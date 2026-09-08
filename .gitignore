@@ -4,6 +4,7 @@ out/
 .worktrees/
 .pipeline-review.md
 .pipeline-report.md
+.pipeline-qa.md
 .env
 .env.*
 .DS_Store
