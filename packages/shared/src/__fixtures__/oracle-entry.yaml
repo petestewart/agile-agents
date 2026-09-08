@@ -1,0 +1,10 @@
+# Verbatim from design/agile-agents-design.md §4 "Oracle".
+id: DEC-0042
+title: Sessions are JWT, not server-side
+status: active          # active | superseded | retired
+supersedes: [DEC-0019]
+depends: [SPEC-auth-003]
+affects: [SPEC-api-001]  # forward edges, maintained by architect
+decided: 2026-09-07
+by: architect            # or human
+rationale: ...

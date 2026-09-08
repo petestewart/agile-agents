@@ -1,0 +1,8 @@
+# Verbatim from design/agile-agents-design.md §16 "HIL gates policy"
+# (.agile/policy.yaml repo default).
+gates:
+  approve_plan:     human
+  approve_decision: human            # product-level DECs
+  sprint_review:    human            # integration → main
+  unblock:          em
+  demo:             human

@@ -1,0 +1,14 @@
+# From design/agile-agents-design.md §4 "Quota". Verbatim except `kind`,
+# `confidence`, and `source`, whose design values are pipe-separated enum
+# illustrations rather than one concrete value; substituted with one
+# concrete legal value each.
+vendor: openai
+account: codex-plus
+kind: subscription_window
+remaining: 0.22          # fraction, $ or tokens — whatever the vendor exposes
+unit: fraction
+resets_at: 2026-09-07T18:00:00Z
+confidence: reported
+source: stream_event
+updated: ...
+cooldown_until: null     # set on 429

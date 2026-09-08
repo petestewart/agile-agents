@@ -1,0 +1,11 @@
+# From design/agile-agents-design.md §4 "Knowledge store". Verbatim except
+# `kind` and `confidence`, whose design values are pipe-separated enum
+# illustrations (`env | codebase | gotcha | perf`, `observed | verified`);
+# substituted with one concrete legal value each (see ticket.test.ts / T002
+# report notes for the same substitution pattern).
+id: KB-0117
+kind: env
+scope: [packages/api]
+confidence: observed
+source: TKT-0198
+expires: null           # date for env facts that rot

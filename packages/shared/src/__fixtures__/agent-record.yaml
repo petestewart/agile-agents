@@ -1,0 +1,8 @@
+# Not a literal design-doc block — §5 "Storage" only gives a one-line
+# directory-listing comment ("agents/<agent>.yaml   # registry: vendor,
+# model, ticket, pid, last_seen"). Constructed directly from that field list.
+vendor: claude
+model: claude-sonnet-4-5
+ticket: TKT-0231
+pid: 4242
+last_seen: 2026-09-07T18:00:00Z
