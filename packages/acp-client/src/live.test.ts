@@ -7,6 +7,20 @@
  * CANNOT run in this container (no vendor login) — so it is a no-op unless
  * `AGILE_LIVE=1`, per the ticket's Validation Steps.
  *
+ * Assertions are grounded in this repo's own raw capture
+ * (spike/spike-out/claude-default-perm.json, the run §A's table was written
+ * from), NOT title-regex guessing: every `tool_call`'s `kind` field is
+ * 'read' | 'execute' | 'edit' and is present on both the `session/update`
+ * tool_call notification and the `session/request_permission` request's
+ * `toolCall.kind` (the harness's `onUpdate`/`onAgentRequest` read exactly
+ * `u.kind` / `tc.kind`). Titles are generic on the tool_call itself
+ * ("Terminal" for every Bash call, "Read File" for every read) — `rawInput`
+ * is empty `{}` throughout that capture, so no command text is recoverable
+ * from the ACP wire to identify "git status" specifically. Permission
+ * *request* titles are prose ("Write \"hi\" to out.txt", "Edit small.txt",
+ * "Run npm test") and are used only for the positive assertions, which the
+ * capture's `permissionRequests` array confirms verbatim.
+ *
  * Line count for the acceptance criterion: everything below the imports
  * (the actual re-implementation) is under 100 lines — see the report.
  */
@@ -50,18 +64,16 @@ describe('live: Claude default-mode permission scenario', () => {
         clientCapabilities: claude.clientCapabilities,
       });
 
-      const permsRaised: string[] = [];
-      const toolCalls: string[] = [];
+      const toolCallKinds: string[] = [];
+      const permKinds: string[] = [];
+      const permTitles: string[] = [];
       session.on((event) => {
         if (event.type !== 'event') return;
         if (event.event.acp === 'notification' && event.event.message.method === 'session/update') {
           const update = (
-            event.event.message.params as {
-              update?: { sessionUpdate?: string; title?: string; kind?: string };
-            }
+            event.event.message.params as { update?: { sessionUpdate?: string; kind?: string } }
           )?.update;
-          if (update?.sessionUpdate === 'tool_call')
-            toolCalls.push(update.title ?? update.kind ?? 'unknown');
+          if (update?.sessionUpdate === 'tool_call' && update.kind) toolCallKinds.push(update.kind);
           return;
         }
         if (event.event.acp !== 'request' || event.event.method !== 'session/request_permission')
@@ -71,7 +83,8 @@ describe('live: Claude default-mode permission scenario', () => {
           toolCall?: { title?: string; kind?: string };
           options?: Array<{ kind: string; optionId: string }>;
         };
-        permsRaised.push(params.toolCall?.title ?? params.toolCall?.kind ?? 'unknown');
+        permKinds.push(params.toolCall?.kind ?? 'unknown');
+        permTitles.push(params.toolCall?.title ?? 'unknown');
         const allow = params.options?.find((o) => o.kind === 'allow_once') ?? params.options?.[0];
         session.respondPermission(id, {
           outcome: allow
@@ -88,17 +101,26 @@ describe('live: Claude default-mode permission scenario', () => {
       );
 
       expect(reply.status).toBe('completed');
-      // §A, positive half: a redirected write, an edit, and `npm test` all
-      // raise a permission request in `default` mode.
-      expect(permsRaised.some((label) => /echo|out\.txt/i.test(label))).toBe(true);
-      expect(permsRaised.some((label) => /edit|small\.txt/i.test(label))).toBe(true);
-      expect(permsRaised.some((label) => /npm test/i.test(label))).toBe(true);
-      // §A, negative half: the plain read and `git status` ran (so the
-      // absence below is "never asked", not "never attempted") but raised no
-      // permission request at all.
-      expect(toolCalls.some((label) => /read|small\.txt/i.test(label))).toBe(true);
-      expect(toolCalls.some((label) => /git status/i.test(label))).toBe(true);
-      expect(permsRaised.some((label) => /^read$|git status/i.test(label))).toBe(false);
+      // §A, positive half: the redirected write, the edit, and `npm test`
+      // each raised a permission request (kind, then the prose title as
+      // extra confirmation against the real capture).
+      expect(permKinds.filter((k) => k === 'execute').length).toBeGreaterThanOrEqual(2); // echo + npm test
+      expect(permKinds).toContain('edit');
+      expect(permTitles.some((t) => /npm test/i.test(t))).toBe(true);
+      // §A, negative half: reads never raise a permission request — checked
+      // by kind, the one field reliably present on every request — and at
+      // least one read actually ran, so the absence means "never asked", not
+      // "never attempted".
+      expect(toolCallKinds).toContain('read');
+      expect(permKinds).not.toContain('read');
+      // A plain exec (grep, `git status`) ran with no permission request:
+      // more execute-kind tool_calls occurred than execute-kind permission
+      // requests were raised. Command text is not identifiable from the ACP
+      // wire (see header), so this is the strongest assertion the data
+      // supports for "git status specifically was not prompted".
+      const execToolCalls = toolCallKinds.filter((k) => k === 'execute').length;
+      const execPerms = permKinds.filter((k) => k === 'execute').length;
+      expect(execToolCalls).toBeGreaterThan(execPerms);
 
       session.close();
     },

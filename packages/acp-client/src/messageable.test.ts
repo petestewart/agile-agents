@@ -122,6 +122,28 @@ describe('createMessageableSession', () => {
     expect(reply).toEqual({ status: 'completed', text: 'done: all green' });
   });
 
+  it('resets busy when the underlying prompt() rejects before a turn starts, so a later send() is not wedged', async () => {
+    // A prompt that rejects before any turn begins (PROMPT_IN_FLIGHT,
+    // AuthRequiredError, a dead subprocess, ...) emits no turn-ended marker,
+    // so `busy` cannot clear through the event stream the way it does for a
+    // turn that actually runs.
+    const fake = new FakeSpawnedSession();
+    fake.setNextReply(() => Promise.reject(new Error('boom')));
+    const session = createMessageableSession('sess-1', fake as unknown as SpawnedSession);
+
+    const first = session.send('one');
+    expect(session.busy).toBe(true);
+    const firstReply = await first;
+    expect(firstReply.status).toBe('failed');
+    expect(firstReply.error?.code).toBe('prompt_rejected');
+    expect(session.busy).toBe(false); // not stuck
+
+    fake.setNextReply({ status: 'completed', text: 'ok' });
+    const second = await session.send('two');
+    expect(second).toEqual({ status: 'completed', text: 'ok' });
+    expect(fake.prompts).toEqual(['one', 'two']);
+  });
+
   it('notifies turn-end listeners for turns other drivers started', () => {
     const fake = new FakeSpawnedSession();
     const session = createMessageableSession('sess-1', fake as unknown as SpawnedSession);

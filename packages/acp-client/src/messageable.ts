@@ -140,7 +140,25 @@ export function createMessageableSession(
         });
       }
       busy = true;
-      return session.prompt(text);
+      // A turn that actually starts clears `busy` via the turn-ended
+      // notification handled above (independent of this promise settling).
+      // But a `prompt()` that rejects *before* a turn starts — `AcpClientError
+      // PROMPT_IN_FLIGHT`, an `AuthRequiredError` out of `ensureSession()`, a
+      // dead subprocess — never emits that marker, so without this `catch`
+      // `busy` would stay `true` forever and wedge every later `send()`.
+      // Converting the rejection to a settled failed reply also keeps this
+      // method's "never rejects" contract intact for every path, not just
+      // the concurrent-turn guard above.
+      return session.prompt(text).catch((err: unknown) => {
+        busy = false;
+        const message = err instanceof Error ? err.message : String(err);
+        const reply: SessionReply = {
+          status: 'failed',
+          text: '',
+          error: { code: 'prompt_rejected', message },
+        };
+        return reply;
+      });
     },
     onTurnEnded(listener: (end: SessionTurnEnd) => void): () => void {
       turnListeners.add(listener);
