@@ -179,7 +179,7 @@ Priority encodes dependency layer as well as importance: P0 tickets are v0-block
 
 ### Ticket: T013 Role briefs and ceremony templates
 - **Priority:** P0
-- **Status:** In Progress
+- **Status:** In Review
 - **Owner:** sonnet:worker-T013
 - **Scope:** Depends on T002. Prompt templates in `packages/daemon/briefs/`: EM, architect, engineer, reviewer, QA, reader/tool runner; standup, refinement, sprint review, retro. Each brief states the role's contract, the available MCP verbs, the signal-over-volume rules, what to write to the board and when, and what it must never do. Rendered with the entity data from the state store. Kept short; enforcement is elsewhere.
 - **Acceptance Criteria:** Every brief renders against fixture data without missing fields; a snapshot test guards accidental bloat (token count per brief under a set ceiling).
