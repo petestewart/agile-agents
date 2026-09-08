@@ -98,12 +98,12 @@ Priority encodes dependency layer as well as importance: P0 tickets are v0-block
 
 ### Ticket: T004 Daemon skeleton and state bootstrap
 - **Priority:** P0
-- **Status:** In Progress
+- **Status:** In Review
 - **Owner:** sonnet:worker-T004
 - **Scope:** Depends on T002. `agiled` process: config discovery, unix socket JSON-RPC (`bus.*`, `state.*`, `hook.*`, `gate.*` namespaces stubbed), localhost HTTP + WebSocket, PID/lock file (one daemon per repo), graceful shutdown. `agile init`: creates orphan branch `agile-state`, checks it out as a worktree at `.agile/`, writes default `policy.yaml`, `vendors.yaml`, empty indexes, and a `.gitignore` entry for `.worktrees/`.
 - **Acceptance Criteria:** `agile init` in a fresh git repo produces the §4 layout on the orphan branch; a second daemon start fails with a clear lock error; `curl localhost:<port>/health` returns daemon version and state root.
 - **Validation Steps:** Integration test creates a temp git repo, runs init, asserts branch + files; unit tests for lock and shutdown.
-- **Notes:**
+- **Notes:** branch `T004-daemon-skeleton` (local worktree), commit `57eb9df`, self-review PASS. Choices: lock at `<repo>/.agile-daemon.lock`, socket `<repo>/.agile-daemon.sock`, config `agile.config.yaml` at repo root (no design precedent — flagged for review), default port 4600, RPC stubs return code -32001, init uses `git worktree add --orphan` (git ≥2.42). `yaml` runtime dep added to daemon. Flagged for T005: no schema yet for the contents of `oracle/index.yaml`/`knowledge/index.yaml`. Gates `opus:reviewer-T004` + `sonnet:qa-T004` running.
 
 ### Ticket: T005 State store and event log
 - **Priority:** P0
