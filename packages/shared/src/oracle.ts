@@ -11,22 +11,24 @@ import { OracleIdSchema, formatZodError } from './ids';
 export const OracleStatusSchema = z.enum(['active', 'superseded', 'retired']);
 export type OracleStatus = z.infer<typeof OracleStatusSchema>;
 
-export const OracleEntrySchema = z.object({
-  id: OracleIdSchema,
-  title: z.string().min(1),
-  status: OracleStatusSchema,
-  supersedes: z.array(OracleIdSchema).default([]),
-  // DESIGN-GAP: `depends` is shown as a single-item array (`[SPEC-auth-003]`)
-  // with no cardinality rule given; modeled as any-length array like the
-  // other graph-edge fields (`affects`, `supersedes`).
-  depends: z.array(OracleIdSchema).default([]),
-  // "affects makes ripple analysis a graph walk" — forward edges, architect-maintained.
-  affects: z.array(OracleIdSchema).default([]),
-  decided: z.string().min(1),
-  // "by: architect  # or human"
-  by: z.enum(['architect', 'human']),
-  rationale: z.string().min(1),
-});
+export const OracleEntrySchema = z
+  .object({
+    id: OracleIdSchema,
+    title: z.string().min(1),
+    status: OracleStatusSchema,
+    supersedes: z.array(OracleIdSchema).default([]),
+    // DESIGN-GAP: `depends` is shown as a single-item array (`[SPEC-auth-003]`)
+    // with no cardinality rule given; modeled as any-length array like the
+    // other graph-edge fields (`affects`, `supersedes`).
+    depends: z.array(OracleIdSchema).default([]),
+    // "affects makes ripple analysis a graph walk" — forward edges, architect-maintained.
+    affects: z.array(OracleIdSchema).default([]),
+    decided: z.string().min(1),
+    // "by: architect  # or human"
+    by: z.enum(['architect', 'human']),
+    rationale: z.string().min(1),
+  })
+  .strict();
 
 export type OracleEntry = z.infer<typeof OracleEntrySchema>;
 

@@ -43,6 +43,19 @@ describe('Ticket schema', () => {
       }),
     ).not.toThrow();
   });
+
+  test('rejects an unknown top-level key', () => {
+    expect(() => validateTicket({ ...baseTicket, typo_field: 'nope' })).toThrow();
+  });
+
+  test('rejects an unknown key inside contract', () => {
+    expect(() =>
+      validateTicket({
+        ...baseTicket,
+        contract: { ...baseTicket.contract, extra: 'nope' },
+      }),
+    ).toThrow();
+  });
 });
 
 describe('TICKET_TRANSITIONS / isLegalTransition', () => {
@@ -68,6 +81,9 @@ describe('TICKET_TRANSITIONS / isLegalTransition', () => {
     expect(isLegalTransition('stale', 'ready')).toBe(true);
     expect(isLegalTransition('paused', 'ready')).toBe(true);
     expect(isLegalTransition('in_progress', 'stale')).toBe(true); // ripple walk
+    expect(isLegalTransition('ready', 'paused')).toBe(true); // no candidate above floor at assignment
+    expect(isLegalTransition('blocked', 'paused')).toBe(true); // blocked agent dies/429s
+    expect(isLegalTransition('blocked', 'ready')).toBe(true); // dead-agent/quota reassignment
   });
 
   test('invalid transitions are rejected', () => {

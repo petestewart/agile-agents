@@ -14,17 +14,31 @@
 import { z } from 'zod';
 import { TicketIdSchema, formatZodError } from './ids';
 
-export const EVENT_KINDS = ['message', 'hook_decision', 'state_transition'] as const;
+/**
+ * `quota_low` / `quota_exhausted` are added alongside the three prose-named
+ * sources: §4 "Quota" / §10 "Quota-driven pause and handoff" name them as
+ * "Bus events" that drive daemon-side routing/reassignment decisions, which
+ * is exactly the kind of state transition this log exists to record.
+ */
+export const EVENT_KINDS = [
+  'message',
+  'hook_decision',
+  'state_transition',
+  'quota_low',
+  'quota_exhausted',
+] as const;
 export const EventKindSchema = z.enum(EVENT_KINDS);
 export type EventKind = z.infer<typeof EventKindSchema>;
 
-export const EventSchema = z.object({
-  ts: z.string().min(1),
-  kind: EventKindSchema,
-  ticket: TicketIdSchema.optional(),
-  agent: z.string().min(1).optional(),
-  data: z.record(z.string(), z.unknown()).default({}),
-});
+export const EventSchema = z
+  .object({
+    ts: z.string().min(1),
+    kind: EventKindSchema,
+    ticket: TicketIdSchema.optional(),
+    agent: z.string().min(1).optional(),
+    data: z.record(z.string(), z.unknown()).default({}),
+  })
+  .strict();
 
 export type Event = z.infer<typeof EventSchema>;
 

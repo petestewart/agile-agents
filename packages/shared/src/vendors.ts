@@ -10,15 +10,19 @@ import { formatZodError } from './ids';
 export const AccountAuthSchema = z.enum(['subscription', 'api_key']);
 export type AccountAuth = z.infer<typeof AccountAuthSchema>;
 
-export const VendorAccountSchema = z.object({
-  id: z.string().min(1),
-  auth: AccountAuthSchema,
-});
+export const VendorAccountSchema = z
+  .object({
+    id: z.string().min(1),
+    auth: AccountAuthSchema,
+  })
+  .strict();
 export type VendorAccount = z.infer<typeof VendorAccountSchema>;
 
-export const VendorConfigSchema = z.object({
-  accounts: z.array(VendorAccountSchema).min(1),
-});
+export const VendorConfigSchema = z
+  .object({
+    accounts: z.array(VendorAccountSchema).min(1),
+  })
+  .strict();
 export type VendorConfig = z.infer<typeof VendorConfigSchema>;
 
 /** `.agile/vendors.yaml` — one entry per vendor name (claude, openai, cursor, gemini, ...). */
@@ -51,20 +55,22 @@ export const QUOTA_SOURCES = [
 export const QuotaSourceSchema = z.enum(QUOTA_SOURCES);
 export type QuotaSource = z.infer<typeof QuotaSourceSchema>;
 
-export const QuotaSchema = z.object({
-  vendor: z.string().min(1),
-  account: z.string().min(1),
-  kind: QuotaKindSchema,
-  // "remaining: 0.22  # fraction, $ or tokens — whatever the vendor exposes"
-  remaining: z.number(),
-  unit: z.string().min(1),
-  resets_at: z.string().min(1).nullable().optional(),
-  confidence: QuotaConfidenceSchema,
-  source: QuotaSourceSchema,
-  updated: z.string().min(1),
-  // "cooldown_until: null  # set on 429"
-  cooldown_until: z.string().min(1).nullable().default(null),
-});
+export const QuotaSchema = z
+  .object({
+    vendor: z.string().min(1),
+    account: z.string().min(1),
+    kind: QuotaKindSchema,
+    // "remaining: 0.22  # fraction, $ or tokens — whatever the vendor exposes"
+    remaining: z.number(),
+    unit: z.string().min(1),
+    resets_at: z.string().min(1).nullable().optional(),
+    confidence: QuotaConfidenceSchema,
+    source: QuotaSourceSchema,
+    updated: z.string().min(1),
+    // "cooldown_until: null  # set on 429"
+    cooldown_until: z.string().min(1).nullable().default(null),
+  })
+  .strict();
 
 export type Quota = z.infer<typeof QuotaSchema>;
 

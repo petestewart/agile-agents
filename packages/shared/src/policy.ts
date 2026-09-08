@@ -50,10 +50,12 @@ export type GatesBlock = z.infer<typeof GatesBlockSchema>;
  * DESIGN-GAP: no yaml key is given for this list; modeled as a free-form
  * string array of signal names.
  */
-export const PolicySchema = z.object({
-  gates: GatesBlockSchema,
-  breaker_signals: z.array(z.string().min(1)).default([]),
-});
+export const PolicySchema = z
+  .object({
+    gates: GatesBlockSchema,
+    breaker_signals: z.array(z.string().min(1)).default([]),
+  })
+  .strict();
 
 export type Policy = z.infer<typeof PolicySchema>;
 

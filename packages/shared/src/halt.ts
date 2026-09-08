@@ -22,15 +22,17 @@ export type HaltScope = z.infer<typeof HaltScopeSchema>;
 export const HaltQuorumSchema = z.enum(['pending', 'reached']);
 export type HaltQuorum = z.infer<typeof HaltQuorumSchema>;
 
-export const HaltSchema = z.object({
-  id: HaltIdSchema,
-  scope: HaltScopeSchema,
-  reason: z.string().min(1),
-  raised_by: z.string().min(1),
-  // "resolves_when: DEC-xxxx" — a decision id names the resolution condition.
-  resolves_when: OracleIdSchema.optional(),
-  quorum: HaltQuorumSchema,
-});
+export const HaltSchema = z
+  .object({
+    id: HaltIdSchema,
+    scope: HaltScopeSchema,
+    reason: z.string().min(1),
+    raised_by: z.string().min(1),
+    // "resolves_when: DEC-xxxx" — a decision id names the resolution condition.
+    resolves_when: OracleIdSchema.optional(),
+    quorum: HaltQuorumSchema,
+  })
+  .strict();
 
 export type Halt = z.infer<typeof HaltSchema>;
 

@@ -1,0 +1,15 @@
+# Not from the design doc verbatim — a review nit noted that
+# `env: compose: docker/compose.test.yml`, as literally written in the §4
+# "Ticket" example, is not valid unquoted yaml (a second `:` inside a plain
+# scalar). This fixture proves the on-disk quoted form parses; the
+# TicketSchema-level check for the unquoted TS string form is in
+# ticket.test.ts.
+id: TKT-0231
+title: Issue JWT on login
+status: ready
+contract:
+  inputs: [packages/api/auth/**]
+  outputs: [packages/api/auth/jwt.ts]
+  acceptance: ["returns 200"]
+  done: [tests_pass]
+  env: "compose: docker/compose.test.yml"

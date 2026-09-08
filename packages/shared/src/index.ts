@@ -9,6 +9,7 @@
 export const PACKAGE_NAME = '@agile-agents/shared';
 
 export * from './ids';
+export * from './agents';
 export * from './oracle';
 export * from './kb';
 export * from './ticket';

@@ -10,6 +10,7 @@ import { describe, expect, test } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { parse as parseYaml } from 'yaml';
+import { validateAgentRecord } from './agents';
 import { validateHalt } from './halt';
 import { validateKbFact } from './kb';
 import { validateLedgerLine } from './ledger';
@@ -45,6 +46,12 @@ describe('design doc fixtures parse (§4–§5)', () => {
     expect(() => validateTicket(loadYaml('ticket.yaml'))).not.toThrow();
   });
 
+  // stanza.json is verbatim from §4 "Board" except `kind` and
+  // `discovery.tier`, whose design values are pipe-separated enum
+  // illustrations; substituted with one concrete legal value each (kept
+  // consistent: kind "discovery" pairs with a discovery block). JSON has no
+  // comment syntax, so — unlike the yaml fixtures — that note lives here
+  // rather than in the fixture file.
   test('Stanza — §4 Board', () => {
     expect(() => validateStanza(loadJson('stanza.json'))).not.toThrow();
   });
@@ -77,11 +84,22 @@ describe('design doc fixtures parse (§4–§5)', () => {
     expect(() => validateToolDefinition(loadYaml('tool.yaml'))).not.toThrow();
   });
 
+  // ledger-line.json is verbatim from §4 "Ledger" except `kind` (a
+  // pipe-separated enum illustration there too), substituted with one
+  // concrete legal value. Same JSON-has-no-comments note as stanza.json above.
   test('LedgerLine — §4 Ledger', () => {
     expect(() => validateLedgerLine(loadJson('ledger-line.json'))).not.toThrow();
   });
 
   test('Message — §5 Comms bus / Message', () => {
     expect(() => validateMessage(loadYaml('message.yaml'))).not.toThrow();
+  });
+
+  test('AgentRecord — §5 Storage (constructed from prose, no literal block)', () => {
+    expect(() => validateAgentRecord(loadYaml('agent-record.yaml'))).not.toThrow();
+  });
+
+  test('Ticket — §13 contract.env compose form, on-disk (quoted, since unquoted "compose: <path>" is not valid yaml)', () => {
+    expect(() => validateTicket(loadYaml('ticket-compose-env.yaml'))).not.toThrow();
   });
 });

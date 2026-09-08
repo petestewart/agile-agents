@@ -19,17 +19,19 @@ export type LedgerKind = z.infer<typeof LedgerKindSchema>;
  * stricter ID formats used elsewhere, so the literal example still parses;
  * `ceremony`-kind lines also plausibly have no ticket at all.
  */
-export const LedgerLineSchema = z.object({
-  ts: z.string(),
-  sprint: z.string(),
-  ticket: z.string(),
-  agent: z.string(),
-  model: z.string(),
-  in_tokens: z.number().int().min(0),
-  out_tokens: z.number().int().min(0),
-  cost_usd: z.number().min(0),
-  kind: LedgerKindSchema,
-});
+export const LedgerLineSchema = z
+  .object({
+    ts: z.string(),
+    sprint: z.string(),
+    ticket: z.string(),
+    agent: z.string(),
+    model: z.string(),
+    in_tokens: z.number().int().min(0),
+    out_tokens: z.number().int().min(0),
+    cost_usd: z.number().min(0),
+    kind: LedgerKindSchema,
+  })
+  .strict();
 
 export type LedgerLine = z.infer<typeof LedgerLineSchema>;
 

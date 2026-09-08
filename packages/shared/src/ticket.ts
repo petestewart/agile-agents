@@ -59,64 +59,78 @@ export const ContractEnvSchema = z.union([
 ]);
 export type ContractEnv = z.infer<typeof ContractEnvSchema>;
 
-export const TicketContractSchema = z.object({
-  inputs: z.array(z.string().min(1)).default([]),
-  outputs: z.array(z.string().min(1)).default([]),
-  acceptance: z.array(z.string().min(1)).default([]),
-  done: z.array(DoneCriterionSchema).default([]),
-  env: ContractEnvSchema.default('clone'),
-});
+export const TicketContractSchema = z
+  .object({
+    inputs: z.array(z.string().min(1)).default([]),
+    outputs: z.array(z.string().min(1)).default([]),
+    acceptance: z.array(z.string().min(1)).default([]),
+    done: z.array(DoneCriterionSchema).default([]),
+    env: ContractEnvSchema.default('clone'),
+  })
+  .strict();
 export type TicketContract = z.infer<typeof TicketContractSchema>;
 
-export const TicketEstimateSchema = z.object({
-  points: z.union([z.literal(1), z.literal(2), z.literal(3), z.literal(5), z.literal(8)]),
-  tier: TicketTierSchema,
-  reasoning: TicketReasoningSchema,
-  pointed_by: z.string().min(1),
-  pointed_at: z.string().min(1),
-});
+export const TicketEstimateSchema = z
+  .object({
+    points: z.union([z.literal(1), z.literal(2), z.literal(3), z.literal(5), z.literal(8)]),
+    tier: TicketTierSchema,
+    reasoning: TicketReasoningSchema,
+    pointed_by: z.string().min(1),
+    pointed_at: z.string().min(1),
+  })
+  .strict();
 export type TicketEstimate = z.infer<typeof TicketEstimateSchema>;
 
-export const TicketRoutingSchema = z.object({
-  // "<resolved by daemon from tier at assignment>" — absent before assignment.
-  model: z.string().min(1).optional(),
-  attempts: z.number().int().min(0).default(0),
-  max_attempts: z.number().int().min(1),
-  escalation: z.array(TicketTierSchema).default([]),
-});
+export const TicketRoutingSchema = z
+  .object({
+    // "<resolved by daemon from tier at assignment>" — absent before assignment.
+    model: z.string().min(1).optional(),
+    attempts: z.number().int().min(0).default(0),
+    max_attempts: z.number().int().min(1),
+    escalation: z.array(TicketTierSchema).default([]),
+  })
+  .strict();
 export type TicketRouting = z.infer<typeof TicketRoutingSchema>;
 
-export const TicketBudgetSchema = z.object({
-  ceiling_tokens: z.number().int().min(0),
-  // "spent_tokens: 0  # daemon-maintained"
-  spent_tokens: z.number().int().min(0).default(0),
-});
+export const TicketBudgetSchema = z
+  .object({
+    ceiling_tokens: z.number().int().min(0),
+    // "spent_tokens: 0  # daemon-maintained"
+    spent_tokens: z.number().int().min(0).default(0),
+  })
+  .strict();
 export type TicketBudget = z.infer<typeof TicketBudgetSchema>;
 
-export const TicketSchema = z.object({
-  id: TicketIdSchema,
-  title: z.string().min(1),
-  status: TicketStatusSchema,
-  sprint: SprintIdSchema.optional(),
-  parent: EpicIdSchema.optional(),
-  depends: z.array(TicketIdSchema).default([]),
-  oracle_refs: z.array(OracleIdSchema).default([]),
-  kb_refs: z.array(KbIdSchema).default([]),
-  contract: TicketContractSchema,
-  estimate: TicketEstimateSchema.optional(),
-  routing: TicketRoutingSchema.optional(),
-  budget: TicketBudgetSchema.optional(),
-  assignee: z.string().min(1).optional(),
-  worktree: z.string().min(1).optional(),
-  history: z.array(z.string().min(1)).default([]),
-  // "anything the architect tags security: true" (§12).
-  security: z.boolean().default(false),
-  // "ticket status paused, resume_at = earliest resets_at among candidates" (§10).
-  resume_at: z.string().min(1).optional(),
-  // "blocked: agent-declared, carries a reason pointing at a ticket, a
-  // message, or a proposed decision" (§4 "Ticket").
-  blocked_reason: z.string().min(1).optional(),
-});
+export const TicketSchema = z
+  .object({
+    id: TicketIdSchema,
+    title: z.string().min(1),
+    status: TicketStatusSchema,
+    sprint: SprintIdSchema.optional(),
+    parent: EpicIdSchema.optional(),
+    depends: z.array(TicketIdSchema).default([]),
+    oracle_refs: z.array(OracleIdSchema).default([]),
+    kb_refs: z.array(KbIdSchema).default([]),
+    contract: TicketContractSchema,
+    estimate: TicketEstimateSchema.optional(),
+    routing: TicketRoutingSchema.optional(),
+    budget: TicketBudgetSchema.optional(),
+    assignee: z.string().min(1).optional(),
+    worktree: z.string().min(1).optional(),
+    history: z.array(z.string().min(1)).default([]),
+    // "anything the architect tags security: true" (§12).
+    security: z.boolean().default(false),
+    // "ticket status paused, resume_at = earliest resets_at among candidates" (§10).
+    resume_at: z.string().min(1).optional(),
+    // "blocked: agent-declared, carries a reason pointing at a ticket, a
+    // message, or a proposed decision" (§4 "Ticket") — field named `reason`
+    // to match §5 "Questions" ("sets `blocked` with `reason: MSG-id`")
+    // rather than the earlier `blocked_reason`. Still a plain string, not a
+    // discriminated union over MSG-/TKT-/DEC- pointer forms (a review nit;
+    // left for whichever ticket first needs to dereference it).
+    reason: z.string().min(1).optional(),
+  })
+  .strict();
 
 export type Ticket = z.infer<typeof TicketSchema>;
 
@@ -144,11 +158,18 @@ export function validateTicket(input: unknown): Ticket {
  * - in_qa -> done: QA `accept` verdict (§13).
  * - {assigned, in_progress, in_review, in_qa} -> ready: dead-agent / quota
  *   reassignment, "ticket back to ready" (§5 "Liveness", §10 "Quota-driven pause").
- * - {assigned, in_progress, in_review, in_qa} -> paused: quota-floor pause,
- *   "ticket status paused" (§10).
+ * - {ready, assigned, in_progress, in_review, in_qa, blocked} -> paused:
+ *   quota-floor pause, "ticket status paused" (§10) — includes `ready`
+ *   because that's the state a ticket is in when the daemon tries to
+ *   *assign* it and finds no candidate above the floor (the primary pause
+ *   path in §10), and `blocked` because a blocked ticket's agent can still
+ *   die on liveness or hit a 429 while waiting on an answer.
  * - paused -> ready: scheduler resumes into the reassignment pool (§10).
  * - {in_progress, in_review, in_qa} -> blocked: agent-declared block (§4 "Ticket").
- * - blocked -> in_progress: unblocked by an `answer`/`decision` (§5 "Questions").
+ * - blocked -> {in_progress, ready}: unblocked by an `answer`/`decision` (§5
+ *   "Questions"); `ready` covers the dead-agent/quota-reassignment path
+ *   reaching a blocked ticket the same way it reaches the other in-flight
+ *   statuses above.
  * - {ready, assigned, in_progress, in_review, in_qa, blocked, paused} -> stale:
  *   ripple walk marks any live ticket whose `oracle_refs` intersect a changed
  *   decision (§4 "Oracle": "every ticket whose oracle_refs intersects gets
@@ -158,12 +179,12 @@ export function validateTicket(input: unknown): Ticket {
  */
 export const TICKET_TRANSITIONS: Record<TicketStatus, readonly TicketStatus[]> = {
   draft: ['ready'],
-  ready: ['assigned', 'stale'],
+  ready: ['assigned', 'paused', 'stale'],
   assigned: ['in_progress', 'ready', 'paused', 'stale'],
   in_progress: ['in_review', 'blocked', 'ready', 'paused', 'stale'],
   in_review: ['in_progress', 'in_qa', 'ready', 'paused', 'stale'],
   in_qa: ['in_progress', 'done', 'ready', 'paused', 'stale'],
-  blocked: ['in_progress', 'stale'],
+  blocked: ['in_progress', 'ready', 'paused', 'stale'],
   stale: ['ready'],
   paused: ['ready'],
   done: [],

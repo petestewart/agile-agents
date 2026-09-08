@@ -1,5 +1,4 @@
 {
-  "_comment": "From design/agile-agents-design.md §4 'Board'. Verbatim except `kind` and `discovery.tier`, whose design values are pipe-separated enum illustrations; substituted with one concrete legal value each, kept consistent (kind: discovery pairs with a discovery block).",
   "ts": "...",
   "ticket": "TKT-0231",
   "agent": "eng-3",

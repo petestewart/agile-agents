@@ -38,4 +38,43 @@ describe('Message schema', () => {
   test('rejects an unknown message kind', () => {
     expect(() => validateMessage({ ...baseMessage, kind: 'gossip' })).toThrow();
   });
+
+  test('accepts the design-mandated fyi, quota_low, quota_exhausted kinds', () => {
+    expect(() => validateMessage({ ...baseMessage, kind: 'fyi' })).not.toThrow();
+    expect(() => validateMessage({ ...baseMessage, kind: 'quota_low' })).not.toThrow();
+    expect(() => validateMessage({ ...baseMessage, kind: 'quota_exhausted' })).not.toThrow();
+  });
+
+  test('rejects an unknown top-level key', () => {
+    expect(() => validateMessage({ ...baseMessage, extra_field: 'nope' })).toThrow();
+  });
+
+  test('hil_request round-trips kind, hil_kind, and deadline (§5 "HIL")', () => {
+    const hilRequest = validateMessage({
+      ...baseMessage,
+      kind: 'hil_request',
+      hil_kind: 'approve_decision',
+      deadline: '2026-09-08T12:00:00Z',
+    });
+    expect(hilRequest.kind).toBe('hil_request');
+    expect(hilRequest.hil_kind).toBe('approve_decision');
+    expect(hilRequest.deadline).toBe('2026-09-08T12:00:00Z');
+  });
+
+  test('hil_request without hil_kind or deadline is rejected', () => {
+    expect(() => validateMessage({ ...baseMessage, kind: 'hil_request' })).toThrow();
+    expect(() =>
+      validateMessage({ ...baseMessage, kind: 'hil_request', hil_kind: 'demo' }),
+    ).toThrow();
+  });
+
+  test('answer round-trips promote_to (§5 "Questions")', () => {
+    const answer = validateMessage({ ...baseMessage, kind: 'answer', promote_to: 'kb' });
+    expect(answer.kind).toBe('answer');
+    expect(answer.promote_to).toBe('kb');
+  });
+
+  test('answer without promote_to is rejected', () => {
+    expect(() => validateMessage({ ...baseMessage, kind: 'answer' })).toThrow();
+  });
 });
