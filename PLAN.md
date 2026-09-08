@@ -80,8 +80,8 @@ Priority encodes dependency layer as well as importance: P0 tickets are v0-block
 
 ### Ticket: T002 Shared schemas
 - **Priority:** P0
-- **Status:** Todo
-- **Owner:** Unassigned
+- **Status:** In Progress
+- **Owner:** sonnet:worker-T002
 - **Scope:** Depends on T001. zod schemas + inferred types in `packages/shared` for every entity in design §4–5: OracleEntry (DEC/SPEC header), KbFact, Ticket (incl. `paused`, `env`, `security`, routing/budget blocks), Stanza (incl. `handoff`), Halt (scope `global | team | [tickets]`, quorum), Sprint (team, gates block, retro), Policy (gates, owners incl. `human_timeout`, breaker signals), Vendors/accounts, Quota, Tool definition, LedgerLine, Message (kinds, priority, body cap), Event. Include ID formats (`DEC-0042`, `TKT-0231`, ULIDs) and a `validate` helper per entity.
 - **Acceptance Criteria:** Every example YAML/JSON block in the design doc parses; invalid status transitions and oversized message bodies are rejected; types are exported for daemon/cli/ui.
 - **Validation Steps:** `bun test packages/shared` includes fixtures copied verbatim from design §4–5.
@@ -89,8 +89,8 @@ Priority encodes dependency layer as well as importance: P0 tickets are v0-block
 
 ### Ticket: T003 Extract ACP client from Terma
 - **Priority:** P0
-- **Status:** Todo
-- **Owner:** Unassigned
+- **Status:** In Progress
+- **Owner:** sonnet:worker-T003
 - **Scope:** Depends on T001. Lift `src/main/terminal-host/acp-session.ts`, `acp-event-log.ts`, `src/shared/acp-types.ts`, `acp-providers.ts`, `agent-session-contract.ts`, `src/main/lib/terminal-host/acp-events.ts`, `acp-session-contract.ts` and `src/main/lib/control/messageable-acp-session.ts` from the read-only snapshot in `vendor/terma/` (see `vendor/README.md`) into `packages/acp-client`, removing Terma-specific naming and any Drizzle/Electron references; port their unit tests. Add `authenticate` handling (Cursor/Grok need it) and JSONL framing that splits on `\n` only. Provide one public API: `spawnSession({cmd, cwd, env, clientCapabilities}) → { prompt, cancel, load, setMode, on(event), respondPermission, close }`.
 - **Acceptance Criteria:** Package has no dependency on Terma or Electron; the spike harness `permission-matrix.ts` can be re-implemented on top of it in <100 lines and reproduces the Claude `default` perm table from `spike-findings.md`.
 - **Validation Steps:** `bun test packages/acp-client`; `AGILE_LIVE=1 bun test packages/acp-client --grep live` runs the Claude perm scenario end-to-end.
