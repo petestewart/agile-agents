@@ -123,8 +123,10 @@ export const ACP_PROVIDERS: Record<AcpProviderId, AcpProviderConfig> = Object.fr
     clientCapabilities: {
       fs: { readTextFile: true, writeTextFile: true },
     },
-    // Verified by execution (spike-findings.md §D, §C2): `session/new`
-    // before auth fails -32000 with a single `grok.com` OAuth authMethod.
+    // Verified by execution (spike-findings.md §D, §C2 confirm loadSession
+    // and the auth requirement generally); the specific -32000/`grok.com`
+    // shape is recorded in vendor/terma/src/shared/acp-providers.ts, not in
+    // spike-findings.md itself.
     loadSession: true,
     authMethods: ['grok.com'],
   }),

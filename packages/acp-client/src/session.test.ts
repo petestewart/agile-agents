@@ -9,6 +9,7 @@
  * answered through `respondPermission`.
  */
 import { beforeEach, describe, expect, it, mock } from 'bun:test';
+import * as realChildProcess from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import { Readable, Writable } from 'node:stream';
 
@@ -55,7 +56,12 @@ const writeFileMock = mock(
   async (_path: string, _content: string, _enc: string): Promise<void> => {},
 );
 
-mock.module('node:child_process', () => ({ spawn: spawnMock }));
+// Bun's `mock.module` replaces the module in the registry for the whole test
+// run, not just this file — so every other export must be preserved here
+// (spread from the real module captured above) or any other test file that
+// imports e.g. `execFileSync` from `node:child_process` breaks depending on
+// file-load order.
+mock.module('node:child_process', () => ({ ...realChildProcess, spawn: spawnMock }));
 mock.module('node:fs/promises', () => ({
   readFile: (...args: Parameters<typeof readFileMock>) => readFileMock(...args),
   writeFile: (...args: Parameters<typeof writeFileMock>) => writeFileMock(...args),
@@ -592,6 +598,76 @@ describe('spawnSession', () => {
       expect(reply.text).toBe('partial');
       expect(reply.error?.code).toBe('turn_failed');
     });
+
+    it('rejects a second concurrent prompt instead of stranding the first', async () => {
+      const session = create();
+      await answerInitialize();
+      const first = session.prompt('one');
+      await answerSessionNew('acp-1');
+      await flush();
+
+      await expect(session.prompt('two')).rejects.toMatchObject({
+        name: 'AcpClientError',
+        code: 'PROMPT_IN_FLIGHT',
+      });
+
+      // The first prompt is still alive and settles normally — it was never
+      // stranded by the rejected second call.
+      const promptMsg = sentMessages().find((m) => m.method === 'session/prompt');
+      agentSends({ jsonrpc: '2.0', id: promptMsg?.id, result: { stopReason: 'end_turn' } });
+      await expect(first).resolves.toMatchObject({ status: 'completed' });
+
+      // Once the first turn has settled, prompting again works.
+      const third = session.prompt('three');
+      await flush();
+      const thirdPrompt = sentMessages().filter((m) => m.method === 'session/prompt')[1];
+      agentSends({ jsonrpc: '2.0', id: thirdPrompt?.id, result: { stopReason: 'end_turn' } });
+      await expect(third).resolves.toMatchObject({ status: 'completed' });
+    });
+  });
+
+  describe('mcpServers / modeId passthrough (T011)', () => {
+    it('passes mcpServers through on session/new and session/load', async () => {
+      const mcpServers = [{ name: 'agile-tools', command: 'agile', args: ['mcp'] }];
+      const session = create({ mcpServers });
+      await answerInitialize();
+
+      const promptPromise = session.prompt('go');
+      await flush();
+      const newMsg = sentMessages().find((m) => m.method === 'session/new');
+      expect(newMsg?.params).toMatchObject({ mcpServers });
+      answeredIds.add(newMsg?.id as number);
+      agentSends({ jsonrpc: '2.0', id: newMsg?.id, result: { sessionId: 'acp-1' } });
+      await flush();
+      const promptMsg = sentMessages().find((m) => m.method === 'session/prompt');
+      agentSends({ jsonrpc: '2.0', id: promptMsg?.id, result: { stopReason: 'end_turn' } });
+      await promptPromise;
+
+      const loadPromise = session.load('old-session');
+      await flush();
+      const loadMsg = sentMessages().find((m) => m.method === 'session/load');
+      expect(loadMsg?.params).toMatchObject({ mcpServers });
+      agentSends({ jsonrpc: '2.0', id: loadMsg?.id, result: {} });
+      await loadPromise;
+    });
+
+    it('sets the initial mode right after session/new when modeId is given', async () => {
+      const session = create({ modeId: 'acceptEdits' });
+      await answerInitialize();
+      const promptPromise = session.prompt('go');
+      await flush();
+      const newMsg = sentMessages().find((m) => m.method === 'session/new');
+      agentSends({ jsonrpc: '2.0', id: newMsg?.id, result: { sessionId: 'acp-1' } });
+      await flush();
+
+      const setModeMsg = sentMessages().find((m) => m.method === 'session/set_mode');
+      expect(setModeMsg?.params).toEqual({ sessionId: 'acp-1', modeId: 'acceptEdits' });
+      agentSends({ jsonrpc: '2.0', id: setModeMsg?.id, result: {} });
+      await flush();
+      const promptMsg = sentMessages().find((m) => m.method === 'session/prompt');
+      agentSends({ jsonrpc: '2.0', id: promptMsg?.id, result: { stopReason: 'end_turn' } });
+      await promptPromise;
+    });
   });
 
   describe('cancel / setMode / load', () => {
@@ -654,6 +730,130 @@ describe('spawnSession', () => {
       expect(msg?.params).toEqual({ methodId: 'grok.com' });
       agentSends({ jsonrpc: '2.0', id: msg?.id, result: {} });
       await expect(authPromise).resolves.toEqual({});
+    });
+
+    it('raises AuthRequiredError for a -32000 session/new failure, even without "auth" in the message', async () => {
+      const session = create();
+      await answerInitialize();
+      const promptPromise = session.prompt('go');
+      await flush();
+      const newMsg = sentMessages().find((m) => m.method === 'session/new');
+      // Deliberately no "auth" substring — the code alone must trigger it,
+      // matching spike/permission-matrix.ts's `e?.code === -32000 || ...`.
+      agentSends({
+        jsonrpc: '2.0',
+        id: newMsg?.id,
+        error: { code: -32000, message: 'Please sign in first' },
+      });
+      await expect(promptPromise).rejects.toMatchObject({ name: 'AuthRequiredError' });
+    });
+
+    it('surfaces authMethods from a matching error message even without code -32000 (fallback)', async () => {
+      const session = create();
+      await answerInitialize();
+      const promptPromise = session.prompt('go');
+      await flush();
+      const newMsg = sentMessages().find((m) => m.method === 'session/new');
+      agentSends({
+        jsonrpc: '2.0',
+        id: newMsg?.id,
+        error: {
+          code: -32001,
+          message: 'Authentication required',
+          data: { authMethods: ['cursor_login'] },
+        },
+      });
+      await expect(promptPromise).rejects.toMatchObject({
+        name: 'AuthRequiredError',
+        authMethods: { authMethods: ['cursor_login'] },
+      });
+    });
+
+    it('passes authMethods through from the initialize result for the caller to inspect', async () => {
+      const session = create();
+      await flush();
+      const init = sentMessages().find((m) => m.method === 'initialize');
+      agentSends({
+        jsonrpc: '2.0',
+        id: init?.id,
+        result: { protocolVersion: 1, authMethods: [{ id: 'cursor_login' }] },
+      });
+      await expect(session.initialized).resolves.toMatchObject({
+        authMethods: [{ id: 'cursor_login' }],
+      });
+    });
+
+    it('retries session/new successfully after authenticate() resolves', async () => {
+      const session = create();
+      await answerInitialize();
+      const first = session.prompt('go');
+      await flush();
+      const firstNew = sentMessages().find((m) => m.method === 'session/new');
+      agentSends({
+        jsonrpc: '2.0',
+        id: firstNew?.id,
+        error: { code: -32000, message: 'auth required' },
+      });
+      await expect(first).rejects.toMatchObject({ name: 'AuthRequiredError' });
+
+      const authPromise = session.authenticate('cursor_login');
+      await flush();
+      const authMsg = sentMessages().find((m) => m.method === 'authenticate');
+      agentSends({ jsonrpc: '2.0', id: authMsg?.id, result: {} });
+      await authPromise;
+
+      const second = session.prompt('go again');
+      await flush();
+      const secondNew = sentMessages().filter((m) => m.method === 'session/new')[1];
+      agentSends({ jsonrpc: '2.0', id: secondNew?.id, result: { sessionId: 'acp-1' } });
+      await flush();
+      const promptMsg = sentMessages().find((m) => m.method === 'session/prompt');
+      agentSends({ jsonrpc: '2.0', id: promptMsg?.id, result: { stopReason: 'end_turn' } });
+      await expect(second).resolves.toMatchObject({ status: 'completed' });
+    });
+  });
+
+  describe('truncation is never silent (dropped events surface as a `truncated` notice)', () => {
+    it('replay() reports dropped and prepends a synthetic truncated event once the ring cap is exceeded', async () => {
+      const session = create({ eventLogMaxEntries: 2 });
+      await answerInitialize(); // 1 event so far: initialized
+      for (let i = 0; i < 3; i++) {
+        agentSends({ jsonrpc: '2.0', method: 'session/update', params: { n: i } });
+        await flush();
+      }
+
+      const replay = session.replay();
+      expect(replay.dropped).toBeGreaterThan(0);
+      expect(replay.events[0]).toMatchObject({ acp: 'truncated', dropped: replay.dropped });
+    });
+
+    it('on() replays the truncated notice to a listener attached after the drop', async () => {
+      const session = create({ eventLogMaxEntries: 2 });
+      await answerInitialize();
+      for (let i = 0; i < 3; i++) {
+        agentSends({ jsonrpc: '2.0', method: 'session/update', params: { n: i } });
+        await flush();
+      }
+
+      const events: AgentEvent[] = [];
+      session.on((e) => events.push(e));
+      expect(events[0]).toMatchObject({ type: 'event', event: { acp: 'truncated' } });
+    });
+  });
+
+  describe('forwarded requests with no listener attached', () => {
+    it('refuses a permission request outright rather than leaving the agent blocked forever', async () => {
+      const session = create();
+      await answerInitialize();
+
+      agentSends({ jsonrpc: '2.0', id: 'req-1', method: 'session/request_permission', params: {} });
+      await flush();
+
+      expect(sentMessages()).toContainEqual({
+        jsonrpc: '2.0',
+        id: 'req-1',
+        error: { code: -32603, message: 'No listener attached to answer request' },
+      });
     });
   });
 });

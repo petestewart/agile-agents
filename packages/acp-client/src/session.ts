@@ -39,6 +39,7 @@ import {
   AcpClientError,
   type AcpEvent,
   type AcpJsonRpcMessage,
+  type AcpReplay,
   type AcpRequestId,
   type AgentEvent,
   AuthRequiredError,
@@ -98,6 +99,12 @@ export interface SpawnedSession {
   respondPermissionError(id: AcpRequestId, code: number, message: string): boolean;
   /** Subscribe to protocol events and lifecycle signals. Returns an unsubscribe function. */
   on(listener: (event: AgentEvent) => void): () => void;
+  /**
+   * The event ring's current timeline (with a synthetic `truncated` notice
+   * prepended when the cap dropped events) — for a caller that wants the
+   * replay without also subscribing, or wants to check `dropped` on its own.
+   */
+  replay(): AcpReplay<AcpEvent>;
   /** Resolves with the `initialize` result once the handshake completes. */
   readonly initialized: Promise<unknown>;
   /** The ACP `session/new` id once a session exists, else null. */
@@ -149,22 +156,6 @@ async function canonicalize(path: string): Promise<string> {
   }
 }
 
-/**
- * The user-visible text of a prompt's content blocks: `text` blocks
- * verbatim, `resource_link` blocks by name.
- */
-function promptText(prompt: unknown): string | null {
-  if (!Array.isArray(prompt)) return null;
-  const parts: string[] = [];
-  for (const raw of prompt) {
-    if (typeof raw !== 'object' || raw === null) continue;
-    const block = raw as Record<string, unknown>;
-    if (typeof block.text === 'string') parts.push(block.text);
-    else if (typeof block.name === 'string') parts.push(block.name);
-  }
-  return parts.length > 0 ? parts.join('') : null;
-}
-
 function asRecord(value: unknown): Record<string, unknown> | null {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return null;
   return value as Record<string, unknown>;
@@ -199,6 +190,15 @@ export function spawnSession(opts: SpawnSessionOptions): SpawnedSession {
   let forceKillTimer: ReturnType<typeof setTimeout> | null = null;
   let acpSessionId: string | null = null;
   let inFlight: { fold: FinalMessageState; settle: (reply: SessionReply) => void } | null = null;
+  /**
+   * Count of listeners registered through the public `on()`, distinct from
+   * `listeners.size` (which also holds the internal turn-folding listener
+   * added below) — used to refuse a forwarded agent request outright when no
+   * caller could ever answer it, instead of leaving the agent blocked forever.
+   */
+  let publicListenerCount = 0;
+  /** Serializes `load()` so two in-flight loads cannot interleave (matches Terma's `loadChain`). */
+  let loadChain: Promise<void> = Promise.resolve();
 
   const child: ChildProcess = spawn(opts.cmd, opts.args ?? [], {
     cwd,
@@ -217,6 +217,24 @@ export function spawnSession(opts: SpawnSessionOptions): SpawnedSession {
     const stamped = log.append(frame);
     emit({ type: 'event', event: stamped });
     return stamped;
+  }
+
+  /**
+   * The ring's current timeline, with a synthetic `truncated` notice
+   * prepended when the cap dropped events — ported from Terma's
+   * `replayEvents()` (acp-session.ts): "the gap is visible in the timeline
+   * itself rather than only in a field a caller might ignore".
+   */
+  function replayWithTruncationNotice(): AcpReplay<AcpEvent> {
+    const { events, dropped, generation } = log.replay();
+    if (dropped > 0) {
+      return {
+        events: [{ acp: 'truncated', dropped, seq: 0, gen: generation }, ...events],
+        dropped,
+        generation,
+      };
+    }
+    return { events, dropped, generation };
   }
 
   function exitReason(): string {
@@ -346,8 +364,15 @@ export function spawnSession(opts: SpawnSessionOptions): SpawnedSession {
         }
         default:
           // Anything else (session/request_permission, switch_mode "Approve
-          // Plan", …) needs the caller. Recorded before it is emitted: the
-          // agent blocks until this is answered.
+          // Plan", …) needs the caller. With nobody listening, nothing can
+          // ever answer it — refuse explicitly rather than leave the agent
+          // blocked forever on a request that went into the void.
+          if (publicListenerCount === 0) {
+            respondError(id, -32603, 'No listener attached to answer request');
+            return;
+          }
+          // Recorded before it is emitted: the agent blocks until this is
+          // answered.
           outstanding.set(id, { method, params });
           emitFrame({ acp: 'request', id, method, params });
           return;
@@ -483,7 +508,7 @@ export function spawnSession(opts: SpawnSessionOptions): SpawnedSession {
     if (acpSessionId !== null) return acpSessionId;
     await initialized;
     try {
-      const result = await sendRequest('session/new', { cwd, mcpServers: [] });
+      const result = await sendRequest('session/new', { cwd, mcpServers: opts.mcpServers ?? [] });
       recordSessionState(result);
       const r = asRecord(result);
       const sessionId = r?.sessionId;
@@ -491,9 +516,16 @@ export function spawnSession(opts: SpawnSessionOptions): SpawnedSession {
         throw new Error('session/new did not return a sessionId');
       }
       acpSessionId = sessionId;
+      if (opts.modeId !== undefined) {
+        await sendRequest('session/set_mode', { sessionId, modeId: opts.modeId });
+      }
       return sessionId;
     } catch (err) {
-      if (err instanceof AcpRpcError && /auth/i.test(err.message)) {
+      // Match the spike harness (spike/permission-matrix.ts): the JSON-RPC
+      // code is the authoritative signal (-32000, per
+      // design/spike-findings.md §C2, §D on Cursor/Grok); the message regex
+      // is only a fallback for a vendor that uses a different code.
+      if (err instanceof AcpRpcError && (err.code === -32000 || /auth/i.test(err.message))) {
         throw new AuthRequiredError(err.message, err.data);
       }
       throw err;
@@ -572,6 +604,12 @@ export function spawnSession(opts: SpawnSessionOptions): SpawnedSession {
       return exited;
     },
     async prompt(text: string): Promise<SessionReply> {
+      if (inFlight) {
+        throw new AcpClientError(
+          'PROMPT_IN_FLIGHT',
+          'A prompt turn is already running on this session; await it (or session.cancel()) before starting another.',
+        );
+      }
       const sessionId = await ensureSession();
       return promptRequest(sessionId, text);
     },
@@ -580,18 +618,34 @@ export function spawnSession(opts: SpawnSessionOptions): SpawnedSession {
       return notify('session/cancel', { sessionId: acpSessionId });
     },
     async load(sessionId: string): Promise<unknown> {
-      await initialized;
-      log.beginReplace();
-      try {
-        const result = await sendRequest('session/load', { sessionId, cwd, mcpServers: [] });
-        log.commitReplace();
-        acpSessionId = sessionId;
-        recordSessionState(result);
-        return result;
-      } catch (err) {
-        log.abortReplace();
-        throw err;
-      }
+      const run = async (): Promise<unknown> => {
+        await initialized;
+        log.beginReplace();
+        try {
+          const result = await sendRequest('session/load', {
+            sessionId,
+            cwd,
+            mcpServers: opts.mcpServers ?? [],
+          });
+          log.commitReplace();
+          acpSessionId = sessionId;
+          recordSessionState(result);
+          return result;
+        } catch (err) {
+          log.abortReplace();
+          throw err;
+        }
+      };
+      // `then(run, run)` so one failed load does not wedge the queue behind
+      // it; overlapping loads are serialized rather than interleaved (Terma's
+      // `loadChain` — see acp-session.ts's `load()` doc comment for why
+      // resetting the ring per call is not enough on its own).
+      const result = loadChain.then(run, run);
+      loadChain = result.then(
+        () => {},
+        () => {},
+      );
+      return result;
     },
     async setMode(modeId: string): Promise<unknown> {
       const sessionId = await ensureSession();
@@ -607,12 +661,20 @@ export function spawnSession(opts: SpawnSessionOptions): SpawnedSession {
     respondPermissionError(id: AcpRequestId, code: number, message: string): boolean {
       return respondError(id, code, message);
     },
+    replay(): AcpReplay<AcpEvent> {
+      return replayWithTruncationNotice();
+    },
     on(listener: (event: AgentEvent) => void): () => void {
-      // Replay whatever is already in the ring so a listener attached after
-      // the handshake still sees `initialized` and anything since.
-      for (const event of log.replay().events) listener({ type: 'event', event });
+      // Replay whatever is already in the ring — including a synthetic
+      // `truncated` notice when the ring's cap dropped events — so a
+      // listener attached after the handshake still sees `initialized`,
+      // anything since, and any gap in between rather than a silent hole.
+      for (const event of replayWithTruncationNotice().events) listener({ type: 'event', event });
       listeners.add(listener);
-      return () => listeners.delete(listener);
+      publicListenerCount += 1;
+      return () => {
+        if (listeners.delete(listener)) publicListenerCount -= 1;
+      };
     },
     close,
   };

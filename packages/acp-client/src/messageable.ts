@@ -126,6 +126,19 @@ export function createMessageableSession(
       return busy && pendingPermissions.size > 0;
     },
     send(text: string): Promise<SessionReply> {
+      if (busy) {
+        // Contract violation guard — the mailbox is meant to serialize
+        // deliveries (design §5), so a second `send` while one is in flight
+        // is a bug upstream. Settling as a failed reply (never rejecting,
+        // per the contract above) is what stops it from hanging the caller
+        // forever, since `session.prompt()` itself now rejects a concurrent
+        // call rather than stranding it.
+        return Promise.resolve({
+          status: 'failed',
+          text: '',
+          error: { code: 'turn_in_flight', message: 'A delivery turn is already running.' },
+        });
+      }
       busy = true;
       return session.prompt(text);
     },

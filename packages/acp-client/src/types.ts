@@ -138,6 +138,15 @@ export interface SpawnSessionOptions {
   envOverrides?: Record<string, string>;
   /** Capabilities to advertise at `initialize`. Defaults to `{ fs: { readTextFile: true, writeTextFile: true } }`. */
   clientCapabilities?: AcpClientCapabilities;
+  /**
+   * MCP servers to pass through on `session/new` / `session/load`, in the ACP
+   * shape the agent expects verbatim (opaque to this package). Defaults to
+   * `[]`. T011 configures every agent session with the daemon's own MCP
+   * server through this field.
+   */
+  mcpServers?: unknown[];
+  /** Initial mode to request via `session/set_mode` right after `session/new` succeeds, when given. */
+  modeId?: string;
   /** Test seam: override the event-ring entry cap. */
   eventLogMaxEntries?: number;
   /** Test seam: override the event-ring byte cap. */
