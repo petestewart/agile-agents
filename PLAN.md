@@ -71,12 +71,12 @@ Priority encodes dependency layer as well as importance: P0 tickets are v0-block
 
 ### Ticket: T001 Monorepo scaffold
 - **Priority:** P0
-- **Status:** In Progress
+- **Status:** In Review
 - **Owner:** sonnet:worker-T001
 - **Scope:** New repo `agile-agents` with Bun workspaces `packages/{shared,acp-client,daemon,cli,ui}`, shared tsconfig, biome or eslint+prettier, `bun test` wiring, `build`/`typecheck`/`test` scripts at root, CI workflow running all three. No functionality.
 - **Acceptance Criteria:** Clean clone builds and tests green; each package has an `index.ts` and a placeholder test; root scripts fan out to workspaces.
 - **Validation Steps:** `bun install && bun run build && bun run typecheck && bun test`
-- **Notes:**
+- **Notes:** branch `T001-monorepo-scaffold` (local, worktree `.worktrees/T001-monorepo-scaffold`), 1 commit. Worker could not spawn its own reviewer subagent (workers have no Agent tool in this environment) and self-reviewed; manager runs the independent `opus:reviewer-T001` and `sonnet:qa-T001` gates itself.
 
 ### Ticket: T002 Shared schemas
 - **Priority:** P0
@@ -328,3 +328,4 @@ Priority encodes dependency layer as well as importance: P0 tickets are v0-block
 - 2026-09-08 — mode: yolo (`/project --yolo`). No human launch gates; AI review (different model than the worker) + QA subagent gate before every merge.
 - 2026-09-08 — Toolchain: bun 1.3.11 present in the container. Ship mode: DIRECT_MODE (no `gh` auth), so no PRs; the manager merges ticket branches locally with `git merge --no-ff`.
 - 2026-09-08 — Integration branch for this session is `claude/eloquent-ramanujan-o5uips` (the session's designated branch), used in place of `main`: ticket worktrees branch off it and merge back into it; it is pushed after every PLAN.md change. Ticket branches are local-only (not pushed). Landing on `main` is a PR from that branch at the end.
+- 2026-09-08 — Workers (subagents) cannot spawn nested subagents here, so the /pipeline in-worker review step degrades to a self-review. Compensation: the manager runs the independent different-model review and the QA gate directly for every ticket before merge.
