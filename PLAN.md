@@ -80,12 +80,12 @@ Priority encodes dependency layer as well as importance: P0 tickets are v0-block
 
 ### Ticket: T002 Shared schemas
 - **Priority:** P0
-- **Status:** In Progress
+- **Status:** In Review
 - **Owner:** sonnet:worker-T002
 - **Scope:** Depends on T001. zod schemas + inferred types in `packages/shared` for every entity in design §4–5: OracleEntry (DEC/SPEC header), KbFact, Ticket (incl. `paused`, `env`, `security`, routing/budget blocks), Stanza (incl. `handoff`), Halt (scope `global | team | [tickets]`, quorum), Sprint (team, gates block, retro), Policy (gates, owners incl. `human_timeout`, breaker signals), Vendors/accounts, Quota, Tool definition, LedgerLine, Message (kinds, priority, body cap), Event. Include ID formats (`DEC-0042`, `TKT-0231`, ULIDs) and a `validate` helper per entity.
 - **Acceptance Criteria:** Every example YAML/JSON block in the design doc parses; invalid status transitions and oversized message bodies are rejected; types are exported for daemon/cli/ui.
 - **Validation Steps:** `bun test packages/shared` includes fixtures copied verbatim from design §4–5.
-- **Notes:**
+- **Notes:** branch `T002-shared-schemas` (local worktree), 1 commit, worker self-review PASS; 13 DESIGN-GAP choices listed in the worktree review file (enum-illustration values in design blocks substituted with one legal value; Event has no design example; Tool.input/output typed as records). `yaml` devDependency added to shared for fixture loading. Gates: `opus:reviewer-T002` + `sonnet:qa-T002` running.
 
 ### Ticket: T003 Extract ACP client from Terma
 - **Priority:** P0
