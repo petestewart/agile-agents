@@ -10,6 +10,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@agile-agents/shared": "workspace:*"
+    "@agile-agents/shared": "workspace:*",
+    "yaml": "^2.7.0"
   }
 }
