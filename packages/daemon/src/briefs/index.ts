@@ -117,13 +117,16 @@ export function renderSprintReview(ctx: SprintReviewContext): string {
   // Resolved here, not in the template, so an unresolvable owner fails the
   // same way any other missing required field does (render() throws).
   const sprintOwner = ctx.sprint.gates?.sprint_review;
-  const gateOwner = sprintOwner ?? ctx.policy.gates.sprint_review;
+  const repoDefault = ctx.policy.gates.sprint_review;
+  const gateOwner = sprintOwner ?? repoDefault;
   return render(loadTemplate('sprint-review'), {
     sprint: ctx.sprint,
     policy: ctx.policy,
     doneTickets: ctx.doneTickets,
     gateOwner,
-    overridden: sprintOwner !== undefined,
+    repoDefault,
+    // The override note needs both values; degrade to no note when the repo policy has no default.
+    overridden: sprintOwner !== undefined && repoDefault !== undefined,
   });
 }
 
