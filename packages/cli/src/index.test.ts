@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { PACKAGE_NAME, runCliInit } from './index';
+import { PACKAGE_NAME, runCli, runCliInit } from './index';
 
 test('PACKAGE_NAME identifies the package', () => {
   expect(PACKAGE_NAME).toBe('@agile-agents/cli');
@@ -23,14 +23,39 @@ afterEach(() => {
 
 describe('runCliInit', () => {
   test('bootstraps .agile/ in the given repo', () => {
-    const message = runCliInit(repo);
-    expect(message).toContain('bootstrapped');
+    const result = runCliInit(repo);
+    expect(result.message).toContain('bootstrapped');
+    expect(result.alreadyInitialised).toBe(false);
     expect(existsSync(join(repo, '.agile'))).toBe(true);
   });
 
   test('a second call reports already-initialised instead of throwing', () => {
     runCliInit(repo);
-    const message = runCliInit(repo);
-    expect(message).toContain('already initialised');
+    const result = runCliInit(repo);
+    expect(result.message).toContain('already initialised');
+    expect(result.alreadyInitialised).toBe(true);
+  });
+});
+
+describe('runCli init exit code', () => {
+  const originalCwd = process.cwd();
+
+  test('a fresh init exits 0', async () => {
+    process.chdir(repo);
+    try {
+      expect(await runCli(['init'])).toBe(0);
+    } finally {
+      process.chdir(originalCwd);
+    }
+  });
+
+  test('re-init on an already-initialised repo exits non-zero', async () => {
+    process.chdir(repo);
+    try {
+      expect(await runCli(['init'])).toBe(0);
+      expect(await runCli(['init'])).not.toBe(0);
+    } finally {
+      process.chdir(originalCwd);
+    }
   });
 });

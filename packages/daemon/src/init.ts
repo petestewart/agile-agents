@@ -103,7 +103,10 @@ function layoutFiles(stateRoot: string): Array<[string, string]> {
   ];
 }
 
-const GITIGNORE_LINES = ['.agile/', '.worktrees/'];
+// `.agile-daemon.lock`/`.sock` are ratified v0 paths (see lock.ts, config.ts)
+// but are host/process-instance files, not repo state — they must never
+// land in product history alongside `.agile/` and `.worktrees/`.
+const GITIGNORE_LINES = ['.agile/', '.worktrees/', '.agile-daemon.lock', '.agile-daemon.sock'];
 
 function ensureGitignore(repoRoot: string): void {
   const path = join(repoRoot, '.gitignore');

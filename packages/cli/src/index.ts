@@ -31,14 +31,25 @@ function usage(): string {
   ].join('\n');
 }
 
-export function runCliInit(cwd: string = process.cwd()): string {
+export interface CliInitResult {
+  message: string;
+  /** True when init refused because the repo was already bootstrapped — the
+   * caller (`runCli`) turns this into a non-zero exit on stderr, not a
+   * thrown exception, since it's a clean, expected outcome, not a crash. */
+  alreadyInitialised: boolean;
+}
+
+export function runCliInit(cwd: string = process.cwd()): CliInitResult {
   const { repoRoot } = discoverConfig({ cwd });
   try {
     const result = runInit(repoRoot);
-    return `agile init: bootstrapped ${result.stateRoot} on branch ${result.branch} (${result.filesWritten.length} files)`;
+    return {
+      message: `agile init: bootstrapped ${result.stateRoot} on branch ${result.branch} (${result.filesWritten.length} files)`,
+      alreadyInitialised: false,
+    };
   } catch (err) {
     if (err instanceof AlreadyInitialisedError) {
-      return err.message;
+      return { message: err.message, alreadyInitialised: true };
     }
     throw err;
   }
@@ -58,7 +69,12 @@ export async function runCli(argv: string[]): Promise<number> {
   const [command, sub] = argv;
 
   if (command === 'init') {
-    console.log(runCliInit());
+    const { message, alreadyInitialised } = runCliInit();
+    if (alreadyInitialised) {
+      console.error(message);
+      return 1;
+    }
+    console.log(message);
     return 0;
   }
 

@@ -62,7 +62,18 @@ export function acquireLock(lockPath: string): LockHandle {
     unlinkSync(lockPath);
   }
 
-  writeFileSync(lockPath, String(process.pid), { flag: 'wx' });
+  try {
+    writeFileSync(lockPath, String(process.pid), { flag: 'wx' });
+  } catch (err) {
+    // Lost a race with another process reclaiming the same stale lock —
+    // report it the same way a live holder would be reported, not a raw
+    // filesystem error.
+    if ((err as NodeJS.ErrnoException).code === 'EEXIST') {
+      const holderPid = Number.parseInt(readFileSync(lockPath, 'utf8').trim(), 10);
+      throw new LockError(lockPath, holderPid);
+    }
+    throw err;
+  }
 
   let released = false;
   return {

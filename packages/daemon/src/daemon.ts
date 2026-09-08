@@ -5,12 +5,13 @@
  * shape", §15 "one daemon per repo").
  */
 
+import daemonPackageJson from '../package.json' with { type: 'json' };
 import { type AgileConfig, type DiscoverConfigOptions, discoverConfig } from './config';
 import { type HttpServerHandle, startHttpServer } from './http';
 import { type LockHandle, acquireLock } from './lock';
 import { type RpcServerHandle, startRpcServer } from './rpc';
 
-export const DAEMON_VERSION = '0.0.0';
+export const DAEMON_VERSION: string = daemonPackageJson.version;
 
 export interface DaemonHandle {
   config: AgileConfig;
@@ -64,9 +65,12 @@ export async function startDaemon(options: DiscoverConfigOptions = {}): Promise<
     async stop() {
       if (stopped) return;
       stopped = true;
-      await http.stop();
-      await rpc.close();
-      lock.release();
+      try {
+        await http.stop();
+        await rpc.close();
+      } finally {
+        lock.release();
+      }
     },
   };
 }

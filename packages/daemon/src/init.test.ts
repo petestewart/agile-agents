@@ -94,14 +94,14 @@ describe('runInit', () => {
     expect(() => validateVendorsConfig(vendors)).not.toThrow();
   });
 
-  test('adds .agile/ and .worktrees/ to .gitignore, idempotently', () => {
+  test('adds .agile/, .worktrees/, and the daemon lock/socket files to .gitignore, idempotently', () => {
     runInit(repo);
     const gitignore = readFileSync(join(repo, '.gitignore'), 'utf8');
-    expect(gitignore).toContain('.agile/');
-    expect(gitignore).toContain('.worktrees/');
     const lineCount = (needle: string) => gitignore.split('\n').filter((l) => l === needle).length;
-    expect(lineCount('.agile/')).toBe(1);
-    expect(lineCount('.worktrees/')).toBe(1);
+    for (const needle of ['.agile/', '.worktrees/', '.agile-daemon.lock', '.agile-daemon.sock']) {
+      expect(gitignore).toContain(needle);
+      expect(lineCount(needle)).toBe(1);
+    }
   });
 
   test('respects .gitignore lines that already exist', () => {

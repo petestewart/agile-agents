@@ -47,6 +47,7 @@ const NOT_IMPLEMENTED_CODE = -32001;
 const METHOD_NOT_FOUND_CODE = -32601;
 const PARSE_ERROR_CODE = -32700;
 const INVALID_REQUEST_CODE = -32600;
+const INTERNAL_ERROR_CODE = -32603;
 
 const STUB_NAMESPACES = ['bus', 'state', 'hook', 'gate'] as const;
 
@@ -86,55 +87,72 @@ export function buildMethods(options: RpcServerOptions): Record<string, RpcMetho
   };
 }
 
+/**
+ * `undefined` means "send no response" — the JSON-RPC 2.0 spec requires a
+ * server to never reply to a notification (a request object with no `id`
+ * member at all; a `null` id is a real request, just an anonymous one).
+ */
 export async function dispatch(
   methods: Record<string, RpcMethodHandler>,
-  request: JsonRpcRequest,
-): Promise<JsonRpcResponse> {
-  const id = request.id ?? null;
-
-  if (request.jsonrpc !== '2.0' || typeof request.method !== 'string') {
+  request: unknown,
+): Promise<JsonRpcResponse | undefined> {
+  if (typeof request !== 'object' || request === null || Array.isArray(request)) {
     return {
       jsonrpc: '2.0',
-      id,
+      id: null,
       error: { code: INVALID_REQUEST_CODE, message: 'invalid JSON-RPC 2.0 request' },
     };
   }
 
-  const handler = methods[request.method];
+  const req = request as JsonRpcRequest;
+  const isNotification = !('id' in req);
+  const id = req.id ?? null;
+  const reply = (response: JsonRpcResponse): JsonRpcResponse | undefined =>
+    isNotification ? undefined : response;
+
+  if (req.jsonrpc !== '2.0' || typeof req.method !== 'string') {
+    return reply({
+      jsonrpc: '2.0',
+      id,
+      error: { code: INVALID_REQUEST_CODE, message: 'invalid JSON-RPC 2.0 request' },
+    });
+  }
+
+  const handler = methods[req.method];
   if (handler) {
     try {
-      const result = await handler(request.params);
-      return { jsonrpc: '2.0', id, result };
+      const result = await handler(req.params);
+      return reply({ jsonrpc: '2.0', id, result });
     } catch (err) {
-      return {
+      return reply({
         jsonrpc: '2.0',
         id,
         error: {
-          code: NOT_IMPLEMENTED_CODE,
+          code: INTERNAL_ERROR_CODE,
           message: err instanceof Error ? err.message : String(err),
         },
-      };
+      });
     }
   }
 
-  const ns = namespaceOf(request.method);
+  const ns = namespaceOf(req.method);
   if (ns && (STUB_NAMESPACES as readonly string[]).includes(ns)) {
-    return {
+    return reply({
       jsonrpc: '2.0',
       id,
       error: {
         code: NOT_IMPLEMENTED_CODE,
-        message: `${request.method} is not implemented yet (${ns}.* is a T004 stub namespace)`,
+        message: `${req.method} is not implemented yet (${ns}.* is a T004 stub namespace)`,
         data: { namespace: ns },
       },
-    };
+    });
   }
 
-  return {
+  return reply({
     jsonrpc: '2.0',
     id,
-    error: { code: METHOD_NOT_FOUND_CODE, message: `unknown method: ${request.method}` },
-  };
+    error: { code: METHOD_NOT_FOUND_CODE, message: `unknown method: ${req.method}` },
+  });
 }
 
 export interface RpcServerHandle {
@@ -146,6 +164,10 @@ export interface RpcServerHandle {
 function handleConnection(socket: Socket, methods: Record<string, RpcMethodHandler>): void {
   let buffer = '';
   socket.setEncoding('utf8');
+  socket.on('error', () => {
+    // Abrupt client disconnects surface here, not as an exception at the
+    // write site below — swallow it, the socket is on its way out either way.
+  });
   socket.on('data', (chunk: string) => {
     buffer += chunk;
     let newlineIndex = buffer.indexOf('\n');
@@ -156,9 +178,9 @@ function handleConnection(socket: Socket, methods: Record<string, RpcMethodHandl
       if (!line) continue;
 
       void (async () => {
-        let response: JsonRpcResponse;
+        let response: JsonRpcResponse | undefined;
         try {
-          const parsed = JSON.parse(line) as JsonRpcRequest;
+          const parsed: unknown = JSON.parse(line);
           response = await dispatch(methods, parsed);
         } catch {
           response = {
@@ -167,7 +189,7 @@ function handleConnection(socket: Socket, methods: Record<string, RpcMethodHandl
             error: { code: PARSE_ERROR_CODE, message: 'invalid JSON' },
           };
         }
-        socket.write(`${JSON.stringify(response)}\n`);
+        if (response) socket.write(`${JSON.stringify(response)}\n`);
       })();
     }
   });
@@ -182,7 +204,10 @@ export function startRpcServer(options: RpcServerOptions): RpcServerHandle {
   }
 
   const methods = buildMethods(options);
+  const sockets = new Set<Socket>();
   const server: Server = createServer((socket) => {
+    sockets.add(socket);
+    socket.on('close', () => sockets.delete(socket));
     handleConnection(socket, methods);
   });
   server.listen(options.socketPath);
@@ -191,6 +216,11 @@ export function startRpcServer(options: RpcServerOptions): RpcServerHandle {
     socketPath: options.socketPath,
     close(): Promise<void> {
       return new Promise((resolve) => {
+        // server.close() alone only stops accepting new connections and
+        // waits for existing ones to end on their own — every hook/adapter
+        // client sitting on this socket (§5) would hang shutdown forever.
+        // Destroy live sockets so close()'s callback actually fires.
+        for (const socket of sockets) socket.destroy();
         server.close(() => {
           if (existsSync(options.socketPath)) {
             unlinkSync(options.socketPath);
