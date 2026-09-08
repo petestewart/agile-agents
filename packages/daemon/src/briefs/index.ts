@@ -113,11 +113,18 @@ export function renderRefinement(ctx: RefinementContext): string {
 }
 
 export function renderSprintReview(ctx: SprintReviewContext): string {
-  // `sprint.gates`/`policy.gates` are plain `{gateName: owner}` records, and
-  // the template reads one known key (`sprint_review`) via a dotted path —
-  // no array conversion needed here (unlike the EM brief's `{{#each}}` over
-  // every gate).
-  return render(loadTemplate('sprint-review'), ctx);
+  // Most-specific-wins resolution (§16): sprint override, then repo default.
+  // Resolved here, not in the template, so an unresolvable owner fails the
+  // same way any other missing required field does (render() throws).
+  const sprintOwner = ctx.sprint.gates?.sprint_review;
+  const gateOwner = sprintOwner ?? ctx.policy.gates.sprint_review;
+  return render(loadTemplate('sprint-review'), {
+    sprint: ctx.sprint,
+    policy: ctx.policy,
+    doneTickets: ctx.doneTickets,
+    gateOwner,
+    overridden: sprintOwner !== undefined,
+  });
 }
 
 export function renderRetro(ctx: RetroContext): string {

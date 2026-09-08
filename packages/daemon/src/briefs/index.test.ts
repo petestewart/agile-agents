@@ -125,13 +125,28 @@ describe('ceremony templates render against fixture data and stay under the toke
     expect(text).toMatchSnapshot();
   });
 
-  test('sprint review', () => {
+  test('sprint review — sprint override wins over the repo default', () => {
     const text = renderSprintReview({
-      sprint: FIXTURE_SPRINT,
-      policy: FIXTURE_POLICY,
+      sprint: { ...FIXTURE_SPRINT, gates: { sprint_review: 'architect' } },
+      policy: FIXTURE_POLICY, // repo default sprint_review: 'human'
       doneTickets: [FIXTURE_TICKET],
     });
     expect(text).toContain('Auth works end to end');
+    expect(text).toContain('owner for this sprint: architect');
+    expect(text).toContain('sprint override — repo default: human');
+    expect(approxTokenCount(text)).toBeLessThanOrEqual(CEREMONY_TEMPLATE_TOKEN_CEILING);
+    expect(text).toMatchSnapshot();
+  });
+
+  test('sprint review — falls back to the repo default when the sprint has no override', () => {
+    const { gates: _gates, ...sprintWithoutGates } = FIXTURE_SPRINT;
+    const text = renderSprintReview({
+      sprint: sprintWithoutGates,
+      policy: FIXTURE_POLICY, // repo default sprint_review: 'human'
+      doneTickets: [FIXTURE_TICKET],
+    });
+    expect(text).toContain('owner for this sprint: human');
+    expect(text).not.toContain('sprint override');
     expect(approxTokenCount(text)).toBeLessThanOrEqual(CEREMONY_TEMPLATE_TOKEN_CEILING);
     expect(text).toMatchSnapshot();
   });
@@ -224,6 +239,23 @@ describe('missing fields throw instead of rendering silently', () => {
         // biome-ignore lint/suspicious/noExplicitAny: deliberately malformed fixture for the negative test
         halts: [brokenHalt as any],
         discoveries: [],
+      }),
+    ).toThrow(/missing required field/);
+  });
+
+  test('sprint review throws when the gate owner is unresolvable (no sprint override, no repo default)', () => {
+    const { gates: _gates, ...sprintWithoutGates } = FIXTURE_SPRINT;
+    const brokenPolicy = {
+      ...FIXTURE_POLICY,
+      gates: { ...FIXTURE_POLICY.gates } as Record<string, unknown>,
+    };
+    brokenPolicy.gates.sprint_review = undefined;
+    expect(() =>
+      renderSprintReview({
+        sprint: sprintWithoutGates,
+        // biome-ignore lint/suspicious/noExplicitAny: deliberately malformed fixture for the negative test
+        policy: brokenPolicy as any,
+        doneTickets: [FIXTURE_TICKET],
       }),
     ).toThrow(/missing required field/);
   });

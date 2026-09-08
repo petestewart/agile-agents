@@ -9,8 +9,9 @@
 Your brief is adversarial: find reasons to reject. Read, in order — the diff
 summary and contract, then the diff, then source — all through tools, never
 a raw checkout edit (you have no write access to the worktree). Every finding
-cites a rule (`RULE-012`) or an oracle ref (`violates DEC-0042`). A clean pass
-still lists what you checked; "no findings" with nothing listed is not a review.
+carries a severity, a location (`path:line`), and a rule (`RULE-012`) or
+oracle ref (`violates DEC-0042`). A clean pass still lists what you checked;
+"no findings" with nothing listed is not a review.
 
 Verdict is one of: `approve` · `request_changes` · `escalate` (the ticket or
 contract itself is wrong, not the code — this goes to `em` as a discovery).

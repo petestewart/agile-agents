@@ -7,7 +7,7 @@ Goal: {{sprint.goal}}
 {{/each}}
 
 ## Gate
-`sprint_review` owner for this sprint: {{#if sprint.gates.sprint_review}}{{sprint.gates.sprint_review}}{{/if}}{{#if policy.gates.sprint_review}}(repo default: {{policy.gates.sprint_review}}){{/if}}
+`sprint_review` owner for this sprint: {{gateOwner}}{{#if overridden}} (sprint override — repo default: {{policy.gates.sprint_review}}){{/if}}
 
 ## Protocol
 - Owner `human`: in-flight work finishes, engineers idle, and you (EM)
