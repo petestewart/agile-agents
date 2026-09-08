@@ -7,7 +7,7 @@
     "build": "bun run --filter '*' build",
     "typecheck": "bun run --filter '*' typecheck",
     "test": "bun test",
-    "test:integration": "echo 'test:integration: no vendor login in this environment; skipped' && exit 0",
+    "test:integration": "if [ \"$AGILE_LIVE\" = \"1\" ]; then bun test --grep live; else echo 'test:integration: set AGILE_LIVE=1 to run live vendor tests (needs a real vendor login, not available in this container); skipped' && exit 0; fi",
     "lint": "biome check ."
   },
   "devDependencies": {
