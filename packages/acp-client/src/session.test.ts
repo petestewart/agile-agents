@@ -624,6 +624,66 @@ describe('spawnSession', () => {
       agentSends({ jsonrpc: '2.0', id: thirdPrompt?.id, result: { stopReason: 'end_turn' } });
       await expect(third).resolves.toMatchObject({ status: 'completed' });
     });
+
+    it('rejects a second prompt fired synchronously before the first reaches session/new', async () => {
+      // The QA-found race: both calls issued with no `await` between them,
+      // before the first has even sent `session/new` — the guard must
+      // reserve the slot synchronously at the top of `prompt()`, not only
+      // once `promptRequest`/`ensureSession` has resolved, or both calls
+      // slip past it and the first is orphaned forever.
+      const session = create();
+      await answerInitialize();
+
+      const first = session.prompt('one');
+      const second = session.prompt('two'); // no await in between — this is the repro
+
+      await expect(second).rejects.toMatchObject({
+        name: 'AcpClientError',
+        code: 'PROMPT_IN_FLIGHT',
+      });
+
+      await answerSessionNew('acp-1');
+      await flush();
+      const promptMsg = sentMessages().find((m) => m.method === 'session/prompt');
+      agentSends({ jsonrpc: '2.0', id: promptMsg?.id, result: { stopReason: 'end_turn' } });
+      await expect(first).resolves.toMatchObject({ status: 'completed' });
+
+      // The second call never got far enough to send anything of its own.
+      expect(sentMessages().filter((m) => m.method === 'session/new')).toHaveLength(1);
+      expect(sentMessages().filter((m) => m.method === 'session/prompt')).toHaveLength(1);
+    });
+
+    it('close() settles a pending prompt instead of leaving it hanging', async () => {
+      const session = create();
+      await answerInitialize();
+      const pending = session.prompt('go');
+      await answerSessionNew('acp-1'); // now genuinely mid-turn: session/prompt has been sent
+      await flush();
+
+      session.close();
+
+      const reply = await pending;
+      expect(reply.status).toBe('failed');
+      expect(reply.error?.code).toBe('session_error');
+    });
+
+    it('close() unblocks a prompt reserved but not yet past session/new, once the process actually exits', async () => {
+      // Closing settles the reserved slot's internal reply promise
+      // immediately (asserted above), but `prompt()`'s own returned promise
+      // is still awaiting `ensureSession()` at this point — it settles (by
+      // rejecting, an acceptable outcome alongside resolving) once the real
+      // process exit rejects the pending `session/new` round trip. Either
+      // way, the caller is never left hanging.
+      const session = create();
+      await answerInitialize();
+      const pending = session.prompt('go'); // session/new sent, not yet answered
+      await flush();
+
+      session.close();
+      state.child?.emit('exit', 0);
+
+      await expect(pending).rejects.toThrow('ACP agent exited');
+    });
   });
 
   describe('mcpServers / modeId passthrough (T011)', () => {

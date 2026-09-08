@@ -483,6 +483,15 @@ export function spawnSession(opts: SpawnSessionOptions): SpawnedSession {
       forceKillTimer = null;
       if (!exited) signalTree('SIGKILL');
     }, FORCE_KILL_TIMEOUT_MS);
+    // Settle any reserved-or-running prompt turn immediately rather than
+    // waiting on the real process to exit — which, especially in a test
+    // harness or a stuck bridge, may never happen (or happen long after the
+    // grace period above), leaving `prompt()`'s caller hanging forever.
+    if (inFlight) {
+      settleInFlight(
+        replyFromFinalMessage(inFlight.fold, turnEndFromError('ACP session is closing')),
+      );
+    }
   }
 
   const initialized = sendRequest(
@@ -532,7 +541,13 @@ export function spawnSession(opts: SpawnSessionOptions): SpawnedSession {
     }
   }
 
-  function promptRequest(sessionId: string, text: string): Promise<SessionReply> {
+  /**
+   * Send the `session/prompt` request for a turn whose slot is already
+   * reserved in `inFlight` (by `prompt()`, synchronously, before this point)
+   * — settling happens entirely through the fold listener below, matching
+   * whatever the slot's `settle` closure resolves.
+   */
+  function sendPromptTurn(sessionId: string, text: string): void {
     const echo: AcpJsonRpcMessage = {
       jsonrpc: '2.0',
       method: 'session/update',
@@ -543,31 +558,28 @@ export function spawnSession(opts: SpawnSessionOptions): SpawnedSession {
     };
     emitFrame({ acp: 'notification', message: echo });
 
-    return new Promise<SessionReply>((resolve) => {
-      inFlight = { fold: INITIAL_FINAL_MESSAGE, settle: resolve };
-      const recordTurnEnd = (stopReason: string | null) => {
-        emitFrame({
-          acp: 'notification',
-          message: {
-            jsonrpc: '2.0',
-            method: ACP_TURN_ENDED_METHOD,
-            params: { sessionId, stopReason },
-          },
-        });
-      };
-      sendRequest('session/prompt', { sessionId, prompt: [{ type: 'text', text }] }).then(
-        (result) => {
-          const stopReason = asRecord(result)?.stopReason;
-          recordTurnEnd(typeof stopReason === 'string' ? stopReason : null);
+    const recordTurnEnd = (stopReason: string | null) => {
+      emitFrame({
+        acp: 'notification',
+        message: {
+          jsonrpc: '2.0',
+          method: ACP_TURN_ENDED_METHOD,
+          params: { sessionId, stopReason },
         },
-        () => {
-          // The turn-end marker above already carries "failed"; the settled
-          // reply is what the caller sees, so the rejection itself is
-          // intentionally swallowed here.
-          recordTurnEnd(null);
-        },
-      );
-    });
+      });
+    };
+    sendRequest('session/prompt', { sessionId, prompt: [{ type: 'text', text }] }).then(
+      (result) => {
+        const stopReason = asRecord(result)?.stopReason;
+        recordTurnEnd(typeof stopReason === 'string' ? stopReason : null);
+      },
+      () => {
+        // The turn-end marker above already carries "failed"; the settled
+        // reply is what the caller sees, so the rejection itself is
+        // intentionally swallowed here.
+        recordTurnEnd(null);
+      },
+    );
   }
 
   function settleInFlight(reply: SessionReply): void {
@@ -610,8 +622,35 @@ export function spawnSession(opts: SpawnSessionOptions): SpawnedSession {
           'A prompt turn is already running on this session; await it (or session.cancel()) before starting another.',
         );
       }
-      const sessionId = await ensureSession();
-      return promptRequest(sessionId, text);
+      // Reserve the slot *synchronously*, before the first `await` below —
+      // not inside `sendPromptTurn`/after `ensureSession()` resolves. A
+      // second `prompt()` call issued back-to-back with no intervening
+      // `await` (e.g. before `session/new` has even been sent) runs its own
+      // synchronous prelude before this function yields, so the guard above
+      // must see this reservation already in place or both calls slip past
+      // it — exactly the bug this reservation closes.
+      let settle!: (reply: SessionReply) => void;
+      const reply = new Promise<SessionReply>((resolve) => {
+        settle = resolve;
+      });
+      const slot: { fold: FinalMessageState; settle: (reply: SessionReply) => void } = {
+        fold: INITIAL_FINAL_MESSAGE,
+        settle,
+      };
+      inFlight = slot;
+      let sessionId: string;
+      try {
+        sessionId = await ensureSession();
+      } catch (err) {
+        // The turn never started — release the reservation so the next
+        // `prompt()` call is not permanently blocked by this failure. Nobody
+        // else holds a reference to `reply` (it was never returned), so
+        // leaving it unsettled here is not a leak.
+        if (inFlight === slot) inFlight = null;
+        throw err;
+      }
+      sendPromptTurn(sessionId, text);
+      return reply;
     },
     cancel(): boolean {
       if (acpSessionId === null) return false;
