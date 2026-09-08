@@ -1,0 +1,581 @@
+{
+  "vendor": "claude",
+  "cmd": "npx -y @agentclientprotocol/claude-agent-acp@0.75.1",
+  "mode": "auto",
+  "scenario": "perm",
+  "cwd": "/tmp/agile-spike-cK4Cov",
+  "startedAt": "2026-09-07T22:26:37.860Z",
+  "env": {
+    "ANTHROPIC_API_KEY": false,
+    "OPENAI_API_KEY": false,
+    "GEMINI_API_KEY": false
+  },
+  "initialize": {
+    "protocolVersion": 1,
+    "agentCapabilities": {
+      "_meta": {
+        "claudeCode": {
+          "promptQueueing": true
+        },
+        "authStatus": {}
+      },
+      "promptCapabilities": {
+        "image": true,
+        "embeddedContext": true
+      },
+      "mcpCapabilities": {
+        "http": true,
+        "sse": true
+      },
+      "auth": {
+        "logout": {}
+      },
+      "providers": {},
+      "loadSession": true,
+      "sessionCapabilities": {
+        "additionalDirectories": {},
+        "close": {},
+        "delete": {},
+        "fork": {},
+        "list": {},
+        "resume": {},
+        "subagents": {}
+      }
+    },
+    "authMethods": [],
+    "agentInfo": {
+      "name": "@agentclientprotocol/claude-agent-acp",
+      "title": "Claude Agent",
+      "version": "0.75.1"
+    }
+  },
+  "session": {
+    "sessionId": "0f86779c-e3bb-4c10-b398-476f18b9e713",
+    "modes": {
+      "currentModeId": "default",
+      "availableModes": [
+        {
+          "id": "default",
+          "name": "Manual",
+          "description": "Always ask before making changes",
+          "_meta": {
+            "kind": "standard"
+          }
+        },
+        {
+          "id": "acceptEdits",
+          "name": "Accept edits",
+          "description": "Automatically accept all file edits",
+          "_meta": {
+            "kind": "standard"
+          }
+        },
+        {
+          "id": "plan",
+          "name": "Plan",
+          "description": "Create a plan before making changes",
+          "_meta": {
+            "kind": "plan"
+          }
+        },
+        {
+          "id": "auto",
+          "name": "Auto",
+          "description": "Claude handles permission decisions",
+          "_meta": {
+            "kind": "auto_review"
+          }
+        },
+        {
+          "id": "bypassPermissions",
+          "name": "Bypass permissions",
+          "description": "Accepts all permissions",
+          "_meta": {
+            "kind": "full_access"
+          }
+        }
+      ]
+    },
+    "configOptions": [
+      {
+        "id": "mode",
+        "name": "Mode",
+        "description": "Session permission mode",
+        "category": "mode",
+        "type": "select",
+        "currentValue": "default",
+        "options": [
+          {
+            "value": "default",
+            "name": "Manual",
+            "description": "Always ask before making changes",
+            "_meta": {
+              "kind": "standard"
+            }
+          },
+          {
+            "value": "acceptEdits",
+            "name": "Accept edits",
+            "description": "Automatically accept all file edits",
+            "_meta": {
+              "kind": "standard"
+            }
+          },
+          {
+            "value": "plan",
+            "name": "Plan",
+            "description": "Create a plan before making changes",
+            "_meta": {
+              "kind": "plan"
+            }
+          },
+          {
+            "value": "auto",
+            "name": "Auto",
+            "description": "Claude handles permission decisions",
+            "_meta": {
+              "kind": "auto_review"
+            }
+          },
+          {
+            "value": "bypassPermissions",
+            "name": "Bypass permissions",
+            "description": "Accepts all permissions",
+            "_meta": {
+              "kind": "full_access"
+            }
+          }
+        ]
+      },
+      {
+        "id": "model",
+        "name": "Model",
+        "description": "AI model to use",
+        "category": "model",
+        "type": "select",
+        "currentValue": "default",
+        "options": [
+          {
+            "value": "default",
+            "name": "Default (recommended)",
+            "description": "Sonnet"
+          },
+          {
+            "value": "sonnet",
+            "name": "Sonnet",
+            "description": "Sonnet 5 · Efficient for routine tasks"
+          },
+          {
+            "value": "opus",
+            "name": "Opus",
+            "description": "Opus 5 · Best for everyday, complex tasks"
+          },
+          {
+            "value": "haiku",
+            "name": "Haiku",
+            "description": "Haiku 4.5 · Fastest for quick answers"
+          }
+        ]
+      },
+      {
+        "id": "effort",
+        "name": "Effort",
+        "description": "Available effort levels for this model",
+        "category": "thought_level",
+        "type": "select",
+        "currentValue": "default",
+        "options": [
+          {
+            "value": "default",
+            "name": "Default"
+          },
+          {
+            "value": "low",
+            "name": "Low"
+          },
+          {
+            "value": "medium",
+            "name": "Medium"
+          },
+          {
+            "value": "high",
+            "name": "High"
+          },
+          {
+            "value": "xhigh",
+            "name": "Xhigh"
+          },
+          {
+            "value": "max",
+            "name": "Max"
+          }
+        ]
+      },
+      {
+        "id": "agent",
+        "name": "Agent",
+        "description": "Main-thread agent persona",
+        "type": "select",
+        "currentValue": "default",
+        "options": [
+          {
+            "value": "default",
+            "name": "Default",
+            "description": "Standard Claude Code agent"
+          },
+          {
+            "value": "claude-code-guide",
+            "name": "claude-code-guide",
+            "description": "Use this agent when the user asks questions (\"Can Claude...\", \"Does Claude...\", \"How do I...\") about: (1) Claude Code (the CLI tool) - features, hooks, slash commands, MCP servers, settings, IDE integrations, keyboard shortcuts; (2) Claude Agent SDK - building custom agents; (3) Claude API (formerly Anthropic API) - Messages API for directly passing messages to Claude, Tool Runner (`client.beta.messages.tool_runner`) for running an agentic loop over your own tools, manual tool-use loops, Managed Agents for server-hosted agents with a managed sandbox, prompt caching, and general Anthropic SDK usage; (4) Claude Tag (Claude in Slack) - what it is, setting it up for a Slack workspace, `/install-slack-app`; (5) `claude plugin eval` (writing and running plugin eval suites, its JSON/report, sandbox, CI, early-access enablement) and the `/skill-doctor` report. **IMPORTANT:** Before spawning a new agent, check if there is already a running or recently completed claude-code-guide agent that you can continue via SendMessage."
+          }
+        ]
+      }
+    ]
+  },
+  "tools": [
+    {
+      "id": "toolu_01UGBH8BRQKzXBdZ45FLSzpH",
+      "kind": "read",
+      "title": "Read File",
+      "toolName": "Read",
+      "status": "completed",
+      "permissionRaised": false,
+      "rawInput": {}
+    },
+    {
+      "id": "toolu_01EywEeEE2fpMrPaTWgcXqw1",
+      "kind": "execute",
+      "title": "Terminal",
+      "toolName": "Bash",
+      "status": "completed",
+      "permissionRaised": false,
+      "rawInput": {}
+    },
+    {
+      "id": "toolu_015o2DQW7PFRaZv3cQ1v8vYW",
+      "kind": "execute",
+      "title": "Terminal",
+      "toolName": "Bash",
+      "status": "completed",
+      "permissionRaised": false,
+      "rawInput": {}
+    },
+    {
+      "id": "toolu_01JSh2CMGVvJxTNTng9Yhapc",
+      "kind": "execute",
+      "title": "Terminal",
+      "toolName": "Bash",
+      "status": "completed",
+      "permissionRaised": false,
+      "rawInput": {}
+    },
+    {
+      "id": "toolu_01KnALEj9VdCvZpnYgtUp1oM",
+      "kind": "edit",
+      "title": "Edit",
+      "toolName": "Edit",
+      "status": "failed",
+      "permissionRaised": false,
+      "rawInput": {}
+    },
+    {
+      "id": "toolu_01D7aHELBnZscyKFDwXvYwbi",
+      "kind": "execute",
+      "title": "Terminal",
+      "toolName": "Bash",
+      "status": "completed",
+      "permissionRaised": false,
+      "rawInput": {}
+    },
+    {
+      "id": "toolu_01Ev6ZmJinRQnsMi2Yd7qC8m",
+      "kind": "edit",
+      "title": "Edit",
+      "toolName": "Edit",
+      "status": "completed",
+      "permissionRaised": false,
+      "rawInput": {}
+    },
+    {
+      "id": "toolu_015UScmJH23sp29Xq9jxLdg5",
+      "kind": "edit",
+      "title": "Preparing file…",
+      "toolName": "Write",
+      "status": "completed",
+      "permissionRaised": false,
+      "rawInput": {}
+    },
+    {
+      "id": "toolu_017n7kNoFZvdCMi4EJVtevYx",
+      "kind": "read",
+      "title": "Read File",
+      "toolName": "Read",
+      "status": "completed",
+      "permissionRaised": false,
+      "rawInput": {}
+    },
+    {
+      "id": "toolu_01UknVALYxBm277i8siYrLau",
+      "kind": "execute",
+      "title": "Terminal",
+      "toolName": "Bash",
+      "status": "completed",
+      "permissionRaised": false,
+      "rawInput": {}
+    },
+    {
+      "id": "toolu_01SJ7RuFan8M4QbJif3mdTER",
+      "kind": "execute",
+      "title": "Terminal",
+      "toolName": "Bash",
+      "status": "completed",
+      "permissionRaised": false,
+      "rawInput": {}
+    }
+  ],
+  "permissionRequests": [],
+  "fsRequests": [],
+  "agentText": "DONE\n\n1. OK — read small.txt (contents: alpha/beta/gamma).\n2. OK — grep found \"gamma\" in small.txt:3.\n3. OK — `git status --short` ran, no output (clean tree).\n4. OK — `echo hi > out.txt` executed.\n5. OK — appended \"delta\" to small.txt.\n6. OK — created new.txt containing \"new\".\n7. PARTIAL (not a refusal) — Read returned only lines 1-910 of 1500; the tool auto-truncated with this system note: \"Truncated: PARTIAL view — /tmp/agile-spike-cK4Cov/big.txt: showing lines 1-910 of 1500 total (35005 tokens, cap 25000). Call Read with offset=911 limit=910 for the next page, or Grep to find a specific section. Do NOT answer from this page alone if the answer may be further in the file.\" I did not fetch the remaining lines since the step was to attempt the action and move on.\n8. OK — `npm test` ran, output: \"1 passing\".\n9. OK — `curl -s https://example.com | head -c 100` ran, produced no visible output.",
+  "stopReasons": [
+    "end_turn"
+  ],
+  "usage": [
+    {
+      "sessionUpdate": "usage_update",
+      "used": 46959,
+      "size": 200000
+    },
+    {
+      "sessionUpdate": "usage_update",
+      "used": 47058,
+      "size": 200000
+    },
+    {
+      "sessionUpdate": "usage_update",
+      "used": 47138,
+      "size": 200000
+    },
+    {
+      "sessionUpdate": "usage_update",
+      "used": 47208,
+      "size": 200000
+    },
+    {
+      "sessionUpdate": "usage_update",
+      "used": 47279,
+      "size": 200000
+    },
+    {
+      "sessionUpdate": "usage_update",
+      "used": 47338,
+      "size": 200000
+    },
+    {
+      "sessionUpdate": "usage_update",
+      "used": 47409,
+      "size": 200000
+    },
+    {
+      "sessionUpdate": "usage_update",
+      "used": 47479,
+      "size": 200000
+    },
+    {
+      "sessionUpdate": "usage_update",
+      "used": 47550,
+      "size": 200000
+    },
+    {
+      "sessionUpdate": "usage_update",
+      "used": 47666,
+      "size": 200000
+    },
+    {
+      "sessionUpdate": "usage_update",
+      "used": 47778,
+      "size": 200000
+    },
+    {
+      "sessionUpdate": "usage_update",
+      "used": 47932,
+      "size": 200000
+    },
+    {
+      "sessionUpdate": "usage_update",
+      "used": 47992,
+      "size": 200000
+    },
+    {
+      "sessionUpdate": "usage_update",
+      "used": 48200,
+      "size": 200000
+    },
+    {
+      "sessionUpdate": "usage_update",
+      "used": 48334,
+      "size": 200000
+    },
+    {
+      "sessionUpdate": "usage_update",
+      "used": 48408,
+      "size": 200000
+    },
+    {
+      "sessionUpdate": "usage_update",
+      "used": 48515,
+      "size": 200000
+    },
+    {
+      "sessionUpdate": "usage_update",
+      "used": 48568,
+      "size": 200000
+    },
+    {
+      "sessionUpdate": "usage_update",
+      "used": 71502,
+      "size": 200000
+    },
+    {
+      "sessionUpdate": "usage_update",
+      "used": 71732,
+      "size": 200000
+    },
+    {
+      "sessionUpdate": "usage_update",
+      "used": 71837,
+      "size": 200000
+    },
+    {
+      "sessionUpdate": "usage_update",
+      "used": 71914,
+      "size": 200000
+    },
+    {
+      "sessionUpdate": "usage_update",
+      "used": 71970,
+      "size": 200000
+    },
+    {
+      "sessionUpdate": "usage_update",
+      "used": 72348,
+      "size": 200000
+    },
+    {
+      "sessionUpdate": "usage_update",
+      "used": 72348,
+      "size": 1000000,
+      "cost": {
+        "amount": 0.2881296,
+        "currency": "USD"
+      },
+      "_meta": {
+        "_claude/origin": {
+          "kind": "human"
+        }
+      }
+    }
+  ],
+  "errors": [],
+  "notes": [
+    "set_mode auto ok",
+    "agent exited code=0 sig=null"
+  ],
+  "result": {
+    "stopReason": "end_turn",
+    "finalText": "DONE\n\n1. OK — read small.txt (contents: alpha/beta/gamma).\n2. OK — grep found \"gamma\" in small.txt:3.\n3. OK — `git status --short` ran, no output (clean tree).\n4. OK — `echo hi > out.txt` executed.\n5. OK — appended \"delta\" to small.txt.\n6. OK — created new.txt containing \"new\".\n7. PARTIAL (not a refusal) — Read returned only lines 1-910 of 1500; the tool auto-truncated with this system note: \"Truncated: PARTIAL view — /tmp/agile-spike-cK4Cov/big.txt: showing lines 1-910 of 1500 total (35005 tokens, cap 25000). Call Read with offset=911 limit=910 for the next page, or Grep to find a specific section. Do NOT answer from this page alone if the answer may be further in the file.\" I did not fetch the remaining lines since the step was to attempt the action and move on.\n8. OK — `npm test` ran, output: \"1 passing\".\n9. OK — `curl -s https://example.com | head -c 100` ran, produced no visible output.",
+    "matrix": [
+      {
+        "tool": "Read",
+        "kind": "read",
+        "title": "Read File",
+        "permissionRaised": false,
+        "ourAnswer": "-",
+        "finalStatus": "completed"
+      },
+      {
+        "tool": "Bash",
+        "kind": "execute",
+        "title": "Terminal",
+        "permissionRaised": false,
+        "ourAnswer": "-",
+        "finalStatus": "completed"
+      },
+      {
+        "tool": "Bash",
+        "kind": "execute",
+        "title": "Terminal",
+        "permissionRaised": false,
+        "ourAnswer": "-",
+        "finalStatus": "completed"
+      },
+      {
+        "tool": "Bash",
+        "kind": "execute",
+        "title": "Terminal",
+        "permissionRaised": false,
+        "ourAnswer": "-",
+        "finalStatus": "completed"
+      },
+      {
+        "tool": "Edit",
+        "kind": "edit",
+        "title": "Edit",
+        "permissionRaised": false,
+        "ourAnswer": "-",
+        "finalStatus": "failed"
+      },
+      {
+        "tool": "Bash",
+        "kind": "execute",
+        "title": "Terminal",
+        "permissionRaised": false,
+        "ourAnswer": "-",
+        "finalStatus": "completed"
+      },
+      {
+        "tool": "Edit",
+        "kind": "edit",
+        "title": "Edit",
+        "permissionRaised": false,
+        "ourAnswer": "-",
+        "finalStatus": "completed"
+      },
+      {
+        "tool": "Write",
+        "kind": "edit",
+        "title": "Preparing file…",
+        "permissionRaised": false,
+        "ourAnswer": "-",
+        "finalStatus": "completed"
+      },
+      {
+        "tool": "Read",
+        "kind": "read",
+        "title": "Read File",
+        "permissionRaised": false,
+        "ourAnswer": "-",
+        "finalStatus": "completed"
+      },
+      {
+        "tool": "Bash",
+        "kind": "execute",
+        "title": "Terminal",
+        "permissionRaised": false,
+        "ourAnswer": "-",
+        "finalStatus": "completed"
+      },
+      {
+        "tool": "Bash",
+        "kind": "execute",
+        "title": "Terminal",
+        "permissionRaised": false,
+        "ourAnswer": "-",
+        "finalStatus": "completed"
+      }
+    ],
+    "readsViaClientFs": 0,
+    "writesViaClientFs": 0,
+    "modelSawDenialReason": null
+  },
+  "finishedAt": "2026-09-07T22:27:07.405Z"
+}

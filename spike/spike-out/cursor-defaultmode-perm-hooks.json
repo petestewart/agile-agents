@@ -1,0 +1,543 @@
+{
+  "vendor": "cursor",
+  "cmd": "cursor-agent acp",
+  "scenario": "perm",
+  "cwd": "/var/folders/vq/1d_kdxmx6539s0nlqcvrth7h0000gn/T/agile-spike-8FKPKY",
+  "startedAt": "2026-09-07T23:51:51.377Z",
+  "env": {
+    "ANTHROPIC_API_KEY": false,
+    "OPENAI_API_KEY": false,
+    "GEMINI_API_KEY": false
+  },
+  "initialize": {
+    "protocolVersion": 1,
+    "agentCapabilities": {
+      "loadSession": true,
+      "mcpCapabilities": {
+        "http": true,
+        "sse": true
+      },
+      "promptCapabilities": {
+        "audio": false,
+        "embeddedContext": false,
+        "image": true
+      },
+      "sessionCapabilities": {
+        "list": {}
+      }
+    },
+    "authMethods": [
+      {
+        "id": "cursor_login",
+        "name": "Cursor Login",
+        "description": "Authenticate using existing Cursor login credentials. Run 'agent login' first if not logged in."
+      }
+    ]
+  },
+  "session": {
+    "sessionId": "284ab817-467b-4755-8971-828613ab55df",
+    "modes": {
+      "currentModeId": "agent",
+      "availableModes": [
+        {
+          "id": "agent",
+          "name": "Agent",
+          "description": "Full agent capabilities with tool access"
+        },
+        {
+          "id": "plan",
+          "name": "Plan",
+          "description": "Read-only mode for planning and designing before implementation"
+        },
+        {
+          "id": "ask",
+          "name": "Ask",
+          "description": "Q&A mode - no edits or command execution"
+        }
+      ]
+    },
+    "configOptions": [
+      {
+        "id": "mode",
+        "name": "Mode",
+        "description": "Controls how the agent executes tasks",
+        "category": "mode",
+        "type": "select",
+        "currentValue": "agent",
+        "options": [
+          {
+            "value": "agent",
+            "name": "Agent",
+            "description": "Full agent capabilities with tool access"
+          },
+          {
+            "value": "plan",
+            "name": "Plan",
+            "description": "Read-only mode for planning and designing before implementation"
+          },
+          {
+            "value": "ask",
+            "name": "Ask",
+            "description": "Q&A mode - no edits or command execution"
+          }
+        ]
+      },
+      {
+        "id": "model",
+        "name": "Model",
+        "description": "Controls which model variant is used for responses",
+        "category": "model",
+        "type": "select",
+        "currentValue": "gpt-5.5[context=272k,reasoning=medium,fast=false]",
+        "options": [
+          {
+            "value": "default[]",
+            "name": "Auto"
+          },
+          {
+            "value": "grok-4.6[effort=high,fast=true]",
+            "name": "grok-4.6"
+          },
+          {
+            "value": "composer-2.5[fast=true]",
+            "name": "composer-2.5"
+          },
+          {
+            "value": "claude-opus-5[thinking=true,context=300k,effort=high,fast=false]",
+            "name": "claude-opus-5"
+          },
+          {
+            "value": "claude-opus-4-8[thinking=true,context=300k,effort=high,fast=false]",
+            "name": "claude-opus-4-8"
+          },
+          {
+            "value": "gpt-5.6-sol[context=272k,reasoning=medium,fast=false]",
+            "name": "gpt-5.6-sol"
+          },
+          {
+            "value": "gpt-5.5[context=272k,reasoning=medium,fast=false]",
+            "name": "gpt-5.5"
+          },
+          {
+            "value": "claude-fable-5-1[thinking=true,context=300k,effort=high]",
+            "name": "claude-fable-5-1"
+          },
+          {
+            "value": "claude-fable-5[thinking=true,context=300k,effort=high]",
+            "name": "claude-fable-5"
+          },
+          {
+            "value": "grok-4.5[effort=high,fast=true]",
+            "name": "grok-4.5"
+          },
+          {
+            "value": "gemini-3.8-flash[reasoning_effort=high]",
+            "name": "gemini-3.8-flash"
+          },
+          {
+            "value": "gemini-3.7-flash[effort=high]",
+            "name": "gemini-3.7-flash"
+          },
+          {
+            "value": "gpt-5.6-terra[context=272k,reasoning=medium,fast=false]",
+            "name": "gpt-5.6-terra"
+          },
+          {
+            "value": "claude-sonnet-5[thinking=true,context=300k,effort=high]",
+            "name": "claude-sonnet-5"
+          },
+          {
+            "value": "claude-sonnet-4-6[thinking=true,context=200k,effort=medium]",
+            "name": "claude-sonnet-4-6"
+          },
+          {
+            "value": "gpt-5.3-codex[reasoning=medium,fast=false]",
+            "name": "gpt-5.3-codex"
+          },
+          {
+            "value": "claude-opus-4-7[thinking=true,context=300k,effort=xhigh,fast=false]",
+            "name": "claude-opus-4-7"
+          },
+          {
+            "value": "gpt-5.4[context=272k,reasoning=medium,fast=false]",
+            "name": "gpt-5.4"
+          },
+          {
+            "value": "claude-opus-4-6[thinking=true,context=200k,effort=high]",
+            "name": "claude-opus-4-6"
+          },
+          {
+            "value": "claude-opus-4-5[thinking=true]",
+            "name": "claude-opus-4-5"
+          },
+          {
+            "value": "gpt-5.2[reasoning=medium,fast=false]",
+            "name": "gpt-5.2"
+          },
+          {
+            "value": "gpt-5.6-luna[context=272k,reasoning=medium,fast=false]",
+            "name": "gpt-5.6-luna"
+          },
+          {
+            "value": "gemini-3.6-flash[effort=high]",
+            "name": "gemini-3.6-flash"
+          },
+          {
+            "value": "gemini-3.1-pro[]",
+            "name": "gemini-3.1-pro"
+          },
+          {
+            "value": "gpt-5.4-mini[reasoning=medium]",
+            "name": "gpt-5.4-mini"
+          },
+          {
+            "value": "gpt-5.4-nano[reasoning=medium]",
+            "name": "gpt-5.4-nano"
+          },
+          {
+            "value": "claude-haiku-4-5[thinking=true]",
+            "name": "claude-haiku-4-5"
+          },
+          {
+            "value": "claude-sonnet-4-5[thinking=true,context=200k]",
+            "name": "claude-sonnet-4-5"
+          },
+          {
+            "value": "gpt-5.1[reasoning=medium]",
+            "name": "gpt-5.1"
+          },
+          {
+            "value": "gemini-3-flash[]",
+            "name": "gemini-3-flash"
+          },
+          {
+            "value": "gemini-3.5-flash[]",
+            "name": "gemini-3.5-flash"
+          },
+          {
+            "value": "claude-sonnet-4[thinking=false,context=200k]",
+            "name": "claude-sonnet-4"
+          },
+          {
+            "value": "gpt-5-mini[]",
+            "name": "gpt-5-mini"
+          },
+          {
+            "value": "gemini-2.5-flash[]",
+            "name": "gemini-2.5-flash"
+          },
+          {
+            "value": "kimi-k3[reasoning=max]",
+            "name": "kimi-k3"
+          },
+          {
+            "value": "kimi-k2.7-code[]",
+            "name": "kimi-k2.7-code"
+          },
+          {
+            "value": "glm-5.2[reasoning=high]",
+            "name": "glm-5.2"
+          }
+        ]
+      }
+    ]
+  },
+  "tools": [
+    {
+      "id": "call_c8CgZ0OmhzLrZBH89ZtS4vrm\nfc_0a215b512b5523a3016a9f4e20347087d282bd69da509c1e42",
+      "kind": "read",
+      "title": "Read File",
+      "status": "completed",
+      "permissionRaised": false,
+      "rawInput": {}
+    },
+    {
+      "id": "call_bKp1bLICS8MQPHye5MsPdbcx\nfc_0a215b512b5523a3016a9f4e229b1487d28170741300de60c5",
+      "kind": "search",
+      "title": "grep",
+      "status": "completed",
+      "permissionRaised": false,
+      "rawInput": {}
+    },
+    {
+      "id": "call_SUwplbGpxJAzukFcpVBQrabF\nfc_0a215b512b5523a3016a9f4e2417f487d2a44a3cd8692bc761",
+      "kind": "execute",
+      "title": "`git status --short`",
+      "status": "completed",
+      "permissionRaised": true,
+      "rawInput": {
+        "command": "git status --short"
+      },
+      "options": [
+        {
+          "optionId": "allow-once",
+          "name": "Allow once",
+          "kind": "allow_once"
+        },
+        {
+          "optionId": "allow-always",
+          "name": "Allow always",
+          "kind": "allow_always"
+        },
+        {
+          "optionId": "reject-once",
+          "name": "Reject",
+          "kind": "reject_once"
+        }
+      ],
+      "ourAnswer": "allow_once"
+    },
+    {
+      "id": "call_iFBSaYTQbzzUzJyICnLMzza8\nfc_0a215b512b5523a3016a9f4e2641e487d28784984b2209534c",
+      "kind": "execute",
+      "title": "`echo hi > out.txt`",
+      "status": "completed",
+      "permissionRaised": true,
+      "rawInput": {
+        "command": "echo hi > out.txt"
+      },
+      "options": [
+        {
+          "optionId": "allow-once",
+          "name": "Allow once",
+          "kind": "allow_once"
+        },
+        {
+          "optionId": "allow-always",
+          "name": "Allow always",
+          "kind": "allow_always"
+        },
+        {
+          "optionId": "reject-once",
+          "name": "Reject",
+          "kind": "reject_once"
+        }
+      ],
+      "ourAnswer": "allow_once"
+    },
+    {
+      "id": "call_4p2l2mhhw4wiaD1ZXJv45FTV\nctc_0a215b512b5523a3016a9f4e29fa4c87d29f4c83d0825119e3",
+      "kind": "edit",
+      "title": "Edit File",
+      "status": "completed",
+      "permissionRaised": false,
+      "rawInput": {}
+    },
+    {
+      "id": "call_bOV3ntxUjab4i8qyxTX0c9FL\nctc_0a215b512b5523a3016a9f4e2d382c87d2b2910b74c09daadf",
+      "kind": "edit",
+      "title": "Edit File",
+      "status": "completed",
+      "permissionRaised": false,
+      "rawInput": {}
+    },
+    {
+      "id": "call_2LUPyK0WuoiBcPi2xi0061v4\nfc_0a215b512b5523a3016a9f4e2faa7887d2aed816287e26d08b",
+      "kind": "read",
+      "title": "Read File",
+      "status": "completed",
+      "permissionRaised": false,
+      "rawInput": {}
+    },
+    {
+      "id": "call_D1vIfRaptEgzCNJj50VRzQQ5\nfc_0a215b512b5523a3016a9f4e32e50887d29f4ec8394cc95d23",
+      "kind": "execute",
+      "title": "`npm test`",
+      "status": "completed",
+      "permissionRaised": true,
+      "rawInput": {
+        "command": "npm test"
+      },
+      "options": [
+        {
+          "optionId": "allow-once",
+          "name": "Allow once",
+          "kind": "allow_once"
+        },
+        {
+          "optionId": "allow-always",
+          "name": "Allow always",
+          "kind": "allow_always"
+        },
+        {
+          "optionId": "reject-once",
+          "name": "Reject",
+          "kind": "reject_once"
+        }
+      ],
+      "ourAnswer": "allow_once"
+    },
+    {
+      "id": "call_kQ0zW1u0MdmzkHe7GWARKYJW\nfc_0a215b512b5523a3016a9f4e3550cc87d2b7f44555b32c7c7d",
+      "kind": "execute",
+      "title": "`curl -s https://example.com | head -c 100`",
+      "status": "completed",
+      "permissionRaised": true,
+      "rawInput": {
+        "command": "curl -s https://example.com | head -c 100"
+      },
+      "options": [
+        {
+          "optionId": "allow-once",
+          "name": "Allow once",
+          "kind": "allow_once"
+        },
+        {
+          "optionId": "allow-always",
+          "name": "Allow always",
+          "kind": "allow_always"
+        },
+        {
+          "optionId": "reject-once",
+          "name": "Reject",
+          "kind": "reject_once"
+        }
+      ],
+      "ourAnswer": "allow_once"
+    }
+  ],
+  "permissionRequests": [
+    {
+      "toolCallId": "call_SUwplbGpxJAzukFcpVBQrabF\nfc_0a215b512b5523a3016a9f4e2417f487d2a44a3cd8692bc761",
+      "title": "`git status --short`",
+      "kind": "execute",
+      "options": [
+        "allow_once:allow-once",
+        "allow_always:allow-always",
+        "reject_once:reject-once"
+      ],
+      "answered": "allow_once",
+      "hasReasonField": false
+    },
+    {
+      "toolCallId": "call_iFBSaYTQbzzUzJyICnLMzza8\nfc_0a215b512b5523a3016a9f4e2641e487d28784984b2209534c",
+      "title": "`echo hi > out.txt`",
+      "kind": "execute",
+      "options": [
+        "allow_once:allow-once",
+        "allow_always:allow-always",
+        "reject_once:reject-once"
+      ],
+      "answered": "allow_once",
+      "hasReasonField": false
+    },
+    {
+      "toolCallId": "call_D1vIfRaptEgzCNJj50VRzQQ5\nfc_0a215b512b5523a3016a9f4e32e50887d29f4ec8394cc95d23",
+      "title": "`npm test`",
+      "kind": "execute",
+      "options": [
+        "allow_once:allow-once",
+        "allow_always:allow-always",
+        "reject_once:reject-once"
+      ],
+      "answered": "allow_once",
+      "hasReasonField": false
+    },
+    {
+      "toolCallId": "call_kQ0zW1u0MdmzkHe7GWARKYJW\nfc_0a215b512b5523a3016a9f4e3550cc87d2b7f44555b32c7c7d",
+      "title": "`curl -s https://example.com | head -c 100`",
+      "kind": "execute",
+      "options": [
+        "allow_once:allow-once",
+        "allow_always:allow-always",
+        "reject_once:reject-once"
+      ],
+      "answered": "allow_once",
+      "hasReasonField": false
+    }
+  ],
+  "fsRequests": [],
+  "agentText": "DONE\n1. OK\n2. OK\n3. OK\n4. OK\n5. OK\n6. OK\n7. OK\n8. OK\n9. OK",
+  "stopReasons": [
+    "end_turn"
+  ],
+  "usage": [],
+  "errors": [],
+  "notes": [
+    "agent exited code=0 sig=null"
+  ],
+  "result": {
+    "stopReason": "end_turn",
+    "finalText": "DONE\n1. OK\n2. OK\n3. OK\n4. OK\n5. OK\n6. OK\n7. OK\n8. OK\n9. OK",
+    "matrix": [
+      {
+        "tool": "Read File",
+        "kind": "read",
+        "title": "Read File",
+        "permissionRaised": false,
+        "ourAnswer": "-",
+        "finalStatus": "completed"
+      },
+      {
+        "tool": "grep",
+        "kind": "search",
+        "title": "grep",
+        "permissionRaised": false,
+        "ourAnswer": "-",
+        "finalStatus": "completed"
+      },
+      {
+        "tool": "`git status --short`",
+        "kind": "execute",
+        "title": "`git status --short`",
+        "permissionRaised": true,
+        "ourAnswer": "allow_once",
+        "finalStatus": "completed"
+      },
+      {
+        "tool": "`echo hi > out.txt`",
+        "kind": "execute",
+        "title": "`echo hi > out.txt`",
+        "permissionRaised": true,
+        "ourAnswer": "allow_once",
+        "finalStatus": "completed"
+      },
+      {
+        "tool": "Edit File",
+        "kind": "edit",
+        "title": "Edit File",
+        "permissionRaised": false,
+        "ourAnswer": "-",
+        "finalStatus": "completed"
+      },
+      {
+        "tool": "Edit File",
+        "kind": "edit",
+        "title": "Edit File",
+        "permissionRaised": false,
+        "ourAnswer": "-",
+        "finalStatus": "completed"
+      },
+      {
+        "tool": "Read File",
+        "kind": "read",
+        "title": "Read File",
+        "permissionRaised": false,
+        "ourAnswer": "-",
+        "finalStatus": "completed"
+      },
+      {
+        "tool": "`npm test`",
+        "kind": "execute",
+        "title": "`npm test`",
+        "permissionRaised": true,
+        "ourAnswer": "allow_once",
+        "finalStatus": "completed"
+      },
+      {
+        "tool": "`curl -s https://example.com | head -c 100`",
+        "kind": "execute",
+        "title": "`curl -s https://example.com | head -c 100`",
+        "permissionRaised": true,
+        "ourAnswer": "allow_once",
+        "finalStatus": "completed"
+      }
+    ],
+    "readsViaClientFs": 0,
+    "writesViaClientFs": 0,
+    "modelSawDenialReason": null,
+    "hookFired": 0,
+    "hookReasonSeenByModel": false
+  },
+  "finishedAt": "2026-09-07T23:52:24.488Z"
+}

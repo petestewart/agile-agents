@@ -1,0 +1,266 @@
+{
+  "vendor": "cursor",
+  "cmd": "cursor-agent acp",
+  "scenario": "resume",
+  "cwd": "/var/folders/vq/1d_kdxmx6539s0nlqcvrth7h0000gn/T/agile-spike-KAPN9b",
+  "startedAt": "2026-09-07T23:52:39.143Z",
+  "env": {
+    "ANTHROPIC_API_KEY": false,
+    "OPENAI_API_KEY": false,
+    "GEMINI_API_KEY": false
+  },
+  "initialize": {
+    "protocolVersion": 1,
+    "agentCapabilities": {
+      "loadSession": true,
+      "mcpCapabilities": {
+        "http": true,
+        "sse": true
+      },
+      "promptCapabilities": {
+        "audio": false,
+        "embeddedContext": false,
+        "image": true
+      },
+      "sessionCapabilities": {
+        "list": {}
+      }
+    },
+    "authMethods": [
+      {
+        "id": "cursor_login",
+        "name": "Cursor Login",
+        "description": "Authenticate using existing Cursor login credentials. Run 'agent login' first if not logged in."
+      }
+    ]
+  },
+  "session": {
+    "sessionId": "8bd8869a-0026-401d-ac70-48dcb7c0f383",
+    "modes": {
+      "currentModeId": "agent",
+      "availableModes": [
+        {
+          "id": "agent",
+          "name": "Agent",
+          "description": "Full agent capabilities with tool access"
+        },
+        {
+          "id": "plan",
+          "name": "Plan",
+          "description": "Read-only mode for planning and designing before implementation"
+        },
+        {
+          "id": "ask",
+          "name": "Ask",
+          "description": "Q&A mode - no edits or command execution"
+        }
+      ]
+    },
+    "configOptions": [
+      {
+        "id": "mode",
+        "name": "Mode",
+        "description": "Controls how the agent executes tasks",
+        "category": "mode",
+        "type": "select",
+        "currentValue": "agent",
+        "options": [
+          {
+            "value": "agent",
+            "name": "Agent",
+            "description": "Full agent capabilities with tool access"
+          },
+          {
+            "value": "plan",
+            "name": "Plan",
+            "description": "Read-only mode for planning and designing before implementation"
+          },
+          {
+            "value": "ask",
+            "name": "Ask",
+            "description": "Q&A mode - no edits or command execution"
+          }
+        ]
+      },
+      {
+        "id": "model",
+        "name": "Model",
+        "description": "Controls which model variant is used for responses",
+        "category": "model",
+        "type": "select",
+        "currentValue": "gpt-5.5[context=272k,reasoning=medium,fast=false]",
+        "options": [
+          {
+            "value": "default[]",
+            "name": "Auto"
+          },
+          {
+            "value": "grok-4.6[effort=high,fast=true]",
+            "name": "grok-4.6"
+          },
+          {
+            "value": "composer-2.5[fast=true]",
+            "name": "composer-2.5"
+          },
+          {
+            "value": "claude-opus-5[thinking=true,context=300k,effort=high,fast=false]",
+            "name": "claude-opus-5"
+          },
+          {
+            "value": "claude-opus-4-8[thinking=true,context=300k,effort=high,fast=false]",
+            "name": "claude-opus-4-8"
+          },
+          {
+            "value": "gpt-5.6-sol[context=272k,reasoning=medium,fast=false]",
+            "name": "gpt-5.6-sol"
+          },
+          {
+            "value": "gpt-5.5[context=272k,reasoning=medium,fast=false]",
+            "name": "gpt-5.5"
+          },
+          {
+            "value": "claude-fable-5-1[thinking=true,context=300k,effort=high]",
+            "name": "claude-fable-5-1"
+          },
+          {
+            "value": "claude-fable-5[thinking=true,context=300k,effort=high]",
+            "name": "claude-fable-5"
+          },
+          {
+            "value": "grok-4.5[effort=high,fast=true]",
+            "name": "grok-4.5"
+          },
+          {
+            "value": "gemini-3.8-flash[reasoning_effort=high]",
+            "name": "gemini-3.8-flash"
+          },
+          {
+            "value": "gemini-3.7-flash[effort=high]",
+            "name": "gemini-3.7-flash"
+          },
+          {
+            "value": "gpt-5.6-terra[context=272k,reasoning=medium,fast=false]",
+            "name": "gpt-5.6-terra"
+          },
+          {
+            "value": "claude-sonnet-5[thinking=true,context=300k,effort=high]",
+            "name": "claude-sonnet-5"
+          },
+          {
+            "value": "claude-sonnet-4-6[thinking=true,context=200k,effort=medium]",
+            "name": "claude-sonnet-4-6"
+          },
+          {
+            "value": "gpt-5.3-codex[reasoning=medium,fast=false]",
+            "name": "gpt-5.3-codex"
+          },
+          {
+            "value": "claude-opus-4-7[thinking=true,context=300k,effort=xhigh,fast=false]",
+            "name": "claude-opus-4-7"
+          },
+          {
+            "value": "gpt-5.4[context=272k,reasoning=medium,fast=false]",
+            "name": "gpt-5.4"
+          },
+          {
+            "value": "claude-opus-4-6[thinking=true,context=200k,effort=high]",
+            "name": "claude-opus-4-6"
+          },
+          {
+            "value": "claude-opus-4-5[thinking=true]",
+            "name": "claude-opus-4-5"
+          },
+          {
+            "value": "gpt-5.2[reasoning=medium,fast=false]",
+            "name": "gpt-5.2"
+          },
+          {
+            "value": "gpt-5.6-luna[context=272k,reasoning=medium,fast=false]",
+            "name": "gpt-5.6-luna"
+          },
+          {
+            "value": "gemini-3.6-flash[effort=high]",
+            "name": "gemini-3.6-flash"
+          },
+          {
+            "value": "gemini-3.1-pro[]",
+            "name": "gemini-3.1-pro"
+          },
+          {
+            "value": "gpt-5.4-mini[reasoning=medium]",
+            "name": "gpt-5.4-mini"
+          },
+          {
+            "value": "gpt-5.4-nano[reasoning=medium]",
+            "name": "gpt-5.4-nano"
+          },
+          {
+            "value": "claude-haiku-4-5[thinking=true]",
+            "name": "claude-haiku-4-5"
+          },
+          {
+            "value": "claude-sonnet-4-5[thinking=true,context=200k]",
+            "name": "claude-sonnet-4-5"
+          },
+          {
+            "value": "gpt-5.1[reasoning=medium]",
+            "name": "gpt-5.1"
+          },
+          {
+            "value": "gemini-3-flash[]",
+            "name": "gemini-3-flash"
+          },
+          {
+            "value": "gemini-3.5-flash[]",
+            "name": "gemini-3.5-flash"
+          },
+          {
+            "value": "claude-sonnet-4[thinking=false,context=200k]",
+            "name": "claude-sonnet-4"
+          },
+          {
+            "value": "gpt-5-mini[]",
+            "name": "gpt-5-mini"
+          },
+          {
+            "value": "gemini-2.5-flash[]",
+            "name": "gemini-2.5-flash"
+          },
+          {
+            "value": "kimi-k3[reasoning=max]",
+            "name": "kimi-k3"
+          },
+          {
+            "value": "kimi-k2.7-code[]",
+            "name": "kimi-k2.7-code"
+          },
+          {
+            "value": "glm-5.2[reasoning=high]",
+            "name": "glm-5.2"
+          }
+        ]
+      }
+    ]
+  },
+  "tools": [],
+  "permissionRequests": [],
+  "fsRequests": [],
+  "agentText": "PINEAPPLE",
+  "stopReasons": [
+    "end_turn",
+    "end_turn"
+  ],
+  "usage": [],
+  "errors": [],
+  "notes": [
+    "first process stopped; starting fresh process for session/load",
+    "agent exited code=143 sig=null",
+    "agent exited code=0 sig=null"
+  ],
+  "result": {
+    "loadOk": true,
+    "recalled": true,
+    "stopReason": "end_turn"
+  },
+  "finishedAt": "2026-09-07T23:52:57.667Z"
+}

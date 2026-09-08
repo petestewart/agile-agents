@@ -1,0 +1,81 @@
+{
+  "vendor": "gemini",
+  "cmd": "gemini --experimental-acp",
+  "scenario": "perm",
+  "cwd": "/var/folders/vq/1d_kdxmx6539s0nlqcvrth7h0000gn/T/agile-spike-rTQxip",
+  "startedAt": "2026-09-07T22:58:35.073Z",
+  "env": {
+    "ANTHROPIC_API_KEY": false,
+    "OPENAI_API_KEY": false,
+    "GEMINI_API_KEY": false
+  },
+  "initialize": {
+    "protocolVersion": 1,
+    "agentCapabilities": {
+      "loadSession": true,
+      "promptCapabilities": {
+        "image": true,
+        "audio": true,
+        "embeddedContext": true
+      },
+      "mcpCapabilities": {
+        "http": true,
+        "sse": true
+      }
+    },
+    "authMethods": [
+      {
+        "id": "oauth-personal",
+        "name": "Log in with Google",
+        "description": "Log in with your Google account"
+      },
+      {
+        "id": "gemini-api-key",
+        "name": "Gemini API key",
+        "description": "Use an API key with Gemini Developer API",
+        "_meta": {
+          "api-key": {
+            "provider": "google"
+          }
+        }
+      },
+      {
+        "id": "vertex-ai",
+        "name": "Vertex AI",
+        "description": "Use an API key with Vertex AI GenAI API"
+      }
+    ],
+    "agentInfo": {
+      "name": "gemini-cli",
+      "title": "Gemini CLI",
+      "version": "0.32.1"
+    }
+  },
+  "session": null,
+  "tools": [],
+  "permissionRequests": [],
+  "fsRequests": [],
+  "agentText": "",
+  "stopReasons": [],
+  "usage": [],
+  "errors": [
+    {
+      "id": 2,
+      "error": {
+        "code": -32000,
+        "message": "This client is no longer supported for Gemini Code Assist for individuals. To continue using Gemini, please migrate to the Antigravity suite of products: https://antigravity.google"
+      }
+    },
+    {
+      "fatal": "This client is no longer supported for Gemini Code Assist for individuals. To continue using Gemini, please migrate to the Antigravity suite of products: https://antigravity.google"
+    }
+  ],
+  "notes": [
+    "non-JSON stdout: Created execution plan for SessionEnd: 1 hook(s) to execute in parallel",
+    "non-JSON stdout: Expanding hook command: /Users/petestewart/.terma-dev/hooks/notify.sh agent_stop; echo '{}' (cwd: /private/var/folders/v",
+    "non-JSON stdout: Hook execution for SessionEnd: 1 hooks executed successfully, total duration: 5ms",
+    "agent exited code=0 sig=null"
+  ],
+  "result": {},
+  "finishedAt": "2026-09-07T22:58:40.290Z"
+}

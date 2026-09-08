@@ -1,0 +1,302 @@
+{
+  "vendor": "grok",
+  "cmd": "grok agent stdio",
+  "scenario": "perm",
+  "cwd": "/var/folders/vq/1d_kdxmx6539s0nlqcvrth7h0000gn/T/agile-spike-sj3u0E",
+  "startedAt": "2026-09-07T23:54:06.071Z",
+  "env": {
+    "ANTHROPIC_API_KEY": false,
+    "OPENAI_API_KEY": false,
+    "GEMINI_API_KEY": false
+  },
+  "initialize": {
+    "protocolVersion": 1,
+    "agentCapabilities": {
+      "loadSession": true,
+      "promptCapabilities": {
+        "image": false,
+        "audio": false,
+        "embeddedContext": true
+      },
+      "mcpCapabilities": {
+        "http": true,
+        "sse": true
+      },
+      "sessionCapabilities": {
+        "list": {},
+        "resume": {},
+        "close": {}
+      },
+      "auth": {},
+      "_meta": {
+        "x.ai/fs_notify": true,
+        "x.ai/hooks": {
+          "blockingEvents": [
+            "pre_tool_use",
+            "stop",
+            "subagent_stop"
+          ],
+          "decisions": [
+            "deny",
+            "block"
+          ],
+          "stopSignals": [
+            "continue",
+            "stopReason",
+            "additionalContext"
+          ]
+        },
+        "x.ai/capabilities": {
+          "toolOverrides": {
+            "x_keyword_search": true,
+            "x_semantic_search": true,
+            "x_user_search": false,
+            "x_thread_fetch": false
+          }
+        }
+      }
+    },
+    "authMethods": [
+      {
+        "id": "cached_token",
+        "name": "cached_token",
+        "description": "Cached token from ~/.grok/auth.json"
+      },
+      {
+        "id": "grok.com",
+        "name": "Grok",
+        "description": "Sign in with Grok"
+      }
+    ]
+  },
+  "session": {
+    "sessionId": "01a07e4b-1cfe-7013-9ae2-3741a58163de"
+  },
+  "tools": [
+    {
+      "id": "call-67d86e95-79fa-4415-adf0-87deb77b4eee-0",
+      "kind": "read",
+      "title": "read_file",
+      "status": "completed",
+      "permissionRaised": false,
+      "rawInput": {
+        "target_file": "small.txt"
+      }
+    },
+    {
+      "id": "call-2d788e91-23c6-41ec-86fe-dde636145db9-1",
+      "kind": "search",
+      "title": "grep",
+      "status": "completed",
+      "permissionRaised": false,
+      "rawInput": {
+        "pattern": "gamma"
+      }
+    },
+    {
+      "id": "call-25d778ba-b6ff-42e2-9353-9a46edfcf32c-2",
+      "kind": "execute",
+      "title": "run_terminal_command",
+      "status": "completed",
+      "permissionRaised": false,
+      "rawInput": {
+        "command": "git status --short",
+        "description": "Show short git status"
+      }
+    },
+    {
+      "id": "call-e61f457b-5bb4-4bda-935f-1d965da02bad-3",
+      "kind": "execute",
+      "title": "run_terminal_command",
+      "status": "completed",
+      "permissionRaised": false,
+      "rawInput": {
+        "command": "echo hi > out.txt",
+        "description": "Write hi to out.txt"
+      }
+    },
+    {
+      "id": "call-3aae4b50-6dd8-4cc5-8258-fc3f31cf6bce-4",
+      "kind": "edit",
+      "title": "search_replace",
+      "status": "completed",
+      "permissionRaised": false,
+      "rawInput": {
+        "file_path": "small.txt",
+        "old_string": "alpha\nbeta\ngamma",
+        "new_string": "alpha\nbeta\ngamma\ndelta"
+      }
+    },
+    {
+      "id": "call-74ed3809-6946-4f79-a626-a27393258207-5",
+      "kind": "edit",
+      "title": "write",
+      "status": "completed",
+      "permissionRaised": false,
+      "rawInput": {
+        "file_path": "new.txt",
+        "content": "new\n"
+      }
+    },
+    {
+      "id": "call-930ced59-6942-4b0d-8078-e3d303ec55aa-6",
+      "kind": "read",
+      "title": "read_file",
+      "status": "failed",
+      "permissionRaised": false,
+      "rawInput": {
+        "target_file": "big.txt"
+      }
+    },
+    {
+      "id": "call-e43b7dda-c9e6-4f3d-b688-0229555c5cbe-7",
+      "kind": "execute",
+      "title": "run_terminal_command",
+      "status": "completed",
+      "permissionRaised": false,
+      "rawInput": {
+        "command": "npm test",
+        "description": "Run npm test"
+      }
+    },
+    {
+      "id": "call-7b83a768-a458-4c0e-8422-95decda0fb95-8",
+      "kind": "execute",
+      "title": "run_terminal_command",
+      "status": "completed",
+      "permissionRaised": false,
+      "rawInput": {
+        "command": "curl -s https://example.com | head -c 100",
+        "description": "Fetch first 100 bytes from example.com"
+      }
+    }
+  ],
+  "permissionRequests": [],
+  "fsRequests": [
+    {
+      "method": "fs/read_text_file",
+      "path": "/private/var/folders/vq/1d_kdxmx6539s0nlqcvrth7h0000gn/T/agile-spike-sj3u0E/small.txt"
+    },
+    {
+      "method": "fs/read_text_file",
+      "path": "/var/folders/vq/1d_kdxmx6539s0nlqcvrth7h0000gn/T/agile-spike-sj3u0E/small.txt"
+    },
+    {
+      "method": "fs/read_text_file",
+      "path": "/private/var/folders/vq/1d_kdxmx6539s0nlqcvrth7h0000gn/T/agile-spike-sj3u0E/small.txt"
+    },
+    {
+      "method": "fs/write_text_file",
+      "path": "/private/var/folders/vq/1d_kdxmx6539s0nlqcvrth7h0000gn/T/agile-spike-sj3u0E/small.txt",
+      "bytes": 23
+    },
+    {
+      "method": "fs/read_text_file",
+      "path": "/var/folders/vq/1d_kdxmx6539s0nlqcvrth7h0000gn/T/agile-spike-sj3u0E/new.txt"
+    },
+    {
+      "method": "fs/write_text_file",
+      "path": "/var/folders/vq/1d_kdxmx6539s0nlqcvrth7h0000gn/T/agile-spike-sj3u0E/new.txt",
+      "bytes": 4
+    },
+    {
+      "method": "fs/read_text_file",
+      "path": "/private/var/folders/vq/1d_kdxmx6539s0nlqcvrth7h0000gn/T/agile-spike-sj3u0E/big.txt"
+    },
+    {
+      "method": "fs/read_text_file",
+      "path": "/var/folders/vq/1d_kdxmx6539s0nlqcvrth7h0000gn/T/agile-spike-sj3u0E/new.txt"
+    }
+  ],
+  "agentText": "DONE\n1. OK\n2. OK\n3. OK\n4. OK\n5. OK\n6. OK\n7. REFUSED \"Failed to read file: /var/folders/vq/1d_kdxmx6539s0nlqcvrth7h0000gn/T/agile-spike-sj3u0E/big.txt, IO Error: AGILE-GATE: this file is too large for a raw read. Use read_summary(path, question) instead.\"\n8. OK\n9. OK",
+  "stopReasons": [
+    "end_turn"
+  ],
+  "usage": [],
+  "errors": [],
+  "notes": [],
+  "result": {
+    "fsDenied": 1,
+    "stopReason": "end_turn",
+    "finalText": "DONE\n1. OK\n2. OK\n3. OK\n4. OK\n5. OK\n6. OK\n7. REFUSED \"Failed to read file: /var/folders/vq/1d_kdxmx6539s0nlqcvrth7h0000gn/T/agile-spike-sj3u0E/big.txt, IO Error: AGILE-GATE: this file is too large for a raw read. Use read_summary(path, question) instead.\"\n8. OK\n9. OK",
+    "matrix": [
+      {
+        "tool": "read_file",
+        "kind": "read",
+        "title": "read_file",
+        "permissionRaised": false,
+        "ourAnswer": "-",
+        "finalStatus": "completed"
+      },
+      {
+        "tool": "grep",
+        "kind": "search",
+        "title": "grep",
+        "permissionRaised": false,
+        "ourAnswer": "-",
+        "finalStatus": "completed"
+      },
+      {
+        "tool": "run_terminal_command",
+        "kind": "execute",
+        "title": "run_terminal_command",
+        "permissionRaised": false,
+        "ourAnswer": "-",
+        "finalStatus": "completed"
+      },
+      {
+        "tool": "run_terminal_command",
+        "kind": "execute",
+        "title": "run_terminal_command",
+        "permissionRaised": false,
+        "ourAnswer": "-",
+        "finalStatus": "completed"
+      },
+      {
+        "tool": "search_replace",
+        "kind": "edit",
+        "title": "search_replace",
+        "permissionRaised": false,
+        "ourAnswer": "-",
+        "finalStatus": "completed"
+      },
+      {
+        "tool": "write",
+        "kind": "edit",
+        "title": "write",
+        "permissionRaised": false,
+        "ourAnswer": "-",
+        "finalStatus": "completed"
+      },
+      {
+        "tool": "read_file",
+        "kind": "read",
+        "title": "read_file",
+        "permissionRaised": false,
+        "ourAnswer": "-",
+        "finalStatus": "failed"
+      },
+      {
+        "tool": "run_terminal_command",
+        "kind": "execute",
+        "title": "run_terminal_command",
+        "permissionRaised": false,
+        "ourAnswer": "-",
+        "finalStatus": "completed"
+      },
+      {
+        "tool": "run_terminal_command",
+        "kind": "execute",
+        "title": "run_terminal_command",
+        "permissionRaised": false,
+        "ourAnswer": "-",
+        "finalStatus": "completed"
+      }
+    ],
+    "readsViaClientFs": 6,
+    "writesViaClientFs": 2,
+    "modelSawDenialReason": null,
+    "modelSawFsDenyReason": true
+  },
+  "finishedAt": "2026-09-07T23:54:27.629Z"
+}

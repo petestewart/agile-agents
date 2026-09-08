@@ -1,0 +1,17 @@
+{"ev":"tool_call","tool":"read","input":{"path":"small.txt"}}
+{"ev":"tool_call","tool":"bash","input":{"command":"grep -rn gamma ."}}
+{"ev":"tool_result","tool":"read","isError":false}
+{"ev":"tool_result","tool":"bash","isError":false}
+{"ev":"tool_call","tool":"bash","input":{"command":"git status --short"}}
+{"ev":"tool_result","tool":"bash","isError":false}
+{"ev":"tool_call","tool":"bash","input":{"command":"echo hi > out.txt"}}
+{"ev":"tool_result","tool":"bash","isError":false}
+{"ev":"tool_call","tool":"edit","input":{"edits":[{"newText":"gamma\ndelta","oldText":"gamma"}],"path":"small.txt"}}
+{"ev":"tool_result","tool":"edit","isError":false}
+{"ev":"tool_call","tool":"write","input":{"content":"new","path":"new.txt"}}
+{"ev":"tool_result","tool":"write","isError":false}
+{"ev":"tool_call","tool":"read","input":{"path":"big.txt"}}
+{"ev":"tool_call","tool":"bash","input":{"command":"npm test"}}
+{"ev":"tool_result","tool":"bash","isError":false}
+{"ev":"tool_call","tool":"bash","input":{"command":"curl -s https://example.com | head -c 100"}}
+{"ev":"tool_result","tool":"bash","isError":false}

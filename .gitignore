@@ -1,0 +1,14 @@
+node_modules/
+dist/
+out/
+.worktrees/
+.pipeline-review.md
+.pipeline-report.md
+.env
+.env.*
+.DS_Store
+*.log
+# spike scratch (reports are kept)
+spike/spike-out/*.log
+spike/queue/STOP
+_to_delete_staging/

@@ -1,0 +1,110 @@
+{
+  "vendor": "grok",
+  "cmd": "grok agent stdio",
+  "scenario": "cancel",
+  "cwd": "/var/folders/vq/1d_kdxmx6539s0nlqcvrth7h0000gn/T/agile-spike-v8CPVm",
+  "startedAt": "2026-09-07T23:13:41.501Z",
+  "env": {
+    "ANTHROPIC_API_KEY": false,
+    "OPENAI_API_KEY": false,
+    "GEMINI_API_KEY": false
+  },
+  "initialize": {
+    "protocolVersion": 1,
+    "agentCapabilities": {
+      "loadSession": true,
+      "promptCapabilities": {
+        "image": false,
+        "audio": false,
+        "embeddedContext": true
+      },
+      "mcpCapabilities": {
+        "http": true,
+        "sse": true
+      },
+      "sessionCapabilities": {
+        "list": {},
+        "resume": {},
+        "close": {}
+      },
+      "auth": {},
+      "_meta": {
+        "x.ai/fs_notify": true,
+        "x.ai/hooks": {
+          "blockingEvents": [
+            "pre_tool_use",
+            "stop",
+            "subagent_stop"
+          ],
+          "decisions": [
+            "deny",
+            "block"
+          ],
+          "stopSignals": [
+            "continue",
+            "stopReason",
+            "additionalContext"
+          ]
+        },
+        "x.ai/capabilities": {
+          "toolOverrides": {
+            "x_keyword_search": true,
+            "x_semantic_search": true,
+            "x_user_search": false,
+            "x_thread_fetch": false
+          }
+        }
+      }
+    },
+    "authMethods": [
+      {
+        "id": "cached_token",
+        "name": "cached_token",
+        "description": "Cached token from ~/.grok/auth.json"
+      },
+      {
+        "id": "grok.com",
+        "name": "Grok",
+        "description": "Sign in with Grok"
+      }
+    ]
+  },
+  "session": {
+    "sessionId": "01a07e26-1ca8-7873-91f8-db693371b471"
+  },
+  "tools": [
+    {
+      "id": "call-f4f4cad9-6530-4982-859c-bcfa105c65ea-0",
+      "kind": "execute",
+      "title": "run_terminal_command",
+      "permissionRaised": false,
+      "rawInput": {
+        "command": "sleep 25",
+        "description": "Sleep for 25 seconds",
+        "timeout": 35000
+      }
+    }
+  ],
+  "permissionRequests": [],
+  "fsRequests": [],
+  "agentText": "I'll run `sleep 25`, then reply with FINISHED once it completes.ALIVE",
+  "stopReasons": [
+    "cancelled",
+    "end_turn"
+  ],
+  "usage": [],
+  "errors": [],
+  "notes": [],
+  "result": {
+    "cancelStopReason": "cancelled",
+    "cancelLatencyMs": 9,
+    "toolStatusAfterCancel": [
+      {
+        "title": "run_terminal_command"
+      }
+    ],
+    "processAliveAfterCancel": true,
+    "sessionUsableAfterCancel": true
+  },
+  "finishedAt": "2026-09-07T23:13:51.368Z"
+}

@@ -1,0 +1,299 @@
+{
+  "vendor": "codex",
+  "cmd": "npx -y @agentclientprotocol/codex-acp",
+  "scenario": "cancel",
+  "cwd": "/var/folders/vq/1d_kdxmx6539s0nlqcvrth7h0000gn/T/agile-spike-G8RzNV",
+  "startedAt": "2026-09-07T23:13:51.475Z",
+  "env": {
+    "ANTHROPIC_API_KEY": false,
+    "OPENAI_API_KEY": false,
+    "GEMINI_API_KEY": false
+  },
+  "initialize": {
+    "protocolVersion": 1,
+    "agentCapabilities": {
+      "auth": {
+        "logout": {}
+      },
+      "providers": {},
+      "loadSession": true,
+      "promptCapabilities": {
+        "embeddedContext": true,
+        "image": true
+      },
+      "sessionCapabilities": {
+        "resume": {},
+        "list": {},
+        "close": {},
+        "delete": {},
+        "fork": {},
+        "additionalDirectories": {},
+        "subagents": {}
+      },
+      "mcpCapabilities": {
+        "acp": false,
+        "http": true,
+        "sse": false
+      },
+      "_meta": {
+        "authStatus": {}
+      }
+    },
+    "authMethods": [
+      {
+        "id": "api-key",
+        "name": "API Key",
+        "description": "Use an API key to authenticate",
+        "_meta": {
+          "api-key": {
+            "provider": "openai"
+          }
+        }
+      },
+      {
+        "id": "chat-gpt",
+        "name": "ChatGPT",
+        "description": "Use ChatGPT to authenticate"
+      }
+    ],
+    "agentInfo": {
+      "name": "@agentclientprotocol/codex-acp",
+      "title": "Codex",
+      "version": "1.10.0"
+    }
+  },
+  "session": {
+    "sessionId": "01a07e26-46d2-7d53-900c-1223d71ba72e",
+    "modes": {
+      "availableModes": [
+        {
+          "id": "read-only",
+          "name": "Ask for approval",
+          "description": "Always ask to edit external files and use the internet",
+          "_meta": {
+            "kind": "standard"
+          }
+        },
+        {
+          "id": "agent",
+          "name": "Approve for me",
+          "description": "Only ask for actions detected as potentially unsafe",
+          "_meta": {
+            "kind": "auto_review"
+          }
+        },
+        {
+          "id": "agent-full-access",
+          "name": "Full access",
+          "description": "Unrestricted access to the internet and any file on your computer",
+          "_meta": {
+            "kind": "full_access"
+          }
+        }
+      ],
+      "currentModeId": "agent"
+    },
+    "configOptions": [
+      {
+        "id": "mode",
+        "name": "Mode",
+        "description": "Approval and sandboxing preset for the session",
+        "category": "mode",
+        "type": "select",
+        "currentValue": "agent",
+        "options": [
+          {
+            "value": "read-only",
+            "name": "Ask for approval",
+            "description": "Always ask to edit external files and use the internet",
+            "_meta": {
+              "kind": "standard"
+            }
+          },
+          {
+            "value": "agent",
+            "name": "Approve for me",
+            "description": "Only ask for actions detected as potentially unsafe",
+            "_meta": {
+              "kind": "auto_review"
+            }
+          },
+          {
+            "value": "agent-full-access",
+            "name": "Full access",
+            "description": "Unrestricted access to the internet and any file on your computer",
+            "_meta": {
+              "kind": "full_access"
+            }
+          }
+        ]
+      },
+      {
+        "id": "collaboration_mode",
+        "name": "Collaboration mode",
+        "description": "How Codex collaborates for subsequent turns",
+        "category": "collaboration_mode",
+        "type": "select",
+        "currentValue": "default",
+        "options": [
+          {
+            "value": "default",
+            "name": "Default"
+          },
+          {
+            "value": "plan",
+            "name": "Plan",
+            "description": "Plan before making changes"
+          }
+        ]
+      },
+      {
+        "id": "model",
+        "name": "Model",
+        "description": "Model Codex uses for the session",
+        "category": "model",
+        "type": "select",
+        "currentValue": "gpt-5.6-sol",
+        "options": [
+          {
+            "value": "gpt-6-astra",
+            "name": "GPT-6-Astra",
+            "description": "Our most capable model for complex, demanding work."
+          },
+          {
+            "value": "gpt-5.6-sol",
+            "name": "GPT-5.6-Sol",
+            "description": "Reliable agentic workhorse for everyday tasks."
+          },
+          {
+            "value": "gpt-5.6-terra",
+            "name": "GPT-5.6-Terra",
+            "description": "Balanced agentic coding model for everyday work."
+          },
+          {
+            "value": "gpt-5.6-luna",
+            "name": "GPT-5.6-Luna",
+            "description": "Fast and affordable agentic coding model."
+          },
+          {
+            "value": "gpt-5.5",
+            "name": "GPT-5.5",
+            "description": "Proven previous-generation model for coding and general work."
+          },
+          {
+            "value": "gpt-5.4-mini",
+            "name": "GPT-5.4-Mini",
+            "description": "Small, fast, and cost-efficient model for simpler coding tasks."
+          }
+        ]
+      },
+      {
+        "id": "reasoning_effort",
+        "name": "Reasoning effort",
+        "description": "How much reasoning effort the model should use",
+        "category": "thought_level",
+        "type": "select",
+        "currentValue": "low",
+        "options": [
+          {
+            "value": "low",
+            "name": "Low",
+            "description": "Fast responses with lighter reasoning"
+          },
+          {
+            "value": "medium",
+            "name": "Medium",
+            "description": "Balances speed and reasoning depth for everyday tasks"
+          },
+          {
+            "value": "high",
+            "name": "High",
+            "description": "Greater reasoning depth for complex problems"
+          },
+          {
+            "value": "xhigh",
+            "name": "Xhigh",
+            "description": "Extra high reasoning depth for complex problems"
+          },
+          {
+            "value": "max",
+            "name": "Max",
+            "description": "Maximum reasoning depth for the hardest problems"
+          },
+          {
+            "value": "ultra",
+            "name": "Ultra",
+            "description": "Maximum reasoning with automatic task delegation"
+          }
+        ]
+      },
+      {
+        "id": "fast-mode",
+        "name": "Fast mode",
+        "description": "1.5x speed, increased usage",
+        "category": "model_config",
+        "type": "select",
+        "currentValue": "off",
+        "options": [
+          {
+            "value": "off",
+            "name": "Off",
+            "description": "Default speed, normal usage"
+          },
+          {
+            "value": "on",
+            "name": "On",
+            "description": "1.5x speed, increased usage"
+          }
+        ]
+      }
+    ]
+  },
+  "tools": [
+    {
+      "id": "exec-1ac450f9-9d78-429e-a982-a69df7027723",
+      "kind": "execute",
+      "title": "sleep 25",
+      "status": "in_progress",
+      "permissionRaised": false,
+      "rawInput": {
+        "command": "sleep 25",
+        "cwd": "/var/folders/vq/1d_kdxmx6539s0nlqcvrth7h0000gn/T/agile-spike-G8RzNV"
+      }
+    }
+  ],
+  "permissionRequests": [],
+  "fsRequests": [],
+  "agentText": "I’ll run the requested command and reply when it completes.ALIVE",
+  "stopReasons": [
+    "cancelled",
+    "end_turn"
+  ],
+  "usage": [
+    {
+      "sessionUpdate": "usage_update",
+      "used": 17408,
+      "size": 258400
+    },
+    {
+      "sessionUpdate": "usage_update",
+      "used": 20006,
+      "size": 258400
+    }
+  ],
+  "errors": [],
+  "notes": [],
+  "result": {
+    "cancelStopReason": "cancelled",
+    "cancelLatencyMs": 7,
+    "toolStatusAfterCancel": [
+      {
+        "title": "sleep 25",
+        "status": "in_progress"
+      }
+    ],
+    "processAliveAfterCancel": true,
+    "sessionUsableAfterCancel": true
+  },
+  "finishedAt": "2026-09-07T23:14:07.118Z"
+}

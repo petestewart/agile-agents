@@ -1,0 +1,326 @@
+# PLAN.md — Agile Agents
+
+## 1. Overview
+
+Agile Agents is a multi-agent coding orchestrator modeled on an Agile engineering team: an EM that delegates and runs ceremonies, an architect that owns a file-based oracle of product decisions and specs, engineers that implement pointed tickets in git worktrees, adversarial reviewers, and QA agents that run acceptance criteria without reading the implementation. A daemon (`agiled`) owns all state as files under `.agile/` on an orphan `agile-state` branch, hosts vendor coding agents (Claude Code first; Pi, Cursor, Grok, Codex after) as background processes over ACP, enforces gates through hooks rather than prompts, and exposes a CLI and an event feed. A human is pulled in only at policy-defined gates.
+
+Success for this plan (v0) is one repo, one team, Claude for every role, files as the only state backend, CLI plus event feed as the only UI, and no OS sandbox: `agile run` drives a seeded three-ticket epic through one full sprint layer unattended — assign → implement → review → QA → merge to `integration` — with a scripted discovery exercising the halt/standup path and a hook denying a large read with a reason the model sees. Everything after v0 (routing and quotas, more vendors, handoffs, control room, sandbox) is additive on the same state model.
+
+Design reference: `design/agile-agents-design.md` (§4 state model, §5 bus, §6 enforcement tiers, §7 tools, §8 adapter, §9–16 protocols and policy, §18 build decisions) and `design/spike-findings.md` (per-vendor measurements).
+
+## 2. Non Goals
+
+- Any vendor other than Claude Code in v0 (Pi is the first post-v0 vendor; Gemini is out until an account exists).
+- The browser control room, EM chat panel, or any React UI in v0. A plain HTML event feed served by the daemon is the ceiling.
+- Tier-0 OS sandboxing (`sandbox-exec` / containers). v0 relies on Claude hooks + ACP permissions + observation.
+- Quota-aware routing, vendor barometer, graceful handoff, pause/resume across vendors.
+- Multiple teams, multiple repos per daemon, external ticket sync (Linear, GitHub Issues as the oracle), embeddings for the knowledge store.
+- Folding into Terma. Terma becomes a *client* later; the only Terma work in this plan is extracting its ACP layer into a shared package.
+- The Codex `app-server` adapter, Cursor user-level hooks, and the eval harness (`agile bench`).
+
+## 3. Assumptions
+
+- Bun is the runtime and package manager; Claude Code is installed and logged in (`claude login`, Max) on the dev machine; `@agentclientprotocol/claude-agent-acp` (0.75.x) is the Claude adapter, spawned via `npx`.
+- Terma's ACP layer is snapshotted read-only in `vendor/terma/` for extraction (no access to the Terma checkout is needed); its `acp-session.ts`, `acp-types.ts`, `acp-providers.ts`, `agent-session-contract.ts`, `acp-events.ts`, and `acp-session-contract.ts` are Node-only and lift without Electron dependencies (verified by survey).
+- Claude project-level `PreToolUse` hooks fire under the ACP adapter and deliver `permissionDecisionReason` to the model (verified). ACP `session/request_permission` fires only for edits and non-allowlisted exec in `default` mode (verified) — engineers run in `default`.
+- Cheap-model reader/tool runners are ordinary ACP sessions with a fixed prompt; no direct model API calls in v0.
+- A "demo project" fixture (small TypeScript service with tests) is created in-repo for the end-to-end run; it is not a real product.
+- Names `agile` (CLI), `agiled` (daemon), `.agile/` (state) are placeholders and may be renamed in one commit before v0 ships.
+
+## 4. Constraints
+
+- TypeScript throughout; one monorepo with Bun workspaces: `packages/shared` (zod schemas), `packages/acp-client` (extracted from Terma), `packages/daemon`, `packages/cli`, `packages/ui` (v0: static feed only). Schemas are defined once in `shared` and imported everywhere.
+- All state under `.agile/` is plain YAML/JSONL/Markdown, git-tracked on the orphan `agile-state` branch checked out as its own worktree. No SQLite in v0. Every daemon write goes through a validating store; agents never write `.agile/` directly.
+- Hooks are the enforcement layer; prompts are the intent layer. Any gate that matters must be a hook, an ACP permission answer, or a daemon-side check — never only a sentence in a role brief.
+- Signal over volume at every boundary: message bodies capped (~800 chars, pointer not payload), tool outputs distilled (`test_run` returns failures only), daemon truncates oversized tool results before they reach a model.
+- Tests must run under plain `bun test` with no native modules. Anything that needs a live vendor is an integration test behind an explicit flag.
+- No vendor credentials in the daemon: adapters spawn the vendor harness with the user's own login.
+- Every ceremony and gate is reconstructible from `.agile/log/events.jsonl`.
+
+## 5. Architecture Sketch
+
+```
+packages/
+  shared/        zod schemas: Ticket, OracleEntry, KbFact, Stanza, Message, Halt, Sprint, Policy, Vendors, Tool, LedgerLine, Event
+  acp-client/    lifted from Terma: AcpSession (spawn, JSON-RPC framing, fs/*, request forwarding, turn markers, kill), AcpProviders, MessageableSession contract
+  daemon/        agiled: state store · bus · halts + ripple · gates/policy · agent runner · worktree manager · hook endpoint · tool registry + MCP server · HTTP/WS feed
+  cli/           agile: init · run · status · tail · send · approve · halt · hook <event>
+  ui/            static feed.html served by the daemon (v0)
+fixtures/demo-project/   small TS service with tests; seeded .agile/ oracle + epic for the e2e run
+```
+
+Data flow (one ticket): EM (an ACP session with the EM brief and MCP tools) reads the board → calls `assign` → daemon creates worktree `tkt/<id>-<slug>` off `integration`, writes `.claude/settings.json` with the hook, spawns an engineer ACP session in `default` mode → engineer's tool calls hit (1) the `PreToolUse` hook → `agile hook pre-tool-use` → daemon socket: halt check, inbox drain, heartbeat, big-read redirect, budget; (2) ACP `request_permission` → daemon answers by role policy; (3) every `tool_call` is observed into the ledger/log → engineer writes board stanzas via MCP `board_post` → commit → daemon spawns reviewer session (different role brief, read-only policy) → verdict → QA session in a fresh clone → verdict → daemon merges ticket branch to `integration` → EM sees `done` on the board.
+
+Discovery path: engineer stanza `kind: discovery` → EM → architect session decides tier → halt file → hook blocks affected engineers at next tool call → `standup_report` stanzas → quorum → architect publishes `DEC-xxxx` through the write guard → ripple walk marks tickets `stale` → re-refine → delete halt → resume.
+
+External integrations: Claude Code via `@agentclientprotocol/claude-agent-acp`; git (worktrees, orphan branch, merges); the daemon's own MCP server (tools + board/oracle/bus verbs for agents); a unix socket for hooks/CLI and localhost HTTP+WS for the feed.
+
+## 6. Definition of Done
+
+Build: `bun install && bun run build` succeeds from a clean clone; `bun run typecheck` clean; `bun test` green with zero native modules.
+
+Tests: unit coverage for schemas, state store transitions (every ticket status edge), bus routing rules and body cap, ripple walk, halt quorum, gate resolution (sprint → epic → team → default), pointing rubric application, and hook decisions. One integration test (flagged) that spawns a real Claude ACP session and verifies the hook deny reason reaches the model.
+
+Run: in `fixtures/demo-project`, `agile init` creates `.agile/` on `agile-state`; `agile run --sprint` with `policy.yaml` delegating every gate to `em` completes one sprint layer of the seeded epic unattended: three tickets reach `done`, each with a review verdict, a QA verdict, ledger lines, and a merge into `integration`; the scripted discovery in ticket 2 produces a halt, standup reports, a new DEC, a stale→ready cycle, and a resume — all visible in `agile tail` and `events.jsonl`; the engineer's attempt to read the fixture's oversized file is denied by the hook with a reason that appears in the model's own output.
+
+Validation: `agile status` shows the sprint, tickets, agents, and spend; the feed page renders the same; `agile halt` stops all engineers at their next tool call and `agile resume` restarts them; killing an engineer process mid-ticket results in the ticket returning to `ready` with its worktree intact and a re-assignment.
+
+## 7. Task Backlog
+
+Priority encodes dependency layer as well as importance: P0 tickets are v0-blocking foundations, P1 complete v0, P2 are the first post-v0 layer. Depends-on is listed in Scope.
+
+### Ticket: T001 Monorepo scaffold
+- **Priority:** P0
+- **Status:** Todo
+- **Owner:** Unassigned
+- **Scope:** New repo `agile-agents` with Bun workspaces `packages/{shared,acp-client,daemon,cli,ui}`, shared tsconfig, biome or eslint+prettier, `bun test` wiring, `build`/`typecheck`/`test` scripts at root, CI workflow running all three. No functionality.
+- **Acceptance Criteria:** Clean clone builds and tests green; each package has an `index.ts` and a placeholder test; root scripts fan out to workspaces.
+- **Validation Steps:** `bun install && bun run build && bun run typecheck && bun test`
+- **Notes:**
+
+### Ticket: T002 Shared schemas
+- **Priority:** P0
+- **Status:** Todo
+- **Owner:** Unassigned
+- **Scope:** Depends on T001. zod schemas + inferred types in `packages/shared` for every entity in design §4–5: OracleEntry (DEC/SPEC header), KbFact, Ticket (incl. `paused`, `env`, `security`, routing/budget blocks), Stanza (incl. `handoff`), Halt (scope `global | team | [tickets]`, quorum), Sprint (team, gates block, retro), Policy (gates, owners incl. `human_timeout`, breaker signals), Vendors/accounts, Quota, Tool definition, LedgerLine, Message (kinds, priority, body cap), Event. Include ID formats (`DEC-0042`, `TKT-0231`, ULIDs) and a `validate` helper per entity.
+- **Acceptance Criteria:** Every example YAML/JSON block in the design doc parses; invalid status transitions and oversized message bodies are rejected; types are exported for daemon/cli/ui.
+- **Validation Steps:** `bun test packages/shared` includes fixtures copied verbatim from design §4–5.
+- **Notes:**
+
+### Ticket: T003 Extract ACP client from Terma
+- **Priority:** P0
+- **Status:** Todo
+- **Owner:** Unassigned
+- **Scope:** Depends on T001. Lift `src/main/terminal-host/acp-session.ts`, `acp-event-log.ts`, `src/shared/acp-types.ts`, `acp-providers.ts`, `agent-session-contract.ts`, `src/main/lib/terminal-host/acp-events.ts`, `acp-session-contract.ts` and `src/main/lib/control/messageable-acp-session.ts` from the read-only snapshot in `vendor/terma/` (see `vendor/README.md`) into `packages/acp-client`, removing Terma-specific naming and any Drizzle/Electron references; port their unit tests. Add `authenticate` handling (Cursor/Grok need it) and JSONL framing that splits on `\n` only. Provide one public API: `spawnSession({cmd, cwd, env, clientCapabilities}) → { prompt, cancel, load, setMode, on(event), respondPermission, close }`.
+- **Acceptance Criteria:** Package has no dependency on Terma or Electron; the spike harness `permission-matrix.ts` can be re-implemented on top of it in <100 lines and reproduces the Claude `default` perm table from `spike-findings.md`.
+- **Validation Steps:** `bun test packages/acp-client`; `AGILE_LIVE=1 bun test packages/acp-client --grep live` runs the Claude perm scenario end-to-end.
+- **Notes:** Terma keeps its copies until it is switched to consume this package (out of scope here). `vendor/terma/` is a snapshot, never a runtime import; the live spike harness is at `spike/permission-matrix.ts`.
+
+### Ticket: T004 Daemon skeleton and state bootstrap
+- **Priority:** P0
+- **Status:** Todo
+- **Owner:** Unassigned
+- **Scope:** Depends on T002. `agiled` process: config discovery, unix socket JSON-RPC (`bus.*`, `state.*`, `hook.*`, `gate.*` namespaces stubbed), localhost HTTP + WebSocket, PID/lock file (one daemon per repo), graceful shutdown. `agile init`: creates orphan branch `agile-state`, checks it out as a worktree at `.agile/`, writes default `policy.yaml`, `vendors.yaml`, empty indexes, and a `.gitignore` entry for `.worktrees/`.
+- **Acceptance Criteria:** `agile init` in a fresh git repo produces the §4 layout on the orphan branch; a second daemon start fails with a clear lock error; `curl localhost:<port>/health` returns daemon version and state root.
+- **Validation Steps:** Integration test creates a temp git repo, runs init, asserts branch + files; unit tests for lock and shutdown.
+- **Notes:**
+
+### Ticket: T005 State store and event log
+- **Priority:** P0
+- **Status:** Todo
+- **Owner:** Unassigned
+- **Scope:** Depends on T004. Validating read/write layer over `.agile/` for every entity: atomic file writes, ticket status transition table (only legal edges), `history` appends, index maintenance for oracle/KB, append-only `board/status/<ticket>.jsonl`, `ledger/<sprint>.jsonl`, `log/events.jsonl` with every state transition as an event. Commit-to-`agile-state` batching (one commit per logical operation, message = event kind).
+- **Acceptance Criteria:** Illegal transitions throw; every mutation produces exactly one event; state survives daemon restart; `git log` on `agile-state` reads as an audit trail.
+- **Validation Steps:** Property test over random legal transition sequences; restart test.
+- **Notes:**
+
+### Ticket: T006 Bus: inboxes, threads, registry, routing rules
+- **Priority:** P0
+- **Status:** Todo
+- **Owner:** Unassigned
+- **Scope:** Depends on T005. `bus.send/poll/ack/heartbeat` per design §5: ULID message files under `bus/inbox/<agent>/`, `threads/<ticket>/`, `agents/<agent>.yaml` registry with `last_seen`; routing rules (engineers never message engineers; who may send what to whom); body size cap enforced; `to: ticket:<id>` fan-out; `requires_ack` re-delivery one priority up after deadline; broadcast for `halt`/`resume`.
+- **Acceptance Criteria:** Disallowed routes are rejected with a reason; unacked urgent messages re-deliver; registry heartbeat timeout emits an `escalate` to `em` and returns the ticket to `ready`.
+- **Validation Steps:** Unit tests for each routing rule and the re-delivery ladder; a fake-clock test for heartbeat timeout.
+- **Notes:**
+
+### Ticket: T007 Oracle write guard, ripple walk, halts
+- **Priority:** P0
+- **Status:** Todo
+- **Owner:** Unassigned
+- **Scope:** Depends on T005. `oracle.write` endpoint accepting only `architect` with a decision ID: validates `supersedes/depends/affects` graph (no dangling refs, no cycles), flips superseded entries, appends `changelog.md`, drops inactive entries from `index.yaml`. Ripple walk: transitive `affects` ∩ `ticket.oracle_refs` → mark `stale`. Halts: create/delete `board/halts/H-*.yaml` with scope `global | team | [tickets]`, quorum tracking from `standup_report` stanzas, heartbeat-timeout release.
+- **Acceptance Criteria:** A DEC change with a two-hop `affects` chain stales exactly the intersecting tickets; a non-architect write is refused; a halt's `quorum` flips to `reached` when the last affected agent reports or times out.
+- **Validation Steps:** Graph fixtures with cycles/dangling refs; ripple and quorum unit tests.
+- **Notes:**
+
+### Ticket: T008 CLI `agile`
+- **Priority:** P0
+- **Status:** Todo
+- **Owner:** Unassigned
+- **Scope:** Depends on T004–T007. Thin client over the socket: `init`, `status` (sprint/tickets/agents/spend), `tail` (event log, follow, filters by ticket/agent/kind), `send`, `approve <hil-id>`, `delegate <hil-id>`, `halt [--scope]`, `resume`, `hook <event>` (stdin JSON in, JSON out — the single entrypoint vendor hook configs call). Human-readable and `--json` output.
+- **Acceptance Criteria:** Every daemon verb needed by the e2e run is reachable from the CLI; `agile hook pre-tool-use` round-trips a fake payload in <20 ms.
+- **Validation Steps:** CLI tests against an in-process daemon; timing test for the hook path.
+- **Notes:**
+
+### Ticket: T009 Claude hook gate
+- **Priority:** P0
+- **Status:** Todo
+- **Owner:** Unassigned
+- **Scope:** Depends on T008. Per-worktree `.claude/settings.json` generation with `PreToolUse`, `PostToolUse`, and `Stop` hooks calling `agile hook`. Pre-tool-use decision: deny with reason if a halt covers the agent's ticket; inject pending inbox as `additionalContext` (urgent → deny with the message as reason until acknowledged); heartbeat; deny raw `Read`/`Grep` over configurable size with "use read_summary"; deny when ticket budget exceeded; log every decision. Post-tool-use: truncate oversized tool results and record usage. Stop: drain low-priority inbox.
+- **Acceptance Criteria:** Live test: an engineer session under a global halt is blocked at its next tool call with the halt reason; a big read is denied and the model's output quotes the reason; an `answer` message appears in the model's context on the next tool call.
+- **Validation Steps:** `AGILE_LIVE=1 bun test packages/daemon --grep hook`; unit tests for the decision function with fixture payloads.
+- **Notes:** Claude's ACP reject carries no reason — all reasoned denials go through this hook.
+
+### Ticket: T010 ACP permission policy by role
+- **Priority:** P0
+- **Status:** Todo
+- **Owner:** Unassigned
+- **Scope:** Depends on T003, T005. Daemon answers `session/request_permission` per design §14: engineer (edits in worktree, repo scripts, package registries), reviewer (deny all writes/exec except read-only tools), QA (env only), never-without-human list (push outside ticket branch, force-push, branch delete, new dependencies, deny-listed commands). Requests outside policy become `hil_request` items with a deadline. Every decision logged with `allow_once` only (never `allow_always`).
+- **Acceptance Criteria:** Fixture permission requests resolve to the expected option per role; a `git push origin main` from an engineer produces a `hil_request`, not an allow.
+- **Validation Steps:** Table-driven unit tests over (role × request) pairs.
+- **Notes:**
+
+### Ticket: T011 Tool framework, MCP server, `read_summary`, `test_run`
+- **Priority:** P0
+- **Status:** Todo
+- **Owner:** Unassigned
+- **Scope:** Depends on T003, T005, T009. Load `.agile/tools/<name>/tool.yaml` (design §7); expose each tool over a daemon MCP server that every agent session is configured with; run `runner.tier` tools as short-lived cheap ACP sessions with the tool's prompt; cache by `[file_hash, question]` for the sprint; write a ledger line per invocation with `ledger_kind`. Ship `read_summary` (path, question → ≤400-token summary + line refs) and `test_run` (command → failing test names, assertion messages, relevant frames; never a green log). Also expose daemon verbs as MCP tools: `board_post`, `bus_send`, `ticket_get`, `oracle_get`, `kb_search`.
+- **Acceptance Criteria:** An engineer session can call `read_summary` and `test_run` via MCP; a second identical `read_summary` is a cache hit; `test_run` on the demo project's failing test returns under 500 tokens.
+- **Validation Steps:** Live test with the demo project; unit tests for registry loading and cache keys.
+- **Notes:**
+
+### Ticket: T012 Agent runner and worktree manager
+- **Priority:** P0
+- **Status:** Todo
+- **Owner:** Unassigned
+- **Scope:** Depends on T003, T006, T009–T011. Spawn a role session: create/reuse worktree `.worktrees/<TKT>` on `tkt/<id>-<slug>` off `integration`, write hook settings + MCP config, assemble the role brief (ticket YAML, oracle refs by ID, KB refs, rules, contract), start the ACP session in `default` mode, register in `bus/agents`, stream `usage_update` into the ledger, mark the session's `tool_call` events into the event log, handle exit/crash (ticket → `ready`, worktree preserved, `escalate` to em). Reviewer/QA sessions get their own worktree or clone per §12–13.
+- **Acceptance Criteria:** `spawn(engineer, TKT)` leaves a registered agent working in the right worktree with the hook active; `kill -9` on the process yields the recovery path within one heartbeat interval.
+- **Validation Steps:** Live test with a trivial ticket; crash test.
+- **Notes:**
+
+### Ticket: T013 Role briefs and ceremony templates
+- **Priority:** P0
+- **Status:** Todo
+- **Owner:** Unassigned
+- **Scope:** Depends on T002. Prompt templates in `packages/daemon/briefs/`: EM, architect, engineer, reviewer, QA, reader/tool runner; standup, refinement, sprint review, retro. Each brief states the role's contract, the available MCP verbs, the signal-over-volume rules, what to write to the board and when, and what it must never do. Rendered with the entity data from the state store. Kept short; enforcement is elsewhere.
+- **Acceptance Criteria:** Every brief renders against fixture data without missing fields; a snapshot test guards accidental bloat (token count per brief under a set ceiling).
+- **Validation Steps:** Snapshot tests; manual read-through.
+- **Notes:** Prompts will be tuned during T021; this ticket is the first draft plus the rendering plumbing.
+
+### Ticket: T014 Architect: refinement, pointing, discovery triage
+- **Priority:** P1
+- **Status:** Todo
+- **Owner:** Unassigned
+- **Scope:** Depends on T007, T012, T013. Architect session run in Claude `plan` mode for planning turns. Verbs: `ticket_create/refine` (contract, acceptance, `oracle_refs`, `env`), pointing via the four-question rubric writing `estimate` and `tier`, `discovery_triage` (local/scoped/global → halt), `decision_publish` (through the write guard, then ripple), re-refine `stale` tickets (unchanged → ready, split, refactor child on WIP commit). The `ExitPlanMode` permission request is routed to the `approve_plan` gate.
+- **Acceptance Criteria:** Given a seeded product doc and an epic description, the architect produces ≥3 valid tickets with contracts; a scripted discovery yields a halt, a DEC, exactly the right stale tickets, and re-refined replacements.
+- **Validation Steps:** Live test on the demo fixture; unit tests for rubric → tier mapping.
+- **Notes:**
+
+### Ticket: T015 EM: sprint layers, assignment, standup, sprint review
+- **Priority:** P1
+- **Status:** Todo
+- **Owner:** Unassigned
+- **Scope:** Depends on T006, T012, T013. EM session loop: compute the next sprint as the dependency frontier (cap configurable), write `sprints/S-*.yaml` with a recommended gates block, assign `ready` tickets (routing table is a single Claude entry in v0), read the board and post `decisions` stanzas, run the standup protocol on `discovery`/`halt`, run sprint review when the layer is done (delegated → merge `integration → main` and plan the next layer; `human` → `hil_request` and pre-plan), compute the retro block from the ledger.
+- **Acceptance Criteria:** With gates delegated, the EM drives the demo epic across two layers without a human; with `sprint_review: human`, it stops at the review with a `hil_request` and a pre-planned next layer.
+- **Validation Steps:** Live test both gate settings; unit tests for frontier computation and retro math.
+- **Notes:**
+
+### Ticket: T016 Review protocol
+- **Priority:** P1
+- **Status:** Todo
+- **Owner:** Unassigned
+- **Scope:** Depends on T010, T012, T013. Reviewer session per design §12: reads `diff_summary` + contract first; findings schema (severity, cited `RULE-*` or oracle ref, location); verdict `approve | request_changes | escalate`; no new findings on re-review that were visible before; second disagreement on one finding → `question` to architect. `.agile/rules/` loader. Security reviewer pass when `security: true` or tier ≥ hard. Verdicts bump `attempts` at the escalation gate (tier ladder in v0 is a no-op with one model, but the counter and events exist).
+- **Acceptance Criteria:** A seeded rule violation in the demo fixture produces a `request_changes` with the rule cited; a clean diff produces `approve` listing what was checked; a deadlock fixture routes to the architect.
+- **Validation Steps:** Live test with two prepared diffs; unit tests for the convergence rule.
+- **Notes:**
+
+### Ticket: T017 QA protocol
+- **Priority:** P1
+- **Status:** Todo
+- **Owner:** Unassigned
+- **Scope:** Depends on T010, T011, T012, T013. QA session per design §13: fresh clone of the ticket branch (`env: clone`; `compose` deferred), permission policy denying reads of `contract.inputs/outputs`, acceptance criteria executed via `test_run`/commands, one rerun on failure, `flaky` finding → KB, report one line per criterion, verdict `accept | reject`, reject → engineer with report as context and `attempts++`.
+- **Acceptance Criteria:** QA accepts a correct implementation, rejects one that fails a criterion with observed vs expected, and never reads an implementation file (asserted from the permission log).
+- **Validation Steps:** Live test on the demo fixture; assertion over the event log.
+- **Notes:**
+
+### Ticket: T018 Gates policy, HIL requests, circuit breaker
+- **Priority:** P1
+- **Status:** Todo
+- **Owner:** Unassigned
+- **Scope:** Depends on T005, T006. `policy.yaml` + per-sprint `gates:` resolution (sprint → epic → team → default), owners `human | em | architect | human_timeout: <d>`, `hil_request`/`hil_response` message kinds with deadlines, single-instance delegation, delegated approvals producing the same decision artifact + `fyi`, circuit breaker signals (global halt, budget %, integration red, ladder exhausted, deadlock, N denials) forcing gates to `human` until cleared. CLI `approve`/`delegate`/`breaker clear`.
+- **Acceptance Criteria:** Gate resolution table tests pass; a `human_timeout` gate falls through at the deadline; tripping a breaker flips a delegated gate to `human` and the next request says why.
+- **Validation Steps:** Fake-clock unit tests; CLI round-trip test.
+- **Notes:**
+
+### Ticket: T019 Merge and integration owner
+- **Priority:** P1
+- **Status:** Todo
+- **Owner:** Unassigned
+- **Scope:** Depends on T005, T012. On `done`: rebase `tkt/*` onto `integration`, run the repo's test script, merge, delete the worktree (keep if `stale`/abandoned). Conflicts → scoped halt to the ticket owner with the conflict summary. `integration → main` behind the `sprint_review` gate. Git pre-commit hook in every worktree refusing commits while a halt covers the ticket.
+- **Acceptance Criteria:** Two tickets touching the same file produce a scoped halt for the second; a clean merge lands on `integration` with tests run; commits are refused during a halt.
+- **Validation Steps:** Git fixture tests with prepared conflicts.
+- **Notes:**
+
+### Ticket: T020 Event feed page
+- **Priority:** P1
+- **Status:** Todo
+- **Owner:** Unassigned
+- **Scope:** Depends on T004, T005. Single static `feed.html` served by the daemon: WebSocket-tailed event log with filters (ticket, agent, kind), a sprint header (goal, done/in-flight/stale, halts), and the open `hil_request` list with approve/delegate buttons that call the daemon. No framework. This is the entire v0 UI beyond the CLI.
+- **Acceptance Criteria:** Page shows live events within 1 s; approve button resolves a real `hil_request`.
+- **Validation Steps:** Playwright test against a running daemon with synthetic events.
+- **Notes:**
+
+### Ticket: T021 Demo fixture and end-to-end sprint
+- **Priority:** P1
+- **Status:** Todo
+- **Owner:** Unassigned
+- **Scope:** Depends on T014–T020. `fixtures/demo-project`: small TS service with a test suite, a deliberately oversized file, one seeded rule violation opportunity, and a seeded `.agile/` (product.md, two SPECs, one DEC, an epic of three tickets where ticket 2's contract contains a planted contradiction that forces a discovery). `agile run` drives it per the Definition of Done. Tune role briefs until the run passes three times in a row.
+- **Acceptance Criteria:** Definition of Done "Run" section holds; a written run report with token spend per role is committed under `fixtures/demo-project/runs/`.
+- **Validation Steps:** `AGILE_LIVE=1 bun run e2e` three consecutive passes.
+- **Notes:** This is where prompts get real; expect several iterations on T013 briefs.
+
+### Ticket: T022 Pi adapter and `agile` extension
+- **Priority:** P2
+- **Status:** Todo
+- **Owner:** Unassigned
+- **Scope:** Depends on T009, T011, T012. Vendor entry for Pi via `pi-acp` (fork if needed); an `agile` Pi extension installed to `~/.pi/agent/extensions/` (self-guarding on a daemon-set env var) implementing `tool_call` gating with reasons, `tool_result` rewriting for `test_run`-class outputs, halt/inbox delivery, and heartbeat by calling the daemon socket; `quietStartup` handling. Routing table gains `(pi, account, model)` candidates for engineer and reviewer.
+- **Acceptance Criteria:** The demo epic completes with Pi engineers and a Claude reviewer; the perm matrix for Pi reproduces `spike-findings.md` §C4.
+- **Validation Steps:** Live e2e with `routing: engineer → pi`.
+- **Notes:**
+
+### Ticket: T023 Quota records, routing policy, barometer data
+- **Priority:** P2
+- **Status:** Todo
+- **Owner:** Unassigned
+- **Scope:** Depends on T005, T012. `Quota` entities per vendor account (reported vs ledger-countdown, 429 → cooldown), routing policy `(role, tier) → ordered candidates` with floor and cooldown checks, `quota_low`/`quota_exhausted` bus events, Pi-on-Claude billed as extra-usage dollars. Exposed via `agile status` and the feed header.
+- **Acceptance Criteria:** With a simulated exhausted Claude account, new assignments route to the next candidate; a 429 event sets cooldown and reroutes.
+- **Validation Steps:** Unit tests with synthetic quota feeds.
+- **Notes:**
+
+### Ticket: T024 Handoff and pause
+- **Priority:** P2
+- **Status:** Todo
+- **Owner:** Unassigned
+- **Scope:** Depends on T022, T023. Graceful handoff (`quota_low` → inject "write handoff stanza + commit WIP" → stop → reassign in the same worktree with thread + handoff as context), hard handoff (daemon-composed from diff + stanzas), `paused` status with `resume_at`, manual `cooldown_until` per account, ledger split across cells.
+- **Acceptance Criteria:** A ticket started on Claude finishes on Pi after a simulated `quota_low`, with the handoff stanza in the thread and both vendors in the ledger.
+- **Validation Steps:** Live e2e with an injected quota event.
+- **Notes:**
+
+### Ticket: T025 Control room v1
+- **Priority:** P2
+- **Status:** Todo
+- **Owner:** Unassigned
+- **Scope:** Depends on T018, T020, T023. React + Vite SPA in `packages/ui` served by the daemon: inbox-style "Needs you" list with detail-on-click, collapsible Team / Board / Feed panels, Oracle + KB viewer with propose-edit, sprint strip with gate chips, spend + barometer behind a top-bar icon, Halt button, EM chat panel over the ACP stream with steer → action-set cards.
+- **Acceptance Criteria:** Every read in the mockup (`design` artifact "Agile Agents Control Room") is backed by daemon data; every write goes through daemon verbs and appears in the event log.
+- **Validation Steps:** Playwright against a seeded daemon.
+- **Notes:** UX iteration after it's functioning, per design §17.
+
+### Ticket: T026 Tier-0 sandbox
+- **Priority:** P2
+- **Status:** Todo
+- **Owner:** Unassigned
+- **Scope:** Depends on T012. Per-worktree sandbox wrapper for agent processes: macOS `sandbox-exec` profile (read-only mounts for reviewer/QA, no network for engineers except allowlisted registries) with a container fallback; vendor logins must keep working inside it. Routing gains a `requires_sandbox` flag for vendors with ungated exec (Codex, Grok).
+- **Acceptance Criteria:** A reviewer session cannot write to its checkout; an engineer session cannot reach example.com; Claude and Pi sessions still authenticate inside the sandbox.
+- **Validation Steps:** Live tests per role.
+- **Notes:**
+
+### Ticket: T027 Cursor, Grok, Codex adapters
+- **Priority:** P2
+- **Status:** Todo
+- **Owner:** Unassigned
+- **Scope:** Depends on T010, T026. Vendor entries and per-vendor policy: Cursor (`authenticate`, exec-only ACP gating, `ask` mode for reviewers as a nudge), Grok (client-fs gate with reasons, `authenticate`), Codex via `codex-acp` (observation + sandbox only; `app-server` evaluated separately). Each reproduces its `spike-findings.md` row through the extracted client.
+- **Acceptance Criteria:** Perm matrices match the findings; a reviewer on Grok cannot write (client fs refusal + sandbox).
+- **Validation Steps:** Live perm runs per vendor.
+- **Notes:**
+
+## 8. Open Questions
+
+- **Name.** `agile` / `agiled` / `.agile/` are placeholders. Decide before T008 lands so the CLI name is stable.
+- **Where reviewer and QA sessions read from.** Reviewer via tools over the engineer's worktree vs. its own read-only worktree; QA is a fresh clone. The design leans worktree-via-tools for reviewers; T016 should confirm the permission policy makes that safe enough without tier 0.
+- **Claude `plan` mode for the architect.** Verified to surface "Approve Plan" as an ACP permission request; unverified whether plan mode's read-only restriction blocks the architect's own MCP verbs (`ticket_create` is a write from Claude's point of view). T014 must test this first and fall back to `default` mode with a daemon-side gate if needed.
+- **Ledger source of truth.** ACP `usage_update` exists for Claude; other adapters may not emit it. Fall back to ledger countdown per T023.
+- **Terma consumption.** When Terma switches to `packages/acp-client` (and later becomes a client of `agiled`) is Terma's call; not in this plan.
+- **Heartbeat interval, quorum timeout, body cap, cache TTL, quota floor.** Defaults in T005–T007/T011/T023, tuned from the T021 run reports.
+
+## 9. Discovered Issues Log
+
+> _New issues must be appended here with a timestamp and brief context._
