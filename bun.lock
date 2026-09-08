@@ -13,14 +13,23 @@
     "packages/acp-client": {
       "name": "@agile-agents/acp-client",
       "version": "0.0.0",
+      "dependencies": {
+        "@agile-agents/shared": "workspace:*",
+      },
     },
     "packages/cli": {
       "name": "@agile-agents/cli",
       "version": "0.0.0",
+      "dependencies": {
+        "@agile-agents/shared": "workspace:*",
+      },
     },
     "packages/daemon": {
       "name": "@agile-agents/daemon",
       "version": "0.0.0",
+      "dependencies": {
+        "@agile-agents/shared": "workspace:*",
+      },
     },
     "packages/shared": {
       "name": "@agile-agents/shared",
@@ -32,6 +41,9 @@
     "packages/ui": {
       "name": "@agile-agents/ui",
       "version": "0.0.0",
+      "dependencies": {
+        "@agile-agents/shared": "workspace:*",
+      },
     },
   },
   "packages": {
