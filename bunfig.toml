@@ -1,0 +1,6 @@
+[test]
+# vendor/ is a read-only Terma snapshot (input to T003, never run as part of this
+# repo's test suite) and spike/ is the standalone vendor spike harness with its
+# own reports — neither belongs to `bun test` for this monorepo. dist/ holds tsc
+# output, which must never be re-run as tests.
+pathIgnorePatterns = ["vendor/**", "spike/**", "**/dist/**"]

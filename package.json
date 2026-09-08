@@ -1,0 +1,18 @@
+{
+  "name": "agile-agents",
+  "private": true,
+  "version": "0.0.0",
+  "workspaces": ["packages/*"],
+  "scripts": {
+    "build": "bun run --filter '*' build",
+    "typecheck": "bun run --filter '*' typecheck",
+    "test": "bun test",
+    "test:integration": "echo 'test:integration: no vendor login in this environment; skipped' && exit 0",
+    "lint": "biome check ."
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^1.9.4",
+    "@types/bun": "^1.4.2",
+    "typescript": "^5.7.2"
+  }
+}
