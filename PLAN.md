@@ -80,12 +80,12 @@ Priority encodes dependency layer as well as importance: P0 tickets are v0-block
 
 ### Ticket: T002 Shared schemas
 - **Priority:** P0
-- **Status:** In Review
+- **Status:** Done
 - **Owner:** sonnet:worker-T002
 - **Scope:** Depends on T001. zod schemas + inferred types in `packages/shared` for every entity in design §4–5: OracleEntry (DEC/SPEC header), KbFact, Ticket (incl. `paused`, `env`, `security`, routing/budget blocks), Stanza (incl. `handoff`), Halt (scope `global | team | [tickets]`, quorum), Sprint (team, gates block, retro), Policy (gates, owners incl. `human_timeout`, breaker signals), Vendors/accounts, Quota, Tool definition, LedgerLine, Message (kinds, priority, body cap), Event. Include ID formats (`DEC-0042`, `TKT-0231`, ULIDs) and a `validate` helper per entity.
 - **Acceptance Criteria:** Every example YAML/JSON block in the design doc parses; invalid status transitions and oversized message bodies are rejected; types are exported for daemon/cli/ui.
 - **Validation Steps:** `bun test packages/shared` includes fixtures copied verbatim from design §4–5.
-- **Notes:** branch `T002-shared-schemas` (local worktree), 1 commit, worker self-review PASS; 13 DESIGN-GAP choices listed in the worktree review file (enum-illustration values in design blocks substituted with one legal value; Event has no design example; Tool.input/output typed as records). `yaml` devDependency added to shared for fixture loading. QA round 1: ACCEPT. Review round 1: FAIL — Message lacks `promote_to`/hil `kind`/`deadline`; kinds miss `fyi`, `quota_low`, `quota_exhausted`; no `agents/<agent>.yaml` registry schema; schemas are strip-mode not `.strict()`. Worker fixed all 4 (+7 nits) in `05806c1`; round 2 review + QA running.
+- **Notes:** branch `T002-shared-schemas` (local worktree), 1 commit, worker self-review PASS; 13 DESIGN-GAP choices listed in the worktree review file (enum-illustration values in design blocks substituted with one legal value; Event has no design example; Tool.input/output typed as records). `yaml` devDependency added to shared for fixture loading. QA round 1: ACCEPT. Review round 1: FAIL — Message lacks `promote_to`/hil `kind`/`deadline`; kinds miss `fyi`, `quota_low`, `quota_exhausted`; no `agents/<agent>.yaml` registry schema; schemas are strip-mode not `.strict()`. Worker fixed all 4 (+7 nits) in `05806c1`; round 2 review PASS, QA round 2 ACCEPT. merge: 6cf0c45.
 
 ### Ticket: T003 Extract ACP client from Terma
 - **Priority:** P0
@@ -98,8 +98,8 @@ Priority encodes dependency layer as well as importance: P0 tickets are v0-block
 
 ### Ticket: T004 Daemon skeleton and state bootstrap
 - **Priority:** P0
-- **Status:** Todo
-- **Owner:** Unassigned
+- **Status:** In Progress
+- **Owner:** sonnet:worker-T004
 - **Scope:** Depends on T002. `agiled` process: config discovery, unix socket JSON-RPC (`bus.*`, `state.*`, `hook.*`, `gate.*` namespaces stubbed), localhost HTTP + WebSocket, PID/lock file (one daemon per repo), graceful shutdown. `agile init`: creates orphan branch `agile-state`, checks it out as a worktree at `.agile/`, writes default `policy.yaml`, `vendors.yaml`, empty indexes, and a `.gitignore` entry for `.worktrees/`.
 - **Acceptance Criteria:** `agile init` in a fresh git repo produces the §4 layout on the orphan branch; a second daemon start fails with a clear lock error; `curl localhost:<port>/health` returns daemon version and state root.
 - **Validation Steps:** Integration test creates a temp git repo, runs init, asserts branch + files; unit tests for lock and shutdown.
@@ -179,8 +179,8 @@ Priority encodes dependency layer as well as importance: P0 tickets are v0-block
 
 ### Ticket: T013 Role briefs and ceremony templates
 - **Priority:** P0
-- **Status:** Todo
-- **Owner:** Unassigned
+- **Status:** In Progress
+- **Owner:** sonnet:worker-T013
 - **Scope:** Depends on T002. Prompt templates in `packages/daemon/briefs/`: EM, architect, engineer, reviewer, QA, reader/tool runner; standup, refinement, sprint review, retro. Each brief states the role's contract, the available MCP verbs, the signal-over-volume rules, what to write to the board and when, and what it must never do. Rendered with the entity data from the state store. Kept short; enforcement is elsewhere.
 - **Acceptance Criteria:** Every brief renders against fixture data without missing fields; a snapshot test guards accidental bloat (token count per brief under a set ceiling).
 - **Validation Steps:** Snapshot tests; manual read-through.
@@ -333,3 +333,4 @@ Priority encodes dependency layer as well as importance: P0 tickets are v0-block
 - 2026-09-08 — T002 review round 1 FAIL (design-fidelity gaps in Message; missing agent registry schema; strip-mode schemas). Decision: all shared schemas are `.strict()` by default so the daemon's store rejects unknown keys instead of silently dropping them.
 - 2026-09-08 — T003 review round 1 FAIL (five protocol/API blockers, see ticket Notes). Decision: `SpawnSessionOptions` gains `mcpServers` and initial `modeId` so T011/T014 need no package edits; concurrent prompts are rejected with a structured error rather than queued.
 - 2026-09-08 — Verified `bun test --grep` works in bun 1.3.11 as an alias for `-t`; the ticket Validation Steps and root `test:integration` may keep using it.
+- 2026-09-08 — T002 merged (6cf0c45). Unblocks T004 and T013; both launched.
