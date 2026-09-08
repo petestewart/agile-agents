@@ -7,3 +7,6 @@
  */
 
 export const PACKAGE_NAME = '@agile-agents/daemon';
+
+// Role briefs and ceremony templates (T013).
+export * from './briefs';
