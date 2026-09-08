@@ -11,5 +11,8 @@
   },
   "dependencies": {
     "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "yaml": "^2.7.0"
   }
 }

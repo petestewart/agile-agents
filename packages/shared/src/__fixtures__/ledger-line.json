@@ -1,0 +1,12 @@
+{
+  "_comment": "Verbatim from design/agile-agents-design.md §4 'Ledger', substituting `kind` (a pipe-separated enum illustration in the design) with one concrete legal value.",
+  "ts": "",
+  "sprint": "",
+  "ticket": "",
+  "agent": "",
+  "model": "",
+  "in_tokens": 0,
+  "out_tokens": 0,
+  "cost_usd": 0,
+  "kind": "engineer"
+}

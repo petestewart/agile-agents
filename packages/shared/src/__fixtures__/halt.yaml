@@ -1,0 +1,10 @@
+# Not a literal design-doc block — §4 "Halts" only describes the shape in
+# prose ("board/halts/<id>.yaml: scope: global | [TKT-...], reason,
+# raised_by, resolves_when: DEC-xxxx, quorum: pending | reached"). Constructed
+# directly from that description; `scope` here exercises the ticket-list form.
+id: H-12
+scope: [TKT-0231]
+reason: "Auth session model is ambiguous — JWT vs server-side"
+raised_by: architect
+resolves_when: DEC-0042
+quorum: pending

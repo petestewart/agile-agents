@@ -1,0 +1,17 @@
+# Verbatim from design/agile-agents-design.md §7 "Tool framework".
+name: read_summary
+kind: reader
+trigger:
+  hook: pre-tool-use
+  match: tool in [Read, cat] and (file.size > 30KB or files > 5)
+action: redirect          # redirect | deny | augment | require
+runner:
+  tier: trivial           # routed through the same quota-aware policy
+  max_output_tokens: 400
+input:  { path: string, question?: string }
+output: { summary: string, refs: [{path, lines}] }
+cache:
+  key: [file_hash, question]
+  ttl: sprint
+ledger_kind: reader
+promote_to_kb: optional   # summaries can be proposed as KB facts

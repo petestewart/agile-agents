@@ -1,0 +1,13 @@
+# Not a literal design-doc block — constructed to exercise the §15 "team"
+# field and the §16 sprint-level `gates` override on top of the §4 Sprint
+# shape.
+id: S-07
+goal: "Auth works end to end"
+tickets: [TKT-0230, TKT-0231]
+budget_tokens: 5000000
+started: 2026-09-01T00:00:00Z
+carried_over: []
+team: team-alpha
+gates:
+  approve_plan: human
+  sprint_review: human_timeout:4h
