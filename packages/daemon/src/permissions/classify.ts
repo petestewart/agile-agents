@@ -37,6 +37,13 @@
  * `locationsUsed`/`titleFallbackUsed` record which non-`rawInput` source
  * (if any) a decision's `targetPath`/`command`/`toolClass` came from, so a
  * decision log or report can tell them apart from a `rawInput`-derived one.
+ *
+ * `targetPaths` (round-4 review fix) carries *every* path that needs
+ * containment-checking — `locations` can list more than one, and a
+ * `[inside, outside]` pair must not read as "verified" just because the
+ * first entry passed. `targetPath` stays the single "primary" path (first
+ * of `targetPaths`, or the only one `rawInput`/`title` ever produce) for
+ * summaries and any caller that only needs one.
  */
 
 import { homedir } from 'node:os';
@@ -62,10 +69,12 @@ function firstString(...values: unknown[]): string | undefined {
   return undefined;
 }
 
-function firstLocationPath(locations: AcpLocation[] | undefined): string | undefined {
-  if (locations === undefined) return undefined;
-  const first = locations.find((l) => typeof l?.path === 'string' && l.path.length > 0);
-  return first?.path;
+/** Every valid path in `locations`, in order (round-4 review fix: a request can carry more than one, and every one of them needs containment-checking, not just the first). */
+function allLocationPaths(locations: AcpLocation[] | undefined): string[] {
+  if (locations === undefined) return [];
+  return locations
+    .filter((l): l is AcpLocation => typeof l?.path === 'string' && l.path.length > 0)
+    .map((l) => l.path);
 }
 
 const RUN_TITLE_RE = /^Run (.+)$/;
@@ -140,15 +149,23 @@ export function classifyPermissionRequest(params: AcpPermissionRequestParams): P
 
   let command = rawCommand;
   let targetPath = rawTargetPath;
+  // Every path that must be containment-checked, not just `targetPath`
+  // (the "primary"/first one, kept for summaries and back-compat callers).
+  // rawInput/title only ever produce one path; `locations` can carry
+  // several, and every one of them has to be verified (round-4 review fix
+  // — a request with an inside path first and an outside one second must
+  // not read as "the target" and stop looking).
+  let targetPaths: string[] | undefined = rawTargetPath !== undefined ? [rawTargetPath] : undefined;
   let locationsUsed = false;
   let titleFallbackUsed = false;
 
   // Fallback order: rawInput (above) > locations > title > kind-only.
   // Each tier is tried only when every higher-precedence source gave nothing.
   if (rawCommand === undefined && rawTargetPath === undefined) {
-    const locationPath = firstLocationPath(toolCall.locations);
-    if (locationPath !== undefined) {
-      targetPath = locationPath;
+    const locationPaths = allLocationPaths(toolCall.locations);
+    if (locationPaths.length > 0) {
+      targetPath = locationPaths[0];
+      targetPaths = locationPaths;
       locationsUsed = true;
     } else {
       const fallback = parseTitle(toolCall.title, toolClass);
@@ -157,6 +174,7 @@ export function classifyPermissionRequest(params: AcpPermissionRequestParams): P
         titleFallbackUsed = true;
       } else if (fallback.targetPath !== undefined) {
         targetPath = fallback.targetPath;
+        targetPaths = [fallback.targetPath];
         titleFallbackUsed = true;
       } else if (fallback.toolClass !== undefined) {
         toolClass = fallback.toolClass;
@@ -170,6 +188,7 @@ export function classifyPermissionRequest(params: AcpPermissionRequestParams): P
     title: toolCall.title,
     command,
     targetPath,
+    targetPaths,
     url,
     raw: params,
     locationsUsed,

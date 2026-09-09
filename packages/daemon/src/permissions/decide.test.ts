@@ -643,3 +643,67 @@ describe('decidePermission — locations (round 4, opus R3-2)', () => {
     expect(decision.kind).toBe('deny');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Round-5 review fix (opus R4-1): every location must be containment
+// checked, not just the first — a [inside, outside] pair used to allow.
+// ---------------------------------------------------------------------------
+describe('decidePermission — every location entry is checked (round 5, opus R4-1)', () => {
+  test('engineer: [inside, outside] locations denies (was: allowed, checking only the first)', () => {
+    const decision = decide(
+      'engineer',
+      request('edit', {
+        title: 'Edit file',
+        locations: [{ path: `${WORKTREE}/src/a.ts` }, { path: '/etc/passwd' }],
+      }),
+    );
+    expect(decision.kind).toBe('deny');
+  });
+
+  test('engineer: [outside, inside] (outside first) also denies', () => {
+    const decision = decide(
+      'engineer',
+      request('edit', {
+        title: 'Edit file',
+        locations: [{ path: '/etc/passwd' }, { path: `${WORKTREE}/src/a.ts` }],
+      }),
+    );
+    expect(decision.kind).toBe('deny');
+  });
+
+  test('engineer: every location inside the worktree still allows', () => {
+    const decision = decide(
+      'engineer',
+      request('edit', {
+        title: 'Edit file',
+        locations: [{ path: `${WORKTREE}/src/a.ts` }, { path: `${WORKTREE}/src/b.ts` }],
+      }),
+    );
+    expect(decision.kind).toBe('allow');
+  });
+
+  test('engineer: a second location under .agile/ hils even when the first is a normal in-worktree file', () => {
+    const decision = decide(
+      'engineer',
+      request('edit', {
+        title: 'Edit file',
+        locations: [
+          { path: `${WORKTREE}/src/a.ts` },
+          { path: `${WORKTREE}/.agile/tickets/TKT-0001.yaml` },
+        ],
+      }),
+    );
+    expect(decision.kind).toBe('hil');
+  });
+
+  test('engineer: a second location that is a manifest file hils even when the first is a normal file', () => {
+    const decision = decide(
+      'engineer',
+      request('edit', {
+        title: 'Edit file',
+        locations: [{ path: `${WORKTREE}/src/a.ts` }, { path: `${WORKTREE}/package.json` }],
+      }),
+    );
+    expect(decision.kind).toBe('hil');
+  });
+});

@@ -81,6 +81,18 @@ export function isPackageRegistryUrl(url: string | undefined): boolean {
   );
 }
 
+/**
+ * Every path a request needs containment-checked (round-4 review fix:
+ * `classified.targetPath` alone is only the first of `toolCall.locations`
+ * — a `[inside, outside]` pair must not pass just because the first entry
+ * does). Falls back to `[targetPath]` for `rawInput`/title-derived
+ * requests, which only ever carry one.
+ */
+function allTargetPaths(classified: PermissionRequest): string[] {
+  if (classified.targetPaths !== undefined) return classified.targetPaths;
+  return classified.targetPath !== undefined ? [classified.targetPath] : [];
+}
+
 /** The never-without-human verdict for one already-parsed atom, or `undefined` if this atom doesn't match any named category. */
 function neverWithoutHumanForAtom(
   atom: cmd.CommandAtom,
@@ -155,13 +167,19 @@ export function checkNeverWithoutHuman(
   classified: PermissionRequest,
   ctx: PolicyContext,
 ): PolicyVerdict | undefined {
-  if (classified.toolClass === 'edit' && cmd.touchesAgileState(classified.targetPath)) {
-    return hil('direct writes to .agile/ are never automatic — file a hil_request');
-  }
-  if (classified.toolClass === 'edit' && cmd.isManifestPath(classified.targetPath)) {
-    return hil(
-      'editing a dependency manifest/lockfile is never automatic — file a discovery/hil_request',
-    );
+  if (classified.toolClass === 'edit') {
+    // Every location, not just the first (round-4 review fix — see
+    // `allTargetPaths`): a `[safe.txt, .agile/tickets/x.yaml]` pair must
+    // still hit these gates.
+    const paths = allTargetPaths(classified);
+    if (paths.some((p) => cmd.touchesAgileState(p))) {
+      return hil('direct writes to .agile/ are never automatic — file a hil_request');
+    }
+    if (paths.some((p) => cmd.isManifestPath(p))) {
+      return hil(
+        'editing a dependency manifest/lockfile is never automatic — file a discovery/hil_request',
+      );
+    }
   }
 
   if (classified.toolClass === 'execute' && classified.command !== undefined) {
@@ -226,15 +244,19 @@ function engineerVerdict(classified: PermissionRequest, ctx: PolicyContext): Pol
       // "own worktree; state via daemon" (§14) — reads are never gated by
       // ACP anyway (spike-findings §A), but answer consistently if asked.
       return ALLOW;
-    case 'edit':
-      if (classified.targetPath === undefined) {
+    case 'edit': {
+      // Every path must resolve inside the worktree (round-4 review fix,
+      // R4-1): a request with an inside path first and an outside one
+      // second must not read as "verified" once the first one passes.
+      const paths = allTargetPaths(classified);
+      if (paths.length === 0) {
         return deny(
           'cannot verify the edit target is inside the worktree — use read_summary/report the path',
         );
       }
-      return isPathInside(classified.targetPath, ctx.worktreePath)
-        ? ALLOW
-        : deny(`edit target ${classified.targetPath} is outside the worktree`);
+      const outside = paths.find((p) => !isPathInside(p, ctx.worktreePath));
+      return outside === undefined ? ALLOW : deny(`edit target ${outside} is outside the worktree`);
+    }
     case 'execute':
       if (classified.command === undefined) {
         // DESIGN-GAP (manager decision, overriding the reviewer's

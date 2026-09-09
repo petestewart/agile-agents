@@ -98,8 +98,10 @@ export interface PermissionRequest {
   title?: string;
   /** `rawInput.command` for `execute` tool calls. */
   command?: string;
-  /** `rawInput.file_path` / `rawInput.path` for `read`/`edit` tool calls. */
+  /** `rawInput.file_path` / `rawInput.path` for `read`/`edit` tool calls — the primary/first path when there's more than one (see `targetPaths`). */
   targetPath?: string;
+  /** Every path that must be containment-checked (round-4 review fix: `toolCall.locations` can carry more than one, and a `[inside, outside]` pair must not pass just because the first entry does). `rawInput`/`title` only ever produce one, so this is `[targetPath]` in that case; `undefined` alongside `targetPath === undefined`. */
+  targetPaths?: string[];
   /** `rawInput.url` for `fetch` tool calls. */
   url?: string;
   /** True when `targetPath` came from `toolCall.locations[0].path` (`rawInput` had neither a command nor a path) — see `classify.ts`'s file header for the fallback order. */

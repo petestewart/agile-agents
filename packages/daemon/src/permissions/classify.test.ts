@@ -268,4 +268,28 @@ describe('classifyPermissionRequest — locations (round 3)', () => {
     expect(classified.locationsUsed).toBe(false);
     expect(classified.titleFallbackUsed).toBe(true);
   });
+
+  test('round 4 (R4-1): every location is exposed via targetPaths, not just the first', () => {
+    const classified = classifyPermissionRequest(
+      paramsWith({
+        kind: 'edit',
+        rawInput: {},
+        locations: [{ path: '/work/.worktrees/TKT-0001-x/src/a.ts' }, { path: '/etc/passwd' }],
+      }),
+    );
+    expect(classified.targetPath).toBe('/work/.worktrees/TKT-0001-x/src/a.ts');
+    expect(classified.targetPaths).toEqual(['/work/.worktrees/TKT-0001-x/src/a.ts', '/etc/passwd']);
+    expect(classified.locationsUsed).toBe(true);
+  });
+
+  test('rawInput/title-derived targetPath is also exposed as a one-element targetPaths', () => {
+    expect(
+      classifyPermissionRequest(paramsWith({ kind: 'edit', rawInput: { file_path: '/a/b.ts' } }))
+        .targetPaths,
+    ).toEqual(['/a/b.ts']);
+    expect(
+      classifyPermissionRequest(paramsWith({ kind: 'edit', title: 'Edit small.txt', rawInput: {} }))
+        .targetPaths,
+    ).toEqual(['small.txt']);
+  });
 });
