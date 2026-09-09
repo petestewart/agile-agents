@@ -328,7 +328,7 @@ Priority encodes dependency layer as well as importance: P0 tickets are v0-block
 - **Scope:** Depends on T010. `npm test 2>&1`, `cmd 2>/dev/null`, `cmd >/dev/null` from an engineer currently deny (fail-safe over-deny). Treat redirects to `/dev/null`, `&1`, `&2` as non-writes; keep every file-target redirect gated as today. Table tests.
 - **Acceptance Criteria:** The listed forms allow for the engineer; reviewer/QA still deny all redirects; every T010 adversarial test still passes.
 - **Validation Steps:** `bun test packages/daemon/src/permissions`.
-- **Notes:** Deferred from T010 review round 3 (R3-3). Branch `T029-benign-redirects` (`0e12206`), 865 tests green; gates running.
+- **Notes:** Deferred from T010 review round 3 (R3-3). Branch `T029-benign-redirects` (`0e12206`), 865 tests green; review round 1 PASS (~65 adversarial spellings; note `cmd 2>&1 | grep x` still denies because `grep` isn't on the engineer exec allow-list — design-correct). QA running.
 
 ## 8. Open Questions
 
