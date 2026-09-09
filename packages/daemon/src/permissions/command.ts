@@ -504,40 +504,106 @@ export function isManifestPath(path: string | undefined): boolean {
  */
 const REDIRECTION_TOKEN_RE = /^(\d+|&)?(>>?|<>|>\|)/;
 
+/**
+ * A bare input redirect (`[n]<word` — one `<`, not `<>`) is deliberately
+ * **not** matched by `REDIRECTION_TOKEN_RE`: it opens `word` for reading,
+ * not writing (T029 — `sed 's/x/y/' < in.txt` reads `in.txt`). It's left as
+ * an ordinary token, which is correct for every role: the engineer's
+ * repo-script/git allow-list and the reviewer/QA safe-tool checks below
+ * don't special-case it and don't need to — it never resolves to a target
+ * needing worktree containment or a write-primitive deny.
+ */
+
 /** `tee`, a redirection operator token (any form `REDIRECTION_TOKEN_RE` matches, as its own token or fused onto the target), or a `<(...)` process substitution. */
 export function hasRedirectionOrTee(tokens: string[]): boolean {
   if (tokens.includes('tee')) return true;
   return tokens.some((t) => REDIRECTION_TOKEN_RE.test(t) || t.startsWith('<('));
 }
 
-const FD_DUP_RE = /^&\d+$/;
+/** `&1`, `&2`, … (fd duplication, `2>&1`) or `&-` (fd close, `2>&-`) — no real file, just a stream operation. */
+const FD_DUP_RE = /^&(\d+|-)$/;
 
 /**
- * Every redirection's target in `tokens` — there can be more than one
- * (`cmd > a.txt 2> b.txt`, round-2 "newly visible" finding: the round-1
- * version only checked the first) — whether fused onto the operator
- * (`>out.txt`, `1>/etc/x`) or given as the following token. A bare
- * fd-duplication target (`2>&1` — no real file, just a stream merge) is
- * skipped: there is nothing on disk to contain.
+ * True when a redirection's target is not a real file on disk: `/dev/null`
+ * (discarded, nothing written) or a bare fd form (`&1`/`&2`/… duplication,
+ * `&-` close). These are non-writes — T029: `npm test 2>&1`, `cmd
+ * 2>/dev/null`, `cmd >/dev/null`, and `cmd &>/dev/null` don't touch the
+ * filesystem, so no role needs to gate them as writes. Every other target
+ * (a real path, or a redirection with no target at all — see
+ * `hasUnresolvedRedirection`) is still gated exactly as before.
  */
-export function redirectionTargets(tokens: string[]): string[] {
-  const targets: string[] = [];
+export function isBenignRedirectTarget(target: string | undefined): boolean {
+  if (target === undefined) return false;
+  return target === '/dev/null' || FD_DUP_RE.test(target);
+}
+
+interface RedirectionOccurrence {
+  /** The resolved target text (fused or following-token), or `undefined` if the operator has nothing after it (unresolvable). */
+  target: string | undefined;
+}
+
+/** Every redirection operator occurrence in `tokens`, fused (`>out.txt`, `1>/etc/x`) or as a following token, with its resolved target (if any). Does not include `tee` or `<(...)` process substitution — those have no operator/target shape and are checked separately. */
+function redirectionOccurrences(tokens: string[]): RedirectionOccurrence[] {
+  const occurrences: RedirectionOccurrence[] = [];
   for (let i = 0; i < tokens.length; i++) {
     const t = tokens[i] ?? '';
     const m = REDIRECTION_TOKEN_RE.exec(t);
     if (!m) continue;
     const rest = t.slice(m[0].length);
-    if (rest.length > 0) {
-      if (!FD_DUP_RE.test(rest)) targets.push(rest);
-      continue;
-    }
-    const next = tokens[i + 1];
-    if (next !== undefined && !FD_DUP_RE.test(next)) targets.push(next);
+    occurrences.push({ target: rest.length > 0 ? rest : tokens[i + 1] });
+  }
+  return occurrences;
+}
+
+/**
+ * True if any redirection operator in `tokens` has nothing usable after it
+ * (nothing fused, no following token) — unresolvable, so it's never treated
+ * as benign even if it happens to look like a stream op.
+ */
+export function hasUnresolvedRedirection(tokens: string[]): boolean {
+  return redirectionOccurrences(tokens).some((o) => o.target === undefined);
+}
+
+/**
+ * Every redirection's **non-benign** target in `tokens` — there can be more
+ * than one (`cmd > a.txt 2> b.txt`, round-2 "newly visible" finding: the
+ * round-1 version only checked the first) — whether fused onto the operator
+ * (`>out.txt`, `1>/etc/x`) or given as the following token. Benign targets
+ * (`/dev/null`, fd-dup/close — see `isBenignRedirectTarget`) are excluded:
+ * there is nothing on disk to contain. An unresolved operator (no target at
+ * all) contributes nothing here — see `hasUnresolvedRedirection`, which
+ * callers must check separately so "no non-benign targets" isn't confused
+ * with "no redirection to worry about".
+ */
+export function redirectionTargets(tokens: string[]): string[] {
+  const targets: string[] = [];
+  for (const occ of redirectionOccurrences(tokens)) {
+    if (occ.target !== undefined && !isBenignRedirectTarget(occ.target)) targets.push(occ.target);
   }
   return targets;
 }
 
-/** The first redirection target, if any — see `redirectionTargets` for the full (possibly multi-target) picture. */
+/** The first non-benign redirection target, if any — see `redirectionTargets` for the full (possibly multi-target) picture. */
 export function redirectionTarget(tokens: string[]): string | undefined {
   return redirectionTargets(tokens)[0];
+}
+
+/**
+ * True if `tokens` contain `tee`, a `<(...)` process substitution, an
+ * unresolvable redirection, or a redirection whose target is a real file
+ * (not `/dev/null`/fd-dup/fd-close) — i.e. something that actually writes,
+ * or can't be proven not to. Benign redirects (`2>&1`, `>/dev/null`,
+ * `&>/dev/null`, `2>&-`) are excluded (T029): they're not write primitives,
+ * so reviewer/QA don't need to deny them and the engineer doesn't need a
+ * worktree-containment check for them. Use this wherever the old
+ * `hasRedirectionOrTee` gated a *write*; `hasRedirectionOrTee` itself is
+ * kept for the narrower "does this touch redirection syntax at all" case
+ * (currently just the engineer's entry check, which still falls through to
+ * classify the underlying command either way).
+ */
+export function hasWritingRedirectionOrTee(tokens: string[]): boolean {
+  if (tokens.includes('tee')) return true;
+  if (tokens.some((t) => t.startsWith('<('))) return true;
+  if (hasUnresolvedRedirection(tokens)) return true;
+  return redirectionTargets(tokens).length > 0;
 }

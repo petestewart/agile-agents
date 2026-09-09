@@ -205,21 +205,29 @@ export function checkNeverWithoutHuman(
 function engineerExecuteVerdict(command: string, ctx: PolicyContext): PolicyVerdict {
   for (const atom of cmd.parseCommandIntoAtoms(command)) {
     if (cmd.hasRedirectionOrTee(atom.tokens)) {
-      // Every redirection target must resolve inside the worktree (review
-      // round 2: a single `>` used to be the only spelling checked — `1>`,
-      // `2>`, `&>`, and a second `>` later in the same atom all slipped
-      // through). `tee` and an unresolvable target (fd-dup forms, `<(...)`)
-      // have no path to verify, so they deny outright rather than guess.
-      const targets = cmd.redirectionTargets(atom.tokens);
+      // Every *non-benign* redirection target must resolve inside the
+      // worktree (review round 2: a single `>` used to be the only spelling
+      // checked — `1>`, `2>`, `&>`, and a second `>` later in the same atom
+      // all slipped through). `tee`, an unresolvable target, and a process
+      // substitution (`<(...)`) have no path to verify, so they deny
+      // outright rather than guess. Benign targets (`/dev/null`, fd-dup
+      // `&1`/`&2`, fd-close `&-`) are not writes and need no containment
+      // check at all (T029: `npm test 2>&1`, `cmd 2>/dev/null`,
+      // `cmd >/dev/null` no longer over-deny here).
       const hasTee = atom.tokens.includes('tee');
+      const hasProcessSub = atom.tokens.some((t) => t.startsWith('<('));
+      const unresolved = cmd.hasUnresolvedRedirection(atom.tokens);
+      const targets = cmd.redirectionTargets(atom.tokens);
       if (
         hasTee ||
-        targets.length === 0 ||
+        hasProcessSub ||
+        unresolved ||
         targets.some((t) => !isPathInside(t, ctx.worktreePath))
       ) {
         return deny('redirected output escapes the worktree (or uses tee/process substitution)');
       }
-      // Every redirection target is inside the worktree — fall through and still
+      // Every non-benign redirection target is inside the worktree (or
+      // every redirection here was benign) — fall through and still
       // classify the underlying command below. A safe redirect target does
       // not by itself make the command it's attached to allowed (e.g.
       // `rm -rf secret > <worktree>/out.log` must still be denied for not
@@ -320,7 +328,11 @@ function isReviewerSafeTool(tokens: string[]): boolean {
 
 function reviewerExecuteVerdict(command: string): PolicyVerdict {
   for (const atom of cmd.parseCommandIntoAtoms(command)) {
-    if (cmd.hasRedirectionOrTee(atom.tokens)) {
+    // Benign redirects (`/dev/null`, fd-dup/close) write nothing, so
+    // `git diff 2>/dev/null` is a read like any other `git diff` (T029);
+    // tee, process substitution, an unresolved target, or a real-file
+    // target are still denied as write primitives.
+    if (cmd.hasWritingRedirectionOrTee(atom.tokens)) {
       return deny('reviewer role denies exec with redirection/tee — those are write primitives');
     }
     const args = cmd.gitArgs(atom.tokens);
@@ -360,9 +372,10 @@ function qaExecuteVerdict(command: string): PolicyVerdict {
   // "anything in the env" (§14) — exec is bounded by the QA env itself (a
   // throwaway clone/container, §13), not by a path check here. Redirection
   // and tee are still write primitives regardless of role (opus blocking
-  // finding 2 names reviewer/QA together).
+  // finding 2 names reviewer/QA together) — except benign forms
+  // (`/dev/null`, fd-dup/close), which write nothing (T029).
   for (const atom of cmd.parseCommandIntoAtoms(command)) {
-    if (cmd.hasRedirectionOrTee(atom.tokens)) {
+    if (cmd.hasWritingRedirectionOrTee(atom.tokens)) {
       return deny('QA role denies exec with redirection/tee — those are write primitives');
     }
   }
