@@ -10,6 +10,8 @@
 
 import type { Event, Halt, HilRequest, Sprint, Ticket } from '@agile-agents/shared';
 import type { GateService } from '../gates';
+import { quotaFraction } from '../quota/records';
+import type { QuotaService } from '../quota/records';
 import type { StateStore } from '../store';
 
 /** Default cap on how many recent events a snapshot carries (ticket: "last N (e.g. 200)"). */
@@ -42,12 +44,29 @@ export interface FeedSprintInfo {
   tickets: TicketsSummary;
 }
 
+/**
+ * T023 addition: §17 "Human UI" → "Sprint strip": "the vendor barometer —
+ * per-vendor gauge, resets-in, confidence dot"; §4 "Quota" for the fields
+ * themselves. Additive — `buildSnapshot`'s new `quota` parameter is
+ * optional, so every pre-T023 caller still gets a valid `FeedSnapshot`
+ * (with an empty `quota` array) unchanged.
+ */
+export interface FeedQuotaInfo {
+  vendor: string;
+  account: string;
+  remaining_fraction: number;
+  cooldown_until: string | null;
+  confidence: 'reported' | 'estimated' | 'low';
+  spend_usd?: number;
+}
+
 export interface FeedSnapshot {
   type: 'snapshot';
   events: Event[];
   sprint: FeedSprintInfo;
   halts: Halt[];
   hil: HilRequest[];
+  quota: FeedQuotaInfo[];
 }
 
 function summarizeTickets(tickets: Ticket[]): TicketsSummary {
@@ -82,6 +101,8 @@ export function buildSnapshot(
   store: StateStore,
   gates: GateService,
   eventLimit: number = DEFAULT_SNAPSHOT_EVENT_LIMIT,
+  /** T023: optional so every existing call site (no `QuotaService` wired yet) keeps building a valid snapshot with an empty `quota` array. */
+  quota?: QuotaService,
 ): FeedSnapshot {
   const events = store.listEvents().slice(-eventLimit);
   const tickets = store.listTickets();
@@ -90,6 +111,14 @@ export function buildSnapshot(
   // "the open hil_request list" (T020 scope) — resolved requests are history,
   // not attention-queue items, so the snapshot only ships pending ones.
   const hil = gates.list().filter((request) => request.status === 'pending');
+  const quotaInfo: FeedQuotaInfo[] = (quota?.list() ?? []).map((q) => ({
+    vendor: q.vendor,
+    account: q.account,
+    remaining_fraction: quotaFraction(q),
+    cooldown_until: q.cooldown_until,
+    confidence: q.confidence,
+    spend_usd: q.spend_usd,
+  }));
 
   return {
     type: 'snapshot',
@@ -97,5 +126,6 @@ export function buildSnapshot(
     sprint: { sprint, tickets: summarizeTickets(tickets) },
     halts,
     hil,
+    quota: quotaInfo,
   };
 }
