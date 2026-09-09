@@ -31,7 +31,7 @@
  */
 
 import { appendFileSync, existsSync, lstatSync, readFileSync, readlinkSync } from 'node:fs';
-import { dirname, isAbsolute, join, normalize, relative, resolve, sep } from 'node:path';
+import { dirname, isAbsolute, join, normalize, parse, relative, resolve, sep } from 'node:path';
 import {
   type AgentId,
   type AgentRecord,
@@ -338,90 +338,104 @@ export class StateStore {
 
   /**
    * T032 follow-up to the lexical guard above: `resolve()` never touches the
-   * filesystem, so it stops `..` traversal but not a symlink planted
-   * *inside* the state root that points outside it (e.g.
-   * `.agile/tickets/evil -> /etc`) — the lexical path still reads as
-   * contained, and then the real fs call (read/write/unlink) follows the
-   * link off the state root.
+   * filesystem, so it stops `..` traversal in *caller-supplied* segments but
+   * not a symlink planted *inside* the state root that points outside it —
+   * the lexical path still reads as contained, and then the real fs call
+   * (read/write/unlink) follows the link off the state root. Three review
+   * rounds progressively closed this (see `.pipeline-review.md` for the
+   * full history — dangling targets, then a leaf link's escaping *ancestor*
+   * directory, both needed `lstatSync`, not `existsSync`/a single
+   * multi-component resolve); this version additionally never lexically
+   * `normalize()`s a symlink's own target text, for the reason below.
    *
-   * Round 1 review (opus) found the first version of this guard (walk up
-   * to the nearest *existing* ancestor via `existsSync`, then `realpathSync`
-   * that) missed a **dangling** symlink: `existsSync` follows symlinks and
-   * reports `false` for one whose target doesn't exist yet, so the walk
-   * skipped straight past it to its legitimate parent and let the write
-   * through — `appendJsonlLine`/`appendFileSync`-style creates then follow
-   * the link and land outside the root with no error. Fixed by switching to
-   * `lstatSync` (reports a symlink as a symlink whether or not its target
-   * exists) walked component by component.
+   * Round 3 review (opus) found that computing a hop's target via
+   * `normalize(rawTarget)` collapses `..` *before* the containment check
+   * and before the target is decomposed into components to walk — so
+   * `.agile/esc -> <outside>/sub` plus a leaf `-> "<stateRoot>/esc/../pwned.jsonl"`
+   * normalizes straight to `<stateRoot>/pwned.jsonl` (lexically fine) and
+   * the `esc` segment — the actual escaping symlink — is never `lstat`ed at
+   * all, because `normalize` already erased it before the walk began. The
+   * kernel does not resolve paths this way: it resolves `esc` *first*
+   * (following the link to `<outside>/sub`) and only then applies `..`,
+   * landing in `<outside>`, not back inside the root.
    *
-   * Round 2 review (opus) found that first `lstatSync`-based version still
-   * had a hole: after following a hop to `nextTarget`, it resumed the walk
-   * by calling `lstatSync(nextTarget)` directly — but `lstat` only refuses
-   * to follow the *final* path component; the kernel still resolves every
-   * *intermediate* one. So a leaf symlink whose target is lexically inside
-   * the root (passes the containment check) but whose *parent directory* is
-   * itself a symlink escaping the root was waved through: e.g.
-   * `.agile/inner -> /tmp/victim` (an escaping directory link) plus
-   * `.agile/log/events.jsonl -> .agile/inner/pwned.jsonl` (a leaf link whose
-   * target string never leaves `.agile/` lexically) together land a write
-   * at `/tmp/victim/pwned.jsonl` with no throw.
+   * Fixed by never handing a symlink's raw `readlinkSync` output to
+   * `normalize()`/`relative()`: `walkSegments` takes each `/`-separated raw
+   * segment in order and threads `current` through them itself — a plain
+   * segment is `join`ed on and passed to `resolveComponentSymlink` (which
+   * may hop it elsewhere, checking containment immediately, before any
+   * later segment is even looked at); a `..` segment pops one component off
+   * `current` **as currently resolved** (i.e. after any symlink hop already
+   * applied to it), exactly mirroring kernel resolution order, never a bulk
+   * textual collapse; `.` and empty segments (a leading/trailing/doubled
+   * separator) are skipped. An escaping directory link is therefore refused
+   * the moment `resolveComponentSymlink` reaches it, before any trailing
+   * `..` in the same target string could lexically "cancel" it back to
+   * looking contained. `resolveComponentSymlink` uses this same walk for a
+   * hop's target (absolute targets walk from the filesystem root; relative
+   * targets walk from the symlink's own — already resolved — directory), so
+   * the fix applies uniformly to both forms and to arbitrarily nested
+   * chains. The shared `budget` still bounds the total hop count
+   * (`MAX_SYMLINK_HOPS`) so a cycle or a long chain terminates rather than
+   * looping.
    *
-   * Fixed by never resuming the walk on a multi-component path without
-   * re-decomposing it: `resolvePathSafely` always walks a target's path one
-   * component at a time from `root`, and `resolveComponentSymlink` — when a
-   * component turns out to be a symlink — recurses back into
-   * `resolvePathSafely` on the hop's target rather than `lstatSync`-ing it
-   * directly. That re-walk re-checks every ancestor of the new target (not
-   * just its leaf), and if that ancestor walk itself hits another symlink,
-   * the same recursion handles it, however deep the chain. A shared `budget`
-   * counts every hop across the whole recursion so a link cycle (or any
-   * chain, however constructed) still terminates (`MAX_SYMLINK_HOPS`, loosely
-   * modelled on Linux's `MAXSYMLINKS`) rather than looping forever.
-   *
-   * TOCTOU residual (round 2 B2, documented per review, not closed): this
-   * guard runs once, synchronously, inside `abs()` — it holds no file
-   * descriptor and re-checks nothing at the actual `readFileSync`/
-   * `appendFileSync`/`writeFileSync`/`unlinkSync` call site a moment later,
-   * every one of which follows symlinks itself. A component swapped for a
-   * symlink *after* this check returns and *before* that syscall lands would
-   * still escape. Closing that race for real would mean opening every write
-   * target with `O_NOFOLLOW` (`fs.openSync(path, os.constants.O_NOFOLLOW |
-   * ...)`) or moving to an fd-relative (`openat`-style) store, which doesn't
-   * fit the current atomic-rename write helpers (`fs.ts`'s
-   * `writeYamlFileAtomic`/`atomicWriteFile` write a temp file then `rename`
-   * it over the target — the target itself is never opened for write) without
-   * a broader rework. Accepted as out of scope for this ticket: the
-   * prerequisite is a second, concurrent, in-process-or-sibling actor able to
-   * write inside `.agile/` at the exact instant between this check and the
-   * next fs call — i.e. the same "a local writer already has a foothold
-   * inside the state root" threat model this whole guard exists for, not a
-   * new one. A future ticket that wants the race closed should look at
-   * `fs.ts`'s write helpers first.
+   * TOCTOU residual (documented, not closed — round 2 B2): this guard runs
+   * once, synchronously, inside `abs()`; it holds no file descriptor and
+   * re-checks nothing at the actual `readFileSync`/`appendFileSync`/
+   * `writeFileSync`/`unlinkSync` call site a moment later, every one of
+   * which follows symlinks itself. A component swapped for a symlink
+   * *after* this check returns and *before* that syscall lands would still
+   * escape. Closing that race for real would mean opening every write
+   * target with `O_NOFOLLOW` or moving to an fd-relative (`openat`-style)
+   * store, which doesn't fit the current atomic-rename write helpers
+   * (`fs.ts`'s `writeYamlFileAtomic`/`atomicWriteFile` write a temp file
+   * then `rename` it over the target — the target itself is never opened
+   * for write) without a broader rework. Accepted as out of scope for this
+   * ticket: the prerequisite is a second, concurrent, in-process-or-sibling
+   * actor able to write inside `.agile/` at the exact instant between this
+   * check and the next fs call — the same "a local writer already has a
+   * foothold inside the state root" threat model this whole guard exists
+   * for, not a new one. A future ticket that wants the race closed should
+   * look at `fs.ts`'s write helpers first.
    */
   private assertNoEscapingSymlink(resolved: string, root: string, parts: string[]): void {
-    this.resolvePathSafely(root, resolved, parts, { hops: 0 });
+    // `resolved` was produced by `resolve(this.stateRoot, ...parts)` in
+    // `abs()` — a lexical normalization of *code-controlled* segments
+    // (ticket ids, `'board'`, `'halts'`, ...) that has already passed the
+    // plain containment check there, so it can never itself carry a `..`
+    // that still needs kernel-order (post-symlink) handling. That hazard is
+    // specific to a *symlink's own* `readlinkSync` text (see
+    // `resolveComponentSymlink`), not to this top-level entry.
+    const rel = relative(root, resolved);
+    const segments = rel === '' ? [] : rel.split(sep);
+    this.walkSegments(root, segments, root, parts, { hops: 0 });
   }
 
   /** Loosely modelled on Linux's `MAXSYMLINKS` — a link chain (or cycle) this long is never legitimate. */
   private static readonly MAX_SYMLINK_HOPS = 40;
 
   /**
-   * Walks `targetAbs` (already known to lie lexically inside `root`) one
-   * path component at a time, `join`-ing onto `root` fresh each hop — never
-   * resuming on a pre-built multi-component string — so every ancestor
-   * directory is individually checked for being a symlink, not just the
-   * final leaf.
+   * Walks `segments` one raw path component at a time starting from
+   * `baseDir`, resolving any symlink hop along the way (`resolveComponentSymlink`)
+   * and popping `..` off the path *as currently resolved* rather than
+   * collapsing it lexically ahead of time (round 3 B1 — see this class's
+   * doc comment above `assertNoEscapingSymlink`). `.` and empty segments are
+   * skipped. Returns the final resolved location (existing or not).
    */
-  private resolvePathSafely(
+  private walkSegments(
+    baseDir: string,
+    segments: string[],
     root: string,
-    targetAbs: string,
     parts: string[],
     budget: { hops: number },
   ): string {
-    const rel = relative(root, targetAbs);
-    const segments = rel === '' ? [] : rel.split(sep).filter((seg) => seg.length > 0);
-    let current = root;
+    let current = baseDir;
     for (const seg of segments) {
+      if (seg === '' || seg === '.') continue;
+      if (seg === '..') {
+        current = dirname(current);
+        continue;
+      }
       current = join(current, seg);
       current = this.resolveComponentSymlink(current, root, parts, budget);
     }
@@ -429,12 +443,15 @@ export class StateStore {
   }
 
   /**
-   * If `path` is a symlink (dangling or not), resolves one hop, checks the
-   * hop's target for containment, then recurses into `resolvePathSafely` on
-   * that target — re-walking *its* components from `root` — instead of
-   * `lstatSync`-ing the multi-component target directly (round 2 B1: that
-   * only re-checks the target's own leaf, never its ancestry). Returns
-   * `path` unchanged when it isn't a symlink, or doesn't exist yet.
+   * If `path` is a symlink (dangling or not), resolves one hop by walking
+   * its *raw* `readlinkSync` target with `walkSegments` — never
+   * `normalize()`d first, so a `..` in the target is applied against the
+   * hop's actually-resolved position, not lexically erased before an
+   * escaping component in the same target is ever examined (round 3 B1).
+   * An absolute target walks from the filesystem root; a relative one walks
+   * from `path`'s own (already-resolved) directory. Checks the fully
+   * resolved hop target for containment before returning it. Returns `path`
+   * unchanged when it isn't a symlink, or doesn't exist yet.
    */
   private resolveComponentSymlink(
     path: string,
@@ -471,14 +488,22 @@ export class StateStore {
     }
 
     const rawTarget = readlinkSync(path);
-    const nextTarget = isAbsolute(rawTarget)
-      ? normalize(rawTarget)
-      : normalize(join(dirname(path), rawTarget));
+    const rawSegments = rawTarget.split(/[\\/]/);
+    // Absolute target: resolved the way a kernel would, from the
+    // filesystem's own root — never assumed to start with `root`'s literal
+    // text, so a target like `"<root>/esc/../pwned.jsonl"` still walks
+    // through (and `lstat`s) the `esc` component itself. Relative target:
+    // resolved against `path`'s own directory, which is already a fully
+    // resolved location by the time we get here (every earlier component
+    // on the way to `path` has already been through this same function).
+    const baseDir = isAbsolute(rawTarget) ? parse(root).root : dirname(path);
+    const nextTarget = this.walkSegments(baseDir, rawSegments, root, parts, budget);
+
     if (nextTarget !== root && !nextTarget.startsWith(root + sep)) {
       throw new Error(`state path escapes the state root (symlink): ${parts.join('/')}`);
     }
 
-    return this.resolvePathSafely(root, nextTarget, parts, budget);
+    return nextTarget;
   }
 
   /**
