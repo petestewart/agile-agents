@@ -11,7 +11,9 @@
  * `hasUnsafeShellConstruct`.
  */
 
-import { basename, isAbsolute, relative, resolve } from 'node:path';
+import { realpathSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { basename, dirname, isAbsolute, join as joinPath, relative, resolve } from 'node:path';
 
 // ---------------------------------------------------------------------------
 // Quote-aware splitting/tokenizing
@@ -250,13 +252,70 @@ export function isPipedIntoBareShell(atom: CommandAtom): boolean {
 // Path containment
 // ---------------------------------------------------------------------------
 
-/** True if `path` resolves to `root` or somewhere under it. */
+/**
+ * `realpath`s `p`, walking up to its nearest *existing* ancestor when `p`
+ * itself (or part of it) doesn't exist yet (T030 review finding 6: a path
+ * that doesn't exist yet must still resolve through its parent, and any
+ * existing ancestor that's a symlink must be followed before the
+ * containment check — otherwise a symlink under the worktree pointing
+ * outside it, or one of the worktree root's own ancestors being a symlink,
+ * would compare textually "inside" while actually reading/writing
+ * somewhere else entirely). Never throws: an unreadable/nonexistent chain
+ * all the way to the filesystem root falls back to the plain resolved path.
+ */
+function realpathNearestExisting(p: string): string {
+  const target = resolve(p);
+  const missingSegments: string[] = [];
+  let current = target;
+  for (;;) {
+    try {
+      const real = realpathSync(current);
+      return missingSegments.length > 0 ? resolve(real, ...missingSegments.reverse()) : real;
+    } catch {
+      const parent = dirname(current);
+      if (parent === current) return target; // reached the fs root and even that failed — give up safely
+      missingSegments.push(basename(current));
+      current = parent;
+    }
+  }
+}
+
+/** True if `path` resolves to `root` or somewhere under it, once both are
+ * `realpath`'d (see `realpathNearestExisting`) so a symlink can't launder an
+ * escape past a purely textual comparison. */
 export function isPathInside(path: string, root: string): boolean {
-  const resolvedRoot = resolve(root);
-  const resolvedPath = resolve(root, path);
+  const resolvedRoot = realpathNearestExisting(resolve(root));
+  const resolvedPath = realpathNearestExisting(resolve(root, path));
   if (resolvedPath === resolvedRoot) return true;
   const rel = relative(resolvedRoot, resolvedPath);
   return rel !== '' && !rel.startsWith('..') && !isAbsolute(rel);
+}
+
+// ---------------------------------------------------------------------------
+// `~`/`$VAR`/backtick resolution for path-like arguments and redirect
+// targets (T030 review findings 1 & 4) — one function so both call sites
+// agree on what's "safe to resolve" vs. unclassifiable.
+// ---------------------------------------------------------------------------
+
+export type ResolvedPathArgument = { safe: true; path: string } | { safe: false };
+
+/**
+ * Resolves one path-like token the way a real shell would before this
+ * tier's containment check ever sees it: `~` and `~/rest` expand against
+ * the real home directory (never trusted as "inside" just because the
+ * literal string doesn't start with `/`); a bare `$`, a backtick, or an
+ * unsupported `~user` form is unclassifiable — this tokenizer cannot know
+ * what it expands to, so it's `{ safe: false }`, routed to `hil` by the
+ * caller, never silently treated as a relative path under the worktree
+ * (review finding 1: `cat ~/.ssh/id_rsa` must not resolve as "inside" just
+ * because `~` was never expanded at all).
+ */
+export function resolveTargetPath(token: string): ResolvedPathArgument {
+  if (token.includes('$') || token.includes('`')) return { safe: false };
+  if (token === '~') return { safe: true, path: homedir() };
+  if (token.startsWith('~/')) return { safe: true, path: joinPath(homedir(), token.slice(2)) };
+  if (token.startsWith('~')) return { safe: false }; // `~user` — unsupported, still unexpanded
+  return { safe: true, path: token };
 }
 
 // ---------------------------------------------------------------------------
@@ -644,9 +703,103 @@ export function grepPathArgs(tokens: string[]): string[] {
   return rest.slice(1);
 }
 
-/** `find`'s write primitives (opus/T029 precedent, reused here): present anywhere, they take this command off the benign list entirely (falls through to the normal deny) rather than being containment-checked. */
+/**
+ * `find`'s write/exec primitives (T029/T030 review): present anywhere, they
+ * take this command off the benign list entirely (falls through to the
+ * normal deny) rather than being containment-checked. Covers every GNU
+ * `find` action that writes, execs, or reports to a file/pipe: `-delete`,
+ * `-exec`/`-execdir`, `-ok`/`-okdir` (exec, with or without confirmation),
+ * and `-fprint`/`-fprintf`/`-fls` (writes matches to a named file — a
+ * write primitive same as `-delete`, not merely a read like `-print`).
+ */
+const FIND_WRITE_FLAGS = new Set([
+  '-delete',
+  '-exec',
+  '-execdir',
+  '-ok',
+  '-okdir',
+  '-fprint',
+  '-fprintf',
+  '-fls',
+]);
 export function isFindWriteInvocation(tokens: string[]): boolean {
-  return tokens.some((t) => t === '-delete' || t === '-exec' || t === '-execdir' || t === '-ok' || t === '-okdir');
+  return tokens.some((t) => FIND_WRITE_FLAGS.has(t));
+}
+
+// ---------------------------------------------------------------------------
+// `--flag=value`/`-o value` path-bearing flags (T030 review finding 3):
+// `benignPathArgs`/`grepPathArgs` only ever look at non-flag positional
+// tokens, so `cp --target-directory=/etc x`, `sort --output /etc/x`, and
+// `grep -f /etc/passwd` sailed through unchecked — the flag's *value* is
+// every bit as much a path as a positional argument is.
+// ---------------------------------------------------------------------------
+
+/** Flags on these commands whose value (fused `=value`, fused short
+ * `-oVALUE`, or the next token) is a path this ticket's examples name
+ * explicitly (`cp`/`mv --target-directory`/`-t`, `sort --output`/`-o`,
+ * `grep`/`rg --file`/`-f` — a pattern *file*, still a read path). */
+const KNOWN_PATH_VALUE_FLAGS: Record<string, ReadonlySet<string>> = {
+  cp: new Set(['-t', '--target-directory']),
+  mv: new Set(['-t', '--target-directory']),
+  sort: new Set(['-o', '--output']),
+  grep: new Set(['-f', '--file']),
+  rg: new Set(['-f', '--file']),
+};
+
+const LONG_FLAG_WITH_VALUE_RE = /^--([A-Za-z][A-Za-z0-9-]*)=(.*)$/;
+
+/**
+ * A conservative guess that an unrecognized long flag's fused `=value` is
+ * itself a path worth containment-checking (ticket: "unknown long flags
+ * with `=` whose value looks like a path → check it too") — an absolute
+ * path, a `./`/`../`-relative path, a `~`-form, or any value containing a
+ * `/`. Deliberately excludes a bare word/number (`--width=80`, far more
+ * likely an ordinary option value than a path).
+ */
+function looksLikePathValue(value: string): boolean {
+  if (value.length === 0) return false;
+  return (
+    value.startsWith('/') ||
+    value.startsWith('./') ||
+    value.startsWith('../') ||
+    value.startsWith('~') ||
+    value.includes('/')
+  );
+}
+
+/**
+ * Every path-like value carried by a flag on this invocation: a fused
+ * `--flag=value` long form (checked when the value looks like a path, or
+ * when this command+flag pair is in `KNOWN_PATH_VALUE_FLAGS`), a known
+ * flag's value as the *next* token (`sort --output /etc/x`, `grep -f
+ * /etc/passwd`), or a known short flag's fused value (`sort -o/etc/x`).
+ * Combine with `benignPathArgs`/`grepPathArgs` for the full path set.
+ */
+export function flagPathValues(tokens: string[]): string[] {
+  const head = tokens[0] ?? '';
+  const knownFlags = KNOWN_PATH_VALUE_FLAGS[head] ?? new Set<string>();
+  const values: string[] = [];
+  for (let i = 1; i < tokens.length; i++) {
+    const t = tokens[i] ?? '';
+    const eqMatch = LONG_FLAG_WITH_VALUE_RE.exec(t);
+    if (eqMatch) {
+      const flagName = `--${eqMatch[1] ?? ''}`;
+      const value = eqMatch[2] ?? '';
+      if (knownFlags.has(flagName) || looksLikePathValue(value)) values.push(value);
+      continue;
+    }
+    if (knownFlags.has(t)) {
+      const next = tokens[i + 1];
+      if (next !== undefined) values.push(next);
+      continue;
+    }
+    for (const flag of knownFlags) {
+      if (flag.length === 2 && !flag.startsWith('--') && t.startsWith(flag) && t.length > 2) {
+        values.push(t.slice(2));
+      }
+    }
+  }
+  return values;
 }
 
 /**
@@ -665,26 +818,45 @@ export function findSearchRoots(tokens: string[]): string[] {
   return roots.length > 0 ? roots : ['.'];
 }
 
-/** A `$` anywhere in an argument is an unexpanded shell variable (`$HOME`, `${FOO}`) — this tokenizer never expands it, so a literal string like `"$HOME/.ssh/id_rsa"` would otherwise resolve (wrongly) as a relative path under the worktree instead of the real value the shell would substitute. Unclassifiable — the caller routes this to `hil`, never a guessed allow. */
-export function hasShellVariable(token: string): boolean {
-  return token.includes('$');
+/**
+ * `bunx <pkg>`/`npx <pkg>` (single-word form), `bun x <pkg>` (space form,
+ * T030 review), `npm exec <pkg>`, `pnpm dlx <pkg>`, and `yarn dlx <pkg>` —
+ * every "run this package's bin" spelling this ticket names — restricted
+ * to "repo-local bins": no flag that forces fetching from the registry
+ * (`-p`/`--package`, `-y`/`--yes` auto-install, `-g`/`--global`), and no
+ * explicit `@version` pin — those name a package to *fetch*, not a bin
+ * this worktree's own `node_modules/.bin` (or bun's package cache for an
+ * existing dependency) already has. DESIGN-GAP: this layer is a pure
+ * function over command text (decide.ts's contract) with no filesystem
+ * access, so it can't check `node_modules/.bin` directly — this is a
+ * syntactic proxy for "not forcing a fresh fetch", tune during T021 if the
+ * demo run shows gaps.
+ */
+const BUNX_NPX_FORCE_INSTALL_FLAGS = new Set(['-p', '--package', '-y', '--yes', '-g', '--global']);
+
+/** The "run a package's bin" tail tokens for any of the recognized spellings, or `undefined` if `tokens` isn't one of them. */
+function dlxRestTokens(tokens: string[]): string[] | undefined {
+  const head = tokens[0];
+  if (head === 'bunx' || head === 'npx') return tokens.slice(1);
+  if (head === 'bun' && tokens[1] === 'x') return tokens.slice(2);
+  if (head === 'npm' && tokens[1] === 'exec') return tokens.slice(2);
+  if (head === 'pnpm' && tokens[1] === 'dlx') return tokens.slice(2);
+  if (head === 'yarn' && tokens[1] === 'dlx') return tokens.slice(2);
+  return undefined;
 }
 
-/** `bunx`/`npx` restricted to "repo-local bins" (ticket): no flag that forces fetching from the registry (`-p`/`--package`, `-y`/`--yes` auto-install, `-g`/`--global`), and no explicit `@version` pin — those name a package to *fetch*, not a bin this worktree's own `node_modules/.bin` (or bun's package cache for an existing dependency) already has. DESIGN-GAP: this layer is a pure function over command text (decide.ts's contract) with no filesystem access, so it can't check `node_modules/.bin` directly — this is a syntactic proxy for "not forcing a fresh fetch", tune during T021 if the demo run shows gaps. */
-const BUNX_NPX_FORCE_INSTALL_FLAGS = new Set(['-p', '--package', '-y', '--yes', '-g', '--global']);
 export function isRepoLocalBinInvocation(tokens: string[]): boolean {
-  const head = tokens[0];
-  if (head !== 'bunx' && head !== 'npx') return false;
-  const rest = tokens.slice(1);
+  const rest = dlxRestTokens(tokens);
+  if (rest === undefined) return false;
   if (rest.some((t) => BUNX_NPX_FORCE_INSTALL_FLAGS.has(t))) return false;
-  const bin = rest.find((t) => !isFlagToken(t));
+  const bin = rest.find((t) => !isFlagToken(t) && t !== '--');
   return bin !== undefined && !bin.includes('@');
 }
 
 const SCRIPT_LAUNCHER_HEADS = new Set(['node', 'bun']);
-/** `bun`'s own subcommands (`run`/`test`/`build`/`install`/`i`/`add`) are handled by `isRepoScriptCommand`/`isNewDependencyInstall` before this ever runs — this only recognizes `node <file>`/`bun <file>` direct script execution, so it must not re-claim those subcommand names as if they were script paths. */
+/** `bun`'s own subcommands (`run`/`test`/`build`/`install`/`i`/`add`/`x`) are handled by `isRepoScriptCommand`/`isNewDependencyInstall`/`isRepoLocalBinInvocation` before this ever runs — this only recognizes `node <file>`/`bun <file>` direct script execution, so it must not re-claim those subcommand names as if they were script paths (T030 review: `bun x cowsay@1.0.0` must fall through to deny via the dlx path, not be laundered as "bun script named x"). */
 function looksLikeBunSubcommand(token: string): boolean {
-  return REPO_SCRIPT_SUBCOMMANDS.has(token) || NEW_DEP_SUBCOMMANDS.has(token);
+  return REPO_SCRIPT_SUBCOMMANDS.has(token) || NEW_DEP_SUBCOMMANDS.has(token) || token === 'x';
 }
 
 /** `node <script>`/`bun <script>` (direct file execution, not `bun run`/`npm`-style subcommands) — the script path, or `undefined` if this isn't that shape. */

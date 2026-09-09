@@ -887,9 +887,9 @@ describe('decidePermission — T030 engineer benign-command allow-list', () => {
     `cp ${inside('src/a.ts')} /tmp/x`,
     `mv ${inside('src/a.ts')} /tmp/x`,
     'mkdir -p /etc/x',
-    `head -n 5 /etc/passwd`,
-    `tail -n 5 /etc/passwd`,
-    `touch /etc/new.ts`,
+    'head -n 5 /etc/passwd',
+    'tail -n 5 /etc/passwd',
+    'touch /etc/new.ts',
     `diff /etc/passwd ${inside('src/a.ts')}`,
     'grep FAIL /etc/passwd',
     'find /etc -name shadow',
@@ -904,47 +904,38 @@ describe('decidePermission — T030 engineer benign-command allow-list', () => {
   }
 
   test('engineer: cat "$HOME/.ssh/id_rsa" is a hil_request, not a laundered allow (unresolved shell variable)', () => {
-    const decision = decide(
-      'engineer',
-      request('execute', { command: 'cat "$HOME/.ssh/id_rsa"' }),
-    );
+    const decision = decide('engineer', request('execute', { command: 'cat "$HOME/.ssh/id_rsa"' }));
     expect(decision.kind).toBe('hil');
   });
 
   test('engineer: find . -delete is denied (write flag takes it off the benign list)', () => {
-    expect(decide('engineer', request('execute', { command: 'find . -delete' })).kind).toBe(
-      'deny',
-    );
+    expect(decide('engineer', request('execute', { command: 'find . -delete' })).kind).toBe('deny');
   });
 
   test('engineer: find . -exec rm {} \\; is denied (write flag takes it off the benign list)', () => {
-    expect(
-      decide('engineer', request('execute', { command: 'find . -exec rm {} \\;' })).kind,
-    ).toBe('deny');
-  });
-
-  test('engineer: find . -ok rm {} \\; is denied (write flag takes it off the benign list)', () => {
-    expect(
-      decide('engineer', request('execute', { command: 'find . -ok rm {} \\;' })).kind,
-    ).toBe('deny');
-  });
-
-  test('engineer: npx cowsay@1.0.0 is denied (pinned version fetches, not repo-local)', () => {
-    expect(
-      decide('engineer', request('execute', { command: 'npx cowsay@1.0.0' })).kind,
-    ).toBe('deny');
-  });
-
-  test('engineer: npx -y cowsay is denied (forces install, not repo-local)', () => {
-    expect(decide('engineer', request('execute', { command: 'npx -y cowsay' })).kind).toBe(
+    expect(decide('engineer', request('execute', { command: 'find . -exec rm {} \\;' })).kind).toBe(
       'deny',
     );
   });
 
-  test('engineer: bun run build stays a repo script (unaffected by the script-execution path check)', () => {
-    expect(decide('engineer', request('execute', { command: 'bun run build' })).kind).toBe(
-      'allow',
+  test('engineer: find . -ok rm {} \\; is denied (write flag takes it off the benign list)', () => {
+    expect(decide('engineer', request('execute', { command: 'find . -ok rm {} \\;' })).kind).toBe(
+      'deny',
     );
+  });
+
+  test('engineer: npx cowsay@1.0.0 is denied (pinned version fetches, not repo-local)', () => {
+    expect(decide('engineer', request('execute', { command: 'npx cowsay@1.0.0' })).kind).toBe(
+      'deny',
+    );
+  });
+
+  test('engineer: npx -y cowsay is denied (forces install, not repo-local)', () => {
+    expect(decide('engineer', request('execute', { command: 'npx -y cowsay' })).kind).toBe('deny');
+  });
+
+  test('engineer: bun run build stays a repo script (unaffected by the script-execution path check)', () => {
+    expect(decide('engineer', request('execute', { command: 'bun run build' })).kind).toBe('allow');
   });
 
   test('engineer: bun add zod stays a hil_request (unaffected by the script-execution path check)', () => {
@@ -952,9 +943,7 @@ describe('decidePermission — T030 engineer benign-command allow-list', () => {
   });
 
   test('every existing adversarial test still passes: an unrecognized command is still denied', () => {
-    expect(decide('engineer', request('execute', { command: 'python evil.py' })).kind).toBe(
-      'deny',
-    );
+    expect(decide('engineer', request('execute', { command: 'python evil.py' })).kind).toBe('deny');
   });
 });
 
@@ -982,5 +971,149 @@ describe('decidePermission — T030 reviewer read-only additions', () => {
     expect(decide('reviewer', request('execute', { command: 'git push origin main' })).kind).toBe(
       'hil',
     );
+  });
+});
+
+describe('decidePermission — T030 review-round fixes (opus, 7 blockers)', () => {
+  // 1. `~` expansion — never trust a `~`/`~user` path as "inside" just
+  // because the literal string doesn't start with `/`.
+  test('engineer: cat ~/.ssh/id_rsa is denied, not allowed (unexpanded ~ resolves to the real home dir, outside the worktree)', () => {
+    expect(decide('engineer', request('execute', { command: 'cat ~/.ssh/id_rsa' })).kind).toBe(
+      'deny',
+    );
+  });
+
+  test('engineer: cat ~otheruser/id_rsa is a hil_request (unsupported ~user form is unclassifiable)', () => {
+    expect(decide('engineer', request('execute', { command: 'cat ~otheruser/id_rsa' })).kind).toBe(
+      'hil',
+    );
+  });
+
+  test('engineer: a backtick in a path argument is a hil_request', () => {
+    expect(decide('engineer', request('execute', { command: 'cat `whoami`.txt' })).kind).toBe(
+      'hil',
+    );
+  });
+
+  // 2. `find` write primitives — the full GNU set, for both roles.
+  const FIND_WRITE_FLAGS = ['-fprint', '-fprintf', '-fls', '-execdir', '-ok', '-okdir'];
+  for (const flag of FIND_WRITE_FLAGS) {
+    test(`engineer: find . ${flag} out.txt is denied (write primitive)`, () => {
+      expect(
+        decide('engineer', request('execute', { command: `find . ${flag} out.txt` })).kind,
+      ).toBe('deny');
+    });
+    test(`reviewer: find . ${flag} out.txt is denied (write primitive)`, () => {
+      expect(
+        decide('reviewer', request('execute', { command: `find . ${flag} out.txt` })).kind,
+      ).toBe('deny');
+    });
+  }
+
+  // 3. `--flag=path`/`-o value` forms.
+  test('engineer: cp --target-directory=/etc a.ts is denied (fused long-flag path escapes)', () => {
+    expect(
+      decide('engineer', request('execute', { command: 'cp --target-directory=/etc a.ts' })).kind,
+    ).toBe('deny');
+  });
+
+  test('engineer: mv -t /etc a.ts is denied (separate-token known flag escapes)', () => {
+    expect(decide('engineer', request('execute', { command: 'mv -t /etc a.ts' })).kind).toBe(
+      'deny',
+    );
+  });
+
+  test('engineer: sort --output=/etc/x a.ts is denied', () => {
+    expect(
+      decide('engineer', request('execute', { command: 'sort --output=/etc/x a.ts' })).kind,
+    ).toBe('deny');
+  });
+
+  test('engineer: sort --output /etc/x a.ts is denied (separate-token form)', () => {
+    expect(
+      decide('engineer', request('execute', { command: 'sort --output /etc/x a.ts' })).kind,
+    ).toBe('deny');
+  });
+
+  test('engineer: sort -o/etc/x a.ts is denied (fused short-flag form)', () => {
+    expect(decide('engineer', request('execute', { command: 'sort -o/etc/x a.ts' })).kind).toBe(
+      'deny',
+    );
+  });
+
+  test('engineer: grep -f /etc/passwd FAIL is denied (pattern file escapes)', () => {
+    expect(
+      decide('engineer', request('execute', { command: 'grep -f /etc/passwd FAIL' })).kind,
+    ).toBe('deny');
+  });
+
+  test('engineer: an unrecognized long flag whose value looks like a path still gates it', () => {
+    expect(
+      decide('engineer', request('execute', { command: 'cat --foo=/etc/passwd a.ts' })).kind,
+    ).toBe('deny');
+  });
+
+  test('engineer: cp --target-directory=src/out a.ts is allowed (value resolves inside the worktree)', () => {
+    expect(
+      decide('engineer', request('execute', { command: 'cp --target-directory=src/out a.ts' }))
+        .kind,
+    ).toBe('allow');
+  });
+
+  // 4. Redirect targets go through the same ~/$VAR/backtick resolution.
+  test('engineer: echo hi > ~/.ssh/authorized_keys is denied, not allowed', () => {
+    expect(
+      decide('engineer', request('execute', { command: 'echo hi > ~/.ssh/authorized_keys' })).kind,
+    ).toBe('deny');
+  });
+
+  test('engineer: echo hi > $HOME/.ssh/authorized_keys is a hil_request, not allowed', () => {
+    expect(
+      decide('engineer', request('execute', { command: 'echo hi > $HOME/.ssh/authorized_keys' }))
+        .kind,
+    ).toBe('hil');
+  });
+
+  // 5. `bun x`, `npm exec`, `pnpm dlx`, `yarn dlx` space forms.
+  test('engineer: bun x cowsay hi is allowed (repo-local bin, space form)', () => {
+    expect(decide('engineer', request('execute', { command: 'bun x cowsay hi' })).kind).toBe(
+      'allow',
+    );
+  });
+
+  test('engineer: npm exec cowsay hi is allowed (repo-local bin)', () => {
+    expect(decide('engineer', request('execute', { command: 'npm exec cowsay hi' })).kind).toBe(
+      'allow',
+    );
+  });
+
+  test('engineer: pnpm dlx cowsay hi is allowed (repo-local bin)', () => {
+    expect(decide('engineer', request('execute', { command: 'pnpm dlx cowsay hi' })).kind).toBe(
+      'allow',
+    );
+  });
+
+  test('engineer: yarn dlx cowsay hi is allowed (repo-local bin)', () => {
+    expect(decide('engineer', request('execute', { command: 'yarn dlx cowsay hi' })).kind).toBe(
+      'allow',
+    );
+  });
+
+  test('engineer: bun x cowsay@1.0.0 is denied (pinned version fetches, not repo-local)', () => {
+    expect(decide('engineer', request('execute', { command: 'bun x cowsay@1.0.0' })).kind).toBe(
+      'deny',
+    );
+  });
+
+  test('engineer: npm exec -y cowsay is denied (forces install, not repo-local)', () => {
+    expect(decide('engineer', request('execute', { command: 'npm exec -y cowsay' })).kind).toBe(
+      'deny',
+    );
+  });
+
+  test('engineer: pnpm dlx --package cowsay cowsay is denied (forces install, not repo-local)', () => {
+    expect(
+      decide('engineer', request('execute', { command: 'pnpm dlx --package cowsay cowsay' })).kind,
+    ).toBe('deny');
   });
 });

@@ -1,15 +1,25 @@
-import { describe, expect, test } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join as joinPath } from 'node:path';
 import type { CommandAtom } from './command';
 import {
+  benignPathArgs,
+  findSearchRoots,
+  flagPathValues,
+  grepPathArgs,
   hasRedirectionOrTee,
   hasUnresolvedRedirection,
   hasUnsafeShellConstruct,
   hasWritingRedirectionOrTee,
   isBenignRedirectTarget,
   isBranchDelete,
+  isFindWriteInvocation,
   isForcePush,
   isNewDependencyInstall,
+  isPathInside,
   isPipedIntoBareShell,
+  isRepoLocalBinInvocation,
   isTicketBranch,
   parseCommandIntoAtoms,
   parseGitInvocation,
@@ -17,6 +27,8 @@ import {
   redirectionTarget,
   redirectionTargets,
   refspecDestBranch,
+  resolveTargetPath,
+  scriptExecutionPath,
   splitCommandSegments,
   stripPrefixes,
   tokenizeSegment,
@@ -328,5 +340,172 @@ describe('parseCommandIntoAtoms', () => {
     // usage; this test documents the boundary rather than asserting safety.
     const [, , shAtom] = atoms as [CommandAtom, CommandAtom, CommandAtom];
     expect(isPipedIntoBareShell(shAtom)).toBe(false);
+  });
+});
+
+describe('resolveTargetPath (T030 review finding 1 & 4)', () => {
+  test('expands a bare ~ to the real home directory', () => {
+    const resolved = resolveTargetPath('~');
+    expect(resolved.safe).toBe(true);
+    if (resolved.safe) expect(resolved.path.length).toBeGreaterThan(0);
+  });
+
+  test('expands ~/rest against the real home directory', () => {
+    const resolved = resolveTargetPath('~/.ssh/id_rsa');
+    expect(resolved.safe).toBe(true);
+    if (resolved.safe) expect(resolved.path.endsWith('/.ssh/id_rsa')).toBe(true);
+  });
+
+  test('~otheruser is unsupported and unsafe (never silently treated as a literal relative path)', () => {
+    expect(resolveTargetPath('~otheruser/x').safe).toBe(false);
+  });
+
+  test('a $ anywhere makes the token unsafe', () => {
+    expect(resolveTargetPath('$HOME/.ssh/id_rsa').safe).toBe(false);
+    expect(resolveTargetPath('"$HOME/x"').safe).toBe(false);
+  });
+
+  test('a backtick anywhere makes the token unsafe', () => {
+    expect(resolveTargetPath('`whoami`.txt').safe).toBe(false);
+  });
+
+  test('an ordinary relative or absolute path is safe and unchanged', () => {
+    expect(resolveTargetPath('src/a.ts')).toEqual({ safe: true, path: 'src/a.ts' });
+    expect(resolveTargetPath('/etc/passwd')).toEqual({ safe: true, path: '/etc/passwd' });
+  });
+});
+
+describe('isPathInside — symlink escape (T030 review finding 6)', () => {
+  let root: string;
+
+  beforeEach(() => {
+    root = mkdtempSync(joinPath(tmpdir(), 'agile-perm-test-'));
+  });
+
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  test('a symlink under the worktree pointing outside it is not "inside"', () => {
+    const worktree = joinPath(root, 'worktree');
+    const outside = joinPath(root, 'outside');
+    mkdirSync(worktree, { recursive: true });
+    mkdirSync(outside, { recursive: true });
+    const link = joinPath(worktree, 'escape');
+    symlinkSync(outside, link);
+    expect(isPathInside(link, worktree)).toBe(false);
+  });
+
+  test('a symlinked worktree root itself is still resolved before comparison', () => {
+    const real = joinPath(root, 'real-worktree');
+    mkdirSync(real, { recursive: true });
+    const linkedRoot = joinPath(root, 'linked-worktree');
+    symlinkSync(real, linkedRoot);
+    // A plain file reached through the symlinked root still resolves as
+    // inside once both sides are realpath'd to the same target.
+    expect(isPathInside(joinPath(linkedRoot, 'src/a.ts'), linkedRoot)).toBe(true);
+  });
+
+  test('a path that does not exist yet still resolves relative to its existing parent', () => {
+    const worktree = joinPath(root, 'worktree');
+    mkdirSync(worktree, { recursive: true });
+    expect(isPathInside(joinPath(worktree, 'not-yet-created.txt'), worktree)).toBe(true);
+    expect(isPathInside(joinPath(root, 'sibling', 'not-yet-created.txt'), worktree)).toBe(false);
+  });
+});
+
+describe('isFindWriteInvocation (T030 review finding 2)', () => {
+  for (const flag of [
+    '-delete',
+    '-exec',
+    '-execdir',
+    '-ok',
+    '-okdir',
+    '-fprint',
+    '-fprintf',
+    '-fls',
+  ]) {
+    test(`"find . ${flag}" is a write invocation`, () => {
+      expect(isFindWriteInvocation(['find', '.', flag])).toBe(true);
+    });
+  }
+
+  test('a plain find with no write flag is not a write invocation', () => {
+    expect(isFindWriteInvocation(['find', '.', '-name', '*.ts'])).toBe(false);
+  });
+});
+
+describe('findSearchRoots / grepPathArgs / benignPathArgs', () => {
+  test('findSearchRoots stops at the first expression primitive', () => {
+    expect(findSearchRoots(['find', 'src', 'build', '-type', 'f'])).toEqual(['src', 'build']);
+    expect(findSearchRoots(['find', '-name', '*.ts'])).toEqual(['.']);
+  });
+
+  test('grepPathArgs treats the first non-flag token as the pattern, not a path', () => {
+    expect(grepPathArgs(['grep', 'FAIL', 'a.log'])).toEqual(['a.log']);
+    expect(grepPathArgs(['grep', 'FAIL'])).toEqual([]);
+  });
+
+  test('benignPathArgs filters flags and the [ command trailing ]', () => {
+    expect(benignPathArgs(['cp', 'a.ts', 'b.ts'])).toEqual(['a.ts', 'b.ts']);
+    expect(benignPathArgs(['[', '-f', 'a.ts', ']'])).toEqual(['a.ts']);
+  });
+});
+
+describe('flagPathValues (T030 review finding 3)', () => {
+  test('extracts a fused --flag=value long form for a known command+flag', () => {
+    expect(flagPathValues(['cp', '--target-directory=/etc', 'a.ts'])).toEqual(['/etc']);
+  });
+
+  test('extracts a known flag value from the next token', () => {
+    expect(flagPathValues(['sort', '--output', '/etc/x', 'a.ts'])).toEqual(['/etc/x']);
+    expect(flagPathValues(['mv', '-t', '/etc', 'a.ts'])).toEqual(['/etc']);
+    expect(flagPathValues(['grep', '-f', '/etc/passwd', 'FAIL'])).toEqual(['/etc/passwd']);
+  });
+
+  test('extracts a fused short-flag value', () => {
+    expect(flagPathValues(['sort', '-o/etc/x', 'a.ts'])).toEqual(['/etc/x']);
+  });
+
+  test('an unrecognized long flag is still checked when its value looks like a path', () => {
+    expect(flagPathValues(['cat', '--foo=/etc/passwd', 'a.ts'])).toEqual(['/etc/passwd']);
+    expect(flagPathValues(['head', '--lines=5'])).toEqual([]); // "5" doesn't look like a path
+  });
+
+  test("a value that resolves inside the worktree is still just a value (containment is the caller's job)", () => {
+    expect(flagPathValues(['cp', '--target-directory=src/out', 'a.ts'])).toEqual(['src/out']);
+  });
+});
+
+describe('isRepoLocalBinInvocation — dlx spellings (T030 review finding 5)', () => {
+  const ALLOWED = [
+    ['bunx', 'cowsay', 'hi'],
+    ['npx', 'cowsay', 'hi'],
+    ['bun', 'x', 'cowsay', 'hi'],
+    ['npm', 'exec', 'cowsay', 'hi'],
+    ['pnpm', 'dlx', 'cowsay', 'hi'],
+    ['yarn', 'dlx', 'cowsay', 'hi'],
+  ];
+  for (const tokens of ALLOWED) {
+    test(`"${tokens.join(' ')}" is a repo-local bin invocation`, () => {
+      expect(isRepoLocalBinInvocation(tokens)).toBe(true);
+    });
+  }
+
+  const DENIED = [
+    ['bun', 'x', 'cowsay@1.0.0'],
+    ['npm', 'exec', '-y', 'cowsay'],
+    ['pnpm', 'dlx', '--package', 'cowsay', 'cowsay'],
+    ['yarn', 'dlx', 'cowsay@1.0.0'],
+    ['npx', '-g', 'cowsay'],
+  ];
+  for (const tokens of DENIED) {
+    test(`"${tokens.join(' ')}" is not a repo-local bin invocation`, () => {
+      expect(isRepoLocalBinInvocation(tokens)).toBe(false);
+    });
+  }
+
+  test('"bun x cowsay@1.0.0" does not get misread as a bun-script invocation', () => {
+    expect(scriptExecutionPath(['bun', 'x', 'cowsay@1.0.0'])).toBeUndefined();
   });
 });

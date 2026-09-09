@@ -245,14 +245,24 @@ const ENGINEER_BENIGN_PATH_TOOLS = new Set([
   'diff',
 ]);
 
-/** Every path this atom touches must resolve inside the worktree; a `$`-bearing argument is unclassifiable (never a guessed allow) and routes to `hil` instead. */
+/**
+ * Every path this atom touches must resolve inside the worktree, via
+ * `cmd.resolveTargetPath` (T030 review findings 1 & 4): `~`/`~/rest` are
+ * expanded against the real home directory first (never trusted as
+ * "inside" just because the literal string is relative-looking); a `$`,
+ * backtick, or unsupported `~user` form is unclassifiable and routes to
+ * `hil` — never a guessed allow.
+ */
 function verifyBenignPaths(paths: string[], ctx: PolicyContext): PolicyVerdict {
-  for (const p of paths) {
-    if (cmd.hasShellVariable(p)) {
-      return hil(`"${p}" contains an unresolved shell variable — file a hil_request`);
+  for (const raw of paths) {
+    const resolved = cmd.resolveTargetPath(raw);
+    if (!resolved.safe) {
+      return hil(
+        `"${raw}" contains an unresolved shell variable/backtick/home-directory reference — file a hil_request`,
+      );
     }
-    if (!isPathInside(p, ctx.worktreePath)) {
-      return deny(`${p} is outside the worktree`);
+    if (!isPathInside(resolved.path, ctx.worktreePath)) {
+      return deny(`${raw} is outside the worktree`);
     }
   }
   return ALLOW;
@@ -285,12 +295,12 @@ function engineerBenignCommandVerdict(
   if (cmd.isRepoLocalBinInvocation(tokens)) return ALLOW;
 
   if (head === 'find') {
-    if (cmd.isFindWriteInvocation(tokens)) return undefined; // -delete/-exec/-ok: not benign, fall through
+    if (cmd.isFindWriteInvocation(tokens)) return undefined; // -delete/-exec/-ok/-fprint*: not benign, fall through
     return verifyBenignPaths(cmd.findSearchRoots(tokens), ctx);
   }
 
   if (head === 'grep' || head === 'rg') {
-    return verifyBenignPaths(cmd.grepPathArgs(tokens), ctx);
+    return verifyBenignPaths([...cmd.grepPathArgs(tokens), ...cmd.flagPathValues(tokens)], ctx);
   }
 
   const scriptPath = cmd.scriptExecutionPath(tokens);
@@ -299,7 +309,7 @@ function engineerBenignCommandVerdict(
   }
 
   if (ENGINEER_BENIGN_PATH_TOOLS.has(head)) {
-    return verifyBenignPaths(cmd.benignPathArgs(tokens), ctx);
+    return verifyBenignPaths([...cmd.benignPathArgs(tokens), ...cmd.flagPathValues(tokens)], ctx);
   }
 
   return undefined;
@@ -320,14 +330,23 @@ function engineerExecuteVerdict(command: string, ctx: PolicyContext): PolicyVerd
       const hasTee = atom.tokens.includes('tee');
       const hasProcessSub = atom.tokens.some((t) => t.startsWith('<('));
       const unresolved = cmd.hasUnresolvedRedirection(atom.tokens);
-      const targets = cmd.redirectionTargets(atom.tokens);
-      if (
-        hasTee ||
-        hasProcessSub ||
-        unresolved ||
-        targets.some((t) => !isPathInside(t, ctx.worktreePath))
-      ) {
+      if (hasTee || hasProcessSub || unresolved) {
         return deny('redirected output escapes the worktree (or uses tee/process substitution)');
+      }
+      // Every redirection target goes through the same `~`/`$VAR`/backtick
+      // resolution as any other path argument (T030 review finding 4 —
+      // `echo hi > $HOME/.ssh/authorized_keys`/`echo hi > ~/.bashrc` must
+      // not be laundered through a purely textual "starts with /" miss).
+      for (const raw of cmd.redirectionTargets(atom.tokens)) {
+        const resolved = cmd.resolveTargetPath(raw);
+        if (!resolved.safe) {
+          return hil(
+            `"${raw}" contains an unresolved shell variable/backtick/home-directory reference — file a hil_request`,
+          );
+        }
+        if (!isPathInside(resolved.path, ctx.worktreePath)) {
+          return deny('redirected output escapes the worktree (or uses tee/process substitution)');
+        }
       }
       // Every non-benign redirection target is inside the worktree (or
       // every redirection here was benign) — fall through and still
@@ -438,7 +457,11 @@ function isReviewerSafeTool(tokens: string[]): boolean {
   if (REVIEWER_PLAIN_READ_ONLY_TOOLS.has(head)) return true;
   if (head === 'sed') return !isSedInPlace(tokens);
   if (head === 'find')
-    return !tokens.some((t) => t === '-delete' || t === '-exec' || t === '-execdir');
+    // T030 review finding 2: reuse the engineer's write-flag set
+    // (`-delete`/`-exec`/`-execdir`/`-ok`/`-okdir`/`-fprint`/`-fprintf`/
+    // `-fls`) so the reviewer denies exactly the same `find` write
+    // primitives, not a narrower list.
+    return !cmd.isFindWriteInvocation(tokens);
   // `perl -i ...` and `gawk -i inplace ...` are also in-place rewrites
   // (review round 2, "if cheap") — neither `perl` nor `gawk`/`awk` is in
   // `REVIEWER_PLAIN_READ_ONLY_TOOLS` or has a case above, so they already
