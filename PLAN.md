@@ -238,7 +238,7 @@ Priority encodes dependency layer as well as importance: P0 tickets are v0-block
 - **Scope:** Depends on T005, T012. On `done`: rebase `tkt/*` onto `integration`, run the repo's test script, merge, delete the worktree (keep if `stale`/abandoned). Conflicts → scoped halt to the ticket owner with the conflict summary. `integration → main` behind the `sprint_review` gate. Git pre-commit hook in every worktree refusing commits while a halt covers the ticket.
 - **Acceptance Criteria:** Two tickets touching the same file produce a scoped halt for the second; a clean merge lands on `integration` with tests run; commits are refused during a halt.
 - **Validation Steps:** Git fixture tests with prepared conflicts.
-- **Notes:** branch `T019-merge-owner` (`8034ebf`); `src/merge/` (git wrapper, MergeOwner: rebase → tests → merge on `integration`, conflict/test-failure → scoped halt + `halt` message via em, `integration → main` behind an injected gate predicate, pre-commit hook via `bun -e`), 23 real-git tests. Pre-gate fix requested: MergeRecord schema + merge event kinds belong in shared (worker granted). Wiring for `daemon.ts`/`runner/worktrees.ts` at merge.
+- **Notes:** branch `T019-merge-owner` (`8034ebf`); `src/merge/` (git wrapper, MergeOwner: rebase → tests → merge on `integration`, conflict/test-failure → scoped halt + `halt` message via em, `integration → main` behind an injected gate predicate, pre-commit hook via `bun -e`), 23 real-git tests. Shared `MergeRecord` schema + 4 merge event kinds added in `94e3a67` (1078 tests). Wiring for `daemon.ts`/`runner/worktrees.ts` at merge. Gates running.
 
 ### Ticket: T020 Event feed page
 - **Priority:** P1
