@@ -37,7 +37,7 @@ interface RawConfigFile {
   socketPath?: string;
 }
 
-function findRepoRoot(startDir: string): string {
+function findRepoRoot(startDir: string, tempDirBase?: string): string {
   // Review round 1 blocker B2: this call is what *discovers* the repo
   // root, so there's no `repoRoot` in hand yet to sandbox under — an
   // earlier version used `startDir` itself, which materializes
@@ -49,7 +49,16 @@ function findRepoRoot(startDir: string): string {
   // `dockerProbeEnv` already uses for its own "no repo root in hand"
   // case): a fresh, uid/pid-unique temp directory instead of the caller's
   // own cwd, removed again once this one bootstrap call is done with it.
-  const probe = sandboxedSubprocessEnvOrTemp(undefined, 'git');
+  //
+  // Review round 3 blocker B3: `tempDirBase` (defaults to `os.tmpdir()` via
+  // `sandboxedSubprocessEnvOrTemp` itself, same DI seam T037 round 4 built
+  // for `sandbox/backend.ts`) exists purely so a test can point this at its
+  // own `mkdtempSync`'d directory instead of the real, shared OS temp dir —
+  // round 3's own non-repo-leak regression test used to snapshot
+  // `readdirSync(tmpdir())` before/after and assert no *other* entry
+  // appeared, which is racy against every other process (and every other
+  // test file in the same `bun test` run) also using the real temp dir.
+  const probe = sandboxedSubprocessEnvOrTemp(undefined, 'git', tempDirBase);
   try {
     const result = Bun.spawnSync(['git', 'rev-parse', '--show-toplevel'], {
       cwd: startDir,
@@ -88,6 +97,14 @@ export interface DiscoverConfigOptions {
   /** Overrides applied after file + env — used by tests and CLI flags. */
   port?: number;
   socketPath?: string;
+  /**
+   * Test-only seam (review round 3 B3): overrides where `findRepoRoot`'s
+   * no-repo-root sandbox fallback `mkdtempSync`s its temp directory —
+   * defaults to `os.tmpdir()`. Production never sets this; a test points it
+   * at its own `mkdtempSync`'d directory so it can assert *that* directory
+   * (never the real, shared OS temp dir) is empty afterwards.
+   */
+  tempDirBase?: string;
 }
 
 /**
@@ -96,7 +113,7 @@ export interface DiscoverConfigOptions {
  */
 export function discoverConfig(options: DiscoverConfigOptions = {}): AgileConfig {
   const cwd = options.cwd ?? process.cwd();
-  const repoRoot = findRepoRoot(cwd);
+  const repoRoot = findRepoRoot(cwd, options.tempDirBase);
   const stateRoot = join(repoRoot, '.agile');
   const fileConfig = readConfigFile(repoRoot);
 
