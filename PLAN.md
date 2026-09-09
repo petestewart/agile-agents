@@ -125,12 +125,12 @@ Priority encodes dependency layer as well as importance: P0 tickets are v0-block
 
 ### Ticket: T007 Oracle write guard, ripple walk, halts
 - **Priority:** P0
-- **Status:** In Review
+- **Status:** Done
 - **Owner:** sonnet:worker-T007
 - **Scope:** Depends on T005. `oracle.write` endpoint accepting only `architect` with a decision ID: validates `supersedes/depends/affects` graph (no dangling refs, no cycles), flips superseded entries, appends `changelog.md`, drops inactive entries from `index.yaml`. Ripple walk: transitive `affects` ∩ `ticket.oracle_refs` → mark `stale`. Halts: create/delete `board/halts/H-*.yaml` with scope `global | team | [tickets]`, quorum tracking from `standup_report` stanzas, heartbeat-timeout release.
 - **Acceptance Criteria:** A DEC change with a two-hop `affects` chain stales exactly the intersecting tickets; a non-architect write is refused; a halt's `quorum` flips to `reached` when the last affected agent reports or times out.
 - **Validation Steps:** Graph fixtures with cycles/dangling refs; ripple and quorum unit tests.
-- **Notes:** branch `T007-oracle-ripple-halts` (local worktree); `src/oracle/` (write guard, graph validation, ripple) + `src/halts/` (create/release/quorum, injectable clock), 19 tests. Worker escalated: `standup_report` is a Message not a Stanza kind (agreed, no change); quorum bookkeeping was process-local (manager: make it durable — Halt gains `affected`/`reported`/`raised_at`, persisted via `putHalt`); `putHalt` always minted `halt_created` (manager: add `halt_updated`). Worker applied all three in `4ee081b`. Review round 1 FAIL: cycle detection unions `depends`+`affects` so the design's mirrored pair is refused; dangling check index-only refuses refs to superseded-on-disk entries. QA round 1 ACCEPT. Worker fixed both (+3 nits) in `b3d19eb`; review round 2 PASS. QA round 2 running.
+- **Notes:** branch `T007-oracle-ripple-halts` (local worktree); `src/oracle/` (write guard, graph validation, ripple) + `src/halts/` (create/release/quorum, injectable clock), 19 tests. Worker escalated: `standup_report` is a Message not a Stanza kind (agreed, no change); quorum bookkeeping was process-local (manager: make it durable — Halt gains `affected`/`reported`/`raised_at`, persisted via `putHalt`); `putHalt` always minted `halt_created` (manager: add `halt_updated`). Worker applied all three in `4ee081b`. Review round 1 FAIL: cycle detection unions `depends`+`affects` so the design's mirrored pair is refused; dangling check index-only refuses refs to superseded-on-disk entries. QA round 1 ACCEPT. Worker fixed both (+3 nits) in `b3d19eb`; review round 2 PASS, QA round 2 ACCEPT. merge: 4f8bc80 (oracle/halt RPC wired; `Clock` type collision with bus resolved by explicit re-export).
 
 ### Ticket: T008 CLI `agile`
 - **Priority:** P0
@@ -348,3 +348,4 @@ Priority encodes dependency layer as well as importance: P0 tickets are v0-block
 - 2026-09-09 — Store gained `putEntities(writes, event)` (atomic multi-file put, one caller-supplied event, one commit); bus send uses it so a fan-out is one audit entry (0fc1dbe).
 - 2026-09-09 — T010 QA found a push-to-main bypass via `git -C`; command classification must tokenize shell chains and skip git global options. Title-based fallback adopted for payloads with empty `rawInput`.
 - 2026-09-09 — Decision (manager): the ACP `request_permission` answer is a best-effort command gate (kind-level policy is the guaranteed floor); command-level never-without-human enforcement is primary in the PreToolUse hook (T009), the only measured carrier of `tool_input`. Follow-up for a machine with a Claude login: extend `spike/permission-matrix.ts` to record `request_permission` params (`rawInput`, `locations`) so T010's title fallback can be confirmed or removed.
+- 2026-09-09 — T007 merged (4f8bc80). With T004–T007 done, T008 (CLI) is unblocked once T018 lands (its verbs); T009 depends on T008. Remaining wave-4: T010, T018 in fix/gate rounds.
