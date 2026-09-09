@@ -18,8 +18,8 @@ describe('roleOf', () => {
 });
 
 describe('checkRoute — allowed routes', () => {
-  test('engineer -> em: question/discovery/escalate', () => {
-    for (const kind of ['question', 'discovery', 'escalate'] as const) {
+  test('engineer -> em: question/discovery/escalate/standup_report', () => {
+    for (const kind of ['question', 'discovery', 'escalate', 'standup_report'] as const) {
       expect(checkRoute({ from: 'eng-1', to: 'em', kind }).allowed).toBe(true);
     }
   });
@@ -40,9 +40,11 @@ describe('checkRoute — allowed routes', () => {
     expect(checkRoute({ from: 'qa-1', to: 'eng-1', kind: 'qa_verdict' }).allowed).toBe(true);
   });
 
-  test('reviewer/qa -> em: copy, any kind', () => {
+  test('reviewer/qa -> em: copy, any kind (including standup_report — a reviewer/qa can also be a halt-affected agent)', () => {
     expect(checkRoute({ from: 'reviewer-1', to: 'em', kind: 'review_verdict' }).allowed).toBe(true);
     expect(checkRoute({ from: 'qa-1', to: 'em', kind: 'qa_verdict' }).allowed).toBe(true);
+    expect(checkRoute({ from: 'reviewer-1', to: 'em', kind: 'standup_report' }).allowed).toBe(true);
+    expect(checkRoute({ from: 'qa-1', to: 'em', kind: 'standup_report' }).allowed).toBe(true);
   });
 
   test('architect -> em', () => {
