@@ -40,7 +40,7 @@ import type { StateStore } from '../store/store';
 import { isAllowedTestCommand } from '../tools/test-run';
 import { type QaCriterion, parseCriteria } from './criteria';
 import { resolveQaEnv } from './env';
-import { buildQaReport, renderQaVerdictBody } from './report';
+import { buildQaReport, qaAllSkipped, renderQaVerdictBody } from './report';
 import {
   type FlakyFinding,
   type QaCriterionResult,
@@ -250,8 +250,23 @@ export class QaProtocol {
    * sends the `qa_verdict` message to the engineer (+ em copy — §5 routing
    * "reviewer/qa → engineer (verdict), → em (copy)"), transitions the
    * ticket, and on reject bumps `routing.attempts` (escalating to em at
-   * `max_attempts`). Clears this ticket's round state either way — a fresh
-   * `start()` is required for the next round.
+   * `max_attempts`). Clears this ticket's round state — a fresh `start()`
+   * is required for the next round — in every case EXCEPT a failed
+   * `qa_verdict` delivery, where the round is left intact for a retry.
+   *
+   * Round-2 review fix (opus blocker B1): when `buildQaReport` computed
+   * `qaAllSkipped(report)` (every criterion `skipped` — nothing was ever
+   * executed), this method refuses to transition the ticket at all,
+   * `done` included — §13's contract is "accept a correct implementation,
+   * reject one that fails a criterion", and an implementation nothing was
+   * run against is neither. The ticket is left `in_qa` (not bounced back
+   * to `in_progress` either — round-1's fix that a denied/unplanned
+   * command degrades to `skipped` instead of aborting the round means this
+   * can be the CONTRACT's fault, not the engineer's code, so bumping
+   * `routing.attempts` and asking the engineer to "fix" something would be
+   * wrong) and an urgent escalate reaches `em` (qa can't message the
+   * architect directly — §5 routing) so a human/architect re-scopes the
+   * contract or unblocks the round by hand.
    */
   async submit(ticket: TicketId, agent: AgentId): Promise<QaReport> {
     const state = this.requireState(ticket);
@@ -263,24 +278,6 @@ export class QaProtocol {
     const report = buildQaReport(ticketObj, state.round, state.results);
     const relPath = qaReportRelPath(ticket, report.round);
     await this.deps.store.putEntity(relPath, validateQaReport, report);
-
-    const skipped = state.results.filter((r) => r.status === 'skipped');
-    if (skipped.length > 0) {
-      await this.deps.bus.send({
-        id: ulid(),
-        ts: this.now().toISOString(),
-        from: agent,
-        to: ['em'],
-        kind: 'escalate',
-        priority: 'normal',
-        ticket,
-        body: `${skipped.length} criterion(s) on ${ticket} can't be exercised from outside — a finding against the criterion, not the code (§13). Architect should re-scope the contract.`.slice(
-          0,
-          MESSAGE_BODY_MAX_CHARS,
-        ),
-        refs: [relPath],
-      });
-    }
 
     const recipients: string[] = ticketObj.assignee ? [ticketObj.assignee, 'em'] : ['em'];
     const verdictSend = await this.deps.bus.send({
@@ -324,6 +321,51 @@ export class QaProtocol {
       throw new QaVerdictDeliveryError(
         `qa_submit: qa_verdict delivery failed for ${ticket} — ${verdictSend.reason}`,
       );
+    }
+
+    // Review round 2 fix (nit): the skipped-criteria escalate now fires
+    // only AFTER the qa_verdict has been confirmed delivered, and only
+    // ONCE — previously it ran unconditionally before the send, so a
+    // `QaVerdictDeliveryError` retry (which reaches this point again on a
+    // second `submit()` call) re-sent it, duplicating the escalate in em's
+    // inbox. `nothingExecuted` gets its own, stronger escalate below
+    // instead of this informational one, so the two are never both sent.
+    const skipped = state.results.filter((r) => r.status === 'skipped');
+    const nothingExecuted = qaAllSkipped(report);
+    if (skipped.length > 0 && !nothingExecuted) {
+      await this.deps.bus.send({
+        id: ulid(),
+        ts: this.now().toISOString(),
+        from: agent,
+        to: ['em'],
+        kind: 'escalate',
+        priority: 'normal',
+        ticket,
+        body: `${skipped.length} criterion(s) on ${ticket} can't be exercised from outside — a finding against the criterion, not the code (§13). Architect should re-scope the contract.`.slice(
+          0,
+          MESSAGE_BODY_MAX_CHARS,
+        ),
+        refs: [relPath],
+      });
+    }
+
+    if (nothingExecuted) {
+      await this.deps.bus.send({
+        id: ulid(),
+        ts: this.now().toISOString(),
+        from: agent,
+        to: ['em'],
+        kind: 'escalate',
+        priority: 'urgent',
+        ticket,
+        body: `QA could not execute ANY criterion on ${ticket} (round ${report.round}) — refusing to accept an unverified implementation. Every criterion was unplannable or denied at run time; needs architect re-scoping of the contract (or a different exercise path) before QA can run again. Ticket left in_qa.`.slice(
+          0,
+          MESSAGE_BODY_MAX_CHARS,
+        ),
+        refs: [relPath],
+      });
+      this.rounds.delete(ticket);
+      return report;
     }
 
     if (report.verdict === 'accept') {

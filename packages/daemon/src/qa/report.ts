@@ -19,9 +19,20 @@ import type { QaCriterionResult } from './rerun';
 /**
  * `verdict` is `reject` if any criterion `fail`ed; `accept` otherwise —
  * `flaky` counts as a pass-with-a-caveat (it's a KB fact, not a reject,
- * §13), and `skipped` alone does not force a reject (it's escalated to the
- * architect via em as its own finding — see `protocol.ts`'s `submit` — not
- * silently treated as a failure of the engineer's work).
+ * §13), and `skipped` alone does not force a reject when at least one OTHER
+ * criterion actually ran (it's escalated to the architect via em as its own
+ * finding — see `protocol.ts`'s `submit` — not silently treated as a
+ * failure of the engineer's work).
+ *
+ * Round-2 review fix (opus blocker B1): when EVERY line is `skipped` —
+ * nothing executed at all — `verdict` is forced to `reject` even though no
+ * line technically `fail`ed. §13's contract is "accept a correct
+ * implementation, reject one that fails a criterion"; an implementation
+ * nothing was ever run against is neither, and the old "reject iff any
+ * fail" rule silently `accept`ed it (round-1's fix that a denied/unplanned
+ * command degrades to `skipped` instead of aborting the round made this
+ * newly reachable). `qaAllSkipped` names the same check `protocol.ts`
+ * reuses to also refuse the ticket transition, not just the report label.
  */
 export function buildQaReport(
   ticket: Ticket,
@@ -34,8 +45,15 @@ export function buildQaReport(
     status: r.status,
     evidence: r.evidence,
   }));
-  const verdict = lines.some((l) => l.status === 'fail') ? 'reject' : 'accept';
+  const anyFail = lines.some((l) => l.status === 'fail');
+  const anyExecuted = lines.some((l) => l.status === 'pass' || l.status === 'flaky');
+  const verdict = anyFail || !anyExecuted ? 'reject' : 'accept';
   return validateQaReport({ ticket: ticket.id, round, lines, verdict });
+}
+
+/** True when every line is `skipped` — no criterion was actually exercised. Shared by `protocol.ts`'s `submit` so the "refuse to accept/transition" rule and the report's own verdict computation can never drift apart. */
+export function qaAllSkipped(report: QaReport): boolean {
+  return report.lines.every((l) => l.status === 'skipped');
 }
 
 const TRUNCATION_MARGIN_CHARS = 48;

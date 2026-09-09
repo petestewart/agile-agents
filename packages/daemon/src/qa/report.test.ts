@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { validateTicket } from '@agile-agents/shared';
-import { buildQaReport, renderQaVerdictBody } from './report';
+import { buildQaReport, qaAllSkipped, renderQaVerdictBody } from './report';
 import type { QaCriterionResult } from './rerun';
 
 function makeTicket(acceptance: string[]) {
@@ -44,12 +44,54 @@ describe('buildQaReport', () => {
     expect(report.verdict).toBe('reject');
   });
 
-  test('skipped alone (no fails) does not force a reject', () => {
+  test('a partial skip alongside an actually-executed pass does not force a reject', () => {
+    const results: QaCriterionResult[] = [
+      { criterion: 'a', command: 'bun test a', status: 'pass', evidence: 'ok' },
+      { criterion: 'b', status: 'skipped', evidence: 'no command' },
+    ];
+    const report = buildQaReport(makeTicket(['a', 'b']), 1, results);
+    expect(report.verdict).toBe('accept');
+    expect(qaAllSkipped(report)).toBe(false);
+  });
+
+  test('round-2 review fix (B1): every line skipped — nothing executed — forces a reject, not an accept', () => {
+    const results: QaCriterionResult[] = [
+      { criterion: 'a', status: 'skipped', evidence: 'no command' },
+      { criterion: 'b', status: 'skipped', evidence: 'command denied: not allow-listed' },
+    ];
+    const report = buildQaReport(makeTicket(['a', 'b']), 1, results);
+    expect(report.verdict).toBe('reject');
+    expect(qaAllSkipped(report)).toBe(true);
+  });
+
+  test('a single-criterion all-skipped report also rejects (the smallest reproduction of B1)', () => {
     const results: QaCriterionResult[] = [
       { criterion: 'a', status: 'skipped', evidence: 'no command' },
     ];
     const report = buildQaReport(makeTicket(['a']), 1, results);
-    expect(report.verdict).toBe('accept');
+    expect(report.verdict).toBe('reject');
+    expect(qaAllSkipped(report)).toBe(true);
+  });
+});
+
+describe('qaAllSkipped', () => {
+  test('false when at least one line executed (pass/flaky/fail)', () => {
+    expect(
+      qaAllSkipped(
+        buildQaReport(makeTicket(['a', 'b']), 1, [
+          { criterion: 'a', status: 'fail', command: 'x', evidence: 'e' },
+          { criterion: 'b', status: 'skipped', evidence: 'e' },
+        ]),
+      ),
+    ).toBe(false);
+  });
+
+  test('true only when every line is skipped', () => {
+    expect(
+      qaAllSkipped(
+        buildQaReport(makeTicket(['a']), 1, [{ criterion: 'a', status: 'skipped', evidence: 'e' }]),
+      ),
+    ).toBe(true);
   });
 });
 

@@ -6,6 +6,7 @@ import { type TicketId, validateQaReport, validateTicket } from '@agile-agents/s
 import { Bus } from '../bus/bus';
 import { runInit } from '../init';
 import { StateStore } from '../store/store';
+import { TestRunDeniedError } from '../tools/test-run';
 import { QaEnvUnsupportedError } from './env';
 import { QaProtocol, QaVerdictDeliveryError } from './protocol';
 
@@ -179,23 +180,29 @@ describe('QaProtocol end-to-end (real test_run, fixture project)', () => {
     expect(emInbox.some((m) => m.kind === 'escalate')).toBe(true);
   });
 
-  test('skipped criterion (no qa_plan command) does not force a reject but escalates the finding', async () => {
+  test('a partial skip alongside an executed criterion does not force a reject, and escalates the finding', async () => {
     const ticket = makeTicket('TKT-0012' as TicketId, {
-      contract: { acceptance: ['a UI criterion nothing can exercise headlessly'] },
+      contract: {
+        acceptance: ['the pass suite passes', 'a UI criterion nothing can exercise headlessly'],
+      },
     });
     await store.putTicket(ticket);
     const protocol = makeProtocol();
 
     protocol.start(ticket, qaWorktree);
-    // No qa_plan call at all — the criterion stays unplanned.
+    // Only criterion 0 is planned — criterion 1 stays unplanned (skipped).
+    protocol.plan(ticket.id, { 0: 'bun test pass.test.ts' });
     const results = await protocol.run(ticket.id);
-    expect(results[0]?.status).toBe('skipped');
+    expect(results.map((r) => r.status)).toEqual(['pass', 'skipped']);
 
     const report = await protocol.submit(ticket.id, 'qa-12');
     expect(report.verdict).toBe('accept');
+    expect(store.getTicket(ticket.id).status).toBe('done');
 
     const emInbox = bus.poll('em');
-    expect(emInbox.some((m) => m.kind === 'escalate')).toBe(true);
+    const escalation = emInbox.find((m) => m.kind === 'escalate');
+    expect(escalation).toBeDefined();
+    expect(escalation?.priority).toBe('normal');
   });
 
   test('qa.status reflects the in-flight round and clears after submit', async () => {
@@ -309,5 +316,95 @@ describe("QaProtocol.submit checks bus.send's SendResult (T017 review round)", (
 
     expect(report.verdict).toBe('accept');
     expect(store.getTicket(ticket.id).status).toBe('done');
+  });
+});
+
+describe('QaProtocol.submit refuses to accept/transition when nothing executed (T017 review round 3, opus B1)', () => {
+  test('every criterion unplanned (no qa_plan at all) -> reject, ticket left in_qa, urgent escalate to em, no attempts bump', async () => {
+    const ticket = makeTicket('TKT-0030' as TicketId, {
+      contract: {
+        acceptance: ['criterion A cannot be automated', 'criterion B neither'],
+      },
+      routing: { attempts: 0, max_attempts: 2, escalation: [] },
+    });
+    await store.putTicket(ticket);
+    const protocol = makeProtocol();
+
+    protocol.start(ticket, qaWorktree);
+    // No qa_plan call at all.
+    const results = await protocol.run(ticket.id);
+    expect(results.map((r) => r.status)).toEqual(['skipped', 'skipped']);
+
+    const report = await protocol.submit(ticket.id, 'qa-30');
+    expect(report.verdict).toBe('reject');
+
+    const stored = store.getTicket(ticket.id);
+    expect(stored.status).toBe('in_qa'); // NOT done, NOT bounced to in_progress.
+    expect(stored.routing?.attempts).toBe(0); // not bumped — this may not be the engineer's fault.
+
+    const emInbox = bus.poll('em');
+    const escalation = emInbox.find((m) => m.kind === 'escalate');
+    expect(escalation).toBeDefined();
+    expect(escalation?.priority).toBe('urgent');
+    expect(escalation?.body).toContain('could not execute ANY criterion');
+
+    // Exactly one escalate, not two (the informational partial-skip escalate must not also fire).
+    expect(emInbox.filter((m) => m.kind === 'escalate')).toHaveLength(1);
+
+    // Round state cleared — a fresh start() is required (this is a terminal outcome for the round).
+    expect(protocol.status(ticket.id)).toBeUndefined();
+  });
+
+  test("design's own example criterion (a live-HTTP check qa_plan can never accept) reproduces the same refusal, not a silent accept", async () => {
+    const ticket = makeTicket('TKT-0031' as TicketId, {
+      contract: {
+        acceptance: ['POST /login with valid creds returns 200 and a JWT whose exp is +24h'],
+      },
+    });
+    await store.putTicket(ticket);
+    const protocol = makeProtocol();
+
+    protocol.start(ticket, qaWorktree);
+    // No qa_plan call — a live-HTTP criterion like this one has no
+    // `test_run`-shaped command to plan it to in the first place (`curl`/
+    // `http` aren't on `isAllowedTestCommand`'s allow-list), reproducing
+    // exactly the scenario the round-2 review measured.
+    const results = await protocol.run(ticket.id);
+    expect(results[0]?.status).toBe('skipped');
+
+    const report = await protocol.submit(ticket.id, 'qa-31');
+    expect(report.verdict).toBe('reject');
+    expect(store.getTicket(ticket.id).status).toBe('in_qa');
+  });
+
+  test('every planned command denied at run time (TestRunDeniedError) -> same refusal, round-1 fix (no abort) still holds', async () => {
+    const ticket = makeTicket('TKT-0032' as TicketId, {
+      contract: { acceptance: ['a', 'b'] },
+    });
+    await store.putTicket(ticket);
+    const protocol = new QaProtocol({
+      store,
+      bus,
+      repoRoot: repo,
+      // Every command "denied at run time" — exercises the same skipped
+      // path `TestRunDeniedError` produces, without depending on plan-time
+      // validation's exact allow-list.
+      runTestRun: async () => {
+        throw new TestRunDeniedError('denied for this test');
+      },
+    });
+
+    protocol.start(ticket, qaWorktree);
+    // Plan validation only checks the command shape, not runtime denial —
+    // a shape that passes `isAllowedTestCommand`/`decidePermission` but is
+    // then denied by the (test-injected) runner reproduces the "denied at
+    // run time" path distinctly from "never planned at all".
+    protocol.plan(ticket.id, { 0: 'bun test pass.test.ts', 1: 'bun test fail.test.ts' });
+    const results = await protocol.run(ticket.id); // must NOT throw (round-1 fix).
+    expect(results.every((r) => r.status === 'skipped')).toBe(true);
+
+    const report = await protocol.submit(ticket.id, 'qa-32');
+    expect(report.verdict).toBe('reject');
+    expect(store.getTicket(ticket.id).status).toBe('in_qa');
   });
 });
