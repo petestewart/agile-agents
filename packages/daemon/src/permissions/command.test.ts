@@ -12,6 +12,7 @@ import {
   parseGitInvocation,
   pushRefspecs,
   redirectionTarget,
+  redirectionTargets,
   refspecDestBranch,
   splitCommandSegments,
   stripPrefixes,
@@ -161,7 +162,7 @@ describe('isNewDependencyInstall — beyond npm/pnpm/bun', () => {
   });
 });
 
-describe('hasRedirectionOrTee / redirectionTarget', () => {
+describe('hasRedirectionOrTee / redirectionTarget / redirectionTargets', () => {
   test('detects tee and > / >> as their own token or fused onto the target', () => {
     expect(hasRedirectionOrTee(['cat', 'evil', '>', 'out.txt'])).toBe(true);
     expect(hasRedirectionOrTee(['cat', 'evil', '>out.txt'])).toBe(true);
@@ -170,9 +171,41 @@ describe('hasRedirectionOrTee / redirectionTarget', () => {
     expect(hasRedirectionOrTee(['npm', 'test'])).toBe(false);
   });
 
-  test('extracts the redirection target', () => {
+  test('detects fd-prefixed and combined forms (review round 2, opus R2-1): 1>, 2>, &>, >|, <>, 2>>', () => {
+    for (const tokens of [
+      ['cat', 'f', '1>', 'g'],
+      ['cat', 'f', '1>g'],
+      ['cat', 'f', '2>', 'g'],
+      ['cat', 'f', '&>', 'g'],
+      ['cat', 'f', '&>g'],
+      ['echo', 'x', '&>>', 'g'],
+      ['echo', 'x', '2>>', 'g'],
+      ['cmd', '>|', 'g'],
+      ['cmd', '<>', 'g'],
+    ]) {
+      expect(hasRedirectionOrTee(tokens)).toBe(true);
+    }
+  });
+
+  test('a bare "&" (background job operator) is not mistaken for a redirection', () => {
+    expect(hasRedirectionOrTee(['npm', 'test', '&'])).toBe(false);
+  });
+
+  test('extracts the redirection target, including fd-prefixed/fused forms', () => {
     expect(redirectionTarget(['cat', 'evil', '>', 'out.txt'])).toBe('out.txt');
     expect(redirectionTarget(['cat', 'evil', '>out.txt'])).toBe('out.txt');
+    expect(redirectionTarget(['cat', 'evil', '1>', 'out.txt'])).toBe('out.txt');
+    expect(redirectionTarget(['npm', 'run', 'build', '1>/etc/x'])).toBe('/etc/x');
+    expect(redirectionTarget(['cat', 'evil', '&>', 'out.txt'])).toBe('out.txt');
+  });
+
+  test('redirectionTargets collects every target, not just the first (opus "newly visible" finding)', () => {
+    expect(redirectionTargets(['cmd', '>', 'a.txt', '2>', 'b.txt'])).toEqual(['a.txt', 'b.txt']);
+  });
+
+  test('a bare fd-duplication (2>&1) has no real target, and is not mistaken for one', () => {
+    expect(hasRedirectionOrTee(['cmd', '2>&1'])).toBe(true);
+    expect(redirectionTargets(['cmd', '2>&1'])).toEqual([]);
   });
 });
 

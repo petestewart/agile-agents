@@ -25,11 +25,19 @@
  *   force-push, branch delete, new dependency, the deny-listed commands)
  *   is primary in T009's PreToolUse hook**, which is the only measured
  *   carrier of the actual command text. This module still classifies
- *   command text correctly whenever it IS available here (`rawInput`, a
- *   `locations` field if one ever appears, or the `title` fallback below)
- *   — a permissive answer at this tier would defeat the hook even though
- *   the hook is the primary backstop, so the classifier in
- *   `command.ts`/`policy-tables.ts` is not decorative.
+ *   command text correctly whenever it IS available here: from `rawInput`
+ *   when populated, or — since every recorded capture shows `rawInput: {}`
+ *   and that is the branch that will actually run against a live vendor —
+ *   from `toolCall.title` via the narrow fallback in `classify.ts`
+ *   (`^Run (.+)$` → command, `^(?:Edit|Write|Create) (.+)$` → path,
+ *   `^Read(?: File)?$` → confirms a read). Anything outside those shapes
+ *   (free-form prose, `"Terminal"`) stays kind-only. A permissive answer at
+ *   this tier would defeat the hook even though the hook is the primary
+ *   backstop, so the classifier in `command.ts`/`policy-tables.ts`/
+ *   `classify.ts` is not decorative. (There is no `locations` field on
+ *   `AcpToolCall` — it does not appear in any recorded capture or in
+ *   `spike/permission-matrix.ts`'s parsing, so nothing here parses it;
+ *   add it if a future capture shows the wire actually carries one.)
  * - When no command text is available at all for an `execute` request, the
  *   engineer verdict is `deny` (with a reason pointing at the hook-gated
  *   path), not `hil` — see the `// DESIGN-GAP:` comment in

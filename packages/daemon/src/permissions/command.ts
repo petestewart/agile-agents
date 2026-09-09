@@ -491,19 +491,53 @@ export function isManifestPath(path: string | undefined): boolean {
 // Redirection / tee (opus blocking finding 2)
 // ---------------------------------------------------------------------------
 
-/** `tee`, or a `>`/`>>` redirection token (as its own token or fused onto the target, e.g. `>out.txt`), or a `<(...)` process substitution. */
+/**
+ * Matches any redirection operator, with or without a leading file
+ * descriptor digit or `&` (review round 2, opus R2-1): `>`, `>>`, `<>`,
+ * `>|`, and fd-prefixed/combined forms `1>`, `2>`, `2>>`, `&>`, `&>>`. A
+ * plain whitespace-only `/^>{1,2}/` (round-1's check) never matched `1>`/
+ * `2>`/`&>`, so `cat f 1> g` and `npm run build 1>/etc/x` were invisible to
+ * both the reviewer/QA outright-deny and the engineer's worktree-containment
+ * check. `test()`/`exec()` intentionally have no trailing anchor — a fused
+ * target (`1>/etc/x`) still starts with the operator, and that's the case
+ * that matters.
+ */
+const REDIRECTION_TOKEN_RE = /^(\d+|&)?(>>?|<>|>\|)/;
+
+/** `tee`, a redirection operator token (any form `REDIRECTION_TOKEN_RE` matches, as its own token or fused onto the target), or a `<(...)` process substitution. */
 export function hasRedirectionOrTee(tokens: string[]): boolean {
   if (tokens.includes('tee')) return true;
-  return tokens.some((t) => /^>{1,2}/.test(t) || t.startsWith('<('));
+  return tokens.some((t) => REDIRECTION_TOKEN_RE.test(t) || t.startsWith('<('));
 }
 
-/** The path argument of the first `>`/`>>` redirection, whether it's its own token or fused (`>out.txt`). `undefined` if there's no plain-file redirection to check (e.g. only `tee`, or only `<(...)`). */
-export function redirectionTarget(tokens: string[]): string | undefined {
+const FD_DUP_RE = /^&\d+$/;
+
+/**
+ * Every redirection's target in `tokens` — there can be more than one
+ * (`cmd > a.txt 2> b.txt`, round-2 "newly visible" finding: the round-1
+ * version only checked the first) — whether fused onto the operator
+ * (`>out.txt`, `1>/etc/x`) or given as the following token. A bare
+ * fd-duplication target (`2>&1` — no real file, just a stream merge) is
+ * skipped: there is nothing on disk to contain.
+ */
+export function redirectionTargets(tokens: string[]): string[] {
+  const targets: string[] = [];
   for (let i = 0; i < tokens.length; i++) {
     const t = tokens[i] ?? '';
-    if (t === '>' || t === '>>') return tokens[i + 1];
-    const m = /^(>{1,2})(.+)$/.exec(t);
-    if (m) return m[2];
+    const m = REDIRECTION_TOKEN_RE.exec(t);
+    if (!m) continue;
+    const rest = t.slice(m[0].length);
+    if (rest.length > 0) {
+      if (!FD_DUP_RE.test(rest)) targets.push(rest);
+      continue;
+    }
+    const next = tokens[i + 1];
+    if (next !== undefined && !FD_DUP_RE.test(next)) targets.push(next);
   }
-  return undefined;
+  return targets;
+}
+
+/** The first redirection target, if any — see `redirectionTargets` for the full (possibly multi-target) picture. */
+export function redirectionTarget(tokens: string[]): string | undefined {
+  return redirectionTargets(tokens)[0];
 }

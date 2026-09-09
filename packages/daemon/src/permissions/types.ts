@@ -10,22 +10,23 @@
  * and the client answers with `{ outcome: { outcome: 'selected', optionId }
  * | { outcome: 'cancelled' } }`.
  *
- * DESIGN-GAP (verify-before-build finding): every recorded spike payload in
- * `spike/spike-out/*.json` shows `rawInput: {}` for every tool call,
- * including edits and execs — the harness never captured populated
- * `rawInput`. The ticket's instruction to parse
- * `rawInput.command`/`file_path`/`path` is still the right target (it is
- * the field the ACP spec and the Claude bridge define for this purpose,
- * and ourAnswer/title strings in the same payloads confirm the bridge does
- * carry structured tool arguments elsewhere in its own tool-call
- * bookkeeping) — but a real run may hand this policy an empty `rawInput`.
- * Classification degrades to `targetPath`/`command` both `undefined` in
- * that case, and every rule below treats "can't identify the target" as
- * the safe default (deny/hil, never allow) rather than guessing from
- * `title` text, which is human-readable prose the bridge is free to
- * reformat. Flagged for the manager: a follow-up spike run against a
- * Claude Code build that populates `rawInput` would confirm the field
- * names before this ships against a live vendor.
+ * DESIGN-GAP (verify-before-build finding, updated round 2): every
+ * recorded spike payload in `spike/spike-out/*.json` shows `rawInput: {}`
+ * for every tool call, including edits and execs — the harness never
+ * captured populated `rawInput`. Whether the *permission request's own*
+ * `rawInput` is ever populated for Claude is unmeasured, not proven empty
+ * (a follow-up spike run against a live vendor recording
+ * `params.toolCall.rawInput` unconditionally would settle it) — but since
+ * every capture to date shows `{}`, `classify.ts` treats `rawInput` empty
+ * as the expected case, not the exceptional one: when it carries neither a
+ * command nor a path, `title` — model-authored prose, but observed to
+ * follow a small set of shapes ("Run npm test", "Edit small.txt", "Write
+ * new.txt", "Read File") — is parsed as a fallback (`classify.ts`'s file
+ * header has the exact patterns). This is deliberately narrow: only those
+ * shapes are recognized, and anything else (free-form prose, "Terminal")
+ * leaves classification kind-only, at which point the policy table's
+ * existing safe defaults apply (deny/hil, never allow, on an
+ * unidentifiable target).
  */
 
 /** The three roles this ticket's policy table covers (§14's Architect/EM/Reader rows are out of scope here). */
@@ -83,6 +84,8 @@ export interface PermissionRequest {
   targetPath?: string;
   /** `rawInput.url` for `fetch` tool calls. */
   url?: string;
+  /** True when `command`/`targetPath`/`toolClass` came from parsing `title` (`rawInput` had neither) rather than from `rawInput` itself — see `classify.ts`'s file header. */
+  titleFallbackUsed: boolean;
   raw: AcpPermissionRequestParams;
 }
 

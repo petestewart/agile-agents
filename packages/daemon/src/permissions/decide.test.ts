@@ -454,3 +454,117 @@ describe('decidePermission — engineer redirection (review round)', () => {
     expect(decision.kind).toBe('deny');
   });
 });
+
+describe('decidePermission — fd-prefixed redirects (review round 2, opus R2-1)', () => {
+  test('reviewer: 1>/2>/&> are denied just like a plain >', () => {
+    for (const command of ['cat f 1> g', 'cat f &> g', 'git diff 1>/etc/x']) {
+      expect(decide('reviewer', request('execute', { command })).kind).toBe('deny');
+    }
+  });
+
+  test('engineer: a fd-prefixed redirect outside the worktree is denied', () => {
+    const decision = decide('engineer', request('execute', { command: 'npm run build 1>/etc/x' }));
+    expect(decision.kind).toBe('deny');
+  });
+
+  test('engineer: a fd-prefixed redirect inside the worktree is allowed', () => {
+    const decision = decide(
+      'engineer',
+      request('execute', { command: `npm run build 1>${WORKTREE}/out.log` }),
+    );
+    expect(decision.kind).toBe('allow');
+  });
+
+  test('engineer: a second redirect in the same command is also checked', () => {
+    const decision = decide(
+      'engineer',
+      request('execute', { command: `npm test > ${WORKTREE}/out.log 2> /etc/err.log` }),
+    );
+    expect(decision.kind).toBe('deny');
+  });
+});
+
+describe('decidePermission — sed --in-place / perl -i / gawk -i (review round 2, opus R2-2)', () => {
+  test('reviewer: sed --in-place and --in-place=.bak are denied like -i', () => {
+    for (const command of [
+      'sed --in-place s/a/b/ f',
+      'sed --in-place=.bak s/a/b/ f',
+      'sed -i.bak s/a/b/ f',
+      'sed -ibak s/a/b/ f',
+    ]) {
+      expect(decide('reviewer', request('execute', { command })).kind).toBe('deny');
+    }
+  });
+
+  test('reviewer: sed without any in-place flag is still read-only', () => {
+    expect(decide('reviewer', request('execute', { command: 'sed -n 1,5p f' })).kind).toBe('allow');
+  });
+
+  test('reviewer: perl -i and gawk -i inplace are denied (not on the allow-list at all)', () => {
+    expect(decide('reviewer', request('execute', { command: "perl -i -pe 's/a/b/' f" })).kind).toBe(
+      'deny',
+    );
+    expect(decide('reviewer', request('execute', { command: 'gawk -i inplace { } f' })).kind).toBe(
+      'deny',
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Degraded payload / title fallback (round-2 QA requirement): rawInput: {}
+// is what every recorded Claude capture actually ships, so this table is
+// the branch that runs against a live vendor.
+// ---------------------------------------------------------------------------
+describe('decidePermission — degraded payloads (title fallback, review round 2)', () => {
+  test('engineer: title "Run git push origin main" with empty rawInput is a hil_request, not a silent deny', () => {
+    const decision = decide('engineer', request('execute', { title: 'Run git push origin main' }));
+    expect(decision.kind).toBe('hil');
+  });
+
+  test('engineer: title "Run git status" with empty rawInput is allowed', () => {
+    const decision = decide('engineer', request('execute', { title: 'Run git status' }));
+    expect(decision.kind).toBe('allow');
+  });
+
+  test('engineer: title "Run npm test" with empty rawInput is allowed', () => {
+    const decision = decide('engineer', request('execute', { title: 'Run npm test' }));
+    expect(decision.kind).toBe('allow');
+  });
+
+  test('engineer: title "Run bun add zod" with empty rawInput is a hil_request (new dependency)', () => {
+    const decision = decide('engineer', request('execute', { title: 'Run bun add zod' }));
+    expect(decision.kind).toBe('hil');
+  });
+
+  test('engineer: title "Edit small.txt" with empty rawInput resolves against the worktree and allows', () => {
+    const decision = decide('engineer', request('edit', { title: 'Edit small.txt' }));
+    expect(decision.kind).toBe('allow');
+  });
+
+  test('engineer: title "Write new.txt" with empty rawInput resolves against the worktree and allows', () => {
+    const decision = decide('engineer', request('edit', { title: 'Write new.txt' }));
+    expect(decision.kind).toBe('allow');
+  });
+
+  test('engineer: title "Edit /outside/x.ts" with empty rawInput denies on the outside-the-worktree rule', () => {
+    const decision = decide('engineer', request('edit', { title: 'Edit /outside/x.ts' }));
+    expect(decision.kind).toBe('deny');
+  });
+
+  test('engineer: title "Terminal" (no parseable shape) with empty rawInput stays a reasoned deny, not hil', () => {
+    const decision = decide('engineer', request('execute', { title: 'Terminal' }));
+    expect(decision.kind).toBe('deny');
+  });
+
+  test('reviewer/QA: title-derived edits are still denied (kind-level floor holds regardless of title)', () => {
+    expect(decide('reviewer', request('edit', { title: 'Edit small.txt' })).kind).toBe('deny');
+    expect(decide('qa', request('edit', { title: 'Write new.txt' })).kind).toBe('deny');
+  });
+
+  test('title "Read File" / "Read" with empty rawInput is allowed for every role', () => {
+    for (const role of ROLES) {
+      expect(decide(role, request('read', { title: 'Read File' })).kind).toBe('allow');
+      expect(decide(role, request('read', { title: 'Read' })).kind).toBe('allow');
+    }
+  });
+});

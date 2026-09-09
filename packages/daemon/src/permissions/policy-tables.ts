@@ -187,11 +187,21 @@ export function checkNeverWithoutHuman(
 function engineerExecuteVerdict(command: string, ctx: PolicyContext): PolicyVerdict {
   for (const atom of cmd.parseCommandIntoAtoms(command)) {
     if (cmd.hasRedirectionOrTee(atom.tokens)) {
-      const target = cmd.redirectionTarget(atom.tokens);
-      if (target === undefined || !isPathInside(target, ctx.worktreePath)) {
+      // Every redirection target must resolve inside the worktree (review
+      // round 2: a single `>` used to be the only spelling checked — `1>`,
+      // `2>`, `&>`, and a second `>` later in the same atom all slipped
+      // through). `tee` and an unresolvable target (fd-dup forms, `<(...)`)
+      // have no path to verify, so they deny outright rather than guess.
+      const targets = cmd.redirectionTargets(atom.tokens);
+      const hasTee = atom.tokens.includes('tee');
+      if (
+        hasTee ||
+        targets.length === 0 ||
+        targets.some((t) => !isPathInside(t, ctx.worktreePath))
+      ) {
         return deny('redirected output escapes the worktree (or uses tee/process substitution)');
       }
-      // Redirection target is inside the worktree — fall through and still
+      // Every redirection target is inside the worktree — fall through and still
       // classify the underlying command below. A safe redirect target does
       // not by itself make the command it's attached to allowed (e.g.
       // `rm -rf secret > <worktree>/out.log` must still be denied for not
@@ -263,13 +273,26 @@ const REVIEWER_PLAIN_READ_ONLY_TOOLS = new Set(['grep', 'rg', 'cat', 'ls', 'wc']
  * finding 2), so they're gated on flags rather than allowed/dropped
  * wholesale.
  */
+/** `sed -i`/`-i.bak`/`-ibak` (short form, review round 1) and `--in-place`/`--in-place=.bak` (long form, review round 2 — `t.startsWith('-i')` alone never matched a `--`-prefixed flag) are all in-place-edit forms. */
+function isSedInPlace(tokens: string[]): boolean {
+  return tokens.some(
+    (t) => t === '-i' || t.startsWith('-i') || t === '--in-place' || t.startsWith('--in-place='),
+  );
+}
+
 function isReviewerSafeTool(tokens: string[]): boolean {
   const head = tokens[0];
   if (head === undefined) return false;
   if (REVIEWER_PLAIN_READ_ONLY_TOOLS.has(head)) return true;
-  if (head === 'sed') return !tokens.some((t) => t === '-i' || t.startsWith('-i'));
+  if (head === 'sed') return !isSedInPlace(tokens);
   if (head === 'find')
     return !tokens.some((t) => t === '-delete' || t === '-exec' || t === '-execdir');
+  // `perl -i ...` and `gawk -i inplace ...` are also in-place rewrites
+  // (review round 2, "if cheap") — neither `perl` nor `gawk`/`awk` is in
+  // `REVIEWER_PLAIN_READ_ONLY_TOOLS` or has a case above, so they already
+  // fall through to `false` (denied) regardless of flags. No extra check
+  // is needed unless one of them is ever added to the allow-list — see
+  // `command.test.ts` for a locked-in regression covering both.
   return false;
 }
 
