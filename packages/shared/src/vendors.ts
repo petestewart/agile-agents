@@ -168,6 +168,21 @@ export const QuotaSchema = z
      * call — "a reset after a successful call".
      */
     cooldown_backoff_seconds: z.number().positive().optional(),
+    /**
+     * T023 round-3 review-fix DESIGN-GAP: the `remaining` a 429 zeroes
+     * (§4/§10: "remaining 0 until reset") needs to be restorable once the
+     * *cooldown* elapses but the *window* hasn't also rolled over — without
+     * this, the account's true remaining budget from before the 429 is
+     * lost outright, and the first `recordUsage` after re-admission starts
+     * back at 0 tokens and immediately re-exhausts the account for good
+     * (opus round 2 finding). Captured by `record429` on a *new* episode
+     * (never re-captured while escalating the same episode — `remaining`
+     * is already 0 by then) and restored (then cleared) once
+     * `QuotaService`'s cooldown-recovery step runs after the cooldown
+     * elapses; a window reset that also fires at the same time takes
+     * precedence and rearms to the full `limit` instead.
+     */
+    pre_cooldown_remaining: z.number().min(0).optional(),
   })
   .strict();
 

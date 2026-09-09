@@ -63,6 +63,16 @@ export const DEFAULT_QUOTA_FLOOR = 0.15;
  */
 export const DEFAULT_WINDOW_TOKENS = 1_000_000;
 
+/**
+ * Round-3 review-fix DESIGN-GAP: "always set `resets_at` from the vendor
+ * window (default a `window_hours` when the vendor entry lacks it)". No
+ * cadence tunable exists in CLAUDE.md or the design for this either. A day
+ * is a v0 placeholder (a subscription window is at least this granular in
+ * every vendor spike-findings entry), correctable per-account via
+ * `VendorAccount.quota.window_hours` with zero code changes.
+ */
+export const DEFAULT_WINDOW_HOURS = 24;
+
 /** Review-fix: "escalate cooldown (e.g. retry-after or 30 s → 1 m → 5 m → 15 m cap)". */
 export const BACKOFF_LADDER_SECONDS = [30, 60, 300, 900] as const;
 
@@ -193,6 +203,14 @@ export class QuotaService {
    * `limit` here, since the *next* write's `previousFraction` reflects the
    * rearmed (full) state, not the stale below-floor one.
    *
+   * Round-3 review-fix: `resets_at` is now always advanced by a concrete
+   * cadence (the account's configured `window_hours`, else
+   * `DEFAULT_WINDOW_HOURS`) rather than ever clearing to `null` — a record
+   * with no cadence configured used to rearm once and then never again,
+   * which (opus round 2) also left `record429`/`recordUsage` with no
+   * window-reset backstop to fall back on when a cooldown-only recovery
+   * (`applyCooldownRecovery`, below) didn't apply.
+   *
    * Returns `existing` unchanged when no reset is due (no `resets_at`, or
    * it hasn't arrived yet).
    */
@@ -204,30 +222,81 @@ export class QuotaService {
     const resetsAtMs = Date.parse(existing.resets_at);
     if (Number.isNaN(resetsAtMs) || this.now().getTime() < resetsAtMs) return existing;
 
-    const windowHours = accountConfig?.window_hours;
-    // DESIGN-GAP: with no configured cadence, this is a one-shot rearm —
-    // `resets_at` clears to `null` and no further automatic rearm happens
-    // until something (a reported reading, or vendors.yaml gaining
-    // `window_hours`) sets a new one.
-    const nextResetsAt =
-      windowHours !== undefined
-        ? new Date(resetsAtMs + windowHours * 60 * 60 * 1000).toISOString()
-        : null;
+    const windowHours = accountConfig?.window_hours ?? DEFAULT_WINDOW_HOURS;
+    const nextResetsAt = new Date(resetsAtMs + windowHours * 60 * 60 * 1000).toISOString();
 
     return {
       ...existing,
       remaining: existing.limit ?? existing.remaining,
       cooldown_until: null,
       cooldown_backoff_seconds: undefined,
+      pre_cooldown_remaining: undefined,
       resets_at: nextResetsAt,
     };
   }
 
-  private initialResetsAt(accountConfig: AccountQuotaConfig | undefined): string | null {
-    if (accountConfig?.window_hours === undefined) return null;
-    return new Date(
-      this.now().getTime() + accountConfig.window_hours * 60 * 60 * 1000,
-    ).toISOString();
+  /** Round-3 review-fix: every countdown record gets a real cadence, defaulting to `DEFAULT_WINDOW_HOURS` — never `null` — so `applyWindowReset` always has a `resets_at` to eventually act on, even for an account with no `quota.window_hours` configured. */
+  private initialResetsAt(accountConfig: AccountQuotaConfig | undefined): string {
+    const windowHours = accountConfig?.window_hours ?? DEFAULT_WINDOW_HOURS;
+    return new Date(this.now().getTime() + windowHours * 60 * 60 * 1000).toISOString();
+  }
+
+  /**
+   * Round-3 review-fix (opus round 2 finding): a 429 zeroes `remaining`
+   * for the duration of its cooldown (§4: "remaining 0 until reset"), but
+   * once the *cooldown itself* elapses that zero is stale, not a fresh
+   * reading — the account's pre-429 budget is still (presumptively) there.
+   * `routeCandidates` already treats a stale post-cooldown zero as "lazily"
+   * available for routing *decisions* (see `routing.ts`), but the first
+   * `recordUsage`/`recordReported` call after re-admission was still
+   * decrementing from that stale 0 and re-persisting an even-more-final 0
+   * with `cooldown_until: null` — at that point routing's own lazy rescue
+   * no longer applies (there is no `cooldown_until` left to treat as
+   * stale), permanently shedding an account that was never actually out of
+   * budget.
+   *
+   * Restores `remaining` to whatever it was captured as just before the
+   * 429 (`pre_cooldown_remaining`), clamped to the current `limit` (in
+   * case the configured window shrank in the meantime) — "keep the
+   * pre-cooldown remaining" per §4's `remaining` semantics being a live
+   * account balance, not something a *rate limit* (as opposed to a window
+   * rollover) has any authority to permanently reduce. A window reset that
+   * has *also* elapsed by the time this runs (checked by `applyWindowReset`
+   * immediately afterward, in `resolveExisting`) takes precedence and
+   * rearms to the full `limit` instead, per §4's actual reset semantics.
+   *
+   * Returns `existing` unchanged when there is no cooldown, or it hasn't
+   * elapsed yet.
+   */
+  private applyCooldownRecovery(
+    existing: Quota | undefined,
+    accountConfig: AccountQuotaConfig | undefined,
+  ): Quota | undefined {
+    if (existing?.cooldown_until == null) return existing;
+    if (Date.parse(existing.cooldown_until) > this.now().getTime()) return existing;
+
+    const limit = accountConfig?.window_tokens ?? existing.limit ?? DEFAULT_WINDOW_TOKENS;
+    const restored = existing.pre_cooldown_remaining ?? limit;
+
+    return {
+      ...existing,
+      remaining: Math.max(0, Math.min(restored, limit)),
+      limit,
+      cooldown_until: null,
+      cooldown_backoff_seconds: undefined,
+      pre_cooldown_remaining: undefined,
+    };
+  }
+
+  /** Loads the current record (if any) and applies both recovery steps, in order: cooldown recovery first (restores the pre-429 remaining), then window reset (which — if *also* due — overrides that restored value with a full rearm to `limit`, taking precedence per §4). Every call site (`recordUsage`/`recordReported`/`record429`) goes through this instead of `tryGetQuota` directly, so a stale cooldown or an elapsed window is never read as this call's actual starting state. */
+  private resolveExisting(
+    vendor: string,
+    account: string,
+    accountConfig: AccountQuotaConfig | undefined,
+  ): Quota | undefined {
+    const raw = this.tryGetQuota(vendor, account);
+    const cooldownRecovered = this.applyCooldownRecovery(raw, accountConfig);
+    return this.applyWindowReset(cooldownRecovered, accountConfig);
   }
 
   /**
@@ -248,7 +317,7 @@ export class QuotaService {
    */
   async recordUsage(vendor: string, account: string, ledgerLine: LedgerLine): Promise<Quota> {
     const accountConfig = this.accountConfig(vendor, account);
-    const existing = this.applyWindowReset(this.tryGetQuota(vendor, account), accountConfig);
+    const existing = this.resolveExisting(vendor, account, accountConfig);
     const previousFraction = existing ? quotaFraction(existing, accountConfig?.window_tokens) : 1;
 
     const windowTokens =
@@ -322,7 +391,7 @@ export class QuotaService {
     opts: { spendDeltaUsd?: number } = {},
   ): Promise<Quota> {
     const accountConfig = this.accountConfig(vendor, account);
-    const existing = this.applyWindowReset(this.tryGetQuota(vendor, account), accountConfig);
+    const existing = this.resolveExisting(vendor, account, accountConfig);
     const previousFraction = existing ? quotaFraction(existing, accountConfig?.window_tokens) : 1;
 
     let remaining: number;
@@ -369,8 +438,14 @@ export class QuotaService {
       remaining,
       unit,
       limit,
+      // An explicit `null` from the reading (the vendor genuinely reports
+      // no window) is respected as-is; `undefined` (not given at all)
+      // falls back to whatever's already known, then a fresh default
+      // cadence — same "always set resets_at" round-3 fix as `recordUsage`.
       resets_at:
-        reading.resets_at !== undefined ? reading.resets_at : (existing?.resets_at ?? null),
+        reading.resets_at !== undefined
+          ? reading.resets_at
+          : (existing?.resets_at ?? this.initialResetsAt(accountConfig)),
       confidence,
       source: 'usage_endpoint',
       updated: this.now().toISOString(),
@@ -403,7 +478,11 @@ export class QuotaService {
    */
   async record429(vendor: string, account: string, retryAfterSeconds?: number): Promise<Quota> {
     const accountConfig = this.accountConfig(vendor, account);
-    const existing = this.applyWindowReset(this.tryGetQuota(vendor, account), accountConfig);
+    // `resolveExisting` recovers any *prior* episode's stale cooldown/window
+    // first, so `existing` here reflects the account's true state right
+    // before *this* 429 — the correct value to capture as
+    // `pre_cooldown_remaining` below when this is a fresh episode.
+    const existing = this.resolveExisting(vendor, account, accountConfig);
     const nowMs = this.now().getTime();
     const sameEpisode =
       existing?.cooldown_until != null && Date.parse(existing.cooldown_until) > nowMs;
@@ -415,18 +494,27 @@ export class QuotaService {
 
     const windowTokens = accountConfig?.window_tokens ?? existing?.limit ?? DEFAULT_WINDOW_TOKENS;
 
+    // Round-3 review-fix: capture the pre-429 `remaining` once, on this
+    // episode's first 429 — never re-captured while merely escalating the
+    // same episode's backoff, since `remaining` is already 0 by then and
+    // would clobber the real value this is meant to restore later.
+    const preCooldownRemaining = sameEpisode
+      ? existing?.pre_cooldown_remaining
+      : (existing?.remaining ?? windowTokens);
+
     const updated: Quota = validateQuota({
       vendor,
       account,
       kind: existing?.kind ?? 'subscription_window',
       remaining: 0,
       unit: existing?.unit ?? 'tokens',
-      resets_at: existing?.resets_at ?? null,
+      resets_at: existing?.resets_at ?? this.initialResetsAt(accountConfig),
       confidence: 'reported',
       source: 'rate_limit_429',
       updated: new Date(nowMs).toISOString(),
       cooldown_until: cooldownUntil,
       cooldown_backoff_seconds: backoffSeconds,
+      pre_cooldown_remaining: preCooldownRemaining,
       limit: existing?.unit === 'tokens' || existing === undefined ? windowTokens : existing.limit,
       billing: existing?.billing,
       spend_usd: existing?.spend_usd,

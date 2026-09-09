@@ -7,7 +7,13 @@ import { validateAgentRecord, validateLedgerLine } from '@agile-agents/shared';
 import { Bus } from '../bus/bus';
 import { runInit } from '../init';
 import { NotFoundError, StateStore } from '../store/store';
-import { DEFAULT_QUOTA_FLOOR, DEFAULT_WINDOW_TOKENS, QuotaService, quotaFraction } from './records';
+import {
+  DEFAULT_QUOTA_FLOOR,
+  DEFAULT_WINDOW_HOURS,
+  DEFAULT_WINDOW_TOKENS,
+  QuotaService,
+  quotaFraction,
+} from './records';
 import { pickCandidate, routeCandidates } from './routing';
 
 let repo: string;
@@ -400,6 +406,40 @@ describe('QuotaService + routeCandidates — end-to-end reroute after a 429 (QA 
     if ('none' in routedAfter) throw new Error('unreachable');
     expect(routedAfter.map((c) => c.account)).toContain('default');
   });
+
+  test('opus round-2 fix: 429 -> cooldown elapses -> one recordUsage call -> the account is still routable afterward', async () => {
+    // This is the exact regression: routing's own lazy "cooldown elapsed"
+    // rescue (`routing.ts`) only helps until something actually WRITES a
+    // fresh record — the first `recordUsage` after re-admission used to
+    // carry the stale post-429 `remaining: 0` forward and re-persist it
+    // with `cooldown_until: null`, at which point there is no longer a
+    // cooldown for routing's lazy rescue to treat as stale, permanently
+    // shedding a perfectly healthy account.
+    const clock = fakeClock(Date.parse('2026-09-09T00:00:00.000Z'));
+    const quota = new QuotaService({ store, now: clock.now });
+    await store.putVendors({
+      claude: {
+        accounts: [{ id: 'default', auth: 'subscription', quota: { window_tokens: 1_000 } }],
+      },
+    });
+
+    await quota.record429('claude', 'default', 60);
+    clock.advance(61_000); // cooldown elapses
+
+    // The one usage record QA/opus asked for — this is what used to break it.
+    const afterUsage = await quota.recordUsage('claude', 'default', ledgerLine({ in_tokens: 10 }));
+    expect(afterUsage.cooldown_until).toBeNull();
+    // Restored from the pre-429 full 1000, minus this call's own 10-token
+    // decrement — not stuck at 0.
+    expect(afterUsage.remaining).toBe(990);
+
+    const routed = routeCandidates('engineer', 'standard', {
+      vendors: store.getVendors(),
+      quotas: quota.list(),
+      now: clock.now(),
+    });
+    expect(pickCandidate(routed)).toEqual({ vendor: 'claude', account: 'default' });
+  });
 });
 
 describe('QuotaService — window reset across two windows (review fix #4)', () => {
@@ -445,15 +485,19 @@ describe('QuotaService — window reset across two windows (review fix #4)', () 
     expect(sentMessages.filter((m) => m.kind === 'quota_low')).toHaveLength(2);
   });
 
-  test('with no window_hours configured, a rearm is one-shot (resets_at clears to null)', async () => {
+  test('round-3 review-fix: with no window_hours configured, resets_at still gets a default cadence (DEFAULT_WINDOW_HOURS) rather than staying null forever', async () => {
     const clock = fakeClock(Date.parse('2026-09-09T00:00:00.000Z'));
     const quota = new QuotaService({ store, bus: fakeBus, now: clock.now });
-    // No `window_hours` — `resets_at` is never established in the first place (no configured cadence), so a plain countdown record never schedules its own rearm.
+    // No `window_hours` configured — used to leave `resets_at` permanently
+    // `null` (a one-shot rearm at best); now it always gets a concrete
+    // default cadence so a window-reset backstop always exists.
     await store.putVendors({
       claude: { accounts: [{ id: 'max', auth: 'subscription', quota: { window_tokens: 100 } }] },
     });
     const updated = await quota.recordUsage('claude', 'max', ledgerLine({ in_tokens: 10 }));
-    expect(updated.resets_at).toBeNull();
+    expect(updated.resets_at).toBe(
+      new Date(clock.now().getTime() + DEFAULT_WINDOW_HOURS * 60 * 60 * 1000).toISOString(),
+    );
   });
 });
 
