@@ -134,17 +134,17 @@ Priority encodes dependency layer as well as importance: P0 tickets are v0-block
 
 ### Ticket: T008 CLI `agile`
 - **Priority:** P0
-- **Status:** In Review
+- **Status:** Done
 - **Owner:** sonnet:worker-T008
 - **Scope:** Depends on T004–T007. Thin client over the socket: `init`, `status` (sprint/tickets/agents/spend), `tail` (event log, follow, filters by ticket/agent/kind), `send`, `approve <hil-id>`, `delegate <hil-id>`, `halt [--scope]`, `resume`, `hook <event>` (stdin JSON in, JSON out — the single entrypoint vendor hook configs call). Human-readable and `--json` output.
 - **Acceptance Criteria:** Every daemon verb needed by the e2e run is reachable from the CLI; `agile hook pre-tool-use` round-trips a fake payload in <20 ms.
 - **Validation Steps:** CLI tests against an in-process daemon; timing test for the hook path.
-- **Notes:** branch `T008-cli` (local worktree); one file per verb under `packages/cli/src/commands/`, socket client, `hook <event>` maps kebab→`hook.<snake>` and fails open (`{}`, exit 0) on stub/unreachable daemon with `--fail-closed`. Timing: in-process ~0.2 ms; subprocess ~90–100 ms (Bun cold start) vs the 20 ms criterion — reviewer to judge. `status` shows agents/spend as n/a (no RPC yet). Escalation: no `oracle write` CLI verb (not in scope; architect publishes via MCP in T014). Review round 1 PASS: hook path 0.14 ms socket round trip, ~100 ms subprocess judged acceptable for v0; fail-open default acceptable only while `hook.*` is a stub — T009 flips it to fail-closed with a 2 s timeout. Nits being applied (tail --follow mid-line drop, halts in status, stderr warning on fail-open, socket close handler). QA round 1 ACCEPT (every verb exercised against a live daemon).
+- **Notes:** branch `T008-cli` (local worktree); one file per verb under `packages/cli/src/commands/`, socket client, `hook <event>` maps kebab→`hook.<snake>` and fails open (`{}`, exit 0) on stub/unreachable daemon with `--fail-closed`. Timing: in-process ~0.2 ms; subprocess ~90–100 ms (Bun cold start) vs the 20 ms criterion — reviewer to judge. `status` shows agents/spend as n/a (no RPC yet). Escalation: no `oracle write` CLI verb (not in scope; architect publishes via MCP in T014). Review round 1 PASS: hook path 0.14 ms socket round trip, ~100 ms subprocess judged acceptable for v0; fail-open default acceptable only while `hook.*` is a stub — T009 flips it to fail-closed with a 2 s timeout. Nits being applied (tail --follow mid-line drop, halts in status, stderr warning on fail-open, socket close handler). QA round 1 ACCEPT (every verb exercised against a live daemon). Nits applied in `6f7f235`. merge: 07da0ca.
 
 ### Ticket: T009 Claude hook gate
 - **Priority:** P0
-- **Status:** Todo
-- **Owner:** Unassigned
+- **Status:** In Progress
+- **Owner:** sonnet:worker-T009
 - **Scope:** Depends on T008. Per-worktree `.claude/settings.json` generation with `PreToolUse`, `PostToolUse`, and `Stop` hooks calling `agile hook`. Pre-tool-use decision: deny with reason if a halt covers the agent's ticket; inject pending inbox as `additionalContext` (urgent → deny with the message as reason until acknowledged); heartbeat; deny raw `Read`/`Grep` over configurable size with "use read_summary"; deny when ticket budget exceeded; log every decision. Post-tool-use: truncate oversized tool results and record usage. Stop: drain low-priority inbox.
 - **Acceptance Criteria:** Live test: an engineer session under a global halt is blocked at its next tool call with the halt reason; a big read is denied and the model's output quotes the reason; an `answer` message appears in the model's context on the next tool call.
 - **Validation Steps:** `AGILE_LIVE=1 bun test packages/daemon --grep hook`; unit tests for the decision function with fixture payloads.
@@ -152,12 +152,12 @@ Priority encodes dependency layer as well as importance: P0 tickets are v0-block
 
 ### Ticket: T010 ACP permission policy by role
 - **Priority:** P0
-- **Status:** In Review
+- **Status:** Done
 - **Owner:** sonnet:worker-T010
 - **Scope:** Depends on T003, T005. Daemon answers `session/request_permission` per design §14: engineer (edits in worktree, repo scripts, package registries), reviewer (deny all writes/exec except read-only tools), QA (env only), never-without-human list (push outside ticket branch, force-push, branch delete, new dependencies, deny-listed commands). Requests outside policy become `hil_request` items with a deadline. Every decision logged with `allow_once` only (never `allow_always`).
 - **Acceptance Criteria:** Fixture permission requests resolve to the expected option per role; a `git push origin main` from an engineer produces a `hil_request`, not an allow.
 - **Validation Steps:** Table-driven unit tests over (role × request) pairs.
-- **Notes:** branch `T010-permission-policy` (local worktree); `src/permissions/` (classifier, policy tables, decide, responder, 70 tests), daemon gains a workspace dep on acp-client for types. Worker flags: real spike payloads carry `rawInput: {}` on every tool call, so command-level classification may only work from titles or must move to the PreToolUse hook (T009) — reviewer asked to rule on efficacy. `hil_request` written to `bus/inbox/human/` (T018's GateService becomes the single HIL owner at wiring). QA round 1 REJECT: `git -C . push origin main` from an engineer → unattended allow (bypass); env-prefix and `cd &&` spellings → deny instead of hil; empty `rawInput` denies nearly all engineer exec. Review round 1 FAIL: classifier bypassable (`git -C`, chained commands, multi-refspec push, `branch -d`; reviewer `sed -i`/redirects allowed), whitespace-only tokenizer; efficacy unproven because permission-request params were never captured. Decision: ACP layer is best-effort command gating with kind-level floor; primary command enforcement is T009's hook. Sent back with both lists; worker fixed all in `3b8bc98` (tokenizer/segmenter, git global options, multi-refspec, redirection gating, injectable HIL lifecycle); QA round 2 REJECT on one item: title fallback (`Run <cmd>`/`Edit <path>`) never implemented, so degraded payloads still deny. Review round 2 FAIL on the same omission plus fd-prefixed redirects (`1>`, `&>`) and `sed --in-place` evading the reviewer deny. Worker fixed all three in `b1fe479`. Review round 3 FAIL: title fallback treats prose (`Edit file`, `Edit ~/.bashrc`) as an in-worktree path → allow; `locations` still unparsed. Round 4 sent (path-shaped titles only; precedence rawInput > locations > title > kind). QA round 3 ACCEPT. Round 4 (`8cfe534`: path-plausible titles only, `locations` parsed, precedence rawInput > locations > title > kind); review round 4 PASS (should-fix: check every `locations` entry — worker applying; deferred fail-safe over-denies e.g. `npm test 2>&1` → follow-up ticket). QA round 4 ACCEPT.
+- **Notes:** branch `T010-permission-policy` (local worktree); `src/permissions/` (classifier, policy tables, decide, responder, 70 tests), daemon gains a workspace dep on acp-client for types. Worker flags: real spike payloads carry `rawInput: {}` on every tool call, so command-level classification may only work from titles or must move to the PreToolUse hook (T009) — reviewer asked to rule on efficacy. `hil_request` written to `bus/inbox/human/` (T018's GateService becomes the single HIL owner at wiring). QA round 1 REJECT: `git -C . push origin main` from an engineer → unattended allow (bypass); env-prefix and `cd &&` spellings → deny instead of hil; empty `rawInput` denies nearly all engineer exec. Review round 1 FAIL: classifier bypassable (`git -C`, chained commands, multi-refspec push, `branch -d`; reviewer `sed -i`/redirects allowed), whitespace-only tokenizer; efficacy unproven because permission-request params were never captured. Decision: ACP layer is best-effort command gating with kind-level floor; primary command enforcement is T009's hook. Sent back with both lists; worker fixed all in `3b8bc98` (tokenizer/segmenter, git global options, multi-refspec, redirection gating, injectable HIL lifecycle); QA round 2 REJECT on one item: title fallback (`Run <cmd>`/`Edit <path>`) never implemented, so degraded payloads still deny. Review round 2 FAIL on the same omission plus fd-prefixed redirects (`1>`, `&>`) and `sed --in-place` evading the reviewer deny. Worker fixed all three in `b1fe479`. Review round 3 FAIL: title fallback treats prose (`Edit file`, `Edit ~/.bashrc`) as an in-worktree path → allow; `locations` still unparsed. Round 4 sent (path-shaped titles only; precedence rawInput > locations > title > kind). QA round 3 ACCEPT. Round 4 (`8cfe534`: path-plausible titles only, `locations` parsed, precedence rawInput > locations > title > kind); review round 4 PASS (should-fix: check every `locations` entry — worker applying; deferred fail-safe over-denies e.g. `npm test 2>&1` → follow-up ticket). QA round 4 ACCEPT. Locations fix `ee9ecd2`. merge: a6bbba5 (permissions exported from the daemon index; ULID helper kept internal). Follow-ups: T028 (ULID dedupe), T029 (`2>&1` over-deny).
 
 ### Ticket: T011 Tool framework, MCP server, `read_summary`, `test_run`
 - **Priority:** P0
@@ -242,12 +242,12 @@ Priority encodes dependency layer as well as importance: P0 tickets are v0-block
 
 ### Ticket: T020 Event feed page
 - **Priority:** P1
-- **Status:** In Review
+- **Status:** Done
 - **Owner:** sonnet:worker-T020
 - **Scope:** Depends on T004, T005. Single static `feed.html` served by the daemon: WebSocket-tailed event log with filters (ticket, agent, kind), a sprint header (goal, done/in-flight/stale, halts), and the open `hil_request` list with approve/delegate buttons that call the daemon. No framework. This is the entire v0 UI beyond the CLI.
 - **Acceptance Criteria:** Page shows live events within 1 s; approve button resolves a real `hil_request`.
 - **Validation Steps:** Playwright test against a running daemon with synthetic events.
-- **Notes:** Discovered dependency: the approve button needs T018's `hil_request` handling — run T020 after T018 merges. Branch `T020-feed-page` (local worktree): `packages/ui/static/feed.html`, `src/feed/` tailer + `/feed`, `/api/snapshot`, `/api/hil/:id/approve|delegate`, WS snapshot+live; Playwright e2e passes here (live latency 55–339 ms). Escalation: ui devDep on daemon made a workspace cycle — worker moved the e2e into `packages/daemon/src/feed/` and dropped the cycle (`2d1605b`). Review round 1 PASS (live latency ~110 ms; nits: Origin check on HIL POSTs, snapshot/live race — worker applying; `escapeHtml`+`innerHTML` invariant noted). QA round 1 ACCEPT (manual Playwright e2e: <1 s live events, filters, halt header, real approve, reconnect, XSS-safe).
+- **Notes:** Discovered dependency: the approve button needs T018's `hil_request` handling — run T020 after T018 merges. Branch `T020-feed-page` (local worktree): `packages/ui/static/feed.html`, `src/feed/` tailer + `/feed`, `/api/snapshot`, `/api/hil/:id/approve|delegate`, WS snapshot+live; Playwright e2e passes here (live latency 55–339 ms). Escalation: ui devDep on daemon made a workspace cycle — worker moved the e2e into `packages/daemon/src/feed/` and dropped the cycle (`2d1605b`). Review round 1 PASS (live latency ~110 ms; nits: Origin check on HIL POSTs, snapshot/live race — worker applying; `escapeHtml`+`innerHTML` invariant noted). QA round 1 ACCEPT (manual Playwright e2e: <1 s live events, filters, halt header, real approve, reconnect, XSS-safe). Nits applied in `38f036f` (Origin check on HIL POSTs, snapshot/live race). merge: acc292d.
 
 ### Ticket: T021 Demo fixture and end-to-end sprint
 - **Priority:** P1
@@ -312,6 +312,24 @@ Priority encodes dependency layer as well as importance: P0 tickets are v0-block
 - **Validation Steps:** Live perm runs per vendor.
 - **Notes:**
 
+### Ticket: T028 Shared ULID generator
+- **Priority:** P1
+- **Status:** In Progress
+- **Owner:** sonnet:worker-T028
+- **Scope:** Depends on T008, T010, T018, T020 (all Done). Move the three copies of the ULID generator (`packages/daemon/src/bus/ulid.ts`, `packages/daemon/src/gates/ulid.ts`, `packages/daemon/src/permissions/ulid.ts`, plus `packages/cli/src/ulid.ts`) into `packages/shared/src/ids.ts` as one `ulid(now?)` implementation (Crockford base32, monotonic within a ms) next to `UlidSchema`; delete the copies; update imports and tests. No behaviour change.
+- **Acceptance Criteria:** One implementation, exported from shared; `grep -rn "function ulid\|generateUlid" packages` finds only shared; all existing tests pass unchanged.
+- **Validation Steps:** `bun test`; grep.
+- **Notes:** Discovered during T008/T010/T018 reviews (three duplicate generators).
+
+### Ticket: T029 Permission classifier: stop over-denying benign stderr redirects
+- **Priority:** P2
+- **Status:** Todo
+- **Owner:** Unassigned
+- **Scope:** Depends on T010. `npm test 2>&1`, `cmd 2>/dev/null`, `cmd >/dev/null` from an engineer currently deny (fail-safe over-deny). Treat redirects to `/dev/null`, `&1`, `&2` as non-writes; keep every file-target redirect gated as today. Table tests.
+- **Acceptance Criteria:** The listed forms allow for the engineer; reviewer/QA still deny all redirects; every T010 adversarial test still passes.
+- **Validation Steps:** `bun test packages/daemon/src/permissions`.
+- **Notes:** Deferred from T010 review round 3 (R3-3).
+
 ## 8. Open Questions
 
 - **Name.** `agile` / `agiled` / `.agile/` are placeholders. Decide before T008 lands so the CLI name is stable.
@@ -352,3 +370,4 @@ Priority encodes dependency layer as well as importance: P0 tickets are v0-block
 - 2026-09-09 — T018 merged (7a7ebc1); 553 tests green. Wave 5 launched: T008 (CLI, incl. T018's approve/delegate/breaker verbs) and T020 (feed page, approve button on real HIL requests). T010 in round-2 gates.
 - 2026-09-09 — Decision: no workspace dependency cycles; e2e tests that need the daemon live in `packages/daemon`. `playwright-core` is a root devDependency; the e2e auto-skips without a Chromium executable and runs via root `test:e2e` (and under `bun test` where Chromium exists).
 - 2026-09-09 — Decision: `agile hook` fails open only until T009 lands; T009 makes fail-closed the default (deny with reason when the daemon is unreachable) with a 2 s timeout. Per-tool-call hook cost ≈100 ms (Bun cold start) accepted for v0. ULID generator now exists in bus, gates and cli — dedupe into shared as a small follow-up ticket.
+- 2026-09-09 — T010, T008, T020 merged (a6bbba5, 07da0ca, acc292d); 840 tests green incl. the Playwright e2e. Added T028 (shared ULID generator) and T029 (benign stderr redirects) as discovered work. Launched T009 (hook gate) and T028 in parallel.
