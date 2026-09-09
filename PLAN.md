@@ -134,12 +134,12 @@ Priority encodes dependency layer as well as importance: P0 tickets are v0-block
 
 ### Ticket: T008 CLI `agile`
 - **Priority:** P0
-- **Status:** In Progress
+- **Status:** In Review
 - **Owner:** sonnet:worker-T008
 - **Scope:** Depends on T004–T007. Thin client over the socket: `init`, `status` (sprint/tickets/agents/spend), `tail` (event log, follow, filters by ticket/agent/kind), `send`, `approve <hil-id>`, `delegate <hil-id>`, `halt [--scope]`, `resume`, `hook <event>` (stdin JSON in, JSON out — the single entrypoint vendor hook configs call). Human-readable and `--json` output.
 - **Acceptance Criteria:** Every daemon verb needed by the e2e run is reachable from the CLI; `agile hook pre-tool-use` round-trips a fake payload in <20 ms.
 - **Validation Steps:** CLI tests against an in-process daemon; timing test for the hook path.
-- **Notes:**
+- **Notes:** branch `T008-cli` (local worktree); one file per verb under `packages/cli/src/commands/`, socket client, `hook <event>` maps kebab→`hook.<snake>` and fails open (`{}`, exit 0) on stub/unreachable daemon with `--fail-closed`. Timing: in-process ~0.2 ms; subprocess ~90–100 ms (Bun cold start) vs the 20 ms criterion — reviewer to judge. `status` shows agents/spend as n/a (no RPC yet). Escalation: no `oracle write` CLI verb (not in scope; architect publishes via MCP in T014). Gates running.
 
 ### Ticket: T009 Claude hook gate
 - **Priority:** P0
