@@ -98,17 +98,17 @@ Priority encodes dependency layer as well as importance: P0 tickets are v0-block
 
 ### Ticket: T004 Daemon skeleton and state bootstrap
 - **Priority:** P0
-- **Status:** In Review
+- **Status:** Done
 - **Owner:** sonnet:worker-T004
 - **Scope:** Depends on T002. `agiled` process: config discovery, unix socket JSON-RPC (`bus.*`, `state.*`, `hook.*`, `gate.*` namespaces stubbed), localhost HTTP + WebSocket, PID/lock file (one daemon per repo), graceful shutdown. `agile init`: creates orphan branch `agile-state`, checks it out as a worktree at `.agile/`, writes default `policy.yaml`, `vendors.yaml`, empty indexes, and a `.gitignore` entry for `.worktrees/`.
 - **Acceptance Criteria:** `agile init` in a fresh git repo produces the §4 layout on the orphan branch; a second daemon start fails with a clear lock error; `curl localhost:<port>/health` returns daemon version and state root.
 - **Validation Steps:** Integration test creates a temp git repo, runs init, asserts branch + files; unit tests for lock and shutdown.
-- **Notes:** branch `T004-daemon-skeleton` (local worktree), commit `57eb9df`, self-review PASS. Choices: lock at `<repo>/.agile-daemon.lock`, socket `<repo>/.agile-daemon.sock`, config `agile.config.yaml` at repo root (no design precedent — flagged for review), default port 4600, RPC stubs return code -32001, init uses `git worktree add --orphan` (git ≥2.42). `yaml` runtime dep added to daemon. Flagged for T005: no schema yet for the contents of `oracle/index.yaml`/`knowledge/index.yaml`. Review round 1 FAIL: shutdown hangs/leaks lock+socket while an RPC client is connected; lock/sock not gitignored; JSON-RPC notifications answered and handler errors mis-coded. QA round 1 REJECT on one item: re-init refuses correctly but exits 0 (CLI swallows `AlreadyInitialisedError`); everything else passed incl. stale-lock recovery. Worker fixed all four (+5 nits) in `c78aade`; review round 2 PASS. QA round 2 running.
+- **Notes:** branch `T004-daemon-skeleton` (local worktree), commit `57eb9df`, self-review PASS. Choices: lock at `<repo>/.agile-daemon.lock`, socket `<repo>/.agile-daemon.sock`, config `agile.config.yaml` at repo root (no design precedent — flagged for review), default port 4600, RPC stubs return code -32001, init uses `git worktree add --orphan` (git ≥2.42). `yaml` runtime dep added to daemon. Flagged for T005: no schema yet for the contents of `oracle/index.yaml`/`knowledge/index.yaml`. Review round 1 FAIL: shutdown hangs/leaks lock+socket while an RPC client is connected; lock/sock not gitignored; JSON-RPC notifications answered and handler errors mis-coded. QA round 1 REJECT on one item: re-init refuses correctly but exits 0 (CLI swallows `AlreadyInitialisedError`); everything else passed incl. stale-lock recovery. Worker fixed all four (+5 nits) in `c78aade`; review round 2 PASS, QA round 2 ACCEPT (incl. SIGTERM with connected clients, JSON-RPC notification/parse-error behaviour). merge: 11ee296 (conflict in `packages/daemon/src/index.ts` with T013's export resolved by keeping both).
 
 ### Ticket: T005 State store and event log
 - **Priority:** P0
-- **Status:** Todo
-- **Owner:** Unassigned
+- **Status:** In Progress
+- **Owner:** sonnet:worker-T005
 - **Scope:** Depends on T004. Validating read/write layer over `.agile/` for every entity: atomic file writes, ticket status transition table (only legal edges), `history` appends, index maintenance for oracle/KB, append-only `board/status/<ticket>.jsonl`, `ledger/<sprint>.jsonl`, `log/events.jsonl` with every state transition as an event. Commit-to-`agile-state` batching (one commit per logical operation, message = event kind).
 - **Acceptance Criteria:** Illegal transitions throw; every mutation produces exactly one event; state survives daemon restart; `git log` on `agile-state` reads as an audit trail.
 - **Validation Steps:** Property test over random legal transition sequences; restart test.
@@ -337,3 +337,4 @@ Priority encodes dependency layer as well as importance: P0 tickets are v0-block
 - 2026-09-08 — Decision (manager, yolo): T004's host-local runtime paths `<repo>/.agile-daemon.lock`, `<repo>/.agile-daemon.sock` and optional `<repo>/agile.config.yaml` (port/socketPath; precedence options > `AGILE_PORT`/`AGILE_SOCKET_PATH` env > file > defaults, port 4600) are ratified for v0. Rationale: lock and config must work before `.agile/` exists and must never live on the committed state branch. Reviewer flagged this as a convention needing approval; user may reverse.
 - 2026-09-08 — T003 QA round 2 found a pre-initialisation prompt race the round-1/2 reviews missed; black-box QA against a fake ACP agent is paying for itself — keep it mandatory.
 - 2026-09-08 — T013 merged (51f41ba). Design prose §5 should say the EM posts a `decision` *message*, not a `decisions` stanza (stanzas are engineer-only per §4); shared schema is authoritative. Design doc edit deferred to T021 tuning.
+- 2026-09-09 — T004 merged (11ee296). Unblocks T005 (launched). T005 must also define schemas/handling for the contents of `oracle/index.yaml` and `knowledge/index.yaml` (written as `{}` by init) — flagged by T004.
