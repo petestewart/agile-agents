@@ -970,3 +970,106 @@ describe('unknown-key rejection round trip', () => {
     ).rejects.toThrow(/invalid OracleEntry/);
   });
 });
+
+describe('deferred-commit batching (T009 review round, hot-path decision)', () => {
+  test('several deferred appendEvent calls land in exactly one commit, only once flushed', async () => {
+    const store = StateStore.open(stateRoot);
+    const before = git(['rev-list', '--count', 'HEAD'], stateRoot);
+
+    for (let i = 0; i < 5; i++) {
+      await store.appendEvent(
+        { ts: new Date().toISOString(), kind: 'hook_decision', data: { i } },
+        { commit: 'deferred' },
+      );
+    }
+    // Not committed yet — the whole point of deferring.
+    expect(git(['rev-list', '--count', 'HEAD'], stateRoot)).toBe(before);
+    // But already durable on disk (readable) before any commit happens.
+    expect(store.listEvents().filter((e) => e.kind === 'hook_decision')).toHaveLength(5);
+
+    await store.flush();
+    const after = git(['rev-list', '--count', 'HEAD'], stateRoot);
+    expect(Number(after) - Number(before)).toBe(1);
+    // A second flush with nothing queued is a true no-op (no empty commit).
+    await store.flush();
+    expect(git(['rev-list', '--count', 'HEAD'], stateRoot)).toBe(after);
+  });
+
+  test('a regular mutation flushes pending deferred paths first, as a separate preceding commit', async () => {
+    const store = StateStore.open(stateRoot);
+    const beforeSha = git(['rev-parse', 'HEAD'], stateRoot);
+    const before = git(['rev-list', '--count', 'HEAD'], stateRoot);
+
+    await store.appendEvent(
+      { ts: new Date().toISOString(), kind: 'hook_decision', data: {} },
+      { commit: 'deferred' },
+    );
+    expect(git(['rev-list', '--count', 'HEAD'], stateRoot)).toBe(before);
+
+    // A regular (non-deferred) mutation must not silently swallow the
+    // deferred write into its own commit message.
+    await store.putTicket(makeTicket('TKT-0001'));
+    const after = git(['rev-list', '--count', 'HEAD'], stateRoot);
+    expect(Number(after) - Number(before)).toBe(2);
+
+    const log = git(['log', '--format=%s', `${beforeSha}..HEAD`], stateRoot);
+    const messages = log.split('\n').filter(Boolean).reverse();
+    expect(messages).toEqual(['deferred_batch', 'ticket_put']);
+  });
+
+  describe('StateStore.heartbeat', () => {
+    test('the first heartbeat for an agent writes (deferred) and returns the new record', async () => {
+      const store = StateStore.open(stateRoot);
+      const before = git(['rev-list', '--count', 'HEAD'], stateRoot);
+      const record = await store.heartbeat('eng-1' as never, { vendor: 'claude', model: 'sonnet' });
+      expect(record.vendor).toBe('claude');
+      expect(git(['rev-list', '--count', 'HEAD'], stateRoot)).toBe(before); // deferred, not committed
+      await store.flush();
+      expect(Number(git(['rev-list', '--count', 'HEAD'], stateRoot)) - Number(before)).toBe(1);
+    });
+
+    test('coalesces: a second heartbeat within 30s with no field changes is a pure no-op', async () => {
+      const store = StateStore.open(stateRoot);
+      let now = new Date('2026-09-09T00:00:00.000Z');
+      const first = await store.heartbeat(
+        'eng-1' as never,
+        { vendor: 'claude', model: 'sonnet' },
+        () => now,
+      );
+      now = new Date(now.getTime() + 10_000); // +10s, under the 30s window
+      const second = await store.heartbeat('eng-1' as never, {}, () => now);
+      expect(second).toEqual(first); // last_seen unchanged — no write happened
+    });
+
+    test('writes again once past the 30s coalescing window', async () => {
+      const store = StateStore.open(stateRoot);
+      let now = new Date('2026-09-09T00:00:00.000Z');
+      const first = await store.heartbeat(
+        'eng-1' as never,
+        { vendor: 'claude', model: 'sonnet' },
+        () => now,
+      );
+      now = new Date(now.getTime() + 31_000); // past the 30s window
+      const second = await store.heartbeat('eng-1' as never, {}, () => now);
+      expect(second.last_seen).not.toBe(first.last_seen);
+    });
+
+    test('a field change writes immediately even inside the coalescing window', async () => {
+      const store = StateStore.open(stateRoot);
+      let now = new Date('2026-09-09T00:00:00.000Z');
+      const first = await store.heartbeat(
+        'eng-1' as never,
+        { vendor: 'claude', model: 'sonnet' },
+        () => now,
+      );
+      now = new Date(now.getTime() + 1_000);
+      const second = await store.heartbeat(
+        'eng-1' as never,
+        { ticket: 'TKT-0001' as never },
+        () => now,
+      );
+      expect(second.ticket).toBe('TKT-0001');
+      expect(second.last_seen).not.toBe(first.last_seen);
+    });
+  });
+});

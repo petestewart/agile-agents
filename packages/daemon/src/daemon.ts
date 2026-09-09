@@ -11,6 +11,7 @@ import { Bus, buildBusRpcMethods } from './bus';
 import { type AgileConfig, type DiscoverConfigOptions, discoverConfig } from './config';
 import { GateService, buildGateRpcMethods } from './gates';
 import { buildHaltRpcMethods } from './halts';
+import { HookService, buildHookRpcMethods } from './hook';
 import { type HttpServerHandle, startHttpServer } from './http';
 import { type LockHandle, acquireLock } from './lock';
 import { buildOracleRpcMethods } from './oracle';
@@ -51,6 +52,12 @@ export async function startDaemon(options: DiscoverConfigOptions = {}): Promise<
           ...buildOracleRpcMethods(store),
           ...buildHaltRpcMethods(store),
           ...buildGateRpcMethods(gateService),
+          ...buildHookRpcMethods(
+            new HookService(store, new Bus(store, config.stateRoot), {
+              repoRoot: config.repoRoot,
+              gates: gateService,
+            }),
+          ),
         }
       : undefined;
 
@@ -97,6 +104,10 @@ export async function startDaemon(options: DiscoverConfigOptions = {}): Promise<
       try {
         await http.stop();
         await rpc.close();
+        // Flush any pending deferred hook_decision/heartbeat commits (T009
+        // review round, hot-path decision) — a graceful shutdown must not
+        // lose a batch that hasn't hit its 5s debounce yet.
+        await store?.flush();
       } finally {
         lock.release();
       }

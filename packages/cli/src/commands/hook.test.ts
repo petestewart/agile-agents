@@ -20,12 +20,20 @@ describe('hookEventToMethod', () => {
 });
 
 describe('parseHookArgs', () => {
-  test('reads the event and --fail-closed', () => {
+  test('fail-closed is the default (T009); --fail-open opts out', () => {
     expect(parseHookArgs(parseArgs(['pre-tool-use']))).toEqual({
+      event: 'pre-tool-use',
+      failClosed: true,
+      timeoutMs: undefined,
+    });
+    expect(parseHookArgs(parseArgs(['pre-tool-use', '--fail-open']))).toEqual({
       event: 'pre-tool-use',
       failClosed: false,
       timeoutMs: undefined,
     });
+  });
+
+  test('--fail-closed is still accepted (explicit, no-op vs the default)', () => {
     expect(parseHookArgs(parseArgs(['pre-tool-use', '--fail-closed']))).toEqual({
       event: 'pre-tool-use',
       failClosed: true,
@@ -36,7 +44,7 @@ describe('parseHookArgs', () => {
   test('reads --timeout as a number of milliseconds', () => {
     expect(parseHookArgs(parseArgs(['pre-tool-use', '--timeout', '500']))).toEqual({
       event: 'pre-tool-use',
-      failClosed: false,
+      failClosed: true,
       timeoutMs: 500,
     });
   });
@@ -67,7 +75,7 @@ describe('runHook', () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  test('forwards stdin JSON to hook.<event> and prints the real decision', async () => {
+  test('forwards stdin JSON to hook.<event> and prints the real decision verbatim', async () => {
     rpc = startRpcServer({
       socketPath,
       version: 'test',
@@ -89,7 +97,7 @@ describe('runHook', () => {
       code = await runHook({
         socketPath,
         event: 'pre-tool-use',
-        failClosed: false,
+        failClosed: true,
         stdin: stdinWith({ tool: 'Read' }),
       });
     } finally {
@@ -100,9 +108,9 @@ describe('runHook', () => {
     expect(parsed).toEqual({ decision: 'allow', echoedTool: 'Read' });
   });
 
-  test('fail-open (default): a not-implemented stub yields a permissive {} decision, exit 0, warns on stderr', async () => {
-    // No `hook.*` extraMethods wired — this is exactly T008's integration
-    // state (hook.* is T009's stub namespace).
+  test('fail-open (--fail-open): a not-implemented stub yields a permissive {} decision, exit 0, warns on stderr', async () => {
+    // No `hook.*` extraMethods wired — same shape as an RPC failure for any
+    // other reason (unimplemented method, handler throw, etc).
     rpc = startRpcServer({ socketPath, version: 'test', stateRoot: dir, startedAt: Date.now() });
 
     const lines: string[] = [];
@@ -160,7 +168,7 @@ describe('runHook', () => {
     );
   });
 
-  test('--timeout bounds how long a wedged daemon is waited on before failing open', async () => {
+  test('--timeout bounds how long a wedged daemon is waited on before failing (open here)', async () => {
     rpc = startRpcServer({
       socketPath,
       version: 'test',
@@ -194,10 +202,13 @@ describe('runHook', () => {
     expect(elapsed).toBeLessThan(1000);
   });
 
-  test('--fail-closed: a not-implemented stub is a hard failure, exit 1', async () => {
+  test('fail-closed (default, T009): a not-implemented stub denies the pre-tool-use call with a reason, exit 0', async () => {
     rpc = startRpcServer({ socketPath, version: 'test', stateRoot: dir, startedAt: Date.now() });
+    const lines: string[] = [];
     const errors: string[] = [];
-    const original = console.error;
+    const originalLog = console.log;
+    const originalError = console.error;
+    console.log = (msg: string) => lines.push(msg);
     console.error = (msg: string) => errors.push(msg);
     let code: number;
     try {
@@ -208,16 +219,24 @@ describe('runHook', () => {
         stdin: stdinWith({}),
       });
     } finally {
-      console.error = original;
+      console.log = originalLog;
+      console.error = originalError;
     }
-    expect(code).toBe(1);
+    expect(code).toBe(0);
+    expect(JSON.parse(lines.join('\n'))).toEqual({
+      hookSpecificOutput: {
+        hookEventName: 'PreToolUse',
+        permissionDecision: 'deny',
+        permissionDecisionReason: 'agile daemon unreachable',
+      },
+    });
     expect(errors.join('\n')).toMatch(/not implemented yet/);
   });
 
-  test('--fail-closed: an unreachable daemon is also a hard failure, exit 1', async () => {
-    const errors: string[] = [];
-    const original = console.error;
-    console.error = (msg: string) => errors.push(msg);
+  test('fail-closed: an unreachable daemon also denies pre-tool-use with a reason, exit 0', async () => {
+    const lines: string[] = [];
+    const original = console.log;
+    console.log = (msg: string) => lines.push(msg);
     let code: number;
     try {
       code = await runHook({
@@ -227,9 +246,32 @@ describe('runHook', () => {
         stdin: stdinWith({}),
       });
     } finally {
-      console.error = original;
+      console.log = original;
     }
-    expect(code).toBe(1);
+    expect(code).toBe(0);
+    expect(JSON.parse(lines.join('\n'))).toEqual({
+      hookSpecificOutput: {
+        hookEventName: 'PreToolUse',
+        permissionDecision: 'deny',
+        permissionDecisionReason: 'agile daemon unreachable',
+      },
+    });
+  });
+
+  test('fail-closed: post-tool-use/stop have no deny concept, so they still print {} on failure', async () => {
+    for (const event of ['post-tool-use', 'stop']) {
+      const lines: string[] = [];
+      const original = console.log;
+      console.log = (msg: string) => lines.push(msg);
+      let code: number;
+      try {
+        code = await runHook({ socketPath, event, failClosed: true, stdin: stdinWith({}) });
+      } finally {
+        console.log = original;
+      }
+      expect(code).toBe(0);
+      expect(JSON.parse(lines.join('\n'))).toEqual({});
+    }
   });
 
   test('invalid JSON on stdin exits 1 without reaching the daemon', async () => {

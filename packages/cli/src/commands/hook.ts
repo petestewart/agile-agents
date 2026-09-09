@@ -5,34 +5,39 @@
  * payload format"). Forwards stdin JSON to `hook.<event>` (kebab-case CLI
  * event -> snake_case RPC method: `pre-tool-use` -> `hook.pre_tool_use`,
  * `post-tool-use` -> `hook.post_tool_use`, `stop` -> `hook.stop`) and prints
- * the daemon's reply as JSON to stdout.
+ * the daemon's reply as JSON to stdout, verbatim — this file never inspects
+ * or reshapes a successful `hook.*` result; `packages/daemon/src/hook/`
+ * (T009) is what decides what that JSON looks like.
  *
- * The `hook.*` RPC namespace is still T009's stub (`rpc.ts`'s
- * `STUB_NAMESPACES`, -32001 "not implemented yet"). A vendor hook blocks the
- * tool call it wraps until this process exits, so this ticket's read of the
- * ticket's acceptance line ("a vendor hook never blocks because the daemon
- * isn't ready") is: **fail open by default** — on the stub's -32001, or on
- * any transport failure (daemon not running at all, which is exactly the
- * same "not ready" situation from the hook's point of view), print a
- * permissive pass-through decision `{}` and exit 0, so a half-wired or
- * absent daemon degrades to "allow everything" rather than freezing every
- * vendor tool call.
+ * T009 flips the previous T008 default: **fail-closed is now the default**
+ * (CLAUDE.md Discovered Issues Log, 2026-09-09: "`agile hook` fails open
+ * only until T009 lands; T009 makes fail-closed the default ... with a 2 s
+ * timeout"). On any RPC failure (the `hook.*` stub's -32001, a real handler
+ * error, or the daemon being unreachable entirely):
  *
- * Review fix (independent review, "hook" item 3): fail-open used to be
- * silent — a disabled enforcement layer with no trace anywhere. stdout must
- * stay pure JSON (it's what a vendor hook config parses as the decision),
- * so the warning goes to stderr, which Claude's PreToolUse hook contract
+ * - `pre-tool-use`: prints the fail-closed deny shape from this file's
+ *   header comment history — `{"hookSpecificOutput": {"hookEventName":
+ *   "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason":
+ *   "agile daemon unreachable"}}` — and exits 0, so Claude's PreToolUse
+ *   hook contract (a JSON `permissionDecision` on stdout) actually blocks
+ *   the call and shows the model the reason, per
+ *   `spike/spike-out/claude-default-perm-hooks.json` (`hookReasonSeenByModel:
+ *   true`) — an exit-1/2 failure with nothing on stdout would not.
+ * - `post-tool-use`/`stop`: DESIGN-GAP — neither event has a "deny the tool
+ *   call" concept (the tool already ran, or the turn is already ending), so
+ *   there is nothing a fail-*closed* JSON could usefully block; these two
+ *   always print `{}` and exit 0 regardless of `failClosed`, same as the
+ *   old fail-open behaviour, with the same stderr warning.
+ *
+ * `--fail-open` restores the pre-T009 default (permissive `{}` pass-through
+ * on any failure, for every event) — kept as an escape hatch, not the
+ * default, per the Discovered Issues Log decision above.
+ *
+ * Review carry-over (independent review, "hook" item 3, still true): stdout
+ * must stay pure JSON (it's what a vendor hook config parses as the
+ * decision), so every warning goes to stderr, which Claude's hook contract
  * ignores on exit 0 — free visibility in the vendor's own hook log, zero
- * behavioural change.
- *
- * DESIGN-GAP: the design does not specify what a "permissive pass-through
- * decision" looks like on the wire (that's T009's contract to define,
- * alongside the real per-vendor hook JSON shapes named in §6/spike-findings)
- * — `{}` is the smallest value that says nothing ("no decision" reads as
- * "allow" to every hook consumer this ticket could find in the design).
- * `--fail-closed` flips this for T009: any RPC failure (stub or transport)
- * is then a hard failure — the error is printed to stderr and the process
- * exits 1, instead of substituting `{}`.
+ * behavioural change to what the model sees.
  */
 
 import { type ParsedArgs, hasFlag, optionalString, readStdin } from '../args';
@@ -49,6 +54,25 @@ export const DEFAULT_HOOK_TIMEOUT_MS = 2000;
 /** `pre-tool-use` -> `pre_tool_use`, `post-tool-use` -> `post_tool_use`, `stop` -> `stop`. */
 export function hookEventToMethod(event: string): string {
   return `hook.${event.replace(/-/g, '_')}`;
+}
+
+const CLAUDE_HOOK_EVENT_NAMES: Record<string, string> = {
+  'pre-tool-use': 'PreToolUse',
+  'post-tool-use': 'PostToolUse',
+  stop: 'Stop',
+};
+
+/** The fail-closed deny shape for a `pre-tool-use` RPC failure — see this file's header. */
+function failClosedDenyJson(event: string, reason: string): unknown {
+  const hookEventName = CLAUDE_HOOK_EVENT_NAMES[event];
+  if (hookEventName !== 'PreToolUse') return {};
+  return {
+    hookSpecificOutput: {
+      hookEventName,
+      permissionDecision: 'deny',
+      permissionDecisionReason: reason,
+    },
+  };
 }
 
 export interface RunHookOptions {
@@ -83,21 +107,24 @@ export async function runHook(options: RunHookOptions): Promise<number> {
     return 0;
   } catch (err) {
     const isStub = err instanceof RpcCallError && err.code === NOT_IMPLEMENTED_CODE;
+    const detail = `${isStub ? 'hook.* not implemented yet' : 'RPC failed'}: ${
+      err instanceof Error ? err.message : String(err)
+    }`;
     if (!failClosed) {
-      // Fail-open: a stub reply or an unreachable daemon both mean "the
-      // daemon has no opinion yet" from the hook's point of view. stdout
-      // stays pure JSON (a vendor hook parses it as the decision); the
-      // warning is stderr-only so it never corrupts that contract.
+      // Fail-open (--fail-open): a stub reply or an unreachable daemon both
+      // mean "the daemon has no opinion yet" from the hook's point of view.
+      // stdout stays pure JSON (a vendor hook parses it as the decision);
+      // the warning is stderr-only so it never corrupts that contract.
       console.error('agile hook: daemon unreachable or hook.* not implemented; failing open');
       printJson({});
       return 0;
     }
-    console.error(
-      `agile hook ${event}: ${isStub ? 'hook.* not implemented yet' : 'RPC failed'}: ${
-        err instanceof Error ? err.message : String(err)
-      }`,
-    );
-    return 1;
+    // Fail-closed (default, T009): stdout still stays pure JSON so Claude's
+    // hook contract can act on it — see this file's header for why only
+    // pre-tool-use gets an actual deny shape.
+    console.error(`agile hook ${event}: ${detail}`);
+    printJson(failClosedDenyJson(event, 'agile daemon unreachable'));
+    return 0;
   }
 }
 
@@ -115,5 +142,9 @@ export function parseHookArgs(args: ParsedArgs): {
       `--timeout must be a number of milliseconds, got ${JSON.stringify(timeoutRaw)}`,
     );
   }
-  return { event, failClosed: hasFlag(args.options, 'fail-closed'), timeoutMs };
+  // T009: fail-closed is now the default; --fail-open restores the old
+  // permissive default; --fail-closed is accepted (and true) for
+  // explicitness/back-compat but no longer needed to opt in.
+  const failClosed = !hasFlag(args.options, 'fail-open');
+  return { event, failClosed, timeoutMs };
 }

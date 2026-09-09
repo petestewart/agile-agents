@@ -65,3 +65,7 @@ export * from './gates';
 
 // ACP permission policy by role (T010).
 export * from './permissions';
+
+// Claude hook gate: per-worktree settings.json, pre/post-tool-use + stop
+// decisions, hook.* RPC methods (T009).
+export * from './hook';
