@@ -30,8 +30,8 @@
  * automatic rollback of the just-written bytes is implemented.
  */
 
-import { appendFileSync, existsSync, readFileSync, realpathSync } from 'node:fs';
-import { dirname, isAbsolute, join, normalize, resolve, sep } from 'node:path';
+import { appendFileSync, existsSync, lstatSync, readFileSync, readlinkSync } from 'node:fs';
+import { dirname, isAbsolute, join, normalize, relative, resolve, sep } from 'node:path';
 import {
   type AgentId,
   type AgentRecord,
@@ -264,14 +264,7 @@ export class StateStore {
   // stray timer outlives it.
   private closed = false;
 
-  // T032: the real (symlink-resolved) state root, computed once at `open()`
-  // time (the directory is required to exist by then) and compared against
-  // on every `abs()` call — see `assertRealContainment` below.
-  private readonly realStateRoot: string;
-
-  private constructor(private readonly stateRoot: string) {
-    this.realStateRoot = realpathSync(stateRoot);
-  }
+  private constructor(private readonly stateRoot: string) {}
 
   /**
    * Marks this store closed (so `scheduleDeferredFlush` becomes a no-op
@@ -339,7 +332,7 @@ export class StateStore {
     if (resolved !== root && !resolved.startsWith(root + sep)) {
       throw new Error(`state path escapes the state root: ${parts.join('/')}`);
     }
-    this.assertRealContainment(resolved, parts);
+    this.assertNoEscapingSymlink(resolved, root, parts);
     return resolved;
   }
 
@@ -349,25 +342,68 @@ export class StateStore {
    * *inside* the state root that points outside it (e.g.
    * `.agile/tickets/evil -> /etc`) — the lexical path still reads as
    * contained, and then the real fs call (read/write/unlink) follows the
-   * link off the state root. `resolved` itself usually doesn't exist yet
-   * (most callers are about to create it), so walk up to the nearest
-   * *existing* ancestor and realpath that instead; it must land inside
-   * `realStateRoot` itself or one of its descendants (`.agile`'s own
-   * sub-dirs — `board/`, `tickets/`, the `agile-state` worktree's other
-   * paths — all resolve there with no symlink involved).
+   * link off the state root.
+   *
+   * Round 1 review (opus) found the first version of this guard (walk up
+   * to the nearest *existing* ancestor via `existsSync`, then `realpathSync`
+   * that) missed a **dangling** symlink: `existsSync` follows symlinks and
+   * reports `false` for one whose target doesn't exist yet, so the walk
+   * skipped straight past it to its legitimate parent and let the write
+   * through — `appendJsonlLine`/`appendFileSync`-style creates then follow
+   * the link and land outside the root with no error.
+   *
+   * Fixed by walking every path *component* from `root` down to `resolved`
+   * with `lstatSync` (which reports a symlink as a symlink whether or not
+   * its target exists — the fix `existsSync` couldn't do) and, at each
+   * symlink hop (dangling or not, following chains), resolving its raw
+   * `readlinkSync` target and checking *that* for containment before
+   * continuing the walk from there. A component that doesn't exist at all
+   * (`lstatSync` throws) ends the walk early — nothing under a
+   * not-yet-created path can itself be a pre-planted symlink, so the
+   * ordinary not-yet-existing-file case (`putTicket` to a fresh id, a new
+   * board/ledger file, ...) passes straight through with no filesystem
+   * surprises.
    */
-  private assertRealContainment(resolved: string, parts: string[]): void {
-    let probe = resolved;
-    for (;;) {
-      if (existsSync(probe)) break;
-      const parent = dirname(probe);
-      if (parent === probe) break; // filesystem root; existsSync(stateRoot) already true at open()
-      probe = parent;
+  private assertNoEscapingSymlink(resolved: string, root: string, parts: string[]): void {
+    const rel = relative(root, resolved);
+    const segments = rel === '' ? [] : rel.split(sep).filter((seg) => seg.length > 0);
+    let current = root;
+    for (const seg of segments) {
+      current = join(current, seg);
+      current = this.followSymlinkChain(current, root, parts);
     }
-    const realProbe = realpathSync(probe);
-    if (realProbe !== this.realStateRoot && !realProbe.startsWith(this.realStateRoot + sep)) {
-      throw new Error(`state path escapes the state root: ${parts.join('/')}`);
+  }
+
+  /**
+   * Resolves `path` if it is a symlink (or a chain of them), checking
+   * containment against `root` at every hop, dangling or not. Returns the
+   * final location (existing or not) so the caller can keep walking
+   * subsequent path components from there — a symlinked *directory*
+   * component must have its own children checked against where it actually
+   * points, not where it lexically sits.
+   */
+  private followSymlinkChain(path: string, root: string, parts: string[]): string {
+    let current = path;
+    for (let hop = 0; hop < 40; hop++) {
+      let stat: ReturnType<typeof lstatSync>;
+      try {
+        stat = lstatSync(current);
+      } catch {
+        return current; // doesn't exist (yet) — nothing left to resolve
+      }
+      if (!stat.isSymbolicLink()) return current;
+      const rawTarget = readlinkSync(current);
+      const nextTarget = isAbsolute(rawTarget)
+        ? normalize(rawTarget)
+        : normalize(join(dirname(current), rawTarget));
+      if (nextTarget !== root && !nextTarget.startsWith(root + sep)) {
+        throw new Error(`state path escapes the state root (symlink): ${parts.join('/')}`);
+      }
+      current = nextTarget;
     }
+    throw new Error(
+      `state path escapes the state root (symlink chain too deep): ${parts.join('/')}`,
+    );
   }
 
   /**

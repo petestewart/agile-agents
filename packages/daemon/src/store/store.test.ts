@@ -691,8 +691,9 @@ describe('StateStore.abs() containment (path-traversal backstop)', () => {
 // touches the filesystem, so a symlink *planted inside* the state root that
 // points outside it slips past a purely lexical check — only a real fs call
 // (read/write/unlink) would follow the link and actually escape. `abs()`
-// must catch this too by realpath-ing the target's nearest existing
-// ancestor and comparing against a realpath'd state root.
+// must catch this too by walking every path component with `lstatSync`
+// (which reports a symlink whether or not its target exists) and checking
+// each hop's `readlinkSync` target for containment.
 describe('StateStore.abs() containment (symlink escape, T032)', () => {
   test('getHalt refuses a halt file that is a symlink to a file outside the state root', () => {
     const store = StateStore.open(stateRoot);
@@ -731,6 +732,86 @@ describe('StateStore.abs() containment (symlink escape, T032)', () => {
     const store = StateStore.open(stateRoot);
     await expect(store.putTicket(makeTicket('TKT-9999'))).resolves.toBeDefined();
     expect(store.getTicket('TKT-9999' as never).id).toBe('TKT-9999');
+  });
+
+  // Round 1 review (opus) B1: `existsSync` follows symlinks and reports
+  // `false` for a *dangling* one, so the first version of this guard (walk
+  // up to the nearest existing ancestor) skipped straight past a dangling
+  // symlink to its legitimate parent and let the write through —
+  // `appendJsonlLine`'s `writeFileSync(..., {flag:'a'})` then creates the
+  // file at the link's target, outside the state root, with no error.
+  // `lstatSync` reports the symlink itself regardless of whether its
+  // target exists, which is what closes this.
+  test('a dangling symlink planted as an events.jsonl-style append target is refused, not silently created outside the root', async () => {
+    const store = StateStore.open(stateRoot);
+    const victimDir = mkdtempSync(join(tmpdir(), 'agile-store-dangling-'));
+    const victimPath = join(victimDir, 'pwned.jsonl');
+    const eventsPath = join(stateRoot, 'log', 'events.jsonl');
+    try {
+      rmSync(eventsPath, { force: true });
+      symlinkSync(victimPath, eventsPath); // target does NOT exist
+      expect(existsSync(victimPath)).toBe(false);
+      await expect(store.putTicket(makeTicket('TKT-9998'))).rejects.toThrow(
+        /escapes the state root/,
+      );
+      expect(existsSync(victimPath)).toBe(false);
+    } finally {
+      rmSync(eventsPath, { force: true });
+      writeFileSync(eventsPath, ''); // restore so afterEach/other calls don't trip
+      rmSync(victimDir, { recursive: true, force: true });
+    }
+  });
+
+  test('a dangling directory symlink planted in place of board/halts is refused', () => {
+    const store = StateStore.open(stateRoot);
+    const realHaltsDir = join(stateRoot, 'board', 'halts');
+    const danglingTarget = join(tmpdir(), `agile-store-dangling-dir-${Date.now()}`);
+    try {
+      expect(existsSync(danglingTarget)).toBe(false); // never created — the point of "dangling"
+      rmSync(realHaltsDir, { recursive: true, force: true });
+      symlinkSync(danglingTarget, realHaltsDir);
+      expect(() => store.getHalt('anything' as never)).toThrow(/escapes the state root/);
+    } finally {
+      rmSync(realHaltsDir, { force: true });
+    }
+  });
+
+  test('a symlink chain (inside root -> inside root -> outside, dangling) is refused', async () => {
+    const store = StateStore.open(stateRoot);
+    const haltsDir = join(stateRoot, 'board', 'halts');
+    const hop1 = join(haltsDir, 'evil.yaml'); // what getHalt('evil') resolves to
+    const hop2 = join(stateRoot, 'board', 'link2.yaml'); // still inside root
+    const danglingOutside = join(tmpdir(), `agile-store-chain-dangling-${Date.now()}`);
+    try {
+      expect(existsSync(danglingOutside)).toBe(false);
+      symlinkSync(hop2, hop1); // hop1 -> hop2 (inside root)
+      symlinkSync(danglingOutside, hop2); // hop2 -> outside, dangling
+      expect(() => store.getHalt('evil' as never)).toThrow(/escapes the state root/);
+    } finally {
+      rmSync(hop1, { force: true });
+      rmSync(hop2, { force: true });
+    }
+  });
+
+  test('a symlink whose target is inside the state root is allowed', async () => {
+    const store = StateStore.open(stateRoot);
+    await store.putHalt({
+      id: 'H-501' as never,
+      scope: 'global',
+      reason: 'fixture',
+      raised_by: 'test',
+      quorum: 'pending',
+    });
+    const haltsDir = join(stateRoot, 'board', 'halts');
+    const realPath = join(haltsDir, 'H-501.yaml');
+    const aliasPath = join(haltsDir, 'H-502.yaml');
+    try {
+      symlinkSync(realPath, aliasPath); // target is inside the state root
+      const halt = store.getHalt('H-502' as never);
+      expect(halt.id).toBe('H-501');
+    } finally {
+      rmSync(aliasPath, { force: true });
+    }
   });
 });
 
