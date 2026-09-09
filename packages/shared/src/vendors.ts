@@ -31,6 +31,17 @@ export const VendorConfigSchema = z
     // Additive + defaulted so every existing `vendors.yaml` (Claude,
     // Cursor, Gemini — none of which need it) keeps validating unchanged.
     requires_sandbox: z.boolean().default(false),
+    // T026 round 3 (review round 2 nit — "`enabled` must be a schema'd
+    // config field ... not ad-hoc"): the explicit opt-in that
+    // `sandbox.wrapAgentCommand`'s `enabled` input and
+    // `runner/session.ts`'s `AgentSessionOptions.sandboxEnabled` both
+    // exist to receive — turns tier-0 wrapping on for a vendor that
+    // doesn't `requires_sandbox`, without a backend's mere presence being
+    // enough on its own (design §6, review round 1 B2). Not yet read by
+    // any caller — `runner.ts` (outside this ticket's file ownership)
+    // needs to thread `VendorConfig.sandbox_enabled` through the same path
+    // `requires_sandbox` takes; see the pipeline report's wiring section.
+    sandbox_enabled: z.boolean().default(false),
   })
   .strict();
 export type VendorConfig = z.infer<typeof VendorConfigSchema>;

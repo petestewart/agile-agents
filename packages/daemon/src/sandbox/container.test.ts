@@ -73,6 +73,9 @@ describe('buildContainerCommand', () => {
         '-v',
         '/repo/.git/refs:/repo/.git/refs:rw',
         '-v',
+        // Round 3 B6: the branch reflog lives under the common `.git/logs`.
+        '/repo/.git/logs:/repo/.git/logs:rw',
+        '-v',
         '/repo/.git/worktrees/TKT-0001:/repo/.git/worktrees/TKT-0001:rw',
       ]),
     );

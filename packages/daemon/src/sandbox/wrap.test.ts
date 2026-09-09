@@ -70,11 +70,56 @@ describe('wrapAgentCommand', () => {
     });
   });
 
+  test('round 3 (QA round 2): enabled true + backend none fails closed, exactly like requiresSandbox — no silent passthrough', () => {
+    expect(() =>
+      wrapAgentCommand(
+        { ...baseInput, vendor: 'claude', command: 'npx', args: ['-y', 'x'], enabled: true },
+        { detectBackendDeps: noneDeps(), ...noIoDeps },
+      ),
+    ).toThrow(SandboxRequiredError);
+
+    try {
+      wrapAgentCommand(
+        { ...baseInput, vendor: 'claude', command: 'npx', args: ['-y', 'x'], enabled: true },
+        { detectBackendDeps: noneDeps(), ...noIoDeps },
+      );
+      throw new Error('expected wrapAgentCommand to throw');
+    } catch (err) {
+      expect(err).toBeInstanceOf(SandboxRequiredError);
+      expect((err as SandboxRequiredError).vendor).toBe('claude');
+      // Not a spawn — no command/args ever escape this call on this path.
+    }
+  });
+
   test('requiresSandbox undefined behaves like false (default-safe)', () => {
     const result = wrapAgentCommand(
       { ...baseInput, vendor: 'claude', command: 'npx', args: [] },
       { detectBackendDeps: noneDeps(), ...noIoDeps },
     );
+    expect(result.backend).toBe('none');
+  });
+
+  test('round 3 nit: detectBackend() is never probed at all when neither requiresSandbox nor enabled is set', () => {
+    let probed = false;
+    const spyDeps: DetectBackendDeps = {
+      platform: () => {
+        probed = true;
+        return 'linux';
+      },
+      hasSandboxExec: () => {
+        probed = true;
+        return false;
+      },
+      hasContainerRuntime: () => {
+        probed = true;
+        return false;
+      },
+    };
+    const result = wrapAgentCommand(
+      { ...baseInput, vendor: 'claude', command: 'npx', args: [] },
+      { detectBackendDeps: spyDeps, ...noIoDeps },
+    );
+    expect(probed).toBe(false);
     expect(result.backend).toBe('none');
   });
 
@@ -104,19 +149,35 @@ describe('wrapAgentCommand', () => {
     expect(result.backend).toBe('sandbox-exec');
   });
 
-  test('backend container + requiresSandbox true: wraps under docker instead of refusing', () => {
-    const result = wrapAgentCommand(
-      { ...baseInput, requiresSandbox: true },
-      { detectBackendDeps: containerDeps(), ...noIoDeps },
-    );
-    expect(result.backend).toBe('container');
-    expect(result.command).toBe('docker');
-    expect(result.args).toContain('grok');
+  test('round 3: backend container + requiresSandbox true + role engineer is insufficient -> throws (Docker cannot enforce the registry allow-list)', () => {
+    try {
+      wrapAgentCommand(
+        { ...baseInput, requiresSandbox: true },
+        { detectBackendDeps: containerDeps(), ...noIoDeps },
+      );
+      throw new Error('expected wrapAgentCommand to throw');
+    } catch (err) {
+      expect(err).toBeInstanceOf(SandboxRequiredError);
+      expect((err as Error).message).toContain('container');
+      expect((err as Error).message).toContain('network allow-list');
+    }
   });
 
-  test('backend container: resolveHostBinaryPath is consulted and its result mounted+used (round 2 B5)', () => {
+  test('round 3: backend container + requiresSandbox true + role reviewer/qa is sufficient (no network posture to enforce beyond none) -> wraps under docker', () => {
+    for (const role of ['reviewer', 'qa'] as const) {
+      const result = wrapAgentCommand(
+        { ...baseInput, role, requiresSandbox: true },
+        { detectBackendDeps: containerDeps(), ...noIoDeps },
+      );
+      expect(result.backend).toBe('container');
+      expect(result.command).toBe('docker');
+      expect(result.args).toContain('grok');
+    }
+  });
+
+  test('backend container: resolveHostBinaryPath is consulted and its result mounted+used when no explicit image is set (round 2 B5)', () => {
     const result = wrapAgentCommand(
-      { ...baseInput, requiresSandbox: true },
+      { ...baseInput, role: 'reviewer', requiresSandbox: true },
       {
         detectBackendDeps: containerDeps(),
         gitPathsDeps: noIoDeps.gitPathsDeps,
@@ -127,6 +188,25 @@ describe('wrapAgentCommand', () => {
     expect(result.args).toEqual(
       expect.arrayContaining(['-v', '/usr/local/bin/grok:/usr/local/bin/grok:ro']),
     );
+  });
+
+  test('round 3 B7: resolveHostBinaryPath is never consulted once a non-default image is explicitly configured', () => {
+    let called = false;
+    const result = wrapAgentCommand(
+      { ...baseInput, role: 'reviewer', requiresSandbox: true },
+      {
+        detectBackendDeps: containerDeps(),
+        gitPathsDeps: noIoDeps.gitPathsDeps,
+        resolveHostBinaryPath: () => {
+          called = true;
+          return '/usr/local/bin/grok';
+        },
+        containerOptions: { image: 'agile/grok-acp:1' },
+      },
+    );
+    expect(called).toBe(false);
+    expect(result.args).not.toContain('/usr/local/bin/grok');
+    expect(result.args).toContain('agile/grok-acp:1');
   });
 
   test('round 2 B3: socketPath flows through into the rendered sandbox-exec profile', () => {

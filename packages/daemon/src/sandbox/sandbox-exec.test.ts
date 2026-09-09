@@ -83,6 +83,10 @@ describe('renderSandboxExecProfile', () => {
     expect(text).toContain('(allow file-write* (subpath "/repo/.git/worktrees/TKT-0001"))');
     expect(text).toContain('(allow file-write* (subpath "/repo/.git/objects"))');
     expect(text).toContain('(allow file-write* (subpath "/repo/.git/refs"))');
+    // Round 3 B6: the branch reflog lives under the *common* `.git/logs`,
+    // not the per-worktree gitdir — missing this made every real commit
+    // fail with "unable to append to .git/logs/refs/heads/<branch>".
+    expect(text).toContain('(allow file-write* (subpath "/repo/.git/logs"))');
   });
 
   test('round 2 B4: reviewer never gets a shared-git write rule even if gitPaths were passed in', () => {

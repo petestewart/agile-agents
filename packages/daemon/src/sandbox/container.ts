@@ -90,17 +90,20 @@ export function buildContainerCommand(
     `${profile.worktreePath}:${profile.worktreePath}:${profile.worktreeWritable ? 'rw' : 'ro'}`,
   );
 
-  // Round 2 B4: same shared-git write access sandbox-exec grants, mounted
-  // instead of allow-ruled. `commonGitDir` first (read-only — config,
-  // hooks, the main checkout's own HEAD stay untouched), then the two
-  // subpaths git commit actually writes, then this worktree's own gitdir —
-  // mount order matters here: each later `-v` on a path nested under an
-  // earlier one overrides that subtree.
+  // Round 2 B4 / round 3 B6: same shared-git write access sandbox-exec
+  // grants, mounted instead of allow-ruled. `commonGitDir` first (read-only
+  // — config, hooks, the main checkout's own HEAD stay untouched), then the
+  // three subpaths git commit actually writes (`objects`, `refs`, and the
+  // branch reflog under `logs` — round 2 missed `logs` and a real commit
+  // died at "unable to append to .git/logs/refs/heads/<branch>"), then this
+  // worktree's own gitdir — mount order matters here: each later `-v` on a
+  // path nested under an earlier one overrides that subtree.
   if (profile.role === 'engineer' && profile.gitPaths) {
     const { worktreeGitDir, commonGitDir } = profile.gitPaths;
     dockerArgs.push('-v', `${commonGitDir}:${commonGitDir}:ro`);
     dockerArgs.push('-v', `${join(commonGitDir, 'objects')}:${join(commonGitDir, 'objects')}:rw`);
     dockerArgs.push('-v', `${join(commonGitDir, 'refs')}:${join(commonGitDir, 'refs')}:rw`);
+    dockerArgs.push('-v', `${join(commonGitDir, 'logs')}:${join(commonGitDir, 'logs')}:rw`);
     dockerArgs.push('-v', `${worktreeGitDir}:${worktreeGitDir}:rw`);
   }
 

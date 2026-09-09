@@ -74,20 +74,29 @@ export function renderSandboxExecProfile(profile: SandboxProfile): string {
   }
 
   if (profile.role === 'engineer' && profile.gitPaths) {
-    // Round 2 B4: a worktree's `.git` is a gitfile pointing at
+    // Round 2 B4 / round 3 B6: a worktree's `.git` is a gitfile pointing at
     // `<repo>/.git/worktrees/<name>` (this worktree's own HEAD/index/logs);
-    // `git commit` also needs to write new objects/refs into the *shared*
-    // `<repo>/.git`. `(allow file-read*)` above already covers reading the
-    // rest of it (rules, other branches) — only these two subpaths need
+    // `git commit` also needs to write new objects/refs *and append to the
+    // branch's reflog* into the *shared* `<repo>/.git`. Round 2 granted
+    // `objects`/`refs` but missed `logs` — the branch reflog
+    // (`logs/refs/heads/<branch>`) lives in the *common* git dir, not the
+    // per-worktree one (only `logs/HEAD` is per-worktree, already covered
+    // by `worktreeGitDir` above), so a commit without this allow dies at
+    // "cannot update the ref ... unable to append to
+    // '.git/logs/refs/heads/<branch>'" (exit 128) — reproduced end-to-end
+    // in round 2 review and again by `git-write-set.test.ts` here.
+    // `(allow file-read*)` above already covers reading the rest of
+    // `<repo>/.git` (rules, other branches) — only these subpaths need
     // write. Reviewer/QA never reach this branch (`gitPaths` is only ever
     // set on an engineer profile — see `profile.ts`), so they stay
     // read-only across all of `<repo>/.git` as §14 requires.
     lines.push(
       '',
-      "; engineer: shared git dir — commit needs to write new objects/refs, and this worktree's own HEAD/index/logs",
+      "; engineer: shared git dir — commit needs to write new objects/refs/reflog, and this worktree's own HEAD/index/logs",
       `(allow file-write* (subpath "${escapeSbplString(profile.gitPaths.worktreeGitDir)}"))`,
       `(allow file-write* (subpath "${escapeSbplString(join(profile.gitPaths.commonGitDir, 'objects'))}"))`,
       `(allow file-write* (subpath "${escapeSbplString(join(profile.gitPaths.commonGitDir, 'refs'))}"))`,
+      `(allow file-write* (subpath "${escapeSbplString(join(profile.gitPaths.commonGitDir, 'logs'))}"))`,
     );
   }
 
