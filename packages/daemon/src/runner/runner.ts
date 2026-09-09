@@ -33,6 +33,7 @@ import { installPreCommitHook } from '../merge/precommit';
 import type { PermissionRole } from '../permissions';
 import { wrapAgentCommand } from '../sandbox';
 import type { StateStore } from '../store';
+import { sandboxedSubprocessEnv } from '../subprocess-env';
 import { assembleBrief } from './brief';
 import { type AgentSessionHandle, type AgentSessionOptions, startAgentSession } from './session';
 import {
@@ -104,6 +105,7 @@ function ensureArchitectWorktree(repoRoot: string): string {
   mkdirSync(join(repoRoot, '.worktrees'), { recursive: true });
   const result = Bun.spawnSync(['git', 'worktree', 'add', '--detach', path, INTEGRATION_BRANCH], {
     cwd: repoRoot,
+    env: sandboxedSubprocessEnv(repoRoot, 'git'),
     stdout: 'pipe',
     stderr: 'pipe',
   });
