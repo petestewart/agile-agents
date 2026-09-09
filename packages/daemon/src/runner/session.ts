@@ -679,7 +679,7 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
       // any other role.
       if (role === 'architect' && isArchitectPlanRequest(params.toolCall)) {
         void (async () => {
-          const options = params.options;
+          const options = params.options ?? [];
           let approved = false;
           // Review round 2 (opus blocker 1): `store.getPolicy()` and every
           // `GateService` call below are fallible (a missing
