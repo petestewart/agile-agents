@@ -30,7 +30,14 @@
  * automatic rollback of the just-written bytes is implemented.
  */
 
-import { appendFileSync, existsSync, lstatSync, readFileSync, readlinkSync } from 'node:fs';
+import {
+  appendFileSync,
+  existsSync,
+  lstatSync,
+  readFileSync,
+  readlinkSync,
+  realpathSync,
+} from 'node:fs';
 import { dirname, isAbsolute, join, normalize, parse, relative, resolve, sep } from 'node:path';
 import {
   type AgentId,
@@ -264,7 +271,21 @@ export class StateStore {
   // stray timer outlives it.
   private closed = false;
 
-  private constructor(private readonly stateRoot: string) {}
+  // Round 5 review (opus) B1: an absolute symlink target is walked from the
+  // filesystem root and checked for containment against `stateRoot`'s
+  // *literal* text — but when the state root is itself reached through a
+  // symlinked ancestor directory (macOS `tmpdir()` under `/var ->
+  // /private/var`, or any operator layout with a linked parent), the walk
+  // legitimately resolves through that ancestor to the *real* directory,
+  // which no longer shares the literal prefix. Cached once here (the
+  // directory is required to exist by `open()`'s `existsSync` check, so
+  // `realpathSync` is safe) so `resolveComponentSymlink` can accept
+  // containment against either form — see its own doc comment.
+  private readonly realStateRoot: string;
+
+  private constructor(private readonly stateRoot: string) {
+    this.realStateRoot = realpathSync(stateRoot);
+  }
 
   /**
    * Marks this store closed (so `scheduleDeferredFlush` becomes a no-op
@@ -407,8 +428,17 @@ export class StateStore {
     // specific to a *symlink's own* `readlinkSync` text (see
     // `resolveComponentSymlink`), not to this top-level entry.
     const rel = relative(root, resolved);
-    const segments = rel === '' ? [] : rel.split(sep);
+    // Round 5 nit N3: explicit here (not just relied on as a side effect of
+    // `walkSegments`'s own `''`/`'.'` skip) so the invariant is local to
+    // whichever function computes the segment list, not just to whichever
+    // happens to consume it today.
+    const segments = rel === '' ? [] : rel.split(sep).filter((seg) => seg.length > 0);
     this.walkSegments(root, segments, root, parts, { hops: 0 });
+  }
+
+  /** `target` is `root` itself or lies under it (`root + sep` prefix, never a bare string-prefix match). */
+  private isContainedIn(target: string, root: string): boolean {
+    return target === root || target.startsWith(root + sep);
   }
 
   /** Loosely modelled on Linux's `MAXSYMLINKS` — a link chain (or cycle) this long is never legitimate. */
@@ -488,18 +518,69 @@ export class StateStore {
     }
 
     const rawTarget = readlinkSync(path);
-    const rawSegments = rawTarget.split(/[\\/]/);
-    // Absolute target: resolved the way a kernel would, from the
-    // filesystem's own root — never assumed to start with `root`'s literal
-    // text, so a target like `"<root>/esc/../pwned.jsonl"` still walks
-    // through (and `lstat`s) the `esc` component itself. Relative target:
-    // resolved against `path`'s own directory, which is already a fully
-    // resolved location by the time we get here (every earlier component
-    // on the way to `path` has already been through this same function).
-    const baseDir = isAbsolute(rawTarget) ? parse(root).root : dirname(path);
+    let baseDir: string;
+    let rawSegments: string[];
+    if (isAbsolute(rawTarget)) {
+      // Round 5 B1: an absolute target is walked the way a kernel would —
+      // but blindly starting every absolute walk at the filesystem root
+      // means `lstat`ing `root`'s own ancestry, and a state root reached
+      // through a symlinked ancestor directory (macOS `tmpdir()` under
+      // `/var -> /private/var`, or any linked parent) then resolves that
+      // ancestor to its real location, which no longer shares `root`'s
+      // *literal* prefix — a plainly inside-root absolute target (built,
+      // as ordinary code does, from the literal `stateRoot` string) was
+      // false-refused. Fixed by first checking whether the raw target
+      // itself already names `root` (its usual literal text) or
+      // `realStateRoot` (root's cached real path) as a prefix — the common
+      // case for any absolute target actually meant to land inside this
+      // store — and, if so, walking only the remainder from that root form
+      // directly, never touching root's own ancestry at all (exactly like
+      // the relative-target branch below). A target like
+      // `"<root>/esc/../pwned.jsonl"` still has `root` as its prefix, so
+      // the remainder walked is `["esc", "..", "pwned.jsonl"]` from `root`
+      // — `esc` is still an ordinary segment of that walk and still gets
+      // `lstat`ed. Only a target naming *neither* root form at all falls
+      // back to a full filesystem-root walk (kernel-accurate, and — since
+      // such a target does not even claim to be inside this store — the
+      // rare residual risk of an unrelated ancestor symlink elsewhere on
+      // disk tripping the per-hop check is accepted, the same way other
+      // out-of-scope TOCTOU-class residuals are documented rather than
+      // chased to full generality).
+      if (this.isContainedIn(rawTarget, root)) {
+        baseDir = root;
+        rawSegments = rawTarget.slice(root.length).split(sep);
+      } else if (this.isContainedIn(rawTarget, this.realStateRoot)) {
+        baseDir = this.realStateRoot;
+        rawSegments = rawTarget.slice(this.realStateRoot.length).split(sep);
+      } else {
+        baseDir = parse(root).root;
+        // Round 5 nit N1: split on the platform separator only — a
+        // backslash is an ordinary filename character on POSIX, not a path
+        // separator, so treating it as one (the round 3/4 `/[\\/]/` regex)
+        // would mis-split a target that legitimately contains one.
+        rawSegments = rawTarget.split(sep);
+      }
+    } else {
+      // Relative target: resolved against `path`'s own directory, which is
+      // already a fully resolved location by the time we get here (every
+      // earlier component on the way to `path` has already been through
+      // this same function).
+      baseDir = dirname(path);
+      rawSegments = rawTarget.split(sep);
+    }
+
     const nextTarget = this.walkSegments(baseDir, rawSegments, root, parts, budget);
 
-    if (nextTarget !== root && !nextTarget.startsWith(root + sep)) {
+    // Round 5 B1: accept containment against either root form — `nextTarget`
+    // is already fully symlink-resolved by `walkSegments`, so comparing it
+    // to `realStateRoot` is exactly as safe as comparing it to the literal
+    // `root`, and is what makes the shortcut above (and the fallback
+    // filesystem-root walk, which may legitimately land inside the real
+    // root without ever mentioning its literal text) correct.
+    if (
+      !this.isContainedIn(nextTarget, root) &&
+      !this.isContainedIn(nextTarget, this.realStateRoot)
+    ) {
       throw new Error(`state path escapes the state root (symlink): ${parts.join('/')}`);
     }
 
