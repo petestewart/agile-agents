@@ -197,12 +197,12 @@ Priority encodes dependency layer as well as importance: P0 tickets are v0-block
 
 ### Ticket: T015 EM: sprint layers, assignment, standup, sprint review
 - **Priority:** P1
-- **Status:** In Progress
+- **Status:** In Review
 - **Owner:** sonnet:worker-T015
 - **Scope:** Depends on T006, T012, T013. EM session loop: compute the next sprint as the dependency frontier (cap configurable), write `sprints/S-*.yaml` with a recommended gates block, assign `ready` tickets (routing table is a single Claude entry in v0), read the board and post `decisions` stanzas, run the standup protocol on `discovery`/`halt`, run sprint review when the layer is done (delegated → merge `integration → main` and plan the next layer; `human` → `hil_request` and pre-plan), compute the retro block from the ledger.
 - **Acceptance Criteria:** With gates delegated, the EM drives the demo epic across two layers without a human; with `sprint_review: human`, it stops at the review with a `hil_request` and a pre-planned next layer.
 - **Validation Steps:** Live test both gate settings; unit tests for frontier computation and retro math.
-- **Notes:**
+- **Notes:** branch `T015-em` (`9c2848b`); `src/em/` (frontier/sprint planning, assignment, board/decision, standup protocol, sprint review, retro, EmLoop, verbs/RPC), 32 tests + gated live test. Discovered: `bus/routing.ts` lacks engineer → em `standup_report` (design §5) — worker granted the routing fix before gates.
 
 ### Ticket: T016 Review protocol
 - **Priority:** P1
@@ -388,3 +388,4 @@ Priority encodes dependency layer as well as importance: P0 tickets are v0-block
 - 2026-09-09 — Integration branch suite verified green 2/2 (987 pass) after T011; the deferred-commit git race QA saw on T012 only manifests under that branch's subprocess load — root cause and fix are T012's to land (store `close()`/flush guard).
 - 2026-09-09 — Decision: no `mock.module` anywhere in the repo (Bun applies it process-wide across test files); external process/IO dependencies are injected instead. The hook resolves agent and role from the agent registry (`AgentRecord.worktree`/`role`, disambiguated by `AGILE_AGENT`), never by inferring from the worktree path.
 - 2026-09-09 — T012 merged (0878378) after 4 review rounds / 4 QA rounds; 1046 tests green. Wave 6 launched in parallel: T014 (`src/architect/`), T015 (`src/em/`), T016 (`src/review/`), T017 (`src/qa/`), T019 (`src/merge/`), T023 (`src/quota/`), T030 (permissions allow-list). Manager wires `daemon.ts`/`index.ts` at merge.
+- 2026-09-09 — T015 found the T006 routing table missing engineer → em `standup_report` (§5); fixed under T015 with a row-by-row re-derivation from the design.
