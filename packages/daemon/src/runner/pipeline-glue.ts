@@ -34,7 +34,7 @@
  * point and make the next call."
  */
 
-import type { TicketId } from '@agile-agents/shared';
+import type { AgentId, TicketId } from '@agile-agents/shared';
 import type { Bus } from '../bus/bus';
 import type { StateStore } from '../store/store';
 import { agentIdFor } from './runner';
@@ -42,6 +42,24 @@ import { agentIdFor } from './runner';
 /** The slice of `ReviewProtocol` this glue needs (T016). */
 export interface ReviewStarter {
   start(ticket: TicketId): Promise<unknown>;
+}
+
+/**
+ * The slice of `Runner` this glue needs to tell a still-live reviewer
+ * session apart from a spawn that must happen, and to talk to it again
+ * (T021 round 3). `isLive`/`promptAgent` must come from `Runner`'s own
+ * in-process map, never from `StateStore.getAgent`/`AgentRecord` — that
+ * record is durable and survives a daemon restart (`runner.ts`'s `list()`
+ * doc comment), so inferring liveness from it treats a long-dead process
+ * as live and permanently suppresses a real spawn the ticket needs (QA
+ * round 2 / opus review round 2 blocker 1 — a round-2 attempt at this glue
+ * used `store.getAgent` and a new test built for this exact round caught
+ * it: a stale record acked a ticket's *first* `review_request` with no
+ * reviewer ever spawned).
+ */
+export interface ReviewRunner {
+  isLive(agentId: AgentId): boolean;
+  promptAgent(agentId: AgentId, text: string): Promise<unknown>;
 }
 
 /** The slice of `Runner` this glue needs to spawn QA (T012). */
@@ -55,27 +73,14 @@ export interface DoneMerger {
   onTicketDone(ticket: TicketId): Promise<unknown>;
 }
 
-/** True if `store.getAgent(id)` finds a live record — `getAgent` throws `NotFoundError` rather than returning `undefined` for a missing one (`store/store.ts`). */
-function agentIsLive(
-  store: Pick<StateStore, 'getAgent'>,
-  id: Parameters<StateStore['getAgent']>[0],
-): boolean {
-  try {
-    store.getAgent(id);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 /**
  * Reads every unread `review_request` message off each ticket's reviewer
- * inbox and starts the review round for it, acking the message once
- * `start` has been called. `seen` dedupes by `${ticket}:${message.id}` so a
- * message that somehow survives un-acked (a crash between `start()`
- * throwing and the ack below) is not retried indefinitely within one
- * process lifetime — the same "idempotent consumer" reasoning `EmLoop`
- * documents for its own inbox polling.
+ * inbox and starts (or re-prompts) the review round for it, acking the
+ * message once handled. `seen` dedupes by `${ticket}:${message.id}` so a
+ * message that somehow survives un-acked (a crash between the handling
+ * below and the ack) is not retried indefinitely within one process
+ * lifetime — the same "idempotent consumer" reasoning `EmLoop` documents
+ * for its own inbox polling.
  *
  * The reviewer role has no single fixed agent id the way `em`/`architect`
  * do — `AgentIdSchema`/`roleOf` require a concrete id, and `Runner`'s own
@@ -85,42 +90,51 @@ function agentIsLive(
  * polls the same computed id for every open ticket rather than one shared
  * inbox.
  *
- * Re-review reuse (T021 round 2): a ticket's reviewer agent id is stable
- * across rounds (same convention as above), and nothing in this codebase
- * ever tells that session's session to exit between rounds — it just stops
- * being prompted once its round-1 verdict is submitted, same as an
- * engineer's session between a `request_changes` and the next `board_post`.
- * `reviewer.start` (`ReviewProtocol.start`) unconditionally calls
- * `Runner.spawn`, which throws "already running" for an agent id still
- * live (`runner.ts`'s one-id-per-(role,ticket) map) — so a second
+ * Re-review reuse (T021 round 2, corrected round 3): a ticket's reviewer
+ * agent id is stable across rounds (same convention as above), and nothing
+ * in this codebase ever tells that session to exit between rounds — it
+ * just stops being prompted once its round-1 verdict is submitted, same as
+ * an engineer's session between a `request_changes` and the next
+ * `board_post`. `reviewer.start` (`ReviewProtocol.start`) unconditionally
+ * calls `Runner.spawn`, which throws "already running" for an agent id
+ * still live (`runner.ts`'s one-id-per-(role,ticket) map) — so a second
  * `review_request` on the same ticket (the engineer's fix-and-resubmit)
- * must skip `start` and only replicate its other job, the ticket's
- * `in_progress -> in_review` edge, or the re-review never happens at all.
+ * must skip `start`. Round 2 shipped that half; round 3 adds the other
+ * half opus review round 2 blocker 2 caught: skipping `start` alone drops
+ * the request on the floor in a live run, because a session is otherwise
+ * only ever prompted once, at spawn (`session.ts`'s file header) — nothing
+ * would ever tell the still-live reviewer a re-review is wanted. This now
+ * calls `runner.promptAgent` with the `review_request` message's own body
+ * so the live session actually receives a second turn.
  */
 export async function advanceReviewRequests(
-  store: Pick<StateStore, 'listTickets' | 'getAgent' | 'getTicket' | 'transitionTicket'>,
+  store: Pick<StateStore, 'listTickets' | 'getTicket' | 'transitionTicket'>,
   bus: Pick<Bus, 'poll' | 'ack'>,
   reviewer: ReviewStarter,
+  runner: ReviewRunner,
   seen: Set<string>,
 ): Promise<TicketId[]> {
   const started: TicketId[] = [];
   for (const ticket of store.listTickets()) {
-    const inbox = bus.poll(agentIdFor('reviewer', ticket.id));
+    const reviewerId = agentIdFor('reviewer', ticket.id);
+    const inbox = bus.poll(reviewerId);
     for (const message of inbox) {
       if (message.kind !== 'review_request' || !message.ticket) continue;
       const key = `${message.ticket}:${message.id}`;
       if (seen.has(key)) continue;
       seen.add(key);
-      if (agentIsLive(store, agentIdFor('reviewer', message.ticket))) {
+      const messageReviewerId = agentIdFor('reviewer', message.ticket);
+      if (runner.isLive(messageReviewerId)) {
         const current = store.getTicket(message.ticket);
         if (current.status === 'in_progress') {
           await store.transitionTicket(message.ticket, 'in_review', { by: 'daemon' });
         }
+        await runner.promptAgent(messageReviewerId, message.body);
       } else {
         await reviewer.start(message.ticket);
       }
       started.push(message.ticket);
-      await bus.ack(agentIdFor('reviewer', ticket.id), message.id);
+      await bus.ack(reviewerId, message.id);
     }
   }
   return started;

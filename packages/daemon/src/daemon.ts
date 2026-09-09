@@ -239,8 +239,8 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
   const qaSpawned = new Set<TicketId>();
   const mergedDone = new Set<TicketId>();
   async function advancePipeline(): Promise<void> {
-    if (store && bus && reviewProtocol)
-      await advanceReviewRequests(store, bus, reviewProtocol, seenReviewRequests);
+    if (store && bus && reviewProtocol && runner)
+      await advanceReviewRequests(store, bus, reviewProtocol, runner, seenReviewRequests);
     if (store && runner) await advanceQaSpawns(store, runner, qaSpawned);
     if (store && mergeOwner) await advanceDoneTickets(store, mergeOwner, mergedDone);
   }

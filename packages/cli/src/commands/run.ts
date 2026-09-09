@@ -36,9 +36,14 @@
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import type { ClaudePreToolUsePayload, DaemonHandle } from '@agile-agents/daemon';
+import type {
+  AgentSessionOptions,
+  ClaudePreToolUsePayload,
+  DaemonHandle,
+} from '@agile-agents/daemon';
 import {
   HookService,
+  NotFoundError,
   advanceDoneTickets,
   advanceQaSpawns,
   advanceReviewRequests,
@@ -49,8 +54,10 @@ import {
   reRefineStale,
   registerArchitectTools,
   registerQaTools,
+  reviewRecordRelPath,
   reviewSubmit,
   startDaemon,
+  validateReviewRecord,
 } from '@agile-agents/daemon';
 import type { OracleEntry, Ticket, TicketId } from '@agile-agents/shared';
 import { ulid, validateTicket } from '@agile-agents/shared';
@@ -67,6 +74,17 @@ export interface RunOptions {
   tickIntervalMs?: number;
   /** Wall-clock budget for `--live` mode before giving up (fake mode uses `maxTicks` instead, since it never actually waits). Defaults to 10 minutes (the quorum-timeout tunable). */
   liveTimeoutMs?: number;
+  /** `--live` mode only: abort with a diagnosis if every tracked ticket's status (plus discovery/sprint-review progress) is unchanged for this many ms, instead of waiting out the rest of `liveTimeoutMs` (opus review round 2 nit: an unreachable vendor — e.g. a bogus key, or a hung handshake — otherwise churns silently for the full timeout with no way to tell "broken" from "just slow"). Defaults to 2 minutes; ignored in `--fake` mode. */
+  stallTimeoutMs?: number;
+  /**
+   * Test-only seam: overrides the ACP transport `--live` mode spawns
+   * every session on, exactly like `--fake`'s `createFakeSpawn()` does for
+   * fake mode — lets the live-mode wait/stall-watchdog logic itself
+   * (`tickIntervalMs`/`liveTimeoutMs`/`stallTimeoutMs` above) be exercised
+   * deterministically in `bun test`/CI without a real vendor login. Real
+   * `agile run --live` usage never sets this. Ignored when `fake` is true.
+   */
+  liveSpawnForTest?: AgentSessionOptions['spawn'];
   /** Where to write the run report. Defaults to `<cwd>/runs`. */
   reportDir?: string;
 }
@@ -179,6 +197,29 @@ function allMerged(handle: DaemonHandle, ids: TicketId[]): boolean {
     const record = handle.mergeOwner?.status(id) as { status?: string } | undefined;
     return record?.status === 'merged';
   });
+}
+
+/**
+ * Counts `ticket`'s stored primary review rounds directly off
+ * `board/reviews/<ticket>-r<n>.yaml` — the same durable records
+ * `ReviewProtocol.nextPrimaryRound` walks — rather than the driver's own
+ * `reviewRoundsByTicket` bookkeeping (opus review round 2 nit: that map is
+ * only ever populated inside the `if (fake)` scripted branch, so a
+ * *live* run's report claimed "0 rounds" for every ticket even though the
+ * real review records existed). Correct in both modes since it reads what
+ * actually happened, not what this driver scripted.
+ */
+function countReviewRounds(store: NonNullable<DaemonHandle['store']>, ticket: TicketId): number {
+  let round = 1;
+  while (true) {
+    try {
+      store.getEntity(reviewRecordRelPath(ticket, round, 'primary'), validateReviewRecord);
+      round++;
+    } catch (err) {
+      if (err instanceof NotFoundError) return round - 1;
+      throw err;
+    }
+  }
 }
 
 /**
@@ -573,7 +614,27 @@ async function driveQaWork(handle: DaemonHandle, ticket: Ticket): Promise<void> 
   const submitTool = tools.find((t) => t.name === 'qa_submit');
   if (!planTool || !runTool || !submitTool) return;
   await planTool.handler(ctx, { plan });
-  await runTool.handler(ctx, {});
+  const results = (await runTool.handler(ctx, {})) as Array<{
+    criterion: string;
+    command?: string;
+    status: string;
+    evidence: string;
+  }>;
+  // `bun test -t "<pattern>"` matching zero tests still exits 0, and
+  // `tools/test-run.ts`'s own pass-count classifier (out of this ticket's
+  // file allowance) reads that as a real pass — `"... -> 0 passed"`. This
+  // driver's own `qaPlanFor` commands are exact test-name substrings, so a
+  // `0 passed` here means one drifted out of sync with the actual test
+  // (T021 round 3, opus review round 2 nit) — the fixture's own defect,
+  // not the criterion actually holding. Fail loud rather than let the
+  // offline e2e (or `agile run`) accept it as genuine evidence.
+  for (const r of results) {
+    if (/->\s*0 passed\b/.test(r.evidence)) {
+      throw new Error(
+        `agile run: QA criterion "${r.criterion}" (command: ${r.command ?? '(none)'}) matched zero tests (${r.evidence}) — the qaPlanFor command has drifted from the actual test name; this is a fixture defect, not a real pass. See .pipeline-report.md.`,
+      );
+    }
+  }
   await submitTool.handler(ctx, {});
 }
 
@@ -630,11 +691,12 @@ export async function runDemoSprint(opts: RunOptions): Promise<RunResult> {
   // enough for a real engineer/reviewer/qa chain to actually finish.
   const tickIntervalMs = opts.tickIntervalMs ?? (fake ? 0 : 30_000);
   const liveTimeoutMs = opts.liveTimeoutMs ?? 10 * 60 * 1000;
+  const stallTimeoutMs = opts.stallTimeoutMs ?? 2 * 60 * 1000;
 
   const handle = await startDaemon({
     cwd: opts.cwd,
     port: 0,
-    runnerSpawn: fake ? createFakeSpawn() : undefined,
+    runnerSpawn: fake ? createFakeSpawn() : opts.liveSpawnForTest,
     gateDelegate: fake
       ? () => ({ decision: 'approve', by: 'em', rationale: 'automated (agile run --fake)' })
       : undefined,
@@ -653,193 +715,233 @@ export async function runDemoSprint(opts: RunOptions): Promise<RunResult> {
       throw new Error('agile run: daemon did not construct its object graph (no .agile/ state?)');
     }
     const { store, bus, emLoop, gateService, runner, mergeOwner, reviewProtocol } = handle;
-
-    let seed: SeedFile = {};
-    if (opts.seed) {
-      seed = loadSeed(opts.seed);
-      if (store.listTickets().length === 0) await seedFixture(handle, seed);
+    try {
+      return await runSprintBody();
+    } finally {
+      // Drains every still-live session (stop + await its own exit/crash
+      // cleanup) whether the body above returned normally or threw (T021
+      // round 3: the stall watchdog's thrown error used to skip straight
+      // to `handle.stop()`, which stops sessions but doesn't wait on their
+      // exit — a background write from the hung session's own crash
+      // handling could still be in flight when a caller then removes
+      // `cwd`, exactly the race this function's own header already
+      // documents for the *normal* completion path). Never blocks past a
+      // genuinely stuck exit forever: bounded, same as `runner.test.ts`'s
+      // own teardown convention.
+      await Promise.all(
+        runner.list().map((session) => {
+          session.stop();
+          return Promise.race([session.exited, Bun.sleep(15_000)]);
+        }),
+      );
     }
-    const trackedIds = seedTicketIds(seed);
 
-    if (store.listSprints().length === 0) {
-      await planSprint(store, { goal: 'Demo epic layer 1' });
-    }
+    async function runSprintBody(): Promise<RunResult> {
+      let seed: SeedFile = {};
+      if (opts.seed) {
+        seed = loadSeed(opts.seed);
+        if (store.listTickets().length === 0) await seedFixture(handle, seed);
+      }
+      const trackedIds = seedTicketIds(seed);
 
-    const seenReview = new Set<string>();
-    const qaSpawned = new Set<TicketId>();
-    const mergedDone = new Set<TicketId>();
-    const engineerHandled = new Set<TicketId>();
-    const reviewerHandled = new Set<TicketId>();
-    const qaHandled = new Set<TicketId>();
-    // The seeded rule-violation ticket needs a *second* engineer/reviewer
-    // turn (fix, then re-review) after its round-1 `request_changes` — the
-    // sets above are "handled once, ever" gates for the common case, so
-    // this ticket's second pass needs its own dedicated tracking rather
-    // than overloading them (T021 round 2 / QA round 1, opus round 1
-    // blocker 1).
-    const violationTicket = seed.violation?.ticket;
-    const violationFixDriven = new Set<TicketId>();
-    const violationReviewedRound2 = new Set<TicketId>();
-    const reviewRoundsByTicket = new Map<TicketId, number>();
-    let discoveryRaised = false;
-    let discoveryResolved = !seed.discovery;
-    let oversizedReadDecision = 'not checked (no --seed)';
+      if (store.listSprints().length === 0) {
+        await planSprint(store, { goal: 'Demo epic layer 1' });
+      }
 
-    const start = Date.now();
-    let tick = 0;
-    for (; fake ? tick < maxTicks : Date.now() - start < liveTimeoutMs; tick++) {
-      await gateService.tick();
-      await emLoop.tick();
-      await advanceReviewRequests(store, bus, reviewProtocol, seenReview);
-      await advanceQaSpawns(store, runner, qaSpawned);
-      await advanceDoneTickets(store, mergeOwner, mergedDone);
+      const seenReview = new Set<string>();
+      const qaSpawned = new Set<TicketId>();
+      const mergedDone = new Set<TicketId>();
+      const engineerHandled = new Set<TicketId>();
+      const reviewerHandled = new Set<TicketId>();
+      const qaHandled = new Set<TicketId>();
+      // The seeded rule-violation ticket needs a *second* engineer/reviewer
+      // turn (fix, then re-review) after its round-1 `request_changes` — the
+      // sets above are "handled once, ever" gates for the common case, so
+      // this ticket's second pass needs its own dedicated tracking rather
+      // than overloading them (T021 round 2 / QA round 1, opus round 1
+      // blocker 1).
+      const violationTicket = seed.violation?.ticket;
+      const violationFixDriven = new Set<TicketId>();
+      const violationReviewedRound2 = new Set<TicketId>();
+      const reviewRoundsByTicket = new Map<TicketId, number>();
+      let discoveryRaised = false;
+      let discoveryResolved = !seed.discovery;
+      let oversizedReadDecision = 'not checked (no --seed)';
 
-      if (fake) {
-        for (const ticket of store.listTickets()) {
-          const attempts = ticket.routing?.attempts ?? 0;
-          const isViolationFixTurn =
-            ticket.id === violationTicket &&
-            ticket.status === 'in_progress' &&
-            attempts >= 1 &&
-            !violationFixDriven.has(ticket.id);
+      const start = Date.now();
+      // Fail-fast stall watchdog state (`--live` only, see below): a
+      // cheap signature of everything the loop's own completion condition
+      // watches — a real spawn attempt moves a ticket `ready -> assigned ->
+      // in_progress` immediately, synchronously, before any actual vendor
+      // I/O (`runner.ts`'s `spawn`), so "still ready" alone doesn't catch an
+      // unreachable vendor — the ticket leaves `ready` right away and then
+      // simply never moves again while a hung/failed session sits there.
+      let lastProgressSignature = '';
+      let lastProgressAt = start;
+      let tick = 0;
+      for (; fake ? tick < maxTicks : Date.now() - start < liveTimeoutMs; tick++) {
+        await gateService.tick();
+        await emLoop.tick();
+        await advanceReviewRequests(store, bus, reviewProtocol, runner, seenReview);
+        await advanceQaSpawns(store, runner, qaSpawned);
+        await advanceDoneTickets(store, mergeOwner, mergedDone);
 
-          if (
-            ticket.worktree &&
-            (isViolationFixTurn ||
-              (ticket.status === 'in_progress' && !engineerHandled.has(ticket.id)))
-          ) {
-            const attempt = isViolationFixTurn ? 2 : 1;
-            if (isViolationFixTurn) violationFixDriven.add(ticket.id);
-            else engineerHandled.add(ticket.id);
-            if (oversizedReadDecision.startsWith('not checked')) {
-              oversizedReadDecision = await checkOversizedReadDenied(
-                handle,
-                join(handle.config.repoRoot, ticket.worktree),
-              );
+        if (fake) {
+          for (const ticket of store.listTickets()) {
+            const attempts = ticket.routing?.attempts ?? 0;
+            const isViolationFixTurn =
+              ticket.id === violationTicket &&
+              ticket.status === 'in_progress' &&
+              attempts >= 1 &&
+              !violationFixDriven.has(ticket.id);
+
+            if (
+              ticket.worktree &&
+              (isViolationFixTurn ||
+                (ticket.status === 'in_progress' && !engineerHandled.has(ticket.id)))
+            ) {
+              const attempt = isViolationFixTurn ? 2 : 1;
+              if (isViolationFixTurn) violationFixDriven.add(ticket.id);
+              else engineerHandled.add(ticket.id);
+              if (oversizedReadDecision.startsWith('not checked')) {
+                oversizedReadDecision = await checkOversizedReadDenied(
+                  handle,
+                  join(handle.config.repoRoot, ticket.worktree),
+                );
+              }
+              await driveEngineerWork(handle, ticket, seed, attempt);
+              if (attempt === 1 && seed.discovery?.reporterTicket === ticket.id)
+                discoveryRaised = true;
             }
-            await driveEngineerWork(handle, ticket, seed, attempt);
-            if (attempt === 1 && seed.discovery?.reporterTicket === ticket.id)
-              discoveryRaised = true;
+
+            const isViolationReviewRound2 =
+              ticket.id === violationTicket &&
+              ticket.status === 'in_review' &&
+              attempts >= 1 &&
+              !violationReviewedRound2.has(ticket.id);
+
+            // `store.getAgent` throws `NotFoundError` rather than returning
+            // `undefined` for a missing record (store.ts), so it must stay
+            // short-circuited behind `ticket.status === 'in_review'` — never
+            // hoisted into an eagerly-evaluated local, or every ticket not
+            // yet in review throws here on every tick.
+            if (
+              ticket.status === 'in_review' &&
+              (isViolationReviewRound2 || !reviewerHandled.has(ticket.id)) &&
+              store.getAgent(agentIdFor('reviewer', ticket.id))
+            ) {
+              const round = isViolationReviewRound2 ? 2 : 1;
+              if (isViolationReviewRound2) violationReviewedRound2.add(ticket.id);
+              else reviewerHandled.add(ticket.id);
+              reviewRoundsByTicket.set(ticket.id, round);
+              await driveReviewerWork(handle, ticket, round, seed);
+              // Deliberately not stopping the reviewer session here: nothing
+              // in this codebase tells a session to exit between rounds (an
+              // engineer's session between a `request_changes` and its own
+              // next `board_post` is left alone the same way), and a session
+              // exit while the ticket is still `in_progress`/`in_review` (a
+              // `LIVE_STATUS`) makes `session.ts`'s `finish()` treat it as a
+              // crash and re-ready the ticket, wiping this round's outcome.
+              // `advanceReviewRequests` (`pipeline-glue.ts`) reuses this same
+              // still-live session for round 2 instead of re-spawning it.
+            }
+
+            if (
+              ticket.status === 'in_qa' &&
+              !qaHandled.has(ticket.id) &&
+              store.getAgent(agentIdFor('qa', ticket.id))
+            ) {
+              qaHandled.add(ticket.id);
+              await driveQaWork(handle, ticket);
+            }
           }
 
-          const isViolationReviewRound2 =
-            ticket.id === violationTicket &&
-            ticket.status === 'in_review' &&
-            attempts >= 1 &&
-            !violationReviewedRound2.has(ticket.id);
-
-          // `store.getAgent` throws `NotFoundError` rather than returning
-          // `undefined` for a missing record (store.ts), so it must stay
-          // short-circuited behind `ticket.status === 'in_review'` — never
-          // hoisted into an eagerly-evaluated local, or every ticket not
-          // yet in review throws here on every tick.
-          if (
-            ticket.status === 'in_review' &&
-            (isViolationReviewRound2 || !reviewerHandled.has(ticket.id)) &&
-            store.getAgent(agentIdFor('reviewer', ticket.id))
-          ) {
-            const round = isViolationReviewRound2 ? 2 : 1;
-            if (isViolationReviewRound2) violationReviewedRound2.add(ticket.id);
-            else reviewerHandled.add(ticket.id);
-            reviewRoundsByTicket.set(ticket.id, round);
-            await driveReviewerWork(handle, ticket, round, seed);
-            // Deliberately not stopping the reviewer session here: nothing
-            // in this codebase tells a session to exit between rounds (an
-            // engineer's session between a `request_changes` and its own
-            // next `board_post` is left alone the same way), and a session
-            // exit while the ticket is still `in_progress`/`in_review` (a
-            // `LIVE_STATUS`) makes `session.ts`'s `finish()` treat it as a
-            // crash and re-ready the ticket, wiping this round's outcome.
-            // `advanceReviewRequests` (`pipeline-glue.ts`) reuses this same
-            // still-live session for round 2 instead of re-spawning it.
-          }
-
-          if (
-            ticket.status === 'in_qa' &&
-            !qaHandled.has(ticket.id) &&
-            store.getAgent(agentIdFor('qa', ticket.id))
-          ) {
-            qaHandled.add(ticket.id);
-            await driveQaWork(handle, ticket);
+          if (discoveryRaised && !discoveryResolved) {
+            const result = await runScriptedDiscovery(handle, seed.discovery);
+            discoveryResolved = result.resolved;
+            // A staled ticket's engineer agent is already live (spawned before
+            // the ripple hit) — `assignReady`'s "already running" swallow
+            // (assign.ts's own doc comment) means it will never re-spawn one,
+            // by design: the same session is expected to keep working once
+            // resumed. This offline driver has no live model polling its own
+            // inbox to notice that on its own, so it resumes the ticket and
+            // re-drives that same scripted turn directly.
+            for (const staledId of result.staled) {
+              const staled = store.getTicket(staledId);
+              if (staled.status !== 'ready' || !store.getAgent(agentIdFor('engineer', staledId))) {
+                continue; // never had a live engineer — assignReady will spawn one normally.
+              }
+              let resumed = await store.transitionTicket(staledId, 'assigned', {
+                by: 'architect',
+              });
+              resumed = await store.transitionTicket(staledId, 'in_progress', {
+                by: resumed.assignee ?? agentIdFor('engineer', staledId),
+              });
+              if (!engineerHandled.has(staledId)) {
+                engineerHandled.add(staledId);
+                await driveEngineerWork(handle, resumed, seed, 1);
+              }
+            }
           }
         }
 
-        if (discoveryRaised && !discoveryResolved) {
-          const result = await runScriptedDiscovery(handle, seed.discovery);
-          discoveryResolved = result.resolved;
-          // A staled ticket's engineer agent is already live (spawned before
-          // the ripple hit) — `assignReady`'s "already running" swallow
-          // (assign.ts's own doc comment) means it will never re-spawn one,
-          // by design: the same session is expected to keep working once
-          // resumed. This offline driver has no live model polling its own
-          // inbox to notice that on its own, so it resumes the ticket and
-          // re-drives that same scripted turn directly.
-          for (const staledId of result.staled) {
-            const staled = store.getTicket(staledId);
-            if (staled.status !== 'ready' || !store.getAgent(agentIdFor('engineer', staledId))) {
-              continue; // never had a live engineer — assignReady will spawn one normally.
-            }
-            let resumed = await store.transitionTicket(staledId, 'assigned', {
-              by: 'architect',
-            });
-            resumed = await store.transitionTicket(staledId, 'in_progress', {
-              by: resumed.assignee ?? agentIdFor('engineer', staledId),
-            });
-            if (!engineerHandled.has(staledId)) {
-              engineerHandled.add(staledId);
-              await driveEngineerWork(handle, resumed, seed, 1);
-            }
+        const sprintReviewed = store.listSprints().some((s) => s.review_at !== undefined);
+        if (
+          trackedIds.length > 0 &&
+          allMerged(handle, trackedIds) &&
+          discoveryResolved &&
+          sprintReviewed
+        ) {
+          break;
+        }
+        // Fail-fast stall watchdog, `--live` only (opus review round 2 nit):
+        // an unreachable vendor (a bogus key, a hung handshake, ...)
+        // otherwise churns silently for the full `liveTimeoutMs` (observed:
+        // 200s+ with no output before a manual kill) with nothing to
+        // distinguish "broken" from "just slow". Tracks a cheap signature of
+        // every tracked ticket's status plus `discoveryResolved`/
+        // `sprintReviewed` — whatever the loop's own completion condition
+        // above watches — and aborts once `stallTimeoutMs` passes with that
+        // signature unchanged, rather than only checking "still ready"
+        // (which a real spawn attempt leaves within milliseconds, then
+        // simply never advances again while a hung session sits there).
+        if (!fake && trackedIds.length > 0) {
+          const signature = `${trackedIds.map((id) => store.getTicket(id).status).join(',')}|${discoveryResolved}|${sprintReviewed}`;
+          if (signature !== lastProgressSignature) {
+            lastProgressSignature = signature;
+            lastProgressAt = Date.now();
+          } else if (Date.now() - lastProgressAt >= stallTimeoutMs) {
+            throw new Error(
+              `agile run --live: no progress (ticket statuses/discovery/sprint-review unchanged: "${signature}") for ${stallTimeoutMs}ms — no vendor session appears reachable (check the login/key \`agile run --live\` is meant to use). Aborting instead of waiting out the remaining liveTimeoutMs.`,
+            );
           }
+        }
+        if (!fake && tickIntervalMs > 0) {
+          await new Promise((resolve) => setTimeout(resolve, tickIntervalMs));
         }
       }
 
-      const sprintReviewed = store.listSprints().some((s) => s.review_at !== undefined);
-      if (
-        trackedIds.length > 0 &&
-        allMerged(handle, trackedIds) &&
-        discoveryResolved &&
-        sprintReviewed
-      ) {
-        break;
-      }
-      if (!fake && tickIntervalMs > 0) {
-        await new Promise((resolve) => setTimeout(resolve, tickIntervalMs));
-      }
+      const reportDir = opts.reportDir ?? join(opts.cwd, 'runs');
+      mkdirSync(reportDir, { recursive: true });
+      const ticketOutcomes = trackedIds.map((id) => {
+        const ticket = store.getTicket(id);
+        return {
+          ticket: id,
+          status: ticket.status,
+          merged: (mergeOwner.status(id) as { status?: string } | undefined)?.status === 'merged',
+          reviewRounds: countReviewRounds(store, id),
+        };
+      });
+      const reportPath = join(reportDir, `${new Date().toISOString().replace(/[:.]/g, '-')}.md`);
+      writeFileSync(reportPath, renderReport(handle, ticketOutcomes, oversizedReadDecision, tick));
+
+      // Draining every still-live session (stop + await its own exit/crash
+      // cleanup) so a background `finish()` write can't race a caller that
+      // removes `cwd` right after this resolves is now the outer `finally`'s
+      // job (see above) — it runs on this normal-return path too, not just
+      // on a thrown error, so there is nothing left to do here.
+      return { reportPath, ticketOutcomes, oversizedReadDecision, ticksUsed: tick };
     }
-
-    const reportDir = opts.reportDir ?? join(opts.cwd, 'runs');
-    mkdirSync(reportDir, { recursive: true });
-    const ticketOutcomes = trackedIds.map((id) => {
-      const ticket = store.getTicket(id);
-      return {
-        ticket: id,
-        status: ticket.status,
-        merged: (mergeOwner.status(id) as { status?: string } | undefined)?.status === 'merged',
-        reviewRounds: reviewRoundsByTicket.get(id) ?? 0,
-      };
-    });
-    const reportPath = join(reportDir, `${new Date().toISOString().replace(/[:.]/g, '-')}.md`);
-    writeFileSync(reportPath, renderReport(handle, ticketOutcomes, oversizedReadDecision, tick));
-
-    // `handle.stop()` (below, `daemon.ts`) stops every still-live session
-    // but deliberately doesn't wait on each one's own async exit/crash
-    // cleanup ("never blocks shutdown on a slow-to-die agent" — its own
-    // doc comment) — a background `finish()` (`runner/session.ts`: an
-    // escalate message + `store.flush()`) can still be in flight after
-    // `stop()` resolves. Every ticket this driver ran finished (`done`,
-    // never explicitly stopped mid-flight — see the file header), so
-    // draining each one's `exited` here first is safe and gives the
-    // report's own writes, plus the daemon's shutdown flush, a fully
-    // quiesced store to land in: a caller that removes `cwd` right after
-    // `runDemoSprint` resolves (this driver's own e2e test does) would
-    // otherwise race that background write into a "not a git repository"
-    // failure once `cwd` is gone.
-    for (const session of runner.list()) {
-      session.stop();
-      await session.exited;
-    }
-
-    return { reportPath, ticketOutcomes, oversizedReadDecision, ticksUsed: tick };
   } finally {
     await handle.stop();
   }

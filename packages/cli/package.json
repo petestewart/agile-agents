@@ -17,5 +17,8 @@
     "@agile-agents/daemon": "workspace:*",
     "@modelcontextprotocol/sdk": "1.30.0",
     "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@agile-agents/acp-client": "workspace:*"
   }
 }

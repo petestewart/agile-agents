@@ -285,6 +285,39 @@ export class Runner {
   }
 
   /**
+   * True only if this *in-process* runner currently believes `agentId` is
+   * live (T021 round 3 — the one honest liveness source for "should I
+   * spawn a fresh session or reuse this one"). Deliberately never consults
+   * `StateStore.getAgent`/`AgentRecord`: that record is durable and
+   * survives a daemon restart (this file's own `list()` doc comment), so a
+   * caller that inferred liveness from its mere presence would treat a
+   * long-dead process as live and never spawn a real replacement — the
+   * exact bug a round-2 attempt at this shipped and QA/opus review round 2
+   * both caught by exercising it directly.
+   */
+  isLive(agentId: AgentId): boolean {
+    return this.live.has(agentId);
+  }
+
+  /**
+   * Sends a fresh turn to an already-live session (T021 round 3) — the
+   * counterpart to `isLive`: a caller that finds an agent id still live
+   * must talk to that same session again rather than re-`spawn`ing it
+   * (which throws "already running"), and a session is otherwise only
+   * ever prompted once, at spawn (`session.ts`'s own file header). Throws
+   * if `agentId` isn't live — a caller should always check `isLive` (or
+   * otherwise know the id is live) before calling this, the same
+   * precondition `stop`/`list` place on their own callers.
+   */
+  async promptAgent(agentId: AgentId, text: string): Promise<unknown> {
+    const handle = this.live.get(agentId);
+    if (!handle) {
+      throw new Error(`runner.promptAgent: ${agentId} is not live`);
+    }
+    return handle.prompt(text);
+  }
+
+  /**
    * Calls `bus.checkLiveness()` + `bus.sweepRedelivery()` and reaps any
    * `this.live` entry whose ticket the liveness sweep just readied out from
    * under it (the agent's own process may still be technically alive but

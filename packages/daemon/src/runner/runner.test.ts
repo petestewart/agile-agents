@@ -328,6 +328,69 @@ describe('Runner.spawn', () => {
     runner.stop('eng-0231');
     await result.exited;
   }, 90000);
+
+  // T021 round 3 (opus review round 2 blockers 1/2): `Runner.isLive` must
+  // reflect only the in-process `live` map — never the durable
+  // `AgentRecord`, which survives a "restart" (a fresh `Runner` instance
+  // over the same store) — and `Runner.promptAgent` must reach the actual
+  // still-running subprocess with a genuine second `session/prompt`, not
+  // just flip a ticket status. Real subprocess round-trip both times, not
+  // mocked.
+  test('Runner.isLive reflects only the in-process map (a durable AgentRecord alone is not "live"); Runner.promptAgent delivers a real second turn', async () => {
+    const engineerRunner = trackedRunner({
+      store,
+      bus,
+      repoRoot: repo,
+      spawn: fakeSpawn({ steps: [{ type: 'hang' }] }),
+    });
+    const eng = await engineerRunner.spawn('engineer', 'TKT-0231');
+
+    const runner = trackedRunner({
+      store,
+      bus,
+      repoRoot: repo,
+      spawn: fakeSpawn({
+        steps: [
+          { type: 'tool_call', toolCallId: 'r1', kind: 'other', title: 'review turn' },
+          { type: 'end_turn' },
+        ],
+      }),
+    });
+    const rev = await runner.spawn('reviewer', 'TKT-0231');
+
+    expect(runner.isLive('reviewer-0231')).toBe(true);
+
+    // A "restart" is just a fresh `Runner` over the same durable store —
+    // the `AgentRecord` the spawn above wrote is still on disk, but this
+    // new instance's own `live` map starts empty.
+    const restarted = trackedRunner({
+      store,
+      bus,
+      repoRoot: repo,
+      spawn: fakeSpawn({ steps: [{ type: 'hang' }] }),
+    });
+    // `store.putAgent` is fire-and-forget from `startAgentSession` (never
+    // awaited by `spawn()`'s own return) — wait for it to actually land
+    // before asserting the record survives a "restart".
+    await waitFor(() => agentExists('reviewer-0231'));
+    expect(restarted.isLive('reviewer-0231')).toBe(false); // but this process never spawned it
+
+    const toolCallCount = () =>
+      store
+        .listEvents()
+        .filter(
+          (e) => e.kind === 'tool_call' && (e.data as Record<string, unknown>).toolCallId === 'r1',
+        ).length;
+    await waitFor(() => toolCallCount() >= 1); // round 1's own spawn-time prompt.
+
+    await runner.promptAgent('reviewer-0231', 're-review: please check again');
+    await waitFor(() => toolCallCount() >= 2); // a genuine second turn on the SAME subprocess.
+
+    runner.stop('reviewer-0231');
+    await rev.exited;
+    engineerRunner.stop('eng-0231');
+    await eng.exited;
+  }, 90000);
 });
 
 describe('crash recovery', () => {

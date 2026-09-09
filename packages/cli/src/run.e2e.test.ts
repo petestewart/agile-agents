@@ -22,42 +22,36 @@
  * Validation Steps command — silently became a live attempt with no wait
  * loop and failed in ~3s, on a logged-in host too). The separate `live`
  * test below is what that command is actually meant to exercise; it's
- * skipped (not failed) whenever this run can't plausibly go live — either
- * `AGILE_LIVE` isn't set, or it is but no vendor login is detected — with
- * the reason visible in the test name.
+ * gated purely on `AGILE_LIVE=1` (round 3 — same convention as every other
+ * `live.test.ts` in this repo), skipped with the reason in its own name
+ * when unset. `runDemoSprint`'s stall watchdog (`run.ts`) is what turns a
+ * set-but-unreachable `AGILE_LIVE=1` into a fast, diagnosed failure rather
+ * than a silent multi-minute hang.
  */
 
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { cpSync, mkdtempSync, rmSync } from 'node:fs';
+import { cpSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { spawnSession } from '@agile-agents/acp-client';
 import { runCliInit } from './commands/init';
 import { runDemoSprint } from './commands/run';
 
 const FIXTURE_ROOT = join(import.meta.dir, '..', '..', '..', 'fixtures', 'demo-project');
 
-/**
- * Best-effort local signal that a *keyed* Claude login is available to spawn
- * against (`providers.ts`'s own "ambient login (`claude login`, or
- * `ANTHROPIC_API_KEY`)" header comment names both forms, but only the key
- * form is safely detectable here): a `claude login`'d session's own state
- * lives at `~/.claude.json`, which is indistinguishable from "a Claude Code
- * CLI happens to be installed" — this exact container has that file
- * (Claude Code's own config) with no vendor login behind it, so checking
- * for it is a false positive proven live, not a hypothetical (an earlier
- * round of this fix hung for a full `AGILE_LIVE=1` timeout because of it).
- * `ANTHROPIC_API_KEY` has no such ambiguity, so it's the only signal this
- * checks; a real `claude login`-only host needs to export it (or a person
- * confirming the login is in place is what `AGILE_LIVE=1` already assumes
- * for every other `live.test.ts` in this repo — this test only adds a
- * *cheaper* false-negative-safe skip on top, never a stricter gate).
- */
-function hasVendorLogin(): boolean {
-  return Boolean(process.env.ANTHROPIC_API_KEY);
-}
-
+// T021 round 3 (opus review round 2 nit): gate purely on `AGILE_LIVE=1`,
+// same as every other `live.test.ts` in this repo
+// (`acp-client/src/live.test.ts`, `daemon/src/em/live.test.ts`,
+// `daemon/src/hook/live.test.ts`, `test:integration`'s own `--grep live`
+// convention) — the ticket's own Validation Steps command IS
+// `AGILE_LIVE=1 bun run e2e`, so gating on anything narrower (round 2's
+// `ANTHROPIC_API_KEY` check) means it can never fire on the host CLAUDE.md
+// actually describes (a Claude Max `claude login`, no API key), passing
+// vacuously by skipping every time. `runDemoSprint`'s own stall watchdog
+// (`run.ts`) is what turns "AGILE_LIVE=1 but nothing reachable" into a
+// fast, clear failure instead of ten minutes of silent churn — this test
+// no longer tries to predict that up front.
 const liveRequested = process.env.AGILE_LIVE === '1';
-const canRunLive = liveRequested && hasVendorLogin();
 
 let repo: string;
 
@@ -183,14 +177,12 @@ describe('agile run (offline, fake ACP)', () => {
   }, 60_000);
 });
 
-describe('agile run (live, real ACP — only with AGILE_LIVE=1 and a vendor login)', () => {
+describe('agile run (live, real ACP — only with AGILE_LIVE=1)', () => {
   const title = liveRequested
-    ? canRunLive
-      ? 'drives the seeded demo epic to done against a real Claude session'
-      : 'drives the seeded demo epic to done against a real Claude session (skipped: AGILE_LIVE=1 but no vendor login detected — see hasVendorLogin())'
+    ? 'drives the seeded demo epic to done against a real Claude session'
     : 'drives the seeded demo epic to done against a real Claude session (skipped: AGILE_LIVE not set)';
 
-  test.skipIf(!canRunLive)(
+  test.skipIf(!liveRequested)(
     title,
     async () => {
       // Live mode has no scripted engineer/reviewer/QA turns (`run.ts`'s own
@@ -221,4 +213,48 @@ describe('agile run (live, real ACP — only with AGILE_LIVE=1 and a vendor logi
     },
     15 * 60_000,
   );
+});
+
+describe('agile run --live stall watchdog (offline, deterministic — opus review round 2 nit)', () => {
+  test('aborts fast with a clear diagnosis when a live-mode session never progresses, instead of waiting out liveTimeoutMs', async () => {
+    // Reproduces the exact failure mode the nit named — an unreachable
+    // vendor (there, a bogus `ANTHROPIC_API_KEY`; here, a session that
+    // spawns fine, registers, and then never responds, via `fake-agent.ts`'s
+    // own `hang` step) — deterministically and fast, via `liveSpawnForTest`
+    // (a test-only seam, `run.ts`'s own doc comment): this exercises the
+    // real `!fake` code path (the live tick loop, `tickIntervalMs`/
+    // `stallTimeoutMs`), just with a controllable transport standing in
+    // for a real vendor, so this test needs no login and never spawns a
+    // real vendor CLI.
+    const fakeAgentPath = join(
+      import.meta.dir,
+      '..',
+      '..',
+      'daemon',
+      'src',
+      'runner',
+      'fake-agent.ts',
+    );
+    const hangScriptPath = join(repo, 'hang-script.json');
+    writeFileSync(hangScriptPath, JSON.stringify({ steps: [{ type: 'hang' }] }));
+    const hangSpawn = (opts: Parameters<typeof spawnSession>[0]) =>
+      spawnSession({
+        ...opts,
+        cmd: 'bun',
+        args: [fakeAgentPath],
+        envOverrides: { ...opts.envOverrides, AGILE_FAKE_AGENT_SCRIPT: hangScriptPath },
+      });
+
+    await expect(
+      runDemoSprint({
+        cwd: repo,
+        seed: join(FIXTURE_ROOT, 'seed', 'epic.json'),
+        fake: false,
+        liveSpawnForTest: hangSpawn,
+        tickIntervalMs: 100,
+        liveTimeoutMs: 30_000,
+        stallTimeoutMs: 500,
+      }),
+    ).rejects.toThrow(/no progress .* for 500ms/);
+  }, 20_000);
 });

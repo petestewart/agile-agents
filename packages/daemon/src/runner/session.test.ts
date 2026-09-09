@@ -601,14 +601,13 @@ describe('T027: per-vendor session wiring (Cursor ask mode, Grok client-fs gate,
 
     const info = await handle.exited;
     expect(info.ticketReadied).toBe(true);
-    expect(info.reason).toContain('first prompt failed');
+    expect(info.reason).toContain('prompt failed');
     expect(store.getTicket('TKT-0231').status).toBe('ready');
 
     const inbox = await bus.poll('em' as never);
     expect(
       inbox.some(
-        (m) =>
-          m.kind === 'escalate' && m.ticket === 'TKT-0231' && /first prompt failed/.test(m.body),
+        (m) => m.kind === 'escalate' && m.ticket === 'TKT-0231' && /prompt failed/.test(m.body),
       ),
     ).toBe(true);
 
@@ -618,7 +617,7 @@ describe('T027: per-vendor session wiring (Cursor ask mode, Grok client-fs gate,
         (e) =>
           e.kind === 'agent_put' &&
           e.agent === 'eng-0231' &&
-          /first prompt failed/.test(String((e.data as Record<string, unknown>).warning ?? '')),
+          /prompt failed/.test(String((e.data as Record<string, unknown>).warning ?? '')),
       ),
     ).toBe(true);
   }, 90000);

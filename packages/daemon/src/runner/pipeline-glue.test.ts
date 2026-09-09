@@ -10,12 +10,29 @@ import { StateStore } from '../store';
 import {
   type DoneMerger,
   type QaSpawner,
+  type ReviewRunner,
   type ReviewStarter,
   advanceDoneTickets,
   advanceQaSpawns,
   advanceReviewRequests,
 } from './pipeline-glue';
 import { agentIdFor } from './runner';
+
+/** A `ReviewRunner` test double — `live` is the fake's own in-process-map stand-in, deliberately never touching the store, matching the real `Runner.isLive`/`Runner.promptAgent` contract (`runner.ts`). */
+function fakeReviewRunner(
+  initiallyLive: AgentId[] = [],
+): ReviewRunner & { prompted: Array<{ agentId: AgentId; text: string }> } {
+  const live = new Set(initiallyLive);
+  const prompted: Array<{ agentId: AgentId; text: string }> = [];
+  return {
+    prompted,
+    isLive: (agentId) => live.has(agentId),
+    promptAgent: async (agentId, text) => {
+      if (!live.has(agentId)) throw new Error(`fakeReviewRunner: ${agentId} is not live`);
+      prompted.push({ agentId, text });
+    },
+  };
+}
 
 let repo: string;
 let store: StateStore;
@@ -73,33 +90,33 @@ describe('advanceReviewRequests', () => {
       },
     };
     const seen = new Set<string>();
+    const runner = fakeReviewRunner(); // nothing live — every request must spawn.
 
-    const first = await advanceReviewRequests(store, bus, reviewer, seen);
+    const first = await advanceReviewRequests(store, bus, reviewer, runner, seen);
     expect(first).toEqual(['TKT-0001']);
     expect(started).toEqual(['TKT-0001']);
     expect(bus.poll(reviewerId)).toHaveLength(0); // acked
 
     // A second poll with nothing new in the inbox starts nothing again.
-    const second = await advanceReviewRequests(store, bus, reviewer, seen);
+    const second = await advanceReviewRequests(store, bus, reviewer, runner, seen);
     expect(second).toEqual([]);
     expect(started).toEqual(['TKT-0001']);
   });
 
-  test('reuses a still-live reviewer session for a second review_request instead of re-spawning it', async () => {
-    // T021 round 2: a re-review after `request_changes` sends a second
-    // `review_request` to the *same* reviewer agent id (`agentIdFor`'s
-    // one-id-per-(role,ticket) convention) — `ReviewProtocol.start`'s
-    // `Runner.spawn` would throw "already running" for it since nothing
-    // ever tells that session to exit between rounds, so this must not
-    // call `reviewer.start` a second time; it only replicates `start`'s
-    // other job, the `in_progress -> in_review` edge.
+  test('re-prompts a live reviewer session for a second review_request instead of re-spawning it', async () => {
+    // T021 round 3 (opus review round 2 blocker 2): a re-review after
+    // `request_changes` sends a second `review_request` to the *same*
+    // reviewer agent id (`agentIdFor`'s one-id-per-(role,ticket)
+    // convention) — `ReviewProtocol.start`'s `Runner.spawn` would throw
+    // "already running" for it since nothing ever tells that session to
+    // exit between rounds, so this must not call `reviewer.start` a
+    // second time. Round 2 stopped there (only replicated `start`'s
+    // ticket-transition side effect); round 3 also delivers the request
+    // to the live session via `runner.promptAgent` — a session is
+    // otherwise only ever prompted once, at spawn, so skipping `start`
+    // alone would silently strand a live re-review with no way to answer.
     await store.putTicket(makeTicket('TKT-0002' as TicketId, { status: 'in_progress' }));
     const reviewerId = agentIdFor('reviewer', 'TKT-0002' as TicketId);
-    await store.putAgent(reviewerId, {
-      vendor: 'claude',
-      model: 'claude',
-      last_seen: new Date().toISOString(),
-    });
     await bus.send({
       id: ulid(),
       ts: new Date().toISOString(),
@@ -119,12 +136,59 @@ describe('advanceReviewRequests', () => {
         started.push(ticket);
       },
     };
+    const runner = fakeReviewRunner([reviewerId]); // the round-1 session is still live.
 
-    const result = await advanceReviewRequests(store, bus, reviewer, new Set());
+    const result = await advanceReviewRequests(store, bus, reviewer, runner, new Set());
     expect(result).toEqual(['TKT-0002']);
     expect(started).toEqual([]); // never re-spawned
+    expect(runner.prompted).toEqual([{ agentId: reviewerId, text: 'fixed, ready for round 2' }]);
     expect(store.getTicket('TKT-0002' as TicketId).status).toBe('in_review');
     expect(bus.poll(reviewerId)).toHaveLength(0); // acked
+  });
+
+  test('a stale AgentRecord with no live runner session still spawns — liveness never comes from the durable store', async () => {
+    // T021 round 3 (QA round 2 / opus review round 2 blocker 1): a round-2
+    // attempt at the reuse branch checked `store.getAgent(...)` (the
+    // durable `AgentRecord`) instead of the runner's own in-process map.
+    // That record survives a daemon restart (`runner.ts`'s own `list()`
+    // doc comment) — so a ticket re-assigned after a restart, with a
+    // reviewer record left over from before it, would have its very first
+    // `review_request` acked and the ticket moved to `in_review` with no
+    // reviewer ever spawned. Reproduces that exact setup: an `AgentRecord`
+    // on record, but the runner (a fresh process, post-"restart") reports
+    // it not live.
+    await store.putTicket(makeTicket('TKT-0003' as TicketId, { status: 'in_progress' }));
+    const reviewerId = agentIdFor('reviewer', 'TKT-0003' as TicketId);
+    await store.putAgent(reviewerId, {
+      vendor: 'claude',
+      model: 'claude',
+      last_seen: new Date().toISOString(),
+    });
+    await bus.send({
+      id: ulid(),
+      ts: new Date().toISOString(),
+      from: 'eng-0003' as AgentId,
+      to: [reviewerId],
+      kind: 'review_request',
+      priority: 'normal',
+      ticket: 'TKT-0003' as TicketId,
+      body: 'ready for review',
+      refs: [],
+      requires_ack: false,
+    });
+
+    const started: TicketId[] = [];
+    const reviewer: ReviewStarter = {
+      start: async (ticket) => {
+        started.push(ticket);
+      },
+    };
+    const runner = fakeReviewRunner(); // nothing live in this process, despite the stale record.
+
+    const result = await advanceReviewRequests(store, bus, reviewer, runner, new Set());
+    expect(result).toEqual(['TKT-0003']);
+    expect(started).toEqual(['TKT-0003']); // spawned for real, not suppressed
+    expect(runner.prompted).toEqual([]);
   });
 
   test('ignores non-review_request messages and messages with no ticket', async () => {
@@ -149,7 +213,7 @@ describe('advanceReviewRequests', () => {
         calls += 1;
       },
     };
-    const result = await advanceReviewRequests(store, bus, reviewer, new Set());
+    const result = await advanceReviewRequests(store, bus, reviewer, fakeReviewRunner(), new Set());
     expect(result).toEqual([]);
     expect(calls).toBe(0);
     // Non-review_request traffic is left alone (some other consumer's).
