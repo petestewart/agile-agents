@@ -152,12 +152,12 @@ Priority encodes dependency layer as well as importance: P0 tickets are v0-block
 
 ### Ticket: T010 ACP permission policy by role
 - **Priority:** P0
-- **Status:** In Progress
+- **Status:** In Review
 - **Owner:** sonnet:worker-T010
 - **Scope:** Depends on T003, T005. Daemon answers `session/request_permission` per design §14: engineer (edits in worktree, repo scripts, package registries), reviewer (deny all writes/exec except read-only tools), QA (env only), never-without-human list (push outside ticket branch, force-push, branch delete, new dependencies, deny-listed commands). Requests outside policy become `hil_request` items with a deadline. Every decision logged with `allow_once` only (never `allow_always`).
 - **Acceptance Criteria:** Fixture permission requests resolve to the expected option per role; a `git push origin main` from an engineer produces a `hil_request`, not an allow.
 - **Validation Steps:** Table-driven unit tests over (role × request) pairs.
-- **Notes:**
+- **Notes:** branch `T010-permission-policy` (local worktree); `src/permissions/` (classifier, policy tables, decide, responder, 70 tests), daemon gains a workspace dep on acp-client for types. Worker flags: real spike payloads carry `rawInput: {}` on every tool call, so command-level classification may only work from titles or must move to the PreToolUse hook (T009) — reviewer asked to rule on efficacy. `hil_request` written to `bus/inbox/human/` (T018 persists HIL requests separately — consolidate at merge). Gates running.
 
 ### Ticket: T011 Tool framework, MCP server, `read_summary`, `test_run`
 - **Priority:** P0
