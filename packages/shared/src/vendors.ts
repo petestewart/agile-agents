@@ -21,6 +21,16 @@ export type VendorAccount = z.infer<typeof VendorAccountSchema>;
 export const VendorConfigSchema = z
   .object({
     accounts: z.array(VendorAccountSchema).min(1),
+    // T026 (design §6 "Enforcement tiers": "a vendor with ungated exec
+    // (Codex, Grok) is an engineer only inside a tier-0 sandbox") — set
+    // `true` for vendors whose ACP/native bridge cannot be made to gate
+    // exec at tier 1/2 (spike-findings.md §D: Codex and Grok both prompt
+    // for nothing). Routing must refuse to spawn such a vendor as an
+    // engineer when `sandbox.detectBackend()` reports `none` rather than
+    // running it unsandboxed — see `packages/daemon/src/sandbox`.
+    // Additive + defaulted so every existing `vendors.yaml` (Claude,
+    // Cursor, Gemini — none of which need it) keeps validating unchanged.
+    requires_sandbox: z.boolean().default(false),
   })
   .strict();
 export type VendorConfig = z.infer<typeof VendorConfigSchema>;
