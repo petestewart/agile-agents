@@ -42,6 +42,7 @@ import { realpathSync, statSync } from 'node:fs';
 import { isAbsolute, resolve } from 'node:path';
 import type {
   AgentId,
+  AgentRecord,
   Message,
   Policy,
   Ticket,
@@ -63,7 +64,7 @@ import {
   type HookLimits,
 } from './types';
 
-/** Raw Claude `PostToolUse` hook stdin payload. */
+/** Raw Claude `PostToolUse` hook stdin payload. `agile_agent` — see `ClaudePreToolUsePayload`'s doc comment (`hook/types.ts`): a disambiguation hint only, applied after cwd resolution, never trusted alone. */
 export interface ClaudePostToolUsePayload {
   hook_event_name?: string;
   cwd?: string;
@@ -71,15 +72,17 @@ export interface ClaudePostToolUsePayload {
   tool_name?: string;
   tool_input?: Record<string, unknown>;
   tool_response?: unknown;
+  agile_agent?: string;
   [key: string]: unknown;
 }
 
-/** Raw Claude `Stop` hook stdin payload. */
+/** Raw Claude `Stop` hook stdin payload. `agile_agent` — see `ClaudePreToolUsePayload`'s doc comment (`hook/types.ts`): a disambiguation hint only, applied after cwd resolution, never trusted alone. */
 export interface ClaudeStopPayload {
   hook_event_name?: string;
   cwd?: string;
   session_id?: string;
   stop_hook_active?: boolean;
+  agile_agent?: string;
   [key: string]: unknown;
 }
 
@@ -217,16 +220,38 @@ export class HookService {
    * `agile_agent` field, when the CLI forwarded `AGILE_AGENT`) disambiguates
    * when more than one registered agent's worktree contains `cwd`.
    */
+  /**
+   * Review round 3 (opus item 4): a stale registry entry (`last_seen`
+   * older than the bus's own liveness timeout — CLAUDE.md tunable "liveness
+   * timeout 5 min") must not win disambiguation, or even resolve alone.
+   * The liveness sweep (`runner.ts`/`bus.ts`) removes a dead agent's record
+   * eventually, but there's a real window between "the agent actually died"
+   * and "the sweep noticed" where a stale-but-still-on-disk record could
+   * otherwise authorize (or, worse, mis-disambiguate) a hook call that
+   * isn't really coming from that agent any more. A record with an
+   * unparseable `last_seen` is treated as stale too — fail safe, not "trust
+   * a value we can't even read".
+   */
+  private isStale(record: AgentRecord, now: Date): boolean {
+    const lastSeenMs = Date.parse(record.last_seen);
+    if (Number.isNaN(lastSeenMs)) return true;
+    return now.getTime() - lastSeenMs >= this.bus.getLivenessTimeoutMs();
+  }
+
   private resolveAgentByCwd(
     cwd: string | undefined,
     agentHint: string | undefined,
   ): { agent: AgentId; ticket: TicketId; role: PermissionRole; worktreePath: string } | undefined {
     if (cwd === undefined) return undefined;
     const realCwd = safeRealpath(cwd);
+    const now = this.now();
 
     const candidates = this.store.listAgents().filter(({ record }) => {
       const worktreeAbs = this.absWorktree(record.worktree);
-      return worktreeAbs !== undefined && isPathInside(realCwd, safeRealpath(worktreeAbs));
+      if (worktreeAbs === undefined || !isPathInside(realCwd, safeRealpath(worktreeAbs))) {
+        return false;
+      }
+      return !this.isStale(record, now);
     });
 
     if (candidates.length > 0) {

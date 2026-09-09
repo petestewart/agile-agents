@@ -69,7 +69,14 @@ function agentRecord(overrides: Partial<AgentRecord> = {}): AgentRecord {
     model: 'claude-sonnet-4-5',
     ticket: 'TKT-0001',
     pid: 4242,
-    last_seen: '2026-09-09T00:00:00Z',
+    // Fresh by default — real "now" at fixture-construction time, not a
+    // hardcoded past timestamp — so every existing test here stays "live"
+    // under review round 3's staleness check (`resolveAgentByCwd` ignores a
+    // registry entry whose `last_seen` is older than the bus's liveness
+    // timeout) without having to inject a matching clock into every
+    // `service()` call. Tests that need a genuinely stale record pass their
+    // own `last_seen` override.
+    last_seen: new Date().toISOString(),
     ...overrides,
   };
 }
@@ -538,30 +545,113 @@ describe('HookService — registry-based agent resolution (T012 QA/review round)
 
     // Disambiguated via the `agile_agent` hint (what the CLI forwards from
     // `AGILE_AGENT`, itself set by `writeClaudeSettings`'s `agentId` option)
-    // — reviewer resolves as `role: 'reviewer'`.
+    // — reviewer resolves as `role: 'reviewer'`, and role now actually
+    // GATES the edit (review round 3, opus item 1 — this used to only be
+    // attributed correctly on the event log while still `allow`ing the
+    // edit itself; asserted here, not `void`d).
     const asReviewer = await svc.preToolUse({
       cwd: worktree,
       tool_name: 'Edit',
       tool_input: { file_path: join(worktree, 'a.ts') },
       agile_agent: 'reviewer-1',
     });
+    expect(asReviewer.hookSpecificOutput.permissionDecision).toBe('deny');
+    expect(asReviewer.hookSpecificOutput.permissionDecisionReason).toMatch(/reviewer role denies/);
     const reviewerEvents = store
       .listEvents()
       .filter((e) => e.kind === 'hook_decision' && e.agent === 'reviewer-1');
     expect(reviewerEvents).toHaveLength(1);
-    void asReviewer;
 
+    // Same shared worktree, same file, but resolved as the engineer — the
+    // engineer's own edit-inside-worktree allowance still applies.
     const asEngineer = await svc.preToolUse({
       cwd: worktree,
       tool_name: 'Edit',
       tool_input: { file_path: join(worktree, 'a.ts') },
       agile_agent: 'eng-1',
     });
+    expect(asEngineer.hookSpecificOutput.permissionDecision).toBe('allow');
     const engineerEvents = store
       .listEvents()
       .filter((e) => e.kind === 'hook_decision' && e.agent === 'eng-1');
     expect(engineerEvents).toHaveLength(1);
-    void asEngineer;
+  });
+
+  test('reviewer Bash: only the read-only allow-list passes, everything else denies (review round 3, opus item 1)', async () => {
+    await seedTicket({ status: 'in_review', assignee: 'eng-1' });
+    await store.putAgent(
+      'reviewer-1',
+      agentRecord({ role: 'reviewer', worktree, ticket: 'TKT-0001' }),
+    );
+    const svc = service();
+
+    const readOnly = await svc.preToolUse({
+      cwd: worktree,
+      tool_name: 'Bash',
+      tool_input: { command: 'git diff' },
+      agile_agent: 'reviewer-1',
+    });
+    expect(readOnly.hookSpecificOutput.permissionDecision).toBe('allow');
+
+    const destructive = await svc.preToolUse({
+      cwd: worktree,
+      tool_name: 'Bash',
+      tool_input: { command: 'rm -rf src' },
+      agile_agent: 'reviewer-1',
+    });
+    expect(destructive.hookSpecificOutput.permissionDecision).toBe('deny');
+    expect(destructive.hookSpecificOutput.permissionDecisionReason).toMatch(/reviewer role denies/);
+  });
+
+  test('QA Edit denies (deny edits to source — write test files only), engineer edit outside its worktree denies', async () => {
+    await seedTicket({ status: 'in_qa', assignee: 'eng-1' });
+    const qaWorktree = join(repo, '.worktrees', 'TKT-0001-qa');
+    mkdirSync(qaWorktree, { recursive: true });
+    await store.putAgent(
+      'qa-1',
+      agentRecord({ role: 'qa', worktree: qaWorktree, ticket: 'TKT-0001' }),
+    );
+    const svc = service();
+
+    const qaEdit = await svc.preToolUse({
+      cwd: qaWorktree,
+      tool_name: 'Edit',
+      tool_input: { file_path: join(qaWorktree, 'src.ts') },
+    });
+    expect(qaEdit.hookSpecificOutput.permissionDecision).toBe('deny');
+    expect(qaEdit.hookSpecificOutput.permissionDecisionReason).toMatch(/QA role denies edits/);
+
+    await store.putAgent('eng-1', agentRecord({ role: 'engineer', worktree, ticket: 'TKT-0001' }));
+    const outside = await svc.preToolUse({
+      cwd: worktree,
+      tool_name: 'Edit',
+      // Escapes the engineer's own worktree.
+      tool_input: { file_path: join(repo, 'outside.ts') },
+    });
+    expect(outside.hookSpecificOutput.permissionDecision).toBe('deny');
+    expect(outside.hookSpecificOutput.permissionDecisionReason).toMatch(/outside the worktree/);
+  });
+
+  test('a stale registry entry (last_seen past the liveness timeout) is ignored when resolving cwd (review round 3, opus item 4)', async () => {
+    await seedTicket({ status: 'in_progress', assignee: 'eng-1' });
+    const staleLastSeen = new Date(Date.now() - 10 * 60 * 1000).toISOString(); // 10 min ago
+    await store.putAgent(
+      'eng-1',
+      agentRecord({ role: 'engineer', worktree, ticket: 'TKT-0001', last_seen: staleLastSeen }),
+    );
+
+    const svc = service();
+    const result = await svc.preToolUse({
+      cwd: worktree,
+      tool_name: 'Read',
+      tool_input: { file_path: 'x.txt' },
+    });
+
+    // Falls back to the Ticket.worktree-based resolution (the registry
+    // entry is ignored as stale) — the ticket itself still resolves this as
+    // an allow (a Read is always allowed), but attribution comes from the
+    // fallback path, not the stale registry record.
+    expect(result.hookSpecificOutput.permissionDecision).toBe('allow');
   });
 
   test('an agent record with no `worktree` set falls back to the Ticket.worktree-based resolution (backward compat)', async () => {

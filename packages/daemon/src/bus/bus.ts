@@ -130,6 +130,18 @@ export class Bus {
     this.livenessTimeoutMs = options.livenessTimeoutMs ?? DEFAULT_LIVENESS_TIMEOUT_MS;
   }
 
+  /**
+   * This bus's configured liveness timeout (T012 review round 3, opus item
+   * 4) — `HookService.resolveAgentByCwd` reads this to decide whether a
+   * registered agent's `last_seen` is too stale to trust for cwd/role
+   * resolution, rather than hardcoding `DEFAULT_LIVENESS_TIMEOUT_MS`
+   * (which would silently diverge from a `Bus` constructed with a custom
+   * `livenessTimeoutMs`, e.g. in a test).
+   */
+  getLivenessTimeoutMs(): number {
+    return this.livenessTimeoutMs;
+  }
+
   private inboxDir(agent: string, sub?: string): string {
     return sub
       ? join(this.stateRoot, 'bus', 'inbox', agent, sub)
@@ -313,7 +325,14 @@ export class Bus {
       vendor: patch.vendor ?? existing.vendor ?? 'unknown',
       model: patch.model ?? existing.model ?? 'unknown',
       ticket: patch.ticket ?? existing.ticket,
-      pid: patch.pid ?? existing.pid ?? process.pid,
+      // T012 review round 3 (opus item 3, out-of-grant necessity — see
+      // `runner/session.ts`'s header and `.pipeline-report.md`): never fall
+      // back to `process.pid` (the daemon's own pid). `runner/session.ts`'s
+      // `recordHeartbeat` calls `bus.heartbeat` on every tool call with no
+      // `pid` in its patch, so leaving this fallback in place would silently
+      // overwrite a correctly-omitted `pid` with the daemon's on the very
+      // next heartbeat after registration — defeating the fix at its source.
+      pid: patch.pid ?? existing.pid,
       last_seen: this.now().toISOString(),
     };
     return this.store.putAgent(agent, record);

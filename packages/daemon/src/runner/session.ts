@@ -11,17 +11,23 @@
  * and ticket state transition a call to `spawn()` implies; this module just
  * runs the session once handed a worktree path and a rendered brief.
  *
- * `AgentRecord.pid` (T012 QA round fix): registration now uses
- * `session.pid` — `@agile-agents/acp-client`'s `SpawnedSession` exposes the
- * spawned child's real OS pid (granted for this round: `packages/acp-client/
- * src/{session,types}.ts`) — falling back to the daemon's own pid only in
- * the narrow window `spawn()` itself failed to assign one. This is what
- * lets an external operator's "kill -9 the pid on record" acceptance step
- * work as written, not just the daemon's own automatic liveness sweep
- * (which never reads `pid` for anything — the crash test in `runner.test.ts`
- * now asserts `store.getAgent(...).pid` equals the fake agent's own pid
- * *before* killing it, closing the gap a previous round of this ticket left
- * as a documented DESIGN-GAP).
+ * `AgentRecord.pid` (T012 QA round fix, corrected in review round 3):
+ * registration uses `session.pid` — `@agile-agents/acp-client`'s
+ * `SpawnedSession` exposes the spawned child's real OS pid (granted for
+ * this round: `packages/acp-client/src/{session,types}.ts`). Round 2 fell
+ * back to the daemon's own pid (`session.pid ?? process.pid`) in the
+ * narrow window a spawn failed to assign one — opus round 2 correctly
+ * called this out as recreating the exact "kill the record, kill the
+ * daemon" footgun the fix was supposed to remove. `AgentRecord.pid` is now
+ * optional (`packages/shared/src/agents.ts`, granted): when
+ * `session.pid` is `null`, `pid` is omitted entirely (never substituted)
+ * and an `agent_put` event logs a warning naming the gap, so it's visible
+ * in `log/events.jsonl` rather than silently wrong. This is what lets an
+ * external operator's "kill -9 the pid on record" acceptance step work as
+ * written, not just the daemon's own automatic liveness sweep (which never
+ * reads `pid` for anything — the crash test in `runner.test.ts` asserts
+ * `store.getAgent(...).pid` equals the fake agent's own pid *before*
+ * killing it).
  *
  * `role`/`worktree`/`session_id` survival (DESIGN-GAP): `StateStore.heartbeat`
  * and `Bus.heartbeat` (both outside this ticket's file ownership) rebuild
@@ -455,21 +461,40 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
   // Registration (§5 "Storage": agents/<agent>.yaml) — before the first
   // prompt, so a crash during the very first turn still has a record to
   // clean up.
+  //
+  // `pid` (review round 3, opus item 3): `AgentRecord.pid` is optional
+  // precisely so this never falls back to `process.pid` (the daemon's own
+  // pid) — see this file's header. `session.pid` is `null` only in the
+  // narrow window the spawned child's pid wasn't assigned (mirrors Node's
+  // `ChildProcess.pid` being `undefined` in that case); when that happens
+  // the record is still written (an idle-but-registered agent beats no
+  // record at all), just without `pid`, and a warning event is logged so
+  // the gap shows up in `log/events.jsonl` instead of silently resolving
+  // to the wrong process.
+  const spawnedPid = session.pid;
   void store
     .putAgent(agentId, {
       vendor: provider.id,
       model,
       ticket,
-      // The spawned agent subprocess's own OS pid (T012 QA round —
-      // `SpawnedSession.pid`, acp-client). Falls back to the daemon's own
-      // pid only in the narrow window `spawn()` itself failed to assign one
-      // (mirrors Node's `ChildProcess.pid` being `undefined` in exactly that
-      // case) — `AgentRecordSchema.pid` requires a positive int, and a
-      // fallback here is strictly better than never registering at all.
-      pid: session.pid ?? process.pid,
+      ...(spawnedPid !== null ? { pid: spawnedPid } : {}),
       last_seen: now().toISOString(),
       role,
       worktree: worktreePath,
+    })
+    .then(() => {
+      if (spawnedPid !== null) return undefined;
+      return store.appendEvent(
+        buildEvent('agent_put', {
+          agent: agentId,
+          ticket,
+          data: {
+            warning:
+              'spawned agent pid unknown at registration; AgentRecord.pid omitted (never falls back to the daemon pid)',
+          },
+        }),
+        { commit: 'deferred' },
+      );
     })
     .then(() => session.prompt(brief))
     .catch(() => {

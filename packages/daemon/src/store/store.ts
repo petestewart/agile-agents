@@ -266,23 +266,39 @@ export class StateStore {
   private constructor(private readonly stateRoot: string) {}
 
   /**
-   * Cancels any pending deferred-flush timer, flushes whatever was queued
-   * (synchronously — `flushDeferredNow`'s own git work is all synchronous
-   * `Bun.spawnSync` calls, so no `await`/mutex hop is needed here), and
-   * marks this store closed so `scheduleDeferredFlush` becomes a no-op
-   * after this. Idempotent. This is the definitive fix for a debounced
-   * flush firing minutes later against a since-removed worktree (the
-   * QA-reported "not a git repository" race): nothing is left queued *and*
-   * nothing can be queued again once this returns. `git.ts`'s `commitPaths`
-   * still no-ops (logging, not throwing) instead of crashing if `stateRoot`
-   * is gone at all, as a backstop for a caller that skips `close()` entirely.
+   * Marks this store closed (so `scheduleDeferredFlush` becomes a no-op
+   * from this point on — no *new* timer can ever be armed again) and routes
+   * a flush of whatever's currently queued through the mutex, respecting
+   * FIFO order with any mutation already in flight or queued ahead of it.
+   *
+   * Review round 3 (opus, nit from round 2 promoted to a required fix):
+   * round 2 called `flushDeferredNow()` directly here, bypassing the
+   * mutex — harmless in practice (the store's git work is synchronous, and
+   * every real caller already `await`s `flush()` first, which itself runs
+   * under the mutex and leaves it idle), but it was the one place this
+   * class's own "every mutation is serialized" invariant didn't actually
+   * hold. Fire-and-forget is intentional: `close()` stays a synchronous,
+   * void-returning method (every call site — `daemon.ts` shutdown, both
+   * runner test files' `afterEach`, `store.test.ts` — calls it bare, with
+   * no `await`) so a caller that wants a *guaranteed*-drained store before
+   * proceeding synchronously must call `await store.flush()` first, same as
+   * before; `close()` is the belt-and-suspenders timer-cancellation/backstop
+   * flush, not the primary drain path. `git.ts`'s `commitPaths` still
+   * no-ops (logging, not throwing) instead of crashing if `stateRoot` is
+   * gone by the time this queued flush actually runs, so a caller that
+   * immediately removes the worktree right after `close()` (exactly what
+   * the round-1 QA race reproduces) is still safe either way.
    */
   close(): void {
     this.closed = true;
-    // `flushDeferredNow` clears the timer itself too — see its own doc
-    // comment — so this covers both the "nothing was queued" and "something
-    // was queued" cases in one call.
-    this.flushDeferredNow();
+    this.mutex
+      .run(() => this.flushDeferredNow())
+      .catch(() => {
+        // Swallowed deliberately — same reasoning as `scheduleDeferredFlush`'s
+        // own timer callback: a failed flush here has nowhere useful to
+        // report to (this is teardown), and `commitPaths`'s missing-worktree
+        // guard means it shouldn't normally even reject.
+      });
   }
 
   static open(stateRoot: string): StateStore {
@@ -850,7 +866,13 @@ export class StateStore {
         vendor: patch.vendor ?? existing?.vendor ?? 'unknown',
         model: patch.model ?? existing?.model ?? 'unknown',
         ticket: patch.ticket ?? existing?.ticket,
-        pid: patch.pid ?? existing?.pid ?? process.pid,
+        // Review round 3 (opus item 3): never fall back to `process.pid` —
+        // that's the *daemon's* pid, not the agent's. `pid` is optional
+        // (`@agile-agents/shared`'s `AgentRecord`) precisely so a heartbeat
+        // that runs before/without a known agent pid (e.g. right after
+        // `runner/session.ts` registered without one) leaves it unset
+        // instead of quietly overwriting it with the wrong process.
+        pid: patch.pid ?? existing?.pid,
         last_seen: nowDate.toISOString(),
       };
       const validated = validateAgentRecord(record);

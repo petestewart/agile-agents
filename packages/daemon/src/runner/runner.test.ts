@@ -260,10 +260,16 @@ describe('crash recovery', () => {
     // actually be the agent's own pid, not the daemon's/test's.
     await waitFor(() => agentExists('eng-0231'));
     const recordedPid = store.getAgent('eng-0231' as never).pid;
+    // `pid` is optional on `AgentRecord` (review round 3) precisely so a
+    // real spawn's pid is never allowed to be *missing and silently
+    // defaulted* — but a real spawn always DOES get one, so this is a real
+    // assertion, not a type-narrowing formality: the crash-recovery
+    // acceptance step below needs a real pid to kill.
+    expect(recordedPid).toBeDefined();
     expect(recordedPid).toBe(realPid);
     expect(recordedPid).not.toBe(process.pid);
 
-    process.kill(recordedPid, 'SIGKILL');
+    process.kill(recordedPid as number, 'SIGKILL');
 
     // `session.ts`'s own `exit` handler drives this — no need to wait a full
     // liveness timeout; `result.exited` resolves once cleanup has run.
