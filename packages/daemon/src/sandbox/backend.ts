@@ -14,6 +14,7 @@
 
 import { execFileSync } from 'node:child_process';
 import { platform } from 'node:os';
+import { sandboxedSubprocessEnv } from '../subprocess-env';
 import type { SandboxBackend } from './types';
 
 export interface DetectBackendDeps {
@@ -36,13 +37,27 @@ function binaryOnPath(bin: string): boolean {
   }
 }
 
-function dockerDaemonReachable(): boolean {
+/**
+ * T034: `docker info` must never run with the daemon's own inherited
+ * `$HOME` — the docker CLI reads/writes `$HOME/.docker/config.json` (or
+ * creates it) on every invocation, which is exactly the shape of leak this
+ * ticket exists to close (T021 found the same thing for `npm test`'s debug
+ * logger). `repoRoot` defaults to `process.cwd()` — every other daemon
+ * entry point that lacks an explicit repo root uses the same default (see
+ * `config.ts`), and in production the daemon process's cwd *is* its repo
+ * root. Callers with a real repo root handy should pass it explicitly.
+ */
+export function dockerDaemonReachable(repoRoot: string = process.cwd()): boolean {
   if (!binaryOnPath('docker')) return false;
   try {
     // `docker info` fails fast (no daemon socket) rather than hanging when
     // the daemon isn't running — confirmed on this container: "failed to
     // connect to the docker API at unix:///var/run/docker.sock ...".
-    execFileSync('docker', ['info'], { stdio: ['ignore', 'ignore', 'ignore'], timeout: 5000 });
+    execFileSync('docker', ['info'], {
+      stdio: ['ignore', 'ignore', 'ignore'],
+      timeout: 5000,
+      env: sandboxedSubprocessEnv(repoRoot, 'sandbox-detect'),
+    });
     return true;
   } catch {
     return false;
@@ -53,7 +68,7 @@ function dockerDaemonReachable(): boolean {
 export const defaultDetectBackendDeps: DetectBackendDeps = {
   platform,
   hasSandboxExec: () => binaryOnPath('sandbox-exec'),
-  hasContainerRuntime: dockerDaemonReachable,
+  hasContainerRuntime: () => dockerDaemonReachable(),
 };
 
 /**

@@ -1,5 +1,8 @@
 import { describe, expect, test } from 'bun:test';
-import { type DetectBackendDeps, detectBackend } from './backend';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { type DetectBackendDeps, detectBackend, dockerDaemonReachable } from './backend';
 
 function deps(overrides: Partial<DetectBackendDeps>): DetectBackendDeps {
   return {
@@ -61,5 +64,32 @@ describe('detectBackend', () => {
         }),
       ),
     ).toBe('sandbox-exec');
+  });
+});
+
+describe('dockerDaemonReachable (T034)', () => {
+  let repoRoot: string;
+
+  test('runs `docker info` with a sandboxed HOME under <repoRoot>/.agile-daemon-cache/, never the real one', () => {
+    repoRoot = mkdtempSync(join(tmpdir(), 'agile-sandbox-detect-'));
+    try {
+      // Never throws regardless of whether a real `docker` binary/daemon is
+      // present on this host (mirrors the real-deps contract `backend.test.ts`
+      // already asserts for `detectBackend()` above).
+      expect(() => dockerDaemonReachable(repoRoot)).not.toThrow();
+      // Whether or not a `docker` binary is on `$PATH` here, if it is, the
+      // sandboxed cache directory the probe's env points `$HOME` at must
+      // have been created — the observable proof `execFileSync` actually
+      // received the sandboxed env, not the daemon's inherited one.
+      const cacheHome = join(repoRoot, '.agile-daemon-cache', 'sandbox-detect', 'home');
+      // Only asserted when a `docker` binary exists on this host — the
+      // function short-circuits (never spawns anything, never builds the
+      // env) when it doesn't, which is itself correct behaviour.
+      if (Bun.which('docker')) {
+        expect(existsSync(cacheHome)).toBe(true);
+      }
+    } finally {
+      rmSync(repoRoot, { recursive: true, force: true });
+    }
   });
 });
