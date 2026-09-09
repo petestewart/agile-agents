@@ -17,6 +17,7 @@ import { EM_TOOLS, EmLoop, type EmToolDeps, buildEmRpcMethods } from './em';
 import { pickCurrentSprint } from './feed';
 import { GateService, buildGateRpcMethods } from './gates';
 import { buildHaltRpcMethods } from './halts';
+import { HandoffCoordinator, buildHandoffRpcMethods, registerHandoffTools } from './handoff';
 import { HookService, buildHookRpcMethods } from './hook';
 import { type HttpServerHandle, startHttpServer } from './http';
 import { type LockHandle, acquireLock } from './lock';
@@ -167,16 +168,34 @@ export async function startDaemon(options: DiscoverConfigOptions = {}): Promise<
           },
         })
       : undefined;
+  // Handoff coordinator (T024, §10): exactly one instance for the daemon's
+  // lifetime — its quota-event cursor is seeded once at construction, so a
+  // per-tick instance would never see a `quota_low`/`quota_exhausted`.
+  const handoffCoordinator =
+    store && bus && runner && quotaService
+      ? new HandoffCoordinator({
+          store,
+          bus,
+          runner,
+          quota: quotaService,
+          repoRoot: config.repoRoot,
+        })
+      : undefined;
   // Ceremony driver: one daemon-level interval ticks the gate service (HIL
-  // deadline fallthrough, §16 — nothing else calls `GateService.tick()`)
-  // and then the EM loop. Cadence matches the runner sweep / heartbeat
-  // tunable (30 s); errors are logged, never fatal to the daemon.
+  // deadline fallthrough, §16 — nothing else calls `GateService.tick()`),
+  // then the handoff coordinator over every ticket (pausing a stuck-ready
+  // ticket must precede `assignReady`, which runs inside the EM tick), then
+  // the EM loop. Cadence matches the runner sweep / heartbeat tunable
+  // (30 s); errors are logged, never fatal to the daemon.
   const ceremonyTimer =
     gateService && emLoop
       ? setInterval(() => {
           void (async () => {
             try {
               await gateService.tick();
+              if (handoffCoordinator && store) {
+                await handoffCoordinator.tick(store.listTickets().map((t) => t.id));
+              }
               await emLoop.tick();
             } catch (err) {
               console.error('ceremony tick failed:', err);
@@ -207,6 +226,23 @@ export async function startDaemon(options: DiscoverConfigOptions = {}): Promise<
           const tool = qaTools.find((t) => t.name === name);
           if (!tool) throw new Error(`unknown qa verb: ${name}`);
           return tool.handler(ctx, input);
+        },
+      });
+    }
+    if (handoffCoordinator) {
+      const handoffTools = registerHandoffTools();
+      toolService.registerProvider({
+        roles: ['em', 'human'],
+        listTools: () =>
+          handoffTools.map((t) => ({
+            name: t.name,
+            description: t.description,
+            inputSpec: t.inputSpec,
+          })),
+        callTool: (ctx, name, input) => {
+          const tool = handoffTools.find((t) => t.name === name);
+          if (!tool) throw new Error(`unknown handoff verb: ${name}`);
+          return tool.handler({ store, bus }, ctx, input);
         },
       });
     }
@@ -351,6 +387,7 @@ export async function startDaemon(options: DiscoverConfigOptions = {}): Promise<
           ...(emLoop ? buildEmRpcMethods(emLoop, store) : {}),
           ...(qaProtocol ? buildQaRpcMethods(qaProtocol) : {}),
           ...(quotaService ? buildQuotaRpcMethods(quotaService, store) : {}),
+          ...(handoffCoordinator ? buildHandoffRpcMethods(handoffCoordinator, store, bus) : {}),
         }
       : undefined;
 
