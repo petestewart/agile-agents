@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -637,6 +637,53 @@ describe('Halt: putHalt / getHalt / listHalts / deleteHalt', () => {
     const events = store.listEvents();
     expect(events[1]?.kind).toBe('halt_updated');
     expect(events[1]?.data).toEqual({ haltId: 'H-12', quorum: 'reached' });
+  });
+});
+
+// T025 review round 1 blocker 1: an unvalidated id string reaching a
+// schema-typed method (the shape an HTTP route that skips `HaltIdSchema.
+// safeParse` would produce, e.g. `../../victim`) must not escape the state
+// root. This exercises `StateStore.abs()`'s own containment guard directly
+// through a public method, rather than trusting every call site to have
+// validated first — the guard is the backstop for every current and future
+// caller of `abs()`, not just `deleteHalt`.
+describe('StateStore.abs() containment (path-traversal backstop)', () => {
+  // `haltRelPath` is `board/halts/<id>.yaml` — two levels deep, so an id
+  // needs three `..` segments to walk past `board`, `halts`, and the state
+  // root itself and land outside it (two `..` only cancels back down to
+  // *inside* the state root — a different, HTTP-layer-validated bug: see
+  // `http.test.ts`'s "invalid id" tests for `DELETE /api/halt/:id`).
+  test('deleteHalt with a 3-level traversal id throws and does not touch anything outside the state root', async () => {
+    const store = StateStore.open(stateRoot);
+    const victimPath = join(stateRoot, '..', 'victim.yaml');
+    writeFileSync(victimPath, 'i must survive\n');
+    try {
+      await expect(store.deleteHalt('../../../victim' as never)).rejects.toThrow(
+        /escapes the state root/,
+      );
+      expect(readFileSync(victimPath, 'utf8')).toBe('i must survive\n');
+    } finally {
+      rmSync(victimPath, { force: true });
+    }
+  });
+
+  test('getHalt with a 3-level traversal id throws rather than reading a file outside the state root', () => {
+    const store = StateStore.open(stateRoot);
+    expect(() => store.getHalt('../../../etc/passwd' as never)).toThrow(/escapes the state root/);
+  });
+
+  test('a sibling directory sharing the state root as a string prefix is still rejected (no bare startsWith)', async () => {
+    const store = StateStore.open(stateRoot);
+    // stateRoot is `<repo>/.agile`; `<repo>/.agile-evil` shares the string
+    // *prefix* "<repo>/.agile" but is not a descendant of it — three `..`
+    // from `board/halts/<id>.yaml` walks back past `board`, `halts`, and
+    // `.agile` itself to `<repo>`, then into the sibling. A bare
+    // `startsWith(root)` (no `+ sep`) would wrongly accept this.
+    const evilSibling = join(stateRoot, '..', '.agile-evil');
+    await expect(store.deleteHalt('../../../.agile-evil/x' as never)).rejects.toThrow(
+      /escapes the state root/,
+    );
+    expect(existsSync(evilSibling)).toBe(false);
   });
 });
 

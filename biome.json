@@ -1,7 +1,17 @@
 {
   "$schema": "https://biomejs.dev/schemas/1.9.4/schema.json",
   "files": {
-    "ignore": ["node_modules", "dist", "out", ".worktrees", "vendor", "spike", "design", ".claude"]
+    "ignore": [
+      "node_modules",
+      "dist",
+      "dist-app",
+      "out",
+      ".worktrees",
+      "vendor",
+      "spike",
+      "design",
+      ".claude"
+    ]
   },
   "formatter": {
     "enabled": true,

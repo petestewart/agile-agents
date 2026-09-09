@@ -1,5 +1,6 @@
 node_modules/
 dist/
+dist-app/
 out/
 .worktrees/
 .pipeline-review.md

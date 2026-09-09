@@ -31,7 +31,7 @@
  */
 
 import { appendFileSync, existsSync, readFileSync } from 'node:fs';
-import { isAbsolute, join, normalize } from 'node:path';
+import { isAbsolute, join, normalize, resolve, sep } from 'node:path';
 import {
   type AgentId,
   type AgentRecord,
@@ -312,8 +312,27 @@ export class StateStore {
     return new StateStore(stateRoot);
   }
 
+  /**
+   * T025 review round 1 (blocker 1): every caller of `abs()` was trusted to
+   * have already validated its own path-derived segments (most do, via a
+   * schema like `TicketIdSchema`/`OracleIdSchema` before ever reaching
+   * here) — but `abs()` itself had no containment guard, so a single
+   * missed validation anywhere (present and future) turns into an
+   * arbitrary read/write/delete under `.agile/`'s *parent*, not just
+   * inside it. `join()` alone does not stop this: `join(root, '..',
+   * '..', 'x')` normalizes to a path outside `root` without error.
+   * Resolve to an absolute path and require it to be `stateRoot` itself or
+   * a descendant of it (`stateRoot + sep` prefix, not a bare `startsWith`,
+   * so a sibling directory that merely shares the same string prefix —
+   * `state-root-evil` next to `state-root` — cannot pass by accident).
+   */
   private abs(...parts: string[]): string {
-    return join(this.stateRoot, ...parts);
+    const resolved = resolve(this.stateRoot, ...parts);
+    const root = resolve(this.stateRoot);
+    if (resolved !== root && !resolved.startsWith(root + sep)) {
+      throw new Error(`state path escapes the state root: ${parts.join('/')}`);
+    }
+    return resolved;
   }
 
   /**
