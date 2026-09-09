@@ -581,6 +581,55 @@ describe('HookService — registry-based agent resolution (T012 QA/review round)
     expect(events[0]?.ticket).toBe('TKT-0001');
   });
 
+  // T031: the architect resolves from its own read-only checkout regardless
+  // of the ticket its `AgentRecord.ticket` happens to name — unlike
+  // engineer/reviewer/qa, that ticket's own status is not gated (a `done`
+  // or `ready` ticket is the normal case for whatever the architect's
+  // brief/ledger context was last rendered for, not a stale registration).
+  test('an architect resolves from .worktrees/architect even when its recorded ticket is `done`, and its Bash/Edit are denied by the role table', async () => {
+    await seedTicket({ status: 'done' });
+    const architectWorktree = join(repo, '.worktrees', 'architect');
+    mkdirSync(architectWorktree, { recursive: true });
+    await store.putAgent(
+      'architect',
+      agentRecord({ role: 'architect', worktree: architectWorktree, ticket: 'TKT-0001' }),
+    );
+
+    const svc = service();
+    const read = await svc.preToolUse({
+      cwd: architectWorktree,
+      tool_name: 'Read',
+      tool_input: { file_path: join(architectWorktree, 'x.txt') },
+    });
+    expect(read.hookSpecificOutput.permissionDecision).toBe('allow');
+    const readEvents = store
+      .listEvents()
+      .filter((e) => e.kind === 'hook_decision' && e.agent === 'architect');
+    expect(readEvents).toHaveLength(1);
+    expect(readEvents[0]?.ticket).toBe('TKT-0001');
+
+    const edit = await svc.preToolUse({
+      cwd: architectWorktree,
+      tool_name: 'Edit',
+      tool_input: { file_path: join(architectWorktree, 'x.txt') },
+    });
+    expect(edit.hookSpecificOutput.permissionDecision).toBe('deny');
+
+    const exec = await svc.preToolUse({
+      cwd: architectWorktree,
+      tool_name: 'Bash',
+      tool_input: { command: 'npm publish' },
+    });
+    expect(exec.hookSpecificOutput.permissionDecision).toBe('deny');
+
+    const readOnlyExec = await svc.preToolUse({
+      cwd: architectWorktree,
+      tool_name: 'Bash',
+      tool_input: { command: 'git log' },
+    });
+    expect(readOnlyExec.hookSpecificOutput.permissionDecision).toBe('allow');
+  });
+
   test('reviewer and engineer sharing one worktree: role comes from the registry, not inferred as engineer', async () => {
     await seedTicket({ status: 'in_review', assignee: 'eng-1' });
     await store.putAgent('eng-1', agentRecord({ role: 'engineer', worktree, ticket: 'TKT-0001' }));

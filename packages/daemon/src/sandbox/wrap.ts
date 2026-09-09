@@ -46,6 +46,13 @@ import { buildSandboxProfile } from './profile';
 import { buildSandboxExecCommand, renderSandboxExecProfile } from './sandbox-exec';
 import type { WrappedCommand } from './types';
 
+/**
+ * T031: `role` grew a fourth member (`'architect'`) — every check below
+ * that isn't `role === 'engineer'` already treats "not engineer" as
+ * "read-only, no network" (`buildSandboxProfile`, `backendInsufficientFor
+ * RequiredSandbox`), which is exactly §14's Architect row too, so nothing
+ * in this module needed a new branch for it.
+ */
 export interface WrapAgentCommandInput {
   role: PermissionRole;
   worktreePath: string;

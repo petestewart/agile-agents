@@ -156,6 +156,7 @@ export function resolveRelToWorktree(path: string, worktreePath: string): string
   return relative(realWorktree, realAbs).split(sep).join('/');
 }
 
+/** T031: `role` grew `'architect'` — `decideQaRead` below already only ever narrows `role === 'qa'`, so an architect (or any other role) read stays allowed here unchanged. */
 export interface DecideQaReadContext {
   role: PermissionRole;
   ticket: Ticket;

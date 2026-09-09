@@ -78,7 +78,7 @@ import {
   type SpawnedSession,
   spawnSession as defaultSpawnSession,
 } from '@agile-agents/acp-client';
-import type { AgentId, LedgerKind, LedgerLine, TicketId } from '@agile-agents/shared';
+import type { AgentId, LedgerKind, LedgerLine, Policy, TicketId } from '@agile-agents/shared';
 import { ulid, validateLedgerLine } from '@agile-agents/shared';
 import type { Bus } from '../bus';
 import { pickCurrentSprint } from '../feed';
@@ -103,10 +103,17 @@ import { type WrapAgentCommandFn, wrapAgentCommand as defaultWrapAgentCommand } 
 import { buildEvent } from '../store';
 import type { StateStore } from '../store';
 
+/**
+ * T031: `architect` maps to `'ceremony'` — the ledger kind this codebase
+ * already uses for a role that isn't tied to one ticket's own spend budget
+ * (`LEDGER_KINDS` in `packages/shared/src/ledger.ts`; `'reader'` is the
+ * other ledger-only kind, for tool-runner turns, not a spawned session).
+ */
 const ROLE_LEDGER_KIND: Record<PermissionRole, LedgerKind> = {
   engineer: 'engineer',
   reviewer: 'review',
   qa: 'qa',
+  architect: 'ceremony',
 };
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -176,6 +183,29 @@ export interface AgentSessionOptions {
   piAgentDir?: string;
   /** Test seam: inject a fake `installPiExtension` instead of the real filesystem writer, so a non-Pi-provider test never pays for the (harmless but pointless) real check. Defaults to the real `installPiExtension`. */
   installPiExtension?: typeof installPiExtension;
+  /**
+   * Architect-only (T031 — CLAUDE.md v0 default: "Architect planning turn:
+   * try Claude `plan` mode first ... If plan mode blocks the architect's
+   * MCP writes, run `default` mode with a daemon-side `approve_plan`
+   * gate."). `'plan'` (the default) sends `modeId: 'plan'` on a Claude
+   * spawn, so `ExitPlanMode` arrives as the "Approve Plan"
+   * `session/request_permission` (`kind: 'switch_mode'`,
+   * design/spike-findings.md §C3) this module routes to the `approve_plan`
+   * gate below. `'default'` is the documented fallback — DESIGN-GAP
+   * (`architect/session.ts`'s own header, carried over unresolved: whether
+   * plan mode's read-only restriction also blocks the architect's own MCP
+   * verb calls is unmeasured in this container, no live vendor login
+   * available — see CLAUDE.md "Cloud sessions"), so this stays a
+   * caller-chosen seam rather than something this module auto-detects.
+   * Ignored for every non-architect role and for a non-Claude provider (no
+   * `switch_mode`/plan-mode concept measured on any other vendor —
+   * `provider.defaultModeId` applies unchanged there).
+   */
+  architectMode?: 'plan' | 'default';
+  /** Test seam: how often to re-poll a pending `approve_plan` gate (see `architectMode`). Defaults to 200ms. */
+  architectGatePollMs?: number;
+  /** Test seam: how long to wait on a pending `approve_plan` gate before denying the plan. Defaults to 5 minutes. */
+  architectGateTimeoutMs?: number;
 }
 
 export interface AgentExitInfo {
@@ -282,6 +312,66 @@ function mcpServerConfig(cliBin: string, agentId: AgentId, ticket: TicketId): un
     command: cliBin,
     args: ['mcp', '--agent', agentId, '--ticket', ticket],
   };
+}
+
+/**
+ * T031: `ExitPlanMode` arrives titled "Approve Plan" with `kind:
+ * 'switch_mode'` (design/spike-findings.md §C3). Title match is a fallback
+ * for a vendor/version that doesn't set `kind` — mirrors `architect/
+ * session.ts`'s own `isExitPlanModeRequest` (not imported from there: this
+ * ticket's file ownership is `runner/session.ts`, not `architect/**`, and
+ * the check is three lines).
+ */
+function isArchitectPlanRequest(toolCall: { kind?: string; title?: string } | undefined): boolean {
+  if (!toolCall) return false;
+  if (toolCall.kind === 'switch_mode') return true;
+  return typeof toolCall.title === 'string' && /approve plan/i.test(toolCall.title);
+}
+
+function findPermissionOption(
+  options: Array<{ optionId: string; kind: string }>,
+  wantKinds: readonly string[],
+): { optionId: string; kind: string } | undefined {
+  for (const kind of wantKinds) {
+    const found = options.find((o) => o.kind === kind);
+    if (found) return found;
+  }
+  return undefined;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Waits on the `approve_plan` gate `GateService.request` opened, polling
+ * `GateService.get` until it resolves (a human's `respond`, an EM/architect
+ * delegate firing synchronously inside `request` itself, or this
+ * function's own timeout) — same polling shape as `architect/session.ts`'s
+ * `awaitPlanApproval` (that module has no push/subscribe surface to wait on
+ * either; `GateService` doesn't gain one from this ticket).
+ */
+async function awaitArchitectPlanApproval(
+  gateService: GateService,
+  policy: Policy,
+  pollMs: number,
+  timeoutMs: number,
+  now: () => Date,
+): Promise<boolean> {
+  const request = await gateService.request('approve_plan', {
+    policy,
+    hilKind: 'approve_decision',
+    from: 'architect',
+  });
+  if (request.status === 'resolved') return request.decision === 'approve';
+
+  const start = now().getTime();
+  while (true) {
+    const current = gateService.get(request.id);
+    if (current.status === 'resolved') return current.decision === 'approve';
+    if (now().getTime() - start >= timeoutMs) return false;
+    await sleep(pollMs);
+  }
 }
 
 /** Best-effort model id from the `_agile/session_state` notification's `configOptions` — shape is vendor-specific and not modeled anywhere; falls back to `'unknown'` rather than guessing at a field name that isn't there. */
@@ -396,9 +486,16 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
   // courtesy nudge on top of that (§C3 — prompt-level only, never a
   // substitute for the reviewer table's own execute/edit deny verdicts,
   // which run unchanged regardless of mode); every other vendor/role keeps
-  // its provider's own default.
+  // its provider's own default. T031: the architect on Claude gets `'plan'`
+  // (CLAUDE.md v0 default, `opts.architectMode` seam — see its doc comment)
+  // — the request_permission handler below is what turns `ExitPlanMode`
+  // into the `approve_plan` gate once this mode actually raises one.
+  const architectPlanMode =
+    role === 'architect' && provider.id === 'claude' && (opts.architectMode ?? 'plan') === 'plan';
   const modeId =
-    (provider.id === 'cursor' ? cursorModeIdFor(role) : undefined) ?? provider.defaultModeId;
+    (provider.id === 'cursor' ? cursorModeIdFor(role) : undefined) ??
+    (architectPlanMode ? 'plan' : undefined) ??
+    provider.defaultModeId;
 
   const spawnOptions: SpawnSessionOptions = {
     cmd: wrapped.command,
@@ -571,7 +668,113 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
 
     const frame = event.event;
     if (frame.acp === 'request' && frame.method === 'session/request_permission') {
-      void responder.handleRequest(frame.id, frame.params as AcpPermissionRequestParams);
+      const params = frame.params as AcpPermissionRequestParams;
+      // T031: an architect's `ExitPlanMode` ("Approve Plan") request is the
+      // `approve_plan` gate itself (design/spike-findings.md §C3), routed
+      // to `GateService` rather than through `architectVerdict` (which has
+      // no notion of `switch_mode` at all — it isn't a read/edit/execute/
+      // fetch tool class, so it would otherwise hit the safe-default deny).
+      // Every other permission request from an architect session (an edit,
+      // an exec) still goes through the normal responder below, same as
+      // any other role.
+      if (role === 'architect' && isArchitectPlanRequest(params.toolCall)) {
+        void (async () => {
+          const options = params.options ?? [];
+          let approved = false;
+          // Review round 2 (opus blocker 1): `store.getPolicy()` and every
+          // `GateService` call below are fallible (a missing
+          // `.agile/policy.yaml`, a store write failure, a corrupt/removed
+          // HIL record) — and, unlike `permissions/responder.ts`'s own
+          // "respond before the fallible event-log write" rule (quoted in
+          // its file header: "a store hiccup must not leave the agent's
+          // turn hung on an already-decided answer"), this branch used to
+          // run every fallible call *before* ever responding to `frame.id`.
+          // A thrown error here used to propagate straight out of this
+          // `session.on` listener and into `acp-client`'s frame dispatch —
+          // reproduced in review: the fake agent's permission request was
+          // never answered at all, hanging the turn forever. Fail closed
+          // instead: any error opening/polling the gate denies the plan
+          // (never silently allows one nobody actually approved), and the
+          // request is always answered before anything else in this branch
+          // can fail again.
+          let gateFailure: string | undefined;
+          try {
+            if (gateService) {
+              approved = await awaitArchitectPlanApproval(
+                gateService,
+                store.getPolicy(),
+                opts.architectGatePollMs ?? 200,
+                opts.architectGateTimeoutMs ?? 5 * 60 * 1000,
+                now,
+              );
+            }
+          } catch (err) {
+            approved = false;
+            gateFailure = err instanceof Error ? err.message : String(err);
+          }
+
+          const chosen = approved
+            ? findPermissionOption(options, ['allow_once', 'allow_always'])
+            : findPermissionOption(options, ['reject_once', 'reject_always']);
+          if (chosen) {
+            session.respondPermission(frame.id, {
+              outcome: { outcome: 'selected', optionId: chosen.optionId },
+            });
+          } else {
+            session.respondPermission(frame.id, { outcome: { outcome: 'cancelled' } });
+          }
+
+          const reason =
+            gateFailure !== undefined
+              ? `approve_plan gate unavailable (${gateFailure}) — denied`
+              : gateService
+                ? 'approve_plan gate'
+                : 'approve_plan gate unavailable (no GateService wired) — denied';
+          // Best-effort logging only, after the request is already
+          // answered above — a failure here must never re-throw into this
+          // listener (that's exactly the bug this fix closes).
+          track(
+            store
+              .appendEvent(
+                buildEvent('hook_decision', {
+                  ticket,
+                  agent: agentId,
+                  data: { role, toolClass: 'other', decision: approved ? 'allow' : 'deny', reason },
+                }),
+                { commit: 'deferred' },
+              )
+              .catch(() => {}),
+          );
+
+          if (gateFailure !== undefined) {
+            // Surface the failure through the same escalate shape `finish()`
+            // uses for a session ending — em needs to see a broken gate,
+            // but the architect session itself stays live (it can still
+            // answer non-plan tool calls normally; only this one plan
+            // request was denied).
+            track(
+              bus
+                .send({
+                  id: ulid(),
+                  ts: now().toISOString(),
+                  from: agentId,
+                  to: ['em'],
+                  kind: 'escalate',
+                  priority: 'urgent',
+                  ticket,
+                  body: `${agentId} (${role}) approve_plan gate failed, plan denied: ${gateFailure}`.slice(
+                    0,
+                    800,
+                  ),
+                  requires_ack: true,
+                })
+                .catch(() => {}),
+            );
+          }
+        })();
+        return;
+      }
+      void responder.handleRequest(frame.id, params);
       return;
     }
 

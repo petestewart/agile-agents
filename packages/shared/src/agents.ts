@@ -38,8 +38,17 @@
 import { z } from 'zod';
 import { TicketIdSchema, formatZodError } from './ids';
 
-/** Roles T012's runner spawns a session for. Architect/EM registration is out of this ticket's scope (§8 names engineer/reviewer/qa as the spawned role sessions). */
-export const AGENT_RUNNER_ROLES = ['engineer', 'reviewer', 'qa'] as const;
+/**
+ * Roles T012's runner spawns a session for. EM registration is still out of
+ * scope (§8 names engineer/reviewer/qa/architect as the spawned role
+ * sessions; EM's own ceremony loop, `em/loop.ts`, never goes through
+ * `runner/session.ts`'s `AgentRecord` registration path). `architect` added
+ * T031 (design §14's Architect row + CLAUDE.md's v0 default) — the
+ * architect is now a spawned `Runner.spawn('architect', ticket)` session
+ * like the other three, with a singleton `AgentId` ('architect', per
+ * `AGENT_ID_PATTERN`) rather than a per-ticket one.
+ */
+export const AGENT_RUNNER_ROLES = ['engineer', 'reviewer', 'qa', 'architect'] as const;
 export const AgentRunnerRoleSchema = z.enum(AGENT_RUNNER_ROLES);
 export type AgentRunnerRole = z.infer<typeof AgentRunnerRoleSchema>;
 

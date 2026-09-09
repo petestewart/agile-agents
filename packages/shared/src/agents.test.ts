@@ -52,7 +52,7 @@ describe('AgentRecord schema', () => {
     ).not.toThrow();
   });
 
-  test('rejects an unknown role', () => {
+  test('accepts the architect role (T031 — a singleton spawned session, not a per-ticket one)', () => {
     expect(() =>
       validateAgentRecord({
         vendor: 'claude',
@@ -60,6 +60,18 @@ describe('AgentRecord schema', () => {
         pid: 4242,
         last_seen: '2026-09-07T18:00:00Z',
         role: 'architect',
+      }),
+    ).not.toThrow();
+  });
+
+  test('rejects an unknown role', () => {
+    expect(() =>
+      validateAgentRecord({
+        vendor: 'claude',
+        model: 'claude-sonnet-4-5',
+        pid: 4242,
+        last_seen: '2026-09-07T18:00:00Z',
+        role: 'em',
       }),
     ).toThrow();
   });

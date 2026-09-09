@@ -42,7 +42,7 @@ function request(
   };
 }
 
-const ROLES: PermissionRole[] = ['engineer', 'reviewer', 'qa'];
+const ROLES: PermissionRole[] = ['engineer', 'reviewer', 'qa', 'architect'];
 
 function decide(role: PermissionRole, req: AcpPermissionRequestParams) {
   return decidePermission({ role, ticket: 'TKT-0001', worktreePath: WORKTREE, request: req });
@@ -249,6 +249,33 @@ describe('decidePermission — role table', () => {
 
   test('QA: read is allowed', () => {
     expect(decide('qa', request('read')).kind).toBe('allow');
+  });
+
+  // T031 — design §14 Architect row: "oracle, tickets, KB" read; "oracle
+  // (write guard), tickets, rules" write (but only via MCP verbs — see
+  // `policy-tables.ts`'s `architectVerdict`); "none" run/network.
+  test('architect: read is allowed', () => {
+    expect(decide('architect', request('read')).kind).toBe('allow');
+  });
+
+  test('architect: edit is always denied, even inside the checkout', () => {
+    const decision = decide('architect', request('edit', { targetPath: `${WORKTREE}/src/a.ts` }));
+    expect(decision.kind).toBe('deny');
+  });
+
+  test('architect: exec is limited to read-only tools, same as the reviewer', () => {
+    expect(decide('architect', request('execute', { command: 'git diff' })).kind).toBe('allow');
+    expect(decide('architect', request('execute', { command: 'git log' })).kind).toBe('allow');
+    expect(decide('architect', request('execute', { command: 'npm test' })).kind).toBe('deny');
+    expect(decide('architect', request('execute', { command: 'echo hi > out.txt' })).kind).toBe(
+      'deny',
+    );
+  });
+
+  test('architect: fetch is always denied (no network)', () => {
+    expect(
+      decide('architect', request('fetch', { url: 'https://registry.npmjs.org/zod' })).kind,
+    ).toBe('deny');
   });
 
   for (const role of ROLES) {

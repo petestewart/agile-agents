@@ -7,20 +7,23 @@
  * "the bus's `checkLiveness`/`sweepRedelivery` still need a periodic caller
  * — that is yours").
  *
- * Agent id scheme (DESIGN-GAP — see `packages/shared/src/ids.ts`'s
- * `AGENT_ID_PATTERN`, outside this ticket's file ownership): the pattern is
- * `eng-\d+` / `reviewer-\d+` / `qa-\d+` — digits only after the dash, not a
- * kebab slug. So the id is `<rolePrefix>-<ticket digits>` (`TKT-0231` ->
- * `eng-0231` / `reviewer-0231` / `qa-0231`), one agent per (role, ticket)
- * pair. Two ticket digits colliding across different `TKT-` prefixes never
- * happens (`TicketIdSchema` is `TKT-\d{4,}` only), so this is unambiguous —
- * but it does mean an engineer, its reviewer, and its QA on the *same*
- * ticket never collide with each other (different prefixes), while a ticket
- * being re-picked-up after a crash reuses the exact same id (intentional:
- * `store.getAgent`/`deleteAgent` calls in `session.ts`'s exit handling and a
- * fresh `spawn()` afterward operate on the same registry entry).
+ * Agent id scheme (see `packages/shared/src/ids.ts`'s `AGENT_ID_PATTERN`):
+ * for engineer/reviewer/qa the pattern is `eng-\d+` / `reviewer-\d+` /
+ * `qa-\d+` — digits only after the dash, not a kebab slug. So the id is
+ * `<rolePrefix>-<ticket digits>` (`TKT-0231` -> `eng-0231` / `reviewer-0231`
+ * / `qa-0231`), one agent per (role, ticket) pair. Two ticket digits
+ * colliding across different `TKT-` prefixes never happens (`TicketIdSchema`
+ * is `TKT-\d{4,}` only), so this is unambiguous — but it does mean an
+ * engineer, its reviewer, and its QA on the *same* ticket never collide with
+ * each other (different prefixes), while a ticket being re-picked-up after a
+ * crash reuses the exact same id (intentional: `store.getAgent`/
+ * `deleteAgent` calls in `session.ts`'s exit handling and a fresh `spawn()`
+ * afterward operate on the same registry entry). T031: the architect's id is
+ * the literal `'architect'` (one per repo, §15), not a `role-\d+` family —
+ * see `agentIdFor` below.
  */
 
+import { existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { type AcpProviderConfig, resolveAcpProvider } from '@agile-agents/acp-client';
 import type { AgentId, Ticket, TicketId } from '@agile-agents/shared';
@@ -32,17 +35,84 @@ import { wrapAgentCommand } from '../sandbox';
 import type { StateStore } from '../store';
 import { assembleBrief } from './brief';
 import { type AgentSessionHandle, type AgentSessionOptions, startAgentSession } from './session';
-import { ensureQaClone, ensureTicketWorktree, ticketDigits } from './worktrees';
+import {
+  INTEGRATION_BRANCH,
+  ensureIntegrationBranch,
+  ensureQaClone,
+  ensureTicketWorktree,
+  ticketDigits,
+} from './worktrees';
 
 const ROLE_PREFIX: Record<PermissionRole, string> = {
   engineer: 'eng',
   reviewer: 'reviewer',
   qa: 'qa',
+  // Unused by `agentIdFor` below (architect short-circuits to the literal
+  // singleton id before this table is ever consulted) — kept present only
+  // so this stays an exhaustive `Record<PermissionRole, string>` (T031: a
+  // new role must show up here, not be silently omitted).
+  architect: 'architect',
 };
 
-/** `<rolePrefix>-<ticket digits>` — see file header. */
+/**
+ * `<rolePrefix>-<ticket digits>` for engineer/reviewer/qa — see file
+ * header. T031: the architect is a singleton, not a per-(role,ticket)
+ * family (`AGENT_ID_PATTERN` in `packages/shared/src/ids.ts` has
+ * `architect` as a literal alternative, the same way `em`/`human`/`daemon`
+ * are, not a `role-\d+` family) — `ticket` is accepted (so
+ * `Runner.spawn('architect', ticket)` still type-checks against the same
+ * call shape every other role uses, and so an architect turn can still
+ * carry a "currently focused ticket" for its brief/ledger context) but
+ * ignored for id purposes: every call for role `'architect'` resolves to
+ * the same bus address, matching design §15 "One architect per repo".
+ */
 export function agentIdFor(role: PermissionRole, ticket: TicketId): AgentId {
+  if (role === 'architect') return 'architect' as AgentId;
   return `${ROLE_PREFIX[role]}-${ticketDigits(ticket)}` as AgentId;
+}
+
+/**
+ * `.worktrees/architect`, a **detached** checkout of wherever `integration`
+ * currently points (T031 — session override: "worktree placement: a
+ * read-only checkout of `integration` at `.worktrees/architect`"), created
+ * once and reused for every later architect spawn (the singleton id above
+ * means there is only ever one). Detached rather than `git worktree add
+ * path integration` (branch-checked-out, the way `ensureTicketWorktree`/
+ * `ensureQaClone` check out their own dedicated branches): git refuses to
+ * check the same branch out in two worktrees at once, and `integration`
+ * is *also* what `MergeOwner.onTicketDone` needs its own dedicated
+ * worktree on to actually merge tickets into (`merge/owner.ts`'s
+ * `ensureNamedWorktree`) — a branch-checked-out architect worktree would
+ * permanently starve every merge on this repo the moment it exists (found
+ * running the offline e2e locally, not by inspection: `git worktree add`
+ * on the already-checked-out branch fails with "already used by
+ * worktree"). The architect never commits here anyway (it writes `.agile/`
+ * state through MCP verbs, not this checkout, and "read-only" is enforced
+ * by the permission/sandbox layers — §14's Architect row,
+ * `permissions/policy-tables.ts`'s `architectVerdict` — not by git), so a
+ * detached HEAD loses nothing: it just doesn't hold `integration`'s own
+ * ref hostage. Reused as-is (no re-checkout) on later calls, same as every
+ * other `ensure*Worktree` in this module — it can drift behind
+ * `integration` as merges land, which is fine for a checkout the architect
+ * never reads repo source out of.
+ */
+function ensureArchitectWorktree(repoRoot: string): string {
+  const path = join(repoRoot, '.worktrees', 'architect');
+  if (existsSync(path)) return path;
+
+  ensureIntegrationBranch(repoRoot);
+  mkdirSync(join(repoRoot, '.worktrees'), { recursive: true });
+  const result = Bun.spawnSync(['git', 'worktree', 'add', '--detach', path, INTEGRATION_BRANCH], {
+    cwd: repoRoot,
+    stdout: 'pipe',
+    stderr: 'pipe',
+  });
+  if (result.exitCode !== 0) {
+    throw new Error(
+      `runner: failed to place the architect's read-only checkout of '${INTEGRATION_BRANCH}' at ${path}: ${new TextDecoder().decode(result.stderr)}`,
+    );
+  }
+  return path;
 }
 
 /** Default periodic sweep cadence — CLAUDE.md doesn't name one for the sweep itself (only the 5min liveness *timeout* and 10min quorum timeout it drives); 30s matches the heartbeat tunable so a dead agent is caught within roughly one heartbeat interval of the liveness timeout elapsing. */
@@ -81,6 +151,17 @@ export interface RunnerOptions {
   piAgentDir?: AgentSessionOptions['piAgentDir'];
   /** T022: forwarded to `startAgentSession` — injects a fake `installPiExtension` for the same reason as `piAgentDir`. */
   installPiExtension?: AgentSessionOptions['installPiExtension'];
+  /**
+   * T031 review round 2 (opus blocker 2): forwarded to `startAgentSession`
+   * for an architect spawn — see `AgentSessionOptions.architectMode`'s own
+   * doc comment. Without this field CLAUDE.md's documented `default`-mode
+   * fallback ("if plan mode blocks the architect's MCP writes, run
+   * `default` mode with a daemon-side `approve_plan` gate") was reachable
+   * only by a unit test calling `startAgentSession` directly, never by any
+   * real `Runner.spawn('architect', ...)` caller or config. Defaults to
+   * `'plan'` (via `startAgentSession`'s own default) when unset.
+   */
+  architectMode?: AgentSessionOptions['architectMode'];
 }
 
 export interface SpawnResult {
@@ -216,6 +297,11 @@ export class Runner {
         );
       }
       worktreePath = ensureTicketWorktree(repoRoot, ticket).path;
+    } else if (role === 'architect') {
+      // T031: no ticket-state transition, worktree assignment, or
+      // pre-commit hook install — the architect never edits `ticket` and
+      // its checkout isn't a per-ticket branch (see `ensureArchitectWorktree`).
+      worktreePath = ensureArchitectWorktree(repoRoot);
     } else {
       worktreePath = ensureQaClone(repoRoot, ticket).path;
       this.opts.onQaSpawn?.(ticket, worktreePath);
@@ -254,6 +340,7 @@ export class Runner {
       wrapCommand: this.opts.wrapCommand,
       piAgentDir: this.opts.piAgentDir,
       installPiExtension: this.opts.installPiExtension,
+      architectMode: this.opts.architectMode,
     });
     this.live.set(agentId, handle);
     void handle.exited.then(() => {

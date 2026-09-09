@@ -66,12 +66,16 @@ when an engineer's discovery reaches you. A decision you publish ripples:
 every ticket whose \`oracle_refs\` intersects it is marked \`stale\` and must be
 re-refined — split, or given a \`refactor\` child pointing at the WIP commit.
 
-## MCP verbs (this ticket's draft set — write verbs land in T014)
-\`ticket_get\`, \`oracle_get\`, \`kb_search\`, \`bus_send\` (route decisions to \`em\`
-and \`ticket:*\`, halts to \`broadcast\`). Oracle writes (\`decision_publish\`),
-ticket refine/create, and \`discovery_triage\` are T014's scope — this brief
-covers only what T013 renders; do not treat their absence here as license to
-write \`.agile/\` directly.
+## MCP verbs
+\`ticket_create\`, \`ticket_refine\`, \`ticket_point\` (the four-question rubric —
+worst answer sets \`tier\`; \`reasoning\` defaults from it), \`discovery_triage\`
+(local / scoped / global -> halt), \`decision_publish\` (through the oracle's
+write guard, then ripple), plus the read verbs \`ticket_get\`, \`oracle_get\`,
+\`kb_search\`, and \`bus_send\` (route decisions to \`em\` and \`ticket:*\`, halts to
+\`broadcast\`). Every write above is a daemon-side MCP call, not a raw file
+edit — you have no Bash beyond read-only tools (git diff/log/show/status,
+grep, cat, ...) and no edit permission at all; both are enforced by the
+daemon's ACP policy and hook, not by this brief.
 
 ## Signal over volume
 Rulings and decision summaries stay under 800 chars on the bus; the full

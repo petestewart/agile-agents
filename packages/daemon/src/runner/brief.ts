@@ -5,13 +5,17 @@
  * oracle_refs, kb_refs, worktree) -> ..."). The result becomes the session's
  * first `prompt()` call.
  *
- * Oracle refs (DESIGN-GAP): none of the three T013 contexts this ticket
- * spawns (`EngineerBriefContext`, `ReviewerBriefContext`, `QaBriefContext`)
- * carry a resolved `oracleEntries` field — only `ArchitectBriefContext`
- * does — and their templates print `ticket.oracle_refs` as bare IDs
- * (`{{#each ticket.oracle_refs}}...{{/each}}`), never a resolved body. So
- * `getOracleEntry` is not called here for these three roles; the ticket's
- * `oracle_refs` array is all the brief shows, matching T013's own contract.
+ * Oracle refs (DESIGN-GAP): none of the three original T013 contexts this
+ * module renders (`EngineerBriefContext`, `ReviewerBriefContext`,
+ * `QaBriefContext`) carry a resolved `oracleEntries` field — their templates
+ * print `ticket.oracle_refs` as bare IDs (`{{#each ticket.oracle_refs}}...
+ * {{/each}}`), never a resolved body — so `getOracleEntry` is not called
+ * here for these three roles; the ticket's `oracle_refs` array is all the
+ * brief shows, matching T013's own contract. `ArchitectBriefContext` is the
+ * one context that DOES carry a resolved `oracleEntries` field (T031 wires
+ * it via `oracleEntriesFor` below, resolving the spawn ticket's
+ * `oracle_refs` the same stale-tolerant way `kbFactsFor` already does for
+ * the reviewer's `kb_refs`).
  *
  * Rules (DESIGN-GAP): `.agile/rules/*.md` (§12 "Rules live in
  * `.agile/rules/RULE-012.md`, one per file") has no field in any T013
@@ -23,8 +27,13 @@
 
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
-import type { AgentId, KbFact, Ticket } from '@agile-agents/shared';
-import { renderEngineerBrief, renderQaBrief, renderReviewerBrief } from '../briefs';
+import type { AgentId, KbFact, OracleEntry, Ticket } from '@agile-agents/shared';
+import {
+  renderArchitectBrief,
+  renderEngineerBrief,
+  renderQaBrief,
+  renderReviewerBrief,
+} from '../briefs';
 import type { PermissionRole } from '../permissions';
 import type { StateStore } from '../store';
 
@@ -57,6 +66,24 @@ function kbFactsFor(store: StateStore, ticket: Ticket): KbFact[] {
   return facts;
 }
 
+/**
+ * Resolves `ticket.oracle_refs` to `OracleEntry`s for `ArchitectBriefContext`
+ * (T031 — this ticket's own file header DESIGN-GAP note: "only
+ * `ArchitectBriefContext` [carries] a resolved `oracleEntries` field").
+ * Same stale-ref tolerance as `kbFactsFor` above.
+ */
+function oracleEntriesFor(store: StateStore, ticket: Ticket): OracleEntry[] {
+  const entries: OracleEntry[] = [];
+  for (const id of ticket.oracle_refs) {
+    try {
+      entries.push(store.getOracleEntry(id).entry);
+    } catch {
+      // Stale/removed oracle_ref — brief renders without it rather than failing outright.
+    }
+  }
+  return entries;
+}
+
 export interface AssembleBriefOptions {
   store: StateStore;
   /** `.agile/` root — where `rules/*.md` lives. */
@@ -78,6 +105,11 @@ export function assembleBrief(opts: AssembleBriefOptions): string {
       return renderReviewerBrief({ agent, ticket, kbFacts: kbFactsFor(store, ticket) }) + appendix;
     case 'qa':
       return renderQaBrief({ agent, ticket }) + appendix;
+    case 'architect':
+      return (
+        renderArchitectBrief({ agent, ticket, oracleEntries: oracleEntriesFor(store, ticket) }) +
+        appendix
+      );
     default: {
       const exhaustive: never = role;
       throw new Error(`assembleBrief: unknown role ${String(exhaustive)}`);
