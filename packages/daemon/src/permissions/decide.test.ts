@@ -522,12 +522,13 @@ describe('decidePermission — T029 benign redirect forms', () => {
   });
 
   test('engineer: a benign redirect on one pipeline segment does not excuse a disallowed later segment', () => {
-    // "cmd 2>&1 | grep x" (ticket example): the redirect no longer causes
-    // the over-deny, but `grep` still isn't on the engineer's allow-list
-    // (repo scripts / git only) — the command is denied for that orthogonal
-    // reason, not because of the redirect.
+    // "cmd 2>&1 | python x" (updated for T030, which added grep/rg to the
+    // engineer's benign-command table — see the `grep`/`rg` describe block
+    // below): the redirect no longer causes the over-deny, but `python`
+    // still isn't on the engineer's allow-list — the command is denied for
+    // that orthogonal reason, not because of the redirect.
     expect(
-      decide('engineer', request('execute', { command: 'npm test 2>&1 | grep FAIL' })).kind,
+      decide('engineer', request('execute', { command: 'npm test 2>&1 | python evil.py' })).kind,
     ).toBe('deny');
   });
 
@@ -818,5 +819,168 @@ describe('decidePermission — every location entry is checked (round 5, opus R4
       }),
     );
     expect(decision.kind).toBe('hil');
+  });
+});
+
+describe('decidePermission — T030 engineer benign-command allow-list', () => {
+  const inside = (rel: string) => `${WORKTREE}/${rel}`;
+
+  const NO_PATH_ALLOWED = [
+    'echo hi',
+    'printf "%s\\n" hi',
+    'pwd',
+    'which node',
+    'date',
+    'true',
+    'false',
+    'test -f a.ts',
+    '[ -f a.ts ]',
+    'env',
+  ];
+  for (const command of NO_PATH_ALLOWED) {
+    test(`engineer: "${command}" is allowed`, () => {
+      expect(decide('engineer', request('execute', { command })).kind).toBe('allow');
+    });
+  }
+
+  const PATH_TOOLS_INSIDE_ALLOWED = [
+    `cat ${inside('src/a.ts')}`,
+    'ls -la',
+    `mkdir -p ${inside('tmp/x')}`,
+    `cp ${inside('src/a.ts')} ${inside('src/b.ts')}`,
+    `mv ${inside('src/a.ts')} ${inside('src/b.ts')}`,
+    `head -n 5 ${inside('src/a.ts')}`,
+    `tail -n 5 ${inside('src/a.ts')}`,
+    `wc -l ${inside('src/a.ts')}`,
+    `sort ${inside('src/a.ts')}`,
+    `uniq ${inside('src/a.ts')}`,
+    `cut -d, -f1 ${inside('src/a.ts')}`,
+    'tr a-z A-Z',
+    `touch ${inside('src/new.ts')}`,
+    `diff ${inside('src/a.ts')} ${inside('src/b.ts')}`,
+    `grep FAIL ${inside('src/a.ts')}`,
+    `rg FAIL ${inside('src/a.ts')}`,
+    'grep FAIL',
+    "find . -name '*.ts'",
+    `find ${inside('src')} -type f`,
+    'bunx vitest run',
+    'npx cowsay hi',
+    `node ${inside('scripts/build.js')}`,
+    `bun ${inside('scripts/build.js')}`,
+    'git status',
+    'git log --oneline',
+    'git diff',
+    'git show HEAD',
+    'git branch --list',
+    'git stash list',
+  ];
+  for (const command of PATH_TOOLS_INSIDE_ALLOWED) {
+    test(`engineer: "${command}" (inside the worktree) is allowed`, () => {
+      const decision = decide('engineer', request('execute', { command }));
+      expect(decision.kind).toBe('allow');
+    });
+  }
+
+  const PATH_TOOLS_OUTSIDE_DENIED = [
+    'cat /etc/passwd',
+    'cat ../../etc/passwd',
+    `cp ${inside('src/a.ts')} /tmp/x`,
+    `mv ${inside('src/a.ts')} /tmp/x`,
+    'mkdir -p /etc/x',
+    `head -n 5 /etc/passwd`,
+    `tail -n 5 /etc/passwd`,
+    `touch /etc/new.ts`,
+    `diff /etc/passwd ${inside('src/a.ts')}`,
+    'grep FAIL /etc/passwd',
+    'find /etc -name shadow',
+    'node ../evil.js',
+    'bun ../evil.js',
+  ];
+  for (const command of PATH_TOOLS_OUTSIDE_DENIED) {
+    test(`engineer: "${command}" (path outside the worktree) is denied`, () => {
+      const decision = decide('engineer', request('execute', { command }));
+      expect(decision.kind).toBe('deny');
+    });
+  }
+
+  test('engineer: cat "$HOME/.ssh/id_rsa" is a hil_request, not a laundered allow (unresolved shell variable)', () => {
+    const decision = decide(
+      'engineer',
+      request('execute', { command: 'cat "$HOME/.ssh/id_rsa"' }),
+    );
+    expect(decision.kind).toBe('hil');
+  });
+
+  test('engineer: find . -delete is denied (write flag takes it off the benign list)', () => {
+    expect(decide('engineer', request('execute', { command: 'find . -delete' })).kind).toBe(
+      'deny',
+    );
+  });
+
+  test('engineer: find . -exec rm {} \\; is denied (write flag takes it off the benign list)', () => {
+    expect(
+      decide('engineer', request('execute', { command: 'find . -exec rm {} \\;' })).kind,
+    ).toBe('deny');
+  });
+
+  test('engineer: find . -ok rm {} \\; is denied (write flag takes it off the benign list)', () => {
+    expect(
+      decide('engineer', request('execute', { command: 'find . -ok rm {} \\;' })).kind,
+    ).toBe('deny');
+  });
+
+  test('engineer: npx cowsay@1.0.0 is denied (pinned version fetches, not repo-local)', () => {
+    expect(
+      decide('engineer', request('execute', { command: 'npx cowsay@1.0.0' })).kind,
+    ).toBe('deny');
+  });
+
+  test('engineer: npx -y cowsay is denied (forces install, not repo-local)', () => {
+    expect(decide('engineer', request('execute', { command: 'npx -y cowsay' })).kind).toBe(
+      'deny',
+    );
+  });
+
+  test('engineer: bun run build stays a repo script (unaffected by the script-execution path check)', () => {
+    expect(decide('engineer', request('execute', { command: 'bun run build' })).kind).toBe(
+      'allow',
+    );
+  });
+
+  test('engineer: bun add zod stays a hil_request (unaffected by the script-execution path check)', () => {
+    expect(decide('engineer', request('execute', { command: 'bun add zod' })).kind).toBe('hil');
+  });
+
+  test('every existing adversarial test still passes: an unrecognized command is still denied', () => {
+    expect(decide('engineer', request('execute', { command: 'python evil.py' })).kind).toBe(
+      'deny',
+    );
+  });
+});
+
+describe('decidePermission — T030 reviewer read-only additions', () => {
+  const READ_ONLY_ALLOWED = ['head -n 5 src/a.ts', 'tail -n 5 src/a.ts', 'pwd', 'which git'];
+  for (const command of READ_ONLY_ALLOWED) {
+    test(`reviewer: "${command}" is allowed`, () => {
+      expect(decide('reviewer', request('execute', { command })).kind).toBe('allow');
+    });
+  }
+
+  test('reviewer: diff a.ts b.ts is allowed (read-only tool)', () => {
+    expect(decide('reviewer', request('execute', { command: 'diff a.ts b.ts' })).kind).toBe(
+      'allow',
+    );
+  });
+
+  test('reviewer: still denies all writes (unaffected by the read-only additions)', () => {
+    expect(decide('reviewer', request('edit', { targetPath: `${WORKTREE}/src/a.ts` })).kind).toBe(
+      'deny',
+    );
+  });
+
+  test('reviewer: still denies git push (unaffected by the read-only additions)', () => {
+    expect(decide('reviewer', request('execute', { command: 'git push origin main' })).kind).toBe(
+      'hil',
+    );
   });
 });

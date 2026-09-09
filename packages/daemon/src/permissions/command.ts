@@ -607,3 +607,92 @@ export function hasWritingRedirectionOrTee(tokens: string[]): boolean {
   if (hasUnresolvedRedirection(tokens)) return true;
   return redirectionTargets(tokens).length > 0;
 }
+
+// ---------------------------------------------------------------------------
+// Benign-command helpers (T030): the everyday, non-repo-script, non-git
+// commands an engineer's allow-list otherwise starves out (`cat`, `ls`,
+// `mkdir`, `cp`/`mv`, `grep`/`rg`, `find`, …). The engineer's read scope is
+// "own worktree" (§14), so even a purely-reading command like `cat` needs
+// every path it touches containment-checked, not just the writing ones.
+// These helpers extract "which tokens are path arguments" per command
+// shape; `policy-tables.ts` does the containment check and picks the verdict.
+// ---------------------------------------------------------------------------
+
+function isFlagToken(t: string): boolean {
+  return t.startsWith('-');
+}
+
+/** True for the closing `]` of a `[ ... ]` test invocation — syntax, not a path. */
+function isTestBracketClose(token: string, head: string | undefined): boolean {
+  return head === '[' && token === ']';
+}
+
+/** Every non-flag positional argument of a plain `cmd arg arg...` invocation — the "every path" set for the simple benign commands (`cat`, `ls`, `mkdir`, `cp`, `mv`, `head`, `tail`, `wc`, `sort`, `uniq`, `cut`, `touch`, `diff`). Not `find`- or `grep`-aware — see `findSearchRoots`/`grepPathArgs`. */
+export function benignPathArgs(tokens: string[]): string[] {
+  const head = tokens[0];
+  return tokens.slice(1).filter((t) => !isFlagToken(t) && !isTestBracketClose(t, head));
+}
+
+/**
+ * `grep`/`rg`'s path arguments: the first non-flag token is the *pattern*,
+ * not a path (`grep FAIL app.log` reads `app.log`, but `FAIL` is never a
+ * filesystem path) — every non-flag token after it is a file/dir argument.
+ * `grep FAIL` alone (reading stdin) yields no paths to check at all.
+ */
+export function grepPathArgs(tokens: string[]): string[] {
+  const rest = tokens.slice(1).filter((t) => !isFlagToken(t));
+  return rest.slice(1);
+}
+
+/** `find`'s write primitives (opus/T029 precedent, reused here): present anywhere, they take this command off the benign list entirely (falls through to the normal deny) rather than being containment-checked. */
+export function isFindWriteInvocation(tokens: string[]): boolean {
+  return tokens.some((t) => t === '-delete' || t === '-exec' || t === '-execdir' || t === '-ok' || t === '-okdir');
+}
+
+/**
+ * `find`'s search roots: the leading run of non-flag tokens before the
+ * first expression primitive (`-name`, `-type`, …) or operator (`(`, `!`).
+ * Real `find` syntax allows paths only in that leading position, so this
+ * matches ordinary usage (`find . -name '*.ts'`, `find src build -type f`).
+ * `find` with no leading path at all searches `.` (find's own default).
+ */
+export function findSearchRoots(tokens: string[]): string[] {
+  const roots: string[] = [];
+  for (const t of tokens.slice(1)) {
+    if (isFlagToken(t) || t === '(' || t === ')' || t === '!') break;
+    roots.push(t);
+  }
+  return roots.length > 0 ? roots : ['.'];
+}
+
+/** A `$` anywhere in an argument is an unexpanded shell variable (`$HOME`, `${FOO}`) — this tokenizer never expands it, so a literal string like `"$HOME/.ssh/id_rsa"` would otherwise resolve (wrongly) as a relative path under the worktree instead of the real value the shell would substitute. Unclassifiable — the caller routes this to `hil`, never a guessed allow. */
+export function hasShellVariable(token: string): boolean {
+  return token.includes('$');
+}
+
+/** `bunx`/`npx` restricted to "repo-local bins" (ticket): no flag that forces fetching from the registry (`-p`/`--package`, `-y`/`--yes` auto-install, `-g`/`--global`), and no explicit `@version` pin — those name a package to *fetch*, not a bin this worktree's own `node_modules/.bin` (or bun's package cache for an existing dependency) already has. DESIGN-GAP: this layer is a pure function over command text (decide.ts's contract) with no filesystem access, so it can't check `node_modules/.bin` directly — this is a syntactic proxy for "not forcing a fresh fetch", tune during T021 if the demo run shows gaps. */
+const BUNX_NPX_FORCE_INSTALL_FLAGS = new Set(['-p', '--package', '-y', '--yes', '-g', '--global']);
+export function isRepoLocalBinInvocation(tokens: string[]): boolean {
+  const head = tokens[0];
+  if (head !== 'bunx' && head !== 'npx') return false;
+  const rest = tokens.slice(1);
+  if (rest.some((t) => BUNX_NPX_FORCE_INSTALL_FLAGS.has(t))) return false;
+  const bin = rest.find((t) => !isFlagToken(t));
+  return bin !== undefined && !bin.includes('@');
+}
+
+const SCRIPT_LAUNCHER_HEADS = new Set(['node', 'bun']);
+/** `bun`'s own subcommands (`run`/`test`/`build`/`install`/`i`/`add`) are handled by `isRepoScriptCommand`/`isNewDependencyInstall` before this ever runs — this only recognizes `node <file>`/`bun <file>` direct script execution, so it must not re-claim those subcommand names as if they were script paths. */
+function looksLikeBunSubcommand(token: string): boolean {
+  return REPO_SCRIPT_SUBCOMMANDS.has(token) || NEW_DEP_SUBCOMMANDS.has(token);
+}
+
+/** `node <script>`/`bun <script>` (direct file execution, not `bun run`/`npm`-style subcommands) — the script path, or `undefined` if this isn't that shape. */
+export function scriptExecutionPath(tokens: string[]): string | undefined {
+  const head = tokens[0];
+  if (head === undefined || !SCRIPT_LAUNCHER_HEADS.has(head)) return undefined;
+  const arg = tokens[1];
+  if (arg === undefined || isFlagToken(arg)) return undefined;
+  if (head === 'bun' && looksLikeBunSubcommand(arg)) return undefined;
+  return arg;
+}

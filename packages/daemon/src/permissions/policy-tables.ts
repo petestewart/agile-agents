@@ -202,6 +202,109 @@ export function checkNeverWithoutHuman(
 // `checkNeverWithoutHuman` already ran and returned nothing.
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Engineer benign-command table (T030): everyday commands the allow-list
+// otherwise starves out because they're neither a repo script nor git.
+// Checked only after `isRepoScriptCommand`/`gitArgs` have already had first
+// claim (so `bun run`/`bun add`/any git subcommand keep their existing,
+// more specific handling) and only for atoms that survived
+// `checkNeverWithoutHuman` and the redirection gate above.
+// ---------------------------------------------------------------------------
+
+/** Commands with nothing worth containment-checking: they take no
+ * filesystem path (`pwd`, `date`, `which`, `true`, `false`), or only ever
+ * report existence/exit status rather than content (`test`, `[`), or print
+ * their literal argv (`echo`, `printf`) or transform stdin (`tr`). */
+const ENGINEER_BENIGN_NO_PATH_TOOLS = new Set([
+  'echo',
+  'printf',
+  'pwd',
+  'which',
+  'date',
+  'true',
+  'false',
+  'test',
+  '[',
+  'tr',
+]);
+
+/** Commands whose non-flag positional arguments are every path they read or write — see `cmd.benignPathArgs`. */
+const ENGINEER_BENIGN_PATH_TOOLS = new Set([
+  'cat',
+  'ls',
+  'mkdir',
+  'cp',
+  'mv',
+  'head',
+  'tail',
+  'wc',
+  'sort',
+  'uniq',
+  'cut',
+  'touch',
+  'diff',
+]);
+
+/** Every path this atom touches must resolve inside the worktree; a `$`-bearing argument is unclassifiable (never a guessed allow) and routes to `hil` instead. */
+function verifyBenignPaths(paths: string[], ctx: PolicyContext): PolicyVerdict {
+  for (const p of paths) {
+    if (cmd.hasShellVariable(p)) {
+      return hil(`"${p}" contains an unresolved shell variable — file a hil_request`);
+    }
+    if (!isPathInside(p, ctx.worktreePath)) {
+      return deny(`${p} is outside the worktree`);
+    }
+  }
+  return ALLOW;
+}
+
+/**
+ * The benign-command verdict for one atom, or `undefined` if its head isn't
+ * one of these named benign shapes at all (the caller falls through to the
+ * existing "not an allowed command" deny).
+ */
+function engineerBenignCommandVerdict(
+  atom: cmd.CommandAtom,
+  ctx: PolicyContext,
+): PolicyVerdict | undefined {
+  const { tokens } = atom;
+  const head = tokens[0];
+
+  if (head === undefined) {
+    // A bare wrapper invocation (`env`, `command`, `exec`, `nohup`, `time`,
+    // `xargs`) with nothing left after `stripPrefixes` removed it — inert,
+    // nothing to run. This is also how `env` with no assignments (ticket:
+    // "env (no assignments)") reaches here: `env` is itself a wrapper
+    // command (command.ts's `WRAPPER_COMMANDS`), so a bare `env` always
+    // strips to an empty token list before any policy layer sees it.
+    return ALLOW;
+  }
+
+  if (ENGINEER_BENIGN_NO_PATH_TOOLS.has(head)) return ALLOW;
+
+  if (cmd.isRepoLocalBinInvocation(tokens)) return ALLOW;
+
+  if (head === 'find') {
+    if (cmd.isFindWriteInvocation(tokens)) return undefined; // -delete/-exec/-ok: not benign, fall through
+    return verifyBenignPaths(cmd.findSearchRoots(tokens), ctx);
+  }
+
+  if (head === 'grep' || head === 'rg') {
+    return verifyBenignPaths(cmd.grepPathArgs(tokens), ctx);
+  }
+
+  const scriptPath = cmd.scriptExecutionPath(tokens);
+  if (scriptPath !== undefined) {
+    return verifyBenignPaths([scriptPath], ctx);
+  }
+
+  if (ENGINEER_BENIGN_PATH_TOOLS.has(head)) {
+    return verifyBenignPaths(cmd.benignPathArgs(tokens), ctx);
+  }
+
+  return undefined;
+}
+
 function engineerExecuteVerdict(command: string, ctx: PolicyContext): PolicyVerdict {
   for (const atom of cmd.parseCommandIntoAtoms(command)) {
     if (cmd.hasRedirectionOrTee(atom.tokens)) {
@@ -240,6 +343,11 @@ function engineerExecuteVerdict(command: string, ctx: PolicyContext): PolicyVerd
       // reset --hard already handled) is the engineer's own ticket
       // branch work — "git inside the worktree except the never list" (ticket).
       continue;
+    }
+    const benign = engineerBenignCommandVerdict(atom, ctx);
+    if (benign !== undefined) {
+      if (benign.action === 'allow') continue;
+      return benign;
     }
     return deny(`${atom.tokens[0] ?? command} is not an allowed command for the engineer role`);
   }
@@ -295,7 +403,21 @@ function engineerVerdict(classified: PermissionRequest, ctx: PolicyContext): Pol
 }
 
 const REVIEWER_READ_ONLY_GIT_SUBCOMMANDS = new Set(['diff', 'log', 'show', 'status']);
-const REVIEWER_PLAIN_READ_ONLY_TOOLS = new Set(['grep', 'rg', 'cat', 'ls', 'wc']);
+/** T030: extended with the pure read-only subset of the engineer's new
+ * benign-command table (`head`/`tail`/`diff`/`pwd`/`which`) — reading, never
+ * writing, so safe for the reviewer's read-only-tools allowance (§14) too. */
+const REVIEWER_PLAIN_READ_ONLY_TOOLS = new Set([
+  'grep',
+  'rg',
+  'cat',
+  'ls',
+  'wc',
+  'head',
+  'tail',
+  'diff',
+  'pwd',
+  'which',
+]);
 
 /**
  * `sed`/`find` are only read-only in a subset of their invocations — `sed
