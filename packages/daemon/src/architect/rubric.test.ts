@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { type FourQuestionAnswers, pointTicket } from './rubric';
+import { type FourQuestionAnswers, pointTicket, validateFourQuestionAnswers } from './rubric';
 
 /** Three fixture tickets (ticket acceptance: "pointing on three fixture tickets matches the expected tiers"). */
 describe('pointTicket — fixtures', () => {
@@ -123,5 +123,63 @@ describe('pointTicket — edge rows', () => {
       precedent: 'exact_pattern',
     });
     expect(result.points).toBe(8);
+  });
+});
+
+/**
+ * Independent review fix (opus blocker 1): an unrecognised answer value must
+ * be refused, never silently coerced to the worst tier by falling through
+ * the ternary chain's final `else`.
+ */
+describe('pointTicket / validateFourQuestionAnswers — rejects bad input', () => {
+  const valid = {
+    points: 1,
+    ambiguity: 'contract_specified',
+    blastRadius: 'one_module',
+    verifiability: 'executable_tests',
+    precedent: 'exact_pattern',
+  } as const;
+
+  test('an unrecognised ambiguity value throws, not coerces to novel', () => {
+    expect(() => pointTicket({ ...valid, ambiguity: 'somehow_both' })).toThrow();
+  });
+
+  test('an unrecognised blastRadius value throws', () => {
+    expect(() => pointTicket({ ...valid, blastRadius: 'the whole repo' })).toThrow();
+  });
+
+  test('an unrecognised verifiability value throws', () => {
+    expect(() => pointTicket({ ...valid, verifiability: 'vibes' })).toThrow();
+  });
+
+  test('an unrecognised precedent value throws', () => {
+    expect(() => pointTicket({ ...valid, precedent: 'maybe' })).toThrow();
+  });
+
+  test('a non-Fibonacci points value throws', () => {
+    expect(() => pointTicket({ ...valid, points: 4 })).toThrow();
+  });
+
+  test('an unrecognised reasoningOverride value throws', () => {
+    expect(() => pointTicket({ ...valid, reasoningOverride: 'extreme' })).toThrow();
+  });
+
+  test('an unknown extra key is refused (.strict())', () => {
+    expect(() => pointTicket({ ...valid, extraField: 'nope' })).toThrow();
+  });
+
+  test('a missing required field throws', () => {
+    const { precedent: _drop, ...missingPrecedent } = valid;
+    expect(() => pointTicket(missingPrecedent)).toThrow();
+  });
+
+  test('null/non-object input throws', () => {
+    expect(() => pointTicket(null)).toThrow();
+    expect(() => pointTicket('novel')).toThrow();
+  });
+
+  test('validateFourQuestionAnswers accepts valid input and returns it typed', () => {
+    const result = validateFourQuestionAnswers(valid);
+    expect(result).toEqual(valid);
   });
 });

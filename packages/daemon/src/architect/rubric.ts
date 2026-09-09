@@ -35,6 +35,8 @@
  */
 
 import type { TicketEstimate, TicketReasoning, TicketTier } from '@agile-agents/shared';
+import { formatZodError } from '@agile-agents/shared';
+import { z } from 'zod';
 
 export type AmbiguityAnswer =
   /** "contract fully specified by oracle refs" (trivial/standard cell). */
@@ -79,6 +81,37 @@ export interface FourQuestionAnswers {
   reasoningOverride?: TicketReasoning;
 }
 
+/**
+ * Independent review fix (opus blocker 1): the four answers arrive from an
+ * MCP call as untyped JSON — a bad/unrecognised value (a typo, a value from
+ * a different vendor's own vocabulary) must not silently fall through the
+ * `? :` chains below. Those chains only ever compare against known literals,
+ * so anything else previously landed in the final `else` branch of each
+ * ternary — i.e. coerced to the *worst* answer (`novel`/`hard`) with no
+ * error raised. `FourQuestionAnswersSchema` closes that off: every field is
+ * a strict enum, `points` is the closed Fibonacci set `TicketEstimateSchema`
+ * itself uses, and the object is `.strict()` so an unrecognised extra key
+ * (not just an unrecognised value) is refused too.
+ */
+export const FourQuestionAnswersSchema = z
+  .object({
+    points: z.union([z.literal(1), z.literal(2), z.literal(3), z.literal(5), z.literal(8)]),
+    ambiguity: z.enum(['contract_specified', 'requires_choices', 'choices_are_decisions']),
+    blastRadius: z.enum(['one_module', 'bounded_context', 'public_interface_or_data_model']),
+    verifiability: z.enum(['executable_tests', 'needs_judgment', 'cant_be_written_until_done']),
+    precedent: z.enum(['exact_pattern', 'similar_pattern', 'none']),
+    reasoningOverride: z.enum(['low', 'medium', 'high']).optional(),
+  })
+  .strict();
+
+export function validateFourQuestionAnswers(input: unknown): FourQuestionAnswers {
+  const result = FourQuestionAnswersSchema.safeParse(input);
+  if (!result.success) {
+    throw new Error(formatZodError('FourQuestionAnswers', result.error));
+  }
+  return result.data;
+}
+
 export interface PointingResult {
   points: TicketEstimate['points'];
   tier: TicketTier;
@@ -106,12 +139,21 @@ const REASONING_BY_TIER: Record<TicketTier, TicketReasoning> = {
   novel: 'high',
 };
 
-/** Pure four-question pointing (§11). Deterministic — no store/clock access, so the architect's MCP verb layer supplies `pointed_by`/`pointed_at` when it writes the result onto a ticket's `estimate` block. */
-export function pointTicket(answers: FourQuestionAnswers): PointingResult {
+/**
+ * Pure four-question pointing (§11). Deterministic — no store/clock access,
+ * so the architect's MCP verb layer supplies `pointed_by`/`pointed_at` when
+ * it writes the result onto a ticket's `estimate` block. Validates `answers`
+ * against `FourQuestionAnswersSchema` first (review fix, opus blocker 1) —
+ * `pointTicket` is called both from `verbs.ts` (MCP input, genuinely
+ * untrusted) and directly from tests/other daemon code, so the validation
+ * lives here rather than being the MCP layer's problem alone.
+ */
+export function pointTicket(answers: unknown): PointingResult {
+  const validated = validateFourQuestionAnswers(answers);
   const worstOfThree = Math.max(
-    ambiguityLevel(answers.ambiguity),
-    blastRadiusLevel(answers.blastRadius),
-    verifiabilityLevel(answers.verifiability),
+    ambiguityLevel(validated.ambiguity),
+    blastRadiusLevel(validated.blastRadius),
+    verifiabilityLevel(validated.verifiability),
   );
 
   let tier: TicketTier;
@@ -123,21 +165,21 @@ export function pointTicket(answers: FourQuestionAnswers): PointingResult {
     // All three at the merged low cell — Precedent alone decides trivial vs
     // standard vs hard (never novel by itself; see file header).
     tier =
-      answers.precedent === 'exact_pattern'
+      validated.precedent === 'exact_pattern'
         ? 'trivial'
-        : answers.precedent === 'similar_pattern'
+        : validated.precedent === 'similar_pattern'
           ? 'standard'
           : 'hard';
   }
 
-  const reasoning = answers.reasoningOverride ?? REASONING_BY_TIER[tier];
+  const reasoning = validated.reasoningOverride ?? REASONING_BY_TIER[tier];
   const reasoningNotes = [
-    `ambiguity=${answers.ambiguity}`,
-    `blast_radius=${answers.blastRadius}`,
-    `verifiability=${answers.verifiability}`,
-    `precedent=${answers.precedent}`,
-    `-> tier=${tier}, reasoning=${reasoning}${answers.reasoningOverride ? ' (overridden)' : ''}`,
+    `ambiguity=${validated.ambiguity}`,
+    `blast_radius=${validated.blastRadius}`,
+    `verifiability=${validated.verifiability}`,
+    `precedent=${validated.precedent}`,
+    `-> tier=${tier}, reasoning=${reasoning}${validated.reasoningOverride ? ' (overridden)' : ''}`,
   ].join('; ');
 
-  return { points: answers.points, tier, reasoning, reasoningNotes };
+  return { points: validated.points, tier, reasoning, reasoningNotes };
 }

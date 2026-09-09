@@ -11,20 +11,32 @@
  * `store.putTicket`) covers everything else.
  *
  * `reRefineStale`: the three re-refine paths off a `stale` ticket named in
- * the ticket's scope line. Every path ends by transitioning the *parent*
- * `stale -> ready` — the only legal outgoing edge `TICKET_TRANSITIONS` gives
- * `stale` (`packages/shared/src/ticket.ts`). There is no "Dropped"/
- * "superseded" ticket status in `TICKET_STATUSES` at all (DESIGN-GAP: this
- * ticket's scope line asks for "parent Dropped-equivalent status per the
- * shared transition table (pick the legal edge; document)" — the shared
- * schema simply doesn't have one to pick beyond `ready`, and adding one is a
- * `packages/shared` change outside this ticket's file ownership). So a
- * split/refactor parent is "retired" the only way the schema allows: it goes
- * back to `ready` but with its own new children added to its `depends` list
- * (`store.putTicket`, before the transition) — a `ready` ticket whose
- * `depends` aren't all `done` never becomes the sprint frontier (§9), so the
- * parent is functionally inert (never re-picked-up) until its children land,
- * without inventing a status the schema doesn't have.
+ * the ticket's scope line — `unchanged` and `refactor_child` end on the
+ * `stale -> ready` edge (`TICKET_TRANSITIONS`, `packages/shared/src/
+ * ticket.ts`); `split` does not (see below).
+ *
+ * Independent review fix (opus blocker 2, round 2): a `split` parent's own
+ * work is *fully superseded* by its children — unlike `refactor_child`
+ * (where the parent's original contract still stands once a prerequisite
+ * lands), there is nothing left for the parent itself to do. The first
+ * version of this function readied the split parent with its children added
+ * to `depends`, reasoning that a `ready` ticket whose `depends` aren't all
+ * `done` never becomes the sprint frontier (§9) — but once the children
+ * *do* land, that parent re-enters the frontier and gets reassigned with a
+ * contract that's already been delivered by the split, which is exactly the
+ * bug: nothing distinguishes "genuinely blocked, resume when unblocked"
+ * (`refactor_child`) from "superseded, never resume" (`split`) once both
+ * are sitting at `ready`. Fixed: a `split` parent stays at `stale` — a
+ * *legal* status (`TICKET_STATUSES` includes it) that §9's frontier
+ * (`every ready ticket`) already excludes by construction, with no
+ * `depends` trick needed. DESIGN-GAP (still open): `TICKET_STATUSES` has no
+ * "Dropped"/permanently-superseded terminal status of its own — reusing
+ * `stale` here is a repurposing, not a real terminal state (a `stale`
+ * ticket is nominally "needs re-refining", not "done for good"), and relies
+ * on nobody calling `reRefineStale`/`ticket_refine` on it again. A real
+ * terminal status is a `packages/shared/src/ticket.ts` schema change
+ * outside this ticket's file ownership — flagged for whoever owns that
+ * file next, not decided here.
  */
 
 import { existsSync } from 'node:fs';
@@ -36,6 +48,7 @@ import type {
   TicketId,
 } from '@agile-agents/shared';
 import { validateTicket } from '@agile-agents/shared';
+import { IllegalTransitionError } from '../store';
 import type { StateStore } from '../store';
 
 export class RefineValidationError extends Error {
@@ -55,8 +68,16 @@ export interface RefineTicketPatch {
   estimate?: TicketEstimate;
 }
 
-/** Every oracle ref a patch would leave the ticket carrying must resolve in the *active* index — §4 "Oracle": a ref onto something superseded/never-existed is refused the same way `oracleWrite`'s own dangling-ref check is. */
-function assertOracleRefsResolve(store: StateStore, refs: readonly OracleId[]): void {
+/**
+ * Every oracle ref a patch would leave the ticket carrying must resolve in
+ * the *active* index — §4 "Oracle": a ref onto something superseded/
+ * never-existed is refused the same way `oracleWrite`'s own dangling-ref
+ * check is. Exported (QA round 1 fix) so `verbs.ts`'s `ticket_create` can
+ * run the identical check `ticket_refine` already runs via `refineTicket` —
+ * a ticket must never be able to reach a resolvable `oracle_refs` state by
+ * being *created* with a dangling one and never refined again.
+ */
+export function assertOracleRefsResolve(store: StateStore, refs: readonly OracleId[]): void {
   const index = store.listOracleIndex();
   const dangling = refs.filter((ref) => !(ref in index));
   if (dangling.length > 0) {
@@ -181,7 +202,7 @@ export interface SplitChildSpec {
 export type ReRefineDecision =
   /** The decision that staled this ticket doesn't actually change its contract — goes straight back to `ready` as-is (§4 "Ticket": "unchanged -> ready"). */
   | { kind: 'unchanged' }
-  /** Splits the ticket into fully-specified children; the parent is readied but blocked on them (see file header). */
+  /** Splits the ticket into fully-specified children; the parent stays `stale` — its own work is fully superseded, not merely blocked (see file header). */
   | { kind: 'split'; children: readonly SplitChildSpec[] }
   /** A `refactor` child pointing at the parent's WIP commit (§5 step 6, ticket scope). */
   | {
@@ -210,10 +231,24 @@ export async function reRefineStale(
   store: StateStore,
   id: TicketId,
   decision: ReRefineDecision,
-  options: { by?: string } = {},
+  options: { by?: string; now?: () => Date } = {},
 ): Promise<ReRefineResult> {
   const by = options.by ?? 'architect';
+  const now = options.now ?? (() => new Date());
   const current = store.getTicket(id);
+  if (current.status !== 'stale') {
+    // `putTicket` (used by the `split` path below, which no longer calls
+    // `transitionTicket`) doesn't itself check `isLegalTransition` the way
+    // `transitionTicket` does — assert this explicitly so `split` fails the
+    // same way `unchanged`/`refactor_child` already do (via
+    // `transitionTicket`'s own guard) when called on a non-stale ticket,
+    // rather than silently rewriting a live ticket's `depends`/history.
+    // `to: 'ready'` names the family of edge every re-refine path implies
+    // (`stale -> ready`, or — for `split` — staying at `stale` on purpose);
+    // what's actually illegal here is calling this function at all from a
+    // non-`stale` status.
+    throw new IllegalTransitionError(id, current.status, 'ready');
+  }
 
   if (decision.kind === 'unchanged') {
     const parent = await store.transitionTicket(id, 'ready', {
@@ -243,15 +278,20 @@ export async function reRefineStale(
       children.push(await store.putTicket(child, { by }));
     }
     const childIds = children.map((c) => c.id);
-    const parentWithDepends = validateTicket({
+    // Review fix (opus blocker 2): stays at `stale`, not `ready` — the
+    // parent's own work is fully superseded by the children, not merely
+    // blocked on them (see file header). `depends` still records the split
+    // for anyone reading the ticket, but no longer needs to *do* anything —
+    // `stale` already keeps it off the §9 sprint frontier on its own.
+    const parentSplit = validateTicket({
       ...current,
       depends: [...new Set([...current.depends, ...childIds])],
+      history: [
+        ...current.history,
+        `${now().toISOString()} re-refined by ${by}: split into ${childIds.join(', ')} — parent stays stale (superseded, not resumable; see DESIGN-GAP in refine.ts)`,
+      ],
     });
-    await store.putTicket(parentWithDepends, { by });
-    const parent = await store.transitionTicket(id, 'ready', {
-      by,
-      reason: `re-refined: split into ${childIds.join(', ')}`,
-    });
+    const parent = await store.putTicket(parentSplit, { by });
     return { parent, children };
   }
 

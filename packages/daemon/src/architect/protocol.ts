@@ -47,6 +47,10 @@ export interface RunDiscoveryProtocolResult {
   haltScope: HaltScope | null;
   staled: TicketId[];
   reRefined: TicketId[];
+  /** False only when the halt's quorum wasn't `reached` yet (review fix, opus blocker 3) — `staled`/`reRefined` are both empty in that case, nothing having been published. */
+  released: boolean;
+  /** Present only when `released` is false. */
+  reason?: string;
 }
 
 /**
@@ -73,16 +77,40 @@ export async function runDiscoveryProtocol(
   };
 
   if (triage.tier === 'local' || !triage.halt) {
-    return { tier: triage.tier, haltId: null, haltScope: null, staled: [], reRefined: [] };
+    return {
+      tier: triage.tier,
+      haltId: null,
+      haltScope: null,
+      staled: [],
+      reRefined: [],
+      released: true,
+    };
   }
 
   const published = (await tools.callTool(ctx, 'decision_publish', {
     entry: input.decisionEntry,
     body: input.decisionBody,
     haltId: triage.halt.id,
-  })) as { oracle: { stale: TicketId[] } };
+  })) as { released: boolean; reason?: string; oracle?: { stale: TicketId[] } };
 
-  const staled = published.oracle.stale;
+  if (!published.released) {
+    // §5 ordering ("reports -> quorum -> decision -> release"): the halt's
+    // quorum isn't `reached` yet — nothing was published, so there is
+    // nothing to ripple or re-refine. The caller (an EM ceremony, or a
+    // retry once quorum lands) decides what to do next; this function
+    // doesn't loop/wait on its own.
+    return {
+      tier: triage.tier,
+      haltId: triage.halt.id,
+      haltScope: triage.halt.scope,
+      staled: [],
+      reRefined: [],
+      released: false,
+      reason: published.reason,
+    };
+  }
+
+  const staled = published.oracle?.stale ?? [];
   const decisionFor = input.reRefineDecisionFor ?? (() => ({ kind: 'unchanged' as const }));
   const reRefined: TicketId[] = [];
   for (const ticketId of staled) {
@@ -98,5 +126,6 @@ export async function runDiscoveryProtocol(
     haltScope: triage.halt.scope,
     staled,
     reRefined,
+    released: true,
   };
 }

@@ -125,7 +125,7 @@ describe('reRefineStale — unchanged', () => {
 });
 
 describe('reRefineStale — split', () => {
-  test('mints child tickets, parent readied but depends-blocked on them', async () => {
+  test('mints child tickets; parent stays stale (superseded, not merely blocked — review fix, opus blocker 2)', async () => {
     await store.putTicket(
       makeTicket('TKT-0001', { status: 'stale', contract: contract(), depends: [] }),
     );
@@ -138,8 +138,13 @@ describe('reRefineStale — split', () => {
     });
     expect(result.children).toHaveLength(2);
     expect(result.children.map((c) => c.status)).toEqual(['ready', 'ready']);
-    expect(result.parent.status).toBe('ready');
+    // The parent stays `stale` — never re-enters the §9 sprint frontier, so
+    // it can't be reassigned once the children land with an
+    // already-delivered contract (the bug the fix closes).
+    expect(result.parent.status).toBe('stale');
     expect(result.parent.depends).toEqual(result.children.map((c) => c.id));
+    expect(result.parent.history.at(-1)).toContain('split into');
+    expect(result.parent.history.at(-1)).toContain('stale');
     // Minted ids don't collide with the parent's own id.
     expect(new Set(result.children.map((c) => c.id)).has('TKT-0001')).toBe(false);
   });
@@ -152,6 +157,31 @@ describe('reRefineStale — split', () => {
         children: [{ title: 'Bad half', contract: contract({ acceptance: [] }) }],
       }),
     ).rejects.toThrow(RefineValidationError);
+  });
+
+  test('a split ticket never re-enters the sprint frontier once children are done', async () => {
+    await store.putTicket(makeTicket('TKT-0001', { status: 'stale', contract: contract() }));
+    const result = await reRefineStale(store, 'TKT-0001', {
+      kind: 'split',
+      children: [{ title: 'Half A', contract: contract({ acceptance: ['a'] }) }],
+    });
+    // `stale -> ready` is the *only* legal edge back out — but nothing in
+    // this module calls it automatically just because children finished,
+    // which is exactly the point: unlike a `ready` ticket blocked on
+    // `depends`, a `stale` one is never picked up by the EM frontier
+    // (§9: "every ready ticket whose depends are all done") without an
+    // explicit re-refine.
+    expect(store.getTicket(result.parent.id).status).toBe('stale');
+  });
+
+  test('refuses to split a non-stale ticket', async () => {
+    await store.putTicket(makeTicket('TKT-0001', { status: 'ready', contract: contract() }));
+    await expect(
+      reRefineStale(store, 'TKT-0001', {
+        kind: 'split',
+        children: [{ title: 'Half A', contract: contract({ acceptance: ['a'] }) }],
+      }),
+    ).rejects.toThrow(IllegalTransitionError);
   });
 });
 

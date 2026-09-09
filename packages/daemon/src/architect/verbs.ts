@@ -34,8 +34,8 @@ import type { StateStore } from '../store';
 import { toCallToolResult } from '../tools/mcp-server';
 import { type ToolInputSpec, zodObjectSchemaFromInputSpec } from '../tools/schema';
 import { publishDecision, resolveDiscovery } from './decision';
-import { nextTicketId, refineTicket } from './refine';
-import { type FourQuestionAnswers, pointTicket } from './rubric';
+import { assertOracleRefsResolve, nextTicketId, refineTicket } from './refine';
+import { pointTicket } from './rubric';
 import { triageDiscovery } from './triage';
 
 export class ArchitectToolError extends Error {}
@@ -81,13 +81,20 @@ async function ticketCreate(
   const p = requireObject(input);
   const title = requireString(p.title, 'title');
   const id = (typeof p.id === 'string' ? p.id : nextTicketId(deps.store)) as TicketId;
+  const oracleRefs = (p.oracle_refs as OracleId[] | undefined) ?? [];
+  // QA round 1 fix: `ticket_create` used to accept an unresolved
+  // `oracle_refs` entry that `ticket_refine` correctly rejects
+  // (`assertOracleRefsResolve`) — a draft ticket can't be created citing an
+  // oracle entry that doesn't exist (or has been superseded/retired) any
+  // more than a refine can leave it citing one.
+  assertOracleRefsResolve(deps.store, oracleRefs);
   return deps.store.putTicket(
     {
       id,
       title,
       status: 'draft',
       depends: (p.depends as TicketId[] | undefined) ?? [],
-      oracle_refs: (p.oracle_refs as OracleId[] | undefined) ?? [],
+      oracle_refs: oracleRefs,
       kb_refs: [],
       contract: {
         inputs: [],
@@ -132,10 +139,13 @@ async function ticketPoint(deps: ArchitectToolDeps, ctx: ArchitectToolCallContex
   assertArchitect(ctx);
   const p = requireObject(input);
   const id = requireString(p.id, 'id') as TicketId;
-  const answers = p.answers as FourQuestionAnswers | undefined;
-  if (!answers)
+  if (p.answers === undefined) {
     throw new ArchitectToolError('ticket_point: "answers" (the four-question rubric) is required');
-  const result = pointTicket(answers);
+  }
+  // `pointTicket` validates `p.answers` against `FourQuestionAnswersSchema`
+  // itself (review fix, opus blocker 1) — an unrecognised value/key throws
+  // there rather than silently coercing to the worst tier.
+  const result = pointTicket(p.answers);
   const now = deps.now ?? (() => new Date());
   const ticket = deps.store.getTicket(id);
   const estimate = {

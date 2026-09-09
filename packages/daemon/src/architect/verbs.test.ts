@@ -59,6 +59,40 @@ describe('createArchitectMcpServer', () => {
     expect(ticket.id).toBe('TKT-0001');
   });
 
+  test('QA round 1 fix: ticket_create refuses an unresolved oracle_ref, same as ticket_refine', async () => {
+    const result = await client.callTool({
+      name: 'ticket_create',
+      arguments: { title: 'A new ticket', oracle_refs: ['DEC-9999'] },
+    });
+    expect(result.isError).toBe(true);
+    const text = (result.content as Array<{ type: string; text: string }>)[0]?.text ?? '';
+    expect(text).toMatch(/oracle_refs/);
+    // Nothing was written.
+    expect(store.listTickets()).toHaveLength(0);
+  });
+
+  test('ticket_create accepts a resolvable oracle_ref', async () => {
+    await store.putOracleEntry(
+      {
+        id: 'DEC-0001',
+        title: 'x',
+        status: 'active',
+        supersedes: [],
+        depends: [],
+        affects: [],
+        decided: '2026-09-08',
+        by: 'architect',
+        rationale: 'x',
+      },
+      'body',
+    );
+    const result = await client.callTool({
+      name: 'ticket_create',
+      arguments: { title: 'A new ticket', oracle_refs: ['DEC-0001'] },
+    });
+    expect(result.isError).not.toBe(true);
+  });
+
   test('ticket_refine readies a draft with a resolvable oracle ref', async () => {
     await client.callTool({ name: 'ticket_create', arguments: { title: 'A new ticket' } });
     await store.putOracleEntry(

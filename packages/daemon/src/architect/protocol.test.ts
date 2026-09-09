@@ -227,4 +227,49 @@ describe('runDiscoveryProtocol — the one-call convenience path', () => {
     expect(result.staled).toEqual([]);
     expect(() => store.getOracleEntry('DEC-0099')).toThrow();
   });
+
+  test('review fix (opus blocker 3): a halt whose quorum is still pending blocks the whole rest of the sequence', async () => {
+    // A registered agent so `createHalt`'s `global`-scope `affected` set is
+    // non-empty — nobody has reported in yet, so quorum starts (and stays)
+    // `pending`.
+    await store.putAgent('eng-1', {
+      vendor: 'claude',
+      model: 'claude-sonnet-4-5',
+      last_seen: '2026-09-09T00:00:00Z',
+    });
+
+    const result = await runDiscoveryProtocol(
+      { store },
+      {
+        reporterTicket: 'TKT-0001',
+        discovery: {
+          tier: 'local',
+          affects: ['DEC-0001'],
+          proposed: 'DEC-0001 contradicts the new SSO requirement',
+        },
+        decisionEntry: {
+          id: 'DEC-0002',
+          title: 'Sessions are JWT',
+          status: 'active',
+          supersedes: ['DEC-0001'],
+          depends: [],
+          affects: ['DEC-0001'],
+          decided: '2026-09-09',
+          by: 'architect',
+          rationale: 'SSO',
+        },
+        decisionBody: 'Sessions switch to JWT.',
+      },
+    );
+
+    expect(result.tier).toBe('global');
+    expect(result.released).toBe(false);
+    expect(result.reason).toMatch(/quorum/i);
+    expect(result.staled).toEqual([]);
+    expect(result.reRefined).toEqual([]);
+    // Halt still active, nothing rippled, nothing published.
+    expect(store.listHalts()).toHaveLength(1);
+    expect(store.getTicket('TKT-0002').status).toBe('in_progress');
+    expect(() => store.getOracleEntry('DEC-0002')).toThrow();
+  });
 });
