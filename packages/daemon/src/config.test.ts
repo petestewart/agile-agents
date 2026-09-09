@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { discoverConfig } from './config';
@@ -59,6 +59,28 @@ describe('discoverConfig', () => {
     const outside = mkdtempSync(join(tmpdir(), 'agile-notgit-'));
     try {
       expect(() => discoverConfig({ cwd: outside })).toThrow(/not a git repository/);
+    } finally {
+      rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
+  test("review round 1 blocker B2: a non-repo cwd (e.g. the operator's own $HOME) gets no .agile-daemon-cache left behind, even though the call throws", () => {
+    const outside = mkdtempSync(join(tmpdir(), 'agile-notgit-'));
+    const tmpEntriesBefore = readdirSync(tmpdir());
+    try {
+      expect(() => discoverConfig({ cwd: outside })).toThrow(/not a git repository/);
+      // Nothing materialized inside the non-repo directory itself — the old
+      // bug used `startDir` (here, `outside`) directly as the sandbox cache
+      // root, so `findRepoRoot`'s bootstrap git spawn left
+      // `<outside>/.agile-daemon-cache/git/` behind despite the throw.
+      expect(existsSync(join(outside, '.agile-daemon-cache'))).toBe(false);
+      // Nor did it leak a fresh directory into the OS temp dir that outlives
+      // the call — the no-repo-root fallback's own `mkdtempSync` must be
+      // cleaned up in every case, including the error path.
+      const tmpEntriesAfter = readdirSync(tmpdir());
+      const newEntries = tmpEntriesAfter.filter((e) => !tmpEntriesBefore.includes(e));
+      const leaked = newEntries.filter((e) => e !== outside.split('/').pop());
+      expect(leaked).toEqual([]);
     } finally {
       rmSync(outside, { recursive: true, force: true });
     }

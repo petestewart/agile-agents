@@ -38,7 +38,8 @@
  * "vendor session env keeps the real HOME" test.
  */
 
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 /** `.agile-daemon-cache/` under `repoRoot` — the daemon's own host-local scratch space, gitignored, never the operator's real `$HOME`. */
@@ -68,5 +69,58 @@ export function sandboxedSubprocessEnv(repoRoot: string, name: string): Record<s
     XDG_CONFIG_HOME: xdgConfig,
     XDG_DATA_HOME: xdgData,
     XDG_STATE_HOME: xdgState,
+  };
+}
+
+/** A `sandboxedSubprocessEnvOrTemp` call's env plus how to release whatever it had to create just for this one call — see its doc comment. */
+export interface SandboxedSubprocessEnvOrTemp {
+  env: Record<string, string>;
+  /** Removes the call's own temp directory. A no-op when `repoRoot` was given: that cache directory belongs to the caller, not this one call (same lifetime as every other `sandboxedSubprocessEnv` caller's cache). */
+  cleanup: () => void;
+}
+
+/**
+ * `sandboxedSubprocessEnv`, for a caller with no real `repoRoot` in hand yet
+ * — either because the call this env is *for* is itself how a repo root
+ * gets discovered (`config.ts`'s bootstrap `git rev-parse
+ * --show-toplevel`, `merge/precommit.ts`'s `git rev-parse
+ * --git-common-dir`), or because the caller has no repo to root under at
+ * all (`sandbox/backend.ts`'s bare, no-args `dockerProbeEnv`/`binaryOnPath`
+ * calls).
+ *
+ * When `repoRoot` is given, this is exactly `sandboxedSubprocessEnv` with a
+ * no-op `cleanup`. When omitted, it `mkdtempSync`s a fresh, uid/pid-unique
+ * directory under the OS temp dir instead — review round 2 (T034, on
+ * `sandbox/backend.ts`'s `dockerProbeEnv`, the first caller of this shape):
+ * a *fixed* `os.tmpdir()/.agile-daemon-cache/<name>/` path is exactly as
+ * unsafe as writing into the caller's own cwd, just world-shared instead —
+ * any other process on the host can occupy it first (a regular file,
+ * another uid's directory, a symlink). A fresh `mkdtempSync` per call has
+ * nothing else on the host already occupying it, and `cleanup()` removes it
+ * once the one-shot call is done with it.
+ *
+ * `sandbox/backend.ts`'s `dockerProbeEnv` is this function under a fixed
+ * `'sandbox-detect'` name, kept as its own export (T026) for that module's
+ * own call sites and tests; this generalizes the same shape for T037's
+ * bootstrap-probe callers instead of a fourth near-copy.
+ */
+export function sandboxedSubprocessEnvOrTemp(
+  repoRoot: string | undefined,
+  name: string,
+): SandboxedSubprocessEnvOrTemp {
+  if (repoRoot !== undefined) {
+    return { env: sandboxedSubprocessEnv(repoRoot, name), cleanup: () => {} };
+  }
+  const tempBase = mkdtempSync(join(tmpdir(), `agile-daemon-${name}-`));
+  return {
+    env: sandboxedSubprocessEnv(tempBase, name),
+    cleanup: () => {
+      try {
+        rmSync(tempBase, { recursive: true, force: true });
+      } catch {
+        // Best-effort — a leaked one-shot temp dir under the OS temp
+        // directory is not a correctness bug.
+      }
+    },
   };
 }

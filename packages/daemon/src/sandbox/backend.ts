@@ -29,23 +29,31 @@ export interface DetectBackendDeps {
 }
 
 /**
- * `repoRoot` threads through when the caller has one (`dockerDaemonReachable`
- * does, from `hasContainerRuntime`); the bare `hasSandboxExec` check below
- * has none, same as `dockerProbeEnv`'s own no-repo-root callers, so it falls
- * back to a fresh per-call `mkdtempSync` under the OS temp dir.
+ * `command -v` is POSIX and doesn't require the binary to run cleanly
+ * (unlike `--version`, which some CLIs don't support) — just presence.
+ * Takes an already-built sandboxed `env` rather than a `repoRoot` (review
+ * round 1 nit N5) so a caller that needs more than one presence/behaviour
+ * check against the same probe — `dockerDaemonReachable` checks for the
+ * `docker` binary and then runs `docker info` — builds (and tears down)
+ * exactly one `dockerProbeEnv`, not one per check.
  */
-function binaryOnPath(bin: string, repoRoot?: string): boolean {
-  const probe = dockerProbeEnv(repoRoot);
+function commandOnPath(bin: string, env: Record<string, string>): boolean {
   try {
-    // `command -v` is POSIX and doesn't require the binary to run cleanly
-    // (unlike `--version`, which some CLIs don't support) — just presence.
     execFileSync('sh', ['-c', `command -v ${bin}`], {
       stdio: ['ignore', 'ignore', 'ignore'],
-      env: probe.env,
+      env,
     });
     return true;
   } catch {
     return false;
+  }
+}
+
+/** `sandbox-exec` presence has no `repoRoot` to thread through (nothing upstream of `detectBackend()` has one — see `dockerProbeEnv`'s doc comment), so this is its own one-shot probe. */
+function hasBinaryOnPath(bin: string): boolean {
+  const probe = dockerProbeEnv(undefined);
+  try {
+    return commandOnPath(bin, probe.env);
   } finally {
     probe.cleanup();
   }
@@ -117,11 +125,17 @@ export function dockerProbeEnv(repoRoot: string | undefined): DockerProbeEnv {
  * real failure and is left to throw out of this function rather than being
  * folded into the same catch as "docker unreachable", which is precisely
  * the bug that let a probe-setup failure silently read as "no docker".
+ *
+ * Round 1 review nit N5: one `dockerProbeEnv` is built and reused for both
+ * the `command -v docker` presence check and the `docker info` call itself
+ * — previously each built (and tore down) its own, doubling the
+ * `mkdtempSync`/`mkdirSync`/`rmSync` cost of every no-repo-root probe for
+ * no benefit (the two checks always agree on which env to use).
  */
 export function dockerDaemonReachable(repoRoot?: string): boolean {
-  if (!binaryOnPath('docker', repoRoot)) return false;
   const probe = dockerProbeEnv(repoRoot);
   try {
+    if (!commandOnPath('docker', probe.env)) return false;
     // `docker info` fails fast (no daemon socket) rather than hanging when
     // the daemon isn't running — confirmed on this container: "failed to
     // connect to the docker API at unix:///var/run/docker.sock ...".
@@ -146,7 +160,7 @@ export function dockerDaemonReachable(repoRoot?: string): boolean {
  */
 export const defaultDetectBackendDeps: DetectBackendDeps = {
   platform,
-  hasSandboxExec: () => binaryOnPath('sandbox-exec'),
+  hasSandboxExec: () => hasBinaryOnPath('sandbox-exec'),
   hasContainerRuntime: () => dockerDaemonReachable(),
 };
 

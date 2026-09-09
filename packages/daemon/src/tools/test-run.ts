@@ -91,6 +91,17 @@ export const MAX_FAILURES_RETURNED = 10;
  * the highest-volume writer there and the only one with a sweep already
  * wired to run after every call, so this is that same call site, not a new
  * one — no other tool needed its own pruning hook added.
+ *
+ * Review round 1 nit N2: the trade-off this broadening makes explicit — a
+ * `test_run` prune can now delete `review/diff-summary.ts`'s raw diff for
+ * an *old* review round, even one a still-open review record's
+ * `rawDiffPath` pointer references, turning that pointer dangling instead
+ * of the file growing the tree without bound. At a 200 MiB budget this is
+ * judged the right trade (an occasional stale pointer to a long-settled
+ * review round, versus unbounded disk growth with no sweep at all) — no
+ * per-tool exclusion or reservation is carved out of the shared budget.
+ * Revisit if review tooling ever needs a raw diff to outlive this budget's
+ * churn.
  */
 export const MAX_RETAINED_RAW_OUTPUT_BYTES = 200 * 1024 * 1024; // 200 MiB
 

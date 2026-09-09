@@ -164,6 +164,12 @@ describe('dockerProbeEnv (T034 round 3): no-repo-root fallback survives the old 
         cleanup();
       }
     } finally {
+      // Review round 1 nit N4: a `delete` here would be runtime-agnostic
+      // (Bun deletes the var on an `undefined` assignment; Node would set
+      // the literal string `"undefined"`), but this repo is Bun-only
+      // (CLAUDE.md) and the project's own lint rule
+      // (`lint/performance/noDelete`) forbids `delete` — so this stays a
+      // plain assignment, relying on Bun's documented behavior.
       process.env.TMPDIR = originalTmpdir;
       rmSync(testTmpBase, { recursive: true, force: true });
     }
@@ -262,6 +268,12 @@ describe('dockerDaemonReachable (T034)', () => {
     } finally {
       stub.restore();
       rmSync(staleFixedRoot, { force: true });
+      // Review round 1 nit N4: a `delete` here would be runtime-agnostic
+      // (Bun deletes the var on an `undefined` assignment; Node would set
+      // the literal string `"undefined"`), but this repo is Bun-only
+      // (CLAUDE.md) and the project's own lint rule
+      // (`lint/performance/noDelete`) forbids `delete` — so this stays a
+      // plain assignment, relying on Bun's documented behavior.
       process.env.TMPDIR = originalTmpdir;
       rmSync(testTmpBase, { recursive: true, force: true });
     }

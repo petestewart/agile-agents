@@ -14,7 +14,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { parse as parseYaml } from 'yaml';
-import { sandboxedSubprocessEnv } from './subprocess-env';
+import { sandboxedSubprocessEnvOrTemp } from './subprocess-env';
 
 export interface AgileConfig {
   /** Repo toplevel (git rev-parse --show-toplevel), i.e. where `.agile/` lives. */
@@ -38,21 +38,33 @@ interface RawConfigFile {
 }
 
 function findRepoRoot(startDir: string): string {
-  // No repo root is known yet — this call is what discovers it — so `startDir`
-  // (the closest thing on hand, per the caller's own cwd) is used as the
-  // sandbox cache root instead, same shape as `dockerProbeEnv`'s no-repo-root
-  // fallback.
-  const result = Bun.spawnSync(['git', 'rev-parse', '--show-toplevel'], {
-    cwd: startDir,
-    stdout: 'pipe',
-    stderr: 'pipe',
-    env: sandboxedSubprocessEnv(startDir, 'git'),
-  });
-  if (result.exitCode !== 0) {
-    const stderr = new TextDecoder().decode(result.stderr).trim();
-    throw new Error(`not a git repository (looked from ${startDir}): ${stderr}`);
+  // Review round 1 blocker B2: this call is what *discovers* the repo
+  // root, so there's no `repoRoot` in hand yet to sandbox under — an
+  // earlier version used `startDir` itself, which materializes
+  // `<startDir>/.agile-daemon-cache/` even when `startDir` isn't inside any
+  // repo at all (e.g. `agile status` run from the operator's own `$HOME`),
+  // and leaves it behind even though this call then throws. Fixed with
+  // `sandboxedSubprocessEnvOrTemp`'s no-repo-root fallback (the same
+  // `mkdtempSync` + `cleanup()` shape `sandbox/backend.ts`'s
+  // `dockerProbeEnv` already uses for its own "no repo root in hand"
+  // case): a fresh, uid/pid-unique temp directory instead of the caller's
+  // own cwd, removed again once this one bootstrap call is done with it.
+  const probe = sandboxedSubprocessEnvOrTemp(undefined, 'git');
+  try {
+    const result = Bun.spawnSync(['git', 'rev-parse', '--show-toplevel'], {
+      cwd: startDir,
+      stdout: 'pipe',
+      stderr: 'pipe',
+      env: probe.env,
+    });
+    if (result.exitCode !== 0) {
+      const stderr = new TextDecoder().decode(result.stderr).trim();
+      throw new Error(`not a git repository (looked from ${startDir}): ${stderr}`);
+    }
+    return new TextDecoder().decode(result.stdout).trim();
+  } finally {
+    probe.cleanup();
   }
-  return new TextDecoder().decode(result.stdout).trim();
 }
 
 function readConfigFile(repoRoot: string): RawConfigFile {
