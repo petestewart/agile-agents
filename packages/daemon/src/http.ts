@@ -160,8 +160,11 @@ async function handleHilAction(
   try {
     if (action === 'approve') {
       const decision: HilDecision = 'approve';
-      const by = typeof body.by === 'string' && body.by.length > 0 ? body.by : 'human';
-      const updated = await gates.respond(parsedId.data, decision, by);
+      // T032: the actor is always `human` for a browser write, never taken
+      // from the request body (a page could otherwise forge another actor) —
+      // same hardcode `raised_by`/`from` already use on the halt/chat/propose
+      // routes below.
+      const updated = await gates.respond(parsedId.data, decision, 'human');
       return jsonResponse(updated);
     }
 

@@ -30,8 +30,8 @@
  * automatic rollback of the just-written bytes is implemented.
  */
 
-import { appendFileSync, existsSync, readFileSync } from 'node:fs';
-import { isAbsolute, join, normalize, resolve, sep } from 'node:path';
+import { appendFileSync, existsSync, readFileSync, realpathSync } from 'node:fs';
+import { dirname, isAbsolute, join, normalize, resolve, sep } from 'node:path';
 import {
   type AgentId,
   type AgentRecord,
@@ -264,7 +264,14 @@ export class StateStore {
   // stray timer outlives it.
   private closed = false;
 
-  private constructor(private readonly stateRoot: string) {}
+  // T032: the real (symlink-resolved) state root, computed once at `open()`
+  // time (the directory is required to exist by then) and compared against
+  // on every `abs()` call — see `assertRealContainment` below.
+  private readonly realStateRoot: string;
+
+  private constructor(private readonly stateRoot: string) {
+    this.realStateRoot = realpathSync(stateRoot);
+  }
 
   /**
    * Marks this store closed (so `scheduleDeferredFlush` becomes a no-op
@@ -332,7 +339,35 @@ export class StateStore {
     if (resolved !== root && !resolved.startsWith(root + sep)) {
       throw new Error(`state path escapes the state root: ${parts.join('/')}`);
     }
+    this.assertRealContainment(resolved, parts);
     return resolved;
+  }
+
+  /**
+   * T032 follow-up to the lexical guard above: `resolve()` never touches the
+   * filesystem, so it stops `..` traversal but not a symlink planted
+   * *inside* the state root that points outside it (e.g.
+   * `.agile/tickets/evil -> /etc`) — the lexical path still reads as
+   * contained, and then the real fs call (read/write/unlink) follows the
+   * link off the state root. `resolved` itself usually doesn't exist yet
+   * (most callers are about to create it), so walk up to the nearest
+   * *existing* ancestor and realpath that instead; it must land inside
+   * `realStateRoot` itself or one of its descendants (`.agile`'s own
+   * sub-dirs — `board/`, `tickets/`, the `agile-state` worktree's other
+   * paths — all resolve there with no symlink involved).
+   */
+  private assertRealContainment(resolved: string, parts: string[]): void {
+    let probe = resolved;
+    for (;;) {
+      if (existsSync(probe)) break;
+      const parent = dirname(probe);
+      if (parent === probe) break; // filesystem root; existsSync(stateRoot) already true at open()
+      probe = parent;
+    }
+    const realProbe = realpathSync(probe);
+    if (realProbe !== this.realStateRoot && !realProbe.startsWith(this.realStateRoot + sep)) {
+      throw new Error(`state path escapes the state root: ${parts.join('/')}`);
+    }
   }
 
   /**

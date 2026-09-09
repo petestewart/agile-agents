@@ -209,13 +209,13 @@ describe('feed with a real store', () => {
     const res = await fetch(`http://127.0.0.1:${feedServer.port}/api/hil/${created.id}/approve`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ by: 'pete' }),
+      body: JSON.stringify({}),
     });
     expect(res.status).toBe(200);
     const updated = (await res.json()) as { status: string; decision: string; decided_by: string };
     expect(updated.status).toBe('resolved');
     expect(updated.decision).toBe('approve');
-    expect(updated.decided_by).toBe('pete');
+    expect(updated.decided_by).toBe('human');
 
     // Assert against the on-disk HIL file, not just the HTTP response.
     const onDisk = store.getEntity(`board/hil/${created.id}.yaml`, (v) => v as { status: string });
@@ -224,6 +224,21 @@ describe('feed with a real store', () => {
     // gate.list (via GateService.list()) reflects the resolution too.
     const list = gates.list();
     expect(list.find((r) => r.id === created.id)?.status).toBe('resolved');
+  });
+
+  // T032: `by` must never be trusted from the request body — a page could
+  // otherwise forge the audit trail's actor. Same hardcode as T025's
+  // halt/chat/propose routes; this asserts it holds for approve too.
+  test('POST /api/hil/:id/approve ignores a forged `by` in the body and always records `human`', async () => {
+    const created = await gates.request('unblock', { policy: policy(), hilKind: 'unblock' });
+    const res = await fetch(`http://127.0.0.1:${feedServer.port}/api/hil/${created.id}/approve`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ by: 'architect' }),
+    });
+    expect(res.status).toBe(200);
+    const updated = (await res.json()) as { decided_by: string };
+    expect(updated.decided_by).toBe('human');
   });
 
   test('POST /api/hil/:id/approve twice: the second call 409s (already resolved)', async () => {
