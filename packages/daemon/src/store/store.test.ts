@@ -621,6 +621,23 @@ describe('Halt: putHalt / getHalt / listHalts / deleteHalt', () => {
     const store = StateStore.open(stateRoot);
     await expect(store.deleteHalt('H-99' as never)).rejects.toThrow(NotFoundError);
   });
+
+  test('a second putHalt for the same id mints halt_updated, not halt_created', async () => {
+    const store = StateStore.open(stateRoot);
+    await store.putHalt(makeHalt() as never);
+    await store.putHalt(makeHalt({ quorum: 'pending', reported: ['eng-1'] }) as never);
+    const events = store.listEvents();
+    expect(events.map((e) => e.kind)).toEqual(['halt_created', 'halt_updated']);
+  });
+
+  test('putHalt on an existing id flipping quorum to reached carries {haltId, quorum} data', async () => {
+    const store = StateStore.open(stateRoot);
+    await store.putHalt(makeHalt() as never);
+    await store.putHalt(makeHalt({ quorum: 'reached' }) as never);
+    const events = store.listEvents();
+    expect(events[1]?.kind).toBe('halt_updated');
+    expect(events[1]?.data).toEqual({ haltId: 'H-12', quorum: 'reached' });
+  });
 });
 
 describe('Sprint: putSprint / getSprint / listSprints', () => {

@@ -58,4 +58,32 @@ describe('Halt schema', () => {
       }),
     ).toThrow();
   });
+
+  test('accepts quorum-tracking fields (affected/reported/raised_at)', () => {
+    expect(() =>
+      validateHalt({
+        id: 'H-1',
+        scope: ['TKT-0231'],
+        reason: 'x',
+        raised_by: 'architect',
+        quorum: 'pending',
+        affected: ['eng-1', 'eng-2'],
+        reported: ['eng-1'],
+        raised_at: '2026-09-09T00:00:00.000Z',
+      }),
+    ).not.toThrow();
+  });
+
+  test('quorum-tracking fields are optional (a halt with none still validates)', () => {
+    const halt = validateHalt({
+      id: 'H-1',
+      scope: 'global',
+      reason: 'x',
+      raised_by: 'architect',
+      quorum: 'pending',
+    });
+    expect(halt.affected).toBeUndefined();
+    expect(halt.reported).toBeUndefined();
+    expect(halt.raised_at).toBeUndefined();
+  });
 });

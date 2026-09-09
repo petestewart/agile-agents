@@ -31,6 +31,20 @@ export const HaltSchema = z
     // "resolves_when: DEC-xxxx" — a decision id names the resolution condition.
     resolves_when: OracleIdSchema.optional(),
     quorum: HaltQuorumSchema,
+    // DESIGN-GAP (T007 manager decision, quorum durability): §4 "Halts" only
+    // names `quorum: pending | reached` on the file; §5 "Discovery ->
+    // standup -> resume" step 4 ("Daemon marks halt quorum: reached once
+    // every affected agent reports or times out on heartbeat") requires
+    // tracking *which* agents must report and which already have, plus when
+    // the halt was raised (for the quorum timeout). CLAUDE.md's "every
+    // ceremony is reconstructible from .agile/" rules out process-local
+    // bookkeeping, so that state is promoted onto the Halt file itself —
+    // optional so a hand-written or pre-existing halt file without them
+    // still validates (e.g. a `team:` scope halt with no resolvable
+    // membership, or a halt authored before this field existed).
+    affected: z.array(z.string().min(1)).optional(),
+    reported: z.array(z.string().min(1)).optional(),
+    raised_at: z.string().min(1).optional(),
   })
   .strict();
 
