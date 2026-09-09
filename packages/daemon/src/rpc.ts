@@ -124,12 +124,19 @@ export async function dispatch(
       const result = await handler(req.params);
       return reply({ jsonrpc: '2.0', id, result });
     } catch (err) {
+      // Handlers may throw a structured error carrying its own JSON-RPC
+      // code (e.g. -32602 invalid params); anything else is an internal error.
+      const structured =
+        err instanceof Error && typeof (err as { code?: unknown }).code === 'number'
+          ? (err as Error & { code: number; data?: unknown })
+          : undefined;
       return reply({
         jsonrpc: '2.0',
         id,
         error: {
-          code: INTERNAL_ERROR_CODE,
+          code: structured ? structured.code : INTERNAL_ERROR_CODE,
           message: err instanceof Error ? err.message : String(err),
+          ...(structured?.data !== undefined ? { data: structured.data } : {}),
         },
       });
     }

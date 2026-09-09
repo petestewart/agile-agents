@@ -59,3 +59,6 @@ export {
   releaseHalt,
   type CreateHaltInput,
 } from './halts';
+
+// Gates policy, HIL requests, circuit breaker (T018).
+export * from './gates';

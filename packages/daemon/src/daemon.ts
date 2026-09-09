@@ -9,6 +9,7 @@ import { existsSync } from 'node:fs';
 import daemonPackageJson from '../package.json' with { type: 'json' };
 import { Bus, buildBusRpcMethods } from './bus';
 import { type AgileConfig, type DiscoverConfigOptions, discoverConfig } from './config';
+import { GateService, buildGateRpcMethods } from './gates';
 import { buildHaltRpcMethods } from './halts';
 import { type HttpServerHandle, startHttpServer } from './http';
 import { type LockHandle, acquireLock } from './lock';
@@ -45,6 +46,7 @@ export async function startDaemon(options: DiscoverConfigOptions = {}): Promise<
         ...buildBusRpcMethods(new Bus(store, config.stateRoot)),
         ...buildOracleRpcMethods(store),
         ...buildHaltRpcMethods(store),
+        ...buildGateRpcMethods(new GateService(store)),
       }
     : undefined;
 
