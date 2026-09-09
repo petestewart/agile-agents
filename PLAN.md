@@ -202,7 +202,7 @@ Priority encodes dependency layer as well as importance: P0 tickets are v0-block
 - **Scope:** Depends on T006, T012, T013. EM session loop: compute the next sprint as the dependency frontier (cap configurable), write `sprints/S-*.yaml` with a recommended gates block, assign `ready` tickets (routing table is a single Claude entry in v0), read the board and post `decisions` stanzas, run the standup protocol on `discovery`/`halt`, run sprint review when the layer is done (delegated → merge `integration → main` and plan the next layer; `human` → `hil_request` and pre-plan), compute the retro block from the ledger.
 - **Acceptance Criteria:** With gates delegated, the EM drives the demo epic across two layers without a human; with `sprint_review: human`, it stops at the review with a `hil_request` and a pre-planned next layer.
 - **Validation Steps:** Live test both gate settings; unit tests for frontier computation and retro math.
-- **Notes:** branch `T015-em` (`9c2848b`); `src/em/` (frontier/sprint planning, assignment, board/decision, standup protocol, sprint review, retro, EmLoop, verbs/RPC), 32 tests + gated live test. Discovered: `bus/routing.ts` lacks engineer → em `standup_report` (design §5) — worker granted the routing fix before gates.
+- **Notes:** branch `T015-em` (`9c2848b`); `src/em/` (frontier/sprint planning, assignment, board/decision, standup protocol, sprint review, retro, EmLoop, verbs/RPC), 32 tests + gated live test. Discovered: `bus/routing.ts` lacks engineer → em `standup_report` (design §5) — worker fixed routing in `97149b6` (only that row was missing after a row-by-row re-derivation; test bypass removed, 1076 tests). Gates running.
 
 ### Ticket: T016 Review protocol
 - **Priority:** P1
