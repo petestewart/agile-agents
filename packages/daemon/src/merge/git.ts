@@ -22,9 +22,41 @@
  * record the outcome — so this never throws, and draws the force/no-force
  * line at "tracked" vs "untracked", never forcing past uncommitted tracked
  * changes.
+ *
+ * T034: every spawn here also runs with `sandboxedSubprocessEnv` (never
+ * this process's inherited `$HOME`) — git respects `HOME` for its own
+ * global config (`~/.gitconfig`) and, on some platforms, credential
+ * helpers, and this module's callers span the daemon's own worktrees
+ * (`this.repoRoot`, a ticket worktree, `.worktrees/_integration`,
+ * `.worktrees/_main`), never the operator's real home. Production must not
+ * rely on the test preload's `GIT_CONFIG_GLOBAL=/dev/null` for this — see
+ * `repoRootForEnv` for how the sandbox root is derived from whatever `cwd`
+ * a caller passes, since none of `git`/`gitWrite`'s callers carry a
+ * separate `repoRoot` parameter today.
  */
 
+import { sep } from 'node:path';
+import { sandboxedSubprocessEnv } from '../subprocess-env';
+
 const textDecoder = new TextDecoder();
+
+/**
+ * Every cwd this module's callers pass is either the daemon's own repo
+ * root or one of its worktrees (`<repoRoot>/.worktrees/<name>`) — never an
+ * arbitrary directory. Recovering `repoRoot` from `cwd` this way means
+ * `git`/`gitWrite` can sandbox every spawn without changing their
+ * signatures (both take only `args`/`cwd` today, and `merge/owner.ts`,
+ * which this ticket does not touch, calls them that way).
+ */
+function repoRootForEnv(cwd: string): string {
+  const marker = `${sep}.worktrees${sep}`;
+  const idx = cwd.indexOf(marker);
+  return idx === -1 ? cwd : cwd.slice(0, idx);
+}
+
+function gitEnv(cwd: string): Record<string, string> {
+  return sandboxedSubprocessEnv(repoRootForEnv(cwd), 'git');
+}
 
 export interface GitResult {
   exitCode: number;
@@ -38,9 +70,9 @@ export const DAEMON_GIT_AUTHOR = {
   email: 'agiled@agile-agents.local',
 } as const;
 
-function daemonEnv(): Record<string, string> {
+function daemonEnv(cwd: string): Record<string, string> {
   return {
-    ...(process.env as Record<string, string>),
+    ...gitEnv(cwd),
     GIT_AUTHOR_NAME: DAEMON_GIT_AUTHOR.name,
     GIT_AUTHOR_EMAIL: DAEMON_GIT_AUTHOR.email,
     GIT_COMMITTER_NAME: DAEMON_GIT_AUTHOR.name,
@@ -50,7 +82,12 @@ function daemonEnv(): Record<string, string> {
 
 /** Read-only / plumbing commands (checkout, log, diff, rev-parse, worktree, ...). */
 export function git(args: string[], cwd: string): GitResult {
-  const result = Bun.spawnSync(['git', ...args], { cwd, stdout: 'pipe', stderr: 'pipe' });
+  const result = Bun.spawnSync(['git', ...args], {
+    cwd,
+    env: gitEnv(cwd),
+    stdout: 'pipe',
+    stderr: 'pipe',
+  });
   return {
     exitCode: result.exitCode,
     stdout: textDecoder.decode(result.stdout).trim(),
@@ -87,7 +124,7 @@ export function runGit(args: string[], cwd: string): string {
 export function gitWrite(args: string[], cwd: string): GitResult {
   const result = Bun.spawnSync(['git', '-c', 'commit.gpgsign=false', ...args], {
     cwd,
-    env: daemonEnv(),
+    env: daemonEnv(cwd),
     stdout: 'pipe',
     stderr: 'pipe',
   });
