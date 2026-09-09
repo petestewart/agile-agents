@@ -301,7 +301,7 @@ Priority encodes dependency layer as well as importance: P0 tickets are v0-block
 - **Scope:** Depends on T012. Per-worktree sandbox wrapper for agent processes: macOS `sandbox-exec` profile (read-only mounts for reviewer/QA, no network for engineers except allowlisted registries) with a container fallback; vendor logins must keep working inside it. Routing gains a `requires_sandbox` flag for vendors with ungated exec (Codex, Grok).
 - **Acceptance Criteria:** A reviewer session cannot write to its checkout; an engineer session cannot reach example.com; Claude and Pi sessions still authenticate inside the sandbox.
 - **Validation Steps:** Live tests per role.
-- **Notes:**
+- **Notes:** Branch `T026-tier0-sandbox` (`9c9bc51`); `src/sandbox/` (profile builder, `detectBackend()` → `none` here, sandbox-exec + container renderers, fail-closed `wrapAgentCommand` seam in `runner/session.ts`), additive `requires_sandbox` on `VendorConfigSchema`; 36 tests; live checks `AGILE_LIVE=1`-gated. Review round 1 FAIL: SBPL denies AF_UNIX so the hook bridge fails open; engineer writable set excludes the git common dir so commits are impossible; container backend drops `AGILE_*`/socket/`$HOME` and uses an image with no vendor CLI; wraps unconditionally on darwin; `live.test.ts` asserts `none` unconditionally. Sent back for round 2; QA round 1 running.
 
 ### Ticket: T027 Cursor, Grok, Codex adapters
 - **Priority:** P2
