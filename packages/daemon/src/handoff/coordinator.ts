@@ -85,7 +85,10 @@ export class HandoffCoordinator {
   }
 
   /** Every ticket currently `in_progress` and routed to `(vendor, account)`, with its assignee. */
-  private inProgressOn(vendor: string, account: string): Array<{ ticket: Ticket; agentId: AgentId }> {
+  private inProgressOn(
+    vendor: string,
+    account: string,
+  ): Array<{ ticket: Ticket; agentId: AgentId }> {
     const hits: Array<{ ticket: Ticket; agentId: AgentId }> = [];
     for (const ticket of this.opts.store.listTickets()) {
       if (ticket.status !== 'in_progress') continue;
@@ -166,7 +169,10 @@ export class HandoffCoordinator {
       });
     }
 
-    await this.reassign(ticket, { vendor: current.routing?.vendor, account: current.routing?.account });
+    await this.reassign(ticket, {
+      vendor: current.routing?.vendor,
+      account: current.routing?.account,
+    });
   }
 
   /** Polls until `runner.stop`'s own exit handling has readied the ticket (bounded — a session that never emits `exit` at all is a bug elsewhere, not something to spin on forever). */
@@ -242,7 +248,10 @@ export class HandoffCoordinator {
         this.pending.delete(entry.ticket);
         this.opts.runner.stop(entry.agentId);
         await this.waitReady(entry.ticket);
-        const ok = await this.reassign(entry.ticket, { vendor: entry.vendor, account: entry.account });
+        const ok = await this.reassign(entry.ticket, {
+          vendor: entry.vendor,
+          account: entry.account,
+        });
         if (ok) complied.push(entry.ticket);
         continue;
       }

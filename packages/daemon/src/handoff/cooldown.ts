@@ -54,7 +54,9 @@ export async function setManualCooldown(
   opts: SetCooldownOptions,
 ): Promise<ReturnType<typeof validateQuota>> {
   if (Number.isNaN(Date.parse(opts.until))) {
-    throw new CooldownError(`setManualCooldown: "until" is not a valid ISO timestamp: ${opts.until}`);
+    throw new CooldownError(
+      `setManualCooldown: "until" is not a valid ISO timestamp: ${opts.until}`,
+    );
   }
   const now = opts.now?.() ?? new Date();
 

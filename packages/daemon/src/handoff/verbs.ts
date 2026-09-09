@@ -8,10 +8,10 @@
 
 import { roleOf } from '../bus/routing';
 import type { RpcMethodHandler } from '../rpc';
+import type { StateStore } from '../store';
 import type { ToolInputSpec } from '../tools/schema';
 import type { ToolCallContext } from '../tools/types';
 import { CooldownError, setManualCooldown } from './cooldown';
-import type { StateStore } from '../store';
 
 export class HandoffVerbError extends Error {}
 
@@ -54,7 +54,11 @@ async function cooldownSet(deps: HandoffToolDeps, ctx: ToolCallContext, input: u
     throw new HandoffVerbError('cooldown_set: "until" must be an ISO timestamp string');
   }
   try {
-    return await setManualCooldown(deps.store, { vendor: p.vendor, account: p.account, until: p.until });
+    return await setManualCooldown(deps.store, {
+      vendor: p.vendor,
+      account: p.account,
+      until: p.until,
+    });
   } catch (err) {
     if (err instanceof CooldownError) throw new HandoffVerbError(err.message);
     throw err;
@@ -73,13 +77,14 @@ export const HANDOFF_TOOLS: readonly HandoffToolInfo[] = [
   {
     name: 'cooldown_set',
     description:
-      "Manually cool down a vendor account until an ISO timestamp — triggers the same handoff path as a 429 (§10).",
+      'Manually cool down a vendor account until an ISO timestamp — triggers the same handoff path as a 429 (§10).',
     inputSpec: { vendor: STRING, account: STRING, until: STRING },
     handler: cooldownSet,
   },
   {
     name: 'handoff_status',
-    description: 'List tickets currently paused for lack of a quota candidate, with their resume_at.',
+    description:
+      'List tickets currently paused for lack of a quota candidate, with their resume_at.',
     inputSpec: {},
     handler: handoffStatus,
   },

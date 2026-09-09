@@ -20,7 +20,12 @@ import type { Message, Stanza, Ticket, TicketId, TicketTier } from '@agile-agent
 import { ulid } from '@agile-agents/shared';
 import type { Bus } from '../bus';
 import type { QuotaService } from '../quota/records';
-import { type RoutingCandidate, type RoutingTable, pickCandidate, routeCandidates } from '../quota/routing';
+import {
+  type RoutingCandidate,
+  type RoutingTable,
+  pickCandidate,
+  routeCandidates,
+} from '../quota/routing';
 import type { Runner } from '../runner';
 import type { StateStore } from '../store';
 
@@ -96,7 +101,9 @@ export async function reassignTicket(opts: ReassignOptions): Promise<ReassignRes
   if ('none' in result) return result;
 
   const filtered = opts.exclude
-    ? result.filter((c) => !(c.vendor === opts.exclude?.vendor && c.account === opts.exclude?.account))
+    ? result.filter(
+        (c) => !(c.vendor === opts.exclude?.vendor && c.account === opts.exclude?.account),
+      )
     : result;
   const picked = pickCandidate(filtered.length > 0 ? filtered : result);
   if ('none' in picked) return picked;

@@ -8,8 +8,8 @@
 import type { TicketId } from '@agile-agents/shared';
 import type { RpcMethodHandler } from '../rpc';
 import type { StateStore } from '../store';
-import type { HandoffCoordinator } from './coordinator';
 import { CooldownError, setManualCooldown } from './cooldown';
+import type { HandoffCoordinator } from './coordinator';
 
 export interface HandoffCooldownSetParams {
   vendor: string;

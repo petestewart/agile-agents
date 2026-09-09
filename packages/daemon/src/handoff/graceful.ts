@@ -56,10 +56,7 @@ export async function sendGracefulHandoffInstruction(
     kind: 'decision',
     priority: 'urgent',
     ticket: opts.ticket,
-    body:
-      `${opts.vendor}/${opts.account} is low on quota. Before your next tool call: ` +
-      'post a board_post handoff stanza (done/next/gotchas/uncommitted_state) ' +
-      'and commit your WIP. You will be reassigned shortly.',
+    body: `${opts.vendor}/${opts.account} is low on quota. Before your next tool call: post a board_post handoff stanza (done/next/gotchas/uncommitted_state) and commit your WIP. You will be reassigned shortly.`,
     refs: [],
     requires_ack: true,
     deadline: opts.deadline,
