@@ -29,6 +29,7 @@
       "name": "@agile-agents/daemon",
       "version": "0.0.0",
       "dependencies": {
+        "@agile-agents/acp-client": "workspace:*",
         "@agile-agents/shared": "workspace:*",
         "yaml": "^2.7.0",
       },
