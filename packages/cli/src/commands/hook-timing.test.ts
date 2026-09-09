@@ -37,7 +37,8 @@ const MEASURED_RUNS = 10;
 // an explicit timeout sized to what it actually spawns instead of loosening
 // the measured-median assertion.
 const SPAWN_TIMEOUT_BUDGET_MS = 3000; // generous per-spawn ceiling under heavy load
-const CLI_SUBPROCESS_TEST_TIMEOUT_MS = (WARMUP_RUNS + MEASURED_RUNS) * SPAWN_TIMEOUT_BUDGET_MS + 2000;
+const CLI_SUBPROCESS_TEST_TIMEOUT_MS =
+  (WARMUP_RUNS + MEASURED_RUNS) * SPAWN_TIMEOUT_BUDGET_MS + 2000;
 
 function median(values: number[]): number {
   const sorted = [...values].sort((a, b) => a - b);
@@ -84,46 +85,50 @@ describe('agile hook pre-tool-use timing', () => {
     expect(m).toBeLessThan(20);
   });
 
-  test('end-to-end CLI subprocess: report measured numbers honestly', async () => {
-    const samples: number[] = [];
-    for (let i = 0; i < WARMUP_RUNS + MEASURED_RUNS; i++) {
-      const start = performance.now();
-      // T033 round 3: stdout/stderr write straight to files instead of
-      // `'pipe'` — round 2's `Promise.all`-drained pipes still let
-      // `proc.exited` race Bun's own epoll bookkeeping for the piped fds
-      // under concurrent-agent load (see `hook/rpc.test.ts`'s `runHookCli`
-      // doc comment for the full story and why `Bun.spawnSync` doesn't work
-      // here either). A file-backed stdio destination never touches that
-      // pipe/epoll path at all.
-      const stdoutPath = join(dir, `hook-timing-stdout-${i}.txt`);
-      const stderrPath = join(dir, `hook-timing-stderr-${i}.txt`);
-      const proc = Bun.spawn({
-        cmd: ['bun', CLI_ENTRY, 'hook', 'pre-tool-use'],
-        stdin: new Response(JSON.stringify({ tool: 'Read', input: { path: '/x' } })),
-        stdout: Bun.file(stdoutPath),
-        stderr: Bun.file(stderrPath),
-        env: { ...process.env, AGILE_SOCKET_PATH: socketPath },
-      });
-      await proc.exited;
-      const stdout = await Bun.file(stdoutPath).text();
-      const elapsed = performance.now() - start;
-      if (i >= WARMUP_RUNS) samples.push(elapsed);
-      if (i === WARMUP_RUNS) {
-        // Sanity-check the very first measured run actually worked.
-        expect(JSON.parse(stdout)).toEqual({ decision: 'allow' });
+  test(
+    'end-to-end CLI subprocess: report measured numbers honestly',
+    async () => {
+      const samples: number[] = [];
+      for (let i = 0; i < WARMUP_RUNS + MEASURED_RUNS; i++) {
+        const start = performance.now();
+        // T033 round 3: stdout/stderr write straight to files instead of
+        // `'pipe'` — round 2's `Promise.all`-drained pipes still let
+        // `proc.exited` race Bun's own epoll bookkeeping for the piped fds
+        // under concurrent-agent load (see `hook/rpc.test.ts`'s `runHookCli`
+        // doc comment for the full story and why `Bun.spawnSync` doesn't work
+        // here either). A file-backed stdio destination never touches that
+        // pipe/epoll path at all.
+        const stdoutPath = join(dir, `hook-timing-stdout-${i}.txt`);
+        const stderrPath = join(dir, `hook-timing-stderr-${i}.txt`);
+        const proc = Bun.spawn({
+          cmd: ['bun', CLI_ENTRY, 'hook', 'pre-tool-use'],
+          stdin: new Response(JSON.stringify({ tool: 'Read', input: { path: '/x' } })),
+          stdout: Bun.file(stdoutPath),
+          stderr: Bun.file(stderrPath),
+          env: { ...process.env, AGILE_SOCKET_PATH: socketPath },
+        });
+        await proc.exited;
+        const stdout = await Bun.file(stdoutPath).text();
+        const elapsed = performance.now() - start;
+        if (i >= WARMUP_RUNS) samples.push(elapsed);
+        if (i === WARMUP_RUNS) {
+          // Sanity-check the very first measured run actually worked.
+          expect(JSON.parse(stdout)).toEqual({ decision: 'allow' });
+        }
       }
-    }
-    const m = median(samples);
-    // DESIGN-GAP / honesty clause: Bun subprocess startup in this container
-    // can exceed the 20ms hook budget on its own (process spawn + module
-    // resolution), which the <20ms acceptance line is about the socket
-    // round trip, not process startup. Budget here is loose (2s) so the
-    // test still fails on a real regression (e.g. a hang) without asserting
-    // a number this container cannot deliver; the actual median is printed
-    // either way for whoever tunes this next (see pipeline report).
-    console.log(
-      `[hook timing] end-to-end CLI subprocess median: ${m.toFixed(2)}ms (samples: ${samples.map((s) => s.toFixed(2)).join(', ')})`,
-    );
-    expect(m).toBeLessThan(2000);
-  }, CLI_SUBPROCESS_TEST_TIMEOUT_MS);
+      const m = median(samples);
+      // DESIGN-GAP / honesty clause: Bun subprocess startup in this container
+      // can exceed the 20ms hook budget on its own (process spawn + module
+      // resolution), which the <20ms acceptance line is about the socket
+      // round trip, not process startup. Budget here is loose (2s) so the
+      // test still fails on a real regression (e.g. a hang) without asserting
+      // a number this container cannot deliver; the actual median is printed
+      // either way for whoever tunes this next (see pipeline report).
+      console.log(
+        `[hook timing] end-to-end CLI subprocess median: ${m.toFixed(2)}ms (samples: ${samples.map((s) => s.toFixed(2)).join(', ')})`,
+      );
+      expect(m).toBeLessThan(2000);
+    },
+    CLI_SUBPROCESS_TEST_TIMEOUT_MS,
+  );
 });
