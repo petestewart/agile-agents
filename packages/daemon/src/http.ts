@@ -7,7 +7,9 @@
  * when a `StateStore` + `GateService` are supplied, this also serves the
  * static feed page (`GET /` and `GET /feed`), its JSON snapshot
  * (`GET /api/snapshot`), the HIL approve/delegate actions the page's buttons
- * call (`POST /api/hil/:id/approve` / `POST /api/hil/:id/delegate`), and
+ * call (`POST /api/hil/:id/approve` / `POST /api/hil/:id/delegate` — a
+ * present `Origin`/`Sec-Fetch-Site` naming a different origin/site is
+ * rejected with 403, see `isSameOriginRequest`), and
  * tails `log/events.jsonl` to broadcast `{type:'event', event}` frames to
  * every `/ws` subscriber after its initial `{type:'hello'}` +
  * `{type:'snapshot', ...}`. Without a store (pre-`agile init`, or a caller
@@ -76,6 +78,30 @@ async function readJsonBody(req: Request): Promise<Record<string, unknown>> {
   } catch {
     throw new Error('invalid JSON body');
   }
+}
+
+/**
+ * Review nit (opus, non-blocking): the HIL POSTs are the human gate, so a
+ * page in the user's browser drive-by POSTing an approve at the default
+ * daemon port is worth guarding against even though today's exploitability
+ * is low (ids are ULIDs, `/api/snapshot` sends no CORS headers). A present
+ * `Origin` must match this server's own origin; a present `Sec-Fetch-Site`
+ * (most modern browsers, always absent from same-process test/CLI clients)
+ * must be `same-origin` or `none`. Both headers are optional on the wire, so
+ * their *absence* is not itself rejected — only a value that actively names
+ * a different origin/site is.
+ */
+function isSameOriginRequest(req: Request, port: number): boolean {
+  const origin = req.headers.get('origin');
+  if (origin !== null) {
+    const allowed = new Set([`http://127.0.0.1:${port}`, `http://localhost:${port}`]);
+    if (!allowed.has(origin)) return false;
+  }
+  const secFetchSite = req.headers.get('sec-fetch-site');
+  if (secFetchSite !== null && secFetchSite !== 'same-origin' && secFetchSite !== 'none') {
+    return false;
+  }
+  return true;
 }
 
 /** `/api/hil/<id>/<action>` — `<id>` is everything between the two fixed segments, `<action>` one of approve|delegate. */
@@ -173,6 +199,9 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
       const hilMatch = matchHilAction(url.pathname);
       if (hilMatch && req.method === 'POST') {
         if (!feed) return errorResponse(503, 'state store not initialised (run `agile init`)');
+        if (!isSameOriginRequest(req, srv.port ?? options.port)) {
+          return errorResponse(403, 'cross-origin request rejected');
+        }
         return handleHilAction(req, feed.gates, hilMatch.id, hilMatch.action);
       }
 

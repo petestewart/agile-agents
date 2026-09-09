@@ -125,4 +125,61 @@ maybeDescribe('feed page (Playwright e2e)', () => {
       rmSync(repo, { recursive: true, force: true });
     }
   }, 20000);
+
+  test('a slow /api/snapshot HTTP fallback does not clobber a live event received first (review nit)', async () => {
+    const repo = initRepo();
+    let handle: DaemonHandle | undefined;
+    const browser = await chromium.launch({ executablePath });
+
+    try {
+      const init = runInit(repo);
+      const store = StateStore.open(init.stateRoot);
+
+      handle = await startDaemon({
+        cwd: repo,
+        port: 0,
+        socketPath: join(repo, '.agile-daemon.sock'),
+      });
+
+      const page = await browser.newPage();
+      // Delay the page's own /api/snapshot fetch well past when the WS
+      // snapshot + a live event will have already arrived, reproducing
+      // the race the review nit named: without the `liveDataApplied`
+      // guard, this stale fetch resolving late would overwrite the
+      // WS-sourced state and drop the live event from the DOM.
+      await page.route('**/api/snapshot', async (route) => {
+        await new Promise((resolve) => setTimeout(resolve, 1500));
+        await route.continue();
+      });
+
+      await page.goto(`http://127.0.0.1:${handle.http.port}/feed`);
+
+      const ticketId = 'TKT-9002';
+      await store.putTicket({
+        id: ticketId,
+        title: 'Race guard e2e event',
+        status: 'draft',
+        contract: { inputs: [], outputs: [], acceptance: [], done: [], env: 'clone' },
+        depends: [],
+        oracle_refs: [],
+        kb_refs: [],
+        history: [],
+        security: false,
+      });
+
+      const eventRow = page.locator('#events-body tr', { hasText: ticketId });
+      // Arrives over the WS well within 1s, long before the delayed HTTP
+      // fallback below resolves.
+      await eventRow.waitFor({ state: 'attached', timeout: 1000 });
+
+      // Give the delayed /api/snapshot fetch time to resolve and (pre-fix)
+      // clobber the row.
+      await page.waitForTimeout(2000);
+      expect(await eventRow.count()).toBeGreaterThan(0);
+    } finally {
+      await browser.close();
+      await handle?.stop();
+      rmSync(repo, { recursive: true, force: true });
+    }
+  }, 20000);
 });

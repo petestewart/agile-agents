@@ -253,4 +253,61 @@ describe('feed with a real store', () => {
     );
     expect(res.status).toBe(404);
   });
+
+  describe('cross-origin protection on HIL POSTs (review nit)', () => {
+    test('a same-origin Origin header is accepted', async () => {
+      const created = await gates.request('unblock', { policy: policy(), hilKind: 'unblock' });
+      const res = await fetch(`http://127.0.0.1:${feedServer.port}/api/hil/${created.id}/approve`, {
+        method: 'POST',
+        headers: { origin: `http://127.0.0.1:${feedServer.port}` },
+        body: JSON.stringify({ by: 'a' }),
+      });
+      expect(res.status).toBe(200);
+    });
+
+    test('an Origin naming a different origin is rejected with 403 and does not resolve the request', async () => {
+      const created = await gates.request('unblock', { policy: policy(), hilKind: 'unblock' });
+      const res = await fetch(`http://127.0.0.1:${feedServer.port}/api/hil/${created.id}/approve`, {
+        method: 'POST',
+        headers: { origin: 'http://evil.example' },
+        body: JSON.stringify({ by: 'a' }),
+      });
+      expect(res.status).toBe(403);
+      expect(gates.get(created.id).status).toBe('pending');
+    });
+
+    test('no Origin header at all (e.g. a CLI/server client) is accepted', async () => {
+      const created = await gates.request('unblock', { policy: policy(), hilKind: 'unblock' });
+      const res = await fetch(`http://127.0.0.1:${feedServer.port}/api/hil/${created.id}/approve`, {
+        method: 'POST',
+        body: JSON.stringify({ by: 'a' }),
+      });
+      expect(res.status).toBe(200);
+    });
+
+    test('Sec-Fetch-Site: same-origin is accepted, cross-site is rejected with 403', async () => {
+      const sameOrigin = await gates.request('unblock', { policy: policy(), hilKind: 'unblock' });
+      const ok = await fetch(
+        `http://127.0.0.1:${feedServer.port}/api/hil/${sameOrigin.id}/approve`,
+        {
+          method: 'POST',
+          headers: { 'sec-fetch-site': 'same-origin' },
+          body: JSON.stringify({ by: 'a' }),
+        },
+      );
+      expect(ok.status).toBe(200);
+
+      const crossSite = await gates.request('unblock', { policy: policy(), hilKind: 'unblock' });
+      const rejected = await fetch(
+        `http://127.0.0.1:${feedServer.port}/api/hil/${crossSite.id}/approve`,
+        {
+          method: 'POST',
+          headers: { 'sec-fetch-site': 'cross-site' },
+          body: JSON.stringify({ by: 'a' }),
+        },
+      );
+      expect(rejected.status).toBe(403);
+      expect(gates.get(crossSite.id).status).toBe('pending');
+    });
+  });
 });

@@ -267,6 +267,10 @@
   var filterAgent = document.getElementById('filter-agent');
   var filterKind = document.getElementById('filter-kind');
 
+  // Fragile invariant (review nit, not fixed — every renderer below builds
+  // its markup as an innerHTML string, not DOM nodes + textContent): every
+  // server-sourced field interpolated into one of those strings, including
+  // inside a quoted attribute, MUST be passed through escapeHtml first.
   function escapeHtml(s) {
     return String(s).replace(/[&<>"']/g, function (c) {
       return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
@@ -421,10 +425,19 @@
     renderHil();
   }
 
+  // Review nit: the WS already sends a snapshot on every connect, so this
+  // HTTP fetch exists only to paint something before the socket opens. If it
+  // resolves *after* the WS's own snapshot (or a live event), applying it
+  // would clobber that newer state — `liveDataApplied` guards against that
+  // race by skipping the fallback once anything WS-sourced has landed.
+  var liveDataApplied = false;
+
   function loadSnapshotFallback() {
     fetch(SNAPSHOT_URL)
       .then(function (res) { return res.json(); })
-      .then(applySnapshot)
+      .then(function (snapshot) {
+        if (!liveDataApplied) applySnapshot(snapshot);
+      })
       .catch(function () { /* daemon not reachable over HTTP yet; WS retry will catch up */ });
   }
 
@@ -461,8 +474,10 @@
       if (msg.type === 'hello') {
         setConn('connected', 'live');
       } else if (msg.type === 'snapshot') {
+        liveDataApplied = true;
         applySnapshot(msg);
       } else if (msg.type === 'event') {
+        liveDataApplied = true;
         pushEvent(msg.event);
         renderEvents();
       }
