@@ -242,12 +242,12 @@ Priority encodes dependency layer as well as importance: P0 tickets are v0-block
 
 ### Ticket: T020 Event feed page
 - **Priority:** P1
-- **Status:** In Progress
+- **Status:** In Review
 - **Owner:** sonnet:worker-T020
 - **Scope:** Depends on T004, T005. Single static `feed.html` served by the daemon: WebSocket-tailed event log with filters (ticket, agent, kind), a sprint header (goal, done/in-flight/stale, halts), and the open `hil_request` list with approve/delegate buttons that call the daemon. No framework. This is the entire v0 UI beyond the CLI.
 - **Acceptance Criteria:** Page shows live events within 1 s; approve button resolves a real `hil_request`.
 - **Validation Steps:** Playwright test against a running daemon with synthetic events.
-- **Notes:** Discovered dependency: the approve button needs T018's `hil_request` handling — run T020 after T018 merges.
+- **Notes:** Discovered dependency: the approve button needs T018's `hil_request` handling — run T020 after T018 merges. Branch `T020-feed-page` (local worktree): `packages/ui/static/feed.html`, `src/feed/` tailer + `/feed`, `/api/snapshot`, `/api/hil/:id/approve|delegate`, WS snapshot+live; Playwright e2e passes here (live latency 55–339 ms). Escalation: ui devDep on daemon made a workspace cycle — manager: move the e2e into the daemon package (in progress), then gates.
 
 ### Ticket: T021 Demo fixture and end-to-end sprint
 - **Priority:** P1
@@ -350,3 +350,4 @@ Priority encodes dependency layer as well as importance: P0 tickets are v0-block
 - 2026-09-09 — Decision (manager): the ACP `request_permission` answer is a best-effort command gate (kind-level policy is the guaranteed floor); command-level never-without-human enforcement is primary in the PreToolUse hook (T009), the only measured carrier of `tool_input`. Follow-up for a machine with a Claude login: extend `spike/permission-matrix.ts` to record `request_permission` params (`rawInput`, `locations`) so T010's title fallback can be confirmed or removed.
 - 2026-09-09 — T007 merged (4f8bc80). With T004–T007 done, T008 (CLI) is unblocked once T018 lands (its verbs); T009 depends on T008. Remaining wave-4: T010, T018 in fix/gate rounds.
 - 2026-09-09 — T018 merged (7a7ebc1); 553 tests green. Wave 5 launched: T008 (CLI, incl. T018's approve/delegate/breaker verbs) and T020 (feed page, approve button on real HIL requests). T010 in round-2 gates.
+- 2026-09-09 — Decision: no workspace dependency cycles; e2e tests that need the daemon live in `packages/daemon`. `playwright-core` is a root devDependency; the e2e auto-skips without a Chromium executable and runs via root `test:e2e` (and under `bun test` where Chromium exists).
