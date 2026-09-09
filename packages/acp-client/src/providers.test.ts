@@ -25,6 +25,7 @@ describe('ACP provider registry', () => {
     expect(isAcpProviderId('gemini')).toBe(true);
     expect(isAcpProviderId('cursor')).toBe(true);
     expect(isAcpProviderId('grok')).toBe(true);
+    expect(isAcpProviderId('pi')).toBe(true);
     expect(isAcpProviderId('toString')).toBe(false);
     expect(isAcpProviderId('codex')).toBe(false);
   });
@@ -59,6 +60,14 @@ describe('ACP provider registry', () => {
     expect(grok.args).toEqual(['agent', 'stdio']);
     expect(grok.authMethods).toEqual(['grok.com']);
     expect(grok.loadSession).toBe(true);
+  });
+
+  it('describes pi over pi-acp, no args, no auth round trip, loadSession verified', () => {
+    const pi = ACP_PROVIDERS.pi;
+    expect(pi.command).toBe('pi-acp');
+    expect(pi.args).toEqual([]);
+    expect(pi.authMethods).toEqual([]);
+    expect(pi.loadSession).toBe(true);
   });
 
   it('freezes every entry so callers cannot rewrite shared config', () => {

@@ -88,6 +88,12 @@ import {
   type PermissionRole,
   buildPermissionResponder,
 } from '../permissions';
+import {
+  GATE_ENV_VAR as PI_GATE_ENV_VAR,
+  installPiExtension,
+  readAgileExtensionSource,
+  resolvePiAgentDir,
+} from '../pi';
 import { buildEvent } from '../store';
 import type { StateStore } from '../store';
 
@@ -125,6 +131,15 @@ export interface AgentSessionOptions {
   spawn?: typeof defaultSpawnSession;
   now?: () => Date;
   hookTimeoutSeconds?: number;
+  /**
+   * T022: only consulted when `provider.id === 'pi'` — the Pi agent config
+   * directory `installPiExtension` writes `extensions/agile.ts` and
+   * `settings.json` into (`resolvePiAgentDir()`'s default when unset). Test
+   * seam so a session test never touches the real `~/.pi/agent`.
+   */
+  piAgentDir?: string;
+  /** Test seam: inject a fake `installPiExtension` instead of the real filesystem writer, so a non-Pi-provider test never pays for the (harmless but pointless) real check. Defaults to the real `installPiExtension`. */
+  installPiExtension?: typeof installPiExtension;
 }
 
 export interface AgentExitInfo {
@@ -206,6 +221,19 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
     timeoutSeconds: opts.hookTimeoutSeconds,
   });
 
+  // T022: Pi has no ACP-level hook equivalent — its own enforcement lives in
+  // the `agile` extension (`pi/agile-extension.ts`), which this install call
+  // makes sure is on disk (idempotent) and self-guards on `AGILE_PI_GATE`,
+  // set below only for a Pi-provider session so every other vendor's
+  // envOverrides are unaffected.
+  if (provider.id === 'pi') {
+    const install = opts.installPiExtension ?? installPiExtension;
+    install({
+      agentDir: opts.piAgentDir ?? resolvePiAgentDir(),
+      extensionSource: readAgileExtensionSource(),
+    });
+  }
+
   const spawnOptions: SpawnSessionOptions = {
     cmd: provider.command,
     args: [...provider.args],
@@ -215,6 +243,7 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
       AGILE_AGENT: agentId,
       AGILE_TICKET: ticket,
       ...(opts.socketPath ? { AGILE_SOCKET_PATH: opts.socketPath } : {}),
+      ...(provider.id === 'pi' ? { [PI_GATE_ENV_VAR]: '1' } : {}),
     },
     clientCapabilities: provider.clientCapabilities,
     mcpServers: [mcpServerConfig(cliBin, agentId, ticket)],

@@ -306,4 +306,54 @@ describe('startAgentSession', () => {
     handle.stop();
     await handle.exited;
   }, 90000);
+
+  // T022: Pi has no ACP-level hook, so `startAgentSession` installs the
+  // `agile` Pi extension and sets its gate env var itself, only for a
+  // `provider.id === 'pi'` session — this proves the branch fires (and
+  // fires with the right args) without touching the real `~/.pi/agent`
+  // (the `installPiExtension`/`piAgentDir` test seams) or needing a real
+  // `pi`/`pi-acp` process (the fake-agent ACP harness stands in, same as
+  // every other test in this file).
+  test('a pi-provider session installs the agile extension', async () => {
+    await store.putTicket(makeTicket({ status: 'done' }), { by: 'test' });
+
+    const calls: unknown[] = [];
+    const provider = fakeProvider({ steps: [{ type: 'end_turn' }] });
+    const piProvider = { ...provider, id: 'pi' as const };
+
+    const handle = startTrackedSession({
+      store,
+      bus,
+      role: 'engineer',
+      agentId: 'eng-0231',
+      ticket: 'TKT-0231',
+      worktreePath: worktree,
+      brief: 'do the ticket',
+      currentSprintId: () => 'S-01',
+      provider: piProvider,
+      piAgentDir: join(scratch, 'pi-agent-dir'),
+      installPiExtension: (opts) => {
+        calls.push(opts);
+        return {
+          extensionPath: join(opts.agentDir, 'extensions', 'agile.ts'),
+          settingsPath: join(opts.agentDir, 'settings.json'),
+          extensionWritten: true,
+          settingsWritten: true,
+        };
+      },
+    });
+
+    await handle.session.initialized;
+    expect(calls).toHaveLength(1);
+    expect((calls[0] as { agentDir: string }).agentDir).toBe(join(scratch, 'pi-agent-dir'));
+    expect((calls[0] as { extensionSource: string }).extensionSource).toContain(
+      'createAgileExtension',
+    );
+    // Real filesystem untouched — the fake `installPiExtension` above never
+    // wrote anything under `piAgentDir`.
+    expect(existsSync(join(scratch, 'pi-agent-dir'))).toBe(false);
+
+    handle.stop();
+    await handle.exited;
+  }, 90000);
 });

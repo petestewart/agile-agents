@@ -33,12 +33,19 @@ export const DEFAULT_MAX_ATTEMPTS = 2;
 
 export interface RouteCandidate {
   vendor: string;
+  /** Vendor account id (`.agile/vendors.yaml`'s per-vendor `accounts[].id`) — optional because the v0 single-Claude stub never named one; T022 (Pi) is the first candidate set that does. */
+  account?: string;
   model: string;
   reasoning?: TicketReasoning;
 }
 
 export interface RouteContext {
-  role: 'engineer';
+  // T022 widens this from 'engineer'-only so `pi-route-candidates.ts` can
+  // name reviewer candidates too (design/agile-agents-design.md §22 scope:
+  // "candidates for engineer and reviewer"); `defaultRoute` below still
+  // ignores `role` entirely, so this is purely additive — no behaviour
+  // change for the existing engineer-only v0 default.
+  role: 'engineer' | 'reviewer';
   tier: TicketTier;
 }
 
