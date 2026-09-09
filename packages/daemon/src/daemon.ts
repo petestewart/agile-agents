@@ -10,6 +10,7 @@ import daemonPackageJson from '../package.json' with { type: 'json' };
 import { registerArchitectTools } from './architect';
 import { Bus, buildBusRpcMethods } from './bus';
 import { type AgileConfig, type DiscoverConfigOptions, discoverConfig } from './config';
+import { EM_TOOLS, EmLoop, type EmToolDeps, buildEmRpcMethods } from './em';
 import { pickCurrentSprint } from './feed';
 import { GateService, buildGateRpcMethods } from './gates';
 import { buildHaltRpcMethods } from './halts';
@@ -34,6 +35,9 @@ import { StateStore, buildStateRpcMethods } from './store';
 import { LiveRunner, ToolService, buildToolRpcMethods, loadToolRegistry } from './tools';
 
 export const DAEMON_VERSION: string = daemonPackageJson.version;
+
+/** Gate + EM ceremony tick cadence — same 30 s as the heartbeat tunable (CLAUDE.md). */
+export const CEREMONY_TICK_MS = 30 * 1000;
 
 export interface DaemonHandle {
   config: AgileConfig;
@@ -104,13 +108,87 @@ export async function startDaemon(options: DiscoverConfigOptions = {}): Promise<
         })
       : undefined;
 
-  // Role-scoped verb providers (T014 architect; T016 review; T015/T017 add
-  // theirs). Each provider is only *listed* for its roles; the verbs
+  // EM protocol loop (T015, §9–§11/§16): sprint planning, assignment,
+  // standups/quorum, discovery triage hand-off, sprint review. Its delegated
+  // sprint-review path merges integration -> main through the merge owner
+  // and only plans the next sprint once that merge actually landed.
+  const emLoop =
+    store && bus && runner && gateService && mergeOwner
+      ? new EmLoop({
+          store,
+          bus,
+          runner,
+          gateService,
+          sprintReview: {
+            mergeIntegrationToMain: async () => {
+              const outcome = await mergeOwner.mergeIntegrationToMain();
+              if (outcome.status !== 'merged') {
+                throw new Error(
+                  `integration -> main merge did not land (${outcome.status}): ${outcome.summary}`,
+                );
+              }
+            },
+          },
+        })
+      : undefined;
+  // Ceremony driver: one daemon-level interval ticks the gate service (HIL
+  // deadline fallthrough, §16 — nothing else calls `GateService.tick()`)
+  // and then the EM loop. Cadence matches the runner sweep / heartbeat
+  // tunable (30 s); errors are logged, never fatal to the daemon.
+  const ceremonyTimer =
+    gateService && emLoop
+      ? setInterval(() => {
+          void (async () => {
+            try {
+              await gateService.tick();
+              await emLoop.tick();
+            } catch (err) {
+              console.error('ceremony tick failed:', err);
+            }
+          })();
+        }, CEREMONY_TICK_MS)
+      : undefined;
+  ceremonyTimer?.unref();
+
+  // Role-scoped verb providers (T014 architect; T016 review; T015 em; T017
+  // adds qa). Each provider is only *listed* for its roles; the verbs
   // themselves re-check the caller's role, so a mis-scoped listing can never
   // widen what an agent may do.
   let reviewDeps: ReviewVerbDeps | undefined;
   if (toolService && store && bus && runner) {
     const architect = registerArchitectTools({ store });
+    if (emLoop && gateService && mergeOwner) {
+      const emDeps: EmToolDeps = {
+        store,
+        bus,
+        gateService,
+        runner,
+        sprintReview: {
+          mergeIntegrationToMain: async () => {
+            const outcome = await mergeOwner.mergeIntegrationToMain();
+            if (outcome.status !== 'merged') {
+              throw new Error(
+                `integration -> main merge did not land (${outcome.status}): ${outcome.summary}`,
+              );
+            }
+          },
+        },
+      };
+      toolService.registerProvider({
+        roles: ['em'],
+        listTools: () =>
+          EM_TOOLS.map((t) => ({
+            name: t.name,
+            description: t.description,
+            inputSpec: t.inputSpec,
+          })),
+        callTool: (ctx, name, input) => {
+          const tool = EM_TOOLS.find((t) => t.name === name);
+          if (!tool) throw new Error(`unknown em verb: ${name}`);
+          return tool.handler(emDeps, ctx, input);
+        },
+      });
+    }
     toolService.registerProvider({
       roles: ['architect'],
       listTools: () =>
@@ -217,6 +295,7 @@ export async function startDaemon(options: DiscoverConfigOptions = {}): Promise<
           ...buildRunnerRpcMethods(runner),
           ...(reviewDeps ? buildReviewRpcMethods(reviewDeps) : {}),
           ...buildMergeRpcMethods(mergeOwner),
+          ...(emLoop ? buildEmRpcMethods(emLoop, store) : {}),
         }
       : undefined;
 
@@ -265,6 +344,7 @@ export async function startDaemon(options: DiscoverConfigOptions = {}): Promise<
         // (graceful — same `stop()` path a `runner.stop` RPC call takes);
         // does not wait on each session's own exit/crash cleanup, so this
         // never blocks shutdown on a slow-to-die agent.
+        if (ceremonyTimer) clearInterval(ceremonyTimer);
         runner?.stopAll();
         await http.stop();
         await rpc.close();

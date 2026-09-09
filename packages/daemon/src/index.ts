@@ -88,3 +88,7 @@ export * from './review';
 // Merge and integration owner: ticket -> integration -> main, pre-commit
 // halt guard, merge.* RPC methods (T019).
 export * from './merge';
+
+// EM protocol: sprint planning/assignment, board, standups + quorum,
+// discovery hand-off, sprint review + retro, EmLoop, em.* RPC (T015).
+export * from './em';
