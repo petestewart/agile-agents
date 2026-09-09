@@ -20,6 +20,7 @@
 import { existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Ticket, TicketId } from '@agile-agents/shared';
+import { sandboxedSubprocessEnv } from '../subprocess-env';
 
 /** §15: "created by the daemon off `integration`". */
 export const INTEGRATION_BRANCH = 'integration';
@@ -30,8 +31,20 @@ interface GitResult {
   stderr: string;
 }
 
+/**
+ * T034: sandboxed, never this process's inherited `$HOME` — every call
+ * site in this module passes `repoRoot` itself as `cwd` (worktree/clone
+ * *targets* are always a `path` argument, never the cwd a command runs
+ * from), so `cwd` here already *is* the repo root the sandbox should be
+ * keyed on.
+ */
 function git(args: string[], cwd: string): GitResult {
-  const result = Bun.spawnSync(['git', ...args], { cwd, stdout: 'pipe', stderr: 'pipe' });
+  const result = Bun.spawnSync(['git', ...args], {
+    cwd,
+    env: sandboxedSubprocessEnv(cwd, 'git'),
+    stdout: 'pipe',
+    stderr: 'pipe',
+  });
   return {
     exitCode: result.exitCode,
     stdout: new TextDecoder().decode(result.stdout).trim(),
