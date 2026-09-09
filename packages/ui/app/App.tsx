@@ -17,7 +17,14 @@ import { Panel } from './components/Panel';
 import { SprintStrip } from './components/SprintStrip';
 import { TeamPanel } from './components/TeamPanel';
 import { TopBar } from './components/TopBar';
-import { getAgents, getKbIndex, getOracleIndex, getPolicy, getTickets } from './lib/api';
+import {
+  getAgents,
+  getKbIndex,
+  getOracleIndex,
+  getPolicy,
+  getSnapshot,
+  getTickets,
+} from './lib/api';
 import type { FeedSnapshot } from './lib/feed-types';
 import { connectFeedSocket } from './lib/ws';
 
@@ -50,20 +57,29 @@ export function App() {
   // `feed.e2e.test.ts`'s second test).
   const liveDataApplied = useRef(false);
 
+  // Re-pulls every HTTP-sourced read, `/api/snapshot` included. The `hil`/
+  // `halts`/`quota` fields the panels read come from `snapshot` (kept
+  // otherwise in sync by `/ws`'s live event tail, same as the T020 feed
+  // page) — but a HIL resolve or a raised halt needs its *own* list entry
+  // to disappear/appear immediately, not wait on the next unrelated event
+  // to arrive over the socket, so every write in this app calls this after
+  // it succeeds.
   const refreshAux = useCallback(async () => {
     try {
-      const [a, t, o, k, p] = await Promise.all([
+      const [a, t, o, k, p, snap] = await Promise.all([
         getAgents(),
         getTickets(),
         getOracleIndex(),
         getKbIndex(),
         getPolicy(),
+        getSnapshot(),
       ]);
       setAgents(a);
       setTickets(t);
       setOracle(o);
       setKb(k);
       setPolicy(p);
+      setSnapshot(snap);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }

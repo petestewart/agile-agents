@@ -24,6 +24,7 @@ import {
   KbIdSchema,
   OracleIdSchema,
   TicketIdSchema,
+  ulid,
 } from '@agile-agents/shared';
 import { CONTROL_ROOM_DIST_DIR, FEED_HTML_PATH } from '@agile-agents/ui';
 import type { Bus } from './bus';
@@ -242,8 +243,8 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
        * Control room SPA (T025 — §17 "Control room", §18 "UI: React + Vite
        * SPA ... serves the built UI as static files"). `/` and `/feed` stay
        * the T020 static page above; the React app lives at its own prefix
-       * (`vite.config.ts`'s `base: './'` keeps every built asset URL
-       * relative to it) so both v0 UIs can be served side by side.
+       * (`vite.config.ts`'s `base: '/control-room/'`) so both v0 UIs can be
+       * served side by side.
        */
       if (url.pathname === '/control-room' || url.pathname === '/control-room/') {
         return new Response(Bun.file(join(CONTROL_ROOM_DIST_DIR, 'index.html')), {
@@ -406,6 +407,8 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
         }
         try {
           const result = await feed.bus.send({
+            id: ulid(),
+            ts: new Date().toISOString(),
             from: 'human',
             to: ['em'],
             kind: 'fyi',
@@ -413,7 +416,8 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
             body: body.body,
             ...(typeof body.ticket === 'string' ? { ticket: body.ticket } : {}),
           });
-          return jsonResponse({ ok: true, message: result });
+          if (!result.ok) return errorResponse(400, result.reason);
+          return jsonResponse({ ok: true, message: result.message });
         } catch (err) {
           return errorResponse(400, err instanceof Error ? err.message : String(err));
         }
@@ -446,6 +450,8 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
         }
         try {
           const result = await feed.bus.send({
+            id: ulid(),
+            ts: new Date().toISOString(),
             from: 'human',
             to: ['architect'],
             kind: 'decision',
@@ -453,7 +459,8 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
             body: `Proposed edit to ${body.target}: ${body.body}`,
             refs: [body.target],
           });
-          return jsonResponse({ ok: true, message: result });
+          if (!result.ok) return errorResponse(400, result.reason);
+          return jsonResponse({ ok: true, message: result.message });
         } catch (err) {
           return errorResponse(400, err instanceof Error ? err.message : String(err));
         }

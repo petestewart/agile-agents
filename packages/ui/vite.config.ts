@@ -5,17 +5,21 @@
  * React app, `src/` stays a non-JSX Bun/tsc target so the two build
  * pipelines never collide.
  *
- * `base: './control-room/'` keeps every built asset URL relative, since the
- * daemon (`packages/daemon/src/http.ts`) serves this bundle under the
+ * `base: '/control-room/'` is absolute rather than `'./'` — the daemon
+ * (`packages/daemon/src/http.ts`) serves this bundle under the
  * `/control-room` path prefix, not site root (`/` and `/feed` stay the T020
- * static page).
+ * static page), and a relative base breaks the moment a viewer navigates to
+ * `/control-room` with no trailing slash: the browser then resolves
+ * `./assets/...` against `/` (the last path *segment*, "control-room", is
+ * dropped), 404ing every asset. An absolute base is correct regardless of
+ * the trailing slash.
  */
 import react from '@vitejs/plugin-react';
 import { defineConfig } from 'vite';
 
 export default defineConfig({
   root: 'app',
-  base: './',
+  base: '/control-room/',
   plugins: [react()],
   build: {
     outDir: '../dist-app',
