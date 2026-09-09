@@ -87,6 +87,25 @@ export function callRpc<T = unknown>(
       );
     });
 
+    // Review fix (independent review, "client.ts" item 4): without this, a
+    // daemon that accepts the connection and then closes it without ever
+    // writing a reply (crash mid-request, graceful shutdown racing a
+    // client) left `finish` waiting on the full `timeoutMs` even though the
+    // socket had already told us no response is coming. `'close'` fires
+    // after `'end'`/`'error'` either way, so this only ever does anything
+    // when nothing else already settled the promise — a clean response
+    // (which calls `socket.destroy()` in `finish`) or a transport error
+    // both mark `settled` first.
+    socket.on('close', () => {
+      finish(() =>
+        reject(
+          new RpcConnectionError(
+            `daemon closed the connection at ${socketPath} before replying to ${method}`,
+          ),
+        ),
+      );
+    });
+
     socket.on('connect', () => {
       const request = { jsonrpc: '2.0' as const, id, method, params };
       socket.write(`${JSON.stringify(request)}\n`);

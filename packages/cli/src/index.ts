@@ -49,7 +49,7 @@ function usage(): string {
     '  halt [--scope <scope>] [--reason <text>] [--by <agent>]',
     '  resume <halt-id>',
     '  breaker clear <signal>',
-    '  hook <event>               stdin JSON in, JSON out (e.g. hook pre-tool-use) [--fail-closed]',
+    '  hook <event>               stdin JSON in, JSON out (e.g. hook pre-tool-use) [--fail-closed] [--timeout <ms>, default 2000]',
     '',
     'flags:',
     '  --json                     machine-readable output for any verb above',
@@ -144,8 +144,8 @@ export async function runCli(argv: string[], cwd: string = process.cwd()): Promi
 
       case 'hook': {
         const args: ParsedArgs = parseArgs(rest.slice(1));
-        const { event, failClosed } = parseHookArgs(args);
-        return await runHook({ socketPath, event, failClosed });
+        const { event, failClosed, timeoutMs } = parseHookArgs(args);
+        return await runHook({ socketPath, event, failClosed, timeoutMs });
       }
 
       default:

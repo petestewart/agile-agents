@@ -18,6 +18,13 @@
  * absent daemon degrades to "allow everything" rather than freezing every
  * vendor tool call.
  *
+ * Review fix (independent review, "hook" item 3): fail-open used to be
+ * silent — a disabled enforcement layer with no trace anywhere. stdout must
+ * stay pure JSON (it's what a vendor hook config parses as the decision),
+ * so the warning goes to stderr, which Claude's PreToolUse hook contract
+ * ignores on exit 0 — free visibility in the vendor's own hook log, zero
+ * behavioural change.
+ *
  * DESIGN-GAP: the design does not specify what a "permissive pass-through
  * decision" looks like on the wire (that's T009's contract to define,
  * alongside the real per-vendor hook JSON shapes named in §6/spike-findings)
@@ -28,11 +35,16 @@
  * exits 1, instead of substituting `{}`.
  */
 
-import { type ParsedArgs, hasFlag, readStdin } from '../args';
+import { type ParsedArgs, hasFlag, optionalString, readStdin } from '../args';
 import { RpcCallError, callRpc } from '../client';
 import { printJson } from '../format';
 
 const NOT_IMPLEMENTED_CODE = -32001;
+
+/** Review fix (independent review, "hook" item 3): the hook path inherits
+ * `callRpc`'s general 5s default, which is too long for a per-tool-call
+ * hook to hang on a wedged daemon. `--timeout` overrides it. */
+export const DEFAULT_HOOK_TIMEOUT_MS = 2000;
 
 /** `pre-tool-use` -> `pre_tool_use`, `post-tool-use` -> `post_tool_use`, `stop` -> `stop`. */
 export function hookEventToMethod(event: string): string {
@@ -43,11 +55,14 @@ export interface RunHookOptions {
   socketPath: string;
   event: string;
   failClosed: boolean;
+  /** Milliseconds to wait for the daemon before failing (open or closed per `failClosed`). Default 2000. */
+  timeoutMs?: number;
   stdin?: NodeJS.ReadableStream;
 }
 
 export async function runHook(options: RunHookOptions): Promise<number> {
   const { socketPath, event, failClosed } = options;
+  const timeoutMs = options.timeoutMs ?? DEFAULT_HOOK_TIMEOUT_MS;
   const raw = await readStdin(options.stdin);
 
   let payload: unknown;
@@ -63,14 +78,17 @@ export async function runHook(options: RunHookOptions): Promise<number> {
   const method = hookEventToMethod(event);
 
   try {
-    const result = await callRpc<unknown>(socketPath, method, payload);
+    const result = await callRpc<unknown>(socketPath, method, payload, { timeoutMs });
     printJson(result);
     return 0;
   } catch (err) {
     const isStub = err instanceof RpcCallError && err.code === NOT_IMPLEMENTED_CODE;
     if (!failClosed) {
       // Fail-open: a stub reply or an unreachable daemon both mean "the
-      // daemon has no opinion yet" from the hook's point of view.
+      // daemon has no opinion yet" from the hook's point of view. stdout
+      // stays pure JSON (a vendor hook parses it as the decision); the
+      // warning is stderr-only so it never corrupts that contract.
+      console.error('agile hook: daemon unreachable or hook.* not implemented; failing open');
       printJson({});
       return 0;
     }
@@ -83,8 +101,19 @@ export async function runHook(options: RunHookOptions): Promise<number> {
   }
 }
 
-export function parseHookArgs(args: ParsedArgs): { event: string; failClosed: boolean } {
+export function parseHookArgs(args: ParsedArgs): {
+  event: string;
+  failClosed: boolean;
+  timeoutMs?: number;
+} {
   const event = args.positionals[0];
   if (!event) throw new Error('usage: agile hook <event> (e.g. pre-tool-use)');
-  return { event, failClosed: hasFlag(args.options, 'fail-closed') };
+  const timeoutRaw = optionalString(args.options, 'timeout');
+  const timeoutMs = timeoutRaw !== undefined ? Number(timeoutRaw) : undefined;
+  if (timeoutRaw !== undefined && (timeoutMs === undefined || Number.isNaN(timeoutMs))) {
+    throw new Error(
+      `--timeout must be a number of milliseconds, got ${JSON.stringify(timeoutRaw)}`,
+    );
+  }
+  return { event, failClosed: hasFlag(args.options, 'fail-closed'), timeoutMs };
 }

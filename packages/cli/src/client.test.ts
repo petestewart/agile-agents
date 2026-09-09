@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { type Server, createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { type RpcServerHandle, startRpcServer } from '@agile-agents/daemon';
@@ -61,5 +62,33 @@ describe('callRpc', () => {
     const status = await callRpc<{ version: string; pid: number }>(socketPath, 'daemon.status');
     expect(status.version).toBe('9.9.9');
     expect(status.pid).toBe(process.pid);
+  });
+
+  describe('a daemon that closes the connection without replying', () => {
+    let rawServer: Server | undefined;
+
+    afterEach(async () => {
+      await new Promise<void>((resolve) =>
+        rawServer ? rawServer.close(() => resolve()) : resolve(),
+      );
+    });
+
+    test('rejects promptly with RpcConnectionError instead of hanging for the full timeout', async () => {
+      rawServer = createServer((socket) => {
+        // Accept the connection, then close it immediately — never write a
+        // JSON-RPC response line. Simulates a daemon crashing or shutting
+        // down mid-request.
+        socket.end();
+      });
+      await new Promise<void>((resolve) => rawServer?.listen(socketPath, resolve));
+
+      const start = performance.now();
+      await expect(
+        callRpc(socketPath, 'daemon.ping', undefined, { timeoutMs: 5000 }),
+      ).rejects.toThrow(RpcConnectionError);
+      const elapsed = performance.now() - start;
+      // Well under the 5s timeout passed above — proves 'close' short-circuits it.
+      expect(elapsed).toBeLessThan(1000);
+    });
   });
 });

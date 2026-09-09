@@ -1,4 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
+import type { Halt } from '@agile-agents/shared';
+import { callRpc } from '../client';
 import { type TestDaemon, startTestDaemon } from '../test-support';
 import { fetchStatus, printStatusHuman, runStatus } from './status';
 
@@ -37,6 +39,21 @@ describe('fetchStatus', () => {
   test('an empty ticket board reports an empty list, not an error', async () => {
     const status = await fetchStatus(daemon.socketPath);
     expect(status.tickets).toEqual([]);
+    expect(status.halts).toEqual([]);
+  });
+
+  test('includes active halts (id, scope, quorum) so resume has a discovery path', async () => {
+    const halt = await callRpc<Halt>(daemon.socketPath, 'state.halt_create', {
+      scope: 'global',
+      reason: 'seeded for status test',
+      raised_by: 'human',
+    });
+
+    const status = await fetchStatus(daemon.socketPath);
+    expect(status.halts).toHaveLength(1);
+    expect(status.halts[0]?.id).toBe(halt.id);
+    expect(status.halts[0]?.scope).toBe('global');
+    expect(status.halts[0]?.quorum).toBeDefined();
   });
 });
 
@@ -54,6 +71,7 @@ describe('runStatus', () => {
     const parsed = JSON.parse(lines.join('\n'));
     expect(parsed.daemon.pid).toBe(process.pid);
     expect(Array.isArray(parsed.tickets)).toBe(true);
+    expect(Array.isArray(parsed.halts)).toBe(true);
   });
 
   test('human mode does not throw on an empty board', () => {
@@ -61,6 +79,7 @@ describe('runStatus', () => {
       printStatusHuman({
         daemon: { version: 'v', stateRoot: '/x', pid: 1, uptime: 0 },
         tickets: [],
+        halts: [],
         agents: 'n/a (no RPC yet)',
         spend: 'n/a (no RPC yet)',
       }),
