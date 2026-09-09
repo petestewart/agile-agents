@@ -85,6 +85,48 @@ describe('advanceReviewRequests', () => {
     expect(started).toEqual(['TKT-0001']);
   });
 
+  test('reuses a still-live reviewer session for a second review_request instead of re-spawning it', async () => {
+    // T021 round 2: a re-review after `request_changes` sends a second
+    // `review_request` to the *same* reviewer agent id (`agentIdFor`'s
+    // one-id-per-(role,ticket) convention) — `ReviewProtocol.start`'s
+    // `Runner.spawn` would throw "already running" for it since nothing
+    // ever tells that session to exit between rounds, so this must not
+    // call `reviewer.start` a second time; it only replicates `start`'s
+    // other job, the `in_progress -> in_review` edge.
+    await store.putTicket(makeTicket('TKT-0002' as TicketId, { status: 'in_progress' }));
+    const reviewerId = agentIdFor('reviewer', 'TKT-0002' as TicketId);
+    await store.putAgent(reviewerId, {
+      vendor: 'claude',
+      model: 'claude',
+      last_seen: new Date().toISOString(),
+    });
+    await bus.send({
+      id: ulid(),
+      ts: new Date().toISOString(),
+      from: 'eng-0002' as AgentId,
+      to: [reviewerId],
+      kind: 'review_request',
+      priority: 'normal',
+      ticket: 'TKT-0002' as TicketId,
+      body: 'fixed, ready for round 2',
+      refs: [],
+      requires_ack: false,
+    });
+
+    const started: TicketId[] = [];
+    const reviewer: ReviewStarter = {
+      start: async (ticket) => {
+        started.push(ticket);
+      },
+    };
+
+    const result = await advanceReviewRequests(store, bus, reviewer, new Set());
+    expect(result).toEqual(['TKT-0002']);
+    expect(started).toEqual([]); // never re-spawned
+    expect(store.getTicket('TKT-0002' as TicketId).status).toBe('in_review');
+    expect(bus.poll(reviewerId)).toHaveLength(0); // acked
+  });
+
   test('ignores non-review_request messages and messages with no ticket', async () => {
     await store.putTicket(makeTicket('TKT-0001' as TicketId));
     const reviewerId = agentIdFor('reviewer', 'TKT-0001' as TicketId);

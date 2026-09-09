@@ -70,6 +70,20 @@
       }
     }
   ],
+  "rules": [
+    {
+      "id": "RULE-001",
+      "markdown": "# RULE-001: No debug logging in shipped code\n\nNo debug `console.log`/`console.debug` calls ship in `src/` (mirrors SPEC-quality-001 clause 2). A stray debug line left in a merged commit is noise in production output and often leaks internal state — remove it before requesting review, or explain in the PR why it's intentional.\n"
+    }
+  ],
+  "violation": {
+    "_comment": "The T021 'one seeded rule-violation opportunity' (PLAN.md scope). TKT-1001's first engineer pass (run.ts's applyEngineerChange) leaves a console.log matching `pattern` in src/tasks.ts; the scripted reviewer's round-1 verdict cites RULE-001 against it (driveReviewerWork), the engineer's second pass removes it, and round 2 is a plain approve.",
+    "ticket": "TKT-1001",
+    "ruleId": "RULE-001",
+    "pattern": "console.log(",
+    "message": "RULE-001: debug console.log left in completeTask() — remove it before merge.",
+    "severity": "major"
+  },
   "discovery": {
     "_comment": "Scripted for TKT-1002's engineer in offline/--fake mode (no live model to notice the contradiction on its own) — see run.ts's driveEngineerWork.",
     "reporterTicket": "TKT-1002",

@@ -55,6 +55,19 @@ export interface DoneMerger {
   onTicketDone(ticket: TicketId): Promise<unknown>;
 }
 
+/** True if `store.getAgent(id)` finds a live record — `getAgent` throws `NotFoundError` rather than returning `undefined` for a missing one (`store/store.ts`). */
+function agentIsLive(
+  store: Pick<StateStore, 'getAgent'>,
+  id: Parameters<StateStore['getAgent']>[0],
+): boolean {
+  try {
+    store.getAgent(id);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Reads every unread `review_request` message off each ticket's reviewer
  * inbox and starts the review round for it, acking the message once
@@ -71,9 +84,21 @@ export interface DoneMerger {
  * string isn't even a valid `AgentId` — `bus.send` rejects it). So this
  * polls the same computed id for every open ticket rather than one shared
  * inbox.
+ *
+ * Re-review reuse (T021 round 2): a ticket's reviewer agent id is stable
+ * across rounds (same convention as above), and nothing in this codebase
+ * ever tells that session's session to exit between rounds — it just stops
+ * being prompted once its round-1 verdict is submitted, same as an
+ * engineer's session between a `request_changes` and the next `board_post`.
+ * `reviewer.start` (`ReviewProtocol.start`) unconditionally calls
+ * `Runner.spawn`, which throws "already running" for an agent id still
+ * live (`runner.ts`'s one-id-per-(role,ticket) map) — so a second
+ * `review_request` on the same ticket (the engineer's fix-and-resubmit)
+ * must skip `start` and only replicate its other job, the ticket's
+ * `in_progress -> in_review` edge, or the re-review never happens at all.
  */
 export async function advanceReviewRequests(
-  store: Pick<StateStore, 'listTickets'>,
+  store: Pick<StateStore, 'listTickets' | 'getAgent' | 'getTicket' | 'transitionTicket'>,
   bus: Pick<Bus, 'poll' | 'ack'>,
   reviewer: ReviewStarter,
   seen: Set<string>,
@@ -86,7 +111,14 @@ export async function advanceReviewRequests(
       const key = `${message.ticket}:${message.id}`;
       if (seen.has(key)) continue;
       seen.add(key);
-      await reviewer.start(message.ticket);
+      if (agentIsLive(store, agentIdFor('reviewer', message.ticket))) {
+        const current = store.getTicket(message.ticket);
+        if (current.status === 'in_progress') {
+          await store.transitionTicket(message.ticket, 'in_review', { by: 'daemon' });
+        }
+      } else {
+        await reviewer.start(message.ticket);
+      }
       started.push(message.ticket);
       await bus.ack(agentIdFor('reviewer', ticket.id), message.id);
     }

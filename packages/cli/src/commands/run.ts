@@ -61,8 +61,12 @@ export interface RunOptions {
   seed?: string;
   /** Offline/no-vendor mode: fake ACP transport + this module plays every model turn. Default true unless `--live` or `AGILE_LIVE=1`. */
   fake?: boolean;
-  /** Ceremony-tick budget before giving up (each iteration is synchronous, no real delay) — default 200. */
+  /** Ceremony-tick budget before giving up in `--fake` mode (each iteration is synchronous, no real delay) — default 200. Live mode instead bounds itself by `liveTimeoutMs`, wall-clock. */
   maxTicks?: number;
+  /** Wait between ticks — real ACP sessions need this to make progress; fake ones don't. Defaults to 0 (`--fake`) or 30s (`--live`, the heartbeat tunable). */
+  tickIntervalMs?: number;
+  /** Wall-clock budget for `--live` mode before giving up (fake mode uses `maxTicks` instead, since it never actually waits). Defaults to 10 minutes (the quorum-timeout tunable). */
+  liveTimeoutMs?: number;
   /** Where to write the run report. Defaults to `<cwd>/runs`. */
   reportDir?: string;
 }
@@ -77,6 +81,24 @@ interface SeedFile {
     affectsOracle: string[];
     proposed: string;
     decision: { entry: OracleEntry; body: string };
+  };
+  /** `.agile/rules/<id>.md` files to seed (T016 loader format, `review/rules.ts`'s "`# RULE-id: title`" markdown shape) — the fixture's "one seeded rule violation opportunity" (T021 scope) needs a rule for a reviewer to actually cite. */
+  rules?: Array<{ id: string; markdown: string }>;
+  /**
+   * The one ticket whose first engineer pass deliberately trips a rule
+   * (QA round 1 gap, opus review round 1 blocker 1): `pattern` is the
+   * literal source text `driveReviewerWork` greps the ticket's worktree for
+   * to build the round-1 finding's line number — it must appear verbatim in
+   * whatever `applyEngineerChange`'s first pass writes for `ticket`, and
+   * disappear on the second pass (the engineer's fix), or the scripted
+   * reviewer has nothing to cite / nothing to confirm fixed.
+   */
+  violation?: {
+    ticket: TicketId;
+    ruleId: string;
+    pattern: string;
+    message: string;
+    severity: 'blocker' | 'major' | 'minor' | 'nit';
   };
 }
 
@@ -93,11 +115,32 @@ function seedProductMd(stateRoot: string, markdown: string): void {
   });
 }
 
+/**
+ * `.agile/rules/<id>.md` — also a plain file `review/rules.ts`'s `loadRules`
+ * reads directly off disk (not a `StateStore` entity), same convention as
+ * `seedProductMd` above. Without at least one seeded rule, `rulesList`
+ * has nothing for a reviewer to cite and T021's "one seeded rule-violation
+ * opportunity" (PLAN.md scope) can't be exercised at all (QA round 1 /
+ * opus review round 1 blocker 1).
+ */
+function seedRules(stateRoot: string, rules: SeedFile['rules']): void {
+  if (!rules || rules.length === 0) return;
+  mkdirSync(join(stateRoot, 'rules'), { recursive: true });
+  for (const rule of rules) {
+    writeFileSync(join(stateRoot, 'rules', `${rule.id}.md`), rule.markdown);
+  }
+  Bun.spawnSync(['git', 'add', 'rules'], { cwd: stateRoot });
+  Bun.spawnSync(['git', '-c', 'commit.gpgsign=false', 'commit', '-q', '-m', 'seed: rules'], {
+    cwd: stateRoot,
+  });
+}
+
 async function seedFixture(handle: DaemonHandle, seed: SeedFile): Promise<void> {
   const { store } = handle;
   if (!store) throw new Error('agile run: daemon has no store (run `agile init` first)');
 
   if (seed.productMd) seedProductMd(handle.config.stateRoot, seed.productMd);
+  seedRules(handle.config.stateRoot, seed.rules);
   for (const { entry, body } of seed.oracle ?? []) {
     await store.putOracleEntry(entry, body);
   }
@@ -219,13 +262,14 @@ async function driveEngineerWork(
   handle: DaemonHandle,
   ticket: Ticket,
   seed: SeedFile,
+  attempt: number,
 ): Promise<void> {
   const { store, bus } = handle;
   if (!store || !bus || !ticket.worktree) return;
   const worktreePath = join(handle.config.repoRoot, ticket.worktree);
   const agent = agentIdFor('engineer', ticket.id);
 
-  applyEngineerChange(worktreePath, ticket.id);
+  applyEngineerChange(worktreePath, ticket.id, attempt);
   // `git add src` only — never `-A`: the worktree also carries the
   // daemon's own `.claude/settings.json` (`runner/session.ts`'s
   // `writeClaudeSettings`, rewritten with a different `agentId` whenever
@@ -289,32 +333,72 @@ async function driveEngineerWork(
   });
 }
 
-/** The demo epic's three tickets, hand-written per ticket id (small and fixed — a generic "apply this contract" engine is out of this driver's scope). */
-function applyEngineerChange(worktreePath: string, ticketId: TicketId): void {
+/** The demo epic's three tickets, hand-written per ticket id (small and fixed — a generic "apply this contract" engine is out of this driver's scope). `attempt` (1-based) distinguishes a ticket's first engineer pass from its post-`request_changes` fix pass — only `TKT-1001` (the seeded rule-violation ticket, T021 scope) reads it; every other ticket's change is attempt-independent. Each ticket's own proof test lives in its own new file (TKT-1001: `complete-task.test.ts`, TKT-1002: `list-tasks-order.test.ts`, TKT-1003: `overdue.test.ts`, already the existing pattern) rather than appended to the shared `tasks.test.ts` — two tickets both editing that file's tail is exactly the kind of same-line collision `MergeOwner.onTicketDone`'s rebase has no scripted conflict-resolution turn for (this driver hit that for real while wiring this in — see `.pipeline-report.md`). */
+function applyEngineerChange(worktreePath: string, ticketId: TicketId, attempt: number): void {
   const tasksPath = join(worktreePath, 'src', 'tasks.ts');
   const current = readFileSync(tasksPath, 'utf8');
 
   if (ticketId === 'TKT-1001') {
-    writeFileSync(
-      tasksPath,
-      current.replace(
-        '  getTask(id: string): Task | undefined {\n    return this.tasks.get(id);\n  }\n}',
+    if (attempt === 1) {
+      // First pass: implements the criterion correctly, but leaves a debug
+      // `console.log` in place — the seeded RULE-001 violation ("no debug
+      // console.log/console.debug calls ship in src/") a reviewer is
+      // expected to catch and cite, not silently wave through.
+      writeFileSync(
+        tasksPath,
+        current.replace(
+          '  getTask(id: string): Task | undefined {\n    return this.tasks.get(id);\n  }\n}',
+          [
+            '  getTask(id: string): Task | undefined {',
+            '    return this.tasks.get(id);',
+            '  }',
+            '',
+            '  /** Marks a task done and returns it. Throws a descriptive Error for an unknown id (SPEC-quality-001 clause 1). */',
+            '  completeTask(id: string): Task {',
+            '    const task = this.tasks.get(id);',
+            '    if (!task) throw new Error(`completeTask: no task with id "${id}"`);',
+            '    console.log(`completeTask: marking ${id} done`);',
+            '    task.done = true;',
+            '    return task;',
+            '  }',
+            '}',
+          ].join('\n'),
+        ),
+      );
+      writeFileSync(
+        join(worktreePath, 'src', 'complete-task.test.ts'),
         [
-          '  getTask(id: string): Task | undefined {',
-          '    return this.tasks.get(id);',
-          '  }',
+          "import { describe, expect, test } from 'bun:test';",
+          "import { TaskStore } from './tasks';",
           '',
-          '  /** Marks a task done and returns it. Throws a descriptive Error for an unknown id (SPEC-0001 clause 1). */',
-          '  completeTask(id: string): Task {',
-          '    const task = this.tasks.get(id);',
-          '    if (!task) throw new Error(`completeTask: no task with id "${id}"`);',
-          '    task.done = true;',
-          '    return task;',
-          '  }',
-          '}',
+          "describe('TaskStore.completeTask', () => {",
+          "  test('sets done to true and returns the updated task', () => {",
+          '    const store = new TaskStore();',
+          "    const task = store.createTask('ship it', '2026-09-10');",
+          '    const completed = store.completeTask(task.id);',
+          '    expect(completed.done).toBe(true);',
+          '    expect(store.getTask(task.id)?.done).toBe(true);',
+          '  });',
+          '',
+          "  test('throws on unknown id', () => {",
+          '    const store = new TaskStore();',
+          "    expect(() => store.completeTask('nope')).toThrow(/no task with id/);",
+          '  });',
+          '});',
+          '',
         ].join('\n'),
-      ),
-    );
+      );
+    } else {
+      // Fix pass (round-2 re-review): strip the cited debug line only — the
+      // completeTask logic and the proof test added on attempt 1 are untouched.
+      writeFileSync(
+        tasksPath,
+        current
+          .split('\n')
+          .filter((line) => !line.includes('console.log('))
+          .join('\n'),
+      );
+    }
   } else if (ticketId === 'TKT-1002') {
     // DEC-0001: ascending by dueDate wins (SPEC-tasks-002 clause 1; clause 2 retired).
     writeFileSync(
@@ -328,6 +412,27 @@ function applyEngineerChange(worktreePath: string, ticketId: TicketId): void {
           '  }',
         ].join('\n'),
       ),
+    );
+    // Created out of due-date order on purpose: under the pre-DEC-0001
+    // insertion-order behaviour this assertion fails (['later', 'earlier']),
+    // so the QA command below is real signal, not a rubber stamp (opus
+    // review round 1 blocker 3).
+    writeFileSync(
+      join(worktreePath, 'src', 'list-tasks-order.test.ts'),
+      [
+        "import { describe, expect, test } from 'bun:test';",
+        "import { TaskStore } from './tasks';",
+        '',
+        "describe('TaskStore.listTasks order', () => {",
+        "  test('sorts ascending by dueDate', () => {",
+        '    const store = new TaskStore();',
+        "    store.createTask('later', '2026-09-20');",
+        "    store.createTask('earlier', '2026-09-05');",
+        "    expect(store.listTasks().map((t) => t.title)).toEqual(['earlier', 'later']);",
+        '  });',
+        '});',
+        '',
+      ].join('\n'),
     );
   } else if (ticketId === 'TKT-1003') {
     // A separate file, not a `tasks.ts` edit — TKT-1001 and TKT-1002 both
@@ -369,30 +474,100 @@ function applyEngineerChange(worktreePath: string, ticketId: TicketId): void {
   }
 }
 
-/** The scripted reviewer's one turn: a plain `approve` (T021's offline driver doesn't script a request_changes round — see `.pipeline-report.md`). */
-async function driveReviewerWork(handle: DaemonHandle, ticket: Ticket): Promise<void> {
+/** The 1-based line number of the first line in `relPath` containing `pattern` (a literal substring, not a regex), or `undefined` if the file/pattern isn't found — how the scripted reviewer locates the seeded violation in the ticket's own worktree instead of hard-coding a line number that would drift with the file's other content. */
+function findLineContaining(
+  worktreePath: string,
+  relPath: string,
+  pattern: string,
+): number | undefined {
+  const path = join(worktreePath, relPath);
+  if (!existsSync(path)) return undefined;
+  const lines = readFileSync(path, 'utf8').split('\n');
+  const idx = lines.findIndex((line) => line.includes(pattern));
+  return idx === -1 ? undefined : idx + 1;
+}
+
+/**
+ * The scripted reviewer's one turn for `round`. For `seed.violation`'s
+ * ticket on round 1, this cites the seeded rule against the worktree's own
+ * source (not a hard-coded finding) and requests changes; every other
+ * round/ticket is a plain `approve` (T021 scope: one seeded violation, not
+ * a generally adversarial reviewer).
+ */
+async function driveReviewerWork(
+  handle: DaemonHandle,
+  ticket: Ticket,
+  round: number,
+  seed: SeedFile,
+): Promise<void> {
   if (!handle.reviewProtocol || !handle.store) return;
   const deps = {
     protocol: handle.reviewProtocol,
     store: handle.store,
     stateRoot: handle.config.stateRoot,
   };
-  await reviewSubmit(
-    deps,
-    { agent: agentIdFor('reviewer', ticket.id), ticket: ticket.id },
-    { round: 1, pass: 'primary', verdict: 'approve', findings: [] },
-  );
+  const ctx = { agent: agentIdFor('reviewer', ticket.id), ticket: ticket.id };
+
+  const violation = seed.violation;
+  if (violation && violation.ticket === ticket.id && round === 1 && ticket.worktree) {
+    const worktreePath = join(handle.config.repoRoot, ticket.worktree);
+    const line = findLineContaining(worktreePath, 'src/tasks.ts', violation.pattern);
+    if (line !== undefined) {
+      await reviewSubmit(deps, ctx, {
+        round,
+        pass: 'primary',
+        verdict: 'request_changes',
+        findings: [
+          {
+            severity: violation.severity,
+            rule: violation.ruleId,
+            location: { path: 'src/tasks.ts', line },
+            message: violation.message,
+          },
+        ],
+      });
+      return;
+    }
+    // The violation's own pattern isn't in the worktree (a regression in
+    // `applyEngineerChange`'s attempt-1 branch) — fall through to a plain
+    // approve rather than submit a finding with no real location, so this
+    // failure surfaces as "the QA/e2e assertion for a request_changes round
+    // never happened" instead of a fabricated citation.
+  }
+  await reviewSubmit(deps, ctx, { round, pass: 'primary', verdict: 'approve', findings: [] });
 }
 
-/** The scripted QA turn: map every criterion to `bun test` (the fixture's own real suite, run for real in the fresh QA clone) and submit. */
+/** Per-ticket criterion -> command map for the scripted QA turn — each command targets the specific test file the engineer's own commit added for that criterion (`applyEngineerChange`), so a QA verdict is evidence the criterion actually holds, not a blanket `bun test` pass (opus review round 1 blocker 3). Falls back to bare `bun test` for a ticket/criterion this driver has no specific test name for. */
+function qaPlanFor(ticket: Ticket): Record<string, string> {
+  // Substrings of the test's own name (bun's `-t` matches the full
+  // "describe > test" path) — must track `applyEngineerChange`'s actual
+  // `test(...)` literals exactly, not a paraphrase, or `-t` matches nothing
+  // and `test_run` reports an empty-evidence failure (round 2 fix: this bit
+  // once already, when the criterion text and the test name diverged after
+  // `complete-task.test.ts`/`list-tasks-order.test.ts` were split out of
+  // the shared `tasks.test.ts` — see `.pipeline-report.md`).
+  const byTicket: Record<string, string[]> = {
+    'TKT-1001': [
+      'bun test -t "sets done to true and returns the updated task"',
+      'bun test -t "throws on unknown id"',
+    ],
+    'TKT-1002': ['bun test -t "sorts ascending by dueDate"'],
+    'TKT-1003': ['bun test -t "returns only tasks due before now"'],
+  };
+  const commands = byTicket[ticket.id];
+  const plan: Record<string, string> = {};
+  ticket.contract.acceptance.forEach((_c, i) => {
+    plan[String(i)] = commands?.[i] ?? 'bun test';
+  });
+  return plan;
+}
+
+/** The scripted QA turn: run each criterion's own command (see `qaPlanFor`) for real in the fresh QA clone, then submit. */
 async function driveQaWork(handle: DaemonHandle, ticket: Ticket): Promise<void> {
   if (!handle.qaProtocol) return;
   const tools = registerQaTools(handle.qaProtocol);
   const ctx = { agent: agentIdFor('qa', ticket.id), ticket: ticket.id };
-  const plan: Record<string, string> = {};
-  ticket.contract.acceptance.forEach((_c, i) => {
-    plan[String(i)] = 'bun test';
-  });
+  const plan = qaPlanFor(ticket);
   const planTool = tools.find((t) => t.name === 'qa_plan');
   const runTool = tools.find((t) => t.name === 'qa_run');
   const submitTool = tools.find((t) => t.name === 'qa_submit');
@@ -425,7 +600,13 @@ async function checkOversizedReadDenied(
 
 export interface RunResult {
   reportPath: string;
-  ticketOutcomes: Array<{ ticket: TicketId; status: string; merged: boolean }>;
+  ticketOutcomes: Array<{
+    ticket: TicketId;
+    status: string;
+    merged: boolean;
+    /** Primary review rounds actually run for this ticket (1 unless the seeded violation forced a round-2 re-review; 0 if review never started). */
+    reviewRounds: number;
+  }>;
   oversizedReadDecision: string;
   ticksUsed: number;
 }
@@ -437,6 +618,18 @@ export async function runDemoSprint(opts: RunOptions): Promise<RunResult> {
   }
   const fake = opts.fake ?? process.env.AGILE_LIVE !== '1';
   const maxTicks = opts.maxTicks ?? 200;
+  // Live mode has no scripted turns to drive progress synchronously — real
+  // ACP sessions answer on their own clock, so the loop must actually wait
+  // between ticks instead of hot-looping `maxTicks` times in milliseconds
+  // (opus review round 1 blocker 2: the old unconditional `for (; tick <
+  // maxTicks; tick++)` with no sleep burned its whole budget in ~3s
+  // regardless of vendor login). `tickIntervalMs` defaults to the heartbeat
+  // tunable (CLAUDE.md: "heartbeat 30s") in live mode, 0 (no wait — fake
+  // sessions resolve synchronously within the same tick) otherwise;
+  // `liveTimeoutMs` defaults to the quorum-timeout tunable (10 min), long
+  // enough for a real engineer/reviewer/qa chain to actually finish.
+  const tickIntervalMs = opts.tickIntervalMs ?? (fake ? 0 : 30_000);
+  const liveTimeoutMs = opts.liveTimeoutMs ?? 10 * 60 * 1000;
 
   const handle = await startDaemon({
     cwd: opts.cwd,
@@ -478,12 +671,23 @@ export async function runDemoSprint(opts: RunOptions): Promise<RunResult> {
     const engineerHandled = new Set<TicketId>();
     const reviewerHandled = new Set<TicketId>();
     const qaHandled = new Set<TicketId>();
+    // The seeded rule-violation ticket needs a *second* engineer/reviewer
+    // turn (fix, then re-review) after its round-1 `request_changes` — the
+    // sets above are "handled once, ever" gates for the common case, so
+    // this ticket's second pass needs its own dedicated tracking rather
+    // than overloading them (T021 round 2 / QA round 1, opus round 1
+    // blocker 1).
+    const violationTicket = seed.violation?.ticket;
+    const violationFixDriven = new Set<TicketId>();
+    const violationReviewedRound2 = new Set<TicketId>();
+    const reviewRoundsByTicket = new Map<TicketId, number>();
     let discoveryRaised = false;
     let discoveryResolved = !seed.discovery;
     let oversizedReadDecision = 'not checked (no --seed)';
 
+    const start = Date.now();
     let tick = 0;
-    for (; tick < maxTicks; tick++) {
+    for (; fake ? tick < maxTicks : Date.now() - start < liveTimeoutMs; tick++) {
       await gateService.tick();
       await emLoop.tick();
       await advanceReviewRequests(store, bus, reviewProtocol, seenReview);
@@ -492,29 +696,64 @@ export async function runDemoSprint(opts: RunOptions): Promise<RunResult> {
 
       if (fake) {
         for (const ticket of store.listTickets()) {
-          if (
+          const attempts = ticket.routing?.attempts ?? 0;
+          const isViolationFixTurn =
+            ticket.id === violationTicket &&
             ticket.status === 'in_progress' &&
-            !engineerHandled.has(ticket.id) &&
-            ticket.worktree
+            attempts >= 1 &&
+            !violationFixDriven.has(ticket.id);
+
+          if (
+            ticket.worktree &&
+            (isViolationFixTurn ||
+              (ticket.status === 'in_progress' && !engineerHandled.has(ticket.id)))
           ) {
-            engineerHandled.add(ticket.id);
+            const attempt = isViolationFixTurn ? 2 : 1;
+            if (isViolationFixTurn) violationFixDriven.add(ticket.id);
+            else engineerHandled.add(ticket.id);
             if (oversizedReadDecision.startsWith('not checked')) {
               oversizedReadDecision = await checkOversizedReadDenied(
                 handle,
                 join(handle.config.repoRoot, ticket.worktree),
               );
             }
-            await driveEngineerWork(handle, ticket, seed);
-            if (seed.discovery?.reporterTicket === ticket.id) discoveryRaised = true;
+            await driveEngineerWork(handle, ticket, seed, attempt);
+            if (attempt === 1 && seed.discovery?.reporterTicket === ticket.id)
+              discoveryRaised = true;
           }
+
+          const isViolationReviewRound2 =
+            ticket.id === violationTicket &&
+            ticket.status === 'in_review' &&
+            attempts >= 1 &&
+            !violationReviewedRound2.has(ticket.id);
+
+          // `store.getAgent` throws `NotFoundError` rather than returning
+          // `undefined` for a missing record (store.ts), so it must stay
+          // short-circuited behind `ticket.status === 'in_review'` — never
+          // hoisted into an eagerly-evaluated local, or every ticket not
+          // yet in review throws here on every tick.
           if (
             ticket.status === 'in_review' &&
-            !reviewerHandled.has(ticket.id) &&
+            (isViolationReviewRound2 || !reviewerHandled.has(ticket.id)) &&
             store.getAgent(agentIdFor('reviewer', ticket.id))
           ) {
-            reviewerHandled.add(ticket.id);
-            await driveReviewerWork(handle, ticket);
+            const round = isViolationReviewRound2 ? 2 : 1;
+            if (isViolationReviewRound2) violationReviewedRound2.add(ticket.id);
+            else reviewerHandled.add(ticket.id);
+            reviewRoundsByTicket.set(ticket.id, round);
+            await driveReviewerWork(handle, ticket, round, seed);
+            // Deliberately not stopping the reviewer session here: nothing
+            // in this codebase tells a session to exit between rounds (an
+            // engineer's session between a `request_changes` and its own
+            // next `board_post` is left alone the same way), and a session
+            // exit while the ticket is still `in_progress`/`in_review` (a
+            // `LIVE_STATUS`) makes `session.ts`'s `finish()` treat it as a
+            // crash and re-ready the ticket, wiping this round's outcome.
+            // `advanceReviewRequests` (`pipeline-glue.ts`) reuses this same
+            // still-live session for round 2 instead of re-spawning it.
           }
+
           if (
             ticket.status === 'in_qa' &&
             !qaHandled.has(ticket.id) &&
@@ -548,7 +787,7 @@ export async function runDemoSprint(opts: RunOptions): Promise<RunResult> {
             });
             if (!engineerHandled.has(staledId)) {
               engineerHandled.add(staledId);
-              await driveEngineerWork(handle, resumed, seed);
+              await driveEngineerWork(handle, resumed, seed, 1);
             }
           }
         }
@@ -563,6 +802,9 @@ export async function runDemoSprint(opts: RunOptions): Promise<RunResult> {
       ) {
         break;
       }
+      if (!fake && tickIntervalMs > 0) {
+        await new Promise((resolve) => setTimeout(resolve, tickIntervalMs));
+      }
     }
 
     const reportDir = opts.reportDir ?? join(opts.cwd, 'runs');
@@ -573,6 +815,7 @@ export async function runDemoSprint(opts: RunOptions): Promise<RunResult> {
         ticket: id,
         status: ticket.status,
         merged: (mergeOwner.status(id) as { status?: string } | undefined)?.status === 'merged',
+        reviewRounds: reviewRoundsByTicket.get(id) ?? 0,
       };
     });
     const reportPath = join(reportDir, `${new Date().toISOString().replace(/[:.]/g, '-')}.md`);
@@ -629,6 +872,10 @@ function renderReport(
   const ticketLines = outcomes.map(
     (o) => `- ${o.ticket}: status=${o.status}, merged=${o.merged ? 'yes' : 'no'}`,
   );
+  const reviewRoundLines = outcomes.map(
+    (o) =>
+      `- ${o.ticket}: ${o.reviewRounds} round${o.reviewRounds === 1 ? '' : 's'}${o.reviewRounds > 1 ? ' (request_changes then approve)' : o.reviewRounds === 1 ? ' (approve)' : ''}`,
+  );
 
   return [
     `# agile run report — ${new Date().toISOString()}`,
@@ -637,6 +884,9 @@ function renderReport(
     '',
     '## Per-ticket outcome',
     ...ticketLines,
+    '',
+    '## Review rounds per ticket',
+    ...reviewRoundLines,
     '',
     '## Token spend per role (ledger)',
     ...spendLines,
