@@ -170,12 +170,12 @@ Priority encodes dependency layer as well as importance: P0 tickets are v0-block
 
 ### Ticket: T012 Agent runner and worktree manager
 - **Priority:** P0
-- **Status:** In Review
+- **Status:** Done
 - **Owner:** sonnet:worker-T012
 - **Scope:** Depends on T003, T006, T009–T011. Spawn a role session: create/reuse worktree `.worktrees/<TKT>` on `tkt/<id>-<slug>` off `integration`, write hook settings + MCP config, assemble the role brief (ticket YAML, oracle refs by ID, KB refs, rules, contract), start the ACP session in `default` mode, register in `bus/agents`, stream `usage_update` into the ledger, mark the session's `tool_call` events into the event log, handle exit/crash (ticket → `ready`, worktree preserved, `escalate` to em). Reviewer/QA sessions get their own worktree or clone per §12–13.
 - **Acceptance Criteria:** `spawn(engineer, TKT)` leaves a registered agent working in the right worktree with the hook active; `kill -9` on the process yields the recovery path within one heartbeat interval.
 - **Validation Steps:** Live test with a trivial ticket; crash test.
-- **Notes:** branch `T012-agent-runner` (local worktree, `e2810c6` + `c1df33f`); `src/runner/` (worktrees, brief, session, runner, rpc, fake ACP agent for tests), additive `AgentRecord` fields. Worker flags: full suite flaky under the sandbox's 4-CPU ceiling when subprocess-heavy tests run together (own tests deterministic in isolation) — reviewer asked to root-cause. QA round 1 REJECT: full suite red 3/3 under load (runner/session timeouts + a store deferred-commit git race leaking into other files); recorded `pid` is the daemon's, not the agent's; `ready` ticket never advances on spawn; `usage_update` dropped without a sprint; `tool_call` events logged as `entity_put`. Sent to the worker. Review round 1 FAIL — root cause of the red suite: acp-client's process-global `mock.module('node:child_process')` leaks across test files and stubs the real spawn (fix: inject the spawn function); store `track()` replaces instead of accumulating deferred paths (leaked timers throw); QA clone path never matches `Ticket.worktree` (hook denies QA); reviewer role inferred from the shared worktree (edits allowed). All sent as one round with grants for acp-client tests, store, hook service/settings. Worker fixed everything in `31b0132` (full suite 1028 pass, 3/3 green); review round 2 FAIL on one item: the hook applies role policy only to Bash, so reviewer Edit/Write in the shared worktree is still allowed (test voided the result). Round 3 sent (role policy on every tool via `decidePermission`; no daemon-pid fallback; stale-record filtering). QA round 2 ACCEPT (pid, ticket advancement, tool_call kind, suite 3/3 green verified; QA read the reviewer-Edit allow as tier separation — overruled: hooks are the enforcement layer, role policy applies to every tool). Worker fixed round 3 in `249b694` (1039 tests, 3/3 green); review round 3 PASS (role policy enforced for every tool; scope note: engineer tier-1 Bash is allow-list-only, so `cat`/`mkdir`/`curl` deny — accepted, follow-up T030). QA round 3 REJECT: the hook's heartbeat path rewrites the agent record without `role`/`worktree`/`session_id` after the 30 s coalescing window, so a reviewer decays to engineer policy. Worker fixed round 4 in `89b1d61` (store-level `heartbeat` updates `last_seen` only; 1044 tests 2/2 green); review round 4 PASS (identity guarantee moved into `StateStore.heartbeat`; same latent bug fixed in `Bus.heartbeat`). QA round 4 running.
+- **Notes:** branch `T012-agent-runner` (local worktree, `e2810c6` + `c1df33f`); `src/runner/` (worktrees, brief, session, runner, rpc, fake ACP agent for tests), additive `AgentRecord` fields. Worker flags: full suite flaky under the sandbox's 4-CPU ceiling when subprocess-heavy tests run together (own tests deterministic in isolation) — reviewer asked to root-cause. QA round 1 REJECT: full suite red 3/3 under load (runner/session timeouts + a store deferred-commit git race leaking into other files); recorded `pid` is the daemon's, not the agent's; `ready` ticket never advances on spawn; `usage_update` dropped without a sprint; `tool_call` events logged as `entity_put`. Sent to the worker. Review round 1 FAIL — root cause of the red suite: acp-client's process-global `mock.module('node:child_process')` leaks across test files and stubs the real spawn (fix: inject the spawn function); store `track()` replaces instead of accumulating deferred paths (leaked timers throw); QA clone path never matches `Ticket.worktree` (hook denies QA); reviewer role inferred from the shared worktree (edits allowed). All sent as one round with grants for acp-client tests, store, hook service/settings. Worker fixed everything in `31b0132` (full suite 1028 pass, 3/3 green); review round 2 FAIL on one item: the hook applies role policy only to Bash, so reviewer Edit/Write in the shared worktree is still allowed (test voided the result). Round 3 sent (role policy on every tool via `decidePermission`; no daemon-pid fallback; stale-record filtering). QA round 2 ACCEPT (pid, ticket advancement, tool_call kind, suite 3/3 green verified; QA read the reviewer-Edit allow as tier separation — overruled: hooks are the enforcement layer, role policy applies to every tool). Worker fixed round 3 in `249b694` (1039 tests, 3/3 green); review round 3 PASS (role policy enforced for every tool; scope note: engineer tier-1 Bash is allow-list-only, so `cat`/`mkdir`/`curl` deny — accepted, follow-up T030). QA round 3 REJECT: the hook's heartbeat path rewrites the agent record without `role`/`worktree`/`session_id` after the 30 s coalescing window, so a reviewer decays to engineer policy. Worker fixed round 4 in `89b1d61` (store-level `heartbeat` updates `last_seen` only; 1044 tests 2/2 green); review round 4 PASS (identity guarantee moved into `StateStore.heartbeat`; same latent bug fixed in `Bus.heartbeat`). QA round 4 ACCEPT (80 s live reviewer-hook scenario; crash recovery). merge: 0878378.
 
 ### Ticket: T013 Role briefs and ceremony templates
 - **Priority:** P0
@@ -188,8 +188,8 @@ Priority encodes dependency layer as well as importance: P0 tickets are v0-block
 
 ### Ticket: T014 Architect: refinement, pointing, discovery triage
 - **Priority:** P1
-- **Status:** Todo
-- **Owner:** Unassigned
+- **Status:** In Progress
+- **Owner:** sonnet:worker-T014
 - **Scope:** Depends on T007, T012, T013. Architect session run in Claude `plan` mode for planning turns. Verbs: `ticket_create/refine` (contract, acceptance, `oracle_refs`, `env`), pointing via the four-question rubric writing `estimate` and `tier`, `discovery_triage` (local/scoped/global → halt), `decision_publish` (through the write guard, then ripple), re-refine `stale` tickets (unchanged → ready, split, refactor child on WIP commit). The `ExitPlanMode` permission request is routed to the `approve_plan` gate.
 - **Acceptance Criteria:** Given a seeded product doc and an epic description, the architect produces ≥3 valid tickets with contracts; a scripted discovery yields a halt, a DEC, exactly the right stale tickets, and re-refined replacements.
 - **Validation Steps:** Live test on the demo fixture; unit tests for rubric → tier mapping.
@@ -197,8 +197,8 @@ Priority encodes dependency layer as well as importance: P0 tickets are v0-block
 
 ### Ticket: T015 EM: sprint layers, assignment, standup, sprint review
 - **Priority:** P1
-- **Status:** Todo
-- **Owner:** Unassigned
+- **Status:** In Progress
+- **Owner:** sonnet:worker-T015
 - **Scope:** Depends on T006, T012, T013. EM session loop: compute the next sprint as the dependency frontier (cap configurable), write `sprints/S-*.yaml` with a recommended gates block, assign `ready` tickets (routing table is a single Claude entry in v0), read the board and post `decisions` stanzas, run the standup protocol on `discovery`/`halt`, run sprint review when the layer is done (delegated → merge `integration → main` and plan the next layer; `human` → `hil_request` and pre-plan), compute the retro block from the ledger.
 - **Acceptance Criteria:** With gates delegated, the EM drives the demo epic across two layers without a human; with `sprint_review: human`, it stops at the review with a `hil_request` and a pre-planned next layer.
 - **Validation Steps:** Live test both gate settings; unit tests for frontier computation and retro math.
@@ -206,8 +206,8 @@ Priority encodes dependency layer as well as importance: P0 tickets are v0-block
 
 ### Ticket: T016 Review protocol
 - **Priority:** P1
-- **Status:** Todo
-- **Owner:** Unassigned
+- **Status:** In Progress
+- **Owner:** sonnet:worker-T016
 - **Scope:** Depends on T010, T012, T013. Reviewer session per design §12: reads `diff_summary` + contract first; findings schema (severity, cited `RULE-*` or oracle ref, location); verdict `approve | request_changes | escalate`; no new findings on re-review that were visible before; second disagreement on one finding → `question` to architect. `.agile/rules/` loader. Security reviewer pass when `security: true` or tier ≥ hard. Verdicts bump `attempts` at the escalation gate (tier ladder in v0 is a no-op with one model, but the counter and events exist).
 - **Acceptance Criteria:** A seeded rule violation in the demo fixture produces a `request_changes` with the rule cited; a clean diff produces `approve` listing what was checked; a deadlock fixture routes to the architect.
 - **Validation Steps:** Live test with two prepared diffs; unit tests for the convergence rule.
@@ -215,8 +215,8 @@ Priority encodes dependency layer as well as importance: P0 tickets are v0-block
 
 ### Ticket: T017 QA protocol
 - **Priority:** P1
-- **Status:** Todo
-- **Owner:** Unassigned
+- **Status:** In Progress
+- **Owner:** sonnet:worker-T017
 - **Scope:** Depends on T010, T011, T012, T013. QA session per design §13: fresh clone of the ticket branch (`env: clone`; `compose` deferred), permission policy denying reads of `contract.inputs/outputs`, acceptance criteria executed via `test_run`/commands, one rerun on failure, `flaky` finding → KB, report one line per criterion, verdict `accept | reject`, reject → engineer with report as context and `attempts++`.
 - **Acceptance Criteria:** QA accepts a correct implementation, rejects one that fails a criterion with observed vs expected, and never reads an implementation file (asserted from the permission log).
 - **Validation Steps:** Live test on the demo fixture; assertion over the event log.
@@ -233,8 +233,8 @@ Priority encodes dependency layer as well as importance: P0 tickets are v0-block
 
 ### Ticket: T019 Merge and integration owner
 - **Priority:** P1
-- **Status:** Todo
-- **Owner:** Unassigned
+- **Status:** In Progress
+- **Owner:** sonnet:worker-T019
 - **Scope:** Depends on T005, T012. On `done`: rebase `tkt/*` onto `integration`, run the repo's test script, merge, delete the worktree (keep if `stale`/abandoned). Conflicts → scoped halt to the ticket owner with the conflict summary. `integration → main` behind the `sprint_review` gate. Git pre-commit hook in every worktree refusing commits while a halt covers the ticket.
 - **Acceptance Criteria:** Two tickets touching the same file produce a scoped halt for the second; a clean merge lands on `integration` with tests run; commits are refused during a halt.
 - **Validation Steps:** Git fixture tests with prepared conflicts.
@@ -269,8 +269,8 @@ Priority encodes dependency layer as well as importance: P0 tickets are v0-block
 
 ### Ticket: T023 Quota records, routing policy, barometer data
 - **Priority:** P2
-- **Status:** Todo
-- **Owner:** Unassigned
+- **Status:** In Progress
+- **Owner:** sonnet:worker-T023
 - **Scope:** Depends on T005, T012. `Quota` entities per vendor account (reported vs ledger-countdown, 429 → cooldown), routing policy `(role, tier) → ordered candidates` with floor and cooldown checks, `quota_low`/`quota_exhausted` bus events, Pi-on-Claude billed as extra-usage dollars. Exposed via `agile status` and the feed header.
 - **Acceptance Criteria:** With a simulated exhausted Claude account, new assignments route to the next candidate; a 429 event sets cooldown and reroutes.
 - **Validation Steps:** Unit tests with synthetic quota feeds.
@@ -332,8 +332,8 @@ Priority encodes dependency layer as well as importance: P0 tickets are v0-block
 
 ### Ticket: T030 Engineer Bash allow-list: benign commands
 - **Priority:** P1
-- **Status:** Todo
-- **Owner:** Unassigned
+- **Status:** In Progress
+- **Owner:** sonnet:worker-T030
 - **Scope:** Depends on T012. The hook's engineer policy is allow-list-only for Bash (repo scripts, package managers, git inside the worktree), so everyday benign commands (`cat`, `ls`, `mkdir`, `cp`/`mv` inside the worktree, `echo`, `grep`/`rg`, `find` without `-delete`/`-exec`, `head`/`tail`/`wc`, `pwd`, `which`, `node`/`bun` scripts inside the worktree) deny. Extend `packages/daemon/src/permissions/policy-tables.ts` with a benign-command table (path arguments containment-checked against the worktree), keep the never-without-human list untouched, and table-test it; reviewer/QA policies unchanged. Tune during T021 if the demo run shows more gaps.
 - **Acceptance Criteria:** The listed commands allow for an engineer inside its worktree; the same commands with a path outside the worktree deny; every existing adversarial test still passes.
 - **Validation Steps:** `bun test packages/daemon/src/permissions packages/daemon/src/hook`.
@@ -387,3 +387,4 @@ Priority encodes dependency layer as well as importance: P0 tickets are v0-block
 - 2026-09-09 — T011 merged (62e1b00) after 3 review rounds / 3 QA rounds. Launched T012 (agent runner + worktree manager), the last blocker before T014–T017, T019, T023.
 - 2026-09-09 — Integration branch suite verified green 2/2 (987 pass) after T011; the deferred-commit git race QA saw on T012 only manifests under that branch's subprocess load — root cause and fix are T012's to land (store `close()`/flush guard).
 - 2026-09-09 — Decision: no `mock.module` anywhere in the repo (Bun applies it process-wide across test files); external process/IO dependencies are injected instead. The hook resolves agent and role from the agent registry (`AgentRecord.worktree`/`role`, disambiguated by `AGILE_AGENT`), never by inferring from the worktree path.
+- 2026-09-09 — T012 merged (0878378) after 4 review rounds / 4 QA rounds; 1046 tests green. Wave 6 launched in parallel: T014 (`src/architect/`), T015 (`src/em/`), T016 (`src/review/`), T017 (`src/qa/`), T019 (`src/merge/`), T023 (`src/quota/`), T030 (permissions allow-list). Manager wires `daemon.ts`/`index.ts` at merge.
