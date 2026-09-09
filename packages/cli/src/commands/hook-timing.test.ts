@@ -74,23 +74,24 @@ describe('agile hook pre-tool-use timing', () => {
     const samples: number[] = [];
     for (let i = 0; i < WARMUP_RUNS + MEASURED_RUNS; i++) {
       const start = performance.now();
+      // T033 round 3: stdout/stderr write straight to files instead of
+      // `'pipe'` — round 2's `Promise.all`-drained pipes still let
+      // `proc.exited` race Bun's own epoll bookkeeping for the piped fds
+      // under concurrent-agent load (see `hook/rpc.test.ts`'s `runHookCli`
+      // doc comment for the full story and why `Bun.spawnSync` doesn't work
+      // here either). A file-backed stdio destination never touches that
+      // pipe/epoll path at all.
+      const stdoutPath = join(dir, `hook-timing-stdout-${i}.txt`);
+      const stderrPath = join(dir, `hook-timing-stderr-${i}.txt`);
       const proc = Bun.spawn({
         cmd: ['bun', CLI_ENTRY, 'hook', 'pre-tool-use'],
         stdin: new Response(JSON.stringify({ tool: 'Read', input: { path: '/x' } })),
-        stdout: 'pipe',
-        stderr: 'pipe',
+        stdout: Bun.file(stdoutPath),
+        stderr: Bun.file(stderrPath),
         env: { ...process.env, AGILE_SOCKET_PATH: socketPath },
       });
-      // T033 round 2: drain stdout, stderr, and exit together (Bun's
-      // documented spawn-consumption pattern) instead of sequentially
-      // awaiting stdout then exited — see `hook/rpc.test.ts`'s `runHookCli`
-      // for why an undrained `stderr: 'pipe'` can otherwise race
-      // `proc.exited`'s own epoll bookkeeping into an EBADF under load.
-      const [stdout] = await Promise.all([
-        new Response(proc.stdout).text(),
-        new Response(proc.stderr).text(),
-        proc.exited,
-      ]);
+      await proc.exited;
+      const stdout = await Bun.file(stdoutPath).text();
       const elapsed = performance.now() - start;
       if (i >= WARMUP_RUNS) samples.push(elapsed);
       if (i === WARMUP_RUNS) {

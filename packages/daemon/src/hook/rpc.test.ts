@@ -91,26 +91,55 @@ describe('hook.* RPC round trip (via dispatch)', () => {
 });
 
 /**
- * T033 root-cause fix: the two tests below used to await `stdout.text()`
- * then `exited` sequentially, leaving `stderr: 'pipe'` undrained — under
- * full-suite load that raced `proc.exited`'s own epoll bookkeeping into an
- * intermittent `EBADF: bad file descriptor, epoll_ctl` (reproduced 2/7 full
- * runs on the integration head; 0/6 in isolation — see `.pipeline-report.md`).
- * Draining stdout, stderr, and exit together (Bun's documented `Bun.spawn`
- * pattern) closes the race. No assertion changes: exit code and stdout are
- * checked exactly as before; stderr is captured only for a failure message.
+ * T033 root-cause fix, round 3: round 2's `Promise.all([stdout.text(),
+ * stderr.text(), exited])` (draining piped stdout/stderr concurrently with
+ * exit instead of sequentially) narrowed the race but did not close it —
+ * QA still reproduced `EBADF: bad file descriptor, epoll_ctl` here under
+ * concurrent-agent load (two `store` suites looping in the background,
+ * load average ~2-3/4 cores; see `.pipeline-report.md`'s "Round 3" log).
+ * The EBADF comes from Bun's own epoll bookkeeping for *piped* stdio fds,
+ * not from an undrained buffer — draining faster doesn't remove the pipe,
+ * it just shrinks the window. Routing stdout/stderr straight to plain files
+ * (`Bun.file(path)` as the stdio destination) removes the pipe/epoll path
+ * for those fds entirely: the OS dup2()s the child's fds onto regular
+ * files, so there is nothing for `proc.exited`'s bookkeeping to race.
+ *
+ * `Bun.spawnSync` (the coordinator's other suggested option) was tried and
+ * rejected: this describe block's own `startRpcServer` runs its unix-socket
+ * server in *this same test process*, and `spawnSync` blocks this
+ * process's event loop for the whole CLI subprocess lifetime — the socket
+ * server could never accept the child's connection, so the child would
+ * always hit its own 2s timeout and fail closed instead of getting a real
+ * reply, breaking the very assertion this test exists to make.
+ *
+ * No assertion changes from round 2: exit code and stdout are checked
+ * exactly as before; stderr is still captured only for a failure message.
  */
-async function runHookCli(proc: {
-  stdout: ReadableStream<Uint8Array>;
-  stderr: ReadableStream<Uint8Array>;
-  exited: Promise<number>;
+async function runHookCli(spawnArgs: {
+  cmd: string[];
+  stdin: Response;
+  env: Record<string, string | undefined>;
 }): Promise<{ stdout: string; stderr: string; exitCode: number }> {
-  const [stdout, stderr, exitCode] = await Promise.all([
-    new Response(proc.stdout).text(),
-    new Response(proc.stderr).text(),
-    proc.exited,
-  ]);
-  return { stdout, stderr, exitCode };
+  const dir = mkdtempSync(join(tmpdir(), 'agile-hook-cli-'));
+  const stdoutPath = join(dir, 'stdout.txt');
+  const stderrPath = join(dir, 'stderr.txt');
+  try {
+    const proc = Bun.spawn({
+      cmd: spawnArgs.cmd,
+      stdin: spawnArgs.stdin,
+      stdout: Bun.file(stdoutPath),
+      stderr: Bun.file(stderrPath),
+      env: spawnArgs.env,
+    });
+    const exitCode = await proc.exited;
+    const [stdout, stderr] = await Promise.all([
+      Bun.file(stdoutPath).text(),
+      Bun.file(stderrPath).text(),
+    ]);
+    return { stdout, stderr, exitCode };
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 }
 
 describe('hook.* RPC round trip through the CLI subprocess', () => {
@@ -135,16 +164,13 @@ describe('hook.* RPC round trip through the CLI subprocess', () => {
 
   test('`agile hook pre-tool-use` prints the daemon reply verbatim', async () => {
     await seedTicket();
-    const proc = Bun.spawn({
+    const { stdout, stderr, exitCode } = await runHookCli({
       cmd: ['bun', CLI_ENTRY, 'hook', 'pre-tool-use'],
       stdin: new Response(
         JSON.stringify({ cwd: worktree, tool_name: 'Read', tool_input: { file_path: 'x.txt' } }),
       ),
-      stdout: 'pipe',
-      stderr: 'pipe',
       env: { ...process.env, AGILE_SOCKET_PATH: socketPath },
     });
-    const { stdout, stderr, exitCode } = await runHookCli(proc);
     expect(exitCode, stderr).toBe(0);
     expect(JSON.parse(stdout)).toEqual({
       hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'allow' },
@@ -160,16 +186,13 @@ describe('hook.* RPC round trip through the CLI subprocess', () => {
       raised_by: 'architect',
     });
 
-    const proc = Bun.spawn({
+    const { stdout, stderr, exitCode } = await runHookCli({
       cmd: ['bun', CLI_ENTRY, 'hook', 'pre-tool-use'],
       stdin: new Response(
         JSON.stringify({ cwd: worktree, tool_name: 'Read', tool_input: { file_path: 'x.txt' } }),
       ),
-      stdout: 'pipe',
-      stderr: 'pipe',
       env: { ...process.env, AGILE_SOCKET_PATH: socketPath },
     });
-    const { stdout, stderr, exitCode } = await runHookCli(proc);
     expect(exitCode, stderr).toBe(0);
     expect(JSON.parse(stdout)).toEqual({
       hookSpecificOutput: {
