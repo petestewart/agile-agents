@@ -37,6 +37,17 @@ import { TicketIdSchema, formatZodError } from './ids';
  * kinds `entity_put`/`entity_deleted` minted by the generic
  * `putEntity`/`deleteEntity` trio (T006's message/thread files, or any
  * future entity with no dedicated helper yet).
+ *
+ * DESIGN-GAP (T018 review fix): `hil_requested`/`hil_resolved`/
+ * `breaker_tripped`/`breaker_cleared` are added for §16 "HIL gates policy".
+ * Every generic `putEntity` write to `board/hil/**`/`board/breaker.yaml`
+ * already mints an `entity_put`/`entity_deleted` event on its own, but these
+ * four semantic kinds are minted alongside it (one HIL mutation now yields
+ * two log lines, same as `state_transition` already coexists with
+ * `ticket_put` for a ticket transition), so a `log/events.jsonl` consumer
+ * can filter on "a HIL request opened/resolved" or "a breaker
+ * tripped/cleared" without grepping generic-entity payloads for a
+ * `board/hil/` path prefix.
  */
 export const EVENT_KINDS = [
   'message',
@@ -67,6 +78,10 @@ export const EVENT_KINDS = [
   'vendors_put',
   'entity_put',
   'entity_deleted',
+  'hil_requested',
+  'hil_resolved',
+  'breaker_tripped',
+  'breaker_cleared',
 ] as const;
 export const EventKindSchema = z.enum(EVENT_KINDS);
 export type EventKind = z.infer<typeof EventKindSchema>;

@@ -884,6 +884,30 @@ describe('Generic entity trio: putEntity / getEntity / deleteEntity', () => {
     expect(store.getEntity(relPath, validateWidget)).toEqual({ id: 'w1', n: 42 });
     expect(readFileSync(join(stateRoot, relPath), 'utf8').trim().startsWith('{')).toBe(true);
   });
+
+  test('listEntities reads back every entity in a directory (yaml + json), skipping hidden/temp files', async () => {
+    const store = StateStore.open(stateRoot);
+    await store.putEntity(join('board', 'hil', 'a.yaml'), validateWidget, { id: 'a', n: 1 });
+    await store.putEntity(join('board', 'hil', 'b.yaml'), validateWidget, { id: 'b', n: 2 });
+    await store.putEntity(join('board', 'hil', 'c.json'), validateWidget, { id: 'c', n: 3 });
+    writeFileSync(join(stateRoot, 'board', 'hil', '.gitkeep'), '');
+    writeFileSync(join(stateRoot, 'board', 'hil', '.stray.yaml.tmp-1-xyz'), 'garbage: [');
+
+    const all = store.listEntities(join('board', 'hil'), validateWidget);
+    expect(all.map((w) => w.id).sort()).toEqual(['a', 'b', 'c']);
+  });
+
+  test('listEntities on a missing directory returns []', () => {
+    const store = StateStore.open(stateRoot);
+    expect(store.listEntities(join('board', 'hil'), validateWidget)).toEqual([]);
+  });
+
+  test('listEntities refuses a path that escapes the state root', () => {
+    const store = StateStore.open(stateRoot);
+    expect(() => store.listEntities('../outside', validateWidget)).toThrow(
+      /escapes the state root/,
+    );
+  });
 });
 
 describe('appendEvent — public escape hatch for message/hook_decision events', () => {
