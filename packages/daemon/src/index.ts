@@ -106,3 +106,7 @@ export * from './sandbox';
 
 // Pi adapter: the agile Pi extension source, its installer, gate env (T022).
 export * from './pi';
+
+// Handoff and pause: graceful/hard handoff, pause/resume, manual cooldown,
+// HandoffCoordinator, handoff.* RPC (T024).
+export * from './handoff';

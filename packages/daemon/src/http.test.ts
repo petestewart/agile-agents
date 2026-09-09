@@ -3,6 +3,7 @@ import { appendFileSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Policy } from '@agile-agents/shared';
+import { Bus } from './bus';
 import { GateService } from './gates';
 import { type HttpServerHandle, startHttpServer } from './http';
 import { runInit } from './init';
@@ -309,5 +310,278 @@ describe('feed with a real store', () => {
       expect(rejected.status).toBe(403);
       expect(gates.get(crossSite.id).status).toBe('pending');
     });
+  });
+});
+
+// --- T025 control room reads/writes (verify-before-build inventory found
+// none of these endpoints existed before this ticket — every one below is a
+// GET backed by an existing StateStore getter, or a POST/DELETE through an
+// existing daemon verb: createHalt/releaseHalt, Bus.send). ---
+
+describe('T025 control room routes', () => {
+  let repo: string;
+  let stateRoot: string;
+  let store: StateStore;
+  let gates: GateService;
+  let bus: Bus;
+  let crServer: HttpServerHandle;
+
+  function policy(overrides: Partial<Policy['gates']> = {}): Policy {
+    return { gates: { unblock: 'human', ...overrides }, breaker_signals: [] };
+  }
+
+  beforeEach(() => {
+    repo = mkdtempSync(join(tmpdir(), 'agile-cr-http-'));
+    Bun.spawnSync(['git', 'init', '-q'], { cwd: repo });
+    Bun.spawnSync(['git', 'config', 'user.email', 'test@example.com'], { cwd: repo });
+    Bun.spawnSync(['git', 'config', 'user.name', 'Test'], { cwd: repo });
+    writeFileSync(join(repo, 'README.md'), '# fixture\n');
+    Bun.spawnSync(['git', 'add', '-A'], { cwd: repo });
+    Bun.spawnSync(['git', 'commit', '-q', '-m', 'initial commit'], { cwd: repo });
+    const init = runInit(repo);
+    stateRoot = init.stateRoot;
+    store = StateStore.open(stateRoot);
+    gates = new GateService(store);
+    bus = new Bus(store, stateRoot);
+    crServer = startHttpServer({
+      port: 0,
+      version: '0.0.0-test',
+      stateRoot,
+      startedAt: Date.now(),
+      store,
+      gates,
+      bus,
+      feedPollIntervalMs: 20,
+    });
+  });
+
+  afterEach(async () => {
+    await crServer.stop();
+    rmSync(repo, { recursive: true, force: true });
+  });
+
+  test('GET /api/agents lists registered agents', async () => {
+    await bus.heartbeat('eng-1', { vendor: 'claude', model: 'sonnet' });
+    const res = await fetch(`http://127.0.0.1:${crServer.port}/api/agents`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Array<{ id: string; record: { vendor: string } }>;
+    expect(body.find((a) => a.id === 'eng-1')?.record.vendor).toBe('claude');
+  });
+
+  test('GET /api/tickets and /api/tickets/:id return the ticket plus its stanzas', async () => {
+    await store.putTicket({
+      id: 'TKT-0101',
+      title: 'Read endpoint fixture',
+      status: 'draft',
+      contract: { inputs: [], outputs: [], acceptance: [], done: [], env: 'clone' },
+      depends: [],
+      oracle_refs: [],
+      kb_refs: [],
+      history: [],
+      security: false,
+    });
+
+    const list = await fetch(`http://127.0.0.1:${crServer.port}/api/tickets`);
+    expect(list.status).toBe(200);
+    const tickets = (await list.json()) as Array<{ id: string }>;
+    expect(tickets.some((t) => t.id === 'TKT-0101')).toBe(true);
+
+    const detail = await fetch(`http://127.0.0.1:${crServer.port}/api/tickets/TKT-0101`);
+    expect(detail.status).toBe(200);
+    const body = (await detail.json()) as { ticket: { id: string }; stanzas: unknown[] };
+    expect(body.ticket.id).toBe('TKT-0101');
+    expect(Array.isArray(body.stanzas)).toBe(true);
+  });
+
+  test('GET /api/tickets/:id 404s for an unknown ticket', async () => {
+    const res = await fetch(`http://127.0.0.1:${crServer.port}/api/tickets/TKT-9999`);
+    expect(res.status).toBe(404);
+  });
+
+  test('GET /api/oracle and /api/oracle/:id return the index and one entry', async () => {
+    await store.putOracleEntry(
+      {
+        id: 'DEC-0001',
+        title: 'Test decision',
+        status: 'active',
+        supersedes: [],
+        depends: [],
+        affects: [],
+        decided: '2026-09-08',
+        by: 'architect',
+        rationale: 'fixture',
+      },
+      'Full decision body.',
+    );
+
+    const index = await fetch(`http://127.0.0.1:${crServer.port}/api/oracle`);
+    expect(index.status).toBe(200);
+    const indexBody = (await index.json()) as Record<string, { title: string }>;
+    expect(indexBody['DEC-0001']?.title).toBe('Test decision');
+
+    const entry = await fetch(`http://127.0.0.1:${crServer.port}/api/oracle/DEC-0001`);
+    expect(entry.status).toBe(200);
+    const entryBody = (await entry.json()) as { entry: { id: string }; body: string };
+    expect(entryBody.entry.id).toBe('DEC-0001');
+    expect(entryBody.body.trim()).toBe('Full decision body.');
+  });
+
+  test('GET /api/oracle/:id 404s for an unknown id', async () => {
+    const res = await fetch(`http://127.0.0.1:${crServer.port}/api/oracle/DEC-9999`);
+    expect(res.status).toBe(404);
+  });
+
+  test('GET /api/kb and /api/kb/:id return the index and one fact', async () => {
+    await store.putKbFact(
+      {
+        id: 'KB-0001',
+        kind: 'gotcha',
+        scope: ['auth'],
+        confidence: 'observed',
+        source: 'TKT-0101',
+        expires: null,
+      },
+      'Fixture fact body.',
+    );
+
+    const index = await fetch(`http://127.0.0.1:${crServer.port}/api/kb`);
+    expect(index.status).toBe(200);
+    const indexBody = (await index.json()) as Record<string, { kind: string }>;
+    expect(indexBody['KB-0001']?.kind).toBe('gotcha');
+
+    const fact = await fetch(`http://127.0.0.1:${crServer.port}/api/kb/KB-0001`);
+    expect(fact.status).toBe(200);
+    const factBody = (await fact.json()) as { fact: { id: string }; body: string };
+    expect(factBody.fact.id).toBe('KB-0001');
+    expect(factBody.body.trim()).toBe('Fixture fact body.');
+  });
+
+  test('GET /api/policy returns the repo policy', async () => {
+    const res = await fetch(`http://127.0.0.1:${crServer.port}/api/policy`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Policy;
+    expect(body.gates).toBeDefined();
+  });
+
+  test('POST /api/halt creates a real halt (via createHalt) that shows up in the snapshot', async () => {
+    const res = await fetch(`http://127.0.0.1:${crServer.port}/api/halt`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ reason: 'test halt' }),
+    });
+    expect(res.status).toBe(201);
+    const halt = (await res.json()) as { id: string; scope: string; raised_by: string };
+    expect(halt.scope).toBe('global');
+    expect(halt.raised_by).toBe('human');
+
+    expect(store.listHalts().some((h) => h.id === halt.id)).toBe(true);
+
+    const del = await fetch(`http://127.0.0.1:${crServer.port}/api/halt/${halt.id}`, {
+      method: 'DELETE',
+    });
+    expect(del.status).toBe(200);
+    expect(store.listHalts().some((h) => h.id === halt.id)).toBe(false);
+  });
+
+  test('DELETE /api/halt/:id 404s for an unknown halt', async () => {
+    const res = await fetch(`http://127.0.0.1:${crServer.port}/api/halt/H-999`, {
+      method: 'DELETE',
+    });
+    expect(res.status).toBe(404);
+  });
+
+  test('T025 review round 1 blocker 1: DELETE /api/halt/:id 400s a traversal id instead of reaching the store', async () => {
+    const res = await fetch(
+      `http://127.0.0.1:${crServer.port}/api/halt/${encodeURIComponent('../../../victim')}`,
+      { method: 'DELETE' },
+    );
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toContain('invalid halt id');
+  });
+
+  test('T025 review round 1 blocker 2: POST /api/halt ignores a forged raised_by and always writes human', async () => {
+    const res = await fetch(`http://127.0.0.1:${crServer.port}/api/halt`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ reason: 'test halt', raised_by: 'architect' }),
+    });
+    expect(res.status).toBe(201);
+    const halt = (await res.json()) as { id: string; raised_by: string };
+    expect(halt.raised_by).toBe('human');
+    expect(store.getHalt(halt.id as never).raised_by).toBe('human');
+  });
+
+  test('POST /api/chat/em lands a real fyi message on the em inbox via Bus.send', async () => {
+    const res = await fetch(`http://127.0.0.1:${crServer.port}/api/chat/em`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ body: 'steer: reroute TKT-0233 off openai' }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { ok: boolean; message: { kind: string; to: string[] } };
+    expect(body.ok).toBe(true);
+    expect(body.message.kind).toBe('fyi');
+    expect(body.message.to).toEqual(['em']);
+
+    const inbox = bus.poll('em');
+    expect(inbox.some((m) => m.body.includes('reroute TKT-0233'))).toBe(true);
+  });
+
+  test('POST /api/chat/em without a body is a 400', async () => {
+    const res = await fetch(`http://127.0.0.1:${crServer.port}/api/chat/em`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  test('POST /api/chat/em without a wired Bus 503s (documented daemon.ts wiring gap)', async () => {
+    const noBusServer = startHttpServer({
+      port: 0,
+      version: '0.0.0-test',
+      stateRoot,
+      startedAt: Date.now(),
+      store,
+      gates,
+      // no `bus` — mirrors today's real `daemon.ts`, which does not pass one yet.
+    });
+    try {
+      const res = await fetch(`http://127.0.0.1:${noBusServer.port}/api/chat/em`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ body: 'hi' }),
+      });
+      expect(res.status).toBe(503);
+    } finally {
+      await noBusServer.stop();
+    }
+  });
+
+  test('POST /api/oracle/propose sends a decision request to the architect, never writes the oracle directly', async () => {
+    const res = await fetch(`http://127.0.0.1:${crServer.port}/api/oracle/propose`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ target: 'DEC-0042', body: 'Widen the grace window to 60s.' }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { ok: boolean; message: { kind: string; to: string[] } };
+    expect(body.ok).toBe(true);
+    expect(body.message.kind).toBe('decision');
+    expect(body.message.to).toEqual(['architect']);
+
+    const inbox = bus.poll('architect');
+    expect(inbox.some((m) => m.body.includes('DEC-0042') && m.body.includes('60s'))).toBe(true);
+    // Never a direct write — no such entry exists in the oracle index.
+    expect(store.listOracleIndex()['DEC-0042']).toBeUndefined();
+  });
+
+  test('control room SPA is served under /control-room (falls back to 404 pre-build, same as a missing feed.html would)', async () => {
+    const res = await fetch(`http://127.0.0.1:${crServer.port}/control-room`);
+    // Either served (if `bun run build` has produced dist-app/index.html in
+    // this checkout) or 404 (fresh checkout, ui package not built yet) —
+    // both are acceptable; a 500 is not.
+    expect([200, 404]).toContain(res.status);
   });
 });

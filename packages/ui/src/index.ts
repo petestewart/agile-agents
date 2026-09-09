@@ -20,3 +20,12 @@ export const PACKAGE_NAME = '@agile-agents/ui';
 
 /** Absolute path to the static feed page; `packages/daemon` serves it as-is. */
 export const FEED_HTML_PATH: string = join(import.meta.dir, '..', 'static', 'feed.html');
+
+/**
+ * Absolute path to the built control room SPA (T025 — `vite.config.ts`'s
+ * `outDir: '../dist-app'`, `root: 'app'`). Populated by `bun run build`
+ * (this package's `build` script chains `vite build` after `tsc`); until
+ * that has run for this package, `packages/daemon`'s `/control-room` routes
+ * 404 the same way a missing `static/feed.html` would.
+ */
+export const CONTROL_ROOM_DIST_DIR: string = join(import.meta.dir, '..', 'dist-app');

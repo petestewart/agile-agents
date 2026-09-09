@@ -600,6 +600,26 @@ export class QuotaService {
         ? (existing?.spend_usd ?? 0) + opts.spendDeltaUsd
         : existing?.spend_usd;
 
+    // T024 round 2 review-fix (opus B4): `resolveExisting` already recovered
+    // an *elapsed* cooldown to `null` — a still-non-null `existing.
+    // cooldown_until` here is by construction still active (a 429's own
+    // rate limit, or a manual one — `handoff/cooldown.ts`'s
+    // `setManualCooldown` — the human explicitly asked to keep an account
+    // free for a window). A reported reading (a real vendor usage-endpoint
+    // number) is real information about the account's *balance*, but it is
+    // not evidence the rate limit/manual quiet-hours request has lifted —
+    // unconditionally nulling `cooldown_until` here (the pre-round-2
+    // behaviour) silently cancelled either one on the next routine usage
+    // poll, with no trace. `routeCandidates` excludes purely on
+    // `cooldown_until` regardless of `remaining`'s magnitude (`routing.ts`'s
+    // `coolingDown` check runs independently of the floor/fraction check),
+    // so preserving these two fields costs nothing routing-wise while the
+    // cooldown holds; `pre_cooldown_remaining` is refreshed to this
+    // reading's own resolved `remaining` (the freshest known real balance)
+    // so `applyCooldownRecovery` restores an up-to-date number once the
+    // cooldown actually elapses, not a stale pre-cooldown snapshot.
+    const cooldownStillActive = existing?.cooldown_until != null;
+
     const updated: Quota = validateQuota({
       vendor,
       account,
@@ -618,8 +638,9 @@ export class QuotaService {
       confidence,
       source: 'usage_endpoint',
       updated: this.now().toISOString(),
-      cooldown_until: null,
-      cooldown_backoff_seconds: undefined,
+      cooldown_until: cooldownStillActive ? existing.cooldown_until : null,
+      cooldown_backoff_seconds: cooldownStillActive ? existing.cooldown_backoff_seconds : undefined,
+      pre_cooldown_remaining: cooldownStillActive ? remaining : undefined,
       billing: opts.spendDeltaUsd !== undefined ? 'extra_usage_dollars' : existing?.billing,
       spend_usd,
     });
@@ -659,7 +680,28 @@ export class QuotaService {
     const backoffSeconds =
       retryAfterSeconds ??
       nextBackoffSeconds(sameEpisode ? existing?.cooldown_backoff_seconds : undefined);
-    const cooldownUntil = new Date(nowMs + backoffSeconds * 1000).toISOString();
+    const computedCooldownUntil = new Date(nowMs + backoffSeconds * 1000).toISOString();
+
+    // T024 round 2 review-fix (opus B4): `cooldown_until` must never move
+    // *backward* while it's still active — a still-future `existing.
+    // cooldown_until` (only visible here because `resolveExisting` already
+    // recovered an elapsed one to `null`/rearmed) can only ever come from a
+    // longer-running cooldown than this 429's own ladder tier would compute
+    // (a manual `cooldown_until` set well ahead of the ladder, most
+    // concretely — `handoff/cooldown.ts`'s `setManualCooldown`, which writes
+    // this same field directly via `store.putQuota` with no ladder tier of
+    // its own). Taking the later of the two keeps a human's "keep my window
+    // free for 4h" intact through a 429 that would otherwise reset it to
+    // the ladder's 30s floor, while changing nothing for the ordinary case
+    // (the ladder's own escalation always computes a *later* cooldownUntil
+    // than the previous tier, so `computedCooldownUntil` wins as before).
+    const keepExistingCooldown =
+      existing?.cooldown_until != null &&
+      Date.parse(existing.cooldown_until) > Date.parse(computedCooldownUntil);
+    const cooldownUntil = keepExistingCooldown ? existing.cooldown_until : computedCooldownUntil;
+    const cooldownBackoffSecondsToStore = keepExistingCooldown
+      ? existing.cooldown_backoff_seconds
+      : backoffSeconds;
 
     const windowTokens = accountConfig?.window_tokens ?? existing?.limit ?? DEFAULT_WINDOW_TOKENS;
 
@@ -702,7 +744,7 @@ export class QuotaService {
       source: 'rate_limit_429',
       updated: new Date(nowMs).toISOString(),
       cooldown_until: cooldownUntil,
-      cooldown_backoff_seconds: backoffSeconds,
+      cooldown_backoff_seconds: cooldownBackoffSecondsToStore,
       pre_cooldown_remaining: preCooldownRemaining,
       limit: isNonTokenExisting ? existing.limit : windowTokens,
       billing: existing?.billing,

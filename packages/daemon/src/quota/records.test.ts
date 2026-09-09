@@ -996,3 +996,105 @@ describe('quotaFraction — fallback chain (review fix #3)', () => {
 test('tryGetQuota NotFoundError does not leak past QuotaService (sanity import check)', () => {
   expect(() => store.getQuota('nope', 'nope')).toThrow(NotFoundError);
 });
+
+describe('QuotaService — a long-running cooldown (e.g. a manual one) must never be shortened or cleared (T024 round 2 review-fix, opus B4)', () => {
+  test('record429 does not shorten a cooldown_until further in the future than its own ladder tier would compute', async () => {
+    const clock = fakeClock(Date.parse('2026-01-01T00:00:00.000Z'));
+    const quota = new QuotaService({ store, now: clock.now });
+
+    // A long cooldown already on record (stands in for a manual
+    // `setManualCooldown('claude', 'default', +4h)` — this test only needs
+    // the field, not `handoff/cooldown.ts` itself, to stay a pure
+    // `quota/**` unit test).
+    const fourHoursOut = new Date(clock.now().getTime() + 4 * 3600_000).toISOString();
+    await store.putQuota(
+      validateQuota({
+        vendor: 'claude',
+        account: 'default',
+        kind: 'subscription_window',
+        remaining: 0,
+        unit: 'tokens',
+        resets_at: null,
+        confidence: 'estimated',
+        source: 'ledger_countdown',
+        updated: clock.now().toISOString(),
+        cooldown_until: fourHoursOut,
+        limit: 1000,
+      }),
+    );
+
+    const updated = await quota.record429('claude', 'default');
+
+    expect(updated.cooldown_until).toBe(fourHoursOut); // not the ladder's 30s
+  });
+
+  test('record429 still escalates normally when its own ladder tier is later than the existing cooldown', async () => {
+    const clock = fakeClock(Date.parse('2026-01-01T00:00:00.000Z'));
+    const quota = new QuotaService({ store, now: clock.now });
+
+    const first = await quota.record429('claude', 'default'); // +30s
+    expect(Date.parse(first.cooldown_until as string) - clock.now().getTime()).toBe(30_000);
+
+    clock.advance(1_000); // still within the 30s cooldown -> same episode
+    const second = await quota.record429('claude', 'default'); // ladder -> +60s from *now*
+
+    expect(Date.parse(second.cooldown_until as string)).toBeGreaterThan(
+      Date.parse(first.cooldown_until as string),
+    );
+  });
+
+  test('recordReported does not clear or shorten an active cooldown_until', async () => {
+    const clock = fakeClock(Date.parse('2026-01-01T00:00:00.000Z'));
+    const quota = new QuotaService({ store, now: clock.now });
+
+    const fourHoursOut = new Date(clock.now().getTime() + 4 * 3600_000).toISOString();
+    await store.putQuota(
+      validateQuota({
+        vendor: 'claude',
+        account: 'default',
+        kind: 'subscription_window',
+        remaining: 0,
+        unit: 'tokens',
+        resets_at: null,
+        confidence: 'estimated',
+        source: 'ledger_countdown',
+        updated: clock.now().toISOString(),
+        cooldown_until: fourHoursOut,
+        limit: 1000,
+      }),
+    );
+
+    const updated = await quota.recordReported('claude', 'default', { remaining: 0.9 });
+
+    expect(updated.cooldown_until).toBe(fourHoursOut); // still cooling down
+    // Routing still excludes the account purely on `cooldown_until`,
+    // independent of the (now much healthier-looking) `remaining` reading.
+    const result = routeCandidates('engineer', 'standard', {
+      vendors: { claude: { accounts: [{ id: 'default', auth: 'subscription' }] } } as never,
+      quotas: [updated],
+      now: clock.now(),
+    });
+    expect('none' in result).toBe(true);
+  });
+
+  test('recordReported refreshes pre_cooldown_remaining so recovery restores an up-to-date balance, not a stale pre-cooldown snapshot', async () => {
+    const clock = fakeClock(Date.parse('2026-01-01T00:00:00.000Z'));
+    const quota = new QuotaService({ store, now: clock.now });
+
+    await quota.record429('claude', 'default'); // pre_cooldown_remaining <- full window
+    await quota.recordReported('claude', 'default', {
+      remaining: 400,
+      unit: 'tokens',
+      limit: 1000,
+    });
+
+    clock.advance(31_000); // past the 30s ladder cooldown
+    const recovered = await quota.recordUsage(
+      'claude',
+      'default',
+      ledgerLine({ in_tokens: 0, out_tokens: 0 }),
+    );
+
+    expect(recovered.remaining).toBe(400); // the reported balance, not the stale full-window one
+  });
+});

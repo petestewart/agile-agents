@@ -18,6 +18,7 @@ import { pickCurrentSprint } from './feed';
 import { GateService, buildGateRpcMethods } from './gates';
 import type { DelegateFn } from './gates';
 import { buildHaltRpcMethods } from './halts';
+import { HandoffCoordinator, buildHandoffRpcMethods, registerHandoffTools } from './handoff';
 import { HookService, buildHookRpcMethods } from './hook';
 import { type HttpServerHandle, startHttpServer } from './http';
 import { type LockHandle, acquireLock } from './lock';
@@ -225,10 +226,26 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
           },
         })
       : undefined;
+  // Handoff coordinator (T024, §10): exactly one instance for the daemon's
+  // lifetime — its quota-event cursor is seeded once at construction, so a
+  // per-tick instance would never see a `quota_low`/`quota_exhausted`.
+  const handoffCoordinator =
+    store && bus && runner && quotaService
+      ? new HandoffCoordinator({
+          store,
+          bus,
+          runner,
+          quota: quotaService,
+          repoRoot: config.repoRoot,
+        })
+      : undefined;
   // Ceremony driver: one daemon-level interval ticks the gate service (HIL
-  // deadline fallthrough, §16 — nothing else calls `GateService.tick()`)
-  // and then the EM loop. Cadence matches the runner sweep / heartbeat
-  // tunable (30 s); errors are logged, never fatal to the daemon.
+  // deadline fallthrough, §16 — nothing else calls `GateService.tick()`),
+  // then the handoff coordinator over every ticket (pausing a stuck-ready
+  // ticket must precede `assignReady`, which runs inside the EM tick), then
+  // the EM loop, then this pipeline glue. Cadence matches the runner sweep
+  // / heartbeat tunable (30 s); errors are logged, never fatal to the
+  // daemon.
   // T021 "wiring gaps": the three hand-offs off the architecture sketch's
   // data-flow paragraph nothing else drives (see `runner/pipeline-glue.ts`'s
   // header) — an engineer's `review_request`, a reviewer's approve-into-
@@ -250,6 +267,9 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
           void (async () => {
             try {
               await gateService.tick();
+              if (handoffCoordinator && store) {
+                await handoffCoordinator.tick(store.listTickets().map((t) => t.id));
+              }
               await emLoop.tick();
               await advancePipeline();
             } catch (err) {
@@ -281,6 +301,23 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
           const tool = qaTools.find((t) => t.name === name);
           if (!tool) throw new Error(`unknown qa verb: ${name}`);
           return tool.handler(ctx, input);
+        },
+      });
+    }
+    if (handoffCoordinator) {
+      const handoffTools = registerHandoffTools();
+      toolService.registerProvider({
+        roles: ['em', 'human'],
+        listTools: () =>
+          handoffTools.map((t) => ({
+            name: t.name,
+            description: t.description,
+            inputSpec: t.inputSpec,
+          })),
+        callTool: (ctx, name, input) => {
+          const tool = handoffTools.find((t) => t.name === name);
+          if (!tool) throw new Error(`unknown handoff verb: ${name}`);
+          return tool.handler({ store, bus }, ctx, input);
         },
       });
     }
@@ -427,6 +464,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
           ...(emLoop ? buildEmRpcMethods(emLoop, store) : {}),
           ...(qaProtocol ? buildQaRpcMethods(qaProtocol) : {}),
           ...(quotaService ? buildQuotaRpcMethods(quotaService, store) : {}),
+          ...(handoffCoordinator ? buildHandoffRpcMethods(handoffCoordinator, store, bus) : {}),
         }
       : undefined;
 
@@ -454,6 +492,10 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
       store,
       gates: gateService,
       quota: quotaService,
+      // T025 review round 1 (blocker 3, manager-granted): without this the
+      // control room's EM chat and Oracle propose-edit routes 503 forever
+      // — `bus` is already constructed above for the RPC `bus.*` methods.
+      bus,
     });
   } catch (err) {
     await rpc.close();
