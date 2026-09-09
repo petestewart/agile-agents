@@ -73,3 +73,7 @@ export * from './hook';
 // Tool framework: registry, cache, runner, read_summary/test_run, built-in
 // daemon-verb tools, MCP server factory, tool.* RPC methods (T011).
 export * from './tools';
+
+// Agent runner and worktree manager: worktree placement, brief assembly,
+// ACP session wiring, and the runner.* RPC methods (T012).
+export * from './runner';

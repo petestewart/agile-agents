@@ -37,6 +37,33 @@ describe('AgentRecord schema', () => {
     ).toThrow();
   });
 
+  test('validates the T012 additive fields (role/worktree/session_id)', () => {
+    expect(() =>
+      validateAgentRecord({
+        vendor: 'claude',
+        model: 'claude-sonnet-4-5',
+        ticket: 'TKT-0231',
+        pid: 4242,
+        last_seen: '2026-09-07T18:00:00Z',
+        role: 'engineer',
+        worktree: '.worktrees/TKT-0231',
+        session_id: 'sess-abc123',
+      }),
+    ).not.toThrow();
+  });
+
+  test('rejects an unknown role', () => {
+    expect(() =>
+      validateAgentRecord({
+        vendor: 'claude',
+        model: 'claude-sonnet-4-5',
+        pid: 4242,
+        last_seen: '2026-09-07T18:00:00Z',
+        role: 'architect',
+      }),
+    ).toThrow();
+  });
+
   test('rejects a malformed ticket id and a non-positive pid', () => {
     expect(() =>
       validateAgentRecord({
