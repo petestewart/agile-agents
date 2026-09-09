@@ -91,24 +91,14 @@ describe('hook.* RPC round trip (via dispatch)', () => {
 });
 
 /**
- * T033 root-cause fix: the two tests below used to `await new
- * Response(proc.stdout).text()` and only *then* `await proc.exited` — under
- * full-suite CPU contention this occasionally crashed with `EBADF: bad file
- * descriptor, epoll_ctl` from inside `proc.exited` (reproduced 2/10 full
- * runs on the integration head; 0/6 in isolation). The subprocess is spawned
- * with `stderr: 'pipe'` but the old code never drained it — an un-consumed
- * piped stream left the child's stderr fd alive and unregistered from this
- * process's own epoll instance until GC got around to it; when that
- * finalization lands in the same tick `proc.exited`'s own internal
- * epoll_ctl call runs (far more likely once the whole suite has many other
- * subprocesses/sockets churning fds), the two races and the second one to
- * touch the fd sees it already gone. Waiting on stdout, stderr, and exit
- * *together* (Bun's own documented `Bun.spawn` pattern) is the real
- * readiness fix — every stdio stream this process handed the OS is drained
- * before we call the subprocess "done", so there's nothing left half-closed
- * for `proc.exited`'s bookkeeping to race. This changes no assertion: exit
- * code and stdout are checked exactly as before, stderr is captured only
- * for a failure message.
+ * T033 root-cause fix: the two tests below used to await `stdout.text()`
+ * then `exited` sequentially, leaving `stderr: 'pipe'` undrained — under
+ * full-suite load that raced `proc.exited`'s own epoll bookkeeping into an
+ * intermittent `EBADF: bad file descriptor, epoll_ctl` (reproduced 2/7 full
+ * runs on the integration head; 0/6 in isolation — see `.pipeline-report.md`).
+ * Draining stdout, stderr, and exit together (Bun's documented `Bun.spawn`
+ * pattern) closes the race. No assertion changes: exit code and stdout are
+ * checked exactly as before; stderr is captured only for a failure message.
  */
 async function runHookCli(proc: {
   stdout: ReadableStream<Uint8Array>;
