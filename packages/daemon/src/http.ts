@@ -19,6 +19,7 @@
 
 import { join } from 'node:path';
 import {
+  HaltIdSchema,
   type HilDecision,
   HilIdSchema,
   KbIdSchema,
@@ -351,15 +352,17 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
           typeof body.reason === 'string' && body.reason.length > 0
             ? body.reason
             : 'raised from the control room';
-        const raisedBy =
-          typeof body.raised_by === 'string' && body.raised_by.length > 0
-            ? body.raised_by
-            : 'human';
+        // T025 review round 1 (blocker 2): `raised_by` is the audit answer
+        // to "who stopped the factory" (§5 quorum/standup, the retro) — a
+        // browser write's actor is always `human`, never taken from the
+        // request body (a page could otherwise forge `architect`). Same
+        // hardcode `/api/chat/em`/`/api/oracle/propose` already use for
+        // `from`.
         try {
           const halt = await createHalt(feed.store, {
             scope: 'global',
             reason,
-            raised_by: raisedBy,
+            raised_by: 'human',
           });
           return jsonResponse(halt, 201);
         } catch (err) {
@@ -373,8 +376,17 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
         if (!isSameOriginRequest(req, srv.port ?? options.port)) {
           return errorResponse(403, 'cross-origin request rejected');
         }
+        // T025 review round 1 (blocker 1): validate before it ever reaches
+        // `releaseHalt`/`store.abs()` — every sibling route already does
+        // this (`TicketIdSchema`/`OracleIdSchema`/`KbIdSchema` above), this
+        // one was cast instead of parsed, and a traversal id
+        // (`..%2F..%2Fvictim`) reached `store.deleteHalt` unvalidated.
+        const parsedHaltId = HaltIdSchema.safeParse(haltMatch);
+        if (!parsedHaltId.success) {
+          return errorResponse(400, `invalid halt id: ${haltMatch}`);
+        }
         try {
-          await releaseHalt(feed.store, haltMatch as `H-${number}`);
+          await releaseHalt(feed.store, parsedHaltId.data);
           return jsonResponse({ ok: true });
         } catch (err) {
           if (err instanceof NotFoundError) return errorResponse(404, err.message);

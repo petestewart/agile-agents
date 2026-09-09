@@ -67,9 +67,6 @@ export function BoardPanel({ tickets, halts }: { tickets: Ticket[]; halts: Halt[
                   flexDirection: 'column',
                   alignItems: 'flex-start',
                   borderLeft: inHaltScope(t.id) ? '3px solid var(--danger)' : undefined,
-                  width: '100%',
-                  textAlign: 'left',
-                  border: 'none',
                 }}
                 onClick={() => open(t.id)}
               >

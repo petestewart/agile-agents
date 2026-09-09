@@ -89,7 +89,6 @@ export function OraclePanel({ oracle, kb }: { oracle: OracleIndex; kb: KbIndex }
                 className="cr-list-row"
                 data-testid={`oracle-item-${id}`}
                 onClick={() => openOracle(id)}
-                style={{ width: '100%', textAlign: 'left', border: 'none' }}
               >
                 <span className="cr-badge">{id}</span>
                 <span style={{ flex: 1, fontSize: 12.5 }}>{oracle[id]?.title}</span>
@@ -102,7 +101,6 @@ export function OraclePanel({ oracle, kb }: { oracle: OracleIndex; kb: KbIndex }
                 className="cr-list-row"
                 data-testid={`kb-item-${id}`}
                 onClick={() => openKb(id)}
-                style={{ width: '100%', textAlign: 'left', border: 'none' }}
               >
                 <span className="cr-badge">{id}</span>
                 <span style={{ flex: 1, fontSize: 12.5 }}>{kb[id]?.kind}</span>

@@ -43,13 +43,7 @@ export function TeamPanel({
       {agents.map((a) => {
         const halted = haltedAgents.has('*');
         return (
-          <button
-            type="button"
-            key={a.id}
-            className="cr-list-row"
-            onClick={() => open(a)}
-            style={{ width: '100%', textAlign: 'left', border: 'none' }}
-          >
+          <button type="button" key={a.id} className="cr-list-row" onClick={() => open(a)}>
             <span className={`cr-badge${halted ? ' status-halted' : ''}`}>{a.id}</span>
             <span style={{ flex: 1 }}>
               {a.record.vendor}/{a.record.model}

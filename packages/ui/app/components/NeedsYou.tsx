@@ -40,7 +40,6 @@ export function NeedsYou({ items, onChanged }: { items: HilRequest[]; onChanged:
               className="cr-inbox-item hil-item"
               data-id={item.id}
               onClick={() => setSelected(item)}
-              style={{ width: '100%', textAlign: 'left', border: 'none' }}
             >
               <span className="cr-badge">{item.hil_kind}</span>
               <span style={{ flex: 1 }}>

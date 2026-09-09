@@ -1,4 +1,16 @@
 :root {
+  /*
+   * T025 review round 1 (blocker 4): without this, a `<button>`-based
+   * interactive surface (panel headers, board cards, inbox rows — plain
+   * elements with no `background`/`color` of their own, relying on the
+   * class below) falls back to the UA form-control palette computed for
+   * `color-scheme: normal`, i.e. *light* `ButtonFace`/`ButtonText` even
+   * inside a dark page. Declaring both schemes here is what makes that
+   * fallback resolve to the right one when a class genuinely leaves a
+   * property unset, on top of every surface below now setting its own
+   * `background`/`color` explicitly so there is no fallback to reach for.
+   */
+  color-scheme: light dark;
   --bg: #f7f7f5;
   --bg-panel: #ffffff;
   --bg-raised: #ffffff;
@@ -14,8 +26,13 @@
   --radius: 10px;
 }
 
+:root[data-theme="light"] {
+  color-scheme: light;
+}
+
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
+    color-scheme: dark;
     --bg: #17171a;
     --bg-panel: #1f2023;
     --bg-raised: #26272b;
@@ -31,6 +48,7 @@
   }
 }
 :root[data-theme="dark"] {
+  color-scheme: dark;
   --bg: #17171a;
   --bg-panel: #1f2023;
   --bg-raised: #26272b;
@@ -167,7 +185,20 @@ body {
   padding: 10px 14px;
   cursor: pointer;
   user-select: none;
+  /* T025 review round 1 (blocker 4): this is a `<button>` (Panel.tsx) — an
+   * explicit background/color, not the class relying on inherited/UA
+   * defaults, is what stops a dark page from rendering a light-grey
+   * ButtonFace header. Border reset here too, since `.cr-panel` already
+   * draws the panel's own border. `font: inherit` comes before
+   * `font-weight` (a shorthand after the longhand it's meant to combine
+   * with would silently reset it back to `normal`). */
+  font: inherit;
   font-weight: 600;
+  background: var(--bg-panel);
+  color: var(--text);
+  border: none;
+  text-align: left;
+  width: 100%;
 }
 .cr-panel-header .count {
   color: var(--text-dim);
@@ -193,8 +224,18 @@ body {
   align-items: center;
   gap: 10px;
   padding: 8px 4px;
-  border-bottom: 1px solid var(--border);
   cursor: pointer;
+  /* T025 review round 1 (blocker 4): both classes style `<button>`
+   * elements (NeedsYou/TeamPanel/BoardPanel/OraclePanel rows) — same UA
+   * ButtonFace/ButtonText fallback as `.cr-panel-header` above without
+   * these. */
+  background: var(--bg-panel);
+  color: var(--text);
+  border: none;
+  border-bottom: 1px solid var(--border);
+  font: inherit;
+  text-align: left;
+  width: 100%;
 }
 .cr-inbox-item:last-child,
 .cr-list-row:last-child {

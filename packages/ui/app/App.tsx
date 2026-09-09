@@ -33,6 +33,30 @@ type Tab = 'ops' | 'oracle';
 const MAX_EVENTS = 500;
 
 /**
+ * QA round 1 (REJECT): an external change (e.g. a ticket status flipped
+ * through the store by an agent) never reached the Board/Team/Oracle/KB
+ * panels without a full manual reload — `hil`/`halts`/`quota` come from the
+ * live `/ws` snapshot, but `agents`/`tickets`/`oracle`/`kb`/`policy` were
+ * only ever (re)pulled on mount or after *this browser's own* write.
+ * These are the event kinds `store.ts` mints for exactly those entities
+ * (`event.ts`'s enumeration) — any of them arriving over `/ws` means one of
+ * those five reads is now stale.
+ */
+const REFRESH_TRIGGER_KINDS = new Set<Event['kind']>([
+  'ticket_put',
+  'state_transition',
+  'stanza_appended',
+  'oracle_put',
+  'kb_put',
+  'agent_put',
+  'agent_deleted',
+  'policy_put',
+]);
+
+/** Coalesces a burst of triggering events (e.g. a ticket transition plus its stanza) into one refetch. */
+const REFRESH_DEBOUNCE_MS = 150;
+
+/**
  * Control room shell (T025 — design §17 "Control room"; session scope:
  * "collapsible Team / Board / Feed panels ... sprint strip with gate chips
  * ... Halt button ... EM chat panel"). Reads come from the daemon's
@@ -52,18 +76,15 @@ export function App() {
   const [kb, setKb] = useState<KbIndex>({});
   const [policy, setPolicy] = useState<Policy | undefined>(undefined);
   const [error, setError] = useState<string | undefined>(undefined);
-  // Guards against a slow HTTP fallback clobbering state the WS already
-  // delivered (same race the T020 feed page's e2e suite fixed — see
-  // `feed.e2e.test.ts`'s second test).
-  const liveDataApplied = useRef(false);
+  const refreshTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
   // Re-pulls every HTTP-sourced read, `/api/snapshot` included. The `hil`/
-  // `halts`/`quota` fields the panels read come from `snapshot` (kept
-  // otherwise in sync by `/ws`'s live event tail, same as the T020 feed
-  // page) — but a HIL resolve or a raised halt needs its *own* list entry
-  // to disappear/appear immediately, not wait on the next unrelated event
-  // to arrive over the socket, so every write in this app calls this after
-  // it succeeds.
+  // `halts`/`quota` fields the panels read come from `snapshot` — this is
+  // called both after every write this browser makes (so its own resolved
+  // HIL request or raised halt disappears/appears immediately) and,
+  // debounced, whenever `/ws` reports one of `REFRESH_TRIGGER_KINDS` (so an
+  // *external* change — another agent flipping a ticket, say — shows up
+  // without a manual reload too).
   const refreshAux = useCallback(async () => {
     try {
       const [a, t, o, k, p, snap] = await Promise.all([
@@ -85,22 +106,32 @@ export function App() {
     }
   }, []);
 
+  const scheduleRefresh = useCallback(() => {
+    if (refreshTimer.current) clearTimeout(refreshTimer.current);
+    refreshTimer.current = setTimeout(() => {
+      refreshTimer.current = undefined;
+      void refreshAux();
+    }, REFRESH_DEBOUNCE_MS);
+  }, [refreshAux]);
+
   useEffect(() => {
     void refreshAux();
     const handle = connectFeedSocket({
       onSnapshot: (snap) => {
-        liveDataApplied.current = true;
         setSnapshot(snap);
         setEvents(snap.events);
       },
       onEvent: (event) => {
-        liveDataApplied.current = true;
         setEvents((prev) => [...prev, event].slice(-MAX_EVENTS));
+        if (REFRESH_TRIGGER_KINDS.has(event.kind)) scheduleRefresh();
       },
       onStatusChange: (status) => setConnected(status === 'open'),
     });
-    return () => handle.close();
-  }, [refreshAux]);
+    return () => {
+      handle.close();
+      if (refreshTimer.current) clearTimeout(refreshTimer.current);
+    };
+  }, [refreshAux, scheduleRefresh]);
 
   const hil = snapshot?.hil ?? [];
   const halts = snapshot?.halts ?? [];

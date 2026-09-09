@@ -14,12 +14,7 @@ export function Panel({
   const [open, setOpen] = useState(defaultOpen);
   return (
     <section className="cr-panel">
-      <button
-        type="button"
-        className="cr-panel-header"
-        onClick={() => setOpen((v) => !v)}
-        style={{ width: '100%', textAlign: 'left', border: 'none' }}
-      >
+      <button type="button" className="cr-panel-header" onClick={() => setOpen((v) => !v)}>
         <span>{title}</span>
         {count !== undefined && <span className="count">({count})</span>}
         <span className="chev">{open ? '▾' : '▸'}</span>

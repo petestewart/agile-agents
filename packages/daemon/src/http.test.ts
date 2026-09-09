@@ -490,6 +490,28 @@ describe('T025 control room routes', () => {
     expect(res.status).toBe(404);
   });
 
+  test('T025 review round 1 blocker 1: DELETE /api/halt/:id 400s a traversal id instead of reaching the store', async () => {
+    const res = await fetch(
+      `http://127.0.0.1:${crServer.port}/api/halt/${encodeURIComponent('../../../victim')}`,
+      { method: 'DELETE' },
+    );
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toContain('invalid halt id');
+  });
+
+  test('T025 review round 1 blocker 2: POST /api/halt ignores a forged raised_by and always writes human', async () => {
+    const res = await fetch(`http://127.0.0.1:${crServer.port}/api/halt`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ reason: 'test halt', raised_by: 'architect' }),
+    });
+    expect(res.status).toBe(201);
+    const halt = (await res.json()) as { id: string; raised_by: string };
+    expect(halt.raised_by).toBe('human');
+    expect(store.getHalt(halt.id as never).raised_by).toBe('human');
+  });
+
   test('POST /api/chat/em lands a real fyi message on the em inbox via Bus.send', async () => {
     const res = await fetch(`http://127.0.0.1:${crServer.port}/api/chat/em`, {
       method: 'POST',

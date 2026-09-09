@@ -378,6 +378,10 @@ export async function startDaemon(options: DiscoverConfigOptions = {}): Promise<
       store,
       gates: gateService,
       quota: quotaService,
+      // T025 review round 1 (blocker 3, manager-granted): without this the
+      // control room's EM chat and Oracle propose-edit routes 503 forever
+      // — `bus` is already constructed above for the RPC `bus.*` methods.
+      bus,
     });
   } catch (err) {
     await rpc.close();
