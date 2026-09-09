@@ -3,22 +3,40 @@
  * beyond the original brief": "append-only event log of every message, hook
  * decision, and state transition"; §4 layout `log/events.jsonl`).
  *
- * T005 owns exactly one of the three named event sources: `state_transition`
- * (ticket status changes, via `StateStore.transitionTicket`). `message` and
- * `hook_decision` events are emitted by the bus (T006) and hook endpoint
- * (T008+) respectively — this module only builds the shape, `appendEvent`
- * in store.ts writes it.
- *
- * Ticket acceptance criterion "every mutation produces exactly one event" is
- * scoped to ticket transitions (matching the Validation Steps: "property
- * test over random legal transition sequences" asserting `events count ==
- * transitions"). Non-transition mutations (oracle/KB/ledger/stanza writes)
- * still get their own git commit each (§4 "What this buys" — the audit
- * trail is the commit log), but do not each mint a `log/events.jsonl` line;
- * none of them is a message, a hook decision, or a state transition.
+ * Review fix (manager decision B1): the acceptance criterion "every
+ * mutation produces exactly one event" is honored literally now — every
+ * `StateStore` mutation method builds one `Event` (via `buildEvent` below)
+ * and commits it through `StateStore`'s private `commitEvent` with
+ * `message = event.kind`, so the commit log and the event log share one
+ * vocabulary. `message` and `hook_decision` (the two named sources T005
+ * doesn't itself produce) are written by future callers — T006 (bus),
+ * T008/T009 (hook endpoint) — through the now-public `StateStore.appendEvent`.
  */
 
-import { type Event, type TicketId, type TicketStatus, validateEvent } from '@agile-agents/shared';
+import {
+  type Event,
+  type EventKind,
+  type TicketId,
+  type TicketStatus,
+  validateEvent,
+} from '@agile-agents/shared';
+
+export interface BuildEventInput {
+  ticket?: TicketId;
+  agent?: string;
+  data?: Record<string, unknown>;
+}
+
+/** Builds (and validates) an `Event` of the given kind, ts stamped now. */
+export function buildEvent(kind: EventKind, input: BuildEventInput = {}): Event {
+  return validateEvent({
+    ts: new Date().toISOString(),
+    kind,
+    ...(input.ticket !== undefined ? { ticket: input.ticket } : {}),
+    ...(input.agent !== undefined ? { agent: input.agent } : {}),
+    data: input.data ?? {},
+  });
+}
 
 export interface StateTransitionEventInput {
   ticket: TicketId;
@@ -28,11 +46,9 @@ export interface StateTransitionEventInput {
   reason?: string;
 }
 
-/** Builds (and validates) the one `state_transition` event for a ticket transition. */
+/** Builds the one `state_transition` event for a ticket transition. */
 export function buildStateTransitionEvent(input: StateTransitionEventInput): Event {
-  return validateEvent({
-    ts: new Date().toISOString(),
-    kind: 'state_transition',
+  return buildEvent('state_transition', {
     ticket: input.ticket,
     agent: input.agent,
     data: {

@@ -7,10 +7,13 @@ import {
   atomicWriteFile,
   ensureDir,
   fileExists,
+  isHiddenOrTempFile,
+  listDataFiles,
   readJsonFile,
   readJsonlFile,
   readYamlFile,
   removeFile,
+  sweepStaleTempFiles,
   writeJsonFileAtomic,
   writeYamlFileAtomic,
 } from './fs';
@@ -43,6 +46,74 @@ describe('atomicWriteFile', () => {
     atomicWriteFile(path, 'first');
     atomicWriteFile(path, 'second');
     expect(readJsonFileRaw(path)).toBe('second');
+  });
+
+  // Review B4: the temp name must not end in the entity's own extension,
+  // so a crash-orphaned temp file is never mistaken for a real entity by
+  // an extension-filtered directory listing. (No leftover file at all on
+  // success, matching "leaves no temp file behind" above, but for a
+  // `.yaml`-suffixed path specifically.)
+  test('succeeding write leaves only the target .yaml file, no temp remnant', () => {
+    const path = join(dir, 'TKT-0001.yaml');
+    atomicWriteFile(path, 'status: draft\n');
+    expect(readdirSync(dir)).toEqual(['TKT-0001.yaml']);
+  });
+});
+
+describe('isHiddenOrTempFile', () => {
+  test('true for a leftover atomic-write temp file', () => {
+    expect(isHiddenOrTempFile('.TKT-0001.yaml.tmp-1700000000000-abc123')).toBe(true);
+  });
+
+  test('true for a plain hidden file', () => {
+    expect(isHiddenOrTempFile('.gitkeep')).toBe(true);
+  });
+
+  test('false for a real entity file', () => {
+    expect(isHiddenOrTempFile('TKT-0001.yaml')).toBe(false);
+  });
+});
+
+describe('listDataFiles', () => {
+  test('returns only real entity files, skipping hidden/temp ones', () => {
+    writeFileSync(join(dir, 'TKT-0001.yaml'), '');
+    writeFileSync(join(dir, 'TKT-0002.yaml'), '');
+    writeFileSync(join(dir, '.TKT-0003.yaml.tmp-123-abc'), ''); // crash-orphaned temp
+    writeFileSync(join(dir, '.gitkeep'), '');
+    writeFileSync(join(dir, 'README.md'), '');
+
+    expect(listDataFiles(dir, '.yaml').sort()).toEqual(['TKT-0001.yaml', 'TKT-0002.yaml']);
+  });
+
+  test('returns [] for a missing directory', () => {
+    expect(listDataFiles(join(dir, 'nope'), '.yaml')).toEqual([]);
+  });
+});
+
+describe('sweepStaleTempFiles', () => {
+  test('removes leftover temp files recursively, leaves everything else', () => {
+    writeFileSync(join(dir, 'a.yaml'), 'kept');
+    ensureDir(join(dir, 'sub'));
+    writeFileSync(join(dir, 'sub', 'b.yaml'), 'kept');
+    writeFileSync(join(dir, '.a.yaml.tmp-1-x'), 'stale');
+    writeFileSync(join(dir, 'sub', '.b.yaml.tmp-2-y'), 'stale');
+
+    const removed = sweepStaleTempFiles(dir);
+
+    expect(removed.sort()).toEqual(
+      [join(dir, '.a.yaml.tmp-1-x'), join(dir, 'sub', '.b.yaml.tmp-2-y')].sort(),
+    );
+    expect(existsSync(join(dir, 'a.yaml'))).toBe(true);
+    expect(existsSync(join(dir, 'sub', 'b.yaml'))).toBe(true);
+    expect(existsSync(join(dir, '.a.yaml.tmp-1-x'))).toBe(false);
+    expect(existsSync(join(dir, 'sub', '.b.yaml.tmp-2-y'))).toBe(false);
+  });
+
+  test('a leftover temp file does not break listDataFiles (B4 regression)', () => {
+    writeFileSync(join(dir, 'TKT-0001.yaml'), 'status: draft\n');
+    writeFileSync(join(dir, '.TKT-0002.yaml.tmp-999-zzz'), 'garbage, not valid yaml: [');
+
+    expect(listDataFiles(dir, '.yaml')).toEqual(['TKT-0001.yaml']);
   });
 });
 

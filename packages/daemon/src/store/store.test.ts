@@ -50,6 +50,20 @@ describe('StateStore.open', () => {
   test('throws if stateRoot does not exist', () => {
     expect(() => StateStore.open(join(repo, 'nope'))).toThrow();
   });
+
+  // Review B4 regression (store-level, complementing fs.test.ts's unit tests).
+  test('sweeps a leftover atomic-write temp file so listTickets() is not poisoned by it', async () => {
+    const store = StateStore.open(stateRoot);
+    await store.putTicket(makeTicket('TKT-0001'));
+
+    // Simulate a crash mid-write: a temp file left behind in tickets/.
+    writeFileSync(join(stateRoot, 'tickets', '.TKT-0002.yaml.tmp-123-abc'), 'garbage: [');
+
+    // A store opened fresh over the same root sweeps it on open.
+    const restarted = StateStore.open(stateRoot);
+    expect(() => restarted.listTickets()).not.toThrow();
+    expect(restarted.listTickets().map((t) => t.id)).toEqual(['TKT-0001']);
+  });
 });
 
 describe('Ticket get/list/put', () => {
@@ -75,10 +89,16 @@ describe('Ticket get/list/put', () => {
     expect(ids).toEqual(['TKT-0001', 'TKT-0002']);
   });
 
-  test('putTicket commits, with no event emitted (creation is not a transition)', async () => {
+  // Review B1: putTicket now mints a ticket_put event too (every mutation
+  // produces exactly one event, read literally).
+  test('putTicket mints exactly one ticket_put event, commit message matches', async () => {
     const store = StateStore.open(stateRoot);
-    await store.putTicket(makeTicket('TKT-0001'));
-    expect(store.listEvents()).toEqual([]);
+    await store.putTicket(makeTicket('TKT-0001'), { by: 'architect' });
+    const events = store.listEvents();
+    expect(events).toHaveLength(1);
+    expect(events[0]?.kind).toBe('ticket_put');
+    expect(events[0]?.ticket).toBe('TKT-0001');
+    expect(events[0]?.agent).toBe('architect');
     const subject = git(['log', '-1', '--format=%s'], stateRoot);
     expect(subject).toBe('ticket_put');
   });
@@ -93,22 +113,22 @@ describe('transitionTicket — illegal transitions', () => {
     );
   });
 
-  test('an illegal transition leaves the ticket, board, events, and commit log untouched', async () => {
+  test('an illegal transition leaves the ticket, events, and commit log untouched', async () => {
     const store = StateStore.open(stateRoot);
     await store.putTicket(makeTicket('TKT-0001', { status: 'draft' }));
+    const eventsBefore = store.listEvents().length;
     const beforeLog = git(['log', '--format=%H'], stateRoot);
 
     await expect(store.transitionTicket('TKT-0001', 'done', { by: 'architect' })).rejects.toThrow();
 
     expect(store.getTicket('TKT-0001').status).toBe('draft');
     expect(store.getTicket('TKT-0001').history).toEqual([]);
-    expect(store.listEvents()).toEqual([]);
-    expect(store.listBoardRaw('TKT-0001')).toEqual([]);
+    expect(store.listEvents()).toHaveLength(eventsBefore);
     expect(git(['log', '--format=%H'], stateRoot)).toBe(beforeLog);
   });
 });
 
-describe('transitionTicket — every legal edge', () => {
+describe('transitionTicket — every legal edge (exhaustive coverage)', () => {
   let edgeCounter = 0;
   for (const [from, tos] of Object.entries(TICKET_TRANSITIONS) as Array<
     [TicketStatus, readonly TicketStatus[]]
@@ -153,7 +173,9 @@ describe('transitionTicket — audit trail', () => {
     await store.transitionTicket('TKT-0001', 'assigned', { by: 'em' });
     await store.transitionTicket('TKT-0001', 'in_progress', { by: 'eng-1' });
 
-    const events = store.listEvents();
+    const events = store
+      .listEvents()
+      .filter((e) => e.ticket === 'TKT-0001' && e.kind === 'state_transition');
     expect(events.map((e) => e.kind)).toEqual([
       'state_transition',
       'state_transition',
@@ -185,11 +207,18 @@ describe('property test — random legal transition sequences', () => {
     };
   }
 
-  test('200 random legal sequences: events == transitions, statuses match, history grows by one per step', async () => {
+  // Review B3: 40 sequences (down from 200) — exhaustive edge coverage
+  // already comes from the per-edge loop above, not from this test; this
+  // one is about cross-sequence properties (event/history/git-log
+  // consistency over an arbitrary walk), which 40 seeded sequences already
+  // exercises well within a bounded, non-flaky wall time. Timeout is set
+  // generously below the measured wall time (see .pipeline-report.md for
+  // the 3-run measurement this is based on).
+  test('40 random legal sequences: events == transitions, statuses match, history/git-log track the walk', async () => {
     const store = StateStore.open(stateRoot);
     const rand = mulberry32(0xc0ffee);
-    const SEQUENCES = 200;
-    const MAX_STEPS_PER_SEQUENCE = 4; // keep git-spawn count bounded for test runtime
+    const SEQUENCES = 40;
+    const MAX_STEPS_PER_SEQUENCE = 4;
 
     for (let i = 0; i < SEQUENCES; i++) {
       const id = `TKT-${1000 + i}`;
@@ -197,7 +226,7 @@ describe('property test — random legal transition sequences', () => {
 
       let status: TicketStatus = 'draft';
       let steps = 0;
-      const maxSteps = 1 + Math.floor(rand() * MAX_STEPS_PER_SEQUENCE); // 1..MAX_STEPS_PER_SEQUENCE transitions per sequence
+      const maxSteps = 1 + Math.floor(rand() * MAX_STEPS_PER_SEQUENCE);
       const path: TicketStatus[] = [];
 
       while (steps < maxSteps) {
@@ -214,20 +243,25 @@ describe('property test — random legal transition sequences', () => {
       expect(ticket.status).toBe(status);
       expect(ticket.history).toHaveLength(path.length);
 
-      const boardEvents = store
-        .listBoardRaw(id)
-        .filter(
-          (line): line is { kind: string } =>
-            typeof line === 'object' && line !== null && 'kind' in line,
-        )
-        .filter((line) => line.kind === 'state_transition');
-      expect(boardEvents).toHaveLength(path.length);
-
-      const ticketEvents = store.listEvents().filter((e) => e.ticket === id);
+      const ticketEvents = store
+        .listEvents()
+        .filter((e) => e.ticket === id && e.kind === 'state_transition');
       expect(ticketEvents).toHaveLength(path.length);
       expect(ticketEvents.map((e) => e.data.to)).toEqual(path);
+
+      // git log --format=%s, restricted to this ticket's own N most
+      // recent state_transition commits (there is exactly one commit per
+      // transition and each commit's subject is the event kind), matches
+      // the walk length — folds the audit-trail property into this loop
+      // too (review nit #12), not only the separate 3-step example test.
+      const recentSubjects = git(['log', `-${path.length}`, '--format=%s'], stateRoot).split('\n');
+      if (path.length > 0) {
+        expect(recentSubjects).toEqual(path.map(() => 'state_transition'));
+      }
     }
-  }, 60_000);
+    // Review B3: timeout set well clear (>=3x) of the measured wall time —
+    // see .pipeline-report.md for the 3-run measurement this is based on.
+  }, 45_000);
 });
 
 describe('restart survives — fresh StateStore over the same root reads back identical entities', () => {
@@ -271,7 +305,7 @@ describe('atomic write on failed validation', () => {
 });
 
 describe('Board: appendStanza', () => {
-  test('appends a validated stanza and commits it', async () => {
+  test('appends a validated stanza and commits it (message == event kind)', async () => {
     const store = StateStore.open(stateRoot);
     const stanza = await store.appendStanza({
       ts: '2026-09-08T00:00:00Z',
@@ -282,7 +316,13 @@ describe('Board: appendStanza', () => {
     });
     expect(store.listStanzas('TKT-0001')).toEqual([stanza]);
     const subject = git(['log', '-1', '--format=%s'], stateRoot);
-    expect(subject).toBe('stanza:progress');
+    expect(subject).toBe('stanza_appended');
+
+    const events = store.listEvents();
+    expect(events).toHaveLength(1);
+    expect(events[0]?.kind).toBe('stanza_appended');
+    expect(events[0]?.ticket).toBe('TKT-0001');
+    expect(events[0]?.agent).toBe('eng-1');
   });
 
   test('rejects a discovery stanza with no discovery block', async () => {
@@ -298,10 +338,14 @@ describe('Board: appendStanza', () => {
     ).rejects.toThrow();
   });
 
-  test('listStanzas filters out state_transition board lines', async () => {
+  // Review B5: board/status/<ticket>.jsonl holds ONLY Stanzas now —
+  // transitions no longer mirror there.
+  test('transitionTicket no longer writes anything to the board file', async () => {
     const store = StateStore.open(stateRoot);
     await store.putTicket(makeTicket('TKT-0001', { status: 'draft' }));
     await store.transitionTicket('TKT-0001', 'ready', { by: 'architect' });
+    expect(store.listBoardRaw('TKT-0001')).toEqual([]);
+
     await store.appendStanza({
       ts: '2026-09-08T00:00:00Z',
       ticket: 'TKT-0001',
@@ -309,14 +353,33 @@ describe('Board: appendStanza', () => {
       kind: 'progress',
       summary: 'started',
     });
-
-    expect(store.listBoardRaw('TKT-0001')).toHaveLength(2);
+    expect(store.listBoardRaw('TKT-0001')).toHaveLength(1);
     expect(store.listStanzas('TKT-0001')).toHaveLength(1);
+  });
+
+  // Review B5: listStanzas must throw (not silently drop) on a malformed line.
+  test('listStanzas throws a descriptive error naming the file and line on a malformed line', () => {
+    const store = StateStore.open(stateRoot);
+    const boardPath = join(stateRoot, 'board', 'status', 'TKT-0001.jsonl');
+    writeFileSync(
+      boardPath,
+      `${JSON.stringify({
+        ts: '2026-09-08T00:00:00Z',
+        ticket: 'TKT-0001',
+        agent: 'eng-1',
+        kind: 'progress',
+        summary: 'ok line',
+      })}\n${JSON.stringify({ not: 'a valid stanza' })}\n`,
+    );
+
+    expect(() => store.listStanzas('TKT-0001')).toThrow(
+      /malformed stanza in board\/status\/TKT-0001\.jsonl at line 2/,
+    );
   });
 });
 
 describe('Ledger: appendLedgerLine', () => {
-  test('appends a validated ledger line and commits it', async () => {
+  test('appends a validated ledger line and commits it (message == event kind)', async () => {
     const store = StateStore.open(stateRoot);
     const line = await store.appendLedgerLine('S-07', {
       ts: '2026-09-08T00:00:00Z',
@@ -331,7 +394,11 @@ describe('Ledger: appendLedgerLine', () => {
     });
     expect(store.listLedger('S-07')).toEqual([line]);
     const subject = git(['log', '-1', '--format=%s'], stateRoot);
-    expect(subject).toBe('ledger_append');
+    expect(subject).toBe('ledger_appended');
+
+    const events = store.listEvents();
+    expect(events).toHaveLength(1);
+    expect(events[0]?.kind).toBe('ledger_appended');
   });
 
   test('rejects an unknown key', async () => {
@@ -352,6 +419,25 @@ describe('Ledger: appendLedgerLine', () => {
     ).rejects.toThrow();
     expect(store.listLedger('S-07')).toEqual([]);
   });
+
+  // Review nit: line.sprint must match the sprint argument.
+  test('rejects a line whose sprint does not match the sprint argument', async () => {
+    const store = StateStore.open(stateRoot);
+    await expect(
+      store.appendLedgerLine('S-07', {
+        ts: '2026-09-08T00:00:00Z',
+        sprint: 'S-99',
+        ticket: 'TKT-0001',
+        agent: 'eng-1',
+        model: 'claude-sonnet',
+        in_tokens: 1,
+        out_tokens: 1,
+        cost_usd: 0,
+        kind: 'engineer',
+      }),
+    ).rejects.toThrow(/does not match sprint argument/);
+    expect(store.listLedger('S-07')).toEqual([]);
+  });
 });
 
 describe('Oracle index maintenance', () => {
@@ -370,7 +456,7 @@ describe('Oracle index maintenance', () => {
     };
   }
 
-  test('an active entry is written to disk and added to the index', async () => {
+  test('an active entry is written to disk and added to the index; mints one oracle_put event', async () => {
     const store = StateStore.open(stateRoot);
     await store.putOracleEntry(makeEntry() as never, 'Full decision body.');
 
@@ -385,6 +471,12 @@ describe('Oracle index maintenance', () => {
     const { entry, body } = store.getOracleEntry('DEC-0042');
     expect(entry.title).toBe('Sessions are JWT, not server-side');
     expect(body.trim()).toBe('Full decision body.');
+
+    const events = store.listEvents();
+    expect(events).toHaveLength(1);
+    expect(events[0]?.kind).toBe('oracle_put');
+    const subject = git(['log', '-1', '--format=%s'], stateRoot);
+    expect(subject).toBe('oracle_put');
   });
 
   test('a superseded write drops the entry from the index but keeps the file', async () => {
@@ -416,6 +508,20 @@ describe('Oracle index maintenance', () => {
     expect(changelog).toContain('Simplifies revocation.');
   });
 
+  // Review nit: a multi-line rationale must not break "one line per change".
+  test('collapses a multi-line rationale into a single changelog line', async () => {
+    const store = StateStore.open(stateRoot);
+    await store.putOracleEntry(
+      makeEntry({ rationale: 'Line one.\nLine two.\n  Line three.' }) as never,
+      'body',
+    );
+    const changelog = readFileSync(join(stateRoot, 'oracle', 'changelog.md'), 'utf8');
+    const lines = changelog.trim().split('\n');
+    const changeLine = lines[lines.length - 1] ?? '';
+    expect(changeLine).not.toContain('\n');
+    expect(changeLine).toContain('Line one. Line two. Line three.');
+  });
+
   test('getOracleEntry on a missing id throws NotFoundError', () => {
     const store = StateStore.open(stateRoot);
     expect(() => store.getOracleEntry('DEC-9999')).toThrow(NotFoundError);
@@ -435,7 +541,7 @@ describe('Knowledge store index maintenance', () => {
     };
   }
 
-  test('a fact is written to disk and indexed', async () => {
+  test('a fact is written to disk and indexed; mints one kb_put event', async () => {
     const store = StateStore.open(stateRoot);
     await store.putKbFact(makeFact() as never, 'The gotcha, in prose.');
 
@@ -449,6 +555,10 @@ describe('Knowledge store index maintenance', () => {
     const { fact, body } = store.getKbFact('KB-0117');
     expect(fact.confidence).toBe('observed');
     expect(body.trim()).toBe('The gotcha, in prose.');
+
+    const events = store.listEvents();
+    expect(events).toHaveLength(1);
+    expect(events[0]?.kind).toBe('kb_put');
   });
 
   test('a later write updates the index in place', async () => {
@@ -461,6 +571,281 @@ describe('Knowledge store index maintenance', () => {
   test('getKbFact on a missing id throws NotFoundError', () => {
     const store = StateStore.open(stateRoot);
     expect(() => store.getKbFact('KB-9999')).toThrow(NotFoundError);
+  });
+});
+
+describe('Halt: putHalt / getHalt / listHalts / deleteHalt', () => {
+  function makeHalt(overrides: Record<string, unknown> = {}) {
+    return {
+      id: 'H-12',
+      scope: 'global',
+      reason: 'discovery: auth model needs rework',
+      raised_by: 'architect',
+      quorum: 'pending',
+      ...overrides,
+    };
+  }
+
+  test('putHalt creates the file, mints halt_created, one commit', async () => {
+    const store = StateStore.open(stateRoot);
+    await store.putHalt(makeHalt() as never);
+    expect(store.getHalt('H-12' as never).quorum).toBe('pending');
+    const events = store.listEvents();
+    expect(events).toHaveLength(1);
+    expect(events[0]?.kind).toBe('halt_created');
+    expect(git(['log', '-1', '--format=%s'], stateRoot)).toBe('halt_created');
+  });
+
+  test('listHalts returns every halt file', async () => {
+    const store = StateStore.open(stateRoot);
+    await store.putHalt(makeHalt() as never);
+    await store.putHalt(makeHalt({ id: 'H-13', scope: ['TKT-0001'] }) as never);
+    expect(
+      store
+        .listHalts()
+        .map((h) => h.id)
+        .sort(),
+    ).toEqual(['H-12', 'H-13']);
+  });
+
+  test('deleteHalt releases (removes) the file and mints halt_released', async () => {
+    const store = StateStore.open(stateRoot);
+    await store.putHalt(makeHalt() as never);
+    await store.deleteHalt('H-12' as never);
+    expect(() => store.getHalt('H-12' as never)).toThrow(NotFoundError);
+    const events = store.listEvents();
+    expect(events.map((e) => e.kind)).toEqual(['halt_created', 'halt_released']);
+  });
+
+  test('deleteHalt on a missing halt throws NotFoundError', async () => {
+    const store = StateStore.open(stateRoot);
+    await expect(store.deleteHalt('H-99' as never)).rejects.toThrow(NotFoundError);
+  });
+});
+
+describe('Sprint: putSprint / getSprint / listSprints', () => {
+  function makeSprint(overrides: Record<string, unknown> = {}) {
+    return {
+      id: 'S-07',
+      goal: 'Auth works end to end',
+      tickets: [],
+      budget_tokens: 5_000_000,
+      started: '2026-09-08T00:00:00Z',
+      ...overrides,
+    };
+  }
+
+  test('putSprint/getSprint round-trip, mints sprint_put', async () => {
+    const store = StateStore.open(stateRoot);
+    await store.putSprint(makeSprint() as never);
+    expect(store.getSprint('S-07' as never).goal).toBe('Auth works end to end');
+    expect(store.listEvents()[0]?.kind).toBe('sprint_put');
+  });
+
+  test('listSprints returns every sprint file', async () => {
+    const store = StateStore.open(stateRoot);
+    await store.putSprint(makeSprint() as never);
+    await store.putSprint(makeSprint({ id: 'S-08' }) as never);
+    expect(
+      store
+        .listSprints()
+        .map((s) => s.id)
+        .sort(),
+    ).toEqual(['S-07', 'S-08']);
+  });
+
+  test('getSprint on a missing id throws NotFoundError', () => {
+    const store = StateStore.open(stateRoot);
+    expect(() => store.getSprint('S-99' as never)).toThrow(NotFoundError);
+  });
+});
+
+describe('Quota: putQuota / getQuota', () => {
+  function makeQuota(overrides: Record<string, unknown> = {}) {
+    return {
+      vendor: 'claude',
+      account: 'default',
+      kind: 'subscription_window',
+      remaining: 0.5,
+      unit: 'fraction',
+      confidence: 'reported',
+      source: 'usage_endpoint',
+      updated: '2026-09-08T00:00:00Z',
+      ...overrides,
+    };
+  }
+
+  test('putQuota/getQuota round-trip, mints quota_put', async () => {
+    const store = StateStore.open(stateRoot);
+    await store.putQuota(makeQuota() as never);
+    expect(store.getQuota('claude', 'default').remaining).toBe(0.5);
+    expect(store.listEvents()[0]?.kind).toBe('quota_put');
+  });
+
+  test('getQuota on a missing account throws NotFoundError', () => {
+    const store = StateStore.open(stateRoot);
+    expect(() => store.getQuota('claude', 'nope')).toThrow(NotFoundError);
+  });
+});
+
+describe('AgentRecord: putAgent / getAgent / listAgents / deleteAgent', () => {
+  function makeRecord(overrides: Record<string, unknown> = {}) {
+    return {
+      vendor: 'claude',
+      model: 'sonnet',
+      pid: 123,
+      last_seen: '2026-09-08T00:00:00Z',
+      ...overrides,
+    };
+  }
+
+  test('putAgent/getAgent round-trip, mints agent_put', async () => {
+    const store = StateStore.open(stateRoot);
+    await store.putAgent('eng-1' as never, makeRecord() as never);
+    expect(store.getAgent('eng-1' as never).model).toBe('sonnet');
+    const events = store.listEvents();
+    expect(events[0]?.kind).toBe('agent_put');
+    expect(events[0]?.agent).toBe('eng-1');
+  });
+
+  test('listAgents returns every agent record', async () => {
+    const store = StateStore.open(stateRoot);
+    await store.putAgent('eng-1' as never, makeRecord() as never);
+    await store.putAgent('eng-2' as never, makeRecord() as never);
+    expect(
+      store
+        .listAgents()
+        .map((a) => a.id)
+        .sort(),
+    ).toEqual(['eng-1', 'eng-2']);
+  });
+
+  test('deleteAgent removes the record and mints agent_deleted', async () => {
+    const store = StateStore.open(stateRoot);
+    await store.putAgent('eng-1' as never, makeRecord() as never);
+    await store.deleteAgent('eng-1' as never);
+    expect(() => store.getAgent('eng-1' as never)).toThrow(NotFoundError);
+    expect(store.listEvents().map((e) => e.kind)).toEqual(['agent_put', 'agent_deleted']);
+  });
+});
+
+describe('Policy / Vendors singletons', () => {
+  test('getPolicy reads what agile init wrote', () => {
+    const store = StateStore.open(stateRoot);
+    expect(store.getPolicy().gates.approve_plan).toBe('human');
+  });
+
+  test('putPolicy overwrites it and mints policy_put', async () => {
+    const store = StateStore.open(stateRoot);
+    await store.putPolicy({
+      gates: { approve_plan: 'em' },
+      breaker_signals: [],
+    } as never);
+    expect(store.getPolicy().gates.approve_plan).toBe('em');
+    expect(store.listEvents()[0]?.kind).toBe('policy_put');
+  });
+
+  test('getVendors reads what agile init wrote', () => {
+    const store = StateStore.open(stateRoot);
+    expect(store.getVendors().claude).toBeDefined();
+  });
+
+  test('putVendors overwrites it and mints vendors_put', async () => {
+    const store = StateStore.open(stateRoot);
+    await store.putVendors({
+      claude: { accounts: [{ id: 'default', auth: 'subscription' }] },
+    } as never);
+    expect(store.listEvents()[0]?.kind).toBe('vendors_put');
+  });
+});
+
+describe('Generic entity trio: putEntity / getEntity / deleteEntity', () => {
+  interface Widget {
+    id: string;
+    n: number;
+  }
+  function validateWidget(input: unknown): Widget {
+    const value = input as Widget;
+    if (typeof value?.id !== 'string' || typeof value?.n !== 'number') {
+      throw new Error('invalid Widget');
+    }
+    return { id: value.id, n: value.n };
+  }
+
+  test('putEntity writes + validates, getEntity reads it back, mints entity_put', async () => {
+    const store = StateStore.open(stateRoot);
+    const relPath = join('bus', 'inbox', 'em', '01J9EXAMPLE0000000000000000.yaml');
+    await store.putEntity(relPath, validateWidget, { id: 'w1', n: 1 });
+    expect(store.getEntity(relPath, validateWidget)).toEqual({ id: 'w1', n: 1 });
+    const events = store.listEvents();
+    expect(events[0]?.kind).toBe('entity_put');
+    expect(events[0]?.data).toEqual({ relPath });
+  });
+
+  test('putEntity rejects invalid data, writes nothing', async () => {
+    const store = StateStore.open(stateRoot);
+    const relPath = join('bus', 'inbox', 'em', 'bad.yaml');
+    await expect(store.putEntity(relPath, validateWidget, { id: 'w1' })).rejects.toThrow();
+    expect(() => store.getEntity(relPath, validateWidget)).toThrow(NotFoundError);
+  });
+
+  test('getEntity on a missing path throws NotFoundError', () => {
+    const store = StateStore.open(stateRoot);
+    expect(() => store.getEntity('bus/inbox/em/nope.yaml', validateWidget)).toThrow(NotFoundError);
+  });
+
+  test('deleteEntity removes the file and mints entity_deleted', async () => {
+    const store = StateStore.open(stateRoot);
+    const relPath = join('bus', 'inbox', 'em', 'w1.yaml');
+    await store.putEntity(relPath, validateWidget, { id: 'w1', n: 1 });
+    await store.deleteEntity(relPath);
+    expect(() => store.getEntity(relPath, validateWidget)).toThrow(NotFoundError);
+    expect(store.listEvents().map((e) => e.kind)).toEqual(['entity_put', 'entity_deleted']);
+  });
+
+  test('deleteEntity on a missing path throws NotFoundError', async () => {
+    const store = StateStore.open(stateRoot);
+    await expect(store.deleteEntity('bus/inbox/em/nope.yaml')).rejects.toThrow(NotFoundError);
+  });
+
+  test('a .json relPath round-trips as JSON', async () => {
+    const store = StateStore.open(stateRoot);
+    const relPath = join('bus', 'inbox', 'em', 'w1.json');
+    await store.putEntity(relPath, validateWidget, { id: 'w1', n: 42 });
+    expect(store.getEntity(relPath, validateWidget)).toEqual({ id: 'w1', n: 42 });
+    expect(readFileSync(join(stateRoot, relPath), 'utf8').trim().startsWith('{')).toBe(true);
+  });
+});
+
+describe('appendEvent — public escape hatch for message/hook_decision events', () => {
+  test('appends and commits a message event with message == kind', async () => {
+    const store = StateStore.open(stateRoot);
+    const event = await store.appendEvent({
+      ts: '2026-09-08T00:00:00Z',
+      kind: 'message',
+      data: { from: 'eng-1', to: ['em'] },
+    });
+    expect(store.listEvents()).toEqual([event]);
+    expect(git(['log', '-1', '--format=%s'], stateRoot)).toBe('message');
+  });
+
+  test('appends a hook_decision event', async () => {
+    const store = StateStore.open(stateRoot);
+    await store.appendEvent({
+      ts: '2026-09-08T00:00:00Z',
+      kind: 'hook_decision',
+      agent: 'eng-1',
+      data: { allow: false, reason: 'halt active' },
+    });
+    expect(store.listEvents()[0]?.kind).toBe('hook_decision');
+  });
+
+  test('rejects an invalid event and writes nothing', async () => {
+    const store = StateStore.open(stateRoot);
+    await expect(
+      store.appendEvent({ ts: '2026-09-08T00:00:00Z', kind: 'not_a_kind' } as never),
+    ).rejects.toThrow();
+    expect(store.listEvents()).toEqual([]);
   });
 });
 

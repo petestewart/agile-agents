@@ -10,30 +10,58 @@
  * validate the data with a shared zod schema *before* calling this — that
  * ordering is what "a failing validation leaves the previous file intact"
  * (T005 test plan) actually requires; this module has no opinion on schemas.
+ *
+ * Durability note (review nit, not fixed): the header above claims
+ * *atomicity*, not durability — there is no `fsync` on the temp file or the
+ * containing directory after `rename`, so a hard power loss (not a process
+ * crash) could still lose the write or, on some filesystems, leave stale
+ * metadata. Out of scope for T005's fix pass; flagged in the report.
+ *
+ * Temp-file naming (review B4 fix): the temp name is
+ * `.<basename>.tmp-<ts>-<rand>` — a leading dot (hidden) plus a suffix that
+ * never ends in the entity's own extension, so a crash-orphaned temp file
+ * for `tickets/TKT-0001.yaml` is named `.TKT-0001.yaml.tmp-<ts>-<rand>`,
+ * which does not end in `.yaml` and is not picked up by an
+ * extension-filtered directory listing. `listDataFiles` below is the one
+ * place every store `listX` should filter through (extension match, no
+ * leading dot, no `.tmp-` — belt-and-braces on top of the naming fix), and
+ * `sweepStaleTempFiles` gives `StateStore.open` a way to clean up anything
+ * still orphaned from before this fix (or a still-more-unlucky crash
+ * between the rename's temp-file write and the rename itself).
  */
 
 import {
   existsSync,
   mkdirSync,
   readFileSync,
+  readdirSync,
   renameSync,
   unlinkSync,
   writeFileSync,
 } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 
 export function ensureDir(dirPath: string): void {
   mkdirSync(dirPath, { recursive: true });
 }
 
+const TEMP_FILE_MARKER = '.tmp-';
+
+function tempFileName(targetPath: string): string {
+  const rand = Math.random().toString(36).slice(2);
+  return `.${basename(targetPath)}${TEMP_FILE_MARKER}${Date.now()}-${rand}`;
+}
+
+/** True for a hidden file or a leftover atomic-write temp file — never a real entity file. */
+export function isHiddenOrTempFile(name: string): boolean {
+  return name.startsWith('.') || name.includes(TEMP_FILE_MARKER);
+}
+
 /** Writes `content` to `path` atomically (temp file + rename), creating parent dirs. */
 export function atomicWriteFile(path: string, content: string): void {
   ensureDir(dirname(path));
-  const tmpPath = join(
-    dirname(path),
-    `.tmp-${Date.now()}-${Math.random().toString(36).slice(2)}-${path.split('/').pop()}`,
-  );
+  const tmpPath = join(dirname(path), tempFileName(path));
   writeFileSync(tmpPath, content);
   renameSync(tmpPath, path);
 }
@@ -82,4 +110,40 @@ export function fileExists(path: string): boolean {
 
 export function removeFile(path: string): void {
   if (existsSync(path)) unlinkSync(path);
+}
+
+/**
+ * Every filename in `dirPath` ending in `extension`, excluding hidden files
+ * and atomic-write temp files (see `isHiddenOrTempFile`) — the one place
+ * every store `listX` reader filters a directory, so a crash-orphaned temp
+ * file (or a stray `.gitkeep`) never gets parsed as an entity (review B4).
+ */
+export function listDataFiles(dirPath: string, extension: string): string[] {
+  if (!existsSync(dirPath)) return [];
+  return readdirSync(dirPath).filter(
+    (name) => name.endsWith(extension) && !isHiddenOrTempFile(name),
+  );
+}
+
+/**
+ * Recursively removes any leftover atomic-write temp file under `root`
+ * (review B4: "StateStore.open sweeps stale temp files"). Returns the
+ * absolute paths removed, for logging/tests.
+ */
+export function sweepStaleTempFiles(root: string): string[] {
+  const removed: string[] = [];
+  const walk = (dir: string): void => {
+    if (!existsSync(dir)) return;
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const full = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        walk(full);
+      } else if (entry.name.startsWith('.') && entry.name.includes(TEMP_FILE_MARKER)) {
+        unlinkSync(full);
+        removed.push(full);
+      }
+    }
+  };
+  walk(root);
+  return removed;
 }

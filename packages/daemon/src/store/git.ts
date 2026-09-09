@@ -12,10 +12,26 @@
  * possible — never rides along). "Nothing to commit" (the write produced no
  * byte-level change, e.g. re-transitioning to a state that re-serializes
  * identically) is not an error — it's the common case for idempotent retries.
+ *
+ * Ordering / partial-state note (review nit, documented not fully solved):
+ * the store always writes its entity file(s) *before* calling
+ * `commitPaths`. If the commit step itself throws (git missing, disk full,
+ * a hook rejecting the commit), the write has already landed on disk and in
+ * `log/events.jsonl`, but is not yet committed — the working tree is
+ * ahead of `agile-state`'s history until the next mutation happens to touch
+ * the same paths and sweep them into a commit under an unrelated message,
+ * or until a human runs `git commit` by hand. `commitPaths` surfaces the
+ * failure (it throws, it doesn't swallow), so the caller/daemon at least
+ * sees the error rather than silently losing it; a full rollback (restoring
+ * the prior file bytes and truncating the JSONL lines just appended) is not
+ * implemented — flagged as a known gap rather than solved in this pass.
  */
 
 const AUTHOR_NAME = 'agiled';
-const AUTHOR_EMAIL = 'agiled@local';
+// Matches init.ts's bootstrap commit author (`agiled <agiled@localhost>`) —
+// one author identity for every commit on `agile-state` (review nit: T005
+// originally used `agiled@local`, a second identity for the same actor).
+const AUTHOR_EMAIL = 'agiled@localhost';
 
 function git(args: string[], cwd: string): { exitCode: number; stdout: string; stderr: string } {
   const result = Bun.spawnSync(['git', ...args], { cwd, stdout: 'pipe', stderr: 'pipe' });
@@ -41,6 +57,11 @@ function runGit(args: string[], cwd: string): string {
  * (returns `null`) if none of those paths actually changed relative to
  * HEAD — "must tolerate nothing to commit" (T005 scope).
  *
+ * Change detection (review nit fix): `git status --porcelain -- <paths>`
+ * rather than matching git's human-readable commit output for "nothing to
+ * commit" — porcelain format is a stable, locale-independent contract,
+ * where the previous approach broke under any non-English `git` locale.
+ *
  * `relativePaths` are relative to `stateRoot` (the `agile-state` worktree
  * root), matching how every store module builds paths.
  */
@@ -53,9 +74,14 @@ export function commitPaths(
     throw new Error('commitPaths: relativePaths must be non-empty');
   }
 
+  const status = runGit(['status', '--porcelain', '--', ...relativePaths], stateRoot);
+  if (status.length === 0) {
+    return null;
+  }
+
   runGit(['add', '-A', '--', ...relativePaths], stateRoot);
 
-  const result = git(
+  runGit(
     [
       '-c',
       `user.name=${AUTHOR_NAME}`,
@@ -69,17 +95,6 @@ export function commitPaths(
     ],
     stateRoot,
   );
-
-  if (result.exitCode !== 0) {
-    // "nothing to commit, working tree clean" (or the pathspec-scoped
-    // equivalent) is not an error — tolerate it (T005 scope) and unstage
-    // whatever `add -A` may have staged for these paths.
-    if (/nothing to commit/.test(result.stdout) || /nothing to commit/.test(result.stderr)) {
-      git(['reset', '--', ...relativePaths], stateRoot);
-      return null;
-    }
-    throw new Error(`git commit failed in ${stateRoot}: ${result.stderr || result.stdout}`);
-  }
 
   return runGit(['rev-parse', 'HEAD'], stateRoot);
 }

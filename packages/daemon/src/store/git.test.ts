@@ -41,11 +41,11 @@ describe('commitPaths', () => {
     expect(status).toContain('b.txt');
   });
 
-  test('authors the commit as agiled <agiled@local>', () => {
+  test("authors the commit as agiled <agiled@localhost> (matches init.ts's bootstrap commit)", () => {
     writeFileSync(join(repo, 'a.txt'), 'a');
     commitPaths(repo, ['a.txt'], 'add a');
     const author = git(['log', '-1', '--format=%an <%ae>'], repo);
-    expect(author).toBe('agiled <agiled@local>');
+    expect(author).toBe('agiled <agiled@localhost>');
   });
 
   test('returns null and tolerates "nothing to commit" when nothing changed', () => {
@@ -74,5 +74,24 @@ describe('commitPaths', () => {
 
   test('rejects an empty path list', () => {
     expect(() => commitPaths(repo, [], 'x')).toThrow(/non-empty/);
+  });
+
+  // Review nit: "nothing to commit" detection must not depend on git's
+  // human-readable, locale-dependent commit output.
+  test('detects "nothing to commit" via porcelain status, not locale-dependent message text', () => {
+    writeFileSync(join(repo, 'a.txt'), 'a');
+    commitPaths(repo, ['a.txt'], 'add a');
+
+    const result = Bun.spawnSync(
+      ['git', '-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-m', 'noop'],
+      { cwd: repo, env: { ...process.env, LC_ALL: 'fr_FR.UTF-8' }, stdout: 'pipe', stderr: 'pipe' },
+    );
+    // Whatever git prints under a non-English locale (may itself fall back
+    // to C if fr_FR isn't installed in the test image) is irrelevant —
+    // commitPaths never inspects this text at all.
+    expect(result.exitCode).not.toBe(0);
+
+    const second = commitPaths(repo, ['a.txt'], 'no-op');
+    expect(second).toBeNull();
   });
 });

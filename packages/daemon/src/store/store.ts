@@ -6,7 +6,10 @@
  * Every write: validate with the shared zod schema first (so a failing
  * validation touches no file), then an atomic file write (fs.ts), then one
  * git commit on the `agile-state` worktree batching every file that one
- * logical operation touched (git.ts). Reads never mutate.
+ * logical operation touched, plus the one `Event` line that operation mints
+ * in `log/events.jsonl` (git.ts) — the commit message is that event's
+ * `kind`, so the commit log and the event log share one vocabulary (review
+ * fix, manager decision B1). Reads never mutate.
  *
  * Concurrency: one daemon process per repo (§15), so a plain async mutex
  * around each mutation method is enough — it only needs to serialize this
@@ -18,12 +21,23 @@
  * concurrently (e.g. two RPC requests racing) without reasoning about
  * interleaving, and so a slower future implementation (real async I/O)
  * doesn't silently reintroduce a race.
+ *
+ * Partial-state note (review nit, documented not fully solved): every
+ * mutation writes its entity file(s) first, then commits. If the commit
+ * step throws (see git.ts's header), the write already landed on disk (and
+ * in `log/events.jsonl`) ahead of `agile-state`'s committed history — the
+ * error surfaces to the caller rather than being swallowed, but no
+ * automatic rollback of the just-written bytes is implemented.
  */
 
-import { appendFileSync, existsSync, readFileSync, readdirSync } from 'node:fs';
+import { appendFileSync, existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
+  type AgentId,
+  type AgentRecord,
   type Event,
+  type Halt,
+  type HaltId,
   type KbFact,
   type KbId,
   type KbIndex,
@@ -31,30 +45,45 @@ import {
   type OracleEntry,
   type OracleId,
   type OracleIndex,
+  type Policy,
+  type Quota,
+  type Sprint,
   type SprintId,
   type Stanza,
   type Ticket,
   type TicketId,
   type TicketStatus,
+  type VendorsConfig,
   isLegalTransition,
+  validateAgentRecord,
   validateEvent,
+  validateHalt,
   validateKbFact,
   validateKbIndex,
   validateLedgerLine,
   validateOracleEntry,
   validateOracleIndex,
+  validatePolicy,
+  validateQuota,
+  validateSprint,
   validateStanza,
   validateTicket,
+  validateVendorsConfig,
 } from '@agile-agents/shared';
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
-import { buildStateTransitionEvent } from './events';
+import { buildEvent, buildStateTransitionEvent } from './events';
 import {
   appendJsonlLine,
   atomicWriteFile,
   ensureDir,
   fileExists,
+  listDataFiles,
+  readJsonFile,
   readJsonlFile,
   readYamlFile,
+  removeFile,
+  sweepStaleTempFiles,
+  writeJsonFileAtomic,
   writeYamlFileAtomic,
 } from './fs';
 import { commitPaths } from './git';
@@ -124,13 +153,16 @@ function formatHistoryLine(
  * `2026-09-07 DEC-0042 supersedes DEC-0019: <one line>`"). Generalized past
  * the one given example (a supersession) to any oracle write, since
  * `putOracleEntry` is the only writer and every write needs a line.
+ * Collapses embedded newlines (review nit) so a multi-line rationale can't
+ * break the file's "one line per change" contract.
  */
 function formatOracleChangelogLine(entry: OracleEntry): string {
   const date = entry.decided || todayIso();
+  const rationale = entry.rationale.replace(/\s*\n\s*/g, ' ').trim();
   if (entry.supersedes.length > 0) {
-    return `${date} ${entry.id} supersedes ${entry.supersedes.join(', ')}: ${entry.rationale}`;
+    return `${date} ${entry.id} supersedes ${entry.supersedes.join(', ')}: ${rationale}`;
   }
-  return `${date} ${entry.id} ${entry.status}: ${entry.rationale}`;
+  return `${date} ${entry.id} ${entry.status}: ${rationale}`;
 }
 
 function oracleEntryRelPath(id: OracleId): string {
@@ -175,18 +207,31 @@ function readKbIndex(path: string): KbIndex {
 
 function appendChangelogLine(path: string, line: string): void {
   ensureDir(join(path, '..'));
-  if (!existsSync(path)) {
+  if (!fileExists(path)) {
     appendFileSync(path, '# Changelog\n\n');
   }
   appendFileSync(path, `${line}\n`);
 }
 
-function safeParseStanza(input: unknown): Stanza | undefined {
-  try {
-    return validateStanza(input);
-  } catch {
-    return undefined;
+/** Generic entity (de)serialization by extension — `.json` or yaml (everything else). */
+function writeEntityFile(absPath: string, data: unknown): void {
+  if (absPath.endsWith('.json')) {
+    writeJsonFileAtomic(absPath, data);
+  } else {
+    writeYamlFileAtomic(absPath, data);
   }
+}
+
+function readEntityFile<T>(absPath: string): T {
+  if (absPath.endsWith('.json')) return readJsonFile<T>(absPath);
+  return readYamlFile<T>(absPath);
+}
+
+/** The pieces one mutation needs: its return value, the paths it touched, and its one Event. */
+interface MutationResult<T> {
+  result: T;
+  relPaths: string[];
+  event: Event;
 }
 
 export class StateStore {
@@ -198,6 +243,9 @@ export class StateStore {
     if (!existsSync(stateRoot)) {
       throw new Error(`StateStore.open: ${stateRoot} does not exist (run \`agile init\` first)`);
     }
+    // Review B4: clean up anything a prior crash left mid-write before any
+    // listX call can trip over it.
+    sweepStaleTempFiles(stateRoot);
     return new StateStore(stateRoot);
   }
 
@@ -205,8 +253,44 @@ export class StateStore {
     return join(this.stateRoot, ...parts);
   }
 
-  private commit(relativePaths: string[], message: string): string | null {
-    return commitPaths(this.stateRoot, relativePaths, message);
+  /** Appends `event` to `log/events.jsonl` and commits `relPaths` (plus that file) with message = event.kind. */
+  private commitEvent(relPaths: string[], event: Event): void {
+    const validated = validateEvent(event);
+    const eventsRel = join('log', 'events.jsonl');
+    appendJsonlLine(this.abs(eventsRel), validated);
+    const paths = relPaths.includes(eventsRel) ? relPaths : [...relPaths, eventsRel];
+    commitPaths(this.stateRoot, paths, validated.kind);
+  }
+
+  /** Runs one mutation under the mutex: `fn` does the validated file write(s) and builds its one Event; this commits it. */
+  private mutate<T>(fn: () => MutationResult<T>): Promise<T> {
+    return this.mutex.run(() => {
+      const { result, relPaths, event } = fn();
+      this.commitEvent(relPaths, event);
+      return result;
+    });
+  }
+
+  /**
+   * Public escape hatch for the two named event sources T005 doesn't itself
+   * produce (review fix, manager decision B1): `message` (T006's bus) and
+   * `hook_decision` (T008/T009's hook endpoint) go through this instead of
+   * re-implementing append+commit outside the store (which CLAUDE.md's
+   * "written only through the daemon's validating store" forbids).
+   */
+  async appendEvent(event: Event): Promise<Event> {
+    return this.mutex.run(() => {
+      const validated = validateEvent(event);
+      this.commitEvent([], validated);
+      return validated;
+    });
+  }
+
+  /** Read-only: the full `log/events.jsonl` audit stream. */
+  listEvents(): Event[] {
+    return readJsonlFile<unknown>(this.abs('log', 'events.jsonl')).map((line) =>
+      validateEvent(line),
+    );
   }
 
   // ---------------------------------------------------------------- Ticket
@@ -219,26 +303,22 @@ export class StateStore {
 
   listTickets(): Ticket[] {
     const dir = this.abs('tickets');
-    if (!existsSync(dir)) return [];
-    return readdirSync(dir)
-      .filter((name) => name.endsWith('.yaml'))
-      .map((name) => validateTicket(readYamlFile(join(dir, name))));
+    return listDataFiles(dir, '.yaml').map((name) => validateTicket(readYamlFile(join(dir, name))));
   }
 
   /**
    * Creates or wholesale-replaces a ticket file. Used to seed tickets (there
    * is no `assign`/`create` ceremony in T005's scope) — unlike
    * `transitionTicket`, this does not check `isLegalTransition` (there is no
-   * "from" state the first time) and does not emit an event: only a status
-   * *transition* is an event source (§3, events.ts), and creation isn't one.
+   * "from" state the first time). Mints a `ticket_put` event (review B1).
    */
-  async putTicket(ticket: Ticket): Promise<Ticket> {
-    return this.mutex.run(() => {
+  async putTicket(ticket: Ticket, options: { by?: string } = {}): Promise<Ticket> {
+    return this.mutate(() => {
       const validated = validateTicket(ticket);
       const relPath = join('tickets', `${validated.id}.yaml`);
       writeYamlFileAtomic(this.abs(relPath), validated);
-      this.commit([relPath], 'ticket_put');
-      return validated;
+      const event = buildEvent('ticket_put', { ticket: validated.id, agent: options.by, data: {} });
+      return { result: validated, relPaths: [relPath], event };
     });
   }
 
@@ -246,19 +326,23 @@ export class StateStore {
    * The only ticket status mutator. Checks `isLegalTransition` *before*
    * touching any file (so an illegal transition throws with nothing written,
    * committed, or logged — T005 acceptance criterion), appends one
-   * `history` line, appends the transition event to the ticket's board
-   * file, and emits exactly one `state_transition` event to
-   * `log/events.jsonl` — all three files land in one commit whose message
-   * is that event's `kind` ("state_transition" for every transition, so
+   * `history` line, and emits exactly one `state_transition` event to
+   * `log/events.jsonl` — both files land in one commit whose message is
+   * that event's `kind` ("state_transition" for every transition, so
    * `git log --format=%s` reproduces the kind sequence — T005's
    * property-test / audit-trail requirement).
+   *
+   * Review fix (B5): no longer mirrors the event onto
+   * `board/status/<ticket>.jsonl` — that file holds only agent-written
+   * `Stanza`s (§4 "Board"); the ticket's transition history lives in
+   * `log/events.jsonl` (filterable by `ticket`) and in `Ticket.history`.
    */
   async transitionTicket(
     id: TicketId,
     to: TicketStatus,
     options: TransitionOptions,
   ): Promise<Ticket> {
-    return this.mutex.run(() => {
+    return this.mutate(() => {
       const current = this.getTicket(id);
       if (!isLegalTransition(current.status, to)) {
         throw new IllegalTransitionError(id, current.status, to);
@@ -282,48 +366,55 @@ export class StateStore {
       });
 
       const ticketRel = join('tickets', `${id}.yaml`);
-      const eventsRel = join('log', 'events.jsonl');
-      const boardRel = join('board', 'status', `${id}.jsonl`);
-
       writeYamlFileAtomic(this.abs(ticketRel), updated);
-      appendJsonlLine(this.abs(eventsRel), event);
-      appendJsonlLine(this.abs(boardRel), event);
 
-      this.commit([ticketRel, eventsRel, boardRel], event.kind);
-
-      return updated;
+      return { result: updated, relPaths: [ticketRel], event };
     });
   }
 
   // ----------------------------------------------------------------- Board
 
   /**
-   * Appends an agent-written checkpoint stanza (§4 "Board") to the ticket's
-   * append-only board file — the same file `transitionTicket` also appends
-   * `state_transition` events to (see `listBoardRaw`/`listStanzas` for
-   * reading either kind back out). Own commit; no event (only ticket
-   * transitions are an event source, see events.ts).
+   * Appends an agent-written checkpoint stanza (§4 "Board") — the *only*
+   * line shape `board/status/<ticket>.jsonl` holds (review B5; ticket
+   * transitions no longer mirror there, see `transitionTicket`). Mints one
+   * `stanza_appended` event.
    */
   async appendStanza(input: Stanza): Promise<Stanza> {
-    return this.mutex.run(() => {
+    return this.mutate(() => {
       const stanza = validateStanza(input);
       const boardRel = join('board', 'status', `${stanza.ticket}.jsonl`);
       appendJsonlLine(this.abs(boardRel), stanza);
-      this.commit([boardRel], `stanza:${stanza.kind}`);
-      return stanza;
+      const event = buildEvent('stanza_appended', {
+        ticket: stanza.ticket,
+        agent: stanza.agent,
+        data: { kind: stanza.kind },
+      });
+      return { result: stanza, relPaths: [boardRel], event };
     });
   }
 
-  /** Every line in a ticket's board file, whatever shape (stanza or transition event), unvalidated. */
+  /** Every raw line in a ticket's board file, unvalidated (diagnostics only — prefer `listStanzas`). */
   listBoardRaw(ticket: TicketId): unknown[] {
     return readJsonlFile(this.abs('board', 'status', `${ticket}.jsonl`));
   }
 
-  /** Only the lines that parse as an agent-written `Stanza` (transition-event lines are filtered out). */
+  /**
+   * Every stanza in a ticket's board file, validated. Review fix (B5): a
+   * line that fails to parse as a `Stanza` is no longer silently dropped —
+   * this throws, naming the file and the 1-based line number, so a
+   * schema-drifted or corrupted line surfaces instead of vanishing.
+   */
   listStanzas(ticket: TicketId): Stanza[] {
-    return this.listBoardRaw(ticket)
-      .map((line) => safeParseStanza(line))
-      .filter((s): s is Stanza => s !== undefined);
+    const relPath = join('board', 'status', `${ticket}.jsonl`);
+    return this.listBoardRaw(ticket).map((line, index) => {
+      try {
+        return validateStanza(line);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        throw new Error(`malformed stanza in ${relPath} at line ${index + 1}: ${message}`);
+      }
+    });
   }
 
   // --------------------------------------------------------------- Oracle
@@ -333,11 +424,11 @@ export class StateStore {
    * `oracle/index.yaml` ("active only" — §4: an entry whose `status` is no
    * longer `active` is *removed* from the index here, not merely updated,
    * matching "Superseded files ... drop out of index.yaml") and appends one
-   * `oracle/changelog.md` line. All three files land in one commit; no
-   * event (see events.ts's scoping note).
+   * `oracle/changelog.md` line. All three files land in one commit along
+   * with the one `oracle_put` event this mints (review B1).
    */
   async putOracleEntry(entry: OracleEntry, body: string): Promise<OracleEntry> {
-    return this.mutex.run(() => {
+    return this.mutate(() => {
       const validated = validateOracleEntry(entry);
       const entryRel = oracleEntryRelPath(validated.id);
       const indexRel = join('oracle', 'index.yaml');
@@ -360,15 +451,18 @@ export class StateStore {
 
       appendChangelogLine(this.abs(changelogRel), formatOracleChangelogLine(validated));
 
-      this.commit([entryRel, indexRel, changelogRel], 'oracle_put');
-      return validated;
+      const event = buildEvent('oracle_put', {
+        agent: validated.by,
+        data: { id: validated.id, status: validated.status },
+      });
+      return { result: validated, relPaths: [entryRel, indexRel, changelogRel], event };
     });
   }
 
   getOracleEntry(id: OracleId): { entry: OracleEntry; body: string } {
     const path = this.abs(oracleEntryRelPath(id));
     if (!fileExists(path)) throw new NotFoundError('OracleEntry', id);
-    const parsed = parseFrontmatter<unknown>(readFileSync(path, 'utf8'));
+    const parsed = parseFrontmatter<unknown>(readEntityFileRaw(path));
     return { entry: validateOracleEntry(parsed.data), body: parsed.body };
   }
 
@@ -379,7 +473,7 @@ export class StateStore {
   // ----------------------------------------------------------------- KB
 
   async putKbFact(fact: KbFact, body: string): Promise<KbFact> {
-    return this.mutex.run(() => {
+    return this.mutate(() => {
       const validated = validateKbFact(fact);
       const factRel = join('knowledge', 'facts', `${validated.id}.md`);
       const indexRel = join('knowledge', 'index.yaml');
@@ -395,15 +489,15 @@ export class StateStore {
       };
       writeYamlFileAtomic(this.abs(indexRel), validateKbIndex(index));
 
-      this.commit([factRel, indexRel], 'kb_put');
-      return validated;
+      const event = buildEvent('kb_put', { data: { id: validated.id, kind: validated.kind } });
+      return { result: validated, relPaths: [factRel, indexRel], event };
     });
   }
 
   getKbFact(id: KbId): { fact: KbFact; body: string } {
     const path = this.abs('knowledge', 'facts', `${id}.md`);
     if (!fileExists(path)) throw new NotFoundError('KbFact', id);
-    const parsed = parseFrontmatter<unknown>(readFileSync(path, 'utf8'));
+    const parsed = parseFrontmatter<unknown>(readEntityFileRaw(path));
     return { fact: validateKbFact(parsed.data), body: parsed.body };
   }
 
@@ -413,13 +507,23 @@ export class StateStore {
 
   // -------------------------------------------------------------- Ledger
 
+  /** Review nit: `line.sprint` must match the `sprint` argument (previously unchecked). */
   async appendLedgerLine(sprint: SprintId, line: LedgerLine): Promise<LedgerLine> {
-    return this.mutex.run(() => {
+    return this.mutate(() => {
       const validated = validateLedgerLine(line);
+      if (validated.sprint !== sprint) {
+        throw new Error(
+          `appendLedgerLine: line.sprint (${JSON.stringify(validated.sprint)}) does not match sprint argument (${JSON.stringify(sprint)})`,
+        );
+      }
       const ledgerRel = join('ledger', `${sprint}.jsonl`);
       appendJsonlLine(this.abs(ledgerRel), validated);
-      this.commit([ledgerRel], 'ledger_append');
-      return validated;
+      const event = buildEvent('ledger_appended', {
+        ticket: isTicketIdLike(validated.ticket) ? (validated.ticket as TicketId) : undefined,
+        agent: validated.agent.length > 0 ? validated.agent : undefined,
+        data: { sprint, kind: validated.kind },
+      });
+      return { result: validated, relPaths: [ledgerRel], event };
     });
   }
 
@@ -427,12 +531,216 @@ export class StateStore {
     return readJsonlFile<LedgerLine>(this.abs('ledger', `${sprint}.jsonl`));
   }
 
-  // -------------------------------------------------------------- Events
+  // ---------------------------------------------------------------- Halt
 
-  /** Read-only: the full `log/events.jsonl` audit stream. */
-  listEvents(): Event[] {
-    return readJsonlFile<unknown>(this.abs('log', 'events.jsonl')).map((line) =>
-      validateEvent(line),
-    );
+  private haltRelPath(id: HaltId): string {
+    return join('board', 'halts', `${id}.yaml`);
   }
+
+  /** Creates (or updates, e.g. a quorum flip) a halt file. §4 "Halts": presence of the file = halt active. */
+  async putHalt(halt: Halt): Promise<Halt> {
+    return this.mutate(() => {
+      const validated = validateHalt(halt);
+      const relPath = this.haltRelPath(validated.id);
+      writeYamlFileAtomic(this.abs(relPath), validated);
+      const event = buildEvent('halt_created', {
+        data: { id: validated.id, scope: validated.scope },
+      });
+      return { result: validated, relPaths: [relPath], event };
+    });
+  }
+
+  getHalt(id: HaltId): Halt {
+    const path = this.abs(this.haltRelPath(id));
+    if (!fileExists(path)) throw new NotFoundError('Halt', id);
+    return validateHalt(readYamlFile(path));
+  }
+
+  listHalts(): Halt[] {
+    const dir = this.abs('board', 'halts');
+    return listDataFiles(dir, '.yaml').map((name) => validateHalt(readYamlFile(join(dir, name))));
+  }
+
+  /** Releases a halt: "Delete the file to release" (§4 "Halts"). */
+  async deleteHalt(id: HaltId): Promise<void> {
+    return this.mutate(() => {
+      const relPath = this.haltRelPath(id);
+      if (!fileExists(this.abs(relPath))) throw new NotFoundError('Halt', id);
+      removeFile(this.abs(relPath));
+      const event = buildEvent('halt_released', { data: { id } });
+      return { result: undefined, relPaths: [relPath], event };
+    });
+  }
+
+  // -------------------------------------------------------------- Sprint
+
+  private sprintRelPath(id: SprintId): string {
+    return join('sprints', `${id}.yaml`);
+  }
+
+  async putSprint(sprint: Sprint): Promise<Sprint> {
+    return this.mutate(() => {
+      const validated = validateSprint(sprint);
+      const relPath = this.sprintRelPath(validated.id);
+      writeYamlFileAtomic(this.abs(relPath), validated);
+      const event = buildEvent('sprint_put', { data: { id: validated.id } });
+      return { result: validated, relPaths: [relPath], event };
+    });
+  }
+
+  getSprint(id: SprintId): Sprint {
+    const path = this.abs(this.sprintRelPath(id));
+    if (!fileExists(path)) throw new NotFoundError('Sprint', id);
+    return validateSprint(readYamlFile(path));
+  }
+
+  listSprints(): Sprint[] {
+    const dir = this.abs('sprints');
+    return listDataFiles(dir, '.yaml').map((name) => validateSprint(readYamlFile(join(dir, name))));
+  }
+
+  // --------------------------------------------------------------- Quota
+
+  /**
+   * DESIGN-GAP: §4 "Quota" gives the record's schema but the Layout tree
+   * (§4) never names a file path for it (unlike every other entity). Filed
+   * at `quota/<vendor>-<account>.yaml`, one file per account, mirroring how
+   * every other per-id entity in the layout gets its own file.
+   */
+  private quotaRelPath(vendor: string, account: string): string {
+    return join('quota', `${vendor}-${account}.yaml`);
+  }
+
+  async putQuota(quota: Quota): Promise<Quota> {
+    return this.mutate(() => {
+      const validated = validateQuota(quota);
+      const relPath = this.quotaRelPath(validated.vendor, validated.account);
+      writeYamlFileAtomic(this.abs(relPath), validated);
+      const event = buildEvent('quota_put', {
+        data: { vendor: validated.vendor, account: validated.account },
+      });
+      return { result: validated, relPaths: [relPath], event };
+    });
+  }
+
+  getQuota(vendor: string, account: string): Quota {
+    const path = this.abs(this.quotaRelPath(vendor, account));
+    if (!fileExists(path)) throw new NotFoundError('Quota', `${vendor}-${account}`);
+    return validateQuota(readYamlFile(path));
+  }
+
+  // ---------------------------------------------------------- AgentRecord
+
+  private agentRelPath(id: AgentId): string {
+    return join('bus', 'agents', `${id}.yaml`);
+  }
+
+  async putAgent(id: AgentId, record: AgentRecord): Promise<AgentRecord> {
+    return this.mutate(() => {
+      const validated = validateAgentRecord(record);
+      const relPath = this.agentRelPath(id);
+      writeYamlFileAtomic(this.abs(relPath), validated);
+      const event = buildEvent('agent_put', { agent: id, data: {} });
+      return { result: validated, relPaths: [relPath], event };
+    });
+  }
+
+  getAgent(id: AgentId): AgentRecord {
+    const path = this.abs(this.agentRelPath(id));
+    if (!fileExists(path)) throw new NotFoundError('AgentRecord', id);
+    return validateAgentRecord(readYamlFile(path));
+  }
+
+  listAgents(): Array<{ id: string; record: AgentRecord }> {
+    const dir = this.abs('bus', 'agents');
+    return listDataFiles(dir, '.yaml').map((name) => ({
+      id: name.slice(0, -'.yaml'.length),
+      record: validateAgentRecord(readYamlFile(join(dir, name))),
+    }));
+  }
+
+  async deleteAgent(id: AgentId): Promise<void> {
+    return this.mutate(() => {
+      const relPath = this.agentRelPath(id);
+      if (!fileExists(this.abs(relPath))) throw new NotFoundError('AgentRecord', id);
+      removeFile(this.abs(relPath));
+      const event = buildEvent('agent_deleted', { agent: id, data: {} });
+      return { result: undefined, relPaths: [relPath], event };
+    });
+  }
+
+  // -------------------------------------------------------- Policy/Vendors
+
+  getPolicy(): Policy {
+    const path = this.abs('policy.yaml');
+    if (!fileExists(path)) throw new NotFoundError('Policy', 'policy.yaml');
+    return validatePolicy(readYamlFile(path));
+  }
+
+  async putPolicy(policy: Policy): Promise<Policy> {
+    return this.mutate(() => {
+      const validated = validatePolicy(policy);
+      const relPath = 'policy.yaml';
+      writeYamlFileAtomic(this.abs(relPath), validated);
+      const event = buildEvent('policy_put');
+      return { result: validated, relPaths: [relPath], event };
+    });
+  }
+
+  getVendors(): VendorsConfig {
+    const path = this.abs('vendors.yaml');
+    if (!fileExists(path)) throw new NotFoundError('VendorsConfig', 'vendors.yaml');
+    return validateVendorsConfig(readYamlFile(path));
+  }
+
+  async putVendors(vendors: VendorsConfig): Promise<VendorsConfig> {
+    return this.mutate(() => {
+      const validated = validateVendorsConfig(vendors);
+      const relPath = 'vendors.yaml';
+      writeYamlFileAtomic(this.abs(relPath), validated);
+      const event = buildEvent('vendors_put');
+      return { result: validated, relPaths: [relPath], event };
+    });
+  }
+
+  // -------------------------------------------------------- Generic entity
+
+  /**
+   * Generic validating put/get/delete trio (review B2) for any entity with
+   * no dedicated helper above — T006's `bus/inbox/**`/`bus/threads/**`
+   * message files today, whatever needs one tomorrow. Serializes as yaml
+   * unless `relPath` ends in `.json`. Mints a generic `entity_put`/
+   * `entity_deleted` event carrying the `relPath`.
+   */
+  async putEntity<T>(relPath: string, validator: (input: unknown) => T, data: unknown): Promise<T> {
+    return this.mutate(() => {
+      const validated = validator(data);
+      writeEntityFile(this.abs(relPath), validated);
+      const event = buildEvent('entity_put', { data: { relPath } });
+      return { result: validated, relPaths: [relPath], event };
+    });
+  }
+
+  getEntity<T>(relPath: string, validator: (input: unknown) => T): T {
+    const path = this.abs(relPath);
+    if (!fileExists(path)) throw new NotFoundError('Entity', relPath);
+    return validator(readEntityFile(path));
+  }
+
+  async deleteEntity(relPath: string): Promise<void> {
+    return this.mutate(() => {
+      if (!fileExists(this.abs(relPath))) throw new NotFoundError('Entity', relPath);
+      removeFile(this.abs(relPath));
+      const event = buildEvent('entity_deleted', { data: { relPath } });
+      return { result: undefined, relPaths: [relPath], event };
+    });
+  }
+}
+
+function readEntityFileRaw(path: string): string {
+  return readFileSync(path, 'utf8');
+}
+
+function isTicketIdLike(value: string): boolean {
+  return /^TKT-\d{4,}$/.test(value);
 }
