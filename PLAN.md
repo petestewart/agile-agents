@@ -134,8 +134,8 @@ Priority encodes dependency layer as well as importance: P0 tickets are v0-block
 
 ### Ticket: T008 CLI `agile`
 - **Priority:** P0
-- **Status:** Todo
-- **Owner:** Unassigned
+- **Status:** In Progress
+- **Owner:** sonnet:worker-T008
 - **Scope:** Depends on T004–T007. Thin client over the socket: `init`, `status` (sprint/tickets/agents/spend), `tail` (event log, follow, filters by ticket/agent/kind), `send`, `approve <hil-id>`, `delegate <hil-id>`, `halt [--scope]`, `resume`, `hook <event>` (stdin JSON in, JSON out — the single entrypoint vendor hook configs call). Human-readable and `--json` output.
 - **Acceptance Criteria:** Every daemon verb needed by the e2e run is reachable from the CLI; `agile hook pre-tool-use` round-trips a fake payload in <20 ms.
 - **Validation Steps:** CLI tests against an in-process daemon; timing test for the hook path.
@@ -157,7 +157,7 @@ Priority encodes dependency layer as well as importance: P0 tickets are v0-block
 - **Scope:** Depends on T003, T005. Daemon answers `session/request_permission` per design §14: engineer (edits in worktree, repo scripts, package registries), reviewer (deny all writes/exec except read-only tools), QA (env only), never-without-human list (push outside ticket branch, force-push, branch delete, new dependencies, deny-listed commands). Requests outside policy become `hil_request` items with a deadline. Every decision logged with `allow_once` only (never `allow_always`).
 - **Acceptance Criteria:** Fixture permission requests resolve to the expected option per role; a `git push origin main` from an engineer produces a `hil_request`, not an allow.
 - **Validation Steps:** Table-driven unit tests over (role × request) pairs.
-- **Notes:** branch `T010-permission-policy` (local worktree); `src/permissions/` (classifier, policy tables, decide, responder, 70 tests), daemon gains a workspace dep on acp-client for types. Worker flags: real spike payloads carry `rawInput: {}` on every tool call, so command-level classification may only work from titles or must move to the PreToolUse hook (T009) — reviewer asked to rule on efficacy. `hil_request` written to `bus/inbox/human/` (T018's GateService becomes the single HIL owner at wiring). QA round 1 REJECT: `git -C . push origin main` from an engineer → unattended allow (bypass); env-prefix and `cd &&` spellings → deny instead of hil; empty `rawInput` denies nearly all engineer exec. Review round 1 FAIL: classifier bypassable (`git -C`, chained commands, multi-refspec push, `branch -d`; reviewer `sed -i`/redirects allowed), whitespace-only tokenizer; efficacy unproven because permission-request params were never captured. Decision: ACP layer is best-effort command gating with kind-level floor; primary command enforcement is T009's hook. Sent back with both lists.
+- **Notes:** branch `T010-permission-policy` (local worktree); `src/permissions/` (classifier, policy tables, decide, responder, 70 tests), daemon gains a workspace dep on acp-client for types. Worker flags: real spike payloads carry `rawInput: {}` on every tool call, so command-level classification may only work from titles or must move to the PreToolUse hook (T009) — reviewer asked to rule on efficacy. `hil_request` written to `bus/inbox/human/` (T018's GateService becomes the single HIL owner at wiring). QA round 1 REJECT: `git -C . push origin main` from an engineer → unattended allow (bypass); env-prefix and `cd &&` spellings → deny instead of hil; empty `rawInput` denies nearly all engineer exec. Review round 1 FAIL: classifier bypassable (`git -C`, chained commands, multi-refspec push, `branch -d`; reviewer `sed -i`/redirects allowed), whitespace-only tokenizer; efficacy unproven because permission-request params were never captured. Decision: ACP layer is best-effort command gating with kind-level floor; primary command enforcement is T009's hook. Sent back with both lists; worker fixed all in `3b8bc98` (tokenizer/segmenter, git global options, multi-refspec, redirection gating, injectable HIL lifecycle); round 2 review + QA running.
 
 ### Ticket: T011 Tool framework, MCP server, `read_summary`, `test_run`
 - **Priority:** P0
@@ -224,12 +224,12 @@ Priority encodes dependency layer as well as importance: P0 tickets are v0-block
 
 ### Ticket: T018 Gates policy, HIL requests, circuit breaker
 - **Priority:** P1
-- **Status:** In Review
+- **Status:** Done
 - **Owner:** sonnet:worker-T018
 - **Scope:** Depends on T005, T006. `policy.yaml` + per-sprint `gates:` resolution (sprint → epic → team → default), owners `human | em | architect | human_timeout: <d>`, `hil_request`/`hil_response` message kinds with deadlines, single-instance delegation, delegated approvals producing the same decision artifact + `fyi`, circuit breaker signals (global halt, budget %, integration red, ladder exhausted, deadlock, N denials) forcing gates to `human` until cleared. CLI `approve`/`delegate`/`breaker clear`.
 - **Acceptance Criteria:** Gate resolution table tests pass; a `human_timeout` gate falls through at the deadline; tripping a breaker flips a delegated gate to `human` and the next request says why.
 - **Validation Steps:** Fake-clock unit tests; CLI round-trip test.
-- **Notes:** branch `T018-gates-hil-breaker` (local worktree); `src/gates/` (resolveGate, GateService with fake clock, breaker, `gate.*` RPC table), self-review PASS. CLI verbs deferred to T008 (T008 now depends on T018). Review round 1 FAIL: HIL/breaker entity shapes + hand-rolled validators live in the daemon (must be shared zod); no `hil_kind`; delegated `fyi` never written as a bus message; default delegate fail-open auto-approves; `gate.*` params unvalidated; pending index in-memory so `human_timeout` fallthrough dies on restart. Sent back with grants: add `packages/shared/src/hil.ts`, `store.listEntities`, event kinds. QA round 1 ACCEPT. Worker fixed all 6 in `902d10b` (shared `hil.ts`, `store.listEntities`, fail-closed delegate, durable index); round 2 review + QA running.
+- **Notes:** branch `T018-gates-hil-breaker` (local worktree); `src/gates/` (resolveGate, GateService with fake clock, breaker, `gate.*` RPC table), self-review PASS. CLI verbs deferred to T008 (T008 now depends on T018). Review round 1 FAIL: HIL/breaker entity shapes + hand-rolled validators live in the daemon (must be shared zod); no `hil_kind`; delegated `fyi` never written as a bus message; default delegate fail-open auto-approves; `gate.*` params unvalidated; pending index in-memory so `human_timeout` fallthrough dies on restart. Sent back with grants: add `packages/shared/src/hil.ts`, `store.listEntities`, event kinds. QA round 1 ACCEPT. Worker fixed all 6 in `902d10b` (shared `hil.ts`, `store.listEntities`, fail-closed delegate, durable index); review round 2 PASS, QA round 2 ACCEPT. merge: 7a7ebc1 (gate RPC wired with a default `GateService` — no delegate configured, so delegated gates stay pending until T015 wires the EM; `dispatch` now preserves handler error codes). Follow-up: a HIL request costs 3 commits/4 events — switch the service to `store.putEntities` for one audit entry.
 
 ### Ticket: T019 Merge and integration owner
 - **Priority:** P1
@@ -242,8 +242,8 @@ Priority encodes dependency layer as well as importance: P0 tickets are v0-block
 
 ### Ticket: T020 Event feed page
 - **Priority:** P1
-- **Status:** Todo
-- **Owner:** Unassigned
+- **Status:** In Progress
+- **Owner:** sonnet:worker-T020
 - **Scope:** Depends on T004, T005. Single static `feed.html` served by the daemon: WebSocket-tailed event log with filters (ticket, agent, kind), a sprint header (goal, done/in-flight/stale, halts), and the open `hil_request` list with approve/delegate buttons that call the daemon. No framework. This is the entire v0 UI beyond the CLI.
 - **Acceptance Criteria:** Page shows live events within 1 s; approve button resolves a real `hil_request`.
 - **Validation Steps:** Playwright test against a running daemon with synthetic events.
@@ -349,3 +349,4 @@ Priority encodes dependency layer as well as importance: P0 tickets are v0-block
 - 2026-09-09 — T010 QA found a push-to-main bypass via `git -C`; command classification must tokenize shell chains and skip git global options. Title-based fallback adopted for payloads with empty `rawInput`.
 - 2026-09-09 — Decision (manager): the ACP `request_permission` answer is a best-effort command gate (kind-level policy is the guaranteed floor); command-level never-without-human enforcement is primary in the PreToolUse hook (T009), the only measured carrier of `tool_input`. Follow-up for a machine with a Claude login: extend `spike/permission-matrix.ts` to record `request_permission` params (`rawInput`, `locations`) so T010's title fallback can be confirmed or removed.
 - 2026-09-09 — T007 merged (4f8bc80). With T004–T007 done, T008 (CLI) is unblocked once T018 lands (its verbs); T009 depends on T008. Remaining wave-4: T010, T018 in fix/gate rounds.
+- 2026-09-09 — T018 merged (7a7ebc1); 553 tests green. Wave 5 launched: T008 (CLI, incl. T018's approve/delegate/breaker verbs) and T020 (feed page, approve button on real HIL requests). T010 in round-2 gates.
