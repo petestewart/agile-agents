@@ -172,13 +172,77 @@ describe('runTestRun', () => {
       maxOutputBytes: 4096,
     });
 
-    // Killed by the output cap (SIGKILL, not a clean pass) — same `timed_out`
-    // signal path as a real timeout (Bun's `maxBuffer` kills with
-    // `killSignal`, indistinguishable from a timeout kill at the signal
-    // level), and the result still comes back promptly with something
-    // written to disk rather than growing without bound.
+    // T034: the process is no longer killed for exceeding the byte cap
+    // (Bun's `maxBuffer` is gone — see `test-run.ts`'s header comment on
+    // `runTestRun`); it runs to completion and the cap instead bounds only
+    // the *distilled* text used for parsing/summarizing. Either way the
+    // result comes back promptly with something written to disk rather
+    // than growing without bound.
+    expect(result.timed_out).toBeUndefined();
     expect(result.raw_output.length).toBeGreaterThan(0);
     expect(result.summary.length).toBeLessThan(500 * 4);
+  });
+
+  test('T034 (T033 review addendum): a captured stream past maxOutputBytes is truncated in the distilled summary, but the raw file on disk keeps every byte', async () => {
+    writeFileSync(
+      join(repo, 'pkg.test.ts'),
+      [
+        'import { test, expect } from "bun:test";',
+        'test("very noisy", () => {',
+        // ~2 MiB of stdout — comfortably past the default 1 MiB
+        // `MAX_TEST_RUN_OUTPUT_BYTES` and the 4 KiB cap this test sets.
+        '  for (let i = 0; i < 20000; i++) console.log("y".repeat(100));',
+        '  expect(1).toBe(1);',
+        '});',
+      ].join('\n'),
+    );
+    const result = await runTestRun({
+      input: { command: 'bun test pkg.test.ts' },
+      worktree: repo,
+      repoRoot: repo,
+      maxOutputBytes: 4096,
+    });
+
+    // Distilled output stays bounded by the (tiny) cap regardless of how
+    // much the process actually printed.
+    expect(result.timed_out).toBeUndefined();
+    expect(result.summary.length).toBeLessThan(500 * 4);
+    expect(JSON.stringify(result).length).toBeLessThan(500 * 4 * 2);
+
+    // The raw file `raw_output` points at, however, has the full,
+    // untruncated combined log — comfortably more than the 4096-byte cap
+    // (the test itself printed roughly 2 MiB to stdout alone).
+    const rawPath = join(repo, '.agile-daemon-cache', 'raw', result.raw_output);
+    const rawBytes = Bun.file(rawPath).size;
+    expect(rawBytes).toBeGreaterThan(4096 * 10);
+  });
+
+  test('T034: the spawned test command runs with a sandboxed HOME, never the daemon operator\'s real one', async () => {
+    // A tiny bun test that prints the HOME it was actually spawned with —
+    // proves the env `runTestRun` builds for the child (not just what this
+    // test process itself happens to have) is the sandboxed one.
+    writeFileSync(
+      join(repo, 'pkg.test.ts'),
+      [
+        'import { test, expect } from "bun:test";',
+        'test("prints HOME", () => {',
+        '  console.log("HOME=" + process.env.HOME);',
+        '  expect(1).toBe(1);',
+        '});',
+      ].join('\n'),
+    );
+    const result = await runTestRun({
+      input: { command: 'bun test pkg.test.ts' },
+      worktree: repo,
+      repoRoot: repo,
+    });
+    const rawPath = join(repo, '.agile-daemon-cache', 'raw', result.raw_output);
+    const rawText = await Bun.file(rawPath).text();
+    const match = /HOME=(\S+)/.exec(rawText);
+    expect(match?.[1]).toBeDefined();
+    const sandboxedHome = match?.[1] ?? '';
+    expect(sandboxedHome).not.toBe(process.env.HOME);
+    expect(sandboxedHome).toContain(join(repo, '.agile-daemon-cache', 'test-run'));
   });
 
   test('review round 2 fix (blocker 1): 60 failures — the WHOLE serialized result stays under 500 tokens, not just summary', async () => {

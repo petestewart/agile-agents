@@ -14,7 +14,8 @@
  * allow-list.
  */
 
-import { isAbsolute, join, resolve } from 'node:path';
+import { mkdirSync } from 'node:fs';
+import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { ulid } from '@agile-agents/shared';
 import {
   hasUnsafeShellConstruct,
@@ -24,7 +25,8 @@ import {
   stripPrefixes,
   tokenizeSegment,
 } from '../permissions/command';
-import { rawOutputPath, writeRawOutput } from './cache';
+import { sandboxedSubprocessEnv } from '../subprocess-env';
+import { CACHE_DIR_NAME, rawOutputPath } from './cache';
 import { charsPerToken } from './runner';
 
 export interface TestRunInput {
@@ -368,32 +370,71 @@ export async function runTestRun(opts: RunTestRunOptions): Promise<TestRunOutput
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TEST_RUN_TIMEOUT_MS;
   const maxOutputBytes = opts.maxOutputBytes ?? MAX_TEST_RUN_OUTPUT_BYTES;
 
-  // QA round 1 fix: a spawn timeout (process killed, never left running
-  // forever) and a native per-stream output cap (`maxBuffer` — Bun kills the
-  // process and truncates rather than buffering an unbounded amount of
-  // output in memory). `killSignal: 'SIGKILL'` — a runaway test process is
-  // not expected to clean up gracefully, and a soft SIGTERM it ignores would
-  // defeat the timeout/cap entirely.
+  // T034 (T033 review round 3 follow-up): stdout/stderr go straight to
+  // plain files, never `'pipe'` — the same fix T033 landed for the hook
+  // CLI subprocess (`hook/rpc.test.ts`'s `runHookCli`). This was the only
+  // remaining async `Bun.spawn` with piped stdio in the daemon that drains
+  // *then* awaits `exited`: Bun's own epoll bookkeeping for piped stdio fds
+  // can race `proc.exited` under load (`EBADF: bad file descriptor,
+  // epoll_ctl`) — draining concurrently with `exited` (the fix tried
+  // elsewhere first) only narrows that race, never closes it, because the
+  // race is in the pipe/epoll path itself, not in drain ordering. The OS
+  // dup2()s the child's fds onto regular files, so there is nothing left
+  // to race. This also removes Bun's `maxBuffer` (a piped-stream-only
+  // option, and the process-killing mechanism the old cap used) — the byte
+  // ceiling below is now a size check on the captured files after the
+  // process has already exited, never a reason to kill it early, and the
+  // full, untruncated output is always on disk under
+  // `<repoRoot>/.agile-daemon-cache/test-run/` regardless of size.
+  //
+  // `env`: T034 — never the daemon's inherited `process.env`/`$HOME`; a
+  // test suite's own tooling (npm's debug logger, a package manager's
+  // cache) must never write into the operator's real home directory.
+  const runId = ulid();
+  const captureDir = join(opts.repoRoot, CACHE_DIR_NAME, 'test-run');
+  mkdirSync(captureDir, { recursive: true });
+  const stdoutPath = join(captureDir, `${runId}.out`);
+  const stderrPath = join(captureDir, `${runId}.err`);
+
   const proc = Bun.spawn(tokens, {
     cwd,
-    stdout: 'pipe',
-    stderr: 'pipe',
+    stdout: Bun.file(stdoutPath),
+    stderr: Bun.file(stderrPath),
     timeout: timeoutMs,
     killSignal: 'SIGKILL',
-    maxBuffer: maxOutputBytes,
+    env: sandboxedSubprocessEnv(opts.repoRoot, 'test-run'),
   });
-  const [stdout, stderr] = await Promise.all([
-    new Response(proc.stdout).text(),
-    new Response(proc.stderr).text(),
-  ]);
   const exitCode = await proc.exited;
   // Bun reports a timeout/signal kill as a negative/undefined-ish `exitCode`
   // depending on platform; `proc.signalCode` is the reliable signal.
   const timedOut = proc.signalCode !== null && proc.signalCode !== undefined;
+
+  const stdoutFile = Bun.file(stdoutPath);
+  const stderrFile = Bun.file(stderrPath);
+
+  // The distilled text used for parsing/summarizing is capped per stream —
+  // the same per-stream ceiling `maxBuffer` used to enforce — by reading
+  // only the tail of a stream that exceeds it (a failing assertion or
+  // `FAILED`/`--- FAIL` marker is far more likely to be near the end of a
+  // noisy log than the start). The raw files on disk are never truncated.
+  const [stdout, stderr] = await Promise.all([
+    readCappedTail(stdoutFile, maxOutputBytes),
+    readCappedTail(stderrFile, maxOutputBytes),
+  ]);
   const combined = stderr.length > 0 ? `${stdout}\n${stderr}` : stdout;
 
-  const rawRelPath = join(opts.input.command.split(/\s+/)[0] ?? 'run', `${ulid()}.log`);
-  writeRawOutput(rawOutputPath(opts.repoRoot, 'test_run', rawRelPath), combined);
+  // Combine the two on-disk capture files into the one raw-output artifact
+  // `raw_output` points to, streaming chunk-by-chunk rather than joining
+  // JS strings — a multi-hundred-MB log must never be held whole in memory
+  // just to copy it (review round fix: the old `writeRawOutput(path,
+  // combined)` did exactly that, using the already-capped `combined`
+  // string, which was fine only because `maxBuffer` had already capped it
+  // upstream; that upstream cap is gone now).
+  const rawRelPath = join(opts.input.command.split(/\s+/)[0] ?? 'run', `${runId}.log`);
+  await writeRawOutputStream(rawOutputPath(opts.repoRoot, 'test_run', rawRelPath), [
+    stdoutFile,
+    stderrFile,
+  ]);
 
   const allFailures = timedOut ? [] : exitCode === 0 ? [] : parseFailures(combined);
   const ok = !timedOut && exitCode === 0 && allFailures.length === 0;
@@ -415,4 +456,42 @@ export async function runTestRun(opts: RunTestRunOptions): Promise<TestRunOutput
     rawOutputRelPath: join('test_run', rawRelPath),
     timedOut,
   });
+}
+
+/**
+ * Reads `file` in full, unless it exceeds `capBytes` — then only the last
+ * `capBytes` are read (`BunFile.slice` is a cheap, lazy view; no
+ * intermediate copy of the skipped prefix is ever made). This is the size
+ * check that replaces Bun's `maxBuffer` (T034): the process is never
+ * killed for producing too much output, only the text used for parsing is
+ * bounded.
+ */
+async function readCappedTail(file: ReturnType<typeof Bun.file>, capBytes: number): Promise<string> {
+  if (file.size <= capBytes) return file.text();
+  return file.slice(file.size - capBytes).text();
+}
+
+/**
+ * Streams `parts` (in order) into `destPath`, never materializing the
+ * whole concatenation as one JS string/buffer — the raw-output artifact
+ * can legitimately be well past `maxOutputBytes` (that cap only bounds the
+ * *distilled* text used for parsing), so copying it must not itself
+ * reintroduce an unbounded in-memory buffer.
+ */
+async function writeRawOutputStream(
+  destPath: string,
+  parts: readonly ReturnType<typeof Bun.file>[],
+): Promise<void> {
+  mkdirSync(dirname(destPath), { recursive: true });
+  const writer = Bun.file(destPath).writer();
+  try {
+    for (const part of parts) {
+      if (part.size === 0) continue;
+      for await (const chunk of part.stream()) {
+        writer.write(chunk);
+      }
+    }
+  } finally {
+    await writer.end();
+  }
 }
