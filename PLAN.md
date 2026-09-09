@@ -188,12 +188,12 @@ Priority encodes dependency layer as well as importance: P0 tickets are v0-block
 
 ### Ticket: T014 Architect: refinement, pointing, discovery triage
 - **Priority:** P1
-- **Status:** In Progress
+- **Status:** In Review
 - **Owner:** sonnet:worker-T014
 - **Scope:** Depends on T007, T012, T013. Architect session run in Claude `plan` mode for planning turns. Verbs: `ticket_create/refine` (contract, acceptance, `oracle_refs`, `env`), pointing via the four-question rubric writing `estimate` and `tier`, `discovery_triage` (local/scoped/global → halt), `decision_publish` (through the write guard, then ripple), re-refine `stale` tickets (unchanged → ready, split, refactor child on WIP commit). The `ExitPlanMode` permission request is routed to the `approve_plan` gate.
 - **Acceptance Criteria:** Given a seeded product doc and an epic description, the architect produces ≥3 valid tickets with contracts; a scripted discovery yields a halt, a DEC, exactly the right stale tickets, and re-refined replacements.
 - **Validation Steps:** Live test on the demo fixture; unit tests for rubric → tier mapping.
-- **Notes:**
+- **Notes:** branch `T014-architect` (local worktree); `src/architect/` (rubric, triage, refine, decision, verbs, session, protocol), 43 tests, self-review PASS. Integration gaps for merge wiring: no `architect` PermissionRole in runner/permissions; MCP bridge does not yet expose architect verbs. Design choices: no `dropped` status, so split parents stay `ready` but depends-blocked; plan mode first with `approve_plan` gate fallback. Gates running.
 
 ### Ticket: T015 EM: sprint layers, assignment, standup, sprint review
 - **Priority:** P1
