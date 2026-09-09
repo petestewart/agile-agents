@@ -53,7 +53,7 @@ export interface OracleWriteResult {
   stale: TicketId[];
 }
 
-/** Adjacency used only for cycle detection — `depends` + `affects` edges (§6: "no cycles across depends/affects"). */
+/** Adjacency used only for cycle detection — `depends` and `affects` edges, kept as two separate relations (see `findCycle`). */
 interface GraphNode {
   depends: OracleId[];
   affects: OracleId[];
@@ -80,8 +80,26 @@ function loadActiveGraph(store: StateStore, pending: OracleEntry): Map<OracleId,
   return graph;
 }
 
-/** DFS cycle detection (white/gray/black) over `depends` ∪ `affects` edges. Returns the cycle path, or undefined. */
-function findCycle(graph: Map<OracleId, GraphNode>): OracleId[] | undefined {
+/**
+ * DFS cycle detection (white/gray/black), run separately over `depends`
+ * edges and over `affects` edges — never unioned. Review fix (opus, blocker
+ * 1): `depends` and `affects` are opposite directions of the *same*
+ * relation (§4: "`affects` … forward edges, maintained by architect" mirrors
+ * a `depends` edge the other way — the worked example header shows exactly
+ * this, `DEC-0042 depends: [SPEC-auth-003]` alongside `SPEC-auth-003
+ * affects: [SPEC-api-001, …]`-shaped forward pointers). Unioning the two
+ * edge sets turned every such mirrored pair into a 2-cycle and made it
+ * impossible to maintain both halves of one relation — exactly the
+ * configuration the ripple walk depends on. A cycle *within* `depends`
+ * alone (a genuine circular dependency) or *within* `affects` alone (an
+ * infinite ripple) is still refused; a `depends`/`affects` pair that mirrors
+ * each other is not a cycle. `relation` names which edge set is being
+ * walked, so the refusal can say which one.
+ */
+function findCycle(
+  graph: Map<OracleId, GraphNode>,
+  relation: 'depends' | 'affects',
+): OracleId[] | undefined {
   const WHITE = 0;
   const GRAY = 1;
   const BLACK = 2;
@@ -92,7 +110,7 @@ function findCycle(graph: Map<OracleId, GraphNode>): OracleId[] | undefined {
     color.set(id, GRAY);
     stack.push(id);
     const node = graph.get(id);
-    const edges = node ? [...node.depends, ...node.affects] : [];
+    const edges = node ? node[relation] : [];
     for (const next of edges) {
       const nextColor = color.get(next) ?? WHITE;
       if (nextColor === WHITE) {
@@ -115,6 +133,16 @@ function findCycle(graph: Map<OracleId, GraphNode>): OracleId[] | undefined {
     }
   }
   return undefined;
+}
+
+/** True if an oracle entry file exists on disk, regardless of `status` (active, superseded, or retired). */
+function oracleEntryExistsOnDisk(store: StateStore, id: OracleId): boolean {
+  try {
+    store.getOracleEntry(id);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -180,10 +208,21 @@ export async function rippleWalk(store: StateStore, changedId: OracleId): Promis
  *
  * 1. actor === 'architect', else refuse (§4: "Writer: architect only").
  * 2. entry doesn't supersede itself.
- * 3. every id in supersedes/depends/affects exists in the *current* oracle
- *    index (dangling check) — literal reading of the session brief
- *    ("must reference existing IDs in the oracle index").
- * 4. no cycle across depends/affects once this entry's edges are added.
+ * 3. dangling refs (review fix, opus blocker 2): `supersedes` is checked
+ *    against any oracle entry that exists **on disk**, active or not —
+ *    §4 is explicit that a superseded entry still exists ("Superseded files
+ *    keep their body … flip status") and `supersedes` is permanent header
+ *    data, so an entry could never be re-written (edited body, same header)
+ *    once its target had already flipped, if the check only looked at the
+ *    live index. `depends`/`affects` are still checked against the
+ *    *current* index only — DESIGN-GAP: kept asymmetric on purpose. Those
+ *    two edges drive live semantics (dependency ordering, ripple), so a
+ *    reference onto a no-longer-active entry is refused the same way a
+ *    reference to something that never existed is, rather than silently
+ *    riding along on a dead entry.
+ * 4. no cycle within `depends` alone, and no cycle within `affects` alone
+ *    (see `findCycle`'s header for why these are checked separately rather
+ *    than unioned).
  *
  * Then: write the entry (`putOracleEntry` — handles frontmatter, index,
  * changelog, and its own `oracle_put` event), flip every `active` entry it
@@ -210,8 +249,11 @@ export async function oracleWrite(
 
   const index = store.listOracleIndex();
   const indexIds = new Set(Object.keys(index));
-  const referenced = [...entry.supersedes, ...entry.depends, ...entry.affects];
-  const dangling = [...new Set(referenced.filter((id) => !indexIds.has(id)))];
+  const danglingSupersedes = entry.supersedes.filter((id) => !oracleEntryExistsOnDisk(store, id));
+  const danglingDependsOrAffects = [...entry.depends, ...entry.affects].filter(
+    (id) => !indexIds.has(id),
+  );
+  const dangling = [...new Set([...danglingSupersedes, ...danglingDependsOrAffects])];
   if (dangling.length > 0) {
     throw new OracleWriteRefusedError(`dangling oracle refs: ${dangling.join(', ')}`, {
       dangling,
@@ -219,9 +261,19 @@ export async function oracleWrite(
   }
 
   const graph = loadActiveGraph(store, entry);
-  const cycle = findCycle(graph);
-  if (cycle) {
-    throw new OracleWriteRefusedError(`cycle detected: ${cycle.join(' -> ')}`, { cycle });
+  const dependsCycle = findCycle(graph, 'depends');
+  if (dependsCycle) {
+    throw new OracleWriteRefusedError(`cycle detected in depends: ${dependsCycle.join(' -> ')}`, {
+      cycle: dependsCycle,
+      relation: 'depends',
+    });
+  }
+  const affectsCycle = findCycle(graph, 'affects');
+  if (affectsCycle) {
+    throw new OracleWriteRefusedError(`cycle detected in affects: ${affectsCycle.join(' -> ')}`, {
+      cycle: affectsCycle,
+      relation: 'affects',
+    });
   }
 
   const written = await store.putOracleEntry(entry, input.body);

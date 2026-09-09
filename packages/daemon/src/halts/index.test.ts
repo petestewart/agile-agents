@@ -105,6 +105,34 @@ describe('createHalt / releaseHalt', () => {
     await releaseHalt(store, halt.id);
     expect(store.listHalts().map((h) => h.id)).not.toContain(halt.id);
   });
+
+  // Review fix (opus nit): a released halt's id must never be reused —
+  // it would make an event-log line or a bus message citing "H-1" ambiguous
+  // about which halt it meant.
+  test('a new halt never reuses a released halt id', async () => {
+    const clock = fakeClock(0);
+    const first = await createHalt(
+      store,
+      { scope: 'global', reason: 'a', raised_by: 'architect' },
+      clock.now,
+    );
+    expect(first.id).toBe('H-1');
+    await releaseHalt(store, first.id);
+
+    const second = await createHalt(
+      store,
+      { scope: 'global', reason: 'b', raised_by: 'architect' },
+      clock.now,
+    );
+    expect(second.id).toBe('H-2');
+  });
+
+  test('createHalt does not write the halt file twice (one halt_created event, no halt_updated)', async () => {
+    const clock = fakeClock(0);
+    await createHalt(store, { scope: 'global', reason: 'x', raised_by: 'architect' }, clock.now);
+    const kinds = store.listEvents().map((e) => e.kind);
+    expect(kinds).toEqual(['halt_created']);
+  });
 });
 
 describe('quorum', () => {
@@ -160,6 +188,61 @@ describe('quorum', () => {
     expect(halt.quorum).toBe('pending');
     const after = await recordStandupReport(store, halt.id, 'eng-9', clock.now);
     expect(after.quorum).toBe('reached');
+  });
+
+  // Review fix (opus nit): the 10-minute default is overridable per call.
+  test('quorum timeout is configurable, not hardcoded to the 10-minute default', async () => {
+    await store.putAgent('eng-1', makeAgent({ ticket: 'TKT-0001' }));
+    await store.putTicket(makeTicket('TKT-0001'));
+    const clock = fakeClock(0);
+    const shortTimeoutMs = 5000;
+    const halt = await createHalt(
+      store,
+      { scope: ['TKT-0001'], reason: 'discovery', raised_by: 'architect' },
+      clock.now,
+      shortTimeoutMs,
+    );
+    expect(halt.quorum).toBe('pending');
+
+    clock.advance(shortTimeoutMs - 1);
+    const stillPending = await recordStandupReport(
+      store,
+      halt.id,
+      'someone-else',
+      clock.now,
+      shortTimeoutMs,
+    );
+    expect(stillPending.quorum).toBe('pending');
+
+    clock.advance(1);
+    const timedOut = await recordStandupReport(
+      store,
+      halt.id,
+      'someone-else',
+      clock.now,
+      shortTimeoutMs,
+    );
+    expect(timedOut.quorum).toBe('reached');
+  });
+
+  // Review fix (opus nit): a duplicate report from an agent already recorded
+  // must not re-write the file or mint another halt_updated event.
+  test('a duplicate standup report from the same agent does not re-write the halt', async () => {
+    await store.putAgent('eng-1', makeAgent({ ticket: 'TKT-0001' }));
+    await store.putAgent('eng-2', makeAgent({ ticket: 'TKT-0001' }));
+    await store.putTicket(makeTicket('TKT-0001'));
+
+    const clock = fakeClock(0);
+    const halt = await createHalt(
+      store,
+      { scope: ['TKT-0001'], reason: 'discovery', raised_by: 'architect' },
+      clock.now,
+    );
+    await recordStandupReport(store, halt.id, 'eng-1', clock.now);
+    const eventsAfterFirst = store.listEvents().length;
+
+    await recordStandupReport(store, halt.id, 'eng-1', clock.now);
+    expect(store.listEvents().length).toBe(eventsAfterFirst);
   });
 });
 

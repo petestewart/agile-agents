@@ -110,10 +110,34 @@ describe('oracleWrite — graph validation', () => {
     ).rejects.toThrow(/may not supersede itself/);
   });
 
-  test('refuses a cycle across depends/affects', async () => {
+  // Review fix (opus blocker 1): `depends` and `affects` are opposite
+  // directions of the *same* relation (§4), so a mirrored pair — A depends
+  // on B, B affects A — is exactly how the architect is meant to record one
+  // relationship and must be accepted, not refused as a 2-cycle.
+  test('accepts a mirrored depends/affects pair (not a cycle)', async () => {
     await oracleWrite(store, {
       actor: 'architect',
-      entry: makeEntry({ id: 'DEC-0001', affects: [] }),
+      entry: makeEntry({ id: 'SPEC-auth-003', title: 'auth spec' }),
+      body: 'x',
+    });
+    await oracleWrite(store, {
+      actor: 'architect',
+      entry: makeEntry({ id: 'DEC-0042', depends: ['SPEC-auth-003'] }),
+      body: 'x',
+    });
+    await expect(
+      oracleWrite(store, {
+        actor: 'architect',
+        entry: makeEntry({ id: 'SPEC-auth-003', title: 'auth spec', affects: ['DEC-0042'] }),
+        body: 'x',
+      }),
+    ).resolves.toBeDefined();
+  });
+
+  test('refuses a real cycle within depends alone', async () => {
+    await oracleWrite(store, {
+      actor: 'architect',
+      entry: makeEntry({ id: 'DEC-0001' }),
       body: 'x',
     });
     await oracleWrite(store, {
@@ -121,14 +145,35 @@ describe('oracleWrite — graph validation', () => {
       entry: makeEntry({ id: 'DEC-0002', depends: ['DEC-0001'] }),
       body: 'x',
     });
-    // Closing the loop: DEC-0001 now affects DEC-0002, which depends on DEC-0001.
+    // Closing the loop: DEC-0001 now depends on DEC-0002, which depends on DEC-0001.
+    await expect(
+      oracleWrite(store, {
+        actor: 'architect',
+        entry: makeEntry({ id: 'DEC-0001', depends: ['DEC-0002'] }),
+        body: 'x',
+      }),
+    ).rejects.toThrow(/cycle detected in depends/);
+  });
+
+  test('refuses a real cycle within affects alone', async () => {
+    await oracleWrite(store, {
+      actor: 'architect',
+      entry: makeEntry({ id: 'DEC-0001' }),
+      body: 'x',
+    });
+    await oracleWrite(store, {
+      actor: 'architect',
+      entry: makeEntry({ id: 'DEC-0002', affects: ['DEC-0001'] }),
+      body: 'x',
+    });
+    // Closing the loop: DEC-0001 now affects DEC-0002, which affects DEC-0001.
     await expect(
       oracleWrite(store, {
         actor: 'architect',
         entry: makeEntry({ id: 'DEC-0001', affects: ['DEC-0002'] }),
         body: 'x',
       }),
-    ).rejects.toThrow(/cycle detected/);
+    ).rejects.toThrow(/cycle detected in affects/);
   });
 
   test('happy path: writes entry, flips superseded, appends changelog, updates index', async () => {
@@ -148,6 +193,34 @@ describe('oracleWrite — graph validation', () => {
     expect(store.getOracleEntry('DEC-0019').entry.status).toBe('superseded');
     expect(store.listOracleIndex()['DEC-0019']).toBeUndefined();
     expect(store.listOracleIndex()['DEC-0042']).toBeDefined();
+  });
+
+  // Review fix (opus blocker 2): §4 — a superseded entry still exists on
+  // disk ("Superseded files keep their body … flip status"); only
+  // `index.yaml` drops it. Re-writing an entry (edited body, same header)
+  // must not be blocked just because something it supersedes has already
+  // been flipped by that very same original write.
+  test('re-writing an entry whose supersedes target is already superseded is accepted', async () => {
+    await oracleWrite(store, {
+      actor: 'architect',
+      entry: makeEntry({ id: 'DEC-0019', title: 'old' }),
+      body: 'old body',
+    });
+    await oracleWrite(store, {
+      actor: 'architect',
+      entry: makeEntry({ id: 'DEC-0042', title: 'new', supersedes: ['DEC-0019'] }),
+      body: 'new body',
+    });
+
+    // DEC-0019 is now superseded and gone from the index; re-writing DEC-0042
+    // (same header, edited body) must still succeed.
+    await expect(
+      oracleWrite(store, {
+        actor: 'architect',
+        entry: makeEntry({ id: 'DEC-0042', title: 'new (edited)', supersedes: ['DEC-0019'] }),
+        body: 'new body, edited',
+      }),
+    ).resolves.toBeDefined();
   });
 
   test('changelog.md gets a line for the write', async () => {
