@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { validatePolicy, validateVendorsConfig } from '@agile-agents/shared';
 import { parse as parseYaml } from 'yaml';
-import { AlreadyInitialisedError, STATE_BRANCH, runInit } from './init';
+import { AlreadyInitialisedError, STATE_BRANCH, recommendedVendorEntries, runInit } from './init';
 
 let repo: string;
 
@@ -94,14 +94,18 @@ describe('runInit', () => {
     expect(() => validateVendorsConfig(vendors)).not.toThrow();
   });
 
-  test('vendors.yaml (T027): cursor/grok/codex are routing candidates, keyed by ACP_PROVIDERS id, requires_sandbox on the ungated-exec vendors only', () => {
+  test('the shipped vendors.yaml default stays claude-only (T027: extending it broke quota/feed/cli tests elsewhere that hard-code a single account — see init.ts)', () => {
     runInit(repo);
     const stateRoot = join(repo, '.agile');
     const vendors = validateVendorsConfig(
       parseYaml(readFileSync(join(stateRoot, 'vendors.yaml'), 'utf8')),
     );
+    expect(Object.keys(vendors)).toEqual(['claude']);
+  });
 
-    expect(vendors.claude?.requires_sandbox).toBe(false);
+  test('recommendedVendorEntries (T027): cursor/grok/codex, keyed by ACP_PROVIDERS id, requires_sandbox on the ungated-exec vendors only', () => {
+    const vendors = recommendedVendorEntries();
+
     expect(vendors.cursor?.accounts).toEqual([{ id: 'default', auth: 'subscription' }]);
     expect(vendors.cursor?.requires_sandbox).toBe(false);
     expect(vendors.grok?.accounts).toEqual([{ id: 'default', auth: 'subscription' }]);
@@ -112,6 +116,14 @@ describe('runInit', () => {
     // looks entries up by `ACP_PROVIDERS` id (`codex`), which `openai`
     // would never match.
     expect(vendors.openai).toBeUndefined();
+    // Merging these into a running vendors.yaml alongside claude must still
+    // validate as one VendorsConfig.
+    expect(() =>
+      validateVendorsConfig({
+        claude: { accounts: [{ id: 'default', auth: 'subscription' }] },
+        ...vendors,
+      }),
+    ).not.toThrow();
   });
 
   test('adds .agile/, .worktrees/, and the daemon lock/socket files to .gitignore, idempotently', () => {

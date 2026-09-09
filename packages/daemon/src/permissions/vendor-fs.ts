@@ -64,9 +64,7 @@ export function buildGrokFsPolicy(role: PermissionRole): VendorFsImpl {
     async writeFile(path, data, encoding) {
       if (!canWriteViaClientFs(role)) {
         throw new Error(
-          `AGILE-GATE: ${role} may not write files (client-fs policy — vendor=grok, ` +
-            'design §14 "Permissions per role": Reviewer Write = nothing). ' +
-            'This ticket is read-only for you; findings go in the review report.',
+          `AGILE-GATE: ${role} may not write files (client-fs policy — vendor=grok, design §14 "Permissions per role": Reviewer Write = nothing). This ticket is read-only for you; findings go in the review report.`,
         );
       }
       return writeFile(path, data, encoding);

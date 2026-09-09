@@ -72,6 +72,7 @@ import {
   ACP_PROVIDERS,
   type AcpProviderConfig,
   type AgentEvent,
+  AuthRequiredError,
   type SpawnSessionOptions,
   type SpawnedSession,
   spawnSession as defaultSpawnSession,
@@ -86,7 +87,9 @@ import {
   type AcpPermissionRequestParams,
   type PermissionResponderHandle,
   type PermissionRole,
+  buildGrokFsPolicy,
   buildPermissionResponder,
+  cursorModeIdFor,
 } from '../permissions';
 import { type WrapAgentCommandFn, wrapAgentCommand as defaultWrapAgentCommand } from '../sandbox';
 import { buildEvent } from '../store';
@@ -178,6 +181,34 @@ export interface AgentSessionHandle {
   exited: Promise<AgentExitInfo>;
   /** `session.cancel()` + `session.close()`, for a graceful stop (`runner.stop`) — does not itself run the exit/crash handling (that's `exited`, driven by the session's own `exit` event either way). */
   stop(): void;
+}
+
+/**
+ * T027: the first `prompt()` on a Cursor/Grok session fails with
+ * `AuthRequiredError` until the ACP `authenticate` round trip runs
+ * (design/spike-findings.md §C2/§D: "Cursor … ACP `authenticate
+ * (cursor_login)` required"; "Grok … needs ACP `authenticate` (OAuth)").
+ * Runs every `provider.authMethods` id in order (empty for every other
+ * vendor — Claude/Codex/Gemini authenticate ambiently, §C/§D — so this is a
+ * one-branch no-op for them) and retries once. A provider that lists no
+ * auth methods but still throws `AuthRequiredError` re-throws unchanged —
+ * there is nothing this function can do about a vendor `resolveAcpProvider`
+ * didn't say needed a handshake.
+ */
+async function promptWithAuthRetry(
+  session: SpawnedSession,
+  provider: AcpProviderConfig,
+  brief: string,
+): Promise<unknown> {
+  try {
+    return await session.prompt(brief);
+  } catch (err) {
+    if (!(err instanceof AuthRequiredError) || provider.authMethods.length === 0) throw err;
+    for (const methodId of provider.authMethods) {
+      await session.authenticate(methodId);
+    }
+    return session.prompt(brief);
+  }
 }
 
 /** Builds the MCP stdio server entry T011's report specifies: `agile mcp --agent <id> --ticket <id>`. */
@@ -273,7 +304,18 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
     },
     clientCapabilities: provider.clientCapabilities,
     mcpServers: [mcpServerConfig(cliBin, agentId, ticket)],
-    modeId: 'default',
+    // T027: Cursor's reviewer gets its `ask` mode as a courtesy nudge
+    // (design/spike-findings.md §C3 — prompt-level only, never a
+    // substitute for the reviewer table's own execute/edit deny verdicts,
+    // which run unchanged regardless of mode). Every other vendor/role
+    // keeps today's flat `default`.
+    modeId: (provider.id === 'cursor' ? cursorModeIdFor(role) : undefined) ?? 'default',
+    // T027: Grok routes all file I/O through client fs and has no other
+    // gateable surface (design/spike-findings.md §C2/§C3) — this is the
+    // one seam where a reviewer's write can be refused with a reason the
+    // model actually sees (`permissions/vendor-fs.ts`). No other provider
+    // is measured using client fs for real I/O, so this stays Grok-only.
+    ...(provider.id === 'grok' ? { fsImpl: buildGrokFsPolicy(role) } : {}),
   };
   const session = spawn(spawnOptions);
 
@@ -556,7 +598,7 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
         { commit: 'deferred' },
       );
     })
-    .then(() => session.prompt(brief))
+    .then(() => promptWithAuthRetry(session, provider, brief))
     .catch(() => {
       // A failed registration or a rejected first prompt both surface
       // through the session's own `exit`/`error` events (acp-client settles

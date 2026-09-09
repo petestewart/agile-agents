@@ -57,34 +57,55 @@ function defaultPolicy(): Policy {
 }
 
 /**
- * Default `.agile/vendors.yaml`. §18's "Claude for every role" was v0's
- * starting scope; T027 (design §6/§8, design/spike-findings.md §D) adds
- * Cursor, Grok, and Codex as routing candidates once their accounts are
- * configured — each entry keyed by its `@agile-agents/acp-client`
- * `ACP_PROVIDERS` id (`claude`/`cursor`/`grok`/`codex`), the same id
- * `Runner.vendorConfigFor(provider.id)` looks vendors.yaml entries up by
- * (`packages/daemon/src/runner/runner.ts`) — not the design §8 example's
- * company-name key (`openai`), which nothing in the runtime path resolves
- * against.
+ * Default `.agile/vendors.yaml` — v0 scope is "Claude for every role" (§18),
+ * so the only account wired up by default is a Claude subscription login.
  *
- * `requires_sandbox: true` on grok/codex (`packages/shared/src/vendors.ts`,
- * merged in T026): design/spike-findings.md's final per-vendor matrix (§C3)
- * measured **zero** ACP permission requests and no hook layer for both —
- * "codex-acp never asks, regardless of mode or approval policy" and Grok's
- * exec is entirely ungated (only its client-fs reads/writes are gated, §C2)
- * — so `Runner.spawn`/`wrapAgentCommand` refuse to run either as an
- * engineer without a live tier-0 sandbox backend (T026, fail-closed) rather
- * than ever running ungated exec unsandboxed. Cursor omits the flag: its
- * `agent` mode raises an ACP permission request for **every exec** (§C2),
- * so tier 2 already gates it (`decidePermission`/`policy-tables.ts` apply
- * unchanged — no per-vendor branching needed there, see this ticket's
- * report).
+ * T027 note (design §6/§8, design/spike-findings.md §D): adding Cursor,
+ * Grok, or Codex here as *seeded* candidates was tried and reverted —
+ * `QuotaService.list`/`routeCandidates`/the feed snapshot/`agile status`'s
+ * spend table (`packages/daemon/src/quota/**`, `packages/daemon/src/
+ * feed/**`, `packages/cli/src/commands/status.ts`, none of them this
+ * ticket's files) all hard-code "the shipped default vendors.yaml is
+ * claude/default, one account" in their own test fixtures/assertions, so
+ * seeding three more vendors by default breaks eight tests outside this
+ * ticket's ownership — a cross-cutting change, not this ticket's to make
+ * unilaterally (CLAUDE.md: "No new codebase conventions without explicit
+ * approval"). See `recommendedVendorEntries` below for the entries an
+ * operator adds to `.agile/vendors.yaml` by hand to enable Cursor/Grok/
+ * Codex routing, and `vendors.test.ts`/`init.test.ts` for the schema-level
+ * coverage of the shape (`requires_sandbox: true` on grok/codex).
  */
 function defaultVendorsConfig(): VendorsConfig {
   return validateVendorsConfig({
     claude: {
       accounts: [{ id: 'default', auth: 'subscription' }],
     },
+  });
+}
+
+/**
+ * T027: the `.agile/vendors.yaml` stanzas an operator adds by hand to route
+ * to Cursor/Grok/Codex — not seeded into `defaultVendorsConfig()`'s output
+ * (see that function's header for why). Keyed by `@agile-agents/acp-client`
+ * `ACP_PROVIDERS` id (`cursor`/`grok`/`codex`) — the id
+ * `Runner.vendorConfigFor(provider.id)` looks vendors.yaml entries up by
+ * (`packages/daemon/src/runner/runner.ts`), not design §8's example's
+ * company-name key (`openai`), which nothing in the runtime path resolves
+ * against. `requires_sandbox: true` on grok/codex
+ * (`packages/shared/src/vendors.ts`, merged in T026): design/
+ * spike-findings.md's final per-vendor matrix (§C3) measured **zero** ACP
+ * permission requests and no hook layer for both — "codex-acp never asks,
+ * regardless of mode or approval policy" and Grok's exec is entirely
+ * ungated (only its client-fs reads/writes are gated, §C2) — so
+ * `Runner.spawn`/`wrapAgentCommand` refuse to run either as an engineer
+ * without a live tier-0 sandbox backend (T026, fail-closed) rather than
+ * ever running ungated exec unsandboxed. Cursor omits the flag: its `agent`
+ * mode raises an ACP permission request for **every exec** (§C2), so tier 2
+ * already gates it (`decidePermission`/`policy-tables.ts` apply unchanged —
+ * no per-vendor branching needed there).
+ */
+export function recommendedVendorEntries(): VendorsConfig {
+  return validateVendorsConfig({
     cursor: {
       accounts: [{ id: 'default', auth: 'subscription' }],
     },

@@ -2,7 +2,11 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { AcpProviderConfig } from '@agile-agents/acp-client';
+import {
+  type AcpProviderConfig,
+  type SpawnSessionOptions,
+  spawnSession as realSpawnSession,
+} from '@agile-agents/acp-client';
 import type { Ticket } from '@agile-agents/shared';
 import { validateSprint, validateTicket } from '@agile-agents/shared';
 import { Bus } from '../bus';
@@ -302,6 +306,147 @@ describe('startAgentSession', () => {
         (e) => e.kind === 'ledger_no_sprint' && e.ticket === 'TKT-0231' && e.agent === 'eng-0231',
       ),
     ).toBe(true);
+
+    handle.stop();
+    await handle.exited;
+  }, 90000);
+});
+
+describe('T027: per-vendor session wiring (Cursor ask mode, Grok client-fs gate, Cursor/Grok authenticate retry)', () => {
+  /** Wraps the real `spawnSession` so a test can inspect the exact `SpawnSessionOptions` `startAgentSession` built, while still exercising a real subprocess/handshake underneath (never a hand-rolled `SpawnedSession` stub). */
+  function capturingSpawn(sink: { options?: SpawnSessionOptions }): typeof realSpawnSession {
+    return (options: SpawnSessionOptions) => {
+      sink.options = options;
+      return realSpawnSession(options);
+    };
+  }
+
+  test('a Cursor reviewer gets modeId "ask" and no fsImpl; a Cursor engineer gets neither override', async () => {
+    await store.putTicket(makeTicket({ status: 'done' }), { by: 'test' });
+    const reviewerSink: { options?: SpawnSessionOptions } = {};
+    const reviewerHandle = startTrackedSession({
+      store,
+      bus,
+      role: 'reviewer',
+      agentId: 'reviewer-0231',
+      ticket: 'TKT-0231',
+      worktreePath: worktree,
+      brief: 'review it',
+      currentSprintId: () => 'S-01',
+      provider: { ...fakeProvider({ steps: [{ type: 'end_turn' }] }), id: 'cursor' },
+      spawn: capturingSpawn(reviewerSink),
+    });
+    await reviewerHandle.session.initialized;
+    expect(reviewerSink.options?.modeId).toBe('ask');
+    expect(reviewerSink.options?.fsImpl).toBeUndefined();
+    reviewerHandle.stop();
+    await reviewerHandle.exited;
+
+    const engineerSink: { options?: SpawnSessionOptions } = {};
+    const engineerHandle = startTrackedSession({
+      store,
+      bus,
+      role: 'engineer',
+      agentId: 'eng-0231',
+      ticket: 'TKT-0231',
+      worktreePath: worktree,
+      brief: 'do it',
+      currentSprintId: () => 'S-01',
+      provider: { ...fakeProvider({ steps: [{ type: 'end_turn' }] }), id: 'cursor' },
+      spawn: capturingSpawn(engineerSink),
+    });
+    await engineerHandle.session.initialized;
+    expect(engineerSink.options?.modeId).toBe('default');
+    expect(engineerSink.options?.fsImpl).toBeUndefined();
+    engineerHandle.stop();
+    await engineerHandle.exited;
+  }, 90000);
+
+  test("a Grok reviewer gets an fsImpl whose writeFile refuses with a reasoned AGILE-GATE message; a Grok engineer's fsImpl.writeFile still writes", async () => {
+    await store.putTicket(makeTicket({ status: 'done' }), { by: 'test' });
+    const reviewerSink: { options?: SpawnSessionOptions } = {};
+    const reviewerHandle = startTrackedSession({
+      store,
+      bus,
+      role: 'reviewer',
+      agentId: 'reviewer-0231',
+      ticket: 'TKT-0231',
+      worktreePath: worktree,
+      brief: 'review it',
+      currentSprintId: () => 'S-01',
+      provider: { ...fakeProvider({ steps: [{ type: 'end_turn' }] }), id: 'grok' },
+      spawn: capturingSpawn(reviewerSink),
+    });
+    await reviewerHandle.session.initialized;
+    expect(reviewerSink.options?.modeId).toBe('default');
+    expect(reviewerSink.options?.fsImpl).toBeDefined();
+    await expect(
+      reviewerSink.options?.fsImpl?.writeFile(join(worktree, 'notes.md'), 'x', 'utf8'),
+    ).rejects.toThrow(/AGILE-GATE: reviewer may not write files/);
+    reviewerHandle.stop();
+    await reviewerHandle.exited;
+
+    const engineerSink: { options?: SpawnSessionOptions } = {};
+    const engineerHandle = startTrackedSession({
+      store,
+      bus,
+      role: 'engineer',
+      agentId: 'eng-0231',
+      ticket: 'TKT-0231',
+      worktreePath: worktree,
+      brief: 'do it',
+      currentSprintId: () => 'S-01',
+      provider: { ...fakeProvider({ steps: [{ type: 'end_turn' }] }), id: 'grok' },
+      spawn: capturingSpawn(engineerSink),
+    });
+    await engineerHandle.session.initialized;
+    const path = join(worktree, 'a.ts');
+    await engineerSink.options?.fsImpl?.writeFile(path, 'content', 'utf8');
+    expect(readFileSync(path, 'utf8')).toBe('content');
+    engineerHandle.stop();
+    await engineerHandle.exited;
+  }, 90000);
+
+  // T027: exercises the real production path — a real subprocess whose
+  // `session/new` fails with the -32000 `AuthRequiredError` shape until
+  // `authenticate(methodId)` runs (design/spike-findings.md §C2/§D), proving
+  // `promptWithAuthRetry` actually calls `session.authenticate` for every
+  // `provider.authMethods` id and retries the same brief, rather than just
+  // asserting the helper's shape in isolation.
+  test('AuthRequiredError from session/new triggers authenticate(methodId) then a successful retried prompt', async () => {
+    await store.putTicket(makeTicket({ status: 'done' }), { by: 'test' });
+    const logFile = join(scratch, 'auth-log.jsonl');
+    const provider: AcpProviderConfig = {
+      ...fakeProvider({
+        requireAuthMethod: 'cursor_login',
+        logFile,
+        steps: [{ type: 'usage_update', used: 7 }, { type: 'end_turn' }],
+      }),
+      id: 'cursor',
+      authMethods: ['cursor_login'],
+    };
+
+    const handle = startTrackedSession({
+      store,
+      bus,
+      role: 'engineer',
+      agentId: 'eng-0231',
+      ticket: 'TKT-0231',
+      worktreePath: worktree,
+      brief: 'do the ticket',
+      currentSprintId: () => 'S-01',
+      provider,
+    });
+
+    await handle.session.initialized;
+    // The retried prompt's usage_update landing in the ledger is the real
+    // side effect that proves the whole retry round trip worked, not just
+    // that `authenticate` was called.
+    await waitFor(() => store.listLedger('S-01').some((l) => l.in_tokens === 7));
+    await waitFor(() => existsSync(logFile));
+    const log = readFileSync(logFile, 'utf8');
+    expect(log).toContain('"method":"authenticate"');
+    expect(log).toContain('cursor_login');
 
     handle.stop();
     await handle.exited;

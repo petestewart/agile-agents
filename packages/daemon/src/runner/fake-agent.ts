@@ -41,6 +41,31 @@ export type FakeAgentStep =
 
 export interface FakeAgentScript {
   steps: FakeAgentStep[];
+  /**
+   * T027: when set, `session/new` responds with the JSON-RPC error code/
+   * shape `@agile-agents/acp-client`'s `ensureSession` maps to
+   * `AuthRequiredError` (design/spike-findings.md §C2/§D — Cursor/Grok gate
+   * `session/new` behind ACP `authenticate`) until this exact `methodId`
+   * has been sent via `authenticate`; every `session/new` after that
+   * succeeds normally. Omitted (default): `session/new` always succeeds,
+   * matching every existing test's assumption.
+   */
+  requireAuthMethod?: string;
+  /**
+   * T027: path to append one JSON line per `session/set_mode` and
+   * `authenticate` request this process receives — a test's way to observe
+   * what `runner/session.ts` actually sent without a fragile process-exit
+   * race, the same pattern `request_permission`'s `resultFile` already
+   * uses for the client's answer. Omitted: no logging (default, matches
+   * every existing test).
+   */
+  logFile?: string;
+}
+
+function appendLog(script: FakeAgentScript, line: Record<string, unknown>): void {
+  if (!script.logFile) return;
+  const prior = existsSync(script.logFile) ? readFileSync(script.logFile, 'utf8') : '';
+  writeFileSync(script.logFile, `${prior}${JSON.stringify(line)}\n`);
 }
 
 const DEFAULT_SCRIPT: FakeAgentScript = {
@@ -52,6 +77,11 @@ function loadScript(): FakeAgentScript {
   if (!path || !existsSync(path)) return DEFAULT_SCRIPT;
   return JSON.parse(readFileSync(path, 'utf8')) as FakeAgentScript;
 }
+
+/** Loaded once — `session/new`/`session/set_mode`/`authenticate` (T027) need it in `handleLine`, not just `runScript`'s per-prompt read. */
+const script = loadScript();
+/** `authenticate` methodIds this process has seen, for `requireAuthMethod` gating (T027). */
+const authenticatedMethods = new Set<string>();
 
 interface JsonRpcLine {
   jsonrpc?: string;
@@ -84,7 +114,6 @@ function notify(method: string, params: unknown): void {
 let sessionId = 'fake-session-1';
 
 async function runScript(promptRequestId: number | string): Promise<void> {
-  const script = loadScript();
   for (const step of script.steps) {
     switch (step.type) {
       case 'usage_update':
@@ -166,6 +195,18 @@ function handleLine(line: string): void {
       write({ id: message.id, result: { protocolVersion: 1, agentCapabilities: {} } });
       return;
     case 'session/new':
+      // T027: `requireAuthMethod` simulates Cursor/Grok's "session/new
+      // fails until authenticate runs" behaviour (spike-findings.md
+      // §C2/§D) — matches the JSON-RPC code
+      // `@agile-agents/acp-client`'s `ensureSession` maps to
+      // `AuthRequiredError`.
+      if (script.requireAuthMethod && !authenticatedMethods.has(script.requireAuthMethod)) {
+        write({
+          id: message.id,
+          error: { code: -32000, message: 'authentication required' },
+        });
+        return;
+      }
       write({ id: message.id, result: { sessionId, modes: null, configOptions: null } });
       return;
     case 'session/load':
@@ -173,6 +214,7 @@ function handleLine(line: string): void {
       write({ id: message.id, result: { sessionId, modes: null, configOptions: null } });
       return;
     case 'session/set_mode':
+      appendLog(script, { method: 'session/set_mode', params: message.params });
       write({ id: message.id, result: {} });
       return;
     case 'session/prompt':
@@ -181,9 +223,13 @@ function handleLine(line: string): void {
     case 'session/cancel':
       // Fire-and-forget notification, per ACP — nothing to answer.
       return;
-    case 'authenticate':
+    case 'authenticate': {
+      const methodId = (message.params as { methodId?: string } | undefined)?.methodId;
+      if (methodId) authenticatedMethods.add(methodId);
+      appendLog(script, { method: 'authenticate', params: message.params });
       write({ id: message.id, result: {} });
       return;
+    }
     default:
       if (message.id !== undefined) write({ id: message.id, result: {} });
       return;

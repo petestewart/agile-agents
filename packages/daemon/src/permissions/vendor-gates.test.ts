@@ -112,8 +112,9 @@ describe('Cursor (§C2/§C3: ACP permission fires for every exec, never for edit
 describe('Grok (§C2/§C3: client fs is the only gate; ACP permission never fires)', () => {
   test('a reviewer cannot write via client fs — the reasoned refusal matches the AGILE-GATE convention the model is confirmed to see verbatim', async () => {
     const policy = buildGrokFsPolicy('reviewer');
-    await expect(policy.writeFile('/work/.worktrees/TKT-0001-x/notes.md', 'x', 'utf8')).rejects
-      .toThrow(/AGILE-GATE: reviewer may not write files/);
+    await expect(
+      policy.writeFile('/work/.worktrees/TKT-0001-x/notes.md', 'x', 'utf8'),
+    ).rejects.toThrow(/AGILE-GATE: reviewer may not write files/);
   });
 
   test('an engineer can still write via client fs — Grok engineers are not blanket-denied, only reviewers', async () => {
