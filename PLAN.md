@@ -215,12 +215,12 @@ Priority encodes dependency layer as well as importance: P0 tickets are v0-block
 
 ### Ticket: T017 QA protocol
 - **Priority:** P1
-- **Status:** In Progress
+- **Status:** In Review
 - **Owner:** sonnet:worker-T017
 - **Scope:** Depends on T010, T011, T012, T013. QA session per design §13: fresh clone of the ticket branch (`env: clone`; `compose` deferred), permission policy denying reads of `contract.inputs/outputs`, acceptance criteria executed via `test_run`/commands, one rerun on failure, `flaky` finding → KB, report one line per criterion, verdict `accept | reject`, reject → engineer with report as context and `attempts++`.
 - **Acceptance Criteria:** QA accepts a correct implementation, rejects one that fails a criterion with observed vs expected, and never reads an implementation file (asserted from the permission log).
 - **Validation Steps:** Live test on the demo fixture; assertion over the event log.
-- **Notes:**
+- **Notes:** branch `T017-qa-protocol` (`c6af920`, `7ff2fde`); `src/qa/` (env clone-only, criteria, deny list, one-rerun/flaky → KB, report, QaProtocol, verbs, RPC), shared `QaReport` schema, 47 tests (real fixture repo). Wiring for the manager: hook seam for contract-read denial, `registerQaTools`/`buildQaRpcMethods`, `QaProtocol.start()` from `Runner.spawn('qa')`. Gates running.
 
 ### Ticket: T018 Gates policy, HIL requests, circuit breaker
 - **Priority:** P1
