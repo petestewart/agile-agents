@@ -138,9 +138,27 @@ describe('Grok (§C2/§C3: client fs is the only gate; ACP permission never fire
     expect(canWriteViaClientFs('reviewer')).toBe(false);
   });
 
+  // T027 round 2 (review round 1 nit): actually perform a read/realpath
+  // rather than only checking the methods exist — a real assertion, not a
+  // typeof check that would pass even if `readFile` silently refused.
   test('reads are never gated by this policy — only writeFile refuses', async () => {
-    const policy = buildGrokFsPolicy('reviewer');
-    expect(typeof policy.readFile).toBe('function');
-    expect(typeof policy.realpath).toBe('function');
+    const {
+      mkdtempSync,
+      rmSync,
+      writeFileSync: writeFixture,
+      realpathSync,
+    } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const dir = mkdtempSync(join(tmpdir(), 'grok-fs-policy-read-'));
+    try {
+      const path = join(dir, 'notes.md');
+      writeFixture(path, 'hello');
+      const policy = buildGrokFsPolicy('reviewer');
+      await expect(policy.readFile(path, 'utf8')).resolves.toBe('hello');
+      await expect(policy.realpath(path)).resolves.toBe(realpathSync(path));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

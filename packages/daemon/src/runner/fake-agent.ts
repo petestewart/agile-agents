@@ -60,6 +60,21 @@ export interface FakeAgentScript {
    * every existing test).
    */
   logFile?: string;
+  /**
+   * T027 review round 1 B1: mode ids this simulated vendor actually
+   * supports, mirroring a real vendor's advertised mode set
+   * (design/spike-findings.md §C2 — Cursor `agent | plan | ask`, Codex
+   * `read-only | agent | agent-full-access`, Claude `default |
+   * acceptEdits | plan | auto | bypassPermissions`, Grok: none at all).
+   * When set, `session/set_mode` with any other id responds with a
+   * JSON-RPC error (`Unknown mode: <id>`) the way a real vendor rejects an
+   * unsupported mode — this is what catches `runner/session.ts` sending a
+   * mode id the target vendor doesn't have (round 1 found `'default'`
+   * sent to every vendor regardless). Omitted: any modeId is accepted
+   * (back-compat default for scripts that don't care about mode
+   * validation).
+   */
+  validModes?: string[];
 }
 
 function appendLog(script: FakeAgentScript, line: Record<string, unknown>): void {
@@ -213,10 +228,16 @@ function handleLine(line: string): void {
       sessionId = (message.params as { sessionId?: string } | undefined)?.sessionId ?? sessionId;
       write({ id: message.id, result: { sessionId, modes: null, configOptions: null } });
       return;
-    case 'session/set_mode':
+    case 'session/set_mode': {
       appendLog(script, { method: 'session/set_mode', params: message.params });
+      const modeId = (message.params as { modeId?: string } | undefined)?.modeId;
+      if (script.validModes && (modeId === undefined || !script.validModes.includes(modeId))) {
+        write({ id: message.id, error: { code: -32602, message: `Unknown mode: ${modeId}` } });
+        return;
+      }
       write({ id: message.id, result: {} });
       return;
+    }
     case 'session/prompt':
       if (message.id !== undefined) void runScript(message.id);
       return;

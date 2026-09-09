@@ -2,10 +2,11 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { type SpawnSessionOptions, spawnSession } from '@agile-agents/acp-client';
+import { ACP_PROVIDERS, type SpawnSessionOptions, spawnSession } from '@agile-agents/acp-client';
 import { validateTicket } from '@agile-agents/shared';
 import { Bus } from '../bus';
 import { runInit } from '../init';
+import { SandboxRequiredError } from '../sandbox';
 import { StateStore } from '../store';
 import type { FakeAgentScript } from './fake-agent';
 import { buildRunnerRpcMethods } from './rpc';
@@ -344,5 +345,66 @@ describe('runner.* RPC methods', () => {
       return remaining.length === 0;
     });
     expect((await methods['runner.list']?.({})) as Array<{ agentId: string }>).toEqual([]);
+  }, 90000);
+});
+
+describe('Runner.spawn — provider-level requiresSandbox cannot be opted out of by vendors.yaml (T027 review round 1 B2)', () => {
+  test('a bare `grok` vendors.yaml stanza (no requires_sandbox key) + no sandbox backend refuses the engineer spawn before any ticket transition', async () => {
+    // The exact shape design §8's own example yaml uses — accounts only,
+    // no `requires_sandbox` key anywhere. `VendorConfigSchema` defaults
+    // that field to `false`, so this is the case that would run Grok
+    // engineer's ungated exec completely unsandboxed if the flag lived
+    // only in vendors.yaml.
+    await store.putVendors({ grok: { accounts: [{ id: 'default', auth: 'subscription' }] } });
+    const before = store.getTicket('TKT-0231');
+
+    const runner = trackedRunner({
+      store,
+      bus,
+      repoRoot: repo,
+      provider: ACP_PROVIDERS.grok,
+      // Stands in for a host with no tier-0 backend (`detectBackend()` ->
+      // `'none'`) — same fail-closed contract `sandbox/wrap.ts`'s own
+      // tests exercise directly; this test's job is only to prove
+      // `Runner.spawn` actually calls it with `requiresSandbox: true` for
+      // a plain `grok` stanza, not to re-verify `wrapAgentCommand`'s own
+      // backend-detection logic.
+      wrapCommand: (input) => {
+        if (input.requiresSandbox) {
+          throw new SandboxRequiredError(input.vendor, input.role, 'none');
+        }
+        return { command: input.command, args: [...input.args], envOverrides: {}, backend: 'none' };
+      },
+    });
+
+    await expect(runner.spawn('engineer', 'TKT-0231')).rejects.toThrow(SandboxRequiredError);
+
+    const after = store.getTicket('TKT-0231');
+    expect(after.status).toBe(before.status);
+    expect(after.assignee).toBe(before.assignee);
+    expect(after.worktree).toBe(before.worktree);
+    expect(agentExists('eng-0231')).toBe(false);
+  });
+
+  test('the same bare `grok` stanza with a wrapCommand stand-in for a live backend spawns normally (requiresSandbox alone does not block a sandboxed host)', async () => {
+    await store.putVendors({ grok: { accounts: [{ id: 'default', auth: 'subscription' }] } });
+
+    const runner = trackedRunner({
+      store,
+      bus,
+      repoRoot: repo,
+      provider: ACP_PROVIDERS.grok,
+      spawn: fakeSpawn({ steps: [{ type: 'hang' }] }),
+      wrapCommand: (input) => ({
+        command: input.command,
+        args: [...input.args],
+        envOverrides: {},
+        backend: 'none',
+      }),
+    });
+
+    const result = await runner.spawn('engineer', 'TKT-0231');
+    expect(result.agentId).toBe('eng-0231');
+    expect(store.getTicket('TKT-0231').status).toBe('in_progress');
   }, 90000);
 });

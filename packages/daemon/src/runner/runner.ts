@@ -119,11 +119,19 @@ export class Runner {
 
     // T026 tier-0 sandbox: the vendor's `requires_sandbox` /
     // `sandbox_enabled` flags come from `vendors.yaml`; a vendor the config
-    // omits (or no config at all, pre-`agile init`) is treated as neither.
+    // omits (or no config at all, pre-`agile init`) is treated as neither —
+    // EXCEPT (T027 review round 1 B2) a provider whose bridge is measured
+    // to have no gated exec at any tier (`ACP_PROVIDERS.<id>.requiresSandbox`
+    // — Codex/Grok, design/spike-findings.md §C3) carries that fact on the
+    // provider entry itself, ORed in here, so the refusal cannot be opted
+    // out of by an operator's `vendors.yaml` simply omitting the field (the
+    // schema default is `false`, and design §8's own example yaml never
+    // sets it at all).
     const provider = this.opts.provider ?? ACP_PROVIDERS.claude;
     const vendorConfig = this.vendorConfigFor(provider.id);
     const sandbox = {
-      requiresSandbox: vendorConfig?.requires_sandbox ?? false,
+      requiresSandbox:
+        (provider.requiresSandbox ?? false) || (vendorConfig?.requires_sandbox ?? false),
       sandboxEnabled: vendorConfig?.sandbox_enabled ?? false,
     };
     const wrapCommand = this.opts.wrapCommand ?? wrapAgentCommand;

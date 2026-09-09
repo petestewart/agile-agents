@@ -44,6 +44,38 @@ export interface AcpProviderConfig {
    * `session/new` behind `authenticate` (§C2, §D).
    */
   authMethods: readonly string[];
+  /**
+   * ACP `session/set_mode` id to request right after `session/new`, or
+   * `undefined` when the vendor has no mode concept at all
+   * (design/spike-findings.md §C2: Grok — "no modes"; §D: Gemini reports
+   * none either). `runner/session.ts` omits `SpawnSessionOptions.modeId`
+   * entirely when this is `undefined`, so `ensureSession()` never sends
+   * `session/set_mode` for such a vendor (T027 review round 1 B1: sending
+   * `'default'` — a *Claude*-only mode id — to Cursor/Grok/Codex fails the
+   * whole `ensureSession()`, and therefore the first prompt, since none of
+   * them has a `'default'` mode). Vendor mode sets, per spike-findings.md
+   * §C2: Cursor `agent | plan | ask`, Codex `read-only | agent |
+   * agent-full-access`, Claude `default | acceptEdits | plan | auto |
+   * bypassPermissions`.
+   */
+  defaultModeId?: string;
+  /**
+   * `true` when this vendor's bridge is measured to gate exec at **no**
+   * tier — not ACP permission, not a hook, not client fs
+   * (design/spike-findings.md §C3's final matrix: Codex "codex-acp never
+   * asks, regardless of mode or approval policy"; Grok's exec is entirely
+   * ungated, only its client-fs reads/writes are gated). `Runner.spawn`
+   * (T027 review round 1 B2) ORs this with `VendorConfig.requires_sandbox`
+   * from `vendors.yaml` rather than trusting the yaml field alone, so the
+   * tier-0 refusal (design §6: "a vendor with ungated exec ... is an
+   * engineer only inside a tier-0 sandbox") cannot be silently opted out of
+   * by an operator's `vendors.yaml` simply omitting the field (its schema
+   * default is `false`, and design §8's own example yaml never sets it at
+   * all). Defaults `undefined`/falsy for every vendor whose exec tier 2
+   * actually gates (Claude, Cursor per §C2 — "raises a permission request
+   * for every exec").
+   */
+  requiresSandbox?: boolean;
 }
 
 /** Deep-freeze one registry entry so no caller can rewrite shared config. */
@@ -80,6 +112,10 @@ export const ACP_PROVIDERS: Record<AcpProviderId, AcpProviderConfig> = Object.fr
     // Ambient login (`claude login`, or ANTHROPIC_API_KEY) — no ACP
     // `authenticate` round trip needed (spike-findings.md §C, §C2).
     authMethods: [],
+    // Modes at 0.75.1 (§C): `default, acceptEdits, plan, auto,
+    // bypassPermissions` — `default` is what tier 2 needs to see edits/exec
+    // (§6: "Engineers run in `default` mode so tier 2 sees edits/exec").
+    defaultModeId: 'default',
   }),
   gemini: freezeProvider({
     id: 'gemini',
@@ -95,6 +131,8 @@ export const ACP_PROVIDERS: Record<AcpProviderId, AcpProviderConfig> = Object.fr
     // restart instead of attempting a load blind.
     loadSession: false,
     authMethods: [],
+    // No `defaultModeId` — spike-findings.md §D: "reports no modes";
+    // `session.ts` omits `session/set_mode` entirely for this vendor.
   }),
   cursor: freezeProvider({
     id: 'cursor',
@@ -111,6 +149,12 @@ export const ACP_PROVIDERS: Record<AcpProviderId, AcpProviderConfig> = Object.fr
     // requires the ACP `authenticate(cursor_login)` round trip first
     // (spike-findings.md §C2).
     authMethods: ['cursor_login'],
+    // Modes `agent | plan | ask` (§C2). `agent` is the default an
+    // engineer/QA session runs in; a reviewer instead gets `ask`
+    // (`permissions/vendor-modes.ts`'s `cursorModeIdFor`, §C3's "useful for
+    // reviewers as a nudge, not a gate" — additive to, never a substitute
+    // for, tier 2's own exec-request gating).
+    defaultModeId: 'agent',
   }),
   grok: freezeProvider({
     id: 'grok',
@@ -129,6 +173,14 @@ export const ACP_PROVIDERS: Record<AcpProviderId, AcpProviderConfig> = Object.fr
     // spike-findings.md itself.
     loadSession: true,
     authMethods: ['grok.com'],
+    // No `defaultModeId` — spike-findings.md §C2: Grok has "no modes";
+    // `session.ts` omits `session/set_mode` entirely for this vendor
+    // (T027 review round 1 B1 — sending a Claude mode id like `'default'`
+    // here fails `session/new`'s handshake outright).
+    // Grok's exec is entirely ungated at every tier (§C3) — only its
+    // client-fs reads/writes are gated (`permissions/vendor-fs.ts`) — so it
+    // is an engineer only inside a tier-0 sandbox (design §6).
+    requiresSandbox: true,
   }),
   codex: freezeProvider({
     id: 'codex',
@@ -162,6 +214,15 @@ export const ACP_PROVIDERS: Record<AcpProviderId, AcpProviderConfig> = Object.fr
     // `authenticate` round trip (unlike Cursor/Grok, no -32000/auth error
     // was ever observed for codex-acp in any spike run).
     authMethods: [],
+    // Modes `read-only | agent | agent-full-access` (§C2) — `agent` is what
+    // an engineer needs (write access); irrelevant to gating either way
+    // since codex-acp "raises zero permission requests in agent and
+    // read-only" alike (§C2/§C3), so mode never affects enforcement here.
+    defaultModeId: 'agent',
+    // codex-acp "raises zero permission requests ... regardless of mode or
+    // approval policy" (§C3) — no tier 1/2 gate exists for this vendor at
+    // all, so it is an engineer only inside a tier-0 sandbox (design §6).
+    requiresSandbox: true,
   }),
 });
 
