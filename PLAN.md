@@ -107,12 +107,12 @@ Priority encodes dependency layer as well as importance: P0 tickets are v0-block
 
 ### Ticket: T005 State store and event log
 - **Priority:** P0
-- **Status:** In Progress
+- **Status:** In Review
 - **Owner:** sonnet:worker-T005
 - **Scope:** Depends on T004. Validating read/write layer over `.agile/` for every entity: atomic file writes, ticket status transition table (only legal edges), `history` appends, index maintenance for oracle/KB, append-only `board/status/<ticket>.jsonl`, `ledger/<sprint>.jsonl`, `log/events.jsonl` with every state transition as an event. Commit-to-`agile-state` batching (one commit per logical operation, message = event kind).
 - **Acceptance Criteria:** Illegal transitions throw; every mutation produces exactly one event; state survives daemon restart; `git log` on `agile-state` reads as an audit trail.
 - **Validation Steps:** Property test over random legal transition sequences; restart test.
-- **Notes:**
+- **Notes:** branch `T005-state-store` (local worktree), 3 commits, self-review PASS. `StateStore` in `packages/daemon/src/store/` (ticket get/list/put/transition, stanzas, oracle+KB with index maintenance, ledger, events; one git commit per operation); `OracleIndex`/`KbIndex` schemas added to shared; `state.ticket_get/list` RPC real, other `state.*` still stubs. Worker scoping call flagged for review: only status transitions emit `events.jsonl` lines (oracle/KB/stanza/ledger writes get commits but no event). Gates `opus:reviewer-T005` + `sonnet:qa-T005` running.
 
 ### Ticket: T006 Bus: inboxes, threads, registry, routing rules
 - **Priority:** P0
