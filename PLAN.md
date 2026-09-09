@@ -251,8 +251,8 @@ Priority encodes dependency layer as well as importance: P0 tickets are v0-block
 
 ### Ticket: T021 Demo fixture and end-to-end sprint
 - **Priority:** P1
-- **Status:** Todo
-- **Owner:** Unassigned
+- **Status:** In Progress
+- **Owner:** sonnet:worker-T021
 - **Scope:** Depends on T014–T020. `fixtures/demo-project`: small TS service with a test suite, a deliberately oversized file, one seeded rule violation opportunity, and a seeded `.agile/` (product.md, two SPECs, one DEC, an epic of three tickets where ticket 2's contract contains a planted contradiction that forces a discovery). `agile run` drives it per the Definition of Done. Tune role briefs until the run passes three times in a row.
 - **Acceptance Criteria:** Definition of Done "Run" section holds; a written run report with token spend per role is committed under `fixtures/demo-project/runs/`.
 - **Validation Steps:** `AGILE_LIVE=1 bun run e2e` three consecutive passes.
@@ -260,12 +260,12 @@ Priority encodes dependency layer as well as importance: P0 tickets are v0-block
 
 ### Ticket: T022 Pi adapter and `agile` extension
 - **Priority:** P2
-- **Status:** In Progress
+- **Status:** In Review
 - **Owner:** sonnet:worker-T022
 - **Scope:** Depends on T009, T011, T012. Vendor entry for Pi via `pi-acp` (fork if needed); an `agile` Pi extension installed to `~/.pi/agent/extensions/` (self-guarding on a daemon-set env var) implementing `tool_call` gating with reasons, `tool_result` rewriting for `test_run`-class outputs, halt/inbox delivery, and heartbeat by calling the daemon socket; `quietStartup` handling. Routing table gains `(pi, account, model)` candidates for engineer and reviewer.
 - **Acceptance Criteria:** The demo epic completes with Pi engineers and a Claude reviewer; the perm matrix for Pi reproduces `spike-findings.md` §C4.
 - **Validation Steps:** Live e2e with `routing: engineer → pi`.
-- **Notes:**
+- **Notes:** Branch `T022-pi-adapter` (`fc0eb9f`): `ACP_PROVIDERS.pi` (pi-acp; offline `initialize` handshake verified, no login), `src/pi/agile-extension.ts` + idempotent installer (temp `PI_HOME` in tests), `session.ts` wiring gated on `provider.id === 'pi'`, `(pi, account, model)` route candidates; 43 tests; live perm matrix `AGILE_LIVE=1`-deferred. Round 1 review + QA running.
 
 ### Ticket: T023 Quota records, routing policy, barometer data
 - **Priority:** P2
