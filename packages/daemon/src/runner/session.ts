@@ -88,6 +88,13 @@ import {
   type PermissionRole,
   buildPermissionResponder,
 } from '../permissions';
+import {
+  ForeignPiExtensionError,
+  GATE_ENV_VAR as PI_GATE_ENV_VAR,
+  installPiExtension,
+  readAgileExtensionSource,
+  resolvePiAgentDir,
+} from '../pi';
 import { type WrapAgentCommandFn, wrapAgentCommand as defaultWrapAgentCommand } from '../sandbox';
 import { buildEvent } from '../store';
 import type { StateStore } from '../store';
@@ -156,6 +163,15 @@ export interface AgentSessionOptions {
   sandboxEnabled?: boolean;
   /** Test seam: override how the agent process command is wrapped for tier-0 sandboxing before spawn. Defaults to the real `sandbox.wrapAgentCommand`. */
   wrapCommand?: WrapAgentCommandFn;
+  /**
+   * T022: only consulted when `provider.id === 'pi'` — the Pi agent config
+   * directory `installPiExtension` writes `extensions/agile.ts` and
+   * `settings.json` into (`resolvePiAgentDir()`'s default when unset). Test
+   * seam so a session test never touches the real `~/.pi/agent`.
+   */
+  piAgentDir?: string;
+  /** Test seam: inject a fake `installPiExtension` instead of the real filesystem writer, so a non-Pi-provider test never pays for the (harmless but pointless) real check. Defaults to the real `installPiExtension`. */
+  installPiExtension?: typeof installPiExtension;
 }
 
 export interface AgentExitInfo {
@@ -259,6 +275,38 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
     enabled: opts.sandboxEnabled,
     socketPath: opts.socketPath,
   });
+  // T022: Pi has no ACP-level hook equivalent — its own enforcement lives in
+  // the `agile` extension (`pi/agile-extension.ts`), which this install call
+  // makes sure is on disk (idempotent) and self-guards on `AGILE_PI_GATE`,
+  // set below only for a Pi-provider session so every other vendor's
+  // envOverrides are unaffected.
+  //
+  // Round 2 review fix (B3): `installPiExtension` itself already never
+  // throws for a `settings.json` (`quietStartup`) failure — this try/catch
+  // is the outer safety net the review asked for regardless, so a bug
+  // anywhere in that call can never silently take the whole spawn down
+  // *except* for the one failure mode that's genuinely load-bearing: a
+  // foreign, non-agile-owned `extensions/agile.ts` at the target path
+  // (`ForeignPiExtensionError`, B2) — without the extension file actually
+  // on disk there is no tier-1 gate for this session at all, so that one
+  // is re-thrown rather than swallowed (CLAUDE.md: "hooks are the
+  // enforcement layer" — spawning ungated is worse than not spawning).
+  if (provider.id === 'pi') {
+    const install = opts.installPiExtension ?? installPiExtension;
+    try {
+      install({
+        agentDir: opts.piAgentDir ?? resolvePiAgentDir(),
+        extensionSource: readAgileExtensionSource(),
+      });
+    } catch (err) {
+      if (err instanceof ForeignPiExtensionError) throw err;
+      throw new Error(
+        `startAgentSession: installing the agile Pi extension for ${agentId} failed: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
+  }
 
   const spawnOptions: SpawnSessionOptions = {
     cmd: wrapped.command,
@@ -270,6 +318,7 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
       AGILE_AGENT: agentId,
       AGILE_TICKET: ticket,
       ...(opts.socketPath ? { AGILE_SOCKET_PATH: opts.socketPath } : {}),
+      ...(provider.id === 'pi' ? { [PI_GATE_ENV_VAR]: '1' } : {}),
     },
     clientCapabilities: provider.clientCapabilities,
     mcpServers: [mcpServerConfig(cliBin, agentId, ticket)],

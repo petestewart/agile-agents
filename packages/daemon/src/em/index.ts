@@ -1,5 +1,6 @@
 export * from './sprint';
 export * from './assign';
+export * from './pi-route-candidates';
 export * from './board';
 export * from './discovery';
 // Explicit list: `Clock` is a local alias that would collide with `bus`'s

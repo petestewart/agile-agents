@@ -14,7 +14,7 @@
  */
 import type { AcpClientCapabilities } from './types';
 
-export type AcpProviderId = 'claude' | 'gemini' | 'cursor' | 'grok';
+export type AcpProviderId = 'claude' | 'gemini' | 'cursor' | 'grok' | 'pi';
 
 export interface AcpProviderConfig {
   id: AcpProviderId;
@@ -129,6 +129,34 @@ export const ACP_PROVIDERS: Record<AcpProviderId, AcpProviderConfig> = Object.fr
     // spike-findings.md itself.
     loadSession: true,
     authMethods: ['grok.com'],
+  }),
+  pi: freezeProvider({
+    id: 'pi',
+    label: 'Pi',
+    // Community ACP shim over `pi --mode rpc` (T022; design/spike-findings.md
+    // §C4: "adapter = `pi-acp` (or fork) as the ACP shim, all enforcement in
+    // an `agile` extension"). No args needed — `pi-acp` spawns `pi --mode rpc
+    // --no-themes` itself; the underlying `pi` binary it looks for on `$PATH`
+    // can be overridden with `PI_ACP_PI_COMMAND` if it's ever not `pi`.
+    command: 'pi-acp',
+    args: [],
+    envOverrides: {},
+    clientCapabilities: {
+      fs: { readTextFile: true, writeTextFile: true },
+    },
+    // Verified offline (T022 verify-before-build, pi-acp@0.0.33 against
+    // @earendil-works/pi-coding-agent@0.85.1, no vendor login): `initialize`
+    // replies `agentCapabilities.loadSession: true`, matching
+    // spike-findings.md §C4's "session/load restored context via pi-acp's
+    // session map".
+    loadSession: true,
+    // `initialize`'s `authMethods` is a single terminal-login stub, not a
+    // real ACP auth round trip (spike-findings.md §C4: "authMethods is a
+    // terminal-login stub"); `pi-acp` completes `initialize` with no
+    // API-key env vars present, so `session/new` needs no `authenticate`
+    // call — real login is `pi`'s own `~/.pi/agent/auth.json`, out of band,
+    // same as Claude's ambient `claude login`.
+    authMethods: [],
   }),
 });
 

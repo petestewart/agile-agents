@@ -103,3 +103,6 @@ export * from './quota';
 // Tier-0 sandbox: profiles, backend detection, sandbox-exec/container
 // renderers, wrapAgentCommand (T026).
 export * from './sandbox';
+
+// Pi adapter: the agile Pi extension source, its installer, gate env (T022).
+export * from './pi';
