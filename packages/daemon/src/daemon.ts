@@ -5,11 +5,13 @@
  * shape", §15 "one daemon per repo").
  */
 
+import { existsSync } from 'node:fs';
 import daemonPackageJson from '../package.json' with { type: 'json' };
 import { type AgileConfig, type DiscoverConfigOptions, discoverConfig } from './config';
 import { type HttpServerHandle, startHttpServer } from './http';
 import { type LockHandle, acquireLock } from './lock';
 import { type RpcServerHandle, startRpcServer } from './rpc';
+import { StateStore, buildStateRpcMethods } from './store';
 
 export const DAEMON_VERSION: string = daemonPackageJson.version;
 
@@ -28,6 +30,13 @@ export async function startDaemon(options: DiscoverConfigOptions = {}): Promise<
   const lock = acquireLock(config.lockPath);
   const startedAt = Date.now();
 
+  // `.agile/` may not exist yet (before `agile init`); state.* stays fully
+  // stubbed in that case, same as T004 — only wire the real handlers when
+  // there's a state root to open them against.
+  const extraMethods = existsSync(config.stateRoot)
+    ? buildStateRpcMethods(StateStore.open(config.stateRoot))
+    : undefined;
+
   let rpc: RpcServerHandle;
   let http: HttpServerHandle;
   try {
@@ -36,6 +45,7 @@ export async function startDaemon(options: DiscoverConfigOptions = {}): Promise<
       version: DAEMON_VERSION,
       stateRoot: config.stateRoot,
       startedAt,
+      extraMethods,
     });
   } catch (err) {
     lock.release();
