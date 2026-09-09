@@ -219,6 +219,62 @@ describe('HookService.preToolUse', () => {
     expect(bus.poll('eng-1')).toHaveLength(0); // acked, moved to done/
   });
 
+  // T022 round 2 fix (review B1): a caller with no additionalContext
+  // channel (the `agile` Pi extension) sets `no_additional_context_channel`
+  // so a normal message is left untouched — proving the fix against the
+  // real `HookService`/`Bus`, the same objects the reviewer's repro used.
+  test('no_additional_context_channel: a normal message is neither surfaced nor acked', async () => {
+    await seedTicket();
+    await bus.send({
+      id: ulid(),
+      ts: new Date().toISOString(),
+      from: 'em',
+      to: ['eng-1'],
+      kind: 'answer',
+      priority: 'normal',
+      body: 'use the JWT approach',
+      promote_to: 'none',
+    });
+
+    const svc = service();
+    const result = await svc.preToolUse({
+      cwd: worktree,
+      tool_name: 'Read',
+      tool_input: { file_path: 'x.txt' },
+      no_additional_context_channel: true,
+    });
+    expect(result.hookSpecificOutput.permissionDecision).toBe('allow');
+    expect(result.hookSpecificOutput.additionalContext).toBeUndefined();
+    // Still in the inbox — nothing acked it — so a later poll (e.g.
+    // `before_agent_start`) can still deliver it.
+    expect(bus.poll('eng-1')).toHaveLength(1);
+  });
+
+  test('no_additional_context_channel does not suppress an urgent deny', async () => {
+    await seedTicket();
+    await bus.send({
+      id: ulid(),
+      ts: new Date().toISOString(),
+      from: 'em',
+      to: ['eng-1'],
+      kind: 'halt',
+      priority: 'urgent',
+      body: 'stop and re-read the ticket',
+      promote_to: 'none',
+    });
+
+    const svc = service();
+    const result = await svc.preToolUse({
+      cwd: worktree,
+      tool_name: 'Read',
+      tool_input: { file_path: 'x.txt' },
+      no_additional_context_channel: true,
+    });
+    expect(result.hookSpecificOutput.permissionDecision).toBe('deny');
+    expect(result.hookSpecificOutput.permissionDecisionReason).toBe('stop and re-read the ticket');
+    expect(bus.poll('eng-1')).toHaveLength(0); // urgent ack is unaffected by the flag
+  });
+
   test('an urgent message denies with its body, and is acked so the next call sees the next tier', async () => {
     await seedTicket();
     await bus.send({

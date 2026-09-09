@@ -1,8 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { ulid, validateTicket } from '@agile-agents/shared';
+import { Bus, buildBusRpcMethods } from '../bus';
+import { GateService } from '../gates';
+import { HookService, buildHookRpcMethods } from '../hook';
+import { runInit } from '../init';
 import { type RpcServerHandle, startRpcServer } from '../rpc';
+import { StateStore } from '../store';
 import {
   GATE_ENV_VAR,
   type HookPreToolUseReply,
@@ -84,6 +90,23 @@ describe('summarizeTestOutput', () => {
     expect(result.text).toContain('AGILE-SUMMARY');
     expect(result.text).toContain('fail-looking');
     expect(result.text).toContain('AssertionError: expected 1 to be 2');
+  });
+
+  // Round 2 review fix (B4, secondary nit): an early failure block must
+  // survive even when a long trailing summary would otherwise push it out
+  // of a tail-only truncation (jest/vitest-per-file-block-shaped output).
+  it('keeps an early failure line even when it falls outside the tail', () => {
+    const lines = [
+      'FAIL src/foo.test.ts',
+      'AssertionError: expected 1 to be 2 at foo.test.ts:12',
+      ...Array.from({ length: 300 }, (_, i) => `PASS trailing_${i}`),
+    ];
+    const big = lines.join('\n');
+    const result = summarizeTestOutput(big);
+    expect(result.rewritten).toBe(true);
+    // The early failure lines are far outside the last 40 lines (the tail).
+    expect(result.text).toContain('AssertionError: expected 1 to be 2 at foo.test.ts:12');
+    expect(result.text).toContain('failure-matching lines');
   });
 });
 
@@ -301,6 +324,74 @@ describe('createAgileExtension: tool_result rewriting', () => {
     );
     expect(nonTestResult).toBeUndefined();
   });
+
+  // Round 2 review fix (B4): a rewritten *failing* run must echo isError:
+  // true — a summary that comes back looking like a pass is exactly the
+  // failure mode this rewrite must never produce.
+  it('preserves isError: true on a rewritten failing test run', async () => {
+    rpcServer = startRpcServer({
+      socketPath,
+      version: '0.0.0-test',
+      stateRoot: dir,
+      startedAt: Date.now(),
+      extraMethods: { 'hook.post_tool_use': () => ({}), 'bus.heartbeat': () => ({}) },
+    });
+
+    const pi = new FakePi();
+    createAgileExtension({
+      env: { [GATE_ENV_VAR]: '1', AGILE_SOCKET_PATH: socketPath, AGILE_AGENT: 'eng-1' },
+      heartbeatIntervalMs: 60_000,
+    })(pi);
+
+    const bigLines = Array.from({ length: 300 }, (_, i) => `PASS case_${i}`);
+    bigLines.push('FAIL case_x: boom');
+    const bigOutput = bigLines.join('\n');
+
+    const rewritten = await pi.toolResult?.(
+      {
+        type: 'tool_result',
+        toolCallId: '1',
+        toolName: 'bash',
+        input: { command: 'bun test' },
+        content: [{ type: 'text', text: bigOutput }],
+        isError: true,
+      },
+      { cwd: '/repo' },
+    );
+    expect(rewritten?.content?.[0]?.text).toContain('AGILE-SUMMARY');
+    expect(rewritten?.isError).toBe(true);
+  });
+
+  it('preserves isError: false on a rewritten passing test run', async () => {
+    rpcServer = startRpcServer({
+      socketPath,
+      version: '0.0.0-test',
+      stateRoot: dir,
+      startedAt: Date.now(),
+      extraMethods: { 'hook.post_tool_use': () => ({}), 'bus.heartbeat': () => ({}) },
+    });
+
+    const pi = new FakePi();
+    createAgileExtension({
+      env: { [GATE_ENV_VAR]: '1', AGILE_SOCKET_PATH: socketPath, AGILE_AGENT: 'eng-1' },
+      heartbeatIntervalMs: 60_000,
+    })(pi);
+
+    const bigOutput = Array.from({ length: 400 }, (_, i) => `PASS case_${i}`).join('\n');
+    const rewritten = await pi.toolResult?.(
+      {
+        type: 'tool_result',
+        toolCallId: '1',
+        toolName: 'bash',
+        input: { command: 'bun test' },
+        content: [{ type: 'text', text: bigOutput }],
+        isError: false,
+      },
+      { cwd: '/repo' },
+    );
+    expect(rewritten?.content?.[0]?.text).toContain('AGILE-SUMMARY');
+    expect(rewritten?.isError).toBe(false);
+  });
 });
 
 describe('createAgileExtension: inbox delivery', () => {
@@ -359,6 +450,93 @@ describe('createAgileExtension: inbox delivery', () => {
       { cwd: '/repo' },
     );
     expect(result).toBeUndefined();
+  });
+
+  // T022 round 2 fix (review B1) — end-to-end against the REAL
+  // HookService/Bus/StateStore (not fakes), the same objects the
+  // reviewer's own repro used: a normal-priority message sent before the
+  // engineer's first tool call must survive that tool_call (no
+  // additionalContext channel to lose it into) and still be there for
+  // before_agent_start to deliver + ack on the *next* turn.
+  it('a normal message survives a tool_call and is still delivered on the next before_agent_start (real HookService/Bus)', async () => {
+    const repo = mkdtempSync(join(tmpdir(), 'agile-pi-extension-e2e-'));
+    Bun.spawnSync(['git', 'init', '-q'], { cwd: repo });
+    Bun.spawnSync(['git', 'config', 'user.email', 'test@example.com'], { cwd: repo });
+    Bun.spawnSync(['git', 'config', 'user.name', 'Test'], { cwd: repo });
+    writeFileSync(join(repo, 'README.md'), '# fixture\n');
+    Bun.spawnSync(['git', 'add', '-A'], { cwd: repo });
+    Bun.spawnSync(['git', 'commit', '-q', '-m', 'init'], { cwd: repo });
+    const worktree = join(repo, '.worktrees', 'TKT-0001');
+    mkdirSync(worktree, { recursive: true });
+
+    try {
+      const init = runInit(repo);
+      const store = StateStore.open(init.stateRoot);
+      const bus = new Bus(store, init.stateRoot);
+      await store.putTicket(
+        validateTicket({
+          id: 'TKT-0001',
+          title: 'Ticket',
+          status: 'in_progress',
+          contract: {},
+          history: [],
+          assignee: 'eng-1',
+          worktree: join('.worktrees', 'TKT-0001'),
+        }),
+      );
+      const hookService = new HookService(store, bus, {
+        repoRoot: repo,
+        gates: new GateService(store),
+      });
+
+      await bus.send({
+        id: ulid(),
+        ts: new Date().toISOString(),
+        from: 'em',
+        to: ['eng-1'],
+        kind: 'answer',
+        priority: 'normal',
+        body: 'stop editing src/foo.ts, TKT-0002 owns it now',
+        promote_to: 'none',
+      });
+
+      rpcServer = startRpcServer({
+        socketPath,
+        version: '0.0.0-test',
+        stateRoot: init.stateRoot,
+        startedAt: Date.now(),
+        extraMethods: {
+          ...buildHookRpcMethods(hookService),
+          ...buildBusRpcMethods(bus),
+        },
+      });
+
+      const pi = new FakePi();
+      createAgileExtension({
+        env: { [GATE_ENV_VAR]: '1', AGILE_SOCKET_PATH: socketPath, AGILE_AGENT: 'eng-1' },
+        heartbeatIntervalMs: 60_000,
+      })(pi);
+
+      const toolCallResult = await pi.toolCall?.(
+        { type: 'tool_call', toolCallId: '1', toolName: 'read', input: { file_path: 'x.txt' } },
+        { cwd: worktree },
+      );
+      expect(toolCallResult).toEqual({});
+      // Not acked by the tool_call round trip — still pending.
+      expect(bus.poll('eng-1')).toHaveLength(1);
+
+      const delivered = await pi.beforeAgentStart?.(
+        { type: 'before_agent_start', prompt: 'go' },
+        { cwd: worktree },
+      );
+      expect(delivered?.message?.content[0]?.text).toContain('TKT-0002 owns it now');
+
+      await new Promise((r) => setTimeout(r, 20));
+      expect(bus.poll('eng-1')).toHaveLength(0); // delivered, now acked
+      store.close();
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
   });
 });
 

@@ -3,16 +3,19 @@
  * reviewer roles (T022 scope: "Routing table gains `(pi, account, model)`
  * candidates for engineer and reviewer").
  *
- * `em/assign.ts`'s `defaultRoute` stays the v0 single-Claude stub (CLAUDE.md
- * "v0 defaults": "one repo, one team, Claude for every role" until T023's
- * real `(role, tier) -> ordered candidates` policy lands — its
- * `src/quota/routeCandidates` isn't merged into this integration branch yet
- * (PLAN.md T023, "In Review" as of this ticket). Wiring these candidates
- * into the live routing table is therefore left to whichever of T022/T023
- * merges second (see this ticket's `.pipeline-report.md`, "Wiring the
- * manager needs to do at merge") — this file just supplies the data T023's
- * policy (or a manager-authored interim `RouteFn`) can consume without
- * re-deriving Pi's account ids from `design/spike-findings.md` again.
+ * T022 round 2 (review N1: "nothing consumes pi-route-candidates ... so no
+ * Pi session can be scheduled today"): `em/assign.ts`'s `defaultRoute` now
+ * builds its ordered candidate list from these two arrays directly (Claude
+ * first, still winning by default — see `assign.ts`'s `orderedCandidates`),
+ * and `Runner.spawn` (`runner/runner.ts`) resolves `ticket.routing.vendor`
+ * into an `AcpProviderConfig` at spawn time, so a `route` that actually
+ * returns a Pi candidate (T023's real policy, or a caller-injected
+ * `AssignReadyOptions.route` today) is now schedulable end to end. T023's
+ * own `(role, tier) -> ordered candidates` policy (`src/quota/
+ * routeCandidates`) isn't merged into this integration branch yet (PLAN.md
+ * T023, "In Review" as of this ticket) — when it lands, it should read
+ * these two arrays rather than re-deriving Pi's account ids from
+ * `design/spike-findings.md` again.
  *
  * Account ids match `design/spike-findings.md` §C4 "Auth": "`/login`
  * supports Claude Pro/Max ..., ChatGPT Plus/Pro ..., xAI/Grok subscription,

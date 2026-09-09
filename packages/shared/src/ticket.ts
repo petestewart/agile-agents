@@ -85,6 +85,17 @@ export const TicketRoutingSchema = z
   .object({
     // "<resolved by daemon from tier at assignment>" — absent before assignment.
     model: z.string().min(1).optional(),
+    // T022 round 2 (review N1): the vendor id (`.agile/vendors.yaml`'s
+    // top-level key — `claude`, `pi`, ...) the routed candidate resolved
+    // to, so `Runner.spawn` (packages/daemon/src/runner/runner.ts) can
+    // actually select that vendor's `AcpProviderConfig` instead of always
+    // defaulting to Claude. Optional: absent on a ticket predating this
+    // field, or one never assigned yet.
+    vendor: z.string().min(1).optional(),
+    // Vendor account id (`.agile/vendors.yaml`'s per-vendor `accounts[].id`)
+    // — optional, and meaningless without `vendor` (not enforced here;
+    // `RouteCandidate`'s own producer is the only writer of this pair).
+    account: z.string().min(1).optional(),
     attempts: z.number().int().min(0).default(0),
     max_attempts: z.number().int().min(1),
     escalation: z.array(TicketTierSchema).default([]),

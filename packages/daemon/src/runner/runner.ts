@@ -22,6 +22,7 @@
  */
 
 import { join } from 'node:path';
+import { type AcpProviderConfig, resolveAcpProvider } from '@agile-agents/acp-client';
 import type { AgentId, Ticket, TicketId } from '@agile-agents/shared';
 import type { Bus } from '../bus';
 import type { GateService } from '../gates';
@@ -67,6 +68,10 @@ export interface RunnerOptions {
    * enforcement layer, so this is on by default; a test may inject a no-op.
    */
   installPreCommitHook?: (worktreePath: string, ticket: Ticket) => unknown;
+  /** T022: forwarded to `startAgentSession` for a `pi`-routed spawn — test seam so a Pi-provider `Runner.spawn` test never touches the real `~/.pi/agent` (mirrors `session.test.ts`'s own seam of the same name). */
+  piAgentDir?: AgentSessionOptions['piAgentDir'];
+  /** T022: forwarded to `startAgentSession` — injects a fake `installPiExtension` for the same reason as `piAgentDir`. */
+  installPiExtension?: AgentSessionOptions['installPiExtension'];
 }
 
 export interface SpawnResult {
@@ -96,8 +101,24 @@ export class Runner {
    * policy (§12, CLAUDE.md v0 default) — the ticket must already carry a
    * `worktree` (an engineer has run at least once). QA: a fresh clone at
    * `.worktrees/<TKT-id>-qa` (§13).
+   *
+   * Provider selection (T022 round 2, review N1): `opts.provider`, when
+   * given, wins outright (an explicit caller override — the injectable
+   * seam the review asked for, and what `runner.test.ts`'s fake-ACP-agent
+   * tests use to force a specific `AcpProviderConfig` without touching
+   * `ticket.routing` at all). Otherwise resolved from `ticket.routing.vendor`
+   * (`em/assign.ts`'s `assignReady` is what actually writes that field —
+   * see its own doc comment), defaulting to Claude when unset via
+   * `resolveAcpProvider`'s own `undefined` -> `'claude'` contract — so a
+   * reviewer/QA spawn (routing is only ever written for the engineer role
+   * today) is unaffected and still runs on Claude, matching this ticket's
+   * "Pi engineers and a Claude reviewer" demo shape.
    */
-  async spawn(role: PermissionRole, ticketId: TicketId): Promise<SpawnResult> {
+  async spawn(
+    role: PermissionRole,
+    ticketId: TicketId,
+    opts: { provider?: AcpProviderConfig } = {},
+  ): Promise<SpawnResult> {
     const { store, bus, repoRoot } = this.opts;
     const agentId = agentIdFor(role, ticketId);
     if (this.live.has(agentId)) {
@@ -149,6 +170,8 @@ export class Runner {
       ticket,
     });
 
+    const provider = opts.provider ?? resolveAcpProvider(ticket.routing?.vendor);
+
     const handle = startAgentSession({
       store,
       bus,
@@ -162,6 +185,9 @@ export class Runner {
       gateService: this.opts.gateService,
       spawn: this.opts.spawn,
       now: this.opts.now,
+      provider,
+      piAgentDir: this.opts.piAgentDir,
+      installPiExtension: this.opts.installPiExtension,
     });
     this.live.set(agentId, handle);
     void handle.exited.then(() => {

@@ -54,11 +54,33 @@ describe('assignReady', () => {
     expect(ticket.routing?.max_attempts).toBe(2);
   });
 
-  test('the default route is the single-Claude-entry v0 stub', () => {
+  test('the default route is Claude first (T022: candidates are wired in, but Claude still wins)', () => {
     expect(defaultRoute({ role: 'engineer', tier: 'standard' })).toEqual({
       vendor: 'claude',
       model: 'claude',
     });
+    expect(defaultRoute({ role: 'reviewer', tier: 'standard' })).toEqual({
+      vendor: 'claude',
+      model: 'claude',
+    });
+  });
+
+  // T022 round 2 (N1): the routed candidate's vendor/account now survive
+  // onto `ticket.routing` too, not just `model` — what `Runner.spawn`
+  // actually reads to pick a provider.
+  test('records the routed vendor and account onto ticket.routing', async () => {
+    await fx.store.putTicket(makeTicket('TKT-0001' as TicketId));
+    await fx.store.putSprint(makeSprint('S-1', { tickets: ['TKT-0001'] as TicketId[] }));
+    const sprint = fx.store.getSprint('S-1' as never);
+    const runner = fakeRunner(fx.store);
+
+    const route = () => ({ vendor: 'pi', account: 'pi-on-claude-max', model: 'claude-sonnet' });
+    await assignReady(fx.store, bus, runner, sprint, { route });
+
+    const ticket = fx.store.getTicket('TKT-0001' as TicketId);
+    expect(ticket.routing?.vendor).toBe('pi');
+    expect(ticket.routing?.account).toBe('pi-on-claude-max');
+    expect(ticket.routing?.model).toBe('claude-sonnet');
   });
 
   test('skips a ticket already picked up by a live agent (idempotent against re-scans)', async () => {

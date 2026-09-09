@@ -27,6 +27,7 @@ import { ulid } from '@agile-agents/shared';
 import type { Bus } from '../bus';
 import type { Runner, SpawnResult } from '../runner';
 import type { StateStore } from '../store';
+import { PI_ENGINEER_CANDIDATES, PI_REVIEWER_CANDIDATES } from './pi-route-candidates';
 
 /** CLAUDE.md tunable: "max_attempts 2" — the default when a ticket has no `routing` block yet. */
 export const DEFAULT_MAX_ATTEMPTS = 2;
@@ -51,8 +52,35 @@ export interface RouteContext {
 
 export type RouteFn = (ctx: RouteContext) => RouteCandidate;
 
-/** v0 routing table: `(role, tier) -> [claude]`, one candidate, no fallback (CLAUDE.md, §18). */
-export const defaultRoute: RouteFn = () => ({ vendor: 'claude', model: 'claude' });
+/** The v0 single entry — still first in every ordered list below, so `defaultRoute`'s actual behavior is unchanged by T022 (CLAUDE.md "v0 defaults": "Claude for every role"). */
+const CLAUDE_CANDIDATE: RouteCandidate = { vendor: 'claude', model: 'claude' };
+
+/**
+ * v0 routing table: `(role, tier) -> ordered candidates`, Claude first, Pi
+ * after (T022 round 2 review, N1: "wire the candidates into defaultRoute").
+ * `defaultRoute` itself still always returns the first entry — Claude — so
+ * this is genuinely additive: no scheduling behaviour changes for the
+ * existing demo path, but the candidate lists are no longer dead code, and
+ * a caller wanting the Pi path today can inject its own `route` (e.g.
+ * `() => PI_ENGINEER_CANDIDATES[0]`) through `AssignReadyOptions.route`
+ * without this module changing at all — exactly the seam this file's
+ * header describes for T023's real policy. `tier` is intentionally unused
+ * by every entry here still (no per-tier ordering exists in v0); kept on
+ * `RouteContext` for the same forward-compatibility reason it already was.
+ */
+function orderedCandidates(role: RouteContext['role']): readonly RouteCandidate[] {
+  return role === 'engineer'
+    ? [CLAUDE_CANDIDATE, ...PI_ENGINEER_CANDIDATES]
+    : [CLAUDE_CANDIDATE, ...PI_REVIEWER_CANDIDATES];
+}
+
+export const defaultRoute: RouteFn = (ctx) => {
+  const [first] = orderedCandidates(ctx.role);
+  // `orderedCandidates` always starts with `CLAUDE_CANDIDATE`, so `first`
+  // is never undefined — `noUncheckedIndexedAccess` just can't see that
+  // through the ternary above.
+  return first ?? CLAUDE_CANDIDATE;
+};
 
 export interface AssignReadyOptions {
   route?: RouteFn;
@@ -98,7 +126,11 @@ export async function assignReady(
     if (ticket.status !== 'ready') continue;
 
     const candidate = route({ role: 'engineer', tier: tierOf(ticket) });
-    if (ticket.routing?.model !== candidate.model) {
+    if (
+      ticket.routing?.model !== candidate.model ||
+      ticket.routing?.vendor !== candidate.vendor ||
+      ticket.routing?.account !== candidate.account
+    ) {
       await store.putTicket(
         {
           ...ticket,
@@ -107,6 +139,12 @@ export async function assignReady(
             max_attempts: ticket.routing?.max_attempts ?? DEFAULT_MAX_ATTEMPTS,
             escalation: ticket.routing?.escalation ?? [],
             model: candidate.model,
+            // T022 round 2 (N1): recorded so `Runner.spawn` can actually
+            // select the routed provider (`runner.ts`'s `resolveAcpProvider`
+            // call) instead of always defaulting to Claude — see this
+            // file's header and `runner.ts`'s own doc comment on `spawn`.
+            vendor: candidate.vendor,
+            ...(candidate.account !== undefined ? { account: candidate.account } : {}),
           },
         },
         { by: 'em' },

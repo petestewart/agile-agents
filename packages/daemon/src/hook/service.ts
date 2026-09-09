@@ -293,6 +293,11 @@ export class HookService {
   private async buildContext(
     cwd: string | undefined,
     agentHint?: string,
+    // T022 round 2 fix (B1) — see `ClaudePreToolUsePayload.no_additional_context_channel`'s
+    // doc comment: strips normal-priority messages out of the inbox handed
+    // to `decidePreToolUse` so tier 3 never folds/acks them for a caller
+    // with nowhere to put `additionalContext`.
+    noAdditionalContextChannel = false,
   ): Promise<HookDecisionContext | undefined> {
     const resolved = this.resolveAgentByCwd(cwd, agentHint);
     if (resolved === undefined) return undefined;
@@ -344,7 +349,9 @@ export class HookService {
       role,
       worktreePath,
       halts: activeHaltsFor(this.store, ticketId),
-      inbox: this.bus.poll(agent),
+      inbox: noAdditionalContextChannel
+        ? this.bus.poll(agent).filter((m) => m.priority !== 'normal')
+        : this.bus.poll(agent),
       ticketBudget: ticket.budget,
       limits: this.limits,
       fileSize: this.fileSize,
@@ -424,7 +431,11 @@ export class HookService {
    * logs the decision (see this file's header).
    */
   async preToolUse(payload: ClaudePreToolUsePayload): Promise<PreToolUseHookOutput> {
-    const ctx = await this.buildContext(payload.cwd, agentHintFrom(payload));
+    const ctx = await this.buildContext(
+      payload.cwd,
+      agentHintFrom(payload),
+      payload.no_additional_context_channel === true,
+    );
     if (ctx === undefined) {
       await this.logDecision(undefined, 'pre_tool_use', {
         decision: 'deny',

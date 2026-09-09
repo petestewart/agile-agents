@@ -7,6 +7,7 @@ import type { Ticket } from '@agile-agents/shared';
 import { validateSprint, validateTicket } from '@agile-agents/shared';
 import { Bus } from '../bus';
 import { runInit } from '../init';
+import { ForeignPiExtensionError } from '../pi';
 import { StateStore } from '../store';
 import type { FakeAgentScript } from './fake-agent';
 import { type AgentSessionHandle, startAgentSession } from './session';
@@ -356,4 +357,60 @@ describe('startAgentSession', () => {
     handle.stop();
     await handle.exited;
   }, 90000);
+
+  // Round 2 review fix (B2/B3): a foreign extension file is the one
+  // install failure that's load-bearing enough to still block the spawn —
+  // proven here at the `startAgentSession` call site, not just inside
+  // `install.ts` (session.test.ts:317's happy path already covers the fake
+  // install being called with the right args).
+  test('a ForeignPiExtensionError from installPiExtension blocks the spawn (fatal, not swallowed)', async () => {
+    await store.putTicket(makeTicket({ status: 'done' }), { by: 'test' });
+    const provider = { ...fakeProvider({ steps: [{ type: 'end_turn' }] }), id: 'pi' as const };
+
+    expect(() =>
+      startAgentSession({
+        store,
+        bus,
+        role: 'engineer',
+        agentId: 'eng-0231',
+        ticket: 'TKT-0231',
+        worktreePath: worktree,
+        brief: 'do the ticket',
+        currentSprintId: () => 'S-01',
+        provider,
+        piAgentDir: join(scratch, 'pi-agent-dir'),
+        installPiExtension: () => {
+          throw new ForeignPiExtensionError(
+            join(scratch, 'pi-agent-dir', 'extensions', 'agile.ts'),
+          );
+        },
+      }),
+    ).toThrow(ForeignPiExtensionError);
+  });
+
+  // A non-Foreign install failure is also surfaced (not silently
+  // swallowed) — session.ts's B3 try/catch only exists to add context, not
+  // to hide a real failure of the load-bearing extension write.
+  test('a non-Foreign installPiExtension failure still blocks the spawn, wrapped with context', async () => {
+    await store.putTicket(makeTicket({ status: 'done' }), { by: 'test' });
+    const provider = { ...fakeProvider({ steps: [{ type: 'end_turn' }] }), id: 'pi' as const };
+
+    expect(() =>
+      startAgentSession({
+        store,
+        bus,
+        role: 'engineer',
+        agentId: 'eng-0231',
+        ticket: 'TKT-0231',
+        worktreePath: worktree,
+        brief: 'do the ticket',
+        currentSprintId: () => 'S-01',
+        provider,
+        piAgentDir: join(scratch, 'pi-agent-dir'),
+        installPiExtension: () => {
+          throw new Error('disk full');
+        },
+      }),
+    ).toThrow(/eng-0231.*disk full|disk full.*eng-0231/s);
+  });
 });

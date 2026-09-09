@@ -231,6 +231,102 @@ describe('Runner.spawn', () => {
     runner.stop('qa-0231');
     await Promise.all([eng.exited, rev.exited, qa.exited]);
   }, 90000);
+
+  // T022 round 2 review fix (N1): `ticket.routing.vendor` must actually
+  // steer which `AcpProviderConfig` a spawn uses — `fakeSpawn` overrides the
+  // real OS-level command regardless of `provider.command` (same seam every
+  // other test in this file relies on), so this proves the *selection*,
+  // not that a real `pi-acp` process ran (no vendor login in this
+  // container — see T022's verify-before-build notes).
+  test('a ticket routed to vendor "pi" spawns with ACP_PROVIDERS.pi and installs the agile extension', async () => {
+    await store.putTicket(
+      {
+        ...store.getTicket('TKT-0231'),
+        routing: {
+          attempts: 0,
+          max_attempts: 2,
+          escalation: [],
+          model: 'claude-sonnet',
+          vendor: 'pi',
+        },
+      },
+      { by: 'em' },
+    );
+
+    const installCalls: unknown[] = [];
+    const runner = trackedRunner({
+      store,
+      bus,
+      repoRoot: repo,
+      spawn: fakeSpawn({ steps: [{ type: 'hang' }] }),
+      piAgentDir: join(scratch, 'pi-agent-dir'),
+      installPiExtension: (installOpts) => {
+        installCalls.push(installOpts);
+        return {
+          extensionPath: join(installOpts.agentDir, 'extensions', 'agile.ts'),
+          settingsPath: join(installOpts.agentDir, 'settings.json'),
+          extensionWritten: true,
+          settingsWritten: true,
+        };
+      },
+    });
+
+    const result = await runner.spawn('engineer', 'TKT-0231');
+    expect(installCalls).toHaveLength(1);
+    expect((installCalls[0] as { agentDir: string }).agentDir).toBe(join(scratch, 'pi-agent-dir'));
+    // Real filesystem untouched — the fake `installPiExtension` above never wrote anything.
+    expect(existsSync(join(scratch, 'pi-agent-dir'))).toBe(false);
+
+    const agent = store.getAgent('eng-0231');
+    expect(agent.vendor).toBe('pi');
+
+    runner.stop('eng-0231');
+    await result.exited;
+  }, 90000);
+
+  // The injectable override wins outright over `ticket.routing`, per this
+  // ticket's own doc comment on `Runner.spawn`.
+  test('an explicit provider override wins over ticket.routing', async () => {
+    await store.putTicket(
+      {
+        ...store.getTicket('TKT-0231'),
+        routing: {
+          attempts: 0,
+          max_attempts: 2,
+          escalation: [],
+          model: 'claude-sonnet',
+          vendor: 'pi',
+        },
+      },
+      { by: 'em' },
+    );
+
+    const runner = trackedRunner({
+      store,
+      bus,
+      repoRoot: repo,
+      spawn: fakeSpawn({ steps: [{ type: 'hang' }] }),
+    });
+
+    const result = await runner.spawn('engineer', 'TKT-0231', {
+      provider: {
+        id: 'claude',
+        label: 'forced claude',
+        command: 'bun',
+        args: [],
+        envOverrides: {},
+        clientCapabilities: { fs: { readTextFile: true, writeTextFile: true } },
+        loadSession: true,
+        authMethods: [],
+      },
+    });
+
+    const agent = store.getAgent('eng-0231');
+    expect(agent.vendor).toBe('claude');
+
+    runner.stop('eng-0231');
+    await result.exited;
+  }, 90000);
 });
 
 describe('crash recovery', () => {

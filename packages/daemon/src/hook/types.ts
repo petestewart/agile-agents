@@ -73,6 +73,26 @@ export interface ClaudePreToolUsePayload {
    * opus item 2).
    */
   agile_agent?: string;
+  /**
+   * T022 round 2 fix (review B1): set by the `agile` Pi extension on every
+   * `hook.pre_tool_use` call — Pi's `tool_call` result has no field to carry
+   * `additionalContext` on (unlike Claude's hook JSON contract), so a
+   * caller setting this asks `HookService` not to fold pending
+   * normal-priority inbox messages into this decision at all (tier 3 of
+   * `decide.ts`'s `decidePreToolUse` never sees them — they stay unacked,
+   * still in the inbox). Without this, `service.ts`'s `buildContext` would
+   * hand `decidePreToolUse` a normal message, tier 3 would ack it as part
+   * of this decision (`decide.ts`'s own contract: "the reason is the
+   * delivery ... acked in the same decision that surfaces it"), and the
+   * content would be silently discarded the moment the caller has nowhere
+   * to put `additionalContext` — exactly the bug this field exists to
+   * avoid. Urgent messages are unaffected (tier 2 already denies with the
+   * body as the reason, which Pi's `tool_call` result CAN carry via
+   * `reason`); only tier 3's normal-priority folding is skipped, leaving
+   * `before_agent_start`'s own poll+ack (`agile-extension.ts`) as the sole
+   * delivery path for those. Never set by Claude's own hook payload.
+   */
+  no_additional_context_channel?: boolean;
   [key: string]: unknown;
 }
 
