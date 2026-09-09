@@ -540,6 +540,28 @@ describe('createAgileExtension: inbox delivery', () => {
   });
 });
 
+/**
+ * Polls a real, checkable condition instead of a blind `Bun.sleep(N)` — same
+ * pattern as `runner/runner.test.ts`'s `waitFor`. A fixed sleep here raced
+ * the socket round trip: measured up to ~27ms for the registration
+ * heartbeat to arrive under two concurrent `bun test packages/daemon/src/store`
+ * load loops (T038), well past the original 10ms window. The deadline stays
+ * generous so a genuinely disabled timer (e.g. a mutant) fails the test
+ * instead of hanging past the suite's own timeout.
+ */
+async function waitFor(
+  predicate: () => boolean,
+  { timeoutMs = 5_000, intervalMs = 5 }: { timeoutMs?: number; intervalMs?: number } = {},
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate()) {
+    if (Date.now() >= deadline) {
+      throw new Error(`waitFor: condition not met within ${timeoutMs}ms`);
+    }
+    await new Promise((r) => setTimeout(r, intervalMs));
+  }
+}
+
 describe('createAgileExtension: heartbeat', () => {
   it('calls bus.heartbeat on agent_settled and via the periodic timer', async () => {
     const heartbeats: unknown[] = [];
@@ -568,15 +590,17 @@ describe('createAgileExtension: heartbeat', () => {
     })(pi);
 
     // One fires at registration.
-    await new Promise((r) => setTimeout(r, 10));
+    await waitFor(() => heartbeats.length >= 1);
     expect(heartbeats.length).toBeGreaterThanOrEqual(1);
 
     pi.agentSettled?.();
-    await new Promise((r) => setTimeout(r, 10));
+    await waitFor(() => heartbeats.length >= 2);
     expect(heartbeats.length).toBeGreaterThanOrEqual(2);
 
-    // The periodic timer fires again without any external trigger.
-    await new Promise((r) => setTimeout(r, 40));
+    // The periodic timer fires again without any external trigger: nothing
+    // below prompts a heartbeat, so this only passes if the interval itself
+    // fires — a mutant that disables it never reaches 3 and waitFor throws.
+    await waitFor(() => heartbeats.length >= 3);
     expect(heartbeats.length).toBeGreaterThanOrEqual(3);
     const first = heartbeats[0] as { agent?: string; patch?: { ticket?: string } };
     expect(first.agent).toBe('eng-1');
