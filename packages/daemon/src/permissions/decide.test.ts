@@ -490,6 +490,119 @@ describe('decidePermission — fd-prefixed redirects (review round 2, opus R2-1)
   });
 });
 
+describe('decidePermission — T029 benign redirect forms', () => {
+  // "Benign" = the redirect target is /dev/null or a bare fd operation
+  // (`&1`, `&2`, `&-`) — nothing is written to disk, so no role needs to
+  // gate it as a write. File-target redirects are unaffected (see the
+  // fd-prefixed and engineer-redirection describe blocks above, which still
+  // pass unchanged).
+  const BENIGN_ENGINEER_COMMANDS = [
+    'npm test 2>&1',
+    'npm test 2>/dev/null',
+    'npm test >/dev/null',
+    'npm test &>/dev/null',
+    'npm test &>>/dev/null',
+    'npm test 1>&2',
+    'npm test 2>&-',
+    'bun run build > /dev/null 2>&1',
+  ];
+
+  for (const command of BENIGN_ENGINEER_COMMANDS) {
+    test(`engineer: "${command}" is allowed (benign redirect on an otherwise-allowed repo script)`, () => {
+      expect(decide('engineer', request('execute', { command })).kind).toBe('allow');
+    });
+  }
+
+  test('engineer: a benign redirect does not launder an otherwise-disallowed command', () => {
+    // The redirect itself must not become an allow signal — "rm -rf" is
+    // still not a repo script or git invocation.
+    expect(decide('engineer', request('execute', { command: 'rm -rf secret 2>&1' })).kind).toBe(
+      'deny',
+    );
+  });
+
+  test('engineer: a benign redirect on one pipeline segment does not excuse a disallowed later segment', () => {
+    // "cmd 2>&1 | grep x" (ticket example): the redirect no longer causes
+    // the over-deny, but `grep` still isn't on the engineer's allow-list
+    // (repo scripts / git only) — the command is denied for that orthogonal
+    // reason, not because of the redirect.
+    expect(
+      decide('engineer', request('execute', { command: 'npm test 2>&1 | grep FAIL' })).kind,
+    ).toBe('deny');
+  });
+
+  test('engineer: benign redirect + a fully allowed pipeline is allowed end to end', () => {
+    expect(
+      decide('engineer', request('execute', { command: 'npm test 2>&1 | npm run report' })).kind,
+    ).toBe('allow');
+  });
+
+  test('engineer: a mix of a benign and a real file-target redirect still gates the file target', () => {
+    const decision = decide(
+      'engineer',
+      request('execute', { command: `npm test 2>&1 1>${WORKTREE}/out.log` }),
+    );
+    expect(decision.kind).toBe('allow');
+    const outside = decide(
+      'engineer',
+      request('execute', { command: 'npm test 2>&1 1>/etc/out.log' }),
+    );
+    expect(outside.kind).toBe('deny');
+  });
+
+  test('reviewer: git diff/log/show/status with a benign redirect is still read-only (allowed)', () => {
+    for (const command of [
+      'git diff 2>/dev/null',
+      'git log 2>&1',
+      'git show >/dev/null',
+      'git status &>/dev/null',
+    ]) {
+      expect(decide('reviewer', request('execute', { command })).kind).toBe('allow');
+    }
+  });
+
+  test('reviewer: a benign redirect on a non-read-only command is still denied (for the command, not the redirect)', () => {
+    expect(decide('reviewer', request('execute', { command: 'npm test 2>&1' })).kind).toBe('deny');
+  });
+
+  test('reviewer: a file-target redirect is still denied outright, benign forms notwithstanding', () => {
+    expect(decide('reviewer', request('execute', { command: 'git diff 2>err.log' })).kind).toBe(
+      'deny',
+    );
+  });
+
+  test('QA: a benign redirect no longer denies exec', () => {
+    expect(decide('qa', request('execute', { command: 'npm test 2>&1' })).kind).toBe('allow');
+    expect(decide('qa', request('execute', { command: 'npm test >/dev/null 2>&1' })).kind).toBe(
+      'allow',
+    );
+  });
+
+  test('QA: a file-target redirect is still denied', () => {
+    expect(decide('qa', request('execute', { command: 'npm test > out.log' })).kind).toBe('deny');
+  });
+
+  test('QA: tee is still denied even alongside a benign redirect', () => {
+    expect(decide('qa', request('execute', { command: 'npm test 2>&1 | tee out.log' })).kind).toBe(
+      'deny',
+    );
+  });
+
+  test('an unresolved redirect operator (nothing after it) is not treated as benign', () => {
+    // Pathological/truncated input — no target to prove is benign, so it's
+    // denied like any other unverifiable redirect, for every role.
+    expect(decide('engineer', request('execute', { command: 'npm test >' })).kind).toBe('deny');
+    expect(decide('qa', request('execute', { command: 'npm test >' })).kind).toBe('deny');
+  });
+
+  test('a bare input redirect from a file is a read, not gated as a write, for every role', () => {
+    expect(decide('reviewer', request('execute', { command: 'cat < notes.txt' })).kind).toBe(
+      'allow',
+    );
+    expect(decide('qa', request('execute', { command: 'diff a.txt < b.txt' })).kind).toBe('allow');
+  });
+});
+
 describe('decidePermission — sed --in-place / perl -i / gawk -i (review round 2, opus R2-2)', () => {
   test('reviewer: sed --in-place and --in-place=.bak are denied like -i', () => {
     for (const command of [

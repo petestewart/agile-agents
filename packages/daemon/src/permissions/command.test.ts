@@ -2,7 +2,10 @@ import { describe, expect, test } from 'bun:test';
 import type { CommandAtom } from './command';
 import {
   hasRedirectionOrTee,
+  hasUnresolvedRedirection,
   hasUnsafeShellConstruct,
+  hasWritingRedirectionOrTee,
+  isBenignRedirectTarget,
   isBranchDelete,
   isForcePush,
   isNewDependencyInstall,
@@ -206,6 +209,71 @@ describe('hasRedirectionOrTee / redirectionTarget / redirectionTargets', () => {
   test('a bare fd-duplication (2>&1) has no real target, and is not mistaken for one', () => {
     expect(hasRedirectionOrTee(['cmd', '2>&1'])).toBe(true);
     expect(redirectionTargets(['cmd', '2>&1'])).toEqual([]);
+  });
+});
+
+describe('isBenignRedirectTarget (T029)', () => {
+  test('recognizes /dev/null and fd-dup/fd-close forms', () => {
+    expect(isBenignRedirectTarget('/dev/null')).toBe(true);
+    expect(isBenignRedirectTarget('&1')).toBe(true);
+    expect(isBenignRedirectTarget('&2')).toBe(true);
+    expect(isBenignRedirectTarget('&10')).toBe(true);
+    expect(isBenignRedirectTarget('&-')).toBe(true);
+  });
+
+  test('a real file path, or no target at all, is not benign', () => {
+    expect(isBenignRedirectTarget('out.log')).toBe(false);
+    expect(isBenignRedirectTarget('/dev/nullish')).toBe(false);
+    expect(isBenignRedirectTarget('&')).toBe(false);
+    expect(isBenignRedirectTarget(undefined)).toBe(false);
+  });
+});
+
+describe('redirectionTargets / hasWritingRedirectionOrTee — benign forms excluded (T029)', () => {
+  test('benign redirect tokens have no non-benign target and are not a writing redirection', () => {
+    for (const tokens of [
+      ['cmd', '2>&1'],
+      ['cmd', '2>/dev/null'],
+      ['cmd', '>/dev/null'],
+      ['cmd', '&>/dev/null'],
+      ['cmd', '&>>/dev/null'],
+      ['cmd', '1>&2'],
+      ['cmd', '2>&-'],
+    ]) {
+      expect(redirectionTargets(tokens)).toEqual([]);
+      expect(hasWritingRedirectionOrTee(tokens)).toBe(false);
+      // still recognized as *touching* redirection syntax, per the narrower helper
+      expect(hasRedirectionOrTee(tokens)).toBe(true);
+    }
+  });
+
+  test('a real file-target redirect is unaffected: still a target, still a writing redirection', () => {
+    expect(redirectionTargets(['cmd', '>', 'out.txt'])).toEqual(['out.txt']);
+    expect(hasWritingRedirectionOrTee(['cmd', '>', 'out.txt'])).toBe(true);
+    expect(redirectionTargets(['cmd', '2>', 'err.log'])).toEqual(['err.log']);
+    expect(hasWritingRedirectionOrTee(['cmd', '2>', 'err.log'])).toBe(true);
+  });
+
+  test('a mix of a benign and a real target keeps only the real one', () => {
+    expect(redirectionTargets(['cmd', '2>&1', '1>', 'out.log'])).toEqual(['out.log']);
+    expect(hasWritingRedirectionOrTee(['cmd', '2>&1', '1>', 'out.log'])).toBe(true);
+  });
+
+  test('tee and process substitution are still writing redirections regardless of any benign target present', () => {
+    expect(hasWritingRedirectionOrTee(['cmd', '2>&1', '|', 'tee', 'out.log'])).toBe(true);
+    expect(hasWritingRedirectionOrTee(['diff', '<(cmd)', '2>&1'])).toBe(true);
+  });
+
+  test('an unresolved redirect (nothing after the operator) is not benign', () => {
+    expect(hasUnresolvedRedirection(['cmd', '>'])).toBe(true);
+    expect(hasWritingRedirectionOrTee(['cmd', '>'])).toBe(true);
+    expect(hasUnresolvedRedirection(['cmd', '2>&1'])).toBe(false);
+  });
+
+  test('a bare input redirect (<file) is invisible to redirection detection entirely — it is a read', () => {
+    expect(hasRedirectionOrTee(['cat', '<', 'notes.txt'])).toBe(false);
+    expect(hasWritingRedirectionOrTee(['cat', '<', 'notes.txt'])).toBe(false);
+    expect(hasRedirectionOrTee(['cat', '<notes.txt'])).toBe(false);
   });
 });
 
