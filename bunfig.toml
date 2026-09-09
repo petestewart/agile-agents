@@ -1,4 +1,6 @@
 [test]
+# Hermetic git for fixture repos (host signing helpers, identity).
+preload = ["./test-preload.ts"]
 # vendor/ is a read-only Terma snapshot (input to T003, never run as part of this
 # repo's test suite) and spike/ is the standalone vendor spike harness with its
 # own reports — neither belongs to `bun test` for this monorepo. dist/ holds tsc
