@@ -30,13 +30,12 @@
 
 import { join } from 'node:path';
 import type { AcpRequestId } from '@agile-agents/acp-client';
-import { type AgentId, type TicketId, validateMessage } from '@agile-agents/shared';
+import { type AgentId, type TicketId, ulid, validateMessage } from '@agile-agents/shared';
 import type { StateStore } from '../store';
 import { buildEvent } from '../store';
 import { classifyPermissionRequest } from './classify';
 import { decidePermission } from './decide';
 import type { AcpPermissionRequestParams, Decision, PermissionRole } from './types';
-import { generateUlid } from './ulid';
 
 /** Default time a human has to answer a `hil_request` before it's overdue. Not a CLAUDE.md tunable (none listed for this); kept local and overridable per ctx. Enforcing this deadline (ticking, escalating) is T018's `GateService`, not this module — see the file header. */
 export const DEFAULT_HIL_DEADLINE_MS = 60 * 60 * 1000;
@@ -103,7 +102,7 @@ async function defaultRequestHil(
   store: StateStore,
   input: HilRequestInput,
 ): Promise<{ id: string }> {
-  const id = generateUlid();
+  const id = ulid();
   const message = validateMessage({
     id,
     ts: new Date().toISOString(),
