@@ -222,6 +222,19 @@ export class QuotaService {
    * strictly after `now` — one rearm catches the account fully up
    * regardless of how long it sat idle, exactly once.
    *
+   * Round-5 review-fix (opus round 4 non-blocking nit): this method used
+   * to unconditionally null out `cooldown_until`/`cooldown_backoff_seconds`/
+   * `pre_cooldown_remaining` whenever it rearmed — including when a 429's
+   * cooldown was still genuinely active (the reviewer measured a window
+   * boundary landing 13 minutes into a 900s cooldown and cancelling it
+   * early). By the time this method runs, `resolveExisting` has already
+   * called `applyCooldownRecovery` first, which clears an *elapsed*
+   * cooldown itself — so if `existing.cooldown_until` is still set here,
+   * it is by construction still in the future, and a window reset (which
+   * only concerns the countdown budget, not an in-flight rate limit) must
+   * not shorten it. Those three fields are now left exactly as `existing`
+   * had them (via the spread below), never forced to `null`/`undefined`.
+   *
    * Returns `existing` unchanged when no reset is due (no `resets_at`, or
    * it hasn't arrived yet).
    */
@@ -246,9 +259,6 @@ export class QuotaService {
     return {
       ...existing,
       remaining: existing.limit ?? existing.remaining,
-      cooldown_until: null,
-      cooldown_backoff_seconds: undefined,
-      pre_cooldown_remaining: undefined,
       resets_at: nextResetsAt,
     };
   }
@@ -527,13 +537,33 @@ export class QuotaService {
 
     const windowTokens = accountConfig?.window_tokens ?? existing?.limit ?? DEFAULT_WINDOW_TOKENS;
 
+    // Round-5 review-fix (opus round 4 blocker): a record with `unit ===
+    // 'tokens'` but no real `limit` (`confidence: 'low'` — `recordUsage`'s
+    // own round-4 fix already guards against reading `remaining` there as
+    // a token count) is *not* a resolved baseline — capturing its bare
+    // `remaining` (e.g. `0.8`, a fraction, not a token count) as
+    // `pre_cooldown_remaining` and then attaching a real `limit`
+    // (`windowTokens`) to the 429 record corrupts it exactly the same way:
+    // after the cooldown elapses, `applyCooldownRecovery` would restore
+    // `remaining: 0.8` against `limit: windowTokens`, reading as "almost
+    // completely exhausted" for an account that was actually ~80% full.
+    // Same guard as `recordUsage`'s baseline check: only trust
+    // `existing.remaining` as a real token count when `existing.limit` is
+    // also defined; otherwise this 429 starts from a fresh full-window
+    // baseline, exactly like `recordUsage` already would have.
+    const hasRealTokenBaseline =
+      existing !== undefined && existing.unit === 'tokens' && existing.limit !== undefined;
+    const isNonTokenExisting = existing !== undefined && existing.unit !== 'tokens';
+
     // Round-3 review-fix: capture the pre-429 `remaining` once, on this
     // episode's first 429 — never re-captured while merely escalating the
     // same episode's backoff, since `remaining` is already 0 by then and
     // would clobber the real value this is meant to restore later.
     const preCooldownRemaining = sameEpisode
       ? existing?.pre_cooldown_remaining
-      : (existing?.remaining ?? windowTokens);
+      : hasRealTokenBaseline || isNonTokenExisting
+        ? (existing?.remaining ?? windowTokens)
+        : windowTokens;
 
     const updated: Quota = validateQuota({
       vendor,
@@ -548,7 +578,7 @@ export class QuotaService {
       cooldown_until: cooldownUntil,
       cooldown_backoff_seconds: backoffSeconds,
       pre_cooldown_remaining: preCooldownRemaining,
-      limit: existing?.unit === 'tokens' || existing === undefined ? windowTokens : existing.limit,
+      limit: isNonTokenExisting ? existing.limit : windowTokens,
       billing: existing?.billing,
       spend_usd: existing?.spend_usd,
     });

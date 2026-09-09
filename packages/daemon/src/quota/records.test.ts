@@ -637,6 +637,106 @@ describe('QuotaService — a low-confidence unresolved reading never becomes a c
   });
 });
 
+describe('QuotaService.record429 — the low-confidence baseline guard also applies to the 429 path (opus round 4 blocker)', () => {
+  test('a 429 on an 80%-full low-confidence account, with the shipped default vendors.yaml (no window_tokens), re-admits it fully once the cooldown elapses — not pinned at remaining 0.8 / limit 1e6', async () => {
+    // No `store.putVendors` call at all here — this is exactly what
+    // `agile init` ships (`init.ts`'s `defaultVendorsConfig`): `claude`
+    // with a single `default` account and no `quota` stanza whatsoever.
+    const clock = fakeClock(Date.parse('2026-09-09T00:00:00.000Z'));
+    const sent: Message[] = [];
+    const bus = makeFakeBus(sent);
+    const quota = new QuotaService({ store, bus, now: clock.now });
+
+    // An 80%-full reading with nothing to resolve the bare fraction
+    // against — the exact low-confidence shape from the previous describe
+    // block's test.
+    const reported = await quota.recordReported('claude', 'default', { remaining: 0.8 });
+    expect(reported.confidence).toBe('low');
+    expect(reported.limit).toBeUndefined();
+
+    // A 429 hits the account while it's in this unresolved state.
+    const afterFirst429 = await quota.record429('claude', 'default', 30);
+    // Round-5 fix: the bare 0.8 must never become `pre_cooldown_remaining`
+    // attached to a real `limit` — it must be treated as a fresh full
+    // baseline, exactly like `recordUsage` already treats it.
+    expect(afterFirst429.pre_cooldown_remaining).toBe(afterFirst429.limit);
+    expect(sent.filter((m) => m.kind === 'quota_exhausted')).toHaveLength(1);
+
+    // Still cooling down: excluded from routing.
+    const stillCoolingDown = routeCandidates('engineer', 'standard', {
+      vendors: store.getVendors(),
+      quotas: quota.list(),
+      now: clock.now(),
+    });
+    expect('none' in stillCoolingDown).toBe(true);
+
+    // Cooldown elapses — no further write yet (mirrors the read-side
+    // recovery this ticket's round 4 fixed).
+    clock.advance(31_000);
+    const recovered = routeCandidates('engineer', 'standard', {
+      vendors: store.getVendors(),
+      quotas: quota.list(),
+      now: clock.now(),
+    });
+    // Must be fully re-admitted — not pinned near-zero by a bogus
+    // `remaining: 0.8 / limit: 1_000_000` artifact.
+    expect(pickCandidate(recovered)).toEqual({ vendor: 'claude', account: 'default' });
+
+    // And the next real usage call must not emit a second quota_exhausted
+    // (the bug: a bogus near-zero record would immediately re-exhaust and
+    // pin the account at zero for the rest of the 24h window).
+    const afterUsage = await quota.recordUsage('claude', 'default', ledgerLine({ in_tokens: 10 }));
+    expect(afterUsage.remaining).toBeGreaterThan(0);
+    expect(sent.filter((m) => m.kind === 'quota_exhausted')).toHaveLength(1); // still just the one, from the 429 itself
+  });
+});
+
+describe('QuotaService — a window reset must not shorten an in-flight 429 cooldown (opus round 4 non-blocking nit)', () => {
+  test('a window boundary landing mid-cooldown leaves cooldown_until/backoff/pre_cooldown_remaining untouched', async () => {
+    const clock = fakeClock(Date.parse('2026-09-09T00:00:00.000Z'));
+    await store.putVendors({
+      claude: {
+        accounts: [
+          { id: 'max', auth: 'subscription', quota: { window_tokens: 1_000, window_hours: 1 } },
+        ],
+      },
+    });
+    const quota = new QuotaService({ store, now: clock.now });
+
+    // Establish a resets_at (T0 + 1h) via a normal usage call.
+    await quota.recordUsage('claude', 'max', ledgerLine({ in_tokens: 100 }));
+
+    // Advance to 13 minutes before the window boundary, then hit a 429
+    // with a 900s (15 min) cooldown — so the cooldown is still active when
+    // the window boundary passes underneath it (matching the reviewer's
+    // measured repro: re-admission 13 minutes into a 900s cooldown).
+    clock.advance(47 * 60 * 1000); // T0 + 47min (13 min before the T0+1h boundary)
+    const after429 = await quota.record429('claude', 'max', 900);
+    const cooldownUntilMs = Date.parse(after429.cooldown_until as string);
+
+    // Advance past the window boundary (T0+1h) but still inside the 900s
+    // cooldown (cooldownUntilMs is T0+47min+900s = T0+62min).
+    clock.advance(14 * 60 * 1000); // now = T0 + 61min — past the T0+1h window boundary, before T0+62min
+    expect(clock.now().getTime()).toBeGreaterThan(Date.parse('2026-09-09T01:00:00.000Z'));
+    expect(clock.now().getTime()).toBeLessThan(cooldownUntilMs);
+
+    // A read (list(), which now runs recovery) must not cancel the
+    // still-active cooldown just because the window also rolled over.
+    const listed = quota.list().find((q) => q.account === 'max');
+    expect(listed?.cooldown_until).toBe(after429.cooldown_until);
+    expect(listed?.cooldown_backoff_seconds).toBe(900);
+    expect(listed?.pre_cooldown_remaining).toBe(after429.pre_cooldown_remaining);
+
+    // Routing must still exclude it — the cooldown was not shortened.
+    const stillCoolingDown = routeCandidates('engineer', 'standard', {
+      vendors: store.getVendors(),
+      quotas: quota.list(),
+      now: clock.now(),
+    });
+    expect('none' in stillCoolingDown).toBe(true);
+  });
+});
+
 describe('QuotaService — real Bus (routing check, not just the injected fake)', () => {
   test('a real Bus accepts the daemon -> em quota_low/quota_exhausted send (checkRoute allows it)', async () => {
     const bus = new Bus(store, stateRoot);
