@@ -13,6 +13,7 @@
 export const PACKAGE_NAME = '@agile-agents/daemon';
 
 export { discoverConfig, type AgileConfig, type DiscoverConfigOptions } from './config';
+export { DAEMON_CACHE_DIR, sandboxedSubprocessEnv } from './subprocess-env';
 export { acquireLock, LockError, type LockHandle } from './lock';
 export {
   startRpcServer,

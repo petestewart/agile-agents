@@ -49,28 +49,39 @@ import type { Ticket } from '@agile-agents/shared';
 import { TicketIdSchema } from '@agile-agents/shared';
 import { activeHaltsFor } from '../halts';
 import { StateStore } from '../store';
+import { sandboxedSubprocessEnvOrTemp } from '../subprocess-env';
 
 /**
- * T034 round 2 (review): this one call can't go through `./git`'s
- * `runGit` (which now requires an explicit `repoRoot`) — discovering the
- * repo root *is* what this call is for, so no `repoRoot` exists yet to
- * pass it. Left as a plain, unsandboxed `git rev-parse` (read-only,
- * touches no file `$HOME` would own) rather than inventing a heuristic to
- * feed itself; reported to the manager as one of the still-unsandboxed
- * git spawns outside this ticket's scope.
+ * T034 round 2 (review) found this couldn't go through `./git`'s `runGit`
+ * (which requires an explicit `repoRoot`) — discovering the repo root *is*
+ * what this call is for, so no `repoRoot` exists yet to pass it. An
+ * earlier T037 pass used `worktreePath` itself as the sandbox cache root
+ * here (lower risk than `config.ts`'s own bootstrap call, since a
+ * `worktreePath` is by construction inside a checkout — but review round 1
+ * flagged it as the same class of issue as **B2**: it still writes into a
+ * directory this call doesn't own the lifecycle of, on the same "no repo
+ * root in hand" reasoning). Now uses `sandboxedSubprocessEnvOrTemp`'s
+ * no-repo-root fallback instead — a fresh, uid/pid-unique temp directory,
+ * removed once this one bootstrap call is done with it.
  */
 function gitCommonDir(worktreePath: string): string {
-  const result = Bun.spawnSync(['git', 'rev-parse', '--git-common-dir'], {
-    cwd: worktreePath,
-    stdout: 'pipe',
-    stderr: 'pipe',
-  });
-  if (result.exitCode !== 0) {
-    throw new Error(
-      `installPreCommitHook: git rev-parse --git-common-dir failed in ${worktreePath}: ${new TextDecoder().decode(result.stderr).trim()}`,
-    );
+  const probe = sandboxedSubprocessEnvOrTemp(undefined, 'git');
+  try {
+    const result = Bun.spawnSync(['git', 'rev-parse', '--git-common-dir'], {
+      cwd: worktreePath,
+      stdout: 'pipe',
+      stderr: 'pipe',
+      env: probe.env,
+    });
+    if (result.exitCode !== 0) {
+      throw new Error(
+        `installPreCommitHook: git rev-parse --git-common-dir failed in ${worktreePath}: ${new TextDecoder().decode(result.stderr).trim()}`,
+      );
+    }
+    return new TextDecoder().decode(result.stdout).trim();
+  } finally {
+    probe.cleanup();
   }
-  return new TextDecoder().decode(result.stdout).trim();
 }
 
 export interface CommitCheck {

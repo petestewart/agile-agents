@@ -21,6 +21,7 @@ import type { Stanza, TicketId } from '@agile-agents/shared';
 import { runDiffSummary } from '../review/diff-summary';
 import { INTEGRATION_BRANCH } from '../runner/worktrees';
 import type { StateStore } from '../store';
+import { sandboxedSubprocessEnv } from '../subprocess-env';
 
 interface GitResult {
   exitCode: number;
@@ -28,9 +29,14 @@ interface GitResult {
 }
 
 /** Never throws — a torn-down/never-materialized worktree (e.g. `cwd` itself doesn't exist) must not block composing *some* handoff, same reasoning as this function's own doc comment below. */
-function git(args: string[], cwd: string): GitResult {
+function git(args: string[], cwd: string, repoRoot: string): GitResult {
   try {
-    const result = Bun.spawnSync(['git', ...args], { cwd, stdout: 'pipe', stderr: 'pipe' });
+    const result = Bun.spawnSync(['git', ...args], {
+      cwd,
+      stdout: 'pipe',
+      stderr: 'pipe',
+      env: sandboxedSubprocessEnv(repoRoot, 'git'),
+    });
     return { exitCode: result.exitCode, stdout: new TextDecoder().decode(result.stdout).trim() };
   } catch {
     return { exitCode: 1, stdout: '' };
@@ -38,10 +44,10 @@ function git(args: string[], cwd: string): GitResult {
 }
 
 /** `git diff --stat` over the working tree (staged + unstaged) — best-effort empty string on any git failure (a corrupted/half-torn-down worktree must not block composing *some* handoff). */
-function uncommittedStat(worktreePath: string): string {
+function uncommittedStat(worktreePath: string, repoRoot: string): string {
   if (!existsSync(worktreePath)) return '';
-  const staged = git(['diff', '--stat', '--cached'], worktreePath);
-  const unstaged = git(['diff', '--stat'], worktreePath);
+  const staged = git(['diff', '--stat', '--cached'], worktreePath, repoRoot);
+  const unstaged = git(['diff', '--stat'], worktreePath, repoRoot);
   const parts = [staged.stdout, unstaged.stdout].filter((s) => s.length > 0);
   return parts.join('\n');
 }
@@ -93,7 +99,7 @@ export function composeHardHandoff(opts: ComposeHardHandoffOptions): {
     // Worktree may already be gone/detached — fall back to the placeholder.
   }
 
-  const uncommitted = uncommittedStat(opts.worktreePath);
+  const uncommitted = uncommittedStat(opts.worktreePath, opts.repoRoot);
   const stanzas = lastStanzas(opts.store, opts.ticket);
   const gotchasFromBoard = stanzas.map((s) => `[${s.kind}] ${s.summary}`).join('\n');
 

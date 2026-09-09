@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { validateTicket } from '@agile-agents/shared';
@@ -107,6 +107,10 @@ describe('installPreCommitHook + real git commit', () => {
     await store.putTicket(ticket);
     const wt = ensureTicketWorktree(repo, ticket);
     installPreCommitHook(wt.path, ticket);
+    // Review round 1: gitCommonDir's bootstrap `git rev-parse` no longer
+    // uses `worktreePath` as its sandbox cache root (same class of issue
+    // as B2 on config.ts) — nothing should land inside the worktree itself.
+    expect(existsSync(join(wt.path, '.agile-daemon-cache'))).toBe(false);
 
     writeFileSync(join(wt.path, 'work.txt'), 'first change\n');
     runGit(['add', '-A'], wt.path);

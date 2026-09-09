@@ -2,7 +2,11 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { DAEMON_CACHE_DIR, sandboxedSubprocessEnv } from './subprocess-env';
+import {
+  DAEMON_CACHE_DIR,
+  sandboxedSubprocessEnv,
+  sandboxedSubprocessEnvOrTemp,
+} from './subprocess-env';
 
 let repoRoot: string;
 
@@ -73,6 +77,68 @@ describe('sandboxedSubprocessEnv', () => {
       } else {
         process.env.GIT_CONFIG_GLOBAL = original;
       }
+    }
+  });
+});
+
+describe('sandboxedSubprocessEnvOrTemp (review round 1 B2 fix)', () => {
+  test('with a repoRoot, behaves exactly like sandboxedSubprocessEnv and cleanup() is a no-op', () => {
+    const { env, cleanup } = sandboxedSubprocessEnvOrTemp(repoRoot, 'git');
+    const cacheRoot = join(repoRoot, DAEMON_CACHE_DIR, 'git');
+    expect(env.HOME).toBe(join(cacheRoot, 'home'));
+    cleanup();
+    // The repoRoot form has nothing of its own to clean up — the cache dir
+    // belongs to the caller, same lifetime as every other
+    // `sandboxedSubprocessEnv` caller's cache.
+    expect(existsSync(env.HOME as string)).toBe(true);
+  });
+
+  test('without a repoRoot, falls back to a fresh mkdtemp under the OS temp dir and never touches process.cwd()', () => {
+    const cwdMarker = process.cwd();
+    const { env, cleanup } = sandboxedSubprocessEnvOrTemp(undefined, 'git');
+    try {
+      expect(env.HOME?.startsWith(cwdMarker)).toBe(false);
+      expect(env.HOME?.startsWith(tmpdir())).toBe(true);
+      expect(existsSync(env.HOME as string)).toBe(true);
+    } finally {
+      cleanup();
+    }
+  });
+
+  test('cleanup() removes the no-repoRoot temp directory entirely', () => {
+    const { env, cleanup } = sandboxedSubprocessEnvOrTemp(undefined, 'git');
+    const tempBase = join(env.HOME as string, '..', '..', '..');
+    expect(existsSync(tempBase)).toBe(true);
+    cleanup();
+    expect(existsSync(tempBase)).toBe(false);
+  });
+
+  test('two concurrent no-repoRoot calls never collide on the same directory', () => {
+    const a = sandboxedSubprocessEnvOrTemp(undefined, 'git');
+    const b = sandboxedSubprocessEnvOrTemp(undefined, 'git');
+    try {
+      expect(a.env.HOME).not.toBe(b.env.HOME);
+    } finally {
+      a.cleanup();
+      b.cleanup();
+    }
+  });
+
+  test('QA round 3 (T037 REJECT, blocker): an injected tempDirBase is used instead of the real OS temp dir, and cleanup only removes the injected dir', () => {
+    const injectedBase = mkdtempSync(join(tmpdir(), 'agile-subprocess-env-injected-'));
+    try {
+      const { env, cleanup } = sandboxedSubprocessEnvOrTemp(undefined, 'git', injectedBase);
+      try {
+        expect(env.HOME?.startsWith(injectedBase)).toBe(true);
+        expect(env.HOME?.startsWith(tmpdir())).toBe(injectedBase.startsWith(tmpdir()));
+      } finally {
+        cleanup();
+      }
+      // The injected base directory itself is the caller's own — only the
+      // mkdtemp'd subdirectory this call created inside it is removed.
+      expect(existsSync(injectedBase)).toBe(true);
+    } finally {
+      rmSync(injectedBase, { recursive: true, force: true });
     }
   });
 });

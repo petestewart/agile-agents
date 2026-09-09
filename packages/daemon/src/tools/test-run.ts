@@ -78,15 +78,57 @@ export const MAX_FAILURES_RETURNED = 10;
  * *single* run's captured output; the raw combined log is now always
  * written in full regardless of size — see `runTestRun`'s header comment),
  * disk use across *many* runs needs its own ceiling instead. After every
- * run, `pruneRawTestRunOutputs` deletes the oldest raw `test_run` logs
- * (by mtime) under this tool's `raw/test_run/` cache tree until the total
- * is back under this budget — a run's own freshly-written log is never
- * pruned by the same call that wrote it (it's the newest file there).
+ * run, `pruneRawTestRunOutputs` deletes the oldest raw logs (by mtime)
+ * under the whole `raw/` cache tree until the total is back under this
+ * budget — a run's own freshly-written log is never pruned by the same
+ * call that wrote it (it's the newest file there).
+ *
+ * T037 (T034 residual N5): this used to bound only `raw/test_run/` — every
+ * other tool writing under `raw/` (`review/diff-summary.ts`'s raw diffs,
+ * currently the only other one) had no ceiling of its own at all, so the
+ * sweep root is now the whole `raw/` tree, one shared budget across every
+ * tool's raw output rather than a `test_run`-only one. `test_run` is by far
+ * the highest-volume writer there and the only one with a sweep already
+ * wired to run after every call, so this is that same call site, not a new
+ * one — no other tool needed its own pruning hook added.
+ *
+ * Review round 1 nit N2: the trade-off this broadening makes explicit — a
+ * `test_run` prune can now delete `review/diff-summary.ts`'s raw diff for
+ * an *old* review round, even one a still-open review record's
+ * `rawDiffPath` pointer references, turning that pointer dangling instead
+ * of the file growing the tree without bound. At a 200 MiB budget this is
+ * judged the right trade (an occasional stale pointer to a long-settled
+ * review round, versus unbounded disk growth with no sweep at all) — no
+ * per-tool exclusion or reservation is carved out of the shared budget.
+ * Revisit if review tooling ever needs a raw diff to outlive this budget's
+ * churn.
  */
 export const MAX_RETAINED_RAW_OUTPUT_BYTES = 200 * 1024 * 1024; // 200 MiB
 
 /** Standalone test-runner binaries beyond the `bun`/`npm`/`pnpm` repo-script allowance (§7's named parsers: "vitest/jest, pytest, go test"). */
 const STANDALONE_TEST_BINARIES = new Set(['vitest', 'jest', 'pytest']);
+
+/**
+ * T037 (T034 residual, review round 2/3 N2/N4/N5): `pruneRawTestRunOutputs`'s
+ * `protectedPaths` parameter only ever carried the *calling* run's own
+ * paths — a concurrent `runTestRun` call's still-being-written `.out`/`.err`
+ * captures (or its not-yet-pruned `.log`) had no protection at all against
+ * another call's sweep. Every in-flight run's raw-output paths are
+ * registered here (module-level, process-wide — a single daemon process is
+ * the only thing that ever calls `runTestRun`, so this needs no cross-process
+ * mechanism) before its capture files can be written, and removed once that
+ * run is fully done with them (including its own prune call), in a
+ * `finally` so a thrown/rejected run still cleans up its registration.
+ *
+ * QA round 1 (T037 REJECT, blocker): this registry alone still lost the race
+ * when a sibling run finished (and deregistered) before this run's own
+ * prune executed — its file was, by then, in neither set. `runStartedAt` /
+ * `pruneRawTestRunOutputs`'s `minProtectedMtimeMs` closes that remaining
+ * window (see that function's doc comment for the exact guarantee); this
+ * registry still covers the still-in-flight case (a file whose mtime
+ * predates this run's own start but whose writer hasn't finished yet).
+ */
+const inFlightRawOutputPaths = new Set<string>();
 
 /**
  * "only allowed repo-script commands run" (manager decision, reusing T010's
@@ -377,6 +419,14 @@ export interface RunTestRunOptions {
 }
 
 export async function runTestRun(opts: RunTestRunOptions): Promise<TestRunOutput> {
+  // QA round 1 (T037 REJECT, blocker): captured as early as possible, before
+  // any command validation or spawn — see `inFlightRawOutputPaths`'s doc
+  // comment for why the registry alone isn't enough. Any file with an mtime
+  // at or after this run's own start belongs to a run that began before or
+  // during this one (concurrent, by construction), whether or not that
+  // sibling has already finished and deregistered from the in-flight set by
+  // the time *this* run's own sweep executes.
+  const runStartedAt = Date.now();
   const { command } = opts.input;
   if (!isAllowedTestCommand(command)) {
     throw new TestRunDeniedError(
@@ -429,10 +479,81 @@ export async function runTestRun(opts: RunTestRunOptions): Promise<TestRunOutput
   const runId = ulid();
   const bin = opts.input.command.split(/\s+/)[0] ?? 'run';
   const testRunRawRoot = join(opts.repoRoot, DAEMON_CACHE_DIR, 'raw', 'test_run');
+  // T037 (T034 residual N4): `MAX_RETAINED_RAW_OUTPUT_BYTES` used to bound
+  // only `raw/test_run/` — every other tool's raw output under `raw/`
+  // (e.g. `review/diff-summary.ts`'s raw diffs) had no ceiling of its own
+  // at all. Pruning now sweeps the whole `raw/` tree (every tool's
+  // subdirectory), one shared budget across all of it, rather than
+  // inventing a second, parallel ceiling+sweep for each tool that writes
+  // there — `test_run` is by far the highest-volume writer, so this is the
+  // one call site that already runs the sweep on every relevant occasion.
+  const rawTreeRoot = join(opts.repoRoot, DAEMON_CACHE_DIR, 'raw');
   const rawDir = join(testRunRawRoot, bin);
   mkdirSync(rawDir, { recursive: true });
   const stdoutPath = join(rawDir, `${runId}.out`);
   const stderrPath = join(rawDir, `${runId}.err`);
+  const rawRelPath = join(bin, `${runId}.log`);
+  const rawLogPath = rawOutputPath(opts.repoRoot, 'test_run', rawRelPath);
+
+  // Registered before the capture files exist and removed only once this
+  // run's own prune call has run (see `inFlightRawOutputPaths`'s doc
+  // comment) — a concurrent `runTestRun`'s sweep must never be able to
+  // delete these out from under this call, at any point in its lifetime.
+  for (const path of [stdoutPath, stderrPath, rawLogPath]) {
+    inFlightRawOutputPaths.add(path);
+  }
+  try {
+    return await runTestRunSpawned({
+      opts,
+      tokens,
+      cwd,
+      timeoutMs,
+      maxOutputBytes,
+      maxRetainedRawBytes,
+      rawTreeRoot,
+      stdoutPath,
+      stderrPath,
+      rawRelPath,
+      rawLogPath,
+      runStartedAt,
+    });
+  } finally {
+    for (const path of [stdoutPath, stderrPath, rawLogPath]) {
+      inFlightRawOutputPaths.delete(path);
+    }
+  }
+}
+
+interface RunTestRunSpawnedArgs {
+  opts: RunTestRunOptions;
+  tokens: string[];
+  cwd: string;
+  timeoutMs: number;
+  maxOutputBytes: number;
+  maxRetainedRawBytes: number;
+  rawTreeRoot: string;
+  stdoutPath: string;
+  stderrPath: string;
+  rawRelPath: string;
+  rawLogPath: string;
+  runStartedAt: number;
+}
+
+async function runTestRunSpawned(args: RunTestRunSpawnedArgs): Promise<TestRunOutput> {
+  const {
+    opts,
+    tokens,
+    cwd,
+    timeoutMs,
+    maxOutputBytes,
+    maxRetainedRawBytes,
+    rawTreeRoot,
+    stdoutPath,
+    stderrPath,
+    rawRelPath,
+    rawLogPath,
+    runStartedAt,
+  } = args;
 
   const proc = Bun.spawn(tokens, {
     cwd,
@@ -467,9 +588,9 @@ export async function runTestRun(opts: RunTestRunOptions): Promise<TestRunOutput
   // just to copy it (review round fix: the old `writeRawOutput(path,
   // combined)` did exactly that, using the already-capped `combined`
   // string, which was fine only because `maxBuffer` had already capped it
-  // upstream; that upstream cap is gone now).
-  const rawRelPath = join(bin, `${runId}.log`);
-  const rawLogPath = rawOutputPath(opts.repoRoot, 'test_run', rawRelPath);
+  // upstream; that upstream cap is gone now). `rawRelPath`/`rawLogPath` are
+  // computed by the caller, before the capture files exist, so they can be
+  // registered in `inFlightRawOutputPaths` up front.
   await writeRawOutputStream(rawLogPath, [stdoutFile, stderrFile]);
 
   // Round 2 review: the two capture files have now been folded into the
@@ -495,15 +616,34 @@ export async function runTestRun(opts: RunTestRunOptions): Promise<TestRunOutput
   // disk) are passed in as protected — a plain oldest-first sweep with no
   // such protection can and did delete the very file `raw_output` was just
   // set to point at, whenever a single run's log alone exceeded the whole
-  // budget. Protecting by path also covers another run's still-being-written
-  // `.out`/`.err` captures the same way, since the mechanism has no notion
-  // of "whose run" a path belongs to — it just never deletes a protected one.
+  // budget.
+  //
+  // T037 (round 2/3 N2 follow-up): `inFlightRawOutputPaths` is folded in
+  // too — every *other* concurrently-running `runTestRun` call's own
+  // registered paths — so this sweep can never delete a concurrent run's
+  // still-being-written `.out`/`.err` (or not-yet-pruned `.log`) either,
+  // not just this call's own.
+  //
+  // QA round 1 (T037 REJECT, blocker): the registry alone still lost the
+  // race when a sibling run *finished* (including its own prune, and its
+  // `finally` deregistration) before this run's own prune executed — at
+  // that point the sibling's `rawLogPath` is in neither `protectedPaths`
+  // (it's the sibling's file, not this call's own) nor
+  // `inFlightRawOutputPaths` (the sibling already removed itself). Fixed
+  // with `runStartedAt`: any file whose mtime is at or after *this* call's
+  // own start belongs to a run that began before or during this one —
+  // concurrent by construction — and is protected regardless of whether
+  // that run has already finished. The guarantee this establishes: a run's
+  // `raw_output` survives every sweep triggered by a run that started
+  // before or during it; only genuinely older runs' logs (predating this
+  // sweep's own caller) remain subject to the budget.
   let rawOutputOverBudget = false;
   try {
     rawOutputOverBudget = pruneRawTestRunOutputs(
-      testRunRawRoot,
+      rawTreeRoot,
       maxRetainedRawBytes,
-      new Set([stdoutPath, stderrPath, rawLogPath]),
+      new Set([stdoutPath, stderrPath, rawLogPath, ...inFlightRawOutputPaths]),
+      runStartedAt,
     );
   } catch {
     // Best-effort housekeeping only.
@@ -595,10 +735,11 @@ function collectFilesRecursive(dir: string, acc: string[] = []): string[] {
  * Deletes the oldest files (by mtime) under `rootDir` until the total size
  * of what remains is at or under `maxTotalBytes` — see
  * `MAX_RETAINED_RAW_OUTPUT_BYTES`'s doc comment for why this replaces
- * Bun's per-run `maxBuffer` cap. `rootDir` is `test_run`'s whole raw-output
- * tree (every `<bin>/` subdirectory `runTestRun` has ever written into),
- * so this bounds total disk use across every run, not just the one that
- * just finished.
+ * Bun's per-run `maxBuffer` cap. `rootDir` is the whole `raw/` cache tree
+ * (T037: every tool's subdirectory under it, not just `test_run`'s own
+ * `<bin>/` ones), so this bounds total disk use across every run and every
+ * tool that writes there, not just the one `test_run` call that just
+ * finished.
  *
  * Round 2 review (blocker 1): a plain oldest-first sweep with no notion of
  * "the run in flight" is not safe — a single log larger than `maxTotalBytes`
@@ -607,14 +748,29 @@ function collectFilesRecursive(dir: string, acc: string[] = []): string[] {
  * since that one file already exceeded the whole budget, every earlier run's
  * log too). `protectedPaths` fixes this: any path in the set is never a
  * sweep candidate, however old or however far over budget the tree still is
- * once every unprotected file is gone. Callers pass the current run's
+ * once every unprotected file is gone. `runTestRun` passes the current run's
  * `rawLogPath` plus its two (by-now-usually-already-deleted, but possibly
- * still present) capture paths. Note the set is per call: `runTestRun`
- * protects only its *own* run's paths, so another concurrent run's
- * still-being-written `.out`/`.err` captures are not protected by this
- * sweep (the sweep looks only at the path, never at whose run it belongs
- * to). Closing that window needs a shared in-flight registry — see the
- * T034 follow-up ticket.
+ * still present) capture paths, unioned with `inFlightRawOutputPaths` (T037
+ * — closes the T034 follow-up: every *other* concurrently-running
+ * `runTestRun` call's in-flight paths are protected too, not just the
+ * calling run's own).
+ *
+ * QA round 1 (T037 REJECT, blocker): `protectedPaths` alone still lost the
+ * race for a *finished* concurrent sibling — `runTestRun` deregisters a
+ * run's paths from `inFlightRawOutputPaths` once that run is done, so by
+ * the time a later-finishing sibling's own sweep runs, an earlier-finishing
+ * sibling's `rawLogPath` is protected by neither set (it's not this call's
+ * own path, and its owner already deregistered). `minProtectedMtimeMs`
+ * closes that: any file with `mtimeMs >= minProtectedMtimeMs` is protected
+ * regardless of whether it appears in `protectedPaths`, whether its owning
+ * run is still running, and whether that owner ever registered anywhere at
+ * all. Callers pass their own start time — anything written at or after a
+ * run's own start belongs to a run that began before or during it
+ * (concurrent, by construction), never a genuinely older, unrelated run.
+ * **The guarantee this establishes:** a run's `raw_output` survives every
+ * sweep triggered by a run that started before or during it; only logs from
+ * runs that both started *and* finished strictly before the current run
+ * began remain subject to the budget.
  *
  * Returns `true` when the protected paths alone still exceed `maxTotalBytes`
  * after every unprotected file has been deleted — the caller surfaces this
@@ -625,6 +781,7 @@ export function pruneRawTestRunOutputs(
   rootDir: string,
   maxTotalBytes: number,
   protectedPaths: ReadonlySet<string>,
+  minProtectedMtimeMs?: number,
 ): boolean {
   const files = collectFilesRecursive(rootDir).map((path) => {
     const stat = statSync(path);
@@ -633,9 +790,10 @@ export function pruneRawTestRunOutputs(
   let total = files.reduce((sum, f) => sum + f.size, 0);
   if (total <= maxTotalBytes) return false;
 
-  const prunable = files
-    .filter((file) => !protectedPaths.has(file.path))
-    .sort((a, b) => a.mtimeMs - b.mtimeMs);
+  const isProtected = (file: { path: string; mtimeMs: number }): boolean =>
+    protectedPaths.has(file.path) ||
+    (minProtectedMtimeMs !== undefined && file.mtimeMs >= minProtectedMtimeMs);
+  const prunable = files.filter((file) => !isProtected(file)).sort((a, b) => a.mtimeMs - b.mtimeMs);
   for (const file of prunable) {
     if (total <= maxTotalBytes) break;
     try {

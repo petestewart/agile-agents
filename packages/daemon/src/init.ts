@@ -15,6 +15,7 @@ import {
   validateVendorsConfig,
 } from '@agile-agents/shared';
 import { stringify as stringifyYaml } from 'yaml';
+import { sandboxedSubprocessEnv } from './subprocess-env';
 
 export const STATE_BRANCH = 'agile-state';
 const STATE_DIR_NAME = '.agile';
@@ -26,8 +27,13 @@ export class AlreadyInitialisedError extends Error {
   }
 }
 
-function git(args: string[], cwd: string): string {
-  const result = Bun.spawnSync(['git', ...args], { cwd, stdout: 'pipe', stderr: 'pipe' });
+function git(args: string[], cwd: string, repoRoot: string): string {
+  const result = Bun.spawnSync(['git', ...args], {
+    cwd,
+    stdout: 'pipe',
+    stderr: 'pipe',
+    env: sandboxedSubprocessEnv(repoRoot, 'git'),
+  });
   if (result.exitCode !== 0) {
     const stderr = new TextDecoder().decode(result.stderr).trim();
     throw new Error(`git ${args.join(' ')} failed in ${cwd}: ${stderr}`);
@@ -38,6 +44,7 @@ function git(args: string[], cwd: string): string {
 function branchExists(repoRoot: string, branch: string): boolean {
   const result = Bun.spawnSync(['git', 'show-ref', '--verify', '--quiet', `refs/heads/${branch}`], {
     cwd: repoRoot,
+    env: sandboxedSubprocessEnv(repoRoot, 'git'),
   });
   return result.exitCode === 0;
 }
@@ -299,7 +306,7 @@ export function runInit(repoRoot: string): InitResult {
   // worktree with an empty working directory — no separate "clear the
   // working tree" step needed, unlike `checkout --orphan` in the current
   // worktree.
-  git(['worktree', 'add', '--orphan', '-b', STATE_BRANCH, STATE_DIR_NAME], repoRoot);
+  git(['worktree', 'add', '--orphan', '-b', STATE_BRANCH, STATE_DIR_NAME], repoRoot, repoRoot);
 
   const filesWritten: string[] = [];
   for (const [path, content] of layoutFiles(stateRoot)) {
@@ -307,7 +314,7 @@ export function runInit(repoRoot: string): InitResult {
     filesWritten.push(path);
   }
 
-  git(['add', '-A'], stateRoot);
+  git(['add', '-A'], stateRoot, repoRoot);
   git(
     [
       '-c',
@@ -322,6 +329,7 @@ export function runInit(repoRoot: string): InitResult {
       'agile init: bootstrap state layout',
     ],
     stateRoot,
+    repoRoot,
   );
 
   ensureGitignore(repoRoot);

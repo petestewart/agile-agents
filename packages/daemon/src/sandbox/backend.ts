@@ -13,10 +13,8 @@
  */
 
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
-import { platform, tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { sandboxedSubprocessEnv } from '../subprocess-env';
+import { platform } from 'node:os';
+import { type SandboxedSubprocessEnvOrTemp, sandboxedSubprocessEnvOrTemp } from '../subprocess-env';
 import type { SandboxBackend } from './types';
 
 export interface DetectBackendDeps {
@@ -28,23 +26,45 @@ export interface DetectBackendDeps {
   hasContainerRuntime: () => boolean;
 }
 
-function binaryOnPath(bin: string): boolean {
+/**
+ * `command -v` is POSIX and doesn't require the binary to run cleanly
+ * (unlike `--version`, which some CLIs don't support) — just presence.
+ * Takes an already-built sandboxed `env` rather than a `repoRoot` (review
+ * round 1 nit N5) so a caller that needs more than one presence/behaviour
+ * check against the same probe — `dockerDaemonReachable` checks for the
+ * `docker` binary and then runs `docker info` — builds (and tears down)
+ * exactly one `dockerProbeEnv`, not one per check.
+ */
+function commandOnPath(bin: string, env: Record<string, string>): boolean {
   try {
-    // `command -v` is POSIX and doesn't require the binary to run cleanly
-    // (unlike `--version`, which some CLIs don't support) — just presence.
-    execFileSync('sh', ['-c', `command -v ${bin}`], { stdio: ['ignore', 'ignore', 'ignore'] });
+    execFileSync('sh', ['-c', `command -v ${bin}`], {
+      stdio: ['ignore', 'ignore', 'ignore'],
+      env,
+    });
     return true;
   } catch {
     return false;
   }
 }
 
-/** A probe's env plus how to release whatever `dockerProbeEnv` had to create just for this one call — see its doc comment. */
-export interface DockerProbeEnv {
-  env: Record<string, string>;
-  /** Removes the probe's own temp directory. A no-op when `repoRoot` was given: that cache directory belongs to the caller, not this probe, so it is left in place (same lifetime as every other `sandboxedSubprocessEnv` caller's cache). */
-  cleanup: () => void;
+/** `sandbox-exec` presence has no `repoRoot` to thread through (nothing upstream of `detectBackend()` has one — see `dockerProbeEnv`'s doc comment), so this is its own one-shot probe. */
+function hasBinaryOnPath(bin: string): boolean {
+  const probe = dockerProbeEnv(undefined);
+  try {
+    return commandOnPath(bin, probe.env);
+  } finally {
+    probe.cleanup();
+  }
 }
+
+/**
+ * A probe's env plus how to release whatever `dockerProbeEnv` had to create
+ * just for this one call — see its doc comment. Review round 2 (N2): an
+ * alias of `SandboxedSubprocessEnvOrTemp` (kept as its own named export for
+ * this module's own call sites and tests) now that `dockerProbeEnv`
+ * delegates to `sandboxedSubprocessEnvOrTemp` instead of duplicating it.
+ */
+export type DockerProbeEnv = SandboxedSubprocessEnvOrTemp;
 
 /**
  * The env `dockerDaemonReachable` spawns `docker info` with — pulled out
@@ -72,23 +92,19 @@ export interface DockerProbeEnv {
  * fallback now `mkdtempSync`s a fresh, uid/pid-unique directory per call —
  * nothing else on the host can already be occupying it — and hands back a
  * `cleanup()` to remove it once the one-shot probe is done with it.
+ *
+ * Review round 2 (opus, N2): this used to duplicate
+ * `sandboxedSubprocessEnvOrTemp`'s body (`mkdtempSync` + `sandboxedSubprocessEnv`
+ * + `rmSync`, byte-for-byte the same shape once `name` is `'sandbox-detect'`)
+ * instead of delegating to it, despite `subprocess-env.ts`'s own doc comment
+ * claiming this function exists "instead of a fourth near-copy" — the near-copy
+ * count went from three to four, not down. Now a thin wrapper: `DockerProbeEnv`
+ * is `SandboxedSubprocessEnvOrTemp`, kept as its own named export (T026) for
+ * this module's own call sites and tests, and `tempDirBase` (QA round 3) passes
+ * straight through.
  */
-export function dockerProbeEnv(repoRoot: string | undefined): DockerProbeEnv {
-  if (repoRoot !== undefined) {
-    return { env: sandboxedSubprocessEnv(repoRoot, 'sandbox-detect'), cleanup: () => {} };
-  }
-  const tempBase = mkdtempSync(join(tmpdir(), 'agile-daemon-sandbox-detect-'));
-  return {
-    env: sandboxedSubprocessEnv(tempBase, 'sandbox-detect'),
-    cleanup: () => {
-      try {
-        rmSync(tempBase, { recursive: true, force: true });
-      } catch {
-        // Best-effort — a leaked one-shot probe dir under the OS temp
-        // directory is not a correctness bug.
-      }
-    },
-  };
+export function dockerProbeEnv(repoRoot: string | undefined, tempDirBase?: string): DockerProbeEnv {
+  return sandboxedSubprocessEnvOrTemp(repoRoot, 'sandbox-detect', tempDirBase);
 }
 
 /**
@@ -105,11 +121,17 @@ export function dockerProbeEnv(repoRoot: string | undefined): DockerProbeEnv {
  * real failure and is left to throw out of this function rather than being
  * folded into the same catch as "docker unreachable", which is precisely
  * the bug that let a probe-setup failure silently read as "no docker".
+ *
+ * Round 1 review nit N5: one `dockerProbeEnv` is built and reused for both
+ * the `command -v docker` presence check and the `docker info` call itself
+ * — previously each built (and tore down) its own, doubling the
+ * `mkdtempSync`/`mkdirSync`/`rmSync` cost of every no-repo-root probe for
+ * no benefit (the two checks always agree on which env to use).
  */
-export function dockerDaemonReachable(repoRoot?: string): boolean {
-  if (!binaryOnPath('docker')) return false;
-  const probe = dockerProbeEnv(repoRoot);
+export function dockerDaemonReachable(repoRoot?: string, tempDirBase?: string): boolean {
+  const probe = dockerProbeEnv(repoRoot, tempDirBase);
   try {
+    if (!commandOnPath('docker', probe.env)) return false;
     // `docker info` fails fast (no daemon socket) rather than hanging when
     // the daemon isn't running — confirmed on this container: "failed to
     // connect to the docker API at unix:///var/run/docker.sock ...".
@@ -134,7 +156,7 @@ export function dockerDaemonReachable(repoRoot?: string): boolean {
  */
 export const defaultDetectBackendDeps: DetectBackendDeps = {
   platform,
-  hasSandboxExec: () => binaryOnPath('sandbox-exec'),
+  hasSandboxExec: () => hasBinaryOnPath('sandbox-exec'),
   hasContainerRuntime: () => dockerDaemonReachable(),
 };
 
