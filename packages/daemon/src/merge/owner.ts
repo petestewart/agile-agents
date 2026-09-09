@@ -8,25 +8,30 @@
  *
  * Two entry points:
  *  - `onTicketDone(ticketId)` — called once a ticket reaches `done` (QA
- *    accept). Rebases the ticket's worktree onto `integration`, runs the
- *    repo's tests, and on success merges the ticket branch into
- *    `integration` **in the main repo checkout** (`repoRoot`, never the
- *    ticket's own worktree — §15's "integration owner" role is a single
- *    shared checkout, not a per-ticket one). A rebase conflict or a test
- *    failure instead raises a halt scoped to just this ticket
- *    (`createHalt({scope:[ticket]})`) with a summary naming the offending
- *    file(s) and, where discoverable, the other ticket(s) whose commits
- *    already on `integration` touched the same file — the worktree is left
- *    exactly as it was (rebase aborted) so the engineer's fix cycle reuses
- *    the same directory (§15: "Fix cycles and escalations reuse the same
- *    worktree").
+ *    accept; `stale` is also accepted — see `ONTICKETDONE_ALLOWED_STATUSES`).
+ *    Rebases the ticket's worktree onto `integration`, runs the repo's
+ *    tests, and on success merges the ticket branch into `integration`
+ *    **in a daemon-owned `.worktrees/_integration` worktree** — never the
+ *    ticket's own worktree, and never the user's own checkout of `repoRoot`
+ *    (review round 1 blocker 1: an earlier version ran `git checkout
+ *    integration` directly in `repoRoot`, which is whatever branch/WIP a
+ *    human happens to have checked out there — see `ensureNamedWorktree`).
+ *    A rebase conflict or a test failure instead raises a halt scoped to
+ *    just this ticket (`createHalt({scope:[ticket]})`) with a summary
+ *    naming the offending file(s) and, where discoverable, the other
+ *    ticket(s) whose commits already on `integration` touched the same
+ *    file — the worktree is left exactly as it was (rebase aborted) so the
+ *    engineer's fix cycle reuses the same directory (§15: "Fix cycles and
+ *    escalations reuse the same worktree").
  *  - `mergeIntegrationToMain()` — `integration -> main`, gated on the
- *    `sprint_review` HIL request being `resolved`/`approve` (§16).
+ *    `sprint_review` HIL request being `resolved`/`approve` (§16), merged in
+ *    a second daemon-owned worktree, `.worktrees/_main` — same reasoning.
  *
- * Every mutation to `repoRoot`'s checked-out branch (both entry points, plus
- * the worktree removal at the end of a clean `onTicketDone`) is serialized
- * through one mutex — `repoRoot` is a single shared checkout, so two merges
- * running concurrently would otherwise race on `git checkout`.
+ * Every mutation this class makes (both entry points, plus the ticket
+ * worktree removal at the end of a clean `onTicketDone`) is serialized
+ * through one mutex — the `_integration`/`_main` worktrees and `integration`
+ * itself are shared mutable state, so two merges running concurrently would
+ * otherwise race on them.
  *
  * Merge outcomes are recorded two ways: a `board/merges/<ticket>.yaml`
  * `MergeRecord` (`packages/shared/src/merge.ts`) via the store's generic
@@ -37,10 +42,16 @@
  * event.ts`) so `log/events.jsonl` has a semantic line for "a merge
  * happened" the way `hil_requested` sits alongside `entity_put` for a HIL
  * write. A conflict/test-failure outcome additionally goes through
- * `createHalt`, which mints its own `halt_created` event.
+ * `createHalt`, which mints its own `halt_created` event. The `MergeRecord`
+ * is written (and events appended) for a `merged` outcome *before* the
+ * ticket worktree removal is attempted (review round 1 blocker 2: the merge
+ * itself has already landed by that point, so a removal failure — a stray
+ * untracked file `git worktree remove` refuses to walk over — must never
+ * cost the durable record of a merge that already happened; see
+ * `removeWorktreeSafely` in `git.ts`).
  */
 
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
   type HaltId,
@@ -50,15 +61,21 @@ import {
   type MergeRecord,
   type Ticket,
   type TicketId,
+  type TicketStatus,
   ulid,
   validateMergeRecord,
 } from '@agile-agents/shared';
 import type { Bus } from '../bus';
 import type { GateService } from '../gates/service';
 import { activeHaltsFor, createHalt } from '../halts';
-import { INTEGRATION_BRANCH, ensureIntegrationBranch, ticketBranchName } from '../runner/worktrees';
+import {
+  INTEGRATION_BRANCH,
+  ensureIntegrationBranch,
+  ensureTicketWorktree,
+  ticketBranchName,
+} from '../runner/worktrees';
 import { NotFoundError, type StateStore, buildEvent } from '../store';
-import { git, gitWrite, runGit } from './git';
+import { GitCommandError, git, gitWrite, removeWorktreeSafely, runGit } from './git';
 
 /** Injected test runner result — see `defaultRunTests` for the repo-detection default. */
 export interface RunTestsResult {
@@ -193,6 +210,64 @@ export interface MergeOwnerOptions {
 /** Ticket ids whose commit subjects mention them — used by the conflict summary below. */
 const TICKET_ID_PATTERN = /TKT-\d{4,}/g;
 
+/**
+ * `onTicketDone` runs for a ticket QA just accepted (`done`), or — per the
+ * ticket's own Design note ("keep if stale/abandoned") — one the architect
+ * marked `stale` after QA accepted it but before the merge landed (a ripple
+ * walk can mark any live ticket stale, and `done` isn't excluded from that
+ * in practice even though `TICKET_TRANSITIONS` has no formal edge *into*
+ * `stale` from `done` today — see the `.pipeline-review.md`/report
+ * DESIGN-GAP). Any other status means `merge.ticket`/`onTicketDone` was
+ * called too early (review round 1 nit: "done guard on merge.ticket RPC").
+ */
+const ONTICKETDONE_ALLOWED_STATUSES: readonly TicketStatus[] = ['done', 'stale'];
+
+export class TicketNotReadyForMergeError extends Error {
+  constructor(ticket: TicketId, status: TicketStatus) {
+    super(
+      `merge refused: ${ticket} has status "${status}", expected one of ${ONTICKETDONE_ALLOWED_STATUSES.join(', ')}`,
+    );
+    this.name = 'TicketNotReadyForMergeError';
+  }
+}
+
+export class MissingTicketWorktreeError extends Error {
+  constructor(ticket: TicketId, branch: string) {
+    super(`merge: ${ticket} (branch ${branch}) has no worktree and no existing branch to reattach`);
+    this.name = 'MissingTicketWorktreeError';
+  }
+}
+
+/**
+ * `branch` (`integration` or `main`) is already checked out in some other
+ * worktree of this repo — most commonly a human's own `repoRoot` checkout.
+ * See `ensureNamedWorktree`'s comment for why this module refuses rather
+ * than working around it.
+ */
+export class BranchCheckedOutElsewhereError extends Error {
+  constructor(
+    public readonly branch: string,
+    gitStderr: string,
+  ) {
+    super(
+      `merge: cannot create a dedicated worktree for "${branch}" — it is already checked out elsewhere in this repo (commonly the operator's own checkout). Check the branch out nowhere else and retry. (git: ${gitStderr})`,
+    );
+    this.name = 'BranchCheckedOutElsewhereError';
+  }
+}
+
+/**
+ * Daemon-owned worktrees this class merges *into* — never the user's own
+ * checkout of `repoRoot` (review round 1 blocker 1). Lazily created,
+ * never removed (unlike a ticket's own worktree): they are this class's
+ * permanent workspace, so there is never a "done with it" moment to clean
+ * up at. `_` prefixes them so they can never collide with a `TKT-####`
+ * ticket worktree directory name.
+ */
+const INTEGRATION_WORKTREE_DIR = '_integration';
+const MAIN_WORKTREE_DIR = '_main';
+const MAIN_BRANCH = 'main';
+
 export class MergeOwner {
   private readonly runTests: RunTestsFn;
   private readonly clock: () => Date;
@@ -208,6 +283,48 @@ export class MergeOwner {
     this.runTests = options.runTests ?? defaultRunTests;
     this.clock = options.clock ?? (() => new Date());
     this.gateApproved = options.gateApproved ?? (() => ({ approved: false }));
+  }
+
+  /**
+   * `.worktrees/<dirName>` on `branch`, created off whatever `branch`
+   * already points to (never `-b`: `integration`/`main` already exist by
+   * the time this is called, `ensureIntegrationBranch` having been run for
+   * the former). Idempotent — a second call just returns the existing
+   * path. This is what replaces `git checkout <branch>` in `repoRoot`
+   * (review round 1 blocker 1): the daemon merges inside its own worktree,
+   * never the user's checkout.
+   */
+  private ensureNamedWorktree(dirName: string, branch: string): string {
+    const path = join(this.repoRoot, '.worktrees', dirName);
+    if (existsSync(path)) return path;
+    mkdirSync(join(this.repoRoot, '.worktrees'), { recursive: true });
+    const result = git(['worktree', 'add', path, branch], this.repoRoot);
+    if (result.exitCode !== 0) {
+      // Git refuses to check out a branch into a second worktree while any
+      // worktree (including `repoRoot` itself) already has it checked
+      // out — exactly the scenario blocker 1 exists to avoid colliding
+      // with (a human's own checkout sitting on `main`/`integration`).
+      // This module deliberately does not attempt a checkout-free ref
+      // update (`git branch -f`/plumbing) as a fallback: git itself
+      // refuses to force-move a branch that's checked out anywhere too, so
+      // there is no safe, generic way to advance it without disturbing
+      // whichever worktree holds it — surfaced as a clear, actionable
+      // error instead of a raw git one.
+      if (/already used by worktree/i.test(result.stderr)) {
+        throw new BranchCheckedOutElsewhereError(branch, result.stderr);
+      }
+      throw new GitCommandError(['worktree', 'add', path, branch], this.repoRoot, result.stderr);
+    }
+    return path;
+  }
+
+  private ensureIntegrationWorktree(): string {
+    ensureIntegrationBranch(this.repoRoot);
+    return this.ensureNamedWorktree(INTEGRATION_WORKTREE_DIR, INTEGRATION_BRANCH);
+  }
+
+  private ensureMainWorktree(): string {
+    return this.ensureNamedWorktree(MAIN_WORKTREE_DIR, MAIN_BRANCH);
   }
 
   /** `board/merges/<ticket>.yaml`, or `undefined` if this ticket has never gone through `onTicketDone`. */
@@ -231,11 +348,25 @@ export class MergeOwner {
 
   private async doOnTicketDone(ticketId: TicketId): Promise<MergeOutcome> {
     const ticket = this.store.getTicket(ticketId);
-    const branch = ticketBranchName(ticket);
-    const worktreePath = join(this.repoRoot, '.worktrees', ticket.id);
-    if (!existsSync(worktreePath)) {
-      throw new Error(`merge: no worktree at ${worktreePath} for ${ticket.id} (branch ${branch})`);
+    if (!ONTICKETDONE_ALLOWED_STATUSES.includes(ticket.status)) {
+      throw new TicketNotReadyForMergeError(ticket.id, ticket.status);
     }
+    const branch = ticketBranchName(ticket);
+
+    // Dedupe the worktree-path rule against `runner/worktrees.ts` (review
+    // round 1 nit) rather than re-deriving `.worktrees/<TKT-id>` here.
+    // `ensureTicketWorktree` is idempotent (a `created: false` return is a
+    // plain no-op lookup) and, if the worktree was removed but the branch
+    // survived (the `stale`/`abandoned` keep path, or a prior removal-
+    // safety fallback below), reattaches to the existing branch rather than
+    // fabricating an empty one — so `created: true` here only ever means
+    // "no worktree *and* no existing branch", which is the same "nothing to
+    // merge" condition the old explicit `existsSync` check guarded against.
+    const engineerWorktree = ensureTicketWorktree(this.repoRoot, ticket);
+    if (engineerWorktree.created) {
+      throw new MissingTicketWorktreeError(ticket.id, branch);
+    }
+    const worktreePath = engineerWorktree.path;
 
     ensureIntegrationBranch(this.repoRoot);
 
@@ -253,10 +384,13 @@ export class MergeOwner {
       return this.haltAndRecord(ticket, 'test_failed', summary);
     }
 
-    runGit(['checkout', INTEGRATION_BRANCH], this.repoRoot);
+    // Merge into `integration` inside the daemon's own worktree — never
+    // `repoRoot` itself (review round 1 blocker 1; see the class header
+    // and `ensureNamedWorktree`).
+    const integrationWorktree = this.ensureIntegrationWorktree();
     const merge = gitWrite(
       ['merge', '--no-ff', branch, '-m', `Merge ${ticket.id} ${ticket.title}`],
-      this.repoRoot,
+      integrationWorktree,
     );
     if (merge.exitCode !== 0) {
       // Defensive: a rebase onto `integration` immediately before this
@@ -264,13 +398,13 @@ export class MergeOwner {
       // rebase conflict in case `integration` moved between the rebase
       // above and this checkout (another ticket's merge racing in — the
       // mutex prevents that within one process, but not across processes).
-      const files = this.conflictedFiles(this.repoRoot);
-      gitWrite(['merge', '--abort'], this.repoRoot);
+      const files = this.conflictedFiles(integrationWorktree);
+      gitWrite(['merge', '--abort'], integrationWorktree);
       const summary = this.buildConflictSummary(ticket, files.length > 0 ? files : [merge.stderr]);
       return this.haltAndRecord(ticket, 'conflict', summary);
     }
 
-    const mergeCommit = runGit(['rev-parse', 'HEAD'], this.repoRoot);
+    const mergeCommit = runGit(['rev-parse', 'HEAD'], integrationWorktree);
     await this.store.appendEvent(
       buildEvent('merge_completed', {
         ticket: ticket.id,
@@ -289,9 +423,26 @@ export class MergeOwner {
       return { status: 'merged', ticket: ticket.id, mergeCommit, worktreeKept: true };
     }
 
-    runGit(['worktree', 'remove', worktreePath], this.repoRoot);
+    // The merge has landed: record it *before* attempting removal (review
+    // round 1 blocker 2) so a removal failure below can never cost this
+    // record. `removeWorktreeSafely` never throws — a stray untracked file
+    // gets force-removed, but real uncommitted tracked work keeps the
+    // worktree in place rather than being discarded, and either way the
+    // record already reflects the truth: the merge happened.
     await this.recordMerge(ticket.id, { status: 'merged', mergeCommit, worktreeKept: false });
-    return { status: 'merged', ticket: ticket.id, mergeCommit, worktreeKept: false };
+    const removal = removeWorktreeSafely(this.repoRoot, worktreePath);
+    if (removal.removed) {
+      return { status: 'merged', ticket: ticket.id, mergeCommit, worktreeKept: false };
+    }
+
+    console.warn(`merge: kept ${worktreePath} after ${ticket.id} merged — ${removal.reason}`);
+    await this.recordMerge(ticket.id, {
+      status: 'merged',
+      mergeCommit,
+      worktreeKept: true,
+      summary: removal.reason,
+    });
+    return { status: 'merged', ticket: ticket.id, mergeCommit, worktreeKept: true };
   }
 
   /**
@@ -424,7 +575,9 @@ export class MergeOwner {
       };
     }
 
-    runGit(['checkout', 'main'], this.repoRoot);
+    // Merge into `main` inside the daemon's own `_main` worktree — never
+    // `repoRoot` itself (review round 1 blocker 1; see the class header).
+    const mainWorktree = this.ensureMainWorktree();
     const suffix = approval.hilId ? ` (${approval.hilId})` : '';
     const merge = gitWrite(
       [
@@ -434,14 +587,14 @@ export class MergeOwner {
         '-m',
         `Merge ${INTEGRATION_BRANCH} into main${suffix}`,
       ],
-      this.repoRoot,
+      mainWorktree,
     );
     if (merge.exitCode !== 0) {
-      gitWrite(['merge', '--abort'], this.repoRoot);
+      gitWrite(['merge', '--abort'], mainWorktree);
       throw new Error(`merge.integration_to_main: merge failed: ${merge.stderr}`);
     }
 
-    const mergeCommit = runGit(['rev-parse', 'HEAD'], this.repoRoot);
+    const mergeCommit = runGit(['rev-parse', 'HEAD'], mainWorktree);
     await this.store.appendEvent(
       buildEvent('integration_merged_to_main', {
         data: {

@@ -15,6 +15,13 @@
  * likewise") — and stamps a fixed daemon author/committer via env so a
  * merge/rebase commit's identity never depends on whatever `user.name`/
  * `user.email` happens to be configured in the calling environment.
+ *
+ * `removeWorktreeSafely` (review round 1, opus blocker 2): a plain `git
+ * worktree remove` throws on a stray untracked file, and doing that *after*
+ * the merge already landed would otherwise be the caller's last chance to
+ * record the outcome — so this never throws, and draws the force/no-force
+ * line at "tracked" vs "untracked", never forcing past uncommitted tracked
+ * changes.
  */
 
 const textDecoder = new TextDecoder();
@@ -89,4 +96,48 @@ export function gitWrite(args: string[], cwd: string): GitResult {
     stdout: textDecoder.decode(result.stdout).trim(),
     stderr: textDecoder.decode(result.stderr).trim(),
   };
+}
+
+export interface RemoveWorktreeResult {
+  removed: boolean;
+  /** Why it wasn't removed — present whenever `removed` is `false`. */
+  reason?: string;
+}
+
+/**
+ * Removes `worktreePath` (a worktree of `repoRoot`) without ever throwing.
+ * Reads `worktreePath`'s own status first: any *tracked* modification
+ * (staged, unstaged, or a mid-operation state `git status` reports as
+ * non-`??`) keeps the worktree untouched — never force past real work, even
+ * though `git worktree remove --force` would happily discard it. Untracked
+ * files only (build output, scratch files) get `--force`, since a plain
+ * `git worktree remove` refuses to remove a non-empty directory. A status
+ * check that itself fails (`worktreePath` already gone, say) is reported
+ * the same way as a failed removal — this function's contract is "tell me
+ * whether the worktree is gone after this call", not "diagnose why".
+ */
+export function removeWorktreeSafely(repoRoot: string, worktreePath: string): RemoveWorktreeResult {
+  const status = git(['status', '--porcelain=v1', '--untracked-files=all'], worktreePath);
+  if (status.exitCode !== 0) {
+    return { removed: false, reason: `could not read worktree status: ${status.stderr}` };
+  }
+
+  const lines = status.stdout.split('\n').filter((line) => line.length > 0);
+  const hasTrackedChanges = lines.some((line) => !line.startsWith('??'));
+  if (hasTrackedChanges) {
+    return {
+      removed: false,
+      reason: 'worktree has uncommitted tracked changes — kept for inspection, not force-removed',
+    };
+  }
+
+  const hasUntrackedOnly = lines.length > 0;
+  const args = hasUntrackedOnly
+    ? ['worktree', 'remove', '--force', worktreePath]
+    : ['worktree', 'remove', worktreePath];
+  const result = git(args, repoRoot);
+  if (result.exitCode !== 0) {
+    return { removed: false, reason: `git worktree remove failed: ${result.stderr}` };
+  }
+  return { removed: true };
 }

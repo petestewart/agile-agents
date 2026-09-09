@@ -29,6 +29,10 @@ beforeEach(() => {
   git(['add', '-A'], repo);
   git(['commit', '-q', '-m', 'init'], repo);
   ensureIntegrationBranch(repo);
+  // Leave `main`/`integration` un-checked-out anywhere so MergeOwner's own
+  // `.worktrees/_integration`/`_main` can claim them (owner.test.ts's
+  // "dev-feature" fixture documents why).
+  git(['checkout', '-b', 'dev-feature'], repo);
 
   const init = runInit(repo);
   store = StateStore.open(init.stateRoot);

@@ -9,36 +9,29 @@
  * Param validation follows `gates/rpc.ts`'s pattern (T018 review fix):
  * every handler validates its params at the boundary with a shared zod
  * schema and throws a typed `RpcParamError` (-32602) rather than letting a
- * bare destructuring `TypeError` reach `dispatch()`. Same KNOWN LIMITATION
- * as `gates/rpc.ts` documents: `dispatch()`'s catch-all currently reports
- * every thrown error as `-32603` regardless of `.code` — `.code`/`.data`
- * are still attached here for the moment that's fixed.
+ * bare destructuring `TypeError` reach `dispatch()`. `RpcError`/
+ * `RpcParamError` themselves are re-exported from the root `rpc.ts` (T019
+ * review round 1 nit — that file granted an additive-only export for this;
+ * `gates/rpc.ts` predates it and keeps its own identical copy, out of this
+ * ticket's file ownership to change) rather than a second definition here.
+ * Same KNOWN LIMITATION `rpc.ts`'s own doc comment on these classes names:
+ * `dispatch()`'s catch-all currently reports every thrown error as
+ * `-32603` regardless of `.code` — `.code`/`.data` are still attached here
+ * for the moment that's fixed.
+ *
+ * `onTicketDone`'s own status guard (`TicketNotReadyForMergeError`, see
+ * `owner.ts`) is what actually keeps `merge.ticket` from running on a
+ * ticket that isn't `done`/`stale` — enforced once, in the owner, so a
+ * direct (non-RPC) caller gets the same guarantee this RPC method does.
  */
 
 import { TicketIdSchema } from '@agile-agents/shared';
 import type { TicketId } from '@agile-agents/shared';
+import { RpcParamError } from '../rpc';
 import type { RpcMethodHandler } from '../rpc';
 import type { MergeOwner } from './owner';
 
-const INVALID_PARAMS_CODE = -32602;
-
-export class RpcError extends Error {
-  constructor(
-    public readonly code: number,
-    message: string,
-    public readonly data?: unknown,
-  ) {
-    super(message);
-    this.name = 'RpcError';
-  }
-}
-
-export class RpcParamError extends RpcError {
-  constructor(message: string, data?: unknown) {
-    super(INVALID_PARAMS_CODE, message, data);
-    this.name = 'RpcParamError';
-  }
-}
+export { RpcError, RpcParamError } from '../rpc';
 
 function requireObject(params: unknown): Record<string, unknown> {
   if (typeof params !== 'object' || params === null || Array.isArray(params)) {

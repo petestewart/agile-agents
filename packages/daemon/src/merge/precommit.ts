@@ -26,10 +26,14 @@
  *
  * Limits (documented, not solved — no sibling precedent to build a merge-
  * with-existing-hook step from, unlike `hook/settings.ts`'s JSON merge):
- *  - Overwrites any other `pre-commit` hook already installed in the repo
- *    (idempotent against *itself*, not merge-safe against a stranger's
- *    hook). Fine for this repo (nothing else installs one), flagged for
- *    whoever adds a second pre-commit concern later.
+ *  - `installPreCommitHook` refuses (throws) rather than silently
+ *    overwriting a `pre-commit` hook it did not itself install (review
+ *    round 1 nit — detected by the absence of this module's `MARKER`
+ *    string in the existing file). It does not attempt to *chain* into a
+ *    foreign hook (call it after ours) since there is no sibling precedent
+ *    in this codebase for composing hook scripts; a human resolves the
+ *    conflict by removing/renaming the foreign hook or merging it into the
+ *    generated script by hand.
  *  - Only checked-out worktrees on a `tkt/*` branch are covered; a commit
  *    made directly on `integration`/`main` in the main checkout (this
  *    package's own merge commits) is never blocked by this hook, by design
@@ -50,6 +54,23 @@ import { runGit } from './git';
 export interface CommitCheck {
   allowed: boolean;
   reason?: string;
+}
+
+/**
+ * Present in every script `renderPreCommitScript` generates — the only
+ * signal `installPreCommitHook` has for "this hook is ours" vs. "a human or
+ * another tool put something else at `.git/hooks/pre-commit`" (review
+ * round 1 nit).
+ */
+const HOOK_MARKER = 'Installed by agile-agents T019';
+
+export class ForeignPreCommitHookError extends Error {
+  constructor(public readonly hookPath: string) {
+    super(
+      `installPreCommitHook: refusing to overwrite ${hookPath} — it does not contain the "${HOOK_MARKER}" marker, so it wasn't installed by this module. Remove or back it up, or fold its logic into the generated script by hand, before retrying.`,
+    );
+    this.name = 'ForeignPreCommitHookError';
+  }
 }
 
 /**
@@ -111,7 +132,7 @@ export function renderPreCommitScript(mergeIndexPath: string, stateRoot: string)
   ].join(' ');
 
   return `#!/bin/sh
-# Installed by agile-agents T019 (packages/daemon/src/merge/precommit.ts).
+# ${HOOK_MARKER} (packages/daemon/src/merge/precommit.ts).
 # Worktrees share this repo's .git/hooks directory; this script resolves
 # which ticket owns the *current* worktree from its checked-out branch
 # (tkt/<digits>-<slug> -> TKT-<digits>) and refuses the commit while an
@@ -137,6 +158,25 @@ export interface InstallPreCommitHookResult {
 }
 
 /**
+ * Resolves the absolute path to *this package's* barrel — `index.ts` when
+ * running from source (every test in this repo, and a `bun run`ned daemon),
+ * `index.js` once `bun run build` (`tsconfig.json`'s `tsc` build, see
+ * `package.json`) has emitted this file next to `dist/merge/precommit.js`
+ * (review round 1 nit: `import.meta.dir` is wherever *this* file physically
+ * runs from, so the extension must track it rather than being hardcoded to
+ * source).
+ */
+function resolveMergeIndexPath(): string {
+  const tsPath = join(import.meta.dir, 'index.ts');
+  if (existsSync(tsPath)) return tsPath;
+  const jsPath = join(import.meta.dir, 'index.js');
+  if (existsSync(jsPath)) return jsPath;
+  throw new Error(
+    `installPreCommitHook: could not find index.ts or index.js next to ${import.meta.dir}`,
+  );
+}
+
+/**
  * Installs (or leaves untouched, if already byte-identical) the shared
  * `pre-commit` script for the repo `worktreePath` belongs to. `ticket` is
  * used only to sanity-check that `worktreePath` is actually checked out on
@@ -145,6 +185,10 @@ export interface InstallPreCommitHookResult {
  * would work correctly for whatever ticket the caller *should* have
  * passed), just surfaced so a caller wiring this up wrong finds out
  * immediately rather than trusting a hook that happens to work anyway.
+ *
+ * Throws `ForeignPreCommitHookError` rather than overwriting a
+ * `pre-commit` hook already present that this module didn't itself install
+ * (review round 1 nit — see the file header's Limits section).
  */
 export function installPreCommitHook(
   worktreePath: string,
@@ -154,7 +198,7 @@ export function installPreCommitHook(
   const commonDir = isAbsolute(rawCommonDir) ? rawCommonDir : resolve(worktreePath, rawCommonDir);
   const repoRoot = dirname(commonDir);
   const stateRoot = join(repoRoot, '.agile');
-  const mergeIndexPath = join(import.meta.dir, 'index.ts');
+  const mergeIndexPath = resolveMergeIndexPath();
 
   const hooksDir = join(commonDir, 'hooks');
   mkdirSync(hooksDir, { recursive: true });
@@ -162,6 +206,9 @@ export function installPreCommitHook(
 
   const script = renderPreCommitScript(mergeIndexPath, stateRoot);
   const existing = existsSync(hookPath) ? readFileSync(hookPath, 'utf8') : undefined;
+  if (existing !== undefined && !existing.includes(HOOK_MARKER)) {
+    throw new ForeignPreCommitHookError(hookPath);
+  }
   const installed = existing !== script;
   if (installed) {
     writeFileSync(hookPath, script);
