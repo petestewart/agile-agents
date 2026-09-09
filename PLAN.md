@@ -377,12 +377,12 @@ Priority encodes dependency layer as well as importance: P0 tickets are v0-block
 
 ### Ticket: T035 Deflake the `agile run` stall-watchdog test
 - **Priority:** P2
-- **Status:** In Progress
+- **Status:** In Review
 - **Owner:** sonnet:worker-T035
 - **Scope:** Depends on T021. `packages/cli/src/run.e2e.test.ts` "a genuinely silent session (spawns, then never sends another event) trips the watchdog after the threshold" fails intermittently (1 of 3 isolated runs, ~0.9 s) on the integration head. Root-cause it (the accelerated clock vs real timers in the runner sweep / ceremony tick / heartbeat coalescing is the likely seam), make the test deterministic without weakening what it asserts, and prove 20 consecutive isolated runs plus 3 full-suite runs green. Never skip, quarantine, or retry-wrap.
 - **Acceptance Criteria:** 20/20 isolated runs and 3/3 full-suite runs with 0 failures; assertions unchanged or stronger.
 - **Validation Steps:** `for i in $(seq 20); do bun test packages/cli/src/run.e2e.test.ts; done` and 3x `bun test`.
-- **Notes:** Observed at the T033 round-3 merge and again after the preload fix.
+- **Notes:** Observed at the T033 round-3 merge and again after the preload fix. Branch `T035-watchdog-deflake` (`96a3344`, test-only): root cause — `liveTimeoutMs` (120 000 at 600x ≈ 50 ms real) raced the 30 s stall threshold when `assignReady` spawned three real subprocesses in one tick; fix seeds one ticket and raises `liveTimeoutMs` to 1 000 000; 20/20 isolated, 3/3 full-suite. Round 1 review + QA running.
 
 ## 8. Open Questions
 
