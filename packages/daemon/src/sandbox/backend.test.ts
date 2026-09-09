@@ -138,39 +138,38 @@ describe('dockerProbeEnv (T034 round 2)', () => {
 
 describe('dockerProbeEnv (T034 round 3): no-repo-root fallback survives the old fixed path being occupied', () => {
   test('the old fixed <tmpdir>/.agile-daemon-cache/sandbox-detect/home path being a regular file does not stop a fresh probe', () => {
-    // T037: scoped to a per-test `TMPDIR` (rather than the real OS temp
-    // dir) so this never collides with another concurrently-running test
-    // process's own use of the same fixed `<tmpdir>/.agile-daemon-cache/
-    // sandbox-detect` path.
-    const originalTmpdir = process.env.TMPDIR;
+    // QA round 3 (T037 REJECT, blocker): a previous version of this test
+    // isolated itself by mutating `process.env.TMPDIR` at runtime — `strace`
+    // showed that under a full-suite `bun test` (many files running
+    // concurrently in one process, one shared `process.env`) this is not
+    // reliably honoured, so this test's own "occupy the old fixed path"
+    // step ended up squatting on the *real* `/tmp/.agile-daemon-cache/
+    // sandbox-detect`, exactly the collision this test exists to guard
+    // against. Fixed with dependency injection instead: `dockerProbeEnv`'s
+    // `tempDirBase` parameter is a per-test `mkdtempSync` directory standing
+    // in for "the OS temp dir", so "the old fixed path" here means
+    // `<testTmpBase>/.agile-daemon-cache/sandbox-detect` — never the real
+    // one — and no shared mutable process state is touched at all. Every
+    // directory/file this test creates is created inside the `try`, so a
+    // failure partway through never leaks past the `finally`.
     const testTmpBase = mkdtempSync(join(tmpdir(), 'agile-backend-test-tmpdir-'));
-    process.env.TMPDIR = testTmpBase;
     try {
-      const staleFixedRoot = join(tmpdir(), '.agile-daemon-cache', 'sandbox-detect');
-      mkdirSync(join(tmpdir(), '.agile-daemon-cache'), { recursive: true });
-      // A previous run (this repo's own round 1/2 regression, or any other
-      // process) may have already left this path as a directory — clear
-      // whatever is there first so this test deterministically starts from
-      // "occupied by a regular file", the round 2 B2 scenario.
-      rmSync(staleFixedRoot, { recursive: true, force: true });
-      // Occupy the old fixed path's shape with a regular file, exactly as
-      // round 2's B2 scenario describes ("a regular file, a symlink, another
+      const staleFixedRoot = join(testTmpBase, '.agile-daemon-cache', 'sandbox-detect');
+      mkdirSync(join(testTmpBase, '.agile-daemon-cache'), { recursive: true });
+      // Occupy the fixed path's shape with a regular file, exactly as round
+      // 2's B2 scenario describes ("a regular file, a symlink, another
       // uid's directory").
       writeFileSync(staleFixedRoot, 'occupied by something else');
-      const { env, cleanup } = dockerProbeEnv(undefined);
+      const { env, cleanup } = dockerProbeEnv(undefined, testTmpBase);
       try {
         expect(existsSync(env.HOME as string)).toBe(true);
+        // And the injected `tempDirBase`, not the real OS temp dir, is what
+        // this probe actually rooted under.
+        expect(env.HOME?.startsWith(testTmpBase)).toBe(true);
       } finally {
         cleanup();
       }
     } finally {
-      // Review round 1 nit N4: a `delete` here would be runtime-agnostic
-      // (Bun deletes the var on an `undefined` assignment; Node would set
-      // the literal string `"undefined"`), but this repo is Bun-only
-      // (CLAUDE.md) and the project's own lint rule
-      // (`lint/performance/noDelete`) forbids `delete` — so this stays a
-      // plain assignment, relying on Bun's documented behavior.
-      process.env.TMPDIR = originalTmpdir;
       rmSync(testTmpBase, { recursive: true, force: true });
     }
   });
@@ -239,42 +238,34 @@ describe('dockerDaemonReachable (T034)', () => {
   });
 
   test('B2: a stub docker exiting 0, with the old fixed <tmpdir>/.agile-daemon-cache/sandbox-detect/ path occupied by a regular file, still resolves detectBackend() away from "none"', () => {
-    // T037: scoped to a per-test `TMPDIR`, same reasoning as the previous
-    // test — never collide with another concurrently-running test process's
-    // own use of this fixed path.
-    const originalTmpdir = process.env.TMPDIR;
+    // QA round 3 (T037 REJECT, blocker): same fix as the `dockerProbeEnv`
+    // test above — dependency injection (`dockerDaemonReachable`'s
+    // `tempDirBase`) instead of a `process.env.TMPDIR` mutation that isn't
+    // reliably honoured under full-suite concurrency. Everything this test
+    // creates is created inside the `try`, so a failure partway through
+    // never leaks a `TMPDIR` mutation or a temp dir past the `finally`
+    // (review round 2 N3: the previous version's `mkdirSync`/`rmSync`/
+    // `writeFileSync` ran *before* the `try` even started).
     const testTmpBase = mkdtempSync(join(tmpdir(), 'agile-backend-test-tmpdir-'));
-    process.env.TMPDIR = testTmpBase;
-    const staleFixedRoot = join(tmpdir(), '.agile-daemon-cache', 'sandbox-detect');
-    mkdirSync(join(tmpdir(), '.agile-daemon-cache'), { recursive: true });
-    // A previous run (this repo's own round 1/2 regression, or any other
-    // process) may have already left this path as a directory — clear
-    // whatever is there first so this test deterministically starts from
-    // "occupied by a regular file", the round 2 B2 scenario.
-    rmSync(staleFixedRoot, { recursive: true, force: true });
-    writeFileSync(staleFixedRoot, 'occupied by another process entirely');
     const stub = installStubDocker(0);
     try {
+      const staleFixedRoot = join(testTmpBase, '.agile-daemon-cache', 'sandbox-detect');
+      mkdirSync(join(testTmpBase, '.agile-daemon-cache'), { recursive: true });
+      writeFileSync(staleFixedRoot, 'occupied by another process entirely');
       // Exercised the way production actually calls it: no repo root at
-      // all, through `defaultDetectBackendDeps.hasContainerRuntime`.
-      expect(dockerDaemonReachable()).toBe(true);
+      // all, through `defaultDetectBackendDeps.hasContainerRuntime` — but
+      // with the injected `testTmpBase` standing in for the real OS temp
+      // dir, never the real `/tmp`.
+      expect(dockerDaemonReachable(undefined, testTmpBase)).toBe(true);
       expect(
         detectBackend({
           platform: () => 'linux',
           hasSandboxExec: () => false,
-          hasContainerRuntime: () => dockerDaemonReachable(),
+          hasContainerRuntime: () => dockerDaemonReachable(undefined, testTmpBase),
         }),
       ).toBe('container');
     } finally {
       stub.restore();
-      rmSync(staleFixedRoot, { force: true });
-      // Review round 1 nit N4: a `delete` here would be runtime-agnostic
-      // (Bun deletes the var on an `undefined` assignment; Node would set
-      // the literal string `"undefined"`), but this repo is Bun-only
-      // (CLAUDE.md) and the project's own lint rule
-      // (`lint/performance/noDelete`) forbids `delete` — so this stays a
-      // plain assignment, relying on Bun's documented behavior.
-      process.env.TMPDIR = originalTmpdir;
       rmSync(testTmpBase, { recursive: true, force: true });
     }
   });

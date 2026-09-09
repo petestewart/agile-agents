@@ -103,15 +103,30 @@ export interface SandboxedSubprocessEnvOrTemp {
  * `'sandbox-detect'` name, kept as its own export (T026) for that module's
  * own call sites and tests; this generalizes the same shape for T037's
  * bootstrap-probe callers instead of a fourth near-copy.
+ *
+ * QA round 3 (T037 REJECT, blocker): `tempDirBase` — where the no-repo-root
+ * `mkdtempSync` is rooted — defaults to `os.tmpdir()` but is dependency-
+ * injectable, the same shape `detectBackend` already takes a `deps` object
+ * for. This exists *only* so a test can isolate itself from the real,
+ * shared OS temp directory by passing its own `mkdtempSync`'d directory —
+ * QA found (with `strace`, reproduced 3/3 full-suite runs) that the
+ * previous approach (a test-local `process.env.TMPDIR` mutation) is not
+ * reliably honoured by `os.tmpdir()` under full-suite concurrency (many
+ * test files running in one process), so `sandbox/backend.test.ts`'s "old
+ * fixed path occupied" regression tests ended up squatting on the real
+ * `/tmp/.agile-daemon-cache/sandbox-detect` themselves — exactly the
+ * collision this module exists to prevent. Dependency injection has no
+ * such race: no shared mutable process state is involved at all.
  */
 export function sandboxedSubprocessEnvOrTemp(
   repoRoot: string | undefined,
   name: string,
+  tempDirBase: string = tmpdir(),
 ): SandboxedSubprocessEnvOrTemp {
   if (repoRoot !== undefined) {
     return { env: sandboxedSubprocessEnv(repoRoot, name), cleanup: () => {} };
   }
-  const tempBase = mkdtempSync(join(tmpdir(), `agile-daemon-${name}-`));
+  const tempBase = mkdtempSync(join(tempDirBase, `agile-daemon-${name}-`));
   return {
     env: sandboxedSubprocessEnv(tempBase, name),
     cleanup: () => {

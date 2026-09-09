@@ -123,4 +123,22 @@ describe('sandboxedSubprocessEnvOrTemp (review round 1 B2 fix)', () => {
       b.cleanup();
     }
   });
+
+  test('QA round 3 (T037 REJECT, blocker): an injected tempDirBase is used instead of the real OS temp dir, and cleanup only removes the injected dir', () => {
+    const injectedBase = mkdtempSync(join(tmpdir(), 'agile-subprocess-env-injected-'));
+    try {
+      const { env, cleanup } = sandboxedSubprocessEnvOrTemp(undefined, 'git', injectedBase);
+      try {
+        expect(env.HOME?.startsWith(injectedBase)).toBe(true);
+        expect(env.HOME?.startsWith(tmpdir())).toBe(injectedBase.startsWith(tmpdir()));
+      } finally {
+        cleanup();
+      }
+      // The injected base directory itself is the caller's own — only the
+      // mkdtemp'd subdirectory this call created inside it is removed.
+      expect(existsSync(injectedBase)).toBe(true);
+    } finally {
+      rmSync(injectedBase, { recursive: true, force: true });
+    }
+  });
 });

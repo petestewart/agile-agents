@@ -13,10 +13,8 @@
  */
 
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
-import { platform, tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { sandboxedSubprocessEnv } from '../subprocess-env';
+import { platform } from 'node:os';
+import { type SandboxedSubprocessEnvOrTemp, sandboxedSubprocessEnvOrTemp } from '../subprocess-env';
 import type { SandboxBackend } from './types';
 
 export interface DetectBackendDeps {
@@ -59,12 +57,14 @@ function hasBinaryOnPath(bin: string): boolean {
   }
 }
 
-/** A probe's env plus how to release whatever `dockerProbeEnv` had to create just for this one call — see its doc comment. */
-export interface DockerProbeEnv {
-  env: Record<string, string>;
-  /** Removes the probe's own temp directory. A no-op when `repoRoot` was given: that cache directory belongs to the caller, not this probe, so it is left in place (same lifetime as every other `sandboxedSubprocessEnv` caller's cache). */
-  cleanup: () => void;
-}
+/**
+ * A probe's env plus how to release whatever `dockerProbeEnv` had to create
+ * just for this one call — see its doc comment. Review round 2 (N2): an
+ * alias of `SandboxedSubprocessEnvOrTemp` (kept as its own named export for
+ * this module's own call sites and tests) now that `dockerProbeEnv`
+ * delegates to `sandboxedSubprocessEnvOrTemp` instead of duplicating it.
+ */
+export type DockerProbeEnv = SandboxedSubprocessEnvOrTemp;
 
 /**
  * The env `dockerDaemonReachable` spawns `docker info` with — pulled out
@@ -92,23 +92,19 @@ export interface DockerProbeEnv {
  * fallback now `mkdtempSync`s a fresh, uid/pid-unique directory per call —
  * nothing else on the host can already be occupying it — and hands back a
  * `cleanup()` to remove it once the one-shot probe is done with it.
+ *
+ * Review round 2 (opus, N2): this used to duplicate
+ * `sandboxedSubprocessEnvOrTemp`'s body (`mkdtempSync` + `sandboxedSubprocessEnv`
+ * + `rmSync`, byte-for-byte the same shape once `name` is `'sandbox-detect'`)
+ * instead of delegating to it, despite `subprocess-env.ts`'s own doc comment
+ * claiming this function exists "instead of a fourth near-copy" — the near-copy
+ * count went from three to four, not down. Now a thin wrapper: `DockerProbeEnv`
+ * is `SandboxedSubprocessEnvOrTemp`, kept as its own named export (T026) for
+ * this module's own call sites and tests, and `tempDirBase` (QA round 3) passes
+ * straight through.
  */
-export function dockerProbeEnv(repoRoot: string | undefined): DockerProbeEnv {
-  if (repoRoot !== undefined) {
-    return { env: sandboxedSubprocessEnv(repoRoot, 'sandbox-detect'), cleanup: () => {} };
-  }
-  const tempBase = mkdtempSync(join(tmpdir(), 'agile-daemon-sandbox-detect-'));
-  return {
-    env: sandboxedSubprocessEnv(tempBase, 'sandbox-detect'),
-    cleanup: () => {
-      try {
-        rmSync(tempBase, { recursive: true, force: true });
-      } catch {
-        // Best-effort — a leaked one-shot probe dir under the OS temp
-        // directory is not a correctness bug.
-      }
-    },
-  };
+export function dockerProbeEnv(repoRoot: string | undefined, tempDirBase?: string): DockerProbeEnv {
+  return sandboxedSubprocessEnvOrTemp(repoRoot, 'sandbox-detect', tempDirBase);
 }
 
 /**
@@ -132,8 +128,8 @@ export function dockerProbeEnv(repoRoot: string | undefined): DockerProbeEnv {
  * `mkdtempSync`/`mkdirSync`/`rmSync` cost of every no-repo-root probe for
  * no benefit (the two checks always agree on which env to use).
  */
-export function dockerDaemonReachable(repoRoot?: string): boolean {
-  const probe = dockerProbeEnv(repoRoot);
+export function dockerDaemonReachable(repoRoot?: string, tempDirBase?: string): boolean {
+  const probe = dockerProbeEnv(repoRoot, tempDirBase);
   try {
     if (!commandOnPath('docker', probe.env)) return false;
     // `docker info` fails fast (no daemon socket) rather than hanging when
