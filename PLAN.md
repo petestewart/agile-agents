@@ -278,12 +278,12 @@ Priority encodes dependency layer as well as importance: P0 tickets are v0-block
 
 ### Ticket: T024 Handoff and pause
 - **Priority:** P2
-- **Status:** In Review
-- **Owner:** sonnet:worker-T024
+- **Status:** Done
+- **Owner:** Unassigned
 - **Scope:** Depends on T022, T023. Graceful handoff (`quota_low` → inject "write handoff stanza + commit WIP" → stop → reassign in the same worktree with thread + handoff as context), hard handoff (daemon-composed from diff + stanzas), `paused` status with `resume_at`, manual `cooldown_until` per account, ledger split across cells.
 - **Acceptance Criteria:** A ticket started on Claude finishes on Pi after a simulated `quota_low`, with the handoff stanza in the thread and both vendors in the ledger.
 - **Validation Steps:** Live e2e with an injected quota event.
-- **Notes:** Branch `T024-handoff-pause` (`b7eee42`, relaunched after the restart); `src/handoff/` (pause/resume against the quota floor, manual per-account cooldown via `Quota.cooldown_until`, urgent graceful-handoff instruction, daemon-composed hard handoff from diff+stanzas, same-worktree reassignment with thread context, `HandoffCoordinator` tick loop, verbs + RPC) plus an `extraContext` seam in `Runner.spawn`; no shared schema change (fields already shipped in T022/T023); offline acceptance proven in `coordinator.test.ts`. Manager wiring: coordinator tick, verbs provider, `handoff.*` RPC. QA round 1 ACCEPT (nit: `handoff.cooldown_set` RPC lacks a caller-identity check). Review round 1 FAIL: any stanza counts as handoff compliance; stop→reassign handshake races the real `Runner` (`already running` or dropped handoff); manual cooldown emits no event; a manual cooldown is shortened by one 429 and erased by `recordReported`; `lastEventIndex = 0` replays history after restart. Worker round 2 `ef9002c` (all five blockers + RPC identity + nits N1–N3; N4–N6 deferred); Review round 2: all five blockers + RPC identity confirmed fixed, but FAIL on a new one — `resume_at` ignores `cooldown_until` (a 30 s 429 pauses a ticket ~20 h; a 4 h manual cooldown flaps then over-pauses). QA round 2 ACCEPT. Worker round 3 `946ec5c` (`pause.ts` scores the ticket's own routed candidates, `cooldown_until` over `resets_at` when active, `resumeDueTickets` re-checks routability; nits N-a..N-e); Review round 3 PASS (two nits). QA round 3 running.
+- **Notes:** Branch `T024-handoff-pause` (`b7eee42`, relaunched after the restart); `src/handoff/` (pause/resume against the quota floor, manual per-account cooldown via `Quota.cooldown_until`, urgent graceful-handoff instruction, daemon-composed hard handoff from diff+stanzas, same-worktree reassignment with thread context, `HandoffCoordinator` tick loop, verbs + RPC) plus an `extraContext` seam in `Runner.spawn`; no shared schema change (fields already shipped in T022/T023); offline acceptance proven in `coordinator.test.ts`. Manager wiring: coordinator tick, verbs provider, `handoff.*` RPC. QA round 1 ACCEPT (nit: `handoff.cooldown_set` RPC lacks a caller-identity check). Review round 1 FAIL: any stanza counts as handoff compliance; stop→reassign handshake races the real `Runner` (`already running` or dropped handoff); manual cooldown emits no event; a manual cooldown is shortened by one 429 and erased by `recordReported`; `lastEventIndex = 0` replays history after restart. Worker round 2 `ef9002c` (all five blockers + RPC identity + nits N1–N3; N4–N6 deferred); Review round 2: all five blockers + RPC identity confirmed fixed, but FAIL on a new one — `resume_at` ignores `cooldown_until` (a 30 s 429 pauses a ticket ~20 h; a 4 h manual cooldown flaps then over-pauses). QA round 2 ACCEPT. Worker round 3 `946ec5c` (`pause.ts` scores the ticket's own routed candidates, `cooldown_until` over `resets_at` when active, `resumeDueTickets` re-checks routability; nits N-a..N-e); Review round 3 PASS (two nits). QA round 3 ACCEPT. merge: `2dac4ac`; manager wired one `HandoffCoordinator` (ticked over all tickets before the EM loop), the `em`/`human` verb provider, `handoff.*` RPC, and the index export in 8a7f56e.
 
 ### Ticket: T025 Control room v1
 - **Priority:** P2
@@ -350,12 +350,21 @@ Priority encodes dependency layer as well as importance: P0 tickets are v0-block
 
 ### Ticket: T032 HTTP write actor hardening and store path guard follow-ups
 - **Priority:** P2
-- **Status:** In Progress
+- **Status:** In Review
 - **Owner:** sonnet:worker-T032
 - **Scope:** Depends on T020, T025. (1) `POST /api/hil/:id/approve` and `/delegate` (T020) still take `by` from the request body — set the actor server-side (`human`) like T025's routes. (2) `StateStore.abs()`'s containment guard is lexical; add a realpath check so a symlink planted inside the state root cannot escape it. (3) Feed WebSocket: heartbeat `agent_put` events trigger a full six-endpoint refetch per agent per 30 s in the control room — exclude heartbeat-only updates from the refetch trigger. Tests for each.
 - **Acceptance Criteria:** No HTTP write accepts an actor field; a symlink escape through `abs()` is refused; a heartbeat burst causes zero control-room refetches.
 - **Validation Steps:** `bun test packages/daemon/src/store packages/daemon/src/http.test.ts` and `bun run test:e2e`.
-- **Notes:** From T025 review round 2 nits.
+- **Notes:** From T025 review round 2 nits. Branch `T032-http-hardening` (`40b2b45`): HIL approve actor fixed to `human` (other write routes audited clean), `abs()` realpath containment (file + dir symlink tests), heartbeat-only `agent_put` skipped by the control-room refetch (Playwright: 20-heartbeat burst → 0 `/api/*`); 8/8 e2e. Round 1 review + QA running.
+
+### Ticket: T033 Deflake subprocess-timing tests under full-suite load
+- **Priority:** P2
+- **Status:** Todo
+- **Owner:** Unassigned
+- **Scope:** Depends on T009, T012. With ~1780 tests, one of two subprocess-timing tests fails intermittently in a full `bun test` run and passes 3x in isolation: `hook/rpc.test.ts` "`agile hook pre-tool-use` prints the daemon reply verbatim" and `runner/runner.test.ts` "kill -9 on the recorded pid … within one liveness interval". Make both robust to load (wait on readiness signals instead of fixed timeouts, inject the liveness interval, give the CLI subprocess a deterministic socket-ready wait) without weakening what they assert; never skip or quarantine.
+- **Acceptance Criteria:** 10 consecutive full-suite runs with 0 failures.
+- **Validation Steps:** `for i in $(seq 10); do bun test; done` on the integration head.
+- **Notes:** Observed at the T024 merge (`8a7f56e`): 1776 pass / 1 fail, a different test each run; both green 3x in isolation.
 
 ## 8. Open Questions
 
@@ -425,3 +434,4 @@ Priority encodes dependency layer as well as importance: P0 tickets are v0-block
 - 2026-09-09 — T027 merged (fe20bc5) after 2 review / 2 QA rounds. Follow-up from T025 review: `POST /api/hil/:id/approve` (T020) trusts `by` from the body — add to T032 below.
 - 2026-09-09 — T025 merged (54c902d) after 2 review / 2 QA rounds; control room served at `/control-room`, `feed.html` kept as fallback. 1718 unit tests + 7 Playwright e2e green.
 - 2026-09-09 — Post-T025 gate re-run: first run red only because the lockfile gained UI deps not yet installed in the manager checkout; after `bun install` typecheck/lint/build green, 1737 pass / 0 fail, e2e 7/7. Rule: run `bun install` after every merge that touches a `package.json`.
+- 2026-09-09 — T024 merged (2dac4ac) after 3 review / 3 QA rounds, wired in 8a7f56e. Full suite shows a load-dependent flake (one of two subprocess tests, both green in isolation) — logged as T033 rather than merged over silently; typecheck/lint/build/e2e green. T032 shipped (`40b2b45`), gates running.
