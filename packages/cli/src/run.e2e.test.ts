@@ -78,6 +78,49 @@ function acceleratedClock(factor: number): () => Date {
 
 const FIXTURE_ROOT = join(import.meta.dir, '..', '..', '..', 'fixtures', 'demo-project');
 
+/**
+ * A one-ticket seed (T035 deflake) for the stall-watchdog tests below —
+ * they only need *a* live session to spawn against a controllable
+ * transport, not the full three-ticket demo epic. Written into `repo`
+ * (never the checked-in fixture) the same way `fakeAgentSpawn` writes its
+ * own script file.
+ *
+ * Root cause this narrows (T035): `emLoop.tick()`'s `assignReady` spawns
+ * every `ready` ticket in the sprint in one tick, and each spawn is a real
+ * OS subprocess + a real `git worktree add` (`ensureTicketWorktree`) —
+ * genuine wall-clock work `testNow`'s accelerated clock cannot speed up
+ * without losing the real ACP transport this test exists to exercise. With
+ * the full epic's three tickets, that's three concurrent real spawns; under
+ * load (this file's own earlier, heavier fake-mode e2e test still settling
+ * background work, or a busy CI host) that burst has been observed to cost
+ * several hundred real ms. At a 600x acceleration factor, real time spent
+ * *before* the watchdog's own state ever gets read counts against
+ * `liveTimeoutMs` just as much as it counts toward `stallTimeoutMs` — so a
+ * slow spawn burst can push `clockNow() - start` past `liveTimeoutMs`
+ * (ending the loop normally) in the same tick where `clockNow() -
+ * lastLivenessAt` was still a few thousand ms short of `stallTimeoutMs`,
+ * racing the very outcome this test asserts. One ticket instead of three
+ * cuts that burst to a single real spawn, and the much larger
+ * `liveTimeoutMs` this test now uses (see its own comment) is what actually
+ * closes the race rather than just making it rarer.
+ */
+function writeSingleTicketSeed(repo: string): string {
+  const seed = {
+    tickets: [
+      {
+        id: 'TKT-9001',
+        title: 'Stall-watchdog probe ticket',
+        status: 'ready',
+        oracle_refs: [],
+        contract: { acceptance: ['n/a — never actually worked by a live session'], env: 'clone' },
+      },
+    ],
+  };
+  const path = join(repo, 'stall-watchdog-seed.json');
+  writeFileSync(path, JSON.stringify(seed));
+  return path;
+}
+
 // T021 round 3 (opus review round 2 nit): gate purely on `AGILE_LIVE=1`,
 // same as every other `live.test.ts` in this repo
 // (`acp-client/src/live.test.ts`, `daemon/src/em/live.test.ts`,
@@ -286,19 +329,32 @@ describe('agile run --live stall watchdog (offline, deterministic — opus revie
     // 4 nit) — `testNow`'s accelerated clock (T021 round 5, QA round 4
     // finding 1) is what lets this test actually observe that real 30s
     // threshold firing without a real 30-second sleep.
+    //
+    // T035 deflake (1 of 3 isolated runs, ~0.9s — observed only when this
+    // file's own earlier, heavier fake-mode e2e test ran first in the same
+    // process): a one-ticket seed (`writeSingleTicketSeed`'s own doc
+    // comment has the full root cause) cuts the real spawn burst
+    // `assignReady` triggers from three concurrent subprocesses to one, and
+    // `liveTimeoutMs` is now a full order of magnitude past the 30s floor
+    // (real budget ~1.7s at this 600x factor, not the ~50ms the old
+    // 120_000 left once a real spawn burst had already eaten into it) —
+    // together these mean the watchdog's own 30s (virtual) threshold always
+    // has real room to actually elapse before `liveTimeoutMs` can end the
+    // loop out from under it, instead of racing a variable real-world
+    // subprocess-spawn cost against both thresholds at once.
     const hangSpawn = fakeAgentSpawn(repo, 'hang', [{ type: 'hang' }]);
     const testNow = acceleratedClock(600); // 30s of clock time in ~50ms real.
 
     await expect(
       runDemoSprint({
         cwd: repo,
-        seed: join(FIXTURE_ROOT, 'seed', 'epic.json'),
+        seed: writeSingleTicketSeed(repo),
         fake: false,
         liveSpawnForTest: hangSpawn,
         testNow,
         preflightTimeoutMs: 300,
         tickIntervalMs: 5,
-        liveTimeoutMs: 120_000, // well past the 30s floor so the watchdog — not this bound — is what fires.
+        liveTimeoutMs: 1_000_000, // ~1.7s of real budget at this factor — comfortably past even a slow real spawn burst, so the watchdog (not this bound) is always what fires.
         stallTimeoutMs: 1, // clamped up to the real 30s floor by run.ts itself.
       }),
     ).rejects.toThrow(/no session liveness \(AgentRecord\.last_seen\) observed for 30000ms/);
