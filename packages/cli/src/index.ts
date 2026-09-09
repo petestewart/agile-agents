@@ -20,6 +20,7 @@ import { runApprove, runBreakerClear, runDelegate, runGateList, runResolve } fro
 import { runHalt, runResume } from './commands/halt';
 import { parseHookArgs, runHook } from './commands/hook';
 import { runCliInit } from './commands/init';
+import { runDemoSprint } from './commands/run';
 import { runSend } from './commands/send';
 import { runStatus } from './commands/status';
 import { runTail } from './commands/tail';
@@ -30,6 +31,8 @@ export const PACKAGE_NAME = '@agile-agents/cli';
 // the pieces directly rather than going through `runCli`.
 export { runCliInit };
 export { runCliDaemonStart };
+export { runDemoSprint };
+export type { RunOptions, RunResult } from './commands/run';
 export type { CliInitResult } from './commands/init';
 
 function usage(): string {
@@ -39,6 +42,7 @@ function usage(): string {
     'commands:',
     '  init                       bootstrap .agile/ state in the current git repo',
     '  daemon start               start agiled in the foreground for this repo',
+    '  run [--seed <path>] [--live] [--max-ticks <n>]   drive one sprint layer unattended (T021)',
     '  status                     sprint/tickets/agents/spend',
     '  tail                       tail the event log (--follow, --ticket, --agent, --kind)',
     '  send                       send a bus message (--from --to --kind --priority --body [--ticket])',
@@ -85,6 +89,30 @@ export async function runCli(argv: string[], cwd: string = process.cwd()): Promi
     console.log(await runCliDaemonStart(cwd));
     // Foreground process: keep the event loop alive until shutdown signals fire.
     return new Promise(() => {});
+  }
+
+  if (command === 'run') {
+    const args = parseArgs(rest.slice(1));
+    const result = await runDemoSprint({
+      cwd,
+      seed: typeof args.options.seed === 'string' ? args.options.seed : undefined,
+      fake: args.options.live === undefined,
+      maxTicks:
+        typeof args.options['max-ticks'] === 'string'
+          ? Number(args.options['max-ticks'])
+          : undefined,
+    });
+    if (json) {
+      console.log(JSON.stringify(result, null, 2));
+    } else {
+      console.log(`report: ${result.reportPath}`);
+      for (const o of result.ticketOutcomes) {
+        console.log(`  ${o.ticket}: status=${o.status} merged=${o.merged}`);
+      }
+      console.log(`oversized-file hook check: ${result.oversizedReadDecision}`);
+    }
+    const allDone = result.ticketOutcomes.every((o) => o.merged);
+    return allDone || result.ticketOutcomes.length === 0 ? 0 : 1;
   }
 
   if (!command) {

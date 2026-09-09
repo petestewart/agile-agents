@@ -15,6 +15,7 @@ import {
   MergeOwner,
   type RunTestsFn,
   TicketNotReadyForMergeError,
+  defaultRunTests,
   sprintReviewApproved,
 } from './owner';
 
@@ -372,5 +373,59 @@ describe('sprintReviewApproved', () => {
     const result = sprintReviewApproved({ list: () => requests as never });
     expect(result.approved).toBe(true);
     expect(result.hilId).toBe('HIL-01J9BBBBBBBBBBBBBBBBBBBBBB');
+  });
+});
+
+describe('defaultRunTests — subprocess sandboxing (T021 round 5, QA round 4 finding 6)', () => {
+  let scratchRepoRoot: string;
+  let scratchCwd: string;
+
+  beforeEach(() => {
+    // Two separate scratch dirs, deliberately: `repoRoot` (the daemon's own
+    // root, where `.agile-daemon-cache/` belongs) and `cwd` (the ticket
+    // worktree the test command actually runs in) are different
+    // directories in real usage — a fake sharing them would hide a bug
+    // where the sandbox landed under the wrong one.
+    scratchRepoRoot = mkdtempSync(join(tmpdir(), 'agile-runtests-repo-'));
+    scratchCwd = mkdtempSync(join(tmpdir(), 'agile-runtests-cwd-'));
+  });
+
+  afterEach(() => {
+    rmSync(scratchRepoRoot, { recursive: true, force: true });
+    rmSync(scratchCwd, { recursive: true, force: true });
+  });
+
+  test('spawns the test command with HOME/npm_config_cache/XDG_* pointed under repoRoot/.agile-daemon-cache, never the real env', async () => {
+    const reportPath = join(scratchCwd, 'env-report.json');
+    // No bun lockfile in `scratchCwd`, so `defaultRunTests` picks the
+    // `npm test` branch — the exact path QA round 4 found writing real
+    // `$HOME/.npm/_logs`. A plain `node -e` script (no test framework
+    // needed) reports back the four env vars this fix controls.
+    writeFileSync(
+      join(scratchCwd, 'package.json'),
+      JSON.stringify({
+        name: 'sandboxed-fixture',
+        scripts: {
+          test: `node -e "require('fs').writeFileSync(process.argv[1], JSON.stringify({HOME: process.env.HOME, npm_config_cache: process.env.npm_config_cache, XDG_CACHE_HOME: process.env.XDG_CACHE_HOME, XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME}))" ${reportPath}`,
+        },
+      }),
+    );
+
+    const result = await defaultRunTests(scratchCwd, scratchRepoRoot);
+    expect(result.ok).toBe(true);
+
+    const reported = JSON.parse(readFileSync(reportPath, 'utf8')) as Record<string, string>;
+    const cacheRoot = join(scratchRepoRoot, '.agile-daemon-cache');
+    expect(reported.HOME?.startsWith(cacheRoot)).toBe(true);
+    expect(reported.npm_config_cache?.startsWith(cacheRoot)).toBe(true);
+    expect(reported.XDG_CACHE_HOME?.startsWith(cacheRoot)).toBe(true);
+    expect(reported.XDG_CONFIG_HOME?.startsWith(cacheRoot)).toBe(true);
+    // Never the real operator env this process itself inherited.
+    expect(reported.HOME).not.toBe(process.env.HOME);
+
+    // The sandbox directories are created eagerly, not left for the
+    // subprocess to discover missing.
+    expect(existsSync(join(cacheRoot, 'home'))).toBe(true);
+    expect(existsSync(join(cacheRoot, 'npm-cache'))).toBe(true);
   });
 });

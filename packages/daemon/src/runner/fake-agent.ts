@@ -37,7 +37,9 @@ export type FakeAgentStep =
       resultFile?: string;
     }
   | { type: 'end_turn'; stopReason?: string }
-  | { type: 'hang' };
+  | { type: 'hang' }
+  /** Pauses `ms` before the next step (T021 round 4) — simulates a real long-running turn that keeps sending events over real wall-clock time, spaced out, instead of a script's steps normally firing back-to-back with no delay. */
+  | { type: 'delay'; ms: number };
 
 export interface FakeAgentScript {
   steps: FakeAgentStep[];
@@ -177,6 +179,9 @@ async function runScript(promptRequestId: number | string): Promise<void> {
         // update, same as a real vendor's `session/cancel` leaves a
         // `pending` tool_call (design/spike-findings.md).
         return;
+      case 'delay':
+        await new Promise((resolve) => setTimeout(resolve, step.ms));
+        break;
       default:
         break;
     }

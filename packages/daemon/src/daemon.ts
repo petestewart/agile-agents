@@ -16,6 +16,7 @@ import { type AgileConfig, type DiscoverConfigOptions, discoverConfig } from './
 import { EM_TOOLS, EmLoop, type EmToolDeps, buildEmRpcMethods } from './em';
 import { pickCurrentSprint } from './feed';
 import { GateService, buildGateRpcMethods } from './gates';
+import type { DelegateFn } from './gates';
 import { buildHaltRpcMethods } from './halts';
 import { HandoffCoordinator, buildHandoffRpcMethods, registerHandoffTools } from './handoff';
 import { HookService, buildHookRpcMethods } from './hook';
@@ -36,7 +37,14 @@ import {
   rulesList,
 } from './review';
 import { type RpcServerHandle, startRpcServer } from './rpc';
-import { Runner, buildRunnerRpcMethods } from './runner';
+import {
+  Runner,
+  advanceDoneTickets,
+  advanceQaSpawns,
+  advanceReviewRequests,
+  buildRunnerRpcMethods,
+} from './runner';
+import type { AgentSessionOptions } from './runner';
 import { StateStore, buildStateRpcMethods } from './store';
 import { LiveRunner, ToolService, buildToolRpcMethods, loadToolRegistry } from './tools';
 
@@ -51,11 +59,61 @@ export interface DaemonHandle {
   rpc: RpcServerHandle;
   http: HttpServerHandle;
   startedAt: number;
+  /**
+   * The daemon's own internal object graph, exposed for a caller that
+   * wants to drive ceremonies directly in-process rather than over the
+   * unix socket (T021's `agile run`: an unattended sprint has no human/
+   * live-vendor EM session to poll `gate.*`/`em.*` RPC on its own timer,
+   * so a driver calls `emLoop.tick()`/`gateService` itself). `undefined`
+   * for every field when `.agile/` doesn't exist yet (pre-`agile init`),
+   * same condition `extraMethods` below already gates on.
+   */
+  store?: StateStore;
+  bus?: Bus;
+  gateService?: GateService;
+  runner?: Runner;
+  mergeOwner?: MergeOwner;
+  reviewProtocol?: ReviewProtocol;
+  qaProtocol?: QaProtocol;
+  emLoop?: EmLoop;
   /** Graceful shutdown: closes both servers, then releases the lock. */
   stop(): Promise<void>;
 }
 
-export async function startDaemon(options: DiscoverConfigOptions = {}): Promise<DaemonHandle> {
+export interface StartDaemonOptions extends DiscoverConfigOptions {
+  /**
+   * Test/offline-run seam: overrides every spawned engineer/reviewer/qa
+   * session's underlying ACP transport (forwarded to `Runner`'s own
+   * `spawn` option, `runner/session.ts`'s `AgentSessionOptions['spawn']`).
+   * Real usage never sets this — `LiveRunner`/the default `spawnSession`
+   * stay in effect. `agile run`'s offline/fixture mode is the one caller
+   * (T021): no vendor login in this container, so the demo e2e substitutes
+   * the same fake-agent transport `runner/*.test.ts` already uses.
+   */
+  runnerSpawn?: AgentSessionOptions['spawn'];
+  /**
+   * Test/offline-run seam: `GateService`'s own decision delegate
+   * (`gates/service.ts`) — a gate whose policy owner resolves to `em` (or
+   * `architect`) is decided synchronously by this function instead of
+   * waiting on a live EM/architect session to call `gate.respond` itself.
+   * Real usage never sets this (a live EM session answers its own gates);
+   * `agile run`'s offline mode does, since it never spawns one.
+   */
+  gateDelegate?: DelegateFn;
+  /**
+   * Test-only seam: the daemon's own clock, threaded to `Bus` (heartbeat
+   * timestamps + coalescing, `bus/bus.ts`) and `Runner` (forwarded to every
+   * spawned session's own `now`, `runner/session.ts`) so a test can run a
+   * real heartbeat-coalescing window (`StateStore.heartbeat`'s
+   * `HEARTBEAT_COALESCE_MS`, 30s) or a real liveness timeout in
+   * well-under-a-second of actual wall-clock time — e.g. an accelerated
+   * clock, not a counter mock, so ordering/proportional gaps stay real.
+   * Real usage never sets this (the daemon runs on the system clock).
+   */
+  now?: () => Date;
+}
+
+export async function startDaemon(options: StartDaemonOptions = {}): Promise<DaemonHandle> {
   const config = discoverConfig(options);
   const lock = acquireLock(config.lockPath);
   const startedAt = Date.now();
@@ -68,10 +126,12 @@ export async function startDaemon(options: DiscoverConfigOptions = {}): Promise<
   const store = existsSync(config.stateRoot) ? StateStore.open(config.stateRoot) : undefined;
   // Hoisted (T020) so the same GateService instance backs both `gate.*` RPC
   // and the feed page's HIL snapshot/approve/delegate HTTP routes.
-  const gateService = store ? new GateService(store) : undefined;
+  const gateService = store
+    ? new GateService(store, options.gateDelegate ? { delegate: options.gateDelegate } : {})
+    : undefined;
   // Hoisted (T011) so `bus.*` RPC, the hook service, and the tool service's
   // `bus_send` built-in all share one `Bus` instance over the same store.
-  const bus = store ? new Bus(store, config.stateRoot) : undefined;
+  const bus = store ? new Bus(store, config.stateRoot, { now: options.now }) : undefined;
   // Quota records + routing data (T023): fed by every session's
   // `usage_update` through the runner; read by `quota.*` RPC, `agile
   // status`, and the feed header.
@@ -132,6 +192,8 @@ export async function startDaemon(options: DiscoverConfigOptions = {}): Promise<
           onQaSpawn: qaProtocol
             ? (ticket, worktree) => qaProtocol.start(ticket, worktree)
             : undefined,
+          spawn: options.runnerSpawn,
+          now: options.now,
         })
       : undefined;
   runner?.startSweep();
@@ -143,6 +205,14 @@ export async function startDaemon(options: DiscoverConfigOptions = {}): Promise<
       ? new MergeOwner(store, bus, config.repoRoot, {
           gateApproved: () => sprintReviewApproved(gateService),
         })
+      : undefined;
+  // Review protocol (T016, §12) — hoisted above the ceremony timer (T021)
+  // so the pipeline glue below can call `reviewProtocol.start` on an
+  // engineer's `review_request`; re-used, not re-constructed, by the
+  // role-scoped verb provider block further down.
+  const reviewProtocol =
+    store && bus && runner
+      ? new ReviewProtocol({ store, bus, runner, repoRoot: config.repoRoot })
       : undefined;
 
   // EM protocol loop (T015, §9–§11/§16): sprint planning, assignment,
@@ -185,8 +255,24 @@ export async function startDaemon(options: DiscoverConfigOptions = {}): Promise<
   // deadline fallthrough, §16 — nothing else calls `GateService.tick()`),
   // then the handoff coordinator over every ticket (pausing a stuck-ready
   // ticket must precede `assignReady`, which runs inside the EM tick), then
-  // the EM loop. Cadence matches the runner sweep / heartbeat tunable
-  // (30 s); errors are logged, never fatal to the daemon.
+  // the EM loop, then this pipeline glue. Cadence matches the runner sweep
+  // / heartbeat tunable (30 s); errors are logged, never fatal to the
+  // daemon.
+  // T021 "wiring gaps": the three hand-offs off the architecture sketch's
+  // data-flow paragraph nothing else drives (see `runner/pipeline-glue.ts`'s
+  // header) — an engineer's `review_request`, a reviewer's approve-into-
+  // `in_qa`, and QA landing a ticket on `done`. Each `Set` is process-local
+  // idempotency bookkeeping, same rationale as `EmLoop`'s own
+  // `calledHalts`/`escalatedHalts`/`seenDiscoveryStanzas`.
+  const seenReviewRequests = new Set<string>();
+  const qaSpawned = new Set<TicketId>();
+  const mergedDone = new Set<TicketId>();
+  async function advancePipeline(): Promise<void> {
+    if (store && bus && reviewProtocol && runner)
+      await advanceReviewRequests(store, bus, reviewProtocol, runner, seenReviewRequests);
+    if (store && runner) await advanceQaSpawns(store, runner, qaSpawned);
+    if (store && mergeOwner) await advanceDoneTickets(store, mergeOwner, mergedDone);
+  }
   const ceremonyTimer =
     gateService && emLoop
       ? setInterval(() => {
@@ -197,6 +283,7 @@ export async function startDaemon(options: DiscoverConfigOptions = {}): Promise<
                 await handoffCoordinator.tick(store.listTickets().map((t) => t.id));
               }
               await emLoop.tick();
+              await advancePipeline();
             } catch (err) {
               console.error('ceremony tick failed:', err);
             }
@@ -289,9 +376,11 @@ export async function startDaemon(options: DiscoverConfigOptions = {}): Promise<
     });
 
     // Review protocol (T016, §12): `diff_summary` + reviewer verbs for the
-    // reviewer role, `review_dispute` (+ `review_get`) for the engineer role.
-    const reviewProtocol = new ReviewProtocol({ store, bus, runner, repoRoot: config.repoRoot });
-    reviewDeps = { protocol: reviewProtocol, store, stateRoot: config.stateRoot };
+    // reviewer role, `review_dispute` (+ `review_get`) for the engineer
+    // role. Reuses the instance hoisted above the ceremony timer (T021) —
+    // guaranteed constructed here, since it shares this block's exact
+    // `store && bus && runner` guard.
+    reviewDeps = { protocol: reviewProtocol as ReviewProtocol, store, stateRoot: config.stateRoot };
     const deps = reviewDeps;
     const reviewToolDeps = { store, bus, repoRoot: config.repoRoot };
     const STRING = { type: 'string', optional: false } as const;
@@ -433,6 +522,14 @@ export async function startDaemon(options: DiscoverConfigOptions = {}): Promise<
     rpc,
     http,
     startedAt,
+    store,
+    bus,
+    gateService,
+    runner,
+    mergeOwner,
+    reviewProtocol,
+    qaProtocol,
+    emLoop,
     async stop() {
       if (stopped) return;
       stopped = true;
