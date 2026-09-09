@@ -815,6 +815,92 @@ describe('StateStore.abs() containment (symlink escape, T032)', () => {
   });
 });
 
+// Round 2 review (opus) B1: a leaf symlink whose target string is lexically
+// inside the root passed the round-2 guard even when the target's *own
+// parent directory* was itself an escaping symlink — resuming the walk with
+// a bare `lstatSync(nextTarget)` only re-checks `nextTarget`'s leaf, since
+// `lstat` refuses to follow just the final path component; the kernel still
+// resolves every intermediate one. `resolvePathSafely`/`resolveComponentSymlink`
+// close this by always re-decomposing a hop's target and re-walking it
+// component by component from `root`, however many nested hops it takes.
+describe('StateStore.abs() containment (leaf link under an escaping dir link, T032 round 3)', () => {
+  test('absolute leaf-link target through an escaping directory link is refused', async () => {
+    const store = StateStore.open(stateRoot);
+    const victimDir = mkdtempSync(join(tmpdir(), 'agile-store-round3-abs-'));
+    const innerLink = join(stateRoot, 'inner'); // escaping directory link
+    const eventsPath = join(stateRoot, 'log', 'events.jsonl');
+    const victimFile = join(victimDir, 'pwned.jsonl');
+    try {
+      symlinkSync(victimDir, innerLink); // .agile/inner -> outside dir (escapes)
+      rmSync(eventsPath, { force: true });
+      // Lexically inside the root — no `..`, no absolute escape by itself.
+      symlinkSync(join(stateRoot, 'inner', 'pwned.jsonl'), eventsPath);
+      await expect(store.putTicket(makeTicket('TKT-9997'))).rejects.toThrow(
+        /escapes the state root/,
+      );
+      expect(existsSync(victimFile)).toBe(false);
+    } finally {
+      rmSync(eventsPath, { force: true });
+      writeFileSync(eventsPath, '');
+      rmSync(innerLink, { force: true });
+      rmSync(victimDir, { recursive: true, force: true });
+    }
+  });
+
+  test('relative leaf-link target through an escaping directory link is refused', async () => {
+    const store = StateStore.open(stateRoot);
+    const victimDir = mkdtempSync(join(tmpdir(), 'agile-store-round3-rel-'));
+    const outLink = join(stateRoot, 'board', 'out'); // escaping directory link
+    const eventsPath = join(stateRoot, 'log', 'events.jsonl');
+    const victimFile = join(victimDir, 'pwned.jsonl');
+    try {
+      symlinkSync(victimDir, outLink); // .agile/board/out -> outside dir
+      rmSync(eventsPath, { force: true });
+      // Relative target, resolved against the symlink's own directory
+      // (`.agile/log`) — `../board/out/pwned.jsonl` never leaves `.agile/`
+      // lexically.
+      symlinkSync(join('..', 'board', 'out', 'pwned.jsonl'), eventsPath);
+      await expect(store.putTicket(makeTicket('TKT-9996'))).rejects.toThrow(
+        /escapes the state root/,
+      );
+      expect(existsSync(victimFile)).toBe(false);
+    } finally {
+      rmSync(eventsPath, { force: true });
+      writeFileSync(eventsPath, '');
+      rmSync(outLink, { force: true });
+      rmSync(victimDir, { recursive: true, force: true });
+    }
+  });
+
+  test('two nested directory-link hops (both lexically inside) before the final escape are still refused', async () => {
+    const store = StateStore.open(stateRoot);
+    const victimDir = mkdtempSync(join(tmpdir(), 'agile-store-round3-nested-'));
+    const outerLink = join(stateRoot, 'outer'); // .agile/outer -> .agile/middle (inside)
+    const middleLink = join(stateRoot, 'middle'); // .agile/middle -> outside (escapes)
+    const eventsPath = join(stateRoot, 'log', 'events.jsonl');
+    const victimFile = join(victimDir, 'pwned.jsonl');
+    try {
+      symlinkSync(join(stateRoot, 'middle'), outerLink);
+      symlinkSync(victimDir, middleLink);
+      rmSync(eventsPath, { force: true });
+      // Lexically inside the root two levels deep: log/events.jsonl ->
+      // .agile/outer/pwned.jsonl -> (outer resolves to middle) ->
+      // (middle resolves outside).
+      symlinkSync(join(stateRoot, 'outer', 'pwned.jsonl'), eventsPath);
+      await expect(store.putTicket(makeTicket('TKT-9995'))).rejects.toThrow(
+        /escapes the state root/,
+      );
+      expect(existsSync(victimFile)).toBe(false);
+    } finally {
+      rmSync(eventsPath, { force: true });
+      writeFileSync(eventsPath, '');
+      rmSync(outerLink, { force: true });
+      rmSync(middleLink, { force: true });
+      rmSync(victimDir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('Sprint: putSprint / getSprint / listSprints', () => {
   function makeSprint(overrides: Record<string, unknown> = {}) {
     return {

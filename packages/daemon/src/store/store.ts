@@ -350,60 +350,135 @@ export class StateStore {
    * reports `false` for one whose target doesn't exist yet, so the walk
    * skipped straight past it to its legitimate parent and let the write
    * through — `appendJsonlLine`/`appendFileSync`-style creates then follow
-   * the link and land outside the root with no error.
+   * the link and land outside the root with no error. Fixed by switching to
+   * `lstatSync` (reports a symlink as a symlink whether or not its target
+   * exists) walked component by component.
    *
-   * Fixed by walking every path *component* from `root` down to `resolved`
-   * with `lstatSync` (which reports a symlink as a symlink whether or not
-   * its target exists — the fix `existsSync` couldn't do) and, at each
-   * symlink hop (dangling or not, following chains), resolving its raw
-   * `readlinkSync` target and checking *that* for containment before
-   * continuing the walk from there. A component that doesn't exist at all
-   * (`lstatSync` throws) ends the walk early — nothing under a
-   * not-yet-created path can itself be a pre-planted symlink, so the
-   * ordinary not-yet-existing-file case (`putTicket` to a fresh id, a new
-   * board/ledger file, ...) passes straight through with no filesystem
-   * surprises.
+   * Round 2 review (opus) found that first `lstatSync`-based version still
+   * had a hole: after following a hop to `nextTarget`, it resumed the walk
+   * by calling `lstatSync(nextTarget)` directly — but `lstat` only refuses
+   * to follow the *final* path component; the kernel still resolves every
+   * *intermediate* one. So a leaf symlink whose target is lexically inside
+   * the root (passes the containment check) but whose *parent directory* is
+   * itself a symlink escaping the root was waved through: e.g.
+   * `.agile/inner -> /tmp/victim` (an escaping directory link) plus
+   * `.agile/log/events.jsonl -> .agile/inner/pwned.jsonl` (a leaf link whose
+   * target string never leaves `.agile/` lexically) together land a write
+   * at `/tmp/victim/pwned.jsonl` with no throw.
+   *
+   * Fixed by never resuming the walk on a multi-component path without
+   * re-decomposing it: `resolvePathSafely` always walks a target's path one
+   * component at a time from `root`, and `resolveComponentSymlink` — when a
+   * component turns out to be a symlink — recurses back into
+   * `resolvePathSafely` on the hop's target rather than `lstatSync`-ing it
+   * directly. That re-walk re-checks every ancestor of the new target (not
+   * just its leaf), and if that ancestor walk itself hits another symlink,
+   * the same recursion handles it, however deep the chain. A shared `budget`
+   * counts every hop across the whole recursion so a link cycle (or any
+   * chain, however constructed) still terminates (`MAX_SYMLINK_HOPS`, loosely
+   * modelled on Linux's `MAXSYMLINKS`) rather than looping forever.
+   *
+   * TOCTOU residual (round 2 B2, documented per review, not closed): this
+   * guard runs once, synchronously, inside `abs()` — it holds no file
+   * descriptor and re-checks nothing at the actual `readFileSync`/
+   * `appendFileSync`/`writeFileSync`/`unlinkSync` call site a moment later,
+   * every one of which follows symlinks itself. A component swapped for a
+   * symlink *after* this check returns and *before* that syscall lands would
+   * still escape. Closing that race for real would mean opening every write
+   * target with `O_NOFOLLOW` (`fs.openSync(path, os.constants.O_NOFOLLOW |
+   * ...)`) or moving to an fd-relative (`openat`-style) store, which doesn't
+   * fit the current atomic-rename write helpers (`fs.ts`'s
+   * `writeYamlFileAtomic`/`atomicWriteFile` write a temp file then `rename`
+   * it over the target — the target itself is never opened for write) without
+   * a broader rework. Accepted as out of scope for this ticket: the
+   * prerequisite is a second, concurrent, in-process-or-sibling actor able to
+   * write inside `.agile/` at the exact instant between this check and the
+   * next fs call — i.e. the same "a local writer already has a foothold
+   * inside the state root" threat model this whole guard exists for, not a
+   * new one. A future ticket that wants the race closed should look at
+   * `fs.ts`'s write helpers first.
    */
   private assertNoEscapingSymlink(resolved: string, root: string, parts: string[]): void {
-    const rel = relative(root, resolved);
+    this.resolvePathSafely(root, resolved, parts, { hops: 0 });
+  }
+
+  /** Loosely modelled on Linux's `MAXSYMLINKS` — a link chain (or cycle) this long is never legitimate. */
+  private static readonly MAX_SYMLINK_HOPS = 40;
+
+  /**
+   * Walks `targetAbs` (already known to lie lexically inside `root`) one
+   * path component at a time, `join`-ing onto `root` fresh each hop — never
+   * resuming on a pre-built multi-component string — so every ancestor
+   * directory is individually checked for being a symlink, not just the
+   * final leaf.
+   */
+  private resolvePathSafely(
+    root: string,
+    targetAbs: string,
+    parts: string[],
+    budget: { hops: number },
+  ): string {
+    const rel = relative(root, targetAbs);
     const segments = rel === '' ? [] : rel.split(sep).filter((seg) => seg.length > 0);
     let current = root;
     for (const seg of segments) {
       current = join(current, seg);
-      current = this.followSymlinkChain(current, root, parts);
+      current = this.resolveComponentSymlink(current, root, parts, budget);
     }
+    return current;
   }
 
   /**
-   * Resolves `path` if it is a symlink (or a chain of them), checking
-   * containment against `root` at every hop, dangling or not. Returns the
-   * final location (existing or not) so the caller can keep walking
-   * subsequent path components from there — a symlinked *directory*
-   * component must have its own children checked against where it actually
-   * points, not where it lexically sits.
+   * If `path` is a symlink (dangling or not), resolves one hop, checks the
+   * hop's target for containment, then recurses into `resolvePathSafely` on
+   * that target — re-walking *its* components from `root` — instead of
+   * `lstatSync`-ing the multi-component target directly (round 2 B1: that
+   * only re-checks the target's own leaf, never its ancestry). Returns
+   * `path` unchanged when it isn't a symlink, or doesn't exist yet.
    */
-  private followSymlinkChain(path: string, root: string, parts: string[]): string {
-    let current = path;
-    for (let hop = 0; hop < 40; hop++) {
-      let stat: ReturnType<typeof lstatSync>;
-      try {
-        stat = lstatSync(current);
-      } catch {
-        return current; // doesn't exist (yet) — nothing left to resolve
-      }
-      if (!stat.isSymbolicLink()) return current;
-      const rawTarget = readlinkSync(current);
-      const nextTarget = isAbsolute(rawTarget)
-        ? normalize(rawTarget)
-        : normalize(join(dirname(current), rawTarget));
-      if (nextTarget !== root && !nextTarget.startsWith(root + sep)) {
-        throw new Error(`state path escapes the state root (symlink): ${parts.join('/')}`);
-      }
-      current = nextTarget;
+  private resolveComponentSymlink(
+    path: string,
+    root: string,
+    parts: string[],
+    budget: { hops: number },
+  ): string {
+    let stat: ReturnType<typeof lstatSync>;
+    try {
+      stat = lstatSync(path);
+    } catch (err) {
+      // Round 2 nit N1: only a missing component (`ENOENT`, or `ENOTDIR`
+      // when an earlier segment we already resolved turned out not to be a
+      // directory after all) means "nothing to resolve here" — anything
+      // else (`EACCES`, `ELOOP`, a NUL byte's `ERR_INVALID_ARG_VALUE`, ...)
+      // is a real filesystem error the caller's own subsequent read/write
+      // is about to hit too, and swallowing it here would just relabel a
+      // permissions/encoding problem as an ordinary "not created yet" path.
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code === 'ENOENT' || code === 'ENOTDIR') return path;
+      throw err;
     }
-    throw new Error(
-      `state path escapes the state root (symlink chain too deep): ${parts.join('/')}`,
-    );
+    if (!stat.isSymbolicLink()) return path;
+
+    budget.hops += 1;
+    if (budget.hops > StateStore.MAX_SYMLINK_HOPS) {
+      // Round 2 nit N2: this cap catches a genuine escape chain and a pure
+      // symlink *cycle* alike (e.g. a<->b, neither ever escaping on its
+      // own) — refusing either way is correct, but "too deep" undersells
+      // the cycle case, so the message names both.
+      throw new Error(
+        `state path escapes the state root (symlink chain exceeded ${StateStore.MAX_SYMLINK_HOPS} hops — a link cycle or a genuine escape): ${parts.join('/')}`,
+      );
+    }
+
+    const rawTarget = readlinkSync(path);
+    const nextTarget = isAbsolute(rawTarget)
+      ? normalize(rawTarget)
+      : normalize(join(dirname(path), rawTarget));
+    if (nextTarget !== root && !nextTarget.startsWith(root + sep)) {
+      throw new Error(`state path escapes the state root (symlink): ${parts.join('/')}`);
+    }
+
+    return this.resolvePathSafely(root, nextTarget, parts, budget);
   }
 
   /**
