@@ -12,17 +12,17 @@ describe('renderClaudeSettings', () => {
         PreToolUse: [
           {
             matcher: '*',
-            hooks: [{ type: 'command', command: 'agile hook pre-tool-use', timeout: 2 }],
+            hooks: [{ type: 'command', command: 'agile hook pre-tool-use', timeout: 5 }],
           },
         ],
         PostToolUse: [
           {
             matcher: '*',
-            hooks: [{ type: 'command', command: 'agile hook post-tool-use', timeout: 2 }],
+            hooks: [{ type: 'command', command: 'agile hook post-tool-use', timeout: 5 }],
           },
         ],
         Stop: [
-          { matcher: '*', hooks: [{ type: 'command', command: 'agile hook stop', timeout: 2 }] },
+          { matcher: '*', hooks: [{ type: 'command', command: 'agile hook stop', timeout: 5 }] },
         ],
       },
     });
@@ -35,9 +35,14 @@ describe('renderClaudeSettings', () => {
     );
   });
 
-  test('timeoutSeconds overrides the default 2s', () => {
-    const settings = renderClaudeSettings({ agileBin: 'agile', timeoutSeconds: 5 });
-    expect(settings.hooks.Stop[0]?.hooks[0]?.timeout).toBe(5);
+  test('timeoutSeconds overrides the default 5s', () => {
+    const settings = renderClaudeSettings({ agileBin: 'agile', timeoutSeconds: 8 });
+    expect(settings.hooks.Stop[0]?.hooks[0]?.timeout).toBe(8);
+  });
+
+  test('the default (5s) exceeds the CLI RPC deadline (2000ms)', () => {
+    const settings = renderClaudeSettings({ agileBin: 'agile' });
+    expect(settings.hooks.PreToolUse[0]?.hooks[0]?.timeout).toBeGreaterThan(2);
   });
 });
 

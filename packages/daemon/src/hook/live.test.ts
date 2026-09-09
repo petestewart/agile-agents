@@ -25,7 +25,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ACP_PROVIDERS, spawnSession } from '@agile-agents/acp-client';
-import { validateTicket } from '@agile-agents/shared';
+import { ulid, validateTicket } from '@agile-agents/shared';
 import { startDaemon } from '../daemon';
 import { createHalt, releaseHalt } from '../halts';
 import { runInit } from '../init';
@@ -120,7 +120,7 @@ describe('live: Claude hook gate end-to-end', () => {
         }
 
         // 3. An `answer` message appears in the model's context on the next tool call.
-        const { Bus, ulid } = await import('../bus');
+        const { Bus } = await import('../bus');
         const bus = new Bus(store, init.stateRoot);
         await bus.send({
           id: ulid(),

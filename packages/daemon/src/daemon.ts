@@ -55,6 +55,7 @@ export async function startDaemon(options: DiscoverConfigOptions = {}): Promise<
           ...buildHookRpcMethods(
             new HookService(store, new Bus(store, config.stateRoot), {
               repoRoot: config.repoRoot,
+              gates: gateService,
             }),
           ),
         }
@@ -103,6 +104,10 @@ export async function startDaemon(options: DiscoverConfigOptions = {}): Promise<
       try {
         await http.stop();
         await rpc.close();
+        // Flush any pending deferred hook_decision/heartbeat commits (T009
+        // review round, hot-path decision) — a graceful shutdown must not
+        // lose a batch that hasn't hit its 5s debounce yet.
+        await store?.flush();
       } finally {
         lock.release();
       }

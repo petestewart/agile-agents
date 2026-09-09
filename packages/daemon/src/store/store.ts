@@ -234,8 +234,29 @@ interface MutationResult<T> {
   event: Event;
 }
 
+/**
+ * Deferred-commit batching (T009 review round, "Hot-path decision"): a
+ * pre-tool-use hook call previously cost one `git commit` for its
+ * `hook_decision` event and another for its heartbeat — two commits per
+ * tool call is not sustainable. `appendEvent(event, {commit:'deferred'})`
+ * (and `heartbeat`, below) append their line/file write immediately (so a
+ * reader of `log/events.jsonl`/`bus/agents/<id>.yaml` sees it right away)
+ * but queue the relative path instead of committing — a debounced timer
+ * (`DEFERRED_FLUSH_MS`) batches every queued path into one commit, and any
+ * *regular* (non-deferred) mutation flushes whatever is queued first, as
+ * its own preceding commit, so the audit trail never silently drops a
+ * deferred write behind a later one. `StateStore.flush()` (called by
+ * `daemon.ts` on shutdown) flushes on demand for tests/graceful stop.
+ */
+const DEFERRED_FLUSH_MS = 5000;
+const DEFERRED_COMMIT_MESSAGE = 'deferred_batch';
+/** CLAUDE.md tunable: "heartbeat 30 s" — `StateStore.heartbeat`'s coalescing window. */
+export const HEARTBEAT_COALESCE_MS = 30 * 1000;
+
 export class StateStore {
   private readonly mutex = new Mutex();
+  private readonly deferredRelPaths = new Set<string>();
+  private deferredTimer: ReturnType<typeof setTimeout> | null = null;
 
   private constructor(private readonly stateRoot: string) {}
 
@@ -270,8 +291,40 @@ export class StateStore {
     return normalized;
   }
 
-  /** Appends `event` to `log/events.jsonl` and commits `relPaths` (plus that file) with message = event.kind. */
+  /** Commits whatever deferred paths are queued (if any) as one commit, and clears the queue/timer. Synchronous — callers already hold the mutex. */
+  private flushDeferredNow(): void {
+    if (this.deferredTimer !== null) {
+      clearTimeout(this.deferredTimer);
+      this.deferredTimer = null;
+    }
+    if (this.deferredRelPaths.size === 0) return;
+    const paths = [...this.deferredRelPaths];
+    this.deferredRelPaths.clear();
+    commitPaths(this.stateRoot, paths, DEFERRED_COMMIT_MESSAGE);
+  }
+
+  /** Arms the debounce timer (if not already armed) to flush queued deferred paths after `DEFERRED_FLUSH_MS`. `unref`d so it never keeps the process alive on its own. */
+  private scheduleDeferredFlush(): void {
+    if (this.deferredTimer !== null) return;
+    const timer = setTimeout(() => {
+      this.mutex.run(() => this.flushDeferredNow()).catch(() => {});
+    }, DEFERRED_FLUSH_MS);
+    timer.unref?.();
+    this.deferredTimer = timer;
+  }
+
+  /** Appends `event`'s line to `log/events.jsonl` immediately and queues the path for the next flush — no commit yet. Synchronous — callers already hold the mutex. */
+  private deferEventSync(event: Event, extraRelPaths: string[] = []): void {
+    const eventsRel = join('log', 'events.jsonl');
+    appendJsonlLine(this.abs(eventsRel), event);
+    this.deferredRelPaths.add(eventsRel);
+    for (const p of extraRelPaths) this.deferredRelPaths.add(p);
+    this.scheduleDeferredFlush();
+  }
+
+  /** Appends `event` to `log/events.jsonl` and commits `relPaths` (plus that file) with message = event.kind — flushing any pending deferred paths first (as their own preceding commit), so a batched write is never silently absorbed into an unrelated commit message. */
   private commitEvent(relPaths: string[], event: Event): void {
+    this.flushDeferredNow();
     const validated = validateEvent(event);
     const eventsRel = join('log', 'events.jsonl');
     appendJsonlLine(this.abs(eventsRel), validated);
@@ -289,13 +342,39 @@ export class StateStore {
   }
 
   /**
+   * Flushes any pending deferred writes into one commit right now. Called by
+   * `daemon.ts` on graceful shutdown (so a deferred hook_decision/heartbeat
+   * batch is never lost) and by tests that want a deterministic flush point
+   * instead of waiting `DEFERRED_FLUSH_MS`.
+   */
+  async flush(): Promise<void> {
+    return this.mutex.run(() => this.flushDeferredNow());
+  }
+
+  /**
    * Public escape hatch for the two named event sources T005 doesn't itself
    * produce (review fix, manager decision B1): `message` (T006's bus) and
    * `hook_decision` (T008/T009's hook endpoint) go through this instead of
    * re-implementing append+commit outside the store (which CLAUDE.md's
    * "written only through the daemon's validating store" forbids).
+   *
+   * `{commit: 'deferred'}` (T009 review round, hot-path decision): appends
+   * the event line immediately but batches the commit — see the file's
+   * "Deferred-commit batching" header comment. Every other caller keeps the
+   * original one-event-one-commit behaviour (`commit: 'immediate'`, the
+   * default).
    */
-  async appendEvent(event: Event): Promise<Event> {
+  async appendEvent(
+    event: Event,
+    options: { commit?: 'immediate' | 'deferred' } = {},
+  ): Promise<Event> {
+    if (options.commit === 'deferred') {
+      return this.mutex.run(() => {
+        const validated = validateEvent(event);
+        this.deferEventSync(validated);
+        return validated;
+      });
+    }
     return this.mutex.run(() => {
       const validated = validateEvent(event);
       this.commitEvent([], validated);
@@ -673,6 +752,62 @@ export class StateStore {
       writeYamlFileAtomic(this.abs(relPath), validated);
       const event = buildEvent('agent_put', { agent: id, data: {} });
       return { result: validated, relPaths: [relPath], event };
+    });
+  }
+
+  /**
+   * Heartbeat write, deferred-commit + coalesced (T009 review round, hot-path
+   * decision): the pre-tool-use hook calls this on every tool call, so two
+   * things keep it cheap — (1) the write is deferred (see the file's
+   * "Deferred-commit batching" header), and (2) CLAUDE.md's 30s heartbeat
+   * tunable means a `last_seen` less than `HEARTBEAT_COALESCE_MS` old with no
+   * *other* field actually changing is a pure no-op: no file write, no event,
+   * nothing queued — the existing record is returned unchanged. A `patch`
+   * that changes `vendor`/`model`/`ticket`/`pid` away from what's on disk
+   * always writes, regardless of how recent `last_seen` is, so a ticket
+   * reassignment is never held back by the coalescing window.
+   */
+  async heartbeat(
+    id: AgentId,
+    patch: Partial<AgentRecord> = {},
+    now: () => Date = () => new Date(),
+  ): Promise<AgentRecord> {
+    return this.mutex.run(() => {
+      let existing: AgentRecord | undefined;
+      try {
+        existing = this.getAgent(id);
+      } catch {
+        // No registry entry yet — always writes below.
+      }
+
+      const nowDate = now();
+      if (existing !== undefined) {
+        const lastSeenMs = Date.parse(existing.last_seen);
+        const fieldsChanged = (Object.keys(patch) as Array<keyof AgentRecord>).some(
+          (key) => patch[key] !== undefined && patch[key] !== existing?.[key],
+        );
+        if (
+          !fieldsChanged &&
+          !Number.isNaN(lastSeenMs) &&
+          nowDate.getTime() - lastSeenMs < HEARTBEAT_COALESCE_MS
+        ) {
+          return existing;
+        }
+      }
+
+      const record: AgentRecord = {
+        vendor: patch.vendor ?? existing?.vendor ?? 'unknown',
+        model: patch.model ?? existing?.model ?? 'unknown',
+        ticket: patch.ticket ?? existing?.ticket,
+        pid: patch.pid ?? existing?.pid ?? process.pid,
+        last_seen: nowDate.toISOString(),
+      };
+      const validated = validateAgentRecord(record);
+      const relPath = this.agentRelPath(id);
+      writeYamlFileAtomic(this.abs(relPath), validated);
+      const event = buildEvent('agent_put', { agent: id, data: { heartbeat: true } });
+      this.deferEventSync(event, [relPath]);
+      return validated;
     });
   }
 

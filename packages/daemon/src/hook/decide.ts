@@ -19,10 +19,32 @@
  *      to `deny`.
  *   7. else allow.
  *
- * Only one tier fires per call — the first one that matches wins, same as
- * §6's tier table reads (a halt pre-empts everything else, an urgent
- * message pre-empts the budget check, etc.). This mirrors `decidePermission`
- * (T010): a single pure function, side effects performed by the caller.
+ * Review round fix (blocker 1): tier 3 (normal inbox) used to *return*
+ * before tiers 4–6 ever ran, so a pending `answer` message let a big Read,
+ * an over-budget ticket, or a `git push origin main` sail through as
+ * `allow` — context injection was silently overriding the gate. Tiers 1–2
+ * still short-circuit (a halt or an urgent message pre-empts everything,
+ * §6's tier table), but tier 3 is now **additive**: the gate verdict is
+ * computed first from tiers 4–6 (`computeGateVerdict`), and a pending
+ * normal message only ever *adds* `additionalContext` (+ acks) on top of
+ * whatever that verdict already was — it can turn an `allow` into an
+ * `allow` with context, or a `deny`/`ask` into the same `deny`/`ask` with
+ * context, but it can never itself change `decision`. DESIGN-GAP: Claude's
+ * hook docs don't explicitly confirm `additionalContext` is honoured
+ * alongside a `deny`/`ask` `permissionDecision` (every capture to date only
+ * exercises `additionalContext` on an `allow`) — attaching it unconditionally
+ * is the simplest reading of "still deliver (attach the context to the deny
+ * output if Claude accepts it, else keep the messages pending)"; if a live
+ * run ever shows Claude drops `additionalContext` on a non-allow decision,
+ * the fallback is to leave the messages unacked here (service.ts already
+ * treats `ack` as this function's decision, not an unconditional side
+ * effect) rather than silently losing them.
+ *
+ * Only one tier among 1/2/4/5/6 fires per call — the first one that matches
+ * wins, same as §6's tier table reads (a halt pre-empts everything else, an
+ * urgent message pre-empts the budget check, etc.). This mirrors
+ * `decidePermission` (T010): a single pure function, side effects performed
+ * by the caller.
  *
  * DESIGN-GAP (ack semantics for a `deny`-by-urgent-message, per this
  * ticket's Standing rules): §5 says urgent delivery is "until acknowledged"
@@ -73,38 +95,11 @@ function buildAdditionalContext(messages: HookDecisionContext['inbox']): string 
   return lines.join('\n');
 }
 
-export function decidePreToolUse(
+/** Tiers 4–6: the gate verdict, computed independently of any normal-priority inbox message pending — see this file's header, review round fix (blocker 1). */
+function computeGateVerdict(
   ctx: HookDecisionContext,
   payload: ClaudePreToolUsePayload,
 ): HookDecision {
-  // 1. Halt covering this ticket (global or ticket-scoped) — §4 "Halts":
-  // "Engineer-side pre-tool-use hook checks this directory before every
-  // write or ticket pickup." `ctx.halts` is already `activeHaltsFor`'s
-  // result, so any entry means a covering halt exists.
-  const halt = ctx.halts[0];
-  if (halt) {
-    return { decision: 'deny', reason: halt.reason };
-  }
-
-  // 2. Urgent unacked inbox — oldest first (ctx.inbox is already ordered
-  // urgent -> normal -> low, ties broken by ulid/send order per Bus.poll).
-  const urgent = ctx.inbox.find((m) => m.priority === 'urgent');
-  if (urgent) {
-    return { decision: 'deny', reason: urgent.body, ack: [urgent.id] };
-  }
-
-  // 3. Normal inbox — inject as additionalContext, ack every one delivered
-  // this way (§5: "hook allows the call and injects inbox as additional
-  // context").
-  const normal = ctx.inbox.filter((m) => m.priority === 'normal');
-  if (normal.length > 0) {
-    return {
-      decision: 'allow',
-      additionalContext: buildAdditionalContext(normal),
-      ack: normal.map((m) => m.id),
-    };
-  }
-
   // 4. Big raw Read/Grep — §7 "Tool framework": a matched raw call is
   // denied with the tool's redirect already named.
   if (isReadLikeTool(payload.tool_name)) {
@@ -163,4 +158,43 @@ export function decidePreToolUse(
 
   // 7. Else allow.
   return { decision: 'allow' };
+}
+
+export function decidePreToolUse(
+  ctx: HookDecisionContext,
+  payload: ClaudePreToolUsePayload,
+): HookDecision {
+  // 1. Halt covering this ticket (global or ticket-scoped) — §4 "Halts":
+  // "Engineer-side pre-tool-use hook checks this directory before every
+  // write or ticket pickup." `ctx.halts` is already `activeHaltsFor`'s
+  // result, so any entry means a covering halt exists.
+  const halt = ctx.halts[0];
+  if (halt) {
+    return { decision: 'deny', reason: halt.reason };
+  }
+
+  // 2. Urgent unacked inbox — oldest first (ctx.inbox is already ordered
+  // urgent -> normal -> low, ties broken by ulid/send order per Bus.poll).
+  const urgent = ctx.inbox.find((m) => m.priority === 'urgent');
+  if (urgent) {
+    return { decision: 'deny', reason: urgent.body, ack: [urgent.id] };
+  }
+
+  // Tiers 4–6, computed BEFORE tier 3 so a pending normal message can never
+  // change the verdict (review round fix, blocker 1).
+  const gate = computeGateVerdict(ctx, payload);
+
+  // 3. Normal inbox — additive only: attaches additionalContext (+ acks) on
+  // top of `gate`, whatever `gate` already decided (§5: "hook allows the
+  // call and injects inbox as additional context" — extended here to "the
+  // hook renders whatever decision it was going to render, PLUS injects
+  // inbox as additional context").
+  const normal = ctx.inbox.filter((m) => m.priority === 'normal');
+  if (normal.length === 0) return gate;
+
+  return {
+    ...gate,
+    additionalContext: buildAdditionalContext(normal),
+    ack: normal.map((m) => m.id),
+  };
 }

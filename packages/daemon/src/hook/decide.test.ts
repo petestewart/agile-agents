@@ -171,3 +171,51 @@ describe('decidePreToolUse — order of precedence', () => {
     expect(result).toEqual({ decision: 'allow' });
   });
 });
+
+describe('decidePreToolUse — normal inbox is additive, never overrides the gate verdict (review round fix, blocker 1)', () => {
+  const normal = makeMessage({ id: 'norm-1', priority: 'normal', body: 'use the JWT approach' });
+
+  test('a pending normal message does NOT turn a big-read denial into an allow', () => {
+    const ctx = baseCtx({ inbox: [normal], fileSize: () => 100 * 1024 });
+    const result = decidePreToolUse(ctx, {
+      tool_name: 'Read',
+      tool_input: { file_path: 'big.txt' },
+    });
+    expect(result.decision).toBe('deny');
+    expect(result.reason).toMatch(/read_summary/);
+    // Still delivered: attached to the deny output, and acked.
+    expect(result.additionalContext).toContain('use the JWT approach');
+    expect(result.ack).toEqual(['norm-1']);
+  });
+
+  test('a pending normal message does NOT turn a budget denial into an allow', () => {
+    const ctx = baseCtx({
+      inbox: [normal],
+      ticketBudget: { ceiling_tokens: 1000, spent_tokens: 1000 },
+    });
+    const result = decidePreToolUse(ctx, { tool_name: 'Read', tool_input: { file_path: 'x.txt' } });
+    expect(result.decision).toBe('deny');
+    expect(result.reason).toMatch(/budget exhausted/);
+    expect(result.additionalContext).toContain('use the JWT approach');
+    expect(result.ack).toEqual(['norm-1']);
+  });
+
+  test('a pending normal message does NOT turn a never-without-human ask into an allow', () => {
+    const ctx = baseCtx({ inbox: [normal] });
+    const result = decidePreToolUse(ctx, {
+      tool_name: 'Bash',
+      tool_input: { command: 'git push origin main' },
+    });
+    expect(result.decision).toBe('ask');
+    expect(result.additionalContext).toContain('use the JWT approach');
+    expect(result.ack).toEqual(['norm-1']);
+  });
+
+  test('with nothing else to gate, a pending normal message still just allows + injects context', () => {
+    const ctx = baseCtx({ inbox: [normal] });
+    const result = decidePreToolUse(ctx, { tool_name: 'Read', tool_input: { file_path: 'x.txt' } });
+    expect(result.decision).toBe('allow');
+    expect(result.additionalContext).toContain('use the JWT approach');
+    expect(result.ack).toEqual(['norm-1']);
+  });
+});

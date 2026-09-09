@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import type { Ticket } from '@agile-agents/shared';
 import { validateTicket } from '@agile-agents/shared';
 import { Bus } from '../bus';
+import { GateService } from '../gates';
 import { runInit } from '../init';
 import { type RpcServerHandle, dispatch, startRpcServer } from '../rpc';
 import { StateStore } from '../store';
@@ -29,7 +30,7 @@ beforeEach(() => {
   const init = runInit(repo);
   store = StateStore.open(init.stateRoot);
   bus = new Bus(store, init.stateRoot);
-  hookService = new HookService(store, bus, { repoRoot: repo });
+  hookService = new HookService(store, bus, { repoRoot: repo, gates: new GateService(store) });
   methods = buildHookRpcMethods(hookService);
 
   worktree = join(repo, '.worktrees', 'TKT-0001');

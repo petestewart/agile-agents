@@ -14,9 +14,13 @@
  * an event-scoped matcher — not a per-tool one — is what this ticket needs).
  * `timeout` is Claude's own per-hook-invocation ceiling in seconds (not to
  * be confused with `agile hook`'s own `--timeout` in milliseconds, T009's
- * CLI change) — set to 2s to match the ticket's "2 s timeout" for the
- * fail-closed default, so a wedged daemon can't hang the hook past what
- * `agile hook` itself would already time out at.
+ * CLI change, which stays 2000ms). Review round fix: it must EXCEED the
+ * CLI's own RPC deadline, not equal it — at 2s/2000ms, Claude could kill
+ * the hook process at the exact moment `agile hook` was about to print its
+ * fail-closed deny JSON, turning a "daemon slow" case into a raw process
+ * kill with nothing on stdout (worse than the deny it was designed to
+ * produce). Default is 5s here so a slow daemon always yields a printed
+ * deny before Claude's own timeout would fire.
  *
  * Agent identification (DESIGN-GAP, documented per the session brief's
  * "the daemon must know which agent is calling"): the brief's suggested
@@ -68,7 +72,7 @@ export interface RenderClaudeSettingsOptions {
   agileBin: string;
   /** When set, prefixed as `AGILE_SOCKET_PATH=<socketPath> ` onto every hook command — see file header. */
   socketPath?: string;
-  /** Claude's own per-hook-invocation timeout, in seconds. Default 2 (matches T009's fail-closed 2s daemon-side timeout). */
+  /** Claude's own per-hook-invocation timeout, in seconds. Default 5 — must exceed the CLI's 2000ms RPC deadline (`DEFAULT_HOOK_TIMEOUT_MS`) so a slow daemon always yields a printed fail-closed deny instead of a killed hook process. */
   timeoutSeconds?: number;
 }
 
@@ -85,7 +89,7 @@ function hookCommand(options: RenderClaudeSettingsOptions, agileEvent: string): 
 
 /** Builds the `.claude/settings.json` object this worktree needs — `PreToolUse`/`PostToolUse`/`Stop`, each invoking `agile hook <event>` with matcher `"*"`. */
 export function renderClaudeSettings(options: RenderClaudeSettingsOptions): ClaudeSettings {
-  const timeout = options.timeoutSeconds ?? 2;
+  const timeout = options.timeoutSeconds ?? 5;
   const hooks = {} as Record<ClaudeHookEventName, ClaudeHookMatcher[]>;
   for (const { claudeEvent, agileEvent } of HOOK_EVENTS) {
     hooks[claudeEvent] = [
