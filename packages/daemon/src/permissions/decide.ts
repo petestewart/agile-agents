@@ -30,13 +30,9 @@ export function decidePermission(ctx: DecisionContext): Decision {
   const classified = classifyPermissionRequest(ctx.request);
   const options = ctx.request.options ?? [];
 
-  const neverVerdict = checkNeverWithoutHuman(classified, {
-    role: ctx.role,
-    worktreePath: ctx.worktreePath,
-  });
-  const verdict =
-    neverVerdict ??
-    roleVerdict(ctx.role, classified, { role: ctx.role, worktreePath: ctx.worktreePath });
+  const policyCtx = { role: ctx.role, worktreePath: ctx.worktreePath, ticket: ctx.ticket };
+  const neverVerdict = checkNeverWithoutHuman(classified, policyCtx);
+  const verdict = neverVerdict ?? roleVerdict(ctx.role, classified, policyCtx);
 
   if (verdict.action === 'allow') {
     const option = findOption(options, 'allow_once');

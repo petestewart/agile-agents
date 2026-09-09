@@ -156,6 +156,13 @@ describe('buildPermissionResponder', () => {
       outcome: { outcome: 'selected', optionId: 'allow-once' },
     });
     expect(responder.pendingHilCount()).toBe(0);
+
+    // Review-round fix: resolveHil must not ack/delete the message itself —
+    // that lifecycle belongs to T018's GateService (or T006's bus ack), not
+    // this module.
+    expect(store.getEntity(join('bus', 'inbox', 'human', `${id}.yaml`), validateMessage).id).toBe(
+      id,
+    );
   });
 
   test('resolveHil returns false for an unknown/already-resolved id', async () => {
@@ -168,5 +175,45 @@ describe('buildPermissionResponder', () => {
       session,
     });
     expect(await responder.resolveHil('nonexistent', { optionId: 'allow-once' })).toBe(false);
+  });
+
+  test('requestHil is injectable, so T018 can own persistence instead of the default store writer', async () => {
+    const session = fakeSession();
+    const calls: Array<{
+      ticket: string;
+      agent: string;
+      hilKind: string;
+      summary: string;
+      deadline: string;
+    }> = [];
+    const responder = buildPermissionResponder(store, {
+      role: 'engineer',
+      ticket: 'TKT-0001',
+      agent: 'eng-1',
+      worktreePath: '/work/.worktrees/TKT-0001-x',
+      session,
+      requestHil: async (input) => {
+        calls.push(input);
+        return { id: 'custom-id-1' };
+      },
+    });
+
+    const decision = await responder.handleRequest(
+      99,
+      request('execute', { command: 'git push origin main' }),
+    );
+    expect(decision.kind).toBe('hil');
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.ticket).toBe('TKT-0001');
+    expect(calls[0]?.agent).toBe('eng-1');
+    expect(calls[0]?.hilKind).toBe('unblock');
+
+    // No message was written to the default bus path — the injected
+    // callback owns persistence entirely.
+    expect(() => readdirSync(join(stateRoot, 'bus', 'inbox', 'human'))).toThrow();
+
+    const resolved = await responder.resolveHil('custom-id-1', { optionId: 'allow-once' });
+    expect(resolved).toBe(true);
+    expect(session.calls[0]?.id).toBe(99);
   });
 });

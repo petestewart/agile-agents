@@ -5,10 +5,21 @@
  *
  * Every verdict function returns a reason string on deny/hil (never a bare
  * `false`) — "Deny always carries a reason and a pointer" (§14).
+ *
+ * Review-round rewrite (opus's blocking findings + manager consolidation):
+ * a command is now split into `CommandAtom`s (command.ts) — one per
+ * `;`/`&&`/`||`/`|`/newline-separated segment, with `sh -c "..."` recursed
+ * into — and classified **most-restrictive-atom-wins**: any atom that hits
+ * the never-without-human list makes the whole command `hil`; failing that,
+ * any atom the role table would deny makes the whole command `deny`; only
+ * if every atom is individually allowed does the whole command allow. This
+ * is what closes the `git status && git push origin main` /
+ * `FOO=1 git push origin main` / `cd sub && git push origin main` /
+ * `sh -c "git push origin main"` bypasses.
  */
 
-import { isPathInside, tokenize } from './command';
 import * as cmd from './command';
+import { isPathInside } from './command';
 import type { PermissionRequest, PermissionRole } from './types';
 
 export type PolicyVerdict =
@@ -27,6 +38,8 @@ function hil(reason: string): PolicyVerdict {
 export interface PolicyContext {
   role: PermissionRole;
   worktreePath: string;
+  /** This ticket's id (`TKT-0001`) — the only branch a `push` may target without a human (opus should-fix 4). */
+  ticket: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -68,11 +81,75 @@ export function isPackageRegistryUrl(url: string | undefined): boolean {
   );
 }
 
+/** The never-without-human verdict for one already-parsed atom, or `undefined` if this atom doesn't match any named category. */
+function neverWithoutHumanForAtom(
+  atom: cmd.CommandAtom,
+  ctx: PolicyContext,
+): PolicyVerdict | undefined {
+  const { tokens } = atom;
+
+  const parsedGit = cmd.parseGitInvocation(tokens);
+  if (parsedGit.cPaths.some((p) => !isPathInside(p, ctx.worktreePath))) {
+    return hil('git -C outside the worktree is never automatic — file a hil_request');
+  }
+  const args = parsedGit.args;
+  if (args !== undefined) {
+    if (cmd.isForcePush(args)) {
+      return hil('force-push is never automatic — file a hil_request');
+    }
+    if (cmd.isBranchDelete(args)) {
+      return hil('branch deletion is never automatic — file a hil_request');
+    }
+    if (cmd.isGitResetHard(args)) {
+      return hil('git reset --hard is never automatic — file a hil_request');
+    }
+    if (args[0] === 'push') {
+      const refspecs = cmd.pushRefspecs(args);
+      if (refspecs.length === 0) {
+        return hil(
+          'push with no explicit branch (current branch/default remote) is never automatic — file a hil_request',
+        );
+      }
+      for (const refspec of refspecs) {
+        const branch = cmd.refspecDestBranch(refspec);
+        if (!cmd.isTicketBranch(branch, ctx.ticket)) {
+          return hil(
+            `push to ${branch} (not this ticket's branch) is never automatic — file a hil_request`,
+          );
+        }
+      }
+    }
+  }
+
+  if (cmd.isNewDependencyInstall(tokens)) {
+    return hil('installing a new dependency is never automatic — file a discovery/hil_request');
+  }
+  if (cmd.isRmMinusRf(tokens)) {
+    const outside = cmd.rmTargets(tokens).some((t) => !isPathInside(t, ctx.worktreePath));
+    if (outside) {
+      return hil('rm -rf outside the worktree is never automatic — file a hil_request');
+    }
+  }
+  if (cmd.isPipedIntoBareShell(atom)) {
+    return hil('piping a remote fetch into a shell is never automatic — file a hil_request');
+  }
+  if (cmd.isSudo(tokens)) {
+    return hil('sudo is never automatic — file a hil_request');
+  }
+  if (cmd.isChmodRecursive777(tokens)) {
+    return hil('chmod -R 777 is never automatic — file a hil_request');
+  }
+
+  return undefined;
+}
+
 /**
  * Checks the request against the universal never-without-human list.
  * Returns a `hil` verdict when matched, `undefined` when the request isn't
  * one of these named categories (the caller falls through to the role
- * table).
+ * table). Splits `execute` commands into atoms first (see file header) so
+ * a shell chain can't smuggle a never-without-human segment past a
+ * whitespace-only tokenizer.
  */
 export function checkNeverWithoutHuman(
   classified: PermissionRequest,
@@ -81,48 +158,21 @@ export function checkNeverWithoutHuman(
   if (classified.toolClass === 'edit' && cmd.touchesAgileState(classified.targetPath)) {
     return hil('direct writes to .agile/ are never automatic — file a hil_request');
   }
+  if (classified.toolClass === 'edit' && cmd.isManifestPath(classified.targetPath)) {
+    return hil(
+      'editing a dependency manifest/lockfile is never automatic — file a discovery/hil_request',
+    );
+  }
 
   if (classified.toolClass === 'execute' && classified.command !== undefined) {
-    const tokens = tokenize(classified.command);
-    const args = cmd.gitArgs(tokens);
-
-    if (args !== undefined) {
-      if (cmd.isForcePush(args)) {
-        return hil('force-push is never automatic — file a hil_request');
-      }
-      if (cmd.isBranchDelete(args)) {
-        return hil('branch deletion is never automatic — file a hil_request');
-      }
-      if (cmd.isGitResetHard(args)) {
-        return hil('git reset --hard is never automatic — file a hil_request');
-      }
-      if (args[0] === 'push') {
-        const branch = cmd.pushTargetBranch(args);
-        if (!cmd.isTicketBranch(branch)) {
-          return hil(
-            `push to ${branch ?? 'the current branch'} (not the ticket's tkt/* branch) is never automatic — file a hil_request`,
-          );
-        }
-      }
+    if (cmd.hasUnsafeShellConstruct(classified.command)) {
+      return hil(
+        'command substitution/backticks/eval/unbalanced quotes are unclassifiable — file a hil_request',
+      );
     }
-
-    if (cmd.isNewDependencyInstall(tokens)) {
-      return hil('installing a new dependency is never automatic — file a discovery/hil_request');
-    }
-    if (cmd.isRmMinusRf(tokens)) {
-      const outside = cmd.rmTargets(tokens).some((t) => !isPathInside(t, ctx.worktreePath));
-      if (outside) {
-        return hil('rm -rf outside the worktree is never automatic — file a hil_request');
-      }
-    }
-    if (cmd.isPipeToShell(classified.command)) {
-      return hil('piping a remote fetch into a shell is never automatic — file a hil_request');
-    }
-    if (cmd.isSudo(tokens)) {
-      return hil('sudo is never automatic — file a hil_request');
-    }
-    if (cmd.isChmodRecursive777(tokens)) {
-      return hil('chmod -R 777 is never automatic — file a hil_request');
+    for (const atom of cmd.parseCommandIntoAtoms(classified.command)) {
+      const verdict = neverWithoutHumanForAtom(atom, ctx);
+      if (verdict !== undefined) return verdict;
     }
   }
 
@@ -133,6 +183,32 @@ export function checkNeverWithoutHuman(
 // Role tables (§14's table, one function per role). Each assumes
 // `checkNeverWithoutHuman` already ran and returned nothing.
 // ---------------------------------------------------------------------------
+
+function engineerExecuteVerdict(command: string, ctx: PolicyContext): PolicyVerdict {
+  for (const atom of cmd.parseCommandIntoAtoms(command)) {
+    if (cmd.hasRedirectionOrTee(atom.tokens)) {
+      const target = cmd.redirectionTarget(atom.tokens);
+      if (target === undefined || !isPathInside(target, ctx.worktreePath)) {
+        return deny('redirected output escapes the worktree (or uses tee/process substitution)');
+      }
+      // Redirection target is inside the worktree — fall through and still
+      // classify the underlying command below. A safe redirect target does
+      // not by itself make the command it's attached to allowed (e.g.
+      // `rm -rf secret > <worktree>/out.log` must still be denied for not
+      // being a repo script or git invocation).
+    }
+    if (cmd.isRepoScriptCommand(atom.tokens)) continue;
+    if (cmd.gitArgs(atom.tokens) !== undefined) {
+      // Any git invocation inside the worktree that isn't on the
+      // never-without-human list above (push/force-push/branch-delete/
+      // reset --hard already handled) is the engineer's own ticket
+      // branch work — "git inside the worktree except the never list" (ticket).
+      continue;
+    }
+    return deny(`${atom.tokens[0] ?? command} is not an allowed command for the engineer role`);
+  }
+  return ALLOW;
+}
 
 function engineerVerdict(classified: PermissionRequest, ctx: PolicyContext): PolicyVerdict {
   switch (classified.toolClass) {
@@ -149,23 +225,24 @@ function engineerVerdict(classified: PermissionRequest, ctx: PolicyContext): Pol
       return isPathInside(classified.targetPath, ctx.worktreePath)
         ? ALLOW
         : deny(`edit target ${classified.targetPath} is outside the worktree`);
-    case 'execute': {
+    case 'execute':
       if (classified.command === undefined) {
-        return deny('execute request carries no command to classify');
+        // DESIGN-GAP (manager decision, overriding the reviewer's
+        // suggested `hil`): a `hil` here would flood the human queue with
+        // every generic "Terminal"-titled request a vendor sends without
+        // rawInput — every exec this policy can't read a command for,
+        // benign or not. `deny` is recoverable (the model gets a reason
+        // and a pointer) and keeps the human queue for requests this
+        // layer actually understands. Command-level enforcement for
+        // exactly this "we can't see the command" case is T009's
+        // PreToolUse hook's job (see index.ts's file header) — it
+        // provably carries `tool_input.command` (spike-findings §B),
+        // this tier does not.
+        return deny(
+          'execute request carries no command to classify at this tier — retry via the hook-gated path (T009) with a clearer command',
+        );
       }
-      const tokens = tokenize(classified.command);
-      if (cmd.isRepoScriptCommand(tokens)) return ALLOW;
-      if (cmd.gitArgs(tokens) !== undefined) {
-        // Any git invocation inside the worktree that isn't on the
-        // never-without-human list above (push/force-push/branch-delete/
-        // reset --hard already handled) is the engineer's own ticket
-        // branch work — "git inside the worktree except the never list" (ticket).
-        return ALLOW;
-      }
-      return deny(
-        `${tokens[0] ?? classified.command} is not an allowed command for the engineer role`,
-      );
-    }
+      return engineerExecuteVerdict(classified.command, ctx);
     case 'fetch':
       return isPackageRegistryUrl(classified.url)
         ? ALLOW
@@ -177,6 +254,42 @@ function engineerVerdict(classified: PermissionRequest, ctx: PolicyContext): Pol
   }
 }
 
+const REVIEWER_READ_ONLY_GIT_SUBCOMMANDS = new Set(['diff', 'log', 'show', 'status']);
+const REVIEWER_PLAIN_READ_ONLY_TOOLS = new Set(['grep', 'rg', 'cat', 'ls', 'wc']);
+
+/**
+ * `sed`/`find` are only read-only in a subset of their invocations — `sed
+ * -i` and `find … -delete`/`-exec` are write primitives (opus blocking
+ * finding 2), so they're gated on flags rather than allowed/dropped
+ * wholesale.
+ */
+function isReviewerSafeTool(tokens: string[]): boolean {
+  const head = tokens[0];
+  if (head === undefined) return false;
+  if (REVIEWER_PLAIN_READ_ONLY_TOOLS.has(head)) return true;
+  if (head === 'sed') return !tokens.some((t) => t === '-i' || t.startsWith('-i'));
+  if (head === 'find')
+    return !tokens.some((t) => t === '-delete' || t === '-exec' || t === '-execdir');
+  return false;
+}
+
+function reviewerExecuteVerdict(command: string): PolicyVerdict {
+  for (const atom of cmd.parseCommandIntoAtoms(command)) {
+    if (cmd.hasRedirectionOrTee(atom.tokens)) {
+      return deny('reviewer role denies exec with redirection/tee — those are write primitives');
+    }
+    const args = cmd.gitArgs(atom.tokens);
+    const isReadOnlyGit =
+      args !== undefined && REVIEWER_READ_ONLY_GIT_SUBCOMMANDS.has(args[0] ?? '');
+    if (isReadOnlyGit) continue;
+    if (isReviewerSafeTool(atom.tokens)) continue;
+    return deny(
+      'reviewer role denies all exec except read-only tools (git diff/log/show, grep, …)',
+    );
+  }
+  return ALLOW;
+}
+
 function reviewerVerdict(classified: PermissionRequest): PolicyVerdict {
   switch (classified.toolClass) {
     case 'read':
@@ -184,22 +297,11 @@ function reviewerVerdict(classified: PermissionRequest): PolicyVerdict {
       return ALLOW;
     case 'edit':
       return deny('reviewer role denies all writes — use read-only tools');
-    case 'execute': {
+    case 'execute':
       if (classified.command === undefined) {
         return deny('reviewer role denies exec with no command to classify');
       }
-      const tokens = tokenize(classified.command);
-      const args = cmd.gitArgs(tokens);
-      const isReadOnlyGit =
-        args !== undefined && ['diff', 'log', 'show', 'status'].includes(args[0] ?? '');
-      const isReadOnlyTool = ['grep', 'rg', 'cat', 'ls', 'find', 'wc', 'sed'].includes(
-        tokens[0] ?? '',
-      );
-      if (isReadOnlyGit || isReadOnlyTool) return ALLOW;
-      return deny(
-        'reviewer role denies all exec except read-only tools (git diff/log/show, grep, …)',
-      );
-    }
+      return reviewerExecuteVerdict(classified.command);
     case 'fetch':
       return deny('reviewer role has no network access');
     default:
@@ -209,7 +311,20 @@ function reviewerVerdict(classified: PermissionRequest): PolicyVerdict {
   }
 }
 
-function qaVerdict(classified: PermissionRequest, ctx: PolicyContext): PolicyVerdict {
+function qaExecuteVerdict(command: string): PolicyVerdict {
+  // "anything in the env" (§14) — exec is bounded by the QA env itself (a
+  // throwaway clone/container, §13), not by a path check here. Redirection
+  // and tee are still write primitives regardless of role (opus blocking
+  // finding 2 names reviewer/QA together).
+  for (const atom of cmd.parseCommandIntoAtoms(command)) {
+    if (cmd.hasRedirectionOrTee(atom.tokens)) {
+      return deny('QA role denies exec with redirection/tee — those are write primitives');
+    }
+  }
+  return ALLOW;
+}
+
+function qaVerdict(classified: PermissionRequest): PolicyVerdict {
   switch (classified.toolClass) {
     case 'read':
       // "env minus contract.inputs/outputs" (§14) — the contract-scoped
@@ -226,9 +341,8 @@ function qaVerdict(classified: PermissionRequest, ctx: PolicyContext): PolicyVer
       // the safe reading of "deny edits to source". DESIGN-GAP, same as above.
       return deny('QA role denies edits to source — write test files only, via a dedicated tool');
     case 'execute':
-      // "anything in the env" (§14) — exec is bounded by the QA env itself
-      // (a throwaway clone/container, §13), not by a path check here.
-      return ALLOW;
+      if (classified.command === undefined) return ALLOW;
+      return qaExecuteVerdict(classified.command);
     case 'fetch':
       // "env base URL" (§14). No base URL is threaded into this policy
       // layer yet (DecisionContext has no envBaseUrl field) — treat as
@@ -254,6 +368,6 @@ export function roleVerdict(
     case 'reviewer':
       return reviewerVerdict(classified);
     case 'qa':
-      return qaVerdict(classified, ctx);
+      return qaVerdict(classified);
   }
 }

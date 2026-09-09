@@ -271,3 +271,186 @@ describe('decidePermission — no allow_once/reject_once option offered', () => 
     expect(decision.kind).toBe('hil');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Review round: every spelling of "push to main" the QA report and opus's
+// review demonstrated as a bypass (or a near-miss landing on the wrong
+// category) against the pre-fix tokenizer. Every one of these must be
+// `hil`, not `allow` and not `deny` — a human must see every one of them.
+// ---------------------------------------------------------------------------
+describe('decidePermission — push-to-main bypass spellings (review round)', () => {
+  const bypassCommands = [
+    'git -C . push origin main',
+    'git -C /repo push origin main',
+    'git --git-dir=/x push origin main',
+    'git -c user.name=x push origin main',
+    'git --work-tree=/x push origin main',
+    'git --no-pager push origin main',
+    'FOO=1 git push origin main',
+    'BAR=baz FOO=1 git push origin main',
+    'cd sub && git push origin main',
+    'sh -c "git push origin main"',
+    'bash -c "git push origin main"',
+    'zsh -c "git push origin main"',
+    'command git push origin main',
+    'exec git push origin main',
+    'nohup git push origin main',
+    'time git push origin main',
+    'env git push origin main',
+    '\\git push origin main',
+    'git status && git push origin main',
+    'git status; git push origin main',
+    'git status || git push origin main',
+    'echo hi\ngit push origin main',
+    'git push origin main tkt/TKT-0001-x', // laundering via a trailing good refspec
+    'git push origin HEAD:main',
+    'git push origin +main',
+    'git push --force-with-lease origin tkt/TKT-0001-x',
+    'git push', // no explicit branch — never assumed safe
+    'git push origin', // remote only, no branch
+  ];
+
+  for (const command of bypassCommands) {
+    test(`engineer: ${JSON.stringify(command)} is a hil_request`, () => {
+      const decision = decide('engineer', request('execute', { command }));
+      expect(decision.kind).toBe('hil');
+    });
+  }
+
+  test('git -C <path outside the worktree> is a hil_request on its own, even for a read-only subcommand', () => {
+    const decision = decide(
+      'engineer',
+      request('execute', { command: 'git -C /somewhere/else status' }),
+    );
+    expect(decision.kind).toBe('hil');
+  });
+
+  test('git -C . (the worktree itself) does not block an otherwise-fine command', () => {
+    const decision = decide('engineer', request('execute', { command: 'git -C . status' }));
+    expect(decision.kind).toBe('allow');
+  });
+
+  test('branch deletion: -D, -d, --delete, and push --delete/-d all hil', () => {
+    for (const command of [
+      'git branch -D tkt/old',
+      'git branch -d tkt/old',
+      'git branch --delete tkt/old',
+      'git push origin --delete tkt/old',
+      'git push origin -d tkt/old',
+    ]) {
+      expect(decide('engineer', request('execute', { command })).kind).toBe('hil');
+    }
+  });
+
+  test('unsafe shell constructs (subshell, backticks, eval, unbalanced quotes) always hil, never allow', () => {
+    for (const command of [
+      'echo $(rm -rf /)',
+      'echo `whoami`',
+      'eval rm -rf /',
+      'echo "unterminated',
+      "echo 'unterminated",
+    ]) {
+      expect(decide('engineer', request('execute', { command })).kind).toBe('hil');
+    }
+  });
+});
+
+describe('decidePermission — reviewer/QA read-only bypasses (review round)', () => {
+  test('reviewer: sed -i is a write primitive, denied', () => {
+    const decision = decide('reviewer', request('execute', { command: 'sed -i s/a/b/ src/a.ts' }));
+    expect(decision.kind).toBe('deny');
+  });
+
+  test('reviewer: sed without -i is still read-only', () => {
+    const decision = decide('reviewer', request('execute', { command: 'sed -n 1,5p src/a.ts' }));
+    expect(decision.kind).toBe('allow');
+  });
+
+  test('reviewer: find -delete / -exec are write primitives, denied', () => {
+    expect(decide('reviewer', request('execute', { command: 'find . -delete' })).kind).toBe('deny');
+    expect(decide('reviewer', request('execute', { command: 'find . -exec rm {} \\;' })).kind).toBe(
+      'deny',
+    );
+  });
+
+  test('reviewer: find without -delete/-exec is still read-only', () => {
+    expect(decide('reviewer', request('execute', { command: 'find . -name "*.ts"' })).kind).toBe(
+      'allow',
+    );
+  });
+
+  test('reviewer: a redirection is denied outright, even after a read-only command', () => {
+    expect(decide('reviewer', request('execute', { command: 'cat evil > src/a.ts' })).kind).toBe(
+      'deny',
+    );
+  });
+
+  test('reviewer: a chain with a non-read-only segment is denied', () => {
+    expect(decide('reviewer', request('execute', { command: 'git diff && rm -rf src' })).kind).toBe(
+      'deny',
+    );
+  });
+
+  test('QA: redirection/tee is denied even though QA otherwise allows exec', () => {
+    expect(decide('qa', request('execute', { command: 'npm test > out.log' })).kind).toBe('deny');
+    expect(decide('qa', request('execute', { command: 'npm test | tee out.log' })).kind).toBe(
+      'deny',
+    );
+  });
+});
+
+describe('decidePermission — manifest/lockfile edits are a hil_request (review round)', () => {
+  for (const filename of ['package.json', 'bun.lock', 'package-lock.json', 'pnpm-lock.yaml']) {
+    test(`engineer: editing ${filename} in the worktree is a hil_request (new dependency)`, () => {
+      const decision = decide(
+        'engineer',
+        request('edit', { targetPath: `${WORKTREE}/${filename}` }),
+      );
+      expect(decision.kind).toBe('hil');
+    });
+  }
+});
+
+describe('decidePermission — package managers beyond npm/pnpm/bun (review round)', () => {
+  for (const command of [
+    'yarn add lodash',
+    'pip install requests',
+    'cargo add serde',
+    'gem install rails',
+  ]) {
+    test(`engineer: "${command}" is a hil_request (new dependency)`, () => {
+      expect(decide('engineer', request('execute', { command })).kind).toBe('hil');
+    });
+  }
+});
+
+describe('decidePermission — engineer redirection (review round)', () => {
+  test('redirecting output inside the worktree is fine', () => {
+    const decision = decide(
+      'engineer',
+      request('execute', { command: `npm test > ${WORKTREE}/out.log` }),
+    );
+    expect(decision.kind).toBe('allow');
+  });
+
+  test('redirecting output outside the worktree is denied', () => {
+    const decision = decide('engineer', request('execute', { command: 'npm test > /etc/passwd' }));
+    expect(decision.kind).toBe('deny');
+  });
+
+  test('tee is denied for the engineer too (opaque write target)', () => {
+    const decision = decide(
+      'engineer',
+      request('execute', { command: 'npm test | tee /tmp/out.log' }),
+    );
+    expect(decision.kind).toBe('deny');
+  });
+
+  test('regression: a safe-looking redirect target does not launder an otherwise-disallowed command', () => {
+    const decision = decide(
+      'engineer',
+      request('execute', { command: `rm -rf secret > ${WORKTREE}/out.log` }),
+    );
+    expect(decision.kind).toBe('deny');
+  });
+});
