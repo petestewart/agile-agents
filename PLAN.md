@@ -314,12 +314,12 @@ Priority encodes dependency layer as well as importance: P0 tickets are v0-block
 
 ### Ticket: T028 Shared ULID generator
 - **Priority:** P1
-- **Status:** In Review
+- **Status:** Done
 - **Owner:** sonnet:worker-T028
 - **Scope:** Depends on T008, T010, T018, T020 (all Done). Move the three copies of the ULID generator (`packages/daemon/src/bus/ulid.ts`, `packages/daemon/src/gates/ulid.ts`, `packages/daemon/src/permissions/ulid.ts`, plus `packages/cli/src/ulid.ts`) into `packages/shared/src/ids.ts` as one `ulid(now?)` implementation (Crockford base32, monotonic within a ms) next to `UlidSchema`; delete the copies; update imports and tests. No behaviour change.
 - **Acceptance Criteria:** One implementation, exported from shared; `grep -rn "function ulid\|generateUlid" packages` finds only shared; all existing tests pass unchanged.
 - **Validation Steps:** `bun test`; grep.
-- **Notes:** Discovered during T008/T010/T018 reviews (four duplicate generators). Branch `T028-shared-ulid` (local worktree), 837 tests green; review round 1 PASS. QA running.
+- **Notes:** Discovered during T008/T010/T018 reviews (four duplicate generators). Branch `T028-shared-ulid` (local worktree), 837 tests green; review round 1 PASS, QA ACCEPT. merge: 40cd1e7.
 
 ### Ticket: T029 Permission classifier: stop over-denying benign stderr redirects
 - **Priority:** P2
@@ -371,3 +371,4 @@ Priority encodes dependency layer as well as importance: P0 tickets are v0-block
 - 2026-09-09 — Decision: no workspace dependency cycles; e2e tests that need the daemon live in `packages/daemon`. `playwright-core` is a root devDependency; the e2e auto-skips without a Chromium executable and runs via root `test:e2e` (and under `bun test` where Chromium exists).
 - 2026-09-09 — Decision: `agile hook` fails open only until T009 lands; T009 makes fail-closed the default (deny with reason when the daemon is unreachable) with a 2 s timeout. Per-tool-call hook cost ≈100 ms (Bun cold start) accepted for v0. ULID generator now exists in bus, gates and cli — dedupe into shared as a small follow-up ticket.
 - 2026-09-09 — T010, T008, T020 merged (a6bbba5, 07da0ca, acc292d); 840 tests green incl. the Playwright e2e. Added T028 (shared ULID generator) and T029 (benign stderr redirects) as discovered work. Launched T009 (hook gate) and T028 in parallel.
+- 2026-09-09 — T028 merged (40cd1e7). Note for T009's merge: import `ulid` from `@agile-agents/shared` (the per-area copies are gone).
