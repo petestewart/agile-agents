@@ -96,3 +96,6 @@ export * from './em';
 // QA protocol: clone env, criteria, contract-path deny, rerun/flaky, report,
 // QaProtocol, qa_* verbs, qa.* RPC (T017).
 export * from './qa';
+
+// Quota records, routing policy, barometer data, quota.* RPC (T023).
+export * from './quota';

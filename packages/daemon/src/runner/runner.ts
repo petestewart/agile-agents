@@ -69,6 +69,8 @@ export interface RunnerOptions {
   installPreCommitHook?: (worktreePath: string, ticket: Ticket) => unknown;
   /** T017: called once per QA spawn with the ticket and its fresh clone path — the daemon wires `QaProtocol.start` here. */
   onQaSpawn?: (ticket: Ticket, worktreePath: string) => unknown;
+  /** T023: forwarded to every session — see `AgentSessionOptions.quota`. */
+  quota?: AgentSessionOptions['quota'];
 }
 
 export interface SpawnResult {
@@ -165,6 +167,7 @@ export class Runner {
       gateService: this.opts.gateService,
       spawn: this.opts.spawn,
       now: this.opts.now,
+      quota: this.opts.quota,
     });
     this.live.set(agentId, handle);
     void handle.exited.then(() => {

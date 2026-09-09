@@ -23,6 +23,7 @@ import { type LockHandle, acquireLock } from './lock';
 import { MergeOwner, buildMergeRpcMethods, sprintReviewApproved } from './merge';
 import { buildOracleRpcMethods } from './oracle';
 import { QaProtocol, buildQaRpcMethods, decideQaRead, registerQaTools } from './qa';
+import { QuotaService, buildQuotaRpcMethods } from './quota';
 import {
   REVIEW_BUILTIN_TOOLS,
   ReviewProtocol,
@@ -70,6 +71,10 @@ export async function startDaemon(options: DiscoverConfigOptions = {}): Promise<
   // Hoisted (T011) so `bus.*` RPC, the hook service, and the tool service's
   // `bus_send` built-in all share one `Bus` instance over the same store.
   const bus = store ? new Bus(store, config.stateRoot) : undefined;
+  // Quota records + routing data (T023): fed by every session's
+  // `usage_update` through the runner; read by `quota.*` RPC, `agile
+  // status`, and the feed header.
+  const quotaService = store && bus ? new QuotaService({ store, bus }) : undefined;
   // QA protocol (T017, §13): fresh clone per ticket, contract-path deny,
   // criteria runs, verdicts. Constructed before the tool service and the
   // runner because both take closures over it.
@@ -345,6 +350,7 @@ export async function startDaemon(options: DiscoverConfigOptions = {}): Promise<
           ...buildMergeRpcMethods(mergeOwner),
           ...(emLoop ? buildEmRpcMethods(emLoop, store) : {}),
           ...(qaProtocol ? buildQaRpcMethods(qaProtocol) : {}),
+          ...(quotaService ? buildQuotaRpcMethods(quotaService, store) : {}),
         }
       : undefined;
 
@@ -371,6 +377,7 @@ export async function startDaemon(options: DiscoverConfigOptions = {}): Promise<
       startedAt,
       store,
       gates: gateService,
+      quota: quotaService,
     });
   } catch (err) {
     await rpc.close();

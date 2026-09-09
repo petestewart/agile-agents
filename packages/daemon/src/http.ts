@@ -21,6 +21,7 @@ import { type HilDecision, HilIdSchema } from '@agile-agents/shared';
 import { FEED_HTML_PATH } from '@agile-agents/ui';
 import { type EventTailerHandle, buildSnapshot, startEventTailer } from './feed';
 import { GateAlreadyResolvedError, GateNotFoundError, type GateService } from './gates';
+import type { QuotaService } from './quota/records';
 import type { StateStore } from './store';
 
 export interface HealthPayload {
@@ -40,6 +41,8 @@ export interface HttpServerOptions {
   store?: StateStore;
   /** Required alongside `store` to serve the HIL attention-queue snapshot + approve/delegate actions. */
   gates?: GateService;
+  /** T023: live quota/barometer data for the feed header; optional (empty `quota` array without it). */
+  quota?: QuotaService;
   /** Test hook: overrides the tailer's poll interval (default 250ms — see `feed/tailer.ts`). */
   feedPollIntervalMs?: number;
 }
@@ -156,11 +159,12 @@ async function handleHilAction(
 interface FeedContext {
   store: StateStore;
   gates: GateService;
+  quota?: QuotaService;
 }
 
 function resolveFeedContext(options: HttpServerOptions): FeedContext | undefined {
   if (!options.store || !options.gates) return undefined;
-  return { store: options.store, gates: options.gates };
+  return { store: options.store, gates: options.gates, quota: options.quota };
 }
 
 export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
@@ -193,7 +197,7 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
 
       if (url.pathname === '/api/snapshot') {
         if (!feed) return errorResponse(503, 'state store not initialised (run `agile init`)');
-        return jsonResponse(buildSnapshot(feed.store, feed.gates));
+        return jsonResponse(buildSnapshot(feed.store, feed.gates, undefined, feed.quota));
       }
 
       const hilMatch = matchHilAction(url.pathname);
@@ -225,7 +229,7 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
 
         if (feed) {
           ws.subscribe(FEED_WS_TOPIC);
-          ws.send(JSON.stringify(buildSnapshot(feed.store, feed.gates)));
+          ws.send(JSON.stringify(buildSnapshot(feed.store, feed.gates, undefined, feed.quota)));
         }
       },
       message() {

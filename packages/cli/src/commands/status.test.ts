@@ -9,8 +9,7 @@ import { type RpcServerHandle, StateStore, runInit, startRpcServer } from '@agil
 // ownership excludes `daemon/src/index.ts`). Imported by subpath here so
 // this test can exercise the real quota-wired status path today; switch to
 // the package-root import once index.ts re-exports them.
-import { QuotaService } from '@agile-agents/daemon/src/quota/records';
-import { buildQuotaRpcMethods } from '@agile-agents/daemon/src/quota/rpc';
+import { QuotaService, buildQuotaRpcMethods } from '@agile-agents/daemon';
 import type { Halt } from '@agile-agents/shared';
 import { callRpc } from '../client';
 import { type TestDaemon, startTestDaemon } from '../test-support';

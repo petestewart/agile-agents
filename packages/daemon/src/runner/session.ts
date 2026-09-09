@@ -76,7 +76,7 @@ import {
   type SpawnedSession,
   spawnSession as defaultSpawnSession,
 } from '@agile-agents/acp-client';
-import type { AgentId, LedgerKind, TicketId } from '@agile-agents/shared';
+import type { AgentId, LedgerKind, LedgerLine, TicketId } from '@agile-agents/shared';
 import { ulid, validateLedgerLine } from '@agile-agents/shared';
 import type { Bus } from '../bus';
 import { pickCurrentSprint } from '../feed';
@@ -125,6 +125,15 @@ export interface AgentSessionOptions {
   spawn?: typeof defaultSpawnSession;
   now?: () => Date;
   hookTimeoutSeconds?: number;
+  /**
+   * T023 quota tracking: every `usage_update` ledger line is also fed to
+   * the quota service for this session's vendor/account (countdown,
+   * `quota_low`/`quota_exhausted`). Optional — tests and pre-`.agile/`
+   * daemons run without it.
+   */
+  quota?: { recordUsage(vendor: string, account: string, line: LedgerLine): Promise<unknown> };
+  /** Vendor account this session is billed to. Defaults to `'default'` until routing threads the chosen account through. */
+  account?: string;
 }
 
 export interface AgentExitInfo {
@@ -411,23 +420,22 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
           const resolvedSprintId = currentSprintId();
           const noSprint = resolvedSprintId === undefined;
           const sprint = resolvedSprintId ?? 'nosprint';
-          track(
-            store.appendLedgerLine(
-              sprint,
-              validateLedgerLine({
-                ts: now().toISOString(),
-                sprint,
-                ticket,
-                agent: agentId,
-                model,
-                in_tokens: delta,
-                out_tokens: 0,
-                cost_usd: 0,
-                kind: ROLE_LEDGER_KIND[role],
-              }),
-              { commit: 'deferred' },
-            ),
-          );
+          const ledgerLine = validateLedgerLine({
+            ts: now().toISOString(),
+            sprint,
+            ticket,
+            agent: agentId,
+            model,
+            in_tokens: delta,
+            out_tokens: 0,
+            cost_usd: 0,
+            kind: ROLE_LEDGER_KIND[role],
+          });
+          track(store.appendLedgerLine(sprint, ledgerLine, { commit: 'deferred' }));
+          // T023: the same line drives the per-account quota countdown.
+          if (opts.quota) {
+            track(opts.quota.recordUsage(provider.id, opts.account ?? 'default', ledgerLine));
+          }
           if (noSprint) {
             track(
               store.appendEvent(
