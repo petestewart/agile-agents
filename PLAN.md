@@ -359,8 +359,8 @@ Priority encodes dependency layer as well as importance: P0 tickets are v0-block
 
 ### Ticket: T033 Deflake subprocess-timing tests under full-suite load
 - **Priority:** P2
-- **Status:** Todo
-- **Owner:** Unassigned
+- **Status:** In Progress
+- **Owner:** sonnet:worker-T033
 - **Scope:** Depends on T009, T012. With ~1780 tests, one of two subprocess-timing tests fails intermittently in a full `bun test` run and passes 3x in isolation: `hook/rpc.test.ts` "`agile hook pre-tool-use` prints the daemon reply verbatim" and `runner/runner.test.ts` "kill -9 on the recorded pid … within one liveness interval". Make both robust to load (wait on readiness signals instead of fixed timeouts, inject the liveness interval, give the CLI subprocess a deterministic socket-ready wait) without weakening what they assert; never skip or quarantine.
 - **Acceptance Criteria:** 10 consecutive full-suite runs with 0 failures.
 - **Validation Steps:** `for i in $(seq 10); do bun test; done` on the integration head.
