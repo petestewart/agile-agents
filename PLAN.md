@@ -269,12 +269,12 @@ Priority encodes dependency layer as well as importance: P0 tickets are v0-block
 
 ### Ticket: T023 Quota records, routing policy, barometer data
 - **Priority:** P2
-- **Status:** In Progress
+- **Status:** In Review
 - **Owner:** sonnet:worker-T023
 - **Scope:** Depends on T005, T012. `Quota` entities per vendor account (reported vs ledger-countdown, 429 → cooldown), routing policy `(role, tier) → ordered candidates` with floor and cooldown checks, `quota_low`/`quota_exhausted` bus events, Pi-on-Claude billed as extra-usage dollars. Exposed via `agile status` and the feed header.
 - **Acceptance Criteria:** With a simulated exhausted Claude account, new assignments route to the next candidate; a 429 event sets cooldown and reroutes.
 - **Validation Steps:** Unit tests with synthetic quota feeds.
-- **Notes:**
+- **Notes:** branch `T023-quota-routing` (2 commits); `src/quota/` (QuotaService: countdown/reported/429/barometer; `routeCandidates`; RPC), additive Quota/VendorAccount fields in shared, feed snapshot + `agile status` sections; 1099 tests. Wiring for the manager: daemon/index + `runner/session.ts` calls to `recordUsage`/`record429`; T015 injects `route()`. Gates running.
 
 ### Ticket: T024 Handoff and pause
 - **Priority:** P2
