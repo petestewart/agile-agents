@@ -260,8 +260,8 @@ Priority encodes dependency layer as well as importance: P0 tickets are v0-block
 
 ### Ticket: T022 Pi adapter and `agile` extension
 - **Priority:** P2
-- **Status:** Todo
-- **Owner:** Unassigned
+- **Status:** In Progress
+- **Owner:** sonnet:worker-T022
 - **Scope:** Depends on T009, T011, T012. Vendor entry for Pi via `pi-acp` (fork if needed); an `agile` Pi extension installed to `~/.pi/agent/extensions/` (self-guarding on a daemon-set env var) implementing `tool_call` gating with reasons, `tool_result` rewriting for `test_run`-class outputs, halt/inbox delivery, and heartbeat by calling the daemon socket; `quietStartup` handling. Routing table gains `(pi, account, model)` candidates for engineer and reviewer.
 - **Acceptance Criteria:** The demo epic completes with Pi engineers and a Claude reviewer; the perm matrix for Pi reproduces `spike-findings.md` §C4.
 - **Validation Steps:** Live e2e with `routing: engineer → pi`.
@@ -296,8 +296,8 @@ Priority encodes dependency layer as well as importance: P0 tickets are v0-block
 
 ### Ticket: T026 Tier-0 sandbox
 - **Priority:** P2
-- **Status:** Todo
-- **Owner:** Unassigned
+- **Status:** In Progress
+- **Owner:** sonnet:worker-T026
 - **Scope:** Depends on T012. Per-worktree sandbox wrapper for agent processes: macOS `sandbox-exec` profile (read-only mounts for reviewer/QA, no network for engineers except allowlisted registries) with a container fallback; vendor logins must keep working inside it. Routing gains a `requires_sandbox` flag for vendors with ungated exec (Codex, Grok).
 - **Acceptance Criteria:** A reviewer session cannot write to its checkout; an engineer session cannot reach example.com; Claude and Pi sessions still authenticate inside the sandbox.
 - **Validation Steps:** Live tests per role.
@@ -395,3 +395,4 @@ Priority encodes dependency layer as well as importance: P0 tickets are v0-block
 - 2026-09-09 — T016 merged (acf74f3) and wired into the daemon (review providers + review.* RPC, 9025e10). T030 merged (bfd4512) after 4 review / 4 QA rounds. 1347 tests green.
 - 2026-09-09 — T019 merged (8ef1564), wired in d1301fc. Merge conflict in `packages/shared/src/index.ts` (review + merge barrel exports) resolved by keeping both. Decision: the pre-commit halt guard is installed on every engineer worktree by default (hooks are the enforcement layer); a repo with a foreign `pre-commit` hook fails spawn loudly rather than skipping the guard. `merge/rpc.ts` no longer re-exports `RpcError`/`RpcParamError` (duplicate barrel export). 1385 tests green.
 - 2026-09-09 — T015 merged (ea7a94a), wired in 23639a3. Decision: the daemon owns a 30 s ceremony tick (`CEREMONY_TICK_MS`) that calls `GateService.tick()` then `EmLoop.tick()` — reviewer found no other caller of `GateService.tick()`, so §16 deadline fallthrough was inert. `mergeIntegrationToMain` is injected from T019 and throws on any non-`merged` outcome so the next sprint is never planned over a failed merge. T017 review round 2 FAIL (fail-open on all-skipped criteria), T023 review round 3 FAIL (3 blockers); both back to workers. 1425 tests green.
+- 2026-09-09 — Wave 7 launched: T022 (Pi adapter; `pi-acp` 0.0.33 / pi-coding-agent 0.73.1 visible on npm, no Pi login in the container) and T026 (tier-0 sandbox; Linux container, `docker` binary present, no `sandbox-exec`/`bwrap`). Both told to verify the toolchain first and report Blocked rather than fake a live path. T021 waits on T017; T025/T024 wait on T023.
