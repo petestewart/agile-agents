@@ -151,6 +151,17 @@ export interface RunnerOptions {
   piAgentDir?: AgentSessionOptions['piAgentDir'];
   /** T022: forwarded to `startAgentSession` — injects a fake `installPiExtension` for the same reason as `piAgentDir`. */
   installPiExtension?: AgentSessionOptions['installPiExtension'];
+  /**
+   * T031 review round 2 (opus blocker 2): forwarded to `startAgentSession`
+   * for an architect spawn — see `AgentSessionOptions.architectMode`'s own
+   * doc comment. Without this field CLAUDE.md's documented `default`-mode
+   * fallback ("if plan mode blocks the architect's MCP writes, run
+   * `default` mode with a daemon-side `approve_plan` gate") was reachable
+   * only by a unit test calling `startAgentSession` directly, never by any
+   * real `Runner.spawn('architect', ...)` caller or config. Defaults to
+   * `'plan'` (via `startAgentSession`'s own default) when unset.
+   */
+  architectMode?: AgentSessionOptions['architectMode'];
 }
 
 export interface SpawnResult {
@@ -329,6 +340,7 @@ export class Runner {
       wrapCommand: this.opts.wrapCommand,
       piAgentDir: this.opts.piAgentDir,
       installPiExtension: this.opts.installPiExtension,
+      architectMode: this.opts.architectMode,
     });
     this.live.set(agentId, handle);
     void handle.exited.then(() => {

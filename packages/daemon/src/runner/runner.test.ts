@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { ACP_PROVIDERS, type SpawnSessionOptions, spawnSession } from '@agile-agents/acp-client';
 import { validateTicket } from '@agile-agents/shared';
 import { Bus } from '../bus';
+import { GateService } from '../gates';
 import { runInit } from '../init';
 import { SandboxRequiredError } from '../sandbox';
 import { StateStore } from '../store';
@@ -49,6 +50,29 @@ function fakeSpawn(script: FakeAgentScript, pidFile?: string) {
         ...(pidFile ? { AGILE_FAKE_AGENT_PIDFILE: pidFile } : {}),
       },
     });
+}
+
+/**
+ * Like `fakeSpawn`, but also captures the exact `SpawnSessionOptions`
+ * `Runner`/`startAgentSession` built (T031 review round 2 blocker 2 — the
+ * `modeId` `Runner.spawn('architect', ...)` actually sends is what proves
+ * `RunnerOptions.architectMode` is wired through, not just accepted).
+ */
+function fakeSpawnCapturing(script: FakeAgentScript, sink: { options?: SpawnSessionOptions }) {
+  const scriptPath = join(
+    scratch,
+    `${Bun.hash(JSON.stringify(script) + Math.random()).toString(36)}.json`,
+  );
+  writeFileSync(scriptPath, JSON.stringify(script));
+  return (opts: SpawnSessionOptions) => {
+    sink.options = opts;
+    return spawnSession({
+      ...opts,
+      cmd: 'bun',
+      args: [FAKE_AGENT_PATH],
+      envOverrides: { ...opts.envOverrides, AGILE_FAKE_AGENT_SCRIPT: scriptPath },
+    });
+  };
 }
 
 /** Builds a `Runner` and registers it for forced teardown in `afterEach` — see `activeRunners`. */
@@ -293,6 +317,96 @@ describe('Runner.spawn', () => {
       stderr: 'pipe',
     });
     expect(mergeCheck.exitCode).toBe(0);
+
+    runner.stop('architect');
+    await result.exited;
+  }, 90000);
+
+  // T031 review round 2 (opus blocker 2): `RunnerOptions.architectMode`
+  // must actually be reachable from `Runner.spawn`, not just accepted by
+  // `startAgentSession` when called directly from a unit test. Proves both
+  // halves: the `default` mode id is what's actually sent (not a hard-forced
+  // `plan`), and the plan-approval round trip through a real `GateService`
+  // still happens regardless of mode — CLAUDE.md's documented fallback
+  // ("run `default` mode with a daemon-side `approve_plan` gate") is a real,
+  // selectable behaviour, not dead code.
+  test('RunnerOptions.architectMode "default" reaches the spawned session (modeId is not forced to "plan") and the approve_plan gate still runs', async () => {
+    // `runInit` (this file's `beforeEach`) seeds the repo default
+    // `approve_plan: human` — re-point it at `em` so the delegate below
+    // actually resolves the gate instead of leaving it pending on a human
+    // nobody in this test answers.
+    await store.putPolicy({
+      gates: {
+        approve_plan: 'em',
+        approve_decision: 'human',
+        sprint_review: 'human',
+        unblock: 'human',
+        demo: 'human',
+      },
+      breaker_signals: [],
+    });
+    const gateService = new GateService(store, {
+      delegate: () => ({ decision: 'approve', by: 'em', rationale: 'test delegate' }),
+    });
+    const resultFile = join(scratch, 'runner-architect-default-mode-plan-result.json');
+    const sink: { options?: SpawnSessionOptions } = {};
+    const runner = trackedRunner({
+      store,
+      bus,
+      repoRoot: repo,
+      gateService,
+      architectMode: 'default',
+      spawn: fakeSpawnCapturing(
+        {
+          steps: [
+            {
+              type: 'request_permission',
+              toolCall: { toolCallId: 'plan-1', kind: 'switch_mode', title: 'Approve Plan' },
+              options: [
+                { optionId: 'allow', kind: 'allow_once' },
+                { optionId: 'reject', kind: 'reject_once' },
+              ],
+              resultFile,
+            },
+            { type: 'end_turn' },
+          ],
+        },
+        sink,
+      ),
+    });
+
+    const result = await runner.spawn('architect', 'TKT-0231');
+    // Claude's own default mode (`ACP_PROVIDERS.claude.defaultModeId`) —
+    // never `'plan'` when `architectMode: 'default'` is set. Before this
+    // round's fix, `RunnerOptions` had no field to carry this at all, so
+    // every `Runner.spawn('architect', ...)` hard-forced `plan` regardless.
+    expect(sink.options?.modeId).toBe('default');
+    expect(sink.options?.modeId).not.toBe('plan');
+
+    await waitFor(() => existsSync(resultFile));
+    const planResult = JSON.parse(readFileSync(resultFile, 'utf8')) as {
+      outcome: { outcome: string; optionId?: string };
+    };
+    // The gate still ran — the fake agent raised the exact same
+    // `ExitPlanMode`/"Approve Plan" request a real `plan`-mode session
+    // would, and it's still routed through the real `GateService`'s
+    // em-delegate rather than falling through to `architectVerdict`'s
+    // safe-default deny.
+    expect(planResult.outcome).toEqual({ outcome: 'selected', optionId: 'allow' });
+
+    await waitFor(() =>
+      store
+        .listEvents()
+        .some(
+          (e) => e.kind === 'hook_decision' && (e.data as { role?: string })?.role === 'architect',
+        ),
+    );
+    const decisionEvent = store
+      .listEvents()
+      .find(
+        (e) => e.kind === 'hook_decision' && (e.data as { role?: string })?.role === 'architect',
+      );
+    expect((decisionEvent?.data as { decision?: string })?.decision).toBe('allow');
 
     runner.stop('architect');
     await result.exited;

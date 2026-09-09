@@ -681,15 +681,38 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
         void (async () => {
           const options = params.options;
           let approved = false;
-          if (gateService) {
-            approved = await awaitArchitectPlanApproval(
-              gateService,
-              store.getPolicy(),
-              opts.architectGatePollMs ?? 200,
-              opts.architectGateTimeoutMs ?? 5 * 60 * 1000,
-              now,
-            );
+          // Review round 2 (opus blocker 1): `store.getPolicy()` and every
+          // `GateService` call below are fallible (a missing
+          // `.agile/policy.yaml`, a store write failure, a corrupt/removed
+          // HIL record) — and, unlike `permissions/responder.ts`'s own
+          // "respond before the fallible event-log write" rule (quoted in
+          // its file header: "a store hiccup must not leave the agent's
+          // turn hung on an already-decided answer"), this branch used to
+          // run every fallible call *before* ever responding to `frame.id`.
+          // A thrown error here used to propagate straight out of this
+          // `session.on` listener and into `acp-client`'s frame dispatch —
+          // reproduced in review: the fake agent's permission request was
+          // never answered at all, hanging the turn forever. Fail closed
+          // instead: any error opening/polling the gate denies the plan
+          // (never silently allows one nobody actually approved), and the
+          // request is always answered before anything else in this branch
+          // can fail again.
+          let gateFailure: string | undefined;
+          try {
+            if (gateService) {
+              approved = await awaitArchitectPlanApproval(
+                gateService,
+                store.getPolicy(),
+                opts.architectGatePollMs ?? 200,
+                opts.architectGateTimeoutMs ?? 5 * 60 * 1000,
+                now,
+              );
+            }
+          } catch (err) {
+            approved = false;
+            gateFailure = err instanceof Error ? err.message : String(err);
           }
+
           const chosen = approved
             ? findPermissionOption(options, ['allow_once', 'allow_always'])
             : findPermissionOption(options, ['reject_once', 'reject_always']);
@@ -700,23 +723,54 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
           } else {
             session.respondPermission(frame.id, { outcome: { outcome: 'cancelled' } });
           }
+
+          const reason =
+            gateFailure !== undefined
+              ? `approve_plan gate unavailable (${gateFailure}) — denied`
+              : gateService
+                ? 'approve_plan gate'
+                : 'approve_plan gate unavailable (no GateService wired) — denied';
+          // Best-effort logging only, after the request is already
+          // answered above — a failure here must never re-throw into this
+          // listener (that's exactly the bug this fix closes).
           track(
-            store.appendEvent(
-              buildEvent('hook_decision', {
-                ticket,
-                agent: agentId,
-                data: {
-                  role,
-                  toolClass: 'other',
-                  decision: approved ? 'allow' : 'deny',
-                  reason: gateService
-                    ? 'approve_plan gate'
-                    : 'approve_plan gate unavailable (no GateService wired) — denied',
-                },
-              }),
-              { commit: 'deferred' },
-            ),
+            store
+              .appendEvent(
+                buildEvent('hook_decision', {
+                  ticket,
+                  agent: agentId,
+                  data: { role, toolClass: 'other', decision: approved ? 'allow' : 'deny', reason },
+                }),
+                { commit: 'deferred' },
+              )
+              .catch(() => {}),
           );
+
+          if (gateFailure !== undefined) {
+            // Surface the failure through the same escalate shape `finish()`
+            // uses for a session ending — em needs to see a broken gate,
+            // but the architect session itself stays live (it can still
+            // answer non-plan tool calls normally; only this one plan
+            // request was denied).
+            track(
+              bus
+                .send({
+                  id: ulid(),
+                  ts: now().toISOString(),
+                  from: agentId,
+                  to: ['em'],
+                  kind: 'escalate',
+                  priority: 'urgent',
+                  ticket,
+                  body: `${agentId} (${role}) approve_plan gate failed, plan denied: ${gateFailure}`.slice(
+                    0,
+                    800,
+                  ),
+                  requires_ack: true,
+                })
+                .catch(() => {}),
+            );
+          }
         })();
         return;
       }
