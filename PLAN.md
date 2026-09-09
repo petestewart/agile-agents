@@ -386,12 +386,12 @@ Priority encodes dependency layer as well as importance: P0 tickets are v0-block
 
 ### Ticket: T036 Deflake `hook-timing.test.ts` end-to-end CLI subprocess test
 - **Priority:** P3
-- **Status:** In Progress
+- **Status:** In Review
 - **Owner:** sonnet:worker-T036
 - **Scope:** Depends on T033. `packages/cli/src/commands/hook-timing.test.ts` "end-to-end CLI subprocess: report measured numbers honestly" hit its 5 000 ms bun-test timeout once in three full-suite runs during T035 QA round 2 (full run 190 s under load from five concurrent agents). It spawns a real CLI subprocess; under load the spawn+round-trip exceeds the default timeout. Attribute the cost (spawn vs measurement loop), then either bound the measured samples or give the test an explicit timeout proportional to what it measures without weakening the "honest numbers" assertion. Test-only.
 - **Acceptance Criteria:** 20/20 isolated runs of the file under two concurrent `bun test packages/daemon/src/store` load loops; 3/3 full `bun test`; assertions unchanged or stronger.
 - **Validation Steps:** `for i in $(seq 20); do bun test packages/cli/src/commands/hook-timing.test.ts; done` under load, then 3x `bun test`.
-- **Notes:** Discovered by T035 QA round 2 (2026-09-09). T033 already routed this test's subprocess stdio to files (rounds 2–3); this is a timeout-under-load flake, not the EBADF race.
+- **Notes:** Discovered by T035 QA round 2 (2026-09-09). T033 already routed this test's subprocess stdio to files (rounds 2–3); this is a timeout-under-load flake, not the EBADF race. Branch `T036-hook-timing-deflake` (`d175338`, test-only, +15/-1): measured 11 sequential real `bun` CLI spawns at ~250 ms each isolated, 250–480 ms under load ≈ 4.2 s against the 5 s default per-test timeout; fix gives the test an explicit timeout `(warmup+measured)*3000+2000` ms with sample count and the median<2000 ms assertion unchanged; 20/20 under load, 3/3 full suites. Review round 1 + QA round 1 running.
 
 ### Ticket: T037 Sandbox the remaining daemon and CLI subprocess spawns
 - **Priority:** P3
