@@ -13,7 +13,7 @@
  */
 
 import { execFileSync } from 'node:child_process';
-import { platform } from 'node:os';
+import { platform, tmpdir } from 'node:os';
 import { sandboxedSubprocessEnv } from '../subprocess-env';
 import type { SandboxBackend } from './types';
 
@@ -38,16 +38,34 @@ function binaryOnPath(bin: string): boolean {
 }
 
 /**
+ * The env `dockerDaemonReachable` spawns `docker info` with — pulled out
+ * as its own pure function (T034 round 2 review) so a test can assert its
+ * shape directly and deterministically, without needing a real `docker`
+ * binary on the test host or depending on `execFileSync` actually running.
+ *
+ * `repoRoot` is never defaulted to `process.cwd()` (round 1 finding: that
+ * made every plain `bun test` invocation materialize
+ * `<cwd>/.agile-daemon-cache/` inside whatever directory happened to be the
+ * working directory when the test process started — this repo checkout,
+ * in CI). Callers that know their repo root must pass it; a caller that
+ * doesn't (this module's own bare, no-args real-deps probe — nothing
+ * upstream of `detectBackend()` threads a real repo root through today,
+ * see the pipeline report's "still-unsandboxed" list) sandboxes under the
+ * OS temp directory instead, which is always safe to write into and never
+ * shows up in any repo's `git status`.
+ */
+export function dockerProbeEnv(repoRoot: string | undefined): Record<string, string> {
+  return sandboxedSubprocessEnv(repoRoot ?? tmpdir(), 'sandbox-detect');
+}
+
+/**
  * T034: `docker info` must never run with the daemon's own inherited
  * `$HOME` — the docker CLI reads/writes `$HOME/.docker/config.json` (or
  * creates it) on every invocation, which is exactly the shape of leak this
  * ticket exists to close (T021 found the same thing for `npm test`'s debug
- * logger). `repoRoot` defaults to `process.cwd()` — every other daemon
- * entry point that lacks an explicit repo root uses the same default (see
- * `config.ts`), and in production the daemon process's cwd *is* its repo
- * root. Callers with a real repo root handy should pass it explicitly.
+ * logger). See `dockerProbeEnv` for how `repoRoot` is resolved.
  */
-export function dockerDaemonReachable(repoRoot: string = process.cwd()): boolean {
+export function dockerDaemonReachable(repoRoot?: string): boolean {
   if (!binaryOnPath('docker')) return false;
   try {
     // `docker info` fails fast (no daemon socket) rather than hanging when
@@ -56,7 +74,7 @@ export function dockerDaemonReachable(repoRoot: string = process.cwd()): boolean
     execFileSync('docker', ['info'], {
       stdio: ['ignore', 'ignore', 'ignore'],
       timeout: 5000,
-      env: sandboxedSubprocessEnv(repoRoot, 'sandbox-detect'),
+      env: dockerProbeEnv(repoRoot),
     });
     return true;
   } catch {
@@ -64,7 +82,12 @@ export function dockerDaemonReachable(repoRoot: string = process.cwd()): boolean
   }
 }
 
-/** Real dependencies — what `detectBackend()` uses when called with no args. */
+/**
+ * Real dependencies — what `detectBackend()` uses when called with no
+ * args. `hasContainerRuntime` never has a repo root to pass (nothing
+ * upstream threads one through — see `dockerProbeEnv`'s doc comment), so
+ * every real-deps probe sandboxes under the OS temp dir.
+ */
 export const defaultDetectBackendDeps: DetectBackendDeps = {
   platform,
   hasSandboxExec: () => binaryOnPath('sandbox-exec'),

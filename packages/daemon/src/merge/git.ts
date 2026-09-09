@@ -27,36 +27,24 @@
  * this process's inherited `$HOME`) — git respects `HOME` for its own
  * global config (`~/.gitconfig`) and, on some platforms, credential
  * helpers, and this module's callers span the daemon's own worktrees
- * (`this.repoRoot`, a ticket worktree, `.worktrees/_integration`,
+ * (the repo root, a ticket worktree, `.worktrees/_integration`,
  * `.worktrees/_main`), never the operator's real home. Production must not
- * rely on the test preload's `GIT_CONFIG_GLOBAL=/dev/null` for this — see
- * `repoRootForEnv` for how the sandbox root is derived from whatever `cwd`
- * a caller passes, since none of `git`/`gitWrite`'s callers carry a
- * separate `repoRoot` parameter today.
+ * rely on the test preload's `GIT_CONFIG_GLOBAL=/dev/null` for this.
+ *
+ * T034 round 2 (review): `git`/`gitWrite`/`runGit` take `repoRoot` as an
+ * explicit parameter — not derived from `cwd` by string-matching a
+ * `/.worktrees/` segment (an earlier version of this file did that; a
+ * heuristic is exactly the kind of thing that quietly breaks the day a
+ * repo root or worktree happens to contain that literal substring itself,
+ * or the layout changes). Every caller already knows its own repo root
+ * (`merge/owner.ts`'s `this.repoRoot`, `merge/precommit.ts`'s threaded
+ * `repoRoot` parameter) — passing it explicitly is strictly simpler than
+ * recovering it.
  */
 
-import { sep } from 'node:path';
 import { sandboxedSubprocessEnv } from '../subprocess-env';
 
 const textDecoder = new TextDecoder();
-
-/**
- * Every cwd this module's callers pass is either the daemon's own repo
- * root or one of its worktrees (`<repoRoot>/.worktrees/<name>`) — never an
- * arbitrary directory. Recovering `repoRoot` from `cwd` this way means
- * `git`/`gitWrite` can sandbox every spawn without changing their
- * signatures (both take only `args`/`cwd` today, and `merge/owner.ts`,
- * which this ticket does not touch, calls them that way).
- */
-function repoRootForEnv(cwd: string): string {
-  const marker = `${sep}.worktrees${sep}`;
-  const idx = cwd.indexOf(marker);
-  return idx === -1 ? cwd : cwd.slice(0, idx);
-}
-
-function gitEnv(cwd: string): Record<string, string> {
-  return sandboxedSubprocessEnv(repoRootForEnv(cwd), 'git');
-}
 
 export interface GitResult {
   exitCode: number;
@@ -70,9 +58,9 @@ export const DAEMON_GIT_AUTHOR = {
   email: 'agiled@agile-agents.local',
 } as const;
 
-function daemonEnv(cwd: string): Record<string, string> {
+function daemonEnv(repoRoot: string): Record<string, string> {
   return {
-    ...gitEnv(cwd),
+    ...sandboxedSubprocessEnv(repoRoot, 'git'),
     GIT_AUTHOR_NAME: DAEMON_GIT_AUTHOR.name,
     GIT_AUTHOR_EMAIL: DAEMON_GIT_AUTHOR.email,
     GIT_COMMITTER_NAME: DAEMON_GIT_AUTHOR.name,
@@ -81,10 +69,10 @@ function daemonEnv(cwd: string): Record<string, string> {
 }
 
 /** Read-only / plumbing commands (checkout, log, diff, rev-parse, worktree, ...). */
-export function git(args: string[], cwd: string): GitResult {
+export function git(args: string[], cwd: string, repoRoot: string): GitResult {
   const result = Bun.spawnSync(['git', ...args], {
     cwd,
-    env: gitEnv(cwd),
+    env: sandboxedSubprocessEnv(repoRoot, 'git'),
     stdout: 'pipe',
     stderr: 'pipe',
   });
@@ -107,8 +95,8 @@ export class GitCommandError extends Error {
 }
 
 /** Runs a plumbing command, throwing `GitCommandError` on a non-zero exit. */
-export function runGit(args: string[], cwd: string): string {
-  const result = git(args, cwd);
+export function runGit(args: string[], cwd: string, repoRoot: string): string {
+  const result = git(args, cwd, repoRoot);
   if (result.exitCode !== 0) {
     throw new GitCommandError(args, cwd, result.stderr);
   }
@@ -121,10 +109,10 @@ export function runGit(args: string[], cwd: string): string {
  * daemon-authored (env). Never throws on a non-zero exit (rebase/merge
  * conflicts are an expected outcome the caller inspects), unlike `runGit`.
  */
-export function gitWrite(args: string[], cwd: string): GitResult {
+export function gitWrite(args: string[], cwd: string, repoRoot: string): GitResult {
   const result = Bun.spawnSync(['git', '-c', 'commit.gpgsign=false', ...args], {
     cwd,
-    env: daemonEnv(cwd),
+    env: daemonEnv(repoRoot),
     stdout: 'pipe',
     stderr: 'pipe',
   });
@@ -154,7 +142,7 @@ export interface RemoveWorktreeResult {
  * whether the worktree is gone after this call", not "diagnose why".
  */
 export function removeWorktreeSafely(repoRoot: string, worktreePath: string): RemoveWorktreeResult {
-  const status = git(['status', '--porcelain=v1', '--untracked-files=all'], worktreePath);
+  const status = git(['status', '--porcelain=v1', '--untracked-files=all'], worktreePath, repoRoot);
   if (status.exitCode !== 0) {
     return { removed: false, reason: `could not read worktree status: ${status.stderr}` };
   }
@@ -172,7 +160,7 @@ export function removeWorktreeSafely(repoRoot: string, worktreePath: string): Re
   const args = hasUntrackedOnly
     ? ['worktree', 'remove', '--force', worktreePath]
     : ['worktree', 'remove', worktreePath];
-  const result = git(args, repoRoot);
+  const result = git(args, repoRoot, repoRoot);
   if (result.exitCode !== 0) {
     return { removed: false, reason: `git worktree remove failed: ${result.stderr}` };
   }

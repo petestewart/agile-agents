@@ -126,11 +126,21 @@ describe('runInit', () => {
     ).not.toThrow();
   });
 
-  test('adds .agile/, .worktrees/, and the daemon lock/socket files to .gitignore, idempotently', () => {
+  test('adds .agile/, .worktrees/, the daemon lock/socket files, and .agile-daemon-cache/ to .gitignore, idempotently', () => {
     runInit(repo);
     const gitignore = readFileSync(join(repo, '.gitignore'), 'utf8');
     const lineCount = (needle: string) => gitignore.split('\n').filter((l) => l === needle).length;
-    for (const needle of ['.agile/', '.worktrees/', '.agile-daemon.lock', '.agile-daemon.sock']) {
+    // T034: `.agile-daemon-cache/` (test_run/git/sandbox-probe subprocess
+    // caches, `../subprocess-env.ts`) is host-local scratch, same as
+    // `.worktrees/` and the lock/socket files — it must never show up as
+    // untracked once a daemon subprocess writes into it.
+    for (const needle of [
+      '.agile/',
+      '.worktrees/',
+      '.agile-daemon.lock',
+      '.agile-daemon.sock',
+      '.agile-daemon-cache/',
+    ]) {
       expect(gitignore).toContain(needle);
       expect(lineCount(needle)).toBe(1);
     }

@@ -14,7 +14,7 @@
  * allow-list.
  */
 
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, readdirSync, statSync, unlinkSync } from 'node:fs';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { ulid } from '@agile-agents/shared';
 import {
@@ -25,8 +25,8 @@ import {
   stripPrefixes,
   tokenizeSegment,
 } from '../permissions/command';
-import { sandboxedSubprocessEnv } from '../subprocess-env';
-import { CACHE_DIR_NAME, rawOutputPath } from './cache';
+import { DAEMON_CACHE_DIR, sandboxedSubprocessEnv } from '../subprocess-env';
+import { rawOutputPath } from './cache';
 import { charsPerToken } from './runner';
 
 export interface TestRunInput {
@@ -63,6 +63,17 @@ export const DEFAULT_TEST_RUN_TIMEOUT_MS = 120_000;
 export const MAX_TEST_RUN_OUTPUT_BYTES = 1024 * 1024; // 1 MiB
 /** Keeps the result well under the ~500-token acceptance cap even for a suite with dozens of failures — the rest are still on disk via `raw_output`. */
 export const MAX_FAILURES_RETURNED = 10;
+/**
+ * T034 round 2 (review): with Bun's `maxBuffer` gone (it used to bound a
+ * *single* run's captured output; the raw combined log is now always
+ * written in full regardless of size — see `runTestRun`'s header comment),
+ * disk use across *many* runs needs its own ceiling instead. After every
+ * run, `pruneRawTestRunOutputs` deletes the oldest raw `test_run` logs
+ * (by mtime) under this tool's `raw/test_run/` cache tree until the total
+ * is back under this budget — a run's own freshly-written log is never
+ * pruned by the same call that wrote it (it's the newest file there).
+ */
+export const MAX_RETAINED_RAW_OUTPUT_BYTES = 200 * 1024 * 1024; // 200 MiB
 
 /** Standalone test-runner binaries beyond the `bun`/`npm`/`pnpm` repo-script allowance (§7's named parsers: "vitest/jest, pytest, go test"). */
 const STANDALONE_TEST_BINARIES = new Set(['vitest', 'jest', 'pytest']);
@@ -348,6 +359,8 @@ export interface RunTestRunOptions {
   timeoutMs?: number;
   /** Overrides `MAX_TEST_RUN_OUTPUT_BYTES` — mainly for tests. */
   maxOutputBytes?: number;
+  /** Overrides `MAX_RETAINED_RAW_OUTPUT_BYTES` — mainly for tests. */
+  maxRetainedRawBytes?: number;
 }
 
 export async function runTestRun(opts: RunTestRunOptions): Promise<TestRunOutput> {
@@ -369,6 +382,7 @@ export async function runTestRun(opts: RunTestRunOptions): Promise<TestRunOutput
   const tokens = stripPrefixes(tokenizeSegment(command));
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TEST_RUN_TIMEOUT_MS;
   const maxOutputBytes = opts.maxOutputBytes ?? MAX_TEST_RUN_OUTPUT_BYTES;
+  const maxRetainedRawBytes = opts.maxRetainedRawBytes ?? MAX_RETAINED_RAW_OUTPUT_BYTES;
 
   // T034 (T033 review round 3 follow-up): stdout/stderr go straight to
   // plain files, never `'pipe'` — the same fix T033 landed for the hook
@@ -384,17 +398,28 @@ export async function runTestRun(opts: RunTestRunOptions): Promise<TestRunOutput
   // option, and the process-killing mechanism the old cap used) — the byte
   // ceiling below is now a size check on the captured files after the
   // process has already exited, never a reason to kill it early, and the
-  // full, untruncated output is always on disk under
-  // `<repoRoot>/.agile-daemon-cache/test-run/` regardless of size.
+  // full, untruncated output is always on disk (see `MAX_RETAINED_RAW_OUTPUT_BYTES`
+  // for the cap across runs, not within one).
   //
   // `env`: T034 — never the daemon's inherited `process.env`/`$HOME`; a
   // test suite's own tooling (npm's debug logger, a package manager's
   // cache) must never write into the operator's real home directory.
+  //
+  // Capture location (round 2 review): the two capture files live under
+  // this tool's `raw/test_run/<bin>/` cache tree — the *same* tree the
+  // final combined log is written to below, and deliberately **not**
+  // anywhere under `sandboxedSubprocessEnv`'s own `test-run/` sandbox
+  // directory (where the child's `$HOME`/`npm_config_cache`/`XDG_*` live).
+  // A test suite that pokes around its own sandboxed home (lists it,
+  // globs it, `rm -rf`s a "cache" directory it thinks is its own) must
+  // never be able to see or disturb the very files recording its output.
   const runId = ulid();
-  const captureDir = join(opts.repoRoot, CACHE_DIR_NAME, 'test-run');
-  mkdirSync(captureDir, { recursive: true });
-  const stdoutPath = join(captureDir, `${runId}.out`);
-  const stderrPath = join(captureDir, `${runId}.err`);
+  const bin = opts.input.command.split(/\s+/)[0] ?? 'run';
+  const testRunRawRoot = join(opts.repoRoot, DAEMON_CACHE_DIR, 'raw', 'test_run');
+  const rawDir = join(testRunRawRoot, bin);
+  mkdirSync(rawDir, { recursive: true });
+  const stdoutPath = join(rawDir, `${runId}.out`);
+  const stderrPath = join(rawDir, `${runId}.err`);
 
   const proc = Bun.spawn(tokens, {
     cwd,
@@ -430,11 +455,32 @@ export async function runTestRun(opts: RunTestRunOptions): Promise<TestRunOutput
   // combined)` did exactly that, using the already-capped `combined`
   // string, which was fine only because `maxBuffer` had already capped it
   // upstream; that upstream cap is gone now).
-  const rawRelPath = join(opts.input.command.split(/\s+/)[0] ?? 'run', `${runId}.log`);
-  await writeRawOutputStream(rawOutputPath(opts.repoRoot, 'test_run', rawRelPath), [
-    stdoutFile,
-    stderrFile,
-  ]);
+  const rawRelPath = join(bin, `${runId}.log`);
+  const rawLogPath = rawOutputPath(opts.repoRoot, 'test_run', rawRelPath);
+  await writeRawOutputStream(rawLogPath, [stdoutFile, stderrFile]);
+
+  // Round 2 review: the two capture files have now been folded into the
+  // single combined log above — remove them rather than keeping three
+  // copies of the same output per run. Best-effort: a file already gone
+  // (a test double, a concurrent cleanup) is not this function's problem.
+  for (const path of [stdoutPath, stderrPath]) {
+    try {
+      unlinkSync(path);
+    } catch {
+      // already gone — fine.
+    }
+  }
+
+  // Round 2 review: `maxBuffer` used to bound one run's output; with it
+  // gone the raw log above is always written in full, so disk use across
+  // *many* runs needs its own ceiling — prune the oldest raw `test_run`
+  // logs (by mtime) until the tree is back under budget. Never throws: a
+  // pruning failure must not fail the test run that triggered it.
+  try {
+    pruneRawTestRunOutputs(testRunRawRoot, maxRetainedRawBytes);
+  } catch {
+    // Best-effort housekeeping only.
+  }
 
   const allFailures = timedOut ? [] : exitCode === 0 ? [] : parseFailures(combined);
   const ok = !timedOut && exitCode === 0 && allFailures.length === 0;
@@ -496,5 +542,57 @@ async function writeRawOutputStream(
     }
   } finally {
     await writer.end();
+  }
+}
+
+function collectFilesRecursive(dir: string, acc: string[] = []): string[] {
+  let entries: import('node:fs').Dirent[];
+  try {
+    entries = readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return acc; // dir doesn't exist (yet) — nothing to collect.
+  }
+  for (const entry of entries) {
+    const full = join(dir, entry.name);
+    if (entry.isDirectory()) {
+      collectFilesRecursive(full, acc);
+    } else {
+      acc.push(full);
+    }
+  }
+  return acc;
+}
+
+/**
+ * Deletes the oldest files (by mtime) under `rootDir` until the total size
+ * of what remains is at or under `maxTotalBytes` — see
+ * `MAX_RETAINED_RAW_OUTPUT_BYTES`'s doc comment for why this replaces
+ * Bun's per-run `maxBuffer` cap. `rootDir` is `test_run`'s whole raw-output
+ * tree (every `<bin>/` subdirectory `runTestRun` has ever written into),
+ * so this bounds total disk use across every run, not just the one that
+ * just finished. A single run's own two freshly-written files are never
+ * both close to the boundary and older than everything else, so the run
+ * that triggers a prune never has its own just-written log deleted by it
+ * in practice; even in the pathological case where it is, the run's
+ * `raw_output` pointer simply becomes stale, exactly as it would for any
+ * log old enough to be pruned on a later run.
+ */
+function pruneRawTestRunOutputs(rootDir: string, maxTotalBytes: number): void {
+  const files = collectFilesRecursive(rootDir).map((path) => {
+    const stat = statSync(path);
+    return { path, size: stat.size, mtimeMs: stat.mtimeMs };
+  });
+  let total = files.reduce((sum, f) => sum + f.size, 0);
+  if (total <= maxTotalBytes) return;
+
+  files.sort((a, b) => a.mtimeMs - b.mtimeMs);
+  for (const file of files) {
+    if (total <= maxTotalBytes) break;
+    try {
+      unlinkSync(file.path);
+      total -= file.size;
+    } catch {
+      // Already gone, or a permissions/race hiccup — best-effort only.
+    }
   }
 }

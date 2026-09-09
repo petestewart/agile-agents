@@ -2,7 +2,12 @@ import { describe, expect, test } from 'bun:test';
 import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { type DetectBackendDeps, detectBackend, dockerDaemonReachable } from './backend';
+import {
+  type DetectBackendDeps,
+  detectBackend,
+  dockerDaemonReachable,
+  dockerProbeEnv,
+} from './backend';
 
 function deps(overrides: Partial<DetectBackendDeps>): DetectBackendDeps {
   return {
@@ -67,27 +72,50 @@ describe('detectBackend', () => {
   });
 });
 
-describe('dockerDaemonReachable (T034)', () => {
-  let repoRoot: string;
-
-  test('runs `docker info` with a sandboxed HOME under <repoRoot>/.agile-daemon-cache/, never the real one', () => {
-    repoRoot = mkdtempSync(join(tmpdir(), 'agile-sandbox-detect-'));
+describe('dockerProbeEnv (T034 round 2)', () => {
+  // Pure and deterministic — no `docker` binary or real spawn needed, so
+  // this runs identically on every host (round 1 review: the previous
+  // version of this test only asserted anything when `docker` happened to
+  // be on `$PATH`, i.e. it could silently assert nothing at all).
+  test('with a repoRoot, HOME/npm_config_cache/XDG_* are sandboxed under <repoRoot>/.agile-daemon-cache/sandbox-detect/', () => {
+    const repoRoot = mkdtempSync(join(tmpdir(), 'agile-sandbox-detect-'));
     try {
-      // Never throws regardless of whether a real `docker` binary/daemon is
-      // present on this host (mirrors the real-deps contract `backend.test.ts`
-      // already asserts for `detectBackend()` above).
+      const env = dockerProbeEnv(repoRoot);
+      const cacheRoot = join(repoRoot, '.agile-daemon-cache', 'sandbox-detect');
+      expect(env.HOME).toBe(join(cacheRoot, 'home'));
+      expect(env.npm_config_cache).toBe(join(cacheRoot, 'npm-cache'));
+      expect(env.XDG_CACHE_HOME).toBe(join(cacheRoot, 'xdg-cache'));
+      expect(env.HOME).not.toBe(process.env.HOME);
+      // Directories are created eagerly, same contract as `sandboxedSubprocessEnv`.
+      expect(existsSync(env.HOME as string)).toBe(true);
+    } finally {
+      rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
+
+  test('without a repoRoot (a bare, no-args real-deps probe), falls back to the OS temp dir — never process.cwd()', () => {
+    const cwdMarker = process.cwd();
+    const env = dockerProbeEnv(undefined);
+    // Never rooted under the current working directory (round 1 finding:
+    // this used to default to `process.cwd()`, which materialized
+    // `.agile-daemon-cache/` inside whatever repo `bun test` happened to
+    // run from).
+    expect(env.HOME?.startsWith(cwdMarker)).toBe(false);
+    expect(env.HOME?.startsWith(tmpdir())).toBe(true);
+    expect(existsSync(env.HOME as string)).toBe(true);
+    rmSync(env.HOME as string, { recursive: true, force: true });
+  });
+});
+
+describe('dockerDaemonReachable (T034)', () => {
+  test('never throws, and (if it probes at all) uses the given repoRoot, never process.cwd()', () => {
+    const repoRoot = mkdtempSync(join(tmpdir(), 'agile-sandbox-detect-'));
+    try {
       expect(() => dockerDaemonReachable(repoRoot)).not.toThrow();
-      // Whether or not a `docker` binary is on `$PATH` here, if it is, the
-      // sandboxed cache directory the probe's env points `$HOME` at must
-      // have been created — the observable proof `execFileSync` actually
-      // received the sandboxed env, not the daemon's inherited one.
-      const cacheHome = join(repoRoot, '.agile-daemon-cache', 'sandbox-detect', 'home');
-      // Only asserted when a `docker` binary exists on this host — the
-      // function short-circuits (never spawns anything, never builds the
-      // env) when it doesn't, which is itself correct behaviour.
-      if (Bun.which('docker')) {
-        expect(existsSync(cacheHome)).toBe(true);
-      }
+      // Whether or not a real `docker` binary/daemon is present on this
+      // host, this repo checkout's own `process.cwd()` must never end up
+      // with a `.agile-daemon-cache/` from this call (round 1 finding).
+      expect(existsSync(join(process.cwd(), '.agile-daemon-cache', 'sandbox-detect'))).toBe(false);
     } finally {
       rmSync(repoRoot, { recursive: true, force: true });
     }

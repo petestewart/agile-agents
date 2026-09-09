@@ -245,6 +245,77 @@ describe('runTestRun', () => {
     expect(sandboxedHome).toContain(join(repo, '.agile-daemon-cache', 'test-run'));
   });
 
+  test('T034 round 2 (review): the raw output lives outside the sandboxed HOME tree, never inside it', async () => {
+    writeFileSync(
+      join(repo, 'pkg.test.ts'),
+      [
+        'import { test, expect } from "bun:test";',
+        'test("ok", () => { expect(1).toBe(1); });',
+      ].join('\n'),
+    );
+    const result = await runTestRun({
+      input: { command: 'bun test pkg.test.ts' },
+      worktree: repo,
+      repoRoot: repo,
+    });
+    const rawPath = join(repo, '.agile-daemon-cache', 'raw', result.raw_output);
+    const sandboxHomeRoot = join(repo, '.agile-daemon-cache', 'test-run');
+    // The raw log is a real, findable file...
+    expect(await Bun.file(rawPath).exists()).toBe(true);
+    // ...and it does not sit anywhere under the same directory tree the
+    // spawned test command's own sandboxed $HOME/npm-cache/XDG_* live in —
+    // a test suite that pokes around its own sandbox must never be able to
+    // see or disturb the files recording its own output.
+    expect(rawPath.startsWith(sandboxHomeRoot)).toBe(false);
+  });
+
+  test('T034 round 2 (review): raw test_run output is pruned (oldest first) once it exceeds maxRetainedRawBytes', async () => {
+    writeFileSync(
+      join(repo, 'pkg.test.ts'),
+      [
+        'import { test, expect } from "bun:test";',
+        'test("chatty", () => {',
+        '  console.log("z".repeat(2000));',
+        '  expect(1).toBe(1);',
+        '});',
+      ].join('\n'),
+    );
+
+    const raws: string[] = [];
+    // Each run's raw log is a few KB (bun's own banner/summary plus the
+    // 2000-char line) — a tiny budget forces pruning after just a couple
+    // of runs, without needing megabytes of fixture output.
+    for (let i = 0; i < 5; i++) {
+      const result = await runTestRun({
+        input: { command: 'bun test pkg.test.ts' },
+        worktree: repo,
+        repoRoot: repo,
+        maxRetainedRawBytes: 4096,
+      });
+      raws.push(join(repo, '.agile-daemon-cache', 'raw', result.raw_output));
+    }
+
+    // The most recent run's own raw log always survives its own prune.
+    const newest = raws[raws.length - 1];
+    const oldest = raws[0];
+    expect(newest).toBeDefined();
+    expect(oldest).toBeDefined();
+    expect(await Bun.file(newest as string).exists()).toBe(true);
+    // At least the very first run's log — the oldest by construction —
+    // must have been pruned away by the time the budget was exceeded.
+    expect(await Bun.file(oldest as string).exists()).toBe(false);
+
+    // The tree as a whole stays near the budget, not growing unbounded
+    // across repeated runs (some slack: the newest run's own two files
+    // are never pruned by the same call that wrote them).
+    const glob = new Bun.Glob('**/*');
+    let total = 0;
+    for await (const relPath of glob.scan(join(repo, '.agile-daemon-cache', 'raw', 'test_run'))) {
+      total += Bun.file(join(repo, '.agile-daemon-cache', 'raw', 'test_run', relPath)).size;
+    }
+    expect(total).toBeLessThan(4096 * 3);
+  });
+
   test('review round 2 fix (blocker 1): 60 failures — the WHOLE serialized result stays under 500 tokens, not just summary', async () => {
     const lines = ['import { test, expect } from "bun:test";'];
     for (let i = 0; i < 60; i++) {

@@ -27,19 +27,22 @@ afterEach(() => {
   rmSync(repoRoot, { recursive: true, force: true });
 });
 
-describe('T034: git()/gitWrite() spawn with a sandboxed HOME, never the real one', () => {
+describe('T034: git()/gitWrite()/runGit() spawn with a sandboxed HOME, never the real one', () => {
   test('git() run directly in repoRoot creates a sandboxed HOME under <repoRoot>/.agile-daemon-cache/git/', () => {
-    runGit(['rev-parse', 'HEAD'], repoRoot);
+    runGit(['rev-parse', 'HEAD'], repoRoot, repoRoot);
     const sandboxedHome = join(repoRoot, '.agile-daemon-cache', 'git', 'home');
     expect(existsSync(sandboxedHome)).toBe(true);
   });
 
-  test('git() run in a `.worktrees/<name>` subdirectory still sandboxes under the *repo root*, not the worktree', () => {
+  test('git() run in a `.worktrees/<name>` subdirectory sandboxes under the *explicit repoRoot* passed in, not derived from cwd', () => {
     const worktreeDir = join(repoRoot, '.worktrees', 'TKT-0001');
     mkdirSync(join(repoRoot, '.worktrees'), { recursive: true });
     rawGit(['worktree', 'add', worktreeDir, '-b', 'tkt-0001', 'main'], repoRoot);
 
-    const result = git(['status', '--porcelain'], worktreeDir);
+    // cwd is the worktree; repoRoot is passed explicitly and separately —
+    // T034 round 2 dropped the earlier `/.worktrees/` string-heuristic in
+    // favour of every caller stating its own repo root.
+    const result = git(['status', '--porcelain'], worktreeDir, repoRoot);
     expect(result.exitCode).toBe(0);
 
     const sandboxedHome = join(repoRoot, '.agile-daemon-cache', 'git', 'home');
@@ -48,13 +51,25 @@ describe('T034: git()/gitWrite() spawn with a sandboxed HOME, never the real one
     expect(existsSync(join(worktreeDir, '.agile-daemon-cache'))).toBe(false);
   });
 
+  test('an explicit repoRoot that differs from cwd is honoured exactly, not silently corrected', () => {
+    const otherRoot = mkdtempSync(join(tmpdir(), 'agile-merge-git-other-'));
+    try {
+      const result = git(['rev-parse', 'HEAD'], repoRoot, otherRoot);
+      expect(result.exitCode).toBe(0);
+      expect(existsSync(join(otherRoot, '.agile-daemon-cache', 'git', 'home'))).toBe(true);
+      expect(existsSync(join(repoRoot, '.agile-daemon-cache'))).toBe(false);
+    } finally {
+      rmSync(otherRoot, { recursive: true, force: true });
+    }
+  });
+
   test('gitWrite() (rebase/merge/commit path) also sandboxes HOME, alongside the daemon author env', () => {
-    const result = gitWrite(['commit', '--allow-empty', '-m', 'noop'], repoRoot);
+    const result = gitWrite(['commit', '--allow-empty', '-m', 'noop'], repoRoot, repoRoot);
     expect(result.exitCode).toBe(0);
     const sandboxedHome = join(repoRoot, '.agile-daemon-cache', 'git', 'home');
     expect(existsSync(sandboxedHome)).toBe(true);
 
-    const author = runGit(['log', '-1', '--format=%an <%ae>'], repoRoot);
+    const author = runGit(['log', '-1', '--format=%an <%ae>'], repoRoot, repoRoot);
     expect(author).toBe('agiled <agiled@agile-agents.local>');
   });
 
@@ -64,7 +79,7 @@ describe('T034: git()/gitWrite() spawn with a sandboxed HOME, never the real one
     try {
       // A plain `git()` call still succeeds with the override in place —
       // proof this module doesn't stomp on it, whatever the caller set.
-      const result = git(['rev-parse', 'HEAD'], repoRoot);
+      const result = git(['rev-parse', 'HEAD'], repoRoot, repoRoot);
       expect(result.exitCode).toBe(0);
     } finally {
       if (original === undefined) {
