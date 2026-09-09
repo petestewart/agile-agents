@@ -8,8 +8,10 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import {
   type Policy,
+  type ToolDefinition,
   type VendorsConfig,
   validatePolicy,
+  validateToolDefinition,
   validateVendorsConfig,
 } from '@agile-agents/shared';
 import { stringify as stringifyYaml } from 'yaml';
@@ -72,6 +74,92 @@ function writeFile(path: string, content: string): void {
   writeFileSync(path, content);
 }
 
+/**
+ * Starter tool set (T011 — design/agile-agents-design.md §7 "Tool framework":
+ * "Starter set: read_summary ... test_run ..."; this ticket's scope names
+ * exactly these two). Seeded through `validateToolDefinition` so a broken
+ * seed can never itself fail `loadToolRegistry`'s validation on the very
+ * first daemon start after `agile init`.
+ */
+function starterToolDefinition(def: ToolDefinition): ToolDefinition {
+  return validateToolDefinition(def);
+}
+
+const READ_SUMMARY_TOOL: ToolDefinition = starterToolDefinition({
+  name: 'read_summary',
+  kind: 'reader',
+  trigger: {
+    hook: 'pre-tool-use',
+    match: 'tool in [Read, Grep] and (file.size > 30KB or files > 5)',
+  },
+  action: 'redirect',
+  runner: { tier: 'trivial', max_output_tokens: 400 },
+  input: { path: 'string', question: 'string?' },
+  output: { summary: 'string', refs: '[{path, lines}]' },
+  cache: { key: ['file_hash', 'question'], ttl: 'sprint' },
+  ledger_kind: 'reader',
+  promote_to_kb: 'optional',
+});
+
+const READ_SUMMARY_PROMPT = `# read_summary
+
+You are a reader agent. You are given a file's full contents and, optionally,
+a question about it. Produce:
+
+- \`summary\`: at most 400 tokens (~1600 characters). Describe what the file
+  does; if a question was given, answer it directly.
+- \`refs\`: a list of \`{"path": "...", "lines": "<start>-<end>"}\` pointers
+  backing the claims in your summary.
+
+Respond with **only** a JSON object of the shape
+\`{"summary": "...", "refs": [{"path": "...", "lines": "12-40"}]}\`.
+No prose outside the JSON.
+`;
+
+const TEST_RUN_TOOL: ToolDefinition = starterToolDefinition({
+  name: 'test_run',
+  kind: 'reader',
+  trigger: {
+    hook: 'pre-tool-use',
+    match: 'tool in [Bash] and command matches test_runner',
+  },
+  action: 'augment',
+  runner: { tier: 'trivial', max_output_tokens: 500 },
+  input: { command: 'string', cwd: 'string?' },
+  output: {
+    ok: 'boolean',
+    failures: '[{name, message, frames}]',
+    summary: 'string',
+    exit_code: 'number',
+  },
+  ledger_kind: 'reader',
+  promote_to_kb: 'never',
+});
+
+const TEST_RUN_PROMPT = `# test_run
+
+Not a runner-tier prompt: \`test_run\` executes \`command\` directly in the
+ticket worktree (\`Bun.spawn\`, no ACP session) and parses its own output for
+failing test names, assertion messages, and relevant frames — never a green
+log. This file exists for the registry's "tool.yaml + prompt" convention;
+nothing reads it at runtime.
+`;
+
+/** Writes `tool.yaml` + `prompt.md` for one starter tool, unless a `tool.yaml` is already there — "keep it idempotent" (this ticket's file-ownership note). */
+function starterToolFiles(
+  toolsDir: string,
+  def: ToolDefinition,
+  prompt: string,
+): Array<[string, string]> {
+  const dir = join(toolsDir, def.name);
+  const yamlPath = join(dir, 'tool.yaml');
+  if (existsSync(yamlPath)) return [];
+  return [
+    [yamlPath, stringifyYaml(def)],
+    [join(dir, 'prompt.md'), prompt],
+  ];
+}
+
 /** Every file the §4 layout needs at init time. Directories with no listed
  * default file get a `.gitkeep` so git tracks the (otherwise empty) dir. */
 function layoutFiles(stateRoot: string): Array<[string, string]> {
@@ -94,6 +182,8 @@ function layoutFiles(stateRoot: string): Array<[string, string]> {
     [p('policy.yaml'), stringifyYaml(defaultPolicy())],
     [p('vendors.yaml'), stringifyYaml(defaultVendorsConfig())],
     [p('tools', '.gitkeep'), ''],
+    ...starterToolFiles(p('tools'), READ_SUMMARY_TOOL, READ_SUMMARY_PROMPT),
+    ...starterToolFiles(p('tools'), TEST_RUN_TOOL, TEST_RUN_PROMPT),
     [p('rules', '.gitkeep'), ''],
     [p('ledger', '.gitkeep'), ''],
     [p('log', 'events.jsonl'), ''],
@@ -105,8 +195,16 @@ function layoutFiles(stateRoot: string): Array<[string, string]> {
 
 // `.agile-daemon.lock`/`.sock` are ratified v0 paths (see lock.ts, config.ts)
 // but are host/process-instance files, not repo state — they must never
-// land in product history alongside `.agile/` and `.worktrees/`.
-const GITIGNORE_LINES = ['.agile/', '.worktrees/', '.agile-daemon.lock', '.agile-daemon.sock'];
+// land in product history alongside `.agile/` and `.worktrees/`. Sibling
+// precedent, T011: `.agile-daemon-cache/` (tool result cache + raw test_run
+// output, `tools/cache.ts`) is the same kind of host-local, non-audit file.
+const GITIGNORE_LINES = [
+  '.agile/',
+  '.worktrees/',
+  '.agile-daemon.lock',
+  '.agile-daemon.sock',
+  '.agile-daemon-cache/',
+];
 
 function ensureGitignore(repoRoot: string): void {
   const path = join(repoRoot, '.gitignore');

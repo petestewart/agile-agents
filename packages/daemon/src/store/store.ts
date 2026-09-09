@@ -603,16 +603,42 @@ export class StateStore {
 
   // -------------------------------------------------------------- Ledger
 
-  /** Review nit: `line.sprint` must match the `sprint` argument (previously unchecked). */
-  async appendLedgerLine(sprint: SprintId, line: LedgerLine): Promise<LedgerLine> {
+  /**
+   * Review nit: `line.sprint` must match the `sprint` argument (previously
+   * unchecked). `{commit: 'deferred'}` (T011 — the tool framework's MCP tool
+   * calls can be frequent enough during a busy session to warrant the same
+   * hot-path batching T009 gave `hook_decision`/heartbeat writes; see the
+   * file's "Deferred-commit batching" header) appends the line immediately
+   * but queues the commit — every other caller keeps the default immediate
+   * one-line-one-commit behaviour.
+   */
+  async appendLedgerLine(
+    sprint: SprintId,
+    line: LedgerLine,
+    options: { commit?: 'immediate' | 'deferred' } = {},
+  ): Promise<LedgerLine> {
+    const validated = validateLedgerLine(line);
+    if (validated.sprint !== sprint) {
+      throw new Error(
+        `appendLedgerLine: line.sprint (${JSON.stringify(validated.sprint)}) does not match sprint argument (${JSON.stringify(sprint)})`,
+      );
+    }
+    const ledgerRel = join('ledger', `${sprint}.jsonl`);
+
+    if (options.commit === 'deferred') {
+      return this.mutex.run(() => {
+        appendJsonlLine(this.abs(ledgerRel), validated);
+        const event = buildEvent('ledger_appended', {
+          ticket: isTicketIdLike(validated.ticket) ? (validated.ticket as TicketId) : undefined,
+          agent: validated.agent.length > 0 ? validated.agent : undefined,
+          data: { sprint, kind: validated.kind },
+        });
+        this.deferEventSync(event, [ledgerRel]);
+        return validated;
+      });
+    }
+
     return this.mutate(() => {
-      const validated = validateLedgerLine(line);
-      if (validated.sprint !== sprint) {
-        throw new Error(
-          `appendLedgerLine: line.sprint (${JSON.stringify(validated.sprint)}) does not match sprint argument (${JSON.stringify(sprint)})`,
-        );
-      }
-      const ledgerRel = join('ledger', `${sprint}.jsonl`);
       appendJsonlLine(this.abs(ledgerRel), validated);
       const event = buildEvent('ledger_appended', {
         ticket: isTicketIdLike(validated.ticket) ? (validated.ticket as TicketId) : undefined,

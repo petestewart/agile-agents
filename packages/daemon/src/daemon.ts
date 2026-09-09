@@ -17,6 +17,7 @@ import { type LockHandle, acquireLock } from './lock';
 import { buildOracleRpcMethods } from './oracle';
 import { type RpcServerHandle, startRpcServer } from './rpc';
 import { StateStore, buildStateRpcMethods } from './store';
+import { LiveRunner, ToolService, buildToolRpcMethods, loadToolRegistry } from './tools';
 
 export const DAEMON_VERSION: string = daemonPackageJson.version;
 
@@ -44,20 +45,38 @@ export async function startDaemon(options: DiscoverConfigOptions = {}): Promise<
   // Hoisted (T020) so the same GateService instance backs both `gate.*` RPC
   // and the feed page's HIL snapshot/approve/delegate HTTP routes.
   const gateService = store ? new GateService(store) : undefined;
+  // Hoisted (T011) so `bus.*` RPC, the hook service, and the tool service's
+  // `bus_send` built-in all share one `Bus` instance over the same store.
+  const bus = store ? new Bus(store, config.stateRoot) : undefined;
+  // Tool registry (§7 "Tool framework"): loaded once at startup from
+  // `.agile/tools/*/tool.yaml`. `LiveRunner` spawns a real short-lived Claude
+  // ACP session per `runner.tier` call — the daemon's actual runtime path;
+  // `FakeRunner` exists only for this package's own tests.
+  const toolService =
+    store && bus
+      ? new ToolService({
+          store,
+          bus,
+          registry: loadToolRegistry(config.stateRoot),
+          runner: new LiveRunner(),
+          repoRoot: config.repoRoot,
+        })
+      : undefined;
   const extraMethods =
-    store && gateService
+    store && gateService && bus && toolService
       ? {
           ...buildStateRpcMethods(store),
-          ...buildBusRpcMethods(new Bus(store, config.stateRoot)),
+          ...buildBusRpcMethods(bus),
           ...buildOracleRpcMethods(store),
           ...buildHaltRpcMethods(store),
           ...buildGateRpcMethods(gateService),
           ...buildHookRpcMethods(
-            new HookService(store, new Bus(store, config.stateRoot), {
+            new HookService(store, bus, {
               repoRoot: config.repoRoot,
               gates: gateService,
             }),
           ),
+          ...buildToolRpcMethods(toolService),
         }
       : undefined;
 

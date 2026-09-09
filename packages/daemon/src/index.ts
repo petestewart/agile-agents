@@ -69,3 +69,7 @@ export * from './permissions';
 // Claude hook gate: per-worktree settings.json, pre/post-tool-use + stop
 // decisions, hook.* RPC methods (T009).
 export * from './hook';
+
+// Tool framework: registry, cache, runner, read_summary/test_run, built-in
+// daemon-verb tools, MCP server factory, tool.* RPC methods (T011).
+export * from './tools';
