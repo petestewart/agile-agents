@@ -20,7 +20,13 @@ const STANDARD_OPTIONS = [
 
 function request(
   kind: string,
-  opts: { command?: string; targetPath?: string; url?: string; title?: string } = {},
+  opts: {
+    command?: string;
+    targetPath?: string;
+    url?: string;
+    title?: string;
+    locations?: Array<{ path: string; line?: number }>;
+  } = {},
 ): AcpPermissionRequestParams {
   const rawInput: Record<string, unknown> = {};
   if (opts.command !== undefined) rawInput.command = opts.command;
@@ -28,7 +34,7 @@ function request(
   if (opts.url !== undefined) rawInput.url = opts.url;
   return {
     sessionId: 'sess-1',
-    toolCall: { toolCallId: 'tc-1', kind, title: opts.title, rawInput },
+    toolCall: { toolCallId: 'tc-1', kind, title: opts.title, rawInput, locations: opts.locations },
     options: STANDARD_OPTIONS,
   };
 }
@@ -566,5 +572,74 @@ describe('decidePermission — degraded payloads (title fallback, review round 2
       expect(decide(role, request('read', { title: 'Read File' })).kind).toBe('allow');
       expect(decide(role, request('read', { title: 'Read' })).kind).toBe('allow');
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Round-4 review fix (opus R3-1): prose after Edit/Write/Create must not
+// resolve to a fictitious in-worktree path. Every one of these was an
+// incorrect `allow` before this round's fix; all must be `deny` now.
+// ---------------------------------------------------------------------------
+describe('decidePermission — title-fallback prose regression (round 4, opus R3-1)', () => {
+  const proseTitles = [
+    'Edit file',
+    'Edit the config file',
+    'Write the report',
+    'Create a new module',
+  ];
+
+  for (const title of proseTitles) {
+    test(`engineer: title ${JSON.stringify(title)} with empty rawInput is denied, not allowed`, () => {
+      const decision = decide('engineer', request('edit', { title }));
+      expect(decision.kind).toBe('deny');
+    });
+  }
+
+  test('engineer: title "Edit ~/.bashrc" with empty rawInput is denied (expands to home, never in-worktree)', () => {
+    const decision = decide('engineer', request('edit', { title: 'Edit ~/.bashrc' }));
+    expect(decision.kind).toBe('deny');
+  });
+
+  test('engineer: title \'Edit "src/a b.ts"\' (quoted, inside the worktree) is allowed', () => {
+    const decision = decide('engineer', request('edit', { title: 'Edit "src/a b.ts"' }));
+    expect(decision.kind).toBe('allow');
+  });
+
+  test('engineer: a real-looking title still allows (no regression on the round-2/3 happy path)', () => {
+    expect(decide('engineer', request('edit', { title: 'Edit small.txt' })).kind).toBe('allow');
+    expect(decide('engineer', request('edit', { title: 'Write new.txt' })).kind).toBe('allow');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Round-4 review requirement (opus R3-2): toolCall.locations, parsed
+// before the title fallback.
+// ---------------------------------------------------------------------------
+describe('decidePermission — locations (round 4, opus R3-2)', () => {
+  test('engineer: title "Edit file" (unparseable prose) + locations outside the worktree denies', () => {
+    const decision = decide(
+      'engineer',
+      request('edit', { title: 'Edit file', locations: [{ path: '/etc/passwd' }] }),
+    );
+    expect(decision.kind).toBe('deny');
+  });
+
+  test('engineer: locations inside the worktree allows, even with unparseable prose in the title', () => {
+    const decision = decide(
+      'engineer',
+      request('edit', {
+        title: 'Edit file',
+        locations: [{ path: `${WORKTREE}/src/a.ts` }],
+      }),
+    );
+    expect(decision.kind).toBe('allow');
+  });
+
+  test('reviewer: locations do not override the kind-level floor (edit still denied)', () => {
+    const decision = decide(
+      'reviewer',
+      request('edit', { title: 'Edit file', locations: [{ path: `${WORKTREE}/src/a.ts` }] }),
+    );
+    expect(decision.kind).toBe('deny');
   });
 });

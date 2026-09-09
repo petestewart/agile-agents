@@ -155,3 +155,117 @@ describe('classifyPermissionRequest — title fallback', () => {
     expect(classified.titleFallbackUsed).toBe(false);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Round-3 review fix: prose after "Edit"/"Write"/"Create" must not be
+// laundered into a fictitious in-worktree path.
+// ---------------------------------------------------------------------------
+describe('classifyPermissionRequest — title fallback does not trust prose as a path (round 3)', () => {
+  test('bare-word and multi-word prose captures yield no targetPath at all', () => {
+    for (const title of [
+      'Edit file',
+      'Edit the config file',
+      'Write the report',
+      'Create a new module',
+      'Edit two files: a.ts and /etc/passwd',
+    ]) {
+      const classified = classifyPermissionRequest(
+        paramsWith({ kind: 'edit', title, rawInput: {} }),
+      );
+      expect(classified.targetPath).toBeUndefined();
+      expect(classified.titleFallbackUsed).toBe(false);
+    }
+  });
+
+  test('a quoted capture with a space is still trusted (it looks like a path once unquoted)', () => {
+    const classified = classifyPermissionRequest(
+      paramsWith({ kind: 'edit', title: 'Edit "src/a b.ts"', rawInput: {} }),
+    );
+    expect(classified.targetPath).toBe('src/a b.ts');
+    expect(classified.titleFallbackUsed).toBe(true);
+  });
+
+  test('a real-looking unquoted capture (has a slash or extension, no spaces) is still trusted', () => {
+    expect(
+      classifyPermissionRequest(paramsWith({ kind: 'edit', title: 'Edit small.txt', rawInput: {} }))
+        .targetPath,
+    ).toBe('small.txt');
+    expect(
+      classifyPermissionRequest(
+        paramsWith({ kind: 'edit', title: 'Edit src/lib/a.ts', rawInput: {} }),
+      ).targetPath,
+    ).toBe('src/lib/a.ts');
+  });
+
+  test('a leading ~ expands against the real home directory and is never an in-worktree path', () => {
+    const classified = classifyPermissionRequest(
+      paramsWith({ kind: 'edit', title: 'Edit ~/.bashrc', rawInput: {} }),
+    );
+    expect(classified.targetPath).toBeDefined();
+    expect(classified.targetPath).not.toContain('~');
+    expect(classified.targetPath?.endsWith('.bashrc')).toBe(true);
+    expect(classified.titleFallbackUsed).toBe(true);
+  });
+
+  test('bare ~ alone expands to the home directory itself', () => {
+    const classified = classifyPermissionRequest(
+      paramsWith({ kind: 'edit', title: 'Edit ~', rawInput: {} }),
+    );
+    expect(classified.targetPath).toBeDefined();
+    expect(classified.targetPath).not.toContain('~');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Round-3 review requirement: toolCall.locations, checked between rawInput
+// and title.
+// ---------------------------------------------------------------------------
+describe('classifyPermissionRequest — locations (round 3)', () => {
+  test('locations[0].path is used when rawInput has neither a command nor a path', () => {
+    const classified = classifyPermissionRequest(
+      paramsWith({
+        kind: 'edit',
+        title: 'Edit file',
+        rawInput: {},
+        locations: [{ path: '/etc/passwd' }],
+      }),
+    );
+    expect(classified.targetPath).toBe('/etc/passwd');
+    expect(classified.locationsUsed).toBe(true);
+    expect(classified.titleFallbackUsed).toBe(false);
+  });
+
+  test('locations takes precedence over the title fallback, even when the title alone would have matched', () => {
+    const classified = classifyPermissionRequest(
+      paramsWith({
+        kind: 'edit',
+        title: 'Edit small.txt',
+        rawInput: {},
+        locations: [{ path: '/etc/passwd' }],
+      }),
+    );
+    expect(classified.targetPath).toBe('/etc/passwd');
+    expect(classified.locationsUsed).toBe(true);
+  });
+
+  test('rawInput still takes precedence over locations', () => {
+    const classified = classifyPermissionRequest(
+      paramsWith({
+        kind: 'edit',
+        rawInput: { file_path: '/a/b.ts' },
+        locations: [{ path: '/etc/passwd' }],
+      }),
+    );
+    expect(classified.targetPath).toBe('/a/b.ts');
+    expect(classified.locationsUsed).toBe(false);
+  });
+
+  test('an empty locations array falls through to the title fallback', () => {
+    const classified = classifyPermissionRequest(
+      paramsWith({ kind: 'edit', title: 'Edit small.txt', rawInput: {}, locations: [] }),
+    );
+    expect(classified.targetPath).toBe('small.txt');
+    expect(classified.locationsUsed).toBe(false);
+    expect(classified.titleFallbackUsed).toBe(true);
+  });
+});

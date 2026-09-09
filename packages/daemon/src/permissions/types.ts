@@ -10,7 +10,7 @@
  * and the client answers with `{ outcome: { outcome: 'selected', optionId }
  * | { outcome: 'cancelled' } }`.
  *
- * DESIGN-GAP (verify-before-build finding, updated round 2): every
+ * DESIGN-GAP (verify-before-build finding, updated round 3): every
  * recorded spike payload in `spike/spike-out/*.json` shows `rawInput: {}`
  * for every tool call, including edits and execs — the harness never
  * captured populated `rawInput`. Whether the *permission request's own*
@@ -18,15 +18,18 @@
  * (a follow-up spike run against a live vendor recording
  * `params.toolCall.rawInput` unconditionally would settle it) — but since
  * every capture to date shows `{}`, `classify.ts` treats `rawInput` empty
- * as the expected case, not the exceptional one: when it carries neither a
- * command nor a path, `title` — model-authored prose, but observed to
- * follow a small set of shapes ("Run npm test", "Edit small.txt", "Write
- * new.txt", "Read File") — is parsed as a fallback (`classify.ts`'s file
- * header has the exact patterns). This is deliberately narrow: only those
- * shapes are recognized, and anything else (free-form prose, "Terminal")
- * leaves classification kind-only, at which point the policy table's
- * existing safe defaults apply (deny/hil, never allow, on an
- * unidentifiable target).
+ * as the expected case, not the exceptional one, and falls back **in this
+ * order**: `rawInput` > `toolCall.locations` (an array of `{path, line?}`
+ * some ACP tool calls carry for edit/read targets, independent of
+ * `rawInput` and of the model-authored `title`) > `title` — model-authored
+ * prose, observed to follow a small set of shapes ("Run npm test", "Edit
+ * small.txt", "Write new.txt", "Read File") — parsed narrowly
+ * (`classify.ts`'s file header has the exact patterns and, since round 3,
+ * a "does this actually look like a path" check: prose like "Edit the
+ * config file" is deliberately rejected rather than resolved into a false
+ * in-worktree allow). Anything past all three sources leaves classification
+ * kind-only, at which point the policy table's existing safe defaults apply
+ * (deny/hil, never allow, on an unidentifiable target).
  */
 
 /** The three roles this ticket's policy table covers (§14's Architect/EM/Reader rows are out of scope here). */
@@ -52,11 +55,26 @@ export interface AcpPermissionOption {
  */
 export type AcpToolKind = 'read' | 'edit' | 'execute' | 'fetch' | string;
 
+/**
+ * One location an edit/read tool call touches. Not modeled anywhere in
+ * `@agile-agents/acp-client`'s types (that package models the JSON-RPC
+ * session/reply contract, not `session/request_permission`'s own payload
+ * shape) and not present in any recorded spike capture — included per the
+ * round-3 review instruction as a field some ACP tool calls are documented
+ * to carry, independent of `rawInput` and of `title`. `line` is accepted
+ * on the wire but unused by this policy (path is all containment checks need).
+ */
+export interface AcpLocation {
+  path: string;
+  line?: number;
+}
+
 export interface AcpToolCall {
   toolCallId?: string;
   kind?: AcpToolKind;
   title?: string;
   rawInput?: Record<string, unknown>;
+  locations?: AcpLocation[];
 }
 
 /** `session/request_permission` params, as forwarded by `SpawnedSession`'s `'request'` event. */
@@ -84,7 +102,9 @@ export interface PermissionRequest {
   targetPath?: string;
   /** `rawInput.url` for `fetch` tool calls. */
   url?: string;
-  /** True when `command`/`targetPath`/`toolClass` came from parsing `title` (`rawInput` had neither) rather than from `rawInput` itself — see `classify.ts`'s file header. */
+  /** True when `targetPath` came from `toolCall.locations[0].path` (`rawInput` had neither a command nor a path) — see `classify.ts`'s file header for the fallback order. */
+  locationsUsed: boolean;
+  /** True when `command`/`targetPath`/`toolClass` came from parsing `title` (`rawInput` and `locations` both had nothing) rather than from either of those — see `classify.ts`'s file header. */
   titleFallbackUsed: boolean;
   raw: AcpPermissionRequestParams;
 }
