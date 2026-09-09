@@ -386,8 +386,8 @@ Priority encodes dependency layer as well as importance: P0 tickets are v0-block
 
 ### Ticket: T036 Deflake `hook-timing.test.ts` end-to-end CLI subprocess test
 - **Priority:** P3
-- **Status:** Todo
-- **Owner:** Unassigned
+- **Status:** In Progress
+- **Owner:** sonnet:worker-T036
 - **Scope:** Depends on T033. `packages/cli/src/commands/hook-timing.test.ts` "end-to-end CLI subprocess: report measured numbers honestly" hit its 5 000 ms bun-test timeout once in three full-suite runs during T035 QA round 2 (full run 190 s under load from five concurrent agents). It spawns a real CLI subprocess; under load the spawn+round-trip exceeds the default timeout. Attribute the cost (spawn vs measurement loop), then either bound the measured samples or give the test an explicit timeout proportional to what it measures without weakening the "honest numbers" assertion. Test-only.
 - **Acceptance Criteria:** 20/20 isolated runs of the file under two concurrent `bun test packages/daemon/src/store` load loops; 3/3 full `bun test`; assertions unchanged or stronger.
 - **Validation Steps:** `for i in $(seq 20); do bun test packages/cli/src/commands/hook-timing.test.ts; done` under load, then 3x `bun test`.
