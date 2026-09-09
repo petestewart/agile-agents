@@ -100,6 +100,17 @@ export interface StartDaemonOptions extends DiscoverConfigOptions {
    * `agile run`'s offline mode does, since it never spawns one.
    */
   gateDelegate?: DelegateFn;
+  /**
+   * Test-only seam: the daemon's own clock, threaded to `Bus` (heartbeat
+   * timestamps + coalescing, `bus/bus.ts`) and `Runner` (forwarded to every
+   * spawned session's own `now`, `runner/session.ts`) so a test can run a
+   * real heartbeat-coalescing window (`StateStore.heartbeat`'s
+   * `HEARTBEAT_COALESCE_MS`, 30s) or a real liveness timeout in
+   * well-under-a-second of actual wall-clock time — e.g. an accelerated
+   * clock, not a counter mock, so ordering/proportional gaps stay real.
+   * Real usage never sets this (the daemon runs on the system clock).
+   */
+  now?: () => Date;
 }
 
 export async function startDaemon(options: StartDaemonOptions = {}): Promise<DaemonHandle> {
@@ -120,7 +131,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
     : undefined;
   // Hoisted (T011) so `bus.*` RPC, the hook service, and the tool service's
   // `bus_send` built-in all share one `Bus` instance over the same store.
-  const bus = store ? new Bus(store, config.stateRoot) : undefined;
+  const bus = store ? new Bus(store, config.stateRoot, { now: options.now }) : undefined;
   // Quota records + routing data (T023): fed by every session's
   // `usage_update` through the runner; read by `quota.*` RPC, `agile
   // status`, and the feed header.
@@ -182,6 +193,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
             ? (ticket, worktree) => qaProtocol.start(ticket, worktree)
             : undefined,
           spawn: options.runnerSpawn,
+          now: options.now,
         })
       : undefined;
   runner?.startSweep();

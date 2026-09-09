@@ -119,6 +119,18 @@ export interface RunOptions {
    * when `fake` is true.
    */
   liveSpawnForTest?: AgentSessionOptions['spawn'];
+  /**
+   * Test-only seam: overrides `startDaemon`'s own clock (`Bus`'s heartbeat
+   * timestamps/coalescing, `Runner`'s per-session `now`) and this
+   * function's own `--live`-mode loop-bound/stall-watchdog clock, so both
+   * sides read the same time. Lets a test clear the store's real 30s
+   * heartbeat-coalescing window and a real multi-minute `stallTimeoutMs`
+   * in well under a second of actual wall-clock time (e.g. an accelerated
+   * clock — `now => new Date(anchor + (Date.now() - anchor) * factor)` —
+   * keeps real relative ordering/proportional gaps, unlike a manually
+   * stepped counter). Real `agile run --live` usage never sets this.
+   */
+  testNow?: () => Date;
   /** Where to write the run report. Defaults to `<cwd>/runs`. */
   reportDir?: string;
 }
@@ -790,11 +802,30 @@ export async function runDemoSprint(opts: RunOptions): Promise<RunResult> {
   // enough for a real engineer/reviewer/qa chain to actually finish.
   const tickIntervalMs = opts.tickIntervalMs ?? (fake ? 0 : 30_000);
   const liveTimeoutMs = opts.liveTimeoutMs ?? 10 * 60 * 1000;
-  const stallTimeoutMs = opts.stallTimeoutMs ?? DEFAULT_LIVENESS_TIMEOUT_MS;
+  // Floor at 30s (opus review round 4 nit): `StateStore.heartbeat`
+  // coalesces `AgentRecord.last_seen` writes to at most once per 30s
+  // (`HEARTBEAT_COALESCE_MS`) — a threshold below that would false-positive
+  // on a perfectly healthy session that just hasn't crossed a coalescing
+  // window yet. `opts.testNow` (below) is how a test gets a *real* sub-30s
+  // threshold to actually fire without waiting on real wall-clock time:
+  // it accelerates the clock both sides of this comparison read, rather
+  // than shrinking the threshold underneath the coalescing window's own
+  // real-time assumption.
+  const stallTimeoutMs = Math.max(opts.stallTimeoutMs ?? DEFAULT_LIVENESS_TIMEOUT_MS, 30_000);
+  // `--live`-mode watchdog/loop-bound clock (test-only override via
+  // `opts.testNow`, forwarded to the daemon itself below so
+  // `AgentRecord.last_seen` timestamps and this loop's own readings stay
+  // on the same clock — round 5's own "healthy long turn" test uses an
+  // accelerated-but-real clock here to clear the 30s coalescing window and
+  // a multi-minute `stallTimeoutMs` in well under a second of actual wall
+  // time, without faking away the real proportional ordering between
+  // events that a counter-based mock would lose).
+  const clockNow = (): number => (opts.testNow ? opts.testNow().getTime() : Date.now());
 
   const handle = await startDaemon({
     cwd: opts.cwd,
     port: 0,
+    now: opts.testNow,
     runnerSpawn: fake ? createFakeSpawn() : opts.liveSpawnForTest,
     gateDelegate: fake
       ? () => ({ decision: 'approve', by: 'em', rationale: 'automated (agile run --fake)' })
@@ -876,7 +907,7 @@ export async function runDemoSprint(opts: RunOptions): Promise<RunResult> {
       let discoveryResolved = !seed.discovery;
       let oversizedReadDecision = 'not checked (no --seed)';
 
-      const start = Date.now();
+      const start = clockNow();
       // Fail-fast stall watchdog state (`--live` only, see below): the most
       // recent `AgentRecord.last_seen` this loop has observed across every
       // registered agent — the exact liveness signal `Bus.checkLiveness`'s
@@ -886,10 +917,14 @@ export async function runDemoSprint(opts: RunOptions): Promise<RunResult> {
       // reproduced round 3's status-based watchdog aborting a healthy run
       // with 45 `tool_call` events already logged). Starts at `start` so a
       // vendor that never spawns anything at all is still bounded by
-      // `stallTimeoutMs`, same as one that spawns and then goes silent.
+      // `stallTimeoutMs`, same as one that spawns and then goes silent —
+      // though "never spawns anything at all" is itself now treated as
+      // "not stalled yet" tick-by-tick below (opus review round 4 nit),
+      // this initial value is only ever compared against on the very first
+      // check, before that branch has had a chance to run.
       let lastLivenessAt = start;
       let tick = 0;
-      for (; fake ? tick < maxTicks : Date.now() - start < liveTimeoutMs; tick++) {
+      for (; fake ? tick < maxTicks : clockNow() - start < liveTimeoutMs; tick++) {
         await gateService.tick();
         await emLoop.tick();
         await advanceReviewRequests(store, bus, reviewProtocol, runner, seenReview);
@@ -1020,8 +1055,17 @@ export async function runDemoSprint(opts: RunOptions): Promise<RunResult> {
             .filter((ms) => Number.isFinite(ms));
           if (lastSeenTimes.length > 0) {
             lastLivenessAt = Math.max(lastLivenessAt, ...lastSeenTimes);
+          } else {
+            // No agent has ever registered yet (opus review round 4 nit):
+            // that's normal spawn latency (worktree placement, the vendor
+            // process actually starting), not a stall — keep pushing the
+            // clock forward until the *first* agent shows up, rather than
+            // counting the time since loop start against it. Once at least
+            // one agent has registered, the branch above takes over and the
+            // real countdown begins.
+            lastLivenessAt = clockNow();
           }
-          if (Date.now() - lastLivenessAt >= stallTimeoutMs) {
+          if (clockNow() - lastLivenessAt >= stallTimeoutMs) {
             throw new Error(
               `agile run --live: no session liveness (AgentRecord.last_seen) observed for ${stallTimeoutMs}ms — no vendor session appears reachable. Aborting instead of waiting out the remaining liveTimeoutMs.`,
             );

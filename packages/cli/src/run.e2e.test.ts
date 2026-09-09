@@ -60,6 +60,22 @@ function fakeAgentSpawn(repo: string, name: string, steps: unknown[]) {
     });
 }
 
+/**
+ * A real, monotonic clock that runs `factor`x faster than the wall clock
+ * (T021 round 5, QA round 4 finding 1) — `runDemoSprint`'s `testNow` seam
+ * threads this into both `AgentRecord.last_seen` writes (via `Bus`'s own
+ * heartbeat coalescing, `store.ts`'s `HEARTBEAT_COALESCE_MS`) and the
+ * stall watchdog's own timing, so a test can clear a real 30s coalescing
+ * window and a real multi-minute `stallTimeoutMs` in a small fraction of a
+ * real second — without a counter-stepped mock, which would lose the real
+ * proportional gaps between events (and could let a test pass for a reason
+ * that has nothing to do with the real coalescing/threshold logic).
+ */
+function acceleratedClock(factor: number): () => Date {
+  const realStart = Date.now();
+  return () => new Date(realStart + (Date.now() - realStart) * factor);
+}
+
 const FIXTURE_ROOT = join(import.meta.dir, '..', '..', '..', 'fixtures', 'demo-project');
 
 // T021 round 3 (opus review round 2 nit): gate purely on `AGILE_LIVE=1`,
@@ -265,7 +281,13 @@ describe('agile run --live stall watchdog (offline, deterministic — opus revie
     // transport standing in for a real vendor. `preflightTimeoutMs` is
     // pinned short too — the pre-flight probe itself hangs on `initialize`
     // exactly the same way, so it must not eat the whole test timeout.
+    //
+    // `stallTimeoutMs` floors at 30s (`run.ts`'s own `Math.max`, opus round
+    // 4 nit) — `testNow`'s accelerated clock (T021 round 5, QA round 4
+    // finding 1) is what lets this test actually observe that real 30s
+    // threshold firing without a real 30-second sleep.
     const hangSpawn = fakeAgentSpawn(repo, 'hang', [{ type: 'hang' }]);
+    const testNow = acceleratedClock(600); // 30s of clock time in ~50ms real.
 
     await expect(
       runDemoSprint({
@@ -273,39 +295,46 @@ describe('agile run --live stall watchdog (offline, deterministic — opus revie
         seed: join(FIXTURE_ROOT, 'seed', 'epic.json'),
         fake: false,
         liveSpawnForTest: hangSpawn,
+        testNow,
         preflightTimeoutMs: 300,
-        tickIntervalMs: 100,
-        liveTimeoutMs: 30_000,
-        stallTimeoutMs: 500,
+        tickIntervalMs: 5,
+        liveTimeoutMs: 120_000, // well past the 30s floor so the watchdog — not this bound — is what fires.
+        stallTimeoutMs: 1, // clamped up to the real 30s floor by run.ts itself.
       }),
-    ).rejects.toThrow(/no session liveness \(AgentRecord\.last_seen\) observed for 500ms/);
-  }, 20_000);
+    ).rejects.toThrow(/no session liveness \(AgentRecord\.last_seen\) observed for 30000ms/);
+  }, 10_000);
 
   test('a healthy long turn with steady events does not trip the watchdog, even while a ticket sits in_progress the whole time', async () => {
     // T021 round 4 (opus review round 3 blocker): round 3's watchdog keyed
     // on ticket-*status* stasis and aborted a real, healthy run mid-turn.
     // This proves the fix's other half, not just that the watchdog fires —
-    // a session that keeps emitting events (`usage_update`, spaced out by
-    // real wall-clock `delay` steps — T021 round 4's addition to
-    // `fake-agent.ts`) for longer than `stallTimeoutMs` must never trip it.
+    // a session that keeps emitting events (`usage_update`, spaced by
+    // `fake-agent.ts`'s `delay` step — T021 round 4's addition) for longer
+    // than `stallTimeoutMs` must never trip it, because `AgentRecord.
+    // last_seen` keeps advancing.
     //
-    // Timing here is deliberately real, not compressed: `AgentRecord.
-    // last_seen` writes are coalesced to at most once per
-    // `HEARTBEAT_COALESCE_MS` (30s, `store.ts`) — an event landing sooner
-    // than that since the last *written* heartbeat is a genuine no-op, by
-    // design (CLAUDE.md: "signal over volume"). A `stallTimeoutMs` shorter
-    // than that window would make this test pass for the wrong reason (an
-    // artificial timing regime the watchdog was never meant to survive);
-    // this uses continuous pulses well past 30s and a threshold comfortably
-    // above the coalescing window, so the only thing keeping the watchdog
-    // quiet is the real production write path actually firing.
-    const totalMs = 36_000;
-    const pulseEveryMs = 250;
-    const stallTimeoutMs = 40_000; // > HEARTBEAT_COALESCE_MS (30s) with real margin.
+    // `last_seen` writes are coalesced to at most once per
+    // `HEARTBEAT_COALESCE_MS` (30s, `store.ts`) — a genuine, deliberate
+    // "signal over volume" behavior, not a bug — so proving this
+    // meaningfully (not just compressing every timeout below that window,
+    // which would pass for the wrong reason) needs the *real* coalescing
+    // logic to actually run. `testNow`'s accelerated clock (T021 round 5,
+    // QA round 4 finding 1) is what lets this happen in well under a
+    // second of real wall time instead of the ~36-39s round 4 shipped: the
+    // pulses still land at real, short (millisecond) intervals — only the
+    // clock both `Bus`'s heartbeat coalescing and this loop's own
+    // watchdog read is sped up, so the real proportional relationship
+    // between "how often an event lands" and "how wide the coalescing/
+    // stall windows are" is preserved, just compressed in wall-clock terms.
+    const factor = 400;
+    const pulses = 20;
+    const pulseDelayMs = 15; // real ms between pulses -> `pulseDelayMs * factor` ms of clock time each.
+    const stallTimeoutMs = 60_000; // double the 30s floor, comfortable margin over the coalesced write cadence below.
+    const testNow = acceleratedClock(factor);
     const steps: unknown[] = [];
-    for (let elapsed = 0; elapsed < totalMs; elapsed += pulseEveryMs) {
+    for (let i = 0; i < pulses; i++) {
       steps.push({ type: 'usage_update', used: 5 });
-      steps.push({ type: 'delay', ms: pulseEveryMs });
+      steps.push({ type: 'delay', ms: pulseDelayMs });
     }
     // `hang` at the end, deliberately: no `end_turn`, so the session (and
     // the ticket's `in_progress` status) is still open/live for the whole
@@ -314,20 +343,20 @@ describe('agile run --live stall watchdog (offline, deterministic — opus revie
     // events" (the earlier test already covers "eventually goes silent").
     steps.push({ type: 'hang' });
     const healthySpawn = fakeAgentSpawn(repo, 'healthy', steps);
-    const liveTimeoutMs = totalMs + 2_000;
+    const liveTimeoutMs = pulses * pulseDelayMs * factor + 20_000; // clock-time bound, just past the pulses' own total.
 
     let sawInProgress = false;
     const { StateStore } = await import('@agile-agents/daemon');
-    const pollDeadline = Date.now() + liveTimeoutMs;
+    const pollDeadlineRealMs = Date.now() + 5_000; // real-time deadline — this test's own real budget, independent of the accelerated clock above.
     const pollForStatus = (async () => {
-      while (Date.now() < pollDeadline) {
+      while (Date.now() < pollDeadlineRealMs) {
         try {
           const store = StateStore.open(join(repo, '.agile'));
           if (store.getTicket('TKT-1001' as never).status === 'in_progress') sawInProgress = true;
         } catch {
           // Not seeded/assigned yet.
         }
-        await new Promise((resolve) => setTimeout(resolve, 250));
+        await new Promise((resolve) => setTimeout(resolve, 15));
       }
     })();
 
@@ -340,15 +369,16 @@ describe('agile run --live stall watchdog (offline, deterministic — opus revie
       seed: join(FIXTURE_ROOT, 'seed', 'epic.json'),
       fake: false,
       liveSpawnForTest: healthySpawn,
-      preflightTimeoutMs: 5_000,
-      tickIntervalMs: 1_000,
+      testNow,
+      preflightTimeoutMs: 2_000,
+      tickIntervalMs: 5,
       liveTimeoutMs,
       stallTimeoutMs,
     });
     expect(result.ticketOutcomes.every((o) => o.status === 'in_progress')).toBe(true);
     await pollForStatus;
     expect(sawInProgress).toBe(true);
-  }, 60_000);
+  }, 10_000);
 
   test('no vendor reachable at all skips fast via the pre-flight, instead of burning stallTimeoutMs/liveTimeoutMs', async () => {
     // T021 round 4 (opus review round 3 blocker, "on a host with no vendor
