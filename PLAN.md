@@ -125,12 +125,12 @@ Priority encodes dependency layer as well as importance: P0 tickets are v0-block
 
 ### Ticket: T007 Oracle write guard, ripple walk, halts
 - **Priority:** P0
-- **Status:** In Progress
+- **Status:** In Review
 - **Owner:** sonnet:worker-T007
 - **Scope:** Depends on T005. `oracle.write` endpoint accepting only `architect` with a decision ID: validates `supersedes/depends/affects` graph (no dangling refs, no cycles), flips superseded entries, appends `changelog.md`, drops inactive entries from `index.yaml`. Ripple walk: transitive `affects` ∩ `ticket.oracle_refs` → mark `stale`. Halts: create/delete `board/halts/H-*.yaml` with scope `global | team | [tickets]`, quorum tracking from `standup_report` stanzas, heartbeat-timeout release.
 - **Acceptance Criteria:** A DEC change with a two-hop `affects` chain stales exactly the intersecting tickets; a non-architect write is refused; a halt's `quorum` flips to `reached` when the last affected agent reports or times out.
 - **Validation Steps:** Graph fixtures with cycles/dangling refs; ripple and quorum unit tests.
-- **Notes:**
+- **Notes:** branch `T007-oracle-ripple-halts` (local worktree); `src/oracle/` (write guard, graph validation, ripple) + `src/halts/` (create/release/quorum, injectable clock), 19 tests. Worker escalated: `standup_report` is a Message not a Stanza kind (agreed, no change); quorum bookkeeping was process-local (manager: make it durable — Halt gains `affected`/`reported`/`raised_at`, persisted via `putHalt`); `putHalt` always minted `halt_created` (manager: add `halt_updated`). Worker applying; gates after.
 
 ### Ticket: T008 CLI `agile`
 - **Priority:** P0
@@ -342,3 +342,4 @@ Priority encodes dependency layer as well as importance: P0 tickets are v0-block
 - 2026-09-09 — T005 review round 1 FAIL (5 blockers). Decisions (manager, yolo): (1) every store mutation emits exactly one `events.jsonl` line and its commit message is that event kind — one vocabulary for audit trail and event log; missing kinds added to shared `EVENT_KINDS` as DESIGN-GAP; (2) the store gets a generic validating `putEntity/getEntity/deleteEntity` trio plus Halt/Sprint/Quota/AgentRecord/Policy/Vendors helpers so T006/T007/T015/T023 never write `.agile/` around the store; (3) `board/status/<ticket>.jsonl` holds Stanzas only, transitions live in `events.jsonl`.
 - 2026-09-09 — Container issue: the session's environment-manager process hit its 20k file-descriptor limit (leaked sockets), so the git commit-signing hook (`/tmp/code-sign`) fails with "too many open files". Manager commits on the integration branch are made with `-c commit.gpgsign=false` from here on; worker commits in worktrees may hit the same and should do likewise. Content is unaffected; signatures are missing on those commits.
 - 2026-09-09 — T005 merged (6a3f999); 405 tests green. Wave 4 launched in parallel: T006 (`src/bus/`), T007 (`src/oracle/`, `src/halts/`), T010 (`src/permissions/`), T018 (`src/gates/`); each ships a `build<X>RpcMethods(store)` table and the manager wires `daemon.ts`/`index.ts` at merge. T019/T023 also depend on T012 (not runnable yet); T020 sequenced after T018 (discovered dependency). T018's CLI verbs (`approve`/`delegate`/`breaker clear`) land with T008, which now also depends on T018.
+- 2026-09-09 — T007 escalations decided: halt quorum tracking must survive restart, so shared `Halt` gains optional `affected`, `reported`, `raised_at` (DESIGN-GAP) and `EVENT_KINDS` gains `halt_updated`; `store.putHalt` distinguishes create vs update. No `ripple` summary event — per-ticket `state_transition` events carry the decision id.
