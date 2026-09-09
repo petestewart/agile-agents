@@ -395,8 +395,8 @@ Priority encodes dependency layer as well as importance: P0 tickets are v0-block
 
 ### Ticket: T037 Sandbox the remaining daemon and CLI subprocess spawns
 - **Priority:** P3
-- **Status:** Todo
-- **Owner:** Unassigned
+- **Status:** In Progress
+- **Owner:** sonnet:worker-T037
 - **Scope:** Depends on T034. Route every remaining non-vendor subprocess through `packages/daemon/src/subprocess-env.ts`'s `sandboxedSubprocessEnv(repoRoot, purpose)`: the git spawns in `review/diff-summary.ts`, `config.ts`, `store/git.ts`, `architect/refine.ts` (four sites), `handoff/hard.ts`, `init.ts` (two sites), `merge/precommit.ts` (bootstrap `rev-parse --git-common-dir`); the `sh -c command -v` probes in `sandbox/backend.ts` and `sandbox/wrap.ts`; and `packages/cli/src/commands/run.ts`'s offline-demo git spawns. Also close the two T034 residuals: `pruneRawTestRunOutputs` protects only the calling run's paths, so a concurrent `test_run`'s in-flight `.out`/`.err` can be swept (needs a shared in-flight registry in `tools/test-run.ts`); and `MAX_RETAINED_RAW_OUTPUT_BYTES` bounds only `raw/test_run/`, not other tools' `raw/` output. The two sandbox tests that touch the real `<tmpdir>/.agile-daemon-cache/sandbox-detect` path should set `TMPDIR` to a per-test directory.
 - **Acceptance Criteria:** `grep -rn "spawn\|execFile" packages/daemon/src packages/cli/src` shows every non-vendor spawn passing a sandboxed env (vendor ACP spawns still keep the real `HOME`, negative test retained); two concurrent `runTestRun` calls cannot prune each other's captures (test); `bun test` green with no new file under `~/.npm`/`~/.cache`/`~/.config`.
 - **Validation Steps:** `bun test packages/daemon packages/cli`; the home-dir before/after check around `bun test` and `bun run e2e`.
