@@ -294,17 +294,26 @@ function engineerBenignCommandVerdict(
 
   const dlx = cmd.parseDlxInvocation(tokens);
   if (dlx !== undefined) {
-    // T030 QA round 2: allowed only when the target bin actually exists in
-    // this worktree's node_modules/.bin at decision time — not a syntactic
-    // guess (a bare `npx cowsay`/`bunx cowsay` with no repo dependency on
-    // cowsay must hil as "new dependency execution", the same as `bun add
-    // cowsay` would). A forced-install flag (-p/--package/-y/--yes/-g/
-    // --global) is always hil, even if a same-named bin happens to exist,
-    // since it can install/overwrite a different version than what's
-    // actually checked in.
+    // T030 QA round 2 / opus round 3: `bunx`/`bun x`/`npm exec` are allowed
+    // only when the target bin actually exists (as a real, executable,
+    // in-worktree file — see cmd.isRepoLocalBin) in this worktree's
+    // node_modules/.bin at decision time — not a syntactic guess (a bare
+    // `npx cowsay`/`bunx cowsay` with no repo dependency on cowsay must hil
+    // as "new dependency execution", the same as `bun add cowsay` would).
+    // A forced-install flag (-p/--package/-y/--yes/-g/--global) is always
+    // hil, even if a same-named bin happens to exist, since it can
+    // install/overwrite a different version than what's actually checked
+    // in. `pnpm dlx`/`yarn dlx` never consult the local node_modules/.bin
+    // at all — `dlx` always fetches into a temporary store and runs that —
+    // so they're always hil regardless of `isRepoLocalBin`.
     if (dlx.forcesInstall) {
       return hil(
         `"${dlx.bin}" forces a package install/global run (-p/--package/-y/--yes/-g/--global) — file a hil_request`,
+      );
+    }
+    if (dlx.neverLocal) {
+      return hil(
+        `"${dlx.bin}" via dlx always fetches into a temporary store, never the local node_modules/.bin — file a hil_request`,
       );
     }
     return cmd.isRepoLocalBin(dlx.bin, ctx.worktreePath)

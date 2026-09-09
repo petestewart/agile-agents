@@ -11,7 +11,7 @@
  * `hasUnsafeShellConstruct`.
  */
 
-import { existsSync, realpathSync } from 'node:fs';
+import { realpathSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, dirname, isAbsolute, join as joinPath, relative, resolve } from 'node:path';
 
@@ -820,14 +820,20 @@ export function findSearchRoots(tokens: string[]): string[] {
 
 /**
  * `bunx <pkg>`/`npx <pkg>` (single-word form), `bun x <pkg>` (space form,
- * T030 review), `npm exec <pkg>`, `pnpm dlx <pkg>`, and `yarn dlx <pkg>` —
- * every "run this package's bin" spelling this ticket names — restricted
- * to "repo-local bins" (T030 QA round 2): allowed only when the target bin
- * actually exists in this worktree's `node_modules/.bin/` at decision time
- * (`isRepoLocalBin`, below) — not a syntactic proxy any more. Any flag that
- * forces a fetch/install (`-p`/`--package`, `-y`/`--yes`, `-g`/`--global`)
- * is `hil` regardless of whether the bin happens to already exist, since
- * those flags can install/overwrite a different version than what's
+ * T030 review), and `npm exec <pkg>` — the three spellings that actually
+ * prefer an already-installed local bin before fetching anything — are
+ * restricted to "repo-local bins" (T030 QA round 2/opus round 3): allowed
+ * only when the target bin exists as a real, executable, in-worktree file
+ * under this worktree's `node_modules/.bin/` at decision time
+ * (`isRepoLocalBin`, below), not a syntactic guess. `pnpm dlx`/`yarn dlx`
+ * (T030 opus round 3) are excluded from that check entirely — `dlx` by
+ * definition fetches the package into a temporary store and runs *that*,
+ * so a local `node_modules/.bin` entry existing is not evidence of what
+ * `dlx` will actually execute; both are unconditionally `hil` regardless
+ * of `bin`/`isRepoLocalBin` (see `DlxInvocation.neverLocal`). Any flag
+ * that forces a fetch/install (`-p`/`--package`, `-y`/`--yes`,
+ * `-g`/`--global`) is `hil` regardless of `neverLocal`/`isRepoLocalBin`,
+ * since those flags can install/overwrite a different version than what's
  * checked in.
  */
 const DLX_FORCE_INSTALL_FLAGS = new Set(['-p', '--package', '-y', '--yes', '-g', '--global']);
@@ -840,45 +846,79 @@ function isForceInstallFlag(t: string): boolean {
   return false;
 }
 
-/** The "run a package's bin" tail tokens for any of the recognized spellings, or `undefined` if `tokens` isn't one of them. */
-function dlxRestTokens(tokens: string[]): string[] | undefined {
+/** The "run a package's bin" tail tokens for any of the recognized spellings, plus whether this spelling ever consults the local `node_modules/.bin` at all (`pnpm dlx`/`yarn dlx` never do), or `undefined` if `tokens` isn't one of them. */
+function dlxRestTokens(tokens: string[]): { rest: string[]; neverLocal: boolean } | undefined {
   const head = tokens[0];
-  if (head === 'bunx' || head === 'npx') return tokens.slice(1);
-  if (head === 'bun' && tokens[1] === 'x') return tokens.slice(2);
-  if (head === 'npm' && tokens[1] === 'exec') return tokens.slice(2);
-  if (head === 'pnpm' && tokens[1] === 'dlx') return tokens.slice(2);
-  if (head === 'yarn' && tokens[1] === 'dlx') return tokens.slice(2);
+  if (head === 'bunx' || head === 'npx') return { rest: tokens.slice(1), neverLocal: false };
+  if (head === 'bun' && tokens[1] === 'x') return { rest: tokens.slice(2), neverLocal: false };
+  if (head === 'npm' && tokens[1] === 'exec') return { rest: tokens.slice(2), neverLocal: false };
+  if (head === 'pnpm' && tokens[1] === 'dlx') return { rest: tokens.slice(2), neverLocal: true };
+  if (head === 'yarn' && tokens[1] === 'dlx') return { rest: tokens.slice(2), neverLocal: true };
   return undefined;
 }
 
 export interface DlxInvocation {
   /** The bin/package name this invocation would run. */
   bin: string;
-  /** A `-p`/`--package`/`-y`/`--yes`/`-g`/`--global` flag was present — always `hil`, regardless of `isRepoLocalBin`. */
+  /** A `-p`/`--package`/`-y`/`--yes`/`-g`/`--global` flag was present — always `hil`, regardless of `isRepoLocalBin`/`neverLocal`. */
   forcesInstall: boolean;
+  /** `pnpm dlx`/`yarn dlx` — never resolves a local bin, so always `hil` regardless of `isRepoLocalBin` (opus round 3). */
+  neverLocal: boolean;
 }
 
-/** Parses any of `bunx`/`npx`/`bun x`/`npm exec`/`pnpm dlx`/`yarn dlx` into `{ bin, forcesInstall }`, or `undefined` if `tokens` isn't one of these shapes at all (no bin token found either way). */
+/** Parses any of `bunx`/`npx`/`bun x`/`npm exec`/`pnpm dlx`/`yarn dlx` into `{ bin, forcesInstall, neverLocal }`, or `undefined` if `tokens` isn't one of these shapes at all (no bin token found either way). */
 export function parseDlxInvocation(tokens: string[]): DlxInvocation | undefined {
-  const rest = dlxRestTokens(tokens);
-  if (rest === undefined) return undefined;
+  const parsed = dlxRestTokens(tokens);
+  if (parsed === undefined) return undefined;
+  const { rest, neverLocal } = parsed;
   const forcesInstall = rest.some((t) => isForceInstallFlag(t));
   const bin = rest.find((t) => !isFlagToken(t) && t !== '--');
   if (bin === undefined) return undefined;
-  return { bin, forcesInstall };
+  return { bin, forcesInstall, neverLocal };
 }
 
 /**
- * True only if `bin` exists as a file under this worktree's
- * `node_modules/.bin/` — the actual repo-local-bin check (T030 QA round
- * 2), not a syntactic guess. Never throws: an unreadable/nonexistent
- * `node_modules/.bin` (or a `bin` containing a `/`, which couldn't be a
- * flat bin-dir entry anyway) is "not repo-local", not an error.
+ * A `node_modules/.bin` entry is a plain identifier — never `.`/`..`, never
+ * containing a path separator, never starting with `.` (a hidden file, or
+ * `..` itself would already be excluded by the separator ban but this also
+ * catches a lone `.`) — so `npx .` (npm's "run the package in this
+ * directory" form) and `npx ..` (which collapses `node_modules/.bin/..` to
+ * `node_modules`, an existing directory) can never even reach the
+ * filesystem check below (T030 opus round 3).
+ */
+const PLAIN_BIN_NAME_RE = /^[A-Za-z0-9_-][A-Za-z0-9_.-]*$/;
+
+/**
+ * True only if `bin` is a real, executable, regular file inside this
+ * worktree's `node_modules/.bin/` — the repo-local-bin check (T030 QA
+ * round 2, hardened in opus round 3):
+ *
+ * 1. `bin` must be a plain identifier (`PLAIN_BIN_NAME_RE`) — rules out
+ *    `.`/`..`/anything with a `/` before ever touching the filesystem.
+ * 2. Both `worktreePath` and the candidate `node_modules/.bin/<bin>` path
+ *    are `realpathSync`'d, and the candidate's real path must resolve
+ *    *inside* the worktree's real path — closes the symlink escape where
+ *    a `.bin` entry (or `node_modules/.bin` itself) is a symlink pointing
+ *    outside the worktree (e.g. `node_modules/.bin -> /usr/bin`), which a
+ *    bare `existsSync` would follow and treat as "repo-local".
+ * 3. The resolved target must be a regular file (not a directory/socket/
+ *    etc.) with at least one executable bit set — a `.bin` entry that
+ *    exists but isn't runnable isn't a bin to run.
+ *
+ * Never throws: any of the above failing (nonexistent path, permission
+ * error, non-file) means "not repo-local", not an error.
  */
 export function isRepoLocalBin(bin: string, worktreePath: string): boolean {
-  if (bin.length === 0 || bin.includes('/')) return false;
+  if (!PLAIN_BIN_NAME_RE.test(bin)) return false;
   try {
-    return existsSync(resolve(worktreePath, 'node_modules', '.bin', bin));
+    const worktreeReal = realpathSync(resolve(worktreePath));
+    const candidateReal = realpathSync(resolve(worktreePath, 'node_modules', '.bin', bin));
+    if (candidateReal === worktreeReal) return false;
+    const rel = relative(worktreeReal, candidateReal);
+    if (rel === '' || rel.startsWith('..') || isAbsolute(rel)) return false;
+    const stats = statSync(candidateReal);
+    if (!stats.isFile()) return false;
+    return (stats.mode & 0o111) !== 0;
   } catch {
     return false;
   }

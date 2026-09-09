@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join as joinPath } from 'node:path';
 import type { CommandAtom } from './command';
@@ -478,25 +478,25 @@ describe('flagPathValues (T030 review finding 3)', () => {
   });
 });
 
-describe('parseDlxInvocation — dlx spellings (T030 review finding 5 / QA round 2)', () => {
-  const RECOGNIZED: Array<[string[], string, boolean]> = [
-    [['bunx', 'cowsay', 'hi'], 'cowsay', false],
-    [['npx', 'cowsay', 'hi'], 'cowsay', false],
-    [['bun', 'x', 'cowsay', 'hi'], 'cowsay', false],
-    [['npm', 'exec', 'cowsay', 'hi'], 'cowsay', false],
-    [['pnpm', 'dlx', 'cowsay', 'hi'], 'cowsay', false],
-    [['yarn', 'dlx', 'cowsay', 'hi'], 'cowsay', false],
-    [['bun', 'x', 'cowsay@1.0.0'], 'cowsay@1.0.0', false],
-    [['npm', 'exec', '-y', 'cowsay'], 'cowsay', true],
-    [['pnpm', 'dlx', '--package', 'cowsay', 'cowsay'], 'cowsay', true],
-    [['yarn', 'dlx', 'cowsay@1.0.0'], 'cowsay@1.0.0', false],
-    [['npx', '-g', 'cowsay'], 'cowsay', true],
-    [['npx', '-pcowsay', 'cowsay'], 'cowsay', true],
-    [['npx', '--package=cowsay', 'cowsay'], 'cowsay', true],
+describe('parseDlxInvocation — dlx spellings (T030 review finding 5 / QA round 2 / opus round 3)', () => {
+  const RECOGNIZED: Array<[string[], string, boolean, boolean]> = [
+    [['bunx', 'cowsay', 'hi'], 'cowsay', false, false],
+    [['npx', 'cowsay', 'hi'], 'cowsay', false, false],
+    [['bun', 'x', 'cowsay', 'hi'], 'cowsay', false, false],
+    [['npm', 'exec', 'cowsay', 'hi'], 'cowsay', false, false],
+    [['pnpm', 'dlx', 'cowsay', 'hi'], 'cowsay', false, true],
+    [['yarn', 'dlx', 'cowsay', 'hi'], 'cowsay', false, true],
+    [['bun', 'x', 'cowsay@1.0.0'], 'cowsay@1.0.0', false, false],
+    [['npm', 'exec', '-y', 'cowsay'], 'cowsay', true, false],
+    [['pnpm', 'dlx', '--package', 'cowsay', 'cowsay'], 'cowsay', true, true],
+    [['yarn', 'dlx', 'cowsay@1.0.0'], 'cowsay@1.0.0', false, true],
+    [['npx', '-g', 'cowsay'], 'cowsay', true, false],
+    [['npx', '-pcowsay', 'cowsay'], 'cowsay', true, false],
+    [['npx', '--package=cowsay', 'cowsay'], 'cowsay', true, false],
   ];
-  for (const [tokens, bin, forcesInstall] of RECOGNIZED) {
-    test(`"${tokens.join(' ')}" parses to bin=${bin}, forcesInstall=${forcesInstall}`, () => {
-      expect(parseDlxInvocation(tokens)).toEqual({ bin, forcesInstall });
+  for (const [tokens, bin, forcesInstall, neverLocal] of RECOGNIZED) {
+    test(`"${tokens.join(' ')}" parses to bin=${bin}, forcesInstall=${forcesInstall}, neverLocal=${neverLocal}`, () => {
+      expect(parseDlxInvocation(tokens)).toEqual({ bin, forcesInstall, neverLocal });
     });
   }
 
@@ -510,8 +510,17 @@ describe('parseDlxInvocation — dlx spellings (T030 review finding 5 / QA round
   });
 });
 
-describe('isRepoLocalBin (T030 QA round 2 — real node_modules/.bin check)', () => {
+describe('isRepoLocalBin (T030 QA round 2 real node_modules/.bin check, hardened opus round 3)', () => {
   let root: string;
+
+  const makeExecutableBin = (worktree: string, name: string) => {
+    const binDir = joinPath(worktree, 'node_modules', '.bin');
+    mkdirSync(binDir, { recursive: true });
+    const target = joinPath(binDir, name);
+    writeFileSync(target, '#!/bin/sh\n');
+    chmodSync(target, 0o755);
+    return target;
+  };
 
   beforeEach(() => {
     root = mkdtempSync(joinPath(tmpdir(), 'agile-perm-dlx-test-'));
@@ -521,16 +530,28 @@ describe('isRepoLocalBin (T030 QA round 2 — real node_modules/.bin check)', ()
     rmSync(root, { recursive: true, force: true });
   });
 
-  test('true when the bin exists under node_modules/.bin', () => {
-    const binDir = joinPath(root, 'node_modules', '.bin');
-    mkdirSync(binDir, { recursive: true });
-    writeFileSync(joinPath(binDir, 'biome'), '#!/bin/sh\n');
+  test('true when the bin exists, is a regular file, and is executable', () => {
+    makeExecutableBin(root, 'biome');
     expect(isRepoLocalBin('biome', root)).toBe(true);
   });
 
-  test('false when node_modules/.bin has no such entry', () => {
+  test('false when the bin exists but is not executable', () => {
     const binDir = joinPath(root, 'node_modules', '.bin');
     mkdirSync(binDir, { recursive: true });
+    const target = joinPath(binDir, 'biome');
+    writeFileSync(target, '#!/bin/sh\n');
+    chmodSync(target, 0o644);
+    expect(isRepoLocalBin('biome', root)).toBe(false);
+  });
+
+  test('false when the bin is a directory, not a regular file', () => {
+    const binDir = joinPath(root, 'node_modules', '.bin');
+    mkdirSync(joinPath(binDir, 'biome'), { recursive: true });
+    expect(isRepoLocalBin('biome', root)).toBe(false);
+  });
+
+  test('false when node_modules/.bin has no such entry', () => {
+    mkdirSync(joinPath(root, 'node_modules', '.bin'), { recursive: true });
     expect(isRepoLocalBin('biome', root)).toBe(false);
   });
 
@@ -540,5 +561,46 @@ describe('isRepoLocalBin (T030 QA round 2 — real node_modules/.bin check)', ()
 
   test('false for a bin name containing a path separator (never a flat bin-dir entry)', () => {
     expect(isRepoLocalBin('../escape', root)).toBe(false);
+    expect(isRepoLocalBin('a/b', root)).toBe(false);
+  });
+
+  test('false for "." and ".." (opus round 3: node_modules/.bin/.. collapses to an existing directory)', () => {
+    mkdirSync(joinPath(root, 'node_modules', '.bin'), { recursive: true });
+    expect(isRepoLocalBin('.', root)).toBe(false);
+    expect(isRepoLocalBin('..', root)).toBe(false);
+  });
+
+  test('false for a bin name starting with "." (hidden file)', () => {
+    makeExecutableBin(root, '.hidden');
+    expect(isRepoLocalBin('.hidden', root)).toBe(false);
+  });
+
+  test('false when the .bin entry is a symlink pointing outside the worktree (opus round 3)', () => {
+    const outside = mkdtempSync(joinPath(tmpdir(), 'agile-perm-dlx-outside-'));
+    try {
+      const outsideBin = joinPath(outside, 'escbin');
+      writeFileSync(outsideBin, '#!/bin/sh\n');
+      chmodSync(outsideBin, 0o755);
+      const binDir = joinPath(root, 'node_modules', '.bin');
+      mkdirSync(binDir, { recursive: true });
+      symlinkSync(outsideBin, joinPath(binDir, 'escbin'));
+      expect(isRepoLocalBin('escbin', root)).toBe(false);
+    } finally {
+      rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
+  test('false when node_modules/.bin itself is a symlink pointing outside the worktree (opus round 3)', () => {
+    const outsideBinDir = mkdtempSync(joinPath(tmpdir(), 'agile-perm-dlx-outside-bin-'));
+    try {
+      const sh = joinPath(outsideBinDir, 'sh');
+      writeFileSync(sh, '#!/bin/sh\n');
+      chmodSync(sh, 0o755);
+      mkdirSync(joinPath(root, 'node_modules'), { recursive: true });
+      symlinkSync(outsideBinDir, joinPath(root, 'node_modules', '.bin'));
+      expect(isRepoLocalBin('sh', root)).toBe(false);
+    } finally {
+      rmSync(outsideBinDir, { recursive: true, force: true });
+    }
   });
 });

@@ -7,7 +7,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join as joinPath } from 'node:path';
 import { decidePermission } from './decide';
@@ -1128,7 +1128,7 @@ describe('decidePermission — T030 review-round fixes (opus, 7 blockers)', () =
   });
 });
 
-describe('decidePermission — T030 QA round 2: dlx forms gated on a real node_modules/.bin', () => {
+describe('decidePermission — T030 QA round 2 / opus round 3: dlx forms gated on a real, realpath-contained, executable node_modules/.bin', () => {
   let realWorktree: string;
 
   const decideInRealWorktree = (command: string) =>
@@ -1139,6 +1139,15 @@ describe('decidePermission — T030 QA round 2: dlx forms gated on a real node_m
       request: request('execute', { command }),
     });
 
+  const makeExecutableBin = (worktree: string, name: string) => {
+    const binDir = joinPath(worktree, 'node_modules', '.bin');
+    mkdirSync(binDir, { recursive: true });
+    const target = joinPath(binDir, name);
+    writeFileSync(target, '#!/bin/sh\n');
+    chmodSync(target, 0o755);
+    return target;
+  };
+
   beforeEach(() => {
     realWorktree = mkdtempSync(joinPath(tmpdir(), 'agile-perm-decide-dlx-'));
   });
@@ -1147,10 +1156,8 @@ describe('decidePermission — T030 QA round 2: dlx forms gated on a real node_m
     rmSync(realWorktree, { recursive: true, force: true });
   });
 
-  test('bunx biome check . is allowed when node_modules/.bin/biome exists', () => {
-    const binDir = joinPath(realWorktree, 'node_modules', '.bin');
-    mkdirSync(binDir, { recursive: true });
-    writeFileSync(joinPath(binDir, 'biome'), '#!/bin/sh\n');
+  test('bunx biome check . is allowed when node_modules/.bin/biome exists and is executable', () => {
+    makeExecutableBin(realWorktree, 'biome');
     expect(decideInRealWorktree('bunx biome check .').kind).toBe('allow');
   });
 
@@ -1163,16 +1170,63 @@ describe('decidePermission — T030 QA round 2: dlx forms gated on a real node_m
   });
 
   test('npm exec biome check . is allowed when node_modules/.bin/biome exists', () => {
-    const binDir = joinPath(realWorktree, 'node_modules', '.bin');
-    mkdirSync(binDir, { recursive: true });
-    writeFileSync(joinPath(binDir, 'biome'), '#!/bin/sh\n');
+    makeExecutableBin(realWorktree, 'biome');
     expect(decideInRealWorktree('npm exec biome check .').kind).toBe('allow');
   });
 
   test('bunx biome check . is still a hil_request even with the bin present, if -y is also passed (forces install)', () => {
-    const binDir = joinPath(realWorktree, 'node_modules', '.bin');
-    mkdirSync(binDir, { recursive: true });
-    writeFileSync(joinPath(binDir, 'biome'), '#!/bin/sh\n');
+    makeExecutableBin(realWorktree, 'biome');
     expect(decideInRealWorktree('npx -y biome check .').kind).toBe('hil');
+  });
+
+  // opus round 3 blocker 1: escapes that a bare existsSync would miss.
+  test('npx .. is a hil_request, not allowed (node_modules/.bin/.. collapses to an existing directory)', () => {
+    mkdirSync(joinPath(realWorktree, 'node_modules', '.bin'), { recursive: true });
+    expect(decideInRealWorktree('npx ..').kind).toBe('hil');
+  });
+
+  test('npx . is a hil_request, not allowed ("run the package in this directory" form)', () => {
+    mkdirSync(joinPath(realWorktree, 'node_modules', '.bin'), { recursive: true });
+    expect(decideInRealWorktree('npx .').kind).toBe('hil');
+  });
+
+  test('npx escbin is a hil_request when node_modules/.bin/escbin is a symlink pointing outside the worktree', () => {
+    const outside = mkdtempSync(joinPath(tmpdir(), 'agile-perm-decide-dlx-outside-'));
+    try {
+      const outsideBin = joinPath(outside, 'escbin');
+      writeFileSync(outsideBin, '#!/bin/sh\n');
+      chmodSync(outsideBin, 0o755);
+      const binDir = joinPath(realWorktree, 'node_modules', '.bin');
+      mkdirSync(binDir, { recursive: true });
+      symlinkSync(outsideBin, joinPath(binDir, 'escbin'));
+      expect(decideInRealWorktree('npx escbin').kind).toBe('hil');
+    } finally {
+      rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
+  test('npx sh is a hil_request when node_modules/.bin itself is a symlink pointing outside the worktree', () => {
+    const outsideBinDir = mkdtempSync(joinPath(tmpdir(), 'agile-perm-decide-dlx-outside-bin-'));
+    try {
+      const sh = joinPath(outsideBinDir, 'sh');
+      writeFileSync(sh, '#!/bin/sh\n');
+      chmodSync(sh, 0o755);
+      mkdirSync(joinPath(realWorktree, 'node_modules'), { recursive: true });
+      symlinkSync(outsideBinDir, joinPath(realWorktree, 'node_modules', '.bin'));
+      expect(decideInRealWorktree('npx sh').kind).toBe('hil');
+    } finally {
+      rmSync(outsideBinDir, { recursive: true, force: true });
+    }
+  });
+
+  // opus round 3 blocker 2: pnpm dlx / yarn dlx never resolve a local bin.
+  test('pnpm dlx biome is a hil_request even when node_modules/.bin/biome exists (dlx never uses the local bin)', () => {
+    makeExecutableBin(realWorktree, 'biome');
+    expect(decideInRealWorktree('pnpm dlx biome check .').kind).toBe('hil');
+  });
+
+  test('yarn dlx biome is a hil_request even when node_modules/.bin/biome exists (dlx never uses the local bin)', () => {
+    makeExecutableBin(realWorktree, 'biome');
+    expect(decideInRealWorktree('yarn dlx biome check .').kind).toBe('hil');
   });
 });
