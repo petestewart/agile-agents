@@ -206,12 +206,12 @@ Priority encodes dependency layer as well as importance: P0 tickets are v0-block
 
 ### Ticket: T016 Review protocol
 - **Priority:** P1
-- **Status:** In Progress
+- **Status:** In Review
 - **Owner:** sonnet:worker-T016
 - **Scope:** Depends on T010, T012, T013. Reviewer session per design §12: reads `diff_summary` + contract first; findings schema (severity, cited `RULE-*` or oracle ref, location); verdict `approve | request_changes | escalate`; no new findings on re-review that were visible before; second disagreement on one finding → `question` to architect. `.agile/rules/` loader. Security reviewer pass when `security: true` or tier ≥ hard. Verdicts bump `attempts` at the escalation gate (tier ladder in v0 is a no-op with one model, but the counter and events exist).
 - **Acceptance Criteria:** A seeded rule violation in the demo fixture produces a `request_changes` with the rule cited; a clean diff produces `approve` listing what was checked; a deadlock fixture routes to the architect.
 - **Validation Steps:** Live test with two prepared diffs; unit tests for the convergence rule.
-- **Notes:**
+- **Notes:** branch `T016-review-protocol`; `src/review/` (rules loader, findings/verdict, re-review convergence, `diff_summary`, ReviewProtocol with attempts/escalation/security pass/dispute routing), shared `review.ts`; 1095 tests. Wiring gaps for the manager: tools registry, rpc, runner brief. Gates running.
 
 ### Ticket: T017 QA protocol
 - **Priority:** P1
