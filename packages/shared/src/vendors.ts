@@ -52,6 +52,27 @@ export type VendorAccount = z.infer<typeof VendorAccountSchema>;
 export const VendorConfigSchema = z
   .object({
     accounts: z.array(VendorAccountSchema).min(1),
+    // T026 (design §6 "Enforcement tiers": "a vendor with ungated exec
+    // (Codex, Grok) is an engineer only inside a tier-0 sandbox") — set
+    // `true` for vendors whose ACP/native bridge cannot be made to gate
+    // exec at tier 1/2 (spike-findings.md §D: Codex and Grok both prompt
+    // for nothing). Routing must refuse to spawn such a vendor as an
+    // engineer when `sandbox.detectBackend()` reports `none` rather than
+    // running it unsandboxed — see `packages/daemon/src/sandbox`.
+    // Additive + defaulted so every existing `vendors.yaml` (Claude,
+    // Cursor, Gemini — none of which need it) keeps validating unchanged.
+    requires_sandbox: z.boolean().default(false),
+    // T026 round 3 (review round 2 nit — "`enabled` must be a schema'd
+    // config field ... not ad-hoc"): the explicit opt-in that
+    // `sandbox.wrapAgentCommand`'s `enabled` input and
+    // `runner/session.ts`'s `AgentSessionOptions.sandboxEnabled` both
+    // exist to receive — turns tier-0 wrapping on for a vendor that
+    // doesn't `requires_sandbox`, without a backend's mere presence being
+    // enough on its own (design §6, review round 1 B2). Not yet read by
+    // any caller — `runner.ts` (outside this ticket's file ownership)
+    // needs to thread `VendorConfig.sandbox_enabled` through the same path
+    // `requires_sandbox` takes; see the pipeline report's wiring section.
+    sandbox_enabled: z.boolean().default(false),
   })
   .strict();
 export type VendorConfig = z.infer<typeof VendorConfigSchema>;
@@ -59,6 +80,8 @@ export type VendorConfig = z.infer<typeof VendorConfigSchema>;
 /** `.agile/vendors.yaml` — one entry per vendor name (claude, openai, cursor, gemini, ...). */
 export const VendorsConfigSchema = z.record(z.string().min(1), VendorConfigSchema);
 export type VendorsConfig = z.infer<typeof VendorsConfigSchema>;
+/** Pre-validation shape: the defaulted fields (`requires_sandbox`, `sandbox_enabled`) are optional on input. */
+export type VendorsConfigInput = z.input<typeof VendorsConfigSchema>;
 
 export function validateVendorsConfig(input: unknown): VendorsConfig {
   const result = VendorsConfigSchema.safeParse(input);

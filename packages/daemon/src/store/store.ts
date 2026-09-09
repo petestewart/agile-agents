@@ -54,6 +54,7 @@ import {
   type TicketId,
   type TicketStatus,
   type VendorsConfig,
+  type VendorsConfigInput,
   isLegalTransition,
   validateAgentRecord,
   validateEvent,
@@ -940,7 +941,7 @@ export class StateStore {
     return validateVendorsConfig(readYamlFile(path));
   }
 
-  async putVendors(vendors: VendorsConfig): Promise<VendorsConfig> {
+  async putVendors(vendors: VendorsConfigInput): Promise<VendorsConfig> {
     return this.mutate(() => {
       const validated = validateVendorsConfig(vendors);
       const relPath = 'vendors.yaml';

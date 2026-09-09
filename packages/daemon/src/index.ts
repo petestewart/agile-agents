@@ -99,3 +99,7 @@ export * from './qa';
 
 // Quota records, routing policy, barometer data, quota.* RPC (T023).
 export * from './quota';
+
+// Tier-0 sandbox: profiles, backend detection, sandbox-exec/container
+// renderers, wrapAgentCommand (T026).
+export * from './sandbox';

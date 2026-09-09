@@ -22,11 +22,13 @@
  */
 
 import { join } from 'node:path';
+import { ACP_PROVIDERS, type AcpProviderConfig } from '@agile-agents/acp-client';
 import type { AgentId, Ticket, TicketId } from '@agile-agents/shared';
 import type { Bus } from '../bus';
 import type { GateService } from '../gates';
 import { installPreCommitHook } from '../merge/precommit';
 import type { PermissionRole } from '../permissions';
+import { wrapAgentCommand } from '../sandbox';
 import type { StateStore } from '../store';
 import { assembleBrief } from './brief';
 import { type AgentSessionHandle, type AgentSessionOptions, startAgentSession } from './session';
@@ -71,6 +73,10 @@ export interface RunnerOptions {
   onQaSpawn?: (ticket: Ticket, worktreePath: string) => unknown;
   /** T023: forwarded to every session — see `AgentSessionOptions.quota`. */
   quota?: AgentSessionOptions['quota'];
+  /** ACP provider every session runs on. Defaults to Claude; vendor routing (T022) resolves this per ticket. */
+  provider?: AcpProviderConfig;
+  /** Test seam for the tier-0 sandbox pre-check + wrap (T026); defaults to the real `wrapAgentCommand`. */
+  wrapCommand?: AgentSessionOptions['wrapCommand'];
 }
 
 export interface SpawnResult {
@@ -111,9 +117,36 @@ export class Runner {
     let ticket = store.getTicket(ticketId);
     let worktreePath: string;
 
+    // T026 tier-0 sandbox: the vendor's `requires_sandbox` /
+    // `sandbox_enabled` flags come from `vendors.yaml`; a vendor the config
+    // omits (or no config at all, pre-`agile init`) is treated as neither.
+    const provider = this.opts.provider ?? ACP_PROVIDERS.claude;
+    const vendorConfig = this.vendorConfigFor(provider.id);
+    const sandbox = {
+      requiresSandbox: vendorConfig?.requires_sandbox ?? false,
+      sandboxEnabled: vendorConfig?.sandbox_enabled ?? false,
+    };
+    const wrapCommand = this.opts.wrapCommand ?? wrapAgentCommand;
+
     if (role === 'engineer') {
       const result = ensureTicketWorktree(repoRoot, ticket);
       worktreePath = result.path;
+      // Fail-closed pre-check (T026 report, wiring item 3): a
+      // `requires_sandbox` vendor with no usable backend must be refused
+      // *before* the ticket transitions to `assigned`/`in_progress`, or a
+      // refused spawn would strand the ticket with no live agent. Same
+      // `wrapAgentCommand` the session runs; it throws
+      // `SandboxRequiredError` and is a no-op passthrough otherwise.
+      wrapCommand({
+        role,
+        worktreePath,
+        vendor: provider.id,
+        command: provider.command,
+        args: provider.args,
+        requiresSandbox: sandbox.requiresSandbox,
+        enabled: sandbox.sandboxEnabled,
+        socketPath: this.opts.socketPath,
+      });
       (this.opts.installPreCommitHook ?? installPreCommitHook)(worktreePath, ticket);
       const relWorktree = `.worktrees/${ticket.id}`;
       if (ticket.worktree !== relWorktree || ticket.assignee !== agentId) {
@@ -168,6 +201,10 @@ export class Runner {
       spawn: this.opts.spawn,
       now: this.opts.now,
       quota: this.opts.quota,
+      provider,
+      requiresSandbox: sandbox.requiresSandbox,
+      sandboxEnabled: sandbox.sandboxEnabled,
+      wrapCommand: this.opts.wrapCommand,
     });
     this.live.set(agentId, handle);
     void handle.exited.then(() => {
@@ -182,6 +219,15 @@ export class Runner {
       exited: handle.exited,
       stop: () => handle.stop(),
     };
+  }
+
+  /** `vendors.yaml` entry for an ACP provider id, or `undefined` when the config or the entry is absent. */
+  private vendorConfigFor(vendorId: string) {
+    try {
+      return this.opts.store.getVendors()[vendorId];
+    } catch {
+      return undefined;
+    }
   }
 
   /** Every session this runner instance currently believes is live (in-process bookkeeping — a daemon restart loses this list; `store.listAgents()` is the durable source of truth). */
