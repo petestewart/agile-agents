@@ -278,12 +278,12 @@ Priority encodes dependency layer as well as importance: P0 tickets are v0-block
 
 ### Ticket: T024 Handoff and pause
 - **Priority:** P2
-- **Status:** In Progress
+- **Status:** In Review
 - **Owner:** sonnet:worker-T024
 - **Scope:** Depends on T022, T023. Graceful handoff (`quota_low` → inject "write handoff stanza + commit WIP" → stop → reassign in the same worktree with thread + handoff as context), hard handoff (daemon-composed from diff + stanzas), `paused` status with `resume_at`, manual `cooldown_until` per account, ledger split across cells.
 - **Acceptance Criteria:** A ticket started on Claude finishes on Pi after a simulated `quota_low`, with the handoff stanza in the thread and both vendors in the ledger.
 - **Validation Steps:** Live e2e with an injected quota event.
-- **Notes:**
+- **Notes:** Branch `T024-handoff-pause` (`b7eee42`, relaunched after the restart); `src/handoff/` (pause/resume against the quota floor, manual per-account cooldown via `Quota.cooldown_until`, urgent graceful-handoff instruction, daemon-composed hard handoff from diff+stanzas, same-worktree reassignment with thread context, `HandoffCoordinator` tick loop, verbs + RPC) plus an `extraContext` seam in `Runner.spawn`; no shared schema change (fields already shipped in T022/T023); offline acceptance proven in `coordinator.test.ts`. Manager wiring: coordinator tick, verbs provider, `handoff.*` RPC. Round 1 review + QA running.
 
 ### Ticket: T025 Control room v1
 - **Priority:** P2
