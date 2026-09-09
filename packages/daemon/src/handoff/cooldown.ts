@@ -14,27 +14,59 @@
  * `quota_exhausted`-shaped signal `record429` produces, once
  * `setManualCooldown` also emits it (see below).
  *
+ * T024 round 2 review-fix (opus B3): "once `setManualCooldown` also emits
+ * it" was aspirational in round 1 -- the write went straight to
+ * `store.putQuota` with no event at all, so `HandoffCoordinator.tick()`
+ * (which reacts only to `quota_low`/`quota_exhausted` *events*, not to
+ * `Quota` records directly) never saw a manual cooldown on an in-flight
+ * ticket until its next real usage/reported reading happened to cross a
+ * threshold -- i.e. never, for an account nobody is actively burning right
+ * now. `setManualCooldown` now appends the same `quota_exhausted` event
+ * `QuotaService.emitQuotaEvent` writes (`{vendor, account, remaining}` in
+ * `data` -- the exact shape `coordinator.ts`'s `drainQuotaEvents` reads) and,
+ * when a `bus` is given, the matching urgent bus message -- `quota_exhausted`
+ * rather than `quota_low` because a human asking to free an account *now*
+ * has the same "no time to wait for compliance" urgency a real 429 does
+ * (design doc's hard-handoff path), not the graceful one.
+ *
+ * T024 round 2 review-fix (opus B4): `cooldown_backoff_seconds` is no
+ * longer left `undefined` -- carried over from `existing` (if any) so a
+ * later `record429` arriving mid-manual-cooldown has a real tier to
+ * escalate from rather than restarting the ladder at its 30s floor (moot
+ * either way now that `record429`/`recordReported` in `quota/records.ts`
+ * never shorten or clear an already-future `cooldown_until` -- this is
+ * belt-and-suspenders, not the load-bearing fix; that fix lives in
+ * `records.ts` itself, see its own doc comments).
+ *
  * DESIGN-GAP: unlike a 429 (`record429`), a manual cooldown has no
- * `retryAfterSeconds` from a vendor response — the caller (a human, via the
+ * `retryAfterSeconds` from a vendor response -- the caller (a human, via the
  * verb/RPC) names the `until` timestamp directly instead of a duration fed
- * through the backoff ladder. `cooldown_backoff_seconds`/
- * `pre_cooldown_remaining` are still populated the same way `record429`
- * populates them (captured once per episode) so `QuotaService`'s own
- * cooldown-recovery step (`applyCooldownRecovery`) restores the account
- * correctly once the manual window elapses — a manual cooldown is not
- * exempt from that recovery path.
+ * through the backoff ladder. `pre_cooldown_remaining` is still populated
+ * the same way `record429` populates it (captured once per episode) so
+ * `QuotaService`'s own cooldown-recovery step (`applyCooldownRecovery`)
+ * restores the account correctly once the manual window elapses -- a manual
+ * cooldown is not exempt from that recovery path.
  */
 
-import { validateQuota } from '@agile-agents/shared';
+import { type Message, ulid, validateQuota } from '@agile-agents/shared';
+import { quotaFraction } from '../quota/records';
 import type { StateStore } from '../store';
+import { buildEvent } from '../store/events';
 import { NotFoundError } from '../store/store';
+
+/** Minimal seam a real `Bus.send` already satisfies — same shape `quota/records.ts`'s own `QuotaBusSender` uses, so a caller doesn't need to construct a full `Bus` (or its exact `SendResult` shape) just to hand one in here or in a test. */
+export interface CooldownBusSender {
+  send(input: unknown): Promise<{ ok: boolean; reason?: string }>;
+}
 
 export interface SetCooldownOptions {
   vendor: string;
   account: string;
-  /** ISO timestamp — the account is excluded from routing until this instant. */
+  /** ISO timestamp -- the account is excluded from routing until this instant. */
   until: string;
   now?: () => Date;
+  /** Optional -- when given, also sends the urgent `quota_exhausted` bus message `QuotaService.emitQuotaEvent` sends, so `em`'s inbox reflects it too (not what `HandoffCoordinator` itself reacts to -- that's the event, always written below). */
+  bus?: CooldownBusSender;
 }
 
 export class CooldownError extends Error {}
@@ -87,9 +119,59 @@ export async function setManualCooldown(
         ? existing.pre_cooldown_remaining
         : (existing?.remaining ?? existing?.limit),
     limit: existing?.limit,
+    // Round 2 (opus B4, belt-and-suspenders): carried over rather than left
+    // `undefined` — see this file's header.
+    cooldown_backoff_seconds: existing?.cooldown_backoff_seconds,
     billing: existing?.billing,
     spend_usd: existing?.spend_usd,
   });
 
-  return store.putQuota(updated);
+  const saved = await store.putQuota(updated);
+
+  // Round 2 (opus B3): the event `HandoffCoordinator.tick()`'s
+  // `drainQuotaEvents` actually reads — without this, a manual cooldown on
+  // an account with no in-flight ticket burning usage right now never
+  // reaches the coordinator at all. `quota_exhausted`, not `quota_low`: a
+  // human explicitly asking to free an account now has no graceful
+  // window to wait out (§10's hard-handoff path), the same urgency a real
+  // 429 carries.
+  const windowTokensFallback = accountWindowTokens(store, opts.vendor, opts.account);
+  await store.appendEvent(
+    buildEvent('quota_exhausted', {
+      data: {
+        vendor: opts.vendor,
+        account: opts.account,
+        remaining: quotaFraction(saved, windowTokensFallback),
+      },
+    }),
+  );
+  if (opts.bus) {
+    const message: Message = {
+      id: ulid(now.getTime()),
+      ts: now.toISOString(),
+      from: 'daemon',
+      to: ['em'],
+      kind: 'quota_exhausted',
+      priority: 'urgent',
+      body: `${opts.vendor}/${opts.account} manually cooled down until ${opts.until}`,
+      refs: [],
+      requires_ack: false,
+    };
+    await opts.bus.send(message);
+  }
+
+  return saved;
+}
+
+/** Same fallback `QuotaService.list`/`routing.ts` already use — an account's configured `quota.window_tokens`, or `undefined` when there's no `vendors.yaml` entry (or none at all) to read it from. */
+function accountWindowTokens(
+  store: StateStore,
+  vendor: string,
+  account: string,
+): number | undefined {
+  try {
+    return store.getVendors()[vendor]?.accounts.find((a) => a.id === account)?.quota?.window_tokens;
+  } catch {
+    return undefined;
+  }
 }

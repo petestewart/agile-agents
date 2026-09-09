@@ -1,10 +1,18 @@
 /**
  * Shared test fixtures for `handoff/*.test.ts` — mirrors `em/test-helpers.ts`'s
  * `makeFixture`/`makeTicket`/`fakeRunner` shape, extended with a `stop()`
- * that actually mimics `runner/session.ts`'s exit handling (transitions the
- * ticket `in_progress -> ready`, same as a real session's `finish()`) —
- * `HandoffCoordinator` depends on that transition happening for its own
- * `waitReady` poll to ever resolve.
+ * that actually mimics `runner/session.ts`'s exit handling: it transitions
+ * the ticket `in_progress -> ready` *and* only then resolves the spawned
+ * session's own `exited` promise, with `live` cleared by a `.then` attached
+ * at spawn time (before any external consumer's own await) — the same
+ * ordering the real `Runner`/`session.ts` produce, and the one
+ * `HandoffCoordinator.waitStopped` (round 2, opus B2) depends on.
+ *
+ * `exitDelayMs` (constructor option) simulates a slow-to-exit vendor CLI —
+ * the ticket-ready transition and `exited`'s resolution both land after this
+ * delay, decoupled from `stop()`'s own synchronous return, reproducing the
+ * exact race the round 1 review measured against `waitReady`'s ticket-status
+ * poll.
  */
 
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
@@ -71,26 +79,37 @@ export function makeSprint(id: string, overrides: Partial<Sprint> = {}): Sprint 
   });
 }
 
+export type FakeHandoffRunner = Pick<Runner, 'spawn' | 'stop' | 'list'> & {
+  live: Set<AgentId>;
+  spawnedProviders: Map<AgentId, string>;
+};
+
 /**
- * A `Pick<Runner, 'spawn' | 'stop'>` fake: `spawn` mimics the real
+ * A `Pick<Runner, 'spawn' | 'stop' | 'list'>` fake — `spawn` mimics the real
  * `Runner.spawn`'s ticket transitions and worktree/assignee bookkeeping
- * (same as `em/test-helpers.ts`'s `fakeRunner`); `stop(agentId)` mimics
- * `runner/session.ts`'s `finish()` — transitions the ticket back to
- * `ready` when it's still in a live status, then drops the agent from
- * `live` — so `HandoffCoordinator.waitReady`'s poll loop resolves the same
- * way it would against a real session's exit event.
+ * (same as `em/test-helpers.ts`'s `fakeRunner`); `stop(agentId)`/`list()`
+ * mimic `runner/session.ts`'s `finish()` + `Runner`'s own `live` bookkeeping
+ * closely enough that `HandoffCoordinator.waitStopped` (round 2, opus B2)
+ * exercises the real ordering: the ticket transitions to `ready`, *then*
+ * `exited` resolves, and only *then* (via a `.then` registered at spawn
+ * time, before any external consumer's own await) does `live` actually
+ * drop the agent.
  */
 export function fakeHandoffRunner(
   store: StateStore,
-): Pick<Runner, 'spawn' | 'stop'> & { live: Set<AgentId>; spawnedProviders: Map<AgentId, string> } {
+  opts: { exitDelayMs?: number } = {},
+): FakeHandoffRunner {
   const live = new Set<AgentId>();
+  const handles = new Map<AgentId, SpawnResult>();
   const ticketByAgent = new Map<AgentId, TicketId>();
   const spawnedProviders = new Map<AgentId, string>();
+  const exitResolvers = new Map<AgentId, () => void>();
+  const exitDelayMs = opts.exitDelayMs ?? 0;
 
   return {
     live,
     spawnedProviders,
-    async spawn(role, ticketId, opts): Promise<SpawnResult> {
+    async spawn(role, ticketId, spawnOpts): Promise<SpawnResult> {
       const agentId = agentIdFor(role, ticketId);
       if (live.has(agentId)) {
         throw new Error(`fakeHandoffRunner: ${agentId} is already running`);
@@ -112,27 +131,46 @@ export function fakeHandoffRunner(
           { by: agentId },
         );
       }
-      void opts?.extraContext; // observed via `spawnedProviders`/direct opts capture in tests that need it
+      void spawnOpts?.extraContext; // observed via `spawnedProviders`/direct opts capture in tests that need it
 
-      return {
+      const exited = new Promise<Awaited<SpawnResult['exited']>>((resolve) => {
+        exitResolvers.set(agentId, () =>
+          resolve({ agentId, ticket: ticketId, reason: 'stopped', ticketReadied: true }),
+        );
+      });
+      // Registered here, at spawn time — before any external consumer
+      // (`HandoffCoordinator.waitStopped`) ever awaits this same promise —
+      // so it always runs first once `exited` settles, exactly mirroring
+      // `runner/runner.ts`'s own `void handle.exited.then(() => this.live.
+      // delete(agentId))`.
+      void exited.then(() => {
+        live.delete(agentId);
+        handles.delete(agentId);
+      });
+
+      const handle: SpawnResult = {
         agentId,
         role,
         ticket: ticketId,
         worktree: `.worktrees/${ticketId}`,
-        exited: new Promise(() => {
-          // Real exit-driven cleanup is simulated synchronously by `stop()`.
-        }),
+        exited,
         stop: () => {
-          live.delete(agentId);
+          // Real stop() is driven through the outer `stop(agentId)` below —
+          // this per-handle stop is unused by these tests but kept for
+          // shape-parity with `SpawnResult`.
         },
       };
+      handles.set(agentId, handle);
+      return handle;
     },
     stop(agentId: AgentId): boolean {
       if (!live.has(agentId)) return false;
-      live.delete(agentId);
       const ticketId = ticketByAgent.get(agentId);
-      if (ticketId) {
-        void (async () => {
+      void (async () => {
+        if (exitDelayMs > 0) {
+          await new Promise((resolve) => setTimeout(resolve, exitDelayMs));
+        }
+        if (ticketId) {
           try {
             const current = store.getTicket(ticketId);
             const LIVE_STATUSES = new Set([
@@ -148,9 +186,15 @@ export function fakeHandoffRunner(
           } catch {
             // Ticket vanished — nothing to ripple back, same as the real finish().
           }
-        })();
-      }
+        }
+        // Ticket is `ready` (or already moved on) *before* `exited`
+        // resolves — same ordering `session.ts`'s `finish()` produces.
+        exitResolvers.get(agentId)?.();
+      })();
       return true;
+    },
+    list(): SpawnResult[] {
+      return [...handles.values()];
     },
   };
 }

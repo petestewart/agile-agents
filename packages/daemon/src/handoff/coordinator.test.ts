@@ -328,3 +328,263 @@ describe('HandoffCoordinator — graceful handoff (offline, fake ACP agent)', ()
     expect(store.getTicket(ticket.id).resume_at).toBeUndefined();
   });
 });
+
+describe('HandoffCoordinator — round 2 review-fix regressions', () => {
+  let fx: HandoffFixture;
+
+  beforeEach(async () => {
+    fx = makeHandoffFixture();
+    await seedVendorsAndQuota(fx);
+  });
+
+  afterEach(() => fx.cleanup());
+
+  test('B1: an ordinary progress stanza does not count as compliance — only a handoff stanza does, and the deadline path still composes one', async () => {
+    const { store, bus } = fx;
+    const runner = fakeHandoffRunner(store);
+    const quota = new QuotaService({ store, bus });
+
+    let ticket = makeTicket('TKT-0020' as TicketId, {
+      status: 'ready',
+      routing: {
+        vendor: 'claude',
+        account: 'default',
+        model: 'claude-sonnet',
+        attempts: 0,
+        max_attempts: 2,
+        escalation: [],
+      },
+    });
+    ticket = await store.putTicket(ticket);
+    const spawned = await runner.spawn('engineer', ticket.id);
+
+    let now = Date.now();
+    const coordinator = new HandoffCoordinator({
+      store,
+      bus,
+      runner,
+      quota,
+      repoRoot: fx.repo,
+      routing: ROUTING,
+      graceMs: 10_000,
+      now: () => new Date(now),
+    });
+
+    await store.appendEvent(
+      buildEvent('quota_low', { data: { vendor: 'claude', account: 'default', remaining: 0.1 } }),
+    );
+    await coordinator.tick([ticket.id]);
+
+    // An ordinary progress stanza, not a handoff — must NOT be treated as compliance.
+    now += 100;
+    await store.appendStanza({
+      ts: new Date(now).toISOString(),
+      ticket: ticket.id,
+      agent: spawned.agentId,
+      kind: 'progress',
+      summary: 'still working on it',
+    });
+
+    const stillWaiting = await coordinator.tick([ticket.id]);
+    expect(stillWaiting.compliedAndReassigned).toEqual([]);
+    expect(stillWaiting.hardHandoffs).toEqual([]);
+    expect(store.getTicket(ticket.id).status).toBe('in_progress');
+    expect(store.getTicket(ticket.id).routing?.vendor).toBe('claude'); // not reassigned
+
+    // Deadline elapses with still no handoff stanza -> hard handoff composes one.
+    now += 20_000;
+    const afterDeadline = await coordinator.tick([ticket.id]);
+    expect(afterDeadline.hardHandoffs).toEqual([ticket.id]);
+    const stanzas = store.listStanzas(ticket.id);
+    expect(stanzas.some((s) => s.kind === 'handoff' && s.agent === 'daemon')).toBe(true);
+    expect(store.getTicket(ticket.id).routing?.vendor).toBe('pi');
+  });
+
+  test('B2: a slow-exiting session (live clears well after the ticket is readied) does not throw "already running" and still reassigns', async () => {
+    const { store, bus } = fx;
+    const runner = fakeHandoffRunner(store, { exitDelayMs: 200 });
+    const quota = new QuotaService({ store, bus });
+
+    let ticket = makeTicket('TKT-0021' as TicketId, {
+      status: 'ready',
+      routing: {
+        vendor: 'claude',
+        account: 'default',
+        model: 'claude-sonnet',
+        attempts: 0,
+        max_attempts: 2,
+        escalation: [],
+      },
+    });
+    ticket = await store.putTicket(ticket);
+    const spawned = await runner.spawn('engineer', ticket.id);
+
+    const coordinator = new HandoffCoordinator({
+      store,
+      bus,
+      runner,
+      quota,
+      repoRoot: fx.repo,
+      routing: ROUTING,
+    });
+
+    await store.appendEvent(
+      buildEvent('quota_exhausted', {
+        data: { vendor: 'claude', account: 'default', remaining: 0 },
+      }),
+    );
+
+    // Must not throw/reject even though the fake runner's `live` set only
+    // clears 200ms after the ticket is readied (measured race in round 1).
+    const result = await coordinator.tick([ticket.id]);
+
+    expect(result.hardHandoffs).toEqual([ticket.id]);
+    // Reassigned under the *same* agent id (role+ticket-digits scheme) —
+    // `live` has it again from the new spawn, not because the old one was
+    // never actually torn down (that's what the earlier `waitStopped`
+    // inside `runHardHandoff` had to get right for this reassign to have
+    // succeeded at all, rather than throwing "already running").
+    const reassigned = store.getTicket(ticket.id);
+    expect(reassigned.status).toBe('in_progress');
+    expect(reassigned.routing?.vendor).toBe('pi');
+    expect(reassigned.assignee).toBe(spawned.agentId);
+  });
+
+  test('B5: a coordinator constructed after historical quota events exist does not replay them', async () => {
+    const { store, bus } = fx;
+    const runner = fakeHandoffRunner(store);
+    const quota = new QuotaService({ store, bus });
+
+    let ticket = makeTicket('TKT-0022' as TicketId, {
+      status: 'ready',
+      routing: {
+        vendor: 'claude',
+        account: 'default',
+        model: 'claude-sonnet',
+        attempts: 0,
+        max_attempts: 2,
+        escalation: [],
+      },
+    });
+    ticket = await store.putTicket(ticket);
+    await runner.spawn('engineer', ticket.id);
+
+    // A historical event from "before the restart" — must never be seen by
+    // a coordinator constructed after it.
+    await store.appendEvent(
+      buildEvent('quota_low', { data: { vendor: 'claude', account: 'default', remaining: 0.1 } }),
+    );
+
+    const coordinator = new HandoffCoordinator({
+      store,
+      bus,
+      runner,
+      quota,
+      repoRoot: fx.repo,
+      routing: ROUTING,
+    });
+    const result = await coordinator.tick([ticket.id]);
+
+    expect(result.gracefulStarted).toEqual([]);
+    expect(result.hardHandoffs).toEqual([]);
+    expect(store.getTicket(ticket.id).status).toBe('in_progress');
+  });
+
+  test('N3: an agent that exits on its own during the graceful wait still gets a daemon-composed hard handoff, not a silent drop', async () => {
+    const { store, bus } = fx;
+    const runner = fakeHandoffRunner(store);
+    const quota = new QuotaService({ store, bus });
+
+    let ticket = makeTicket('TKT-0023' as TicketId, {
+      status: 'ready',
+      routing: {
+        vendor: 'claude',
+        account: 'default',
+        model: 'claude-sonnet',
+        attempts: 0,
+        max_attempts: 2,
+        escalation: [],
+      },
+    });
+    ticket = await store.putTicket(ticket);
+    const spawned = await runner.spawn('engineer', ticket.id);
+
+    const coordinator = new HandoffCoordinator({
+      store,
+      bus,
+      runner,
+      quota,
+      repoRoot: fx.repo,
+      routing: ROUTING,
+      graceMs: 60_000,
+    });
+
+    await store.appendEvent(
+      buildEvent('quota_low', { data: { vendor: 'claude', account: 'default', remaining: 0.1 } }),
+    );
+    const first = await coordinator.tick([ticket.id]);
+    expect(first.gracefulStarted).toEqual([ticket.id]);
+
+    // The agent crashes/exits on its own — simulated exactly as a real
+    // crash would surface: `runner.stop` from outside this coordinator
+    // (e.g. the liveness sweep), readying the ticket without any handoff
+    // stanza and well before the graceful deadline.
+    runner.stop(spawned.agentId);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(store.getTicket(ticket.id).status).toBe('ready');
+
+    const second = await coordinator.tick([ticket.id]);
+    expect(second.hardHandoffs).toEqual([ticket.id]);
+    const stanzas = store.listStanzas(ticket.id);
+    expect(stanzas.some((s) => s.kind === 'handoff' && s.agent === 'daemon')).toBe(true);
+    expect(store.getTicket(ticket.id).routing?.vendor).toBe('pi');
+  });
+
+  test('N2: reassignment returns none (letting pause run) rather than re-spawning on the very account being handed off from', async () => {
+    const { store, bus } = fx;
+    const runner = fakeHandoffRunner(store);
+    const quota = new QuotaService({ store, bus });
+
+    // Only claude is configured/routed — no alternative candidate exists.
+    const soloRouting: RoutingTable = {
+      'engineer:standard': [{ vendor: 'claude', account: 'default' }],
+    };
+
+    let ticket = makeTicket('TKT-0024' as TicketId, {
+      status: 'ready',
+      routing: {
+        vendor: 'claude',
+        account: 'default',
+        model: 'claude-sonnet',
+        attempts: 0,
+        max_attempts: 2,
+        escalation: [],
+      },
+    });
+    ticket = await store.putTicket(ticket);
+    const spawned = await runner.spawn('engineer', ticket.id);
+
+    const coordinator = new HandoffCoordinator({
+      store,
+      bus,
+      runner,
+      quota,
+      repoRoot: fx.repo,
+      routing: soloRouting,
+    });
+
+    await store.appendEvent(
+      buildEvent('quota_exhausted', {
+        data: { vendor: 'claude', account: 'default', remaining: 0 },
+      }),
+    );
+    const result = await coordinator.tick([ticket.id]);
+
+    // Hard handoff still ran (stopped + composed the stanza); reassignment
+    // itself must not have re-spawned on claude/default.
+    expect(result.hardHandoffs).toEqual([ticket.id]);
+    const reassigned = store.getTicket(ticket.id);
+    expect(reassigned.status).toBe('ready'); // left ready, not re-spawned
+    expect(runner.live.has(spawned.agentId)).toBe(false);
+  });
+});

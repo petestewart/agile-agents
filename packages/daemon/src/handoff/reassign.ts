@@ -105,7 +105,15 @@ export async function reassignTicket(opts: ReassignOptions): Promise<ReassignRes
         (c) => !(c.vendor === opts.exclude?.vendor && c.account === opts.exclude?.account),
       )
     : result;
-  const picked = pickCandidate(filtered.length > 0 ? filtered : result);
+  // Round 2 review-fix (opus N2): when the account being handed off *from*
+  // is the only eligible candidate, this must return `none` (letting the
+  // pause path run) rather than silently falling back to re-spawning the
+  // very account the handoff was moving away from — round 1's `result`
+  // fallback did exactly that.
+  if (filtered.length === 0) {
+    return { none: true, reason: 'no eligible candidate besides the one being handed off from' };
+  }
+  const picked = pickCandidate(filtered);
   if ('none' in picked) return picked;
 
   await opts.store.putTicket(

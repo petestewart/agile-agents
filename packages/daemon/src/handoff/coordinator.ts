@@ -13,13 +13,29 @@
  * `store.listEvents()` (which carries the structured `{vendor, account}`
  * `QuotaService.emitQuotaEvent` already writes) rather than polled off
  * `em`'s bus inbox — a `Message`'s own schema has no vendor/account fields,
- * only a free-text `body` (§5 "Message"). A `lastSeenIndex` cursor (not a
- * timestamp: two events can share one `ts` at sub-millisecond daemon
- * speed) means every event is processed exactly once per coordinator
- * instance; a restart re-scans from empty and could reprocess a handoff
- * that already happened, but `startGracefulOrHard`'s own guards (ticket
- * must still be `in_progress` under the same vendor/account) make a
- * replay a no-op rather than a duplicate handoff.
+ * only a free-text `body` (§5 "Message"). The cursor is seeded to the
+ * *current* event-log length in the constructor (round 2 review-fix, opus
+ * B5 — round 1 started it at `0`, replaying the entire historical log on
+ * the first tick after every daemon restart: any past `quota_low` for an
+ * account a ticket happens to be running on again would immediately fire a
+ * spurious instruction/stop/reassign on otherwise-healthy work), so only
+ * events appended *after* this coordinator instance came up are ever seen.
+ * Not a timestamp (two events can share one `ts` at sub-millisecond daemon
+ * speed) — an index into the append-only log both dedupes within one
+ * instance's lifetime and, seeded at startup, never looks backward past it.
+ *
+ * Stop→reassign handshake (round 2 review-fix, opus B2): round 1 polled
+ * `Ticket.status` to decide the old session was gone, which raced
+ * `Runner`'s own bookkeeping — `session.ts`'s `finish()` transitions the
+ * ticket to `ready` *before* it drops the agent from `Runner`'s internal
+ * `live` map (via `handle.exited`'s own resolution), so a poll that returns
+ * the instant the ticket reads `ready` can still land inside the window
+ * where `Runner.spawn`'s "already running" guard fires. Every stop→reassign
+ * path here now awaits the actual session's `exited` promise (found via
+ * `runner.list()`, the same handle a real `Runner` or this package's own
+ * fake-runner test helper exposes) before ever calling `reassignTicket`,
+ * closing that race the way `em/assign.ts`'s own "already running" guard
+ * already documents as a known hazard elsewhere in this codebase.
  */
 
 import type { AgentId, Event, Ticket, TicketId } from '@agile-agents/shared';
@@ -42,14 +58,21 @@ interface PendingGraceful {
   vendor: string;
   account: string;
   deadlineMs: number;
-  /** Number of stanzas on this ticket's board at the moment the instruction was sent — a later stanza count means the agent complied. */
-  stanzaCountAtInstruction: number;
+  /**
+   * ISO timestamp of the graceful instruction itself (round 2 review-fix,
+   * opus B1 — round 1's "any later stanza counts as compliance" let a
+   * routine `progress` stanza posted for an unrelated reason satisfy the
+   * check with no `handoff` stanza ever written). Compliance now requires a
+   * `kind: 'handoff'` stanza whose own `ts` is strictly after this one.
+   */
+  instructionTs: string;
 }
 
 export interface HandoffCoordinatorOptions {
   store: StateStore;
   bus: Bus;
-  runner: Pick<Runner, 'spawn' | 'stop'>;
+  /** `list` is required (round 2, opus B2) — see this file's header on the stop→reassign handshake. */
+  runner: Pick<Runner, 'spawn' | 'stop' | 'list'>;
   quota: Pick<QuotaService, 'list'>;
   repoRoot: string;
   graceMs?: number;
@@ -67,21 +90,33 @@ export interface HandoffTickResult {
 }
 
 export class HandoffCoordinator {
-  private lastEventIndex = 0;
+  /** Round 2 (opus B5): seeded to the log's current length, not `0` — see this file's header. */
+  private lastEventIndex: number;
   private readonly pending = new Map<TicketId, PendingGraceful>();
 
-  constructor(private readonly opts: HandoffCoordinatorOptions) {}
+  constructor(private readonly opts: HandoffCoordinatorOptions) {
+    this.lastEventIndex = opts.store.listEvents().length;
+  }
 
   private now(): Date {
     return this.opts.now?.() ?? new Date();
   }
 
-  private stanzaCount(ticket: TicketId): number {
+  private hasHandoffStanzaSince(ticket: TicketId, sinceTs: string): boolean {
+    let stanzas: ReturnType<StateStore['listStanzas']>;
     try {
-      return this.opts.store.listStanzas(ticket).length;
+      stanzas = this.opts.store.listStanzas(ticket);
     } catch {
-      return 0;
+      return false;
     }
+    return stanzas.some((s) => s.kind === 'handoff' && s.ts > sinceTs);
+  }
+
+  /** Awaits the real session's own exit — round 2 (opus B2), see this file's header. A `runner.list()` miss means the agent is already gone (its own `handle.exited` already settled and `Runner` already dropped it from `live`), so there is nothing left to await. */
+  private async waitStopped(agentId: AgentId): Promise<void> {
+    const handle = this.opts.runner.list().find((r) => r.agentId === agentId);
+    if (!handle) return;
+    await handle.exited;
   }
 
   /** Every ticket currently `in_progress` and routed to `(vendor, account)`, with its assignee. */
@@ -108,6 +143,7 @@ export class HandoffCoordinator {
       if (this.pending.has(ticket.id)) continue;
       const deadlineMs = now.getTime() + (this.opts.graceMs ?? DEFAULT_GRACE_MS);
       const deadline = new Date(deadlineMs).toISOString();
+      const instructionTs = now.toISOString();
       await sendGracefulHandoffInstruction({
         bus: this.opts.bus,
         agent: agentId,
@@ -123,7 +159,7 @@ export class HandoffCoordinator {
         vendor,
         account,
         deadlineMs,
-        stanzaCountAtInstruction: this.stanzaCount(ticket.id),
+        instructionTs,
       });
       started.push(ticket.id);
     }
@@ -141,15 +177,21 @@ export class HandoffCoordinator {
     return done;
   }
 
-  /** Stops the running session, waits for its own exit handling to ready the ticket (the dead-agent path, §5 "Liveness"), composes a daemon-written handoff stanza, and reassigns. */
+  /** Stops the running session, awaits its actual exit (round 2, opus B2 — see file header), then composes+reassigns via `finishHardHandoff`. */
   private async runHardHandoff(ticket: TicketId, agentId: AgentId, reason: string): Promise<void> {
     const stopped = this.opts.runner.stop(agentId);
-    if (!stopped) {
-      // Already gone (crashed on its own) — the liveness sweep or its own
-      // exit handler already readied the ticket; nothing further to await.
+    if (stopped) {
+      await this.waitStopped(agentId);
     }
-    await this.waitReady(ticket);
+    // `stopped === false` means the agent was already gone (crashed on its
+    // own, or the liveness sweep already reaped it) — its own exit handling
+    // has already run either way, so proceeding straight to composing the
+    // handoff is correct without anything further to await.
+    await this.finishHardHandoff(ticket, reason);
+  }
 
+  /** Composes the daemon-written handoff stanza (when the ticket still has a worktree) and reassigns — the tail both `runHardHandoff` and the "agent exited during the graceful wait" path (round 2, opus N3) share. Assumes the old session is already fully stopped. */
+  private async finishHardHandoff(ticket: TicketId, reason: string): Promise<void> {
     const current = this.opts.store.getTicket(ticket);
     if (current.worktree) {
       const { handoff, summary } = composeHardHandoff({
@@ -173,21 +215,6 @@ export class HandoffCoordinator {
       vendor: current.routing?.vendor,
       account: current.routing?.account,
     });
-  }
-
-  /** Polls until `runner.stop`'s own exit handling has readied the ticket (bounded — a session that never emits `exit` at all is a bug elsewhere, not something to spin on forever). */
-  private async waitReady(ticket: TicketId, maxWaitMs = 2000): Promise<void> {
-    const start = Date.now();
-    while (Date.now() - start < maxWaitMs) {
-      let current: Ticket;
-      try {
-        current = this.opts.store.getTicket(ticket);
-      } catch {
-        return;
-      }
-      if (current.status === 'ready' || current.status === 'paused') return;
-      await new Promise((r) => setTimeout(r, 10));
-    }
   }
 
   private async reassign(
@@ -223,7 +250,16 @@ export class HandoffCoordinator {
     return fresh;
   }
 
-  /** Pending graceful entries past their deadline with no compliance yet -> hard handoff. Compliant ones (a fresh stanza landed) -> stop + reassign without waiting out the rest of the deadline. */
+  /**
+   * Pending graceful entries past their deadline with no compliance yet ->
+   * hard handoff. Compliant ones (an actual `handoff` stanza landed, round
+   * 2 opus B1) -> stop + reassign without waiting out the rest of the
+   * deadline. An entry whose agent already exited on its own during the
+   * wait (round 2, opus N3 — e.g. the liveness sweep beat this coordinator
+   * to it) is not simply dropped: it gets the same daemon-composed hard
+   * handoff a deadline timeout would have gotten it, since the account it
+   * was on is exactly as unavailable either way.
+   */
   private async checkPending(): Promise<{ complied: TicketId[]; hard: TicketId[] }> {
     const complied: TicketId[] = [];
     const hard: TicketId[] = [];
@@ -237,17 +273,27 @@ export class HandoffCoordinator {
         this.pending.delete(entry.ticket);
         continue;
       }
-      // Already moved on by some other path (reassigned, done, etc.).
+      // Already moved on by some other path (reassigned, done, etc.) — or
+      // the agent exited on its own (round 2, opus N3).
       if (current.status !== 'in_progress' || current.assignee !== entry.agentId) {
         this.pending.delete(entry.ticket);
+        if (current.status === 'ready') {
+          await this.finishHardHandoff(
+            entry.ticket,
+            `agent exited during graceful wait on ${entry.vendor}/${entry.account}`,
+          );
+          hard.push(entry.ticket);
+        }
         continue;
       }
 
-      const compliedAlready = this.stanzaCount(entry.ticket) > entry.stanzaCountAtInstruction;
+      // Round 2 (opus B1): compliance requires the actual `handoff` stanza
+      // the instruction asked for, not merely *any* later stanza.
+      const compliedAlready = this.hasHandoffStanzaSince(entry.ticket, entry.instructionTs);
       if (compliedAlready) {
         this.pending.delete(entry.ticket);
-        this.opts.runner.stop(entry.agentId);
-        await this.waitReady(entry.ticket);
+        const stopped = this.opts.runner.stop(entry.agentId);
+        if (stopped) await this.waitStopped(entry.agentId);
         const ok = await this.reassign(entry.ticket, {
           vendor: entry.vendor,
           account: entry.account,

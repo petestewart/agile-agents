@@ -3,15 +3,33 @@
  * `buildQuotaRpcMethods` — for wiring into `rpc.ts`'s `extraMethods` table.
  * Not wired into `daemon.ts`/`index.ts`/`rpc.ts` by this ticket (file
  * ownership boundary); see the pipeline report for the exact wiring line.
+ *
+ * Round 2 (QA round 1): unlike a verb (`verbs.ts`'s `cooldownSet`, gated by
+ * `requireEm` on the `ToolCallContext` the MCP bridge builds from the
+ * calling session's own agent id), a raw RPC method has no caller identity
+ * of its own to check by default — `tool.call`'s own RPC entry
+ * (`tools/rpc.ts`) is exactly why every other role-restricted capability in
+ * this codebase is reached *through* `tool.call`/`ToolService`, not a
+ * bespoke RPC method. `handoff.cooldown_set` is the one exception (built to
+ * mirror `quota/rpc.ts`'s ungated `quota.record_429` shape) — so it now
+ * takes the caller's `agent` id as an explicit param (same pattern
+ * `tools/rpc.ts`'s `tool.call`/`tool.list` already use) and checks its role
+ * itself, rather than trusting every socket client that can reach the RPC
+ * port to be `em`.
  */
 
 import type { TicketId } from '@agile-agents/shared';
+import { roleOf } from '../bus/routing';
 import type { RpcMethodHandler } from '../rpc';
 import type { StateStore } from '../store';
-import { CooldownError, setManualCooldown } from './cooldown';
+import { type CooldownBusSender, CooldownError, setManualCooldown } from './cooldown';
 import type { HandoffCoordinator } from './coordinator';
 
+export class HandoffRpcError extends Error {}
+
 export interface HandoffCooldownSetParams {
+  /** Caller identity — checked against the same `em`/`human` allow-list `verbs.ts`'s `cooldownSet` enforces via `ToolCallContext`. */
+  agent: string;
   vendor: string;
   account: string;
   until: string;
@@ -21,9 +39,21 @@ export interface HandoffTickParams {
   sprintTicketIds?: TicketId[];
 }
 
+function requireEmOrHuman(agent: unknown, method: string): void {
+  if (typeof agent !== 'string' || agent.length === 0) {
+    throw new HandoffRpcError(`${method}: "agent" must be a non-empty string`);
+  }
+  const role = roleOf(agent);
+  if (role !== 'em' && role !== 'human') {
+    throw new HandoffRpcError(`${method}: only em or human may call this method (was ${role})`);
+  }
+}
+
 export function buildHandoffRpcMethods(
   coordinator: HandoffCoordinator,
   store: StateStore,
+  /** Optional — threaded to `setManualCooldown` so `handoff.cooldown_set` also sends the urgent bus message (parity with `verbs.ts`'s `cooldownSet`), not only the event `HandoffCoordinator.tick()` reacts to. */
+  bus?: CooldownBusSender,
 ): Record<string, RpcMethodHandler> {
   return {
     'handoff.tick': (params) => {
@@ -31,11 +61,21 @@ export function buildHandoffRpcMethods(
       return coordinator.tick(sprintTicketIds ?? store.listTickets().map((t) => t.id));
     },
     'handoff.cooldown_set': async (params) => {
-      const { vendor, account, until } = params as HandoffCooldownSetParams;
+      const { agent, vendor, account, until } = (params ?? {}) as Partial<HandoffCooldownSetParams>;
+      requireEmOrHuman(agent, 'handoff.cooldown_set');
+      if (typeof vendor !== 'string' || vendor.length === 0) {
+        throw new HandoffRpcError('handoff.cooldown_set: "vendor" must be a non-empty string');
+      }
+      if (typeof account !== 'string' || account.length === 0) {
+        throw new HandoffRpcError('handoff.cooldown_set: "account" must be a non-empty string');
+      }
+      if (typeof until !== 'string' || until.length === 0) {
+        throw new HandoffRpcError('handoff.cooldown_set: "until" must be an ISO timestamp string');
+      }
       try {
-        return await setManualCooldown(store, { vendor, account, until });
+        return await setManualCooldown(store, { vendor, account, until, bus });
       } catch (err) {
-        if (err instanceof CooldownError) throw new Error(err.message);
+        if (err instanceof CooldownError) throw new HandoffRpcError(err.message);
         throw err;
       }
     },

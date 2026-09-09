@@ -62,4 +62,37 @@ describe('setManualCooldown', () => {
     expect(quota.pre_cooldown_remaining).toBe(800);
     expect(quota.limit).toBe(1000);
   });
+
+  test('B3 (round 2 review-fix): emits a quota_exhausted event, the same shape HandoffCoordinator.tick() reads', async () => {
+    await fx.store.putVendors({ claude: { accounts: [{ id: 'default', auth: 'subscription' }] } });
+    const until = new Date(Date.now() + 4 * 3600_000).toISOString();
+
+    await setManualCooldown(fx.store, { vendor: 'claude', account: 'default', until });
+
+    const events = fx.store.listEvents().filter((e) => e.kind === 'quota_exhausted');
+    expect(events).toHaveLength(1);
+    expect(events[0]?.data).toMatchObject({ vendor: 'claude', account: 'default' });
+  });
+
+  test('B3: also sends the urgent bus message when a bus is given', async () => {
+    await fx.store.putVendors({ claude: { accounts: [{ id: 'default', auth: 'subscription' }] } });
+    const sent: unknown[] = [];
+    const fakeBus = {
+      send: async (input: unknown) => {
+        sent.push(input);
+        return { ok: true as const };
+      },
+    };
+    const until = new Date(Date.now() + 4 * 3600_000).toISOString();
+
+    await setManualCooldown(fx.store, {
+      vendor: 'claude',
+      account: 'default',
+      until,
+      bus: fakeBus,
+    });
+
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toMatchObject({ kind: 'quota_exhausted', priority: 'urgent', to: ['em'] });
+  });
 });

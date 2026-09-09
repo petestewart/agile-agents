@@ -7,11 +7,10 @@
  */
 
 import { roleOf } from '../bus/routing';
-import type { RpcMethodHandler } from '../rpc';
 import type { StateStore } from '../store';
 import type { ToolInputSpec } from '../tools/schema';
 import type { ToolCallContext } from '../tools/types';
-import { CooldownError, setManualCooldown } from './cooldown';
+import { type CooldownBusSender, CooldownError, setManualCooldown } from './cooldown';
 
 export class HandoffVerbError extends Error {}
 
@@ -30,6 +29,8 @@ function requireObject(input: unknown): Record<string, unknown> {
 
 export interface HandoffToolDeps {
   store: StateStore;
+  /** Round 2 (opus B3): threaded to `setManualCooldown` so `cooldown_set` also sends the urgent bus message, not only the event. Optional — a caller with no `Bus` handy (a test) still gets the event, just not the message. */
+  bus?: CooldownBusSender;
 }
 
 export interface HandoffToolInfo {
@@ -58,6 +59,7 @@ async function cooldownSet(deps: HandoffToolDeps, ctx: ToolCallContext, input: u
       vendor: p.vendor,
       account: p.account,
       until: p.until,
+      bus: deps.bus,
     });
   } catch (err) {
     if (err instanceof CooldownError) throw new HandoffVerbError(err.message);
