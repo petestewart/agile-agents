@@ -170,12 +170,12 @@ Priority encodes dependency layer as well as importance: P0 tickets are v0-block
 
 ### Ticket: T012 Agent runner and worktree manager
 - **Priority:** P0
-- **Status:** In Progress
+- **Status:** In Review
 - **Owner:** sonnet:worker-T012
 - **Scope:** Depends on T003, T006, T009–T011. Spawn a role session: create/reuse worktree `.worktrees/<TKT>` on `tkt/<id>-<slug>` off `integration`, write hook settings + MCP config, assemble the role brief (ticket YAML, oracle refs by ID, KB refs, rules, contract), start the ACP session in `default` mode, register in `bus/agents`, stream `usage_update` into the ledger, mark the session's `tool_call` events into the event log, handle exit/crash (ticket → `ready`, worktree preserved, `escalate` to em). Reviewer/QA sessions get their own worktree or clone per §12–13.
 - **Acceptance Criteria:** `spawn(engineer, TKT)` leaves a registered agent working in the right worktree with the hook active; `kill -9` on the process yields the recovery path within one heartbeat interval.
 - **Validation Steps:** Live test with a trivial ticket; crash test.
-- **Notes:**
+- **Notes:** branch `T012-agent-runner` (local worktree, `e2810c6` + `c1df33f`); `src/runner/` (worktrees, brief, session, runner, rpc, fake ACP agent for tests), additive `AgentRecord` fields. Worker flags: full suite flaky under the sandbox's 4-CPU ceiling when subprocess-heavy tests run together (own tests deterministic in isolation) — reviewer asked to root-cause. Gates running.
 
 ### Ticket: T013 Role briefs and ceremony templates
 - **Priority:** P0
