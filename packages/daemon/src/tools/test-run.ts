@@ -466,7 +466,10 @@ export async function runTestRun(opts: RunTestRunOptions): Promise<TestRunOutput
  * killed for producing too much output, only the text used for parsing is
  * bounded.
  */
-async function readCappedTail(file: ReturnType<typeof Bun.file>, capBytes: number): Promise<string> {
+async function readCappedTail(
+  file: ReturnType<typeof Bun.file>,
+  capBytes: number,
+): Promise<string> {
   if (file.size <= capBytes) return file.text();
   return file.slice(file.size - capBytes).text();
 }

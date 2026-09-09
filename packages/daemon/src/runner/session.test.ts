@@ -669,7 +669,7 @@ describe('T027: per-vendor session wiring (Cursor ask mode, Grok client-fs gate,
   }, 90000);
 });
 
-describe('T034: vendor ACP session spawns keep the operator\'s real HOME (never the daemon\'s sandboxed one)', () => {
+describe("T034: vendor ACP session spawns keep the operator's real HOME (never the daemon's sandboxed one)", () => {
   test('startAgentSession never sets an env/envOverrides.HOME for the vendor spawn', async () => {
     await store.putTicket(makeTicket({ status: 'done' }), { by: 'test' });
     const sink: { options?: SpawnSessionOptions } = {};

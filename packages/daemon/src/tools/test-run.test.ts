@@ -217,7 +217,7 @@ describe('runTestRun', () => {
     expect(rawBytes).toBeGreaterThan(4096 * 10);
   });
 
-  test('T034: the spawned test command runs with a sandboxed HOME, never the daemon operator\'s real one', async () => {
+  test("T034: the spawned test command runs with a sandboxed HOME, never the daemon operator's real one", async () => {
     // A tiny bun test that prints the HOME it was actually spawned with —
     // proves the env `runTestRun` builds for the child (not just what this
     // test process itself happens to have) is the sandboxed one.
