@@ -20,7 +20,11 @@
     "packages/cli": {
       "name": "@agile-agents/cli",
       "version": "0.0.0",
+      "bin": {
+        "agile": "./src/index.ts",
+      },
       "dependencies": {
+        "@agile-agents/daemon": "workspace:*",
         "@agile-agents/shared": "workspace:*",
       },
     },
@@ -29,6 +33,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@agile-agents/shared": "workspace:*",
+        "yaml": "^2.7.0",
       },
     },
     "packages/shared": {
