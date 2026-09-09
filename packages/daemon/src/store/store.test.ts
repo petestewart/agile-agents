@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -684,6 +684,53 @@ describe('StateStore.abs() containment (path-traversal backstop)', () => {
       /escapes the state root/,
     );
     expect(existsSync(evilSibling)).toBe(false);
+  });
+});
+
+// T032: the lexical guard above stops `..` traversal but `resolve()` never
+// touches the filesystem, so a symlink *planted inside* the state root that
+// points outside it slips past a purely lexical check — only a real fs call
+// (read/write/unlink) would follow the link and actually escape. `abs()`
+// must catch this too by realpath-ing the target's nearest existing
+// ancestor and comparing against a realpath'd state root.
+describe('StateStore.abs() containment (symlink escape, T032)', () => {
+  test('getHalt refuses a halt file that is a symlink to a file outside the state root', () => {
+    const store = StateStore.open(stateRoot);
+    const victimPath = join(repo, '..', 'symlink-victim.yaml');
+    writeFileSync(victimPath, 'id: evil\nscope: global\nraised_by: attacker\n');
+    const linkPath = join(stateRoot, 'board', 'halts', 'evil.yaml');
+    try {
+      symlinkSync(victimPath, linkPath);
+      expect(() => store.getHalt('evil' as never)).toThrow(/escapes the state root/);
+    } finally {
+      rmSync(linkPath, { force: true });
+      rmSync(victimPath, { force: true });
+    }
+  });
+
+  test('deleteHalt refuses to unlink through a symlinked directory that escapes the state root', async () => {
+    const store = StateStore.open(stateRoot);
+    const victimDir = mkdtempSync(join(tmpdir(), 'agile-store-victim-'));
+    writeFileSync(join(victimDir, 'evil.yaml'), 'id: evil\nscope: global\nraised_by: attacker\n');
+    const realHaltsDir = join(stateRoot, 'board', 'halts');
+    try {
+      // Swap the halts directory itself out for a symlink to somewhere else
+      // entirely — the id and file name are both innocuous; only the
+      // directory segment is malicious.
+      rmSync(realHaltsDir, { recursive: true, force: true });
+      symlinkSync(victimDir, realHaltsDir);
+      await expect(store.deleteHalt('evil' as never)).rejects.toThrow(/escapes the state root/);
+      expect(existsSync(join(victimDir, 'evil.yaml'))).toBe(true);
+    } finally {
+      rmSync(realHaltsDir, { force: true });
+      rmSync(victimDir, { recursive: true, force: true });
+    }
+  });
+
+  test('putTicket to a not-yet-existing file still resolves normally (no false positive)', async () => {
+    const store = StateStore.open(stateRoot);
+    await expect(store.putTicket(makeTicket('TKT-9999'))).resolves.toBeDefined();
+    expect(store.getTicket('TKT-9999' as never).id).toBe('TKT-9999');
   });
 });
 
