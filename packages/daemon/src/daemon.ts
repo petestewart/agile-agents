@@ -17,6 +17,16 @@ import { HookService, buildHookRpcMethods } from './hook';
 import { type HttpServerHandle, startHttpServer } from './http';
 import { type LockHandle, acquireLock } from './lock';
 import { buildOracleRpcMethods } from './oracle';
+import {
+  REVIEW_BUILTIN_TOOLS,
+  ReviewProtocol,
+  type ReviewVerbDeps,
+  buildReviewRpcMethods,
+  reviewDispute,
+  reviewGet,
+  reviewSubmit,
+  rulesList,
+} from './review';
 import { type RpcServerHandle, startRpcServer } from './rpc';
 import { Runner, buildRunnerRpcMethods } from './runner';
 import { StateStore, buildStateRpcMethods } from './store';
@@ -84,8 +94,12 @@ export async function startDaemon(options: DiscoverConfigOptions = {}): Promise<
       : undefined;
   runner?.startSweep();
 
-  // Role-scoped verb providers (T014 architect; T015–T017 add theirs).
-  if (toolService && store) {
+  // Role-scoped verb providers (T014 architect; T016 review; T015/T017 add
+  // theirs). Each provider is only *listed* for its roles; the verbs
+  // themselves re-check the caller's role, so a mis-scoped listing can never
+  // widen what an agent may do.
+  let reviewDeps: ReviewVerbDeps | undefined;
+  if (toolService && store && bus && runner) {
     const architect = registerArchitectTools({ store });
     toolService.registerProvider({
       roles: ['architect'],
@@ -96,6 +110,83 @@ export async function startDaemon(options: DiscoverConfigOptions = {}): Promise<
       callTool: (ctx, name, input) =>
         architect.callTool({ agent: ctx.agent, ticket: ctx.ticket }, name, input),
     });
+
+    // Review protocol (T016, §12): `diff_summary` + reviewer verbs for the
+    // reviewer role, `review_dispute` (+ `review_get`) for the engineer role.
+    const reviewProtocol = new ReviewProtocol({ store, bus, runner, repoRoot: config.repoRoot });
+    reviewDeps = { protocol: reviewProtocol, store, stateRoot: config.stateRoot };
+    const deps = reviewDeps;
+    const reviewToolDeps = { store, bus, repoRoot: config.repoRoot };
+    const STRING = { type: 'string', optional: false } as const;
+    const STRING_OPT = { type: 'string', optional: true } as const;
+    const NUMBER = { type: 'number', optional: false } as const;
+    const ARRAY_OPT = { type: 'array', optional: true } as const;
+    const OBJECT = { type: 'object', optional: false } as const;
+    const reviewGetTool = {
+      name: 'review_get',
+      description: "Read one round's stored review verdict for the caller's ticket.",
+      inputSpec: { round: NUMBER, pass: STRING_OPT },
+      handler: reviewGet,
+    };
+    const reviewerVerbs = [
+      ...REVIEW_BUILTIN_TOOLS.map((t) => ({
+        name: t.name,
+        description: t.description,
+        inputSpec: t.inputSpec,
+        handler: (ctx: { agent: string; ticket?: string }, input: unknown) =>
+          t.handler(reviewToolDeps, ctx, input),
+      })),
+      {
+        name: 'review_submit',
+        description:
+          "Submit this round's verdict (pass/findings/verdict) for the caller's ticket (reviewer-only).",
+        inputSpec: { round: NUMBER, pass: STRING, verdict: OBJECT, findings: ARRAY_OPT },
+        handler: (ctx: { agent: string; ticket?: string }, input: unknown) =>
+          reviewSubmit(deps, ctx, input),
+      },
+      {
+        ...reviewGetTool,
+        handler: (ctx: { agent: string; ticket?: string }, input: unknown) =>
+          reviewGet(deps, ctx, input),
+      },
+      {
+        name: 'rules_list',
+        description: 'List the review rules a finding must cite (reviewer-only).',
+        inputSpec: {},
+        handler: (ctx: { agent: string; ticket?: string }, input: unknown) =>
+          rulesList(deps, ctx, input),
+      },
+    ];
+    const engineerVerbs = [
+      {
+        ...reviewGetTool,
+        handler: (ctx: { agent: string; ticket?: string }, input: unknown) =>
+          reviewGet(deps, ctx, input),
+      },
+      {
+        name: 'review_dispute',
+        description:
+          'Dispute one review finding by its round-trip identity (path/line + citation) (engineer-only).',
+        inputSpec: { finding: OBJECT },
+        handler: (ctx: { agent: string; ticket?: string }, input: unknown) =>
+          reviewDispute(deps, ctx, input),
+      },
+    ];
+    for (const [roles, verbs] of [
+      [['reviewer'], reviewerVerbs],
+      [['engineer'], engineerVerbs],
+    ] as const) {
+      toolService.registerProvider({
+        roles,
+        listTools: () =>
+          verbs.map((v) => ({ name: v.name, description: v.description, inputSpec: v.inputSpec })),
+        callTool: (ctx, name, input) => {
+          const verb = verbs.find((v) => v.name === name);
+          if (!verb) throw new Error(`unknown review verb: ${name}`);
+          return verb.handler(ctx, input);
+        },
+      });
+    }
   }
 
   const extraMethods =
@@ -114,6 +205,7 @@ export async function startDaemon(options: DiscoverConfigOptions = {}): Promise<
           ),
           ...buildToolRpcMethods(toolService),
           ...buildRunnerRpcMethods(runner),
+          ...(reviewDeps ? buildReviewRpcMethods(reviewDeps) : {}),
         }
       : undefined;
 
