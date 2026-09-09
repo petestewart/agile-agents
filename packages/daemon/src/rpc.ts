@@ -202,6 +202,36 @@ function handleConnection(socket: Socket, methods: Record<string, RpcMethodHandl
   });
 }
 
+/**
+ * Shared RPC error shape (T019 review round 1 nit): `gates/rpc.ts` (T018)
+ * defined this pair locally before any `build*RpcMethods` module had a
+ * common place to import it from. Additive-only change, granted to T019
+ * for this one fix — nothing above this line was touched, and `gates/
+ * rpc.ts` keeps its own copy rather than being edited to import this one
+ * (out of T019's file ownership). `dispatch()`'s catch-all below still
+ * doesn't special-case `.code`/`.data` (same KNOWN LIMITATION `gates/
+ * rpc.ts` documents) — every `RpcError` still surfaces as a generic
+ * `-32603` until that's fixed, so callers should keep asserting on
+ * `.message`, not `.code`.
+ */
+export class RpcError extends Error {
+  constructor(
+    public readonly code: number,
+    message: string,
+    public readonly data?: unknown,
+  ) {
+    super(message);
+    this.name = 'RpcError';
+  }
+}
+
+export class RpcParamError extends RpcError {
+  constructor(message: string, data?: unknown) {
+    super(-32602, message, data);
+    this.name = 'RpcParamError';
+  }
+}
+
 export function startRpcServer(options: RpcServerOptions): RpcServerHandle {
   // A stale socket file from a previous unclean shutdown blocks bind; the
   // lock file is the real single-instance guard (acquired before this is
