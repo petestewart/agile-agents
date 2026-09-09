@@ -57,14 +57,44 @@ function defaultPolicy(): Policy {
 }
 
 /**
- * Default `.agile/vendors.yaml` — v0 scope is "Claude for every role" (§18),
- * so the only account wired up by default is a Claude subscription login.
- * Other vendors are added by later tickets as they land.
+ * Default `.agile/vendors.yaml`. §18's "Claude for every role" was v0's
+ * starting scope; T027 (design §6/§8, design/spike-findings.md §D) adds
+ * Cursor, Grok, and Codex as routing candidates once their accounts are
+ * configured — each entry keyed by its `@agile-agents/acp-client`
+ * `ACP_PROVIDERS` id (`claude`/`cursor`/`grok`/`codex`), the same id
+ * `Runner.vendorConfigFor(provider.id)` looks vendors.yaml entries up by
+ * (`packages/daemon/src/runner/runner.ts`) — not the design §8 example's
+ * company-name key (`openai`), which nothing in the runtime path resolves
+ * against.
+ *
+ * `requires_sandbox: true` on grok/codex (`packages/shared/src/vendors.ts`,
+ * merged in T026): design/spike-findings.md's final per-vendor matrix (§C3)
+ * measured **zero** ACP permission requests and no hook layer for both —
+ * "codex-acp never asks, regardless of mode or approval policy" and Grok's
+ * exec is entirely ungated (only its client-fs reads/writes are gated, §C2)
+ * — so `Runner.spawn`/`wrapAgentCommand` refuse to run either as an
+ * engineer without a live tier-0 sandbox backend (T026, fail-closed) rather
+ * than ever running ungated exec unsandboxed. Cursor omits the flag: its
+ * `agent` mode raises an ACP permission request for **every exec** (§C2),
+ * so tier 2 already gates it (`decidePermission`/`policy-tables.ts` apply
+ * unchanged — no per-vendor branching needed there, see this ticket's
+ * report).
  */
 function defaultVendorsConfig(): VendorsConfig {
   return validateVendorsConfig({
     claude: {
       accounts: [{ id: 'default', auth: 'subscription' }],
+    },
+    cursor: {
+      accounts: [{ id: 'default', auth: 'subscription' }],
+    },
+    grok: {
+      accounts: [{ id: 'default', auth: 'subscription' }],
+      requires_sandbox: true,
+    },
+    codex: {
+      accounts: [{ id: 'default', auth: 'subscription' }],
+      requires_sandbox: true,
     },
   });
 }

@@ -94,6 +94,26 @@ describe('runInit', () => {
     expect(() => validateVendorsConfig(vendors)).not.toThrow();
   });
 
+  test('vendors.yaml (T027): cursor/grok/codex are routing candidates, keyed by ACP_PROVIDERS id, requires_sandbox on the ungated-exec vendors only', () => {
+    runInit(repo);
+    const stateRoot = join(repo, '.agile');
+    const vendors = validateVendorsConfig(
+      parseYaml(readFileSync(join(stateRoot, 'vendors.yaml'), 'utf8')),
+    );
+
+    expect(vendors.claude?.requires_sandbox).toBe(false);
+    expect(vendors.cursor?.accounts).toEqual([{ id: 'default', auth: 'subscription' }]);
+    expect(vendors.cursor?.requires_sandbox).toBe(false);
+    expect(vendors.grok?.accounts).toEqual([{ id: 'default', auth: 'subscription' }]);
+    expect(vendors.grok?.requires_sandbox).toBe(true);
+    expect(vendors.codex?.accounts).toEqual([{ id: 'default', auth: 'subscription' }]);
+    expect(vendors.codex?.requires_sandbox).toBe(true);
+    // Not the design §8 example's company-name key — `Runner.vendorConfigFor`
+    // looks entries up by `ACP_PROVIDERS` id (`codex`), which `openai`
+    // would never match.
+    expect(vendors.openai).toBeUndefined();
+  });
+
   test('adds .agile/, .worktrees/, and the daemon lock/socket files to .gitignore, idempotently', () => {
     runInit(repo);
     const gitignore = readFileSync(join(repo, '.gitignore'), 'utf8');
