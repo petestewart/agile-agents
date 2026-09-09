@@ -12,6 +12,7 @@
   "dependencies": {
     "@agile-agents/acp-client": "workspace:*",
     "@agile-agents/shared": "workspace:*",
+    "@agile-agents/ui": "workspace:*",
     "yaml": "^2.7.0"
   }
 }
