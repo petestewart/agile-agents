@@ -256,10 +256,30 @@ export class QuotaService {
     if (nextResetsAtMs <= nowMs) nextResetsAtMs += windowMs;
     const nextResetsAt = new Date(nextResetsAtMs).toISOString();
 
+    // Round-7 review-fix (opus round 6 blocker B1): when a window boundary
+    // falls *inside* a still-active cooldown (by construction, any
+    // `cooldown_until` still visible here is active — `applyCooldownRecovery`
+    // already ran first and clears only an elapsed one), the visible
+    // `remaining` stays `0` throughout the cooldown (`recordUsageWhileCoolingDown`
+    // forces it), so rearming *that* to `limit` is a no-op the mid-cooldown
+    // path immediately discards. `pre_cooldown_remaining` — the real budget
+    // underneath — is what actually needs the rearm: the window rolling
+    // over means a fresh budget exists regardless of whether a rate limit
+    // also happens to be in effect, and the two must roll over together or
+    // the fresh window's budget is silently lost the moment any mid-cooldown
+    // usage is recorded against the stale pre-429 balance. The cooldown
+    // itself (`cooldown_until`/`cooldown_backoff_seconds`) is untouched
+    // either way — this is a *budget* rearm, not a rate-limit one (the
+    // round-5 property this fix must not regress).
+    const cooldownStillActive = existing.cooldown_until != null;
+
     return {
       ...existing,
       remaining: existing.limit ?? existing.remaining,
       resets_at: nextResetsAt,
+      ...(cooldownStillActive
+        ? { pre_cooldown_remaining: existing.limit ?? existing.remaining }
+        : {}),
     };
   }
 
@@ -486,8 +506,15 @@ export class QuotaService {
       remaining: 0,
       unit: 'tokens',
       resets_at: existing.resets_at ?? this.initialResetsAt(accountConfig),
-      confidence: 'estimated',
-      source: 'ledger_countdown',
+      // Round-7 nit fix (N1): preserved, not overwritten — the account is
+      // still actively rate-limited, so it's still a `'reported'`/
+      // `'rate_limit_429'` reading (or whatever a prior mid-cooldown call
+      // already preserved) for as long as the cooldown lasts, exactly like
+      // `cooldown_until`/`cooldown_backoff_seconds` right below. Only a
+      // real recovery (post-cooldown `recordUsage`, or a `recordReported`)
+      // should ever downgrade this to a countdown estimate.
+      confidence: existing.confidence,
+      source: existing.source,
       updated: this.now().toISOString(),
       // Preserved verbatim — this call is not the thing that ends a rate limit.
       cooldown_until: existing.cooldown_until,

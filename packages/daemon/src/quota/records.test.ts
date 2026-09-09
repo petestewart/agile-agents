@@ -701,8 +701,8 @@ describe('QuotaService.record429 — the low-confidence baseline guard also appl
   });
 });
 
-describe('QuotaService — a window reset must not shorten an in-flight 429 cooldown (opus round 4 non-blocking nit)', () => {
-  test('a window boundary landing mid-cooldown leaves cooldown_until/backoff/pre_cooldown_remaining untouched', async () => {
+describe('QuotaService — a window reset must not shorten an in-flight 429 cooldown, but must still rearm the budget underneath (opus round 4 nit + round 6 blocker B1)', () => {
+  test('a window boundary landing mid-cooldown leaves cooldown_until/backoff untouched but rearms pre_cooldown_remaining to the fresh window budget', async () => {
     const clock = fakeClock(Date.parse('2026-09-09T00:00:00.000Z'));
     await store.putVendors({
       claude: {
@@ -731,13 +731,18 @@ describe('QuotaService — a window reset must not shorten an in-flight 429 cool
     expect(clock.now().getTime()).toBeLessThan(cooldownUntilMs);
 
     // A read (list(), which now runs recovery) must not cancel the
-    // still-active cooldown just because the window also rolled over.
+    // still-active cooldown just because the window also rolled over —
+    // the cooldown fields are untouched...
     const listed = quota.list().find((q) => q.account === 'max');
     expect(listed?.cooldown_until).toBe(after429.cooldown_until);
     expect(listed?.cooldown_backoff_seconds).toBe(900);
-    expect(listed?.pre_cooldown_remaining).toBe(after429.pre_cooldown_remaining);
+    // ...but round-6 blocker B1: the *budget* underneath must still roll
+    // over with the window — the fresh window's full 1000 tokens, not the
+    // stale pre-429 balance frozen at the moment of the 429.
+    expect(listed?.pre_cooldown_remaining).toBe(1_000);
+    expect(listed?.pre_cooldown_remaining).not.toBe(after429.pre_cooldown_remaining);
 
-    // Routing must still exclude it — the cooldown was not shortened.
+    // Routing must still exclude it — the cooldown itself was not shortened.
     const stillCoolingDown = routeCandidates('engineer', 'standard', {
       vendors: store.getVendors(),
       quotas: quota.list(),
@@ -808,6 +813,68 @@ describe('QuotaService.recordUsage — arriving mid-cooldown must not clear it o
     expect(pickCandidate(recovered)).toEqual({ vendor: 'claude', account: 'default' });
     const listedAfterRecovery = quota.list().find((q) => q.account === 'default');
     expect(listedAfterRecovery?.remaining).toBe(windowTokens - 20);
+  });
+});
+
+describe('QuotaService — a window boundary inside an active cooldown must still rearm the budget (opus round 6 blocker B1)', () => {
+  test('usage recorded on both sides of a mid-cooldown window rollover lands on the fresh budget minus post-boundary usage, and is routable once the cooldown ends', async () => {
+    // Reviewer's exact repro sequence (single-account topology, matching
+    // the shipped default's shape, with an explicit short window so the
+    // boundary-inside-cooldown scenario is reachable in a fast test):
+    // recordUsage(900) at T0 (100 left, resets_at = T0+1h) -> record429
+    // (retryAfter 900s) at T0+55m (cooldown ends T0+70m, spanning the
+    // T0+1h boundary) -> recordUsage(10) at T0+61m (after the boundary,
+    // still mid-cooldown) -> at T0+71m the account must be routable at
+    // 1000 - 10 = 990, not stuck at 90 (the round-6 regression: 100 - 10
+    // from the stale pre-429 balance, silently discarding the rollover).
+    const clock = fakeClock(Date.parse('2026-09-09T00:00:00.000Z'));
+    await store.putVendors({
+      claude: {
+        accounts: [
+          { id: 'default', auth: 'subscription', quota: { window_tokens: 1_000, window_hours: 1 } },
+        ],
+      },
+    });
+    const quota = new QuotaService({ store, now: clock.now });
+
+    const beforeCooldown = await quota.recordUsage(
+      'claude',
+      'default',
+      ledgerLine({ in_tokens: 900 }),
+    );
+    expect(beforeCooldown.remaining).toBe(100);
+    expect(beforeCooldown.resets_at).toBe(
+      new Date(clock.now().getTime() + 60 * 60 * 1000).toISOString(),
+    );
+
+    clock.advance(55 * 60 * 1000); // T0 + 55min
+    const after429 = await quota.record429('claude', 'default', 900); // cooldown ends T0+70min, spans the T0+1h boundary
+    expect(after429.pre_cooldown_remaining).toBe(100); // captured pre-429 balance, before any rollover
+
+    clock.advance(6 * 60 * 1000); // T0 + 61min — past the T0+1h boundary, still mid-cooldown (ends T0+70min)
+    const midCooldownAfterBoundary = await quota.recordUsage(
+      'claude',
+      'default',
+      ledgerLine({ in_tokens: 10 }),
+    );
+    // Cooldown untouched by the window rollover (the round-5 property).
+    expect(midCooldownAfterBoundary.cooldown_until).toBe(after429.cooldown_until);
+    expect(midCooldownAfterBoundary.remaining).toBe(0); // still the visible cooling-down reading
+    // The budget rolled over WITH the window: fresh 1000, minus this
+    // call's own 10 tokens — not 100 (stale pre-429 balance) minus 10.
+    expect(midCooldownAfterBoundary.pre_cooldown_remaining).toBe(990);
+
+    clock.advance(10 * 60 * 1000); // T0 + 71min — cooldown has elapsed (ended T0+70min)
+    const listed = quota.list().find((q) => q.account === 'default');
+    expect(listed?.remaining).toBe(990);
+    expect(listed?.cooldown_until).toBeNull();
+
+    const routed = routeCandidates('engineer', 'standard', {
+      vendors: store.getVendors(),
+      quotas: quota.list(),
+      now: clock.now(),
+    });
+    expect(pickCandidate(routed)).toEqual({ vendor: 'claude', account: 'default' });
   });
 });
 
