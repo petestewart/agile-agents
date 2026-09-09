@@ -315,7 +315,7 @@ describe('QuotaService.record429 — one quota_exhausted per episode, escalating
     expect(updated.cooldown_backoff_seconds).toBe(120);
   });
 
-  test('a successful recordUsage call resets the escalation tier for the next episode', async () => {
+  test('round-6 fix: a recordUsage call arriving mid-cooldown does NOT clear it — reset-after-success only applies once the cooldown has actually elapsed', async () => {
     const clock = fakeClock(Date.parse('2026-09-09T00:00:00.000Z'));
     const quota = new QuotaService({ store, bus: fakeBus, now: clock.now });
     await store.putVendors({
@@ -324,10 +324,20 @@ describe('QuotaService.record429 — one quota_exhausted per episode, escalating
 
     await quota.record429('claude', 'max'); // 30s
     await quota.record429('claude', 'max'); // escalates to 60s
-    // A successful call clears cooldown/backoff — "reset after a successful call".
-    const afterUsage = await quota.recordUsage('claude', 'max', ledgerLine({ in_tokens: 10 }));
-    expect(afterUsage.cooldown_until).toBeNull();
-    expect(afterUsage.cooldown_backoff_seconds).toBeUndefined();
+
+    // A usage call arriving WHILE still cooling down must not clear the
+    // cooldown or the escalation tier — the round-5 opus nit this round fixes.
+    const midCooldown = await quota.recordUsage('claude', 'max', ledgerLine({ in_tokens: 10 }));
+    expect(midCooldown.cooldown_until).not.toBeNull();
+    expect(midCooldown.cooldown_backoff_seconds).toBe(60);
+    expect(midCooldown.remaining).toBe(0); // still the visible "cooling down" reading
+
+    // Once the cooldown genuinely elapses, a real successful call DOES
+    // reset the escalation tier for the next episode.
+    clock.advance(61_000);
+    const afterCooldown = await quota.recordUsage('claude', 'max', ledgerLine({ in_tokens: 10 }));
+    expect(afterCooldown.cooldown_until).toBeNull();
+    expect(afterCooldown.cooldown_backoff_seconds).toBeUndefined();
 
     sentMessages.length = 0;
     const freshEpisode = await quota.record429('claude', 'max');
@@ -734,6 +744,70 @@ describe('QuotaService — a window reset must not shorten an in-flight 429 cool
       now: clock.now(),
     });
     expect('none' in stillCoolingDown).toBe(true);
+  });
+});
+
+describe('QuotaService.recordUsage — arriving mid-cooldown must not clear it or baseline from the synthetic zero (opus round 5 nit 1)', () => {
+  test('with the shipped default vendors.yaml (single account, no window_tokens), a recordUsage call during a 429 cooldown keeps the account excluded for the full cooldown, not the whole 24h window', async () => {
+    // No `store.putVendors` call at all — this is exactly what `agile
+    // init` ships (`init.ts`'s `defaultVendorsConfig`): `claude` with a
+    // single `default` account and no `quota` stanza whatsoever, so
+    // there is no second candidate for routing to fall back to either.
+    const clock = fakeClock(Date.parse('2026-09-09T00:00:00.000Z'));
+    const sent: Message[] = [];
+    const bus = makeFakeBus(sent);
+    const quota = new QuotaService({ store, bus, now: clock.now });
+
+    // Establish a real countdown baseline first.
+    const beforeCooldown = await quota.recordUsage(
+      'claude',
+      'default',
+      ledgerLine({ in_tokens: 10 }),
+    );
+    const windowTokens = beforeCooldown.limit as number;
+    expect(beforeCooldown.remaining).toBe(windowTokens - 10);
+
+    const after429 = await quota.record429('claude', 'default', 60);
+    expect(after429.cooldown_until).not.toBeNull();
+    expect(after429.pre_cooldown_remaining).toBe(windowTokens - 10);
+
+    // A usage call arrives 5s into the 60s cooldown — this is the bug:
+    // the old code baselined from the visible synthetic `remaining: 0`
+    // and cleared `cooldown_until` ("reset after a successful call"),
+    // pinning the account at 0 for the rest of the 24h default window.
+    clock.advance(5_000);
+    const midCooldown = await quota.recordUsage('claude', 'default', ledgerLine({ in_tokens: 10 }));
+    expect(midCooldown.cooldown_until).not.toBeNull(); // NOT cleared
+    expect(midCooldown.remaining).toBe(0); // still the visible "cooling down" reading
+    // The real balance underneath kept decrementing, from the pre-cooldown
+    // value — not from 0.
+    expect(midCooldown.pre_cooldown_remaining).toBe(windowTokens - 20);
+
+    // Still excluded from routing — the cooldown itself, not a day.
+    const stillCoolingDown = routeCandidates('engineer', 'standard', {
+      vendors: store.getVendors(),
+      quotas: quota.list(),
+      now: clock.now(),
+    });
+    expect('none' in stillCoolingDown).toBe(true);
+
+    // Only one quota_exhausted for the whole episode, from the 429 itself
+    // — the mid-cooldown recordUsage call must not signal anything new.
+    expect(sent.filter((m) => m.kind === 'quota_exhausted')).toHaveLength(1);
+
+    // Once the cooldown *actually* ends (55s later — the original 60s from
+    // the 429, not extended by the mid-cooldown call), the account is
+    // re-admitted with the correctly-decremented balance — not stuck for
+    // the rest of the day.
+    clock.advance(56_000); // now = 61s after the 429 — cooldown has elapsed
+    const recovered = routeCandidates('engineer', 'standard', {
+      vendors: store.getVendors(),
+      quotas: quota.list(),
+      now: clock.now(),
+    });
+    expect(pickCandidate(recovered)).toEqual({ vendor: 'claude', account: 'default' });
+    const listedAfterRecovery = quota.list().find((q) => q.account === 'default');
+    expect(listedAfterRecovery?.remaining).toBe(windowTokens - 20);
   });
 });
 

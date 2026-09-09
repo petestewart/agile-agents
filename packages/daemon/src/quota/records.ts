@@ -342,10 +342,33 @@ export class QuotaService {
    * the same "lazily on read" reasoning `routeCandidates` (routing.ts)
    * applies independently for a stale cooldown it hasn't yet had a
    * `recordUsage` call to clear.
+   *
+   * Round-6 review-fix (opus round 5 nit 1): that "reset after a
+   * successful call" reasoning only holds once the cooldown has actually
+   * lapsed — `resolveExisting` already recovers that case (an *elapsed*
+   * cooldown means this call's own success is real evidence). A call that
+   * arrives *while the cooldown is still active* is not such evidence; the
+   * 429's `remaining: 0` is a synthetic reading, not a real token count,
+   * and clearing `cooldown_until` here would re-admit an account the
+   * vendor is still actively rate-limiting. Delegated to
+   * `recordUsageWhileCoolingDown` below — never clears the cooldown, never
+   * baselines from the visible synthetic `0`, and keeps decrementing
+   * `pre_cooldown_remaining` (the real balance) so the account is
+   * re-admitted with the right number once the cooldown *actually* ends,
+   * not before.
    */
   async recordUsage(vendor: string, account: string, ledgerLine: LedgerLine): Promise<Quota> {
     const accountConfig = this.accountConfig(vendor, account);
     const existing = this.resolveExisting(vendor, account, accountConfig);
+
+    // `resolveExisting` only clears an *elapsed* cooldown (via
+    // `applyCooldownRecovery`) — if one is still set here, it is by
+    // construction still in the future (see `applyWindowReset`'s own
+    // round-5 doc comment for the same invariant).
+    if (existing?.cooldown_until != null) {
+      return this.recordUsageWhileCoolingDown(vendor, account, existing, accountConfig, ledgerLine);
+    }
+
     const previousFraction = existing ? quotaFraction(existing, accountConfig?.window_tokens) : 1;
 
     const windowTokens =
@@ -404,6 +427,82 @@ export class QuotaService {
       updated,
       accountConfig?.window_tokens,
     );
+    return updated;
+  }
+
+  /**
+   * Round-6 review-fix (opus round 5 nit 1): `recordUsage`'s behaviour when
+   * a call arrives while the account is *still* cooling down from a 429.
+   * §4/§10's "remaining 0 until reset" is a reading about what routing
+   * should see, not a real token count to decrement from — treating it as
+   * one, and then clearing `cooldown_until` as "reset after a successful
+   * call", is exactly the "stale zero re-persisted, cooldown cleared" bug
+   * rounds 2/3 already fixed for the *post*-cooldown case, reached through
+   * a third door (a call arriving *during* the cooldown instead of just
+   * after it). With the shipped single-account default `vendors.yaml` this
+   * would stall every assignment for the rest of the default 24h window
+   * off one 429, since neither of `routeCandidates`'s two rescues
+   * (stale-cooldown, stale-`resets_at`) apply to a *freshly-written*,
+   * still-actively-cooling-down record.
+   *
+   * Keeps `remaining: 0` and the cooldown fields (`cooldown_until`,
+   * `cooldown_backoff_seconds`) exactly as they were — this call does not
+   * end the rate limit, only the vendor's own clock does — and decrements
+   * `pre_cooldown_remaining` (the real balance underneath the synthetic
+   * `0`) by this call's own usage, so whatever usage happens mid-cooldown
+   * is still accounted for and the account is re-admitted with the
+   * correct, decremented balance once `applyCooldownRecovery` restores it
+   * after the cooldown *actually* ends — never before.
+   */
+  private async recordUsageWhileCoolingDown(
+    vendor: string,
+    account: string,
+    existing: Quota,
+    accountConfig: AccountQuotaConfig | undefined,
+    ledgerLine: LedgerLine,
+  ): Promise<Quota> {
+    const windowTokens =
+      accountConfig?.window_tokens ??
+      (existing.unit === 'tokens' ? existing.limit : undefined) ??
+      DEFAULT_WINDOW_TOKENS;
+
+    // Same low-confidence guard as the normal path: only trust
+    // `pre_cooldown_remaining` as a real token count when the record it
+    // came from was itself a resolved `tokens` baseline.
+    const hasRealTokenBaseline = existing.unit === 'tokens' && existing.limit !== undefined;
+    const baselineTokens = hasRealTokenBaseline
+      ? (existing.pre_cooldown_remaining ?? windowTokens)
+      : windowTokens;
+
+    const used = ledgerLine.in_tokens + ledgerLine.out_tokens;
+    const updatedPreCooldownRemaining = Math.max(0, baselineTokens - used);
+
+    const updated: Quota = validateQuota({
+      vendor,
+      account,
+      kind: existing.kind,
+      // Still cooling down: the visible reading stays 0 (§4: "remaining 0
+      // until reset") — only `pre_cooldown_remaining` moves.
+      remaining: 0,
+      unit: 'tokens',
+      resets_at: existing.resets_at ?? this.initialResetsAt(accountConfig),
+      confidence: 'estimated',
+      source: 'ledger_countdown',
+      updated: this.now().toISOString(),
+      // Preserved verbatim — this call is not the thing that ends a rate limit.
+      cooldown_until: existing.cooldown_until,
+      cooldown_backoff_seconds: existing.cooldown_backoff_seconds,
+      pre_cooldown_remaining: updatedPreCooldownRemaining,
+      limit: windowTokens,
+      billing: existing.billing,
+      spend_usd: existing.spend_usd,
+    });
+
+    await this.store.putQuota(updated);
+    // No crossing-detection here: `record429` already emitted
+    // `quota_exhausted` once for this episode (§4/review-fix #5), and the
+    // account is already known-excluded for the cooldown's duration — a
+    // usage call mid-cooldown has nothing new to signal.
     return updated;
   }
 
