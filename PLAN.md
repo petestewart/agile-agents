@@ -375,6 +375,15 @@ Priority encodes dependency layer as well as importance: P0 tickets are v0-block
 - **Validation Steps:** `bun test packages/daemon/src/tools packages/daemon/src/merge packages/daemon/src/sandbox` and the home-dir before/after check.
 - **Notes:** From T021 review round 5 nit (`tools/test-run.ts:377`). Branch `T034-subprocess-env` (`c1fa297`): shared `subprocess-env.ts` wired into `tools/test-run.ts`, `sandbox/backend.ts`, `merge/git.ts`, `runner/worktrees.ts`; vendor spawns keep the real `HOME` (negative test); `test_run` capture moved to `Bun.file` with a post-exit size check; home-dir before/after clean; 1815 tests. Round 1 review + QA running. Scope add (T033 review round 3): the same spawn drains then awaits `exited` with piped stdio — the Bun epoll `EBADF` race — so `test_run` must capture to `Bun.file` paths under `.agile-daemon-cache/test-run/` and replace `maxBuffer` with a file-size check.
 
+### Ticket: T035 Deflake the `agile run` stall-watchdog test
+- **Priority:** P2
+- **Status:** In Progress
+- **Owner:** sonnet:worker-T035
+- **Scope:** Depends on T021. `packages/cli/src/run.e2e.test.ts` "a genuinely silent session (spawns, then never sends another event) trips the watchdog after the threshold" fails intermittently (1 of 3 isolated runs, ~0.9 s) on the integration head. Root-cause it (the accelerated clock vs real timers in the runner sweep / ceremony tick / heartbeat coalescing is the likely seam), make the test deterministic without weakening what it asserts, and prove 20 consecutive isolated runs plus 3 full-suite runs green. Never skip, quarantine, or retry-wrap.
+- **Acceptance Criteria:** 20/20 isolated runs and 3/3 full-suite runs with 0 failures; assertions unchanged or stronger.
+- **Validation Steps:** `for i in $(seq 20); do bun test packages/cli/src/run.e2e.test.ts; done` and 3x `bun test`.
+- **Notes:** Observed at the T033 round-3 merge and again after the preload fix.
+
 ## 8. Open Questions
 
 - **Name.** `agile` / `agiled` / `.agile/` are placeholders. Decide before T008 lands so the CLI name is stable.
@@ -449,3 +458,4 @@ Priority encodes dependency layer as well as importance: P0 tickets are v0-block
 - 2026-09-09 — Added and launched T034 (sandbox every daemon subprocess env) for the `tools/test-run.ts` leak the T021 review found; it is independent of T021's merge.
 - 2026-09-09 — T021 merged (c28d122) after 5 review / 5 QA rounds: demo fixture, `agile run`, offline e2e over the fake ACP agent, liveness-based stall watchdog, injectable clock through daemon/bus/runner, sandboxed test-runner env. T031 (architect ACP session) launched.
 - 2026-09-09 — T033 merged (6a4c2c7) after 3 rounds. Discovered while gating it: Bun 1.3.11 snapshots the environment for `Bun.spawn`/`spawnSync` without an `env` option, so the test preload's `GIT_CONFIG_GLOBAL` never reached fixture git children and every fixture commit was silently going through the host signing helper (100 failures once that helper hit its fd limit). Fixed in 80c6770: the preload defaults `env` to `process.env` and keeps identity in a hermetic gitconfig (env identity outranks `-c user.name`). Worth remembering for production code too: any daemon spawn that relies on a mutated `process.env` must pass `env` explicitly (T034 does).
+- 2026-09-09 — Added and launched T035 (deflake the `agile run` stall-watchdog test): flaked 1/3 in isolation after T021 merged.
