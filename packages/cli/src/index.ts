@@ -2,74 +2,76 @@
 /**
  * @agile-agents/cli
  *
- * agile: the Agile Agents command-line interface.
+ * agile: the Agile Agents command-line interface — a thin client over
+ * agiled's unix-socket JSON-RPC API (design/agile-agents-design.md §18
+ * "Technical shape": "`agile` CLI: same client lib").
  *
- * T004 scope: `agile init` and `agile daemon start`, thin wrappers over
- * @agile-agents/daemon library functions (design/agile-agents-design.md §18
- * "Technical shape": "same client lib" as the daemon). T008 fleshes out
- * status/chat/send/approve/halt/hook. No CLI framework dependency — argv
- * parsing here is deliberately minimal.
+ * T004 scope was `init` and `daemon start`; T008 (this file) adds
+ * status/tail/send/approve/delegate/resolve/halt/resume/hook/breaker and
+ * makes every verb support `--json` alongside its human-readable output.
+ * `index.ts` is pure dispatch — one file per verb lives under `commands/`.
  */
 
-import {
-  AlreadyInitialisedError,
-  discoverConfig,
-  installShutdownSignals,
-  runInit,
-  startDaemon,
-} from '@agile-agents/daemon';
+import { join } from 'node:path';
+import { discoverConfig } from '@agile-agents/daemon';
+import { type ParsedArgs, parseArgs } from './args';
+import { runCliDaemonStart } from './commands/daemon';
+import { runApprove, runBreakerClear, runDelegate, runGateList, runResolve } from './commands/gate';
+import { runHalt, runResume } from './commands/halt';
+import { parseHookArgs, runHook } from './commands/hook';
+import { runCliInit } from './commands/init';
+import { runSend } from './commands/send';
+import { runStatus } from './commands/status';
+import { runTail } from './commands/tail';
 
 export const PACKAGE_NAME = '@agile-agents/cli';
 
+// Re-exported for the existing T004 test suite and any embedder that wants
+// the pieces directly rather than going through `runCli`.
+export { runCliInit };
+export { runCliDaemonStart };
+export type { CliInitResult } from './commands/init';
+
 function usage(): string {
   return [
-    'usage: agile <command>',
+    'usage: agile <command> [options]',
     '',
     'commands:',
-    '  init            bootstrap .agile/ state in the current git repo',
-    '  daemon start    start agiled in the foreground for this repo',
+    '  init                       bootstrap .agile/ state in the current git repo',
+    '  daemon start               start agiled in the foreground for this repo',
+    '  status                     sprint/tickets/agents/spend',
+    '  tail                       tail the event log (--follow, --ticket, --agent, --kind)',
+    '  send                       send a bus message (--from --to --kind --priority --body [--ticket])',
+    '  approve <hil-id>           approve a HIL request [--by <agent>]',
+    '  delegate <hil-id> --to em|architect',
+    '  resolve <hil-id> --decision approve|deny [--by <agent>]',
+    '  gate list                  list open HIL requests',
+    '  halt [--scope <scope>] [--reason <text>] [--by <agent>]',
+    '  resume <halt-id>',
+    '  breaker clear <signal>',
+    '  hook <event>               stdin JSON in, JSON out (e.g. hook pre-tool-use) [--fail-closed]',
+    '',
+    'flags:',
+    '  --json                     machine-readable output for any verb above',
   ].join('\n');
 }
 
-export interface CliInitResult {
-  message: string;
-  /** True when init refused because the repo was already bootstrapped — the
-   * caller (`runCli`) turns this into a non-zero exit on stderr, not a
-   * thrown exception, since it's a clean, expected outcome, not a crash. */
-  alreadyInitialised: boolean;
+function socketPathFor(cwd: string): string {
+  return discoverConfig({ cwd }).socketPath;
 }
 
-export function runCliInit(cwd: string = process.cwd()): CliInitResult {
-  const { repoRoot } = discoverConfig({ cwd });
-  try {
-    const result = runInit(repoRoot);
-    return {
-      message: `agile init: bootstrapped ${result.stateRoot} on branch ${result.branch} (${result.filesWritten.length} files)`,
-      alreadyInitialised: false,
-    };
-  } catch (err) {
-    if (err instanceof AlreadyInitialisedError) {
-      return { message: err.message, alreadyInitialised: true };
-    }
-    throw err;
-  }
+function reportError(err: unknown): number {
+  console.error(err instanceof Error ? err.message : String(err));
+  return 1;
 }
 
-export async function runCliDaemonStart(cwd: string = process.cwd()): Promise<string> {
-  const handle = await startDaemon({ cwd });
-  installShutdownSignals(handle);
-  return (
-    `agiled started: pid=${handle.lock.pid} ` +
-    `http=http://127.0.0.1:${handle.http.port} socket=${handle.rpc.socketPath} ` +
-    `state=${handle.config.stateRoot}`
-  );
-}
-
-export async function runCli(argv: string[]): Promise<number> {
-  const [command, sub] = argv;
+export async function runCli(argv: string[], cwd: string = process.cwd()): Promise<number> {
+  const json = argv.includes('--json');
+  const rest = argv.filter((a) => a !== '--json');
+  const [command, sub, ...restArgv] = rest;
 
   if (command === 'init') {
-    const { message, alreadyInitialised } = runCliInit();
+    const { message, alreadyInitialised } = runCliInit(cwd);
     if (alreadyInitialised) {
       console.error(message);
       return 1;
@@ -79,13 +81,80 @@ export async function runCli(argv: string[]): Promise<number> {
   }
 
   if (command === 'daemon' && sub === 'start') {
-    console.log(await runCliDaemonStart());
+    console.log(await runCliDaemonStart(cwd));
     // Foreground process: keep the event loop alive until shutdown signals fire.
     return new Promise(() => {});
   }
 
-  console.error(usage());
-  return command ? 1 : 0;
+  if (!command) {
+    console.error(usage());
+    return 0;
+  }
+
+  // Every remaining command is a client of the running daemon's socket.
+  const socketPath = socketPathFor(cwd);
+
+  try {
+    switch (command) {
+      case 'status':
+        return await runStatus(socketPath, json);
+
+      case 'tail': {
+        const args = parseArgs(rest.slice(1));
+        const eventsPath = join(discoverConfig({ cwd }).stateRoot, 'log', 'events.jsonl');
+        return await runTail({
+          eventsPath,
+          follow: args.options.follow !== undefined,
+          json,
+          filters: {
+            ticket: typeof args.options.ticket === 'string' ? args.options.ticket : undefined,
+            agent: typeof args.options.agent === 'string' ? args.options.agent : undefined,
+            kind: typeof args.options.kind === 'string' ? args.options.kind : undefined,
+          },
+        });
+      }
+
+      case 'send':
+        return await runSend(socketPath, parseArgs(rest.slice(1)), json);
+
+      case 'approve':
+        return await runApprove(socketPath, parseArgs(rest.slice(1)), json);
+
+      case 'delegate':
+        return await runDelegate(socketPath, parseArgs(rest.slice(1)), json);
+
+      case 'resolve':
+        return await runResolve(socketPath, parseArgs(rest.slice(1)), json);
+
+      case 'gate':
+        if (sub === 'list') return await runGateList(socketPath, json);
+        console.error(usage());
+        return 1;
+
+      case 'halt':
+        return await runHalt(socketPath, parseArgs(rest.slice(1)), json);
+
+      case 'resume':
+        return await runResume(socketPath, parseArgs(rest.slice(1)), json);
+
+      case 'breaker':
+        if (sub === 'clear') return await runBreakerClear(socketPath, parseArgs(restArgv), json);
+        console.error(usage());
+        return 1;
+
+      case 'hook': {
+        const args: ParsedArgs = parseArgs(rest.slice(1));
+        const { event, failClosed } = parseHookArgs(args);
+        return await runHook({ socketPath, event, failClosed });
+      }
+
+      default:
+        console.error(usage());
+        return 1;
+    }
+  } catch (err) {
+    return reportError(err);
+  }
 }
 
 if (import.meta.main) {
