@@ -143,7 +143,7 @@ Priority encodes dependency layer as well as importance: P0 tickets are v0-block
 
 ### Ticket: T009 Claude hook gate
 - **Priority:** P0
-- **Status:** In Progress
+- **Status:** In Review
 - **Owner:** sonnet:worker-T009
 - **Scope:** Depends on T008. Per-worktree `.claude/settings.json` generation with `PreToolUse`, `PostToolUse`, and `Stop` hooks calling `agile hook`. Pre-tool-use decision: deny with reason if a halt covers the agent's ticket; inject pending inbox as `additionalContext` (urgent → deny with the message as reason until acknowledged); heartbeat; deny raw `Read`/`Grep` over configurable size with "use read_summary"; deny when ticket budget exceeded; log every decision. Post-tool-use: truncate oversized tool results and record usage. Stop: drain low-priority inbox.
 - **Acceptance Criteria:** Live test: an engineer session under a global halt is blocked at its next tool call with the halt reason; a big read is denied and the model's output quotes the reason; an `answer` message appears in the model's context on the next tool call.
