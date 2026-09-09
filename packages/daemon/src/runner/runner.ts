@@ -126,7 +126,18 @@ export class Runner {
   async spawn(
     role: PermissionRole,
     ticketId: TicketId,
-    opts: { provider?: AcpProviderConfig } = {},
+    opts: {
+      provider?: AcpProviderConfig;
+      /**
+       * T024 seam: appended to the assembled brief as a "Handoff context"
+       * section — "starts in the same worktree with thread + handoff
+       * stanza as context" (design §10 "Quota-driven pause and handoff").
+       * `packages/daemon/src/handoff/**` is the only caller today; every
+       * other spawn path (assignReady, a fresh QA/reviewer spawn) omits it
+       * and the brief renders exactly as before this ticket.
+       */
+      extraContext?: string;
+    } = {},
   ): Promise<SpawnResult> {
     const { store, bus, repoRoot } = this.opts;
     const agentId = agentIdFor(role, ticketId);
@@ -209,6 +220,10 @@ export class Runner {
       agent: agentId,
       ticket,
     });
+    // T024 seam (see this method's `opts.extraContext` doc comment above).
+    const fullBrief = opts.extraContext
+      ? `${brief}\n\n## Handoff context\n\n${opts.extraContext}\n`
+      : brief;
 
     const handle = startAgentSession({
       store,
@@ -217,7 +232,7 @@ export class Runner {
       agentId,
       ticket: ticketId,
       worktreePath,
-      brief,
+      brief: fullBrief,
       cliBin: this.opts.cliBin,
       socketPath: this.opts.socketPath,
       gateService: this.opts.gateService,
