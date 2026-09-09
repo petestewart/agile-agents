@@ -14,14 +14,11 @@ import { describe, expect, test } from 'bun:test';
 import { existsSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import {
-  type DaemonHandle,
-  GateService,
-  StateStore,
-  runInit,
-  startDaemon,
-} from '@agile-agents/daemon';
 import { chromium } from 'playwright-core';
+import { type DaemonHandle, startDaemon } from '../daemon';
+import { GateService } from '../gates';
+import { runInit } from '../init';
+import { StateStore } from '../store';
 
 function findChromiumExecutable(): string | undefined {
   const override = process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE;
