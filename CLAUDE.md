@@ -16,6 +16,8 @@ Drive the plan with `/project` (manager) which launches `/pipeline` workers (one
 
 ## Commands
 
+Bun **1.3.11 or newer** is required (CI pins 1.3.11; verified on 1.4.2). Older Bun ignores `pathIgnorePatterns` in `bunfig.toml`, so `vendor/` and `dist/` run as tests and hundreds of tests fail — `bun upgrade` first if `bun --version` is older.
+
 Until T001 lands there is no code. After it:
 
 ```bash
