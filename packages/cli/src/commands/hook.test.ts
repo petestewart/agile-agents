@@ -108,6 +108,75 @@ describe('runHook', () => {
     expect(parsed).toEqual({ decision: 'allow', echoedTool: 'Read' });
   });
 
+  // T012 QA/review round: `AGILE_AGENT` (set by `writeClaudeSettings`'s
+  // `agentId` option) is forwarded into the payload as `agile_agent`, so
+  // `HookService.resolveAgentByCwd` can disambiguate a reviewer/engineer
+  // sharing one worktree.
+  test('forwards AGILE_AGENT as payload.agile_agent when set', async () => {
+    rpc = startRpcServer({
+      socketPath,
+      version: 'test',
+      stateRoot: dir,
+      startedAt: Date.now(),
+      extraMethods: {
+        'hook.pre_tool_use': (params) => ({
+          receivedAgent: (params as { agile_agent?: unknown }).agile_agent,
+        }),
+      },
+    });
+
+    const lines: string[] = [];
+    const original = console.log;
+    const originalEnv = process.env.AGILE_AGENT;
+    process.env.AGILE_AGENT = 'reviewer-1';
+    console.log = (msg: string) => lines.push(msg);
+    let code: number;
+    try {
+      code = await runHook({
+        socketPath,
+        event: 'pre-tool-use',
+        failClosed: true,
+        stdin: stdinWith({ tool: 'Edit' }),
+      });
+    } finally {
+      console.log = original;
+      if (originalEnv === undefined) Reflect.deleteProperty(process.env, 'AGILE_AGENT');
+      else process.env.AGILE_AGENT = originalEnv;
+    }
+    expect(code).toBe(0);
+    expect(JSON.parse(lines.join('\n'))).toEqual({ receivedAgent: 'reviewer-1' });
+  });
+
+  test('does not add agile_agent when AGILE_AGENT is unset', async () => {
+    rpc = startRpcServer({
+      socketPath,
+      version: 'test',
+      stateRoot: dir,
+      startedAt: Date.now(),
+      extraMethods: {
+        'hook.pre_tool_use': (params) => ({ hasAgileAgent: 'agile_agent' in (params as object) }),
+      },
+    });
+
+    const lines: string[] = [];
+    const original = console.log;
+    const originalEnv = process.env.AGILE_AGENT;
+    Reflect.deleteProperty(process.env, 'AGILE_AGENT');
+    console.log = (msg: string) => lines.push(msg);
+    try {
+      await runHook({
+        socketPath,
+        event: 'pre-tool-use',
+        failClosed: true,
+        stdin: stdinWith({ tool: 'Read' }),
+      });
+    } finally {
+      console.log = original;
+      if (originalEnv !== undefined) process.env.AGILE_AGENT = originalEnv;
+    }
+    expect(JSON.parse(lines.join('\n'))).toEqual({ hasAgileAgent: false });
+  });
+
   test('fail-open (--fail-open): a not-implemented stub yields a permissive {} decision, exit 0, warns on stderr', async () => {
     // No `hook.*` extraMethods wired — same shape as an RPC failure for any
     // other reason (unimplemented method, handler throw, etc).

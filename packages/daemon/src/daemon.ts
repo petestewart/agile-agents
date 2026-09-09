@@ -17,6 +17,7 @@ import { type HttpServerHandle, startHttpServer } from './http';
 import { type LockHandle, acquireLock } from './lock';
 import { buildOracleRpcMethods } from './oracle';
 import { type RpcServerHandle, startRpcServer } from './rpc';
+import { Runner, buildRunnerRpcMethods } from './runner';
 import { StateStore, buildStateRpcMethods } from './store';
 import { LiveRunner, ToolService, buildToolRpcMethods, loadToolRegistry } from './tools';
 
@@ -68,8 +69,22 @@ export async function startDaemon(options: DiscoverConfigOptions = {}): Promise<
           currentSprintId: () => pickCurrentSprint(store.listSprints())?.id,
         })
       : undefined;
+  // Agent runner (T012): worktree placement, brief assembly, ACP session
+  // wiring, and the periodic liveness/redelivery sweep — see runner/runner.ts.
+  const runner =
+    store && bus
+      ? new Runner({
+          store,
+          bus,
+          repoRoot: config.repoRoot,
+          socketPath: config.socketPath,
+          gateService,
+        })
+      : undefined;
+  runner?.startSweep();
+
   const extraMethods =
-    store && gateService && bus && toolService
+    store && gateService && bus && toolService && runner
       ? {
           ...buildStateRpcMethods(store),
           ...buildBusRpcMethods(bus),
@@ -83,6 +98,7 @@ export async function startDaemon(options: DiscoverConfigOptions = {}): Promise<
             }),
           ),
           ...buildToolRpcMethods(toolService),
+          ...buildRunnerRpcMethods(runner),
         }
       : undefined;
 
@@ -127,12 +143,22 @@ export async function startDaemon(options: DiscoverConfigOptions = {}): Promise<
       if (stopped) return;
       stopped = true;
       try {
+        // Stops the sweep and every live session's underlying process
+        // (graceful — same `stop()` path a `runner.stop` RPC call takes);
+        // does not wait on each session's own exit/crash cleanup, so this
+        // never blocks shutdown on a slow-to-die agent.
+        runner?.stopAll();
         await http.stop();
         await rpc.close();
         // Flush any pending deferred hook_decision/heartbeat commits (T009
         // review round, hot-path decision) — a graceful shutdown must not
         // lose a batch that hasn't hit its 5s debounce yet.
         await store?.flush();
+        // Cancels the deferred-flush timer outright (T012 QA round) — belt
+        // and suspenders alongside the flush above, since `flush()` only
+        // drains what's queued *now*, not anything a still-armed timer
+        // might schedule after this returns.
+        store?.close();
       } finally {
         lock.release();
       }

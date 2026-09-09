@@ -7,21 +7,28 @@
  * §7; wire shape verified against `design/spike-findings.md` §B and
  * `spike/spike-out/claude-default-perm-hooks.json`).
  *
- * Agent/ticket resolution (DESIGN-GAP, see `settings.ts`'s file header for
- * the full reasoning): the raw Claude hook payload's `cwd` field is matched
- * against every `Ticket.worktree` (resolved against `repoRoot`) via
- * `isPathInside` (reused from `permissions/command.ts` — the payload's cwd
- * can be the worktree root itself or a subdirectory Claude `cd`'d into).
- * Both sides are `realpath`d first (review round fix: a symlinked worktree
- * must match the ticket's real path either way it's addressed). Only a
- * ticket in a live status (`assigned`/`in_progress`/`in_review`/`in_qa`)
- * with an `assignee` counts as a match — a `done`/`stale`/`draft`/`ready`/
- * `blocked`/`paused` ticket's old worktree, or an unassigned one, must not
- * resolve as if an engineer were actively working it. The ticket's
- * `assignee` is the resolved agent id; role is fixed to `'engineer'` (this
- * ticket's settings/hook wiring only targets engineer worktrees per its
- * Scope and Acceptance Criteria — reviewer/QA wiring is out of scope here
- * and would need a role signal this payload shape has no field for).
+ * Agent/ticket resolution (T012 QA/review round rewrite — see
+ * `resolveAgentByCwd`): resolved primarily through the **agent registry**
+ * (`AgentRecord.worktree`/`.role`, `bus/agents/<id>.yaml`) rather than
+ * `Ticket.worktree` — the registry is what T012 actually sets correctly for
+ * every role, QA included (a fresh clone at `.worktrees/<TKT>-qa` that never
+ * matches `Ticket.worktree` at all, which is why QA hook calls were
+ * hard-denied before this round). `Ticket.worktree` is kept only as a
+ * fallback for a caller/test with no `AgentRecord` on file. Both sides of
+ * every path comparison are `realpath`d first (review round fix: a
+ * symlinked worktree must match either way it's addressed) via
+ * `isPathInside` (reused from `permissions/command.ts`). Role comes from
+ * the resolved `AgentRecord.role`, never inferred as `'engineer'` — critical
+ * when a reviewer and an engineer share one physical worktree (§12,
+ * CLAUDE.md v0 default): resolving by path alone would answer every hook
+ * call in that shared directory as if it were the engineer, silently
+ * defeating the reviewer's read-only tier-1 gate. When more than one
+ * registered agent's worktree contains `cwd` (exactly the shared-worktree
+ * case), the payload's `agile_agent` hint (set by `writeClaudeSettings`'s
+ * `agentId` option — see `settings.ts` — and forwarded by the CLI from
+ * `AGILE_AGENT`) disambiguates; with no hint, or a hint matching none of
+ * the candidates, resolution fails closed (`undefined`) rather than
+ * guessing.
  *
  * Review round fix (blocker 2): an unresolved `cwd` previously **failed
  * open** (`permissionDecision: 'allow'`) and logged nothing — a vendor hook
@@ -35,6 +42,7 @@ import { realpathSync, statSync } from 'node:fs';
 import { isAbsolute, resolve } from 'node:path';
 import type {
   AgentId,
+  AgentRecord,
   Message,
   Policy,
   Ticket,
@@ -44,6 +52,7 @@ import type {
 import type { Bus } from '../bus';
 import type { GateService } from '../gates';
 import { activeHaltsFor } from '../halts';
+import type { PermissionRole } from '../permissions';
 import { isPathInside } from '../permissions/command';
 import { NotFoundError, type StateStore, buildEvent } from '../store';
 import { decidePreToolUse } from './decide';
@@ -55,7 +64,7 @@ import {
   type HookLimits,
 } from './types';
 
-/** Raw Claude `PostToolUse` hook stdin payload. */
+/** Raw Claude `PostToolUse` hook stdin payload. `agile_agent` — see `ClaudePreToolUsePayload`'s doc comment (`hook/types.ts`): a disambiguation hint only, applied after cwd resolution, never trusted alone. */
 export interface ClaudePostToolUsePayload {
   hook_event_name?: string;
   cwd?: string;
@@ -63,15 +72,17 @@ export interface ClaudePostToolUsePayload {
   tool_name?: string;
   tool_input?: Record<string, unknown>;
   tool_response?: unknown;
+  agile_agent?: string;
   [key: string]: unknown;
 }
 
-/** Raw Claude `Stop` hook stdin payload. */
+/** Raw Claude `Stop` hook stdin payload. `agile_agent` — see `ClaudePreToolUsePayload`'s doc comment (`hook/types.ts`): a disambiguation hint only, applied after cwd resolution, never trusted alone. */
 export interface ClaudeStopPayload {
   hook_event_name?: string;
   cwd?: string;
   session_id?: string;
   stop_hook_active?: boolean;
+  agile_agent?: string;
   [key: string]: unknown;
 }
 
@@ -150,6 +161,18 @@ const LIVE_TICKET_STATUSES: readonly TicketStatus[] = [
 const UNRESOLVED_CWD_REASON = 'agile: cwd is not a registered ticket worktree';
 const UNBLOCK_GATE = 'unblock';
 
+/**
+ * Reads the disambiguation hint (T012 QA/review round — see this file's
+ * header) off the raw hook payload: `agile_agent`, a field only the CLI
+ * writes (from its own `process.env.AGILE_AGENT`, itself only set when
+ * `writeClaudeSettings`'s `agentId` option embedded `AGILE_AGENT=<id>` into
+ * the hook command) — Claude's own hook payload never carries this key, so
+ * it's `undefined` for every hook config this daemon didn't write itself.
+ */
+function agentHintFrom(payload: Record<string, unknown>): string | undefined {
+  return typeof payload.agile_agent === 'string' ? payload.agile_agent : undefined;
+}
+
 export class HookService {
   private readonly limits: HookLimits;
   private readonly fileSize: (path: string) => number | undefined;
@@ -165,34 +188,115 @@ export class HookService {
     this.now = options.now ?? (() => new Date());
   }
 
-  /** Finds the live-status ticket whose `worktree` (resolved against `repoRoot`, both sides `realpath`d) contains `cwd`, or `undefined` if none matches. */
+  /** Resolves an absolute worktree path, `undefined`-safe, relative to `repoRoot`. */
+  private absWorktree(worktree: string | undefined): string | undefined {
+    if (worktree === undefined) return undefined;
+    return isAbsolute(worktree) ? worktree : resolve(this.options.repoRoot, worktree);
+  }
+
+  /**
+   * Finds the live-status ticket whose `worktree` (resolved against
+   * `repoRoot`, both sides `realpath`d) contains `cwd` — the fallback path
+   * for a caller/test with no `AgentRecord` on file (see this file's header).
+   */
   private resolveTicketByCwd(cwd: string | undefined): Ticket | undefined {
     if (cwd === undefined) return undefined;
     const realCwd = safeRealpath(cwd);
     for (const ticket of this.store.listTickets()) {
       if (ticket.worktree === undefined || ticket.assignee === undefined) continue;
       if (!LIVE_TICKET_STATUSES.includes(ticket.status)) continue;
-      const worktreeAbs = isAbsolute(ticket.worktree)
-        ? ticket.worktree
-        : resolve(this.options.repoRoot, ticket.worktree);
-      if (isPathInside(realCwd, safeRealpath(worktreeAbs))) return ticket;
+      const worktreeAbs = this.absWorktree(ticket.worktree);
+      if (worktreeAbs !== undefined && isPathInside(realCwd, safeRealpath(worktreeAbs))) {
+        return ticket;
+      }
     }
     return undefined;
   }
 
-  /** Resolves `{agent, ticket}` from the payload's `cwd`, or `undefined` if this call can't be attributed to a known, live, assigned ticket — see this file's header DESIGN-GAP. */
-  private resolveAgentTicket(
-    cwd: string | undefined,
-  ): { agent: AgentId; ticket: TicketId } | undefined {
-    const ticket = this.resolveTicketByCwd(cwd);
-    if (ticket === undefined || ticket.assignee === undefined) return undefined;
-    return { agent: ticket.assignee as AgentId, ticket: ticket.id };
+  /**
+   * Resolves `{agent, ticket, role, worktreePath}` from the payload's `cwd`
+   * (registry-first — see this file's header) — or `undefined` if this call
+   * can't be attributed to a known, live agent. `agentHint` (the payload's
+   * `agile_agent` field, when the CLI forwarded `AGILE_AGENT`) disambiguates
+   * when more than one registered agent's worktree contains `cwd`.
+   */
+  /**
+   * Review round 3 (opus item 4): a stale registry entry (`last_seen`
+   * older than the bus's own liveness timeout — CLAUDE.md tunable "liveness
+   * timeout 5 min") must not win disambiguation, or even resolve alone.
+   * The liveness sweep (`runner.ts`/`bus.ts`) removes a dead agent's record
+   * eventually, but there's a real window between "the agent actually died"
+   * and "the sweep noticed" where a stale-but-still-on-disk record could
+   * otherwise authorize (or, worse, mis-disambiguate) a hook call that
+   * isn't really coming from that agent any more. A record with an
+   * unparseable `last_seen` is treated as stale too — fail safe, not "trust
+   * a value we can't even read".
+   */
+  private isStale(record: AgentRecord, now: Date): boolean {
+    const lastSeenMs = Date.parse(record.last_seen);
+    if (Number.isNaN(lastSeenMs)) return true;
+    return now.getTime() - lastSeenMs >= this.bus.getLivenessTimeoutMs();
   }
 
-  private async buildContext(cwd: string | undefined): Promise<HookDecisionContext | undefined> {
-    const resolved = this.resolveAgentTicket(cwd);
+  private resolveAgentByCwd(
+    cwd: string | undefined,
+    agentHint: string | undefined,
+  ): { agent: AgentId; ticket: TicketId; role: PermissionRole; worktreePath: string } | undefined {
+    if (cwd === undefined) return undefined;
+    const realCwd = safeRealpath(cwd);
+    const now = this.now();
+
+    const candidates = this.store.listAgents().filter(({ record }) => {
+      const worktreeAbs = this.absWorktree(record.worktree);
+      if (worktreeAbs === undefined || !isPathInside(realCwd, safeRealpath(worktreeAbs))) {
+        return false;
+      }
+      return !this.isStale(record, now);
+    });
+
+    if (candidates.length > 0) {
+      const chosen =
+        candidates.length === 1 ? candidates[0] : candidates.find((c) => c.id === agentHint);
+      // More than one candidate and no (matching) hint — fail closed rather
+      // than guess which agent is really calling (this file's header).
+      if (chosen === undefined) return undefined;
+      const ticketId = chosen.record.ticket;
+      if (ticketId === undefined) return undefined;
+      try {
+        const ticket = this.store.getTicket(ticketId);
+        if (!LIVE_TICKET_STATUSES.includes(ticket.status)) return undefined;
+      } catch {
+        return undefined;
+      }
+      const worktreePath = this.absWorktree(chosen.record.worktree) ?? this.options.repoRoot;
+      return {
+        agent: chosen.id as AgentId,
+        ticket: ticketId,
+        role: chosen.record.role ?? 'engineer',
+        worktreePath,
+      };
+    }
+
+    // Fallback: no registered agent's worktree matches — the older
+    // ticket-worktree-based resolution, engineer-only (no role signal
+    // exists on `Ticket` itself).
+    const ticket = this.resolveTicketByCwd(cwd);
+    if (ticket === undefined || ticket.assignee === undefined) return undefined;
+    return {
+      agent: ticket.assignee as AgentId,
+      ticket: ticket.id,
+      role: 'engineer',
+      worktreePath: this.absWorktree(ticket.worktree) ?? this.options.repoRoot,
+    };
+  }
+
+  private async buildContext(
+    cwd: string | undefined,
+    agentHint?: string,
+  ): Promise<HookDecisionContext | undefined> {
+    const resolved = this.resolveAgentByCwd(cwd, agentHint);
     if (resolved === undefined) return undefined;
-    const { agent, ticket: ticketId } = resolved;
+    const { agent, ticket: ticketId, role, worktreePath } = resolved;
 
     let ticket: Ticket;
     try {
@@ -202,24 +306,42 @@ export class HookService {
       throw err;
     }
 
-    const worktreePath = ticket.worktree
-      ? isAbsolute(ticket.worktree)
-        ? ticket.worktree
-        : resolve(this.options.repoRoot, ticket.worktree)
-      : this.options.repoRoot;
-
     // Liveness heartbeat rides on the pre-tool-use hook (§5 "Liveness":
     // "bus.heartbeat rides on the pre-tool-use hook") — done here so every
     // hook event (not only pre-tool-use) keeps the registry warm. Goes
     // straight through the store's deferred, 30s-coalesced `heartbeat` (T009
     // review round, hot-path decision) rather than `Bus.heartbeat` (which
     // always writes+commits) — this is the per-tool-call hot path.
-    await this.store.heartbeat(agent, { ticket: ticketId }, this.now);
+    //
+    // Round 4 (QA round 3 REJECT — a real regression): `StateStore.heartbeat`
+    // now ONLY ever touches `last_seen`/`ticket` and carries every other
+    // field (`role`/`worktree`/`session_id` included) over from the existing
+    // record verbatim — it used to reconstruct the whole record from just
+    // this call's `{ ticket }` patch, silently dropping `role`/`worktree`
+    // once `HEARTBEAT_COALESCE_MS` elapsed. That decayed a live reviewer or
+    // QA session (one tool call roughly every 30+ seconds is normal) to
+    // `resolveAgentByCwd`'s `role ?? 'engineer'` fallback mid-session — this
+    // call site needs no change for the fix (it already only ever passed
+    // `ticket`), the fix is entirely in `StateStore.heartbeat` so it can
+    // never recur from any caller, this one included.
+    //
+    // `StateStore.heartbeat` now throws `NotFoundError` for an agent with no
+    // registered `AgentRecord` at all (round 4: heartbeating an unregistered
+    // agent is a caller bug, never a reason to fabricate one) — but
+    // `resolveAgentByCwd`'s own backward-compat fallback (no `AgentRecord`,
+    // resolved via `Ticket.worktree`/`.assignee` alone) is a legitimate,
+    // tested path with no registry entry to heartbeat at all. That's not a
+    // bug here, just nothing to update — swallow only that specific error.
+    try {
+      await this.store.heartbeat(agent, { ticket: ticketId }, this.now);
+    } catch (err) {
+      if (!(err instanceof NotFoundError)) throw err;
+    }
 
     return {
       agent,
       ticket: ticketId,
-      role: 'engineer',
+      role,
       worktreePath,
       halts: activeHaltsFor(this.store, ticketId),
       inbox: this.bus.poll(agent),
@@ -302,7 +424,7 @@ export class HookService {
    * logs the decision (see this file's header).
    */
   async preToolUse(payload: ClaudePreToolUsePayload): Promise<PreToolUseHookOutput> {
-    const ctx = await this.buildContext(payload.cwd);
+    const ctx = await this.buildContext(payload.cwd, agentHintFrom(payload));
     if (ctx === undefined) {
       await this.logDecision(undefined, 'pre_tool_use', {
         decision: 'deny',
@@ -349,7 +471,7 @@ export class HookService {
    * oversized, tells the model so via `additionalContext`.
    */
   async postToolUse(payload: ClaudePostToolUsePayload): Promise<PostToolUseHookOutput> {
-    const ctx = await this.buildContext(payload.cwd);
+    const ctx = await this.buildContext(payload.cwd, agentHintFrom(payload));
     if (ctx === undefined) return {};
 
     const responseText =
@@ -414,7 +536,7 @@ export class HookService {
    * `StopHookOutput`'s DESIGN-GAP.
    */
   async stop(payload: ClaudeStopPayload): Promise<StopHookOutput> {
-    const ctx = await this.buildContext(payload.cwd);
+    const ctx = await this.buildContext(payload.cwd, agentHintFrom(payload));
     if (ctx === undefined) return {};
 
     const low = this.bus.poll(ctx.agent, { priority: 'low' });

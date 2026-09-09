@@ -54,6 +54,25 @@ export interface ClaudePreToolUsePayload {
   cwd?: string;
   tool_name?: string;
   tool_input?: Record<string, unknown>;
+  /**
+   * T012 review round — a disambiguation HINT only, never a credential.
+   * Only the `agile hook` CLI writes this field (forwarded from its own
+   * `process.env.AGILE_AGENT`, itself only set when `writeClaudeSettings`'s
+   * `agentId` option embedded `AGILE_AGENT=<id>` into the hook command —
+   * see `hook/settings.ts`); Claude's own hook payload never carries it.
+   *
+   * `HookService.resolveAgentByCwd` (`hook/service.ts`) uses this ONLY to
+   * pick among agent registry entries that have *already* matched `cwd` —
+   * it never resolves an agent by this field alone, and a hint naming an
+   * agent whose worktree doesn't contain `cwd` is simply not among the
+   * candidates it can pick from. This matters because the value is
+   * self-asserted by the calling process's own environment: a compromised
+   * or misconfigured agent process could set `AGILE_AGENT` to claim to be
+   * someone else, so it can only ever narrow an already-cwd-verified set
+   * of candidates, never substitute for that verification (review round 3,
+   * opus item 2).
+   */
+  agile_agent?: string;
   [key: string]: unknown;
 }
 

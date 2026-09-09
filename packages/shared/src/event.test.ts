@@ -40,8 +40,30 @@ describe('Event — §3/§4 log/events.jsonl', () => {
     'vendors_put',
     'entity_put',
     'entity_deleted',
+    // T012 QA round: dedicated kinds for observing an ACP tool_call and for
+    // flagging a usage_update that arrived before any sprint existed.
+    'tool_call',
+    'ledger_no_sprint',
   ])('%s is a valid EVENT_KINDS entry', (kind) => {
     expect(EVENT_KINDS).toContain(kind as (typeof EVENT_KINDS)[number]);
     expect(() => validateEvent({ ts: '2026-09-08T00:00:00Z', kind })).not.toThrow();
+  });
+
+  test('a tool_call event carries {agent, ticket, toolCallId, kind, title, status} in data', () => {
+    const event = validateEvent({
+      ts: '2026-09-08T00:00:00Z',
+      kind: 'tool_call',
+      ticket: 'TKT-0231',
+      agent: 'eng-0231',
+      data: { toolCallId: 't1', kind: 'edit', title: 'Edit foo.ts', status: 'completed' },
+    });
+    expect(event.ticket).toBe('TKT-0231');
+    expect(event.agent).toBe('eng-0231');
+    expect(event.data).toEqual({
+      toolCallId: 't1',
+      kind: 'edit',
+      title: 'Edit foo.ts',
+      status: 'completed',
+    });
   });
 });

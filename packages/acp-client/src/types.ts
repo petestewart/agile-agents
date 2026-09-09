@@ -153,6 +153,34 @@ export interface SpawnSessionOptions {
   eventLogMaxChars?: number;
   /** Test seam: override the stdout line-framer byte cap. */
   maxStdoutBufferBytes?: number;
+  /**
+   * Test seam (T012 QA/review round): inject the `node:child_process.spawn`
+   * implementation instead of using the real one. Defaults to the real
+   * `spawn`. Replaces the earlier pattern of `bun:test`'s
+   * `mock.module('node:child_process', ...)` in this package's own
+   * `session.test.ts` — that call replaces the module in Bun's *process-wide*
+   * module registry, not just for this file, so it silently stubbed out real
+   * process spawning for every other test file that happened to run in the
+   * same `bun test` invocation afterward (including this package's
+   * downstream consumers, e.g. `packages/daemon`'s own real-subprocess
+   * tests) — a correctness bug in the test suite, not a design tradeoff.
+   * Per-call injection has no such cross-file effect.
+   */
+  spawn?: typeof import('node:child_process').spawn;
+  /**
+   * Test seam (same rationale as `spawn` above): inject the `fs/promises`
+   * functions the `fs/read_text_file` / `fs/write_text_file` ACP handlers
+   * and workspace-confinement path resolution use. Defaults to the real
+   * `node:fs/promises`. Typed to the minimal shape this package actually
+   * calls (`string` paths, `'utf8'` encoding) rather than importing Node's
+   * full overloaded signatures, which a test fake need not — and cannot
+   * trivially — satisfy in full.
+   */
+  fsImpl?: {
+    readFile: (path: string, encoding: 'utf8') => Promise<string>;
+    writeFile: (path: string, data: string, encoding: 'utf8') => Promise<void>;
+    realpath: (path: string) => Promise<string>;
+  };
 }
 
 /**

@@ -11,12 +11,21 @@
  *   4. big raw Read/Grep (over `limits.maxReadBytes`/`maxGrepBytes`) -> deny
  *      "use read_summary(path, question)".
  *   5. budget: `spent_tokens >= ceiling_tokens` -> deny.
- *   6. command-level never-without-human via `checkNeverWithoutHuman`
- *      (reused from T010's permissions module — see this package's
- *      `permissions/index.ts` file header for why command-level
- *      enforcement is primary *here*, not in the ACP responder) for a
- *      `Bash` `tool_input.command` -> hil verdict maps to `ask`, deny maps
- *      to `deny`.
+ *   6. role × tool policy via `decidePermission`, T010's whole pipeline
+ *      reused whole (classify -> never-without-human -> role table — see
+ *      `roleToolVerdict`'s doc comment below) for every edit-kind tool
+ *      (`Edit`/`Write`/`MultiEdit`/`NotebookEdit`, or any tool reporting
+ *      `tool_input.kind === 'edit'`) and for `Bash` -> `hil` verdict maps
+ *      to `ask`, `deny` maps to `deny`, `allow` falls through to step 7.
+ *      Round 3 (opus item 1) replaced a Bash-only `checkNeverWithoutHuman`
+ *      branch here: a reviewer's `Edit`/`Write`, and a reviewer's `Bash`
+ *      running anything outside the read-only allow-list, used to reach
+ *      this hook's step 7 `allow` untouched, because only ACP's separate
+ *      "best-effort" permission layer (`permissions/index.ts`) ever
+ *      consulted the role table — this tier (the actual enforcement
+ *      backstop per that module's own file header) did not. Every role's
+ *      command/edit policy — including the engineer's (git + repo scripts,
+ *      per §14) — is now enforced here too, not only at ACP's tier 2.
  *   7. else allow.
  *
  * Review round fix (blocker 1): tier 3 (normal inbox) used to *return*
@@ -58,8 +67,13 @@
  * falls through to the lower tiers.
  */
 
-import { checkNeverWithoutHuman } from '../permissions';
-import type { PermissionRequest } from '../permissions';
+import { decidePermission } from '../permissions';
+import type {
+  AcpPermissionOption,
+  AcpPermissionRequestParams,
+  AcpToolCall,
+  AcpToolKind,
+} from '../permissions';
 import type { ClaudePreToolUsePayload, HookDecision, HookDecisionContext } from './types';
 
 /** §5 "Delivery by priority": normal inbox is injected, capped so a burst of messages can't blow past the message-body-cap spirit for the whole context injection. Pointer, not payload — bodies are already ≤800 chars each (`MESSAGE_BODY_MAX_CHARS`), this just bounds how many get concatenated. */
@@ -93,6 +107,92 @@ function buildAdditionalContext(messages: HookDecisionContext['inbox']): string 
     total += line.length + 1;
   }
   return lines.join('\n');
+}
+
+// ---------------------------------------------------------------------------
+// Role × tool policy (review round 3, opus item 1) — reuses T010's whole
+// `decidePermission` pipeline (classify -> never-without-human -> role
+// table) instead of the old Bash-only `checkNeverWithoutHuman` branch. See
+// this file's header for why: reviewer/QA edits and a reviewer's `Bash`
+// both used to sail through to step 7's `allow` because the role table was
+// never consulted for this hook at all — only ACP's separate, "best-effort"
+// permission layer (`permissions/index.ts`) ever ran it.
+// ---------------------------------------------------------------------------
+
+/** Claude's own tool names for a file edit — `NotebookEdit` edits a `notebook_path`, the rest a `file_path`/`path`. */
+const EDIT_TOOL_NAMES = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit']);
+
+/** Synthetic two-option menu handed to `decidePermission` (T010 always picks between `allow_once`/`reject_once`, §14: "never `allow_always`") — a Claude hook call carries no ACP `options` of its own, so this fakes just enough of one for the function to run; the `optionId` it ends up picking is discarded below, only `decision.kind`/`reason` matter here. */
+const SYNTHETIC_OPTIONS: AcpPermissionOption[] = [
+  { optionId: 'allow', kind: 'allow_once' },
+  { optionId: 'deny', kind: 'reject_once' },
+];
+
+/**
+ * Maps a Claude hook tool call onto the ACP `AcpToolKind` `decidePermission`
+ * classifies on. `undefined` for anything this policy doesn't (yet) gate at
+ * this tier — Read/Grep (handled by tier 4's size gate and otherwise always
+ * allowed for every role) and every other built-in (Glob, Task, WebFetch,
+ * …) fall through unchanged to step 7's `allow`, exactly as before this
+ * round; only edit-kind tools and `Bash` are newly routed through the role
+ * table.
+ */
+function claudeToolKind(payload: ClaudePreToolUsePayload): AcpToolKind | undefined {
+  if (payload.tool_name !== undefined && EDIT_TOOL_NAMES.has(payload.tool_name)) return 'edit';
+  // Generic escape hatch (review instruction: "any tool with kind: edit") —
+  // a custom/MCP tool that reports its own ACP-style kind on `tool_input`;
+  // none of Claude's built-in tools do this today, but nothing here should
+  // require a hardcoded name list to be exhaustive.
+  if (payload.tool_input?.kind === 'edit') return 'edit';
+  if (payload.tool_name === 'Bash') return 'execute';
+  return undefined;
+}
+
+/** `rawInput` for the synthetic `AcpToolCall` — just enough of Claude's `tool_input` for `classifyPermissionRequest` to read a command/path back out. */
+function claudeToolRawInput(
+  kind: AcpToolKind,
+  payload: ClaudePreToolUsePayload,
+): Record<string, unknown> {
+  const input = payload.tool_input ?? {};
+  if (kind === 'execute') {
+    return typeof input.command === 'string' ? { command: input.command } : {};
+  }
+  const path = input.file_path ?? input.path ?? input.notebook_path;
+  return typeof path === 'string' ? { file_path: path } : {};
+}
+
+/**
+ * The role × tool verdict for an edit-kind tool or `Bash`, or `undefined`
+ * when this tool isn't one of those (the caller falls through to step 7).
+ * `decidePermission`'s three outcomes map onto `HookVerdict` as: `allow` ->
+ * fall through to the same `allow` step 7 would give anyway (`undefined`
+ * here, not a duplicate `{decision:'allow'}`); `deny` -> `deny`; `hil` ->
+ * `ask` (this hook's own vocabulary for "needs a human", translated into a
+ * durable HIL request by `service.ts`).
+ */
+function roleToolVerdict(
+  ctx: HookDecisionContext,
+  payload: ClaudePreToolUsePayload,
+): HookDecision | undefined {
+  const kind = claudeToolKind(payload);
+  if (kind === undefined) return undefined;
+
+  const toolCall: AcpToolCall = {
+    kind,
+    title: payload.tool_name,
+    rawInput: claudeToolRawInput(kind, payload),
+  };
+  const request: AcpPermissionRequestParams = { toolCall, options: SYNTHETIC_OPTIONS };
+  const decision = decidePermission({
+    role: ctx.role,
+    ticket: ctx.ticket,
+    worktreePath: ctx.worktreePath,
+    request,
+  });
+
+  if (decision.kind === 'allow') return undefined;
+  if (decision.kind === 'deny') return { decision: 'deny', reason: decision.reason };
+  return { decision: 'ask', reason: decision.reason };
 }
 
 /** Tiers 4–6: the gate verdict, computed independently of any normal-priority inbox message pending — see this file's header, review round fix (blocker 1). */
@@ -130,31 +230,13 @@ function computeGateVerdict(
     };
   }
 
-  // 6. Command-level never-without-human, for Bash only (the only tool
-  // this hook payload carries a real command string for).
-  if (payload.tool_name === 'Bash') {
-    const command = payload.tool_input?.command;
-    if (typeof command === 'string' && command.length > 0) {
-      const classified: PermissionRequest = {
-        toolClass: 'execute',
-        command,
-        locationsUsed: false,
-        titleFallbackUsed: false,
-        raw: { toolCall: { kind: 'execute', title: 'Bash', rawInput: { command } }, options: [] },
-      };
-      const verdict = checkNeverWithoutHuman(classified, {
-        role: ctx.role,
-        worktreePath: ctx.worktreePath,
-        ticket: ctx.ticket,
-      });
-      if (verdict?.action === 'hil') {
-        return { decision: 'ask', reason: verdict.reason };
-      }
-      if (verdict?.action === 'deny') {
-        return { decision: 'deny', reason: verdict.reason };
-      }
-    }
-  }
+  // 6. Role × tool policy (review round 3, opus item 1) — reuses T010's
+  // whole `decidePermission` pipeline for every edit-kind tool and for
+  // `Bash`, replacing the old Bash-only `checkNeverWithoutHuman` branch.
+  // See `roleToolVerdict`'s doc comment above for the mapping; `undefined`
+  // means this tool isn't gated at this tier and falls through to step 7.
+  const roleTool = roleToolVerdict(ctx, payload);
+  if (roleTool !== undefined) return roleTool;
 
   // 7. Else allow.
   return { decision: 'allow' };

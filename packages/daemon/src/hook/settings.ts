@@ -72,6 +72,17 @@ export interface RenderClaudeSettingsOptions {
   agileBin: string;
   /** When set, prefixed as `AGILE_SOCKET_PATH=<socketPath> ` onto every hook command — see file header. */
   socketPath?: string;
+  /**
+   * T012 QA/review round: when set, prefixed as `AGILE_AGENT=<agentId> `
+   * onto every hook command (alongside `AGILE_SOCKET_PATH`, when both are
+   * given). The CLI (`agile hook <event>`) forwards this env var as the
+   * payload's `agile_agent` field; `hook/service.ts`'s `HookService`
+   * resolves it as a disambiguation hint when more than one registered
+   * agent's worktree contains the hook's `cwd` — the reviewer/engineer
+   * shared-worktree case (§12, CLAUDE.md v0 default). Without it, that case
+   * fails closed rather than guessing which agent is really calling.
+   */
+  agentId?: string;
   /** Claude's own per-hook-invocation timeout, in seconds. Default 5 — must exceed the CLI's 2000ms RPC deadline (`DEFAULT_HOOK_TIMEOUT_MS`) so a slow daemon always yields a printed fail-closed deny instead of a killed hook process. */
   timeoutSeconds?: number;
 }
@@ -83,7 +94,11 @@ const HOOK_EVENTS: ReadonlyArray<{ claudeEvent: ClaudeHookEventName; agileEvent:
 ];
 
 function hookCommand(options: RenderClaudeSettingsOptions, agileEvent: string): string {
-  const envPrefix = options.socketPath ? `AGILE_SOCKET_PATH=${options.socketPath} ` : '';
+  const envAssignments = [
+    options.socketPath ? `AGILE_SOCKET_PATH=${options.socketPath}` : undefined,
+    options.agentId ? `AGILE_AGENT=${options.agentId}` : undefined,
+  ].filter((a): a is string => a !== undefined);
+  const envPrefix = envAssignments.length > 0 ? `${envAssignments.join(' ')} ` : '';
   return `${envPrefix}${options.agileBin} hook ${agileEvent}`;
 }
 

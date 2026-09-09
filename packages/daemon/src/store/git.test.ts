@@ -94,4 +94,14 @@ describe('commitPaths', () => {
     const second = commitPaths(repo, ['a.txt'], 'no-op');
     expect(second).toBeNull();
   });
+
+  // T012 QA round: a debounced deferred-commit timer elsewhere (store.ts)
+  // can fire after its target worktree has been removed. Rather than
+  // throwing `fatal: not a git repository`, this degrades to the same
+  // "nothing to commit" no-op as an unchanged path list.
+  test('no-ops instead of throwing when stateRoot no longer exists', () => {
+    writeFileSync(join(repo, 'a.txt'), 'a');
+    rmSync(repo, { recursive: true, force: true });
+    expect(commitPaths(repo, ['a.txt'], 'add a')).toBeNull();
+  });
 });
