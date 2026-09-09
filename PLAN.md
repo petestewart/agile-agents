@@ -359,12 +359,12 @@ Priority encodes dependency layer as well as importance: P0 tickets are v0-block
 
 ### Ticket: T033 Deflake subprocess-timing tests under full-suite load
 - **Priority:** P2
-- **Status:** In Progress
+- **Status:** In Review
 - **Owner:** sonnet:worker-T033
 - **Scope:** Depends on T009, T012. With ~1780 tests, one of two subprocess-timing tests fails intermittently in a full `bun test` run and passes 3x in isolation: `hook/rpc.test.ts` "`agile hook pre-tool-use` prints the daemon reply verbatim" and `runner/runner.test.ts` "kill -9 on the recorded pid … within one liveness interval". Make both robust to load (wait on readiness signals instead of fixed timeouts, inject the liveness interval, give the CLI subprocess a deterministic socket-ready wait) without weakening what they assert; never skip or quarantine.
 - **Acceptance Criteria:** 10 consecutive full-suite runs with 0 failures.
 - **Validation Steps:** `for i in $(seq 10); do bun test; done` on the integration head.
-- **Notes:** Observed at the T024 merge (`8a7f56e`): 1776 pass / 1 fail, a different test each run; both green 3x in isolation.
+- **Notes:** Observed at the T024 merge (`8a7f56e`): 1776 pass / 1 fail, a different test each run; both green 3x in isolation. Branch `T033-deflake` (`60a15a1`): hook CLI test had an undrained `stderr` pipe racing `proc.exited` (`EBADF epoll_ctl` under fd pressure, 2/7 pre-fix full runs) — fixed by draining stdout/stderr/exit together; the runner crash-recovery test never reproduced in 17 observations and was left untouched; 10 consecutive post-fix full runs green at 1777. Round 1 review + QA running.
 
 ## 8. Open Questions
 
