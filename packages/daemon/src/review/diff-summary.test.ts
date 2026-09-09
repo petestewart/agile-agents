@@ -102,6 +102,31 @@ describe('runDiffSummary', () => {
     expect(output.hunks[0]?.path).toBe('a.ts');
   });
 
+  test('degrades gracefully and marks truncated when the summary would exceed the token cap', () => {
+    // Many new files each declaring several functions — enough distinct
+    // symbols/files that the untruncated JSON blows well past the cap.
+    for (let i = 0; i < 60; i++) {
+      const lines = Array.from(
+        { length: 20 },
+        (_, j) => `export function fn${i}_${j}() {\n  return ${j};\n}\n`,
+      ).join('\n');
+      writeFileSync(join(repo, `file${i}.ts`), lines);
+    }
+    git(['add', '-A']);
+    git(['commit', '-q', '-m', 'many files']);
+
+    const output = runDiffSummary({
+      worktree: repo,
+      base: 'integration',
+      head: 'tkt/0001-fixture',
+      repoRoot: repo,
+    });
+
+    expect(output.truncated).toBe(true);
+    expect(output.hunks).toEqual([]);
+    expect(JSON.stringify(output).length).toBeLessThan(20_000);
+  });
+
   test('throws DiffSummaryError on an invalid base ref', () => {
     expect(() =>
       runDiffSummary({
