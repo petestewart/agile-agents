@@ -39,16 +39,20 @@ export interface VendorFsImpl {
 }
 
 /**
- * §14 "Permissions per role", Write column: Reviewer = "nothing". This is
- * this ticket's acceptance criterion ("a reviewer on Grok cannot write")
- * and the only row this module enforces categorically — Engineer Write
- * ("own worktree only") and QA Write ("own test files in the env") both
- * stay unscoped here (their finer-grained containment is out of this
- * ticket's scope; nothing about Grok changes what an engineer or QA may
- * write, only what a *reviewer* may).
+ * §14 "Permissions per role", Write column: Reviewer = "nothing", Architect
+ * = "oracle (write guard), tickets, rules" — but, per `policy-tables.ts`'s
+ * `architectVerdict`, only ever via the MCP verbs, never a raw file write;
+ * a Grok architect's client-fs `writeFile` is exactly the raw path that
+ * cell doesn't cover, so it denies the same way a reviewer's does (T031).
+ * This was this ticket's original acceptance criterion ("a reviewer on
+ * Grok cannot write") and is the only row this module enforces
+ * categorically — Engineer Write ("own worktree only") and QA Write ("own
+ * test files in the env") both stay unscoped here (their finer-grained
+ * containment is out of scope; nothing about Grok changes what an
+ * engineer or QA may write, only what a reviewer or architect may).
  */
 export function canWriteViaClientFs(role: PermissionRole): boolean {
-  return role !== 'reviewer';
+  return role !== 'reviewer' && role !== 'architect';
 }
 
 /**

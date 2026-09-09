@@ -139,6 +139,13 @@ describe('Runner.spawn', () => {
     expect(agentIdFor('qa', 'TKT-0231')).toBe('qa-0231');
   });
 
+  // T031: the architect is a singleton — one bus address regardless of
+  // which ticket it's currently focused on (design §15).
+  test('architect agent id is the literal singleton "architect", regardless of the ticket', () => {
+    expect(agentIdFor('architect', 'TKT-0231')).toBe('architect');
+    expect(agentIdFor('architect', 'TKT-9999')).toBe('architect');
+  });
+
   // Timeout justification: 90s bounds one real `bun <fake-agent.ts>` spawn
   // plus registration and the final teardown wait, with generous headroom
   // for this sandbox's measured worst-case subprocess-start latency under
@@ -231,6 +238,64 @@ describe('Runner.spawn', () => {
     runner.stop('reviewer-0231');
     runner.stop('qa-0231');
     await Promise.all([eng.exited, rev.exited, qa.exited]);
+  }, 90000);
+
+  // T031: the architect's checkout must not hold `integration`'s own ref —
+  // `MergeOwner.onTicketDone` needs its own dedicated worktree on
+  // `integration` to merge tickets into (`merge/owner.ts`'s
+  // `ensureNamedWorktree`), and a branch-checked-out architect worktree
+  // would permanently block every merge the moment it existed (this is
+  // exactly the failure the offline e2e reproduced before `ensureArchitect
+  // Worktree` switched to `git worktree add --detach`).
+  test('spawn(architect, TKT) places a detached checkout of integration at .worktrees/architect, touches no ticket state, and does not block a later merge worktree on integration', async () => {
+    const runner = trackedRunner({
+      store,
+      bus,
+      repoRoot: repo,
+      spawn: fakeSpawn({ steps: [{ type: 'hang' }] }),
+    });
+    const before = store.getTicket('TKT-0231');
+
+    const result = await runner.spawn('architect', 'TKT-0231');
+    expect(result.agentId).toBe('architect');
+    expect(result.worktree).toBe(join(repo, '.worktrees', 'architect'));
+    expect(existsSync(join(result.worktree, '.claude', 'settings.json'))).toBe(true);
+
+    // No engineer-only side effects leaked onto the ticket the architect
+    // happened to be spawned "for" (its brief/ledger context, not a claim
+    // on the ticket).
+    const after = store.getTicket('TKT-0231');
+    expect(after.status).toBe(before.status);
+    expect(after.assignee).toBe(before.assignee);
+    expect(after.worktree).toBe(before.worktree);
+
+    const agent = store.getAgent('architect');
+    expect(agent.role).toBe('architect');
+    expect(agent.worktree).toBe(result.worktree);
+
+    // Detached, not branch-checked-out — `git worktree list --porcelain`
+    // reports `detached` instead of a `branch` line for this worktree.
+    const list = Bun.spawnSync(['git', 'worktree', 'list', '--porcelain'], {
+      cwd: repo,
+      stdout: 'pipe',
+    }).stdout.toString();
+    const architectEntry = list.split('\n\n').find((block) => block.includes(result.worktree));
+    expect(architectEntry).toContain('detached');
+
+    // `integration` is still free for a real merge-style dedicated
+    // worktree to check out (the branch itself, not detached) — this is
+    // exactly what `MergeOwner.onTicketDone` needs and what a
+    // branch-checked-out architect worktree would have permanently blocked.
+    const mergeWorktree = join(repo, '.worktrees', 'integration-merge-check');
+    const mergeCheck = Bun.spawnSync(['git', 'worktree', 'add', mergeWorktree, 'integration'], {
+      cwd: repo,
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+    expect(mergeCheck.exitCode).toBe(0);
+
+    runner.stop('architect');
+    await result.exited;
   }, 90000);
 
   // T022 round 2 review fix (N1): `ticket.routing.vendor` must actually

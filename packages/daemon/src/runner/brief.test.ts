@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { FIXTURE_KB_FACT, FIXTURE_TICKET } from '../briefs/fixtures';
+import { FIXTURE_KB_FACT, FIXTURE_ORACLE_ENTRY, FIXTURE_TICKET } from '../briefs/fixtures';
 import { runInit } from '../init';
 import { StateStore } from '../store';
 import { assembleBrief } from './brief';
@@ -74,6 +74,23 @@ describe('assembleBrief', () => {
     });
     expect(text).toContain('TKT-0231');
     expect(text).toContain('qa-231');
+  });
+
+  test('architect brief renders and resolves oracle_refs to OracleEntry bodies (T031)', async () => {
+    await store.putOracleEntry(
+      FIXTURE_ORACLE_ENTRY,
+      'JWT chosen for statelessness across the edge fleet.',
+    );
+    const text = assembleBrief({
+      store,
+      stateRoot,
+      role: 'architect',
+      agent: 'architect',
+      ticket: FIXTURE_TICKET,
+    });
+    expect(text).toContain('TKT-0231');
+    expect(text).toContain('DEC-0042');
+    // The stale ref (SPEC-auth-003, never seeded here) is skipped, not fatal.
   });
 
   test('a stale kb_ref is skipped rather than failing the whole brief', () => {

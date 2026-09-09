@@ -74,6 +74,39 @@ export interface DoneMerger {
 }
 
 /**
+ * The slice of `Runner` `ensureArchitectSpawned` needs (T031) — the same
+ * `isLive`/`spawn` shape `QaSpawner`/`ReviewRunner` above already use for
+ * their own roles.
+ */
+export interface ArchitectSpawner {
+  isLive(agentId: AgentId): boolean;
+  spawn(role: 'architect', ticket: TicketId): Promise<unknown>;
+}
+
+/**
+ * Ensures the architect's singleton session (`agentIdFor('architect', ...)`
+ * — one per repo, §15) is live before its MCP verbs are invoked for
+ * `ticket`'s discovery cycle, spawning it once and reusing it for every
+ * later discovery this process raises (T031 — the hand-off `run.ts`'s
+ * `runScriptedDiscovery` used to skip entirely: it called
+ * `registerArchitectTools` in-process with no spawned agent at all, unlike
+ * every other role's own scripted turn, which drives its verbs against a
+ * real `Runner.spawn`ed session over the fake ACP transport — see
+ * `fake-driver.ts`'s own header). Returns whether a spawn actually
+ * happened, for logging/tests — mirrors `advanceReviewRequests`/
+ * `advanceQaSpawns`'s own `isLive`-before-`spawn` idiom.
+ */
+export async function ensureArchitectSpawned(
+  runner: ArchitectSpawner,
+  ticket: TicketId,
+): Promise<boolean> {
+  const agentId = agentIdFor('architect', ticket);
+  if (runner.isLive(agentId)) return false;
+  await runner.spawn('architect', ticket);
+  return true;
+}
+
+/**
  * Reads every unread `review_request` message off each ticket's reviewer
  * inbox and starts (or re-prompts) the review round for it, acking the
  * message once handled. `seen` dedupes by `${ticket}:${message.id}` so a

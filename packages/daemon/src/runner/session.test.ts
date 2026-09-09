@@ -11,6 +11,7 @@ import {
 import type { Ticket } from '@agile-agents/shared';
 import { validateSprint, validateTicket } from '@agile-agents/shared';
 import { Bus } from '../bus';
+import { GateService } from '../gates';
 import { runInit } from '../init';
 import { ForeignPiExtensionError } from '../pi';
 import { StateStore } from '../store';
@@ -662,6 +663,170 @@ describe('T027: per-vendor session wiring (Cursor ask mode, Grok client-fs gate,
     const log = readFileSync(logFile, 'utf8');
     expect(log).toContain('"method":"authenticate"');
     expect(log).toContain('cursor_login');
+
+    handle.stop();
+    await handle.exited;
+  }, 90000);
+});
+
+describe('T031: architect session (plan mode -> approve_plan gate; edits/exec denied)', () => {
+  /** Makes the ticket look "not live" (§14 doesn't scope the architect to one ticket's status) — same shape `makeTicket` builds, but architect specifics don't depend on it either way. */
+  function architectTicket(): Ticket {
+    return makeTicket({ status: 'ready', assignee: undefined, worktree: undefined });
+  }
+
+  test('a Claude architect gets modeId "plan"; ExitPlanMode ("Approve Plan") is routed to the approve_plan gate and logged in the permission log', async () => {
+    await store.putTicket(architectTicket(), { by: 'test' });
+    await store.putPolicy({
+      gates: {
+        approve_plan: 'em',
+        approve_decision: 'human',
+        sprint_review: 'human',
+        unblock: 'human',
+        demo: 'human',
+      },
+      breaker_signals: [],
+    });
+    const gateService = new GateService(store, {
+      delegate: () => ({ decision: 'approve', by: 'em', rationale: 'test delegate' }),
+    });
+
+    const resultFile = join(scratch, 'plan-approval-result.json');
+    const sink: { options?: SpawnSessionOptions } = {};
+    const handle = startTrackedSession({
+      store,
+      bus,
+      role: 'architect',
+      agentId: 'architect',
+      ticket: 'TKT-0231',
+      worktreePath: worktree,
+      brief: 'plan the sprint',
+      currentSprintId: () => 'S-01',
+      gateService,
+      provider: {
+        ...fakeProvider({
+          steps: [
+            {
+              type: 'request_permission',
+              toolCall: { toolCallId: 'plan-1', kind: 'switch_mode', title: 'Approve Plan' },
+              options: [
+                { optionId: 'allow', kind: 'allow_once' },
+                { optionId: 'reject', kind: 'reject_once' },
+              ],
+              resultFile,
+            },
+            { type: 'end_turn' },
+          ],
+        }),
+        defaultModeId: 'default',
+      },
+      spawn: (opts) => {
+        sink.options = opts;
+        return realSpawnSession(opts);
+      },
+    });
+
+    await handle.session.initialized;
+    expect(sink.options?.modeId).toBe('plan');
+
+    await waitFor(() => existsSync(resultFile));
+    const result = JSON.parse(readFileSync(resultFile, 'utf8')) as {
+      outcome: { outcome: string; optionId?: string };
+    };
+    expect(result.outcome).toEqual({ outcome: 'selected', optionId: 'allow' });
+
+    await waitFor(() =>
+      store
+        .listEvents()
+        .some(
+          (e) =>
+            e.kind === 'hook_decision' && (e.data as { decision?: string })?.decision === 'allow',
+        ),
+    );
+    const decisionEvent = store
+      .listEvents()
+      .find(
+        (e) =>
+          e.kind === 'hook_decision' && (e.data as { decision?: string })?.decision === 'allow',
+      );
+    expect((decisionEvent?.data as { role?: string })?.role).toBe('architect');
+
+    handle.stop();
+    await handle.exited;
+  }, 90000);
+
+  test('an architect edit is denied and a Bash exec outside the read-only allow-list is denied, both via the normal permission log', async () => {
+    await store.putTicket(architectTicket(), { by: 'test' });
+    const editResultFile = join(scratch, 'architect-edit-result.json');
+    const execResultFile = join(scratch, 'architect-exec-result.json');
+    const handle = startTrackedSession({
+      store,
+      bus,
+      role: 'architect',
+      agentId: 'architect',
+      ticket: 'TKT-0231',
+      worktreePath: worktree,
+      brief: 'plan the sprint',
+      currentSprintId: () => 'S-01',
+      provider: fakeProvider({
+        steps: [
+          {
+            type: 'request_permission',
+            toolCall: {
+              toolCallId: 'edit-1',
+              kind: 'edit',
+              rawInput: { file_path: `${worktree}/src/a.ts` },
+            },
+            options: [
+              { optionId: 'allow', kind: 'allow_once' },
+              { optionId: 'reject', kind: 'reject_once' },
+            ],
+            resultFile: editResultFile,
+          },
+          {
+            type: 'request_permission',
+            toolCall: {
+              toolCallId: 'exec-1',
+              kind: 'execute',
+              rawInput: { command: 'npm publish' },
+            },
+            options: [
+              { optionId: 'allow', kind: 'allow_once' },
+              { optionId: 'reject', kind: 'reject_once' },
+            ],
+            resultFile: execResultFile,
+          },
+          { type: 'end_turn' },
+        ],
+      }),
+    });
+
+    await handle.session.initialized;
+    await waitFor(() => existsSync(editResultFile) && existsSync(execResultFile));
+    const editResult = JSON.parse(readFileSync(editResultFile, 'utf8')) as {
+      outcome: { outcome: string; optionId?: string };
+    };
+    const execResult = JSON.parse(readFileSync(execResultFile, 'utf8')) as {
+      outcome: { outcome: string; optionId?: string };
+    };
+    expect(editResult.outcome).toEqual({ outcome: 'selected', optionId: 'reject' });
+    expect(execResult.outcome).toEqual({ outcome: 'selected', optionId: 'reject' });
+
+    await waitFor(
+      () =>
+        store
+          .listEvents()
+          .filter(
+            (e) =>
+              e.kind === 'hook_decision' && (e.data as { role?: string })?.role === 'architect',
+          ).length >= 2,
+    );
+    const denials = store
+      .listEvents()
+      .filter(
+        (e) => e.kind === 'hook_decision' && (e.data as { role?: string })?.role === 'architect',
+      );
+    expect(denials.every((e) => (e.data as { decision?: string }).decision === 'deny')).toBe(true);
 
     handle.stop();
     await handle.exited;

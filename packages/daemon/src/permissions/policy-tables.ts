@@ -650,6 +650,55 @@ function qaVerdict(classified: PermissionRequest): PolicyVerdict {
   }
 }
 
+/**
+ * Architect role table (T031 — design §14 Architect row: "oracle, tickets,
+ * KB" read; "oracle (write guard), tickets, rules" write; "none" run;
+ * "none" network).
+ *
+ * The write cell is real but never reaches this ACP layer at all: every
+ * architect write (`decision_publish`, `ticket_create`/`refine`) is an MCP
+ * verb, dispatched over the separate stdio bridge (`agile mcp --agent
+ * architect`) straight to `architect/verbs.ts`'s own write-guarded
+ * handlers — the same reason `engineerVerdict`'s doc comment notes reads
+ * are "never gated by ACP anyway" for tool calls that don't go through the
+ * model's raw edit/exec primitives. So a `session/request_permission`
+ * *edit* here can only mean the model tried to write a file directly
+ * (`Write`/`Edit`/a client-fs write) — exactly what the architect brief's
+ * "Never run code or touch a worktree" forbids — and always denies, with
+ * no role-specific carve-out the way the engineer's own-worktree check has
+ * one.
+ *
+ * Execute mirrors the reviewer's "read-only tools only" table (session
+ * override text: "no Bash except read-only") — reused directly rather than
+ * re-derived, since the shape (git diff/log/show/status + a fixed set of
+ * read-only binaries, no redirection/tee) is identical; ticket text
+ * doesn't ask for a narrower table than the reviewer's.
+ */
+function architectVerdict(classified: PermissionRequest): PolicyVerdict {
+  switch (classified.toolClass) {
+    case 'read':
+      // "oracle, tickets, KB" (§14) — reads are never gated by ACP anyway
+      // (spike-findings §A); answer consistently if asked.
+      return ALLOW;
+    case 'edit':
+      return deny(
+        'architect role never edits files directly — oracle/ticket writes go through the ' +
+          'MCP verbs (decision_publish, ticket_create/refine), not a raw Write/Edit',
+      );
+    case 'execute':
+      if (classified.command === undefined) {
+        return deny('architect role denies exec with no command to classify');
+      }
+      return reviewerExecuteVerdict(classified.command);
+    case 'fetch':
+      return deny('architect role has no network access');
+    default:
+      return deny(
+        `unknown tool kind${classified.title ? ` (${classified.title})` : ''} — safe default deny`,
+      );
+  }
+}
+
 export function roleVerdict(
   role: PermissionRole,
   classified: PermissionRequest,
@@ -662,5 +711,7 @@ export function roleVerdict(
       return reviewerVerdict(classified);
     case 'qa':
       return qaVerdict(classified);
+    case 'architect':
+      return architectVerdict(classified);
   }
 }
