@@ -6,7 +6,10 @@
  * different one.
  */
 
-import { describe, expect, test } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join as joinPath } from 'node:path';
 import { decidePermission } from './decide';
 import type { AcpPermissionRequestParams, PermissionRole } from './types';
 
@@ -863,8 +866,6 @@ describe('decidePermission — T030 engineer benign-command allow-list', () => {
     'grep FAIL',
     "find . -name '*.ts'",
     `find ${inside('src')} -type f`,
-    'bunx vitest run',
-    'npx cowsay hi',
     `node ${inside('scripts/build.js')}`,
     `bun ${inside('scripts/build.js')}`,
     'git status',
@@ -924,14 +925,22 @@ describe('decidePermission — T030 engineer benign-command allow-list', () => {
     );
   });
 
-  test('engineer: npx cowsay@1.0.0 is denied (pinned version fetches, not repo-local)', () => {
+  test('engineer: npx cowsay@1.0.0 is a hil_request (bin not found under node_modules/.bin — new dependency execution)', () => {
     expect(decide('engineer', request('execute', { command: 'npx cowsay@1.0.0' })).kind).toBe(
-      'deny',
+      'hil',
     );
   });
 
-  test('engineer: npx -y cowsay is denied (forces install, not repo-local)', () => {
-    expect(decide('engineer', request('execute', { command: 'npx -y cowsay' })).kind).toBe('deny');
+  test('engineer: npx -y cowsay is a hil_request (forces install, regardless of node_modules/.bin)', () => {
+    expect(decide('engineer', request('execute', { command: 'npx -y cowsay' })).kind).toBe('hil');
+  });
+
+  test('engineer: npx cowsay (not installed) is a hil_request (T030 QA round 2)', () => {
+    expect(decide('engineer', request('execute', { command: 'npx cowsay' })).kind).toBe('hil');
+  });
+
+  test('engineer: bunx cowsay (not installed) is a hil_request (T030 QA round 2)', () => {
+    expect(decide('engineer', request('execute', { command: 'bunx cowsay' })).kind).toBe('hil');
   });
 
   test('engineer: bun run build stays a repo script (unaffected by the script-execution path check)', () => {
@@ -1074,46 +1083,96 @@ describe('decidePermission — T030 review-round fixes (opus, 7 blockers)', () =
     ).toBe('hil');
   });
 
-  // 5. `bun x`, `npm exec`, `pnpm dlx`, `yarn dlx` space forms.
-  test('engineer: bun x cowsay hi is allowed (repo-local bin, space form)', () => {
-    expect(decide('engineer', request('execute', { command: 'bun x cowsay hi' })).kind).toBe(
-      'allow',
-    );
+  // 5. `bun x`, `npm exec`, `pnpm dlx`, `yarn dlx` space forms — T030 QA
+  // round 2: none of these are syntactically trusted any more. Without a
+  // real node_modules/.bin/cowsay (the fake WORKTREE fixture has none),
+  // every one of them is a hil_request, same as bunx/npx.
+  test('engineer: bun x cowsay hi is a hil_request (no node_modules/.bin/cowsay)', () => {
+    expect(decide('engineer', request('execute', { command: 'bun x cowsay hi' })).kind).toBe('hil');
   });
 
-  test('engineer: npm exec cowsay hi is allowed (repo-local bin)', () => {
+  test('engineer: npm exec cowsay hi is a hil_request (no node_modules/.bin/cowsay)', () => {
     expect(decide('engineer', request('execute', { command: 'npm exec cowsay hi' })).kind).toBe(
-      'allow',
+      'hil',
     );
   });
 
-  test('engineer: pnpm dlx cowsay hi is allowed (repo-local bin)', () => {
+  test('engineer: pnpm dlx cowsay hi is a hil_request (no node_modules/.bin/cowsay)', () => {
     expect(decide('engineer', request('execute', { command: 'pnpm dlx cowsay hi' })).kind).toBe(
-      'allow',
+      'hil',
     );
   });
 
-  test('engineer: yarn dlx cowsay hi is allowed (repo-local bin)', () => {
+  test('engineer: yarn dlx cowsay hi is a hil_request (no node_modules/.bin/cowsay)', () => {
     expect(decide('engineer', request('execute', { command: 'yarn dlx cowsay hi' })).kind).toBe(
-      'allow',
+      'hil',
     );
   });
 
-  test('engineer: bun x cowsay@1.0.0 is denied (pinned version fetches, not repo-local)', () => {
+  test('engineer: bun x cowsay@1.0.0 is a hil_request (pinned version, not a flat bin-dir entry)', () => {
     expect(decide('engineer', request('execute', { command: 'bun x cowsay@1.0.0' })).kind).toBe(
-      'deny',
+      'hil',
     );
   });
 
-  test('engineer: npm exec -y cowsay is denied (forces install, not repo-local)', () => {
+  test('engineer: npm exec -y cowsay is a hil_request (forces install)', () => {
     expect(decide('engineer', request('execute', { command: 'npm exec -y cowsay' })).kind).toBe(
-      'deny',
+      'hil',
     );
   });
 
-  test('engineer: pnpm dlx --package cowsay cowsay is denied (forces install, not repo-local)', () => {
+  test('engineer: pnpm dlx --package cowsay cowsay is a hil_request (forces install)', () => {
     expect(
       decide('engineer', request('execute', { command: 'pnpm dlx --package cowsay cowsay' })).kind,
-    ).toBe('deny');
+    ).toBe('hil');
+  });
+});
+
+describe('decidePermission — T030 QA round 2: dlx forms gated on a real node_modules/.bin', () => {
+  let realWorktree: string;
+
+  const decideInRealWorktree = (command: string) =>
+    decidePermission({
+      role: 'engineer',
+      ticket: 'TKT-0001',
+      worktreePath: realWorktree,
+      request: request('execute', { command }),
+    });
+
+  beforeEach(() => {
+    realWorktree = mkdtempSync(joinPath(tmpdir(), 'agile-perm-decide-dlx-'));
+  });
+
+  afterEach(() => {
+    rmSync(realWorktree, { recursive: true, force: true });
+  });
+
+  test('bunx biome check . is allowed when node_modules/.bin/biome exists', () => {
+    const binDir = joinPath(realWorktree, 'node_modules', '.bin');
+    mkdirSync(binDir, { recursive: true });
+    writeFileSync(joinPath(binDir, 'biome'), '#!/bin/sh\n');
+    expect(decideInRealWorktree('bunx biome check .').kind).toBe('allow');
+  });
+
+  test('bunx biome check . is a hil_request when node_modules/.bin/biome is absent', () => {
+    expect(decideInRealWorktree('bunx biome check .').kind).toBe('hil');
+  });
+
+  test('npx cowsay is a hil_request when node_modules/.bin/cowsay is absent', () => {
+    expect(decideInRealWorktree('npx cowsay').kind).toBe('hil');
+  });
+
+  test('npm exec biome check . is allowed when node_modules/.bin/biome exists', () => {
+    const binDir = joinPath(realWorktree, 'node_modules', '.bin');
+    mkdirSync(binDir, { recursive: true });
+    writeFileSync(joinPath(binDir, 'biome'), '#!/bin/sh\n');
+    expect(decideInRealWorktree('npm exec biome check .').kind).toBe('allow');
+  });
+
+  test('bunx biome check . is still a hil_request even with the bin present, if -y is also passed (forces install)', () => {
+    const binDir = joinPath(realWorktree, 'node_modules', '.bin');
+    mkdirSync(binDir, { recursive: true });
+    writeFileSync(joinPath(binDir, 'biome'), '#!/bin/sh\n');
+    expect(decideInRealWorktree('npx -y biome check .').kind).toBe('hil');
   });
 });

@@ -11,7 +11,7 @@
  * `hasUnsafeShellConstruct`.
  */
 
-import { realpathSync } from 'node:fs';
+import { existsSync, realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, dirname, isAbsolute, join as joinPath, relative, resolve } from 'node:path';
 
@@ -822,17 +822,23 @@ export function findSearchRoots(tokens: string[]): string[] {
  * `bunx <pkg>`/`npx <pkg>` (single-word form), `bun x <pkg>` (space form,
  * T030 review), `npm exec <pkg>`, `pnpm dlx <pkg>`, and `yarn dlx <pkg>` —
  * every "run this package's bin" spelling this ticket names — restricted
- * to "repo-local bins": no flag that forces fetching from the registry
- * (`-p`/`--package`, `-y`/`--yes` auto-install, `-g`/`--global`), and no
- * explicit `@version` pin — those name a package to *fetch*, not a bin
- * this worktree's own `node_modules/.bin` (or bun's package cache for an
- * existing dependency) already has. DESIGN-GAP: this layer is a pure
- * function over command text (decide.ts's contract) with no filesystem
- * access, so it can't check `node_modules/.bin` directly — this is a
- * syntactic proxy for "not forcing a fresh fetch", tune during T021 if the
- * demo run shows gaps.
+ * to "repo-local bins" (T030 QA round 2): allowed only when the target bin
+ * actually exists in this worktree's `node_modules/.bin/` at decision time
+ * (`isRepoLocalBin`, below) — not a syntactic proxy any more. Any flag that
+ * forces a fetch/install (`-p`/`--package`, `-y`/`--yes`, `-g`/`--global`)
+ * is `hil` regardless of whether the bin happens to already exist, since
+ * those flags can install/overwrite a different version than what's
+ * checked in.
  */
-const BUNX_NPX_FORCE_INSTALL_FLAGS = new Set(['-p', '--package', '-y', '--yes', '-g', '--global']);
+const DLX_FORCE_INSTALL_FLAGS = new Set(['-p', '--package', '-y', '--yes', '-g', '--global']);
+
+/** `-p`/`--package` also has fused forms (`-ppkgname`, `--package=pkgname`) — any spelling of the flag forces a fetch. */
+function isForceInstallFlag(t: string): boolean {
+  if (DLX_FORCE_INSTALL_FLAGS.has(t)) return true;
+  if (t.startsWith('--package=')) return true;
+  if (t.startsWith('-p') && t.length > 2) return true; // fused -pPKG
+  return false;
+}
 
 /** The "run a package's bin" tail tokens for any of the recognized spellings, or `undefined` if `tokens` isn't one of them. */
 function dlxRestTokens(tokens: string[]): string[] | undefined {
@@ -845,16 +851,41 @@ function dlxRestTokens(tokens: string[]): string[] | undefined {
   return undefined;
 }
 
-export function isRepoLocalBinInvocation(tokens: string[]): boolean {
+export interface DlxInvocation {
+  /** The bin/package name this invocation would run. */
+  bin: string;
+  /** A `-p`/`--package`/`-y`/`--yes`/`-g`/`--global` flag was present — always `hil`, regardless of `isRepoLocalBin`. */
+  forcesInstall: boolean;
+}
+
+/** Parses any of `bunx`/`npx`/`bun x`/`npm exec`/`pnpm dlx`/`yarn dlx` into `{ bin, forcesInstall }`, or `undefined` if `tokens` isn't one of these shapes at all (no bin token found either way). */
+export function parseDlxInvocation(tokens: string[]): DlxInvocation | undefined {
   const rest = dlxRestTokens(tokens);
-  if (rest === undefined) return false;
-  if (rest.some((t) => BUNX_NPX_FORCE_INSTALL_FLAGS.has(t))) return false;
+  if (rest === undefined) return undefined;
+  const forcesInstall = rest.some((t) => isForceInstallFlag(t));
   const bin = rest.find((t) => !isFlagToken(t) && t !== '--');
-  return bin !== undefined && !bin.includes('@');
+  if (bin === undefined) return undefined;
+  return { bin, forcesInstall };
+}
+
+/**
+ * True only if `bin` exists as a file under this worktree's
+ * `node_modules/.bin/` — the actual repo-local-bin check (T030 QA round
+ * 2), not a syntactic guess. Never throws: an unreadable/nonexistent
+ * `node_modules/.bin` (or a `bin` containing a `/`, which couldn't be a
+ * flat bin-dir entry anyway) is "not repo-local", not an error.
+ */
+export function isRepoLocalBin(bin: string, worktreePath: string): boolean {
+  if (bin.length === 0 || bin.includes('/')) return false;
+  try {
+    return existsSync(resolve(worktreePath, 'node_modules', '.bin', bin));
+  } catch {
+    return false;
+  }
 }
 
 const SCRIPT_LAUNCHER_HEADS = new Set(['node', 'bun']);
-/** `bun`'s own subcommands (`run`/`test`/`build`/`install`/`i`/`add`/`x`) are handled by `isRepoScriptCommand`/`isNewDependencyInstall`/`isRepoLocalBinInvocation` before this ever runs — this only recognizes `node <file>`/`bun <file>` direct script execution, so it must not re-claim those subcommand names as if they were script paths (T030 review: `bun x cowsay@1.0.0` must fall through to deny via the dlx path, not be laundered as "bun script named x"). */
+/** `bun`'s own subcommands (`run`/`test`/`build`/`install`/`i`/`add`/`x`) are handled by `isRepoScriptCommand`/`isNewDependencyInstall`/`parseDlxInvocation` before this ever runs — this only recognizes `node <file>`/`bun <file>` direct script execution, so it must not re-claim those subcommand names as if they were script paths (T030 review: `bun x cowsay@1.0.0` must fall through to the dlx path, not be laundered as "bun script named x"). */
 function looksLikeBunSubcommand(token: string): boolean {
   return REPO_SCRIPT_SUBCOMMANDS.has(token) || NEW_DEP_SUBCOMMANDS.has(token) || token === 'x';
 }

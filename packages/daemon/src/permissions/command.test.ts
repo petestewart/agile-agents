@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join as joinPath } from 'node:path';
 import type { CommandAtom } from './command';
@@ -19,9 +19,10 @@ import {
   isNewDependencyInstall,
   isPathInside,
   isPipedIntoBareShell,
-  isRepoLocalBinInvocation,
+  isRepoLocalBin,
   isTicketBranch,
   parseCommandIntoAtoms,
+  parseDlxInvocation,
   parseGitInvocation,
   pushRefspecs,
   redirectionTarget,
@@ -477,35 +478,67 @@ describe('flagPathValues (T030 review finding 3)', () => {
   });
 });
 
-describe('isRepoLocalBinInvocation — dlx spellings (T030 review finding 5)', () => {
-  const ALLOWED = [
-    ['bunx', 'cowsay', 'hi'],
-    ['npx', 'cowsay', 'hi'],
-    ['bun', 'x', 'cowsay', 'hi'],
-    ['npm', 'exec', 'cowsay', 'hi'],
-    ['pnpm', 'dlx', 'cowsay', 'hi'],
-    ['yarn', 'dlx', 'cowsay', 'hi'],
+describe('parseDlxInvocation — dlx spellings (T030 review finding 5 / QA round 2)', () => {
+  const RECOGNIZED: Array<[string[], string, boolean]> = [
+    [['bunx', 'cowsay', 'hi'], 'cowsay', false],
+    [['npx', 'cowsay', 'hi'], 'cowsay', false],
+    [['bun', 'x', 'cowsay', 'hi'], 'cowsay', false],
+    [['npm', 'exec', 'cowsay', 'hi'], 'cowsay', false],
+    [['pnpm', 'dlx', 'cowsay', 'hi'], 'cowsay', false],
+    [['yarn', 'dlx', 'cowsay', 'hi'], 'cowsay', false],
+    [['bun', 'x', 'cowsay@1.0.0'], 'cowsay@1.0.0', false],
+    [['npm', 'exec', '-y', 'cowsay'], 'cowsay', true],
+    [['pnpm', 'dlx', '--package', 'cowsay', 'cowsay'], 'cowsay', true],
+    [['yarn', 'dlx', 'cowsay@1.0.0'], 'cowsay@1.0.0', false],
+    [['npx', '-g', 'cowsay'], 'cowsay', true],
+    [['npx', '-pcowsay', 'cowsay'], 'cowsay', true],
+    [['npx', '--package=cowsay', 'cowsay'], 'cowsay', true],
   ];
-  for (const tokens of ALLOWED) {
-    test(`"${tokens.join(' ')}" is a repo-local bin invocation`, () => {
-      expect(isRepoLocalBinInvocation(tokens)).toBe(true);
+  for (const [tokens, bin, forcesInstall] of RECOGNIZED) {
+    test(`"${tokens.join(' ')}" parses to bin=${bin}, forcesInstall=${forcesInstall}`, () => {
+      expect(parseDlxInvocation(tokens)).toEqual({ bin, forcesInstall });
     });
   }
 
-  const DENIED = [
-    ['bun', 'x', 'cowsay@1.0.0'],
-    ['npm', 'exec', '-y', 'cowsay'],
-    ['pnpm', 'dlx', '--package', 'cowsay', 'cowsay'],
-    ['yarn', 'dlx', 'cowsay@1.0.0'],
-    ['npx', '-g', 'cowsay'],
-  ];
-  for (const tokens of DENIED) {
-    test(`"${tokens.join(' ')}" is not a repo-local bin invocation`, () => {
-      expect(isRepoLocalBinInvocation(tokens)).toBe(false);
-    });
-  }
+  test('a non-dlx invocation is undefined', () => {
+    expect(parseDlxInvocation(['bun', 'run', 'build'])).toBeUndefined();
+    expect(parseDlxInvocation(['npm', 'test'])).toBeUndefined();
+  });
 
   test('"bun x cowsay@1.0.0" does not get misread as a bun-script invocation', () => {
     expect(scriptExecutionPath(['bun', 'x', 'cowsay@1.0.0'])).toBeUndefined();
+  });
+});
+
+describe('isRepoLocalBin (T030 QA round 2 — real node_modules/.bin check)', () => {
+  let root: string;
+
+  beforeEach(() => {
+    root = mkdtempSync(joinPath(tmpdir(), 'agile-perm-dlx-test-'));
+  });
+
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  test('true when the bin exists under node_modules/.bin', () => {
+    const binDir = joinPath(root, 'node_modules', '.bin');
+    mkdirSync(binDir, { recursive: true });
+    writeFileSync(joinPath(binDir, 'biome'), '#!/bin/sh\n');
+    expect(isRepoLocalBin('biome', root)).toBe(true);
+  });
+
+  test('false when node_modules/.bin has no such entry', () => {
+    const binDir = joinPath(root, 'node_modules', '.bin');
+    mkdirSync(binDir, { recursive: true });
+    expect(isRepoLocalBin('biome', root)).toBe(false);
+  });
+
+  test('false when node_modules/.bin does not exist at all', () => {
+    expect(isRepoLocalBin('biome', root)).toBe(false);
+  });
+
+  test('false for a bin name containing a path separator (never a flat bin-dir entry)', () => {
+    expect(isRepoLocalBin('../escape', root)).toBe(false);
   });
 });

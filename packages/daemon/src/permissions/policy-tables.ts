@@ -292,7 +292,27 @@ function engineerBenignCommandVerdict(
 
   if (ENGINEER_BENIGN_NO_PATH_TOOLS.has(head)) return ALLOW;
 
-  if (cmd.isRepoLocalBinInvocation(tokens)) return ALLOW;
+  const dlx = cmd.parseDlxInvocation(tokens);
+  if (dlx !== undefined) {
+    // T030 QA round 2: allowed only when the target bin actually exists in
+    // this worktree's node_modules/.bin at decision time — not a syntactic
+    // guess (a bare `npx cowsay`/`bunx cowsay` with no repo dependency on
+    // cowsay must hil as "new dependency execution", the same as `bun add
+    // cowsay` would). A forced-install flag (-p/--package/-y/--yes/-g/
+    // --global) is always hil, even if a same-named bin happens to exist,
+    // since it can install/overwrite a different version than what's
+    // actually checked in.
+    if (dlx.forcesInstall) {
+      return hil(
+        `"${dlx.bin}" forces a package install/global run (-p/--package/-y/--yes/-g/--global) — file a hil_request`,
+      );
+    }
+    return cmd.isRepoLocalBin(dlx.bin, ctx.worktreePath)
+      ? ALLOW
+      : hil(
+          `"${dlx.bin}" is not an existing repo-local bin (node_modules/.bin) — file a hil_request (new dependency execution)`,
+        );
+  }
 
   if (head === 'find') {
     if (cmd.isFindWriteInvocation(tokens)) return undefined; // -delete/-exec/-ok/-fprint*: not benign, fall through
