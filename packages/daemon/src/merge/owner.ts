@@ -28,15 +28,15 @@
  * through one mutex — `repoRoot` is a single shared checkout, so two merges
  * running concurrently would otherwise race on `git checkout`.
  *
- * DESIGN-GAP: no `EVENT_KINDS` entry exists for "a ticket merged into
- * integration" / "integration merged into main" (`packages/shared/src/
- * event.ts` is outside this ticket's file ownership — see the pipeline
- * report's "missing shared fields" list). Every merge outcome is instead
- * recorded as a `board/merges/<ticket>.yaml` entity via the store's generic
- * `putEntity` (the same pattern `board/hil/**`/`board/breaker.yaml` used
- * before their schemas were promoted to `packages/shared`), which mints the
- * generic `entity_put` event on its own — `merge.status` reads this file
- * back. A conflict/test-failure outcome additionally goes through
+ * Merge outcomes are recorded two ways: a `board/merges/<ticket>.yaml`
+ * `MergeRecord` (`packages/shared/src/merge.ts`) via the store's generic
+ * `putEntity` — `merge.status` reads this back, and `putEntity` mints its
+ * own generic `entity_put` event alongside the write — and a dedicated
+ * `EVENT_KINDS` entry per outcome (`merge_completed`/`merge_conflict`/
+ * `merge_tests_failed`/`integration_merged_to_main`, `packages/shared/src/
+ * event.ts`) so `log/events.jsonl` has a semantic line for "a merge
+ * happened" the way `hil_requested` sits alongside `entity_put` for a HIL
+ * write. A conflict/test-failure outcome additionally goes through
  * `createHalt`, which mints its own `halt_created` event.
  */
 
@@ -46,9 +46,12 @@ import {
   type HaltId,
   type HilId,
   MESSAGE_BODY_MAX_CHARS,
+  type MergeOutcomeStatus,
+  type MergeRecord,
   type Ticket,
   type TicketId,
   ulid,
+  validateMergeRecord,
 } from '@agile-agents/shared';
 import type { Bus } from '../bus';
 import type { GateService } from '../gates/service';
@@ -138,8 +141,14 @@ export function sprintReviewApproved(gates: Pick<GateService, 'list'>): GateAppr
   return { approved: latest.decision === 'approve', hilId: latest.id };
 }
 
-export type MergeOutcomeStatus = 'merged' | 'conflict' | 'test_failed' | 'gated';
-
+/**
+ * The in-memory result `onTicketDone`/`mergeIntegrationToMain` return (and
+ * `merge.ticket`/`merge.integration_to_main` hand back over RPC) — a
+ * superset of the persisted `MergeRecord` (`packages/shared/src/merge.ts`):
+ * `gated` never gets written to a per-ticket record (see that schema's own
+ * doc comment), and `ticket` is optional here since
+ * `mergeIntegrationToMain` isn't about any one ticket.
+ */
 export interface MergeOutcome {
   status: MergeOutcomeStatus;
   ticket?: TicketId;
@@ -148,48 +157,6 @@ export interface MergeOutcome {
   hilId?: HilId;
   mergeCommit?: string;
   worktreeKept?: boolean;
-}
-
-/** `board/merges/<ticket>.yaml` — see the file header's DESIGN-GAP note. */
-export interface MergeRecord {
-  ticket: TicketId;
-  status: MergeOutcomeStatus;
-  at: string;
-  summary?: string;
-  haltId?: HaltId;
-  mergeCommit?: string;
-  worktreeKept?: boolean;
-  keepReason?: 'stale' | 'abandoned';
-}
-
-const MERGE_RECORD_STATUSES: readonly MergeOutcomeStatus[] = [
-  'merged',
-  'conflict',
-  'test_failed',
-  'gated',
-];
-
-/**
- * Hand-rolled validator (not a `packages/shared` zod schema — see the file
- * header's DESIGN-GAP): structurally identical in spirit to `putEntity`'s
- * `validator: (input) => T` contract, which is exactly what `HilRequest`/
- * `BreakerState` used before their schemas were promoted to
- * `packages/shared/src/hil.ts`.
- */
-function validateMergeRecord(input: unknown): MergeRecord {
-  if (typeof input !== 'object' || input === null) {
-    throw new Error('MergeRecord: expected an object');
-  }
-  const r = input as Record<string, unknown>;
-  if (typeof r.ticket !== 'string') throw new Error('MergeRecord: "ticket" must be a string');
-  if (
-    typeof r.status !== 'string' ||
-    !MERGE_RECORD_STATUSES.includes(r.status as MergeOutcomeStatus)
-  ) {
-    throw new Error(`MergeRecord: "status" must be one of ${MERGE_RECORD_STATUSES.join(', ')}`);
-  }
-  if (typeof r.at !== 'string') throw new Error('MergeRecord: "at" must be a string');
-  return r as unknown as MergeRecord;
 }
 
 function mergeRecordPath(ticket: TicketId): string {
@@ -305,9 +272,9 @@ export class MergeOwner {
 
     const mergeCommit = runGit(['rev-parse', 'HEAD'], this.repoRoot);
     await this.store.appendEvent(
-      buildEvent('entity_put', {
+      buildEvent('merge_completed', {
         ticket: ticket.id,
-        data: { merge: 'ticket_to_integration', branch, mergeCommit },
+        data: { branch, mergeCommit },
       }),
     );
 
@@ -418,6 +385,12 @@ export class MergeOwner {
       body: `merge halt on ${ticket.id}: ${summary}`.slice(0, MESSAGE_BODY_MAX_CHARS),
       requires_ack: true,
     });
+    await this.store.appendEvent(
+      buildEvent(status === 'conflict' ? 'merge_conflict' : 'merge_tests_failed', {
+        ticket: ticket.id,
+        data: { summary, haltId: halt.id },
+      }),
+    );
     await this.recordMerge(ticket.id, { status, summary, haltId: halt.id });
     return { status, ticket: ticket.id, summary, haltId: halt.id };
   }
@@ -470,9 +443,8 @@ export class MergeOwner {
 
     const mergeCommit = runGit(['rev-parse', 'HEAD'], this.repoRoot);
     await this.store.appendEvent(
-      buildEvent('entity_put', {
+      buildEvent('integration_merged_to_main', {
         data: {
-          merge: 'integration_to_main',
           mergeCommit,
           ...(approval.hilId !== undefined ? { hilId: approval.hilId } : {}),
         },

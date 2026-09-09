@@ -93,7 +93,7 @@ describe('onTicketDone — clean merge', () => {
     expect(record?.worktreeKept).toBe(false);
 
     const events = store.listEvents().filter((e) => e.ticket === ticket.id);
-    expect(events.some((e) => e.data.merge === 'ticket_to_integration')).toBe(true);
+    expect(events.some((e) => e.kind === 'merge_completed')).toBe(true);
   });
 
   test('keeps the worktree for a stale ticket', async () => {
@@ -170,6 +170,9 @@ describe('onTicketDone — conflict path', () => {
 
     const record = owner.status(b.id);
     expect(record?.status).toBe('conflict');
+
+    const events = store.listEvents().filter((e) => e.ticket === b.id);
+    expect(events.some((e) => e.kind === 'merge_conflict')).toBe(true);
   });
 });
 
@@ -189,6 +192,9 @@ describe('onTicketDone — test failure path', () => {
 
     const halt = store.getHalt(outcome.haltId as HaltId);
     expect(halt.scope).toEqual([ticket.id]);
+
+    const events = store.listEvents().filter((e) => e.ticket === ticket.id);
+    expect(events.some((e) => e.kind === 'merge_tests_failed')).toBe(true);
   });
 });
 
@@ -223,6 +229,7 @@ describe('mergeIntegrationToMain', () => {
     expect(outcome.mergeCommit).toBeTruthy();
     expect(git(['show', 'main:shipped.txt'])).toBe('shipped');
     expect(git(['rev-parse', '--abbrev-ref', 'HEAD'])).toBe('main');
+    expect(store.listEvents().some((e) => e.kind === 'integration_merged_to_main')).toBe(true);
   });
 });
 

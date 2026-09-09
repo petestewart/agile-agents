@@ -44,6 +44,12 @@ describe('Event — §3/§4 log/events.jsonl', () => {
     // flagging a usage_update that arrived before any sprint existed.
     'tool_call',
     'ledger_no_sprint',
+    // T019 merge/integration owner: onTicketDone's three outcomes plus the
+    // sprint-review integration -> main merge.
+    'merge_completed',
+    'merge_conflict',
+    'merge_tests_failed',
+    'integration_merged_to_main',
   ])('%s is a valid EVENT_KINDS entry', (kind) => {
     expect(EVENT_KINDS).toContain(kind as (typeof EVENT_KINDS)[number]);
     expect(() => validateEvent({ ts: '2026-09-08T00:00:00Z', kind })).not.toThrow();

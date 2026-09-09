@@ -96,6 +96,30 @@ export const EVENT_KINDS = [
   // elsewhere for exactly this), but the daemon also logs this event so the
   // gap is visible in `log/events.jsonl`, not just silently absorbed.
   'ledger_no_sprint',
+  // DESIGN-GAP (T019 merge/integration owner, manager-granted follow-up):
+  // §15 "Git model and teams" names the merge cadence ("ticket -> integration
+  // on done ... conflicts bounce to the ticket owner as a scoped halt ...
+  // integration -> main at sprint review") but, like every other mutation
+  // kind above, never names an event kind for it — these were previously
+  // filed under the generic `entity_put`/`halt_created` kinds alone for lack
+  // of a granted `event.ts` change (same situation `tool_call` documents
+  // just above). Four kinds, not five: a `merge_started` kind was
+  // considered and dropped — `packages/daemon/src/merge/owner.ts` has no
+  // durable intermediate state between "asked to merge a done ticket" and
+  // one of these four outcomes to log a start event against (unlike, say,
+  // a `HilRequest`'s `pending` status), so it would only ever appear
+  // immediately followed by its own outcome in the same log, carrying no
+  // information the outcome event doesn't already carry with its own `ts`.
+  //  - `merge_completed`: a ticket's branch landed on `integration`.
+  //  - `merge_conflict` / `merge_tests_failed`: the two ways `onTicketDone`
+  //    instead raises a scoped halt (§15's "conflicts bounce ... as a
+  //    scoped halt") — mirrors `halt_created`'s own event, one level up.
+  //  - `integration_merged_to_main`: `integration -> main` at sprint review
+  //    (§16 "HIL gates policy").
+  'merge_completed',
+  'merge_conflict',
+  'merge_tests_failed',
+  'integration_merged_to_main',
 ] as const;
 export const EventKindSchema = z.enum(EVENT_KINDS);
 export type EventKind = z.infer<typeof EventKindSchema>;
