@@ -56,7 +56,7 @@ export interface FeedQuotaInfo {
   account: string;
   remaining_fraction: number;
   cooldown_until: string | null;
-  confidence: 'reported' | 'estimated';
+  confidence: 'reported' | 'estimated' | 'low';
   spend_usd?: number;
 }
 

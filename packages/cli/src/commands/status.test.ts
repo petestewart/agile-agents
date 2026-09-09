@@ -2,7 +2,6 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { Halt } from '@agile-agents/shared';
 import { type RpcServerHandle, StateStore, runInit, startRpcServer } from '@agile-agents/daemon';
 // DESIGN-GAP: `QuotaService`/`buildQuotaRpcMethods` (T023, `packages/daemon/
 // src/quota/**`) are not yet re-exported from `@agile-agents/daemon`'s
@@ -12,9 +11,10 @@ import { type RpcServerHandle, StateStore, runInit, startRpcServer } from '@agil
 // the package-root import once index.ts re-exports them.
 import { QuotaService } from '@agile-agents/daemon/src/quota/records';
 import { buildQuotaRpcMethods } from '@agile-agents/daemon/src/quota/rpc';
+import type { Halt } from '@agile-agents/shared';
 import { callRpc } from '../client';
 import { type TestDaemon, startTestDaemon } from '../test-support';
-import { fetchStatus, printStatusHuman, runStatus, type StatusQuotaEntry } from './status';
+import { type StatusQuotaEntry, fetchStatus, printStatusHuman, runStatus } from './status';
 
 let daemon: TestDaemon;
 
@@ -175,7 +175,11 @@ describe('fetchStatus — with quota.* RPC wired (T023)', () => {
   });
 
   test('a 429 recorded through quota.record_429 shows up in the next fetchStatus', async () => {
-    await callRpc(socketPath, 'quota.record_429', { vendor: 'claude', account: 'default', retryAfterSeconds: 60 });
+    await callRpc(socketPath, 'quota.record_429', {
+      vendor: 'claude',
+      account: 'default',
+      retryAfterSeconds: 60,
+    });
     const status = await fetchStatus(socketPath);
     if (!Array.isArray(status.spend)) throw new Error('unreachable');
     expect(status.spend[0]?.cooldown_until).not.toBeNull();

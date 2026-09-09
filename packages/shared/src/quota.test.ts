@@ -9,12 +9,7 @@
  */
 
 import { describe, expect, test } from 'bun:test';
-import {
-  QuotaSchema,
-  VendorAccountSchema,
-  validateQuota,
-  validateVendorsConfig,
-} from './vendors';
+import { QuotaSchema, VendorAccountSchema, validateQuota, validateVendorsConfig } from './vendors';
 
 function baseQuota(overrides: Record<string, unknown> = {}) {
   return {

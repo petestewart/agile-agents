@@ -7,12 +7,8 @@ import { validateAgentRecord, validateLedgerLine } from '@agile-agents/shared';
 import { Bus } from '../bus/bus';
 import { runInit } from '../init';
 import { NotFoundError, StateStore } from '../store/store';
-import {
-  DEFAULT_QUOTA_FLOOR,
-  DEFAULT_WINDOW_TOKENS,
-  QuotaService,
-  quotaFraction,
-} from './records';
+import { DEFAULT_QUOTA_FLOOR, DEFAULT_WINDOW_TOKENS, QuotaService, quotaFraction } from './records';
+import { pickCandidate, routeCandidates } from './routing';
 
 let repo: string;
 let stateRoot: string;
@@ -53,7 +49,22 @@ function ledgerLine(overrides: Partial<LedgerLine> = {}): LedgerLine {
 /** Fake clock for deterministic cooldown/window-crossing assertions. */
 function fakeClock(startMs: number): { now: () => Date; advance: (ms: number) => void } {
   let current = startMs;
-  return { now: () => new Date(current), advance: (ms: number) => (current += ms) };
+  return {
+    now: () => new Date(current),
+    advance: (ms: number) => {
+      current += ms;
+    },
+  };
+}
+
+/** A `QuotaBusSender` that records every sent message into `sink` for assertions. */
+function makeFakeBus(sink: Message[]): { send: (input: unknown) => Promise<{ ok: true }> } {
+  return {
+    send: async (input: unknown) => {
+      sink.push(input as Message);
+      return { ok: true };
+    },
+  };
 }
 
 describe('QuotaService.recordUsage — countdown', () => {
@@ -83,33 +94,70 @@ describe('QuotaService.recordUsage — countdown', () => {
   });
 
   test('honors a per-account `quota.window_tokens` override from vendors.yaml', async () => {
-    await store.putVendors({ claude: { accounts: [{ id: 'max', auth: 'subscription', quota: { window_tokens: 1_000 } }] } });
+    await store.putVendors({
+      claude: { accounts: [{ id: 'max', auth: 'subscription', quota: { window_tokens: 1_000 } }] },
+    });
     const quota = new QuotaService({ store });
-    const updated = await quota.recordUsage('claude', 'max', ledgerLine({ in_tokens: 400, out_tokens: 0 }));
+    const updated = await quota.recordUsage(
+      'claude',
+      'max',
+      ledgerLine({ in_tokens: 400, out_tokens: 0 }),
+    );
     expect(updated.limit).toBe(1_000);
     expect(updated.remaining).toBe(600);
     expect(quotaFraction(updated)).toBeCloseTo(0.6);
   });
 
   test('remaining never goes negative', async () => {
-    await store.putVendors({ claude: { accounts: [{ id: 'max', auth: 'subscription', quota: { window_tokens: 100 } }] } });
+    await store.putVendors({
+      claude: { accounts: [{ id: 'max', auth: 'subscription', quota: { window_tokens: 100 } }] },
+    });
     const quota = new QuotaService({ store });
-    const updated = await quota.recordUsage('claude', 'max', ledgerLine({ in_tokens: 1_000, out_tokens: 0 }));
+    const updated = await quota.recordUsage(
+      'claude',
+      'max',
+      ledgerLine({ in_tokens: 1_000, out_tokens: 0 }),
+    );
     expect(updated.remaining).toBe(0);
   });
 });
 
 describe('QuotaService.recordReported', () => {
-  test('overrides the countdown estimate with a reported reading', async () => {
-    await store.putVendors({ claude: { accounts: [{ id: 'max', auth: 'subscription', quota: { window_tokens: 1_000 } }] } });
+  test('a bare fraction reading (no unit) resolves against the account window_tokens and overrides the countdown', async () => {
+    await store.putVendors({
+      claude: { accounts: [{ id: 'max', auth: 'subscription', quota: { window_tokens: 1_000 } }] },
+    });
     const quota = new QuotaService({ store });
     await quota.recordUsage('claude', 'max', ledgerLine({ in_tokens: 900, out_tokens: 0 }));
     // Countdown thinks remaining is 100/1000 = 0.10 — a real reading says otherwise.
-    const reported = await quota.recordReported('claude', 'max', { remaining: 0.8, unit: 'fraction' });
+    const reported = await quota.recordReported('claude', 'max', { remaining: 0.8 });
     expect(reported.confidence).toBe('reported');
     expect(reported.source).toBe('usage_endpoint');
-    expect(reported.remaining).toBe(0.8);
-    expect(reported.unit).toBe('fraction');
+    expect(reported.unit).toBe('tokens');
+    expect(reported.limit).toBe(1_000);
+    expect(reported.remaining).toBe(800);
+    expect(quotaFraction(reported)).toBeCloseTo(0.8);
+  });
+
+  test('an absolute reading in a concrete unit is stored as given', async () => {
+    const quota = new QuotaService({ store });
+    const reported = await quota.recordReported('claude', 'max', {
+      remaining: 5_000,
+      unit: 'requests',
+      limit: 10_000,
+    });
+    expect(reported.unit).toBe('requests');
+    expect(reported.remaining).toBe(5_000);
+    expect(reported.limit).toBe(10_000);
+  });
+
+  test('a bare fraction with no resolvable limit anywhere is marked low-confidence and never trips exhausted', async () => {
+    const quota = new QuotaService({ store, bus: { send: async () => ({ ok: true }) } });
+    // No vendors.yaml entry for this account at all — nothing to resolve against.
+    const reported = await quota.recordReported('claude', 'ghost', { remaining: 0.02 });
+    expect(reported.confidence).toBe('low');
+    expect(reported.limit).toBeUndefined();
+    expect(quotaFraction(reported)).toBe(1);
   });
 
   test('Pi-on-Claude extra-usage dollars accrue across calls', async () => {
@@ -117,7 +165,7 @@ describe('QuotaService.recordReported', () => {
     const first = await quota.recordReported(
       'claude',
       'pi',
-      { remaining: 1, unit: 'fraction' },
+      { remaining: 1, unit: 'usd' },
       { spendDeltaUsd: 1.25 },
     );
     expect(first.billing).toBe('extra_usage_dollars');
@@ -125,23 +173,50 @@ describe('QuotaService.recordReported', () => {
     const second = await quota.recordReported(
       'claude',
       'pi',
-      { remaining: 1, unit: 'fraction' },
+      { remaining: 1, unit: 'usd' },
       { spendDeltaUsd: 0.75 },
     );
     expect(second.spend_usd).toBe(2.0);
+  });
+
+  test('reproduces and fixes the reviewed unit-inheritance bug: a reported 80%-full reading no longer trips a spurious quota_exhausted on the next countdown decrement', async () => {
+    await store.putVendors({
+      claude: { accounts: [{ id: 'max', auth: 'subscription', quota: { window_tokens: 1_000 } }] },
+    });
+    const sent: Message[] = [];
+    const bus = makeFakeBus(sent);
+    const quota = new QuotaService({ store, bus });
+
+    // Countdown drives the account down near the floor.
+    await quota.recordUsage('claude', 'max', ledgerLine({ in_tokens: 950 }));
+
+    // A real reading says the account is actually 80% full (e.g. the window
+    // rolled over on the vendor's side) — a bare fraction, no `unit` given.
+    await quota.recordReported('claude', 'max', { remaining: 0.8 });
+    sent.length = 0; // only the *next* countdown call's behaviour is under test.
+
+    // A small further usage decrement should come off the reported 800/1000
+    // baseline, not misread the 0.8 as "0.8 tokens remaining".
+    const updated = await quota.recordUsage('claude', 'max', ledgerLine({ in_tokens: 50 }));
+    expect(updated.remaining).toBe(750);
+    expect(quotaFraction(updated)).toBeCloseTo(0.75);
+    expect(sent.some((m) => m.kind === 'quota_exhausted')).toBe(false);
+    expect(sent.some((m) => m.kind === 'quota_low')).toBe(false);
   });
 });
 
 describe('QuotaService — quota_low / quota_exhausted bus events', () => {
   const sentMessages: Message[] = [];
-  const fakeBus = { send: async (input: unknown) => (sentMessages.push(input as Message), { ok: true }) };
+  const fakeBus = makeFakeBus(sentMessages);
 
   beforeEach(() => {
     sentMessages.length = 0;
   });
 
   test('crossing the floor emits exactly one quota_low event + bus message', async () => {
-    await store.putVendors({ claude: { accounts: [{ id: 'max', auth: 'subscription', quota: { window_tokens: 1_000 } }] } });
+    await store.putVendors({
+      claude: { accounts: [{ id: 'max', auth: 'subscription', quota: { window_tokens: 1_000 } }] },
+    });
     const quota = new QuotaService({ store, bus: fakeBus, floor: 0.2 });
 
     // 1000 -> 500 (0.5): above floor, no event.
@@ -163,7 +238,9 @@ describe('QuotaService — quota_low / quota_exhausted bus events', () => {
   });
 
   test('countdown reaching zero emits quota_exhausted', async () => {
-    await store.putVendors({ claude: { accounts: [{ id: 'max', auth: 'subscription', quota: { window_tokens: 100 } }] } });
+    await store.putVendors({
+      claude: { accounts: [{ id: 'max', auth: 'subscription', quota: { window_tokens: 100 } }] },
+    });
     const quota = new QuotaService({ store, bus: fakeBus });
     await quota.recordUsage('claude', 'max', ledgerLine({ in_tokens: 100 }));
     const exhausted = sentMessages.filter((m) => m.kind === 'quota_exhausted');
@@ -183,9 +260,200 @@ describe('QuotaService — quota_low / quota_exhausted bus events', () => {
 
   test('no bus injected: recordUsage/record429 still write the Quota + event, just skip the send', async () => {
     const quota = new QuotaService({ store });
-    await store.putVendors({ claude: { accounts: [{ id: 'max', auth: 'subscription', quota: { window_tokens: 10 } }] } });
+    await store.putVendors({
+      claude: { accounts: [{ id: 'max', auth: 'subscription', quota: { window_tokens: 10 } }] },
+    });
     await quota.recordUsage('claude', 'max', ledgerLine({ in_tokens: 10 }));
     expect(store.listEvents().some((e) => e.kind === 'quota_exhausted')).toBe(true);
+  });
+});
+
+describe('QuotaService.record429 — one quota_exhausted per episode, escalating backoff (review fix #5)', () => {
+  const sentMessages: Message[] = [];
+  const fakeBus = makeFakeBus(sentMessages);
+
+  beforeEach(() => {
+    sentMessages.length = 0;
+  });
+
+  test('repeated 429s within the same still-active cooldown escalate 30s -> 1m -> 5m -> 15m cap without re-emitting quota_exhausted', async () => {
+    const clock = fakeClock(Date.parse('2026-09-09T00:00:00.000Z'));
+    const quota = new QuotaService({ store, bus: fakeBus, now: clock.now });
+
+    const first = await quota.record429('claude', 'max');
+    expect(first.cooldown_backoff_seconds).toBe(30);
+    expect(first.cooldown_until).toBe(new Date(clock.now().getTime() + 30_000).toISOString());
+
+    const second = await quota.record429('claude', 'max');
+    expect(second.cooldown_backoff_seconds).toBe(60);
+
+    const third = await quota.record429('claude', 'max');
+    expect(third.cooldown_backoff_seconds).toBe(300);
+
+    const fourth = await quota.record429('claude', 'max');
+    expect(fourth.cooldown_backoff_seconds).toBe(900);
+
+    // Cap: a fifth 429 within the same episode stays at 900, not beyond.
+    const fifth = await quota.record429('claude', 'max');
+    expect(fifth.cooldown_backoff_seconds).toBe(900);
+
+    const exhausted = sentMessages.filter((m) => m.kind === 'quota_exhausted');
+    expect(exhausted).toHaveLength(1); // once per episode, not per call
+  });
+
+  test('an explicit retryAfterSeconds always wins over the ladder', async () => {
+    const clock = fakeClock(Date.parse('2026-09-09T00:00:00.000Z'));
+    const quota = new QuotaService({ store, bus: fakeBus, now: clock.now });
+    await quota.record429('claude', 'max'); // 30s (ladder default)
+    const updated = await quota.record429('claude', 'max', 120); // vendor-provided hint, same episode
+    expect(updated.cooldown_backoff_seconds).toBe(120);
+  });
+
+  test('a successful recordUsage call resets the escalation tier for the next episode', async () => {
+    const clock = fakeClock(Date.parse('2026-09-09T00:00:00.000Z'));
+    const quota = new QuotaService({ store, bus: fakeBus, now: clock.now });
+    await store.putVendors({
+      claude: { accounts: [{ id: 'max', auth: 'subscription', quota: { window_tokens: 1_000 } }] },
+    });
+
+    await quota.record429('claude', 'max'); // 30s
+    await quota.record429('claude', 'max'); // escalates to 60s
+    // A successful call clears cooldown/backoff — "reset after a successful call".
+    const afterUsage = await quota.recordUsage('claude', 'max', ledgerLine({ in_tokens: 10 }));
+    expect(afterUsage.cooldown_until).toBeNull();
+    expect(afterUsage.cooldown_backoff_seconds).toBeUndefined();
+
+    sentMessages.length = 0;
+    const freshEpisode = await quota.record429('claude', 'max');
+    expect(freshEpisode.cooldown_backoff_seconds).toBe(30); // back to the first tier, not 300
+    expect(sentMessages.filter((m) => m.kind === 'quota_exhausted')).toHaveLength(1); // a fresh episode emits again
+  });
+
+  test('a 429 after the previous cooldown has elapsed starts a fresh episode (emits again, restarts the ladder)', async () => {
+    const clock = fakeClock(Date.parse('2026-09-09T00:00:00.000Z'));
+    const quota = new QuotaService({ store, bus: fakeBus, now: clock.now });
+
+    await quota.record429('claude', 'max'); // 30s cooldown, episode #1
+    clock.advance(31_000); // cooldown elapses
+    sentMessages.length = 0;
+
+    const secondEpisode = await quota.record429('claude', 'max');
+    expect(secondEpisode.cooldown_backoff_seconds).toBe(30); // fresh episode, not escalated from the first
+    expect(sentMessages.filter((m) => m.kind === 'quota_exhausted')).toHaveLength(1);
+  });
+});
+
+describe('QuotaService + routeCandidates — end-to-end reroute after a 429 (QA fix)', () => {
+  test('a fake clock advancing past cooldown_until re-admits the account to routing without any further write', async () => {
+    const clock = fakeClock(Date.parse('2026-09-09T00:00:00.000Z'));
+    const quota = new QuotaService({ store, now: clock.now });
+    await store.putVendors({
+      claude: { accounts: [{ id: 'default', auth: 'subscription' }] },
+    });
+
+    await quota.record429('claude', 'default', 60);
+    const vendors = store.getVendors();
+
+    // Still cooling down: no candidate.
+    const stillCoolingDown = routeCandidates('engineer', 'standard', {
+      vendors,
+      quotas: quota.list(),
+      now: clock.now(),
+    });
+    expect('none' in stillCoolingDown).toBe(true);
+
+    // Advance past the 60s cooldown — no further QuotaService call at all,
+    // purely the passage of time — and it should route again.
+    clock.advance(61_000);
+    const afterCooldown = routeCandidates('engineer', 'standard', {
+      vendors,
+      quotas: quota.list(),
+      now: clock.now(),
+    });
+    expect(pickCandidate(afterCooldown)).toEqual({ vendor: 'claude', account: 'default' });
+  });
+
+  test('acceptance scenario end-to-end: exhausted Claude reroutes to a second vendor, then re-admits Claude once its cooldown elapses', async () => {
+    const clock = fakeClock(Date.parse('2026-09-09T00:00:00.000Z'));
+    const quota = new QuotaService({ store, now: clock.now });
+    await store.putVendors({
+      claude: { accounts: [{ id: 'default', auth: 'subscription' }] },
+      openai: { accounts: [{ id: 'chatgpt', auth: 'subscription' }] },
+    });
+
+    await quota.record429('claude', 'default', 60);
+    const routed = routeCandidates('engineer', 'standard', {
+      vendors: store.getVendors(),
+      quotas: quota.list(),
+      now: clock.now(),
+    });
+    expect(pickCandidate(routed)).toEqual({ vendor: 'openai', account: 'chatgpt' });
+
+    clock.advance(61_000);
+    const routedAfter = routeCandidates('engineer', 'standard', {
+      vendors: store.getVendors(),
+      quotas: quota.list(),
+      now: clock.now(),
+    });
+    // Both are eligible again; Claude (never actually spent, just cooled down) leads on remaining fraction.
+    expect('none' in routedAfter).toBe(false);
+    if ('none' in routedAfter) throw new Error('unreachable');
+    expect(routedAfter.map((c) => c.account)).toContain('default');
+  });
+});
+
+describe('QuotaService — window reset across two windows (review fix #4)', () => {
+  const sentMessages: Message[] = [];
+  const fakeBus = makeFakeBus(sentMessages);
+
+  beforeEach(() => {
+    sentMessages.length = 0;
+  });
+
+  test('a window rollover re-arms remaining to full and re-arms the quota_low crossing for the next window', async () => {
+    const clock = fakeClock(Date.parse('2026-09-09T00:00:00.000Z'));
+    await store.putVendors({
+      claude: {
+        accounts: [
+          { id: 'max', auth: 'subscription', quota: { window_tokens: 1_000, window_hours: 1 } },
+        ],
+      },
+    });
+    const quota = new QuotaService({ store, bus: fakeBus, now: clock.now, floor: 0.15 });
+
+    // Window 1: drive it below the floor — one quota_low.
+    const first = await quota.recordUsage('claude', 'max', ledgerLine({ in_tokens: 950 }));
+    expect(first.remaining).toBe(50);
+    expect(first.resets_at).toBe(new Date(clock.now().getTime() + 60 * 60 * 1000).toISOString());
+    expect(sentMessages.filter((m) => m.kind === 'quota_low')).toHaveLength(1);
+
+    // Advance past resets_at (61 minutes) — the next call rearms first.
+    clock.advance(61 * 60 * 1000);
+    const rearmedResetsAt = first.resets_at as string;
+    const second = await quota.recordUsage('claude', 'max', ledgerLine({ in_tokens: 10 }));
+    // Rearmed to 1000 before this call's own 10-token decrement.
+    expect(second.remaining).toBe(990);
+    expect(second.resets_at).toBe(
+      new Date(Date.parse(rearmedResetsAt) + 60 * 60 * 1000).toISOString(),
+    );
+    // No new quota_low: rearmed fraction (1.0) then 0.99, never crossed the floor this time.
+    expect(sentMessages.filter((m) => m.kind === 'quota_low')).toHaveLength(1);
+
+    // Window 2: drive it below the floor again — the crossing must be able to fire a *second* time.
+    const third = await quota.recordUsage('claude', 'max', ledgerLine({ in_tokens: 850 }));
+    expect(third.remaining).toBe(140); // 0.14, below the 0.15 floor
+    expect(sentMessages.filter((m) => m.kind === 'quota_low')).toHaveLength(2);
+  });
+
+  test('with no window_hours configured, a rearm is one-shot (resets_at clears to null)', async () => {
+    const clock = fakeClock(Date.parse('2026-09-09T00:00:00.000Z'));
+    const quota = new QuotaService({ store, bus: fakeBus, now: clock.now });
+    // No `window_hours` — `resets_at` is never established in the first place (no configured cadence), so a plain countdown record never schedules its own rearm.
+    await store.putVendors({
+      claude: { accounts: [{ id: 'max', auth: 'subscription', quota: { window_tokens: 100 } }] },
+    });
+    const updated = await quota.recordUsage('claude', 'max', ledgerLine({ in_tokens: 10 }));
+    expect(updated.resets_at).toBeNull();
   });
 });
 
@@ -195,7 +463,11 @@ describe('QuotaService — real Bus (routing check, not just the injected fake)'
     // eng-1 must be registered for Bus to have an inbox to poll, but the
     // daemon -> em route doesn't require em to be pre-registered.
     const quota = new QuotaService({ store, bus });
-    await store.putVendors({ claude: { accounts: [{ id: 'default', auth: 'subscription', quota: { window_tokens: 100 } }] } });
+    await store.putVendors({
+      claude: {
+        accounts: [{ id: 'default', auth: 'subscription', quota: { window_tokens: 100 } }],
+      },
+    });
     await quota.recordUsage('claude', 'default', ledgerLine({ in_tokens: 100 }));
     const inbox = await bus.poll('em' as never);
     expect(inbox.some((m) => m.kind === 'quota_exhausted')).toBe(true);
@@ -208,9 +480,11 @@ describe('QuotaService.list', () => {
     const listed = quota.list();
     // init's default vendors.yaml is claude/default.
     expect(listed).toHaveLength(1);
-    expect(listed[0]?.vendor).toBe('claude');
-    expect(listed[0]?.account).toBe('default');
-    expect(quotaFraction(listed[0]!)).toBe(1);
+    const entry = listed[0];
+    expect(entry).toBeDefined();
+    expect(entry?.vendor).toBe('claude');
+    expect(entry?.account).toBe('default');
+    if (entry) expect(quotaFraction(entry)).toBe(1);
   });
 
   test('reflects a persisted Quota record once one exists', async () => {
@@ -222,13 +496,16 @@ describe('QuotaService.list', () => {
 });
 
 describe('QuotaService.barometer', () => {
-  test('tokens_per_hour reflects this vendor\'s registered agents within the window', async () => {
-    await store.putAgent('eng-1', validateAgentRecord({
-      vendor: 'claude',
-      model: 'claude-x',
-      ticket: undefined,
-      last_seen: new Date().toISOString(),
-    }));
+  test("tokens_per_hour reflects this vendor's registered agents within the window", async () => {
+    await store.putAgent(
+      'eng-1',
+      validateAgentRecord({
+        vendor: 'claude',
+        model: 'claude-x',
+        ticket: undefined,
+        last_seen: new Date().toISOString(),
+      }),
+    );
     await store.putSprint({
       id: 'S-01',
       goal: 'test sprint',
@@ -247,12 +524,15 @@ describe('QuotaService.barometer', () => {
   });
 
   test('ignores ledger lines from agents of a different vendor', async () => {
-    await store.putAgent('eng-1', validateAgentRecord({
-      vendor: 'openai',
-      model: 'gpt',
-      ticket: undefined,
-      last_seen: new Date().toISOString(),
-    }));
+    await store.putAgent(
+      'eng-1',
+      validateAgentRecord({
+        vendor: 'openai',
+        model: 'gpt',
+        ticket: undefined,
+        last_seen: new Date().toISOString(),
+      }),
+    );
     const quota = new QuotaService({ store });
     await store.appendLedgerLine(
       'S-01',
@@ -274,8 +554,22 @@ test('DEFAULT_QUOTA_FLOOR matches the CLAUDE.md tunable', () => {
   expect(DEFAULT_QUOTA_FLOOR).toBe(0.15);
 });
 
-test('quotaFraction: no limit means remaining is already the fraction', () => {
-  expect(quotaFraction({ remaining: 0.42 })).toBe(0.42);
+describe('quotaFraction — fallback chain (review fix #3)', () => {
+  test('uses the record limit when present', () => {
+    expect(quotaFraction({ remaining: 250, limit: 1_000, unit: 'tokens' })).toBe(0.25);
+  });
+
+  test('falls back to a given window-tokens fallback when the record has no limit', () => {
+    expect(quotaFraction({ remaining: 250, unit: 'tokens' }, 1_000)).toBe(0.25);
+  });
+
+  test('with neither a limit nor a fallback, returns 1 (never reads as exhausted)', () => {
+    expect(quotaFraction({ remaining: 0, unit: 'tokens' })).toBe(1);
+  });
+
+  test('a non-tokens unit with no limit ignores a tokens-only fallback and returns 1', () => {
+    expect(quotaFraction({ remaining: 0, unit: 'usd' }, 1_000)).toBe(1);
+  });
 });
 
 test('tryGetQuota NotFoundError does not leak past QuotaService (sanity import check)', () => {

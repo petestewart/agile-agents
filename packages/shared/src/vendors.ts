@@ -27,6 +27,15 @@ export const AccountQuotaConfigSchema = z
     window_tokens: z.number().positive().optional(),
     /** Per-account override of the CLAUDE.md quota-floor tunable (default 0.15). */
     floor: z.number().min(0).max(1).optional(),
+    /**
+     * T023 review-fix DESIGN-GAP: window-reset cadence in hours (e.g. `24`
+     * for a daily window, `168` for weekly). No field for this exists
+     * anywhere in the design either; without it a window's `resets_at`
+     * can be rearmed once (cleared to `null`) but never re-scheduled for
+     * the window after that. Optional — an account with no configured
+     * cadence just doesn't get automatic multi-window rearming.
+     */
+    window_hours: z.number().positive().optional(),
   })
   .strict();
 export type AccountQuotaConfig = z.infer<typeof AccountQuotaConfigSchema>;
@@ -64,9 +73,37 @@ export const QUOTA_KINDS = ['subscription_window', 'prepaid_credits', 'pay_as_yo
 export const QuotaKindSchema = z.enum(QUOTA_KINDS);
 export type QuotaKind = z.infer<typeof QuotaKindSchema>;
 
-export const QUOTA_CONFIDENCE_LEVELS = ['reported', 'estimated'] as const;
+/**
+ * `low` (T023 review-fix addition): a countdown/reported value computed
+ * with no known denominator at all (no record `limit`, no vendor account
+ * `quota.window_tokens`) — the record still needs *some* `remaining`
+ * number to satisfy the schema, but nothing downstream may treat it as
+ * accurate enough to threshold against. `quotaFraction` (`daemon/src/
+ * quota/records.ts`) always returns `1` (never trips `quota_low`/
+ * `quota_exhausted`) whenever a record's fraction can't be resolved,
+ * regardless of confidence — `low` exists so a human/UI reading the record
+ * directly can tell "we don't actually know" apart from a confident
+ * `estimated` countdown.
+ */
+export const QUOTA_CONFIDENCE_LEVELS = ['reported', 'estimated', 'low'] as const;
 export const QuotaConfidenceSchema = z.enum(QUOTA_CONFIDENCE_LEVELS);
 export type QuotaConfidence = z.infer<typeof QuotaConfidenceSchema>;
+
+/**
+ * T023 review-fix: "Model units explicitly per record" — every `Quota`
+ * record `QuotaService` writes now uses one of these three concrete units
+ * (never an ambiguous bare "fraction") so `remaining`/`limit` are always
+ * commensurable within one record and across successive writes to the
+ * same record. `QuotaSchema.unit` itself stays `z.string().min(1)`
+ * (unchanged) rather than a `.enum()` — tightening it would break the
+ * existing `__fixtures__/quota.yaml` fixture's literal `unit: fraction`
+ * (verbatim from the design doc's own example) and is a `packages/shared`
+ * schema decision beyond this fix's scope; this is the closed set
+ * `daemon/src/quota/**`'s own code always writes going forward.
+ */
+export const QUOTA_UNITS = ['tokens', 'requests', 'usd'] as const;
+export const QuotaUnitSchema = z.enum(QUOTA_UNITS);
+export type QuotaUnit = z.infer<typeof QuotaUnitSchema>;
 
 export const QUOTA_SOURCES = [
   'stream_event',
@@ -121,6 +158,16 @@ export const QuotaSchema = z
     billing: QuotaBillingSchema.optional(),
     /** Cumulative dollars accrued under `billing: extra_usage_dollars`. */
     spend_usd: z.number().min(0).optional(),
+    /**
+     * T023 review-fix DESIGN-GAP: current escalation tier for `record429`'s
+     * backoff ladder (30s → 1m → 5m → 15m cap), so a repeated 429 within the
+     * same cooldown episode can escalate from *this* tier rather than
+     * re-deriving it from `cooldown_until - updated` (fragile once a vendor
+     * `Retry-After` and our own ladder are mixed across calls). Cleared
+     * (`undefined`) on the next successful `recordUsage`/`recordReported`
+     * call — "a reset after a successful call".
+     */
+    cooldown_backoff_seconds: z.number().positive().optional(),
   })
   .strict();
 

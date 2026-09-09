@@ -73,22 +73,54 @@ function quotaFor(quotas: Quota[], vendor: string, account: string): Quota | und
   return quotas.find((q) => q.vendor === vendor && q.account === account);
 }
 
+function accountWindowTokens(
+  vendors: VendorsConfig,
+  vendor: string,
+  account: string,
+): number | undefined {
+  return vendors[vendor]?.accounts.find((a) => a.id === account)?.quota?.window_tokens;
+}
+
 /**
  * `(role, tier) → ordered candidates`, filtered by floor + cooldown and
  * ordered by remaining fraction (most headroom first) — "Daemon picks the
  * first candidate with `remaining > floor` ... and no cooldown" (§11).
  * Ties (equal fraction, including two never-observed accounts) preserve
  * the routing table's/`vendors.yaml`'s own declared order.
+ *
+ * QA-fix: a candidate whose `Quota` record still carries a stale
+ * `cooldown_until` that has already elapsed is treated as fully available
+ * ("lazily on read") rather than excluded by its now-stale zeroed
+ * `remaining` — a 429 always zeroes `remaining` alongside setting
+ * `cooldown_until` (§4: "remaining 0 until reset"), so once the cooldown
+ * itself has passed that zero can no longer be trusted as current and must
+ * not keep excluding the account on the floor check. This only applies to
+ * a record that a 429 actually touched (`cooldown_until` was set at some
+ * point); a plain countdown exhaustion (`remaining` at 0 with no
+ * `cooldown_until` ever set) is not stale and stays excluded until a real
+ * reset/reported reading changes it.
  */
-export function routeCandidates(role: string, tier: string, opts: RouteCandidatesOptions): RouteResult {
+export function routeCandidates(
+  role: string,
+  tier: string,
+  opts: RouteCandidatesOptions,
+): RouteResult {
   const now = opts.now ?? new Date();
   const floor = opts.floor ?? DEFAULT_QUOTA_FLOOR;
   const configured = opts.routing?.[routingKey(role, tier)] ?? allConfiguredAccounts(opts.vendors);
 
   const scored = configured.map((candidate) => {
     const quota = quotaFor(opts.quotas, candidate.vendor, candidate.account);
-    const fraction = quota ? quotaFraction(quota) : 1;
-    const coolingDown = quota?.cooldown_until != null && Date.parse(quota.cooldown_until) > now.getTime();
+    const hadCooldown = quota?.cooldown_until != null;
+    const cooldownElapsed =
+      hadCooldown && Date.parse(quota?.cooldown_until as string) <= now.getTime();
+    const coolingDown = hadCooldown && !cooldownElapsed;
+    const windowTokensFallback = accountWindowTokens(
+      opts.vendors,
+      candidate.vendor,
+      candidate.account,
+    );
+    const fraction = !quota ? 1 : cooldownElapsed ? 1 : quotaFraction(quota, windowTokensFallback);
     return { candidate, fraction, coolingDown };
   });
 

@@ -52,18 +52,22 @@ describe('quota.* RPC', () => {
     });
     expect(updated.cooldown_until).not.toBeNull();
 
-    const listed = await call<Array<{ vendor: string; account: string; cooldown_until: string | null }>>(
-      'quota.list',
-    );
+    const listed =
+      await call<Array<{ vendor: string; account: string; cooldown_until: string | null }>>(
+        'quota.list',
+      );
     expect(listed[0]?.cooldown_until).not.toBeNull();
   });
 
   test('quota.route round-trips a routing decision and reroutes to none after a 429 exhausts the only account', async () => {
     await call('quota.record_429', { vendor: 'claude', account: 'default' });
-    const result = await call<{ none: true; reason: string } | Array<{ vendor: string }>>('quota.route', {
-      role: 'engineer',
-      tier: 'standard',
-    });
+    const result = await call<{ none: true; reason: string } | Array<{ vendor: string }>>(
+      'quota.route',
+      {
+        role: 'engineer',
+        tier: 'standard',
+      },
+    );
     // Only account configured is now in cooldown -> no candidate.
     expect(result).toMatchObject({ none: true });
   });

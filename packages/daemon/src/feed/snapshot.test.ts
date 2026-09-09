@@ -6,8 +6,8 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { runInit } from '../init';
 import { GateService } from '../gates';
+import { runInit } from '../init';
 import { QuotaService } from '../quota/records';
 import { StateStore } from '../store';
 import { buildSnapshot } from './snapshot';
@@ -43,7 +43,11 @@ describe('with a QuotaService', () => {
     const quota = new QuotaService({ store });
     const snapshot = buildSnapshot(store, gates, undefined, quota);
     expect(snapshot.quota).toHaveLength(1);
-    expect(snapshot.quota[0]).toMatchObject({ vendor: 'claude', account: 'default', remaining_fraction: 1 });
+    expect(snapshot.quota[0]).toMatchObject({
+      vendor: 'claude',
+      account: 'default',
+      remaining_fraction: 1,
+    });
   });
 
   test('reflects cooldown_until after a 429', async () => {
@@ -56,8 +60,20 @@ describe('with a QuotaService', () => {
 
   test('carries spend_usd for a Pi-on-Claude extra-usage account', async () => {
     const quota = new QuotaService({ store });
-    await store.putVendors({ claude: { accounts: [{ id: 'default', auth: 'subscription' }, { id: 'pi', auth: 'subscription' }] } });
-    await quota.recordReported('claude', 'pi', { remaining: 1, unit: 'fraction' }, { spendDeltaUsd: 2.5 });
+    await store.putVendors({
+      claude: {
+        accounts: [
+          { id: 'default', auth: 'subscription' },
+          { id: 'pi', auth: 'subscription' },
+        ],
+      },
+    });
+    await quota.recordReported(
+      'claude',
+      'pi',
+      { remaining: 1, unit: 'usd' },
+      { spendDeltaUsd: 2.5 },
+    );
     const snapshot = buildSnapshot(store, gates, undefined, quota);
     const pi = snapshot.quota.find((q) => q.account === 'pi');
     expect(pi?.spend_usd).toBe(2.5);

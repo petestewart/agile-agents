@@ -19,9 +19,28 @@
  * this ticket's file-ownership boundary. `runner/session.ts` is expected to
  * call `recordUsage`/`record429` at its `usage_update`/vendor-error call
  * sites; see the pipeline report for the exact wiring lines.
+ *
+ * Independent-review fix round (units, window reset, 429 escalation): every
+ * record this service writes now carries a concrete `unit` (`tokens` |
+ * `requests` | `usd` — never a bare ambiguous "fraction"), keeps
+ * `remaining`/`limit` commensurable in that unit across successive writes,
+ * re-arms a countdown when `resets_at` has elapsed, and escalates a 429's
+ * `cooldown_until` through a ladder within one cooldown episode rather than
+ * re-emitting `quota_exhausted` on every call. See each method's doc
+ * comment for the specific bug it fixes and the reproduction test in
+ * `records.test.ts`.
  */
 
-import type { Event, LedgerLine, Quota, QuotaKind, VendorsConfig } from '@agile-agents/shared';
+import type {
+  AccountQuotaConfig,
+  Event,
+  LedgerLine,
+  Quota,
+  QuotaConfidence,
+  QuotaKind,
+  QuotaUnit,
+  VendorsConfig,
+} from '@agile-agents/shared';
 import { ulid, validateQuota } from '@agile-agents/shared';
 import { buildEvent } from '../store/events';
 import { NotFoundError, type StateStore } from '../store/store';
@@ -37,12 +56,15 @@ export const DEFAULT_QUOTA_FLOOR = 0.15;
  * than none at all. One million tokens is a v0 placeholder magnitude (a
  * Claude subscription context/turn budget order of magnitude), correctable
  * per-account via `VendorAccount.quota.window_tokens` with zero code
- * changes once real numbers are known.
+ * changes once real numbers are known. This is distinct from `quotaFraction`'s
+ * own "neither limit nor account config known" fallback (which returns `1`,
+ * never a guessed magnitude) — this constant only ever backs a *countdown*
+ * record, which therefore always has some limit, guessed or configured.
  */
 export const DEFAULT_WINDOW_TOKENS = 1_000_000;
 
-/** CLAUDE.md doesn't tunable a 429 backoff explicitly; five minutes is the v0 default absent a vendor `Retry-After`. */
-export const DEFAULT_429_BACKOFF_SECONDS = 300;
+/** Review-fix: "escalate cooldown (e.g. retry-after or 30 s → 1 m → 5 m → 15 m cap)". */
+export const BACKOFF_LADDER_SECONDS = [30, 60, 300, 900] as const;
 
 /** Minimal seam `Bus.send` already satisfies — avoids importing the concrete `Bus` class into a module that must not edit it. */
 export interface QuotaBusSender {
@@ -59,19 +81,59 @@ export interface QuotaServiceOptions {
 }
 
 export interface ReportedReading {
-  /** Same unit as `unit` below — a real reading from the vendor, not a countdown estimate. */
+  /**
+   * Absolute remaining in `unit` when `unit` is given; otherwise (review
+   * fix) a bare `0..1` fraction of whatever limit can be resolved (this
+   * reading's own `limit`, else the account's `vendors.yaml`
+   * `quota.window_tokens`, else the existing record's own token-unit
+   * limit) — resolved immediately into a concrete `tokens` reading so the
+   * stored record never carries an ambiguous unit. "Reported updates
+   * replace the baseline": the resolved absolute value *replaces*
+   * whatever the countdown currently thinks, and the next `recordUsage`
+   * decrements from it directly.
+   */
   remaining: number;
-  unit?: string;
+  unit?: QuotaUnit;
+  /** This reading's own denominator, same unit as `remaining`/`unit`. */
+  limit?: number;
   resets_at?: string | null;
   kind?: QuotaKind;
 }
 
-/** `remaining` normalized to a [0, 1] fraction of `limit` when present, else `remaining` itself (already a fraction — §4: "fraction, $ or tokens"). */
-export function quotaFraction(quota: Pick<Quota, 'remaining' | 'limit'>): number {
+/**
+ * `remaining / limit` when `limit` is known (the record's own denominator —
+ * review fix: "must use the record's limit, drop nothing"); else
+ * `remaining / windowTokensFallback` when a fallback denominator is given
+ * and the record is unit `tokens`; else `1` — an unresolvable fraction
+ * must never read as "exhausted" (review fix: "when neither exists ...
+ * never emit exhausted").
+ */
+export function quotaFraction(
+  quota: Pick<Quota, 'remaining' | 'limit' | 'unit'>,
+  windowTokensFallback?: number,
+): number {
   if (quota.limit !== undefined && quota.limit > 0) {
     return Math.max(0, Math.min(1, quota.remaining / quota.limit));
   }
-  return quota.remaining;
+  if (windowTokensFallback !== undefined && windowTokensFallback > 0 && quota.unit === 'tokens') {
+    return Math.max(0, Math.min(1, quota.remaining / windowTokensFallback));
+  }
+  return 1;
+}
+
+const BACKOFF_FIRST_SECONDS: number = BACKOFF_LADDER_SECONDS[0];
+const BACKOFF_CAP_SECONDS: number =
+  BACKOFF_LADDER_SECONDS[BACKOFF_LADDER_SECONDS.length - 1] ?? BACKOFF_FIRST_SECONDS;
+
+function nextBackoffSeconds(currentSeconds: number | undefined): number {
+  if (currentSeconds === undefined) return BACKOFF_FIRST_SECONDS;
+  const index = BACKOFF_LADDER_SECONDS.indexOf(
+    currentSeconds as (typeof BACKOFF_LADDER_SECONDS)[number],
+  );
+  if (index === -1 || index === BACKOFF_LADDER_SECONDS.length - 1) {
+    return BACKOFF_CAP_SECONDS;
+  }
+  return BACKOFF_LADDER_SECONDS[index + 1] ?? BACKOFF_CAP_SECONDS;
 }
 
 export interface BarometerStats {
@@ -109,25 +171,375 @@ export class QuotaService {
     }
   }
 
-  private accountFloor(vendor: string, account: string): number {
+  private accountConfig(vendor: string, account: string): AccountQuotaConfig | undefined {
     try {
       const vendors = this.store.getVendors();
-      const found = vendors[vendor]?.accounts.find((a) => a.id === account);
-      return found?.quota?.floor ?? this.defaultFloor;
+      return vendors[vendor]?.accounts.find((a) => a.id === account)?.quota;
     } catch {
-      return this.defaultFloor;
+      return undefined;
     }
   }
 
-  private windowTokens(vendor: string, account: string, existing: Quota | undefined): number {
-    try {
-      const vendors = this.store.getVendors();
-      const found = vendors[vendor]?.accounts.find((a) => a.id === account);
-      if (found?.quota?.window_tokens !== undefined) return found.quota.window_tokens;
-    } catch {
-      // No vendors.yaml (or account not listed) — fall through to the record's own limit, then the default.
+  private accountFloor(accountConfig: AccountQuotaConfig | undefined): number {
+    return accountConfig?.floor ?? this.defaultFloor;
+  }
+
+  /**
+   * Review-fix (#4, window reset): "when `now >= resets_at`, re-arm
+   * (`remaining = limit`, `resets_at += window`, clear `quota_low` emitted
+   * flag)". There is no separate "emitted" flag to clear — the existing
+   * once-per-crossing logic (`afterQuotaWrite`'s `previousFraction`
+   * comparison) already re-arms itself once `remaining` is reset to
+   * `limit` here, since the *next* write's `previousFraction` reflects the
+   * rearmed (full) state, not the stale below-floor one.
+   *
+   * Returns `existing` unchanged when no reset is due (no `resets_at`, or
+   * it hasn't arrived yet).
+   */
+  private applyWindowReset(
+    existing: Quota | undefined,
+    accountConfig: AccountQuotaConfig | undefined,
+  ): Quota | undefined {
+    if (existing?.resets_at == null) return existing;
+    const resetsAtMs = Date.parse(existing.resets_at);
+    if (Number.isNaN(resetsAtMs) || this.now().getTime() < resetsAtMs) return existing;
+
+    const windowHours = accountConfig?.window_hours;
+    // DESIGN-GAP: with no configured cadence, this is a one-shot rearm —
+    // `resets_at` clears to `null` and no further automatic rearm happens
+    // until something (a reported reading, or vendors.yaml gaining
+    // `window_hours`) sets a new one.
+    const nextResetsAt =
+      windowHours !== undefined
+        ? new Date(resetsAtMs + windowHours * 60 * 60 * 1000).toISOString()
+        : null;
+
+    return {
+      ...existing,
+      remaining: existing.limit ?? existing.remaining,
+      cooldown_until: null,
+      cooldown_backoff_seconds: undefined,
+      resets_at: nextResetsAt,
+    };
+  }
+
+  private initialResetsAt(accountConfig: AccountQuotaConfig | undefined): string | null {
+    if (accountConfig?.window_hours === undefined) return null;
+    return new Date(
+      this.now().getTime() + accountConfig.window_hours * 60 * 60 * 1000,
+    ).toISOString();
+  }
+
+  /**
+   * §4 countdown feed: `ledgerLine`'s token delta decrements the account's
+   * remaining-tokens budget. Emits `quota_low`/`quota_exhausted` (bus +
+   * event) exactly once per crossing — i.e. only on the transition from
+   * "above floor" to "at/below floor" (or to zero) — never on every
+   * subsequent decrement while already below it. A window reset (§4/review
+   * fix #4) or a `recordReported` reading that brings the fraction back
+   * above the floor re-arms the crossing.
+   *
+   * Review-fix "reset after a successful call": a successful usage record
+   * clears any `cooldown_until`/escalation tier left over from a prior 429
+   * — this call succeeding is itself evidence the account is usable again,
+   * the same "lazily on read" reasoning `routeCandidates` (routing.ts)
+   * applies independently for a stale cooldown it hasn't yet had a
+   * `recordUsage` call to clear.
+   */
+  async recordUsage(vendor: string, account: string, ledgerLine: LedgerLine): Promise<Quota> {
+    const accountConfig = this.accountConfig(vendor, account);
+    const existing = this.applyWindowReset(this.tryGetQuota(vendor, account), accountConfig);
+    const previousFraction = existing ? quotaFraction(existing, accountConfig?.window_tokens) : 1;
+
+    const windowTokens =
+      accountConfig?.window_tokens ??
+      (existing?.unit === 'tokens' ? existing.limit : undefined) ??
+      DEFAULT_WINDOW_TOKENS;
+
+    // Review-fix (#2): the baseline is only ever the existing record's own
+    // `remaining` when it is *already* in the same `tokens` unit this
+    // method works in — never inferred from a fraction (that inference is
+    // exactly what let a `recordReported` value in a different unit get
+    // silently misread as a raw token count). Any other existing unit (or
+    // no existing record) starts a fresh full-window baseline.
+    const baselineTokens = existing?.unit === 'tokens' ? existing.remaining : windowTokens;
+
+    const used = ledgerLine.in_tokens + ledgerLine.out_tokens;
+    const remainingTokens = Math.max(0, baselineTokens - used);
+
+    const updated: Quota = validateQuota({
+      vendor,
+      account,
+      kind: existing?.kind ?? 'subscription_window',
+      remaining: remainingTokens,
+      unit: 'tokens',
+      resets_at: existing?.resets_at ?? this.initialResetsAt(accountConfig),
+      confidence: 'estimated',
+      source: 'ledger_countdown',
+      updated: this.now().toISOString(),
+      cooldown_until: null,
+      cooldown_backoff_seconds: undefined,
+      limit: windowTokens,
+      billing: existing?.billing,
+      spend_usd: existing?.spend_usd,
+    });
+
+    await this.store.putQuota(updated);
+    await this.afterQuotaWrite(
+      vendor,
+      account,
+      previousFraction,
+      updated,
+      accountConfig?.window_tokens,
+    );
+    return updated;
+  }
+
+  /**
+   * §4 "reported" feed: a real vendor reading (stream event / usage
+   * endpoint) overrides the countdown estimate outright, regardless of
+   * what the countdown currently thinks — "reported updates replace the
+   * baseline" (review fix #2). A bare `0..1` fraction reading (no `unit`
+   * given) is resolved into a concrete `tokens` reading immediately
+   * (against this reading's own `limit`, else the account's configured
+   * `window_tokens`, else the existing record's own token-unit limit) so
+   * the stored record's `unit`/`remaining`/`limit` are always mutually
+   * consistent — never inherited from whatever unit the *previous* record
+   * happened to be in, which was the review-flagged bug: a reported 0.8
+   * (80% full) got stored with an inherited `unit: 'tokens'`, so the very
+   * next countdown decrement read "0.8" as "0.8 tokens left" and tripped a
+   * spurious `quota_exhausted` (see `records.test.ts`'s
+   * `'reproduces and fixes the reviewed unit-inheritance bug'`).
+   *
+   * Also the write path for Pi-on-Claude's extra-usage dollar accrual
+   * (§4/§11: "Pi-on-Claude billed as extra-usage dollars") via
+   * `spendDeltaUsd`.
+   */
+  async recordReported(
+    vendor: string,
+    account: string,
+    reading: ReportedReading,
+    opts: { spendDeltaUsd?: number } = {},
+  ): Promise<Quota> {
+    const accountConfig = this.accountConfig(vendor, account);
+    const existing = this.applyWindowReset(this.tryGetQuota(vendor, account), accountConfig);
+    const previousFraction = existing ? quotaFraction(existing, accountConfig?.window_tokens) : 1;
+
+    let remaining: number;
+    let unit: QuotaUnit;
+    let limit: number | undefined;
+    let confidence: QuotaConfidence;
+
+    if (reading.unit !== undefined) {
+      unit = reading.unit;
+      remaining = reading.remaining;
+      limit = reading.limit ?? (unit === 'tokens' ? accountConfig?.window_tokens : undefined);
+      confidence = 'reported';
+    } else {
+      const resolvedLimit =
+        reading.limit ??
+        accountConfig?.window_tokens ??
+        (existing?.unit === 'tokens' ? existing.limit : undefined);
+      if (resolvedLimit !== undefined) {
+        unit = 'tokens';
+        limit = resolvedLimit;
+        remaining = Math.round(reading.remaining * resolvedLimit);
+        confidence = 'reported';
+      } else {
+        // Nothing to resolve the bare fraction against — store it as a
+        // last resort with `limit` left unset and `confidence: 'low'`, so
+        // `quotaFraction` (no limit, no fallback given) always reads it as
+        // `1` regardless of this stored number (review fix #3).
+        unit = 'tokens';
+        limit = undefined;
+        remaining = reading.remaining;
+        confidence = 'low';
+      }
     }
-    return existing?.limit ?? DEFAULT_WINDOW_TOKENS;
+
+    const spend_usd =
+      opts.spendDeltaUsd !== undefined
+        ? (existing?.spend_usd ?? 0) + opts.spendDeltaUsd
+        : existing?.spend_usd;
+
+    const updated: Quota = validateQuota({
+      vendor,
+      account,
+      kind: reading.kind ?? existing?.kind ?? 'subscription_window',
+      remaining,
+      unit,
+      limit,
+      resets_at:
+        reading.resets_at !== undefined ? reading.resets_at : (existing?.resets_at ?? null),
+      confidence,
+      source: 'usage_endpoint',
+      updated: this.now().toISOString(),
+      cooldown_until: null,
+      cooldown_backoff_seconds: undefined,
+      billing: opts.spendDeltaUsd !== undefined ? 'extra_usage_dollars' : existing?.billing,
+      spend_usd,
+    });
+
+    await this.store.putQuota(updated);
+    await this.afterQuotaWrite(
+      vendor,
+      account,
+      previousFraction,
+      updated,
+      accountConfig?.window_tokens,
+    );
+    return updated;
+  }
+
+  /**
+   * §4/§10: "A 429 is a reading: remaining 0 until reset". Review-fix #5:
+   * emits `quota_exhausted` once per *cooldown episode* — a repeated 429
+   * while the previous `cooldown_until` is still in the future escalates
+   * the same episode's backoff (an explicit `retryAfterSeconds` always
+   * wins; otherwise the ladder 30s → 1m → 5m → 15m cap) without a second
+   * event/bus send. A 429 arriving after the prior cooldown has already
+   * elapsed (or none was ever set) starts a fresh episode at the ladder's
+   * first tier and emits.
+   */
+  async record429(vendor: string, account: string, retryAfterSeconds?: number): Promise<Quota> {
+    const accountConfig = this.accountConfig(vendor, account);
+    const existing = this.applyWindowReset(this.tryGetQuota(vendor, account), accountConfig);
+    const nowMs = this.now().getTime();
+    const sameEpisode =
+      existing?.cooldown_until != null && Date.parse(existing.cooldown_until) > nowMs;
+
+    const backoffSeconds =
+      retryAfterSeconds ??
+      nextBackoffSeconds(sameEpisode ? existing?.cooldown_backoff_seconds : undefined);
+    const cooldownUntil = new Date(nowMs + backoffSeconds * 1000).toISOString();
+
+    const windowTokens = accountConfig?.window_tokens ?? existing?.limit ?? DEFAULT_WINDOW_TOKENS;
+
+    const updated: Quota = validateQuota({
+      vendor,
+      account,
+      kind: existing?.kind ?? 'subscription_window',
+      remaining: 0,
+      unit: existing?.unit ?? 'tokens',
+      resets_at: existing?.resets_at ?? null,
+      confidence: 'reported',
+      source: 'rate_limit_429',
+      updated: new Date(nowMs).toISOString(),
+      cooldown_until: cooldownUntil,
+      cooldown_backoff_seconds: backoffSeconds,
+      limit: existing?.unit === 'tokens' || existing === undefined ? windowTokens : existing.limit,
+      billing: existing?.billing,
+      spend_usd: existing?.spend_usd,
+    });
+
+    await this.store.putQuota(updated);
+    if (!sameEpisode) {
+      await this.emitQuotaEvent(
+        'quota_exhausted',
+        vendor,
+        account,
+        updated,
+        accountConfig?.window_tokens,
+      );
+    }
+    return updated;
+  }
+
+  /** Shared crossing-detection + event/bus emission for `recordUsage`/`recordReported`. */
+  private async afterQuotaWrite(
+    vendor: string,
+    account: string,
+    previousFraction: number,
+    updated: Quota,
+    windowTokensFallback: number | undefined,
+  ): Promise<void> {
+    const floor = this.accountFloor(this.accountConfig(vendor, account));
+    const newFraction = quotaFraction(updated, windowTokensFallback);
+    const isCoolingDown =
+      updated.cooldown_until !== null && Date.parse(updated.cooldown_until) > this.now().getTime();
+
+    if (newFraction <= 0 || isCoolingDown) {
+      if (previousFraction > 0 && !isCoolingDown) {
+        await this.emitQuotaEvent(
+          'quota_exhausted',
+          vendor,
+          account,
+          updated,
+          windowTokensFallback,
+        );
+      }
+      return;
+    }
+    if (newFraction <= floor && previousFraction > floor) {
+      await this.emitQuotaEvent('quota_low', vendor, account, updated, windowTokensFallback);
+    }
+  }
+
+  private async emitQuotaEvent(
+    kind: 'quota_low' | 'quota_exhausted',
+    vendor: string,
+    account: string,
+    quota: Quota,
+    windowTokensFallback: number | undefined,
+  ): Promise<Event> {
+    const event = await this.store.appendEvent(
+      buildEvent(kind, {
+        data: { vendor, account, remaining: quotaFraction(quota, windowTokensFallback) },
+      }),
+    );
+    if (this.bus) {
+      const now = this.now();
+      await this.bus.send({
+        id: ulid(now.getTime()),
+        ts: now.toISOString(),
+        from: 'daemon',
+        to: ['em'],
+        kind,
+        priority: kind === 'quota_exhausted' ? 'urgent' : 'normal',
+        body: `${vendor}/${account} ${kind === 'quota_exhausted' ? 'exhausted' : 'low'} (remaining ${(quotaFraction(quota, windowTokensFallback) * 100).toFixed(0)}%)`,
+        requires_ack: false,
+      });
+    }
+    return event;
+  }
+
+  /**
+   * Every account named in `vendors.yaml`, its `Quota` record if one
+   * exists (else a synthesized full/untouched default — never persisted).
+   * Enriches a record that has no `limit` of its own with the account's
+   * configured `window_tokens` as an effective display-only limit (never
+   * persisted), so a caller with no `vendors.yaml` of its own (the feed
+   * snapshot, `agile status`) can call `quotaFraction(quota)` — 1-arg —
+   * and still get an accurate fraction.
+   */
+  list(): Quota[] {
+    let vendors: VendorsConfig;
+    try {
+      vendors = this.store.getVendors();
+    } catch {
+      return [];
+    }
+    const quotas: Quota[] = [];
+    for (const [vendor, config] of Object.entries(vendors)) {
+      for (const account of config.accounts) {
+        const existing = this.tryGetQuota(vendor, account.id);
+        const record =
+          existing ??
+          this.defaultQuota(
+            vendor,
+            account.id,
+            account.quota?.window_tokens ?? DEFAULT_WINDOW_TOKENS,
+          );
+        const effectiveLimit =
+          record.limit ?? (record.unit === 'tokens' ? account.quota?.window_tokens : undefined);
+        quotas.push(
+          effectiveLimit !== undefined && record.limit === undefined
+            ? { ...record, limit: effectiveLimit }
+            : record,
+        );
+      }
+    }
+    return quotas;
   }
 
   private defaultQuota(vendor: string, account: string, windowTokens: number): Quota {
@@ -143,201 +555,6 @@ export class QuotaService {
       cooldown_until: null,
       limit: windowTokens,
     });
-  }
-
-  /**
-   * §4 countdown feed: `ledgerLine`'s token delta decrements the account's
-   * remaining-tokens budget. Emits `quota_low`/`quota_exhausted` (bus +
-   * event) exactly once per crossing — i.e. only on the transition from
-   * "above floor" to "at/below floor" (or to zero) — never on every
-   * subsequent decrement while already below it, which is what "once per
-   * window" (§4) means absent an explicit reset signal. A later `reported`
-   * reading (or the window's `resets_at` rolling over — T024's concern)
-   * that brings the fraction back above the floor re-arms the crossing.
-   */
-  async recordUsage(vendor: string, account: string, ledgerLine: LedgerLine): Promise<Quota> {
-    const existing = this.tryGetQuota(vendor, account);
-    const windowTokens = this.windowTokens(vendor, account, existing);
-    const previousFraction = existing ? quotaFraction(existing) : 1;
-
-    // Baseline remaining tokens: reuse the existing record's own token
-    // count when it's already tracked in tokens; otherwise (no record yet,
-    // or the existing record is a `reported` fraction/dollar reading)
-    // re-derive a token baseline from its fraction against this window.
-    const baselineTokens =
-      existing !== undefined && existing.unit === 'tokens'
-        ? existing.remaining
-        : windowTokens * previousFraction;
-
-    const used = ledgerLine.in_tokens + ledgerLine.out_tokens;
-    const remainingTokens = Math.max(0, baselineTokens - used);
-
-    const updated: Quota = validateQuota({
-      vendor,
-      account,
-      kind: existing?.kind ?? 'subscription_window',
-      remaining: remainingTokens,
-      unit: 'tokens',
-      resets_at: existing?.resets_at ?? null,
-      confidence: 'estimated',
-      source: 'ledger_countdown',
-      updated: this.now().toISOString(),
-      cooldown_until: existing?.cooldown_until ?? null,
-      limit: windowTokens,
-      billing: existing?.billing,
-      spend_usd: existing?.spend_usd,
-    });
-
-    await this.store.putQuota(updated);
-    await this.afterQuotaWrite(vendor, account, previousFraction, updated);
-    return updated;
-  }
-
-  /**
-   * §4 "reported" feed: a real vendor reading (stream event / usage
-   * endpoint) overrides the countdown estimate outright, regardless of
-   * what the countdown currently thinks. Also the write path for
-   * Pi-on-Claude's extra-usage dollar accrual (§4/§11: "Pi-on-Claude billed
-   * as extra-usage dollars") via `spendDeltaUsd`.
-   */
-  async recordReported(
-    vendor: string,
-    account: string,
-    reading: ReportedReading,
-    opts: { spendDeltaUsd?: number } = {},
-  ): Promise<Quota> {
-    const existing = this.tryGetQuota(vendor, account);
-    const previousFraction = existing ? quotaFraction(existing) : 1;
-
-    const spend_usd =
-      opts.spendDeltaUsd !== undefined
-        ? (existing?.spend_usd ?? 0) + opts.spendDeltaUsd
-        : existing?.spend_usd;
-
-    const updated: Quota = validateQuota({
-      vendor,
-      account,
-      kind: reading.kind ?? existing?.kind ?? 'subscription_window',
-      remaining: reading.remaining,
-      unit: reading.unit ?? existing?.unit ?? 'fraction',
-      resets_at: reading.resets_at !== undefined ? reading.resets_at : (existing?.resets_at ?? null),
-      confidence: 'reported',
-      source: 'usage_endpoint',
-      updated: this.now().toISOString(),
-      cooldown_until: existing?.cooldown_until ?? null,
-      // A reported reading is authoritative on its own terms — it carries
-      // no local "limit" denominator of its own (§4's `remaining` is
-      // already whatever fraction/unit the vendor reported).
-      limit: undefined,
-      billing: opts.spendDeltaUsd !== undefined ? 'extra_usage_dollars' : existing?.billing,
-      spend_usd,
-    });
-
-    await this.store.putQuota(updated);
-    await this.afterQuotaWrite(vendor, account, previousFraction, updated);
-    return updated;
-  }
-
-  /**
-   * §4/§10: "A 429 is a reading: remaining 0 until reset" — always sets
-   * `cooldown_until` and always emits `quota_exhausted` (a 429 is a fresh,
-   * discrete signal each time it happens, unlike the countdown's
-   * once-per-crossing `quota_low`/`quota_exhausted`).
-   */
-  async record429(vendor: string, account: string, retryAfterSeconds?: number): Promise<Quota> {
-    const existing = this.tryGetQuota(vendor, account);
-    const windowTokens = this.windowTokens(vendor, account, existing);
-    const cooldownUntil = new Date(
-      this.now().getTime() + (retryAfterSeconds ?? DEFAULT_429_BACKOFF_SECONDS) * 1000,
-    ).toISOString();
-
-    const updated: Quota = validateQuota({
-      vendor,
-      account,
-      kind: existing?.kind ?? 'subscription_window',
-      remaining: 0,
-      unit: existing?.unit ?? 'tokens',
-      resets_at: existing?.resets_at ?? null,
-      confidence: 'reported',
-      source: 'rate_limit_429',
-      updated: this.now().toISOString(),
-      cooldown_until: cooldownUntil,
-      limit: existing?.unit === 'tokens' || existing === undefined ? windowTokens : existing.limit,
-      billing: existing?.billing,
-      spend_usd: existing?.spend_usd,
-    });
-
-    await this.store.putQuota(updated);
-    await this.emitQuotaEvent('quota_exhausted', vendor, account, updated);
-    return updated;
-  }
-
-  /** Shared crossing-detection + event/bus emission for `recordUsage`/`recordReported`. */
-  private async afterQuotaWrite(
-    vendor: string,
-    account: string,
-    previousFraction: number,
-    updated: Quota,
-  ): Promise<void> {
-    const floor = this.accountFloor(vendor, account);
-    const newFraction = quotaFraction(updated);
-    const isCoolingDown = updated.cooldown_until !== null && Date.parse(updated.cooldown_until) > this.now().getTime();
-
-    if (newFraction <= 0 || isCoolingDown) {
-      if (previousFraction > 0 && !isCoolingDown) {
-        await this.emitQuotaEvent('quota_exhausted', vendor, account, updated);
-      } else if (isCoolingDown) {
-        // Cooldown is set elsewhere (record429 already emits its own
-        // event) — nothing further to do here.
-      }
-      return;
-    }
-    if (newFraction <= floor && previousFraction > floor) {
-      await this.emitQuotaEvent('quota_low', vendor, account, updated);
-    }
-  }
-
-  private async emitQuotaEvent(
-    kind: 'quota_low' | 'quota_exhausted',
-    vendor: string,
-    account: string,
-    quota: Quota,
-  ): Promise<Event> {
-    const event = await this.store.appendEvent(
-      buildEvent(kind, { data: { vendor, account, remaining: quotaFraction(quota) } }),
-    );
-    if (this.bus) {
-      const now = this.now();
-      await this.bus.send({
-        id: ulid(now.getTime()),
-        ts: now.toISOString(),
-        from: 'daemon',
-        to: ['em'],
-        kind,
-        priority: kind === 'quota_exhausted' ? 'urgent' : 'normal',
-        body: `${vendor}/${account} ${kind === 'quota_exhausted' ? 'exhausted' : 'low'} (remaining ${(quotaFraction(quota) * 100).toFixed(0)}%)`,
-        requires_ack: false,
-      });
-    }
-    return event;
-  }
-
-  /** Every account named in `vendors.yaml`, its `Quota` record if one exists (else a synthesized full/untouched default — never persisted). */
-  list(): Quota[] {
-    let vendors: VendorsConfig;
-    try {
-      vendors = this.store.getVendors();
-    } catch {
-      return [];
-    }
-    const quotas: Quota[] = [];
-    for (const [vendor, config] of Object.entries(vendors)) {
-      for (const account of config.accounts) {
-        const existing = this.tryGetQuota(vendor, account.id);
-        quotas.push(existing ?? this.defaultQuota(vendor, account.id, account.quota?.window_tokens ?? DEFAULT_WINDOW_TOKENS));
-      }
-    }
-    return quotas;
   }
 
   /**
@@ -379,7 +596,8 @@ export class QuotaService {
 
     const events = this.store.listEvents().filter((e) => Date.parse(e.ts) >= windowStartMs);
     const denials = events.filter(
-      (e) => e.kind === 'hook_decision' && agentIds.has(e.agent ?? '') && e.data.decision === 'deny',
+      (e) =>
+        e.kind === 'hook_decision' && agentIds.has(e.agent ?? '') && e.data.decision === 'deny',
     ).length;
     const rateLimit429Count = events.filter(
       (e) => e.kind === 'quota_exhausted' && e.data.vendor === vendor && e.data.account === account,

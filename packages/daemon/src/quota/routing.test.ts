@@ -3,15 +3,29 @@ import type { Quota, VendorsConfig } from '@agile-agents/shared';
 import { validateQuota, validateVendorsConfig } from '@agile-agents/shared';
 import { pickCandidate, routeCandidates } from './routing';
 
-function quota(overrides: Partial<Quota> & Pick<Quota, 'vendor' | 'account' | 'remaining'>): Quota {
+/**
+ * `remaining` here is a `0..1` fraction for test-writing convenience —
+ * translated into a concrete `unit: 'tokens'` record (`limit: 10_000`,
+ * `remaining: fraction * 10_000`) since T023's review fix removed the
+ * ambiguous bare "unit: fraction" convention `quotaFraction` used to
+ * special-case (a record with no `limit` no longer reads its `remaining`
+ * as an already-normalized fraction — see `records.ts`'s `quotaFraction`).
+ */
+function quota(
+  overrides: Partial<Omit<Quota, 'remaining'>> &
+    Pick<Quota, 'vendor' | 'account'> & { remaining: number },
+): Quota {
+  const { remaining: fraction, ...rest } = overrides;
   return validateQuota({
     kind: 'subscription_window',
-    unit: 'fraction',
+    unit: 'tokens',
+    limit: 10_000,
     confidence: 'estimated',
     source: 'ledger_countdown',
     updated: new Date().toISOString(),
     cooldown_until: null,
-    ...overrides,
+    ...rest,
+    remaining: Math.round(fraction * 10_000),
   });
 }
 
@@ -26,14 +40,20 @@ const singleClaudeConfig: VendorsConfig = validateVendorsConfig({
 
 describe('routeCandidates — default fallback (no routing table)', () => {
   test('with only the single Claude entry configured, that is the only candidate', () => {
-    const result = routeCandidates('engineer', 'standard', { vendors: singleClaudeConfig, quotas: [] });
+    const result = routeCandidates('engineer', 'standard', {
+      vendors: singleClaudeConfig,
+      quotas: [],
+    });
     expect('none' in result).toBe(false);
     if ('none' in result) throw new Error('unreachable');
     expect(result).toEqual([{ vendor: 'claude', account: 'default' }]);
   });
 
   test('a never-observed account (no Quota record) is treated as fully available', () => {
-    const result = routeCandidates('engineer', 'standard', { vendors: twoVendorConfig, quotas: [] });
+    const result = routeCandidates('engineer', 'standard', {
+      vendors: twoVendorConfig,
+      quotas: [],
+    });
     expect('none' in result).toBe(false);
   });
 });
@@ -53,7 +73,9 @@ describe('routeCandidates — floor filtering', () => {
       quota({ vendor: 'claude', account: 'max', remaining: 0 }),
       quota({ vendor: 'openai', account: 'chatgpt', remaining: 0.9 }),
     ];
-    const result = pickCandidate(routeCandidates('engineer', 'standard', { vendors: twoVendorConfig, quotas }));
+    const result = pickCandidate(
+      routeCandidates('engineer', 'standard', { vendors: twoVendorConfig, quotas }),
+    );
     expect(result).toEqual({ vendor: 'openai', account: 'chatgpt' });
   });
 
@@ -100,21 +122,34 @@ describe('routeCandidates — cooldown', () => {
       }),
       quota({ vendor: 'openai', account: 'chatgpt', remaining: 0.7 }),
     ];
-    const result = routeCandidates('engineer', 'standard', { vendors: twoVendorConfig, quotas, now });
+    const result = routeCandidates('engineer', 'standard', {
+      vendors: twoVendorConfig,
+      quotas,
+      now,
+    });
     expect(result).toEqual([{ vendor: 'openai', account: 'chatgpt' }]);
   });
 
-  test('a cooldown that has already elapsed no longer excludes the account', () => {
+  test('QA-fix: a cooldown that has already elapsed no longer excludes the account, even though remaining is still the stale 0 a 429 left behind', () => {
     const now = new Date('2026-09-09T12:00:00.000Z');
+    // This is exactly what `record429` persists — `remaining: 0` alongside
+    // `cooldown_until` (§4: "remaining 0 until reset") — not a
+    // hand-picked healthy fraction. The bug QA found: once `cooldown_until`
+    // elapses, `remaining` is still 0 on disk (nothing has refreshed it
+    // yet), so the floor check alone kept excluding the account forever.
     const quotas = [
       quota({
         vendor: 'claude',
         account: 'default',
-        remaining: 0.9,
-        cooldown_until: new Date(now.getTime() - 1_000).toISOString(),
+        remaining: 0, // stale post-429 value; still on disk
+        cooldown_until: new Date(now.getTime() - 1_000).toISOString(), // elapsed 1s ago
       }),
     ];
-    const result = routeCandidates('engineer', 'standard', { vendors: singleClaudeConfig, quotas, now });
+    const result = routeCandidates('engineer', 'standard', {
+      vendors: singleClaudeConfig,
+      quotas,
+      now,
+    });
     expect(result).toEqual([{ vendor: 'claude', account: 'default' }]);
   });
 });
@@ -151,10 +186,14 @@ describe('routeCandidates — explicit routing table (§11)', () => {
       vendors,
       quotas: [],
       routing: {
-        'reviewer:novel': [{ vendor: 'openai', account: 'chatgpt', model: 'o1', reasoning: 'high' }],
+        'reviewer:novel': [
+          { vendor: 'openai', account: 'chatgpt', model: 'o1', reasoning: 'high' },
+        ],
       },
     });
-    expect(result).toEqual([{ vendor: 'openai', account: 'chatgpt', model: 'o1', reasoning: 'high' }]);
+    expect(result).toEqual([
+      { vendor: 'openai', account: 'chatgpt', model: 'o1', reasoning: 'high' },
+    ]);
   });
 
   test('falls back to the default enumeration for a (role, tier) not in the routing table', () => {

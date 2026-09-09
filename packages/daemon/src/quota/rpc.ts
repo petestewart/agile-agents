@@ -7,7 +7,7 @@
 
 import type { RpcMethodHandler } from '../rpc';
 import type { StateStore } from '../store/store';
-import { QuotaService } from './records';
+import type { QuotaService } from './records';
 import { type RouteCandidatesOptions, routeCandidates } from './routing';
 
 export interface QuotaRecord429Params {
