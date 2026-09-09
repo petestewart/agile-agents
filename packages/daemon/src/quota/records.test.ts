@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { LedgerLine, Message } from '@agile-agents/shared';
 import { validateAgentRecord, validateLedgerLine } from '@agile-agents/shared';
+import { Bus } from '../bus/bus';
 import { runInit } from '../init';
 import { NotFoundError, StateStore } from '../store/store';
 import {
@@ -185,6 +186,19 @@ describe('QuotaService — quota_low / quota_exhausted bus events', () => {
     await store.putVendors({ claude: { accounts: [{ id: 'max', auth: 'subscription', quota: { window_tokens: 10 } }] } });
     await quota.recordUsage('claude', 'max', ledgerLine({ in_tokens: 10 }));
     expect(store.listEvents().some((e) => e.kind === 'quota_exhausted')).toBe(true);
+  });
+});
+
+describe('QuotaService — real Bus (routing check, not just the injected fake)', () => {
+  test('a real Bus accepts the daemon -> em quota_low/quota_exhausted send (checkRoute allows it)', async () => {
+    const bus = new Bus(store, stateRoot);
+    // eng-1 must be registered for Bus to have an inbox to poll, but the
+    // daemon -> em route doesn't require em to be pre-registered.
+    const quota = new QuotaService({ store, bus });
+    await store.putVendors({ claude: { accounts: [{ id: 'default', auth: 'subscription', quota: { window_tokens: 100 } }] } });
+    await quota.recordUsage('claude', 'default', ledgerLine({ in_tokens: 100 }));
+    const inbox = await bus.poll('em' as never);
+    expect(inbox.some((m) => m.kind === 'quota_exhausted')).toBe(true);
   });
 });
 
