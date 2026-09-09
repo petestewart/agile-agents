@@ -251,12 +251,12 @@ Priority encodes dependency layer as well as importance: P0 tickets are v0-block
 
 ### Ticket: T021 Demo fixture and end-to-end sprint
 - **Priority:** P1
-- **Status:** In Progress
+- **Status:** In Review
 - **Owner:** sonnet:worker-T021
 - **Scope:** Depends on T014–T020. `fixtures/demo-project`: small TS service with a test suite, a deliberately oversized file, one seeded rule violation opportunity, and a seeded `.agile/` (product.md, two SPECs, one DEC, an epic of three tickets where ticket 2's contract contains a planted contradiction that forces a discovery). `agile run` drives it per the Definition of Done. Tune role briefs until the run passes three times in a row.
 - **Acceptance Criteria:** Definition of Done "Run" section holds; a written run report with token spend per role is committed under `fixtures/demo-project/runs/`.
 - **Validation Steps:** `AGILE_LIVE=1 bun run e2e` three consecutive passes.
-- **Notes:** This is where prompts get real; expect several iterations on T013 briefs.
+- **Notes:** Branch `T021-demo-e2e` (`625a4c5`; survived the container restart as uncommitted files, merged integration first). `fixtures/demo-project` (service + tests, 2011-line oversized `legacy/dump.ts`, seeded `.agile/` epic with the planted contradiction), `agile run` (`cli/commands/run.ts`), offline e2e over the fake ACP agent (`run.e2e.test.ts`, `runner/pipeline-glue.ts`, `fake-driver.ts`) run 3x green as the offline stand-in for the three live passes; run report under `runs/`. Worker declined the architect-spawn wiring as a design decision — split out as T031. QA round 1 REJECT: no `RULE-*.md` seeded and the scripted reviewer always approves, so the "seeded rule violation → `request_changes` citing the rule" path is never exercised (all other checks passed). Review round 1 FAIL: same rule gap; `AGILE_LIVE=1 bun run e2e` flips to live mode with no wait and fails in 3 s; offline QA maps every criterion to bare `bun test` (evidence-free). Positives: `agile run` drives the real wired daemon graph on the ceremony tick. Worker round 2 `32b946e` (seeded `RULE-001` + planted `console.log` → real `request_changes`/fix/`approve` on TKT-1001; live mode waits with a deadline; per-ticket proof tests for QA; a reviewer re-spawn collision fixed in `pipeline-glue.ts` with a partial `session.ts` exit-handling change flagged). QA round 2 ACCEPT (rule cycle, DEC-0001 proof test flips, live mode skips fast, event order, home-dir isolation). Review round 2 FAIL: `pipeline-glue.ts` infers session liveness from the durable `AgentRecord` instead of the `Runner` map, so a stale record after a daemon restart acks the first `review_request` and moves the ticket `in_review` with no reviewer spawned; the reuse branch consumes a re-review request nothing can answer (a session is prompted once), so the round-trip is offline-only in production. Nits: live gate keyed on `ANTHROPIC_API_KEY` not `AGILE_LIVE`, 10-min silent churn on a bogus key, `reviewRounds` unset live, `-t` "0 passed" false-pass. Sent back for round 3.
 
 ### Ticket: T022 Pi adapter and `agile` extension
 - **Priority:** P2
@@ -278,21 +278,21 @@ Priority encodes dependency layer as well as importance: P0 tickets are v0-block
 
 ### Ticket: T024 Handoff and pause
 - **Priority:** P2
-- **Status:** In Progress
+- **Status:** In Review
 - **Owner:** sonnet:worker-T024
 - **Scope:** Depends on T022, T023. Graceful handoff (`quota_low` → inject "write handoff stanza + commit WIP" → stop → reassign in the same worktree with thread + handoff as context), hard handoff (daemon-composed from diff + stanzas), `paused` status with `resume_at`, manual `cooldown_until` per account, ledger split across cells.
 - **Acceptance Criteria:** A ticket started on Claude finishes on Pi after a simulated `quota_low`, with the handoff stanza in the thread and both vendors in the ledger.
 - **Validation Steps:** Live e2e with an injected quota event.
-- **Notes:**
+- **Notes:** Branch `T024-handoff-pause` (`b7eee42`, relaunched after the restart); `src/handoff/` (pause/resume against the quota floor, manual per-account cooldown via `Quota.cooldown_until`, urgent graceful-handoff instruction, daemon-composed hard handoff from diff+stanzas, same-worktree reassignment with thread context, `HandoffCoordinator` tick loop, verbs + RPC) plus an `extraContext` seam in `Runner.spawn`; no shared schema change (fields already shipped in T022/T023); offline acceptance proven in `coordinator.test.ts`. Manager wiring: coordinator tick, verbs provider, `handoff.*` RPC. QA round 1 ACCEPT (nit: `handoff.cooldown_set` RPC lacks a caller-identity check). Review round 1 FAIL: any stanza counts as handoff compliance; stop→reassign handshake races the real `Runner` (`already running` or dropped handoff); manual cooldown emits no event; a manual cooldown is shortened by one 429 and erased by `recordReported`; `lastEventIndex = 0` replays history after restart. Worker round 2 `ef9002c` (all five blockers + RPC identity + nits N1–N3; N4–N6 deferred); Review round 2: all five blockers + RPC identity confirmed fixed, but FAIL on a new one — `resume_at` ignores `cooldown_until` (a 30 s 429 pauses a ticket ~20 h; a 4 h manual cooldown flaps then over-pauses). QA round 2 ACCEPT. Sent back for round 3 (resume_at vs cooldown).
 
 ### Ticket: T025 Control room v1
 - **Priority:** P2
-- **Status:** In Progress
+- **Status:** In Review
 - **Owner:** sonnet:worker-T025
 - **Scope:** Depends on T018, T020, T023. React + Vite SPA in `packages/ui` served by the daemon: inbox-style "Needs you" list with detail-on-click, collapsible Team / Board / Feed panels, Oracle + KB viewer with propose-edit, sprint strip with gate chips, spend + barometer behind a top-bar icon, Halt button, EM chat panel over the ACP stream with steer → action-set cards.
 - **Acceptance Criteria:** Every read in the mockup (`design` artifact "Agile Agents Control Room") is backed by daemon data; every write goes through daemon verbs and appears in the event log.
 - **Validation Steps:** Playwright against a seeded daemon.
-- **Notes:** UX iteration after it's functioning, per design §17.
+- **Notes:** Branch `T025-control-room` (`186aa59`, resumed from the restart scaffolding; mockup artifact found and used): React + Vite SPA under `/control-room` (Needs-you inbox with approve/delegate, Team/Board/Feed panels, Oracle/KB viewer with propose-edit, sprint strip + gate chips, spend/barometer popover, Halt button, bus-backed EM chat); new read endpoints `/api/{agents,tickets,oracle,kb,policy}` and write endpoints `/api/halt`, `/api/chat/em`, `/api/oracle/propose` backed by existing store getters/verbs; 2 new Playwright tests (4/4 e2e). Manager wiring: pass `bus` into `startHttpServer`. Gaps: no worktree-diff/bus-thread read endpoint, no EM ACP-stream proxy. Review round 1 FAIL: `DELETE /api/halt/:id` path traversal deleted an arbitrary `.agile/` file (unguarded `store.abs()`); `POST /api/halt` trusts `raised_by` from the body (forged actor); `bus` never passed to `startHttpServer` so chat/propose 503 and the e2e pins it; dark mode falls back to UA colours on every clickable surface. Sent back for round 2 (granted: `store.abs()` containment guard, the one-line `daemon.ts` bus wiring). QA round 1 REJECT: chat/propose 503 (same bus wiring gap) and external ticket changes never appear without a manual reload (WebSocket handlers never refetch); 6/8 scenarios passed. Worker round 2 `0f9793b` (`HaltIdSchema` at the route + `StateStore.abs()` containment guard with tests, `raised_by` fixed to `human`, `bus` passed in `daemon.ts` with the e2e asserting delivery, explicit dark-mode colours + computed-colour test, debounced refetch on `/ws` events + no-reload test; 7/7 e2e 3x). Review round 2 PASS (nits: `abs()` guard is lexical — a planted symlink inside the state root still escapes, unreachable from HTTP; `POST /api/hil/:id/approve` accepts a forged `by`, pre-existing T020; heartbeat `agent_put` triggers a six-endpoint refetch per agent per 30 s). QA round 2 running.
 
 ### Ticket: T026 Tier-0 sandbox
 - **Priority:** P2
@@ -305,12 +305,12 @@ Priority encodes dependency layer as well as importance: P0 tickets are v0-block
 
 ### Ticket: T027 Cursor, Grok, Codex adapters
 - **Priority:** P2
-- **Status:** In Progress
-- **Owner:** sonnet:worker-T027
+- **Status:** Done
+- **Owner:** Unassigned
 - **Scope:** Depends on T010, T026. Vendor entries and per-vendor policy: Cursor (`authenticate`, exec-only ACP gating, `ask` mode for reviewers as a nudge), Grok (client-fs gate with reasons, `authenticate`), Codex via `codex-acp` (observation + sandbox only; `app-server` evaluated separately). Each reproduces its `spike-findings.md` row through the extracted client.
 - **Acceptance Criteria:** Perm matrices match the findings; a reviewer on Grok cannot write (client fs refusal + sandbox).
 - **Validation Steps:** Live perm runs per vendor.
-- **Notes:**
+- **Notes:** Branch `T027-vendor-adapters` (`3a302bc`, 3 commits): Codex `acp-client` entry (codex-acp; no ACP auth, no client-fs per spike §D/§C2/§C3), `permissions/vendor-modes.ts` (Cursor `ask`-mode reviewer nudge) + `vendor-fs.ts` (Grok client-fs write refusal) wired in `runner/session.ts` with an `authenticate`-retry seam; table tests per spike row incl. "reviewer cannot write on Grok". Worker reverted seeding Cursor/Grok/Codex into the shipped `vendors.yaml` (8 tests outside its grant hard-code a single-vendor default) and exports `recommendedVendorEntries()` instead — manager to judge. Live perm runs `AGILE_LIVE=1`-gated. Review round 1 FAIL: `session.ts` sends `modeId: 'default'` to vendors with no such mode and the failure is swallowed (ticket stranded `in_progress`); `requires_sandbox` enforced only from a yaml field defaulting to `false`, so a bare `grok:` stanza runs unsandboxed. Sent back for round 2 (mode ids on the provider entry; `requiresSandbox` on the provider entry). QA round 1 ACCEPT (note: unrecoverable-auth → ready-ticket path relies on the liveness backstop, untested). Worker round 2 `935b149` (`defaultModeId` per provider entry per spike §C2, fail-loud mode failure, mode-validating fake agent, `requiresSandbox` on the grok/codex provider entries OR'd with yaml, bounded per-method auth retry); Review round 2 PASS (nits: Codex reviewer gets `agent` not a read-only nudge; test title over-claims; failure warning reuses `agent_put`; `recommendedVendorEntries()` caller-less). QA round 2 ACCEPT. merge: `fe20bc5` (conflicts: `AcpProviderId` union now includes both `pi` and `codex`; `runner.ts` keeps the T022 provider resolution with the T027 provider-level `requiresSandbox` OR). Decision: shipped `vendors.yaml` stays Claude-only; Cursor/Grok/Codex are enabled by adding `recommendedVendorEntries()`'s stanza by hand (8 tests pin the single-vendor default). Live perm runs per vendor remain `AGILE_LIVE=1` follow-ups.
 
 ### Ticket: T028 Shared ULID generator
 - **Priority:** P1
@@ -338,6 +338,24 @@ Priority encodes dependency layer as well as importance: P0 tickets are v0-block
 - **Acceptance Criteria:** The listed commands allow for an engineer inside its worktree; the same commands with a path outside the worktree deny; every existing adversarial test still passes.
 - **Validation Steps:** `bun test packages/daemon/src/permissions packages/daemon/src/hook`.
 - **Notes:** Discovered in T012 review round 3. Branch `T030-benign-commands` (local worktree). Review round 1 FAIL: `~` unexpanded (home counted as inside), `find -fprint/-fls` writes, `--flag=path` values unchecked, redirect targets skip the `$VAR`/`~` check, `bun x` bypass, no realpath containment, lint red. QA round 1 REJECT on lint only. Worker fixed all 7 in `a191469` (1182 tests); review round 2 PASS. QA round 2 REJECT: flag-less `bun x`/`npx <pkg>` still allowed. Worker fixed round 3 in `6073c39` (dlx forms require a real `node_modules/.bin` entry); QA round 3 ACCEPT; review round 3 FAIL: `isRepoLocalBin` lacks realpath containment (`.bin -> /usr/bin` allows any binary), `pnpm/yarn dlx` should be unconditional hil. Round 4 (`a7c5415`): review PASS, QA ACCEPT. merge: `bfd4512`.
+
+### Ticket: T031 Architect ACP session: permission row and role threading
+- **Priority:** P2
+- **Status:** Todo
+- **Owner:** Unassigned
+- **Scope:** Depends on T010, T014, T021, T026. `PermissionRole` is `engineer | reviewer | qa` (T010 scoped §14's Architect/EM/Reader rows out). Add the architect row per design §14 (oracle write guard + tickets + rules via MCP verbs; no repo edits; `plan` mode per the v0 default, falling back to `default` mode + `approve_plan` gate), thread `'architect'` through `permissions/policy-tables.ts`, `sandbox/{types,wrap}.ts`'s exhaustive per-role tables, `qa/deny.ts`, `runner/runner.ts` (`agentIdFor`, worktree placement: architect works in a read-only checkout of `integration`), and `Runner.spawn('architect', ...)`. The offline e2e (T021) currently calls `registerArchitectTools` directly; switch it to a spawned architect session over the fake ACP agent.
+- **Acceptance Criteria:** `Runner.spawn('architect', ticket)` type-checks and starts a session whose hook/ACP policy denies edits and Bash and allows the architect MCP verbs; the T021 offline e2e produces its discovery → decision cycle through that session; `bun test` green.
+- **Validation Steps:** `bun test packages/daemon/src/runner packages/daemon/src/permissions packages/daemon/src/architect` and the offline e2e 3x.
+- **Notes:** Discovered by T021 (worker report, discovered issue 1). A design decision, not a mechanical patch — hence its own ticket.
+
+### Ticket: T032 HTTP write actor hardening and store path guard follow-ups
+- **Priority:** P2
+- **Status:** Todo
+- **Owner:** Unassigned
+- **Scope:** Depends on T020, T025. (1) `POST /api/hil/:id/approve` and `/delegate` (T020) still take `by` from the request body — set the actor server-side (`human`) like T025's routes. (2) `StateStore.abs()`'s containment guard is lexical; add a realpath check so a symlink planted inside the state root cannot escape it. (3) Feed WebSocket: heartbeat `agent_put` events trigger a full six-endpoint refetch per agent per 30 s in the control room — exclude heartbeat-only updates from the refetch trigger. Tests for each.
+- **Acceptance Criteria:** No HTTP write accepts an actor field; a symlink escape through `abs()` is refused; a heartbeat burst causes zero control-room refetches.
+- **Validation Steps:** `bun test packages/daemon/src/store packages/daemon/src/http.test.ts` and `bun run test:e2e`.
+- **Notes:** From T025 review round 2 nits.
 
 ## 8. Open Questions
 
@@ -401,3 +419,7 @@ Priority encodes dependency layer as well as importance: P0 tickets are v0-block
 - 2026-09-09 — T023 merged (c4945bd) after 7 review / 7 QA rounds, wired in ba8be2a. Follow-ups logged: thread the routed account into sessions (T022 adds `ticket.routing.account`), surface vendor 429s from the ACP stream into `record429`, and the two round-7 nits. 1594 tests green.
 - 2026-09-09 — T026 merged () after 3 review / 3 QA rounds, wired in 8d063d9; merge conflict in `runner/session.ts` (quota vs sandbox options, both additive) resolved by keeping both. Wave 8 launched: T025 (control room v1) and T027 (Cursor/Grok/Codex adapters; no vendor logins here, spike rows are the reference). 1645 tests green.
 - 2026-09-09 — T022 merged (9bd0c59) after 2 review / 2 QA rounds. Routed account now reaches the quota service (closes the T023 `default`-account placeholder for routed tickets). T024 launched (handoff and pause; depends on T022 + T023). 1692 tests green.
+- 2026-09-09 — Container restart killed the four in-flight workers (T021, T024, T025, T027). Worktrees survived: T021 (~10 uncommitted files, branch cut from an older integration head — told to merge integration first), T025 (~5 uncommitted files), T027 (clean), T024 (no worktree yet). All four relaunched in resume mode with an instruction to commit early. No merged work was lost; integration head `e67ebaa` matches origin.
+- 2026-09-09 — T021 shipped (`625a4c5`); round 1 gates running. Added T031 (architect ACP session: permission row + role threading) for the gap T021 surfaced; the live discovery cycle has no real architect session until it lands.
+- 2026-09-09 — Security finding (T025 review): an HTTP route cast a URL segment into a store path and `StateStore.abs()` had no containment check, so `..%2F` escaped `.agile/`. Decision: `abs()` gains a state-root containment guard (fail closed) and every path-derived id is schema-validated at the HTTP edge; browser writes are always actor `human` (no actor fields accepted from request bodies).
+- 2026-09-09 — T027 merged (fe20bc5) after 2 review / 2 QA rounds. Follow-up from T025 review: `POST /api/hil/:id/approve` (T020) trusts `by` from the body — add to T032 below.

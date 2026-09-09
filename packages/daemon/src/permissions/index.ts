@@ -52,6 +52,8 @@
 
 export { classifyPermissionRequest } from './classify';
 export { decidePermission } from './decide';
+export { buildGrokFsPolicy, canWriteViaClientFs, type VendorFsImpl } from './vendor-fs';
+export { cursorModeIdFor } from './vendor-modes';
 export {
   checkNeverWithoutHuman,
   isPackageRegistryUrl,

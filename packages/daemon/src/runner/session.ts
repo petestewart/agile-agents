@@ -72,6 +72,7 @@ import {
   ACP_PROVIDERS,
   type AcpProviderConfig,
   type AgentEvent,
+  AuthRequiredError,
   type SpawnSessionOptions,
   type SpawnedSession,
   spawnSession as defaultSpawnSession,
@@ -86,7 +87,9 @@ import {
   type AcpPermissionRequestParams,
   type PermissionResponderHandle,
   type PermissionRole,
+  buildGrokFsPolicy,
   buildPermissionResponder,
+  cursorModeIdFor,
 } from '../permissions';
 import {
   ForeignPiExtensionError,
@@ -194,6 +197,48 @@ export interface AgentSessionHandle {
   exited: Promise<AgentExitInfo>;
   /** `session.cancel()` + `session.close()`, for a graceful stop (`runner.stop`) — does not itself run the exit/crash handling (that's `exited`, driven by the session's own `exit` event either way). */
   stop(): void;
+}
+
+/**
+ * T027: the first `prompt()` on a Cursor/Grok session fails with
+ * `AuthRequiredError` until the ACP `authenticate` round trip runs
+ * (design/spike-findings.md §C2/§D: "Cursor … ACP `authenticate
+ * (cursor_login)` required"; "Grok … needs ACP `authenticate` (OAuth)").
+ * Tries each `provider.authMethods` id **in order, one at a time**, retrying
+ * the prompt after each: the first retry that succeeds (or fails with
+ * anything other than `AuthRequiredError`) short-circuits the loop, so a
+ * two-method vendor doesn't waste — or worse, get blocked by — an
+ * `authenticate` call for a method it turns out not to need (round 2 fix,
+ * review round 1 nit: the original ran *every* method id unconditionally,
+ * so a rejection on the first id would throw out of the loop before the
+ * second was ever tried). Empty for every vendor that authenticates
+ * ambiently (Claude/Codex/Gemini, §C/§D) — a one-branch no-op re-throw for
+ * them. A provider that lists no auth methods but still throws
+ * `AuthRequiredError` re-throws unchanged — there is nothing this function
+ * can do about a vendor `resolveAcpProvider` didn't say needed a handshake.
+ */
+async function promptWithAuthRetry(
+  session: SpawnedSession,
+  provider: AcpProviderConfig,
+  brief: string,
+): Promise<unknown> {
+  try {
+    return await session.prompt(brief);
+  } catch (err) {
+    if (!(err instanceof AuthRequiredError) || provider.authMethods.length === 0) throw err;
+    let lastErr: unknown = err;
+    for (const methodId of provider.authMethods) {
+      try {
+        await session.authenticate(methodId);
+        return await session.prompt(brief);
+      } catch (retryErr) {
+        lastErr = retryErr;
+        if (!(retryErr instanceof AuthRequiredError)) throw retryErr;
+        // Still needs auth — try the next method id, if any.
+      }
+    }
+    throw lastErr;
+  }
 }
 
 /** Builds the MCP stdio server entry T011's report specifies: `agile mcp --agent <id> --ticket <id>`. */
@@ -308,6 +353,19 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
     }
   }
 
+  // T027 review round 1 B1: `modeId` must come from the *provider's own*
+  // mode vocabulary (`defaultModeId` — undefined for a vendor with no mode
+  // concept, e.g. Grok, spike-findings.md §C2 "no modes"), never a flat
+  // `'default'` — that's a Claude-only mode id, and `session/set_mode`
+  // rejects it for every other vendor, failing the whole `ensureSession()`
+  // and therefore the first prompt. Cursor's reviewer gets `ask` as a
+  // courtesy nudge on top of that (§C3 — prompt-level only, never a
+  // substitute for the reviewer table's own execute/edit deny verdicts,
+  // which run unchanged regardless of mode); every other vendor/role keeps
+  // its provider's own default.
+  const modeId =
+    (provider.id === 'cursor' ? cursorModeIdFor(role) : undefined) ?? provider.defaultModeId;
+
   const spawnOptions: SpawnSessionOptions = {
     cmd: wrapped.command,
     args: wrapped.args,
@@ -322,7 +380,18 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
     },
     clientCapabilities: provider.clientCapabilities,
     mcpServers: [mcpServerConfig(cliBin, agentId, ticket)],
-    modeId: 'default',
+    // Omitted entirely (not even `modeId: undefined`) when the provider has
+    // no mode — `SpawnSessionOptions.modeId` being present-but-undefined
+    // vs. absent doesn't matter to `ensureSession()`'s `!== undefined`
+    // check, but this keeps the built object honest about what's actually
+    // being requested.
+    ...(modeId !== undefined ? { modeId } : {}),
+    // T027: Grok routes all file I/O through client fs and has no other
+    // gateable surface (design/spike-findings.md §C2/§C3) — this is the
+    // one seam where a reviewer's write can be refused with a reason the
+    // model actually sees (`permissions/vendor-fs.ts`). No other provider
+    // is measured using client fs for real I/O, so this stays Grok-only.
+    ...(provider.id === 'grok' ? { fsImpl: buildGrokFsPolicy(role) } : {}),
   };
   const session = spawn(spawnOptions);
 
@@ -605,11 +674,37 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
         { commit: 'deferred' },
       );
     })
-    .then(() => session.prompt(brief))
-    .catch(() => {
-      // A failed registration or a rejected first prompt both surface
-      // through the session's own `exit`/`error` events (acp-client settles
-      // any reserved turn on close/exit) — nothing further to do here.
+    .then(() => promptWithAuthRetry(session, provider, brief))
+    .catch(async (err: unknown) => {
+      // T027 review round 1 B1: a rejected first prompt (e.g.
+      // `session/set_mode` rejecting an unsupported mode id) does NOT
+      // imply the subprocess exits — only the one in-flight request
+      // failed, so `session`'s own `exit`/`error` events this module
+      // otherwise relies on may never fire, silently stranding an
+      // `in_progress` ticket with an agent that never received its brief.
+      // Fail the spawn loudly instead of assuming a future event will:
+      // stop the (possibly still-healthy) subprocess and run the same
+      // ticket-readied/escalate/cleanup path a real exit would
+      // (`finish()` is idempotent — a genuine `exit` event arriving after
+      // this is a no-op).
+      const message = err instanceof Error ? err.message : String(err);
+      await store
+        .appendEvent(
+          buildEvent('agent_put', {
+            agent: agentId,
+            ticket,
+            data: { warning: `first prompt failed, stopping session: ${message}` },
+          }),
+          { commit: 'deferred' },
+        )
+        .catch(() => {
+          // Best-effort visibility only — `finish()` below is what actually
+          // recovers the ticket/agent state regardless of whether this
+          // event write lands.
+        });
+      session.cancel();
+      session.close();
+      await finish(`first prompt failed: ${message}`);
     });
 
   return {

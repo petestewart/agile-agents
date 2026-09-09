@@ -2,7 +2,12 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { AcpProviderConfig } from '@agile-agents/acp-client';
+import {
+  ACP_PROVIDERS,
+  type AcpProviderConfig,
+  type SpawnSessionOptions,
+  spawnSession as realSpawnSession,
+} from '@agile-agents/acp-client';
 import type { Ticket } from '@agile-agents/shared';
 import { validateSprint, validateTicket } from '@agile-agents/shared';
 import { Bus } from '../bus';
@@ -61,6 +66,33 @@ function fakeProvider(script: FakeAgentScript, pidFile?: string): AcpProviderCon
     clientCapabilities: { fs: { readTextFile: true, writeTextFile: true } },
     loadSession: true,
     authMethods: [],
+  };
+}
+
+/**
+ * T027 round 2: like `fakeProvider`, but carries a *real* `ACP_PROVIDERS`
+ * entry's non-transport fields (`defaultModeId`, `authMethods`,
+ * `requiresSandbox`, ...) over the fake transport (command/args/env) — so a
+ * test asserting "Cursor gets mode X" is asserting against the actual
+ * registered Cursor config, not a value the test made up, which is exactly
+ * what let `modeId: 'default'` (a Claude-only mode) ship for every vendor
+ * in round 1 undetected.
+ */
+function fakeProviderFor(
+  vendor: AcpProviderConfig,
+  script: FakeAgentScript,
+  pidFile?: string,
+): AcpProviderConfig {
+  const scriptPath = join(scratch, `${Bun.hash(JSON.stringify(script)).toString(36)}.json`);
+  writeFileSync(scriptPath, JSON.stringify(script));
+  return {
+    ...vendor,
+    command: 'bun',
+    args: [FAKE_AGENT_PATH],
+    envOverrides: {
+      AGILE_FAKE_AGENT_SCRIPT: scriptPath,
+      ...(pidFile ? { AGILE_FAKE_AGENT_PIDFILE: pidFile } : {}),
+    },
   };
 }
 
@@ -413,4 +445,226 @@ describe('startAgentSession', () => {
       }),
     ).toThrow(/eng-0231.*disk full|disk full.*eng-0231/s);
   });
+});
+
+describe('T027: per-vendor session wiring (Cursor ask mode, Grok client-fs gate, Cursor/Grok authenticate retry)', () => {
+  /** Wraps the real `spawnSession` so a test can inspect the exact `SpawnSessionOptions` `startAgentSession` built, while still exercising a real subprocess/handshake underneath (never a hand-rolled `SpawnedSession` stub). */
+  function capturingSpawn(sink: { options?: SpawnSessionOptions }): typeof realSpawnSession {
+    return (options: SpawnSessionOptions) => {
+      sink.options = options;
+      return realSpawnSession(options);
+    };
+  }
+
+  // T027 round 2: `validModes` on the script makes the fake agent reject
+  // any mode id outside Cursor's real advertised set (§C2 `agent | plan |
+  // ask`) exactly like `cursor-agent acp` would — this is the harness the
+  // round 1 reviewer used to catch `modeId: 'default'` going out to every
+  // vendor. `fakeProviderFor(ACP_PROVIDERS.cursor, ...)` asserts against
+  // the actually-registered Cursor provider, not a value this test invents.
+  test('a Cursor reviewer gets modeId "ask" and no fsImpl; a Cursor engineer gets its own "agent" default, not Claude\'s "default"', async () => {
+    await store.putTicket(makeTicket({ status: 'done' }), { by: 'test' });
+    const cursorValidModes = ['agent', 'plan', 'ask'];
+    const reviewerSink: { options?: SpawnSessionOptions } = {};
+    const reviewerHandle = startTrackedSession({
+      store,
+      bus,
+      role: 'reviewer',
+      agentId: 'reviewer-0231',
+      ticket: 'TKT-0231',
+      worktreePath: worktree,
+      brief: 'review it',
+      currentSprintId: () => 'S-01',
+      provider: fakeProviderFor(ACP_PROVIDERS.cursor, {
+        validModes: cursorValidModes,
+        steps: [{ type: 'end_turn' }],
+      }),
+      spawn: capturingSpawn(reviewerSink),
+    });
+    await reviewerHandle.session.initialized;
+    expect(reviewerSink.options?.modeId).toBe('ask');
+    expect(reviewerSink.options?.fsImpl).toBeUndefined();
+    reviewerHandle.stop();
+    await reviewerHandle.exited;
+
+    const engineerSink: { options?: SpawnSessionOptions } = {};
+    const engineerHandle = startTrackedSession({
+      store,
+      bus,
+      role: 'engineer',
+      agentId: 'eng-0231',
+      ticket: 'TKT-0231',
+      worktreePath: worktree,
+      brief: 'do it',
+      currentSprintId: () => 'S-01',
+      provider: fakeProviderFor(ACP_PROVIDERS.cursor, {
+        validModes: cursorValidModes,
+        steps: [{ type: 'usage_update', used: 3 }, { type: 'end_turn' }],
+      }),
+      spawn: capturingSpawn(engineerSink),
+    });
+    await engineerHandle.session.initialized;
+    expect(engineerSink.options?.modeId).toBe('agent');
+    expect(engineerSink.options?.fsImpl).toBeUndefined();
+    // The prompt actually succeeded against the mode-validating fake (a
+    // rejected `session/set_mode` would never reach this usage_update).
+    await waitFor(() => store.listLedger('S-01').some((l) => l.in_tokens === 3));
+    engineerHandle.stop();
+    await engineerHandle.exited;
+  }, 90000);
+
+  // T027 round 2: Grok's `validModes` is left unset — deliberately, since
+  // Grok has no modes at all (§C2) — so if `session.ts` ever sent a
+  // `modeId` for Grok again, this would only catch it via the `logFile`
+  // assertion below (a mode-less fake accepts anything), which is why the
+  // logFile check is the one doing the real work here.
+  test("a Grok reviewer gets an fsImpl whose writeFile refuses with a reasoned AGILE-GATE message; a Grok engineer's fsImpl.writeFile still writes; neither sends session/set_mode", async () => {
+    await store.putTicket(makeTicket({ status: 'done' }), { by: 'test' });
+    const reviewerLogFile = join(scratch, 'grok-reviewer-log.jsonl');
+    const reviewerSink: { options?: SpawnSessionOptions } = {};
+    const reviewerHandle = startTrackedSession({
+      store,
+      bus,
+      role: 'reviewer',
+      agentId: 'reviewer-0231',
+      ticket: 'TKT-0231',
+      worktreePath: worktree,
+      brief: 'review it',
+      currentSprintId: () => 'S-01',
+      provider: fakeProviderFor(ACP_PROVIDERS.grok, {
+        logFile: reviewerLogFile,
+        steps: [{ type: 'end_turn' }],
+      }),
+      spawn: capturingSpawn(reviewerSink),
+    });
+    await reviewerHandle.session.initialized;
+    expect(reviewerSink.options?.modeId).toBeUndefined();
+    expect(reviewerSink.options?.fsImpl).toBeDefined();
+    await expect(
+      reviewerSink.options?.fsImpl?.writeFile(join(worktree, 'notes.md'), 'x', 'utf8'),
+    ).rejects.toThrow(/AGILE-GATE: reviewer may not write files/);
+    reviewerHandle.stop();
+    await reviewerHandle.exited;
+    // `appendLog` only creates the file when it's actually called — its
+    // absence here is the proof no `session/set_mode` (or `authenticate`)
+    // request was ever sent for Grok.
+    expect(existsSync(reviewerLogFile)).toBe(false);
+
+    const engineerSink: { options?: SpawnSessionOptions } = {};
+    const engineerHandle = startTrackedSession({
+      store,
+      bus,
+      role: 'engineer',
+      agentId: 'eng-0231',
+      ticket: 'TKT-0231',
+      worktreePath: worktree,
+      brief: 'do it',
+      currentSprintId: () => 'S-01',
+      provider: fakeProviderFor(ACP_PROVIDERS.grok, { steps: [{ type: 'end_turn' }] }),
+      spawn: capturingSpawn(engineerSink),
+    });
+    await engineerHandle.session.initialized;
+    expect(engineerSink.options?.modeId).toBeUndefined();
+    const path = join(worktree, 'a.ts');
+    await engineerSink.options?.fsImpl?.writeFile(path, 'content', 'utf8');
+    expect(readFileSync(path, 'utf8')).toBe('content');
+    engineerHandle.stop();
+    await engineerHandle.exited;
+  }, 90000);
+
+  // T027 round 2 (review round 1 B1): the fix's other half — a mode
+  // rejection (or any first-prompt failure) must fail the spawn loudly
+  // rather than stranding an `in_progress` ticket with a live-but-idle
+  // subprocess. Deliberately sends an unsupported mode id
+  // (`fakeProviderFor`'s Cursor entry with a `validModes` set that excludes
+  // its own `defaultModeId`) to simulate the exact regression round 1
+  // found, and asserts the daemon recovers: ticket back to `ready`, an
+  // `escalate` to em, and the subprocess actually stopped (not left
+  // running with a never-delivered brief).
+  test('a rejected session/set_mode fails the spawn loudly: ticket readied, em escalated, subprocess stopped', async () => {
+    await store.putTicket(makeTicket({ status: 'in_progress' }), { by: 'test' });
+
+    const handle = startTrackedSession({
+      store,
+      bus,
+      role: 'engineer',
+      agentId: 'eng-0231',
+      ticket: 'TKT-0231',
+      worktreePath: worktree,
+      brief: 'do the ticket',
+      currentSprintId: () => 'S-01',
+      provider: fakeProviderFor(
+        { ...ACP_PROVIDERS.cursor, defaultModeId: 'default' }, // wrong on purpose
+        { validModes: ['agent', 'plan', 'ask'], steps: [{ type: 'end_turn' }] },
+      ),
+    });
+
+    const info = await handle.exited;
+    expect(info.ticketReadied).toBe(true);
+    expect(info.reason).toContain('first prompt failed');
+    expect(store.getTicket('TKT-0231').status).toBe('ready');
+
+    const inbox = await bus.poll('em' as never);
+    expect(
+      inbox.some(
+        (m) =>
+          m.kind === 'escalate' && m.ticket === 'TKT-0231' && /first prompt failed/.test(m.body),
+      ),
+    ).toBe(true);
+
+    const events = store.listEvents();
+    expect(
+      events.some(
+        (e) =>
+          e.kind === 'agent_put' &&
+          e.agent === 'eng-0231' &&
+          /first prompt failed/.test(String((e.data as Record<string, unknown>).warning ?? '')),
+      ),
+    ).toBe(true);
+  }, 90000);
+
+  // T027: exercises the real production path — a real subprocess whose
+  // `session/new` fails with the -32000 `AuthRequiredError` shape until
+  // `authenticate(methodId)` runs (design/spike-findings.md §C2/§D), proving
+  // `promptWithAuthRetry` actually calls `session.authenticate` for every
+  // `provider.authMethods` id and retries the same brief, rather than just
+  // asserting the helper's shape in isolation.
+  test('AuthRequiredError from session/new triggers authenticate(methodId) then a successful retried prompt', async () => {
+    await store.putTicket(makeTicket({ status: 'done' }), { by: 'test' });
+    const logFile = join(scratch, 'auth-log.jsonl');
+    const provider: AcpProviderConfig = {
+      ...fakeProvider({
+        requireAuthMethod: 'cursor_login',
+        logFile,
+        steps: [{ type: 'usage_update', used: 7 }, { type: 'end_turn' }],
+      }),
+      id: 'cursor',
+      authMethods: ['cursor_login'],
+    };
+
+    const handle = startTrackedSession({
+      store,
+      bus,
+      role: 'engineer',
+      agentId: 'eng-0231',
+      ticket: 'TKT-0231',
+      worktreePath: worktree,
+      brief: 'do the ticket',
+      currentSprintId: () => 'S-01',
+      provider,
+    });
+
+    await handle.session.initialized;
+    // The retried prompt's usage_update landing in the ledger is the real
+    // side effect that proves the whole retry round trip worked, not just
+    // that `authenticate` was called.
+    await waitFor(() => store.listLedger('S-01').some((l) => l.in_tokens === 7));
+    await waitFor(() => existsSync(logFile));
+    const log = readFileSync(logFile, 'utf8');
+    expect(log).toContain('"method":"authenticate"');
+    expect(log).toContain('cursor_login');
+
+    handle.stop();
+    await handle.exited;
+  }, 90000);
 });
