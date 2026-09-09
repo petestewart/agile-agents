@@ -136,6 +136,15 @@ export interface AgentSessionOptions {
    * same as before this ticket.
    */
   requiresSandbox?: boolean;
+  /**
+   * T026 round 2 (review round 1 B2): explicit opt-in to run *this*
+   * session's vendor under tier 0 even when it doesn't `requiresSandbox` —
+   * a future config/policy surface's seam. Defaults `false`, which is what
+   * keeps today's behaviour unchanged for Claude/Pi sessions on a host
+   * that happens to have a tier-0 backend available (a backend existing is
+   * never itself a reason to wrap — see `sandbox/wrap.ts`'s header).
+   */
+  sandboxEnabled?: boolean;
   /** Test seam: override how the agent process command is wrapped for tier-0 sandboxing before spawn. Defaults to the real `sandbox.wrapAgentCommand`. */
   wrapCommand?: WrapAgentCommandFn;
 }
@@ -223,7 +232,13 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
   // backend this host supports before it ever spawns. Throws
   // `SandboxRequiredError` (fail-closed) when `requiresSandbox` is set and
   // `detectBackend()` resolves `none` — the caller (`runner.spawn`) must not
-  // catch that into an unsandboxed spawn.
+  // catch that into an unsandboxed spawn. Round 2 (review round 1 B2): a
+  // backend merely being *available* is never itself a reason to wrap —
+  // `wrapAgentCommand` only wraps when `requiresSandbox` or `sandboxEnabled`
+  // is explicitly set, so this call is a no-op passthrough for today's
+  // Claude/Pi sessions exactly as before this ticket. Round 2 B3: threads
+  // `socketPath` through so the rendered profile can grant the daemon
+  // socket — without it, turning tier 0 on silently breaks tier 1.
   const wrapCommand = opts.wrapCommand ?? defaultWrapAgentCommand;
   const wrapped = wrapCommand({
     role,
@@ -232,6 +247,8 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
     command: provider.command,
     args: provider.args,
     requiresSandbox: opts.requiresSandbox,
+    enabled: opts.sandboxEnabled,
+    socketPath: opts.socketPath,
   });
 
   const spawnOptions: SpawnSessionOptions = {

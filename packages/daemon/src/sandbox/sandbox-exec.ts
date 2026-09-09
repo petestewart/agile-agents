@@ -16,8 +16,16 @@
  * kernel actually resolves and enforces it that way — flagged for live
  * verification alongside the ticket's own "Live tests per role" validation
  * step, on a real Mac.
+ *
+ * Round 2 (review round 1 B3/B4): the daemon's Unix-domain socket
+ * (`AGILE_SOCKET_PATH`, tier 1's hook bridge — `hook/settings.ts`) and the
+ * engineer's shared-git write paths (`git-paths.ts`) are granted here too,
+ * for every role and independent of the `network`/`worktreeWritable`
+ * postures above — without them, turning on tier 0 silently breaks tier 1
+ * (every hook fails open) and an engineer can never produce a commit.
  */
 
+import { join } from 'node:path';
 import type { SandboxProfile } from './types';
 
 /**
@@ -39,6 +47,11 @@ export function renderSandboxExecProfile(profile: SandboxProfile): string {
     '(allow mach-lookup)',
     '(allow sysctl-read)',
     '(allow ipc-posix-shm)',
+    '(allow file-ioctl)',
+    '(allow signal (target children))',
+    '(allow process-info* (target self))',
+    '(allow file-write-data (literal "/dev/null") (literal "/dev/dtracehelper"))',
+    '(allow file-read* file-write-data file-ioctl (literal "/dev/tty"))',
     '',
     '; --- filesystem: read-only mount everywhere by default (§6/§14) ---',
     '(allow file-read*)',
@@ -60,14 +73,51 @@ export function renderSandboxExecProfile(profile: SandboxProfile): string {
     }
   }
 
+  if (profile.role === 'engineer' && profile.gitPaths) {
+    // Round 2 B4: a worktree's `.git` is a gitfile pointing at
+    // `<repo>/.git/worktrees/<name>` (this worktree's own HEAD/index/logs);
+    // `git commit` also needs to write new objects/refs into the *shared*
+    // `<repo>/.git`. `(allow file-read*)` above already covers reading the
+    // rest of it (rules, other branches) — only these two subpaths need
+    // write. Reviewer/QA never reach this branch (`gitPaths` is only ever
+    // set on an engineer profile — see `profile.ts`), so they stay
+    // read-only across all of `<repo>/.git` as §14 requires.
+    lines.push(
+      '',
+      "; engineer: shared git dir — commit needs to write new objects/refs, and this worktree's own HEAD/index/logs",
+      `(allow file-write* (subpath "${escapeSbplString(profile.gitPaths.worktreeGitDir)}"))`,
+      `(allow file-write* (subpath "${escapeSbplString(join(profile.gitPaths.commonGitDir, 'objects'))}"))`,
+      `(allow file-write* (subpath "${escapeSbplString(join(profile.gitPaths.commonGitDir, 'refs'))}"))`,
+    );
+  }
+
+  if (profile.socketPath) {
+    // Round 2 B3: the daemon's Unix-domain socket, for every role — this is
+    // tier 1's own bridge (`agile hook ...` -> the daemon), not a role's
+    // §14 "Network" posture. Both a `network-outbound` and a plain
+    // file-read/write form are granted: SBPL's exact predicate for an
+    // AF_UNIX `connect(2)` isn't independently confirmed on this container
+    // (same unverified-on-real-macOS caveat as the hostname rules below),
+    // so this errs toward "definitely covers it" rather than guessing one
+    // form and silently breaking the hook bridge again.
+    lines.push(
+      '',
+      '; daemon socket bridge (tier 1) — must work regardless of role/network posture',
+      `(allow file-read* file-write* (literal "${escapeSbplString(profile.socketPath)}"))`,
+      `(allow network* (literal "${escapeSbplString(profile.socketPath)}"))`,
+    );
+  }
+
   if (profile.network === 'allowlist' && profile.allowedHosts.length > 0) {
     lines.push('', '; engineer: package registries only (§14 "Network" column)');
     for (const host of profile.allowedHosts) {
       lines.push(`(allow network-outbound (remote tcp "${escapeSbplString(host)}:*"))`);
-      // DNS itself must resolve before the hostname filter above can match
-      // anything — without this every allow-listed host is unreachable.
-      lines.push(`(allow network-outbound (remote udp "${escapeSbplString(host)}:53"))`);
     }
+    // DNS resolution itself happens out-of-process via mDNSResponder on
+    // macOS (covered by the `mach-lookup` allow above, not a `network*`
+    // rule against the target host — round 2 nit fix: the earlier
+    // `(remote udp "<host>:53")` form was a category error, since port 53
+    // traffic goes to the *resolver's* address, never the target host).
   } else {
     lines.push('', `; ${profile.role}: no network (§14) — no network-outbound allow rule`);
   }

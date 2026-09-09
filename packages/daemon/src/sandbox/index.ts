@@ -25,11 +25,17 @@ export {
   type SandboxExecCommand,
 } from './sandbox-exec';
 export {
+  DEFAULT_CONTAINER_HOME,
   DEFAULT_SANDBOX_IMAGE,
   buildContainerCommand,
   type ContainerCommand,
   type ContainerCommandOptions,
 } from './container';
+export {
+  resolveWorktreeGitPaths,
+  type GitPathsDeps,
+  type WorktreeGitPaths,
+} from './git-paths';
 export {
   SandboxRequiredError,
   wrapAgentCommand,

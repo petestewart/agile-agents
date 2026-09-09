@@ -63,6 +63,52 @@ describe('buildSandboxProfile', () => {
     expect(profile.loginEnvPassthrough).toEqual([]);
   });
 
+  test('round 2: homeDir/loginRelPaths/socketPath are carried through for every role', () => {
+    const engineer = buildSandboxProfile({
+      role: 'engineer',
+      worktreePath: '/repo/.worktrees/TKT-0001',
+      vendor: 'claude',
+      homeDir: '/home/pete',
+      socketPath: '/repo/.agile-daemon.sock',
+    });
+    expect(engineer.homeDir).toBe('/home/pete');
+    expect(engineer.loginRelPaths).toEqual(['.claude', '.config/claude']);
+    expect(engineer.socketPath).toBe('/repo/.agile-daemon.sock');
+
+    const reviewer = buildSandboxProfile({
+      role: 'reviewer',
+      worktreePath: '/repo/.worktrees/TKT-0001',
+      vendor: 'claude',
+      homeDir: '/home/pete',
+      socketPath: '/repo/.agile-daemon.sock',
+    });
+    expect(reviewer.socketPath).toBe('/repo/.agile-daemon.sock');
+  });
+
+  test('round 2 B4: gitPaths only ever lands on an engineer profile', () => {
+    const gitPaths = {
+      worktreeGitDir: '/repo/.git/worktrees/TKT-0001',
+      commonGitDir: '/repo/.git',
+    };
+    const engineer = buildSandboxProfile({
+      role: 'engineer',
+      worktreePath: '/repo/.worktrees/TKT-0001',
+      vendor: 'claude',
+      homeDir: '/home/pete',
+      gitPaths,
+    });
+    expect(engineer.gitPaths).toEqual(gitPaths);
+
+    const reviewer = buildSandboxProfile({
+      role: 'reviewer',
+      worktreePath: '/repo/.worktrees/TKT-0001',
+      vendor: 'claude',
+      homeDir: '/home/pete',
+      gitPaths,
+    });
+    expect(reviewer.gitPaths).toBeUndefined();
+  });
+
   test('grok: login paths and env passthrough resolved (ungated-exec vendor)', () => {
     const profile = buildSandboxProfile({
       role: 'engineer',

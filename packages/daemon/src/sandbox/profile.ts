@@ -89,6 +89,12 @@ export function buildSandboxProfile(opts: SandboxProfileOptions): SandboxProfile
       allowedHosts: [...DEFAULT_REGISTRY_ALLOWLIST, ...(opts.extraAllowedHosts ?? [])],
       loginPaths,
       loginEnvPassthrough,
+      homeDir: home,
+      loginRelPaths,
+      socketPath: opts.socketPath,
+      // Round 2 B4: only the engineer gets shared-git write access —
+      // reviewer/QA stay read-only there even if a caller passed `gitPaths`.
+      gitPaths: opts.gitPaths,
     };
   }
 
@@ -101,5 +107,8 @@ export function buildSandboxProfile(opts: SandboxProfileOptions): SandboxProfile
     allowedHosts: [],
     loginPaths,
     loginEnvPassthrough,
+    homeDir: home,
+    loginRelPaths,
+    socketPath: opts.socketPath,
   };
 }

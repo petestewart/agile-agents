@@ -39,6 +39,38 @@ export interface SandboxProfile {
   loginPaths: readonly string[];
   /** Env vars that must pass through unmodified for auth to keep working (e.g. `ANTHROPIC_API_KEY`) — not secrets rendered into the profile, just names to preserve. */
   loginEnvPassthrough: readonly string[];
+  /**
+   * Host home directory `loginPaths` were resolved against, and the
+   * vendor-relative fragments themselves (`.claude`, `.config/claude`, ...)
+   * — kept alongside the already-joined `loginPaths` so the container
+   * backend can re-home them under the container's own `$HOME` (round 2
+   * B5: mounting a host-absolute path like `/Users/pete/.claude` is inert
+   * if the container's `$HOME` is `/root`).
+   */
+  homeDir: string;
+  loginRelPaths: readonly string[];
+  /**
+   * Absolute path to the daemon's Unix-domain socket (`AGILE_SOCKET_PATH`)
+   * this session's tier-1 hook bridge connects to — round 2 B3: without an
+   * explicit allow for this path, enabling tier 0 silently kills tier 1
+   * (the hook can't reach the daemon, fails open). Granted for *every*
+   * role, independent of `network` — this is the daemon's own local IPC
+   * bridge, not the network policy §14 describes for a role's own outbound
+   * traffic. `undefined` when the caller has no socket path to give
+   * (documented gap: the profile then cannot guarantee the hook bridge
+   * works — see `sandbox-exec.ts`'s header).
+   */
+  socketPath?: string;
+  /**
+   * Git paths an engineer needs write access to beyond its own worktree in
+   * order to commit at all (round 2 B4) — a worktree's `.git` is a gitfile
+   * pointing at `<repo>/.git/worktrees/<name>`, and objects/refs live in
+   * the shared `<repo>/.git` the worktree's own subpath never covers.
+   * `undefined`/ignored for reviewer and QA (they must stay read-only
+   * there) and when git-paths resolution fails (e.g. QA's fresh clone has
+   * a real `.git` directory, not a linked-worktree gitfile).
+   */
+  gitPaths?: { worktreeGitDir: string; commonGitDir: string };
 }
 
 export interface SandboxProfileOptions {
@@ -49,6 +81,10 @@ export interface SandboxProfileOptions {
   extraAllowedHosts?: readonly string[];
   /** Override home-dir resolution for login-path rendering (test seam) — defaults to `os.homedir()`. */
   homeDir?: string;
+  /** See `SandboxProfile.socketPath`. */
+  socketPath?: string;
+  /** See `SandboxProfile.gitPaths`. Only applied when `role === 'engineer'`. */
+  gitPaths?: { worktreeGitDir: string; commonGitDir: string };
 }
 
 /** A shell-ready command after tier-0 wrapping. Still just data — nothing here has spawned anything. */

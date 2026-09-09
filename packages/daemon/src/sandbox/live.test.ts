@@ -2,27 +2,44 @@
  * Live checks against this host's *real* tier-0 capability (T026 — ticket
  * scope: "anything that needs a real backend is gated on `AGILE_LIVE=1`").
  * Everything else in this module (`profile.test.ts`, `backend.test.ts`,
- * `sandbox-exec.test.ts`, `container.test.ts`, `wrap.test.ts`) is a pure
- * function tested with injected dependencies and always runs.
+ * `sandbox-exec.test.ts`, `container.test.ts`, `wrap.test.ts`,
+ * `git-paths.test.ts`) is a pure function tested with injected dependencies
+ * and always runs.
  *
- * This container (verified directly while building this ticket — see the
- * pipeline report): Linux, no `sandbox-exec`, no `bwrap`, a `docker` binary
- * present but no reachable daemon (`docker info` fails: "failed to connect
- * to the docker API at unix:///var/run/docker.sock ... dial unix
- * /var/run/docker.sock: connect: no such file or directory"). So the one
- * assertion this file can make unconditionally — run with or without
- * `AGILE_LIVE`, since it costs nothing and documents the honest-`'none'`
- * acceptance bar the ticket sets — is that today, on this host,
- * `detectBackend()` with its *real* dependencies resolves `'none'`, never a
- * false positive. Actually exercising a real `sandbox-exec`/container spawn
- * needs a host that has one, hence `AGILE_LIVE=1`.
+ * Round 2 (review round 1 B1): the earlier version of this file asserted
+ * `detectBackend()` (real deps) resolves `'none'` unconditionally — true on
+ * this container (Linux, no `sandbox-exec`/`bwrap`, a `docker` binary with
+ * no reachable daemon), but false on macOS (`/usr/bin/sandbox-exec` always
+ * exists there) or any Linux host with a running docker daemon — exactly
+ * the hosts this feature targets, so that assertion turned the suite red
+ * on the machine someone would actually run it on. The portable invariant
+ * this file can check *anywhere*, without hard-coding an outcome, is that
+ * `detectBackend()`'s real result is always consistent with its own real
+ * building blocks (`defaultDetectBackendDeps`) — i.e. the wiring between
+ * `detectBackend` and its dependencies is connected correctly on whatever
+ * host actually runs this.
  */
 import { describe, expect, it, test } from 'bun:test';
 import { execFileSync } from 'node:child_process';
-import { detectBackend } from './backend';
+import { defaultDetectBackendDeps, detectBackend } from './backend';
+import { SANDBOX_BACKENDS } from './types';
 
-test('this container has no tier-0 backend: detectBackend() resolves none honestly', () => {
-  expect(detectBackend()).toBe('none');
+test('detectBackend() with real deps always resolves to a declared backend', () => {
+  expect(SANDBOX_BACKENDS).toContain(detectBackend());
+});
+
+test('detectBackend() with real deps is internally consistent with its own real probes, on whatever host runs this', () => {
+  const backend = detectBackend();
+  const deps = defaultDetectBackendDeps;
+
+  // No reachable container runtime => never 'container', on any host.
+  if (!deps.hasContainerRuntime()) {
+    expect(backend).not.toBe('container');
+  }
+  // Not darwin, or no sandbox-exec on PATH => never 'sandbox-exec'.
+  if (deps.platform() !== 'darwin' || !deps.hasSandboxExec()) {
+    expect(backend).not.toBe('sandbox-exec');
+  }
 });
 
 const live = process.env.AGILE_LIVE === '1' ? it : it.skip;
