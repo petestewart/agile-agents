@@ -22,13 +22,11 @@
         "agile": "./src/index.ts",
       },
       "dependencies": {
+        "@agile-agents/acp-client": "workspace:*",
         "@agile-agents/daemon": "workspace:*",
         "@agile-agents/shared": "workspace:*",
         "@modelcontextprotocol/sdk": "1.30.0",
         "zod": "^3.24.1",
-      },
-      "devDependencies": {
-        "@agile-agents/acp-client": "workspace:*",
       },
     },
     "packages/daemon": {

@@ -35,7 +35,30 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSession } from '@agile-agents/acp-client';
 import { runCliInit } from './commands/init';
-import { runDemoSprint } from './commands/run';
+import { LiveVendorUnavailableError, runDemoSprint } from './commands/run';
+
+const FAKE_AGENT_PATH = join(
+  import.meta.dir,
+  '..',
+  '..',
+  'daemon',
+  'src',
+  'runner',
+  'fake-agent.ts',
+);
+
+/** Writes a fake-agent script file under `repo` and returns a `liveSpawnForTest` spawn function that runs it. */
+function fakeAgentSpawn(repo: string, name: string, steps: unknown[]) {
+  const scriptPath = join(repo, `${name}.json`);
+  writeFileSync(scriptPath, JSON.stringify({ steps }));
+  return (opts: Parameters<typeof spawnSession>[0]) =>
+    spawnSession({
+      ...opts,
+      cmd: 'bun',
+      args: [FAKE_AGENT_PATH],
+      envOverrides: { ...opts.envOverrides, AGILE_FAKE_AGENT_SCRIPT: scriptPath },
+    });
+}
 
 const FIXTURE_ROOT = join(import.meta.dir, '..', '..', '..', 'fixtures', 'demo-project');
 
@@ -191,13 +214,29 @@ describe('agile run (live, real ACP — only with AGILE_LIVE=1)', () => {
       // waits on the daemon's real ceremony tick (opus review round 1
       // blocker 2: the old loop had no wait at all and burned `maxTicks` in
       // milliseconds regardless of a real session's progress).
-      const result = await runDemoSprint({
-        cwd: repo,
-        seed: join(FIXTURE_ROOT, 'seed', 'epic.json'),
-        fake: false,
-        tickIntervalMs: 5_000,
-        liveTimeoutMs: 10 * 60_000,
-      });
+      let result: Awaited<ReturnType<typeof runDemoSprint>>;
+      try {
+        result = await runDemoSprint({
+          cwd: repo,
+          seed: join(FIXTURE_ROOT, 'seed', 'epic.json'),
+          fake: false,
+          tickIntervalMs: 5_000,
+          liveTimeoutMs: 10 * 60_000,
+        });
+      } catch (err) {
+        // T021 round 4 (opus review round 3): `AGILE_LIVE=1` alone doesn't
+        // prove a working vendor login is actually present on this host —
+        // the pre-flight (`run.ts`'s `preflightLiveVendor`) is what
+        // answers that, fast, and this is the one place a caller is
+        // expected to treat "nothing reachable" as an honest skip rather
+        // than a failure, exactly as the ticket's own Validation Step
+        // (`AGILE_LIVE=1 bun run e2e`) needs to on a login-less host.
+        if (err instanceof LiveVendorUnavailableError) {
+          console.log(`live e2e: ${err.message}`);
+          return;
+        }
+        throw err;
+      }
 
       expect(result.ticketOutcomes).toHaveLength(3);
       for (const outcome of result.ticketOutcomes) {
@@ -215,35 +254,18 @@ describe('agile run (live, real ACP — only with AGILE_LIVE=1)', () => {
   );
 });
 
-describe('agile run --live stall watchdog (offline, deterministic — opus review round 2 nit)', () => {
-  test('aborts fast with a clear diagnosis when a live-mode session never progresses, instead of waiting out liveTimeoutMs', async () => {
-    // Reproduces the exact failure mode the nit named — an unreachable
-    // vendor (there, a bogus `ANTHROPIC_API_KEY`; here, a session that
-    // spawns fine, registers, and then never responds, via `fake-agent.ts`'s
-    // own `hang` step) — deterministically and fast, via `liveSpawnForTest`
-    // (a test-only seam, `run.ts`'s own doc comment): this exercises the
-    // real `!fake` code path (the live tick loop, `tickIntervalMs`/
-    // `stallTimeoutMs`), just with a controllable transport standing in
-    // for a real vendor, so this test needs no login and never spawns a
-    // real vendor CLI.
-    const fakeAgentPath = join(
-      import.meta.dir,
-      '..',
-      '..',
-      'daemon',
-      'src',
-      'runner',
-      'fake-agent.ts',
-    );
-    const hangScriptPath = join(repo, 'hang-script.json');
-    writeFileSync(hangScriptPath, JSON.stringify({ steps: [{ type: 'hang' }] }));
-    const hangSpawn = (opts: Parameters<typeof spawnSession>[0]) =>
-      spawnSession({
-        ...opts,
-        cmd: 'bun',
-        args: [fakeAgentPath],
-        envOverrides: { ...opts.envOverrides, AGILE_FAKE_AGENT_SCRIPT: hangScriptPath },
-      });
+describe('agile run --live stall watchdog (offline, deterministic — opus review round 3 blocker)', () => {
+  test('a genuinely silent session (spawns, then never sends another event) trips the watchdog after the threshold', async () => {
+    // Reproduces the failure mode the watchdog exists for — an unreachable
+    // vendor that spawns fine, registers, and then never responds
+    // (`fake-agent.ts`'s own `hang` step) — deterministically and fast, via
+    // `liveSpawnForTest` (a test-only seam, `run.ts`'s own doc comment):
+    // exercises the real `!fake` code path (the live tick loop,
+    // `tickIntervalMs`/`stallTimeoutMs`), just with a controllable
+    // transport standing in for a real vendor. `preflightTimeoutMs` is
+    // pinned short too — the pre-flight probe itself hangs on `initialize`
+    // exactly the same way, so it must not eat the whole test timeout.
+    const hangSpawn = fakeAgentSpawn(repo, 'hang', [{ type: 'hang' }]);
 
     await expect(
       runDemoSprint({
@@ -251,10 +273,108 @@ describe('agile run --live stall watchdog (offline, deterministic — opus revie
         seed: join(FIXTURE_ROOT, 'seed', 'epic.json'),
         fake: false,
         liveSpawnForTest: hangSpawn,
+        preflightTimeoutMs: 300,
         tickIntervalMs: 100,
         liveTimeoutMs: 30_000,
         stallTimeoutMs: 500,
       }),
-    ).rejects.toThrow(/no progress .* for 500ms/);
+    ).rejects.toThrow(/no session liveness \(AgentRecord\.last_seen\) observed for 500ms/);
+  }, 20_000);
+
+  test('a healthy long turn with steady events does not trip the watchdog, even while a ticket sits in_progress the whole time', async () => {
+    // T021 round 4 (opus review round 3 blocker): round 3's watchdog keyed
+    // on ticket-*status* stasis and aborted a real, healthy run mid-turn.
+    // This proves the fix's other half, not just that the watchdog fires —
+    // a session that keeps emitting events (`usage_update`, spaced out by
+    // real wall-clock `delay` steps — T021 round 4's addition to
+    // `fake-agent.ts`) for longer than `stallTimeoutMs` must never trip it.
+    //
+    // Timing here is deliberately real, not compressed: `AgentRecord.
+    // last_seen` writes are coalesced to at most once per
+    // `HEARTBEAT_COALESCE_MS` (30s, `store.ts`) — an event landing sooner
+    // than that since the last *written* heartbeat is a genuine no-op, by
+    // design (CLAUDE.md: "signal over volume"). A `stallTimeoutMs` shorter
+    // than that window would make this test pass for the wrong reason (an
+    // artificial timing regime the watchdog was never meant to survive);
+    // this uses continuous pulses well past 30s and a threshold comfortably
+    // above the coalescing window, so the only thing keeping the watchdog
+    // quiet is the real production write path actually firing.
+    const totalMs = 36_000;
+    const pulseEveryMs = 250;
+    const stallTimeoutMs = 40_000; // > HEARTBEAT_COALESCE_MS (30s) with real margin.
+    const steps: unknown[] = [];
+    for (let elapsed = 0; elapsed < totalMs; elapsed += pulseEveryMs) {
+      steps.push({ type: 'usage_update', used: 5 });
+      steps.push({ type: 'delay', ms: pulseEveryMs });
+    }
+    // `hang` at the end, deliberately: no `end_turn`, so the session (and
+    // the ticket's `in_progress` status) is still open/live for the whole
+    // test — this test's job is only "steady events keep the watchdog
+    // quiet while they're happening", not "it stays quiet forever with no
+    // events" (the earlier test already covers "eventually goes silent").
+    steps.push({ type: 'hang' });
+    const healthySpawn = fakeAgentSpawn(repo, 'healthy', steps);
+    const liveTimeoutMs = totalMs + 2_000;
+
+    let sawInProgress = false;
+    const { StateStore } = await import('@agile-agents/daemon');
+    const pollDeadline = Date.now() + liveTimeoutMs;
+    const pollForStatus = (async () => {
+      while (Date.now() < pollDeadline) {
+        try {
+          const store = StateStore.open(join(repo, '.agile'));
+          if (store.getTicket('TKT-1001' as never).status === 'in_progress') sawInProgress = true;
+        } catch {
+          // Not seeded/assigned yet.
+        }
+        await new Promise((resolve) => setTimeout(resolve, 250));
+      }
+    })();
+
+    // Not `.rejects`/`.toThrow` — the assertion here is that this
+    // *resolves* at all (the watchdog never aborted it); a genuinely
+    // unfinished demo epic resolving normally via `liveTimeoutMs` running
+    // out is the expected, non-error outcome for this test.
+    const result = await runDemoSprint({
+      cwd: repo,
+      seed: join(FIXTURE_ROOT, 'seed', 'epic.json'),
+      fake: false,
+      liveSpawnForTest: healthySpawn,
+      preflightTimeoutMs: 5_000,
+      tickIntervalMs: 1_000,
+      liveTimeoutMs,
+      stallTimeoutMs,
+    });
+    expect(result.ticketOutcomes.every((o) => o.status === 'in_progress')).toBe(true);
+    await pollForStatus;
+    expect(sawInProgress).toBe(true);
+  }, 60_000);
+
+  test('no vendor reachable at all skips fast via the pre-flight, instead of burning stallTimeoutMs/liveTimeoutMs', async () => {
+    // T021 round 4 (opus review round 3 blocker, "on a host with no vendor
+    // login ... skip fast"): a nonexistent binary reproduces "vendor
+    // unreachable" cleanly (ENOENT from the real `child_process.spawn`,
+    // surfaced by `acp-client`'s own `error` handling) without depending on
+    // any real vendor's specific auth-failure shape. The pre-flight must
+    // catch this before a single ceremony tick runs — `liveTimeoutMs`/
+    // `stallTimeoutMs` are pinned huge here specifically so the test can
+    // only pass if the pre-flight (bounded by `preflightTimeoutMs`) is
+    // what's actually stopping it, not one of the other two timeouts.
+    const before = Date.now();
+    const unreachableSpawn = (opts: Parameters<typeof spawnSession>[0]) =>
+      spawnSession({ ...opts, cmd: 'agile-agents-nonexistent-vendor-binary-xyz', args: [] });
+
+    await expect(
+      runDemoSprint({
+        cwd: repo,
+        seed: join(FIXTURE_ROOT, 'seed', 'epic.json'),
+        fake: false,
+        liveSpawnForTest: unreachableSpawn,
+        preflightTimeoutMs: 3_000,
+        stallTimeoutMs: 10 * 60_000,
+        liveTimeoutMs: 10 * 60_000,
+      }),
+    ).rejects.toThrow(LiveVendorUnavailableError);
+    expect(Date.now() - before).toBeLessThan(10_000); // fast skip, nowhere near either 10-minute timeout.
   }, 20_000);
 });

@@ -35,13 +35,22 @@
  */
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import {
+  type AcpProviderConfig,
+  type SpawnSessionOptions,
+  type SpawnedSession,
+  resolveAcpProvider,
+  spawnSession,
+} from '@agile-agents/acp-client';
 import type {
   AgentSessionOptions,
   ClaudePreToolUsePayload,
   DaemonHandle,
 } from '@agile-agents/daemon';
 import {
+  DEFAULT_LIVENESS_TIMEOUT_MS,
   HookService,
   NotFoundError,
   advanceDoneTickets,
@@ -74,19 +83,109 @@ export interface RunOptions {
   tickIntervalMs?: number;
   /** Wall-clock budget for `--live` mode before giving up (fake mode uses `maxTicks` instead, since it never actually waits). Defaults to 10 minutes (the quorum-timeout tunable). */
   liveTimeoutMs?: number;
-  /** `--live` mode only: abort with a diagnosis if every tracked ticket's status (plus discovery/sprint-review progress) is unchanged for this many ms, instead of waiting out the rest of `liveTimeoutMs` (opus review round 2 nit: an unreachable vendor — e.g. a bogus key, or a hung handshake — otherwise churns silently for the full timeout with no way to tell "broken" from "just slow"). Defaults to 2 minutes; ignored in `--fake` mode. */
+  /**
+   * `--live` mode only: abort with a diagnosis if no tracked session has
+   * shown any liveness signal (a fresh `AgentRecord.last_seen` — the exact
+   * field `Bus.checkLiveness`'s own liveness sweep keys on, §5) for this
+   * many ms, instead of waiting out the rest of `liveTimeoutMs`. Round 3
+   * keyed this on ticket-*status* stasis instead and a 2-minute default —
+   * opus review round 3 reproduced it aborting a *healthy* run mid-turn
+   * (45 real `tool_call` events already logged) because a real engineer
+   * turn can sit `in_progress` far longer than 2 minutes while genuinely
+   * working. Defaults to `DEFAULT_LIVENESS_TIMEOUT_MS` (5 min, this repo's
+   * own liveness tunable) — never lower in real usage; only test code
+   * should inject something shorter. Ignored in `--fake` mode.
+   */
   stallTimeoutMs?: number;
   /**
+   * `--live` mode only: bounds the one-off pre-flight handshake probe
+   * (`preflightLiveVendor`) run before any ceremony ticks — if the ACP
+   * `initialize` round trip with the routed provider doesn't complete
+   * within this many ms, `runDemoSprint` rejects immediately with
+   * `LiveVendorUnavailableError` instead of proceeding into a run that was
+   * never going to see a live session (opus review round 3: "on a host
+   * with no vendor login, `AGILE_LIVE=1` must detect that up front ...
+   * and skip fast"). Defaults to 20s. Ignored in `--fake` mode.
+   */
+  preflightTimeoutMs?: number;
+  /**
    * Test-only seam: overrides the ACP transport `--live` mode spawns
-   * every session on, exactly like `--fake`'s `createFakeSpawn()` does for
-   * fake mode — lets the live-mode wait/stall-watchdog logic itself
-   * (`tickIntervalMs`/`liveTimeoutMs`/`stallTimeoutMs` above) be exercised
-   * deterministically in `bun test`/CI without a real vendor login. Real
-   * `agile run --live` usage never sets this. Ignored when `fake` is true.
+   * every session on (including the pre-flight probe), exactly like
+   * `--fake`'s `createFakeSpawn()` does for fake mode — lets the live-mode
+   * wait/pre-flight/stall-watchdog logic itself
+   * (`tickIntervalMs`/`liveTimeoutMs`/`preflightTimeoutMs`/`stallTimeoutMs`
+   * above) be exercised deterministically in `bun test`/CI without a real
+   * vendor login. Real `agile run --live` usage never sets this. Ignored
+   * when `fake` is true.
    */
   liveSpawnForTest?: AgentSessionOptions['spawn'];
   /** Where to write the run report. Defaults to `<cwd>/runs`. */
   reportDir?: string;
+}
+
+/**
+ * Thrown by `runDemoSprint`'s `--live` pre-flight when no vendor session
+ * could be reached at all — distinct from every other failure this
+ * function can throw so a caller (the live e2e test) can tell "there is
+ * nothing to run against" apart from a genuine bug and treat it as a fast,
+ * clearly-labeled skip instead of a failure (opus review round 3: on a
+ * login-less host, `AGILE_LIVE=1 bun run e2e` — the ticket's own
+ * Validation Step — must skip fast with a reason, not fail after burning
+ * the stall-watchdog's timeout).
+ */
+export class LiveVendorUnavailableError extends Error {
+  constructor(reason: string) {
+    super(
+      `agile run --live: no vendor session reachable (${reason}) — skipping instead of running a sprint with nothing to answer it. Set up the vendor login (or point --live at a working one) before retrying.`,
+    );
+    this.name = 'LiveVendorUnavailableError';
+  }
+}
+
+/**
+ * `--live` pre-flight (opus review round 3 blocker): before any ceremony
+ * ticks run, spawn one throwaway probe session against the same provider a
+ * real engineer spawn would use (`resolveAcpProvider`'s own default —
+ * unrouted tickets resolve to Claude, `runner.ts`'s own doc comment) and
+ * wait for just the ACP `initialize` handshake, bounded by `timeoutMs`.
+ * This answers "is there anyone to talk to at all" cheaply — a host with
+ * no vendor login (or an unreachable bridge, e.g. `npx` unable to fetch
+ * the ACP adapter package) fails or hangs right here, turning what would
+ * otherwise be the stall watchdog's full liveness-tunable-sized wait (>= 5
+ * min) into a single bounded probe. Never reused for real work — closed
+ * immediately either way, regardless of outcome.
+ */
+async function preflightLiveVendor(
+  spawnOverride: AgentSessionOptions['spawn'] | undefined,
+  timeoutMs: number,
+): Promise<{ reachable: true } | { reachable: false; reason: string }> {
+  const provider: AcpProviderConfig = resolveAcpProvider(undefined);
+  const spawnFn: (opts: SpawnSessionOptions) => SpawnedSession =
+    spawnOverride ?? ((opts) => spawnSession(opts));
+  let probe: SpawnedSession | undefined;
+  try {
+    probe = spawnFn({
+      cmd: provider.command,
+      args: [...provider.args],
+      cwd: tmpdir(),
+      envOverrides: provider.envOverrides,
+      clientCapabilities: provider.clientCapabilities,
+    });
+    await Promise.race([
+      probe.initialized,
+      new Promise((_resolve, reject) =>
+        setTimeout(
+          () => reject(new Error(`initialize handshake timed out after ${timeoutMs}ms`)),
+          timeoutMs,
+        ),
+      ),
+    ]);
+    return { reachable: true };
+  } catch (err) {
+    return { reachable: false, reason: err instanceof Error ? err.message : String(err) };
+  } finally {
+    probe?.close();
+  }
 }
 
 interface SeedFile {
@@ -691,7 +790,7 @@ export async function runDemoSprint(opts: RunOptions): Promise<RunResult> {
   // enough for a real engineer/reviewer/qa chain to actually finish.
   const tickIntervalMs = opts.tickIntervalMs ?? (fake ? 0 : 30_000);
   const liveTimeoutMs = opts.liveTimeoutMs ?? 10 * 60 * 1000;
-  const stallTimeoutMs = opts.stallTimeoutMs ?? 2 * 60 * 1000;
+  const stallTimeoutMs = opts.stallTimeoutMs ?? DEFAULT_LIVENESS_TIMEOUT_MS;
 
   const handle = await startDaemon({
     cwd: opts.cwd,
@@ -737,6 +836,16 @@ export async function runDemoSprint(opts: RunOptions): Promise<RunResult> {
     }
 
     async function runSprintBody(): Promise<RunResult> {
+      if (!fake) {
+        const preflight = await preflightLiveVendor(
+          opts.liveSpawnForTest,
+          opts.preflightTimeoutMs ?? 20_000,
+        );
+        if (!preflight.reachable) {
+          throw new LiveVendorUnavailableError(preflight.reason);
+        }
+      }
+
       let seed: SeedFile = {};
       if (opts.seed) {
         seed = loadSeed(opts.seed);
@@ -763,21 +872,22 @@ export async function runDemoSprint(opts: RunOptions): Promise<RunResult> {
       const violationTicket = seed.violation?.ticket;
       const violationFixDriven = new Set<TicketId>();
       const violationReviewedRound2 = new Set<TicketId>();
-      const reviewRoundsByTicket = new Map<TicketId, number>();
       let discoveryRaised = false;
       let discoveryResolved = !seed.discovery;
       let oversizedReadDecision = 'not checked (no --seed)';
 
       const start = Date.now();
-      // Fail-fast stall watchdog state (`--live` only, see below): a
-      // cheap signature of everything the loop's own completion condition
-      // watches — a real spawn attempt moves a ticket `ready -> assigned ->
-      // in_progress` immediately, synchronously, before any actual vendor
-      // I/O (`runner.ts`'s `spawn`), so "still ready" alone doesn't catch an
-      // unreachable vendor — the ticket leaves `ready` right away and then
-      // simply never moves again while a hung/failed session sits there.
-      let lastProgressSignature = '';
-      let lastProgressAt = start;
+      // Fail-fast stall watchdog state (`--live` only, see below): the most
+      // recent `AgentRecord.last_seen` this loop has observed across every
+      // registered agent — the exact liveness signal `Bus.checkLiveness`'s
+      // own sweep keys on (`bus/bus.ts`), not ticket status (round 3's
+      // mistake: a ticket can legitimately sit `in_progress` for many
+      // minutes of real, observable vendor work — opus review round 3
+      // reproduced round 3's status-based watchdog aborting a healthy run
+      // with 45 `tool_call` events already logged). Starts at `start` so a
+      // vendor that never spawns anything at all is still bounded by
+      // `stallTimeoutMs`, same as one that spawns and then goes silent.
+      let lastLivenessAt = start;
       let tick = 0;
       for (; fake ? tick < maxTicks : Date.now() - start < liveTimeoutMs; tick++) {
         await gateService.tick();
@@ -833,7 +943,6 @@ export async function runDemoSprint(opts: RunOptions): Promise<RunResult> {
               const round = isViolationReviewRound2 ? 2 : 1;
               if (isViolationReviewRound2) violationReviewedRound2.add(ticket.id);
               else reviewerHandled.add(ticket.id);
-              reviewRoundsByTicket.set(ticket.id, round);
               await driveReviewerWork(handle, ticket, round, seed);
               // Deliberately not stopping the reviewer session here: nothing
               // in this codebase tells a session to exit between rounds (an
@@ -894,25 +1003,27 @@ export async function runDemoSprint(opts: RunOptions): Promise<RunResult> {
         ) {
           break;
         }
-        // Fail-fast stall watchdog, `--live` only (opus review round 2 nit):
-        // an unreachable vendor (a bogus key, a hung handshake, ...)
-        // otherwise churns silently for the full `liveTimeoutMs` (observed:
-        // 200s+ with no output before a manual kill) with nothing to
-        // distinguish "broken" from "just slow". Tracks a cheap signature of
-        // every tracked ticket's status plus `discoveryResolved`/
-        // `sprintReviewed` — whatever the loop's own completion condition
-        // above watches — and aborts once `stallTimeoutMs` passes with that
-        // signature unchanged, rather than only checking "still ready"
-        // (which a real spawn attempt leaves within milliseconds, then
-        // simply never advances again while a hung session sits there).
+        // Fail-fast stall watchdog, `--live` only (opus review round 3
+        // blocker: round 2's version keyed on ticket-status stasis with a
+        // 2-minute default, which aborted a *healthy* live run mid-turn —
+        // see the field's own doc comment on `stallTimeoutMs`). Keys on the
+        // same signal `Bus.checkLiveness`'s own sweep uses
+        // (`AgentRecord.last_seen`, updated on every heartbeat/tool_call —
+        // `session.ts`'s `recordHeartbeat`), so it never fires while any
+        // session is actually producing events, and its default threshold
+        // is this repo's own 5-minute liveness tunable, not an invented
+        // shorter one.
         if (!fake && trackedIds.length > 0) {
-          const signature = `${trackedIds.map((id) => store.getTicket(id).status).join(',')}|${discoveryResolved}|${sprintReviewed}`;
-          if (signature !== lastProgressSignature) {
-            lastProgressSignature = signature;
-            lastProgressAt = Date.now();
-          } else if (Date.now() - lastProgressAt >= stallTimeoutMs) {
+          const lastSeenTimes = store
+            .listAgents()
+            .map((a) => Date.parse(a.record.last_seen))
+            .filter((ms) => Number.isFinite(ms));
+          if (lastSeenTimes.length > 0) {
+            lastLivenessAt = Math.max(lastLivenessAt, ...lastSeenTimes);
+          }
+          if (Date.now() - lastLivenessAt >= stallTimeoutMs) {
             throw new Error(
-              `agile run --live: no progress (ticket statuses/discovery/sprint-review unchanged: "${signature}") for ${stallTimeoutMs}ms — no vendor session appears reachable (check the login/key \`agile run --live\` is meant to use). Aborting instead of waiting out the remaining liveTimeoutMs.`,
+              `agile run --live: no session liveness (AgentRecord.last_seen) observed for ${stallTimeoutMs}ms — no vendor session appears reachable. Aborting instead of waiting out the remaining liveTimeoutMs.`,
             );
           }
         }

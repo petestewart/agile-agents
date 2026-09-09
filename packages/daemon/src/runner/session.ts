@@ -73,6 +73,7 @@ import {
   type AcpProviderConfig,
   type AgentEvent,
   AuthRequiredError,
+  type SessionReply,
   type SpawnSessionOptions,
   type SpawnedSession,
   spawnSession as defaultSpawnSession,
@@ -228,20 +229,42 @@ export interface AgentSessionHandle {
  * `AuthRequiredError` re-throws unchanged — there is nothing this function
  * can do about a vendor `resolveAcpProvider` didn't say needed a handshake.
  */
+/**
+ * `session.prompt()` never rejects for a turn that dies mid-flight — a
+ * `close()`/`exit`/transport `error` settles the in-flight turn with a
+ * *resolved* `SessionReply` (`status: 'failed'`, `acp-client/src/
+ * session.ts`'s `turnEndFromError`/`replyFromFinalMessage` — correct on
+ * that package's own terms: a turn ending in error is still a turn that
+ * ended). This module's callers (`runPromptTurn`'s fail-loud handling,
+ * `Runner.promptAgent`'s callers) need the opposite: "the turn reached a
+ * live agent" vs. "the request went to a corpse" are different outcomes,
+ * and a re-review that quietly "succeeds" against a dead session (T021
+ * round 4, opus review round 3 nit) is worse than one that visibly fails.
+ * So a resolved `status: 'failed'` reply is turned into a rejection here,
+ * before `runPromptTurn`'s own catch ever sees it.
+ */
+function rejectOnFailedReply(reply: unknown): unknown {
+  const r = reply as Partial<SessionReply> | undefined;
+  if (r && r.status === 'failed') {
+    throw new Error(r.error?.message ?? 'ACP prompt turn failed with no error message');
+  }
+  return reply;
+}
+
 async function promptWithAuthRetry(
   session: SpawnedSession,
   provider: AcpProviderConfig,
   brief: string,
 ): Promise<unknown> {
   try {
-    return await session.prompt(brief);
+    return rejectOnFailedReply(await session.prompt(brief));
   } catch (err) {
     if (!(err instanceof AuthRequiredError) || provider.authMethods.length === 0) throw err;
     let lastErr: unknown = err;
     for (const methodId of provider.authMethods) {
       try {
         await session.authenticate(methodId);
-        return await session.prompt(brief);
+        return rejectOnFailedReply(await session.prompt(brief));
       } catch (retryErr) {
         lastErr = retryErr;
         if (!(retryErr instanceof AuthRequiredError)) throw retryErr;

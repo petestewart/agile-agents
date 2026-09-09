@@ -1,4 +1,4 @@
-# agile run report — 2026-09-09T13:33:38.886Z
+# agile run report — 2026-09-09T14:29:39.596Z
 
 Ceremony ticks used: 5
 
@@ -14,8 +14,8 @@ Ceremony ticks used: 5
 
 ## Token spend per role (ledger)
 - engineer: 30 in / 0 out tokens, $0.0000
-- qa: 30 in / 0 out tokens, $0.0000
 - review: 30 in / 0 out tokens, $0.0000
+- qa: 30 in / 0 out tokens, $0.0000
 
 ## Oversized-file hook check
-- deny: /tmp/agile-sample-uXUZ1L/.worktrees/TKT-1002/src/legacy/dump.ts is 141341 bytes (over the 65536-byte raw-read limit); use read_summary(path, question) via MCP instead.
+- deny: /tmp/agile-sample-q46KJB/.worktrees/TKT-1002/src/legacy/dump.ts is 141341 bytes (over the 65536-byte raw-read limit); use read_summary(path, question) via MCP instead.

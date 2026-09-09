@@ -122,17 +122,30 @@ export async function advanceReviewRequests(
       if (message.kind !== 'review_request' || !message.ticket) continue;
       const key = `${message.ticket}:${message.id}`;
       if (seen.has(key)) continue;
-      seen.add(key);
       const messageReviewerId = agentIdFor('reviewer', message.ticket);
       if (runner.isLive(messageReviewerId)) {
         const current = store.getTicket(message.ticket);
         if (current.status === 'in_progress') {
           await store.transitionTicket(message.ticket, 'in_review', { by: 'daemon' });
         }
-        await runner.promptAgent(messageReviewerId, message.body);
+        try {
+          await runner.promptAgent(messageReviewerId, message.body);
+        } catch {
+          // The session died in the window between `isLive` above and this
+          // actual prompt (T021 round 4, opus review round 3 nit: a real
+          // `kill -9` right there) — `message` is neither marked `seen` nor
+          // acked, so a later tick retries it once `finish()`'s own crash
+          // cleanup has run and this agent id is no longer live: that retry
+          // takes the `reviewer.start` branch below and spawns for real,
+          // instead of this call silently counting a prompt-to-a-corpse as
+          // "handled" (session.ts's `rejectOnFailedReply` is what makes
+          // that corpse-prompt reject instead of quietly resolving).
+          continue;
+        }
       } else {
         await reviewer.start(message.ticket);
       }
+      seen.add(key);
       started.push(message.ticket);
       await bus.ack(reviewerId, message.id);
     }
