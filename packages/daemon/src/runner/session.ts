@@ -73,6 +73,7 @@ import {
   type AcpProviderConfig,
   type AgentEvent,
   AuthRequiredError,
+  type SessionReply,
   type SpawnSessionOptions,
   type SpawnedSession,
   spawnSession as defaultSpawnSession,
@@ -195,6 +196,17 @@ export interface AgentSessionHandle {
   responder: PermissionResponderHandle;
   /** Resolves once the process has exited/crashed *and* the exit/crash handling (ticket -> ready, escalate, deleteAgent) has finished. Never rejects. */
   exited: Promise<AgentExitInfo>;
+  /**
+   * Sends a fresh `session/prompt` turn to this still-live session (T021
+   * round 3) — the seam a re-review (or any other need to talk to an
+   * already-spawned agent a second time) uses instead of respawning under
+   * the same agent id, which `Runner.spawn` refuses while a session is
+   * still live. Rejects if the turn itself fails (same fail-loud handling
+   * as the initial spawn prompt: the process is stopped and the exit/crash
+   * path runs before this rejects) — a caller should treat a rejection the
+   * same way a failed spawn would be treated.
+   */
+  prompt(text: string): Promise<unknown>;
   /** `session.cancel()` + `session.close()`, for a graceful stop (`runner.stop`) — does not itself run the exit/crash handling (that's `exited`, driven by the session's own `exit` event either way). */
   stop(): void;
 }
@@ -217,20 +229,42 @@ export interface AgentSessionHandle {
  * `AuthRequiredError` re-throws unchanged — there is nothing this function
  * can do about a vendor `resolveAcpProvider` didn't say needed a handshake.
  */
+/**
+ * `session.prompt()` never rejects for a turn that dies mid-flight — a
+ * `close()`/`exit`/transport `error` settles the in-flight turn with a
+ * *resolved* `SessionReply` (`status: 'failed'`, `acp-client/src/
+ * session.ts`'s `turnEndFromError`/`replyFromFinalMessage` — correct on
+ * that package's own terms: a turn ending in error is still a turn that
+ * ended). This module's callers (`runPromptTurn`'s fail-loud handling,
+ * `Runner.promptAgent`'s callers) need the opposite: "the turn reached a
+ * live agent" vs. "the request went to a corpse" are different outcomes,
+ * and a re-review that quietly "succeeds" against a dead session (T021
+ * round 4, opus review round 3 nit) is worse than one that visibly fails.
+ * So a resolved `status: 'failed'` reply is turned into a rejection here,
+ * before `runPromptTurn`'s own catch ever sees it.
+ */
+function rejectOnFailedReply(reply: unknown): unknown {
+  const r = reply as Partial<SessionReply> | undefined;
+  if (r && r.status === 'failed') {
+    throw new Error(r.error?.message ?? 'ACP prompt turn failed with no error message');
+  }
+  return reply;
+}
+
 async function promptWithAuthRetry(
   session: SpawnedSession,
   provider: AcpProviderConfig,
   brief: string,
 ): Promise<unknown> {
   try {
-    return await session.prompt(brief);
+    return rejectOnFailedReply(await session.prompt(brief));
   } catch (err) {
     if (!(err instanceof AuthRequiredError) || provider.authMethods.length === 0) throw err;
     let lastErr: unknown = err;
     for (const methodId of provider.authMethods) {
       try {
         await session.authenticate(methodId);
-        return await session.prompt(brief);
+        return rejectOnFailedReply(await session.prompt(brief));
       } catch (retryErr) {
         lastErr = retryErr;
         if (!(retryErr instanceof AuthRequiredError)) throw retryErr;
@@ -650,6 +684,72 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
   // the gap shows up in `log/events.jsonl` instead of silently resolving
   // to the wrong process.
   const spawnedPid = session.pid;
+
+  /**
+   * One prompt turn on this session, with the "a rejected prompt does not
+   * imply the subprocess exits" fail-loud handling (T027 review round 1
+   * B1's own reasoning, generalised in T021 round 3 to any turn, not just
+   * the first): a session/update stream failing silently would strand
+   * whatever ticket status this turn was supposed to advance. Shared by
+   * the initial post-registration prompt below and the exported `prompt()`
+   * handle method (T021 round 3 — a re-review/second turn on an already-
+   * live session, since nothing else in this codebase re-prompts one; see
+   * `runner/runner.ts`'s `promptAgent` and `pipeline-glue.ts`'s re-review
+   * reuse branch, the callers this exists for). Rejects to the caller
+   * (unlike the registration call site below, which swallows it — that one
+   * has no caller to report back to) so `Runner.promptAgent` can surface a
+   * failed re-prompt instead of silently doing nothing.
+   */
+  // Serializes turns on this session (T021 round 3): the ACP client
+  // refuses a second `session/prompt` while one is still in flight
+  // (`PROMPT_IN_FLIGHT` — a real single-turn-at-a-time protocol
+  // constraint, not a bug to work around by racing it). The initial
+  // post-registration prompt below is fire-and-forget from `spawn`'s own
+  // point of view — a caller of the new `prompt()` handle method (a
+  // re-review) has no way to know whether that first turn has actually
+  // settled yet, so `runPromptTurn` queues onto whatever turn is already
+  // running instead of calling `session.prompt` directly: each call waits
+  // for the previous one to settle (success or failure) before sending its
+  // own, but still resolves/rejects on its *own* turn's real outcome, not
+  // the previous one's.
+  let turnQueue: Promise<void> = Promise.resolve();
+  async function runPromptTurn(text: string): Promise<unknown> {
+    const runOnce = async (): Promise<unknown> => {
+      try {
+        return await promptWithAuthRetry(session, provider, text);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        await store
+          .appendEvent(
+            buildEvent('agent_put', {
+              agent: agentId,
+              ticket,
+              data: { warning: `prompt failed, stopping session: ${message}` },
+            }),
+            { commit: 'deferred' },
+          )
+          .catch(() => {
+            // Best-effort visibility only — `finish()` below is what
+            // actually recovers the ticket/agent state regardless of
+            // whether this event write lands.
+          });
+        session.cancel();
+        session.close();
+        await finish(`prompt failed: ${message}`);
+        throw err;
+      }
+    };
+    const result = turnQueue.then(runOnce, runOnce);
+    // Never let one turn's rejection poison the queue for the *next* one —
+    // only this call's own returned promise carries its outcome to its
+    // caller.
+    turnQueue = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    return result;
+  }
+
   void store
     .putAgent(agentId, {
       vendor: provider.id,
@@ -674,37 +774,12 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
         { commit: 'deferred' },
       );
     })
-    .then(() => promptWithAuthRetry(session, provider, brief))
-    .catch(async (err: unknown) => {
-      // T027 review round 1 B1: a rejected first prompt (e.g.
-      // `session/set_mode` rejecting an unsupported mode id) does NOT
-      // imply the subprocess exits — only the one in-flight request
-      // failed, so `session`'s own `exit`/`error` events this module
-      // otherwise relies on may never fire, silently stranding an
-      // `in_progress` ticket with an agent that never received its brief.
-      // Fail the spawn loudly instead of assuming a future event will:
-      // stop the (possibly still-healthy) subprocess and run the same
-      // ticket-readied/escalate/cleanup path a real exit would
-      // (`finish()` is idempotent — a genuine `exit` event arriving after
-      // this is a no-op).
-      const message = err instanceof Error ? err.message : String(err);
-      await store
-        .appendEvent(
-          buildEvent('agent_put', {
-            agent: agentId,
-            ticket,
-            data: { warning: `first prompt failed, stopping session: ${message}` },
-          }),
-          { commit: 'deferred' },
-        )
-        .catch(() => {
-          // Best-effort visibility only — `finish()` below is what actually
-          // recovers the ticket/agent state regardless of whether this
-          // event write lands.
-        });
-      session.cancel();
-      session.close();
-      await finish(`first prompt failed: ${message}`);
+    .then(() => runPromptTurn(brief))
+    .catch(() => {
+      // `runPromptTurn` already ran the full stop/escalate/`finish()`
+      // recovery and rethrew only so a caller of `prompt()` can see the
+      // failure — this initial call has no such caller, so it's swallowed
+      // here (matches the pre-round-3 behavior exactly).
     });
 
   return {
@@ -715,6 +790,20 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
     session,
     responder,
     exited,
+    /**
+     * Sends a fresh turn to this already-live session (T021 round 3):
+     * `session/prompt` is otherwise only ever called once, at spawn — a
+     * second review round (or any other multi-turn need) has no way to
+     * reach a session that's still connected but idle without this. Real
+     * ACP sessions support multiple prompt turns on one `session/new`
+     * (that's the wire-level shape a multi-turn conversation already is);
+     * `fake-agent.ts`'s `session/prompt` handler already re-runs its
+     * (default one-`usage_update`-plus-`end_turn`) script on every call,
+     * with no special-casing needed for a second call.
+     */
+    prompt(text: string) {
+      return runPromptTurn(text);
+    },
     stop() {
       // Deliberately does NOT call `unsubscribe()` here — `close()` only
       // *starts* tearing the process down (SIGTERM, escalating to SIGKILL

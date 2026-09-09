@@ -83,12 +83,62 @@ export interface RunTestsResult {
   summary: string;
 }
 
-export type RunTestsFn = (cwd: string) => RunTestsResult | Promise<RunTestsResult>;
+/**
+ * `repoRoot` (added T021 round 5) is the *daemon's* repo root — never the
+ * ticket worktree (`cwd`, a different, disposable directory) — so a test
+ * double can build the same sandbox path `defaultRunTests` does without
+ * having to be handed a third argument nobody's `RunTestsFn` fake actually
+ * needs (a fake that ignores the extra parameter is exactly as valid a
+ * `RunTestsFn` as one that only took `cwd`, per this type's own arity —
+ * every existing fake in `owner.test.ts` keeps compiling unchanged).
+ */
+export type RunTestsFn = (
+  cwd: string,
+  repoRoot: string,
+) => RunTestsResult | Promise<RunTestsResult>;
 
 const TEST_OUTPUT_TAIL_CHARS = 4000;
 
 function tail(text: string, max: number): string {
   return text.length > max ? `...${text.slice(text.length - max)}` : text;
+}
+
+/** `.agile-daemon-cache/` under `repoRoot` — the daemon's own host-local scratch space, gitignored, never the operator's real `$HOME`. */
+const DAEMON_CACHE_DIR = '.agile-daemon-cache';
+
+/**
+ * Env for any test-runner subprocess `defaultRunTests` spawns: `HOME` (and
+ * everything a package manager's own config/cache resolution keys off —
+ * `npm_config_cache`, the `XDG_*` base-directory vars a growing set of CLIs
+ * read even outside a strict XDG-following OS) all point under the
+ * daemon's own `.agile-daemon-cache/` instead of the real operator's home
+ * (T021 round 5, QA round 4 finding 6: `npm test`'s own debug logger
+ * writes to `$HOME/.npm/_logs` unconditionally, regardless of `cwd` — a
+ * demo/offline run was writing into the actual `/root/.npm/_logs` on every
+ * ticket merge). Every directory is created eagerly so a tool that assumes
+ * its config dir already exists (rather than creating it on first write)
+ * doesn't fail outright.
+ */
+function sandboxedSubprocessEnv(repoRoot: string): Record<string, string> {
+  const cacheRoot = join(repoRoot, DAEMON_CACHE_DIR);
+  const home = join(cacheRoot, 'home');
+  const npmCache = join(cacheRoot, 'npm-cache');
+  const xdgCache = join(cacheRoot, 'xdg-cache');
+  const xdgConfig = join(cacheRoot, 'xdg-config');
+  const xdgData = join(cacheRoot, 'xdg-data');
+  const xdgState = join(cacheRoot, 'xdg-state');
+  for (const dir of [home, npmCache, xdgCache, xdgConfig, xdgData, xdgState]) {
+    mkdirSync(dir, { recursive: true });
+  }
+  return {
+    ...process.env,
+    HOME: home,
+    npm_config_cache: npmCache,
+    XDG_CACHE_HOME: xdgCache,
+    XDG_CONFIG_HOME: xdgConfig,
+    XDG_DATA_HOME: xdgData,
+    XDG_STATE_HOME: xdgState,
+  };
 }
 
 /**
@@ -98,8 +148,11 @@ function tail(text: string, max: number): string {
  * mirrors the `/worktree` skill's own lockfile-based detection. Only run
  * when a `scripts.test` entry actually exists in `package.json`; a repo
  * with none is treated as "nothing to run" (`ok: true`), not a failure.
+ * Runs with `sandboxedSubprocessEnv` regardless of which command wins —
+ * a `bun run test` worktree can just as easily shell out to something
+ * `$HOME`-sensitive from inside its own test suite.
  */
-export const defaultRunTests: RunTestsFn = (cwd) => {
+export const defaultRunTests: RunTestsFn = (cwd, repoRoot) => {
   const pkgPath = join(cwd, 'package.json');
   let hasTestScript = false;
   if (existsSync(pkgPath)) {
@@ -118,7 +171,12 @@ export const defaultRunTests: RunTestsFn = (cwd) => {
 
   const usesBun = existsSync(join(cwd, 'bun.lock')) || existsSync(join(cwd, 'bun.lockb'));
   const cmd = usesBun ? ['bun', 'run', 'test'] : ['npm', 'test'];
-  const proc = Bun.spawnSync(cmd, { cwd, stdout: 'pipe', stderr: 'pipe' });
+  const proc = Bun.spawnSync(cmd, {
+    cwd,
+    stdout: 'pipe',
+    stderr: 'pipe',
+    env: sandboxedSubprocessEnv(repoRoot),
+  });
   const decoder = new TextDecoder();
   const output = tail(
     `${decoder.decode(proc.stdout)}${decoder.decode(proc.stderr)}`.trim(),
@@ -378,7 +436,7 @@ export class MergeOwner {
       return this.haltAndRecord(ticket, 'conflict', summary);
     }
 
-    const testResult = await this.runTests(worktreePath);
+    const testResult = await this.runTests(worktreePath, this.repoRoot);
     if (!testResult.ok) {
       const summary = `tests failed on ${branch} after rebasing onto ${INTEGRATION_BRANCH}: ${testResult.summary}`;
       return this.haltAndRecord(ticket, 'test_failed', summary);

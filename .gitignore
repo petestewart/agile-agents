@@ -3,6 +3,7 @@ dist/
 dist-app/
 out/
 .worktrees/
+.agile-daemon-cache/
 .pipeline-review.md
 .pipeline-report.md
 .pipeline-qa.md
