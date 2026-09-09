@@ -95,10 +95,18 @@ afterEach(async () => {
 });
 
 describe('startAgentSession', () => {
-  test('registers the agent, then heartbeats and ledgers a usage_update, and cleans up on stop', async () => {
+  // Consolidated into one spawned session (registration, ledger, tool_call
+  // event, and permission forwarding) — real-subprocess tests are the
+  // heaviest in this suite (each spawns a real `bun` process), so this
+  // covers the wiring end to end without multiplying spawns per assertion.
+  // Role-specific *policy* differences (allow vs. deny, by role) are T010's
+  // own exhaustive test surface (`permissions/responder.test.ts`); this only
+  // needs to prove the forwarding wiring works, once.
+  test('registers the agent, ledgers a usage_update, logs a tool_call, forwards a permission request, and cleans up on stop', async () => {
     // `done` — a non-live status, so the exit-handling path below must NOT
-    // ripple the ticket back to `ready` (see the other test for that path).
+    // ripple the ticket back to `ready` (see the next test for that path).
     await store.putTicket(makeTicket({ status: 'done' }), { by: 'test' });
+    const resultFile = join(scratch, 'perm-result.json');
 
     const handle = startAgentSession({
       store,
@@ -114,17 +122,33 @@ describe('startAgentSession', () => {
           { type: 'usage_update', used: 120 },
           { type: 'tool_call', toolCallId: 't1', kind: 'edit', title: 'Edit foo.ts' },
           { type: 'tool_call_update', toolCallId: 't1', status: 'completed' },
+          {
+            type: 'request_permission',
+            toolCall: {
+              toolCallId: 't2',
+              kind: 'edit',
+              rawInput: { file_path: join(worktree, 'foo.ts') },
+            },
+            options: [
+              { optionId: 'allow-once', kind: 'allow_once' },
+              { optionId: 'reject-once', kind: 'reject_once' },
+            ],
+            resultFile,
+          },
           { type: 'end_turn' },
         ],
       }),
     });
 
     await handle.session.initialized;
-    // Give the fake agent a moment to run its script and the store's
-    // deferred-commit writes to land.
-    await Bun.sleep(300);
-    await store.flush();
+    for (let i = 0; i < 500 && !existsSync(resultFile); i++) {
+      await Bun.sleep(20);
+    }
+    const outcome = JSON.parse(readFileSync(resultFile, 'utf8'));
+    // Engineer editing inside its own worktree — allow_once (T010 policy).
+    expect(outcome).toEqual({ outcome: { outcome: 'selected', optionId: 'allow-once' } });
 
+    await store.flush();
     const agent = store.getAgent('eng-0231');
     expect(agent.role).toBe('engineer');
     expect(agent.worktree).toBe(worktree);
@@ -144,9 +168,9 @@ describe('startAgentSession', () => {
 
     handle.stop();
     const info = await handle.exited;
-    expect(info.ticketReadied).toBe(false); // ticket already had no live-status-losing condition to flip— see next test for the readied path
+    expect(info.ticketReadied).toBe(false); // ticket already had no live-status-losing condition to flip — see next test for the readied path
     expect(() => store.getAgent('eng-0231')).toThrow();
-  }, 60000);
+  }, 90000);
 
   test('a graceful stop while the ticket is in_progress transitions it back to ready and escalates to em', async () => {
     await store.putTicket(makeTicket({ status: 'in_progress' }), { by: 'test' });
@@ -172,93 +196,5 @@ describe('startAgentSession', () => {
 
     const inbox = bus.poll('em');
     expect(inbox.some((m) => m.kind === 'escalate' && m.ticket === 'TKT-0231')).toBe(true);
-  }, 60000);
-
-  test('forwards session/request_permission to the daemon and answers by role — engineer edit inside the worktree is allow_once', async () => {
-    await store.putTicket(makeTicket(), { by: 'test' });
-    const resultFile = join(scratch, 'perm-result.json');
-
-    const handle = startAgentSession({
-      store,
-      bus,
-      role: 'engineer',
-      agentId: 'eng-0231',
-      ticket: 'TKT-0231',
-      worktreePath: worktree,
-      brief: 'do the ticket',
-      currentSprintId: () => 'S-01',
-      provider: fakeProvider({
-        steps: [
-          {
-            type: 'request_permission',
-            toolCall: {
-              toolCallId: 't1',
-              kind: 'edit',
-              rawInput: { file_path: join(worktree, 'foo.ts') },
-            },
-            options: [
-              { optionId: 'allow-once', kind: 'allow_once' },
-              { optionId: 'reject-once', kind: 'reject_once' },
-            ],
-            resultFile,
-          },
-          { type: 'end_turn' },
-        ],
-      }),
-    });
-
-    await handle.session.initialized;
-    for (let i = 0; i < 100 && !existsSync(resultFile); i++) {
-      await Bun.sleep(20);
-    }
-    const outcome = JSON.parse(readFileSync(resultFile, 'utf8'));
-    expect(outcome).toEqual({ outcome: { outcome: 'selected', optionId: 'allow-once' } });
-
-    handle.stop();
-    await handle.exited;
-  }, 60000);
-
-  test('reviewer edit is denied (reject_once) regardless of the path', async () => {
-    await store.putTicket(makeTicket({ assignee: 'reviewer-0231' }), { by: 'test' });
-    const resultFile = join(scratch, 'perm-result-reviewer.json');
-
-    const handle = startAgentSession({
-      store,
-      bus,
-      role: 'reviewer',
-      agentId: 'reviewer-0231',
-      ticket: 'TKT-0231',
-      worktreePath: worktree,
-      brief: 'review the ticket',
-      currentSprintId: () => 'S-01',
-      provider: fakeProvider({
-        steps: [
-          {
-            type: 'request_permission',
-            toolCall: {
-              toolCallId: 't1',
-              kind: 'edit',
-              rawInput: { file_path: join(worktree, 'foo.ts') },
-            },
-            options: [
-              { optionId: 'allow-once', kind: 'allow_once' },
-              { optionId: 'reject-once', kind: 'reject_once' },
-            ],
-            resultFile,
-          },
-          { type: 'end_turn' },
-        ],
-      }),
-    });
-
-    await handle.session.initialized;
-    for (let i = 0; i < 100 && !existsSync(resultFile); i++) {
-      await Bun.sleep(20);
-    }
-    const outcome = JSON.parse(readFileSync(resultFile, 'utf8'));
-    expect(outcome).toEqual({ outcome: { outcome: 'selected', optionId: 'reject-once' } });
-
-    handle.stop();
-    await handle.exited;
-  }, 60000);
+  }, 90000);
 });

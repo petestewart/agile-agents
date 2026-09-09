@@ -114,9 +114,13 @@ describe('Runner.spawn', () => {
 
     runner.stop('eng-0231');
     await result.exited;
-  }, 60000);
+  }, 90000);
 
-  test('reviewer reuses the engineer worktree, and refuses to spawn before one exists', async () => {
+  // Consolidated (review fix — subprocess-heavy tests measurably slow the
+  // full 76-file suite under this sandbox's CPU ceiling; see the pipeline
+  // report): one `Runner`, three roles spawned in turn, instead of three
+  // separate real-subprocess tests.
+  test('reviewer reuses the engineer worktree (refusing before one exists); QA gets its own fresh clone', async () => {
     const runner = new Runner({
       store,
       bus,
@@ -130,27 +134,15 @@ describe('Runner.spawn', () => {
     const rev = await runner.spawn('reviewer', 'TKT-0231');
     expect(rev.worktree).toBe(eng.worktree);
 
-    runner.stop('eng-0231');
-    runner.stop('reviewer-0231');
-    await Promise.all([eng.exited, rev.exited]);
-  }, 60000);
-
-  test('qa gets its own fresh clone', async () => {
-    const runner = new Runner({
-      store,
-      bus,
-      repoRoot: repo,
-      spawn: fakeSpawn({ steps: [{ type: 'hang' }] }),
-    });
-    const eng = await runner.spawn('engineer', 'TKT-0231');
     const qa = await runner.spawn('qa', 'TKT-0231');
     expect(qa.worktree).not.toBe(eng.worktree);
     expect(qa.worktree).toBe(join(repo, '.worktrees', 'TKT-0231-qa'));
 
     runner.stop('eng-0231');
+    runner.stop('reviewer-0231');
     runner.stop('qa-0231');
-    await Promise.all([eng.exited, qa.exited]);
-  }, 60000);
+    await Promise.all([eng.exited, rev.exited, qa.exited]);
+  }, 90000);
 });
 
 describe('crash recovery', () => {
@@ -170,7 +162,7 @@ describe('crash recovery', () => {
     expect(store.getTicket('TKT-0231').status).toBe('in_progress');
 
     // Wait for the fake agent to actually start and record its own pid.
-    for (let i = 0; i < 100 && !existsSync(pidFile); i++) {
+    for (let i = 0; i < 500 && !existsSync(pidFile); i++) {
       await Bun.sleep(20);
     }
     expect(existsSync(pidFile)).toBe(true);
@@ -192,7 +184,7 @@ describe('crash recovery', () => {
     expect(inbox.some((m) => m.kind === 'escalate' && m.ticket === 'TKT-0231')).toBe(true);
 
     runner.stopAll();
-  }, 60_000);
+  }, 90_000);
 });
 
 describe('runSweep', () => {
@@ -249,11 +241,11 @@ describe('runner.* RPC methods', () => {
     // to actually finish (surfaced here as it dropping out of `list()`)
     // before the test ends, so `afterEach`'s `rmSync` never races a
     // still-in-flight commit from `finish()`.
-    for (let i = 0; i < 100; i++) {
+    for (let i = 0; i < 500; i++) {
       const remaining = (await methods['runner.list']?.({})) as Array<{ agentId: string }>;
       if (remaining.length === 0) break;
       await Bun.sleep(20);
     }
     expect((await methods['runner.list']?.({})) as Array<{ agentId: string }>).toEqual([]);
-  }, 60000);
+  }, 90000);
 });
