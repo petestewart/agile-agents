@@ -224,12 +224,12 @@ Priority encodes dependency layer as well as importance: P0 tickets are v0-block
 
 ### Ticket: T018 Gates policy, HIL requests, circuit breaker
 - **Priority:** P1
-- **Status:** In Progress
+- **Status:** In Review
 - **Owner:** sonnet:worker-T018
 - **Scope:** Depends on T005, T006. `policy.yaml` + per-sprint `gates:` resolution (sprint → epic → team → default), owners `human | em | architect | human_timeout: <d>`, `hil_request`/`hil_response` message kinds with deadlines, single-instance delegation, delegated approvals producing the same decision artifact + `fyi`, circuit breaker signals (global halt, budget %, integration red, ladder exhausted, deadlock, N denials) forcing gates to `human` until cleared. CLI `approve`/`delegate`/`breaker clear`.
 - **Acceptance Criteria:** Gate resolution table tests pass; a `human_timeout` gate falls through at the deadline; tripping a breaker flips a delegated gate to `human` and the next request says why.
 - **Validation Steps:** Fake-clock unit tests; CLI round-trip test.
-- **Notes:**
+- **Notes:** branch `T018-gates-hil-breaker` (local worktree); `src/gates/` (resolveGate, GateService with fake clock, breaker, `gate.*` RPC table), self-review PASS. CLI verbs deferred to T008 (T008 now depends on T018). Gates `opus:reviewer-T018` + `sonnet:qa-T018` running; reviewer asked to check whether `gates/types.ts` defines schemas that belong in shared.
 
 ### Ticket: T019 Merge and integration owner
 - **Priority:** P1
