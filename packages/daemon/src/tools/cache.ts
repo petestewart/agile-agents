@@ -14,9 +14,15 @@
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { DAEMON_CACHE_DIR } from '../subprocess-env';
 
-/** Sibling precedent: `.agile-daemon.lock`, `.agile-daemon.sock` (T004). */
-export const CACHE_DIR_NAME = '.agile-daemon-cache';
+/**
+ * Sibling precedent: `.agile-daemon.lock`, `.agile-daemon.sock` (T004).
+ * T034 round 2 (review): re-exported from `../subprocess-env` rather than
+ * defined again here — this file and `subprocess-env.ts` used to each
+ * define their own identical `'.agile-daemon-cache'` string constant.
+ */
+export const CACHE_DIR_NAME = DAEMON_CACHE_DIR;
 
 export function toolCacheRoot(repoRoot: string): string {
   return join(repoRoot, CACHE_DIR_NAME, 'tools');

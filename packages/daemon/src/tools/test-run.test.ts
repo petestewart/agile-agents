@@ -1,11 +1,12 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   MAX_FAILURES_RETURNED,
   TestRunDeniedError,
   isAllowedTestCommand,
+  pruneRawTestRunOutputs,
   runTestRun,
 } from './test-run';
 
@@ -172,13 +173,211 @@ describe('runTestRun', () => {
       maxOutputBytes: 4096,
     });
 
-    // Killed by the output cap (SIGKILL, not a clean pass) — same `timed_out`
-    // signal path as a real timeout (Bun's `maxBuffer` kills with
-    // `killSignal`, indistinguishable from a timeout kill at the signal
-    // level), and the result still comes back promptly with something
-    // written to disk rather than growing without bound.
+    // T034: the process is no longer killed for exceeding the byte cap
+    // (Bun's `maxBuffer` is gone — see `test-run.ts`'s header comment on
+    // `runTestRun`); it runs to completion and the cap instead bounds only
+    // the *distilled* text used for parsing/summarizing. Either way the
+    // result comes back promptly with something written to disk rather
+    // than growing without bound.
+    expect(result.timed_out).toBeUndefined();
     expect(result.raw_output.length).toBeGreaterThan(0);
     expect(result.summary.length).toBeLessThan(500 * 4);
+  });
+
+  test('T034 (T033 review addendum): a captured stream past maxOutputBytes is truncated in the distilled summary, but the raw file on disk keeps every byte', async () => {
+    writeFileSync(
+      join(repo, 'pkg.test.ts'),
+      [
+        'import { test, expect } from "bun:test";',
+        'test("very noisy", () => {',
+        // ~2 MiB of stdout — comfortably past the default 1 MiB
+        // `MAX_TEST_RUN_OUTPUT_BYTES` and the 4 KiB cap this test sets.
+        '  for (let i = 0; i < 20000; i++) console.log("y".repeat(100));',
+        '  expect(1).toBe(1);',
+        '});',
+      ].join('\n'),
+    );
+    const result = await runTestRun({
+      input: { command: 'bun test pkg.test.ts' },
+      worktree: repo,
+      repoRoot: repo,
+      maxOutputBytes: 4096,
+    });
+
+    // Distilled output stays bounded by the (tiny) cap regardless of how
+    // much the process actually printed.
+    expect(result.timed_out).toBeUndefined();
+    expect(result.summary.length).toBeLessThan(500 * 4);
+    expect(JSON.stringify(result).length).toBeLessThan(500 * 4 * 2);
+
+    // The raw file `raw_output` points at, however, has the full,
+    // untruncated combined log — comfortably more than the 4096-byte cap
+    // (the test itself printed roughly 2 MiB to stdout alone).
+    const rawPath = join(repo, '.agile-daemon-cache', 'raw', result.raw_output);
+    const rawBytes = Bun.file(rawPath).size;
+    expect(rawBytes).toBeGreaterThan(4096 * 10);
+  });
+
+  test("T034: the spawned test command runs with a sandboxed HOME, never the daemon operator's real one", async () => {
+    // A tiny bun test that prints the HOME it was actually spawned with —
+    // proves the env `runTestRun` builds for the child (not just what this
+    // test process itself happens to have) is the sandboxed one.
+    writeFileSync(
+      join(repo, 'pkg.test.ts'),
+      [
+        'import { test, expect } from "bun:test";',
+        'test("prints HOME", () => {',
+        '  console.log("HOME=" + process.env.HOME);',
+        '  expect(1).toBe(1);',
+        '});',
+      ].join('\n'),
+    );
+    const result = await runTestRun({
+      input: { command: 'bun test pkg.test.ts' },
+      worktree: repo,
+      repoRoot: repo,
+    });
+    const rawPath = join(repo, '.agile-daemon-cache', 'raw', result.raw_output);
+    const rawText = await Bun.file(rawPath).text();
+    const match = /HOME=(\S+)/.exec(rawText);
+    expect(match?.[1]).toBeDefined();
+    const sandboxedHome = match?.[1] ?? '';
+    expect(sandboxedHome).not.toBe(process.env.HOME);
+    expect(sandboxedHome).toContain(join(repo, '.agile-daemon-cache', 'test-run'));
+  });
+
+  test('T034 round 2 (review): the raw output lives outside the sandboxed HOME tree, never inside it', async () => {
+    writeFileSync(
+      join(repo, 'pkg.test.ts'),
+      [
+        'import { test, expect } from "bun:test";',
+        'test("ok", () => { expect(1).toBe(1); });',
+      ].join('\n'),
+    );
+    const result = await runTestRun({
+      input: { command: 'bun test pkg.test.ts' },
+      worktree: repo,
+      repoRoot: repo,
+    });
+    const rawPath = join(repo, '.agile-daemon-cache', 'raw', result.raw_output);
+    const sandboxHomeRoot = join(repo, '.agile-daemon-cache', 'test-run');
+    // The raw log is a real, findable file...
+    expect(await Bun.file(rawPath).exists()).toBe(true);
+    // ...and it does not sit anywhere under the same directory tree the
+    // spawned test command's own sandboxed $HOME/npm-cache/XDG_* live in —
+    // a test suite that pokes around its own sandbox must never be able to
+    // see or disturb the files recording its own output.
+    expect(rawPath.startsWith(sandboxHomeRoot)).toBe(false);
+  });
+
+  test('T034 round 2 (review): raw test_run output is pruned (oldest first) once it exceeds maxRetainedRawBytes', async () => {
+    writeFileSync(
+      join(repo, 'pkg.test.ts'),
+      [
+        'import { test, expect } from "bun:test";',
+        'test("chatty", () => {',
+        '  console.log("z".repeat(2000));',
+        '  expect(1).toBe(1);',
+        '});',
+      ].join('\n'),
+    );
+
+    const raws: string[] = [];
+    // Each run's raw log is a few KB (bun's own banner/summary plus the
+    // 2000-char line) — a tiny budget forces pruning after just a couple
+    // of runs, without needing megabytes of fixture output.
+    for (let i = 0; i < 5; i++) {
+      const result = await runTestRun({
+        input: { command: 'bun test pkg.test.ts' },
+        worktree: repo,
+        repoRoot: repo,
+        maxRetainedRawBytes: 4096,
+      });
+      raws.push(join(repo, '.agile-daemon-cache', 'raw', result.raw_output));
+    }
+
+    // The most recent run's own raw log always survives its own prune.
+    const newest = raws[raws.length - 1];
+    const oldest = raws[0];
+    expect(newest).toBeDefined();
+    expect(oldest).toBeDefined();
+    expect(await Bun.file(newest as string).exists()).toBe(true);
+    // At least the very first run's log — the oldest by construction —
+    // must have been pruned away by the time the budget was exceeded.
+    expect(await Bun.file(oldest as string).exists()).toBe(false);
+
+    // The tree as a whole stays near the budget, not growing unbounded
+    // across repeated runs (some slack: the newest run's own two files
+    // are never pruned by the same call that wrote them).
+    const glob = new Bun.Glob('**/*');
+    let total = 0;
+    for await (const relPath of glob.scan(join(repo, '.agile-daemon-cache', 'raw', 'test_run'))) {
+      total += Bun.file(join(repo, '.agile-daemon-cache', 'raw', 'test_run', relPath)).size;
+    }
+    expect(total).toBeLessThan(4096 * 3);
+  });
+
+  test('round 3 review fix (blocker 1): a run whose own raw log alone exceeds maxRetainedRawBytes still has its raw_output on disk afterwards', async () => {
+    writeFileSync(
+      join(repo, 'pkg.test.ts'),
+      [
+        'import { test, expect } from "bun:test";',
+        'test("chatty", () => {',
+        // ~500 KB of stdout — comfortably more than the 50 KiB budget below,
+        // so the run's own combined log alone exceeds the whole tree budget.
+        '  for (let i = 0; i < 2500; i++) console.log("q".repeat(200));',
+        '  expect(1).toBe(1);',
+        '});',
+      ].join('\n'),
+    );
+
+    const result = await runTestRun({
+      input: { command: 'bun test pkg.test.ts' },
+      worktree: repo,
+      repoRoot: repo,
+      maxRetainedRawBytes: 50 * 1024,
+    });
+
+    const rawPath = join(repo, '.agile-daemon-cache', 'raw', result.raw_output);
+    // The old plain oldest-first sweep had nothing else to delete before
+    // this run's own just-written log, so it deleted *that* — leaving
+    // `raw_output` pointing at nothing. Protecting it must keep it on disk.
+    expect(await Bun.file(rawPath).exists()).toBe(true);
+    expect(Bun.file(rawPath).size).toBeGreaterThan(50 * 1024);
+    // Surfaced on the result rather than silently exceeding the budget.
+    expect(result.raw_output_over_budget).toBe(true);
+  });
+
+  test('round 3 review fix (nit N4): a caller-supplied protected path survives the sweep even if oldest (runTestRun itself protects only its own run’s paths)', async () => {
+    writeFileSync(
+      join(repo, 'pkg.test.ts'),
+      [
+        'import { test, expect } from "bun:test";',
+        'test("ok", () => { expect(1).toBe(1); });',
+      ].join('\n'),
+    );
+
+    // Simulate another run's still-being-written capture files: old mtimes
+    // (so a plain oldest-first sweep would pick them first) sitting in the
+    // same `test_run/<bin>/` tree `runTestRun` writes into.
+    const inFlightDir = join(repo, '.agile-daemon-cache', 'raw', 'test_run', 'bun');
+    mkdirSync(inFlightDir, { recursive: true });
+    const inFlightPath = join(inFlightDir, 'in-flight.out');
+    writeFileSync(inFlightPath, 'x'.repeat(40 * 1024));
+    const oldTime = new Date(Date.now() - 60_000);
+    utimesSync(inFlightPath, oldTime, oldTime);
+
+    // This asserts the *pruning* mechanism itself honours a protected path
+    // regardless of age, directly — `runTestRun` only ever protects its own
+    // run's paths, so a concurrent run's in-flight capture is NOT protected
+    // today; this test covers the mechanism, not that (unclosed) window.
+    const stillOverBudget = pruneRawTestRunOutputs(
+      join(repo, '.agile-daemon-cache', 'raw', 'test_run'),
+      1,
+      new Set([inFlightPath]),
+    );
+    expect(stillOverBudget).toBe(true); // still over budget — the file is protected, not deletable.
+    expect(await Bun.file(inFlightPath).exists()).toBe(true);
   });
 
   test('review round 2 fix (blocker 1): 60 failures — the WHOLE serialized result stays under 500 tokens, not just summary', async () => {

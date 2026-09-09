@@ -49,7 +49,29 @@ import type { Ticket } from '@agile-agents/shared';
 import { TicketIdSchema } from '@agile-agents/shared';
 import { activeHaltsFor } from '../halts';
 import { StateStore } from '../store';
-import { runGit } from './git';
+
+/**
+ * T034 round 2 (review): this one call can't go through `./git`'s
+ * `runGit` (which now requires an explicit `repoRoot`) — discovering the
+ * repo root *is* what this call is for, so no `repoRoot` exists yet to
+ * pass it. Left as a plain, unsandboxed `git rev-parse` (read-only,
+ * touches no file `$HOME` would own) rather than inventing a heuristic to
+ * feed itself; reported to the manager as one of the still-unsandboxed
+ * git spawns outside this ticket's scope.
+ */
+function gitCommonDir(worktreePath: string): string {
+  const result = Bun.spawnSync(['git', 'rev-parse', '--git-common-dir'], {
+    cwd: worktreePath,
+    stdout: 'pipe',
+    stderr: 'pipe',
+  });
+  if (result.exitCode !== 0) {
+    throw new Error(
+      `installPreCommitHook: git rev-parse --git-common-dir failed in ${worktreePath}: ${new TextDecoder().decode(result.stderr).trim()}`,
+    );
+  }
+  return new TextDecoder().decode(result.stdout).trim();
+}
 
 export interface CommitCheck {
   allowed: boolean;
@@ -194,7 +216,7 @@ export function installPreCommitHook(
   worktreePath: string,
   ticket: Ticket,
 ): InstallPreCommitHookResult {
-  const rawCommonDir = runGit(['rev-parse', '--git-common-dir'], worktreePath);
+  const rawCommonDir = gitCommonDir(worktreePath);
   const commonDir = isAbsolute(rawCommonDir) ? rawCommonDir : resolve(worktreePath, rawCommonDir);
   const repoRoot = dirname(commonDir);
   const stateRoot = join(repoRoot, '.agile');

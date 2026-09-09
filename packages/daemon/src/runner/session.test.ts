@@ -667,3 +667,41 @@ describe('T027: per-vendor session wiring (Cursor ask mode, Grok client-fs gate,
     await handle.exited;
   }, 90000);
 });
+
+describe("T034: vendor ACP session spawns keep the operator's real HOME (never the daemon's sandboxed one)", () => {
+  test('startAgentSession never sets an env/envOverrides.HOME for the vendor spawn', async () => {
+    await store.putTicket(makeTicket({ status: 'done' }), { by: 'test' });
+    const sink: { options?: SpawnSessionOptions } = {};
+
+    const handle = startTrackedSession({
+      store,
+      bus,
+      role: 'engineer',
+      agentId: 'eng-0231',
+      ticket: 'TKT-0231',
+      worktreePath: worktree,
+      brief: 'do it',
+      currentSprintId: () => 'S-01',
+      provider: fakeProvider({ steps: [{ type: 'end_turn' }] }),
+      spawn: (options: SpawnSessionOptions) => {
+        sink.options = options;
+        return realSpawnSession(options);
+      },
+    });
+    await handle.session.initialized;
+
+    // No override at all — `resolveAgentEnv` (acp-client) then defaults to
+    // this process's own `process.env`, which is the daemon operator's
+    // real `HOME`. T034 sandboxes every *other* daemon subprocess (test
+    // runners, git, the docker probe); a vendor CLI needs its own real
+    // login/session store, so this is the one spawn site that must keep
+    // it — see `resolveAgentEnv`'s own doc comment in
+    // `packages/acp-client/src/session.ts`.
+    expect(sink.options?.env).toBeUndefined();
+    expect(sink.options?.envOverrides?.HOME).toBeUndefined();
+    expect(sink.options?.envOverrides?.XDG_CACHE_HOME).toBeUndefined();
+
+    handle.stop();
+    await handle.exited;
+  }, 90000);
+});

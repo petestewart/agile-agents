@@ -424,8 +424,12 @@ describe('defaultRunTests — subprocess sandboxing (T021 round 5, QA round 4 fi
     expect(reported.HOME).not.toBe(process.env.HOME);
 
     // The sandbox directories are created eagerly, not left for the
-    // subprocess to discover missing.
-    expect(existsSync(join(cacheRoot, 'home'))).toBe(true);
-    expect(existsSync(join(cacheRoot, 'npm-cache'))).toBe(true);
+    // subprocess to discover missing. T034: `defaultRunTests` now spawns
+    // through the shared `sandboxedSubprocessEnv(repoRoot, 'merge-tests')`
+    // helper (`../subprocess-env`), which namespaces each caller's cache
+    // under `<cacheRoot>/<name>/` — `merge-tests` here — so two different
+    // subprocess kinds sharing one repo root never share one `$HOME`.
+    expect(existsSync(join(cacheRoot, 'merge-tests', 'home'))).toBe(true);
+    expect(existsSync(join(cacheRoot, 'merge-tests', 'npm-cache'))).toBe(true);
   });
 });

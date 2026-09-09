@@ -129,3 +129,20 @@ describe('ensureQaClone', () => {
     expect(second.path).toBe(first.path);
   });
 });
+
+describe('T034: git spawns in this module are sandboxed, never the real $HOME', () => {
+  test('ensureIntegrationBranch creates a sandboxed HOME under <repoRoot>/.agile-daemon-cache/git/', () => {
+    ensureIntegrationBranch(repo);
+    expect(existsSync(join(repo, '.agile-daemon-cache', 'git', 'home'))).toBe(true);
+  });
+
+  test('ensureTicketWorktree and ensureQaClone sandbox HOME under the repo root, not inside the worktree/clone', () => {
+    const ticket = makeTicket();
+    const worktree = ensureTicketWorktree(repo, ticket);
+    const qa = ensureQaClone(repo, ticket);
+
+    expect(existsSync(join(repo, '.agile-daemon-cache', 'git', 'home'))).toBe(true);
+    expect(existsSync(join(worktree.path, '.agile-daemon-cache'))).toBe(false);
+    expect(existsSync(join(qa.path, '.agile-daemon-cache'))).toBe(false);
+  });
+});

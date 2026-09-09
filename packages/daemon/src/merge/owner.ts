@@ -75,6 +75,7 @@ import {
   ticketBranchName,
 } from '../runner/worktrees';
 import { NotFoundError, type StateStore, buildEvent } from '../store';
+import { sandboxedSubprocessEnv } from '../subprocess-env';
 import { GitCommandError, git, gitWrite, removeWorktreeSafely, runGit } from './git';
 
 /** Injected test runner result — see `defaultRunTests` for the repo-detection default. */
@@ -103,44 +104,6 @@ function tail(text: string, max: number): string {
   return text.length > max ? `...${text.slice(text.length - max)}` : text;
 }
 
-/** `.agile-daemon-cache/` under `repoRoot` — the daemon's own host-local scratch space, gitignored, never the operator's real `$HOME`. */
-const DAEMON_CACHE_DIR = '.agile-daemon-cache';
-
-/**
- * Env for any test-runner subprocess `defaultRunTests` spawns: `HOME` (and
- * everything a package manager's own config/cache resolution keys off —
- * `npm_config_cache`, the `XDG_*` base-directory vars a growing set of CLIs
- * read even outside a strict XDG-following OS) all point under the
- * daemon's own `.agile-daemon-cache/` instead of the real operator's home
- * (T021 round 5, QA round 4 finding 6: `npm test`'s own debug logger
- * writes to `$HOME/.npm/_logs` unconditionally, regardless of `cwd` — a
- * demo/offline run was writing into the actual `/root/.npm/_logs` on every
- * ticket merge). Every directory is created eagerly so a tool that assumes
- * its config dir already exists (rather than creating it on first write)
- * doesn't fail outright.
- */
-function sandboxedSubprocessEnv(repoRoot: string): Record<string, string> {
-  const cacheRoot = join(repoRoot, DAEMON_CACHE_DIR);
-  const home = join(cacheRoot, 'home');
-  const npmCache = join(cacheRoot, 'npm-cache');
-  const xdgCache = join(cacheRoot, 'xdg-cache');
-  const xdgConfig = join(cacheRoot, 'xdg-config');
-  const xdgData = join(cacheRoot, 'xdg-data');
-  const xdgState = join(cacheRoot, 'xdg-state');
-  for (const dir of [home, npmCache, xdgCache, xdgConfig, xdgData, xdgState]) {
-    mkdirSync(dir, { recursive: true });
-  }
-  return {
-    ...process.env,
-    HOME: home,
-    npm_config_cache: npmCache,
-    XDG_CACHE_HOME: xdgCache,
-    XDG_CONFIG_HOME: xdgConfig,
-    XDG_DATA_HOME: xdgData,
-    XDG_STATE_HOME: xdgState,
-  };
-}
-
 /**
  * Default `runTests`: `bun run test` when the worktree has a bun lockfile
  * (CLAUDE.md's own tooling — "bun test, no native modules"), else `npm
@@ -148,9 +111,13 @@ function sandboxedSubprocessEnv(repoRoot: string): Record<string, string> {
  * mirrors the `/worktree` skill's own lockfile-based detection. Only run
  * when a `scripts.test` entry actually exists in `package.json`; a repo
  * with none is treated as "nothing to run" (`ok: true`), not a failure.
- * Runs with `sandboxedSubprocessEnv` regardless of which command wins —
- * a `bun run test` worktree can just as easily shell out to something
- * `$HOME`-sensitive from inside its own test suite.
+ * Runs with `sandboxedSubprocessEnv` (T034 — moved to the shared
+ * `../subprocess-env` module so `tools/test-run.ts`, `sandbox/backend.ts`,
+ * `merge/git.ts` and `runner/worktrees.ts` all share one implementation
+ * instead of near-identical copies; this call site originated it in T021)
+ * regardless of which command wins — a `bun run test` worktree can just as
+ * easily shell out to something `$HOME`-sensitive from inside its own test
+ * suite.
  */
 export const defaultRunTests: RunTestsFn = (cwd, repoRoot) => {
   const pkgPath = join(cwd, 'package.json');
@@ -175,7 +142,7 @@ export const defaultRunTests: RunTestsFn = (cwd, repoRoot) => {
     cwd,
     stdout: 'pipe',
     stderr: 'pipe',
-    env: sandboxedSubprocessEnv(repoRoot),
+    env: sandboxedSubprocessEnv(repoRoot, 'merge-tests'),
   });
   const decoder = new TextDecoder();
   const output = tail(
@@ -356,7 +323,7 @@ export class MergeOwner {
     const path = join(this.repoRoot, '.worktrees', dirName);
     if (existsSync(path)) return path;
     mkdirSync(join(this.repoRoot, '.worktrees'), { recursive: true });
-    const result = git(['worktree', 'add', path, branch], this.repoRoot);
+    const result = git(['worktree', 'add', path, branch], this.repoRoot, this.repoRoot);
     if (result.exitCode !== 0) {
       // Git refuses to check out a branch into a second worktree while any
       // worktree (including `repoRoot` itself) already has it checked
@@ -428,10 +395,10 @@ export class MergeOwner {
 
     ensureIntegrationBranch(this.repoRoot);
 
-    const rebase = gitWrite(['rebase', INTEGRATION_BRANCH], worktreePath);
+    const rebase = gitWrite(['rebase', INTEGRATION_BRANCH], worktreePath, this.repoRoot);
     if (rebase.exitCode !== 0) {
       const files = this.conflictedFiles(worktreePath);
-      gitWrite(['rebase', '--abort'], worktreePath);
+      gitWrite(['rebase', '--abort'], worktreePath, this.repoRoot);
       const summary = this.buildConflictSummary(ticket, files.length > 0 ? files : [rebase.stderr]);
       return this.haltAndRecord(ticket, 'conflict', summary);
     }
@@ -449,6 +416,7 @@ export class MergeOwner {
     const merge = gitWrite(
       ['merge', '--no-ff', branch, '-m', `Merge ${ticket.id} ${ticket.title}`],
       integrationWorktree,
+      this.repoRoot,
     );
     if (merge.exitCode !== 0) {
       // Defensive: a rebase onto `integration` immediately before this
@@ -457,12 +425,12 @@ export class MergeOwner {
       // above and this checkout (another ticket's merge racing in — the
       // mutex prevents that within one process, but not across processes).
       const files = this.conflictedFiles(integrationWorktree);
-      gitWrite(['merge', '--abort'], integrationWorktree);
+      gitWrite(['merge', '--abort'], integrationWorktree, this.repoRoot);
       const summary = this.buildConflictSummary(ticket, files.length > 0 ? files : [merge.stderr]);
       return this.haltAndRecord(ticket, 'conflict', summary);
     }
 
-    const mergeCommit = runGit(['rev-parse', 'HEAD'], integrationWorktree);
+    const mergeCommit = runGit(['rev-parse', 'HEAD'], integrationWorktree, this.repoRoot);
     await this.store.appendEvent(
       buildEvent('merge_completed', {
         ticket: ticket.id,
@@ -516,7 +484,7 @@ export class MergeOwner {
   }
 
   private conflictedFiles(cwd: string): string[] {
-    const out = git(['diff', '--name-only', '--diff-filter=U'], cwd).stdout;
+    const out = git(['diff', '--name-only', '--diff-filter=U'], cwd, this.repoRoot).stdout;
     return out
       .split('\n')
       .map((line) => line.trim())
@@ -549,6 +517,7 @@ export class MergeOwner {
     // commit underneath it.
     const log = git(
       ['log', '--full-history', INTEGRATION_BRANCH, '--format=%s', '--', file],
+      this.repoRoot,
       this.repoRoot,
     ).stdout;
     const ids = new Set<string>();
@@ -646,13 +615,14 @@ export class MergeOwner {
         `Merge ${INTEGRATION_BRANCH} into main${suffix}`,
       ],
       mainWorktree,
+      this.repoRoot,
     );
     if (merge.exitCode !== 0) {
-      gitWrite(['merge', '--abort'], mainWorktree);
+      gitWrite(['merge', '--abort'], mainWorktree, this.repoRoot);
       throw new Error(`merge.integration_to_main: merge failed: ${merge.stderr}`);
     }
 
-    const mergeCommit = runGit(['rev-parse', 'HEAD'], mainWorktree);
+    const mergeCommit = runGit(['rev-parse', 'HEAD'], mainWorktree, this.repoRoot);
     await this.store.appendEvent(
       buildEvent('integration_merged_to_main', {
         data: {
