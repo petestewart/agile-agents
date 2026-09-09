@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { connect } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -154,5 +154,62 @@ describe('state.* RPC methods (T005)', () => {
       method: 'state.ticket_transition',
     });
     expect('error' in stillStubbed && stillStubbed.error.code).toBe(-32001);
+  });
+});
+
+describe('tool.* RPC methods (T011)', () => {
+  test('a tool call resolves the live sprint and writes ledger/<sprint>.jsonl, not ledger/nosprint.jsonl', async () => {
+    const init = runInit(repo);
+    const store = StateStore.open(init.stateRoot);
+    await store.putTicket({
+      id: 'TKT-0001',
+      title: 'Test',
+      status: 'in_progress',
+      contract: { inputs: [], outputs: [], acceptance: [], done: [], env: 'clone' },
+      depends: [],
+      oracle_refs: [],
+      kb_refs: [],
+      history: [],
+      security: false,
+      assignee: 'eng-1',
+    });
+    await store.putSprint({
+      id: 'S-01',
+      goal: 'test',
+      tickets: ['TKT-0001'],
+      budget_tokens: 1000,
+      started: '2026-09-09T00:00:00.000Z',
+      carried_over: [],
+    });
+    writeFileSync(
+      join(repo, 'pkg.test.ts'),
+      'import { test, expect } from "bun:test";\ntest("ok", () => { expect(1).toBe(1); });\n',
+    );
+
+    handle = await startDaemon({
+      cwd: repo,
+      port: 0,
+      socketPath: join(repo, '.agile-daemon.sock'),
+    });
+
+    // `test_run` never touches the runner/ACP layer (it executes `command`
+    // directly), so it exercises the daemon's real `tool.call` -> `ToolService`
+    // -> ledger path end to end without needing a live vendor session.
+    const response = await call(handle.rpc.socketPath, {
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'tool.call',
+      params: {
+        agent: 'eng-1',
+        ticket: 'TKT-0001',
+        name: 'test_run',
+        input: { command: 'bun test pkg.test.ts' },
+      },
+    });
+    expect('result' in response && (response.result as { ok: boolean }).ok).toBe(true);
+
+    await store.flush();
+    expect(existsSync(join(init.stateRoot, 'ledger', 'S-01.jsonl'))).toBe(true);
+    expect(existsSync(join(init.stateRoot, 'ledger', 'nosprint.jsonl'))).toBe(false);
   });
 });

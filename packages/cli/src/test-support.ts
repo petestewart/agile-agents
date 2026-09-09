@@ -16,14 +16,18 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   Bus,
+  FakeRunner,
   GateService,
   type RpcServerHandle,
   StateStore,
+  ToolService,
   buildBusRpcMethods,
   buildGateRpcMethods,
   buildHaltRpcMethods,
   buildOracleRpcMethods,
   buildStateRpcMethods,
+  buildToolRpcMethods,
+  loadToolRegistry,
   runInit,
   startRpcServer,
 } from '@agile-agents/daemon';
@@ -56,6 +60,15 @@ export async function startTestDaemon(prefix = 'agile-cli-test-'): Promise<TestD
   // tests that need auto-delegation pass their own `GateService` instead of
   // using this helper.
   const gateService = new GateService(store);
+  // `FakeRunner` (never a real vendor session) so `tool.*` tests never need
+  // `AGILE_LIVE=1` — same reasoning as the daemon's own tool tests.
+  const toolService = new ToolService({
+    store,
+    bus: new Bus(store, init.stateRoot),
+    registry: loadToolRegistry(init.stateRoot),
+    runner: new FakeRunner(),
+    repoRoot: repo,
+  });
 
   const rpc = startRpcServer({
     socketPath,
@@ -68,6 +81,7 @@ export async function startTestDaemon(prefix = 'agile-cli-test-'): Promise<TestD
       ...buildOracleRpcMethods(store),
       ...buildHaltRpcMethods(store),
       ...buildGateRpcMethods(gateService),
+      ...buildToolRpcMethods(toolService),
     },
   });
 

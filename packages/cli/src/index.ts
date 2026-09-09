@@ -50,6 +50,7 @@ function usage(): string {
     '  resume <halt-id>',
     '  breaker clear <signal>',
     '  hook <event>               stdin JSON in, JSON out (e.g. hook pre-tool-use) [--fail-closed] [--timeout <ms>, default 2000]',
+    "  mcp --agent <id> [--ticket <id>] [--timeout <ms>, default 60000]   stdio MCP bridge to the daemon's tool.* RPC",
     '',
     'flags:',
     '  --json                     machine-readable output for any verb above',
@@ -146,6 +147,26 @@ export async function runCli(argv: string[], cwd: string = process.cwd()): Promi
         const args: ParsedArgs = parseArgs(rest.slice(1));
         const { event, failClosed, timeoutMs } = parseHookArgs(args);
         return await runHook({ socketPath, event, failClosed, timeoutMs });
+      }
+
+      case 'mcp': {
+        // Dynamic import (review finding, T011): `./commands/mcp` pulls in
+        // `@modelcontextprotocol/sdk`, whose `server/stdio.js` transitively
+        // loads a very large generated `types.js` — importing it eagerly at
+        // module load delayed every other verb's process startup enough
+        // that `agile hook`'s `readStdin()` (a bare `for await (const chunk
+        // of process.stdin)`) sometimes attached its reader after the
+        // piped stdin had already been silently dropped, losing the hook
+        // payload. A static top-level import made every CLI invocation pay
+        // that cost merely by importing this file; loading it only when the
+        // `mcp` verb actually runs confines the cost to the one verb that
+        // needs it.
+        const { parseMcpArgs, runCliMcp } = await import('./commands/mcp');
+        const args: ParsedArgs = parseArgs(rest.slice(1));
+        const { agent, ticket, timeoutMs } = parseMcpArgs(args);
+        // Foreground process, same as `daemon start`: keep the event loop
+        // alive for the life of the stdio MCP session.
+        return await runCliMcp({ socketPath, agent, ticket, timeoutMs });
       }
 
       default:

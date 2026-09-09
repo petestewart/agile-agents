@@ -113,7 +113,7 @@ function computeGateVerdict(
       if (size !== undefined && size > limit) {
         return {
           decision: 'deny',
-          reason: `${path} is ${size} bytes (over the ${limit}-byte raw-read limit); use read_summary(path, question) instead.`,
+          reason: `${path} is ${size} bytes (over the ${limit}-byte raw-read limit); use read_summary(path, question) via MCP instead.`,
         };
       }
     }
