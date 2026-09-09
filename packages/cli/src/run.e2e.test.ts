@@ -85,24 +85,18 @@ const FIXTURE_ROOT = join(import.meta.dir, '..', '..', '..', 'fixtures', 'demo-p
  * (never the checked-in fixture) the same way `fakeAgentSpawn` writes its
  * own script file.
  *
- * Root cause this narrows (T035): `emLoop.tick()`'s `assignReady` spawns
- * every `ready` ticket in the sprint in one tick, and each spawn is a real
- * OS subprocess + a real `git worktree add` (`ensureTicketWorktree`) —
- * genuine wall-clock work `testNow`'s accelerated clock cannot speed up
- * without losing the real ACP transport this test exists to exercise. With
- * the full epic's three tickets, that's three concurrent real spawns; under
- * load (this file's own earlier, heavier fake-mode e2e test still settling
- * background work, or a busy CI host) that burst has been observed to cost
- * several hundred real ms. At a 600x acceleration factor, real time spent
- * *before* the watchdog's own state ever gets read counts against
- * `liveTimeoutMs` just as much as it counts toward `stallTimeoutMs` — so a
- * slow spawn burst can push `clockNow() - start` past `liveTimeoutMs`
- * (ending the loop normally) in the same tick where `clockNow() -
- * lastLivenessAt` was still a few thousand ms short of `stallTimeoutMs`,
- * racing the very outcome this test asserts. One ticket instead of three
- * cuts that burst to a single real spawn, and the much larger
- * `liveTimeoutMs` this test now uses (see its own comment) is what actually
- * closes the race rather than just making it rarer.
+ * T035 round 2 (opus review round 1, finding 2's corollary): this is NOT
+ * the determinism fix for the "genuinely silent session" test below — an
+ * earlier version of this comment claimed it was, but a smaller real spawn
+ * burst is still a real-time race, just a narrower one (confirmed: 3
+ * concurrent spawns vs. 1 only changes the odds, not the shape). The actual
+ * fix is that test's own `liveTimeoutMs`, pinned past this file's bun-test
+ * timeout so no amount of real spawn latency can end the loop before the
+ * watchdog does (see that test's comment). This helper is kept purely
+ * because it makes the target test cheaper (one real subprocess instead of
+ * three) — it is not load-bearing for correctness, and every test in this
+ * `describe` still gets full three-agent fan-in coverage from the sibling
+ * tests below, which still seed from the real `epic.json`.
  */
 function writeSingleTicketSeed(repo: string): string {
   const seed = {
@@ -332,16 +326,32 @@ describe('agile run --live stall watchdog (offline, deterministic — opus revie
     //
     // T035 deflake (1 of 3 isolated runs, ~0.9s — observed only when this
     // file's own earlier, heavier fake-mode e2e test ran first in the same
-    // process): a one-ticket seed (`writeSingleTicketSeed`'s own doc
-    // comment has the full root cause) cuts the real spawn burst
-    // `assignReady` triggers from three concurrent subprocesses to one, and
-    // `liveTimeoutMs` is now a full order of magnitude past the 30s floor
-    // (real budget ~1.7s at this 600x factor, not the ~50ms the old
-    // 120_000 left once a real spawn burst had already eaten into it) —
-    // together these mean the watchdog's own 30s (virtual) threshold always
-    // has real room to actually elapse before `liveTimeoutMs` can end the
-    // loop out from under it, instead of racing a variable real-world
-    // subprocess-spawn cost against both thresholds at once.
+    // process): `run.ts:927` bounds the loop with `clockNow() - start <
+    // liveTimeoutMs` and `run.ts:1068` fires the watchdog on `clockNow() -
+    // lastLivenessAt >= stallTimeoutMs` — both read the *same* injected,
+    // 600x-amplified `clockNow`, so real time burned inside a tick (a real
+    // OS subprocess spawn + a real `git worktree add`, `assignReady`'s own
+    // wall-clock cost, `ensureTicketWorktree`) counts against *both*
+    // budgets at once. The old `liveTimeoutMs: 120_000` left only ~200ms of
+    // real budget total, so a slow-enough spawn burst could exhaust it
+    // before the watchdog's own 30s (virtual) threshold had elapsed,
+    // ending the loop normally instead of throwing — a race whose odds
+    // depend on host speed/load, not a determinism fix.
+    //
+    // Round 2 (opus review round 1, finding 2 — BLOCKING: "a wider margin
+    // is not a determinism fix"): `liveTimeoutMs` is pinned past this
+    // test's own 10s bun-test timeout at this 600x factor (10_000 * 600 =
+    // 6_000_000, rounded up here) — the same idiom the third test in this
+    // `describe` already uses ("pinned huge here specifically so the test
+    // can only pass if [the intended mechanism] is what's actually
+    // stopping it"). With the loop bound now unreachable inside any run
+    // this file's own timeout permits, the *only* way this test can end is
+    // the watchdog throwing once 50ms of real time (30_000 / 600) have
+    // passed since the (silent) agent registered — which always happens,
+    // on any host, under any load — or the bun-test timeout itself failing
+    // loudly if the watchdog ever regresses. No more real-time race:
+    // `writeSingleTicketSeed` below only makes the spawn burst cheaper, it
+    // is no longer what makes this test correct (see its own doc comment).
     const hangSpawn = fakeAgentSpawn(repo, 'hang', [{ type: 'hang' }]);
     const testNow = acceleratedClock(600); // 30s of clock time in ~50ms real.
 
@@ -354,7 +364,7 @@ describe('agile run --live stall watchdog (offline, deterministic — opus revie
         testNow,
         preflightTimeoutMs: 300,
         tickIntervalMs: 5,
-        liveTimeoutMs: 1_000_000, // ~1.7s of real budget at this factor — comfortably past even a slow real spawn burst, so the watchdog (not this bound) is always what fires.
+        liveTimeoutMs: 60_000_000, // pinned past this test's own 10s bun-test timeout at 600x — see comment above; the loop bound can never end the run.
         stallTimeoutMs: 1, // clamped up to the real 30s floor by run.ts itself.
       }),
     ).rejects.toThrow(/no session liveness \(AgentRecord\.last_seen\) observed for 30000ms/);
@@ -382,10 +392,28 @@ describe('agile run --live stall watchdog (offline, deterministic — opus revie
     // watchdog read is sped up, so the real proportional relationship
     // between "how often an event lands" and "how wide the coalescing/
     // stall windows are" is preserved, just compressed in wall-clock terms.
+    //
+    // T035 round 2 (opus review round 1, finding 3 — pre-existing, 2/20
+    // under load, always "no session liveness ... observed for 60000ms"):
+    // the old `stallTimeoutMs = 60_000` was a fixed real-time margin over
+    // the pulse cadence — a single real scheduling hiccup between pulses
+    // (e.g. ~150ms real under load, amplified 400x) could close that gap
+    // and trip the watchdog early, same shape as the sibling test's
+    // finding 2. This test's own assertion needs `liveTimeoutMs` (not the
+    // watchdog) to end the loop, so `stallTimeoutMs` can't be pinned past
+    // the bun-test timeout the way the sibling test's is — instead it is
+    // pinned relative to `liveTimeoutMs` itself, below, with a margin no
+    // realistic per-tick scheduling delay could ever close: since the loop
+    // can never run past `liveTimeoutMs` of virtual time (`run.ts:927`),
+    // and `lastLivenessAt` never exceeds `clockNow()`, `clockNow() -
+    // lastLivenessAt` can never exceed `clockNow() - start`, which is
+    // itself bounded by `liveTimeoutMs` plus at most one tick's own
+    // duration. A multi-million-ms margin over `liveTimeoutMs` makes the
+    // "never trips" property a checkable invariant between two configured
+    // numbers, not a race against how fast this host schedules pulses.
     const factor = 400;
     const pulses = 20;
     const pulseDelayMs = 15; // real ms between pulses -> `pulseDelayMs * factor` ms of clock time each.
-    const stallTimeoutMs = 60_000; // double the 30s floor, comfortable margin over the coalesced write cadence below.
     const testNow = acceleratedClock(factor);
     const steps: unknown[] = [];
     for (let i = 0; i < pulses; i++) {
@@ -400,6 +428,13 @@ describe('agile run --live stall watchdog (offline, deterministic — opus revie
     steps.push({ type: 'hang' });
     const healthySpawn = fakeAgentSpawn(repo, 'healthy', steps);
     const liveTimeoutMs = pulses * pulseDelayMs * factor + 20_000; // clock-time bound, just past the pulses' own total.
+    // Pinned relative to `liveTimeoutMs`, not the pulse cadence — see the
+    // comment above this test's setup. `clockNow() - lastLivenessAt` can
+    // never exceed `clockNow() - start`, which the loop itself never lets
+    // exceed `liveTimeoutMs` by more than one tick's own duration, so this
+    // margin (~7M ms of virtual headroom) makes a false trip structurally
+    // impossible rather than merely unlikely.
+    const stallTimeoutMs = liveTimeoutMs + 7_000_000;
 
     let sawInProgress = false;
     const { StateStore } = await import('@agile-agents/daemon');
