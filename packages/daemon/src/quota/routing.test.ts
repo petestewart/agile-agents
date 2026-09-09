@@ -154,6 +154,44 @@ describe('routeCandidates — cooldown', () => {
   });
 });
 
+describe('routeCandidates — stale resets_at (opus round 3 blocker 1)', () => {
+  test('a countdown exhausted with no 429 involved (no cooldown_until ever set) is rescued once resets_at has elapsed, same as the cooldown case', () => {
+    const now = new Date('2026-09-09T12:00:00.000Z');
+    const quotas = [
+      quota({
+        vendor: 'claude',
+        account: 'default',
+        remaining: 0, // countdown-exhausted; no 429/cooldown ever involved
+        resets_at: new Date(now.getTime() - 1_000).toISOString(), // elapsed 1s ago
+      }),
+    ];
+    const result = routeCandidates('engineer', 'standard', {
+      vendors: singleClaudeConfig,
+      quotas,
+      now,
+    });
+    expect(result).toEqual([{ vendor: 'claude', account: 'default' }]);
+  });
+
+  test('a resets_at still in the future does not rescue an exhausted account', () => {
+    const now = new Date('2026-09-09T12:00:00.000Z');
+    const quotas = [
+      quota({
+        vendor: 'claude',
+        account: 'default',
+        remaining: 0,
+        resets_at: new Date(now.getTime() + 60_000).toISOString(), // not due yet
+      }),
+    ];
+    const result = routeCandidates('engineer', 'standard', {
+      vendors: singleClaudeConfig,
+      quotas,
+      now,
+    });
+    expect('none' in result).toBe(true);
+  });
+});
+
 describe('routeCandidates — no candidate', () => {
   test('every configured candidate below floor or cooling down -> {none: true, reason}', () => {
     const quotas = [

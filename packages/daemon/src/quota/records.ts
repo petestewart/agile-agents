@@ -211,6 +211,17 @@ export class QuotaService {
    * window-reset backstop to fall back on when a cooldown-only recovery
    * (`applyCooldownRecovery`, below) didn't apply.
    *
+   * Round-4 review-fix (opus round 3, blocker 3): advancing by exactly one
+   * window left `resets_at` in the past after any idle gap longer than one
+   * window (e.g. a `window_hours: 1` account idle for 5h) — every
+   * subsequent write would then see `now >= resets_at` again and re-arm
+   * `remaining` to `limit` before decrementing, on every single call,
+   * silently discarding whatever usage that call itself just recorded.
+   * Now advances by however many whole windows have elapsed (`ceil`,
+   * clamped to at least one), landing `resets_at` on the first boundary
+   * strictly after `now` — one rearm catches the account fully up
+   * regardless of how long it sat idle, exactly once.
+   *
    * Returns `existing` unchanged when no reset is due (no `resets_at`, or
    * it hasn't arrived yet).
    */
@@ -220,10 +231,17 @@ export class QuotaService {
   ): Quota | undefined {
     if (existing?.resets_at == null) return existing;
     const resetsAtMs = Date.parse(existing.resets_at);
-    if (Number.isNaN(resetsAtMs) || this.now().getTime() < resetsAtMs) return existing;
+    const nowMs = this.now().getTime();
+    if (Number.isNaN(resetsAtMs) || nowMs < resetsAtMs) return existing;
 
     const windowHours = accountConfig?.window_hours ?? DEFAULT_WINDOW_HOURS;
-    const nextResetsAt = new Date(resetsAtMs + windowHours * 60 * 60 * 1000).toISOString();
+    const windowMs = windowHours * 60 * 60 * 1000;
+    const windowsElapsed = Math.max(1, Math.ceil((nowMs - resetsAtMs) / windowMs));
+    let nextResetsAtMs = resetsAtMs + windowsElapsed * windowMs;
+    // `ceil` can land exactly on `now` when the gap is a whole number of
+    // windows — "the first boundary *after* now" must be strictly after it.
+    if (nextResetsAtMs <= nowMs) nextResetsAtMs += windowMs;
+    const nextResetsAt = new Date(nextResetsAtMs).toISOString();
 
     return {
       ...existing,
@@ -331,7 +349,22 @@ export class QuotaService {
     // exactly what let a `recordReported` value in a different unit get
     // silently misread as a raw token count). Any other existing unit (or
     // no existing record) starts a fresh full-window baseline.
-    const baselineTokens = existing?.unit === 'tokens' ? existing.remaining : windowTokens;
+    //
+    // Round-4 review-fix (opus round 3, blocker 2): `existing.limit ===
+    // undefined` is exactly `recordReported`'s "nothing to resolve a bare
+    // fraction against" case (`confidence: 'low'`) — `existing.remaining`
+    // there is the unresolved 0..1 fraction itself (e.g. `0.8`), not a
+    // token count, even though `existing.unit === 'tokens'`. Trusting it
+    // as a baseline is what let an 80%-full account get declared exhausted
+    // by a single token. A record with no `limit` has nothing commensurable
+    // to decrement from, so it gets the same fresh full-window baseline as
+    // a non-token-unit record, exactly like `quotaFraction` already treats
+    // a limit-less record as unresolvable rather than reading `remaining`
+    // as gospel.
+    const baselineTokens =
+      existing?.unit === 'tokens' && existing.limit !== undefined
+        ? existing.remaining
+        : windowTokens;
 
     const used = ledgerLine.in_tokens + ledgerLine.out_tokens;
     const remainingTokens = Math.max(0, baselineTokens - used);
@@ -599,6 +632,20 @@ export class QuotaService {
    * persisted), so a caller with no `vendors.yaml` of its own (the feed
    * snapshot, `agile status`) can call `quotaFraction(quota)` — 1-arg —
    * and still get an accurate fraction.
+   *
+   * Round-4 review-fix (opus round 3, blocker 1): reads now run through
+   * the same `resolveExisting` (cooldown recovery, then window reset) that
+   * `recordUsage`/`recordReported`/`record429` apply on write — computed
+   * fresh here, **never persisted** (a read must never itself mutate
+   * state; the next real write persists whatever recovery implies). Before
+   * this fix, recovery only ever ran on write, so an account the
+   * countdown alone exhausted (no 429 involved) had nothing left to write
+   * to it once routing excluded it — the window could roll over
+   * indefinitely and `list()`/`routeCandidates` would keep reading the
+   * pre-rollover exhausted record forever, since nothing was ever calling
+   * `recordUsage` again to trigger the rearm. `routeCandidates` (`routing.
+   * ts`) independently also treats a stale `resets_at` the same way for
+   * hand-built `Quota` records that never go through this method.
    */
   list(): Quota[] {
     let vendors: VendorsConfig;
@@ -610,7 +657,7 @@ export class QuotaService {
     const quotas: Quota[] = [];
     for (const [vendor, config] of Object.entries(vendors)) {
       for (const account of config.accounts) {
-        const existing = this.tryGetQuota(vendor, account.id);
+        const existing = this.resolveExisting(vendor, account.id, account.quota);
         const record =
           existing ??
           this.defaultQuota(

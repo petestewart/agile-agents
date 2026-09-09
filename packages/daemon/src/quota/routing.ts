@@ -94,11 +94,20 @@ function accountWindowTokens(
  * `remaining` — a 429 always zeroes `remaining` alongside setting
  * `cooldown_until` (§4: "remaining 0 until reset"), so once the cooldown
  * itself has passed that zero can no longer be trusted as current and must
- * not keep excluding the account on the floor check. This only applies to
- * a record that a 429 actually touched (`cooldown_until` was set at some
- * point); a plain countdown exhaustion (`remaining` at 0 with no
- * `cooldown_until` ever set) is not stale and stays excluded until a real
- * reset/reported reading changes it.
+ * not keep excluding the account on the floor check.
+ *
+ * Round-4 review-fix (opus round 3, blocker 1): the symmetric rescue now
+ * also applies to a stale `resets_at` — a countdown the daemon itself
+ * exhausted (no 429 involved) used to stay excluded *forever* once its
+ * window rolled over, because the window-reset rearm only ever ran on a
+ * `QuotaService` write (`resolveExisting`, in `records.ts`), and an
+ * excluded account never gets routed a ticket to generate one. `quota.
+ * list()` now also runs reads through the same recovery (see its own doc
+ * comment), so in practice this candidate would usually already arrive
+ * here rearmed — this check is the same rescue applied directly to
+ * whatever `Quota` a caller hands in (a hand-built one in a test, or any
+ * future caller that doesn't route through `list()`), so the fix holds
+ * regardless of how the record got here.
  */
 export function routeCandidates(
   role: string,
@@ -115,12 +124,17 @@ export function routeCandidates(
     const cooldownElapsed =
       hadCooldown && Date.parse(quota?.cooldown_until as string) <= now.getTime();
     const coolingDown = hadCooldown && !cooldownElapsed;
+    // Round-4 review-fix (blocker 1): a stale `resets_at` — the window has
+    // rolled over but nothing has re-armed the record yet — is rescued the
+    // same way a stale post-cooldown zero already is, above.
+    const windowElapsed = quota?.resets_at != null && Date.parse(quota.resets_at) <= now.getTime();
     const windowTokensFallback = accountWindowTokens(
       opts.vendors,
       candidate.vendor,
       candidate.account,
     );
-    const fraction = !quota ? 1 : cooldownElapsed ? 1 : quotaFraction(quota, windowTokensFallback);
+    const fraction =
+      !quota || cooldownElapsed || windowElapsed ? 1 : quotaFraction(quota, windowTokensFallback);
     return { candidate, fraction, coolingDown };
   });
 

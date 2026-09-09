@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { LedgerLine, Message } from '@agile-agents/shared';
-import { validateAgentRecord, validateLedgerLine } from '@agile-agents/shared';
+import { validateAgentRecord, validateLedgerLine, validateQuota } from '@agile-agents/shared';
 import { Bus } from '../bus/bus';
 import { runInit } from '../init';
 import { NotFoundError, StateStore } from '../store/store';
@@ -498,6 +498,142 @@ describe('QuotaService — window reset across two windows (review fix #4)', () 
     expect(updated.resets_at).toBe(
       new Date(clock.now().getTime() + DEFAULT_WINDOW_HOURS * 60 * 60 * 1000).toISOString(),
     );
+  });
+
+  test('advances resets_at to the first boundary after now, not just one window, after an idle gap longer than one window (opus round 3 blocker 3)', async () => {
+    const clock = fakeClock(Date.parse('2026-09-09T00:00:00.000Z'));
+    await store.putVendors({
+      claude: {
+        accounts: [
+          { id: 'max', auth: 'subscription', quota: { window_tokens: 1_000, window_hours: 1 } },
+        ],
+      },
+    });
+    const quota = new QuotaService({ store, bus: fakeBus, now: clock.now });
+
+    const first = await quota.recordUsage('claude', 'max', ledgerLine({ in_tokens: 100 }));
+    const firstResetsAtMs = Date.parse(first.resets_at as string);
+    expect(firstResetsAtMs).toBe(clock.now().getTime() + 60 * 60 * 1000); // T0 + 1h
+
+    // Idle for 5 windows (5h) — old (buggy) behaviour advanced by exactly
+    // one window, landing resets_at 4 windows *in the past*, so this write
+    // (and every one after it, one window at a time) would spuriously
+    // re-arm to full before decrementing, discarding the usage it itself
+    // just recorded.
+    clock.advance(5 * 60 * 60 * 1000); // now = T0 + 5h
+    const second = await quota.recordUsage('claude', 'max', ledgerLine({ in_tokens: 100 }));
+
+    // Rearmed once (1000 - 100 = 900), not left stuck re-arming.
+    expect(second.remaining).toBe(900);
+    // resets_at lands on the first boundary strictly after `now` (T0+5h),
+    // i.e. T0+6h — not T0+2h (one window past the original, still in the past).
+    const nowMs = clock.now().getTime();
+    const secondResetsAtMs = Date.parse(second.resets_at as string);
+    expect(secondResetsAtMs).toBeGreaterThan(nowMs);
+    expect(secondResetsAtMs).toBe(firstResetsAtMs + 5 * 60 * 60 * 1000); // T0+1h + 5h = T0+6h
+
+    // The very next call must NOT re-arm again (resets_at is now in the future).
+    const third = await quota.recordUsage('claude', 'max', ledgerLine({ in_tokens: 50 }));
+    expect(third.remaining).toBe(850); // 900 - 50, not rearmed to 1000 - 50
+  });
+});
+
+describe('QuotaService — recovery applies on read, not only on write (opus round 3 blocker 1)', () => {
+  test('a countdown-exhausted account (no 429 involved) is a routable candidate again once its window elapses, with no intervening write', async () => {
+    const clock = fakeClock(Date.parse('2026-09-09T00:00:00.000Z'));
+    await store.putVendors({
+      claude: {
+        accounts: [
+          { id: 'default', auth: 'subscription', quota: { window_tokens: 1_000, window_hours: 1 } },
+        ],
+      },
+    });
+    const quota = new QuotaService({ store, now: clock.now });
+
+    // Spend the whole window — the countdown alone exhausts it, no 429 involved.
+    await quota.recordUsage('claude', 'default', ledgerLine({ in_tokens: 1_000 }));
+    const exhausted = routeCandidates('engineer', 'standard', {
+      vendors: store.getVendors(),
+      quotas: quota.list(),
+      now: clock.now(),
+    });
+    expect('none' in exhausted).toBe(true);
+
+    // Advance past the window's resets_at — deliberately no further
+    // recordUsage/recordReported/record429 call in between, since the
+    // whole point is that an excluded account never gets routed a ticket
+    // to generate one.
+    clock.advance(2 * 60 * 60 * 1000); // 2h > the 1h window
+
+    const stillListedStale = quota.list().find((q) => q.account === 'default');
+    // list() itself already reflects the recovery (round-4 fix) — this is
+    // the "display no longer disagrees with routing" half of the fix.
+    expect(stillListedStale?.remaining).toBe(1_000);
+
+    const recovered = routeCandidates('engineer', 'standard', {
+      vendors: store.getVendors(),
+      quotas: quota.list(),
+      now: clock.now(),
+    });
+    expect(pickCandidate(recovered)).toEqual({ vendor: 'claude', account: 'default' });
+  });
+
+  test('routeCandidates rescues a hand-built Quota with a stale resets_at directly, even bypassing list()', () => {
+    const now = new Date('2026-09-09T12:00:00.000Z');
+    const vendors = store.getVendors(); // default seed: claude/default
+    const staleQuota = validateQuota({
+      vendor: 'claude',
+      account: 'default',
+      kind: 'subscription_window',
+      remaining: 0,
+      unit: 'tokens',
+      limit: 1_000,
+      confidence: 'estimated',
+      source: 'ledger_countdown',
+      updated: new Date(now.getTime() - 60 * 60 * 1000).toISOString(),
+      cooldown_until: null,
+      resets_at: new Date(now.getTime() - 1_000).toISOString(), // elapsed 1s ago
+    });
+    const result = routeCandidates('engineer', 'standard', {
+      vendors,
+      quotas: [staleQuota],
+      now,
+    });
+    expect(result).toEqual([{ vendor: 'claude', account: 'default' }]);
+  });
+});
+
+describe('QuotaService — a low-confidence unresolved reading never becomes a countdown baseline (opus round 3 blocker 2)', () => {
+  test('an 80%-full account with no vendors.yaml quota config is not declared exhausted by a single token', async () => {
+    // Deliberately no `quota` stanza on either account — the state of
+    // every account in today's default vendors.yaml.
+    await store.putVendors({
+      claude: { accounts: [{ id: 'max', auth: 'subscription' }] },
+      openai: { accounts: [{ id: 'chatgpt', auth: 'subscription' }] },
+    });
+    const sent: Message[] = [];
+    const bus = makeFakeBus(sent);
+    const quota = new QuotaService({ store, bus });
+
+    const reported = await quota.recordReported('claude', 'max', { remaining: 0.8 });
+    expect(reported.confidence).toBe('low');
+    expect(reported.limit).toBeUndefined();
+
+    // A single token must not exhaust an 80%-full account.
+    const afterOneToken = await quota.recordUsage('claude', 'max', ledgerLine({ in_tokens: 1 }));
+    expect(afterOneToken.remaining).toBeGreaterThan(0);
+    expect(sent.some((m) => m.kind === 'quota_exhausted')).toBe(false);
+
+    const routed = routeCandidates('engineer', 'standard', {
+      vendors: store.getVendors(),
+      quotas: quota.list(),
+    });
+    // Still eligible (not excluded as exhausted) — a never-observed second
+    // account naturally still leads on remaining fraction (1.0 vs. just
+    // under 1.0), which is correct ordering, not the bug under test.
+    expect('none' in routed).toBe(false);
+    if ('none' in routed) throw new Error('unreachable');
+    expect(routed.map((c) => c.account)).toContain('max');
   });
 });
 
