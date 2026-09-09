@@ -78,6 +78,45 @@ function acceleratedClock(factor: number): () => Date {
 
 const FIXTURE_ROOT = join(import.meta.dir, '..', '..', '..', 'fixtures', 'demo-project');
 
+/**
+ * A one-ticket seed (T035 deflake), matching the ticket shape in
+ * `fixtures/demo-project/seed/epic.json` but with a single entry. Used by
+ * the two stall-watchdog tests that spawn a controllable transport (the
+ * "genuinely silent session" and "healthy long turn" tests below) — neither
+ * needs the full three-ticket demo epic, and each real spawn is a real OS
+ * subprocess + a real `git worktree add`, so one ticket instead of three
+ * bounds that unavoidable real cost for both. The third test in this
+ * `describe` ("no vendor reachable") still seeds from the real `epic.json`
+ * — it never reaches a spawn at all (it fails at the pre-flight), so the
+ * three-agent fan-in path there is moot and unaffected. Written into `repo`
+ * (never the checked-in fixture) the same way `fakeAgentSpawn` writes its
+ * own script file.
+ *
+ * For the "genuinely silent session" test, this is a cost optimization
+ * only — its determinism comes from its own `liveTimeoutMs`, pinned past
+ * this file's bun-test timeout (see that test's comment). For the "healthy
+ * long turn" test (T035 round 3), it is load-bearing: bounding real
+ * spawn/handshake latency to a single subprocess is part of what keeps that
+ * test's `stallTimeoutMs < liveTimeoutMs` margin (see that test's comment)
+ * safe under load.
+ */
+function writeSingleTicketSeed(repo: string): string {
+  const seed = {
+    tickets: [
+      {
+        id: 'TKT-9001',
+        title: 'Stall-watchdog probe ticket',
+        status: 'ready',
+        oracle_refs: [],
+        contract: { acceptance: ['n/a — never actually worked by a live session'], env: 'clone' },
+      },
+    ],
+  };
+  const path = join(repo, 'stall-watchdog-seed.json');
+  writeFileSync(path, JSON.stringify(seed));
+  return path;
+}
+
 // T021 round 3 (opus review round 2 nit): gate purely on `AGILE_LIVE=1`,
 // same as every other `live.test.ts` in this repo
 // (`acp-client/src/live.test.ts`, `daemon/src/em/live.test.ts`,
@@ -278,27 +317,51 @@ describe('agile run --live stall watchdog (offline, deterministic — opus revie
     // `liveSpawnForTest` (a test-only seam, `run.ts`'s own doc comment):
     // exercises the real `!fake` code path (the live tick loop,
     // `tickIntervalMs`/`stallTimeoutMs`), just with a controllable
-    // transport standing in for a real vendor. `preflightTimeoutMs` is
-    // pinned short too — the pre-flight probe itself hangs on `initialize`
-    // exactly the same way, so it must not eat the whole test timeout.
+    // transport standing in for a real vendor.
     //
-    // `stallTimeoutMs` floors at 30s (`run.ts`'s own `Math.max`, opus round
-    // 4 nit) — `testNow`'s accelerated clock (T021 round 5, QA round 4
-    // finding 1) is what lets this test actually observe that real 30s
-    // threshold firing without a real 30-second sleep.
+    // `stallTimeoutMs` floors at 30s (`run.ts`'s own `Math.max`) —
+    // `testNow`'s accelerated clock is what lets this test actually observe
+    // that real 30s threshold firing without a real 30-second sleep.
+    //
+    // T035: `run.ts:927` bounds the loop with `clockNow() - start <
+    // liveTimeoutMs`, and `run.ts:1068` fires the watchdog on `clockNow() -
+    // lastLivenessAt >= stallTimeoutMs` — both read the *same* injected,
+    // 600x-amplified `clockNow`, so real time burned inside a tick (a real
+    // OS subprocess spawn + a real `git worktree add`, `assignReady`'s own
+    // wall-clock cost) counts against *both* budgets at once. A finite
+    // `liveTimeoutMs` therefore races real spawn latency against the
+    // watchdog's own threshold — the flake this test used to have.
+    // `liveTimeoutMs` is pinned past this test's own 10s bun-test timeout
+    // at this 600x factor (10_000 * 600 = 6_000_000, rounded up) — the same
+    // idiom the third test in this `describe` uses for `preflightTimeoutMs`
+    // ("pinned huge ... specifically so the test can only pass if [the
+    // intended mechanism] is what's actually stopping it"). With the loop
+    // bound now unreachable inside any run this file's own timeout permits,
+    // the only way this test can end is the watchdog throwing once 50ms of
+    // real time (30_000 / 600) have passed since the (silent) agent
+    // registered — which always happens, on any host, under any load — or
+    // the bun-test timeout itself failing loudly if the watchdog ever
+    // regresses.
     const hangSpawn = fakeAgentSpawn(repo, 'hang', [{ type: 'hang' }]);
     const testNow = acceleratedClock(600); // 30s of clock time in ~50ms real.
 
     await expect(
       runDemoSprint({
         cwd: repo,
-        seed: join(FIXTURE_ROOT, 'seed', 'epic.json'),
+        seed: writeSingleTicketSeed(repo),
         fake: false,
         liveSpawnForTest: hangSpawn,
         testNow,
-        preflightTimeoutMs: 300,
+        // Real (non-`testNow`) budget for the pre-flight `initialize`
+        // handshake (`run.ts`'s `preflightLiveVendor`, a plain
+        // `setTimeout`) — pinned generously above any observed real
+        // subprocess-spawn+handshake cost (measured well under 1s even
+        // under heavy load) so a slow host fails this test loudly via the
+        // bun-test timeout rather than as a wrong-message
+        // `LiveVendorUnavailableError` rejection.
+        preflightTimeoutMs: 5_000,
         tickIntervalMs: 5,
-        liveTimeoutMs: 120_000, // well past the 30s floor so the watchdog — not this bound — is what fires.
+        liveTimeoutMs: 60_000_000, // pinned past this test's own 10s bun-test timeout at 600x — see comment above; the loop bound can never end the run.
         stallTimeoutMs: 1, // clamped up to the real 30s floor by run.ts itself.
       }),
     ).rejects.toThrow(/no session liveness \(AgentRecord\.last_seen\) observed for 30000ms/);
@@ -326,10 +389,39 @@ describe('agile run --live stall watchdog (offline, deterministic — opus revie
     // watchdog read is sped up, so the real proportional relationship
     // between "how often an event lands" and "how wide the coalescing/
     // stall windows are" is preserved, just compressed in wall-clock terms.
-    const factor = 400;
-    const pulses = 20;
+    //
+    // T035 round 3 (opus review round 2 blocker): a `stallTimeoutMs` set
+    // *above* `liveTimeoutMs` (round 2's shipped fix) makes the watchdog
+    // throw at `run.ts:1068` mathematically unreachable regardless of what
+    // the heartbeat path does — proven by the reviewer's mutation probe: a
+    // healthy spawn emitting zero liveness pulses passed 3/3 against that
+    // config. A watchdog test whose watchdog cannot fire is vacuous, so the
+    // fix keeps the ordering the real property needs —
+    // `HEARTBEAT_COALESCE_MS(30s) << stallTimeoutMs < liveTimeoutMs` — and
+    // buys determinism by (a) shrinking `factor` and (b) using
+    // `writeSingleTicketSeed` here too, instead of disabling the check:
+    //
+    // (a) at the old 400x, one real ~150ms scheduling hiccup between pulses
+    //     (round 2's own measurement, under load) becomes 60,000ms of
+    //     virtual time — able to consume the *entire* old margin between
+    //     the coalescing window and `stallTimeoutMs` on its own. At this
+    //     file's `factor = 50`, the same hiccup is only 7,500ms of virtual
+    //     time — an order of magnitude smaller than the margins below.
+    // (b) the three-ticket epic's three concurrent real spawns/handshakes
+    //     (the same real, unavoidable wall-clock cost the target test's
+    //     round-2 comment describes) push the *first* pulse-driven
+    //     heartbeat back by however long that handshake burst takes —
+    //     measured up to ~54,000ms of virtual time here with three
+    //     concurrent spawns, which left too little of `liveTimeoutMs`
+    //     for a genuinely silent run to ever reach `stallTimeoutMs` before
+    //     the loop's own bound ended it (a distinct, second way the old
+    //     shape could go vacuous, caught by re-running the mutation probe
+    //     below rather than assumed away). One real spawn measures
+    //     ~10,000-13,000ms of virtual time instead — comfortably inside
+    //     the margins chosen below.
+    const factor = 50;
+    const pulses = 100; // 100 * 15 * 50 = 75_000ms of virtual pulsing — 2.5x the coalescing window, so multiple real coalesced writes actually land.
     const pulseDelayMs = 15; // real ms between pulses -> `pulseDelayMs * factor` ms of clock time each.
-    const stallTimeoutMs = 60_000; // double the 30s floor, comfortable margin over the coalesced write cadence below.
     const testNow = acceleratedClock(factor);
     const steps: unknown[] = [];
     for (let i = 0; i < pulses; i++) {
@@ -343,7 +435,20 @@ describe('agile run --live stall watchdog (offline, deterministic — opus revie
     // events" (the earlier test already covers "eventually goes silent").
     steps.push({ type: 'hang' });
     const healthySpawn = fakeAgentSpawn(repo, 'healthy', steps);
-    const liveTimeoutMs = pulses * pulseDelayMs * factor + 20_000; // clock-time bound, just past the pulses' own total.
+    const totalPulseVirtualMs = pulses * pulseDelayMs * factor; // 75_000
+    const liveTimeoutMs = totalPulseVirtualMs + 15_000; // 90_000 — a deliberately small tail past the last pulse (see `stallTimeoutMs` below), not the loop's whole remaining budget.
+    // `HEARTBEAT_COALESCE_MS(30_000) << stallTimeoutMs < liveTimeoutMs`.
+    // Double the coalescing window (comfortably above the worst healthy-run
+    // gap — one coalesced write cycle, ~30_750ms, or the single-spawn
+    // handshake delay before the first pulse, ~10_000-13_000ms — both far
+    // under 60_000) and clearly below `liveTimeoutMs` (90_000, a 30_000ms
+    // margin) so a genuinely silent session — no pulses at all — trips this
+    // well before `liveTimeoutMs` would end the loop on its own. Verified
+    // both directions (T035 round 3, see `.pipeline-report.md`): the real
+    // (healthy) script here never trips it, and a mutant with the pulse
+    // steps replaced by bare delays (same seed, same timeouts, zero
+    // liveness events) trips reliably.
+    const stallTimeoutMs = 60_000;
 
     let sawInProgress = false;
     const { StateStore } = await import('@agile-agents/daemon');
@@ -352,7 +457,7 @@ describe('agile run --live stall watchdog (offline, deterministic — opus revie
       while (Date.now() < pollDeadlineRealMs) {
         try {
           const store = StateStore.open(join(repo, '.agile'));
-          if (store.getTicket('TKT-1001' as never).status === 'in_progress') sawInProgress = true;
+          if (store.getTicket('TKT-9001' as never).status === 'in_progress') sawInProgress = true;
         } catch {
           // Not seeded/assigned yet.
         }
@@ -366,11 +471,11 @@ describe('agile run --live stall watchdog (offline, deterministic — opus revie
     // out is the expected, non-error outcome for this test.
     const result = await runDemoSprint({
       cwd: repo,
-      seed: join(FIXTURE_ROOT, 'seed', 'epic.json'),
+      seed: writeSingleTicketSeed(repo),
       fake: false,
       liveSpawnForTest: healthySpawn,
       testNow,
-      preflightTimeoutMs: 2_000,
+      preflightTimeoutMs: 5_000,
       tickIntervalMs: 5,
       liveTimeoutMs,
       stallTimeoutMs,
