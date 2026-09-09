@@ -27,7 +27,9 @@ export function BoardPanel({ tickets, halts }: { tickets: Ticket[]; halts: Halt[
   const [error, setError] = useState<string | undefined>(undefined);
 
   function inHaltScope(id: TicketId): boolean {
-    return halts.some((h) => h.scope === 'global' || (Array.isArray(h.scope) && h.scope.includes(id)));
+    return halts.some(
+      (h) => h.scope === 'global' || (Array.isArray(h.scope) && h.scope.includes(id)),
+    );
   }
 
   async function open(id: TicketId) {
@@ -56,7 +58,8 @@ export function BoardPanel({ tickets, halts }: { tickets: Ticket[]; halts: Halt[
               {status.toUpperCase()} ({byStatus.get(status)?.length ?? 0})
             </div>
             {(byStatus.get(status) ?? []).map((t) => (
-              <div
+              <button
+                type="button"
                 key={t.id}
                 className="cr-list-row"
                 data-testid={`ticket-card-${t.id}`}
@@ -64,26 +67,37 @@ export function BoardPanel({ tickets, halts }: { tickets: Ticket[]; halts: Halt[
                   flexDirection: 'column',
                   alignItems: 'flex-start',
                   borderLeft: inHaltScope(t.id) ? '3px solid var(--danger)' : undefined,
+                  width: '100%',
+                  textAlign: 'left',
+                  border: 'none',
                 }}
                 onClick={() => open(t.id)}
-                role="button"
-                tabIndex={0}
               >
                 <strong style={{ fontSize: 12.5 }}>
                   {t.id} {t.title}
                 </strong>
                 <span style={{ color: 'var(--text-dim)', fontSize: 11 }}>
-                  {t.tier} · {t.points}pt
+                  {t.estimate ? `${t.estimate.tier} · ${t.estimate.points}pt` : 'unpointed'}
                 </span>
-              </div>
+              </button>
             ))}
           </div>
         ))}
       </div>
 
       {detail && (
-        <div className="cr-modal-backdrop" onClick={() => setDetail(undefined)}>
-          <div className="cr-modal" onClick={(e) => e.stopPropagation()}>
+        <div
+          className="cr-modal-backdrop"
+          onClick={() => setDetail(undefined)}
+          onKeyDown={(e) => e.key === 'Escape' && setDetail(undefined)}
+          role="presentation"
+        >
+          <div
+            className="cr-modal"
+            onClick={(e) => e.stopPropagation()}
+            onKeyDown={(e) => e.stopPropagation()}
+            role="presentation"
+          >
             <h2>
               {detail.ticket.id} — {detail.ticket.title}
             </h2>
@@ -95,13 +109,13 @@ export function BoardPanel({ tickets, halts }: { tickets: Ticket[]; halts: Halt[
             {detail.stanzas
               .slice(-5)
               .reverse()
-              .map((s, i) => (
-                <pre key={i} style={{ whiteSpace: 'pre-wrap', fontSize: 12 }}>
+              .map((s) => (
+                <pre key={`${s.ts}-${s.kind}`} style={{ whiteSpace: 'pre-wrap', fontSize: 12 }}>
                   {JSON.stringify(s, null, 2)}
                 </pre>
               ))}
             <div className="cr-modal-actions">
-              <button className="cr-icon-btn" onClick={() => setDetail(undefined)}>
+              <button type="button" className="cr-icon-btn" onClick={() => setDetail(undefined)}>
                 Close
               </button>
             </div>

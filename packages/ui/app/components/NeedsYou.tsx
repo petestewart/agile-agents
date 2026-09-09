@@ -34,13 +34,13 @@ export function NeedsYou({ items, onChanged }: { items: HilRequest[]; onChanged:
       ) : (
         <div>
           {items.map((item) => (
-            <div
+            <button
+              type="button"
               key={item.id}
               className="cr-inbox-item hil-item"
               data-id={item.id}
               onClick={() => setSelected(item)}
-              role="button"
-              tabIndex={0}
+              style={{ width: '100%', textAlign: 'left', border: 'none' }}
             >
               <span className="cr-badge">{item.hil_kind}</span>
               <span style={{ flex: 1 }}>
@@ -52,14 +52,24 @@ export function NeedsYou({ items, onChanged }: { items: HilRequest[]; onChanged:
                   due {new Date(item.deadline).toLocaleTimeString()}
                 </span>
               )}
-            </div>
+            </button>
           ))}
         </div>
       )}
 
       {selected && (
-        <div className="cr-modal-backdrop" onClick={() => setSelected(undefined)}>
-          <div className="cr-modal" onClick={(e) => e.stopPropagation()}>
+        <div
+          className="cr-modal-backdrop"
+          onClick={() => setSelected(undefined)}
+          onKeyDown={(e) => e.key === 'Escape' && setSelected(undefined)}
+          role="presentation"
+        >
+          <div
+            className="cr-modal"
+            onClick={(e) => e.stopPropagation()}
+            onKeyDown={(e) => e.stopPropagation()}
+            role="presentation"
+          >
             <h2>
               {selected.gate} · {selected.hil_kind}
             </h2>
@@ -84,6 +94,7 @@ export function NeedsYou({ items, onChanged }: { items: HilRequest[]; onChanged:
             {error && <p style={{ color: 'var(--danger)' }}>{error}</p>}
             <div className="cr-modal-actions">
               <button
+                type="button"
                 className="cr-icon-btn approve"
                 data-testid="hil-approve"
                 disabled={busy}
@@ -92,6 +103,7 @@ export function NeedsYou({ items, onChanged }: { items: HilRequest[]; onChanged:
                 Approve
               </button>
               <button
+                type="button"
                 className="cr-icon-btn"
                 disabled={busy}
                 onClick={() => act(() => delegateHil(selected.id, 'em'))}
@@ -99,13 +111,14 @@ export function NeedsYou({ items, onChanged }: { items: HilRequest[]; onChanged:
                 Delegate to EM
               </button>
               <button
+                type="button"
                 className="cr-icon-btn"
                 disabled={busy}
                 onClick={() => act(() => delegateHil(selected.id, 'architect'))}
               >
                 Delegate to architect
               </button>
-              <button className="cr-icon-btn" onClick={() => setSelected(undefined)}>
+              <button type="button" className="cr-icon-btn" onClick={() => setSelected(undefined)}>
                 Close
               </button>
             </div>

@@ -1,4 +1,5 @@
-import type { FeedSnapshot, Halt, Policy } from '@agile-agents/shared';
+import type { Halt, Policy } from '@agile-agents/shared';
+import type { FeedSnapshot } from '../lib/feed-types';
 
 /**
  * §17 "Sprint strip": goal, tickets done, token burn vs budget, global halt

@@ -27,11 +27,11 @@ import {
 } from '@agile-agents/shared';
 import { CONTROL_ROOM_DIST_DIR, FEED_HTML_PATH } from '@agile-agents/ui';
 import type { Bus } from './bus';
-import { NotFoundError } from './store';
 import { type EventTailerHandle, buildSnapshot, startEventTailer } from './feed';
 import { GateAlreadyResolvedError, GateNotFoundError, type GateService } from './gates';
 import { createHalt, releaseHalt } from './halts';
 import type { QuotaService } from './quota/records';
+import { NotFoundError } from './store';
 import type { StateStore } from './store';
 
 export interface HealthPayload {
@@ -346,14 +346,20 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
         } catch (err) {
           return errorResponse(400, err instanceof Error ? err.message : String(err));
         }
-        const reason = typeof body.reason === 'string' && body.reason.length > 0
-          ? body.reason
-          : 'raised from the control room';
-        const raisedBy = typeof body.raised_by === 'string' && body.raised_by.length > 0
-          ? body.raised_by
-          : 'human';
+        const reason =
+          typeof body.reason === 'string' && body.reason.length > 0
+            ? body.reason
+            : 'raised from the control room';
+        const raisedBy =
+          typeof body.raised_by === 'string' && body.raised_by.length > 0
+            ? body.raised_by
+            : 'human';
         try {
-          const halt = await createHalt(feed.store, { scope: 'global', reason, raised_by: raisedBy });
+          const halt = await createHalt(feed.store, {
+            scope: 'global',
+            reason,
+            raised_by: raisedBy,
+          });
           return jsonResponse(halt, 201);
         } catch (err) {
           return errorResponse(400, err instanceof Error ? err.message : String(err));

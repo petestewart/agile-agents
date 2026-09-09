@@ -9,7 +9,6 @@
 import type {
   AgentId,
   AgentRecord,
-  FeedSnapshot,
   KbFact,
   KbId,
   KbIndex,
@@ -17,10 +16,12 @@ import type {
   OracleEntry,
   OracleId,
   OracleIndex,
+  Policy,
   Stanza,
   Ticket,
   TicketId,
 } from '@agile-agents/shared';
+import type { FeedSnapshot } from './feed-types';
 
 async function asJson<T>(res: Response): Promise<T> {
   if (!res.ok) {
@@ -38,6 +39,10 @@ async function asJson<T>(res: Response): Promise<T> {
 
 export function getSnapshot(): Promise<FeedSnapshot> {
   return fetch('/api/snapshot').then((r) => asJson(r));
+}
+
+export function getPolicy(): Promise<Policy> {
+  return fetch('/api/policy').then((r) => asJson(r));
 }
 
 export function getAgents(): Promise<Array<{ id: AgentId; record: AgentRecord }>> {
@@ -93,9 +98,7 @@ export function raiseHalt(reason: string): Promise<unknown> {
 }
 
 export function releaseHalt(id: string): Promise<unknown> {
-  return fetch(`/api/halt/${encodeURIComponent(id)}`, { method: 'DELETE' }).then((r) =>
-    asJson(r),
-  );
+  return fetch(`/api/halt/${encodeURIComponent(id)}`, { method: 'DELETE' }).then((r) => asJson(r));
 }
 
 /** EM chat panel send (steer / question) — §17: "steer -> action-set cards". */

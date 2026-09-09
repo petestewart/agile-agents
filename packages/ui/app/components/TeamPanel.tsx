@@ -43,12 +43,12 @@ export function TeamPanel({
       {agents.map((a) => {
         const halted = haltedAgents.has('*');
         return (
-          <div
+          <button
+            type="button"
             key={a.id}
             className="cr-list-row"
             onClick={() => open(a)}
-            role="button"
-            tabIndex={0}
+            style={{ width: '100%', textAlign: 'left', border: 'none' }}
           >
             <span className={`cr-badge${halted ? ' status-halted' : ''}`}>{a.id}</span>
             <span style={{ flex: 1 }}>
@@ -58,13 +58,23 @@ export function TeamPanel({
             <span style={{ color: 'var(--text-dim)', fontSize: 12 }}>
               {a.record.last_seen ? new Date(a.record.last_seen).toLocaleTimeString() : 'never'}
             </span>
-          </div>
+          </button>
         );
       })}
 
       {detail && (
-        <div className="cr-modal-backdrop" onClick={() => setDetail(undefined)}>
-          <div className="cr-modal" onClick={(e) => e.stopPropagation()}>
+        <div
+          className="cr-modal-backdrop"
+          onClick={() => setDetail(undefined)}
+          onKeyDown={(e) => e.key === 'Escape' && setDetail(undefined)}
+          role="presentation"
+        >
+          <div
+            className="cr-modal"
+            onClick={(e) => e.stopPropagation()}
+            onKeyDown={(e) => e.stopPropagation()}
+            role="presentation"
+          >
             <h2>{detail.id}</h2>
             {error && <p style={{ color: 'var(--danger)' }}>{error}</p>}
             {detail.stanzas.length === 0 ? (
@@ -73,8 +83,8 @@ export function TeamPanel({
               detail.stanzas
                 .slice(-10)
                 .reverse()
-                .map((s, i) => (
-                  <div key={i} style={{ marginBottom: 10 }}>
+                .map((s) => (
+                  <div key={`${s.ts}-${s.kind}`} style={{ marginBottom: 10 }}>
                     <div className="meta" style={{ color: 'var(--text-dim)', fontSize: 11 }}>
                       {s.kind} · {s.ts}
                     </div>
@@ -85,7 +95,7 @@ export function TeamPanel({
                 ))
             )}
             <div className="cr-modal-actions">
-              <button className="cr-icon-btn" onClick={() => setDetail(undefined)}>
+              <button type="button" className="cr-icon-btn" onClick={() => setDetail(undefined)}>
                 Close
               </button>
             </div>

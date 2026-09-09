@@ -5,7 +5,8 @@
  * Status must never cost tokens; it is read straight from daemon state
  * (§17) — this module owns the live half of that read path.
  */
-import type { Event, FeedSnapshot } from '@agile-agents/shared';
+import type { Event } from '@agile-agents/shared';
+import type { FeedSnapshot } from './feed-types';
 
 export type FeedFrame =
   | { type: 'hello'; version: string; stateRoot: string }

@@ -14,17 +14,16 @@ export function Panel({
   const [open, setOpen] = useState(defaultOpen);
   return (
     <section className="cr-panel">
-      <div
+      <button
+        type="button"
         className="cr-panel-header"
         onClick={() => setOpen((v) => !v)}
-        role="button"
-        tabIndex={0}
-        onKeyDown={(e) => e.key === 'Enter' && setOpen((v) => !v)}
+        style={{ width: '100%', textAlign: 'left', border: 'none' }}
       >
         <span>{title}</span>
         {count !== undefined && <span className="count">({count})</span>}
         <span className="chev">{open ? '▾' : '▸'}</span>
-      </div>
+      </button>
       {open && <div className="cr-panel-body">{children}</div>}
     </section>
   );
