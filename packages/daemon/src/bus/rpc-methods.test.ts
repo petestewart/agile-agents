@@ -2,12 +2,12 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { ulid } from '@agile-agents/shared';
 import { runInit } from '../init';
 import { dispatch } from '../rpc';
 import { StateStore } from '../store';
 import { Bus } from './bus';
 import { buildBusRpcMethods } from './rpc-methods';
-import { ulid } from './ulid';
 
 let repo: string;
 let stateRoot: string;

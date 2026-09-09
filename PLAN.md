@@ -143,12 +143,12 @@ Priority encodes dependency layer as well as importance: P0 tickets are v0-block
 
 ### Ticket: T009 Claude hook gate
 - **Priority:** P0
-- **Status:** In Progress
+- **Status:** In Review
 - **Owner:** sonnet:worker-T009
 - **Scope:** Depends on T008. Per-worktree `.claude/settings.json` generation with `PreToolUse`, `PostToolUse`, and `Stop` hooks calling `agile hook`. Pre-tool-use decision: deny with reason if a halt covers the agent's ticket; inject pending inbox as `additionalContext` (urgent → deny with the message as reason until acknowledged); heartbeat; deny raw `Read`/`Grep` over configurable size with "use read_summary"; deny when ticket budget exceeded; log every decision. Post-tool-use: truncate oversized tool results and record usage. Stop: drain low-priority inbox.
 - **Acceptance Criteria:** Live test: an engineer session under a global halt is blocked at its next tool call with the halt reason; a big read is denied and the model's output quotes the reason; an `answer` message appears in the model's context on the next tool call.
 - **Validation Steps:** `AGILE_LIVE=1 bun test packages/daemon --grep hook`; unit tests for the decision function with fixture payloads.
-- **Notes:** Claude's ACP reject carries no reason — all reasoned denials go through this hook.
+- **Notes:** Claude's ACP reject carries no reason — all reasoned denials go through this hook. — branch `T009-hook-gate` (local worktree); `src/hook/` (settings, decide, service, rpc), CLI hook fails closed by default (`--fail-open`). DESIGN-GAPs: agent identified by `cwd` → `Ticket.worktree`; PostToolUse cannot truncate tool results for Claude (logs usage + ledger line); Stop hook delivery. Live test gated on `AGILE_LIVE=1`, unverified here. Review round 1 FAIL: pending normal message short-circuits to allow (bypasses big-read/budget/never-list); unresolvable or symlinked cwd fails open unlogged; stale `ulid` import from bus; Stop acks low messages into `systemMessage` (user-facing, undelivered); hook timeout equals the RPC deadline; 2 commits per tool call on the hot path. Sent back with decisions. QA round 1 running.
 
 ### Ticket: T010 ACP permission policy by role
 - **Priority:** P0
@@ -314,21 +314,21 @@ Priority encodes dependency layer as well as importance: P0 tickets are v0-block
 
 ### Ticket: T028 Shared ULID generator
 - **Priority:** P1
-- **Status:** In Progress
+- **Status:** Done
 - **Owner:** sonnet:worker-T028
 - **Scope:** Depends on T008, T010, T018, T020 (all Done). Move the three copies of the ULID generator (`packages/daemon/src/bus/ulid.ts`, `packages/daemon/src/gates/ulid.ts`, `packages/daemon/src/permissions/ulid.ts`, plus `packages/cli/src/ulid.ts`) into `packages/shared/src/ids.ts` as one `ulid(now?)` implementation (Crockford base32, monotonic within a ms) next to `UlidSchema`; delete the copies; update imports and tests. No behaviour change.
 - **Acceptance Criteria:** One implementation, exported from shared; `grep -rn "function ulid\|generateUlid" packages` finds only shared; all existing tests pass unchanged.
 - **Validation Steps:** `bun test`; grep.
-- **Notes:** Discovered during T008/T010/T018 reviews (three duplicate generators).
+- **Notes:** Discovered during T008/T010/T018 reviews (four duplicate generators). Branch `T028-shared-ulid` (local worktree), 837 tests green; review round 1 PASS, QA ACCEPT. merge: 40cd1e7.
 
 ### Ticket: T029 Permission classifier: stop over-denying benign stderr redirects
 - **Priority:** P2
-- **Status:** Todo
-- **Owner:** Unassigned
+- **Status:** Done
+- **Owner:** sonnet:worker-T029
 - **Scope:** Depends on T010. `npm test 2>&1`, `cmd 2>/dev/null`, `cmd >/dev/null` from an engineer currently deny (fail-safe over-deny). Treat redirects to `/dev/null`, `&1`, `&2` as non-writes; keep every file-target redirect gated as today. Table tests.
 - **Acceptance Criteria:** The listed forms allow for the engineer; reviewer/QA still deny all redirects; every T010 adversarial test still passes.
 - **Validation Steps:** `bun test packages/daemon/src/permissions`.
-- **Notes:** Deferred from T010 review round 3 (R3-3).
+- **Notes:** Deferred from T010 review round 3 (R3-3). Branch `T029-benign-redirects` (`0e12206`), 865 tests green; review round 1 PASS (~65 adversarial spellings; note `cmd 2>&1 | grep x` still denies because `grep` isn't on the engineer exec allow-list — design-correct). QA ACCEPT. merge: 9b4bc02.
 
 ## 8. Open Questions
 
@@ -371,3 +371,5 @@ Priority encodes dependency layer as well as importance: P0 tickets are v0-block
 - 2026-09-09 — Decision: no workspace dependency cycles; e2e tests that need the daemon live in `packages/daemon`. `playwright-core` is a root devDependency; the e2e auto-skips without a Chromium executable and runs via root `test:e2e` (and under `bun test` where Chromium exists).
 - 2026-09-09 — Decision: `agile hook` fails open only until T009 lands; T009 makes fail-closed the default (deny with reason when the daemon is unreachable) with a 2 s timeout. Per-tool-call hook cost ≈100 ms (Bun cold start) accepted for v0. ULID generator now exists in bus, gates and cli — dedupe into shared as a small follow-up ticket.
 - 2026-09-09 — T010, T008, T020 merged (a6bbba5, 07da0ca, acc292d); 840 tests green incl. the Playwright e2e. Added T028 (shared ULID generator) and T029 (benign stderr redirects) as discovered work. Launched T009 (hook gate) and T028 in parallel.
+- 2026-09-09 — T028 merged (40cd1e7). Note for T009's merge: import `ulid` from `@agile-agents/shared` (the per-area copies are gone).
+- 2026-09-09 — Decisions (T009): the hook fails closed whenever the calling cwd cannot be resolved to a live ticket worktree (realpath-normalised); inbox injection never changes a gate verdict; hook decisions and heartbeats use deferred (batched, ~5 s debounced) commits on `agile-state` — every mutation still emits exactly one event, but hot-path events may share a commit; heartbeats coalesce to one write per 30 s; hook settings timeout 5 s > CLI RPC deadline 2 s.

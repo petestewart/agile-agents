@@ -41,11 +41,11 @@ import {
   MessageSchema,
   type TicketId,
   type TicketStatus,
+  ulid,
   validateMessage,
 } from '@agile-agents/shared';
 import type { StateStore } from '../store';
 import { checkRoute } from './routing';
-import { ulid } from './ulid';
 
 export type Clock = () => Date;
 

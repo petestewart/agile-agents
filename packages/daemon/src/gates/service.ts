@@ -36,6 +36,7 @@ import {
   type Message,
   type Policy,
   type TicketId,
+  ulid,
   validateBreakerState,
   validateHilRequest,
   validateMessage,
@@ -44,7 +45,6 @@ import { NotFoundError, type StateStore, buildEvent } from '../store';
 import { parseDurationMs } from './duration';
 import { resolveGate } from './resolve';
 import { humanTimeoutDuration, isHumanTimeoutOwner } from './types';
-import { generateUlid } from './ulid';
 
 const HIL_DIR = 'board/hil';
 // Sibling of board/hil/, board/halts/, board/status/ — deliberately NOT
@@ -64,7 +64,7 @@ function hilPath(id: HilId): string {
 }
 
 function newHilId(): HilId {
-  return `HIL-${generateUlid()}` as HilId;
+  return `HIL-${ulid()}` as HilId;
 }
 
 function inboxPath(agent: string, messageId: string): string {
@@ -289,7 +289,7 @@ export class GateService {
       req.deadline ??
       new Date(new Date(req.requested_at).getTime() + DEFAULT_MESSAGE_DEADLINE_MS).toISOString();
     const message: Message = {
-      id: generateUlid(),
+      id: ulid(),
       ts: req.requested_at,
       from,
       to: ['human'],
@@ -309,7 +309,7 @@ export class GateService {
   private async notifyResolved(req: HilRequest): Promise<void> {
     if (!req.delegated || !req.fyi) return;
     const message: Message = {
-      id: generateUlid(),
+      id: ulid(),
       ts: req.fyi.sent_at,
       from: 'daemon',
       to: ['human'],
