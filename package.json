@@ -8,11 +8,13 @@
     "typecheck": "bun run --filter '*' typecheck",
     "test": "bun test",
     "test:integration": "if [ \"$AGILE_LIVE\" = \"1\" ]; then bun test --grep live; else echo 'test:integration: set AGILE_LIVE=1 to run live vendor tests (needs a real vendor login, not available in this container); skipped' && exit 0; fi",
+    "test:e2e": "bun test packages/ui/src/feed.e2e.test.ts",
     "lint": "biome check ."
   },
   "devDependencies": {
     "@biomejs/biome": "^1.9.4",
     "@types/bun": "^1.4.2",
+    "playwright-core": "1.56.0",
     "typescript": "^5.7.2"
   }
 }

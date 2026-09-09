@@ -40,15 +40,19 @@ export async function startDaemon(options: DiscoverConfigOptions = {}): Promise<
   // One StateStore instance is shared by every RPC namespace (same mutex,
   // same agile-state worktree).
   const store = existsSync(config.stateRoot) ? StateStore.open(config.stateRoot) : undefined;
-  const extraMethods = store
-    ? {
-        ...buildStateRpcMethods(store),
-        ...buildBusRpcMethods(new Bus(store, config.stateRoot)),
-        ...buildOracleRpcMethods(store),
-        ...buildHaltRpcMethods(store),
-        ...buildGateRpcMethods(new GateService(store)),
-      }
-    : undefined;
+  // Hoisted (T020) so the same GateService instance backs both `gate.*` RPC
+  // and the feed page's HIL snapshot/approve/delegate HTTP routes.
+  const gateService = store ? new GateService(store) : undefined;
+  const extraMethods =
+    store && gateService
+      ? {
+          ...buildStateRpcMethods(store),
+          ...buildBusRpcMethods(new Bus(store, config.stateRoot)),
+          ...buildOracleRpcMethods(store),
+          ...buildHaltRpcMethods(store),
+          ...buildGateRpcMethods(gateService),
+        }
+      : undefined;
 
   let rpc: RpcServerHandle;
   let http: HttpServerHandle;
@@ -71,6 +75,8 @@ export async function startDaemon(options: DiscoverConfigOptions = {}): Promise<
       version: DAEMON_VERSION,
       stateRoot: config.stateRoot,
       startedAt,
+      store,
+      gates: gateService,
     });
   } catch (err) {
     await rpc.close();

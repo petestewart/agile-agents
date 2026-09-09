@@ -11,5 +11,8 @@
   },
   "dependencies": {
     "@agile-agents/shared": "workspace:*"
+  },
+  "devDependencies": {
+    "@agile-agents/daemon": "workspace:*"
   }
 }
