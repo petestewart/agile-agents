@@ -100,6 +100,12 @@ describe('QaProtocol.start', () => {
     expect(() => makeProtocol().start(ticket, qaWorktree)).toThrow(QaEnvUnsupportedError);
   });
 
+  test('review round nit: refuses an empty contract.acceptance up front, not via an opaque zod error later', async () => {
+    const ticket = makeTicket('TKT-0026' as TicketId, { contract: { acceptance: [] } });
+    await store.putTicket(ticket);
+    expect(() => makeProtocol().start(ticket, qaWorktree)).toThrow(/empty contract.acceptance/);
+  });
+
   test('round increments across QA rounds on the same ticket', async () => {
     const ticket = makeTicket('TKT-0002' as TicketId, { contract: { acceptance: ['a'] } });
     await store.putTicket(ticket);

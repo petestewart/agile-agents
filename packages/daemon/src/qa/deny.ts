@@ -7,13 +7,15 @@
  * QA its tool permissions ... not by this generic ACP layer, which has no
  * contract in scope").
  *
- * This ticket owns `packages/daemon/src/qa/**` only — NOT `hook/decide.ts`
- * or `permissions/**` — so the enforcement seam this module plugs into is
- * named, not wired, here. See this file's bottom doc comment ("Wiring for
- * the manager") for the exact one-line change `hook/decide.ts` needs.
+ * Review round fix: this ticket was originally granted `packages/daemon/src/
+ * qa/**` only, with the enforcement seam this module plugs into named-but-
+ * not-wired at the bottom of this file. A later review round granted
+ * `hook/{decide,service}.ts` and `permissions/policy-tables.ts` for exactly
+ * this wiring, which now exists for real — see those files, and the
+ * (updated) doc comment at the bottom of this one for the shape of it.
  */
 
-import { readdirSync, statSync } from 'node:fs';
+import { readdirSync, realpathSync, statSync } from 'node:fs';
 import { isAbsolute, join, relative, sep } from 'node:path';
 import type { Ticket } from '@agile-agents/shared';
 import type { PermissionRole } from '../permissions';
@@ -128,9 +130,30 @@ function resolveGlobAgainstClone(pattern: string, worktreePath: string): string[
  * reuse this resolver (alongside `matchesAnyPattern`) instead of
  * re-deriving path resolution themselves.
  */
+/** `realpath`, falling back to the plain resolved path if the target doesn't exist yet (a criterion's not-yet-created output, an Edit's new file) — never throws. Same pattern as `hook/service.ts`'s own `safeRealpath`. */
+function safeRealpath(path: string): string {
+  try {
+    return realpathSync(path);
+  } catch {
+    return path;
+  }
+}
+
+/**
+ * Review round nit: without `realpath`ing both sides, a symlink inside the
+ * clone pointing at a denied path (or the clone itself being reached via a
+ * symlinked alias, the same case `hook/service.ts` already guards for
+ * `cwd`) would bypass the glob match by construction-of-path alone rather
+ * than by content. `safeRealpath` never throws on a not-yet-existing path
+ * (a fresh `Edit`'s target, a criterion's not-yet-created output) — it
+ * falls back to the plain resolved path, so this stays a pure best-effort
+ * normalization, never a reason to crash a permission check.
+ */
 export function resolveRelToWorktree(path: string, worktreePath: string): string {
   const abs = isAbsolute(path) ? path : join(worktreePath, path);
-  return relative(worktreePath, abs).split(sep).join('/');
+  const realAbs = safeRealpath(abs);
+  const realWorktree = safeRealpath(worktreePath);
+  return relative(realWorktree, realAbs).split(sep).join('/');
 }
 
 export interface DecideQaReadContext {

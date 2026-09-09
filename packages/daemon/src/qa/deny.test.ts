@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { validateTicket } from '@agile-agents/shared';
@@ -117,5 +117,14 @@ describe('decideQaRead', () => {
       'packages/api/auth/jwt.ts',
     );
     expect(decision).toEqual({ allow: true });
+  });
+
+  test('review round nit: a symlink pointing at a denied path denies too (realpath, not literal path text)', () => {
+    symlinkSync(join(dir, 'packages/api/auth/jwt.ts'), join(dir, 'alias.ts'));
+    const decision = decideQaRead(
+      { role: 'qa', ticket: makeTicket(), worktreePath: dir },
+      join(dir, 'alias.ts'),
+    );
+    expect(decision.allow).toBe(false);
   });
 });

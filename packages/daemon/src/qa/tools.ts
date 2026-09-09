@@ -49,10 +49,18 @@ function qaPlanInput(input: unknown): Record<number, string> {
   }
   const mapping: Record<number, string> = {};
   for (const [key, value] of Object.entries(plan as Record<string, unknown>)) {
+    // Review round nit: validate the key itself — `Number("foo")` is `NaN`,
+    // which used to surface only downstream as an opaque
+    // "no criterion at index NaN" from `QaProtocol.plan`. Not a silent
+    // drop either way, but naming the actual problem here is clearer.
+    const index = Number(key);
+    if (!Number.isInteger(index) || index < 0) {
+      throw new QaToolError(`qa_plan: plan key "${key}" must be a non-negative integer index`);
+    }
     if (typeof value !== 'string' || value.length === 0) {
       throw new QaToolError(`qa_plan: plan["${key}"] must be a non-empty command string`);
     }
-    mapping[Number(key)] = value;
+    mapping[index] = value;
   }
   return mapping;
 }

@@ -25,9 +25,11 @@ import {
   type AgentId,
   type KbFact,
   type KbId,
+  MESSAGE_BODY_MAX_CHARS,
   type QaReport,
   type Ticket,
   type TicketId,
+  qaReportRelPath,
   ulid,
   validateQaReport,
 } from '@agile-agents/shared';
@@ -151,6 +153,15 @@ export class QaProtocol {
   start(ticket: Ticket, worktreePath: string): QaStatus {
     resolveQaEnv(ticket, worktreePath);
     const criteria = parseCriteria(ticket);
+    // Review round nit: `contract.acceptance` empty means nothing for QA to
+    // run at all — refuse here with a QA-shaped error rather than letting
+    // `submit()` die inside zod's `lines.min(1)` with an opaque message
+    // once `run()` produces zero results.
+    if (criteria.length === 0) {
+      throw new Error(
+        `qa protocol: ${ticket.id} has an empty contract.acceptance — nothing for QA to run`,
+      );
+    }
     const state: QaRoundState = {
       ticket: ticket.id,
       round: this.nextRound(ticket.id),
@@ -250,7 +261,7 @@ export class QaProtocol {
 
     const ticketObj = this.deps.store.getTicket(ticket);
     const report = buildQaReport(ticketObj, state.round, state.results);
-    const relPath = `board/qa/${ticket}-r${report.round}.yaml`;
+    const relPath = qaReportRelPath(ticket, report.round);
     await this.deps.store.putEntity(relPath, validateQaReport, report);
 
     const skipped = state.results.filter((r) => r.status === 'skipped');
@@ -265,7 +276,7 @@ export class QaProtocol {
         ticket,
         body: `${skipped.length} criterion(s) on ${ticket} can't be exercised from outside — a finding against the criterion, not the code (§13). Architect should re-scope the contract.`.slice(
           0,
-          800,
+          MESSAGE_BODY_MAX_CHARS,
         ),
         refs: [relPath],
       });
@@ -306,7 +317,7 @@ export class QaProtocol {
         ticket,
         body: `qa_verdict for ${ticket} (round ${report.round}) failed to deliver: ${verdictSend.reason}`.slice(
           0,
-          800,
+          MESSAGE_BODY_MAX_CHARS,
         ),
         refs: [relPath],
       });
@@ -340,7 +351,7 @@ export class QaProtocol {
           ticket,
           body: `${ticket} rejected by QA ${attempts} time(s) (max_attempts=${maxAttempts}) — escalating (§4 routing.attempts).`.slice(
             0,
-            800,
+            MESSAGE_BODY_MAX_CHARS,
           ),
           refs: [relPath],
         });
