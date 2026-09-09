@@ -161,12 +161,12 @@ Priority encodes dependency layer as well as importance: P0 tickets are v0-block
 
 ### Ticket: T011 Tool framework, MCP server, `read_summary`, `test_run`
 - **Priority:** P0
-- **Status:** In Progress
+- **Status:** In Review
 - **Owner:** sonnet:worker-T011
 - **Scope:** Depends on T003, T005, T009. Load `.agile/tools/<name>/tool.yaml` (design §7); expose each tool over a daemon MCP server that every agent session is configured with; run `runner.tier` tools as short-lived cheap ACP sessions with the tool's prompt; cache by `[file_hash, question]` for the sprint; write a ledger line per invocation with `ledger_kind`. Ship `read_summary` (path, question → ≤400-token summary + line refs) and `test_run` (command → failing test names, assertion messages, relevant frames; never a green log). Also expose daemon verbs as MCP tools: `board_post`, `bus_send`, `ticket_get`, `oracle_get`, `kb_search`.
 - **Acceptance Criteria:** An engineer session can call `read_summary` and `test_run` via MCP; a second identical `read_summary` is a cache hit; `test_run` on the demo project's failing test returns under 500 tokens.
 - **Validation Steps:** Live test with the demo project; unit tests for registry loading and cache keys.
-- **Notes:**
+- **Notes:** branch `T011-tools-mcp` (local worktree, `ad238da`); `src/tools/` (registry, service, cache, runner with Fake/Live, read_summary, test_run, builtins, in-process MCP server, `tool.*` RPC), `agile mcp` stdio bridge, tools seeded by init; 969 tests. DESIGN-GAPs: `LedgerLine` has no `cache` field (hit = zero tokens); §6 attach-result stretch goal skipped; LiveRunner untested here. Gates running.
 
 ### Ticket: T012 Agent runner and worktree manager
 - **Priority:** P0
