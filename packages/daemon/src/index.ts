@@ -46,3 +46,16 @@ export * from './store';
 
 // Comms bus (T006).
 export * from './bus';
+
+// Oracle write guard + ripple walk, and halts (T007).
+export * from './oracle';
+export {
+  QUORUM_TIMEOUT_MS,
+  activeHaltsFor,
+  buildHaltRpcMethods,
+  createHalt,
+  evaluateQuorum,
+  recordStandupReport,
+  releaseHalt,
+  type CreateHaltInput,
+} from './halts';
