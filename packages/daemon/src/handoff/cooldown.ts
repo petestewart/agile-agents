@@ -49,10 +49,13 @@
  */
 
 import { type Message, ulid, validateQuota } from '@agile-agents/shared';
-import { quotaFraction } from '../quota/records';
+import { BACKOFF_LADDER_SECONDS, quotaFraction } from '../quota/records';
 import type { StateStore } from '../store';
 import { buildEvent } from '../store/events';
 import { NotFoundError } from '../store/store';
+
+/** The ladder's own ceiling tier (`quota/records.ts`'s `BACKOFF_LADDER_SECONDS`, `[30, 60, 300, 900]`) — round 3 review-fix (N-d): a fresh manual cooldown is a human-chosen, typically-multi-hour span with no ladder tier of its own; recording the *ceiling* rather than leaving `cooldown_backoff_seconds` `undefined` means a 429 landing mid-manual-cooldown that somehow *did* need to fall back on the tier (`quota/records.ts`'s own `keepExistingCooldown` guard already makes this belt-and-suspenders, not load-bearing — see that file's doc comments) starts from the top of the ladder, not its 30s floor. */
+const MANUAL_COOLDOWN_BACKOFF_SECONDS = BACKOFF_LADDER_SECONDS[BACKOFF_LADDER_SECONDS.length - 1];
 
 /** Minimal seam a real `Bus.send` already satisfies — same shape `quota/records.ts`'s own `QuotaBusSender` uses, so a caller doesn't need to construct a full `Bus` (or its exact `SendResult` shape) just to hand one in here or in a test. */
 export interface CooldownBusSender {
@@ -100,6 +103,14 @@ export async function setManualCooldown(
     existing = undefined;
   }
 
+  // Round 3 review-fix (N-c): an already-active cooldown means this call is
+  // *extending* one, not starting a fresh episode — same "sameEpisode"
+  // reasoning `quota/records.ts`'s `record429` already applies to its own
+  // `quota_exhausted` emission, reused here so a repeated/extending
+  // `setManualCooldown` call doesn't file a duplicate event every time.
+  const wasAlreadyCoolingDown =
+    existing?.cooldown_until != null && Date.parse(existing.cooldown_until) > now.getTime();
+
   const updated = validateQuota({
     vendor: opts.vendor,
     account: opts.account,
@@ -114,14 +125,16 @@ export async function setManualCooldown(
     // First manual cooldown this episode captures whatever was there before
     // (so recovery has something real to restore); a manual cooldown that
     // only *extends* an already-active one keeps the original capture.
-    pre_cooldown_remaining:
-      existing?.cooldown_until != null && Date.parse(existing.cooldown_until) > now.getTime()
-        ? existing.pre_cooldown_remaining
-        : (existing?.remaining ?? existing?.limit),
+    pre_cooldown_remaining: wasAlreadyCoolingDown
+      ? existing?.pre_cooldown_remaining
+      : (existing?.remaining ?? existing?.limit),
     limit: existing?.limit,
-    // Round 2 (opus B4, belt-and-suspenders): carried over rather than left
-    // `undefined` — see this file's header.
-    cooldown_backoff_seconds: existing?.cooldown_backoff_seconds,
+    // Round 2 (opus B4) / round 3 (N-d): carried over when extending an
+    // active cooldown; a *fresh* manual cooldown gets the ladder's own
+    // ceiling tier rather than `undefined` — see this file's header.
+    cooldown_backoff_seconds: wasAlreadyCoolingDown
+      ? existing?.cooldown_backoff_seconds
+      : MANUAL_COOLDOWN_BACKOFF_SECONDS,
     billing: existing?.billing,
     spend_usd: existing?.spend_usd,
   });
@@ -134,30 +147,36 @@ export async function setManualCooldown(
   // reaches the coordinator at all. `quota_exhausted`, not `quota_low`: a
   // human explicitly asking to free an account now has no graceful
   // window to wait out (§10's hard-handoff path), the same urgency a real
-  // 429 carries.
-  const windowTokensFallback = accountWindowTokens(store, opts.vendor, opts.account);
-  await store.appendEvent(
-    buildEvent('quota_exhausted', {
-      data: {
-        vendor: opts.vendor,
-        account: opts.account,
-        remaining: quotaFraction(saved, windowTokensFallback),
-      },
-    }),
-  );
-  if (opts.bus) {
-    const message: Message = {
-      id: ulid(now.getTime()),
-      ts: now.toISOString(),
-      from: 'daemon',
-      to: ['em'],
-      kind: 'quota_exhausted',
-      priority: 'urgent',
-      body: `${opts.vendor}/${opts.account} manually cooled down until ${opts.until}`,
-      refs: [],
-      requires_ack: false,
-    };
-    await opts.bus.send(message);
+  // 429 carries. Round 3 (N-c): skipped when merely extending an
+  // already-active cooldown — the coordinator already reacted to this
+  // account once; there is nothing new to signal, and `startHardImmediately`
+  // would just re-run its (harmless but pointless) pass over a ticket that
+  // already moved on.
+  if (!wasAlreadyCoolingDown) {
+    const windowTokensFallback = accountWindowTokens(store, opts.vendor, opts.account);
+    await store.appendEvent(
+      buildEvent('quota_exhausted', {
+        data: {
+          vendor: opts.vendor,
+          account: opts.account,
+          remaining: quotaFraction(saved, windowTokensFallback),
+        },
+      }),
+    );
+    if (opts.bus) {
+      const message: Message = {
+        id: ulid(now.getTime()),
+        ts: now.toISOString(),
+        from: 'daemon',
+        to: ['em'],
+        kind: 'quota_exhausted',
+        priority: 'urgent',
+        body: `${opts.vendor}/${opts.account} manually cooled down until ${opts.until}`,
+        refs: [],
+        requires_ack: false,
+      };
+      await opts.bus.send(message);
+    }
   }
 
   return saved;

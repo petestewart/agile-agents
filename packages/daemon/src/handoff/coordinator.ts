@@ -342,7 +342,13 @@ export class HandoffCoordinator {
       routing: this.opts.routing,
       floor: this.opts.floor,
     });
-    const resumed = await resumeDueTickets(this.opts.store, () => this.now());
+    const resumed = await resumeDueTickets({
+      store: this.opts.store,
+      quota: this.opts.quota,
+      now: () => this.now(),
+      routing: this.opts.routing,
+      floor: this.opts.floor,
+    });
 
     return {
       gracefulStarted,

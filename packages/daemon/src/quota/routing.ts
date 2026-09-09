@@ -58,6 +58,22 @@ function routingKey(role: string, tier: string): string {
   return `${role}:${tier}`;
 }
 
+/**
+ * The configured `(vendor, account)` candidates for `(role, tier)`,
+ * *before* quota filtering — exactly the set `routeCandidates` itself
+ * would score. Exported (T024 round 3 review-fix, opus blocker 1) so
+ * `handoff/pause.ts` can compute `resume_at` over the same candidate set
+ * routing actually considers, rather than every `Quota` record on file
+ * (which can include accounts no ticket of this tier is even routed to).
+ */
+export function candidatesFor(
+  role: string,
+  tier: string,
+  opts: { vendors: VendorsConfig; routing?: RoutingTable },
+): RoutingCandidate[] {
+  return opts.routing?.[routingKey(role, tier)] ?? allConfiguredAccounts(opts.vendors);
+}
+
 /** Every `(vendor, account)` pair configured in `vendors.yaml`, in file order — "else the single Claude entry" (§11) for the default seed config. */
 function allConfiguredAccounts(vendors: VendorsConfig): RoutingCandidate[] {
   const candidates: RoutingCandidate[] = [];
@@ -116,7 +132,7 @@ export function routeCandidates(
 ): RouteResult {
   const now = opts.now ?? new Date();
   const floor = opts.floor ?? DEFAULT_QUOTA_FLOOR;
-  const configured = opts.routing?.[routingKey(role, tier)] ?? allConfiguredAccounts(opts.vendors);
+  const configured = candidatesFor(role, tier, { vendors: opts.vendors, routing: opts.routing });
 
   const scored = configured.map((candidate) => {
     const quota = quotaFor(opts.quotas, candidate.vendor, candidate.account);

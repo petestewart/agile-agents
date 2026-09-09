@@ -1,9 +1,21 @@
 /**
  * `handoff.*` MCP verbs (T024), same `ToolService.registerProvider` shape
  * `em/verbs.ts`/`qa/tools.ts` already use — a sibling registry, not an edit
- * to either (this ticket owns `handoff/**` only). `em`-only: cooldowns and
- * handoff visibility are an EM/operator concern (design §10), never
- * something an engineer/reviewer/qa session calls on itself.
+ * to either (this ticket owns `handoff/**` only). Handoff visibility
+ * (`handoff_status`) is `em`-only — an EM/operator concern (design §10),
+ * never something an engineer/reviewer/qa session calls on itself.
+ *
+ * `cooldown_set` is `em` **or** `human` (round 3 review-fix, N-a — round 2
+ * left it `em`-only here while `rpc.ts`'s `handoff.cooldown_set` allowed
+ * both and claimed parity with this file; that claim was false). Widened
+ * rather than narrowing the RPC side: §10's own framing of a manual
+ * cooldown is a human request ("keep my Max window free for 4h"), and §5
+ * "HIL" already treats `human` as a first-class bus participant. No MCP
+ * session today is ever launched with agent id `human` (`agile mcp --agent
+ * <id> --ticket <id>` only spawns `em`/`architect`/`eng-*`/`reviewer-*`/
+ * `qa-*`), so this is presently unreachable in practice — kept anyway so
+ * the policy is genuinely the same on both surfaces, not merely documented
+ * as such.
  */
 
 import { roleOf } from '../bus/routing';
@@ -17,6 +29,13 @@ export class HandoffVerbError extends Error {}
 function requireEm(ctx: ToolCallContext, verb: string): void {
   if (roleOf(ctx.agent) !== 'em') {
     throw new HandoffVerbError(`${verb}: only the em agent may call this verb`);
+  }
+}
+
+function requireEmOrHuman(ctx: ToolCallContext, verb: string): void {
+  const role = roleOf(ctx.agent);
+  if (role !== 'em' && role !== 'human') {
+    throw new HandoffVerbError(`${verb}: only em or human may call this verb (was ${role})`);
   }
 }
 
@@ -43,7 +62,7 @@ export interface HandoffToolInfo {
 const STRING = { type: 'string', optional: false } as const;
 
 async function cooldownSet(deps: HandoffToolDeps, ctx: ToolCallContext, input: unknown) {
-  requireEm(ctx, 'cooldown_set');
+  requireEmOrHuman(ctx, 'cooldown_set');
   const p = requireObject(input);
   if (typeof p.vendor !== 'string' || p.vendor.length === 0) {
     throw new HandoffVerbError('cooldown_set: "vendor" must be a non-empty string');

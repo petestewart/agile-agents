@@ -95,4 +95,50 @@ describe('setManualCooldown', () => {
     expect(sent).toHaveLength(1);
     expect(sent[0]).toMatchObject({ kind: 'quota_exhausted', priority: 'urgent', to: ['em'] });
   });
+
+  test('N-c (round 3 review-fix): extending an already-active cooldown does not emit a duplicate event or bus message', async () => {
+    await fx.store.putVendors({ claude: { accounts: [{ id: 'default', auth: 'subscription' }] } });
+    const sent: unknown[] = [];
+    const fakeBus = {
+      send: async (input: unknown) => {
+        sent.push(input);
+        return { ok: true as const };
+      },
+    };
+    const firstUntil = new Date(Date.now() + 4 * 3600_000).toISOString();
+    const extendedUntil = new Date(Date.now() + 8 * 3600_000).toISOString();
+
+    await setManualCooldown(fx.store, {
+      vendor: 'claude',
+      account: 'default',
+      until: firstUntil,
+      bus: fakeBus,
+    });
+    const extended = await setManualCooldown(fx.store, {
+      vendor: 'claude',
+      account: 'default',
+      until: extendedUntil,
+      bus: fakeBus,
+    });
+
+    // The write itself still takes effect (the account really is now
+    // cooling down until the later timestamp) — only the signal is deduped.
+    expect(extended.cooldown_until).toBe(extendedUntil);
+    const events = fx.store.listEvents().filter((e) => e.kind === 'quota_exhausted');
+    expect(events).toHaveLength(1);
+    expect(sent).toHaveLength(1);
+  });
+
+  test('N-d (round 3 review-fix): a fresh manual cooldown carries the ladder ceiling tier, not undefined', async () => {
+    await fx.store.putVendors({ claude: { accounts: [{ id: 'default', auth: 'subscription' }] } });
+    const until = new Date(Date.now() + 4 * 3600_000).toISOString();
+
+    const quota = await setManualCooldown(fx.store, {
+      vendor: 'claude',
+      account: 'default',
+      until,
+    });
+
+    expect(quota.cooldown_backoff_seconds).toBe(900);
+  });
 });

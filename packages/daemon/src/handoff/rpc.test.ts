@@ -55,7 +55,7 @@ describe('handoff.cooldown_set RPC — caller-identity check (QA round 1)', () =
       account: 'default',
       until: new Date(Date.now() + 3600_000).toISOString(),
     });
-    expect(message).toContain('only em or human');
+    expect(message).toContain('only em/human');
   });
 
   test('accepts em', async () => {
@@ -85,5 +85,24 @@ describe('handoff.* RPC — other methods', () => {
   test('handoff.paused lists paused tickets', async () => {
     const result = await call<unknown[]>('handoff.paused');
     expect(result).toEqual([]);
+  });
+});
+
+describe('handoff.tick RPC — caller-identity check (round 3, N-b)', () => {
+  test('rejects with no agent param at all', async () => {
+    const message = await callErr('handoff.tick', {});
+    expect(message).toContain('"agent"');
+  });
+
+  test('rejects an engineer agent id', async () => {
+    const message = await callErr('handoff.tick', { agent: 'eng-1' });
+    expect(message).toContain('only em/human/daemon');
+  });
+
+  test('accepts em, human, and daemon', async () => {
+    for (const agent of ['em', 'human', 'daemon']) {
+      const result = await call<unknown>('handoff.tick', { agent });
+      expect(result).toBeDefined();
+    }
   });
 });
