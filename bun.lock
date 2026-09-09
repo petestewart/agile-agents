@@ -13,9 +13,6 @@
     "packages/acp-client": {
       "name": "@agile-agents/acp-client",
       "version": "0.0.0",
-      "dependencies": {
-        "@agile-agents/shared": "workspace:*",
-      },
     },
     "packages/cli": {
       "name": "@agile-agents/cli",
