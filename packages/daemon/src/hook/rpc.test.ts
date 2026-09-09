@@ -90,6 +90,39 @@ describe('hook.* RPC round trip (via dispatch)', () => {
   });
 });
 
+/**
+ * T033 root-cause fix: the two tests below used to `await new
+ * Response(proc.stdout).text()` and only *then* `await proc.exited` — under
+ * full-suite CPU contention this occasionally crashed with `EBADF: bad file
+ * descriptor, epoll_ctl` from inside `proc.exited` (reproduced 2/10 full
+ * runs on the integration head; 0/6 in isolation). The subprocess is spawned
+ * with `stderr: 'pipe'` but the old code never drained it — an un-consumed
+ * piped stream left the child's stderr fd alive and unregistered from this
+ * process's own epoll instance until GC got around to it; when that
+ * finalization lands in the same tick `proc.exited`'s own internal
+ * epoll_ctl call runs (far more likely once the whole suite has many other
+ * subprocesses/sockets churning fds), the two races and the second one to
+ * touch the fd sees it already gone. Waiting on stdout, stderr, and exit
+ * *together* (Bun's own documented `Bun.spawn` pattern) is the real
+ * readiness fix — every stdio stream this process handed the OS is drained
+ * before we call the subprocess "done", so there's nothing left half-closed
+ * for `proc.exited`'s bookkeeping to race. This changes no assertion: exit
+ * code and stdout are checked exactly as before, stderr is captured only
+ * for a failure message.
+ */
+async function runHookCli(proc: {
+  stdout: ReadableStream<Uint8Array>;
+  stderr: ReadableStream<Uint8Array>;
+  exited: Promise<number>;
+}): Promise<{ stdout: string; stderr: string; exitCode: number }> {
+  const [stdout, stderr, exitCode] = await Promise.all([
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+    proc.exited,
+  ]);
+  return { stdout, stderr, exitCode };
+}
+
 describe('hook.* RPC round trip through the CLI subprocess', () => {
   const CLI_ENTRY = join(import.meta.dir, '..', '..', '..', 'cli', 'src', 'index.ts');
   let rpc: RpcServerHandle;
@@ -121,9 +154,8 @@ describe('hook.* RPC round trip through the CLI subprocess', () => {
       stderr: 'pipe',
       env: { ...process.env, AGILE_SOCKET_PATH: socketPath },
     });
-    const stdout = await new Response(proc.stdout).text();
-    const exitCode = await proc.exited;
-    expect(exitCode).toBe(0);
+    const { stdout, stderr, exitCode } = await runHookCli(proc);
+    expect(exitCode, stderr).toBe(0);
     expect(JSON.parse(stdout)).toEqual({
       hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'allow' },
     });
@@ -147,9 +179,8 @@ describe('hook.* RPC round trip through the CLI subprocess', () => {
       stderr: 'pipe',
       env: { ...process.env, AGILE_SOCKET_PATH: socketPath },
     });
-    const stdout = await new Response(proc.stdout).text();
-    const exitCode = await proc.exited;
-    expect(exitCode).toBe(0);
+    const { stdout, stderr, exitCode } = await runHookCli(proc);
+    expect(exitCode, stderr).toBe(0);
     expect(JSON.parse(stdout)).toEqual({
       hookSpecificOutput: {
         hookEventName: 'PreToolUse',
