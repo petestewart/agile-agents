@@ -7,6 +7,7 @@
 
 import { existsSync } from 'node:fs';
 import daemonPackageJson from '../package.json' with { type: 'json' };
+import { Bus, buildBusRpcMethods } from './bus';
 import { type AgileConfig, type DiscoverConfigOptions, discoverConfig } from './config';
 import { type HttpServerHandle, startHttpServer } from './http';
 import { type LockHandle, acquireLock } from './lock';
@@ -33,8 +34,14 @@ export async function startDaemon(options: DiscoverConfigOptions = {}): Promise<
   // `.agile/` may not exist yet (before `agile init`); state.* stays fully
   // stubbed in that case, same as T004 — only wire the real handlers when
   // there's a state root to open them against.
-  const extraMethods = existsSync(config.stateRoot)
-    ? buildStateRpcMethods(StateStore.open(config.stateRoot))
+  // One StateStore instance is shared by every RPC namespace (same mutex,
+  // same agile-state worktree).
+  const store = existsSync(config.stateRoot) ? StateStore.open(config.stateRoot) : undefined;
+  const extraMethods = store
+    ? {
+        ...buildStateRpcMethods(store),
+        ...buildBusRpcMethods(new Bus(store, config.stateRoot)),
+      }
     : undefined;
 
   let rpc: RpcServerHandle;

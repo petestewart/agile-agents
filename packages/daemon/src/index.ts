@@ -43,3 +43,6 @@ export * from './briefs';
 
 // Validating state store over .agile/ (T005).
 export * from './store';
+
+// Comms bus (T006).
+export * from './bus';
