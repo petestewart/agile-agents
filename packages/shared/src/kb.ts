@@ -39,3 +39,38 @@ export function validateKbFact(input: unknown): KbFact {
   }
   return result.data;
 }
+
+/**
+ * `knowledge/index.yaml` (§4 "Knowledge store" lists the file but, unlike
+ * Oracle's index, gives no "id → ..." comment at all; init writes `{}`, T004).
+ *
+ * DESIGN-GAP: contents inferred by analogy with `oracle/index.yaml` (§4
+ * "Oracle": a map keyed by id, carrying the fields a reader filters/scopes
+ * by before opening the full fact file) — `kind`, `scope`, and `confidence`
+ * are exactly what "Reader agents query by scope before touching source"
+ * (§4 "Knowledge store") needs without reading `facts/KB-*.md`, plus
+ * `expires` since "Retro prunes expired/contradicted facts" is an index-time
+ * filter too. `source` is left out: it points at a ticket/proposal, useful
+ * once a fact is open, not for deciding whether to open it. No `title`
+ * field exists on `KbFactSchema` itself to carry into the index.
+ */
+export const KbIndexEntrySchema = z
+  .object({
+    kind: KbKindSchema,
+    scope: z.array(z.string().min(1)).min(1),
+    confidence: KbConfidenceSchema,
+    expires: z.string().min(1).nullable(),
+  })
+  .strict();
+export type KbIndexEntry = z.infer<typeof KbIndexEntrySchema>;
+
+export const KbIndexSchema = z.record(KbIdSchema, KbIndexEntrySchema);
+export type KbIndex = z.infer<typeof KbIndexSchema>;
+
+export function validateKbIndex(input: unknown): KbIndex {
+  const result = KbIndexSchema.safeParse(input);
+  if (!result.success) {
+    throw new Error(formatZodError('KbIndex', result.error));
+  }
+  return result.data;
+}
