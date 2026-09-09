@@ -32,8 +32,16 @@
  * (deny/hil, never allow, on an unidentifiable target).
  */
 
-/** The three roles this ticket's policy table covers (§14's Architect/EM/Reader rows are out of scope here). */
-export type PermissionRole = 'engineer' | 'reviewer' | 'qa';
+/**
+ * The four roles this table covers (§14's EM/Reader rows are still out of
+ * scope — EM never runs an ACP session, per `runner/runner.ts`'s file
+ * header; a `read_summary` tool-runner turn has no session of its own
+ * either). `architect` added T031 (design §14 "Permissions per role",
+ * Architect row: "oracle, tickets, KB" read; "oracle (write guard),
+ * tickets, rules" write — but only via MCP verbs, never a raw ACP edit —
+ * "none" run; "none" network).
+ */
+export type PermissionRole = 'engineer' | 'reviewer' | 'qa' | 'architect';
 
 /** ACP permission option kinds seen on the wire (spike-findings.md §A). */
 export type AcpPermissionOptionKind =

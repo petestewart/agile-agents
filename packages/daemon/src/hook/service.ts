@@ -263,11 +263,22 @@ export class HookService {
       if (chosen === undefined) return undefined;
       const ticketId = chosen.record.ticket;
       if (ticketId === undefined) return undefined;
-      try {
-        const ticket = this.store.getTicket(ticketId);
-        if (!LIVE_TICKET_STATUSES.includes(ticket.status)) return undefined;
-      } catch {
-        return undefined;
+      // T031: the architect isn't scoped to one ticket's own lifecycle the
+      // way engineer/reviewer/qa are — `AgentRecord.ticket` on an architect
+      // session is only ever "whichever ticket its brief/ledger context was
+      // rendered for" (`runner/brief.ts`), not a status this hook should
+      // gate a tool call on. An architect calling from its own worktree
+      // (`.worktrees/architect`, the containment check above) must resolve
+      // regardless of that ticket's current status — a `done`/`ready`
+      // ticket here is normal, not a stale/crashed registration the way it
+      // would be for the other three roles.
+      if (chosen.record.role !== 'architect') {
+        try {
+          const ticket = this.store.getTicket(ticketId);
+          if (!LIVE_TICKET_STATUSES.includes(ticket.status)) return undefined;
+        } catch {
+          return undefined;
+        }
       }
       const worktreePath = this.absWorktree(chosen.record.worktree) ?? this.options.repoRoot;
       return {

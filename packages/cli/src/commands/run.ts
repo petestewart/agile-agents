@@ -28,10 +28,21 @@
  *    only plans the sprint, seeds the fixture, and polls until the sprint
  *    completes or `--max-ticks` is exhausted — the daemon's own ceremony
  *    tick (`daemon.ts`) does the actual driving once a live EM/engineer/
- *    reviewer/qa loop is answering its own gates and bus messages. (An
- *    actual architect ACP session for a *live* discovery still needs the
- *    wiring gap named in `.pipeline-report.md`; `--fake` mode sidesteps it
- *    by calling the architect's own verbs directly, deterministically.)
+ *    reviewer/qa/architect loop is answering its own gates and bus
+ *    messages.
+ *
+ * T031: `runScriptedDiscovery` below now spawns a real architect session
+ * (`Runner.spawn('architect', ...)`, `pipeline-glue.ts`'s
+ * `ensureArchitectSpawned` — singleton, reused for every discovery this run
+ * raises) over the same fake ACP transport every other role's `--fake`
+ * session runs on, instead of calling `registerArchitectTools` with no
+ * agent involved at all. The scripted driver still invokes the architect's
+ * verbs (`discovery_triage`/`decision_publish`) directly against that
+ * registry — exactly the same "spawn a real session, then drive its verbs
+ * by direct daemon-side call rather than scripting the ACP transport
+ * itself" shape `driveQaWork` already uses for QA (`fake-driver.ts`'s own
+ * header: "the demo driver does its actual work through direct daemon-side
+ * calls ..., not by scripting this transport").
  */
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
@@ -59,6 +70,7 @@ import {
   agentIdFor,
   createFakeSpawn,
   discoverConfig,
+  ensureArchitectSpawned,
   planSprint,
   reRefineStale,
   registerArchitectTools,
@@ -353,6 +365,14 @@ async function runScriptedDiscovery(
 ): Promise<ScriptedDiscoveryResult> {
   if (!discovery || !handle.store) return { resolved: false, staled: [] };
   const store = handle.store;
+
+  // T031: a real spawned session first (see this file's own header) — the
+  // architect's verbs are still invoked directly below, same as every
+  // other role's scripted turn in this driver.
+  if (handle.runner) {
+    await ensureArchitectSpawned(handle.runner, discovery.reporterTicket);
+  }
+
   const architect = registerArchitectTools({ store });
   const ctx = { agent: 'architect' as const };
 
