@@ -9,49 +9,131 @@
  * scope for T018 — see the pipeline report's wiring instructions for the
  * manager): `daemon.ts` should pass this object as part of
  * `RpcServerOptions.extraMethods` alongside `buildStateRpcMethods`.
+ *
+ * T018 review fix (finding 5): every handler validates its params at the
+ * boundary — reusing shared's own zod schemas (`HilIdSchema`,
+ * `HilDecisionSchema`, `BreakerSignalSchema`) via `.safeParse` rather than
+ * bare-casting — and throws a typed `RpcError` subclass (`RpcParamError`
+ * -32602 for invalid params, `-32001`-range codes for domain errors) instead
+ * of letting a destructuring `TypeError` reach `dispatch()`.
+ *
+ * KNOWN LIMITATION (documented, not fixed — `rpc.ts`'s `dispatch()` is out
+ * of this ticket's file ownership): `dispatch()` currently wraps every
+ * thrown error the same way, `{ code: INTERNAL_ERROR_CODE (-32603), message:
+ * err.message }`, regardless of any `.code` the error carries (see
+ * `rpc.ts`'s catch block). So today a JSON-RPC client sees -32603 for every
+ * failure from this module, not the specific code named on the error class
+ * below. The `.code`/`.data` are still attached for the moment `dispatch()`
+ * is extended with one line (`code: err instanceof RpcError ? err.code :
+ * INTERNAL_ERROR_CODE`) — flagged for the manager in `.pipeline-report.md`.
+ * Every negative-path test therefore asserts on `error.message` (which
+ * already carries the specific, correct detail), not `error.code`.
  */
 
+import {
+  BREAKER_SIGNALS,
+  BreakerSignalSchema,
+  HilDecisionSchema,
+  HilIdSchema,
+} from '@agile-agents/shared';
+import type { BreakerSignal, HilDecision, HilId } from '@agile-agents/shared';
 import type { RpcMethodHandler } from '../rpc';
 import type { GateService } from './service';
-import type { BreakerSignal } from './types';
 
-interface ApproveParams {
-  id: string;
-  by: string;
+const INVALID_PARAMS_CODE = -32602;
+
+export class RpcError extends Error {
+  constructor(
+    public readonly code: number,
+    message: string,
+    public readonly data?: unknown,
+  ) {
+    super(message);
+    this.name = 'RpcError';
+  }
 }
 
-interface ResolveParams {
-  id: string;
-  decision: 'approve' | 'deny';
-  by: string;
+export class RpcParamError extends RpcError {
+  constructor(message: string, data?: unknown) {
+    super(INVALID_PARAMS_CODE, message, data);
+    this.name = 'RpcParamError';
+  }
 }
 
-interface DelegateParams {
-  id: string;
-  to: 'em' | 'architect';
+function requireObject(params: unknown): Record<string, unknown> {
+  if (typeof params !== 'object' || params === null || Array.isArray(params)) {
+    throw new RpcParamError('params must be an object', { params });
+  }
+  return params as Record<string, unknown>;
 }
 
-interface BreakerClearParams {
-  signal: BreakerSignal;
+function requireHilId(value: unknown): HilId {
+  const result = HilIdSchema.safeParse(value);
+  if (!result.success) {
+    throw new RpcParamError(`invalid "id": must look like HIL-<ulid>`, { id: value });
+  }
+  return result.data;
+}
+
+function requireBy(value: unknown): string {
+  if (typeof value !== 'string' || value.length === 0) {
+    throw new RpcParamError('"by" must be a non-empty string', { by: value });
+  }
+  return value;
+}
+
+function requireDecision(value: unknown): HilDecision {
+  const result = HilDecisionSchema.safeParse(value);
+  if (!result.success) {
+    throw new RpcParamError('invalid "decision": must be "approve" or "deny"', {
+      decision: value,
+    });
+  }
+  return result.data;
+}
+
+function requireDelegateTo(value: unknown): 'em' | 'architect' {
+  if (value !== 'em' && value !== 'architect') {
+    throw new RpcParamError('invalid "to": must be "em" or "architect"', { to: value });
+  }
+  return value;
+}
+
+function requireBreakerSignal(value: unknown): BreakerSignal {
+  const result = BreakerSignalSchema.safeParse(value);
+  if (!result.success) {
+    throw new RpcParamError(`invalid "signal": must be one of ${BREAKER_SIGNALS.join(', ')}`, {
+      signal: value,
+    });
+  }
+  return result.data;
 }
 
 export function buildGateRpcMethods(service: GateService): Record<string, RpcMethodHandler> {
   return {
     'gate.list': () => service.list(),
     'gate.approve': (params) => {
-      const { id, by } = params as ApproveParams;
+      const p = requireObject(params);
+      const id = requireHilId(p.id);
+      const by = requireBy(p.by);
       return service.respond(id, 'approve', by);
     },
     'gate.resolve': (params) => {
-      const { id, decision, by } = params as ResolveParams;
+      const p = requireObject(params);
+      const id = requireHilId(p.id);
+      const decision = requireDecision(p.decision);
+      const by = requireBy(p.by);
       return service.respond(id, decision, by);
     },
     'gate.delegate': (params) => {
-      const { id, to } = params as DelegateParams;
+      const p = requireObject(params);
+      const id = requireHilId(p.id);
+      const to = requireDelegateTo(p.to);
       return service.delegateRequest(id, to);
     },
     'gate.breaker_clear': (params) => {
-      const { signal } = params as BreakerClearParams;
+      const p = requireObject(params);
+      const signal = requireBreakerSignal(p.signal);
       return service.clear(signal);
     },
   };

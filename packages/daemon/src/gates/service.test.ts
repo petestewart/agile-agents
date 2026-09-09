@@ -10,6 +10,7 @@ import {
   type GateDecision,
   GateNotFoundError,
   GateService,
+  NoDelegateConfiguredError,
 } from './service';
 
 let repo: string;
@@ -50,42 +51,71 @@ function policy(gates: Policy['gates']): Policy {
   return { gates, breaker_signals: [] };
 }
 
+function ctx(gates: Policy['gates'], extra: Record<string, unknown> = {}) {
+  return { policy: policy(gates), hilKind: 'unblock' as const, ...extra };
+}
+
 describe('GateService.request', () => {
-  test('a human-owned gate opens pending with no deadline', async () => {
+  test('a human-owned gate opens pending with no deadline, and writes an urgent hil_request bus message', async () => {
     const service = new GateService(store, { clock });
-    const req = await service.request('sprint_review', {
-      policy: policy({ sprint_review: 'human' }),
-    });
+    const req = await service.request('sprint_review', ctx({ sprint_review: 'human' }));
     expect(req.owner).toBe('human');
     expect(req.status).toBe('pending');
     expect(req.deadline).toBeUndefined();
+
+    const inbox = store.listEntities(
+      'bus/inbox/human',
+      (v) => v as { kind: string; priority: string },
+    );
+    expect(inbox).toHaveLength(1);
+    expect(inbox[0]?.kind).toBe('hil_request');
+    expect(inbox[0]?.priority).toBe('urgent');
   });
 
-  test('an em-owned gate is auto-decided immediately and produces a decision artifact + fyi', async () => {
+  test('an em-owned gate with a delegate is auto-decided immediately and produces a decision artifact + fyi message', async () => {
     const service = new GateService(store, { clock, delegate: denyDelegate });
-    const req = await service.request('unblock', { policy: policy({ unblock: 'em' }) });
+    const req = await service.request('unblock', ctx({ unblock: 'em' }));
     expect(req.status).toBe('resolved');
     expect(req.delegated).toBe(true);
     expect(req.decision).toBe('deny');
     expect(req.decided_by).toBe('architect');
     expect(req.fyi?.to).toBe('human');
     expect(req.fyi?.body).toContain('unblock');
+    expect(req.deadline).toBeUndefined();
 
     // The decision artifact is durable, not just in-memory.
     const reloaded = store.getEntity(`board/hil/${req.id}.yaml`, (v) => v as typeof req);
     expect(reloaded.status).toBe('resolved');
+
+    const inbox = store.listEntities(
+      'bus/inbox/human',
+      (v) => v as { kind: string; priority: string },
+    );
+    expect(inbox.some((m) => m.kind === 'fyi' && m.priority === 'low')).toBe(true);
+  });
+
+  test('an em-owned gate with NO delegate configured stays pending (fail closed, never auto-approves)', async () => {
+    const service = new GateService(store, { clock });
+    const req = await service.request('unblock', ctx({ unblock: 'em' }));
+    expect(req.status).toBe('pending');
+    expect(req.decision).toBeUndefined();
+    expect(req.reason).toBe('no delegate configured');
+
+    // It is still listed for the human, via a hil_request message.
+    const inbox = store.listEntities('bus/inbox/human', (v) => v as { kind: string });
+    expect(inbox.some((m) => m.kind === 'hil_request')).toBe(true);
   });
 
   test('a human_timeout gate opens pending with a deadline derived from the duration', async () => {
     const service = new GateService(store, { clock });
-    const req = await service.request('demo', { policy: policy({ demo: 'human_timeout:1h' }) });
+    const req = await service.request('demo', ctx({ demo: 'human_timeout:1h' }));
     expect(req.status).toBe('pending');
     expect(req.deadline).toBe(new Date(now.getTime() + 3_600_000).toISOString());
   });
 
   test('an unknown gate defaults to human', async () => {
     const service = new GateService(store, { clock });
-    const req = await service.request('no_such_gate', { policy: policy({}) });
+    const req = await service.request('no_such_gate', ctx({}));
     expect(req.owner).toBe('human');
     expect(req.status).toBe('pending');
   });
@@ -94,16 +124,17 @@ describe('GateService.request', () => {
 describe('GateService.respond', () => {
   test('resolves a pending request with a decision and who decided it', async () => {
     const service = new GateService(store, { clock });
-    const req = await service.request('demo', { policy: policy({ demo: 'human' }) });
+    const req = await service.request('demo', ctx({ demo: 'human' }));
     const resolved = await service.respond(req.id, 'approve', 'human');
     expect(resolved.status).toBe('resolved');
     expect(resolved.decision).toBe('approve');
     expect(resolved.decided_by).toBe('human');
+    expect(resolved.deadline).toBeUndefined();
   });
 
   test('refuses to respond twice', async () => {
     const service = new GateService(store, { clock });
-    const req = await service.request('demo', { policy: policy({ demo: 'human' }) });
+    const req = await service.request('demo', ctx({ demo: 'human' }));
     await service.respond(req.id, 'approve', 'human');
     await expect(service.respond(req.id, 'deny', 'human')).rejects.toThrow(
       GateAlreadyResolvedError,
@@ -112,7 +143,7 @@ describe('GateService.respond', () => {
 
   test('an unknown id throws', async () => {
     const service = new GateService(store, { clock });
-    await expect(service.respond('hil_nope', 'approve', 'human')).rejects.toThrow(
+    await expect(service.respond('HIL-nope', 'approve', 'human')).rejects.toThrow(
       GateNotFoundError,
     );
   });
@@ -121,7 +152,7 @@ describe('GateService.respond', () => {
 describe('GateService.delegateRequest (single-instance delegation)', () => {
   test('delegates a pending human-owned request, producing the same artifact shape + fyi', async () => {
     const service = new GateService(store, { clock, delegate: denyDelegate });
-    const req = await service.request('demo', { policy: policy({ demo: 'human' }) });
+    const req = await service.request('demo', ctx({ demo: 'human' }));
     const delegated = await service.delegateRequest(req.id, 'architect');
     expect(delegated.status).toBe('resolved');
     expect(delegated.delegated).toBe(true);
@@ -130,19 +161,25 @@ describe('GateService.delegateRequest (single-instance delegation)', () => {
   });
 
   test('a second delegate call on the same request is refused (single-instance)', async () => {
-    const service = new GateService(store, { clock });
-    const req = await service.request('demo', { policy: policy({ demo: 'human' }) });
+    const service = new GateService(store, { clock, delegate: denyDelegate });
+    const req = await service.request('demo', ctx({ demo: 'human' }));
     await service.delegateRequest(req.id, 'em');
     await expect(service.delegateRequest(req.id, 'architect')).rejects.toThrow(
       GateAlreadyResolvedError,
     );
   });
+
+  test('refuses to delegate without a configured delegate function', async () => {
+    const service = new GateService(store, { clock });
+    const req = await service.request('demo', ctx({ demo: 'human' }));
+    await expect(service.delegateRequest(req.id, 'em')).rejects.toThrow(NoDelegateConfiguredError);
+  });
 });
 
 describe('GateService.tick (human_timeout fallthrough)', () => {
   test('does not fall through before the deadline', async () => {
-    const service = new GateService(store, { clock });
-    const req = await service.request('demo', { policy: policy({ demo: 'human_timeout:1h' }) });
+    const service = new GateService(store, { clock, delegate: denyDelegate });
+    const req = await service.request('demo', ctx({ demo: 'human_timeout:1h' }));
     advance(3_599_999); // one ms short of 1h
     const fallenThrough = await service.tick(now);
     expect(fallenThrough).toHaveLength(0);
@@ -151,7 +188,7 @@ describe('GateService.tick (human_timeout fallthrough)', () => {
 
   test('falls through exactly at the deadline', async () => {
     const service = new GateService(store, { clock, delegate: denyDelegate });
-    const req = await service.request('demo', { policy: policy({ demo: 'human_timeout:1h' }) });
+    const req = await service.request('demo', ctx({ demo: 'human_timeout:1h' }));
     advance(3_600_000); // exactly 1h
     const fallenThrough = await service.tick(now);
     expect(fallenThrough.map((r) => r.id)).toContain(req.id);
@@ -163,19 +200,42 @@ describe('GateService.tick (human_timeout fallthrough)', () => {
   });
 
   test('leaves a plain human-owned (non-timeout) request untouched', async () => {
-    const service = new GateService(store, { clock });
-    const req = await service.request('demo', { policy: policy({ demo: 'human' }) });
+    const service = new GateService(store, { clock, delegate: denyDelegate });
+    const req = await service.request('demo', ctx({ demo: 'human' }));
     advance(10_000_000);
     await service.tick(now);
     expect(service.get(req.id).status).toBe('pending');
+  });
+
+  test('without a configured delegate, a due human_timeout request stays pending with a reason, and is not reported as fallen through', async () => {
+    const service = new GateService(store, { clock });
+    const req = await service.request('demo', ctx({ demo: 'human_timeout:1h' }));
+    advance(3_600_000);
+    const fallenThrough = await service.tick(now);
+    expect(fallenThrough).toHaveLength(0);
+    const stillPending = service.get(req.id);
+    expect(stillPending.status).toBe('pending');
+    expect(stillPending.reason).toBe('no delegate configured');
+  });
+
+  test('survives a restart: a NEW GateService over the same store still falls through at the deadline', async () => {
+    const first = new GateService(store, { clock });
+    const req = await first.request('demo', ctx({ demo: 'human_timeout:1h' }));
+    advance(3_600_000);
+
+    // Simulate a daemon restart: a brand new GateService instance, no shared in-memory state.
+    const second = new GateService(store, { clock, delegate: denyDelegate });
+    const fallenThrough = await second.tick(now);
+    expect(fallenThrough.map((r) => r.id)).toContain(req.id);
+    expect(second.get(req.id).status).toBe('resolved');
   });
 });
 
 describe('circuit breaker', () => {
   test('tripping a signal forces even a delegated gate to human, and the request names the signal', async () => {
-    const service = new GateService(store, { clock });
+    const service = new GateService(store, { clock, delegate: denyDelegate });
     await service.trip('integration_red', 'nightly integration suite is failing');
-    const req = await service.request('unblock', { policy: policy({ unblock: 'em' }) });
+    const req = await service.request('unblock', ctx({ unblock: 'em' }));
     expect(req.owner).toBe('human');
     expect(req.status).toBe('pending');
     expect(req.reason).toContain('integration_red');
@@ -185,7 +245,7 @@ describe('circuit breaker', () => {
     const service = new GateService(store, { clock, delegate: denyDelegate });
     await service.trip('deadlock', 'eng-3 vs reviewer-1');
     await service.clear('deadlock');
-    const req = await service.request('unblock', { policy: policy({ unblock: 'em' }) });
+    const req = await service.request('unblock', ctx({ unblock: 'em' }));
     expect(req.owner).toBe('em');
     expect(req.status).toBe('resolved');
     expect(req.reason).toBeUndefined();
@@ -195,18 +255,20 @@ describe('circuit breaker', () => {
     const service = new GateService(store, { clock });
     await service.trip('budget_pct', 'sprint over 90% of budget');
     await service.trip('ladder_exhausted', 'TKT-0231 exhausted escalation');
-    const req = await service.request('demo', { policy: policy({ demo: 'human' }) });
+    const req = await service.request('demo', ctx({ demo: 'human' }));
     expect(req.reason).toContain('budget_pct');
     expect(req.reason).toContain('ladder_exhausted');
   });
 });
 
 describe('GateService.list', () => {
-  test('lists every request created so far', async () => {
+  test('lists every request created so far, read fresh from disk (durable across instances)', async () => {
     const service = new GateService(store, { clock });
-    const a = await service.request('demo', { policy: policy({ demo: 'human' }) });
-    const b = await service.request('unblock', { policy: policy({ unblock: 'human' }) });
-    const ids = service.list().map((r) => r.id);
+    const a = await service.request('demo', ctx({ demo: 'human' }));
+    const b = await service.request('unblock', ctx({ unblock: 'human' }));
+
+    const fresh = new GateService(store, { clock });
+    const ids = fresh.list().map((r) => r.id);
     expect(ids).toContain(a.id);
     expect(ids).toContain(b.id);
   });

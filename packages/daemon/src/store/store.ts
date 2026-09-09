@@ -759,6 +759,22 @@ export class StateStore {
       return { result: undefined, relPaths: [relPath], event };
     });
   }
+
+  /**
+   * Read-only: every entity file directly inside `rawRelDir` (`.yaml` and
+   * `.json`, same hidden/temp-file filter as every other store `listX`, see
+   * `fs.ts`'s `listDataFiles`), validated. Companion to the generic entity
+   * trio above for a caller (e.g. `GateService`) that needs to enumerate a
+   * whole directory of generically-stored entities rather than reading them
+   * one id at a time. A missing directory returns `[]`, same as every other
+   * `listX` on an empty/uninitialized collection.
+   */
+  listEntities<T>(rawRelDir: string, validator: (input: unknown) => T): T[] {
+    const relDir = this.containedRelPath(rawRelDir);
+    const dirAbs = this.abs(relDir);
+    const names = [...listDataFiles(dirAbs, '.yaml'), ...listDataFiles(dirAbs, '.json')];
+    return names.map((name) => validator(readEntityFile(this.abs(relDir, name))));
+  }
 }
 
 function readEntityFileRaw(path: string): string {

@@ -1,46 +1,74 @@
 /**
  * `GateService` — HIL requests, delegation, and the circuit breaker over a
  * `StateStore` (design/agile-agents-design.md §16 "HIL gates policy", §5
- * "HIL"). See `types.ts`'s header for why `HilRequest`/`BreakerState` are
- * hand-validated local types rather than shared zod schemas, and why both
- * are stored under `board/hil/**` via the store's generic entity trio.
+ * "HIL"). `HilRequest`/`BreakerState` are shared zod schemas
+ * (`packages/shared/src/hil.ts`); this module owns only the resolution/
+ * persistence/bus-notification logic over them.
  *
- * Persistence note (DESIGN-GAP, flagged for the manager): `StateStore` has
- * no generic "list a directory of entities" method (only per-entity
- * `list*()` helpers for the kinds it knows about natively), and this ticket
- * may not add one (store/** is out of scope). Every request this service
- * creates or mutates is still durably written to its own
- * `board/hil/<id>.yaml` file via `putEntity` (so another process — or a
- * future `StateStore.listEntities` — can read it back), but `list()` itself
- * is served from an in-memory index scoped to this `GateService` instance,
- * so a restarted daemon starts `list()` empty until such a store method
- * exists. Recommended addition: `StateStore.listEntities(dir, validator)`.
+ * T018 review fix summary (see `.pipeline-review.md` "Independent review
+ * (opus)" for the full findings):
+ *  1. Entity schemas moved to `packages/shared/src/hil.ts` (this file just imports them).
+ *  2/3. `request()` now requires a `hilKind` and writes real bus messages —
+ *       an urgent `hil_request` for every pending outcome, a low-priority
+ *       `fyi` for every delegated decision — to `bus/inbox/human/<ulid>.yaml`
+ *       via the store's generic entity trio (T006's own layout).
+ *  4. No default delegate: without one injected, an `em`/`architect`-owned
+ *     gate (or a timed-out `human_timeout` gate) stays `pending` with
+ *     `reason: "no delegate configured"` instead of auto-approving.
+ *  6. `list()`/`tick()`/`get()` read `board/hil/**` from disk via the new
+ *     `StateStore.listEntities`, so they survive a daemon restart — no more
+ *     in-process-only index.
+ *
+ * Finding 5 (RPC param validation) is addressed in `rpc.ts`.
  */
 
-import type { GateOwner, GatesBlock, Policy } from '@agile-agents/shared';
-import { NotFoundError, type StateStore } from '../store';
-import { parseDurationMs } from './duration';
-import { resolveGate } from './resolve';
 import {
+  type AgentId,
+  BREAKER_SIGNALS,
   type BreakerSignal,
   type BreakerState,
+  type GateOwner,
+  type GatesBlock,
   type HilDecision,
+  type HilId,
+  type HilKind,
   type HilRequest,
-  humanTimeoutDuration,
-  isHumanTimeoutOwner,
+  type Message,
+  type Policy,
+  type TicketId,
   validateBreakerState,
   validateHilRequest,
-} from './types';
+  validateMessage,
+} from '@agile-agents/shared';
+import { NotFoundError, type StateStore, buildEvent } from '../store';
+import { parseDurationMs } from './duration';
+import { resolveGate } from './resolve';
+import { humanTimeoutDuration, isHumanTimeoutOwner } from './types';
+import { generateUlid } from './ulid';
 
 const HIL_DIR = 'board/hil';
-const BREAKER_PATH = `${HIL_DIR}/_breaker.yaml`;
+// Sibling of board/hil/, board/halts/, board/status/ — deliberately NOT
+// nested under board/hil/ so `StateStore.listEntities(HIL_DIR, ...)` never
+// has to special-case it (review nit).
+const BREAKER_PATH = 'board/breaker.yaml';
+const NO_DELEGATE_REASON = 'no delegate configured';
+// §5 "HIL": every hil_request message needs a deadline. A plain `human`
+// owner has no HIL deadline semantics of its own (§16 only defines one for
+// `human_timeout`), so a generous, non-enforced default is used purely to
+// satisfy MessageSchema's contract for bus delivery/redelivery bookkeeping.
+// DESIGN-GAP: not specified anywhere in the design.
+const DEFAULT_MESSAGE_DEADLINE_MS = parseDurationMs('7d');
 
-function hilPath(id: string): string {
+function hilPath(id: HilId): string {
   return `${HIL_DIR}/${id}.yaml`;
 }
 
-function newHilId(): string {
-  return `hil_${crypto.randomUUID()}`;
+function newHilId(): HilId {
+  return `HIL-${generateUlid()}` as HilId;
+}
+
+function inboxPath(agent: string, messageId: string): string {
+  return `bus/inbox/${agent}/${messageId}.yaml`;
 }
 
 export interface GateDecision {
@@ -53,22 +81,25 @@ export interface GateDecision {
  * Auto-decides an `em`/`architect`-owned gate, or a `human_timeout` gate
  * that fell through at its deadline (§16: "tick(now) falls through to the
  * delegate at the deadline" reuses the same delegation logic as a
- * policy-delegated owner).
+ * policy-delegated owner). No default is provided by this module — see
+ * `GateServiceOptions.delegate`'s header (finding 4: fail closed, not open).
  */
 export type DelegateFn = (ctx: {
   gate: string;
   owner: GateOwner;
-  ticket?: string;
+  ticket?: TicketId;
 }) => GateDecision;
-
-const DEFAULT_DELEGATE: DelegateFn = ({ owner }) => ({
-  decision: 'approve',
-  by: owner === 'em' || owner === 'architect' ? owner : 'em',
-});
 
 export interface GateServiceOptions {
   clock?: () => Date;
-  /** Injectable so tests (and, eventually, the EM/architect adapters) control auto-decisions. */
+  /**
+   * Injectable so tests (and, eventually, the EM/architect adapters) control
+   * auto-decisions. Deliberately optional with NO default implementation
+   * (review finding 4): a human-in-the-loop gate must never auto-approve
+   * itself just because nobody wired a delegate yet. Without one, an
+   * `em`/`architect`-owned request (or a timed-out `human_timeout` one)
+   * stays `pending` with `reason: "no delegate configured"`.
+   */
   delegate?: DelegateFn;
 }
 
@@ -77,7 +108,11 @@ export interface GateRequestContext {
   sprint?: GatesBlock;
   epic?: GatesBlock;
   team?: GatesBlock;
-  ticket?: string;
+  ticket?: TicketId;
+  /** `hil_request` kind (§5 "HIL"): approve_decision | steer | demo | unblock. Required. */
+  hilKind: HilKind;
+  /** Who to attribute the resulting bus message to. Defaults to `'daemon'`. */
+  from?: AgentId;
 }
 
 export class GateNotFoundError extends Error {
@@ -94,23 +129,35 @@ export class GateAlreadyResolvedError extends Error {
   }
 }
 
+export class NoDelegateConfiguredError extends Error {
+  constructor(id: string) {
+    super(`hil request ${id} cannot be delegated: no delegate function is configured`);
+    this.name = 'NoDelegateConfiguredError';
+  }
+}
+
+export class UnknownBreakerSignalError extends Error {
+  constructor(signal: string) {
+    super(`unknown breaker signal: ${signal}`);
+    this.name = 'UnknownBreakerSignalError';
+  }
+}
+
 export class GateService {
   private readonly clock: () => Date;
-  private readonly delegate: DelegateFn;
-  /** See file header: the durable copy is one file per id under board/hil/; this is the in-process index `list()` reads. */
-  private readonly requests = new Map<string, HilRequest>();
+  private readonly delegate: DelegateFn | undefined;
 
   constructor(
     private readonly store: StateStore,
     options: GateServiceOptions = {},
   ) {
     this.clock = options.clock ?? (() => new Date());
-    this.delegate = options.delegate ?? DEFAULT_DELEGATE;
+    this.delegate = options.delegate;
   }
 
   // ------------------------------------------------------------- Breaker
 
-  private async loadBreaker(): Promise<BreakerState> {
+  private loadBreaker(): BreakerState {
     try {
       return this.store.getEntity(BREAKER_PATH, validateBreakerState);
     } catch (err) {
@@ -119,24 +166,34 @@ export class GateService {
     }
   }
 
-  async trippedSignals(): Promise<BreakerSignal[]> {
-    const state = await this.loadBreaker();
+  trippedSignals(): BreakerSignal[] {
+    const state = this.loadBreaker();
     return Object.keys(state.tripped) as BreakerSignal[];
   }
 
   /** "force every gate to human until cleared" (§16). */
   async trip(signal: BreakerSignal, detail: string): Promise<BreakerState> {
-    const state = await this.loadBreaker();
-    return this.store.putEntity(BREAKER_PATH, validateBreakerState, {
+    if (!(BREAKER_SIGNALS as readonly string[]).includes(signal)) {
+      throw new UnknownBreakerSignalError(signal);
+    }
+    const state = this.loadBreaker();
+    const saved = await this.store.putEntity(BREAKER_PATH, validateBreakerState, {
       tripped: { ...state.tripped, [signal]: detail },
     });
+    await this.store.appendEvent(buildEvent('breaker_tripped', { data: { signal, detail } }));
+    return saved;
   }
 
   async clear(signal: BreakerSignal): Promise<BreakerState> {
-    const state = await this.loadBreaker();
+    if (!(BREAKER_SIGNALS as readonly string[]).includes(signal)) {
+      throw new UnknownBreakerSignalError(signal);
+    }
+    const state = this.loadBreaker();
     const tripped = { ...state.tripped };
     delete tripped[signal];
-    return this.store.putEntity(BREAKER_PATH, validateBreakerState, { tripped });
+    const saved = await this.store.putEntity(BREAKER_PATH, validateBreakerState, { tripped });
+    await this.store.appendEvent(buildEvent('breaker_cleared', { data: { signal } }));
+    return saved;
   }
 
   // ------------------------------------------------------------- Requests
@@ -146,48 +203,70 @@ export class GateService {
    * a naming `reason` while any breaker is tripped) and opens a `HilRequest`:
    * `human` → pending, no deadline; `human_timeout:<d>` → pending with a
    * deadline; `em`/`architect` → immediately auto-decided via `delegate`
-   * (the decision artifact + `fyi`, §16).
+   * when one is configured (decision artifact + `fyi` bus message), else
+   * left `pending` with `reason: "no delegate configured"`. Every pending
+   * outcome also writes an urgent `hil_request` bus message to the human's
+   * inbox (§5 "HIL").
    */
   async request(gate: string, ctx: GateRequestContext): Promise<HilRequest> {
     const resolved = resolveGate(gate, ctx);
-    const tripped = await this.trippedSignals();
+    const tripped = this.trippedSignals();
     const breakerActive = tripped.length > 0;
     const owner: GateOwner = breakerActive ? 'human' : resolved;
-    const reason = breakerActive ? `circuit breaker tripped: ${tripped.join(', ')}` : undefined;
+    const breakerReason = breakerActive
+      ? `circuit breaker tripped: ${tripped.join(', ')}`
+      : undefined;
 
     const now = this.clock();
     const base: HilRequest = {
       id: newHilId(),
       gate,
+      hil_kind: ctx.hilKind,
       ...(ctx.ticket !== undefined ? { ticket: ctx.ticket } : {}),
       owner,
       status: 'pending',
       requested_at: now.toISOString(),
-      ...(reason !== undefined ? { reason } : {}),
+      ...(breakerReason !== undefined ? { reason: breakerReason } : {}),
     };
 
     let record: HilRequest;
     if (owner === 'em' || owner === 'architect') {
-      record = this.autoDecide(base, owner, now, 'gate policy');
+      record = this.delegate
+        ? this.autoDecide(base, now, 'gate policy')
+        : { ...base, reason: base.reason ?? NO_DELEGATE_REASON };
     } else if (isHumanTimeoutOwner(owner)) {
       const deadline = new Date(now.getTime() + parseDurationMs(humanTimeoutDuration(owner)));
       record = { ...base, deadline: deadline.toISOString() };
     } else {
-      record = base;
+      record = base; // plain human
     }
 
-    return this.persist(record);
+    const saved = await this.persist(record);
+    await this.store.appendEvent(
+      buildEvent('hil_requested', {
+        ...(saved.ticket !== undefined ? { ticket: saved.ticket } : {}),
+        data: { id: saved.id, gate: saved.gate, owner: saved.owner },
+      }),
+    );
+
+    if (saved.status === 'resolved') {
+      await this.notifyResolved(saved);
+    } else {
+      await this.notifyPending(saved, ctx.from ?? 'daemon');
+    }
+    return saved;
   }
 
-  private autoDecide(
-    base: HilRequest,
-    owner: string,
-    now: Date,
-    via: 'gate policy' | 'single-instance delegation' | 'human_timeout fallthrough',
-  ): HilRequest {
-    const decision = this.delegate({ gate: base.gate, owner: base.owner, ticket: base.ticket });
+  private autoDecide(base: HilRequest, now: Date, via: string): HilRequest {
+    const delegate = this.delegate;
+    if (!delegate) throw new NoDelegateConfiguredError(base.id);
+    const decision = delegate({ gate: base.gate, owner: base.owner, ticket: base.ticket });
+    // A resolved record carries no live deadline (review nit) — drop the key
+    // entirely rather than setting it `undefined`, so yaml/json round-trip
+    // never has to reason about an explicit-undefined field.
+    const { deadline: _deadline, ...withoutDeadline } = base;
     return {
-      ...base,
+      ...withoutDeadline,
       status: 'resolved',
       decision: decision.decision,
       decided_by: decision.by,
@@ -195,30 +274,84 @@ export class GateService {
       delegated: true,
       fyi: {
         to: 'human',
-        body: `gate "${base.gate}" ${decision.decision}d by ${decision.by} (${via}, owner: ${owner})${decision.rationale ? ` — ${decision.rationale}` : ''}`,
+        body: `gate "${base.gate}" ${decision.decision}d by ${decision.by} (${via}, owner: ${base.owner})${decision.rationale ? ` — ${decision.rationale}` : ''}`,
         sent_at: now.toISOString(),
       },
     };
   }
 
   private async persist(record: HilRequest): Promise<HilRequest> {
-    const saved = await this.store.putEntity(hilPath(record.id), validateHilRequest, record);
-    this.requests.set(saved.id, saved);
-    return saved;
+    return this.store.putEntity(hilPath(record.id), validateHilRequest, record);
+  }
+
+  private async notifyPending(req: HilRequest, from: AgentId): Promise<void> {
+    const deadline =
+      req.deadline ??
+      new Date(new Date(req.requested_at).getTime() + DEFAULT_MESSAGE_DEADLINE_MS).toISOString();
+    const message: Message = {
+      id: generateUlid(),
+      ts: req.requested_at,
+      from,
+      to: ['human'],
+      kind: 'hil_request',
+      priority: 'urgent',
+      ...(req.ticket !== undefined ? { ticket: req.ticket } : {}),
+      body: `gate "${req.gate}" needs a human decision (${req.hil_kind})${req.reason ? ` — ${req.reason}` : ''}`,
+      refs: [hilPath(req.id)],
+      requires_ack: true,
+      deadline,
+      hil_kind: req.hil_kind,
+    };
+    const validated = validateMessage(message);
+    await this.store.putEntity(inboxPath('human', validated.id), validateMessage, validated);
+  }
+
+  private async notifyResolved(req: HilRequest): Promise<void> {
+    if (!req.delegated || !req.fyi) return;
+    const message: Message = {
+      id: generateUlid(),
+      ts: req.fyi.sent_at,
+      from: 'daemon',
+      to: ['human'],
+      kind: 'fyi',
+      priority: 'low',
+      ...(req.ticket !== undefined ? { ticket: req.ticket } : {}),
+      body: req.fyi.body,
+      refs: [hilPath(req.id)],
+      requires_ack: false,
+    };
+    const validated = validateMessage(message);
+    await this.store.putEntity(inboxPath('human', validated.id), validateMessage, validated);
+    await this.store.appendEvent(
+      buildEvent('hil_resolved', {
+        ...(req.ticket !== undefined ? { ticket: req.ticket } : {}),
+        agent: req.decided_by,
+        data: { id: req.id, decision: req.decision },
+      }),
+    );
   }
 
   /** A human (or anyone acting as the resolved owner) answers a pending request directly. */
-  async respond(id: string, decision: HilDecision, by: string): Promise<HilRequest> {
+  async respond(id: HilId, decision: HilDecision, by: string): Promise<HilRequest> {
     const current = this.get(id);
     if (current.status !== 'pending') throw new GateAlreadyResolvedError(id);
     const now = this.clock();
-    return this.persist({
-      ...current,
+    const { deadline: _deadline, ...withoutDeadline } = current;
+    const saved = await this.persist({
+      ...withoutDeadline,
       status: 'resolved',
       decision,
       decided_by: by,
       resolved_at: now.toISOString(),
     });
+    await this.store.appendEvent(
+      buildEvent('hil_resolved', {
+        ...(saved.ticket !== undefined ? { ticket: saved.ticket } : {}),
+        agent: by,
+        data: { id: saved.id, decision: saved.decision },
+      }),
+    );
+    return saved;
   }
 
   /**
@@ -226,46 +359,62 @@ export class GateService {
    * from the attention queue without changing policy" (§16). Only usable
    * while `pending` — once used the request is `resolved`, so a second
    * `delegateRequest` call on the same id is refused (T018 acceptance).
+   * Requires a `delegate` function (fail closed, same as `request()`).
    */
-  async delegateRequest(id: string, to: 'em' | 'architect'): Promise<HilRequest> {
+  async delegateRequest(id: HilId, to: 'em' | 'architect'): Promise<HilRequest> {
     const current = this.get(id);
     if (current.status !== 'pending') throw new GateAlreadyResolvedError(id);
-    return this.persist(
-      this.autoDecide({ ...current, owner: to }, to, this.clock(), 'single-instance delegation'),
+    if (!this.delegate) throw new NoDelegateConfiguredError(id);
+    const resolved = this.autoDecide(
+      { ...current, owner: to },
+      this.clock(),
+      'single-instance delegation',
     );
+    const saved = await this.persist(resolved);
+    await this.notifyResolved(saved);
+    return saved;
   }
 
   /**
    * Falls every pending `human_timeout:<d>` request whose deadline has
    * passed through to the delegate ("proceed as the fallback owner would",
-   * §16) — exactly at the deadline, not before (T018 acceptance).
+   * §16) — exactly at the deadline, not before (T018 acceptance). Without a
+   * configured delegate, a due request stays `pending` with
+   * `reason: "no delegate configured"` instead of silently resolving
+   * (finding 4) and is not counted as "fallen through".
    */
   async tick(now: Date = this.clock()): Promise<HilRequest[]> {
     const fallenThrough: HilRequest[] = [];
-    for (const req of this.requests.values()) {
+    for (const req of this.list()) {
       if (req.status !== 'pending' || !req.deadline || !isHumanTimeoutOwner(req.owner)) continue;
       if (new Date(req.deadline).getTime() > now.getTime()) continue;
-      fallenThrough.push(
-        await this.persist(this.autoDecide(req, req.owner, now, 'human_timeout fallthrough')),
-      );
+
+      if (!this.delegate) {
+        if (req.reason !== NO_DELEGATE_REASON) {
+          await this.persist({ ...req, reason: NO_DELEGATE_REASON });
+        }
+        continue;
+      }
+
+      const resolved = this.autoDecide(req, now, 'human_timeout fallthrough');
+      const saved = await this.persist(resolved);
+      await this.notifyResolved(saved);
+      fallenThrough.push(saved);
     }
     return fallenThrough;
   }
 
-  get(id: string): HilRequest {
-    const cached = this.requests.get(id);
-    if (cached) return cached;
+  get(id: HilId): HilRequest {
     try {
-      const loaded = this.store.getEntity(hilPath(id), validateHilRequest);
-      this.requests.set(id, loaded);
-      return loaded;
+      return this.store.getEntity(hilPath(id), validateHilRequest);
     } catch (err) {
       if (err instanceof NotFoundError) throw new GateNotFoundError(id);
       throw err;
     }
   }
 
+  /** Durable: reads `board/hil/**` fresh from disk every call (review finding 6). */
   list(): HilRequest[] {
-    return Array.from(this.requests.values());
+    return this.store.listEntities(HIL_DIR, validateHilRequest);
   }
 }
