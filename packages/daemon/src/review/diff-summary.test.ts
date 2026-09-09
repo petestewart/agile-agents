@@ -102,6 +102,59 @@ describe('runDiffSummary', () => {
     expect(output.hunks[0]?.path).toBe('a.ts');
   });
 
+  test('a hunk hash is stable across a pure line-number shift elsewhere in the file (opus review, blocker 1)', () => {
+    // Must exist on `integration` too, or the whole file reads as newly
+    // added (one hunk, not a real modification) on the ticket branch.
+    const base = `${Array.from({ length: 20 }, (_, i) => `line ${i + 1}`).join('\n')}\n`;
+    git(['checkout', '-q', 'integration']);
+    writeFileSync(join(repo, 'shift.ts'), base);
+    git(['add', '-A']);
+    git(['commit', '-q', '-m', 'base shift file on integration']);
+    git(['checkout', '-q', 'tkt/0001-fixture']);
+    git(['merge', '-q', 'integration']);
+
+    // Round A: modify line 10 only.
+    const roundA = base.split('\n');
+    roundA[9] = 'line 10 CHANGED';
+    writeFileSync(join(repo, 'shift.ts'), roundA.join('\n'));
+    git(['add', '-A']);
+    git(['commit', '-q', '-m', 'round A']);
+    const outputA = runDiffSummary({
+      worktree: repo,
+      base: 'integration',
+      head: 'tkt/0001-fixture',
+      repoRoot: repo,
+    });
+
+    // Round B: the same line-10 change, plus an unrelated insertion far away
+    // at the top of the file — shifts the line-10 hunk's new-side range down
+    // without changing its own content at all.
+    const roundB = ['inserted line 0', ...roundA];
+    writeFileSync(join(repo, 'shift.ts'), roundB.join('\n'));
+    git(['add', '-A']);
+    git(['commit', '-q', '-m', 'round B']);
+    const outputB = runDiffSummary({
+      worktree: repo,
+      base: 'integration',
+      head: 'tkt/0001-fixture',
+      repoRoot: repo,
+    });
+
+    const shiftHunksA = outputA.hunks.filter((h) => h.path === 'shift.ts');
+    const shiftHunksB = outputB.hunks
+      .filter((h) => h.path === 'shift.ts')
+      .sort((a, b) => a.newStart - b.newStart);
+    const hunkA = shiftHunksA[0];
+    // The line-10 hunk is the *last* one in round B (the unrelated insertion
+    // produces its own, earlier hunk).
+    const hunkB = shiftHunksB.at(-1);
+
+    expect(hunkA).toBeDefined();
+    expect(hunkB).toBeDefined();
+    expect(hunkA?.newStart).not.toBe(hunkB?.newStart); // it did shift...
+    expect(hunkA?.hash).toBe(hunkB?.hash); // ...but the hash didn't.
+  });
+
   test('degrades gracefully and marks truncated when the summary would exceed the token cap', () => {
     // Many new files each declaring several functions — enough distinct
     // symbols/files that the untruncated JSON blows well past the cap.
@@ -123,8 +176,12 @@ describe('runDiffSummary', () => {
     });
 
     expect(output.truncated).toBe(true);
-    expect(output.hunks).toEqual([]);
-    expect(JSON.stringify(output).length).toBeLessThan(20_000);
+    // The hunk record is protocol-internal bookkeeping the re-review rule
+    // depends on — truncation must never drop it, only the reviewer-facing
+    // files/riskNotes/symbols (opus review, blocker 1).
+    expect(output.hunks.length).toBeGreaterThan(0);
+    expect(output.files.every((f) => f.symbols.length <= 5)).toBe(true);
+    expect(output.riskNotes.length).toBeLessThanOrEqual(5);
   });
 
   test('throws DiffSummaryError on an invalid base ref', () => {

@@ -52,10 +52,11 @@ export interface ReviewVerbDeps {
 }
 
 /**
- * `review_submit` — reviewer role only. `hunks` is the round's
- * `diff_summary` output (the same call the reviewer itself just made), so
- * the daemon can re-review-check *this* submission and persist it for the
- * next round's check.
+ * `review_submit` — reviewer role only. Any `hunks` a caller includes in
+ * `input` is ignored: `ReviewProtocol.submitVerdict` computes this round's
+ * diff hunks itself, from the ticket's real worktree, precisely so a
+ * reviewer session cannot lie about what a round's diff looked like (opus
+ * review, blocker 1) — see `protocol.ts`'s `computeHunks`.
  */
 export async function reviewSubmit(
   deps: ReviewVerbDeps,
@@ -76,7 +77,6 @@ export async function reviewSubmit(
     pass: p.pass as SubmitVerdictInput['pass'],
     findings: Array.isArray(p.findings) ? p.findings.map((f) => FindingSchema.parse(f)) : [],
     verdict: p.verdict as SubmitVerdictInput['verdict'],
-    hunks: Array.isArray(p.hunks) ? (p.hunks as SubmitVerdictInput['hunks']) : [],
   };
   return deps.protocol.submitVerdict(ctx.agent as AgentId, payload);
 }

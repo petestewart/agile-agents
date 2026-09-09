@@ -78,10 +78,36 @@ describe('loadRules', () => {
     expect(() => loadRules(stateRoot)).toThrow(RuleLoadError);
   });
 
-  test('rejects a badly-named file', () => {
+  test('skips a non-RULE file with a warning instead of throwing (opus review, blocker 3)', () => {
     const dir = rulesDir();
-    writeFileSync(join(dir, 'not-a-rule.md'), '# hi\nbody\n');
-    expect(() => loadRules(stateRoot)).toThrow(RuleLoadError);
+    writeFileSync(join(dir, 'README.md'), '# Rules\nSee individual RULE-###.md files.\n');
+    writeFileSync(join(dir, '.gitkeep'), '');
+    const originalWarn = console.warn;
+    const warnings: unknown[][] = [];
+    console.warn = (...args: unknown[]) => {
+      warnings.push(args);
+    };
+    try {
+      expect(loadRules(stateRoot)).toEqual([]);
+      expect(warnings.length).toBeGreaterThan(0);
+      expect(warnings.some((args) => String(args[0]).includes('README.md'))).toBe(true);
+    } finally {
+      console.warn = originalWarn;
+    }
+  });
+
+  test('skips stray files but still loads real rules alongside them', () => {
+    const dir = rulesDir();
+    writeFileSync(join(dir, 'README.md'), '# Rules\n');
+    writeFileSync(join(dir, 'RULE-001.md'), '# RULE-001: A\ntext a\n');
+    const originalWarn = console.warn;
+    console.warn = () => {};
+    try {
+      const rules = loadRules(stateRoot);
+      expect(rules.map((r) => r.id)).toEqual(['RULE-001']);
+    } finally {
+      console.warn = originalWarn;
+    }
   });
 
   test('rejects a body with no text', () => {

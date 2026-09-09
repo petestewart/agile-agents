@@ -24,7 +24,15 @@ export interface DiffHunk {
   /** New-side (post-change) line range this hunk covers. */
   newStart: number;
   newEnd: number;
-  /** Hash of the hunk's own lines — unchanged across rounds iff the hash matches. */
+  /**
+   * Hash of the hunk's own body lines only — the `@@ -a,b +c,d @@` header is
+   * deliberately excluded (opus review, blocker 1): the header encodes exact
+   * line numbers, so an unrelated edit earlier in the file that shifts this
+   * hunk down/up with no content change would otherwise change the hash and
+   * make `rereview.ts` treat unchanged code as "changed" — fail-open on the
+   * one check this hash exists to make fail-closed. Unchanged across rounds
+   * iff the hash matches.
+   */
   hash: string;
 }
 
@@ -174,7 +182,8 @@ function parseUnifiedDiff(raw: string): ParsedFileDiff[] {
       const newStart = Number(hunkHeader[1]);
       const newLen = hunkHeader[2] !== undefined ? Number(hunkHeader[2]) : 1;
       currentHunk = { newStart, newEnd: newLen > 0 ? newStart + newLen - 1 : newStart };
-      currentHunkLines = [line];
+      // Body lines only — never the header itself, see `DiffHunk.hash`'s doc.
+      currentHunkLines = [];
       continue;
     }
     if (currentHunk) currentHunkLines.push(line);
@@ -246,19 +255,18 @@ export function runDiffSummary(opts: RunDiffSummaryOptions): DiffSummaryOutput {
     truncated: false,
   };
 
+  // Token cap applies only to the reviewer-facing fields (files/riskNotes/
+  // symbols) — `hunks` is protocol-internal bookkeeping the re-review rule
+  // depends on for correctness, never a reviewer-facing payload, so it is
+  // never a candidate for truncation (opus review, blocker 1: "truncation
+  // must never drop the hunk record"). The size check itself is therefore
+  // computed on the output *without* hunks.
   const maxChars = MAX_OUTPUT_TOKENS * charsPerToken();
-  const serialized = JSON.stringify(output);
-  if (serialized.length > maxChars) {
-    // Degrade gracefully rather than throw: drop hunks first (protocol-only
-    // metadata a reviewer never reads), then trim risk notes/symbols.
+  const displaySize = () => JSON.stringify({ ...output, hunks: [] }).length;
+  if (displaySize() > maxChars) {
     output.truncated = true;
-    if (JSON.stringify({ ...output, hunks: [] }).length <= maxChars) {
-      output.hunks = [];
-    } else {
-      output.hunks = [];
-      output.riskNotes = output.riskNotes.slice(0, 5);
-      output.files = output.files.map((f) => ({ ...f, symbols: f.symbols.slice(0, 5) }));
-    }
+    output.riskNotes = output.riskNotes.slice(0, 5);
+    output.files = output.files.map((f) => ({ ...f, symbols: f.symbols.slice(0, 5) }));
   }
 
   return output;

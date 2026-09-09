@@ -12,6 +12,7 @@
  * `em -> anyone` can).
  */
 
+import { isAbsolute, join } from 'node:path';
 import {
   type AgentId,
   type Finding,
@@ -28,7 +29,7 @@ import { agentIdFor } from '../runner/runner';
 import { INTEGRATION_BRANCH, ticketBranchName } from '../runner/worktrees';
 import { NotFoundError } from '../store/store';
 import type { StateStore } from '../store/store';
-import { type DiffHunk, runDiffSummary } from './diff-summary';
+import { type DiffHunk, type DiffSummaryOutput, runDiffSummary } from './diff-summary';
 import { findingKey } from './findings';
 import { type ReReviewResult, validateReReview } from './rereview';
 import {
@@ -39,6 +40,9 @@ import {
   validateDisputeRecord,
   validateReviewRecord,
 } from './types';
+
+/** CLAUDE.md tunable: "max_attempts 2" — used to initialise `routing` on a ticket that was pointed without one yet (opus review, cheap nit: `attempts` must still increment). */
+const DEFAULT_MAX_ATTEMPTS = 2;
 
 export class ReReviewViolationError extends Error {
   constructor(public readonly result: ReReviewResult) {
@@ -62,6 +66,8 @@ export interface ReviewProtocolOptions {
   store: StateStore;
   bus: Bus;
   runner: ReviewRunner;
+  /** Repo root — where `.worktrees/**` and the ticket's git branches live (`runner/worktrees.ts`'s convention). Required so `submitVerdict` can compute this round's diff hunks itself; see the class header. */
+  repoRoot: string;
   now?: () => Date;
 }
 
@@ -77,8 +83,6 @@ export interface SubmitVerdictInput {
   pass?: ReviewPass;
   findings: Finding[];
   verdict: ReviewVerdictKind;
-  /** This round's `diff_summary` hunks (§7) — persisted for future rounds' re-review check. */
-  hunks: DiffHunk[];
 }
 
 export type SubmitVerdictOutcome =
@@ -110,13 +114,40 @@ export class ReviewProtocol {
   private readonly store: StateStore;
   private readonly bus: Bus;
   private readonly runner: ReviewRunner;
+  private readonly repoRoot: string;
   private readonly now: () => Date;
 
   constructor(opts: ReviewProtocolOptions) {
     this.store = opts.store;
     this.bus = opts.bus;
     this.runner = opts.runner;
+    this.repoRoot = opts.repoRoot;
     this.now = opts.now ?? (() => new Date());
+  }
+
+  /** The ticket's worktree if one is on record, else the repo root — same fallback contract as `tools/service.ts`'s `resolveWorktree`. */
+  private resolveWorktree(ticket: Ticket): string {
+    if (ticket.worktree) {
+      return isAbsolute(ticket.worktree) ? ticket.worktree : join(this.repoRoot, ticket.worktree);
+    }
+    return this.repoRoot;
+  }
+
+  /**
+   * Computes *this* round's diff hunks itself, from the ticket's actual
+   * worktree — never trusting a caller-supplied `hunks` value (opus review,
+   * blocker 1: "a reviewer can bypass [the re-review gate]" by lying about
+   * what a round's diff looked like). This is the one and only source of
+   * truth `submitVerdict` uses for both the re-review check and what gets
+   * persisted into the `ReviewRecord`.
+   */
+  private computeHunks(ticket: Ticket): DiffSummaryOutput {
+    return runDiffSummary({
+      worktree: this.resolveWorktree(ticket),
+      base: INTEGRATION_BRANCH,
+      head: ticketBranchName(ticket),
+      repoRoot: this.repoRoot,
+    });
   }
 
   private async getReviewRecord(
@@ -150,11 +181,6 @@ export class ReviewProtocol {
     return round;
   }
 
-  private async hasApprovedSecurityPass(ticket: TicketId, round: number): Promise<boolean> {
-    const record = await this.getReviewRecord(ticket, round, 'security');
-    return record?.verdict === 'approve';
-  }
-
   /**
    * Places the reviewer on `ticket`, transitioning it into `in_review` if
    * it isn't already there (an engineer submit lands it `in_progress`; a
@@ -173,9 +199,10 @@ export class ReviewProtocol {
 
   /**
    * Runs the `diff_summary` tool for `ticket`'s worktree against
-   * `integration` (§7) — a convenience wrapper so a caller assembling a
-   * `submitVerdict` payload doesn't have to know the branch-naming
-   * convention (`runner/worktrees.ts`'s `ticketBranchName`/`INTEGRATION_BRANCH`).
+   * `integration` (§7) — a public convenience wrapper (e.g. for a reviewer
+   * or CLI to preview the summary before submitting) around the same
+   * `runDiffSummary` call `submitVerdict` makes for itself. Not used for
+   * `submitVerdict`'s own hunk computation — see `computeHunks`.
    */
   diffSummary(ticket: Ticket, worktree: string, repoRoot: string) {
     return runDiffSummary({
@@ -196,6 +223,11 @@ export class ReviewProtocol {
       verdict: input.verdict,
     });
 
+    const ticket = this.store.getTicket(input.ticket);
+    // Computed by the daemon from the real worktree, never taken from the
+    // caller — see `computeHunks`'s header (opus review, blocker 1).
+    const hunks = this.computeHunks(ticket).hunks;
+
     if (pass === 'primary' && validated.round > 1) {
       const priorRounds = await this.priorPrimaryRounds(input.ticket, validated.round);
       const round1 = priorRounds[0];
@@ -204,7 +236,7 @@ export class ReviewProtocol {
           priorRounds.map((r) => r.findings),
           validated.findings,
           round1.hunks,
-          input.hunks,
+          hunks,
         );
         if (reReview.rejected.length > 0) {
           throw new ReReviewViolationError(reReview);
@@ -220,7 +252,7 @@ export class ReviewProtocol {
       ts: this.now().toISOString(),
       findings: validated.findings,
       verdict: validated.verdict,
-      hunks: input.hunks,
+      hunks,
     };
     await this.store.putEntity(
       reviewRecordRelPath(input.ticket, validated.round, pass),
@@ -239,7 +271,7 @@ export class ReviewProtocol {
     });
 
     if (validated.verdict === 'approve') {
-      return this.applyApprove(input.ticket, validated.round, pass);
+      return this.applyApprove(input.ticket, validated.round);
     }
     if (validated.verdict === 'request_changes') {
       return this.applyRequestChanges(agent, input.ticket);
@@ -257,27 +289,41 @@ export class ReviewProtocol {
     return { status: 'escalated_by_reviewer' };
   }
 
-  private async applyApprove(
-    ticketId: TicketId,
-    round: number,
-    pass: ReviewPass,
-  ): Promise<SubmitVerdictOutcome> {
+  /**
+   * `approve` -> `in_qa`, except when the ticket needs a security pass
+   * (§12): then BOTH a primary `approve` AND a security `approve` must be
+   * on record for this round, from two DIFFERENT reviewer agent ids, before
+   * the transition happens (opus review, blocker 2 — a lone `pass:
+   * 'security'` approve, or the same agent id satisfying both mandates,
+   * must not move the ticket). Called after the *current* submission's
+   * record has already been persisted, so it re-reads both records fresh
+   * rather than trusting which pass just landed — this makes the check
+   * symmetric regardless of which pass is submitted first.
+   *
+   * Operational note: `Runner.spawn('reviewer', ticket)` (`runner/
+   * runner.ts`) computes the *same* agent id (`agentIdFor`) regardless of
+   * pass, so today's in-process auto-spawn cannot itself produce two
+   * distinct agent ids for one ticket — a live security-pass session needs
+   * to be launched with an explicitly different `--agent` id (an EM/
+   * orchestration-layer concern, not this method's), which is why this
+   * method no longer speculatively spawns one.
+   */
+  private async applyApprove(ticketId: TicketId, round: number): Promise<SubmitVerdictOutcome> {
     const ticket = this.store.getTicket(ticketId);
-    if (pass === 'primary' && requiresSecurityPass(ticket)) {
-      const securityApproved = await this.hasApprovedSecurityPass(ticketId, round);
-      if (!securityApproved) {
-        // DESIGN-GAP (see this ticket's report): actually spawning the
-        // second reviewer session with the security brief needs
-        // `runner/brief.ts`'s `assembleBrief` (and `src/briefs/index.ts`) to
-        // accept a `pass` and select `briefs/reviewer-security.md` — outside
-        // this ticket's file ownership (`src/runner/**`, `src/briefs/**`).
-        // Best-effort today: reuse the primary reviewer brief for the
-        // security pass so the gate is still real (a second `submitVerdict`
-        // call with `pass: 'security'` is still required before `in_qa`),
-        // just not yet security-brief-specific.
-        await this.runner.spawn('reviewer', ticketId);
-        return { status: 'security_pass_required' };
-      }
+    if (!requiresSecurityPass(ticket)) {
+      await this.store.transitionTicket(ticketId, 'in_qa', { by: 'daemon' });
+      return { status: 'in_qa' };
+    }
+
+    const primary = await this.getReviewRecord(ticketId, round, 'primary');
+    const security = await this.getReviewRecord(ticketId, round, 'security');
+    const bothApproved =
+      primary?.verdict === 'approve' &&
+      security?.verdict === 'approve' &&
+      primary.agent !== security.agent;
+
+    if (!bothApproved) {
+      return { status: 'security_pass_required' };
     }
     await this.store.transitionTicket(ticketId, 'in_qa', { by: 'daemon' });
     return { status: 'in_qa' };
@@ -291,9 +337,17 @@ export class ReviewProtocol {
     const ticket = this.store.getTicket(ticketId);
     const routing = ticket.routing;
     const attempts = (routing?.attempts ?? 0) + 1;
-    const maxAttempts = routing?.max_attempts ?? Number.POSITIVE_INFINITY;
+    const maxAttempts = routing?.max_attempts ?? DEFAULT_MAX_ATTEMPTS;
+    // `attempts` must bump even on a ticket pointed without a `routing`
+    // block yet (opus review, cheap nit): initialise one rather than
+    // silently no-op'ing the counter.
     await this.store.putTicket(
-      { ...ticket, routing: routing ? { ...routing, attempts } : routing },
+      {
+        ...ticket,
+        routing: routing
+          ? { ...routing, attempts }
+          : { attempts, max_attempts: DEFAULT_MAX_ATTEMPTS, escalation: [] },
+      },
       { by: reviewer },
     );
 

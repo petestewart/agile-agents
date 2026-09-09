@@ -99,11 +99,7 @@ function parseYamlRule(fileName: string, idFromFile: string, raw: string): RuleD
   return { id, title: p.title, text: p.text };
 }
 
-function loadOneRuleFile(dir: string, fileName: string): RuleDefinition {
-  const match = RULE_FILE_PATTERN.exec(fileName);
-  if (!match) {
-    throw new RuleLoadError(fileName, 'rule files must be named RULE-###.md or RULE-###.yaml');
-  }
+function loadOneRuleFile(dir: string, fileName: string, match: RegExpExecArray): RuleDefinition {
   const [, idFromFile, ext] = match;
   const idResult = RuleIdSchema.safeParse(idFromFile);
   if (!idResult.success) {
@@ -120,8 +116,16 @@ function loadOneRuleFile(dir: string, fileName: string): RuleDefinition {
  * directory doesn't exist yet — same "empty, not an error" convention as
  * every other loader in this codebase (`tools/registry.ts`'s
  * `loadToolRegistry`, every `StateStore.listX` on an uninitialized
- * collection). Throws (naming the file) on a malformed rule file, a
- * filename/id mismatch, or a duplicate id across two files.
+ * collection).
+ *
+ * A file that isn't even named `RULE-###.md`/`.yaml` (a stray `README.md`,
+ * `.gitkeep`, etc.) is **skipped with a warning**, not thrown on — matching
+ * `tools/registry.ts`'s tolerance (a directory with no `tool.yaml` is
+ * skipped, not an error; opus review, blocker 3). A file that *is* named
+ * like a rule but is malformed once opened (bad heading, filename/id
+ * mismatch, invalid YAML, a duplicate id across two files) still throws,
+ * naming the file — that's a rule someone meant to author and got wrong,
+ * not stray repo clutter.
  */
 export function loadRules(stateRoot: string): RuleDefinition[] {
   const rulesDir = join(stateRoot, 'rules');
@@ -135,7 +139,17 @@ export function loadRules(stateRoot: string): RuleDefinition[] {
   const rules: RuleDefinition[] = [];
   const seenIds = new Set<string>();
   for (const name of names) {
-    const rule = loadOneRuleFile(rulesDir, name);
+    const match = RULE_FILE_PATTERN.exec(name);
+    if (!match) {
+      // The one warn/log surface this pure fs loader has — it takes no
+      // StateStore/event-log handle (see the module header), so an
+      // `.agile/log/events.jsonl` line isn't reachable from here without a
+      // larger signature change than this fix warrants (same `console.*`
+      // precedent as `daemon.ts`/`http.ts`).
+      console.warn(`review/rules: skipping ${name} in ${rulesDir} — not a RULE-###.md/.yaml file`);
+      continue;
+    }
+    const rule = loadOneRuleFile(rulesDir, name, match);
     if (seenIds.has(rule.id)) {
       throw new RuleLoadError(
         name,

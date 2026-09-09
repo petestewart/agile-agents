@@ -9,6 +9,14 @@
  * loses the chance to raise it later only as long as the engineer never
  * touched that code again; once a later round's diff shows a different hash
  * at that location, it's freshly-reviewable code again.
+ *
+ * DESIGN-GAP (opus review nit): the baseline is always round 1 specifically
+ * — a location first visible in round 2's diff (not round 1's) is not
+ * checked against by this rule and may be raised fresh in round 4. That is
+ * the literal §12 wording ("visible in the first pass"), read here as
+ * "round 1" rather than "any prior round", so it is intentional, not an
+ * oversight — flagged because the rejection reason string below hard-codes
+ * "round 1" and could otherwise read as a bug report.
  */
 
 import type { Finding } from '@agile-agents/shared';
