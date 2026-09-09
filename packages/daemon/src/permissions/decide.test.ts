@@ -6,7 +6,10 @@
  * different one.
  */
 
-import { describe, expect, test } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join as joinPath } from 'node:path';
 import { decidePermission } from './decide';
 import type { AcpPermissionRequestParams, PermissionRole } from './types';
 
@@ -522,12 +525,13 @@ describe('decidePermission — T029 benign redirect forms', () => {
   });
 
   test('engineer: a benign redirect on one pipeline segment does not excuse a disallowed later segment', () => {
-    // "cmd 2>&1 | grep x" (ticket example): the redirect no longer causes
-    // the over-deny, but `grep` still isn't on the engineer's allow-list
-    // (repo scripts / git only) — the command is denied for that orthogonal
-    // reason, not because of the redirect.
+    // "cmd 2>&1 | python x" (updated for T030, which added grep/rg to the
+    // engineer's benign-command table — see the `grep`/`rg` describe block
+    // below): the redirect no longer causes the over-deny, but `python`
+    // still isn't on the engineer's allow-list — the command is denied for
+    // that orthogonal reason, not because of the redirect.
     expect(
-      decide('engineer', request('execute', { command: 'npm test 2>&1 | grep FAIL' })).kind,
+      decide('engineer', request('execute', { command: 'npm test 2>&1 | python evil.py' })).kind,
     ).toBe('deny');
   });
 
@@ -818,5 +822,411 @@ describe('decidePermission — every location entry is checked (round 5, opus R4
       }),
     );
     expect(decision.kind).toBe('hil');
+  });
+});
+
+describe('decidePermission — T030 engineer benign-command allow-list', () => {
+  const inside = (rel: string) => `${WORKTREE}/${rel}`;
+
+  const NO_PATH_ALLOWED = [
+    'echo hi',
+    'printf "%s\\n" hi',
+    'pwd',
+    'which node',
+    'date',
+    'true',
+    'false',
+    'test -f a.ts',
+    '[ -f a.ts ]',
+    'env',
+  ];
+  for (const command of NO_PATH_ALLOWED) {
+    test(`engineer: "${command}" is allowed`, () => {
+      expect(decide('engineer', request('execute', { command })).kind).toBe('allow');
+    });
+  }
+
+  const PATH_TOOLS_INSIDE_ALLOWED = [
+    `cat ${inside('src/a.ts')}`,
+    'ls -la',
+    `mkdir -p ${inside('tmp/x')}`,
+    `cp ${inside('src/a.ts')} ${inside('src/b.ts')}`,
+    `mv ${inside('src/a.ts')} ${inside('src/b.ts')}`,
+    `head -n 5 ${inside('src/a.ts')}`,
+    `tail -n 5 ${inside('src/a.ts')}`,
+    `wc -l ${inside('src/a.ts')}`,
+    `sort ${inside('src/a.ts')}`,
+    `uniq ${inside('src/a.ts')}`,
+    `cut -d, -f1 ${inside('src/a.ts')}`,
+    'tr a-z A-Z',
+    `touch ${inside('src/new.ts')}`,
+    `diff ${inside('src/a.ts')} ${inside('src/b.ts')}`,
+    `grep FAIL ${inside('src/a.ts')}`,
+    `rg FAIL ${inside('src/a.ts')}`,
+    'grep FAIL',
+    "find . -name '*.ts'",
+    `find ${inside('src')} -type f`,
+    `node ${inside('scripts/build.js')}`,
+    `bun ${inside('scripts/build.js')}`,
+    'git status',
+    'git log --oneline',
+    'git diff',
+    'git show HEAD',
+    'git branch --list',
+    'git stash list',
+  ];
+  for (const command of PATH_TOOLS_INSIDE_ALLOWED) {
+    test(`engineer: "${command}" (inside the worktree) is allowed`, () => {
+      const decision = decide('engineer', request('execute', { command }));
+      expect(decision.kind).toBe('allow');
+    });
+  }
+
+  const PATH_TOOLS_OUTSIDE_DENIED = [
+    'cat /etc/passwd',
+    'cat ../../etc/passwd',
+    `cp ${inside('src/a.ts')} /tmp/x`,
+    `mv ${inside('src/a.ts')} /tmp/x`,
+    'mkdir -p /etc/x',
+    'head -n 5 /etc/passwd',
+    'tail -n 5 /etc/passwd',
+    'touch /etc/new.ts',
+    `diff /etc/passwd ${inside('src/a.ts')}`,
+    'grep FAIL /etc/passwd',
+    'find /etc -name shadow',
+    'node ../evil.js',
+    'bun ../evil.js',
+  ];
+  for (const command of PATH_TOOLS_OUTSIDE_DENIED) {
+    test(`engineer: "${command}" (path outside the worktree) is denied`, () => {
+      const decision = decide('engineer', request('execute', { command }));
+      expect(decision.kind).toBe('deny');
+    });
+  }
+
+  test('engineer: cat "$HOME/.ssh/id_rsa" is a hil_request, not a laundered allow (unresolved shell variable)', () => {
+    const decision = decide('engineer', request('execute', { command: 'cat "$HOME/.ssh/id_rsa"' }));
+    expect(decision.kind).toBe('hil');
+  });
+
+  test('engineer: find . -delete is denied (write flag takes it off the benign list)', () => {
+    expect(decide('engineer', request('execute', { command: 'find . -delete' })).kind).toBe('deny');
+  });
+
+  test('engineer: find . -exec rm {} \\; is denied (write flag takes it off the benign list)', () => {
+    expect(decide('engineer', request('execute', { command: 'find . -exec rm {} \\;' })).kind).toBe(
+      'deny',
+    );
+  });
+
+  test('engineer: find . -ok rm {} \\; is denied (write flag takes it off the benign list)', () => {
+    expect(decide('engineer', request('execute', { command: 'find . -ok rm {} \\;' })).kind).toBe(
+      'deny',
+    );
+  });
+
+  test('engineer: npx cowsay@1.0.0 is a hil_request (bin not found under node_modules/.bin — new dependency execution)', () => {
+    expect(decide('engineer', request('execute', { command: 'npx cowsay@1.0.0' })).kind).toBe(
+      'hil',
+    );
+  });
+
+  test('engineer: npx -y cowsay is a hil_request (forces install, regardless of node_modules/.bin)', () => {
+    expect(decide('engineer', request('execute', { command: 'npx -y cowsay' })).kind).toBe('hil');
+  });
+
+  test('engineer: npx cowsay (not installed) is a hil_request (T030 QA round 2)', () => {
+    expect(decide('engineer', request('execute', { command: 'npx cowsay' })).kind).toBe('hil');
+  });
+
+  test('engineer: bunx cowsay (not installed) is a hil_request (T030 QA round 2)', () => {
+    expect(decide('engineer', request('execute', { command: 'bunx cowsay' })).kind).toBe('hil');
+  });
+
+  test('engineer: bun run build stays a repo script (unaffected by the script-execution path check)', () => {
+    expect(decide('engineer', request('execute', { command: 'bun run build' })).kind).toBe('allow');
+  });
+
+  test('engineer: bun add zod stays a hil_request (unaffected by the script-execution path check)', () => {
+    expect(decide('engineer', request('execute', { command: 'bun add zod' })).kind).toBe('hil');
+  });
+
+  test('every existing adversarial test still passes: an unrecognized command is still denied', () => {
+    expect(decide('engineer', request('execute', { command: 'python evil.py' })).kind).toBe('deny');
+  });
+});
+
+describe('decidePermission — T030 reviewer read-only additions', () => {
+  const READ_ONLY_ALLOWED = ['head -n 5 src/a.ts', 'tail -n 5 src/a.ts', 'pwd', 'which git'];
+  for (const command of READ_ONLY_ALLOWED) {
+    test(`reviewer: "${command}" is allowed`, () => {
+      expect(decide('reviewer', request('execute', { command })).kind).toBe('allow');
+    });
+  }
+
+  test('reviewer: diff a.ts b.ts is allowed (read-only tool)', () => {
+    expect(decide('reviewer', request('execute', { command: 'diff a.ts b.ts' })).kind).toBe(
+      'allow',
+    );
+  });
+
+  test('reviewer: still denies all writes (unaffected by the read-only additions)', () => {
+    expect(decide('reviewer', request('edit', { targetPath: `${WORKTREE}/src/a.ts` })).kind).toBe(
+      'deny',
+    );
+  });
+
+  test('reviewer: still denies git push (unaffected by the read-only additions)', () => {
+    expect(decide('reviewer', request('execute', { command: 'git push origin main' })).kind).toBe(
+      'hil',
+    );
+  });
+});
+
+describe('decidePermission — T030 review-round fixes (opus, 7 blockers)', () => {
+  // 1. `~` expansion — never trust a `~`/`~user` path as "inside" just
+  // because the literal string doesn't start with `/`.
+  test('engineer: cat ~/.ssh/id_rsa is denied, not allowed (unexpanded ~ resolves to the real home dir, outside the worktree)', () => {
+    expect(decide('engineer', request('execute', { command: 'cat ~/.ssh/id_rsa' })).kind).toBe(
+      'deny',
+    );
+  });
+
+  test('engineer: cat ~otheruser/id_rsa is a hil_request (unsupported ~user form is unclassifiable)', () => {
+    expect(decide('engineer', request('execute', { command: 'cat ~otheruser/id_rsa' })).kind).toBe(
+      'hil',
+    );
+  });
+
+  test('engineer: a backtick in a path argument is a hil_request', () => {
+    expect(decide('engineer', request('execute', { command: 'cat `whoami`.txt' })).kind).toBe(
+      'hil',
+    );
+  });
+
+  // 2. `find` write primitives — the full GNU set, for both roles.
+  const FIND_WRITE_FLAGS = ['-fprint', '-fprintf', '-fls', '-execdir', '-ok', '-okdir'];
+  for (const flag of FIND_WRITE_FLAGS) {
+    test(`engineer: find . ${flag} out.txt is denied (write primitive)`, () => {
+      expect(
+        decide('engineer', request('execute', { command: `find . ${flag} out.txt` })).kind,
+      ).toBe('deny');
+    });
+    test(`reviewer: find . ${flag} out.txt is denied (write primitive)`, () => {
+      expect(
+        decide('reviewer', request('execute', { command: `find . ${flag} out.txt` })).kind,
+      ).toBe('deny');
+    });
+  }
+
+  // 3. `--flag=path`/`-o value` forms.
+  test('engineer: cp --target-directory=/etc a.ts is denied (fused long-flag path escapes)', () => {
+    expect(
+      decide('engineer', request('execute', { command: 'cp --target-directory=/etc a.ts' })).kind,
+    ).toBe('deny');
+  });
+
+  test('engineer: mv -t /etc a.ts is denied (separate-token known flag escapes)', () => {
+    expect(decide('engineer', request('execute', { command: 'mv -t /etc a.ts' })).kind).toBe(
+      'deny',
+    );
+  });
+
+  test('engineer: sort --output=/etc/x a.ts is denied', () => {
+    expect(
+      decide('engineer', request('execute', { command: 'sort --output=/etc/x a.ts' })).kind,
+    ).toBe('deny');
+  });
+
+  test('engineer: sort --output /etc/x a.ts is denied (separate-token form)', () => {
+    expect(
+      decide('engineer', request('execute', { command: 'sort --output /etc/x a.ts' })).kind,
+    ).toBe('deny');
+  });
+
+  test('engineer: sort -o/etc/x a.ts is denied (fused short-flag form)', () => {
+    expect(decide('engineer', request('execute', { command: 'sort -o/etc/x a.ts' })).kind).toBe(
+      'deny',
+    );
+  });
+
+  test('engineer: grep -f /etc/passwd FAIL is denied (pattern file escapes)', () => {
+    expect(
+      decide('engineer', request('execute', { command: 'grep -f /etc/passwd FAIL' })).kind,
+    ).toBe('deny');
+  });
+
+  test('engineer: an unrecognized long flag whose value looks like a path still gates it', () => {
+    expect(
+      decide('engineer', request('execute', { command: 'cat --foo=/etc/passwd a.ts' })).kind,
+    ).toBe('deny');
+  });
+
+  test('engineer: cp --target-directory=src/out a.ts is allowed (value resolves inside the worktree)', () => {
+    expect(
+      decide('engineer', request('execute', { command: 'cp --target-directory=src/out a.ts' }))
+        .kind,
+    ).toBe('allow');
+  });
+
+  // 4. Redirect targets go through the same ~/$VAR/backtick resolution.
+  test('engineer: echo hi > ~/.ssh/authorized_keys is denied, not allowed', () => {
+    expect(
+      decide('engineer', request('execute', { command: 'echo hi > ~/.ssh/authorized_keys' })).kind,
+    ).toBe('deny');
+  });
+
+  test('engineer: echo hi > $HOME/.ssh/authorized_keys is a hil_request, not allowed', () => {
+    expect(
+      decide('engineer', request('execute', { command: 'echo hi > $HOME/.ssh/authorized_keys' }))
+        .kind,
+    ).toBe('hil');
+  });
+
+  // 5. `bun x`, `npm exec`, `pnpm dlx`, `yarn dlx` space forms — T030 QA
+  // round 2: none of these are syntactically trusted any more. Without a
+  // real node_modules/.bin/cowsay (the fake WORKTREE fixture has none),
+  // every one of them is a hil_request, same as bunx/npx.
+  test('engineer: bun x cowsay hi is a hil_request (no node_modules/.bin/cowsay)', () => {
+    expect(decide('engineer', request('execute', { command: 'bun x cowsay hi' })).kind).toBe('hil');
+  });
+
+  test('engineer: npm exec cowsay hi is a hil_request (no node_modules/.bin/cowsay)', () => {
+    expect(decide('engineer', request('execute', { command: 'npm exec cowsay hi' })).kind).toBe(
+      'hil',
+    );
+  });
+
+  test('engineer: pnpm dlx cowsay hi is a hil_request (no node_modules/.bin/cowsay)', () => {
+    expect(decide('engineer', request('execute', { command: 'pnpm dlx cowsay hi' })).kind).toBe(
+      'hil',
+    );
+  });
+
+  test('engineer: yarn dlx cowsay hi is a hil_request (no node_modules/.bin/cowsay)', () => {
+    expect(decide('engineer', request('execute', { command: 'yarn dlx cowsay hi' })).kind).toBe(
+      'hil',
+    );
+  });
+
+  test('engineer: bun x cowsay@1.0.0 is a hil_request (pinned version, not a flat bin-dir entry)', () => {
+    expect(decide('engineer', request('execute', { command: 'bun x cowsay@1.0.0' })).kind).toBe(
+      'hil',
+    );
+  });
+
+  test('engineer: npm exec -y cowsay is a hil_request (forces install)', () => {
+    expect(decide('engineer', request('execute', { command: 'npm exec -y cowsay' })).kind).toBe(
+      'hil',
+    );
+  });
+
+  test('engineer: pnpm dlx --package cowsay cowsay is a hil_request (forces install)', () => {
+    expect(
+      decide('engineer', request('execute', { command: 'pnpm dlx --package cowsay cowsay' })).kind,
+    ).toBe('hil');
+  });
+});
+
+describe('decidePermission — T030 QA round 2 / opus round 3: dlx forms gated on a real, realpath-contained, executable node_modules/.bin', () => {
+  let realWorktree: string;
+
+  const decideInRealWorktree = (command: string) =>
+    decidePermission({
+      role: 'engineer',
+      ticket: 'TKT-0001',
+      worktreePath: realWorktree,
+      request: request('execute', { command }),
+    });
+
+  const makeExecutableBin = (worktree: string, name: string) => {
+    const binDir = joinPath(worktree, 'node_modules', '.bin');
+    mkdirSync(binDir, { recursive: true });
+    const target = joinPath(binDir, name);
+    writeFileSync(target, '#!/bin/sh\n');
+    chmodSync(target, 0o755);
+    return target;
+  };
+
+  beforeEach(() => {
+    realWorktree = mkdtempSync(joinPath(tmpdir(), 'agile-perm-decide-dlx-'));
+  });
+
+  afterEach(() => {
+    rmSync(realWorktree, { recursive: true, force: true });
+  });
+
+  test('bunx biome check . is allowed when node_modules/.bin/biome exists and is executable', () => {
+    makeExecutableBin(realWorktree, 'biome');
+    expect(decideInRealWorktree('bunx biome check .').kind).toBe('allow');
+  });
+
+  test('bunx biome check . is a hil_request when node_modules/.bin/biome is absent', () => {
+    expect(decideInRealWorktree('bunx biome check .').kind).toBe('hil');
+  });
+
+  test('npx cowsay is a hil_request when node_modules/.bin/cowsay is absent', () => {
+    expect(decideInRealWorktree('npx cowsay').kind).toBe('hil');
+  });
+
+  test('npm exec biome check . is allowed when node_modules/.bin/biome exists', () => {
+    makeExecutableBin(realWorktree, 'biome');
+    expect(decideInRealWorktree('npm exec biome check .').kind).toBe('allow');
+  });
+
+  test('bunx biome check . is still a hil_request even with the bin present, if -y is also passed (forces install)', () => {
+    makeExecutableBin(realWorktree, 'biome');
+    expect(decideInRealWorktree('npx -y biome check .').kind).toBe('hil');
+  });
+
+  // opus round 3 blocker 1: escapes that a bare existsSync would miss.
+  test('npx .. is a hil_request, not allowed (node_modules/.bin/.. collapses to an existing directory)', () => {
+    mkdirSync(joinPath(realWorktree, 'node_modules', '.bin'), { recursive: true });
+    expect(decideInRealWorktree('npx ..').kind).toBe('hil');
+  });
+
+  test('npx . is a hil_request, not allowed ("run the package in this directory" form)', () => {
+    mkdirSync(joinPath(realWorktree, 'node_modules', '.bin'), { recursive: true });
+    expect(decideInRealWorktree('npx .').kind).toBe('hil');
+  });
+
+  test('npx escbin is a hil_request when node_modules/.bin/escbin is a symlink pointing outside the worktree', () => {
+    const outside = mkdtempSync(joinPath(tmpdir(), 'agile-perm-decide-dlx-outside-'));
+    try {
+      const outsideBin = joinPath(outside, 'escbin');
+      writeFileSync(outsideBin, '#!/bin/sh\n');
+      chmodSync(outsideBin, 0o755);
+      const binDir = joinPath(realWorktree, 'node_modules', '.bin');
+      mkdirSync(binDir, { recursive: true });
+      symlinkSync(outsideBin, joinPath(binDir, 'escbin'));
+      expect(decideInRealWorktree('npx escbin').kind).toBe('hil');
+    } finally {
+      rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
+  test('npx sh is a hil_request when node_modules/.bin itself is a symlink pointing outside the worktree', () => {
+    const outsideBinDir = mkdtempSync(joinPath(tmpdir(), 'agile-perm-decide-dlx-outside-bin-'));
+    try {
+      const sh = joinPath(outsideBinDir, 'sh');
+      writeFileSync(sh, '#!/bin/sh\n');
+      chmodSync(sh, 0o755);
+      mkdirSync(joinPath(realWorktree, 'node_modules'), { recursive: true });
+      symlinkSync(outsideBinDir, joinPath(realWorktree, 'node_modules', '.bin'));
+      expect(decideInRealWorktree('npx sh').kind).toBe('hil');
+    } finally {
+      rmSync(outsideBinDir, { recursive: true, force: true });
+    }
+  });
+
+  // opus round 3 blocker 2: pnpm dlx / yarn dlx never resolve a local bin.
+  test('pnpm dlx biome is a hil_request even when node_modules/.bin/biome exists (dlx never uses the local bin)', () => {
+    makeExecutableBin(realWorktree, 'biome');
+    expect(decideInRealWorktree('pnpm dlx biome check .').kind).toBe('hil');
+  });
+
+  test('yarn dlx biome is a hil_request even when node_modules/.bin/biome exists (dlx never uses the local bin)', () => {
+    makeExecutableBin(realWorktree, 'biome');
+    expect(decideInRealWorktree('yarn dlx biome check .').kind).toBe('hil');
   });
 });
