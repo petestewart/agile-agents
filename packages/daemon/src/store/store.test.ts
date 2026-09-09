@@ -1,5 +1,13 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -684,6 +692,504 @@ describe('StateStore.abs() containment (path-traversal backstop)', () => {
       /escapes the state root/,
     );
     expect(existsSync(evilSibling)).toBe(false);
+  });
+});
+
+// T032: the lexical guard above stops `..` traversal but `resolve()` never
+// touches the filesystem, so a symlink *planted inside* the state root that
+// points outside it slips past a purely lexical check — only a real fs call
+// (read/write/unlink) would follow the link and actually escape. `abs()`
+// must catch this too by walking every path component with `lstatSync`
+// (which reports a symlink whether or not its target exists) and checking
+// each hop's `readlinkSync` target for containment.
+describe('StateStore.abs() containment (symlink escape, T032)', () => {
+  test('getHalt refuses a halt file that is a symlink to a file outside the state root', () => {
+    const store = StateStore.open(stateRoot);
+    const victimPath = join(repo, '..', 'symlink-victim.yaml');
+    writeFileSync(victimPath, 'id: evil\nscope: global\nraised_by: attacker\n');
+    const linkPath = join(stateRoot, 'board', 'halts', 'evil.yaml');
+    try {
+      symlinkSync(victimPath, linkPath);
+      expect(() => store.getHalt('evil' as never)).toThrow(/escapes the state root/);
+    } finally {
+      rmSync(linkPath, { force: true });
+      rmSync(victimPath, { force: true });
+    }
+  });
+
+  test('deleteHalt refuses to unlink through a symlinked directory that escapes the state root', async () => {
+    const store = StateStore.open(stateRoot);
+    const victimDir = mkdtempSync(join(tmpdir(), 'agile-store-victim-'));
+    writeFileSync(join(victimDir, 'evil.yaml'), 'id: evil\nscope: global\nraised_by: attacker\n');
+    const realHaltsDir = join(stateRoot, 'board', 'halts');
+    try {
+      // Swap the halts directory itself out for a symlink to somewhere else
+      // entirely — the id and file name are both innocuous; only the
+      // directory segment is malicious.
+      rmSync(realHaltsDir, { recursive: true, force: true });
+      symlinkSync(victimDir, realHaltsDir);
+      await expect(store.deleteHalt('evil' as never)).rejects.toThrow(/escapes the state root/);
+      expect(existsSync(join(victimDir, 'evil.yaml'))).toBe(true);
+    } finally {
+      rmSync(realHaltsDir, { force: true });
+      rmSync(victimDir, { recursive: true, force: true });
+    }
+  });
+
+  test('putTicket to a not-yet-existing file still resolves normally (no false positive)', async () => {
+    const store = StateStore.open(stateRoot);
+    await expect(store.putTicket(makeTicket('TKT-9999'))).resolves.toBeDefined();
+    expect(store.getTicket('TKT-9999' as never).id).toBe('TKT-9999');
+  });
+
+  // Round 1 review (opus) B1: `existsSync` follows symlinks and reports
+  // `false` for a *dangling* one, so the first version of this guard (walk
+  // up to the nearest existing ancestor) skipped straight past a dangling
+  // symlink to its legitimate parent and let the write through —
+  // `appendJsonlLine`'s `writeFileSync(..., {flag:'a'})` then creates the
+  // file at the link's target, outside the state root, with no error.
+  // `lstatSync` reports the symlink itself regardless of whether its
+  // target exists, which is what closes this.
+  test('a dangling symlink planted as an events.jsonl-style append target is refused, not silently created outside the root', async () => {
+    const store = StateStore.open(stateRoot);
+    const victimDir = mkdtempSync(join(tmpdir(), 'agile-store-dangling-'));
+    const victimPath = join(victimDir, 'pwned.jsonl');
+    const eventsPath = join(stateRoot, 'log', 'events.jsonl');
+    try {
+      rmSync(eventsPath, { force: true });
+      symlinkSync(victimPath, eventsPath); // target does NOT exist
+      expect(existsSync(victimPath)).toBe(false);
+      await expect(store.putTicket(makeTicket('TKT-9998'))).rejects.toThrow(
+        /escapes the state root/,
+      );
+      expect(existsSync(victimPath)).toBe(false);
+    } finally {
+      rmSync(eventsPath, { force: true });
+      writeFileSync(eventsPath, ''); // restore so afterEach/other calls don't trip
+      rmSync(victimDir, { recursive: true, force: true });
+    }
+  });
+
+  test('a dangling directory symlink planted in place of board/halts is refused', () => {
+    const store = StateStore.open(stateRoot);
+    const realHaltsDir = join(stateRoot, 'board', 'halts');
+    const danglingTarget = join(tmpdir(), `agile-store-dangling-dir-${Date.now()}`);
+    try {
+      expect(existsSync(danglingTarget)).toBe(false); // never created — the point of "dangling"
+      rmSync(realHaltsDir, { recursive: true, force: true });
+      symlinkSync(danglingTarget, realHaltsDir);
+      expect(() => store.getHalt('anything' as never)).toThrow(/escapes the state root/);
+    } finally {
+      rmSync(realHaltsDir, { force: true });
+    }
+  });
+
+  test('a symlink chain (inside root -> inside root -> outside, dangling) is refused', async () => {
+    const store = StateStore.open(stateRoot);
+    const haltsDir = join(stateRoot, 'board', 'halts');
+    const hop1 = join(haltsDir, 'evil.yaml'); // what getHalt('evil') resolves to
+    const hop2 = join(stateRoot, 'board', 'link2.yaml'); // still inside root
+    const danglingOutside = join(tmpdir(), `agile-store-chain-dangling-${Date.now()}`);
+    try {
+      expect(existsSync(danglingOutside)).toBe(false);
+      symlinkSync(hop2, hop1); // hop1 -> hop2 (inside root)
+      symlinkSync(danglingOutside, hop2); // hop2 -> outside, dangling
+      expect(() => store.getHalt('evil' as never)).toThrow(/escapes the state root/);
+    } finally {
+      rmSync(hop1, { force: true });
+      rmSync(hop2, { force: true });
+    }
+  });
+
+  test('a symlink whose target is inside the state root is allowed', async () => {
+    const store = StateStore.open(stateRoot);
+    await store.putHalt({
+      id: 'H-501' as never,
+      scope: 'global',
+      reason: 'fixture',
+      raised_by: 'test',
+      quorum: 'pending',
+    });
+    const haltsDir = join(stateRoot, 'board', 'halts');
+    const realPath = join(haltsDir, 'H-501.yaml');
+    const aliasPath = join(haltsDir, 'H-502.yaml');
+    try {
+      symlinkSync(realPath, aliasPath); // target is inside the state root
+      const halt = store.getHalt('H-502' as never);
+      expect(halt.id).toBe('H-501');
+    } finally {
+      rmSync(aliasPath, { force: true });
+    }
+  });
+});
+
+// Round 2 review (opus) B1: a leaf symlink whose target string is lexically
+// inside the root passed the round-2 guard even when the target's *own
+// parent directory* was itself an escaping symlink — resuming the walk with
+// a bare `lstatSync(nextTarget)` only re-checks `nextTarget`'s leaf, since
+// `lstat` refuses to follow just the final path component; the kernel still
+// resolves every intermediate one. `resolvePathSafely`/`resolveComponentSymlink`
+// close this by always re-decomposing a hop's target and re-walking it
+// component by component from `root`, however many nested hops it takes.
+describe('StateStore.abs() containment (leaf link under an escaping dir link, T032 round 3)', () => {
+  test('absolute leaf-link target through an escaping directory link is refused', async () => {
+    const store = StateStore.open(stateRoot);
+    const victimDir = mkdtempSync(join(tmpdir(), 'agile-store-round3-abs-'));
+    const innerLink = join(stateRoot, 'inner'); // escaping directory link
+    const eventsPath = join(stateRoot, 'log', 'events.jsonl');
+    const victimFile = join(victimDir, 'pwned.jsonl');
+    try {
+      symlinkSync(victimDir, innerLink); // .agile/inner -> outside dir (escapes)
+      rmSync(eventsPath, { force: true });
+      // Lexically inside the root — no `..`, no absolute escape by itself.
+      symlinkSync(join(stateRoot, 'inner', 'pwned.jsonl'), eventsPath);
+      await expect(store.putTicket(makeTicket('TKT-9997'))).rejects.toThrow(
+        /escapes the state root/,
+      );
+      expect(existsSync(victimFile)).toBe(false);
+    } finally {
+      rmSync(eventsPath, { force: true });
+      writeFileSync(eventsPath, '');
+      rmSync(innerLink, { force: true });
+      rmSync(victimDir, { recursive: true, force: true });
+    }
+  });
+
+  test('relative leaf-link target through an escaping directory link is refused', async () => {
+    const store = StateStore.open(stateRoot);
+    const victimDir = mkdtempSync(join(tmpdir(), 'agile-store-round3-rel-'));
+    const outLink = join(stateRoot, 'board', 'out'); // escaping directory link
+    const eventsPath = join(stateRoot, 'log', 'events.jsonl');
+    const victimFile = join(victimDir, 'pwned.jsonl');
+    try {
+      symlinkSync(victimDir, outLink); // .agile/board/out -> outside dir
+      rmSync(eventsPath, { force: true });
+      // Relative target, resolved against the symlink's own directory
+      // (`.agile/log`) — `../board/out/pwned.jsonl` never leaves `.agile/`
+      // lexically.
+      symlinkSync(join('..', 'board', 'out', 'pwned.jsonl'), eventsPath);
+      await expect(store.putTicket(makeTicket('TKT-9996'))).rejects.toThrow(
+        /escapes the state root/,
+      );
+      expect(existsSync(victimFile)).toBe(false);
+    } finally {
+      rmSync(eventsPath, { force: true });
+      writeFileSync(eventsPath, '');
+      rmSync(outLink, { force: true });
+      rmSync(victimDir, { recursive: true, force: true });
+    }
+  });
+
+  test('two nested directory-link hops (both lexically inside) before the final escape are still refused', async () => {
+    const store = StateStore.open(stateRoot);
+    const victimDir = mkdtempSync(join(tmpdir(), 'agile-store-round3-nested-'));
+    const outerLink = join(stateRoot, 'outer'); // .agile/outer -> .agile/middle (inside)
+    const middleLink = join(stateRoot, 'middle'); // .agile/middle -> outside (escapes)
+    const eventsPath = join(stateRoot, 'log', 'events.jsonl');
+    const victimFile = join(victimDir, 'pwned.jsonl');
+    try {
+      symlinkSync(join(stateRoot, 'middle'), outerLink);
+      symlinkSync(victimDir, middleLink);
+      rmSync(eventsPath, { force: true });
+      // Lexically inside the root two levels deep: log/events.jsonl ->
+      // .agile/outer/pwned.jsonl -> (outer resolves to middle) ->
+      // (middle resolves outside).
+      symlinkSync(join(stateRoot, 'outer', 'pwned.jsonl'), eventsPath);
+      await expect(store.putTicket(makeTicket('TKT-9995'))).rejects.toThrow(
+        /escapes the state root/,
+      );
+      expect(existsSync(victimFile)).toBe(false);
+    } finally {
+      rmSync(eventsPath, { force: true });
+      writeFileSync(eventsPath, '');
+      rmSync(outerLink, { force: true });
+      rmSync(middleLink, { force: true });
+      rmSync(victimDir, { recursive: true, force: true });
+    }
+  });
+});
+
+// Round 3 review (opus) B1: a hop's target was computed as
+// `normalize(rawTarget)`, which collapses `..` *lexically* before the
+// containment check and before the target is split into components to
+// walk. `.agile/esc -> <outside>` plus a leaf `-> "<stateRoot>/esc/../pwned.jsonl"`
+// normalizes straight to `<stateRoot>/pwned.jsonl` — the `esc` segment (the
+// actual escaping symlink) is erased before ever being `lstat`ed, so the
+// escape goes undetected. The kernel resolves `esc` *first*, then applies
+// `..` from wherever `esc` actually points. Every target string below is
+// built with template-literal concatenation, never `join()` — `join()`
+// itself would strip the `..` and silently defeat the point of these tests.
+describe('StateStore.abs() containment (`..` inside a symlink target, T032 round 4)', () => {
+  test('absolute hop target with a `..` that lexically cancels an escaping directory link is still refused', async () => {
+    const store = StateStore.open(stateRoot);
+    const victimParent = mkdtempSync(join(tmpdir(), 'agile-store-round4-abs-'));
+    const victimSub = join(victimParent, 'sub');
+    mkdirSync(victimSub);
+    const escLink = join(stateRoot, 'esc'); // .agile/esc -> victimSub (escapes)
+    const eventsPath = join(stateRoot, 'log', 'events.jsonl');
+    const victimFile = join(victimParent, 'pwned.jsonl');
+    try {
+      symlinkSync(victimSub, escLink);
+      rmSync(eventsPath, { force: true });
+      // Lexically `<stateRoot>/pwned.jsonl` once `..` is collapsed as text
+      // — but the kernel resolves `esc` (-> victimSub) first, then applies
+      // `..` from *there*, landing in victimParent, not stateRoot.
+      symlinkSync(`${stateRoot}/esc/../pwned.jsonl`, eventsPath);
+      await expect(store.putTicket(makeTicket('TKT-9994'))).rejects.toThrow(
+        /escapes the state root/,
+      );
+      expect(existsSync(victimFile)).toBe(false);
+    } finally {
+      rmSync(eventsPath, { force: true });
+      writeFileSync(eventsPath, '');
+      rmSync(escLink, { force: true });
+      rmSync(victimParent, { recursive: true, force: true });
+    }
+  });
+
+  test('relative hop target with a `..` that lexically cancels an escaping directory link is still refused', async () => {
+    const store = StateStore.open(stateRoot);
+    const victimParent = mkdtempSync(join(tmpdir(), 'agile-store-round4-rel-'));
+    const victimSub = join(victimParent, 'sub');
+    mkdirSync(victimSub);
+    const escLink = join(stateRoot, 'board', 'esc'); // .agile/board/esc -> victimSub
+    const eventsPath = join(stateRoot, 'log', 'events.jsonl');
+    const victimFile = join(victimParent, 'pwned.jsonl');
+    try {
+      symlinkSync(victimSub, escLink);
+      rmSync(eventsPath, { force: true });
+      // Resolved against `log/`'s own directory: `../board/esc/../pwned.jsonl`.
+      symlinkSync('../board/esc/../pwned.jsonl', eventsPath);
+      await expect(store.putTicket(makeTicket('TKT-9993'))).rejects.toThrow(
+        /escapes the state root/,
+      );
+      expect(existsSync(victimFile)).toBe(false);
+    } finally {
+      rmSync(eventsPath, { force: true });
+      writeFileSync(eventsPath, '');
+      rmSync(escLink, { force: true });
+      rmSync(victimParent, { recursive: true, force: true });
+    }
+  });
+
+  test('a relative target that starts with `..` (no link involved) is refused as a genuine escape', async () => {
+    const store = StateStore.open(stateRoot);
+    const eventsPath = join(stateRoot, 'log', 'events.jsonl');
+    const victimPath = join(tmpdir(), 'agile-store-round4-leading-dotdot-victim.jsonl');
+    try {
+      rmSync(eventsPath, { force: true });
+      rmSync(victimPath, { force: true });
+      // Four `..` walks past `log`, the state root, its parent (the repo),
+      // and the repo's parent (tmpdir) — same shape as `store.test.ts`'s
+      // very first traversal test, but exercised through a symlink target
+      // instead of a caller-supplied id.
+      symlinkSync('../../../../tmp/agile-store-round4-leading-dotdot-victim.jsonl', eventsPath);
+      await expect(store.putTicket(makeTicket('TKT-9992'))).rejects.toThrow(
+        /escapes the state root/,
+      );
+      expect(existsSync(victimPath)).toBe(false);
+    } finally {
+      rmSync(eventsPath, { force: true });
+      writeFileSync(eventsPath, '');
+      rmSync(victimPath, { force: true });
+    }
+  });
+
+  test('a symlink target of only `..` segments is refused', async () => {
+    const store = StateStore.open(stateRoot);
+    const eventsPath = join(stateRoot, 'log', 'events.jsonl');
+    try {
+      rmSync(eventsPath, { force: true });
+      symlinkSync('../../../../../../../..', eventsPath);
+      await expect(store.putTicket(makeTicket('TKT-9991'))).rejects.toThrow(
+        /escapes the state root/,
+      );
+    } finally {
+      rmSync(eventsPath, { force: true });
+      writeFileSync(eventsPath, '');
+    }
+  });
+
+  // No false positive: `..` legitimately walking back up through an
+  // inside-root directory link must still resolve to a real inside-root
+  // location and be allowed — proves the fix pops `..` off the *resolved*
+  // (post-symlink) position rather than refusing any `..` outright.
+  test('`..` immediately after an inside-root directory link is allowed when the final position is still inside the root', async () => {
+    const store = StateStore.open(stateRoot);
+    // .agile/nested/alias -> .agile/board (an inside-root dir link, declared
+    // two levels deep so its *lexical* parent differs from where it
+    // actually resolves).
+    const nestedDir = join(stateRoot, 'nested');
+    mkdirSync(nestedDir);
+    const alias = join(nestedDir, 'alias');
+    const eventsPath = join(stateRoot, 'log', 'events.jsonl');
+    try {
+      symlinkSync(join(stateRoot, 'board'), alias);
+      rmSync(eventsPath, { force: true });
+      // Resolves: log/ -> ../nested/alias (= .agile/board) -> .. (= .agile,
+      // the root itself) -> real.jsonl. Inside the root throughout.
+      symlinkSync('../nested/alias/../real.jsonl', eventsPath);
+      await expect(store.putTicket(makeTicket('TKT-9990'))).resolves.toBeDefined();
+      expect(existsSync(join(stateRoot, 'real.jsonl'))).toBe(true);
+    } finally {
+      rmSync(eventsPath, { force: true });
+      writeFileSync(eventsPath, '');
+      rmSync(alias, { force: true });
+      rmSync(nestedDir, { recursive: true, force: true });
+      rmSync(join(stateRoot, 'real.jsonl'), { force: true });
+    }
+  });
+});
+
+// Round 4 review (opus) B1: an absolute symlink target was walked from the
+// filesystem root and its fully-resolved hop compared against the state
+// root's *literal, unresolved* text — so when the state root is itself
+// reached through a symlinked ancestor directory (macOS `tmpdir()` under
+// `/var -> /private/var`, or any operator layout with a linked parent), a
+// plainly inside-root absolute link legitimately resolves through that
+// ancestor to the *real* directory, which no longer shares the literal
+// prefix, and was false-refused. Simulated here with our own repo layout
+// (a real directory plus a *separate* directory that only holds a symlink
+// to it) rather than relying on the host's own `tmpdir()` happening to
+// involve a link, so this reproduces on Linux too, not just on a machine
+// where it already does.
+describe('StateStore.abs() containment (state root reached through a symlinked ancestor, T032 round 5)', () => {
+  let realRepoDir: string;
+  let linkedParentDir: string;
+  let linkedStateRoot: string;
+  let linkedStore: StateStore;
+
+  beforeEach(() => {
+    realRepoDir = mkdtempSync(join(tmpdir(), 'agile-store-r5-real-'));
+    linkedParentDir = mkdtempSync(join(tmpdir(), 'agile-store-r5-linkparent-'));
+    const symlinkedRepoPath = join(linkedParentDir, 'repo');
+    symlinkSync(realRepoDir, symlinkedRepoPath); // the "/var -> /private/var" stand-in
+    Bun.spawnSync(['git', 'init', '-q'], { cwd: symlinkedRepoPath });
+    Bun.spawnSync(['git', 'config', 'user.email', 'test@example.com'], { cwd: symlinkedRepoPath });
+    Bun.spawnSync(['git', 'config', 'user.name', 'Test'], { cwd: symlinkedRepoPath });
+    writeFileSync(join(symlinkedRepoPath, 'README.md'), '# fixture repo\n');
+    Bun.spawnSync(['git', 'add', '-A'], { cwd: symlinkedRepoPath });
+    Bun.spawnSync(['git', 'commit', '-q', '-m', 'initial commit'], { cwd: symlinkedRepoPath });
+    // `runInit` is called against the *symlinked* path, exactly as a daemon
+    // pointed at a repo under a linked parent would — `linkedStateRoot`'s
+    // literal text carries the link, not its real target.
+    const init = runInit(symlinkedRepoPath);
+    linkedStateRoot = init.stateRoot;
+    linkedStore = StateStore.open(linkedStateRoot);
+  });
+
+  afterEach(() => {
+    rmSync(linkedParentDir, { recursive: true, force: true });
+    rmSync(realRepoDir, { recursive: true, force: true });
+  });
+
+  test('an absolute inside-root link (built from the literal, symlink-carrying state root text) is allowed', async () => {
+    const eventsPath = join(linkedStateRoot, 'log', 'events.jsonl');
+    try {
+      rmSync(eventsPath, { force: true });
+      // Ordinary code builds an absolute target this way — from the literal
+      // `stateRoot` string, which here still carries the linked-ancestor
+      // prefix.
+      symlinkSync(`${linkedStateRoot}/log/real.jsonl`, eventsPath);
+      await expect(linkedStore.putTicket(makeTicket('TKT-9501'))).resolves.toBeDefined();
+      expect(existsSync(join(linkedStateRoot, 'log', 'real.jsonl'))).toBe(true);
+    } finally {
+      rmSync(eventsPath, { force: true });
+      writeFileSync(eventsPath, '');
+      rmSync(join(linkedStateRoot, 'log', 'real.jsonl'), { force: true });
+    }
+  });
+
+  test('an absolute escaping link is still refused', async () => {
+    const victimDir = mkdtempSync(join(tmpdir(), 'agile-store-r5-victim-'));
+    const eventsPath = join(linkedStateRoot, 'log', 'events.jsonl');
+    const victimFile = join(victimDir, 'pwned.jsonl');
+    try {
+      rmSync(eventsPath, { force: true });
+      symlinkSync(victimFile, eventsPath);
+      await expect(linkedStore.putTicket(makeTicket('TKT-9502'))).rejects.toThrow(
+        /escapes the state root/,
+      );
+      expect(existsSync(victimFile)).toBe(false);
+    } finally {
+      rmSync(eventsPath, { force: true });
+      writeFileSync(eventsPath, '');
+      rmSync(victimDir, { recursive: true, force: true });
+    }
+  });
+
+  test('the round-3/4 `..`-cancels-an-escaping-link repro still refuses under a symlinked-ancestor root', async () => {
+    const victimParent = mkdtempSync(join(tmpdir(), 'agile-store-r5-vparent-'));
+    const victimSub = join(victimParent, 'sub');
+    mkdirSync(victimSub);
+    const escLink = join(linkedStateRoot, 'esc');
+    const eventsPath = join(linkedStateRoot, 'log', 'events.jsonl');
+    const victimFile = join(victimParent, 'pwned.jsonl');
+    try {
+      symlinkSync(victimSub, escLink);
+      rmSync(eventsPath, { force: true });
+      symlinkSync(`${linkedStateRoot}/esc/../pwned.jsonl`, eventsPath);
+      await expect(linkedStore.putTicket(makeTicket('TKT-9511'))).rejects.toThrow(
+        /escapes the state root/,
+      );
+      expect(existsSync(victimFile)).toBe(false);
+    } finally {
+      rmSync(eventsPath, { force: true });
+      writeFileSync(eventsPath, '');
+      rmSync(escLink, { force: true });
+      rmSync(victimParent, { recursive: true, force: true });
+    }
+  });
+
+  test("round 4's inside-root-link-then-`..` case (built with an absolute, literal-root-prefixed link) still allowed under a symlinked-ancestor root", async () => {
+    const nestedDir = join(linkedStateRoot, 'nested');
+    mkdirSync(nestedDir);
+    const alias = join(nestedDir, 'alias');
+    const eventsPath = join(linkedStateRoot, 'log', 'events.jsonl');
+    try {
+      symlinkSync(join(linkedStateRoot, 'board'), alias); // absolute, literal-root-prefixed
+      rmSync(eventsPath, { force: true });
+      symlinkSync('../nested/alias/../real.jsonl', eventsPath);
+      await expect(linkedStore.putTicket(makeTicket('TKT-9512'))).resolves.toBeDefined();
+      expect(existsSync(join(linkedStateRoot, 'real.jsonl'))).toBe(true);
+    } finally {
+      rmSync(eventsPath, { force: true });
+      writeFileSync(eventsPath, '');
+      rmSync(alias, { force: true });
+      rmSync(nestedDir, { recursive: true, force: true });
+      rmSync(join(linkedStateRoot, 'real.jsonl'), { force: true });
+    }
+  });
+
+  // Round 5 nit N2: an absolute target with a trailing separator resolves
+  // through the same empty-segment skip as any other trailing/doubled
+  // separator — the guard itself never chokes on it (any `EISDIR` a write
+  // might hit afterwards for a target that turns out not to be a real
+  // directory is the kernel's own trailing-slash semantics, not a
+  // containment-guard failure).
+  test('an absolute inside-root link with a trailing separator does not trip the guard itself', async () => {
+    const eventsPath = join(linkedStateRoot, 'log', 'events.jsonl');
+    try {
+      rmSync(eventsPath, { force: true });
+      symlinkSync(`${linkedStateRoot}/board/`, eventsPath); // trailing "/"
+      // `board` already exists as a real directory — writing an events line
+      // through it fails at the fs layer (it's a directory, not append-able
+      // as a file), but that must be a *different* error than our own
+      // containment guard's, proving the trailing separator didn't itself
+      // confuse `walkSegments`/`resolveComponentSymlink` into a false
+      // "escapes the state root".
+      let caught: unknown;
+      try {
+        await linkedStore.putTicket(makeTicket('TKT-9513'));
+      } catch (err) {
+        caught = err;
+      }
+      expect(caught).toBeDefined();
+      expect((caught as Error).message).not.toMatch(/escapes the state root/);
+    } finally {
+      rmSync(eventsPath, { force: true });
+      writeFileSync(eventsPath, '');
+    }
   });
 });
 

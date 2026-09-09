@@ -384,4 +384,83 @@ maybeDescribe('control room SPA (Playwright e2e)', () => {
       rmSync(repo, { recursive: true, force: true });
     }
   }, 20000);
+
+  // T032: a heartbeat-only `agent_put` (store.ts's `heartbeat()`, the
+  // `data: {heartbeat: true}` shape) must NOT trigger `refreshAux`'s
+  // six-endpoint refetch — before this fix, one arrived roughly every 30s
+  // per live agent and re-pulled agents/tickets/oracle/kb/policy/snapshot
+  // for no observable change every time. A real (non-heartbeat) `agent_put`
+  // — e.g. `putAgent` registering a role change — must still refetch.
+  test('a heartbeat burst causes zero /api/* refetches; a real agent_put still refetches', async () => {
+    const repo = initRepo();
+    let handle: DaemonHandle | undefined;
+    const browser = await chromium.launch({ executablePath });
+
+    try {
+      const init = runInit(repo);
+      const store = StateStore.open(init.stateRoot);
+      const agentId = 'agent-heartbeat-e2e' as never;
+      await store.putAgent(agentId, {
+        vendor: 'claude',
+        model: 'sonnet',
+        last_seen: new Date(0).toISOString(),
+      });
+
+      handle = await startDaemon({
+        cwd: repo,
+        port: 0,
+        socketPath: join(repo, '.agile-daemon.sock'),
+      });
+
+      const page = await browser.newPage();
+      const apiRequests: string[] = [];
+      page.on('request', (req) => {
+        const path = new URL(req.url()).pathname;
+        if (path.startsWith('/api/')) apiRequests.push(path);
+      });
+
+      await page.goto(`http://127.0.0.1:${handle.http.port}/control-room`);
+      // Let the initial mount's own refreshAux (six requests) settle before
+      // measuring — only requests from here on are attributable to events.
+      await page.waitForTimeout(500);
+      apiRequests.length = 0;
+
+      // 20-heartbeat burst: each call advances `now` well past
+      // HEARTBEAT_COALESCE_MS so every one actually writes and mints its
+      // own `agent_put` (real 30s-apart beats), rather than being coalesced
+      // away — this exercises the UI's event filter, not the store's
+      // coalescing (that's `store.test.ts`'s job).
+      let simulatedNow = Date.now();
+      for (let i = 0; i < 20; i++) {
+        simulatedNow += 40_000;
+        const beatTime = simulatedNow;
+        await store.heartbeat(agentId, {}, () => new Date(beatTime));
+      }
+
+      // Give the (debounced, 150ms) refresh path every chance to have fired
+      // if it were going to.
+      await page.waitForTimeout(800);
+      expect(apiRequests).toEqual([]);
+
+      // A real agent_put (role/registration change, not a heartbeat) still
+      // triggers the refetch — the filter targets the heartbeat shape
+      // specifically, it doesn't silently swallow every agent_put.
+      await store.putAgent(agentId, {
+        vendor: 'claude',
+        model: 'sonnet',
+        last_seen: new Date(simulatedNow).toISOString(),
+        role: 'engineer',
+      });
+
+      const deadline = Date.now() + 5000;
+      while (apiRequests.length === 0 && Date.now() < deadline) {
+        await page.waitForTimeout(100);
+      }
+      expect(apiRequests.length).toBeGreaterThan(0);
+    } finally {
+      await browser.close();
+      await handle?.stop();
+      rmSync(repo, { recursive: true, force: true });
+    }
+  }, 20000);
 });

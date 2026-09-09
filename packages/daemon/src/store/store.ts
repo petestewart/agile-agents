@@ -30,8 +30,15 @@
  * automatic rollback of the just-written bytes is implemented.
  */
 
-import { appendFileSync, existsSync, readFileSync } from 'node:fs';
-import { isAbsolute, join, normalize, resolve, sep } from 'node:path';
+import {
+  appendFileSync,
+  existsSync,
+  lstatSync,
+  readFileSync,
+  readlinkSync,
+  realpathSync,
+} from 'node:fs';
+import { dirname, isAbsolute, join, normalize, parse, relative, resolve, sep } from 'node:path';
 import {
   type AgentId,
   type AgentRecord,
@@ -264,7 +271,21 @@ export class StateStore {
   // stray timer outlives it.
   private closed = false;
 
-  private constructor(private readonly stateRoot: string) {}
+  // Round 5 review (opus) B1: an absolute symlink target is walked from the
+  // filesystem root and checked for containment against `stateRoot`'s
+  // *literal* text — but when the state root is itself reached through a
+  // symlinked ancestor directory (macOS `tmpdir()` under `/var ->
+  // /private/var`, or any operator layout with a linked parent), the walk
+  // legitimately resolves through that ancestor to the *real* directory,
+  // which no longer shares the literal prefix. Cached once here (the
+  // directory is required to exist by `open()`'s `existsSync` check, so
+  // `realpathSync` is safe) so `resolveComponentSymlink` can accept
+  // containment against either form — see its own doc comment.
+  private readonly realStateRoot: string;
+
+  private constructor(private readonly stateRoot: string) {
+    this.realStateRoot = realpathSync(stateRoot);
+  }
 
   /**
    * Marks this store closed (so `scheduleDeferredFlush` becomes a no-op
@@ -332,7 +353,238 @@ export class StateStore {
     if (resolved !== root && !resolved.startsWith(root + sep)) {
       throw new Error(`state path escapes the state root: ${parts.join('/')}`);
     }
+    this.assertNoEscapingSymlink(resolved, root, parts);
     return resolved;
+  }
+
+  /**
+   * T032 follow-up to the lexical guard above: `resolve()` never touches the
+   * filesystem, so it stops `..` traversal in *caller-supplied* segments but
+   * not a symlink planted *inside* the state root that points outside it —
+   * the lexical path still reads as contained, and then the real fs call
+   * (read/write/unlink) follows the link off the state root. Three review
+   * rounds progressively closed this (see `.pipeline-review.md` for the
+   * full history — dangling targets, then a leaf link's escaping *ancestor*
+   * directory, both needed `lstatSync`, not `existsSync`/a single
+   * multi-component resolve); this version additionally never lexically
+   * `normalize()`s a symlink's own target text, for the reason below.
+   *
+   * Round 3 review (opus) found that computing a hop's target via
+   * `normalize(rawTarget)` collapses `..` *before* the containment check
+   * and before the target is decomposed into components to walk — so
+   * `.agile/esc -> <outside>/sub` plus a leaf `-> "<stateRoot>/esc/../pwned.jsonl"`
+   * normalizes straight to `<stateRoot>/pwned.jsonl` (lexically fine) and
+   * the `esc` segment — the actual escaping symlink — is never `lstat`ed at
+   * all, because `normalize` already erased it before the walk began. The
+   * kernel does not resolve paths this way: it resolves `esc` *first*
+   * (following the link to `<outside>/sub`) and only then applies `..`,
+   * landing in `<outside>`, not back inside the root.
+   *
+   * Fixed by never handing a symlink's raw `readlinkSync` output to
+   * `normalize()`/`relative()`: `walkSegments` takes each `/`-separated raw
+   * segment in order and threads `current` through them itself — a plain
+   * segment is `join`ed on and passed to `resolveComponentSymlink` (which
+   * may hop it elsewhere, checking containment immediately, before any
+   * later segment is even looked at); a `..` segment pops one component off
+   * `current` **as currently resolved** (i.e. after any symlink hop already
+   * applied to it), exactly mirroring kernel resolution order, never a bulk
+   * textual collapse; `.` and empty segments (a leading/trailing/doubled
+   * separator) are skipped. An escaping directory link is therefore refused
+   * the moment `resolveComponentSymlink` reaches it, before any trailing
+   * `..` in the same target string could lexically "cancel" it back to
+   * looking contained. `resolveComponentSymlink` uses this same walk for a
+   * hop's target (absolute targets walk from the filesystem root; relative
+   * targets walk from the symlink's own — already resolved — directory), so
+   * the fix applies uniformly to both forms and to arbitrarily nested
+   * chains. The shared `budget` still bounds the total hop count
+   * (`MAX_SYMLINK_HOPS`) so a cycle or a long chain terminates rather than
+   * looping.
+   *
+   * TOCTOU residual (documented, not closed — round 2 B2): this guard runs
+   * once, synchronously, inside `abs()`; it holds no file descriptor and
+   * re-checks nothing at the actual `readFileSync`/`appendFileSync`/
+   * `writeFileSync`/`unlinkSync` call site a moment later, every one of
+   * which follows symlinks itself. A component swapped for a symlink
+   * *after* this check returns and *before* that syscall lands would still
+   * escape. Closing that race for real would mean opening every write
+   * target with `O_NOFOLLOW` or moving to an fd-relative (`openat`-style)
+   * store, which doesn't fit the current atomic-rename write helpers
+   * (`fs.ts`'s `writeYamlFileAtomic`/`atomicWriteFile` write a temp file
+   * then `rename` it over the target — the target itself is never opened
+   * for write) without a broader rework. Accepted as out of scope for this
+   * ticket: the prerequisite is a second, concurrent, in-process-or-sibling
+   * actor able to write inside `.agile/` at the exact instant between this
+   * check and the next fs call — the same "a local writer already has a
+   * foothold inside the state root" threat model this whole guard exists
+   * for, not a new one. A future ticket that wants the race closed should
+   * look at `fs.ts`'s write helpers first.
+   */
+  private assertNoEscapingSymlink(resolved: string, root: string, parts: string[]): void {
+    // `resolved` was produced by `resolve(this.stateRoot, ...parts)` in
+    // `abs()` — a lexical normalization of *code-controlled* segments
+    // (ticket ids, `'board'`, `'halts'`, ...) that has already passed the
+    // plain containment check there, so it can never itself carry a `..`
+    // that still needs kernel-order (post-symlink) handling. That hazard is
+    // specific to a *symlink's own* `readlinkSync` text (see
+    // `resolveComponentSymlink`), not to this top-level entry.
+    const rel = relative(root, resolved);
+    // Round 5 nit N3: explicit here (not just relied on as a side effect of
+    // `walkSegments`'s own `''`/`'.'` skip) so the invariant is local to
+    // whichever function computes the segment list, not just to whichever
+    // happens to consume it today.
+    const segments = rel === '' ? [] : rel.split(sep).filter((seg) => seg.length > 0);
+    this.walkSegments(root, segments, root, parts, { hops: 0 });
+  }
+
+  /** `target` is `root` itself or lies under it (`root + sep` prefix, never a bare string-prefix match). */
+  private isContainedIn(target: string, root: string): boolean {
+    return target === root || target.startsWith(root + sep);
+  }
+
+  /** Loosely modelled on Linux's `MAXSYMLINKS` — a link chain (or cycle) this long is never legitimate. */
+  private static readonly MAX_SYMLINK_HOPS = 40;
+
+  /**
+   * Walks `segments` one raw path component at a time starting from
+   * `baseDir`, resolving any symlink hop along the way (`resolveComponentSymlink`)
+   * and popping `..` off the path *as currently resolved* rather than
+   * collapsing it lexically ahead of time (round 3 B1 — see this class's
+   * doc comment above `assertNoEscapingSymlink`). `.` and empty segments are
+   * skipped. Returns the final resolved location (existing or not).
+   */
+  private walkSegments(
+    baseDir: string,
+    segments: string[],
+    root: string,
+    parts: string[],
+    budget: { hops: number },
+  ): string {
+    let current = baseDir;
+    for (const seg of segments) {
+      if (seg === '' || seg === '.') continue;
+      if (seg === '..') {
+        current = dirname(current);
+        continue;
+      }
+      current = join(current, seg);
+      current = this.resolveComponentSymlink(current, root, parts, budget);
+    }
+    return current;
+  }
+
+  /**
+   * If `path` is a symlink (dangling or not), resolves one hop by walking
+   * its *raw* `readlinkSync` target with `walkSegments` — never
+   * `normalize()`d first, so a `..` in the target is applied against the
+   * hop's actually-resolved position, not lexically erased before an
+   * escaping component in the same target is ever examined (round 3 B1).
+   * An absolute target walks from the filesystem root; a relative one walks
+   * from `path`'s own (already-resolved) directory. Checks the fully
+   * resolved hop target for containment before returning it. Returns `path`
+   * unchanged when it isn't a symlink, or doesn't exist yet.
+   */
+  private resolveComponentSymlink(
+    path: string,
+    root: string,
+    parts: string[],
+    budget: { hops: number },
+  ): string {
+    let stat: ReturnType<typeof lstatSync>;
+    try {
+      stat = lstatSync(path);
+    } catch (err) {
+      // Round 2 nit N1: only a missing component (`ENOENT`, or `ENOTDIR`
+      // when an earlier segment we already resolved turned out not to be a
+      // directory after all) means "nothing to resolve here" — anything
+      // else (`EACCES`, `ELOOP`, a NUL byte's `ERR_INVALID_ARG_VALUE`, ...)
+      // is a real filesystem error the caller's own subsequent read/write
+      // is about to hit too, and swallowing it here would just relabel a
+      // permissions/encoding problem as an ordinary "not created yet" path.
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code === 'ENOENT' || code === 'ENOTDIR') return path;
+      throw err;
+    }
+    if (!stat.isSymbolicLink()) return path;
+
+    budget.hops += 1;
+    if (budget.hops > StateStore.MAX_SYMLINK_HOPS) {
+      // Round 2 nit N2: this cap catches a genuine escape chain and a pure
+      // symlink *cycle* alike (e.g. a<->b, neither ever escaping on its
+      // own) — refusing either way is correct, but "too deep" undersells
+      // the cycle case, so the message names both.
+      throw new Error(
+        `state path escapes the state root (symlink chain exceeded ${StateStore.MAX_SYMLINK_HOPS} hops — a link cycle or a genuine escape): ${parts.join('/')}`,
+      );
+    }
+
+    const rawTarget = readlinkSync(path);
+    let baseDir: string;
+    let rawSegments: string[];
+    if (isAbsolute(rawTarget)) {
+      // Round 5 B1: an absolute target is walked the way a kernel would —
+      // but blindly starting every absolute walk at the filesystem root
+      // means `lstat`ing `root`'s own ancestry, and a state root reached
+      // through a symlinked ancestor directory (macOS `tmpdir()` under
+      // `/var -> /private/var`, or any linked parent) then resolves that
+      // ancestor to its real location, which no longer shares `root`'s
+      // *literal* prefix — a plainly inside-root absolute target (built,
+      // as ordinary code does, from the literal `stateRoot` string) was
+      // false-refused. Fixed by first checking whether the raw target
+      // itself already names `root` (its usual literal text) or
+      // `realStateRoot` (root's cached real path) as a prefix — the common
+      // case for any absolute target actually meant to land inside this
+      // store — and, if so, walking only the remainder from that root form
+      // directly, never touching root's own ancestry at all (exactly like
+      // the relative-target branch below). A target like
+      // `"<root>/esc/../pwned.jsonl"` still has `root` as its prefix, so
+      // the remainder walked is `["esc", "..", "pwned.jsonl"]` from `root`
+      // — `esc` is still an ordinary segment of that walk and still gets
+      // `lstat`ed. Only a target naming *neither* root form at all falls
+      // back to a full filesystem-root walk (kernel-accurate, and — since
+      // such a target does not even claim to be inside this store — the
+      // rare residual risk of an unrelated ancestor symlink elsewhere on
+      // disk tripping the per-hop check is accepted, the same way other
+      // out-of-scope TOCTOU-class residuals are documented rather than
+      // chased to full generality).
+      if (this.isContainedIn(rawTarget, root)) {
+        baseDir = root;
+        rawSegments = rawTarget.slice(root.length).split(sep);
+      } else if (this.isContainedIn(rawTarget, this.realStateRoot)) {
+        baseDir = this.realStateRoot;
+        rawSegments = rawTarget.slice(this.realStateRoot.length).split(sep);
+      } else {
+        baseDir = parse(root).root;
+        // Round 5 nit N1: split on the platform separator only — a
+        // backslash is an ordinary filename character on POSIX, not a path
+        // separator, so treating it as one (the round 3/4 `/[\\/]/` regex)
+        // would mis-split a target that legitimately contains one.
+        rawSegments = rawTarget.split(sep);
+      }
+    } else {
+      // Relative target: resolved against `path`'s own directory, which is
+      // already a fully resolved location by the time we get here (every
+      // earlier component on the way to `path` has already been through
+      // this same function).
+      baseDir = dirname(path);
+      rawSegments = rawTarget.split(sep);
+    }
+
+    const nextTarget = this.walkSegments(baseDir, rawSegments, root, parts, budget);
+
+    // Round 5 B1: accept containment against either root form — `nextTarget`
+    // is already fully symlink-resolved by `walkSegments`, so comparing it
+    // to `realStateRoot` is exactly as safe as comparing it to the literal
+    // `root`, and is what makes the shortcut above (and the fallback
+    // filesystem-root walk, which may legitimately land inside the real
+    // root without ever mentioning its literal text) correct.
+    if (
+      !this.isContainedIn(nextTarget, root) &&
+      !this.isContainedIn(nextTarget, this.realStateRoot)
+    ) {
+      throw new Error(`state path escapes the state root (symlink): ${parts.join('/')}`);
+    }
+
+    return nextTarget;
   }
 
   /**

@@ -57,6 +57,24 @@ const REFRESH_TRIGGER_KINDS = new Set<Event['kind']>([
 const REFRESH_DEBOUNCE_MS = 150;
 
 /**
+ * T032: `store.ts`'s `heartbeat()` mints an `agent_put` with `data:
+ * {heartbeat: true}` on every coalesced ~30s liveness beat (see its own doc
+ * comment — it's the ONLY caller that sets this field; every other
+ * `agent_put` writer, e.g. `putAgent`/spawn/exit, sends `data: {}` or a
+ * `warning`). A live session heartbeats roughly once every 30s per agent,
+ * which — before this — fired the full six-endpoint `refreshAux` every
+ * time, for no observable UI change (agents/tickets/oracle/kb/policy don't
+ * change on a heartbeat, only `last_seen` inside `snapshot.agents`, which
+ * heartbeat-only updates don't even need to reflect immediately). Treat
+ * this one event shape as a no-refetch signal so a room full of idle agents
+ * doesn't spam the daemon every 30s, while any other `agent_put` (a role
+ * change, a new registration, a real status flip) still refetches as before.
+ */
+function isHeartbeatOnlyEvent(event: Event): boolean {
+  return event.kind === 'agent_put' && event.data?.heartbeat === true;
+}
+
+/**
  * Control room shell (T025 — design §17 "Control room"; session scope:
  * "collapsible Team / Board / Feed panels ... sprint strip with gate chips
  * ... Halt button ... EM chat panel"). Reads come from the daemon's
@@ -123,7 +141,9 @@ export function App() {
       },
       onEvent: (event) => {
         setEvents((prev) => [...prev, event].slice(-MAX_EVENTS));
-        if (REFRESH_TRIGGER_KINDS.has(event.kind)) scheduleRefresh();
+        if (REFRESH_TRIGGER_KINDS.has(event.kind) && !isHeartbeatOnlyEvent(event)) {
+          scheduleRefresh();
+        }
       },
       onStatusChange: (status) => setConnected(status === 'open'),
     });
