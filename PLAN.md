@@ -332,12 +332,12 @@ Priority encodes dependency layer as well as importance: P0 tickets are v0-block
 
 ### Ticket: T030 Engineer Bash allow-list: benign commands
 - **Priority:** P1
-- **Status:** In Progress
+- **Status:** In Review
 - **Owner:** sonnet:worker-T030
 - **Scope:** Depends on T012. The hook's engineer policy is allow-list-only for Bash (repo scripts, package managers, git inside the worktree), so everyday benign commands (`cat`, `ls`, `mkdir`, `cp`/`mv` inside the worktree, `echo`, `grep`/`rg`, `find` without `-delete`/`-exec`, `head`/`tail`/`wc`, `pwd`, `which`, `node`/`bun` scripts inside the worktree) deny. Extend `packages/daemon/src/permissions/policy-tables.ts` with a benign-command table (path arguments containment-checked against the worktree), keep the never-without-human list untouched, and table-test it; reviewer/QA policies unchanged. Tune during T021 if the demo run shows more gaps.
 - **Acceptance Criteria:** The listed commands allow for an engineer inside its worktree; the same commands with a path outside the worktree deny; every existing adversarial test still passes.
 - **Validation Steps:** `bun test packages/daemon/src/permissions packages/daemon/src/hook`.
-- **Notes:** Discovered in T012 review round 3.
+- **Notes:** Discovered in T012 review round 3. Branch `T030-benign-commands` (local worktree), 1112 tests; gates running.
 
 ## 8. Open Questions
 
