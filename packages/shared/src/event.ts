@@ -50,6 +50,14 @@ export const EVENT_KINDS = [
   'kb_put',
   'ledger_appended',
   'halt_created',
+  // DESIGN-GAP (T007 manager decision): `putHalt` previously minted
+  // `halt_created` for every put, including a quorum-tracking update to an
+  // existing halt file — indistinguishable from an actual creation in the
+  // event/commit log. `halt_updated` covers every non-creating `putHalt`
+  // (e.g. `recordStandupReport`/timeout evaluation flipping `quorum` to
+  // `reached`), named after the store method exactly like the other
+  // store-mutation kinds above (`ticket_put`, `oracle_put`, ...).
+  'halt_updated',
   'halt_released',
   'sprint_put',
   'quota_put',

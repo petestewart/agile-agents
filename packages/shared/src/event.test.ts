@@ -30,6 +30,7 @@ describe('Event — §3/§4 log/events.jsonl', () => {
     'kb_put',
     'ledger_appended',
     'halt_created',
+    'halt_updated',
     'halt_released',
     'sprint_put',
     'quota_put',

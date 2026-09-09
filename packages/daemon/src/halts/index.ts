@@ -5,25 +5,20 @@
  * variant).
  *
  * File ownership: this module (`packages/daemon/src/halts/**`) plus
- * `packages/daemon/src/oracle/**` are the only things T007 may edit — no
- * changes to `store.ts`, `rpc.ts`, or `packages/shared`.
+ * `packages/daemon/src/oracle/**` are T007's usual ownership; the manager
+ * additionally granted `packages/shared/src/halt.ts` and
+ * `packages/daemon/src/store/store.ts` for this one change (durable quorum
+ * tracking, see below) — everything else stays off-limits.
  *
- * Quorum bookkeeping (which agents a halt is waiting on, which have reported,
- * when it was raised) is kept as **process-local state**, not persisted to
- * `.agile/`, and is documented here as a deliberate DESIGN-GAP:
- *
- * - The `Halt` schema (`packages/shared/src/halt.ts`) only carries
- *   `quorum: pending | reached` — no field for the affected-agent set, the
- *   reported set, or a raised-at timestamp. Adding one is a `packages/shared`
- *   change outside this ticket's file ownership; see the pipeline report for
- *   the exact schema addition to hand the manager.
- * - `StateStore` already documents itself as "one daemon process per repo"
- *   (see `store.ts`'s `Mutex` comment) for the same reason its own mutex
- *   doesn't need cross-process coordination — process-local quorum state
- *   rides the same assumption and needs no new on-disk artifact type.
- * - State is keyed by `WeakMap<StateStore, ...>` (not a bare module
- *   singleton) so distinct `StateStore.open()` instances — e.g. one per test
- *   — never share state even when they mint the same halt id.
+ * Quorum bookkeeping (which agents a halt is waiting on, which have
+ * reported, when it was raised) is **persisted on the `Halt` file itself**
+ * (`affected`/`reported`/`raised_at` — added to `HaltSchema` by this change,
+ * see the `DESIGN-GAP` there) rather than kept in process memory: CLAUDE.md
+ * requires every ceremony to be reconstructible from `.agile/`, and a daemon
+ * restart mid-halt must not forget who has already reported. Every function
+ * below reads/writes that state through `store.getHalt`/`store.putHalt` —
+ * there is no other state in this module, so two `StateStore` instances
+ * pointed at the same `.agile/` (e.g. a restarted daemon) agree automatically.
  */
 
 import type { AgentId, Halt, HaltId, HaltScope, OracleId, TicketId } from '@agile-agents/shared';
@@ -36,23 +31,6 @@ export const QUORUM_TIMEOUT_MS = 10 * 60 * 1000;
 
 export type Clock = () => number;
 const defaultClock: Clock = () => Date.now();
-
-interface QuorumState {
-  affected: Set<string>;
-  reported: Set<string>;
-  raisedAt: number;
-}
-
-const quorumStates = new WeakMap<StateStore, Map<HaltId, QuorumState>>();
-
-function stateMapFor(store: StateStore): Map<HaltId, QuorumState> {
-  let map = quorumStates.get(store);
-  if (!map) {
-    map = new Map();
-    quorumStates.set(store, map);
-  }
-  return map;
-}
 
 function haltIdNumber(id: HaltId): number {
   const n = Number(id.slice('H-'.length));
@@ -82,9 +60,9 @@ function nextHaltId(store: StateStore): HaltId {
  * agent/ticket mapping from), so a team halt's quorum is vacuously reached
  * immediately (empty affected set) until a later ticket adds team modeling.
  */
-function computeAffectedAgents(store: StateStore, scope: HaltScope): Set<string> {
+function computeAffectedAgents(store: StateStore, scope: HaltScope): string[] {
   if (scope === 'global') {
-    return new Set(store.listAgents().map((a) => a.id));
+    return store.listAgents().map((a) => a.id);
   }
   if (Array.isArray(scope)) {
     const ticketIds = new Set<TicketId>(scope);
@@ -100,9 +78,9 @@ function computeAffectedAgents(store: StateStore, scope: HaltScope): Set<string>
         // Ticket gone/never existed — nothing to add.
       }
     }
-    return agents;
+    return [...agents];
   }
-  return new Set();
+  return [];
 }
 
 export interface CreateHaltInput {
@@ -113,12 +91,12 @@ export interface CreateHaltInput {
 }
 
 /**
- * Creates a halt: mints the next `H-<n>` id, writes it `quorum: pending` via
- * the store (§4: presence of the file = halt active), and seeds process-local
- * quorum tracking against the affected-agent set computed at creation time.
- * If that set is empty (nobody currently assigned/registered on the scope,
- * or a `team:` halt), the quorum is reached immediately — vacuous truth,
- * and there's nobody to wait on.
+ * Creates a halt: mints the next `H-<n>` id, computes the affected-agent set
+ * at creation time, and persists `affected`/`reported: []`/`raised_at` on
+ * the file alongside `quorum: pending` (§4: presence of the file = halt
+ * active). If the affected set is empty (nobody currently assigned/
+ * registered on the scope, or a `team:` halt), quorum is reached immediately
+ * — vacuous truth, nobody to wait on.
  */
 export async function createHalt(
   store: StateStore,
@@ -126,19 +104,22 @@ export async function createHalt(
   clock: Clock = defaultClock,
 ): Promise<Halt> {
   const id = nextHaltId(store);
-  const halt = validateHalt({ ...input, id, quorum: 'pending' });
-  const created = await store.putHalt(halt);
-
-  const affected = computeAffectedAgents(store, created.scope);
-  stateMapFor(store).set(id, { affected, reported: new Set(), raisedAt: clock() });
-
+  const affected = computeAffectedAgents(store, input.scope);
+  const halt = validateHalt({
+    ...input,
+    id,
+    quorum: 'pending',
+    affected,
+    reported: [],
+    raised_at: new Date(clock()).toISOString(),
+  });
+  await store.putHalt(halt);
   return evaluateQuorum(store, id, clock);
 }
 
-/** Releases a halt: deletes the file (§4: "Delete the file to release") and drops its quorum state. */
+/** Releases a halt: deletes the file (§4: "Delete the file to release"). */
 export async function releaseHalt(store: StateStore, id: HaltId): Promise<void> {
   await store.deleteHalt(id);
-  stateMapFor(store).delete(id);
 }
 
 /**
@@ -158,22 +139,20 @@ export function activeHaltsFor(store: StateStore, target: TicketId | AgentId): H
 
 /**
  * Records that `agent` has reported in for `haltId` (§5 step 3: "reply
- * `standup_report`") and re-evaluates quorum. A report from an agent outside
- * the tracked affected set (e.g. one that joined after the halt was raised)
- * is recorded but doesn't by itself change whether quorum is reached — only
+ * `standup_report`"), persists it onto the halt's `reported` list, and
+ * re-evaluates quorum. A report from an agent outside the tracked
+ * `affected` set (e.g. one that joined after the halt was raised) is still
+ * recorded but doesn't by itself change whether quorum is reached — only
  * every *originally* affected agent reporting (or the timeout) does.
+ * Restart-safe: this reads/writes only the halt file, nothing process-local.
  *
  * DESIGN-GAP: the session brief also asks for "a helper that scans a
  * ticket's stanzas of [the `standup_report`] kind" as an alternative input
- * path. `STANZA_KINDS` (`packages/shared/src/stanza.ts`) has no
- * `standup_report` member — that kind exists only on `Message`
- * (`packages/shared/src/message.ts`'s `MESSAGE_KINDS`), per §5 "Message":
- * `standup_report` is a bus message kind, not a board stanza kind. There is
- * nothing to scan for under the `Stanza` schema as it stands, and stanza
- * validation is `.strict()` with a closed `kind` enum, so nothing here can
- * fabricate one without a `packages/shared` change. Only the direct-call
- * path (`recordStandupReport`) is implemented; see the pipeline report for
- * the shared-schema note this leaves for the manager.
+ * path. Per manager decision, `standup_report` stays a `Message` kind
+ * (`packages/shared/src/message.ts`), not a `Stanza` kind — there is nothing
+ * to scan for under the `Stanza` schema, and the bus (T006) is the intended
+ * read surface for standup replies, wired into this by the EM protocol
+ * (T015). Only the direct-call path is implemented here.
  */
 export async function recordStandupReport(
   store: StateStore,
@@ -181,21 +160,27 @@ export async function recordStandupReport(
   agent: string,
   clock: Clock = defaultClock,
 ): Promise<Halt> {
-  const state = stateMapFor(store).get(haltId);
-  if (state) state.reported.add(agent);
+  const halt = store.getHalt(haltId);
+  if (halt.quorum === 'reached') return halt;
+
+  const reported = new Set(halt.reported ?? []);
+  reported.add(agent);
+  await store.putHalt({ ...halt, reported: [...reported] });
+
   return evaluateQuorum(store, haltId, clock);
 }
 
 /**
- * Flips `quorum` to `reached` (writing through the store, so it's durable
- * and the `Halt` file is the single source of truth for readers who never
- * call into this module) once every originally-affected agent has reported,
- * or once `QUORUM_TIMEOUT_MS` has elapsed since the halt was raised (§4:
- * "quorum: pending | reached"; §5 "Liveness"/session brief: "reports or the
- * quorum timeout ... elapses"). A no-op (returns the halt unchanged) once
- * quorum is already `reached`, or if there is no tracked quorum state for
- * this id (a halt this process didn't create — e.g. loaded fresh from disk
- * on daemon restart; nothing to evaluate against, per the DESIGN-GAP above).
+ * Flips `quorum` to `reached` (writing through the store, so it's durable —
+ * the `Halt` file is the single source of truth, readable by any process
+ * that opens the same `.agile/`) once every agent in the halt's persisted
+ * `affected` set has reported, or once `QUORUM_TIMEOUT_MS` has elapsed since
+ * `raised_at` (§4: "quorum: pending | reached"; §5 "Liveness"/session brief:
+ * "reports or the quorum timeout ... elapses"). A no-op (returns the halt
+ * unchanged, no write) once quorum is already `reached`, or if the halt
+ * predates this field (no `raised_at` — nothing to time out against, and an
+ * absent `affected` list is treated as "nobody to wait on" below, not as
+ * "unknown").
  */
 export async function evaluateQuorum(
   store: StateStore,
@@ -205,11 +190,11 @@ export async function evaluateQuorum(
   const halt = store.getHalt(haltId);
   if (halt.quorum === 'reached') return halt;
 
-  const state = stateMapFor(store).get(haltId);
-  if (!state) return halt;
-
-  const allReported = [...state.affected].every((agent) => state.reported.has(agent));
-  const timedOut = clock() - state.raisedAt >= QUORUM_TIMEOUT_MS;
+  const affected = halt.affected ?? [];
+  const reported = new Set(halt.reported ?? []);
+  const allReported = affected.every((agent) => reported.has(agent));
+  const timedOut =
+    halt.raised_at !== undefined && clock() - Date.parse(halt.raised_at) >= QUORUM_TIMEOUT_MS;
   if (!allReported && !timedOut) return halt;
 
   return store.putHalt({ ...halt, quorum: 'reached' });

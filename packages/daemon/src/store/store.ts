@@ -554,15 +554,29 @@ export class StateStore {
     return join('board', 'halts', `${id}.yaml`);
   }
 
-  /** Creates (or updates, e.g. a quorum flip) a halt file. §4 "Halts": presence of the file = halt active. */
+  /**
+   * Creates (or updates, e.g. a quorum flip) a halt file. §4 "Halts":
+   * presence of the file = halt active. Review fix (T007 manager decision):
+   * previously always minted `halt_created`, even for an update to an
+   * existing halt (e.g. `recordStandupReport` persisting a quorum flip) —
+   * indistinguishable from an actual creation in the event/commit log. Now
+   * mints `halt_created` only the first time a given id's file is written,
+   * `halt_updated` on every subsequent put. A quorum flip to `reached`
+   * carries `{haltId, quorum: 'reached'}` as the event's `data` so the feed
+   * can show it without diffing the file.
+   */
   async putHalt(halt: Halt): Promise<Halt> {
     return this.mutate(() => {
       const validated = validateHalt(halt);
       const relPath = this.haltRelPath(validated.id);
+      const existed = fileExists(this.abs(relPath));
       writeYamlFileAtomic(this.abs(relPath), validated);
-      const event = buildEvent('halt_created', {
-        data: { id: validated.id, scope: validated.scope },
-      });
+      const kind = existed ? 'halt_updated' : 'halt_created';
+      const data =
+        existed && validated.quorum === 'reached'
+          ? { haltId: validated.id, quorum: validated.quorum }
+          : { id: validated.id, scope: validated.scope };
+      const event = buildEvent(kind, { data });
       return { result: validated, relPaths: [relPath], event };
     });
   }

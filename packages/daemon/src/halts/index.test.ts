@@ -15,6 +15,7 @@ import {
 } from './index';
 
 let repo: string;
+let stateRoot: string;
 let store: StateStore;
 
 beforeEach(() => {
@@ -24,7 +25,8 @@ beforeEach(() => {
   Bun.spawnSync(['git', 'config', 'user.name', 'Test'], { cwd: repo });
   Bun.spawnSync(['git', 'commit', '--allow-empty', '-q', '-m', 'init'], { cwd: repo });
   const init = runInit(repo);
-  store = StateStore.open(init.stateRoot);
+  stateRoot = init.stateRoot;
+  store = StateStore.open(stateRoot);
 });
 
 afterEach(() => {
@@ -158,6 +160,35 @@ describe('quorum', () => {
     expect(halt.quorum).toBe('pending');
     const after = await recordStandupReport(store, halt.id, 'eng-9', clock.now);
     expect(after.quorum).toBe('reached');
+  });
+});
+
+describe('quorum survives a daemon restart', () => {
+  test('re-opening the store preserves affected/reported and reaches quorum on the last report', async () => {
+    await store.putAgent('eng-1', makeAgent({ ticket: 'TKT-0001' }));
+    await store.putAgent('eng-2', makeAgent({ ticket: 'TKT-0001' }));
+    await store.putTicket(makeTicket('TKT-0001'));
+
+    const clock = fakeClock(0);
+    const halt = await createHalt(
+      store,
+      { scope: ['TKT-0001'], reason: 'discovery', raised_by: 'architect' },
+      clock.now,
+    );
+    expect(halt.quorum).toBe('pending');
+
+    const afterFirst = await recordStandupReport(store, halt.id, 'eng-1', clock.now);
+    expect(afterFirst.quorum).toBe('pending');
+
+    // Simulate a daemon restart: a brand new StateStore over the same
+    // .agile/ root, no shared process state with the one above.
+    const freshStore = StateStore.open(stateRoot);
+    const afterSecond = await recordStandupReport(freshStore, halt.id, 'eng-2', clock.now);
+    expect(afterSecond.quorum).toBe('reached');
+
+    // The original store handle sees the same durable result too.
+    expect(store.getHalt(halt.id).quorum).toBe('reached');
+    expect(store.getHalt(halt.id).reported?.sort()).toEqual(['eng-1', 'eng-2']);
   });
 });
 
