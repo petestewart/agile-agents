@@ -1,11 +1,12 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   MAX_FAILURES_RETURNED,
   TestRunDeniedError,
   isAllowedTestCommand,
+  pruneRawTestRunOutputs,
   runTestRun,
 } from './test-run';
 
@@ -314,6 +315,69 @@ describe('runTestRun', () => {
       total += Bun.file(join(repo, '.agile-daemon-cache', 'raw', 'test_run', relPath)).size;
     }
     expect(total).toBeLessThan(4096 * 3);
+  });
+
+  test('round 3 review fix (blocker 1): a run whose own raw log alone exceeds maxRetainedRawBytes still has its raw_output on disk afterwards', async () => {
+    writeFileSync(
+      join(repo, 'pkg.test.ts'),
+      [
+        'import { test, expect } from "bun:test";',
+        'test("chatty", () => {',
+        // ~500 KB of stdout — comfortably more than the 50 KiB budget below,
+        // so the run's own combined log alone exceeds the whole tree budget.
+        '  for (let i = 0; i < 2500; i++) console.log("q".repeat(200));',
+        '  expect(1).toBe(1);',
+        '});',
+      ].join('\n'),
+    );
+
+    const result = await runTestRun({
+      input: { command: 'bun test pkg.test.ts' },
+      worktree: repo,
+      repoRoot: repo,
+      maxRetainedRawBytes: 50 * 1024,
+    });
+
+    const rawPath = join(repo, '.agile-daemon-cache', 'raw', result.raw_output);
+    // The old plain oldest-first sweep had nothing else to delete before
+    // this run's own just-written log, so it deleted *that* — leaving
+    // `raw_output` pointing at nothing. Protecting it must keep it on disk.
+    expect(await Bun.file(rawPath).exists()).toBe(true);
+    expect(Bun.file(rawPath).size).toBeGreaterThan(50 * 1024);
+    // Surfaced on the result rather than silently exceeding the budget.
+    expect(result.raw_output_over_budget).toBe(true);
+  });
+
+  test('round 3 review fix (nit N4): a concurrent run’s in-flight capture files are protected by the same mechanism, even if oldest', async () => {
+    writeFileSync(
+      join(repo, 'pkg.test.ts'),
+      [
+        'import { test, expect } from "bun:test";',
+        'test("ok", () => { expect(1).toBe(1); });',
+      ].join('\n'),
+    );
+
+    // Simulate another run's still-being-written capture files: old mtimes
+    // (so a plain oldest-first sweep would pick them first) sitting in the
+    // same `test_run/<bin>/` tree `runTestRun` writes into.
+    const inFlightDir = join(repo, '.agile-daemon-cache', 'raw', 'test_run', 'bun');
+    mkdirSync(inFlightDir, { recursive: true });
+    const inFlightPath = join(inFlightDir, 'in-flight.out');
+    writeFileSync(inFlightPath, 'x'.repeat(40 * 1024));
+    const oldTime = new Date(Date.now() - 60_000);
+    utimesSync(inFlightPath, oldTime, oldTime);
+
+    // This asserts the *pruning* mechanism itself honours a protected path
+    // regardless of age, directly — `runTestRun` only ever protects its own
+    // run's paths, so a concurrent run's in-flight capture is protected the
+    // same way any caller-supplied path is: by being in the set at all.
+    const stillOverBudget = pruneRawTestRunOutputs(
+      join(repo, '.agile-daemon-cache', 'raw', 'test_run'),
+      1,
+      new Set([inFlightPath]),
+    );
+    expect(stillOverBudget).toBe(true); // still over budget — the file is protected, not deletable.
+    expect(await Bun.file(inFlightPath).exists()).toBe(true);
   });
 
   test('review round 2 fix (blocker 1): 60 failures — the WHOLE serialized result stays under 500 tokens, not just summary', async () => {

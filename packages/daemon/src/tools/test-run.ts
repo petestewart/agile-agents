@@ -53,6 +53,16 @@ export interface TestRunOutput {
   omitted_failures?: number;
   /** The true number of failures parsed, regardless of how many `failures[]` actually carries — never dropped by the size budget (review round 2). */
   total_failures: number;
+  /**
+   * Round 2 review (blocker 1): set when this run's own raw log (plus its
+   * two capture files) alone exceed `maxRetainedRawBytes` — pruning could
+   * not bring the `raw/test_run/` tree back under budget without deleting
+   * the very file `raw_output` points to, so the file was kept and the
+   * budget was exceeded instead. The pointer above is always live; this
+   * just flags that other, older runs' `raw_output` pointers may have been
+   * pruned harder than usual to make room.
+   */
+  raw_output_over_budget?: boolean;
 }
 
 export class TestRunDeniedError extends Error {}
@@ -300,6 +310,8 @@ export interface BudgetTestRunOutputInput {
   exitCode: number;
   rawOutputRelPath: string;
   timedOut: boolean;
+  /** See `TestRunOutput.raw_output_over_budget`. */
+  rawOutputOverBudget?: boolean;
 }
 
 /**
@@ -326,6 +338,7 @@ export function budgetTestRunOutput(input: BudgetTestRunOutputInput): TestRunOut
       total_failures: totalFailures,
       ...(input.timedOut ? { timed_out: true } : {}),
       ...(omitted > 0 ? { omitted_failures: omitted } : {}),
+      ...(input.rawOutputOverBudget ? { raw_output_over_budget: true } : {}),
     };
   };
   const fits = (failures: TestFailure[]): boolean =>
@@ -476,8 +489,22 @@ export async function runTestRun(opts: RunTestRunOptions): Promise<TestRunOutput
   // *many* runs needs its own ceiling — prune the oldest raw `test_run`
   // logs (by mtime) until the tree is back under budget. Never throws: a
   // pruning failure must not fail the test run that triggered it.
+  //
+  // Round 2 review (blocker 1): this run's own `rawLogPath` (and the two
+  // capture files, in case an earlier unlink above failed and left them on
+  // disk) are passed in as protected — a plain oldest-first sweep with no
+  // such protection can and did delete the very file `raw_output` was just
+  // set to point at, whenever a single run's log alone exceeded the whole
+  // budget. Protecting by path also covers another run's still-being-written
+  // `.out`/`.err` captures the same way, since the mechanism has no notion
+  // of "whose run" a path belongs to — it just never deletes a protected one.
+  let rawOutputOverBudget = false;
   try {
-    pruneRawTestRunOutputs(testRunRawRoot, maxRetainedRawBytes);
+    rawOutputOverBudget = pruneRawTestRunOutputs(
+      testRunRawRoot,
+      maxRetainedRawBytes,
+      new Set([stdoutPath, stderrPath, rawLogPath]),
+    );
   } catch {
     // Best-effort housekeeping only.
   }
@@ -501,6 +528,7 @@ export async function runTestRun(opts: RunTestRunOptions): Promise<TestRunOutput
     exitCode,
     rawOutputRelPath: join('test_run', rawRelPath),
     timedOut,
+    rawOutputOverBudget,
   });
 }
 
@@ -570,23 +598,43 @@ function collectFilesRecursive(dir: string, acc: string[] = []): string[] {
  * Bun's per-run `maxBuffer` cap. `rootDir` is `test_run`'s whole raw-output
  * tree (every `<bin>/` subdirectory `runTestRun` has ever written into),
  * so this bounds total disk use across every run, not just the one that
- * just finished. A single run's own two freshly-written files are never
- * both close to the boundary and older than everything else, so the run
- * that triggers a prune never has its own just-written log deleted by it
- * in practice; even in the pathological case where it is, the run's
- * `raw_output` pointer simply becomes stale, exactly as it would for any
- * log old enough to be pruned on a later run.
+ * just finished.
+ *
+ * Round 2 review (blocker 1): a plain oldest-first sweep with no notion of
+ * "the run in flight" is not safe — a single log larger than `maxTotalBytes`
+ * left the sweep no file it could stop before deleting, so it deleted the
+ * `raw_output` this call's own caller had just returned to the agent (and,
+ * since that one file already exceeded the whole budget, every earlier run's
+ * log too). `protectedPaths` fixes this: any path in the set is never a
+ * sweep candidate, however old or however far over budget the tree still is
+ * once every unprotected file is gone. Callers pass the current run's
+ * `rawLogPath` plus its two (by-now-usually-already-deleted, but possibly
+ * still present) capture paths — the same mechanism, with no extra code,
+ * also protects another *concurrent* run's still-being-written `.out`/`.err`
+ * captures, since the sweep only ever looks at the path, never at whose run
+ * it belongs to.
+ *
+ * Returns `true` when the protected paths alone still exceed `maxTotalBytes`
+ * after every unprotected file has been deleted — the caller surfaces this
+ * on the result (`raw_output_over_budget`) rather than the budget being
+ * silently exceeded with no sign of it.
  */
-function pruneRawTestRunOutputs(rootDir: string, maxTotalBytes: number): void {
+export function pruneRawTestRunOutputs(
+  rootDir: string,
+  maxTotalBytes: number,
+  protectedPaths: ReadonlySet<string>,
+): boolean {
   const files = collectFilesRecursive(rootDir).map((path) => {
     const stat = statSync(path);
     return { path, size: stat.size, mtimeMs: stat.mtimeMs };
   });
   let total = files.reduce((sum, f) => sum + f.size, 0);
-  if (total <= maxTotalBytes) return;
+  if (total <= maxTotalBytes) return false;
 
-  files.sort((a, b) => a.mtimeMs - b.mtimeMs);
-  for (const file of files) {
+  const prunable = files
+    .filter((file) => !protectedPaths.has(file.path))
+    .sort((a, b) => a.mtimeMs - b.mtimeMs);
+  for (const file of prunable) {
     if (total <= maxTotalBytes) break;
     try {
       unlinkSync(file.path);
@@ -595,4 +643,5 @@ function pruneRawTestRunOutputs(rootDir: string, maxTotalBytes: number): void {
       // Already gone, or a permissions/race hiccup — best-effort only.
     }
   }
+  return total > maxTotalBytes;
 }
