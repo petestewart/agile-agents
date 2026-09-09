@@ -207,11 +207,16 @@ Verdict is \`accept\` or \`reject\`, plus one line per criterion: pass/fail, the
 command or action used, and for a fail, observed vs. expected via \`test_run\`.
 
 ## MCP verbs
-\`ticket_get\` (contract and acceptance criteria only), \`test_run\` (failures
-only, never a green log), \`bus_send\` (\`qa_verdict\` to the engineer, a copy
-to \`em\`; \`escalate\` to \`em\` — never straight to the architect, per routing).
-No \`read_summary\` on \`contract.inputs\`/\`contract.outputs\` — that would be
-reading the implementation by another door; the daemon denies it.
+\`qa_plan\` (map each criterion index to the command/action that exercises it
+from outside — a criterion with no entry is \`skipped\`, not failed), \`qa_run\`
+(executes every planned criterion with the one-rerun-on-failure policy —
+you never call \`test_run\` yourself, \`qa_run\` does, and applies §13's
+flaky-on-second-different-result rule for you), \`qa_submit\` (files the
+report and sends the verdict — do this exactly once per round, after
+\`qa_run\` has completed). Also \`ticket_get\` (contract and acceptance
+criteria only) and \`kb_search\` for prior gotchas. No \`read_summary\` on
+\`contract.inputs\`/\`contract.outputs\` — that would be reading the
+implementation by another door; the daemon denies it.
 
 ## Signal over volume
 Verdict body stays under 800 chars; the full per-criterion report goes to a
