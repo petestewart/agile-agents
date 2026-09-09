@@ -25,3 +25,4 @@ export * from './event';
 export * from './hil';
 export * from './review';
 export * from './merge';
+export * from './qa';

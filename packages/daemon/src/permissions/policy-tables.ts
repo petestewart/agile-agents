@@ -18,6 +18,13 @@
  * `sh -c "git push origin main"` bypasses.
  */
 
+// T017 review round: QA's `cat`/`head`/`grep` Bash rule (below,
+// `qaBashPathVerdict`) reuses the exact same path-resolution/glob-matching
+// primitives QA's raw-Read deny check uses, rather than re-deriving them —
+// `import type` elsewhere in `qa/deny.ts` (of `PermissionRole`, from this
+// package's `../permissions` barrel) makes this a type-only back-edge at
+// the JS level, not a runtime circular require.
+import { matchesAnyPattern, resolveRelToWorktree } from '../qa/deny';
 import * as cmd from './command';
 import { isPathInside } from './command';
 import type { PermissionRequest, PermissionRole } from './types';
@@ -554,6 +561,60 @@ function qaExecuteVerdict(command: string): PolicyVerdict {
     }
   }
   return ALLOW;
+}
+
+/** Bash binaries that read a file's contents (or a directory's) given a path argument — the ones §14's QA Bash rule (review round fix) needs to gate the same way a raw `Read` is gated. Not exhaustive (no `less`/`more`/`awk`/`sed` without `-i` etc. — those already reach `qaExecuteVerdict`'s allow path unchanged); extend here if a real run shows another one QA reaches for. */
+const QA_PATH_READING_BINARIES = new Set(['cat', 'head', 'tail', 'grep']);
+
+function isFlagToken(token: string): boolean {
+  return token.startsWith('-');
+}
+
+/**
+ * QA round-2 review fix: `cat`/`head`/`tail`/`grep` reach a QA env's
+ * `contract.inputs`/`outputs` just as readily as a raw `Read` — the Bash
+ * execute path was never checked against the deny list at all (§14's QA
+ * row: "env minus contract.inputs/outputs" was only ever enforced for
+ * `Read`/`Grep`-the-tool, not `Bash cat`/`grep`/etc.).
+ *
+ * This is a STANDALONE function, not folded into `qaExecuteVerdict`'s
+ * normal role-table walk: `decidePermission` (`permissions/decide.ts`, out
+ * of this ticket's file ownership) builds `PolicyContext` as a fixed
+ * `{role, worktreePath, ticket}` object with no room for a per-ticket deny
+ * list, so a caller that HAS resolved one (today: `hook/decide.ts`'s
+ * `roleToolVerdict`, from the ticket's own `contract.inputs/outputs` via
+ * `qa/deny.ts`'s `qaReadDenyList`) calls this ADDITIONALLY — see
+ * `hook/decide.ts` for the wiring. The ACP-responder tier
+ * (`permissions/responder.ts`, also out of scope here) does not call this;
+ * it inherits the same DESIGN-GAP `qaVerdict`'s own `read`/`execute` cases
+ * already flag ("the contract-scoped exclusion is enforced by whatever
+ * hands QA its tool permissions ... not by this generic ACP layer").
+ *
+ * `grep`'s first non-flag argument is its pattern, not a path — skipped.
+ * Every other non-flag argument of a matched binary is resolved against
+ * `worktreePath` (`qa/deny.ts`'s `resolveRelToWorktree`, the same resolver
+ * the raw-Read check uses) and checked against `denyList` (`qa/deny.ts`'s
+ * `matchesAnyPattern`).
+ */
+export function qaBashPathVerdict(
+  command: string,
+  worktreePath: string,
+  denyList: readonly string[],
+): PolicyVerdict | undefined {
+  if (denyList.length === 0) return undefined;
+  for (const atom of cmd.parseCommandIntoAtoms(command)) {
+    const [head, ...rest] = atom.tokens;
+    if (head === undefined || !QA_PATH_READING_BINARIES.has(head)) continue;
+    const nonFlagArgs = rest.filter((t) => !isFlagToken(t));
+    const pathArgs = head === 'grep' ? nonFlagArgs.slice(1) : nonFlagArgs;
+    for (const arg of pathArgs) {
+      const relPath = resolveRelToWorktree(arg, worktreePath);
+      if (matchesAnyPattern(relPath, denyList)) {
+        return deny('QA may not read contract inputs/outputs (§13)');
+      }
+    }
+  }
+  return undefined;
 }
 
 function qaVerdict(classified: PermissionRequest): PolicyVerdict {

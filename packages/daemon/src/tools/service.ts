@@ -34,6 +34,18 @@ export interface ToolListEntry {
   inputSpec: ToolInputSpec;
 }
 
+/**
+ * Result of a path-based guard check — deliberately the same tiny shape
+ * `qa/deny.ts`'s `QaReadDecision` uses (`{allow: true} | {allow: false,
+ * reason}`), but this module has no QA-specific knowledge: `pathGuard` is a
+ * plain function, wired by whoever constructs `ToolService`.
+ */
+export type ToolPathGuardResult = { allow: true } | { allow: false; reason: string };
+export type ToolPathGuard = (ctx: ToolCallContext, absolutePath: string) => ToolPathGuardResult;
+
+/** Thrown when `pathGuard` denies a reader tool's path (today: `read_summary`) — QA round fix: `read_summary` reads the file itself and returns a summary of it, so it would otherwise bypass the raw-`Read` contract-input/output deny list (§13) by another door. */
+export class ToolPathDeniedError extends Error {}
+
 export interface ToolServiceOptions {
   store: StateStore;
   bus: Bus;
@@ -43,6 +55,8 @@ export interface ToolServiceOptions {
   repoRoot: string;
   /** Resolves the current sprint id for cache TTL scoping (§7: "ttl: sprint"); `undefined` when no sprint is active. */
   currentSprintId?: () => string | undefined;
+  /** Optional path-based guard consulted before a reader tool exposes file content (today: only `read_summary`'s `path`) — e.g. QA's contract-input/output deny list. This module stays role-agnostic; the daemon wires a role-specific closure at construction. */
+  pathGuard?: ToolPathGuard;
 }
 
 /**
@@ -65,6 +79,7 @@ export class ToolService {
   private readonly runner: ToolRunner;
   private readonly repoRoot: string;
   private readonly currentSprintId: () => string | undefined;
+  private readonly pathGuard?: ToolPathGuard;
 
   constructor(opts: ToolServiceOptions) {
     this.store = opts.store;
@@ -73,6 +88,7 @@ export class ToolService {
     this.runner = opts.runner;
     this.repoRoot = opts.repoRoot;
     this.currentSprintId = opts.currentSprintId ?? (() => undefined);
+    this.pathGuard = opts.pathGuard;
   }
 
   /** Plug a role-scoped provider in (idempotent by identity). */
@@ -181,10 +197,20 @@ export class ToolService {
   ): Promise<unknown> {
     if (loaded.definition.name === 'read_summary') {
       const worktree = this.resolveWorktree(ctx);
+      const typedInput = input as { path: string; question?: string };
+      if (this.pathGuard) {
+        const absPath = isAbsolute(typedInput.path)
+          ? typedInput.path
+          : join(worktree, typedInput.path);
+        const guard = this.pathGuard(ctx, absPath);
+        if (!guard.allow) {
+          throw new ToolPathDeniedError(`read_summary: ${guard.reason}`);
+        }
+      }
       const result = await runReadSummary({
         tool: loaded,
         ctx,
-        input: input as { path: string; question?: string },
+        input: typedInput,
         worktree,
         repoRoot: this.repoRoot,
         sprintId: this.currentSprintId(),
