@@ -319,7 +319,7 @@ Priority encodes dependency layer as well as importance: P0 tickets are v0-block
 - **Scope:** Depends on T008, T010, T018, T020 (all Done). Move the three copies of the ULID generator (`packages/daemon/src/bus/ulid.ts`, `packages/daemon/src/gates/ulid.ts`, `packages/daemon/src/permissions/ulid.ts`, plus `packages/cli/src/ulid.ts`) into `packages/shared/src/ids.ts` as one `ulid(now?)` implementation (Crockford base32, monotonic within a ms) next to `UlidSchema`; delete the copies; update imports and tests. No behaviour change.
 - **Acceptance Criteria:** One implementation, exported from shared; `grep -rn "function ulid\|generateUlid" packages` finds only shared; all existing tests pass unchanged.
 - **Validation Steps:** `bun test`; grep.
-- **Notes:** Discovered during T008/T010/T018 reviews (four duplicate generators). Branch `T028-shared-ulid` (local worktree), 837 tests green; gates running.
+- **Notes:** Discovered during T008/T010/T018 reviews (four duplicate generators). Branch `T028-shared-ulid` (local worktree), 837 tests green; review round 1 PASS. QA running.
 
 ### Ticket: T029 Permission classifier: stop over-denying benign stderr redirects
 - **Priority:** P2
