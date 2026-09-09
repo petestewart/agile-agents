@@ -165,6 +165,9 @@ export function runInit(repoRoot: string): InitResult {
       'user.name=agiled',
       '-c',
       'user.email=agiled@localhost',
+      // Daemon-authored state commits are never signed with the user's key.
+      '-c',
+      'commit.gpgsign=false',
       'commit',
       '-m',
       'agile init: bootstrap state layout',

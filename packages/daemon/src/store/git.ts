@@ -87,6 +87,9 @@ export function commitPaths(
       `user.name=${AUTHOR_NAME}`,
       '-c',
       `user.email=${AUTHOR_EMAIL}`,
+      // Daemon-authored state commits are never signed with the user's key.
+      '-c',
+      'commit.gpgsign=false',
       'commit',
       '-m',
       message,

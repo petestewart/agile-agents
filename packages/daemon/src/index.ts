@@ -40,3 +40,6 @@ export { runInit, AlreadyInitialisedError, STATE_BRANCH, type InitResult } from 
 
 // Role briefs and ceremony templates (T013).
 export * from './briefs';
+
+// Validating state store over .agile/ (T005).
+export * from './store';
