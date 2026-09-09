@@ -116,12 +116,12 @@ Priority encodes dependency layer as well as importance: P0 tickets are v0-block
 
 ### Ticket: T006 Bus: inboxes, threads, registry, routing rules
 - **Priority:** P0
-- **Status:** In Progress
+- **Status:** In Review
 - **Owner:** sonnet:worker-T006
 - **Scope:** Depends on T005. `bus.send/poll/ack/heartbeat` per design §5: ULID message files under `bus/inbox/<agent>/`, `threads/<ticket>/`, `agents/<agent>.yaml` registry with `last_seen`; routing rules (engineers never message engineers; who may send what to whom); body size cap enforced; `to: ticket:<id>` fan-out; `requires_ack` re-delivery one priority up after deadline; broadcast for `halt`/`resume`.
 - **Acceptance Criteria:** Disallowed routes are rejected with a reason; unacked urgent messages re-deliver; registry heartbeat timeout emits an `escalate` to `em` and returns the ticket to `ready`.
 - **Validation Steps:** Unit tests for each routing rule and the re-delivery ladder; a fake-clock test for heartbeat timeout.
-- **Notes:**
+- **Notes:** branch `T006-bus` (local worktree); `src/bus/` (Bus: send/poll/ack/heartbeat/checkLiveness/sweepRedelivery, routing table, ULID, RPC table), 52 tests, self-review PASS. Liveness/redelivery sweeps have no timer yet — the daemon loop ticket (T009/T012) must call them. Manager wires `daemon.ts` at merge (hoist the shared StateStore). Gates `opus:reviewer-T006` + `sonnet:qa-T006` running.
 
 ### Ticket: T007 Oracle write guard, ripple walk, halts
 - **Priority:** P0
