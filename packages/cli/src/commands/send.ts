@@ -9,11 +9,11 @@
  */
 
 import type { SendResult } from '@agile-agents/daemon';
+import { ulid } from '@agile-agents/shared';
 import type { ParsedArgs } from '../args';
 import { optionalString, requireOption } from '../args';
 import { callRpc } from '../client';
 import { printFields, printJson } from '../format';
-import { generateUlid } from '../ulid';
 
 export function buildSendMessage(args: ParsedArgs): Record<string, unknown> {
   const from = requireOption(args.options, 'from');
@@ -23,7 +23,7 @@ export function buildSendMessage(args: ParsedArgs): Record<string, unknown> {
   const body = requireOption(args.options, 'body');
 
   const message: Record<string, unknown> = {
-    id: generateUlid(),
+    id: ulid(),
     ts: new Date().toISOString(),
     from,
     to: toRaw

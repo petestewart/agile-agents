@@ -17,6 +17,82 @@ export const UlidSchema = z
 export type Ulid = z.infer<typeof UlidSchema>;
 
 /**
+ * ULID generator (design §5 "Comms bus" → "Message": "id: 01J9...  # ulid").
+ * No `ulid` library dependency — a small monotonic-within-a-ms Crockford
+ * base32 generator, matching `UlidSchema` above.
+ *
+ * Layout: 10 chars of millisecond timestamp + 16 chars of randomness, both
+ * base32-encoded (5 bits/char × 26 chars = 130 bits ⊇ 48-bit time + 80-bit
+ * random, the standard ULID split: https://github.com/ulid/spec). Two
+ * ulid() calls in the same millisecond increment the random part by one
+ * instead of drawing fresh randomness, so ids stay strictly increasing and
+ * therefore sortable within one ms, not just across ms boundaries — "ULIDs
+ * order per inbox" (§5 "Ordering / failure").
+ */
+
+// Crockford base32: 0-9 then A-Z minus I, L, O, U (visually ambiguous /
+// easily confused with digits) — exactly `UlidSchema`'s character class.
+const ULID_ENCODING = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
+const ULID_ENCODING_LEN = ULID_ENCODING.length; // 32 = 2^5
+const ULID_TIME_LEN = 10;
+const ULID_RANDOM_LEN = 16;
+
+let lastUlidTimeMs = -1;
+let lastUlidRandom: number[] = [];
+
+function ulidRandomDigits(len: number): number[] {
+  const bytes = new Uint8Array(len);
+  crypto.getRandomValues(bytes);
+  // Modulo bias is negligible for a 26-bit-range Uint8 into 32 buckets and
+  // irrelevant for id-uniqueness purposes; a rejection-sampling loop would
+  // be needless ceremony here.
+  return Array.from(bytes, (b) => b % ULID_ENCODING_LEN);
+}
+
+function ulidEncodeTime(timeMs: number): string {
+  let out = '';
+  let t = timeMs;
+  for (let i = 0; i < ULID_TIME_LEN; i++) {
+    const mod = t % ULID_ENCODING_LEN;
+    out = ULID_ENCODING[mod] + out;
+    t = (t - mod) / ULID_ENCODING_LEN;
+  }
+  return out;
+}
+
+function ulidEncodeDigits(digits: number[]): string {
+  return digits.map((d) => ULID_ENCODING[d]).join('');
+}
+
+/** Increments the random part as a base-32 big-endian counter; overflow wraps to zeros. */
+function ulidIncrementRandom(digits: number[]): number[] {
+  const next = [...digits];
+  for (let i = next.length - 1; i >= 0; i--) {
+    const value = next[i] ?? 0;
+    if (value < ULID_ENCODING_LEN - 1) {
+      next[i] = value + 1;
+      return next;
+    }
+    next[i] = 0;
+  }
+  // 80 bits of overflow inside one millisecond is not reachable in practice;
+  // wrapping to all-zero (already done by the loop above) is a harmless
+  // fallback rather than throwing and breaking a hot send path.
+  return next;
+}
+
+/** Generates a new ULID. `now` is injectable for deterministic tests. */
+export function ulid(now: number = Date.now()): string {
+  if (now === lastUlidTimeMs) {
+    lastUlidRandom = ulidIncrementRandom(lastUlidRandom);
+  } else {
+    lastUlidTimeMs = now;
+    lastUlidRandom = ulidRandomDigits(ULID_RANDOM_LEN);
+  }
+  return ulidEncodeTime(now) + ulidEncodeDigits(lastUlidRandom);
+}
+
+/**
  * DEC-0042 / SPEC-auth-003 — oracle entry ids (§4 "Oracle").
  * DESIGN-GAP: the design only shows a numeric decision id (`DEC-0042`) and a
  * slugged spec id (`SPEC-auth-003`); no format grammar is given, so the slug
