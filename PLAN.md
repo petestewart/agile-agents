@@ -206,12 +206,12 @@ Priority encodes dependency layer as well as importance: P0 tickets are v0-block
 
 ### Ticket: T016 Review protocol
 - **Priority:** P1
-- **Status:** In Review
-- **Owner:** sonnet:worker-T016
+- **Status:** Done
+- **Owner:** Unassigned
 - **Scope:** Depends on T010, T012, T013. Reviewer session per design §12: reads `diff_summary` + contract first; findings schema (severity, cited `RULE-*` or oracle ref, location); verdict `approve | request_changes | escalate`; no new findings on re-review that were visible before; second disagreement on one finding → `question` to architect. `.agile/rules/` loader. Security reviewer pass when `security: true` or tier ≥ hard. Verdicts bump `attempts` at the escalation gate (tier ladder in v0 is a no-op with one model, but the counter and events exist).
 - **Acceptance Criteria:** A seeded rule violation in the demo fixture produces a `request_changes` with the rule cited; a clean diff produces `approve` listing what was checked; a deadlock fixture routes to the architect.
 - **Validation Steps:** Live test with two prepared diffs; unit tests for the convergence rule.
-- **Notes:** branch `T016-review-protocol`; `src/review/` (rules loader, findings/verdict, re-review convergence, `diff_summary`, ReviewProtocol with attempts/escalation/security pass/dispute routing), shared `review.ts`; 1095 tests. Wiring gaps for the manager: tools registry, rpc, runner brief. Review round 1 FAIL: convergence gate trusts reviewer-supplied hunks; a lone security-pass approve advances the ticket; `loadRules` throws on stray files. Sent back. QA round 1 ACCEPT (8 scenarios on real git diffs; independently hit the `loadRules` throw on init's `rules/.gitkeep`). Worker fixed all in `865a484` (1123 tests); round 2 review + QA running.
+- **Notes:** branch `T016-review-protocol`; `src/review/` (rules loader, findings/verdict, re-review convergence, `diff_summary`, ReviewProtocol with attempts/escalation/security pass/dispute routing), shared `review.ts`; 1095 tests. Wiring gaps for the manager: tools registry, rpc, runner brief. Review round 1 FAIL: convergence gate trusts reviewer-supplied hunks; a lone security-pass approve advances the ticket; `loadRules` throws on stray files. Sent back. QA round 1 ACCEPT (8 scenarios on real git diffs; independently hit the `loadRules` throw on init's `rules/.gitkeep`). Worker fixed all in `865a484` (1123 tests); Review round 2 PASS, QA round 2 ACCEPT. merge: `acf74f3`; manager wired providers (reviewer: diff_summary/review_submit/review_get/rules_list; engineer: review_get/review_dispute) + `review.*` RPC in 9025e10.
 
 ### Ticket: T017 QA protocol
 - **Priority:** P1
@@ -332,12 +332,12 @@ Priority encodes dependency layer as well as importance: P0 tickets are v0-block
 
 ### Ticket: T030 Engineer Bash allow-list: benign commands
 - **Priority:** P1
-- **Status:** In Review
-- **Owner:** sonnet:worker-T030
+- **Status:** Done
+- **Owner:** Unassigned
 - **Scope:** Depends on T012. The hook's engineer policy is allow-list-only for Bash (repo scripts, package managers, git inside the worktree), so everyday benign commands (`cat`, `ls`, `mkdir`, `cp`/`mv` inside the worktree, `echo`, `grep`/`rg`, `find` without `-delete`/`-exec`, `head`/`tail`/`wc`, `pwd`, `which`, `node`/`bun` scripts inside the worktree) deny. Extend `packages/daemon/src/permissions/policy-tables.ts` with a benign-command table (path arguments containment-checked against the worktree), keep the never-without-human list untouched, and table-test it; reviewer/QA policies unchanged. Tune during T021 if the demo run shows more gaps.
 - **Acceptance Criteria:** The listed commands allow for an engineer inside its worktree; the same commands with a path outside the worktree deny; every existing adversarial test still passes.
 - **Validation Steps:** `bun test packages/daemon/src/permissions packages/daemon/src/hook`.
-- **Notes:** Discovered in T012 review round 3. Branch `T030-benign-commands` (local worktree). Review round 1 FAIL: `~` unexpanded (home counted as inside), `find -fprint/-fls` writes, `--flag=path` values unchecked, redirect targets skip the `$VAR`/`~` check, `bun x` bypass, no realpath containment, lint red. QA round 1 REJECT on lint only. Worker fixed all 7 in `a191469` (1182 tests); review round 2 PASS. QA round 2 REJECT: flag-less `bun x`/`npx <pkg>` still allowed. Worker fixed round 3 in `6073c39` (dlx forms require a real `node_modules/.bin` entry); QA round 3 ACCEPT; review round 3 FAIL: `isRepoLocalBin` lacks realpath containment (`.bin -> /usr/bin` allows any binary), `pnpm/yarn dlx` should be unconditional hil. Round 4 sent.
+- **Notes:** Discovered in T012 review round 3. Branch `T030-benign-commands` (local worktree). Review round 1 FAIL: `~` unexpanded (home counted as inside), `find -fprint/-fls` writes, `--flag=path` values unchecked, redirect targets skip the `$VAR`/`~` check, `bun x` bypass, no realpath containment, lint red. QA round 1 REJECT on lint only. Worker fixed all 7 in `a191469` (1182 tests); review round 2 PASS. QA round 2 REJECT: flag-less `bun x`/`npx <pkg>` still allowed. Worker fixed round 3 in `6073c39` (dlx forms require a real `node_modules/.bin` entry); QA round 3 ACCEPT; review round 3 FAIL: `isRepoLocalBin` lacks realpath containment (`.bin -> /usr/bin` allows any binary), `pnpm/yarn dlx` should be unconditional hil. Round 4 (`a7c5415`): review PASS, QA ACCEPT. merge: `bfd4512`.
 
 ## 8. Open Questions
 
@@ -392,3 +392,4 @@ Priority encodes dependency layer as well as importance: P0 tickets are v0-block
 - 2026-09-09 — Decision (T019): the daemon never touches the user's checkout; all merges happen in daemon-owned worktrees `.worktrees/_integration` and `.worktrees/_main`, created lazily and never deleted. MergeRecord + events are written before any worktree cleanup; cleanup failures are logged, not thrown.
 - 2026-09-09 — T014 merged (f5011d9). `ToolService.registerProvider({roles, listTools, callTool})` is the seam T015/T016/T017 verbs are wired through at merge; `tool.list` is now role-filtered by the calling agent.
 - 2026-09-09 — The container's global git config (`commit.gpgsign=true` with a signing helper that now fails on fd exhaustion) made every fixture `git commit` in tests fail (36 failures). Fix: root `test-preload.ts` (via `bunfig.toml [test] preload`) sets `GIT_CONFIG_GLOBAL=/dev/null`, `GIT_CONFIG_NOSYSTEM=1` and a fixed test identity — tests are hermetic regardless of host git config. Suite back to 1106 pass.
+- 2026-09-09 — T016 merged (acf74f3) and wired into the daemon (review providers + review.* RPC, 9025e10). T030 merged (bfd4512) after 4 review / 4 QA rounds. 1347 tests green.
