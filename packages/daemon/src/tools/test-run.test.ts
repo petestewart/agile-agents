@@ -447,6 +447,62 @@ describe('runTestRun', () => {
     expect(slowRawContent).toContain('y'.repeat(20000));
   }, 15_000);
 
+  test('QA round 1 (T037 REJECT, blocker): a run that finishes (and deregisters) before a slower sibling still has raw_output on disk once the sibling prunes', async () => {
+    // QA's exact repro shape: both runs write a substantial (~200KB)
+    // capture and a budget far smaller than either log, so every run's own
+    // prune sweep actually deletes things. Ordering is forced with a sleep
+    // (not timing luck) so run A is guaranteed to fully complete — write,
+    // read back, unlink its two capture files, prune, AND deregister from
+    // `inFlightRawOutputPaths` — before run B's own prune ever executes.
+    // Before the fix (`minProtectedMtimeMs`), B's sweep found A's `.log` in
+    // neither `protectedPaths` (not B's own path) nor
+    // `inFlightRawOutputPaths` (A already deregistered) and deleted it.
+    writeFileSync(
+      join(repo, 'quick.test.ts'),
+      [
+        'import { test, expect } from "bun:test";',
+        'test("quick", () => {',
+        '  console.log("q".repeat(200000));',
+        '  expect(1).toBe(1);',
+        '});',
+      ].join('\n'),
+    );
+    writeFileSync(
+      join(repo, 'delayed.test.ts'),
+      [
+        'import { test, expect } from "bun:test";',
+        'test("delayed", async () => {',
+        '  await new Promise((r) => setTimeout(r, 600));',
+        '  console.log("d".repeat(200000));',
+        '  expect(1).toBe(1);',
+        '});',
+      ].join('\n'),
+    );
+
+    const opts = (command: string) => ({
+      input: { command },
+      worktree: repo,
+      repoRoot: repo,
+      maxRetainedRawBytes: 50 * 1024,
+    });
+
+    // Launched together (`Promise.all`) so both are genuinely concurrent
+    // `runTestRun` calls against the same `repoRoot` — the sleep inside
+    // `delayed.test.ts`, not call ordering here, is what guarantees `quick`
+    // finishes (and deregisters) first.
+    const [quickResult, delayedResult] = await Promise.all([
+      runTestRun(opts('bun test quick.test.ts')),
+      runTestRun(opts('bun test delayed.test.ts')),
+    ]);
+
+    expect(quickResult.ok).toBe(true);
+    expect(delayedResult.ok).toBe(true);
+    const quickRawPath = join(repo, '.agile-daemon-cache', 'raw', quickResult.raw_output);
+    const delayedRawPath = join(repo, '.agile-daemon-cache', 'raw', delayedResult.raw_output);
+    expect(await Bun.file(quickRawPath).exists()).toBe(true);
+    expect(await Bun.file(delayedRawPath).exists()).toBe(true);
+  }, 15_000);
+
   test('review round 2 fix (blocker 1): 60 failures — the WHOLE serialized result stays under 500 tokens, not just summary', async () => {
     const lines = ['import { test, expect } from "bun:test";'];
     for (let i = 0; i < 60; i++) {

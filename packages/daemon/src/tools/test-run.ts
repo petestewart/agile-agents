@@ -108,6 +108,14 @@ const STANDALONE_TEST_BINARIES = new Set(['vitest', 'jest', 'pytest']);
  * mechanism) before its capture files can be written, and removed once that
  * run is fully done with them (including its own prune call), in a
  * `finally` so a thrown/rejected run still cleans up its registration.
+ *
+ * QA round 1 (T037 REJECT, blocker): this registry alone still lost the race
+ * when a sibling run finished (and deregistered) before this run's own
+ * prune executed — its file was, by then, in neither set. `runStartedAt` /
+ * `pruneRawTestRunOutputs`'s `minProtectedMtimeMs` closes that remaining
+ * window (see that function's doc comment for the exact guarantee); this
+ * registry still covers the still-in-flight case (a file whose mtime
+ * predates this run's own start but whose writer hasn't finished yet).
  */
 const inFlightRawOutputPaths = new Set<string>();
 
@@ -400,6 +408,14 @@ export interface RunTestRunOptions {
 }
 
 export async function runTestRun(opts: RunTestRunOptions): Promise<TestRunOutput> {
+  // QA round 1 (T037 REJECT, blocker): captured as early as possible, before
+  // any command validation or spawn — see `inFlightRawOutputPaths`'s doc
+  // comment for why the registry alone isn't enough. Any file with an mtime
+  // at or after this run's own start belongs to a run that began before or
+  // during this one (concurrent, by construction), whether or not that
+  // sibling has already finished and deregistered from the in-flight set by
+  // the time *this* run's own sweep executes.
+  const runStartedAt = Date.now();
   const { command } = opts.input;
   if (!isAllowedTestCommand(command)) {
     throw new TestRunDeniedError(
@@ -488,6 +504,7 @@ export async function runTestRun(opts: RunTestRunOptions): Promise<TestRunOutput
       stderrPath,
       rawRelPath,
       rawLogPath,
+      runStartedAt,
     });
   } finally {
     for (const path of [stdoutPath, stderrPath, rawLogPath]) {
@@ -508,6 +525,7 @@ interface RunTestRunSpawnedArgs {
   stderrPath: string;
   rawRelPath: string;
   rawLogPath: string;
+  runStartedAt: number;
 }
 
 async function runTestRunSpawned(args: RunTestRunSpawnedArgs): Promise<TestRunOutput> {
@@ -523,6 +541,7 @@ async function runTestRunSpawned(args: RunTestRunSpawnedArgs): Promise<TestRunOu
     stderrPath,
     rawRelPath,
     rawLogPath,
+    runStartedAt,
   } = args;
 
   const proc = Bun.spawn(tokens, {
@@ -593,12 +612,27 @@ async function runTestRunSpawned(args: RunTestRunSpawnedArgs): Promise<TestRunOu
   // registered paths — so this sweep can never delete a concurrent run's
   // still-being-written `.out`/`.err` (or not-yet-pruned `.log`) either,
   // not just this call's own.
+  //
+  // QA round 1 (T037 REJECT, blocker): the registry alone still lost the
+  // race when a sibling run *finished* (including its own prune, and its
+  // `finally` deregistration) before this run's own prune executed — at
+  // that point the sibling's `rawLogPath` is in neither `protectedPaths`
+  // (it's the sibling's file, not this call's own) nor
+  // `inFlightRawOutputPaths` (the sibling already removed itself). Fixed
+  // with `runStartedAt`: any file whose mtime is at or after *this* call's
+  // own start belongs to a run that began before or during this one —
+  // concurrent by construction — and is protected regardless of whether
+  // that run has already finished. The guarantee this establishes: a run's
+  // `raw_output` survives every sweep triggered by a run that started
+  // before or during it; only genuinely older runs' logs (predating this
+  // sweep's own caller) remain subject to the budget.
   let rawOutputOverBudget = false;
   try {
     rawOutputOverBudget = pruneRawTestRunOutputs(
       rawTreeRoot,
       maxRetainedRawBytes,
       new Set([stdoutPath, stderrPath, rawLogPath, ...inFlightRawOutputPaths]),
+      runStartedAt,
     );
   } catch {
     // Best-effort housekeeping only.
@@ -710,6 +744,23 @@ function collectFilesRecursive(dir: string, acc: string[] = []): string[] {
  * `runTestRun` call's in-flight paths are protected too, not just the
  * calling run's own).
  *
+ * QA round 1 (T037 REJECT, blocker): `protectedPaths` alone still lost the
+ * race for a *finished* concurrent sibling — `runTestRun` deregisters a
+ * run's paths from `inFlightRawOutputPaths` once that run is done, so by
+ * the time a later-finishing sibling's own sweep runs, an earlier-finishing
+ * sibling's `rawLogPath` is protected by neither set (it's not this call's
+ * own path, and its owner already deregistered). `minProtectedMtimeMs`
+ * closes that: any file with `mtimeMs >= minProtectedMtimeMs` is protected
+ * regardless of whether it appears in `protectedPaths`, whether its owning
+ * run is still running, and whether that owner ever registered anywhere at
+ * all. Callers pass their own start time — anything written at or after a
+ * run's own start belongs to a run that began before or during it
+ * (concurrent, by construction), never a genuinely older, unrelated run.
+ * **The guarantee this establishes:** a run's `raw_output` survives every
+ * sweep triggered by a run that started before or during it; only logs from
+ * runs that both started *and* finished strictly before the current run
+ * began remain subject to the budget.
+ *
  * Returns `true` when the protected paths alone still exceed `maxTotalBytes`
  * after every unprotected file has been deleted — the caller surfaces this
  * on the result (`raw_output_over_budget`) rather than the budget being
@@ -719,6 +770,7 @@ export function pruneRawTestRunOutputs(
   rootDir: string,
   maxTotalBytes: number,
   protectedPaths: ReadonlySet<string>,
+  minProtectedMtimeMs?: number,
 ): boolean {
   const files = collectFilesRecursive(rootDir).map((path) => {
     const stat = statSync(path);
@@ -727,9 +779,10 @@ export function pruneRawTestRunOutputs(
   let total = files.reduce((sum, f) => sum + f.size, 0);
   if (total <= maxTotalBytes) return false;
 
-  const prunable = files
-    .filter((file) => !protectedPaths.has(file.path))
-    .sort((a, b) => a.mtimeMs - b.mtimeMs);
+  const isProtected = (file: { path: string; mtimeMs: number }): boolean =>
+    protectedPaths.has(file.path) ||
+    (minProtectedMtimeMs !== undefined && file.mtimeMs >= minProtectedMtimeMs);
+  const prunable = files.filter((file) => !isProtected(file)).sort((a, b) => a.mtimeMs - b.mtimeMs);
   for (const file of prunable) {
     if (total <= maxTotalBytes) break;
     try {
