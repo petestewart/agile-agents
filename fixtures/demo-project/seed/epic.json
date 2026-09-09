@@ -1,0 +1,94 @@
+{
+  "_comment": "T021 demo fixture seed, loaded by `agile run --seed` (packages/cli/src/commands/run.ts) via the daemon's validating StateStore — never written as raw .agile/ files. product.md is the one exception (init.ts's own stub is a plain file, not a StateStore entity).",
+  "productMd": "# Product\n\ndemo-project is a tiny in-memory task tracker (fixtures/demo-project/src/tasks.ts) — the T021 end-to-end demo's target, not a real product. Non-goals: persistence, auth, a UI. Glossary: a *task* has a title, an ISO `dueDate`, and a `done` flag.\n",
+  "oracle": [
+    {
+      "entry": {
+        "id": "SPEC-quality-001",
+        "title": "Code quality baseline",
+        "status": "active",
+        "supersedes": [],
+        "depends": [],
+        "affects": [],
+        "decided": "2026-01-01T00:00:00Z",
+        "by": "human",
+        "rationale": "Seeded baseline spec for the demo epic — every ticket's implementation is checked against it."
+      },
+      "body": "# SPEC-quality-001: Code quality baseline\n\n1. Every public function validates its inputs and throws a descriptive `Error` on invalid input — never returns a silently wrong result.\n2. No debug `console.log`/`console.debug` calls ship in `src/`.\n"
+    },
+    {
+      "entry": {
+        "id": "SPEC-tasks-002",
+        "title": "Task listing order",
+        "status": "active",
+        "supersedes": [],
+        "depends": [],
+        "affects": [],
+        "decided": "2026-01-01T00:00:00Z",
+        "by": "human",
+        "rationale": "Seeded spec for the demo epic's second ticket — contains the planted self-contradiction T021 requires."
+      },
+      "body": "# SPEC-tasks-002: Task listing order\n\n1. `listTasks()` returns tasks sorted ascending by `dueDate`.\n2. `listTasks()` must preserve insertion order and never reorder tasks.\n\n(Clauses 1 and 2 contradict each other for any two tasks created out of due-date order — this is the seeded contradiction ticket TKT-1002's engineer is expected to discover, not silently pick one reading of.)\n"
+    }
+  ],
+  "tickets": [
+    {
+      "id": "TKT-1001",
+      "title": "Add completeTask(id) to TaskStore",
+      "status": "ready",
+      "oracle_refs": ["SPEC-quality-001"],
+      "contract": {
+        "acceptance": [
+          "TaskStore.completeTask(id) sets that task's done to true and returns the updated task",
+          "completeTask throws a descriptive Error for an unknown id (SPEC-quality-001 clause 1)"
+        ],
+        "env": "clone"
+      }
+    },
+    {
+      "id": "TKT-1002",
+      "title": "Sort listTasks() by due date",
+      "status": "ready",
+      "oracle_refs": ["SPEC-tasks-002"],
+      "contract": {
+        "acceptance": [
+          "listTasks() returns tasks sorted ascending by dueDate (SPEC-tasks-002 clause 1)"
+        ],
+        "env": "clone"
+      }
+    },
+    {
+      "id": "TKT-1003",
+      "title": "Add overdueTasks(now) to TaskStore",
+      "status": "ready",
+      "oracle_refs": ["SPEC-tasks-002"],
+      "contract": {
+        "acceptance": [
+          "overdueTasks(now) returns every task whose dueDate is before now, in listTasks()'s order"
+        ],
+        "env": "clone"
+      }
+    }
+  ],
+  "discovery": {
+    "_comment": "Scripted for TKT-1002's engineer in offline/--fake mode (no live model to notice the contradiction on its own) — see run.ts's driveEngineerWork.",
+    "reporterTicket": "TKT-1002",
+    "tier": "scoped",
+    "affectsOracle": ["SPEC-tasks-002"],
+    "proposed": "SPEC-tasks-002 clauses 1 and 2 contradict each other; resolve by keeping clause 1 (sort ascending by due date) and retiring clause 2.",
+    "decision": {
+      "entry": {
+        "id": "DEC-0001",
+        "title": "listTasks() sorts ascending by due date; clause 2 (insertion order) is retired",
+        "status": "active",
+        "supersedes": [],
+        "depends": [],
+        "affects": ["SPEC-tasks-002"],
+        "decided": "2026-01-01T00:00:00Z",
+        "by": "architect",
+        "rationale": "SPEC-tasks-002 clauses 1 and 2 contradicted each other; clause 1 (sort ascending by due date) is kept, clause 2 (insertion order) is retired."
+      },
+      "body": "# DEC-0001\n\nSPEC-tasks-002 clause 1 (sort ascending by `dueDate`) wins; clause 2 (preserve insertion order) is retired as contradictory. `listTasks()` and anything built on it (TKT-1003's `overdueTasks`) must sort ascending by `dueDate`.\n"
+    }
+  }
+}
