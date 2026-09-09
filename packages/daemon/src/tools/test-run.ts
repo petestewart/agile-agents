@@ -609,10 +609,12 @@ function collectFilesRecursive(dir: string, acc: string[] = []): string[] {
  * sweep candidate, however old or however far over budget the tree still is
  * once every unprotected file is gone. Callers pass the current run's
  * `rawLogPath` plus its two (by-now-usually-already-deleted, but possibly
- * still present) capture paths — the same mechanism, with no extra code,
- * also protects another *concurrent* run's still-being-written `.out`/`.err`
- * captures, since the sweep only ever looks at the path, never at whose run
- * it belongs to.
+ * still present) capture paths. Note the set is per call: `runTestRun`
+ * protects only its *own* run's paths, so another concurrent run's
+ * still-being-written `.out`/`.err` captures are not protected by this
+ * sweep (the sweep looks only at the path, never at whose run it belongs
+ * to). Closing that window needs a shared in-flight registry — see the
+ * T034 follow-up ticket.
  *
  * Returns `true` when the protected paths alone still exceed `maxTotalBytes`
  * after every unprotected file has been deleted — the caller surfaces this

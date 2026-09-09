@@ -348,7 +348,7 @@ describe('runTestRun', () => {
     expect(result.raw_output_over_budget).toBe(true);
   });
 
-  test('round 3 review fix (nit N4): a concurrent run’s in-flight capture files are protected by the same mechanism, even if oldest', async () => {
+  test('round 3 review fix (nit N4): a caller-supplied protected path survives the sweep even if oldest (runTestRun itself protects only its own run’s paths)', async () => {
     writeFileSync(
       join(repo, 'pkg.test.ts'),
       [
@@ -369,8 +369,8 @@ describe('runTestRun', () => {
 
     // This asserts the *pruning* mechanism itself honours a protected path
     // regardless of age, directly — `runTestRun` only ever protects its own
-    // run's paths, so a concurrent run's in-flight capture is protected the
-    // same way any caller-supplied path is: by being in the set at all.
+    // run's paths, so a concurrent run's in-flight capture is NOT protected
+    // today; this test covers the mechanism, not that (unclosed) window.
     const stillOverBudget = pruneRawTestRunOutputs(
       join(repo, '.agile-daemon-cache', 'raw', 'test_run'),
       1,
