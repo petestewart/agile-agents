@@ -14,7 +14,7 @@
  */
 import type { AcpClientCapabilities } from './types';
 
-export type AcpProviderId = 'claude' | 'gemini' | 'cursor' | 'grok';
+export type AcpProviderId = 'claude' | 'gemini' | 'cursor' | 'grok' | 'codex';
 
 export interface AcpProviderConfig {
   id: AcpProviderId;
@@ -129,6 +129,39 @@ export const ACP_PROVIDERS: Record<AcpProviderId, AcpProviderConfig> = Object.fr
     // spike-findings.md itself.
     loadSession: true,
     authMethods: ['grok.com'],
+  }),
+  codex: freezeProvider({
+    id: 'codex',
+    label: 'Codex',
+    // `@agentclientprotocol/codex-acp` 1.10.0 (design/spike-findings.md §D,
+    // §C2, §C3): raises **zero** permission requests in `agent`,
+    // `read-only`, or `agent-full-access`, and stays that way under every
+    // `approval_policy` tested — "codex-acp never asks, regardless of mode
+    // or approval policy. If Codex needs approvals its adapter is the
+    // native `codex app-server` (which has approval request kinds)".
+    // Neither ACP permission (tier 2) nor a hook (tier 1) can gate this
+    // vendor, so a Codex engineer is routed through tier-0 sandbox only
+    // (`VendorConfig.requires_sandbox: true`, §6) plus tier-3 observation —
+    // never spawned unsandboxed (`Runner.spawn`/`wrapAgentCommand` fail
+    // closed on `requires_sandbox` with no backend, T026).
+    command: 'npx',
+    args: ['-y', '@agentclientprotocol/codex-acp@1.10.0'],
+    envOverrides: {},
+    // codex-acp never calls client `fs/*` (spike: "Codex reads files via
+    // shell (`sed -n`) rather than a read tool, so even a read gate would
+    // have to be an exec gate") — advertised anyway, harmless if unused,
+    // matching every other provider's entry here.
+    clientCapabilities: {
+      fs: { readTextFile: true, writeTextFile: true },
+    },
+    // Verified by execution (spike-findings.md §C2: "session/load restores
+    // context").
+    loadSession: true,
+    // Ambient ChatGPT login (`codex login`), out of band — spike-findings.md
+    // §D: "needs ChatGPT login on a real machine", never an ACP
+    // `authenticate` round trip (unlike Cursor/Grok, no -32000/auth error
+    // was ever observed for codex-acp in any spike run).
+    authMethods: [],
   }),
 });
 

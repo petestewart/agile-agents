@@ -25,8 +25,9 @@ describe('ACP provider registry', () => {
     expect(isAcpProviderId('gemini')).toBe(true);
     expect(isAcpProviderId('cursor')).toBe(true);
     expect(isAcpProviderId('grok')).toBe(true);
+    expect(isAcpProviderId('codex')).toBe(true);
     expect(isAcpProviderId('toString')).toBe(false);
-    expect(isAcpProviderId('codex')).toBe(false);
+    expect(isAcpProviderId('copilot')).toBe(false);
   });
 
   it('describes claude on the spike-pinned bridge, no auth round trip needed', () => {
@@ -59,6 +60,17 @@ describe('ACP provider registry', () => {
     expect(grok.args).toEqual(['agent', 'stdio']);
     expect(grok.authMethods).toEqual(['grok.com']);
     expect(grok.loadSession).toBe(true);
+  });
+
+  it('describes codex on codex-acp, no auth round trip needed, no client fs use', () => {
+    const codex = ACP_PROVIDERS.codex;
+    expect(codex.command).toBe('npx');
+    expect(codex.args).toEqual(['-y', '@agentclientprotocol/codex-acp@1.10.0']);
+    expect(codex.authMethods).toEqual([]);
+    expect(codex.loadSession).toBe(true);
+    // Advertised anyway (harmless), even though the spike found codex-acp
+    // never calls it — matches every other provider's entry.
+    expect(codex.clientCapabilities.fs).toEqual({ readTextFile: true, writeTextFile: true });
   });
 
   it('freezes every entry so callers cannot rewrite shared config', () => {
