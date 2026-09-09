@@ -312,7 +312,31 @@ export class HookService {
     // straight through the store's deferred, 30s-coalesced `heartbeat` (T009
     // review round, hot-path decision) rather than `Bus.heartbeat` (which
     // always writes+commits) — this is the per-tool-call hot path.
-    await this.store.heartbeat(agent, { ticket: ticketId }, this.now);
+    //
+    // Round 4 (QA round 3 REJECT — a real regression): `StateStore.heartbeat`
+    // now ONLY ever touches `last_seen`/`ticket` and carries every other
+    // field (`role`/`worktree`/`session_id` included) over from the existing
+    // record verbatim — it used to reconstruct the whole record from just
+    // this call's `{ ticket }` patch, silently dropping `role`/`worktree`
+    // once `HEARTBEAT_COALESCE_MS` elapsed. That decayed a live reviewer or
+    // QA session (one tool call roughly every 30+ seconds is normal) to
+    // `resolveAgentByCwd`'s `role ?? 'engineer'` fallback mid-session — this
+    // call site needs no change for the fix (it already only ever passed
+    // `ticket`), the fix is entirely in `StateStore.heartbeat` so it can
+    // never recur from any caller, this one included.
+    //
+    // `StateStore.heartbeat` now throws `NotFoundError` for an agent with no
+    // registered `AgentRecord` at all (round 4: heartbeating an unregistered
+    // agent is a caller bug, never a reason to fabricate one) — but
+    // `resolveAgentByCwd`'s own backward-compat fallback (no `AgentRecord`,
+    // resolved via `Ticket.worktree`/`.assignee` alone) is a legitimate,
+    // tested path with no registry entry to heartbeat at all. That's not a
+    // bug here, just nothing to update — swallow only that specific error.
+    try {
+      await this.store.heartbeat(agent, { ticket: ticketId }, this.now);
+    } catch (err) {
+      if (!(err instanceof NotFoundError)) throw err;
+    }
 
     return {
       agent,

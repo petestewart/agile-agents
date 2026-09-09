@@ -313,29 +313,45 @@ export class Bus {
    * the alternative (heartbeat before registration is an error) would make
    * every agent's first heartbeat racy against whatever else is supposed to
    * call `putAgent` first, and nothing in §5 names such a call.
+   *
+   * Round 4 (QA round 3 REJECT): this used to rebuild the WHOLE record from
+   * `patch`/`existing.{vendor,model,ticket,pid}` on every call, including
+   * every heartbeat *after* the first — silently dropping `role`/`worktree`/
+   * `session_id` (not in that field list) exactly like `StateStore.heartbeat`
+   * did before this round's fix there. Now: an agent's true first heartbeat
+   * (no existing record) still registers a minimal one via `putAgent`, same
+   * as before; every heartbeat after that delegates to
+   * `StateStore.heartbeat`, which only ever touches `last_seen`/`ticket` and
+   * carries every other field over verbatim — so `vendor`/`model`/`pid` on
+   * an EXISTING record are no longer patchable via a later heartbeat call
+   * either (a narrower contract than before, but the one `StateStore`'s own
+   * fix now enforces at the root; a real vendor/model/pid correction belongs
+   * in a `putAgent` call, not a heartbeat).
    */
   async heartbeat(agent: AgentId, patch: Partial<AgentRecord> = {}): Promise<AgentRecord> {
-    let existing: Partial<AgentRecord> = {};
+    let existing: AgentRecord | undefined;
     try {
       existing = this.store.getAgent(agent);
     } catch {
-      // First heartbeat for this agent — fall through to defaults below.
+      existing = undefined;
     }
-    const record: AgentRecord = {
-      vendor: patch.vendor ?? existing.vendor ?? 'unknown',
-      model: patch.model ?? existing.model ?? 'unknown',
-      ticket: patch.ticket ?? existing.ticket,
-      // T012 review round 3 (opus item 3, out-of-grant necessity — see
-      // `runner/session.ts`'s header and `.pipeline-report.md`): never fall
-      // back to `process.pid` (the daemon's own pid). `runner/session.ts`'s
-      // `recordHeartbeat` calls `bus.heartbeat` on every tool call with no
-      // `pid` in its patch, so leaving this fallback in place would silently
-      // overwrite a correctly-omitted `pid` with the daemon's on the very
-      // next heartbeat after registration — defeating the fix at its source.
-      pid: patch.pid ?? existing.pid,
-      last_seen: this.now().toISOString(),
-    };
-    return this.store.putAgent(agent, record);
+    if (existing === undefined) {
+      // First heartbeat for this agent — register a minimal record (§5:
+      // "create on first heartbeat if absent"). `StateStore.heartbeat`
+      // deliberately refuses to do this itself (round 4: heartbeating an
+      // unregistered agent is a caller bug, not something to paper over) —
+      // `Bus` is the one caller allowed to create a record here, and only
+      // because there truly is none yet.
+      const record: AgentRecord = {
+        vendor: patch.vendor ?? 'unknown',
+        model: patch.model ?? 'unknown',
+        ticket: patch.ticket,
+        pid: patch.pid,
+        last_seen: this.now().toISOString(),
+      };
+      return this.store.putAgent(agent, record);
+    }
+    return this.store.heartbeat(agent, { ticket: patch.ticket }, this.now);
   }
 
   /**

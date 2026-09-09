@@ -666,3 +666,120 @@ describe('HookService — registry-based agent resolution (T012 QA/review round)
     expect(result.hookSpecificOutput.permissionDecision).toBe('allow');
   });
 });
+
+// Round 4 (QA round 3 REJECT — a real regression, not a test-harness
+// artifact): `buildContext`'s own `store.heartbeat` call was silently
+// dropping `role`/`worktree`/`session_id` from the registry once
+// `HEARTBEAT_COALESCE_MS` elapsed, decaying a reviewer to the engineer's
+// permissive policy (and stranding QA with no resolvable identity) after
+// roughly 30+ seconds of normal tool-call traffic. Fixed at the store level
+// (`StateStore.heartbeat` now only ever touches `last_seen`/`ticket`).
+describe('HookService — heartbeat preserves agent identity across the coalescing window (T012 review round 4)', () => {
+  test('role/worktree/session_id survive a hook heartbeat past the coalescing window, byte-for-byte', async () => {
+    await seedTicket({ status: 'in_review', assignee: 'eng-1' });
+    let now = new Date('2026-09-09T00:00:00.000Z');
+    await store.putAgent(
+      'reviewer-1',
+      agentRecord({
+        role: 'reviewer',
+        worktree,
+        session_id: 'sess-reviewer-1',
+        ticket: 'TKT-0001',
+        // Registered well before the simulated clock's start — otherwise
+        // the coalescing check (`now - last_seen < 30s`) sees a *negative*
+        // gap against the fixture's real-wall-clock default `last_seen`
+        // and treats the first heartbeat below as still "recent", never
+        // writing at all.
+        last_seen: new Date(now.getTime() - 60_000).toISOString(),
+      }),
+    );
+    const svc = service({ now: () => now });
+
+    await svc.preToolUse({
+      cwd: worktree,
+      tool_name: 'Read',
+      tool_input: { file_path: 'x.txt' },
+      agile_agent: 'reviewer-1',
+    });
+    const before = store.getAgent('reviewer-1' as never);
+    expect(before.role).toBe('reviewer');
+    expect(before.worktree).toBe(worktree);
+    expect(before.session_id).toBe('sess-reviewer-1');
+
+    // Past the 30s heartbeat-coalescing window — this is exactly the write
+    // QA round 3 caught dropping role/worktree/session_id.
+    now = new Date(now.getTime() + 31_000);
+    await svc.preToolUse({
+      cwd: worktree,
+      tool_name: 'Read',
+      tool_input: { file_path: 'x.txt' },
+      agile_agent: 'reviewer-1',
+    });
+    const after = store.getAgent('reviewer-1' as never);
+    expect(after.role).toBe(before.role);
+    expect(after.worktree).toBe(before.worktree);
+    expect(after.session_id).toBe(before.session_id);
+    expect(after.vendor).toBe(before.vendor);
+    expect(after.model).toBe(before.model);
+    expect(after.pid).toBe(before.pid);
+    expect(after.last_seen).not.toBe(before.last_seen);
+  });
+
+  test('reviewer Edit is still denied after 3 simulated heartbeat windows (injectable clock)', async () => {
+    await seedTicket({ status: 'in_review', assignee: 'eng-1' });
+    await store.putAgent(
+      'reviewer-1',
+      agentRecord({ role: 'reviewer', worktree, ticket: 'TKT-0001' }),
+    );
+    let now = new Date('2026-09-09T00:00:00.000Z');
+    const svc = service({ now: () => now });
+
+    // Three tool calls, each one heartbeat-coalescing window (30s) apart —
+    // simulates a real reviewer session idling between tool calls at a
+    // normal cadence, well past the point QA round 3 found the role gate
+    // silently disappearing.
+    for (let window = 0; window < 3; window++) {
+      now = new Date(now.getTime() + 31_000);
+      const result = await svc.preToolUse({
+        cwd: worktree,
+        tool_name: 'Edit',
+        tool_input: { file_path: join(worktree, 'a.ts') },
+        agile_agent: 'reviewer-1',
+      });
+      expect(result.hookSpecificOutput.permissionDecision).toBe('deny');
+      expect(result.hookSpecificOutput.permissionDecisionReason).toMatch(
+        /reviewer role denies all writes/,
+      );
+    }
+    const record = store.getAgent('reviewer-1' as never);
+    expect(record.role).toBe('reviewer');
+    expect(record.worktree).toBe(worktree);
+  });
+
+  test('QA keeps resolvable identity (worktree) after 3 simulated heartbeat windows', async () => {
+    await seedTicket({ status: 'in_qa', assignee: 'eng-1' });
+    const qaWorktree = join(repo, '.worktrees', 'TKT-0001-qa');
+    mkdirSync(qaWorktree, { recursive: true });
+    await store.putAgent(
+      'qa-1',
+      agentRecord({ role: 'qa', worktree: qaWorktree, ticket: 'TKT-0001' }),
+    );
+    let now = new Date('2026-09-09T00:00:00.000Z');
+    const svc = service({ now: () => now });
+
+    for (let window = 0; window < 3; window++) {
+      now = new Date(now.getTime() + 31_000);
+      const result = await svc.preToolUse({
+        cwd: qaWorktree,
+        tool_name: 'Bash',
+        tool_input: { command: 'bun test' },
+        agile_agent: 'qa-1',
+      });
+      // QA is permitted "anything in the env" (§14) for a plain command —
+      // the regression QA round 3 found made this DENY with "cwd is not a
+      // registered ticket worktree" once `worktree` was dropped.
+      expect(result.hookSpecificOutput.permissionDecision).toBe('allow');
+    }
+    expect(store.getAgent('qa-1' as never).worktree).toBe(qaWorktree);
+  });
+});

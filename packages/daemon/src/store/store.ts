@@ -828,51 +828,59 @@ export class StateStore {
    * things keep it cheap — (1) the write is deferred (see the file's
    * "Deferred-commit batching" header), and (2) CLAUDE.md's 30s heartbeat
    * tunable means a `last_seen` less than `HEARTBEAT_COALESCE_MS` old with no
-   * *other* field actually changing is a pure no-op: no file write, no event,
-   * nothing queued — the existing record is returned unchanged. A `patch`
-   * that changes `vendor`/`model`/`ticket`/`pid` away from what's on disk
-   * always writes, regardless of how recent `last_seen` is, so a ticket
-   * reassignment is never held back by the coalescing window.
+   * ticket reassignment pending is a pure no-op: no file write, no event,
+   * nothing queued — the existing record is returned unchanged.
+   *
+   * Round 4 (QA round 3 REJECT — a real regression, not a test-harness
+   * artifact): this used to reconstruct the WHOLE `AgentRecord` from only
+   * `vendor`/`model`/`ticket`/`pid` on every write past the coalescing
+   * window, silently dropping `role`/`worktree`/`session_id` — fields this
+   * method's own patch never carried, and `hook/service.ts`'s `buildContext`
+   * calls this on *every* PreToolUse hook call with nothing but `{ ticket }`.
+   * A live reviewer or QA session making one tool call roughly every 30+
+   * seconds (entirely normal) would silently lose `role` after its first
+   * heartbeat past the window, decaying to `resolveAgentByCwd`'s
+   * `role ?? 'engineer'` fallback — a reviewer editing its own worktree
+   * unchallenged is exactly the tier-1 gate round 3 just finished proving
+   * real. Fixed at the root, per the QA finding, so it cannot recur from any
+   * caller: this method now ONLY ever touches `last_seen` and (if given)
+   * `ticket` — every other field is carried over from the existing record
+   * verbatim, never reconstructed — and heartbeating an agent with no
+   * existing record is treated as a caller bug (`getAgent` throws
+   * `NotFoundError`), not a silent "create a blank one". A record must be
+   * registered via `putAgent` first; `Bus.heartbeat` is the one place that
+   * still creates a minimal record on an agent's true first heartbeat, and
+   * delegates to this method for every heartbeat after that (see its own
+   * doc comment).
    */
   async heartbeat(
     id: AgentId,
-    patch: Partial<AgentRecord> = {},
+    patch: { ticket?: TicketId } = {},
     now: () => Date = () => new Date(),
   ): Promise<AgentRecord> {
     return this.mutex.run(() => {
-      let existing: AgentRecord | undefined;
-      try {
-        existing = this.getAgent(id);
-      } catch {
-        // No registry entry yet — always writes below.
-      }
+      // Throws `NotFoundError` if `id` isn't registered — deliberate, see
+      // this method's doc comment: heartbeating an unregistered agent is a
+      // bug at the call site, never a reason to fabricate a fresh record.
+      const existing = this.getAgent(id);
 
       const nowDate = now();
-      if (existing !== undefined) {
-        const lastSeenMs = Date.parse(existing.last_seen);
-        const fieldsChanged = (Object.keys(patch) as Array<keyof AgentRecord>).some(
-          (key) => patch[key] !== undefined && patch[key] !== existing?.[key],
-        );
-        if (
-          !fieldsChanged &&
-          !Number.isNaN(lastSeenMs) &&
-          nowDate.getTime() - lastSeenMs < HEARTBEAT_COALESCE_MS
-        ) {
-          return existing;
-        }
+      const ticketChanged = patch.ticket !== undefined && patch.ticket !== existing.ticket;
+      const lastSeenMs = Date.parse(existing.last_seen);
+      if (
+        !ticketChanged &&
+        !Number.isNaN(lastSeenMs) &&
+        nowDate.getTime() - lastSeenMs < HEARTBEAT_COALESCE_MS
+      ) {
+        return existing;
       }
 
+      // Every field carries over from `existing` verbatim except the two
+      // this method is actually allowed to touch — this is the fix: never
+      // reconstruct the record from a patch, only ever patch it.
       const record: AgentRecord = {
-        vendor: patch.vendor ?? existing?.vendor ?? 'unknown',
-        model: patch.model ?? existing?.model ?? 'unknown',
-        ticket: patch.ticket ?? existing?.ticket,
-        // Review round 3 (opus item 3): never fall back to `process.pid` —
-        // that's the *daemon's* pid, not the agent's. `pid` is optional
-        // (`@agile-agents/shared`'s `AgentRecord`) precisely so a heartbeat
-        // that runs before/without a known agent pid (e.g. right after
-        // `runner/session.ts` registered without one) leaves it unset
-        // instead of quietly overwriting it with the wrong process.
-        pid: patch.pid ?? existing?.pid,
+        ...existing,
+        ticket: patch.ticket ?? existing.ticket,
         last_seen: nowDate.toISOString(),
       };
       const validated = validateAgentRecord(record);

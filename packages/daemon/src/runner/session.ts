@@ -29,17 +29,23 @@
  * `store.getAgent(...).pid` equals the fake agent's own pid *before*
  * killing it).
  *
- * `role`/`worktree`/`session_id` survival (DESIGN-GAP): `StateStore.heartbeat`
- * and `Bus.heartbeat` (both outside this ticket's file ownership) rebuild
- * `AgentRecord` from only its five original fields on every write past the
- * 30s coalescing window, silently dropping any other field already on disk.
- * `recordHeartbeat` below (a) registers the full record once via
- * `store.putAgent` at start, then (b) after every `bus.heartbeat()` call,
- * re-applies `role`/`worktree`/`session_id` via `store.putAgent` whenever the
- * heartbeat's own write actually happened and dropped them (cheap: reading
- * the just-written record back is a plain file read, and the extra
- * `putAgent` only fires on the writes that need it, not on every coalesced
- * no-op).
+ * `role`/`worktree`/`session_id` survival — RESOLVED at the root in review
+ * round 4 (QA round 3 REJECT: a live reviewer/QA session silently decayed to
+ * the engineer's permissive policy once `hook/service.ts`'s own
+ * `store.heartbeat` call crossed the 30s coalescing window, because that
+ * method used to rebuild `AgentRecord` from only its patch fields, dropping
+ * anything else already on disk). `StateStore.heartbeat` (`store/store.ts`)
+ * now only ever touches `last_seen`/`ticket`, carrying every other field
+ * over from the existing record verbatim, and `Bus.heartbeat` delegates to
+ * it for every heartbeat past an agent's first. `recordHeartbeat` below
+ * still (a) registers the full record once via `store.putAgent` at start,
+ * then (b) re-applies `role`/`worktree`/`session_id` via `store.putAgent`
+ * after every `bus.heartbeat()` call if they ever come back different from
+ * what this session expects — now a pure backstop against some *other*
+ * future `putAgent`/`heartbeat` caller re-introducing this bug, not the
+ * load-bearing fix it was before round 4 (the fix now lives where round 4's
+ * QA finding said it belonged: the store itself, so it can't recur from any
+ * caller).
  *
  * `tool_call` observation (T012 QA round fix): `@agile-agents/shared`'s
  * `EVENT_KINDS` (granted for this round: `packages/shared/src/event.ts`)

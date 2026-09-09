@@ -1018,24 +1018,72 @@ describe('deferred-commit batching (T009 review round, hot-path decision)', () =
   });
 
   describe('StateStore.heartbeat', () => {
-    test('the first heartbeat for an agent writes (deferred) and returns the new record', async () => {
+    // Round 4 (QA round 3 REJECT): `heartbeat` no longer registers an
+    // agent — it only ever updates `last_seen`/`ticket` on an EXISTING
+    // record, throwing if there is none (`Bus.heartbeat` is the one caller
+    // allowed to create a first record; see bus.ts). Every test here
+    // registers via `putAgent` first, as a real caller must.
+    async function registerAgent(
+      store: StateStore,
+      overrides: Partial<Parameters<StateStore['putAgent']>[1]> = {},
+    ) {
+      return store.putAgent(
+        'eng-1' as never,
+        {
+          vendor: 'claude',
+          model: 'sonnet',
+          last_seen: new Date(0).toISOString(),
+          role: 'engineer',
+          worktree: '.worktrees/TKT-0001',
+          session_id: 'sess-abc',
+          ...overrides,
+        } as never,
+      );
+    }
+
+    test('heartbeating an unregistered agent throws (round 4: never silently create a fresh record)', async () => {
       const store = StateStore.open(stateRoot);
+      await expect(store.heartbeat('eng-1' as never)).rejects.toThrow(/not found/i);
+    });
+
+    test('bumps last_seen (deferred, not committed until flush) on an existing record', async () => {
+      const store = StateStore.open(stateRoot);
+      await registerAgent(store);
       const before = git(['rev-list', '--count', 'HEAD'], stateRoot);
-      const record = await store.heartbeat('eng-1' as never, { vendor: 'claude', model: 'sonnet' });
-      expect(record.vendor).toBe('claude');
+      const record = await store.heartbeat('eng-1' as never);
+      expect(record.last_seen).not.toBe(new Date(0).toISOString());
       expect(git(['rev-list', '--count', 'HEAD'], stateRoot)).toBe(before); // deferred, not committed
       await store.flush();
       expect(Number(git(['rev-list', '--count', 'HEAD'], stateRoot)) - Number(before)).toBe(1);
     });
 
-    test('coalesces: a second heartbeat within 30s with no field changes is a pure no-op', async () => {
+    // The exact regression QA round 3 found: `role`/`worktree`/`session_id`
+    // must survive byte-for-byte across a heartbeat, coalesced or not.
+    test('preserves role/worktree/session_id (and vendor/model/pid) byte-for-byte across a heartbeat', async () => {
+      const store = StateStore.open(stateRoot);
+      const registered = await registerAgent(store, { pid: 4242 });
+      let now = new Date('2026-09-09T00:00:00.000Z');
+      const heartbeat1 = await store.heartbeat('eng-1' as never, {}, () => now);
+      expect(heartbeat1.role).toBe('engineer');
+      expect(heartbeat1.worktree).toBe('.worktrees/TKT-0001');
+      expect(heartbeat1.session_id).toBe('sess-abc');
+      expect(heartbeat1.pid).toBe(4242);
+
+      now = new Date(now.getTime() + 31_000); // past the 30s coalescing window
+      const heartbeat2 = await store.heartbeat('eng-1' as never, {}, () => now);
+      expect(heartbeat2.role).toBe(registered.role);
+      expect(heartbeat2.worktree).toBe(registered.worktree);
+      expect(heartbeat2.session_id).toBe(registered.session_id);
+      expect(heartbeat2.vendor).toBe(registered.vendor);
+      expect(heartbeat2.model).toBe(registered.model);
+      expect(heartbeat2.pid).toBe(registered.pid);
+    });
+
+    test('coalesces: a second heartbeat within 30s with no ticket change is a pure no-op', async () => {
       const store = StateStore.open(stateRoot);
       let now = new Date('2026-09-09T00:00:00.000Z');
-      const first = await store.heartbeat(
-        'eng-1' as never,
-        { vendor: 'claude', model: 'sonnet' },
-        () => now,
-      );
+      await registerAgent(store);
+      const first = await store.heartbeat('eng-1' as never, {}, () => now);
       now = new Date(now.getTime() + 10_000); // +10s, under the 30s window
       const second = await store.heartbeat('eng-1' as never, {}, () => now);
       expect(second).toEqual(first); // last_seen unchanged — no write happened
@@ -1044,24 +1092,18 @@ describe('deferred-commit batching (T009 review round, hot-path decision)', () =
     test('writes again once past the 30s coalescing window', async () => {
       const store = StateStore.open(stateRoot);
       let now = new Date('2026-09-09T00:00:00.000Z');
-      const first = await store.heartbeat(
-        'eng-1' as never,
-        { vendor: 'claude', model: 'sonnet' },
-        () => now,
-      );
+      await registerAgent(store);
+      const first = await store.heartbeat('eng-1' as never, {}, () => now);
       now = new Date(now.getTime() + 31_000); // past the 30s window
       const second = await store.heartbeat('eng-1' as never, {}, () => now);
       expect(second.last_seen).not.toBe(first.last_seen);
     });
 
-    test('a field change writes immediately even inside the coalescing window', async () => {
+    test('a ticket change writes immediately even inside the coalescing window', async () => {
       const store = StateStore.open(stateRoot);
       let now = new Date('2026-09-09T00:00:00.000Z');
-      const first = await store.heartbeat(
-        'eng-1' as never,
-        { vendor: 'claude', model: 'sonnet' },
-        () => now,
-      );
+      await registerAgent(store);
+      const first = await store.heartbeat('eng-1' as never, {}, () => now);
       now = new Date(now.getTime() + 1_000);
       const second = await store.heartbeat(
         'eng-1' as never,
