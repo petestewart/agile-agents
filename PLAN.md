@@ -341,12 +341,12 @@ Priority encodes dependency layer as well as importance: P0 tickets are v0-block
 
 ### Ticket: T031 Architect ACP session: permission row and role threading
 - **Priority:** P2
-- **Status:** In Progress
+- **Status:** In Review
 - **Owner:** sonnet:worker-T031
 - **Scope:** Depends on T010, T014, T021, T026. `PermissionRole` is `engineer | reviewer | qa` (T010 scoped §14's Architect/EM/Reader rows out). Add the architect row per design §14 (oracle write guard + tickets + rules via MCP verbs; no repo edits; `plan` mode per the v0 default, falling back to `default` mode + `approve_plan` gate), thread `'architect'` through `permissions/policy-tables.ts`, `sandbox/{types,wrap}.ts`'s exhaustive per-role tables, `qa/deny.ts`, `runner/runner.ts` (`agentIdFor`, worktree placement: architect works in a read-only checkout of `integration`), and `Runner.spawn('architect', ...)`. The offline e2e (T021) currently calls `registerArchitectTools` directly; switch it to a spawned architect session over the fake ACP agent.
 - **Acceptance Criteria:** `Runner.spawn('architect', ticket)` type-checks and starts a session whose hook/ACP policy denies edits and Bash and allows the architect MCP verbs; the T021 offline e2e produces its discovery → decision cycle through that session; `bun test` green.
 - **Validation Steps:** `bun test packages/daemon/src/runner packages/daemon/src/permissions packages/daemon/src/architect` and the offline e2e 3x.
-- **Notes:** Discovered by T021 (worker report, discovered issue 1). A design decision, not a mechanical patch — hence its own ticket.
+- **Notes:** Discovered by T021 (worker report, discovered issue 1). A design decision, not a mechanical patch — hence its own ticket. Branch `T031-architect-session` (`3d7c337`): `architect` as a fourth `PermissionRole` (read allow, edit deny, exec read-only, no network) threaded through sandbox/qa-deny/ledger/agent-id tables; `Runner.spawn('architect')` on a **detached** read-only checkout of `integration` at `.worktrees/architect` (a branch checkout blocked `MergeOwner`'s merge worktree); Claude sessions in `plan` mode with `ExitPlanMode` → `approve_plan` gate; `default`-mode fallback is a caller-chosen seam (plan-mode MCP-write blocking unmeasured live); offline e2e spawns a real architect session. 1836 tests. Round 1 review + QA running.
 
 ### Ticket: T032 HTTP write actor hardening and store path guard follow-ups
 - **Priority:** P2
