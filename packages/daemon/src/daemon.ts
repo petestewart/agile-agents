@@ -9,6 +9,7 @@ import { existsSync } from 'node:fs';
 import daemonPackageJson from '../package.json' with { type: 'json' };
 import { Bus, buildBusRpcMethods } from './bus';
 import { type AgileConfig, type DiscoverConfigOptions, discoverConfig } from './config';
+import { pickCurrentSprint } from './feed';
 import { GateService, buildGateRpcMethods } from './gates';
 import { buildHaltRpcMethods } from './halts';
 import { HookService, buildHookRpcMethods } from './hook';
@@ -60,6 +61,11 @@ export async function startDaemon(options: DiscoverConfigOptions = {}): Promise<
           registry: loadToolRegistry(config.stateRoot),
           runner: new LiveRunner(),
           repoRoot: config.repoRoot,
+          // Review fix (T011): resolved per call, not memoized — the current
+          // sprint can change over the daemon's life. Same "latest started,
+          // ties by id" rule the feed snapshot uses (`pickCurrentSprint`),
+          // reused rather than re-derived so the two never drift apart.
+          currentSprintId: () => pickCurrentSprint(store.listSprints())?.id,
         })
       : undefined;
   const extraMethods =

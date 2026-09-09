@@ -13,6 +13,7 @@ import type { StateStore } from '../store/store';
 import { BUILTIN_TOOLS, type BuiltinToolDeps } from './builtins';
 import { cacheEntryPath, cacheKey, readCacheEntry, sha256Hex, writeCacheEntry } from './cache';
 import { runReadSummary } from './read-summary';
+import { type ToolInputSpec, inputSpecFromToolIo } from './schema';
 import { runTestRun } from './test-run';
 import type { LoadedTool, ToolCallContext, ToolRunner } from './types';
 
@@ -28,6 +29,8 @@ export interface ToolListEntry {
   description: string;
   /** `builtin` (board_post/bus_send/ticket_get/oracle_get/kb_search) or `registry` (loaded from `.agile/tools/<name>/tool.yaml`). */
   source: 'builtin' | 'registry';
+  /** Real per-field shape (review fix, T011) — see `schema.ts`'s header. RPC-safe: plain strings/booleans, no zod instances, so `tool.list` can ship it verbatim to a remote MCP bridge. */
+  inputSpec: ToolInputSpec;
 }
 
 export interface ToolServiceOptions {
@@ -63,11 +66,13 @@ export class ToolService {
       name: t.name,
       description: t.description,
       source: 'builtin',
+      inputSpec: t.inputSpec,
     }));
     const registered: ToolListEntry[] = this.registry.map((t) => ({
       name: t.definition.name,
       description: `${t.definition.kind} tool (${t.definition.action}); ledger_kind=${t.definition.ledger_kind}`,
       source: 'registry',
+      inputSpec: inputSpecFromToolIo(t.definition.input),
     }));
     return [...builtins, ...registered];
   }

@@ -181,6 +181,12 @@ describe('callTool: built-in verbs', () => {
     expect(none).toEqual([]);
   });
 
+  test('QA round 1 fix: kb_search rejects an unknown input key instead of silently ignoring it', async () => {
+    await expect(
+      service.callTool({ agent: 'eng-1' }, 'kb_search', { scoep: 'daemon' }),
+    ).rejects.toThrow(/unknown input key/);
+  });
+
   test('board_post: an engineer can post to its own ticket', async () => {
     await store.putTicket(makeTicket('TKT-0004'));
     const stanza = await service.callTool({ agent: 'eng-1', ticket: 'TKT-0004' }, 'board_post', {

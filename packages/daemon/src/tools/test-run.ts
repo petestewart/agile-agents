@@ -45,9 +45,20 @@ export interface TestRunOutput {
   exit_code: number;
   /** Path (relative to the host-local cache root) to the full stdout+stderr — "raw output to files with pointers" (CLAUDE.md). */
   raw_output: string;
+  /** True if the spawn timeout fired and the process was killed before it could finish. */
+  timed_out?: boolean;
+  /** Count of failures parsed but dropped from `failures[]` to keep the result small — see `MAX_FAILURES_RETURNED`. */
+  omitted_failures?: number;
 }
 
 export class TestRunDeniedError extends Error {}
+
+/** QA round 1 (T011): a runaway test process must not run forever or flood memory/the ledger. */
+export const DEFAULT_TEST_RUN_TIMEOUT_MS = 120_000;
+/** Bun's native `maxBuffer` (per stream) — a process that logs past this is killed and its output truncated, never buffered without bound. */
+export const MAX_TEST_RUN_OUTPUT_BYTES = 1024 * 1024; // 1 MiB
+/** Keeps the result well under the ~500-token acceptance cap even for a suite with dozens of failures — the rest are still on disk via `raw_output`. */
+export const MAX_FAILURES_RETURNED = 10;
 
 /** Standalone test-runner binaries beyond the `bun`/`npm`/`pnpm` repo-script allowance (§7's named parsers: "vitest/jest, pytest, go test"). */
 const STANDALONE_TEST_BINARIES = new Set(['vitest', 'jest', 'pytest']);
@@ -58,11 +69,35 @@ const STANDALONE_TEST_BINARIES = new Set(['vitest', 'jest', 'pytest']);
  * (`isRepoScriptCommand`), a bare `vitest`/`jest`/`pytest`, or `go test`.
  * No command chaining (`;`/`&&`/`||`/`|`) at all — `test_run` runs exactly
  * one program, directly, with no shell to chain through in the first place.
+ *
+ * Review round fix (blocker 4): `stripPrefixes` exists so the *classifier*
+ * can see through a leading `env FOO=bar` / `nohup` / etc. wrapper to the
+ * real command underneath — it was never meant to also decide what actually
+ * gets executed. `runTestRun` spawns `tokenizeSegment(command)` verbatim
+ * (the raw, un-stripped argv — no shell involved, ever), so classifying on
+ * the stripped tokens while spawning the raw ones let `env
+ * LD_PRELOAD=... bun test` classify as a plain `bun test` and then run with
+ * the env-assignment/wrapper prefix still attached, live. `test_run` itself
+ * has no legitimate reason to carry an env-assignment or wrapper prefix —
+ * the ticket's own tool.yaml never asks for one — so this checks the raw
+ * tokens equal the stripped ones and refuses outright when they don't,
+ * rather than trying to launder the prefix away and spawn the "vetted" tail.
  */
 export function isAllowedTestCommand(command: string): boolean {
   if (hasUnsafeShellConstruct(command)) return false;
   if (splitCommandSegments(command).length !== 1) return false;
-  const tokens = stripPrefixes(tokenizeSegment(command));
+  const rawTokens = tokenizeSegment(command);
+  const strippedTokens = stripPrefixes(rawTokens);
+  // Any difference at all (an env assignment/wrapper prefix stripped away,
+  // or even a token `stripPrefixes`'s unescaping rewrote) means the argv
+  // that would actually be spawned (`rawTokens`, verbatim, no shell) isn't
+  // the same as the argv the check below is about to classify — refuse
+  // rather than spawn something other than what was vetted.
+  const tokensMatch =
+    rawTokens.length === strippedTokens.length &&
+    rawTokens.every((t, i) => t === strippedTokens[i]);
+  if (!tokensMatch) return false;
+  const tokens = strippedTokens;
   if (tokens.length === 0) return false;
   if (isRepoScriptCommand(tokens)) return true;
   const [bin, sub] = tokens;
@@ -233,6 +268,10 @@ export interface RunTestRunOptions {
   worktree: string;
   /** For the host-local raw-output file — see `cache.ts`. */
   repoRoot: string;
+  /** Overrides `DEFAULT_TEST_RUN_TIMEOUT_MS` — mainly for tests. */
+  timeoutMs?: number;
+  /** Overrides `MAX_TEST_RUN_OUTPUT_BYTES` — mainly for tests. */
+  maxOutputBytes?: number;
 }
 
 export async function runTestRun(opts: RunTestRunOptions): Promise<TestRunOutput> {
@@ -244,22 +283,73 @@ export async function runTestRun(opts: RunTestRunOptions): Promise<TestRunOutput
   }
 
   const cwd = resolveCwd(opts.worktree, opts.input.cwd);
-  const tokens = tokenizeSegment(command);
+  // Review round fix (blocker 4): spawn exactly the tokens `isAllowedTestCommand`
+  // vetted — never the raw, un-stripped ones — so a command that (somehow)
+  // slipped an env-assignment/wrapper prefix past the check can't ever run
+  // with that prefix live. `isAllowedTestCommand` already refuses any
+  // command where stripping would change anything, so this is always
+  // identical to `tokenizeSegment(command)` by the time it's reached — kept
+  // explicit rather than relying on that invariant silently.
+  const tokens = stripPrefixes(tokenizeSegment(command));
+  const timeoutMs = opts.timeoutMs ?? DEFAULT_TEST_RUN_TIMEOUT_MS;
+  const maxOutputBytes = opts.maxOutputBytes ?? MAX_TEST_RUN_OUTPUT_BYTES;
 
-  const proc = Bun.spawn(tokens, { cwd, stdout: 'pipe', stderr: 'pipe' });
+  // QA round 1 fix: a spawn timeout (process killed, never left running
+  // forever) and a native per-stream output cap (`maxBuffer` — Bun kills the
+  // process and truncates rather than buffering an unbounded amount of
+  // output in memory). `killSignal: 'SIGKILL'` — a runaway test process is
+  // not expected to clean up gracefully, and a soft SIGTERM it ignores would
+  // defeat the timeout/cap entirely.
+  const proc = Bun.spawn(tokens, {
+    cwd,
+    stdout: 'pipe',
+    stderr: 'pipe',
+    timeout: timeoutMs,
+    killSignal: 'SIGKILL',
+    maxBuffer: maxOutputBytes,
+  });
   const [stdout, stderr] = await Promise.all([
     new Response(proc.stdout).text(),
     new Response(proc.stderr).text(),
   ]);
   const exitCode = await proc.exited;
+  // Bun reports a timeout/signal kill as a negative/undefined-ish `exitCode`
+  // depending on platform; `proc.signalCode` is the reliable signal.
+  const timedOut = proc.signalCode !== null && proc.signalCode !== undefined;
   const combined = stderr.length > 0 ? `${stdout}\n${stderr}` : stdout;
 
   const rawRelPath = join(opts.input.command.split(/\s+/)[0] ?? 'run', `${ulid()}.log`);
   writeRawOutput(rawOutputPath(opts.repoRoot, 'test_run', rawRelPath), combined);
 
-  const failures = exitCode === 0 ? [] : parseFailures(combined);
-  const ok = exitCode === 0 && failures.length === 0;
-  const summary = summarize(ok, failures, passSummary(combined));
+  const allFailures = timedOut ? [] : exitCode === 0 ? [] : parseFailures(combined);
+  const failures = allFailures.slice(0, MAX_FAILURES_RETURNED);
+  const omittedCount = allFailures.length - failures.length;
+  const ok = !timedOut && exitCode === 0 && allFailures.length === 0;
 
-  return { ok, failures, summary, exit_code: exitCode, raw_output: join('test_run', rawRelPath) };
+  let summary: string;
+  if (timedOut) {
+    summary = `test_run: killed after exceeding the ${timeoutMs}ms timeout — see raw_output`;
+  } else {
+    summary = summarize(ok, failures, passSummary(combined));
+    if (omittedCount > 0) {
+      summary = `${summary}\n...and ${omittedCount} more failure(s) — see raw_output`;
+    }
+    // `summarize()` already caps the per-failure portion, but the appended
+    // "...and N more" line can push a summary that was already right at the
+    // cap over it — one final truncation keeps the acceptance ceiling
+    // (~500 tokens) an invariant of the whole string, not just one piece of it.
+    if (summary.length > MAX_SUMMARY_CHARS) {
+      summary = `${summary.slice(0, MAX_SUMMARY_CHARS)}\n[truncated]`;
+    }
+  }
+
+  return {
+    ok,
+    failures,
+    summary,
+    exit_code: exitCode,
+    raw_output: join('test_run', rawRelPath),
+    ...(timedOut ? { timed_out: true } : {}),
+    ...(omittedCount > 0 ? { omitted_failures: omittedCount } : {}),
+  };
 }

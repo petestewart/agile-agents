@@ -10,7 +10,22 @@ export {
   writeCacheEntry,
   writeRawOutput,
 } from './cache';
-export { FakeRunner, LiveRunner, charsPerToken, truncateToTokens } from './runner';
+export {
+  DEFAULT_RUNNER_TIMEOUT_MS,
+  FakeRunner,
+  LiveRunner,
+  ToolRunnerTimeoutError,
+  charsPerToken,
+  truncateToTokens,
+  withRunnerTimeout,
+} from './runner';
+export {
+  type ToolFieldType,
+  type ToolInputFieldSpec,
+  type ToolInputSpec,
+  inputSpecFromToolIo,
+  zodShapeFromInputSpec,
+} from './schema';
 export {
   type ReadSummaryInput,
   type ReadSummaryOutput,

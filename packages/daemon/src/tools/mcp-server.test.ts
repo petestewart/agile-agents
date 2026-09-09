@@ -95,6 +95,19 @@ describe('createToolMcpServer', () => {
     expect(runner.callCount).toBe(1);
   });
 
+  test('review fix: read_summary and test_run publish real per-field input schemas, not an empty properties object', async () => {
+    const { tools } = await client.listTools();
+    const readSummary = tools.find((t) => t.name === 'read_summary');
+    const testRun = tools.find((t) => t.name === 'test_run');
+    expect(readSummary?.inputSchema.properties).toBeDefined();
+    expect(Object.keys(readSummary?.inputSchema.properties ?? {}).sort()).toEqual([
+      'path',
+      'question',
+    ]);
+    expect(testRun?.inputSchema.properties).toBeDefined();
+    expect(Object.keys(testRun?.inputSchema.properties ?? {}).sort()).toEqual(['command', 'cwd']);
+  });
+
   test('a tool error comes back as an MCP error result, not a thrown exception', async () => {
     const result = await client.callTool({ name: 'ticket_get', arguments: { id: 'TKT-9999' } });
     expect(result.isError).toBe(true);

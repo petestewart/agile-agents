@@ -62,7 +62,14 @@ function summarizeTickets(tickets: Ticket[]): TicketsSummary {
   return { done, in_flight: inFlight, stale, total: tickets.length };
 }
 
-function pickCurrentSprint(sprints: Sprint[]): Sprint | undefined {
+/**
+ * Exported (T011 review fix): the tool framework's `ToolService` needs the
+ * same "which sprint is current" answer to resolve `ledger/<sprint>.jsonl`
+ * and the cache's sprint-TTL scoping — re-deriving the DESIGN-GAP'd
+ * "latest `started`, ties by id" rule a second time would just as surely
+ * drift from this one.
+ */
+export function pickCurrentSprint(sprints: Sprint[]): Sprint | undefined {
   if (sprints.length === 0) return undefined;
   return sprints.reduce((latest, candidate) => {
     if (candidate.started > latest.started) return candidate;

@@ -50,7 +50,7 @@ function usage(): string {
     '  resume <halt-id>',
     '  breaker clear <signal>',
     '  hook <event>               stdin JSON in, JSON out (e.g. hook pre-tool-use) [--fail-closed] [--timeout <ms>, default 2000]',
-    "  mcp --agent <id> [--ticket <id>]   stdio MCP bridge to the daemon's tool.* RPC",
+    "  mcp --agent <id> [--ticket <id>] [--timeout <ms>, default 60000]   stdio MCP bridge to the daemon's tool.* RPC",
     '',
     'flags:',
     '  --json                     machine-readable output for any verb above',
@@ -163,10 +163,10 @@ export async function runCli(argv: string[], cwd: string = process.cwd()): Promi
         // needs it.
         const { parseMcpArgs, runCliMcp } = await import('./commands/mcp');
         const args: ParsedArgs = parseArgs(rest.slice(1));
-        const { agent, ticket } = parseMcpArgs(args);
+        const { agent, ticket, timeoutMs } = parseMcpArgs(args);
         // Foreground process, same as `daemon start`: keep the event loop
         // alive for the life of the stdio MCP session.
-        return await runCliMcp({ socketPath, agent, ticket });
+        return await runCliMcp({ socketPath, agent, ticket, timeoutMs });
       }
 
       default:

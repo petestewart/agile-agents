@@ -14,47 +14,80 @@
  * a different identity than the one it was launched with).
  */
 
+import type { ToolInputSpec } from '@agile-agents/daemon';
+import { zodShapeFromInputSpec } from '@agile-agents/daemon';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { z } from 'zod';
-import { type ParsedArgs, requireOption } from '../args';
+import { type ParsedArgs, optionalString, requireOption } from '../args';
 import { callRpc } from '../client';
+
+/**
+ * QA round 1 (T011): a live `read_summary`/`test_run` call can take real
+ * seconds (a short-lived ACP session, or an actual test suite) — `client.ts`'s
+ * general 5s default is tuned for cheap RPC round trips, not "run something",
+ * and would routinely time out a perfectly healthy call. Matches the
+ * runner's own `DEFAULT_RUNNER_TIMEOUT_MS` so the bridge doesn't give up
+ * meaningfully before the daemon-side runner would anyway.
+ */
+export const DEFAULT_MCP_TOOL_TIMEOUT_MS = 60_000;
 
 export interface McpBridgeOptions {
   socketPath: string;
   agent: string;
   ticket?: string;
+  /** RPC deadline for `tool.call` (and `tool.list`), in ms. Default `DEFAULT_MCP_TOOL_TIMEOUT_MS`. */
+  timeoutMs?: number;
 }
 
 interface ToolListEntry {
   name: string;
   description: string;
   source: 'builtin' | 'registry';
+  inputSpec: ToolInputSpec;
 }
 
-export function parseMcpArgs(args: ParsedArgs): { agent: string; ticket?: string } {
+export function parseMcpArgs(args: ParsedArgs): {
+  agent: string;
+  ticket?: string;
+  timeoutMs?: number;
+} {
   const agent = requireOption(args.options, 'agent');
   const ticket = typeof args.options.ticket === 'string' ? args.options.ticket : undefined;
-  return { agent, ticket };
+  const timeoutRaw = optionalString(args.options, 'timeout');
+  const timeoutMs = timeoutRaw !== undefined ? Number(timeoutRaw) : undefined;
+  if (timeoutRaw !== undefined && (timeoutMs === undefined || Number.isNaN(timeoutMs))) {
+    throw new Error(
+      `--timeout must be a number of milliseconds, got ${JSON.stringify(timeoutRaw)}`,
+    );
+  }
+  return { agent, ticket, timeoutMs };
 }
 
 /** Builds (but does not connect) the MCP server for one bridge invocation — split out so a test can drive it over an in-memory transport instead of real stdio. */
 export async function buildMcpBridgeServer(options: McpBridgeOptions): Promise<McpServer> {
-  const tools = await callRpc<ToolListEntry[]>(options.socketPath, 'tool.list');
+  const timeoutMs = options.timeoutMs ?? DEFAULT_MCP_TOOL_TIMEOUT_MS;
+  const tools = await callRpc<ToolListEntry[]>(options.socketPath, 'tool.list', undefined, {
+    timeoutMs,
+  });
   const server = new McpServer({ name: 'agile-agents-tools', version: '0.0.0' });
 
   for (const tool of tools) {
     server.registerTool(
       tool.name,
-      { description: tool.description, inputSchema: z.record(z.string(), z.unknown()) },
+      { description: tool.description, inputSchema: zodShapeFromInputSpec(tool.inputSpec) },
       async (args) => {
         try {
-          const result = await callRpc(options.socketPath, 'tool.call', {
-            agent: options.agent,
-            ticket: options.ticket,
-            name: tool.name,
-            input: args ?? {},
-          });
+          const result = await callRpc(
+            options.socketPath,
+            'tool.call',
+            {
+              agent: options.agent,
+              ticket: options.ticket,
+              name: tool.name,
+              input: args ?? {},
+            },
+            { timeoutMs },
+          );
           return { content: [{ type: 'text' as const, text: JSON.stringify(result ?? null) }] };
         } catch (err) {
           return {

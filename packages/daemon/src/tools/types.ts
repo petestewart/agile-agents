@@ -30,6 +30,14 @@ export interface ToolRunInput {
   /** Working directory for the short-lived session (the ticket worktree). */
   cwd: string;
   maxOutputTokens: number;
+  /**
+   * QA round 1 (T011): every `ToolRunner` must enforce a deadline and own
+   * its own cleanup (kill the child/session) when it fires — a caller's own
+   * timeout (e.g. the MCP bridge's RPC deadline) only stops *that caller*
+   * from waiting, it does nothing to the still-running daemon-side call.
+   * Defaults to `DEFAULT_RUNNER_TIMEOUT_MS` (`runner.ts`) when omitted.
+   */
+  timeoutMs?: number;
 }
 
 export interface ToolRunResult {
