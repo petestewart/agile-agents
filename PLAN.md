@@ -395,12 +395,12 @@ Priority encodes dependency layer as well as importance: P0 tickets are v0-block
 
 ### Ticket: T037 Sandbox the remaining daemon and CLI subprocess spawns
 - **Priority:** P3
-- **Status:** In Progress
+- **Status:** In Review
 - **Owner:** sonnet:worker-T037
 - **Scope:** Depends on T034. Route every remaining non-vendor subprocess through `packages/daemon/src/subprocess-env.ts`'s `sandboxedSubprocessEnv(repoRoot, purpose)`: the git spawns in `review/diff-summary.ts`, `config.ts`, `store/git.ts`, `architect/refine.ts` (four sites), `handoff/hard.ts`, `init.ts` (two sites), `merge/precommit.ts` (bootstrap `rev-parse --git-common-dir`); the `sh -c command -v` probes in `sandbox/backend.ts` and `sandbox/wrap.ts`; and `packages/cli/src/commands/run.ts`'s offline-demo git spawns. Also close the two T034 residuals: `pruneRawTestRunOutputs` protects only the calling run's paths, so a concurrent `test_run`'s in-flight `.out`/`.err` can be swept (needs a shared in-flight registry in `tools/test-run.ts`); and `MAX_RETAINED_RAW_OUTPUT_BYTES` bounds only `raw/test_run/`, not other tools' `raw/` output. The two sandbox tests that touch the real `<tmpdir>/.agile-daemon-cache/sandbox-detect` path should set `TMPDIR` to a per-test directory.
 - **Acceptance Criteria:** `grep -rn "spawn\|execFile" packages/daemon/src packages/cli/src` shows every non-vendor spawn passing a sandboxed env (vendor ACP spawns still keep the real `HOME`, negative test retained); two concurrent `runTestRun` calls cannot prune each other's captures (test); `bun test` green with no new file under `~/.npm`/`~/.cache`/`~/.config`.
 - **Validation Steps:** `bun test packages/daemon packages/cli`; the home-dir before/after check around `bun test` and `bun run e2e`.
-- **Notes:** Follow-up from T034 (worker report out-of-scope list + review rounds 2–3 nits N2/N4/N5). Mechanical; no new conventions.
+- **Notes:** Follow-up from T034 (worker report out-of-scope list + review rounds 2–3 nits N2/N4/N5). Mechanical; no new conventions. Branch `T037-sandbox-remaining-spawns` (`6f822fd`, 14 files, +344/-73, merges clean): every listed site sandboxed, `sandboxedSubprocessEnv` exported from the daemon barrel for the CLI, module-level in-flight registry in `tools/test-run.ts` (regression test fails without it), retention budget now bounds the whole `raw/` tree, `sandbox-detect` tests scoped to a per-test `TMPDIR`. Worker caught its own bug: a `dirname(dirname(worktree))` repo-root guess escaped to `/` against flat fixtures — now uses the path in hand. 1845 tests, home dir byte-identical. Review round 1 + QA round 1 running.
 
 ### Ticket: T038 Deflake the Pi extension heartbeat timer test
 - **Priority:** P3
