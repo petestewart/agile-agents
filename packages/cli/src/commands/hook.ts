@@ -99,6 +99,24 @@ export async function runHook(options: RunHookOptions): Promise<number> {
     return 1;
   }
 
+  // T012 QA/review round (out-of-file-grant necessity, documented in the
+  // pipeline report): `writeClaudeSettings`'s `agentId` option embeds
+  // `AGILE_AGENT=<id>` onto the hook command string, which sets this env
+  // var for *this CLI process* — the only place that value is visible, since
+  // the daemon is a separate long-running process. `HookService`'s
+  // `resolveAgentByCwd` needs it as a disambiguation hint when a reviewer
+  // and an engineer share one physical worktree (§12); Claude's own hook
+  // payload never carries an `agile_agent` field, so this is additive, not
+  // a reinterpretation of the vendor's contract.
+  if (
+    typeof process.env.AGILE_AGENT === 'string' &&
+    typeof payload === 'object' &&
+    payload !== null &&
+    !Array.isArray(payload)
+  ) {
+    (payload as Record<string, unknown>).agile_agent = process.env.AGILE_AGENT;
+  }
+
   const method = hookEventToMethod(event);
 
   try {

@@ -109,6 +109,16 @@ export interface SpawnedSession {
   readonly initialized: Promise<unknown>;
   /** The ACP `session/new` id once a session exists, else null. */
   readonly sessionId: string | null;
+  /**
+   * The spawned agent subprocess's own OS pid (design/agile-agents-design.md
+   * §8, §5 "Storage" — `bus/agents/<agent>.yaml`'s `pid` field is meant to be
+   * this, not the daemon's own pid). `null` only in the narrow window where
+   * `spawn()` itself failed before a pid could be assigned (mirrors Node's
+   * own `ChildProcess.pid`, which is `undefined` in exactly that case —
+   * normalized to `null` here so every other field on this interface that
+   * can be "not yet/not ever available" uses the same sentinel).
+   */
+  readonly pid: number | null;
   readonly exited: boolean;
   /** SIGTERM the agent, escalating to SIGKILL after a grace period. */
   close(): void;
@@ -139,13 +149,17 @@ export function resolveAgentEnv(
  * Canonicalise a path that may not exist yet (a file about to be written):
  * resolve the closest existing ancestor and re-append the remainder, so
  * symlinked parents are followed without requiring the leaf to exist.
+ * `realpathFn` is injectable (test seam — see `SpawnSessionOptions.fsImpl`).
  */
-async function canonicalize(path: string): Promise<string> {
+async function canonicalize(
+  path: string,
+  realpathFn: (path: string) => Promise<string> = realpath,
+): Promise<string> {
   let current = path;
   const trailing: string[] = [];
   for (;;) {
     try {
-      const real = await realpath(current);
+      const real = await realpathFn(current);
       return trailing.length ? [real, ...trailing].join(sep) : real;
     } catch {
       const parent = dirname(current);
@@ -171,6 +185,12 @@ export function spawnSession(opts: SpawnSessionOptions): SpawnedSession {
   const env = resolveAgentEnv(opts.env, opts.envOverrides);
   const clientCapabilities = opts.clientCapabilities ?? DEFAULT_CLIENT_CAPABILITIES;
   const cwd = opts.cwd;
+  // Test seams (see `SpawnSessionOptions`'s doc comments) — default to the
+  // real implementations so production callers see no behavior change.
+  const doSpawn = opts.spawn ?? spawn;
+  const doReadFile = opts.fsImpl?.readFile ?? readFile;
+  const doWriteFile = opts.fsImpl?.writeFile ?? writeFile;
+  const doRealpath = opts.fsImpl?.realpath ?? realpath;
 
   const framer = new LineFramer(opts.maxStdoutBufferBytes ?? DEFAULT_MAX_BUFFER_BYTES);
   const log = new EventLog<AcpEvent>(
@@ -200,7 +220,7 @@ export function spawnSession(opts: SpawnSessionOptions): SpawnedSession {
   /** Serializes `load()` so two in-flight loads cannot interleave (matches Terma's `loadChain`). */
   let loadChain: Promise<void> = Promise.resolve();
 
-  const child: ChildProcess = spawn(opts.cmd, opts.args ?? [], {
+  const child: ChildProcess = doSpawn(opts.cmd, opts.args ?? [], {
     cwd,
     env,
     stdio: ['pipe', 'pipe', 'pipe'],
@@ -323,7 +343,7 @@ export function spawnSession(opts: SpawnSessionOptions): SpawnedSession {
   }
 
   async function workspaceRoot(): Promise<string> {
-    if (cachedRoot === null) cachedRoot = await canonicalize(resolvePath(cwd));
+    if (cachedRoot === null) cachedRoot = await canonicalize(resolvePath(cwd), doRealpath);
     return cachedRoot;
   }
 
@@ -335,7 +355,7 @@ export function spawnSession(opts: SpawnSessionOptions): SpawnedSession {
    */
   async function confinePath(path: string): Promise<string> {
     const root = await workspaceRoot();
-    const resolved = await canonicalize(resolvePath(cwd, path));
+    const resolved = await canonicalize(resolvePath(cwd, path), doRealpath);
     if (resolved !== root && !resolved.startsWith(root + sep)) {
       throw new Error(`Path outside session workspace: ${path}`);
     }
@@ -352,13 +372,13 @@ export function spawnSession(opts: SpawnSessionOptions): SpawnedSession {
       switch (method) {
         case 'fs/read_text_file': {
           const path = await confinePath(String(p.path ?? ''));
-          const content = await readFile(path, 'utf8');
+          const content = await doReadFile(path, 'utf8');
           respond(id, { content });
           return;
         }
         case 'fs/write_text_file': {
           const path = await confinePath(String(p.path ?? ''));
-          await writeFile(path, String(p.content ?? ''), 'utf8');
+          await doWriteFile(path, String(p.content ?? ''), 'utf8');
           respond(id, {});
           return;
         }
@@ -611,6 +631,9 @@ export function spawnSession(opts: SpawnSessionOptions): SpawnedSession {
     initialized,
     get sessionId() {
       return acpSessionId;
+    },
+    get pid() {
+      return child.pid ?? null;
     },
     get exited() {
       return exited;

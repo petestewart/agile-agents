@@ -7,11 +7,28 @@
  * daemon built on top of this package owns that, T004+), events observed
  * only through `on(listener)`, and permission-style forwarded requests
  * answered through `respondPermission`.
+ *
+ * T012 QA/review round: this file used to install its fakes via
+ * `mock.module('node:child_process', ...)` / `mock.module('node:fs/promises',
+ * ...)`. Bun's `mock.module` replaces the module in the *process-wide*
+ * module registry for the whole `bun test` invocation, not just this file —
+ * so it silently stubbed out real process spawning (and real `fs/promises`)
+ * for every other test file that happened to run afterward in the same
+ * invocation, including `packages/daemon`'s own real-subprocess tests. That
+ * was a correctness bug in the test suite (not merely a style nit): a
+ * daemon test expecting to spawn a real `bun fake-agent.ts` child could
+ * silently get this file's fake 99999-pid object instead, which never
+ * actually spawns anything or emits a real `exit`, hanging the daemon test
+ * indefinitely. Fixed by threading the fakes through `SpawnSessionOptions`'s
+ * new `spawn`/`fsImpl` injection points instead (`session.ts`/`types.ts`) —
+ * no process-wide state, so this file's own behavior is unchanged but
+ * nothing leaks.
  */
 import { beforeEach, describe, expect, it, mock } from 'bun:test';
-import * as realChildProcess from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import { Readable, Writable } from 'node:stream';
+import { spawnSession } from './session';
+import { AcpClientError } from './types';
 
 const state: {
   child:
@@ -55,25 +72,10 @@ const readFileMock = mock(async (_path: string, _enc: string): Promise<string> =
 const writeFileMock = mock(
   async (_path: string, _content: string, _enc: string): Promise<void> => {},
 );
+// realpath is identity here; symlink behaviour is out of scope for a
+// subprocess-mocked unit test.
+const realpathMock = (path: string) => Promise.resolve(path);
 
-// Bun's `mock.module` replaces the module in the registry for the whole test
-// run, not just this file — so every other export must be preserved here
-// (spread from the real module captured above) or any other test file that
-// imports e.g. `execFileSync` from `node:child_process` breaks depending on
-// file-load order.
-mock.module('node:child_process', () => ({ ...realChildProcess, spawn: spawnMock }));
-mock.module('node:fs/promises', () => ({
-  readFile: (...args: Parameters<typeof readFileMock>) => readFileMock(...args),
-  writeFile: (...args: Parameters<typeof writeFileMock>) => writeFileMock(...args),
-  // realpath is identity here; symlink behaviour is out of scope for a
-  // subprocess-mocked unit test.
-  realpath: (path: string) => Promise.resolve(path),
-}));
-
-const { spawnSession, AcpClientError } = await import('./session').then(async (session) => ({
-  ...session,
-  AcpClientError: (await import('./types')).AcpClientError,
-}));
 type AgentEvent = import('./types').AgentEvent;
 
 function agentSends(obj: unknown): void {
@@ -122,13 +124,29 @@ describe('spawnSession', () => {
   });
 
   function create(overrides: Partial<Parameters<typeof spawnSession>[0]> = {}) {
-    return spawnSession({ cmd: 'npx', args: ['-y', 'acp-bridge@1'], cwd: '/tmp', ...overrides });
+    return spawnSession({
+      cmd: 'npx',
+      args: ['-y', 'acp-bridge@1'],
+      cwd: '/tmp',
+      spawn: spawnMock as unknown as typeof import('node:child_process').spawn,
+      fsImpl: { readFile: readFileMock, writeFile: writeFileMock, realpath: realpathMock },
+      ...overrides,
+    });
   }
 
   it("inherits the caller's environment when none is given", () => {
     create();
     const opts = spawnMock.mock.calls[0]?.[2] as { env: Record<string, string> };
     expect(opts.env.PATH).toBe(process.env.PATH);
+  });
+
+  // T012 QA round: `AgentRecord.pid` in the daemon is meant to be the
+  // spawned agent's own OS pid, not the caller's — `SpawnedSession` didn't
+  // expose it at all before this.
+  it('exposes the spawned child process pid (not the caller/daemon pid)', () => {
+    const session = create();
+    expect(session.pid).toBe(99999); // the fake child's `pid` set up above
+    expect(session.pid).not.toBe(process.pid);
   });
 
   it('refuses an explicit environment with no PATH with a structured error', () => {

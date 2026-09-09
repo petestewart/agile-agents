@@ -82,6 +82,20 @@ export const EVENT_KINDS = [
   'hil_resolved',
   'breaker_tripped',
   'breaker_cleared',
+  // DESIGN-GAP (T012 QA round): §8 "Adapter contract" has the daemon
+  // observing every ACP `tool_call`/`tool_call_update` off the `tool_call`
+  // stream (§6 tier 3 "observation"), but no event kind exists to log one —
+  // T012 had been filing these under the generic `entity_put` bucket for
+  // lack of a granted `event.ts` change. Named directly after the ACP
+  // `session/update` discriminant it observes, matching this file's own
+  // convention of naming a kind after what produced it.
+  'tool_call',
+  // "usage_update arrived before any sprint existed to file its ledger line
+  // under" (T012 QA round finding) — the ledger line still gets written
+  // (under the `nosprint` fallback file `runner/session.ts` already used
+  // elsewhere for exactly this), but the daemon also logs this event so the
+  // gap is visible in `log/events.jsonl`, not just silently absorbed.
+  'ledger_no_sprint',
 ] as const;
 export const EventKindSchema = z.enum(EVENT_KINDS);
 export type EventKind = z.infer<typeof EventKindSchema>;

@@ -154,6 +154,11 @@ export async function startDaemon(options: DiscoverConfigOptions = {}): Promise<
         // review round, hot-path decision) — a graceful shutdown must not
         // lose a batch that hasn't hit its 5s debounce yet.
         await store?.flush();
+        // Cancels the deferred-flush timer outright (T012 QA round) — belt
+        // and suspenders alongside the flush above, since `flush()` only
+        // drains what's queued *now*, not anything a still-armed timer
+        // might schedule after this returns.
+        store?.close();
       } finally {
         lock.release();
       }

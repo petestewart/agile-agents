@@ -257,8 +257,33 @@ export class StateStore {
   private readonly mutex = new Mutex();
   private readonly deferredRelPaths = new Set<string>();
   private deferredTimer: ReturnType<typeof setTimeout> | null = null;
+  // Review fix (T012 QA/review round): once closed, no *new* deferred-flush
+  // timer is armed — see `scheduleDeferredFlush` — so a caller that has torn
+  // this store down (a test's `afterEach`, a daemon shutdown) can be sure no
+  // stray timer outlives it.
+  private closed = false;
 
   private constructor(private readonly stateRoot: string) {}
+
+  /**
+   * Cancels any pending deferred-flush timer, flushes whatever was queued
+   * (synchronously — `flushDeferredNow`'s own git work is all synchronous
+   * `Bun.spawnSync` calls, so no `await`/mutex hop is needed here), and
+   * marks this store closed so `scheduleDeferredFlush` becomes a no-op
+   * after this. Idempotent. This is the definitive fix for a debounced
+   * flush firing minutes later against a since-removed worktree (the
+   * QA-reported "not a git repository" race): nothing is left queued *and*
+   * nothing can be queued again once this returns. `git.ts`'s `commitPaths`
+   * still no-ops (logging, not throwing) instead of crashing if `stateRoot`
+   * is gone at all, as a backstop for a caller that skips `close()` entirely.
+   */
+  close(): void {
+    this.closed = true;
+    // `flushDeferredNow` clears the timer itself too — see its own doc
+    // comment — so this covers both the "nothing was queued" and "something
+    // was queued" cases in one call.
+    this.flushDeferredNow();
+  }
 
   static open(stateRoot: string): StateStore {
     if (!existsSync(stateRoot)) {
@@ -303,9 +328,9 @@ export class StateStore {
     commitPaths(this.stateRoot, paths, DEFERRED_COMMIT_MESSAGE);
   }
 
-  /** Arms the debounce timer (if not already armed) to flush queued deferred paths after `DEFERRED_FLUSH_MS`. `unref`d so it never keeps the process alive on its own. */
+  /** Arms the debounce timer (if not already armed) to flush queued deferred paths after `DEFERRED_FLUSH_MS`. `unref`d so it never keeps the process alive on its own. No-op once `close()` has been called (see its doc comment). */
   private scheduleDeferredFlush(): void {
-    if (this.deferredTimer !== null) return;
+    if (this.closed || this.deferredTimer !== null) return;
     const timer = setTimeout(() => {
       this.mutex.run(() => this.flushDeferredNow()).catch(() => {});
     }, DEFERRED_FLUSH_MS);

@@ -9,7 +9,7 @@ import { Bus } from '../bus';
 import { runInit } from '../init';
 import { StateStore } from '../store';
 import type { FakeAgentScript } from './fake-agent';
-import { startAgentSession } from './session';
+import { type AgentSessionHandle, startAgentSession } from './session';
 
 const FAKE_AGENT_PATH = join(import.meta.dir, 'fake-agent.ts');
 
@@ -19,6 +19,12 @@ let store: StateStore;
 let bus: Bus;
 let worktree: string;
 let scratch: string;
+// T012 QA round fix: one fake agent per test, always killed in afterEach —
+// even if the test body throws before reaching its own `handle.stop()`, so
+// a failing assertion can never leak a live subprocess into later tests
+// (a leaked `bun fake-agent.ts` process was the root cause of a real,
+// reproduced full-suite slowdown; see the pipeline report).
+let activeHandles: AgentSessionHandle[] = [];
 
 function git(args: string[], cwd: string): void {
   const result = Bun.spawnSync(['git', ...args], { cwd });
@@ -57,6 +63,33 @@ function fakeProvider(script: FakeAgentScript, pidFile?: string): AcpProviderCon
   };
 }
 
+/** Wraps `startAgentSession` and registers the handle for forced teardown in `afterEach` — see `activeHandles`. */
+function startTrackedSession(opts: Parameters<typeof startAgentSession>[0]): AgentSessionHandle {
+  const handle = startAgentSession(opts);
+  activeHandles.push(handle);
+  return handle;
+}
+
+/**
+ * Polls a real, checkable condition instead of a blind `Bun.sleep(N)` — the
+ * event-driven alternative CLAUDE.md/QA round asked for wherever there's no
+ * cheaper synchronous signal (an ACP notification, a resolved promise) to
+ * await directly. Still bounded, so a genuinely broken condition fails
+ * fast-ish rather than hanging to the outer test timeout.
+ */
+async function waitFor(
+  predicate: () => boolean,
+  { timeoutMs = 20_000, intervalMs = 20 }: { timeoutMs?: number; intervalMs?: number } = {},
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate()) {
+    if (Date.now() >= deadline) {
+      throw new Error(`waitFor: condition not met within ${timeoutMs}ms`);
+    }
+    await Bun.sleep(intervalMs);
+  }
+}
+
 beforeEach(async () => {
   repo = mkdtempSync(join(tmpdir(), 'agile-runner-session-'));
   git(['init', '-q'], repo);
@@ -72,6 +105,7 @@ beforeEach(async () => {
 
   worktree = join(repo, '.worktrees', 'TKT-0231');
   scratch = mkdtempSync(join(tmpdir(), 'agile-runner-scratch-'));
+  activeHandles = [];
 
   await store.putSprint(
     validateSprint({
@@ -85,11 +119,22 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  // Force-kill anything still alive, regardless of whether the test's own
+  // body reached its own `handle.stop()` — see `activeHandles`'s doc
+  // comment. `exited` never rejects (session.ts's own contract), so this
+  // can't itself hang; bound it anyway in case a future change breaks that.
+  await Promise.all(
+    activeHandles.map(async (handle) => {
+      handle.stop();
+      await Promise.race([handle.exited, Bun.sleep(15_000)]);
+    }),
+  );
   // Drain any pending deferred-commit writes (heartbeat/ledger/tool_call
   // events — see store.ts's "Deferred-commit batching" header) before the
   // repo is deleted; otherwise the background flush timer can fire a `git`
   // command against a directory that no longer exists.
   await store.flush();
+  store.close();
   rmSync(repo, { recursive: true, force: true });
   rmSync(scratch, { recursive: true, force: true });
 });
@@ -102,13 +147,19 @@ describe('startAgentSession', () => {
   // Role-specific *policy* differences (allow vs. deny, by role) are T010's
   // own exhaustive test surface (`permissions/responder.test.ts`); this only
   // needs to prove the forwarding wiring works, once.
+  //
+  // Timeout justification: 90s bounds one real `bun <fake-agent.ts>` spawn
+  // plus the handshake/prompt/permission round trip and the final teardown
+  // wait — generous headroom for this sandbox's measured worst-case
+  // subprocess-start/exit latency under full-suite CPU contention (a clean,
+  // idle run finishes in ~1-2s).
   test('registers the agent, ledgers a usage_update, logs a tool_call, forwards a permission request, and cleans up on stop', async () => {
     // `done` — a non-live status, so the exit-handling path below must NOT
     // ripple the ticket back to `ready` (see the next test for that path).
     await store.putTicket(makeTicket({ status: 'done' }), { by: 'test' });
     const resultFile = join(scratch, 'perm-result.json');
 
-    const handle = startAgentSession({
+    const handle = startTrackedSession({
       store,
       bus,
       role: 'engineer',
@@ -141,9 +192,11 @@ describe('startAgentSession', () => {
     });
 
     await handle.session.initialized;
-    for (let i = 0; i < 500 && !existsSync(resultFile); i++) {
-      await Bun.sleep(20);
-    }
+    // Event-driven: the fake agent writes `resultFile` only after it has
+    // received the daemon's actual permission answer (see fake-agent.ts's
+    // `request_permission` step) — polling for that file is polling for the
+    // real side effect the test cares about, not a guessed settle time.
+    await waitFor(() => existsSync(resultFile));
     const outcome = JSON.parse(readFileSync(resultFile, 'utf8'));
     // Engineer editing inside its own worktree — allow_once (T010 policy).
     expect(outcome).toEqual({ outcome: { outcome: 'selected', optionId: 'allow-once' } });
@@ -153,16 +206,26 @@ describe('startAgentSession', () => {
     expect(agent.role).toBe('engineer');
     expect(agent.worktree).toBe(worktree);
     expect(agent.vendor).toBe('claude');
+    // T012 QA round fix: the recorded pid is the fake agent's own OS pid,
+    // not the daemon's/test's own — see `session.ts`'s registration and
+    // `@agile-agents/acp-client`'s `SpawnedSession.pid`.
+    expect(handle.session.pid).not.toBeNull();
+    expect(agent.pid).toBe(handle.session.pid as number);
+    expect(agent.pid).not.toBe(process.pid);
 
     const ledger = store.listLedger('S-01');
     expect(ledger.some((l) => l.kind === 'engineer' && l.in_tokens === 120)).toBe(true);
 
     const events = store.listEvents();
+    // T012 QA round fix: a dedicated `tool_call` EventKind, not the earlier
+    // round's `entity_put` stand-in.
     expect(
       events.some(
         (e) =>
-          e.kind === 'entity_put' &&
-          (e.data as Record<string, unknown>).observation === 'tool_call',
+          e.kind === 'tool_call' &&
+          e.ticket === 'TKT-0231' &&
+          e.agent === 'eng-0231' &&
+          (e.data as Record<string, unknown>).toolCallId === 't1',
       ),
     ).toBe(true);
 
@@ -175,7 +238,7 @@ describe('startAgentSession', () => {
   test('a graceful stop while the ticket is in_progress transitions it back to ready and escalates to em', async () => {
     await store.putTicket(makeTicket({ status: 'in_progress' }), { by: 'test' });
 
-    const handle = startAgentSession({
+    const handle = startTrackedSession({
       store,
       bus,
       role: 'engineer',
@@ -187,7 +250,16 @@ describe('startAgentSession', () => {
       provider: fakeProvider({ steps: [{ type: 'hang' }] }),
     });
     await handle.session.initialized;
-    await Bun.sleep(100);
+    // Event-driven: wait for registration to actually land (the real
+    // precondition for "the agent is up") instead of a blind settle sleep.
+    await waitFor(() => {
+      try {
+        store.getAgent('eng-0231');
+        return true;
+      } catch {
+        return false;
+      }
+    });
 
     handle.stop();
     const info = await handle.exited;
@@ -196,5 +268,42 @@ describe('startAgentSession', () => {
 
     const inbox = bus.poll('em');
     expect(inbox.some((m) => m.kind === 'escalate' && m.ticket === 'TKT-0231')).toBe(true);
+  }, 90000);
+
+  // T012 QA round finding: a usage_update before any sprint exists used to
+  // be silently dropped (no ledger line, no log).
+  test('a usage_update with no resolvable sprint files the ledger line under `nosprint` and logs `ledger_no_sprint`', async () => {
+    await store.putTicket(makeTicket({ status: 'done' }), { by: 'test' });
+
+    const handle = startTrackedSession({
+      store,
+      bus,
+      role: 'engineer',
+      agentId: 'eng-0231',
+      ticket: 'TKT-0231',
+      worktreePath: worktree,
+      brief: 'do the ticket',
+      currentSprintId: () => undefined, // no sprint resolvable, regardless of the seeded S-01
+      provider: fakeProvider({
+        steps: [{ type: 'usage_update', used: 42 }, { type: 'end_turn' }],
+      }),
+    });
+
+    await handle.session.initialized;
+    await waitFor(() => store.listLedger('nosprint' as never).length > 0);
+    await store.flush();
+
+    const ledger = store.listLedger('nosprint' as never);
+    expect(ledger.some((l) => l.sprint === 'nosprint' && l.in_tokens === 42)).toBe(true);
+
+    const events = store.listEvents();
+    expect(
+      events.some(
+        (e) => e.kind === 'ledger_no_sprint' && e.ticket === 'TKT-0231' && e.agent === 'eng-0231',
+      ),
+    ).toBe(true);
+
+    handle.stop();
+    await handle.exited;
   }, 90000);
 });

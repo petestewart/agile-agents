@@ -11,18 +11,17 @@
  * and ticket state transition a call to `spawn()` implies; this module just
  * runs the session once handed a worktree path and a rendered brief.
  *
- * `AgentRecord.pid` (DESIGN-GAP): `@agile-agents/acp-client`'s
- * `SpawnedSession` (packages/acp-client/src/session.ts) never exposes the
- * spawned child's OS pid — Terma's `AcpSession` didn't either, and adding it
- * is a `packages/acp-client` change outside this ticket's file ownership.
- * Registration therefore omits `pid` from the heartbeat patch and lets
- * `StateStore.heartbeat`'s existing fallback (`patch.pid ?? existing?.pid ??
- * process.pid`) supply the *daemon's* pid instead of the agent subprocess's
- * — informational only; nothing in this codebase does OS-level operations
- * (kill, monitor) against `AgentRecord.pid` today (grepped: only
- * `cli/status`/`cli/daemon` print it). The crash test drives a real kill
- * against the fake agent's own pid independently (see `fake-agent.ts` and
- * `runner.test.ts`), not through this field.
+ * `AgentRecord.pid` (T012 QA round fix): registration now uses
+ * `session.pid` — `@agile-agents/acp-client`'s `SpawnedSession` exposes the
+ * spawned child's real OS pid (granted for this round: `packages/acp-client/
+ * src/{session,types}.ts`) — falling back to the daemon's own pid only in
+ * the narrow window `spawn()` itself failed to assign one. This is what
+ * lets an external operator's "kill -9 the pid on record" acceptance step
+ * work as written, not just the daemon's own automatic liveness sweep
+ * (which never reads `pid` for anything — the crash test in `runner.test.ts`
+ * now asserts `store.getAgent(...).pid` equals the fake agent's own pid
+ * *before* killing it, closing the gap a previous round of this ticket left
+ * as a documented DESIGN-GAP).
  *
  * `role`/`worktree`/`session_id` survival (DESIGN-GAP): `StateStore.heartbeat`
  * and `Bus.heartbeat` (both outside this ticket's file ownership) rebuild
@@ -36,15 +35,25 @@
  * `putAgent` only fires on the writes that need it, not on every coalesced
  * no-op).
  *
- * `tool_call` observation (DESIGN-GAP): `@agile-agents/shared`'s
- * `EVENT_KINDS` (packages/shared/src/event.ts) has no kind for "an ACP
- * `tool_call`/`tool_call_update` was observed" — every existing kind names a
- * specific store mutation, and `event.ts` is outside this ticket's file
- * ownership. `entity_put` is reused (event.ts's own doc comment names it as
- * the bucket for "any future entity with no dedicated helper yet") purely as
- * an event-log marker — no entity file is written alongside it. Escalated in
- * the pipeline report: a dedicated `tool_call` `EventKind` is the correct
- * fix, gated on `packages/shared/src/event.ts` file ownership.
+ * `tool_call` observation (T012 QA round fix): `@agile-agents/shared`'s
+ * `EVENT_KINDS` (granted for this round: `packages/shared/src/event.ts`)
+ * gained a dedicated `tool_call` kind, so every `tool_call`/`tool_call_update`
+ * ACP notification is now logged as `kind: 'tool_call'` with
+ * `{toolCallId, kind, title, status}` in `data` (`agent`/`ticket` are the
+ * `Event` schema's own top-level fields, not duplicated into `data`) —
+ * replacing the earlier round's `entity_put`-as-stand-in workaround.
+ *
+ * `usage_update` before any sprint exists (T012 QA round finding): a
+ * `usage_update` that arrives with no sprint on record used to be silently
+ * dropped (`currentSprintId()` resolves to `undefined`, and the ledger write
+ * was skipped outright). It's now filed under the `nosprint` ledger file
+ * (`store.appendLedgerLine`'s own sprint-id convention — `SprintIdSchema`
+ * requires the literal shape, so a real placeholder id would fail
+ * validation; `nosprint` is a plain string, not a `SprintId`, matching how
+ * `ledger/nosprint.jsonl` is already named elsewhere as the pre-sprint
+ * fallback), and a `ledger_no_sprint` event is logged so the gap is visible
+ * in `log/events.jsonl` rather than only in a missing ledger line nobody
+ * went looking for.
  */
 
 import {
@@ -175,6 +184,13 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
   writeClaudeSettings(worktreePath, {
     agileBin: cliBin,
     socketPath: opts.socketPath,
+    // T012 QA/review round: disambiguates hook calls when a reviewer and an
+    // engineer share one physical worktree (§12) — see `hook/service.ts`'s
+    // `resolveAgentByCwd`. Each session's own `.claude/settings.json` write
+    // is read by Claude once at its own startup, so a later session sharing
+    // the same worktree overwriting this file with its own `agentId` does
+    // not retroactively change an already-running session's hook command.
+    agentId,
     timeoutSeconds: opts.hookTimeoutSeconds,
   });
 
@@ -225,18 +241,29 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
 
   /**
    * Every fire-and-forget store write this module makes (heartbeat, ledger,
-   * tool_call observation) is chained onto this promise. `finish()` awaits
-   * the latest link before resolving `exited` — since `StateStore`'s mutex
-   * processes writes strictly in the order they were enqueued, awaiting the
-   * *last* one enqueued guarantees every earlier one has already landed too.
-   * Without this, a test (or a caller) that deletes the worktree/repo right
-   * after `exited` resolves can race a still-in-flight deferred commit into
-   * a "not a git repository" error — the failure this tracker exists to
+   * tool_call observation) is added here and removed on settle. `finish()`
+   * awaits every entry still pending — review round fix: an earlier version
+   * of this tracker kept only the *latest* write (on the theory that
+   * `StateStore`'s mutex is strictly FIFO, so awaiting the last one enqueued
+   * would imply every earlier one had landed too); that reasoning has a gap
+   * whenever two writes are enqueued through paths that don't themselves
+   * serialize before reaching the mutex (e.g. two `track()` calls from two
+   * different listener invocations racing each other's own pre-mutex async
+   * work), so a real accumulating set is what's actually needed to be sure
+   * `finish()` never resolves `exited` while a write from this session is
+   * still in flight. Without this, a caller that deletes the worktree/repo
+   * right after `exited` resolves can race a still-in-flight deferred commit
+   * into a "not a git repository" error — the failure this tracker exists to
    * close off.
    */
-  let pendingWrites: Promise<unknown> = Promise.resolve();
+  const pendingWrites = new Set<Promise<unknown>>();
   function track(promise: Promise<unknown>): void {
-    pendingWrites = promise.catch(() => {});
+    let settled: Promise<void>;
+    settled = promise.then(
+      () => void pendingWrites.delete(settled),
+      () => void pendingWrites.delete(settled),
+    );
+    pendingWrites.add(settled);
   }
 
   /** Re-applies role/worktree/session_id if the heartbeat write just dropped them (see file header). */
@@ -267,9 +294,9 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
     if (settled) return;
     settled = true;
     unsubscribe();
-    // See `pendingWrites`'s doc comment — every earlier fire-and-forget
-    // write is guaranteed to have landed by the time this resolves.
-    await pendingWrites;
+    // See `pendingWrites`'s doc comment — waits for every fire-and-forget
+    // write still in flight, not just the most recently started one.
+    await Promise.all([...pendingWrites]);
 
     let ticketReadied = false;
     try {
@@ -363,21 +390,39 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
           // backwards, e.g. a fresh turn); `out_tokens`/`cost_usd` stay 0.
           const delta = Math.max(0, used - lastUsedTokens);
           lastUsedTokens = used;
-          const sprint = currentSprintId();
-          if (sprint !== undefined) {
-            track(
-              store.appendLedgerLine(
+          // T012 QA round fix: a usage_update before any sprint exists used
+          // to be silently dropped. `nosprint` is this codebase's existing
+          // pre-sprint fallback file convention (`tools/service.ts`,
+          // `tools/cache.ts`) — the ledger line still lands, plus a
+          // `ledger_no_sprint` event so the gap is visible in the log, not
+          // just in a ledger file nobody thought to check.
+          const resolvedSprintId = currentSprintId();
+          const noSprint = resolvedSprintId === undefined;
+          const sprint = resolvedSprintId ?? 'nosprint';
+          track(
+            store.appendLedgerLine(
+              sprint,
+              validateLedgerLine({
+                ts: now().toISOString(),
                 sprint,
-                validateLedgerLine({
-                  ts: now().toISOString(),
-                  sprint,
+                ticket,
+                agent: agentId,
+                model,
+                in_tokens: delta,
+                out_tokens: 0,
+                cost_usd: 0,
+                kind: ROLE_LEDGER_KIND[role],
+              }),
+              { commit: 'deferred' },
+            ),
+          );
+          if (noSprint) {
+            track(
+              store.appendEvent(
+                buildEvent('ledger_no_sprint', {
                   ticket,
                   agent: agentId,
-                  model,
-                  in_tokens: delta,
-                  out_tokens: 0,
-                  cost_usd: 0,
-                  kind: ROLE_LEDGER_KIND[role],
+                  data: { in_tokens: delta },
                 }),
                 { commit: 'deferred' },
               ),
@@ -390,16 +435,12 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
       if (kind === 'tool_call' || kind === 'tool_call_update') {
         track(
           store.appendEvent(
-            buildEvent('entity_put', {
+            buildEvent('tool_call', {
               ticket,
               agent: agentId,
               data: {
-                // See file header: `entity_put` is a documented stand-in for
-                // the missing dedicated `tool_call` EventKind.
-                observation: 'tool_call',
-                sessionUpdate: kind,
                 toolCallId: update?.toolCallId,
-                toolKind: update?.kind,
+                kind: update?.kind,
                 title: update?.title,
                 status: update?.status,
               },
@@ -419,7 +460,13 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
       vendor: provider.id,
       model,
       ticket,
-      pid: process.pid,
+      // The spawned agent subprocess's own OS pid (T012 QA round —
+      // `SpawnedSession.pid`, acp-client). Falls back to the daemon's own
+      // pid only in the narrow window `spawn()` itself failed to assign one
+      // (mirrors Node's `ChildProcess.pid` being `undefined` in exactly that
+      // case) — `AgentRecordSchema.pid` requires a positive int, and a
+      // fallback here is strictly better than never registering at all.
+      pid: session.pid ?? process.pid,
       last_seen: now().toISOString(),
       role,
       worktree: worktreePath,

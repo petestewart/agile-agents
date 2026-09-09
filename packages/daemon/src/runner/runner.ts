@@ -82,11 +82,13 @@ export class Runner {
   /**
    * Places the worktree, assembles the brief, and starts the ACP session.
    * Engineer: `.worktrees/<TKT-id>` off `integration`, ticket transitioned
-   * `assigned -> in_progress` (a no-op if it's already `in_progress` — a fix
-   * cycle reusing the same worktree). Reviewer: the *same* engineer worktree
-   * path, read-only ACP policy (§12, CLAUDE.md v0 default) — the ticket must
-   * already carry a `worktree` (an engineer has run at least once).
-   * QA: a fresh clone at `.worktrees/<TKT-id>-qa` (§13).
+   * `ready -> assigned -> in_progress` (whichever of those two edges still
+   * apply — a ticket already `assigned` skips straight to the second, and
+   * one already `in_progress` is a no-op — a fix cycle reusing the same
+   * worktree). Reviewer: the *same* engineer worktree path, read-only ACP
+   * policy (§12, CLAUDE.md v0 default) — the ticket must already carry a
+   * `worktree` (an engineer has run at least once). QA: a fresh clone at
+   * `.worktrees/<TKT-id>-qa` (§13).
    */
   async spawn(role: PermissionRole, ticketId: TicketId): Promise<SpawnResult> {
     const { store, bus, repoRoot } = this.opts;
@@ -107,6 +109,15 @@ export class Runner {
           { ...ticket, worktree: relWorktree, assignee: agentId },
           { by: agentId },
         );
+      }
+      // T012 QA round fix: a `ready` ticket must advance all the way to
+      // `in_progress` on engineer spawn (design's assignment path,
+      // `TICKET_TRANSITIONS`: `ready -> assigned -> in_progress` — no
+      // direct `ready -> in_progress` edge exists, so this is two
+      // transitions, not one). A ticket already `assigned` (the EM having
+      // assigned it ahead of spawn) skips straight to the second.
+      if (ticket.status === 'ready') {
+        ticket = await store.transitionTicket(ticketId, 'assigned', { by: agentId });
       }
       if (ticket.status === 'assigned') {
         ticket = await store.transitionTicket(ticketId, 'in_progress', { by: agentId });

@@ -27,6 +27,8 @@
  * implemented — flagged as a known gap rather than solved in this pass.
  */
 
+import { existsSync } from 'node:fs';
+
 const AUTHOR_NAME = 'agiled';
 // Matches init.ts's bootstrap commit author (`agiled <agiled@localhost>`) —
 // one author identity for every commit on `agile-state` (review nit: T005
@@ -72,6 +74,20 @@ export function commitPaths(
 ): string | null {
   if (relativePaths.length === 0) {
     throw new Error('commitPaths: relativePaths must be non-empty');
+  }
+
+  // Review fix (T012 QA round): a debounced deferred-commit timer
+  // (store.ts's `scheduleDeferredFlush`) can fire after the `agile-state`
+  // worktree it targets has been removed out from under it (a test's own
+  // teardown, or — in production — the worktree being torn down by
+  // something else entirely). That is not a data-loss bug worth a thrown
+  // error and a crashed caller: there is nothing left to commit to, so this
+  // degrades to a no-op exactly like "nothing to commit" does, rather than
+  // throwing `fatal: not a git repository`. `store.ts`'s `close()` also
+  // cancels the timer outright; this guard is the backstop for whatever
+  // races past that.
+  if (!existsSync(stateRoot)) {
+    return null;
   }
 
   const status = runGit(['status', '--porcelain', '--', ...relativePaths], stateRoot);

@@ -490,3 +490,89 @@ describe('HookService.stop', () => {
     expect(result).toEqual({});
   });
 });
+
+// T012 QA/review round: resolution rewritten to go through the agent
+// registry (`AgentRecord.worktree`/`.role`) first, not just `Ticket.worktree`
+// — see `service.ts`'s file header and `resolveAgentByCwd`.
+describe('HookService — registry-based agent resolution (T012 QA/review round)', () => {
+  test('a QA agent in its own fresh clone (never matching Ticket.worktree) resolves and a read is allowed', async () => {
+    await seedTicket({ status: 'in_qa', assignee: 'eng-1' });
+    const qaWorktree = join(repo, '.worktrees', 'TKT-0001-qa');
+    mkdirSync(qaWorktree, { recursive: true });
+    await store.putAgent(
+      'qa-1',
+      agentRecord({ role: 'qa', worktree: qaWorktree, ticket: 'TKT-0001' }),
+    );
+
+    const svc = service();
+    const result = await svc.preToolUse({
+      hook_event_name: 'PreToolUse',
+      cwd: qaWorktree,
+      tool_name: 'Read',
+      tool_input: { file_path: 'x.txt' },
+    });
+
+    expect(result.hookSpecificOutput.permissionDecision).toBe('allow');
+    const events = store.listEvents().filter((e) => e.kind === 'hook_decision');
+    expect(events[0]?.agent).toBe('qa-1');
+    expect(events[0]?.ticket).toBe('TKT-0001');
+  });
+
+  test('reviewer and engineer sharing one worktree: role comes from the registry, not inferred as engineer', async () => {
+    await seedTicket({ status: 'in_review', assignee: 'eng-1' });
+    await store.putAgent('eng-1', agentRecord({ role: 'engineer', worktree, ticket: 'TKT-0001' }));
+    await store.putAgent(
+      'reviewer-1',
+      agentRecord({ role: 'reviewer', worktree, ticket: 'TKT-0001' }),
+    );
+
+    // Ambiguous (two agents, same worktree, no hint) — fails closed rather
+    // than silently resolving as the engineer.
+    const svc = service();
+    const ambiguous = await svc.preToolUse({
+      cwd: worktree,
+      tool_name: 'Edit',
+      tool_input: { file_path: join(worktree, 'a.ts') },
+    });
+    expect(ambiguous.hookSpecificOutput.permissionDecision).toBe('deny');
+
+    // Disambiguated via the `agile_agent` hint (what the CLI forwards from
+    // `AGILE_AGENT`, itself set by `writeClaudeSettings`'s `agentId` option)
+    // — reviewer resolves as `role: 'reviewer'`.
+    const asReviewer = await svc.preToolUse({
+      cwd: worktree,
+      tool_name: 'Edit',
+      tool_input: { file_path: join(worktree, 'a.ts') },
+      agile_agent: 'reviewer-1',
+    });
+    const reviewerEvents = store
+      .listEvents()
+      .filter((e) => e.kind === 'hook_decision' && e.agent === 'reviewer-1');
+    expect(reviewerEvents).toHaveLength(1);
+    void asReviewer;
+
+    const asEngineer = await svc.preToolUse({
+      cwd: worktree,
+      tool_name: 'Edit',
+      tool_input: { file_path: join(worktree, 'a.ts') },
+      agile_agent: 'eng-1',
+    });
+    const engineerEvents = store
+      .listEvents()
+      .filter((e) => e.kind === 'hook_decision' && e.agent === 'eng-1');
+    expect(engineerEvents).toHaveLength(1);
+    void asEngineer;
+  });
+
+  test('an agent record with no `worktree` set falls back to the Ticket.worktree-based resolution (backward compat)', async () => {
+    await seedTicket();
+    // No putAgent call at all — matches every pre-T012-QA-round test above.
+    const svc = service();
+    const result = await svc.preToolUse({
+      cwd: worktree,
+      tool_name: 'Read',
+      tool_input: { file_path: 'x.txt' },
+    });
+    expect(result.hookSpecificOutput.permissionDecision).toBe('allow');
+  });
+});

@@ -9,8 +9,7 @@ import { runInit } from '../init';
 import { StateStore } from '../store';
 import type { FakeAgentScript } from './fake-agent';
 import { buildRunnerRpcMethods } from './rpc';
-import { agentIdFor } from './runner';
-import { Runner } from './runner';
+import { Runner, agentIdFor } from './runner';
 
 const FAKE_AGENT_PATH = join(import.meta.dir, 'fake-agent.ts');
 
@@ -19,6 +18,12 @@ let stateRoot: string;
 let store: StateStore;
 let bus: Bus;
 let scratch: string;
+// T012 QA round fix: every `Runner` a test builds is torn down in
+// `afterEach` regardless of whether the test's own body got that far — a
+// leaked `bun fake-agent.ts` subprocess (from a test failing mid-assertion,
+// before its own `runner.stop(...)` line) was the reproduced root cause of
+// a real full-suite slowdown; see the pipeline report.
+let activeRunners: Runner[] = [];
 
 function git(args: string[], cwd: string): void {
   const result = Bun.spawnSync(['git', ...args], { cwd });
@@ -45,6 +50,42 @@ function fakeSpawn(script: FakeAgentScript, pidFile?: string) {
     });
 }
 
+/** Builds a `Runner` and registers it for forced teardown in `afterEach` — see `activeRunners`. */
+function trackedRunner(opts: ConstructorParameters<typeof Runner>[0]): Runner {
+  const runner = new Runner(opts);
+  activeRunners.push(runner);
+  return runner;
+}
+
+/**
+ * Polls a real, checkable condition instead of a blind `Bun.sleep(N)` — the
+ * event-driven alternative the QA round asked for wherever there's no
+ * cheaper synchronous signal to await directly. Still bounded, so a
+ * genuinely broken condition fails fast-ish rather than hanging to the
+ * outer test timeout.
+ */
+async function waitFor(
+  predicate: () => boolean | Promise<boolean>,
+  { timeoutMs = 20_000, intervalMs = 20 }: { timeoutMs?: number; intervalMs?: number } = {},
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!(await predicate())) {
+    if (Date.now() >= deadline) {
+      throw new Error(`waitFor: condition not met within ${timeoutMs}ms`);
+    }
+    await Bun.sleep(intervalMs);
+  }
+}
+
+function agentExists(id: string): boolean {
+  try {
+    store.getAgent(id as never);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 beforeEach(async () => {
   repo = mkdtempSync(join(tmpdir(), 'agile-runner-'));
   git(['init', '-q'], repo);
@@ -58,6 +99,7 @@ beforeEach(async () => {
   store = StateStore.open(stateRoot);
   bus = new Bus(store, stateRoot);
   scratch = mkdtempSync(join(tmpdir(), 'agile-runner-scratch-'));
+  activeRunners = [];
 
   await store.putTicket(
     validateTicket({
@@ -72,11 +114,19 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
-  // Drain any pending deferred-commit writes (heartbeat/ledger/tool_call
-  // events — see store.ts's "Deferred-commit batching" header) before the
-  // repo is deleted; otherwise the background flush timer can fire a `git`
-  // command against a directory that no longer exists.
+  // Force-stop every runner's sweep timer and every live session, then wait
+  // (bounded) for each session's own exit/crash cleanup to actually finish
+  // — regardless of what the test body itself did — before the repo is
+  // removed, so a still-in-flight commit can never race the `rmSync` below.
+  await Promise.all(
+    activeRunners.map(async (runner) => {
+      const live = runner.list();
+      runner.stopAll();
+      await Promise.all(live.map((r) => Promise.race([r.exited, Bun.sleep(15_000)])));
+    }),
+  );
   await store.flush();
+  store.close();
   rmSync(repo, { recursive: true, force: true });
   rmSync(scratch, { recursive: true, force: true });
 });
@@ -88,8 +138,12 @@ describe('Runner.spawn', () => {
     expect(agentIdFor('qa', 'TKT-0231')).toBe('qa-0231');
   });
 
+  // Timeout justification: 90s bounds one real `bun <fake-agent.ts>` spawn
+  // plus registration and the final teardown wait, with generous headroom
+  // for this sandbox's measured worst-case subprocess-start latency under
+  // full-suite CPU contention (a clean, idle run finishes in ~1-2s).
   test('spawn(engineer, TKT) places the worktree, transitions the ticket, writes hook settings, and registers the agent', async () => {
-    const runner = new Runner({
+    const runner = trackedRunner({
       store,
       bus,
       repoRoot: repo,
@@ -109,8 +163,42 @@ describe('Runner.spawn', () => {
     const agent = store.getAgent('eng-0231');
     expect(agent.role).toBe('engineer');
     expect(agent.worktree).toBe(result.worktree);
+    // T012 QA round fix: the recorded pid is the fake agent's own OS pid.
+    expect(agent.pid).not.toBe(process.pid);
 
     expect(runner.list().map((r) => r.agentId)).toEqual(['eng-0231']);
+
+    runner.stop('eng-0231');
+    await result.exited;
+  }, 90000);
+
+  // T012 QA round finding: a ticket created `ready` (not pre-`assigned`)
+  // must still advance all the way to `in_progress` — the design's
+  // assignment path, `TICKET_TRANSITIONS`: `ready -> assigned ->
+  // in_progress` (no direct edge skips `assigned`).
+  test('spawn(engineer, TKT) on a `ready` ticket advances ready -> assigned -> in_progress, setting assignee/worktree', async () => {
+    await store.transitionTicket('TKT-0231', 'ready', { by: 'test' });
+    // (fixture ticket starts `assigned`, per `beforeEach` — walk it back to
+    // `ready` first since `assigned -> ready` is itself a legal edge.)
+    expect(store.getTicket('TKT-0231').status).toBe('ready');
+
+    const runner = trackedRunner({
+      store,
+      bus,
+      repoRoot: repo,
+      spawn: fakeSpawn({ steps: [{ type: 'hang' }] }),
+    });
+    const result = await runner.spawn('engineer', 'TKT-0231');
+
+    const ticket = store.getTicket('TKT-0231');
+    expect(ticket.status).toBe('in_progress');
+    expect(ticket.assignee).toBe('eng-0231');
+    expect(ticket.worktree).toBe('.worktrees/TKT-0231');
+    // Both edges actually happened (not skipped) — visible in history.
+    expect(ticket.history.some((h) => h.includes('ready') && h.includes('assigned'))).toBe(true);
+    expect(ticket.history.some((h) => h.includes('assigned') && h.includes('in_progress'))).toBe(
+      true,
+    );
 
     runner.stop('eng-0231');
     await result.exited;
@@ -121,7 +209,7 @@ describe('Runner.spawn', () => {
   // report): one `Runner`, three roles spawned in turn, instead of three
   // separate real-subprocess tests.
   test('reviewer reuses the engineer worktree (refusing before one exists); QA gets its own fresh clone', async () => {
-    const runner = new Runner({
+    const runner = trackedRunner({
       store,
       bus,
       repoRoot: repo,
@@ -146,9 +234,9 @@ describe('Runner.spawn', () => {
 });
 
 describe('crash recovery', () => {
-  test('kill -9 on the agent process readies the ticket, escalates to em, keeps the worktree, and drops the agent record — within one liveness interval', async () => {
+  test('kill -9 on the *recorded* pid (AgentRecord.pid) readies the ticket, escalates to em, keeps the worktree, and drops the agent record — within one liveness interval', async () => {
     const pidFile = join(scratch, 'agent.pid');
-    const runner = new Runner({
+    const runner = trackedRunner({
       store,
       bus,
       repoRoot: repo,
@@ -162,14 +250,20 @@ describe('crash recovery', () => {
     expect(store.getTicket('TKT-0231').status).toBe('in_progress');
 
     // Wait for the fake agent to actually start and record its own pid.
-    for (let i = 0; i < 500 && !existsSync(pidFile); i++) {
-      await Bun.sleep(20);
-    }
-    expect(existsSync(pidFile)).toBe(true);
-    const pid = Number(readFileSync(pidFile, 'utf8').trim());
-    expect(pid).toBeGreaterThan(0);
+    await waitFor(() => existsSync(pidFile));
+    const realPid = Number(readFileSync(pidFile, 'utf8').trim());
+    expect(realPid).toBeGreaterThan(0);
 
-    process.kill(pid, 'SIGKILL');
+    // Wait for registration, then use the pid *on the durable record* —
+    // the literal acceptance step ("kill -9 the agent process" via its
+    // recorded pid) and the T012 QA round's critical finding that this must
+    // actually be the agent's own pid, not the daemon's/test's.
+    await waitFor(() => agentExists('eng-0231'));
+    const recordedPid = store.getAgent('eng-0231' as never).pid;
+    expect(recordedPid).toBe(realPid);
+    expect(recordedPid).not.toBe(process.pid);
+
+    process.kill(recordedPid, 'SIGKILL');
 
     // `session.ts`'s own `exit` handler drives this — no need to wait a full
     // liveness timeout; `result.exited` resolves once cleanup has run.
@@ -182,8 +276,6 @@ describe('crash recovery', () => {
 
     const inbox = bus.poll('em');
     expect(inbox.some((m) => m.kind === 'escalate' && m.ticket === 'TKT-0231')).toBe(true);
-
-    runner.stopAll();
   }, 90_000);
 });
 
@@ -191,7 +283,7 @@ describe('runSweep', () => {
   test('drives bus.checkLiveness and bus.sweepRedelivery', async () => {
     let livenessCalls = 0;
     let redeliveryCalls = 0;
-    const runner = new Runner({ store, bus, repoRoot: repo });
+    const runner = trackedRunner({ store, bus, repoRoot: repo });
     const originalLiveness = bus.checkLiveness.bind(bus);
     const originalRedelivery = bus.sweepRedelivery.bind(bus);
     bus.checkLiveness = (...args: Parameters<Bus['checkLiveness']>) => {
@@ -211,7 +303,7 @@ describe('runSweep', () => {
 
 describe('runner.* RPC methods', () => {
   test('spawn/list/stop round-trip', async () => {
-    const runner = new Runner({
+    const runner = trackedRunner({
       store,
       bus,
       repoRoot: repo,
@@ -237,15 +329,14 @@ describe('runner.* RPC methods', () => {
     ).rejects.toThrow();
 
     // `runner.stop` (like `Runner.stop`) only starts the underlying
-    // process's teardown — wait for the session's own exit/crash handling
-    // to actually finish (surfaced here as it dropping out of `list()`)
-    // before the test ends, so `afterEach`'s `rmSync` never races a
-    // still-in-flight commit from `finish()`.
-    for (let i = 0; i < 500; i++) {
+    // process's teardown — wait (event-driven: polls the real `list()`
+    // state, not a blind sleep) for the session's own exit/crash handling
+    // to actually finish before the test ends, so `afterEach`'s `rmSync`
+    // never races a still-in-flight commit from `finish()`.
+    await waitFor(async () => {
       const remaining = (await methods['runner.list']?.({})) as Array<{ agentId: string }>;
-      if (remaining.length === 0) break;
-      await Bun.sleep(20);
-    }
+      return remaining.length === 0;
+    });
     expect((await methods['runner.list']?.({})) as Array<{ agentId: string }>).toEqual([]);
   }, 90000);
 });
