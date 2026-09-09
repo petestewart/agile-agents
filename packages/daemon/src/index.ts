@@ -62,3 +62,6 @@ export {
 
 // Gates policy, HIL requests, circuit breaker (T018).
 export * from './gates';
+
+// ACP permission policy by role (T010).
+export * from './permissions';
