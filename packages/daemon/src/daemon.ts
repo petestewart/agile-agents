@@ -6,9 +6,12 @@
  */
 
 import { existsSync } from 'node:fs';
+import { join } from 'node:path';
+import type { TicketId } from '@agile-agents/shared';
 import daemonPackageJson from '../package.json' with { type: 'json' };
 import { registerArchitectTools } from './architect';
 import { Bus, buildBusRpcMethods } from './bus';
+import { roleOf } from './bus/routing';
 import { type AgileConfig, type DiscoverConfigOptions, discoverConfig } from './config';
 import { EM_TOOLS, EmLoop, type EmToolDeps, buildEmRpcMethods } from './em';
 import { pickCurrentSprint } from './feed';
@@ -19,6 +22,7 @@ import { type HttpServerHandle, startHttpServer } from './http';
 import { type LockHandle, acquireLock } from './lock';
 import { MergeOwner, buildMergeRpcMethods, sprintReviewApproved } from './merge';
 import { buildOracleRpcMethods } from './oracle';
+import { QaProtocol, buildQaRpcMethods, decideQaRead, registerQaTools } from './qa';
 import {
   REVIEW_BUILTIN_TOOLS,
   ReviewProtocol,
@@ -66,6 +70,11 @@ export async function startDaemon(options: DiscoverConfigOptions = {}): Promise<
   // Hoisted (T011) so `bus.*` RPC, the hook service, and the tool service's
   // `bus_send` built-in all share one `Bus` instance over the same store.
   const bus = store ? new Bus(store, config.stateRoot) : undefined;
+  // QA protocol (T017, §13): fresh clone per ticket, contract-path deny,
+  // criteria runs, verdicts. Constructed before the tool service and the
+  // runner because both take closures over it.
+  const qaProtocol =
+    store && bus ? new QaProtocol({ store, bus, repoRoot: config.repoRoot }) : undefined;
   // Tool registry (§7 "Tool framework"): loaded once at startup from
   // `.agile/tools/*/tool.yaml`. `LiveRunner` spawns a real short-lived Claude
   // ACP session per `runner.tier` call — the daemon's actual runtime path;
@@ -83,6 +92,23 @@ export async function startDaemon(options: DiscoverConfigOptions = {}): Promise<
           // ties by id" rule the feed snapshot uses (`pickCurrentSprint`),
           // reused rather than re-derived so the two never drift apart.
           currentSprintId: () => pickCurrentSprint(store.listSprints())?.id,
+          // T017: `read_summary` reads the file itself, so a QA session
+          // could otherwise bypass the hook-tier contract-path deny (§13)
+          // through this tool. Same `decideQaRead` the hook tier relies on,
+          // resolved against the QA clone (`runner/worktrees.ts`'s
+          // `.worktrees/<TKT>-qa` convention).
+          pathGuard: (ctx, absolutePath) => {
+            if (roleOf(ctx.agent) !== 'qa' || !ctx.ticket) return { allow: true };
+            const ticket = store.getTicket(ctx.ticket as TicketId);
+            return decideQaRead(
+              {
+                role: 'qa',
+                ticket,
+                worktreePath: join(config.repoRoot, '.worktrees', `${ticket.id}-qa`),
+              },
+              absolutePath,
+            );
+          },
         })
       : undefined;
   // Agent runner (T012): worktree placement, brief assembly, ACP session
@@ -95,6 +121,11 @@ export async function startDaemon(options: DiscoverConfigOptions = {}): Promise<
           repoRoot: config.repoRoot,
           socketPath: config.socketPath,
           gateService,
+          // T017: a QA spawn opens the protocol's round for that ticket
+          // (criteria parsing, env resolution) against the fresh clone.
+          onQaSpawn: qaProtocol
+            ? (ticket, worktree) => qaProtocol.start(ticket, worktree)
+            : undefined,
         })
       : undefined;
   runner?.startSweep();
@@ -157,6 +188,23 @@ export async function startDaemon(options: DiscoverConfigOptions = {}): Promise<
   let reviewDeps: ReviewVerbDeps | undefined;
   if (toolService && store && bus && runner) {
     const architect = registerArchitectTools({ store });
+    if (qaProtocol) {
+      const qaTools = registerQaTools(qaProtocol);
+      toolService.registerProvider({
+        roles: ['qa'],
+        listTools: () =>
+          qaTools.map((t) => ({
+            name: t.name,
+            description: t.description,
+            inputSpec: t.inputSpec,
+          })),
+        callTool: (ctx, name, input) => {
+          const tool = qaTools.find((t) => t.name === name);
+          if (!tool) throw new Error(`unknown qa verb: ${name}`);
+          return tool.handler(ctx, input);
+        },
+      });
+    }
     if (emLoop && gateService && mergeOwner) {
       const emDeps: EmToolDeps = {
         store,
@@ -296,6 +344,7 @@ export async function startDaemon(options: DiscoverConfigOptions = {}): Promise<
           ...(reviewDeps ? buildReviewRpcMethods(reviewDeps) : {}),
           ...buildMergeRpcMethods(mergeOwner),
           ...(emLoop ? buildEmRpcMethods(emLoop, store) : {}),
+          ...(qaProtocol ? buildQaRpcMethods(qaProtocol) : {}),
         }
       : undefined;
 

@@ -92,3 +92,7 @@ export * from './merge';
 // EM protocol: sprint planning/assignment, board, standups + quorum,
 // discovery hand-off, sprint review + retro, EmLoop, em.* RPC (T015).
 export * from './em';
+
+// QA protocol: clone env, criteria, contract-path deny, rerun/flaky, report,
+// QaProtocol, qa_* verbs, qa.* RPC (T017).
+export * from './qa';

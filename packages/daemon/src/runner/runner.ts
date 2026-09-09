@@ -67,6 +67,8 @@ export interface RunnerOptions {
    * enforcement layer, so this is on by default; a test may inject a no-op.
    */
   installPreCommitHook?: (worktreePath: string, ticket: Ticket) => unknown;
+  /** T017: called once per QA spawn with the ticket and its fresh clone path — the daemon wires `QaProtocol.start` here. */
+  onQaSpawn?: (ticket: Ticket, worktreePath: string) => unknown;
 }
 
 export interface SpawnResult {
@@ -139,6 +141,7 @@ export class Runner {
       worktreePath = ensureTicketWorktree(repoRoot, ticket).path;
     } else {
       worktreePath = ensureQaClone(repoRoot, ticket).path;
+      this.opts.onQaSpawn?.(ticket, worktreePath);
     }
 
     const brief = assembleBrief({

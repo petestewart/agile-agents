@@ -306,6 +306,8 @@ describeProvider('ToolService.registerProvider', () => {
       service.callTool({ agent: 'eng-tkt-0001' }, 'ticket_point', {}),
     ).rejects.toThrow();
     expectProvider(calls).toEqual(['architect:ticket_point']);
+  });
+});
 
 // T017 review round (opus blocker 2): `read_summary` reads the file itself
 // and returns a summary of it — a QA session could otherwise bypass the
