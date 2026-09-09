@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { type Message, ulid, validateMessage } from '@agile-agents/shared';
+import { type Message, ulid } from '@agile-agents/shared';
 import { Bus } from '../bus';
 import { createHalt } from '../halts';
 import { handToArchitect, processStandupReports, releaseIfResolved, standupCall } from './standup';
@@ -24,21 +24,19 @@ afterEach(() => {
 });
 
 /**
- * DESIGN-GAP / discovered issue (out of this ticket's file ownership,
- * `bus/routing.ts`): `checkRoute` allows an engineer to send only
- * `question`/`discovery`/`escalate` to `em` — `standup_report` (§5 step 3:
- * "reply `standup_report`") isn't in that list, so `bus.send` rejects it
- * today. Filed in the pipeline report as a blocker for the manager;
- * `processStandupReports`' own logic is still fully testable by writing the
- * message straight into `em`'s inbox the way a corrected `Bus.send` would.
+ * Sends a `standup_report` through the real bus (`bus/routing.ts`'s
+ * `ENGINEER_TO_EM_KINDS` now allows `engineer -> em standup_report` — see
+ * that file's header for the §5 citation). No bypass: this goes through
+ * `Bus.send`'s full validate + route-check + fan-out path, same as
+ * production.
  */
-async function seedStandupReport(
-  store: typeof fx.store,
+async function sendStandupReport(
   message: Omit<Message, 'id' | 'ts'> & { id?: string; ts?: string },
 ): Promise<Message> {
-  const full = validateMessage({ id: ulid(), ts: new Date(now).toISOString(), ...message });
-  await store.putEntity(`bus/inbox/em/${full.id}.yaml`, validateMessage, full);
-  return full;
+  const input = { id: ulid(now), ts: new Date(now).toISOString(), ...message };
+  const result = await bus.send(input);
+  if (!result.ok) throw new Error(`sendStandupReport: ${result.reason}`);
+  return result.message;
 }
 
 async function registerAgent(agent: string, ticket?: string): Promise<void> {
@@ -93,7 +91,7 @@ describe('processStandupReports + quorum', () => {
     await standupCall(bus, halt, clock);
 
     // eng-1 reports in, naming the halt via refs.
-    await seedStandupReport(fx.store, {
+    await sendStandupReport({
       from: 'eng-1',
       to: ['em'],
       kind: 'standup_report',
@@ -112,7 +110,7 @@ describe('processStandupReports + quorum', () => {
     expect(bus.poll('em' as never).some((m) => m.kind === 'standup_report')).toBe(false);
 
     // eng-2 reports in too -> quorum reached.
-    await seedStandupReport(fx.store, {
+    await sendStandupReport({
       from: 'eng-2',
       to: ['em'],
       kind: 'standup_report',
@@ -128,7 +126,7 @@ describe('processStandupReports + quorum', () => {
   });
 
   test('a standup_report with no recognizable halt id in refs is left unacked, not guessed at', async () => {
-    await seedStandupReport(fx.store, {
+    await sendStandupReport({
       from: 'eng-1',
       to: ['em'],
       kind: 'standup_report',
@@ -173,7 +171,7 @@ describe('releaseIfResolved', () => {
     // Quorum not reached yet, and no decision published -> no-op.
     expect(await releaseIfResolved(fx.store, bus, halt, clock)).toBe(false);
 
-    await seedStandupReport(fx.store, {
+    await sendStandupReport({
       from: 'eng-1',
       to: ['em'],
       kind: 'standup_report',
