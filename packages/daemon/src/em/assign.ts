@@ -49,6 +49,7 @@ export const defaultRoute: RouteFn = () => ({ vendor: 'claude', model: 'claude' 
 
 export interface AssignReadyOptions {
   route?: RouteFn;
+  now?: () => Date;
 }
 
 export interface AssignedTicket {
@@ -77,6 +78,7 @@ export async function assignReady(
   opts: AssignReadyOptions = {},
 ): Promise<AssignedTicket[]> {
   const route = opts.route ?? defaultRoute;
+  const now = opts.now ?? (() => new Date());
   const assigned: AssignedTicket[] = [];
 
   for (const ticketId of sprint.tickets) {
@@ -107,14 +109,20 @@ export async function assignReady(
     let spawned: SpawnResult;
     try {
       spawned = await runner.spawn('engineer', ticketId);
-    } catch {
-      // Already running (e.g. a fix cycle mid-flight) — nothing new to do.
-      continue;
+    } catch (err) {
+      // Review-round nit: only swallow the one expected race (`runner.spawn`
+      // / `fakeRunner`'s own "<agentId> is already running" — a fix cycle
+      // already mid-flight, nothing new to do); any other spawn failure
+      // (worktree setup, brief assembly, ...) is a real problem and should
+      // surface, not vanish silently.
+      const message = err instanceof Error ? err.message : String(err);
+      if (message.includes('already running')) continue;
+      throw err;
     }
 
     const result = await bus.send({
-      id: ulid(),
-      ts: new Date().toISOString(),
+      id: ulid(now().getTime()),
+      ts: now().toISOString(),
       from: 'em',
       to: [spawned.agentId],
       kind: 'assign',

@@ -1,6 +1,7 @@
 export * from './sprint';
 export * from './assign';
 export * from './board';
+export * from './discovery';
 export * from './standup';
 export * from './review';
 export * from './retro';

@@ -31,7 +31,7 @@ import type { ToolCallContext } from '../tools/types';
 import { type AssignReadyOptions, assignReady } from './assign';
 import { postDecision, readBoard } from './board';
 import { type EmLoop, currentSprint } from './loop';
-import { type SprintReviewOptions, sprintReview } from './review';
+import { type SprintReviewOptions, requestSprintReview, resolveSprintReview } from './review';
 import { type PlanSprintOptions, planSprint } from './sprint';
 import { standupCall } from './standup';
 
@@ -119,11 +119,23 @@ async function standupCallVerb(deps: EmToolDeps, ctx: ToolCallContext, input: un
   return { called: halt.id, affected: halt.affected ?? [] };
 }
 
+/**
+ * One-shot: opens (or, per the ticket-request/resolution split in
+ * `review.ts`, immediately tries to resolve) the `sprint_review` gate for a
+ * sprint whose tickets are all done. A model-turn verb call has no
+ * persistent "already requested, waiting on a human" state of its own —
+ * that's `EmLoop.tick()`'s job (it keeps a `pendingReviews` map across
+ * calls) — so calling this verb again after a `'pending'` result opens a
+ * *new* `HilRequest` rather than re-checking the old one. Fine for a
+ * delegated gate (resolves synchronously either way); a human-owned gate is
+ * better driven by the daemon's own tick loop, not repeated verb calls.
+ */
 async function sprintReviewVerb(deps: EmToolDeps, ctx: ToolCallContext, input: unknown) {
   requireEm(ctx, 'sprint_review');
   const p = requireObject(input);
   const sprint = resolveSprint(deps.store, p.sprintId, 'sprint_review');
-  return sprintReview(deps.store, deps.gateService, sprint, deps.sprintReview);
+  const hilRequest = await requestSprintReview(deps.store, deps.gateService, sprint);
+  return resolveSprintReview(deps.store, sprint, hilRequest, deps.sprintReview);
 }
 
 async function decisionPost(deps: EmToolDeps, ctx: ToolCallContext, input: unknown) {

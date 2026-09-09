@@ -8,19 +8,29 @@
  * duplicate it. What `tick()` does, in order, every call:
  *
  *  1. Assign newly `ready` tickets in the live sprint (`assignReady`).
- *  2. Process `em`'s inbox: `standup_report` folded into halts
- *     (`processStandupReports`); `discovery` stanzas/messages and open
- *     halts get a `standup_call` (`standupCall`) if one hasn't gone out yet
- *     for that halt this tick; halts whose quorum just reached get handed
- *     to the architect (`handToArchitect`) once; halts that are both
- *     quorum-reached and decision-published get released + `resume`
- *     (`releaseIfResolved`). `qa_verdict`/`review_verdict` messages
- *     (ticket text: "just log/route") are acked and otherwise ignored here —
- *     the reviewer/QA modules (T016/T017) own reacting to their own
- *     verdicts; the EM's inbox copy is routing noise, not a decision point.
- *  3. Sprint review check: if every ticket in the live sprint is `done` and
- *     review hasn't already fired for it (`sprint.review_at` still unset),
- *     run `sprintReview`.
+ *  2. Triage `discovery` messages/stanzas to the architect
+ *     (`triageDiscoveries` — review-round fix; previously never called).
+ *  3. Process `em`'s inbox: `standup_report` folded into halts
+ *     (`processStandupReports`); every halt not yet quorum-`reached` gets
+ *     its quorum re-evaluated (`evaluateQuorum` — review-round fix:
+ *     previously never called, so a halt could only reach quorum via every
+ *     affected agent reporting, never via the 10-minute timeout, meaning one
+ *     silent/dead agent deadlocked it forever); open halts get a
+ *     `standup_call` if one hasn't gone out yet for that halt this process's
+ *     lifetime; halts whose quorum just reached get handed to the architect
+ *     (`handToArchitect`) once; halts that are both quorum-reached and
+ *     decision-published get released + `resume` (`releaseIfResolved`).
+ *     `qa_verdict`/`review_verdict` messages (ticket text: "just log/route")
+ *     are acked and otherwise ignored here — the reviewer/QA modules
+ *     (T016/T017) own reacting to their own verdicts.
+ *  4. Sprint review: a state machine across ticks (review-round fix — see
+ *     `review.ts`'s header for why a single call can't do this). If every
+ *     ticket in the live sprint is `done` and no review has been requested
+ *     for it yet, `requestSprintReview` opens the gate; every tick after
+ *     that (while the sprint's review is still `pending`) re-checks it via
+ *     `resolveSprintReview` until it resolves. `'approved'` merges + plans
+ *     the next layer; `'denied'` posts a `decision` message instead (no
+ *     merge, no next layer).
  *
  * Every step is a pure daemon-side function under `em/*` — `tick()` is the
  * orchestration glue an actual EM *model* turn's MCP verbs
@@ -29,13 +39,21 @@
  * vendor login here" constraint.
  */
 
-import type { Halt, Message, Sprint } from '@agile-agents/shared';
+import type { HilId, Message, Sprint, SprintId } from '@agile-agents/shared';
 import type { Bus } from '../bus';
 import type { GateService } from '../gates';
+import { evaluateQuorum } from '../halts';
 import type { Runner } from '../runner';
 import type { StateStore } from '../store';
 import { type AssignReadyOptions, assignReady } from './assign';
-import { type SprintReviewOptions, type SprintReviewResult, sprintReview } from './review';
+import { postDecision } from './board';
+import { type TriageDiscoveriesResult, triageDiscoveries } from './discovery';
+import {
+  type SprintReviewOptions,
+  type SprintReviewResult,
+  requestSprintReview,
+  resolveSprintReview,
+} from './review';
 import { handToArchitect, processStandupReports, releaseIfResolved, standupCall } from './standup';
 
 export interface EmLoopOptions {
@@ -50,8 +68,10 @@ export interface EmLoopOptions {
 
 export interface EmTickResult {
   assigned: Awaited<ReturnType<typeof assignReady>>;
+  discoveries: TriageDiscoveriesResult;
   standupsCalled: string[];
   reportsProcessed: Awaited<ReturnType<typeof processStandupReports>>;
+  quorumsEvaluated: string[];
   handedToArchitect: string[];
   released: string[];
   sprintReview?: SprintReviewResult;
@@ -73,6 +93,10 @@ export class EmLoop {
   private readonly calledHalts = new Set<string>();
   /** Halt ids already handed to the architect — same idempotency rationale. */
   private readonly escalatedHalts = new Set<string>();
+  /** `discovery` board-stanza keys already forwarded — see `discovery.ts`'s header. */
+  private readonly seenDiscoveryStanzas = new Set<string>();
+  /** Sprint id -> the in-flight `sprint_review` `HilRequest` id, while `resolveSprintReview` still reads it as `pending`. Removed once resolved. Process-local — see `review.ts`'s header: a restart mid-pending-review re-requests via `requestSprintReview`, opening a second `HilRequest` (the first is simply abandoned, not double-resolved) rather than silently losing the review. */
+  private readonly pendingReviews = new Map<SprintId, HilId>();
 
   constructor(private readonly opts: EmLoopOptions) {}
 
@@ -88,26 +112,19 @@ export class EmLoop {
     return this.opts.now ? this.opts.now() : new Date();
   }
 
-  /** Every halt currently active (global, or scoping a live ticket), deduped by id. */
-  private activeHalts(sprint: Sprint | undefined): Halt[] {
-    const all = new Map<string, Halt>();
-    for (const halt of this.store.listHalts()) all.set(halt.id, halt);
-    void sprint; // Reserved: a future cut could scope this to sprint tickets only; `listHalts()` is small enough in v0 not to need it (activeHaltsFor exists for the per-ticket case).
-    return [...all.values()];
-  }
-
   private async runStandups(): Promise<{
     standupsCalled: string[];
     reportsProcessed: Awaited<ReturnType<typeof processStandupReports>>;
+    quorumsEvaluated: string[];
     handedToArchitect: string[];
     released: string[];
   }> {
     const standupsCalled: string[] = [];
+    const quorumsEvaluated: string[] = [];
     const handedToArchitect: string[] = [];
     const released: string[] = [];
 
-    const halts = this.activeHalts(undefined);
-    for (const halt of halts) {
+    for (const halt of this.store.listHalts()) {
       if (halt.quorum !== 'reached' && !this.calledHalts.has(halt.id)) {
         await standupCall(this.bus, halt, () => this.now());
         this.calledHalts.add(halt.id);
@@ -118,6 +135,16 @@ export class EmLoop {
     const reportsProcessed = await processStandupReports(this.store, this.bus, () =>
       this.now().getTime(),
     );
+
+    // Review-round fix (blocker 3): re-evaluate every still-pending halt's
+    // quorum so the 10-minute timeout can flip it to `reached` even when one
+    // affected agent never reports — previously nothing ever called this.
+    for (const halt of this.store.listHalts()) {
+      if (halt.quorum !== 'reached') {
+        await evaluateQuorum(this.store, halt.id, () => this.now().getTime());
+        quorumsEvaluated.push(halt.id);
+      }
+    }
 
     for (const halt of this.store.listHalts()) {
       if (halt.quorum === 'reached' && !this.escalatedHalts.has(halt.id)) {
@@ -136,7 +163,7 @@ export class EmLoop {
       }
     }
 
-    return { standupsCalled, reportsProcessed, handedToArchitect, released };
+    return { standupsCalled, reportsProcessed, quorumsEvaluated, handedToArchitect, released };
   }
 
   /** Acks every `qa_verdict`/`review_verdict` copy sitting in `em`'s inbox — "just log/route" (ticket text); the reviewer/QA modules own reacting to their own verdicts. */
@@ -147,19 +174,17 @@ export class EmLoop {
     }
   }
 
-  async tick(): Promise<EmTickResult> {
-    const sprint = currentSprint(this.store);
+  /** The sprint-review state machine's one step for `sprint` this tick — see the file header and `review.ts`'s own header for the full shape. `undefined` when there's nothing to do (no sprint, or its tickets aren't all `done` yet and no review is in flight). */
+  private async runSprintReview(
+    sprint: Sprint | undefined,
+  ): Promise<SprintReviewResult | undefined> {
+    if (!sprint || sprint.review_at !== undefined) return undefined;
 
-    const assigned = sprint
-      ? await assignReady(this.store, this.bus, this.opts.runner, sprint, this.opts.assign)
-      : [];
+    const now = () => this.now();
+    const inFlight = this.pendingReviews.get(sprint.id);
 
-    const { standupsCalled, reportsProcessed, handedToArchitect, released } =
-      await this.runStandups();
-    await this.drainVerdictCopies();
-
-    let review: SprintReviewResult | undefined;
-    if (sprint && sprint.review_at === undefined && sprint.tickets.length > 0) {
+    if (inFlight === undefined) {
+      if (sprint.tickets.length === 0) return undefined;
       const tickets = sprint.tickets.map((id) => {
         try {
           return this.store.getTicket(id);
@@ -168,18 +193,74 @@ export class EmLoop {
         }
       });
       const allDone = tickets.every((t) => t !== undefined && t.status === 'done');
-      if (allDone) {
-        review = await sprintReview(this.store, this.opts.gateService, sprint, {
-          ...this.opts.sprintReview,
-          now: () => this.now(),
-        });
+      if (!allDone) return undefined;
+
+      const hilRequest = await requestSprintReview(this.store, this.opts.gateService, sprint);
+      const result = await resolveSprintReview(this.store, sprint, hilRequest, {
+        ...this.opts.sprintReview,
+        now,
+      });
+      if (result.outcome === 'pending') {
+        this.pendingReviews.set(sprint.id, hilRequest.id);
+      } else {
+        await this.onSprintReviewResolved(sprint, result);
       }
+      return result;
     }
+
+    const hilRequest = this.opts.gateService.get(inFlight);
+    const result = await resolveSprintReview(this.store, sprint, hilRequest, {
+      ...this.opts.sprintReview,
+      now,
+    });
+    if (result.outcome !== 'pending') {
+      this.pendingReviews.delete(sprint.id);
+      await this.onSprintReviewResolved(sprint, result);
+    }
+    return result;
+  }
+
+  /** `'denied'` gets a `decision` message onto the bus so the outcome is visible, not silently absorbed (review-round fix's own wording: "sprint stays open with a decision message"). `'approved'` needs nothing further here — `resolveSprintReview` already ran the merge and planned the next layer. */
+  private async onSprintReviewResolved(sprint: Sprint, result: SprintReviewResult): Promise<void> {
+    if (result.outcome !== 'denied') return;
+    await postDecision(this.bus, {
+      to: ['human'],
+      body: `sprint ${sprint.id} review denied by ${result.hilRequest.decided_by ?? result.hilRequest.owner} — no merge, sprint stays open`,
+      refs: [result.hilRequest.id],
+      now: () => this.now(),
+    });
+  }
+
+  async tick(): Promise<EmTickResult> {
+    const sprint = currentSprint(this.store);
+
+    const assigned = sprint
+      ? await assignReady(this.store, this.bus, this.opts.runner, sprint, {
+          ...this.opts.assign,
+          now: () => this.now(),
+        })
+      : [];
+
+    const discoveries = await triageDiscoveries(
+      this.store,
+      this.bus,
+      sprint?.tickets ?? [],
+      this.seenDiscoveryStanzas,
+      () => this.now(),
+    );
+
+    const { standupsCalled, reportsProcessed, quorumsEvaluated, handedToArchitect, released } =
+      await this.runStandups();
+    await this.drainVerdictCopies();
+
+    const review = await this.runSprintReview(sprint);
 
     return {
       assigned,
+      discoveries,
       standupsCalled,
       reportsProcessed,
+      quorumsEvaluated,
       handedToArchitect,
       released,
       sprintReview: review,

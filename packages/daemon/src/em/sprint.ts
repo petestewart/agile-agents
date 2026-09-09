@@ -58,9 +58,15 @@ export function computeFrontier(
 
 /** Next `S-<n>` id — monotonic over every sprint ever created (mirrors `halts/index.ts`'s `nextHaltId`, minus the released-file wrinkle: sprint files are never deleted). */
 export function nextSprintId(store: StateStore): SprintId {
-  const existing = store.listSprints().map((s) => Number(s.id.slice('S-'.length)));
-  const next =
-    existing.length > 0 ? Math.max(...existing.filter((n) => Number.isFinite(n))) + 1 : 1;
+  // Review-round nit: filter *then* check length, so an all-non-finite
+  // input (impossible today — `SprintIdSchema` is `S-\d+`, always finite —
+  // but defensive regardless) can't make `Math.max(...[])` return
+  // `-Infinity` and mint `S--Infinity`.
+  const finite = store
+    .listSprints()
+    .map((s) => Number(s.id.slice('S-'.length)))
+    .filter((n) => Number.isFinite(n));
+  const next = finite.length > 0 ? Math.max(...finite) + 1 : 1;
   return `S-${next}` as SprintId;
 }
 

@@ -81,13 +81,15 @@ export interface PostDecisionInput {
   refs?: string[];
   from?: AgentId;
   requires_ack?: boolean;
+  now?: () => Date;
 }
 
 /** Sends a `decision` bus message (§5 "Comms bus" `kind` enum) — the EM's standup output. */
 export async function postDecision(bus: Bus, input: PostDecisionInput): Promise<SendResult> {
+  const now = input.now ?? (() => new Date());
   const message: Message = {
-    id: ulid(),
-    ts: new Date().toISOString(),
+    id: ulid(now().getTime()),
+    ts: now().toISOString(),
     from: input.from ?? 'em',
     to: input.to,
     kind: 'decision',
