@@ -22,9 +22,10 @@
  */
 
 import { join } from 'node:path';
-import type { AgentId, TicketId } from '@agile-agents/shared';
+import type { AgentId, Ticket, TicketId } from '@agile-agents/shared';
 import type { Bus } from '../bus';
 import type { GateService } from '../gates';
+import { installPreCommitHook } from '../merge/precommit';
 import type { PermissionRole } from '../permissions';
 import type { StateStore } from '../store';
 import { assembleBrief } from './brief';
@@ -60,6 +61,12 @@ export interface RunnerOptions {
   now?: () => Date;
   /** Injectable so tests can drive the sweep without a real timer. */
   sweepIntervalMs?: number;
+  /**
+   * Installs the shared `pre-commit` halt guard (T019 `merge/precommit.ts`)
+   * into every engineer worktree right after it is placed — hooks are the
+   * enforcement layer, so this is on by default; a test may inject a no-op.
+   */
+  installPreCommitHook?: (worktreePath: string, ticket: Ticket) => unknown;
 }
 
 export interface SpawnResult {
@@ -103,6 +110,7 @@ export class Runner {
     if (role === 'engineer') {
       const result = ensureTicketWorktree(repoRoot, ticket);
       worktreePath = result.path;
+      (this.opts.installPreCommitHook ?? installPreCommitHook)(worktreePath, ticket);
       const relWorktree = `.worktrees/${ticket.id}`;
       if (ticket.worktree !== relWorktree || ticket.assignee !== agentId) {
         ticket = await store.putTicket(

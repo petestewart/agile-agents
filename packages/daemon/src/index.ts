@@ -84,3 +84,7 @@ export * from './architect';
 // Review protocol: diff_summary, findings/verdicts, rules, disputes,
 // review.* RPC methods (T016).
 export * from './review';
+
+// Merge and integration owner: ticket -> integration -> main, pre-commit
+// halt guard, merge.* RPC methods (T019).
+export * from './merge';

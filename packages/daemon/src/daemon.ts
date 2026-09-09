@@ -16,6 +16,7 @@ import { buildHaltRpcMethods } from './halts';
 import { HookService, buildHookRpcMethods } from './hook';
 import { type HttpServerHandle, startHttpServer } from './http';
 import { type LockHandle, acquireLock } from './lock';
+import { MergeOwner, buildMergeRpcMethods, sprintReviewApproved } from './merge';
 import { buildOracleRpcMethods } from './oracle';
 import {
   REVIEW_BUILTIN_TOOLS,
@@ -93,6 +94,15 @@ export async function startDaemon(options: DiscoverConfigOptions = {}): Promise<
         })
       : undefined;
   runner?.startSweep();
+  // Merge and integration owner (T019, §15): ticket branch -> integration
+  // on QA accept (`merge.ticket`), integration -> main gated on the latest
+  // `sprint_review` HIL decision (fail-closed via `sprintReviewApproved`).
+  const mergeOwner =
+    store && bus && gateService
+      ? new MergeOwner(store, bus, config.repoRoot, {
+          gateApproved: () => sprintReviewApproved(gateService),
+        })
+      : undefined;
 
   // Role-scoped verb providers (T014 architect; T016 review; T015/T017 add
   // theirs). Each provider is only *listed* for its roles; the verbs
@@ -190,7 +200,7 @@ export async function startDaemon(options: DiscoverConfigOptions = {}): Promise<
   }
 
   const extraMethods =
-    store && gateService && bus && toolService && runner
+    store && gateService && bus && toolService && runner && mergeOwner
       ? {
           ...buildStateRpcMethods(store),
           ...buildBusRpcMethods(bus),
@@ -206,6 +216,7 @@ export async function startDaemon(options: DiscoverConfigOptions = {}): Promise<
           ...buildToolRpcMethods(toolService),
           ...buildRunnerRpcMethods(runner),
           ...(reviewDeps ? buildReviewRpcMethods(reviewDeps) : {}),
+          ...buildMergeRpcMethods(mergeOwner),
         }
       : undefined;
 

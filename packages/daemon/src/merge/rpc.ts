@@ -31,7 +31,7 @@ import { RpcParamError } from '../rpc';
 import type { RpcMethodHandler } from '../rpc';
 import type { MergeOwner } from './owner';
 
-export { RpcError, RpcParamError } from '../rpc';
+// (RpcError/RpcParamError are exported from the package root via ./rpc — not re-exported here to avoid a duplicate barrel export.)
 
 function requireObject(params: unknown): Record<string, unknown> {
   if (typeof params !== 'object' || params === null || Array.isArray(params)) {
