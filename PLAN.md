@@ -251,12 +251,12 @@ Priority encodes dependency layer as well as importance: P0 tickets are v0-block
 
 ### Ticket: T021 Demo fixture and end-to-end sprint
 - **Priority:** P1
-- **Status:** In Progress
+- **Status:** In Review
 - **Owner:** sonnet:worker-T021
 - **Scope:** Depends on T014–T020. `fixtures/demo-project`: small TS service with a test suite, a deliberately oversized file, one seeded rule violation opportunity, and a seeded `.agile/` (product.md, two SPECs, one DEC, an epic of three tickets where ticket 2's contract contains a planted contradiction that forces a discovery). `agile run` drives it per the Definition of Done. Tune role briefs until the run passes three times in a row.
 - **Acceptance Criteria:** Definition of Done "Run" section holds; a written run report with token spend per role is committed under `fixtures/demo-project/runs/`.
 - **Validation Steps:** `AGILE_LIVE=1 bun run e2e` three consecutive passes.
-- **Notes:** This is where prompts get real; expect several iterations on T013 briefs.
+- **Notes:** Branch `T021-demo-e2e` (`625a4c5`; survived the container restart as uncommitted files, merged integration first). `fixtures/demo-project` (service + tests, 2011-line oversized `legacy/dump.ts`, seeded `.agile/` epic with the planted contradiction), `agile run` (`cli/commands/run.ts`), offline e2e over the fake ACP agent (`run.e2e.test.ts`, `runner/pipeline-glue.ts`, `fake-driver.ts`) run 3x green as the offline stand-in for the three live passes; run report under `runs/`. Worker declined the architect-spawn wiring as a design decision — split out as T031. Round 1 review + QA running.
 
 ### Ticket: T022 Pi adapter and `agile` extension
 - **Priority:** P2
@@ -339,6 +339,15 @@ Priority encodes dependency layer as well as importance: P0 tickets are v0-block
 - **Validation Steps:** `bun test packages/daemon/src/permissions packages/daemon/src/hook`.
 - **Notes:** Discovered in T012 review round 3. Branch `T030-benign-commands` (local worktree). Review round 1 FAIL: `~` unexpanded (home counted as inside), `find -fprint/-fls` writes, `--flag=path` values unchecked, redirect targets skip the `$VAR`/`~` check, `bun x` bypass, no realpath containment, lint red. QA round 1 REJECT on lint only. Worker fixed all 7 in `a191469` (1182 tests); review round 2 PASS. QA round 2 REJECT: flag-less `bun x`/`npx <pkg>` still allowed. Worker fixed round 3 in `6073c39` (dlx forms require a real `node_modules/.bin` entry); QA round 3 ACCEPT; review round 3 FAIL: `isRepoLocalBin` lacks realpath containment (`.bin -> /usr/bin` allows any binary), `pnpm/yarn dlx` should be unconditional hil. Round 4 (`a7c5415`): review PASS, QA ACCEPT. merge: `bfd4512`.
 
+### Ticket: T031 Architect ACP session: permission row and role threading
+- **Priority:** P2
+- **Status:** Todo
+- **Owner:** Unassigned
+- **Scope:** Depends on T010, T014, T021, T026. `PermissionRole` is `engineer | reviewer | qa` (T010 scoped §14's Architect/EM/Reader rows out). Add the architect row per design §14 (oracle write guard + tickets + rules via MCP verbs; no repo edits; `plan` mode per the v0 default, falling back to `default` mode + `approve_plan` gate), thread `'architect'` through `permissions/policy-tables.ts`, `sandbox/{types,wrap}.ts`'s exhaustive per-role tables, `qa/deny.ts`, `runner/runner.ts` (`agentIdFor`, worktree placement: architect works in a read-only checkout of `integration`), and `Runner.spawn('architect', ...)`. The offline e2e (T021) currently calls `registerArchitectTools` directly; switch it to a spawned architect session over the fake ACP agent.
+- **Acceptance Criteria:** `Runner.spawn('architect', ticket)` type-checks and starts a session whose hook/ACP policy denies edits and Bash and allows the architect MCP verbs; the T021 offline e2e produces its discovery → decision cycle through that session; `bun test` green.
+- **Validation Steps:** `bun test packages/daemon/src/runner packages/daemon/src/permissions packages/daemon/src/architect` and the offline e2e 3x.
+- **Notes:** Discovered by T021 (worker report, discovered issue 1). A design decision, not a mechanical patch — hence its own ticket.
+
 ## 8. Open Questions
 
 - **Name.** `agile` / `agiled` / `.agile/` are placeholders. Decide before T008 lands so the CLI name is stable.
@@ -402,3 +411,4 @@ Priority encodes dependency layer as well as importance: P0 tickets are v0-block
 - 2026-09-09 — T026 merged () after 3 review / 3 QA rounds, wired in 8d063d9; merge conflict in `runner/session.ts` (quota vs sandbox options, both additive) resolved by keeping both. Wave 8 launched: T025 (control room v1) and T027 (Cursor/Grok/Codex adapters; no vendor logins here, spike rows are the reference). 1645 tests green.
 - 2026-09-09 — T022 merged (9bd0c59) after 2 review / 2 QA rounds. Routed account now reaches the quota service (closes the T023 `default`-account placeholder for routed tickets). T024 launched (handoff and pause; depends on T022 + T023). 1692 tests green.
 - 2026-09-09 — Container restart killed the four in-flight workers (T021, T024, T025, T027). Worktrees survived: T021 (~10 uncommitted files, branch cut from an older integration head — told to merge integration first), T025 (~5 uncommitted files), T027 (clean), T024 (no worktree yet). All four relaunched in resume mode with an instruction to commit early. No merged work was lost; integration head `e67ebaa` matches origin.
+- 2026-09-09 — T021 shipped (`625a4c5`); round 1 gates running. Added T031 (architect ACP session: permission row + role threading) for the gap T021 surfaced; the live discovery cycle has no real architect session until it lands.
