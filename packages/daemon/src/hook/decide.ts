@@ -74,6 +74,10 @@ import type {
   AcpToolCall,
   AcpToolKind,
 } from '../permissions';
+// Not re-exported from `../permissions` (its `index.ts` is out of this
+// ticket's ownership) — imported directly from the module that defines it.
+import { qaBashPathVerdict } from '../permissions/policy-tables';
+import { matchesAnyPattern, resolveRelToWorktree } from '../qa/deny';
 import type { ClaudePreToolUsePayload, HookDecision, HookDecisionContext } from './types';
 
 /** §5 "Delivery by priority": normal inbox is injected, capped so a burst of messages can't blow past the message-body-cap spirit for the whole context injection. Pointer, not payload — bodies are already ≤800 chars each (`MESSAGE_BODY_MAX_CHARS`), this just bounds how many get concatenated. */
@@ -90,6 +94,37 @@ function targetPathOf(payload: ClaudePreToolUsePayload): string | undefined {
   const input = payload.tool_input ?? {};
   const value = input.file_path ?? input.path;
   return typeof value === 'string' && value.length > 0 ? value : undefined;
+}
+
+/**
+ * Every path a built-in tool call's `tool_input` names, across the shapes
+ * Claude's own tools use — not just Read/Grep's single `targetPathOf`
+ * (§ "Big raw Read/Grep" tier): `Glob`'s `path` names a search directory,
+ * and every edit tool (`Edit`/`Write`/`MultiEdit`/`NotebookEdit`) names its
+ * target the same `file_path`/`path`/`notebook_path` way. Exported so
+ * `service.ts` (or a test) can enumerate candidates without re-deriving
+ * Claude's tool_input shapes. Role-agnostic — this is "what paths does this
+ * tool call touch", not "is any of them denied".
+ */
+const PATH_BEARING_TOOL_NAMES = new Set([
+  'Read',
+  'Grep',
+  'Glob',
+  'Edit',
+  'Write',
+  'MultiEdit',
+  'NotebookEdit',
+]);
+
+export function pathsForToolCall(payload: ClaudePreToolUsePayload): string[] {
+  if (payload.tool_name === undefined || !PATH_BEARING_TOOL_NAMES.has(payload.tool_name)) {
+    return [];
+  }
+  const input = payload.tool_input ?? {};
+  const candidates = [input.file_path, input.path, input.notebook_path].filter(
+    (v): v is string => typeof v === 'string' && v.length > 0,
+  );
+  return [...new Set(candidates)];
 }
 
 function formatInboxBody(message: HookDecisionContext['inbox'][number]): string {
@@ -190,9 +225,36 @@ function roleToolVerdict(
     request,
   });
 
-  if (decision.kind === 'allow') return undefined;
   if (decision.kind === 'deny') return { decision: 'deny', reason: decision.reason };
-  return { decision: 'ask', reason: decision.reason };
+  if (decision.kind === 'hil') return { decision: 'ask', reason: decision.reason };
+
+  // `decidePermission`'s own `PolicyContext` (built inside
+  // `permissions/decide.ts`, out of this ticket's ownership) carries only
+  // `{role, worktreePath, ticket}` — no room for a per-ticket deny list
+  // without touching that module. So the QA Bash-path check (§14: `cat`/
+  // `head`/`grep` of a contract path reaches the file just as readily as a
+  // raw `Read`) runs as an ADDITIONAL check here, using the deny list
+  // `service.ts` already resolved onto `ctx.denyReadPaths` for the read-path
+  // seam above — not folded into `decidePermission`'s own role-table walk.
+  if (
+    kind === 'execute' &&
+    ctx.role === 'qa' &&
+    ctx.denyReadPaths &&
+    ctx.denyReadPaths.length > 0 &&
+    payload.tool_input?.command !== undefined &&
+    typeof payload.tool_input.command === 'string'
+  ) {
+    const bashVerdict = qaBashPathVerdict(
+      payload.tool_input.command,
+      ctx.worktreePath,
+      ctx.denyReadPaths,
+    );
+    if (bashVerdict?.action === 'deny') {
+      return { decision: 'deny', reason: bashVerdict.reason };
+    }
+  }
+
+  return undefined;
 }
 
 /** Tiers 4–6: the gate verdict, computed independently of any normal-priority inbox message pending — see this file's header, review round fix (blocker 1). */
@@ -200,6 +262,27 @@ function computeGateVerdict(
   ctx: HookDecisionContext,
   payload: ClaudePreToolUsePayload,
 ): HookDecision {
+  // 0. Role-extension seam (§13/§14): a per-role path deny-list
+  // (`ctx.denyReadPaths`, resolved by `service.ts` — today only for QA's
+  // `contract.inputs ∪ outputs`) checked for every path-bearing tool
+  // (Read/Grep/Glob/Edit/Write/MultiEdit/NotebookEdit), BEFORE the size
+  // gate below — so a denied contract read renders as a clear, correctly-
+  // reasoned deny rather than being redirected to `read_summary` (which
+  // would just read the file by another door) or silently allowed because
+  // it happens to be under the size cap. This function has no QA-specific
+  // knowledge: `denyReadPaths` is opaque per-role data.
+  if (ctx.denyReadPaths && ctx.denyReadPaths.length > 0) {
+    for (const path of pathsForToolCall(payload)) {
+      const relPath = resolveRelToWorktree(path, ctx.worktreePath);
+      if (matchesAnyPattern(relPath, ctx.denyReadPaths)) {
+        return {
+          decision: 'deny',
+          reason: 'QA may not read contract inputs/outputs (§13)',
+        };
+      }
+    }
+  }
+
   // 4. Big raw Read/Grep — §7 "Tool framework": a matched raw call is
   // denied with the tool's redirect already named.
   if (isReadLikeTool(payload.tool_name)) {

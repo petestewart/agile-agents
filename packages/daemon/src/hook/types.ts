@@ -44,6 +44,15 @@ export interface HookDecisionContext {
   limits: HookLimits;
   /** Returns a file's size in bytes, or `undefined` if it doesn't exist / isn't a plain file (e.g. a directory — Grep-over-directory must not size-gate). Injectable for tests; `service.ts` wires `node:fs.statSync`. */
   fileSize: (path: string) => number | undefined;
+  /**
+   * Role-extension seam (T017 review round): path-glob patterns this role
+   * may not read/exec-path-into, resolved per role by `service.ts` — today
+   * only for `role === 'qa'` (§13: `contract.inputs ∪ outputs`, via
+   * `qa/deny.ts`'s `qaReadDenyList`). `decide.ts` treats this as opaque
+   * per-role data (no QA-specific branching lives in the pure decision
+   * function) — undefined/empty for every role with nothing to deny.
+   */
+  denyReadPaths?: string[];
 }
 
 /** Raw Claude `PreToolUse` hook stdin payload (spike-findings.md §B; Claude Code hooks reference: `hook_event_name`, `tool_name`, `tool_input`, plus `cwd`/`session_id`/`transcript_path` common to every hook event). */

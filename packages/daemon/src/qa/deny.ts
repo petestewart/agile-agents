@@ -113,8 +113,22 @@ function resolveGlobAgainstClone(pattern: string, worktreePath: string): string[
   return matches;
 }
 
-/** Normalizes `path` (absolute or relative to `worktreePath`) into a forward-slash relative path for pattern matching. A path that resolves outside `worktreePath` is returned normalized-but-unrelated — it will simply never match a contract pattern, which is correct (contract globs only ever name paths inside the ticket's own tree). */
-function toClonedRelPath(path: string, worktreePath: string): string {
+/**
+ * Normalizes `path` (absolute or relative to `worktreePath`) into a
+ * forward-slash relative path for pattern matching. A path that resolves
+ * outside `worktreePath` is returned normalized-but-unrelated — it will
+ * simply never match a contract pattern, which is correct (contract globs
+ * only ever name paths inside the ticket's own tree).
+ *
+ * Exported (review round fix, opus blocker 2): the original wiring sketch
+ * at the bottom of this file matched Claude's ABSOLUTE `file_path` directly
+ * against `contract.inputs`/`outputs`' repo-relative globs, which never
+ * matches — both sides must be resolved to the same (worktree-relative)
+ * frame first. `hook/decide.ts` and `permissions/policy-tables.ts` both
+ * reuse this resolver (alongside `matchesAnyPattern`) instead of
+ * re-deriving path resolution themselves.
+ */
+export function resolveRelToWorktree(path: string, worktreePath: string): string {
   const abs = isAbsolute(path) ? path : join(worktreePath, path);
   return relative(worktreePath, abs).split(sep).join('/');
 }
@@ -136,7 +150,7 @@ export type QaReadDecision = { allow: true } | { allow: false; reason: string };
  */
 export function decideQaRead(ctx: DecideQaReadContext, path: string): QaReadDecision {
   if (ctx.role !== 'qa') return { allow: true };
-  const relPath = toClonedRelPath(path, ctx.worktreePath);
+  const relPath = resolveRelToWorktree(path, ctx.worktreePath);
   const patterns = [...ctx.ticket.contract.inputs, ...ctx.ticket.contract.outputs];
   if (matchesAnyPattern(relPath, patterns)) {
     return {
@@ -148,40 +162,34 @@ export function decideQaRead(ctx: DecideQaReadContext, path: string): QaReadDeci
 }
 
 /**
- * Wiring for the manager (this ticket does not own `hook/decide.ts` or
- * `permissions/**`, so the seam is documented here rather than patched in):
+ * WIRED (review round fix): `hook/types.ts`'s `HookDecisionContext` carries
+ * `denyReadPaths?: string[]` — `hook/service.ts`'s `buildContext` populates
+ * it from `qaReadDenyList(ticket)` for `role === 'qa'` (the raw contract
+ * patterns, `contract.inputs ∪ outputs` — no need to pre-resolve against the
+ * clone since `hook/decide.ts` resolves each candidate path itself via
+ * `resolveRelToWorktree` before matching, closing the "absolute vs.
+ * repo-relative" bug the first draft of this wiring had). `hook/decide.ts`'s
+ * `computeGateVerdict` consults `ctx.denyReadPaths` (via `pathsForToolCall`
+ * + `resolveRelToWorktree` + `matchesAnyPattern`, all reused from here)
+ * BEFORE the size-gate tier, for every path-bearing built-in tool (`Read`,
+ * `Grep`, `Glob`, `Edit`, `Write`, `MultiEdit`, `NotebookEdit`) — a
+ * role-extension seam (the field is generic per-role data, not QA-specific
+ * machinery in `decide.ts` itself) rather than a QA branch hardcoded into
+ * the pure decision function.
  *
- * `hook/decide.ts`'s `computeGateVerdict` already has a step 4 for
- * "big raw Read/Grep" that resolves `targetPathOf(payload)` and reads
- * `ctx.role`/`ctx.worktreePath` — both already on `HookDecisionContext`.
- * The one thing missing there is the full `Ticket` (only `ctx.ticket:
- * TicketId` and `ctx.ticketBudget` are threaded through today;
- * `hook/service.ts`'s `buildContext` already loads the full `Ticket` at
- * line ~303 via `this.store.getTicket(ticketId)` — it just never forwards
- * it past `ticket.budget`).
+ * The same `ctx.denyReadPaths` also feeds
+ * `permissions/policy-tables.ts`'s `qaBashPathVerdict` (called from
+ * `hook/decide.ts`'s `roleToolVerdict`, alongside its existing
+ * `decidePermission` call) so `cat`/`head`/`grep` of a contract path is
+ * denied the same way a raw `Read` is (§14 Bash rule).
  *
- * The minimal wiring is:
- *   1. Add one optional field to `HookDecisionContext` (`hook/types.ts`):
- *      `ticketContract?: Ticket['contract']`.
- *   2. In `hook/service.ts`'s `buildContext`, add `ticketContract:
- *      ticket.contract` to the object it already builds (the `ticket`
- *      local is already in scope there).
- *   3. In `hook/decide.ts`'s `computeGateVerdict`, right after step 4's
- *      existing `isReadLikeTool(payload.tool_name)` branch (same `path`
- *      already resolved via `targetPathOf(payload)`), add:
- *
- *      if (ctx.role === 'qa' && path !== undefined && ctx.ticketContract) {
- *        const denyReason = matchesAnyPattern(path, [
- *          ...ctx.ticketContract.inputs,
- *          ...ctx.ticketContract.outputs,
- *        ]) && 'QA may not read contract inputs/outputs (§13)';
- *        if (denyReason) return { decision: 'deny', reason: denyReason };
- *      }
- *
- *      (or call `decideQaRead({role: ctx.role, ticket: <the Ticket>,
- *      worktreePath: ctx.worktreePath}, path)` directly if `hook/decide.ts`
- *      is given the whole `Ticket` instead of just its `contract` — either
- *      shape works, this module exports both `decideQaRead` and the lower-
- *      level `matchesAnyPattern` so the manager can pick whichever needs
- *      the smaller `HookDecisionContext` change).
+ * `read_summary` (an MCP tool, not a raw Claude tool the PreToolUse hook
+ * ever sees) is gated separately: `tools/service.ts`'s `ToolService` takes
+ * an optional `pathGuard` — a plain `(ctx, path) => {allow, reason?}`
+ * function, no QA-specific knowledge in `tools/service.ts` either — the
+ * daemon wires a QA closure over `decideQaRead` at construction (not done
+ * in this ticket's own file ownership boundary — `daemon.ts` isn't owned
+ * here — but the mechanism itself is real and directly tested against a
+ * `ToolService` built with a `pathGuard` in `qa/deny.test.ts`/
+ * `tools/service.test.ts`).
  */

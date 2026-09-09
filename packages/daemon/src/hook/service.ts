@@ -54,6 +54,7 @@ import type { GateService } from '../gates';
 import { activeHaltsFor } from '../halts';
 import type { PermissionRole } from '../permissions';
 import { isPathInside } from '../permissions/command';
+import { qaReadDenyList } from '../qa/deny';
 import { NotFoundError, type StateStore, buildEvent } from '../store';
 import { decidePreToolUse } from './decide';
 import {
@@ -348,6 +349,11 @@ export class HookService {
       ticketBudget: ticket.budget,
       limits: this.limits,
       fileSize: this.fileSize,
+      // Role-extension seam (T017 review round) — only QA has a deny list
+      // today; `qaReadDenyList` itself no-ops on the contract shape alone
+      // (it doesn't check `role`), so gate it here rather than let an empty
+      // list leak through for every other role.
+      denyReadPaths: role === 'qa' ? qaReadDenyList(ticket) : undefined,
     };
   }
 

@@ -7,7 +7,12 @@
  * body).
  */
 
-import { MESSAGE_BODY_MAX_CHARS, type QaReport, type QaReportLine, type Ticket } from '@agile-agents/shared';
+import {
+  MESSAGE_BODY_MAX_CHARS,
+  type QaReport,
+  type QaReportLine,
+  type Ticket,
+} from '@agile-agents/shared';
 import { validateQaReport } from '@agile-agents/shared';
 import type { QaCriterionResult } from './rerun';
 
@@ -18,7 +23,11 @@ import type { QaCriterionResult } from './rerun';
  * architect via em as its own finding — see `protocol.ts`'s `submit` — not
  * silently treated as a failure of the engineer's work).
  */
-export function buildQaReport(ticket: Ticket, round: number, results: QaCriterionResult[]): QaReport {
+export function buildQaReport(
+  ticket: Ticket,
+  round: number,
+  results: QaCriterionResult[],
+): QaReport {
   const lines: QaReportLine[] = results.map((r) => ({
     criterion: r.criterion,
     ...(r.command !== undefined ? { command: r.command } : {}),
@@ -34,7 +43,9 @@ const TRUNCATION_MARGIN_CHARS = 48;
 /** One-line-per-criterion `qa_verdict` message body, truncated with a pointer to the full report file when it would exceed the shared 800-char cap. */
 export function renderQaVerdictBody(report: QaReport, reportRefPath: string): string {
   const header = `QA ${report.verdict} for ${report.ticket} (round ${report.round}) — full report: ${reportRefPath}`;
-  const lines = report.lines.map((l) => `${l.status.toUpperCase()}: ${l.criterion} — ${l.evidence}`);
+  const lines = report.lines.map(
+    (l) => `${l.status.toUpperCase()}: ${l.criterion} — ${l.evidence}`,
+  );
   const full = [header, ...lines].join('\n');
   if (full.length <= MESSAGE_BODY_MAX_CHARS) return full;
 

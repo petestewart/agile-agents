@@ -7,7 +7,9 @@ function fakeProtocol(status: unknown) {
 
 describe('buildQaRpcMethods', () => {
   test('qa.status returns the protocol status for a valid ticket id', () => {
-    const methods = buildQaRpcMethods(fakeProtocol({ round: 2, criteriaCount: 3, plannedCount: 1, ranCount: 0 }));
+    const methods = buildQaRpcMethods(
+      fakeProtocol({ round: 2, criteriaCount: 3, plannedCount: 1, ranCount: 0 }),
+    );
     expect(methods['qa.status']?.({ ticket: 'TKT-0001' })).toEqual({
       round: 2,
       criteriaCount: 3,

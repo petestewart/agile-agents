@@ -16,7 +16,7 @@
 import type { QaCriterionStatus } from '@agile-agents/shared';
 import { QA_REPORT_MAX_EVIDENCE_CHARS } from '@agile-agents/shared';
 import type { RunTestRunOptions, TestRunOutput } from '../tools/test-run';
-import { runTestRun as defaultRunTestRun } from '../tools/test-run';
+import { TestRunDeniedError, runTestRun as defaultRunTestRun } from '../tools/test-run';
 import type { QaCriterion } from './criteria';
 
 export type RunTestRunFn = (opts: RunTestRunOptions) => Promise<TestRunOutput>;
@@ -56,30 +56,59 @@ function truncateEvidence(text: string): string {
     : text;
 }
 
+function skippedResult(
+  criterion: QaCriterion,
+  command: string | undefined,
+  reason: string,
+): RunCriterionResult {
+  return {
+    result: {
+      criterion: criterion.text,
+      ...(command !== undefined ? { command } : {}),
+      status: 'skipped',
+      evidence: truncateEvidence(reason),
+    },
+  };
+}
+
 /**
  * Runs one criterion's command, applying the one-rerun-on-failure policy:
  * pass first try -> `pass`; fail then pass on rerun -> `flaky` (+ the
  * `FlakyFinding` the caller files to the KB); fail twice -> `fail` (observed
  * via the second run's `test_run` summary vs. the criterion text as
  * "expected"); no command at all -> `skipped`, never executed.
+ *
+ * Review round fix: a command `test_run` itself refuses at spawn time
+ * (`TestRunDeniedError` — not on the allow-list, e.g. `test_run`'s allowed
+ * shape changed under a plan written before this ticket's own up-front
+ * `qa_plan` validation existed, or a caller bypassing `QaProtocol.plan`'s
+ * validation entirely) must not abort the whole QA round — it becomes this
+ * criterion's own `skipped` finding (with the denial reason as evidence),
+ * and every other planned criterion still runs.
  */
-export async function runCriterionWithRerun(opts: RunCriterionOptions): Promise<RunCriterionResult> {
+export async function runCriterionWithRerun(
+  opts: RunCriterionOptions,
+): Promise<RunCriterionResult> {
   const { criterion, command, worktree, repoRoot } = opts;
   const runTestRun = opts.runTestRun ?? defaultRunTestRun;
 
   if (command === undefined) {
-    return {
-      result: {
-        criterion: criterion.text,
-        status: 'skipped',
-        evidence: truncateEvidence(
-          'no command supplied via qa_plan — cannot be exercised from outside (§13 finding)',
-        ),
-      },
-    };
+    return skippedResult(
+      criterion,
+      undefined,
+      'no command supplied via qa_plan — cannot be exercised from outside (§13 finding)',
+    );
   }
 
-  const first = await runTestRun({ input: { command }, worktree, repoRoot });
+  let first: TestRunOutput;
+  try {
+    first = await runTestRun({ input: { command }, worktree, repoRoot });
+  } catch (err) {
+    if (err instanceof TestRunDeniedError) {
+      return skippedResult(criterion, command, `command denied: ${err.message}`);
+    }
+    throw err;
+  }
   if (first.ok) {
     return {
       result: {

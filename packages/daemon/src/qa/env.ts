@@ -38,10 +38,7 @@ export interface QaEnv {
 export class QaEnvUnsupportedError extends Error {
   constructor(readonly env: string) {
     super(
-      `qa env ${JSON.stringify(env)} is not supported yet — only "clone" (§13 "env: clone") ships ` +
-        'in this ticket; "compose: <file>" is a DESIGN-GAP deferred to a later ticket (no daemon-side ' +
-        'container provisioning/teardown exists). Re-scope the ticket contract to env: clone, or pick up ' +
-        'the compose environment before scheduling QA on it.',
+      `qa env ${JSON.stringify(env)} is not supported yet — only "clone" (§13 "env: clone") ships in this ticket; "compose: <file>" is a DESIGN-GAP deferred to a later ticket (no daemon-side container provisioning/teardown exists). Re-scope the ticket contract to env: clone, or pick up the compose environment before scheduling QA on it.`,
     );
     this.name = 'QaEnvUnsupportedError';
   }

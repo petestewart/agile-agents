@@ -49,7 +49,10 @@ describe('registerQaTools', () => {
     const protocol = fakeProtocol();
     const tools = registerQaTools(asProtocol(protocol));
     const qaPlan = tools.find((t) => t.name === 'qa_plan');
-    await qaPlan?.handler({ agent: 'qa-1', ticket: 'TKT-0001' }, { plan: { 0: 'bun test a.test.ts' } });
+    await qaPlan?.handler(
+      { agent: 'qa-1', ticket: 'TKT-0001' },
+      { plan: { 0: 'bun test a.test.ts' } },
+    );
     expect(protocol.calls).toEqual([['plan', 'TKT-0001', { 0: 'bun test a.test.ts' }]]);
   });
 

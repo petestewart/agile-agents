@@ -303,3 +303,105 @@ describe('decidePreToolUse — role × tool policy (review round 3, reuses decid
     expect(glob).toEqual({ decision: 'allow' });
   });
 });
+
+describe('T017 review round: QA contract-input/output deny-list seam (ctx.denyReadPaths)', () => {
+  const QA_WORKTREE = '/repo/.worktrees/TKT-0001-qa';
+
+  function qaCtx(denyReadPaths: string[]): HookDecisionContext {
+    return baseCtx({ role: 'qa', worktreePath: QA_WORKTREE, denyReadPaths });
+  }
+
+  test('QA Read of an ABSOLUTE path under the clone matching a repo-relative contract glob denies (round-1 bug: absolute vs. repo-relative never matched)', () => {
+    const ctx = qaCtx(['spec/input.md']);
+    const result = decidePreToolUse(ctx, {
+      tool_name: 'Read',
+      tool_input: { file_path: `${QA_WORKTREE}/spec/input.md` },
+    });
+    expect(result).toEqual({
+      decision: 'deny',
+      reason: 'QA may not read contract inputs/outputs (§13)',
+    });
+  });
+
+  test('QA Read of a path NOT in the deny list allows', () => {
+    const ctx = qaCtx(['spec/input.md']);
+    const result = decidePreToolUse(ctx, {
+      tool_name: 'Read',
+      tool_input: { file_path: `${QA_WORKTREE}/src/a.ts` },
+    });
+    expect(result).toEqual({ decision: 'allow' });
+  });
+
+  test('denies before the size gate — a small denied file is still denied with the §13 reason, not silently allowed', () => {
+    const ctx = qaCtx(['spec/input.md']);
+    // Small enough to sail through the size gate on its own (well under the default limit).
+    const result = decidePreToolUse(
+      { ...ctx, fileSize: () => 10 },
+      { tool_name: 'Read', tool_input: { file_path: `${QA_WORKTREE}/spec/input.md` } },
+    );
+    expect(result.decision).toBe('deny');
+    expect(result.reason).toBe('QA may not read contract inputs/outputs (§13)');
+  });
+
+  test('also denies Grep/Glob/Edit/Write/MultiEdit/NotebookEdit on a denied path, relative or absolute', () => {
+    const ctx = qaCtx(['spec/**']);
+    for (const call of [
+      { tool_name: 'Grep', tool_input: { path: 'spec/input.md' } },
+      { tool_name: 'Glob', tool_input: { path: `${QA_WORKTREE}/spec` } },
+      { tool_name: 'Edit', tool_input: { file_path: 'spec/input.md' } },
+      { tool_name: 'Write', tool_input: { file_path: 'spec/input.md' } },
+      { tool_name: 'MultiEdit', tool_input: { file_path: 'spec/input.md' } },
+      { tool_name: 'NotebookEdit', tool_input: { notebook_path: 'spec/notes.ipynb' } },
+    ]) {
+      const result = decidePreToolUse(ctx, call);
+      expect(result.decision).toBe('deny');
+    }
+  });
+
+  test('an engineer with the same worktree/path is unaffected — the seam is per-role data, not a global rule', () => {
+    const ctx = baseCtx({
+      role: 'engineer',
+      worktreePath: QA_WORKTREE,
+      denyReadPaths: undefined,
+    });
+    const result = decidePreToolUse(ctx, {
+      tool_name: 'Read',
+      tool_input: { file_path: `${QA_WORKTREE}/spec/input.md` },
+    });
+    expect(result).toEqual({ decision: 'allow' });
+  });
+
+  test('QA Bash "cat" of a denied path denies with the §13 reason', () => {
+    const ctx = qaCtx(['spec/input.md']);
+    const result = decidePreToolUse(ctx, {
+      tool_name: 'Bash',
+      tool_input: { command: 'cat spec/input.md' },
+    });
+    expect(result.decision).toBe('deny');
+    expect(result.reason).toBe('QA may not read contract inputs/outputs (§13)');
+  });
+
+  test('QA Bash "grep -n foo spec/input.md" (pattern first) denies on the path argument, not the pattern', () => {
+    const ctx = qaCtx(['spec/input.md']);
+    const result = decidePreToolUse(ctx, {
+      tool_name: 'Bash',
+      tool_input: { command: 'grep -n foo spec/input.md' },
+    });
+    expect(result.decision).toBe('deny');
+  });
+
+  test('QA Bash "head spec/input.md" denies, "cat src/a.ts" allows', () => {
+    const ctx = qaCtx(['spec/input.md']);
+    const denied = decidePreToolUse(ctx, {
+      tool_name: 'Bash',
+      tool_input: { command: 'head spec/input.md' },
+    });
+    expect(denied.decision).toBe('deny');
+
+    const allowed = decidePreToolUse(ctx, {
+      tool_name: 'Bash',
+      tool_input: { command: 'cat src/a.ts' },
+    });
+    expect(allowed).toEqual({ decision: 'allow' });
+  });
+});

@@ -7,7 +7,7 @@ import { Bus } from '../bus/bus';
 import { runInit } from '../init';
 import { StateStore } from '../store/store';
 import { QaEnvUnsupportedError } from './env';
-import { QaProtocol } from './protocol';
+import { QaProtocol, QaVerdictDeliveryError } from './protocol';
 
 let repo: string;
 let stateRoot: string;
@@ -28,7 +28,11 @@ beforeEach(() => {
   git(['config', 'user.name', 'Test'], repo);
   writeFileSync(join(repo, 'README.md'), '# fixture repo\n');
   git(['add', '-A'], repo);
-  git(['commit', '-q', '-m', 'initial commit'], repo);
+  // `-c commit.gpgsign=false`: this throwaway fixture repo has no signing
+  // key of its own — an ambient global `commit.gpgsign=true` (this
+  // environment's default) must not make an unrelated unit test's commit
+  // fail on a signing helper it has nothing to do with.
+  git(['-c', 'commit.gpgsign=false', 'commit', '-q', '-m', 'initial commit'], repo);
   const init = runInit(repo);
   stateRoot = init.stateRoot;
   store = StateStore.open(stateRoot);
@@ -210,5 +214,94 @@ describe('QaProtocol end-to-end (real test_run, fixture project)', () => {
 
     await protocol.submit(ticket.id, 'qa-13');
     expect(protocol.status(ticket.id)).toBeUndefined();
+  });
+});
+
+describe('QaProtocol.plan validation (T017 review round)', () => {
+  test("rejects the whole plan — no partial application — naming the offending criterion, for a command outside test_run's allow-list", () => {
+    const ticket = makeTicket('TKT-0020' as TicketId, { contract: { acceptance: ['a', 'b'] } });
+    const protocol = makeProtocol();
+    protocol.start(ticket, qaWorktree);
+
+    expect(() =>
+      protocol.plan(ticket.id, { 0: 'bun test pass.test.ts', 1: 'cat spec/input.md' }),
+    ).toThrow(/criterion 1 \("b"\)/);
+    // Nothing applied, including the valid entry at index 0.
+    expect(protocol.status(ticket.id)?.plannedCount).toBe(0);
+  });
+
+  test('rejects a command the qa permissions classifier would deny (redirection is a write primitive)', () => {
+    const ticket = makeTicket('TKT-0021' as TicketId, { contract: { acceptance: ['a'] } });
+    const protocol = makeProtocol();
+    protocol.start(ticket, qaWorktree);
+
+    expect(() => protocol.plan(ticket.id, { 0: 'bun test > out.log' })).toThrow(
+      /denied by the qa permission policy/,
+    );
+    expect(protocol.status(ticket.id)?.plannedCount).toBe(0);
+  });
+
+  test('rejects an out-of-range criterion index without applying any entry', () => {
+    const ticket = makeTicket('TKT-0022' as TicketId, { contract: { acceptance: ['a'] } });
+    const protocol = makeProtocol();
+    protocol.start(ticket, qaWorktree);
+
+    expect(() =>
+      protocol.plan(ticket.id, { 0: 'bun test pass.test.ts', 5: 'bun test pass.test.ts' }),
+    ).toThrow(/no criterion at index 5/);
+  });
+
+  test('a fully valid plan applies every entry', () => {
+    const ticket = makeTicket('TKT-0023' as TicketId, { contract: { acceptance: ['a', 'b'] } });
+    const protocol = makeProtocol();
+    protocol.start(ticket, qaWorktree);
+
+    protocol.plan(ticket.id, { 0: 'bun test pass.test.ts', 1: 'bun test fail.test.ts' });
+    expect(protocol.status(ticket.id)?.plannedCount).toBe(2);
+  });
+});
+
+describe("QaProtocol.submit checks bus.send's SendResult (T017 review round)", () => {
+  test('a failed qa_verdict delivery (malformed assignee) throws, escalates to em, and does NOT transition the ticket', async () => {
+    const ticket = makeTicket('TKT-0024' as TicketId, {
+      contract: { acceptance: ['the pass suite passes'] },
+      // Not a valid AgentId shape (`MessageRecipientSchema` requires
+      // `em|architect|human|daemon|eng-\d+|reviewer-\d+|qa-\d+`, `broadcast`,
+      // or `ticket:TKT-...`) — `Ticket.assignee` itself has no such format
+      // constraint, so this is a legal ticket with an undeliverable assignee.
+      assignee: 'not-a-valid-agent-id',
+    });
+    await store.putTicket(ticket);
+    const protocol = makeProtocol();
+
+    protocol.start(ticket, qaWorktree);
+    protocol.plan(ticket.id, { 0: 'bun test pass.test.ts' });
+    await protocol.run(ticket.id);
+
+    await expect(protocol.submit(ticket.id, 'qa-24')).rejects.toThrow(QaVerdictDeliveryError);
+
+    const stored = store.getTicket(ticket.id);
+    expect(stored.status).toBe('in_qa'); // unchanged — no transition on undelivered verdict.
+
+    const emInbox = bus.poll('em');
+    const escalation = emInbox.find((m) => m.kind === 'escalate' && m.body.includes('qa_verdict'));
+    expect(escalation).toBeDefined();
+    expect(escalation?.priority).toBe('urgent');
+  });
+
+  test('a successful delivery still transitions the ticket as before (regression guard)', async () => {
+    const ticket = makeTicket('TKT-0025' as TicketId, {
+      contract: { acceptance: ['the pass suite passes'] },
+    });
+    await store.putTicket(ticket);
+    const protocol = makeProtocol();
+
+    protocol.start(ticket, qaWorktree);
+    protocol.plan(ticket.id, { 0: 'bun test pass.test.ts' });
+    await protocol.run(ticket.id);
+    const report = await protocol.submit(ticket.id, 'qa-25');
+
+    expect(report.verdict).toBe('accept');
+    expect(store.getTicket(ticket.id).status).toBe('done');
   });
 });

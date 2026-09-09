@@ -9,7 +9,7 @@ import { runInit } from '../init';
 import { StateStore } from '../store';
 import { loadToolRegistry } from './registry';
 import { FakeRunner } from './runner';
-import { ToolService, UnknownToolError } from './service';
+import { ToolPathDeniedError, ToolService, UnknownToolError } from './service';
 
 let repo: string;
 let store: StateStore;
@@ -236,5 +236,71 @@ describe('callTool: built-in verbs', () => {
         body: 'hi',
       }),
     ).rejects.toThrow();
+  });
+});
+
+// T017 review round (opus blocker 2): `read_summary` reads the file itself
+// and returns a summary of it — a QA session could otherwise bypass the
+// raw-`Read` contract-input/output deny list by calling this MCP tool
+// instead. `pathGuard` is a plain, role-agnostic function on `ToolService`;
+// the daemon wires a QA-specific closure at construction (not exercised
+// here — this proves the mechanism itself denies/allows correctly and is
+// consulted with the fully-resolved absolute path).
+describe('callTool: read_summary respects an injected pathGuard (T017 review round)', () => {
+  function serviceWithGuard(
+    pathGuard: ConstructorParameters<typeof ToolService>[0]['pathGuard'],
+  ): ToolService {
+    return new ToolService({
+      store,
+      bus,
+      registry: loadToolRegistry(join(repo, '.agile')),
+      runner,
+      repoRoot: repo,
+      pathGuard,
+    });
+  }
+
+  test('a denied path throws ToolPathDeniedError, naming the reason, and never calls the runner', async () => {
+    await store.putTicket(makeTicket('TKT-0007'));
+    let calledWith: { ctx: unknown; path: string } | undefined;
+    const guarded = serviceWithGuard((ctx, path) => {
+      calledWith = { ctx, path };
+      return { allow: false, reason: 'QA may not read contract inputs/outputs (§13)' };
+    });
+
+    let runnerCalled = false;
+    runner.run = (async () => {
+      runnerCalled = true;
+      return { text: '{}', model: 'fake', inTokens: 0, outTokens: 0 };
+    }) as typeof runner.run;
+
+    await expect(
+      guarded.callTool({ agent: 'qa-1', ticket: 'TKT-0007' }, 'read_summary', { path: 'a.ts' }),
+    ).rejects.toThrow(ToolPathDeniedError);
+    await expect(
+      guarded.callTool({ agent: 'qa-1', ticket: 'TKT-0007' }, 'read_summary', { path: 'a.ts' }),
+    ).rejects.toThrow(/QA may not read contract inputs\/outputs/);
+    expect(runnerCalled).toBe(false);
+    // Called with the fully-resolved ABSOLUTE path (worktree + relative
+    // input), not the raw relative `path` field — the exact resolution the
+    // hook-tier fix needed too (round-1 bug: absolute vs. repo-relative).
+    expect(calledWith?.path).toBe(join(repo, 'a.ts'));
+  });
+
+  test('an allowed path proceeds to the runner as normal', async () => {
+    await store.putTicket(makeTicket('TKT-0008'));
+    const guarded = serviceWithGuard(() => ({ allow: true }));
+    const result = await guarded.callTool({ agent: 'qa-1', ticket: 'TKT-0008' }, 'read_summary', {
+      path: 'a.ts',
+    });
+    expect(result).toEqual({ summary: 'a summary', refs: [] });
+  });
+
+  test('no pathGuard configured — read_summary behaves exactly as before (no throw)', async () => {
+    await store.putTicket(makeTicket('TKT-0009'));
+    const result = await service.callTool({ agent: 'eng-1', ticket: 'TKT-0009' }, 'read_summary', {
+      path: 'a.ts',
+    });
+    expect(result).toEqual({ summary: 'a summary', refs: [] });
   });
 });

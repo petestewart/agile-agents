@@ -25,21 +25,72 @@ import {
   type AgentId,
   type KbFact,
   type KbId,
+  type QaReport,
   type Ticket,
   type TicketId,
   ulid,
   validateQaReport,
-  type QaReport,
 } from '@agile-agents/shared';
 import type { Bus } from '../bus/bus';
+import { decidePermission } from '../permissions';
+import type { AcpPermissionOption, AcpPermissionRequestParams } from '../permissions';
 import type { StateStore } from '../store/store';
+import { isAllowedTestCommand } from '../tools/test-run';
 import { type QaCriterion, parseCriteria } from './criteria';
 import { resolveQaEnv } from './env';
 import { buildQaReport, renderQaVerdictBody } from './report';
-import { type FlakyFinding, type QaCriterionResult, type RunTestRunFn, runCriterionWithRerun } from './rerun';
+import {
+  type FlakyFinding,
+  type QaCriterionResult,
+  type RunTestRunFn,
+  runCriterionWithRerun,
+} from './rerun';
 
 /** CLAUDE.md tunable: "max_attempts: 2" — used only when a ticket has no `routing` block at all (a ticket the architect never pointed, or a test fixture). */
 export const DEFAULT_MAX_ATTEMPTS = 2;
+
+/** Thrown by `QaProtocol.submit` when `bus.send`'s `qa_verdict` delivery is rejected (unknown/malformed recipient, a §5 routing violation, an over-cap body) — the ticket is NOT transitioned in this case (see `submit`'s doc comment). */
+export class QaVerdictDeliveryError extends Error {}
+
+/** Synthetic two-option menu, matching `hook/decide.ts`'s own `SYNTHETIC_OPTIONS` — `decidePermission` always needs an `allow_once`/`reject_once` pair to pick between, even for this preflight-only call (no real ACP request is ever answered with the chosen option). */
+const SYNTHETIC_OPTIONS: AcpPermissionOption[] = [
+  { optionId: 'allow', kind: 'allow_once' },
+  { optionId: 'deny', kind: 'reject_once' },
+];
+
+/**
+ * Review round fix: `qa_plan` used to accept anything and only find out at
+ * `qa_run` time (via `test_run`'s own `TestRunDeniedError`) that a planned
+ * command was never going to execute — or, worse, would have executed
+ * something the qa role table denies outright had it not gone through
+ * `test_run`'s narrow allow-list at all. Validates BOTH: (1) `test_run`'s
+ * own allow-list (`isAllowedTestCommand` — the actual execution boundary
+ * `qa_run` uses), and (2) the general permissions classifier
+ * (`decidePermission`, the same pipeline `hook/decide.ts`'s `roleToolVerdict`
+ * runs a Claude `Bash` call through) for the qa role on this ticket/worktree
+ * — so a command that would be denied for being a write, a never-without-
+ * human command, etc. is rejected at plan time with the reason, not
+ * silently attempted. Returns the problem string, or `undefined` if the
+ * command is fine.
+ */
+function validatePlannedCommand(
+  command: string,
+  ticket: TicketId,
+  worktreePath: string,
+): string | undefined {
+  if (!isAllowedTestCommand(command)) {
+    return `"${command}" is not an allowed test_run command (only bun/npm/pnpm run|test|build, vitest, jest, pytest, or go test)`;
+  }
+  const request: AcpPermissionRequestParams = {
+    toolCall: { kind: 'execute', title: 'Bash', rawInput: { command } },
+    options: SYNTHETIC_OPTIONS,
+  };
+  const decision = decidePermission({ role: 'qa', ticket, worktreePath, request });
+  if (decision.kind !== 'allow') {
+    return `"${command}" would be denied by the qa permission policy: ${decision.reason}`;
+  }
+  return undefined;
+}
 
 export interface QaProtocolDeps {
   store: StateStore;
@@ -114,12 +165,30 @@ export class QaProtocol {
   /** `qa_plan` verb — the QA model turn's per-criterion command mapping (criterion index -> command), §13 "Executable criteria preferred". A criterion with no entry here is `skipped`, not denied — see `rerun.ts`. */
   plan(ticket: TicketId, mapping: Record<number, string>): void {
     const state = this.requireState(ticket);
+
+    // Review round fix: validate the WHOLE plan up front, before applying
+    // any of it — `test_run`'s own allow-list plus the general permissions
+    // classifier (`validatePlannedCommand`, above) — and reject naming
+    // every offending criterion, rather than accepting each entry as it's
+    // walked and only discovering a bad command at `qa_run` time.
+    const errors: string[] = [];
     for (const [key, command] of Object.entries(mapping)) {
       const index = Number(key);
-      if (!state.criteria.some((c) => c.index === index)) {
+      const criterion = state.criteria.find((c) => c.index === index);
+      if (!criterion) {
         throw new Error(`qa_plan: ${ticket} has no criterion at index ${index}`);
       }
-      state.plan.set(index, command);
+      const problem = validatePlannedCommand(command, ticket, state.worktreePath);
+      if (problem !== undefined) {
+        errors.push(`criterion ${index} ("${criterion.text}"): ${problem}`);
+      }
+    }
+    if (errors.length > 0) {
+      throw new Error(`qa_plan rejected — ${errors.join('; ')}`);
+    }
+
+    for (const [key, command] of Object.entries(mapping)) {
+      state.plan.set(Number(key), command);
     }
   }
 
@@ -160,10 +229,7 @@ export class QaProtocol {
       source: ticket,
       expires: null,
     };
-    const body =
-      `Criterion "${finding.criterion.text}" (command: \`${finding.command}\`) failed on the first ` +
-      `run and passed on rerun during QA — flaky, not a real regression (§13 "Flakiness").\n\n` +
-      `First run: ${finding.first.summary}\nRerun: ${finding.second.summary}`;
+    const body = `Criterion "${finding.criterion.text}" (command: \`${finding.command}\`) failed on the first run and passed on rerun during QA — flaky, not a real regression (§13 "Flakiness").\n\nFirst run: ${finding.first.summary}\nRerun: ${finding.second.summary}`;
     await this.deps.store.putKbFact(fact, body);
   }
 
@@ -206,7 +272,7 @@ export class QaProtocol {
     }
 
     const recipients: string[] = ticketObj.assignee ? [ticketObj.assignee, 'em'] : ['em'];
-    await this.deps.bus.send({
+    const verdictSend = await this.deps.bus.send({
       id: ulid(),
       ts: this.now().toISOString(),
       from: agent,
@@ -217,6 +283,37 @@ export class QaProtocol {
       body: renderQaVerdictBody(report, relPath),
       refs: [relPath],
     });
+
+    // Review round fix: `Bus.send` REJECTS rather than throwing (unknown/
+    // malformed recipient, a routing-table violation, a body over the char
+    // cap) — the return value must be checked. A verdict the engineer never
+    // received must not silently transition the ticket as if it had: that
+    // would move `TKT-...` to `done`/back to `in_progress` with nobody
+    // actually told, losing the round. Best-effort escalate the delivery
+    // failure itself to `em` (its own send is not re-checked — if that one
+    // also fails there is nothing further to do but throw) and refuse to
+    // transition at all; the round's in-memory state is intentionally left
+    // in place (not cleared) so a retry of `qa_submit` can attempt delivery
+    // again rather than losing `run()`'s results.
+    if (!verdictSend.ok) {
+      await this.deps.bus.send({
+        id: ulid(),
+        ts: this.now().toISOString(),
+        from: agent,
+        to: ['em'],
+        kind: 'escalate',
+        priority: 'urgent',
+        ticket,
+        body: `qa_verdict for ${ticket} (round ${report.round}) failed to deliver: ${verdictSend.reason}`.slice(
+          0,
+          800,
+        ),
+        refs: [relPath],
+      });
+      throw new QaVerdictDeliveryError(
+        `qa_submit: qa_verdict delivery failed for ${ticket} — ${verdictSend.reason}`,
+      );
+    }
 
     if (report.verdict === 'accept') {
       await this.deps.store.transitionTicket(ticket, 'done', { by: agent });

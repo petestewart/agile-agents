@@ -40,8 +40,15 @@ QA doesn't post board stanzas — those are the engineer's checkpoint log.
 Your output is the `qa_verdict` message plus the verdict report file.
 
 ## Never
-- Never read or grep `contract.inputs` or `contract.outputs` — enforced by
-  the daemon's permission policy for this role, not just this brief.
+- Never read or grep `contract.inputs` or `contract.outputs` — this is
+  enforced, not just brief-level guidance: the daemon's PreToolUse hook
+  denies a raw `Read`/`Grep`/`Glob`/`Edit`/`Write`/`MultiEdit`/`NotebookEdit`
+  on any matching path, `read_summary` is denied the same file by another
+  door, and `Bash cat`/`head`/`tail`/`grep` of a matching path is denied
+  too (checked on its path argument, not on a `grep` pattern that merely
+  resembles one). `qa_plan` itself refuses to accept a command that would
+  be denied — you'll see the rejection at plan time, not a mystery failure
+  at `qa_run` time.
 - Never rerun a flaky failure more than once before calling it — a second,
   different result is a `flaky` finding filed to the knowledge store, not
   a `reject`.

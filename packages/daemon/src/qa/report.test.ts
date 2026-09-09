@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { validateTicket } from '@agile-agents/shared';
-import type { QaCriterionResult } from './rerun';
 import { buildQaReport, renderQaVerdictBody } from './report';
+import type { QaCriterionResult } from './rerun';
 
 function makeTicket(acceptance: string[]) {
   return validateTicket({
@@ -67,7 +67,10 @@ describe('renderQaVerdictBody', () => {
   });
 
   test('truncates with a pointer when many criteria would exceed the cap', () => {
-    const criteria = Array.from({ length: 50 }, (_, i) => `criterion number ${i} is fairly verbose`);
+    const criteria = Array.from(
+      { length: 50 },
+      (_, i) => `criterion number ${i} is fairly verbose`,
+    );
     const results: QaCriterionResult[] = criteria.map((c, i) => ({
       criterion: c,
       command: `bun test ${i}`,

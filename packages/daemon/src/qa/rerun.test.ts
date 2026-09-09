@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test';
+import { TestRunDeniedError } from '../tools/test-run';
 import type { TestRunOutput } from '../tools/test-run';
 import type { RunTestRunFn } from './rerun';
 import { runCriterionWithRerun } from './rerun';
@@ -83,6 +84,38 @@ describe('runCriterionWithRerun', () => {
     expect(flaky?.command).toBe('bun test c.test.ts');
     expect(flaky?.first.summary).toBe('flaked once');
     expect(flaky?.second.summary).toBe('passed on rerun');
+  });
+
+  test('T017 review round: a TestRunDeniedError at spawn time becomes skipped, not a thrown/aborted round', async () => {
+    const denyingRunner: RunTestRunFn = async () => {
+      throw new TestRunDeniedError('test_run: command not allowed: "cat spec/input.md"');
+    };
+    const { result, flaky } = await runCriterionWithRerun({
+      criterion: { index: 0, text: 'criterion D' },
+      command: 'cat spec/input.md',
+      worktree: '/tmp/x',
+      repoRoot: '/tmp',
+      runTestRun: denyingRunner,
+    });
+    expect(result.status).toBe('skipped');
+    expect(result.command).toBe('cat spec/input.md');
+    expect(result.evidence).toContain('command denied');
+    expect(flaky).toBeUndefined();
+  });
+
+  test('a non-TestRunDeniedError still propagates (only the denial is swallowed into skipped)', async () => {
+    const throwingRunner: RunTestRunFn = async () => {
+      throw new Error('spawn ENOENT');
+    };
+    await expect(
+      runCriterionWithRerun({
+        criterion: { index: 0, text: 'criterion E' },
+        command: 'bun test e.test.ts',
+        worktree: '/tmp/x',
+        repoRoot: '/tmp',
+        runTestRun: throwingRunner,
+      }),
+    ).rejects.toThrow('spawn ENOENT');
   });
 
   test('evidence stays within the 200-char cap', async () => {

@@ -783,3 +783,110 @@ describe('HookService — heartbeat preserves agent identity across the coalesci
     expect(store.getAgent('qa-1' as never).worktree).toBe(qaWorktree);
   });
 });
+
+// T017 review round (opus blocker 2): end-to-end through the real
+// HookService.preToolUse — not just decide.ts's pure function — proving
+// `buildContext` actually resolves and forwards `ctx.denyReadPaths` for a
+// QA session, and that a Claude ABSOLUTE `file_path` under the clone is
+// correctly matched against the ticket's repo-relative contract globs.
+describe('HookService — QA contract-input/output deny list (T017 review round)', () => {
+  test('QA Read of a contract input under the clone denies with the §13 reason; a non-contract path allows', async () => {
+    await seedTicket({
+      status: 'in_qa',
+      assignee: 'eng-1',
+      contract: {
+        inputs: ['spec/input.md'],
+        outputs: [],
+        acceptance: ['x'],
+        done: [],
+        env: 'clone',
+      },
+    });
+    const qaWorktree = join(repo, '.worktrees', 'TKT-0001-qa');
+    mkdirSync(join(qaWorktree, 'spec'), { recursive: true });
+    mkdirSync(join(qaWorktree, 'src'), { recursive: true });
+    writeFileSync(join(qaWorktree, 'spec', 'input.md'), '# spec\n');
+    writeFileSync(join(qaWorktree, 'src', 'a.ts'), '// impl\n');
+    await store.putAgent(
+      'qa-1',
+      agentRecord({ role: 'qa', worktree: qaWorktree, ticket: 'TKT-0001' }),
+    );
+    const svc = service();
+
+    const denied = await svc.preToolUse({
+      cwd: qaWorktree,
+      tool_name: 'Read',
+      // Claude always sends an ABSOLUTE file_path — this is the exact shape
+      // the first wiring draft failed to match against the ticket's
+      // repo-relative `contract.inputs` glob.
+      tool_input: { file_path: join(qaWorktree, 'spec', 'input.md') },
+    });
+    expect(denied.hookSpecificOutput.permissionDecision).toBe('deny');
+    expect(denied.hookSpecificOutput.permissionDecisionReason).toBe(
+      'QA may not read contract inputs/outputs (§13)',
+    );
+
+    const allowed = await svc.preToolUse({
+      cwd: qaWorktree,
+      tool_name: 'Read',
+      tool_input: { file_path: join(qaWorktree, 'src', 'a.ts') },
+    });
+    expect(allowed.hookSpecificOutput.permissionDecision).toBe('allow');
+  });
+
+  test('QA Bash "cat" of the same contract input denies (§14 Bash rule)', async () => {
+    await seedTicket({
+      status: 'in_qa',
+      assignee: 'eng-1',
+      contract: {
+        inputs: ['spec/input.md'],
+        outputs: [],
+        acceptance: ['x'],
+        done: [],
+        env: 'clone',
+      },
+    });
+    const qaWorktree = join(repo, '.worktrees', 'TKT-0001-qa');
+    mkdirSync(join(qaWorktree, 'spec'), { recursive: true });
+    writeFileSync(join(qaWorktree, 'spec', 'input.md'), '# spec\n');
+    await store.putAgent(
+      'qa-1',
+      agentRecord({ role: 'qa', worktree: qaWorktree, ticket: 'TKT-0001' }),
+    );
+    const svc = service();
+
+    const result = await svc.preToolUse({
+      cwd: qaWorktree,
+      tool_name: 'Bash',
+      tool_input: { command: 'cat spec/input.md' },
+    });
+    expect(result.hookSpecificOutput.permissionDecision).toBe('deny');
+    expect(result.hookSpecificOutput.permissionDecisionReason).toBe(
+      'QA may not read contract inputs/outputs (§13)',
+    );
+  });
+
+  test('an engineer session is unaffected — denyReadPaths is only ever set for role qa', async () => {
+    await seedTicket({
+      status: 'in_progress',
+      assignee: 'eng-1',
+      contract: {
+        inputs: ['spec/input.md'],
+        outputs: [],
+        acceptance: ['x'],
+        done: [],
+        env: 'clone',
+      },
+    });
+    mkdirSync(join(worktree, 'spec'), { recursive: true });
+    writeFileSync(join(worktree, 'spec', 'input.md'), '# spec\n');
+    const svc = service();
+
+    const result = await svc.preToolUse({
+      cwd: worktree,
+      tool_name: 'Read',
+      tool_input: { file_path: join(worktree, 'spec', 'input.md') },
+    });
+    expect(result.hookSpecificOutput.permissionDecision).toBe('allow');
+  });
+});

@@ -89,7 +89,10 @@ describe('decideQaRead', () => {
       { role: 'qa', ticket: makeTicket(), worktreePath: dir },
       'packages/api/auth/jwt.ts',
     );
-    expect(decision).toEqual({ allow: false, reason: 'QA may not read contract inputs/outputs (§13)' });
+    expect(decision).toEqual({
+      allow: false,
+      reason: 'QA may not read contract inputs/outputs (§13)',
+    });
   });
 
   test('denies a read of a contract input path (absolute)', () => {
