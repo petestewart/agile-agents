@@ -789,6 +789,24 @@ describe('Generic entity trio: putEntity / getEntity / deleteEntity', () => {
     expect(() => store.getEntity(relPath, validateWidget)).toThrow(NotFoundError);
   });
 
+  test('the trio refuses paths that escape the state root', async () => {
+    const store = StateStore.open(stateRoot);
+    for (const bad of [
+      '../outside.yaml',
+      '/etc/passwd',
+      'bus/../../x.yaml',
+      '.git/config',
+      'a/.git/x.yaml',
+    ]) {
+      await expect(store.putEntity(bad, validateWidget, { id: 'w1', n: 1 })).rejects.toThrow(
+        /escapes the state root/,
+      );
+      expect(() => store.getEntity(bad, validateWidget)).toThrow(/escapes the state root/);
+      await expect(store.deleteEntity(bad)).rejects.toThrow(/escapes the state root/);
+    }
+    expect(store.listEvents()).toHaveLength(0);
+  });
+
   test('getEntity on a missing path throws NotFoundError', () => {
     const store = StateStore.open(stateRoot);
     expect(() => store.getEntity('bus/inbox/em/nope.yaml', validateWidget)).toThrow(NotFoundError);

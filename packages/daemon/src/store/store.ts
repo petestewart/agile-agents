@@ -31,7 +31,7 @@
  */
 
 import { appendFileSync, existsSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { isAbsolute, join, normalize } from 'node:path';
 import {
   type AgentId,
   type AgentRecord,
@@ -251,6 +251,23 @@ export class StateStore {
 
   private abs(...parts: string[]): string {
     return join(this.stateRoot, ...parts);
+  }
+
+  /**
+   * Caller-supplied relative paths (the generic entity trio) must stay inside
+   * the state root: no absolute paths, no `..` segments, no `.git`.
+   */
+  private containedRelPath(relPath: string): string {
+    const normalized = normalize(relPath);
+    if (
+      isAbsolute(normalized) ||
+      normalized === '.' ||
+      normalized.startsWith('..') ||
+      normalized.split(/[\\/]/).some((seg) => seg === '..' || seg === '.git')
+    ) {
+      throw new Error(`entity path escapes the state root: ${relPath}`);
+    }
+    return normalized;
   }
 
   /** Appends `event` to `log/events.jsonl` and commits `relPaths` (plus that file) with message = event.kind. */
@@ -712,7 +729,12 @@ export class StateStore {
    * unless `relPath` ends in `.json`. Mints a generic `entity_put`/
    * `entity_deleted` event carrying the `relPath`.
    */
-  async putEntity<T>(relPath: string, validator: (input: unknown) => T, data: unknown): Promise<T> {
+  async putEntity<T>(
+    rawRelPath: string,
+    validator: (input: unknown) => T,
+    data: unknown,
+  ): Promise<T> {
+    const relPath = this.containedRelPath(rawRelPath);
     return this.mutate(() => {
       const validated = validator(data);
       writeEntityFile(this.abs(relPath), validated);
@@ -721,13 +743,15 @@ export class StateStore {
     });
   }
 
-  getEntity<T>(relPath: string, validator: (input: unknown) => T): T {
+  getEntity<T>(rawRelPath: string, validator: (input: unknown) => T): T {
+    const relPath = this.containedRelPath(rawRelPath);
     const path = this.abs(relPath);
     if (!fileExists(path)) throw new NotFoundError('Entity', relPath);
     return validator(readEntityFile(path));
   }
 
-  async deleteEntity(relPath: string): Promise<void> {
+  async deleteEntity(rawRelPath: string): Promise<void> {
+    const relPath = this.containedRelPath(rawRelPath);
     return this.mutate(() => {
       if (!fileExists(this.abs(relPath))) throw new NotFoundError('Entity', relPath);
       removeFile(this.abs(relPath));
