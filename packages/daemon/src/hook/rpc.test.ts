@@ -90,6 +90,29 @@ describe('hook.* RPC round trip (via dispatch)', () => {
   });
 });
 
+/**
+ * T033 root-cause fix: the two tests below used to await `stdout.text()`
+ * then `exited` sequentially, leaving `stderr: 'pipe'` undrained — under
+ * full-suite load that raced `proc.exited`'s own epoll bookkeeping into an
+ * intermittent `EBADF: bad file descriptor, epoll_ctl` (reproduced 2/7 full
+ * runs on the integration head; 0/6 in isolation — see `.pipeline-report.md`).
+ * Draining stdout, stderr, and exit together (Bun's documented `Bun.spawn`
+ * pattern) closes the race. No assertion changes: exit code and stdout are
+ * checked exactly as before; stderr is captured only for a failure message.
+ */
+async function runHookCli(proc: {
+  stdout: ReadableStream<Uint8Array>;
+  stderr: ReadableStream<Uint8Array>;
+  exited: Promise<number>;
+}): Promise<{ stdout: string; stderr: string; exitCode: number }> {
+  const [stdout, stderr, exitCode] = await Promise.all([
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+    proc.exited,
+  ]);
+  return { stdout, stderr, exitCode };
+}
+
 describe('hook.* RPC round trip through the CLI subprocess', () => {
   const CLI_ENTRY = join(import.meta.dir, '..', '..', '..', 'cli', 'src', 'index.ts');
   let rpc: RpcServerHandle;
@@ -121,9 +144,8 @@ describe('hook.* RPC round trip through the CLI subprocess', () => {
       stderr: 'pipe',
       env: { ...process.env, AGILE_SOCKET_PATH: socketPath },
     });
-    const stdout = await new Response(proc.stdout).text();
-    const exitCode = await proc.exited;
-    expect(exitCode).toBe(0);
+    const { stdout, stderr, exitCode } = await runHookCli(proc);
+    expect(exitCode, stderr).toBe(0);
     expect(JSON.parse(stdout)).toEqual({
       hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'allow' },
     });
@@ -147,9 +169,8 @@ describe('hook.* RPC round trip through the CLI subprocess', () => {
       stderr: 'pipe',
       env: { ...process.env, AGILE_SOCKET_PATH: socketPath },
     });
-    const stdout = await new Response(proc.stdout).text();
-    const exitCode = await proc.exited;
-    expect(exitCode).toBe(0);
+    const { stdout, stderr, exitCode } = await runHookCli(proc);
+    expect(exitCode, stderr).toBe(0);
     expect(JSON.parse(stdout)).toEqual({
       hookSpecificOutput: {
         hookEventName: 'PreToolUse',

@@ -81,8 +81,16 @@ describe('agile hook pre-tool-use timing', () => {
         stderr: 'pipe',
         env: { ...process.env, AGILE_SOCKET_PATH: socketPath },
       });
-      const stdout = await new Response(proc.stdout).text();
-      await proc.exited;
+      // T033 round 2: drain stdout, stderr, and exit together (Bun's
+      // documented spawn-consumption pattern) instead of sequentially
+      // awaiting stdout then exited — see `hook/rpc.test.ts`'s `runHookCli`
+      // for why an undrained `stderr: 'pipe'` can otherwise race
+      // `proc.exited`'s own epoll bookkeeping into an EBADF under load.
+      const [stdout] = await Promise.all([
+        new Response(proc.stdout).text(),
+        new Response(proc.stderr).text(),
+        proc.exited,
+      ]);
       const elapsed = performance.now() - start;
       if (i >= WARMUP_RUNS) samples.push(elapsed);
       if (i === WARMUP_RUNS) {
