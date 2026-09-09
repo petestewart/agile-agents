@@ -287,12 +287,12 @@ Priority encodes dependency layer as well as importance: P0 tickets are v0-block
 
 ### Ticket: T025 Control room v1
 - **Priority:** P2
-- **Status:** In Progress
+- **Status:** In Review
 - **Owner:** sonnet:worker-T025
 - **Scope:** Depends on T018, T020, T023. React + Vite SPA in `packages/ui` served by the daemon: inbox-style "Needs you" list with detail-on-click, collapsible Team / Board / Feed panels, Oracle + KB viewer with propose-edit, sprint strip with gate chips, spend + barometer behind a top-bar icon, Halt button, EM chat panel over the ACP stream with steer → action-set cards.
 - **Acceptance Criteria:** Every read in the mockup (`design` artifact "Agile Agents Control Room") is backed by daemon data; every write goes through daemon verbs and appears in the event log.
 - **Validation Steps:** Playwright against a seeded daemon.
-- **Notes:** UX iteration after it's functioning, per design §17.
+- **Notes:** Branch `T025-control-room` (`186aa59`, resumed from the restart scaffolding; mockup artifact found and used): React + Vite SPA under `/control-room` (Needs-you inbox with approve/delegate, Team/Board/Feed panels, Oracle/KB viewer with propose-edit, sprint strip + gate chips, spend/barometer popover, Halt button, bus-backed EM chat); new read endpoints `/api/{agents,tickets,oracle,kb,policy}` and write endpoints `/api/halt`, `/api/chat/em`, `/api/oracle/propose` backed by existing store getters/verbs; 2 new Playwright tests (4/4 e2e). Manager wiring: pass `bus` into `startHttpServer`. Gaps: no worktree-diff/bus-thread read endpoint, no EM ACP-stream proxy. Round 1 review + QA running.
 
 ### Ticket: T026 Tier-0 sandbox
 - **Priority:** P2
@@ -305,12 +305,12 @@ Priority encodes dependency layer as well as importance: P0 tickets are v0-block
 
 ### Ticket: T027 Cursor, Grok, Codex adapters
 - **Priority:** P2
-- **Status:** In Progress
+- **Status:** In Review
 - **Owner:** sonnet:worker-T027
 - **Scope:** Depends on T010, T026. Vendor entries and per-vendor policy: Cursor (`authenticate`, exec-only ACP gating, `ask` mode for reviewers as a nudge), Grok (client-fs gate with reasons, `authenticate`), Codex via `codex-acp` (observation + sandbox only; `app-server` evaluated separately). Each reproduces its `spike-findings.md` row through the extracted client.
 - **Acceptance Criteria:** Perm matrices match the findings; a reviewer on Grok cannot write (client fs refusal + sandbox).
 - **Validation Steps:** Live perm runs per vendor.
-- **Notes:**
+- **Notes:** Branch `T027-vendor-adapters` (`3a302bc`, 3 commits): Codex `acp-client` entry (codex-acp; no ACP auth, no client-fs per spike §D/§C2/§C3), `permissions/vendor-modes.ts` (Cursor `ask`-mode reviewer nudge) + `vendor-fs.ts` (Grok client-fs write refusal) wired in `runner/session.ts` with an `authenticate`-retry seam; table tests per spike row incl. "reviewer cannot write on Grok". Worker reverted seeding Cursor/Grok/Codex into the shipped `vendors.yaml` (8 tests outside its grant hard-code a single-vendor default) and exports `recommendedVendorEntries()` instead — manager to judge. Live perm runs `AGILE_LIVE=1`-gated. Round 1 review + QA running.
 
 ### Ticket: T028 Shared ULID generator
 - **Priority:** P1
