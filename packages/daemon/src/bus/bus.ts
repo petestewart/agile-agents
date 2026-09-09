@@ -224,18 +224,21 @@ export class Bus {
       for (const id of this.resolveRecipients(to, message.from)) recipients.add(id);
     }
 
-    for (const agent of recipients) {
-      await this.store.putEntity(this.inboxRelPath(agent, message.id), validateMessage, message);
-    }
+    // One send = one atomic batch of inbox files (+ thread copy) = one
+    // `message` event = one commit on agile-state.
+    const writes = [...recipients].map((agent) => ({
+      relPath: this.inboxRelPath(agent, message.id),
+      validator: validateMessage,
+      data: message,
+    }));
     if (message.ticket) {
-      await this.store.putEntity(
-        this.threadRelPath(message.ticket, message.id),
-        validateMessage,
-        message,
-      );
+      writes.push({
+        relPath: this.threadRelPath(message.ticket, message.id),
+        validator: validateMessage,
+        data: message,
+      });
     }
-
-    await this.store.appendEvent({
+    await this.store.putEntities(writes, {
       ts: this.now().toISOString(),
       kind: 'message',
       ticket: message.ticket,

@@ -743,6 +743,30 @@ export class StateStore {
     });
   }
 
+  /**
+   * Atomic multi-file put: validates every entry first, writes them all, and
+   * mints exactly ONE caller-supplied event + one commit for the whole batch.
+   * Used for logical operations that touch several files (a bus send fanning
+   * out to N inboxes plus a thread copy) so the audit trail reads as one
+   * operation, not N.
+   */
+  async putEntities(
+    writes: Array<{ relPath: string; validator: (input: unknown) => unknown; data: unknown }>,
+    event: Event,
+  ): Promise<void> {
+    const contained = writes.map((w) => ({ ...w, relPath: this.containedRelPath(w.relPath) }));
+    return this.mutate(() => {
+      const validatedEvent = validateEvent(event);
+      const validated = contained.map((w) => ({ relPath: w.relPath, value: w.validator(w.data) }));
+      for (const v of validated) writeEntityFile(this.abs(v.relPath), v.value);
+      return {
+        result: undefined,
+        relPaths: validated.map((v) => v.relPath),
+        event: validatedEvent,
+      };
+    });
+  }
+
   getEntity<T>(rawRelPath: string, validator: (input: unknown) => T): T {
     const relPath = this.containedRelPath(rawRelPath);
     const path = this.abs(relPath);

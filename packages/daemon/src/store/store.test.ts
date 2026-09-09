@@ -789,6 +789,40 @@ describe('Generic entity trio: putEntity / getEntity / deleteEntity', () => {
     expect(() => store.getEntity(relPath, validateWidget)).toThrow(NotFoundError);
   });
 
+  test('putEntities writes every file, mints exactly one caller-supplied event and one commit', async () => {
+    const store = StateStore.open(stateRoot);
+    const before = store.listEvents().length;
+    const commitsBefore = git(['log', '--format=%s'], stateRoot).split('\n').length;
+    await store.putEntities(
+      [
+        { relPath: 'bus/inbox/em/w1.yaml', validator: validateWidget, data: { id: 'w1', n: 1 } },
+        { relPath: 'bus/inbox/qa/w1.yaml', validator: validateWidget, data: { id: 'w1', n: 1 } },
+      ],
+      { ts: new Date().toISOString(), kind: 'message', data: { id: 'w1' } },
+    );
+    expect(store.getEntity('bus/inbox/em/w1.yaml', validateWidget)).toEqual({ id: 'w1', n: 1 });
+    expect(store.getEntity('bus/inbox/qa/w1.yaml', validateWidget)).toEqual({ id: 'w1', n: 1 });
+    expect(store.listEvents().length - before).toBe(1);
+    expect(store.listEvents().at(-1)?.kind).toBe('message');
+    const subjects = git(['log', '--format=%s'], stateRoot).split('\n');
+    expect(subjects.length - commitsBefore).toBe(1);
+    expect(subjects[0]).toBe('message');
+  });
+
+  test('putEntities validates everything before writing anything', async () => {
+    const store = StateStore.open(stateRoot);
+    await expect(
+      store.putEntities(
+        [
+          { relPath: 'bus/inbox/em/ok.yaml', validator: validateWidget, data: { id: 'w1', n: 1 } },
+          { relPath: 'bus/inbox/em/bad.yaml', validator: validateWidget, data: { id: 'w1' } },
+        ],
+        { ts: new Date().toISOString(), kind: 'message', data: {} },
+      ),
+    ).rejects.toThrow();
+    expect(() => store.getEntity('bus/inbox/em/ok.yaml', validateWidget)).toThrow(NotFoundError);
+  });
+
   test('the trio refuses paths that escape the state root', async () => {
     const store = StateStore.open(stateRoot);
     for (const bad of [
