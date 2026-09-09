@@ -551,7 +551,7 @@ describe('createAgileExtension: inbox delivery', () => {
  */
 async function waitFor(
   predicate: () => boolean,
-  { timeoutMs = 5_000, intervalMs = 5 }: { timeoutMs?: number; intervalMs?: number } = {},
+  { timeoutMs = 4_000, intervalMs = 5 }: { timeoutMs?: number; intervalMs?: number } = {},
 ): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (!predicate()) {
