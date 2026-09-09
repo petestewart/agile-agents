@@ -77,3 +77,6 @@ export * from './tools';
 // Agent runner and worktree manager: worktree placement, brief assembly,
 // ACP session wiring, and the runner.* RPC methods (T012).
 export * from './runner';
+
+// Architect: refinement, pointing, discovery triage (T014).
+export * from './architect';

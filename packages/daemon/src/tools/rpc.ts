@@ -24,7 +24,15 @@ function requireString(value: unknown, field: string): string {
 
 export function buildToolRpcMethods(service: ToolService): Record<string, RpcMethodHandler> {
   return {
-    'tool.list': () => service.listTools(),
+    'tool.list': (params) => {
+      const agent =
+        typeof params === 'object' &&
+        params !== null &&
+        typeof (params as { agent?: unknown }).agent === 'string'
+          ? (params as { agent: string }).agent
+          : undefined;
+      return service.listTools(agent);
+    },
     'tool.call': (params) => {
       const p = requireObject(params);
       const agent = requireString(p.agent, 'agent');

@@ -7,6 +7,7 @@
 
 import { existsSync } from 'node:fs';
 import daemonPackageJson from '../package.json' with { type: 'json' };
+import { registerArchitectTools } from './architect';
 import { Bus, buildBusRpcMethods } from './bus';
 import { type AgileConfig, type DiscoverConfigOptions, discoverConfig } from './config';
 import { pickCurrentSprint } from './feed';
@@ -82,6 +83,20 @@ export async function startDaemon(options: DiscoverConfigOptions = {}): Promise<
         })
       : undefined;
   runner?.startSweep();
+
+  // Role-scoped verb providers (T014 architect; T015–T017 add theirs).
+  if (toolService && store) {
+    const architect = registerArchitectTools({ store });
+    toolService.registerProvider({
+      roles: ['architect'],
+      listTools: () =>
+        architect
+          .listTools()
+          .map((t) => ({ name: t.name, description: t.description, inputSpec: t.inputSpec })),
+      callTool: (ctx, name, input) =>
+        architect.callTool({ agent: ctx.agent, ticket: ctx.ticket }, name, input),
+    });
+  }
 
   const extraMethods =
     store && gateService && bus && toolService && runner

@@ -9,6 +9,7 @@ import { readFileSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
 import type { LedgerKind, TicketId } from '@agile-agents/shared';
 import type { Bus } from '../bus/bus';
+import { roleOf } from '../bus/routing';
 import type { StateStore } from '../store/store';
 import { BUILTIN_TOOLS, type BuiltinToolDeps } from './builtins';
 import { cacheEntryPath, cacheKey, readCacheEntry, sha256Hex, writeCacheEntry } from './cache';
@@ -28,7 +29,7 @@ export interface ToolListEntry {
   name: string;
   description: string;
   /** `builtin` (board_post/bus_send/ticket_get/oracle_get/kb_search) or `registry` (loaded from `.agile/tools/<name>/tool.yaml`). */
-  source: 'builtin' | 'registry';
+  source: 'builtin' | 'registry' | 'provider';
   /** Real per-field shape (review fix, T011) — see `schema.ts`'s header. RPC-safe: plain strings/booleans, no zod instances, so `tool.list` can ship it verbatim to a remote MCP bridge. */
   inputSpec: ToolInputSpec;
 }
@@ -44,7 +45,20 @@ export interface ToolServiceOptions {
   currentSprintId?: () => string | undefined;
 }
 
+/**
+ * A role-scoped tool provider plugged into the service by the daemon at
+ * startup (architect/EM/review/QA verbs live in their own areas — T014–T017).
+ * `roles` restricts who sees and may call the provider's tools; the caller's
+ * role is derived from the agent id like everywhere else (`roleOf`).
+ */
+export interface ToolProvider {
+  roles: readonly string[];
+  listTools(): Array<{ name: string; description: string; inputSpec: ToolInputSpec }>;
+  callTool(ctx: ToolCallContext, name: string, input: unknown): Promise<unknown>;
+}
+
 export class ToolService {
+  private readonly providers: ToolProvider[] = [];
   private readonly store: StateStore;
   private readonly bus: Bus;
   private readonly registry: LoadedTool[];
@@ -61,7 +75,26 @@ export class ToolService {
     this.currentSprintId = opts.currentSprintId ?? (() => undefined);
   }
 
-  listTools(): ToolListEntry[] {
+  /** Plug a role-scoped provider in (idempotent by identity). */
+  registerProvider(provider: ToolProvider): void {
+    if (!this.providers.includes(provider)) this.providers.push(provider);
+  }
+
+  private providersFor(agent: string | undefined): ToolProvider[] {
+    if (agent === undefined) return this.providers;
+    const role = roleOf(agent);
+    return this.providers.filter((p) => p.roles.includes(role) || p.roles.includes(agent));
+  }
+
+  listTools(agent?: string): ToolListEntry[] {
+    const provided: ToolListEntry[] = this.providersFor(agent).flatMap((p) =>
+      p.listTools().map((t) => ({
+        name: t.name,
+        description: t.description,
+        source: 'provider' as const,
+        inputSpec: t.inputSpec,
+      })),
+    );
     const builtins: ToolListEntry[] = BUILTIN_TOOLS.map((t) => ({
       name: t.name,
       description: t.description,
@@ -74,7 +107,7 @@ export class ToolService {
       source: 'registry',
       inputSpec: inputSpecFromToolIo(t.definition.input),
     }));
-    return [...builtins, ...registered];
+    return [...builtins, ...registered, ...provided];
   }
 
   /** The ticket's worktree if one is on record, else the repo root — see `ReadSummaryOptions`/`RunTestRunOptions`'s worktree contract. */
@@ -95,6 +128,11 @@ export class ToolService {
   }
 
   async callTool(ctx: ToolCallContext, name: string, input: unknown): Promise<unknown> {
+    for (const provider of this.providersFor(ctx.agent)) {
+      if (provider.listTools().some((t) => t.name === name)) {
+        return provider.callTool(ctx, name, input);
+      }
+    }
     const builtin = BUILTIN_TOOLS.find((t) => t.name === name);
     if (builtin) {
       const deps: BuiltinToolDeps = { store: this.store, bus: this.bus };

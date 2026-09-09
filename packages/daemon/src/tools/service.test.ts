@@ -238,3 +238,73 @@ describe('callTool: built-in verbs', () => {
     ).rejects.toThrow();
   });
 });
+
+// Manager wiring (T014 merge): role-scoped tool providers.
+import {
+  describe as describeProvider,
+  expect as expectProvider,
+  test as testProvider,
+} from 'bun:test';
+
+describeProvider('ToolService.registerProvider', () => {
+  testProvider('a provider is listed and callable only for its roles', async () => {
+    const { ToolService } = await import('./service');
+    const { FakeRunner } = await import('./runner');
+    const { runInit } = await import('../init');
+    const { StateStore } = await import('../store');
+    const { Bus } = await import('../bus');
+    const { mkdtempSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const repo = mkdtempSync(join(tmpdir(), 'agile-provider-'));
+    Bun.spawnSync(['git', 'init', '-q', repo]);
+    Bun.spawnSync([
+      'git',
+      '-C',
+      repo,
+      '-c',
+      'user.name=t',
+      '-c',
+      'user.email=t@t',
+      '-c',
+      'commit.gpgsign=false',
+      'commit',
+      '-q',
+      '--allow-empty',
+      '-m',
+      'init',
+    ]);
+    const { stateRoot } = runInit(repo);
+    const store = StateStore.open(stateRoot);
+    const bus = new Bus(store, stateRoot);
+    const service = new ToolService({
+      store,
+      bus,
+      registry: [],
+      runner: new FakeRunner(),
+      repoRoot: repo,
+    });
+    const calls: string[] = [];
+    service.registerProvider({
+      roles: ['architect'],
+      listTools: () => [{ name: 'ticket_point', description: 'x', inputSpec: {} }],
+      callTool: async (ctx, name) => {
+        calls.push(`${ctx.agent}:${name}`);
+        return { ok: true };
+      },
+    });
+    expectProvider(service.listTools('architect').some((t) => t.name === 'ticket_point')).toBe(
+      true,
+    );
+    expectProvider(service.listTools('eng-tkt-0001').some((t) => t.name === 'ticket_point')).toBe(
+      false,
+    );
+    expectProvider(await service.callTool({ agent: 'architect' }, 'ticket_point', {})).toEqual({
+      ok: true,
+    });
+    await expectProvider(
+      service.callTool({ agent: 'eng-tkt-0001' }, 'ticket_point', {}),
+    ).rejects.toThrow();
+    expectProvider(calls).toEqual(['architect:ticket_point']);
+  });
+});

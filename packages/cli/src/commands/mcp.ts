@@ -42,7 +42,7 @@ export interface McpBridgeOptions {
 interface ToolListEntry {
   name: string;
   description: string;
-  source: 'builtin' | 'registry';
+  source: 'builtin' | 'registry' | 'provider';
   inputSpec: ToolInputSpec;
 }
 
@@ -66,9 +66,14 @@ export function parseMcpArgs(args: ParsedArgs): {
 /** Builds (but does not connect) the MCP server for one bridge invocation — split out so a test can drive it over an in-memory transport instead of real stdio. */
 export async function buildMcpBridgeServer(options: McpBridgeOptions): Promise<McpServer> {
   const timeoutMs = options.timeoutMs ?? DEFAULT_MCP_TOOL_TIMEOUT_MS;
-  const tools = await callRpc<ToolListEntry[]>(options.socketPath, 'tool.list', undefined, {
-    timeoutMs,
-  });
+  const tools = await callRpc<ToolListEntry[]>(
+    options.socketPath,
+    'tool.list',
+    { agent: options.agent },
+    {
+      timeoutMs,
+    },
+  );
   const server = new McpServer({ name: 'agile-agents-tools', version: '0.0.0' });
 
   for (const tool of tools) {
