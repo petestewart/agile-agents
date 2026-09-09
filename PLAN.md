@@ -350,8 +350,8 @@ Priority encodes dependency layer as well as importance: P0 tickets are v0-block
 
 ### Ticket: T032 HTTP write actor hardening and store path guard follow-ups
 - **Priority:** P2
-- **Status:** Todo
-- **Owner:** Unassigned
+- **Status:** In Progress
+- **Owner:** sonnet:worker-T032
 - **Scope:** Depends on T020, T025. (1) `POST /api/hil/:id/approve` and `/delegate` (T020) still take `by` from the request body — set the actor server-side (`human`) like T025's routes. (2) `StateStore.abs()`'s containment guard is lexical; add a realpath check so a symlink planted inside the state root cannot escape it. (3) Feed WebSocket: heartbeat `agent_put` events trigger a full six-endpoint refetch per agent per 30 s in the control room — exclude heartbeat-only updates from the refetch trigger. Tests for each.
 - **Acceptance Criteria:** No HTTP write accepts an actor field; a symlink escape through `abs()` is refused; a heartbeat burst causes zero control-room refetches.
 - **Validation Steps:** `bun test packages/daemon/src/store packages/daemon/src/http.test.ts` and `bun run test:e2e`.
