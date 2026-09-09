@@ -108,6 +108,13 @@ describe('createToolMcpServer', () => {
     expect(Object.keys(testRun?.inputSchema.properties ?? {}).sort()).toEqual(['command', 'cwd']);
   });
 
+  test('review round 2 fix (blocker 2): kb_search rejects an unknown key over MCP, naming it', async () => {
+    const result = await client.callTool({ name: 'kb_search', arguments: { scoep: 'daemon' } });
+    expect(result.isError).toBe(true);
+    const text = (result.content as Array<{ type: string; text: string }>)[0]?.text ?? '';
+    expect(text).toMatch(/scoep/);
+  });
+
   test('a tool error comes back as an MCP error result, not a thrown exception', async () => {
     const result = await client.callTool({ name: 'ticket_get', arguments: { id: 'TKT-9999' } });
     expect(result.isError).toBe(true);

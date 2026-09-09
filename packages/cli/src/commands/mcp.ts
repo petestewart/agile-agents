@@ -15,7 +15,7 @@
  */
 
 import type { ToolInputSpec } from '@agile-agents/daemon';
-import { zodShapeFromInputSpec } from '@agile-agents/daemon';
+import { zodObjectSchemaFromInputSpec } from '@agile-agents/daemon';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { type ParsedArgs, optionalString, requireOption } from '../args';
@@ -74,7 +74,7 @@ export async function buildMcpBridgeServer(options: McpBridgeOptions): Promise<M
   for (const tool of tools) {
     server.registerTool(
       tool.name,
-      { description: tool.description, inputSchema: zodShapeFromInputSpec(tool.inputSpec) },
+      { description: tool.description, inputSchema: zodObjectSchemaFromInputSpec(tool.inputSpec) },
       async (args) => {
         try {
           const result = await callRpc(

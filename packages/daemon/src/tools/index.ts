@@ -24,6 +24,7 @@ export {
   type ToolInputFieldSpec,
   type ToolInputSpec,
   inputSpecFromToolIo,
+  zodObjectSchemaFromInputSpec,
   zodShapeFromInputSpec,
 } from './schema';
 export {

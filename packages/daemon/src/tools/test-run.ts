@@ -49,6 +49,8 @@ export interface TestRunOutput {
   timed_out?: boolean;
   /** Count of failures parsed but dropped from `failures[]` to keep the result small — see `MAX_FAILURES_RETURNED`. */
   omitted_failures?: number;
+  /** The true number of failures parsed, regardless of how many `failures[]` actually carries — never dropped by the size budget (review round 2). */
+  total_failures: number;
 }
 
 export class TestRunDeniedError extends Error {}
@@ -241,16 +243,31 @@ function firstNonEmpty<T>(arr: T[]): T[] | undefined {
   return arr.length > 0 ? arr : undefined;
 }
 
-const MAX_SUMMARY_TOKENS = 500;
+/**
+ * Review round 2 (blocker 1): the ≤500-token acceptance ceiling applies to
+ * the WHOLE serialized `TestRunOutput`, not just `summary` — a 60-failure
+ * bun test run was still ~850-1100 tokens even with `summary` capped and
+ * `failures[]` limited to `MAX_FAILURES_RETURNED` entries, because each
+ * entry's full `message`/`frames` still dominated the payload. `summary`
+ * gets its own, tighter budget so `failures[]` has room left within the
+ * shared ceiling — see `budgetTestRunOutput` for how the whole result is
+ * kept under `MAX_RESULT_CHARS`.
+ */
+const MAX_RESULT_TOKENS = 500;
+const MAX_RESULT_CHARS = MAX_RESULT_TOKENS * charsPerToken();
+const MAX_SUMMARY_TOKENS = 120;
 const MAX_SUMMARY_CHARS = MAX_SUMMARY_TOKENS * charsPerToken();
+/** Step 2 of `budgetTestRunOutput`'s shrink ladder: a short excerpt is still enough to recognize which assertion failed. */
+const MAX_FAILURE_MESSAGE_CHARS = 60;
+
+function truncate(text: string, maxChars: number): string {
+  return text.length > maxChars ? `${text.slice(0, maxChars)}\n[truncated]` : text;
+}
 
 function summarize(ok: boolean, failures: TestFailure[], passHint: string): string {
   if (ok) return passHint;
   const lines = failures.map((f) => `${f.name}: ${f.message}`.trim());
-  let summary = lines.join('\n');
-  if (summary.length > MAX_SUMMARY_CHARS)
-    summary = `${summary.slice(0, MAX_SUMMARY_CHARS)}\n[truncated]`;
-  return summary;
+  return truncate(lines.join('\n'), MAX_SUMMARY_CHARS);
 }
 
 /** Best-effort "N passed" hint from common runner pass-count lines; falls back to a fixed string when no runner-specific count is recognized. */
@@ -260,6 +277,63 @@ function passSummary(output: string): string {
   const goMatch = /^PASS$/m.exec(output);
   if (goMatch) return 'passed';
   return 'tests passed';
+}
+
+export interface BudgetTestRunOutputInput {
+  ok: boolean;
+  /** Every failure parsed, unfiltered — `budgetTestRunOutput` decides how many (and how much of each) survive into the result. */
+  allFailures: TestFailure[];
+  summary: string;
+  exitCode: number;
+  rawOutputRelPath: string;
+  timedOut: boolean;
+}
+
+/**
+ * Assembles the final `TestRunOutput`, shrinking `failures[]` — first by
+ * dropping stack frames, then by truncating each message, then by dropping
+ * whole entries one at a time — until `JSON.stringify(result).length` fits
+ * `MAX_RESULT_CHARS`. `total_failures` (the true count, always present) and
+ * `raw_output` (the pointer to the untruncated log) are never dropped —
+ * they're what let an agent decide whether the omitted detail is worth
+ * reading from disk. Converges unconditionally: with `failures: []` the
+ * result is just the envelope + `summary`, already within budget on its own.
+ */
+export function budgetTestRunOutput(input: BudgetTestRunOutputInput): TestRunOutput {
+  const totalFailures = input.allFailures.length;
+
+  const assemble = (failures: TestFailure[]): TestRunOutput => {
+    const omitted = totalFailures - failures.length;
+    return {
+      ok: input.ok,
+      failures,
+      summary: input.summary,
+      exit_code: input.exitCode,
+      raw_output: input.rawOutputRelPath,
+      total_failures: totalFailures,
+      ...(input.timedOut ? { timed_out: true } : {}),
+      ...(omitted > 0 ? { omitted_failures: omitted } : {}),
+    };
+  };
+  const fits = (failures: TestFailure[]): boolean =>
+    JSON.stringify(assemble(failures)).length <= MAX_RESULT_CHARS;
+
+  let failures = input.allFailures.slice(0, MAX_FAILURES_RETURNED);
+  if (fits(failures)) return assemble(failures);
+
+  failures = failures.map((f) => ({ ...f, frames: [] }));
+  if (fits(failures)) return assemble(failures);
+
+  failures = failures.map((f) => ({
+    ...f,
+    message: truncate(f.message, MAX_FAILURE_MESSAGE_CHARS),
+  }));
+  if (fits(failures)) return assemble(failures);
+
+  while (failures.length > 0 && !fits(failures)) {
+    failures = failures.slice(0, failures.length - 1);
+  }
+  return assemble(failures);
 }
 
 export interface RunTestRunOptions {
@@ -322,34 +396,23 @@ export async function runTestRun(opts: RunTestRunOptions): Promise<TestRunOutput
   writeRawOutput(rawOutputPath(opts.repoRoot, 'test_run', rawRelPath), combined);
 
   const allFailures = timedOut ? [] : exitCode === 0 ? [] : parseFailures(combined);
-  const failures = allFailures.slice(0, MAX_FAILURES_RETURNED);
-  const omittedCount = allFailures.length - failures.length;
   const ok = !timedOut && exitCode === 0 && allFailures.length === 0;
 
-  let summary: string;
-  if (timedOut) {
-    summary = `test_run: killed after exceeding the ${timeoutMs}ms timeout — see raw_output`;
-  } else {
-    summary = summarize(ok, failures, passSummary(combined));
-    if (omittedCount > 0) {
-      summary = `${summary}\n...and ${omittedCount} more failure(s) — see raw_output`;
-    }
-    // `summarize()` already caps the per-failure portion, but the appended
-    // "...and N more" line can push a summary that was already right at the
-    // cap over it — one final truncation keeps the acceptance ceiling
-    // (~500 tokens) an invariant of the whole string, not just one piece of it.
-    if (summary.length > MAX_SUMMARY_CHARS) {
-      summary = `${summary.slice(0, MAX_SUMMARY_CHARS)}\n[truncated]`;
-    }
-  }
+  const summary = timedOut
+    ? `test_run: killed after exceeding the ${timeoutMs}ms timeout — see raw_output`
+    : summarize(ok, allFailures.slice(0, MAX_FAILURES_RETURNED), passSummary(combined));
 
-  return {
+  // Review round 2 (blocker 1): the whole serialized result, not just
+  // `summary`, must stay under the token ceiling — `budgetTestRunOutput`
+  // shrinks `failures[]` as needed; `total_failures`/`omitted_failures` and
+  // `raw_output` always carry the true count and a pointer to everything
+  // that got left out.
+  return budgetTestRunOutput({
     ok,
-    failures,
+    allFailures,
     summary,
-    exit_code: exitCode,
-    raw_output: join('test_run', rawRelPath),
-    ...(timedOut ? { timed_out: true } : {}),
-    ...(omittedCount > 0 ? { omitted_failures: omittedCount } : {}),
-  };
+    exitCode,
+    rawOutputRelPath: join('test_run', rawRelPath),
+    timedOut,
+  });
 }

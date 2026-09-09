@@ -92,3 +92,23 @@ export function zodShapeFromInputSpec(spec: ToolInputSpec): Record<string, z.Zod
   }
   return shape;
 }
+
+/**
+ * Review round 2 (blocker 2): `registerTool`'s `inputSchema` accepts either
+ * a raw shape (`ZodRawShapeCompat`) or a full schema (`AnySchema`) — passing
+ * the raw shape lets the SDK build its own `z.object(shape)` internally,
+ * which zod defaults to *stripping* unknown keys rather than rejecting them
+ * (zod's "strip" mode), so `kb_search`'s own unknown-key check inside the
+ * handler never even saw the offending key: the SDK's own validation step
+ * had already silently dropped it from `args` before the handler ran.
+ * Passing a fully-built `z.object(shape).strict()` instead — still an
+ * `AnySchema`, so `registerTool` accepts it exactly the same way — makes an
+ * unrecognized key fail the SDK's own input validation, which the SDK
+ * reports back as an MCP tool error (`isError: true`) naming the key,
+ * before the handler is ever invoked.
+ */
+export function zodObjectSchemaFromInputSpec(
+  spec: ToolInputSpec,
+): z.ZodObject<Record<string, z.ZodTypeAny>> {
+  return z.object(zodShapeFromInputSpec(spec)).strict();
+}

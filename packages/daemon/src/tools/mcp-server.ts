@@ -17,7 +17,7 @@
  */
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { zodShapeFromInputSpec } from './schema';
+import { zodObjectSchemaFromInputSpec } from './schema';
 import type { ToolService } from './service';
 import type { ToolCallContext } from './types';
 
@@ -55,7 +55,10 @@ export function createToolMcpServer(
   for (const entry of service.listTools()) {
     server.registerTool(
       entry.name,
-      { description: entry.description, inputSchema: zodShapeFromInputSpec(entry.inputSpec) },
+      {
+        description: entry.description,
+        inputSchema: zodObjectSchemaFromInputSpec(entry.inputSpec),
+      },
       async (args) => toCallToolResult(() => service.callTool(ctx, entry.name, args ?? {})),
     );
   }

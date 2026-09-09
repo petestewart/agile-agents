@@ -181,7 +181,7 @@ describe('runTestRun', () => {
     expect(result.summary.length).toBeLessThan(500 * 4);
   });
 
-  test('QA round 1 fix: 60 failures still return under 500 tokens (failures[] capped, rest noted as omitted)', async () => {
+  test('review round 2 fix (blocker 1): 60 failures — the WHOLE serialized result stays under 500 tokens, not just summary', async () => {
     const lines = ['import { test, expect } from "bun:test";'];
     for (let i = 0; i < 60; i++) {
       lines.push(`test("case ${i}", () => { expect(1).toBe(2); });`);
@@ -196,7 +196,11 @@ describe('runTestRun', () => {
 
     expect(result.ok).toBe(false);
     expect(result.failures.length).toBeLessThanOrEqual(MAX_FAILURES_RETURNED);
-    expect(result.omitted_failures ?? 0).toBeGreaterThan(0);
-    expect(result.summary.length).toBeLessThan(500 * 4);
+    expect(result.total_failures).toBe(60);
+    expect(result.omitted_failures ?? 0).toBe(60 - result.failures.length);
+    // The acceptance ceiling applies to the whole payload an agent actually
+    // receives, not just the `summary` string.
+    const serializedTokens = JSON.stringify(result).length / 4;
+    expect(serializedTokens).toBeLessThanOrEqual(500);
   });
 });
