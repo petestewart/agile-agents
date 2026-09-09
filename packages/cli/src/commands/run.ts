@@ -65,6 +65,7 @@ import {
   registerQaTools,
   reviewRecordRelPath,
   reviewSubmit,
+  sandboxedSubprocessEnv,
   startDaemon,
   validateReviewRecord,
 } from '@agile-agents/daemon';
@@ -236,11 +237,13 @@ function loadSeed(path: string): SeedFile {
 }
 
 /** `oracle/product.md` is a plain bootstrap file (`init.ts`'s own stub, not a `StateStore` entity) — seeding it follows the same convention. */
-function seedProductMd(stateRoot: string, markdown: string): void {
+function seedProductMd(stateRoot: string, repoRoot: string, markdown: string): void {
+  const env = sandboxedSubprocessEnv(repoRoot, 'git');
   writeFileSync(join(stateRoot, 'oracle', 'product.md'), markdown);
-  Bun.spawnSync(['git', 'add', 'oracle/product.md'], { cwd: stateRoot });
+  Bun.spawnSync(['git', 'add', 'oracle/product.md'], { cwd: stateRoot, env });
   Bun.spawnSync(['git', '-c', 'commit.gpgsign=false', 'commit', '-q', '-m', 'seed: product.md'], {
     cwd: stateRoot,
+    env,
   });
 }
 
@@ -252,15 +255,17 @@ function seedProductMd(stateRoot: string, markdown: string): void {
  * opportunity" (PLAN.md scope) can't be exercised at all (QA round 1 /
  * opus review round 1 blocker 1).
  */
-function seedRules(stateRoot: string, rules: SeedFile['rules']): void {
+function seedRules(stateRoot: string, repoRoot: string, rules: SeedFile['rules']): void {
   if (!rules || rules.length === 0) return;
+  const env = sandboxedSubprocessEnv(repoRoot, 'git');
   mkdirSync(join(stateRoot, 'rules'), { recursive: true });
   for (const rule of rules) {
     writeFileSync(join(stateRoot, 'rules', `${rule.id}.md`), rule.markdown);
   }
-  Bun.spawnSync(['git', 'add', 'rules'], { cwd: stateRoot });
+  Bun.spawnSync(['git', 'add', 'rules'], { cwd: stateRoot, env });
   Bun.spawnSync(['git', '-c', 'commit.gpgsign=false', 'commit', '-q', '-m', 'seed: rules'], {
     cwd: stateRoot,
+    env,
   });
 }
 
@@ -268,8 +273,10 @@ async function seedFixture(handle: DaemonHandle, seed: SeedFile): Promise<void> 
   const { store } = handle;
   if (!store) throw new Error('agile run: daemon has no store (run `agile init` first)');
 
-  if (seed.productMd) seedProductMd(handle.config.stateRoot, seed.productMd);
-  seedRules(handle.config.stateRoot, seed.rules);
+  if (seed.productMd) {
+    seedProductMd(handle.config.stateRoot, handle.config.repoRoot, seed.productMd);
+  }
+  seedRules(handle.config.stateRoot, handle.config.repoRoot, seed.rules);
   for (const { entry, body } of seed.oracle ?? []) {
     await store.putOracleEntry(entry, body);
   }
@@ -431,10 +438,11 @@ async function driveEngineerWork(
   // uncommitted diff by the time `MergeOwner.onTicketDone` tried to rebase
   // — a real failure mode this driver hit and fixed here, not a defect in
   // `merge/owner.ts` (see `.pipeline-report.md`).
-  Bun.spawnSync(['git', 'add', 'src'], { cwd: worktreePath });
+  const gitEnv = sandboxedSubprocessEnv(handle.config.repoRoot, 'git');
+  Bun.spawnSync(['git', 'add', 'src'], { cwd: worktreePath, env: gitEnv });
   Bun.spawnSync(
     ['git', '-c', 'commit.gpgsign=false', 'commit', '-q', '-m', `${ticket.id}: implement`],
-    { cwd: worktreePath },
+    { cwd: worktreePath, env: gitEnv },
   );
 
   if (seed.discovery && seed.discovery.reporterTicket === ticket.id) {

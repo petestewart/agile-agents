@@ -14,6 +14,7 @@
  */
 
 import { createHash } from 'node:crypto';
+import { sandboxedSubprocessEnv } from '../subprocess-env';
 import { rawOutputPath, writeRawOutput } from '../tools/cache';
 import { charsPerToken } from '../tools/runner';
 
@@ -73,8 +74,13 @@ interface GitResult {
   stderr: string;
 }
 
-function git(args: string[], cwd: string): GitResult {
-  const result = Bun.spawnSync(['git', ...args], { cwd, stdout: 'pipe', stderr: 'pipe' });
+function git(args: string[], cwd: string, repoRoot: string): GitResult {
+  const result = Bun.spawnSync(['git', ...args], {
+    cwd,
+    stdout: 'pipe',
+    stderr: 'pipe',
+    env: sandboxedSubprocessEnv(repoRoot, 'git'),
+  });
   return {
     exitCode: result.exitCode,
     stdout: new TextDecoder().decode(result.stdout),
@@ -220,7 +226,7 @@ function buildRiskNotes(files: ParsedFileDiff[]): string[] {
 
 export function runDiffSummary(opts: RunDiffSummaryOptions): DiffSummaryOutput {
   const range = `${opts.base}...${opts.head}`;
-  const result = git(['diff', range], opts.worktree);
+  const result = git(['diff', range], opts.worktree, opts.repoRoot);
   if (result.exitCode !== 0) {
     throw new DiffSummaryError(`git diff ${range} failed in ${opts.worktree}: ${result.stderr}`);
   }

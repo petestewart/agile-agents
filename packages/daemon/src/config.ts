@@ -14,6 +14,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { parse as parseYaml } from 'yaml';
+import { sandboxedSubprocessEnv } from './subprocess-env';
 
 export interface AgileConfig {
   /** Repo toplevel (git rev-parse --show-toplevel), i.e. where `.agile/` lives. */
@@ -37,10 +38,15 @@ interface RawConfigFile {
 }
 
 function findRepoRoot(startDir: string): string {
+  // No repo root is known yet — this call is what discovers it — so `startDir`
+  // (the closest thing on hand, per the caller's own cwd) is used as the
+  // sandbox cache root instead, same shape as `dockerProbeEnv`'s no-repo-root
+  // fallback.
   const result = Bun.spawnSync(['git', 'rev-parse', '--show-toplevel'], {
     cwd: startDir,
     stdout: 'pipe',
     stderr: 'pipe',
+    env: sandboxedSubprocessEnv(startDir, 'git'),
   });
   if (result.exitCode !== 0) {
     const stderr = new TextDecoder().decode(result.stderr).trim();

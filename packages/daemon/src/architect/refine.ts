@@ -50,6 +50,7 @@ import type {
 import { validateTicket } from '@agile-agents/shared';
 import { IllegalTransitionError } from '../store';
 import type { StateStore } from '../store';
+import { sandboxedSubprocessEnv } from '../subprocess-env';
 
 export class RefineValidationError extends Error {
   constructor(
@@ -166,18 +167,30 @@ function commitWorktreeWip(worktreeDir: string, message: string): string | undef
   if (!existsSync(worktreeDir)) {
     throw new RefineValidationError(`refactor-child worktree does not exist: ${worktreeDir}`);
   }
+  // No `repoRoot` is threaded through `reRefineStale` today, and
+  // `worktreeDir`'s real-world shape (`<repoRoot>/.worktrees/<ticket-id>`,
+  // `runner/worktrees.ts`'s own convention) isn't guaranteed for every
+  // caller (this file's own tests pass a bare `mkdtemp` worktree one level
+  // under the OS temp dir, where walking up two parents would land outside
+  // any directory this call has any business writing to) — `worktreeDir`
+  // itself stands in as the sandbox cache root instead, same fallback
+  // `config.ts`'s bootstrap `git rev-parse` and `merge/precommit.ts`'s
+  // `gitCommonDir` use for their own "no repo root in hand yet" call.
+  const env = sandboxedSubprocessEnv(worktreeDir, 'git');
   const status = Bun.spawnSync(['git', 'status', '--porcelain'], {
     cwd: worktreeDir,
     stdout: 'pipe',
     stderr: 'pipe',
+    env,
   });
   if (decode(status.stdout) === '') return undefined;
 
-  Bun.spawnSync(['git', 'add', '-A'], { cwd: worktreeDir, stdout: 'pipe', stderr: 'pipe' });
+  Bun.spawnSync(['git', 'add', '-A'], { cwd: worktreeDir, stdout: 'pipe', stderr: 'pipe', env });
   const commit = Bun.spawnSync(['git', 'commit', '-q', '-m', `WIP: ${message}`], {
     cwd: worktreeDir,
     stdout: 'pipe',
     stderr: 'pipe',
+    env,
   });
   if (commit.exitCode !== 0) {
     throw new RefineValidationError(
@@ -188,6 +201,7 @@ function commitWorktreeWip(worktreeDir: string, message: string): string | undef
     cwd: worktreeDir,
     stdout: 'pipe',
     stderr: 'pipe',
+    env,
   });
   return decode(rev.stdout);
 }

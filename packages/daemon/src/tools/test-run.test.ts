@@ -368,9 +368,10 @@ describe('runTestRun', () => {
     utimesSync(inFlightPath, oldTime, oldTime);
 
     // This asserts the *pruning* mechanism itself honours a protected path
-    // regardless of age, directly — `runTestRun` only ever protects its own
-    // run's paths, so a concurrent run's in-flight capture is NOT protected
-    // today; this test covers the mechanism, not that (unclosed) window.
+    // regardless of age, directly — see the "T037" test below for the
+    // window this used to leave open (a concurrent run's own in-flight
+    // capture, not just an explicitly-passed protected path), now closed by
+    // `inFlightRawOutputPaths`.
     const stillOverBudget = pruneRawTestRunOutputs(
       join(repo, '.agile-daemon-cache', 'raw', 'test_run'),
       1,
@@ -379,6 +380,72 @@ describe('runTestRun', () => {
     expect(stillOverBudget).toBe(true); // still over budget — the file is protected, not deletable.
     expect(await Bun.file(inFlightPath).exists()).toBe(true);
   });
+
+  test("T037 (T034 residual): two concurrent runTestRun calls cannot prune each other's in-flight captures", async () => {
+    // A slower run whose capture files land first (older mtime) — exactly
+    // the shape a plain oldest-first sweep would pick to delete — plus a
+    // fast run that starts and finishes while the slow one is still
+    // writing. A tiny `maxRetainedRawBytes` forces both runs' own prune
+    // sweep to actually fire.
+    writeFileSync(
+      join(repo, 'slow.test.ts'),
+      [
+        'import { test, expect } from "bun:test";',
+        'test("slow", async () => {',
+        '  await new Promise((r) => setTimeout(r, 500));',
+        '  console.log("y".repeat(20000));',
+        '  expect(1).toBe(1);',
+        '});',
+      ].join('\n'),
+    );
+    writeFileSync(
+      join(repo, 'fast.test.ts'),
+      [
+        'import { test, expect } from "bun:test";',
+        'test("fast", () => { expect(1).toBe(1); });',
+      ].join('\n'),
+    );
+
+    const slowPromise = runTestRun({
+      input: { command: 'bun test slow.test.ts' },
+      worktree: repo,
+      repoRoot: repo,
+      maxRetainedRawBytes: 1,
+    });
+
+    // Give the slow run time to spawn and start writing its capture files
+    // before the fast run's own sweep can fire.
+    await new Promise((r) => setTimeout(r, 150));
+
+    const fastResult = await runTestRun({
+      input: { command: 'bun test fast.test.ts' },
+      worktree: repo,
+      repoRoot: repo,
+      maxRetainedRawBytes: 1,
+    });
+    const slowResult = await slowPromise;
+
+    // Without `inFlightRawOutputPaths` protecting the slow run's still-open
+    // capture files, the fast run's own (budget: 1 byte, so it always
+    // fires) sweep — running while the slow run is still mid-flight — would
+    // have deleted the slow run's `.out`/`.err` out from under it: they are
+    // the oldest files in the tree at that point and not in the fast run's
+    // own `protectedPaths` set. That doesn't fail the slow run outright (the
+    // already-open fd keeps writing to the now-unlinked inode), but the
+    // slow run reads its capture files back *by path* afterwards — a
+    // deleted path reads back empty, silently losing the captured output
+    // rather than throwing. Once each run is done, its own raw log is
+    // ordinary prunable history again (the tiny budget here legitimately
+    // evicts the fast run's own now-cold log later) — the property under
+    // test is only that the *in-flight* window is protected, not eventual
+    // retention.
+    expect(slowResult.ok).toBe(true);
+    expect(fastResult.ok).toBe(true);
+    const slowRawPath = join(repo, '.agile-daemon-cache', 'raw', slowResult.raw_output);
+    expect(await Bun.file(slowRawPath).exists()).toBe(true);
+    const slowRawContent = await Bun.file(slowRawPath).text();
+    expect(slowRawContent).toContain('y'.repeat(20000));
+  }, 15_000);
 
   test('review round 2 fix (blocker 1): 60 failures — the WHOLE serialized result stays under 500 tokens, not just summary', async () => {
     const lines = ['import { test, expect } from "bun:test";'];

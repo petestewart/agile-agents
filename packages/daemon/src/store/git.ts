@@ -28,6 +28,7 @@
  */
 
 import { existsSync } from 'node:fs';
+import { sandboxedSubprocessEnv } from '../subprocess-env';
 
 const AUTHOR_NAME = 'agiled';
 // Matches init.ts's bootstrap commit author (`agiled <agiled@localhost>`) —
@@ -36,7 +37,22 @@ const AUTHOR_NAME = 'agiled';
 const AUTHOR_EMAIL = 'agiled@localhost';
 
 function git(args: string[], cwd: string): { exitCode: number; stdout: string; stderr: string } {
-  const result = Bun.spawnSync(['git', ...args], { cwd, stdout: 'pipe', stderr: 'pipe' });
+  // `cwd` is always `stateRoot` here. In production that's `<repoRoot>/.agile`
+  // (config.ts's invariant), so its parent would be the real repo root — but
+  // this module's own tests (and any other caller) don't guarantee that
+  // nesting, only that `stateRoot` itself is a real, writable directory this
+  // call already owns. `stateRoot` itself is used as the sandbox cache root
+  // instead of guessing at a parent that may not be the repo at all — a
+  // `.agile-daemon-cache/` landing inside `.agile/` is harmless (this
+  // function only ever stages/commits the exact `relativePaths` its callers
+  // pass, never `-A` over the whole tree, so an extra untracked directory
+  // here is never swept into a commit).
+  const result = Bun.spawnSync(['git', ...args], {
+    cwd,
+    stdout: 'pipe',
+    stderr: 'pipe',
+    env: sandboxedSubprocessEnv(cwd, 'git'),
+  });
   return {
     exitCode: result.exitCode,
     stdout: new TextDecoder().decode(result.stdout).trim(),

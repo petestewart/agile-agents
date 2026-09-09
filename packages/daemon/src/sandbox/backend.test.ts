@@ -138,18 +138,25 @@ describe('dockerProbeEnv (T034 round 2)', () => {
 
 describe('dockerProbeEnv (T034 round 3): no-repo-root fallback survives the old fixed path being occupied', () => {
   test('the old fixed <tmpdir>/.agile-daemon-cache/sandbox-detect/home path being a regular file does not stop a fresh probe', () => {
-    const staleFixedRoot = join(tmpdir(), '.agile-daemon-cache', 'sandbox-detect');
-    mkdirSync(join(tmpdir(), '.agile-daemon-cache'), { recursive: true });
-    // A previous run (this repo's own round 1/2 regression, or any other
-    // process) may have already left this path as a directory — clear
-    // whatever is there first so this test deterministically starts from
-    // "occupied by a regular file", the round 2 B2 scenario.
-    rmSync(staleFixedRoot, { recursive: true, force: true });
-    // Occupy the old fixed path's shape with a regular file, exactly as
-    // round 2's B2 scenario describes ("a regular file, a symlink, another
-    // uid's directory").
-    writeFileSync(staleFixedRoot, 'occupied by something else');
+    // T037: scoped to a per-test `TMPDIR` (rather than the real OS temp
+    // dir) so this never collides with another concurrently-running test
+    // process's own use of the same fixed `<tmpdir>/.agile-daemon-cache/
+    // sandbox-detect` path.
+    const originalTmpdir = process.env.TMPDIR;
+    const testTmpBase = mkdtempSync(join(tmpdir(), 'agile-backend-test-tmpdir-'));
+    process.env.TMPDIR = testTmpBase;
     try {
+      const staleFixedRoot = join(tmpdir(), '.agile-daemon-cache', 'sandbox-detect');
+      mkdirSync(join(tmpdir(), '.agile-daemon-cache'), { recursive: true });
+      // A previous run (this repo's own round 1/2 regression, or any other
+      // process) may have already left this path as a directory — clear
+      // whatever is there first so this test deterministically starts from
+      // "occupied by a regular file", the round 2 B2 scenario.
+      rmSync(staleFixedRoot, { recursive: true, force: true });
+      // Occupy the old fixed path's shape with a regular file, exactly as
+      // round 2's B2 scenario describes ("a regular file, a symlink, another
+      // uid's directory").
+      writeFileSync(staleFixedRoot, 'occupied by something else');
       const { env, cleanup } = dockerProbeEnv(undefined);
       try {
         expect(existsSync(env.HOME as string)).toBe(true);
@@ -157,7 +164,8 @@ describe('dockerProbeEnv (T034 round 3): no-repo-root fallback survives the old 
         cleanup();
       }
     } finally {
-      rmSync(staleFixedRoot, { force: true });
+      process.env.TMPDIR = originalTmpdir;
+      rmSync(testTmpBase, { recursive: true, force: true });
     }
   });
 });
@@ -225,6 +233,12 @@ describe('dockerDaemonReachable (T034)', () => {
   });
 
   test('B2: a stub docker exiting 0, with the old fixed <tmpdir>/.agile-daemon-cache/sandbox-detect/ path occupied by a regular file, still resolves detectBackend() away from "none"', () => {
+    // T037: scoped to a per-test `TMPDIR`, same reasoning as the previous
+    // test — never collide with another concurrently-running test process's
+    // own use of this fixed path.
+    const originalTmpdir = process.env.TMPDIR;
+    const testTmpBase = mkdtempSync(join(tmpdir(), 'agile-backend-test-tmpdir-'));
+    process.env.TMPDIR = testTmpBase;
     const staleFixedRoot = join(tmpdir(), '.agile-daemon-cache', 'sandbox-detect');
     mkdirSync(join(tmpdir(), '.agile-daemon-cache'), { recursive: true });
     // A previous run (this repo's own round 1/2 regression, or any other
@@ -248,6 +262,8 @@ describe('dockerDaemonReachable (T034)', () => {
     } finally {
       stub.restore();
       rmSync(staleFixedRoot, { force: true });
+      process.env.TMPDIR = originalTmpdir;
+      rmSync(testTmpBase, { recursive: true, force: true });
     }
   });
 });

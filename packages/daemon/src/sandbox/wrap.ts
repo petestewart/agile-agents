@@ -30,7 +30,12 @@ import { writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { PermissionRole } from '../permissions';
-import { type DetectBackendDeps, defaultDetectBackendDeps, detectBackend } from './backend';
+import {
+  type DetectBackendDeps,
+  defaultDetectBackendDeps,
+  detectBackend,
+  dockerProbeEnv,
+} from './backend';
 import {
   type ContainerCommandOptions,
   DEFAULT_SANDBOX_IMAGE,
@@ -108,12 +113,22 @@ function defaultWriteProfileFile(contents: string): string {
  * comment for why automatic was the bug.
  */
 export function defaultResolveHostBinaryPath(cmd: string): string | undefined {
+  // No repo root reaches this seam (see `WrapAgentCommandDeps.resolveHostBinaryPath`'s
+  // doc comment — a caller opts in explicitly, with no `repoRoot` of its
+  // own to pass), so this falls back to a fresh per-call `mkdtempSync`,
+  // same shape as `dockerProbeEnv`'s own no-repo-root case.
+  const probe = dockerProbeEnv(undefined);
   try {
-    return execFileSync('sh', ['-c', `command -v ${cmd}`], { stdio: ['ignore', 'pipe', 'ignore'] })
+    return execFileSync('sh', ['-c', `command -v ${cmd}`], {
+      stdio: ['ignore', 'pipe', 'ignore'],
+      env: probe.env,
+    })
       .toString()
       .trim();
   } catch {
     return undefined;
+  } finally {
+    probe.cleanup();
   }
 }
 

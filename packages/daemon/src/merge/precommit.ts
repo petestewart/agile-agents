@@ -49,21 +49,23 @@ import type { Ticket } from '@agile-agents/shared';
 import { TicketIdSchema } from '@agile-agents/shared';
 import { activeHaltsFor } from '../halts';
 import { StateStore } from '../store';
+import { sandboxedSubprocessEnv } from '../subprocess-env';
 
 /**
- * T034 round 2 (review): this one call can't go through `./git`'s
- * `runGit` (which now requires an explicit `repoRoot`) — discovering the
- * repo root *is* what this call is for, so no `repoRoot` exists yet to
- * pass it. Left as a plain, unsandboxed `git rev-parse` (read-only,
- * touches no file `$HOME` would own) rather than inventing a heuristic to
- * feed itself; reported to the manager as one of the still-unsandboxed
- * git spawns outside this ticket's scope.
+ * T034 round 2 (review) found this couldn't go through `./git`'s `runGit`
+ * (which requires an explicit `repoRoot`) — discovering the repo root *is*
+ * what this call is for, so no `repoRoot` exists yet to pass it. T037
+ * closes that residual the same way `config.ts`'s own bootstrap
+ * `git rev-parse` does: `worktreePath` (the one directory already on hand
+ * and known writable) stands in as the sandbox cache root for this one
+ * call, even though it isn't the eventual repo root.
  */
 function gitCommonDir(worktreePath: string): string {
   const result = Bun.spawnSync(['git', 'rev-parse', '--git-common-dir'], {
     cwd: worktreePath,
     stdout: 'pipe',
     stderr: 'pipe',
+    env: sandboxedSubprocessEnv(worktreePath, 'git'),
   });
   if (result.exitCode !== 0) {
     throw new Error(

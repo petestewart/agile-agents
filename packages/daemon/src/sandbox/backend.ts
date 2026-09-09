@@ -28,14 +28,26 @@ export interface DetectBackendDeps {
   hasContainerRuntime: () => boolean;
 }
 
-function binaryOnPath(bin: string): boolean {
+/**
+ * `repoRoot` threads through when the caller has one (`dockerDaemonReachable`
+ * does, from `hasContainerRuntime`); the bare `hasSandboxExec` check below
+ * has none, same as `dockerProbeEnv`'s own no-repo-root callers, so it falls
+ * back to a fresh per-call `mkdtempSync` under the OS temp dir.
+ */
+function binaryOnPath(bin: string, repoRoot?: string): boolean {
+  const probe = dockerProbeEnv(repoRoot);
   try {
     // `command -v` is POSIX and doesn't require the binary to run cleanly
     // (unlike `--version`, which some CLIs don't support) — just presence.
-    execFileSync('sh', ['-c', `command -v ${bin}`], { stdio: ['ignore', 'ignore', 'ignore'] });
+    execFileSync('sh', ['-c', `command -v ${bin}`], {
+      stdio: ['ignore', 'ignore', 'ignore'],
+      env: probe.env,
+    });
     return true;
   } catch {
     return false;
+  } finally {
+    probe.cleanup();
   }
 }
 
@@ -107,7 +119,7 @@ export function dockerProbeEnv(repoRoot: string | undefined): DockerProbeEnv {
  * the bug that let a probe-setup failure silently read as "no docker".
  */
 export function dockerDaemonReachable(repoRoot?: string): boolean {
-  if (!binaryOnPath('docker')) return false;
+  if (!binaryOnPath('docker', repoRoot)) return false;
   const probe = dockerProbeEnv(repoRoot);
   try {
     // `docker info` fails fast (no daemon socket) rather than hanging when
