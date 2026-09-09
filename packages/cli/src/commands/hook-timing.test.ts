@@ -25,6 +25,20 @@ const CLI_ENTRY = join(import.meta.dir, '..', 'index.ts');
 const WARMUP_RUNS = 1;
 const MEASURED_RUNS = 10;
 
+// T036: this test spawns WARMUP_RUNS + MEASURED_RUNS real `bun` subprocesses
+// sequentially. Isolated, each spawn costs ~250ms (bun runtime startup +
+// module resolution of the CLI entry); under full-suite load it measured
+// 250-480ms/spawn (two concurrent `bun test packages/daemon/src/store`
+// loops). 11 spawns at that rate already sums to ~4-4.2s against bun:test's
+// default 5000ms per-test timeout, before server startup/parsing overhead —
+// so the flake is the *test harness* timeout racing the very subprocess cost
+// this test exists to measure, not a hang. The in-process test above proves
+// the RPC round trip itself stays under 20ms; give the CLI subprocess test
+// an explicit timeout sized to what it actually spawns instead of loosening
+// the measured-median assertion.
+const SPAWN_TIMEOUT_BUDGET_MS = 3000; // generous per-spawn ceiling under heavy load
+const CLI_SUBPROCESS_TEST_TIMEOUT_MS = (WARMUP_RUNS + MEASURED_RUNS) * SPAWN_TIMEOUT_BUDGET_MS + 2000;
+
 function median(values: number[]): number {
   const sorted = [...values].sort((a, b) => a - b);
   const mid = Math.floor(sorted.length / 2);
@@ -111,5 +125,5 @@ describe('agile hook pre-tool-use timing', () => {
       `[hook timing] end-to-end CLI subprocess median: ${m.toFixed(2)}ms (samples: ${samples.map((s) => s.toFixed(2)).join(', ')})`,
     );
     expect(m).toBeLessThan(2000);
-  });
+  }, CLI_SUBPROCESS_TEST_TIMEOUT_MS);
 });
