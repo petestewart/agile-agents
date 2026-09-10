@@ -362,7 +362,7 @@ export class GateService {
       delegated: true,
       fyi: {
         to: 'human',
-        body: `gate "${base.gate}" ${decision.decision}d by ${decision.by} (${via}, owner: ${base.owner})${decision.rationale ? ` — ${decision.rationale}` : ''}`,
+        body: `gate "${base.gate}" ${decision.decision === 'approve' ? 'approved' : 'denied'} by ${decision.by} (${via}, owner: ${base.owner})${decision.rationale ? ` — ${decision.rationale}` : ''}`,
         sent_at: now.toISOString(),
       },
     };

@@ -30,6 +30,7 @@ import {
 import type { Policy, Sprint } from '@agile-agents/shared';
 import { renderEmBrief } from '../briefs';
 import type { DelegateContext, DelegateFn, GateDecision } from '../gates';
+import { openStderrLog } from '../runner/session';
 import { NotFoundError, StateStore } from '../store';
 
 export interface EmSessionDelegateOptions {
@@ -44,6 +45,8 @@ export interface EmSessionDelegateOptions {
   timeoutMs?: number;
   /** Progress notices (`agile run --live` prints them). */
   onNotice?: (line: string) => void;
+  /** Where the EM session's stderr goes (`openStderrLog`, one file per decision: `em-<ts>.stderr.log`). The sixth live run's EM session went silent for six minutes with nothing on record. */
+  stderrLogDir?: string;
 }
 
 export const DEFAULT_EM_DECISION_TIMEOUT_MS = 90_000;
@@ -125,6 +128,8 @@ export function createEmSessionDelegate(options: EmSessionDelegateOptions): Dele
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       const decided = (async () => {
+        const stderrLog = openStderrLog(options.stderrLogDir, 'em', new Date());
+        if (stderrLog) notice(`agile run --live: EM session stderr -> ${stderrLog.path}`);
         session = spawn({
           cmd: provider.command,
           args: [...provider.args],
@@ -132,6 +137,7 @@ export function createEmSessionDelegate(options: EmSessionDelegateOptions): Dele
           envOverrides: provider.envOverrides,
           clientCapabilities: provider.clientCapabilities,
           mcpServers: [],
+          ...(stderrLog ? { onStderr: stderrLog.append } : {}),
           ...(provider.defaultModeId !== undefined ? { modeId: provider.defaultModeId } : {}),
         });
         await session.initialized;
@@ -155,7 +161,7 @@ export function createEmSessionDelegate(options: EmSessionDelegateOptions): Dele
       });
       const parsed = await Promise.race([decided, timeout]);
       notice(
-        `agile run --live: EM ${parsed.decision}d gate ${ctx.gate}${ctx.ticket ? ` (${ctx.ticket})` : ''}${parsed.rationale ? ` — ${parsed.rationale.slice(0, 200)}` : ''}`,
+        `agile run --live: EM ${parsed.decision === 'approve' ? 'approved' : 'denied'} gate ${ctx.gate}${ctx.ticket ? ` (${ctx.ticket})` : ''}${parsed.rationale ? ` — ${parsed.rationale.slice(0, 200)}` : ''}`,
       );
       return { decision: parsed.decision, by: 'em', rationale: parsed.rationale || undefined };
     } catch (err) {

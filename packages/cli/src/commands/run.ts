@@ -899,6 +899,7 @@ export async function runDemoSprint(opts: RunOptions): Promise<RunResult> {
               stateRoot: join(opts.cwd, '.agile'),
               cwd: opts.cwd,
               onNotice: opts.onNotice ?? ((line: string) => console.error(line)),
+              stderrLogDir: join(opts.cwd, '.agile-daemon-cache', 'sessions'),
             }))),
   });
 

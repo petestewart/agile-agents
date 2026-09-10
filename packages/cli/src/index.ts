@@ -105,6 +105,7 @@ export async function runCli(argv: string[], cwd: string = process.cwd()): Promi
             stateRoot: discoverConfig({ cwd }).stateRoot,
             cwd,
             onNotice: (line) => console.error(line),
+            stderrLogDir: join(cwd, '.agile-daemon-cache', 'sessions'),
           })
         : undefined,
       maxTicks:

@@ -65,6 +65,52 @@ export interface ReviewRunner {
   promptAgent(agentId: AgentId, text: string): Promise<unknown>;
 }
 
+/** How long a re-prompt waits for the session to reject it outright (not live, prompt refused) before the glue treats the turn as dispatched. */
+export const TURN_ACCEPT_WINDOW_MS = 2_000;
+
+/**
+ * Sends a turn without waiting for the model to finish it. `Runner.
+ * promptAgent` resolves when the whole turn ends (`session.ts`'s
+ * `runPromptTurn`, queued behind any turn still in flight) — minutes on a
+ * real vendor — and every glue function here used to `await` it, so one
+ * re-prompt froze the driver loop (`agile run`'s tick, `GateService.tick`,
+ * `EmLoop.tick`, every other hand-off) for the length of a model turn.
+ * Fifth/sixth live runs (2026-09-10): 9 ticks in 20 min; engineers whose
+ * APPROVED/DENIED prompt could not be delivered sent no heartbeats and
+ * were reaped as "unresponsive".
+ *
+ * The retry contract the callers document is kept: a session that rejects
+ * the prompt straight away (died between `isLive` and here) still throws
+ * within `acceptMs`, so the message stays unread for the next tick. A turn
+ * that fails later is the session's own business — `runPromptTurn` stops
+ * it, readies the ticket and escalates to em — so that rejection is
+ * swallowed here rather than surfacing as an unhandled promise.
+ */
+export async function dispatchTurn(
+  runner: Pick<ReviewRunner, 'promptAgent'>,
+  agentId: AgentId,
+  text: string,
+  acceptMs: number = TURN_ACCEPT_WINDOW_MS,
+): Promise<void> {
+  const turn = runner.promptAgent(agentId, text).then(
+    () => undefined,
+    (err: unknown) => {
+      throw err;
+    },
+  );
+  turn.catch(() => {});
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const accepted = new Promise<void>((resolve) => {
+    timer = setTimeout(resolve, acceptMs);
+    timer.unref?.();
+  });
+  try {
+    await Promise.race([turn, accepted]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 /** The slice of `Runner` this glue needs to spawn QA (T012). */
 export interface QaSpawner {
   spawn(role: 'qa', ticket: TicketId): Promise<unknown>;
@@ -165,7 +211,7 @@ export async function advanceReviewRequests(
           await store.transitionTicket(message.ticket, 'in_review', { by: 'daemon' });
         }
         try {
-          await runner.promptAgent(messageReviewerId, message.body);
+          await dispatchTurn(runner, messageReviewerId, message.body);
         } catch {
           // The session died in the window between `isLive` above and this
           // actual prompt (T021 round 4, opus review round 3 nit: a real
@@ -306,7 +352,7 @@ export async function advanceEngineerVerdicts(
       ].join('\n');
       try {
         if (runner.isLive(engineerId)) {
-          await runner.promptAgent(engineerId, text);
+          await dispatchTurn(runner, engineerId, text);
         } else {
           await runner.spawn('engineer', message.ticket, { extraContext: text });
         }
@@ -373,7 +419,7 @@ export async function advanceHilResolutions(
         ? `${req.id} was APPROVED by ${req.decided_by ?? 'the gate owner'}${what}. You may run that command now — re-run it and continue.${req.fyi?.body ? ` Note: ${req.fyi.body}` : ''}`
         : `${req.id} was DENIED by ${req.decided_by ?? 'the gate owner'}${what}.${req.fyi?.body ? ` ${req.fyi.body}` : ''} Do not retry it; find another way within your worktree, or post a \`blocked\` stanza with the reason.`;
     try {
-      await runner.promptAgent(engineerId, text);
+      await dispatchTurn(runner, engineerId, text);
     } catch {
       continue; // session died between isLive and the prompt — retry next tick.
     }
@@ -414,7 +460,7 @@ export async function advanceArchitectInbox(
     const text = `${message.kind} from ${message.from} on ${message.ticket}: ${message.body}${refs}`;
     try {
       if (runner.isLive('architect' as AgentId)) {
-        await runner.promptAgent('architect' as AgentId, text);
+        await dispatchTurn(runner, 'architect' as AgentId, text);
       } else {
         await runner.spawn('architect', message.ticket, { extraContext: text });
       }

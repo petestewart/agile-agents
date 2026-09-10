@@ -4,6 +4,7 @@
  * dispatch.
  */
 
+import { join } from 'node:path';
 import {
   createEmSessionDelegate,
   discoverConfig,
@@ -21,6 +22,7 @@ export async function runCliDaemonStart(cwd: string = process.cwd()): Promise<st
       stateRoot: discoverConfig({ cwd }).stateRoot,
       cwd,
       onNotice: (line) => console.error(line),
+      stderrLogDir: join(cwd, '.agile-daemon-cache', 'sessions'),
     }),
   });
   installShutdownSignals(handle);

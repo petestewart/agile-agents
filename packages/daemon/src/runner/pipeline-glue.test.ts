@@ -21,6 +21,7 @@ import {
   advanceReviewRequests,
   advanceReviewerEscalations,
   advanceSecurityReviews,
+  dispatchTurn,
   releaseStaleTicketSessions,
 } from './pipeline-glue';
 import { agentIdFor, securityReviewerIdFor } from './runner';
@@ -690,5 +691,46 @@ describe('releaseStaleTicketSessions', () => {
     ]);
     expect(live.has(agentIdFor('engineer', active.id))).toBe(true);
     expect(releaseStaleTicketSessions(fakeStore, runner)).toEqual([]);
+  });
+});
+
+describe('dispatchTurn', () => {
+  test('returns once the turn is accepted, not when the model finishes it', async () => {
+    // Sixth live run (2026-09-10): every glue re-prompt awaited the whole
+    // model turn, freezing the driver loop for minutes per hand-off.
+    let finish: (() => void) | undefined;
+    const runner = {
+      promptAgent: () =>
+        new Promise<void>((resolve) => {
+          finish = resolve;
+        }),
+    };
+    const started = Date.now();
+    await dispatchTurn(runner, 'eng-0001' as AgentId, 'go', 50);
+    expect(Date.now() - started).toBeLessThan(1_000);
+    expect(finish).toBeDefined();
+    finish?.();
+  });
+
+  test('an immediate rejection (session gone) still throws so the caller retries next tick', async () => {
+    const runner = {
+      promptAgent: async () => {
+        throw new Error('not live');
+      },
+    };
+    await expect(dispatchTurn(runner, 'eng-0001' as AgentId, 'go', 50)).rejects.toThrow('not live');
+  });
+
+  test('a turn that fails after acceptance is swallowed (the session recovers itself)', async () => {
+    let fail: ((err: Error) => void) | undefined;
+    const runner = {
+      promptAgent: () =>
+        new Promise<void>((_resolve, reject) => {
+          fail = reject;
+        }),
+    };
+    await dispatchTurn(runner, 'eng-0001' as AgentId, 'go', 20);
+    fail?.(new Error('turn died later'));
+    await new Promise((r) => setTimeout(r, 10));
   });
 });
