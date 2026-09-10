@@ -1,6 +1,10 @@
 {
   "permissions": {
     "allow": [
+      "Bash(chmod:*)",
+      "Bash(chown:*)",
+      "Bash(runuser -p -u ubuntu:*)",
+      "Bash(timeout:*)",
       "Bash(bun:*)",
       "Bash(bunx:*)",
       "Bash(npm:*)",
