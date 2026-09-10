@@ -317,6 +317,7 @@ export class Runner {
       role,
       agent: agentId,
       ticket,
+      reviewer: agentIdFor('reviewer', ticketId),
     });
     // T024 seam (see this method's `opts.extraContext` doc comment above).
     const fullBrief = opts.extraContext

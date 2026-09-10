@@ -28,6 +28,8 @@ export interface RoleBriefBase {
 
 export interface EngineerBriefContext extends RoleBriefBase {
   policy: Policy;
+  /** The reviewer agent id for this ticket (`agentIdFor('reviewer', ticket)`), so the engineer never has to guess the `review_request` recipient. Optional for callers that render without a runner. */
+  reviewer?: AgentId;
 }
 
 export interface ArchitectBriefContext extends RoleBriefBase {

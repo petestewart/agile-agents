@@ -35,6 +35,7 @@ import { join } from 'node:path';
 import {
   type AgentId,
   type AgentRecord,
+  type AgentRunnerRole,
   type Message,
   type MessagePriority,
   type MessageRecipient,
@@ -60,6 +61,14 @@ export const DEFAULT_LIVENESS_TIMEOUT_MS = 5 * 60 * 1000;
  * valid `-> ready` source for this exact path: assigned, in_progress,
  * in_review, in_qa, blocked.
  */
+/** Which runner role is expected to be *active* (producing events) at each live ticket stage — see `checkLiveness`. `assigned`/`in_progress`: the engineer; `in_review`: the reviewer; `in_qa`: QA. */
+const ACTIVE_ROLE_FOR_STATUS: Partial<Record<TicketStatus, AgentRunnerRole>> = {
+  assigned: 'engineer',
+  in_progress: 'engineer',
+  in_review: 'reviewer',
+  in_qa: 'qa',
+};
+
 const LIVE_TICKET_STATUSES: readonly TicketStatus[] = [
   'assigned',
   'in_progress',
@@ -347,6 +356,10 @@ export class Bus {
         model: patch.model ?? 'unknown',
         ticket: patch.ticket,
         pid: patch.pid,
+        // `role` matters to `checkLiveness` (which role is expected to be
+        // active at the ticket's stage); dropping it here made every
+        // bus-registered agent look role-less.
+        ...(patch.role !== undefined ? { role: patch.role } : {}),
         last_seen: this.now().toISOString(),
       };
       return this.store.putAgent(agent, record);
@@ -374,6 +387,16 @@ export class Bus {
       try {
         const found = this.store.getTicket(record.ticket);
         if (LIVE_TICKET_STATUSES.includes(found.status)) ticket = found.id;
+        // A role that isn't the one working the ticket's current stage is
+        // idle *by design*, not unresponsive: the engineer waits (turn
+        // ended) while its ticket is `in_review`/`in_qa`, the reviewer
+        // waits between rounds while it is `in_progress`. The first live
+        // run (2026-09-10) reaped all three engineers exactly one liveness
+        // period after they handed off for review and re-spawned them cold.
+        // Records with no `role` (pre-T012 shape) keep the old behaviour.
+        if (ticket && record.role && ACTIVE_ROLE_FOR_STATUS[found.status] !== record.role) {
+          continue;
+        }
       } catch {
         // Ticket vanished from under the agent — nothing to ripple back.
       }

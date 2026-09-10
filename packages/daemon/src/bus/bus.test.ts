@@ -282,6 +282,47 @@ describe('Bus.checkLiveness', () => {
     expect(store.getTicket('TKT-0001').status).toBe('in_progress');
   });
 
+  test('does not reap an engineer idle by design while its ticket is in_review, but does reap the reviewer that owns that stage', async () => {
+    // First live run (2026-09-10): every engineer handed off for review,
+    // ended its turn (an ACP session is prompted once), and was reaped by
+    // this sweep exactly one liveness period later — then re-spawned cold.
+    await store.putTicket(makeTicket('TKT-0001', { status: 'in_review', assignee: 'eng-1' }));
+    const start = new Date('2026-01-01T00:00:00.000Z');
+    let now = start;
+    const bus = new Bus(store, stateRoot, { now: () => now, livenessTimeoutMs: 5 * 60 * 1000 });
+    await bus.heartbeat('eng-1', {
+      vendor: 'claude',
+      model: 'sonnet',
+      pid: 1,
+      ticket: 'TKT-0001',
+      role: 'engineer',
+    });
+    await bus.heartbeat('reviewer-1', {
+      vendor: 'claude',
+      model: 'sonnet',
+      pid: 2,
+      ticket: 'TKT-0001',
+      role: 'reviewer',
+    });
+
+    now = new Date(start.getTime() + 6 * 60 * 1000);
+    const escalations = await bus.checkLiveness(now);
+    // The reviewer is the active role at in_review: silent for 6 min = dead.
+    expect(escalations).toEqual([{ agent: 'reviewer-1', ticket: 'TKT-0001' }]);
+    // The engineer is waiting on the reviewer: untouched.
+    expect(store.getAgent('eng-1').role).toBe('engineer');
+  });
+
+  test('a role-less (legacy) record on a stage it is not active for is still reaped', async () => {
+    await store.putTicket(makeTicket('TKT-0001', { status: 'in_review', assignee: 'eng-1' }));
+    const start = new Date('2026-01-01T00:00:00.000Z');
+    let now = start;
+    const bus = new Bus(store, stateRoot, { now: () => now, livenessTimeoutMs: 5 * 60 * 1000 });
+    await bus.heartbeat('eng-1', { vendor: 'claude', model: 'sonnet', pid: 1, ticket: 'TKT-0001' });
+    now = new Date(start.getTime() + 6 * 60 * 1000);
+    expect(await bus.checkLiveness(now)).toEqual([{ agent: 'eng-1', ticket: 'TKT-0001' }]);
+  });
+
   test('does not escalate an idle agent (no ticket)', async () => {
     const start = new Date('2026-01-01T00:00:00.000Z');
     let now = start;

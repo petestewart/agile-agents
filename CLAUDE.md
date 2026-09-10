@@ -43,6 +43,11 @@ what keeps `test:integration` honest:
   session's stderr under `.agile-daemon-cache/sessions/*.stderr.log`. A
   pending `hil_request` (nothing auto-approves in `--live`) is printed as
   `HIL needed: <id>` with the `agile approve <id>` that unblocks the session.
+  MCP tool *errors* (a verb rejecting the model's input) are not in
+  `events.jsonl` — `tool_call` events carry no result — they are in Claude
+  Code's own `~/Library/Caches/claude-cli-nodejs/<worktree>/mcp-logs-agile/`
+  (`grep -h '"error"' *.jsonl`). A verb called many times in a burst is a
+  model retrying a schema rejection; read those errors first.
 
 Both name their test files explicitly. The old `--grep live` selector matched
 39+ ordinary offline tests as well, because `live` is a substring of

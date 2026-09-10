@@ -26,6 +26,15 @@ the hook redirects these anyway), \`test_run\` (failures only, never a green log
 \`board_post\` (your checkpoint stanzas), \`bus_send\` (\`question\`/\`discovery\`/\`escalate\`
 to \`em\`; \`review_request\` to a reviewer once you submit).
 
+## Handing off for review
+When the work is committed and tests pass: post a \`review_submitted\` stanza,
+then \`bus_send\` a \`review_request\` (kind \`review_request\`, \`to: ["reviewer"]\`
+— the daemon resolves that to your reviewer, agent id \`reviewer-0231\`). The
+stanza alone does not start a review; the message does. After sending it your
+turn ends — that is expected. The daemon prompts you again when the verdict
+arrives (\`review_get\` reads the record); fix, commit, and send a fresh
+\`review_request\`.
+
 ## Signal over volume
 Message bodies are capped at 800 chars — pointer, not payload; put anything
 longer in a file and pass its path via \`refs\`. Use \`read_summary\` instead of

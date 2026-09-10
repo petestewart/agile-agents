@@ -77,7 +77,17 @@ export const ROLE_BRIEF_TOKEN_CEILING = 900;
 export const CEREMONY_TEMPLATE_TOKEN_CEILING = 500;
 
 export function renderEngineerBrief(ctx: EngineerBriefContext): string {
-  return render(loadTemplate('engineer'), ctx);
+  // The reviewer id follows `agentIdFor`'s `reviewer-<ticket digits>`
+  // convention (`runner/runner.ts`); derived here when a caller renders
+  // without a runner so the template's required field is always present.
+  const ticketId = typeof ctx.ticket?.id === 'string' ? ctx.ticket.id : undefined;
+  const reviewer =
+    ctx.reviewer ??
+    (ticketId !== undefined ? `reviewer-${ticketId.replace(/^TKT-/, '')}` : undefined);
+  // A missing ticket id must still surface as the template's own "missing
+  // required field" error (the render-time contract this module's tests
+  // pin), not as a TypeError from deriving the reviewer id.
+  return render(loadTemplate('engineer'), reviewer !== undefined ? { ...ctx, reviewer } : ctx);
 }
 
 export function renderArchitectBrief(ctx: ArchitectBriefContext): string {

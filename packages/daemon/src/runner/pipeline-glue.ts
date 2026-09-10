@@ -238,3 +238,85 @@ export async function advanceDoneTickets(
   }
   return merged;
 }
+
+/**
+ * The slice of `Runner` `advanceEngineerVerdicts` needs: re-prompt a live
+ * engineer session, or spawn a fresh one carrying the verdict as handoff
+ * context when the original session is gone (liveness-reaped, crashed).
+ */
+export interface EngineerRunner extends ReviewRunner {
+  spawn(role: 'engineer', ticket: TicketId, opts?: { extraContext?: string }): Promise<unknown>;
+}
+
+/** Finding severities a verdict body can name — only used to phrase the re-prompt. */
+const REWORK_KINDS = new Set(['review_verdict', 'qa_verdict']);
+
+/**
+ * The fourth hand-off the first live run exposed (2026-09-10): a verdict
+ * that sends a ticket back to `in_progress` (`ReviewProtocol.
+ * applyRequestChanges`, `QaProtocol.submit` on a failed round) lands as a
+ * `review_verdict`/`qa_verdict` message in the engineer's inbox — and
+ * nothing ever prompted the engineer again. An ACP session is prompted
+ * once, at spawn (`session.ts`); the engineer ends its turn after sending
+ * `review_request`, sits idle, and five minutes later the liveness sweep
+ * reaped it (`bus.ts` `checkLiveness`) and the EM re-spawned it cold with
+ * no memory of the review. In `--fake` mode `run.ts`'s scripted driver
+ * plays the fix turn itself, which is why the offline e2e never saw this.
+ *
+ * For every unread rework verdict whose ticket is back in `in_progress`:
+ * re-prompt the still-live engineer session with the verdict (the message
+ * body is a pointer — the review record path is in `refs`, `review_get`
+ * reads it), or spawn a fresh engineer with the verdict as handoff context
+ * when the session is gone. Verdicts that don't ask for rework (an approve
+ * that moved the ticket to `in_qa`, a QA pass to `done`) are acked without
+ * a prompt — the engineer is idle by design while another role works.
+ * `seen` is the caller's once-per-process idempotency set, same pattern as
+ * the other glue functions here.
+ */
+export async function advanceEngineerVerdicts(
+  store: Pick<StateStore, 'listTickets' | 'getTicket'>,
+  bus: Pick<Bus, 'poll' | 'ack'>,
+  runner: EngineerRunner,
+  seen: Set<string>,
+): Promise<TicketId[]> {
+  const prompted: TicketId[] = [];
+  for (const ticket of store.listTickets()) {
+    const engineerId = agentIdFor('engineer', ticket.id);
+    for (const message of bus.poll(engineerId)) {
+      if (!REWORK_KINDS.has(message.kind) || !message.ticket) continue;
+      const key = `${message.ticket}:${message.id}`;
+      if (seen.has(key)) continue;
+      const current = store.getTicket(message.ticket);
+      if (current.status !== 'in_progress') {
+        // Not a rework verdict (approve -> in_qa, pass -> done): nothing to
+        // re-prompt; just take it off the engineer's unread pile.
+        seen.add(key);
+        await bus.ack(engineerId, message.id);
+        continue;
+      }
+      const refs = message.refs.length > 0 ? `\nRecord(s): ${message.refs.join(', ')}` : '';
+      const text = [
+        `${message.kind === 'review_verdict' ? 'Review' : 'QA'} verdict on ${message.ticket} sent it back to you: ${message.body}${refs}`,
+        'Read the record (review_get for a review round), fix every finding in your worktree, commit,',
+        'post a `review_submitted` board stanza, then bus_send a new `review_request` to the reviewer.',
+        'Dispute a finding with review_dispute instead of arguing in prose.',
+      ].join('\n');
+      try {
+        if (runner.isLive(engineerId)) {
+          await runner.promptAgent(engineerId, text);
+        } else {
+          await runner.spawn('engineer', message.ticket, { extraContext: text });
+        }
+      } catch {
+        // Session died between isLive and the prompt, or the spawn failed:
+        // leave the message unread and unseen so the next tick retries —
+        // the same retry contract `advanceReviewRequests` documents.
+        continue;
+      }
+      seen.add(key);
+      prompted.push(message.ticket);
+      await bus.ack(engineerId, message.id);
+    }
+  }
+  return prompted;
+}

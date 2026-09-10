@@ -91,16 +91,25 @@ export interface AssembleBriefOptions {
   role: PermissionRole;
   agent: AgentId;
   ticket: Ticket;
+  /** The ticket's reviewer agent id, named in the engineer brief as the `review_request` recipient. */
+  reviewer?: AgentId;
 }
 
 /** Renders the T013 role brief for `role` plus the `.agile/rules/*.md` appendix — this is the session's first prompt. */
 export function assembleBrief(opts: AssembleBriefOptions): string {
-  const { store, stateRoot, role, agent, ticket } = opts;
+  const { store, stateRoot, role, agent, ticket, reviewer } = opts;
   const appendix = rulesAppendix(loadRules(stateRoot));
 
   switch (role) {
     case 'engineer':
-      return renderEngineerBrief({ agent, ticket, policy: store.getPolicy() }) + appendix;
+      return (
+        renderEngineerBrief({
+          agent,
+          ticket,
+          policy: store.getPolicy(),
+          ...(reviewer !== undefined ? { reviewer } : {}),
+        }) + appendix
+      );
     case 'reviewer':
       return renderReviewerBrief({ agent, ticket, kbFacts: kbFactsFor(store, ticket) }) + appendix;
     case 'qa':

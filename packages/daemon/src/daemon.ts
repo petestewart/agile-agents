@@ -40,6 +40,7 @@ import { type RpcServerHandle, startRpcServer } from './rpc';
 import {
   Runner,
   advanceDoneTickets,
+  advanceEngineerVerdicts,
   advanceQaSpawns,
   advanceReviewRequests,
   buildRunnerRpcMethods,
@@ -276,11 +277,14 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
   // idempotency bookkeeping, same rationale as `EmLoop`'s own
   // `calledHalts`/`escalatedHalts`/`seenDiscoveryStanzas`.
   const seenReviewRequests = new Set<string>();
+  const seenEngineerVerdicts = new Set<string>();
   const qaSpawned = new Set<TicketId>();
   const mergedDone = new Set<TicketId>();
   async function advancePipeline(): Promise<void> {
     if (store && bus && reviewProtocol && runner)
       await advanceReviewRequests(store, bus, reviewProtocol, runner, seenReviewRequests);
+    if (store && bus && runner)
+      await advanceEngineerVerdicts(store, bus, runner, seenEngineerVerdicts);
     if (store && runner) await advanceQaSpawns(store, runner, qaSpawned);
     if (store && mergeOwner) await advanceDoneTickets(store, mergeOwner, mergedDone);
   }
@@ -415,9 +419,20 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
       })),
       {
         name: 'review_submit',
+        // Measured on the first live run with verbs (2026-09-10): this spec
+        // advertised `verdict` as an OBJECT while `VerdictSchema` requires
+        // the string enum, and `pass` as required — the reviewer retried
+        // review_submit 34 times against the zod rejection and no review
+        // record ever landed. The description now spells out the exact
+        // shape so the model gets it right on the first call.
         description:
-          "Submit this round's verdict (pass/findings/verdict) for the caller's ticket (reviewer-only).",
-        inputSpec: { round: NUMBER, pass: STRING, verdict: OBJECT, findings: ARRAY_OPT },
+          "Submit this round's verdict for the caller's ticket (reviewer-only). " +
+          'Input: { round: 1-based integer, verdict: "approve" | "request_changes" | "escalate", ' +
+          'findings?: [{ severity: "blocker" | "major" | "minor" | "nit", location: { path, line? }, ' +
+          'message, rule?: "RULE-###" | oracle_ref?: "DEC-####" (exactly one of the two) }], ' +
+          'pass?: "primary" (default) | "security" }. Findings default to []; a clean pass is ' +
+          'verdict "approve" with findings [].',
+        inputSpec: { round: NUMBER, pass: STRING_OPT, verdict: STRING, findings: ARRAY_OPT },
         handler: (ctx: { agent: string; ticket?: string }, input: unknown) =>
           reviewSubmit(deps, ctx, input),
       },

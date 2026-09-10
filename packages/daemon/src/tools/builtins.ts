@@ -77,9 +77,54 @@ async function boardPost(deps: BuiltinToolDeps, ctx: ToolCallContext, input: unk
   return deps.store.appendStanza(stanza);
 }
 
+/** Role aliases a session may use as a `bus_send` recipient — resolved to the caller's ticket's agent id (`agentIdFor`'s `<prefix>-<ticket digits>` convention, mirrored here rather than imported: `runner/runner.ts` imports this package). */
+const RECIPIENT_ROLE_ALIASES: Record<string, string> = {
+  engineer: 'eng',
+  reviewer: 'reviewer',
+  qa: 'qa',
+};
+
+/** Priority spellings models reach for that the schema doesn't have. */
+const PRIORITY_ALIASES: Record<string, string> = {
+  high: 'urgent',
+  critical: 'urgent',
+  medium: 'normal',
+  default: 'normal',
+};
+
+/**
+ * Normalizes a `bus_send` input before schema validation (first live run,
+ * 2026-09-10): the engineers had no way to know their reviewer's agent id
+ * and guessed (`"reviewer"`, `"rev-1002"`, then `em`) — one of three
+ * landed the `review_request`, the other two tickets never reached
+ * `in_review`; and every `priority: "high"` was rejected. A recipient
+ * naming a role resolves to that role's agent id for the caller's ticket;
+ * `priority` defaults to `normal` and accepts the common synonyms.
+ */
+export function normalizeBusSendInput(
+  p: Record<string, unknown>,
+  ctx: Pick<ToolCallContext, 'ticket'>,
+): Record<string, unknown> {
+  const out: Record<string, unknown> = { ...p };
+  if (Array.isArray(p.to)) {
+    out.to = p.to.map((recipient) => {
+      if (typeof recipient !== 'string') return recipient;
+      const prefix = RECIPIENT_ROLE_ALIASES[recipient];
+      if (prefix === undefined || !ctx.ticket) return recipient;
+      return `${prefix}-${ctx.ticket.replace(/^TKT-/, '')}`;
+    });
+  }
+  if (p.priority === undefined) {
+    out.priority = 'normal';
+  } else if (typeof p.priority === 'string') {
+    out.priority = PRIORITY_ALIASES[p.priority.toLowerCase()] ?? p.priority;
+  }
+  return out;
+}
+
 /** `bus_send` — routing is enforced by `Bus.send` itself (§5 "Routing rules"); `from` is always the calling agent, never caller-supplied, so a session can't spoof another agent's identity over MCP. */
 async function busSend(deps: BuiltinToolDeps, ctx: ToolCallContext, input: unknown) {
-  const p = requireObject(input);
+  const p = normalizeBusSendInput(requireObject(input), ctx);
   const message = {
     id: typeof p.id === 'string' ? p.id : ulid(),
     ts: new Date().toISOString(),
@@ -164,8 +209,17 @@ const OBJECT_OPT = { type: 'object', optional: true } as const;
 export const BUILTIN_TOOLS: readonly BuiltinToolInfo[] = [
   {
     name: 'board_post',
+    // Shapes spelled out (first live run, 2026-09-10): models invented
+    // `discovery: {kind, evidence, suggested_owner}` and put free text in
+    // `affects`; the schema wants exactly {tier, proposed, affects?: DEC ids}.
     description:
-      "Post a board stanza (progress/blocked/discovery/etc.) to the caller's own ticket.",
+      'Post a board stanza to the caller\'s own ticket. Input: { kind: "progress" | "blocked" | ' +
+      '"discovery" | "review_submitted" | "handoff" | "done", summary: string (the checkpoint, ' +
+      'one paragraph), discovery?: { tier: "local" | "scoped" | "global", proposed: string (what ' +
+      'you propose), affects?: ["DEC-####" | "SPEC-..." oracle ids only] } — required when kind is ' +
+      '"discovery"; handoff?: { done, next, gotchas?, uncommitted_state? } — required when kind is ' +
+      '"handoff". No other keys. Posting review_submitted does NOT request the review — ' +
+      'bus_send a review_request to "reviewer" for that.',
     inputSpec: {
       kind: STRING,
       summary: STRING,
@@ -176,11 +230,16 @@ export const BUILTIN_TOOLS: readonly BuiltinToolInfo[] = [
   },
   {
     name: 'bus_send',
-    description: 'Send a bus message, routed and validated by the daemon (§5 routing rules apply).',
+    description:
+      'Send a bus message, routed and validated by the daemon (§5 routing rules apply). ' +
+      'to: agent ids, or the role names "reviewer" | "qa" | "engineer" (resolved to your ' +
+      'ticket\'s agent) or "em"; kind: question | discovery | escalate | standup_report (to em), ' +
+      'review_request (to reviewer); priority: urgent | normal (default) | low; body: <= 800 ' +
+      'chars — put anything longer in a file and pass its path in refs.',
     inputSpec: {
       to: ARRAY,
       kind: STRING,
-      priority: STRING,
+      priority: STRING_OPT,
       body: STRING,
       ticket: STRING_OPT,
       reply_to: STRING_OPT,

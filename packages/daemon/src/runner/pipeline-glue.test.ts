@@ -13,6 +13,7 @@ import {
   type ReviewRunner,
   type ReviewStarter,
   advanceDoneTickets,
+  advanceEngineerVerdicts,
   advanceQaSpawns,
   advanceReviewRequests,
 } from './pipeline-glue';
@@ -65,6 +66,115 @@ function makeTicket(id: TicketId, overrides: Partial<Ticket> = {}): Ticket {
     ...overrides,
   });
 }
+
+function fakeEngineerRunner(initiallyLive: AgentId[] = []) {
+  const base = fakeReviewRunner(initiallyLive);
+  const spawned: Array<{ ticket: TicketId; extraContext?: string }> = [];
+  return {
+    ...base,
+    spawned,
+    spawn: async (_role: 'engineer', ticket: TicketId, opts?: { extraContext?: string }) => {
+      spawned.push({ ticket, extraContext: opts?.extraContext });
+    },
+  };
+}
+
+async function sendVerdict(
+  kind: 'review_verdict' | 'qa_verdict',
+  ticket: TicketId,
+  body: string,
+  refs: string[] = [],
+): Promise<void> {
+  const from = (kind === 'review_verdict' ? 'reviewer-0001' : 'qa-0001') as AgentId;
+  const engineerId = agentIdFor('engineer', ticket);
+  const result = await bus.send({
+    id: ulid(),
+    ts: new Date().toISOString(),
+    from,
+    to: [engineerId],
+    kind,
+    priority: 'normal',
+    ticket,
+    body,
+    refs,
+    requires_ack: false,
+  });
+  if (!result.ok) throw new Error(`sendVerdict: ${result.reason}`);
+}
+
+describe('advanceEngineerVerdicts', () => {
+  test('re-prompts the live engineer with a request_changes verdict (ticket back in_progress), once, and acks it', async () => {
+    // The first live run (2026-09-10): after `review_request` the engineer's
+    // turn ends; a rework verdict landed in its inbox and nothing ever
+    // prompted it again, so it sat idle until the liveness sweep reaped it.
+    await store.putTicket(makeTicket('TKT-0001' as TicketId, { status: 'in_progress' }));
+    const engineerId = agentIdFor('engineer', 'TKT-0001' as TicketId);
+    await sendVerdict(
+      'review_verdict',
+      'TKT-0001' as TicketId,
+      'round 1: request_changes (2 finding(s))',
+      ['board/reviews/TKT-0001-r1.yaml'],
+    );
+    const runner = fakeEngineerRunner([engineerId]);
+    const seen = new Set<string>();
+
+    expect(await advanceEngineerVerdicts(store, bus, runner, seen)).toEqual(['TKT-0001']);
+    expect(runner.prompted).toHaveLength(1);
+    expect(runner.prompted[0]?.agentId).toBe(engineerId);
+    expect(runner.prompted[0]?.text).toContain('request_changes');
+    expect(runner.prompted[0]?.text).toContain('board/reviews/TKT-0001-r1.yaml');
+    expect(runner.prompted[0]?.text).toContain('review_request');
+    expect(runner.spawned).toHaveLength(0);
+    expect(bus.poll(engineerId)).toHaveLength(0); // acked
+
+    expect(await advanceEngineerVerdicts(store, bus, runner, seen)).toEqual([]);
+    expect(runner.prompted).toHaveLength(1);
+  });
+
+  test('spawns a fresh engineer carrying the verdict as handoff context when the session is gone', async () => {
+    await store.putTicket(makeTicket('TKT-0002' as TicketId, { status: 'in_progress' }));
+    await sendVerdict('qa_verdict', 'TKT-0002' as TicketId, 'round 1: FAIL 1/3 criteria');
+    const runner = fakeEngineerRunner(); // nothing live
+    const seen = new Set<string>();
+
+    expect(await advanceEngineerVerdicts(store, bus, runner, seen)).toEqual(['TKT-0002']);
+    expect(runner.prompted).toHaveLength(0);
+    expect(runner.spawned).toHaveLength(1);
+    expect(runner.spawned[0]?.ticket).toBe('TKT-0002');
+    expect(runner.spawned[0]?.extraContext).toContain('QA verdict on TKT-0002');
+  });
+
+  test('acks a non-rework verdict (ticket moved on to in_qa) without prompting', async () => {
+    await store.putTicket(makeTicket('TKT-0003' as TicketId, { status: 'in_qa' }));
+    const engineerId = agentIdFor('engineer', 'TKT-0003' as TicketId);
+    await sendVerdict('review_verdict', 'TKT-0003' as TicketId, 'round 1: approve (0 finding(s))');
+    const runner = fakeEngineerRunner([engineerId]);
+
+    expect(await advanceEngineerVerdicts(store, bus, runner, new Set())).toEqual([]);
+    expect(runner.prompted).toHaveLength(0);
+    expect(runner.spawned).toHaveLength(0);
+    expect(bus.poll(engineerId)).toHaveLength(0);
+  });
+
+  test('a prompt that throws leaves the verdict unread so the next tick retries', async () => {
+    await store.putTicket(makeTicket('TKT-0004' as TicketId, { status: 'in_progress' }));
+    const engineerId = agentIdFor('engineer', 'TKT-0004' as TicketId);
+    await sendVerdict(
+      'review_verdict',
+      'TKT-0004' as TicketId,
+      'round 1: request_changes (1 finding(s))',
+    );
+    const runner = fakeEngineerRunner([engineerId]);
+    runner.promptAgent = async () => {
+      throw new Error('session died');
+    };
+    const seen = new Set<string>();
+
+    expect(await advanceEngineerVerdicts(store, bus, runner, seen)).toEqual([]);
+    expect(seen.size).toBe(0);
+    expect(bus.poll(engineerId)).toHaveLength(1);
+  });
+});
 
 describe('advanceReviewRequests', () => {
   test('starts review for every unread review_request and acks it, exactly once', async () => {

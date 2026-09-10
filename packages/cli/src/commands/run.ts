@@ -67,6 +67,7 @@ import {
   HookService,
   NotFoundError,
   advanceDoneTickets,
+  advanceEngineerVerdicts,
   advanceQaSpawns,
   advanceReviewRequests,
   agentIdFor,
@@ -926,6 +927,7 @@ export async function runDemoSprint(opts: RunOptions): Promise<RunResult> {
       }
 
       const seenReview = new Set<string>();
+      const seenEngineerVerdicts = new Set<string>();
       const qaSpawned = new Set<TicketId>();
       const mergedDone = new Set<TicketId>();
       const engineerHandled = new Set<TicketId>();
@@ -967,6 +969,10 @@ export async function runDemoSprint(opts: RunOptions): Promise<RunResult> {
         await gateService.tick();
         await emLoop.tick();
         await advanceReviewRequests(store, bus, reviewProtocol, runner, seenReview);
+        // Live only: `--fake`'s scripted driver below plays the fix turn
+        // after `request_changes` itself (`driveEngineerWork(..., 2)`), so
+        // re-prompting the fake session here would double-drive it.
+        if (!fake) await advanceEngineerVerdicts(store, bus, runner, seenEngineerVerdicts);
         await advanceQaSpawns(store, runner, qaSpawned);
         await advanceDoneTickets(store, mergeOwner, mergedDone);
 
