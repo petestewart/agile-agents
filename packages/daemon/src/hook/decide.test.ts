@@ -48,6 +48,25 @@ function makeMessage(overrides: Partial<Message> = {}): Message {
 }
 
 describe('decidePreToolUse — order of precedence', () => {
+  test('1b. the architect is exempt from halt denials — it raised the halt and must be able to release it', () => {
+    const decision = decidePreToolUse(
+      baseCtx({
+        agent: 'architect',
+        role: 'architect',
+        worktreePath: '/repo/.worktrees/architect',
+        halts: [
+          makeHalt({ reason: 'SPEC-tasks-002 contradicts itself — architect ruling needed' }),
+        ],
+      }),
+      {
+        cwd: '/repo/.worktrees/architect',
+        tool_name: 'mcp__agile__decision_publish',
+        tool_input: {},
+      },
+    );
+    expect(decision.decision).not.toBe('deny');
+  });
+
   test('1. a halt covering the ticket denies with the halt reason, ahead of everything else', () => {
     const ctx = baseCtx({
       halts: [makeHalt({ reason: 'AGILE-HALT: auth model changed, stand down' })],

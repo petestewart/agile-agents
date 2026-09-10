@@ -333,8 +333,14 @@ export function decidePreToolUse(
   // "Engineer-side pre-tool-use hook checks this directory before every
   // write or ticket pickup." `ctx.halts` is already `activeHaltsFor`'s
   // result, so any entry means a covering halt exists.
+  // The architect is exempt: it is the role that *raises* a halt
+  // (`discovery_triage`) and the only one that can release it
+  // (`decision_publish`). On the fourth live run the architect triaged the
+  // planted contradiction, its own halt then denied every tool call it
+  // made afterwards — the ruling it had reached survived only as hook deny
+  // reasons in the event log and never reached the oracle.
   const halt = ctx.halts[0];
-  if (halt) {
+  if (halt && ctx.role !== 'architect') {
     return { decision: 'deny', reason: halt.reason };
   }
 

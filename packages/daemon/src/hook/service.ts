@@ -40,14 +40,15 @@
 
 import { realpathSync, statSync } from 'node:fs';
 import { isAbsolute, resolve } from 'node:path';
-import type {
-  AgentId,
-  AgentRecord,
-  Message,
-  Policy,
-  Ticket,
-  TicketId,
-  TicketStatus,
+import {
+  type AgentId,
+  type AgentRecord,
+  MESSAGE_BODY_MAX_CHARS,
+  type Message,
+  type Policy,
+  type Ticket,
+  type TicketId,
+  type TicketStatus,
 } from '@agile-agents/shared';
 import type { Bus } from '../bus';
 import type { GateService } from '../gates';
@@ -380,6 +381,7 @@ export class HookService {
     ctx: { ticket?: TicketId; agent?: AgentId } | undefined,
     event: string,
     decision: HookDecision,
+    detail: { tool?: string; command?: string } = {},
   ): Promise<void> {
     await this.store.appendEvent(
       buildEvent('hook_decision', {
@@ -389,6 +391,12 @@ export class HookService {
           event,
           decision: decision.decision,
           reason: decision.reason,
+          // What was refused, for post-mortems (a deny reason alone left a
+          // live run's blocked commit unrecoverable from the log).
+          ...(decision.decision !== 'allow' && detail.tool ? { tool: detail.tool } : {}),
+          ...(decision.decision !== 'allow' && detail.command
+            ? { command: detail.command.slice(0, MESSAGE_BODY_MAX_CHARS) }
+            : {}),
         },
       }),
       { commit: 'deferred' },
@@ -484,7 +492,9 @@ export class HookService {
       const hilId = await this.resolveOrCreateHil(
         ctx.ticket,
         ctx.agent,
-        `${ctx.agent} asked to run \`${command}\` — ${why}`.slice(0, 400),
+        // The whole command up to the message-body cap: a 400-char cut left
+        // the human/EM deciding on a commit command they could only half see.
+        `${ctx.agent} asked to run \`${command}\` — ${why}`.slice(0, MESSAGE_BODY_MAX_CHARS),
       );
       decision = {
         ...decision,
