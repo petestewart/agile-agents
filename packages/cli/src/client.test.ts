@@ -77,7 +77,10 @@ describe('callRpc', () => {
       rawServer = createServer((socket) => {
         // Accept the connection, then close it immediately — never write a
         // JSON-RPC response line. Simulates a daemon crashing or shutting
-        // down mid-request.
+        // down mid-request. Drain first: on macOS, Bun never completes
+        // `server.close()` for a socket ended with unread inbound bytes (the
+        // request line the client writes on connect), so the afterEach hangs.
+        socket.resume();
         socket.end();
       });
       await new Promise<void>((resolve) => rawServer?.listen(socketPath, resolve));

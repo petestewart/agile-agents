@@ -334,8 +334,9 @@ export class MergeOwner {
       // refuses to force-move a branch that's checked out anywhere too, so
       // there is no safe, generic way to advance it without disturbing
       // whichever worktree holds it — surfaced as a clear, actionable
-      // error instead of a raw git one.
-      if (/already used by worktree/i.test(result.stderr)) {
+      // error instead of a raw git one. Git < 2.42 words it "is already
+      // checked out at"; newer gits say "is already used by worktree at".
+      if (/already (used by worktree|checked out) at/i.test(result.stderr)) {
         throw new BranchCheckedOutElsewhereError(branch, result.stderr);
       }
       throw new GitCommandError(['worktree', 'add', path, branch], this.repoRoot, result.stderr);

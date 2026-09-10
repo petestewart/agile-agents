@@ -41,6 +41,47 @@ function git(args: string[], cwd: string, repoRoot: string): string {
   return new TextDecoder().decode(result.stdout).trim();
 }
 
+/**
+ * Checks out an unborn `agile-state` branch in a brand new, empty worktree
+ * at `stateRoot`. git 2.42+ does this in one step (`worktree add --orphan`).
+ * Older gits (macOS ships Apple Git 2.39) don't know the flag, so fall back
+ * to a worktree detached at a throwaway empty-tree commit (HEAD may be
+ * unborn, so it can't be the anchor), then re-point the worktree's HEAD at
+ * the unborn branch — the same end state, so the bootstrap commit below is
+ * the branch's root commit either way. The anchor commit is unreachable and
+ * gets pruned by gc.
+ */
+function addOrphanWorktree(repoRoot: string, stateRoot: string): void {
+  const orphan = Bun.spawnSync(
+    ['git', 'worktree', 'add', '--orphan', '-b', STATE_BRANCH, STATE_DIR_NAME],
+    { cwd: repoRoot, stdout: 'pipe', stderr: 'pipe', env: sandboxedSubprocessEnv(repoRoot, 'git') },
+  );
+  if (orphan.exitCode === 0) return;
+  const stderr = new TextDecoder().decode(orphan.stderr).trim();
+  if (!/unknown option .orphan/.test(stderr)) {
+    throw new Error(
+      `git worktree add --orphan -b ${STATE_BRANCH} ${STATE_DIR_NAME} failed in ${repoRoot}: ${stderr}`,
+    );
+  }
+  const emptyTree = git(['hash-object', '-t', 'tree', '--stdin'], repoRoot, repoRoot);
+  const anchor = git(
+    [
+      '-c',
+      'user.name=agiled',
+      '-c',
+      'user.email=agiled@localhost',
+      'commit-tree',
+      emptyTree,
+      '-m',
+      'empty',
+    ],
+    repoRoot,
+    repoRoot,
+  );
+  git(['worktree', 'add', '--detach', STATE_DIR_NAME, anchor], repoRoot, repoRoot);
+  git(['symbolic-ref', 'HEAD', `refs/heads/${STATE_BRANCH}`], stateRoot, repoRoot);
+}
+
 function branchExists(repoRoot: string, branch: string): boolean {
   const result = Bun.spawnSync(['git', 'show-ref', '--verify', '--quiet', `refs/heads/${branch}`], {
     cwd: repoRoot,
@@ -302,11 +343,7 @@ export function runInit(repoRoot: string): InitResult {
     throw new AlreadyInitialisedError(`branch ${STATE_BRANCH} already exists`);
   }
 
-  // git 2.42+: creates an unborn/orphan branch checked out in a brand new
-  // worktree with an empty working directory — no separate "clear the
-  // working tree" step needed, unlike `checkout --orphan` in the current
-  // worktree.
-  git(['worktree', 'add', '--orphan', '-b', STATE_BRANCH, STATE_DIR_NAME], repoRoot, repoRoot);
+  addOrphanWorktree(repoRoot, stateRoot);
 
   const filesWritten: string[] = [];
   for (const [path, content] of layoutFiles(stateRoot)) {
