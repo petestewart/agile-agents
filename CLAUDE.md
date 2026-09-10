@@ -25,8 +25,27 @@ bun install
 bun run build        # all workspaces
 bun run typecheck
 bun test             # plain bun test, no native modules — must stay green
-bun run test:integration   # flagged; needs a real vendor login, not for cloud
+bun run test:integration   # offline end-to-end (real daemon + real browser, no vendor) — must stay green
+bun run test:live          # AGILE_LIVE=1; spawns real vendor sessions — manual/nightly only
 ```
+
+`test:integration` and `test:live` are strictly separated, and the split is
+what keeps `test:integration` honest:
+
+- **`test:integration`** never spawns a vendor. It forces `AGILE_LIVE=` empty,
+  so an exported `AGILE_LIVE=1` in the shell cannot turn vendor spawning back
+  on. It must pass with no vendor login, and CI runs it.
+- **`test:live`** is the only script that spawns real vendor sessions. It takes
+  minutes, needs a real login, and is never part of CI or a normal `bun test`.
+
+Both name their test files explicitly. The old `--grep live` selector matched
+39+ ordinary offline tests as well, because `live` is a substring of
+`delivers`, `liveness` and `lives` — it selected 43 tests across all 143 files
+and took ~11 minutes.
+
+The Playwright e2e tests (feed page, control room) need a Chromium and **fail
+loudly** when there is none, rather than skipping: `bunx playwright-core
+install chromium`, or point `PLAYWRIGHT_CHROMIUM_EXECUTABLE` at a binary.
 
 If `bun` is missing in a fresh container: `curl -fsSL https://bun.sh/install | bash` (then `export PATH="$HOME/.bun/bin:$PATH"`), or `npm i -g bun`. If neither works, note it in the PLAN Discovered Issues log and stop — do not swap the toolchain.
 

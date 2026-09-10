@@ -1,9 +1,9 @@
 /**
  * Playwright e2e for the control room SPA (T025 — design
  * agile-agents-design.md §17 "Control room"; ticket Validation Steps:
- * "Playwright against a seeded daemon"). Same Chromium-discovery pattern as
- * `feed.e2e.test.ts` (auto-skipped when no Chromium executable can be
- * found) and the same `startDaemon` harness — this covers the render + the
+ * "Playwright against a seeded daemon"). Same Chromium discovery as
+ * `feed.e2e.test.ts` (`resolveChromiumExecutable`, which throws rather than
+ * skipping when no browser is installed) and the same `startDaemon` harness — this covers the render + the
  * read/write paths through `startDaemon`'s real wiring, `bus.send` included
  * (T025 review round 1 blocker 3: `daemon.ts` now passes its `Bus` into
  * `startHttpServer`, so chat/propose-edit are exercised for real here, not
@@ -11,7 +11,7 @@
  */
 
 import { describe, expect, test } from 'bun:test';
-import { existsSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { chromium } from 'playwright-core';
@@ -20,28 +20,9 @@ import { type DaemonHandle, startDaemon } from '../daemon';
 import { GateService } from '../gates';
 import { runInit } from '../init';
 import { StateStore } from '../store';
+import { resolveChromiumExecutable } from './chromium';
 
-function findChromiumExecutable(): string | undefined {
-  const override = process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE;
-  if (override && existsSync(override)) return override;
-
-  const browsersPath = process.env.PLAYWRIGHT_BROWSERS_PATH ?? '/opt/pw-browsers';
-  if (!existsSync(browsersPath)) return undefined;
-
-  const candidates = readdirSync(browsersPath).filter((name) => name.startsWith('chromium-'));
-  for (const dir of candidates) {
-    const candidate = join(browsersPath, dir, 'chrome-linux', 'chrome');
-    if (existsSync(candidate)) return candidate;
-  }
-  return undefined;
-}
-
-const executablePath = findChromiumExecutable();
-const maybeDescribe = executablePath ? describe : describe.skip;
-
-if (!executablePath) {
-  console.warn('control-room.e2e.test: no Chromium executable found — skipping Playwright e2e.');
-}
+const executablePath = resolveChromiumExecutable();
 
 function initRepo(): string {
   const repo = mkdtempSync(join(tmpdir(), 'agile-control-room-e2e-'));
@@ -52,7 +33,7 @@ function initRepo(): string {
   return repo;
 }
 
-maybeDescribe('control room SPA (Playwright e2e)', () => {
+describe('control room SPA (Playwright e2e)', () => {
   test('renders Needs You from a seeded hil_request, approves it for real, and reflects a live halt', async () => {
     const repo = initRepo();
     let handle: DaemonHandle | undefined;

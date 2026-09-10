@@ -3,15 +3,15 @@
  * against a running daemon with synthetic events"; acceptance: "Page shows
  * live events within 1 s; approve button resolves a real `hil_request`").
  *
- * Runs under plain `bun test`, auto-skipped when no Chromium executable can
- * be found (session instructions: launch via `chromium.launch({
- * executablePath })`, discovered under `PLAYWRIGHT_CHROMIUM_EXECUTABLE` or
- * under `/opt/pw-browsers` — never `playwright install`). A root
- * `test:e2e` script runs just this file.
+ * Runs under plain `bun test`. The Chromium binary is discovered by
+ * `resolveChromiumExecutable` (`./chromium`), which throws when there is
+ * none — this file fails loudly rather than skipping, because a skipped SPA
+ * suite reported as green is a false green. A root `test:e2e` script runs
+ * just this file.
  */
 
 import { describe, expect, test } from 'bun:test';
-import { existsSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { chromium } from 'playwright-core';
@@ -19,28 +19,9 @@ import { type DaemonHandle, startDaemon } from '../daemon';
 import { GateService } from '../gates';
 import { runInit } from '../init';
 import { StateStore } from '../store';
+import { resolveChromiumExecutable } from './chromium';
 
-function findChromiumExecutable(): string | undefined {
-  const override = process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE;
-  if (override && existsSync(override)) return override;
-
-  const browsersPath = process.env.PLAYWRIGHT_BROWSERS_PATH ?? '/opt/pw-browsers';
-  if (!existsSync(browsersPath)) return undefined;
-
-  const candidates = readdirSync(browsersPath).filter((name) => name.startsWith('chromium-'));
-  for (const dir of candidates) {
-    const candidate = join(browsersPath, dir, 'chrome-linux', 'chrome');
-    if (existsSync(candidate)) return candidate;
-  }
-  return undefined;
-}
-
-const executablePath = findChromiumExecutable();
-const maybeDescribe = executablePath ? describe : describe.skip;
-
-if (!executablePath) {
-  console.warn('feed.e2e.test: no Chromium executable found — skipping Playwright e2e.');
-}
+const executablePath = resolveChromiumExecutable();
 
 function initRepo(): string {
   const repo = mkdtempSync(join(tmpdir(), 'agile-feed-e2e-'));
@@ -51,7 +32,7 @@ function initRepo(): string {
   return repo;
 }
 
-maybeDescribe('feed page (Playwright e2e)', () => {
+describe('feed page (Playwright e2e)', () => {
   test('shows a live event within 1s and Approve resolves a real hil_request on disk', async () => {
     const repo = initRepo();
     let handle: DaemonHandle | undefined;

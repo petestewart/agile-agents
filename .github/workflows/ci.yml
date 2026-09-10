@@ -17,6 +17,12 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
+      # The Playwright e2e tests (feed + control room) fail loudly when no
+      # Chromium is installed, rather than skipping — a skipped SPA suite
+      # reported as green is a false green. This step is what makes them run.
+      - name: Install Chromium for the Playwright e2e tests
+        run: bunx playwright-core install --with-deps chromium
+
       - name: Lint
         run: bun run lint
 
@@ -28,3 +34,8 @@ jobs:
 
       - name: Test
         run: bun test
+
+      # No vendor login exists on CI, so this must pass without one. It runs
+      # with AGILE_LIVE unset, so nothing here spawns a vendor session.
+      - name: Integration tests (no vendor spawning)
+        run: bun run test:integration
