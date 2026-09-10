@@ -102,6 +102,7 @@ import {
 import { type WrapAgentCommandFn, wrapAgentCommand as defaultWrapAgentCommand } from '../sandbox';
 import { buildEvent } from '../store';
 import type { StateStore } from '../store';
+import { type CliInvocation, cliInvocationToShell, normalizeCliBin } from './cli-bin';
 
 /**
  * T031: `architect` maps to `'ceremony'` — the ledger kind this codebase
@@ -131,8 +132,8 @@ export interface AgentSessionOptions {
   worktreePath: string;
   /** Rendered role brief (`brief.ts`) — sent as the first `prompt()`. */
   brief: string;
-  /** Path/name of the `agile` CLI binary, for both the hook command and the MCP server's stdio command. Defaults to `'agile'` (on `$PATH`). */
-  cliBin?: string;
+  /** How to invoke the `agile` CLI, for both the hook command and the MCP server's stdio command: a bare name/path, or a structured `{command, args}` (`runner/cli-bin.ts`'s `resolveCliBin` — e.g. `bun <path to packages/cli/src/index.ts>`). Defaults to `'agile'` (on `$PATH`). */
+  cliBin?: string | CliInvocation;
   /** `AGILE_SOCKET_PATH` for the worktree's hook + MCP bridge, when the worktree's own `git rev-parse --show-toplevel` wouldn't already resolve to the main repo (every `.worktrees/**` ticket worktree). */
   socketPath?: string;
   provider?: AcpProviderConfig;
@@ -306,11 +307,11 @@ async function promptWithAuthRetry(
 }
 
 /** Builds the MCP stdio server entry T011's report specifies: `agile mcp --agent <id> --ticket <id>`. */
-function mcpServerConfig(cliBin: string, agentId: AgentId, ticket: TicketId): unknown {
+function mcpServerConfig(cli: CliInvocation, agentId: AgentId, ticket: TicketId): unknown {
   return {
     name: 'agile',
-    command: cliBin,
-    args: ['mcp', '--agent', agentId, '--ticket', ticket],
+    command: cli.command,
+    args: [...cli.args, 'mcp', '--agent', agentId, '--ticket', ticket],
   };
 }
 
@@ -402,7 +403,7 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
     gateService,
     now = () => new Date(),
   } = opts;
-  const cliBin = opts.cliBin ?? 'agile';
+  const cliBin = normalizeCliBin(opts.cliBin);
   const provider = opts.provider ?? ACP_PROVIDERS.claude;
   const spawn = opts.spawn ?? defaultSpawnSession;
   const currentSprintId =
@@ -410,7 +411,7 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
 
   // Tier 1 (§6): hook wiring active before the agent's first tool call.
   writeClaudeSettings(worktreePath, {
-    agileBin: cliBin,
+    agileBin: cliInvocationToShell(cliBin),
     socketPath: opts.socketPath,
     // T012 QA/review round: disambiguates hook calls when a reviewer and an
     // engineer share one physical worktree (§12) — see `hook/service.ts`'s

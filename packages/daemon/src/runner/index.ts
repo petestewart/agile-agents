@@ -5,3 +5,4 @@ export * from './runner';
 export * from './rpc';
 export * from './pipeline-glue';
 export * from './fake-driver';
+export * from './cli-bin';

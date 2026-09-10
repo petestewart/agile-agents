@@ -125,8 +125,8 @@ export interface RunnerOptions {
   bus: Bus;
   /** Repo root — where `.worktrees/**` and the ticket's git branches live. */
   repoRoot: string;
-  /** Path/name of the `agile` CLI binary passed to hook settings + MCP config. Defaults to `'agile'`. */
-  cliBin?: string;
+  /** How to invoke the `agile` CLI for hook settings + MCP config — see `AgentSessionOptions.cliBin`. The daemon passes `resolveCliBin()`'s result; defaults to bare `'agile'`. */
+  cliBin?: AgentSessionOptions['cliBin'];
   /** `AGILE_SOCKET_PATH` threaded into every spawned session's worktree — needed whenever the daemon isn't using the default socket path a worktree would otherwise discover on its own. */
   socketPath?: string;
   gateService?: GateService;

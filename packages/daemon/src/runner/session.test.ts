@@ -514,6 +514,54 @@ describe('T027: per-vendor session wiring (Cursor ask mode, Grok client-fs gate,
     await engineerHandle.exited;
   }, 90000);
 
+  // Live-run finding: the daemon used to hand every session the bare name
+  // `agile` for its hook command and MCP server, which only resolves when
+  // the CLI is linked onto $PATH. A structured `cliBin` (`resolveCliBin()`,
+  // e.g. `bun <path to packages/cli/src/index.ts>`) must reach both
+  // consumers verbatim: the MCP server as command + args (exec'd, no
+  // shell), the hook command as one shell-quoted string.
+  test('a structured cliBin reaches the MCP server config as command+args and the hook command shell-quoted', async () => {
+    await store.putTicket(makeTicket({ status: 'done' }), { by: 'test' });
+    const sink: { options?: SpawnSessionOptions } = {};
+    const handle = startTrackedSession({
+      store,
+      bus,
+      role: 'engineer',
+      agentId: 'eng-0231',
+      ticket: 'TKT-0231',
+      worktreePath: worktree,
+      brief: 'do it',
+      currentSprintId: () => 'S-01',
+      cliBin: { command: '/opt/bun', args: ['/my repo/packages/cli/src/index.ts'] },
+      provider: fakeProviderFor(ACP_PROVIDERS.claude, { steps: [{ type: 'end_turn' }] }),
+      spawn: capturingSpawn(sink),
+    });
+    await handle.session.initialized;
+    const mcp = (sink.options?.mcpServers ?? []) as Array<{
+      name: string;
+      command: string;
+      args: string[];
+    }>;
+    const agileMcp = mcp.find((m) => m.name === 'agile');
+    expect(agileMcp?.command).toBe('/opt/bun');
+    expect(agileMcp?.args).toEqual([
+      '/my repo/packages/cli/src/index.ts',
+      'mcp',
+      '--agent',
+      'eng-0231',
+      '--ticket',
+      'TKT-0231',
+    ]);
+    const settings = JSON.parse(
+      readFileSync(join(worktree, '.claude', 'settings.json'), 'utf8'),
+    ) as { hooks: { PreToolUse: Array<{ hooks: Array<{ command: string }> }> } };
+    const hook = settings.hooks.PreToolUse[0]?.hooks[0]?.command ?? '';
+    expect(hook).toContain("/opt/bun '/my repo/packages/cli/src/index.ts' hook pre-tool-use");
+    expect(hook.endsWith('|| exit 2')).toBe(true);
+    handle.stop();
+    await handle.exited;
+  }, 90000);
+
   // T027 round 2: Grok's `validModes` is left unset — deliberately, since
   // Grok has no modes at all (§C2) — so if `session.ts` ever sent a
   // `modeId` for Grok again, this would only catch it via the `logFile`

@@ -12,7 +12,7 @@ describe('renderClaudeSettings', () => {
         PreToolUse: [
           {
             matcher: '*',
-            hooks: [{ type: 'command', command: 'agile hook pre-tool-use', timeout: 5 }],
+            hooks: [{ type: 'command', command: 'agile hook pre-tool-use || exit 2', timeout: 5 }],
           },
         ],
         PostToolUse: [
@@ -31,7 +31,7 @@ describe('renderClaudeSettings', () => {
   test('prefixes AGILE_SOCKET_PATH when socketPath is given', () => {
     const settings = renderClaudeSettings({ agileBin: 'agile', socketPath: '/tmp/agile.sock' });
     expect(settings.hooks.PreToolUse[0]?.hooks[0]?.command).toBe(
-      'AGILE_SOCKET_PATH=/tmp/agile.sock agile hook pre-tool-use',
+      'AGILE_SOCKET_PATH=/tmp/agile.sock agile hook pre-tool-use || exit 2',
     );
   });
 
@@ -40,7 +40,7 @@ describe('renderClaudeSettings', () => {
   test('prefixes AGILE_AGENT when agentId is given', () => {
     const settings = renderClaudeSettings({ agileBin: 'agile', agentId: 'reviewer-1' });
     expect(settings.hooks.PreToolUse[0]?.hooks[0]?.command).toBe(
-      'AGILE_AGENT=reviewer-1 agile hook pre-tool-use',
+      'AGILE_AGENT=reviewer-1 agile hook pre-tool-use || exit 2',
     );
   });
 
@@ -51,7 +51,7 @@ describe('renderClaudeSettings', () => {
       agentId: 'reviewer-1',
     });
     expect(settings.hooks.PreToolUse[0]?.hooks[0]?.command).toBe(
-      'AGILE_SOCKET_PATH=/tmp/agile.sock AGILE_AGENT=reviewer-1 agile hook pre-tool-use',
+      'AGILE_SOCKET_PATH=/tmp/agile.sock AGILE_AGENT=reviewer-1 agile hook pre-tool-use || exit 2',
     );
   });
 
@@ -75,7 +75,7 @@ describe('writeClaudeSettings', () => {
       const written = writeClaudeSettings(dir, { agileBin: 'agile' });
       const onDisk = JSON.parse(readFileSync(join(dir, '.claude', 'settings.json'), 'utf8'));
       expect(onDisk).toEqual(written);
-      expect(onDisk.hooks.PreToolUse[0].hooks[0].command).toBe('agile hook pre-tool-use');
+      expect(onDisk.hooks.PreToolUse[0].hooks[0].command).toBe('agile hook pre-tool-use || exit 2');
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -130,7 +130,7 @@ describe('writeClaudeSettings', () => {
       writeClaudeSettings(dir, { agileBin: 'agile' });
       const merged = writeClaudeSettings(dir, { agileBin: '/usr/local/bin/agile' });
       expect(merged.hooks.PreToolUse[0]?.hooks[0]?.command).toBe(
-        '/usr/local/bin/agile hook pre-tool-use',
+        '/usr/local/bin/agile hook pre-tool-use || exit 2',
       );
     } finally {
       rmSync(dir, { recursive: true, force: true });

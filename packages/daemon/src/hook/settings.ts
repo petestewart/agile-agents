@@ -99,7 +99,15 @@ function hookCommand(options: RenderClaudeSettingsOptions, agileEvent: string): 
     options.agentId ? `AGILE_AGENT=${options.agentId}` : undefined,
   ].filter((a): a is string => a !== undefined);
   const envPrefix = envAssignments.length > 0 ? `${envAssignments.join(' ')} ` : '';
-  return `${envPrefix}${options.agileBin} hook ${agileEvent}`;
+  const command = `${envPrefix}${options.agileBin} hook ${agileEvent}`;
+  // A hook whose binary is missing or crashes exits non-zero with nothing on
+  // stdout, and Claude treats any exit code other than 2 as a *non-blocking*
+  // error — the tool call proceeds ungated (first live run: no `agile` on
+  // $PATH silently disabled tier 1). Exit 2 is Claude's "block" code, so a
+  // PreToolUse hook that cannot even run now denies instead of allowing.
+  // `agile hook pre-tool-use` itself still prints its own deny JSON and
+  // exits 0 on an RPC failure, so this only fires when the CLI never ran.
+  return agileEvent === 'pre-tool-use' ? `${command} || exit 2` : command;
 }
 
 /** Builds the `.claude/settings.json` object this worktree needs — `PreToolUse`/`PostToolUse`/`Stop`, each invoking `agile hook <event>` with matcher `"*"`. */

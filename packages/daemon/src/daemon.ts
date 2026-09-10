@@ -43,6 +43,7 @@ import {
   advanceQaSpawns,
   advanceReviewRequests,
   buildRunnerRpcMethods,
+  resolveCliBin,
 } from './runner';
 import type { AgentSessionOptions } from './runner';
 import { StateStore, buildStateRpcMethods } from './store';
@@ -179,12 +180,22 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
       : undefined;
   // Agent runner (T012): worktree placement, brief assembly, ACP session
   // wiring, and the periodic liveness/redelivery sweep — see runner/runner.ts.
+  const cliBin = resolveCliBin();
+  if (cliBin.source === 'missing') {
+    console.error(
+      'agiled: no `agile` CLI found (no AGILE_CLI_BIN, no workspace entry, nothing on $PATH) — spawned sessions will have no hooks or MCP tools; set AGILE_CLI_BIN',
+    );
+  }
   const runner =
     store && bus
       ? new Runner({
           store,
           bus,
           repoRoot: config.repoRoot,
+          // How spawned sessions reach this daemon's own CLI for their hook
+          // command and MCP server — resolved to something that actually
+          // runs on this host (`runner/cli-bin.ts`), never assumed on $PATH.
+          cliBin,
           socketPath: config.socketPath,
           gateService,
           // T017: a QA spawn opens the protocol's round for that ticket
