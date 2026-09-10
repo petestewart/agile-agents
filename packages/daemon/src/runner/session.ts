@@ -359,6 +359,15 @@ async function promptWithAuthRetry(
  * (`hook/settings.ts`); this is the MCP descriptor's equivalent, as an
  * argument rather than an env entry because the ACP `env` field's shape
  * differs between vendors and an argument works everywhere.
+ *
+ * `env: []` is load-bearing even though empty: measured on a live daemon
+ * (two real Claude sessions, descriptors identical except for this field),
+ * `@agentclientprotocol/claude-agent-acp` 0.75.1 silently drops a stdio
+ * MCP server whose descriptor has no `env` at all — the session lists no
+ * `mcp__agile__*` tools and the bridge's `session/create` trace shows no
+ * MCP phase. With `env: []` (the ACP schema's `EnvVariable[]` shape) the
+ * tools appear. Without it, `--socket` alone still left every live session
+ * with zero daemon verbs.
  */
 function mcpServerConfig(
   cli: CliInvocation,
@@ -378,6 +387,7 @@ function mcpServerConfig(
       ticket,
       ...(socketPath !== undefined ? ['--socket', socketPath] : []),
     ],
+    env: [],
   };
 }
 

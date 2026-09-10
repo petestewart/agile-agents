@@ -542,9 +542,14 @@ describe('T027: per-vendor session wiring (Cursor ask mode, Grok client-fs gate,
       name: string;
       command: string;
       args: string[];
+      env?: unknown;
     }>;
     const agileMcp = mcp.find((m) => m.name === 'agile');
     expect(agileMcp?.command).toBe('/opt/bun');
+    // `env: []` must be present (not merely absent-or-undefined): the Claude
+    // ACP adapter drops a descriptor without it — measured live, see
+    // `mcpServerConfig`'s doc comment.
+    expect(agileMcp?.env).toEqual([]);
     expect(agileMcp?.args).toEqual([
       '/my repo/packages/cli/src/index.ts',
       'mcp',
