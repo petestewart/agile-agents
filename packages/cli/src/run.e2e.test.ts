@@ -455,6 +455,13 @@ describe('agile run --live stall watchdog (offline, deterministic — opus revie
       /Registered agents \(last_seen age\):\n {2}eng-9001: engineer TKT-9001/,
     );
     expect(message).toContain(join(repo, '.agile-daemon-cache', 'sessions'));
+    // The report is written on the abort path too (runs 5–8 had none): the
+    // error names it and it carries the per-ticket outcome.
+    const reportMatch = /Report: (\S+\.md)/.exec(message);
+    expect(reportMatch).not.toBeNull();
+    const abortedReport = await Bun.file(reportMatch?.[1] ?? '').text();
+    expect(abortedReport).toContain('## Per-ticket outcome');
+    expect(abortedReport).toContain('TKT-9001: status=');
 
     const hilNotices = notices.filter((line) => line.includes('HIL needed:'));
     expect(hilNotices).toHaveLength(1); // announced once, not once per tick.

@@ -1001,6 +1001,28 @@ export async function runDemoSprint(opts: RunOptions): Promise<RunResult> {
       const announcedHils = new Set<string>();
       const notice = opts.onNotice ?? ((line: string) => console.error(line));
       let tick = 0;
+      /** `runs/<ts>.md` + the per-ticket outcomes — on the normal return and on every abort path alike. */
+      const writeReport = (ticksUsed: number) => {
+        const reportDir = opts.reportDir ?? join(opts.cwd, 'runs');
+        mkdirSync(reportDir, { recursive: true });
+        const ticketOutcomes = trackedIds.map((id) => {
+          const ticket = store.getTicket(id);
+          const verdicts = listReviewVerdicts(store, id);
+          return {
+            ticket: id,
+            status: ticket.status,
+            merged: (mergeOwner.status(id) as { status?: string } | undefined)?.status === 'merged',
+            reviewRounds: verdicts.length,
+            reviewVerdicts: verdicts,
+          };
+        });
+        const reportPath = join(reportDir, `${new Date().toISOString().replace(/[:.]/g, '-')}.md`);
+        writeFileSync(
+          reportPath,
+          renderReport(handle, ticketOutcomes, oversizedReadDecision, ticksUsed),
+        );
+        return { reportPath, ticketOutcomes };
+      };
       for (; fake ? tick < maxTicks : clockNow() - start < liveTimeoutMs; tick++) {
         await gateService.tick();
         await emLoop.tick();
@@ -1169,13 +1191,18 @@ export async function runDemoSprint(opts: RunOptions): Promise<RunResult> {
             lastLivenessAt = clockNow();
           }
           if (clockNow() - lastLivenessAt >= stallTimeoutMs) {
+            // Write the report before aborting (runs 5–8, 2026-09-10: the
+            // watchdog fired after all reachable work was done, and the one
+            // artifact the post-mortem wanted — review rounds, per-ticket
+            // status — was the one never written).
+            const abortedReport = writeReport(tick);
             throw new Error(
               `agile run --live: no session liveness (AgentRecord.last_seen) observed for ${stallTimeoutMs}ms — ${describeStall(
                 store,
                 gateService,
                 opts.cwd,
                 clockNow(),
-              )}`,
+              )} Report: ${abortedReport.reportPath}`,
             );
           }
         }
@@ -1184,21 +1211,7 @@ export async function runDemoSprint(opts: RunOptions): Promise<RunResult> {
         }
       }
 
-      const reportDir = opts.reportDir ?? join(opts.cwd, 'runs');
-      mkdirSync(reportDir, { recursive: true });
-      const ticketOutcomes = trackedIds.map((id) => {
-        const ticket = store.getTicket(id);
-        const verdicts = listReviewVerdicts(store, id);
-        return {
-          ticket: id,
-          status: ticket.status,
-          merged: (mergeOwner.status(id) as { status?: string } | undefined)?.status === 'merged',
-          reviewRounds: verdicts.length,
-          reviewVerdicts: verdicts,
-        };
-      });
-      const reportPath = join(reportDir, `${new Date().toISOString().replace(/[:.]/g, '-')}.md`);
-      writeFileSync(reportPath, renderReport(handle, ticketOutcomes, oversizedReadDecision, tick));
+      const { reportPath, ticketOutcomes } = writeReport(tick);
 
       // Draining every still-live session (stop + await its own exit/crash
       // cleanup) so a background `finish()` write can't race a caller that
