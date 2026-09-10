@@ -140,5 +140,8 @@ describe('live: Claude hook gate end-to-end', () => {
         await daemon.stop();
       }
     },
+    // Three real Claude turns plus a daemon: far past bun's 5 s default
+    // per-test timeout (first live run on macOS timed out).
+    15 * 60_000,
   );
 });
