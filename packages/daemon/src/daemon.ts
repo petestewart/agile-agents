@@ -45,8 +45,10 @@ import {
   advanceHilResolutions,
   advanceQaSpawns,
   advanceReviewRequests,
+  advanceReviewerEscalations,
   advanceSecurityReviews,
   buildRunnerRpcMethods,
+  releaseStaleTicketSessions,
   resolveCliBin,
 } from './runner';
 import type { AgentSessionOptions } from './runner';
@@ -292,6 +294,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
   const seenHilResolutions = new Set<string>();
   const seenArchitectInbox = new Set<string>();
   const seenSecurityReviews = new Set<string>();
+  const seenReviewerEscalations = new Set<string>();
   const qaSpawned = new Set<TicketId>();
   const mergedDone = new Set<TicketId>();
   async function advancePipeline(): Promise<void> {
@@ -302,6 +305,8 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
     if (gateService && runner) await advanceHilResolutions(gateService, runner, seenHilResolutions);
     if (bus && runner) await advanceArchitectInbox(bus, runner, seenArchitectInbox);
     if (store && runner) await advanceSecurityReviews(store, runner, seenSecurityReviews);
+    if (store && bus) await advanceReviewerEscalations(store, bus, seenReviewerEscalations);
+    if (store && runner) releaseStaleTicketSessions(store, runner);
     if (store && runner) await advanceQaSpawns(store, runner, qaSpawned);
     if (store && mergeOwner) await advanceDoneTickets(store, mergeOwner, mergedDone);
   }

@@ -35,6 +35,7 @@
  */
 
 import type { AgentId, TicketId } from '@agile-agents/shared';
+import { ulid } from '@agile-agents/shared';
 import type { Bus } from '../bus/bus';
 import { validateReviewRecord } from '../review/types';
 import { reviewRecordRelPath } from '../review/types';
@@ -503,4 +504,120 @@ export async function advanceSecurityReviews(
     spawned.push(ticket.id);
   }
   return spawned;
+}
+
+/** The slice of `Runner` the stale-ticket glue needs. */
+export interface StaleTicketRunner {
+  isLive(agentId: AgentId): boolean;
+  stop(agentId: AgentId): boolean;
+}
+
+/** The store slice `advanceReviewerEscalations` needs. */
+export type EscalationStore = Pick<StateStore, 'getTicket' | 'transitionTicket'>;
+
+/**
+ * Eighth hand-off (fifth live run, 2026-09-10): a reviewer's `escalate`
+ * verdict ("the ticket/contract is wrong, not the code", §12) lands as an
+ * `escalate` message in `em`'s inbox and stops there — the EM is a brief,
+ * not a session; `EmLoop` only forwards `discovery` messages. TKT-1003's
+ * reviewer escalated round 1 (its one `oracle_refs` entry had been
+ * superseded by DEC-1002), then idled until the liveness sweep reaped it,
+ * while the architect that already held the answer was never asked.
+ *
+ * §5's design path for exactly this — a ripple, then "architect
+ * re-refines" — is what an escalate maps onto: the ticket goes `stale`
+ * (a reviewer's escalate IS the ripple, arrived at by reading), the
+ * escalation is forwarded to the architect with the review record as the
+ * pointer (`advanceArchitectInbox` prompts/spawns it), and `ticket_refine`
+ * readies the ticket again for `assignReady` to reassign into the same
+ * worktree. Only a reviewer's escalate on an `in_review` ticket qualifies;
+ * the other `escalate` senders (liveness, `applyRequestChanges`' attempts
+ * ladder, a session-ended notice) keep their existing "notify em" meaning.
+ */
+export async function advanceReviewerEscalations(
+  store: EscalationStore,
+  bus: Pick<Bus, 'poll' | 'ack' | 'send'>,
+  seen: Set<string>,
+): Promise<TicketId[]> {
+  const staled: TicketId[] = [];
+  for (const message of bus.poll('em' as AgentId)) {
+    if (message.kind !== 'escalate' || !message.ticket) continue;
+    if (!message.from.startsWith('reviewer-')) continue;
+    if (seen.has(message.id)) continue;
+    let ticket: ReturnType<StateStore['getTicket']>;
+    try {
+      ticket = store.getTicket(message.ticket);
+    } catch {
+      seen.add(message.id);
+      await bus.ack('em' as AgentId, message.id);
+      continue;
+    }
+    if (ticket.status !== 'in_review') {
+      // Already moved on (a later round approved, or the ticket was staled
+      // by a ripple in the meantime): nothing to route.
+      seen.add(message.id);
+      await bus.ack('em' as AgentId, message.id);
+      continue;
+    }
+    await store.transitionTicket(ticket.id, 'stale', {
+      by: 'daemon',
+      reason: `reviewer escalation by ${message.from}: ${message.body}`.slice(0, 300),
+    });
+    const forwarded = await bus.send({
+      id: ulid(),
+      ts: new Date().toISOString(),
+      from: 'em',
+      to: ['architect' as AgentId],
+      kind: 'escalate',
+      priority: 'urgent',
+      ticket: ticket.id,
+      body: [
+        `${message.from} escalated ${ticket.id} on review: ${message.body}.`,
+        `The daemon marked ${ticket.id} stale; its sessions are stopped and the worktree is kept.`,
+        'Read the review record (review_get / the ref below), rule on the contract (decision_publish if the oracle must change),',
+        `then ticket_refine ${ticket.id} with the corrected contract/oracle_refs — that readies it and the EM reassigns it.`,
+      ]
+        .join(' ')
+        .slice(0, 800),
+      refs: message.refs,
+      requires_ack: false,
+    });
+    if (!forwarded.ok) throw new Error(`advanceReviewerEscalations: ${forwarded.reason}`);
+    seen.add(message.id);
+    staled.push(ticket.id);
+    await bus.ack('em' as AgentId, message.id);
+  }
+  return staled;
+}
+
+/**
+ * A `stale` ticket's sessions are done: the engineer, the reviewer(s) and
+ * QA were briefed against a contract the architect is about to rewrite,
+ * and `Runner.spawn` refuses to re-spawn an agent id that is still live —
+ * so once `ticket_refine` readies the ticket, `assignReady` would hit
+ * "already running" every tick and the ticket would never move (the
+ * ripple path staled TKT-1003 with a live engineer on it). Stop them
+ * (graceful; `session.ts`'s `finish()` leaves a `stale` ticket alone —
+ * only live statuses get readied on exit). Idempotent: a stopped agent id
+ * is no longer live on the next tick.
+ */
+export function releaseStaleTicketSessions(
+  store: Pick<StateStore, 'listTickets'>,
+  runner: StaleTicketRunner,
+): AgentId[] {
+  const stopped: AgentId[] = [];
+  for (const ticket of store.listTickets()) {
+    if (ticket.status !== 'stale') continue;
+    const ids: AgentId[] = [
+      agentIdFor('engineer', ticket.id),
+      agentIdFor('reviewer', ticket.id),
+      securityReviewerIdFor(ticket.id),
+      agentIdFor('qa', ticket.id),
+    ];
+    for (const id of ids) {
+      if (!runner.isLive(id)) continue;
+      if (runner.stop(id)) stopped.push(id);
+    }
+  }
+  return stopped;
 }

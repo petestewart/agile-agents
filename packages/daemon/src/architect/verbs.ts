@@ -245,7 +245,7 @@ export const ARCHITECT_TOOLS: readonly ArchitectToolInfo[] = [
   {
     name: 'ticket_refine',
     description:
-      "Refine a ticket's contract/oracle_refs and ready it if it's a draft (architect-only).",
+      "Refine a ticket's contract/oracle_refs and ready it if it's a draft or stale (a stale ticket — ripple or reviewer escalate — is readied with the corrected contract; architect-only).",
     inputSpec: { id: STRING, title: STRING_OPT, contract: OBJECT_OPT, oracle_refs: ARRAY_OPT },
     handler: ticketRefine,
   },

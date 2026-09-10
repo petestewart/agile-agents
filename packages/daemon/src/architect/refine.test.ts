@@ -101,10 +101,36 @@ describe('refineTicket', () => {
   });
 
   test('a ticket past draft stays at its current status (no forced ready)', async () => {
+    await store.putTicket(makeTicket('TKT-0001', { status: 'in_progress', contract: contract() }));
+    const result = await refineTicket(store, 'TKT-0001', { title: 'Renamed' });
+    expect(result.status).toBe('in_progress');
+    expect(result.title).toBe('Renamed');
+  });
+
+  // Fifth live run (2026-09-10): the ripple staled a ticket and the live
+  // architect's `ticket_refine` left it `stale` — no verb reached
+  // `reRefineStale`, so the ticket could never be reassigned.
+  test('re-readies a stale ticket (the only re-refine an MCP verb can reach)', async () => {
+    await seedEntry('DEC-0002');
     await store.putTicket(makeTicket('TKT-0001', { status: 'stale', contract: contract() }));
+    const result = await refineTicket(store, 'TKT-0001', { oracle_refs: ['DEC-0002'] });
+    expect(result.status).toBe('ready');
+    expect(result.oracle_refs).toEqual(['DEC-0002']);
+    expect(result.history.at(-1)).toContain('re-refined by architect');
+  });
+
+  test('a split parent stays stale even when refined again', async () => {
+    await store.putTicket(
+      makeTicket('TKT-0001', {
+        status: 'stale',
+        contract: contract(),
+        history: [
+          '2026-09-10T00:00:00.000Z re-refined by architect: split into TKT-0002 — parent stays stale (superseded, not resumable; see DESIGN-GAP in refine.ts)',
+        ],
+      }),
+    );
     const result = await refineTicket(store, 'TKT-0001', { title: 'Renamed' });
     expect(result.status).toBe('stale');
-    expect(result.title).toBe('Renamed');
   });
 });
 

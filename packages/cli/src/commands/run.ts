@@ -361,14 +361,17 @@ function allMerged(handle: DaemonHandle, ids: TicketId[]): boolean {
  * real review records existed). Correct in both modes since it reads what
  * actually happened, not what this driver scripted.
  */
-function countReviewRounds(store: NonNullable<DaemonHandle['store']>, ticket: TicketId): number {
-  let round = 1;
-  while (true) {
+function listReviewVerdicts(store: NonNullable<DaemonHandle['store']>, ticket: TicketId): string[] {
+  const verdicts: string[] = [];
+  for (let round = 1; ; round++) {
     try {
-      store.getEntity(reviewRecordRelPath(ticket, round, 'primary'), validateReviewRecord);
-      round++;
+      const record = store.getEntity(
+        reviewRecordRelPath(ticket, round, 'primary'),
+        validateReviewRecord,
+      );
+      verdicts.push(record.verdict);
     } catch (err) {
-      if (err instanceof NotFoundError) return round - 1;
+      if (err instanceof NotFoundError) return verdicts;
       throw err;
     }
   }
@@ -828,6 +831,8 @@ export interface RunResult {
     merged: boolean;
     /** Primary review rounds actually run for this ticket (1 unless the seeded violation forced a round-2 re-review; 0 if review never started). */
     reviewRounds: number;
+    /** The primary verdict of each round, in order (`['request_changes', 'approve']`). The fifth live run's report labelled a lone `escalate` "(approve)"; the label now reads the records. */
+    reviewVerdicts: string[];
   }>;
   oversizedReadDecision: string;
   ticksUsed: number;
@@ -1182,11 +1187,13 @@ export async function runDemoSprint(opts: RunOptions): Promise<RunResult> {
       mkdirSync(reportDir, { recursive: true });
       const ticketOutcomes = trackedIds.map((id) => {
         const ticket = store.getTicket(id);
+        const verdicts = listReviewVerdicts(store, id);
         return {
           ticket: id,
           status: ticket.status,
           merged: (mergeOwner.status(id) as { status?: string } | undefined)?.status === 'merged',
-          reviewRounds: countReviewRounds(store, id),
+          reviewRounds: verdicts.length,
+          reviewVerdicts: verdicts,
         };
       });
       const reportPath = join(reportDir, `${new Date().toISOString().replace(/[:.]/g, '-')}.md`);
@@ -1306,7 +1313,7 @@ function renderReport(
   );
   const reviewRoundLines = outcomes.map(
     (o) =>
-      `- ${o.ticket}: ${o.reviewRounds} round${o.reviewRounds === 1 ? '' : 's'}${o.reviewRounds > 1 ? ' (request_changes then approve)' : o.reviewRounds === 1 ? ' (approve)' : ''}`,
+      `- ${o.ticket}: ${o.reviewRounds} round${o.reviewRounds === 1 ? '' : 's'}${o.reviewVerdicts.length > 0 ? ` (${o.reviewVerdicts.join(' then ')})` : ''}`,
   );
 
   return [

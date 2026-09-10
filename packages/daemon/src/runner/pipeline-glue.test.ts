@@ -19,9 +19,11 @@ import {
   advanceHilResolutions,
   advanceQaSpawns,
   advanceReviewRequests,
+  advanceReviewerEscalations,
   advanceSecurityReviews,
+  releaseStaleTicketSessions,
 } from './pipeline-glue';
-import { agentIdFor } from './runner';
+import { agentIdFor, securityReviewerIdFor } from './runner';
 
 /** A `ReviewRunner` test double — `live` is the fake's own in-process-map stand-in, deliberately never touching the store, matching the real `Runner.isLive`/`Runner.promptAgent` contract (`runner.ts`). */
 function fakeReviewRunner(
@@ -578,5 +580,115 @@ describe('advanceDoneTickets', () => {
     const result = await advanceDoneTickets(store, merger, new Set());
     expect(result).toEqual([]);
     expect(mergeCalls).toEqual([]);
+  });
+});
+
+describe('advanceReviewerEscalations', () => {
+  async function sendEscalate(ticket: TicketId, body: string, refs: string[] = []) {
+    const result = await bus.send({
+      id: ulid(),
+      ts: new Date().toISOString(),
+      from: agentIdFor('reviewer', ticket),
+      to: ['em'],
+      kind: 'escalate',
+      priority: 'normal',
+      ticket,
+      body,
+      refs,
+      requires_ack: false,
+    });
+    if (!result.ok) throw new Error(`sendEscalate: ${result.reason}`);
+  }
+
+  test("a reviewer's escalate stales the in_review ticket and forwards it to the architect with the record", async () => {
+    // Fifth live run (2026-09-10): reviewer-1003 escalated round 1 (its
+    // spec had been superseded by DEC-1002); the message sat in em's inbox,
+    // the reviewer idled, and the architect was never asked.
+    await store.putTicket(makeTicket('TKT-1003' as TicketId, { status: 'in_review' }));
+    await sendEscalate(
+      'TKT-1003' as TicketId,
+      'reviewer escalates round 1: ticket/contract issue',
+      ['board/reviews/TKT-1003-r1.yaml'],
+    );
+    const seen = new Set<string>();
+
+    expect(await advanceReviewerEscalations(store, bus, seen)).toEqual(['TKT-1003']);
+    const ticket = store.getTicket('TKT-1003' as TicketId);
+    expect(ticket.status).toBe('stale');
+    expect(ticket.history.at(-1)).toContain('reviewer escalation by reviewer-1003');
+
+    const architectInbox = bus.poll('architect' as AgentId);
+    expect(architectInbox).toHaveLength(1);
+    expect(architectInbox[0]?.kind).toBe('escalate');
+    expect(architectInbox[0]?.from).toBe('em');
+    expect(architectInbox[0]?.ticket).toBe('TKT-1003');
+    expect(architectInbox[0]?.refs).toEqual(['board/reviews/TKT-1003-r1.yaml']);
+    expect(architectInbox[0]?.body).toContain('ticket_refine TKT-1003');
+    expect(bus.poll('em' as AgentId).filter((m) => m.kind === 'escalate')).toHaveLength(0);
+
+    // Idempotent: nothing left to route.
+    expect(await advanceReviewerEscalations(store, bus, seen)).toEqual([]);
+    expect(bus.poll('architect' as AgentId)).toHaveLength(1);
+  });
+
+  test('escalates from other senders, or on a ticket no longer in_review, are left to em', async () => {
+    await store.putTicket(makeTicket('TKT-0002' as TicketId, { status: 'in_progress' }));
+    await sendEscalate('TKT-0002' as TicketId, 'late escalate');
+    const daemonNote = await bus.send({
+      id: ulid(),
+      ts: new Date().toISOString(),
+      from: 'daemon',
+      to: ['em'],
+      kind: 'escalate',
+      priority: 'urgent',
+      ticket: 'TKT-0002',
+      body: 'eng-0002 (engineer) session ended: process exited (code 0)',
+      refs: [],
+      requires_ack: true,
+    });
+    expect(daemonNote.ok).toBe(true);
+    const seen = new Set<string>();
+
+    expect(await advanceReviewerEscalations(store, bus, seen)).toEqual([]);
+    expect(store.getTicket('TKT-0002' as TicketId).status).toBe('in_progress');
+    expect(bus.poll('architect' as AgentId)).toHaveLength(0);
+    // The reviewer's stale copy is acked (nothing to route); the daemon's
+    // own notice stays for em's loop.
+    const remaining = bus.poll('em' as AgentId).filter((m) => m.kind === 'escalate');
+    expect(remaining.map((m) => m.from)).toEqual(['daemon']);
+  });
+});
+
+describe('releaseStaleTicketSessions', () => {
+  test('stops every live session on a stale ticket, once, and leaves other tickets alone', () => {
+    // The ripple path: a live engineer on a ticket the ripple just staled
+    // makes `Runner.spawn` throw "already running" forever once the ticket
+    // is readied again.
+    const stale = makeTicket('TKT-0001' as TicketId, { status: 'stale' });
+    const active = makeTicket('TKT-0002' as TicketId, { status: 'in_progress' });
+    const live = new Set<AgentId>([
+      agentIdFor('engineer', stale.id),
+      agentIdFor('reviewer', stale.id),
+      securityReviewerIdFor(stale.id),
+      agentIdFor('engineer', active.id),
+    ]);
+    const stopped: AgentId[] = [];
+    const runner = {
+      isLive: (id: AgentId) => live.has(id),
+      stop: (id: AgentId) => {
+        stopped.push(id);
+        live.delete(id);
+        return true;
+      },
+    };
+    const fakeStore = { listTickets: () => [stale, active] };
+
+    expect(releaseStaleTicketSessions(fakeStore, runner)).toEqual([
+      'eng-0001',
+      'reviewer-0001',
+      'reviewer-sec-0001',
+    ]);
+    expect(live.has(agentIdFor('engineer', active.id))).toBe(true);
+    expect(releaseStaleTicketSessions(fakeStore, runner)).toEqual([]);
   });
 });

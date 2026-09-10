@@ -105,8 +105,9 @@ function assertContractRefinable(contract: TicketContract): void {
  * and, if it's currently `draft`, readies it (`draft -> ready`, §4 "Ticket").
  * A ticket that's already past `draft` (e.g. a `stale` ticket the architect
  * is patching before deciding it's `unchanged`) is left at its current
- * status — callers that want the `stale -> ready` edge go through
- * `reRefineStale`, which has its own three paths.
+ * status. A `stale` ticket (ripple, or a reviewer's escalate) is readied
+ * too — the same edge `reRefineStale`'s `unchanged` path takes, which is
+ * the only re-refine an MCP verb can reach; split parents stay `stale`.
  */
 export async function refineTicket(
   store: StateStore,
@@ -134,7 +135,22 @@ export async function refineTicket(
   if (saved.status === 'draft') {
     return store.transitionTicket(id, 'ready', { by, reason: 'refined by architect' });
   }
+  // Fifth live run (2026-09-10): the ripple staled a ticket and the live
+  // architect's only verb for it, `ticket_refine`, patched the contract
+  // and left it `stale` — `reRefineStale` (the split / refactor-child
+  // paths) has no MCP verb, so nothing could ever ready the ticket again.
+  // A refine on a stale ticket IS the "unchanged" re-refine with a patch:
+  // ready it. The one exception is a split parent, which stays `stale` on
+  // purpose (see the file header's DESIGN-GAP).
+  if (saved.status === 'stale' && !isSplitParent(saved)) {
+    return store.transitionTicket(id, 'ready', { by, reason: 're-refined by architect' });
+  }
   return saved;
+}
+
+/** True for a `split` parent — `reRefineStale` leaves it `stale` for good and records why in `history`. */
+export function isSplitParent(ticket: Pick<Ticket, 'history'>): boolean {
+  return ticket.history.some((line) => line.includes('parent stays stale'));
 }
 
 /** `TKT-0231` -> `231`, mirroring `halts/index.ts`'s `haltIdNumber` — the shared package has no "mint the next ticket id" helper of its own (tickets are otherwise seeded, not minted at runtime), so split/refactor-child ticket creation needs its own monotonic id source. */

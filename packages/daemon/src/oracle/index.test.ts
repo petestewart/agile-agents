@@ -273,6 +273,31 @@ describe('rippleWalk', () => {
     expect(store.getTicket('TKT-0004').status).toBe('stale');
   });
 
+  // Fifth live run (2026-09-10): DEC-1002 superseded SPEC-tasks-002 and
+  // TKT-1003, citing only that spec, stayed `in_review` on a dead entry.
+  test('superseding an entry stales the tickets that cite it, even with no affects edge', async () => {
+    await oracleWrite(store, {
+      actor: 'architect',
+      entry: makeEntry({ id: 'SPEC-tasks-002', by: 'architect', title: 'tasks spec' }),
+      body: 'x',
+    });
+    await store.putTicket(
+      makeTicket('TKT-1003', { oracle_refs: ['SPEC-tasks-002'], status: 'in_review' }),
+    );
+    await store.putTicket(makeTicket('TKT-1004', { oracle_refs: ['DEC-0099'] }));
+
+    const result = await oracleWrite(store, {
+      actor: 'architect',
+      entry: makeEntry({ id: 'DEC-1002', supersedes: ['SPEC-tasks-002'] }),
+      body: 'x',
+    });
+
+    expect(result.superseded).toEqual(['SPEC-tasks-002']);
+    expect(result.stale).toEqual(['TKT-1003']);
+    expect(store.getTicket('TKT-1003').status).toBe('stale');
+    expect(store.getTicket('TKT-1004').status).toBe('ready');
+  });
+
   test('a draft ticket cannot be marked stale (no legal transition)', async () => {
     await oracleWrite(store, {
       actor: 'architect',

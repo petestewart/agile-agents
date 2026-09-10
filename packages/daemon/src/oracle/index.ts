@@ -155,9 +155,9 @@ function oracleEntryExistsOnDisk(store: StateStore, id: OracleId): boolean {
  * Missing entries (already gone / never existed) are skipped rather than
  * thrown — the walk is best-effort over whatever oracle state exists.
  */
-function affectsClosure(store: StateStore, changedId: OracleId): Set<OracleId> {
-  const visited = new Set<OracleId>([changedId]);
-  const frontier: OracleId[] = [changedId];
+function affectsClosure(store: StateStore, seeds: readonly OracleId[]): Set<OracleId> {
+  const visited = new Set<OracleId>(seeds);
+  const frontier: OracleId[] = [...seeds];
   while (frontier.length > 0) {
     const id = frontier.pop();
     if (id === undefined) break;
@@ -185,8 +185,12 @@ function affectsClosure(store: StateStore, changedId: OracleId): Set<OracleId> {
  * stale from — `done`, which is terminal, and tickets already `stale`).
  * Returns the ids actually transitioned.
  */
-export async function rippleWalk(store: StateStore, changedId: OracleId): Promise<TicketId[]> {
-  const closure = affectsClosure(store, changedId);
+export async function rippleWalk(
+  store: StateStore,
+  changedId: OracleId,
+  alsoChanged: readonly OracleId[] = [],
+): Promise<TicketId[]> {
+  const closure = affectsClosure(store, [changedId, ...alsoChanged]);
   const staled: TicketId[] = [];
   for (const ticket of store.listTickets()) {
     if (!isLegalTransition(ticket.status, 'stale')) continue;
@@ -286,7 +290,12 @@ export async function oracleWrite(
     superseded.push(id);
   }
 
-  const stale = await rippleWalk(store, written.id);
+  // The entries this write superseded changed too (fifth live run,
+  // 2026-09-10: DEC-1002 superseded SPEC-tasks-002 and TKT-1003, whose only
+  // `oracle_refs` entry that was, stayed `in_review` pointing at a dead
+  // spec). A ticket citing a superseded entry is the textbook stale ticket,
+  // so the walk seeds from them as well as from the new entry.
+  const stale = await rippleWalk(store, written.id, superseded);
 
   return { entry: written, superseded, stale };
 }
