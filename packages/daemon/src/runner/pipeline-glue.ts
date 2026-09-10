@@ -653,7 +653,15 @@ export function releaseStaleTicketSessions(
 ): AgentId[] {
   const stopped: AgentId[] = [];
   for (const ticket of store.listTickets()) {
-    if (ticket.status !== 'stale') continue;
+    // `ready` too (seventh live run, 2026-09-10): the architect re-refined
+    // both staled tickets within 16 s, before this glue ever saw them
+    // `stale`, and the idle engineer sessions from before the ripple kept
+    // `assignReady` throwing "already running" for the rest of the run. A
+    // `ready` ticket has nobody working it by definition — `Runner.spawn`
+    // moves it to `in_progress` before the session is live, `finish()` and
+    // the liveness sweep only ready a ticket whose session is gone — so any
+    // live session still bound to one is a leftover to stop.
+    if (ticket.status !== 'stale' && ticket.status !== 'ready') continue;
     const ids: AgentId[] = [
       agentIdFor('engineer', ticket.id),
       agentIdFor('reviewer', ticket.id),

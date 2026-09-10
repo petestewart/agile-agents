@@ -667,11 +667,15 @@ describe('releaseStaleTicketSessions', () => {
     // is readied again.
     const stale = makeTicket('TKT-0001' as TicketId, { status: 'stale' });
     const active = makeTicket('TKT-0002' as TicketId, { status: 'in_progress' });
+    // Re-refined before the glue saw it stale (seventh live run): the old
+    // engineer session must go too, or `assignReady` never re-spawns.
+    const readied = makeTicket('TKT-0003' as TicketId, { status: 'ready' });
     const live = new Set<AgentId>([
       agentIdFor('engineer', stale.id),
       agentIdFor('reviewer', stale.id),
       securityReviewerIdFor(stale.id),
       agentIdFor('engineer', active.id),
+      agentIdFor('engineer', readied.id),
     ]);
     const stopped: AgentId[] = [];
     const runner = {
@@ -682,12 +686,13 @@ describe('releaseStaleTicketSessions', () => {
         return true;
       },
     };
-    const fakeStore = { listTickets: () => [stale, active] };
+    const fakeStore = { listTickets: () => [stale, active, readied] };
 
     expect(releaseStaleTicketSessions(fakeStore, runner)).toEqual([
       'eng-0001',
       'reviewer-0001',
       'reviewer-sec-0001',
+      'eng-0003',
     ]);
     expect(live.has(agentIdFor('engineer', active.id))).toBe(true);
     expect(releaseStaleTicketSessions(fakeStore, runner)).toEqual([]);
