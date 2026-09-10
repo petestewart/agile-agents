@@ -934,4 +934,28 @@ describe('spawnSession', () => {
       });
     });
   });
+
+  it('agent stderr reaches `onStderr` as utf8 chunks and is dropped without a sink', async () => {
+    const chunks: string[] = [];
+    const withSink = create({ onStderr: (chunk) => chunks.push(chunk) });
+    state.child?.stderr.push('vendor: login expired\n');
+    await flush();
+    expect(chunks).toEqual(['vendor: login expired\n']);
+    // A throwing sink never takes the session down.
+    const boom = create({
+      onStderr: () => {
+        throw new Error('sink failed');
+      },
+    });
+    state.child?.stderr.push('more\n');
+    await flush();
+    expect(boom.exited).toBe(false);
+    withSink.close();
+    boom.close();
+    // Without a sink stderr is simply consumed (no throw, no event).
+    const silent = create();
+    state.child?.stderr.push('ignored\n');
+    await flush();
+    silent.close();
+  });
 });

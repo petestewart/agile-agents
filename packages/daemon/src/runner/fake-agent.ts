@@ -77,6 +77,8 @@ export interface FakeAgentScript {
    * validation).
    */
   validModes?: string[];
+  /** Written to this process's stderr once at startup — simulates a vendor's own startup diagnostics, for testing the daemon's per-session stderr log (`runner/session.ts`'s `stderrLogDir`). */
+  stderrBanner?: string;
 }
 
 function appendLog(script: FakeAgentScript, line: Record<string, unknown>): void {
@@ -97,6 +99,7 @@ function loadScript(): FakeAgentScript {
 
 /** Loaded once — `session/new`/`session/set_mode`/`authenticate` (T027) need it in `handleLine`, not just `runScript`'s per-prompt read. */
 const script = loadScript();
+if (script.stderrBanner !== undefined) process.stderr.write(`${script.stderrBanner}\n`);
 /** `authenticate` methodIds this process has seen, for `requireAuthMethod` gating (T027). */
 const authenticatedMethods = new Set<string>();
 

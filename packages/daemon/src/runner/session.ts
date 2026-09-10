@@ -68,6 +68,8 @@
  * went looking for.
  */
 
+import { appendFileSync, mkdirSync } from 'node:fs';
+import { join } from 'node:path';
 import {
   ACP_PROVIDERS,
   type AcpProviderConfig,
@@ -116,6 +118,31 @@ const ROLE_LEDGER_KIND: Record<PermissionRole, LedgerKind> = {
   qa: 'qa',
   architect: 'ceremony',
 };
+
+/** A per-session stderr log under `stderrLogDir` — see `AgentSessionOptions.stderrLogDir`. Returns `undefined` when no dir is configured or it can't be created. */
+export function openStderrLog(
+  dir: string | undefined,
+  agentId: string,
+  at: Date,
+): { path: string; append: (chunk: string) => void } | undefined {
+  if (dir === undefined) return undefined;
+  const path = join(dir, `${agentId}-${at.toISOString().replace(/[:.]/g, '-')}.stderr.log`);
+  try {
+    mkdirSync(dir, { recursive: true });
+  } catch {
+    return undefined;
+  }
+  return {
+    path,
+    append: (chunk) => {
+      try {
+        appendFileSync(path, chunk);
+      } catch {
+        // Diagnostics only — never let a full disk or a vanished dir take the session down.
+      }
+    },
+  };
+}
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return null;
@@ -203,6 +230,17 @@ export interface AgentSessionOptions {
    * `provider.defaultModeId` applies unchanged there).
    */
   architectMode?: 'plan' | 'default';
+  /**
+   * Directory for this session's vendor-process stderr log
+   * (`<dir>/<agentId>-<spawn timestamp>.stderr.log`, appended as chunks
+   * arrive). The runner passes `<repoRoot>/.agile-daemon-cache/sessions`
+   * (gitignored, a sibling of the other daemon-cache subdirs). Without it
+   * the vendor's stderr is dropped, and a session that dies or blocks at
+   * startup (bad login, rejected flag, missing binary) leaves no trace
+   * beyond a `last_seen` that never advances. Never fatal: a failed
+   * mkdir/append is swallowed so logging can't take a spawn down.
+   */
+  stderrLogDir?: string;
   /** Test seam: how often to re-poll a pending `approve_plan` gate (see `architectMode`). Defaults to 200ms. */
   architectGatePollMs?: number;
   /** Test seam: how long to wait on a pending `approve_plan` gate before denying the plan. Defaults to 5 minutes. */
@@ -498,6 +536,7 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
     (architectPlanMode ? 'plan' : undefined) ??
     provider.defaultModeId;
 
+  const stderrLog = openStderrLog(opts.stderrLogDir, agentId, now());
   const spawnOptions: SpawnSessionOptions = {
     cmd: wrapped.command,
     args: wrapped.args,
@@ -512,6 +551,7 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
     },
     clientCapabilities: provider.clientCapabilities,
     mcpServers: [mcpServerConfig(cliBin, agentId, ticket)],
+    ...(stderrLog ? { onStderr: stderrLog.append } : {}),
     // Omitted entirely (not even `modeId: undefined`) when the provider has
     // no mode — `SpawnSessionOptions.modeId` being present-but-undefined
     // vs. absent doesn't matter to `ensureSession()`'s `!== undefined`

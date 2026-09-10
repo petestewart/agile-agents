@@ -37,6 +37,12 @@ what keeps `test:integration` honest:
   on. It must pass with no vendor login, and CI runs it.
 - **`test:live`** is the only script that spawns real vendor sessions. It takes
   minutes, needs a real login, and is never part of CI or a normal `bun test`.
+  When the epic run fails, re-run it with `AGILE_LIVE_KEEP=1` so the temp repo
+  survives (its path is printed); look at `.agile/log/events.jsonl`,
+  `.agile/board/hil/`, `.agile/bus/agents/`, `runs/*.md` and each vendor
+  session's stderr under `.agile-daemon-cache/sessions/*.stderr.log`. A
+  pending `hil_request` (nothing auto-approves in `--live`) is printed as
+  `HIL needed: <id>` with the `agile approve <id>` that unblocks the session.
 
 Both name their test files explicitly. The old `--grep live` selector matched
 39+ ordinary offline tests as well, because `live` is a substring of

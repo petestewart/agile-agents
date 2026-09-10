@@ -33,7 +33,7 @@ import { installPreCommitHook } from '../merge/precommit';
 import type { PermissionRole } from '../permissions';
 import { wrapAgentCommand } from '../sandbox';
 import type { StateStore } from '../store';
-import { sandboxedSubprocessEnv } from '../subprocess-env';
+import { DAEMON_CACHE_DIR, sandboxedSubprocessEnv } from '../subprocess-env';
 import { assembleBrief } from './brief';
 import { type AgentSessionHandle, type AgentSessionOptions, startAgentSession } from './session';
 import {
@@ -164,6 +164,8 @@ export interface RunnerOptions {
    * `'plan'` (via `startAgentSession`'s own default) when unset.
    */
   architectMode?: AgentSessionOptions['architectMode'];
+  /** Where every spawned session's vendor stderr is logged — see `AgentSessionOptions.stderrLogDir`. Defaults to `<repoRoot>/.agile-daemon-cache/sessions`. */
+  stderrLogDir?: string;
 }
 
 export interface SpawnResult {
@@ -343,6 +345,7 @@ export class Runner {
       piAgentDir: this.opts.piAgentDir,
       installPiExtension: this.opts.installPiExtension,
       architectMode: this.opts.architectMode,
+      stderrLogDir: this.opts.stderrLogDir ?? join(repoRoot, DAEMON_CACHE_DIR, 'sessions'),
     });
     this.live.set(agentId, handle);
     void handle.exited.then(() => {

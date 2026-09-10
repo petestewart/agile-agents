@@ -454,8 +454,15 @@ export function spawnSession(opts: SpawnSessionOptions): SpawnedSession {
   });
 
   child.stderr?.setEncoding('utf8');
-  child.stderr?.on('data', () => {
-    // Agent stderr is diagnostics, not protocol — never forwarded.
+  child.stderr?.on('data', (chunk: string) => {
+    // Agent stderr is diagnostics, not protocol — never parsed here. Handed
+    // to the caller's sink when one is given (`onStderr`), dropped otherwise.
+    if (opts.onStderr === undefined) return;
+    try {
+      opts.onStderr(String(chunk));
+    } catch {
+      // A failing sink must never take the session down.
+    }
   });
 
   const onDead = (code: number | null) => {

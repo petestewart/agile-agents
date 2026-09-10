@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -16,7 +16,7 @@ import { runInit } from '../init';
 import { ForeignPiExtensionError } from '../pi';
 import { StateStore } from '../store';
 import type { FakeAgentScript } from './fake-agent';
-import { type AgentSessionHandle, startAgentSession } from './session';
+import { type AgentSessionHandle, openStderrLog, startAgentSession } from './session';
 
 const FAKE_AGENT_PATH = join(import.meta.dir, 'fake-agent.ts');
 
@@ -1062,4 +1062,63 @@ describe('T031: architect session (plan mode -> approve_plan gate; edits/exec de
     handle.stop();
     await handle.exited;
   }, 90000);
+
+  test('the vendor process stderr lands in a per-session log under stderrLogDir; a missing dir means no log, never a failed spawn', async () => {
+    await store.putTicket(makeTicket({ status: 'done' }), { by: 'test' });
+    const logDir = join(scratch, 'daemon-cache', 'sessions');
+    const handle = startTrackedSession({
+      store,
+      bus,
+      role: 'engineer',
+      agentId: 'eng-stderr',
+      ticket: 'TKT-0231',
+      worktreePath: worktree,
+      brief: 'do the ticket',
+      stderrLogDir: logDir,
+      provider: fakeProvider({
+        stderrBanner: 'fake vendor: startup diagnostics go to stderr',
+        steps: [{ type: 'end_turn' }],
+      }),
+    });
+    await handle.session.initialized;
+    await waitFor(() => {
+      if (!existsSync(logDir)) return false;
+      return readdirSync(logDir).some(
+        (name) =>
+          name.startsWith('eng-stderr-') &&
+          name.endsWith('.stderr.log') &&
+          readFileSync(join(logDir, name), 'utf8').includes('startup diagnostics'),
+      );
+    });
+    handle.stop();
+    await handle.exited;
+
+    // Same spawn with no `stderrLogDir`: nothing written anywhere, session still fine.
+    const quiet = startTrackedSession({
+      store,
+      bus,
+      role: 'engineer',
+      agentId: 'eng-quiet',
+      ticket: 'TKT-0231',
+      worktreePath: worktree,
+      brief: 'do the ticket',
+      provider: fakeProvider({ stderrBanner: 'dropped', steps: [{ type: 'end_turn' }] }),
+    });
+    await quiet.session.initialized;
+    quiet.stop();
+    await quiet.exited;
+    expect(readdirSync(logDir).some((n) => n.startsWith('eng-quiet-'))).toBe(false);
+  });
+
+  test('openStderrLog names the file by agent and spawn time and swallows write failures', () => {
+    const dir = join(scratch, 'logs');
+    const log = openStderrLog(dir, 'eng-0001', new Date('2026-09-10T12:00:00.000Z'));
+    expect(log?.path).toBe(join(dir, 'eng-0001-2026-09-10T12-00-00-000Z.stderr.log'));
+    log?.append('one\n');
+    log?.append('two\n');
+    expect(readFileSync(log?.path ?? '', 'utf8')).toBe('one\ntwo\n');
+    rmSync(dir, { recursive: true, force: true });
+    expect(() => log?.append('after the dir vanished')).not.toThrow();
+    expect(openStderrLog(undefined, 'eng-0001', new Date())).toBeUndefined();
+  });
 });

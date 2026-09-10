@@ -147,6 +147,15 @@ export interface SpawnSessionOptions {
   mcpServers?: unknown[];
   /** Initial mode to request via `session/set_mode` right after `session/new` succeeds, when given. */
   modeId?: string;
+  /**
+   * Receives every chunk the agent process writes to its stderr (utf8).
+   * Stderr is diagnostics, never protocol — it is not parsed here, and
+   * without a sink it is dropped. The daemon uses this to keep a per-session
+   * stderr log so a vendor that fails at startup (bad login, missing
+   * binary, rejected flag) leaves a readable trace instead of a silent,
+   * event-less session that only a liveness watchdog ever notices.
+   */
+  onStderr?: (chunk: string) => void;
   /** Test seam: override the event-ring entry cap. */
   eventLogMaxEntries?: number;
   /** Test seam: override the event-ring byte cap. */

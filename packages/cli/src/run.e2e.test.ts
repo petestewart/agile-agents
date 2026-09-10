@@ -50,7 +50,11 @@ const FAKE_AGENT_PATH = join(
 /** Writes a fake-agent script file under `repo` and returns a `liveSpawnForTest` spawn function that runs it. */
 function fakeAgentSpawn(repo: string, name: string, steps: unknown[]) {
   const scriptPath = join(repo, `${name}.json`);
-  writeFileSync(scriptPath, JSON.stringify({ steps }));
+  // `logFile`: what the fake agent received/sent, for `AGILE_LIVE_KEEP=1` post-mortems.
+  writeFileSync(
+    scriptPath,
+    JSON.stringify({ steps, logFile: join(repo, `${name}.fake-agent.log`) }),
+  );
   return (opts: Parameters<typeof spawnSession>[0]) =>
     spawnSession({
       ...opts,
@@ -158,6 +162,15 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  // `AGILE_LIVE_KEEP=1` leaves the temp repo in place so a failed live run's
+  // artifacts (`.agile/log/events.jsonl`, `.agile/bus/agents/*.yaml`,
+  // `.agile/board/hil/*`, `.agile-daemon-cache/sessions/*.stderr.log`,
+  // `runs/*.md`) can be inspected after the test — the default cleanup
+  // otherwise removes exactly the evidence a live failure needs.
+  if (process.env.AGILE_LIVE_KEEP === '1') {
+    console.log(`agile run e2e: AGILE_LIVE_KEEP=1 — keeping ${repo}`);
+    return;
+  }
   rmSync(repo, { recursive: true, force: true });
 });
 
@@ -366,6 +379,84 @@ describe('agile run --live stall watchdog (offline, deterministic — opus revie
       }),
     ).rejects.toThrow(/no session liveness \(AgentRecord\.last_seen\) observed for 30000ms/);
   }, 10_000);
+
+  test('a session blocked on a hil-routed permission is announced as it happens and named by the watchdog, not reported as "unreachable"', async () => {
+    // The failure mode the first real `test:live` run on a laptop actually
+    // hit: in live mode nothing auto-approves (`run.ts` passes no
+    // `gateDelegate`), so a `hil`-routed `session/request_permission`
+    // (`permissions/policy-tables.ts` — here a force-push) is left
+    // unanswered by the responder and the vendor session blocks silently.
+    // `last_seen` stops advancing, and five minutes later the watchdog
+    // aborted with "no vendor session appears reachable" — true of the
+    // symptom, wrong about the cause. This pins the two things that change
+    // that: (1) the pending HIL is announced (`onNotice`) on the tick it
+    // appears, with the `agile approve <id>` that unblocks it; (2) the
+    // watchdog's error enumerates the pending HIL(s) and the registered
+    // agents' last_seen ages instead of guessing.
+    const blockedSpawn = fakeAgentSpawn(repo, 'hil-blocked', [
+      {
+        type: 'request_permission',
+        toolCall: {
+          toolCallId: 'push-1',
+          kind: 'execute',
+          title: 'Run git push --force origin main',
+          rawInput: { command: 'git push --force origin main' },
+        },
+        options: [
+          { optionId: 'allow', kind: 'allow_once' },
+          { optionId: 'reject', kind: 'reject_once' },
+        ],
+      },
+      { type: 'hang' },
+    ]);
+    // 20x, not the silent-session test's 600x: at 600x the 30s watchdog
+    // floor is 50ms of real time, which fires before the fake agent (a real
+    // `bun` subprocess) has even received its first prompt — fine for a test
+    // that only needs *some* stall, useless for one that needs the
+    // permission request to actually arrive first. At 20x the floor is 1.5s
+    // real: comfortably past spawn + prompt + request_permission on any
+    // host, still well inside this test's own timeout.
+    const testNow = acceleratedClock(20);
+    const notices: string[] = [];
+
+    let thrown: unknown;
+    try {
+      await runDemoSprint({
+        cwd: repo,
+        seed: writeSingleTicketSeed(repo),
+        fake: false,
+        liveSpawnForTest: blockedSpawn,
+        testNow,
+        onNotice: (line) => notices.push(line),
+        preflightTimeoutMs: 5_000,
+        tickIntervalMs: 5,
+        liveTimeoutMs: 60_000_000, // pinned past this test's own timeout at 20x, same idiom as the silent-session test: only the watchdog can end this run.
+        stallTimeoutMs: 1, // clamped up to the real 30s floor by run.ts itself.
+      });
+    } catch (err) {
+      thrown = err;
+    }
+    expect(thrown).toBeInstanceOf(Error);
+    const message = (thrown as Error).message;
+    expect(message).toMatch(/no session liveness \(AgentRecord\.last_seen\) observed for 30000ms/);
+    expect(message).toMatch(
+      /1 pending hil_request\(s\) — the blocked session\(s\) were waiting on a human/,
+    );
+    expect(message).toMatch(/force-push is never automatic/);
+    expect(message).toMatch(/agile approve HIL-/);
+    expect(message).toMatch(
+      /Registered agents \(last_seen age\):\n {2}eng-9001: engineer TKT-9001/,
+    );
+    expect(message).toContain(join(repo, '.agile-daemon-cache', 'sessions'));
+
+    const hilNotices = notices.filter((line) => line.includes('HIL needed:'));
+    expect(hilNotices).toHaveLength(1); // announced once, not once per tick.
+    expect(hilNotices[0]).toMatch(/permission:engineer TKT-9001/);
+    expect(hilNotices[0]).toContain(
+      '`git push --force origin main`: force-push is never automatic',
+    );
+    expect(hilNotices[0]).toContain(`(cd ${repo} && agile approve HIL-`);
+  }, 30_000);
 
   test('a healthy long turn with steady events does not trip the watchdog, even while a ticket sits in_progress the whole time', async () => {
     // T021 round 4 (opus review round 3 blocker): round 3's watchdog keyed

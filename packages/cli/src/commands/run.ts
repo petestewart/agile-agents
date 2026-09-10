@@ -59,6 +59,8 @@ import type {
   AgentSessionOptions,
   ClaudePreToolUsePayload,
   DaemonHandle,
+  GateService,
+  StateStore,
 } from '@agile-agents/daemon';
 import {
   DEFAULT_LIVENESS_TIMEOUT_MS,
@@ -81,7 +83,7 @@ import {
   startDaemon,
   validateReviewRecord,
 } from '@agile-agents/daemon';
-import type { OracleEntry, Ticket, TicketId } from '@agile-agents/shared';
+import type { HilRequest, OracleEntry, Ticket, TicketId } from '@agile-agents/shared';
 import { ulid, validateTicket } from '@agile-agents/shared';
 
 export interface RunOptions {
@@ -146,6 +148,13 @@ export interface RunOptions {
   testNow?: () => Date;
   /** Where to write the run report. Defaults to `<cwd>/runs`. */
   reportDir?: string;
+  /**
+   * Where `--live` progress notices go (a newly raised `hil_request` that a
+   * human must answer before the blocked session can continue, with the
+   * `agile approve <id>` to run). Defaults to `console.error`. Tests inject
+   * a collector.
+   */
+  onNotice?: (line: string) => void;
 }
 
 /**
@@ -951,6 +960,8 @@ export async function runDemoSprint(opts: RunOptions): Promise<RunResult> {
       // this initial value is only ever compared against on the very first
       // check, before that branch has had a chance to run.
       let lastLivenessAt = start;
+      const announcedHils = new Set<string>();
+      const notice = opts.onNotice ?? ((line: string) => console.error(line));
       let tick = 0;
       for (; fake ? tick < maxTicks : clockNow() - start < liveTimeoutMs; tick++) {
         await gateService.tick();
@@ -1076,6 +1087,23 @@ export async function runDemoSprint(opts: RunOptions): Promise<RunResult> {
         // session is actually producing events, and its default threshold
         // is this repo's own 5-minute liveness tunable, not an invented
         // shorter one.
+        // `--live` only: surface every still-pending `hil_request` the
+        // moment it appears. In live mode the daemon has no gate delegate
+        // (nothing auto-approves as `em` the way `--fake` does), so a
+        // `hil`-routed permission (`permissions/decide.ts` — force-push,
+        // dependency install, a push to a non-ticket branch, ...) leaves
+        // the vendor's `session/request_permission` unanswered and that
+        // session silently blocked until a human resolves it. Without this
+        // notice the only symptom is a `last_seen` that stops advancing
+        // and, five minutes later, the stall watchdog below — which is
+        // exactly how the first real `test:live` run on a laptop died.
+        if (!fake) {
+          for (const req of gateService.list()) {
+            if (req.status !== 'pending' || announcedHils.has(req.id)) continue;
+            announcedHils.add(req.id);
+            notice(formatPendingHil(req, opts.cwd, store));
+          }
+        }
         if (!fake && trackedIds.length > 0) {
           const lastSeenTimes = store
             .listAgents()
@@ -1095,7 +1123,12 @@ export async function runDemoSprint(opts: RunOptions): Promise<RunResult> {
           }
           if (clockNow() - lastLivenessAt >= stallTimeoutMs) {
             throw new Error(
-              `agile run --live: no session liveness (AgentRecord.last_seen) observed for ${stallTimeoutMs}ms — no vendor session appears reachable. Aborting instead of waiting out the remaining liveTimeoutMs.`,
+              `agile run --live: no session liveness (AgentRecord.last_seen) observed for ${stallTimeoutMs}ms — ${describeStall(
+                store,
+                gateService,
+                opts.cwd,
+                clockNow(),
+              )}`,
             );
           }
         }
@@ -1128,6 +1161,79 @@ export async function runDemoSprint(opts: RunOptions): Promise<RunResult> {
   } finally {
     await handle.stop();
   }
+}
+
+/**
+ * One `--live` notice per newly pending `hil_request`: what raised it (the
+ * latest `hook_decision` event with `decision: hil` for the same agent, when
+ * there is one — that's where the classifier's actual reason lives; the
+ * gate record itself only knows "no delegate configured"), and the command
+ * that answers it. `agile` discovers the daemon socket from the repo root
+ * (`discoverConfig`), so the hint is anchored on `cwd`.
+ */
+function formatPendingHil(req: HilRequest, cwd: string, store: StateStore): string {
+  const hookReason = latestHilHookReason(store, req);
+  const why = hookReason ?? req.reason ?? req.gate;
+  const ticket = req.ticket ? ` ${req.ticket}` : '';
+  return [
+    `agile run --live: HIL needed: ${req.id} (${req.gate}${ticket}) — ${why}.`,
+    '  The requesting session is blocked until this is answered:',
+    `    (cd ${cwd} && agile approve ${req.id})   # or: agile resolve ${req.id} --decision deny`,
+  ].join('\n');
+}
+
+function latestHilHookReason(store: StateStore, req: HilRequest): string | undefined {
+  // `req.owner` is the resolver (human / delegate), not the requester — the
+  // event log is the only place the requesting agent and the classifier's
+  // reason are recorded together.
+  const events = store.listEvents();
+  for (let i = events.length - 1; i >= 0; i--) {
+    const ev = events[i];
+    if (ev === undefined || ev.kind !== 'hook_decision' || ev.data.decision !== 'hil') continue;
+    if (ev.ticket !== req.ticket) continue; // same ticket, or both ticket-less (an architect gate)
+    const reason = ev.data.reason;
+    const command = ev.data.command;
+    const agent = ev.agent ?? 'unknown agent';
+    const what =
+      typeof command === 'string' ? `\`${command}\`` : String(ev.data.toolClass ?? 'a tool call');
+    return `${agent} asked to run ${what}: ${typeof reason === 'string' ? reason : 'routed to a human'}`;
+  }
+  return undefined;
+}
+
+/** The stall watchdog's error, after its fixed "no session liveness ... observed for Nms — " head: every pending HIL (the run was waiting on a human, not on an unreachable vendor) and every registered agent with how long ago it was last seen — so the abort names the actual blocker instead of guessing "unreachable". */
+function describeStall(
+  store: StateStore,
+  gateService: GateService,
+  cwd: string,
+  nowMs: number,
+): string {
+  const lines: string[] = [];
+  const pending = gateService.list().filter((r) => r.status === 'pending');
+  if (pending.length > 0) {
+    lines.push(
+      `${pending.length} pending hil_request(s) — the blocked session(s) were waiting on a human, not on the vendor. Aborting instead of waiting out the remaining liveTimeoutMs.`,
+    );
+    for (const req of pending) lines.push(formatPendingHil(req, cwd, store));
+  } else {
+    lines.push(
+      'no vendor session appears reachable. Aborting instead of waiting out the remaining liveTimeoutMs.',
+    );
+  }
+  const agents = store.listAgents();
+  if (agents.length > 0) {
+    lines.push('\nRegistered agents (last_seen age):');
+    for (const { id, record } of agents) {
+      const age = Math.max(0, nowMs - Date.parse(record.last_seen));
+      lines.push(
+        `  ${id}: ${record.role ?? '?'}${record.ticket ? ` ${record.ticket}` : ''} — ${Math.round(age / 1000)}s ago (${record.vendor}/${record.model})`,
+      );
+    }
+  }
+  lines.push(
+    `\nVendor stderr, per session: ${join(cwd, '.agile-daemon-cache', 'sessions')}/<agent>-<ts>.stderr.log`,
+  );
+  return lines.join('\n');
 }
 
 function renderReport(
