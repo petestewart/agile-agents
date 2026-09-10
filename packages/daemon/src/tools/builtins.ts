@@ -114,6 +114,11 @@ export function normalizeBusSendInput(
       return `${prefix}-${ctx.ticket.replace(/^TKT-/, '')}`;
     });
   }
+  // Third live run: one engineer's `review_request` had no `ticket` and the
+  // reviewer-side glue (`advanceReviewRequests`) skips ticket-less requests,
+  // so it sat unread forever and that ticket never reached `in_review`. A
+  // session always speaks for its own ticket.
+  if (p.ticket === undefined && ctx.ticket) out.ticket = ctx.ticket;
   if (p.priority === undefined) {
     out.priority = 'normal';
   } else if (typeof p.priority === 'string') {

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { runInit } from '../init';
@@ -153,6 +153,47 @@ describe('runReadSummary', () => {
       runner,
     });
     expect(result.output.summary).toBe('not json at all');
+  });
+
+  test("the daemon's own raw artifacts are readable: an absolute diff_summary pointer and a relative test_run pointer", async () => {
+    // First live run: `diff_summary` returned a pointer under
+    // `.agile-daemon-cache/raw/`, every reviewer called `read_summary` on
+    // it, and the worktree containment check refused it.
+    const rawDir = join(repo, '.agile-daemon-cache', 'raw', 'diff_summary');
+    mkdirSync(rawDir, { recursive: true });
+    const diffPath = join(rawDir, 'tkt_0001-abc.diff');
+    writeFileSync(diffPath, '--- a/a.ts\n+++ b/a.ts\n');
+    const testRunDir = join(repo, '.agile-daemon-cache', 'raw', 'test_run', 'bun');
+    mkdirSync(testRunDir, { recursive: true });
+    writeFileSync(join(testRunDir, 'run1.log'), '1 fail\n');
+
+    const runner = new FakeRunner(() => ({
+      text: JSON.stringify({ summary: 'ok', refs: [] }),
+      model: 'fake-model',
+      inTokens: 1,
+      outTokens: 1,
+    }));
+    const viaAbsolute = await runReadSummary({
+      tool: readSummaryTool,
+      ctx: { agent: 'reviewer-1' },
+      input: { path: diffPath },
+      worktree: join(repo, '.worktrees', 'TKT-0001'),
+      repoRoot: repo,
+      sprintId: undefined,
+      runner,
+    });
+    expect(viaAbsolute.output.summary).toBe('ok');
+    const viaRelative = await runReadSummary({
+      tool: readSummaryTool,
+      ctx: { agent: 'eng-1' },
+      input: { path: 'test_run/bun/run1.log' },
+      worktree: join(repo, '.worktrees', 'TKT-0001'),
+      repoRoot: repo,
+      sprintId: undefined,
+      runner,
+    });
+    expect(viaRelative.output.summary).toBe('ok');
+    expect(runner.callCount).toBe(2);
   });
 
   test('a path escaping the worktree is refused', async () => {

@@ -4,10 +4,25 @@
  * dispatch.
  */
 
-import { installShutdownSignals, startDaemon } from '@agile-agents/daemon';
+import {
+  createEmSessionDelegate,
+  discoverConfig,
+  installShutdownSignals,
+  startDaemon,
+} from '@agile-agents/daemon';
 
 export async function runCliDaemonStart(cwd: string = process.cwd()): Promise<string> {
-  const handle = await startDaemon({ cwd });
+  // em-owned gates (`unblock` from the hook, `approve_plan`, ...) are decided
+  // by a one-shot EM vendor session (`em/delegate.ts`) — without a delegate
+  // `GateService` fails closed and every such request parks as pending.
+  const handle = await startDaemon({
+    cwd,
+    gateDelegate: createEmSessionDelegate({
+      stateRoot: discoverConfig({ cwd }).stateRoot,
+      cwd,
+      onNotice: (line) => console.error(line),
+    }),
+  });
   installShutdownSignals(handle);
   return (
     `agiled started: pid=${handle.lock.pid} ` +

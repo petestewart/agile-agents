@@ -67,6 +67,8 @@ export const HilRequestSchema = z
     deadline: z.string().datetime().optional(),
     /** Names the tripped breaker signal(s), or "no delegate configured" (§16 fail-closed rule). */
     reason: z.string().min(1).optional(),
+    /** What was actually asked (the command a hook refused, the permission a session requested, ...) — the part a human or delegate needs to decide on. Absent for gates that carry their own context (sprint_review). */
+    summary: z.string().min(1).optional(),
     decision: HilDecisionSchema.optional(),
     decided_by: z.string().min(1).optional(),
     resolved_at: z.string().datetime().optional(),

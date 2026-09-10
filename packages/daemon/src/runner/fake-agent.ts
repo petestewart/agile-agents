@@ -36,6 +36,8 @@ export type FakeAgentStep =
       /** If set, the client's answer (`{outcome}`) is written here as JSON — a test's way to observe what the daemon decided. */
       resultFile?: string;
     }
+  /** Streams `text` as the agent's message (one `agent_message_chunk`) — what `session.prompt()` returns as `reply.text` (acp-client `contract.ts`'s final-message fold). */
+  | { type: 'agent_text'; text: string }
   | { type: 'end_turn'; stopReason?: string }
   | { type: 'hang' }
   /** Pauses `ms` before the next step (T021 round 4) — simulates a real long-running turn that keeps sending events over real wall-clock time, spaced out, instead of a script's steps normally firing back-to-back with no delay. */
@@ -151,6 +153,15 @@ async function runScript(promptRequestId: number | string): Promise<void> {
             kind: step.kind ?? 'other',
             title: step.title ?? step.toolCallId,
             status: step.status ?? 'pending',
+          },
+        });
+        break;
+      case 'agent_text':
+        notify('session/update', {
+          sessionId,
+          update: {
+            sessionUpdate: 'agent_message_chunk',
+            content: { type: 'text', text: step.text },
           },
         });
         break;

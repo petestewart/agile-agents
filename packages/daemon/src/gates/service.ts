@@ -33,6 +33,7 @@ import {
   type HilId,
   type HilKind,
   type HilRequest,
+  MESSAGE_BODY_MAX_CHARS,
   type Message,
   type Policy,
   type TicketId,
@@ -52,6 +53,8 @@ const HIL_DIR = 'board/hil';
 // has to special-case it (review nit).
 const BREAKER_PATH = 'board/breaker.yaml';
 const NO_DELEGATE_REASON = 'no delegate configured';
+/** `reason` on a pending request an async delegate is still deciding. */
+export const DELEGATE_DECIDING_REASON = 'delegate deciding';
 // §5 "HIL": every hil_request message needs a deadline. A plain `human`
 // owner has no HIL deadline semantics of its own (§16 only defines one for
 // `human_timeout`), so a generous, non-enforced default is used purely to
@@ -84,11 +87,24 @@ export interface GateDecision {
  * policy-delegated owner). No default is provided by this module — see
  * `GateServiceOptions.delegate`'s header (finding 4: fail closed, not open).
  */
-export type DelegateFn = (ctx: {
+export interface DelegateContext {
   gate: string;
   owner: GateOwner;
   ticket?: TicketId;
-}) => GateDecision;
+  hilKind?: HilKind;
+  /** What was asked — see `HilRequest.summary`. */
+  summary?: string;
+}
+
+/**
+ * A synchronous delegate decides inline (the request is persisted already
+ * resolved — every existing test/`--fake` delegate). An async one (the EM
+ * session delegate, `em/delegate.ts`) is persisted `pending` with
+ * `reason: "delegate deciding"` and resolved when its promise settles —
+ * the hook that raised it must answer Claude within its own 5 s timeout
+ * and cannot wait on a model turn.
+ */
+export type DelegateFn = (ctx: DelegateContext) => GateDecision | Promise<GateDecision>;
 
 export interface GateServiceOptions {
   clock?: () => Date;
@@ -113,6 +129,8 @@ export interface GateRequestContext {
   hilKind: HilKind;
   /** Who to attribute the resulting bus message to. Defaults to `'daemon'`. */
   from?: AgentId;
+  /** What was asked — stored on the record, shown in the notice, handed to the delegate. */
+  summary?: string;
 }
 
 export class GateNotFoundError extends Error {
@@ -227,13 +245,23 @@ export class GateService {
       status: 'pending',
       requested_at: now.toISOString(),
       ...(breakerReason !== undefined ? { reason: breakerReason } : {}),
+      ...(ctx.summary !== undefined ? { summary: ctx.summary } : {}),
     };
 
     let record: HilRequest;
+    let deciding: Promise<GateDecision> | undefined;
     if (owner === 'em' || owner === 'architect') {
-      record = this.delegate
-        ? this.autoDecide(base, now, 'gate policy')
-        : { ...base, reason: base.reason ?? NO_DELEGATE_REASON };
+      if (!this.delegate) {
+        record = { ...base, reason: base.reason ?? NO_DELEGATE_REASON };
+      } else {
+        const outcome = this.callDelegate(base);
+        if (outcome instanceof Promise) {
+          record = { ...base, reason: DELEGATE_DECIDING_REASON };
+          deciding = outcome;
+        } else {
+          record = this.finalizeDecision(base, outcome, now, 'gate policy');
+        }
+      }
     } else if (isHumanTimeoutOwner(owner)) {
       const deadline = new Date(now.getTime() + parseDurationMs(humanTimeoutDuration(owner)));
       record = { ...base, deadline: deadline.toISOString() };
@@ -254,13 +282,73 @@ export class GateService {
     } else {
       await this.notifyPending(saved, ctx.from ?? 'daemon');
     }
+    if (deciding) this.settleLater(saved, deciding, 'gate policy');
     return saved;
   }
 
-  private autoDecide(base: HilRequest, now: Date, via: string): HilRequest {
+  /** Async delegate decisions still in flight — `await settled()` in a test or a shutdown path. */
+  private readonly inFlight = new Set<Promise<void>>();
+
+  /** Resolves once every async delegate decision started so far has been persisted (or failed closed). */
+  async settled(): Promise<void> {
+    while (this.inFlight.size > 0) await Promise.all([...this.inFlight]);
+  }
+
+  private settleLater(pending: HilRequest, deciding: Promise<GateDecision>, via: string): void {
+    const task = (async () => {
+      let decision: GateDecision;
+      try {
+        decision = await deciding;
+      } catch (err) {
+        // Fail closed: a delegate that crashes or times out denies, with the
+        // failure as the rationale, rather than leaving the request pending
+        // forever with nobody to answer it.
+        decision = {
+          decision: 'deny',
+          by: pending.owner,
+          rationale: `delegate failed: ${err instanceof Error ? err.message : String(err)}`,
+        };
+      }
+      let current: HilRequest;
+      try {
+        current = this.get(pending.id);
+      } catch {
+        return; // request vanished (state reset) — nothing to resolve.
+      }
+      if (current.status !== 'pending') return; // a human answered first — theirs stands.
+      const { reason: _reason, ...withoutReason } = current;
+      const resolved = this.finalizeDecision(withoutReason, decision, this.clock(), via);
+      const saved = await this.persist(resolved);
+      await this.notifyResolved(saved);
+    })().catch(() => {
+      // Persist/notify failures are logged by the store; never unhandled here.
+    });
+    this.inFlight.add(task);
+    void task.finally(() => this.inFlight.delete(task));
+  }
+
+  private callDelegate(base: HilRequest): GateDecision | Promise<GateDecision> {
     const delegate = this.delegate;
     if (!delegate) throw new NoDelegateConfiguredError(base.id);
-    const decision = delegate({ gate: base.gate, owner: base.owner, ticket: base.ticket });
+    return delegate({
+      gate: base.gate,
+      owner: base.owner,
+      ticket: base.ticket,
+      hilKind: base.hil_kind,
+      summary: base.summary,
+    });
+  }
+
+  private async autoDecide(base: HilRequest, now: Date, via: string): Promise<HilRequest> {
+    return this.finalizeDecision(base, await this.callDelegate(base), now, via);
+  }
+
+  private finalizeDecision(
+    base: HilRequest,
+    decision: GateDecision,
+    now: Date,
+    via: string,
+  ): HilRequest {
     // A resolved record carries no live deadline (review nit) — drop the key
     // entirely rather than setting it `undefined`, so yaml/json round-trip
     // never has to reason about an explicit-undefined field.
@@ -296,7 +384,10 @@ export class GateService {
       kind: 'hil_request',
       priority: 'urgent',
       ...(req.ticket !== undefined ? { ticket: req.ticket } : {}),
-      body: `gate "${req.gate}" needs a human decision (${req.hil_kind})${req.reason ? ` — ${req.reason}` : ''}`,
+      body: `gate "${req.gate}" needs a human decision (${req.hil_kind})${req.summary ? `: ${req.summary}` : ''}${req.reason ? ` — ${req.reason}` : ''}`.slice(
+        0,
+        MESSAGE_BODY_MAX_CHARS,
+      ),
       refs: [hilPath(req.id)],
       requires_ack: true,
       deadline,
@@ -365,7 +456,7 @@ export class GateService {
     const current = this.get(id);
     if (current.status !== 'pending') throw new GateAlreadyResolvedError(id);
     if (!this.delegate) throw new NoDelegateConfiguredError(id);
-    const resolved = this.autoDecide(
+    const resolved = await this.autoDecide(
       { ...current, owner: to },
       this.clock(),
       'single-instance delegation',
@@ -396,7 +487,7 @@ export class GateService {
         continue;
       }
 
-      const resolved = this.autoDecide(req, now, 'human_timeout fallthrough');
+      const resolved = await this.autoDecide(req, now, 'human_timeout fallthrough');
       const saved = await this.persist(resolved);
       await this.notifyResolved(saved);
       fallenThrough.push(saved);

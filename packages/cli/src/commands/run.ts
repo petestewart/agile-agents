@@ -59,6 +59,7 @@ import type {
   AgentSessionOptions,
   ClaudePreToolUsePayload,
   DaemonHandle,
+  DelegateFn,
   GateService,
   StateStore,
 } from '@agile-agents/daemon';
@@ -66,8 +67,10 @@ import {
   DEFAULT_LIVENESS_TIMEOUT_MS,
   HookService,
   NotFoundError,
+  advanceArchitectInbox,
   advanceDoneTickets,
   advanceEngineerVerdicts,
+  advanceHilResolutions,
   advanceQaSpawns,
   advanceReviewRequests,
   agentIdFor,
@@ -156,6 +159,13 @@ export interface RunOptions {
    * a collector.
    */
   onNotice?: (line: string) => void;
+  /**
+   * `--live` only: who decides `em`/`architect`-owned gates. `agile run
+   * --live` passes `createEmSessionDelegate` (a one-shot EM vendor session
+   * per decision); tests leave it unset so a `hil`-routed request stays
+   * pending, which the stall watchdog then reports.
+   */
+  gateDelegate?: DelegateFn;
 }
 
 /**
@@ -867,7 +877,7 @@ export async function runDemoSprint(opts: RunOptions): Promise<RunResult> {
     runnerSpawn: fake ? createFakeSpawn() : opts.liveSpawnForTest,
     gateDelegate: fake
       ? () => ({ decision: 'approve', by: 'em', rationale: 'automated (agile run --fake)' })
-      : undefined,
+      : opts.gateDelegate,
   });
 
   try {
@@ -928,6 +938,8 @@ export async function runDemoSprint(opts: RunOptions): Promise<RunResult> {
 
       const seenReview = new Set<string>();
       const seenEngineerVerdicts = new Set<string>();
+      const seenHilResolutions = new Set<string>();
+      const seenArchitectInbox = new Set<string>();
       const qaSpawned = new Set<TicketId>();
       const mergedDone = new Set<TicketId>();
       const engineerHandled = new Set<TicketId>();
@@ -972,7 +984,11 @@ export async function runDemoSprint(opts: RunOptions): Promise<RunResult> {
         // Live only: `--fake`'s scripted driver below plays the fix turn
         // after `request_changes` itself (`driveEngineerWork(..., 2)`), so
         // re-prompting the fake session here would double-drive it.
-        if (!fake) await advanceEngineerVerdicts(store, bus, runner, seenEngineerVerdicts);
+        if (!fake) {
+          await advanceEngineerVerdicts(store, bus, runner, seenEngineerVerdicts);
+          await advanceHilResolutions(gateService, runner, seenHilResolutions);
+          await advanceArchitectInbox(bus, runner, seenArchitectInbox);
+        }
         await advanceQaSpawns(store, runner, qaSpawned);
         await advanceDoneTickets(store, mergeOwner, mergedDone);
 
@@ -1179,7 +1195,7 @@ export async function runDemoSprint(opts: RunOptions): Promise<RunResult> {
  */
 function formatPendingHil(req: HilRequest, cwd: string, store: StateStore): string {
   const hookReason = latestHilHookReason(store, req);
-  const why = hookReason ?? req.reason ?? req.gate;
+  const why = req.summary ?? hookReason ?? req.reason ?? req.gate;
   const ticket = req.ticket ? ` ${req.ticket}` : '';
   return [
     `agile run --live: HIL needed: ${req.id} (${req.gate}${ticket}) — ${why}.`,

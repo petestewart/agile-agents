@@ -13,7 +13,7 @@
  */
 
 import { join } from 'node:path';
-import { discoverConfig } from '@agile-agents/daemon';
+import { createEmSessionDelegate, discoverConfig } from '@agile-agents/daemon';
 import { type ParsedArgs, parseArgs } from './args';
 import { runCliDaemonStart } from './commands/daemon';
 import { runApprove, runBreakerClear, runDelegate, runGateList, runResolve } from './commands/gate';
@@ -93,10 +93,20 @@ export async function runCli(argv: string[], cwd: string = process.cwd()): Promi
 
   if (command === 'run') {
     const args = parseArgs(rest.slice(1));
+    const live = args.options.live !== undefined;
     const result = await runDemoSprint({
       cwd,
       seed: typeof args.options.seed === 'string' ? args.options.seed : undefined,
-      fake: args.options.live === undefined,
+      fake: !live,
+      // Live: em-owned gates are decided by a one-shot EM vendor session
+      // (`em/delegate.ts`); without it they park forever as pending.
+      gateDelegate: live
+        ? createEmSessionDelegate({
+            stateRoot: discoverConfig({ cwd }).stateRoot,
+            cwd,
+            onNotice: (line) => console.error(line),
+          })
+        : undefined,
       maxTicks:
         typeof args.options['max-ticks'] === 'string'
           ? Number(args.options['max-ticks'])

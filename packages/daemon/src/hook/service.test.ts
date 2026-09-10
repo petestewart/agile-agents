@@ -407,6 +407,10 @@ describe('HookService.preToolUse', () => {
     expect(requests[0]?.ticket).toBe('TKT-0001');
     expect(requests[0]?.gate).toBe('unblock');
     expect(requests[0]?.status).toBe('pending');
+    // What was asked travels with the request (first live run: the record
+    // only said "no delegate configured" and nobody could decide on it).
+    expect(requests[0]?.summary).toContain('git push origin main');
+    expect(reason).toContain('the daemon prompts you with the decision');
 
     // A real hil_request message landed in the human inbox.
     const humanInbox = bus.poll('human' as never);

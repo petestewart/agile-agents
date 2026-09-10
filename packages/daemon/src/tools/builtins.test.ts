@@ -25,6 +25,16 @@ describe('normalizeBusSendInput', () => {
     expect(normalizeBusSendInput({ to: ['reviewer'] }, {}).to).toEqual(['reviewer']);
   });
 
+  test("ticket defaults to the caller's ticket (a ticket-less review_request is never consumed)", () => {
+    expect(normalizeBusSendInput({ to: ['reviewer'] }, { ticket: 'TKT-1001' }).ticket).toBe(
+      'TKT-1001',
+    );
+    expect(
+      normalizeBusSendInput({ to: ['em'], ticket: 'TKT-1002' }, { ticket: 'TKT-1001' }).ticket,
+    ).toBe('TKT-1002');
+    expect(normalizeBusSendInput({ to: ['em'] }, {}).ticket).toBeUndefined();
+  });
+
   test('priority defaults to normal and accepts common synonyms', () => {
     expect(normalizeBusSendInput({ to: ['em'] }, { ticket: 'TKT-1' }).priority).toBe('normal');
     expect(normalizeBusSendInput({ priority: 'high' }, {}).priority).toBe('urgent');

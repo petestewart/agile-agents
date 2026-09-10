@@ -12,8 +12,10 @@ import {
   type QaSpawner,
   type ReviewRunner,
   type ReviewStarter,
+  advanceArchitectInbox,
   advanceDoneTickets,
   advanceEngineerVerdicts,
+  advanceHilResolutions,
   advanceQaSpawns,
   advanceReviewRequests,
 } from './pipeline-glue';
@@ -173,6 +175,112 @@ describe('advanceEngineerVerdicts', () => {
     expect(await advanceEngineerVerdicts(store, bus, runner, seen)).toEqual([]);
     expect(seen.size).toBe(0);
     expect(bus.poll(engineerId)).toHaveLength(1);
+  });
+});
+
+describe('advanceHilResolutions', () => {
+  const resolved = (id: string, decision: 'approve' | 'deny', ticket = 'TKT-0001') => ({
+    id,
+    gate: 'unblock',
+    ticket: ticket as TicketId,
+    status: 'resolved' as const,
+    decision,
+    decided_by: 'em',
+    summary: 'eng-0001 asked to run `git push origin TKT-0001`',
+    fyi: { body: 'gate "unblock" approved by em (gate policy, owner: em) — ticket branch only' },
+  });
+
+  test('tells the live engineer its unblock request was approved, once', async () => {
+    const engineerId = agentIdFor('engineer', 'TKT-0001' as TicketId);
+    const runner = fakeReviewRunner([engineerId]);
+    const seen = new Set<string>();
+    const gates = { list: () => [resolved('HIL-1', 'approve')] };
+    expect(await advanceHilResolutions(gates, runner, seen)).toEqual(['HIL-1']);
+    expect(runner.prompted[0]?.agentId).toBe(engineerId);
+    expect(runner.prompted[0]?.text).toContain('APPROVED');
+    expect(runner.prompted[0]?.text).toContain('git push origin TKT-0001');
+    expect(await advanceHilResolutions(gates, runner, seen)).toEqual([]);
+    expect(runner.prompted).toHaveLength(1);
+  });
+
+  test('a denial carries the rationale and says not to retry', async () => {
+    const engineerId = agentIdFor('engineer', 'TKT-0002' as TicketId);
+    const runner = fakeReviewRunner([engineerId]);
+    const gates = { list: () => [resolved('HIL-2', 'deny', 'TKT-0002')] };
+    await advanceHilResolutions(gates, runner, new Set());
+    expect(runner.prompted[0]?.text).toContain('DENIED');
+    expect(runner.prompted[0]?.text).toContain('Do not retry');
+  });
+
+  test('pending requests, non-unblock gates, and dead engineers are left alone (dead ones are marked seen)', async () => {
+    const runner = fakeReviewRunner();
+    const seen = new Set<string>();
+    const gates = {
+      list: () => [
+        { ...resolved('HIL-3', 'approve'), status: 'pending' as const },
+        { ...resolved('HIL-4', 'approve'), gate: 'approve_plan' },
+        resolved('HIL-5', 'approve'),
+      ],
+    };
+    expect(await advanceHilResolutions(gates, runner, seen)).toEqual([]);
+    expect(runner.prompted).toHaveLength(0);
+    expect([...seen]).toEqual(['HIL-5']);
+  });
+});
+
+describe('advanceArchitectInbox', () => {
+  async function sendToArchitect(kind: 'discovery' | 'question', ticket: TicketId, body: string) {
+    const result = await bus.send({
+      id: ulid(),
+      ts: new Date().toISOString(),
+      from: 'em' as AgentId,
+      to: ['architect' as AgentId],
+      kind,
+      priority: 'normal',
+      ticket,
+      body,
+      refs: [],
+      requires_ack: false,
+    });
+    if (!result.ok) throw new Error(`sendToArchitect: ${result.reason}`);
+  }
+
+  test('spawns the architect with the message as handoff context when none is live, then acks', async () => {
+    await store.putTicket(makeTicket('TKT-0001' as TicketId));
+    await sendToArchitect(
+      'discovery',
+      'TKT-0001' as TicketId,
+      'SPEC-tasks-002 clauses 1 and 2 contradict',
+    );
+    const spawned: Array<{ ticket: TicketId; extraContext?: string }> = [];
+    const runner = {
+      ...fakeReviewRunner(),
+      spawn: async (_role: 'architect', ticket: TicketId, opts?: { extraContext?: string }) => {
+        spawned.push({ ticket, extraContext: opts?.extraContext });
+      },
+    };
+    const seen = new Set<string>();
+    expect(await advanceArchitectInbox(bus, runner, seen)).toHaveLength(1);
+    expect(spawned[0]?.ticket).toBe('TKT-0001');
+    expect(spawned[0]?.extraContext).toContain('discovery from em on TKT-0001');
+    expect(spawned[0]?.extraContext).toContain('contradict');
+    expect(bus.poll('architect' as AgentId)).toHaveLength(0);
+    expect(await advanceArchitectInbox(bus, runner, seen)).toEqual([]);
+  });
+
+  test('prompts a live architect instead of spawning a second one', async () => {
+    await store.putTicket(makeTicket('TKT-0002' as TicketId));
+    await sendToArchitect('question', 'TKT-0002' as TicketId, 'which clause governs?');
+    const base = fakeReviewRunner(['architect' as AgentId]);
+    const runner = {
+      ...base,
+      spawn: async () => {
+        throw new Error('must not spawn');
+      },
+    };
+    await advanceArchitectInbox(bus, runner, new Set());
+    expect(base.prompted[0]?.agentId).toBe('architect');
+    expect(base.prompted[0]?.text).toContain('which clause governs?');
   });
 });
 

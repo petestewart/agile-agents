@@ -426,7 +426,11 @@ export class HookService {
    * opening a second one for a retried/identical call — "no duplicate" per
    * the QA test.
    */
-  private async resolveOrCreateHil(ticket: TicketId, agent: AgentId): Promise<string> {
+  private async resolveOrCreateHil(
+    ticket: TicketId,
+    agent: AgentId,
+    summary: string,
+  ): Promise<string> {
     const existing = this.options.gates
       .list()
       .find((r) => r.status === 'pending' && r.ticket === ticket && r.gate === UNBLOCK_GATE);
@@ -438,6 +442,9 @@ export class HookService {
       ticket,
       hilKind: 'unblock',
       from: agent,
+      // What was asked, so the notice/delegate/human can decide on it —
+      // the first live run's requests only said "no delegate configured".
+      summary,
     });
     return created.id;
   }
@@ -469,11 +476,20 @@ export class HookService {
 
     let decision = decidePreToolUse(ctx, payload);
     if (decision.decision === 'ask') {
-      const hilId = await this.resolveOrCreateHil(ctx.ticket, ctx.agent);
+      const command =
+        typeof payload.tool_input?.command === 'string'
+          ? payload.tool_input.command
+          : `${payload.tool_name ?? 'tool'} call`;
+      const why = decision.reason ?? 'never-without-human command';
+      const hilId = await this.resolveOrCreateHil(
+        ctx.ticket,
+        ctx.agent,
+        `${ctx.agent} asked to run \`${command}\` — ${why}`.slice(0, 400),
+      );
       decision = {
         ...decision,
         decision: 'deny',
-        reason: `${decision.reason ?? 'never-without-human command'} — awaiting human approval, see ${hilId}`,
+        reason: `${why} — filed ${hilId} for the gate owner; do other work or wait, the daemon prompts you with the decision`,
       };
     }
 

@@ -620,6 +620,7 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
                 ticket: input.ticket,
                 hilKind: input.hilKind,
                 from: input.agent,
+                summary: input.summary,
               })
               .then((req) => ({ id: req.id })),
         }

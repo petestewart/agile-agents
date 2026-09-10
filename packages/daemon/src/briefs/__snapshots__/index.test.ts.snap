@@ -47,6 +47,16 @@ and when the ticket lands (\`done\`). A \`discovery\` stanza is for anything the
 oracle doesn't already answer — tier it \`local\`/\`scoped\`/\`global\` as best you
 can; the architect confirms or changes it.
 
+## Shell rules the hook enforces
+The PreToolUse hook classifies every command; what it can't classify it
+refuses. Keep commands classifiable: no command substitution, backticks, \`eval\`,
+heredocs or unbalanced quotes — for a multi-line commit message use repeated
+\`-m\` flags. Stay inside your worktree (no \`/tmp\`, no \`rm\`, no \`cd\` out of it),
+run tools through the repo's scripts (\`bun test\`, \`bun run typecheck\` — one
+command per call, not \`a && b\`), and never \`-g\`/\`-y\` installs. A refusal that
+names a \`HIL-…\` id has been filed with the gate owner; do other work, the
+daemon prompts you with the decision.
+
 ## Never
 - Never message another engineer directly — cross-ticket needs go through \`em\`.
 - Never touch \`.agile/\` files directly; state changes go through the daemon.

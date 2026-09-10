@@ -48,6 +48,10 @@ what keeps `test:integration` honest:
   Code's own `~/Library/Caches/claude-cli-nodejs/<worktree>/mcp-logs-agile/`
   (`grep -h '"error"' *.jsonl`). A verb called many times in a burst is a
   model retrying a schema rejection; read those errors first.
+  `em`-owned gates (`unblock` from the hook, `approve_plan`, ...) are decided
+  by a one-shot EM vendor session (`packages/daemon/src/em/delegate.ts`) —
+  the run prints `EM deciding gate …` / `EM approved|denied gate …`; without
+  a delegate (tests) they stay pending.
 
 Both name their test files explicitly. The old `--grep live` selector matched
 39+ ordinary offline tests as well, because `live` is a substring of

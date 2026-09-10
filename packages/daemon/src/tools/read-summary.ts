@@ -5,9 +5,10 @@
  * one T011 seeds, but this module doesn't hard-code its name.
  */
 
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { isAbsolute, resolve } from 'node:path';
 import { isPathInside } from '../permissions/command';
+import { DAEMON_CACHE_DIR } from '../subprocess-env';
 import { cacheEntryPath, cacheKey, readCacheEntry, sha256Hex, writeCacheEntry } from './cache';
 import { charsPerToken } from './runner';
 import type { LoadedTool, ToolCallContext, ToolRunner } from './types';
@@ -31,13 +32,29 @@ export class ReadSummaryError extends Error {}
 
 const MAX_SUMMARY_TOKENS_DEFAULT = 400;
 
-/** Resolves `path` against `worktree` and refuses anything that escapes it — same containment contract as every other worktree-scoped tool in this package. */
-function resolveInWorktree(path: string, worktree: string): string {
-  const abs = isAbsolute(path) ? path : resolve(worktree, path);
-  if (!isPathInside(abs, worktree)) {
+/**
+ * Resolves `path` against `worktree` and refuses anything that escapes it —
+ * same containment contract as every other worktree-scoped tool in this
+ * package — with one deliberate second root: the daemon's own raw-output
+ * tree (`<repoRoot>/.agile-daemon-cache/raw/`). `diff_summary` and
+ * `test_run` hand out pointers into it ("raw output to files with pointers",
+ * CLAUDE.md), and on the first live run every reviewer did the obvious thing
+ * with the pointer — `read_summary` on it — and was refused. A relative path
+ * is tried under the worktree first, then under the raw root (test_run's
+ * pointer is relative to the raw tree).
+ */
+function resolveInWorktree(path: string, worktree: string, repoRoot: string): string {
+  const rawRoot = resolve(repoRoot, DAEMON_CACHE_DIR, 'raw');
+  if (isAbsolute(path)) {
+    if (isPathInside(path, worktree) || isPathInside(path, rawRoot)) return path;
     throw new ReadSummaryError(`read_summary: path escapes the worktree: ${path}`);
   }
-  return abs;
+  const inWorktree = resolve(worktree, path);
+  if (isPathInside(inWorktree, worktree) && existsSync(inWorktree)) return inWorktree;
+  const inRaw = resolve(rawRoot, path);
+  if (isPathInside(inRaw, rawRoot) && existsSync(inRaw)) return inRaw;
+  if (isPathInside(inWorktree, worktree)) return inWorktree; // missing file: the caller's read reports ENOENT
+  throw new ReadSummaryError(`read_summary: path escapes the worktree: ${path}`);
 }
 
 /**
@@ -92,7 +109,7 @@ export interface RunReadSummaryResult {
 
 export async function runReadSummary(opts: RunReadSummaryOptions): Promise<RunReadSummaryResult> {
   const { tool, input } = opts;
-  const absPath = resolveInWorktree(input.path, opts.worktree);
+  const absPath = resolveInWorktree(input.path, opts.worktree, opts.repoRoot);
   const content = readFileSync(absPath, 'utf8');
   const fileHash = sha256Hex(content);
   const question = input.question ?? '';

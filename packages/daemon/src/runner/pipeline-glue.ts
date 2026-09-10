@@ -320,3 +320,107 @@ export async function advanceEngineerVerdicts(
   }
   return prompted;
 }
+
+/** The slice of `GateService` `advanceHilResolutions` needs. */
+export interface HilLister {
+  list(): Array<{
+    id: string;
+    gate: string;
+    ticket?: TicketId;
+    status: 'pending' | 'resolved';
+    decision?: 'approve' | 'deny';
+    decided_by?: string;
+    summary?: string;
+    fyi?: { body: string };
+  }>;
+}
+
+/**
+ * Fifth hand-off (first live runs, 2026-09-10): the PreToolUse hook denies a
+ * never-without-human command *naming* an `unblock` `hil_request` and moves
+ * on — Claude only ever sees the hook's stdout, so the engineer gets "filed
+ * HIL-…" and nothing else, ever. Once that request is resolved (by a human
+ * via `agile approve`, or by the EM delegate) somebody has to tell the
+ * session. This re-prompts the ticket's live engineer with the outcome:
+ * approved → re-run the command; denied → the rationale, find another way.
+ * Only `unblock` requests (the hook's) are handled here; permission-path
+ * requests (`permission:<role>`) are answered on the ACP request itself by
+ * the responder. `seen` is the caller's once-per-process set.
+ */
+export async function advanceHilResolutions(
+  gates: HilLister,
+  runner: ReviewRunner,
+  seen: Set<string>,
+): Promise<string[]> {
+  const prompted: string[] = [];
+  for (const req of gates.list()) {
+    if (req.status !== 'resolved' || req.gate !== 'unblock' || !req.ticket) continue;
+    if (seen.has(req.id)) continue;
+    const engineerId = agentIdFor('engineer', req.ticket);
+    if (!runner.isLive(engineerId)) {
+      // No session to tell. Mark seen: a later engineer spawn reads the
+      // board/inbox for context; re-prompting a future session with a
+      // stale resolution would be noise.
+      seen.add(req.id);
+      continue;
+    }
+    const what = req.summary ? ` (${req.summary})` : '';
+    const text =
+      req.decision === 'approve'
+        ? `${req.id} was APPROVED by ${req.decided_by ?? 'the gate owner'}${what}. You may run that command now — re-run it and continue.${req.fyi?.body ? ` Note: ${req.fyi.body}` : ''}`
+        : `${req.id} was DENIED by ${req.decided_by ?? 'the gate owner'}${what}.${req.fyi?.body ? ` ${req.fyi.body}` : ''} Do not retry it; find another way within your worktree, or post a \`blocked\` stanza with the reason.`;
+    try {
+      await runner.promptAgent(engineerId, text);
+    } catch {
+      continue; // session died between isLive and the prompt — retry next tick.
+    }
+    seen.add(req.id);
+    prompted.push(req.id);
+  }
+  return prompted;
+}
+
+/** The slice of `Runner` `advanceArchitectInbox` needs. */
+export interface ArchitectRunner extends ReviewRunner {
+  spawn(role: 'architect', ticket: TicketId, opts?: { extraContext?: string }): Promise<unknown>;
+}
+
+/**
+ * Sixth hand-off: `em/discovery.ts` forwards every `discovery` stanza to the
+ * `architect` inbox — and in a live run nobody ever spawned an architect
+ * (only `--fake`'s scripted driver called `ensureArchitectSpawned`), so the
+ * planted contradiction the engineers found and the reviewers escalated on
+ * sat unread. For each unread architect-inbox message: prompt the live
+ * architect session with it, or spawn one (T031's singleton, on the
+ * message's ticket) carrying the message as handoff context; then ack.
+ */
+export async function advanceArchitectInbox(
+  bus: Pick<Bus, 'poll' | 'ack'>,
+  runner: ArchitectRunner,
+  seen: Set<string>,
+): Promise<string[]> {
+  const handled: string[] = [];
+  for (const message of bus.poll('architect' as AgentId)) {
+    if (seen.has(message.id)) continue;
+    if (!message.ticket) {
+      seen.add(message.id);
+      await bus.ack('architect' as AgentId, message.id);
+      continue;
+    }
+    const refs = message.refs.length > 0 ? `\nRefs: ${message.refs.join(', ')}` : '';
+    const text = `${message.kind} from ${message.from} on ${message.ticket}: ${message.body}${refs}`;
+    try {
+      if (runner.isLive('architect' as AgentId)) {
+        await runner.promptAgent('architect' as AgentId, text);
+      } else {
+        await runner.spawn('architect', message.ticket, { extraContext: text });
+      }
+    } catch {
+      continue; // retry next tick, same contract as the other glue.
+    }
+    seen.add(message.id);
+    handled.push(message.id);
+    await bus.ack('architect' as AgentId, message.id);
+  }
+  return handled;
+}

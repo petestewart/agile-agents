@@ -456,9 +456,10 @@ describe('agile run --live stall watchdog (offline, deterministic — opus revie
     const hilNotices = notices.filter((line) => line.includes('HIL needed:'));
     expect(hilNotices).toHaveLength(1); // announced once, not once per tick.
     expect(hilNotices[0]).toMatch(/permission:engineer TKT-9001/);
-    expect(hilNotices[0]).toContain(
-      '`git push --force origin main`: force-push is never automatic',
-    );
+    // The request's own `summary` (the responder's classified "execute
+    // \"<command>\": <rule>") is what the notice shows now.
+    expect(hilNotices[0]).toContain('git push --force origin main');
+    expect(hilNotices[0]).toContain('force-push is never automatic');
     expect(hilNotices[0]).toContain(`(cd ${repo} && agile approve HIL-`);
   }, 30_000);
 

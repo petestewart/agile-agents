@@ -94,6 +94,70 @@ describe('GateService.request', () => {
     expect(inbox.some((m) => m.kind === 'fyi' && m.priority === 'low')).toBe(true);
   });
 
+  test('an ASYNC delegate leaves the request pending ("delegate deciding") and resolves it when the promise settles', async () => {
+    // The EM-session delegate (`em/delegate.ts`) takes a model turn; the
+    // hook that raised the request cannot wait on it.
+    let resolveDecision!: (d: GateDecision) => void;
+    const deciding = new Promise<GateDecision>((resolve) => {
+      resolveDecision = resolve;
+    });
+    const service = new GateService(store, { clock, delegate: () => deciding });
+    const req = await service.request(
+      'unblock',
+      ctx(
+        { unblock: 'em' },
+        {
+          ticket: 'TKT-0001',
+          summary: 'eng-0001 asked to run `git push origin main`',
+        },
+      ) as never,
+    );
+    expect(req.status).toBe('pending');
+    expect(req.reason).toBe('delegate deciding');
+    expect(req.summary).toBe('eng-0001 asked to run `git push origin main`');
+
+    resolveDecision({ decision: 'approve', by: 'em', rationale: 'ticket branch only' });
+    await service.settled();
+    const after = service.get(req.id);
+    expect(after.status).toBe('resolved');
+    expect(after.decision).toBe('approve');
+    expect(after.decided_by).toBe('em');
+    expect(after.delegated).toBe(true);
+    expect(after.reason).toBeUndefined();
+    expect(after.fyi?.body).toContain('ticket branch only');
+  });
+
+  test('an async delegate that rejects fails closed: denied, with the failure as rationale', async () => {
+    const service = new GateService(store, {
+      clock,
+      delegate: async () => {
+        throw new Error('EM session timed out');
+      },
+    });
+    const req = await service.request('unblock', ctx({ unblock: 'em' }));
+    expect(req.status).toBe('pending');
+    await service.settled();
+    const after = service.get(req.id);
+    expect(after.status).toBe('resolved');
+    expect(after.decision).toBe('deny');
+    expect(after.fyi?.body).toContain('EM session timed out');
+  });
+
+  test('a human answer that lands before the async delegate wins; the late decision is dropped', async () => {
+    let resolveDecision!: (d: GateDecision) => void;
+    const deciding = new Promise<GateDecision>((resolve) => {
+      resolveDecision = resolve;
+    });
+    const service = new GateService(store, { clock, delegate: () => deciding });
+    const req = await service.request('unblock', ctx({ unblock: 'em' }));
+    await service.respond(req.id, 'deny', 'human');
+    resolveDecision({ decision: 'approve', by: 'em' });
+    await service.settled();
+    const after = service.get(req.id);
+    expect(after.decision).toBe('deny');
+    expect(after.decided_by).toBe('human');
+  });
+
   test('an em-owned gate with NO delegate configured stays pending (fail closed, never auto-approves)', async () => {
     const service = new GateService(store, { clock });
     const req = await service.request('unblock', ctx({ unblock: 'em' }));
