@@ -87,7 +87,7 @@ case "${1:-}" in
   log)
     sync
     ls -1 "$HERE"/inbox/*/*.md 2>/dev/null | sort -t/ -k1 | while read -r f; do
-      echo "== $(basename "$f" .md) → $(basename "$(dirname "$f")")  $(sed -n 's/^subject: //p' "$f" | head -1)"
+      echo "== $(basename "$f" .md) -> $(basename "$(dirname "$f")")  $(sed -n 's/^subject: //p' "$f" | head -1)"
     done
     ;;
   *)
