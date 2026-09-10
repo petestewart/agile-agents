@@ -533,6 +533,7 @@ describe('T027: per-vendor session wiring (Cursor ask mode, Grok client-fs gate,
       brief: 'do it',
       currentSprintId: () => 'S-01',
       cliBin: { command: '/opt/bun', args: ['/my repo/packages/cli/src/index.ts'] },
+      socketPath: '/my repo/.agile-daemon.sock',
       provider: fakeProviderFor(ACP_PROVIDERS.claude, { steps: [{ type: 'end_turn' }] }),
       spawn: capturingSpawn(sink),
     });
@@ -551,6 +552,11 @@ describe('T027: per-vendor session wiring (Cursor ask mode, Grok client-fs gate,
       'eng-0231',
       '--ticket',
       'TKT-0231',
+      // The daemon socket, explicit: the bridge's cwd is the worktree, whose
+      // repo root is NOT where the socket lives (the first real `test:live`
+      // run — 0 daemon verb calls, every engineer idle after its first turn).
+      '--socket',
+      '/my repo/.agile-daemon.sock',
     ]);
     const settings = JSON.parse(
       readFileSync(join(worktree, '.claude', 'settings.json'), 'utf8'),

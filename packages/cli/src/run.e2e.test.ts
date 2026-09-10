@@ -282,6 +282,10 @@ describe('agile run (live, real ACP — only with AGILE_LIVE=1)', () => {
       // waits on the daemon's real ceremony tick (opus review round 1
       // blocker 2: the old loop had no wait at all and burned `maxTicks` in
       // milliseconds regardless of a real session's progress).
+      // Printed up front, not only from `afterEach`: the offline test's own
+      // keep line comes first in the output, and mid-run this is the only
+      // way to know which temp repo is the live one.
+      if (process.env.AGILE_LIVE_KEEP === '1') console.log(`live e2e: repo is ${repo}`);
       let result: Awaited<ReturnType<typeof runDemoSprint>>;
       try {
         result = await runDemoSprint({

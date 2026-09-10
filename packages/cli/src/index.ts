@@ -191,10 +191,15 @@ export async function runCli(argv: string[], cwd: string = process.cwd()): Promi
         // needs it.
         const { parseMcpArgs, runCliMcp } = await import('./commands/mcp');
         const args: ParsedArgs = parseArgs(rest.slice(1));
-        const { agent, ticket, timeoutMs } = parseMcpArgs(args);
+        const { agent, ticket, timeoutMs, socketPath: explicitSocket } = parseMcpArgs(args);
         // Foreground process, same as `daemon start`: keep the event loop
         // alive for the life of the stdio MCP session.
-        return await runCliMcp({ socketPath, agent, ticket, timeoutMs });
+        return await runCliMcp({
+          socketPath: explicitSocket ?? socketPath,
+          agent,
+          ticket,
+          timeoutMs,
+        });
       }
 
       default:

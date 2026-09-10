@@ -344,12 +344,40 @@ async function promptWithAuthRetry(
   }
 }
 
-/** Builds the MCP stdio server entry T011's report specifies: `agile mcp --agent <id> --ticket <id>`. */
-function mcpServerConfig(cli: CliInvocation, agentId: AgentId, ticket: TicketId): unknown {
+/**
+ * Builds the MCP stdio server entry T011's report specifies: `agile mcp
+ * --agent <id> --ticket <id>`, plus `--socket <path>` whenever the session
+ * has an explicit `socketPath`. The MCP server runs with the *worktree* as
+ * its cwd, and `discoverConfig` resolves the daemon socket relative to the
+ * cwd's repo root — which for a `.worktrees/**` checkout is the worktree
+ * itself, not the main repo, so without this the bridge dies on startup
+ * (`connect ENOENT .worktrees/<ticket>/.agile-daemon.sock`) and the session
+ * has no daemon verbs at all: it does the work, ends its turn, and nothing
+ * ever re-prompts it (the first real `test:live` run — every engineer
+ * committed, then sat idle until the liveness watchdog). The hook command
+ * already carries the socket as an `AGILE_SOCKET_PATH=` prefix
+ * (`hook/settings.ts`); this is the MCP descriptor's equivalent, as an
+ * argument rather than an env entry because the ACP `env` field's shape
+ * differs between vendors and an argument works everywhere.
+ */
+function mcpServerConfig(
+  cli: CliInvocation,
+  agentId: AgentId,
+  ticket: TicketId,
+  socketPath: string | undefined,
+): unknown {
   return {
     name: 'agile',
     command: cli.command,
-    args: [...cli.args, 'mcp', '--agent', agentId, '--ticket', ticket],
+    args: [
+      ...cli.args,
+      'mcp',
+      '--agent',
+      agentId,
+      '--ticket',
+      ticket,
+      ...(socketPath !== undefined ? ['--socket', socketPath] : []),
+    ],
   };
 }
 
@@ -550,7 +578,7 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
       ...(provider.id === 'pi' ? { [PI_GATE_ENV_VAR]: '1' } : {}),
     },
     clientCapabilities: provider.clientCapabilities,
-    mcpServers: [mcpServerConfig(cliBin, agentId, ticket)],
+    mcpServers: [mcpServerConfig(cliBin, agentId, ticket, opts.socketPath)],
     ...(stderrLog ? { onStderr: stderrLog.append } : {}),
     // Omitted entirely (not even `modeId: undefined`) when the provider has
     // no mode — `SpawnSessionOptions.modeId` being present-but-undefined

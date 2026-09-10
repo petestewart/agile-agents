@@ -50,9 +50,12 @@ export function parseMcpArgs(args: ParsedArgs): {
   agent: string;
   ticket?: string;
   timeoutMs?: number;
+  /** `--socket <path>`: the daemon socket, explicit — the daemon passes it because a `.worktrees/**` cwd resolves to the wrong repo root (see `runner/session.ts`'s `mcpServerConfig`). Absent: `discoverConfig`'s cwd/env/config resolution applies. */
+  socketPath?: string;
 } {
   const agent = requireOption(args.options, 'agent');
   const ticket = typeof args.options.ticket === 'string' ? args.options.ticket : undefined;
+  const socketPath = optionalString(args.options, 'socket');
   const timeoutRaw = optionalString(args.options, 'timeout');
   const timeoutMs = timeoutRaw !== undefined ? Number(timeoutRaw) : undefined;
   if (timeoutRaw !== undefined && (timeoutMs === undefined || Number.isNaN(timeoutMs))) {
@@ -60,7 +63,7 @@ export function parseMcpArgs(args: ParsedArgs): {
       `--timeout must be a number of milliseconds, got ${JSON.stringify(timeoutRaw)}`,
     );
   }
-  return { agent, ticket, timeoutMs };
+  return { agent, ticket, timeoutMs, ...(socketPath !== undefined ? { socketPath } : {}) };
 }
 
 /** Builds (but does not connect) the MCP server for one bridge invocation — split out so a test can drive it over an in-memory transport instead of real stdio. */
