@@ -83,6 +83,17 @@ export interface DaemonHandle {
   reviewProtocol?: ReviewProtocol;
   qaProtocol?: QaProtocol;
   emLoop?: EmLoop;
+  /**
+   * One pass of the pipeline glue (`runner/pipeline-glue.ts`: review
+   * requests, engineer verdicts, HIL resolutions, architect inbox, security
+   * reviews, reviewer escalations, stale-session release, QA spawns, done
+   * merges) — the same list the ceremony timer drives. `agile run --live`
+   * (`ceremonyTickMs: 0`, no timer) calls this from its own loop instead of
+   * re-listing the glue itself: its hand-rolled copy silently dropped the
+   * two steps added in `b0eb02a`/`81ba3f8`, so neither ever ran live
+   * (eleventh live run, 2026-09-10). `undefined` pre-`agile init`.
+   */
+  advancePipeline?: () => Promise<void>;
   /** Graceful shutdown: closes both servers, then releases the lock. */
   stop(): Promise<void>;
 }
@@ -580,6 +591,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
     reviewProtocol,
     qaProtocol,
     emLoop,
+    ...(store ? { advancePipeline } : {}),
     async stop() {
       if (stopped) return;
       stopped = true;

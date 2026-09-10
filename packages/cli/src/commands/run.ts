@@ -67,13 +67,9 @@ import {
   DEFAULT_LIVENESS_TIMEOUT_MS,
   HookService,
   NotFoundError,
-  advanceArchitectInbox,
   advanceDoneTickets,
-  advanceEngineerVerdicts,
-  advanceHilResolutions,
   advanceQaSpawns,
   advanceReviewRequests,
-  advanceSecurityReviews,
   agentIdFor,
   createEmSessionDelegate,
   createFakeSpawn,
@@ -960,10 +956,6 @@ export async function runDemoSprint(opts: RunOptions): Promise<RunResult> {
       }
 
       const seenReview = new Set<string>();
-      const seenEngineerVerdicts = new Set<string>();
-      const seenHilResolutions = new Set<string>();
-      const seenArchitectInbox = new Set<string>();
-      const seenSecurityReviews = new Set<string>();
       const qaSpawned = new Set<TicketId>();
       const mergedDone = new Set<TicketId>();
       const engineerHandled = new Set<TicketId>();
@@ -1026,18 +1018,23 @@ export async function runDemoSprint(opts: RunOptions): Promise<RunResult> {
       for (; fake ? tick < maxTicks : clockNow() - start < liveTimeoutMs; tick++) {
         await gateService.tick();
         await emLoop.tick();
-        await advanceReviewRequests(store, bus, reviewProtocol, runner, seenReview);
-        // Live only: `--fake`'s scripted driver below plays the fix turn
-        // after `request_changes` itself (`driveEngineerWork(..., 2)`), so
-        // re-prompting the fake session here would double-drive it.
-        if (!fake) {
-          await advanceEngineerVerdicts(store, bus, runner, seenEngineerVerdicts);
-          await advanceHilResolutions(gateService, runner, seenHilResolutions);
-          await advanceArchitectInbox(bus, runner, seenArchitectInbox);
-          await advanceSecurityReviews(store, runner, seenSecurityReviews);
+        if (fake) {
+          // `--fake`'s scripted driver below plays the engineer/architect
+          // turns itself (`driveEngineerWork(..., 2)` after
+          // `request_changes`), so only the hand-offs that don't re-prompt
+          // a session run here; the daemon's full pipeline would
+          // double-drive the fake sessions.
+          await advanceReviewRequests(store, bus, reviewProtocol, runner, seenReview);
+          await advanceQaSpawns(store, runner, qaSpawned);
+          await advanceDoneTickets(store, mergeOwner, mergedDone);
+        } else {
+          // Live: the daemon's own pipeline pass — one list, owned by
+          // `daemon.ts`. The hand-rolled copy this replaced was missing
+          // `advanceReviewerEscalations` and `releaseStaleTicketSessions`
+          // (eleventh live run, 2026-09-10: readied tickets never
+          // re-assigned because the pre-ripple sessions were never stopped).
+          await handle.advancePipeline?.();
         }
-        await advanceQaSpawns(store, runner, qaSpawned);
-        await advanceDoneTickets(store, mergeOwner, mergedDone);
 
         if (fake) {
           for (const ticket of store.listTickets()) {

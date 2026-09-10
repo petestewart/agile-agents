@@ -48,6 +48,9 @@ what keeps `test:integration` honest:
   Code's own `~/Library/Caches/claude-cli-nodejs/<worktree>/mcp-logs-agile/`
   (`grep -h '"error"' *.jsonl`). A verb called many times in a burst is a
   model retrying a schema rejection; read those errors first.
+  `agile run --live` drives the pipeline through `handle.advancePipeline()`
+  (`daemon.ts` — the one list of glue steps); never re-list the glue in
+  `run.ts`, the hand-rolled copy silently drifted twice.
   `em`-owned gates (`unblock` from the hook, `approve_plan`, ...) are decided
   by a one-shot EM vendor session (`packages/daemon/src/em/delegate.ts`) —
   the run prints `EM deciding gate …` / `EM approved|denied gate …`; without
