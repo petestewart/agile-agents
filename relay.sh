@@ -14,6 +14,7 @@
 # lists the ids the recipient has handled. Append-only, per-recipient paths,
 # so both sides can push without conflicting; `sync` rebases before pushing.
 set -euo pipefail
+# bash 3.2 (macOS) compatible: keep strings adjacent to $VARS ASCII-only under set -u.
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SELF="${RELAY_SELF:-}"
@@ -78,10 +79,12 @@ case "${1:-}" in
     ts="$(date -u +%Y%m%dT%H%M%SZ)"
     n=1; while [[ -e "$HERE/inbox/$to/$ts-$SELF-$n.md" ]]; do n=$((n+1)); done
     id="$ts-$SELF-$n"
+    # Drop strays from earlier failed sends so a retry can't sweep them in.
+    "${G[@]}" clean -q -f -- "$HERE/inbox/$to" 2>/dev/null || true
     {
       echo "from: $SELF"; echo "to: $to"; echo "ts: $ts"; echo "subject: $subject"; echo "---"; echo; printf '%s\n' "$body"
     } > "$HERE/inbox/$to/$id.md"
-    commit "msg($SELF→$to): $subject"
+    if ! commit "msg($SELF->$to): $subject"; then rm -f "$HERE/inbox/$to/$id.md"; echo "send failed; message discarded" >&2; exit 1; fi
     echo "sent $id"
     ;;
   log)
