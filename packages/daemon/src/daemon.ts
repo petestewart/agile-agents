@@ -539,6 +539,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
       startedAt,
       extraMethods,
     });
+    await rpc.listening;
   } catch (err) {
     lock.release();
     throw err;

@@ -164,6 +164,14 @@ export async function dispatch(
 
 export interface RpcServerHandle {
   socketPath: string;
+  /**
+   * Resolves once the socket is bound and accepting connections. `net`'s
+   * `listen()` is asynchronous: `startRpcServer` returns before the socket
+   * file exists, so a client spawned right after it (the MCP bridge in
+   * `cli/commands/mcp.test.ts`, on a loaded CI runner) got `connect ENOENT`.
+   * Callers that hand the path to anything else await this first.
+   */
+  listening: Promise<void>;
   close(): Promise<void>;
 }
 
@@ -247,10 +255,16 @@ export function startRpcServer(options: RpcServerOptions): RpcServerHandle {
     socket.on('close', () => sockets.delete(socket));
     handleConnection(socket, methods);
   });
+  const listening = new Promise<void>((resolve, reject) => {
+    server.once('listening', resolve);
+    server.once('error', reject);
+  });
+  listening.catch(() => {});
   server.listen(options.socketPath);
 
   return {
     socketPath: options.socketPath,
+    listening,
     close(): Promise<void> {
       return new Promise((resolve) => {
         // server.close() alone only stops accepting new connections and

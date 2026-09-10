@@ -84,6 +84,7 @@ export async function startTestDaemon(prefix = 'agile-cli-test-'): Promise<TestD
       ...buildToolRpcMethods(toolService),
     },
   });
+  await rpc.listening;
 
   return {
     repo,

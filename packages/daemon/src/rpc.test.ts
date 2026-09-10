@@ -25,6 +25,24 @@ afterEach(async () => {
   rmSync(dir, { recursive: true, force: true });
 });
 
+test('`listening` resolves once the socket file exists (listen() is asynchronous)', async () => {
+  const late = mkdtempSync(join(tmpdir(), 'agile-rpc-listen-'));
+  const path = join(late, 'late.sock');
+  const handle = startRpcServer({
+    socketPath: path,
+    version: '0.0.0-test',
+    stateRoot: join(late, '.agile'),
+    startedAt: Date.now(),
+  });
+  try {
+    await handle.listening;
+    expect(existsSync(path)).toBe(true);
+  } finally {
+    await handle.close();
+    rmSync(late, { recursive: true, force: true });
+  }
+});
+
 function call(request: Record<string, unknown>): Promise<JsonRpcResponse> {
   return new Promise((resolve, reject) => {
     const socket = connect(socketPath);
