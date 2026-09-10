@@ -72,6 +72,11 @@ export function agentIdFor(role: PermissionRole, ticket: TicketId): AgentId {
   return `${ROLE_PREFIX[role]}-${ticketDigits(ticket)}` as AgentId;
 }
 
+/** The security-pass reviewer's id for `ticket` — `reviewer-sec-<digits>`: still `roleOf() === 'reviewer'` (routing, verbs, liveness), distinct from the primary reviewer's id (§12: two reviewers, two mandates). */
+export function securityReviewerIdFor(ticket: TicketId): AgentId {
+  return `${ROLE_PREFIX.reviewer}-sec-${ticketDigits(ticket)}` as AgentId;
+}
+
 /**
  * `.worktrees/architect`, a **detached** checkout of wherever `integration`
  * currently points (T031 — session override: "worktree placement: a
@@ -222,10 +227,18 @@ export class Runner {
        * and the brief renders exactly as before this ticket.
        */
       extraContext?: string;
+      /**
+       * Agent id override. Every role has exactly one id per ticket
+       * (`agentIdFor`) — except the security review pass (§12), which must
+       * be a *second* reviewer with a distinct id (`ReviewProtocol.
+       * applyApprove` refuses to move a ticket to `in_qa` on one agent's
+       * word). `securityReviewerIdFor` is the one caller.
+       */
+      agentId?: AgentId;
     } = {},
   ): Promise<SpawnResult> {
     const { store, bus, repoRoot } = this.opts;
-    const agentId = agentIdFor(role, ticketId);
+    const agentId = opts.agentId ?? agentIdFor(role, ticketId);
     if (this.live.has(agentId)) {
       throw new Error(`runner.spawn: ${agentId} is already running`);
     }

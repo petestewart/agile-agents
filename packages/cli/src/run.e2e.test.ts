@@ -293,7 +293,10 @@ describe('agile run (live, real ACP — only with AGILE_LIVE=1)', () => {
           seed: join(FIXTURE_ROOT, 'seed', 'epic.json'),
           fake: false,
           tickIntervalMs: 5_000,
-          liveTimeoutMs: 10 * 60_000,
+          // 20 min: the fifth live run closed one ticket end to end in ~10
+          // min with the other two mid-QA/mid-review and on track when the
+          // old 10-min budget cut it off.
+          liveTimeoutMs: 20 * 60_000,
         });
       } catch (err) {
         // T021 round 4 (opus review round 3): `AGILE_LIVE=1` alone doesn't
@@ -322,7 +325,7 @@ describe('agile run (live, real ACP — only with AGILE_LIVE=1)', () => {
       // narrative; this test's job is only "a real vendor session, driven
       // by nothing but the real daemon+briefs, converges to done+merged".
     },
-    15 * 60_000,
+    25 * 60_000,
   );
 });
 

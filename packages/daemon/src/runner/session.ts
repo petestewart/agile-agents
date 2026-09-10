@@ -428,17 +428,35 @@ function sleep(ms: number): Promise<void> {
  * `awaitPlanApproval` (that module has no push/subscribe surface to wait on
  * either; `GateService` doesn't gain one from this ticket).
  */
+/** The plan text a Claude `ExitPlanMode` permission request carries (`toolCall.rawInput.plan`), else the tool title, else nothing — capped to the message-body budget. */
+function planSummaryFrom(params: unknown): string | undefined {
+  const toolCall = asRecord(asRecord(params)?.toolCall);
+  const rawInput = asRecord(toolCall?.rawInput);
+  const plan = rawInput?.plan;
+  if (typeof plan === 'string' && plan.trim().length > 0) {
+    return `architect plan: ${plan.trim()}`.slice(0, 800);
+  }
+  const title = toolCall?.title;
+  return typeof title === 'string' && title.length > 0 ? `architect: ${title}` : undefined;
+}
+
 async function awaitArchitectPlanApproval(
   gateService: GateService,
   policy: Policy,
   pollMs: number,
   timeoutMs: number,
   now: () => Date,
+  summary?: string,
 ): Promise<boolean> {
   const request = await gateService.request('approve_plan', {
     policy,
     hilKind: 'approve_decision',
     from: 'architect',
+    // What the architect is asking to have approved — the plan text when
+    // the vendor put it in the request, else the tool title. The EM
+    // delegate decided the first live approve_plan with "no summary text
+    // was recorded" (fifth run).
+    ...(summary !== undefined ? { summary } : {}),
   });
   if (request.status === 'resolved') return request.decision === 'approve';
 
@@ -786,6 +804,7 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
                 opts.architectGatePollMs ?? 200,
                 opts.architectGateTimeoutMs ?? 5 * 60 * 1000,
                 now,
+                planSummaryFrom(params),
               );
             }
           } catch (err) {

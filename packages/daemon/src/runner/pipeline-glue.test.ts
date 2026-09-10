@@ -6,6 +6,7 @@ import type { AgentId, Ticket, TicketId } from '@agile-agents/shared';
 import { ulid, validateTicket } from '@agile-agents/shared';
 import { Bus } from '../bus';
 import { runInit } from '../init';
+import { reviewRecordRelPath, validateReviewRecord } from '../review/types';
 import { StateStore } from '../store';
 import {
   type DoneMerger,
@@ -18,6 +19,7 @@ import {
   advanceHilResolutions,
   advanceQaSpawns,
   advanceReviewRequests,
+  advanceSecurityReviews,
 } from './pipeline-glue';
 import { agentIdFor } from './runner';
 
@@ -281,6 +283,82 @@ describe('advanceArchitectInbox', () => {
     await advanceArchitectInbox(bus, runner, new Set());
     expect(base.prompted[0]?.agentId).toBe('architect');
     expect(base.prompted[0]?.text).toContain('which clause governs?');
+  });
+});
+
+describe('advanceSecurityReviews', () => {
+  const hardEstimate = {
+    points: 5 as const,
+    tier: 'hard' as const,
+    reasoning: 'high' as const,
+    pointed_by: 'architect',
+    pointed_at: new Date().toISOString(),
+  };
+  async function putReview(
+    ticket: TicketId,
+    round: number,
+    pass: 'primary' | 'security',
+    verdict: 'approve' | 'request_changes',
+    agent: string,
+  ) {
+    await store.putEntity(reviewRecordRelPath(ticket, round, pass), validateReviewRecord, {
+      ticket,
+      round,
+      pass,
+      agent,
+      ts: new Date().toISOString(),
+      findings: [],
+      verdict,
+      hunks: [],
+    });
+  }
+  function fakeSecurityRunner(live: AgentId[] = []) {
+    const spawned: Array<{ ticket: TicketId; agentId?: AgentId; extraContext?: string }> = [];
+    return {
+      spawned,
+      isLive: (id: AgentId) => live.includes(id),
+      spawn: async (
+        _role: 'reviewer',
+        ticket: TicketId,
+        opts?: { agentId?: AgentId; extraContext?: string },
+      ) => {
+        spawned.push({ ticket, agentId: opts?.agentId, extraContext: opts?.extraContext });
+      },
+    };
+  }
+
+  test('a hard ticket with a primary approve and no security record spawns reviewer-sec-<digits>, once', async () => {
+    await store.putTicket(
+      makeTicket('TKT-0001' as TicketId, { status: 'in_review', estimate: hardEstimate }),
+    );
+    await putReview('TKT-0001' as TicketId, 1, 'primary', 'approve', 'reviewer-0001');
+    const runner = fakeSecurityRunner();
+    const seen = new Set<string>();
+    expect(await advanceSecurityReviews(store, runner, seen)).toEqual(['TKT-0001']);
+    expect(runner.spawned[0]?.agentId).toBe('reviewer-sec-0001');
+    expect(runner.spawned[0]?.extraContext).toContain(
+      'SECURITY-pass reviewer for TKT-0001 (round 1)',
+    );
+    expect(runner.spawned[0]?.extraContext).toContain('pass: "security"');
+    expect(await advanceSecurityReviews(store, runner, seen)).toEqual([]);
+    expect(runner.spawned).toHaveLength(1);
+  });
+
+  test('no spawn when the ticket needs no security pass, the primary did not approve, or the security record already exists', async () => {
+    await store.putTicket(makeTicket('TKT-0002' as TicketId, { status: 'in_review' }));
+    await putReview('TKT-0002' as TicketId, 1, 'primary', 'approve', 'reviewer-0002');
+    await store.putTicket(
+      makeTicket('TKT-0003' as TicketId, { status: 'in_review', estimate: hardEstimate }),
+    );
+    await putReview('TKT-0003' as TicketId, 1, 'primary', 'request_changes', 'reviewer-0003');
+    await store.putTicket(
+      makeTicket('TKT-0004' as TicketId, { status: 'in_review', security: true }),
+    );
+    await putReview('TKT-0004' as TicketId, 1, 'primary', 'approve', 'reviewer-0004');
+    await putReview('TKT-0004' as TicketId, 1, 'security', 'approve', 'reviewer-sec-0004');
+    const runner = fakeSecurityRunner();
+    expect(await advanceSecurityReviews(store, runner, new Set())).toEqual([]);
+    expect(runner.spawned).toHaveLength(0);
   });
 });
 

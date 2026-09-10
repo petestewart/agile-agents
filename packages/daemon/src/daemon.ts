@@ -45,6 +45,7 @@ import {
   advanceHilResolutions,
   advanceQaSpawns,
   advanceReviewRequests,
+  advanceSecurityReviews,
   buildRunnerRpcMethods,
   resolveCliBin,
 } from './runner';
@@ -290,6 +291,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
   const seenEngineerVerdicts = new Set<string>();
   const seenHilResolutions = new Set<string>();
   const seenArchitectInbox = new Set<string>();
+  const seenSecurityReviews = new Set<string>();
   const qaSpawned = new Set<TicketId>();
   const mergedDone = new Set<TicketId>();
   async function advancePipeline(): Promise<void> {
@@ -299,6 +301,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
       await advanceEngineerVerdicts(store, bus, runner, seenEngineerVerdicts);
     if (gateService && runner) await advanceHilResolutions(gateService, runner, seenHilResolutions);
     if (bus && runner) await advanceArchitectInbox(bus, runner, seenArchitectInbox);
+    if (store && runner) await advanceSecurityReviews(store, runner, seenSecurityReviews);
     if (store && runner) await advanceQaSpawns(store, runner, qaSpawned);
     if (store && mergeOwner) await advanceDoneTickets(store, mergeOwner, mergedDone);
   }

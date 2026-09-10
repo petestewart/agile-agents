@@ -73,6 +73,7 @@ import {
   advanceHilResolutions,
   advanceQaSpawns,
   advanceReviewRequests,
+  advanceSecurityReviews,
   agentIdFor,
   createEmSessionDelegate,
   createFakeSpawn,
@@ -956,6 +957,7 @@ export async function runDemoSprint(opts: RunOptions): Promise<RunResult> {
       const seenEngineerVerdicts = new Set<string>();
       const seenHilResolutions = new Set<string>();
       const seenArchitectInbox = new Set<string>();
+      const seenSecurityReviews = new Set<string>();
       const qaSpawned = new Set<TicketId>();
       const mergedDone = new Set<TicketId>();
       const engineerHandled = new Set<TicketId>();
@@ -1004,6 +1006,7 @@ export async function runDemoSprint(opts: RunOptions): Promise<RunResult> {
           await advanceEngineerVerdicts(store, bus, runner, seenEngineerVerdicts);
           await advanceHilResolutions(gateService, runner, seenHilResolutions);
           await advanceArchitectInbox(bus, runner, seenArchitectInbox);
+          await advanceSecurityReviews(store, runner, seenSecurityReviews);
         }
         await advanceQaSpawns(store, runner, qaSpawned);
         await advanceDoneTickets(store, mergeOwner, mergedDone);

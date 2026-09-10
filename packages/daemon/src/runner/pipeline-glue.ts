@@ -36,8 +36,10 @@
 
 import type { AgentId, TicketId } from '@agile-agents/shared';
 import type { Bus } from '../bus/bus';
+import { validateReviewRecord } from '../review/types';
+import { reviewRecordRelPath } from '../review/types';
 import type { StateStore } from '../store/store';
-import { agentIdFor } from './runner';
+import { agentIdFor, securityReviewerIdFor } from './runner';
 
 /** The slice of `ReviewProtocol` this glue needs (T016). */
 export interface ReviewStarter {
@@ -423,4 +425,82 @@ export async function advanceArchitectInbox(
     await bus.ack('architect' as AgentId, message.id);
   }
   return handled;
+}
+
+/** The slice of `Runner` `advanceSecurityReviews` needs. */
+export interface SecurityReviewRunner {
+  isLive(agentId: AgentId): boolean;
+  spawn(
+    role: 'reviewer',
+    ticket: TicketId,
+    opts?: { agentId?: AgentId; extraContext?: string },
+  ): Promise<unknown>;
+}
+
+/** Mirrors `ReviewProtocol.requiresSecurityPass` (not imported: `review/protocol.ts` imports this package). */
+function needsSecurityPass(ticket: { security?: boolean; estimate?: { tier?: string } }): boolean {
+  return (
+    ticket.security === true ||
+    ticket.estimate?.tier === 'hard' ||
+    ticket.estimate?.tier === 'novel'
+  );
+}
+
+/**
+ * Seventh hand-off (fifth live run, 2026-09-10): a ticket the architect
+ * pointed `hard`/`novel` (or tagged `security`) needs BOTH a primary and a
+ * security `approve`, from two different reviewer ids, before
+ * `ReviewProtocol.applyApprove` moves it to `in_qa` — and nothing ever
+ * spawned the second reviewer (`applyApprove`'s own doc comment: "an EM/
+ * orchestration-layer concern"). TKT-1003 sat `in_review` with a primary
+ * approve until the liveness sweep reaped its idle reviewer. For every
+ * `in_review` ticket that needs the pass, has a primary record for the
+ * latest round with verdict `approve`, and has no security record yet:
+ * spawn `reviewer-sec-<digits>` on the same worktree with the mandate in
+ * its handoff context, once per ticket+round.
+ */
+export async function advanceSecurityReviews(
+  store: Pick<StateStore, 'listTickets' | 'getEntity'>,
+  runner: SecurityReviewRunner,
+  seen: Set<string>,
+): Promise<TicketId[]> {
+  const spawned: TicketId[] = [];
+  const record = (ticket: TicketId, round: number, pass: 'primary' | 'security') => {
+    try {
+      return store.getEntity(reviewRecordRelPath(ticket, round, pass), validateReviewRecord);
+    } catch {
+      return undefined;
+    }
+  };
+  for (const ticket of store.listTickets()) {
+    if (ticket.status !== 'in_review' || !needsSecurityPass(ticket)) continue;
+    // Latest primary round with a record.
+    let round = 0;
+    while (record(ticket.id, round + 1, 'primary') !== undefined) round++;
+    if (round === 0) continue;
+    const primary = record(ticket.id, round, 'primary');
+    if (primary?.verdict !== 'approve') continue;
+    if (record(ticket.id, round, 'security') !== undefined) continue;
+    const key = `${ticket.id}:${round}`;
+    if (seen.has(key)) continue;
+    const agentId = securityReviewerIdFor(ticket.id);
+    if (runner.isLive(agentId)) {
+      seen.add(key);
+      continue;
+    }
+    try {
+      await runner.spawn('reviewer', ticket.id, {
+        agentId,
+        extraContext: [
+          `You are the SECURITY-pass reviewer for ${ticket.id} (round ${round}). A primary reviewer (${primary.agent}) has already approved this round; the ticket cannot move on until a second, independent reviewer has ruled on its security posture.`,
+          'Review the diff for injection, path traversal, secrets, unsafe deserialisation, permission/trust boundaries, and dependency risk — not style. Then submit with review_submit using `pass: "security"` (this is what distinguishes your record from the primary one), the same `round`, and your findings/verdict.',
+        ].join('\n'),
+      });
+    } catch {
+      continue; // retry next tick, same contract as the other glue.
+    }
+    seen.add(key);
+    spawned.push(ticket.id);
+  }
+  return spawned;
 }
