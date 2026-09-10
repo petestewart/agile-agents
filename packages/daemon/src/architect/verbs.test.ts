@@ -195,6 +195,43 @@ describe('createArchitectMcpServer', () => {
     expect(store.listHalts()).toHaveLength(1);
   });
 
+  test('discovery_triage tolerates a missing affects list and rejects a malformed discovery with a readable error', async () => {
+    // Tenth live run (2026-09-10): the live architect omitted `affects` and
+    // the verb crashed with "undefined is not an object (evaluating
+    // 'discovery.affects.length')".
+    await store.putTicket(
+      validateTicket({
+        id: 'TKT-0001',
+        title: 'reporter',
+        status: 'in_progress',
+        oracle_refs: ['DEC-0001'],
+        contract: {},
+        history: [],
+      }),
+    );
+    const ok = await client.callTool({
+      name: 'discovery_triage',
+      arguments: {
+        reporterTicket: 'TKT-0001',
+        discovery: { tier: 'scoped', proposed: 'clause 2 is contradictory' },
+      },
+    });
+    expect(ok.isError).not.toBe(true);
+    const parsed = JSON.parse(
+      (ok.content as Array<{ type: string; text: string }>)[0]?.text ?? '{}',
+    );
+    expect(parsed.tier).toBe('local');
+
+    const bad = await client.callTool({
+      name: 'discovery_triage',
+      arguments: { reporterTicket: 'TKT-0001', discovery: { tier: 'huge', proposed: '' } },
+    });
+    expect(bad.isError).toBe(true);
+    const text = (bad.content as Array<{ type: string; text: string }>)[0]?.text ?? '';
+    expect(text).toContain('discovery_triage: "discovery" must be');
+    expect(text).toContain('tier');
+  });
+
   test('decision_publish with a haltId resolves the halt', async () => {
     await store.putTicket(
       validateTicket({

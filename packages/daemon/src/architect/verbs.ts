@@ -28,6 +28,7 @@ import type {
   TicketContract,
   TicketId,
 } from '@agile-agents/shared';
+import { StanzaDiscoverySchema } from '@agile-agents/shared';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { createHalt } from '../halts';
 import type { StateStore } from '../store';
@@ -170,12 +171,20 @@ async function discoveryTriage(
   assertArchitect(ctx);
   const p = requireObject(input);
   const reporterTicket = requireString(p.reporterTicket, 'reporterTicket') as TicketId;
-  const discovery = p.discovery as {
-    tier: 'local' | 'scoped' | 'global';
-    affects: OracleId[];
-    proposed: string;
-  };
-  if (!discovery) throw new ArchitectToolError('discovery_triage: "discovery" is required');
+  if (!p.discovery) throw new ArchitectToolError('discovery_triage: "discovery" is required');
+  // Tenth live run (2026-09-10): the architect passed a discovery without
+  // `affects` and `triageDiscovery` crashed on `discovery.affects.length`.
+  // The shared stanza schema (`affects` defaults to `[]`) is the contract;
+  // a bad shape is a tool error the model can read, not a TypeError.
+  const parsedDiscovery = StanzaDiscoverySchema.safeParse(p.discovery);
+  if (!parsedDiscovery.success) {
+    throw new ArchitectToolError(
+      `discovery_triage: "discovery" must be { tier: "local" | "scoped" | "global", affects?: string[] (oracle ids), proposed: string } — ${parsedDiscovery.error.issues
+        .map((i) => `${i.path.join('.') || '(root)'}: ${i.message}`)
+        .join('; ')}`,
+    );
+  }
+  const discovery = parsedDiscovery.data;
 
   const result = triageDiscovery(
     { reporterTicket, discovery },
@@ -259,7 +268,8 @@ export const ARCHITECT_TOOLS: readonly ArchitectToolInfo[] = [
   {
     name: 'discovery_triage',
     description:
-      "Confirm or change an engineer discovery's tier (local/scoped/global) and raise a halt if not local (architect-only).",
+      "Confirm or change an engineer discovery's tier (local/scoped/global) and raise a halt if not local (architect-only). " +
+      'Input: { reporterTicket: "TKT-…", discovery: { tier: "local" | "scoped" | "global", affects: ["SPEC-…", "DEC-…"] (oracle ids the discovery touches; may be empty), proposed: "what should change" } }.',
     inputSpec: { reporterTicket: STRING, discovery: OBJECT },
     handler: discoveryTriage,
   },

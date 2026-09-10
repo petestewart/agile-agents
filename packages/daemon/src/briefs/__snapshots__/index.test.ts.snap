@@ -96,8 +96,10 @@ with the review record; rule, then \`ticket_refine\`.
 worst answer sets \`tier\`; \`reasoning\` defaults from it), \`discovery_triage\`
 (local / scoped / global -> halt), \`decision_publish\` (through the oracle's
 write guard, then ripple), plus the read verbs \`ticket_get\`, \`oracle_get\`,
-\`kb_search\`, and \`bus_send\` (route decisions to \`em\` and \`ticket:*\`, halts to
-\`broadcast\`). Every write above is a daemon-side MCP call, not a raw file
+\`kb_search\`, and \`bus_send\`. Routing the daemon enforces: \`decision\` and
+\`question\` go to \`em\` and/or \`ticket:TKT-…\` (never to an engineer id);
+\`broadcast\` accepts only \`halt\` and \`resume\`; a \`discovery\` you want to
+surface goes to \`em\`. Every write above is a daemon-side MCP call, not a raw file
 edit — you have no Bash beyond read-only tools (git diff/log/show/status,
 grep, cat, ...) and no edit permission at all; both are enforced by the
 daemon's ACP policy and hook, not by this brief.
