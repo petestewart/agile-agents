@@ -74,6 +74,7 @@ import {
   advanceQaSpawns,
   advanceReviewRequests,
   agentIdFor,
+  createEmSessionDelegate,
   createFakeSpawn,
   discoverConfig,
   ensureArchitectSpawned,
@@ -874,10 +875,25 @@ export async function runDemoSprint(opts: RunOptions): Promise<RunResult> {
     cwd: opts.cwd,
     port: 0,
     now: opts.testNow,
+    // This loop drives every tick itself — the daemon's own 30 s timer
+    // running the same glue concurrently double-prompted and double-acked
+    // (fourth live run).
+    ceremonyTickMs: 0,
     runnerSpawn: fake ? createFakeSpawn() : opts.liveSpawnForTest,
     gateDelegate: fake
       ? () => ({ decision: 'approve', by: 'em', rationale: 'automated (agile run --fake)' })
-      : opts.gateDelegate,
+      : (opts.gateDelegate ??
+        // A real live run (no fake transport injected) decides em-owned
+        // gates with the EM session delegate; a test that injects
+        // `liveSpawnForTest` keeps them pending so the watchdog can report
+        // them.
+        (opts.liveSpawnForTest
+          ? undefined
+          : createEmSessionDelegate({
+              stateRoot: join(opts.cwd, '.agile'),
+              cwd: opts.cwd,
+              onNotice: opts.onNotice ?? ((line: string) => console.error(line)),
+            }))),
   });
 
   try {

@@ -45,7 +45,7 @@ import {
   ulid,
   validateMessage,
 } from '@agile-agents/shared';
-import type { StateStore } from '../store';
+import { NotFoundError, type StateStore } from '../store';
 import { checkRoute } from './routing';
 
 export type Clock = () => Date;
@@ -303,7 +303,20 @@ export class Bus {
    * acked, so a caller can distinguish "already done" from "no such message".
    */
   async ack(agent: AgentId, id: string): Promise<Message> {
-    const message = this.store.getEntity(this.inboxRelPath(agent, id), validateMessage);
+    let message: Message;
+    try {
+      message = this.store.getEntity(this.inboxRelPath(agent, id), validateMessage);
+    } catch (err) {
+      // Idempotent (fourth live run, 2026-09-10): two pipeline drivers —
+      // `agile run`'s own loop and the daemon's ceremony timer — polled the
+      // same architect message, both prompted, and the second `ack` threw
+      // NotFoundError out of the run. An already-acked message is in
+      // `done/`; acking it again is a no-op that returns it.
+      if (err instanceof NotFoundError) {
+        return this.store.getEntity(this.inboxRelPath(agent, id, true), validateMessage);
+      }
+      throw err;
+    }
     await this.store.putEntity(this.inboxRelPath(agent, id, true), validateMessage, message);
     await this.store.deleteEntity(this.inboxRelPath(agent, id));
     return message;

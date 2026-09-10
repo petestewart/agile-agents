@@ -51,7 +51,9 @@ can; the architect confirms or changes it.
 The PreToolUse hook classifies every command; what it can't classify it
 refuses. Keep commands classifiable: no command substitution, backticks, \`eval\`,
 heredocs or unbalanced quotes — for a multi-line commit message use repeated
-\`-m\` flags. Stay inside your worktree (no \`/tmp\`, no \`rm\`, no \`cd\` out of it),
+\`-m\` flags, and keep backticks (markdown code spans) and \`$\` out of the
+message text: inside a shell string they are substitution, and the hook
+refuses them. Stay inside your worktree (no \`/tmp\`, no \`rm\`, no \`cd\` out of it),
 run tools through the repo's scripts (\`bun test\`, \`bun run typecheck\` — one
 command per call, not \`a && b\`), and never \`-g\`/\`-y\` installs. A refusal that
 names a \`HIL-…\` id has been filed with the gate owner; do other work, the

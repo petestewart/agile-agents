@@ -243,6 +243,31 @@ describe('Bus.heartbeat', () => {
   });
 });
 
+describe('Bus.ack idempotence', () => {
+  test('acking an already-acked message is a no-op that returns it (two concurrent pipeline drivers)', async () => {
+    const bus = new Bus(store, stateRoot, {});
+    const sent = await bus.send({
+      id: ulid(),
+      ts: new Date().toISOString(),
+      from: 'em',
+      to: ['architect'],
+      kind: 'discovery',
+      priority: 'normal',
+      ticket: 'TKT-0001',
+      body: 'a discovery',
+      refs: [],
+      requires_ack: false,
+    });
+    if (!sent.ok) throw new Error(sent.reason);
+    const first = await bus.ack('architect', sent.message.id);
+    const second = await bus.ack('architect', sent.message.id);
+    expect(second.id).toBe(first.id);
+    expect(bus.poll('architect')).toHaveLength(0);
+    // A message that never existed anywhere is still an error.
+    await expect(bus.ack('architect', '01NEVEREXISTED0000000000000')).rejects.toThrow();
+  });
+});
+
 describe('Bus.checkLiveness', () => {
   test('an unresponsive agent on a live ticket: escalate to em + ticket back to ready + agent removed', async () => {
     await store.putTicket(makeTicket('TKT-0001', { status: 'in_progress', assignee: 'eng-1' }));

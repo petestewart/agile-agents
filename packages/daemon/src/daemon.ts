@@ -105,6 +105,14 @@ export interface StartDaemonOptions extends DiscoverConfigOptions {
    */
   gateDelegate?: DelegateFn;
   /**
+   * Ceremony/pipeline tick cadence. Default `CEREMONY_TICK_MS` (30 s); `0`
+   * disables the daemon's own timer for a caller that drives
+   * `gateService.tick()`/`emLoop.tick()`/the pipeline glue itself
+   * (`agile run` — two concurrent drivers over the same inboxes double-
+   * prompted and double-acked on the fourth live run, 2026-09-10).
+   */
+  ceremonyTickMs?: number;
+  /**
    * Test-only seam: the daemon's own clock, threaded to `Bus` (heartbeat
    * timestamps + coalescing, `bus/bus.ts`) and `Runner` (forwarded to every
    * spawned session's own `now`, `runner/session.ts`) so a test can run a
@@ -294,8 +302,9 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
     if (store && runner) await advanceQaSpawns(store, runner, qaSpawned);
     if (store && mergeOwner) await advanceDoneTickets(store, mergeOwner, mergedDone);
   }
+  const ceremonyTickMs = options.ceremonyTickMs ?? CEREMONY_TICK_MS;
   const ceremonyTimer =
-    gateService && emLoop
+    gateService && emLoop && ceremonyTickMs > 0
       ? setInterval(() => {
           void (async () => {
             try {
@@ -309,7 +318,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
               console.error('ceremony tick failed:', err);
             }
           })();
-        }, CEREMONY_TICK_MS)
+        }, ceremonyTickMs)
       : undefined;
   ceremonyTimer?.unref();
 
