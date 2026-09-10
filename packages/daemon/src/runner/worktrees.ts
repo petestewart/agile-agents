@@ -17,7 +17,7 @@
  * once an engineer has run.
  */
 
-import { existsSync, mkdirSync } from 'node:fs';
+import { existsSync, mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Ticket, TicketId } from '@agile-agents/shared';
 import { sandboxedSubprocessEnv } from '../subprocess-env';
@@ -172,6 +172,24 @@ export function ensureQaClone(repoRoot: string, ticket: Ticket): QaCloneResult {
     runGit(['branch', branch, INTEGRATION_BRANCH], repoRoot);
   }
   mkdirSync(join(repoRoot, '.worktrees'), { recursive: true });
-  runGit(['clone', '--branch', branch, '--single-branch', '--', repoRoot, path], repoRoot);
-  return { path, branch, created: true };
+  // A local clone hard-links every loose object it finds in `repoRoot`'s
+  // object store — which the engineer sessions' own `git commit`s (separate
+  // processes, worktrees of this same repo) are writing to at the same
+  // time: a `tmp_obj_*` seen by the clone's readdir and renamed before its
+  // link() fails the whole clone with "failed to copy file … No such file
+  // or directory" (CI, offline e2e, 2026-09-10 — the driver no longer
+  // waits for turns, so QA clones now overlap other tickets' commits).
+  // Retry from a clean destination; the race window is milliseconds.
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      runGit(['clone', '--branch', branch, '--single-branch', '--', repoRoot, path], repoRoot);
+      return { path, branch, created: true };
+    } catch (err) {
+      lastError = err;
+      rmSync(path, { recursive: true, force: true });
+      Bun.sleepSync(200 * attempt);
+    }
+  }
+  throw lastError;
 }
