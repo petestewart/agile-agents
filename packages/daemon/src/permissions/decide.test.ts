@@ -73,6 +73,28 @@ describe('decidePermission — never picks allow_always', () => {
   }
 });
 
+describe('decidePermission — daemon verbs', () => {
+  test("every role may call the daemon's own mcp__agile__* verbs — the verb enforces its role rules, this tier does not", () => {
+    for (const role of ROLES) {
+      for (const verb of [
+        'mcp__agile__bus_send',
+        'mcp__agile__board_post',
+        'mcp__agile__test_run',
+      ]) {
+        const decision = decide(role, request('other', { title: verb }));
+        expect([role, verb, decision.kind]).toEqual([role, verb, 'allow']);
+      }
+    }
+  });
+
+  test('an unknown kind that is not a daemon verb is still the safe default deny', () => {
+    expect(decide('engineer', request('other', { title: 'mcp__github__create_pr' })).kind).toBe(
+      'deny',
+    );
+    expect(decide('engineer', request('other', { title: 'WebSearch' })).kind).toBe('deny');
+  });
+});
+
 describe('decidePermission — role table', () => {
   test('engineer: read is allowed', () => {
     expect(decide('engineer', request('read')).kind).toBe('allow');

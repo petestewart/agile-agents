@@ -46,7 +46,8 @@
  */
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
+import { sandboxedSubprocessEnv } from '../subprocess-env';
 
 export type ClaudeHookEventName = 'PreToolUse' | 'PostToolUse' | 'Stop';
 
@@ -161,5 +162,33 @@ export function writeClaudeSettings(
   };
 
   writeFileSync(path, `${JSON.stringify(merged, null, 2)}\n`);
+  excludeFromGit(worktreePath, '.claude/');
   return merged;
+}
+
+/**
+ * Adds `pattern` to the repo's `info/exclude` (shared by every linked
+ * worktree) so git treats the hook config as ignored. Untracked, it was
+ * one `git stash push -u` away from vanishing: the engineer's stash took
+ * `.claude/settings.json` with it, the vendor stopped running the hook
+ * (tier 1) and every later call fell to the ACP permission tier — fifteenth
+ * and sixteenth live runs, both times 3 s after the stash. `stash -u` and
+ * `clean` leave ignored files alone. Best effort: not a git repo, no change.
+ */
+function excludeFromGit(worktreePath: string, pattern: string): void {
+  const result = Bun.spawnSync(['git', 'rev-parse', '--git-path', 'info/exclude'], {
+    cwd: worktreePath,
+    env: sandboxedSubprocessEnv(worktreePath, 'git'),
+    stdout: 'pipe',
+    stderr: 'pipe',
+  });
+  if (result.exitCode !== 0) return;
+  const rel = new TextDecoder().decode(result.stdout).trim();
+  if (!rel) return;
+  const excludePath = resolve(worktreePath, rel);
+  const current = existsSync(excludePath) ? readFileSync(excludePath, 'utf8') : '';
+  if (current.split('\n').some((line) => line.trim() === pattern)) return;
+  mkdirSync(join(excludePath, '..'), { recursive: true });
+  const sep = current.length === 0 || current.endsWith('\n') ? '' : '\n';
+  writeFileSync(excludePath, `${current}${sep}${pattern}\n`);
 }

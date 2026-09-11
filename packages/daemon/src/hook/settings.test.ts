@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { renderClaudeSettings, writeClaudeSettings } from './settings';
@@ -68,6 +68,34 @@ describe('renderClaudeSettings', () => {
 
 describe('writeClaudeSettings', () => {
   let dir: string;
+
+  test('in a git worktree the hook config is git-excluded, so `git stash push -u` cannot remove it', () => {
+    dir = mkdtempSync(join(tmpdir(), 'agile-settings-git-'));
+    const git = (args: string[]) => {
+      const r = Bun.spawnSync(['git', ...args], { cwd: dir, stdout: 'pipe', stderr: 'pipe' });
+      if (r.exitCode !== 0) throw new Error(new TextDecoder().decode(r.stderr));
+      return new TextDecoder().decode(r.stdout).trim();
+    };
+    try {
+      git(['init', '-q']);
+      git(['config', 'user.email', 't@example.com']);
+      git(['config', 'user.name', 't']);
+      writeFileSync(join(dir, 'README.md'), 'x\n');
+      git(['add', '-A']);
+      git(['commit', '-q', '-m', 'init']);
+      writeClaudeSettings(dir, { agileBin: 'agile' });
+      writeClaudeSettings(dir, { agileBin: 'agile' }); // idempotent: one exclude line
+      expect(git(['status', '--porcelain'])).toBe('');
+      writeFileSync(join(dir, 'wip.txt'), 'wip\n');
+      git(['stash', 'push', '-u']);
+      expect(existsSync(join(dir, '.claude', 'settings.json'))).toBe(true);
+      expect(existsSync(join(dir, 'wip.txt'))).toBe(false);
+      const exclude = readFileSync(join(dir, '.git', 'info', 'exclude'), 'utf8');
+      expect(exclude.split('\n').filter((l) => l === '.claude/')).toHaveLength(1);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 
   test('writes .claude/settings.json under the worktree', () => {
     dir = mkdtempSync(join(tmpdir(), 'agile-settings-'));

@@ -26,13 +26,28 @@ function summarize(classified: PermissionRequest, reason: string): string {
   return `${head}: ${reason}`.slice(0, 800);
 }
 
+/** `mcp__agile__<verb>` — the daemon's own MCP bridge, role-gated inside the verb. */
+export function isDaemonVerb(title: string | undefined): boolean {
+  return title !== undefined && /^mcp__agile__[a-z_]+$/.test(title);
+}
+
 export function decidePermission(ctx: DecisionContext): Decision {
   const classified = classifyPermissionRequest(ctx.request);
   const options = ctx.request.options ?? [];
 
   const policyCtx = { role: ctx.role, worktreePath: ctx.worktreePath, ticket: ctx.ticket };
+  // The daemon's own MCP verbs (`mcp__agile__*`) are never gated here: each
+  // verb enforces its own role rules server-side, and the vendor reports
+  // them as kind `other`, which every role table denies as an unknown tool.
+  // Fifteenth/sixteenth live runs (2026-09-11): a session whose hook config
+  // had been stashed fell through to this tier and its engineer was locked
+  // out of bus_send/board_post/test_run for the rest of the run.
   const neverVerdict = checkNeverWithoutHuman(classified, policyCtx);
-  const verdict = neverVerdict ?? roleVerdict(ctx.role, classified, policyCtx);
+  const verdict =
+    neverVerdict ??
+    (isDaemonVerb(classified.title)
+      ? { action: 'allow' as const }
+      : roleVerdict(ctx.role, classified, policyCtx));
 
   if (verdict.action === 'allow') {
     const option = findOption(options, 'allow_once');
