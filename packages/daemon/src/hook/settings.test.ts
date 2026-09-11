@@ -37,21 +37,14 @@ describe('renderClaudeSettings', () => {
 
   // T012 QA/review round: disambiguates a reviewer/engineer sharing one
   // worktree — see `hook/service.ts`'s `resolveAgentByCwd`.
-  test('prefixes AGILE_AGENT when agentId is given', () => {
-    const settings = renderClaudeSettings({ agileBin: 'agile', agentId: 'reviewer-1' });
-    expect(settings.hooks.PreToolUse[0]?.hooks[0]?.command).toBe(
-      'AGILE_AGENT=reviewer-1 agile hook pre-tool-use || exit 2',
-    );
-  });
-
-  test('prefixes both AGILE_SOCKET_PATH and AGILE_AGENT, socket first, when both are given', () => {
+  test('never embeds AGILE_AGENT — the file is per worktree and an engineer and its reviewer share one; the session env carries the id', () => {
     const settings = renderClaudeSettings({
       agileBin: 'agile',
       socketPath: '/tmp/agile.sock',
       agentId: 'reviewer-1',
     });
     expect(settings.hooks.PreToolUse[0]?.hooks[0]?.command).toBe(
-      'AGILE_SOCKET_PATH=/tmp/agile.sock AGILE_AGENT=reviewer-1 agile hook pre-tool-use || exit 2',
+      'AGILE_SOCKET_PATH=/tmp/agile.sock agile hook pre-tool-use || exit 2',
     );
   });
 

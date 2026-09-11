@@ -74,14 +74,16 @@ export interface RenderClaudeSettingsOptions {
   /** When set, prefixed as `AGILE_SOCKET_PATH=<socketPath> ` onto every hook command — see file header. */
   socketPath?: string;
   /**
-   * T012 QA/review round: when set, prefixed as `AGILE_AGENT=<agentId> `
-   * onto every hook command (alongside `AGILE_SOCKET_PATH`, when both are
-   * given). The CLI (`agile hook <event>`) forwards this env var as the
-   * payload's `agile_agent` field; `hook/service.ts`'s `HookService`
-   * resolves it as a disambiguation hint when more than one registered
-   * agent's worktree contains the hook's `cwd` — the reviewer/engineer
-   * shared-worktree case (§12, CLAUDE.md v0 default). Without it, that case
-   * fails closed rather than guessing which agent is really calling.
+   * The agent this settings file is written for. NOT embedded in the hook
+   * command: `.claude/settings.json` is per *worktree*, and an engineer and
+   * its reviewer share one (§12) — the reviewer, spawned later, overwrote
+   * the engineer's `AGILE_AGENT=<id>` prefix and every hook call from the
+   * engineer's session was then resolved as the reviewer (nineteenth and
+   * twentieth live runs, 2026-09-11: the engineer's own standup report and
+   * its merge-conflict rebase, both decided under the reviewer's identity).
+   * Each vendor session already carries `AGILE_AGENT` in its own process
+   * env (`runner/session.ts` env overrides), and Claude runs hook commands
+   * with that env, so the CLI's `agile_agent` hint is per session there.
    */
   agentId?: string;
   /** Claude's own per-hook-invocation timeout, in seconds. Default 5 — must exceed the CLI's 2000ms RPC deadline (`DEFAULT_HOOK_TIMEOUT_MS`) so a slow daemon always yields a printed fail-closed deny instead of a killed hook process. */
@@ -97,7 +99,6 @@ const HOOK_EVENTS: ReadonlyArray<{ claudeEvent: ClaudeHookEventName; agileEvent:
 function hookCommand(options: RenderClaudeSettingsOptions, agileEvent: string): string {
   const envAssignments = [
     options.socketPath ? `AGILE_SOCKET_PATH=${options.socketPath}` : undefined,
-    options.agentId ? `AGILE_AGENT=${options.agentId}` : undefined,
   ].filter((a): a is string => a !== undefined);
   const envPrefix = envAssignments.length > 0 ? `${envAssignments.join(' ')} ` : '';
   const command = `${envPrefix}${options.agileBin} hook ${agileEvent}`;
