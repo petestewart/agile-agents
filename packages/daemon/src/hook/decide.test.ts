@@ -73,9 +73,78 @@ describe('decidePreToolUse — order of precedence', () => {
       inbox: [makeMessage({ priority: 'urgent', body: 'should never be seen' })],
     });
     const result = decidePreToolUse(ctx, { tool_name: 'Read' });
-    expect(result).toEqual({
-      decision: 'deny',
-      reason: 'AGILE-HALT: auth model changed, stand down',
+    expect(result.decision).toBe('deny');
+    expect(result.reason).toContain(
+      'halt H-1 (global): AGILE-HALT: auth model changed, stand down',
+    );
+    // The urgent message is never surfaced (tier 1 pre-empts tier 2)...
+    expect(result.reason).not.toContain('should never be seen');
+    // ...and the deny tells the agent how to get the halt released.
+    expect(result.reason).toContain('kind: "standup_report"');
+    expect(result.reason).toContain('refs: ["H-1"]');
+    expect(result.ack).toBeUndefined();
+  });
+
+  describe('1a. under a halt the standup_report is the one call still allowed', () => {
+    const halted = () => baseCtx({ halts: [makeHalt({ id: 'H-7' } as Partial<Halt>)] });
+    const busSend = (input: Record<string, unknown>) => ({
+      tool_name: 'mcp__agile__bus_send',
+      tool_input: input,
+    });
+
+    test('a standup_report naming the halt in refs is allowed', () => {
+      const result = decidePreToolUse(
+        halted(),
+        busSend({ to: ['em'], kind: 'standup_report', refs: ['H-7'], body: 'stashed WIP' }),
+      );
+      expect(result).toEqual({ decision: 'allow' });
+    });
+
+    test('a standup_report without the halt ref is denied with the shape to send — the EM cannot fold it otherwise', () => {
+      const result = decidePreToolUse(
+        halted(),
+        busSend({ to: ['em'], kind: 'standup_report', body: 'stashed WIP' }),
+      );
+      expect(result.decision).toBe('deny');
+      expect(result.reason).toContain('refs: ["H-7"]');
+    });
+
+    test('any other bus_send is still denied under the halt', () => {
+      const result = decidePreToolUse(
+        halted(),
+        busSend({ to: ['em'], kind: 'question', refs: ['H-7'], body: 'can I continue?' }),
+      );
+      expect(result.decision).toBe('deny');
+      expect(result.reason).toContain('halt H-7');
+    });
+
+    test("the halt's own urgent standup_call is acked by the tier-1 decision, so it cannot deny the agent again after release", () => {
+      const call = makeMessage({
+        id: 'call-1',
+        kind: 'standup_call',
+        priority: 'urgent',
+        refs: ['H-7'],
+        body: 'halt H-7 (global): ...',
+      });
+      const other = makeMessage({
+        id: 'other-1',
+        kind: 'standup_call',
+        priority: 'urgent',
+        refs: ['H-2'],
+      });
+      const ctx = baseCtx({
+        halts: [makeHalt({ id: 'H-7' } as Partial<Halt>)],
+        inbox: [call, other],
+      });
+      expect(
+        decidePreToolUse(ctx, { tool_name: 'Bash', tool_input: { command: 'git stash' } }).ack,
+      ).toEqual(['call-1']);
+      expect(
+        decidePreToolUse(
+          ctx,
+          busSend({ to: ['em'], kind: 'standup_report', refs: ['H-7'], body: 'x' }),
+        ),
+      ).toEqual({ decision: 'allow', ack: ['call-1'] });
     });
   });
 

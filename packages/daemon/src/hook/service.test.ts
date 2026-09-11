@@ -138,7 +138,9 @@ describe('HookService.preToolUse', () => {
       hookSpecificOutput: {
         hookEventName: 'PreToolUse',
         permissionDecision: 'deny',
-        permissionDecisionReason: 'AGILE-HALT: auth model changed, stand down',
+        permissionDecisionReason: expect.stringContaining(
+          'AGILE-HALT: auth model changed, stand down',
+        ),
       },
     });
 
@@ -180,7 +182,9 @@ describe('HookService.preToolUse', () => {
       tool_input: { file_path: 'x.txt' },
     });
     expect(result.hookSpecificOutput.permissionDecision).toBe('deny');
-    expect(result.hookSpecificOutput.permissionDecisionReason).toBe('AGILE-HALT: symlink test');
+    expect(result.hookSpecificOutput.permissionDecisionReason).toContain(
+      'AGILE-HALT: symlink test',
+    );
   });
 
   test('a big raw Read is denied and the reason names read_summary', async () => {

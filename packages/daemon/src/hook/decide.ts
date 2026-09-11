@@ -5,7 +5,8 @@
  * priority"; §4 "Ticket" → `budget`; §7 "Tool framework" → `read_summary`).
  *
  * Order (§6, this ticket's Scope line, in the order given):
- *   1. halt covering the agent's ticket -> deny with the halt reason.
+ *   1. halt covering the agent's ticket -> deny with the halt reason plus
+ *      the standup_report to send; that one bus_send is allowed (`haltVerdict`).
  *   2. urgent unacked inbox -> deny with the message body as the reason.
  *   3. normal inbox -> additionalContext with the bodies (capped), ack them.
  *   4. big raw Read/Grep (over `limits.maxReadBytes`/`maxGrepBytes`) -> deny
@@ -67,6 +68,7 @@
  * falls through to the lower tiers.
  */
 
+import type { Halt } from '@agile-agents/shared';
 import { decidePermission } from '../permissions';
 import type {
   AcpPermissionOption,
@@ -325,6 +327,62 @@ function computeGateVerdict(
   return { decision: 'allow' };
 }
 
+/** The one MCP verb an affected agent may still call under a halt: its `standup_report` (§5 step 3). */
+const BUS_SEND_TOOL = 'mcp__agile__bus_send';
+
+function haltScopeLabel(halt: Halt): string {
+  return Array.isArray(halt.scope) ? halt.scope.join(',') : halt.scope;
+}
+
+/**
+ * Tier 1 — a halt covering this agent. §5 step 3: "Affected agents' next
+ * tool call is blocked; they commit/stash WIP and reply `standup_report`."
+ * Quorum (`halts/index.ts`) reaches when every affected agent has reported,
+ * or on the 10-minute timeout. Fifteen live runs before this fix reached it
+ * only by the timeout — `reported: []` on every halt file — because this
+ * tier denied *every* tool, the `bus_send` carrying the report included, and
+ * the deny reason was the bare halt reason, which never told the agent to
+ * report. Every halt therefore cost the full ten minutes of a denied,
+ * re-spawned, re-denied team.
+ *
+ * Now: a `bus_send` whose `kind` is `standup_report` and whose `refs` name
+ * this halt is allowed (and only that — `processStandupReports` needs the
+ * `H-<n>` ref to fold the report into the halt, so a report without it is
+ * denied with the exact shape to send instead). Everything else is still
+ * denied, and the reason says what to do. The urgent `standup_call` for this
+ * halt is acked in the same decision: it *is* the delivery, and left unacked
+ * it would deny the agent once more (tier 2) after the halt is released.
+ * Hooks are the enforcement layer, prompts the intent layer — the
+ * instruction rides on the deny so no brief has to carry it.
+ */
+function haltVerdict(
+  ctx: HookDecisionContext,
+  halt: Halt,
+  payload: ClaudePreToolUsePayload,
+): HookDecision {
+  const ack = ctx.inbox
+    .filter((m) => m.kind === 'standup_call' && (m.refs ?? []).includes(halt.id))
+    .map((m) => m.id);
+  const withAck = (decision: HookDecision): HookDecision =>
+    ack.length > 0 ? { ...decision, ack } : decision;
+
+  const reportShape = `mcp__agile__bus_send { to: ["em"], kind: "standup_report", refs: ["${halt.id}"], body: "<one line: what you were doing, what is uncommitted>" }`;
+
+  if (payload.tool_name === BUS_SEND_TOOL && payload.tool_input?.kind === 'standup_report') {
+    const refs = payload.tool_input.refs;
+    if (Array.isArray(refs) && refs.includes(halt.id)) return withAck({ decision: 'allow' });
+    return withAck({
+      decision: 'deny',
+      reason: `standup_report for halt ${halt.id} must name it in refs, or the EM cannot count it: send ${reportShape}`,
+    });
+  }
+
+  return withAck({
+    decision: 'deny',
+    reason: `halt ${halt.id} (${haltScopeLabel(halt)}): ${halt.reason}\nEvery tool is blocked until this halt is released. Report in now with exactly one call: ${reportShape} — then stop and end your turn. Your worktree is kept; you will be re-prompted with the ruling.`,
+  });
+}
+
 export function decidePreToolUse(
   ctx: HookDecisionContext,
   payload: ClaudePreToolUsePayload,
@@ -341,7 +399,7 @@ export function decidePreToolUse(
   // reasons in the event log and never reached the oracle.
   const halt = ctx.halts[0];
   if (halt && ctx.role !== 'architect') {
-    return { decision: 'deny', reason: halt.reason };
+    return haltVerdict(ctx, halt, payload);
   }
 
   // 2. Urgent unacked inbox — oldest first (ctx.inbox is already ordered

@@ -198,7 +198,7 @@ describe('hook.* RPC round trip through the CLI subprocess', () => {
       hookSpecificOutput: {
         hookEventName: 'PreToolUse',
         permissionDecision: 'deny',
-        permissionDecisionReason: 'AGILE-HALT: stand down',
+        permissionDecisionReason: expect.stringContaining('AGILE-HALT: stand down'),
       },
     });
   });
