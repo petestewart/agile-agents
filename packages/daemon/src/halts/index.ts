@@ -107,7 +107,21 @@ function computeAffectedAgents(store: StateStore, scope: HaltScope, raisedBy: st
   // resolving decision), so it is never told to report and would hold
   // quorum `pending` until the timeout every time (fourteenth live run:
   // every other affected agent reported within 70 s; the architect never).
-  const covered = computeCoveredAgents(store, scope).filter((agent) => agent !== raisedBy);
+  // The architect is exempt from the tier-1 halt deny (it is the oracle
+  // and must keep working to resolve halts), so it can never be told to
+  // report and never belongs in an affected set — its registry record
+  // carries whatever ticket it last worked on, which put it in a merge
+  // halt's set in the twenty-second live run, where the EM's urgent
+  // standup_call then denied its next call at tier 2 for nothing.
+  const architects = new Set(
+    store
+      .listAgents()
+      .filter(({ record }) => record.role === 'architect')
+      .map(({ id }) => id),
+  );
+  const covered = computeCoveredAgents(store, scope).filter(
+    (agent) => agent !== raisedBy && !architects.has(agent),
+  );
   if (raisedBy !== 'daemon' || !Array.isArray(scope)) return covered;
   // A daemon-raised, ticket-scoped halt is a merge conflict bounced to the
   // ticket owner (§15): the owner is the one agent that must keep working

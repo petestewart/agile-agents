@@ -319,6 +319,24 @@ describe('scoping', () => {
     expect(oracle.affected?.sort()).toEqual(['eng-1', 'reviewer-1']);
   });
 
+  test('the architect is never affected — exempt from the deny, it could never report', async () => {
+    await store.putTicket(makeTicket('TKT-0001', { status: 'done', assignee: 'eng-1' }));
+    await store.putAgent(
+      'architect',
+      makeAgent({ role: 'architect', ticket: 'TKT-0001' } as Partial<AgentRecord>),
+    );
+    await store.putAgent(
+      'reviewer-1',
+      makeAgent({ role: 'reviewer', ticket: 'TKT-0001' } as Partial<AgentRecord>),
+    );
+    const halt = await createHalt(store, {
+      scope: ['TKT-0001'],
+      reason: 'rebase conflict',
+      raised_by: 'daemon',
+    });
+    expect(halt.affected).toEqual(['reviewer-1']);
+  });
+
   test('global halt covers every ticket', async () => {
     const clock = fakeClock(0);
     await createHalt(store, { scope: 'global', reason: 'x', raised_by: 'architect' }, clock.now);
