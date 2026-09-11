@@ -1017,8 +1017,19 @@ export async function runDemoSprint(opts: RunOptions): Promise<RunResult> {
         return { reportPath, ticketOutcomes };
       };
       for (; fake ? tick < maxTicks : clockNow() - start < liveTimeoutMs; tick++) {
-        await gateService.tick();
-        await emLoop.tick();
+        // Same contract as daemon.ts's ceremony timer: a ceremony error is
+        // logged, never fatal. Twenty-fifth live run (2026-09-11): one
+        // unaddressable standup_call recipient threw out of emLoop.tick(),
+        // the throw escaped this loop and tore down every session with the
+        // epic three merges from done.
+        try {
+          await gateService.tick();
+          await emLoop.tick();
+        } catch (err) {
+          console.warn(
+            `agile run: ceremony tick ${tick} failed — ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
         if (fake) {
           // `--fake`'s scripted driver below plays the engineer/architect
           // turns itself (`driveEngineerWork(..., 2)` after
