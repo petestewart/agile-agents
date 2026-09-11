@@ -833,9 +833,30 @@ export async function advanceReviewerEscalations(
 export function releaseStaleTicketSessions(
   store: Pick<StateStore, 'listTickets'>,
   runner: StaleTicketRunner,
+  /**
+   * True when the ticket's branch has merged — its worktree is gone, and
+   * any session still bound to it (engineer, reviewers, QA) sits live and
+   * registered with a deleted cwd. Twenty-sixth live run (2026-09-11):
+   * those sessions stayed in the next global halt's affected set, the
+   * standup prompt to them failed on the missing directory, the runner
+   * killed them as "prompt failed", and quorum waited the full 10 min on
+   * the one that never got prompted at all.
+   */
+  merged: (ticket: TicketId) => boolean = () => false,
 ): AgentId[] {
   const stopped: AgentId[] = [];
   for (const ticket of store.listTickets()) {
+    if (ticket.status === 'done' && merged(ticket.id)) {
+      for (const id of [
+        agentIdFor('engineer', ticket.id),
+        agentIdFor('reviewer', ticket.id),
+        securityReviewerIdFor(ticket.id),
+        agentIdFor('qa', ticket.id),
+      ]) {
+        if (runner.isLive(id) && runner.stop(id)) stopped.push(id);
+      }
+      continue;
+    }
     // `ready` too (seventh live run, 2026-09-10): the architect re-refined
     // both staled tickets within 16 s, before this glue ever saw them
     // `stale`, and the idle engineer sessions from before the ripple kept

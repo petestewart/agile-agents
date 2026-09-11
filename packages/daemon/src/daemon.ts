@@ -325,7 +325,12 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
     if (bus && runner) await advanceArchitectInbox(bus, runner, seenArchitectInbox);
     if (store && runner) await advanceSecurityReviews(store, runner, seenSecurityReviews);
     if (store && bus) await advanceReviewerEscalations(store, bus, seenReviewerEscalations);
-    if (store && runner) releaseStaleTicketSessions(store, runner);
+    if (store && runner)
+      releaseStaleTicketSessions(store, runner, (id) =>
+        mergeOwner
+          ? (mergeOwner.status(id) as { status?: string } | undefined)?.status === 'merged'
+          : false,
+      );
     if (store && runner) await advanceQaSpawns(store, runner, qaSpawned);
     if (store && mergeOwner) await advanceDoneTickets(store, mergeOwner, mergedDone);
     if (store && runner && mergeOwner)

@@ -847,6 +847,33 @@ describe('advanceReviewerEscalations', () => {
   });
 });
 
+describe('releaseStaleTicketSessions — merged tickets', () => {
+  test('stops every live session of a done ticket whose branch has merged (its worktree is gone), and leaves a done ticket still in the conflict fix cycle alone', () => {
+    const merged = makeTicket('TKT-0001' as TicketId, { status: 'done' });
+    const conflicted = makeTicket('TKT-0002' as TicketId, { status: 'done' });
+    const live = new Set<AgentId>([
+      agentIdFor('engineer', merged.id),
+      agentIdFor('qa', merged.id),
+      agentIdFor('engineer', conflicted.id),
+    ]);
+    const stopped: AgentId[] = [];
+    const runner = {
+      isLive: (id: AgentId) => live.has(id),
+      stop: (id: AgentId) => {
+        stopped.push(id);
+        live.delete(id);
+        return true;
+      },
+    };
+    const fakeStore = { listTickets: () => [merged, conflicted] };
+    expect(releaseStaleTicketSessions(fakeStore, runner, (id) => id === merged.id)).toEqual([
+      agentIdFor('engineer', merged.id),
+      agentIdFor('qa', merged.id),
+    ]);
+    expect(live.has(agentIdFor('engineer', conflicted.id))).toBe(true);
+  });
+});
+
 describe('releaseStaleTicketSessions', () => {
   test('stops every live session on a stale ticket, once, and leaves other tickets alone', () => {
     // The ripple path: a live engineer on a ticket the ripple just staled
