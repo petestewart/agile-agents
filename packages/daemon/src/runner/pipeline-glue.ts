@@ -291,16 +291,22 @@ export async function advanceStandupCalls(
       if (reported.has(agent)) continue;
       const agentId = agent as AgentId;
       const key = `${halt.id}:${agentId}`;
-      if (seen.has(key)) continue;
       const call = bus
         .poll(agentId)
         .find((m) => m.kind === 'standup_call' && (m.refs ?? []).includes(halt.id));
+      // Checked before `seen`, every tick: an agent prompted earlier can die
+      // afterwards — nineteenth live run (2026-09-11): two reviewers were
+      // prompted mid-turn (the prompt queued behind the turn), the ripple
+      // from the architect's decision released their stale tickets'
+      // sessions, the queued prompts failed, and the `seen` mark then kept
+      // this step from ever recording the two dead agents; quorum waited
+      // for the timeout on them alone.
       if (!runner.isLive(agentId)) {
-        seen.add(key);
         await recordStandupReport(store as StateStore, halt.id, agentId);
         if (call) await bus.ack(agentId, call.id);
         continue;
       }
+      if (seen.has(key)) continue;
       if (!call) continue; // already delivered (and acked) by the hook — the report is on its way
       const text = [
         `${call.body}.`,

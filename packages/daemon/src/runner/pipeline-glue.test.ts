@@ -642,6 +642,23 @@ describe('advanceStandupCalls', () => {
     expect(runner.prompted).toHaveLength(1);
   });
 
+  test('an agent prompted on an earlier tick that has since died is recorded as reported', async () => {
+    const eng = agentIdFor('engineer', 'TKT-0001' as TicketId);
+    await store.putAgent(eng, record('engineer', 'TKT-0001' as TicketId));
+    const halt = await createHalt(store, { scope: 'global', reason: 'x', raised_by: 'architect' });
+    await standupCall(halt, [eng]);
+    const live = new Set<AgentId>([eng]);
+    const runner = { ...fakeEngineerRunner([eng]), isLive: (id: AgentId) => live.has(id) };
+    const seen = new Set<string>();
+    expect(await advanceStandupCalls(store, bus, runner, seen)).toEqual([eng]);
+    expect(store.getHalt(halt.id).reported ?? []).toEqual([]);
+    // The ripple released its ticket's session before it reported.
+    live.delete(eng);
+    expect(await advanceStandupCalls(store, bus, runner, seen)).toEqual([]);
+    expect(store.getHalt(halt.id).reported).toEqual([eng]);
+    expect(store.getHalt(halt.id).quorum).toBe('reached');
+  });
+
   test('a halt whose quorum already reached is left alone', async () => {
     const idle = agentIdFor('engineer', 'TKT-0001' as TicketId);
     await store.putAgent(idle, record('engineer', 'TKT-0001' as TicketId));
