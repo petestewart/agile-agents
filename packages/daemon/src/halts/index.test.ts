@@ -276,6 +276,24 @@ describe('quorum survives a daemon restart', () => {
 });
 
 describe('scoping', () => {
+  test('the raiser is not in its own affected set — it is exempt from the deny and could never report', async () => {
+    await store.putAgent('architect', makeAgent({ role: 'architect' } as Partial<AgentRecord>));
+    await store.putAgent(
+      'eng-1',
+      makeAgent({ role: 'engineer', ticket: 'TKT-0001' } as Partial<AgentRecord>),
+    );
+    const clock = fakeClock(0);
+    const halt = await createHalt(
+      store,
+      { scope: 'global', reason: 'x', raised_by: 'architect' },
+      clock.now,
+    );
+    expect(halt.affected).toEqual(['eng-1']);
+    // ...so the one engineer's report alone reaches quorum.
+    const after = await recordStandupReport(store, halt.id, 'eng-1', clock.now);
+    expect(after.quorum).toBe('reached');
+  });
+
   test('global halt covers every ticket', async () => {
     const clock = fakeClock(0);
     await createHalt(store, { scope: 'global', reason: 'x', raised_by: 'architect' }, clock.now);

@@ -101,7 +101,16 @@ function decideQuorum(
  * agent/ticket mapping from), so a team halt's quorum is vacuously reached
  * immediately (empty affected set) until a later ticket adds team modeling.
  */
-function computeAffectedAgents(store: StateStore, scope: HaltScope): string[] {
+function computeAffectedAgents(store: StateStore, scope: HaltScope, raisedBy: string): string[] {
+  // The raiser is never affected by its own halt: the hook exempts the
+  // architect from the halt deny (it must keep working to publish the
+  // resolving decision), so it is never told to report and would hold
+  // quorum `pending` until the timeout every time (fourteenth live run:
+  // every other affected agent reported within 70 s; the architect never).
+  return computeCoveredAgents(store, scope).filter((agent) => agent !== raisedBy);
+}
+
+function computeCoveredAgents(store: StateStore, scope: HaltScope): string[] {
   if (scope === 'global') {
     return store.listAgents().map((a) => a.id);
   }
@@ -150,7 +159,7 @@ export async function createHalt(
   quorumTimeoutMs: number = QUORUM_TIMEOUT_MS,
 ): Promise<Halt> {
   const id = nextHaltId(store);
-  const affected = computeAffectedAgents(store, input.scope);
+  const affected = computeAffectedAgents(store, input.scope, input.raised_by);
   const raised_at = new Date(clock()).toISOString();
   const quorum = decideQuorum(affected, [], raised_at, clock, quorumTimeoutMs);
   const halt = validateHalt({
