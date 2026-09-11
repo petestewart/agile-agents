@@ -37,6 +37,7 @@
 import type { AgentId, TicketId } from '@agile-agents/shared';
 import { ulid } from '@agile-agents/shared';
 import type { Bus } from '../bus/bus';
+import { recordStandupReport } from '../halts';
 import { validateReviewRecord } from '../review/types';
 import { reviewRecordRelPath } from '../review/types';
 import type { StateStore } from '../store/store';
@@ -257,6 +258,66 @@ export async function advanceQaSpawns(
     spawned.push(ticket.id);
   }
   return spawned;
+}
+
+/** The store slice `advanceStandupCalls` needs. */
+export type StandupStore = Pick<StateStore, 'listHalts' | 'getHalt' | 'putHalt' | 'appendEvent'>;
+
+/**
+ * Gets the standup report out of every affected agent the halt has not
+ * heard from (§5 step 3). The tier-1 deny tells a *working* agent to
+ * report; an agent that was idle when the halt came — its turn had ended
+ * (ticket in review/QA, review submitted) — never makes the tool call
+ * that carries the instruction, and its `standup_call` sits unread while
+ * quorum waits for the 10-minute timeout (seventeenth live run: eng-1001
+ * with its ticket in QA and reviewer-1001 after its verdict; fourteenth
+ * and sixteenth runs the same shape). Now, once per halt and agent: a
+ * live idle agent is prompted with the call (a busy one gets it acked by
+ * tier 1 on its next tool call, so only an unread copy is prompted); an
+ * agent with no live session has nothing running to stash and is recorded
+ * as reported on its behalf. Returns the agents prompted.
+ */
+export async function advanceStandupCalls(
+  store: StandupStore,
+  bus: Pick<Bus, 'poll' | 'ack'>,
+  runner: ReviewRunner,
+  seen: Set<string>,
+): Promise<AgentId[]> {
+  const prompted: AgentId[] = [];
+  for (const halt of store.listHalts()) {
+    if (halt.quorum === 'reached') continue;
+    const reported = new Set(halt.reported ?? []);
+    for (const agent of halt.affected ?? []) {
+      if (reported.has(agent)) continue;
+      const agentId = agent as AgentId;
+      const key = `${halt.id}:${agentId}`;
+      if (seen.has(key)) continue;
+      const call = bus
+        .poll(agentId)
+        .find((m) => m.kind === 'standup_call' && (m.refs ?? []).includes(halt.id));
+      if (!runner.isLive(agentId)) {
+        seen.add(key);
+        await recordStandupReport(store as StateStore, halt.id, agentId);
+        if (call) await bus.ack(agentId, call.id);
+        continue;
+      }
+      if (!call) continue; // already delivered (and acked) by the hook — the report is on its way
+      const text = [
+        `${call.body}.`,
+        `You are affected by halt ${halt.id}. Every tool is blocked until it is released. Report in now with exactly one call:`,
+        `mcp__agile__bus_send { to: ["em"], kind: "standup_report", refs: ["${halt.id}"], body: "<one line: what you were doing, what is uncommitted>" }`,
+        '— then stop and end your turn. You will be re-prompted when the halt is released.',
+      ].join('\n');
+      try {
+        await dispatchTurn(runner, agentId, text);
+      } catch {
+        continue;
+      }
+      seen.add(key);
+      prompted.push(agentId);
+    }
+  }
+  return prompted;
 }
 
 /**

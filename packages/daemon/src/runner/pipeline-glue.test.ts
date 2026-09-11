@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import type { AgentId, Ticket, TicketId } from '@agile-agents/shared';
 import { ulid, validateTicket } from '@agile-agents/shared';
 import { Bus } from '../bus';
+import { createHalt } from '../halts';
 import { runInit } from '../init';
 import { reviewRecordRelPath, validateReviewRecord } from '../review/types';
 import { StateStore } from '../store';
@@ -23,6 +24,7 @@ import {
   advanceReviewRequests,
   advanceReviewerEscalations,
   advanceSecurityReviews,
+  advanceStandupCalls,
   dispatchTurn,
   releaseStaleTicketSessions,
 } from './pipeline-glue';
@@ -583,6 +585,72 @@ describe('advanceDoneTickets', () => {
     const result = await advanceDoneTickets(store, merger, new Set());
     expect(result).toEqual([]);
     expect(mergeCalls).toEqual([]);
+  });
+});
+
+describe('advanceStandupCalls', () => {
+  const record = (role: 'engineer' | 'reviewer', ticket: TicketId) => ({
+    vendor: 'claude',
+    model: 'claude-sonnet-4-5',
+    pid: 1234,
+    last_seen: '2026-09-11T00:00:00Z',
+    role,
+    ticket,
+  });
+  async function standupCall(halt: { id: string; reason: string }, to: AgentId[]): Promise<void> {
+    const result = await bus.send({
+      id: ulid(),
+      ts: new Date().toISOString(),
+      from: 'em',
+      to,
+      kind: 'standup_call',
+      priority: 'urgent',
+      body: `halt ${halt.id} (global): ${halt.reason}`,
+      refs: [halt.id],
+      requires_ack: true,
+    });
+    if (!result.ok) throw new Error(`standupCall: ${result.reason}`);
+  }
+
+  test('prompts a live idle affected agent once with the call; records a dead one as reported; leaves a busy one to the hook', async () => {
+    const idle = agentIdFor('engineer', 'TKT-0001' as TicketId);
+    const dead = agentIdFor('reviewer', 'TKT-0001' as TicketId);
+    const busy = agentIdFor('engineer', 'TKT-0002' as TicketId);
+    await store.putAgent(idle, record('engineer', 'TKT-0001' as TicketId));
+    await store.putAgent(dead, record('reviewer', 'TKT-0001' as TicketId));
+    await store.putAgent(busy, record('engineer', 'TKT-0002' as TicketId));
+    const halt = await createHalt(store, {
+      scope: 'global',
+      reason: 'clauses 1 and 2 contradict',
+      raised_by: 'architect',
+    });
+    expect(halt.affected?.sort()).toEqual([busy, dead, idle].sort());
+    await standupCall(halt, [idle, dead, busy]);
+    // The busy agent's next tool call already delivered + acked its copy (tier 1).
+    await bus.ack(busy, bus.poll(busy)[0]?.id as string);
+
+    const runner = fakeEngineerRunner([idle, busy]);
+    const seen = new Set<string>();
+    expect(await advanceStandupCalls(store, bus, runner, seen)).toEqual([idle]);
+    expect(runner.prompted).toHaveLength(1);
+    expect(runner.prompted[0]?.text).toContain('kind: "standup_report"');
+    expect(runner.prompted[0]?.text).toContain(`refs: ["${halt.id}"]`);
+    expect(store.getHalt(halt.id).reported).toEqual([dead]);
+    expect(bus.poll(dead)).toHaveLength(0);
+    // Second tick: nothing new — no double prompt.
+    expect(await advanceStandupCalls(store, bus, runner, seen)).toEqual([]);
+    expect(runner.prompted).toHaveLength(1);
+  });
+
+  test('a halt whose quorum already reached is left alone', async () => {
+    const idle = agentIdFor('engineer', 'TKT-0001' as TicketId);
+    await store.putAgent(idle, record('engineer', 'TKT-0001' as TicketId));
+    const halt = await createHalt(store, { scope: 'global', reason: 'x', raised_by: 'architect' });
+    await standupCall(halt, [idle]);
+    await store.putHalt({ ...store.getHalt(halt.id), quorum: 'reached' });
+    const runner = fakeEngineerRunner([idle]);
+    expect(await advanceStandupCalls(store, bus, runner, new Set())).toEqual([]);
+    expect(runner.prompted).toHaveLength(0);
   });
 });
 
