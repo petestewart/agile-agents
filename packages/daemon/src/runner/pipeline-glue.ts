@@ -529,7 +529,7 @@ export async function advanceEngineerVerdicts(
       const refs = message.refs.length > 0 ? `\nRecord(s): ${message.refs.join(', ')}` : '';
       const text = [
         `${message.kind === 'review_verdict' ? 'Review' : 'QA'} verdict on ${message.ticket} sent it back to you: ${message.body}${refs}`,
-        'Read the record (review_get for a review round), fix every finding in your worktree, commit,',
+        'Read the record (review_get for a review round, qa_get for a QA round — the failing criteria, commands and evidence are there, not in this message), fix every finding in your worktree, commit,',
         'post a `review_submitted` board stanza, then bus_send a new `review_request` to the reviewer.',
         'Dispute a finding with review_dispute instead of arguing in prose.',
       ].join('\n');

@@ -2,12 +2,13 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { qaReportRelPath, validateQaReport } from '@agile-agents/shared';
 import type { AgentId, Finding, TicketId } from '@agile-agents/shared';
 import { runInit } from '../init';
 import { StateStore } from '../store/store';
 import type { ReviewProtocol } from './protocol';
 import { reviewRecordRelPath, validateReviewRecord } from './types';
-import { ReviewVerbError, reviewDispute, reviewGet, reviewSubmit, rulesList } from './verbs';
+import { ReviewVerbError, qaGet, reviewDispute, reviewGet, reviewSubmit, rulesList } from './verbs';
 
 let repo: string;
 let stateRoot: string;
@@ -251,5 +252,32 @@ describe('reviewDispute', () => {
     const input = proto.disputeCalls[0]?.input as { ticket: TicketId; finding: Finding };
     expect(input.ticket).toBe(TICKET);
     expect(input.finding.rule).toBe('RULE-001');
+  });
+});
+
+describe('qa_get', () => {
+  test("returns the caller's ticket's QA report for a round, and names the round when there is none", async () => {
+    const report = {
+      ticket: 'TKT-0001',
+      round: 1,
+      verdict: 'reject',
+      lines: [
+        {
+          criterion: 'overdue tasks come back sorted',
+          command: 'bun test -t overdue',
+          status: 'fail',
+          evidence: '1 failed',
+        },
+      ],
+    };
+    await store.putEntity(qaReportRelPath('TKT-0001', 1), validateQaReport, report);
+    const verbDeps = { protocol: fakeProtocol(), store, stateRoot };
+    const ctx = { agent: ENGINEER_ID, ticket: TICKET };
+    const got = await qaGet(verbDeps, ctx, { round: 1 });
+    expect(got.verdict).toBe('reject');
+    expect(got.lines[0]?.status).toBe('fail');
+    await expect(qaGet(verbDeps, ctx, { round: 2 })).rejects.toThrow(
+      /no QA report for TKT-0001 round 2/,
+    );
   });
 });

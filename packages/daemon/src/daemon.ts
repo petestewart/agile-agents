@@ -31,6 +31,7 @@ import {
   ReviewProtocol,
   type ReviewVerbDeps,
   buildReviewRpcMethods,
+  qaGet,
   reviewDispute,
   reviewGet,
   reviewSubmit,
@@ -458,7 +459,15 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
       inputSpec: { round: NUMBER, pass: STRING_OPT },
       handler: reviewGet,
     };
+    const qaGetTool = {
+      name: 'qa_get',
+      description:
+        "Read one round's stored QA report for the caller's ticket: every criterion with its status (pass/fail/flaky/skipped), the command run and the evidence. The qa_verdict message names only the round — read the failing lines here.",
+      inputSpec: { round: NUMBER },
+      handler: (ctx: { agent: string; ticket?: string }, input: unknown) => qaGet(deps, ctx, input),
+    };
     const reviewerVerbs = [
+      qaGetTool,
       ...REVIEW_BUILTIN_TOOLS.map((t) => ({
         name: t.name,
         description: t.description,
@@ -499,6 +508,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
       },
     ];
     const engineerVerbs = [
+      qaGetTool,
       {
         ...reviewGetTool,
         handler: (ctx: { agent: string; ticket?: string }, input: unknown) =>

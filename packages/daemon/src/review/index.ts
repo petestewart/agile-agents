@@ -82,6 +82,7 @@ export {
 export {
   ReviewVerbError,
   reviewDispute,
+  qaGet,
   reviewGet,
   reviewSubmit,
   rulesList,

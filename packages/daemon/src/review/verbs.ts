@@ -9,7 +9,14 @@
  * header for the precise change).
  */
 
-import { type AgentId, FindingSchema, type TicketId } from '@agile-agents/shared';
+import {
+  type AgentId,
+  FindingSchema,
+  type QaReport,
+  type TicketId,
+  qaReportRelPath,
+  validateQaReport,
+} from '@agile-agents/shared';
 import { roleOf } from '../bus/routing';
 import { NotFoundError } from '../store/store';
 import type { StateStore } from '../store/store';
@@ -101,6 +108,36 @@ export async function reviewGet(
       throw new ReviewVerbError(
         `review_get: no ${pass} review record for ${ticket} round ${round}`,
       );
+    }
+    throw err;
+  }
+}
+
+/**
+ * `qa_get` — read one round's stored QA report for the caller's ticket. No
+ * role restriction, like `review_get`. Twenty-seventh live run
+ * (2026-09-11): the QA verdict message to the engineer was cut at the
+ * 800-char body cap after three passing lines ("see board/qa/<ticket>-r1.yaml"),
+ * that record lives outside the worktree where `read_summary` refuses it,
+ * engineers cannot message QA, and there was no verb for it — the engineer
+ * posted `blocked`, escalated to em, and the run idled to its abort.
+ */
+export async function qaGet(
+  deps: ReviewVerbDeps,
+  ctx: ToolCallContext,
+  input: unknown,
+): Promise<QaReport> {
+  const ticket = requireTicketContext(ctx, 'qa_get');
+  const p = requireObject(input);
+  const round = Number(p.round);
+  if (!Number.isInteger(round) || round < 1) {
+    throw new ReviewVerbError('qa_get: "round" must be a positive integer');
+  }
+  try {
+    return deps.store.getEntity(qaReportRelPath(ticket, round), validateQaReport);
+  } catch (err) {
+    if (err instanceof NotFoundError) {
+      throw new ReviewVerbError(`qa_get: no QA report for ${ticket} round ${round}`);
     }
     throw err;
   }
