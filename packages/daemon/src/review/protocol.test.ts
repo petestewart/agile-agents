@@ -16,6 +16,7 @@ import {
   type SubmitVerdictInput,
   requiresSecurityPass,
 } from './protocol';
+import { reviewRecordRelPath, validateReviewRecord } from './types';
 
 let repo: string;
 let stateRoot: string;
@@ -319,14 +320,24 @@ describe('ReviewProtocol.submitVerdict', () => {
       findings: [],
       verdict: 'approve',
     });
-    const outcome = await proto.submitVerdict(REVIEWER_ID, {
-      ticket: 'TKT-0001' as TicketId,
-      round: 1,
-      pass: 'security',
-      findings: [],
-      verdict: 'approve',
-    });
-    expect(outcome).toEqual({ status: 'security_pass_required' });
+    // Twentieth live run (2026-09-11): the primary reviewer filed the
+    // security pass itself; the record then blocked the real second
+    // reviewer from ever being spawned. Refused before any record is written.
+    await expect(
+      proto.submitVerdict(REVIEWER_ID, {
+        ticket: 'TKT-0001' as TicketId,
+        round: 1,
+        pass: 'security',
+        findings: [],
+        verdict: 'approve',
+      }),
+    ).rejects.toThrow(/second, independent reviewer/);
+    expect(() =>
+      store.getEntity(
+        reviewRecordRelPath('TKT-0001' as TicketId, 1, 'security'),
+        validateReviewRecord,
+      ),
+    ).toThrow();
     expect(store.getTicket('TKT-0001' as TicketId).status).toBe('in_review');
   });
 

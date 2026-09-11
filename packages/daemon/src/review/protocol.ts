@@ -102,6 +102,16 @@ export interface DisputeOutcome {
 }
 
 /** "the architect tags `security: true` or tier is hard/novel" (§12). */
+/** The same agent tried to file both passes of one round — refused before any record is written. */
+export class SecurityPassSelfReviewError extends Error {
+  constructor(agent: string, ticket: string, round: number, pass: ReviewPass) {
+    super(
+      `review_submit: ${agent} already filed the ${pass === 'security' ? 'primary' : 'security'} pass for ${ticket} round ${round} — the ${pass} pass must come from a second, independent reviewer, which the daemon spawns itself. Do not submit it; end your turn.`,
+    );
+    this.name = 'SecurityPassSelfReviewError';
+  }
+}
+
 export function requiresSecurityPass(ticket: Ticket): boolean {
   return (
     ticket.security === true ||
@@ -242,6 +252,20 @@ export class ReviewProtocol {
           throw new ReReviewViolationError(reReview);
         }
       }
+    }
+
+    // A security pass is a *second, independent* reviewer's word (§12;
+    // `applyApprove` below ignores a same-agent pair). Twentieth live run
+    // (2026-09-11): the primary reviewer answered `security_pass_required`
+    // by submitting the security pass itself; the record then existed, so
+    // `advanceSecurityReviews` never spawned the real second reviewer, the
+    // ticket sat in review until the sweep reaped the idle reviewer, and the
+    // engineer redid the whole ticket. Refuse it here, before any record is
+    // written, with the reason the model needs.
+    const otherPass: ReviewPass = pass === 'security' ? 'primary' : 'security';
+    const other = await this.getReviewRecord(input.ticket, validated.round, otherPass);
+    if (other !== undefined && other.agent === agent) {
+      throw new SecurityPassSelfReviewError(agent, input.ticket, validated.round, pass);
     }
 
     const record: ReviewRecord = {
