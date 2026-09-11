@@ -52,7 +52,7 @@
  */
 
 import { existsSync, mkdirSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import {
   type HaltId,
   type HilId,
@@ -67,7 +67,7 @@ import {
 } from '@agile-agents/shared';
 import type { Bus } from '../bus';
 import type { GateService } from '../gates/service';
-import { activeHaltsFor, createHalt } from '../halts';
+import { activeHaltsFor, createHalt, releaseHalt } from '../halts';
 import {
   INTEGRATION_BRANCH,
   ensureIntegrationBranch,
@@ -351,6 +351,68 @@ export class MergeOwner {
 
   private ensureMainWorktree(): string {
     return this.ensureNamedWorktree(MAIN_WORKTREE_DIR, MAIN_BRANCH);
+  }
+
+  /**
+   * True once the engineer has finished the conflict fix cycle: the ticket
+   * branch now has `integration` as an ancestor (rebased or merged onto the
+   * `integration` that moved under it), no rebase is in progress and the
+   * worktree is clean. False for any ticket without a `conflict` record.
+   *
+   * Fourteenth live run (2026-09-11): all three tickets reached `done` and
+   * two hit "rebase conflict onto integration: src/tasks.test.ts" — and
+   * that was terminal: the scoped halt denied the very engineer who had to
+   * resolve it, nothing prompted a session with the conflict, and
+   * `advanceDoneTickets` is one-shot. `advanceMergeConflicts`
+   * (`runner/pipeline-glue.ts`) prompts the engineer once and calls
+   * `retryAfterConflict` when this turns true.
+   */
+  conflictResolved(ticket: TicketId): boolean {
+    const record = this.status(ticket);
+    if (record?.status !== 'conflict') return false;
+    const worktree = join(this.repoRoot, '.worktrees', ticket);
+    if (!existsSync(worktree)) return false;
+    // A rebase in progress leaves `rebase-merge` or `rebase-apply` in the
+    // git dir (REBASE_HEAD is *not* a usable signal: git 2.39 keeps it
+    // after the rebase completes).
+    for (const dir of ['rebase-merge', 'rebase-apply']) {
+      const rel = git(['rev-parse', '--git-path', dir], worktree, this.repoRoot).stdout;
+      if (rel && existsSync(resolve(worktree, rel))) return false;
+    }
+    if (git(['status', '--porcelain=v1'], worktree, this.repoRoot).stdout.trim() !== '')
+      return false;
+    const ancestor = git(
+      ['merge-base', '--is-ancestor', INTEGRATION_BRANCH, 'HEAD'],
+      worktree,
+      this.repoRoot,
+    );
+    return ancestor.exitCode === 0;
+  }
+
+  /**
+   * Second `onTicketDone` after a resolved conflict: releases the conflict
+   * halt, drops the `conflict` record so the attempt is not short-circuited
+   * as already-tried, and merges. A new conflict (integration moved again)
+   * simply raises a new halt and record through the ordinary path.
+   */
+  async retryAfterConflict(ticketId: TicketId): Promise<MergeOutcome> {
+    return this.mutex.run(async () => {
+      const record = this.status(ticketId);
+      if (record?.status !== 'conflict') {
+        throw new Error(
+          `merge: ${ticketId} has no conflict to retry (record: ${record?.status ?? 'none'})`,
+        );
+      }
+      if (record.haltId) {
+        try {
+          await releaseHalt(this.store, record.haltId);
+        } catch (err) {
+          if (!(err instanceof NotFoundError)) throw err;
+        }
+      }
+      await this.store.deleteEntity(mergeRecordPath(ticketId));
+      return this.doOnTicketDone(ticketId);
+    });
   }
 
   /** `board/merges/<ticket>.yaml`, or `undefined` if this ticket has never gone through `onTicketDone`. */

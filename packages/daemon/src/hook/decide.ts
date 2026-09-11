@@ -327,6 +327,17 @@ function computeGateVerdict(
   return { decision: 'allow' };
 }
 
+/** True for the daemon's merge-conflict halt on this engineer's own ticket — see tier 1 in `decidePreToolUse`. */
+function isOwnMergeHalt(ctx: HookDecisionContext, halt: Halt): boolean {
+  return (
+    ctx.role === 'engineer' &&
+    halt.raised_by === 'daemon' &&
+    Array.isArray(halt.scope) &&
+    halt.scope.length === 1 &&
+    halt.scope[0] === ctx.ticket
+  );
+}
+
 /** The one MCP verb an affected agent may still call under a halt: its `standup_report` (§5 step 3). */
 const BUS_SEND_TOOL = 'mcp__agile__bus_send';
 
@@ -397,7 +408,12 @@ export function decidePreToolUse(
   // planted contradiction, its own halt then denied every tool call it
   // made afterwards — the ruling it had reached survived only as hook deny
   // reasons in the event log and never reached the oracle.
-  const halt = ctx.halts[0];
+  // A merge-conflict halt (raised by the daemon, scoped to exactly this
+  // ticket) is addressed *to* this ticket's engineer — it stops everyone
+  // else while the owner rebases (design §15: "conflicts bounce to the
+  // ticket owner as a scoped halt"). Denying the owner too made every
+  // conflict terminal (fourteenth live run); the owner works through it.
+  const halt = ctx.halts.find((h) => !isOwnMergeHalt(ctx, h));
   if (halt && ctx.role !== 'architect') {
     return haltVerdict(ctx, halt, payload);
   }

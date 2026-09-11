@@ -43,6 +43,7 @@ import {
   advanceDoneTickets,
   advanceEngineerVerdicts,
   advanceHilResolutions,
+  advanceMergeConflicts,
   advanceQaSpawns,
   advanceReviewRequests,
   advanceReviewerEscalations,
@@ -308,6 +309,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
   const seenReviewerEscalations = new Set<string>();
   const qaSpawned = new Set<TicketId>();
   const mergedDone = new Set<TicketId>();
+  const conflictPrompted = new Set<TicketId>();
   async function advancePipeline(): Promise<void> {
     if (store && bus && reviewProtocol && runner)
       await advanceReviewRequests(store, bus, reviewProtocol, runner, seenReviewRequests);
@@ -320,6 +322,8 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
     if (store && runner) releaseStaleTicketSessions(store, runner);
     if (store && runner) await advanceQaSpawns(store, runner, qaSpawned);
     if (store && mergeOwner) await advanceDoneTickets(store, mergeOwner, mergedDone);
+    if (store && runner && mergeOwner)
+      await advanceMergeConflicts(store, runner, mergeOwner, conflictPrompted);
   }
   const ceremonyTickMs = options.ceremonyTickMs ?? CEREMONY_TICK_MS;
   const ceremonyTimer =

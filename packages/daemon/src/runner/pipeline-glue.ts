@@ -259,6 +259,73 @@ export async function advanceQaSpawns(
   return spawned;
 }
 
+/** The slice of `MergeOwner` `advanceMergeConflicts` needs. */
+export interface ConflictMerger {
+  status(ticket: TicketId): { status?: string; summary?: string } | undefined;
+  conflictResolved(ticket: TicketId): boolean;
+  retryAfterConflict(ticket: TicketId): Promise<unknown>;
+}
+
+/**
+ * Drives the merge-conflict fix cycle §15 leaves to "the ticket owner"
+ * (design: "conflicts bounce to the ticket owner as a scoped halt").
+ * Fourteenth live run (2026-09-11): the halt was raised and that was the
+ * end of it — the ticket is `done`, so no glue re-prompts its engineer,
+ * and `advanceDoneTickets` never retries a recorded outcome. Now, for each
+ * `done` ticket with a `conflict` record: the engineer is prompted once
+ * with the summary and told to rebase in its worktree (its still-live
+ * session, else a fresh spawn with the text as handoff context — the same
+ * pair `advanceEngineerVerdicts` uses); every tick after that, once
+ * `conflictResolved` (branch rebased onto current `integration`, clean),
+ * the merge is retried. The hook lets that engineer work under its own
+ * merge halt (`decide.ts` tier 1). Returns the tickets retried this tick.
+ */
+export async function advanceMergeConflicts(
+  store: Pick<StateStore, 'listTickets'>,
+  runner: EngineerRunner,
+  merger: ConflictMerger,
+  prompted: Set<TicketId>,
+): Promise<TicketId[]> {
+  const retried: TicketId[] = [];
+  for (const ticket of store.listTickets()) {
+    if (ticket.status !== 'done') continue;
+    const record = merger.status(ticket.id);
+    if (record?.status !== 'conflict') continue;
+    if (merger.conflictResolved(ticket.id)) {
+      prompted.delete(ticket.id);
+      try {
+        await merger.retryAfterConflict(ticket.id);
+      } catch {
+        // A retry that throws (worktree vanished, git error) leaves the
+        // conflict record in place; the next tick sees the same state and
+        // tries again — the retry contract every other step here uses.
+        continue;
+      }
+      retried.push(ticket.id);
+      continue;
+    }
+    if (prompted.has(ticket.id)) continue;
+    const engineerId = agentIdFor('engineer', ticket.id);
+    const text = [
+      `${ticket.id} passed review and QA but could not be merged: ${record.summary ?? 'merge conflict'}.`,
+      `In your worktree, run \`git rebase integration\`, resolve every conflict keeping both tickets' intent,`,
+      'run the tests, and finish the rebase (`git rebase --continue`) so the branch is clean and on top of integration.',
+      'The daemon retries the merge on its own once the branch is rebased; do not open a review request.',
+    ].join('\n');
+    try {
+      if (runner.isLive(engineerId)) {
+        await dispatchTurn(runner, engineerId, text);
+      } else {
+        await runner.spawn('engineer', ticket.id, { extraContext: text });
+      }
+    } catch {
+      continue;
+    }
+    prompted.add(ticket.id);
+  }
+  return retried;
+}
+
 /**
  * Merges every `done` ticket that hasn't gone through `onTicketDone` yet.
  * `merger.status(ticket)` (`board/merges/<ticket>.yaml`) is the durable

@@ -85,6 +85,40 @@ describe('decidePreToolUse — order of precedence', () => {
     expect(result.ack).toBeUndefined();
   });
 
+  test("1c. the daemon's merge-conflict halt on the engineer's own ticket does not deny that engineer — it must rebase through it", () => {
+    const mergeHalt = makeHalt({
+      id: 'H-2',
+      scope: ['TKT-0001'],
+      raised_by: 'daemon',
+      reason: 'rebase conflict onto integration: src/tasks.test.ts (also touched by TKT-0002)',
+    } as Partial<Halt>);
+    const owner = decidePreToolUse(baseCtx({ halts: [mergeHalt] }), {
+      tool_name: 'Bash',
+      tool_input: { command: 'git rebase integration' },
+    });
+    expect(owner.decision).not.toBe('deny');
+    // Everyone else on the ticket is still halted...
+    const reviewer = decidePreToolUse(
+      baseCtx({ role: 'reviewer', agent: 'reviewer-1', halts: [mergeHalt] }),
+      {
+        tool_name: 'Read',
+      },
+    );
+    expect(reviewer.decision).toBe('deny');
+    // ...and so is the engineer under an architect's halt, or a daemon halt on another ticket.
+    const other = makeHalt({
+      id: 'H-3',
+      scope: ['TKT-0002'],
+      raised_by: 'daemon',
+    } as Partial<Halt>);
+    expect(decidePreToolUse(baseCtx({ halts: [other] }), { tool_name: 'Read' }).decision).toBe(
+      'deny',
+    );
+    expect(
+      decidePreToolUse(baseCtx({ halts: [mergeHalt, makeHalt()] }), { tool_name: 'Read' }).decision,
+    ).toBe('deny');
+  });
+
   describe('1a. under a halt the standup_report is the one call still allowed', () => {
     const halted = () => baseCtx({ halts: [makeHalt({ id: 'H-7' } as Partial<Halt>)] });
     const busSend = (input: Record<string, unknown>) => ({

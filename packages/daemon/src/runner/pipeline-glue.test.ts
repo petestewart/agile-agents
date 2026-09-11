@@ -17,6 +17,7 @@ import {
   advanceDoneTickets,
   advanceEngineerVerdicts,
   advanceHilResolutions,
+  advanceMergeConflicts,
   advanceQaSpawns,
   advanceReviewRequests,
   advanceReviewerEscalations,
@@ -581,6 +582,56 @@ describe('advanceDoneTickets', () => {
     const result = await advanceDoneTickets(store, merger, new Set());
     expect(result).toEqual([]);
     expect(mergeCalls).toEqual([]);
+  });
+});
+
+describe('advanceMergeConflicts', () => {
+  const conflictRecord = {
+    status: 'conflict',
+    summary: 'rebase conflict onto integration: src/tasks.test.ts (also touched by TKT-0002)',
+  };
+
+  test('prompts the live engineer once with the conflict, then retries the merge when the branch is rebased', async () => {
+    await store.putTicket(makeTicket('TKT-0001' as TicketId, { status: 'done' }));
+    await store.putTicket(makeTicket('TKT-0002' as TicketId, { status: 'done' }));
+    const runner = fakeEngineerRunner([agentIdFor('engineer', 'TKT-0001' as TicketId)]);
+    let resolved = false;
+    const retried: TicketId[] = [];
+    const merger = {
+      status: (t: TicketId) => (t === 'TKT-0001' ? conflictRecord : { status: 'merged' }),
+      conflictResolved: (t: TicketId) => t === 'TKT-0001' && resolved,
+      retryAfterConflict: async (t: TicketId) => {
+        retried.push(t);
+      },
+    };
+    const prompted = new Set<TicketId>();
+    expect(await advanceMergeConflicts(store, runner, merger, prompted)).toEqual([]);
+    expect(runner.prompted).toHaveLength(1);
+    expect(runner.prompted[0]?.text).toContain('src/tasks.test.ts');
+    expect(runner.prompted[0]?.text).toContain('git rebase integration');
+    expect(runner.spawned).toHaveLength(0);
+    // Second tick, still unresolved: no second prompt.
+    expect(await advanceMergeConflicts(store, runner, merger, prompted)).toEqual([]);
+    expect(runner.prompted).toHaveLength(1);
+    // Engineer rebased: the merge is retried and the ticket can be prompted again on a fresh conflict.
+    resolved = true;
+    expect(await advanceMergeConflicts(store, runner, merger, prompted)).toEqual(['TKT-0001']);
+    expect(retried).toEqual(['TKT-0001']);
+    expect(prompted.has('TKT-0001' as TicketId)).toBe(false);
+  });
+
+  test('spawns the engineer with the conflict as handoff context when its session is gone', async () => {
+    await store.putTicket(makeTicket('TKT-0001' as TicketId, { status: 'done' }));
+    const runner = fakeEngineerRunner();
+    const merger = {
+      status: () => conflictRecord,
+      conflictResolved: () => false,
+      retryAfterConflict: async () => {},
+    };
+    await advanceMergeConflicts(store, runner, merger, new Set());
+    expect(runner.spawned).toHaveLength(1);
+    expect(runner.spawned[0]?.ticket).toBe('TKT-0001');
+    expect(runner.spawned[0]?.extraContext).toContain('could not be merged');
   });
 });
 

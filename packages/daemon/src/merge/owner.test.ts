@@ -2,12 +2,16 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { HaltId, HilId, Ticket } from '@agile-agents/shared';
+import type { HaltId, HilId, Ticket, TicketId } from '@agile-agents/shared';
 import { validateTicket } from '@agile-agents/shared';
 import { Bus } from '../bus';
 import { createHalt } from '../halts';
 import { runInit } from '../init';
-import { ensureIntegrationBranch, ensureTicketWorktree } from '../runner/worktrees';
+import {
+  INTEGRATION_BRANCH,
+  ensureIntegrationBranch,
+  ensureTicketWorktree,
+} from '../runner/worktrees';
 import { StateStore } from '../store';
 import {
   BranchCheckedOutElsewhereError,
@@ -270,6 +274,63 @@ describe('onTicketDone — conflict path', () => {
     expect(events.some((e) => e.kind === 'merge_conflict')).toBe(true);
 
     expectHumanCheckoutUntouched();
+  });
+});
+
+describe('conflict fix cycle — conflictResolved / retryAfterConflict', () => {
+  test('after the engineer rebases the branch onto integration, the retry merges, releases the halt and clears the record', async () => {
+    const a = makeTicket('TKT-0120', { title: 'First writer' });
+    const b = makeTicket('TKT-0121', { title: 'Second writer', assignee: 'eng-2' });
+    await store.putTicket(a);
+    await store.putTicket(b);
+    engineerCommit(a, 'shared.txt', 'from A\n');
+    const wtB = ensureTicketWorktree(repo, b).path;
+    writeFileSync(join(wtB, 'shared.txt'), 'from B\n');
+    git(['add', '-A'], wtB);
+    git(['commit', '-q', '-m', 'b work'], wtB);
+    const owner = new MergeOwner(store, bus, repo, { runTests: okTests });
+    await owner.onTicketDone(a.id);
+    const conflict = await owner.onTicketDone(b.id);
+    expect(conflict.status).toBe('conflict');
+    const haltId = conflict.haltId as HaltId;
+
+    // Nothing has happened in the worktree yet: not resolved, no retry.
+    expect(owner.conflictResolved(b.id)).toBe(false);
+    expect(owner.conflictResolved(a.id)).toBe(false); // merged, not a conflict
+
+    // The engineer rebases and resolves — mid-rebase is not resolved either.
+    const rebase = Bun.spawnSync(['git', 'rebase', INTEGRATION_BRANCH], {
+      cwd: wtB,
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+    expect(rebase.exitCode).not.toBe(0);
+    writeFileSync(join(wtB, 'shared.txt'), 'from A and B\n');
+    git(['add', '-A'], wtB);
+    expect(owner.conflictResolved(b.id)).toBe(false);
+    const cont = Bun.spawnSync(['git', 'rebase', '--continue'], {
+      cwd: wtB,
+      env: { ...process.env, GIT_EDITOR: 'true' },
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+    expect(cont.exitCode, new TextDecoder().decode(cont.stderr)).toBe(0);
+    expect(owner.conflictResolved(b.id)).toBe(true);
+
+    const outcome = await owner.retryAfterConflict(b.id);
+    expect(outcome.status).toBe('merged');
+    expect(owner.status(b.id)?.status).toBe('merged');
+    expect(() => store.getHalt(haltId)).toThrow();
+    expect(owner.conflictResolved(b.id)).toBe(false);
+    expect(git(['show', `${INTEGRATION_BRANCH}:shared.txt`])).toBe('from A and B');
+    expectHumanCheckoutUntouched();
+  });
+
+  test('retryAfterConflict refuses a ticket without a conflict record', async () => {
+    const owner = new MergeOwner(store, bus, repo, { runTests: okTests });
+    await expect(owner.retryAfterConflict('TKT-0999' as TicketId)).rejects.toThrow(
+      /no conflict to retry/,
+    );
   });
 });
 
