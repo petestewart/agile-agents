@@ -265,11 +265,14 @@ describe('runDiscoveryProtocol — the one-call convenience path', () => {
     expect(result.tier).toBe('global');
     expect(result.released).toBe(false);
     expect(result.reason).toMatch(/quorum/i);
-    expect(result.staled).toEqual([]);
+    // Twelfth live run (2026-09-11): the decision is published and pinned
+    // to the halt (its ripple runs), but the release and the re-refine
+    // wait for quorum — the halt stays active until the EM loop sees it.
+    expect([...result.staled].sort()).toEqual(['TKT-0001', 'TKT-0002', 'TKT-0003']);
     expect(result.reRefined).toEqual([]);
-    // Halt still active, nothing rippled, nothing published.
     expect(store.listHalts()).toHaveLength(1);
-    expect(store.getTicket('TKT-0002').status).toBe('in_progress');
-    expect(() => store.getOracleEntry('DEC-0002')).toThrow();
+    expect(store.getHalt(result.haltId as never).resolves_when).toBe('DEC-0002');
+    expect(store.getTicket('TKT-0002').status).toBe('stale');
+    expect(() => store.getOracleEntry('DEC-0002')).not.toThrow();
   });
 });

@@ -232,6 +232,75 @@ describe('createArchitectMcpServer', () => {
     expect(text).toContain('tier');
   });
 
+  test('decision_publish without a haltId pins the decision to the open architect halt', async () => {
+    // Twelfth live run (2026-09-11): the architect published DEC-0001 91 s
+    // after raising a global halt, without naming it; the halt had no
+    // `resolves_when` and was never released — 60 denials, 0 tickets done.
+    for (const [id, assignee] of [
+      ['TKT-0001', 'eng-0001'],
+      ['TKT-0002', 'eng-0002'],
+    ] as const) {
+      await store.putTicket(
+        validateTicket({
+          id,
+          title: id,
+          status: 'in_progress',
+          assignee,
+          oracle_refs: ['DEC-0001'],
+          contract: {},
+          history: [],
+        }),
+      );
+    }
+    // A registered agent keeps the global halt's quorum `pending` (nobody
+    // has reported), the shape of the live run.
+    await store.putAgent('eng-0001', {
+      vendor: 'claude',
+      model: 'claude-sonnet-4-5',
+      last_seen: '2026-09-11T00:00:00Z',
+    });
+    const triage = await client.callTool({
+      name: 'discovery_triage',
+      arguments: {
+        reporterTicket: 'TKT-0001',
+        discovery: {
+          tier: 'global',
+          affects: ['DEC-0001'],
+          proposed: 'clause 2 contradicts clause 1',
+        },
+      },
+    });
+    const haltId = JSON.parse(
+      (triage.content as Array<{ type: string; text: string }>)[0]?.text ?? '{}',
+    ).halt?.id;
+    expect(haltId).toBeDefined();
+    expect(store.getHalt(haltId).quorum).toBe('pending');
+
+    const result = await client.callTool({
+      name: 'decision_publish',
+      arguments: {
+        entry: {
+          id: 'DEC-0007',
+          title: 'clause 1 wins',
+          status: 'active',
+          supersedes: [],
+          depends: [],
+          affects: [],
+          decided: '2026-09-11',
+          by: 'architect',
+          rationale: 'x',
+        },
+        body: 'clause 1 wins',
+      },
+    });
+    expect(result.isError).not.toBe(true);
+    const parsed = JSON.parse(
+      (result.content as Array<{ type: string; text: string }>)[0]?.text ?? '{}',
+    );
+    expect(parsed.resolves_halts).toEqual([haltId]);
+    expect(store.getHalt(haltId).resolves_when).toBe('DEC-0007');
+  });
+
   test('decision_publish with a haltId resolves the halt', async () => {
     await store.putTicket(
       validateTicket({

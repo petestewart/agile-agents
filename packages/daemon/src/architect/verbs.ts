@@ -218,7 +218,20 @@ async function decisionPublish(
   if (typeof p.haltId === 'string') {
     return resolveDiscovery(deps.store, p.haltId as HaltId, entry, body);
   }
-  return publishDecision(deps.store, entry, body);
+  const published = await publishDecision(deps.store, entry, body);
+  // Twelfth live run (2026-09-11): the architect published the decision
+  // that settled its own discovery without naming the halt, and a halt with
+  // no `resolves_when` is never released — every other agent was denied
+  // for the rest of the run. An architect-raised halt still awaiting a
+  // resolution is what this decision is for: pin it, so the EM loop
+  // releases the halt once quorum reaches.
+  const pinned: HaltId[] = [];
+  for (const halt of deps.store.listHalts()) {
+    if (halt.raised_by !== 'architect' || halt.resolves_when !== undefined) continue;
+    await deps.store.putHalt({ ...halt, resolves_when: entry.id });
+    pinned.push(halt.id);
+  }
+  return pinned.length > 0 ? { ...published, resolves_halts: pinned } : published;
 }
 
 export interface ArchitectToolInfo {
@@ -268,7 +281,7 @@ export const ARCHITECT_TOOLS: readonly ArchitectToolInfo[] = [
   {
     name: 'discovery_triage',
     description:
-      "Confirm or change an engineer discovery's tier (local/scoped/global) and raise a halt if not local (architect-only). " +
+      "Confirm or change an engineer discovery's tier (local/scoped/global) and raise a halt if not local (architect-only). The returned halt.id goes into decision_publish's haltId once you have ruled. " +
       'Input: { reporterTicket: "TKT-…", discovery: { tier: "local" | "scoped" | "global", affects: ["SPEC-…", "DEC-…"] (oracle ids the discovery touches; may be empty), proposed: "what should change" } }.',
     inputSpec: { reporterTicket: STRING, discovery: OBJECT },
     handler: discoveryTriage,
@@ -276,7 +289,7 @@ export const ARCHITECT_TOOLS: readonly ArchitectToolInfo[] = [
   {
     name: 'decision_publish',
     description:
-      'Publish an oracle decision (through the write guard) and, if haltId is given, release that halt (architect-only).',
+      'Publish an oracle decision (through the write guard). Pass haltId (from discovery_triage) to name the halt this decision resolves: it is released once quorum reaches. Without haltId, any open halt you raised is pinned to this decision and released the same way (architect-only).',
     inputSpec: { entry: OBJECT, body: STRING, haltId: STRING_OPT },
     handler: decisionPublish,
   },

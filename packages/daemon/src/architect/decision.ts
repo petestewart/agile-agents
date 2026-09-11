@@ -64,6 +64,8 @@ export interface ResolveDiscoveryBlocked {
   released: false;
   reason: string;
   halt: Halt;
+  /** Set when the decision was published anyway (quorum pending, not forced): the halt now names it via `resolves_when` and the EM loop releases it once quorum reaches. */
+  oracle?: OracleWriteResult;
 }
 
 export type ResolveDiscoveryResult = ResolveDiscoverySuccess | ResolveDiscoveryBlocked;
@@ -110,10 +112,21 @@ export async function resolveDiscovery(
   }
 
   if (halt.quorum !== 'reached' && !options.force) {
+    // Twelfth live run (2026-09-11): the architect's ruling arrived 91 s
+    // after it raised the halt, long before the 10-minute quorum timeout,
+    // and refusing it outright left the halt with no `resolves_when` — so
+    // when quorum did reach, `releaseIfResolved` had nothing to look for
+    // and the global halt denied every other agent for the rest of the
+    // run. Publish the decision now (its ripple is wanted regardless) and
+    // pin it to the halt; the *release* still waits for quorum, which is
+    // what the ordering rule protects (agents reporting and stashing WIP).
+    const oracle = await publishDecision(store, entry, body);
+    const pinned = await store.putHalt({ ...halt, resolves_when: entry.id });
     return {
       released: false,
-      reason: `halt ${haltId} quorum is still pending — not every affected agent has reported (or force was not set)`,
-      halt,
+      reason: `halt ${haltId} quorum is still pending — decision ${entry.id} published and pinned as resolves_when; the halt releases when quorum reaches (or on the quorum timeout)`,
+      halt: pinned,
+      oracle,
     };
   }
 

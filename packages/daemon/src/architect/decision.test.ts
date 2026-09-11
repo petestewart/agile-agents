@@ -124,7 +124,9 @@ describe('resolveDiscovery — quorum pending', () => {
     });
   }
 
-  test('refuses to release: nothing published, halt left untouched', async () => {
+  test("does not release, but publishes the decision and pins it as the halt's resolves_when", async () => {
+    // Twelfth live run (2026-09-11): refusing outright left the halt with
+    // no `resolves_when`, so nothing ever released it once quorum reached.
     const halt = await pendingHalt();
     expect(halt.quorum).toBe('pending');
 
@@ -132,10 +134,11 @@ describe('resolveDiscovery — quorum pending', () => {
     if (result.released) throw new Error('expected released: false');
     expect(result.reason).toMatch(/quorum/i);
     expect(result.halt.id).toBe(halt.id);
+    expect(result.oracle?.entry.id).toBe('DEC-0001');
 
-    // Nothing written: halt still active, no decision on record.
-    expect(() => store.getHalt(halt.id)).not.toThrow();
-    expect(() => store.getOracleEntry('DEC-0001')).toThrow();
+    // Halt still active (release waits for quorum), decision on record and pinned.
+    expect(store.getHalt(halt.id).resolves_when).toBe('DEC-0001');
+    expect(() => store.getOracleEntry('DEC-0001')).not.toThrow();
   });
 
   test('force: true bypasses the quorum check and logs the override', async () => {

@@ -23,8 +23,10 @@ with the review record; rule, then `ticket_refine`.
 ## MCP verbs
 `ticket_create`, `ticket_refine`, `ticket_point` (the four-question rubric —
 worst answer sets `tier`; `reasoning` defaults from it), `discovery_triage`
-(local / scoped / global -> halt), `decision_publish` (through the oracle's
-write guard, then ripple), plus the read verbs `ticket_get`, `oracle_get`,
+(local / scoped / global -> halt; keep the returned `halt.id`),
+`decision_publish` (through the oracle's write guard, then ripple; pass that
+`haltId` so the halt is released once quorum reaches — an unreleased halt
+denies every other agent's tool calls), plus the read verbs `ticket_get`, `oracle_get`,
 `kb_search`, and `bus_send`. Routing the daemon enforces: `decision` and
 `question` go to `em` and/or `ticket:TKT-…` (never to an engineer id);
 `broadcast` accepts only `halt` and `resume`; a `discovery` you want to

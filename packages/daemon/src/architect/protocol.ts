@@ -95,15 +95,16 @@ export async function runDiscoveryProtocol(
 
   if (!published.released) {
     // §5 ordering ("reports -> quorum -> decision -> release"): the halt's
-    // quorum isn't `reached` yet — nothing was published, so there is
-    // nothing to ripple or re-refine. The caller (an EM ceremony, or a
-    // retry once quorum lands) decides what to do next; this function
-    // doesn't loop/wait on its own.
+    // quorum isn't `reached` yet. The decision is published and pinned to
+    // the halt (`resolveDiscovery`, twelfth live run) so its ripple has
+    // run, but the release — and the re-refine that follows it — waits for
+    // quorum: the EM loop releases the halt then. This function doesn't
+    // loop/wait on its own.
     return {
       tier: triage.tier,
       haltId: triage.halt.id,
       haltScope: triage.halt.scope,
-      staled: [],
+      staled: published.oracle?.stale ?? [],
       reRefined: [],
       released: false,
       reason: published.reason,
