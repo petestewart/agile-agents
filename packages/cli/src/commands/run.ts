@@ -150,6 +150,8 @@ export interface RunOptions {
   testNow?: () => Date;
   /** Where to write the run report. Defaults to `<cwd>/runs`. */
   reportDir?: string;
+  /** HTTP port for the in-process daemon's feed + control room. Defaults to 0 (OS-assigned); `agile run --port 4600` pins it so the URL is predictable. */
+  port?: number;
   /**
    * Where `--live` progress notices go (a newly raised `hil_request` that a
    * human must answer before the blocked session can continue, with the
@@ -875,7 +877,7 @@ export async function runDemoSprint(opts: RunOptions): Promise<RunResult> {
 
   const handle = await startDaemon({
     cwd: opts.cwd,
-    port: 0,
+    port: opts.port ?? 0,
     now: opts.testNow,
     // This loop drives every tick itself — the daemon's own 30 s timer
     // running the same glue concurrently double-prompted and double-acked
@@ -898,6 +900,12 @@ export async function runDemoSprint(opts: RunOptions): Promise<RunResult> {
               stderrLogDir: join(opts.cwd, '.agile-daemon-cache', 'sessions'),
             }))),
   });
+  if (!fake) {
+    const base = `http://127.0.0.1:${handle.http.port}`;
+    (opts.onNotice ?? ((line: string) => console.error(line)))(
+      `control room: ${base}/control-room   feed: ${base}/`,
+    );
+  }
 
   try {
     if (

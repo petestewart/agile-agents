@@ -42,7 +42,7 @@ function usage(): string {
     'commands:',
     '  init                       bootstrap .agile/ state in the current git repo',
     '  daemon start               start agiled in the foreground for this repo',
-    '  run [--seed <path>] [--live] [--max-ticks <n>]   drive one sprint layer unattended (T021)',
+    '  run [--seed <path>] [--live] [--port <n>] [--max-ticks <n>]   drive one sprint layer unattended (T021)',
     '  status                     sprint/tickets/agents/spend',
     '  tail                       tail the event log (--follow, --ticket, --agent, --kind)',
     '  send                       send a bus message (--from --to --kind --priority --body [--ticket])',
@@ -112,6 +112,7 @@ export async function runCli(argv: string[], cwd: string = process.cwd()): Promi
         typeof args.options['max-ticks'] === 'string'
           ? Number(args.options['max-ticks'])
           : undefined,
+      port: typeof args.options.port === 'string' ? Number(args.options.port) : undefined,
     });
     if (json) {
       console.log(JSON.stringify(result, null, 2));
