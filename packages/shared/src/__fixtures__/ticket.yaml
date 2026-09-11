@@ -1,0 +1,44 @@
+# From design/agile-agents-design.md §4 "Ticket". Verbatim except `status`
+# and `estimate.reasoning`, whose design values are pipe-separated enum
+# illustrations rather than one concrete value; substituted with a single
+# legal value each (see the T002 report notes).
+id: TKT-0231
+title: Issue JWT on login
+status: in_progress
+sprint: S-07
+parent: EPIC-0009
+depends: [TKT-0230]
+oracle_refs: [DEC-0042, SPEC-auth-003]
+kb_refs: [KB-0117]
+
+contract:
+  inputs:  [packages/api/auth/**]
+  outputs: [packages/api/auth/jwt.ts, tests/auth/jwt.test.ts]
+  acceptance:                            # QA runs these without reading impl
+    - "POST /login with valid creds returns 200 and a JWT whose exp is +24h"
+    - "npm test -w packages/api passes"
+  done: [tests_pass, review_approved, qa_accepted, oracle_consistent]
+  env: clone            # clone | compose: docker/compose.test.yml
+
+estimate:
+  points: 3
+  tier: standard        # trivial | standard | hard | novel
+  reasoning: high
+  pointed_by: architect
+  pointed_at: 2026-09-05
+
+routing:
+  model: <resolved by daemon from tier at assignment>
+  attempts: 1
+  max_attempts: 2       # before escalation
+  escalation: [standard, hard]
+
+budget:
+  ceiling_tokens: 400000
+  spent_tokens: 0       # daemon-maintained
+
+assignee: eng-3
+worktree: .worktrees/TKT-0231
+history:
+  - 2026-09-05 created by architect
+  - 2026-09-07 assigned to eng-3 (claude/sonnet)

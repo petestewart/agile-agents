@@ -1,0 +1,14 @@
+# Verbatim from design/agile-agents-design.md §4 "Sprint" (no `team`/`gates`
+# key in that block — see sprint-with-team-and-gates.yaml for those, added
+# per §15/§16).
+id: S-07
+goal: "Auth works end to end"
+tickets: [TKT-0230, TKT-0231]
+budget_tokens: 5000000
+started: ...
+review_at: <HIL demo>
+carried_over: []
+retro:                    # computed from ledger, not agent-written
+  mispointed: [TKT-0229]  # spent > 3x estimate
+  global_halts: 1
+  escalations: 2

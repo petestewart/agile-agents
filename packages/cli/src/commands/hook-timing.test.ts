@@ -1,0 +1,134 @@
+/**
+ * T008 acceptance criterion: "`agile hook pre-tool-use` round-trips a fake
+ * payload in <20 ms." Measured two ways, per the session's instruction to
+ * report both honestly rather than loosening the assertion silently:
+ *
+ *  1. **In-process client round trip** — `callRpc` straight to a running
+ *     `hook.pre_tool_use` handler, no process spawn. This is the number the
+ *     <20ms budget can plausibly be about (a vendor hook process is already
+ *     running; the 20ms is the socket round trip it pays per tool call).
+ *  2. **End-to-end CLI subprocess** — `bun packages/cli/src/index.ts hook
+ *     pre-tool-use` spawned fresh per call, stdin piped, wall time measured
+ *     from spawn to exit. Bun process startup dominates this number and is
+ *     asserted against a much looser budget; if it exceeds even that, the
+ *     test still reports the measured median instead of hiding it.
+ */
+
+import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { type RpcServerHandle, startRpcServer } from '@agile-agents/daemon';
+import { callRpc } from '../client';
+
+const CLI_ENTRY = join(import.meta.dir, '..', 'index.ts');
+const WARMUP_RUNS = 1;
+const MEASURED_RUNS = 10;
+
+// T036: this test spawns WARMUP_RUNS + MEASURED_RUNS real `bun` subprocesses
+// sequentially. Isolated, each spawn costs ~250ms (bun runtime startup +
+// module resolution of the CLI entry); under full-suite load it measured
+// 250-480ms/spawn (two concurrent `bun test packages/daemon/src/store`
+// loops). 11 spawns at that rate already sums to ~4-4.2s against bun:test's
+// default 5000ms per-test timeout, before server startup/parsing overhead —
+// so the flake is the *test harness* timeout racing the very subprocess cost
+// this test exists to measure, not a hang. The in-process test above proves
+// the RPC round trip itself stays under 20ms; give the CLI subprocess test
+// an explicit timeout sized to what it actually spawns instead of loosening
+// the measured-median assertion.
+const SPAWN_TIMEOUT_BUDGET_MS = 3000; // generous per-spawn ceiling under heavy load
+const CLI_SUBPROCESS_TEST_TIMEOUT_MS =
+  (WARMUP_RUNS + MEASURED_RUNS) * SPAWN_TIMEOUT_BUDGET_MS + 2000;
+
+function median(values: number[]): number {
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 === 0
+    ? ((sorted[mid - 1] as number) + (sorted[mid] as number)) / 2
+    : (sorted[mid] as number);
+}
+
+describe('agile hook pre-tool-use timing', () => {
+  let dir: string;
+  let socketPath: string;
+  let rpc: RpcServerHandle;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'agile-cli-hook-timing-'));
+    socketPath = join(dir, 'test.sock');
+    rpc = startRpcServer({
+      socketPath,
+      version: 'test',
+      stateRoot: dir,
+      startedAt: Date.now(),
+      extraMethods: { 'hook.pre_tool_use': () => ({ decision: 'allow' }) },
+    });
+  });
+
+  afterEach(async () => {
+    await rpc.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test('in-process client round trip: median under 20ms', async () => {
+    const samples: number[] = [];
+    for (let i = 0; i < WARMUP_RUNS + MEASURED_RUNS; i++) {
+      const start = performance.now();
+      await callRpc(socketPath, 'hook.pre_tool_use', { tool: 'Read', input: { path: '/x' } });
+      const elapsed = performance.now() - start;
+      if (i >= WARMUP_RUNS) samples.push(elapsed);
+    }
+    const m = median(samples);
+    console.log(
+      `[hook timing] in-process client round trip median: ${m.toFixed(2)}ms (samples: ${samples.map((s) => s.toFixed(2)).join(', ')})`,
+    );
+    expect(m).toBeLessThan(20);
+  });
+
+  test(
+    'end-to-end CLI subprocess: report measured numbers honestly',
+    async () => {
+      const samples: number[] = [];
+      for (let i = 0; i < WARMUP_RUNS + MEASURED_RUNS; i++) {
+        const start = performance.now();
+        // T033 round 3: stdout/stderr write straight to files instead of
+        // `'pipe'` — round 2's `Promise.all`-drained pipes still let
+        // `proc.exited` race Bun's own epoll bookkeeping for the piped fds
+        // under concurrent-agent load (see `hook/rpc.test.ts`'s `runHookCli`
+        // doc comment for the full story and why `Bun.spawnSync` doesn't work
+        // here either). A file-backed stdio destination never touches that
+        // pipe/epoll path at all.
+        const stdoutPath = join(dir, `hook-timing-stdout-${i}.txt`);
+        const stderrPath = join(dir, `hook-timing-stderr-${i}.txt`);
+        const proc = Bun.spawn({
+          cmd: ['bun', CLI_ENTRY, 'hook', 'pre-tool-use'],
+          stdin: new Response(JSON.stringify({ tool: 'Read', input: { path: '/x' } })),
+          stdout: Bun.file(stdoutPath),
+          stderr: Bun.file(stderrPath),
+          env: { ...process.env, AGILE_SOCKET_PATH: socketPath },
+        });
+        await proc.exited;
+        const stdout = await Bun.file(stdoutPath).text();
+        const elapsed = performance.now() - start;
+        if (i >= WARMUP_RUNS) samples.push(elapsed);
+        if (i === WARMUP_RUNS) {
+          // Sanity-check the very first measured run actually worked.
+          expect(JSON.parse(stdout)).toEqual({ decision: 'allow' });
+        }
+      }
+      const m = median(samples);
+      // DESIGN-GAP / honesty clause: Bun subprocess startup in this container
+      // can exceed the 20ms hook budget on its own (process spawn + module
+      // resolution), which the <20ms acceptance line is about the socket
+      // round trip, not process startup. Budget here is loose (2s) so the
+      // test still fails on a real regression (e.g. a hang) without asserting
+      // a number this container cannot deliver; the actual median is printed
+      // either way for whoever tunes this next (see pipeline report).
+      console.log(
+        `[hook timing] end-to-end CLI subprocess median: ${m.toFixed(2)}ms (samples: ${samples.map((s) => s.toFixed(2)).join(', ')})`,
+      );
+      expect(m).toBeLessThan(2000);
+    },
+    CLI_SUBPROCESS_TEST_TIMEOUT_MS,
+  );
+});

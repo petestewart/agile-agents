@@ -1,0 +1,8 @@
+{
+  "ts": "...",
+  "ticket": "TKT-0231",
+  "agent": "eng-3",
+  "kind": "discovery",
+  "summary": "one paragraph max",
+  "discovery": { "tier": "scoped", "affects": ["SPEC-auth-003"], "proposed": "..." }
+}

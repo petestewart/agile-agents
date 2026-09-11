@@ -1,0 +1,502 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Agile Agents — Feed</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #0f1115;
+    --panel: #171a21;
+    --panel-border: #262b36;
+    --text: #e6e8ec;
+    --muted: #8891a3;
+    --accent: #5b9dff;
+    --good: #3ecf8e;
+    --warn: #f5a623;
+    --bad: #f0546a;
+    --row-hover: #1f2430;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-size: 13px;
+    display: flex;
+    flex-direction: column;
+  }
+  header {
+    padding: 10px 16px;
+    border-bottom: 1px solid var(--panel-border);
+    background: var(--panel);
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 16px;
+  }
+  header h1 {
+    font-size: 14px;
+    margin: 0;
+    font-weight: 600;
+    white-space: nowrap;
+  }
+  #conn {
+    font-size: 11px;
+    padding: 2px 8px;
+    border-radius: 10px;
+    border: 1px solid var(--panel-border);
+    color: var(--muted);
+  }
+  #conn.connected { color: var(--good); border-color: var(--good); }
+  #conn.connecting { color: var(--warn); border-color: var(--warn); }
+  #conn.disconnected { color: var(--bad); border-color: var(--bad); }
+
+  .sprint-strip {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 14px;
+    align-items: center;
+    font-size: 12px;
+    color: var(--muted);
+  }
+  .sprint-strip .goal { color: var(--text); font-weight: 500; }
+  .sprint-strip .stat { white-space: nowrap; }
+  .sprint-strip .stat b { color: var(--text); }
+  .sprint-strip .halts.active { color: var(--bad); }
+  .sprint-strip .halts.active b { color: var(--bad); }
+
+  main {
+    flex: 1;
+    display: grid;
+    grid-template-columns: minmax(0, 2fr) minmax(280px, 1fr);
+    gap: 0;
+    min-height: 0;
+  }
+  section {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    border-right: 1px solid var(--panel-border);
+  }
+  section:last-child { border-right: none; }
+  section > h2 {
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--muted);
+    margin: 0;
+    padding: 10px 16px;
+    border-bottom: 1px solid var(--panel-border);
+    background: var(--panel);
+  }
+
+  .filters {
+    display: flex;
+    gap: 8px;
+    padding: 8px 16px;
+    border-bottom: 1px solid var(--panel-border);
+    background: var(--panel);
+    flex-wrap: wrap;
+  }
+  .filters input {
+    background: var(--bg);
+    border: 1px solid var(--panel-border);
+    color: var(--text);
+    padding: 4px 8px;
+    border-radius: 4px;
+    font-size: 12px;
+    width: 130px;
+  }
+  .filters input::placeholder { color: var(--muted); }
+
+  #events {
+    flex: 1;
+    overflow-y: auto;
+  }
+  table { width: 100%; border-collapse: collapse; }
+  #events thead th {
+    position: sticky;
+    top: 0;
+    background: var(--panel);
+    text-align: left;
+    padding: 6px 10px;
+    font-size: 11px;
+    color: var(--muted);
+    border-bottom: 1px solid var(--panel-border);
+    z-index: 1;
+  }
+  #events tbody tr {
+    border-bottom: 1px solid var(--panel-border);
+  }
+  #events tbody tr:hover { background: var(--row-hover); }
+  #events td {
+    padding: 5px 10px;
+    vertical-align: top;
+    white-space: nowrap;
+  }
+  #events td.data {
+    white-space: normal;
+    color: var(--muted);
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 11px;
+    max-width: 0;
+    overflow-wrap: anywhere;
+  }
+  #events td.kind { color: var(--accent); font-weight: 500; }
+  #events td.ts { color: var(--muted); font-family: ui-monospace, monospace; font-size: 11px; }
+  #empty-events {
+    padding: 24px 16px;
+    color: var(--muted);
+    text-align: center;
+  }
+
+  #hil-list {
+    flex: 1;
+    overflow-y: auto;
+    padding: 8px 12px;
+  }
+  .hil-item {
+    background: var(--panel);
+    border: 1px solid var(--panel-border);
+    border-radius: 6px;
+    padding: 10px 12px;
+    margin-bottom: 8px;
+  }
+  .hil-item .gate {
+    font-weight: 600;
+    font-size: 12.5px;
+  }
+  .hil-item .meta {
+    color: var(--muted);
+    font-size: 11px;
+    margin-top: 2px;
+  }
+  .hil-item .reason {
+    color: var(--warn);
+    font-size: 11px;
+    margin-top: 4px;
+  }
+  .hil-actions {
+    display: flex;
+    gap: 6px;
+    margin-top: 8px;
+  }
+  .hil-actions button {
+    flex: 1;
+    padding: 5px 8px;
+    border-radius: 4px;
+    border: 1px solid var(--panel-border);
+    background: var(--bg);
+    color: var(--text);
+    font-size: 11.5px;
+    cursor: pointer;
+  }
+  .hil-actions button:hover { border-color: var(--accent); color: var(--accent); }
+  .hil-actions button.approve:hover { border-color: var(--good); color: var(--good); }
+  .hil-actions button:disabled { opacity: 0.5; cursor: default; }
+  .hil-item.resolved { opacity: 0.55; }
+  .hil-item .resolved-note {
+    margin-top: 6px;
+    font-size: 11px;
+    color: var(--good);
+  }
+  #empty-hil { color: var(--muted); text-align: center; padding: 20px 12px; }
+  #hil-error { color: var(--bad); font-size: 11px; padding: 0 12px 8px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Agile Agents — Feed</h1>
+  <span id="conn" class="connecting">connecting…</span>
+  <div class="sprint-strip" id="sprint-strip">
+    <span class="goal">no sprint</span>
+  </div>
+</header>
+<main>
+  <section id="events-section">
+    <h2>Event feed</h2>
+    <div class="filters">
+      <input id="filter-ticket" placeholder="ticket (TKT-…)" />
+      <input id="filter-agent" placeholder="agent" />
+      <input id="filter-kind" placeholder="kind" />
+    </div>
+    <div id="events">
+      <table>
+        <thead>
+          <tr><th>time</th><th>kind</th><th>ticket</th><th>agent</th><th>data</th></tr>
+        </thead>
+        <tbody id="events-body"></tbody>
+      </table>
+      <div id="empty-events" hidden>No events yet.</div>
+    </div>
+  </section>
+  <section id="hil-section">
+    <h2>Needs a human — open HIL requests</h2>
+    <div id="hil-error" hidden></div>
+    <div id="hil-list"></div>
+    <div id="empty-hil">Nothing waiting on you.</div>
+  </section>
+</main>
+
+<script>
+(function () {
+  'use strict';
+
+  var MAX_EVENTS = 500;
+  var SNAPSHOT_URL = '/api/snapshot';
+
+  /** @type {Array<{ts:string, kind:string, ticket?:string, agent?:string, data?:object}>} */
+  var events = [];
+  /** @type {Map<string, object>} keyed by hil request id */
+  var hilRequests = new Map();
+  var sprintInfo = null;
+  var haltsCount = 0;
+
+  var elConn = document.getElementById('conn');
+  var elEventsBody = document.getElementById('events-body');
+  var elEmptyEvents = document.getElementById('empty-events');
+  var elHilList = document.getElementById('hil-list');
+  var elEmptyHil = document.getElementById('empty-hil');
+  var elHilError = document.getElementById('hil-error');
+  var elSprintStrip = document.getElementById('sprint-strip');
+  var filterTicket = document.getElementById('filter-ticket');
+  var filterAgent = document.getElementById('filter-agent');
+  var filterKind = document.getElementById('filter-kind');
+
+  // Fragile invariant (review nit, not fixed — every renderer below builds
+  // its markup as an innerHTML string, not DOM nodes + textContent): every
+  // server-sourced field interpolated into one of those strings, including
+  // inside a quoted attribute, MUST be passed through escapeHtml first.
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+    });
+  }
+
+  function fmtTime(ts) {
+    try {
+      var d = new Date(ts);
+      if (isNaN(d.getTime())) return String(ts);
+      return d.toLocaleTimeString(undefined, { hour12: false }) + '.' + String(d.getMilliseconds()).padStart(3, '0');
+    } catch (e) {
+      return String(ts);
+    }
+  }
+
+  function pushEvent(evt) {
+    events.push(evt);
+    if (events.length > MAX_EVENTS) events.splice(0, events.length - MAX_EVENTS);
+  }
+
+  function matchesFilters(evt) {
+    var t = filterTicket.value.trim().toLowerCase();
+    var a = filterAgent.value.trim().toLowerCase();
+    var k = filterKind.value.trim().toLowerCase();
+    if (t && !(evt.ticket || '').toLowerCase().includes(t)) return false;
+    if (a && !(evt.agent || '').toLowerCase().includes(a)) return false;
+    if (k && !(evt.kind || '').toLowerCase().includes(k)) return false;
+    return true;
+  }
+
+  function renderEvents() {
+    var filtered = events.filter(matchesFilters);
+    // Newest first.
+    var rows = '';
+    for (var i = filtered.length - 1; i >= 0; i--) {
+      var e = filtered[i];
+      var dataStr = '';
+      try {
+        if (e.data && Object.keys(e.data).length > 0) dataStr = JSON.stringify(e.data);
+      } catch (err) { /* ignore */ }
+      rows +=
+        '<tr>' +
+        '<td class="ts">' + escapeHtml(fmtTime(e.ts)) + '</td>' +
+        '<td class="kind">' + escapeHtml(e.kind || '') + '</td>' +
+        '<td>' + escapeHtml(e.ticket || '') + '</td>' +
+        '<td>' + escapeHtml(e.agent || '') + '</td>' +
+        '<td class="data">' + escapeHtml(dataStr) + '</td>' +
+        '</tr>';
+    }
+    elEventsBody.innerHTML = rows;
+    elEmptyEvents.hidden = filtered.length > 0;
+  }
+
+  function renderSprint() {
+    if (!sprintInfo) {
+      elSprintStrip.innerHTML = '<span class="goal">no sprint</span>';
+      return;
+    }
+    var sprint = sprintInfo.sprint;
+    var counts = sprintInfo.tickets || { done: 0, in_flight: 0, stale: 0, total: 0 };
+    var goal = sprint ? escapeHtml(sprint.goal) : 'no active sprint';
+    var haltsClass = haltsCount > 0 ? 'halts active' : 'halts';
+    elSprintStrip.innerHTML =
+      '<span class="goal">' + goal + '</span>' +
+      '<span class="stat">done <b>' + counts.done + '</b></span>' +
+      '<span class="stat">in-flight <b>' + counts.in_flight + '</b></span>' +
+      '<span class="stat">stale <b>' + counts.stale + '</b></span>' +
+      '<span class="stat ' + haltsClass + '">halts <b>' + haltsCount + '</b></span>';
+  }
+
+  function renderHil() {
+    var open = Array.from(hilRequests.values()).filter(function (r) { return r.status === 'pending'; });
+    // Deadline soonest first, undated last.
+    open.sort(function (a, b) {
+      if (a.deadline && b.deadline) return a.deadline < b.deadline ? -1 : 1;
+      if (a.deadline) return -1;
+      if (b.deadline) return 1;
+      return a.requested_at < b.requested_at ? -1 : 1;
+    });
+    elEmptyHil.hidden = open.length > 0;
+    elHilList.innerHTML = open.map(renderHilItem).join('');
+    Array.from(elHilList.querySelectorAll('button[data-action]')).forEach(function (btn) {
+      btn.addEventListener('click', onHilAction);
+    });
+  }
+
+  function renderHilItem(r) {
+    var deadline = r.deadline ? '· deadline ' + escapeHtml(new Date(r.deadline).toLocaleString()) : '';
+    var reason = r.reason ? '<div class="reason">' + escapeHtml(r.reason) + '</div>' : '';
+    return (
+      '<div class="hil-item" data-id="' + escapeHtml(r.id) + '">' +
+      '<div class="gate">' + escapeHtml(r.gate) + ' <span style="color:var(--muted);font-weight:400">(' + escapeHtml(r.hil_kind) + ')</span></div>' +
+      '<div class="meta">' + escapeHtml(r.ticket || 'no ticket') + ' · owner ' + escapeHtml(r.owner) + ' ' + deadline + '</div>' +
+      reason +
+      '<div class="hil-actions">' +
+      '<button class="approve" data-action="approve" data-id="' + escapeHtml(r.id) + '">Approve</button>' +
+      '<button data-action="delegate" data-to="em" data-id="' + escapeHtml(r.id) + '">Delegate → EM</button>' +
+      '<button data-action="delegate" data-to="architect" data-id="' + escapeHtml(r.id) + '">Delegate → Architect</button>' +
+      '</div>' +
+      '</div>'
+    );
+  }
+
+  function onHilAction(ev) {
+    var btn = ev.currentTarget;
+    var id = btn.getAttribute('data-id');
+    var action = btn.getAttribute('data-action');
+    var item = hilRequests.get(id);
+    if (!item) return;
+    var buttons = btn.closest('.hil-item').querySelectorAll('button');
+    buttons.forEach(function (b) { b.disabled = true; });
+    elHilError.hidden = true;
+
+    var url, body;
+    if (action === 'approve') {
+      url = '/api/hil/' + encodeURIComponent(id) + '/approve';
+      body = { by: 'human' };
+    } else {
+      url = '/api/hil/' + encodeURIComponent(id) + '/delegate';
+      body = { to: btn.getAttribute('data-to') };
+    }
+
+    fetch(url, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+      .then(function (res) {
+        if (!res.ok) return res.json().then(function (b) { throw new Error(b.error || res.statusText); });
+        return res.json();
+      })
+      .then(function (updated) {
+        hilRequests.set(updated.id, updated);
+        renderHil();
+      })
+      .catch(function (err) {
+        elHilError.hidden = false;
+        elHilError.textContent = 'Action failed: ' + err.message;
+        buttons.forEach(function (b) { b.disabled = false; });
+      });
+  }
+
+  function applySnapshot(snapshot) {
+    events = (snapshot.events || []).slice(-MAX_EVENTS);
+    hilRequests = new Map();
+    (snapshot.hil || []).forEach(function (r) { hilRequests.set(r.id, r); });
+    sprintInfo = snapshot.sprint || null;
+    haltsCount = (snapshot.halts || []).length;
+    renderEvents();
+    renderSprint();
+    renderHil();
+  }
+
+  // Review nit: the WS already sends a snapshot on every connect, so this
+  // HTTP fetch exists only to paint something before the socket opens. If it
+  // resolves *after* the WS's own snapshot (or a live event), applying it
+  // would clobber that newer state — `liveDataApplied` guards against that
+  // race by skipping the fallback once anything WS-sourced has landed.
+  var liveDataApplied = false;
+
+  function loadSnapshotFallback() {
+    fetch(SNAPSHOT_URL)
+      .then(function (res) { return res.json(); })
+      .then(function (snapshot) {
+        if (!liveDataApplied) applySnapshot(snapshot);
+      })
+      .catch(function () { /* daemon not reachable over HTTP yet; WS retry will catch up */ });
+  }
+
+  [filterTicket, filterAgent, filterKind].forEach(function (input) {
+    input.addEventListener('input', renderEvents);
+  });
+
+  // --- WebSocket, with backoff reconnect ---
+  var backoffMs = 500;
+  var MAX_BACKOFF_MS = 10000;
+  var socket = null;
+
+  function setConn(state, label) {
+    elConn.className = state;
+    elConn.textContent = label;
+  }
+
+  function connect() {
+    setConn('connecting', 'connecting…');
+    var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    socket = new WebSocket(proto + '//' + location.host + '/ws');
+
+    socket.onopen = function () {
+      backoffMs = 500;
+    };
+
+    socket.onmessage = function (ev) {
+      var msg;
+      try {
+        msg = JSON.parse(ev.data);
+      } catch (e) {
+        return;
+      }
+      if (msg.type === 'hello') {
+        setConn('connected', 'live');
+      } else if (msg.type === 'snapshot') {
+        liveDataApplied = true;
+        applySnapshot(msg);
+      } else if (msg.type === 'event') {
+        liveDataApplied = true;
+        pushEvent(msg.event);
+        renderEvents();
+      }
+    };
+
+    socket.onclose = function () {
+      setConn('disconnected', 'reconnecting…');
+      setTimeout(connect, backoffMs);
+      backoffMs = Math.min(backoffMs * 2, MAX_BACKOFF_MS);
+    };
+
+    socket.onerror = function () {
+      socket.close();
+    };
+  }
+
+  loadSnapshotFallback();
+  connect();
+})();
+</script>
+</body>
+</html>

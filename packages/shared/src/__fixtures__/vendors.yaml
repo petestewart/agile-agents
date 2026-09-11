@@ -1,0 +1,15 @@
+# Verbatim from design/agile-agents-design.md §8 "Adapter contract (ACP)" →
+# "Auth" (.agile/vendors.yaml).
+claude:
+  accounts:
+    - id: max          # `claude login` OAuth — Max subscription
+      auth: subscription
+    - id: api-overflow
+      auth: api_key    # ANTHROPIC_API_KEY, used when max is low
+openai:
+  accounts:
+    - { id: chatgpt, auth: subscription }   # codex login (ChatGPT plan)
+cursor:
+  accounts: [{ id: main, auth: subscription }]
+gemini:
+  accounts: [{ id: google, auth: subscription }, { id: api, auth: api_key }]

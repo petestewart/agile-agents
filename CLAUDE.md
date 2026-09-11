@@ -16,6 +16,8 @@ Drive the plan with `/project` (manager) which launches `/pipeline` workers (one
 
 ## Commands
 
+Bun **1.3.11 or newer** is required (CI pins 1.3.11; verified on 1.4.2). Older Bun ignores `pathIgnorePatterns` in `bunfig.toml`, so `vendor/` and `dist/` run as tests and hundreds of tests fail — `bun upgrade` first if `bun --version` is older.
+
 Until T001 lands there is no code. After it:
 
 ```bash
@@ -23,8 +25,45 @@ bun install
 bun run build        # all workspaces
 bun run typecheck
 bun test             # plain bun test, no native modules — must stay green
-bun run test:integration   # flagged; needs a real vendor login, not for cloud
+bun run test:integration   # offline end-to-end (real daemon + real browser, no vendor) — must stay green
+bun run test:live          # AGILE_LIVE=1; spawns real vendor sessions — manual/nightly only
 ```
+
+`test:integration` and `test:live` are strictly separated, and the split is
+what keeps `test:integration` honest:
+
+- **`test:integration`** never spawns a vendor. It forces `AGILE_LIVE=` empty,
+  so an exported `AGILE_LIVE=1` in the shell cannot turn vendor spawning back
+  on. It must pass with no vendor login, and CI runs it.
+- **`test:live`** is the only script that spawns real vendor sessions. It takes
+  minutes, needs a real login, and is never part of CI or a normal `bun test`.
+  When the epic run fails, re-run it with `AGILE_LIVE_KEEP=1` so the temp repo
+  survives (its path is printed); look at `.agile/log/events.jsonl`,
+  `.agile/board/hil/`, `.agile/bus/agents/`, `runs/*.md` and each vendor
+  session's stderr under `.agile-daemon-cache/sessions/*.stderr.log`. A
+  pending `hil_request` (nothing auto-approves in `--live`) is printed as
+  `HIL needed: <id>` with the `agile approve <id>` that unblocks the session.
+  MCP tool *errors* (a verb rejecting the model's input) are not in
+  `events.jsonl` — `tool_call` events carry no result — they are in Claude
+  Code's own `~/Library/Caches/claude-cli-nodejs/<worktree>/mcp-logs-agile/`
+  (`grep -h '"error"' *.jsonl`). A verb called many times in a burst is a
+  model retrying a schema rejection; read those errors first.
+  `agile run --live` drives the pipeline through `handle.advancePipeline()`
+  (`daemon.ts` — the one list of glue steps); never re-list the glue in
+  `run.ts`, the hand-rolled copy silently drifted twice.
+  `em`-owned gates (`unblock` from the hook, `approve_plan`, ...) are decided
+  by a one-shot EM vendor session (`packages/daemon/src/em/delegate.ts`) —
+  the run prints `EM deciding gate …` / `EM approved|denied gate …`; without
+  a delegate (tests) they stay pending.
+
+Both name their test files explicitly. The old `--grep live` selector matched
+39+ ordinary offline tests as well, because `live` is a substring of
+`delivers`, `liveness` and `lives` — it selected 43 tests across all 143 files
+and took ~11 minutes.
+
+The Playwright e2e tests (feed page, control room) need a Chromium and **fail
+loudly** when there is none, rather than skipping: `bunx playwright-core
+install chromium`, or point `PLAYWRIGHT_CHROMIUM_EXECUTABLE` at a binary.
 
 If `bun` is missing in a fresh container: `curl -fsSL https://bun.sh/install | bash` (then `export PATH="$HOME/.bun/bin:$PATH"`), or `npm i -g bun`. If neither works, note it in the PLAN Discovered Issues log and stop — do not swap the toolchain.
 

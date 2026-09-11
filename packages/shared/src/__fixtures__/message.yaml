@@ -1,0 +1,16 @@
+# From design/agile-agents-design.md §5 "Comms bus" → "Message". Verbatim
+# except `id`/`reply_to` (the design shows truncated placeholders,
+# `01J9...`/`01J8...`, substituted with real 26-char ULIDs) and `kind`/
+# `priority` (pipe-separated enum illustrations in the design, substituted
+# with one concrete legal value each).
+id: 01ARZ3NDEKTSV4RRFFQ69G5FAV
+ts: ...
+from: eng-3            # em | architect | eng-N | reviewer-N | qa-N | human | daemon
+to: [em]               # or broadcast, or ticket:TKT-0231 (fan-out to everyone on it)
+kind: review_request
+priority: normal
+ticket: TKT-0231
+reply_to: 01BX5ZZKBKACTAV9WEVGEMMVRZ
+body: "≤ ~800 chars. Pointer, not payload."
+refs: [DEC-0042, KB-0117, .agile/reviews/TKT-0231-r1.md]
+requires_ack: true

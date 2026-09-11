@@ -1,9 +1,12 @@
 node_modules/
 dist/
+dist-app/
 out/
 .worktrees/
+.agile-daemon-cache/
 .pipeline-review.md
 .pipeline-report.md
+.pipeline-qa.md
 .env
 .env.*
 .DS_Store
