@@ -31,6 +31,7 @@ import {
   runInit,
   startRpcServer,
 } from '@agile-agents/daemon';
+import { RpcConnectionError, callRpc } from './client';
 
 export interface TestDaemon {
   repo: string;
@@ -85,6 +86,21 @@ export async function startTestDaemon(prefix = 'agile-cli-test-'): Promise<TestD
     },
   });
   await rpc.listening;
+  // `listening` says the server bound its path; a client still saw
+  // `connect ENOENT` on it once on a loaded CI runner (the `mcp --socket`
+  // bridge test, 2026-09-11, twin run green, no local reproduction in 8
+  // runs under load). Prove the socket connectable from this process before
+  // handing it to a test that spawns a real CLI subprocess against it.
+  const deadline = Date.now() + 10_000;
+  for (;;) {
+    try {
+      await callRpc(socketPath, 'daemon.ping', {}, { timeoutMs: 1000 });
+      break;
+    } catch (err) {
+      if (!(err instanceof RpcConnectionError) || Date.now() >= deadline) throw err;
+      await new Promise((r) => setTimeout(r, 25));
+    }
+  }
 
   return {
     repo,
