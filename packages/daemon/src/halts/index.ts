@@ -107,7 +107,28 @@ function computeAffectedAgents(store: StateStore, scope: HaltScope, raisedBy: st
   // resolving decision), so it is never told to report and would hold
   // quorum `pending` until the timeout every time (fourteenth live run:
   // every other affected agent reported within 70 s; the architect never).
-  return computeCoveredAgents(store, scope).filter((agent) => agent !== raisedBy);
+  const covered = computeCoveredAgents(store, scope).filter((agent) => agent !== raisedBy);
+  if (raisedBy !== 'daemon' || !Array.isArray(scope)) return covered;
+  // A daemon-raised, ticket-scoped halt is a merge conflict bounced to the
+  // ticket owner (§15): the owner is the one agent that must keep working
+  // through it, not one that stands down and reports. Nineteenth live run
+  // (2026-09-11): the EM's urgent standup_call for the merge halt reached
+  // the engineer, tier 2 denied its first rebase command with it, and the
+  // engineer filed two standup reports instead of rebasing.
+  const owners = new Set<string>();
+  for (const { id, record } of store.listAgents()) {
+    if (record.role === 'engineer' && record.ticket && scope.includes(record.ticket))
+      owners.add(id);
+  }
+  for (const ticketId of scope) {
+    try {
+      const assignee = store.getTicket(ticketId).assignee;
+      if (assignee) owners.add(assignee);
+    } catch {
+      // Ticket gone — nothing to exclude.
+    }
+  }
+  return covered.filter((agent) => !owners.has(agent));
 }
 
 function computeCoveredAgents(store: StateStore, scope: HaltScope): string[] {

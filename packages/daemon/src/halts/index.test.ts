@@ -294,6 +294,31 @@ describe('scoping', () => {
     expect(after.quorum).toBe('reached');
   });
 
+  test("a daemon-raised ticket halt (merge conflict) never names the ticket's engineer — it is the one who must work through it", async () => {
+    await store.putTicket(makeTicket('TKT-0001', { status: 'done', assignee: 'eng-1' }));
+    await store.putAgent(
+      'eng-1',
+      makeAgent({ role: 'engineer', ticket: 'TKT-0001' } as Partial<AgentRecord>),
+    );
+    await store.putAgent(
+      'reviewer-1',
+      makeAgent({ role: 'reviewer', ticket: 'TKT-0001' } as Partial<AgentRecord>),
+    );
+    const halt = await createHalt(store, {
+      scope: ['TKT-0001'],
+      reason: 'rebase conflict',
+      raised_by: 'daemon',
+    });
+    expect(halt.affected).toEqual(['reviewer-1']);
+    // An architect's ticket-scoped halt still stops the engineer.
+    const oracle = await createHalt(store, {
+      scope: ['TKT-0001'],
+      reason: 'spec contradiction',
+      raised_by: 'architect',
+    });
+    expect(oracle.affected?.sort()).toEqual(['eng-1', 'reviewer-1']);
+  });
+
   test('global halt covers every ticket', async () => {
     const clock = fakeClock(0);
     await createHalt(store, { scope: 'global', reason: 'x', raised_by: 'architect' }, clock.now);
