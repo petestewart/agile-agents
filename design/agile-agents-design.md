@@ -544,6 +544,23 @@ Chat with the EM is the steering channel, not the observation channel. Status mu
 
 Deliberately absent: drag-and-drop scheduling (EM's job) and direct chat with individual engineers (tell the EM).
 
+### Operator journey (2026-09-11, from the first hands-on run)
+
+The control room as built answers "is anything waiting on me" and nothing else. The operator's actual journey, in order, is the spec every UI ticket hangs off:
+
+1. **Pick a repo.** `agile init` from the UI or CLI; the control room opens on that repo.
+2. **State the goal.** One paragraph in plain language, typed to the EM. The architect reads the repo and proposes the plan: oracle entries it discovered, tickets with contracts. Hand-written tickets and imports (Jira, GitHub issues) are alternatives, never the default. The seed file is a test fixture, not a front door.
+3. **Ratify the oracle.** The architect's drafted rules are shown as a reviewable list; the operator edits, adds, approves. Same for a later oracle change (`approve_decision`).
+4. **Choose how much to be asked.** A settings card, one row per gate kind (`approve_plan`, `approve_decision`, `unblock`, `sprint_review`, `demo`), each `ask me` / `EM decides, tell me`. Presets on top: ask everything, plans and reviews only, unattended. This is `policy.yaml`'s gates block with a face.
+5. **Approve the plan.** The first Needs-you card: the proposed sprint, tickets in dependency order, what each touches, estimated spend. Approve, edit, or send back with a note.
+6. **Watch the sprint.** Per-ticket progress as a story, not a status enum: who has it, what stage, what happened at each stage (diff summary, review verdict and round, QA result, merge or conflict). Team rows keep a history after an agent leaves. Vendor and model are named.
+7. **Ask and steer.** The EM chat answers questions from daemon state ("what is left on all tickets") and turns a steer into an action-set card. Requires a resident EM session and the stream proxy; today neither exists during a run.
+8. **Handle what needs a human.** Every kind, each as a card with the decision in ten seconds: approve plan, approve decision, unblock (what was blocked, why, allow once / deny), sprint review (the report), demo, halt (what stopped, resume / reassign / abandon), engineer escalation (unwired today), budget threshold.
+9. **Close the sprint, or the goal.** Sprint review shows merged work and what remains of the goal; the EM proposes the next layer or declares the goal met. Promotion to `main` must work when the operator has `main` checked out.
+10. **Read the story afterwards.** A run summary in plain language at the top of the control room and in `runs/*.md`: what was asked, what was built, what went wrong, what was decided and by whom.
+
+Findings from the first run that this journey fixes: the terminal is silent and the UI is a status board, so the operator cannot tell what happened; the chat accepts messages nobody reads; every agent shows `claude/unknown`; the sprint goal is a hard-coded string; a ticket click shows raw YAML.
+
 ### Technical shape
 
 - **One TypeScript monorepo**; schemas (ticket, message, oracle header, stanza) defined once in zod and shared by daemon, hooks, CLI, and UI. This is the main reason not to split languages.
