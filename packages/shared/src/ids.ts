@@ -139,10 +139,15 @@ export const RuleIdSchema = z.string().regex(/^RULE-\d{3,}$/, 'must look like RU
 export type RuleId = z.infer<typeof RuleIdSchema>;
 
 /**
- * Bus agent identity: `em | architect | eng-N | reviewer-N | qa-N | human | daemon`
- * (§5 "Message" — the `from` field enumeration).
+ * Bus agent identity: `em | architect | eng-N | reviewer-N | reviewer-sec-N |
+ * qa-N | human | daemon` (§5 "Message" — the `from` field enumeration).
+ * `reviewer-sec-N` is the §12 security-pass reviewer the daemon mints
+ * itself (`securityReviewerIdFor`); the pattern used to reject it, so the
+ * EM's standup_call to a global halt's affected set threw
+ * "to.1: must be a valid agent id" and aborted the twenty-fifth live run.
  */
-export const AGENT_ID_PATTERN = /^(em|architect|human|daemon|eng-\d+|reviewer-\d+|qa-\d+)$/;
+export const AGENT_ID_PATTERN =
+  /^(em|architect|human|daemon|eng-\d+|reviewer-(?:sec-)?\d+|qa-\d+)$/;
 export const AgentIdSchema = z.string().regex(AGENT_ID_PATTERN, 'must be a valid agent id');
 export type AgentId = z.infer<typeof AgentIdSchema>;
 

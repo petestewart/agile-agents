@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test';
+import { AGENT_ID_PATTERN } from '@agile-agents/shared';
 import { checkRoute, roleOf } from './routing';
 
 describe('roleOf', () => {
@@ -9,6 +10,9 @@ describe('roleOf', () => {
     expect(roleOf('daemon')).toBe('daemon');
     expect(roleOf('eng-3')).toBe('engineer');
     expect(roleOf('reviewer-1')).toBe('reviewer');
+    // The daemon-minted security-pass reviewer (§12) is a reviewer too, and addressable.
+    expect(roleOf('reviewer-sec-1002')).toBe('reviewer');
+    expect(AGENT_ID_PATTERN.test('reviewer-sec-1002')).toBe(true);
     expect(roleOf('qa-2')).toBe('qa');
   });
 
