@@ -105,6 +105,33 @@ function tierOf(ticket: Ticket): TicketTier {
  * picked up, blocked, done, ...) is skipped — idempotent against a `tick()`
  * that re-scans the whole sprint every time.
  */
+/** A history line written by a session that died before doing any work (`runner/session.ts` `finish`). */
+const DEAD_SPAWN_LINE = /-> ready by .* — (prompt failed|session ended)/;
+
+/** Trailing run of dead-spawn readyings in the ticket's history — 0 once any other transition follows. */
+export function deadSpawnStreak(ticket: Pick<Ticket, 'history'>): number {
+  let streak = 0;
+  for (let i = ticket.history.length - 1; i >= 0; i--) {
+    const line = ticket.history[i] ?? '';
+    if (DEAD_SPAWN_LINE.test(line)) {
+      streak++;
+      continue;
+    }
+    // `ready -> assigned -> in_progress` sit between two dead spawns; skip them.
+    if (/ready -> assigned|assigned -> in_progress/.test(line)) continue;
+    break;
+  }
+  return streak;
+}
+
+/** Backoff before re-assigning after `streak` consecutive dead spawns: 15 s doubling, capped at 10 min. */
+export function deadSpawnBackoffMs(streak: number): number {
+  return Math.min(600_000, 15_000 * 2 ** Math.max(0, streak - 1));
+}
+
+/** Process-local: when each ticket's current dead-spawn streak was first seen, keyed by history length so a new failure resets the clock. */
+const deadSpawnSeen = new Map<string, { lines: number; since: number }>();
+
 export async function assignReady(
   store: StateStore,
   bus: Bus,
@@ -124,6 +151,25 @@ export async function assignReady(
       continue; // Ticket vanished — nothing to assign.
     }
     if (ticket.status !== 'ready') continue;
+
+    // Twenty-third live run (2026-09-11): the vendor rejected every prompt
+    // (account usage limit) and this loop re-spawned each ticket every 3 s
+    // — 215 dead sessions in 7 min. A spawn that dies before doing any work
+    // readies the ticket (`session.ts` `finish`); consecutive such readyings
+    // now back off exponentially instead of re-spawning at once.
+    const streak = deadSpawnStreak(ticket);
+    if (streak > 0) {
+      const nowMs = now().getTime();
+      const seen = deadSpawnSeen.get(ticketId);
+      const entry =
+        seen && seen.lines === ticket.history.length
+          ? seen
+          : { lines: ticket.history.length, since: nowMs };
+      deadSpawnSeen.set(ticketId, entry);
+      if (nowMs - entry.since < deadSpawnBackoffMs(streak)) continue;
+    } else {
+      deadSpawnSeen.delete(ticketId);
+    }
 
     const candidate = route({ role: 'engineer', tier: tierOf(ticket) });
     if (

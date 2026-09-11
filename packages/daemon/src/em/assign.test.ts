@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import type { TicketId } from '@agile-agents/shared';
 import { Bus } from '../bus';
-import { assignReady, defaultRoute } from './assign';
+import { assignReady, deadSpawnBackoffMs, deadSpawnStreak, defaultRoute } from './assign';
 import { type Fixture, fakeRunner, makeFixture, makeSprint, makeTicket } from './test-helpers';
 
 let fx: Fixture;
@@ -81,6 +81,38 @@ describe('assignReady', () => {
     expect(ticket.routing?.vendor).toBe('pi');
     expect(ticket.routing?.account).toBe('pi-on-claude-max');
     expect(ticket.routing?.model).toBe('claude-sonnet');
+  });
+
+  test('backs off re-assigning a ticket whose spawns keep dying before any work (vendor rejecting prompts)', async () => {
+    const dead =
+      '2026-09-11 in_progress -> ready by eng-0001 — prompt failed: The turn did not finish cleanly (prompt rejected)';
+    const history = [
+      '2026-09-11 ready -> assigned by eng-0001',
+      '2026-09-11 assigned -> in_progress by eng-0001',
+      dead,
+      '2026-09-11 ready -> assigned by eng-0001',
+      '2026-09-11 assigned -> in_progress by eng-0001',
+      dead,
+    ];
+    await fx.store.putTicket(makeTicket('TKT-0001' as TicketId, { history }));
+    await fx.store.putSprint(makeSprint('S-1', { tickets: ['TKT-0001'] as TicketId[] }));
+    const sprint = fx.store.getSprint('S-1' as never);
+    const runner = fakeRunner(fx.store);
+    expect(deadSpawnStreak({ history })).toBe(2);
+    expect(deadSpawnBackoffMs(2)).toBe(30_000);
+
+    let t = Date.parse('2026-09-11T14:00:00Z');
+    const now = () => new Date(t);
+    expect(await assignReady(fx.store, bus, runner, sprint, { now })).toHaveLength(0);
+    t += 10_000;
+    expect(await assignReady(fx.store, bus, runner, sprint, { now })).toHaveLength(0);
+    t += 25_000; // past the 30 s backoff for a streak of 2
+    expect(await assignReady(fx.store, bus, runner, sprint, { now })).toHaveLength(1);
+  });
+
+  test('a ticket with no dead-spawn streak is assigned at once', () => {
+    expect(deadSpawnStreak({ history: ['2026-09-11 ready -> assigned by eng-0001'] })).toBe(0);
+    expect(deadSpawnBackoffMs(7)).toBe(600_000);
   });
 
   test('skips a ticket already picked up by a live agent (idempotent against re-scans)', async () => {
