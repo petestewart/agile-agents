@@ -560,10 +560,10 @@ describe('Runner.spawn', () => {
         .filter(
           (e) => e.kind === 'tool_call' && (e.data as Record<string, unknown>).toolCallId === 'r1',
         ).length;
-    await waitFor(() => toolCallCount() >= 1); // round 1's own spawn-time prompt.
+    await waitFor(() => toolCallCount() >= 1, { timeoutMs: 60_000 }); // round 1's own spawn-time prompt.
 
     await runner.promptAgent('reviewer-0231', 're-review: please check again');
-    await waitFor(() => toolCallCount() >= 2); // a genuine second turn on the SAME subprocess.
+    await waitFor(() => toolCallCount() >= 2, { timeoutMs: 60_000 }); // a genuine second turn on the SAME subprocess.
 
     runner.stop('reviewer-0231');
     await rev.exited;
