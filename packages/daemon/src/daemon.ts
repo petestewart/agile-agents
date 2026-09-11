@@ -45,6 +45,7 @@ import {
   advanceHilResolutions,
   advanceMergeConflicts,
   advanceQaSpawns,
+  advanceResumes,
   advanceReviewRequests,
   advanceReviewerEscalations,
   advanceSecurityReviews,
@@ -310,11 +311,13 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
   const qaSpawned = new Set<TicketId>();
   const mergedDone = new Set<TicketId>();
   const conflictPrompted = new Set<TicketId>();
+  const seenResumes = new Set<string>();
   async function advancePipeline(): Promise<void> {
     if (store && bus && reviewProtocol && runner)
       await advanceReviewRequests(store, bus, reviewProtocol, runner, seenReviewRequests);
     if (store && bus && runner)
       await advanceEngineerVerdicts(store, bus, runner, seenEngineerVerdicts);
+    if (store && bus && runner) await advanceResumes(store, bus, runner, seenResumes);
     if (gateService && runner) await advanceHilResolutions(gateService, runner, seenHilResolutions);
     if (bus && runner) await advanceArchitectInbox(bus, runner, seenArchitectInbox);
     if (store && runner) await advanceSecurityReviews(store, runner, seenSecurityReviews);

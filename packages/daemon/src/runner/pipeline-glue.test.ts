@@ -19,6 +19,7 @@ import {
   advanceHilResolutions,
   advanceMergeConflicts,
   advanceQaSpawns,
+  advanceResumes,
   advanceReviewRequests,
   advanceReviewerEscalations,
   advanceSecurityReviews,
@@ -582,6 +583,56 @@ describe('advanceDoneTickets', () => {
     const result = await advanceDoneTickets(store, merger, new Set());
     expect(result).toEqual([]);
     expect(mergeCalls).toEqual([]);
+  });
+});
+
+describe('advanceResumes', () => {
+  const agentRecord = (ticket: TicketId) => ({
+    vendor: 'claude',
+    model: 'claude-sonnet-4-5',
+    pid: 1234,
+    last_seen: '2026-09-11T00:00:00Z',
+    role: 'engineer' as const,
+    ticket,
+  });
+  async function broadcastResume(): Promise<void> {
+    const result = await bus.send({
+      id: ulid(),
+      ts: new Date().toISOString(),
+      from: 'em',
+      to: ['broadcast'],
+      kind: 'resume',
+      priority: 'normal',
+      body: 'halt H-1 released — decision DEC-0001 published',
+      refs: ['H-1'],
+      requires_ack: false,
+    });
+    if (!result.ok) throw new Error(`broadcastResume: ${result.reason}`);
+  }
+
+  test('re-prompts a live idle agent once with the resume, and acks it', async () => {
+    const eng = agentIdFor('engineer', 'TKT-0001' as TicketId);
+    await store.putAgent(eng, agentRecord('TKT-0001' as TicketId));
+    await broadcastResume();
+    const runner = fakeEngineerRunner([eng]);
+    const seen = new Set<string>();
+    expect(await advanceResumes(store, bus, runner, seen)).toEqual([eng]);
+    expect(runner.prompted[0]?.agentId).toBe(eng);
+    expect(runner.prompted[0]?.text).toContain('DEC-0001');
+    expect(runner.prompted[0]?.text).toContain('TKT-0001');
+    expect(bus.poll(eng)).toHaveLength(0);
+    expect(await advanceResumes(store, bus, runner, seen)).toEqual([]);
+    expect(runner.prompted).toHaveLength(1);
+  });
+
+  test('an agent that is no longer live just has its copy acked — assignReady re-spawns it with fresh context', async () => {
+    const eng = agentIdFor('engineer', 'TKT-0002' as TicketId);
+    await store.putAgent(eng, agentRecord('TKT-0002' as TicketId));
+    await broadcastResume();
+    const runner = fakeEngineerRunner();
+    expect(await advanceResumes(store, bus, runner, new Set())).toEqual([]);
+    expect(runner.prompted).toHaveLength(0);
+    expect(bus.poll(eng)).toHaveLength(0);
   });
 });
 

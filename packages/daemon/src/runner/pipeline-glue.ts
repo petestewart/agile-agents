@@ -259,6 +259,55 @@ export async function advanceQaSpawns(
   return spawned;
 }
 
+/**
+ * Re-prompts every live agent whose inbox still holds an unread `resume`
+ * (halt released, §5 step 7). The tier-1 halt deny tells the agent to file
+ * its standup_report and end its turn; nothing else ever prompted it again
+ * — sixteenth live run (2026-09-11): all three engineers reported, the halt
+ * released 03:16:34, the `resume` broadcast landed, and the daemon then sat
+ * silent for 14 minutes until the watchdog. A busy agent gets the same
+ * message through the hook's tier 3 (delivered + acked on its next tool
+ * call), so only a copy still unread here is prompted; it is acked either
+ * way. An agent that is no longer live is re-spawned with fresh context by
+ * `assignReady`, so its copy is just acked. Returns the agents prompted.
+ */
+export async function advanceResumes(
+  store: Pick<StateStore, 'listAgents'>,
+  bus: Pick<Bus, 'poll' | 'ack'>,
+  runner: ReviewRunner,
+  seen: Set<string>,
+): Promise<AgentId[]> {
+  const prompted: AgentId[] = [];
+  for (const { id, record } of store.listAgents()) {
+    const agentId = id as AgentId;
+    for (const message of bus.poll(agentId)) {
+      if (message.kind !== 'resume') continue;
+      const key = `${agentId}:${message.id}`;
+      if (seen.has(key)) continue;
+      if (!runner.isLive(agentId)) {
+        seen.add(key);
+        await bus.ack(agentId, message.id);
+        continue;
+      }
+      const ticket = record.ticket ? ` ${record.ticket}` : '';
+      const text = [
+        `${message.body}.`,
+        `The halt that blocked you is over. Pick your ticket${ticket} back up where you left off — your worktree is unchanged —`,
+        'read the published decision with oracle_get if it names one, and carry on to review_request as usual.',
+      ].join('\n');
+      try {
+        await dispatchTurn(runner, agentId, text);
+      } catch {
+        continue;
+      }
+      seen.add(key);
+      await bus.ack(agentId, message.id);
+      prompted.push(agentId);
+    }
+  }
+  return prompted;
+}
+
 /** The slice of `MergeOwner` `advanceMergeConflicts` needs. */
 export interface ConflictMerger {
   status(ticket: TicketId): { status?: string; summary?: string } | undefined;
