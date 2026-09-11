@@ -309,7 +309,7 @@ export async function advanceMergeConflicts(
     const text = [
       `${ticket.id} passed review and QA but could not be merged: ${record.summary ?? 'merge conflict'}.`,
       `In your worktree, run \`git rebase integration\`, resolve every conflict keeping both tickets' intent,`,
-      'run the tests, and finish the rebase (`git rebase --continue`) so the branch is clean and on top of integration.',
+      'run the tests, and finish the rebase (`git -c core.editor=true rebase --continue`) so the branch is clean and on top of integration.',
       'The daemon retries the merge on its own once the branch is rebased; do not open a review request.',
     ].join('\n');
     try {

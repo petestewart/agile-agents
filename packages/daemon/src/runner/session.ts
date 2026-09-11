@@ -602,6 +602,10 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
       ...wrapped.envOverrides,
       AGILE_AGENT: agentId,
       AGILE_TICKET: ticket,
+      // Every git the session runs is headless: a `rebase --continue` or a
+      // `commit` without -m would otherwise open core.editor and hang the
+      // tool call (merge-conflict fix cycle, fifteenth live run).
+      GIT_EDITOR: 'true',
       ...(opts.socketPath ? { AGILE_SOCKET_PATH: opts.socketPath } : {}),
       ...(provider.id === 'pi' ? { [PI_GATE_ENV_VAR]: '1' } : {}),
     },
