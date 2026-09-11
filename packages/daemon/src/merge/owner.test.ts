@@ -329,6 +329,57 @@ describe('conflict fix cycle — conflictResolved / retryAfterConflict', () => {
     expectHumanCheckoutUntouched();
   });
 
+  test('a branch the engineer rebased onto an integration that then moved again is still resolved — the retry rebases onto the current one', async () => {
+    const a = makeTicket('TKT-0130', { title: 'First writer' });
+    const b = makeTicket('TKT-0131', { title: 'Second writer', assignee: 'eng-2' });
+    const c = makeTicket('TKT-0132', { title: 'Third writer' });
+    await store.putTicket(a);
+    await store.putTicket(b);
+    await store.putTicket(c);
+    engineerCommit(a, 'shared.txt', 'from A\n');
+    const wtB = ensureTicketWorktree(repo, b).path;
+    writeFileSync(join(wtB, 'shared.txt'), 'from B\n');
+    git(['add', '-A'], wtB);
+    git(['commit', '-q', '-m', 'b work'], wtB);
+    engineerCommit(c, 'other.txt', 'from C\n');
+    const owner = new MergeOwner(store, bus, repo, { runTests: okTests });
+    await owner.onTicketDone(a.id);
+    const conflict = await owner.onTicketDone(b.id);
+    expect(conflict.status).toBe('conflict');
+    expect(owner.status(b.id)?.branchHead).toBe(git(['rev-parse', 'HEAD'], wtB));
+
+    // The engineer rebases and resolves onto integration as it is now...
+    Bun.spawnSync(['git', 'rebase', INTEGRATION_BRANCH], {
+      cwd: wtB,
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+    writeFileSync(join(wtB, 'shared.txt'), 'from A and B\n');
+    git(['add', '-A'], wtB);
+    Bun.spawnSync(['git', 'rebase', '--continue'], {
+      cwd: wtB,
+      env: { ...process.env, GIT_EDITOR: 'true' },
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+    // ...and integration moves again under it (another ticket merges).
+    await owner.onTicketDone(c.id);
+    const ancestor = Bun.spawnSync(
+      ['git', 'merge-base', '--is-ancestor', INTEGRATION_BRANCH, 'HEAD'],
+      {
+        cwd: wtB,
+        stdout: 'pipe',
+        stderr: 'pipe',
+      },
+    );
+    expect(ancestor.exitCode).not.toBe(0);
+    expect(owner.conflictResolved(b.id)).toBe(true);
+    const outcome = await owner.retryAfterConflict(b.id);
+    expect(outcome.status).toBe('merged');
+    expect(git(['show', `${INTEGRATION_BRANCH}:shared.txt`])).toBe('from A and B');
+    expect(git(['show', `${INTEGRATION_BRANCH}:other.txt`])).toBe('from C');
+  });
+
   test('retryAfterConflict refuses a ticket without a conflict record', async () => {
     const owner = new MergeOwner(store, bus, repo, { runTests: okTests });
     await expect(owner.retryAfterConflict('TKT-0999' as TicketId)).rejects.toThrow(

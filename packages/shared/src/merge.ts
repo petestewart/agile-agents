@@ -47,6 +47,8 @@ export const MergeRecordSchema = z
     summary: z.string().min(1).optional(),
     /** The halt raised for a `conflict`/`test_failed` outcome. */
     haltId: HaltIdSchema.optional(),
+    /** The ticket branch head when a `conflict` was recorded — the fix cycle is resolved once the engineer has moved it (see `MergeOwner.conflictResolved`). */
+    branchHead: z.string().min(1).optional(),
     /** The `integration` merge commit sha for a `merged` outcome. */
     mergeCommit: z.string().min(1).optional(),
     worktreeKept: z.boolean().optional(),

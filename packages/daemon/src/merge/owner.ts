@@ -394,7 +394,15 @@ export class MergeOwner {
       worktree,
       this.repoRoot,
     );
-    return ancestor.exitCode === 0;
+    if (ancestor.exitCode === 0) return true;
+    // Integration moved again during the fix cycle (twenty-ninth live run:
+    // the engineer rebased at 17:24:13, TKT-1002 merged at 17:24:32 and
+    // TKT-1004 after it, so `integration` was never an ancestor and the
+    // cycle sat for 12 minutes). The engineer having moved the branch since
+    // the conflict is enough: the retry rebases onto the current
+    // integration itself and raises a fresh conflict if that fails.
+    const head = git(['rev-parse', 'HEAD'], worktree, this.repoRoot).stdout;
+    return record.branchHead !== undefined && head !== '' && head !== record.branchHead;
   }
 
   /**
@@ -473,7 +481,7 @@ export class MergeOwner {
       const files = this.conflictedFiles(worktreePath);
       gitWrite(['rebase', '--abort'], worktreePath, this.repoRoot);
       const summary = this.buildConflictSummary(ticket, files.length > 0 ? files : [rebase.stderr]);
-      return this.haltAndRecord(ticket, 'conflict', summary);
+      return this.haltAndRecord(ticket, 'conflict', summary, worktreePath);
     }
 
     const testResult = await this.runTests(worktreePath, this.repoRoot);
@@ -618,8 +626,13 @@ export class MergeOwner {
     ticket: Ticket,
     status: 'conflict' | 'test_failed',
     summary: string,
+    worktreePath?: string,
   ): Promise<MergeOutcome> {
     const now = this.clock();
+    const branchHead =
+      worktreePath !== undefined
+        ? git(['rev-parse', 'HEAD'], worktreePath, this.repoRoot).stdout || undefined
+        : undefined;
     const halt = await createHalt(
       this.store,
       { scope: [ticket.id], reason: summary, raised_by: 'daemon' },
@@ -642,7 +655,12 @@ export class MergeOwner {
         data: { summary, haltId: halt.id },
       }),
     );
-    await this.recordMerge(ticket.id, { status, summary, haltId: halt.id });
+    await this.recordMerge(ticket.id, {
+      status,
+      summary,
+      haltId: halt.id,
+      ...(branchHead ? { branchHead } : {}),
+    });
     return { status, ticket: ticket.id, summary, haltId: halt.id };
   }
 
