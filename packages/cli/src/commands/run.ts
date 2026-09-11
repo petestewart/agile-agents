@@ -972,6 +972,7 @@ export async function runDemoSprint(opts: RunOptions): Promise<RunResult> {
       const violationReviewedRound2 = new Set<TicketId>();
       let discoveryRaised = false;
       let discoveryResolved = !seed.discovery;
+      let liveHaltSeen = false;
       let oversizedReadDecision = 'not checked (no --seed)';
 
       const start = clockNow();
@@ -1134,6 +1135,16 @@ export async function runDemoSprint(opts: RunOptions): Promise<RunResult> {
           }
         }
 
+        // Live: the architect raises and resolves the seeded discovery
+        // itself, so "resolved" is read off the board — a halt was seen,
+        // and none is active now. Twenty-fourth live run (2026-09-11): all
+        // three tickets merged at 15:03:42 and the sprint was reviewed ten
+        // seconds later, yet the loop ran on until the no-liveness rule
+        // aborted it — this flag was only ever set by the scripted driver.
+        if (!fake) {
+          if (store.listHalts().length > 0) liveHaltSeen = true;
+          else if (liveHaltSeen) discoveryResolved = true;
+        }
         const sprintReviewed = store.listSprints().some((s) => s.review_at !== undefined);
         if (
           trackedIds.length > 0 &&
