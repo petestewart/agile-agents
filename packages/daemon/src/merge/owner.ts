@@ -377,8 +377,6 @@ export class MergeOwner {
     if (!ONTICKETDONE_ALLOWED_STATUSES.includes(ticket.status)) {
       throw new TicketNotReadyForMergeError(ticket.id, ticket.status);
     }
-    const branch = ticketBranchName(ticket);
-
     // Dedupe the worktree-path rule against `runner/worktrees.ts` (review
     // round 1 nit) rather than re-deriving `.worktrees/<TKT-id>` here.
     // `ensureTicketWorktree` is idempotent (a `created: false` return is a
@@ -389,6 +387,10 @@ export class MergeOwner {
     // "no worktree *and* no existing branch", which is the same "nothing to
     // merge" condition the old explicit `existsSync` check guarded against.
     const engineerWorktree = ensureTicketWorktree(this.repoRoot, ticket);
+    // The branch the worktree is on, not `ticketBranchName(ticket)`: a
+    // re-refined title re-slugs the name, and the merge then asked git for
+    // a branch that never existed (thirteenth live run, TKT-1002).
+    const branch = engineerWorktree.branch;
     if (engineerWorktree.created) {
       throw new MissingTicketWorktreeError(ticket.id, branch);
     }

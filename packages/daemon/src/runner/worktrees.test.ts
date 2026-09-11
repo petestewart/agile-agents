@@ -10,6 +10,7 @@ import {
   ensureQaClone,
   ensureTicketWorktree,
   slugify,
+  ticketBranch,
   ticketBranchName,
 } from './worktrees';
 
@@ -101,6 +102,29 @@ describe('ensureTicketWorktree', () => {
     expect(second.created).toBe(false);
     expect(second.path).toBe(first.path);
     expect(existsSync(join(second.path, 'work-in-progress.txt'))).toBe(true);
+  });
+});
+
+describe('a title edit after the worktree exists (architect re-refine)', () => {
+  test('ensureTicketWorktree, ticketBranch and ensureQaClone all keep the branch the worktree is on', () => {
+    const first = ensureTicketWorktree(repo, makeTicket());
+    const renamed = makeTicket({ title: 'Agent runner and worktree manager (stable on ties)' });
+    // The pure name moved...
+    expect(ticketBranchName(renamed)).not.toBe(first.branch);
+    // ...but nothing that operates on the existing worktree may follow it.
+    const second = ensureTicketWorktree(repo, renamed);
+    expect(second.created).toBe(false);
+    expect(second.branch).toBe(first.branch);
+    expect(ticketBranch(repo, renamed)).toBe(first.branch);
+    expect(git(['rev-parse', '--abbrev-ref', 'HEAD'], second.path)).toBe(first.branch);
+    const qa = ensureQaClone(repo, renamed);
+    expect(qa.branch).toBe(first.branch);
+    expect(git(['rev-parse', '--abbrev-ref', 'HEAD'], qa.path)).toBe(first.branch);
+  });
+
+  test('ticketBranch falls back to the creation name when there is no worktree yet', () => {
+    const ticket = makeTicket();
+    expect(ticketBranch(repo, ticket)).toBe(ticketBranchName(ticket));
   });
 });
 

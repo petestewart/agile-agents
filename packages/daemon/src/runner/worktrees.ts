@@ -85,9 +85,40 @@ export function slugify(title: string, maxLen = 40): string {
   return slug.slice(0, maxLen).replace(/-+$/g, '') || 'ticket';
 }
 
-/** `tkt/<digits>-<slug>` — pure function of the ticket's id/title, so it's stable across engineer/reviewer/QA callers without reading anything off disk. */
+/**
+ * `tkt/<digits>-<slug>` — the name a *new* worktree for this ticket gets.
+ * It is a function of the title, and the title is mutable: the architect's
+ * `ticket_refine` (a ripple re-refine) rewrites it, after which this no
+ * longer names the branch the worktree is on. Thirteen live runs in a row
+ * lost every re-refined ticket this way — `diff_summary`, the review
+ * protocol and the merge owner all asked git for the re-slugged name
+ * (`fatal: ambiguous argument 'integration...tkt/1002-…-stable-on-tie'`)
+ * while `.worktrees/TKT-1002` sat on `tkt/1002-sort-listtasks-by-due-date`.
+ * Every caller that operates on an existing worktree must use
+ * `ticketBranch` (the checked-out branch) instead; this stays the creation
+ * name only.
+ */
 export function ticketBranchName(ticket: Ticket): string {
   return `tkt/${ticketDigits(ticket.id)}-${slugify(ticket.title)}`;
+}
+
+/** Branch checked out in `.worktrees/<TKT-id>`, or undefined when there is no such worktree (or it is detached). */
+export function checkedOutTicketBranch(repoRoot: string, ticket: Ticket): string | undefined {
+  const path = join(repoRoot, '.worktrees', ticket.id);
+  if (!existsSync(path)) return undefined;
+  // `-C path` with `repoRoot` as cwd: the sandboxed HOME must stay under
+  // the repo root, never inside a worktree (T034).
+  const result = git(['-C', path, 'symbolic-ref', '--short', 'HEAD'], repoRoot);
+  return result.exitCode === 0 && result.stdout ? result.stdout : undefined;
+}
+
+/**
+ * The ticket's branch for every git operation: the one its worktree is on
+ * when the worktree exists, else the name a new worktree would get. Stable
+ * across title edits, which `ticketBranchName` alone is not.
+ */
+export function ticketBranch(repoRoot: string, ticket: Ticket): string {
+  return checkedOutTicketBranch(repoRoot, ticket) ?? ticketBranchName(ticket);
 }
 
 /**
@@ -129,7 +160,9 @@ export function ensureTicketWorktree(repoRoot: string, ticket: Ticket): Worktree
   const path = join(repoRoot, '.worktrees', ticket.id);
   const branch = ticketBranchName(ticket);
   if (existsSync(path)) {
-    return { path, branch, created: false };
+    // Report the branch the worktree is actually on — after a title edit
+    // that is not `branch` (see `ticketBranchName`).
+    return { path, branch: checkedOutTicketBranch(repoRoot, ticket) ?? branch, created: false };
   }
 
   ensureIntegrationBranch(repoRoot);
@@ -161,7 +194,7 @@ export interface QaCloneResult {
  * `integration` if QA is spawned before any engineer has run).
  */
 export function ensureQaClone(repoRoot: string, ticket: Ticket): QaCloneResult {
-  const branch = ticketBranchName(ticket);
+  const branch = ticketBranch(repoRoot, ticket);
   const path = join(repoRoot, '.worktrees', `${ticket.id}-qa`);
   if (existsSync(path)) {
     return { path, branch, created: false };

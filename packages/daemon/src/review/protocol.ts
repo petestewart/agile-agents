@@ -26,7 +26,7 @@ import {
 } from '@agile-agents/shared';
 import type { Bus } from '../bus/bus';
 import { agentIdFor } from '../runner/runner';
-import { INTEGRATION_BRANCH, ticketBranchName } from '../runner/worktrees';
+import { INTEGRATION_BRANCH, ticketBranch } from '../runner/worktrees';
 import { NotFoundError } from '../store/store';
 import type { StateStore } from '../store/store';
 import { type DiffHunk, type DiffSummaryOutput, runDiffSummary } from './diff-summary';
@@ -145,7 +145,7 @@ export class ReviewProtocol {
     return runDiffSummary({
       worktree: this.resolveWorktree(ticket),
       base: INTEGRATION_BRANCH,
-      head: ticketBranchName(ticket),
+      head: ticketBranch(this.repoRoot, ticket),
       repoRoot: this.repoRoot,
     });
   }
@@ -208,7 +208,7 @@ export class ReviewProtocol {
     return runDiffSummary({
       worktree,
       base: INTEGRATION_BRANCH,
-      head: ticketBranchName(ticket),
+      head: ticketBranch(repoRoot, ticket),
       repoRoot,
     });
   }

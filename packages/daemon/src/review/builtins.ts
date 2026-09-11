@@ -31,7 +31,7 @@
 import { isAbsolute, join } from 'node:path';
 import type { TicketId } from '@agile-agents/shared';
 import type { Bus } from '../bus/bus';
-import { INTEGRATION_BRANCH, ticketBranchName } from '../runner/worktrees';
+import { INTEGRATION_BRANCH, ticketBranch } from '../runner/worktrees';
 import type { StateStore } from '../store/store';
 import type { ToolCallContext } from '../tools/types';
 import { runDiffSummary } from './diff-summary';
@@ -87,7 +87,7 @@ async function diffSummaryHandler(
   return runDiffSummary({
     worktree,
     base: INTEGRATION_BRANCH,
-    head: ticketBranchName(ticket),
+    head: ticketBranch(deps.repoRoot, ticket),
     repoRoot: deps.repoRoot,
   });
 }
