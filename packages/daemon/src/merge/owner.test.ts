@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { HaltId, HilId, Ticket, TicketId } from '@agile-agents/shared';
@@ -315,6 +315,9 @@ describe('conflict fix cycle — conflictResolved / retryAfterConflict', () => {
       stderr: 'pipe',
     });
     expect(cont.exitCode, new TextDecoder().decode(cont.stderr)).toBe(0);
+    // An untracked file (the fixture's node_modules/) is not dirt.
+    mkdirSync(join(wtB, 'node_modules'), { recursive: true });
+    writeFileSync(join(wtB, 'node_modules', 'x.js'), '');
     expect(owner.conflictResolved(b.id)).toBe(true);
 
     const outcome = await owner.retryAfterConflict(b.id);

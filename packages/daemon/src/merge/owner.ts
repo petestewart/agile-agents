@@ -379,8 +379,16 @@ export class MergeOwner {
       const rel = git(['rev-parse', '--git-path', dir], worktree, this.repoRoot).stdout;
       if (rel && existsSync(resolve(worktree, rel))) return false;
     }
-    if (git(['status', '--porcelain=v1'], worktree, this.repoRoot).stdout.trim() !== '')
-      return false;
+    // Tracked changes and unresolved paths only: an untracked
+    // `node_modules/` (the demo fixture has no .gitignore for it) held the
+    // twenty-second live run's fully rebased branch at "not resolved" for
+    // seven minutes until the driver's no-liveness rule aborted the run.
+    const dirty = git(
+      ['status', '--porcelain=v1', '--untracked-files=no'],
+      worktree,
+      this.repoRoot,
+    ).stdout.trim();
+    if (dirty !== '') return false;
     const ancestor = git(
       ['merge-base', '--is-ancestor', INTEGRATION_BRANCH, 'HEAD'],
       worktree,
