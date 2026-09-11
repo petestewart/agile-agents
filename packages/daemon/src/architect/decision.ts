@@ -11,7 +11,6 @@
  */
 
 import type { Halt, HaltId, OracleEntry } from '@agile-agents/shared';
-import { releaseHalt } from '../halts';
 import type { OracleWriteResult } from '../oracle';
 import { oracleWrite } from '../oracle';
 import { buildEvent } from '../store';
@@ -144,7 +143,16 @@ export async function resolveDiscovery(
     );
   }
 
+  // Eighteenth live run (2026-09-11): this used to `releaseHalt` inline —
+  // the one release path with no `resume` broadcast. The agents that had
+  // reported and ended their turns (the tier-1 deny tells them to) were
+  // never woken; a reviewer sat idle until the liveness sweep reaped it
+  // 5 min later and its ticket fell back to `ready`. The EM loop's
+  // `releaseIfResolved` is the single release path now: it releases and
+  // broadcasts `resume` on its next tick (seconds), given quorum `reached`
+  // and the pinned decision on file — both left here. A forced resolution
+  // marks quorum reached itself so that path releases it too.
   const oracle = await publishDecision(store, entry, body);
-  await releaseHalt(store, haltId);
-  return { oracle, halt, released: true };
+  const pinned = await store.putHalt({ ...halt, resolves_when: entry.id, quorum: 'reached' });
+  return { oracle, halt: pinned, released: true };
 }

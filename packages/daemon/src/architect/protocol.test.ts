@@ -134,7 +134,9 @@ describe('discovery -> standup -> resume, driven by a fake architect over the in
     expect(published.released).toBe(true);
 
     // Step 7 (§5): halt released; ripple staled every live ticket citing DEC-0001.
-    expect(store.listHalts()).toHaveLength(0);
+    expect(store.listHalts().map((h) => [h.quorum, h.resolves_when])).toEqual([
+      ['reached', 'DEC-0002'],
+    ]); // released (+ resume broadcast) by the EM loop's releaseIfResolved, the one release path
     expect(new Set(published.oracle.stale)).toEqual(new Set(['TKT-0001', 'TKT-0002', 'TKT-0003']));
     for (const id of published.oracle.stale) {
       expect(store.getTicket(id).status).toBe('stale');
@@ -186,7 +188,9 @@ describe('runDiscoveryProtocol — the one-call convenience path', () => {
     expect(result.haltId).not.toBeNull();
     expect(new Set(result.staled)).toEqual(new Set(['TKT-0001', 'TKT-0002', 'TKT-0003']));
     expect(new Set(result.reRefined)).toEqual(new Set(result.staled));
-    expect(store.listHalts()).toHaveLength(0);
+    expect(store.listHalts().map((h) => [h.quorum, h.resolves_when])).toEqual([
+      ['reached', 'DEC-0002'],
+    ]); // released (+ resume broadcast) by the EM loop's releaseIfResolved, the one release path
     for (const id of result.staled) {
       expect(store.getTicket(id).status).toBe('ready');
     }

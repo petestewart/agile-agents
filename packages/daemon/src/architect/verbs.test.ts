@@ -353,6 +353,8 @@ describe('createArchitectMcpServer', () => {
       },
     });
     expect(result.isError).not.toBe(true);
-    expect(store.listHalts()).toHaveLength(0);
+    expect(store.listHalts().map((h) => [h.quorum, h.resolves_when])).toEqual([
+      ['reached', 'DEC-0001'],
+    ]); // released (+ resume broadcast) by the EM loop's releaseIfResolved, the one release path
   });
 });

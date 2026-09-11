@@ -4,6 +4,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { OracleEntry, Ticket } from '@agile-agents/shared';
 import { validateTicket } from '@agile-agents/shared';
+import { Bus } from '../bus';
+import { releaseIfResolved } from '../em/standup';
 import { createHalt } from '../halts';
 import { runInit } from '../init';
 import { StateStore } from '../store';
@@ -11,6 +13,7 @@ import { DiscoveryResolutionError, publishDecision, resolveDiscovery } from './d
 
 let repo: string;
 let store: StateStore;
+let bus: Bus;
 
 beforeEach(() => {
   repo = mkdtempSync(join(tmpdir(), 'agile-decision-'));
@@ -20,6 +23,7 @@ beforeEach(() => {
   Bun.spawnSync(['git', 'commit', '--allow-empty', '-q', '-m', 'init'], { cwd: repo });
   const init = runInit(repo);
   store = StateStore.open(init.stateRoot);
+  bus = new Bus(store, init.stateRoot);
 });
 
 afterEach(() => {
@@ -75,7 +79,17 @@ describe('resolveDiscovery — quorum already reached', () => {
     const result = await resolveDiscovery(store, halt.id, makeEntry(), 'body');
     if (!result.released) throw new Error(`expected released: true, got ${result.reason}`);
     expect(result.oracle.entry.id).toBe('DEC-0001');
+    // Not deleted here: the EM loop's releaseIfResolved is the one release
+    // path (it also broadcasts `resume`), and it finds everything it needs.
+    const left = store.getHalt(halt.id);
+    expect(left.quorum).toBe('reached');
+    expect(left.resolves_when).toBe('DEC-0001');
+    expect(await releaseIfResolved(store, bus, left)).toBe(true);
     expect(() => store.getHalt(halt.id)).toThrow();
+    const resume = store
+      .listEvents()
+      .find((e) => e.kind === 'message' && (e.data as { kind?: string }).kind === 'resume');
+    expect(resume).toBeDefined();
   });
 
   test("refuses a decision id mismatched with the halt's resolves_when", async () => {
@@ -101,6 +115,7 @@ describe('resolveDiscovery — quorum already reached', () => {
     });
     const result = await resolveDiscovery(store, halt.id, makeEntry(), 'body');
     expect(result.released).toBe(true);
+    expect(store.getHalt(halt.id).resolves_when).toBe('DEC-0001');
   });
 });
 
@@ -149,6 +164,9 @@ describe('resolveDiscovery — quorum pending', () => {
     });
     if (!result.released) throw new Error(`expected released: true, got ${result.reason}`);
     expect(result.oracle.entry.id).toBe('DEC-0001');
+    // Forced: quorum is marked reached so the EM's release path takes it.
+    expect(store.getHalt(halt.id).quorum).toBe('reached');
+    expect(await releaseIfResolved(store, bus, store.getHalt(halt.id))).toBe(true);
     expect(() => store.getHalt(halt.id)).toThrow();
 
     const forcedEvent = store
