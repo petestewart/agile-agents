@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { AgentRecord, Ticket } from '@agile-agents/shared';
+import type { AgentId, AgentRecord, Ticket, TicketId } from '@agile-agents/shared';
 import { ulid, validateMergeRecord, validateTicket } from '@agile-agents/shared';
 import { Bus } from '../bus';
 import { GateService } from '../gates';
@@ -485,6 +485,41 @@ describe('HookService.preToolUse', () => {
       second.hookSpecificOutput.permissionDecisionReason,
     );
     expect(gates.list()).toHaveLength(1);
+  });
+
+  test('an approved unblock lets the identical command through on retry; a denied one denies without a new request', async () => {
+    await seedTicket();
+    const svc = service();
+    const run = () =>
+      svc.preToolUse({
+        cwd: worktree,
+        tool_name: 'Bash',
+        tool_input: { command: 'git push origin main' },
+      });
+    const first = await run();
+    expect(first.hookSpecificOutput.permissionDecision).toBe('deny');
+    const [request] = gates.list();
+    if (!request) throw new Error('no HIL request filed');
+    await gates.respond(request.id, 'approve', 'em');
+    const retried = await run();
+    expect(retried.hookSpecificOutput.permissionDecision).toBe('allow');
+    expect(gates.list()).toHaveLength(1);
+
+    // A later denial of the same command is honoured too, with no new request.
+    await gates.request('unblock', {
+      policy: store.getPolicy(),
+      ticket: 'TKT-0001' as TicketId,
+      hilKind: 'unblock',
+      from: 'eng-0001' as AgentId,
+      summary: request.summary,
+    });
+    const second = gates.list().find((r) => r.status === 'pending');
+    if (!second) throw new Error('no second request');
+    await gates.respond(second.id, 'deny', 'em');
+    const denied = await run();
+    expect(denied.hookSpecificOutput.permissionDecision).toBe('deny');
+    expect(denied.hookSpecificOutput.permissionDecisionReason).toContain('already denied');
+    expect(gates.list()).toHaveLength(2);
   });
 
   test('an ordinary Bash command allows', async () => {

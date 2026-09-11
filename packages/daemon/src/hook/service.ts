@@ -523,18 +523,45 @@ export class HookService {
           ? payload.tool_input.command
           : `${payload.tool_name ?? 'tool'} call`;
       const why = decision.reason ?? 'never-without-human command';
-      const hilId = await this.resolveOrCreateHil(
-        ctx.ticket,
-        ctx.agent,
-        // The whole command up to the message-body cap: a 400-char cut left
-        // the human/EM deciding on a commit command they could only half see.
-        `${ctx.agent} asked to run \`${command}\` — ${why}`.slice(0, MESSAGE_BODY_MAX_CHARS),
+      // The whole command up to the message-body cap: a 400-char cut left
+      // the human/EM deciding on a commit command they could only half see.
+      const summary = `${ctx.agent} asked to run \`${command}\` — ${why}`.slice(
+        0,
+        MESSAGE_BODY_MAX_CHARS,
       );
-      decision = {
-        ...decision,
-        decision: 'deny',
-        reason: `${why} — filed ${hilId} for the gate owner; do other work or wait, the daemon prompts you with the decision`,
-      };
+      // An `unblock` already decided for this ticket and this exact command
+      // is the answer — the gate is only a gate if approval opens it.
+      // Twenty-eighth live run (2026-09-11): the EM delegate approved the
+      // engineer's `bunx tsc` three times and `bun install` once; every
+      // re-run of the identical command filed a brand-new pending request,
+      // the engineer wrote "approving can never let it through" and gave up.
+      const decided = this.options.gates
+        .list()
+        .filter(
+          (r) =>
+            r.status === 'resolved' &&
+            r.ticket === ctx.ticket &&
+            r.gate === UNBLOCK_GATE &&
+            r.summary === summary,
+        )
+        .sort((a, b) => (a.resolved_at ?? '').localeCompare(b.resolved_at ?? ''))
+        .at(-1);
+      if (decided?.decision === 'approve') {
+        decision = { ...decision, decision: 'allow', reason: undefined };
+      } else if (decided?.decision === 'deny') {
+        decision = {
+          ...decision,
+          decision: 'deny',
+          reason: `${why} — ${decided.id} already denied this exact command; do not retry it`,
+        };
+      } else {
+        const hilId = await this.resolveOrCreateHil(ctx.ticket, ctx.agent, summary);
+        decision = {
+          ...decision,
+          decision: 'deny',
+          reason: `${why} — filed ${hilId} for the gate owner; do other work or wait, the daemon prompts you with the decision`,
+        };
+      }
     }
 
     await this.ackAll(ctx.agent, decision.ack);
