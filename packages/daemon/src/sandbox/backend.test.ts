@@ -219,7 +219,11 @@ describe('dockerDaemonReachable (T034)', () => {
     } finally {
       rmSync(repoRoot, { recursive: true, force: true });
     }
-  });
+    // The probe's own `docker info` is bounded at 5 s (`dockerDaemonReachable`),
+    // the same as bun's default per-test timeout: on a CI runner with a slow
+    // real docker daemon the probe finished just after the test's clock
+    // (6.2 s, 2026-09-11). The probe cannot hang, so give the test room.
+  }, 20_000);
 
   test('N3: a stub docker on PATH actually receives the sandboxed HOME, not the operator’s real one', () => {
     const repoRoot = mkdtempSync(join(tmpdir(), 'agile-sandbox-detect-'));
