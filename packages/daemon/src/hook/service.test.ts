@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AgentRecord, Ticket } from '@agile-agents/shared';
-import { ulid, validateTicket } from '@agile-agents/shared';
+import { ulid, validateMergeRecord, validateTicket } from '@agile-agents/shared';
 import { Bus } from '../bus';
 import { GateService } from '../gates';
 import { createHalt } from '../halts';
@@ -117,6 +117,26 @@ describe('HookService.preToolUse', () => {
     expect(result.hookSpecificOutput.permissionDecisionReason).toMatch(
       /not a registered ticket worktree/,
     );
+  });
+
+  test('a done ticket whose merge hit a conflict still resolves its engineer — the rebase fix cycle runs under the hook', async () => {
+    await seedTicket({ status: 'done' });
+    await store.putEntity('board/merges/TKT-0001.yaml', validateMergeRecord, {
+      ticket: 'TKT-0001',
+      status: 'conflict',
+      at: new Date().toISOString(),
+      summary: 'rebase conflict onto integration: src/tasks.test.ts',
+      haltId: 'H-2',
+    });
+    const svc = service();
+    const result = await svc.preToolUse({
+      cwd: worktree,
+      tool_name: 'Bash',
+      tool_input: { command: 'git rebase integration' },
+    });
+    expect(result.hookSpecificOutput.permissionDecision).toBe('allow');
+    const events = store.listEvents().filter((e) => e.kind === 'hook_decision');
+    expect(events[0]?.ticket).toBe('TKT-0001');
   });
 
   test('a global halt blocks the next tool call with the halt reason, and logs a hook_decision event', async () => {

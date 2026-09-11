@@ -49,10 +49,12 @@ import {
   type Ticket,
   type TicketId,
   type TicketStatus,
+  validateMergeRecord,
 } from '@agile-agents/shared';
 import type { Bus } from '../bus';
 import type { GateService } from '../gates';
 import { activeHaltsFor } from '../halts';
+import { mergeRecordPath } from '../merge/owner';
 import type { PermissionRole } from '../permissions';
 import { isPathInside } from '../permissions/command';
 import { qaReadDenyList } from '../qa/deny';
@@ -206,7 +208,7 @@ export class HookService {
     const realCwd = safeRealpath(cwd);
     for (const ticket of this.store.listTickets()) {
       if (ticket.worktree === undefined || ticket.assignee === undefined) continue;
-      if (!LIVE_TICKET_STATUSES.includes(ticket.status)) continue;
+      if (!this.isLiveTicket(ticket)) continue;
       const worktreeAbs = this.absWorktree(ticket.worktree);
       if (worktreeAbs !== undefined && isPathInside(realCwd, safeRealpath(worktreeAbs))) {
         return ticket;
@@ -238,6 +240,31 @@ export class HookService {
     const lastSeenMs = Date.parse(record.last_seen);
     if (Number.isNaN(lastSeenMs)) return true;
     return now.getTime() - lastSeenMs >= this.bus.getLivenessTimeoutMs();
+  }
+
+  /**
+   * §4's live-status set, plus one case it predates: a `done` ticket whose
+   * merge hit a conflict is back in its engineer's hands for the rebase
+   * (`MergeOwner.haltAndRecord` -> `advanceMergeConflicts`). Seventeenth
+   * live run (2026-09-11): the engineer was prompted with the conflict and
+   * every tool call it made was denied "cwd is not a registered ticket
+   * worktree" — this resolver refused the `done` ticket — so the fix cycle
+   * never started.
+   */
+  private isLiveTicket(ticket: Ticket): boolean {
+    if (LIVE_TICKET_STATUSES.includes(ticket.status)) return true;
+    return ticket.status === 'done' && this.hasMergeConflict(ticket.id);
+  }
+
+  private hasMergeConflict(ticket: TicketId): boolean {
+    try {
+      return (
+        this.store.getEntity(mergeRecordPath(ticket), validateMergeRecord).status === 'conflict'
+      );
+    } catch (err) {
+      if (err instanceof NotFoundError) return false;
+      throw err;
+    }
   }
 
   private resolveAgentByCwd(
@@ -276,7 +303,7 @@ export class HookService {
       if (chosen.record.role !== 'architect') {
         try {
           const ticket = this.store.getTicket(ticketId);
-          if (!LIVE_TICKET_STATUSES.includes(ticket.status)) return undefined;
+          if (!this.isLiveTicket(ticket)) return undefined;
         } catch {
           return undefined;
         }

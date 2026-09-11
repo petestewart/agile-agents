@@ -201,7 +201,7 @@ export interface MergeOutcome {
   worktreeKept?: boolean;
 }
 
-function mergeRecordPath(ticket: TicketId): string {
+export function mergeRecordPath(ticket: TicketId): string {
   return `board/merges/${ticket}.yaml`;
 }
 
