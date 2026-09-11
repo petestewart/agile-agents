@@ -275,13 +275,20 @@ export class HookService {
     const realCwd = safeRealpath(cwd);
     const now = this.now();
 
-    const candidates = this.store.listAgents().filter(({ record }) => {
+    const covering = this.store.listAgents().filter(({ record }) => {
       const worktreeAbs = this.absWorktree(record.worktree);
-      if (worktreeAbs === undefined || !isPathInside(realCwd, safeRealpath(worktreeAbs))) {
-        return false;
-      }
-      return !this.isStale(record, now);
+      return worktreeAbs !== undefined && isPathInside(realCwd, safeRealpath(worktreeAbs));
     });
+    // The hint is the session's own identity (AGILE_AGENT from its
+    // settings.json) and wins outright, stale record or not. Nineteenth
+    // live run (2026-09-11): the engineer's record had gone stale while its
+    // ticket sat in review; the stale filter below dropped it, the reviewer
+    // sharing the worktree became the single candidate, and the engineer's
+    // rebase was resolved — and halted — as the reviewer.
+    const hinted = agentHint !== undefined ? covering.find((c) => c.id === agentHint) : undefined;
+    const candidates = hinted
+      ? [hinted]
+      : covering.filter(({ record }) => !this.isStale(record, now));
 
     if (candidates.length > 0) {
       const chosen =

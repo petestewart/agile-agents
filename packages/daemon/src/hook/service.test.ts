@@ -119,6 +119,33 @@ describe('HookService.preToolUse', () => {
     );
   });
 
+  test('the hinted agent wins over a stale record: an engineer whose record aged out while its ticket sat in review is not mistaken for the reviewer sharing its worktree', async () => {
+    await seedTicket({ status: 'in_review' });
+    await store.putAgent(
+      'eng-0001',
+      agentRecord({
+        role: 'engineer',
+        worktree,
+        ticket: 'TKT-0001',
+        last_seen: '2020-01-01T00:00:00Z',
+      }),
+    );
+    await store.putAgent(
+      'reviewer-0001',
+      agentRecord({ role: 'reviewer', worktree, ticket: 'TKT-0001' }),
+    );
+    const svc = service();
+    const result = await svc.preToolUse({
+      cwd: worktree,
+      tool_name: 'Bash',
+      tool_input: { command: 'git rebase integration' },
+      agile_agent: 'eng-0001',
+    });
+    const events = store.listEvents().filter((e) => e.kind === 'hook_decision');
+    expect(events[0]?.agent).toBe('eng-0001');
+    expect(result.hookSpecificOutput.permissionDecision).toBe('allow');
+  });
+
   test('a done ticket whose merge hit a conflict still resolves its engineer — the rebase fix cycle runs under the hook', async () => {
     await seedTicket({ status: 'done' });
     await store.putEntity('board/merges/TKT-0001.yaml', validateMergeRecord, {
