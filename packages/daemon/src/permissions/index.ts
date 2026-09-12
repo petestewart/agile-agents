@@ -83,5 +83,6 @@ export type {
   HilRequestDraft,
   PermissionRequest,
   PermissionRole,
+  TicketPermissionRole,
   ToolClass,
 } from './types';

@@ -601,6 +601,13 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
        * T041: the thread itself, so a reloaded page (or the popped-out
        * `/control-room/chat` window) renders the same conversation — the bus
        * is the source of truth, nothing is kept in the browser.
+       *
+       * No `isSameOriginRequest` guard, deliberately: that check exists for
+       * CSRF on the *mutating* routes below. This is a read that changes
+       * nothing, and a cross-origin page cannot see the response body
+       * without CORS headers this server never sends — the same reasoning
+       * every other GET here (`/api/snapshot`, `/api/tickets`, ...) already
+       * relies on.
        */
       if (url.pathname === '/api/chat/em' && req.method === 'GET') {
         if (!feed?.emChat) return errorResponse(503, 'em chat is not wired to this daemon');

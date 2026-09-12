@@ -10,12 +10,15 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'no
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ACP_PROVIDERS, type AcpProviderConfig } from '@agile-agents/acp-client';
+import { runInit } from '../init';
 import type { FakeAgentScript } from '../runner/fake-agent';
+import { StateStore } from '../store';
 import { ResidentEm } from './resident';
 
 const FAKE_AGENT_PATH = join(import.meta.dir, '..', 'runner', 'fake-agent.ts');
 
 let repo: string;
+let store: StateStore;
 let scriptSeq = 0;
 
 function fakeProvider(script: FakeAgentScript): AcpProviderConfig {
@@ -37,6 +40,13 @@ async function collect(turn: AsyncIterable<string>): Promise<string[]> {
 
 beforeEach(() => {
   repo = mkdtempSync(join(tmpdir(), 'agile-em-resident-'));
+  Bun.spawnSync(['git', 'init', '-q'], { cwd: repo });
+  Bun.spawnSync(['git', 'config', 'user.email', 'test@example.com'], { cwd: repo });
+  Bun.spawnSync(['git', 'config', 'user.name', 'Test'], { cwd: repo });
+  Bun.spawnSync(['git', 'commit', '--allow-empty', '-q', '-m', 'init'], { cwd: repo });
+  // The resident session's permission responder writes its `hook_decision`
+  // events through the store, so every test needs a real one.
+  store = StateStore.open(runInit(repo).stateRoot);
 });
 
 afterEach(() => {
@@ -47,6 +57,7 @@ describe('ResidentEm', () => {
   test('streams a turn as deltas and resolves done with the full reply', async () => {
     const em = new ResidentEm({
       cwd: repo,
+      store,
       provider: fakeProvider({
         steps: [
           { type: 'agent_text', text: 'TKT-1001 is in review, ' },
@@ -69,6 +80,7 @@ describe('ResidentEm', () => {
     const logFile = join(repo, 'prompts.jsonl');
     const em = new ResidentEm({
       cwd: repo,
+      store,
       brief: () => '# EM brief — em',
       provider: fakeProvider({
         logFile,
@@ -97,6 +109,7 @@ describe('ResidentEm', () => {
   test('serialises concurrent prompts — one turn at a time, in order', async () => {
     const em = new ResidentEm({
       cwd: repo,
+      store,
       provider: fakeProvider({
         steps: [{ type: 'agent_text', text: 'done' }, { type: 'end_turn' }],
       }),
@@ -119,6 +132,7 @@ describe('ResidentEm', () => {
     });
     const em = new ResidentEm({
       cwd: repo,
+      store,
       provider: {
         ...provider,
         envOverrides: { ...provider.envOverrides, AGILE_FAKE_AGENT_PIDFILE: pidFile },
@@ -144,6 +158,7 @@ describe('ResidentEm', () => {
   test('a hung turn times out, ends the delta stream with the error, and the next turn recovers', async () => {
     const hung = new ResidentEm({
       cwd: repo,
+      store,
       timeoutMs: 400,
       provider: fakeProvider({
         steps: [{ type: 'agent_text', text: 'thinking' }, { type: 'hang' }],
@@ -159,9 +174,107 @@ describe('ResidentEm', () => {
     }
   }, 20000);
 
+  /**
+   * T041 review round 1 (blocker): the resident session attaches listeners,
+   * which disables `acp-client`'s "no listener -> auto-refuse" fallback — so
+   * it must answer `session/request_permission` itself, per the §14 EM row.
+   */
+  test('answers an edit and an exec permission request with the em policy, and the turn still completes', async () => {
+    const editResult = join(repo, 'edit-answer.json');
+    const execResult = join(repo, 'exec-answer.json');
+    const options = [
+      { optionId: 'allow', kind: 'allow_once' },
+      { optionId: 'reject', kind: 'reject_once' },
+    ];
+    const em = new ResidentEm({
+      cwd: repo,
+      store,
+      provider: fakeProvider({
+        steps: [
+          {
+            type: 'request_permission',
+            toolCall: { toolCallId: 't1', kind: 'edit', title: 'Edit src/index.ts' },
+            options,
+            resultFile: editResult,
+          },
+          {
+            type: 'request_permission',
+            toolCall: { toolCallId: 't2', kind: 'execute', title: 'Run npm test' },
+            options,
+            resultFile: execResult,
+          },
+          { type: 'agent_text', text: 'both refused, here is what I know instead' },
+          { type: 'end_turn' },
+        ],
+      }),
+    });
+    try {
+      expect(await em.prompt('what is left on all tickets').done).toBe(
+        'both refused, here is what I know instead',
+      );
+      expect(JSON.parse(readFileSync(editResult, 'utf8'))).toEqual({
+        outcome: { outcome: 'selected', optionId: 'reject' },
+      });
+      expect(JSON.parse(readFileSync(execResult, 'utf8'))).toEqual({
+        outcome: { outcome: 'selected', optionId: 'reject' },
+      });
+      // Every verdict is on the audit trail, same as a ticket session's.
+      const decisions = store.listEvents().filter((e) => e.kind === 'hook_decision');
+      expect(decisions).toHaveLength(2);
+      expect(decisions.every((e) => e.data.role === 'em' && e.data.decision === 'deny')).toBe(true);
+    } finally {
+      em.stop();
+    }
+  }, 20000);
+
+  test('a never-without-human request is refused rather than parked — it can never hang the turn', async () => {
+    const pushResult = join(repo, 'push-answer.json');
+    const em = new ResidentEm({
+      cwd: repo,
+      store,
+      // Well under the fake agent's own pace: if the request were parked
+      // (the pre-fix behaviour), the turn would time out instead of
+      // completing, and `done` would reject.
+      timeoutMs: 8000,
+      provider: fakeProvider({
+        steps: [
+          {
+            type: 'request_permission',
+            toolCall: { toolCallId: 't1', kind: 'execute', title: 'Run git push origin main' },
+            options: [
+              { optionId: 'allow', kind: 'allow_once' },
+              { optionId: 'reject', kind: 'reject_once' },
+            ],
+            resultFile: pushResult,
+          },
+          { type: 'agent_text', text: 'refused' },
+          { type: 'end_turn' },
+        ],
+      }),
+    });
+    try {
+      expect(await em.prompt('push my branch for me').done).toBe('refused');
+      // `hil` has nowhere to park for an EM session (no ticket, no waiting
+      // engineer), so it is answered `cancelled` — refused, fail closed.
+      // `git push origin main` is a `hil` verdict from the universal
+      // never-without-human list (verified: `decidePermission` returns
+      // kind 'hil' for this request under role `em`).
+      expect(JSON.parse(readFileSync(pushResult, 'utf8'))).toEqual({
+        outcome: { outcome: 'cancelled' },
+      });
+      const refusal = store
+        .listEvents()
+        .find((e) => e.kind === 'hook_decision' && e.data.decision === 'hil');
+      expect(refusal).toBeDefined();
+    } finally {
+      em.stop();
+    }
+  }, 20000);
+
   test('stop() refuses further turns', async () => {
     const em = new ResidentEm({
       cwd: repo,
+      store,
       provider: fakeProvider({ steps: [{ type: 'end_turn' }] }),
     });
     em.stop();

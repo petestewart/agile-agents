@@ -22,6 +22,16 @@
  * fake-agent transport the offline tests already use drives this too, and
  * no vendor credential ever reaches the daemon.
  *
+ * What `startAgentSession` does that this must NOT skip is the permission
+ * tier: it is the only place `buildPermissionResponder` was attached. This
+ * session attaches the same responder under the new `em` role
+ * (`em/permissions.ts`, design §14's EM row — reads allowed, raw
+ * edits/execs/fetches denied, nothing ever left outstanding). Hooks (tier 1)
+ * are deliberately NOT installed: `writeClaudeSettings` writes
+ * `<worktree>/.claude/settings.json`, and this session's cwd is the
+ * operator's own repo root, so installing them would rewrite the operator's
+ * own Claude Code settings — see the ticket report.
+ *
  * Gate decisions stay with `em/delegate.ts` (one-shot session per decision).
  * This resident session is never asked to decide a gate: a chat turn can
  * occupy it for minutes, and a gate that waits on a busy chat session would
@@ -41,6 +51,8 @@ import {
 } from '@agile-agents/acp-client';
 import { type CliInvocation, normalizeCliBin } from '../runner/cli-bin';
 import { openStderrLog } from '../runner/session';
+import type { StateStore } from '../store';
+import { attachEmPermissionResponder } from './permissions';
 
 /** Whole-turn budget (spawn + handshake + one turn). Chat turns are interactive, so this is shorter than a ticket session's but longer than the gate delegate's. */
 export const DEFAULT_EM_TURN_TIMEOUT_MS = 120_000;
@@ -48,6 +60,14 @@ export const DEFAULT_EM_TURN_TIMEOUT_MS = 120_000;
 export interface ResidentEmOptions {
   /** The session's cwd — the repo root, same as the gate delegate's. */
   cwd: string;
+  /**
+   * Backs the `em`-role ACP permission responder (`em/permissions.ts`): the
+   * policy verdict for every `session/request_permission` this session
+   * raises, and the `hook_decision` event each one is logged as. Required —
+   * a resident session without it would run a vendor at the repo root with
+   * nothing answering its permission requests (T041 review round 1).
+   */
+  store: StateStore;
   provider?: AcpProviderConfig;
   /** How spawned sessions reach this daemon's CLI for the MCP bridge (`runner/cli-bin.ts`). Without it the session gets no `agile` verbs. */
   cliBin?: string | CliInvocation;
@@ -170,6 +190,7 @@ export class ResidentEm {
   private readonly cli: CliInvocation;
   private session: SpawnedSession | undefined;
   private unsubscribe: (() => void) | undefined;
+  private unsubscribePermissions: (() => void) | undefined;
   /** Turn queue: every turn chains off the previous one, settled or failed. */
   private chain: Promise<unknown> = Promise.resolve();
   private stopped = false;
@@ -280,6 +301,15 @@ export class ResidentEm {
     });
     this.session = session;
     this.needsBrief = true;
+    // §14 EM row, answered on every request — attached BEFORE `initialized`
+    // is awaited so a vendor that asks during the handshake is still
+    // answered (`em/permissions.ts`).
+    this.unsubscribePermissions = attachEmPermissionResponder({
+      store: this.options.store,
+      session,
+      cwd: this.options.cwd,
+      onNotice: this.notice,
+    });
     // A vendor that dies (crash, `kill -9`, operator closing it) must not
     // leave a dead handle behind: the next prompt respawns instead.
     this.unsubscribe = session.on((event) => {
@@ -296,6 +326,8 @@ export class ResidentEm {
     const session = this.session;
     this.unsubscribe?.();
     this.unsubscribe = undefined;
+    this.unsubscribePermissions?.();
+    this.unsubscribePermissions = undefined;
     this.session = undefined;
     session?.close();
   }

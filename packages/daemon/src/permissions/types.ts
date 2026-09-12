@@ -33,15 +33,35 @@
  */
 
 /**
- * The four roles this table covers (§14's EM/Reader rows are still out of
- * scope — EM never runs an ACP session, per `runner/runner.ts`'s file
- * header; a `read_summary` tool-runner turn has no session of its own
- * either). `architect` added T031 (design §14 "Permissions per role",
- * Architect row: "oracle, tickets, KB" read; "oracle (write guard),
- * tickets, rules" write — but only via MCP verbs, never a raw ACP edit —
- * "none" run; "none" network).
+ * The five roles this table covers (§14's Reader row is still out of scope
+ * — a `read_summary` tool-runner turn has no session of its own).
+ * `architect` added T031 (design §14 "Permissions per role", Architect row:
+ * "oracle, tickets, KB" read; "oracle (write guard), tickets, rules" write
+ * — but only via MCP verbs, never a raw ACP edit — "none" run; "none"
+ * network).
+ *
+ * `em` added T041. Until then this list said "EM never runs an ACP session,
+ * per `runner/runner.ts`'s file header" — T041's resident EM chat session
+ * (`em/resident.ts`) overturns that premise, so the EM needs its own row
+ * here: without one, a vendor that gates would have its permission requests
+ * answered by nothing, and a vendor that does NOT gate exec/fs at the ACP
+ * layer (Codex, design/spike-findings.md) would leave a daemon-lifetime
+ * session with unrestricted access to the repo root. §14's EM row is read
+ * "state via daemon", write "sprints, assignments, policy proposals" (all
+ * MCP verbs, never a raw edit), run "none", network "none" — see
+ * `emVerdict` in `policy-tables.ts`.
  */
-export type PermissionRole = 'engineer' | 'reviewer' | 'qa' | 'architect';
+export type PermissionRole = 'engineer' | 'reviewer' | 'qa' | 'architect' | 'em';
+
+/**
+ * The roles that run a *ticket* session through `runner/session.ts`
+ * (worktree, `AgentRecord`, ledger, liveness). `em` is deliberately not one
+ * of them — the resident EM chat session is daemon-owned, has no ticket and
+ * no worktree (`em/resident.ts`) — so the runner's exhaustive per-role
+ * tables (agent-id prefix, ledger kind, brief) stay keyed on this narrower
+ * union rather than growing meaningless `em` rows.
+ */
+export type TicketPermissionRole = Exclude<PermissionRole, 'em'>;
 
 /** ACP permission option kinds seen on the wire (spike-findings.md §A). */
 export type AcpPermissionOptionKind =
@@ -121,7 +141,13 @@ export interface PermissionRequest {
 
 export interface DecisionContext {
   role: PermissionRole;
-  ticket: string;
+  /**
+   * The ticket this session belongs to — the only branch a `push` may
+   * target without a human. Optional since T041: the resident EM session
+   * is not a ticket session, and an absent ticket simply means no branch
+   * qualifies as "this ticket's branch" (so a push is never automatic).
+   */
+  ticket?: string;
   worktreePath: string;
   request: AcpPermissionRequestParams;
 }

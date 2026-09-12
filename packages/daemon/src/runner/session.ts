@@ -90,6 +90,7 @@ import {
   type AcpPermissionRequestParams,
   type PermissionResponderHandle,
   type PermissionRole,
+  type TicketPermissionRole,
   buildGrokFsPolicy,
   buildPermissionResponder,
   cursorModeIdFor,
@@ -112,7 +113,7 @@ import { type CliInvocation, cliInvocationToShell, normalizeCliBin } from './cli
  * (`LEDGER_KINDS` in `packages/shared/src/ledger.ts`; `'reader'` is the
  * other ledger-only kind, for tool-runner turns, not a spawned session).
  */
-const ROLE_LEDGER_KIND: Record<PermissionRole, LedgerKind> = {
+const ROLE_LEDGER_KIND: Record<TicketPermissionRole, LedgerKind> = {
   engineer: 'engineer',
   reviewer: 'review',
   qa: 'qa',
@@ -152,7 +153,7 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 export interface AgentSessionOptions {
   store: StateStore;
   bus: Bus;
-  role: PermissionRole;
+  role: TicketPermissionRole;
   agentId: AgentId;
   ticket: TicketId;
   /** Absolute path — the session's `cwd` and where `.claude/settings.json` is written. */
@@ -259,7 +260,7 @@ export interface AgentExitInfo {
 export interface AgentSessionHandle {
   agentId: AgentId;
   ticket: TicketId;
-  role: PermissionRole;
+  role: TicketPermissionRole;
   worktree: string;
   session: SpawnedSession;
   responder: PermissionResponderHandle;

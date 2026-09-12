@@ -30,7 +30,7 @@ import type { AgentId, Ticket, TicketId } from '@agile-agents/shared';
 import type { Bus } from '../bus';
 import type { GateService } from '../gates';
 import { installPreCommitHook } from '../merge/precommit';
-import type { PermissionRole } from '../permissions';
+import type { PermissionRole, TicketPermissionRole } from '../permissions';
 import { wrapAgentCommand } from '../sandbox';
 import type { StateStore } from '../store';
 import { DAEMON_CACHE_DIR, sandboxedSubprocessEnv } from '../subprocess-env';
@@ -44,7 +44,7 @@ import {
   ticketDigits,
 } from './worktrees';
 
-const ROLE_PREFIX: Record<PermissionRole, string> = {
+const ROLE_PREFIX: Record<TicketPermissionRole, string> = {
   engineer: 'eng',
   reviewer: 'reviewer',
   qa: 'qa',
@@ -67,7 +67,7 @@ const ROLE_PREFIX: Record<PermissionRole, string> = {
  * ignored for id purposes: every call for role `'architect'` resolves to
  * the same bus address, matching design §15 "One architect per repo".
  */
-export function agentIdFor(role: PermissionRole, ticket: TicketId): AgentId {
+export function agentIdFor(role: TicketPermissionRole, ticket: TicketId): AgentId {
   if (role === 'architect') return 'architect' as AgentId;
   return `${ROLE_PREFIX[role]}-${ticketDigits(ticket)}` as AgentId;
 }
@@ -175,7 +175,7 @@ export interface RunnerOptions {
 
 export interface SpawnResult {
   agentId: AgentId;
-  role: PermissionRole;
+  role: TicketPermissionRole;
   ticket: TicketId;
   /** Absolute path. */
   worktree: string;
@@ -214,7 +214,7 @@ export class Runner {
    * "Pi engineers and a Claude reviewer" demo shape.
    */
   async spawn(
-    role: PermissionRole,
+    role: TicketPermissionRole,
     ticketId: TicketId,
     opts: {
       provider?: AcpProviderConfig;

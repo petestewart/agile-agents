@@ -32,6 +32,7 @@ import { renderEmBrief } from '../briefs';
 import type { DelegateContext, DelegateFn, GateDecision } from '../gates';
 import { openStderrLog } from '../runner/session';
 import { NotFoundError, StateStore } from '../store';
+import { attachEmPermissionResponder } from './permissions';
 
 export interface EmSessionDelegateOptions {
   /** `.agile/` root — the policy and sprint the brief renders from are read fresh per decision. */
@@ -138,6 +139,7 @@ export function createEmSessionDelegate(options: EmSessionDelegateOptions): Dele
     );
     let session: SpawnedSession | undefined;
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let unsubscribePermissions: (() => void) | undefined;
     try {
       const decided = (async () => {
         const stderrLog = openStderrLog(options.stderrLogDir, 'em', new Date());
@@ -151,6 +153,20 @@ export function createEmSessionDelegate(options: EmSessionDelegateOptions): Dele
           mcpServers: [],
           ...(stderrLog ? { onStderr: stderrLog.append } : {}),
           ...(provider.defaultModeId !== undefined ? { modeId: provider.defaultModeId } : {}),
+        });
+        // T041 review round 1: the same `em`-role ACP permission responder
+        // the resident chat session uses (`em/permissions.ts`). This
+        // one-shot session attached no listeners before, so acp-client's
+        // "no listener -> auto-refuse" fallback covered it — but a blanket
+        // refuse is not a policy and left no audit trail. Attaching the
+        // responder replaces that fallback with the §14 EM row, answered
+        // and logged; it is the same seam and the same guarantee (nothing
+        // is ever left outstanding).
+        unsubscribePermissions = attachEmPermissionResponder({
+          store,
+          session,
+          cwd: options.cwd,
+          onNotice: notice,
         });
         await session.initialized;
         const reply = await session.prompt(prompt);
@@ -184,6 +200,7 @@ export function createEmSessionDelegate(options: EmSessionDelegateOptions): Dele
       return { decision: 'deny', by: 'em', rationale: `fail closed: ${message}` };
     } finally {
       if (timer) clearTimeout(timer);
+      unsubscribePermissions?.();
       session?.close();
     }
   };

@@ -73,13 +73,13 @@ import {
   resolveCliBin,
 } from './runner';
 import type { AgentSessionOptions } from './runner';
-
-/** The ACP spawn seam `ResidentEm` takes (same shape as `em/delegate.ts`'s). */
-type ResidentEmSpawn = NonNullable<ConstructorParameters<typeof ResidentEm>[0]['spawn']>;
 import { StateStore, buildStateRpcMethods } from './store';
 import { DAEMON_CACHE_DIR } from './subprocess-env';
 import { HttpJiraClient, JiraSync, buildSyncRpcMethods, resolveJiraSettings } from './sync';
 import { LiveRunner, ToolService, buildToolRpcMethods, loadToolRegistry } from './tools';
+
+/** The ACP spawn seam `ResidentEm` takes (same shape as `em/delegate.ts`'s). */
+type ResidentEmSpawn = NonNullable<ConstructorParameters<typeof ResidentEm>[0]['spawn']>;
 
 export const DAEMON_VERSION: string = daemonPackageJson.version;
 
@@ -343,6 +343,9 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
     store && bus
       ? new ResidentEm({
           cwd: config.repoRoot,
+          // Backs the `em`-role ACP permission responder (design §14 EM row)
+          // and logs every verdict as a `hook_decision` event.
+          store,
           cliBin,
           socketPath: config.socketPath,
           stderrLogDir: join(config.repoRoot, DAEMON_CACHE_DIR, 'sessions'),
