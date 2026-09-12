@@ -413,8 +413,8 @@ Priority encodes dependency layer as well as importance: P0 tickets are v0-block
 
 ### Ticket: T039 Gate decisions carry free text
 - **Priority:** P1
-- **Status:** Not Started
-- **Owner:** Unassigned
+- **Status:** In Progress
+- **Owner:** opus:worker-T039
 - **Scope:** Design §17 "Control room v2" (2026-09-12): every Needs-you card takes a typed answer as well as its buttons. `HilRequest` gains an optional `note` (body-capped like a message) written with the decision; `agile approve <id>` / the HTTP approve/deny routes accept it; the gate service delivers the note to the asking agent (inbox message, `hil_reply` kind) and to the EM. A note with no button press resolves nothing by itself — the EM delegate (`em/delegate.ts`) reads it and decides approve/deny or raises a contract change on the ticket. Event log carries the note.
 - **Acceptance Criteria:** A pending `unblock` answered with "yes, but only for the seed script" resolves the gate, the engineer's next hook call drains the note into its inbox, and the EM delegate's prompt includes it. Schema stays `.strict()`; no other schema change.
 - **Validation Steps:** `bun test packages/shared packages/daemon/src/gates packages/daemon/src/em`; offline e2e still green.
@@ -467,8 +467,8 @@ Priority encodes dependency layer as well as importance: P0 tickets are v0-block
 
 ### Ticket: T045 Jira two-way sync
 - **Priority:** P3
-- **Status:** Not Started
-- **Owner:** Unassigned
+- **Status:** In Progress
+- **Owner:** opus:worker-T045
 - **Scope:** Depends on T042. Design §17 v2: not an import. Status changes here update the Jira issue; title/description edits in Jira update the ticket; contracts, rules and dependencies stay local. Mapping stored per ticket (`external: {jira: KEY}`), credentials from the user's environment, never in `.agile/`. Conflict rule: last writer wins on title/description, Agile Agents wins on status. A Tickets-pane action links or unlinks a project.
 - **Acceptance Criteria:** Offline test against a fake Jira server proves both directions and the conflict rule; a ticket created in Jira after linking appears as a not-started local ticket.
 - **Validation Steps:** `bun test packages/daemon/src/sync`.
@@ -476,8 +476,8 @@ Priority encodes dependency layer as well as importance: P0 tickets are v0-block
 
 ### Ticket: T046 Run-loop small fixes from the ledger-lite walkthrough
 - **Priority:** P2
-- **Status:** Not Started
-- **Owner:** Unassigned
+- **Status:** In Progress
+- **Owner:** opus:worker-T046
 - **Scope:** Three defects seen on 2026-09-11: (1) the `review/rules` loader warns `skipping .gitkeep` on every tick because `agile init` seeds `oracle/specs/.gitkeep` — skip dotfiles silently; (2) `run.ts` hard-codes the sprint goal `Demo epic layer 1` — take it from the seed or the product brief's first heading; (3) `integration` → `main` promotion fails when `main` is checked out in the user's clone (design says merges happen in `.worktrees/_main`; find out why this path was not used and fix it, or make the failure a clear Needs-you item with the `git merge integration` workaround).
 - **Acceptance Criteria:** No warning lines in a clean run's stderr; sprint name reflects the seed; a live run against a repo with `main` checked out promotes to `main` or raises one clear gate.
 - **Validation Steps:** `bun test packages/daemon packages/cli`; offline e2e; one manual live run on `~/Projects/ledger-lite`.
@@ -646,5 +646,7 @@ Priority encodes dependency layer as well as importance: P0 tickets are v0-block
 
 - 2026-09-11 — **Thirty-second live run (`c236805`, local session): the confirming pass — `bun run test:live` green on the epic a second time.** H-1 19:54:06 → 19:54:42; TKT-1001 merged 19:57:45, TKT-1002 19:60:01 (no conflict this time); TKT-1003 hit the fixture conflict 20:02:40 and merged 20:04:04; `sprint_review` approved by the EM delegate at 20:02:58; the loop exited on completion; 10.5 min of wall clock. Two consecutive clean runs (30 and 32; 31 was a vendor-throttle plus Bun crash). The `test:live` script's only failing test remains the Docker container check, environmental on this host.
 - 2026-09-12 — Control room v2 (design §17 "Control room v2", mockup `design/control-room-mockup.html`, commit 8abf49c) ticketed as T039–T046 after Pete's hands-on ledger-lite runs (2026-09-11). Decisions from the review: no plan approval, Start Sprint N is the one action; documents are edited not approved; Questions (`board/questions/`) distinct from Decisions; free-text on every gate; Jira is two-way sync; one EM conversation with pop-out. Build order: T039 → T040 → T041 → T042/T043 → T044; T045/T046 independent.
+- 2026-09-12 — mode: yolo (`/project --yolo`), control room v2 run (T039–T046). Integration branch is `claude/control-room-v2` off `main` 9dcf7d4: ticket worktrees branch off it and merge back into it (`--no-ff`); pushed after every PLAN.md change; Pete lands it on `main` by PR. DIRECT_MODE (no `gh`). No vendor login in the cloud: `test:live` is never run and no live acceptance criterion is marked verified — each such ticket puts the exact manual check in its Notes and `LIVE-CHECKLIST.md` collects them at the end. Chromium installed via `bunx playwright-core install chromium` so `test:e2e` runs. Build order: T039 → T040 → T041 → T042 ∥ T043 → T044; T045 and T046 whenever a slot is free.
+- 2026-09-12 — Wave 1 launched: T039, T045, T046 (independent).
 
 ## Archived 2026-09-09
