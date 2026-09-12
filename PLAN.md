@@ -413,17 +413,17 @@ Priority encodes dependency layer as well as importance: P0 tickets are v0-block
 
 ### Ticket: T039 Gate decisions carry free text
 - **Priority:** P1
-- **Status:** In Progress
+- **Status:** Done
 - **Owner:** opus:worker-T039
 - **Scope:** Design §17 "Control room v2" (2026-09-12): every Needs-you card takes a typed answer as well as its buttons. `HilRequest` gains an optional `note` (body-capped like a message) written with the decision; `agile approve <id>` / the HTTP approve/deny routes accept it; the gate service delivers the note to the asking agent (inbox message, `hil_reply` kind) and to the EM. A note with no button press resolves nothing by itself — the EM delegate (`em/delegate.ts`) reads it and decides approve/deny or raises a contract change on the ticket. Event log carries the note.
 - **Acceptance Criteria:** A pending `unblock` answered with "yes, but only for the seed script" resolves the gate, the engineer's next hook call drains the note into its inbox, and the EM delegate's prompt includes it. Schema stays `.strict()`; no other schema change.
 - **Validation Steps:** `bun test packages/shared packages/daemon/src/gates packages/daemon/src/em`; offline e2e still green.
-- **Notes:** Foundation for T042/T044. Today `HilDecision` is `approve | deny` only.
+- **Notes:** Foundation for T042/T044. Today `HilDecision` is `approve | deny` only. Branch `T039-gate-decision-notes` (9340162 + 14ee046), merge a9c2008. Review round 1 FAIL (delegate-resolved note never reached the engineer inbox), round 2 PASS; QA round 1 ACCEPT (0 findings, black-box via CLI + HTTP + store). No new message kind: the pre-existing unused `hil_response` kind carries the note. New surfaces: `gate.deny`/`gate.note` RPC, `POST /api/hil/:id/deny|note`, `agile deny`, `agile note <id> --note`, `--note` on approve/deny/resolve. Manual live check: none required (all criteria proved offline).
 
 ### Ticket: T040 Questions store and the missing escalate handler
 - **Priority:** P1
-- **Status:** Not Started
-- **Owner:** Unassigned
+- **Status:** In Progress
+- **Owner:** opus:worker-T040
 - **Scope:** Depends on T039. Design §17 v2 "Questions vs Decisions". New entity `Question` (`board/questions/Q-<ulid>.yaml`: `raised_by`, `ticket?`, `text`, `options?`, `status open|answered`, `answer?`, `resolved_as` = decision id | ticket edit | reply) in `packages/shared`, read/written only through the store. Producers: the engineer `escalate` verb (currently has no handler — the stanza is written and nothing happens), the architect at a planning fork, the EM flagging a gap, the operator from the UI. Resolving one either records a `DEC-*` through the write guard, edits a ticket/rule, or just replies to the raiser. `agile status` lists open questions; `/api/questions` read + answer routes; a pending question is a Needs-you card.
 - **Acceptance Criteria:** An engineer calling `escalate` produces a `Q-*` file, a `question_raised` event and a Needs-you card; answering it with a typed reply writes the answer, delivers it to the engineer's inbox, and marks the question `answered`; answering with "record as decision" creates a `DEC-*` and links it. Convention note: a new `board/` subdirectory is a new artifact type — `board/hil/` is the sibling precedent, and the design section names the path; log the choice in the Decisions log at merge.
 - **Validation Steps:** `bun test packages/shared packages/daemon`; offline e2e green.
@@ -648,5 +648,6 @@ Priority encodes dependency layer as well as importance: P0 tickets are v0-block
 - 2026-09-12 — Control room v2 (design §17 "Control room v2", mockup `design/control-room-mockup.html`, commit 8abf49c) ticketed as T039–T046 after Pete's hands-on ledger-lite runs (2026-09-11). Decisions from the review: no plan approval, Start Sprint N is the one action; documents are edited not approved; Questions (`board/questions/`) distinct from Decisions; free-text on every gate; Jira is two-way sync; one EM conversation with pop-out. Build order: T039 → T040 → T041 → T042/T043 → T044; T045/T046 independent.
 - 2026-09-12 — mode: yolo (`/project --yolo`), control room v2 run (T039–T046). Integration branch is `claude/control-room-v2` off `main` 9dcf7d4: ticket worktrees branch off it and merge back into it (`--no-ff`); pushed after every PLAN.md change; Pete lands it on `main` by PR. DIRECT_MODE (no `gh`). No vendor login in the cloud: `test:live` is never run and no live acceptance criterion is marked verified — each such ticket puts the exact manual check in its Notes and `LIVE-CHECKLIST.md` collects them at the end. Chromium installed via `bunx playwright-core install chromium` so `test:e2e` runs. Build order: T039 → T040 → T041 → T042 ∥ T043 → T044; T045 and T046 whenever a slot is free.
 - 2026-09-12 — Wave 1 launched: T039, T045, T046 (independent).
+- 2026-09-12 — T039 merged (a9c2008). Decisions (manager, yolo): the note travels as the pre-existing `hil_response` message kind (no `hil_reply`); its recipient is the ticket assignee (no `requested_by` field — "no other schema change"); no `hil_noted` event kind — a note-only answer is visible as `entity_put` and then on `hil_resolved.data.note`. Unblocks T040 (launched).
 
 ## Archived 2026-09-09
