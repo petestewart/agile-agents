@@ -57,6 +57,14 @@ const REFRESH_TRIGGER_KINDS = new Set<Event['kind']>([
   // queue, which rides on `/api/snapshot`.
   'question_raised',
   'question_answered',
+  // T043: the top bar renders the current sprint and the halt count from
+  // `/api/snapshot`, so an externally started sprint (`agile run`, the EM
+  // loop) or a halt raised from the CLI has to reach the bar without a
+  // reload — the `/ws` snapshot frame only arrives on (re)connect.
+  'sprint_put',
+  'halt_created',
+  'halt_updated',
+  'halt_released',
 ]);
 
 /** Coalesces a burst of triggering events (e.g. a ticket transition plus its stanza) into one refetch. */
@@ -95,7 +103,7 @@ function isHeartbeatOnlyEvent(event: Event): boolean {
 export function App(): JSX.Element {
   const { snapshot: liveSnapshot, events, connected, onEvent } = useFeed();
   const { view, chatMode, middleOpen } = useShell();
-  const [fetchedSnapshot, setFetchedSnapshot] = useState<FeedSnapshot | undefined>(undefined);
+  const [snapshot, setSnapshot] = useState<FeedSnapshot | undefined>(undefined);
   const [tab, setTab] = useState<Tab>('ops');
   const [agents, setAgents] = useState<Array<{ id: AgentId; record: AgentRecord }>>([]);
   const [tickets, setTickets] = useState<Ticket[]>([]);
@@ -124,7 +132,7 @@ export function App(): JSX.Element {
       setOracle(o);
       setKb(k);
       setPolicy(p);
-      setFetchedSnapshot(snap);
+      setSnapshot(snap);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
@@ -145,6 +153,17 @@ export function App(): JSX.Element {
     };
   }, [refreshAux]);
 
+  /**
+   * The `/ws` snapshot and `refreshAux`'s `GET /api/snapshot` feed ONE piece
+   * of state, newest write wins. Preferring the socket's copy would pin the
+   * page to the snapshot it got on connect, so this browser's own write (an
+   * approved HIL request, a raised halt) would never leave the screen —
+   * exactly the T025/T039 behaviour the e2e tests assert.
+   */
+  useEffect(() => {
+    if (liveSnapshot) setSnapshot(liveSnapshot);
+  }, [liveSnapshot]);
+
   useEffect(
     () =>
       onEvent((event) => {
@@ -154,11 +173,6 @@ export function App(): JSX.Element {
       }),
     [onEvent, scheduleRefresh],
   );
-
-  // The `/ws` snapshot is the fresher of the two (it arrives on connect and
-  // on reconnect); the fetched one fills the gap before the socket opens and
-  // after this browser's own writes.
-  const snapshot = liveSnapshot ?? fetchedSnapshot;
 
   const hil = snapshot?.hil ?? [];
   // T040: open questions are attention-queue items alongside the pending

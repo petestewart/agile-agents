@@ -121,6 +121,29 @@ async function waitForChatText(page: Page, text: string, timeoutMs = 15000): Pro
   }
 }
 
+/** Polls one attribute of one element until it reads `value` — the control room's rows render from an async `GET`, so "not yet loaded" is a real state, not a failure. */
+async function waitForAttr(
+  page: Page,
+  selector: string,
+  attribute: string,
+  value: string,
+  timeoutMs = 10000,
+): Promise<void> {
+  const locator = page.locator(selector);
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    if ((await locator.getAttribute(attribute)) === value) return;
+    if (Date.now() > deadline) {
+      throw new Error(
+        `${selector} never reached ${attribute}="${value}" (last saw ${JSON.stringify(
+          await locator.getAttribute(attribute),
+        )})`,
+      );
+    }
+    await page.waitForTimeout(100);
+  }
+}
+
 function initRepo(): string {
   const repo = mkdtempSync(join(tmpdir(), 'agile-control-room-e2e-'));
   Bun.spawnSync(['git', 'init', '-q'], { cwd: repo });
@@ -197,10 +220,26 @@ describe('control room SPA (Playwright e2e)', () => {
       expect(onDisk.decided_by).toBe('human');
       expect(onDisk.note).toBe('yes, but only for the seed script');
 
-      // The Halt button (§17 "a Halt button that writes a global halt file
-      // ... no explanation needed") creates a real halt via createHalt —
-      // reflected back through the live /ws snapshot into the sprint strip.
-      await page.locator('[data-testid="halt-btn"]').click();
+      // T043: the top bar's single action (§17 v2 "the single action (Start
+      // Sprint N / Halt Sprint N)") replaces T025's separate Halt button.
+      // With a sprint running it halts; the halt is a real one through
+      // `createHalt`, reflected back over the live /ws snapshot into the
+      // sprint strip, and the button then offers Resume.
+      await store.putSprint({
+        id: 'S-1',
+        goal: 'halt fixture sprint',
+        tickets: [],
+        budget_tokens: 1000,
+        started: new Date().toISOString(),
+        carried_over: [],
+      });
+      const action = page.locator('[data-testid="sprint-action"]');
+      const haltDeadline = Date.now() + 5000;
+      while (!(await action.textContent())?.startsWith('Halt') && Date.now() < haltDeadline) {
+        await page.waitForTimeout(100);
+      }
+      expect(await action.textContent()).toBe('Halt Sprint 1');
+      await action.click();
       const haltCount = page.locator('[data-testid="halt-count"]');
       const deadline = Date.now() + 5000;
       let text = await haltCount.textContent();
@@ -211,6 +250,8 @@ describe('control room SPA (Playwright e2e)', () => {
       expect(text).toBe('1');
       expect(store.listHalts()).toHaveLength(1);
       expect(store.listHalts()[0]?.raised_by).toBe('human');
+      // A raised halt takes the button over: the only useful next move.
+      expect(await action.textContent()).toBe('Resume Sprint 1');
     } finally {
       await browser.close();
       await handle?.stop();
@@ -338,9 +379,23 @@ describe('control room SPA (Playwright e2e)', () => {
 
   // T025 review round 1 blocker 4: dark mode fell back to UA
   // ButtonFace/ButtonText on every clickable surface.
-  test('dark mode: panel headers, board cards, and inbox rows never fall back to a UA default colour', async () => {
+  /**
+   * T025 review round 1 blocker 4 (dark mode fell back to UA
+   * ButtonFace/ButtonText on every clickable surface), extended by T043 to
+   * the whole new chrome (§17 "Control room v2"). Deliberately one test
+   * rather than five: every extra `chromium.launch()` in this file is a
+   * liability (see `closeBrowserBounded`), and these checks all want the
+   * same daemon, the same seeded repo and the same page. Sections:
+   *   0. the T025 dark-mode surfaces
+   *   A. the top bar is identical on Plan, Sprint and Settings
+   *   B. the tool row's chat modes and the rail collapse
+   *   C. a Who-decides edit round-trips and changes the next gate's owner
+   *   D. dark AND light: none of the new chrome falls back to a UA colour
+   */
+  test('the chrome: dark mode, identical top bar, chat modes, Who-decides round-trip, light mode', async () => {
     const repo = initRepo();
     let handle: DaemonHandle | undefined;
+    let page: Page | undefined;
     const browser = await chromium.launch({ executablePath });
 
     try {
@@ -362,6 +417,22 @@ describe('control room SPA (Playwright e2e)', () => {
         history: [],
         security: false,
       });
+      // T043: a running sprint and a working agent, so every part of the
+      // top bar has real content to render (an empty bar proves nothing).
+      await store.putSprint({
+        id: 'S-1',
+        goal: 'chrome fixture sprint',
+        tickets: [],
+        budget_tokens: 1000,
+        started: new Date().toISOString(),
+        carried_over: [],
+      });
+      await store.putAgent('eng-1', {
+        vendor: 'claude',
+        model: 'sonnet',
+        last_seen: new Date().toISOString(),
+        ticket: 'TKT-9102',
+      });
 
       handle = await startDaemon({
         cwd: repo,
@@ -369,7 +440,7 @@ describe('control room SPA (Playwright e2e)', () => {
         socketPath: join(repo, '.agile-daemon.sock'),
       });
 
-      const page = await browser.newPage({ colorScheme: 'dark' });
+      page = await browser.newPage({ colorScheme: 'dark' });
       await page.goto(`http://127.0.0.1:${handle.http.port}/control-room`);
 
       // `page.evaluate`'s callback runs in the browser, where `document`/
@@ -403,12 +474,192 @@ describe('control room SPA (Playwright e2e)', () => {
         expect(bg).not.toBe(UA_LIGHT_BG);
         expect(color).not.toBe(UA_LIGHT_TEXT);
       }
+
+      const topbar = page.locator('[data-testid="topbar"]');
+      await topbar.waitFor({ state: 'attached', timeout: 5000 });
+
+      // ---- A. one top bar, identical on every view -----------------------
+      // The running timer is the one thing that legitimately differs between
+      // two reads seconds apart, so it is normalized away; everything else —
+      // text and the order of the bar's parts — must match exactly.
+      const readBar = async (): Promise<{ text: string; order: string[] }> => {
+        const text = ((await topbar.textContent()) ?? '').replace(/\d+m \d+s/g, 'Xm XXs');
+        const order = await topbar.evaluate((el) => {
+          // biome-ignore lint/suspicious/noExplicitAny: browser-context globals
+          const children = Array.from((el as any).children as ArrayLike<Record<string, string>>);
+          return children.map((child) => child.className ?? child.tagName ?? '');
+        });
+        return { text, order };
+      };
+
+      const bars: Array<{ text: string; order: string[] }> = [];
+      for (const view of ['plan', 'sprint', 'settings'] as const) {
+        await page.locator(`[data-testid="topbar"] button[data-view="${view}"]`).click();
+        // The view actually changed — otherwise "identical" is trivially true.
+        await page
+          .locator(`.cr-frame[data-view="${view}"]`)
+          .waitFor({ state: 'attached', timeout: 5000 });
+        bars.push(await readBar());
+      }
+      const first = bars[0] as { text: string; order: string[] };
+      expect(bars[1]).toEqual(first);
+      expect(bars[2]).toEqual(first);
+      // ...and it is the real bar, not three empty ones. The Sprint tab
+      // carries the Needs-you count (§17 v2) — one seeded `hil_request`.
+      expect(first.text).toContain('PlanSprint1Settings');
+      expect(await page.locator('[data-testid="needs-you-badge"]').textContent()).toBe('1');
+      expect(first.text).toContain('Sprint 1 · running');
+      expect(first.text).toContain('1 agent working');
+      expect(first.text).toContain('Halt Sprint 1');
+
+      // The project name, with its path on hover (§17 v2).
+      const project = page.locator('[data-testid="topbar-project"]');
+      expect(await project.textContent()).toBe(repo.split('/').pop() ?? repo);
+      expect(await project.getAttribute('title')).toBe(repo);
+
+      // Every tool-row button is icon-only, so every one must carry a
+      // tooltip and an accessible name, and be reachable by keyboard.
+      for (const id of ['chat-toggle', 'chat-popout', 'chat-maximize']) {
+        const button = page.locator(`[data-testid="${id}"]`);
+        expect(await button.getAttribute('title')).toBeTruthy();
+        expect(await button.getAttribute('aria-label')).toBeTruthy();
+        await button.focus();
+        const focused = await page.evaluate(
+          // biome-ignore lint/suspicious/noExplicitAny: browser-context globals
+          () => ((globalThis as any).document.activeElement as any)?.dataset?.testid as string,
+        );
+        expect(focused).toBe(id);
+      }
+
+      // ---- B. chat modes + rail collapse ---------------------------------
+      const frame = page.locator('.cr-frame');
+      expect(await frame.getAttribute('data-chat')).toBe('panel');
+      expect(await page.locator('.cr-chat-col').count()).toBe(1);
+      expect(await page.locator('.cr-main').count()).toBe(1);
+
+      // Hide: the chat column goes, the middle pane stays.
+      await page.locator('[data-testid="chat-toggle"]').click();
+      expect(await frame.getAttribute('data-chat')).toBe('hidden');
+      expect(await page.locator('.cr-chat-col').count()).toBe(0);
+      expect(await page.locator('.cr-main').count()).toBe(1);
+
+      // Show again, then maximize: "Chat maximize hides the middle pane".
+      await page.locator('[data-testid="chat-toggle"]').click();
+      await page.locator('[data-testid="chat-maximize"]').click();
+      expect(await frame.getAttribute('data-chat')).toBe('max');
+      expect(await page.locator('.cr-main').count()).toBe(0);
+      expect(await page.locator('.cr-chat-col').count()).toBe(1);
+
+      // Restore brings both back.
+      await page.locator('[data-testid="chat-maximize"]').click();
+      expect(await frame.getAttribute('data-chat')).toBe('panel');
+      expect(await page.locator('.cr-main').count()).toBe(1);
+
+      // The rail collapse is a Plan-screen control and survives a reload
+      // (ticket scope: "persisted in localStorage").
+      await page.locator('[data-testid="topbar"] button[data-view="plan"]').click();
+      const planScreen = page.locator('[data-testid="plan-screen"]');
+      await planScreen.waitFor({ state: 'attached', timeout: 5000 });
+      expect(await planScreen.getAttribute('data-rail')).toBe('expanded');
+      await page.locator('[data-testid="rail-toggle"]').click();
+      expect(await planScreen.getAttribute('data-rail')).toBe('collapsed');
+      // Persisted per browser, so the next page load starts collapsed
+      // (asserted on the stored value rather than a reload: every extra
+      // navigation in this file costs a Chromium the process can ill afford).
+      const stored = await page.evaluate(() =>
+        // biome-ignore lint/suspicious/noExplicitAny: browser-context globals
+        (globalThis as any).localStorage.getItem('agile.cr.rail-collapsed'),
+      );
+      expect(stored).toBe('1');
+
+      // ---- C. Who decides: a policy edit that changes the next gate -------
+      // The repo default delegates `unblock` to the EM.
+      expect(store.getPolicy().gates.unblock).toBe('em');
+      await page.locator('[data-testid="topbar"] button[data-view="settings"]').click();
+      const askMe = page.locator('[data-testid="gate-unblock-human"]');
+      await askMe.waitFor({ state: 'attached', timeout: 5000 });
+      // The rows render from `GET /api/policy`; before it lands every row
+      // reads as the fail-safe `human` (`resolveGate`'s default), which is
+      // the very value this section is about to write — so wait for the real
+      // policy first.
+      await waitForAttr(page, '[data-testid="gate-unblock-em"]', 'aria-pressed', 'true');
+      expect(await askMe.getAttribute('aria-pressed')).toBe('false');
+
+      await askMe.click();
+      // The segment reflects the saved policy the daemon handed back...
+      await waitForAttr(page, '[data-testid="gate-unblock-human"]', 'aria-pressed', 'true');
+      // ...it is on disk through the store, with a `policy_put` event...
+      expect(store.getPolicy().gates.unblock).toBe('human');
+      expect(store.listEvents().some((e) => e.kind === 'policy_put' && e.agent === 'human')).toBe(
+        true,
+      );
+      // ...and the NEXT gate raised resolves to the new owner.
+      const raised = await gates.request('unblock', {
+        policy: store.getPolicy(),
+        hilKind: 'unblock',
+      });
+      expect(raised.owner).toBe('human');
+
+      // A preset writes every gate at once, and the chooser reads back what
+      // the gates block now says.
+      await page.locator('[data-testid="preset-hands-off"]').click();
+      await waitForAttr(page, '[data-testid="preset-hands-off"]', 'aria-pressed', 'true');
+      expect(store.getPolicy().gates).toMatchObject({
+        approve_plan: 'em',
+        approve_decision: 'em',
+        unblock: 'em',
+        sprint_review: 'em',
+        demo: 'em',
+      });
+
+      // ---- D. dark and light both render ---------------------------------
+      // T025 review round 1 blocker 4, extended to the new chrome: none of
+      // it may fall back to the UA ButtonFace/ButtonText palette (the two
+      // light constants are the ones declared above).
+      const UA_DARK_BG = 'rgb(59, 59, 59)';
+
+      for (const colorScheme of ['dark', 'light'] as const) {
+        // `page.emulateMedia`, not a second `browser.newPage({colorScheme})`
+        // and no reload: `prefers-color-scheme` is a live media query, so
+        // flipping it re-evaluates the same CSS the control room themes with
+        // — and every extra page/navigation in this file is a Chromium this
+        // process can ill afford (see `closeBrowserBounded`).
+        await page.emulateMedia({ colorScheme });
+
+        const scheme = await page.evaluate(() => {
+          // biome-ignore lint/suspicious/noExplicitAny: browser-context globals
+          const win = globalThis as any;
+          return win.getComputedStyle(win.document.documentElement).colorScheme as string;
+        });
+        expect(scheme).toContain(colorScheme);
+
+        for (const selector of [
+          '[data-testid="topbar"] button[data-view="plan"]',
+          '[data-testid="sprint-action"]',
+          '[data-testid="chat-toggle"]',
+          '[data-testid="gate-unblock-human"]',
+          '[data-testid="preset-hands-off"]',
+        ]) {
+          const { bg, color } = await page.locator(selector).evaluate((el) => {
+            // biome-ignore lint/suspicious/noExplicitAny: browser-context globals
+            const cs = (globalThis as any).getComputedStyle(el);
+            return { bg: cs.backgroundColor as string, color: cs.color as string };
+          });
+          expect(bg).not.toBe(UA_LIGHT_BG);
+          expect(bg).not.toBe(UA_DARK_BG);
+          if (colorScheme === 'dark') expect(color).not.toBe(UA_LIGHT_TEXT);
+        }
+      }
     } finally {
+      // Page, then browser, then daemon. A page left open on a *stopped*
+      // daemon keeps `lib/ws.ts`'s client reconnecting on a 2s timer against
+      // a dead port, and that busy-work is what wedges `browser.close()`.
+      await page?.close();
       await browser.close();
       await handle?.stop();
       rmSync(repo, { recursive: true, force: true });
     }
-  }, 20000);
+  }, 45000);
 
   // QA round 1 (REJECT): an external change (a ticket transitioned through
   // the store directly, not via this browser's own write) must reach the
@@ -700,10 +951,26 @@ describe('control room SPA (Playwright e2e)', () => {
       // spawning a second one (the ticket's whole premise).
       expect(handle.residentEm?.alive).toBe(true);
     } finally {
-      // Daemon first, then the browser (see `closeBrowserBounded`).
+      // T043: close the pages BEFORE the daemon. A page left open on a
+      // stopped daemon keeps `lib/ws.ts`'s client reconnecting on a 2s timer
+      // against a dead port, and that busy-work is what a `browser.close()`
+      // waits on — which is very likely the teardown hang `closeBrowserBounded`
+      // was built to survive. The bound stays as the belt to this braces.
+      await Promise.allSettled(
+        browser?.contexts().flatMap((c) => c.pages().map((p) => p.close())) ?? [],
+      );
       await handle?.stop();
       await closeBrowserBounded(browser);
       rmSync(repo, { recursive: true, force: true });
     }
   }, 60000);
+
+  /**
+   * T043 acceptance: "Screenshots of Plan, Sprint and Settings show the
+   * identical top bar" — asserted as DOM rather than pixels: the bar's text
+   * and the order of its parts must be byte-identical across the three
+   * views, and only `aria-current` on the nav may differ (§17 v2 "Top bar is
+   * identical on every view", ticket note "nothing in the bar should move
+   * between views").
+   */
 });
