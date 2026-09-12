@@ -1269,6 +1269,40 @@ export class StateStore {
     });
   }
 
+  /**
+   * Prose documents (T042): `oracle/product.md` — the one file in the §4
+   * layout that is neither a validated entity nor an oracle entry with
+   * frontmatter, and which the Plan screen's Brief pane reads and writes.
+   * Same containment check, same atomic write, same one-file-one-commit
+   * `entity_put` event as `putEntity` above; the only difference is that
+   * the payload is markdown text rather than a serialized object, so there
+   * is nothing to validate beyond "it is a string".
+   */
+  async putDoc(
+    rawRelPath: string,
+    content: string,
+    options: { by?: string } = {},
+  ): Promise<string> {
+    const relPath = this.containedRelPath(rawRelPath);
+    if (typeof content !== 'string') throw new Error('putDoc: content must be a string');
+    return this.mutate(() => {
+      atomicWriteFile(this.abs(relPath), content);
+      const event = buildEvent('entity_put', {
+        ...(options.by !== undefined ? { agent: options.by } : {}),
+        data: { relPath },
+      });
+      return { result: content, relPaths: [relPath], event };
+    });
+  }
+
+  /** Reads a prose document written by `putDoc` (or by `agile init`). Throws `NotFoundError` when the file is missing, like every other getter. */
+  getDoc(rawRelPath: string): string {
+    const relPath = this.containedRelPath(rawRelPath);
+    const path = this.abs(relPath);
+    if (!fileExists(path)) throw new NotFoundError('Doc', relPath);
+    return readFileSync(path, 'utf8');
+  }
+
   getEntity<T>(rawRelPath: string, validator: (input: unknown) => T): T {
     const relPath = this.containedRelPath(rawRelPath);
     const path = this.abs(relPath);

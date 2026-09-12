@@ -40,6 +40,10 @@ describe('createArchitectMcpServer', () => {
       [
         'decision_publish',
         'discovery_triage',
+        // T042: the architect's planning turn writes `oracle/product.md`
+        // (the Plan screen's Brief pane) — prose, so no `OracleEntry` verb
+        // could carry it.
+        'product_brief_write',
         'ticket_create',
         'ticket_point',
         'ticket_refine',

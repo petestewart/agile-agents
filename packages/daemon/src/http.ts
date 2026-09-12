@@ -34,8 +34,11 @@ import {
   HaltIdSchema,
   type HilDecision,
   HilIdSchema,
+  type KbFact,
+  type KbId,
   KbIdSchema,
   MESSAGE_BODY_MAX_CHARS,
+  type OracleId,
   OracleIdSchema,
   type QuestionId,
   QuestionIdSchema,
@@ -49,6 +52,7 @@ import { EM_CHAT_THREAD, type EmChatService } from './em/chat';
 import { type EventTailerHandle, buildSnapshot, startEventTailer } from './feed';
 import { GateAlreadyResolvedError, GateNotFoundError, type GateService } from './gates';
 import { createHalt, releaseHalt } from './halts';
+import { PlanRefused, type PlanService, isFirstGoal } from './plan';
 import {
   QuestionAlreadyAnsweredError,
   QuestionNotFoundError,
@@ -104,8 +108,25 @@ export interface HttpServerOptions {
    * it did before this ticket (no reply streams back), and `GET` 503s.
    */
   emChat?: EmChatService;
+  /**
+   * T042: the Plan screen's panes and edits (`/api/plan/*`, `POST
+   * /api/sprint/start`) plus the first-goal routing on `POST /api/chat/em`.
+   * Optional — without it those routes 503, exactly like the other
+   * service-backed route families here.
+   */
+  plan?: PlanRoutesContext;
   /** Test hook: overrides the tailer's poll interval (default 250ms — see `feed/tailer.ts`). */
   feedPollIntervalMs?: number;
+}
+
+/**
+ * T042: what the Plan routes need. `service` is the whole pane back end;
+ * `startGoal` runs one architect planning turn and is absent on a daemon
+ * with no architect wired (the first chat line then just goes to the EM).
+ */
+export interface PlanRoutesContext {
+  service: PlanService;
+  startGoal?(goal: string): Promise<{ started: boolean; reason?: string }>;
 }
 
 export interface HttpServerHandle {
@@ -343,6 +364,146 @@ async function handleQuestionAnswer(
   }
 }
 
+/**
+ * Plan screen routes (T042). One handler for the whole `/api/plan/*` family
+ * plus `POST /api/sprint/start`, kept together so the pane → route mapping
+ * reads as one table:
+ *
+ *   GET    /api/plan                      everything the screen renders
+ *   GET  · PUT   /api/plan/brief          oracle/product.md
+ *   GET  · POST  /api/plan/rules          oracle/specs (POST may *propose*)
+ *   GET  · POST  /api/plan/decisions      oracle/decisions (+ re-examination)
+ *   GET  · POST  /api/plan/tickets        tickets/
+ *   PATCH        /api/plan/tickets/:id    living-plan edit rules
+ *   POST         /api/plan/tickets/:id/move
+ *   GET          /api/plan/sprints        finished · next · projected
+ *   GET  · POST  /api/plan/knowledge      knowledge/facts
+ *   GET          /api/plan/policy         policy.yaml (read-only; Settings edits it)
+ *   POST         /api/sprint/start        plan the frontier + approve_plan
+ */
+async function handlePlanRoute(req: Request, url: URL, plan: PlanRoutesContext): Promise<Response> {
+  const service = plan.service;
+  const path = url.pathname;
+  const method = req.method;
+
+  async function body(): Promise<Record<string, unknown>> {
+    return readJsonBody(req);
+  }
+
+  try {
+    if (path === '/api/plan' && method === 'GET') return jsonResponse(service.overview());
+    if (path === '/api/plan/brief' && method === 'GET') return jsonResponse(service.brief());
+    if (path === '/api/plan/brief' && method === 'PUT') {
+      const input = await body();
+      if (typeof input.body !== 'string') return errorResponse(400, 'body is required');
+      return jsonResponse(await service.putBrief(input.body, readActor(input)));
+    }
+    if (path === '/api/plan/rules' && method === 'GET') return jsonResponse(service.listRules());
+    if (path === '/api/plan/rules' && method === 'POST') {
+      const input = await body();
+      return jsonResponse(
+        await service.putRule(
+          {
+            ...(typeof input.id === 'string' ? { id: input.id as OracleId } : {}),
+            title: String(input.title ?? ''),
+            body: String(input.body ?? ''),
+            ...(typeof input.rationale === 'string' ? { rationale: input.rationale } : {}),
+          },
+          readActor(input),
+        ),
+      );
+    }
+    if (path === '/api/plan/decisions' && method === 'GET') {
+      return jsonResponse(service.listDecisions());
+    }
+    if (path === '/api/plan/decisions' && method === 'POST') {
+      const input = await body();
+      return jsonResponse(
+        await service.publishDecision(
+          {
+            title: String(input.title ?? ''),
+            body: String(input.body ?? ''),
+            ...(typeof input.rationale === 'string' ? { rationale: input.rationale } : {}),
+          },
+          readActor(input),
+        ),
+      );
+    }
+    if (path === '/api/plan/tickets' && method === 'GET') {
+      return jsonResponse(service.listTickets());
+    }
+    if (path === '/api/plan/tickets' && method === 'POST') {
+      const input = await body();
+      return jsonResponse(
+        await service.createTicket(
+          {
+            title: String(input.title ?? ''),
+            ...(typeof input.description === 'string' ? { description: input.description } : {}),
+            ...(Array.isArray(input.depends) ? { depends: input.depends as TicketId[] } : {}),
+          },
+          readActor(input),
+        ),
+      );
+    }
+    const ticketMatch = /^\/api\/plan\/tickets\/([^/]+)(\/move)?$/.exec(path);
+    if (ticketMatch?.[1]) {
+      const parsed = TicketIdSchema.safeParse(decodeURIComponent(ticketMatch[1]));
+      if (!parsed.success) return errorResponse(400, `invalid ticket id: ${ticketMatch[1]}`);
+      const input = await body();
+      if (ticketMatch[2] && method === 'POST') {
+        const to = input.to === 'later' ? 'later' : 'next';
+        return jsonResponse(await service.moveTicket(parsed.data, to, readActor(input)));
+      }
+      if (!ticketMatch[2] && (method === 'PATCH' || method === 'POST')) {
+        const { by: _by, ...patch } = input;
+        return jsonResponse(await service.editTicket(parsed.data, patch, readActor(input)));
+      }
+    }
+    if (path === '/api/plan/sprints' && method === 'GET') return jsonResponse(service.sprints());
+    if (path === '/api/plan/knowledge' && method === 'GET') {
+      return jsonResponse(service.listKnowledge());
+    }
+    if (path === '/api/plan/knowledge' && method === 'POST') {
+      const input = await body();
+      return jsonResponse(
+        await service.putKnowledge(
+          {
+            ...(typeof input.id === 'string' ? { id: input.id as KbId } : {}),
+            ...(typeof input.kind === 'string' ? { kind: input.kind as KbFact['kind'] } : {}),
+            ...(Array.isArray(input.scope) ? { scope: input.scope as string[] } : {}),
+            ...(typeof input.confidence === 'string'
+              ? { confidence: input.confidence as KbFact['confidence'] }
+              : {}),
+            body: String(input.body ?? ''),
+          },
+          readActor(input),
+        ),
+      );
+    }
+    if (path === '/api/plan/policy' && method === 'GET') return jsonResponse(service.policy());
+    if (path === '/api/sprint/start' && method === 'POST') {
+      const input = await body();
+      return jsonResponse(
+        await service.startSprint({
+          by: readActor(input),
+          ...(typeof input.cap === 'number' ? { cap: input.cap } : {}),
+          ...(typeof input.goal === 'string' ? { goal: input.goal } : {}),
+        }),
+      );
+    }
+    return new Response('not found', { status: 404 });
+  } catch (err) {
+    if (err instanceof PlanRefused) return errorResponse(409, err.message);
+    if (err instanceof NotFoundError) return errorResponse(404, err.message);
+    return errorResponse(400, err instanceof Error ? err.message : String(err));
+  }
+}
+
+/** Who the write is attributed to. The control room is the human's own window, so `human` is the default — same as the HIL routes. */
+function readActor(input: Record<string, unknown>): string {
+  return typeof input.by === 'string' && input.by.length > 0 ? input.by : 'human';
+}
+
 /** Bundles `store`+`gates` once both are present, so every call site gets one non-optional pair instead of re-checking two optionals. */
 interface FeedContext {
   store: StateStore;
@@ -352,6 +513,7 @@ interface FeedContext {
   jiraSync?: JiraSync;
   questions?: QuestionService;
   emChat?: EmChatService;
+  plan?: PlanRoutesContext;
 }
 
 function resolveFeedContext(options: HttpServerOptions): FeedContext | undefined {
@@ -364,6 +526,7 @@ function resolveFeedContext(options: HttpServerOptions): FeedContext | undefined
     jiraSync: options.jiraSync,
     questions: options.questions,
     emChat: options.emChat,
+    plan: options.plan,
   };
 }
 
@@ -629,6 +792,26 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
           return errorResponse(400, 'body is required');
         }
         /**
+         * T042 (§17 v2: "Your goal is the first message ... the architect
+         * reads the repo, the plan fills in on the left"). Before the EM
+         * ever sees it: on a repo with no tickets and an untouched product
+         * brief, the first line typed here IS the goal, and it starts the
+         * architect's planning turn. The line still goes to the EM below
+         * (and so into the chat thread a reload reads) — the planning turn
+         * is additional, not a replacement.
+         */
+        let planning: { started: boolean; reason?: string } | undefined;
+        if (feed.plan?.startGoal && isFirstGoal(feed.store, feed.plan.service.brief().stub)) {
+          try {
+            planning = await feed.plan.startGoal(body.body);
+          } catch (err) {
+            planning = {
+              started: false,
+              reason: err instanceof Error ? err.message : String(err),
+            };
+          }
+        }
+        /**
          * T041: with a resident EM wired, the human's line still lands on
          * the EM's inbox first (unchanged), and the EM's turn then streams
          * back over `/ws` as `chat_delta` frames — a side channel, not
@@ -673,6 +856,7 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
               ok: true,
               message: result.message,
               streaming: result.streaming,
+              ...(planning !== undefined ? { planning } : {}),
               ...(result.replyId !== undefined ? { reply_id: result.replyId } : {}),
               ...(result.reason !== undefined ? { reason: result.reason } : {}),
             });
@@ -692,7 +876,12 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
             ...(typeof body.ticket === 'string' ? { ticket: body.ticket } : {}),
           });
           if (!result.ok) return errorResponse(400, result.reason);
-          return jsonResponse({ ok: true, message: result.message, streaming: false });
+          return jsonResponse({
+            ok: true,
+            message: result.message,
+            streaming: false,
+            ...(planning !== undefined ? { planning } : {}),
+          });
         } catch (err) {
           return errorResponse(400, err instanceof Error ? err.message : String(err));
         }
@@ -804,6 +993,17 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
           return errorResponse(403, 'cross-origin request rejected');
         }
         return handleQuestionAnswer(req, feed.questions, questionAnswerMatch);
+      }
+
+      // ---- Plan screen (T042, §17 "Control room v2") — one route family
+      // per pane, every write through `PlanService` (and so through the
+      // validating store: `log/events.jsonl` + the `agile-state` commit).
+      if (url.pathname.startsWith('/api/plan') || url.pathname === '/api/sprint/start') {
+        if (!feed?.plan) return errorResponse(503, 'plan service not wired to this daemon');
+        if (req.method !== 'GET' && !isSameOriginRequest(req, srv.port ?? options.port)) {
+          return errorResponse(403, 'cross-origin request rejected');
+        }
+        return handlePlanRoute(req, url, feed.plan);
       }
 
       const hilMatch = matchHilAction(url.pathname);

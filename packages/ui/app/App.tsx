@@ -17,6 +17,7 @@ import { Panel } from './components/Panel';
 import { SprintStrip } from './components/SprintStrip';
 import { TeamPanel } from './components/TeamPanel';
 import { TopBar } from './components/TopBar';
+import { PlanScreen } from './components/plan/PlanScreen';
 import {
   getAgents,
   getKbIndex,
@@ -28,7 +29,7 @@ import {
 import type { FeedSnapshot } from './lib/feed-types';
 import { connectFeedSocket } from './lib/ws';
 
-type Tab = 'ops' | 'oracle';
+type Tab = 'plan' | 'ops' | 'oracle';
 
 const MAX_EVENTS = 500;
 
@@ -90,6 +91,11 @@ function isHeartbeatOnlyEvent(event: Event): boolean {
 export function App() {
   const [snapshot, setSnapshot] = useState<FeedSnapshot | undefined>(undefined);
   const [events, setEvents] = useState<Event[]>([]);
+  // T042 adds the Plan tab to the existing strip. It is NOT the default
+  // view yet: §17 v2's "the repo opens here" is the new top bar's job, which
+  // T043 owns (`TopBar`/nav) — flipping the default from this ticket would
+  // rewrite the Ops-first assumption every existing control-room e2e makes,
+  // for a strip that is about to be replaced anyway.
   const [tab, setTab] = useState<Tab>('ops');
   const [connected, setConnected] = useState(false);
   const [agents, setAgents] = useState<Array<{ id: AgentId; record: AgentRecord }>>([]);
@@ -178,6 +184,14 @@ export function App() {
         <button
           type="button"
           className="cr-icon-btn"
+          aria-pressed={tab === 'plan'}
+          onClick={() => setTab('plan')}
+        >
+          Plan
+        </button>
+        <button
+          type="button"
+          className="cr-icon-btn"
           aria-pressed={tab === 'ops'}
           onClick={() => setTab('ops')}
         >
@@ -201,7 +215,9 @@ export function App() {
         <div className="cr-main">
           <SprintStrip sprint={sprint} halts={halts} gates={policy?.gates} />
 
-          {tab === 'ops' ? (
+          {tab === 'plan' ? (
+            <PlanScreen />
+          ) : tab === 'ops' ? (
             <>
               <Panel title="Needs you" count={hil.length + questions.length} defaultOpen>
                 <NeedsYou items={hil} questions={questions} onChanged={refreshAux} />
