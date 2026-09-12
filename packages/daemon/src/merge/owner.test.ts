@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import type { HaltId, HilId, Ticket, TicketId } from '@agile-agents/shared';
 import { validateTicket } from '@agile-agents/shared';
 import { Bus } from '../bus';
+import { GateService } from '../gates/service';
 import { createHalt } from '../halts';
 import { runInit } from '../init';
 import {
@@ -17,6 +18,7 @@ import {
   BranchCheckedOutElsewhereError,
   type MergeOutcome,
   MergeOwner,
+  PROMOTE_TO_MAIN_GATE,
   type RunTestsFn,
   TicketNotReadyForMergeError,
   defaultRunTests,
@@ -455,6 +457,87 @@ describe('mergeIntegrationToMain', () => {
       gateApproved: () => ({ approved: true }),
     });
     await expect(owner.mergeIntegrationToMain()).rejects.toThrow(BranchCheckedOutElsewhereError);
+  });
+
+  // T046 defect 3: on the operator's own clone `main` is checked out, which
+  // is the normal case, not an operator error — the run used to die with a
+  // raw git-ish error from inside the EM's sprint review and no "Needs you"
+  // item anywhere. With a GateService wired it raises exactly one pending,
+  // human-owned gate carrying the workaround.
+  describe('with a GateService wired (T046 defect 3)', () => {
+    let gateService: GateService;
+
+    beforeEach(async () => {
+      gateService = new GateService(store);
+      // Every gate delegated to `em` — the shipped demo policy's shape.
+      // `promote_to_main` is deliberately not in it, so it resolves to
+      // `human` and no delegate can wave it through.
+      await store.putPolicy({
+        gates: { sprint_review: 'em', unblock: 'em', approve_plan: 'em' },
+        breaker_signals: [],
+      });
+    });
+
+    function blockedOwner(): MergeOwner {
+      git(['checkout', 'main']);
+      return new MergeOwner(store, bus, repo, {
+        gateApproved: () => ({ approved: true }),
+        gates: gateService,
+      });
+    }
+
+    test('raises one human-owned gate with the `git merge integration` workaround instead of throwing', async () => {
+      const owner = blockedOwner();
+      const outcome = await owner.mergeIntegrationToMain();
+
+      expect(outcome.status).toBe('gated');
+      expect(outcome.hilId).toBeTruthy();
+      expect(outcome.summary).toContain('is checked out in this repo');
+      expect(outcome.summary).toContain(`git merge --no-ff ${INTEGRATION_BRANCH}`);
+      expect(outcome.summary).toContain('_main');
+
+      const raised = gateService.list().filter((r) => r.gate === PROMOTE_TO_MAIN_GATE);
+      expect(raised).toHaveLength(1);
+      expect(raised[0]?.status).toBe('pending');
+      // Nothing can auto-decide it: the fix is the operator's own checkout.
+      expect(raised[0]?.owner).toBe('human');
+      expect(raised[0]?.summary).toContain('git merge --no-ff');
+      // `main` really did not move, and the operator's uncommitted WIP in
+      // the clone it is checked out in is untouched.
+      expect(git(['rev-parse', 'main'])).toBe(git(['rev-parse', 'HEAD']));
+      expect(readFileSync(join(repo, WIP_FILE), 'utf8')).toBe(WIP_CONTENT);
+    });
+
+    test('a retried tick reuses the open gate rather than opening a second one', async () => {
+      const owner = blockedOwner();
+      const first = await owner.mergeIntegrationToMain();
+      const second = await owner.mergeIntegrationToMain();
+
+      expect(second.status).toBe('gated');
+      expect(second.hilId).toBe(first.hilId as HilId);
+      expect(gateService.list().filter((r) => r.gate === PROMOTE_TO_MAIN_GATE)).toHaveLength(1);
+    });
+
+    test('promotes for real once the branch is free again — the gate is the blocker, not a permanent refusal', async () => {
+      const ticket = makeTicket('TKT-0131');
+      await store.putTicket(ticket);
+      engineerCommit(ticket, 'promoted.txt', 'promoted\n');
+      const owner = new MergeOwner(store, bus, repo, {
+        runTests: okTests,
+        gateApproved: () => ({ approved: true }),
+        gates: gateService,
+      });
+      await owner.onTicketDone(ticket.id);
+
+      git(['checkout', 'main']);
+      expect((await owner.mergeIntegrationToMain()).status).toBe('gated');
+
+      // The operator applies the workaround's first half: get off `main`.
+      git(['checkout', '--detach']);
+      const outcome = await owner.mergeIntegrationToMain();
+      expect(outcome.status).toBe('merged');
+      expect(git(['show', 'main:promoted.txt'])).toBe('promoted');
+    });
   });
 });
 

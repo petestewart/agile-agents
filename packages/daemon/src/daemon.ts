@@ -244,6 +244,11 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
     store && bus && gateService
       ? new MergeOwner(store, bus, config.repoRoot, {
           gateApproved: () => sprintReviewApproved(gateService),
+          // T046 defect 3: a promotion blocked by `main` being checked out
+          // in the operator's own clone opens one human-owned
+          // `promote_to_main` gate (with the workaround in its summary)
+          // instead of throwing deep inside the EM's sprint review.
+          gates: gateService,
         })
       : undefined;
   // Review protocol (T016, §12) — hoisted above the ceremony timer (T021)
@@ -271,7 +276,9 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
               const outcome = await mergeOwner.mergeIntegrationToMain();
               if (outcome.status !== 'merged') {
                 throw new Error(
-                  `integration -> main merge did not land (${outcome.status}): ${outcome.summary}`,
+                  `integration -> main merge did not land (${outcome.status})${
+                    outcome.hilId ? ` [${outcome.hilId}]` : ''
+                  }: ${outcome.summary}`,
                 );
               }
             },
@@ -409,7 +416,9 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
             const outcome = await mergeOwner.mergeIntegrationToMain();
             if (outcome.status !== 'merged') {
               throw new Error(
-                `integration -> main merge did not land (${outcome.status}): ${outcome.summary}`,
+                `integration -> main merge did not land (${outcome.status})${
+                  outcome.hilId ? ` [${outcome.hilId}]` : ''
+                }: ${outcome.summary}`,
               );
             }
           },
