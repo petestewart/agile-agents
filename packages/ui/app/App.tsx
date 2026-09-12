@@ -14,9 +14,12 @@ import { FeedPanel } from './components/FeedPanel';
 import { NeedsYou } from './components/NeedsYou';
 import { OraclePanel } from './components/OraclePanel';
 import { Panel } from './components/Panel';
+import { Settings } from './components/Settings';
 import { SprintStrip } from './components/SprintStrip';
 import { TeamPanel } from './components/TeamPanel';
+import { ToolRow } from './components/ToolRow';
 import { TopBar } from './components/TopBar';
+import { PlanScreen } from './components/plan/PlanScreen';
 import {
   getAgents,
   getKbIndex,
@@ -25,12 +28,11 @@ import {
   getSnapshot,
   getTickets,
 } from './lib/api';
+import { useFeed } from './lib/feed-context';
 import type { FeedSnapshot } from './lib/feed-types';
-import { connectFeedSocket } from './lib/ws';
+import { useShell } from './lib/shell';
 
 type Tab = 'ops' | 'oracle';
-
-const MAX_EVENTS = 500;
 
 /**
  * QA round 1 (REJECT): an external change (e.g. a ticket status flipped
@@ -79,19 +81,22 @@ function isHeartbeatOnlyEvent(event: Event): boolean {
 }
 
 /**
- * Control room shell (T025 — design §17 "Control room"; session scope:
- * "collapsible Team / Board / Feed panels ... sprint strip with gate chips
- * ... Halt button ... EM chat panel"). Reads come from the daemon's
- * `/api/snapshot` + `/ws` (live tail, same feed T020's page uses) plus the
- * new T025 read endpoints (`/api/agents`, `/api/tickets`, `/api/oracle`,
- * `/api/kb`, `/api/policy`); every write goes through an existing daemon
- * verb (see `lib/api.ts`).
+ * Control room shell.
+ *
+ * T025 built it as one screen (sprint strip + collapsible panels + chat).
+ * T043 puts the §17 v2 chrome around it: one top bar on every view
+ * (`TopBar`), a thin tool row under it (`ToolRow`), and three views — Plan
+ * (T042's, stubbed here), Sprint (the T025 panels, until T044 rewrites
+ * them) and Settings (`Settings`, spend + "Who decides"). The single `/ws`
+ * connection lives in `FeedProvider` (`lib/feed-context.tsx`) and the chrome
+ * state in `ShellProvider` (`lib/shell.tsx`); this component owns only the
+ * HTTP-sourced reads and the layout.
  */
-export function App() {
-  const [snapshot, setSnapshot] = useState<FeedSnapshot | undefined>(undefined);
-  const [events, setEvents] = useState<Event[]>([]);
+export function App(): JSX.Element {
+  const { snapshot: liveSnapshot, events, connected, onEvent } = useFeed();
+  const { view, chatMode, middleOpen } = useShell();
+  const [fetchedSnapshot, setFetchedSnapshot] = useState<FeedSnapshot | undefined>(undefined);
   const [tab, setTab] = useState<Tab>('ops');
-  const [connected, setConnected] = useState(false);
   const [agents, setAgents] = useState<Array<{ id: AgentId; record: AgentRecord }>>([]);
   const [tickets, setTickets] = useState<Ticket[]>([]);
   const [oracle, setOracle] = useState<OracleIndex>({});
@@ -100,13 +105,10 @@ export function App() {
   const [error, setError] = useState<string | undefined>(undefined);
   const refreshTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
-  // Re-pulls every HTTP-sourced read, `/api/snapshot` included. The `hil`/
-  // `halts`/`quota` fields the panels read come from `snapshot` — this is
-  // called both after every write this browser makes (so its own resolved
-  // HIL request or raised halt disappears/appears immediately) and,
-  // debounced, whenever `/ws` reports one of `REFRESH_TRIGGER_KINDS` (so an
-  // *external* change — another agent flipping a ticket, say — shows up
-  // without a manual reload too).
+  // Re-pulls every HTTP-sourced read, `/api/snapshot` included. Called both
+  // after every write this browser makes (so its own resolved HIL request,
+  // raised halt or policy edit shows immediately) and, debounced, whenever
+  // `/ws` reports one of `REFRESH_TRIGGER_KINDS`.
   const refreshAux = useCallback(async () => {
     try {
       const [a, t, o, k, p, snap] = await Promise.all([
@@ -122,7 +124,7 @@ export function App() {
       setOracle(o);
       setKb(k);
       setPolicy(p);
-      setSnapshot(snap);
+      setFetchedSnapshot(snap);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
@@ -138,24 +140,25 @@ export function App() {
 
   useEffect(() => {
     void refreshAux();
-    const handle = connectFeedSocket({
-      onSnapshot: (snap) => {
-        setSnapshot(snap);
-        setEvents(snap.events);
-      },
-      onEvent: (event) => {
-        setEvents((prev) => [...prev, event].slice(-MAX_EVENTS));
+    return () => {
+      if (refreshTimer.current) clearTimeout(refreshTimer.current);
+    };
+  }, [refreshAux]);
+
+  useEffect(
+    () =>
+      onEvent((event) => {
         if (REFRESH_TRIGGER_KINDS.has(event.kind) && !isHeartbeatOnlyEvent(event)) {
           scheduleRefresh();
         }
-      },
-      onStatusChange: (status) => setConnected(status === 'open'),
-    });
-    return () => {
-      handle.close();
-      if (refreshTimer.current) clearTimeout(refreshTimer.current);
-    };
-  }, [refreshAux, scheduleRefresh]);
+      }),
+    [onEvent, scheduleRefresh],
+  );
+
+  // The `/ws` snapshot is the fresher of the two (it arrives on connect and
+  // on reconnect); the fetched one fills the gap before the socket opens and
+  // after this browser's own writes.
+  const snapshot = liveSnapshot ?? fetchedSnapshot;
 
   const hil = snapshot?.hil ?? [];
   // T040: open questions are attention-queue items alongside the pending
@@ -165,64 +168,81 @@ export function App() {
   const quota = snapshot?.quota ?? [];
   const sprint = snapshot?.sprint ?? { tickets: { done: 0, in_flight: 0, stale: 0, total: 0 } };
 
+  const chatVisible = chatMode !== 'hidden';
+  const mainVisible = chatMode !== 'max' && middleOpen;
+
   return (
     <div className="cr-root">
       <TopBar
-        connected={connected}
-        quota={quota}
+        snapshot={snapshot}
         haltCount={halts.length}
         activeHaltIds={halts.map((h) => h.id)}
         onChanged={refreshAux}
       />
-      <div style={{ display: 'flex', gap: 8, padding: '8px 16px 0' }}>
-        <button
-          type="button"
-          className="cr-icon-btn"
-          aria-pressed={tab === 'ops'}
-          onClick={() => setTab('ops')}
-        >
-          Ops
-        </button>
-        <button
-          type="button"
-          className="cr-icon-btn"
-          aria-pressed={tab === 'oracle'}
-          onClick={() => setTab('oracle')}
-        >
-          Oracle / KB
-        </button>
-      </div>
+      <ToolRow connected={connected} />
       {error && (
         <p style={{ color: 'var(--danger)', margin: '8px 16px 0' }} data-testid="app-error">
           {error}
         </p>
       )}
-      <div className="cr-body">
-        <div className="cr-main">
-          <SprintStrip sprint={sprint} halts={halts} gates={policy?.gates} />
-
-          {tab === 'ops' ? (
-            <>
-              <Panel title="Needs you" count={hil.length + questions.length} defaultOpen>
-                <NeedsYou items={hil} questions={questions} onChanged={refreshAux} />
-              </Panel>
-              <Panel title="Team" count={agents.length}>
-                <TeamPanel agents={agents} halts={halts} />
-              </Panel>
-              <Panel title="Board" count={tickets.length} defaultOpen>
-                <BoardPanel tickets={tickets} halts={halts} />
-              </Panel>
-              <Panel title="Feed" count={events.length}>
-                <FeedPanel events={events} />
-              </Panel>
-            </>
-          ) : (
-            <Panel title="Oracle / KB" defaultOpen>
-              <OraclePanel oracle={oracle} kb={kb} />
-            </Panel>
-          )}
-        </div>
-        <ChatPanel />
+      <div
+        className="cr-frame"
+        data-chat={chatMode}
+        data-main={mainVisible ? 'open' : 'closed'}
+        data-view={view}
+      >
+        {mainVisible && (
+          <div className="cr-main">
+            {view === 'plan' && <PlanScreen />}
+            {view === 'settings' && (
+              <Settings policy={policy} quota={quota} onChanged={refreshAux} />
+            )}
+            {view === 'sprint' && (
+              <>
+                <SprintStrip sprint={sprint} halts={halts} gates={policy?.gates} />
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <button
+                    type="button"
+                    className="cr-icon-btn"
+                    aria-pressed={tab === 'ops'}
+                    onClick={() => setTab('ops')}
+                  >
+                    Ops
+                  </button>
+                  <button
+                    type="button"
+                    className="cr-icon-btn"
+                    aria-pressed={tab === 'oracle'}
+                    onClick={() => setTab('oracle')}
+                  >
+                    Oracle / KB
+                  </button>
+                </div>
+                {tab === 'ops' ? (
+                  <>
+                    <Panel title="Needs you" count={hil.length + questions.length} defaultOpen>
+                      <NeedsYou items={hil} questions={questions} onChanged={refreshAux} />
+                    </Panel>
+                    <Panel title="Team" count={agents.length}>
+                      <TeamPanel agents={agents} halts={halts} />
+                    </Panel>
+                    <Panel title="Board" count={tickets.length} defaultOpen>
+                      <BoardPanel tickets={tickets} halts={halts} />
+                    </Panel>
+                    <Panel title="Feed" count={events.length}>
+                      <FeedPanel events={events} />
+                    </Panel>
+                  </>
+                ) : (
+                  <Panel title="Oracle / KB" defaultOpen>
+                    <OraclePanel oracle={oracle} kb={kb} />
+                  </Panel>
+                )}
+              </>
+            )}
+          </div>
+        )}
+        {chatVisible && <ChatPanel />}
       </div>
     </div>
   );

@@ -9,6 +9,7 @@
 import type {
   AgentId,
   AgentRecord,
+  HilRequest,
   KbFact,
   KbId,
   KbIndex,
@@ -18,6 +19,7 @@ import type {
   OracleIndex,
   Policy,
   Question,
+  Sprint,
   Stanza,
   Ticket,
   TicketId,
@@ -197,3 +199,32 @@ export function proposeOracleEdit(target: OracleId | KbId, body: string): Promis
 }
 
 export type { Message };
+
+/**
+ * T043 (§17 "Control room v2" -> Settings "Who decides"): the write half of
+ * `getPolicy`. Goes to `PUT /api/policy`, which validates through the shared
+ * `PolicySchema` and persists via `StateStore.putPolicy` — so the change
+ * lands in `events.jsonl` and is what the *next* gate resolves its owner
+ * against.
+ */
+export function putPolicy(policy: Policy): Promise<Policy> {
+  return fetch('/api/policy', {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(policy),
+  }).then((r) => asJson(r));
+}
+
+/**
+ * T043: the top bar's "Start Sprint N" action. `POST /api/sprint/start`
+ * plans the next frontier (`em/sprint.ts`'s `planSprint`) and raises the
+ * `approve_plan` gate for it — §17 v2: "the `approve_plan` gate is raised at
+ * sprint start and means 'start this frontier ... as it stands'".
+ */
+export function startSprint(goal?: string): Promise<{ sprint: Sprint; hil: HilRequest }> {
+  return fetch('/api/sprint/start', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(goal ? { goal } : {}),
+  }).then((r) => asJson(r));
+}

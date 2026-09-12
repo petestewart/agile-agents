@@ -29,7 +29,7 @@
  * panel can be popped out into its own window.
  */
 
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import {
   HaltIdSchema,
   type HilDecision,
@@ -37,15 +37,18 @@ import {
   KbIdSchema,
   MESSAGE_BODY_MAX_CHARS,
   OracleIdSchema,
+  type Policy,
   type QuestionId,
   QuestionIdSchema,
   type TicketId,
   TicketIdSchema,
   ulid,
+  validatePolicy,
 } from '@agile-agents/shared';
 import { CONTROL_ROOM_DIST_DIR, FEED_HTML_PATH } from '@agile-agents/ui';
 import type { Bus } from './bus';
 import { EM_CHAT_THREAD, type EmChatService } from './em/chat';
+import { planSprint } from './em/sprint';
 import { type EventTailerHandle, buildSnapshot, startEventTailer } from './feed';
 import { GateAlreadyResolvedError, GateNotFoundError, type GateService } from './gates';
 import { createHalt, releaseHalt } from './halts';
@@ -454,7 +457,14 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
       if (url.pathname === '/api/snapshot') {
         if (!feed) return errorResponse(503, 'state store not initialised (run `agile init`)');
         return jsonResponse(
-          buildSnapshot(feed.store, feed.gates, undefined, feed.quota, feed.questions),
+          buildSnapshot(
+            feed.store,
+            feed.gates,
+            undefined,
+            feed.quota,
+            feed.questions,
+            dirname(options.stateRoot),
+          ),
         );
       }
 
@@ -474,6 +484,92 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
       if (url.pathname === '/api/policy' && req.method === 'GET') {
         if (!feed) return errorResponse(503, 'state store not initialised (run `agile init`)');
         return jsonResponse(feed.store.getPolicy());
+      }
+
+      /**
+       * T043 (§17 "Control room v2" -> Settings "Who decides", journey step
+       * 4: "A settings card, one row per gate kind ... This is
+       * `policy.yaml`'s gates block with a face"). The write half of
+       * `GET /api/policy`: same-origin only (every mutating route here is),
+       * validated through the *shared* `PolicySchema` so a browser cannot
+       * write a gates block the daemon would later refuse to read, and
+       * persisted through `StateStore.putPolicy` so it lands in
+       * `events.jsonl` (`policy_put`) and on the `agile-state` branch like
+       * any other mutation. The actor is hardcoded `human` for the same
+       * reason `/api/halt`'s `raised_by` is: a page must not be able to
+       * sign a policy change as the architect.
+       */
+      if (url.pathname === '/api/policy' && req.method === 'PUT') {
+        if (!feed) return errorResponse(503, 'state store not initialised (run `agile init`)');
+        if (!isSameOriginRequest(req, srv.port ?? options.port)) {
+          return errorResponse(403, 'cross-origin request rejected');
+        }
+        let body: Record<string, unknown>;
+        try {
+          body = await readJsonBody(req);
+        } catch (err) {
+          return errorResponse(400, err instanceof Error ? err.message : String(err));
+        }
+        let policy: Policy;
+        try {
+          policy = validatePolicy(body);
+        } catch (err) {
+          return errorResponse(400, err instanceof Error ? err.message : String(err));
+        }
+        try {
+          return jsonResponse(await feed.store.putPolicy(policy, { by: 'human' }));
+        } catch (err) {
+          return errorResponse(400, err instanceof Error ? err.message : String(err));
+        }
+      }
+
+      /**
+       * T043: the top bar's single action in its "Start Sprint N" state
+       * (§17 "Control room v2" — "No plan approval. Documents are edited,
+       * sprints are started. The `approve_plan` gate is raised at sprint
+       * start and means 'start this frontier with these tickets and rules
+       * as they stand'").
+       *
+       * Two existing daemon verbs, nothing new: `planSprint` (`em/sprint.ts`)
+       * computes the dependency frontier, mints `S-<n>`, writes the sprint
+       * file through the store and stamps `sprint:` on each frontier ticket;
+       * `GateService.request('approve_plan', ...)` then raises the gate with
+       * the freshly written sprint's own `gates` block in the resolution
+       * context, so the gate's `owner` is exactly what Settings last wrote.
+       *
+       * SCOPE NOTE (T042, living plan): this route starts the sprint and
+       * raises the gate. It deliberately does NOT drive the EM loop into
+       * assigning the frontier — "the first goal typed into the chat starts
+       * the architect planning turn ... `approve_plan` is raised at Start
+       * Sprint N" is T042's entry point, and `agile run`'s
+       * `handle.advancePipeline()` remains the one list of glue steps.
+       */
+      if (url.pathname === '/api/sprint/start' && req.method === 'POST') {
+        if (!feed) return errorResponse(503, 'state store not initialised (run `agile init`)');
+        if (!isSameOriginRequest(req, srv.port ?? options.port)) {
+          return errorResponse(403, 'cross-origin request rejected');
+        }
+        let body: Record<string, unknown> = {};
+        try {
+          body = await readJsonBody(req);
+        } catch {
+          // An empty body is the normal case — the button sends no options.
+        }
+        try {
+          const goal =
+            typeof body.goal === 'string' && body.goal.length > 0 ? body.goal : undefined;
+          const sprint = await planSprint(feed.store, { ...(goal ? { goal } : {}) });
+          const hil = await feed.gates.request('approve_plan', {
+            policy: feed.store.getPolicy(),
+            ...(sprint.gates ? { sprint: sprint.gates } : {}),
+            hilKind: 'approve_decision',
+            from: 'human',
+            summary: `Start ${sprint.id}: ${sprint.tickets.length} ticket(s) on the frontier`,
+          });
+          return jsonResponse({ sprint, hil }, 201);
+        } catch (err) {
+          return errorResponse(400, err instanceof Error ? err.message : String(err));
+        }
       }
 
       const ticketMatch = matchTicketId(url.pathname);
@@ -837,7 +933,14 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
           ws.subscribe(FEED_WS_TOPIC);
           ws.send(
             JSON.stringify(
-              buildSnapshot(feed.store, feed.gates, undefined, feed.quota, feed.questions),
+              buildSnapshot(
+                feed.store,
+                feed.gates,
+                undefined,
+                feed.quota,
+                feed.questions,
+                dirname(options.stateRoot),
+              ),
             ),
           );
         }

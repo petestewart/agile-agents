@@ -8,7 +8,17 @@
  * event log itself.
  */
 
-import type { Event, Halt, HilRequest, Question, Sprint, Ticket } from '@agile-agents/shared';
+import { basename } from 'node:path';
+import type {
+  AgentRecord,
+  Event,
+  Halt,
+  HilRequest,
+  Question,
+  Sprint,
+  SprintId,
+  Ticket,
+} from '@agile-agents/shared';
 import type { GateService } from '../gates';
 import type { QuestionService } from '../questions';
 import { quotaFraction } from '../quota/records';
@@ -61,6 +71,48 @@ export interface FeedQuotaInfo {
   spend_usd?: number;
 }
 
+/**
+ * T043 (§17 "Control room v2" — "Top bar is identical on every view"): the
+ * project the daemon is driving. `name` is what the bar shows, `path` is
+ * what it shows on hover. Derived from the daemon's own state root
+ * (`<repoRoot>/.agile`), never from anything a browser sends.
+ */
+export interface FeedProjectInfo {
+  name: string;
+  path: string;
+}
+
+/**
+ * T043: everything the always-on top bar renders, in one place, so the bar
+ * costs exactly one read the control room already makes (§17 "Status must
+ * never cost tokens; it is read straight from daemon state").
+ *
+ * DESIGN-GAP: `Sprint` (§4) has no `state` field — it records `started` and,
+ * once closed, a computed `retro` block (`em/retro.ts` is its only writer).
+ * So the mockup's "running 4m 12s" vs "finished in 7m 09s" is derived here:
+ * a sprint with no `retro` is `running`, one with a `retro` is `finished`,
+ * and no sprint at all is `none`. `finished_at` has no field to come from —
+ * the bar shows "finished" without a duration in that state.
+ */
+export interface FeedStatusInfo {
+  sprint_id?: SprintId;
+  sprint_state: 'none' | 'running' | 'finished';
+  /** ISO-8601 `sprint.started` — the top bar's running timer counts up from this. */
+  sprint_started_at?: string;
+  /** The number the "Start Sprint N" button names: the next `S-<n>` that `planSprint` would mint. */
+  next_sprint_number: number;
+  /**
+   * Registered agents currently holding a ticket (`AgentRecord.ticket` set)
+   * — the mockup's "3 agents working". Liveness is deliberately not part of
+   * it: `last_seen` staleness is the daemon's own escalation path (§5
+   * "Liveness"), and a bar that silently stopped counting a wedged agent
+   * would hide exactly the state an operator needs to see.
+   */
+  agents_working: number;
+  /** Open HIL requests + open questions — the count on the Sprint tab (§17 "Sprint carries the Needs-you count"). */
+  needs_you: number;
+}
+
 export interface FeedSnapshot {
   type: 'snapshot';
   events: Event[];
@@ -76,6 +128,20 @@ export interface FeedSnapshot {
    */
   questions: Question[];
   quota: FeedQuotaInfo[];
+  /** T043: the top bar's project name/path. Absent only when no project root was supplied (pre-T043 call sites). */
+  project?: FeedProjectInfo;
+  /** T043: the top bar's sprint status, agents-working and Needs-you counts. */
+  status: FeedStatusInfo;
+}
+
+/** `S-<n>` -> `n`, for the "Start Sprint N" button. Non-numeric ids (impossible today — `SprintIdSchema` is `S-\d+`) are skipped rather than producing `NaN`. */
+function sprintNumber(id: SprintId): number | undefined {
+  const n = Number(id.slice('S-'.length));
+  return Number.isFinite(n) ? n : undefined;
+}
+
+function countAgentsWorking(agents: Array<{ record: AgentRecord }>): number {
+  return agents.filter((a) => a.record.ticket !== undefined).length;
 }
 
 function summarizeTickets(tickets: Ticket[]): TicketsSummary {
@@ -114,6 +180,8 @@ export function buildSnapshot(
   quota?: QuotaService,
   /** T040: optional for the same reason — without it the snapshot carries an empty `questions` array. */
   questions?: QuestionService,
+  /** T043: the repo root the daemon is driving (`<repoRoot>`, i.e. the state root's parent). Optional — without it the snapshot carries no `project` and the top bar falls back to a generic name. */
+  projectRoot?: string,
 ): FeedSnapshot {
   const events = store.listEvents().slice(-eventLimit);
   const tickets = store.listTickets();
@@ -131,13 +199,36 @@ export function buildSnapshot(
     spend_usd: q.spend_usd,
   }));
 
+  const openQuestions = questions?.listOpen() ?? [];
+  const sprints = store.listSprints();
+  const highestSprint = sprints.reduce<number>((max, s) => {
+    const n = sprintNumber(s.id);
+    return n !== undefined && n > max ? n : max;
+  }, 0);
+
+  const status: FeedStatusInfo = {
+    ...(sprint ? { sprint_id: sprint.id, sprint_started_at: sprint.started } : {}),
+    sprint_state:
+      sprint === undefined ? 'none' : sprint.retro === undefined ? 'running' : 'finished',
+    // A running sprint's button offers to start *it* again is nonsense, so
+    // the number is always "the next one `planSprint` would mint" — which
+    // is the current sprint's own number only while none exists yet.
+    next_sprint_number: highestSprint + 1,
+    agents_working: countAgentsWorking(store.listAgents()),
+    needs_you: hil.length + openQuestions.length,
+  };
+
   return {
     type: 'snapshot',
     events,
     sprint: { sprint, tickets: summarizeTickets(tickets) },
     halts,
     hil,
-    questions: questions?.listOpen() ?? [],
+    questions: openQuestions,
     quota: quotaInfo,
+    ...(projectRoot
+      ? { project: { name: basename(projectRoot) || projectRoot, path: projectRoot } }
+      : {}),
+    status,
   };
 }

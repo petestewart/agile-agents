@@ -14,7 +14,7 @@
  * moment a component reads a field this mirror doesn't have.
  */
 
-import type { Event, Halt, HilRequest, Question, Sprint } from '@agile-agents/shared';
+import type { Event, Halt, HilRequest, Question, Sprint, SprintId } from '@agile-agents/shared';
 
 export interface TicketsSummary {
   done: number;
@@ -37,6 +37,22 @@ export interface FeedQuotaInfo {
   spend_usd?: number;
 }
 
+/** T043: the project the daemon drives — the top bar's name, and its path on hover. */
+export interface FeedProjectInfo {
+  name: string;
+  path: string;
+}
+
+/** T043: everything the always-on top bar renders. Mirror of `feed/snapshot.ts`'s `FeedStatusInfo`. */
+export interface FeedStatusInfo {
+  sprint_id?: SprintId;
+  sprint_state: 'none' | 'running' | 'finished';
+  sprint_started_at?: string;
+  next_sprint_number: number;
+  agents_working: number;
+  needs_you: number;
+}
+
 export interface FeedSnapshot {
   type: 'snapshot';
   events: Event[];
@@ -46,4 +62,7 @@ export interface FeedSnapshot {
   /** T040: the open questions (`board/questions/Q-*.yaml`) — Needs-you cards alongside the pending HIL requests. */
   questions: Question[];
   quota: FeedQuotaInfo[];
+  /** T043: absent only when the daemon was started without a project root. */
+  project?: FeedProjectInfo;
+  status: FeedStatusInfo;
 }
