@@ -19,7 +19,7 @@ import {
   type SpawnedSession,
   spawnSession,
 } from '@agile-agents/acp-client';
-import { type Page, chromium } from 'playwright-core';
+import { type Browser, type Page, chromium } from 'playwright-core';
 import { Bus } from '../bus';
 import { type DaemonHandle, startDaemon } from '../daemon';
 import { GateService } from '../gates';
@@ -51,6 +51,64 @@ function cannedEmSpawn(repo: string, reply: string): (opts: SpawnSessionOptions)
       args: [FAKE_AGENT_PATH],
       envOverrides: { ...opts.envOverrides, AGILE_FAKE_AGENT_SCRIPT: scriptPath },
     });
+}
+
+/**
+ * Teardown budget for `browser.close()` — see `closeBrowserBounded`.
+ * Measured: a close that works at all returns in 40-90 ms, here and in the
+ * probe scripts; 10 s is two orders of magnitude of headroom for a loaded
+ * machine.
+ */
+const BROWSER_CLOSE_BUDGET_MS = 10_000;
+
+/**
+ * QA round 1 deflake. `bun test packages/daemon/src/em packages/daemon/src/feed`
+ * failed ~50% of runs (and 100% once the chat test was restructured), always
+ * at the bun-test budget, never in isolation. Instrumenting every step of the
+ * chat test under exactly that command located it precisely: every assertion
+ * completes in well under a second (daemon up ~40 ms, both turns answered and
+ * rendered by ~600 ms, pop-out route ~700 ms), the daemon stays responsive
+ * throughout (`GET /api/chat/em` answers in 1 ms after the wedge), every page
+ * closes in ~35 ms — and then `browser.close()` never returns. Bisecting the
+ * `em` directory implicates `delegate`/`loop`/`assign` (git-subprocess-heavy
+ * store tests), not the subprocess-spawning ones, and standalone probes
+ * (30 spawned children, 50 `spawnSync` calls, a long-lived child spawned
+ * before or after the launch) never reproduce it: this is the test process
+ * failing to observe the Chromium child's exit, i.e. bun's harness, not
+ * anything T041 ships and not a wait a bigger budget would fix.
+ *
+ * So teardown is bounded instead of unbounded: the assertions have all
+ * passed by this point, and a `close()` that has not returned in
+ * `BROWSER_CLOSE_BUDGET_MS` is left to bun's own end-of-run dangling-process
+ * cleanup (it reports "killed N dangling process"), with a line on stderr so
+ * it is never silent. Only this test needs it — the file's other tests each
+ * launch and close their own browser without the `em` directory's load
+ * behind them.
+ */
+async function closeBrowserBounded(browser: Browser | undefined): Promise<void> {
+  if (!browser) return;
+  const closed = await Promise.race([
+    browser.close().then(() => true),
+    Bun.sleep(BROWSER_CLOSE_BUDGET_MS).then(() => false),
+  ]);
+  if (!closed) {
+    console.error(
+      `control-room e2e: browser.close() did not return within ${BROWSER_CLOSE_BUDGET_MS}ms — leaving the process to bun's dangling-process cleanup (teardown only; every assertion passed)`,
+    );
+  }
+}
+
+/** Polls `GET /api/chat/em` until the thread has at least `count` entries (each EM turn appends one). Deadline-bounded so a stuck turn fails with a readable message rather than the bun-test budget. */
+async function waitForThread(base: string, count: number, timeoutMs = 15000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const thread = (await (await fetch(`${base}/api/chat/em`)).json()) as unknown[];
+    if (thread.length >= count) return;
+    if (Date.now() > deadline) {
+      throw new Error(`chat thread never reached ${count} entries (last saw ${thread.length})`);
+    }
+    await Bun.sleep(50);
+  }
 }
 
 /** Polls the rendered chat log for a line containing `text` (this package's tsconfig has no DOM lib, so `page.waitForFunction` is not available here). */
@@ -561,7 +619,7 @@ describe('control room SPA (Playwright e2e)', () => {
   test('the chat panel answers within one turn, and the reply survives a reload and the pop-out route', async () => {
     const repo = initRepo();
     let handle: DaemonHandle | undefined;
-    const browser = await chromium.launch({ executablePath });
+    let browser: Browser | undefined;
     const reply = 'TKT-1001 is in review; TKT-1002 is unassigned.';
 
     try {
@@ -574,27 +632,53 @@ describe('control room SPA (Playwright e2e)', () => {
       });
       const base = `http://127.0.0.1:${handle.http.port}`;
 
+      /**
+       * QA round 1 deflake, part 1: the first turn goes over plain HTTP,
+       * before Chromium exists. Two things come of it — the browser-driven
+       * turn below then reuses an *already resident* session and spawns
+       * nothing (which is what this ticket built, and is now asserted), and
+       * the browser's life no longer straddles a vendor spawn, which is what
+       * made the remaining failure mode reproducible enough to locate (see
+       * `closeBrowserBounded`, part 2). It also buys a real assertion for
+       * free: the panel must render a thread that existed before the page
+       * did.
+       */
+      const warmup = await fetch(`${base}/api/chat/em`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ body: 'warm up the resident EM session' }),
+      });
+      expect(warmup.status).toBe(200);
+      await waitForThread(base, 2);
+      expect(handle.residentEm?.alive).toBe(true);
+
+      browser = await chromium.launch({ executablePath });
       const page = await browser.newPage();
       await page.goto(`${base}/control-room`);
+
+      // The panel renders the thread that already existed before this page
+      // did — history comes from the bus (`GET /api/chat/em`), not from
+      // anything this browser did.
+      await waitForChatText(page, 'warm up the resident EM session');
 
       const textarea = page.locator('.cr-chat-input textarea');
       await textarea.waitFor({ state: 'attached', timeout: 5000 });
       await textarea.fill('what is left on all tickets');
       await page.locator('.cr-chat-input button').click();
 
-      // One turn, answered in the panel.
-      await page.locator('.cr-chat-msg[data-from="em"]').first().waitFor({
-        state: 'attached',
-        timeout: 15000,
-      });
+      // One turn, answered in the panel — on the already-resident session.
+      await waitForChatText(page, 'what is left on all tickets');
+      await waitForThread(base, 4);
       await waitForChatText(page, reply);
+
+      // A reload
 
       // A reload renders the same thread — it comes from the bus, not from
       // anything this page kept in memory.
       await page.reload();
       await waitForChatText(page, reply);
       expect(await page.locator('.cr-chat-msg[data-from="you"]').first().textContent()).toContain(
-        'what is left on all tickets',
+        'warm up the resident EM session',
       );
 
       // ... and so does the popped-out window's own route.
@@ -603,16 +687,22 @@ describe('control room SPA (Playwright e2e)', () => {
       await waitForChatText(popout, reply);
       expect(await popout.locator('[data-testid="chat-popout"]').count()).toBe(0);
 
-      // The reply is a real `em -> human` bus message, not a UI-only render.
+      // The replies are real `em -> human` bus messages, not a UI-only
+      // render: two turns, each answered, in order.
       const thread = (await (await fetch(`${base}/api/chat/em`)).json()) as Array<{
         from: string;
         body: string;
       }>;
-      expect(thread.map((e) => e.from)).toEqual(['human', 'em']);
-      expect(thread[1]?.body).toBe(reply);
+      expect(thread.map((e) => e.from)).toEqual(['human', 'em', 'human', 'em']);
+      expect(thread[2]?.body).toBe('what is left on all tickets');
+      expect(thread[3]?.body).toBe(reply);
+      // The browser-driven turn reused the resident session rather than
+      // spawning a second one (the ticket's whole premise).
+      expect(handle.residentEm?.alive).toBe(true);
     } finally {
-      await browser.close();
+      // Daemon first, then the browser (see `closeBrowserBounded`).
       await handle?.stop();
+      await closeBrowserBounded(browser);
       rmSync(repo, { recursive: true, force: true });
     }
   }, 60000);
