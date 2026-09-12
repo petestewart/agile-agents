@@ -164,6 +164,43 @@ describe('T043: project + status for the top bar', () => {
     expect(buildSnapshot(store, gates).status.agents_working).toBe(1);
   });
 
+  /**
+   * Review round 1 blocker 1: the top bar's action must be disabled while a
+   * finished sprint's review is still open (mockup `#s4`).
+   */
+  test('sprint_review_pending follows an open sprint_review gate', async () => {
+    await store.putSprint({
+      id: 'S-1',
+      goal: 'first',
+      tickets: [],
+      budget_tokens: 1000,
+      started: '2026-09-12T10:00:00.000Z',
+      carried_over: [],
+      retro: { mispointed: [], global_halts: 0, escalations: 0 },
+    });
+    expect(buildSnapshot(store, gates).status.sprint_review_pending).toBe(false);
+
+    const raised = await gates.request('sprint_review', {
+      policy: { gates: { sprint_review: 'human' }, breaker_signals: [] },
+      hilKind: 'demo',
+    });
+    const pending = buildSnapshot(store, gates).status;
+    expect(pending.sprint_state).toBe('finished');
+    expect(pending.sprint_review_pending).toBe(true);
+
+    // Decided — the next sprint is startable again.
+    await gates.respond(raised.id, 'approve', 'human');
+    expect(buildSnapshot(store, gates).status.sprint_review_pending).toBe(false);
+  });
+
+  test('an open gate that is not sprint_review leaves sprint_review_pending false', async () => {
+    await gates.request('unblock', {
+      policy: { gates: { unblock: 'human' }, breaker_signals: [] },
+      hilKind: 'unblock',
+    });
+    expect(buildSnapshot(store, gates).status.sprint_review_pending).toBe(false);
+  });
+
   test('needs_you is open HIL requests plus open questions', async () => {
     await gates.request('unblock', {
       policy: { gates: { unblock: 'human' }, breaker_signals: [] },

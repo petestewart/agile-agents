@@ -51,6 +51,8 @@ export interface FeedStatusInfo {
   next_sprint_number: number;
   agents_working: number;
   needs_you: number;
+  /** A `sprint_review` gate is open — the top bar's action stays disabled ("Review Sprint N first") until it is decided. */
+  sprint_review_pending: boolean;
 }
 
 export interface FeedSnapshot {

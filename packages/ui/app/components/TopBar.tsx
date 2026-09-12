@@ -50,7 +50,15 @@ function useTicker(active: boolean): number {
 export function sprintStatusText(status: FeedSnapshot['status'] | undefined, now: number): string {
   if (!status || status.sprint_state === 'none' || !status.sprint_id) return 'No sprint running';
   const label = status.sprint_id.replace(/^S-/, 'Sprint ');
-  if (status.sprint_state === 'finished') return `${label} · finished`;
+  if (status.sprint_state === 'finished') {
+    // Mockup `#s4`: "Sprint 1 · finished in 7m 09s · review pending". There
+    // is no `finished_at` on a `Sprint` to measure "in 7m 09s" from (§4 has
+    // `started` and the computed `retro`, nothing else), so the duration is
+    // the one part of that line this cannot honestly render.
+    return status.sprint_review_pending
+      ? `${label} · finished · review pending`
+      : `${label} · finished`;
+  }
   const started = status.sprint_started_at ? Date.parse(status.sprint_started_at) : Number.NaN;
   if (Number.isNaN(started)) return `${label} · running`;
   return `${label} · running ${formatElapsed(now - started)}`;
@@ -83,16 +91,24 @@ export function TopBar({
 
   /**
    * The single action (§17 v2: "the single action (Start Sprint N / Halt
-   * Sprint N)"). Three states, one button — a raised halt takes precedence
+   * Sprint N)"). One button, four states — a raised halt takes precedence
    * over everything, because with the factory stopped the only useful next
    * move is to release it (T025's separate Halt/Resume pair collapses into
    * this):
-   *   halted      → Resume Sprint N   (releases every active halt)
-   *   running     → Halt Sprint N     (one global halt, `raised_by: human`)
-   *   otherwise   → Start Sprint N    (`POST /api/sprint/start`)
+   *   halted          → Resume Sprint N  (releases every active halt)
+   *   running         → Halt Sprint N    (one global halt, `raised_by: human`)
+   *   review pending  → Start Sprint N+1, DISABLED, "Review Sprint N first"
+   *   otherwise       → Start Sprint N+1 (`POST /api/sprint/start`)
+   *
+   * The disabled state is the mockup's Review screen (`#s4`:
+   * `<button class="btn signal" disabled title="Review Sprint 1 first">Start
+   * Sprint 2</button>`) — §16's `sprint_review` gate is "integration → main",
+   * so the next frontier must not be startable over an undecided one.
    */
   const halted = haltCount > 0;
+  const reviewPending = status?.sprint_review_pending === true;
   const action: 'resume' | 'halt' | 'start' = halted ? 'resume' : running ? 'halt' : 'start';
+  const blocked = action === 'start' && reviewPending;
   const actionLabel =
     action === 'resume'
       ? `Resume Sprint ${sprintNumber}`
@@ -104,9 +120,15 @@ export function TopBar({
       ? `Release ${haltCount} halt${haltCount === 1 ? '' : 's'} and let the team continue`
       : action === 'halt'
         ? 'Stop every agent on this sprint'
-        : 'Start the next sprint frontier';
+        : blocked
+          ? `Review Sprint ${sprintNumber} first`
+          : 'Start the next sprint frontier';
 
   async function runAction(): Promise<void> {
+    // Belt to the `disabled` braces: the gate is the daemon's, and a click
+    // that slipped through (a stale render, a scripted click) must not start
+    // a sprint over an undecided review.
+    if (blocked) return;
     setBusy(true);
     setError(undefined);
     try {
@@ -158,7 +180,7 @@ export function TopBar({
         type="button"
         className={action === 'halt' ? 'cr-btn danger' : 'cr-btn signal'}
         data-testid="sprint-action"
-        disabled={busy}
+        disabled={busy || blocked}
         title={actionTitle}
         onClick={runAction}
       >

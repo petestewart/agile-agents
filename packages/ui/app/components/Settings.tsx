@@ -51,15 +51,24 @@ const GATE_ROWS: ReadonlyArray<{ gate: string; title: string; what: string }> = 
 
 /**
  * The three presets, from §17 journey step 4 ("ask everything, plans and
- * reviews only, unattended") under the PLAN's names.
+ * reviews only, unattended") under the mockup's own labels (`#s5`'s choices
+ * row: "Everything" / "Plans and reviews" / "Nothing, just tell me").
  *
  * DECISION (see `.pipeline-report.md`): the ticket's parenthetical reads
  * "gates to EM → every gate `em`; hands off → the design's unattended
  * mapping", which would make the middle and last presets identical. The
- * design and the mockup (`#s5`, middle chip "Plans and reviews") define
- * three distinct mappings, and CLAUDE.md says the design wins — so the
- * middle preset is "plans and reviews stay with you", and "hands off" is
- * the unattended one (every gate to the EM).
+ * design and the mockup define three distinct mappings and CLAUDE.md says the
+ * design wins, so the middle preset is the mockup's *rendered* state for the
+ * "Plans and reviews" chip, gate row by gate row (`#s5`): plan, rule change
+ * (`approve_decision`) and sprint review are "Ask me"; the guardrail block
+ * (`unblock`) and the demo are "EM decides". Review round 1 blocker 2: this
+ * preset previously put `approve_decision` on `em`, which is not what that
+ * screen shows.
+ *
+ * The mockup's other three rows — engineer escalation, halt, and the spend
+ * threshold — have no gate name in `KNOWN_GATES`/§16 yet, so nothing here
+ * writes them; when they get one, "Ask me" / "Ask me" / "EM decides, then
+ * tells me" is what that screen shows for them.
  */
 export const POLICY_PRESETS: ReadonlyArray<{
   id: string;
@@ -69,25 +78,25 @@ export const POLICY_PRESETS: ReadonlyArray<{
 }> = [
   {
     id: 'everything-to-me',
-    label: 'Everything to me',
+    label: 'Everything',
     help: 'Every gate stops and waits for you.',
     gates: Object.fromEntries(KNOWN_GATES.map((g) => [g, 'human' as GateOwner])),
   },
   {
     id: 'gates-to-em',
     label: 'Plans and reviews',
-    help: 'You approve the plan and the sprint review; the EM decides the rest and tells you.',
+    help: 'You decide the plan, rule changes and the sprint review; the EM handles blocked agents and demos.',
     gates: {
       approve_plan: 'human',
-      approve_decision: 'em',
-      unblock: 'em',
+      approve_decision: 'human',
       sprint_review: 'human',
+      unblock: 'em',
       demo: 'em',
     },
   },
   {
     id: 'hands-off',
-    label: 'Hands off',
+    label: 'Nothing, just tell me',
     help: 'The EM decides every gate. Nothing waits on you; it all shows up in the review.',
     gates: Object.fromEntries(KNOWN_GATES.map((g) => [g, 'em' as GateOwner])),
   },

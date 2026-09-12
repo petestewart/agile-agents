@@ -111,6 +111,22 @@ export interface FeedStatusInfo {
   agents_working: number;
   /** Open HIL requests + open questions — the count on the Sprint tab (§17 "Sprint carries the Needs-you count"). */
   needs_you: number;
+  /**
+   * A `sprint_review` gate is open (review round 1 blocker 1; mockup `#s4`:
+   * "Sprint 1 · finished in 7m 09s · review pending" with a *disabled*
+   * "Start Sprint 2" and `title="Review Sprint 1 first"`). §16's
+   * `sprint_review` gate is "integration → main"; until it is decided the
+   * next sprint must not be startable.
+   *
+   * DESIGN-GAP: `HilRequest` carries no sprint id (only an optional
+   * `ticket`), so this is "some `sprint_review` gate is pending", not
+   * "*this* sprint's is" — with one sprint reviewed at a time, which is what
+   * §9's layers describe, they are the same thing. A finished sprint whose
+   * review gate was never raised leaves this `false`, i.e. the button is
+   * enabled: the bar reports state, it does not invent a gate nobody asked
+   * for.
+   */
+  sprint_review_pending: boolean;
 }
 
 export interface FeedSnapshot {
@@ -216,6 +232,7 @@ export function buildSnapshot(
     next_sprint_number: highestSprint + 1,
     agents_working: countAgentsWorking(store.listAgents()),
     needs_you: hil.length + openQuestions.length,
+    sprint_review_pending: hil.some((request) => request.gate === 'sprint_review'),
   };
 
   return {

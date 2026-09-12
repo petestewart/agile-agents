@@ -531,6 +531,31 @@ describe('control room SPA (Playwright e2e)', () => {
         expect(focused).toBe(id);
       }
 
+      // ---- A2. finished + review pending: the action is disabled ---------
+      // Mockup `#s4`: "Sprint 1 · finished in 7m 09s · review pending" with a
+      // *disabled* "Start Sprint 2" titled "Review Sprint 1 first". Both
+      // writes go through the store, so the page learns about them over its
+      // already-open `/ws` — no reload, no fetch from this test.
+      const action = page.locator('[data-testid="sprint-action"]');
+      expect(await action.textContent()).toBe('Halt Sprint 1');
+      await gates.request('sprint_review', {
+        policy: { gates: { sprint_review: 'human' }, breaker_signals: [] },
+        hilKind: 'demo',
+      });
+      await store.putSprint({
+        ...store.getSprint('S-1'),
+        retro: { mispointed: [], global_halts: 0, escalations: 0 },
+      });
+      await waitForAttr(page, '[data-testid="sprint-action"]', 'disabled', '');
+      expect(await action.textContent()).toBe('Start Sprint 2');
+      expect(await action.getAttribute('title')).toBe('Review Sprint 1 first');
+      expect(await page.locator('[data-testid="sprint-status"]').textContent()).toBe(
+        'Sprint 1 · finished · review pending',
+      );
+      // Clicking a disabled button does nothing — no sprint is started.
+      await action.click({ force: true }).catch(() => {});
+      expect(store.listSprints().map((sp) => sp.id)).toEqual(['S-1']);
+
       // ---- B. chat modes + rail collapse ---------------------------------
       const frame = page.locator('.cr-frame');
       expect(await frame.getAttribute('data-chat')).toBe('panel');
@@ -626,6 +651,24 @@ describe('control room SPA (Playwright e2e)', () => {
         sprint_review: 'em',
         demo: 'em',
       });
+
+      // Review round 1 blocker 2: the middle preset is the mockup's rendered
+      // "Plans and reviews" state — the rule-change gate (`approve_decision`)
+      // stays with the human, it is not delegated with the rest.
+      await page.locator('[data-testid="preset-gates-to-em"]').click();
+      await waitForAttr(page, '[data-testid="preset-gates-to-em"]', 'aria-pressed', 'true');
+      expect(store.getPolicy().gates).toMatchObject({
+        approve_plan: 'human',
+        approve_decision: 'human',
+        sprint_review: 'human',
+        unblock: 'em',
+        demo: 'em',
+      });
+      expect(
+        await page
+          .locator('[data-testid="gate-approve_decision-human"]')
+          .getAttribute('aria-pressed'),
+      ).toBe('true');
 
       // ---- D. dark and light both render ---------------------------------
       // T025 review round 1 blocker 4, extended to the new chrome: none of
