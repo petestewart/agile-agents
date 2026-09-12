@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Policy } from '@agile-agents/shared';
 import { Bus } from './bus';
+import { EmChatService } from './em/chat';
 import { GateService } from './gates';
 import { type HttpServerHandle, startHttpServer } from './http';
 import { runInit } from './init';
@@ -425,6 +426,7 @@ describe('T025 control room routes', () => {
   let gates: GateService;
   let bus: Bus;
   let crServer: HttpServerHandle;
+  let emChat: EmChatService;
 
   function policy(overrides: Partial<Policy['gates']> = {}): Policy {
     return { gates: { unblock: 'human', ...overrides }, breaker_signals: [] };
@@ -443,6 +445,26 @@ describe('T025 control room routes', () => {
     store = StateStore.open(stateRoot);
     gates = new GateService(store);
     bus = new Bus(store, stateRoot);
+    // T041: a stand-in resident EM (no vendor process) so the chat routes
+    // and the `/ws` chat frames are exercised offline.
+    emChat = new EmChatService({
+      store,
+      bus,
+      repoRoot: repo,
+      gates,
+      resident: {
+        prompt: () =>
+          Object.assign(
+            {
+              [Symbol.asyncIterator]: async function* () {
+                yield 'TKT-1001 is in review, ';
+                yield 'TKT-1002 is unassigned.';
+              },
+            },
+            { done: Promise.resolve('TKT-1001 is in review, TKT-1002 is unassigned.') },
+          ),
+      },
+    });
     crServer = startHttpServer({
       port: 0,
       version: '0.0.0-test',
@@ -451,6 +473,7 @@ describe('T025 control room routes', () => {
       store,
       gates,
       bus,
+      emChat,
       feedPollIntervalMs: 20,
     });
   });
@@ -626,6 +649,58 @@ describe('T025 control room routes', () => {
 
     const inbox = bus.poll('em');
     expect(inbox.some((m) => m.body.includes('reroute TKT-0233'))).toBe(true);
+  });
+
+  test('T041: POST /api/chat/em streams the EM reply over /ws and stores it on the thread', async () => {
+    const frames: Array<Record<string, unknown>> = [];
+    const ws = new WebSocket(`ws://127.0.0.1:${crServer.port}/ws`);
+    await new Promise<void>((resolve, reject) => {
+      ws.addEventListener('open', () => resolve());
+      ws.addEventListener('error', () => reject(new Error('ws failed to open')));
+    });
+    ws.addEventListener('message', (ev) => {
+      frames.push(JSON.parse(ev.data as string) as Record<string, unknown>);
+    });
+
+    const res = await fetch(`http://127.0.0.1:${crServer.port}/api/chat/em`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ body: 'what is left on all tickets' }),
+    });
+    expect(res.status).toBe(200);
+    const posted = (await res.json()) as { streaming: boolean; reply_id: string };
+    expect(posted.streaming).toBe(true);
+
+    const deadline = Date.now() + 5000;
+    while (!frames.some((f) => f.type === 'chat_turn_end') && Date.now() < deadline) {
+      await Bun.sleep(20);
+    }
+    ws.close();
+
+    const deltas = frames.filter((f) => f.type === 'chat_delta');
+    expect(deltas.map((f) => f.text).join('')).toBe(
+      'TKT-1001 is in review, TKT-1002 is unassigned.',
+    );
+    expect(deltas.every((f) => f.message_id === posted.reply_id && f.thread === 'em')).toBe(true);
+    expect(frames.filter((f) => f.type === 'chat_turn_end')).toEqual([
+      { type: 'chat_turn_end', thread: 'em', message_id: posted.reply_id },
+    ]);
+
+    // And the same thread reads back over HTTP — this is what survives a reload.
+    const history = (await (
+      await fetch(`http://127.0.0.1:${crServer.port}/api/chat/em`)
+    ).json()) as Array<{ from: string; body: string }>;
+    expect(history.map((e) => [e.from, e.body])).toEqual([
+      ['human', 'what is left on all tickets'],
+      ['em', 'TKT-1001 is in review, TKT-1002 is unassigned.'],
+    ]);
+  });
+
+  test('T041: GET /control-room/chat serves the SPA shell (pop-out window route)', async () => {
+    const res = await fetch(`http://127.0.0.1:${crServer.port}/control-room/chat`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toContain('text/html');
+    expect(await res.text()).toContain('<div id="root">');
   });
 
   test('POST /api/chat/em without a body is a 400', async () => {

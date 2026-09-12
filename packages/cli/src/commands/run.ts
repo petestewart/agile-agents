@@ -921,6 +921,15 @@ export async function runDemoSprint(opts: RunOptions): Promise<RunResult> {
     // (fourth live run).
     ceremonyTickMs: 0,
     runnerSpawn: fake ? createFakeSpawn() : opts.liveSpawnForTest,
+    // T041: the resident EM chat session (the control room's chat panel).
+    // `--fake`/test runs point it at the same fake ACP transport every other
+    // session uses, so an offline run never tries to spawn a real vendor;
+    // `--live` leaves it unset, i.e. the operator's own vendor login.
+    ...(fake
+      ? { emChatSpawn: createFakeSpawn() }
+      : opts.liveSpawnForTest
+        ? { emChatSpawn: opts.liveSpawnForTest }
+        : {}),
     gateDelegate: fake
       ? () => ({ decision: 'approve', by: 'em', rationale: 'automated (agile run --fake)' })
       : (opts.gateDelegate ??

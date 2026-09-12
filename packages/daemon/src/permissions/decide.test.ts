@@ -42,7 +42,7 @@ function request(
   };
 }
 
-const ROLES: PermissionRole[] = ['engineer', 'reviewer', 'qa', 'architect'];
+const ROLES: PermissionRole[] = ['engineer', 'reviewer', 'qa', 'architect', 'em'];
 
 function decide(role: PermissionRole, req: AcpPermissionRequestParams) {
   return decidePermission({ role, ticket: 'TKT-0001', worktreePath: WORKTREE, request: req });
@@ -298,6 +298,47 @@ describe('decidePermission — role table', () => {
     expect(
       decide('architect', request('fetch', { url: 'https://registry.npmjs.org/zod' })).kind,
     ).toBe('deny');
+  });
+
+  // T041 — design §14 EM row: read "state via daemon"; write "sprints,
+  // assignments, policy proposals" (MCP verbs only, never a raw edit); run
+  // "none"; network "none". This row exists because T041's resident EM chat
+  // session is the first EM ACP session in the system.
+  test('em: read is allowed', () => {
+    expect(decide('em', request('read')).kind).toBe('allow');
+  });
+
+  test('em: a raw edit is always denied — EM writes go through the MCP verbs', () => {
+    const decision = decide('em', request('edit', { targetPath: `${WORKTREE}/src/a.ts` }));
+    expect(decision.kind).toBe('deny');
+    if (decision.kind === 'deny') expect(decision.reason).toContain('MCP verbs');
+  });
+
+  test('em: exec is denied outright (§14 Run = none), even read-only commands', () => {
+    // Stricter than the architect/reviewer row on purpose: the resident EM
+    // session runs at the repo root with no ticket worktree, so there is no
+    // scope in which a shell command from it would be safe.
+    expect(decide('em', request('execute', { command: 'git diff' })).kind).toBe('deny');
+    expect(decide('em', request('execute', { command: 'npm test' })).kind).toBe('deny');
+  });
+
+  test('em: fetch is always denied (no network)', () => {
+    expect(decide('em', request('fetch', { url: 'https://registry.npmjs.org/zod' })).kind).toBe(
+      'deny',
+    );
+  });
+
+  test("em: the daemon's own MCP verbs are still allowed (that is how the EM works)", () => {
+    expect(decide('em', request('other', { title: 'mcp__agile__sprint_plan' })).kind).toBe('allow');
+  });
+
+  test('em: a never-without-human command is a hil verdict, not a silent allow', () => {
+    // The EM session has nowhere to park a hil (no ticket, no waiting
+    // engineer) — `em/permissions.ts` answers it `cancelled`. What matters
+    // here is that the policy never *allows* it.
+    expect(decide('em', request('execute', { command: 'git push origin main' })).kind).not.toBe(
+      'allow',
+    );
   });
 
   for (const role of ROLES) {

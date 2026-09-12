@@ -160,6 +160,14 @@ body {
   flex-direction: column;
 }
 
+/* T041: the popped-out window (`/control-room/chat`) is nothing but the
+   chat column, so it takes the whole viewport instead of a 340px sidebar. */
+.cr-root[data-view="chat"] .cr-chat-col {
+  width: auto;
+  flex: 1;
+  border-left: none;
+}
+
 @media (max-width: 900px) {
   .cr-body {
     flex-direction: column;

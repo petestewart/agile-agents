@@ -34,7 +34,7 @@ import {
   renderQaBrief,
   renderReviewerBrief,
 } from '../briefs';
-import type { PermissionRole } from '../permissions';
+import type { TicketPermissionRole } from '../permissions';
 import type { StateStore } from '../store';
 
 /** Every `.agile/rules/*.md` file's raw content, sorted by filename for determinism. */
@@ -88,7 +88,7 @@ export interface AssembleBriefOptions {
   store: StateStore;
   /** `.agile/` root — where `rules/*.md` lives. */
   stateRoot: string;
-  role: PermissionRole;
+  role: TicketPermissionRole;
   agent: AgentId;
   ticket: Ticket;
   /** The ticket's reviewer agent id, named in the engineer brief as the `review_request` recipient. */

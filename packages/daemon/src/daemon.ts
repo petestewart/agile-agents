@@ -10,6 +10,7 @@ import { join } from 'node:path';
 import type { TicketId } from '@agile-agents/shared';
 import daemonPackageJson from '../package.json' with { type: 'json' };
 import { registerArchitectTools } from './architect';
+import { renderEmBrief } from './briefs';
 import { Bus, buildBusRpcMethods } from './bus';
 import { roleOf } from './bus/routing';
 import {
@@ -18,7 +19,16 @@ import {
   type DiscoverConfigOptions,
   discoverConfig,
 } from './config';
-import { EM_TOOLS, EmLoop, type EmToolDeps, buildEmRpcMethods } from './em';
+import {
+  EM_TOOLS,
+  EmChatService,
+  EmLoop,
+  type EmToolDeps,
+  ResidentEm,
+  buildEmRpcMethods,
+  latestSprint,
+  policyOrDefault,
+} from './em';
 import { pickCurrentSprint } from './feed';
 import { GateService, buildGateRpcMethods } from './gates';
 import type { DelegateFn } from './gates';
@@ -64,8 +74,12 @@ import {
 } from './runner';
 import type { AgentSessionOptions } from './runner';
 import { StateStore, buildStateRpcMethods } from './store';
+import { DAEMON_CACHE_DIR } from './subprocess-env';
 import { HttpJiraClient, JiraSync, buildSyncRpcMethods, resolveJiraSettings } from './sync';
 import { LiveRunner, ToolService, buildToolRpcMethods, loadToolRegistry } from './tools';
+
+/** The ACP spawn seam `ResidentEm` takes (same shape as `em/delegate.ts`'s). */
+type ResidentEmSpawn = NonNullable<ConstructorParameters<typeof ResidentEm>[0]['spawn']>;
 
 export const DAEMON_VERSION: string = daemonPackageJson.version;
 
@@ -96,6 +110,16 @@ export interface DaemonHandle {
   reviewProtocol?: ReviewProtocol;
   qaProtocol?: QaProtocol;
   emLoop?: EmLoop;
+  /**
+   * T041: the daemon's one long-lived EM ACP session, backing the control
+   * room's chat panel. Lazily spawned (nothing runs until the first chat
+   * turn) and never used for gate decisions — those stay with the one-shot
+   * delegate, so killing this session cannot stall a gate. `undefined`
+   * pre-`agile init`.
+   */
+  residentEm?: ResidentEm;
+  /** T041: the chat thread on top of `residentEm` — what `/api/chat/em` reads and writes. `undefined` pre-`agile init`. */
+  emChat?: EmChatService;
   /** T045: Jira two-way sync — `undefined` unless Jira is configured (base URL + credentials in the environment). */
   jiraSync?: JiraSync;
   /**
@@ -133,6 +157,15 @@ export interface StartDaemonOptions extends DiscoverConfigOptions {
    * `agile run`'s offline mode does, since it never spawns one.
    */
   gateDelegate?: DelegateFn;
+  /**
+   * T041 test/offline-run seam: overrides the resident EM chat session's ACP
+   * transport, exactly as `runnerSpawn` does for engineer/reviewer/qa
+   * sessions. Real usage never sets it (the default `spawnSession` spawns
+   * the operator's own vendor login). Without it — and with no vendor
+   * installed — a chat turn fails loudly into the thread rather than
+   * silently doing nothing.
+   */
+  emChatSpawn?: ResidentEmSpawn;
   /**
    * Ceremony/pipeline tick cadence. Default `CEREMONY_TICK_MS` (30 s); `0`
    * disables the daemon's own timer for a caller that drives
@@ -300,6 +333,45 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
           },
         })
       : undefined;
+  // Resident EM chat session (T041, §17 "Technical shape" → EM chat: "the
+  // EM runs as a child process of the daemon over ACP; the daemon relays
+  // its events over the WebSocket"). Constructed eagerly, spawned lazily —
+  // a daemon nobody chats to never starts a vendor process. Its brief is
+  // rendered per spawn from the same `latestSprint`/`policyOrDefault` the
+  // gate delegate uses, so the two EM surfaces never quote different state.
+  const residentEm =
+    store && bus
+      ? new ResidentEm({
+          cwd: config.repoRoot,
+          // Backs the `em`-role ACP permission responder (design §14 EM row)
+          // and logs every verdict as a `hook_decision` event.
+          store,
+          cliBin,
+          socketPath: config.socketPath,
+          stderrLogDir: join(config.repoRoot, DAEMON_CACHE_DIR, 'sessions'),
+          brief: () =>
+            renderEmBrief({
+              agent: 'em',
+              sprint: latestSprint(store),
+              policy: policyOrDefault(store),
+            }),
+          onNotice: (line) => console.error(line),
+          ...(options.emChatSpawn ? { spawn: options.emChatSpawn } : {}),
+        })
+      : undefined;
+  const emChat =
+    store && bus
+      ? new EmChatService({
+          store,
+          bus,
+          repoRoot: config.repoRoot,
+          ...(gateService ? { gates: gateService } : {}),
+          ...(questionService ? { questions: questionService } : {}),
+          ...(residentEm ? { resident: residentEm } : {}),
+          ...(options.now ? { now: options.now } : {}),
+        })
+      : undefined;
+
   // Handoff coordinator (T024, §10): exactly one instance for the daemon's
   // lifetime — its quota-event cursor is seeded once at construction, so a
   // per-tick instance would never see a `quota_low`/`quota_exhausted`.
@@ -662,6 +734,9 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
       // control room's EM chat and Oracle propose-edit routes 503 forever
       // — `bus` is already constructed above for the RPC `bus.*` methods.
       bus,
+      // T041: `/api/chat/em` (GET history, POST send) and the `chat_delta`/
+      // `chat_turn_end` frames on `/ws`.
+      emChat,
       // T045: backs the Tickets pane's link/unlink action.
       jiraSync,
     });
@@ -687,6 +762,8 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
     reviewProtocol,
     qaProtocol,
     emLoop,
+    residentEm,
+    emChat,
     jiraSync,
     ...(store ? { advancePipeline } : {}),
     async stop() {
@@ -700,6 +777,10 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
         if (ceremonyTimer) clearInterval(ceremonyTimer);
         if (jiraTimer) clearInterval(jiraTimer);
         runner?.stopAll();
+        // T041: the resident EM is not a `Runner` session, so `stopAll()`
+        // doesn't reach it — its vendor process would otherwise outlive the
+        // daemon that spawned it.
+        residentEm?.stop();
         await http.stop();
         await rpc.close();
         // Flush any pending deferred hook_decision/heartbeat commits (T009

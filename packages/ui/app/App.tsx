@@ -222,7 +222,7 @@ export function App() {
             </Panel>
           )}
         </div>
-        <ChatPanel connected={connected} />
+        <ChatPanel />
       </div>
     </div>
   );

@@ -17,6 +17,16 @@
  * `{type:'snapshot', ...}`. Without a store (pre-`agile init`, or a caller
  * that only wants `/health`), the feed routes 503 and `/ws` still sends only
  * the hello frame, matching pre-T020 behaviour.
+ *
+ * T041 (§17 "Technical shape" → EM chat): `GET /api/chat/em` returns the
+ * chat thread from the bus and `POST` files the human's line *and* runs one
+ * resident-EM turn, whose text deltas are broadcast to `/ws` subscribers as
+ * `{type:'chat_delta', thread, message_id, text}` frames followed by exactly
+ * one `{type:'chat_turn_end', ...}`. Those frames are a side channel, not
+ * `log/events.jsonl` lines — a per-chunk event would drown every other event
+ * in the feed — and the finished reply is what gets persisted, on the bus.
+ * `/control-room/chat` serves the same SPA bundle in chat-only mode so the
+ * panel can be popped out into its own window.
  */
 
 import { join } from 'node:path';
@@ -35,6 +45,7 @@ import {
 } from '@agile-agents/shared';
 import { CONTROL_ROOM_DIST_DIR, FEED_HTML_PATH } from '@agile-agents/ui';
 import type { Bus } from './bus';
+import { EM_CHAT_THREAD, type EmChatService } from './em/chat';
 import { type EventTailerHandle, buildSnapshot, startEventTailer } from './feed';
 import { GateAlreadyResolvedError, GateNotFoundError, type GateService } from './gates';
 import { createHalt, releaseHalt } from './halts';
@@ -86,6 +97,13 @@ export interface HttpServerOptions {
    * bus-backed control-room routes above do without a `bus`.
    */
   jiraSync?: JiraSync;
+  /**
+   * T041: the resident-EM chat thread behind `GET`/`POST /api/chat/em` and
+   * the `chat_delta`/`chat_turn_end` frames on `/ws`. Optional — without it
+   * `POST /api/chat/em` still files the human's line on the bus exactly as
+   * it did before this ticket (no reply streams back), and `GET` 503s.
+   */
+  emChat?: EmChatService;
   /** Test hook: overrides the tailer's poll interval (default 250ms — see `feed/tailer.ts`). */
   feedPollIntervalMs?: number;
 }
@@ -333,6 +351,7 @@ interface FeedContext {
   bus?: Bus;
   jiraSync?: JiraSync;
   questions?: QuestionService;
+  emChat?: EmChatService;
 }
 
 function resolveFeedContext(options: HttpServerOptions): FeedContext | undefined {
@@ -344,6 +363,7 @@ function resolveFeedContext(options: HttpServerOptions): FeedContext | undefined
     bus: options.bus,
     jiraSync: options.jiraSync,
     questions: options.questions,
+    emChat: options.emChat,
   };
 }
 
@@ -406,6 +426,19 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
        * (`vite.config.ts`'s `base: '/control-room/'`) so both v0 UIs can be
        * served side by side.
        */
+      /**
+       * T041: the chat panel as its own route, so the control room can pop
+       * it out into a separate window (`window.open('/control-room/chat')`)
+       * and keep one conversation across both. Same bundle — the SPA reads
+       * `location.pathname` and renders chat-only (`packages/ui/app/
+       * main.tsx`) — so this is an `index.html` rewrite, exactly like the
+       * bare `/control-room` above, not a second build.
+       */
+      if (url.pathname === '/control-room/chat' || url.pathname === '/control-room/chat/') {
+        return new Response(Bun.file(join(CONTROL_ROOM_DIST_DIR, 'index.html')), {
+          headers: { 'content-type': 'text/html; charset=utf-8' },
+        });
+      }
       if (url.pathname === '/control-room' || url.pathname === '/control-room/') {
         return new Response(Bun.file(join(CONTROL_ROOM_DIST_DIR, 'index.html')), {
           headers: { 'content-type': 'text/html; charset=utf-8' },
@@ -564,6 +597,23 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
        * steer -> action-set card is the EM's own ACP loop, out of this
        * route's scope (documented gap, `.pipeline-report.md`).
        */
+      /**
+       * T041: the thread itself, so a reloaded page (or the popped-out
+       * `/control-room/chat` window) renders the same conversation — the bus
+       * is the source of truth, nothing is kept in the browser.
+       *
+       * No `isSameOriginRequest` guard, deliberately: that check exists for
+       * CSRF on the *mutating* routes below. This is a read that changes
+       * nothing, and a cross-origin page cannot see the response body
+       * without CORS headers this server never sends — the same reasoning
+       * every other GET here (`/api/snapshot`, `/api/tickets`, ...) already
+       * relies on.
+       */
+      if (url.pathname === '/api/chat/em' && req.method === 'GET') {
+        if (!feed?.emChat) return errorResponse(503, 'em chat is not wired to this daemon');
+        return jsonResponse(feed.emChat.history());
+      }
+
       if (url.pathname === '/api/chat/em' && req.method === 'POST') {
         if (!feed?.bus) return errorResponse(503, 'bus not wired to the control room yet');
         if (!isSameOriginRequest(req, srv.port ?? options.port)) {
@@ -578,6 +628,58 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
         if (typeof body.body !== 'string' || body.body.length === 0) {
           return errorResponse(400, 'body is required');
         }
+        /**
+         * T041: with a resident EM wired, the human's line still lands on
+         * the EM's inbox first (unchanged), and the EM's turn then streams
+         * back over `/ws` as `chat_delta` frames — a side channel, not
+         * `events.jsonl`: a per-token line in the event log would drown
+         * every other event and break the "signal over volume" rule. The
+         * finished reply is appended to the bus thread, which is what a
+         * reload reads.
+         */
+        if (feed.emChat) {
+          try {
+            const result = await feed.emChat.send(
+              {
+                body: body.body,
+                ...(typeof body.ticket === 'string' ? { ticket: body.ticket } : {}),
+              },
+              {
+                onDelta: (messageId, text) => {
+                  srv.publish(
+                    FEED_WS_TOPIC,
+                    JSON.stringify({
+                      type: 'chat_delta',
+                      thread: EM_CHAT_THREAD,
+                      message_id: messageId,
+                      text,
+                    }),
+                  );
+                },
+                onEnd: (messageId, error) => {
+                  srv.publish(
+                    FEED_WS_TOPIC,
+                    JSON.stringify({
+                      type: 'chat_turn_end',
+                      thread: EM_CHAT_THREAD,
+                      message_id: messageId,
+                      ...(error !== undefined ? { error } : {}),
+                    }),
+                  );
+                },
+              },
+            );
+            return jsonResponse({
+              ok: true,
+              message: result.message,
+              streaming: result.streaming,
+              ...(result.replyId !== undefined ? { reply_id: result.replyId } : {}),
+              ...(result.reason !== undefined ? { reason: result.reason } : {}),
+            });
+          } catch (err) {
+            return errorResponse(400, err instanceof Error ? err.message : String(err));
+          }
+        }
         try {
           const result = await feed.bus.send({
             id: ulid(),
@@ -590,7 +692,7 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
             ...(typeof body.ticket === 'string' ? { ticket: body.ticket } : {}),
           });
           if (!result.ok) return errorResponse(400, result.reason);
-          return jsonResponse({ ok: true, message: result.message });
+          return jsonResponse({ ok: true, message: result.message, streaming: false });
         } catch (err) {
           return errorResponse(400, err instanceof Error ? err.message : String(err));
         }
