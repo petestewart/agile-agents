@@ -37,6 +37,7 @@ import { createHalt, releaseHalt } from './halts';
 import type { QuotaService } from './quota/records';
 import { NotFoundError } from './store';
 import type { StateStore } from './store';
+import { type JiraSync, requireProjectKey } from './sync';
 
 export interface HealthPayload {
   version: string;
@@ -65,6 +66,14 @@ export interface HttpServerOptions {
    * `.pipeline-report.md` for the one-line `daemon.ts` wiring this needs.
    */
   bus?: Bus;
+  /**
+   * T045: Jira two-way sync, backing the Tickets pane's link/unlink action
+   * (`POST /api/sync/jira/link` / `/unlink`, `GET /api/sync/jira`). Optional
+   * and absent unless the operator has configured Jira (see
+   * `sync/config.ts`) — without it those three routes 503, exactly like the
+   * bus-backed control-room routes above do without a `bus`.
+   */
+  jiraSync?: JiraSync;
   /** Test hook: overrides the tailer's poll interval (default 250ms — see `feed/tailer.ts`). */
   feedPollIntervalMs?: number;
 }
@@ -216,11 +225,18 @@ interface FeedContext {
   gates: GateService;
   quota?: QuotaService;
   bus?: Bus;
+  jiraSync?: JiraSync;
 }
 
 function resolveFeedContext(options: HttpServerOptions): FeedContext | undefined {
   if (!options.store || !options.gates) return undefined;
-  return { store: options.store, gates: options.gates, quota: options.quota, bus: options.bus };
+  return {
+    store: options.store,
+    gates: options.gates,
+    quota: options.quota,
+    bus: options.bus,
+    jiraSync: options.jiraSync,
+  };
 }
 
 /** `/api/tickets/<id>` — control room (T025) ticket detail (ticket + its board stanzas). */
@@ -508,6 +524,44 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
           });
           if (!result.ok) return errorResponse(400, result.reason);
           return jsonResponse({ ok: true, message: result.message });
+        } catch (err) {
+          return errorResponse(400, err instanceof Error ? err.message : String(err));
+        }
+      }
+
+      /**
+       * Jira two-way sync (T045 — §17 v2 "Jira is two-way sync", mockup's
+       * Tickets pane: "Jira: LED-41...44 synced 4:44 PM"). Reads the link
+       * state, and links/unlinks a project — which writes the `jira.project`
+       * key of the host-local `agile.config.yaml`, never anything under
+       * `.agile/`. Credentials never cross this boundary: they come from the
+       * operator's environment (`sync/config.ts`), so the body carries only a
+       * project key.
+       */
+      if (url.pathname === '/api/sync/jira' && req.method === 'GET') {
+        if (!feed?.jiraSync) return errorResponse(503, 'jira sync is not configured');
+        return jsonResponse(feed.jiraSync.status());
+      }
+
+      if (
+        (url.pathname === '/api/sync/jira/link' || url.pathname === '/api/sync/jira/unlink') &&
+        req.method === 'POST'
+      ) {
+        if (!feed?.jiraSync) return errorResponse(503, 'jira sync is not configured');
+        if (!isSameOriginRequest(req, srv.port ?? options.port)) {
+          return errorResponse(403, 'cross-origin request rejected');
+        }
+        if (url.pathname.endsWith('/unlink')) {
+          return jsonResponse(feed.jiraSync.unlink());
+        }
+        let body: Record<string, unknown>;
+        try {
+          body = await readJsonBody(req);
+        } catch (err) {
+          return errorResponse(400, err instanceof Error ? err.message : String(err));
+        }
+        try {
+          return jsonResponse(feed.jiraSync.link(requireProjectKey(body.project)));
         } catch (err) {
           return errorResponse(400, err instanceof Error ? err.message : String(err));
         }

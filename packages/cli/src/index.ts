@@ -31,6 +31,7 @@ import { runCliInit } from './commands/init';
 import { runDemoSprint } from './commands/run';
 import { runSend } from './commands/send';
 import { runStatus } from './commands/status';
+import { runSync } from './commands/sync';
 import { runTail } from './commands/tail';
 
 export const PACKAGE_NAME = '@agile-agents/cli';
@@ -63,6 +64,7 @@ function usage(): string {
     '  halt [--scope <scope>] [--reason <text>] [--by <agent>]',
     '  resume <halt-id>',
     '  breaker clear <signal>',
+    '  sync jira link <PROJECT> | unlink | status    two-way Jira sync (credentials from $JIRA_*)',
     '  hook <event>               stdin JSON in, JSON out (e.g. hook pre-tool-use) [--fail-closed] [--timeout <ms>, default 2000]',
     "  mcp --agent <id> [--ticket <id>] [--timeout <ms>, default 60000]   stdio MCP bridge to the daemon's tool.* RPC",
     '',
@@ -198,6 +200,9 @@ export async function runCli(argv: string[], cwd: string = process.cwd()): Promi
         if (sub === 'clear') return await runBreakerClear(socketPath, parseArgs(restArgv), json);
         console.error(usage());
         return 1;
+
+      case 'sync':
+        return await runSync(socketPath, parseArgs(rest.slice(1)), json);
 
       case 'hook': {
         const args: ParsedArgs = parseArgs(rest.slice(1));

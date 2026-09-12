@@ -16,6 +16,26 @@ import { join } from 'node:path';
 import { parse as parseYaml } from 'yaml';
 import { sandboxedSubprocessEnvOrTemp } from './subprocess-env';
 
+/**
+ * Host-local Jira link settings (T045, §17 v2 "Jira is two-way sync"). Only
+ * the *non-secret* half lives in `agile.config.yaml`: the credentials
+ * (`JIRA_EMAIL`, `JIRA_API_TOKEN`) are read from the operator's environment
+ * and never written anywhere under `.agile/`, per the ticket scope.
+ */
+export interface JiraConfig {
+  /** e.g. `https://acme.atlassian.net` (env: `JIRA_BASE_URL`). */
+  baseUrl?: string;
+  /**
+   * The linked Jira project key, e.g. `LED` (env: `JIRA_PROJECT_KEY`).
+   * Written by `agile sync jira link|unlink` — this file, not anything under
+   * `.agile/`, is where "which project is this repo linked to" lives. A
+   * project key is not a secret; the credentials never come from here.
+   */
+  project?: string;
+  /** Poll cadence for the pull direction (env: `JIRA_POLL_INTERVAL_MS`). */
+  pollIntervalMs?: number;
+}
+
 export interface AgileConfig {
   /** Repo toplevel (git rev-parse --show-toplevel), i.e. where `.agile/` lives. */
   repoRoot: string;
@@ -27,14 +47,17 @@ export interface AgileConfig {
   socketPath: string;
   /** PID/lock file path — see lock.ts for why it lives outside `.agile/`. */
   lockPath: string;
+  /** T045: `jira:` block from `agile.config.yaml`, overlaid with env. Absent when nothing is configured. */
+  jira?: JiraConfig;
 }
 
 const DEFAULT_PORT = 4600;
-const CONFIG_FILE_NAME = 'agile.config.yaml';
+export const CONFIG_FILE_NAME = 'agile.config.yaml';
 
 interface RawConfigFile {
   port?: number;
   socketPath?: string;
+  jira?: JiraConfig;
 }
 
 function findRepoRoot(startDir: string, tempDirBase?: string): string {
@@ -130,5 +153,28 @@ export function discoverConfig(options: DiscoverConfigOptions = {}): AgileConfig
   // See lock.ts for why this lives at the repo root, not inside `.agile/`.
   const lockPath = join(repoRoot, '.agile-daemon.lock');
 
-  return { repoRoot, stateRoot, port, socketPath, lockPath };
+  // T045: env wins over the file, same precedence as `port`/`socketPath`
+  // above. Credentials are *not* read here — `sync/config.ts` pulls
+  // `JIRA_EMAIL`/`JIRA_API_TOKEN` straight from the environment so they
+  // never live on an object that anything might serialise into `.agile/`.
+  const envPollInterval = process.env.JIRA_POLL_INTERVAL_MS
+    ? Number(process.env.JIRA_POLL_INTERVAL_MS)
+    : undefined;
+  const jira: JiraConfig = {
+    ...(fileConfig.jira ?? {}),
+    ...(process.env.JIRA_BASE_URL ? { baseUrl: process.env.JIRA_BASE_URL } : {}),
+    ...(process.env.JIRA_PROJECT_KEY ? { project: process.env.JIRA_PROJECT_KEY } : {}),
+    ...(envPollInterval !== undefined && Number.isFinite(envPollInterval)
+      ? { pollIntervalMs: envPollInterval }
+      : {}),
+  };
+
+  return {
+    repoRoot,
+    stateRoot,
+    port,
+    socketPath,
+    lockPath,
+    ...(Object.keys(jira).length > 0 ? { jira } : {}),
+  };
 }
