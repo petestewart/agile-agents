@@ -476,12 +476,12 @@ Priority encodes dependency layer as well as importance: P0 tickets are v0-block
 
 ### Ticket: T046 Run-loop small fixes from the ledger-lite walkthrough
 - **Priority:** P2
-- **Status:** In Progress
+- **Status:** Done
 - **Owner:** opus:worker-T046
 - **Scope:** Three defects seen on 2026-09-11: (1) the `review/rules` loader warns `skipping .gitkeep` on every tick because `agile init` seeds `oracle/specs/.gitkeep` — skip dotfiles silently; (2) `run.ts` hard-codes the sprint goal `Demo epic layer 1` — take it from the seed or the product brief's first heading; (3) `integration` → `main` promotion fails when `main` is checked out in the user's clone (design says merges happen in `.worktrees/_main`; find out why this path was not used and fix it, or make the failure a clear Needs-you item with the `git merge integration` workaround).
 - **Acceptance Criteria:** No warning lines in a clean run's stderr; sprint name reflects the seed; a live run against a repo with `main` checked out promotes to `main` or raises one clear gate.
 - **Validation Steps:** `bun test packages/daemon packages/cli`; offline e2e; one manual live run on `~/Projects/ledger-lite`.
-- **Notes:** All three noted by Pete in the terminal during the walkthrough.
+- **Notes:** All three noted by Pete in the terminal during the walkthrough. Branch `T046-run-loop-fixes` (d1086e2), merge dd9dcd2. Each defect reproduced by a test first. (1) `loadRules` skips hidden/temp files via the existing `store/fs.ts` predicate; stray non-hidden files still warn. (2) `resolveSprintGoal(seed, stateRoot)`: seed `sprintGoal` → product brief first heading (the untouched `agile init` stub excluded) → none; demo seed gained `sprintGoal`. (3) `.worktrees/_main` was already the merge path — git refuses a second worktree for a checked-out branch, so promotion now raises exactly one human-owned `promote_to_main` HIL (idempotent across ticks) whose summary carries the `git merge --no-ff integration` workaround. Review PASS (1 nit: `em/review.ts` stamps `review_at` before the merge so a gated promotion is not retried automatically after approval — follow-up, not in scope); QA ACCEPT (0 findings). Manual live check (LIVE-CHECKLIST): run `agile run --live` on ledger-lite with `main` checked out — no `skipping .gitkeep` lines, sprint goal is the product brief heading, exactly one `promote_to_main` Needs-you item at sprint review.
 
 ## 8. Open Questions
 
@@ -649,5 +649,6 @@ Priority encodes dependency layer as well as importance: P0 tickets are v0-block
 - 2026-09-12 — mode: yolo (`/project --yolo`), control room v2 run (T039–T046). Integration branch is `claude/control-room-v2` off `main` 9dcf7d4: ticket worktrees branch off it and merge back into it (`--no-ff`); pushed after every PLAN.md change; Pete lands it on `main` by PR. DIRECT_MODE (no `gh`). No vendor login in the cloud: `test:live` is never run and no live acceptance criterion is marked verified — each such ticket puts the exact manual check in its Notes and `LIVE-CHECKLIST.md` collects them at the end. Chromium installed via `bunx playwright-core install chromium` so `test:e2e` runs. Build order: T039 → T040 → T041 → T042 ∥ T043 → T044; T045 and T046 whenever a slot is free.
 - 2026-09-12 — Wave 1 launched: T039, T045, T046 (independent).
 - 2026-09-12 — T039 merged (a9c2008). Decisions (manager, yolo): the note travels as the pre-existing `hil_response` message kind (no `hil_reply`); its recipient is the ticket assignee (no `requested_by` field — "no other schema change"); no `hil_noted` event kind — a note-only answer is visible as `entity_put` and then on `hil_resolved.data.note`. Unblocks T040 (launched).
+- 2026-09-12 — T046 merged (dd9dcd2). New gate name `promote_to_main` (unnamed gates resolve to `human`, which is the point: nobody but the operator can merge into their checked-out `main`). Follow-up candidate: retry a gated promotion automatically once its HIL is approved (`em/review.ts` stamps `review_at` before the merge).
 
 ## Archived 2026-09-09
