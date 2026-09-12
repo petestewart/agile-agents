@@ -499,6 +499,18 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
   const seenResumes = new Set<string>();
   const seenStandupCalls = new Set<string>();
   async function advancePipeline(): Promise<void> {
+    // T042: an `approve_plan` an EM/architect delegate (or a human answering
+    // through `agile approve`) resolved *after* the control room's Start
+    // Sprint click returned. `PlanService.startSprint` deliberately persists
+    // nothing while that gate is pending — `EmLoop.currentSprint()` would
+    // otherwise treat the unapproved sprint as live and start assigning — so
+    // this is where an approved-but-unstarted plan actually becomes a
+    // sprint. Idempotent (see `startApprovedSprint`); the EM assigns its
+    // tickets on the following tick, same as any other newly planned sprint.
+    if (planService) {
+      const started = await planService.startApprovedSprint();
+      if (started) console.error(`approve_plan approved — started ${started.id}`);
+    }
     if (store && bus && reviewProtocol && runner)
       await advanceReviewRequests(store, bus, reviewProtocol, runner, seenReviewRequests);
     if (store && bus && runner)

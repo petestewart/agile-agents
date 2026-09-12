@@ -401,10 +401,16 @@ async function handlePlanRoute(req: Request, url: URL, plan: PlanRoutesContext):
     if (path === '/api/plan/rules' && method === 'GET') return jsonResponse(service.listRules());
     if (path === '/api/plan/rules' && method === 'POST') {
       const input = await body();
+      // Review round 1 (nit 1): validate an edited entry's id up front, the
+      // same way the ticket routes do — the write itself re-validates, but
+      // the `citedBy`/`getOracleEntry` reads that decide *write vs propose*
+      // run first and would otherwise silently no-op on a malformed id.
+      const ruleId = readId(input.id, OracleIdSchema, 'oracle id');
+      if (typeof ruleId === 'object') return errorResponse(400, ruleId.error);
       return jsonResponse(
         await service.putRule(
           {
-            ...(typeof input.id === 'string' ? { id: input.id as OracleId } : {}),
+            ...(ruleId !== undefined ? { id: ruleId as OracleId } : {}),
             title: String(input.title ?? ''),
             body: String(input.body ?? ''),
             ...(typeof input.rationale === 'string' ? { rationale: input.rationale } : {}),
@@ -465,10 +471,12 @@ async function handlePlanRoute(req: Request, url: URL, plan: PlanRoutesContext):
     }
     if (path === '/api/plan/knowledge' && method === 'POST') {
       const input = await body();
+      const kbId = readId(input.id, KbIdSchema, 'kb id');
+      if (typeof kbId === 'object') return errorResponse(400, kbId.error);
       return jsonResponse(
         await service.putKnowledge(
           {
-            ...(typeof input.id === 'string' ? { id: input.id as KbId } : {}),
+            ...(kbId !== undefined ? { id: kbId as KbId } : {}),
             ...(typeof input.kind === 'string' ? { kind: input.kind as KbFact['kind'] } : {}),
             ...(Array.isArray(input.scope) ? { scope: input.scope as string[] } : {}),
             ...(typeof input.confidence === 'string'
@@ -497,6 +505,23 @@ async function handlePlanRoute(req: Request, url: URL, plan: PlanRoutesContext):
     if (err instanceof NotFoundError) return errorResponse(404, err.message);
     return errorResponse(400, err instanceof Error ? err.message : String(err));
   }
+}
+
+/**
+ * An optional id from a request body, validated against its own schema
+ * before any read uses it. `undefined` when absent, `{error}` when present
+ * but malformed (a 400 with a readable message rather than a silent miss).
+ */
+function readId(
+  value: unknown,
+  schema: { safeParse(input: unknown): { success: boolean } },
+  what: string,
+): string | undefined | { error: string } {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== 'string' || !schema.safeParse(value).success) {
+    return { error: `invalid ${what}: ${String(value)}` };
+  }
+  return value;
 }
 
 /** Who the write is attributed to. The control room is the human's own window, so `human` is the default — same as the HIL routes. */
@@ -559,6 +584,8 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
   const feed = resolveFeedContext(options);
 
   let tailer: EventTailerHandle | undefined;
+  /** T042: at most one architect planning turn per daemon (see the `/api/chat/em` POST handler). */
+  let planningTurnStarted = false;
 
   const server = Bun.serve({
     port: options.port,
@@ -801,15 +828,27 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
          * is additional, not a replacement.
          */
         let planning: { started: boolean; reason?: string } | undefined;
-        if (feed.plan?.startGoal && isFirstGoal(feed.store, feed.plan.service.brief().stub)) {
+        // Review round 1 (nit 3): `isFirstGoal` re-reads the ticket count and
+        // the brief fresh, so two chat posts sent before the architect's
+        // first write lands would both look like "the first goal". One
+        // planning turn per daemon is enough — the latch is flipped before
+        // the (async) turn starts, never after.
+        if (
+          !planningTurnStarted &&
+          feed.plan?.startGoal &&
+          isFirstGoal(feed.store, feed.plan.service.brief().stub)
+        ) {
+          planningTurnStarted = true;
           try {
             planning = await feed.plan.startGoal(body.body);
           } catch (err) {
+            planningTurnStarted = false;
             planning = {
               started: false,
               reason: err instanceof Error ? err.message : String(err),
             };
           }
+          if (planning?.started === false) planningTurnStarted = false;
         }
         /**
          * T041: with a resident EM wired, the human's line still lands on

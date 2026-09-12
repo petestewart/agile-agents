@@ -7,10 +7,15 @@
  * uses, with a double that calls the daemon's own architect verbs.
  */
 
-import { describe, expect, test } from 'bun:test';
+import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import {
+  type SpawnSessionOptions,
+  type SpawnedSession,
+  spawnSession,
+} from '@agile-agents/acp-client';
 import type { TicketId } from '@agile-agents/shared';
 import { type Browser, type Page, chromium } from 'playwright-core';
 import { registerArchitectTools } from '../architect';
@@ -21,6 +26,31 @@ import { StateStore } from '../store';
 import { resolveChromiumExecutable } from './chromium';
 
 const executablePath = resolveChromiumExecutable();
+
+const FAKE_AGENT_PATH = join(import.meta.dir, '..', 'runner', 'fake-agent.ts');
+
+/**
+ * The resident EM's ACP transport, faked exactly as `control-room.e2e.test.ts`
+ * does it. Round-1 review caught the omission: without this, the walkthrough's
+ * chat post makes the daemon try to spawn a **real** vendor (no login in CI),
+ * which fails late and leaves a dangling child behind — harmless to this
+ * file's own assertions, but it was enough extra load to time out a Playwright
+ * test in `control-room.e2e.test.ts` later in the same `test:e2e` run.
+ */
+function cannedEmSpawn(repo: string, reply: string): (opts: SpawnSessionOptions) => SpawnedSession {
+  const scriptPath = join(repo, 'em-chat-script.json');
+  writeFileSync(
+    scriptPath,
+    JSON.stringify({ steps: [{ type: 'agent_text', text: reply }, { type: 'end_turn' }] }),
+  );
+  return (opts: SpawnSessionOptions) =>
+    spawnSession({
+      ...opts,
+      cmd: 'bun',
+      args: [FAKE_AGENT_PATH],
+      envOverrides: { ...opts.envOverrides, AGILE_FAKE_AGENT_SCRIPT: scriptPath },
+    });
+}
 
 function initRepo(): string {
   const repo = mkdtempSync(join(tmpdir(), 'agile-plan-e2e-'));
@@ -121,11 +151,28 @@ async function openPlan(page: Page, port: number): Promise<void> {
   await page.locator('[data-testid="plan-screen"]').waitFor({ state: 'attached', timeout: 10000 });
 }
 
+/**
+ * One Chromium for the whole file, not one per test. Round-1 review: a third
+ * e2e file in the same `bun run test:e2e` run pushed the suite over the edge
+ * of the documented bun/Chromium teardown flake (`closeBrowserBounded`'s own
+ * comment in `control-room.e2e.test.ts`) — every extra browser launch/close is
+ * load this file does not need, since its two tests are sequential anyway.
+ */
+let browser: Browser;
+
+beforeAll(async () => {
+  browser = await chromium.launch({ executablePath });
+});
+
+afterAll(async () => {
+  await closeBrowserBounded(browser);
+});
+
 describe('Plan screen (Playwright e2e)', () => {
   test('every pane renders daemon data, and every edit lands in events.jsonl and on agile-state', async () => {
     const repo = initRepo();
     let handle: DaemonHandle | undefined;
-    const browser = await chromium.launch({ executablePath });
+    let openedPage: Page | undefined;
 
     try {
       const init = runInit(repo);
@@ -168,6 +215,7 @@ describe('Plan screen (Playwright e2e)', () => {
         socketPath: join(repo, '.agile-daemon.sock'),
       });
       const page = await browser.newPage();
+      openedPage = page;
       await openPlan(page, handle.http.port);
 
       // --- Tickets pane (the default) renders the seeded tickets, stub marked.
@@ -286,7 +334,7 @@ describe('Plan screen (Playwright e2e)', () => {
       expect(subjects).toContain('kb_put');
       expect(subjects).toContain('ticket_put');
     } finally {
-      await closeBrowserBounded(browser);
+      await openedPage?.close();
       await handle?.stop();
       rmSync(repo, { recursive: true, force: true });
     }
@@ -295,7 +343,7 @@ describe('Plan screen (Playwright e2e)', () => {
   test('no-seed walkthrough: agile init, goal in the chat, panes fill, Start Sprint 1 runs', async () => {
     const repo = initRepo();
     let handle: DaemonHandle | undefined;
-    const browser = await chromium.launch({ executablePath });
+    let openedPage: Page | undefined;
 
     try {
       const init = runInit(repo);
@@ -306,11 +354,15 @@ describe('Plan screen (Playwright e2e)', () => {
         cwd: repo,
         port: 0,
         socketPath: join(repo, '.agile-daemon.sock'),
-        // The one seam: no vendor login in CI, so the planning turn runs the
-        // same daemon verbs through a double (see `cannedArchitect`).
+        // Two seams, both offline: the planning turn runs the same daemon
+        // verbs through a double (see `cannedArchitect`), and the resident EM
+        // the chat post also wakes answers over the fake ACP transport
+        // instead of trying to spawn a vendor that isn't installed.
         architectPlanner: cannedArchitect(store),
+        emChatSpawn: cannedEmSpawn(repo, 'on it'),
       });
       const page = await browser.newPage();
+      openedPage = page;
       await openPlan(page, handle.http.port);
 
       // The empty plan is what the repo opens on.
@@ -365,7 +417,7 @@ describe('Plan screen (Playwright e2e)', () => {
         'the sprint-started notice',
       );
     } finally {
-      await closeBrowserBounded(browser);
+      await openedPage?.close();
       await handle?.stop();
       rmSync(repo, { recursive: true, force: true });
     }

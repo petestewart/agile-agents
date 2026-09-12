@@ -106,8 +106,13 @@ export interface RuleWriteResult {
 }
 
 export interface StartSprintResult {
-  sprint: { id: string; goal: string; tickets: TicketId[] };
+  /** `false` when `approve_plan` is still pending or was denied — nothing was written. */
+  started: boolean;
+  sprint?: { id: string; goal: string; tickets: TicketId[] };
+  /** What was put to the gate: the frontier this would start. */
+  proposal: { id: string; tickets: TicketId[]; goal: string };
   gate: { id: string; owner: string; status: string; decision?: string };
+  reason?: string;
 }
 
 export function getPlanOverview(): Promise<PlanOverview> {

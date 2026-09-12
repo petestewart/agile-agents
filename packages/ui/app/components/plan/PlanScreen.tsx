@@ -111,7 +111,11 @@ export function PlanScreen({
     try {
       const result = await startSprint();
       setStatus(
-        `${result.sprint.id} started with ${result.sprint.tickets.length} ticket(s) — approve_plan ${result.gate.status}${result.gate.decision ? ` (${result.gate.decision})` : ''}.`,
+        result.started && result.sprint
+          ? `${result.sprint.id} started with ${result.sprint.tickets.length} ticket(s) — approve_plan ${result.gate.status}${result.gate.decision ? ` (${result.gate.decision})` : ''}.`
+          : // Nothing was written: the gate is owned by the EM/architect and is
+            // still pending, or it was denied. Say which, and by whom.
+            `${result.proposal.id} not started — ${result.reason ?? `approve_plan is ${result.gate.status}`}.`,
       );
       await refresh();
       onStarted?.();

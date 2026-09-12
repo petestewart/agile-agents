@@ -161,7 +161,10 @@ export function buildSprintBoard(
   for (const sprint of ordered) {
     const members = sprint.tickets.map((id) => byId.get(id)).filter((t): t is Ticket => !!t);
     const done = members.filter((t) => t.status === 'done').length;
-    const finished = members.length > 0 && done === members.length;
+    // Review round 1 (nit 2): a sprint with no members left (its tickets
+    // deleted, or an empty frontier) is *not* running — otherwise it would
+    // sit at the head of the board forever and block Start Sprint.
+    const finished = done === members.length;
     const rowTickets = members.map((t) => rowTicket(t, byId, tickets));
     if (finished) {
       rows.push({

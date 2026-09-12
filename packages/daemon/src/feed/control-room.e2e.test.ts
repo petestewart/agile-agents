@@ -81,9 +81,15 @@ const BROWSER_CLOSE_BUDGET_MS = 10_000;
  * passed by this point, and a `close()` that has not returned in
  * `BROWSER_CLOSE_BUDGET_MS` is left to bun's own end-of-run dangling-process
  * cleanup (it reports "killed N dangling process"), with a line on stderr so
- * it is never silent. Only this test needs it — the file's other tests each
- * launch and close their own browser without the `em` directory's load
- * behind them.
+ * it is never silent.
+ *
+ * T042: every test in this file now uses it, not just the chat one. Adding a
+ * third file to `bun run test:e2e` (the Plan screen's) reproduced the same
+ * wedge in other tests here under CPU contention — instrumented, the
+ * assertions completed in ~600 ms and `browser.close()` was what never
+ * returned, so the test burned its own 20 s budget in teardown with
+ * everything already passed. The bound is a teardown fix only; no assertion
+ * changed.
  */
 async function closeBrowserBounded(browser: Browser | undefined): Promise<void> {
   if (!browser) return;
@@ -212,7 +218,7 @@ describe('control room SPA (Playwright e2e)', () => {
       expect(store.listHalts()).toHaveLength(1);
       expect(store.listHalts()[0]?.raised_by).toBe('human');
     } finally {
-      await browser.close();
+      await closeBrowserBounded(browser);
       await handle?.stop();
       rmSync(repo, { recursive: true, force: true });
     }
@@ -268,7 +274,7 @@ describe('control room SPA (Playwright e2e)', () => {
         true,
       );
     } finally {
-      await browser.close();
+      await closeBrowserBounded(browser);
       await handle?.stop();
       rmSync(repo, { recursive: true, force: true });
     }
@@ -330,7 +336,7 @@ describe('control room SPA (Playwright e2e)', () => {
       // Never a direct write — the oracle entry itself is untouched.
       expect(store.getOracleEntry('DEC-0001' as never).entry.title).toBe('Fixture decision');
     } finally {
-      await browser.close();
+      await closeBrowserBounded(browser);
       await handle?.stop();
       rmSync(repo, { recursive: true, force: true });
     }
@@ -404,7 +410,7 @@ describe('control room SPA (Playwright e2e)', () => {
         expect(color).not.toBe(UA_LIGHT_TEXT);
       }
     } finally {
-      await browser.close();
+      await closeBrowserBounded(browser);
       await handle?.stop();
       rmSync(repo, { recursive: true, force: true });
     }
@@ -465,7 +471,7 @@ describe('control room SPA (Playwright e2e)', () => {
       }
       expect(column).toContain('READY');
     } finally {
-      await browser.close();
+      await closeBrowserBounded(browser);
       await handle?.stop();
       rmSync(repo, { recursive: true, force: true });
     }
@@ -544,7 +550,7 @@ describe('control room SPA (Playwright e2e)', () => {
       }
       expect(apiRequests.length).toBeGreaterThan(0);
     } finally {
-      await browser.close();
+      await closeBrowserBounded(browser);
       await handle?.stop();
       rmSync(repo, { recursive: true, force: true });
     }
@@ -602,7 +608,7 @@ describe('control room SPA (Playwright e2e)', () => {
       // The answer reached the engineer that raised it.
       expect(store.listEntities('bus/inbox/eng-1', (v) => v)).toHaveLength(1);
     } finally {
-      await browser.close();
+      await closeBrowserBounded(browser);
       await handle?.stop();
       rmSync(repo, { recursive: true, force: true });
     }
