@@ -59,6 +59,7 @@ import {
   MESSAGE_BODY_MAX_CHARS,
   type MergeOutcomeStatus,
   type MergeRecord,
+  type Policy,
   type Ticket,
   type TicketId,
   type TicketStatus,
@@ -230,6 +231,21 @@ export interface MergeOwnerOptions {
    * for the latest `sprint_review` request — see `sprintReviewApproved`.
    */
   gateApproved?: GateApprovedFn;
+  /**
+   * The `GateService`, for the one case `mergeIntegrationToMain` can't
+   * merge *and* can't usefully throw: `main` (or `integration`) is checked
+   * out in the operator's own clone, so git refuses the dedicated
+   * `.worktrees/_main` worktree this class merges in (T046 defect 3 — the
+   * raw `BranchCheckedOutElsewhereError` surfaced only as an EM verb error
+   * deep in a run, with nothing in the "Needs you" inbox and no workaround
+   * anywhere). With a `GateService` wired, that becomes exactly one pending
+   * `PROMOTE_TO_MAIN_GATE` request carrying the `git merge integration`
+   * workaround in its summary; without one (unit tests), the error still
+   * throws as before. Same `list`-then-`request` shape `hook/service.ts`'s
+   * `resolveOrCreateHil` uses, so a retried tick reuses the open request
+   * instead of opening a second one.
+   */
+  gates?: Pick<GateService, 'list' | 'request'>;
 }
 
 /** Ticket ids whose commit subjects mention them — used by the conflict summary below. */
@@ -293,10 +309,21 @@ const INTEGRATION_WORKTREE_DIR = '_integration';
 const MAIN_WORKTREE_DIR = '_main';
 const MAIN_BRANCH = 'main';
 
+/**
+ * The gate a blocked `integration -> main` promotion opens (T046 defect 3).
+ * Deliberately a name no shipped `policy.yaml` carries: `resolveGate`
+ * resolves an unnamed gate to `human` (§16's fail-safe), which is the point
+ * — no delegate (EM or otherwise) can decide this one, because the only fix
+ * is the operator moving their own checkout off `main`. If a policy ever
+ * does name it, that is the operator's explicit choice.
+ */
+export const PROMOTE_TO_MAIN_GATE = 'promote_to_main';
+
 export class MergeOwner {
   private readonly runTests: RunTestsFn;
   private readonly clock: () => Date;
   private readonly gateApproved: GateApprovedFn;
+  private readonly gates: Pick<GateService, 'list' | 'request'> | undefined;
   private readonly mutex = new Mutex();
 
   constructor(
@@ -308,6 +335,7 @@ export class MergeOwner {
     this.runTests = options.runTests ?? defaultRunTests;
     this.clock = options.clock ?? (() => new Date());
     this.gateApproved = options.gateApproved ?? (() => ({ approved: false }));
+    this.gates = options.gates;
   }
 
   /**
@@ -664,6 +692,54 @@ export class MergeOwner {
     return { status, ticket: ticket.id, summary, haltId: halt.id };
   }
 
+  /**
+   * `main`/`integration` is checked out in the operator's own clone, so the
+   * dedicated worktree git refuses is unavailable and there is no safe,
+   * generic way to advance the branch behind their back (see
+   * `ensureNamedWorktree`'s comment). Turn that dead end into one pending
+   * "Needs you" item (§17's attention queue reads `board/hil/`) whose
+   * summary carries the one-line workaround, and report the promotion as
+   * `gated` — the same status an unapproved `sprint_review` already
+   * produces, so every existing caller treats it as "did not land, nobody
+   * needs to panic" rather than a crash. Returns `undefined` when no
+   * `GateService` is wired (unit tests), leaving the throw intact.
+   */
+  private async gateBlockedPromotion(
+    err: BranchCheckedOutElsewhereError,
+  ): Promise<MergeOutcome | undefined> {
+    if (!this.gates) return undefined;
+    // `err.branch` is always `main` here — `doMergeIntegrationToMain` only
+    // ever asks for the `_main` worktree — but it is read off the error
+    // rather than re-asserted, so this stays honest if that changes.
+    const summary =
+      `Cannot promote ${INTEGRATION_BRANCH} -> ${MAIN_BRANCH}: "${err.branch}" is checked out in this repo ` +
+      `(${this.repoRoot}), so the daemon cannot create the .worktrees/${MAIN_WORKTREE_DIR} worktree it merges in. ` +
+      `Fix: switch that checkout off "${err.branch}" (git switch --detach) and retry, ` +
+      `or promote by hand in that checkout: git merge --no-ff ${INTEGRATION_BRANCH}`;
+    // Reuse a still-pending request rather than opening one per tick
+    // (`hook/service.ts`'s `resolveOrCreateHil` precedent).
+    const existing = this.gates
+      .list()
+      .find((r) => r.status === 'pending' && r.gate === PROMOTE_TO_MAIN_GATE);
+    if (existing) return { status: 'gated', hilId: existing.id, summary };
+    let policy: Policy;
+    try {
+      policy = this.store.getPolicy();
+    } catch (policyErr) {
+      // Same tolerance as `hook/service.ts`'s `loadPolicyOrDefault`: no
+      // `policy.yaml` yet means no gate is named anywhere, which resolves
+      // this gate to `human` — exactly what it needs to be.
+      if (!(policyErr instanceof NotFoundError)) throw policyErr;
+      policy = { gates: {}, breaker_signals: [] };
+    }
+    const request = await this.gates.request(PROMOTE_TO_MAIN_GATE, {
+      policy,
+      hilKind: 'unblock',
+      summary,
+    });
+    return { status: 'gated', hilId: request.id, summary };
+  }
+
   private async recordMerge(
     ticket: TicketId,
     fields: Omit<MergeRecord, 'ticket' | 'at'>,
@@ -695,7 +771,16 @@ export class MergeOwner {
 
     // Merge into `main` inside the daemon's own `_main` worktree — never
     // `repoRoot` itself (review round 1 blocker 1; see the class header).
-    const mainWorktree = this.ensureMainWorktree();
+    let mainWorktree: string;
+    try {
+      mainWorktree = this.ensureMainWorktree();
+    } catch (err) {
+      if (err instanceof BranchCheckedOutElsewhereError) {
+        const gated = await this.gateBlockedPromotion(err);
+        if (gated) return gated;
+      }
+      throw err;
+    }
     const suffix = approval.hilId ? ` (${approval.hilId})` : '';
     const merge = gitWrite(
       [

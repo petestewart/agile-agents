@@ -213,6 +213,10 @@ describe('agile run (offline, fake ACP)', () => {
     const { StateStore } = await import('@agile-agents/daemon');
     const store = StateStore.open(join(repo, '.agile'));
 
+    // T046 defect 2: the first sprint's goal comes from the seed
+    // (`sprintGoal`), not a string hard-coded in `run.ts`.
+    expect(store.listSprints()[0]?.goal).toBe('Demo epic layer 1');
+
     // The discovery actually happened: TKT-1002/TKT-1003 both went
     // through a `stale` hop (the oracle ripple off DEC-0001) before
     // landing back on `ready` and finishing.

@@ -259,15 +259,21 @@ function starterToolFiles(
   ];
 }
 
+/**
+ * `oracle/product.md` as `agile init` first writes it. Exported so callers
+ * that *derive* something from the product brief (the sprint goal, T046
+ * defect 2) can tell "the architect hasn't written a brief yet" from a real
+ * one, rather than lifting the placeholder `# Product` heading.
+ */
+export const PRODUCT_MD_STUB =
+  '# Product\n\nVision, non-goals, and glossary go here.\n\n(Stub written by `agile init`; the architect fills this in.)\n';
+
 /** Every file the §4 layout needs at init time. Directories with no listed
  * default file get a `.gitkeep` so git tracks the (otherwise empty) dir. */
 function layoutFiles(stateRoot: string): Array<[string, string]> {
   const p = (...parts: string[]) => join(stateRoot, ...parts);
   return [
-    [
-      p('oracle', 'product.md'),
-      '# Product\n\nVision, non-goals, and glossary go here.\n\n(Stub written by `agile init`; the architect fills this in.)\n',
-    ],
+    [p('oracle', 'product.md'), PRODUCT_MD_STUB],
     [p('oracle', 'decisions', '.gitkeep'), ''],
     [p('oracle', 'specs', '.gitkeep'), ''],
     [p('oracle', 'index.yaml'), '{}\n'],

@@ -67,6 +67,7 @@ import {
   DEFAULT_LIVENESS_TIMEOUT_MS,
   HookService,
   NotFoundError,
+  PRODUCT_MD_STUB,
   advanceDoneTickets,
   advanceQaSpawns,
   advanceReviewRequests,
@@ -234,6 +235,8 @@ async function preflightLiveVendor(
 }
 
 interface SeedFile {
+  /** The sprint goal the first planned sprint gets. Falls back to the product brief's first heading — see `resolveSprintGoal` (T046 defect 2). */
+  sprintGoal?: string;
   productMd?: string;
   oracle?: Array<{ entry: OracleEntry; body: string }>;
   tickets?: unknown[];
@@ -266,6 +269,40 @@ interface SeedFile {
 
 function loadSeed(path: string): SeedFile {
   return JSON.parse(readFileSync(path, 'utf8')) as SeedFile;
+}
+
+/** First `# `/`## ` heading of a markdown document, without its hashes. */
+function firstHeading(markdown: string): string | undefined {
+  for (const line of markdown.split('\n')) {
+    const match = /^#{1,6}\s+(.*\S)\s*$/.exec(line);
+    if (match) return match[1];
+  }
+  return undefined;
+}
+
+/**
+ * The goal the *first* sprint of a run is planned with (T046 defect 2 — this
+ * used to be the literal string `Demo epic layer 1`, so every run of every
+ * repo announced the demo fixture's goal). Precedence, most specific first:
+ *
+ *   1. the seed's own `sprintGoal`;
+ *   2. the product brief's first heading (`oracle/product.md`, or the seed's
+ *      `productMd` before it has been written) — but never the untouched
+ *      `agile init` stub, whose heading is the placeholder `# Product`;
+ *   3. nothing — `planSprint` then names it after the sprint id (`Sprint S-1`).
+ *
+ * Later sprints are planned by the EM (`em/review.ts`), not here.
+ */
+export function resolveSprintGoal(seed: SeedFile, stateRoot: string): string | undefined {
+  const seeded = seed.sprintGoal?.trim();
+  if (seeded) return seeded;
+  let brief = seed.productMd;
+  if (brief === undefined) {
+    const path = join(stateRoot, 'oracle', 'product.md');
+    brief = existsSync(path) ? readFileSync(path, 'utf8') : undefined;
+  }
+  if (brief === undefined || brief.trim() === PRODUCT_MD_STUB.trim()) return undefined;
+  return firstHeading(brief);
 }
 
 /** `oracle/product.md` is a plain bootstrap file (`init.ts`'s own stub, not a `StateStore` entity) — seeding it follows the same convention. */
@@ -960,7 +997,8 @@ export async function runDemoSprint(opts: RunOptions): Promise<RunResult> {
       const trackedIds = seedTicketIds(seed);
 
       if (store.listSprints().length === 0) {
-        await planSprint(store, { goal: 'Demo epic layer 1' });
+        const goal = resolveSprintGoal(seed, handle.config.stateRoot);
+        await planSprint(store, { ...(goal !== undefined ? { goal } : {}) });
       }
 
       const seenReview = new Set<string>();

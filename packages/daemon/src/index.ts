@@ -37,7 +37,13 @@ export {
   DAEMON_VERSION,
   type DaemonHandle,
 } from './daemon';
-export { runInit, AlreadyInitialisedError, STATE_BRANCH, type InitResult } from './init';
+export {
+  runInit,
+  AlreadyInitialisedError,
+  STATE_BRANCH,
+  PRODUCT_MD_STUB,
+  type InitResult,
+} from './init';
 
 // Role briefs and ceremony templates (T013).
 export * from './briefs';
