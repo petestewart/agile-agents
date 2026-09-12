@@ -467,12 +467,12 @@ Priority encodes dependency layer as well as importance: P0 tickets are v0-block
 
 ### Ticket: T045 Jira two-way sync
 - **Priority:** P3
-- **Status:** In Progress
+- **Status:** Done
 - **Owner:** opus:worker-T045
 - **Scope:** Depends on T042. Design §17 v2: not an import. Status changes here update the Jira issue; title/description edits in Jira update the ticket; contracts, rules and dependencies stay local. Mapping stored per ticket (`external: {jira: KEY}`), credentials from the user's environment, never in `.agile/`. Conflict rule: last writer wins on title/description, Agile Agents wins on status. A Tickets-pane action links or unlinks a project.
 - **Acceptance Criteria:** Offline test against a fake Jira server proves both directions and the conflict rule; a ticket created in Jira after linking appears as a not-started local ticket.
 - **Validation Steps:** `bun test packages/daemon/src/sync`.
-- **Notes:** External ticket sync is a listed v0 non-goal; this is the first post-v0 integration. Pete: "tickets should not only be able to be imported from jira, they should be able to be synced with jira".
+- **Notes:** External ticket sync is a listed v0 non-goal; this is the first post-v0 integration. Pete: "tickets should not only be able to be imported from jira, they should be able to be synced with jira". Dependency on T042 waived for the sync core (the Tickets-pane link/unlink button is left to T042/T044; RPC `sync.jira_link|unlink|status|tick`, `GET /api/sync/jira`, `POST /api/sync/jira/link|unlink`, `agile sync jira link|unlink|status` exist). Branch `T045-jira-two-way-sync` (18271e9, 439664a, b45118b, 0f293bf, de5544a), merge adbde7a. Review round 1 CHANGES REQUESTED (no HTTP/CLI tests), round 2 PASS, round 3 PASS on the conflict-rule fix; QA round 1 REJECT (local edit time was stamped at tick time so local always won; cursor could run ahead of now), round 2 ACCEPT (0 findings, real wall-clock orderings both ways). `packages/daemon/src/sync/` (client, engine, `fake-jira.ts` Bun.serve fake). Manual live check (LIVE-CHECKLIST): real Atlassian tenant with `JIRA_BASE_URL`/`JIRA_EMAIL`/`JIRA_API_TOKEN` exported, `agile sync jira link <PROJECT>`, then one poll interval.
 
 ### Ticket: T046 Run-loop small fixes from the ledger-lite walkthrough
 - **Priority:** P2
@@ -650,5 +650,6 @@ Priority encodes dependency layer as well as importance: P0 tickets are v0-block
 - 2026-09-12 — Wave 1 launched: T039, T045, T046 (independent).
 - 2026-09-12 — T039 merged (a9c2008). Decisions (manager, yolo): the note travels as the pre-existing `hil_response` message kind (no `hil_reply`); its recipient is the ticket assignee (no `requested_by` field — "no other schema change"); no `hil_noted` event kind — a note-only answer is visible as `entity_put` and then on `hil_resolved.data.note`. Unblocks T040 (launched).
 - 2026-09-12 — T046 merged (dd9dcd2). New gate name `promote_to_main` (unnamed gates resolve to `human`, which is the point: nobody but the operator can merge into their checked-out `main`). Follow-up candidate: retry a gated promotion automatically once its HIL is approved (`em/review.ts` stamps `review_at` before the merge).
+- 2026-09-12 — T045 merged (adbde7a). Decisions (manager, yolo): (1) `Ticket` gains optional `description` (the Jira issue body; also the one-line summary of T042 stubs) and optional `external: { jira: KEY, jira_synced: {title, description, updated_at} }` — the per-issue shadow lives on the ticket, not in a new artifact; (2) NO `.agile/sync/` — the worker proposed `.agile/sync/jira.yaml` and it was rejected as an unapproved artifact type; the linked project key is `jira.project` in host-local `agile.config.yaml`, read-modify-written by link/unlink, credentials env-only; (3) local edit time for last-writer-wins comes from the latest `ticket_put` event in `log/events.jsonl` not authored by `sync:jira`; pull cursor clamped to now; unactionable tickets surface in `JiraSyncPass.skipped`; (4) default poll 60 s, default three-state status map; no new `EVENT_KINDS`.
 
 ## Archived 2026-09-09
