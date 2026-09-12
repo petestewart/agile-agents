@@ -122,7 +122,9 @@ export function NeedsYou({ items, onChanged }: { items: HilRequest[]; onChanged:
                 className="cr-icon-btn approve"
                 data-testid="hil-approve"
                 disabled={busy}
-                onClick={() => act(() => approveHil(selected.id, 'human', note.trim() || undefined))}
+                onClick={() =>
+                  act(() => approveHil(selected.id, 'human', note.trim() || undefined))
+                }
               >
                 Approve
               </button>

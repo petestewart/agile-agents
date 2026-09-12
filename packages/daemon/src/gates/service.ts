@@ -465,12 +465,7 @@ export class GateService {
    * the `hil_resolved` event, and delivered as an `hil_response` bus message
    * to the agent that is waiting on the gate and to the EM.
    */
-  async respond(
-    id: HilId,
-    decision: HilDecision,
-    by: string,
-    note?: string,
-  ): Promise<HilRequest> {
+  async respond(id: HilId, decision: HilDecision, by: string, note?: string): Promise<HilRequest> {
     const current = this.get(id);
     if (current.status !== 'pending') throw new GateAlreadyResolvedError(id);
     const trimmed = normalizeNote(note);

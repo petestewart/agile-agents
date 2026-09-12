@@ -77,7 +77,7 @@ describe('renderEmDecisionPrompt', () => {
   });
 
   // T039: a note with no button press is what the EM decides on.
-  test('includes the human\'s free-text note when one was written', () => {
+  test("includes the human's free-text note when one was written", () => {
     const store = StateStore.open(stateRoot);
     const prompt = renderEmDecisionPrompt(store, {
       gate: 'unblock',

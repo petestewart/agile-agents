@@ -92,10 +92,9 @@ function optionalNote(value: unknown): string | undefined {
   }
   const result = HilNoteSchema.safeParse(value.trim());
   if (!result.success) {
-    throw new RpcParamError(
-      `invalid "note": must be 1-${MESSAGE_BODY_MAX_CHARS} characters`,
-      { note: value },
-    );
+    throw new RpcParamError(`invalid "note": must be 1-${MESSAGE_BODY_MAX_CHARS} characters`, {
+      note: value,
+    });
   }
   return result.data;
 }

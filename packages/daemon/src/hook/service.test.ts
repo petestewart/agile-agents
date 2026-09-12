@@ -523,7 +523,7 @@ describe('HookService.preToolUse', () => {
   });
 
   // T039 (§17 "Control room v2"): a Needs-you card answered in free text.
-  test('a pending unblock answered with a note resolves the gate and the engineer\'s next hook call drains the note into its inbox', async () => {
+  test("a pending unblock answered with a note resolves the gate and the engineer's next hook call drains the note into its inbox", async () => {
     await seedTicket();
     const svc = service();
     const run = () =>
@@ -552,9 +552,9 @@ describe('HookService.preToolUse', () => {
     expect(reply?.priority).toBe('normal');
     expect(reply?.body).toContain('yes, but only for the seed script');
     // ...and a copy reached the EM.
-    expect(
-      bus.poll('em' as AgentId).some((m) => m.body.includes('only for the seed script')),
-    ).toBe(true);
+    expect(bus.poll('em' as AgentId).some((m) => m.body.includes('only for the seed script'))).toBe(
+      true,
+    );
 
     // ...and the engineer's next hook call drains (acks) it into context.
     const retried = await run();

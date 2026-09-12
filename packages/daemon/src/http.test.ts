@@ -277,14 +277,11 @@ describe('feed with a real store', () => {
       body: JSON.stringify({ note: '   ' }),
     });
     expect(empty.status).toBe(400);
-    const tooLong = await fetch(
-      `http://127.0.0.1:${feedServer.port}/api/hil/${noted.id}/approve`,
-      {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ note: 'x'.repeat(801) }),
-      },
-    );
+    const tooLong = await fetch(`http://127.0.0.1:${feedServer.port}/api/hil/${noted.id}/approve`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ note: 'x'.repeat(801) }),
+    });
     expect(tooLong.status).toBe(400);
   });
 
