@@ -73,11 +73,37 @@ export function getKbFact(id: KbId): Promise<{ fact: KbFact; body: string }> {
   return fetch(`/api/kb/${encodeURIComponent(id)}`).then((r) => asJson(r));
 }
 
-export function approveHil(id: string, by = 'human'): Promise<unknown> {
-  return fetch(`/api/hil/${encodeURIComponent(id)}/approve`, {
+/**
+ * T039 (§17 "Control room v2"): every Needs-you card takes a typed answer as
+ * well as its buttons. `note` rides along with approve/deny; `noteHil` sends
+ * one with no button press (it resolves nothing — the EM decides).
+ */
+export function approveHil(id: string, by = 'human', note?: string): Promise<unknown> {
+  return decideHil(id, 'approve', by, note);
+}
+
+export function denyHil(id: string, by = 'human', note?: string): Promise<unknown> {
+  return decideHil(id, 'deny', by, note);
+}
+
+function decideHil(
+  id: string,
+  action: 'approve' | 'deny',
+  by: string,
+  note?: string,
+): Promise<unknown> {
+  return fetch(`/api/hil/${encodeURIComponent(id)}/${action}`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ by }),
+    body: JSON.stringify({ by, ...(note ? { note } : {}) }),
+  }).then((r) => asJson(r));
+}
+
+export function noteHil(id: string, note: string): Promise<unknown> {
+  return fetch(`/api/hil/${encodeURIComponent(id)}/note`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ note }),
   }).then((r) => asJson(r));
 }
 

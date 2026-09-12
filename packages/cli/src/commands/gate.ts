@@ -1,13 +1,14 @@
 /**
- * `agile approve` / `agile delegate` / `agile resolve` / `agile breaker
- * clear` — thin wrappers over the `gate.*` RPC namespace
- * (`packages/daemon/src/gates/rpc.ts`, T018).
+ * `agile approve` / `agile deny` / `agile note` / `agile delegate` /
+ * `agile resolve` / `agile breaker clear` — thin wrappers over the `gate.*`
+ * RPC namespace (`packages/daemon/src/gates/rpc.ts`, T018; `deny`/`note` and
+ * the `--note` free text on every decision are T039).
  */
 
 import type { GateService } from '@agile-agents/daemon';
 import type { BreakerState, HilRequest } from '@agile-agents/shared';
 import type { ParsedArgs } from '../args';
-import { requireOption, requirePositional } from '../args';
+import { optionalString, requireOption, requirePositional } from '../args';
 import { callRpc } from '../client';
 import { printFields, printJson } from '../format';
 
@@ -15,16 +16,25 @@ import { printFields, printJson } from '../format';
 // on `gate.list`'s/`gate.breaker_clear`'s result shape; no runtime use.
 export type GateList = ReturnType<GateService['list']>;
 
-export async function runApprove(
+/**
+ * `agile approve <id> [--note "..."]` / `agile deny <id> [--note "..."]`
+ * (T039, §17 "Control room v2"): the free text is stored on the request,
+ * carried on the `hil_resolved` event, and delivered to the waiting agent
+ * and the EM.
+ */
+async function runDecision(
   socketPath: string,
   args: ParsedArgs,
   json: boolean,
+  method: 'gate.approve' | 'gate.deny',
 ): Promise<number> {
   const id = requirePositional(args, 0, 'hil-id');
   const by = args.options.by;
-  const result = await callRpc<HilRequest>(socketPath, 'gate.approve', {
+  const note = optionalString(args.options, 'note');
+  const result = await callRpc<HilRequest>(socketPath, method, {
     id,
     by: typeof by === 'string' ? by : 'human',
+    ...(note !== undefined ? { note } : {}),
   });
   if (json) printJson(result);
   else
@@ -32,6 +42,51 @@ export async function runApprove(
       ['id', result.id],
       ['status', result.status],
       ['decision', result.decision ?? '-'],
+      ...(result.note !== undefined ? ([['note', result.note]] as Array<[string, string]>) : []),
+    ]);
+  return 0;
+}
+
+export async function runApprove(
+  socketPath: string,
+  args: ParsedArgs,
+  json: boolean,
+): Promise<number> {
+  return runDecision(socketPath, args, json, 'gate.approve');
+}
+
+export async function runDeny(
+  socketPath: string,
+  args: ParsedArgs,
+  json: boolean,
+): Promise<number> {
+  return runDecision(socketPath, args, json, 'gate.deny');
+}
+
+/**
+ * `agile note <hil-id> --note "..."` — a typed answer with no button press
+ * (T039). Records the note on the pending request and hands it to the EM
+ * delegate; it never resolves the gate itself.
+ */
+export async function runGateNote(
+  socketPath: string,
+  args: ParsedArgs,
+  json: boolean,
+): Promise<number> {
+  const id = requirePositional(args, 0, 'hil-id');
+  const by = args.options.by;
+  const note = requireOption(args.options, 'note');
+  const result = await callRpc<HilRequest>(socketPath, 'gate.note', {
+    id,
+    note,
+    by: typeof by === 'string' ? by : 'human',
+  });
+  if (json) printJson(result);
+  else
+    printFields([
+      ['id', result.id],
+      ['status', result.status],
+      ['note', result.note ?? '-'],
     ]);
   return 0;
 }
@@ -62,10 +117,12 @@ export async function runResolve(
   const id = requirePositional(args, 0, 'hil-id');
   const decision = requireOption(args.options, 'decision');
   const by = args.options.by;
+  const note = optionalString(args.options, 'note');
   const result = await callRpc<HilRequest>(socketPath, 'gate.resolve', {
     id,
     decision,
     by: typeof by === 'string' ? by : 'human',
+    ...(note !== undefined ? { note } : {}),
   });
   if (json) printJson(result);
   else
@@ -73,6 +130,7 @@ export async function runResolve(
       ['id', result.id],
       ['status', result.status],
       ['decision', result.decision ?? '-'],
+      ...(result.note !== undefined ? ([['note', result.note]] as Array<[string, string]>) : []),
     ]);
   return 0;
 }

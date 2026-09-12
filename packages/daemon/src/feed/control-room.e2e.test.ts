@@ -85,16 +85,20 @@ describe('control room SPA (Playwright e2e)', () => {
       // Detail-on-click: approve resolves the real hil_request the daemon's
       // GateService owns (never a client-side-only state change).
       await hilItem.click();
+      // T039 (§17 "Control room v2"): the card takes a typed answer as well
+      // as its buttons — the note rides along with the approve.
+      await page.locator('[data-testid="hil-note"]').fill('yes, but only for the seed script');
       await page.locator('[data-testid="hil-approve"]').click();
       await hilItem.waitFor({ state: 'detached', timeout: 5000 });
 
       const onDisk = store.getEntity(
         `board/hil/${seeded.id}.yaml`,
-        (v) => v as { status: string; decision: string; decided_by: string },
+        (v) => v as { status: string; decision: string; decided_by: string; note?: string },
       );
       expect(onDisk.status).toBe('resolved');
       expect(onDisk.decision).toBe('approve');
       expect(onDisk.decided_by).toBe('human');
+      expect(onDisk.note).toBe('yes, but only for the seed script');
 
       // The Halt button (§17 "a Halt button that writes a global halt file
       // ... no explanation needed") creates a real halt via createHalt —

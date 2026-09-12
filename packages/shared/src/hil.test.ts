@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { HilIdSchema, validateBreakerState, validateHilRequest } from './hil';
+import { MESSAGE_BODY_MAX_CHARS } from './message';
 
 function baseRequest(overrides: Record<string, unknown> = {}) {
   return {
@@ -78,6 +79,32 @@ describe('validateHilRequest', () => {
 
   test('rejects extra fields (strict)', () => {
     expect(() => validateHilRequest(baseRequest({ unexpected: true }))).toThrow();
+  });
+});
+
+// T039 (§17 "Control room v2"): the free-text answer a Needs-you card takes.
+describe('HilRequest.note', () => {
+  test('accepts a note up to the shared message-body cap and keeps the schema strict', () => {
+    const req = validateHilRequest({
+      ...baseRequest(),
+      status: 'resolved',
+      decision: 'approve',
+      decided_by: 'human',
+      resolved_at: '2026-01-01T00:00:10.000Z',
+      note: 'yes, but only for the seed script',
+    });
+    expect(req.note).toBe('yes, but only for the seed script');
+    expect(
+      validateHilRequest({ ...baseRequest(), note: 'x'.repeat(MESSAGE_BODY_MAX_CHARS) }).note,
+    ).toHaveLength(MESSAGE_BODY_MAX_CHARS);
+  });
+
+  test('rejects an empty note, an over-long note, and any unknown sibling key', () => {
+    expect(() => validateHilRequest({ ...baseRequest(), note: '' })).toThrow(/note/);
+    expect(() =>
+      validateHilRequest({ ...baseRequest(), note: 'x'.repeat(MESSAGE_BODY_MAX_CHARS + 1) }),
+    ).toThrow(/cap/);
+    expect(() => validateHilRequest({ ...baseRequest(), notes: 'typo' })).toThrow();
   });
 });
 

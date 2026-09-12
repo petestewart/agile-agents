@@ -226,6 +226,68 @@ describe('feed with a real store', () => {
     expect(list.find((r) => r.id === created.id)?.status).toBe('resolved');
   });
 
+  // T039 (§17 "Control room v2"): the Needs-you card's typed answer.
+  test('POST /api/hil/:id/approve carries a note; /deny resolves with deny; /note stores without resolving', async () => {
+    const approved = await gates.request('unblock', { policy: policy(), hilKind: 'unblock' });
+    const withNote = await fetch(
+      `http://127.0.0.1:${feedServer.port}/api/hil/${approved.id}/approve`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ note: 'yes, but only for the seed script' }),
+      },
+    );
+    expect(withNote.status).toBe(200);
+    expect((await withNote.json()) as { note: string }).toMatchObject({
+      status: 'resolved',
+      decision: 'approve',
+      note: 'yes, but only for the seed script',
+    });
+
+    const denied = await gates.request('unblock', { policy: policy(), hilKind: 'unblock' });
+    const denyRes = await fetch(`http://127.0.0.1:${feedServer.port}/api/hil/${denied.id}/deny`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ note: 'not on a shared branch' }),
+    });
+    expect(denyRes.status).toBe(200);
+    expect((await denyRes.json()) as unknown).toMatchObject({
+      decision: 'deny',
+      note: 'not on a shared branch',
+    });
+
+    // A note with no button press resolves nothing.
+    const noted = await gates.request('unblock', { policy: policy(), hilKind: 'unblock' });
+    const noteRes = await fetch(`http://127.0.0.1:${feedServer.port}/api/hil/${noted.id}/note`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ note: 'only for the seed script' }),
+    });
+    expect(noteRes.status).toBe(200);
+    expect((await noteRes.json()) as unknown).toMatchObject({
+      status: 'pending',
+      note: 'only for the seed script',
+    });
+    expect(gates.list().find((r) => r.id === noted.id)?.status).toBe('pending');
+
+    // An empty note on /note is a 400; an over-long note is a 400 too.
+    const empty = await fetch(`http://127.0.0.1:${feedServer.port}/api/hil/${noted.id}/note`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ note: '   ' }),
+    });
+    expect(empty.status).toBe(400);
+    const tooLong = await fetch(
+      `http://127.0.0.1:${feedServer.port}/api/hil/${noted.id}/approve`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ note: 'x'.repeat(801) }),
+      },
+    );
+    expect(tooLong.status).toBe(400);
+  });
+
   // T032: `by` must never be trusted from the request body — a page could
   // otherwise forge the audit trail's actor. Same hardcode as T025's
   // halt/chat/propose routes; this asserts it holds for approve too.

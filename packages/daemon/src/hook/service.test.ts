@@ -522,6 +522,84 @@ describe('HookService.preToolUse', () => {
     expect(gates.list()).toHaveLength(2);
   });
 
+  // T039 (§17 "Control room v2"): a Needs-you card answered in free text.
+  test('a pending unblock answered with a note resolves the gate and the engineer\'s next hook call drains the note into its inbox', async () => {
+    await seedTicket();
+    const svc = service();
+    const run = () =>
+      svc.preToolUse({
+        cwd: worktree,
+        tool_name: 'Bash',
+        tool_input: { command: 'git push origin main' },
+      });
+    await run();
+    const [request] = gates.list();
+    if (!request) throw new Error('no HIL request filed');
+
+    const resolved = await gates.respond(
+      request.id,
+      'approve',
+      'human',
+      'yes, but only for the seed script',
+    );
+    expect(resolved.status).toBe('resolved');
+    expect(resolved.note).toBe('yes, but only for the seed script');
+
+    // The note is in the engineer's inbox as a normal-priority hil_response...
+    const inbox = bus.poll('eng-1' as AgentId);
+    const reply = inbox.find((m) => m.kind === 'hil_response');
+    expect(reply).toBeDefined();
+    expect(reply?.priority).toBe('normal');
+    expect(reply?.body).toContain('yes, but only for the seed script');
+    // ...and a copy reached the EM.
+    expect(
+      bus.poll('em' as AgentId).some((m) => m.body.includes('only for the seed script')),
+    ).toBe(true);
+
+    // ...and the engineer's next hook call drains (acks) it into context.
+    const retried = await run();
+    expect(retried.hookSpecificOutput.permissionDecision).toBe('allow');
+    expect(retried.hookSpecificOutput.additionalContext).toContain(
+      'yes, but only for the seed script',
+    );
+    expect(bus.poll('eng-1' as AgentId).some((m) => m.kind === 'hil_response')).toBe(false);
+
+    // The event log carries the note.
+    const resolvedEvent = store.listEvents().find((e) => e.kind === 'hil_resolved');
+    expect(resolvedEvent?.data.note).toBe('yes, but only for the seed script');
+  });
+
+  // T039 review round 1: the note-only flow ("no button press") must reach the
+  // engineer too, once the EM delegate decides.
+  test('a note with no button press, resolved by the EM delegate, still drains into the engineer inbox', async () => {
+    await seedTicket();
+    // `unblock` is human-owned here, so the request parks pending and the note
+    // (not the gate policy) is what reaches the delegate.
+    await store.putPolicy({ gates: { unblock: 'human' }, breaker_signals: [] });
+    const delegated = new GateService(store, {
+      delegate: () => ({ decision: 'approve', by: 'em', rationale: 'scoped to the seed script' }),
+    });
+    const svc = new HookService(store, bus, { repoRoot: repo, gates: delegated });
+    const run = () =>
+      svc.preToolUse({
+        cwd: worktree,
+        tool_name: 'Bash',
+        tool_input: { command: 'git push origin main' },
+      });
+    await run();
+    const [request] = delegated.list();
+    if (!request) throw new Error('no HIL request filed');
+
+    const noted = await delegated.addNote(request.id, 'only for the seed script', 'human');
+    expect(noted.status).toBe('pending'); // the note alone resolves nothing
+    await delegated.settled();
+    expect(delegated.get(request.id).status).toBe('resolved');
+
+    const retried = await run();
+    expect(retried.hookSpecificOutput.permissionDecision).toBe('allow');
+    expect(retried.hookSpecificOutput.additionalContext).toContain('only for the seed script');
+  });
+
   test('an ordinary Bash command allows', async () => {
     await seedTicket();
     const svc = service();

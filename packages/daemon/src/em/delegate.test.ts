@@ -72,6 +72,23 @@ describe('renderEmDecisionPrompt', () => {
     expect(prompt).toContain('`unblock` gate');
     expect(prompt).toContain('git push origin main');
     expect(prompt).toContain('DECISION: approve');
+    // No note written: no note paragraph.
+    expect(prompt).not.toContain('free text instead of pressing a button');
+  });
+
+  // T039: a note with no button press is what the EM decides on.
+  test('includes the human\'s free-text note when one was written', () => {
+    const store = StateStore.open(stateRoot);
+    const prompt = renderEmDecisionPrompt(store, {
+      gate: 'unblock',
+      owner: 'em',
+      ticket: 'TKT-0001' as never,
+      hilKind: 'unblock',
+      summary: 'eng-0001 asked to run `bun run seed`',
+      note: 'yes, but only for the seed script',
+    });
+    expect(prompt).toContain('free text instead of pressing a button');
+    expect(prompt).toContain('yes, but only for the seed script');
   });
 });
 

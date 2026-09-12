@@ -48,6 +48,80 @@ function errorOf(response: Awaited<ReturnType<typeof dispatch>>) {
   return response && 'error' in response ? response.error : undefined;
 }
 
+// T039: free text on the decision, plus the note-only verb.
+describe('gate.* RPC notes (T039)', () => {
+  test('gate.approve carries a note onto the record', async () => {
+    const req = await service.request('demo', ctx({ demo: 'human' }));
+    const response = await dispatch(methods, {
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'gate.approve',
+      params: { id: req.id, by: 'human', note: 'yes, but only for the seed script' },
+    });
+    expect(resultOf(response)).toEqual(
+      expect.objectContaining({
+        status: 'resolved',
+        decision: 'approve',
+        note: 'yes, but only for the seed script',
+      }),
+    );
+  });
+
+  test('gate.deny resolves with deny + note', async () => {
+    const req = await service.request('demo', ctx({ demo: 'human' }));
+    const response = await dispatch(methods, {
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'gate.deny',
+      params: { id: req.id, by: 'human', note: 'not on a shared branch' },
+    });
+    expect(resultOf(response)).toEqual(
+      expect.objectContaining({ decision: 'deny', note: 'not on a shared branch' }),
+    );
+  });
+
+  test('gate.note stores the note without resolving', async () => {
+    const req = await service.request('demo', ctx({ demo: 'human' }));
+    const response = await dispatch(methods, {
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'gate.note',
+      params: { id: req.id, note: 'only for the seed script', by: 'human' },
+    });
+    expect(resultOf(response)).toEqual(
+      expect.objectContaining({ status: 'pending', note: 'only for the seed script' }),
+    );
+    expect((resultOf(response) as HilRequest).decision).toBeUndefined();
+  });
+
+  test('a non-string or over-long note is invalid params', async () => {
+    const req = await service.request('demo', ctx({ demo: 'human' }));
+    const bad = await dispatch(methods, {
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'gate.approve',
+      params: { id: req.id, by: 'human', note: 42 },
+    });
+    expect(errorOf(bad)?.message).toMatch(/"note" must be a string/);
+
+    const tooLong = await dispatch(methods, {
+      jsonrpc: '2.0',
+      id: 2,
+      method: 'gate.approve',
+      params: { id: req.id, by: 'human', note: 'x'.repeat(801) },
+    });
+    expect(errorOf(tooLong)?.message).toMatch(/invalid "note"/);
+
+    const missing = await dispatch(methods, {
+      jsonrpc: '2.0',
+      id: 3,
+      method: 'gate.note',
+      params: { id: req.id, by: 'human' },
+    });
+    expect(errorOf(missing)?.message).toMatch(/"note" is required/);
+  });
+});
+
 describe('gate.* RPC round trip (via dispatch) — happy paths', () => {
   test('gate.list surfaces a pending request created directly on the service', async () => {
     const req = await service.request('demo', ctx({ demo: 'human' }));

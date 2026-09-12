@@ -105,6 +105,16 @@ export function renderEmDecisionPrompt(store: StateStore, ctx: DelegateContext):
     '## Gate decision requested',
     `The daemon needs your decision on a \`${ctx.gate}\` gate (kind: ${ctx.hilKind ?? 'unknown'})${ticket}. Policy makes \`${ctx.owner}\` the owner of this gate, and you are deciding as the EM.`,
     `What was asked: ${ctx.summary ?? '(no summary recorded)'}`,
+    // T039 (§17 "Control room v2"): a human may answer a Needs-you card in
+    // free text instead of pressing a button. That note resolves nothing by
+    // itself — it lands here, and the EM decides approve/deny in light of it
+    // (or raises a contract change on the ticket).
+    ...(ctx.note !== undefined
+      ? [
+          '',
+          `The human answered this gate in free text instead of pressing a button. Their note is authoritative — decide in light of it, scoping your decision to exactly what it permits: "${ctx.note}"`,
+        ]
+      : []),
     '',
     'Decide as the EM would: approve when the request is safe, reversible or scoped to the ticket’s own branch/worktree, and consistent with the sprint goal; deny when it touches shared branches, installs or deletes outside the worktree, or is not something the ticket needs. Do not run tools — decide from the text.',
     'Answer with a one-paragraph rationale, then a final line that is exactly `DECISION: approve` or `DECISION: deny`.',
