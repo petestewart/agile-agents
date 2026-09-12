@@ -113,15 +113,45 @@ export const TicketBudgetSchema = z
 export type TicketBudget = z.infer<typeof TicketBudgetSchema>;
 
 /**
+ * What the daemon and Jira last *agreed* this issue's title/description were
+ * (T045). The conflict rule ("last writer wins on title/description") is a
+ * three-way compare — Jira's value, the local value, and this shadow — so
+ * one side changing is distinguishable from both changing.
+ *
+ * It lives on the ticket, next to the mapping it shadows, rather than in a
+ * record of its own: T045 names exactly one new piece of sync state, "mapping
+ * stored per ticket (`external: {jira: KEY}`)", and a ticket file is already
+ * the thing that is created, versioned and deleted with the ticket.
+ *
+ * `updated_at` is the issue's own `fields.updated` at that sync (also the
+ * pull cursor, taken as the max across all mapped tickets); `status` is the
+ * issue's status name then, which the status push diffs against;
+ * `local_changed_at` is when the daemon first observed the local ticket
+ * diverge from this shadow, and is cleared once that edit is pushed.
+ */
+export const TicketJiraSyncedSchema = z
+  .object({
+    title: z.string(),
+    description: z.string(),
+    updated_at: z.string().min(1),
+    status: z.string().optional(),
+    local_changed_at: z.string().min(1).optional(),
+  })
+  .strict();
+export type TicketJiraSynced = z.infer<typeof TicketJiraSyncedSchema>;
+
+/**
  * External tracker mapping (§17 "Control room v2": "**Jira is two-way
- * sync**, not import"). One optional key per tracker; `jira` holds the issue
- * key (`LED-41`) this ticket is bound to. `.strict()`, so a tracker with no
- * field here cannot be smuggled in — adding one is a schema change, which is
- * the point: `packages/daemon/src/sync/**` must know every tracker it syncs.
+ * sync**, not import"). `jira` holds the plain issue key (`LED-41`) this
+ * ticket is bound to, exactly as T045 names it; `jira_synced` is the shadow
+ * above. `.strict()`, so a tracker with no field here cannot be smuggled in
+ * — adding one is a schema change, which is the point:
+ * `packages/daemon/src/sync/**` must know every tracker it syncs.
  */
 export const TicketExternalSchema = z
   .object({
     jira: z.string().min(1).optional(),
+    jira_synced: TicketJiraSyncedSchema.optional(),
   })
   .strict();
 export type TicketExternal = z.infer<typeof TicketExternalSchema>;

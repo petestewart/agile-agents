@@ -500,9 +500,11 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
       /**
        * Jira two-way sync (T045 — §17 v2 "Jira is two-way sync", mockup's
        * Tickets pane: "Jira: LED-41...44 synced 4:44 PM"). Reads the link
-       * state, and links/unlinks a project. Credentials never cross this
-       * boundary: they come from the operator's environment
-       * (`sync/config.ts`), so the body carries only a project key.
+       * state, and links/unlinks a project — which writes the `jira.project`
+       * key of the host-local `agile.config.yaml`, never anything under
+       * `.agile/`. Credentials never cross this boundary: they come from the
+       * operator's environment (`sync/config.ts`), so the body carries only a
+       * project key.
        */
       if (url.pathname === '/api/sync/jira' && req.method === 'GET') {
         if (!feed?.jiraSync) return errorResponse(503, 'jira sync is not configured');
@@ -518,7 +520,7 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
           return errorResponse(403, 'cross-origin request rejected');
         }
         if (url.pathname.endsWith('/unlink')) {
-          return jsonResponse(await feed.jiraSync.unlink());
+          return jsonResponse(feed.jiraSync.unlink());
         }
         let body: Record<string, unknown>;
         try {
@@ -527,7 +529,7 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
           return errorResponse(400, err instanceof Error ? err.message : String(err));
         }
         try {
-          return jsonResponse(await feed.jiraSync.link(requireProjectKey(body.project)));
+          return jsonResponse(feed.jiraSync.link(requireProjectKey(body.project)));
         } catch (err) {
           return errorResponse(400, err instanceof Error ? err.message : String(err));
         }

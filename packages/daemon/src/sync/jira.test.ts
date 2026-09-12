@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs';
+import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Ticket, TicketId } from '@agile-agents/shared';
@@ -7,11 +7,12 @@ import { validateTicket } from '@agile-agents/shared';
 import { runInit } from '../init';
 import { StateStore } from '../store';
 import { HttpJiraClient, adfToText, textToAdf, toJqlTimestamp } from './client';
-import { resolveJiraSettings } from './config';
+import { readLinkedProject, resolveJiraSettings, writeLinkedProject } from './config';
 import { type FakeJiraHandle, startFakeJira } from './fake-jira';
-import { DEFAULT_STATUS_MAP, JIRA_LINK_REL_PATH, JiraSync, resolveField } from './jira';
+import { DEFAULT_STATUS_MAP, JiraSync, resolveField } from './jira';
 
 let repo: string;
+let configPath: string;
 let stateRoot: string;
 let store: StateStore;
 let jira: FakeJiraHandle;
@@ -25,7 +26,7 @@ function advance(ms: number): void {
   clock = new Date(clock.getTime() + ms);
 }
 
-function makeSync(): JiraSync {
+function makeSync(overrides: Partial<ConstructorParameters<typeof JiraSync>[0]> = {}): JiraSync {
   return new JiraSync({
     store,
     client: new HttpJiraClient({
@@ -33,9 +34,26 @@ function makeSync(): JiraSync {
       email: 'pete@example.com',
       apiToken: 'token-123',
     }),
+    configPath,
     now,
     onError: () => {},
+    ...overrides,
   });
+}
+
+/** Every file under `.agile/`, relative to the state root (git internals excluded). */
+function stateFiles(): string[] {
+  const found: string[] = [];
+  const walk = (dir: string) => {
+    for (const entry of readdirSync(dir)) {
+      if (entry === '.git') continue;
+      const path = join(dir, entry);
+      if (statSync(path).isDirectory()) walk(path);
+      else found.push(path.slice(stateRoot.length + 1));
+    }
+  };
+  walk(stateRoot);
+  return found.sort();
 }
 
 function seedTicket(id: string, overrides: Partial<Ticket> = {}): Promise<Ticket> {
@@ -60,6 +78,7 @@ beforeEach(() => {
   Bun.spawnSync(['git', 'commit', '--allow-empty', '-q', '-m', 'init'], { cwd: repo });
   const init = runInit(repo);
   stateRoot = init.stateRoot;
+  configPath = join(repo, 'agile.config.yaml');
   store = StateStore.open(stateRoot);
   jira = startFakeJira({ now });
 });
@@ -71,24 +90,56 @@ afterEach(() => {
 });
 
 describe('link / unlink', () => {
-  test('link records the project and unlink removes it', async () => {
+  test('link writes jira.project into agile.config.yaml and unlink removes it', async () => {
     const sync = makeSync();
     expect(sync.status()).toEqual({ linked: false, mapped: 0 });
 
-    const link = await sync.link('LED');
-    expect(link.project).toBe('LED');
-    expect(sync.status().linked).toBe(true);
-    expect(sync.status().project).toBe('LED');
+    const linked = sync.link('LED');
+    expect(linked).toMatchObject({ linked: true, project: 'LED', source: 'config' });
+    expect(readFileSync(configPath, 'utf8')).toContain('project: LED');
+    expect(readLinkedProject(configPath)).toBe('LED');
 
-    const unlinked = await sync.unlink();
-    expect(unlinked).toEqual({ unlinked: true, project: 'LED' });
-    expect(sync.getLink()).toBeUndefined();
-    expect(await sync.unlink()).toEqual({ unlinked: false });
+    expect(sync.unlink()).toEqual({ unlinked: true, project: 'LED' });
+    expect(sync.linkedProject()).toBeUndefined();
+    expect(sync.unlink()).toEqual({ unlinked: false });
   });
 
-  test('re-linking the same project keeps the cursor and shadows', async () => {
+  test('link preserves every other key in agile.config.yaml and writes no credential', () => {
+    writeFileSync(configPath, 'port: 4700\njira:\n  baseUrl: https://acme.atlassian.net\n');
     const sync = makeSync();
-    await sync.link('LED');
+    sync.link('LED');
+    const text = readFileSync(configPath, 'utf8');
+    expect(text).toContain('port: 4700');
+    expect(text).toContain('baseUrl: https://acme.atlassian.net');
+    expect(text).toContain('project: LED');
+    expect(text).not.toContain('token-123');
+    expect(text).not.toContain('pete@example.com');
+
+    // Unlink drops only the project key.
+    sync.unlink();
+    const after = readFileSync(configPath, 'utf8');
+    expect(after).toContain('port: 4700');
+    expect(after).toContain('baseUrl: https://acme.atlassian.net');
+    expect(after).not.toContain('project: LED');
+  });
+
+  test('an env-set project links without a config file and cannot be unlinked by writing one', () => {
+    const sync = makeSync({ envProject: 'ENV' });
+    expect(sync.status()).toMatchObject({ linked: true, project: 'ENV', source: 'env' });
+    const result = sync.unlink();
+    expect(result.unlinked).toBe(false);
+    expect(result.note).toContain('JIRA_PROJECT_KEY');
+  });
+
+  test('a config project outranks the environment', () => {
+    writeLinkedProject(configPath, 'LED');
+    const sync = makeSync({ envProject: 'ENV' });
+    expect(sync.linkedProject()).toBe('LED');
+  });
+
+  test('re-linking the same project keeps the per-ticket shadows and cursor', async () => {
+    const sync = makeSync();
+    sync.link('LED');
     jira.put({
       key: 'LED-1',
       summary: 'Login',
@@ -97,12 +148,12 @@ describe('link / unlink', () => {
       updated: clock.toISOString(),
     });
     await sync.tick();
-    const before = sync.getLink();
-    expect(before?.cursor).toBeDefined();
+    const before = sync.status();
+    expect(before.cursor).toBeDefined();
+    expect(before.mapped).toBe(1);
 
-    const after = await sync.link('LED');
-    expect(after.cursor).toBe(before?.cursor as string);
-    expect(Object.keys(after.issues)).toEqual(['LED-1']);
+    sync.link('LED');
+    expect(sync.status()).toMatchObject({ cursor: before.cursor, mapped: 1 });
   });
 
   test('tick on an unlinked repo is a no-op', async () => {
@@ -121,7 +172,7 @@ describe('link / unlink', () => {
 describe('pull: Jira -> local', () => {
   test('an issue with no local mapping becomes a not-started local ticket', async () => {
     const sync = makeSync();
-    await sync.link('LED');
+    sync.link('LED');
     jira.put({
       key: 'LED-41',
       summary: 'Issue JWT on login',
@@ -151,7 +202,7 @@ describe('pull: Jira -> local', () => {
 
   test('a title/description edit in Jira updates the local ticket', async () => {
     const sync = makeSync();
-    await sync.link('LED');
+    sync.link('LED');
     jira.put({
       key: 'LED-42',
       summary: 'Old title',
@@ -182,7 +233,7 @@ describe('pull: Jira -> local', () => {
 
   test('the pull mints a ticket_put event — no new event kind needed', async () => {
     const sync = makeSync();
-    await sync.link('LED');
+    sync.link('LED');
     jira.put({
       key: 'LED-43',
       summary: 'A',
@@ -203,7 +254,7 @@ describe('pull: Jira -> local', () => {
 describe('push: local -> Jira', () => {
   test('a local status change transitions the Jira issue', async () => {
     const sync = makeSync();
-    await sync.link('LED');
+    sync.link('LED');
     jira.put({
       key: 'LED-44',
       summary: 'Ship it',
@@ -224,7 +275,7 @@ describe('push: local -> Jira', () => {
 
   test('a local title/description edit is pushed to the issue', async () => {
     const sync = makeSync();
-    await sync.link('LED');
+    sync.link('LED');
     jira.put({
       key: 'LED-45',
       summary: 'Jira title',
@@ -254,7 +305,7 @@ describe('push: local -> Jira', () => {
 describe('conflict rule', () => {
   test('Agile Agents wins on status: a status changed in Jira is re-asserted', async () => {
     const sync = makeSync();
-    await sync.link('LED');
+    sync.link('LED');
     jira.put({
       key: 'LED-46',
       summary: 'Auth',
@@ -284,7 +335,7 @@ describe('conflict rule', () => {
 
   test('last writer wins on title: the later Jira edit beats the earlier local one', async () => {
     const sync = makeSync();
-    await sync.link('LED');
+    sync.link('LED');
     jira.put({
       key: 'LED-47',
       summary: 'Base',
@@ -316,7 +367,7 @@ describe('conflict rule', () => {
 
   test('last writer wins on title: the later local edit beats the earlier Jira one', async () => {
     const sync = makeSync();
-    await sync.link('LED');
+    sync.link('LED');
     jira.put({
       key: 'LED-48',
       summary: 'Base',
@@ -358,10 +409,62 @@ describe('conflict rule', () => {
   });
 });
 
+describe('state placement', () => {
+  test('a full sync pass creates nothing under .agile/ except ticket files', async () => {
+    const sync = makeSync();
+    sync.link('LED');
+    const before = new Set(stateFiles());
+
+    jira.put({
+      key: 'LED-60',
+      summary: 'New from Jira',
+      description: 'body',
+      status: 'To Do',
+      updated: clock.toISOString(),
+    });
+    const pass = await sync.tick();
+    expect(pass.created).toHaveLength(1);
+
+    // A local edit and a status change, so the pass exercises both pushes too.
+    const id = pass.created[0] as TicketId;
+    advance(60_000);
+    await store.putTicket(validateTicket({ ...store.getTicket(id), title: 'Local title' }));
+    await store.transitionTicket(id, 'ready', { by: 'architect' });
+    await sync.tick();
+
+    const created = stateFiles().filter((rel) => !before.has(rel));
+    expect(created.length).toBeGreaterThan(0);
+    expect(created.every((rel) => rel.startsWith('tickets/'))).toBe(true);
+    // Specifically: no sync artifact of its own.
+    expect(stateFiles().some((rel) => rel.startsWith('sync/'))).toBe(false);
+  });
+
+  test('the shadow rides on the ticket, under external', async () => {
+    const sync = makeSync();
+    sync.link('LED');
+    jira.put({
+      key: 'LED-61',
+      summary: 'Shadowed',
+      description: 'body',
+      status: 'To Do',
+      updated: clock.toISOString(),
+    });
+    const id = (await sync.tick()).created[0] as TicketId;
+    const ticket = store.getTicket(id);
+    expect(ticket.external?.jira).toBe('LED-61');
+    expect(ticket.external?.jira_synced).toMatchObject({
+      title: 'Shadowed',
+      description: 'body',
+      updated_at: clock.toISOString(),
+      status: 'To Do',
+    });
+  });
+});
+
 describe('credentials', () => {
   test('nothing under .agile/ ever contains the token or the base URL', async () => {
     const sync = makeSync();
-    await sync.link('LED');
+    sync.link('LED');
     jira.put({
       key: 'LED-49',
       summary: 'Secretless',
@@ -374,25 +477,14 @@ describe('credentials', () => {
     // The client did authenticate — so the absence below is not vacuous.
     expect(jira.authHeaders.some((h) => h.startsWith('Basic '))).toBe(true);
 
-    const files: string[] = [];
-    const walk = (dir: string) => {
-      for (const entry of readdirSync(dir)) {
-        if (entry === '.git') continue;
-        const path = join(dir, entry);
-        if (statSync(path).isDirectory()) walk(path);
-        else files.push(path);
-      }
-    };
-    walk(stateRoot);
-    for (const file of files) {
-      const text = readFileSync(file, 'utf8');
+    for (const rel of stateFiles()) {
+      const text = readFileSync(join(stateRoot, rel), 'utf8');
       expect(text).not.toContain('token-123');
       expect(text).not.toContain('pete@example.com');
       expect(text).not.toContain(jira.baseUrl);
     }
-    // The link record itself holds only the project + shadows.
-    const link = readFileSync(join(stateRoot, JIRA_LINK_REL_PATH), 'utf8');
-    expect(link).toContain('project: LED');
+    // The link lives in the host-local config file, not under `.agile/`.
+    expect(readLinkedProject(configPath)).toBe('LED');
   });
 
   test('resolveJiraSettings needs a base URL and both credentials', () => {
@@ -401,14 +493,14 @@ describe('credentials', () => {
       resolveJiraSettings({}, { env: { JIRA_BASE_URL: 'https://x', JIRA_EMAIL: 'a@b.c' } }),
     ).toBeUndefined();
     const settings = resolveJiraSettings(
-      { jira: { projectKey: 'LED', pollIntervalMs: 1234 } },
+      { jira: { project: 'LED', pollIntervalMs: 1234 } },
       { env: { JIRA_BASE_URL: 'https://x', JIRA_EMAIL: 'a@b.c', JIRA_API_TOKEN: 't' } },
     );
     expect(settings).toEqual({
       baseUrl: 'https://x',
       email: 'a@b.c',
       apiToken: 't',
-      projectKey: 'LED',
+      project: 'LED',
       pollIntervalMs: 1234,
     });
   });
@@ -426,19 +518,9 @@ describe('client encoding', () => {
   });
 
   test('an unavailable transition is reported per issue, not fatal to the pass', async () => {
-    const sync = new JiraSync({
-      store,
-      client: new HttpJiraClient({
-        baseUrl: jira.baseUrl,
-        email: 'pete@example.com',
-        apiToken: 'token-123',
-      }),
-      now,
-      // A project whose workflow has no matching status at all.
-      statusMap: { ...DEFAULT_STATUS_MAP, draft: 'Icebox' },
-      onError: () => {},
-    });
-    await sync.link('LED');
+    // A project whose workflow has no matching status at all.
+    const sync = makeSync({ statusMap: { ...DEFAULT_STATUS_MAP, draft: 'Icebox' } });
+    sync.link('LED');
     jira.put({
       key: 'LED-50',
       summary: 'Odd workflow',
@@ -457,7 +539,7 @@ describe('client encoding', () => {
 describe('unlinked tickets', () => {
   test('a local ticket with no external mapping is never pushed', async () => {
     const sync = makeSync();
-    await sync.link('LED');
+    sync.link('LED');
     await seedTicket('TKT-0900');
     const pass = await sync.tick();
     expect(pass.pushedFields).toEqual([]);

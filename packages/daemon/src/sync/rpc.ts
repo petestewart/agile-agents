@@ -32,6 +32,7 @@ export function buildSyncRpcMethods(sync: JiraSync): Record<string, RpcMethodHan
       const p = (params ?? {}) as Record<string, unknown>;
       return sync.link(requireProjectKey(p.project));
     },
+    // (link/unlink write the host-local `agile.config.yaml`, never `.agile/`.)
     'sync.jira_unlink': () => sync.unlink(),
     'sync.jira_status': () => sync.status(),
     /** Force a pass now instead of waiting for the poll interval. */

@@ -12,7 +12,12 @@ import daemonPackageJson from '../package.json' with { type: 'json' };
 import { registerArchitectTools } from './architect';
 import { Bus, buildBusRpcMethods } from './bus';
 import { roleOf } from './bus/routing';
-import { type AgileConfig, type DiscoverConfigOptions, discoverConfig } from './config';
+import {
+  type AgileConfig,
+  CONFIG_FILE_NAME,
+  type DiscoverConfigOptions,
+  discoverConfig,
+} from './config';
 import { EM_TOOLS, EmLoop, type EmToolDeps, buildEmRpcMethods } from './em';
 import { pickCurrentSprint } from './feed';
 import { GateService, buildGateRpcMethods } from './gates';
@@ -310,6 +315,13 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
             email: jiraSettings.email,
             apiToken: jiraSettings.apiToken,
           }),
+          // The link itself lives in the host-local `agile.config.yaml`
+          // (`jira.project`), which `link`/`unlink` read-modify-write —
+          // nothing new is ever written under `.agile/` (manager decision,
+          // T045 restructure); the per-ticket mapping and its shadow ride on
+          // the ticket files themselves.
+          configPath: join(config.repoRoot, CONFIG_FILE_NAME),
+          ...(jiraSettings.project ? { envProject: jiraSettings.project } : {}),
           onError: (message) => console.error(message),
         })
       : undefined;

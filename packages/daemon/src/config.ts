@@ -25,8 +25,13 @@ import { sandboxedSubprocessEnvOrTemp } from './subprocess-env';
 export interface JiraConfig {
   /** e.g. `https://acme.atlassian.net` (env: `JIRA_BASE_URL`). */
   baseUrl?: string;
-  /** Default project key to link, e.g. `LED` (env: `JIRA_PROJECT_KEY`). */
-  projectKey?: string;
+  /**
+   * The linked Jira project key, e.g. `LED` (env: `JIRA_PROJECT_KEY`).
+   * Written by `agile sync jira link|unlink` — this file, not anything under
+   * `.agile/`, is where "which project is this repo linked to" lives. A
+   * project key is not a secret; the credentials never come from here.
+   */
+  project?: string;
   /** Poll cadence for the pull direction (env: `JIRA_POLL_INTERVAL_MS`). */
   pollIntervalMs?: number;
 }
@@ -47,7 +52,7 @@ export interface AgileConfig {
 }
 
 const DEFAULT_PORT = 4600;
-const CONFIG_FILE_NAME = 'agile.config.yaml';
+export const CONFIG_FILE_NAME = 'agile.config.yaml';
 
 interface RawConfigFile {
   port?: number;
@@ -158,7 +163,7 @@ export function discoverConfig(options: DiscoverConfigOptions = {}): AgileConfig
   const jira: JiraConfig = {
     ...(fileConfig.jira ?? {}),
     ...(process.env.JIRA_BASE_URL ? { baseUrl: process.env.JIRA_BASE_URL } : {}),
-    ...(process.env.JIRA_PROJECT_KEY ? { projectKey: process.env.JIRA_PROJECT_KEY } : {}),
+    ...(process.env.JIRA_PROJECT_KEY ? { project: process.env.JIRA_PROJECT_KEY } : {}),
     ...(envPollInterval !== undefined && Number.isFinite(envPollInterval)
       ? { pollIntervalMs: envPollInterval }
       : {}),

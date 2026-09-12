@@ -14,6 +14,7 @@ export const PACKAGE_NAME = '@agile-agents/daemon';
 
 export {
   discoverConfig,
+  CONFIG_FILE_NAME,
   type AgileConfig,
   type DiscoverConfigOptions,
   type JiraConfig,

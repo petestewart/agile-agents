@@ -12,6 +12,7 @@ import { JiraSync } from './jira';
 import { buildSyncRpcMethods, requireProjectKey } from './rpc';
 
 let repo: string;
+let configPath: string;
 let stateRoot: string;
 let store: StateStore;
 let jira: FakeJiraHandle;
@@ -25,6 +26,7 @@ beforeEach(() => {
   Bun.spawnSync(['git', 'commit', '--allow-empty', '-q', '-m', 'init'], { cwd: repo });
   const init = runInit(repo);
   stateRoot = init.stateRoot;
+  configPath = join(repo, 'agile.config.yaml');
   store = StateStore.open(stateRoot);
   jira = startFakeJira();
   sync = new JiraSync({
@@ -34,6 +36,7 @@ beforeEach(() => {
       email: 'pete@example.com',
       apiToken: 'token-123',
     }),
+    configPath,
     onError: () => {},
   });
 });
@@ -133,6 +136,6 @@ describe('/api/sync/jira routes', () => {
       body: JSON.stringify({ project: 'nope nope' }),
     });
     expect(bad.status).toBe(400);
-    expect(sync.getLink()).toBeUndefined();
+    expect(sync.linkedProject()).toBeUndefined();
   });
 });

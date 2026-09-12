@@ -9,7 +9,6 @@
  * RPC error says so, and the hint below points at the environment.
  */
 
-import type { JiraLink } from '@agile-agents/shared';
 import type { ParsedArgs } from '../args';
 import { callRpc } from '../client';
 import { printFields, printJson } from '../format';
@@ -17,7 +16,7 @@ import { printFields, printJson } from '../format';
 interface JiraSyncStatusResult {
   linked: boolean;
   project?: string;
-  linked_at?: string;
+  source?: 'config' | 'env';
   cursor?: string;
   mapped: number;
 }
@@ -26,8 +25,9 @@ export function syncUsage(): string {
   return [
     'usage: agile sync jira <link <PROJECT> | unlink | status>',
     '',
-    'Jira credentials come from the environment (JIRA_BASE_URL, JIRA_EMAIL,',
-    'JIRA_API_TOKEN) and are never written into .agile/.',
+    'The linked project key is stored in agile.config.yaml (jira.project).',
+    'Credentials come from the environment (JIRA_BASE_URL, JIRA_EMAIL,',
+    'JIRA_API_TOKEN) and are never written to any file.',
   ].join('\n');
 }
 
@@ -49,8 +49,8 @@ export async function runSync(
       printFields([
         ['linked', String(result.linked)],
         ['project', result.project ?? '-'],
-        ['linked at', result.linked_at ?? '-'],
-        ['cursor', result.cursor ?? '-'],
+        ['source', result.source ?? '-'],
+        ['synced through', result.cursor ?? '-'],
         ['mapped tickets', String(result.mapped)],
       ]);
     return 0;
@@ -63,25 +63,27 @@ export async function runSync(
       console.error('usage: agile sync jira link <PROJECT>');
       return 1;
     }
-    const link = await callRpc<JiraLink>(socketPath, 'sync.jira_link', { project });
+    const link = await callRpc<JiraSyncStatusResult>(socketPath, 'sync.jira_link', { project });
     if (json) printJson(link);
     else
       printFields([
-        ['linked', link.project],
-        ['at', link.linked_at],
+        ['linked', link.project ?? project],
+        ['mapped tickets', String(link.mapped)],
       ]);
     return 0;
   }
 
   if (action === 'unlink') {
-    const result = await callRpc<{ unlinked: boolean; project?: string }>(
+    const result = await callRpc<{ unlinked: boolean; project?: string; note?: string }>(
       socketPath,
       'sync.jira_unlink',
       {},
     );
     if (json) printJson(result);
-    else
+    else {
       console.log(result.unlinked ? `unlinked: ${result.project}` : 'no jira project was linked');
+      if (result.note) console.log(result.note);
+    }
     return 0;
   }
 
