@@ -600,6 +600,21 @@ describe('control room SPA (Playwright e2e)', () => {
       });
       expect(raised.owner).toBe('human');
 
+      // Spend moved out of the top bar into a Settings row that opens a
+      // modal which can pop out (§17 v2: "Spend is not in the top bar; it is
+      // a Settings row and a pop-out modal").
+      await page.locator('[data-testid="open-spend"]').click();
+      await page
+        .locator('[data-testid="spend-modal"]')
+        .waitFor({ state: 'visible', timeout: 5000 });
+      const spendPopout = page.locator('[data-testid="spend-modal-popout"]');
+      expect(await spendPopout.getAttribute('title')).toBeTruthy();
+      expect(await spendPopout.getAttribute('aria-label')).toBeTruthy();
+      await page.locator('[data-testid="spend-modal"] .cr-modal-actions button').click();
+      await page
+        .locator('[data-testid="spend-modal"]')
+        .waitFor({ state: 'detached', timeout: 5000 });
+
       // A preset writes every gate at once, and the chooser reads back what
       // the gates block now says.
       await page.locator('[data-testid="preset-hands-off"]').click();

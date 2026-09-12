@@ -185,6 +185,9 @@ export function Settings({
   }
 
   const active = matchPreset(policy);
+  // Until `GET /api/policy` has landed there is nothing to merge into, and a
+  // save would write the one edited gate over a gates block it never saw.
+  const locked = busy || policy === undefined;
 
   return (
     <div className="cr-form" data-testid="settings">
@@ -233,7 +236,7 @@ export function Settings({
               data-testid={`preset-${preset.id}`}
               aria-pressed={active === preset.id}
               title={preset.help}
-              disabled={busy}
+              disabled={locked}
               onClick={() => save(preset.gates)}
             >
               {preset.label}
@@ -263,7 +266,7 @@ export function Settings({
                 className={owner === 'human' ? 'on' : undefined}
                 aria-pressed={owner === 'human'}
                 data-testid={`gate-${row.gate}-human`}
-                disabled={busy}
+                disabled={locked}
                 onClick={() => save({ [row.gate]: 'human' })}
               >
                 Ask me
@@ -273,7 +276,7 @@ export function Settings({
                 className={owner === 'em' ? 'on' : undefined}
                 aria-pressed={owner === 'em'}
                 data-testid={`gate-${row.gate}-em`}
-                disabled={busy}
+                disabled={locked}
                 onClick={() => save({ [row.gate]: 'em' })}
               >
                 EM decides
