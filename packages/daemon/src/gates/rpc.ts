@@ -35,6 +35,8 @@ import {
   BreakerSignalSchema,
   HilDecisionSchema,
   HilIdSchema,
+  HilNoteSchema,
+  MESSAGE_BODY_MAX_CHARS,
 } from '@agile-agents/shared';
 import type { BreakerSignal, HilDecision, HilId } from '@agile-agents/shared';
 import type { RpcMethodHandler } from '../rpc';
@@ -82,6 +84,30 @@ function requireBy(value: unknown): string {
   return value;
 }
 
+/** Optional free text typed with a decision (T039) — validated against the shared cap here so a malformed note is `-32602`, not a schema throw from the store. */
+function optionalNote(value: unknown): string | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== 'string') {
+    throw new RpcParamError('"note" must be a string', { note: value });
+  }
+  const result = HilNoteSchema.safeParse(value.trim());
+  if (!result.success) {
+    throw new RpcParamError(
+      `invalid "note": must be 1-${MESSAGE_BODY_MAX_CHARS} characters`,
+      { note: value },
+    );
+  }
+  return result.data;
+}
+
+function requireNote(value: unknown): string {
+  const note = optionalNote(value);
+  if (note === undefined) {
+    throw new RpcParamError('"note" is required', { note: value });
+  }
+  return note;
+}
+
 function requireDecision(value: unknown): HilDecision {
   const result = HilDecisionSchema.safeParse(value);
   if (!result.success) {
@@ -116,14 +142,30 @@ export function buildGateRpcMethods(service: GateService): Record<string, RpcMet
       const p = requireObject(params);
       const id = requireHilId(p.id);
       const by = requireBy(p.by);
-      return service.respond(id, 'approve', by);
+      return service.respond(id, 'approve', by, optionalNote(p.note));
+    },
+    'gate.deny': (params) => {
+      const p = requireObject(params);
+      const id = requireHilId(p.id);
+      const by = requireBy(p.by);
+      return service.respond(id, 'deny', by, optionalNote(p.note));
     },
     'gate.resolve': (params) => {
       const p = requireObject(params);
       const id = requireHilId(p.id);
       const decision = requireDecision(p.decision);
       const by = requireBy(p.by);
-      return service.respond(id, decision, by);
+      return service.respond(id, decision, by, optionalNote(p.note));
+    },
+    // T039: a typed answer with no button press. Stores the note on the
+    // still-pending request and hands it to the EM delegate — never resolves
+    // the gate itself.
+    'gate.note': (params) => {
+      const p = requireObject(params);
+      const id = requireHilId(p.id);
+      const note = requireNote(p.note);
+      const by = requireBy(p.by);
+      return service.addNote(id, note, by);
     },
     'gate.delegate': (params) => {
       const p = requireObject(params);

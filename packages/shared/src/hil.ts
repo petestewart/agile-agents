@@ -52,6 +52,16 @@ export const HilFyiSchema = z
   .strict();
 export type HilFyi = z.infer<typeof HilFyiSchema>;
 
+/**
+ * T039 (§17 "Control room v2"): every Needs-you card takes a typed answer as
+ * well as its buttons. The free text a human wrote with (or instead of) a
+ * button press — body-capped exactly like a bus message body, since that is
+ * what it becomes when `gates/service.ts` delivers it to the asking agent
+ * (`hil_response`) and to the EM. Non-empty: an empty note is the same as no
+ * note and is rejected at the boundary rather than persisted as `""`.
+ */
+export const HilNoteSchema = MessageBodySchema.min(1, 'note must not be empty');
+
 export const HilRequestSchema = z
   .object({
     id: HilIdSchema,
@@ -70,6 +80,8 @@ export const HilRequestSchema = z
     /** What was actually asked (the command a hook refused, the permission a session requested, ...) — the part a human or delegate needs to decide on. Absent for gates that carry their own context (sprint_review). */
     summary: z.string().min(1).optional(),
     decision: HilDecisionSchema.optional(),
+    /** Free text a human typed with the decision, or on its own (T039). A note on its own resolves nothing — the EM delegate reads it and decides. */
+    note: HilNoteSchema.optional(),
     decided_by: z.string().min(1).optional(),
     resolved_at: z.string().datetime().optional(),
     /** True when an `em`/`architect` owner (policy or single-instance delegate) auto-decided this. */

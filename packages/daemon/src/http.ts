@@ -6,8 +6,9 @@
  * T020 (§17 "Human UI": "v0 scope: ... CLI + event feed as the only UI"):
  * when a `StateStore` + `GateService` are supplied, this also serves the
  * static feed page (`GET /` and `GET /feed`), its JSON snapshot
- * (`GET /api/snapshot`), the HIL approve/delegate actions the page's buttons
- * call (`POST /api/hil/:id/approve` / `POST /api/hil/:id/delegate` — a
+ * (`GET /api/snapshot`), the HIL approve/deny/delegate/note actions the
+ * page's buttons call (`POST /api/hil/:id/approve` · `/deny` · `/delegate` ·
+ * `/note`, each accepting an optional `{ note }` free-text answer (T039) — a
  * present `Origin`/`Sec-Fetch-Site` naming a different origin/site is
  * rejected with 403, see `isSameOriginRequest`), and
  * tails `log/events.jsonl` to broadcast `{type:'event', event}` frames to
@@ -23,6 +24,7 @@ import {
   type HilDecision,
   HilIdSchema,
   KbIdSchema,
+  MESSAGE_BODY_MAX_CHARS,
   OracleIdSchema,
   TicketIdSchema,
   ulid,
@@ -127,23 +129,40 @@ function isSameOriginRequest(req: Request, port: number): boolean {
   return true;
 }
 
-/** `/api/hil/<id>/<action>` — `<id>` is everything between the two fixed segments, `<action>` one of approve|delegate. */
-function matchHilAction(
-  pathname: string,
-): { id: string; action: 'approve' | 'delegate' } | undefined {
-  const match = pathname.match(/^\/api\/hil\/([^/]+)\/(approve|delegate)$/);
+/** `/api/hil/<id>/<action>` — `<id>` is everything between the two fixed segments, `<action>` one of approve|deny|delegate|note (T039 adds deny + note). */
+type HilAction = 'approve' | 'deny' | 'delegate' | 'note';
+
+function matchHilAction(pathname: string): { id: string; action: HilAction } | undefined {
+  const match = pathname.match(/^\/api\/hil\/([^/]+)\/(approve|deny|delegate|note)$/);
   if (!match || match[1] === undefined || match[2] === undefined) return undefined;
   return {
     id: decodeURIComponent(match[1]),
-    action: match[2] as 'approve' | 'delegate',
+    action: match[2] as HilAction,
   };
+}
+
+/**
+ * T039: the optional free text a Needs-you card carries with (or instead of)
+ * a button press. Capped/trimmed here so an over-long note is a 400 rather
+ * than a schema throw deeper in `GateService`.
+ */
+function readNote(body: Record<string, unknown>): string | undefined | { error: string } {
+  const raw = body.note;
+  if (raw === undefined || raw === null) return undefined;
+  if (typeof raw !== 'string') return { error: 'note must be a string' };
+  const trimmed = raw.trim();
+  if (trimmed.length === 0) return undefined;
+  if (trimmed.length > MESSAGE_BODY_MAX_CHARS) {
+    return { error: `note exceeds the ${MESSAGE_BODY_MAX_CHARS}-char cap` };
+  }
+  return trimmed;
 }
 
 async function handleHilAction(
   req: Request,
   gates: GateService,
   id: string,
-  action: 'approve' | 'delegate',
+  action: HilAction,
 ): Promise<Response> {
   const parsedId = HilIdSchema.safeParse(id);
   if (!parsedId.success) {
@@ -157,14 +176,27 @@ async function handleHilAction(
     return errorResponse(400, err instanceof Error ? err.message : String(err));
   }
 
+  const note = readNote(body);
+  if (note !== undefined && typeof note !== 'string') {
+    return errorResponse(400, note.error);
+  }
+
   try {
-    if (action === 'approve') {
-      const decision: HilDecision = 'approve';
+    if (action === 'approve' || action === 'deny') {
+      const decision: HilDecision = action === 'approve' ? 'approve' : 'deny';
       // T032: the actor is always `human` for a browser write, never taken
       // from the request body (a page could otherwise forge another actor) —
       // same hardcode `raised_by`/`from` already use on the halt/chat/propose
       // routes below.
-      const updated = await gates.respond(parsedId.data, decision, 'human');
+      const updated = await gates.respond(parsedId.data, decision, 'human', note);
+      return jsonResponse(updated);
+    }
+
+    if (action === 'note') {
+      // T039: a note with no button press resolves nothing — it is recorded
+      // on the pending request and handed to the EM delegate.
+      if (note === undefined) return errorResponse(400, 'note is required');
+      const updated = await gates.addNote(parsedId.data, note, 'human');
       return jsonResponse(updated);
     }
 
