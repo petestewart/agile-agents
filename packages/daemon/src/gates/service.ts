@@ -442,6 +442,20 @@ export class GateService {
         },
       }),
     );
+    // T039 review round 1 (blocker): a request resolved through the delegate
+    // path (`addNote` -> EM decides, single-instance delegation, or a
+    // `human_timeout` fallthrough) used to send only the human `fyi` above,
+    // so the agent actually waiting on the gate never saw the note it was
+    // answered with. Deliver it exactly as `respond()` does — this is the
+    // ticket's PRIMARY flow ("a note with no button press ... the EM delegate
+    // reads it and decides").
+    if (req.note !== undefined) {
+      await this.deliverNote(
+        req,
+        req.decided_by ?? req.owner,
+        `gate "${req.gate}" ${req.decision === 'approve' ? 'approved' : 'denied'} by ${req.decided_by ?? req.owner}`,
+      );
+    }
   }
 
   /**
@@ -560,11 +574,17 @@ export class GateService {
   /** The agent waiting on this gate: the assignee of the request's ticket (the hook that raised an `unblock` runs in that agent's worktree). `undefined` for a ticketless or unassigned request. */
   private waitingAgent(req: HilRequest): AgentId | undefined {
     if (req.ticket === undefined) return undefined;
+    let assignee: string | undefined;
     try {
-      return this.store.getTicket(req.ticket).assignee as AgentId | undefined;
+      assignee = this.store.getTicket(req.ticket).assignee;
     } catch {
       return undefined;
     }
+    // Review nit: never cast — an assignee that isn't a valid agent id would
+    // otherwise throw out of `validateMessage` *after* the decision and its
+    // event were already persisted. Skip the delivery instead.
+    const parsed = AgentIdSchema.safeParse(assignee);
+    return parsed.success ? (parsed.data as AgentId) : undefined;
   }
 
   /**
