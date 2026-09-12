@@ -76,6 +76,9 @@ export {
 // Gates policy, HIL requests, circuit breaker (T018).
 export * from './gates';
 
+// Questions store (T040, §17 "Control room v2" — "Questions vs Decisions").
+export * from './questions';
+
 // ACP permission policy by role (T010).
 export * from './permissions';
 

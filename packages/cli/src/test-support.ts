@@ -20,6 +20,7 @@ import {
   GateService,
   type JiraClient,
   JiraSync,
+  QuestionService,
   type RpcServerHandle,
   StateStore,
   ToolService,
@@ -27,6 +28,7 @@ import {
   buildGateRpcMethods,
   buildHaltRpcMethods,
   buildOracleRpcMethods,
+  buildQuestionRpcMethods,
   buildStateRpcMethods,
   buildSyncRpcMethods,
   buildToolRpcMethods,
@@ -51,6 +53,8 @@ export interface TestDaemon {
    * round-trips against it. Its Jira client is inert (see `INERT_JIRA_CLIENT`):
    * link/unlink/status are pure local state, so no test needs a fake server. */
   jiraSync: JiraSync;
+  /** Same instance wired into `question.*` RPC (T040) — tests seed an open question through it. */
+  questionService: QuestionService;
   cleanup(): Promise<void>;
 }
 
@@ -87,6 +91,7 @@ export async function startTestDaemon(prefix = 'agile-cli-test-'): Promise<TestD
   // tests that need auto-delegation pass their own `GateService` instead of
   // using this helper.
   const gateService = new GateService(store);
+  const questionService = new QuestionService(store);
   // `FakeRunner` (never a real vendor session) so `tool.*` tests never need
   // `AGILE_LIVE=1` — same reasoning as the daemon's own tool tests.
   const toolService = new ToolService({
@@ -115,6 +120,7 @@ export async function startTestDaemon(prefix = 'agile-cli-test-'): Promise<TestD
       ...buildOracleRpcMethods(store),
       ...buildHaltRpcMethods(store),
       ...buildGateRpcMethods(gateService),
+      ...buildQuestionRpcMethods(questionService),
       ...buildToolRpcMethods(toolService),
       ...buildSyncRpcMethods(jiraSync),
     },
@@ -144,6 +150,7 @@ export async function startTestDaemon(prefix = 'agile-cli-test-'): Promise<TestD
     rpc,
     gateService,
     jiraSync,
+    questionService,
     async cleanup() {
       await rpc.close();
       rmSync(repo, { recursive: true, force: true });

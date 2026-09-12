@@ -19,6 +19,7 @@ import { Bus } from '../bus';
 import { type DaemonHandle, startDaemon } from '../daemon';
 import { GateService } from '../gates';
 import { runInit } from '../init';
+import { QuestionService } from '../questions';
 import { StateStore } from '../store';
 import { resolveChromiumExecutable } from './chromium';
 
@@ -442,6 +443,64 @@ describe('control room SPA (Playwright e2e)', () => {
         await page.waitForTimeout(100);
       }
       expect(apiRequests.length).toBeGreaterThan(0);
+    } finally {
+      await browser.close();
+      await handle?.stop();
+      rmSync(repo, { recursive: true, force: true });
+    }
+  }, 20000);
+
+  /**
+   * T040 (§17 "Control room v2" → "Questions vs Decisions"): a pending
+   * question is a Needs-you card, and answering it on the card marks it
+   * answered for real — through the daemon's own `QuestionService`, not a
+   * client-side state change.
+   */
+  test('an open question renders as a Needs-you card and answering it marks it answered', async () => {
+    const repo = initRepo();
+    let handle: DaemonHandle | undefined;
+    const browser = await chromium.launch({ executablePath });
+
+    try {
+      const init = runInit(repo);
+      const store = StateStore.open(init.stateRoot);
+      const questions = new QuestionService(store);
+
+      const seeded = await questions.raise({
+        raised_by: 'eng-1',
+        text: 'the contract contradicts the spec — which wins?',
+      });
+
+      handle = await startDaemon({
+        cwd: repo,
+        port: 0,
+        socketPath: join(repo, '.agile-daemon.sock'),
+      });
+
+      const page = await browser.newPage();
+      await page.goto(`http://127.0.0.1:${handle.http.port}/control-room`);
+
+      const card = page.locator(`.question-item[data-id="${seeded.id}"]`);
+      await card.waitFor({ state: 'attached', timeout: 5000 });
+      expect(await card.textContent()).toContain('which wins?');
+
+      await card.click();
+      await page
+        .locator('[data-testid="question-answer"]')
+        .fill('the spec wins — refine the ticket');
+      await page.locator('[data-testid="question-reply"]').click();
+      await card.waitFor({ state: 'detached', timeout: 5000 });
+
+      const onDisk = store.getEntity(
+        `board/questions/${seeded.id}.yaml`,
+        (v) => v as { status: string; answer: string; resolved_as: string; answered_by: string },
+      );
+      expect(onDisk.status).toBe('answered');
+      expect(onDisk.answer).toBe('the spec wins — refine the ticket');
+      expect(onDisk.resolved_as).toBe('reply');
+      expect(onDisk.answered_by).toBe('human');
+      // The answer reached the engineer that raised it.
+      expect(store.listEntities('bus/inbox/eng-1', (v) => v)).toHaveLength(1);
     } finally {
       await browser.close();
       await handle?.stop();

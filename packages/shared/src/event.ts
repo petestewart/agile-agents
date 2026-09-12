@@ -80,6 +80,15 @@ export const EVENT_KINDS = [
   'entity_deleted',
   'hil_requested',
   'hil_resolved',
+  // T040 (§17 "Control room v2" — "Questions vs Decisions"): a `Question`
+  // (`board/questions/Q-*.yaml`) is opened and answered through the generic
+  // entity trio, which mints only `entity_put`. These two semantic kinds are
+  // minted alongside it for exactly the reason `hil_requested`/`hil_resolved`
+  // are — so a `log/events.jsonl` consumer (and the feed) can filter on "a
+  // question was raised/answered" without grepping generic-entity payloads
+  // for a `board/questions/` path prefix.
+  'question_raised',
+  'question_answered',
   'breaker_tripped',
   'breaker_cleared',
   // DESIGN-GAP (T012 QA round): §8 "Adapter contract" has the daemon

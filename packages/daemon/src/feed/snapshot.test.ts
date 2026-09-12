@@ -8,6 +8,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { GateService } from '../gates';
 import { runInit } from '../init';
+import { QuestionService } from '../questions';
 import { QuotaService } from '../quota/records';
 import { StateStore } from '../store';
 import { buildSnapshot } from './snapshot';
@@ -77,5 +78,21 @@ describe('with a QuotaService', () => {
     const snapshot = buildSnapshot(store, gates, undefined, quota);
     const pi = snapshot.quota.find((q) => q.account === 'pi');
     expect(pi?.spend_usd).toBe(2.5);
+  });
+});
+
+describe('T040: open questions in the attention queue', () => {
+  test('without a QuestionService the array is empty (backward compatible)', () => {
+    expect(buildSnapshot(store, gates).questions).toEqual([]);
+  });
+
+  test('carries open questions only — an answered one is history, like a resolved hil_request', async () => {
+    const questions = new QuestionService(store);
+    const open = await questions.raise({ raised_by: 'eng-1', text: 'is the ticket right?' });
+    const answered = await questions.raise({ raised_by: 'em', text: 'already handled' });
+    await questions.answer(answered.id, { answer: 'yes', by: 'human', resolved_as: 'reply' });
+
+    const snapshot = buildSnapshot(store, gates, undefined, undefined, questions);
+    expect(snapshot.questions.map((q) => q.id)).toEqual([open.id]);
   });
 });

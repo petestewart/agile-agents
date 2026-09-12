@@ -7,6 +7,7 @@ import { Bus } from './bus';
 import { GateService } from './gates';
 import { type HttpServerHandle, startHttpServer } from './http';
 import { runInit } from './init';
+import { QuestionService } from './questions';
 import { StateStore } from './store';
 import { type FakeJiraHandle, HttpJiraClient, JiraSync, startFakeJira } from './sync';
 
@@ -111,6 +112,7 @@ describe('feed with a real store', () => {
   let repo: string;
   let store: StateStore;
   let gates: GateService;
+  let questions: QuestionService;
   let feedServer: HttpServerHandle;
 
   function policy(overrides: Partial<Policy['gates']> = {}): Policy {
@@ -128,6 +130,7 @@ describe('feed with a real store', () => {
     const init = runInit(repo);
     store = StateStore.open(init.stateRoot);
     gates = new GateService(store);
+    questions = new QuestionService(store);
     feedServer = startHttpServer({
       port: 0,
       version: '0.0.0-test',
@@ -135,6 +138,7 @@ describe('feed with a real store', () => {
       startedAt: Date.now(),
       store,
       gates,
+      questions,
       feedPollIntervalMs: 20,
     });
   });
@@ -166,6 +170,7 @@ describe('feed with a real store', () => {
       sprint: { tickets: { done: number; in_flight: number; stale: number; total: number } };
       halts: unknown[];
       hil: Array<{ status: string }>;
+      questions: Array<{ status: string }>;
     };
     expect(body.type).toBe('snapshot');
     expect(Array.isArray(body.events)).toBe(true);
@@ -174,6 +179,8 @@ describe('feed with a real store', () => {
     expect(Array.isArray(body.halts)).toBe(true);
     expect(body.hil).toHaveLength(1);
     expect(body.hil[0]?.status).toBe('pending');
+    // T040: open questions ride the same attention-queue snapshot.
+    expect(body.questions).toEqual([]);
   });
 
   test('WS sends hello, then a snapshot, then a live event within 1s of a store append', async () => {
@@ -833,5 +840,141 @@ describe('T045 Jira sync routes', () => {
       // Still linked: the rejected unlink changed nothing.
       expect(sync.linkedProject()).toBe('LED');
     });
+  });
+});
+
+// --- T040 questions routes (§17 "Control room v2" -> "Questions vs Decisions") ---
+
+describe('T040 question routes', () => {
+  let repo: string;
+  let store: StateStore;
+  let questions: QuestionService;
+  let qServer: HttpServerHandle;
+
+  beforeEach(() => {
+    repo = mkdtempSync(join(tmpdir(), 'agile-questions-http-'));
+    Bun.spawnSync(['git', 'init', '-q'], { cwd: repo });
+    Bun.spawnSync(['git', 'config', 'user.email', 'test@example.com'], { cwd: repo });
+    Bun.spawnSync(['git', 'config', 'user.name', 'Test'], { cwd: repo });
+    writeFileSync(join(repo, 'README.md'), '# fixture\n');
+    Bun.spawnSync(['git', 'add', '-A'], { cwd: repo });
+    Bun.spawnSync(['git', 'commit', '-q', '-m', 'initial commit'], { cwd: repo });
+    const init = runInit(repo);
+    store = StateStore.open(init.stateRoot);
+    questions = new QuestionService(store);
+    qServer = startHttpServer({
+      port: 0,
+      version: '0.0.0-test',
+      stateRoot: init.stateRoot,
+      startedAt: Date.now(),
+      store,
+      gates: new GateService(store),
+      questions,
+      feedPollIntervalMs: 20,
+    });
+  });
+
+  afterEach(async () => {
+    await qServer.stop();
+    rmSync(repo, { recursive: true, force: true });
+  });
+
+  function url(path: string): string {
+    return `http://127.0.0.1:${qServer.port}${path}`;
+  }
+
+  test('POST /api/questions raises one as `human`, GET lists it, and ?status=open filters', async () => {
+    const res = await fetch(url('/api/questions'), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      // T032: a forged raised_by in the body must be ignored.
+      body: JSON.stringify({ text: 'which storage wins?', raised_by: 'architect' }),
+    });
+    expect(res.status).toBe(201);
+    const raised = (await res.json()) as { id: string; raised_by: string; status: string };
+    expect(raised.raised_by).toBe('human');
+    expect(raised.status).toBe('open');
+
+    const list = (await (await fetch(url('/api/questions'))).json()) as unknown[];
+    expect(list).toHaveLength(1);
+    const open = (await (await fetch(url('/api/questions?status=open'))).json()) as unknown[];
+    expect(open).toHaveLength(1);
+  });
+
+  test('POST /api/questions/:id/answer with a reply answers it and delivers to the raiser', async () => {
+    const q = await questions.raise({ raised_by: 'eng-1', text: 'is the ticket right?' });
+    const res = await fetch(url(`/api/questions/${q.id}/answer`), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ answer: 'no — refine it', resolved_as: 'reply' }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { question: { status: string; answered_by: string } };
+    expect(body.question.status).toBe('answered');
+    expect(body.question.answered_by).toBe('human');
+    expect(questions.listOpen()).toHaveLength(0);
+    expect(store.listEntities('bus/inbox/eng-1', (v) => v)).toHaveLength(1);
+  });
+
+  test('answering with "record as decision" publishes a DEC-* and links it', async () => {
+    const q = await questions.raise({ raised_by: 'eng-1', text: 'sqlite or files?' });
+    const res = await fetch(url(`/api/questions/${q.id}/answer`), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ answer: 'files for v0', resolved_as: 'decision' }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { question: { resolved_as: string } };
+    expect(body.question.resolved_as).toMatch(/^DEC-\d{4}$/);
+    expect(Object.keys(store.listOracleIndex())).toContain(body.question.resolved_as);
+  });
+
+  test('bad ids, empty answers, double answers and cross-origin posts are refused', async () => {
+    const q = await questions.raise({ raised_by: 'eng-1', text: 'q' });
+    expect(
+      (
+        await fetch(url('/api/questions/Q-nope/answer'), {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ answer: 'a' }),
+        })
+      ).status,
+    ).toBe(400);
+    expect(
+      (
+        await fetch(url(`/api/questions/${q.id}/answer`), {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ answer: '   ' }),
+        })
+      ).status,
+    ).toBe(400);
+    expect(
+      (
+        await fetch(url('/api/questions'), {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', origin: 'http://evil.example' },
+          body: JSON.stringify({ text: 'drive-by' }),
+        })
+      ).status,
+    ).toBe(403);
+
+    const answer = () =>
+      fetch(url(`/api/questions/${q.id}/answer`), {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ answer: 'a', resolved_as: 'reply' }),
+      });
+    expect((await answer()).status).toBe(200);
+    expect((await answer()).status).toBe(409);
+  });
+
+  test('an unknown question 404s', async () => {
+    const res = await fetch(url('/api/questions/Q-01ARZ3NDEKTSV4RRFFQ69G5FAV/answer'), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ answer: 'a' }),
+    });
+    expect(res.status).toBe(404);
   });
 });

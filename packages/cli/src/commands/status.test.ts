@@ -93,6 +93,7 @@ describe('runStatus', () => {
         halts: [],
         agents: 'n/a (no RPC yet)',
         spend: 'n/a (no RPC yet)',
+        questions: [],
       }),
     ).not.toThrow();
   });
@@ -125,6 +126,7 @@ describe('runStatus', () => {
         halts: [],
         agents: 'n/a (no RPC yet)',
         spend,
+        questions: [],
       }),
     ).not.toThrow();
   });
@@ -165,6 +167,11 @@ describe('fetchStatus — with quota.* RPC wired (T023)', () => {
     rmSync(repo, { recursive: true, force: true });
   });
 
+  test('open questions are empty when the daemon has no question.* RPC (T040 degrade path)', async () => {
+    const status = await fetchStatus(socketPath);
+    expect(status.questions).toEqual([]);
+  });
+
   test('spend carries the real quota.list result once the RPC is wired', async () => {
     const status = await fetchStatus(socketPath);
     expect(Array.isArray(status.spend)).toBe(true);
@@ -182,5 +189,34 @@ describe('fetchStatus — with quota.* RPC wired (T023)', () => {
     const status = await fetchStatus(socketPath);
     if (!Array.isArray(status.spend)) throw new Error('unreachable');
     expect(status.spend[0]?.cooldown_until).not.toBeNull();
+  });
+});
+
+describe('fetchStatus — open questions (T040)', () => {
+  let daemon: TestDaemon;
+
+  beforeEach(async () => {
+    daemon = await startTestDaemon('agile-status-questions-');
+  });
+
+  afterEach(async () => {
+    await daemon.cleanup();
+  });
+
+  test('lists open questions and drops answered ones', async () => {
+    const open = await daemon.questionService.raise({
+      raised_by: 'eng-1',
+      text: 'is the ticket right?',
+    });
+    const answered = await daemon.questionService.raise({ raised_by: 'em', text: 'handled' });
+    await daemon.questionService.answer(answered.id, {
+      answer: 'yes',
+      by: 'human',
+      resolved_as: 'reply',
+    });
+
+    const status = await fetchStatus(daemon.socketPath);
+    expect(status.questions.map((q) => q.id)).toEqual([open.id]);
+    expect(() => printStatusHuman(status)).not.toThrow();
   });
 });

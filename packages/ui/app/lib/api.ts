@@ -17,6 +17,7 @@ import type {
   OracleId,
   OracleIndex,
   Policy,
+  Question,
   Stanza,
   Ticket,
   TicketId,
@@ -104,6 +105,35 @@ export function noteHil(id: string, note: string): Promise<unknown> {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ note }),
+  }).then((r) => asJson(r));
+}
+
+/**
+ * Questions (T040, §17 "Control room v2" → "Questions vs Decisions").
+ * `answerQuestion` posts the typed reply and how it should be applied — a
+ * plain reply, or a recorded `DEC-*` through the oracle write guard.
+ */
+export function getQuestions(openOnly = false): Promise<Question[]> {
+  return fetch(`/api/questions${openOnly ? '?status=open' : ''}`).then((r) => asJson(r));
+}
+
+export function raiseQuestion(text: string, ticket?: TicketId): Promise<Question> {
+  return fetch('/api/questions', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ text, ...(ticket ? { ticket } : {}) }),
+  }).then((r) => asJson(r));
+}
+
+export function answerQuestion(
+  id: string,
+  answer: string,
+  resolvedAs: 'reply' | 'decision' = 'reply',
+): Promise<{ question: Question }> {
+  return fetch(`/api/questions/${encodeURIComponent(id)}/answer`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ answer, resolved_as: resolvedAs }),
   }).then((r) => asJson(r));
 }
 

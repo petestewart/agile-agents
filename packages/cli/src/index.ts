@@ -28,6 +28,7 @@ import {
 import { runHalt, runResume } from './commands/halt';
 import { parseHookArgs, runHook } from './commands/hook';
 import { runCliInit } from './commands/init';
+import { runQuestionAnswer, runQuestionList, runQuestionRaise } from './commands/question';
 import { runDemoSprint } from './commands/run';
 import { runSend } from './commands/send';
 import { runStatus } from './commands/status';
@@ -61,6 +62,9 @@ function usage(): string {
     '  delegate <hil-id> --to em|architect',
     '  resolve <hil-id> --decision approve|deny [--by <agent>] [--note <text>]',
     '  gate list                  list open HIL requests',
+    '  question list              list open questions (board/questions/)',
+    '  question raise --text <text> [--ticket <id>] [--by <agent>]',
+    '  question answer <id> --answer <text> [--as reply|decision|ticket] [--edit <json>] [--ticket <id>]',
     '  halt [--scope <scope>] [--reason <text>] [--by <agent>]',
     '  resume <halt-id>',
     '  breaker clear <signal>',
@@ -187,6 +191,16 @@ export async function runCli(argv: string[], cwd: string = process.cwd()): Promi
 
       case 'gate':
         if (sub === 'list') return await runGateList(socketPath, json);
+        console.error(usage());
+        return 1;
+
+      // T040 (§17 "Control room v2" → "Questions vs Decisions"): answering
+      // one either replies to the raiser, records a `DEC-*` through the
+      // oracle write guard, or applies a ticket edit.
+      case 'question':
+        if (sub === 'list') return await runQuestionList(socketPath, json);
+        if (sub === 'answer') return await runQuestionAnswer(socketPath, parseArgs(restArgv), json);
+        if (sub === 'raise') return await runQuestionRaise(socketPath, parseArgs(restArgv), json);
         console.error(usage());
         return 1;
 
