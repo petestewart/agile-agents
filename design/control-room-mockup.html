@@ -1,0 +1,527 @@
+<title>Control Room Redesign</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+:root{
+  --bg:#f3f4f6;--panel:#ffffff;--panel2:#eaedf1;--line:#d6dae0;--ink:#171a20;--ink2:#5a6270;--ink3:#8a92a0;
+  --signal:#c9691a;--signal-bg:#fbeee2;--good:#1f8f5f;--warn:#b7860f;--crit:#c9353a;--info:#2f6fd6;
+  --mono:'JetBrains Mono',ui-monospace,Menlo,monospace;--sans:'Manrope',system-ui,-apple-system,sans-serif;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  --bg:#0f1216;--panel:#161a20;--panel2:#1d222a;--line:#2a313b;--ink:#e6e9ee;--ink2:#a2aab6;--ink3:#6b7482;
+  --signal:#f0a04b;--signal-bg:#2b2117;--good:#4cc38a;--warn:#e5b567;--crit:#ef6b6e;--info:#7aa7f5;
+}}
+:root[data-theme="dark"]{
+  --bg:#0f1216;--panel:#161a20;--panel2:#1d222a;--line:#2a313b;--ink:#e6e9ee;--ink2:#a2aab6;--ink3:#6b7482;
+  --signal:#f0a04b;--signal-bg:#2b2117;--good:#4cc38a;--warn:#e5b567;--crit:#ef6b6e;--info:#7aa7f5;
+}
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--ink);font-family:var(--sans);font-size:14px;line-height:1.45;margin:0}
+.mono{font-family:var(--mono);font-size:12.5px}
+h1,h2,h3{margin:0;text-wrap:balance;font-weight:700}
+h1{font-size:18px}h2{font-size:15px}h3{font-size:13px;font-weight:600}
+.eyebrow{font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--ink3);font-weight:600}
+a{color:var(--info)}
+button{font:inherit;cursor:pointer}
+.btn{border:1px solid var(--line);background:var(--panel);color:var(--ink);border-radius:6px;padding:6px 12px;font-weight:600}
+.btn:hover{background:var(--panel2)}
+.btn.primary{background:var(--ink);color:var(--bg);border-color:var(--ink)}
+.btn.signal{background:var(--signal);border-color:var(--signal);color:#1a1006}
+.btn.danger{color:var(--crit);border-color:var(--crit)}.btn[disabled]{opacity:.5;cursor:default}
+.btn:focus-visible,.tab:focus-visible{outline:2px solid var(--info);outline-offset:2px}
+
+/* intro */
+.intro{max-width:70ch;padding:20px 20px 8px}
+.intro p{color:var(--ink2);margin:6px 0 0}
+.screens{display:flex;gap:4px;padding:8px 16px 0;border-bottom:1px solid var(--line);flex-wrap:wrap}
+.tab{background:none;border:0;border-bottom:2px solid transparent;color:var(--ink2);padding:8px 12px;font-weight:600}
+.tab[aria-selected="true"]{color:var(--ink);border-bottom-color:var(--signal)}
+.tab small{display:block;font-weight:500;color:var(--ink3);font-size:11px}
+.screen{display:none;padding:16px}.screen.on{display:block}
+.note{background:var(--panel2);border-left:3px solid var(--signal);padding:10px 14px;border-radius:0 6px 6px 0;max-width:70ch;color:var(--ink2);margin-bottom:18px}
+.note b{color:var(--ink)}
+
+/* app frame */
+.app{background:var(--panel);border:1px solid var(--line);border-radius:10px;overflow:hidden;width:100%}
+.topbar{display:flex;align-items:center;gap:14px;padding:10px 16px;border-bottom:1px solid var(--line);background:var(--panel2)}
+.topbar .repo{font-weight:700}.topbar .repo span{color:var(--ink3);font-weight:500}
+.topbar .grow{flex:1}
+.dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--good);margin-right:6px}
+.frame{display:grid;grid-template-columns:1fr minmax(340px,26%);min-height:560px}
+.frame.solo{grid-template-columns:1fr}
+.main{padding:18px 20px;border-right:1px solid var(--line);min-width:0}
+.side{padding:14px 16px;display:flex;flex-direction:column;min-width:0}
+.frame.max{grid-template-columns:1fr}.frame.max .main{display:none}.frame.max .side{max-width:110ch;margin:0 auto;width:100%}
+/* Plan screen keeps a slim rail when the chat is maximized */
+.frame.max.has-rail{grid-template-columns:auto 1fr}.frame.max.has-rail .main{display:block;padding:14px 10px}.frame.max.has-rail .plan{grid-template-columns:auto}.frame.max.has-rail .side{margin:0}
+.frame.hid{grid-template-columns:1fr}.frame.hid .side{display:none}
+.side .dochd a{cursor:pointer}
+@media (max-width:900px){.frame{grid-template-columns:1fr}.main{border-right:0;border-bottom:1px solid var(--line)}}
+
+
+.ib{display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;border:1px solid var(--line);border-radius:6px;background:var(--panel);color:var(--ink2);cursor:pointer;padding:0}
+.ib:hover{background:var(--panel2);color:var(--ink)}.ib.on{background:var(--ink);color:var(--bg);border-color:var(--ink)}
+.side .dochd{display:flex;align-items:center;gap:6px}.side .dochd .eyebrow{flex:1}
+.rail button{align-items:center}.rail button svg{flex:none;margin-right:8px;color:var(--ink3)}.rail button.on svg{color:var(--ink)}
+.rail .lbl{flex:1}
+.rail .rt{margin-top:6px;border-top:1px solid var(--line);padding-top:8px;justify-content:flex-start}
+.plan.mini{grid-template-columns:auto 1fr}.plan.mini .rail button{padding:6px;justify-content:center}.plan.mini .rail button svg{margin:0}.plan.mini .rail .lbl,.plan.mini .rail .n,.plan.mini .rail .path{display:none}
+.frame.max.has-rail .plan>div:nth-child(2){display:none}.frame.max.has-rail .rail .lbl,.frame.max.has-rail .rail .n,.frame.max.has-rail .rail .path{display:none}.frame.max.has-rail .rail button{padding:6px;justify-content:center}.frame.max.has-rail .rail button svg{margin:0}
+.toolrow{display:flex;align-items:center;gap:6px;padding:4px 10px;border-bottom:1px solid var(--line);background:var(--panel)}
+.toolrow .grow{flex:1}.toolrow .sep{width:1px;height:18px;background:var(--line);margin:0 6px}
+.ib.sm{width:24px;height:24px;border:0;background:transparent}.ib.sm:hover{background:var(--panel2)}.ib.sm.on{background:var(--panel2);color:var(--ink)}
+.plan.nopane{grid-template-columns:auto}.plan.nopane>div:nth-child(2){display:none}
+.frame.nopane{grid-template-columns:auto 1fr}.frame.nopane .main{padding:14px 10px}.frame.nopane .side{max-width:none}
+.nav{display:flex;gap:2px;margin-left:10px}
+.nav button{border:0;background:transparent;color:var(--ink2);padding:5px 10px;border-radius:6px;font-weight:600;display:inline-flex;align-items:center;gap:6px}
+.nav button:hover{background:var(--panel)}.nav button.on{background:var(--panel);color:var(--ink);box-shadow:inset 0 0 0 1px var(--line)}
+.nav .badge{background:var(--signal);color:#1a1006;font-weight:800;border-radius:9px;padding:0 6px;font-size:11px}
+.nav .live{width:7px;height:7px;border-radius:50%;background:var(--good)}
+/* summary strip */
+.strip{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:12px;padding:12px 14px;border:1px solid var(--line);border-radius:8px;margin-bottom:16px;font-variant-numeric:tabular-nums}
+.strip .k{font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink3);font-weight:600}
+.strip .v{font-size:17px;font-weight:700;margin-top:2px}
+.strip .v small{font-size:12px;color:var(--ink2);font-weight:500}
+
+/* needs you */
+.needs{border:1px solid var(--signal);background:var(--signal-bg);border-radius:8px;padding:12px 14px;margin-bottom:16px}
+.needs .hd{display:flex;align-items:center;gap:10px;margin-bottom:8px}
+.needs .hd h2{color:var(--signal)}
+.needs .count{background:var(--signal);color:#1a1006;font-weight:800;border-radius:10px;padding:0 8px;font-size:12px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:12px 14px}
+.card + .card{margin-top:10px}
+.card .kind{font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--signal)}
+.card h3{margin-top:2px}
+.card p{margin:6px 0;color:var(--ink2);max-width:70ch}
+.actions{display:flex;gap:8px;margin-top:10px;flex-wrap:wrap}
+.reply{display:flex;gap:8px;margin-top:8px}.reply input{flex:1;font:inherit;background:var(--panel);color:var(--ink);border:1px solid var(--line);border-radius:6px;padding:7px 10px}
+.calm{color:var(--good);font-weight:600;padding:4px 0}
+
+/* ticket stories */
+.section{margin-bottom:18px}
+.section-hd{display:flex;align-items:baseline;gap:10px;margin-bottom:8px}
+.section-hd .eyebrow{flex:1}
+.story{border:1px solid var(--line);border-radius:8px;padding:12px 14px;display:grid;grid-template-columns:150px 1fr;gap:6px 16px}
+.story + .story{margin-top:8px}
+.story .id{font-family:var(--mono);font-size:12px;color:var(--ink3)}
+.story .title{font-weight:700;grid-column:2}
+.story .stage{grid-column:1;display:flex;flex-direction:column;gap:4px}
+.pill{display:inline-flex;align-items:center;gap:6px;border-radius:4px;padding:2px 8px;font-size:12px;font-weight:600;background:var(--panel2);color:var(--ink2);width:fit-content}
+.pill.good{color:var(--good)}.pill.warn{color:var(--warn)}.pill.crit{color:var(--crit)}.pill.info{color:var(--info)}
+.steps{grid-column:2;display:flex;flex-direction:column;gap:5px;margin:0;padding:0;list-style:none}
+.steps li{display:grid;grid-template-columns:64px 18px 1fr;gap:8px;align-items:baseline;color:var(--ink2)}
+.steps li .t{font-family:var(--mono);font-size:11.5px;color:var(--ink3)}
+.steps li .m{width:8px;height:8px;border-radius:50%;background:var(--ink3);display:inline-block;position:relative;top:-1px}
+.steps li.good .m{background:var(--good)}.steps li.warn .m{background:var(--warn)}.steps li.crit .m{background:var(--crit)}.steps li.now .m{background:var(--info);box-shadow:0 0 0 3px color-mix(in srgb,var(--info) 30%,transparent)}
+.steps li.now{color:var(--ink);font-weight:600}
+.steps li b{color:var(--ink)}
+.who{font-family:var(--mono);font-size:11.5px;color:var(--ink3)}
+
+/* team */
+table{border-collapse:collapse;width:100%}
+th{text-align:left;font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink3);font-weight:600;padding:6px 8px;border-bottom:1px solid var(--line)}
+td{padding:7px 8px;border-bottom:1px solid var(--line);vertical-align:top}
+tr:last-child td{border-bottom:0}
+td.mono,th.mono{font-family:var(--mono);font-size:12px}
+.left{color:var(--ink3)}
+
+/* chat */
+.chat{flex:1;display:flex;flex-direction:column;gap:10px;overflow:auto;min-height:0}
+.msg{max-width:100%}
+.msg .from{font-size:11px;color:var(--ink3);font-weight:600;margin-bottom:2px}
+.msg .body{background:var(--panel2);border-radius:8px;padding:8px 10px;color:var(--ink)}
+.msg.you .body{background:transparent;border:1px solid var(--line)}
+.msg .body ul{margin:6px 0 0;padding-left:18px}
+.actionset{border:1px solid var(--info);border-radius:8px;padding:10px 12px;margin-top:6px}
+.actionset .eyebrow{color:var(--info)}
+.actionset ol{margin:6px 0 0;padding-left:18px;color:var(--ink2)}
+.compose{display:flex;gap:8px;margin-top:12px}
+.compose input{flex:1;font:inherit;background:var(--panel);color:var(--ink);border:1px solid var(--line);border-radius:6px;padding:8px 10px}
+
+/* forms */
+.form{max-width:66ch}
+.field{margin-bottom:14px}
+.field label{display:block;font-weight:600;margin-bottom:4px}
+.field .help{color:var(--ink3);font-size:12.5px;margin-top:4px}
+.field textarea,.field input,.field select{width:100%;font:inherit;background:var(--panel);color:var(--ink);border:1px solid var(--line);border-radius:6px;padding:8px 10px}
+.field textarea{min-height:110px;resize:vertical}
+.choices{display:flex;gap:8px;flex-wrap:wrap}
+.choice{border:1px solid var(--line);border-radius:6px;padding:8px 12px;background:var(--panel)}
+.choice.on{border-color:var(--ink);font-weight:700}
+.gate-row{display:grid;grid-template-columns:1fr 240px;gap:12px;align-items:center;padding:10px 0;border-bottom:1px solid var(--line)}
+.gate-row:last-child{border-bottom:0}
+.gate-row .what{color:var(--ink2);font-size:12.5px}
+.seg{display:inline-flex;border:1px solid var(--line);border-radius:6px;overflow:hidden}
+.seg button{border:0;background:var(--panel);color:var(--ink2);padding:5px 10px;font-weight:600;font-size:12.5px}
+.seg button.on{background:var(--ink);color:var(--bg)}
+
+
+/* plan document rail */
+.plan{display:grid;grid-template-columns:200px 1fr;gap:18px}
+.rail{display:flex;flex-direction:column;gap:2px}
+.rail button{text-align:left;border:0;background:none;color:var(--ink2);padding:7px 10px;border-radius:6px;display:flex;justify-content:space-between;gap:8px;font-weight:600}
+.rail button.on{background:var(--panel2);color:var(--ink)}
+.rail button .n{font-family:var(--mono);font-size:11.5px;color:var(--ink3)}
+.tlink{color:var(--ink);text-decoration:none;font-family:var(--mono);font-size:12px}.tlink:hover{text-decoration:underline}
+.rail .path{font-family:var(--mono);font-size:11px;color:var(--ink3);padding:6px 10px 0;line-height:1.5}
+.dochd{display:flex;align-items:baseline;gap:10px;margin-bottom:10px}
+.dochd .eyebrow{flex:1}
+.dochd .file{font-family:var(--mono);font-size:11.5px;color:var(--ink3)}
+.brief{border:1px solid var(--line);border-radius:8px;padding:12px 14px;max-width:70ch;color:var(--ink2);margin-bottom:16px}
+.brief h3{color:var(--ink);margin-bottom:4px}
+.brief p{margin:4px 0}
+
+@media (min-width:1500px){#s3 .section .story{grid-template-columns:170px 1fr}.plan{grid-template-columns:220px 1fr}.card p,.summary p,.note{max-width:90ch}}
+/* plan */
+.plan-t{border:1px solid var(--line);border-radius:8px;padding:12px 14px;margin-bottom:8px;display:grid;grid-template-columns:1fr auto;gap:4px 12px}
+.plan-t .title{font-weight:700}
+.plan-t .meta{color:var(--ink3);font-size:12.5px;grid-column:1}
+.plan-t .touch{font-family:var(--mono);font-size:11.5px;color:var(--ink2);grid-column:1}
+.plan-t .edit{grid-row:1/4;align-self:start}
+.rule{border:1px solid var(--line);border-radius:8px;padding:10px 14px;margin-bottom:8px}
+.rule .id{font-family:var(--mono);font-size:11.5px;color:var(--warn)}
+.rule p{margin:4px 0 0;color:var(--ink2);max-width:70ch}
+.rule .src{font-size:12px;color:var(--ink3);margin-top:4px}
+
+/* diff */
+pre{background:var(--panel2);border-radius:6px;padding:10px 12px;overflow-x:auto;font-family:var(--mono);font-size:12px;line-height:1.5;margin:8px 0}
+.add{color:var(--good)}.del{color:var(--crit)}
+.diffhd{color:var(--ink3)}
+
+/* review */
+.summary p{max-width:70ch;color:var(--ink2);margin:4px 0}
+.summary p b{color:var(--ink)}
+.kv{display:grid;grid-template-columns:160px 1fr;gap:6px 12px;max-width:70ch;margin:10px 0}
+.kv dt{color:var(--ink3)}.kv dd{margin:0}
+.opts{margin-top:16px}
+.opts h3{margin-bottom:6px}
+.opts ul{margin:0;padding-left:18px;color:var(--ink2)}
+.opts li{margin:3px 0}
+@media (prefers-reduced-motion:no-preference){.steps li.now .m{animation:pulse 1.6s ease-in-out infinite}}
+@keyframes pulse{50%{box-shadow:0 0 0 6px color-mix(in srgb,var(--info) 12%,transparent)}}
+</style>
+
+<div class="intro">
+  <div class="eyebrow">Agile Agents · design proposal</div>
+  <h1>Control Room Redesign</h1>
+  <p>Four screens, one per stage of the operator journey in design §17, filled with the real ledger-lite run from this afternoon. The tabs below are demo framing; the app's own navigation is in its top bar (Plan, Sprint, settings). Nothing here is wired to the daemon; it is a mockup to react to.</p>
+</div>
+<div class="screens" role="tablist">
+  <button class="tab" role="tab" aria-selected="true" data-s="s2">1 · Plan<small>goal in, tickets out, approve</small></button>
+  <button class="tab" role="tab" data-s="s3">2 · Sprint<small>watching, steering, deciding</small></button>
+  <button class="tab" role="tab" data-s="s4">3 · Review<small>sprint closed</small></button>
+  <button class="tab" role="tab" data-s="s5">4 · Settings<small>how much to ask you</small></button>
+</div>
+
+
+<!-- ===== 2 PLAN ===== -->
+<section class="screen on" id="s2">
+  <div class="note"><b>Replaces <span class="mono">seed.json</span> and <span class="mono">agile run --seed</span>.</b> The repo opens here with an empty plan and a chat. Your goal is the first message, or you connect Jira and the backlog comes from there. The architect reads the repo, the plan fills in on the left, and you go back and forth until it's right. Starting a sprint snapshots its tickets and rules for the engineers. You come back here at the start of every sprint, and any time in between.</div>
+  <div class="app">
+    <div class="topbar"><div class="repo" title="~/Projects/ledger-lite · main">ledger-lite</div><nav class="nav"><button class="j-nav on" data-s="s2">Plan</button><button class="j-nav" data-s="s3">Sprint</button><button class="j-nav" data-s="s5">Settings</button></nav><div class="grow"></div><span class="eyebrow">No sprint running</span><button class="btn signal">Start Sprint 1</button></div>
+    <div class="toolrow"><button class="ib sm j-rail" title="Collapse sidebar"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16M15 10l-2 2 2 2"/></svg></button><span class="grow"></span><span class="sep"></span><button class="ib sm j-em on" title="Show or hide EM chat"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a8 8 0 0 1-8 8H8l-5 3 1.5-4.5A8 8 0 1 1 21 12z"/></svg></button><button class="ib sm" title="Pop chat out into its own window"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/></svg></button><button class="ib sm j-max" title="Maximize chat"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/></svg></button></div>
+    <div class="frame has-rail"><div class="main">
+      <div class="plan">
+        <nav class="rail" id="rail">
+          <button data-p="p-brief" title="Brief"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><path d="M14 3v6h6M8 13h8M8 17h8"/></svg><span class="lbl">Brief</span><span class="n">1</span></button>
+          <button data-p="p-rules" title="Rules"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l8 4v5c0 5-3.5 8-8 9-4.5-1-8-4-8-9V7z"/><path d="M9 12l2 2 4-4"/></svg><span class="lbl">Rules</span><span class="n">2</span></button>
+          <button data-p="p-q" title="Questions"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M9.5 9.5a2.5 2.5 0 1 1 3.5 2.3c-.7.4-1 1-1 1.7M12 17h.01"/></svg><span class="lbl">Questions</span><span class="n" style="color:var(--signal)">2</span></button>
+          <button data-p="p-dec" title="Decisions"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v18M12 7l6-2v6l-6 2M12 7L6 5v6l6 2"/><path d="M4 21h16"/></svg><span class="lbl">Decisions</span><span class="n">1</span></button>
+          <button data-p="p-tix" class="on" title="Tickets"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v2a2 2 0 0 0 0 4v2a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-2a2 2 0 0 0 0-4z"/><path d="M13 6v12"/></svg><span class="lbl">Tickets</span><span class="n">4</span></button>
+          <button data-p="p-sprint" title="Sprints"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h10M4 12h16M4 18h7"/><path d="M17 3l4 3-4 3"/></svg><span class="lbl">Sprints</span><span class="n">2 projected</span></button>
+          <button data-p="p-kb" title="Knowledge"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 21h4M12 3a6 6 0 0 0-4 10.5c.6.6 1 1.4 1 2.5h6c0-1.1.4-1.9 1-2.5A6 6 0 0 0 12 3z"/></svg><span class="lbl">Knowledge</span><span class="n">4</span></button>
+          <button data-p="p-policy" title="Who decides"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></svg><span class="lbl">Who decides</span><span class="n">policy</span></button>
+                    <div class="path">everything here is a file under .agile/ on the agile-state branch. Edit in the UI, through the EM, or in your editor; all three write the same file.</div>
+        </nav>
+        <div>
+
+          <div class="pane" id="p-brief">
+            <div class="dochd"><span class="eyebrow">Brief</span><span class="file">oracle/product.md</span><button class="btn">Edit</button><button class="ib sm j-close" title="Close"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg></button></div>
+            <div class="brief" style="max-width:none">
+              <h3>Product</h3>
+              <p>ledger-lite is a tiny in-memory personal ledger: accounts, integer-cent transactions, balances and monthly summaries.</p>
+              <h3 style="margin-top:10px">Non-goals</h3>
+              <p>Persistence, authentication, a UI, multi-currency conversion.</p>
+              <h3 style="margin-top:10px">Glossary</h3>
+              <p><b style="color:var(--ink)">Transaction</b>: an account, a signed integer amount in cents (positive = deposit), an ISO date, a memo, an optional category.<br><b style="color:var(--ink)">Reversal</b>: a new transaction that negates an earlier one. The original is never touched.<br><b style="color:var(--ink)">Transfer</b>: two transactions, a withdrawal and a deposit, recorded together.</p>
+              <h3 style="margin-top:10px">Current goal</h3>
+              <p>Add transfers, reversals and a per-category spending breakdown, keeping money in integer cents and the ledger append-only.</p>
+              <div class="src" style="font-size:12px;color:var(--ink3);margin-top:8px">Written by the architect 4:40 PM from your goal, README.md and the existing tests. Glossary entries for Reversal and Transfer were added from your brief.</div>
+            </div>
+          </div>
+
+          <div class="pane" id="p-rules" hidden>
+            <div class="dochd"><span class="eyebrow">Rules (2)</span><span class="file">oracle/specs/SPEC-*.md</span><button class="btn">Add rule</button><button class="ib sm j-close" title="Close"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg></button></div>
+            <div class="rule"><span class="id">SPEC-quality-001</span> <b>Code quality baseline</b> <span class="pill good">active</span><p>1. Every public function validates its inputs and throws a descriptive Error on invalid input, never a silently wrong result.<br>2. Money is always integer cents; no floating-point arithmetic on amounts.<br>3. No console.log or console.debug ships in src/.<br>4. Every new behaviour has a test in test/ and bun test stays green.</p><div class="src">Applies to: every ticket · Drafted by the architect from README.md and existing tests · <a href="#">Edit</a> · <a href="#">History</a></div></div>
+            <div class="rule"><span class="id">SPEC-ledger-002</span> <b>Transactions are immutable once recorded</b> <span class="pill good">active</span><p>Once recorded, a transaction is never edited or deleted. A correction is a new transaction that reverses the original: same account, negated amount, memo referencing the original id.</p><div class="src">Applies to: TKT-2002, TKT-2004 · From your brief · <a href="#">Edit</a> · <a href="#">History</a></div></div>
+            <div class="help" style="color:var(--ink3);font-size:12.5px;margin-top:8px">Reviewers cite these by id when they reject work. Editing a rule that tickets already depend on becomes a proposed decision, so those tickets get re-checked.</div>
+          </div>
+
+          <div class="pane" id="p-q" hidden>
+            <div class="dochd"><span class="eyebrow">Open questions (2)</span><span class="file">board/questions/Q-*.yaml</span><button class="btn">Ask one</button><button class="ib sm j-close" title="Close"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg></button></div>
+            <div class="rule" style="border-color:var(--signal)"><span class="id" style="color:var(--signal)">Q-2</span> <b>How does reverse() know a transaction is already a reversal?</b> <span class="pill warn">blocks TKT-2002 review</span>
+              <p><b style="color:var(--ink)">Raised by</b> the architect, 4:43 PM, after reviewer-2002's nit.<br><b style="color:var(--ink)">Options:</b> (a) memo starts with "reversal of", (b) a <span class="mono">reversalOf</span> field on the transaction.<br><b style="color:var(--ink)">Architect recommends</b> (b): a memo is user text and can collide; a field is explicit and queryable. Would change the TKT-2002 contract and the wording of SPEC-ledger-002.</p>
+              <div class="actions" style="margin-top:6px"><button class="btn signal">Choose (b), record as DEC-002</button><button class="btn">Choose (a)</button></div><div class="reply"><input placeholder="Or answer in your own words"><button class="btn">Send</button></div></div>
+            <div class="rule"><span class="id">Q-1</span> <b>Should a transfer to the same account be an error or a no-op?</b> <span class="pill">not blocking</span>
+              <p><b style="color:var(--ink)">Raised by</b> eng-2001, 4:51 PM, while writing validation. The brief says "validate inputs"; it doesn't say which.<br><b style="color:var(--ink)">Engineer went with</b> error, per SPEC-quality-001 clause 1. Confirm or change.</p>
+              <div class="actions" style="margin-top:6px"><button class="btn">Confirm</button><button class="btn">Change to no-op</button></div><div class="reply"><input placeholder="Or answer in your own words"><button class="btn">Send</button></div></div>
+            <div class="help" style="color:var(--ink3);font-size:12.5px;margin-top:8px">Anything unresolved, from anyone: the architect at a fork, an engineer who thinks a ticket is wrong, the EM flagging a gap in the brief, or you. Answering one records a Decision, edits a ticket or rule, or is just a reply. Answered questions leave this list.</div>
+          </div>
+
+          <div class="pane" id="p-dec" hidden>
+            <div class="dochd"><span class="eyebrow">Decisions (1)</span><span class="file">oracle/decisions/DEC-*.md</span><button class="ib sm j-close" title="Close"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg></button></div>
+            <div class="rule"><span class="id">DEC-001</span> <b>Money is integer cents; no float arithmetic</b> <span class="pill good">approved · you · 4:40 PM</span><p><b style="color:var(--ink)">Question:</b> keep cents as integers or use a decimal library?<br><b style="color:var(--ink)">Chosen:</b> integers. The codebase already does it, no dependency, and the domain never needs sub-cent precision.<br><b style="color:var(--ink)">Affects:</b> SPEC-quality-001 clause 2; every ticket.</p><div class="src">Raised as Q-0 by the architect while drafting the brief · <a href="#">History</a></div></div>
+            <div class="help" style="color:var(--ink3);font-size:12.5px;margin-top:8px">The record of answered questions that changed something. Permanent; rules and tickets cite them by id. Open ones are under Questions.</div>
+          </div>
+
+          <div class="pane" id="p-tix">
+            <div class="dochd"><span class="eyebrow">Tickets (4) · the whole goal, in dependency order</span><span class="file">tickets/TKT-*.yaml</span><span class="pill good" title="Two-way: status, title and description changes flow both ways; contracts stay here">Jira: LED-41…44 synced 4:44 PM</span><button class="btn">Add ticket</button><button class="ib sm j-close" title="Close"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg></button></div>
+            <div class="plan-t"><span class="title">TKT-2001 · Add Ledger.transfer between accounts</span><button class="btn edit">Edit</button><span class="meta">Records a withdrawal and a deposit as one operation, both tagged <i>transfer</i>. Rejects unknown accounts, same account, non-positive amounts before writing anything.</span><span class="touch">src/ledger.ts · test/transfer.test.ts (new) · must follow SPEC-quality-001 · Sprint 1</span></div>
+            <div class="plan-t"><span class="title">TKT-2002 · Add Ledger.reverse(txId, date, memo?)</span><button class="btn edit">Edit</button><span class="meta">Corrects a transaction by recording its negation with a memo pointing at the original. Reversing a reversal, or an unknown id, throws. <i style="color:var(--info)">Changed 4:42 via EM: optional memo.</i></span><span class="touch">src/ledger.ts · test/reverse.test.ts (new) · must follow SPEC-quality-001, SPEC-ledger-002 · Sprint 1</span></div>
+            <div class="plan-t"><span class="title">TKT-2003 · Add categoryBreakdown report</span><button class="btn edit">Edit</button><span class="meta">Sums spending per category for a month. Uncategorised transactions go under <i>uncategorized</i>.</span><span class="touch">src/report.ts · test/report.test.ts · must follow SPEC-quality-001 · Sprint 1</span></div>
+            <div class="plan-t" style="opacity:.7"><span class="title">TKT-2004 · Reverse a transfer as a pair</span><button class="btn edit">Edit</button><span class="meta">Reversing either leg of a transfer reverses both. <i style="color:var(--ink3)">Stub. The architect fills in the contract when 2001 and 2002 land.</i></span><span class="touch">depends: TKT-2001, TKT-2002 · Sprint 2</span></div>
+            <div class="help" style="color:var(--ink3);font-size:12.5px;margin-top:6px">Sprint 1 = every ticket with nothing to wait on. Sprints are computed from the dependencies, not planned by hand. Edit any ticket any time; one that's in flight sends the engineer the new contract. Jira sync is two-way: a status change here (in review, done) updates the Jira issue, an edit to the Jira title or description updates the ticket here; the contract and rules live only here.</div>
+          </div>
+
+          <div class="pane" id="p-sprint" hidden>
+            <div class="dochd"><span class="eyebrow">Sprints</span><span class="file">sprints/S-*.yaml</span><button class="ib sm j-close" title="Close"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg></button></div>
+            <div class="help" style="color:var(--ink3);font-size:12.5px;margin-bottom:10px">Each sprint is the frontier of the ticket graph at the time it starts: every ticket with no unfinished dependencies. Only the next one is settled; later ones are projected and change whenever you change the graph. Finished sprints keep their file and their review.</div>
+
+            <div class="rule"><span class="id" style="color:var(--info)">S-1</span> <b>Next</b> <span class="pill info">3 tickets</span>
+              <table style="margin:8px 0"><thead><tr><th>Ticket</th><th style="width:110px">Status</th><th style="width:90px"></th></tr></thead><tbody>
+                <tr><td><a href="#" class="tlink">TKT-2001 · Add Ledger.transfer</a></td><td><span class="pill" title="blocks 1 ticket">blocker</span></td><td><a href="#">move</a></td></tr>
+                <tr><td><a href="#" class="tlink">TKT-2002 · Add Ledger.reverse</a></td><td><span class="pill" title="blocks 1 ticket">blocker</span></td><td><a href="#">move</a></td></tr>
+                <tr><td><a href="#" class="tlink">TKT-2003 · Add categoryBreakdown</a></td><td class="left">—</td><td><a href="#">move</a></td></tr>
+              </tbody></table>
+              <div class="src">Gates: inherits Who decides · <a href="#">override for this sprint</a> · Estimate about 8 minutes, $2 to $4</div>
+            </div>
+
+            <div class="rule" style="opacity:.75"><span class="id">S-2</span> <b>Projected · after 2001 and 2002 merge</b> <span class="pill">projected</span>
+              <table style="margin:8px 0"><thead><tr><th>Ticket</th><th style="width:110px">Status</th><th style="width:90px"></th></tr></thead><tbody>
+                <tr><td><a href="#" class="tlink">TKT-2004 · Reverse a transfer as a pair</a></td><td><span class="pill warn" title="blocked by 2 tickets">blocked</span></td><td><a href="#">move</a></td></tr>
+              </tbody></table>
+              <div class="help" style="color:var(--ink3);font-size:12.5px">Click a ticket for the specific blocked-by and blocks lists.</div>
+              <div class="rule" style="margin-top:8px;border-color:var(--info)"><span class="id" style="color:var(--info)">Ticket detail · TKT-2004</span> <b>Reverse a transfer as a pair</b> <span class="pill warn">blocked</span>
+                <dl class="kv" style="margin:8px 0 0"><dt>Blocked by</dt><dd class="mono">TKT-2001 <span class="left">in Sprint 1</span><br>TKT-2002 <span class="left">in Sprint 1</span></dd><dt>Blocks</dt><dd class="left">nothing</dd><dt>Rules</dt><dd class="mono">SPEC-quality-001, SPEC-ledger-002</dd><dt>Contract</dt><dd class="left">stub, expanded when blockers land</dd></dl>
+                <div class="src" style="margin-top:6px"><a href="#">Edit</a> · <a href="#">History</a> · this panel opens when you click any ticket, here or on the Tickets pane</div></div>
+              <div class="src">The EM will propose more tickets for this layer at the S-1 review if the goal isn't met.</div>
+            </div>
+
+            <div class="rule" style="border-style:dashed"><span class="id">S-3 …</span> <b>Nothing yet</b><p>The goal is covered by S-1 and S-2 as the plan stands. Adding tickets that depend on S-2 work creates S-3 here automatically.</p></div>
+
+            <div class="help" style="color:var(--ink3);font-size:12.5px;margin-top:10px">What a finished sprint looks like in this list: <span class="mono">S-0 · Done 2026-09-11 · 3 of 3 merged · 7m 09s · $3.20 · <a href="#">review</a> · <a href="#">report</a></span></div>
+          </div>
+
+          <div class="pane" id="p-kb" hidden>
+            <div class="dochd"><span class="eyebrow">Knowledge (4)</span><span class="file">knowledge/facts/*.md</span><button class="btn">Add fact</button><button class="ib sm j-close" title="Close"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg></button></div>
+            <table><thead><tr><th>Fact</th><th>Source</th><th>Used by</th><th></th></tr></thead><tbody>
+              <tr><td>Tests run with <span class="mono">bun test</span>; typecheck is <span class="mono">tsc --noEmit</span>. Both must pass before review.</td><td>package.json</td><td>every engineer brief</td><td><a href="#">edit</a></td></tr>
+              <tr><td>Money is integer cents everywhere; <span class="mono">toCents()</span> in src/money.ts is the only parser.</td><td>src/money.ts</td><td>2001, 2002</td><td><a href="#">edit</a></td></tr>
+              <tr><td>Transactions get ids from a counter in Ledger; ids are strings like <span class="mono">tx-7</span>.</td><td>src/ledger.ts</td><td>2002, 2004</td><td><a href="#">edit</a></td></tr>
+              <tr><td>tsconfig has noUncheckedIndexedAccess on, so array reads need a guard.</td><td>tsconfig.json</td><td>every engineer brief</td><td><a href="#">edit</a></td></tr>
+            </tbody></table>
+            <div class="help" style="color:var(--ink3);font-size:12.5px;margin-top:8px">Things the team learned about this repo that are worth not re-learning. The architect writes most of these; agents add some during a sprint. Pruned when stale.</div>
+          </div>
+
+          <div class="pane" id="p-policy" hidden>
+            <div class="dochd"><span class="eyebrow">Who decides</span><span class="file">policy.yaml</span><a href="#" class="btn">Open Settings</a><button class="ib sm j-close" title="Close"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg></button></div>
+            <table><thead><tr><th>Decision</th><th>Decided by</th></tr></thead><tbody>
+              <tr><td>Plan for a sprint</td><td><b>You</b></td></tr>
+              <tr><td>Rule change mid-sprint</td><td><b>You</b></td></tr>
+              <tr><td>Guardrail blocked an agent</td><td>EM, shown in the review</td></tr>
+              <tr><td>Sprint review</td><td><b>You</b></td></tr>
+              <tr><td>Demo before main</td><td>EM</td></tr>
+              <tr><td>Halt</td><td>EM, then tells you</td></tr>
+              <tr><td>Engineer escalation</td><td><b>You</b></td></tr>
+              <tr><td>Spend crosses $5 in a sprint</td><td><b>You</b></td></tr>
+            </tbody></table>
+            <div class="help" style="color:var(--ink3);font-size:12.5px;margin-top:8px">Preset: plans and reviews. Change any row in Settings; a sprint can override for itself from the Next sprint view.</div>
+          </div>
+
+        </div>
+      </div>
+    </div>
+    <div class="side">
+      <div class="dochd" style="margin-bottom:8px"><span class="eyebrow">EM</span><button class="ib sm j-chatx" title="Close chat"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg></button></div>
+      <div class="chat">
+        <div class="msg you"><div class="from">You · 4:38 PM</div><div class="body">Add the missing ledger operations: transfers between accounts, reversing a transaction as a correction, and a per-category spending breakdown in reports. Keep money as integer cents and keep the ledger append-only.</div></div>
+        <div class="msg"><div class="from">EM · 4:38 PM</div><div class="body">Got it. The architect is reading the repo now: 3 source files, 13 tests, a README. Back in a minute or two.</div></div>
+        <div class="msg"><div class="from">EM · 4:40 PM</div><div class="body">Draft plan is on the left: 3 tickets, 2 rules. One rule came from your brief, one I pulled from the README and the existing tests. Tell me what to change, or approve.</div></div>
+        <div class="msg"><div class="from">EM · 4:41 PM</div><div class="body">One flag: I'd flag one thing: TKT-2001 and TKT-2002 both edit <span class="mono">src/ledger.ts</span>. Running them in parallel is faster, but one will have to rebase over the other. I'd still run them in parallel; the conflict is small.</div></div>
+        <div class="msg you"><div class="from">You · 4:42 PM</div><div class="body">should reverse also take an optional memo?</div></div>
+        <div class="msg"><div class="from">EM · 4:42 PM</div><div class="body">Reasonable. I'd add it to TKT-2002's contract rather than a new ticket.<div class="actionset"><div class="eyebrow">Proposed change</div><ol><li>TKT-2002: add optional <span class="mono">memo</span> parameter, default "reversal of &lt;id&gt;".</li><li>Acceptance: custom memo is stored verbatim.</li></ol><div class="actions"><button class="btn primary">Apply</button><button class="btn">Discard</button></div></div></div></div>
+      </div>
+      <div class="compose"><input placeholder="Change the plan, ask, or say approve…"><button class="btn">Send</button></div>
+    </div></div>
+  </div>
+</section>
+
+<!-- ===== 3 SPRINT ===== -->
+<section class="screen" id="s3">
+  <div class="note"><b>The screen you sat in front of today, rebuilt around "what happened."</b> Each ticket is a story with timestamps, not a card in a column. Needs-you shows the unblock gate that the EM silently decided this afternoon. Team keeps agents after they leave. The EM answers from state.</div>
+  <div class="app">
+    <div class="topbar"><div class="repo" title="~/Projects/ledger-lite · main">ledger-lite</div><nav class="nav"><button class="j-nav" data-s="s2">Plan</button><button class="j-nav on" data-s="s3">Sprint<span class="badge">1</span></button><button class="j-nav" data-s="s5">Settings</button></nav><div class="grow"></div><span class="eyebrow">Sprint 1 · running 4m 12s</span><span><span class="dot"></span>3 agents working</span><button class="btn danger">Halt Sprint 1</button></div>
+    <div class="toolrow"><span class="grow"></span><span class="sep"></span><button class="ib sm j-em on" title="Show or hide EM chat"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a8 8 0 0 1-8 8H8l-5 3 1.5-4.5A8 8 0 1 1 21 12z"/></svg></button><button class="ib sm" title="Pop chat out into its own window"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/></svg></button><button class="ib sm j-max" title="Maximize chat"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/></svg></button></div>
+    <div class="frame"><div class="main">
+      <div class="strip">
+        <div><div class="k">Goal</div><div class="v" style="font-size:14px">Transfers, reversals, category report</div></div>
+        <div><div class="k">Merged</div><div class="v">0 <small>of 3</small></div></div>
+        <div><div class="k">In QA</div><div class="v">3</div></div>
+        <div><div class="k">Blocked</div><div class="v">0</div></div>
+        <div><div class="k">Spend</div><div class="v">$1.84 <small>of $4</small></div></div>
+        <div><div class="k">Asks you</div><div class="v">Plans, reviews</div></div>
+      </div>
+
+      <div class="needs"><div class="hd"><h2>Needs you</h2><span class="count">1</span></div>
+        <div class="card"><div class="kind">Unblock · TKT-2003 · waiting 40s</div><h3>QA wants to create a test file</h3>
+          <p>QA agent <span class="mono">qa-2003</span> tried to write <span class="mono">test/category-breakdown.qa.test.ts</span> in its clone. The guardrail stops QA from creating files, so the engineer's tests are the only ones that count. Allowing it once means QA's own checks run too; the file is never merged.</p>
+          <div class="actions"><button class="btn signal">Allow once</button><button class="btn">Deny</button><button class="btn">Let the EM decide these from now on</button></div><div class="reply"><input placeholder="Or answer in your own words: “allow, but name it category-breakdown.test.ts and keep it under test/”"><button class="btn">Send</button></div><div class="help" style="color:var(--ink3);font-size:12px;margin-top:4px">A typed answer goes to the agent that asked and to the EM. If it amounts to allow or deny, the EM applies it; if it changes the ticket, the EM turns it into a contract change.</div></div>
+      </div>
+
+      <div class="section"><div class="section-hd"><span class="eyebrow">Tickets</span><span class="left">click a ticket for its diff, review and QA notes</span></div>
+        <div class="story"><span class="id">TKT-2001</span><span class="title">Add Ledger.transfer between accounts</span>
+          <div class="stage"><span class="pill info">In QA</span><span class="who">qa-2001 · claude / sonnet-5</span></div>
+          <ul class="steps">
+            <li class="good"><span class="t">4:51:08</span><span class="m"></span><span><b>Built</b> by eng-2001 · +61 −0 in 2 files · 6 new tests pass</span></li>
+            <li class="good"><span class="t">4:55:50</span><span class="m"></span><span><b>Review approved</b>, round 1 · reviewer-2001: "validation happens before either write; matches SPEC-quality-001"</span></li>
+            <li class="now"><span class="t">4:56:14</span><span class="m"></span><span>QA running in a fresh clone</span></li>
+          </ul></div>
+        <div class="story"><span class="id">TKT-2002</span><span class="title">Add Ledger.reverse(txId, date)</span>
+          <div class="stage"><span class="pill info">In QA</span><span class="who">qa-2002 · claude / sonnet-5</span></div>
+          <ul class="steps">
+            <li class="good"><span class="t">4:52:30</span><span class="m"></span><span><b>Built</b> by eng-2002 · +58 −1 in 2 files · 7 new tests pass</span></li>
+            <li class="good"><span class="t">4:56:14</span><span class="m"></span><span><b>Review approved</b>, round 1 · reviewer-2002 cited SPEC-ledger-002: reversal is a new transaction, original untouched</span></li>
+            <li class="now"><span class="t">4:56:12</span><span class="m"></span><span>QA running in a fresh clone</span></li>
+            <li><span class="t">later</span><span class="m"></span><span>Will need to rebase over TKT-2001 (both touch src/ledger.ts)</span></li>
+          </ul></div>
+        <div class="story"><span class="id">TKT-2003</span><span class="title">Add categoryBreakdown report</span>
+          <div class="stage"><span class="pill warn">In QA · blocked</span><span class="who">qa-2003 · claude / sonnet-5</span></div>
+          <ul class="steps">
+            <li class="good"><span class="t">4:50:41</span><span class="m"></span><span><b>Built</b> by eng-2003 · +44 −0 in 2 files · 5 new tests pass</span></li>
+            <li class="good"><span class="t">4:55:19</span><span class="m"></span><span><b>Review approved</b>, round 1</span></li>
+            <li class="warn"><span class="t">4:57:02</span><span class="m"></span><span><b>Waiting on you:</b> QA asked to create a test file</span></li>
+          </ul></div>
+      </div>
+
+      <div class="section"><div class="section-hd"><span class="eyebrow">Team</span><span class="left">finished agents stay listed for the sprint</span></div>
+        <table><thead><tr><th>Agent</th><th>Model</th><th>Ticket</th><th>Doing</th><th class="mono">Tokens</th></tr></thead><tbody>
+          <tr><td class="mono">qa-2001</td><td>claude / sonnet-5</td><td class="mono">TKT-2001</td><td>Running bun test in clone</td><td class="mono">14k</td></tr>
+          <tr><td class="mono">qa-2002</td><td>claude / sonnet-5</td><td class="mono">TKT-2002</td><td>Reading contract</td><td class="mono">9k</td></tr>
+          <tr><td class="mono">qa-2003</td><td>claude / sonnet-5</td><td class="mono">TKT-2003</td><td><span class="pill warn">Blocked</span> waiting on you</td><td class="mono">11k</td></tr>
+          <tr><td class="mono left">reviewer-2001</td><td class="left">claude / opus-5</td><td class="mono left">TKT-2001</td><td class="left">Approved, left 4:55</td><td class="mono left">31k</td></tr>
+          <tr><td class="mono left">eng-2001</td><td class="left">claude / opus-5</td><td class="mono left">TKT-2001</td><td class="left">Done, left 4:54</td><td class="mono left">88k</td></tr>
+        </tbody></table>
+      </div>
+    </div>
+    <div class="side">
+      <div class="dochd" style="margin-bottom:8px"><span class="eyebrow">EM</span><button class="ib sm j-chatx" title="Close chat"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg></button></div>
+      <div class="chat">
+        <div class="msg you"><div class="from">You · 4:55 PM</div><div class="body">what is left on all tickets</div></div>
+        <div class="msg"><div class="from">EM · 4:55 PM</div><div class="body">All three are built and reviewed. What's left:<ul><li><b>2001, 2002:</b> QA, then merge. 2002 rebases over 2001.</li><li><b>2003:</b> QA is blocked waiting on you (test file). Then merge.</li></ul>About 3 to 4 minutes if QA passes.</div></div>
+        <div class="msg you"><div class="from">You · 4:57 PM</div><div class="body">reverse should refuse to reverse a transfer leg on its own</div></div>
+        <div class="msg"><div class="from">EM · 4:57 PM</div><div class="body">That's a contract change to a ticket already in QA.<div class="actionset"><div class="eyebrow">Proposed action</div><ol><li>Send TKT-2002 back to eng-2002 with the new rule.</li><li>Add acceptance: reversing one leg of a transfer throws; a transfer is reversed as a pair.</li><li>QA re-runs after.</li></ol><div class="actions"><button class="btn primary">Do it</button><button class="btn">Make it a new ticket instead</button><button class="btn">Discard</button></div></div></div></div>
+      </div>
+      <div class="compose"><input placeholder="Ask or steer…"><button class="btn">Send</button></div>
+    </div></div>
+  </div>
+</section>
+
+<!-- ===== 4 REVIEW ===== -->
+<section class="screen" id="s4">
+  <div class="note"><b>The sprint review gate, and the story you couldn't get today.</b> Plain-language summary first, then what went wrong, then the decision. The same text lands in <span class="mono">runs/*.md</span>.</div>
+  <div class="app">
+    <div class="topbar"><div class="repo" title="~/Projects/ledger-lite · main">ledger-lite</div><nav class="nav"><button class="j-nav" data-s="s2">Plan</button><button class="j-nav on" data-s="s4">Sprint<span class="badge">1</span></button><button class="j-nav" data-s="s5">Settings</button></nav><div class="grow"></div><span class="eyebrow">Sprint 1 · finished in 7m 09s · review pending</span><button class="btn signal" disabled title="Review Sprint 1 first">Start Sprint 2</button></div>
+    <div class="toolrow"><span class="grow"></span><span class="sep"></span><button class="ib sm j-em on" title="Show or hide EM chat"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a8 8 0 0 1-8 8H8l-5 3 1.5-4.5A8 8 0 1 1 21 12z"/></svg></button><button class="ib sm" title="Pop chat out into its own window"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/></svg></button><button class="ib sm j-max" title="Maximize chat"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/></svg></button></div>
+    <div class="frame"><div class="main">
+      <div class="needs"><div class="hd"><h2>Sprint 1 is ready for your review</h2><span class="count">1</span></div>
+        <div class="card summary">
+          <p><b>What was asked:</b> transfers between accounts, reversing a transaction as a correction, and a per-category spending report.</p>
+          <p><b>What was built:</b> all three. 247 lines across 5 files, 19 new tests, 32 total, all passing. Every ticket passed review in one round and QA accepted it.</p>
+          <p><b>What went wrong:</b> TKT-2002 hit a merge conflict in <span class="mono">src/ledger.ts</span> when it landed after TKT-2001. The team halted that ticket for 37 seconds, eng-2002 resolved it, and it merged cleanly. QA on TKT-2003 needed permission to write its own test file; the EM allowed it.</p>
+          <p><b>Where the code is:</b> on the <span class="mono">integration</span> branch. Accepting merges it into <span class="mono">main</span>.</p>
+          <div class="actions"><button class="btn signal">Accept and merge to main</button><button class="btn">Send a ticket back</button><button class="btn">Open the diff</button></div><div class="reply"><input placeholder="Or say what you want: “accept 2001 and 2003, send 2002 back, the memo prefix detection is too fragile”"><button class="btn">Send</button></div>
+        </div>
+      </div>
+      <div class="section"><div class="section-hd"><span class="eyebrow">Per ticket</span></div>
+        <dl class="kv">
+          <dt class="mono">TKT-2001</dt><dd>transfer(): 2 transactions per call, validation first. Review round 1 approved. QA ran 8 cases incl. same-account and zero amount. Merged 4:40:23.</dd>
+          <dt class="mono">TKT-2002</dt><dd>reverse(): new negating transaction, memo references original. Conflict on rebase, fixed by eng-2002. Merged 4:41:31.</dd>
+          <dt class="mono">TKT-2003</dt><dd>categoryBreakdown(): per-category totals for a month, uncategorised bucket. QA wrote its own edge-case tests (approved by EM). Merged 4:40:22.</dd>
+        </dl>
+      </div>
+      <div class="section"><div class="section-hd"><span class="eyebrow">Decisions made without you</span></div>
+        <table><thead><tr><th>When</th><th>Gate</th><th>Decided by</th><th>Outcome</th></tr></thead><tbody>
+          <tr><td class="mono">4:57</td><td>Unblock · QA test file</td><td>EM</td><td>Allowed once. "QA's tests run only in its clone; nothing merges."</td></tr>
+          <tr><td class="mono">5:00</td><td>Halt · rebase conflict TKT-2002</td><td>EM</td><td>Sent back to eng-2002 to resolve; resumed after 37s.</td></tr>
+        </tbody></table>
+      </div>
+      <div class="opts"><h3>What the EM proposes next</h3><ul><li>Sprint 2: persistence (save and load a ledger as JSON), which the README lists as a non-goal for now. Confirm before planning.</li><li>Or declare the goal met and stop.</li></ul></div>
+    </div>
+    <div class="side">
+      <div class="eyebrow" style="margin-bottom:8px">Diff · TKT-2002 (excerpt)</div>
+      <pre><span class="diffhd">src/ledger.ts</span>
+  record(input: TransactionInput): Transaction {
+<span class="add">+  reverse(txId: string, date: string, memo?: string): Transaction {</span>
+<span class="add">+    const original = this.byId.get(txId);</span>
+<span class="add">+    if (!original) throw new Error(`unknown transaction: ${txId}`);</span>
+<span class="add">+    if (original.memo.startsWith('reversal of ')) {</span>
+<span class="add">+      throw new Error('cannot reverse a reversal');</span>
+<span class="add">+    }</span>
+<span class="add">+    return this.record({</span>
+<span class="add">+      accountId: original.accountId,</span>
+<span class="add">+      amount: -original.amount,</span>
+<span class="add">+      date,</span>
+<span class="add">+      memo: memo ?? `reversal of ${txId}`,</span>
+<span class="add">+    });</span>
+<span class="add">+  }</span></pre>
+      <div class="eyebrow" style="margin:10px 0 6px">Review · reviewer-2002 · round 1</div>
+      <div class="msg"><div class="body">Approve. Original transaction is not mutated (SPEC-ledger-002). Input validation precedes the write. One nit, not blocking: detecting a reversal by memo prefix is fragile; a <span class="mono">reversalOf</span> field would be cleaner. Logged as follow-up.</div></div>
+    </div></div>
+  </div>
+</section>
+
+<!-- ===== 5 SETTINGS ===== -->
+<section class="screen" id="s5">
+  <div class="note"><b>policy.yaml's gates block with a face.</b> Every kind of decision the team can raise, and who makes it. This is what "all em" chips on today's strip were trying to say.</div>
+  <div class="app">
+    <div class="topbar"><div class="repo" title="~/Projects/ledger-lite · main">ledger-lite</div><nav class="nav"><button class="j-nav" data-s="s2">Plan</button><button class="j-nav" data-s="s3">Sprint<span class="badge">1</span></button><button class="j-nav on" data-s="s5">Settings</button></nav><div class="grow"></div><span class="eyebrow">Sprint 1 · running 4m 12s</span><span><span class="dot"></span>3 agents working</span><button class="btn danger">Halt Sprint 1</button></div>
+    <div class="frame solo"><div class="main">
+      <div class="form" style="max-width:76ch">
+        <div class="dochd" style="margin-bottom:10px"><h2>Settings</h2><span class="file">.agile/policy.yaml</span></div><div class="rule" style="display:flex;align-items:center;gap:12px"><div style="flex:1"><b>Spending</b><div class="what">$3.20 this sprint · $3.20 this project · Claude Max, resets in 2h 10m</div></div><button class="btn">Open spending</button><button class="ib sm" title="Pop out"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/></svg></button></div><h2 style="margin-top:18px">How much should the team ask you?</h2>
+        <div class="field" style="margin-top:10px"><div class="choices"><span class="choice">Everything</span><span class="choice on">Plans and reviews</span><span class="choice">Nothing, just tell me</span></div><div class="help">Presets set the rows below. Change any row on its own.</div></div>
+        <div class="gate-row"><div><b>Plan for a sprint</b><div class="what">The architect's proposed tickets and rules before any work starts.</div></div><span class="seg"><button class="on">Ask me</button><button>EM decides</button></span></div>
+        <div class="gate-row"><div><b>Rule change mid-sprint</b><div class="what">The architect wants to add or change a rule because the code contradicted the spec.</div></div><span class="seg"><button class="on">Ask me</button><button>EM decides</button></span></div>
+        <div class="gate-row"><div><b>Guardrail blocked an agent</b><div class="what">An agent tried something the rules stop, like QA creating a file. Allow once or deny.</div></div><span class="seg"><button>Ask me</button><button class="on">EM decides</button></span></div>
+        <div class="gate-row"><div><b>Sprint review</b><div class="what">The merged work and the report. Accept, or send tickets back.</div></div><span class="seg"><button class="on">Ask me</button><button>EM decides</button></span></div>
+        <div class="gate-row"><div><b>Demo before main</b><div class="what">A walkthrough of the finished feature before it's promoted.</div></div><span class="seg"><button>Ask me</button><button class="on">EM decides</button></span></div>
+        <div class="gate-row"><div><b>Halt</b><div class="what">A conflict, a stuck agent, or a rule violation stopped the team. Resume, reassign, or abandon.</div></div><span class="seg"><button>Ask me</button><button class="on">EM decides, then tells me</button></span></div>
+        <div class="gate-row"><div><b>Engineer escalation</b><div class="what">An engineer says the ticket is impossible or wrong as written.</div></div><span class="seg"><button class="on">Ask me</button><button>EM decides</button></span></div>
+        <div class="gate-row"><div><b>Spend crosses</b><div class="what">Stop and ask before going past this per sprint.</div></div><span class="seg"><button>$2</button><button class="on">$5</button><button>$20</button><button>Never</button></span></div>
+        <div class="field" style="margin-top:16px"><label>When the EM decides for you</label><div class="choices"><span class="choice on">Show it in the review</span><span class="choice">Also notify me right away</span></div></div>
+      </div>
+    </div></div>
+  </div>
+</section>
+
+<script>
+const tabs=[...document.querySelectorAll('.tab')];
+tabs.forEach(t=>t.addEventListener('click',()=>{
+  tabs.forEach(x=>x.setAttribute('aria-selected',x===t));
+  document.querySelectorAll('.screen').forEach(s=>s.classList.toggle('on',s.id===t.dataset.s));
+  try{localStorage.setItem('cr-tab',t.dataset.s)}catch(e){}
+}));
+try{const k=localStorage.getItem('cr-tab');const t=tabs.find(x=>x.dataset.s===k);if(t)t.click()}catch(e){}
+document.querySelectorAll('#rail button').forEach(b=>b.addEventListener('click',()=>{
+  b.closest('.plan').classList.remove('nopane');b.closest('.frame').classList.remove('nopane');
+  const app=b.closest('.app');if(app.querySelector('.frame').classList.contains('max'))setMax(app,false);
+  document.querySelectorAll('#rail button').forEach(x=>x.classList.toggle('on',x===b));
+  document.querySelectorAll('.pane').forEach(p=>p.hidden=(p.id!==b.dataset.p));
+}));
+const frameOf=el=>el.closest('.app').querySelector('.frame');
+function setMax(app,on){const f=app.querySelector('.frame');const m=app.querySelector('.j-max');f.classList.toggle('max',on);if(on)f.classList.remove('hid');m.innerHTML=on?`<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 14h6v6M20 10h-6V4M14 10l7-7M3 21l7-7"/></svg>`:`<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/></svg>`;m.title=on?'Restore':'Maximize chat';m.classList.toggle('on',on);if(on)app.querySelector('.j-em').classList.add('on');}
+document.querySelectorAll('.j-max').forEach(b=>b.addEventListener('click',()=>{const app=b.closest('.app');setMax(app,!app.querySelector('.frame').classList.contains('max'));}));
+document.querySelectorAll('.j-em').forEach(b=>b.addEventListener('click',()=>{const app=b.closest('.app');const f=app.querySelector('.frame');if(f.classList.contains('max'))setMax(app,false);const hid=f.classList.toggle('hid');b.classList.toggle('on',!hid);}));
+document.querySelectorAll('.j-rail').forEach(b=>b.addEventListener('click',()=>{const pl=b.closest('.app').querySelector('.plan');const mini=pl.classList.toggle('mini');b.innerHTML=mini?`<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16M13 10l2 2-2 2"/></svg>`:`<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16M15 10l-2 2 2 2"/></svg>`;b.title=mini?'Expand sidebar':'Collapse sidebar';}));
+document.querySelectorAll('.j-close').forEach(b=>b.addEventListener('click',()=>{const pl=b.closest('.plan');pl.querySelectorAll('.pane').forEach(p=>p.hidden=true);pl.querySelectorAll('#rail button').forEach(x=>x.classList.remove('on'));pl.classList.add('nopane');pl.closest('.frame').classList.add('nopane');}));
+document.querySelectorAll('.j-chatx').forEach(b=>b.addEventListener('click',()=>{const app=b.closest('.app');const f=app.querySelector('.frame');if(f.classList.contains('max'))setMax(app,false);f.classList.add('hid');app.querySelector('.j-em').classList.remove('on');}));
+document.querySelectorAll('.j-nav').forEach(b=>b.addEventListener('click',()=>{const t=tabs.find(x=>x.dataset.s===b.dataset.s);if(t)t.click();}));
+</script>

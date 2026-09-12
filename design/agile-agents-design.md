@@ -562,6 +562,22 @@ The control room as built answers "is anything waiting on me" and nothing else. 
 
 Findings from the first run that this journey fixes: the terminal is silent and the UI is a status board, so the operator cannot tell what happened; the chat accepts messages nobody reads; every agent shows `claude/unknown`; the sprint goal is a hard-coded string; a ticket click shows raw YAML.
 
+
+### Control room v2 (2026-09-12, from mockup review with Pete)
+
+Clickable mockup: `design/control-room-mockup.html` (open in a browser; dark/light aware; filled with the ledger-lite run). Decisions taken while reviewing it, in order of weight:
+
+- **No plan approval.** Documents are edited, sprints are started. The `approve_plan` gate is raised at sprint start and means "start this frontier with these tickets and rules as they stand"; the button is **Start Sprint N**, always in the top bar. Nothing else on the Plan screen is ever "approved"; it is edited.
+- **Plan screen = the documents + the EM chat.** Left rail, one entry per artifact family, each opening a pane that renders the files and edits them: Brief (`oracle/product.md`), Rules (`oracle/specs`), Questions (`board/questions/Q-*.yaml`, new), Decisions (`oracle/decisions`), Tickets (`tickets/`), Sprints (`sprints/`, all of them), Knowledge (`knowledge/`), Who decides (`policy.yaml`). The goal is the first chat message; the architect fills the panes. Any pane can be closed (X) and the chat widens; the rail collapses to icons.
+- **Questions vs Decisions.** A Question is unresolved: an architect at a fork, an engineer who thinks the ticket is wrong (the missing `escalate` handler lands here), the EM flagging a gap, or the operator. Answering one records a Decision, edits a ticket or rule, or is just a reply. Decisions is the permanent record of answered questions that changed something. Both need a file home; `board/questions/` is proposed.
+- **Sprints pane lists every sprint**: finished ones with review and report links, the next one settled, later ones projected from the graph. Rows show a blocked/blocker pill only, never the ticket lists; the ticket detail panel carries blocked-by/blocks. One row action, **move**, replaces pull-out/force-in.
+- **Every Needs-you card takes free text** as well as its buttons. A typed answer goes to the asking agent and the EM; the EM applies it as allow/deny or turns it into a contract change. The gate decision schema needs a free-text field.
+- **Jira is two-way sync**, not import: status changes here update the issue, title/description edits there update the ticket; contracts and rules live only here.
+- **EM chat is one conversation across views**, with maximize, pop-out to its own window, hide, and close. The daemon already serves it as a route, so pop-out is cheap.
+- **Top bar is identical on every view**: project name (path on hover), then Plan / Sprint / Settings in fixed positions (Sprint carries the Needs-you count), then on the right the sprint status ("Sprint 1 · running 4m 12s", "3 agents working") and the single action (Start Sprint N / Halt Sprint N). Spend is not in the top bar; it is a Settings row and a pop-out modal.
+- A thin tool row under the top bar holds the rail collapse on the left and, after a divider, chat show/hide, pop-out, and maximize on the right. Icons, not text links.
+- Sprint view: tickets as timestamped stories (built, reviewed with the verdict quoted, in QA, waiting on you), Team keeps finished agents and names vendor/model, Needs-you cards answerable in ten seconds. Review view: what was asked, what was built, what went wrong, where the code is, decisions the EM made without you, what the EM proposes next; the same text goes to `runs/*.md`.
+
 ### Technical shape
 
 - **One TypeScript monorepo**; schemas (ticket, message, oracle header, stanza) defined once in zod and shared by daemon, hooks, CLI, and UI. This is the main reason not to split languages.
