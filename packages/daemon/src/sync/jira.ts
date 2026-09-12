@@ -13,7 +13,12 @@
  *    the per-ticket shadow of what both sides last agreed on
  *    (`external.jira_synced`, `packages/shared/src/ticket.ts`): one side
  *    changed -> that side wins; both changed -> the later of the issue's
- *    `updated` and the time the daemon first observed the local edit.
+ *    `updated` and the **real local edit time**, read out of
+ *    `log/events.jsonl` (see `lastLocalEditAt`). QA round 1, finding 1: this
+ *    used to be the moment a tick first *noticed* the divergence, which is
+ *    always "now" and therefore always later than an already-elapsed Jira
+ *    `updated` — the local side won every real two-sided conflict and Jira
+ *    could only win under clock skew.
  * 3. **Contracts, rules and dependencies stay local.** `contract`,
  *    `oracle_refs`, `kb_refs`, `depends`, `estimate`, `routing` are never
  *    read from or written to Jira.
@@ -105,11 +110,17 @@ export interface JiraSyncPass {
   pushedFields: string[];
   /** Issues whose status was (re-)asserted from the local ticket. */
   pushedStatus: string[];
+  /**
+   * Mapped tickets this pass could not act on, and why (QA round 1, finding
+   * 2: a ticket must never be skipped silently). Not an error — the usual
+   * cause is a mapping that has never been seen in a pull yet.
+   */
+  skipped: Array<{ ticket?: TicketId; key: string; reason: string }>;
   errors: string[];
 }
 
 function emptyPass(): JiraSyncPass {
-  return { created: [], pulled: [], pushedFields: [], pushedStatus: [], errors: [] };
+  return { created: [], pulled: [], pushedFields: [], pushedStatus: [], skipped: [], errors: [] };
 }
 
 /** Which side wins one field, given the shadow both sides last agreed on. */
@@ -121,7 +132,7 @@ export function resolveField(args: {
   shadow: string | undefined;
   /** Issue `fields.updated`. */
   jiraUpdatedAt: string;
-  /** When the daemon first observed the local side diverge from the shadow. */
+  /** The real time of the last local edit to the ticket, or `undefined` if it has never been edited locally. */
   localChangedAt: string | undefined;
 }): FieldWinner {
   const { jira, local, shadow, jiraUpdatedAt, localChangedAt } = args;
@@ -142,12 +153,6 @@ export function resolveField(args: {
   return Date.parse(localChangedAt) > Date.parse(jiraUpdatedAt) ? 'local' : 'jira';
 }
 
-/** Drops `local_changed_at` outright rather than setting it to `undefined` — the shadow is serialised to yaml, and an explicit `undefined` is not a value yaml has. */
-function withoutLocalChange(shadow: TicketJiraSynced): TicketJiraSynced {
-  const { local_changed_at: _dropped, ...rest } = shadow;
-  return rest;
-}
-
 export class JiraSync {
   private readonly store: StateStore;
   private readonly client: JiraClient;
@@ -156,6 +161,8 @@ export class JiraSync {
   private readonly now: () => Date;
   private readonly statusMap: Record<TicketStatus, string>;
   private readonly onError: (message: string) => void;
+  /** Per-pass cache for `lastLocalEditAt`; reset at the top of every `tick`. */
+  private localEdits: Map<string, string> | undefined;
 
   constructor(deps: JiraSyncDeps) {
     this.store = deps.store;
@@ -212,7 +219,7 @@ export class JiraSync {
     const fromConfig = readLinkedProject(this.configPath);
     const project = fromConfig ?? this.envProject;
     const mapped = this.linkedTickets();
-    const cursor = this.cursor(mapped);
+    const cursor = this.cursor(mapped, this.now().toISOString());
     return {
       linked: Boolean(project),
       ...(project ? { project, source: fromConfig ? 'config' : 'env' } : {}),
@@ -224,14 +231,19 @@ export class JiraSync {
   // ------------------------------------------------------------- sync pass
 
   /**
-   * One full pass: observe local edits, pull Jira, merge, push what the
-   * local side won, then assert status. Returns an empty pass when no
-   * project is linked, so the daemon's poll timer is a no-op on an unlinked
-   * repo rather than an error every interval.
+   * One full pass: pull Jira, merge title/description, push what the local
+   * side won, then assert status. Returns an empty pass when no project is
+   * linked, so the daemon's poll timer is a no-op on an unlinked repo rather
+   * than an error every interval.
    */
   async tick(): Promise<JiraSyncPass> {
     const project = this.linkedProject();
     if (!project) return emptyPass();
+
+    // Per-pass cache of "when was this ticket last edited by someone other
+    // than this sync" — one scan of `log/events.jsonl`, and only if a
+    // two-sided conflict actually needs it.
+    this.localEdits = undefined;
 
     const result = emptyPass();
     const nowIso = this.now().toISOString();
@@ -244,24 +256,9 @@ export class JiraSync {
     for (const ticket of this.linkedTickets()) {
       byKey.set(ticket.external?.jira as string, ticket);
     }
-    const cursor = this.cursor([...byKey.values()]);
+    const cursor = this.cursor([...byKey.values()], nowIso);
 
-    // --- 1. observe local edits, so step 2's conflict rule has a local
-    // timestamp to weigh against the issue's `updated`. Stamped once, on
-    // first divergence, and cleared when the edit is pushed.
-    for (const [key, ticket] of byKey) {
-      const shadow = ticket.external?.jira_synced;
-      if (!shadow) continue;
-      const diverged =
-        ticket.title !== shadow.title || (ticket.description ?? '') !== shadow.description;
-      if (diverged && !shadow.local_changed_at) {
-        byKey.set(key, await this.writeShadow(ticket, { ...shadow, local_changed_at: nowIso }));
-      } else if (!diverged && shadow.local_changed_at) {
-        byKey.set(key, await this.writeShadow(ticket, withoutLocalChange(shadow)));
-      }
-    }
-
-    // --- 2. pull + merge.
+    // --- 1. pull + merge.
     let issues: JiraIssue[] = [];
     try {
       issues = await this.client.searchUpdatedSince(project, cursor);
@@ -271,8 +268,15 @@ export class JiraSync {
       result.errors.push(message);
     }
 
+    /** What Jira said about each issue *this pass* — fresher than any shadow. */
+    const fetched = new Map<string, JiraIssue>();
+
     for (const issue of issues) {
-      if (!issue.key) continue;
+      if (!issue.key) {
+        result.skipped.push({ key: '(no key)', reason: 'jira returned an issue with no key' });
+        continue;
+      }
+      fetched.set(issue.key, issue);
       try {
         const ticket = byKey.get(issue.key);
         if (!ticket) {
@@ -282,35 +286,35 @@ export class JiraSync {
           continue;
         }
         const shadow = ticket.external?.jira_synced;
+        // Only consulted when both sides moved — `resolveField` ignores it
+        // otherwise, so the event-log scan stays off the common path.
+        const localChangedAt = this.lastLocalEditAt(ticket.id);
         const titleWinner = resolveField({
           jira: issue.summary,
           local: ticket.title,
           shadow: shadow?.title,
           jiraUpdatedAt: issue.updated,
-          localChangedAt: shadow?.local_changed_at,
+          localChangedAt,
         });
         const descWinner = resolveField({
           jira: issue.description,
           local: ticket.description ?? '',
           shadow: shadow?.description,
           jiraUpdatedAt: issue.updated,
-          localChangedAt: shadow?.local_changed_at,
+          localChangedAt,
         });
 
         // The shadow records the value both sides are agreed on *now*: the
         // issue's value where Jira won (the local ticket is rewritten to
         // match in the same write), and the previously agreed value where
         // the local side won — leaving that field visibly diverged from the
-        // local ticket so step 3 below pushes it and only then advances it.
+        // local ticket so step 2 below pushes it and only then advances it.
         const merged: TicketJiraSynced = {
           title: titleWinner === 'local' ? (shadow?.title ?? issue.summary) : issue.summary,
           description:
             descWinner === 'local' ? (shadow?.description ?? issue.description) : issue.description,
           updated_at: issue.updated,
           status: issue.status,
-          ...(titleWinner === 'local' || descWinner === 'local'
-            ? { local_changed_at: shadow?.local_changed_at ?? nowIso }
-            : {}),
         };
 
         const pulled = titleWinner === 'jira' || descWinner === 'jira';
@@ -329,10 +333,21 @@ export class JiraSync {
       }
     }
 
-    // --- 3/4. push: title/description the local side won, then status.
+    // --- 2/3. push: title/description the local side won, then status.
     for (const [key, ticket] of byKey) {
       const shadow = ticket.external?.jira_synced;
-      if (!shadow) continue;
+      if (!shadow) {
+        // A mapping that has never been seen in a pull: there is no agreed
+        // value to diff against, so pushing would overwrite whatever Jira
+        // holds. Surfaced rather than skipped in silence (QA finding 2).
+        result.skipped.push({
+          ticket: ticket.id,
+          key,
+          reason:
+            'no sync shadow yet — the issue has not appeared in a pull (check the project key and that the issue exists)',
+        });
+        continue;
+      }
       let current = ticket;
 
       const summary = current.title !== shadow.title ? current.title : undefined;
@@ -346,14 +361,11 @@ export class JiraSync {
             ...(summary !== undefined ? { summary } : {}),
             ...(description !== undefined ? { description } : {}),
           });
-          current = await this.writeShadow(
-            current,
-            withoutLocalChange({
-              ...shadow,
-              title: current.title,
-              description: current.description ?? '',
-            }),
-          );
+          current = await this.writeShadow(current, {
+            ...shadow,
+            title: current.title,
+            description: current.description ?? '',
+          });
           result.pushedFields.push(key);
         } catch (err) {
           const message = `jira field push failed for ${key}: ${err instanceof Error ? err.message : String(err)}`;
@@ -363,11 +375,15 @@ export class JiraSync {
       }
 
       // "Agile Agents wins on status": whatever the issue says, the local
-      // status is what it should say. A status changed in Jira shows up in
-      // the shadow's `status` on the pull above and is corrected right here.
+      // status is what it should say. Diffed against the *freshest* status
+      // known — what this pass fetched, falling back to the shadow for an
+      // issue the pull did not return. QA finding 2: this used to read the
+      // shadow alone, so a ticket the pull had stopped returning also
+      // silently stopped having its status asserted.
       const wanted = this.statusMap[current.status];
       const shadowNow = current.external?.jira_synced;
-      if (shadowNow && shadowNow.status !== wanted) {
+      const jiraStatus = fetched.get(key)?.status ?? shadowNow?.status;
+      if (shadowNow && jiraStatus !== wanted) {
         try {
           await this.client.transitionIssue(key, wanted);
           current = await this.writeShadow(current, { ...shadowNow, status: wanted });
@@ -396,14 +412,53 @@ export class JiraSync {
    * (`updated >=`) because Jira's JQL date literal is minute-granular, so an
    * exclusive cursor would drop a second issue edited in the same minute —
    * re-seeing an issue is a no-op, since every decision is shadow-diffed.
+   *
+   * **Clamped to the daemon's now** (QA round 1, finding 2): the shadow's
+   * `updated_at` is whatever the Jira server stamped, so a clock ahead of
+   * this host's would push the cursor into the future and the ticket would
+   * stop matching `updated >= cursor` — silently, permanently, and taking
+   * the status assertion down with it. A cursor can never usefully be later
+   * than now; clamping costs at most one redundant re-fetch.
    */
-  private cursor(tickets: Ticket[]): string | undefined {
+  private cursor(tickets: Ticket[], nowIso: string): string | undefined {
     let latest: string | undefined;
     for (const ticket of tickets) {
       const at = ticket.external?.jira_synced?.updated_at;
       if (at && (!latest || at > latest)) latest = at;
     }
-    return latest;
+    if (latest === undefined) return undefined;
+    return latest > nowIso ? nowIso : latest;
+  }
+
+  /**
+   * The real time of the last local edit to a ticket, from the append-only
+   * event log: the newest `ticket_put` for it whose `agent` is not this sync
+   * (every write this module makes carries `by: SYNC_AGENT`, so the shadow
+   * writes below never count as local edits). `undefined` for a ticket only
+   * this sync has ever written — a stub it created, with no local edit to
+   * weigh against Jira's.
+   *
+   * `ticket_put` only, not `state_transition`: `StateStore.transitionTicket`
+   * changes `status` and `history`, never `title`/`description`, and this
+   * value exists purely to date the last title/description edit. Counting a
+   * status change as one would re-introduce the bug QA found from the other
+   * side — moving a ticket on the board would let the local title win a
+   * conflict it should lose.
+   *
+   * Scanned once per pass and cached, and only when a two-sided conflict
+   * actually needs it.
+   */
+  private lastLocalEditAt(id: TicketId): string | undefined {
+    if (!this.localEdits) {
+      const edits = new Map<string, string>();
+      for (const event of this.store.listEvents()) {
+        if (event.kind !== 'ticket_put' || !event.ticket || event.agent === SYNC_AGENT) continue;
+        const previous = edits.get(event.ticket);
+        if (!previous || event.ts > previous) edits.set(event.ticket, event.ts);
+      }
+      this.localEdits = edits;
+    }
+    return this.localEdits.get(id);
   }
 
   /** One `putTicket` carrying the new shadow and, optionally, the fields Jira won. */

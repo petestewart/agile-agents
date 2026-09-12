@@ -124,10 +124,16 @@ export type TicketBudget = z.infer<typeof TicketBudgetSchema>;
  * the thing that is created, versioned and deleted with the ticket.
  *
  * `updated_at` is the issue's own `fields.updated` at that sync (also the
- * pull cursor, taken as the max across all mapped tickets); `status` is the
- * issue's status name then, which the status push diffs against;
- * `local_changed_at` is when the daemon first observed the local ticket
- * diverge from this shadow, and is cleared once that edit is pushed.
+ * pull cursor, taken as the max across all mapped tickets and clamped to the
+ * daemon's now); `status` is the issue's status name then, which the status
+ * push diffs against.
+ *
+ * It records *only what was last agreed* — never an edit time of its own.
+ * QA round 1, finding 1: an earlier version stamped the moment a tick first
+ * *noticed* the local ticket had diverged, which is always "now" and so
+ * always later than Jira's already-elapsed `updated`, making the local side
+ * win every real two-sided conflict. The real local edit time comes from
+ * `log/events.jsonl` instead (see `packages/daemon/src/sync/jira.ts`).
  */
 export const TicketJiraSyncedSchema = z
   .object({
@@ -135,7 +141,6 @@ export const TicketJiraSyncedSchema = z
     description: z.string(),
     updated_at: z.string().min(1),
     status: z.string().optional(),
-    local_changed_at: z.string().min(1).optional(),
   })
   .strict();
 export type TicketJiraSynced = z.infer<typeof TicketJiraSyncedSchema>;

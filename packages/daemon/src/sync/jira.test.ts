@@ -22,6 +22,10 @@ function now(): Date {
   return clock;
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 function advance(ms: number): void {
   clock = new Date(clock.getTime() + ms);
 }
@@ -164,6 +168,7 @@ describe('link / unlink', () => {
       pulled: [],
       pushedFields: [],
       pushedStatus: [],
+      skipped: [],
       errors: [],
     });
   });
@@ -333,63 +338,67 @@ describe('conflict rule', () => {
     expect(jira.issues.get('LED-46')?.status).toBe('To Do');
   });
 
-  test('last writer wins on title: the later Jira edit beats the earlier local one', async () => {
-    const sync = makeSync();
+  /**
+   * QA round 1, finding 1: these two run on the **real wall clock** — real
+   * `Date.now()` for the issue's `updated`, a real 200 ms gap, and the local
+   * edit dated by its own `ticket_put` event in `log/events.jsonl`. The
+   * synthetic-clock versions they replace could not have caught the bug:
+   * `localChangedAt` used to be stamped at tick time, so the local side won
+   * whichever order the edits really happened in.
+   */
+  test('last writer wins on title: a Jira edit made 200ms after the local one wins', async () => {
+    const sync = makeSync({ now: () => new Date() });
     sync.link('LED');
     jira.put({
       key: 'LED-47',
       summary: 'Base',
       description: 'base',
       status: 'To Do',
-      updated: clock.toISOString(),
+      updated: new Date().toISOString(),
     });
     const id = (await sync.tick()).created[0] as TicketId;
 
-    // Local edits first...
-    advance(60_000);
+    // Local edits first — dated by the `ticket_put` event this write mints.
     await store.putTicket(validateTicket({ ...store.getTicket(id), title: 'Local wrote' }));
-    // ...but the daemon only observes it on the pass where Jira has already
-    // been edited *later*, so the Jira write is the last writer.
-    advance(60_000);
+    await sleep(200);
+    // ...then Jira, genuinely later, in the same poll window.
     jira.put({
       key: 'LED-47',
       summary: 'Jira wrote',
       description: 'base',
       status: 'To Do',
-      updated: clock.toISOString(),
+      updated: new Date().toISOString(),
     });
 
     const pass = await sync.tick();
     expect(pass.pulled).toEqual([id]);
+    expect(pass.pushedFields).toEqual([]);
     expect(store.getTicket(id).title).toBe('Jira wrote');
     expect(jira.issues.get('LED-47')?.summary).toBe('Jira wrote');
   });
 
-  test('last writer wins on title: the later local edit beats the earlier Jira one', async () => {
-    const sync = makeSync();
+  test('last writer wins on title: a local edit made 200ms after the Jira one wins', async () => {
+    const sync = makeSync({ now: () => new Date() });
     sync.link('LED');
     jira.put({
       key: 'LED-48',
       summary: 'Base',
       description: 'base',
       status: 'To Do',
-      updated: clock.toISOString(),
+      updated: new Date().toISOString(),
     });
     const id = (await sync.tick()).created[0] as TicketId;
 
-    // Jira is edited, but the daemon does not pull yet.
-    advance(60_000);
-    const jiraEditedAt = clock.toISOString();
+    // Jira edits first...
     jira.put({
       key: 'LED-48',
       summary: 'Jira wrote',
       description: 'base',
       status: 'To Do',
-      updated: jiraEditedAt,
+      updated: new Date().toISOString(),
     });
-
-    // The local side is edited after that, and *then* a pass runs.
-    advance(60_000);
+    await sleep(200);
+    // ...then the local side, genuinely later.
     await store.putTicket(validateTicket({ ...store.getTicket(id), title: 'Local wrote' }));
 
     const pass = await sync.tick();
@@ -397,6 +406,63 @@ describe('conflict rule', () => {
     expect(pass.pulled).toEqual([]);
     expect(store.getTicket(id).title).toBe('Local wrote');
     expect(jira.issues.get('LED-48')?.summary).toBe('Local wrote');
+  });
+
+  test('a status change is not a title edit: moving the board does not win a title conflict', async () => {
+    const sync = makeSync({ now: () => new Date() });
+    sync.link('LED');
+    jira.put({
+      key: 'LED-52',
+      summary: 'Base',
+      description: 'base',
+      status: 'To Do',
+      updated: new Date().toISOString(),
+    });
+    const id = (await sync.tick()).created[0] as TicketId;
+
+    await store.putTicket(validateTicket({ ...store.getTicket(id), title: 'Local wrote' }));
+    await sleep(200);
+    jira.put({
+      key: 'LED-52',
+      summary: 'Jira wrote',
+      description: 'base',
+      status: 'To Do',
+      updated: new Date().toISOString(),
+    });
+    // A local *status* transition after the Jira edit must not back-date the
+    // title conflict in the local side's favour — `lastLocalEditAt` reads
+    // `ticket_put` only, never `state_transition`.
+    await sleep(50);
+    await store.transitionTicket(id, 'ready', { by: 'architect' });
+
+    await sync.tick();
+    expect(store.getTicket(id).title).toBe('Jira wrote');
+  });
+
+  test("this sync's own shadow writes never count as a local edit", async () => {
+    const sync = makeSync({ now: () => new Date() });
+    sync.link('LED');
+    jira.put({
+      key: 'LED-53',
+      summary: 'Base',
+      description: 'base',
+      status: 'To Do',
+      updated: new Date().toISOString(),
+    });
+    const id = (await sync.tick()).created[0] as TicketId;
+    // Several passes, each writing the shadow, and no local edit at all.
+    await sync.tick();
+    await sleep(50);
+    jira.put({
+      key: 'LED-53',
+      summary: 'Jira wrote',
+      description: 'base',
+      status: 'To Do',
+      updated: new Date().toISOString(),
+    });
+    const pass = await sync.tick();
+    expect(pass.pulled).toEqual([id]);
+    expect(store.getTicket(id).title).toBe('Jira wrote');
   });
 
   test('resolveField: one-sided changes never consult the clock', () => {
@@ -458,6 +524,111 @@ describe('state placement', () => {
       updated_at: clock.toISOString(),
       status: 'To Do',
     });
+  });
+});
+
+describe('cursor and skipped tickets (QA round 1, finding 2)', () => {
+  test('a shadow timestamp ahead of the daemon clock does not blind the ticket', async () => {
+    const sync = makeSync({ now: () => new Date() });
+    sync.link('LED');
+    // A Jira server whose clock runs ahead stamps `updated` in our future.
+    const skewed = new Date(Date.now() + 10 * 60_000).toISOString();
+    await store.putTicket(
+      validateTicket({
+        id: 'TKT-0700',
+        title: 'Skewed',
+        status: 'draft',
+        contract: {},
+        history: [],
+        external: {
+          jira: 'LED-70',
+          jira_synced: {
+            title: 'Skewed',
+            description: '',
+            updated_at: skewed,
+            status: 'To Do',
+          },
+        },
+      }),
+    );
+    // A perfectly ordinary, present-tense Jira edit.
+    jira.put({
+      key: 'LED-70',
+      summary: 'Edited in Jira',
+      description: '',
+      status: 'Done',
+      updated: new Date().toISOString(),
+    });
+
+    const pass = await sync.tick();
+    // Unclamped, the cursor would be 10 minutes in the future and this issue
+    // would never match `updated >= cursor` again.
+    expect(pass.pulled).toEqual(['TKT-0700']);
+    expect(store.getTicket('TKT-0700').title).toBe('Edited in Jira');
+    // ...and the status assertion comes back to life with it.
+    expect(pass.pushedStatus).toEqual(['LED-70']);
+    expect(jira.issues.get('LED-70')?.status).toBe('To Do');
+    expect(pass.errors).toEqual([]);
+  });
+
+  test('status reported by the pull, not the stale shadow, drives re-assertion', async () => {
+    const sync = makeSync({ now: () => new Date() });
+    sync.link('LED');
+    // Shadow claims the issue is already where the local status maps to...
+    await store.putTicket(
+      validateTicket({
+        id: 'TKT-0701',
+        title: 'Drifted',
+        status: 'draft',
+        contract: {},
+        history: [],
+        external: {
+          jira: 'LED-71',
+          jira_synced: {
+            title: 'Drifted',
+            description: '',
+            updated_at: new Date(Date.now() - 60_000).toISOString(),
+            status: 'To Do',
+          },
+        },
+      }),
+    );
+    // ...but Jira actually holds something else.
+    jira.put({
+      key: 'LED-71',
+      summary: 'Drifted',
+      description: '',
+      status: 'Done',
+      updated: new Date().toISOString(),
+    });
+
+    const pass = await sync.tick();
+    expect(pass.pushedStatus).toEqual(['LED-71']);
+    expect(jira.issues.get('LED-71')?.status).toBe('To Do');
+  });
+
+  test('a mapped ticket with no shadow is reported as skipped, not silently ignored', async () => {
+    const sync = makeSync();
+    sync.link('LED');
+    await store.putTicket(
+      validateTicket({
+        id: 'TKT-0702',
+        title: 'Hand-mapped',
+        status: 'draft',
+        contract: {},
+        history: [],
+        external: { jira: 'LED-72' },
+      }),
+    );
+
+    const pass = await sync.tick();
+    expect(pass.errors).toEqual([]);
+    expect(pass.skipped).toHaveLength(1);
+    expect(pass.skipped[0]).toMatchObject({ ticket: 'TKT-0702', key: 'LED-72' });
+    expect(pass.skipped[0]?.reason).toMatch(/no sync shadow yet/);
+    // Nothing was pushed on a guess.
+    expect(pass.pushedFields).toEqual([]);
+    expect(pass.pushedStatus).toEqual([]);
   });
 });
 
