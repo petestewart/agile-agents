@@ -8,15 +8,28 @@
 import type { Event } from '@agile-agents/shared';
 import type { FeedSnapshot } from './feed-types';
 
+/**
+ * T041: EM chat rides the same socket as a side channel — one `chat_delta`
+ * per streamed text chunk of the EM's reply, then exactly one
+ * `chat_turn_end` (carrying `error` when the turn failed). Deliberately not
+ * `events.jsonl` lines: a per-chunk event would drown the feed.
+ */
+export type ChatFrame =
+  | { type: 'chat_delta'; thread: string; message_id: string; text: string }
+  | { type: 'chat_turn_end'; thread: string; message_id: string; error?: string };
+
 export type FeedFrame =
   | { type: 'hello'; version: string; stateRoot: string }
   | (FeedSnapshot & { type: 'snapshot' })
-  | { type: 'event'; event: Event };
+  | { type: 'event'; event: Event }
+  | ChatFrame;
 
 export interface FeedSocketHandlers {
-  onSnapshot: (snapshot: FeedSnapshot) => void;
-  onEvent: (event: Event) => void;
+  onSnapshot?: (snapshot: FeedSnapshot) => void;
+  onEvent?: (event: Event) => void;
   onStatusChange?: (status: 'connecting' | 'open' | 'closed') => void;
+  /** T041: EM chat frames. A subscriber that only wants chat (the popped-out window) passes just this. */
+  onChat?: (frame: ChatFrame) => void;
 }
 
 export interface FeedSocketHandle {
@@ -45,8 +58,11 @@ export function connectFeedSocket(handlers: FeedSocketHandlers): FeedSocketHandl
       } catch {
         return;
       }
-      if (frame.type === 'snapshot') handlers.onSnapshot(frame);
-      else if (frame.type === 'event') handlers.onEvent(frame.event);
+      if (frame.type === 'snapshot') handlers.onSnapshot?.(frame);
+      else if (frame.type === 'event') handlers.onEvent?.(frame.event);
+      else if (frame.type === 'chat_delta' || frame.type === 'chat_turn_end') {
+        handlers.onChat?.(frame);
+      }
     };
     socket.onclose = () => {
       handlers.onStatusChange?.('closed');

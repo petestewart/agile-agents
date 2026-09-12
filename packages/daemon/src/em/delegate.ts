@@ -68,7 +68,8 @@ export function parseEmDecision(
   return undefined;
 }
 
-function latestSprint(store: StateStore): Sprint {
+/** The sprint an EM prompt quotes: the latest-started one, or a placeholder before the first sprint exists. Exported so the resident EM session (`em/resident.ts`) renders its brief from exactly the same inputs this delegate does. */
+export function latestSprint(store: StateStore): Sprint {
   const sprints = store.listSprints();
   const latest = [...sprints].sort((a, b) => b.started.localeCompare(a.started))[0];
   if (latest) return latest;
@@ -82,7 +83,8 @@ function latestSprint(store: StateStore): Sprint {
   } as unknown as Sprint;
 }
 
-function policyOrDefault(store: StateStore): Policy {
+/** The policy an EM prompt quotes, or an empty one before `agile init` wrote it. Exported alongside `latestSprint` — see there. */
+export function policyOrDefault(store: StateStore): Policy {
   try {
     return store.getPolicy();
   } catch (err) {

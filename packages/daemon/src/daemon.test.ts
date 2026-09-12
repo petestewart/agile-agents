@@ -261,4 +261,49 @@ describe('handle.advancePipeline (the one pipeline list)', () => {
     expect(handle.store?.getTicket('TKT-0001').status).toBe('stale');
     expect(bus.poll('architect').some((m) => m.kind === 'escalate')).toBe(true);
   });
+
+  /**
+   * T041 acceptance: "killing the resident session does not stall gates
+   * (delegate path still decides)". The two are deliberately separate
+   * sessions — the resident EM answers chat, the one-shot delegate decides
+   * gates — so this asserts the split holds even with the resident dead.
+   */
+  test('T041: killing the resident EM session does not stall an em-owned gate', async () => {
+    runInit(repo);
+    handle = await startDaemon({
+      cwd: repo,
+      port: 0,
+      socketPath: join(repo, '.agile-daemon.sock'),
+      ceremonyTickMs: 0,
+      gateDelegate: () => ({ decision: 'approve', by: 'em', rationale: 'delegate decided' }),
+    });
+    expect(handle.residentEm).toBeDefined();
+    expect(handle.emChat).toBeDefined();
+
+    handle.residentEm?.kill();
+    expect(handle.residentEm?.alive).toBe(false);
+
+    const gates = handle.gateService;
+    if (!gates) throw new Error('daemon has no gate service');
+    const request = await gates.request('unblock', {
+      policy: { gates: { unblock: 'em' }, breaker_signals: [] },
+      hilKind: 'unblock',
+      summary: 'eng-0001 wants to install a dependency in its own worktree',
+    });
+    await gates.settled();
+    const decided = gates.get(request.id);
+    expect(decided?.status).toBe('resolved');
+    expect(decided?.decision).toBe('approve');
+  });
+
+  test('T041: the resident EM never spawns a vendor process until someone chats', async () => {
+    runInit(repo);
+    handle = await startDaemon({
+      cwd: repo,
+      port: 0,
+      socketPath: join(repo, '.agile-daemon.sock'),
+      ceremonyTickMs: 0,
+    });
+    expect(handle.residentEm?.alive).toBe(false);
+  });
 });

@@ -11,10 +11,15 @@
  */
 
 import { describe, expect, test } from 'bun:test';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { chromium } from 'playwright-core';
+import {
+  type SpawnSessionOptions,
+  type SpawnedSession,
+  spawnSession,
+} from '@agile-agents/acp-client';
+import { type Page, chromium } from 'playwright-core';
 import { Bus } from '../bus';
 import { type DaemonHandle, startDaemon } from '../daemon';
 import { GateService } from '../gates';
@@ -24,6 +29,39 @@ import { StateStore } from '../store';
 import { resolveChromiumExecutable } from './chromium';
 
 const executablePath = resolveChromiumExecutable();
+
+const FAKE_AGENT_PATH = join(import.meta.dir, '..', 'runner', 'fake-agent.ts');
+
+/**
+ * T041: the offline stand-in for the resident EM's vendor — the same
+ * `fake-agent.ts` subprocess `runner/fake-driver.ts`'s `createFakeSpawn`
+ * uses, scripted to answer any prompt with one canned reply. No vendor
+ * login, no `AGILE_LIVE`.
+ */
+function cannedEmSpawn(repo: string, reply: string): (opts: SpawnSessionOptions) => SpawnedSession {
+  const scriptPath = join(repo, 'em-chat-script.json');
+  writeFileSync(
+    scriptPath,
+    JSON.stringify({ steps: [{ type: 'agent_text', text: reply }, { type: 'end_turn' }] }),
+  );
+  return (opts: SpawnSessionOptions) =>
+    spawnSession({
+      ...opts,
+      cmd: 'bun',
+      args: [FAKE_AGENT_PATH],
+      envOverrides: { ...opts.envOverrides, AGILE_FAKE_AGENT_SCRIPT: scriptPath },
+    });
+}
+
+/** Polls the rendered chat log for a line containing `text` (this package's tsconfig has no DOM lib, so `page.waitForFunction` is not available here). */
+async function waitForChatText(page: Page, text: string, timeoutMs = 15000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    if ((await page.locator('.cr-chat-msg', { hasText: text }).count()) > 0) return;
+    if (Date.now() > deadline) throw new Error(`chat log never showed ${JSON.stringify(text)}`);
+    await page.waitForTimeout(100);
+  }
+}
 
 function initRepo(): string {
   const repo = mkdtempSync(join(tmpdir(), 'agile-control-room-e2e-'));
@@ -136,6 +174,10 @@ describe('control room SPA (Playwright e2e)', () => {
         cwd: repo,
         port: 0,
         socketPath: join(repo, '.agile-daemon.sock'),
+        // T041: the send now also runs a resident EM turn — point it at the
+        // fake ACP transport so this offline test never tries to spawn a
+        // real vendor (`test:integration` must pass with no vendor login).
+        emChatSpawn: cannedEmSpawn(repo, 'ack'),
       });
 
       const page = await browser.newPage();
@@ -507,4 +549,71 @@ describe('control room SPA (Playwright e2e)', () => {
       rmSync(repo, { recursive: true, force: true });
     }
   }, 20000);
+
+  /**
+   * T041 acceptance, offline half: "in a live run, 'what is left on all
+   * tickets' gets an answer in the panel within one turn; the pop-out window
+   * and the in-page panel show the same thread". Driven through the fake ACP
+   * transport, so the whole path — `POST /api/chat/em` -> resident EM turn ->
+   * `chat_delta`/`chat_turn_end` on `/ws` -> bus thread -> `GET
+   * /api/chat/em` — is real except for the vendor.
+   */
+  test('the chat panel answers within one turn, and the reply survives a reload and the pop-out route', async () => {
+    const repo = initRepo();
+    let handle: DaemonHandle | undefined;
+    const browser = await chromium.launch({ executablePath });
+    const reply = 'TKT-1001 is in review; TKT-1002 is unassigned.';
+
+    try {
+      runInit(repo);
+      handle = await startDaemon({
+        cwd: repo,
+        port: 0,
+        socketPath: join(repo, '.agile-daemon.sock'),
+        emChatSpawn: cannedEmSpawn(repo, reply),
+      });
+      const base = `http://127.0.0.1:${handle.http.port}`;
+
+      const page = await browser.newPage();
+      await page.goto(`${base}/control-room`);
+
+      const textarea = page.locator('.cr-chat-input textarea');
+      await textarea.waitFor({ state: 'attached', timeout: 5000 });
+      await textarea.fill('what is left on all tickets');
+      await page.locator('.cr-chat-input button').click();
+
+      // One turn, answered in the panel.
+      await page.locator('.cr-chat-msg[data-from="em"]').first().waitFor({
+        state: 'attached',
+        timeout: 15000,
+      });
+      await waitForChatText(page, reply);
+
+      // A reload renders the same thread — it comes from the bus, not from
+      // anything this page kept in memory.
+      await page.reload();
+      await waitForChatText(page, reply);
+      expect(await page.locator('.cr-chat-msg[data-from="you"]').first().textContent()).toContain(
+        'what is left on all tickets',
+      );
+
+      // ... and so does the popped-out window's own route.
+      const popout = await browser.newPage();
+      await popout.goto(`${base}/control-room/chat`);
+      await waitForChatText(popout, reply);
+      expect(await popout.locator('[data-testid="chat-popout"]').count()).toBe(0);
+
+      // The reply is a real `em -> human` bus message, not a UI-only render.
+      const thread = (await (await fetch(`${base}/api/chat/em`)).json()) as Array<{
+        from: string;
+        body: string;
+      }>;
+      expect(thread.map((e) => e.from)).toEqual(['human', 'em']);
+      expect(thread[1]?.body).toBe(reply);
+    } finally {
+      await browser.close();
+      await handle?.stop();
+      rmSync(repo, { recursive: true, force: true });
+    }
+  }, 60000);
 });

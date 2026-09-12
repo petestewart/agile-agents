@@ -157,8 +157,29 @@ export function releaseHalt(id: string): Promise<unknown> {
   return fetch(`/api/halt/${encodeURIComponent(id)}`, { method: 'DELETE' }).then((r) => asJson(r));
 }
 
-/** EM chat panel send (steer / question) — §17: "steer -> action-set cards". */
-export function sendEmChat(body: string, ticket?: TicketId): Promise<{ ok: boolean }> {
+/**
+ * One line of the EM chat thread (T041). Local mirror of
+ * `packages/daemon/src/em/chat.ts`'s `ChatEntry`, for the same
+ * no-workspace-cycle reason `feed-types.ts` mirrors `FeedSnapshot`.
+ */
+export interface ChatEntry {
+  id: string;
+  ts: string;
+  from: 'human' | 'em';
+  body: string;
+  ref?: string;
+}
+
+/** The chat thread as the daemon has it (the bus is the source of truth) — this is what makes a reload, and the popped-out window, show the same conversation. */
+export function getEmChat(): Promise<ChatEntry[]> {
+  return fetch('/api/chat/em').then((r) => asJson(r));
+}
+
+/** EM chat panel send (steer / question) — §17: "steer -> action-set cards". The EM's reply streams back over `/ws` (`chat_delta`/`chat_turn_end`), keyed by `reply_id`. */
+export function sendEmChat(
+  body: string,
+  ticket?: TicketId,
+): Promise<{ ok: boolean; streaming?: boolean; reply_id?: string; reason?: string }> {
   return fetch('/api/chat/em', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },

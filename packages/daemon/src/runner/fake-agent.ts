@@ -56,8 +56,8 @@ export interface FakeAgentScript {
    */
   requireAuthMethod?: string;
   /**
-   * T027: path to append one JSON line per `session/set_mode` and
-   * `authenticate` request this process receives — a test's way to observe
+   * T027: path to append one JSON line per `session/set_mode`,
+   * `authenticate` and (T041) `session/prompt` request this process receives — a test's way to observe
    * what `runner/session.ts` actually sent without a fragile process-exit
    * race, the same pattern `request_permission`'s `resultFile` already
    * uses for the client's answer. Omitted: no logging (default, matches
@@ -258,6 +258,10 @@ function handleLine(line: string): void {
       return;
     }
     case 'session/prompt':
+      // T041: logged like `session/set_mode`/`authenticate` above, so a test
+      // can assert what a session was actually prompted with (the resident
+      // EM's brief-on-first-turn-only rule) without a process-exit race.
+      appendLog(script, { method: 'session/prompt', params: message.params });
       if (message.id !== undefined) void runScript(message.id);
       return;
     case 'session/cancel':
