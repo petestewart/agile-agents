@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { appendFileSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Policy } from '@agile-agents/shared';
@@ -8,6 +8,7 @@ import { GateService } from './gates';
 import { type HttpServerHandle, startHttpServer } from './http';
 import { runInit } from './init';
 import { StateStore } from './store';
+import { type FakeJiraHandle, HttpJiraClient, JiraSync, startFakeJira } from './sync';
 
 let server: HttpServerHandle;
 
@@ -83,6 +84,24 @@ describe('feed routes without a store', () => {
   test('GET /api/snapshot 503s', async () => {
     const res = await fetch(`http://127.0.0.1:${server.port}/api/snapshot`);
     expect(res.status).toBe(503);
+  });
+
+  test('GET /api/sync/jira 503s when Jira is not configured', async () => {
+    const res = await fetch(`http://127.0.0.1:${server.port}/api/sync/jira`);
+    expect(res.status).toBe(503);
+    expect((await res.json()) as { error: string }).toMatchObject({
+      error: 'jira sync is not configured',
+    });
+  });
+
+  test('POST /api/sync/jira/link and /unlink 503 when Jira is not configured', async () => {
+    for (const path of ['/api/sync/jira/link', '/api/sync/jira/unlink']) {
+      const res = await fetch(`http://127.0.0.1:${server.port}${path}`, {
+        method: 'POST',
+        body: JSON.stringify({ project: 'LED' }),
+      });
+      expect(res.status).toBe(503);
+    }
   });
 });
 
@@ -598,5 +617,162 @@ describe('T025 control room routes', () => {
     // this checkout) or 404 (fresh checkout, ui package not built yet) —
     // both are acceptable; a 500 is not.
     expect([200, 404]).toContain(res.status);
+  });
+});
+
+// --- T045: Jira two-way sync link/unlink actions (§17 v2 Tickets pane) ---
+
+describe('T045 Jira sync routes', () => {
+  let repo: string;
+  let configPath: string;
+  let store: StateStore;
+  let jira: FakeJiraHandle;
+  let sync: JiraSync;
+  let syncServer: HttpServerHandle;
+
+  beforeEach(() => {
+    repo = mkdtempSync(join(tmpdir(), 'agile-sync-http-'));
+    Bun.spawnSync(['git', 'init', '-q'], { cwd: repo });
+    Bun.spawnSync(['git', 'config', 'user.email', 'test@example.com'], { cwd: repo });
+    Bun.spawnSync(['git', 'config', 'user.name', 'Test'], { cwd: repo });
+    writeFileSync(join(repo, 'README.md'), '# fixture\n');
+    Bun.spawnSync(['git', 'add', '-A'], { cwd: repo });
+    Bun.spawnSync(['git', 'commit', '-q', '-m', 'initial commit'], { cwd: repo });
+    const init = runInit(repo);
+    configPath = join(repo, 'agile.config.yaml');
+    store = StateStore.open(init.stateRoot);
+    jira = startFakeJira();
+    sync = new JiraSync({
+      store,
+      client: new HttpJiraClient({
+        baseUrl: jira.baseUrl,
+        email: 'pete@example.com',
+        apiToken: 'token-123',
+      }),
+      configPath,
+      onError: () => {},
+    });
+    syncServer = startHttpServer({
+      port: 0,
+      version: '0.0.0-test',
+      stateRoot: init.stateRoot,
+      startedAt: Date.now(),
+      store,
+      gates: new GateService(store),
+      jiraSync: sync,
+      feedPollIntervalMs: 20,
+    });
+  });
+
+  afterEach(async () => {
+    await syncServer.stop();
+    jira.stop();
+    store.close();
+    rmSync(repo, { recursive: true, force: true });
+  });
+
+  test('GET /api/sync/jira reports an unlinked repo', async () => {
+    const res = await fetch(`http://127.0.0.1:${syncServer.port}/api/sync/jira`);
+    expect(res.status).toBe(200);
+    expect((await res.json()) as { linked: boolean; mapped: number }).toEqual({
+      linked: false,
+      mapped: 0,
+    });
+  });
+
+  test('link round-trips a project key through the POST body, and status reflects it', async () => {
+    const linked = await fetch(`http://127.0.0.1:${syncServer.port}/api/sync/jira/link`, {
+      method: 'POST',
+      body: JSON.stringify({ project: 'LED' }),
+    });
+    expect(linked.status).toBe(200);
+    expect((await linked.json()) as { project: string }).toMatchObject({
+      linked: true,
+      project: 'LED',
+      source: 'config',
+    });
+
+    const status = await fetch(`http://127.0.0.1:${syncServer.port}/api/sync/jira`);
+    expect((await status.json()) as { project: string }).toMatchObject({
+      linked: true,
+      project: 'LED',
+    });
+    // The link lands in the host-local config file, never under `.agile/`.
+    expect(readFileSync(configPath, 'utf8')).toContain('project: LED');
+  });
+
+  test('unlink clears the link', async () => {
+    await fetch(`http://127.0.0.1:${syncServer.port}/api/sync/jira/link`, {
+      method: 'POST',
+      body: JSON.stringify({ project: 'LED' }),
+    });
+    const unlinked = await fetch(`http://127.0.0.1:${syncServer.port}/api/sync/jira/unlink`, {
+      method: 'POST',
+    });
+    expect(unlinked.status).toBe(200);
+    expect((await unlinked.json()) as { unlinked: boolean }).toMatchObject({
+      unlinked: true,
+      project: 'LED',
+    });
+
+    const status = await fetch(`http://127.0.0.1:${syncServer.port}/api/sync/jira`);
+    expect((await status.json()) as { linked: boolean }).toMatchObject({ linked: false });
+    expect(sync.linkedProject()).toBeUndefined();
+  });
+
+  test('a project key that is not a Jira key is a 400 and writes nothing', async () => {
+    const res = await fetch(`http://127.0.0.1:${syncServer.port}/api/sync/jira/link`, {
+      method: 'POST',
+      body: JSON.stringify({ project: 'not a key' }),
+    });
+    expect(res.status).toBe(400);
+    expect(sync.linkedProject()).toBeUndefined();
+  });
+
+  describe('cross-origin protection on the sync POSTs', () => {
+    test('a same-origin Origin header is accepted', async () => {
+      const res = await fetch(`http://127.0.0.1:${syncServer.port}/api/sync/jira/link`, {
+        method: 'POST',
+        headers: { origin: `http://127.0.0.1:${syncServer.port}` },
+        body: JSON.stringify({ project: 'LED' }),
+      });
+      expect(res.status).toBe(200);
+      expect(sync.linkedProject()).toBe('LED');
+    });
+
+    test('an Origin naming a different origin is rejected with 403 and does not link', async () => {
+      const res = await fetch(`http://127.0.0.1:${syncServer.port}/api/sync/jira/link`, {
+        method: 'POST',
+        headers: { origin: 'http://evil.example' },
+        body: JSON.stringify({ project: 'LED' }),
+      });
+      expect(res.status).toBe(403);
+      expect(sync.linkedProject()).toBeUndefined();
+    });
+
+    test('no Origin header at all (e.g. a CLI/server client) is accepted', async () => {
+      const res = await fetch(`http://127.0.0.1:${syncServer.port}/api/sync/jira/link`, {
+        method: 'POST',
+        body: JSON.stringify({ project: 'LED' }),
+      });
+      expect(res.status).toBe(200);
+    });
+
+    test('Sec-Fetch-Site: same-origin is accepted, cross-site is rejected with 403', async () => {
+      const ok = await fetch(`http://127.0.0.1:${syncServer.port}/api/sync/jira/link`, {
+        method: 'POST',
+        headers: { 'sec-fetch-site': 'same-origin' },
+        body: JSON.stringify({ project: 'LED' }),
+      });
+      expect(ok.status).toBe(200);
+
+      const rejected = await fetch(`http://127.0.0.1:${syncServer.port}/api/sync/jira/unlink`, {
+        method: 'POST',
+        headers: { 'sec-fetch-site': 'cross-site' },
+      });
+      expect(rejected.status).toBe(403);
+      // Still linked: the rejected unlink changed nothing.
+      expect(sync.linkedProject()).toBe('LED');
+    });
   });
 });
