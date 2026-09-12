@@ -26,3 +26,4 @@ export * from './hil';
 export * from './review';
 export * from './merge';
 export * from './qa';
+export * from './sync';

@@ -12,7 +12,12 @@
 
 export const PACKAGE_NAME = '@agile-agents/daemon';
 
-export { discoverConfig, type AgileConfig, type DiscoverConfigOptions } from './config';
+export {
+  discoverConfig,
+  type AgileConfig,
+  type DiscoverConfigOptions,
+  type JiraConfig,
+} from './config';
 export { DAEMON_CACHE_DIR, sandboxedSubprocessEnv } from './subprocess-env';
 export { acquireLock, LockError, type LockHandle } from './lock';
 export {
@@ -107,6 +112,9 @@ export * from './sandbox';
 
 // Pi adapter: the agile Pi extension source, its installer, gate env (T022).
 export * from './pi';
+
+// External ticket sync: Jira two-way sync, sync.* RPC (T045).
+export * from './sync';
 
 // Handoff and pause: graceful/hard handoff, pause/resume, manual cooldown,
 // HandoffCoordinator, handoff.* RPC (T024).

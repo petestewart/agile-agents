@@ -112,10 +112,34 @@ export const TicketBudgetSchema = z
   .strict();
 export type TicketBudget = z.infer<typeof TicketBudgetSchema>;
 
+/**
+ * External tracker mapping (§17 "Control room v2": "**Jira is two-way
+ * sync**, not import"). One optional key per tracker; `jira` holds the issue
+ * key (`LED-41`) this ticket is bound to. `.strict()`, so a tracker with no
+ * field here cannot be smuggled in — adding one is a schema change, which is
+ * the point: `packages/daemon/src/sync/**` must know every tracker it syncs.
+ */
+export const TicketExternalSchema = z
+  .object({
+    jira: z.string().min(1).optional(),
+  })
+  .strict();
+export type TicketExternal = z.infer<typeof TicketExternalSchema>;
+
 export const TicketSchema = z
   .object({
     id: TicketIdSchema,
     title: z.string().min(1),
+    /**
+     * DESIGN-GAP (T045): the §4 "Ticket" yaml has `title` and `contract` but
+     * no free-text body, while §17 v2 and the control-room mockup both
+     * require "an edit to the Jira title or description updates the ticket
+     * here". The contract is explicitly *not* it ("contracts and rules live
+     * only here", never synced), so a ticket needs a plain prose field of
+     * its own for the issue body to land in. Optional, so every pre-T045
+     * ticket file still validates.
+     */
+    description: z.string().optional(),
     status: TicketStatusSchema,
     sprint: SprintIdSchema.optional(),
     parent: EpicIdSchema.optional(),
@@ -140,6 +164,8 @@ export const TicketSchema = z
     // discriminated union over MSG-/TKT-/DEC- pointer forms (a review nit;
     // left for whichever ticket first needs to dereference it).
     reason: z.string().min(1).optional(),
+    /** External tracker mapping (§17 v2 Jira two-way sync) — absent on an unlinked ticket. */
+    external: TicketExternalSchema.optional(),
   })
   .strict();
 

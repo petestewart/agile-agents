@@ -57,6 +57,7 @@ import {
 } from './runner';
 import type { AgentSessionOptions } from './runner';
 import { StateStore, buildStateRpcMethods } from './store';
+import { HttpJiraClient, JiraSync, buildSyncRpcMethods, resolveJiraSettings } from './sync';
 import { LiveRunner, ToolService, buildToolRpcMethods, loadToolRegistry } from './tools';
 
 export const DAEMON_VERSION: string = daemonPackageJson.version;
@@ -87,6 +88,8 @@ export interface DaemonHandle {
   reviewProtocol?: ReviewProtocol;
   qaProtocol?: QaProtocol;
   emLoop?: EmLoop;
+  /** T045: Jira two-way sync — `undefined` unless Jira is configured (base URL + credentials in the environment). */
+  jiraSync?: JiraSync;
   /**
    * One pass of the pipeline glue (`runner/pipeline-glue.ts`: review
    * requests, engineer verdicts, HIL resolutions, architect inbox, security
@@ -291,6 +294,37 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
           repoRoot: config.repoRoot,
         })
       : undefined;
+  // Jira two-way sync (T045, §17 v2): constructed only when the operator has
+  // actually configured Jira (base URL + `JIRA_EMAIL`/`JIRA_API_TOKEN` in the
+  // environment — `sync/config.ts` never reads credentials from a file, and
+  // nothing here writes them anywhere). Unconfigured, every `sync.*` RPC
+  // method and the three `/api/sync/jira*` routes are simply absent/503 and
+  // no poll timer is armed: a repo that has never touched Jira pays nothing.
+  const jiraSettings = resolveJiraSettings(config);
+  const jiraSync =
+    store && jiraSettings
+      ? new JiraSync({
+          store,
+          client: new HttpJiraClient({
+            baseUrl: jiraSettings.baseUrl,
+            email: jiraSettings.email,
+            apiToken: jiraSettings.apiToken,
+          }),
+          onError: (message) => console.error(message),
+        })
+      : undefined;
+  // Its own timer rather than a step in the ceremony tick: the pull cadence
+  // is a separate tunable (`JIRA_POLL_INTERVAL_MS`, default 60s) and a slow
+  // or unreachable Jira must not delay the EM loop. Errors are collected
+  // into the pass result and logged by `JiraSync` itself, never fatal.
+  const jiraTimer =
+    jiraSync && jiraSettings
+      ? setInterval(() => {
+          void jiraSync.tick().catch((err) => console.error('jira sync tick failed:', err));
+        }, jiraSettings.pollIntervalMs)
+      : undefined;
+  jiraTimer?.unref();
+
   // Ceremony driver: one daemon-level interval ticks the gate service (HIL
   // deadline fallthrough, §16 — nothing else calls `GateService.tick()`),
   // then the handoff coordinator over every ticket (pausing a stuck-ready
@@ -562,6 +596,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
           ...(qaProtocol ? buildQaRpcMethods(qaProtocol) : {}),
           ...(quotaService ? buildQuotaRpcMethods(quotaService, store) : {}),
           ...(handoffCoordinator ? buildHandoffRpcMethods(handoffCoordinator, store, bus) : {}),
+          ...(jiraSync ? buildSyncRpcMethods(jiraSync) : {}),
         }
       : undefined;
 
@@ -594,6 +629,8 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
       // control room's EM chat and Oracle propose-edit routes 503 forever
       // — `bus` is already constructed above for the RPC `bus.*` methods.
       bus,
+      // T045: backs the Tickets pane's link/unlink action.
+      jiraSync,
     });
   } catch (err) {
     await rpc.close();
@@ -616,6 +653,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
     reviewProtocol,
     qaProtocol,
     emLoop,
+    jiraSync,
     ...(store ? { advancePipeline } : {}),
     async stop() {
       if (stopped) return;
@@ -626,6 +664,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
         // does not wait on each session's own exit/crash cleanup, so this
         // never blocks shutdown on a slow-to-die agent.
         if (ceremonyTimer) clearInterval(ceremonyTimer);
+        if (jiraTimer) clearInterval(jiraTimer);
         runner?.stopAll();
         await http.stop();
         await rpc.close();
