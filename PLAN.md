@@ -411,6 +411,78 @@ Priority encodes dependency layer as well as importance: P0 tickets are v0-block
 - **Validation Steps:** `for i in $(seq 20); do bun test packages/daemon/src/pi/agile-extension.test.ts; done` under load, then 3x `bun test`.
 - **Notes:** Discovered by T036 QA round 1 (2026-09-09). Launch after T036 QA round 2 returns so the QA full-suite runs are not competing with a fifth agent. Branch `T038-pi-heartbeat-deflake` (`85a71a1`, test-only): measured registration→first-heartbeat socket latency 1/15 samples at ~27 ms vs the 10 ms fixed sleep; fix replaces the three sleeps with a `waitFor` poll (runner-test pattern), ordering assertions unchanged; timer-disabled mutant fails; 20/20 under load, 3/3 full suites at 1844. QA round 1 ACCEPT (20/20 under load, one-file scope, interval-neutralised mutant fails; 4/6 full suites clean, the 2 failures were the old watchdog flake because `85a71a1` branched before the T035 merge). Review round 1 PASS (only three heartbeat producers, single-shot socket call, so ≥3 is provably the interval; independent mutant 3/3 fail; nit N1 waitFor deadline == bun timeout → set to 4 000 at merge). merge: b0ee498. Gates: 1865 pass, 2 fail in `sandbox/backend.test.ts` that pass 14/14 in isolation — a concurrent T037 reviewer process was mutating the real `<tmpdir>/.agile-daemon-cache/sandbox-detect` path those tests still use (the collision T037 scopes to a per-test `TMPDIR`); 8 Playwright, 3x offline e2e green.
 
+### Ticket: T039 Gate decisions carry free text
+- **Priority:** P1
+- **Status:** Not Started
+- **Owner:** Unassigned
+- **Scope:** Design §17 "Control room v2" (2026-09-12): every Needs-you card takes a typed answer as well as its buttons. `HilRequest` gains an optional `note` (body-capped like a message) written with the decision; `agile approve <id>` / the HTTP approve/deny routes accept it; the gate service delivers the note to the asking agent (inbox message, `hil_reply` kind) and to the EM. A note with no button press resolves nothing by itself — the EM delegate (`em/delegate.ts`) reads it and decides approve/deny or raises a contract change on the ticket. Event log carries the note.
+- **Acceptance Criteria:** A pending `unblock` answered with "yes, but only for the seed script" resolves the gate, the engineer's next hook call drains the note into its inbox, and the EM delegate's prompt includes it. Schema stays `.strict()`; no other schema change.
+- **Validation Steps:** `bun test packages/shared packages/daemon/src/gates packages/daemon/src/em`; offline e2e still green.
+- **Notes:** Foundation for T042/T044. Today `HilDecision` is `approve | deny` only.
+
+### Ticket: T040 Questions store and the missing escalate handler
+- **Priority:** P1
+- **Status:** Not Started
+- **Owner:** Unassigned
+- **Scope:** Depends on T039. Design §17 v2 "Questions vs Decisions". New entity `Question` (`board/questions/Q-<ulid>.yaml`: `raised_by`, `ticket?`, `text`, `options?`, `status open|answered`, `answer?`, `resolved_as` = decision id | ticket edit | reply) in `packages/shared`, read/written only through the store. Producers: the engineer `escalate` verb (currently has no handler — the stanza is written and nothing happens), the architect at a planning fork, the EM flagging a gap, the operator from the UI. Resolving one either records a `DEC-*` through the write guard, edits a ticket/rule, or just replies to the raiser. `agile status` lists open questions; `/api/questions` read + answer routes; a pending question is a Needs-you card.
+- **Acceptance Criteria:** An engineer calling `escalate` produces a `Q-*` file, a `question_raised` event and a Needs-you card; answering it with a typed reply writes the answer, delivers it to the engineer's inbox, and marks the question `answered`; answering with "record as decision" creates a `DEC-*` and links it. Convention note: a new `board/` subdirectory is a new artifact type — `board/hil/` is the sibling precedent, and the design section names the path; log the choice in the Decisions log at merge.
+- **Validation Steps:** `bun test packages/shared packages/daemon`; offline e2e green.
+- **Notes:** Discovered on the 2026-09-11 ledger-lite run: the design has no handler for an engineer who thinks its ticket is wrong.
+
+### Ticket: T041 Resident EM session and chat stream proxy
+- **Priority:** P1
+- **Status:** Not Started
+- **Owner:** Unassigned
+- **Scope:** Depends on T015, T025. Today `agile run --live` has no resident EM session (gates go to a one-shot delegate) and `/api/chat/em` posts to the bus with no ACP stream back, so chat replies never render. Make the EM a resident ACP session for the life of the daemon (the delegate stays as the gate decider when the resident session is busy or absent), proxy its stream over `/ws` as `chat_delta` / `chat_turn_end` events, and serve the chat panel as its own route (`/control-room/chat`) so the UI can pop it out into a separate window and keep one conversation across views. Chat history survives a page reload (bus thread as source of truth).
+- **Acceptance Criteria:** In a live run, "what is left on all tickets" gets an answer in the panel within one turn; the pop-out window and the in-page panel show the same thread; killing the resident session does not stall gates (delegate path still decides). Offline e2e drives the same through the fake transport.
+- **Validation Steps:** `bun test packages/daemon/src/em packages/daemon/src/feed`; `bun run test:integration`; one `test:live` run by hand.
+- **Notes:** Pete on 2026-09-11: "should I have gotten an answer from the em agent here" — no, and that is the bug this fixes.
+
+### Ticket: T042 Plan screen: documents, living plan, Start Sprint
+- **Priority:** P1
+- **Status:** Not Started
+- **Owner:** Unassigned
+- **Scope:** Depends on T039, T040, T041. Design §17 v2 and the mockup `design/control-room-mockup.html` (Plan tab). Replace the "approve the plan" idea in the UI: a left rail with one pane per artifact family — Brief (`oracle/product.md`), Rules (`oracle/specs`), Questions (`board/questions`), Decisions (`oracle/decisions`), Tickets (`tickets/`), Sprints (`sprints/`, every sprint: finished with review/report links, next settled, later projected from the dependency graph), Knowledge (`knowledge/`), Who decides (`policy.yaml`). Each pane renders the files and edits them through daemon verbs (new read/write routes where T025 has none: product.md, specs, decisions, tickets, sprints, policy). Rail collapses to icons; any pane closes and the chat widens. Sprint rows show only a blocked/blocker pill and one action, **move**; the ticket detail panel carries blocked-by/blocks. The first goal typed into the chat starts the architect planning turn (T014 entry) and fills the panes. Living-plan edit rules enforced daemon-side: a not-started ticket is freely editable; an in-flight ticket edit becomes a contract-change message to its engineer; a done ticket edit becomes a follow-up ticket; a rule that a ticket already depends on becomes a proposed decision. `approve_plan` is raised at **Start Sprint N** (the one top-bar action) and means "start this frontier as it stands".
+- **Acceptance Criteria:** Every pane in the mockup is backed by daemon data and every edit appears in `events.jsonl` and on `agile-state`; editing an in-flight ticket produces a contract-change message not a silent rewrite; Start Sprint N plans the frontier and starts it without any other approval step; a fresh `agile init` repo reaches a running sprint from the UI alone with no `--seed`.
+- **Validation Steps:** Playwright against a seeded daemon plus one no-seed walkthrough (`~/Projects/ledger-lite/WALKTHROUGH.md` rewritten to start from the UI).
+- **Notes:** Replaces the seed-file front door for humans; `agile run --seed` stays as the demo harness. Open question (§8): whether the architect writes every ticket in full or stubs later layers — mockup assumes stubs.
+
+### Ticket: T043 Consistent chrome: top bar, tool row, chat modes, Settings
+- **Priority:** P1
+- **Status:** Not Started
+- **Owner:** Unassigned
+- **Scope:** Depends on T041. Mockup, all tabs. One top bar on every view: project name (path on hover), Plan / Sprint / Settings in fixed positions (Sprint carries the Needs-you count), right side sprint status ("Sprint 1 · running 4m 12s", "3 agents working") and the single action button (Start Sprint N / Halt Sprint N). A thin tool row under it: rail collapse on the left; divider; chat show/hide, pop-out, maximize on the right — icons only. Chat maximize hides the middle pane; closing the middle pane widens the chat and vice versa. Spend and barometer move out of the top bar into a Settings row that opens a modal which can pop out. Settings also hosts Who decides: a preset chooser (everything to me / gates to EM / hands off) and per-gate owner segments that write `policy.yaml`.
+- **Acceptance Criteria:** Screenshots of Plan, Sprint and Settings show the identical top bar; every icon has a tooltip and keyboard focus; policy edits from Settings round-trip through the store and change the next gate's owner; dark and light both render (T025 dark-mode regression test extended).
+- **Validation Steps:** Playwright; `bun test packages/daemon/src/feed`.
+- **Notes:** Pete 2026-09-11: icons over text links; nothing in the bar should move between views.
+
+### Ticket: T044 Sprint and Review screens: ticket stories, team, narrative report
+- **Priority:** P1
+- **Status:** Not Started
+- **Owner:** Unassigned
+- **Scope:** Depends on T039, T043. Mockup Sprint and Review tabs. Sprint: each ticket as a timestamped story (assigned, built, reviewed with the verdict quoted, in QA, waiting on you) derived from `events.jsonl` + board stanzas; Needs-you cards with buttons and the T039 free-text reply; Team table keeps finished agents and names vendor/model — capture the real model id on spawn (today every row says `claude/unknown`). Ticket detail panel: blocked-by/blocks, contract, worktree diff, review and QA verdicts (new `/api/tickets/:id/diff` and thread read endpoints, the T025 gap). Review (after `sprint_review`): what was asked, what was built, what went wrong, where the code is, decisions the EM made without you, what the EM proposes next, with a reply box; the same narrative is written into `runs/*.md` instead of the current line-per-event dump.
+- **Acceptance Criteria:** After the offline e2e sprint, the Sprint tab shows three complete stories and the Review tab's narrative equals the `runs/*.md` body; Team rows show a real model id; the diff endpoint refuses paths outside the ticket worktree.
+- **Validation Steps:** Playwright; `bun run test:integration`.
+- **Notes:** Pete's requirement from the first hands-on run: outcomes must be legible to someone who does not know the system.
+
+### Ticket: T045 Jira two-way sync
+- **Priority:** P3
+- **Status:** Not Started
+- **Owner:** Unassigned
+- **Scope:** Depends on T042. Design §17 v2: not an import. Status changes here update the Jira issue; title/description edits in Jira update the ticket; contracts, rules and dependencies stay local. Mapping stored per ticket (`external: {jira: KEY}`), credentials from the user's environment, never in `.agile/`. Conflict rule: last writer wins on title/description, Agile Agents wins on status. A Tickets-pane action links or unlinks a project.
+- **Acceptance Criteria:** Offline test against a fake Jira server proves both directions and the conflict rule; a ticket created in Jira after linking appears as a not-started local ticket.
+- **Validation Steps:** `bun test packages/daemon/src/sync`.
+- **Notes:** External ticket sync is a listed v0 non-goal; this is the first post-v0 integration. Pete: "tickets should not only be able to be imported from jira, they should be able to be synced with jira".
+
+### Ticket: T046 Run-loop small fixes from the ledger-lite walkthrough
+- **Priority:** P2
+- **Status:** Not Started
+- **Owner:** Unassigned
+- **Scope:** Three defects seen on 2026-09-11: (1) the `review/rules` loader warns `skipping .gitkeep` on every tick because `agile init` seeds `oracle/specs/.gitkeep` — skip dotfiles silently; (2) `run.ts` hard-codes the sprint goal `Demo epic layer 1` — take it from the seed or the product brief's first heading; (3) `integration` → `main` promotion fails when `main` is checked out in the user's clone (design says merges happen in `.worktrees/_main`; find out why this path was not used and fix it, or make the failure a clear Needs-you item with the `git merge integration` workaround).
+- **Acceptance Criteria:** No warning lines in a clean run's stderr; sprint name reflects the seed; a live run against a repo with `main` checked out promotes to `main` or raises one clear gate.
+- **Validation Steps:** `bun test packages/daemon packages/cli`; offline e2e; one manual live run on `~/Projects/ledger-lite`.
+- **Notes:** All three noted by Pete in the terminal during the walkthrough.
+
 ## 8. Open Questions
 
 - **Name.** `agile` / `agiled` / `.agile/` are placeholders. Decide before T008 lands so the CLI name is stable.
@@ -418,6 +490,7 @@ Priority encodes dependency layer as well as importance: P0 tickets are v0-block
 - **Claude `plan` mode for the architect.** Verified to surface "Approve Plan" as an ACP permission request; unverified whether plan mode's read-only restriction blocks the architect's own MCP verbs (`ticket_create` is a write from Claude's point of view). T014 must test this first and fall back to `default` mode with a daemon-side gate if needed.
 - **Ledger source of truth.** ACP `usage_update` exists for Claude; other adapters may not emit it. Fall back to ledger countdown per T023.
 - **Terma consumption.** When Terma switches to `packages/acp-client` (and later becomes a client of `agiled`) is Terma's call; not in this plan.
+- **Stub tickets for later layers.** T042 assumes the architect writes later-layer tickets as stubs (title + dependencies) and refines them when their layer is next; the alternative is every ticket in full up front. Pete to decide before T042 starts.
 - **Heartbeat interval, quorum timeout, body cap, cache TTL, quota floor.** Defaults in T005–T007/T011/T023, tuned from the T021 run reports.
 
 ## 9. Discovered Issues Log
@@ -573,5 +646,6 @@ Priority encodes dependency layer as well as importance: P0 tickets are v0-block
 - 2026-09-11 — **Thirty-first live run (`c236805`, local session): not evidence.** From 17:55 the vendor rejected prompts (18 × `prompt failed: The turn did not finish cleanly (prompt rejected)`, the run-23 throttling shape; the dead-spawn backoff held the re-spawns to 26 sessions in 11 min), no halt was ever raised, and at 13 min the test process died in a Bun 1.4.2 segmentation fault (`panic(main thread): Segmentation fault at address 0x0` — Bun's own crash banner). Re-run as the thirty-second.
 
 - 2026-09-11 — **Thirty-second live run (`c236805`, local session): the confirming pass — `bun run test:live` green on the epic a second time.** H-1 19:54:06 → 19:54:42; TKT-1001 merged 19:57:45, TKT-1002 19:60:01 (no conflict this time); TKT-1003 hit the fixture conflict 20:02:40 and merged 20:04:04; `sprint_review` approved by the EM delegate at 20:02:58; the loop exited on completion; 10.5 min of wall clock. Two consecutive clean runs (30 and 32; 31 was a vendor-throttle plus Bun crash). The `test:live` script's only failing test remains the Docker container check, environmental on this host.
+- 2026-09-12 — Control room v2 (design §17 "Control room v2", mockup `design/control-room-mockup.html`, commit 8abf49c) ticketed as T039–T046 after Pete's hands-on ledger-lite runs (2026-09-11). Decisions from the review: no plan approval, Start Sprint N is the one action; documents are edited not approved; Questions (`board/questions/`) distinct from Decisions; free-text on every gate; Jira is two-way sync; one EM conversation with pop-out. Build order: T039 → T040 → T041 → T042/T043 → T044; T045/T046 independent.
 
 ## Archived 2026-09-09
