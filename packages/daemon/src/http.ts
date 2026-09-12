@@ -10,8 +10,9 @@
  * page's buttons call (`POST /api/hil/:id/approve` · `/deny` · `/delegate` ·
  * `/note`, each accepting an optional `{ note }` free-text answer (T039) — a
  * present `Origin`/`Sec-Fetch-Site` naming a different origin/site is
- * rejected with 403, see `isSameOriginRequest`), and
- * tails `log/events.jsonl` to broadcast `{type:'event', event}` frames to
+ * rejected with 403, see `isSameOriginRequest`), the questions store
+ * (`GET`/`POST /api/questions`, `POST /api/questions/:id/answer` — T040),
+ * and tails `log/events.jsonl` to broadcast `{type:'event', event}` frames to
  * every `/ws` subscriber after its initial `{type:'hello'}` +
  * `{type:'snapshot', ...}`. Without a store (pre-`agile init`, or a caller
  * that only wants `/health`), the feed routes 503 and `/ws` still sends only
@@ -26,6 +27,9 @@ import {
   KbIdSchema,
   MESSAGE_BODY_MAX_CHARS,
   OracleIdSchema,
+  type QuestionId,
+  QuestionIdSchema,
+  type TicketId,
   TicketIdSchema,
   ulid,
 } from '@agile-agents/shared';
@@ -34,6 +38,12 @@ import type { Bus } from './bus';
 import { type EventTailerHandle, buildSnapshot, startEventTailer } from './feed';
 import { GateAlreadyResolvedError, GateNotFoundError, type GateService } from './gates';
 import { createHalt, releaseHalt } from './halts';
+import {
+  QuestionAlreadyAnsweredError,
+  QuestionNotFoundError,
+  type QuestionService,
+  parseAnswerParams,
+} from './questions';
 import type { QuotaService } from './quota/records';
 import { NotFoundError } from './store';
 import type { StateStore } from './store';
@@ -55,6 +65,8 @@ export interface HttpServerOptions {
   store?: StateStore;
   /** Required alongside `store` to serve the HIL attention-queue snapshot + approve/delegate actions. */
   gates?: GateService;
+  /** T040: serves `/api/questions` (read + raise + answer) and the open-questions half of the attention queue. Optional — without it those routes 503 and the snapshot's `questions` array is empty. */
+  questions?: QuestionService;
   /** T023: live quota/barometer data for the feed header; optional (empty `quota` array without it). */
   quota?: QuotaService;
   /**
@@ -210,17 +222,118 @@ async function handleHilAction(
   }
 }
 
+/**
+ * `/api/questions/<id>/answer` — T040 (§17 "Control room v2" → "Questions vs
+ * Decisions"). The list/raise routes need no matcher (fixed path).
+ */
+function matchQuestionAnswer(pathname: string): string | undefined {
+  const match = pathname.match(/^\/api\/questions\/([^/]+)\/answer$/);
+  return match?.[1] ? decodeURIComponent(match[1]) : undefined;
+}
+
+/** Free text on a question (the text asked, or the answer typed on the card) — capped here so an over-long body is a 400 rather than a schema throw deeper in `QuestionService`. */
+function readQuestionText(value: unknown, field: string): string | { error: string } {
+  if (typeof value !== 'string') return { error: `${field} must be a string` };
+  const trimmed = value.trim();
+  if (trimmed.length === 0) return { error: `${field} is required` };
+  if (trimmed.length > MESSAGE_BODY_MAX_CHARS) {
+    return { error: `${field} exceeds the ${MESSAGE_BODY_MAX_CHARS}-char cap` };
+  }
+  return trimmed;
+}
+
+/**
+ * `POST /api/questions` — the operator raising a question from the UI (§17
+ * v2 names the operator as one of the four producers). `raised_by` is always
+ * `human`, never taken from the request body: same T032 rule the halt/chat/
+ * HIL routes already follow (a page could otherwise forge `architect`).
+ */
+async function handleQuestionRaise(req: Request, questions: QuestionService): Promise<Response> {
+  let body: Record<string, unknown>;
+  try {
+    body = await readJsonBody(req);
+  } catch (err) {
+    return errorResponse(400, err instanceof Error ? err.message : String(err));
+  }
+  const text = readQuestionText(body.text, 'text');
+  if (typeof text !== 'string') return errorResponse(400, text.error);
+  let ticket: string | undefined;
+  if (body.ticket !== undefined && body.ticket !== null) {
+    const parsed = TicketIdSchema.safeParse(body.ticket);
+    if (!parsed.success) return errorResponse(400, `invalid ticket id: ${String(body.ticket)}`);
+    ticket = parsed.data;
+  }
+  let options: string[] | undefined;
+  if (body.options !== undefined && body.options !== null) {
+    if (
+      !Array.isArray(body.options) ||
+      body.options.some((o) => typeof o !== 'string' || o.length === 0)
+    ) {
+      return errorResponse(400, 'options must be an array of non-empty strings');
+    }
+    options = body.options as string[];
+  }
+  try {
+    const raised = await questions.raise({
+      raised_by: 'human',
+      text,
+      ...(ticket !== undefined ? { ticket: ticket as TicketId } : {}),
+      ...(options !== undefined ? { options } : {}),
+    });
+    return jsonResponse(raised, 201);
+  } catch (err) {
+    return errorResponse(400, err instanceof Error ? err.message : String(err));
+  }
+}
+
+/**
+ * `POST /api/questions/<id>/answer` — `{ answer, resolved_as: 'reply' |
+ * 'decision' | 'ticket', ... }`. Params are parsed by the same
+ * `parseAnswerParams` the `question.answer` RPC uses, so the browser and the
+ * CLI cannot disagree about the shape; `by` is forced to `human` (T032).
+ */
+async function handleQuestionAnswer(
+  req: Request,
+  questions: QuestionService,
+  id: string,
+): Promise<Response> {
+  const parsedId = QuestionIdSchema.safeParse(id);
+  if (!parsedId.success) return errorResponse(400, `invalid question id: ${id}`);
+  let body: Record<string, unknown>;
+  try {
+    body = await readJsonBody(req);
+  } catch (err) {
+    return errorResponse(400, err instanceof Error ? err.message : String(err));
+  }
+  try {
+    const input = parseAnswerParams({ ...body, by: 'human' });
+    const result = await questions.answer(parsedId.data as QuestionId, input);
+    return jsonResponse(result);
+  } catch (err) {
+    if (err instanceof QuestionNotFoundError) return errorResponse(404, err.message);
+    if (err instanceof QuestionAlreadyAnsweredError) return errorResponse(409, err.message);
+    return errorResponse(400, err instanceof Error ? err.message : String(err));
+  }
+}
+
 /** Bundles `store`+`gates` once both are present, so every call site gets one non-optional pair instead of re-checking two optionals. */
 interface FeedContext {
   store: StateStore;
   gates: GateService;
   quota?: QuotaService;
   bus?: Bus;
+  questions?: QuestionService;
 }
 
 function resolveFeedContext(options: HttpServerOptions): FeedContext | undefined {
   if (!options.store || !options.gates) return undefined;
-  return { store: options.store, gates: options.gates, quota: options.quota, bus: options.bus };
+  return {
+    store: options.store,
+    gates: options.gates,
+    quota: options.quota,
+    bus: options.bus,
+    questions: options.questions,
+  };
 }
 
 /** `/api/tickets/<id>` — control room (T025) ticket detail (ticket + its board stanzas). */
@@ -296,7 +409,9 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
 
       if (url.pathname === '/api/snapshot') {
         if (!feed) return errorResponse(503, 'state store not initialised (run `agile init`)');
-        return jsonResponse(buildSnapshot(feed.store, feed.gates, undefined, feed.quota));
+        return jsonResponse(
+          buildSnapshot(feed.store, feed.gates, undefined, feed.quota, feed.questions),
+        );
       }
 
       // ---- control room (T025) reads — every one backed by an existing
@@ -513,6 +628,33 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
         }
       }
 
+      // ---- questions (T040, §17 "Control room v2") — read + raise + answer.
+      if (url.pathname === '/api/questions' && req.method === 'GET') {
+        if (!feed?.questions) return errorResponse(503, 'questions store not available');
+        return jsonResponse(
+          url.searchParams.get('status') === 'open'
+            ? feed.questions.listOpen()
+            : feed.questions.list(),
+        );
+      }
+
+      if (url.pathname === '/api/questions' && req.method === 'POST') {
+        if (!feed?.questions) return errorResponse(503, 'questions store not available');
+        if (!isSameOriginRequest(req, srv.port ?? options.port)) {
+          return errorResponse(403, 'cross-origin request rejected');
+        }
+        return handleQuestionRaise(req, feed.questions);
+      }
+
+      const questionAnswerMatch = matchQuestionAnswer(url.pathname);
+      if (questionAnswerMatch && req.method === 'POST') {
+        if (!feed?.questions) return errorResponse(503, 'questions store not available');
+        if (!isSameOriginRequest(req, srv.port ?? options.port)) {
+          return errorResponse(403, 'cross-origin request rejected');
+        }
+        return handleQuestionAnswer(req, feed.questions, questionAnswerMatch);
+      }
+
       const hilMatch = matchHilAction(url.pathname);
       if (hilMatch && req.method === 'POST') {
         if (!feed) return errorResponse(503, 'state store not initialised (run `agile init`)');
@@ -542,7 +684,11 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
 
         if (feed) {
           ws.subscribe(FEED_WS_TOPIC);
-          ws.send(JSON.stringify(buildSnapshot(feed.store, feed.gates, undefined, feed.quota)));
+          ws.send(
+            JSON.stringify(
+              buildSnapshot(feed.store, feed.gates, undefined, feed.quota, feed.questions),
+            ),
+          );
         }
       },
       message() {

@@ -8,8 +8,9 @@
  * event log itself.
  */
 
-import type { Event, Halt, HilRequest, Sprint, Ticket } from '@agile-agents/shared';
+import type { Event, Halt, HilRequest, Question, Sprint, Ticket } from '@agile-agents/shared';
 import type { GateService } from '../gates';
+import type { QuestionService } from '../questions';
 import { quotaFraction } from '../quota/records';
 import type { QuotaService } from '../quota/records';
 import type { StateStore } from '../store';
@@ -66,6 +67,14 @@ export interface FeedSnapshot {
   sprint: FeedSprintInfo;
   halts: Halt[];
   hil: HilRequest[];
+  /**
+   * T040 (§17 "Control room v2" — "Questions vs Decisions"): the *open*
+   * questions, which are attention-queue items exactly like a pending
+   * `hil_request` — "a pending question is a Needs-you card" (ticket scope).
+   * Answered ones are history and stay out, same rule as `hil` above.
+   * Empty when no `QuestionService` is wired (every pre-T040 call site).
+   */
+  questions: Question[];
   quota: FeedQuotaInfo[];
 }
 
@@ -103,6 +112,8 @@ export function buildSnapshot(
   eventLimit: number = DEFAULT_SNAPSHOT_EVENT_LIMIT,
   /** T023: optional so every existing call site (no `QuotaService` wired yet) keeps building a valid snapshot with an empty `quota` array. */
   quota?: QuotaService,
+  /** T040: optional for the same reason — without it the snapshot carries an empty `questions` array. */
+  questions?: QuestionService,
 ): FeedSnapshot {
   const events = store.listEvents().slice(-eventLimit);
   const tickets = store.listTickets();
@@ -126,6 +137,7 @@ export function buildSnapshot(
     sprint: { sprint, tickets: summarizeTickets(tickets) },
     halts,
     hil,
+    questions: questions?.listOpen() ?? [],
     quota: quotaInfo,
   };
 }

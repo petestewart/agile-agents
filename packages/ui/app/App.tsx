@@ -51,6 +51,10 @@ const REFRESH_TRIGGER_KINDS = new Set<Event['kind']>([
   'agent_put',
   'agent_deleted',
   'policy_put',
+  // T040: a question raised or answered elsewhere changes the Needs-you
+  // queue, which rides on `/api/snapshot`.
+  'question_raised',
+  'question_answered',
 ]);
 
 /** Coalesces a burst of triggering events (e.g. a ticket transition plus its stanza) into one refetch. */
@@ -154,6 +158,9 @@ export function App() {
   }, [refreshAux, scheduleRefresh]);
 
   const hil = snapshot?.hil ?? [];
+  // T040: open questions are attention-queue items alongside the pending
+  // HIL requests, so the Needs-you count covers both.
+  const questions = snapshot?.questions ?? [];
   const halts = snapshot?.halts ?? [];
   const quota = snapshot?.quota ?? [];
   const sprint = snapshot?.sprint ?? { tickets: { done: 0, in_flight: 0, stale: 0, total: 0 } };
@@ -196,8 +203,8 @@ export function App() {
 
           {tab === 'ops' ? (
             <>
-              <Panel title="Needs you" count={hil.length} defaultOpen>
-                <NeedsYou items={hil} onChanged={refreshAux} />
+              <Panel title="Needs you" count={hil.length + questions.length} defaultOpen>
+                <NeedsYou items={hil} questions={questions} onChanged={refreshAux} />
               </Panel>
               <Panel title="Team" count={agents.length}>
                 <TeamPanel agents={agents} halts={halts} />

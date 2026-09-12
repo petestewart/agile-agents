@@ -25,6 +25,7 @@ import { type LockHandle, acquireLock } from './lock';
 import { MergeOwner, buildMergeRpcMethods, sprintReviewApproved } from './merge';
 import { buildOracleRpcMethods } from './oracle';
 import { QaProtocol, buildQaRpcMethods, decideQaRead, registerQaTools } from './qa';
+import { QuestionService, buildQuestionRpcMethods } from './questions';
 import { QuotaService, buildQuotaRpcMethods } from './quota';
 import {
   REVIEW_BUILTIN_TOOLS,
@@ -42,6 +43,7 @@ import {
   Runner,
   advanceArchitectInbox,
   advanceDoneTickets,
+  advanceEngineerEscalations,
   advanceEngineerVerdicts,
   advanceHilResolutions,
   advanceMergeConflicts,
@@ -82,6 +84,7 @@ export interface DaemonHandle {
   store?: StateStore;
   bus?: Bus;
   gateService?: GateService;
+  questionService?: QuestionService;
   runner?: Runner;
   mergeOwner?: MergeOwner;
   reviewProtocol?: ReviewProtocol;
@@ -159,6 +162,10 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
   const gateService = store
     ? new GateService(store, options.gateDelegate ? { delegate: options.gateDelegate } : {})
     : undefined;
+  // Questions store (T040, §17 "Control room v2"): one instance backs the
+  // `question.*` RPC, the `/api/questions` routes, the attention-queue
+  // snapshot, and the engineer-escalate handler in the pipeline glue.
+  const questionService = store ? new QuestionService(store) : undefined;
   // Hoisted (T011) so `bus.*` RPC, the hook service, and the tool service's
   // `bus_send` built-in all share one `Bus` instance over the same store.
   const bus = store ? new Bus(store, config.stateRoot, { now: options.now }) : undefined;
@@ -310,6 +317,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
   const seenArchitectInbox = new Set<string>();
   const seenSecurityReviews = new Set<string>();
   const seenReviewerEscalations = new Set<string>();
+  const seenEngineerEscalations = new Set<string>();
   const qaSpawned = new Set<TicketId>();
   const mergedDone = new Set<TicketId>();
   const conflictPrompted = new Set<TicketId>();
@@ -326,6 +334,8 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
     if (bus && runner) await advanceArchitectInbox(bus, runner, seenArchitectInbox);
     if (store && runner) await advanceSecurityReviews(store, runner, seenSecurityReviews);
     if (store && bus) await advanceReviewerEscalations(store, bus, seenReviewerEscalations);
+    if (questionService && bus)
+      await advanceEngineerEscalations(questionService, bus, seenEngineerEscalations);
     if (store && runner)
       releaseStaleTicketSessions(store, runner, (id) =>
         mergeOwner
@@ -548,6 +558,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
           ...buildOracleRpcMethods(store),
           ...buildHaltRpcMethods(store),
           ...buildGateRpcMethods(gateService),
+          ...(questionService ? buildQuestionRpcMethods(questionService) : {}),
           ...buildHookRpcMethods(
             new HookService(store, bus, {
               repoRoot: config.repoRoot,
@@ -589,6 +600,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
       startedAt,
       store,
       gates: gateService,
+      questions: questionService,
       quota: quotaService,
       // T025 review round 1 (blocker 3, manager-granted): without this the
       // control room's EM chat and Oracle propose-edit routes 503 forever
@@ -611,6 +623,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
     store,
     bus,
     gateService,
+    questionService,
     runner,
     mergeOwner,
     reviewProtocol,

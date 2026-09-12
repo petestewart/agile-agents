@@ -18,6 +18,7 @@ import {
   Bus,
   FakeRunner,
   GateService,
+  QuestionService,
   type RpcServerHandle,
   StateStore,
   ToolService,
@@ -25,6 +26,7 @@ import {
   buildGateRpcMethods,
   buildHaltRpcMethods,
   buildOracleRpcMethods,
+  buildQuestionRpcMethods,
   buildStateRpcMethods,
   buildToolRpcMethods,
   loadToolRegistry,
@@ -44,6 +46,8 @@ export interface TestDaemon {
    * does, since there is no `gate.request` RPC for an external client to
    * create one through. */
   gateService: GateService;
+  /** Same instance wired into `question.*` RPC (T040) — tests seed an open question through it. */
+  questionService: QuestionService;
   cleanup(): Promise<void>;
 }
 
@@ -61,6 +65,7 @@ export async function startTestDaemon(prefix = 'agile-cli-test-'): Promise<TestD
   // tests that need auto-delegation pass their own `GateService` instead of
   // using this helper.
   const gateService = new GateService(store);
+  const questionService = new QuestionService(store);
   // `FakeRunner` (never a real vendor session) so `tool.*` tests never need
   // `AGILE_LIVE=1` — same reasoning as the daemon's own tool tests.
   const toolService = new ToolService({
@@ -82,6 +87,7 @@ export async function startTestDaemon(prefix = 'agile-cli-test-'): Promise<TestD
       ...buildOracleRpcMethods(store),
       ...buildHaltRpcMethods(store),
       ...buildGateRpcMethods(gateService),
+      ...buildQuestionRpcMethods(questionService),
       ...buildToolRpcMethods(toolService),
     },
   });
@@ -109,6 +115,7 @@ export async function startTestDaemon(prefix = 'agile-cli-test-'): Promise<TestD
     store,
     rpc,
     gateService,
+    questionService,
     async cleanup() {
       await rpc.close();
       rmSync(repo, { recursive: true, force: true });

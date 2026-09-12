@@ -30,7 +30,7 @@
  */
 
 import type { DaemonStatus } from '@agile-agents/daemon';
-import type { Halt, Ticket } from '@agile-agents/shared';
+import type { Halt, Question, Ticket } from '@agile-agents/shared';
 import { callRpc } from '../client';
 import { printFields, printJson, printTable } from '../format';
 
@@ -52,6 +52,8 @@ export interface StatusResult {
   halts: Halt[];
   agents: 'n/a (no RPC yet)';
   spend: StatusQuotaEntry[] | 'n/a (no RPC yet)';
+  /** T040: the open questions (`board/questions/`) — "`agile status` lists open questions" (ticket scope). */
+  questions: Question[];
 }
 
 async function fetchQuota(socketPath: string): Promise<StatusQuotaEntry[] | 'n/a (no RPC yet)'> {
@@ -62,12 +64,22 @@ async function fetchQuota(socketPath: string): Promise<StatusQuotaEntry[] | 'n/a
   }
 }
 
+/** Same degrade-don't-throw rule as `fetchQuota`: a daemon without the T040 questions store keeps `agile status` working. */
+async function fetchOpenQuestions(socketPath: string): Promise<Question[]> {
+  try {
+    return await callRpc<Question[]>(socketPath, 'question.list', { open: true });
+  } catch {
+    return [];
+  }
+}
+
 export async function fetchStatus(socketPath: string): Promise<StatusResult> {
   const daemon = await callRpc<DaemonStatus>(socketPath, 'daemon.status');
   const tickets = await callRpc<Ticket[]>(socketPath, 'state.ticket_list');
   const halts = await callRpc<Halt[]>(socketPath, 'state.halt_list');
   const spend = await fetchQuota(socketPath);
-  return { daemon, tickets, halts, agents: 'n/a (no RPC yet)', spend };
+  const questions = await fetchOpenQuestions(socketPath);
+  return { daemon, tickets, halts, agents: 'n/a (no RPC yet)', spend, questions };
 }
 
 function quotaFractionOf(entry: StatusQuotaEntry): number {
@@ -113,6 +125,16 @@ export function printStatusHuman(status: StatusResult): void {
     printTable(
       ['id', 'scope', 'quorum', 'reason'],
       status.halts.map((h) => [h.id, JSON.stringify(h.scope), h.quorum, h.reason]),
+    );
+  }
+  console.log('');
+
+  if (status.questions.length === 0) {
+    console.log('open questions: (none)');
+  } else {
+    printTable(
+      ['id', 'raised_by', 'ticket', 'question'],
+      status.questions.map((q) => [q.id, q.raised_by, q.ticket ?? '-', q.text]),
     );
   }
   console.log('');

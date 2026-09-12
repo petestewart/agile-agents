@@ -14,7 +14,7 @@
  * moment a component reads a field this mirror doesn't have.
  */
 
-import type { Event, Halt, HilRequest, Sprint } from '@agile-agents/shared';
+import type { Event, Halt, HilRequest, Question, Sprint } from '@agile-agents/shared';
 
 export interface TicketsSummary {
   done: number;
@@ -43,5 +43,7 @@ export interface FeedSnapshot {
   sprint: FeedSprintInfo;
   halts: Halt[];
   hil: HilRequest[];
+  /** T040: the open questions (`board/questions/Q-*.yaml`) — Needs-you cards alongside the pending HIL requests. */
+  questions: Question[];
   quota: FeedQuotaInfo[];
 }

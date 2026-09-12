@@ -7,6 +7,7 @@ import { ulid, validateTicket } from '@agile-agents/shared';
 import { Bus } from '../bus';
 import { createHalt } from '../halts';
 import { runInit } from '../init';
+import { QuestionService } from '../questions';
 import { reviewRecordRelPath, validateReviewRecord } from '../review/types';
 import { StateStore } from '../store';
 import {
@@ -16,6 +17,7 @@ import {
   type ReviewStarter,
   advanceArchitectInbox,
   advanceDoneTickets,
+  advanceEngineerEscalations,
   advanceEngineerVerdicts,
   advanceHilResolutions,
   advanceMergeConflicts,
@@ -951,5 +953,64 @@ describe('dispatchTurn', () => {
     await dispatchTurn(runner, 'eng-0001' as AgentId, 'go', 20);
     fail?.(new Error('turn died later'));
     await new Promise((r) => setTimeout(r, 10));
+  });
+});
+
+describe('advanceEngineerEscalations (T040)', () => {
+  async function sendEscalate(from: AgentId, body: string, ticket?: TicketId) {
+    const result = await bus.send({
+      id: ulid(),
+      ts: new Date().toISOString(),
+      from,
+      to: ['em'],
+      kind: 'escalate',
+      priority: 'normal',
+      ...(ticket ? { ticket } : {}),
+      body,
+      refs: [],
+      requires_ack: false,
+    });
+    if (!result.ok) throw new Error(`sendEscalate: ${result.reason}`);
+  }
+
+  test("an engineer's escalate opens a question, acks the message, and is idempotent", async () => {
+    // The premise this ticket was written on (2026-09-11 ledger-lite run):
+    // before this handler the message just sat in em's inbox forever.
+    await store.putTicket(makeTicket('TKT-0001' as TicketId, { status: 'in_progress' }));
+    const questions = new QuestionService(store);
+    await sendEscalate(
+      agentIdFor('engineer', 'TKT-0001' as TicketId),
+      'the contract contradicts SPEC-auth-003',
+      'TKT-0001' as TicketId,
+    );
+    const seen = new Set<string>();
+
+    const raised = await advanceEngineerEscalations(questions, bus, seen);
+    expect(raised).toHaveLength(1);
+    const question = questions.get(raised[0] as never);
+    expect(question.status).toBe('open');
+    expect(question.raised_by).toBe(agentIdFor('engineer', 'TKT-0001' as TicketId));
+    expect(question.ticket).toBe('TKT-0001');
+    expect(question.text).toBe('the contract contradicts SPEC-auth-003');
+    // Acked: the question, not the unread message, is the live record.
+    expect(bus.poll('em' as AgentId).filter((m) => m.kind === 'escalate')).toHaveLength(0);
+
+    expect(await advanceEngineerEscalations(questions, bus, seen)).toEqual([]);
+    expect(questions.list()).toHaveLength(1);
+  });
+
+  test("a daemon's or reviewer's escalate is left alone", async () => {
+    await store.putTicket(makeTicket('TKT-0002' as TicketId, { status: 'in_review' }));
+    const questions = new QuestionService(store);
+    await sendEscalate('daemon' as AgentId, 'agent unresponsive', 'TKT-0002' as TicketId);
+    await sendEscalate(
+      agentIdFor('reviewer', 'TKT-0002' as TicketId),
+      'the ticket is wrong',
+      'TKT-0002' as TicketId,
+    );
+
+    expect(await advanceEngineerEscalations(questions, bus, new Set())).toEqual([]);
+    expect(questions.list()).toHaveLength(0);
+    expect(bus.poll('em' as AgentId).filter((m) => m.kind === 'escalate')).toHaveLength(2);
   });
 });
