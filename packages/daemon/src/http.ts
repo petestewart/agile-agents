@@ -48,8 +48,11 @@ import {
 import { CONTROL_ROOM_DIST_DIR, FEED_HTML_PATH } from '@agile-agents/ui';
 import type { Bus } from './bus';
 import { EM_CHAT_THREAD, type EmChatService } from './em/chat';
+import { buildSprintReport } from './em/report';
 import { planSprint } from './em/sprint';
 import { type EventTailerHandle, buildSnapshot, startEventTailer } from './feed';
+import { TicketDiffError, ticketDiff, ticketThread } from './feed/diff';
+import { buildStory } from './feed/stories';
 import { GateAlreadyResolvedError, GateNotFoundError, type GateService } from './gates';
 import { createHalt, releaseHalt } from './halts';
 import {
@@ -376,6 +379,21 @@ function matchTicketId(pathname: string): string | undefined {
   return match?.[1] ? decodeURIComponent(match[1]) : undefined;
 }
 
+/**
+ * `/api/tickets/<id>/<sub>` — T044's ticket-detail reads: `story` (the
+ * timestamped narrative the Sprint tab renders), `diff` (the worktree diff,
+ * path-guarded) and `thread` (the bus thread carrying the review and QA
+ * verdicts). Each is a plain GET backed by an existing store read; nothing
+ * here writes.
+ */
+type TicketSubResource = 'story' | 'diff' | 'thread';
+
+function matchTicketSub(pathname: string): { id: string; sub: TicketSubResource } | undefined {
+  const match = pathname.match(/^\/api\/tickets\/([^/]+)\/(story|diff|thread)$/);
+  if (!match || match[1] === undefined || match[2] === undefined) return undefined;
+  return { id: decodeURIComponent(match[1]), sub: match[2] as TicketSubResource };
+}
+
 /** `/api/oracle/<id>` — control room (T025) Oracle entry (decision or spec). */
 function matchOracleId(pathname: string): string | undefined {
   const match = pathname.match(/^\/api\/oracle\/([^/]+)$/);
@@ -585,6 +603,43 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
           if (err instanceof NotFoundError) return errorResponse(404, err.message);
           throw err;
         }
+      }
+
+      const ticketSub = matchTicketSub(url.pathname);
+      if (ticketSub && req.method === 'GET') {
+        if (!feed) return errorResponse(503, 'state store not initialised (run `agile init`)');
+        const parsedId = TicketIdSchema.safeParse(ticketSub.id);
+        if (!parsedId.success) return errorResponse(400, `invalid ticket id: ${ticketSub.id}`);
+        const repoRoot = dirname(options.stateRoot);
+        try {
+          if (ticketSub.sub === 'thread') {
+            return jsonResponse(ticketThread(feed.store, parsedId.data));
+          }
+          if (ticketSub.sub === 'story') {
+            const ticket = feed.store.getTicket(parsedId.data);
+            return jsonResponse(
+              buildStory(feed.store, ticket, feed.store.listEvents(), {
+                gates: feed.gates,
+                ...(feed.questions ? { questions: feed.questions } : {}),
+              }),
+            );
+          }
+          return jsonResponse(ticketDiff(feed.store, repoRoot, parsedId.data));
+        } catch (err) {
+          if (err instanceof TicketDiffError) return errorResponse(err.status, err.message);
+          if (err instanceof NotFoundError) return errorResponse(404, err.message);
+          return errorResponse(400, err instanceof Error ? err.message : String(err));
+        }
+      }
+
+      /**
+       * T044: the Review tab's narrative — the SAME
+       * `buildSprintReport`/`renderSprintReportMarkdown` pair `agile run`
+       * writes into `runs/<ts>.md`, so the page and the file cannot drift.
+       */
+      if (url.pathname === '/api/sprint/review' && req.method === 'GET') {
+        if (!feed) return errorResponse(503, 'state store not initialised (run `agile init`)');
+        return jsonResponse(buildSprintReport(feed.store, { gates: feed.gates }));
       }
 
       if (url.pathname === '/api/oracle' && req.method === 'GET') {

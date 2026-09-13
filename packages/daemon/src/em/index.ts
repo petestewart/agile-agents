@@ -16,6 +16,7 @@ export {
   type StandupReportRecord,
 } from './standup';
 export * from './review';
+export * from './report';
 export * from './retro';
 export * from './loop';
 export * from './verbs';

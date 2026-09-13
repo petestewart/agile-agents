@@ -1,18 +1,49 @@
+/**
+ * "Needs you" (§17 "Attention queue"; T044 restyles T039/T040's minimal
+ * list into the mockup's cards: a kind line, a headline, an explanation in
+ * plain language, the buttons, and the free-text reply).
+ *
+ * Every card is inline — no modal. The mockup's premise is that the
+ * operator reads the whole ask without a click, and T039's measurement of
+ * the first hands-on run was that a one-line row told them nothing. The
+ * buttons and the reply box are unchanged verbs: approve/deny with an
+ * optional note, a note on its own (which resolves nothing — the EM decides
+ * from it), and "Let the EM decide these from now on" = the existing
+ * single-instance delegate route. A question card answers through
+ * `QuestionService`, as a plain reply or recorded as a `DEC-*`.
+ */
+
 import type { HilRequest, Question } from '@agile-agents/shared';
 import { useState } from 'react';
 import { answerQuestion, approveHil, delegateHil, denyHil, noteHil } from '../lib/api';
 
 /**
- * "Needs you" inbox (§17 "Attention queue" / session scope: "inbox-style
- * ... with detail-on-click and approve/delegate"). One line per item;
- * clicking opens detail + actions — never all details at once (§17 "Layout
- * direction").
- *
- * T040 (§17 "Control room v2" → "Questions vs Decisions"): an open
- * `Question` is a Needs-you card too — "a pending question is a Needs-you
- * card" (ticket scope). Minimal by design (a reply box and a "Record as
- * decision" button); T042/T044 restyle it.
+ * What each gate actually means, for someone who does not know the system
+ * (the ticket's own Note). Keyed by `hil_kind` — the four §5 kinds — since
+ * gate names are open-ended (`permission:qa`, `unblock`, `approve_plan`, …).
  */
+const KIND_EXPLANATION: Record<string, string> = {
+  unblock:
+    'An agent tried something the guardrails stop. Allowing it once lets that one action through; denying it sends the agent back with the reason.',
+  approve_decision:
+    'A decision needs your sign-off before the team acts on it. Approving records it; denying sends it back to the architect.',
+  steer:
+    'The team wants direction before it continues. Anything you type here reaches the agent that asked and the EM.',
+  demo: 'A walkthrough of finished work before it is promoted. Approving accepts it.',
+};
+
+function headlineFor(item: HilRequest): string {
+  if (item.summary) return item.summary;
+  return `${item.gate} needs a decision`;
+}
+
+function waitingFor(iso: string): string {
+  const seconds = Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 1000));
+  if (seconds < 90) return `waiting ${seconds}s`;
+  const minutes = Math.round(seconds / 60);
+  return minutes < 90 ? `waiting ${minutes}m` : `waiting ${Math.round(minutes / 60)}h`;
+}
+
 export function NeedsYou({
   items,
   questions = [],
@@ -22,22 +53,21 @@ export function NeedsYou({
   questions?: Question[];
   onChanged: () => void;
 }) {
-  const [selected, setSelected] = useState<HilRequest | undefined>(undefined);
-  const [selectedQuestion, setSelectedQuestion] = useState<Question | undefined>(undefined);
-  const [reply, setReply] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | undefined>(undefined);
-  // T039: the typed answer that rides along with a button press — or, via
-  // "Send note", stands alone (which resolves nothing; the EM decides).
-  const [note, setNote] = useState('');
+  /** One draft per card id, so two open cards never share a reply box. */
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
 
-  async function act(fn: () => Promise<unknown>) {
+  const draftOf = (id: string): string => drafts[id] ?? '';
+  const setDraft = (id: string, value: string) =>
+    setDrafts((current) => ({ ...current, [id]: value }));
+
+  async function act(id: string, fn: () => Promise<unknown>) {
     setBusy(true);
     setError(undefined);
     try {
       await fn();
-      setSelected(undefined);
-      setNote('');
+      setDrafts((current) => ({ ...current, [id]: '' }));
       onChanged();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -46,260 +76,159 @@ export function NeedsYou({
     }
   }
 
-  async function answer(question: Question, resolvedAs: 'reply' | 'decision') {
-    setBusy(true);
-    setError(undefined);
-    try {
-      await answerQuestion(question.id, reply.trim(), resolvedAs);
-      setSelectedQuestion(undefined);
-      setReply('');
-      onChanged();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setBusy(false);
-    }
-  }
+  const count = items.length + questions.length;
 
   return (
-    <div>
-      {questions.length > 0 && (
-        <div>
-          {questions.map((question) => (
-            <button
-              type="button"
-              key={question.id}
-              className="cr-inbox-item question-item"
-              data-id={question.id}
-              onClick={() => {
-                setSelectedQuestion(question);
-                setReply('');
-                setError(undefined);
-              }}
-            >
-              <span className="cr-badge">question</span>
-              <span style={{ flex: 1 }}>
-                {question.text}
-                {question.ticket ? ` · ${question.ticket}` : ''}
-              </span>
-              <span style={{ color: 'var(--text-dim)', fontSize: 12 }}>
-                from {question.raised_by}
-              </span>
-            </button>
-          ))}
-        </div>
+    <section className="cr-needs" data-testid="needs-you">
+      <div className="hd">
+        <h2>Needs you</h2>
+        <span className="count" data-testid="needs-you-count">
+          {count}
+        </span>
+      </div>
+
+      {error && (
+        <p style={{ color: 'var(--danger)' }} data-testid="needs-you-error">
+          {error}
+        </p>
       )}
 
-      {items.length === 0 && questions.length === 0 ? (
-        <p className="cr-empty-goal">Nothing needs you right now.</p>
-      ) : (
-        <div>
-          {items.map((item) => (
-            <button
-              type="button"
-              key={item.id}
-              className="cr-inbox-item hil-item"
-              data-id={item.id}
-              onClick={() => {
-                setSelected(item);
-                setNote('');
-                setError(undefined);
-              }}
-            >
-              <span className="cr-badge">{item.hil_kind}</span>
-              <span style={{ flex: 1 }}>
-                {item.gate}
-                {item.ticket ? ` · ${item.ticket}` : ''}
-              </span>
-              {item.deadline && (
-                <span style={{ color: 'var(--text-dim)', fontSize: 12 }}>
-                  due {new Date(item.deadline).toLocaleTimeString()}
-                </span>
-              )}
-            </button>
-          ))}
-        </div>
+      {count === 0 && (
+        <p className="cr-calm" data-testid="needs-you-empty">
+          Nothing needs you right now.
+        </p>
       )}
 
-      {selectedQuestion && (
-        <div
-          className="cr-modal-backdrop"
-          onClick={() => setSelectedQuestion(undefined)}
-          onKeyDown={(e) => e.key === 'Escape' && setSelectedQuestion(undefined)}
-          role="presentation"
-        >
-          <div
-            className="cr-modal"
-            onClick={(e) => e.stopPropagation()}
-            onKeyDown={(e) => e.stopPropagation()}
-            role="presentation"
-          >
-            <h2>Question · {selectedQuestion.raised_by}</h2>
-            <p data-testid="question-text">{selectedQuestion.text}</p>
-            {selectedQuestion.ticket && (
-              <p>
-                <strong>Ticket:</strong> {selectedQuestion.ticket}
-              </p>
-            )}
-            {selectedQuestion.options && (
-              <ul>
-                {selectedQuestion.options.map((option) => (
-                  <li key={option}>{option}</li>
-                ))}
-              </ul>
-            )}
-            {error && <p style={{ color: 'var(--danger)' }}>{error}</p>}
-            <label htmlFor="question-answer" style={{ display: 'block', marginTop: 8 }}>
-              Your answer
-            </label>
-            <textarea
-              id="question-answer"
-              data-testid="question-answer"
-              value={reply}
-              rows={3}
-              style={{ width: '100%' }}
-              placeholder="e.g. the spec wins — refine the ticket against it"
-              onChange={(e) => setReply(e.target.value)}
-            />
-            <div className="cr-modal-actions">
-              <button
-                type="button"
-                className="cr-icon-btn approve"
-                data-testid="question-reply"
-                disabled={busy || reply.trim().length === 0}
-                title="Answer the raiser — no decision recorded"
-                onClick={() => answer(selectedQuestion, 'reply')}
-              >
-                Reply
-              </button>
-              <button
-                type="button"
-                className="cr-icon-btn"
-                data-testid="question-decision"
-                disabled={busy || reply.trim().length === 0}
-                title="Answer and record it as a DEC-* through the oracle write guard"
-                onClick={() => answer(selectedQuestion, 'decision')}
-              >
-                Record as decision
-              </button>
-              <button
-                type="button"
-                className="cr-icon-btn"
-                onClick={() => setSelectedQuestion(undefined)}
-              >
-                Close
-              </button>
-            </div>
+      {items.map((item) => (
+        <article className="cr-card hil-item" key={item.id} data-id={item.id}>
+          <div className="kind">
+            {item.hil_kind} · {item.gate}
+            {item.ticket ? ` · ${item.ticket}` : ''} · {waitingFor(item.requested_at)}
           </div>
-        </div>
-      )}
-
-      {selected && (
-        <div
-          className="cr-modal-backdrop"
-          onClick={() => setSelected(undefined)}
-          onKeyDown={(e) => e.key === 'Escape' && setSelected(undefined)}
-          role="presentation"
-        >
-          <div
-            className="cr-modal"
-            onClick={(e) => e.stopPropagation()}
-            onKeyDown={(e) => e.stopPropagation()}
-            role="presentation"
-          >
-            <h2>
-              {selected.gate} · {selected.hil_kind}
-            </h2>
+          <h3>{headlineFor(item)}</h3>
+          <p>
+            {KIND_EXPLANATION[item.hil_kind] ?? 'This gate is routed to you by the current policy.'}
+            {item.reason ? ` Routed to you because: ${item.reason}.` : ''}
+          </p>
+          {item.note && (
             <p>
-              <strong>Requested:</strong> {new Date(selected.requested_at).toLocaleString()}
+              <strong>Your earlier note:</strong> {item.note}
             </p>
-            {selected.ticket && (
-              <p>
-                <strong>Ticket:</strong> {selected.ticket}
-              </p>
-            )}
-            {selected.deadline && (
-              <p>
-                <strong>Deadline:</strong> {new Date(selected.deadline).toLocaleString()}
-              </p>
-            )}
-            {selected.reason && (
-              <p>
-                <strong>Reason:</strong> {selected.reason}
-              </p>
-            )}
-            {selected.note && (
-              <p>
-                <strong>Note:</strong> {selected.note}
-              </p>
-            )}
-            {error && <p style={{ color: 'var(--danger)' }}>{error}</p>}
-            <label htmlFor="hil-note" style={{ display: 'block', marginTop: 8 }}>
-              Your answer (optional)
-            </label>
-            <textarea
-              id="hil-note"
-              data-testid="hil-note"
-              value={note}
-              rows={3}
-              style={{ width: '100%' }}
-              placeholder="e.g. yes, but only for the seed script"
-              onChange={(e) => setNote(e.target.value)}
-            />
-            <div className="cr-modal-actions">
-              <button
-                type="button"
-                className="cr-icon-btn approve"
-                data-testid="hil-approve"
-                disabled={busy}
-                onClick={() =>
-                  act(() => approveHil(selected.id, 'human', note.trim() || undefined))
-                }
-              >
-                Approve
-              </button>
-              <button
-                type="button"
-                className="cr-icon-btn"
-                data-testid="hil-deny"
-                disabled={busy}
-                onClick={() => act(() => denyHil(selected.id, 'human', note.trim() || undefined))}
-              >
-                Deny
-              </button>
-              <button
-                type="button"
-                className="cr-icon-btn"
-                data-testid="hil-send-note"
-                disabled={busy || note.trim().length === 0}
-                title="Send this answer to the EM without deciding — the EM decides approve/deny from it"
-                onClick={() => act(() => noteHil(selected.id, note.trim()))}
-              >
-                Send note
-              </button>
-              <button
-                type="button"
-                className="cr-icon-btn"
-                disabled={busy}
-                onClick={() => act(() => delegateHil(selected.id, 'em'))}
-              >
-                Delegate to EM
-              </button>
-              <button
-                type="button"
-                className="cr-icon-btn"
-                disabled={busy}
-                onClick={() => act(() => delegateHil(selected.id, 'architect'))}
-              >
-                Delegate to architect
-              </button>
-              <button type="button" className="cr-icon-btn" onClick={() => setSelected(undefined)}>
-                Close
-              </button>
-            </div>
+          )}
+          <div className="cr-actions">
+            <button
+              type="button"
+              className="cr-btn signal"
+              data-testid="hil-approve"
+              disabled={busy}
+              onClick={() =>
+                act(item.id, () =>
+                  approveHil(item.id, 'human', draftOf(item.id).trim() || undefined),
+                )
+              }
+            >
+              {item.hil_kind === 'unblock' ? 'Allow once' : 'Approve'}
+            </button>
+            <button
+              type="button"
+              className="cr-btn"
+              data-testid="hil-deny"
+              disabled={busy}
+              onClick={() =>
+                act(item.id, () => denyHil(item.id, 'human', draftOf(item.id).trim() || undefined))
+              }
+            >
+              Deny
+            </button>
+            <button
+              type="button"
+              className="cr-btn"
+              data-testid="hil-delegate-em"
+              disabled={busy}
+              title="Hands this gate, and this one only, to the EM to decide now"
+              onClick={() => act(item.id, () => delegateHil(item.id, 'em'))}
+            >
+              Let the EM decide these from now on
+            </button>
           </div>
-        </div>
-      )}
-    </div>
+          <div className="cr-reply">
+            <input
+              data-testid="hil-note"
+              value={draftOf(item.id)}
+              disabled={busy}
+              placeholder="Or answer in your own words…"
+              onChange={(e) => setDraft(item.id, e.target.value)}
+            />
+            <button
+              type="button"
+              className="cr-btn"
+              data-testid="hil-send-note"
+              disabled={busy || draftOf(item.id).trim().length === 0}
+              title="Send this answer to the EM without deciding — the EM applies it"
+              onClick={() => act(item.id, () => noteHil(item.id, draftOf(item.id).trim()))}
+            >
+              Send
+            </button>
+          </div>
+          <p className="cr-help">
+            A typed answer goes to the agent that asked and to the EM. If it amounts to allow or
+            deny, the EM applies it; if it changes the ticket, the EM turns it into a contract
+            change.
+          </p>
+        </article>
+      ))}
+
+      {questions.map((question) => (
+        <article className="cr-card question-item" key={question.id} data-id={question.id}>
+          <div className="kind">
+            question · {question.raised_by}
+            {question.ticket ? ` · ${question.ticket}` : ''}
+          </div>
+          <h3 data-testid="question-text">{question.text}</h3>
+          {question.options && (
+            <p>
+              <strong>Options offered:</strong> {question.options.join(' · ')}
+            </p>
+          )}
+          <div className="cr-reply">
+            <input
+              data-testid="question-answer"
+              value={draftOf(question.id)}
+              disabled={busy}
+              placeholder="e.g. the spec wins — refine the ticket against it"
+              onChange={(e) => setDraft(question.id, e.target.value)}
+            />
+            <button
+              type="button"
+              className="cr-btn signal"
+              data-testid="question-reply"
+              disabled={busy || draftOf(question.id).trim().length === 0}
+              title="Answer the raiser — no decision recorded"
+              onClick={() =>
+                act(question.id, () =>
+                  answerQuestion(question.id, draftOf(question.id).trim(), 'reply'),
+                )
+              }
+            >
+              Answer
+            </button>
+            <button
+              type="button"
+              className="cr-btn"
+              data-testid="question-decision"
+              disabled={busy || draftOf(question.id).trim().length === 0}
+              title="Answer and record it as a DEC-* through the oracle write guard"
+              onClick={() =>
+                act(question.id, () =>
+                  answerQuestion(question.id, draftOf(question.id).trim(), 'decision'),
+                )
+              }
+            >
+              Record as decision
+            </button>
+          </div>
+        </article>
+      ))}
+    </section>
   );
 }

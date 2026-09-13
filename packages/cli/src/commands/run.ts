@@ -72,6 +72,7 @@ import {
   advanceQaSpawns,
   advanceReviewRequests,
   agentIdFor,
+  buildSprintReport,
   createEmSessionDelegate,
   createFakeSpawn,
   discoverConfig,
@@ -80,6 +81,7 @@ import {
   reRefineStale,
   registerArchitectTools,
   registerQaTools,
+  renderSprintReportMarkdown,
   reviewRecordRelPath,
   reviewSubmit,
   sandboxedSubprocessEnv,
@@ -1065,9 +1067,23 @@ export async function runDemoSprint(opts: RunOptions): Promise<RunResult> {
           };
         });
         const reportPath = join(reportDir, `${new Date().toISOString().replace(/[:.]/g, '-')}.md`);
+        // T044: the run report IS the sprint-review narrative the control
+        // room's Review tab renders — one builder, one renderer
+        // (`packages/daemon/src/em/report.ts`), so the two cannot drift.
+        // The run harness's own diagnostics ride along under their own
+        // heading; the line-per-event dump this replaced is gone.
         writeFileSync(
           reportPath,
-          renderReport(handle, ticketOutcomes, oversizedReadDecision, ticksUsed),
+          renderSprintReportMarkdown(
+            buildSprintReport(store, {
+              gates: gateService,
+              tickets: trackedIds,
+              diagnostics: [
+                `Ceremony ticks used: ${ticksUsed}`,
+                `Oversized-file hook check: ${oversizedReadDecision}`,
+              ],
+            }),
+          ),
         );
         return { reportPath, ticketOutcomes };
       };
@@ -1370,56 +1386,4 @@ function describeStall(
     `\nVendor stderr, per session: ${join(cwd, '.agile-daemon-cache', 'sessions')}/<agent>-<ts>.stderr.log`,
   );
   return lines.join('\n');
-}
-
-function renderReport(
-  handle: DaemonHandle,
-  outcomes: RunResult['ticketOutcomes'],
-  oversizedReadDecision: string,
-  ticksUsed: number,
-): string {
-  const sprints = handle.store?.listSprints() ?? [];
-  const spendByRole = new Map<string, { in: number; out: number; cost: number }>();
-  for (const sprint of sprints) {
-    for (const line of handle.store?.listLedger(sprint.id) ?? []) {
-      const cur = spendByRole.get(line.kind) ?? { in: 0, out: 0, cost: 0 };
-      cur.in += line.in_tokens;
-      cur.out += line.out_tokens;
-      cur.cost += line.cost_usd;
-      spendByRole.set(line.kind, cur);
-    }
-  }
-  const spendLines =
-    spendByRole.size === 0
-      ? ['(no ledger lines — fake-agent sessions default to a single `usage_update`; see notes)']
-      : [...spendByRole.entries()].map(
-          ([role, s]) => `- ${role}: ${s.in} in / ${s.out} out tokens, $${s.cost.toFixed(4)}`,
-        );
-
-  const ticketLines = outcomes.map(
-    (o) => `- ${o.ticket}: status=${o.status}, merged=${o.merged ? 'yes' : 'no'}`,
-  );
-  const reviewRoundLines = outcomes.map(
-    (o) =>
-      `- ${o.ticket}: ${o.reviewRounds} round${o.reviewRounds === 1 ? '' : 's'}${o.reviewVerdicts.length > 0 ? ` (${o.reviewVerdicts.join(' then ')})` : ''}`,
-  );
-
-  return [
-    `# agile run report — ${new Date().toISOString()}`,
-    '',
-    `Ceremony ticks used: ${ticksUsed}`,
-    '',
-    '## Per-ticket outcome',
-    ...ticketLines,
-    '',
-    '## Review rounds per ticket',
-    ...reviewRoundLines,
-    '',
-    '## Token spend per role (ledger)',
-    ...spendLines,
-    '',
-    '## Oversized-file hook check',
-    `- ${oversizedReadDecision}`,
-    '',
-  ].join('\n');
 }

@@ -349,16 +349,17 @@ describe('control room SPA (Playwright e2e)', () => {
 
         const hilItem = page.locator(`.hil-item[data-id="${seeded.id}"]`);
         await hilItem.waitFor({ state: 'attached', timeout: PAGE_TIMEOUT_MS });
-        // Board is open by default (`Panel defaultOpen`, §17) — the card and
-        // its column header are already in the DOM.
-        const boardCard = page.locator('[data-testid="ticket-card-TKT-9102"]');
-        await boardCard.waitFor({ state: 'attached', timeout: PAGE_TIMEOUT_MS });
-        const boardHeader = page.getByRole('button', { name: /^Board/ });
+        // T044: the Sprint body is the strip + Needs-you cards + one story
+        // per ticket; the story and the Needs-you card are the two surfaces
+        // that used to be the Board card and the panel header here.
+        const storyCard = page.locator('[data-testid="ticket-card-TKT-9102"]');
+        await storyCard.waitFor({ state: 'attached', timeout: PAGE_TIMEOUT_MS });
+        const storyOpen = page.locator('[data-testid="story-open-TKT-9102"]');
 
         const UA_LIGHT_BG = 'rgb(239, 239, 239)';
         const UA_LIGHT_TEXT = 'rgb(0, 0, 0)';
 
-        for (const locator of [boardHeader, hilItem, boardCard]) {
+        for (const locator of [storyOpen, hilItem, storyCard]) {
           const { bg, color } = await locator.evaluate((el) => {
             // biome-ignore lint/suspicious/noExplicitAny: browser-context globals, see comment above
             const cs = (globalThis as any).getComputedStyle(el);
@@ -925,13 +926,13 @@ describe('control room SPA (Playwright e2e)', () => {
         page = await openPage(await browserForTests());
         await page.goto(`http://127.0.0.1:${handle.http.port}/control-room`);
 
-        // Board is open by default (Panel `defaultOpen`).
+        // T044: the ticket is a story, and its stage pill is what a status
+        // change moves (the Board's columns are gone).
         const card = page.locator('[data-testid="ticket-card-TKT-9103"]');
         await card.waitFor({ state: 'attached', timeout: PAGE_TIMEOUT_MS });
-        const initialColumn = await card.evaluate(
-          (el) => el.parentElement?.firstElementChild?.textContent ?? '',
-        );
-        expect(initialColumn).toContain('DRAFT');
+        const stage = page.locator('[data-testid="story-stage-TKT-9103"]');
+        const initialStage = (await stage.textContent()) ?? '';
+        expect(initialStage).toContain('Draft');
 
         // External change: no fetch/reload call from this test — the daemon's
         // own store is mutated directly, the way another agent's process
@@ -939,14 +940,12 @@ describe('control room SPA (Playwright e2e)', () => {
         await store.transitionTicket('TKT-9103', 'ready', { by: 'test' });
 
         const deadline = Date.now() + POLL_DEADLINE_MS;
-        let column = initialColumn;
-        while (column.includes('DRAFT') && Date.now() < deadline) {
+        let label = initialStage;
+        while (label.includes('Draft') && Date.now() < deadline) {
           await page.waitForTimeout(100);
-          column = await card.evaluate(
-            (el) => el.parentElement?.firstElementChild?.textContent ?? '',
-          );
+          label = (await stage.textContent()) ?? '';
         }
-        expect(column).toContain('READY');
+        expect(label).toContain('Ready');
       } finally {
         await teardown([page]);
         await handle?.stop();

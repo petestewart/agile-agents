@@ -885,17 +885,32 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
     if (frame.acp === 'notification' && frame.message.method === '_agile/session_state') {
       const p = asRecord(frame.message.params);
       const resolvedModel = modelFromSessionState(p);
-      if (resolvedModel !== undefined) {
-        model = resolvedModel;
-        track(recordHeartbeat({ model: resolvedModel }));
-      }
+      if (resolvedModel !== undefined) model = resolvedModel;
       const sessionId = p?.sessionId;
-      if (typeof sessionId === 'string') {
+      /**
+       * T044: the model id is written with `putAgent`, NOT through
+       * `recordHeartbeat`. `StateStore.heartbeat` coalesces — a `last_seen`
+       * less than `HEARTBEAT_COALESCE_MS` old with no ticket reassignment
+       * pending is a pure no-op (see its own doc comment) — and this
+       * notification arrives within milliseconds of the registration
+       * `putAgent` below, so every model update was being swallowed and
+       * every agent record kept the `'unknown'` fallback. That is what made
+       * the control room's Team table read `claude/unknown` for every row.
+       * One write carries both fields, since they arrive in one frame.
+       */
+      if (resolvedModel !== undefined || typeof sessionId === 'string') {
         try {
           const current = store.getAgent(agentId);
-          track(store.putAgent(agentId, { ...current, session_id: sessionId }));
+          track(
+            store.putAgent(agentId, {
+              ...current,
+              ...(resolvedModel !== undefined ? { model: resolvedModel } : {}),
+              ...(typeof sessionId === 'string' ? { session_id: sessionId } : {}),
+            }),
+          );
         } catch {
-          // Not registered yet — the initial `putAgent` below will carry session_id once known.
+          // Not registered yet — the initial `putAgent` below carries
+          // whatever `model`/`session_id` are known by the time it runs.
         }
       }
       return;

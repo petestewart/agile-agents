@@ -240,6 +240,14 @@ describe('startAgentSession', () => {
     expect(agent.role).toBe('engineer');
     expect(agent.worktree).toBe(worktree);
     expect(agent.vendor).toBe('claude');
+    // T044: the model id is captured off the ACP `session/new` result's
+    // `configOptions` (`_agile/session_state` -> `modelFromSessionState`),
+    // not left at the `'unknown'` fallback — the Team table names
+    // vendor/model, and every row used to read `claude/unknown`. The fake
+    // vendor reports `DEFAULT_FAKE_MODEL`, which is what makes the offline
+    // e2e able to prove it.
+    expect(agent.model).toBe('fake/model-1');
+    expect(agent.model).not.toBe('unknown');
     // T012 QA round fix: the recorded pid is the fake agent's own OS pid,
     // not the daemon's/test's own — see `session.ts`'s registration and
     // `@agile-agents/acp-client`'s `SpawnedSession.pid`.

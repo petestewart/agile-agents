@@ -51,6 +51,31 @@ export {
   type InitResult,
 } from './init';
 
+/**
+ * Chromium discovery for the Playwright e2e suites. Exported so the CLI's
+ * own offline e2e (`packages/cli/src/run.e2e.test.ts`, which drives the
+ * demo sprint and then looks at the control room that narrates it) shares
+ * one implementation with `feed/*.e2e.test.ts` rather than re-deriving the
+ * per-platform browser layouts.
+ */
+export { resolveChromiumExecutable } from './feed/chromium';
+
+// Feed snapshot, ticket stories and the ticket-detail reads (T020/T044).
+export {
+  buildSnapshot,
+  buildStories,
+  buildStory,
+  buildTeam,
+  resolveTicketWorktree,
+  ticketDiff,
+  ticketThread,
+  TicketDiffError,
+  type FeedSnapshot,
+  type FeedTeamMember,
+  type TicketDiff,
+  type TicketStory,
+} from './feed';
+
 // Role briefs and ceremony templates (T013).
 export * from './briefs';
 

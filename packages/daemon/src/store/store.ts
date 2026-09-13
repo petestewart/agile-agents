@@ -1178,12 +1178,34 @@ export class StateStore {
     }));
   }
 
+  /**
+   * T044: the `agent_deleted` event carries the record that was removed
+   * (`vendor`/`model`/`role`/`ticket`). §17 v2's Team table "keeps finished
+   * agents ... for the sprint", and a session's exit path
+   * (`runner/session.ts`'s `finish()`) *deletes* the registry file — so
+   * after a departure the only remaining trace of who that agent was, and
+   * on what model, is this line in `log/events.jsonl`. `AgentRecord` itself
+   * gains no `left_at`/status field for it: nothing survives to carry one,
+   * and the event already has the timestamp. Same shape as `heartbeat`'s
+   * own `data: {heartbeat: true}` — the payload is free-form
+   * (`EventSchema.data`) and this is the one writer of these fields.
+   */
   async deleteAgent(id: AgentId): Promise<void> {
     return this.mutate(() => {
       const relPath = this.agentRelPath(id);
       if (!fileExists(this.abs(relPath))) throw new NotFoundError('AgentRecord', id);
+      const record = validateAgentRecord(readYamlFile(this.abs(relPath)));
       removeFile(this.abs(relPath));
-      const event = buildEvent('agent_deleted', { agent: id, data: {} });
+      const event = buildEvent('agent_deleted', {
+        agent: id,
+        ...(record.ticket !== undefined ? { ticket: record.ticket } : {}),
+        data: {
+          vendor: record.vendor,
+          model: record.model,
+          ...(record.role !== undefined ? { role: record.role } : {}),
+          ...(record.ticket !== undefined ? { ticket: record.ticket } : {}),
+        },
+      });
       return { result: undefined, relPaths: [relPath], event };
     });
   }
