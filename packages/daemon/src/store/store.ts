@@ -1196,12 +1196,18 @@ export class StateStore {
     return validatePolicy(readYamlFile(path));
   }
 
-  async putPolicy(policy: Policy): Promise<Policy> {
+  /**
+   * T043: `options.by` records who changed the gates block, the same way
+   * `putTicket` records who moved a ticket — the control room's Settings
+   * screen writes `human`. Optional, so every pre-T043 caller keeps minting
+   * an actor-less `policy_put`.
+   */
+  async putPolicy(policy: Policy, options: { by?: string } = {}): Promise<Policy> {
     return this.mutate(() => {
       const validated = validatePolicy(policy);
       const relPath = 'policy.yaml';
       writeYamlFileAtomic(this.abs(relPath), validated);
-      const event = buildEvent('policy_put');
+      const event = buildEvent('policy_put', { agent: options.by, data: {} });
       return { result: validated, relPaths: [relPath], event };
     });
   }
