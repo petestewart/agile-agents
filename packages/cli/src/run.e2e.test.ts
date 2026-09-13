@@ -271,74 +271,81 @@ describe('agile run (offline, fake ACP)', () => {
     expect(qaTkt1002.lines[0]?.command).toContain('sorts ascending by dueDate');
 
     // ------------------------------------------------------------------
-    // T044: the control room has to make this run legible to someone who
-    // does not know the system (the ticket's own Note). Same repo, same
-    // state, a real daemon and a real browser — no extra sprint run.
+    // T044: the run has to be legible to someone who does not know the
+    // system (the ticket's own Note). This asserts the *data* the control
+    // room renders, off a real daemon over HTTP, against the state this
+    // very sprint produced — and that the sprint-review narrative is,
+    // literally, the body of the `runs/*.md` file written above.
+    //
+    // No browser here on purpose: the rendering half lives in
+    // `packages/daemon/src/feed/control-room.e2e.test.ts` ("the Sprint and
+    // Review views"), because a second Chromium launched in this bun
+    // process destabilises the two browser suites that run after this file
+    // under `test:integration` — measured: `test:e2e` alone is 11/11, and
+    // with a Chromium launched here first, two of its tests lose their
+    // browser to bun's dangling-process cleanup mid-test. See
+    // `control-room.e2e.test.ts`'s `browserForTests` note.
     // ------------------------------------------------------------------
-    const { startDaemon, resolveChromiumExecutable } = await import('@agile-agents/daemon');
-    const { chromium } = await import('playwright-core');
+    const { startDaemon } = await import('@agile-agents/daemon');
     const handle = await startDaemon({
       cwd: repo,
       port: 0,
       socketPath: join(repo, '.agile-daemon-cr.sock'),
     });
-    const browser = await chromium.launch({ executablePath: resolveChromiumExecutable() });
     try {
-      const page = await browser.newPage();
-      // playwright-core used without its own test runner defaults every
-      // action to "wait forever" — see control-room.e2e.test.ts's own note.
-      page.setDefaultTimeout(20_000);
-      page.setDefaultNavigationTimeout(20_000);
-      await page.goto(`http://127.0.0.1:${handle.http.port}/control-room`);
+      const base = `http://127.0.0.1:${handle.http.port}`;
+      const snapshot = (await (await fetch(`${base}/api/snapshot`)).json()) as {
+        stories: Array<{
+          ticket: string;
+          status: string;
+          stage: { label: string };
+          steps: Array<{ headline?: string; text: string; ts: string }>;
+        }>;
+        team: Array<{ id: string; model: string; state: string }>;
+      };
 
       // Three complete stories: each ticket says what was built, what the
       // review said and that it merged — with timestamps, in order.
-      for (const id of ['TKT-1001', 'TKT-1002', 'TKT-1003'] as const) {
-        const steps = page.locator(`[data-testid="story-steps-${id}"]`);
-        await steps.waitFor({ state: 'attached', timeout: 20_000 });
-        const text = (await steps.textContent()) ?? '';
-        expect(text).toContain('Built');
-        expect(text).toContain('Review approved');
-        expect(text).toContain('Merged');
-        expect(await page.locator(`[data-testid="story-stage-${id}"]`).textContent()).toContain(
-          'Done',
-        );
+      expect(snapshot.stories).toHaveLength(3);
+      for (const story of snapshot.stories) {
+        const rendered = story.steps.map((step) => `${step.headline ?? ''} ${step.text}`);
+        expect(rendered.some((line) => line.startsWith('Built'))).toBe(true);
+        expect(rendered.some((line) => line.includes('Review approved'))).toBe(true);
+        expect(rendered.some((line) => line.startsWith('Merged'))).toBe(true);
+        expect(story.stage.label).toBe('Done');
+        const timestamps = story.steps.map((step) => step.ts);
+        expect([...timestamps].sort()).toEqual(timestamps);
       }
 
-      // Team rows name the model the session actually ran on. Offline that
-      // is the fake vendor's own id — the point is that it is a real
-      // reported id and not the `'unknown'` fallback every row used to show.
-      const teamRows = page.locator('[data-testid="team"] tbody tr');
-      expect(await teamRows.count()).toBeGreaterThan(0);
-      const teamText = (await page.locator('[data-testid="team"]').textContent()) ?? '';
-      expect(teamText).toContain('fake/model-1');
-      expect(teamText).not.toContain('unknown');
-      // Finished agents stay listed (every session from this run has exited).
-      expect(
-        await page.locator('[data-testid="team"] tbody tr[data-state="left"]').count(),
-      ).toBeGreaterThan(0);
+      // Team rows name the model the session actually ran on — offline that
+      // is the fake vendor's own reported id, never the `'unknown'`
+      // fallback every row used to show — and finished agents stay listed
+      // (every session from this run has exited by now).
+      expect(snapshot.team.length).toBeGreaterThan(0);
+      expect(snapshot.team.every((member) => member.model !== 'unknown')).toBe(true);
+      expect(snapshot.team.some((member) => member.model === 'fake/model-1')).toBe(true);
+      expect(snapshot.team.some((member) => member.state === 'left')).toBe(true);
 
-      // The Review tab's narrative IS the runs/*.md body — one builder, one
+      // The Review view's narrative IS the runs/*.md body: one builder, one
       // renderer (`packages/daemon/src/em/report.ts`).
-      await page.locator('[data-testid="sprint-tab-review"]').click();
-      await page.locator('[data-testid="review-summary"]').waitFor({ state: 'attached' });
-      for (const testid of ['review-asked', 'review-built', 'review-wrong', 'review-where']) {
-        const rendered = (await page.locator(`[data-testid="${testid}"]`).textContent()) ?? '';
-        // The rendered paragraph is "<label> <sentence>"; the file writes
-        // the same sentence after the same label in bold.
-        const sentence = rendered.slice(rendered.indexOf(':') + 1).trim();
-        expect(sentence.length).toBeGreaterThan(0);
-        expect(report).toContain(sentence);
+      const narrative = (await (await fetch(`${base}/api/sprint/review`)).json()) as {
+        asked: string;
+        built: string;
+        went_wrong: string;
+        where: string;
+        per_ticket: Array<{ ticket: string; text: string }>;
+      };
+      expect(report).toContain(narrative.asked);
+      expect(report).toContain(narrative.built);
+      expect(report).toContain(narrative.went_wrong);
+      expect(report).toContain(narrative.where);
+      for (const line of narrative.per_ticket) {
+        expect(report).toContain(`- ${line.ticket}: ${line.text}`);
       }
     } finally {
-      const closed = await Promise.race([
-        browser.close().then(() => true),
-        Bun.sleep(3_000).then(() => false),
-      ]);
-      if (!closed) console.error('run e2e: browser.close() did not return within 3s');
       await handle.stop();
     }
-  }, 180_000);
+  }, 120_000);
 });
 
 describe('agile run (live, real ACP — only with AGILE_LIVE=1)', () => {
