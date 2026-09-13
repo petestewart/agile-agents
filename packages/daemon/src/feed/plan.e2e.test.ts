@@ -7,7 +7,7 @@
  * uses, with a double that calls the daemon's own architect verbs.
  */
 
-import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
+import { afterAll, describe, expect, test } from 'bun:test';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -113,24 +113,68 @@ function cannedArchitect(store: StateStore): ArchitectPlanner {
 }
 
 /**
- * Teardown budget for `browser.close()`. Same bound, and the same reason, as
- * `control-room.e2e.test.ts`'s `closeBrowserBounded`: under a loaded
- * multi-file e2e run bun's harness intermittently fails to observe the
- * Chromium child's exit, and every assertion has already passed by then.
+ * Browser harness, mirroring `control-room.e2e.test.ts`'s (T043) rather than
+ * inventing a second one: ONE Chromium for the file, re-launched if bun's
+ * dangling-process cleanup kills it from outside, a bounded close (a close
+ * that never returns must not burn a test's budget), a real per-page action
+ * timeout, and per-test teardown of the page *context* before its daemon
+ * stops. That file's own comments document the measurements behind each.
  */
-const BROWSER_CLOSE_BUDGET_MS = 10_000;
+const PAGE_TIMEOUT_MS = 10_000;
+const SHARED_CLOSE_BUDGET_MS = 3_000;
 
-async function closeBrowserBounded(browser: Browser | undefined): Promise<void> {
+let sharedBrowser: Browser | undefined;
+
+async function browserForTests(): Promise<Browser> {
+  if (sharedBrowser && !sharedBrowser.isConnected()) sharedBrowser = undefined;
+  if (!sharedBrowser) sharedBrowser = await chromium.launch({ executablePath });
+  return sharedBrowser;
+}
+
+afterAll(async () => {
+  const browser = sharedBrowser;
+  sharedBrowser = undefined;
   if (!browser) return;
   const closed = await Promise.race([
     browser.close().then(() => true),
-    Bun.sleep(BROWSER_CLOSE_BUDGET_MS).then(() => false),
+    Bun.sleep(SHARED_CLOSE_BUDGET_MS).then(() => false),
   ]);
   if (!closed) {
     console.error(
-      `plan e2e: browser.close() did not return within ${BROWSER_CLOSE_BUDGET_MS}ms — leaving it to bun's dangling-process cleanup (teardown only; every assertion passed)`,
+      `plan e2e: the shared browser.close() did not return within ${SHARED_CLOSE_BUDGET_MS}ms — left to bun's dangling-process cleanup (teardown only; every assertion passed)`,
     );
   }
+});
+
+function isBrowserGoneError(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err);
+  return /Target (page, context or browser|closed)|browser has been closed|has been closed/i.test(
+    message,
+  );
+}
+
+/** Each body is self-contained (own repo, daemon, page), so one retry on a killed browser is safe — same rule as the control-room suite. */
+function browserTest(name: string, body: () => Promise<void>, timeoutMs: number): void {
+  test(
+    name,
+    async () => {
+      try {
+        await body();
+      } catch (err) {
+        if (!isBrowserGoneError(err)) throw err;
+        console.error(`plan e2e: "${name}" lost its browser mid-test — retrying once`);
+        sharedBrowser = undefined;
+        await body();
+      }
+    },
+    timeoutMs,
+  );
+}
+
+async function teardown(pages: Array<Page | undefined>): Promise<void> {
+  await Promise.allSettled(
+    pages.filter((p): p is Page => p !== undefined).map((p) => p.context().close()),
+  );
 }
 
 /** Polls until `check` passes, so a debounce-driven refetch isn't a flake. */
@@ -143,283 +187,354 @@ async function until(page: Page, check: () => Promise<boolean>, what: string, ti
   }
 }
 
-async function openPlan(page: Page, port: number): Promise<void> {
+/**
+ * Opens the control room. Plan is the landing view (T043's shell, switched to
+ * `plan` by this ticket — §17 v2 "The repo opens here with an empty plan and
+ * a chat"), so no navigation is needed; the assertion that the Plan screen is
+ * what renders on load is the point.
+ */
+async function openPlan(browser: Browser, port: number): Promise<Page> {
+  const page = await browser.newPage();
+  page.setDefaultTimeout(PAGE_TIMEOUT_MS);
+  page.setDefaultNavigationTimeout(PAGE_TIMEOUT_MS);
   await page.goto(`http://127.0.0.1:${port}/control-room`);
-  // The Plan tab in the existing strip (T043 owns the top-bar nav that makes
-  // Plan the landing view).
-  await page.getByRole('button', { name: 'Plan', exact: true }).click();
   await page.locator('[data-testid="plan-screen"]').waitFor({ state: 'attached', timeout: 10000 });
+  return page;
 }
 
-/**
- * One Chromium for the whole file, not one per test. Round-1 review: a third
- * e2e file in the same `bun run test:e2e` run pushed the suite over the edge
- * of the documented bun/Chromium teardown flake (`closeBrowserBounded`'s own
- * comment in `control-room.e2e.test.ts`) — every extra browser launch/close is
- * load this file does not need, since its two tests are sequential anyway.
- */
-let browser: Browser;
-
-beforeAll(async () => {
-  browser = await chromium.launch({ executablePath });
-});
-
-afterAll(async () => {
-  await closeBrowserBounded(browser);
-});
-
 describe('Plan screen (Playwright e2e)', () => {
-  test('every pane renders daemon data, and every edit lands in events.jsonl and on agile-state', async () => {
-    const repo = initRepo();
-    let handle: DaemonHandle | undefined;
-    let openedPage: Page | undefined;
+  browserTest(
+    'every pane renders daemon data, and every edit lands in events.jsonl and on agile-state',
+    async () => {
+      const repo = initRepo();
+      let handle: DaemonHandle | undefined;
+      let openedPage: Page | undefined;
 
-    try {
-      const init = runInit(repo);
-      const store = StateStore.open(init.stateRoot);
-      await store.putTicket({
-        id: 'TKT-9001',
-        title: 'Add Ledger.transfer',
-        description: 'Records a withdrawal and a deposit as one operation.',
-        status: 'in_progress',
-        assignee: 'eng-9001',
-        contract: {
-          inputs: [],
-          outputs: [],
-          acceptance: ['rejects the same account'],
-          done: [],
-          env: 'clone',
-        },
-        depends: [],
-        oracle_refs: [],
-        kb_refs: [],
-        history: [],
-        security: false,
-      });
-      await store.putTicket({
-        id: 'TKT-9002',
-        title: 'Reverse a transfer as a pair',
-        description: 'Both legs reversed together.',
-        status: 'draft',
-        contract: { inputs: [], outputs: [], acceptance: [], done: [], env: 'clone' },
-        depends: ['TKT-9001'],
-        oracle_refs: [],
-        kb_refs: [],
-        history: [],
-        security: false,
-      });
+      try {
+        const init = runInit(repo);
+        const store = StateStore.open(init.stateRoot);
+        await store.putTicket({
+          id: 'TKT-9001',
+          title: 'Add Ledger.transfer',
+          description: 'Records a withdrawal and a deposit as one operation.',
+          status: 'in_progress',
+          assignee: 'eng-9001',
+          contract: {
+            inputs: [],
+            outputs: [],
+            acceptance: ['rejects the same account'],
+            done: [],
+            env: 'clone',
+          },
+          depends: [],
+          oracle_refs: [],
+          kb_refs: [],
+          history: [],
+          security: false,
+        });
+        await store.putTicket({
+          id: 'TKT-9002',
+          title: 'Reverse a transfer as a pair',
+          description: 'Both legs reversed together.',
+          status: 'draft',
+          contract: { inputs: [], outputs: [], acceptance: [], done: [], env: 'clone' },
+          depends: ['TKT-9001'],
+          oracle_refs: [],
+          kb_refs: [],
+          history: [],
+          security: false,
+        });
 
-      handle = await startDaemon({
-        cwd: repo,
-        port: 0,
-        socketPath: join(repo, '.agile-daemon.sock'),
-      });
-      const page = await browser.newPage();
-      openedPage = page;
-      await openPlan(page, handle.http.port);
+        handle = await startDaemon({
+          cwd: repo,
+          port: 0,
+          socketPath: join(repo, '.agile-daemon.sock'),
+        });
+        const browser = await browserForTests();
+        const page = await openPlan(browser, handle.http.port);
+        openedPage = page;
 
-      // --- Tickets pane (the default) renders the seeded tickets, stub marked.
-      await page
-        .locator('[data-testid="plan-ticket-TKT-9001"]')
-        .waitFor({ state: 'attached', timeout: 10000 });
-      expect(await page.locator('[data-testid="plan-ticket-TKT-9002"]').textContent()).toContain(
-        'stub',
-      );
+        // --- Tickets pane (the default) renders the seeded tickets, stub marked.
+        await page
+          .locator('[data-testid="plan-ticket-TKT-9001"]')
+          .waitFor({ state: 'attached', timeout: 10000 });
+        expect(await page.locator('[data-testid="plan-ticket-TKT-9002"]').textContent()).toContain(
+          'stub',
+        );
 
-      // --- Living plan: editing the in-flight ticket is a contract change,
-      // not a silent rewrite (ticket AC).
-      await page.locator('[data-testid="plan-ticket-edit-TKT-9001"]').click();
-      await page.locator('[data-testid="ticket-title"]').fill('Add Ledger.transfer (both legs)');
-      await page.locator('[data-testid="ticket-save"]').click();
-      await until(
-        page,
-        async () =>
-          (await page.locator('[data-testid="ticket-status"]').textContent())?.includes(
-            'contract change',
-          ) ?? false,
-        'the contract-change notice',
-      );
-      const messages = store.listEvents().filter((e) => e.kind === 'message');
-      expect(messages.length).toBeGreaterThan(0);
+        // --- Living plan: editing the in-flight ticket is a contract change,
+        // not a silent rewrite (ticket AC).
+        await page.locator('[data-testid="plan-ticket-edit-TKT-9001"]').click();
+        await page.locator('[data-testid="ticket-title"]').fill('Add Ledger.transfer (both legs)');
+        await page.locator('[data-testid="ticket-save"]').click();
+        await until(
+          page,
+          async () =>
+            (await page.locator('[data-testid="ticket-status"]').textContent())?.includes(
+              'contract change',
+            ) ?? false,
+          'the contract-change notice',
+        );
+        const messages = store.listEvents().filter((e) => e.kind === 'message');
+        expect(messages.length).toBeGreaterThan(0);
 
-      // --- Brief pane: render + edit.
-      await page.locator('[data-testid="rail-brief"]').click();
-      await page.locator('[data-testid="brief-edit"]').click();
-      await page.locator('[data-testid="brief-text"]').fill('# Product\n\nA tiny ledger.\n');
-      await page.locator('[data-testid="brief-save"]').click();
-      await until(
-        page,
-        async () =>
-          (await page.locator('[data-testid="brief-body"]').textContent())?.includes(
-            'A tiny ledger',
-          ) ?? false,
-        'the saved brief',
-      );
+        // --- Brief pane: render + edit.
+        await page.locator('[data-testid="rail-brief"]').click();
+        await page.locator('[data-testid="brief-edit"]').click();
+        await page.locator('[data-testid="brief-text"]').fill('# Product\n\nA tiny ledger.\n');
+        await page.locator('[data-testid="brief-save"]').click();
+        await until(
+          page,
+          async () =>
+            (await page.locator('[data-testid="brief-body"]').textContent())?.includes(
+              'A tiny ledger',
+            ) ?? false,
+          'the saved brief',
+        );
 
-      // --- Rules pane: render + add.
-      await page.locator('[data-testid="rail-rules"]').click();
-      await page.locator('[data-testid="rule-add"]').click();
-      await page.locator('[data-testid="rule-title"]').fill('Money is integer cents');
-      await page.locator('[data-testid="rule-body"]').fill('No float arithmetic on amounts.');
-      await page.locator('[data-testid="rule-save"]').click();
-      await until(
-        page,
-        async () => (await page.locator('.cr-plan .rule .id').count()) > 0,
-        'the saved rule',
-      );
+        // --- Rules pane: render + add.
+        await page.locator('[data-testid="rail-rules"]').click();
+        await page.locator('[data-testid="rule-add"]').click();
+        await page.locator('[data-testid="rule-title"]').fill('Money is integer cents');
+        await page.locator('[data-testid="rule-body"]').fill('No float arithmetic on amounts.');
+        await page.locator('[data-testid="rule-save"]').click();
+        await until(
+          page,
+          async () => (await page.locator('.cr-plan .rule .id').count()) > 0,
+          'the saved rule',
+        );
 
-      // --- Questions pane: render + ask.
-      await page.locator('[data-testid="rail-questions"]').click();
-      await page
-        .locator('[data-testid="question-ask"]')
-        .fill('Is a same-account transfer an error?');
-      await page.locator('[data-testid="question-ask-send"]').click();
-      await until(
-        page,
-        async () => store.listEvents().some((e) => e.kind === 'question_raised'),
-        'the raised question',
-      );
+        // --- Questions pane: render + ask.
+        await page.locator('[data-testid="rail-questions"]').click();
+        await page
+          .locator('[data-testid="question-ask"]')
+          .fill('Is a same-account transfer an error?');
+        await page.locator('[data-testid="question-ask-send"]').click();
+        await until(
+          page,
+          async () => store.listEvents().some((e) => e.kind === 'question_raised'),
+          'the raised question',
+        );
 
-      // --- Knowledge pane: render + add.
-      await page.locator('[data-testid="rail-knowledge"]').click();
-      await page.locator('[data-testid="fact-add"]').click();
-      await page.locator('[data-testid="fact-body"]').fill('Tests run with bun test.');
-      await page.locator('[data-testid="fact-save"]').click();
-      await until(
-        page,
-        async () => store.listEvents().some((e) => e.kind === 'kb_put'),
-        'the saved fact',
-      );
+        // --- Knowledge pane: render + add.
+        await page.locator('[data-testid="rail-knowledge"]').click();
+        await page.locator('[data-testid="fact-add"]').click();
+        await page.locator('[data-testid="fact-body"]').fill('Tests run with bun test.');
+        await page.locator('[data-testid="fact-save"]').click();
+        await until(
+          page,
+          async () => store.listEvents().some((e) => e.kind === 'kb_put'),
+          'the saved fact',
+        );
 
-      // --- Who decides: read-only render of policy.yaml.
-      await page.locator('[data-testid="rail-policy"]').click();
-      await page
-        .locator('[data-testid="pane-policy"]')
-        .waitFor({ state: 'attached', timeout: 5000 });
-      expect(await page.locator('[data-testid="pane-policy"] tbody tr').count()).toBeGreaterThan(0);
+        // --- Who decides: read-only render of policy.yaml.
+        await page.locator('[data-testid="rail-policy"]').click();
+        await page
+          .locator('[data-testid="pane-policy"]')
+          .waitFor({ state: 'attached', timeout: 5000 });
+        expect(await page.locator('[data-testid="pane-policy"] tbody tr').count()).toBeGreaterThan(
+          0,
+        );
 
-      // --- Sprints pane: the next sprint is settled, the stub is projected,
-      // and the ticket detail panel carries blocked-by/blocks.
-      await page.locator('[data-testid="rail-sprints"]').click();
-      await page
-        .locator('[data-testid="sprint-ticket-TKT-9002"]')
-        .waitFor({ state: 'attached', timeout: 5000 });
-      await page.locator('[data-testid="sprint-ticket-TKT-9002"]').click();
-      expect(await page.locator('[data-testid="detail-blocked-by"]').textContent()).toContain(
-        'TKT-9001',
-      );
+        // --- Sprints pane: the next sprint is settled, the stub is projected,
+        // and the ticket detail panel carries blocked-by/blocks.
+        await page.locator('[data-testid="rail-sprints"]').click();
+        await page
+          .locator('[data-testid="sprint-ticket-TKT-9002"]')
+          .waitFor({ state: 'attached', timeout: 5000 });
+        await page.locator('[data-testid="sprint-ticket-TKT-9002"]').click();
+        expect(await page.locator('[data-testid="detail-blocked-by"]').textContent()).toContain(
+          'TKT-9001',
+        );
 
-      // --- Decisions pane: publishing a decision no ticket cites still
-      // re-examines every not-done ticket (ticket AC).
-      await page.locator('[data-testid="rail-decisions"]').click();
-      await page.locator('[data-testid="decision-add"]').click();
-      await page.locator('[data-testid="decision-title"]').fill('Money is integer cents');
-      await page.locator('[data-testid="decision-body"]').fill('Integers everywhere.');
-      await page.locator('[data-testid="decision-publish"]').click();
-      await until(
-        page,
-        async () => store.listEvents().filter((e) => e.kind === 'ticket_reexamined').length >= 2,
-        'a re-examination record per not-done ticket',
-      );
-      const reexamined = store.listEvents().filter((e) => e.kind === 'ticket_reexamined');
-      expect(new Set(reexamined.map((e) => e.ticket))).toEqual(
-        new Set(['TKT-9001', 'TKT-9002'] as TicketId[]),
-      );
+        // --- Decisions pane: publishing a decision no ticket cites still
+        // re-examines every not-done ticket (ticket AC).
+        await page.locator('[data-testid="rail-decisions"]').click();
+        await page.locator('[data-testid="decision-add"]').click();
+        await page.locator('[data-testid="decision-title"]').fill('Money is integer cents');
+        await page.locator('[data-testid="decision-body"]').fill('Integers everywhere.');
+        await page.locator('[data-testid="decision-publish"]').click();
+        await until(
+          page,
+          async () => store.listEvents().filter((e) => e.kind === 'ticket_reexamined').length >= 2,
+          'a re-examination record per not-done ticket',
+        );
+        const reexamined = store.listEvents().filter((e) => e.kind === 'ticket_reexamined');
+        expect(new Set(reexamined.map((e) => e.ticket))).toEqual(
+          new Set(['TKT-9001', 'TKT-9002'] as TicketId[]),
+        );
 
-      // Every one of those writes is a commit on the agile-state worktree.
-      await store.flush();
-      const subjects = git(['log', '--format=%s'], init.stateRoot).split('\n');
-      expect(subjects).toContain('entity_put');
-      expect(subjects).toContain('oracle_put');
-      expect(subjects).toContain('kb_put');
-      expect(subjects).toContain('ticket_put');
-    } finally {
-      await openedPage?.close();
-      await handle?.stop();
-      rmSync(repo, { recursive: true, force: true });
-    }
-  }, 60000);
+        // Every one of those writes is a commit on the agile-state worktree.
+        await store.flush();
+        const subjects = git(['log', '--format=%s'], init.stateRoot).split('\n');
+        expect(subjects).toContain('entity_put');
+        expect(subjects).toContain('oracle_put');
+        expect(subjects).toContain('kb_put');
+        expect(subjects).toContain('ticket_put');
+      } finally {
+        await teardown([openedPage]);
+        await handle?.stop();
+        rmSync(repo, { recursive: true, force: true });
+      }
+    },
+    60000,
+  );
 
-  test('no-seed walkthrough: agile init, goal in the chat, panes fill, Start Sprint 1 runs', async () => {
-    const repo = initRepo();
-    let handle: DaemonHandle | undefined;
-    let openedPage: Page | undefined;
+  browserTest(
+    'a proposal waiting on an em-owned approve_plan disables Start Sprint instead of offering a second one',
+    async () => {
+      const repo = initRepo();
+      let handle: DaemonHandle | undefined;
+      let openedPage: Page | undefined;
 
-    try {
-      const init = runInit(repo);
-      const store = StateStore.open(init.stateRoot);
-      expect(store.listTickets()).toHaveLength(0);
+      try {
+        const init = runInit(repo);
+        const store = StateStore.open(init.stateRoot);
+        await store.putTicket({
+          id: 'TKT-9301',
+          title: 'Frontier ticket',
+          status: 'ready',
+          contract: {
+            inputs: [],
+            outputs: [],
+            acceptance: ['does the thing'],
+            done: [],
+            env: 'clone',
+          },
+          depends: [],
+          oracle_refs: [],
+          kb_refs: [],
+          history: [],
+          security: false,
+        });
+        // Settings could do this from the UI (T043's `PUT /api/policy`); the
+        // point of this test is the *state after* the gate is raised, so the
+        // policy is seeded directly.
+        const policy = store.getPolicy();
+        await store.putPolicy({ ...policy, gates: { ...policy.gates, approve_plan: 'em' } });
 
-      handle = await startDaemon({
-        cwd: repo,
-        port: 0,
-        socketPath: join(repo, '.agile-daemon.sock'),
-        // Two seams, both offline: the planning turn runs the same daemon
-        // verbs through a double (see `cannedArchitect`), and the resident EM
-        // the chat post also wakes answers over the fake ACP transport
-        // instead of trying to spawn a vendor that isn't installed.
-        architectPlanner: cannedArchitect(store),
-        emChatSpawn: cannedEmSpawn(repo, 'on it'),
-      });
-      const page = await browser.newPage();
-      openedPage = page;
-      await openPlan(page, handle.http.port);
+        handle = await startDaemon({
+          cwd: repo,
+          port: 0,
+          socketPath: join(repo, '.agile-daemon.sock'),
+        });
+        const base = `http://127.0.0.1:${handle.http.port}`;
+        const started = (await (
+          await fetch(`${base}/api/sprint/start`, { method: 'POST' })
+        ).json()) as { started: boolean; gate: { owner: string; status: string } };
+        // Nothing was written — the EM owns the gate and there is no delegate.
+        expect(started.started).toBe(false);
+        expect(started.gate.owner).toBe('em');
+        expect(store.listSprints()).toEqual([]);
 
-      // The empty plan is what the repo opens on.
-      await page
-        .locator('[data-testid="tickets-empty"]')
-        .waitFor({ state: 'attached', timeout: 10000 });
+        const browser = await browserForTests();
+        const page = await openPlan(browser, handle.http.port);
+        openedPage = page;
 
-      // The goal is the first chat message.
-      const textarea = page.locator('.cr-chat-input textarea');
-      await textarea.waitFor({ state: 'attached', timeout: 5000 });
-      await textarea.fill('Add transfers, reversals and a per-category breakdown');
-      await page.locator('.cr-chat-input button').click();
+        const action = page.locator('[data-testid="sprint-action"]');
+        await until(
+          page,
+          async () => (await action.getAttribute('disabled')) !== null,
+          'the top-bar action to report the pending gate',
+        );
+        expect(await action.textContent()).toContain('Start Sprint 1');
+        expect(await action.getAttribute('title')).toContain('approve_plan pending');
+      } finally {
+        await teardown([openedPage]);
+        await handle?.stop();
+        rmSync(repo, { recursive: true, force: true });
+      }
+    },
+    60000,
+  );
 
-      // The architect fills the panes: brief, a rule, one refined ticket and
-      // one stub.
-      await until(
-        page,
-        async () => store.listTickets().length >= 2,
-        'the architect to write the plan',
-        20000,
-      );
-      expect(store.getDoc('oracle/product.md')).toContain('Add transfers');
-      expect(Object.keys(store.listOracleIndex())).toContain('SPEC-quality-001');
-      await until(
-        page,
-        async () => (await page.locator('[data-testid^="plan-ticket-TKT-"]').count()) >= 2,
-        'the tickets pane to fill',
-      );
+  browserTest(
+    'no-seed walkthrough: agile init, goal in the chat, panes fill, Start Sprint 1 runs',
+    async () => {
+      const repo = initRepo();
+      let handle: DaemonHandle | undefined;
+      let openedPage: Page | undefined;
 
-      // Start Sprint 1 — the one action, no other approval step.
-      const start = page.locator('[data-testid="start-sprint"]');
-      await until(page, async () => start.isEnabled(), 'Start Sprint to enable');
-      expect(await start.textContent()).toContain('Start Sprint 1');
-      await start.click();
-      await until(page, async () => store.listSprints().length === 1, 'the sprint to be planned');
+      try {
+        const init = runInit(repo);
+        const store = StateStore.open(init.stateRoot);
+        expect(store.listTickets()).toHaveLength(0);
 
-      const sprint = store.listSprints()[0];
-      expect(sprint?.id).toBe('S-1');
-      expect(sprint?.tickets).toHaveLength(1); // the stub is a later layer
-      // The gate was raised *and* resolved by the click itself.
-      const hil = handle.gateService?.list() ?? [];
-      const approvePlan = hil.filter((r) => r.gate === 'approve_plan');
-      expect(approvePlan).toHaveLength(1);
-      expect(approvePlan[0]?.status).toBe('resolved');
-      expect(approvePlan[0]?.decision).toBe('approve');
-      // And the screen says a sprint is running.
-      await until(
-        page,
-        async () =>
-          (await page.locator('[data-testid="plan-status"]').textContent())?.includes('S-1') ??
-          false,
-        'the sprint-started notice',
-      );
-    } finally {
-      await openedPage?.close();
-      await handle?.stop();
-      rmSync(repo, { recursive: true, force: true });
-    }
-  }, 60000);
+        handle = await startDaemon({
+          cwd: repo,
+          port: 0,
+          socketPath: join(repo, '.agile-daemon.sock'),
+          // Two seams, both offline: the planning turn runs the same daemon
+          // verbs through a double (see `cannedArchitect`), and the resident EM
+          // the chat post also wakes answers over the fake ACP transport
+          // instead of trying to spawn a vendor that isn't installed.
+          architectPlanner: cannedArchitect(store),
+          emChatSpawn: cannedEmSpawn(repo, 'on it'),
+        });
+        const browser = await browserForTests();
+        const page = await openPlan(browser, handle.http.port);
+        openedPage = page;
+
+        // The empty plan is what the repo opens on.
+        await page
+          .locator('[data-testid="tickets-empty"]')
+          .waitFor({ state: 'attached', timeout: 10000 });
+
+        // The goal is the first chat message.
+        const textarea = page.locator('.cr-chat-input textarea');
+        await textarea.waitFor({ state: 'attached', timeout: 5000 });
+        await textarea.fill('Add transfers, reversals and a per-category breakdown');
+        await page.locator('.cr-chat-input button').click();
+
+        // The architect fills the panes: brief, a rule, one refined ticket and
+        // one stub.
+        await until(
+          page,
+          async () => store.listTickets().length >= 2,
+          'the architect to write the plan',
+          20000,
+        );
+        expect(store.getDoc('oracle/product.md')).toContain('Add transfers');
+        expect(Object.keys(store.listOracleIndex())).toContain('SPEC-quality-001');
+        await until(
+          page,
+          async () => (await page.locator('[data-testid^="plan-ticket-TKT-"]').count()) >= 2,
+          'the tickets pane to fill',
+        );
+
+        // Start Sprint 1 — the one action, in T043's top bar, with no other
+        // approval step (§17 v2: "the single action (Start Sprint N / Halt
+        // Sprint N)").
+        const start = page.locator('[data-testid="sprint-action"]');
+        await until(page, async () => start.isEnabled(), 'Start Sprint to enable');
+        expect(await start.textContent()).toContain('Start Sprint 1');
+        await start.click();
+        await until(page, async () => store.listSprints().length === 1, 'the sprint to be planned');
+
+        const sprint = store.listSprints()[0];
+        expect(sprint?.id).toBe('S-1');
+        expect(sprint?.tickets).toHaveLength(1); // the stub is a later layer
+        // The gate was raised *and* resolved by the click itself.
+        const hil = handle.gateService?.list() ?? [];
+        const approvePlan = hil.filter((r) => r.gate === 'approve_plan');
+        expect(approvePlan).toHaveLength(1);
+        expect(approvePlan[0]?.status).toBe('resolved');
+        expect(approvePlan[0]?.decision).toBe('approve');
+        // And the top bar says a sprint is running, without a reload.
+        await until(
+          page,
+          async () =>
+            (await page.locator('[data-testid="sprint-status"]').textContent())?.includes(
+              'Sprint 1 · running',
+            ) ?? false,
+          'the top bar to show the running sprint',
+        );
+      } finally {
+        await teardown([openedPage]);
+        await handle?.stop();
+        rmSync(repo, { recursive: true, force: true });
+      }
+    },
+    60000,
+  );
 });

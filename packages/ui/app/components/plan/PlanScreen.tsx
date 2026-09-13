@@ -1,6 +1,7 @@
 import type { Event, TicketId } from '@agile-agents/shared';
 import { useCallback, useEffect, useState } from 'react';
-import { connectFeedSocket } from '../../lib/ws';
+import { useFeed } from '../../lib/feed-context';
+import { useShell } from '../../lib/shell';
 import { BriefPane } from './BriefPane';
 import { DecisionsPane } from './DecisionsPane';
 import { KnowledgePane } from './KnowledgePane';
@@ -9,7 +10,7 @@ import { QuestionsPane } from './QuestionsPane';
 import { RulesPane } from './RulesPane';
 import { SprintsPane } from './SprintsPane';
 import { TicketsPane } from './TicketsPane';
-import { type PlanOverview, getPlanOverview, startSprint } from './plan-api';
+import { type PlanOverview, getPlanOverview } from './plan-api';
 
 /**
  * The Plan screen (T042 — design §17 "Control room v2": "Plan screen = the
@@ -20,13 +21,14 @@ import { type PlanOverview, getPlanOverview, startSprint } from './plan-api';
  * Everything it renders comes from `GET /api/plan` (one round trip, the
  * panes are small and always shown together) and every edit goes back
  * through a daemon verb — the panes never write a file. A live `/ws` event
- * that changes any of it refetches, the same debounce-on-event pattern the
- * Ops view already uses.
+ * that changes any of it refetches, debounced.
  *
- * Top-bar ownership: T043 owns the shell (`App.tsx`, `TopBar`, rail-collapse
- * state, chat). Until that lands this component carries its own **Start
- * Sprint N** button — the one top-bar action — so the screen is usable and
- * testable standalone; `onStarted` lets the shell take it over later.
+ * The chrome is T043's and this component only consumes it: the single `/ws`
+ * connection through `useFeed()` (never its own socket), the rail-collapse
+ * and pane-open state through `useShell()` (the tool row's left button
+ * toggles the rail; closing a pane widens the chat), the view switch for
+ * "Open Settings", and the one action — **Start Sprint N** — in the top bar,
+ * not here.
  */
 
 export type PaneId =
@@ -66,20 +68,12 @@ const PLAN_REFRESH_KINDS = new Set<Event['kind']>([
 
 const REFRESH_DEBOUNCE_MS = 150;
 
-export function PlanScreen({
-  collapsed = false,
-  onOpenSettings,
-  onStarted,
-}: {
-  /** Rail collapsed to icons (T043's tool row drives this once it lands). */
-  collapsed?: boolean;
-  onOpenSettings?: () => void;
-  onStarted?: () => void;
-}) {
+export function PlanScreen(): JSX.Element {
+  const { onEvent } = useFeed();
+  const { railCollapsed, middleOpen, setMiddleOpen, setView } = useShell();
   const [overview, setOverview] = useState<PlanOverview | undefined>(undefined);
-  const [pane, setPane] = useState<PaneId | undefined>('tickets');
+  const [pane, setPane] = useState<PaneId>('tickets');
   const [selected, setSelected] = useState<TicketId | undefined>(undefined);
-  const [status, setStatus] = useState<string | undefined>(undefined);
   const [error, setError] = useState<string | undefined>(undefined);
 
   const refresh = useCallback(async () => {
@@ -92,36 +86,26 @@ export function PlanScreen({
 
   useEffect(() => {
     void refresh();
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const handle = connectFeedSocket({
-      onEvent: (event) => {
-        if (!PLAN_REFRESH_KINDS.has(event.kind)) return;
-        if (timer) clearTimeout(timer);
-        timer = setTimeout(() => void refresh(), REFRESH_DEBOUNCE_MS);
-      },
-    });
-    return () => {
-      handle.close();
-      if (timer) clearTimeout(timer);
-    };
   }, [refresh]);
 
-  async function start() {
-    setError(undefined);
-    try {
-      const result = await startSprint();
-      setStatus(
-        result.started && result.sprint
-          ? `${result.sprint.id} started with ${result.sprint.tickets.length} ticket(s) — approve_plan ${result.gate.status}${result.gate.decision ? ` (${result.gate.decision})` : ''}.`
-          : // Nothing was written: the gate is owned by the EM/architect and is
-            // still pending, or it was denied. Say which, and by whom.
-            `${result.proposal.id} not started — ${result.reason ?? `approve_plan is ${result.gate.status}`}.`,
-      );
-      await refresh();
-      onStarted?.();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    }
+  // The shell's one socket, not a second connection of this screen's own.
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const unsubscribe = onEvent((event) => {
+      if (!PLAN_REFRESH_KINDS.has(event.kind)) return;
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => void refresh(), REFRESH_DEBOUNCE_MS);
+    });
+    return () => {
+      unsubscribe();
+      if (timer) clearTimeout(timer);
+    };
+  }, [onEvent, refresh]);
+
+  /** Selecting a rail entry re-opens the middle pane (the shell pulls the chat back out of `max`). */
+  function openPane(id: PaneId): void {
+    setPane(id);
+    setMiddleOpen(true);
   }
 
   const counts: Record<PaneId, string> = {
@@ -157,36 +141,19 @@ export function PlanScreen({
       stub: ticket.stub,
     };
   })();
-  const nextSprint = overview?.sprints.next;
-
   return (
-    <div className="cr-plan" data-testid="plan-screen">
-      <div className="cr-plan-actions">
-        <span className="eyebrow">
-          {overview?.sprints.running ? `${overview.sprints.running} running` : 'No sprint running'}
-        </span>
-        <button
-          type="button"
-          className="cr-icon-btn"
-          data-testid="start-sprint"
-          disabled={!nextSprint || overview?.sprints.running !== undefined}
-          onClick={start}
-        >
-          {nextSprint ? `Start Sprint ${nextSprint.id.replace('S-', '')}` : 'Start Sprint'}
-        </button>
-        {status && (
-          <span style={{ color: 'var(--ok)' }} data-testid="plan-status">
-            {status}
-          </span>
-        )}
-        {error && (
-          <span style={{ color: 'var(--danger)' }} data-testid="plan-error">
-            {error}
-          </span>
-        )}
-      </div>
+    <section
+      className={`cr-plan${railCollapsed ? ' mini' : ''}`}
+      data-testid="plan-screen"
+      data-rail={railCollapsed ? 'collapsed' : 'expanded'}
+    >
+      {error && (
+        <p style={{ color: 'var(--danger)' }} data-testid="plan-error">
+          {error}
+        </p>
+      )}
 
-      <div className={`plan${collapsed ? ' mini' : ''}${pane === undefined ? ' nopane' : ''}`}>
+      <div className={`plan${railCollapsed ? ' mini' : ''}${middleOpen ? '' : ' nopane'}`}>
         <nav className="rail" aria-label="Plan documents">
           {RAIL.map((entry) => (
             <button
@@ -196,7 +163,7 @@ export function PlanScreen({
               className={pane === entry.id ? 'on' : undefined}
               aria-pressed={pane === entry.id}
               data-testid={`rail-${entry.id}`}
-              onClick={() => setPane(entry.id)}
+              onClick={() => openPane(entry.id)}
             >
               <span className="lbl">{entry.label}</span>
               <span className="n">{counts[entry.id]}</span>
@@ -208,7 +175,7 @@ export function PlanScreen({
           </div>
         </nav>
 
-        {pane !== undefined && overview && (
+        {middleOpen && overview && (
           <div>
             <div className="cr-plan-paneclose">
               <button
@@ -216,7 +183,7 @@ export function PlanScreen({
                 className="cr-icon-btn"
                 data-testid="pane-close"
                 title="Close this pane and widen the chat"
-                onClick={() => setPane(undefined)}
+                onClick={() => setMiddleOpen(false)}
               >
                 ✕
               </button>
@@ -249,7 +216,7 @@ export function PlanScreen({
             {pane === 'policy' && (
               <PolicyPane
                 {...(overview.policy ? { policy: overview.policy } : {})}
-                {...(onOpenSettings ? { onOpenSettings } : {})}
+                onOpenSettings={() => setView('settings')}
               />
             )}
 
@@ -276,6 +243,6 @@ export function PlanScreen({
           </div>
         )}
       </div>
-    </div>
+    </section>
   );
 }

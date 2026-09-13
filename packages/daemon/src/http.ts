@@ -29,7 +29,7 @@
  * panel can be popped out into its own window.
  */
 
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import {
   HaltIdSchema,
   type HilDecision,
@@ -40,15 +40,18 @@ import {
   MESSAGE_BODY_MAX_CHARS,
   type OracleId,
   OracleIdSchema,
+  type Policy,
   type QuestionId,
   QuestionIdSchema,
   type TicketId,
   TicketIdSchema,
   ulid,
+  validatePolicy,
 } from '@agile-agents/shared';
 import { CONTROL_ROOM_DIST_DIR, FEED_HTML_PATH } from '@agile-agents/ui';
 import type { Bus } from './bus';
 import { EM_CHAT_THREAD, type EmChatService } from './em/chat';
+import { planSprint } from './em/sprint';
 import { type EventTailerHandle, buildSnapshot, startEventTailer } from './feed';
 import { GateAlreadyResolvedError, GateNotFoundError, type GateService } from './gates';
 import { createHalt, releaseHalt } from './halts';
@@ -501,7 +504,7 @@ async function handlePlanRoute(req: Request, url: URL, plan: PlanRoutesContext):
     }
     return new Response('not found', { status: 404 });
   } catch (err) {
-    if (err instanceof PlanRefused) return errorResponse(409, err.message);
+    if (err instanceof PlanRefused) return errorResponse(err.status, err.message);
     if (err instanceof NotFoundError) return errorResponse(404, err.message);
     return errorResponse(400, err instanceof Error ? err.message : String(err));
   }
@@ -644,7 +647,14 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
       if (url.pathname === '/api/snapshot') {
         if (!feed) return errorResponse(503, 'state store not initialised (run `agile init`)');
         return jsonResponse(
-          buildSnapshot(feed.store, feed.gates, undefined, feed.quota, feed.questions),
+          buildSnapshot(
+            feed.store,
+            feed.gates,
+            undefined,
+            feed.quota,
+            feed.questions,
+            dirname(options.stateRoot),
+          ),
         );
       }
 
@@ -665,6 +675,56 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
         if (!feed) return errorResponse(503, 'state store not initialised (run `agile init`)');
         return jsonResponse(feed.store.getPolicy());
       }
+
+      /**
+       * T043 (§17 "Control room v2" -> Settings "Who decides", journey step
+       * 4: "A settings card, one row per gate kind ... This is
+       * `policy.yaml`'s gates block with a face"). The write half of
+       * `GET /api/policy`: same-origin only (every mutating route here is),
+       * validated through the *shared* `PolicySchema` so a browser cannot
+       * write a gates block the daemon would later refuse to read, and
+       * persisted through `StateStore.putPolicy` so it lands in
+       * `events.jsonl` (`policy_put`) and on the `agile-state` branch like
+       * any other mutation. The actor is hardcoded `human` for the same
+       * reason `/api/halt`'s `raised_by` is: a page must not be able to
+       * sign a policy change as the architect.
+       */
+      if (url.pathname === '/api/policy' && req.method === 'PUT') {
+        if (!feed) return errorResponse(503, 'state store not initialised (run `agile init`)');
+        if (!isSameOriginRequest(req, srv.port ?? options.port)) {
+          return errorResponse(403, 'cross-origin request rejected');
+        }
+        let body: Record<string, unknown>;
+        try {
+          body = await readJsonBody(req);
+        } catch (err) {
+          return errorResponse(400, err instanceof Error ? err.message : String(err));
+        }
+        let policy: Policy;
+        try {
+          policy = validatePolicy(body);
+        } catch (err) {
+          return errorResponse(400, err instanceof Error ? err.message : String(err));
+        }
+        try {
+          return jsonResponse(await feed.store.putPolicy(policy, { by: 'human' }));
+        } catch (err) {
+          return errorResponse(400, err instanceof Error ? err.message : String(err));
+        }
+      }
+
+      /**
+       * NOTE (T042 merge): the top bar's Start Sprint action is served by the
+       * Plan route family below (`handlePlanRoute` → `PlanService.startSprint`),
+       * not here. T043 shipped a simpler version of this route that called
+       * `planSprint` first and raised `approve_plan` afterwards; T042's review
+       * round 1 showed that starts the sprint before the gate is decided —
+       * `EmLoop.currentSprint()` treats any sprint without a `review_at` as
+       * live, so an `em`/`architect`-owned gate (async delegate, or none)
+       * had engineers assigned to an unapproved sprint with no rollback on a
+       * denial. The surviving implementation proposes the frontier without
+       * writing anything, raises the gate, and persists only on approval.
+       */
 
       const ticketMatch = matchTicketId(url.pathname);
       if (ticketMatch && req.method === 'GET') {
@@ -1038,10 +1098,13 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
       // per pane, every write through `PlanService` (and so through the
       // validating store: `log/events.jsonl` + the `agile-state` commit).
       if (url.pathname.startsWith('/api/plan') || url.pathname === '/api/sprint/start') {
-        if (!feed?.plan) return errorResponse(503, 'plan service not wired to this daemon');
+        // CSRF check first, before the wiring check: a cross-origin write is
+        // rejected as such whether or not this daemon has a plan service, so
+        // the 503 can never leak "this write would have been accepted".
         if (req.method !== 'GET' && !isSameOriginRequest(req, srv.port ?? options.port)) {
           return errorResponse(403, 'cross-origin request rejected');
         }
+        if (!feed?.plan) return errorResponse(503, 'plan service not wired to this daemon');
         return handlePlanRoute(req, url, feed.plan);
       }
 
@@ -1076,7 +1139,14 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
           ws.subscribe(FEED_WS_TOPIC);
           ws.send(
             JSON.stringify(
-              buildSnapshot(feed.store, feed.gates, undefined, feed.quota, feed.questions),
+              buildSnapshot(
+                feed.store,
+                feed.gates,
+                undefined,
+                feed.quota,
+                feed.questions,
+                dirname(options.stateRoot),
+              ),
             ),
           );
         }

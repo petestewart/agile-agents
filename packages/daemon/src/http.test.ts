@@ -8,6 +8,7 @@ import { EmChatService } from './em/chat';
 import { GateService } from './gates';
 import { type HttpServerHandle, startHttpServer } from './http';
 import { runInit } from './init';
+import { PlanService } from './plan';
 import { QuestionService } from './questions';
 import { StateStore } from './store';
 import { type FakeJiraHandle, HttpJiraClient, JiraSync, startFakeJira } from './sync';
@@ -1051,5 +1052,245 @@ describe('T040 question routes', () => {
       body: JSON.stringify({ answer: 'a' }),
     });
     expect(res.status).toBe(404);
+  });
+});
+
+/**
+ * T043 — the Settings screen's write path and the top bar's single action.
+ * §17 journey step 4 ("This is `policy.yaml`'s gates block with a face") and
+ * §17 v2 ("The `approve_plan` gate is raised at sprint start ... the button
+ * is Start Sprint N, always in the top bar").
+ */
+describe('T043 chrome routes', () => {
+  let repo: string;
+  let stateRoot: string;
+  let store: StateStore;
+  let gates: GateService;
+  let server2: HttpServerHandle;
+
+  beforeEach(() => {
+    repo = mkdtempSync(join(tmpdir(), 'agile-t043-http-'));
+    Bun.spawnSync(['git', 'init', '-q'], { cwd: repo });
+    Bun.spawnSync(['git', 'config', 'user.email', 'test@example.com'], { cwd: repo });
+    Bun.spawnSync(['git', 'config', 'user.name', 'Test'], { cwd: repo });
+    writeFileSync(join(repo, 'README.md'), '# fixture\n');
+    Bun.spawnSync(['git', 'add', '-A'], { cwd: repo });
+    Bun.spawnSync(['git', 'commit', '-q', '-m', 'initial commit'], { cwd: repo });
+    const init = runInit(repo);
+    stateRoot = init.stateRoot;
+    store = StateStore.open(stateRoot);
+    gates = new GateService(store);
+    server2 = startHttpServer({
+      port: 0,
+      version: '0.0.0-test',
+      stateRoot,
+      startedAt: Date.now(),
+      store,
+      gates,
+      // T042 merge: `POST /api/sprint/start` is served by the Plan route
+      // family (`PlanService`), which proposes the frontier, raises
+      // `approve_plan` and persists the sprint only once that gate is
+      // approved — see the note where T043's own version of the route used
+      // to live in `http.ts`.
+      plan: { service: new PlanService({ store, gates }) },
+      feedPollIntervalMs: 20,
+    });
+  });
+
+  afterEach(async () => {
+    await server2.stop();
+    rmSync(repo, { recursive: true, force: true });
+  });
+
+  function base(): string {
+    return `http://127.0.0.1:${server2.port}`;
+  }
+
+  test('GET /api/snapshot carries the top bar’s project and status blocks', async () => {
+    const body = (await (await fetch(`${base()}/api/snapshot`)).json()) as {
+      project?: { name: string; path: string };
+      status: { sprint_state: string; next_sprint_number: number; needs_you: number };
+    };
+    // The project root is the state root's parent, taken from the daemon's
+    // own config — never from anything the browser sends.
+    expect(body.project?.path).toBe(repo);
+    expect(body.project?.name).toBe(repo.split('/').pop());
+    expect(body.status.sprint_state).toBe('none');
+    expect(body.status.next_sprint_number).toBe(1);
+    expect(body.status.needs_you).toBe(0);
+  });
+
+  test('PUT /api/policy round-trips through the store and changes the NEXT gate’s owner', async () => {
+    // Before: the repo default has `unblock: em`, so a raised gate is the
+    // EM's (and, with no delegate wired, stays pending for the EM).
+    expect(store.getPolicy().gates.unblock).toBe('em');
+    const before = await gates.request('unblock', {
+      policy: store.getPolicy(),
+      hilKind: 'unblock',
+    });
+    expect(before.owner).toBe('em');
+
+    const res = await fetch(`${base()}/api/policy`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        gates: { ...store.getPolicy().gates, unblock: 'human' },
+        breaker_signals: [],
+      }),
+    });
+    expect(res.status).toBe(200);
+
+    // It landed on disk through the store (not just in the response)...
+    expect(store.getPolicy().gates.unblock).toBe('human');
+    // ...and in the event log, attributed to the human.
+    const policyEvent = store
+      .listEvents()
+      .filter((e) => e.kind === 'policy_put')
+      .at(-1);
+    expect(policyEvent?.agent).toBe('human');
+
+    // ...and the NEXT gate raised against it resolves to the new owner.
+    const after = await gates.request('unblock', { policy: store.getPolicy(), hilKind: 'unblock' });
+    expect(after.owner).toBe('human');
+  });
+
+  test('PUT /api/policy rejects a gates block the shared schema refuses, writing nothing', async () => {
+    const res = await fetch(`${base()}/api/policy`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ gates: { unblock: 'the-intern' }, breaker_signals: [] }),
+    });
+    expect(res.status).toBe(400);
+    expect(store.getPolicy().gates.unblock).toBe('em');
+  });
+
+  test('PUT /api/policy rejects a cross-origin write with 403', async () => {
+    const res = await fetch(`${base()}/api/policy`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json', origin: 'http://evil.example' },
+      body: JSON.stringify({ gates: { unblock: 'human' }, breaker_signals: [] }),
+    });
+    expect(res.status).toBe(403);
+    expect(store.getPolicy().gates.unblock).toBe('em');
+  });
+
+  test('POST /api/sprint/start proposes the frontier, raises approve_plan, and starts it when the human owns the gate', async () => {
+    await store.putTicket({
+      id: 'TKT-0501',
+      title: 'Frontier ticket',
+      status: 'ready',
+      contract: { inputs: [], outputs: [], acceptance: [], done: [], env: 'clone' },
+      depends: [],
+      oracle_refs: [],
+      kb_refs: [],
+      history: [],
+      security: false,
+    });
+
+    const res = await fetch(`${base()}/api/sprint/start`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      started: boolean;
+      sprint?: { id: string; tickets: string[] };
+      proposal: { id: string; tickets: string[] };
+      gate: { id: string; owner: string; status: string; decision?: string };
+    };
+
+    // The proposal is what went to the gate; the sprint is what the approval
+    // then wrote.
+    expect(body.proposal.id).toBe('S-1');
+    expect(body.proposal.tickets).toEqual(['TKT-0501']);
+    expect(body.started).toBe(true);
+    expect(body.sprint?.id).toBe('S-1');
+    expect(store.getSprint('S-1').tickets).toEqual(['TKT-0501']);
+    expect(store.getTicket('TKT-0501').sprint).toBe('S-1');
+
+    // The gate the design says sprint start means — raised, and resolved by
+    // the click itself because policy owns it to the human.
+    expect(body.gate.owner).toBe('human');
+    expect(body.gate.status).toBe('resolved');
+    expect(body.gate.decision).toBe('approve');
+    expect(gates.list().some((r) => r.gate === 'approve_plan')).toBe(true);
+
+    // The top bar now reads "running", and offers Sprint 2 next.
+    const snap = (await (await fetch(`${base()}/api/snapshot`)).json()) as {
+      status: {
+        sprint_state: string;
+        sprint_id: string;
+        next_sprint_number: number;
+        approve_plan_pending: boolean;
+      };
+    };
+    expect(snap.status.sprint_state).toBe('running');
+    expect(snap.status.sprint_id).toBe('S-1');
+    expect(snap.status.next_sprint_number).toBe(2);
+    expect(snap.status.approve_plan_pending).toBe(false);
+  });
+
+  test('POST /api/sprint/start respects a Settings policy edit: approve_plan goes to the EM, and nothing is written until it decides', async () => {
+    await store.putTicket({
+      id: 'TKT-0502',
+      title: 'Frontier ticket',
+      status: 'ready',
+      contract: { inputs: [], outputs: [], acceptance: [], done: [], env: 'clone' },
+      depends: [],
+      oracle_refs: [],
+      kb_refs: [],
+      history: [],
+      security: false,
+    });
+    await fetch(`${base()}/api/policy`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        gates: { ...store.getPolicy().gates, approve_plan: 'em' },
+        breaker_signals: [],
+      }),
+    });
+    const res = await fetch(`${base()}/api/sprint/start`, { method: 'POST' });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      started: boolean;
+      gate: { owner: string; status: string };
+    };
+    expect(body.gate.owner).toBe('em');
+    expect(body.gate.status).toBe('pending');
+    // T042 review round 1: an undecided gate starts nothing.
+    expect(body.started).toBe(false);
+    expect(store.listSprints()).toHaveLength(0);
+    expect(store.getTicket('TKT-0502').sprint).toBeUndefined();
+
+    // ...and the top bar says so, rather than offering a second start.
+    const snap = (await (await fetch(`${base()}/api/snapshot`)).json()) as {
+      status: { approve_plan_pending: boolean; sprint_state: string };
+    };
+    expect(snap.status.approve_plan_pending).toBe(true);
+    expect(snap.status.sprint_state).toBe('none');
+
+    // A second click is refused rather than raising a duplicate gate.
+    const second = await fetch(`${base()}/api/sprint/start`, { method: 'POST' });
+    expect(second.status).toBe(400);
+    expect(gates.list().filter((r) => r.gate === 'approve_plan')).toHaveLength(1);
+  });
+
+  test('POST /api/sprint/start refuses an empty frontier with 400 and a reason', async () => {
+    const res = await fetch(`${base()}/api/sprint/start`, { method: 'POST' });
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error: string }).error).toMatch(/nothing is ready to start/);
+    expect(store.listSprints()).toHaveLength(0);
+    expect(gates.list()).toHaveLength(0);
+  });
+
+  test('POST /api/sprint/start rejects a cross-origin call with 403', async () => {
+    const res = await fetch(`${base()}/api/sprint/start`, {
+      method: 'POST',
+      headers: { origin: 'http://evil.example' },
+    });
+    expect(res.status).toBe(403);
+    expect(store.listSprints()).toHaveLength(0);
   });
 });

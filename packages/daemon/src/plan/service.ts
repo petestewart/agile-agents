@@ -53,7 +53,18 @@ import { type ReexamineRecord, type Reexaminer, reexamineAfterDecision } from '.
 import { isStub } from './stub';
 
 export class PlanRefused extends Error {
-  constructor(reason: string) {
+  /**
+   * HTTP status the route should answer with. 409 (the default) is the
+   * "the state says no" family — editing a rule live tickets cite, moving a
+   * stub that still has blockers. 400 is for a request that is simply not
+   * startable as asked: an empty frontier, or a second Start Sprint while one
+   * is running or already waiting on `approve_plan` (T043 review's two
+   * guards on this route).
+   */
+  constructor(
+    reason: string,
+    readonly status: 400 | 409 = 409,
+  ) {
     super(`plan: ${reason}`);
     this.name = 'PlanRefused';
   }
@@ -551,17 +562,34 @@ export class PlanService {
   ): Promise<StartSprintResult> {
     const by = options.by ?? 'human';
     const board = this.sprints();
+    // Guard 1 (T043 review): one sprint at a time.
     if (board.running !== undefined) {
-      throw new PlanRefused(`${board.running} is still running — finish or halt it first`);
-    }
-    const proposal = this.proposeSprint(options);
-    if (!proposal) {
-      throw new PlanRefused(
-        'nothing is ready to start: no ticket has all of its dependencies done',
-      );
+      throw new PlanRefused(`${board.running} is still running — finish or halt it first`, 400);
     }
     if (!this.deps.gates) {
       throw new PlanRefused('gate service not wired — cannot raise approve_plan');
+    }
+    // Guard 2 (T043 review): a proposal already waiting on `approve_plan` is
+    // not re-raised. Without this, every click on a top bar that has not
+    // refreshed yet opens another pending request for the same frontier, and
+    // whichever is approved first starts it twice as far as the log is
+    // concerned.
+    const pending = this.pendingApprovePlan();
+    if (pending) {
+      throw new PlanRefused(
+        `approve_plan ${pending.id} is already waiting on ${pending.owner} for this frontier`,
+        400,
+      );
+    }
+    // Guard 3 (T043 review): an empty frontier is a 400, not a sprint with no
+    // tickets — `computeFrontier` returning nothing means every ready ticket
+    // still waits on something (or there are no tickets at all).
+    const proposal = this.proposeSprint(options);
+    if (!proposal || proposal.tickets.length === 0) {
+      throw new PlanRefused(
+        'nothing is ready to start: no ticket has all of its dependencies done',
+        400,
+      );
     }
 
     const request = await this.deps.gates.request('approve_plan', {
@@ -615,6 +643,19 @@ export class PlanService {
    * one stamps those tickets (so the next call's proposal no longer
    * matches). Returns the sprint it started, if any.
    */
+  /** The `approve_plan` request still waiting on a decision, if any — what the top bar's disabled "Start Sprint N" reports. */
+  pendingApprovePlan(): { id: string; owner: string; summary?: string } | undefined {
+    const request = this.deps.gates
+      ?.list()
+      .find((r) => r.gate === 'approve_plan' && r.status === 'pending');
+    if (!request) return undefined;
+    return {
+      id: request.id,
+      owner: request.owner,
+      ...(request.summary !== undefined ? { summary: request.summary } : {}),
+    };
+  }
+
   async startApprovedSprint(): Promise<Sprint | undefined> {
     if (!this.deps.gates) return undefined;
     const board = this.sprints();

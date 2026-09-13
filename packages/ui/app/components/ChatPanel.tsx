@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { type ChatEntry, getEmChat, sendEmChat } from '../lib/api';
-import { connectFeedSocket } from '../lib/ws';
+import { useFeed } from '../lib/feed-context';
 
 interface ChatLine {
   /** The bus message id — the same id `chat_delta`/`chat_turn_end` frames carry, so a streamed reply and its stored copy are one line, never two. */
@@ -40,11 +40,14 @@ function upsert(lines: ChatLine[], line: ChatLine): ChatLine[] {
  * tab, and the popped-out `/control-room/chat` window all show the same
  * thread.
  */
-export function ChatPanel({ popout = true }: { popout?: boolean }) {
+export function ChatPanel() {
+  // T043: the socket is the shell's single `/ws` connection (`FeedProvider`),
+  // not a second one opened by this panel — T041 left it owning its own,
+  // which meant an in-page chat cost two sockets and two snapshot payloads.
+  const { connected, onChat } = useFeed();
   const [lines, setLines] = useState<ChatLine[]>([]);
   const [draft, setDraft] = useState('');
   const [busy, setBusy] = useState(false);
-  const [connected, setConnected] = useState(false);
   const [error, setError] = useState<string | undefined>(undefined);
   const logRef = useRef<HTMLDivElement | null>(null);
 
@@ -64,9 +67,11 @@ export function ChatPanel({ popout = true }: { popout?: boolean }) {
 
   useEffect(() => {
     void reload();
-    const handle = connectFeedSocket({
-      onStatusChange: (status) => setConnected(status === 'open'),
-      onChat: (frame) => {
+  }, [reload]);
+
+  useEffect(
+    () =>
+      onChat((frame) => {
         if (frame.type === 'chat_delta') {
           setLines((prev) => {
             const existing = prev.find((l) => l.id === frame.message_id);
@@ -87,10 +92,9 @@ export function ChatPanel({ popout = true }: { popout?: boolean }) {
         // The finished reply is on the bus by now — re-read so the panel
         // shows exactly what a reload would.
         void reload();
-      },
-    });
-    return () => handle.close();
-  }, [reload]);
+      }),
+    [onChat, reload],
+  );
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: scrolls on every new/extended line, which is what `lines` changing means.
   useEffect(() => {
@@ -133,17 +137,6 @@ export function ChatPanel({ popout = true }: { popout?: boolean }) {
         <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>
           {connected ? 'live' : 'reconnecting…'}
         </span>
-        {popout && (
-          <button
-            type="button"
-            className="cr-icon-btn"
-            data-testid="chat-popout"
-            style={{ marginLeft: 'auto' }}
-            onClick={() => window.open('/control-room/chat', 'agile-em-chat')}
-          >
-            Pop out
-          </button>
-        )}
       </div>
       <div className="cr-chat-log" ref={logRef} data-testid="chat-log">
         {lines.length === 0 && (
@@ -201,8 +194,8 @@ export function ChatPanel({ popout = true }: { popout?: boolean }) {
 export function ChatWindow() {
   return (
     <div className="cr-root" data-view="chat">
-      <div className="cr-body">
-        <ChatPanel popout={false} />
+      <div className="cr-frame" data-chat="max" data-main="closed">
+        <ChatPanel />
       </div>
     </div>
   );
