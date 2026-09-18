@@ -483,6 +483,15 @@ Priority encodes dependency layer as well as importance: P0 tickets are v0-block
 - **Validation Steps:** `bun test packages/daemon packages/cli`; offline e2e; one manual live run on `~/Projects/ledger-lite`.
 - **Notes:** All three noted by Pete in the terminal during the walkthrough. Branch `T046-run-loop-fixes` (d1086e2), merge dd9dcd2. Each defect reproduced by a test first. (1) `loadRules` skips hidden/temp files via the existing `store/fs.ts` predicate; stray non-hidden files still warn. (2) `resolveSprintGoal(seed, stateRoot)`: seed `sprintGoal` → product brief first heading (the untouched `agile init` stub excluded) → none; demo seed gained `sprintGoal`. (3) `.worktrees/_main` was already the merge path — git refuses a second worktree for a checked-out branch, so promotion now raises exactly one human-owned `promote_to_main` HIL (idempotent across ticks) whose summary carries the `git merge --no-ff integration` workaround. Review PASS (1 nit: `em/review.ts` stamps `review_at` before the merge so a gated promotion is not retried automatically after approval — follow-up, not in scope); QA ACCEPT (0 findings). Manual live check (LIVE-CHECKLIST): run `agile run --live` on ledger-lite with `main` checked out — no `skipping .gitkeep` lines, sprint goal is the product brief heading, exactly one `promote_to_main` Needs-you item at sprint review.
 
+### Ticket: T047 Whole-suite `bun test` deflake for the control-room chrome e2e
+- **Priority:** P1
+- **Status:** In Progress
+- **Owner:** opus:worker-T047
+- **Scope:** Depends on T044. After T042–T044 merged, a plain single-process `bun test` (158 files) fails `control room SPA (Playwright e2e) > the chrome: dark mode, identical top bar, review-pending action, chat modes` at its 60 s budget in 2/2 runs, while the same file passes 10/10 via `test:e2e` (one bun process per e2e file) and `test:integration`. Root-cause the whole-suite case (Chromium contention with sibling subprocess-heavy files, bun single-process browser hazard documented in T042/T043/T044) and make whole-suite `bun test` green 3/3 without skipping, disabling or quarantining any test and without removing the e2e files from the default `bun test` glob; splitting the folded chrome test into smaller tests with their own budgets, serialising browser use across files, or launching per-test contexts are all acceptable.
+- **Acceptance Criteria:** 3/3 consecutive whole-suite `bun test` runs 0 fail; `bun run test:e2e` and `bun run test:integration` still 0 fail; no test removed or skipped; assertions unchanged or stronger.
+- **Validation Steps:** `bun test` 3x; `bun run test:e2e`; `bun run test:integration`.
+- **Notes:** Discovered by the manager at the end of the control room v2 run (2026-09-18). Test-only.
+
 ## 8. Open Questions
 
 - **Name.** `agile` / `agiled` / `.agile/` are placeholders. Decide before T008 lands so the CLI name is stable.
