@@ -123,12 +123,55 @@ function cannedArchitect(store: StateStore): ArchitectPlanner {
 const PAGE_TIMEOUT_MS = 10_000;
 const SHARED_CLOSE_BUDGET_MS = 3_000;
 
+/**
+ * T047: getting a usable browser is itself an operation that can hang
+ * forever, so it is bounded here — see the long note in
+ * `control-room.e2e.test.ts`'s `openPage` for the measurements. Short
+ * version: in a whole-suite `bun test` a `chromium.launch()` can simply never
+ * return (`launch()`'s own 30 s timeout does not fire either), and bounding
+ * only the launch is worse than useless, because a launch can *return* a
+ * browser that is already wedged and then every `newPage()` on it hangs.
+ * So: launch and first page under one budget, cache the browser only once it
+ * has produced a page, and never reuse one that missed the budget.
+ */
+const BROWSER_READY_BUDGET_MS = 5_000;
+const BROWSER_ATTEMPTS = 3;
+
+/** A browser that missed its budget is never reused; close it if it ever does come back. */
+function abandonBrowser(browser: Browser | Promise<Browser>): void {
+  void Promise.resolve(browser).then(
+    (late) => late.close().catch(() => {}),
+    () => {},
+  );
+}
+
 let sharedBrowser: Browser | undefined;
 
-async function browserForTests(): Promise<Browser> {
-  if (sharedBrowser && !sharedBrowser.isConnected()) sharedBrowser = undefined;
-  if (!sharedBrowser) sharedBrowser = await chromium.launch({ executablePath });
-  return sharedBrowser;
+/** A page on a browser that is alive: the shared one when it still answers, a fresh one when it does not. */
+async function newSharedPage(): Promise<Page> {
+  for (let attempt = 1; attempt <= BROWSER_ATTEMPTS; attempt++) {
+    if (sharedBrowser && !sharedBrowser.isConnected()) sharedBrowser = undefined;
+    const acquiring: Browser | Promise<Browser> =
+      sharedBrowser ?? chromium.launch({ executablePath });
+    const page = await Promise.race([
+      (async () => {
+        const browser = await acquiring;
+        const opened = await browser.newPage();
+        sharedBrowser = browser;
+        return opened;
+      })(),
+      Bun.sleep(BROWSER_READY_BUDGET_MS).then(() => undefined),
+    ]);
+    if (page) return page;
+    abandonBrowser(acquiring);
+    sharedBrowser = undefined;
+    console.error(
+      `plan e2e: no usable browser within ${BROWSER_READY_BUDGET_MS}ms (attempt ${attempt}/${BROWSER_ATTEMPTS}) — abandoning it and launching another`,
+    );
+  }
+  throw new Error(
+    `plan e2e: chromium.launch()/newPage() did not return within ${BROWSER_READY_BUDGET_MS}ms on any of ${BROWSER_ATTEMPTS} attempts`,
+  );
 }
 
 afterAll(async () => {
@@ -193,8 +236,8 @@ async function until(page: Page, check: () => Promise<boolean>, what: string, ti
  * a chat"), so no navigation is needed; the assertion that the Plan screen is
  * what renders on load is the point.
  */
-async function openPlan(browser: Browser, port: number): Promise<Page> {
-  const page = await browser.newPage();
+async function openPlan(port: number): Promise<Page> {
+  const page = await newSharedPage();
   page.setDefaultTimeout(PAGE_TIMEOUT_MS);
   page.setDefaultNavigationTimeout(PAGE_TIMEOUT_MS);
   await page.goto(`http://127.0.0.1:${port}/control-room`);
@@ -250,8 +293,7 @@ describe('Plan screen (Playwright e2e)', () => {
           port: 0,
           socketPath: join(repo, '.agile-daemon.sock'),
         });
-        const browser = await browserForTests();
-        const page = await openPlan(browser, handle.http.port);
+        const page = await openPlan(handle.http.port);
         openedPage = page;
 
         // --- Tickets pane (the default) renders the seeded tickets, stub marked.
@@ -427,8 +469,7 @@ describe('Plan screen (Playwright e2e)', () => {
         expect(started.gate.owner).toBe('em');
         expect(store.listSprints()).toEqual([]);
 
-        const browser = await browserForTests();
-        const page = await openPlan(browser, handle.http.port);
+        const page = await openPlan(handle.http.port);
         openedPage = page;
 
         const action = page.locator('[data-testid="sprint-action"]');
@@ -471,8 +512,7 @@ describe('Plan screen (Playwright e2e)', () => {
           architectPlanner: cannedArchitect(store),
           emChatSpawn: cannedEmSpawn(repo, 'on it'),
         });
-        const browser = await browserForTests();
-        const page = await openPlan(browser, handle.http.port);
+        const page = await openPlan(handle.http.port);
         openedPage = page;
 
         // The empty plan is what the repo opens on.

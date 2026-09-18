@@ -35,12 +35,60 @@ const executablePath = resolveChromiumExecutable();
  */
 const PAGE_TIMEOUT_MS = 20_000;
 
-/** Every page in this file: one place to install the action/navigation timeout above. */
-async function openPage(browser: Browser): Promise<Page> {
-  const page = await browser.newPage();
-  page.setDefaultTimeout(PAGE_TIMEOUT_MS);
-  page.setDefaultNavigationTimeout(PAGE_TIMEOUT_MS);
-  return page;
+/**
+ * T047: getting a usable browser is itself an operation that can hang
+ * forever, so it is bounded here — see the long note in
+ * `control-room.e2e.test.ts`'s `openPage` for the measurements. Short
+ * version: in a whole-suite `bun test` a `chromium.launch()` can simply never
+ * return (`launch()`'s own 30 s timeout does not fire either), and bounding
+ * only the launch is worse than useless, because a launch can *return* a
+ * browser that is already wedged and then every `newPage()` on it hangs.
+ * So: launch and first page under one budget, cache the browser only once it
+ * has produced a page, and never reuse one that missed the budget.
+ */
+const BROWSER_READY_BUDGET_MS = 5_000;
+const BROWSER_ATTEMPTS = 3;
+
+/** Same floor as `control-room.e2e.test.ts`: a full `BROWSER_ATTEMPTS` sweep plus one page-action timeout must fit inside a test's budget, or a retry that works still loses the test. */
+const TEST_BUDGET_MS = BROWSER_READY_BUDGET_MS * BROWSER_ATTEMPTS + PAGE_TIMEOUT_MS + 1_000;
+
+/** A browser that missed its budget is never reused; close it if it ever does come back. */
+function abandonBrowser(browser: Browser | Promise<Browser>): void {
+  void Promise.resolve(browser).then(
+    (late) => late.close().catch(() => {}),
+    () => {},
+  );
+}
+
+/**
+ * Every page in this file: one place to install the action/navigation timeout
+ * above, and the one place a wedged launch is noticed. Unlike its two sibling
+ * suites this file keeps a browser per test, so each call launches its own —
+ * the caller closes it.
+ */
+async function openPage(): Promise<{ browser: Browser; page: Page }> {
+  for (let attempt = 1; attempt <= BROWSER_ATTEMPTS; attempt++) {
+    const launching = chromium.launch({ executablePath });
+    const opened = await Promise.race([
+      (async () => {
+        const browser = await launching;
+        return { browser, page: await browser.newPage() };
+      })(),
+      Bun.sleep(BROWSER_READY_BUDGET_MS).then(() => undefined),
+    ]);
+    if (opened) {
+      opened.page.setDefaultTimeout(PAGE_TIMEOUT_MS);
+      opened.page.setDefaultNavigationTimeout(PAGE_TIMEOUT_MS);
+      return opened;
+    }
+    abandonBrowser(launching);
+    console.error(
+      `feed e2e: no usable browser within ${BROWSER_READY_BUDGET_MS}ms (attempt ${attempt}/${BROWSER_ATTEMPTS}) — abandoning it and launching another`,
+    );
+  }
+  throw new Error(
+    `feed e2e: chromium.launch()/newPage() did not return within ${BROWSER_READY_BUDGET_MS}ms on any of ${BROWSER_ATTEMPTS} attempts`,
+  );
 }
 
 /** Matching `control-room.e2e.test.ts`: a browser close that has not returned in this budget is left to bun's dangling-process cleanup. Teardown only — every assertion has passed by then. */
@@ -81,10 +129,15 @@ function browserTest(name: string, body: () => Promise<void>, timeoutMs: number)
 }
 
 /** Per-test teardown: this test's page context first (so its `/ws` client is not left reconnecting against a dead port), then the browser, bounded. */
-async function teardown(browser: Browser, pages: Array<Page | undefined>): Promise<void> {
+async function teardown(
+  browser: Browser | undefined,
+  pages: Array<Page | undefined>,
+): Promise<void> {
   await Promise.allSettled(
     pages.filter((p): p is Page => p !== undefined).map((p) => p.context().close()),
   );
+  // T047: `openPage` can fail before a browser exists at all.
+  if (!browser) return;
   const closed = await Promise.race([
     browser.close().then(() => true),
     Bun.sleep(BROWSER_CLOSE_BUDGET_MS).then(() => false),
@@ -112,7 +165,7 @@ describe('feed page (Playwright e2e)', () => {
       const repo = initRepo();
       let handle: DaemonHandle | undefined;
       let page: Page | undefined;
-      const browser = await chromium.launch({ executablePath });
+      let browser: Browser | undefined;
 
       try {
         const init = runInit(repo);
@@ -133,7 +186,7 @@ describe('feed page (Playwright e2e)', () => {
           socketPath: join(repo, '.agile-daemon.sock'),
         });
 
-        page = await openPage(browser);
+        ({ browser, page } = await openPage());
         await page.goto(`http://127.0.0.1:${handle.http.port}/feed`);
 
         // The seeded HIL request renders from the initial snapshot.
@@ -182,7 +235,7 @@ describe('feed page (Playwright e2e)', () => {
         rmSync(repo, { recursive: true, force: true });
       }
     },
-    30000,
+    TEST_BUDGET_MS,
   );
 
   browserTest(
@@ -191,7 +244,7 @@ describe('feed page (Playwright e2e)', () => {
       const repo = initRepo();
       let handle: DaemonHandle | undefined;
       let page: Page | undefined;
-      const browser = await chromium.launch({ executablePath });
+      let browser: Browser | undefined;
 
       try {
         const init = runInit(repo);
@@ -203,7 +256,7 @@ describe('feed page (Playwright e2e)', () => {
           socketPath: join(repo, '.agile-daemon.sock'),
         });
 
-        page = await openPage(browser);
+        ({ browser, page } = await openPage());
         // Delay the page's own /api/snapshot fetch well past when the WS
         // snapshot + a live event will have already arrived, reproducing
         // the race the review nit named: without the `liveDataApplied`
@@ -244,6 +297,6 @@ describe('feed page (Playwright e2e)', () => {
         rmSync(repo, { recursive: true, force: true });
       }
     },
-    30000,
+    TEST_BUDGET_MS,
   );
 });
