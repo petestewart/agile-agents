@@ -1406,6 +1406,8 @@ describe('control room SPA (Playwright e2e)', () => {
         rmSync(repo, { recursive: true, force: true });
       }
     },
-    40000,
+    // 60s, like the file's other retry-prone long test: room for one
+    // `browserTest` retry (two 20s page waits) under whole-suite contention.
+    60000,
   );
 });
