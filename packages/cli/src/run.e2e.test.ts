@@ -269,7 +269,103 @@ describe('agile run (offline, fake ACP)', () => {
       (v) => v as { lines: Array<{ command?: string }> },
     );
     expect(qaTkt1002.lines[0]?.command).toContain('sorts ascending by dueDate');
-  }, 60_000);
+
+    // ------------------------------------------------------------------
+    // T044: the run has to be legible to someone who does not know the
+    // system (the ticket's own Note). This asserts the *data* the control
+    // room renders, off a real daemon over HTTP, against the state this
+    // very sprint produced — and that the sprint-review narrative is,
+    // literally, the body of the `runs/*.md` file written above.
+    //
+    // No browser here on purpose: the rendering half lives in
+    // `packages/daemon/src/feed/control-room.e2e.test.ts` ("the Sprint and
+    // Review views"), because a second Chromium launched in this bun
+    // process destabilises the two browser suites that run after this file
+    // under `test:integration` — measured: `test:e2e` alone is 11/11, and
+    // with a Chromium launched here first, two of its tests lose their
+    // browser to bun's dangling-process cleanup mid-test. See
+    // `control-room.e2e.test.ts`'s `browserForTests` note.
+    // ------------------------------------------------------------------
+    const { startDaemon } = await import('@agile-agents/daemon');
+    const handle = await startDaemon({
+      cwd: repo,
+      port: 0,
+      socketPath: join(repo, '.agile-daemon-cr.sock'),
+    });
+    try {
+      const base = `http://127.0.0.1:${handle.http.port}`;
+      const snapshot = (await (await fetch(`${base}/api/snapshot`)).json()) as {
+        stories: Array<{
+          ticket: string;
+          status: string;
+          stage: { label: string };
+          steps: Array<{ headline?: string; text: string; ts: string }>;
+        }>;
+        team: Array<{ id: string; model: string; state: string; role?: string }>;
+      };
+
+      // Three complete stories: each ticket says what was built, what the
+      // review said and that it merged — with timestamps, in order.
+      expect(snapshot.stories).toHaveLength(3);
+      for (const story of snapshot.stories) {
+        const rendered = story.steps.map((step) => `${step.headline ?? ''} ${step.text}`);
+        expect(rendered.some((line) => line.startsWith('Built'))).toBe(true);
+        expect(rendered.some((line) => line.includes('Review approved'))).toBe(true);
+        expect(rendered.some((line) => line.startsWith('Merged'))).toBe(true);
+        expect(story.stage.label).toBe('Done');
+        const timestamps = story.steps.map((step) => step.ts);
+        expect([...timestamps].sort()).toEqual(timestamps);
+      }
+
+      // Team rows name the model the session actually ran on — offline that
+      // is the fake vendor's own reported id, never the `'unknown'`
+      // fallback every row used to show — and finished agents stay listed
+      // (every session from this run has exited by now).
+      expect(snapshot.team.length).toBeGreaterThan(0);
+      // QA round 1 finding 1: every ROLE, the architect included — it is
+      // spawned by `ensureArchitectSpawned` and never re-prompted, so its
+      // model id has to come from the spawn-time ACP handshake.
+      const rolesSeen = new Set(snapshot.team.map((member) => member.role));
+      for (const role of ['architect', 'engineer', 'reviewer', 'qa']) {
+        expect(rolesSeen.has(role)).toBe(true);
+      }
+      expect(snapshot.team.filter((member) => member.model === 'unknown').map((m) => m.id)).toEqual(
+        [],
+      );
+      expect(snapshot.team.some((member) => member.model === 'fake/model-1')).toBe(true);
+      expect(snapshot.team.some((member) => member.state === 'left')).toBe(true);
+
+      // QA round 1 finding 4: a clean, fully merged sprint leaves nothing
+      // waiting on the operator — every engineer's normal session exit used
+      // to be filed as an open question (`advanceEngineerEscalations`
+      // claimed the daemon's exit notice), which showed every done ticket
+      // as "Done · blocked".
+      const openQuestions = (await (
+        await fetch(`${base}/api/questions?status=open`)
+      ).json()) as unknown[];
+      expect(openQuestions).toEqual([]);
+      expect(snapshot.stories.every((story) => story.stage.label === 'Done')).toBe(true);
+
+      // The Review view's narrative IS the runs/*.md body: one builder, one
+      // renderer (`packages/daemon/src/em/report.ts`).
+      const narrative = (await (await fetch(`${base}/api/sprint/review`)).json()) as {
+        asked: string;
+        built: string;
+        went_wrong: string;
+        where: string;
+        per_ticket: Array<{ ticket: string; text: string }>;
+      };
+      expect(report).toContain(narrative.asked);
+      expect(report).toContain(narrative.built);
+      expect(report).toContain(narrative.went_wrong);
+      expect(report).toContain(narrative.where);
+      for (const line of narrative.per_ticket) {
+        expect(report).toContain(`- ${line.ticket}: ${line.text}`);
+      }
+    } finally {
+      await handle.stop();
+    }
+  }, 120_000);
 });
 
 describe('agile run (live, real ACP — only with AGILE_LIVE=1)', () => {

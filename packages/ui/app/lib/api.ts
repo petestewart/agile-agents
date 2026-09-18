@@ -23,7 +23,7 @@ import type {
   Ticket,
   TicketId,
 } from '@agile-agents/shared';
-import type { FeedSnapshot } from './feed-types';
+import type { FeedSnapshot, SprintReport, TicketDiff, TicketStory } from './feed-types';
 
 async function asJson<T>(res: Response): Promise<T> {
   if (!res.ok) {
@@ -236,4 +236,34 @@ export function startSprint(goal?: string): Promise<{
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(goal ? { goal } : {}),
   }).then((r) => asJson(r));
+}
+
+/**
+ * T044 ticket-detail reads (§17 v2 Sprint tab: "click a ticket for its
+ * diff, review and QA notes"). Each is a plain GET the daemon backs with an
+ * existing store read — `story` is the same narrative the snapshot carries,
+ * re-fetched for one ticket; `diff` is `git diff integration...HEAD` inside
+ * the ticket's own worktree, path-guarded and capped daemon-side; `thread`
+ * is the ticket's bus thread, which is where the reviewer's and QA's own
+ * words live.
+ */
+export function getTicketStory(id: TicketId): Promise<TicketStory> {
+  return fetch(`/api/tickets/${encodeURIComponent(id)}/story`).then((r) => asJson(r));
+}
+
+export function getTicketDiff(id: TicketId): Promise<TicketDiff> {
+  return fetch(`/api/tickets/${encodeURIComponent(id)}/diff`).then((r) => asJson(r));
+}
+
+export function getTicketThread(id: TicketId): Promise<Message[]> {
+  return fetch(`/api/tickets/${encodeURIComponent(id)}/thread`).then((r) => asJson(r));
+}
+
+/**
+ * T044: the sprint-review narrative. The daemon builds it with the same
+ * function that writes `runs/<ts>.md`, so what this renders and what that
+ * file says are the same text.
+ */
+export function getSprintReport(): Promise<SprintReport> {
+  return fetch('/api/sprint/review').then((r) => asJson(r));
 }

@@ -69,4 +69,91 @@ export interface FeedSnapshot {
   /** T043: absent only when the daemon was started without a project root. */
   project?: FeedProjectInfo;
   status: FeedStatusInfo;
+  /** T044: one story per ticket — the Sprint tab's ticket list. */
+  stories: TicketStory[];
+  /** T044: the Team table, departed agents included. */
+  team: FeedTeamMember[];
+}
+
+/**
+ * T044 — mirrors of `packages/daemon/src/feed/stories.ts`'s `TicketStory` /
+ * `StoryStep` and `feed/snapshot.ts`'s `FeedTeamMember`, for the same
+ * no-workspace-cycle reason the rest of this file mirrors `FeedSnapshot`.
+ */
+export type StoryTone = 'good' | 'now' | 'warn' | 'plain';
+
+export interface StoryStep {
+  ts: string;
+  tone: StoryTone;
+  headline?: string;
+  text: string;
+}
+
+export interface TicketStory {
+  ticket: string;
+  title: string;
+  status: string;
+  stage: { label: string; tone: 'info' | 'warn' | 'good' };
+  who?: string;
+  steps: StoryStep[];
+  needs_you: number;
+}
+
+export interface FeedTeamMember {
+  id: string;
+  vendor: string;
+  model: string;
+  role?: string;
+  ticket?: string;
+  state: 'working' | 'idle' | 'left';
+  last_seen: string;
+  left_at?: string;
+  doing: string;
+  tokens: number;
+}
+
+/** T044 — mirror of `packages/daemon/src/em/report.ts`'s `SprintReport` (`GET /api/sprint/review`). */
+export interface ReportDecision {
+  at: string;
+  gate: string;
+  ticket?: string;
+  decided_by: string;
+  outcome: string;
+}
+
+export interface ReportTicketLine {
+  ticket: string;
+  status: string;
+  merged: boolean;
+  review_rounds: number;
+  review_verdicts: string[];
+  qa_verdict?: string;
+  text: string;
+}
+
+export interface SprintReport {
+  sprint?: string;
+  goal: string;
+  asked: string;
+  built: string;
+  went_wrong: string;
+  where: string;
+  per_ticket: ReportTicketLine[];
+  decisions: ReportDecision[];
+  proposes_next: string[];
+  spend: string[];
+  diagnostics: string[];
+  generated_at: string;
+}
+
+/** T044 — mirror of `packages/daemon/src/feed/diff.ts`'s `TicketDiff` (`GET /api/tickets/:id/diff`). */
+export interface TicketDiff {
+  ticket: string;
+  range: string;
+  worktree: string;
+  branch?: string;
+  stat: string;
+  patch: string;
+  truncated: boolean;
+  ref?: string;
 }

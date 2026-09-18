@@ -24,6 +24,7 @@ import type { QuestionService } from '../questions';
 import { quotaFraction } from '../quota/records';
 import type { QuotaService } from '../quota/records';
 import type { StateStore } from '../store';
+import { type TicketStory, buildStories } from './stories';
 
 /** Default cap on how many recent events a snapshot carries (ticket: "last N (e.g. 200)"). */
 export const DEFAULT_SNAPSHOT_EVENT_LIMIT = 200;
@@ -137,6 +138,35 @@ export interface FeedStatusInfo {
   approve_plan_pending: boolean;
 }
 
+/**
+ * T044 (§17 v2 Sprint tab Team table: "finished agents stay listed for the
+ * sprint", one row per agent naming vendor/model, what it is doing and its
+ * token spend).
+ *
+ * Live rows come from the agent registry (`bus/agents/<id>.yaml`); departed
+ * ones are reconstructed from the `agent_deleted` events that removed those
+ * files (`StateStore.deleteAgent` records vendor/model/role/ticket on the
+ * event for exactly this reason). Tokens are summed from the sprint ledger,
+ * which keys every line by `agent`.
+ */
+export interface FeedTeamMember {
+  id: string;
+  vendor: string;
+  model: string;
+  role?: string;
+  ticket?: string;
+  /** `working` — holds a ticket; `idle` — registered, no ticket; `left` — the session ended and its record was deleted. */
+  state: 'working' | 'idle' | 'left';
+  /** ISO-8601 `AgentRecord.last_seen` for a live agent, the `agent_deleted` event ts for a departed one. */
+  last_seen: string;
+  /** Present only for a departed agent — the `agent_deleted` event's timestamp. */
+  left_at?: string;
+  /** The mockup's "Doing" column, in plain language. */
+  doing: string;
+  /** `in_tokens + out_tokens` summed across this agent's ledger lines this sprint. */
+  tokens: number;
+}
+
 export interface FeedSnapshot {
   type: 'snapshot';
   events: Event[];
@@ -156,6 +186,10 @@ export interface FeedSnapshot {
   project?: FeedProjectInfo;
   /** T043: the top bar's sprint status, agents-working and Needs-you counts. */
   status: FeedStatusInfo;
+  /** T044: one story per ticket — the Sprint tab's ticket list. */
+  stories: TicketStory[];
+  /** T044: the Sprint tab's Team table, departed agents included. */
+  team: FeedTeamMember[];
 }
 
 /** `S-<n>` -> `n`, for the "Start Sprint N" button. Non-numeric ids (impossible today — `SprintIdSchema` is `S-\d+`) are skipped rather than producing `NaN`. */
@@ -196,6 +230,91 @@ export function pickCurrentSprint(sprints: Sprint[]): Sprint | undefined {
   });
 }
 
+/** Plain-language "Doing" for one live agent (mockup: "Running bun test in clone", "Blocked waiting on you"). */
+function doingFor(record: AgentRecord, ticketStatus?: Ticket['status'], blocked = false): string {
+  if (blocked) return 'Blocked, waiting on you';
+  if (!record.ticket) return 'Idle, between tickets';
+  switch (record.role) {
+    case 'qa':
+      return `Running QA on ${record.ticket} in a fresh clone`;
+    case 'reviewer':
+      return `Reviewing ${record.ticket}`;
+    case 'architect':
+      return 'Refining tickets and rules';
+    default:
+      return ticketStatus === 'in_review'
+        ? `Waiting on review of ${record.ticket}`
+        : `Building ${record.ticket}`;
+  }
+}
+
+/**
+ * The Team table (§17 v2): every agent this sprint, live and finished.
+ * See `FeedTeamMember` for where a departed agent's vendor/model comes from.
+ */
+export function buildTeam(
+  store: StateStore,
+  blockedTickets: ReadonlySet<string> = new Set(),
+): FeedTeamMember[] {
+  const tokensByAgent = new Map<string, number>();
+  for (const sprint of store.listSprints()) {
+    for (const line of store.listLedger(sprint.id)) {
+      tokensByAgent.set(
+        line.agent,
+        (tokensByAgent.get(line.agent) ?? 0) + line.in_tokens + line.out_tokens,
+      );
+    }
+  }
+  const ticketStatus = new Map(store.listTickets().map((t) => [t.id, t.status]));
+
+  const members = new Map<string, FeedTeamMember>();
+  // Departed first, so a re-registered agent id (a respawned session) is
+  // overwritten below by its live row rather than the other way round.
+  for (const event of store.listEvents()) {
+    if (event.kind !== 'agent_deleted' || event.agent === undefined) continue;
+    const data = event.data as {
+      vendor?: unknown;
+      model?: unknown;
+      role?: unknown;
+      ticket?: unknown;
+    };
+    members.set(event.agent, {
+      id: event.agent,
+      vendor: typeof data.vendor === 'string' ? data.vendor : 'unknown',
+      model: typeof data.model === 'string' ? data.model : 'unknown',
+      ...(typeof data.role === 'string' ? { role: data.role } : {}),
+      ...(typeof data.ticket === 'string' ? { ticket: data.ticket } : {}),
+      state: 'left',
+      last_seen: event.ts,
+      left_at: event.ts,
+      doing: `Finished, left ${new Date(event.ts).toISOString().slice(11, 19)}`,
+      tokens: tokensByAgent.get(event.agent) ?? 0,
+    });
+  }
+
+  for (const { id, record } of store.listAgents()) {
+    const blocked = record.ticket !== undefined && blockedTickets.has(record.ticket);
+    members.set(id, {
+      id,
+      vendor: record.vendor,
+      model: record.model,
+      ...(record.role !== undefined ? { role: record.role } : {}),
+      ...(record.ticket !== undefined ? { ticket: record.ticket } : {}),
+      state: record.ticket === undefined ? 'idle' : 'working',
+      last_seen: record.last_seen,
+      doing: doingFor(record, record.ticket ? ticketStatus.get(record.ticket) : undefined, blocked),
+      tokens: tokensByAgent.get(id) ?? 0,
+    });
+  }
+
+  // Live agents first (the operator's "who is on it now"), then the
+  // departed, each group by id — the mockup's own row order.
+  return [...members.values()].sort((a, b) => {
+    if ((a.state === 'left') !== (b.state === 'left')) return a.state === 'left' ? 1 : -1;
+    return a.id.localeCompare(b.id);
+  });
+}
+
 export function buildSnapshot(
   store: StateStore,
   gates: GateService,
@@ -207,7 +326,8 @@ export function buildSnapshot(
   /** T043: the repo root the daemon is driving (`<repoRoot>`, i.e. the state root's parent). Optional — without it the snapshot carries no `project` and the top bar falls back to a generic name. */
   projectRoot?: string,
 ): FeedSnapshot {
-  const events = store.listEvents().slice(-eventLimit);
+  const allEvents = store.listEvents();
+  const events = allEvents.slice(-eventLimit);
   const tickets = store.listTickets();
   const sprint = pickCurrentSprint(store.listSprints());
   const halts = store.listHalts();
@@ -244,6 +364,23 @@ export function buildSnapshot(
     approve_plan_pending: hil.some((request) => request.gate === 'approve_plan'),
   };
 
+  // `allEvents` is read once and shared: the snapshot ships only the last
+  // `eventLimit` of them, but a ticket's story is derived from the whole
+  // log, and reading it twice per snapshot is pure waste.
+  const stories = buildStories(
+    store,
+    {
+      gates,
+      ...(questions !== undefined ? { questions } : {}),
+    },
+    allEvents,
+  );
+  const blockedTickets = new Set(
+    stories
+      .filter((story) => story.needs_you > 0 && story.status !== 'done')
+      .map((story) => story.ticket as string),
+  );
+
   return {
     type: 'snapshot',
     events,
@@ -256,5 +393,7 @@ export function buildSnapshot(
       ? { project: { name: basename(projectRoot) || projectRoot, path: projectRoot } }
       : {}),
     status,
+    stories,
+    team: buildTeam(store, blockedTickets),
   };
 }

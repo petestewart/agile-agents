@@ -1,38 +1,25 @@
-import type {
-  AgentId,
-  AgentRecord,
-  Event,
-  KbIndex,
-  OracleIndex,
-  Policy,
-  Ticket,
-} from '@agile-agents/shared';
+import type { Event, KbIndex, OracleIndex, Policy, Ticket } from '@agile-agents/shared';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { BoardPanel } from './components/BoardPanel';
 import { ChatPanel } from './components/ChatPanel';
-import { FeedPanel } from './components/FeedPanel';
-import { NeedsYou } from './components/NeedsYou';
 import { OraclePanel } from './components/OraclePanel';
 import { Panel } from './components/Panel';
 import { Settings } from './components/Settings';
-import { SprintStrip } from './components/SprintStrip';
-import { TeamPanel } from './components/TeamPanel';
 import { ToolRow } from './components/ToolRow';
 import { TopBar } from './components/TopBar';
 import { PlanScreen } from './components/plan/PlanScreen';
-import {
-  getAgents,
-  getKbIndex,
-  getOracleIndex,
-  getPolicy,
-  getSnapshot,
-  getTickets,
-} from './lib/api';
+import { ReviewView } from './components/review/ReviewView';
+import { SprintView } from './components/sprint/SprintView';
+import { getKbIndex, getOracleIndex, getPolicy, getSnapshot, getTickets } from './lib/api';
 import { useFeed } from './lib/feed-context';
 import type { FeedSnapshot } from './lib/feed-types';
 import { useShell } from './lib/shell';
 
-type Tab = 'ops' | 'oracle';
+/**
+ * T044: the Sprint slot carries three bodies — the sprint itself, the
+ * sprint-review narrative (which the shell switches to on its own once a
+ * `sprint_review` gate is pending), and T025's Oracle/KB reader.
+ */
+type Tab = 'ops' | 'review' | 'oracle';
 
 /**
  * QA round 1 (REJECT): an external change (e.g. a ticket status flipped
@@ -94,18 +81,19 @@ function isHeartbeatOnlyEvent(event: Event): boolean {
  * T025 built it as one screen (sprint strip + collapsible panels + chat).
  * T043 puts the §17 v2 chrome around it: one top bar on every view
  * (`TopBar`), a thin tool row under it (`ToolRow`), and three views — Plan
- * (T042's, stubbed here), Sprint (the T025 panels, until T044 rewrites
- * them) and Settings (`Settings`, spend + "Who decides"). The single `/ws`
+ * (T042's), Sprint and Settings (`Settings`, spend + "Who decides"). T044
+ * replaced the Sprint slot's T025 panels with the §17 v2 bodies: the sprint
+ * itself (`components/sprint/SprintView`), the sprint-review narrative
+ * (`components/review/ReviewView`) and T025's Oracle/KB reader. The single `/ws`
  * connection lives in `FeedProvider` (`lib/feed-context.tsx`) and the chrome
  * state in `ShellProvider` (`lib/shell.tsx`); this component owns only the
  * HTTP-sourced reads and the layout.
  */
 export function App(): JSX.Element {
-  const { snapshot: liveSnapshot, events, connected, onEvent } = useFeed();
+  const { snapshot: liveSnapshot, connected, onEvent } = useFeed();
   const { view, chatMode, middleOpen } = useShell();
   const [snapshot, setSnapshot] = useState<FeedSnapshot | undefined>(undefined);
   const [tab, setTab] = useState<Tab>('ops');
-  const [agents, setAgents] = useState<Array<{ id: AgentId; record: AgentRecord }>>([]);
   const [tickets, setTickets] = useState<Ticket[]>([]);
   const [oracle, setOracle] = useState<OracleIndex>({});
   const [kb, setKb] = useState<KbIndex>({});
@@ -119,15 +107,13 @@ export function App(): JSX.Element {
   // `/ws` reports one of `REFRESH_TRIGGER_KINDS`.
   const refreshAux = useCallback(async () => {
     try {
-      const [a, t, o, k, p, snap] = await Promise.all([
-        getAgents(),
+      const [t, o, k, p, snap] = await Promise.all([
         getTickets(),
         getOracleIndex(),
         getKbIndex(),
         getPolicy(),
         getSnapshot(),
       ]);
-      setAgents(a);
       setTickets(t);
       setOracle(o);
       setKb(k);
@@ -164,6 +150,16 @@ export function App(): JSX.Element {
     if (liveSnapshot) setSnapshot(liveSnapshot);
   }, [liveSnapshot]);
 
+  const reviewPending = snapshot?.status.sprint_review_pending ?? false;
+  const reviewAnnounced = useRef(false);
+  useEffect(() => {
+    if (reviewPending && !reviewAnnounced.current) {
+      reviewAnnounced.current = true;
+      setTab('review');
+    }
+    if (!reviewPending) reviewAnnounced.current = false;
+  }, [reviewPending]);
+
   useEffect(
     () =>
       onEvent((event) => {
@@ -180,7 +176,14 @@ export function App(): JSX.Element {
   const questions = snapshot?.questions ?? [];
   const halts = snapshot?.halts ?? [];
   const quota = snapshot?.quota ?? [];
-  const sprint = snapshot?.sprint ?? { tickets: { done: 0, in_flight: 0, stale: 0, total: 0 } };
+  /**
+   * T044: the open `sprint_review` gate, when there is one. Its presence
+   * both enables the Review view's decision buttons and auto-selects that
+   * view once — §17 v2: the review IS the sprint's last screen, so an
+   * operator who left the room on the Sprint tab should come back to the
+   * thing that is waiting on them, without losing the ability to click back.
+   */
+  const reviewGate = hil.find((item) => item.gate === 'sprint_review');
 
   const chatVisible = chatMode !== 'hidden';
   const mainVisible = chatMode !== 'max' && middleOpen;
@@ -213,41 +216,57 @@ export function App(): JSX.Element {
             )}
             {view === 'sprint' && (
               <>
-                <SprintStrip sprint={sprint} halts={halts} gates={policy?.gates} />
-                <div style={{ display: 'flex', gap: 8 }}>
+                <div className="cr-view-tabs">
                   <button
                     type="button"
-                    className="cr-icon-btn"
+                    className="cr-btn"
+                    data-testid="sprint-tab-sprint"
                     aria-pressed={tab === 'ops'}
                     onClick={() => setTab('ops')}
                   >
-                    Ops
+                    Sprint
                   </button>
                   <button
                     type="button"
-                    className="cr-icon-btn"
+                    className="cr-btn"
+                    data-testid="sprint-tab-review"
+                    aria-pressed={tab === 'review'}
+                    title={
+                      reviewGate
+                        ? 'The sprint is waiting on your review'
+                        : 'The sprint report so far'
+                    }
+                    onClick={() => setTab('review')}
+                  >
+                    Review{reviewGate ? ' ·' : ''}
+                  </button>
+                  <button
+                    type="button"
+                    className="cr-btn"
                     aria-pressed={tab === 'oracle'}
                     onClick={() => setTab('oracle')}
                   >
                     Oracle / KB
                   </button>
                 </div>
-                {tab === 'ops' ? (
-                  <>
-                    <Panel title="Needs you" count={hil.length + questions.length} defaultOpen>
-                      <NeedsYou items={hil} questions={questions} onChanged={refreshAux} />
-                    </Panel>
-                    <Panel title="Team" count={agents.length}>
-                      <TeamPanel agents={agents} halts={halts} />
-                    </Panel>
-                    <Panel title="Board" count={tickets.length} defaultOpen>
-                      <BoardPanel tickets={tickets} halts={halts} />
-                    </Panel>
-                    <Panel title="Feed" count={events.length}>
-                      <FeedPanel events={events} />
-                    </Panel>
-                  </>
-                ) : (
+                {tab === 'ops' && (
+                  <SprintView
+                    snapshot={snapshot}
+                    hil={hil}
+                    questions={questions}
+                    halts={halts}
+                    tickets={tickets}
+                    {...(policy ? { policy } : {})}
+                    onChanged={refreshAux}
+                  />
+                )}
+                {tab === 'review' && (
+                  <ReviewView
+                    {...(reviewGate ? { gate: reviewGate } : {})}
+                    onChanged={refreshAux}
+                  />
+                )}
+                {tab === 'oracle' && (
                   <Panel title="Oracle / KB" defaultOpen>
                     <OraclePanel oracle={oracle} kb={kb} />
                   </Panel>

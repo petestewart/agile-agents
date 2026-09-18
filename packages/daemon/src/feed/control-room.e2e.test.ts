@@ -19,12 +19,14 @@ import {
   type SpawnedSession,
   spawnSession,
 } from '@agile-agents/acp-client';
+import { ulid } from '@agile-agents/shared';
 import { type Browser, type Page, chromium } from 'playwright-core';
 import { Bus } from '../bus';
 import { type DaemonHandle, startDaemon } from '../daemon';
 import { GateService } from '../gates';
 import { runInit } from '../init';
 import { QuestionService } from '../questions';
+import { reviewRecordRelPath, validateReviewRecord } from '../review/types';
 import { StateStore } from '../store';
 import { resolveChromiumExecutable } from './chromium';
 
@@ -358,16 +360,17 @@ describe('control room SPA (Playwright e2e)', () => {
 
         const hilItem = page.locator(`.hil-item[data-id="${seeded.id}"]`);
         await hilItem.waitFor({ state: 'attached', timeout: PAGE_TIMEOUT_MS });
-        // Board is open by default (`Panel defaultOpen`, §17) — the card and
-        // its column header are already in the DOM.
-        const boardCard = page.locator('[data-testid="ticket-card-TKT-9102"]');
-        await boardCard.waitFor({ state: 'attached', timeout: PAGE_TIMEOUT_MS });
-        const boardHeader = page.getByRole('button', { name: /^Board/ });
+        // T044: the Sprint body is the strip + Needs-you cards + one story
+        // per ticket; the story and the Needs-you card are the two surfaces
+        // that used to be the Board card and the panel header here.
+        const storyCard = page.locator('[data-testid="ticket-card-TKT-9102"]');
+        await storyCard.waitFor({ state: 'attached', timeout: PAGE_TIMEOUT_MS });
+        const storyOpen = page.locator('[data-testid="story-open-TKT-9102"]');
 
         const UA_LIGHT_BG = 'rgb(239, 239, 239)';
         const UA_LIGHT_TEXT = 'rgb(0, 0, 0)';
 
-        for (const locator of [boardHeader, hilItem, boardCard]) {
+        for (const locator of [storyOpen, hilItem, storyCard]) {
           const { bg, color } = await locator.evaluate((el) => {
             // biome-ignore lint/suspicious/noExplicitAny: browser-context globals, see comment above
             const cs = (globalThis as any).getComputedStyle(el);
@@ -934,13 +937,13 @@ describe('control room SPA (Playwright e2e)', () => {
         page = await openPage(await browserForTests());
         await page.goto(`http://127.0.0.1:${handle.http.port}/control-room?view=sprint`);
 
-        // Board is open by default (Panel `defaultOpen`).
+        // T044: the ticket is a story, and its stage pill is what a status
+        // change moves (the Board's columns are gone).
         const card = page.locator('[data-testid="ticket-card-TKT-9103"]');
         await card.waitFor({ state: 'attached', timeout: PAGE_TIMEOUT_MS });
-        const initialColumn = await card.evaluate(
-          (el) => el.parentElement?.firstElementChild?.textContent ?? '',
-        );
-        expect(initialColumn).toContain('DRAFT');
+        const stage = page.locator('[data-testid="story-stage-TKT-9103"]');
+        const initialStage = (await stage.textContent()) ?? '';
+        expect(initialStage).toContain('Draft');
 
         // External change: no fetch/reload call from this test — the daemon's
         // own store is mutated directly, the way another agent's process
@@ -948,14 +951,12 @@ describe('control room SPA (Playwright e2e)', () => {
         await store.transitionTicket('TKT-9103', 'ready', { by: 'test' });
 
         const deadline = Date.now() + POLL_DEADLINE_MS;
-        let column = initialColumn;
-        while (column.includes('DRAFT') && Date.now() < deadline) {
+        let label = initialStage;
+        while (label.includes('Draft') && Date.now() < deadline) {
           await page.waitForTimeout(100);
-          column = await card.evaluate(
-            (el) => el.parentElement?.firstElementChild?.textContent ?? '',
-          );
+          label = (await stage.textContent()) ?? '';
         }
-        expect(column).toContain('READY');
+        expect(label).toContain('Ready');
       } finally {
         await teardown([page]);
         await handle?.stop();
@@ -1209,6 +1210,204 @@ describe('control room SPA (Playwright e2e)', () => {
         rmSync(repo, { recursive: true, force: true });
       }
     },
+    60000,
+  );
+  /**
+   * T044 (§17 v2 Sprint + Review, mockup `#s3`/`#s4`): the two new bodies
+   * render what the daemon derived — one story per ticket with its
+   * timestamped steps and the reviewer's verdict quoted, a Team table that
+   * still lists the agent whose session has exited (with the model it ran
+   * on), and the sprint-review narrative, which is the same text
+   * `em/report.ts` writes into `runs/*.md`.
+   *
+   * The data half of this — after a REAL offline sprint, against the actual
+   * run report file — is asserted in `packages/cli/src/run.e2e.test.ts`,
+   * which cannot open a browser of its own without destabilising this file
+   * (see `browserForTests`). Here the finished sprint is seeded directly
+   * through the store so the render is exercised with no vendor at all.
+   */
+  browserTest(
+    'the Sprint and Review views: ticket stories, a departed agent in Team, and the review narrative',
+    async () => {
+      const repo = initRepo();
+      let handle: DaemonHandle | undefined;
+      let page: Page | undefined;
+
+      try {
+        const init = runInit(repo);
+        const store = StateStore.open(init.stateRoot);
+        const gates = new GateService(store);
+        const bus = new Bus(store, init.stateRoot);
+
+        await store.putSprint({
+          id: 'S-1',
+          goal: 'Transfers, reversals, category report',
+          tickets: ['TKT-9201'],
+          budget_tokens: 1000,
+          started: new Date().toISOString(),
+          carried_over: [],
+        });
+        await store.putTicket({
+          id: 'TKT-9201',
+          title: 'Add Ledger.transfer between accounts',
+          status: 'draft',
+          sprint: 'S-1',
+          contract: {
+            inputs: [],
+            outputs: [],
+            acceptance: ['transfers move both accounts'],
+            done: [],
+            env: 'clone',
+          },
+          depends: [],
+          oracle_refs: [],
+          kb_refs: [],
+          history: [],
+          security: false,
+        });
+        await store.transitionTicket('TKT-9201', 'ready', { by: 'architect' });
+        await store.transitionTicket('TKT-9201', 'assigned', { by: 'em' });
+        await store.transitionTicket('TKT-9201', 'in_progress', { by: 'eng-9201' });
+        await store.appendStanza({
+          ts: new Date().toISOString(),
+          ticket: 'TKT-9201',
+          agent: 'eng-9201',
+          kind: 'review_submitted',
+          summary: '+61 -0 in 2 files, 6 new tests pass',
+        });
+        await store.transitionTicket('TKT-9201', 'in_review', { by: 'eng-9201' });
+        await store.putEntity(reviewRecordRelPath('TKT-9201', 1, 'primary'), validateReviewRecord, {
+          ticket: 'TKT-9201',
+          round: 1,
+          pass: 'primary',
+          agent: 'reviewer-9201',
+          ts: new Date().toISOString(),
+          findings: [],
+          verdict: 'approve',
+          hunks: [],
+        });
+        await bus.send({
+          id: ulid(),
+          ts: new Date().toISOString(),
+          from: 'reviewer-9201',
+          to: ['eng-9201'],
+          kind: 'review_verdict',
+          priority: 'normal',
+          ticket: 'TKT-9201',
+          body: 'validation happens before either write',
+          refs: [reviewRecordRelPath('TKT-9201', 1, 'primary')],
+          requires_ack: false,
+        });
+        await store.transitionTicket('TKT-9201', 'in_qa', { by: 'reviewer-9201' });
+
+        // One agent still working, one whose session has ended — the row
+        // for the second must survive (§17 v2: "finished agents stay
+        // listed for the sprint").
+        await store.putAgent('qa-9201', {
+          vendor: 'claude',
+          model: 'fake/model-1',
+          role: 'qa',
+          ticket: 'TKT-9201',
+          last_seen: new Date().toISOString(),
+        });
+        await store.putAgent('eng-9201', {
+          vendor: 'claude',
+          model: 'fake/model-1',
+          role: 'engineer',
+          ticket: 'TKT-9201',
+          last_seen: new Date().toISOString(),
+        });
+        await store.deleteAgent('eng-9201');
+
+        // The sprint-review gate: it is what turns the Review view's
+        // buttons on, and what the shell switches to on its own.
+        await gates.request('sprint_review', {
+          policy: { gates: { sprint_review: 'human' }, breaker_signals: [] },
+          hilKind: 'approve_decision',
+          summary: 'Sprint 1 is ready for your review',
+        });
+
+        handle = await startDaemon({
+          cwd: repo,
+          port: 0,
+          socketPath: join(repo, '.agile-daemon.sock'),
+        });
+
+        page = await openPage(await browserForTests());
+        await page.goto(`http://127.0.0.1:${handle.http.port}/control-room?view=sprint`);
+
+        // A pending sprint_review opens on the Review view; the Sprint view
+        // is one click away.
+        const summary = page.locator('[data-testid="review-summary"]');
+        await summary.waitFor({ state: 'attached', timeout: PAGE_TIMEOUT_MS });
+        expect(await page.locator('[data-testid="review-asked"]').textContent()).toContain(
+          'Transfers, reversals, category report',
+        );
+        expect(await page.locator('[data-testid="review-where"]').textContent()).toBeTruthy();
+        // The narrative the page shows is the one the daemon built — the
+        // same function that writes `runs/*.md` (asserted against the real
+        // file in the CLI's own e2e).
+        const narrative = (await (
+          await fetch(`http://127.0.0.1:${handle.http.port}/api/sprint/review`)
+        ).json()) as { asked: string; built: string };
+        expect(await page.locator('[data-testid="review-asked"]').textContent()).toBe(
+          `What was asked: ${narrative.asked}`,
+        );
+        expect(await page.locator('[data-testid="review-built"]').textContent()).toBe(
+          `What was built: ${narrative.built}`,
+        );
+
+        await page.locator('[data-testid="sprint-tab-sprint"]').click();
+
+        // The story: timestamped steps, the verdict quoted from the
+        // reviewer's own message, and the "what is happening now" line.
+        const steps = page.locator('[data-testid="story-steps-TKT-9201"]');
+        await steps.waitFor({ state: 'attached', timeout: PAGE_TIMEOUT_MS });
+        const storyText = (await steps.textContent()) ?? '';
+        expect(storyText).toContain('Built');
+        expect(storyText).toContain('6 new tests pass');
+        expect(storyText).toContain('Review approved');
+        expect(storyText).toContain('validation happens before either write');
+        expect(storyText).toContain('QA running in a fresh clone');
+        expect(await page.locator('[data-testid="story-stage-TKT-9201"]').textContent()).toBe(
+          'In QA',
+        );
+
+        // Team: the live QA agent and the departed engineer, both naming a
+        // real model id.
+        const departed = page.locator('[data-testid="team-row-eng-9201"]');
+        await departed.waitFor({ state: 'attached', timeout: PAGE_TIMEOUT_MS });
+        expect(await departed.getAttribute('data-state')).toBe('left');
+        expect(await page.locator('[data-testid="team-model-eng-9201"]').textContent()).toBe(
+          'claude / fake/model-1',
+        );
+        expect(await page.locator('[data-testid="team-model-qa-9201"]').textContent()).toBe(
+          'claude / fake/model-1',
+        );
+
+        // The ticket detail: contract, blocked-by/blocks and the verdicts
+        // off the bus thread (the diff needs a worktree, which this seeded
+        // fixture has none of — the panel says so rather than erroring).
+        await page.locator('[data-testid="story-open-TKT-9201"]').click();
+        const detail = page.locator('[data-testid="ticket-detail"]');
+        await detail.waitFor({ state: 'attached', timeout: PAGE_TIMEOUT_MS });
+        expect(await page.locator('[data-testid="ticket-blocked-by"]').textContent()).toBe(
+          'nothing',
+        );
+        expect(await page.locator('[data-testid="ticket-verdicts"]').textContent()).toContain(
+          'validation happens before either write',
+        );
+        expect(await page.locator('[data-testid="ticket-contract"]').textContent()).toContain(
+          'transfers move both accounts',
+        );
+      } finally {
+        await teardown([page]);
+        await handle?.stop();
+        rmSync(repo, { recursive: true, force: true });
+      }
+    },
+    // 60s, like the file's other retry-prone long test: room for one
+    // `browserTest` retry (two 20s page waits) under whole-suite contention.
     60000,
   );
 });

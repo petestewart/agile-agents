@@ -105,6 +105,17 @@ export interface SpawnedSession {
    * replay without also subscribing, or wants to check `dropped` on its own.
    */
   replay(): AcpReplay<AcpEvent>;
+  /**
+   * Establish the ACP session now — `session/new` (and `session/set_mode`
+   * when a `modeId` was given) right after `initialize`, without waiting for
+   * the first `prompt()`. Idempotent and shared: a concurrent `prompt()`
+   * awaits the same in-flight `session/new` rather than sending a second
+   * one. Resolves with the session id. T044 (QA round 1): the vendor's model
+   * id rides on the `session/new` result (`_agile/session_state`), so a
+   * session that is spawned but never prompted — the architect, in the demo
+   * driver — would otherwise never report one.
+   */
+  open(): Promise<string>;
   /** Resolves with the `initialize` result once the handshake completes. */
   readonly initialized: Promise<unknown>;
   /** The ACP `session/new` id once a session exists, else null. */
@@ -540,8 +551,26 @@ export function spawnSession(opts: SpawnSessionOptions): SpawnedSession {
   // unhandled rejection; callers awaiting `initialized` still see the error.
   initialized.catch(() => {});
 
-  async function ensureSession(): Promise<string> {
-    if (acpSessionId !== null) return acpSessionId;
+  /**
+   * The in-flight `session/new`, shared between `open()` and `prompt()`.
+   * Without this, an eager `open()` and the first `prompt()` racing each
+   * other would both send `session/new`. Cleared on failure so a later call
+   * (e.g. after `authenticate`) retries instead of replaying the rejection.
+   */
+  let sessionOpening: Promise<string> | null = null;
+
+  function ensureSession(): Promise<string> {
+    if (acpSessionId !== null) return Promise.resolve(acpSessionId);
+    if (sessionOpening === null) {
+      sessionOpening = openSession().catch((err) => {
+        sessionOpening = null;
+        throw err;
+      });
+    }
+    return sessionOpening;
+  }
+
+  async function openSession(): Promise<string> {
     await initialized;
     try {
       const result = await sendRequest('session/new', { cwd, mcpServers: opts.mcpServers ?? [] });
@@ -636,6 +665,9 @@ export function spawnSession(opts: SpawnSessionOptions): SpawnedSession {
 
   return {
     initialized,
+    open(): Promise<string> {
+      return ensureSession();
+    },
     get sessionId() {
       return acpSessionId;
     },

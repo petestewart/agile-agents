@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { appendFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { Policy } from '@agile-agents/shared';
+import { type Policy, ulid } from '@agile-agents/shared';
 import { Bus } from './bus';
 import { EmChatService } from './em/chat';
 import { GateService } from './gates';
@@ -10,6 +10,7 @@ import { type HttpServerHandle, startHttpServer } from './http';
 import { runInit } from './init';
 import { PlanService } from './plan';
 import { QuestionService } from './questions';
+import { ensureTicketWorktree } from './runner/worktrees';
 import { StateStore } from './store';
 import { type FakeJiraHandle, HttpJiraClient, JiraSync, startFakeJira } from './sync';
 
@@ -520,6 +521,142 @@ describe('T025 control room routes', () => {
   test('GET /api/tickets/:id 404s for an unknown ticket', async () => {
     const res = await fetch(`http://127.0.0.1:${crServer.port}/api/tickets/TKT-9999`);
     expect(res.status).toBe(404);
+  });
+
+  /**
+   * T044: the ticket-detail reads (`story`, `thread`, `diff`) and the
+   * sprint-review narrative. The diff route's path guard is the one with
+   * teeth — a `worktree` field pointing anywhere outside `.worktrees/` must
+   * be refused rather than run `git diff` against.
+   */
+  describe('T044 ticket detail + sprint review', () => {
+    async function seedTicket(id = 'TKT-0102', worktree?: string): Promise<void> {
+      await store.putTicket({
+        id,
+        title: 'Ticket detail fixture',
+        status: 'in_review',
+        contract: { inputs: [], outputs: [], acceptance: ['it works'], done: [], env: 'clone' },
+        depends: [],
+        oracle_refs: [],
+        kb_refs: [],
+        history: [],
+        security: false,
+        ...(worktree ? { worktree } : {}),
+      });
+    }
+
+    test('GET /api/tickets/:id/story returns the ticket story with its steps', async () => {
+      await seedTicket();
+      await store.appendStanza({
+        ts: new Date().toISOString(),
+        ticket: 'TKT-0102',
+        agent: 'eng-0102',
+        kind: 'done',
+        summary: '+10 −0 in 1 file',
+      });
+      const res = await fetch(`http://127.0.0.1:${crServer.port}/api/tickets/TKT-0102/story`);
+      expect(res.status).toBe(200);
+      const story = (await res.json()) as {
+        ticket: string;
+        steps: Array<{ headline?: string; text: string }>;
+      };
+      expect(story.ticket).toBe('TKT-0102');
+      expect(story.steps.some((step) => step.headline === 'Built')).toBe(true);
+    });
+
+    test('GET /api/tickets/:id/thread returns the ticket bus thread', async () => {
+      await seedTicket();
+      await bus.send({
+        id: ulid(),
+        ts: new Date().toISOString(),
+        from: 'reviewer-0102',
+        to: ['eng-0102'],
+        kind: 'review_verdict',
+        priority: 'normal',
+        ticket: 'TKT-0102',
+        body: 'round 1: approve (0 finding(s))',
+        refs: [],
+        requires_ack: false,
+      });
+      const res = await fetch(`http://127.0.0.1:${crServer.port}/api/tickets/TKT-0102/thread`);
+      expect(res.status).toBe(200);
+      const thread = (await res.json()) as Array<{ kind: string; body: string }>;
+      expect(thread).toHaveLength(1);
+      expect(thread[0]?.kind).toBe('review_verdict');
+    });
+
+    test('GET /api/tickets/:id/diff returns the worktree diff against integration', async () => {
+      await seedTicket('TKT-0103');
+      const ticket = store.getTicket('TKT-0103');
+      const worktree = ensureTicketWorktree(repo, ticket);
+      writeFileSync(join(worktree.path, 'added.ts'), 'export const added = 1;\n');
+      Bun.spawnSync(['git', 'add', '-A'], { cwd: worktree.path });
+      Bun.spawnSync(['git', '-c', 'commit.gpgsign=false', 'commit', '-q', '-m', 'add file'], {
+        cwd: worktree.path,
+      });
+      await store.putTicket({ ...ticket, worktree: join('.worktrees', 'TKT-0103') });
+
+      const res = await fetch(`http://127.0.0.1:${crServer.port}/api/tickets/TKT-0103/diff`);
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { patch: string; range: string; truncated: boolean };
+      expect(body.range).toBe('integration...HEAD');
+      expect(body.patch).toContain('added.ts');
+      expect(body.patch).toContain('export const added = 1;');
+      expect(body.truncated).toBe(false);
+    });
+
+    test('GET /api/tickets/:id/diff refuses a worktree path that resolves outside .worktrees/', async () => {
+      // The escape has to be reachable on disk to prove the guard, not the
+      // filesystem, is what refuses it.
+      await seedTicket('TKT-0104');
+      const ticket = store.getTicket('TKT-0104');
+      ensureTicketWorktree(repo, ticket);
+      await store.putTicket({
+        ...ticket,
+        worktree: join('.worktrees', 'TKT-0104', '..', '..'),
+      });
+
+      const res = await fetch(`http://127.0.0.1:${crServer.port}/api/tickets/TKT-0104/diff`);
+      expect(res.status).toBe(400);
+      expect(((await res.json()) as { error: string }).error).toContain('outside');
+
+      // An absolute path outside the repo is refused the same way.
+      await store.putTicket({ ...store.getTicket('TKT-0104'), worktree: '/etc' });
+      const absolute = await fetch(`http://127.0.0.1:${crServer.port}/api/tickets/TKT-0104/diff`);
+      expect(absolute.status).toBe(400);
+    });
+
+    test('GET /api/tickets/:id/diff 404s when the ticket has no worktree yet', async () => {
+      await seedTicket('TKT-0105');
+      const res = await fetch(`http://127.0.0.1:${crServer.port}/api/tickets/TKT-0105/diff`);
+      expect(res.status).toBe(404);
+    });
+
+    test('GET /api/sprint/review returns the narrative the run report renders', async () => {
+      await store.putSprint({
+        id: 'S-1',
+        goal: 'ship the ledger',
+        tickets: ['TKT-0106'],
+        budget_tokens: 100,
+        started: new Date().toISOString(),
+        carried_over: [],
+      });
+      await seedTicket('TKT-0106');
+      const res = await fetch(`http://127.0.0.1:${crServer.port}/api/sprint/review`);
+      expect(res.status).toBe(200);
+      const report = (await res.json()) as {
+        sprint: string;
+        asked: string;
+        built: string;
+        went_wrong: string;
+        where: string;
+      };
+      expect(report.sprint).toBe('S-1');
+      expect(report.asked).toContain('ship the ledger');
+      expect(report.built).toBeString();
+      expect(report.went_wrong).toBeString();
+      expect(report.where).toBeString();
+    });
   });
 
   test('GET /api/oracle and /api/oracle/:id return the index and one entry', async () => {
