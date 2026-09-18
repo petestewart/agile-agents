@@ -1012,6 +1012,29 @@ describe('advanceEngineerEscalations (T040)', () => {
     expect(questions.listOpen()).toHaveLength(0);
   });
 
+  /**
+   * T048 defect (1), from Pete's first live run of the control-room branch
+   * (2026-09-18): every engineer exit opened a `Q-*` "session ended"
+   * question, so every merged ticket stayed "Done · blocked / Waiting on
+   * you". These are the two exact bodies that run produced. They are the
+   * daemon's notices (`runner/session.ts`'s `finish()` — the only place this
+   * module sends a session-exit notice from) and must raise nothing.
+   */
+  test('the exact `session ended` bodies of the 2026-09-18 live run open no question', async () => {
+    await store.putTicket(makeTicket('TKT-0004' as TicketId, { status: 'done' }));
+    const questions = new QuestionService(store);
+    for (const body of [
+      'eng-2001 (engineer) session ended: prompt failed: ACP session is closing',
+      'eng-2001 (engineer) session ended: process exited (code 0)',
+    ]) {
+      await sendEscalate('daemon' as AgentId, body, 'TKT-0004' as TicketId);
+    }
+    expect(await advanceEngineerEscalations(questions, bus, new Set())).toEqual([]);
+    expect(questions.list()).toHaveLength(0);
+    // The notices themselves are still em's to read — nothing acked them.
+    expect(bus.poll('em' as AgentId).filter((m) => m.kind === 'escalate')).toHaveLength(2);
+  });
+
   test("a daemon's or reviewer's escalate is left alone", async () => {
     await store.putTicket(makeTicket('TKT-0002' as TicketId, { status: 'in_review' }));
     const questions = new QuestionService(store);

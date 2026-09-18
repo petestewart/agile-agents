@@ -484,6 +484,10 @@ export class HookService {
       ticket,
       hilKind: 'unblock',
       from: agent,
+      // T048: the hook caller, not the ticket's assignee, is the agent parked
+      // on this decision — a QA or reviewer hook raises `unblock` gates on a
+      // ticket assigned to the engineer.
+      requestedBy: agent,
       // What was asked, so the notice/delegate/human can decide on it —
       // the first live run's requests only said "no delegate configured".
       summary,

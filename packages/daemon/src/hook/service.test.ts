@@ -569,6 +569,59 @@ describe('HookService.preToolUse', () => {
     expect(resolvedEvent?.data.note).toBe('yes, but only for the seed script');
   });
 
+  /**
+   * T048 defect (2): the first live run of the control-room branch
+   * (2026-09-18) delivered qa-2003's approved `unblock` into eng-2003's
+   * inbox, because `GateService.waitingAgent` was the ticket's *assignee*.
+   * The engineer then refused a command outside its own worktree. The gate
+   * must come back to the agent whose call it blocked.
+   */
+  test("a gate raised by a QA hook is delivered to the QA agent (and the EM), not the ticket's engineer", async () => {
+    await seedTicket({ status: 'in_qa', assignee: 'eng-3' });
+    const qaWorktree = join(repo, '.worktrees', 'TKT-0001-qa');
+    mkdirSync(qaWorktree, { recursive: true });
+    await store.putAgent(
+      'qa-3' as AgentId,
+      agentRecord({ role: 'qa', worktree: qaWorktree, ticket: 'TKT-0001' }),
+    );
+    const svc = service();
+    const run = () =>
+      svc.preToolUse({
+        cwd: qaWorktree,
+        tool_name: 'Bash',
+        tool_input: { command: 'git push origin main' },
+        agile_agent: 'qa-3',
+      });
+
+    const first = await run();
+    expect(first.hookSpecificOutput.permissionDecision).toBe('deny');
+    const [request] = gates.list();
+    if (!request) throw new Error('no HIL request filed');
+    expect(request.requested_by).toBe('qa-3');
+
+    await gates.respond(request.id, 'approve', 'human', 'fine, push the QA fixture tag');
+
+    // The QA agent that asked gets it, told it is its own gate and to retry...
+    const qaInbox = bus.poll('qa-3' as AgentId).filter((m) => m.kind === 'hil_response');
+    expect(qaInbox).toHaveLength(1);
+    expect(qaInbox[0]?.body).toContain('your gate "unblock" was approved');
+    expect(qaInbox[0]?.body).toContain('fine, push the QA fixture tag');
+    expect(qaInbox[0]?.body).toContain('Retry the call it blocked');
+    // ...and it does NOT quote the blocked command back at it.
+    expect(qaInbox[0]?.body).not.toContain('git push origin main');
+    // ...the EM is copied...
+    expect(
+      bus.poll('em' as AgentId).some((m) => m.body.includes('fine, push the QA fixture tag')),
+    ).toBe(true);
+    // ...and the engineer that owns the ticket is left out of it entirely.
+    expect(bus.poll('eng-3' as AgentId)).toHaveLength(0);
+
+    // The QA agent's next hook call drains it into context.
+    const retried = await run();
+    expect(retried.hookSpecificOutput.additionalContext).toContain('fine, push the QA fixture tag');
+    expect(bus.poll('qa-3' as AgentId).some((m) => m.kind === 'hil_response')).toBe(false);
+  });
+
   // T039 review round 1: the note-only flow ("no button press") must reach the
   // engineer too, once the EM delegate decides.
   test('a note with no button press, resolved by the EM delegate, still drains into the engineer inbox', async () => {

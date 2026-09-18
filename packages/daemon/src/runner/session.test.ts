@@ -673,11 +673,17 @@ describe('T027: per-vendor session wiring (Cursor ask mode, Grok client-fs gate,
     expect(store.getTicket('TKT-0231').status).toBe('ready');
 
     const inbox = await bus.poll('em' as never);
-    expect(
-      inbox.some(
-        (m) => m.kind === 'escalate' && m.ticket === 'TKT-0231' && /prompt failed/.test(m.body),
-      ),
-    ).toBe(true);
+    const notice = inbox.find(
+      (m) => m.kind === 'escalate' && m.ticket === 'TKT-0231' && /prompt failed/.test(m.body),
+    );
+    expect(notice).toBeDefined();
+    // T048 defect (1): the notice is the DAEMON's report of an exit, never the
+    // agent escalating. An agent-authored one is read by
+    // `pipeline-glue.ts`'s `advanceEngineerEscalations` as a question to open,
+    // which is how the 2026-09-18 live run got a `Q-*` "session ended" per
+    // engineer exit. `finish()` is the single place this notice is sent from.
+    expect(notice?.from).toBe('daemon');
+    expect(notice?.body).toMatch(/^eng-0231 \(engineer\) session ended: prompt failed/);
 
     const events = store.listEvents();
     expect(

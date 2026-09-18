@@ -213,6 +213,23 @@ describe('agile run (offline, fake ACP)', () => {
     const { StateStore } = await import('@agile-agents/daemon');
     const store = StateStore.open(join(repo, '.agile'));
 
+    /**
+     * T048 defect (1): every `session ended` notice on the bus is the
+     * DAEMON's report of an exit, never an agent-authored `escalate` — an
+     * agent-authored one is exactly what `advanceEngineerEscalations` turns
+     * into a `Q-*` question, which is how Pete's 2026-09-18 live run got one
+     * "session ended" question per engineer exit and showed every merged
+     * ticket as "Done · blocked". `runner/session.ts`'s `finish()` is the
+     * single sender. (The open-questions half of this is asserted against
+     * `/api/questions` in the control-room test below.)
+     */
+    const emInbox = store.listEntities(
+      'bus/inbox/em',
+      (v) => v as { from: string; kind: string; body: string },
+    );
+    const exitNotices = emInbox.filter((m) => m.body.includes('session ended'));
+    expect(exitNotices.filter((m) => m.from !== 'daemon')).toEqual([]);
+
     // T046 defect 2: the first sprint's goal comes from the seed
     // (`sprintGoal`), not a string hard-coded in `run.ts`.
     expect(store.listSprints()[0]?.goal).toBe('Demo epic layer 1');
