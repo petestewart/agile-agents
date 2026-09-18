@@ -51,8 +51,12 @@ function Root(): JSX.Element {
   }
   return (
     <FeedProvider>
-      {/* Sprint, not Plan, is the default view until T042 fills the Plan screen. */}
-      <ShellProvider initialView={isShellView(viewParam) ? viewParam : 'sprint'}>
+      {/*
+        T042: Plan is the landing view — §17 v2's "The repo opens here with an
+        empty plan and a chat" (T043 left this on `sprint` while the Plan
+        screen was a stub). `?view=` still deep-links any of the three.
+      */}
+      <ShellProvider initialView={isShellView(viewParam) ? viewParam : 'plan'}>
         <App />
       </ShellProvider>
     </FeedProvider>

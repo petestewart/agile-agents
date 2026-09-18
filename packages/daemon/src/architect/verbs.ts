@@ -234,6 +234,31 @@ async function decisionPublish(
   return pinned.length > 0 ? { ...published, resolves_halts: pinned } : published;
 }
 
+// --------------------------------------------------------- product_brief_write
+
+/**
+ * T042 (§17 "Control room v2": "The goal is the first chat message; the
+ * architect fills the panes"). The Plan screen's Brief pane renders
+ * `oracle/product.md`, and the architect's planning turn is what first
+ * writes it — but no verb could: `oracle/product.md` is prose, not an
+ * `OracleEntry`, so `decision_publish` cannot carry it. Written through the
+ * store (`putDoc`), so it lands in `events.jsonl` and the `agile-state`
+ * commit like every other write.
+ */
+async function productBriefWrite(
+  deps: ArchitectToolDeps,
+  ctx: ArchitectToolCallContext,
+  input: unknown,
+) {
+  assertArchitect(ctx);
+  const p = requireObject(input);
+  const body = requireString(p.body, 'body');
+  await deps.store.putDoc('oracle/product.md', body.endsWith('\n') ? body : `${body}\n`, {
+    by: 'architect',
+  });
+  return { path: 'oracle/product.md', bytes: body.length };
+}
+
 export interface ArchitectToolInfo {
   name: string;
   description: string;
@@ -292,6 +317,13 @@ export const ARCHITECT_TOOLS: readonly ArchitectToolInfo[] = [
       'Publish an oracle decision (through the write guard). Pass haltId (from discovery_triage) to name the halt this decision resolves: it is released once quorum reaches. Without haltId, any open halt you raised is pinned to this decision and released the same way (architect-only).',
     inputSpec: { entry: OBJECT, body: STRING, haltId: STRING_OPT },
     handler: decisionPublish,
+  },
+  {
+    name: 'product_brief_write',
+    description:
+      'Write oracle/product.md — the product brief the Plan screen renders: vision, non-goals, glossary, and a "Current goal" section. Replaces the whole file (architect-only).',
+    inputSpec: { body: STRING },
+    handler: productBriefWrite,
   },
 ];
 

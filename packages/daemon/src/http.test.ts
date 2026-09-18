@@ -8,6 +8,7 @@ import { EmChatService } from './em/chat';
 import { GateService } from './gates';
 import { type HttpServerHandle, startHttpServer } from './http';
 import { runInit } from './init';
+import { PlanService } from './plan';
 import { QuestionService } from './questions';
 import { StateStore } from './store';
 import { type FakeJiraHandle, HttpJiraClient, JiraSync, startFakeJira } from './sync';
@@ -1086,6 +1087,12 @@ describe('T043 chrome routes', () => {
       startedAt: Date.now(),
       store,
       gates,
+      // T042 merge: `POST /api/sprint/start` is served by the Plan route
+      // family (`PlanService`), which proposes the frontier, raises
+      // `approve_plan` and persists the sprint only once that gate is
+      // approved — see the note where T043's own version of the route used
+      // to live in `http.ts`.
+      plan: { service: new PlanService({ store, gates }) },
       feedPollIntervalMs: 20,
     });
   });
@@ -1167,7 +1174,7 @@ describe('T043 chrome routes', () => {
     expect(store.getPolicy().gates.unblock).toBe('em');
   });
 
-  test('POST /api/sprint/start plans the frontier and raises approve_plan', async () => {
+  test('POST /api/sprint/start proposes the frontier, raises approve_plan, and starts it when the human owns the gate', async () => {
     await store.putTicket({
       id: 'TKT-0501',
       title: 'Frontier ticket',
@@ -1185,35 +1192,57 @@ describe('T043 chrome routes', () => {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({}),
     });
-    expect(res.status).toBe(201);
+    expect(res.status).toBe(200);
     const body = (await res.json()) as {
-      sprint: { id: string; tickets: string[] };
-      hil: { gate: string; owner: string; status: string };
+      started: boolean;
+      sprint?: { id: string; tickets: string[] };
+      proposal: { id: string; tickets: string[] };
+      gate: { id: string; owner: string; status: string; decision?: string };
     };
 
-    // A real sprint file, with the ticket stamped onto it (planSprint).
-    expect(body.sprint.id).toBe('S-1');
-    expect(body.sprint.tickets).toEqual(['TKT-0501']);
+    // The proposal is what went to the gate; the sprint is what the approval
+    // then wrote.
+    expect(body.proposal.id).toBe('S-1');
+    expect(body.proposal.tickets).toEqual(['TKT-0501']);
+    expect(body.started).toBe(true);
+    expect(body.sprint?.id).toBe('S-1');
     expect(store.getSprint('S-1').tickets).toEqual(['TKT-0501']);
     expect(store.getTicket('TKT-0501').sprint).toBe('S-1');
 
-    // ...and the gate the design says sprint start means.
-    expect(body.hil.gate).toBe('approve_plan');
-    expect(body.hil.owner).toBe('human');
-    expect(gates.list().some((r) => r.gate === 'approve_plan' && r.status === 'pending')).toBe(
-      true,
-    );
+    // The gate the design says sprint start means — raised, and resolved by
+    // the click itself because policy owns it to the human.
+    expect(body.gate.owner).toBe('human');
+    expect(body.gate.status).toBe('resolved');
+    expect(body.gate.decision).toBe('approve');
+    expect(gates.list().some((r) => r.gate === 'approve_plan')).toBe(true);
 
     // The top bar now reads "running", and offers Sprint 2 next.
     const snap = (await (await fetch(`${base()}/api/snapshot`)).json()) as {
-      status: { sprint_state: string; sprint_id: string; next_sprint_number: number };
+      status: {
+        sprint_state: string;
+        sprint_id: string;
+        next_sprint_number: number;
+        approve_plan_pending: boolean;
+      };
     };
     expect(snap.status.sprint_state).toBe('running');
     expect(snap.status.sprint_id).toBe('S-1');
     expect(snap.status.next_sprint_number).toBe(2);
+    expect(snap.status.approve_plan_pending).toBe(false);
   });
 
-  test('POST /api/sprint/start respects a Settings policy edit: approve_plan goes to the EM', async () => {
+  test('POST /api/sprint/start respects a Settings policy edit: approve_plan goes to the EM, and nothing is written until it decides', async () => {
+    await store.putTicket({
+      id: 'TKT-0502',
+      title: 'Frontier ticket',
+      status: 'ready',
+      contract: { inputs: [], outputs: [], acceptance: [], done: [], env: 'clone' },
+      depends: [],
+      oracle_refs: [],
+      kb_refs: [],
+      history: [],
+      security: false,
+    });
     await fetch(`${base()}/api/policy`, {
       method: 'PUT',
       headers: { 'content-type': 'application/json' },
@@ -1223,9 +1252,37 @@ describe('T043 chrome routes', () => {
       }),
     });
     const res = await fetch(`${base()}/api/sprint/start`, { method: 'POST' });
-    expect(res.status).toBe(201);
-    const body = (await res.json()) as { hil: { owner: string } };
-    expect(body.hil.owner).toBe('em');
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      started: boolean;
+      gate: { owner: string; status: string };
+    };
+    expect(body.gate.owner).toBe('em');
+    expect(body.gate.status).toBe('pending');
+    // T042 review round 1: an undecided gate starts nothing.
+    expect(body.started).toBe(false);
+    expect(store.listSprints()).toHaveLength(0);
+    expect(store.getTicket('TKT-0502').sprint).toBeUndefined();
+
+    // ...and the top bar says so, rather than offering a second start.
+    const snap = (await (await fetch(`${base()}/api/snapshot`)).json()) as {
+      status: { approve_plan_pending: boolean; sprint_state: string };
+    };
+    expect(snap.status.approve_plan_pending).toBe(true);
+    expect(snap.status.sprint_state).toBe('none');
+
+    // A second click is refused rather than raising a duplicate gate.
+    const second = await fetch(`${base()}/api/sprint/start`, { method: 'POST' });
+    expect(second.status).toBe(400);
+    expect(gates.list().filter((r) => r.gate === 'approve_plan')).toHaveLength(1);
+  });
+
+  test('POST /api/sprint/start refuses an empty frontier with 400 and a reason', async () => {
+    const res = await fetch(`${base()}/api/sprint/start`, { method: 'POST' });
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error: string }).error).toMatch(/nothing is ready to start/);
+    expect(store.listSprints()).toHaveLength(0);
+    expect(gates.list()).toHaveLength(0);
   });
 
   test('POST /api/sprint/start rejects a cross-origin call with 403', async () => {

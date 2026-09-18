@@ -193,12 +193,31 @@ describe('T043: project + status for the top bar', () => {
     expect(buildSnapshot(store, gates).status.sprint_review_pending).toBe(false);
   });
 
+  test('approve_plan_pending follows an open approve_plan gate (T042: Start Sprint writes nothing until it is decided)', async () => {
+    expect(buildSnapshot(store, gates).status.approve_plan_pending).toBe(false);
+
+    const raised = await gates.request('approve_plan', {
+      policy: { gates: { approve_plan: 'em' }, breaker_signals: [] },
+      hilKind: 'approve_decision',
+      summary: 'Start S-1: TKT-0001 — a goal',
+    });
+    const pending = buildSnapshot(store, gates).status;
+    expect(pending.approve_plan_pending).toBe(true);
+    // Nothing was started, so the bar still offers S-1.
+    expect(pending.sprint_state).toBe('none');
+    expect(pending.next_sprint_number).toBe(1);
+
+    await gates.respond(raised.id, 'approve', 'em');
+    expect(buildSnapshot(store, gates).status.approve_plan_pending).toBe(false);
+  });
+
   test('an open gate that is not sprint_review leaves sprint_review_pending false', async () => {
     await gates.request('unblock', {
       policy: { gates: { unblock: 'human' }, breaker_signals: [] },
       hilKind: 'unblock',
     });
     expect(buildSnapshot(store, gates).status.sprint_review_pending).toBe(false);
+    expect(buildSnapshot(store, gates).status.approve_plan_pending).toBe(false);
   });
 
   test('needs_you is open HIL requests plus open questions', async () => {

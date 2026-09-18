@@ -53,6 +53,8 @@ export interface FeedStatusInfo {
   needs_you: number;
   /** A `sprint_review` gate is open — the top bar's action stays disabled ("Review Sprint N first") until it is decided. */
   sprint_review_pending: boolean;
+  /** T042: an `approve_plan` request is open — Start Sprint has proposed a frontier and is waiting on its owner. */
+  approve_plan_pending: boolean;
 }
 
 export interface FeedSnapshot {

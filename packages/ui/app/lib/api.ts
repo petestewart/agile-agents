@@ -9,7 +9,6 @@
 import type {
   AgentId,
   AgentRecord,
-  HilRequest,
   KbFact,
   KbId,
   KbIndex,
@@ -216,12 +215,22 @@ export function putPolicy(policy: Policy): Promise<Policy> {
 }
 
 /**
- * T043: the top bar's "Start Sprint N" action. `POST /api/sprint/start`
- * plans the next frontier (`em/sprint.ts`'s `planSprint`) and raises the
- * `approve_plan` gate for it — §17 v2: "the `approve_plan` gate is raised at
- * sprint start and means 'start this frontier ... as it stands'".
+ * The top bar's "Start Sprint N" action (§17 v2: "the `approve_plan` gate is
+ * raised at sprint start and means 'start this frontier ... as it stands'").
+ *
+ * T042 owns the route: it *proposes* the frontier (pure, nothing written),
+ * raises `approve_plan`, and persists the sprint only once that gate is
+ * approved — so a response can legitimately say `started: false` with the
+ * gate still pending (an EM/architect owner), and the top bar reads
+ * `status.approve_plan_pending` until the daemon's next tick starts it.
  */
-export function startSprint(goal?: string): Promise<{ sprint: Sprint; hil: HilRequest }> {
+export function startSprint(goal?: string): Promise<{
+  started: boolean;
+  sprint?: Sprint;
+  proposal: { id: string; tickets: string[]; goal: string };
+  gate: { id: string; owner: string; status: string; decision?: string };
+  reason?: string;
+}> {
   return fetch('/api/sprint/start', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
