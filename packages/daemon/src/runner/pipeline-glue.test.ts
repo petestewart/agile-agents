@@ -999,6 +999,19 @@ describe('advanceEngineerEscalations (T040)', () => {
     expect(questions.list()).toHaveLength(1);
   });
 
+  test("a session's exit notice (daemon-authored, `... session ended: ...`) never opens a question (T044 QA round 1, finding 4)", async () => {
+    await store.putTicket(makeTicket('TKT-0003' as TicketId, { status: 'done' }));
+    const questions = new QuestionService(store);
+    // Exactly what `runner/session.ts`'s `finish()` sends for a normal exit.
+    await sendEscalate(
+      'daemon' as AgentId,
+      'eng-0003 (engineer) session ended: process exited (code -1)',
+      'TKT-0003' as TicketId,
+    );
+    expect(await advanceEngineerEscalations(questions, bus, new Set())).toEqual([]);
+    expect(questions.listOpen()).toHaveLength(0);
+  });
+
   test("a daemon's or reviewer's escalate is left alone", async () => {
     await store.putTicket(makeTicket('TKT-0002' as TicketId, { status: 'in_review' }));
     const questions = new QuestionService(store);

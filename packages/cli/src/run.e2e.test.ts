@@ -301,7 +301,7 @@ describe('agile run (offline, fake ACP)', () => {
           stage: { label: string };
           steps: Array<{ headline?: string; text: string; ts: string }>;
         }>;
-        team: Array<{ id: string; model: string; state: string }>;
+        team: Array<{ id: string; model: string; state: string; role?: string }>;
       };
 
       // Three complete stories: each ticket says what was built, what the
@@ -322,9 +322,29 @@ describe('agile run (offline, fake ACP)', () => {
       // fallback every row used to show — and finished agents stay listed
       // (every session from this run has exited by now).
       expect(snapshot.team.length).toBeGreaterThan(0);
-      expect(snapshot.team.every((member) => member.model !== 'unknown')).toBe(true);
+      // QA round 1 finding 1: every ROLE, the architect included — it is
+      // spawned by `ensureArchitectSpawned` and never re-prompted, so its
+      // model id has to come from the spawn-time ACP handshake.
+      const rolesSeen = new Set(snapshot.team.map((member) => member.role));
+      for (const role of ['architect', 'engineer', 'reviewer', 'qa']) {
+        expect(rolesSeen.has(role)).toBe(true);
+      }
+      expect(snapshot.team.filter((member) => member.model === 'unknown').map((m) => m.id)).toEqual(
+        [],
+      );
       expect(snapshot.team.some((member) => member.model === 'fake/model-1')).toBe(true);
       expect(snapshot.team.some((member) => member.state === 'left')).toBe(true);
+
+      // QA round 1 finding 4: a clean, fully merged sprint leaves nothing
+      // waiting on the operator — every engineer's normal session exit used
+      // to be filed as an open question (`advanceEngineerEscalations`
+      // claimed the daemon's exit notice), which showed every done ticket
+      // as "Done · blocked".
+      const openQuestions = (await (
+        await fetch(`${base}/api/questions?status=open`)
+      ).json()) as unknown[];
+      expect(openQuestions).toEqual([]);
+      expect(snapshot.stories.every((story) => story.stage.label === 'Done')).toBe(true);
 
       // The Review view's narrative IS the runs/*.md body: one builder, one
       // renderer (`packages/daemon/src/em/report.ts`).

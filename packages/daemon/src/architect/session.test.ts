@@ -37,6 +37,7 @@ function fakeSpawnedSession() {
     prompt: async () => ({ stopReason: 'end_turn' }) as never,
     cancel: () => true,
     load: async () => ({}),
+    open: async () => 'fake-session',
     setMode: async () => ({}),
     authenticate: async () => ({}),
     respondPermission: (id, result) => {

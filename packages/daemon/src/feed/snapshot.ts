@@ -376,7 +376,9 @@ export function buildSnapshot(
     allEvents,
   );
   const blockedTickets = new Set(
-    stories.filter((story) => story.needs_you > 0).map((story) => story.ticket as string),
+    stories
+      .filter((story) => story.needs_you > 0 && story.status !== 'done')
+      .map((story) => story.ticket as string),
   );
 
   return {

@@ -729,10 +729,18 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
       // Ticket vanished or transition illegal from under us — nothing to ripple back.
     }
 
+    // T044 (QA round 1, finding 4): this notice is the DAEMON's, not the
+    // agent's — the agent is gone, and the daemon is reporting that. It used
+    // to go out `from: agentId`, which made `pipeline-glue.ts`'s
+    // `advanceEngineerEscalations` (T040) read every engineer's normal exit
+    // as the engineer escalating, open a `Question` for it, and leave every
+    // merged ticket "Done · blocked / Waiting on you" on the Sprint tab.
+    // `from: 'daemon'` is what `bus.ts`'s own liveness/redelivery notices
+    // already use, and `routing.ts` always allows daemon -> em.
     await bus.send({
       id: ulid(),
       ts: now().toISOString(),
-      from: agentId,
+      from: 'daemon',
       to: ['em'],
       kind: 'escalate',
       priority: 'urgent',
@@ -1070,6 +1078,20 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
       () => undefined,
     );
     return result;
+  }
+
+  // T044 (QA round 1, finding 1): establish the ACP session at spawn, not at
+  // the first prompt. The model id arrives on the `session/new` result (the
+  // `_agile/session_state` notification handled above), and a session that
+  // is spawned but never prompted — the architect under the demo driver —
+  // used to sit at `model: 'unknown'` forever. `open()` shares its
+  // `session/new` with the first `prompt()` below, so nothing is sent twice.
+  // Skipped for vendors that gate `session/new` behind `authenticate`
+  // (Cursor/Grok): there the prompt path's auth retry owns the handshake.
+  if (provider.authMethods.length === 0) {
+    void session.open().catch(() => {
+      // Reported through the prompt path (`runPromptTurn`) if it matters.
+    });
   }
 
   void store

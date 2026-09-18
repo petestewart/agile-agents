@@ -355,8 +355,11 @@ function stageFor(ticket: Ticket, needsYou: number): StoryStage {
     paused: 'Paused',
   };
   const base = label[ticket.status] ?? ticket.status;
-  if (needsYou > 0) return { label: `${base} · blocked`, tone: 'warn' };
+  // A done ticket is done: an open question or gate that still names it is
+  // shown as a step, and counted, but it does not un-finish the work (QA
+  // round 1, finding 4).
   if (ticket.status === 'done') return { label: base, tone: 'good' };
+  if (needsYou > 0) return { label: `${base} · blocked`, tone: 'warn' };
   if (ticket.status === 'blocked' || ticket.status === 'stale' || ticket.status === 'paused') {
     return { label: base, tone: 'warn' };
   }
