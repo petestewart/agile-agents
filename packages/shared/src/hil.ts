@@ -14,7 +14,7 @@
  */
 
 import { z } from 'zod';
-import { TicketIdSchema, ULID_PATTERN, formatZodError } from './ids';
+import { AgentIdSchema, TicketIdSchema, ULID_PATTERN, formatZodError } from './ids';
 import { HilKindSchema, MessageBodySchema } from './message';
 import { GateOwnerSchema } from './policy';
 
@@ -79,6 +79,18 @@ export const HilRequestSchema = z
     reason: z.string().min(1).optional(),
     /** What was actually asked (the command a hook refused, the permission a session requested, ...) — the part a human or delegate needs to decide on. Absent for gates that carry their own context (sprint_review). */
     summary: z.string().min(1).optional(),
+    /**
+     * T048: the agent whose blocked call raised this gate — the hook caller
+     * (`hook/service.ts`) or the ACP session (`permissions/responder.ts`).
+     * It is NOT the ticket's assignee: a QA or reviewer hook raises gates on
+     * a ticket assigned to the engineer, and the first live run of the
+     * control room delivered qa-2003's approved `unblock` into eng-2003's
+     * inbox, where the engineer refused a command outside its worktree.
+     * `gates/service.ts`'s `waitingAgent` targets this when present and
+     * falls back to the assignee only when it is absent (older records,
+     * daemon-raised gates like `sprint_review`/`promote_to_main`).
+     */
+    requested_by: AgentIdSchema.optional(),
     decision: HilDecisionSchema.optional(),
     /** Free text a human typed with the decision, or on its own (T039). A note on its own resolves nothing — the EM delegate reads it and decides. */
     note: HilNoteSchema.optional(),
