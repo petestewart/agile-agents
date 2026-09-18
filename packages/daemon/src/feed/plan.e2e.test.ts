@@ -23,7 +23,13 @@ import { type DaemonHandle, startDaemon } from '../daemon';
 import { runInit } from '../init';
 import type { ArchitectPlanner } from '../plan';
 import { StateStore } from '../store';
-import { resolveChromiumExecutable } from './chromium';
+import {
+  BROWSER_ATTEMPTS,
+  BROWSER_READY_BUDGET_MS,
+  acquireBrowserPage,
+  resolveChromiumExecutable,
+  runWithinBudget,
+} from './chromium';
 
 const executablePath = resolveChromiumExecutable();
 
@@ -124,55 +130,54 @@ const PAGE_TIMEOUT_MS = 10_000;
 const SHARED_CLOSE_BUDGET_MS = 3_000;
 
 /**
- * T047: getting a usable browser is itself an operation that can hang
- * forever, so it is bounded here — see the long note in
- * `control-room.e2e.test.ts`'s `openPage` for the measurements. Short
- * version: in a whole-suite `bun test` a `chromium.launch()` can simply never
- * return (`launch()`'s own 30 s timeout does not fire either), and bounding
- * only the launch is worse than useless, because a launch can *return* a
- * browser that is already wedged and then every `newPage()` on it hangs.
- * So: launch and first page under one budget, cache the browser only once it
- * has produced a page, and never reuse one that missed the budget.
+ * T047: the bounded browser acquisition all three e2e suites share
+ * (`acquireBrowserPage` in `./chromium`, where the measurements and the
+ * ownership rules live once instead of drifting across three near-identical
+ * copies). Short version: a `chromium.launch()` in a whole-suite `bun test`
+ * can simply never return, `launch()`'s own timeout does not fire, and a
+ * launch that *does* return can hand back an already wedged browser — so
+ * launch and first page go under one budget, and only a browser that has
+ * actually produced a page is ever cached.
  */
-const BROWSER_READY_BUDGET_MS = 5_000;
-const BROWSER_ATTEMPTS = 3;
-
-/** A browser that missed its budget is never reused; close it if it ever does come back. */
-function abandonBrowser(browser: Browser | Promise<Browser>): void {
-  void Promise.resolve(browser).then(
-    (late) => late.close().catch(() => {}),
-    () => {},
-  );
-}
-
 let sharedBrowser: Browser | undefined;
 
 /** A page on a browser that is alive: the shared one when it still answers, a fresh one when it does not. */
 async function newSharedPage(): Promise<Page> {
-  for (let attempt = 1; attempt <= BROWSER_ATTEMPTS; attempt++) {
-    if (sharedBrowser && !sharedBrowser.isConnected()) sharedBrowser = undefined;
-    const acquiring: Browser | Promise<Browser> =
-      sharedBrowser ?? chromium.launch({ executablePath });
-    const page = await Promise.race([
-      (async () => {
-        const browser = await acquiring;
-        const opened = await browser.newPage();
-        sharedBrowser = browser;
-        return opened;
-      })(),
-      Bun.sleep(BROWSER_READY_BUDGET_MS).then(() => undefined),
-    ]);
-    if (page) return page;
-    abandonBrowser(acquiring);
+  const acquired = await acquireBrowserPage({
+    label: 'plan e2e',
+    cached: sharedBrowser,
+    launch: () => chromium.launch({ executablePath }),
+    openPage: (browser) => browser.newPage(),
+  }).catch((err: unknown) => {
     sharedBrowser = undefined;
-    console.error(
-      `plan e2e: no usable browser within ${BROWSER_READY_BUDGET_MS}ms (attempt ${attempt}/${BROWSER_ATTEMPTS}) — abandoning it and launching another`,
-    );
-  }
-  throw new Error(
-    `plan e2e: chromium.launch()/newPage() did not return within ${BROWSER_READY_BUDGET_MS}ms on any of ${BROWSER_ATTEMPTS} attempts`,
-  );
+    throw err;
+  });
+  // The only place this file caches a browser, and it can only ever be the
+  // one `acquireBrowserPage` handed back (review round 1 blocker 1).
+  sharedBrowser = acquired.browser;
+  return acquired.page;
 }
+
+/** The wedged browser is dropped *and* closed: `isConnected()` still reports true for it, so nothing else will ever notice it. */
+function discardSharedBrowser(): void {
+  const wedged = sharedBrowser;
+  sharedBrowser = undefined;
+  if (wedged) void wedged.close().catch(() => {});
+}
+
+/**
+ * T047 review round 1: how long a body may take before it is treated as
+ * wedged rather than slow, and the per-test budget that has to hold two of
+ * them. `BODY_BUDGET_MS` sits above the worst *legitimate* body — a full
+ * `BROWSER_ATTEMPTS` acquisition sweep plus one page action running out its
+ * `PAGE_TIMEOUT_MS` — so a genuinely failing body always surfaces its own
+ * error first and only a body making no progress at all is retried.
+ * See `browserTest` for what is being defended against.
+ */
+const BODY_BUDGET_MS = PAGE_TIMEOUT_MS + BROWSER_READY_BUDGET_MS * BROWSER_ATTEMPTS + 5_000;
+
+/** Every test in this file: room for a wedged body, its retry, and slack. */
+const TEST_BUDGET_MS = BODY_BUDGET_MS * 2 + 5_000;
 
 afterAll(async () => {
   const browser = sharedBrowser;
@@ -196,18 +201,56 @@ function isBrowserGoneError(err: unknown): boolean {
   );
 }
 
-/** Each body is self-contained (own repo, daemon, page), so one retry on a killed browser is safe — same rule as the control-room suite. */
+/**
+ * A browser-driven test that survives its browser going quiet underneath it.
+ *
+ * Two failure modes, one recovery. The browser can be *killed* from outside
+ * this file (bun's dangling-process cleanup — the `isBrowserGoneError` case
+ * above, which fails fast and loudly), or it can stay alive and simply stop
+ * answering. T047 review round 1 measured the second one directly: a watchdog
+ * inside the body logged `isConnected() === true` on every 5 s tick for the
+ * whole 60 s the test was stuck, and the body was still running a minute
+ * after bun had failed the test and moved on — bun's per-test timeout cancels
+ * nothing. So a wedge is invisible to `isConnected()`, invisible to
+ * `isBrowserGoneError`, and invisible to `PAGE_TIMEOUT_MS` (the calls that
+ * hang are often ones that take no timeout at all: `waitForTimeout`,
+ * `locator.count()`, `evaluate`). Bounding the body is the only bound test
+ * code has. Which suite gets hit moves between runs, so this is not one bad
+ * wait in one test to rewrite.
+ *
+ * Re-running a body from the top is safe by this file's own design: every
+ * body makes its own repo, daemon and page and cleans all three up in its own
+ * `finally`. An abandoned body keeps running — nothing can cancel it — but it
+ * only ever touches its own temp repo and then tidies itself away.
+ */
 function browserTest(name: string, body: () => Promise<void>, timeoutMs: number): void {
   test(
     name,
     async () => {
+      const retry = async (reason: string): Promise<void> => {
+        console.error(
+          `plan e2e: "${name}" ${reason} — replacing the browser and running it once more`,
+        );
+        discardSharedBrowser();
+        const second = await runWithinBudget(body, BODY_BUDGET_MS);
+        if (!second.done) {
+          throw new Error(
+            `plan e2e: "${name}" made no progress for ${BODY_BUDGET_MS}ms twice over, on two different browsers — the page is wedged, not slow`,
+          );
+        }
+      };
+
       try {
-        await body();
+        const first = await runWithinBudget(body, BODY_BUDGET_MS);
+        if (first.done) return;
+        await retry(
+          `made no progress for ${BODY_BUDGET_MS}ms on a browser still reporting connected`,
+        );
       } catch (err) {
         if (!isBrowserGoneError(err)) throw err;
-        console.error(`plan e2e: "${name}" lost its browser mid-test — retrying once`);
-        sharedBrowser = undefined;
-        await body();
+        await retry(
+          `lost its browser mid-test (${err instanceof Error ? err.message.split('\n')[0] : String(err)})`,
+        );
       }
     },
     timeoutMs,
@@ -419,7 +462,7 @@ describe('Plan screen (Playwright e2e)', () => {
         rmSync(repo, { recursive: true, force: true });
       }
     },
-    60000,
+    TEST_BUDGET_MS,
   );
 
   browserTest(
@@ -486,7 +529,7 @@ describe('Plan screen (Playwright e2e)', () => {
         rmSync(repo, { recursive: true, force: true });
       }
     },
-    60000,
+    TEST_BUDGET_MS,
   );
 
   browserTest(
@@ -575,6 +618,6 @@ describe('Plan screen (Playwright e2e)', () => {
         rmSync(repo, { recursive: true, force: true });
       }
     },
-    60000,
+    TEST_BUDGET_MS,
   );
 });

@@ -28,7 +28,13 @@ import { runInit } from '../init';
 import { QuestionService } from '../questions';
 import { reviewRecordRelPath, validateReviewRecord } from '../review/types';
 import { StateStore } from '../store';
-import { resolveChromiumExecutable } from './chromium';
+import {
+  BROWSER_ATTEMPTS,
+  BROWSER_READY_BUDGET_MS,
+  acquireBrowserPage,
+  resolveChromiumExecutable,
+  runWithinBudget,
+} from './chromium';
 
 const executablePath = resolveChromiumExecutable();
 
@@ -168,21 +174,66 @@ function isBrowserGoneError(err: unknown): boolean {
   );
 }
 
+/** The wedged browser is dropped *and* closed: `isConnected()` still reports true for it, so nothing else will ever notice it. */
+function discardSharedBrowser(): void {
+  const wedged = sharedBrowser;
+  sharedBrowser = undefined;
+  if (wedged) void wedged.close().catch(() => {});
+}
+
+/**
+ * A browser-driven test that survives its browser going quiet underneath it.
+ *
+ * Two failure modes, one recovery. The browser can be *killed* from outside
+ * this file (bun's dangling-process cleanup — the pre-existing
+ * `isBrowserGoneError` case, which fails fast and loudly), or it can stay
+ * alive and simply stop answering. T047 review round 1 measured the second
+ * one directly: a watchdog inside the body logged `isConnected() === true`
+ * on every 5 s tick for the whole 60 s the test was stuck, and the body was
+ * still running a minute after bun had failed the test and moved on — bun's
+ * per-test timeout cancels nothing. So a wedge is invisible to
+ * `isConnected()`, invisible to `isBrowserGoneError`, and invisible to
+ * `PAGE_TIMEOUT_MS` (the calls that hang are often ones that take no timeout
+ * at all: `waitForTimeout`, `locator.count()`, `evaluate`). Bounding the
+ * body is the only bound test code has.
+ *
+ * Re-running a body from the top is safe by this file's own design: every
+ * body makes its own repo, daemon and page and cleans all three up in its own
+ * `finally`. An abandoned body keeps running — nothing can cancel it — but it
+ * only ever touches its own temp repo and then tidies itself away, and it can
+ * no longer reach the shared browser because that has already been replaced.
+ */
 function browserTest(name: string, body: () => Promise<void>, timeoutMs: number): void {
   test(
     name,
     async () => {
+      const retry = async (reason: string): Promise<void> => {
+        console.error(
+          `control-room e2e: "${name}" {reason} — replacing the browser and running it once more`.replace(
+            '{reason}',
+            reason,
+          ),
+        );
+        discardSharedBrowser();
+        const second = await runWithinBudget(body, BODY_BUDGET_MS);
+        if (!second.done) {
+          throw new Error(
+            `control-room e2e: "${name}" made no progress for ${BODY_BUDGET_MS}ms twice over, on two different browsers — the page is wedged, not slow`,
+          );
+        }
+      };
+
       try {
-        await body();
+        const first = await runWithinBudget(body, BODY_BUDGET_MS);
+        if (first.done) return;
+        await retry(
+          `made no progress for ${BODY_BUDGET_MS}ms on a browser still reporting connected`,
+        );
       } catch (err) {
         if (!isBrowserGoneError(err)) throw err;
-        console.error(
-          `control-room e2e: "${name}" lost its browser mid-test (${
-            err instanceof Error ? err.message.split('\n')[0] : String(err)
-          }) — retrying once from a clean repo/daemon/browser`,
+        await retry(
+          `lost its browser mid-test (${err instanceof Error ? err.message.split('\n')[0] : String(err)})`,
         );
-        sharedBrowser = undefined;
-        await body();
       }
     },
     timeoutMs,
@@ -199,96 +250,49 @@ function browserTest(name: string, body: () => Promise<void>, timeoutMs: number)
  */
 
 /**
- * T047 root cause, and the one place this file can defend against it:
- * **getting a usable browser is itself an operation that can hang forever,
- * and it is bounded here.**
- *
- * Measured on this container by timestamping every step of the chrome test
- * through failing whole-suite runs (158 files, one bun process; this file is
- * scheduled third of the three e2e files, so its launch is the process's
- * fourth — the "fifth launch or later" signature the note above describes,
- * now caught in the act):
- *
- *   - `chromium.launch()` reached 227 ms into the test and never returned.
- *     The entire 60 s bun budget went to that one call: no Playwright error,
- *     no `goto`, no assertion. The launch issued 70 ms later by the *next*
- *     test returned in 168 ms and the rest of the file passed, so the
- *     process was healthy the whole time — one wedged launch, not a slow box.
- *   - Bounding only the launch is not enough, and measurably makes things
- *     worse: a launch can *return* a browser that is already wedged, which
- *     is then cached in `sharedBrowser`, and every later test hangs in
- *     `browser.newPage()` — 6 to 8 consecutive tests timing out at their own
- *     budgets in 2/2 runs, where the unbounded version loses one test and
- *     recovers (bun's timeout kills the wedged launch before it is cached).
- *
- * `launch()`'s own timeout never fires either (60 s elapsed against its 30 s
- * default), and `newPage()` takes no timeout at all, so the caller's bound is
- * the only bound there is. Hence: launch *and* first page under one budget,
- * and the browser is only cached once it has actually produced a page. A
- * browser that misses the budget is abandoned — never reused — and the next
- * attempt starts from a fresh `chromium.launch()`. Sizing: a launch that
- * works returns in ~170-400 ms and `newPage()` in ~30 ms, so seconds of
- * budget cannot mistake a loaded box for a wedged one, and
- * `BROWSER_ATTEMPTS` keeps the worst case inside one test's budget.
- */
-const BROWSER_READY_BUDGET_MS = 5_000;
-const BROWSER_ATTEMPTS = 3;
-
-/**
- * The floor under every test budget in this file: the worst legitimate cost
- * of getting a browser at all, plus one full page-action timeout, plus a
- * second of slack. Measured need for the first term in a whole-suite run is
- * one retry; three is the bound. Before T047 six tests here sat at 20 s,
- * which a single `BROWSER_ATTEMPTS` sweep can exceed on its own — the run
- * that proved the retry works still lost one of them that way, to its own
- * budget rather than to anything it asserts.
- */
-const TEST_BUDGET_MS = BROWSER_READY_BUDGET_MS * BROWSER_ATTEMPTS + PAGE_TIMEOUT_MS + 1_000;
-
-/** A browser that missed its budget is never reused; close it if it ever does come back, so nothing is left running deliberately. */
-function abandonBrowser(browser: Browser | Promise<Browser>): void {
-  void Promise.resolve(browser).then(
-    (late) => late.close().catch(() => {}),
-    () => {},
-  );
-}
-
-/**
- * Every page in this file: one place to install the action/navigation
- * timeout above, and one place to notice that the shared browser has stopped
- * answering. Called at the top of every test body, which is exactly where
- * replacing the browser is cheap.
+ * T047: the bounded browser acquisition all three e2e suites share
+ * (`acquireBrowserPage` in `./chromium`, where the measurements and the
+ * ownership rules live once instead of drifting across three near-identical
+ * copies). Short version: a `chromium.launch()` in a whole-suite `bun test`
+ * can simply never return, `launch()`'s own timeout does not fire, and a
+ * launch that *does* return can hand back an already wedged browser — so
+ * launch and first page go under one budget, and only a browser that has
+ * actually produced a page is ever cached.
  */
 async function openPage(options?: { colorScheme?: 'dark' | 'light' }): Promise<Page> {
-  for (let attempt = 1; attempt <= BROWSER_ATTEMPTS; attempt++) {
-    if (sharedBrowser && !sharedBrowser.isConnected()) sharedBrowser = undefined;
-    const acquiring: Browser | Promise<Browser> =
-      sharedBrowser ?? chromium.launch({ executablePath });
-    const page = await Promise.race([
-      (async () => {
-        const browser = await acquiring;
-        const opened = await browser.newPage(options);
-        // Cached only now: a browser that has produced a page is alive.
-        sharedBrowser = browser;
-        return opened;
-      })(),
-      Bun.sleep(BROWSER_READY_BUDGET_MS).then(() => undefined),
-    ]);
-    if (page) {
-      page.setDefaultTimeout(PAGE_TIMEOUT_MS);
-      page.setDefaultNavigationTimeout(PAGE_TIMEOUT_MS);
-      return page;
-    }
-    abandonBrowser(acquiring);
+  const acquired = await acquireBrowserPage({
+    label: 'control-room e2e',
+    cached: sharedBrowser,
+    launch: () => chromium.launch({ executablePath }),
+    openPage: (browser) => browser.newPage(options),
+  }).catch((err: unknown) => {
+    // Nothing usable came back, so whatever was cached is wedged too.
     sharedBrowser = undefined;
-    console.error(
-      `control-room e2e: no usable browser within ${BROWSER_READY_BUDGET_MS}ms (attempt ${attempt}/${BROWSER_ATTEMPTS}) — abandoning it and launching another`,
-    );
-  }
-  throw new Error(
-    `control-room e2e: chromium.launch()/newPage() did not return within ${BROWSER_READY_BUDGET_MS}ms on any of ${BROWSER_ATTEMPTS} attempts`,
-  );
+    throw err;
+  });
+  // The only place this file caches a browser, and it can only ever be the
+  // one `acquireBrowserPage` handed back (review round 1 blocker 1).
+  sharedBrowser = acquired.browser;
+  acquired.page.setDefaultTimeout(PAGE_TIMEOUT_MS);
+  acquired.page.setDefaultNavigationTimeout(PAGE_TIMEOUT_MS);
+  return acquired.page;
 }
+
+/**
+ * T047 review round 1: how long a body may take before it is treated as
+ * wedged rather than slow, and the per-test budget that has to hold two of
+ * them.
+ *
+ * `BODY_BUDGET_MS` sits above the worst *legitimate* cost of a body — a full
+ * `BROWSER_ATTEMPTS` acquisition sweep plus one page action running out its
+ * `PAGE_TIMEOUT_MS` — so a body that is genuinely failing always surfaces its
+ * own error first, and only a body making no progress at all is retried.
+ * Bodies measure ~1-3 s under whole-suite load, so this is ~20x headroom.
+ */
+const BODY_BUDGET_MS = PAGE_TIMEOUT_MS + BROWSER_READY_BUDGET_MS * BROWSER_ATTEMPTS + 5_000;
+
+/** Every test in this file: room for a wedged body, its retry, and slack. */
+const TEST_BUDGET_MS = BODY_BUDGET_MS * 2 + 5_000;
 
 /**
  * Per-test teardown: this test's whole page *context* (`browser.newPage()`
@@ -386,16 +390,6 @@ type ChromeFixture = {
   /** The seeded pending `unblock`: section 0's Needs-you row, section A's badge count. */
   hilId: string;
 };
-
-/**
- * Budget per chrome section: the folded test's old 60 s, now covering a
- * quarter of the work. Kept at 60 s rather than cut to a quarter because it
- * has to hold the worst legitimate case — `LAUNCH_ATTEMPTS` wedged launches
- * (`LAUNCH_BUDGET_MS` each) before a browser exists at all, plus the section
- * and one `browserTest` retry of it. A section plus its fixture measures
- * ~2 s loaded.
- */
-const SECTION_BUDGET_MS = 60_000;
 
 async function withChrome(body: (fixture: ChromeFixture) => Promise<void>): Promise<void> {
   const repo = initRepo();
@@ -514,7 +508,7 @@ describe('control room SPA (Playwright e2e)', () => {
           expect(color).not.toBe(UA_LIGHT_TEXT);
         }
       }),
-    SECTION_BUDGET_MS,
+    TEST_BUDGET_MS,
   );
 
   browserTest(
@@ -581,7 +575,7 @@ describe('control room SPA (Playwright e2e)', () => {
           expect(focused).toBe(id);
         }
       }),
-    SECTION_BUDGET_MS,
+    TEST_BUDGET_MS,
   );
 
   browserTest(
@@ -613,7 +607,7 @@ describe('control room SPA (Playwright e2e)', () => {
         await action.click({ force: true }).catch(() => {});
         expect(store.listSprints().map((sp) => sp.id)).toEqual(['S-1']);
       }),
-    SECTION_BUDGET_MS,
+    TEST_BUDGET_MS,
   );
 
   browserTest(
@@ -661,7 +655,7 @@ describe('control room SPA (Playwright e2e)', () => {
         );
         expect(stored).toBe('1');
       }),
-    SECTION_BUDGET_MS,
+    TEST_BUDGET_MS,
   );
 
   /**
@@ -813,7 +807,7 @@ describe('control room SPA (Playwright e2e)', () => {
         rmSync(repo, { recursive: true, force: true });
       }
     },
-    60000,
+    TEST_BUDGET_MS,
   );
 
   browserTest(
@@ -1358,7 +1352,7 @@ describe('control room SPA (Playwright e2e)', () => {
         rmSync(repo, { recursive: true, force: true });
       }
     },
-    60000,
+    TEST_BUDGET_MS,
   );
   /**
    * T044 (§17 v2 Sprint + Review, mockup `#s3`/`#s4`): the two new bodies
@@ -1556,6 +1550,6 @@ describe('control room SPA (Playwright e2e)', () => {
     },
     // 60s, like the file's other retry-prone long test: room for one
     // `browserTest` retry (two 20s page waits) under whole-suite contention.
-    60000,
+    TEST_BUDGET_MS,
   );
 });
