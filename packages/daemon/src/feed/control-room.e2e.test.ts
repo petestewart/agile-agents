@@ -28,7 +28,13 @@ import { runInit } from '../init';
 import { QuestionService } from '../questions';
 import { reviewRecordRelPath, validateReviewRecord } from '../review/types';
 import { StateStore } from '../store';
-import { resolveChromiumExecutable } from './chromium';
+import {
+  BROWSER_ATTEMPTS,
+  BROWSER_READY_BUDGET_MS,
+  acquireBrowserPage,
+  resolveChromiumExecutable,
+  runWithinBudget,
+} from './chromium';
 
 const executablePath = resolveChromiumExecutable();
 
@@ -111,12 +117,11 @@ let sharedBrowser: Browser | undefined;
  * disconnects once. The trigger is bun's own dangling-process cleanup firing
  * as the directory's short files finish, not anything this file does; so the
  * only defence available to test code is to notice and start again.
+ *
+ * T047: "notice" now covers the browser that is still *connected* and simply
+ * no longer answering, as well as the disconnected one — see `openPage`,
+ * which is where both are noticed and replaced.
  */
-async function browserForTests(): Promise<Browser> {
-  if (sharedBrowser && !sharedBrowser.isConnected()) sharedBrowser = undefined;
-  if (!sharedBrowser) sharedBrowser = await chromium.launch({ executablePath });
-  return sharedBrowser;
-}
 
 /**
  * The one browser's close is bounded, and that bound is load-bearing. T041's
@@ -155,7 +160,7 @@ afterAll(async () => {
  * repo, daemon and page in the body and cleans all three up in its own
  * `finally` — so re-running one from the top is safe, and that is exactly
  * what is needed here: bun's dangling-process cleanup kills this file's
- * browser from outside it (see `browserForTests`), and the test that happens
+ * browser from outside it (see `openPage`), and the test that happens
  * to be running at that moment fails with `Target page, context or browser
  * has been closed` in well under a second. One retry, only for that error
  * signature, and only once, turns that into a pass without hiding anything
@@ -169,21 +174,66 @@ function isBrowserGoneError(err: unknown): boolean {
   );
 }
 
+/** The wedged browser is dropped *and* closed: `isConnected()` still reports true for it, so nothing else will ever notice it. */
+function discardSharedBrowser(): void {
+  const wedged = sharedBrowser;
+  sharedBrowser = undefined;
+  if (wedged) void wedged.close().catch(() => {});
+}
+
+/**
+ * A browser-driven test that survives its browser going quiet underneath it.
+ *
+ * Two failure modes, one recovery. The browser can be *killed* from outside
+ * this file (bun's dangling-process cleanup — the pre-existing
+ * `isBrowserGoneError` case, which fails fast and loudly), or it can stay
+ * alive and simply stop answering. T047 review round 1 measured the second
+ * one directly: a watchdog inside the body logged `isConnected() === true`
+ * on every 5 s tick for the whole 60 s the test was stuck, and the body was
+ * still running a minute after bun had failed the test and moved on — bun's
+ * per-test timeout cancels nothing. So a wedge is invisible to
+ * `isConnected()`, invisible to `isBrowserGoneError`, and invisible to
+ * `PAGE_TIMEOUT_MS` (the calls that hang are often ones that take no timeout
+ * at all: `waitForTimeout`, `locator.count()`, `evaluate`). Bounding the
+ * body is the only bound test code has.
+ *
+ * Re-running a body from the top is safe by this file's own design: every
+ * body makes its own repo, daemon and page and cleans all three up in its own
+ * `finally`. An abandoned body keeps running — nothing can cancel it — but it
+ * only ever touches its own temp repo and then tidies itself away, and it can
+ * no longer reach the shared browser because that has already been replaced.
+ */
 function browserTest(name: string, body: () => Promise<void>, timeoutMs: number): void {
   test(
     name,
     async () => {
+      const retry = async (reason: string): Promise<void> => {
+        console.error(
+          `control-room e2e: "${name}" {reason} — replacing the browser and running it once more`.replace(
+            '{reason}',
+            reason,
+          ),
+        );
+        discardSharedBrowser();
+        const second = await runWithinBudget(body, BODY_BUDGET_MS);
+        if (!second.done) {
+          throw new Error(
+            `control-room e2e: "${name}" made no progress for ${BODY_BUDGET_MS}ms twice over, on two different browsers — the page is wedged, not slow`,
+          );
+        }
+      };
+
       try {
-        await body();
+        const first = await runWithinBudget(body, BODY_BUDGET_MS);
+        if (first.done) return;
+        await retry(
+          `made no progress for ${BODY_BUDGET_MS}ms on a browser still reporting connected`,
+        );
       } catch (err) {
         if (!isBrowserGoneError(err)) throw err;
-        console.error(
-          `control-room e2e: "${name}" lost its browser mid-test (${
-            err instanceof Error ? err.message.split('\n')[0] : String(err)
-          }) — retrying once from a clean repo/daemon/browser`,
+        await retry(
+          `lost its browser mid-test (${err instanceof Error ? err.message.split('\n')[0] : String(err)})`,
         );
-        sharedBrowser = undefined;
-        await body();
       }
     },
     timeoutMs,
@@ -199,23 +249,57 @@ function browserTest(name: string, body: () => Promise<void>, timeoutMs: number)
  * drive the nav themselves are unaffected either way.
  */
 
-/** Every page in this file: one place to install the action/navigation timeout above. */
-async function openPage(
-  browser: Browser,
-  options?: { colorScheme?: 'dark' | 'light' },
-): Promise<Page> {
-  const page = await browser.newPage(options);
-  page.setDefaultTimeout(PAGE_TIMEOUT_MS);
-  page.setDefaultNavigationTimeout(PAGE_TIMEOUT_MS);
-  return page;
+/**
+ * T047: the bounded browser acquisition all three e2e suites share
+ * (`acquireBrowserPage` in `./chromium`, where the measurements and the
+ * ownership rules live once instead of drifting across three near-identical
+ * copies). Short version: a `chromium.launch()` in a whole-suite `bun test`
+ * can simply never return, `launch()`'s own timeout does not fire, and a
+ * launch that *does* return can hand back an already wedged browser — so
+ * launch and first page go under one budget, and only a browser that has
+ * actually produced a page is ever cached.
+ */
+async function openPage(options?: { colorScheme?: 'dark' | 'light' }): Promise<Page> {
+  const acquired = await acquireBrowserPage({
+    label: 'control-room e2e',
+    cached: sharedBrowser,
+    launch: () => chromium.launch({ executablePath }),
+    openPage: (browser) => browser.newPage(options),
+  }).catch((err: unknown) => {
+    // Nothing usable came back, so whatever was cached is wedged too.
+    sharedBrowser = undefined;
+    throw err;
+  });
+  // The only place this file caches a browser, and it can only ever be the
+  // one `acquireBrowserPage` handed back (review round 1 blocker 1).
+  sharedBrowser = acquired.browser;
+  acquired.page.setDefaultTimeout(PAGE_TIMEOUT_MS);
+  acquired.page.setDefaultNavigationTimeout(PAGE_TIMEOUT_MS);
+  return acquired.page;
 }
+
+/**
+ * T047 review round 1: how long a body may take before it is treated as
+ * wedged rather than slow, and the per-test budget that has to hold two of
+ * them.
+ *
+ * `BODY_BUDGET_MS` sits above the worst *legitimate* cost of a body — a full
+ * `BROWSER_ATTEMPTS` acquisition sweep plus one page action running out its
+ * `PAGE_TIMEOUT_MS` — so a body that is genuinely failing always surfaces its
+ * own error first, and only a body making no progress at all is retried.
+ * Bodies measure ~1-3 s under whole-suite load, so this is ~20x headroom.
+ */
+const BODY_BUDGET_MS = PAGE_TIMEOUT_MS + BROWSER_READY_BUDGET_MS * BROWSER_ATTEMPTS + 5_000;
+
+/** Every test in this file: room for a wedged body, its retry, and slack. */
+const TEST_BUDGET_MS = BODY_BUDGET_MS * 2 + 5_000;
 
 /**
  * Per-test teardown: this test's whole page *context* (`browser.newPage()`
  * opens one per page, and closing only the page leaks it), and before its
  * daemon stops — a page left open on a stopped daemon keeps `lib/ws.ts`'s
  * client reconnecting on a 2s timer against a dead port for the rest of the
- * file. The browser itself outlives the test (`browserForTests`).
+ * file. The browser itself outlives the test (`openPage`).
  */
 async function teardown(pages: Array<Page | undefined>): Promise<void> {
   await Promise.allSettled(
@@ -278,75 +362,119 @@ function initRepo(): string {
   return repo;
 }
 
+/**
+ * T047: the shared starting state behind the four `the chrome: …` tests.
+ *
+ * T043 folded those four sections into a single test so this file would only
+ * launch Chromium once. The launch budget is still the constraint
+ * (`openPage`), but the fold also made the *test* the unit of retry,
+ * and `browserTest`'s browser-loss retry re-runs a body from the top. Under a
+ * whole-suite single-process `bun test` — 158 files, Chromium sharing the
+ * process with subprocess-heavy siblings — the folded body used most of its
+ * 60 s budget on its own, so a disconnection in its second half put the retry
+ * past the budget and failed the run (2/2 whole-suite runs, while the file
+ * passed 10/10 on its own via `test:e2e`). The four sections are four tests
+ * now: one browser still, one `chromium.launch()` still, but a quarter of the
+ * work per budget and a retry that costs a quarter as much.
+ *
+ * Every section wants the same starting state — a running sprint, one working
+ * agent, one ticket and one pending `unblock` — on a dark page already
+ * showing the Sprint view, and cleans up its own repo, daemon and page
+ * context (`teardown` before `stop`, as everywhere else in this file).
+ */
+type ChromeFixture = {
+  repo: string;
+  store: StateStore;
+  gates: GateService;
+  page: Page;
+  /** The seeded pending `unblock`: section 0's Needs-you row, section A's badge count. */
+  hilId: string;
+};
+
+async function withChrome(body: (fixture: ChromeFixture) => Promise<void>): Promise<void> {
+  const repo = initRepo();
+  let handle: DaemonHandle | undefined;
+  let page: Page | undefined;
+
+  try {
+    const init = runInit(repo);
+    const store = StateStore.open(init.stateRoot);
+    const gates = new GateService(store);
+    const seeded = await gates.request('unblock', {
+      policy: { gates: { unblock: 'human' }, breaker_signals: [] },
+      hilKind: 'unblock',
+    });
+    await store.putTicket({
+      id: 'TKT-9102',
+      title: 'Dark mode fixture ticket',
+      status: 'ready',
+      contract: { inputs: [], outputs: [], acceptance: [], done: [], env: 'clone' },
+      depends: [],
+      oracle_refs: [],
+      kb_refs: [],
+      history: [],
+      security: false,
+    });
+    // T043: a running sprint and a working agent, so every part of the
+    // top bar has real content to render (an empty bar proves nothing).
+    await store.putSprint({
+      id: 'S-1',
+      goal: 'chrome fixture sprint',
+      tickets: [],
+      budget_tokens: 1000,
+      started: new Date().toISOString(),
+      carried_over: [],
+    });
+    await store.putAgent('eng-1', {
+      vendor: 'claude',
+      model: 'sonnet',
+      last_seen: new Date().toISOString(),
+      ticket: 'TKT-9102',
+    });
+
+    handle = await startDaemon({
+      cwd: repo,
+      port: 0,
+      socketPath: join(repo, '.agile-daemon.sock'),
+    });
+
+    page = await openPage({ colorScheme: 'dark' });
+    await page.goto(`http://127.0.0.1:${handle.http.port}/control-room?view=sprint`);
+    // T042 merge note: the Sprint view is reached by `?view=` deep link
+    // because Plan is now the landing view (§17 v2). Wait for the chrome's
+    // first render here rather than in each section — the bar is what every
+    // section below reads, directly or through the view it frames.
+    await page
+      .locator('[data-testid="topbar"]')
+      .waitFor({ state: 'attached', timeout: PAGE_TIMEOUT_MS });
+
+    await body({ repo, store, gates, page, hilId: seeded.id });
+  } finally {
+    await teardown([page]);
+    await handle?.stop();
+    rmSync(repo, { recursive: true, force: true });
+  }
+}
+
 describe('control room SPA (Playwright e2e)', () => {
-  // T043: the chrome tests run first — see `browserForTests` for why test
+  // T043: the chrome tests run first — see `openPage` for why test
   // order in this file is load-bearing on this container.
   /**
    * T025 review round 1 blocker 4 (dark mode fell back to UA
    * ButtonFace/ButtonText on every clickable surface), extended by T043 to
-   * the top half of the new chrome (§17 "Control room v2"). Several sections
-   * in one test, not one test each: they all
-   * want the same daemon, the same seeded repo and the same page. Sections:
+   * the top half of the new chrome (§17 "Control room v2"), and split by
+   * T047 into the four tests below — one per section, sharing the one
+   * browser and the one `withChrome` fixture:
    *   0.  the T025 dark-mode surfaces
    *   A.  the top bar is identical on Plan, Sprint and Settings
    *   A2. finished + review pending: the single action is disabled
    *   B.  the tool row's chat modes and the rail collapse
-   * Settings' own half is the next test — QA round 1 measured this one
-   * running past its budget when it carried both under the contention of
-   * `bun test packages/daemon/src/feed`.
+   * Settings' own half is the test after them.
    */
   browserTest(
-    'the chrome: dark mode, identical top bar, review-pending action, chat modes',
-    async () => {
-      const repo = initRepo();
-      let handle: DaemonHandle | undefined;
-      let page: Page | undefined;
-
-      try {
-        const init = runInit(repo);
-        const store = StateStore.open(init.stateRoot);
-        const gates = new GateService(store);
-        const seeded = await gates.request('unblock', {
-          policy: { gates: { unblock: 'human' }, breaker_signals: [] },
-          hilKind: 'unblock',
-        });
-        await store.putTicket({
-          id: 'TKT-9102',
-          title: 'Dark mode fixture ticket',
-          status: 'ready',
-          contract: { inputs: [], outputs: [], acceptance: [], done: [], env: 'clone' },
-          depends: [],
-          oracle_refs: [],
-          kb_refs: [],
-          history: [],
-          security: false,
-        });
-        // T043: a running sprint and a working agent, so every part of the
-        // top bar has real content to render (an empty bar proves nothing).
-        await store.putSprint({
-          id: 'S-1',
-          goal: 'chrome fixture sprint',
-          tickets: [],
-          budget_tokens: 1000,
-          started: new Date().toISOString(),
-          carried_over: [],
-        });
-        await store.putAgent('eng-1', {
-          vendor: 'claude',
-          model: 'sonnet',
-          last_seen: new Date().toISOString(),
-          ticket: 'TKT-9102',
-        });
-
-        handle = await startDaemon({
-          cwd: repo,
-          port: 0,
-          socketPath: join(repo, '.agile-daemon.sock'),
-        });
-
-        page = await openPage(await browserForTests(), { colorScheme: 'dark' });
-        await page.goto(`http://127.0.0.1:${handle.http.port}/control-room?view=sprint`);
-
+    'the chrome: dark mode on every clickable surface',
+    () =>
+      withChrome(async ({ page, hilId }) => {
         // `page.evaluate`'s callback runs in the browser, where `document`/
         // `getComputedStyle` exist — this file's own (non-DOM) tsconfig lib
         // does not know that, hence the loose `any` cast rather than a `dom`
@@ -358,7 +486,7 @@ describe('control room SPA (Playwright e2e)', () => {
         });
         expect(colorScheme).toContain('dark');
 
-        const hilItem = page.locator(`.hil-item[data-id="${seeded.id}"]`);
+        const hilItem = page.locator(`.hil-item[data-id="${hilId}"]`);
         await hilItem.waitFor({ state: 'attached', timeout: PAGE_TIMEOUT_MS });
         // T044: the Sprint body is the strip + Needs-you cards + one story
         // per ticket; the story and the Needs-you card are the two surfaces
@@ -379,11 +507,16 @@ describe('control room SPA (Playwright e2e)', () => {
           expect(bg).not.toBe(UA_LIGHT_BG);
           expect(color).not.toBe(UA_LIGHT_TEXT);
         }
+      }),
+    TEST_BUDGET_MS,
+  );
 
+  browserTest(
+    'the chrome: one top bar, identical on Plan, Sprint and Settings',
+    () =>
+      withChrome(async ({ page, repo }) => {
         const topbar = page.locator('[data-testid="topbar"]');
-        await topbar.waitFor({ state: 'attached', timeout: PAGE_TIMEOUT_MS });
 
-        // ---- A. one top bar, identical on every view -----------------------
         // Ticket AC: "Screenshots of Plan, Sprint and Settings show the
         // identical top bar" — asserted as DOM rather than pixels: the bar's
         // text and the order of its parts must be byte-identical across the
@@ -441,13 +574,20 @@ describe('control room SPA (Playwright e2e)', () => {
           );
           expect(focused).toBe(id);
         }
+      }),
+    TEST_BUDGET_MS,
+  );
 
-        // ---- A2. finished + review pending: the action is disabled ---------
+  browserTest(
+    'the chrome: a finished sprint with a pending review disables the action',
+    () =>
+      withChrome(async ({ page, store, gates }) => {
         // Mockup `#s4`: "Sprint 1 · finished in 7m 09s · review pending" with a
         // *disabled* "Start Sprint 2" titled "Review Sprint 1 first". Both
         // writes go through the store, so the page learns about them over its
         // already-open `/ws` — no reload, no fetch from this test.
         const action = page.locator('[data-testid="sprint-action"]');
+        await action.waitFor({ state: 'attached', timeout: PAGE_TIMEOUT_MS });
         expect(await action.textContent()).toBe('Halt Sprint 1');
         await gates.request('sprint_review', {
           policy: { gates: { sprint_review: 'human' }, breaker_signals: [] },
@@ -466,9 +606,16 @@ describe('control room SPA (Playwright e2e)', () => {
         // Clicking a disabled button does nothing — no sprint is started.
         await action.click({ force: true }).catch(() => {});
         expect(store.listSprints().map((sp) => sp.id)).toEqual(['S-1']);
+      }),
+    TEST_BUDGET_MS,
+  );
 
-        // ---- B. chat modes + rail collapse ---------------------------------
+  browserTest(
+    'the chrome: chat modes and the rail collapse',
+    () =>
+      withChrome(async ({ page }) => {
         const frame = page.locator('.cr-frame');
+        await frame.waitFor({ state: 'attached', timeout: PAGE_TIMEOUT_MS });
         expect(await frame.getAttribute('data-chat')).toBe('panel');
         expect(await page.locator('.cr-chat-col').count()).toBe(1);
         expect(await page.locator('.cr-main').count()).toBe(1);
@@ -507,13 +654,8 @@ describe('control room SPA (Playwright e2e)', () => {
           (globalThis as any).localStorage.getItem('agile.cr.rail-collapsed'),
         );
         expect(stored).toBe('1');
-      } finally {
-        await teardown([page]);
-        await handle?.stop();
-        rmSync(repo, { recursive: true, force: true });
-      }
-    },
-    60000,
+      }),
+    TEST_BUDGET_MS,
   );
 
   /**
@@ -543,7 +685,7 @@ describe('control room SPA (Playwright e2e)', () => {
           socketPath: join(repo, '.agile-daemon.sock'),
         });
 
-        page = await openPage(await browserForTests(), { colorScheme: 'dark' });
+        page = await openPage({ colorScheme: 'dark' });
         await page.goto(`http://127.0.0.1:${handle.http.port}/control-room?view=settings`);
 
         const UA_LIGHT_BG = 'rgb(239, 239, 239)';
@@ -665,7 +807,7 @@ describe('control room SPA (Playwright e2e)', () => {
         rmSync(repo, { recursive: true, force: true });
       }
     },
-    60000,
+    TEST_BUDGET_MS,
   );
 
   browserTest(
@@ -704,7 +846,7 @@ describe('control room SPA (Playwright e2e)', () => {
           socketPath: join(repo, '.agile-daemon.sock'),
         });
 
-        page = await openPage(await browserForTests());
+        page = await openPage();
         await page.goto(`http://127.0.0.1:${handle.http.port}/control-room?view=sprint`);
 
         // "Needs you" inbox renders the seeded hil_request (§17 "Attention
@@ -774,7 +916,7 @@ describe('control room SPA (Playwright e2e)', () => {
         rmSync(repo, { recursive: true, force: true });
       }
     },
-    20000,
+    TEST_BUDGET_MS,
   );
 
   browserTest(
@@ -799,7 +941,7 @@ describe('control room SPA (Playwright e2e)', () => {
           emChatSpawn: cannedEmSpawn(repo, 'ack'),
         });
 
-        page = await openPage(await browserForTests());
+        page = await openPage();
         await page.goto(`http://127.0.0.1:${handle.http.port}/control-room?view=sprint`);
 
         const textarea = page.locator('.cr-chat-input textarea');
@@ -834,7 +976,7 @@ describe('control room SPA (Playwright e2e)', () => {
         rmSync(repo, { recursive: true, force: true });
       }
     },
-    20000,
+    TEST_BUDGET_MS,
   );
 
   browserTest(
@@ -869,7 +1011,7 @@ describe('control room SPA (Playwright e2e)', () => {
           socketPath: join(repo, '.agile-daemon.sock'),
         });
 
-        page = await openPage(await browserForTests());
+        page = await openPage();
         await page.goto(`http://127.0.0.1:${handle.http.port}/control-room?view=sprint`);
 
         // The Oracle/KB list only renders once that tab is selected (Ops is
@@ -900,7 +1042,7 @@ describe('control room SPA (Playwright e2e)', () => {
         rmSync(repo, { recursive: true, force: true });
       }
     },
-    20000,
+    TEST_BUDGET_MS,
   );
 
   // QA round 1 (REJECT): an external change (a ticket transitioned through
@@ -934,7 +1076,7 @@ describe('control room SPA (Playwright e2e)', () => {
           socketPath: join(repo, '.agile-daemon.sock'),
         });
 
-        page = await openPage(await browserForTests());
+        page = await openPage();
         await page.goto(`http://127.0.0.1:${handle.http.port}/control-room?view=sprint`);
 
         // T044: the ticket is a story, and its stage pill is what a status
@@ -963,7 +1105,7 @@ describe('control room SPA (Playwright e2e)', () => {
         rmSync(repo, { recursive: true, force: true });
       }
     },
-    20000,
+    TEST_BUDGET_MS,
   );
 
   // T032: a heartbeat-only `agent_put` (store.ts's `heartbeat()`, the
@@ -995,7 +1137,7 @@ describe('control room SPA (Playwright e2e)', () => {
           socketPath: join(repo, '.agile-daemon.sock'),
         });
 
-        page = await openPage(await browserForTests());
+        page = await openPage();
         const apiRequests: string[] = [];
         page.on('request', (req) => {
           const path = new URL(req.url()).pathname;
@@ -1046,7 +1188,7 @@ describe('control room SPA (Playwright e2e)', () => {
         rmSync(repo, { recursive: true, force: true });
       }
     },
-    20000,
+    TEST_BUDGET_MS,
   );
 
   /**
@@ -1078,7 +1220,7 @@ describe('control room SPA (Playwright e2e)', () => {
           socketPath: join(repo, '.agile-daemon.sock'),
         });
 
-        page = await openPage(await browserForTests());
+        page = await openPage();
         await page.goto(`http://127.0.0.1:${handle.http.port}/control-room?view=sprint`);
 
         const card = page.locator(`.question-item[data-id="${seeded.id}"]`);
@@ -1108,7 +1250,7 @@ describe('control room SPA (Playwright e2e)', () => {
         rmSync(repo, { recursive: true, force: true });
       }
     },
-    20000,
+    TEST_BUDGET_MS,
   );
 
   /**
@@ -1158,7 +1300,7 @@ describe('control room SPA (Playwright e2e)', () => {
         await waitForThread(base, 2);
         expect(handle.residentEm?.alive).toBe(true);
 
-        page = await openPage(await browserForTests());
+        page = await openPage();
         await page.goto(`${base}/control-room?view=sprint`);
 
         // The panel renders the thread that already existed before this page
@@ -1187,7 +1329,7 @@ describe('control room SPA (Playwright e2e)', () => {
         );
 
         // ... and so does the popped-out window's own route.
-        popout = await openPage(await browserForTests());
+        popout = await openPage();
         await popout.goto(`${base}/control-room/chat`);
         await waitForChatText(popout, reply);
         expect(await popout.locator('[data-testid="chat-popout"]').count()).toBe(0);
@@ -1210,7 +1352,7 @@ describe('control room SPA (Playwright e2e)', () => {
         rmSync(repo, { recursive: true, force: true });
       }
     },
-    60000,
+    TEST_BUDGET_MS,
   );
   /**
    * T044 (§17 v2 Sprint + Review, mockup `#s3`/`#s4`): the two new bodies
@@ -1223,7 +1365,7 @@ describe('control room SPA (Playwright e2e)', () => {
    * The data half of this — after a REAL offline sprint, against the actual
    * run report file — is asserted in `packages/cli/src/run.e2e.test.ts`,
    * which cannot open a browser of its own without destabilising this file
-   * (see `browserForTests`). Here the finished sprint is seeded directly
+   * (see `openPage`). Here the finished sprint is seeded directly
    * through the store so the render is exercised with no vendor at all.
    */
   browserTest(
@@ -1333,7 +1475,7 @@ describe('control room SPA (Playwright e2e)', () => {
           socketPath: join(repo, '.agile-daemon.sock'),
         });
 
-        page = await openPage(await browserForTests());
+        page = await openPage();
         await page.goto(`http://127.0.0.1:${handle.http.port}/control-room?view=sprint`);
 
         // A pending sprint_review opens on the Review view; the Sprint view
@@ -1408,6 +1550,6 @@ describe('control room SPA (Playwright e2e)', () => {
     },
     // 60s, like the file's other retry-prone long test: room for one
     // `browserTest` retry (two 20s page waits) under whole-suite contention.
-    60000,
+    TEST_BUDGET_MS,
   );
 });

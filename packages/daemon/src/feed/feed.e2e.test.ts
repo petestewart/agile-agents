@@ -19,7 +19,13 @@ import { type DaemonHandle, startDaemon } from '../daemon';
 import { GateService } from '../gates';
 import { runInit } from '../init';
 import { StateStore } from '../store';
-import { resolveChromiumExecutable } from './chromium';
+import {
+  BROWSER_ATTEMPTS,
+  BROWSER_READY_BUDGET_MS,
+  acquireBrowserPage,
+  resolveChromiumExecutable,
+  runWithinBudget,
+} from './chromium';
 
 const executablePath = resolveChromiumExecutable();
 
@@ -35,13 +41,46 @@ const executablePath = resolveChromiumExecutable();
  */
 const PAGE_TIMEOUT_MS = 20_000;
 
-/** Every page in this file: one place to install the action/navigation timeout above. */
-async function openPage(browser: Browser): Promise<Page> {
-  const page = await browser.newPage();
-  page.setDefaultTimeout(PAGE_TIMEOUT_MS);
-  page.setDefaultNavigationTimeout(PAGE_TIMEOUT_MS);
-  return page;
+/**
+ * T047: the bounded browser acquisition all three e2e suites share
+ * (`acquireBrowserPage` in `./chromium`, where the measurements and the
+ * ownership rules live once instead of drifting across three near-identical
+ * copies). Short version: a `chromium.launch()` in a whole-suite `bun test`
+ * can simply never return, `launch()`'s own timeout does not fire, and a
+ * launch that *does* return can hand back an already wedged browser — so
+ * launch and first page go under one budget, and only a browser that has
+ * actually produced a page is ever cached.
+ */
+/**
+ * Every page in this file: one place to install the action/navigation
+ * timeout above. Unlike its two sibling suites this file keeps a browser per
+ * test rather than sharing one, so each call launches its own and the caller
+ * closes it in `teardown`.
+ */
+async function openPage(): Promise<{ browser: Browser; page: Page }> {
+  const acquired = await acquireBrowserPage({
+    label: 'feed e2e',
+    launch: () => chromium.launch({ executablePath }),
+    openPage: (browser) => browser.newPage(),
+  });
+  acquired.page.setDefaultTimeout(PAGE_TIMEOUT_MS);
+  acquired.page.setDefaultNavigationTimeout(PAGE_TIMEOUT_MS);
+  return acquired;
 }
+
+/**
+ * T047 review round 1: how long a body may take before it is treated as
+ * wedged rather than slow, and the per-test budget that has to hold two of
+ * them. `BODY_BUDGET_MS` sits above the worst *legitimate* body — a full
+ * `BROWSER_ATTEMPTS` acquisition sweep plus one page action running out its
+ * `PAGE_TIMEOUT_MS` — so a genuinely failing body always surfaces its own
+ * error first and only a body making no progress at all is retried.
+ * See `browserTest` for what is being defended against.
+ */
+const BODY_BUDGET_MS = PAGE_TIMEOUT_MS + BROWSER_READY_BUDGET_MS * BROWSER_ATTEMPTS + 5_000;
+
+/** Every test in this file: room for a wedged body, its retry, and slack. */
+const TEST_BUDGET_MS = BODY_BUDGET_MS * 2 + 5_000;
 
 /** Matching `control-room.e2e.test.ts`: a browser close that has not returned in this budget is left to bun's dangling-process cleanup. Teardown only — every assertion has passed by then. */
 const BROWSER_CLOSE_BUDGET_MS = 10_000;
@@ -62,18 +101,56 @@ function isBrowserGoneError(err: unknown): boolean {
   );
 }
 
+/**
+ * A browser-driven test that survives its browser going quiet underneath it.
+ *
+ * Two failure modes, one recovery. The browser can be *killed* from outside
+ * this file (bun's dangling-process cleanup — the `isBrowserGoneError` case
+ * above, which fails fast and loudly), or it can stay alive and simply stop
+ * answering. T047 review round 1 measured the second one directly: a watchdog
+ * inside the body logged `isConnected() === true` on every 5 s tick for the
+ * whole 60 s the test was stuck, and the body was still running a minute
+ * after bun had failed the test and moved on — bun's per-test timeout cancels
+ * nothing. So a wedge is invisible to `isConnected()`, invisible to
+ * `isBrowserGoneError`, and invisible to `PAGE_TIMEOUT_MS` (the calls that
+ * hang are often ones that take no timeout at all: `waitForTimeout`,
+ * `locator.count()`, `evaluate`). Bounding the body is the only bound test
+ * code has. Which suite gets hit moves between runs, so this is not one bad
+ * wait in one test to rewrite.
+ *
+ * Re-running a body from the top is safe by this file's own design: every
+ * body makes its own repo, daemon and page and cleans all three up in its own
+ * `finally`. An abandoned body keeps running — nothing can cancel it — but it
+ * only ever touches its own temp repo and then tidies itself away.
+ */
 function browserTest(name: string, body: () => Promise<void>, timeoutMs: number): void {
   test(
     name,
     async () => {
+      const retry = async (reason: string): Promise<void> => {
+        console.error(
+          `feed e2e: "${name}" ${reason} — replacing the browser and running it once more`,
+        );
+        // Each body launches and closes its own browser.
+        const second = await runWithinBudget(body, BODY_BUDGET_MS);
+        if (!second.done) {
+          throw new Error(
+            `feed e2e: "${name}" made no progress for ${BODY_BUDGET_MS}ms twice over, on two different browsers — the page is wedged, not slow`,
+          );
+        }
+      };
+
       try {
-        await body();
+        const first = await runWithinBudget(body, BODY_BUDGET_MS);
+        if (first.done) return;
+        await retry(
+          `made no progress for ${BODY_BUDGET_MS}ms on a browser still reporting connected`,
+        );
       } catch (err) {
         if (!isBrowserGoneError(err)) throw err;
-        console.error(
-          `feed e2e: "${name}" lost its browser mid-test — retrying once from a clean repo/daemon/browser`,
+        await retry(
+          `lost its browser mid-test (${err instanceof Error ? err.message.split('\n')[0] : String(err)})`,
         );
-        await body();
       }
     },
     timeoutMs,
@@ -81,10 +158,15 @@ function browserTest(name: string, body: () => Promise<void>, timeoutMs: number)
 }
 
 /** Per-test teardown: this test's page context first (so its `/ws` client is not left reconnecting against a dead port), then the browser, bounded. */
-async function teardown(browser: Browser, pages: Array<Page | undefined>): Promise<void> {
+async function teardown(
+  browser: Browser | undefined,
+  pages: Array<Page | undefined>,
+): Promise<void> {
   await Promise.allSettled(
     pages.filter((p): p is Page => p !== undefined).map((p) => p.context().close()),
   );
+  // T047: `openPage` can fail before a browser exists at all.
+  if (!browser) return;
   const closed = await Promise.race([
     browser.close().then(() => true),
     Bun.sleep(BROWSER_CLOSE_BUDGET_MS).then(() => false),
@@ -112,7 +194,7 @@ describe('feed page (Playwright e2e)', () => {
       const repo = initRepo();
       let handle: DaemonHandle | undefined;
       let page: Page | undefined;
-      const browser = await chromium.launch({ executablePath });
+      let browser: Browser | undefined;
 
       try {
         const init = runInit(repo);
@@ -133,7 +215,7 @@ describe('feed page (Playwright e2e)', () => {
           socketPath: join(repo, '.agile-daemon.sock'),
         });
 
-        page = await openPage(browser);
+        ({ browser, page } = await openPage());
         await page.goto(`http://127.0.0.1:${handle.http.port}/feed`);
 
         // The seeded HIL request renders from the initial snapshot.
@@ -182,7 +264,7 @@ describe('feed page (Playwright e2e)', () => {
         rmSync(repo, { recursive: true, force: true });
       }
     },
-    30000,
+    TEST_BUDGET_MS,
   );
 
   browserTest(
@@ -191,7 +273,7 @@ describe('feed page (Playwright e2e)', () => {
       const repo = initRepo();
       let handle: DaemonHandle | undefined;
       let page: Page | undefined;
-      const browser = await chromium.launch({ executablePath });
+      let browser: Browser | undefined;
 
       try {
         const init = runInit(repo);
@@ -203,7 +285,7 @@ describe('feed page (Playwright e2e)', () => {
           socketPath: join(repo, '.agile-daemon.sock'),
         });
 
-        page = await openPage(browser);
+        ({ browser, page } = await openPage());
         // Delay the page's own /api/snapshot fetch well past when the WS
         // snapshot + a live event will have already arrived, reproducing
         // the race the review nit named: without the `liveDataApplied`
@@ -244,6 +326,6 @@ describe('feed page (Playwright e2e)', () => {
         rmSync(repo, { recursive: true, force: true });
       }
     },
-    30000,
+    TEST_BUDGET_MS,
   );
 });
