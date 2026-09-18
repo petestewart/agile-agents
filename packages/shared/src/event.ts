@@ -125,6 +125,19 @@ export const EVENT_KINDS = [
   //    scoped halt") — mirrors `halt_created`'s own event, one level up.
   //  - `integration_merged_to_main`: `integration -> main` at sprint review
   //    (§16 "HIL gates policy").
+  // DESIGN-GAP (T042, §17 "Control room v2" → "Later-layer tickets are
+  // stubs"): "a published decision therefore also triggers an architect
+  // re-examination pass over every not-done ticket, recorded per ticket as
+  // unchanged / updated / split. The graph walk is the guarantee, the pass
+  // is the judgment." That per-ticket record has no home in any existing
+  // kind: `ticket_put`/`state_transition` are minted by the store only when
+  // something was actually written, and the whole point of the pass is that
+  // a ticket the architect leaves `unchanged` must still be on the record.
+  // Same reasoning (and same shape) as `question_raised`/`hil_requested`
+  // above: one semantic kind alongside whatever mutation the verdict caused.
+  // `data`: `{decision, verdict: 'unchanged'|'updated'|'split', note?,
+  // children?}`.
+  'ticket_reexamined',
   'merge_completed',
   'merge_conflict',
   'merge_tests_failed',

@@ -39,6 +39,13 @@ import { type HttpServerHandle, startHttpServer } from './http';
 import { type LockHandle, acquireLock } from './lock';
 import { MergeOwner, buildMergeRpcMethods, sprintReviewApproved } from './merge';
 import { buildOracleRpcMethods } from './oracle';
+import {
+  type ArchitectPlanner,
+  PlanService,
+  type Reexaminer,
+  liveArchitectPlanner,
+  startPlanningTurn,
+} from './plan';
 import { QaProtocol, buildQaRpcMethods, decideQaRead, registerQaTools } from './qa';
 import { QuestionService, buildQuestionRpcMethods } from './questions';
 import { QuotaService, buildQuotaRpcMethods } from './quota';
@@ -166,6 +173,22 @@ export interface StartDaemonOptions extends DiscoverConfigOptions {
    * silently doing nothing.
    */
   emChatSpawn?: ResidentEmSpawn;
+  /**
+   * T042 test/offline-run seam: the architect's planning turn for the first
+   * goal typed into the control-room chat. Defaults to
+   * `liveArchitectPlanner` (one real architect ACP session in `plan` mode).
+   * Offline tests pass a double that calls the same daemon verbs the
+   * architect would, so the daemon side of the planning turn is what runs
+   * either way.
+   */
+  architectPlanner?: ArchitectPlanner;
+  /**
+   * T042: the architect's judgment in the post-decision re-examination pass
+   * (§17 v2). Without one every not-done ticket is still *recorded* — as
+   * `unchanged`, with the reason on the `ticket_reexamined` event — so the
+   * pass never silently skips a ticket.
+   */
+  reexaminer?: Reexaminer;
   /**
    * Ceremony/pipeline tick cadence. Default `CEREMONY_TICK_MS` (30 s); `0`
    * disables the daemon's own timer for a caller that drives
@@ -372,6 +395,33 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
         })
       : undefined;
 
+  // Plan screen (T042, §17 "Control room v2"): one service behind every
+  // `/api/plan/*` route, plus the first-goal architect planning turn. The
+  // planner is the live architect session unless a caller (a test, `agile
+  // run`'s offline mode) substitutes one — the same seam `runnerSpawn` and
+  // `emChatSpawn` already are for the other two vendor surfaces.
+  const planService = store
+    ? new PlanService({
+        store,
+        ...(bus ? { bus } : {}),
+        ...(gateService ? { gates: gateService } : {}),
+        ...(questionService ? { questions: questionService } : {}),
+        ...(options.reexaminer ? { reexaminer: options.reexaminer } : {}),
+        ...(options.now ? { now: options.now } : {}),
+      })
+    : undefined;
+  const architectPlanner =
+    options.architectPlanner ??
+    (store && gateService
+      ? liveArchitectPlanner({
+          gateService,
+          policy: policyOrDefault(store),
+          cwd: config.repoRoot,
+          cliBin,
+          socketPath: config.socketPath,
+        })
+      : undefined);
+
   // Handoff coordinator (T024, §10): exactly one instance for the daemon's
   // lifetime — its quota-event cursor is seeded once at construction, so a
   // per-tick instance would never see a `quota_low`/`quota_exhausted`.
@@ -449,6 +499,18 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
   const seenResumes = new Set<string>();
   const seenStandupCalls = new Set<string>();
   async function advancePipeline(): Promise<void> {
+    // T042: an `approve_plan` an EM/architect delegate (or a human answering
+    // through `agile approve`) resolved *after* the control room's Start
+    // Sprint click returned. `PlanService.startSprint` deliberately persists
+    // nothing while that gate is pending — `EmLoop.currentSprint()` would
+    // otherwise treat the unapproved sprint as live and start assigning — so
+    // this is where an approved-but-unstarted plan actually becomes a
+    // sprint. Idempotent (see `startApprovedSprint`); the EM assigns its
+    // tickets on the following tick, same as any other newly planned sprint.
+    if (planService) {
+      const started = await planService.startApprovedSprint();
+      if (started) console.error(`approve_plan approved — started ${started.id}`);
+    }
     if (store && bus && reviewProtocol && runner)
       await advanceReviewRequests(store, bus, reviewProtocol, runner, seenReviewRequests);
     if (store && bus && runner)
@@ -739,6 +801,31 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
       emChat,
       // T045: backs the Tickets pane's link/unlink action.
       jiraSync,
+      // T042: the Plan screen's panes, edits, Start Sprint, and the
+      // first-goal architect planning turn.
+      ...(planService
+        ? {
+            plan: {
+              service: planService,
+              ...(architectPlanner
+                ? {
+                    startGoal: (goal: string) =>
+                      startPlanningTurn(
+                        {
+                          store: store as StateStore,
+                          ...(bus ? { bus } : {}),
+                          planner: architectPlanner,
+                          ...(options.now ? { now: options.now } : {}),
+                          onError: (message: string) => console.error(message),
+                        },
+                        goal,
+                        config.repoRoot,
+                      ),
+                  }
+                : {}),
+            },
+          }
+        : {}),
     });
   } catch (err) {
     await rpc.close();
@@ -765,6 +852,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
     residentEm,
     emChat,
     jiraSync,
+    ...(planService ? { planService } : {}),
     ...(store ? { advancePipeline } : {}),
     async stop() {
       if (stopped) return;

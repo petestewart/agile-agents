@@ -34,8 +34,11 @@ import {
   HaltIdSchema,
   type HilDecision,
   HilIdSchema,
+  type KbFact,
+  type KbId,
   KbIdSchema,
   MESSAGE_BODY_MAX_CHARS,
+  type OracleId,
   OracleIdSchema,
   type Policy,
   type QuestionId,
@@ -55,6 +58,7 @@ import { TicketDiffError, ticketDiff, ticketThread } from './feed/diff';
 import { buildStory } from './feed/stories';
 import { GateAlreadyResolvedError, GateNotFoundError, type GateService } from './gates';
 import { createHalt, releaseHalt } from './halts';
+import { PlanRefused, type PlanService, isFirstGoal } from './plan';
 import {
   QuestionAlreadyAnsweredError,
   QuestionNotFoundError,
@@ -110,8 +114,25 @@ export interface HttpServerOptions {
    * it did before this ticket (no reply streams back), and `GET` 503s.
    */
   emChat?: EmChatService;
+  /**
+   * T042: the Plan screen's panes and edits (`/api/plan/*`, `POST
+   * /api/sprint/start`) plus the first-goal routing on `POST /api/chat/em`.
+   * Optional — without it those routes 503, exactly like the other
+   * service-backed route families here.
+   */
+  plan?: PlanRoutesContext;
   /** Test hook: overrides the tailer's poll interval (default 250ms — see `feed/tailer.ts`). */
   feedPollIntervalMs?: number;
+}
+
+/**
+ * T042: what the Plan routes need. `service` is the whole pane back end;
+ * `startGoal` runs one architect planning turn and is absent on a daemon
+ * with no architect wired (the first chat line then just goes to the EM).
+ */
+export interface PlanRoutesContext {
+  service: PlanService;
+  startGoal?(goal: string): Promise<{ started: boolean; reason?: string }>;
 }
 
 export interface HttpServerHandle {
@@ -349,6 +370,171 @@ async function handleQuestionAnswer(
   }
 }
 
+/**
+ * Plan screen routes (T042). One handler for the whole `/api/plan/*` family
+ * plus `POST /api/sprint/start`, kept together so the pane → route mapping
+ * reads as one table:
+ *
+ *   GET    /api/plan                      everything the screen renders
+ *   GET  · PUT   /api/plan/brief          oracle/product.md
+ *   GET  · POST  /api/plan/rules          oracle/specs (POST may *propose*)
+ *   GET  · POST  /api/plan/decisions      oracle/decisions (+ re-examination)
+ *   GET  · POST  /api/plan/tickets        tickets/
+ *   PATCH        /api/plan/tickets/:id    living-plan edit rules
+ *   POST         /api/plan/tickets/:id/move
+ *   GET          /api/plan/sprints        finished · next · projected
+ *   GET  · POST  /api/plan/knowledge      knowledge/facts
+ *   GET          /api/plan/policy         policy.yaml (read-only; Settings edits it)
+ *   POST         /api/sprint/start        plan the frontier + approve_plan
+ */
+async function handlePlanRoute(req: Request, url: URL, plan: PlanRoutesContext): Promise<Response> {
+  const service = plan.service;
+  const path = url.pathname;
+  const method = req.method;
+
+  async function body(): Promise<Record<string, unknown>> {
+    return readJsonBody(req);
+  }
+
+  try {
+    if (path === '/api/plan' && method === 'GET') return jsonResponse(service.overview());
+    if (path === '/api/plan/brief' && method === 'GET') return jsonResponse(service.brief());
+    if (path === '/api/plan/brief' && method === 'PUT') {
+      const input = await body();
+      if (typeof input.body !== 'string') return errorResponse(400, 'body is required');
+      return jsonResponse(await service.putBrief(input.body, readActor(input)));
+    }
+    if (path === '/api/plan/rules' && method === 'GET') return jsonResponse(service.listRules());
+    if (path === '/api/plan/rules' && method === 'POST') {
+      const input = await body();
+      // Review round 1 (nit 1): validate an edited entry's id up front, the
+      // same way the ticket routes do — the write itself re-validates, but
+      // the `citedBy`/`getOracleEntry` reads that decide *write vs propose*
+      // run first and would otherwise silently no-op on a malformed id.
+      const ruleId = readId(input.id, OracleIdSchema, 'oracle id');
+      if (typeof ruleId === 'object') return errorResponse(400, ruleId.error);
+      return jsonResponse(
+        await service.putRule(
+          {
+            ...(ruleId !== undefined ? { id: ruleId as OracleId } : {}),
+            title: String(input.title ?? ''),
+            body: String(input.body ?? ''),
+            ...(typeof input.rationale === 'string' ? { rationale: input.rationale } : {}),
+          },
+          readActor(input),
+        ),
+      );
+    }
+    if (path === '/api/plan/decisions' && method === 'GET') {
+      return jsonResponse(service.listDecisions());
+    }
+    if (path === '/api/plan/decisions' && method === 'POST') {
+      const input = await body();
+      return jsonResponse(
+        await service.publishDecision(
+          {
+            title: String(input.title ?? ''),
+            body: String(input.body ?? ''),
+            ...(typeof input.rationale === 'string' ? { rationale: input.rationale } : {}),
+          },
+          readActor(input),
+        ),
+      );
+    }
+    if (path === '/api/plan/tickets' && method === 'GET') {
+      return jsonResponse(service.listTickets());
+    }
+    if (path === '/api/plan/tickets' && method === 'POST') {
+      const input = await body();
+      return jsonResponse(
+        await service.createTicket(
+          {
+            title: String(input.title ?? ''),
+            ...(typeof input.description === 'string' ? { description: input.description } : {}),
+            ...(Array.isArray(input.depends) ? { depends: input.depends as TicketId[] } : {}),
+          },
+          readActor(input),
+        ),
+      );
+    }
+    const ticketMatch = /^\/api\/plan\/tickets\/([^/]+)(\/move)?$/.exec(path);
+    if (ticketMatch?.[1]) {
+      const parsed = TicketIdSchema.safeParse(decodeURIComponent(ticketMatch[1]));
+      if (!parsed.success) return errorResponse(400, `invalid ticket id: ${ticketMatch[1]}`);
+      const input = await body();
+      if (ticketMatch[2] && method === 'POST') {
+        const to = input.to === 'later' ? 'later' : 'next';
+        return jsonResponse(await service.moveTicket(parsed.data, to, readActor(input)));
+      }
+      if (!ticketMatch[2] && (method === 'PATCH' || method === 'POST')) {
+        const { by: _by, ...patch } = input;
+        return jsonResponse(await service.editTicket(parsed.data, patch, readActor(input)));
+      }
+    }
+    if (path === '/api/plan/sprints' && method === 'GET') return jsonResponse(service.sprints());
+    if (path === '/api/plan/knowledge' && method === 'GET') {
+      return jsonResponse(service.listKnowledge());
+    }
+    if (path === '/api/plan/knowledge' && method === 'POST') {
+      const input = await body();
+      const kbId = readId(input.id, KbIdSchema, 'kb id');
+      if (typeof kbId === 'object') return errorResponse(400, kbId.error);
+      return jsonResponse(
+        await service.putKnowledge(
+          {
+            ...(kbId !== undefined ? { id: kbId as KbId } : {}),
+            ...(typeof input.kind === 'string' ? { kind: input.kind as KbFact['kind'] } : {}),
+            ...(Array.isArray(input.scope) ? { scope: input.scope as string[] } : {}),
+            ...(typeof input.confidence === 'string'
+              ? { confidence: input.confidence as KbFact['confidence'] }
+              : {}),
+            body: String(input.body ?? ''),
+          },
+          readActor(input),
+        ),
+      );
+    }
+    if (path === '/api/plan/policy' && method === 'GET') return jsonResponse(service.policy());
+    if (path === '/api/sprint/start' && method === 'POST') {
+      const input = await body();
+      return jsonResponse(
+        await service.startSprint({
+          by: readActor(input),
+          ...(typeof input.cap === 'number' ? { cap: input.cap } : {}),
+          ...(typeof input.goal === 'string' ? { goal: input.goal } : {}),
+        }),
+      );
+    }
+    return new Response('not found', { status: 404 });
+  } catch (err) {
+    if (err instanceof PlanRefused) return errorResponse(err.status, err.message);
+    if (err instanceof NotFoundError) return errorResponse(404, err.message);
+    return errorResponse(400, err instanceof Error ? err.message : String(err));
+  }
+}
+
+/**
+ * An optional id from a request body, validated against its own schema
+ * before any read uses it. `undefined` when absent, `{error}` when present
+ * but malformed (a 400 with a readable message rather than a silent miss).
+ */
+function readId(
+  value: unknown,
+  schema: { safeParse(input: unknown): { success: boolean } },
+  what: string,
+): string | undefined | { error: string } {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== 'string' || !schema.safeParse(value).success) {
+    return { error: `invalid ${what}: ${String(value)}` };
+  }
+  return value;
+}
+
+/** Who the write is attributed to. The control room is the human's own window, so `human` is the default — same as the HIL routes. */
+function readActor(input: Record<string, unknown>): string {
+  return typeof input.by === 'string' && input.by.length > 0 ? input.by : 'human';
+}
+
 /** Bundles `store`+`gates` once both are present, so every call site gets one non-optional pair instead of re-checking two optionals. */
 interface FeedContext {
   store: StateStore;
@@ -358,6 +544,7 @@ interface FeedContext {
   jiraSync?: JiraSync;
   questions?: QuestionService;
   emChat?: EmChatService;
+  plan?: PlanRoutesContext;
 }
 
 function resolveFeedContext(options: HttpServerOptions): FeedContext | undefined {
@@ -370,6 +557,7 @@ function resolveFeedContext(options: HttpServerOptions): FeedContext | undefined
     jiraSync: options.jiraSync,
     questions: options.questions,
     emChat: options.emChat,
+    plan: options.plan,
   };
 }
 
@@ -417,6 +605,8 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
   const feed = resolveFeedContext(options);
 
   let tailer: EventTailerHandle | undefined;
+  /** T042: at most one architect planning turn per daemon (see the `/api/chat/em` POST handler). */
+  let planningTurnStarted = false;
 
   const server = Bun.serve({
     port: options.port,
@@ -542,53 +732,17 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
       }
 
       /**
-       * T043: the top bar's single action in its "Start Sprint N" state
-       * (§17 "Control room v2" — "No plan approval. Documents are edited,
-       * sprints are started. The `approve_plan` gate is raised at sprint
-       * start and means 'start this frontier with these tickets and rules
-       * as they stand'").
-       *
-       * Two existing daemon verbs, nothing new: `planSprint` (`em/sprint.ts`)
-       * computes the dependency frontier, mints `S-<n>`, writes the sprint
-       * file through the store and stamps `sprint:` on each frontier ticket;
-       * `GateService.request('approve_plan', ...)` then raises the gate with
-       * the freshly written sprint's own `gates` block in the resolution
-       * context, so the gate's `owner` is exactly what Settings last wrote.
-       *
-       * SCOPE NOTE (T042, living plan): this route starts the sprint and
-       * raises the gate. It deliberately does NOT drive the EM loop into
-       * assigning the frontier — "the first goal typed into the chat starts
-       * the architect planning turn ... `approve_plan` is raised at Start
-       * Sprint N" is T042's entry point, and `agile run`'s
-       * `handle.advancePipeline()` remains the one list of glue steps.
+       * NOTE (T042 merge): the top bar's Start Sprint action is served by the
+       * Plan route family below (`handlePlanRoute` → `PlanService.startSprint`),
+       * not here. T043 shipped a simpler version of this route that called
+       * `planSprint` first and raised `approve_plan` afterwards; T042's review
+       * round 1 showed that starts the sprint before the gate is decided —
+       * `EmLoop.currentSprint()` treats any sprint without a `review_at` as
+       * live, so an `em`/`architect`-owned gate (async delegate, or none)
+       * had engineers assigned to an unapproved sprint with no rollback on a
+       * denial. The surviving implementation proposes the frontier without
+       * writing anything, raises the gate, and persists only on approval.
        */
-      if (url.pathname === '/api/sprint/start' && req.method === 'POST') {
-        if (!feed) return errorResponse(503, 'state store not initialised (run `agile init`)');
-        if (!isSameOriginRequest(req, srv.port ?? options.port)) {
-          return errorResponse(403, 'cross-origin request rejected');
-        }
-        let body: Record<string, unknown> = {};
-        try {
-          body = await readJsonBody(req);
-        } catch {
-          // An empty body is the normal case — the button sends no options.
-        }
-        try {
-          const goal =
-            typeof body.goal === 'string' && body.goal.length > 0 ? body.goal : undefined;
-          const sprint = await planSprint(feed.store, { ...(goal ? { goal } : {}) });
-          const hil = await feed.gates.request('approve_plan', {
-            policy: feed.store.getPolicy(),
-            ...(sprint.gates ? { sprint: sprint.gates } : {}),
-            hilKind: 'approve_decision',
-            from: 'human',
-            summary: `Start ${sprint.id}: ${sprint.tickets.length} ticket(s) on the frontier`,
-          });
-          return jsonResponse({ sprint, hil }, 201);
-        } catch (err) {
-          return errorResponse(400, err instanceof Error ? err.message : String(err));
-        }
-      }
 
       const ticketMatch = matchTicketId(url.pathname);
       if (ticketMatch && req.method === 'GET') {
@@ -780,6 +934,38 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
           return errorResponse(400, 'body is required');
         }
         /**
+         * T042 (§17 v2: "Your goal is the first message ... the architect
+         * reads the repo, the plan fills in on the left"). Before the EM
+         * ever sees it: on a repo with no tickets and an untouched product
+         * brief, the first line typed here IS the goal, and it starts the
+         * architect's planning turn. The line still goes to the EM below
+         * (and so into the chat thread a reload reads) — the planning turn
+         * is additional, not a replacement.
+         */
+        let planning: { started: boolean; reason?: string } | undefined;
+        // Review round 1 (nit 3): `isFirstGoal` re-reads the ticket count and
+        // the brief fresh, so two chat posts sent before the architect's
+        // first write lands would both look like "the first goal". One
+        // planning turn per daemon is enough — the latch is flipped before
+        // the (async) turn starts, never after.
+        if (
+          !planningTurnStarted &&
+          feed.plan?.startGoal &&
+          isFirstGoal(feed.store, feed.plan.service.brief().stub)
+        ) {
+          planningTurnStarted = true;
+          try {
+            planning = await feed.plan.startGoal(body.body);
+          } catch (err) {
+            planningTurnStarted = false;
+            planning = {
+              started: false,
+              reason: err instanceof Error ? err.message : String(err),
+            };
+          }
+          if (planning?.started === false) planningTurnStarted = false;
+        }
+        /**
          * T041: with a resident EM wired, the human's line still lands on
          * the EM's inbox first (unchanged), and the EM's turn then streams
          * back over `/ws` as `chat_delta` frames — a side channel, not
@@ -824,6 +1010,7 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
               ok: true,
               message: result.message,
               streaming: result.streaming,
+              ...(planning !== undefined ? { planning } : {}),
               ...(result.replyId !== undefined ? { reply_id: result.replyId } : {}),
               ...(result.reason !== undefined ? { reason: result.reason } : {}),
             });
@@ -843,7 +1030,12 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
             ...(typeof body.ticket === 'string' ? { ticket: body.ticket } : {}),
           });
           if (!result.ok) return errorResponse(400, result.reason);
-          return jsonResponse({ ok: true, message: result.message, streaming: false });
+          return jsonResponse({
+            ok: true,
+            message: result.message,
+            streaming: false,
+            ...(planning !== undefined ? { planning } : {}),
+          });
         } catch (err) {
           return errorResponse(400, err instanceof Error ? err.message : String(err));
         }
@@ -955,6 +1147,20 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
           return errorResponse(403, 'cross-origin request rejected');
         }
         return handleQuestionAnswer(req, feed.questions, questionAnswerMatch);
+      }
+
+      // ---- Plan screen (T042, §17 "Control room v2") — one route family
+      // per pane, every write through `PlanService` (and so through the
+      // validating store: `log/events.jsonl` + the `agile-state` commit).
+      if (url.pathname.startsWith('/api/plan') || url.pathname === '/api/sprint/start') {
+        // CSRF check first, before the wiring check: a cross-origin write is
+        // rejected as such whether or not this daemon has a plan service, so
+        // the 503 can never leak "this write would have been accepted".
+        if (req.method !== 'GET' && !isSameOriginRequest(req, srv.port ?? options.port)) {
+          return errorResponse(403, 'cross-origin request rejected');
+        }
+        if (!feed?.plan) return errorResponse(503, 'plan service not wired to this daemon');
+        return handlePlanRoute(req, url, feed.plan);
       }
 
       const hilMatch = matchHilAction(url.pathname);

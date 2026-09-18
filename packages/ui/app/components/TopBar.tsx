@@ -107,8 +107,15 @@ export function TopBar({
    */
   const halted = haltCount > 0;
   const reviewPending = status?.sprint_review_pending === true;
+  /**
+   * T042: Start Sprint raises `approve_plan` and writes nothing until it is
+   * decided, so between a click and an EM/architect delegate's answer there
+   * is a real "proposed, waiting" state. The button reports it rather than
+   * offering a second start that the daemon would refuse anyway.
+   */
+  const approvePlanPending = status?.approve_plan_pending === true;
   const action: 'resume' | 'halt' | 'start' = halted ? 'resume' : running ? 'halt' : 'start';
-  const blocked = action === 'start' && reviewPending;
+  const blocked = action === 'start' && (reviewPending || approvePlanPending);
   const actionLabel =
     action === 'resume'
       ? `Resume Sprint ${sprintNumber}`
@@ -120,9 +127,11 @@ export function TopBar({
       ? `Release ${haltCount} halt${haltCount === 1 ? '' : 's'} and let the team continue`
       : action === 'halt'
         ? 'Stop every agent on this sprint'
-        : blocked
+        : reviewPending && action === 'start'
           ? `Review Sprint ${sprintNumber} first`
-          : 'Start the next sprint frontier';
+          : approvePlanPending && action === 'start'
+            ? 'approve_plan pending — the sprint starts when it is approved'
+            : 'Start the next sprint frontier';
 
   async function runAction(): Promise<void> {
     // Belt to the `disabled` braces: the gate is the daemon's, and a click

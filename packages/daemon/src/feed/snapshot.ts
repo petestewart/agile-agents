@@ -128,6 +128,14 @@ export interface FeedStatusInfo {
    * for.
    */
   sprint_review_pending: boolean;
+  /**
+   * T042: an `approve_plan` request is open. Start Sprint N proposes a
+   * frontier and raises this gate *without writing anything* — when its owner
+   * is the EM or the architect the sprint only begins once the delegate
+   * decides — so the top bar's action must read "waiting", not "startable",
+   * in between. Same shape and same reason as `sprint_review_pending`.
+   */
+  approve_plan_pending: boolean;
 }
 
 /**
@@ -353,6 +361,7 @@ export function buildSnapshot(
     agents_working: countAgentsWorking(store.listAgents()),
     needs_you: hil.length + openQuestions.length,
     sprint_review_pending: hil.some((request) => request.gate === 'sprint_review'),
+    approve_plan_pending: hil.some((request) => request.gate === 'approve_plan'),
   };
 
   // `allEvents` is read once and shared: the snapshot ships only the last

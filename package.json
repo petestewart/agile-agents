@@ -10,9 +10,9 @@
     "build": "bun run --filter '*' build",
     "typecheck": "bun run --filter '*' typecheck",
     "test": "bun test",
-    "test:integration": "AGILE_LIVE= bun test packages/cli/src/run.e2e.test.ts packages/daemon/src/feed/feed.e2e.test.ts packages/daemon/src/feed/control-room.e2e.test.ts",
+    "test:integration": "AGILE_LIVE= bun test packages/cli/src/run.e2e.test.ts && AGILE_LIVE= bun test packages/daemon/src/feed/feed.e2e.test.ts && AGILE_LIVE= bun test packages/daemon/src/feed/control-room.e2e.test.ts && AGILE_LIVE= bun test packages/daemon/src/feed/plan.e2e.test.ts",
     "test:live": "AGILE_LIVE=1 bun test packages/daemon/src/em/live.test.ts packages/daemon/src/sandbox/live.test.ts packages/cli/src/run.e2e.test.ts",
-    "test:e2e": "bun test packages/daemon/src/feed/feed.e2e.test.ts packages/daemon/src/feed/control-room.e2e.test.ts",
+    "test:e2e": "bun test packages/daemon/src/feed/feed.e2e.test.ts && bun test packages/daemon/src/feed/control-room.e2e.test.ts && bun test packages/daemon/src/feed/plan.e2e.test.ts",
     "e2e": "bun test packages/cli/src/run.e2e.test.ts",
     "lint": "biome check ."
   },

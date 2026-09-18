@@ -190,6 +190,15 @@ function browserTest(name: string, body: () => Promise<void>, timeoutMs: number)
   );
 }
 
+/**
+ * T042 merge note: every test here that asserts Sprint-view content opens
+ * `/control-room?view=sprint`. Plan is now the landing view (§17 v2: "The
+ * repo opens here with an empty plan and a chat"), which these tests predate;
+ * the `?view=` deep link is T043's own (`main.tsx`), so this is one query
+ * parameter rather than a click on the nav in each test. The two tests that
+ * drive the nav themselves are unaffected either way.
+ */
+
 /** Every page in this file: one place to install the action/navigation timeout above. */
 async function openPage(
   browser: Browser,
@@ -336,7 +345,7 @@ describe('control room SPA (Playwright e2e)', () => {
         });
 
         page = await openPage(await browserForTests(), { colorScheme: 'dark' });
-        await page.goto(`http://127.0.0.1:${handle.http.port}/control-room`);
+        await page.goto(`http://127.0.0.1:${handle.http.port}/control-room?view=sprint`);
 
         // `page.evaluate`'s callback runs in the browser, where `document`/
         // `getComputedStyle` exist — this file's own (non-DOM) tsconfig lib
@@ -696,7 +705,7 @@ describe('control room SPA (Playwright e2e)', () => {
         });
 
         page = await openPage(await browserForTests());
-        await page.goto(`http://127.0.0.1:${handle.http.port}/control-room`);
+        await page.goto(`http://127.0.0.1:${handle.http.port}/control-room?view=sprint`);
 
         // "Needs you" inbox renders the seeded hil_request (§17 "Attention
         // queue": one line per item, deadline, approve/delegate).
@@ -791,7 +800,7 @@ describe('control room SPA (Playwright e2e)', () => {
         });
 
         page = await openPage(await browserForTests());
-        await page.goto(`http://127.0.0.1:${handle.http.port}/control-room`);
+        await page.goto(`http://127.0.0.1:${handle.http.port}/control-room?view=sprint`);
 
         const textarea = page.locator('.cr-chat-input textarea');
         await textarea.waitFor({ state: 'attached', timeout: PAGE_TIMEOUT_MS });
@@ -861,7 +870,7 @@ describe('control room SPA (Playwright e2e)', () => {
         });
 
         page = await openPage(await browserForTests());
-        await page.goto(`http://127.0.0.1:${handle.http.port}/control-room`);
+        await page.goto(`http://127.0.0.1:${handle.http.port}/control-room?view=sprint`);
 
         // The Oracle/KB list only renders once that tab is selected (Ops is
         // the default view, §17 "Layout direction").
@@ -926,7 +935,7 @@ describe('control room SPA (Playwright e2e)', () => {
         });
 
         page = await openPage(await browserForTests());
-        await page.goto(`http://127.0.0.1:${handle.http.port}/control-room`);
+        await page.goto(`http://127.0.0.1:${handle.http.port}/control-room?view=sprint`);
 
         // T044: the ticket is a story, and its stage pill is what a status
         // change moves (the Board's columns are gone).
@@ -993,7 +1002,7 @@ describe('control room SPA (Playwright e2e)', () => {
           if (path.startsWith('/api/')) apiRequests.push(path);
         });
 
-        await page.goto(`http://127.0.0.1:${handle.http.port}/control-room`);
+        await page.goto(`http://127.0.0.1:${handle.http.port}/control-room?view=sprint`);
         // Let the initial mount's own refreshAux (six requests) settle before
         // measuring — only requests from here on are attributable to events.
         await page.waitForTimeout(500);
@@ -1070,7 +1079,7 @@ describe('control room SPA (Playwright e2e)', () => {
         });
 
         page = await openPage(await browserForTests());
-        await page.goto(`http://127.0.0.1:${handle.http.port}/control-room`);
+        await page.goto(`http://127.0.0.1:${handle.http.port}/control-room?view=sprint`);
 
         const card = page.locator(`.question-item[data-id="${seeded.id}"]`);
         await card.waitFor({ state: 'attached', timeout: PAGE_TIMEOUT_MS });
@@ -1150,7 +1159,7 @@ describe('control room SPA (Playwright e2e)', () => {
         expect(handle.residentEm?.alive).toBe(true);
 
         page = await openPage(await browserForTests());
-        await page.goto(`${base}/control-room`);
+        await page.goto(`${base}/control-room?view=sprint`);
 
         // The panel renders the thread that already existed before this page
         // did — history comes from the bus (`GET /api/chat/em`), not from
@@ -1325,7 +1334,7 @@ describe('control room SPA (Playwright e2e)', () => {
         });
 
         page = await openPage(await browserForTests());
-        await page.goto(`http://127.0.0.1:${handle.http.port}/control-room`);
+        await page.goto(`http://127.0.0.1:${handle.http.port}/control-room?view=sprint`);
 
         // A pending sprint_review opens on the Review view; the Sprint view
         // is one click away.
