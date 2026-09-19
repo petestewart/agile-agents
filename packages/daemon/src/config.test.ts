@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { discoverConfig } from './config';
 
@@ -25,8 +25,26 @@ describe('discoverConfig', () => {
     // Resolve symlinks (macOS /tmp is a symlink) before comparing.
     const repoBasename = repo.split('/').pop() ?? repo;
     expect(config.repoRoot.endsWith(repoBasename)).toBe(true);
-    expect(config.stateRoot).toBe(join(config.repoRoot, '.agile'));
+    // T111: the state home is never inside the repo.
+    expect(config.home).not.toContain(config.repoRoot);
+    expect(config.stateRoot).toBe(config.home);
     expect(config.lockPath).toBe(join(config.repoRoot, '.agile-daemon.lock'));
+  });
+
+  // T111 (PLAN.md §5, D9): one state home, `$AGILE_HOME` or `~/.agile/`.
+  test('AGILE_HOME sets the state home; the default is ~/.agile/', () => {
+    process.env.AGILE_HOME = join(repo, '..', 'a-home');
+    expect(discoverConfig({ cwd: repo }).home).toBe(join(repo, '..', 'a-home'));
+
+    Reflect.deleteProperty(process.env, 'AGILE_HOME');
+    expect(discoverConfig({ cwd: repo }).home).toBe(join(homedir(), '.agile'));
+  });
+
+  test('an explicit home option beats AGILE_HOME', () => {
+    process.env.AGILE_HOME = '/tmp/env-home';
+    expect(discoverConfig({ cwd: repo, home: '/tmp/explicit-home' }).home).toBe(
+      '/tmp/explicit-home',
+    );
   });
 
   test('defaults port and socket path when nothing is configured', () => {

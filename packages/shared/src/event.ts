@@ -76,6 +76,7 @@ export const EVENT_KINDS = [
   'agent_deleted',
   'policy_put',
   'vendors_put',
+  'repos_put',
   'entity_put',
   'entity_deleted',
   'hil_requested',

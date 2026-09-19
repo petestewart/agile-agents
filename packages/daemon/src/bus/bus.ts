@@ -246,7 +246,7 @@ export class Bus {
     }
 
     // One send = one atomic batch of inbox files (+ thread copy) = one
-    // `message` event = one commit on agile-state.
+    // `message` event = one line in `log/events.jsonl`.
     const writes = [...recipients].map((agent) => ({
       relPath: this.inboxRelPath(agent, message.id),
       validator: validateMessage,

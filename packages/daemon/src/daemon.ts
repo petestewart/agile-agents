@@ -787,6 +787,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
       port: config.port,
       version: DAEMON_VERSION,
       stateRoot: config.stateRoot,
+      repoRoot: config.repoRoot,
       startedAt,
       store,
       gates: gateService,

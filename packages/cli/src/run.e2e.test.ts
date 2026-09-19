@@ -136,6 +136,8 @@ function writeSingleTicketSeed(repo: string): string {
 const liveRequested = process.env.AGILE_LIVE === '1';
 
 let repo: string;
+let home: string;
+let previousHome: string | undefined;
 
 function git(args: string[], cwd: string): void {
   const result = Bun.spawnSync(['git', ...args], {
@@ -149,6 +151,11 @@ function git(args: string[], cwd: string): void {
 
 beforeEach(() => {
   repo = mkdtempSync(join(tmpdir(), 'agile-run-e2e-'));
+  // T111: the state home lives outside the repo, and `AGILE_HOME` points at
+  // a temp one so this test can never touch the operator's `~/.agile/`.
+  home = mkdtempSync(join(tmpdir(), 'agile-run-e2e-home-'));
+  previousHome = process.env.AGILE_HOME;
+  process.env.AGILE_HOME = home;
   cpSync(FIXTURE_ROOT, repo, { recursive: true });
   git(['init', '-q', '-b', 'main'], repo);
   git(['config', 'user.email', 'test@example.com'], repo);
@@ -162,16 +169,19 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  if (previousHome === undefined) Reflect.deleteProperty(process.env, 'AGILE_HOME');
+  else process.env.AGILE_HOME = previousHome;
   // `AGILE_LIVE_KEEP=1` leaves the temp repo in place so a failed live run's
-  // artifacts (`.agile/log/events.jsonl`, `.agile/bus/agents/*.yaml`,
-  // `.agile/board/hil/*`, `.agile-daemon-cache/sessions/*.stderr.log`,
+  // artifacts (`<home>/log/events.jsonl`, `<home>/bus/agents/*.yaml`,
+  // `<home>/board/hil/*`, `.agile-daemon-cache/sessions/*.stderr.log`,
   // `runs/*.md`) can be inspected after the test — the default cleanup
   // otherwise removes exactly the evidence a live failure needs.
   if (process.env.AGILE_LIVE_KEEP === '1') {
-    console.log(`agile run e2e: AGILE_LIVE_KEEP=1 — keeping ${repo}`);
+    console.log(`agile run e2e: AGILE_LIVE_KEEP=1 — keeping ${repo} (state home ${home})`);
     return;
   }
   rmSync(repo, { recursive: true, force: true });
+  rmSync(home, { recursive: true, force: true });
 });
 
 describe('agile run (offline, fake ACP)', () => {
@@ -211,7 +221,7 @@ describe('agile run (offline, fake ACP)', () => {
     expect(report).toContain('TKT-1001: 2 rounds (request_changes then approve)');
 
     const { StateStore } = await import('@agile-agents/daemon');
-    const store = StateStore.open(join(repo, '.agile'));
+    const store = StateStore.open(home);
 
     /**
      * T048 defect (1): every `session ended` notice on the bus is the
@@ -679,7 +689,7 @@ describe('agile run --live stall watchdog (offline, deterministic — opus revie
     const pollForStatus = (async () => {
       while (Date.now() < pollDeadlineRealMs) {
         try {
-          const store = StateStore.open(join(repo, '.agile'));
+          const store = StateStore.open(home);
           if (store.getTicket('TKT-9001' as never).status === 'in_progress') sawInProgress = true;
         } catch {
           // Not seeded/assigned yet.

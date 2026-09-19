@@ -12,6 +12,7 @@ import { FakeRunner } from './runner';
 import { ToolPathDeniedError, ToolService, UnknownToolError } from './service';
 
 let repo: string;
+let stateRoot: string;
 let store: StateStore;
 let bus: Bus;
 let service: ToolService;
@@ -35,7 +36,9 @@ beforeEach(() => {
   Bun.spawnSync(['git', 'config', 'user.email', 'test@example.com'], { cwd: repo });
   Bun.spawnSync(['git', 'config', 'user.name', 'Test'], { cwd: repo });
   Bun.spawnSync(['git', 'commit', '--allow-empty', '-q', '-m', 'init'], { cwd: repo });
-  const init = runInit(repo);
+  // T111: a state home of its own, outside the repo.
+  const init = runInit(join(repo, 'home'));
+  stateRoot = init.stateRoot;
   store = StateStore.open(init.stateRoot);
   bus = new Bus(store, init.stateRoot);
   runner = new FakeRunner(() => ({
@@ -323,7 +326,7 @@ describe('callTool: read_summary respects an injected pathGuard (T017 review rou
     return new ToolService({
       store,
       bus,
-      registry: loadToolRegistry(join(repo, '.agile')),
+      registry: loadToolRegistry(stateRoot),
       runner,
       repoRoot: repo,
       pathGuard,

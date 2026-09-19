@@ -308,14 +308,9 @@ export function resolveSprintGoal(seed: SeedFile, stateRoot: string): string | u
 }
 
 /** `oracle/product.md` is a plain bootstrap file (`init.ts`'s own stub, not a `StateStore` entity) — seeding it follows the same convention. */
-function seedProductMd(stateRoot: string, repoRoot: string, markdown: string): void {
-  const env = sandboxedSubprocessEnv(repoRoot, 'git');
+function seedProductMd(stateRoot: string, _repoRoot: string, markdown: string): void {
+  // T111: the state home is a plain directory, so seeding is a plain write.
   writeFileSync(join(stateRoot, 'oracle', 'product.md'), markdown);
-  Bun.spawnSync(['git', 'add', 'oracle/product.md'], { cwd: stateRoot, env });
-  Bun.spawnSync(['git', '-c', 'commit.gpgsign=false', 'commit', '-q', '-m', 'seed: product.md'], {
-    cwd: stateRoot,
-    env,
-  });
 }
 
 /**
@@ -326,18 +321,12 @@ function seedProductMd(stateRoot: string, repoRoot: string, markdown: string): v
  * opportunity" (PLAN.md scope) can't be exercised at all (QA round 1 /
  * opus review round 1 blocker 1).
  */
-function seedRules(stateRoot: string, repoRoot: string, rules: SeedFile['rules']): void {
+function seedRules(stateRoot: string, _repoRoot: string, rules: SeedFile['rules']): void {
   if (!rules || rules.length === 0) return;
-  const env = sandboxedSubprocessEnv(repoRoot, 'git');
   mkdirSync(join(stateRoot, 'rules'), { recursive: true });
   for (const rule of rules) {
     writeFileSync(join(stateRoot, 'rules', `${rule.id}.md`), rule.markdown);
   }
-  Bun.spawnSync(['git', 'add', 'rules'], { cwd: stateRoot, env });
-  Bun.spawnSync(['git', '-c', 'commit.gpgsign=false', 'commit', '-q', '-m', 'seed: rules'], {
-    cwd: stateRoot,
-    env,
-  });
 }
 
 async function seedFixture(handle: DaemonHandle, seed: SeedFile): Promise<void> {
@@ -878,7 +867,7 @@ export interface RunResult {
 export async function runDemoSprint(opts: RunOptions): Promise<RunResult> {
   const config = discoverConfig({ cwd: opts.cwd });
   if (!existsSync(config.stateRoot)) {
-    throw new Error('agile run: no .agile/ state found — run `agile init` first');
+    throw new Error(`agile run: no state home at ${config.stateRoot} — run \`agile init\` first`);
   }
   const fake = opts.fake ?? process.env.AGILE_LIVE !== '1';
   const maxTicks = opts.maxTicks ?? 200;
@@ -942,7 +931,7 @@ export async function runDemoSprint(opts: RunOptions): Promise<RunResult> {
         (opts.liveSpawnForTest
           ? undefined
           : createEmSessionDelegate({
-              stateRoot: join(opts.cwd, '.agile'),
+              stateRoot: config.stateRoot,
               cwd: opts.cwd,
               onNotice: opts.onNotice ?? ((line: string) => console.error(line)),
               stderrLogDir: join(opts.cwd, '.agile-daemon-cache', 'sessions'),

@@ -29,6 +29,7 @@ import { runHalt, runResume } from './commands/halt';
 import { parseHookArgs, runHook } from './commands/hook';
 import { runCliInit } from './commands/init';
 import { runQuestionAnswer, runQuestionList, runQuestionRaise } from './commands/question';
+import { runRepoAdd, runRepoList } from './commands/repo';
 import { runDemoSprint } from './commands/run';
 import { runSend } from './commands/send';
 import { runStatus } from './commands/status';
@@ -50,7 +51,9 @@ function usage(): string {
     'usage: agile <command> [options]',
     '',
     'commands:',
-    '  init                       bootstrap .agile/ state in the current git repo',
+    '  init                       create the state home ($AGILE_HOME, default ~/.agile/) if missing',
+    '  repo add <path> [--name <n>] [--protected a,b] [--target-branch <b>] [--vendor <v>]',
+    '  repo list                  list registered repos',
     '  daemon start               start agiled in the foreground for this repo',
     '  run [--seed <path>] [--live] [--port <n>] [--max-ticks <n>]   drive one sprint layer unattended (T021)',
     '  status                     sprint/tickets/agents/spend',
@@ -92,12 +95,7 @@ export async function runCli(argv: string[], cwd: string = process.cwd()): Promi
   const [command, sub, ...restArgv] = rest;
 
   if (command === 'init') {
-    const { message, alreadyInitialised } = runCliInit(cwd);
-    if (alreadyInitialised) {
-      console.error(message);
-      return 1;
-    }
-    console.log(message);
+    console.log(runCliInit(cwd).message);
     return 0;
   }
 
@@ -201,6 +199,13 @@ export async function runCli(argv: string[], cwd: string = process.cwd()): Promi
         if (sub === 'list') return await runQuestionList(socketPath, json);
         if (sub === 'answer') return await runQuestionAnswer(socketPath, parseArgs(restArgv), json);
         if (sub === 'raise') return await runQuestionRaise(socketPath, parseArgs(restArgv), json);
+        console.error(usage());
+        return 1;
+
+      // T111: the repo registry in the state home (`repos.yaml`).
+      case 'repo':
+        if (sub === 'list') return await runRepoList(socketPath, json);
+        if (sub === 'add') return await runRepoAdd(socketPath, parseArgs(restArgv), json, cwd);
         console.error(usage());
         return 1;
 

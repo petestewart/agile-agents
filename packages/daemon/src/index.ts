@@ -45,8 +45,6 @@ export {
 } from './daemon';
 export {
   runInit,
-  AlreadyInitialisedError,
-  STATE_BRANCH,
   PRODUCT_MD_STUB,
   type InitResult,
 } from './init';

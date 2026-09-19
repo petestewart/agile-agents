@@ -28,6 +28,7 @@ import { join } from 'node:path';
 import { type AcpProviderConfig, resolveAcpProvider } from '@agile-agents/acp-client';
 import type { AgentId, Ticket, TicketId } from '@agile-agents/shared';
 import type { Bus } from '../bus';
+import { stateHome } from '../config';
 import type { GateService } from '../gates';
 import { installPreCommitHook } from '../merge/precommit';
 import type { PermissionRole, TicketPermissionRole } from '../permissions';
@@ -326,7 +327,7 @@ export class Runner {
 
     const brief = assembleBrief({
       store,
-      stateRoot: join(repoRoot, '.agile'),
+      stateRoot: stateHome(),
       role,
       agent: agentId,
       ticket,

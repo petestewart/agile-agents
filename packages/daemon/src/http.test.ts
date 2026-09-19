@@ -130,7 +130,8 @@ describe('feed with a real store', () => {
     writeFileSync(join(repo, 'README.md'), '# fixture\n');
     Bun.spawnSync(['git', 'add', '-A'], { cwd: repo });
     Bun.spawnSync(['git', 'commit', '-q', '-m', 'initial commit'], { cwd: repo });
-    const init = runInit(repo);
+    // T111: the state home lives outside the repo.
+    const init = runInit(join(repo, 'home'));
     store = StateStore.open(init.stateRoot);
     gates = new GateService(store);
     questions = new QuestionService(store);
@@ -138,6 +139,7 @@ describe('feed with a real store', () => {
       port: 0,
       version: '0.0.0-test',
       stateRoot: init.stateRoot,
+      repoRoot: repo,
       startedAt: Date.now(),
       store,
       gates,
@@ -442,7 +444,8 @@ describe('T025 control room routes', () => {
     writeFileSync(join(repo, 'README.md'), '# fixture\n');
     Bun.spawnSync(['git', 'add', '-A'], { cwd: repo });
     Bun.spawnSync(['git', 'commit', '-q', '-m', 'initial commit'], { cwd: repo });
-    const init = runInit(repo);
+    // T111: the state home lives outside the repo.
+    const init = runInit(join(repo, 'home'));
     stateRoot = init.stateRoot;
     store = StateStore.open(stateRoot);
     gates = new GateService(store);
@@ -471,6 +474,7 @@ describe('T025 control room routes', () => {
       port: 0,
       version: '0.0.0-test',
       stateRoot,
+      repoRoot: repo,
       startedAt: Date.now(),
       store,
       gates,
@@ -855,6 +859,7 @@ describe('T025 control room routes', () => {
       port: 0,
       version: '0.0.0-test',
       stateRoot,
+      repoRoot: repo,
       startedAt: Date.now(),
       store,
       gates,
@@ -917,7 +922,8 @@ describe('T045 Jira sync routes', () => {
     writeFileSync(join(repo, 'README.md'), '# fixture\n');
     Bun.spawnSync(['git', 'add', '-A'], { cwd: repo });
     Bun.spawnSync(['git', 'commit', '-q', '-m', 'initial commit'], { cwd: repo });
-    const init = runInit(repo);
+    // T111: the state home lives outside the repo.
+    const init = runInit(join(repo, 'home'));
     configPath = join(repo, 'agile.config.yaml');
     store = StateStore.open(init.stateRoot);
     jira = startFakeJira();
@@ -935,6 +941,7 @@ describe('T045 Jira sync routes', () => {
       port: 0,
       version: '0.0.0-test',
       stateRoot: init.stateRoot,
+      repoRoot: repo,
       startedAt: Date.now(),
       store,
       gates: new GateService(store),
@@ -1072,13 +1079,15 @@ describe('T040 question routes', () => {
     writeFileSync(join(repo, 'README.md'), '# fixture\n');
     Bun.spawnSync(['git', 'add', '-A'], { cwd: repo });
     Bun.spawnSync(['git', 'commit', '-q', '-m', 'initial commit'], { cwd: repo });
-    const init = runInit(repo);
+    // T111: the state home lives outside the repo.
+    const init = runInit(join(repo, 'home'));
     store = StateStore.open(init.stateRoot);
     questions = new QuestionService(store);
     qServer = startHttpServer({
       port: 0,
       version: '0.0.0-test',
       stateRoot: init.stateRoot,
+      repoRoot: repo,
       startedAt: Date.now(),
       store,
       gates: new GateService(store),
@@ -1213,7 +1222,8 @@ describe('T043 chrome routes', () => {
     writeFileSync(join(repo, 'README.md'), '# fixture\n');
     Bun.spawnSync(['git', 'add', '-A'], { cwd: repo });
     Bun.spawnSync(['git', 'commit', '-q', '-m', 'initial commit'], { cwd: repo });
-    const init = runInit(repo);
+    // T111: the state home lives outside the repo.
+    const init = runInit(join(repo, 'home'));
     stateRoot = init.stateRoot;
     store = StateStore.open(stateRoot);
     gates = new GateService(store);
@@ -1221,6 +1231,7 @@ describe('T043 chrome routes', () => {
       port: 0,
       version: '0.0.0-test',
       stateRoot,
+      repoRoot: repo,
       startedAt: Date.now(),
       store,
       gates,

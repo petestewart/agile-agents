@@ -54,3 +54,11 @@ for (const key of [
   (Bun as any).spawnSync = (cmd: any, opts?: any) =>
     Array.isArray(cmd) ? origSpawnSync(cmd, withEnv(opts)) : origSpawnSync(withEnv(cmd));
 }
+
+// T111: the daemon's state home is `$AGILE_HOME` (default `~/.agile/`). No
+// test may ever touch the operator's real home, so default it to a temp
+// directory for the whole test process. A test that wants its own home
+// still sets `AGILE_HOME` itself and wins.
+if (!process.env.AGILE_HOME) {
+  process.env.AGILE_HOME = join(mkdtempSync(join(tmpdir(), 'agile-test-home-')), 'home');
+}
