@@ -87,12 +87,12 @@ Build order: Phase 0 → 1 → 2 → 3 → 4 → 5 → 6. Within a phase, ticket
 
 ### Ticket: T100 Land `claude/control-room-v2` and freeze the old plan
 - **Priority:** P0
-- **Status:** Todo
-- **Owner:** —
+- **Status:** Done
+- **Owner:** Pete + manager
 - **Scope:** Pete lands `claude/control-room-v2` into `main` by PR (T039–T051). Then: `PLAN.md` §7 gets a banner "frozen 2026-09-19, see `design/reshape-plan.md`"; no new T0xx tickets. The `/project` skill's "board" becomes this file (rename to `PLAN.md` and move the old one to `PLAN-v1.md` in the same commit).
 - **Acceptance Criteria:** `main` contains the v2 control room; `PLAN.md` is this document with the old plan preserved as `PLAN-v1.md`; `/project` reads the new board.
 - **Validation Steps:** `grep -c '^### Ticket: T1' PLAN.md` ≥ 30; skills' PLAN grep still matches.
-- **Notes:** Manual, Pete. Nothing else in this plan starts before this lands.
+- **Notes:** Manual, Pete. Nothing else in this plan starts before this lands. PR #2 merged to `main` as `a85edda` (2026-09-19). File moves done on `claude/reshape` (PLAN.md → PLAN-v1.md, reshape-plan.md → PLAN.md); `grep -c '^### Ticket: T1' PLAN.md` = 31. The §7 banner on PLAN-v1.md rides with T101.
 
 ### Ticket: T101 Rewrite the design doc around streams, rules, and the classifier tier
 - **Priority:** P0
@@ -389,4 +389,7 @@ Daemon: `em/`, `architect/`, `oracle/`, `qa/`, `halts/`, `quota/`, `handoff/`, `
 
 ## 10. Discovered Issues Log
 
-- (empty)
+- mode: yolo (2026-09-19). Integration branch for the reshape is `claude/reshape`; ticket branches `T###-<slug>` fork from it and merge back `--no-ff`. Pete lands each phase on `main` by PR. Mode: DIRECT_MODE (no `gh`).
+- Q1 assumption in force: a coding stream's target is the repo's default branch when the repo has no integration branch (T132).
+- Q4 assumption in force: repo docs are tracked in `<repo>/.agile-docs/` (T134).
+- Baseline before Phase 1: daemon source (non-test `.ts` under `packages/daemon/src`) = 35,932 lines.
