@@ -525,7 +525,7 @@ export function isChmodRecursive777(tokens: string[]): boolean {
   return tokens[0] === 'chmod' && tokens.includes('-R') && tokens.includes('777');
 }
 
-/** `.agile/` sits under the state worktree, not a ticket worktree — a direct write to it is never automatic (§14). */
+/** The state home () is never a ticket worktree — a direct write to it is never automatic (§14). */
 export function touchesAgileState(path: string | undefined): boolean {
   if (path === undefined) return false;
   return path.split(/[\\/]/).includes('.agile');

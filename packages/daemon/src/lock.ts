@@ -5,7 +5,7 @@
  *
  * Location decision: the lock file lives at `<repo>/.agile-daemon.lock`,
  * *outside* `.agile/` (the state worktree, tracked on the orphan
- * `agile-state` branch). A lock file is host/process-instance information,
+ * state home). A lock file is host/process-instance information,
  * not repo state — it must never be committed, diffed, or shared between
  * clones, so it does not belong on a branch at all. Keeping it at the repo
  * root (sibling to `.agile/`, `.git/`) also means it exists before `.agile/`

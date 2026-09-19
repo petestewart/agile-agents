@@ -1,33 +1,23 @@
 /**
- * `StateStore` — the validating read/write layer over `.agile/` (T005; design
- * agile-agents-design.md §4 "State model", §5 "Storage" (ordering/failure),
- * §15 "Git model and teams").
+ * `StateStore` — the validating read/write layer over the state home
+ * (T005, T111; PLAN.md §5 "State home").
  *
  * Every write: validate with the shared zod schema first (so a failing
- * validation touches no file), then an atomic file write (fs.ts), then one
- * git commit on the `agile-state` worktree batching every file that one
- * logical operation touched, plus the one `Event` line that operation mints
- * in `log/events.jsonl` (git.ts) — the commit message is that event's
- * `kind`, so the commit log and the event log share one vocabulary (review
- * fix, manager decision B1). Reads never mutate.
+ * validation touches no file), then an atomic file write (fs.ts), plus the
+ * one `Event` line that operation mints in `log/events.jsonl`. T111: the
+ * home is `$AGILE_HOME` (default `~/.agile/`), a plain directory, so there
+ * is no commit step and no `agile-state` branch — the event log is the
+ * audit trail. Reads never mutate.
  *
- * Concurrency: one daemon process per repo (§15), so a plain async mutex
- * around each mutation method is enough — it only needs to serialize this
- * process's own concurrent RPC calls against each other, not guard against
- * another process (that's the daemon-wide lock file, lock.ts). All the
- * actual file/git work below is synchronous (Bun.spawnSync, *Sync fs calls),
- * so nothing else runs on the single JS thread while a mutation is
- * mid-flight anyway; the mutex exists so a caller can safely fire mutations
- * concurrently (e.g. two RPC requests racing) without reasoning about
- * interleaving, and so a slower future implementation (real async I/O)
- * doesn't silently reintroduce a race.
- *
- * Partial-state note (review nit, documented not fully solved): every
- * mutation writes its entity file(s) first, then commits. If the commit
- * step throws (see git.ts's header), the write already landed on disk (and
- * in `log/events.jsonl`) ahead of `agile-state`'s committed history — the
- * error surfaces to the caller rather than being swallowed, but no
- * automatic rollback of the just-written bytes is implemented.
+ * Concurrency: one daemon process, so a plain async mutex around each
+ * mutation method is enough — it only needs to serialize this process's own
+ * concurrent RPC calls against each other, not guard against another
+ * process (that's the daemon-wide lock file, lock.ts). All the actual file
+ * work below is synchronous (*Sync fs calls), so nothing else runs on the
+ * single JS thread while a mutation is mid-flight anyway; the mutex exists
+ * so a caller can safely fire mutations concurrently (e.g. two RPC requests
+ * racing) without reasoning about interleaving, and so a slower future
+ * implementation (real async I/O) doesn't silently reintroduce a race.
  */
 
 import {

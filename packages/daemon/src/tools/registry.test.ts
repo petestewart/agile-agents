@@ -21,7 +21,7 @@ afterEach(() => {
 
 describe('loadToolRegistry', () => {
   test('returns [] when .agile/tools does not exist', () => {
-    expect(loadToolRegistry(join(repo, '.agile'))).toEqual([]);
+    expect(loadToolRegistry(join(repo, 'no-such-home'))).toEqual([]);
   });
 
   test('loads the two seeded starter tools from a real `agile init`', () => {
