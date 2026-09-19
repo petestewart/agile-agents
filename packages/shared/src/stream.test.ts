@@ -7,6 +7,7 @@ import {
   ulid,
   validateSessionRef,
   validateStream,
+  validateStreamFinding,
   validateThreadEntry,
 } from './index';
 
@@ -63,6 +64,54 @@ describe('StreamSchema', () => {
   test('rejects a non-ULID id and an unknown status', () => {
     expect(() => validateStream({ ...stream(), id: 'TKT-0231' })).toThrow(/ULID/);
     expect(() => validateStream({ ...stream(), human: { status: 'in_review' } })).toThrow(/human/);
+  });
+});
+
+describe('StreamFindingSchema', () => {
+  const finding = {
+    severity: 'blocker',
+    file: 'packages/daemon/src/store/store.ts',
+    line: 42,
+    text: 'writes the record without validating it first',
+  };
+
+  test('accepts a finding, with and without a line', () => {
+    expect(validateStreamFinding(finding).severity).toBe('blocker');
+    const { line: _line, ...fileScoped } = finding;
+    expect(validateStreamFinding(fileScoped).line).toBeUndefined();
+  });
+
+  test('.strict() rejects an unknown key', () => {
+    expect(() => validateStreamFinding({ ...finding, rule: 'RULE-012' })).toThrow(/unrecognized/i);
+  });
+
+  test('rejects an unknown severity and an over-long text', () => {
+    expect(() => validateStreamFinding({ ...finding, severity: 'blocking' })).toThrow(/severity/);
+    expect(() =>
+      validateStreamFinding({ ...finding, text: 'x'.repeat(THREAD_BODY_MAX_CHARS + 1) }),
+    ).toThrow(/800/);
+  });
+
+  test('a stream accepts arrays of findings and proposed next steps', () => {
+    const parsed = stream({
+      agent: {
+        status: 'working',
+        updated_at: '2026-09-19T10:05:00Z',
+        findings: [finding, { severity: 'nit', file: 'README.md', text: 'stale command' }],
+        proposed_next: ['add the store test', 'rerun the suite'],
+      },
+    } as never);
+    expect(parsed.agent.findings).toHaveLength(2);
+    expect(parsed.agent.proposed_next).toEqual(['add the store test', 'rerun the suite']);
+  });
+
+  test('a stream rejects a bare string where findings must be items', () => {
+    expect(() =>
+      validateStream({
+        ...stream(),
+        agent: { status: 'working', updated_at: 'now', findings: 'looks fine' },
+      }),
+    ).toThrow(/findings/);
   });
 });
 

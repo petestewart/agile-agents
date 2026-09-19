@@ -21,7 +21,15 @@ import { UlidSchema, formatZodError } from './ids';
  */
 export const THREAD_BODY_MAX_CHARS = 800;
 
-/** Who may write a stream record. `daemon` may write both halves. */
+/**
+ * Who may write a stream record. `daemon` may write both halves.
+ *
+ * A thread entry names its writer precisely (`agent:<session id>`), but a
+ * *write* only ever needs the writer's kind: the two-writer split is about
+ * which half of the record may change, not which session changed it. Every
+ * agent session therefore reduces to the bare `'agent'` principal here, on
+ * purpose — the session id belongs in the thread, not in the check.
+ */
 export const STREAM_PRINCIPALS = ['agent', 'human', 'daemon'] as const;
 export const StreamPrincipalSchema = z.enum(STREAM_PRINCIPALS);
 export type StreamPrincipal = z.infer<typeof StreamPrincipalSchema>;
@@ -100,13 +108,43 @@ export const ThreadEntrySchema = z
   .strict();
 export type ThreadEntry = z.infer<typeof ThreadEntrySchema>;
 
+/**
+ * Finding severities. Deliberately the same four words (and the same
+ * spelling, `blocker` not `blocking`) as the repo's existing
+ * `FINDING_SEVERITIES`, so a severity means one thing everywhere.
+ */
+export const STREAM_FINDING_SEVERITIES = ['blocker', 'major', 'minor', 'nit'] as const;
+export const StreamFindingSeveritySchema = z.enum(STREAM_FINDING_SEVERITIES);
+export type StreamFindingSeverity = z.infer<typeof StreamFindingSeveritySchema>;
+
+/**
+ * `Finding = { severity, file, line?, text }` (cockpit design §2.1) — one
+ * structured item under `agent.findings`, so the cockpit can group and link
+ * them instead of re-parsing a paragraph (T131).
+ *
+ * Exported as `StreamFinding`, not `Finding`: the plain name is still taken
+ * by the deprecated review-protocol finding in `review.ts`, which the daemon
+ * imports today. Rename to `Finding` when T122/T125 deletes that one.
+ */
+export const StreamFindingSchema = z
+  .object({
+    severity: StreamFindingSeveritySchema,
+    /** Repo-relative path the finding is about. */
+    file: z.string().min(1),
+    line: z.number().int().positive().optional(),
+    text: z.string().min(1).max(THREAD_BODY_MAX_CHARS),
+  })
+  .strict();
+export type StreamFinding = z.infer<typeof StreamFindingSchema>;
+
 /** Agent-owned half of the stream record. Only `agent`/`daemon` may write it. */
 export const StreamAgentStateSchema = z
   .object({
     status: StreamAgentStatusSchema,
     progress: z.string().max(THREAD_BODY_MAX_CHARS).optional(),
-    findings: z.string().max(THREAD_BODY_MAX_CHARS).optional(),
-    proposed_next: z.string().max(THREAD_BODY_MAX_CHARS).optional(),
+    findings: z.array(StreamFindingSchema).optional(),
+    /** Each next step is one line; the detail belongs in the thread. */
+    proposed_next: z.array(z.string().min(1).max(THREAD_BODY_MAX_CHARS)).optional(),
     updated_at: z.string().min(1),
   })
   .strict();
@@ -157,6 +195,14 @@ export function validateThreadEntry(input: unknown): ThreadEntry {
   const result = ThreadEntrySchema.safeParse(input);
   if (!result.success) {
     throw new Error(formatZodError('ThreadEntry', result.error));
+  }
+  return result.data;
+}
+
+export function validateStreamFinding(input: unknown): StreamFinding {
+  const result = StreamFindingSchema.safeParse(input);
+  if (!result.success) {
+    throw new Error(formatZodError('StreamFinding', result.error));
   }
   return result.data;
 }
