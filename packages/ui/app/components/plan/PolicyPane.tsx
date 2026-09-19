@@ -1,4 +1,5 @@
 import type { Policy } from '@agile-agents/shared';
+import { PaneClose } from './PaneClose';
 
 /**
  * Who decides — `policy.yaml` (§17 v2; mockup `#p-policy`). Read-only here
@@ -25,6 +26,7 @@ export function PolicyPane({
             Open Settings
           </button>
         )}
+        <PaneClose />
       </div>
       <table>
         <thead>

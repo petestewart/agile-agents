@@ -167,6 +167,19 @@ export interface FeedTeamMember {
   tokens: number;
 }
 
+/**
+ * T049 defect 5: the resident EM session's vendor and model, for the chat
+ * header's `vendor / model` next to the live dot. `model` is `'unknown'`
+ * only until the session has reported one on `session/new` — there is no
+ * per-role model field in `.agile/vendors.yaml` for it to come from
+ * (`packages/shared/src/vendors.ts`), so the live session is the only
+ * source. Absent when no resident EM is wired to this daemon.
+ */
+export interface FeedEmInfo {
+  vendor: string;
+  model: string;
+}
+
 export interface FeedSnapshot {
   type: 'snapshot';
   events: Event[];
@@ -190,6 +203,8 @@ export interface FeedSnapshot {
   stories: TicketStory[];
   /** T044: the Sprint tab's Team table, departed agents included. */
   team: FeedTeamMember[];
+  /** T049: the resident EM session's vendor/model, for the chat header. */
+  em?: FeedEmInfo;
 }
 
 /** `S-<n>` -> `n`, for the "Start Sprint N" button. Non-numeric ids (impossible today — `SprintIdSchema` is `S-\d+`) are skipped rather than producing `NaN`. */
@@ -325,6 +340,8 @@ export function buildSnapshot(
   questions?: QuestionService,
   /** T043: the repo root the daemon is driving (`<repoRoot>`, i.e. the state root's parent). Optional — without it the snapshot carries no `project` and the top bar falls back to a generic name. */
   projectRoot?: string,
+  /** T049: the resident EM session's vendor/model. Optional for the same reason as every parameter above it — a daemon with no resident EM ships a snapshot with no `em` block and the chat header says so. */
+  em?: FeedEmInfo,
 ): FeedSnapshot {
   const allEvents = store.listEvents();
   const events = allEvents.slice(-eventLimit);
@@ -395,5 +412,6 @@ export function buildSnapshot(
     status,
     stories,
     team: buildTeam(store, blockedTickets),
+    ...(em ? { em } : {}),
   };
 }

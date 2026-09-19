@@ -42,6 +42,7 @@
  */
 
 import {
+  ACP_SESSION_STATE_METHOD,
   type AcpProviderConfig,
   type AgentEvent,
   type SpawnSessionOptions,
@@ -161,6 +162,54 @@ export function messageChunkText(event: AgentEvent): string | undefined {
   return content.text.length > 0 ? content.text : undefined;
 }
 
+/**
+ * T049 defect 5: the control room's chat header must name the EM session's
+ * vendor *and* model, and "`claude / unknown` is not acceptable once the
+ * session has reported". The model is not in `vendors.yaml` (it has no
+ * per-role model field at all) and not in the provider registry — the only
+ * place it exists is the `session/new` result the `_agile/session_state`
+ * notification carries, which is where a ticket session already reads it
+ * from (`runner/session.ts`'s own `modelFromSessionState`, a private
+ * function in a file this ticket does not own; unify the two when both have
+ * landed). Shape is vendor-specific and modelled nowhere, so an unknown
+ * shape yields `undefined` rather than a guess.
+ */
+export function emModelFromSessionState(params: unknown): string | undefined {
+  const p = params as Record<string, unknown> | null | undefined;
+  if (!p || typeof p !== 'object') return undefined;
+  const configOptions = p.configOptions;
+  if (Array.isArray(configOptions)) {
+    for (const opt of configOptions) {
+      const o = opt as Record<string, unknown> | null;
+      if (o && typeof o === 'object') {
+        if (typeof o.model === 'string') return o.model;
+        if (typeof o.currentValue === 'string' && o.id === 'model') return o.currentValue;
+      }
+    }
+  }
+  if (configOptions && typeof configOptions === 'object') {
+    const record = configOptions as Record<string, unknown>;
+    if (typeof record.model === 'string') return record.model;
+  }
+  return undefined;
+}
+
+/** The `_agile/session_state` notification's params, or `undefined` for every other frame. */
+function sessionStateParams(event: AgentEvent): unknown {
+  if (event.type !== 'event') return undefined;
+  const frame = event.event;
+  if (frame.acp !== 'notification' || frame.message.method !== ACP_SESSION_STATE_METHOD) {
+    return undefined;
+  }
+  return frame.message.params;
+}
+
+/** T049: what the control room's chat header shows next to the live dot. */
+export interface EmSessionIdentity {
+  vendor: string;
+  model: string;
+}
+
 function mcpServerConfig(cli: CliInvocation, socketPath: string | undefined): unknown {
   return {
     name: 'agile',
@@ -196,6 +245,8 @@ export class ResidentEm {
   private stopped = false;
   /** Set on every fresh spawn; cleared once the brief has ridden along with a prompt. */
   private needsBrief = false;
+  /** T049: the model this session reported on `session/new`; `'unknown'` until it has. */
+  private model = 'unknown';
 
   constructor(private readonly options: ResidentEmOptions) {
     this.provider = options.provider ?? resolveAcpProvider(undefined);
@@ -208,6 +259,16 @@ export class ResidentEm {
   /** Whether a live vendor process is currently held. `false` before the first prompt and after `kill()`. */
   get alive(): boolean {
     return this.session !== undefined && !this.session.exited;
+  }
+
+  /**
+   * T049 defect 5: the vendor and model the control room's chat header names.
+   * The vendor is the provider this resident is configured with (known before
+   * anything is spawned); the model is `'unknown'` only until the session has
+   * reported one on `session/new`.
+   */
+  describe(): EmSessionIdentity {
+    return { vendor: this.provider.id, model: this.model };
   }
 
   /**
@@ -313,6 +374,14 @@ export class ResidentEm {
     // A vendor that dies (crash, `kill -9`, operator closing it) must not
     // leave a dead handle behind: the next prompt respawns instead.
     this.unsubscribe = session.on((event) => {
+      // T049: the model arrives once, on the `session/new` result — captured
+      // here rather than in `runTurn` so it is known as soon as the session
+      // is ready, not only after the first reply.
+      const state = sessionStateParams(event);
+      if (state !== undefined) {
+        const reported = emModelFromSessionState(state);
+        if (reported !== undefined) this.model = reported;
+      }
       if (event.type === 'exit' || event.type === 'error') {
         if (this.session === session) this.dropSession();
       }

@@ -2,6 +2,7 @@ export {
   DEFAULT_SNAPSHOT_EVENT_LIMIT,
   buildSnapshot,
   pickCurrentSprint,
+  type FeedEmInfo,
   type FeedSnapshot,
   type FeedSprintInfo,
   type FeedTeamMember,

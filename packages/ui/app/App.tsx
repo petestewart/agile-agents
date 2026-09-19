@@ -186,7 +186,18 @@ export function App(): JSX.Element {
   const reviewGate = hil.find((item) => item.gate === 'sprint_review');
 
   const chatVisible = chatMode !== 'hidden';
-  const mainVisible = chatMode !== 'max' && middleOpen;
+  /**
+   * T049 defect 3: on the Plan screen the middle *pane* is the document
+   * pane, not the whole column — the rail lives beside it and the mockup's
+   * own `.plan.nopane` grid keeps it when the pane is closed. Unmounting
+   * `cr-main` wholesale is what took the rail away with it and left the app
+   * with no way back. So a closed pane on Plan keeps the column (narrowed to
+   * the rail, `data-main="rail"`); on the other views, where nothing can
+   * close it, it stays open.
+   */
+  const railOnly = view === 'plan' && !middleOpen;
+  const mainVisible = chatMode !== 'max' && (middleOpen || railOnly);
+  const mainState = mainVisible ? (railOnly ? 'rail' : 'open') : 'closed';
 
   return (
     <div className="cr-root">
@@ -202,17 +213,17 @@ export function App(): JSX.Element {
           {error}
         </p>
       )}
-      <div
-        className="cr-frame"
-        data-chat={chatMode}
-        data-main={mainVisible ? 'open' : 'closed'}
-        data-view={view}
-      >
+      <div className="cr-frame" data-chat={chatMode} data-main={mainState} data-view={view}>
         {mainVisible && (
           <div className="cr-main">
             {view === 'plan' && <PlanScreen />}
             {view === 'settings' && (
-              <Settings policy={policy} quota={quota} onChanged={refreshAux} />
+              <Settings
+                policy={policy}
+                quota={quota}
+                {...(snapshot?.em ? { em: snapshot.em } : {})}
+                onChanged={refreshAux}
+              />
             )}
             {view === 'sprint' && (
               <>

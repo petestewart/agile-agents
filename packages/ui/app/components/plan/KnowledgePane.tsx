@@ -1,5 +1,7 @@
 import type { KbFact } from '@agile-agents/shared';
 import { useState } from 'react';
+import { Markdown } from '../Markdown';
+import { PaneClose } from './PaneClose';
 import { putKnowledge } from './plan-api';
 
 /**
@@ -47,6 +49,7 @@ export function KnowledgePane({
         >
           Add fact
         </button>
+        <PaneClose />
       </div>
       {error && <p style={{ color: 'var(--danger)' }}>{error}</p>}
       {(adding || editing) && (
@@ -75,7 +78,12 @@ export function KnowledgePane({
         <tbody>
           {facts.map(({ fact, body: text }) => (
             <tr key={fact.id} data-testid={`fact-${fact.id}`}>
-              <td>{text}</td>
+              {/* `knowledge/facts/*.md` is markdown too (T049): a fact that
+                  names a symbol in backticks should read as code, not as
+                  backticks. The raw text is what the editor above holds. */}
+              <td>
+                <Markdown text={text} testId={`fact-body-${fact.id}`} />
+              </td>
               <td className="mono">{fact.scope.join(', ')}</td>
               <td className="mono">{fact.source}</td>
               <td>

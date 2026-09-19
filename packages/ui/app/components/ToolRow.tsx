@@ -21,10 +21,17 @@ import { useShell } from '../lib/shell';
 import { ChatIcon, MaximizeIcon, PopOutIcon, RailCollapseIcon } from './icons';
 
 export function ToolRow({ connected }: { connected: boolean }): JSX.Element {
-  const { view, railCollapsed, toggleRail, chatMode, setChatMode } = useShell();
+  const { view, railCollapsed, toggleRail, chatMode, setChatMode, middleOpen, setMiddleOpen } =
+    useShell();
 
   const chatVisible = chatMode !== 'hidden';
   const maximized = chatMode === 'max';
+  /**
+   * T049 defect 3: the same icon restores a *closed* middle pane, not only a
+   * maximized chat. Toggling `chatMode` alone left a closed pane closed, so
+   * this button — the only chrome left once the pane is gone — did nothing.
+   */
+  const restorable = maximized || !middleOpen;
 
   return (
     <div className="cr-toolrow" data-testid="toolrow">
@@ -75,9 +82,16 @@ export function ToolRow({ connected }: { connected: boolean }): JSX.Element {
         className={`cr-ib${maximized ? ' on' : ''}`}
         data-testid="chat-maximize"
         aria-pressed={maximized}
-        title={maximized ? 'Restore' : 'Maximize chat'}
-        aria-label={maximized ? 'Restore chat' : 'Maximize chat'}
-        onClick={() => setChatMode(maximized ? 'panel' : 'max')}
+        title={restorable ? 'Restore' : 'Maximize chat'}
+        aria-label={restorable ? 'Restore the pane' : 'Maximize chat'}
+        onClick={() => {
+          if (restorable) {
+            setChatMode('panel');
+            setMiddleOpen(true);
+            return;
+          }
+          setChatMode('max');
+        }}
       >
         <MaximizeIcon on={maximized} />
       </button>

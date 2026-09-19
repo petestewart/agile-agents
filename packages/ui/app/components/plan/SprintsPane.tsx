@@ -1,5 +1,6 @@
 import type { TicketId } from '@agile-agents/shared';
 import { useState } from 'react';
+import { PaneClose } from './PaneClose';
 import { type SprintBoard, type SprintRowTicket, moveTicket } from './plan-api';
 
 /**
@@ -53,6 +54,7 @@ export function SprintsPane({
       <div className="dochd">
         <span className="eyebrow">Sprints ({board.rows.length})</span>
         <span className="file">sprints/S-*.yaml</span>
+        <PaneClose />
       </div>
       <p className="src">
         Each sprint is the frontier of the ticket graph when it starts. Only the next one is

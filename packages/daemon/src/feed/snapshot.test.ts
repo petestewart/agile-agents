@@ -234,3 +234,22 @@ describe('T043: project + status for the top bar', () => {
     expect(status.needs_you).toBe(2);
   });
 });
+
+/**
+ * T049 defect 5: the chat header's `vendor / model` rides on the snapshot, so
+ * a daemon with no resident EM still ships a valid snapshot and the header
+ * says "no session yet" rather than inventing one.
+ */
+describe('the em block (T049)', () => {
+  test('is absent without a resident EM', () => {
+    expect(buildSnapshot(store, gates).em).toBeUndefined();
+  });
+
+  test('carries the resident session vendor and model when one is wired', () => {
+    const snapshot = buildSnapshot(store, gates, undefined, undefined, undefined, undefined, {
+      vendor: 'claude',
+      model: 'fake/model-1',
+    });
+    expect(snapshot.em).toEqual({ vendor: 'claude', model: 'fake/model-1' });
+  });
+});
