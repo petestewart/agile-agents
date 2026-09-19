@@ -116,17 +116,17 @@ Build order: Phase 0 → 1 → 2 → 3 → 4 → 5 → 6. Within a phase, ticket
 
 ### Ticket: T111 State home and the repo registry
 - **Priority:** P0
-- **Status:** In Progress
+- **Status:** Done
 - **Owner:** opus:worker-T111
 - **Scope:** The store (`daemon/src/store`) opens `AGILE_HOME` (default `~/.agile/`) instead of a repo's `.agile/` worktree. `repos.yaml` registers repos (`path`, `protected_branches` default `[main, master]`, `target_branch?`, `vendor?`). `agile repo add <path>` / `agile repo list`. Drop the orphan-branch machinery in `store/git.ts` and `init.ts`'s worktree setup; `agile init` becomes "create the home if missing". Events log moves to the home.
 - **Acceptance Criteria:** A daemon started with a temp `AGILE_HOME` serves two registered repos; no `.agile/` directory is created inside a repo; the old `agile-state` code paths are deleted, not flagged off.
 - **Validation Steps:** `bun test packages/daemon/src/store packages/cli`; integration test that registers two temp repos.
-- **Notes:** Migration from an existing `.agile/` worktree is out of scope; ledger-lite gets reset (recipe in LIVE-CHECKLIST).
+- **Notes:** Migration from an existing `.agile/` worktree is out of scope; ledger-lite gets reset (recipe in LIVE-CHECKLIST). Branch `T111-state-home-and-repo-registry`. `store/git.ts` and the orphan-branch init deleted; `repos.yaml` + `agile repo add|list` + `state.repo_*` RPC; `repo.e2e.test.ts` added to `test:integration`; `test-preload.ts` defaults `AGILE_HOME` to a temp dir (the suite used to write into the operator's real `~/.agile/`). Side fix: `chat-state.ts` no longer re-arms a turn that already ended (exposed by the per-write git commit going away; regression test added). Review (sonnet) PASS. Daemon source 35,905 lines. merge: fc827e7.
 
 ### Ticket: T112 Long-lived `agiled` and thin CLI
 - **Priority:** P0
-- **Status:** Todo
-- **Owner:** —
+- **Status:** In Progress
+- **Owner:** opus:worker-T112
 - **Scope:** `agile daemon start|stop|status` runs the daemon detached with a pidfile and a port in `config.yaml`; it never exits because work finished. `agile run` is deleted; its `advancePipeline` glue is replaced by per-stream drivers in Phase 3. `agile status`, `agile tail` talk to the daemon over the existing RPC. The control room is served at `/` (the `/control-room` path stays as a redirect).
 - **Acceptance Criteria:** Daemon survives the last stream closing; `agile status` works with no repo cwd; a second `start` is a no-op with the pid printed.
 - **Validation Steps:** `bun run test:integration` (daemon lifecycle test); manual: start, close the terminal, open the URL.
@@ -392,4 +392,5 @@ Daemon: `em/`, `architect/`, `oracle/`, `qa/`, `halts/`, `quota/`, `handoff/`, `
 - mode: yolo (2026-09-19). Integration branch for the reshape is `claude/reshape`; ticket branches `T###-<slug>` fork from it and merge back `--no-ff`. Pete lands each phase on `main` by PR. Mode: DIRECT_MODE (no `gh`).
 - Q1 assumption in force: a coding stream's target is the repo's default branch when the repo has no integration branch (T132).
 - Q4 assumption in force: repo docs are tracked in `<repo>/.agile-docs/` (T134).
+- Playwright e2e suites are load-sensitive: run concurrently with a full `bun test` one of them times out (a different test each time). Unloaded they are green. Pre-existing; noted at T111.
 - Baseline before Phase 1: daemon source (non-test `.ts` under `packages/daemon/src`) = 35,932 lines.
