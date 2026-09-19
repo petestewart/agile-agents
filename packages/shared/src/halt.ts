@@ -22,6 +22,7 @@ export type HaltScope = z.infer<typeof HaltScopeSchema>;
 export const HaltQuorumSchema = z.enum(['pending', 'reached']);
 export type HaltQuorum = z.infer<typeof HaltQuorumSchema>;
 
+/** @deprecated — removed by T122/T125 (PLAN.md §5: streams replace this entity). */
 export const HaltSchema = z
   .object({
     id: HaltIdSchema,

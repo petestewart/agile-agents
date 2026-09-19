@@ -13,6 +13,7 @@ export const KB_CONFIDENCE_LEVELS = ['observed', 'verified'] as const;
 export const KbConfidenceSchema = z.enum(KB_CONFIDENCE_LEVELS);
 export type KbConfidence = z.infer<typeof KbConfidenceSchema>;
 
+/** @deprecated — removed by T122/T125 (PLAN.md §5: streams replace this entity). */
 export const KbFactSchema = z
   .object({
     id: KbIdSchema,

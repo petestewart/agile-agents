@@ -18,6 +18,7 @@ export const SprintRetroSchema = z
   .strict();
 export type SprintRetro = z.infer<typeof SprintRetroSchema>;
 
+/** @deprecated — removed by T122/T125 (PLAN.md §5: streams replace this entity). */
 export const SprintSchema = z
   .object({
     id: SprintIdSchema,

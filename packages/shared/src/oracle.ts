@@ -11,6 +11,7 @@ import { OracleIdSchema, formatZodError } from './ids';
 export const OracleStatusSchema = z.enum(['active', 'superseded', 'retired']);
 export type OracleStatus = z.infer<typeof OracleStatusSchema>;
 
+/** @deprecated — removed by T122/T125 (PLAN.md §5: streams replace this entity). */
 export const OracleEntrySchema = z
   .object({
     id: OracleIdSchema,

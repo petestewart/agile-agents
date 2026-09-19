@@ -85,6 +85,7 @@ export type ReviewPass = z.infer<typeof ReviewPassSchema>;
  * schema); `request_changes` with an empty findings array has nothing to
  * act on and is rejected below.
  */
+/** @deprecated — removed by T122/T125 (PLAN.md §5: streams replace this entity). */
 export const VerdictSchema = z
   .object({
     ticket: TicketIdSchema,

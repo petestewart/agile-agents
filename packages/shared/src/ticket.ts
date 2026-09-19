@@ -161,6 +161,7 @@ export const TicketExternalSchema = z
   .strict();
 export type TicketExternal = z.infer<typeof TicketExternalSchema>;
 
+/** @deprecated — removed by T122/T125 (PLAN.md §5: streams replace this entity). */
 export const TicketSchema = z
   .object({
     id: TicketIdSchema,

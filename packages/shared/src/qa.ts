@@ -45,6 +45,7 @@ export const QA_VERDICTS = ['accept', 'reject'] as const;
 export const QaVerdictSchema = z.enum(QA_VERDICTS);
 export type QaVerdict = z.infer<typeof QaVerdictSchema>;
 
+/** @deprecated — removed by T122/T125 (PLAN.md §5: streams replace this entity). */
 export const QaReportSchema = z
   .object({
     ticket: TicketIdSchema,

@@ -161,6 +161,7 @@ export const QUOTA_BILLING_MODES = ['subscription', 'extra_usage_dollars'] as co
 export const QuotaBillingSchema = z.enum(QUOTA_BILLING_MODES);
 export type QuotaBilling = z.infer<typeof QuotaBillingSchema>;
 
+/** @deprecated — removed by T122/T125 (PLAN.md §5: streams replace this entity). */
 export const QuotaSchema = z
   .object({
     vendor: z.string().min(1),
