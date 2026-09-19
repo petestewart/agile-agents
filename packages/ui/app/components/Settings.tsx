@@ -17,7 +17,7 @@
 import { type GateOwner, KNOWN_GATES, type Policy } from '@agile-agents/shared';
 import { useState } from 'react';
 import { putPolicy } from '../lib/api';
-import type { FeedQuotaInfo } from '../lib/feed-types';
+import { type FeedEmInfo, type FeedQuotaInfo, emLabel } from '../lib/feed-types';
 import { PopOutIcon } from './icons';
 
 /** One row per gate kind, worded as the mockup words them (`#s5`). */
@@ -167,10 +167,13 @@ export function SpendWindow({ quota }: { quota: FeedQuotaInfo[] }): JSX.Element 
 export function Settings({
   policy,
   quota,
+  em,
   onChanged,
 }: {
   policy: Policy | undefined;
   quota: FeedQuotaInfo[];
+  /** T049: the resident EM session's vendor/model, shown read-only — see the row below. */
+  em?: FeedEmInfo;
   onChanged: () => void;
 }): JSX.Element {
   const [spendOpen, setSpendOpen] = useState(false);
@@ -231,6 +234,34 @@ export function Settings({
         >
           <PopOutIcon />
         </button>
+      </div>
+
+      {/*
+        T049 defect 5: the EM session's vendor/model, read-only.
+        `.agile/vendors.yaml` (`packages/shared/src/vendors.ts`) has no
+        per-role model field at all — a vendor entry is `accounts`,
+        `requires_sandbox` and `sandbox_enabled`, nothing else — and neither
+        `policy.yaml` nor the provider registry carries one. So there is
+        nothing for a picker here to write to, and inventing a config field
+        would be a new convention this ticket has no approval for. The row
+        reports what the live session is on; choosing it needs a schema
+        change first (see the ticket report).
+      */}
+      <div className="cr-rule cr-spend-row" data-testid="settings-em-model">
+        <div style={{ flex: 1 }}>
+          <b>EM session</b>
+          <div className="what">
+            {em
+              ? `${emLabel(em)} — reported by the resident session on its handshake.`
+              : 'No resident EM session has reported yet — it spawns on the first chat message.'}
+          </div>
+        </div>
+        <span
+          className="cr-badge"
+          title="Read-only: .agile/vendors.yaml has no per-role model field to write a choice to"
+        >
+          read-only
+        </span>
       </div>
 
       <h2 style={{ marginTop: 18 }}>How much should the team ask you?</h2>

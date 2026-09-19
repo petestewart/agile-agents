@@ -5,6 +5,7 @@ import { useShell } from '../../lib/shell';
 import { BriefPane } from './BriefPane';
 import { DecisionsPane } from './DecisionsPane';
 import { KnowledgePane } from './KnowledgePane';
+import { PaneCloseProvider } from './PaneClose';
 import { PolicyPane } from './PolicyPane';
 import { QuestionsPane } from './QuestionsPane';
 import { RulesPane } from './RulesPane';
@@ -108,6 +109,13 @@ export function PlanScreen(): JSX.Element {
     setMiddleOpen(true);
   }
 
+  /**
+   * T049 defect 3: closing the pane leaves the rail standing (the shell keeps
+   * the column and narrows it — `App`'s `data-main="rail"`), so the operator
+   * always has a way back without a reload.
+   */
+  const closePane = useCallback(() => setMiddleOpen(false), [setMiddleOpen]);
+
   const counts: Record<PaneId, string> = {
     brief: overview?.brief.stub ? '—' : '1',
     rules: String(overview?.rules.length ?? 0),
@@ -176,71 +184,65 @@ export function PlanScreen(): JSX.Element {
         </nav>
 
         {middleOpen && overview && (
-          <div>
-            <div className="cr-plan-paneclose">
-              <button
-                type="button"
-                className="cr-icon-btn"
-                data-testid="pane-close"
-                title="Close this pane and widen the chat"
-                onClick={() => setMiddleOpen(false)}
-              >
-                ✕
-              </button>
-            </div>
-            {pane === 'brief' && <BriefPane brief={overview.brief} onChanged={refresh} />}
-            {pane === 'rules' && <RulesPane rules={overview.rules} onChanged={refresh} />}
-            {pane === 'questions' && (
-              <QuestionsPane questions={overview.questions} onChanged={refresh} />
-            )}
-            {pane === 'decisions' && (
-              <DecisionsPane decisions={overview.decisions} onChanged={refresh} />
-            )}
-            {pane === 'tickets' && (
-              <TicketsPane
-                tickets={overview.tickets}
-                onChanged={refresh}
-                onSelect={(id) => setSelected(id)}
-              />
-            )}
-            {pane === 'sprints' && (
-              <SprintsPane
-                board={overview.sprints}
-                onChanged={refresh}
-                onSelect={(id) => setSelected(id)}
-              />
-            )}
-            {pane === 'knowledge' && (
-              <KnowledgePane facts={overview.knowledge} onChanged={refresh} />
-            )}
-            {pane === 'policy' && (
-              <PolicyPane
-                {...(overview.policy ? { policy: overview.policy } : {})}
-                onOpenSettings={() => setView('settings')}
-              />
-            )}
+          /* T049 defect 4: the close (X) is rendered by each pane inside its
+             own `.dochd`, exactly where the mockup puts it, instead of in a
+             strip above the pane that overlapped the header's action button. */
+          <PaneCloseProvider value={closePane}>
+            <div>
+              {pane === 'brief' && <BriefPane brief={overview.brief} onChanged={refresh} />}
+              {pane === 'rules' && <RulesPane rules={overview.rules} onChanged={refresh} />}
+              {pane === 'questions' && (
+                <QuestionsPane questions={overview.questions} onChanged={refresh} />
+              )}
+              {pane === 'decisions' && (
+                <DecisionsPane decisions={overview.decisions} onChanged={refresh} />
+              )}
+              {pane === 'tickets' && (
+                <TicketsPane
+                  tickets={overview.tickets}
+                  onChanged={refresh}
+                  onSelect={(id) => setSelected(id)}
+                />
+              )}
+              {pane === 'sprints' && (
+                <SprintsPane
+                  board={overview.sprints}
+                  onChanged={refresh}
+                  onSelect={(id) => setSelected(id)}
+                />
+              )}
+              {pane === 'knowledge' && (
+                <KnowledgePane facts={overview.knowledge} onChanged={refresh} />
+              )}
+              {pane === 'policy' && (
+                <PolicyPane
+                  {...(overview.policy ? { policy: overview.policy } : {})}
+                  onOpenSettings={() => setView('settings')}
+                />
+              )}
 
-            {detail && (
-              <div className="rule" data-testid={`ticket-detail-${detail.id}`}>
-                <span className="id">Ticket detail · {detail.id}</span> <b>{detail.title}</b>
-                <dl className="kv">
-                  <dt>Blocked by</dt>
-                  <dd className="mono" data-testid="detail-blocked-by">
-                    {detail.blocked_by.length > 0 ? detail.blocked_by.join(', ') : 'nothing'}
-                  </dd>
-                  <dt>Blocks</dt>
-                  <dd className="mono" data-testid="detail-blocks">
-                    {detail.blocks.length > 0 ? detail.blocks.join(', ') : 'nothing'}
-                  </dd>
-                  <dt>Contract</dt>
-                  <dd>{detail.stub ? 'stub, expanded when blockers land' : 'refined'}</dd>
-                </dl>
-                <button type="button" className="cr-link" onClick={() => setSelected(undefined)}>
-                  close
-                </button>
-              </div>
-            )}
-          </div>
+              {detail && (
+                <div className="rule" data-testid={`ticket-detail-${detail.id}`}>
+                  <span className="id">Ticket detail · {detail.id}</span> <b>{detail.title}</b>
+                  <dl className="kv">
+                    <dt>Blocked by</dt>
+                    <dd className="mono" data-testid="detail-blocked-by">
+                      {detail.blocked_by.length > 0 ? detail.blocked_by.join(', ') : 'nothing'}
+                    </dd>
+                    <dt>Blocks</dt>
+                    <dd className="mono" data-testid="detail-blocks">
+                      {detail.blocks.length > 0 ? detail.blocks.join(', ') : 'nothing'}
+                    </dd>
+                    <dt>Contract</dt>
+                    <dd>{detail.stub ? 'stub, expanded when blockers land' : 'refined'}</dd>
+                  </dl>
+                  <button type="button" className="cr-link" onClick={() => setSelected(undefined)}>
+                    close
+                  </button>
+                </div>
+              )}
+            </div>
+          </PaneCloseProvider>
         )}
       </div>
     </section>

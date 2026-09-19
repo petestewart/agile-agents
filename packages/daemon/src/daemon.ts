@@ -799,6 +799,11 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
       // T041: `/api/chat/em` (GET history, POST send) and the `chat_delta`/
       // `chat_turn_end` frames on `/ws`.
       emChat,
+      // T049: the chat header's `vendor / model`. A function, not a value:
+      // the model arrives on the resident session's `session/new`, which is
+      // lazy (first prompt), so a snapshot built before that must still see
+      // the real one afterwards.
+      ...(residentEm ? { emSession: () => residentEm.describe() } : {}),
       // T045: backs the Tickets pane's link/unlink action.
       jiraSync,
       // T042: the Plan screen's panes, edits, Start Sprint, and the

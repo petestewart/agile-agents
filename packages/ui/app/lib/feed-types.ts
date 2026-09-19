@@ -57,6 +57,28 @@ export interface FeedStatusInfo {
   approve_plan_pending: boolean;
 }
 
+/**
+ * T049: the resident EM session's vendor and model, for the chat header's
+ * `vendor / model` next to the live dot. `model` is `'unknown'` until the
+ * session has reported one on `session/new`; `.agile/vendors.yaml` carries
+ * no per-role model field, so the live session is the only source.
+ */
+export interface FeedEmInfo {
+  vendor: string;
+  model: string;
+}
+
+/**
+ * T049 defect 5: `vendor / model` for the chat header. The vendor is known
+ * before anything is spawned; the model only once the session has reported it
+ * on `session/new`, and `'unknown'` is the daemon's sentinel for "not yet"
+ * — the ticket is explicit that `claude / unknown` is not acceptable, so the
+ * header says the session is still coming up instead of naming a fake model.
+ */
+export function emLabel(em: FeedEmInfo): string {
+  return em.model === 'unknown' ? `${em.vendor} / starting…` : `${em.vendor} / ${em.model}`;
+}
+
 export interface FeedSnapshot {
   type: 'snapshot';
   events: Event[];
@@ -73,6 +95,8 @@ export interface FeedSnapshot {
   stories: TicketStory[];
   /** T044: the Team table, departed agents included. */
   team: FeedTeamMember[];
+  /** T049: the resident EM session's vendor/model. Absent when no resident EM is wired. */
+  em?: FeedEmInfo;
 }
 
 /**

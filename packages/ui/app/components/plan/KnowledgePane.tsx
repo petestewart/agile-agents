@@ -1,5 +1,6 @@
 import type { KbFact } from '@agile-agents/shared';
 import { useState } from 'react';
+import { PaneClose } from './PaneClose';
 import { putKnowledge } from './plan-api';
 
 /**
@@ -47,6 +48,7 @@ export function KnowledgePane({
         >
           Add fact
         </button>
+        <PaneClose />
       </div>
       {error && <p style={{ color: 'var(--danger)' }}>{error}</p>}
       {(adding || editing) && (

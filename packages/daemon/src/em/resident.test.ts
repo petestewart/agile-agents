@@ -13,7 +13,7 @@ import { ACP_PROVIDERS, type AcpProviderConfig } from '@agile-agents/acp-client'
 import { runInit } from '../init';
 import type { FakeAgentScript } from '../runner/fake-agent';
 import { StateStore } from '../store';
-import { ResidentEm } from './resident';
+import { ResidentEm, emModelFromSessionState } from './resident';
 
 const FAKE_AGENT_PATH = join(import.meta.dir, '..', 'runner', 'fake-agent.ts');
 
@@ -71,6 +71,27 @@ describe('ResidentEm', () => {
       expect(await collect(turn)).toEqual(['TKT-1001 is in review, ', 'TKT-1002 is unassigned.']);
       expect(await turn.done).toBe('TKT-1001 is in review, TKT-1002 is unassigned.');
       expect(em.alive).toBe(true);
+    } finally {
+      em.stop();
+    }
+  }, 20000);
+
+  test('describe() names the provider straight away and the reported model once the session is up (T049)', async () => {
+    const em = new ResidentEm({
+      cwd: repo,
+      store,
+      provider: fakeProvider({
+        model: 'fake/model-7',
+        steps: [{ type: 'agent_text', text: 'ok' }, { type: 'end_turn' }],
+      }),
+    });
+    try {
+      // Before anything is spawned: the vendor is known, the model is not.
+      expect(em.describe()).toEqual({ vendor: 'claude', model: 'unknown' });
+      await em.prompt('status?').done;
+      // `claude / unknown` is exactly what the ticket rejects once the session
+      // has reported — this is the report arriving.
+      expect(em.describe()).toEqual({ vendor: 'claude', model: 'fake/model-7' });
     } finally {
       em.stop();
     }
@@ -279,5 +300,38 @@ describe('ResidentEm', () => {
     });
     em.stop();
     await expect(em.prompt('anything').done).rejects.toThrow(/stopped/);
+  });
+});
+
+/**
+ * T049 defect 5: the model the control room's chat header names. It is not in
+ * `vendors.yaml` and not in the provider registry — the only place it exists
+ * is the `session/new` result the `_agile/session_state` notification carries,
+ * whose `configOptions` shape is vendor-specific, so an unrecognised shape
+ * yields `undefined` rather than a guess the header would print as fact.
+ */
+describe('emModelFromSessionState', () => {
+  test("reads the Claude bridge's configOptions entry (the shape the fake agent reports too)", () => {
+    expect(
+      emModelFromSessionState({
+        sessionId: 's1',
+        modes: null,
+        configOptions: [{ id: 'model', name: 'Model', currentValue: 'fake/model-1' }],
+      }),
+    ).toBe('fake/model-1');
+  });
+
+  test('reads a plain `model` field, on an entry or on the object itself', () => {
+    expect(emModelFromSessionState({ configOptions: [{ model: 'sonnet-9' }] })).toBe('sonnet-9');
+    expect(emModelFromSessionState({ configOptions: { model: 'sonnet-9' } })).toBe('sonnet-9');
+  });
+
+  test('an unrecognised, empty or absent shape is undefined, never a guess', () => {
+    expect(emModelFromSessionState(undefined)).toBeUndefined();
+    expect(emModelFromSessionState(null)).toBeUndefined();
+    expect(emModelFromSessionState('claude')).toBeUndefined();
+    expect(
+      emModelFromSessionState({ configOptions: [{ id: 'mode', currentValue: 'plan' }] }),
+    ).toBeUndefined();
   });
 });

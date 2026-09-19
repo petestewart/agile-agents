@@ -115,6 +115,13 @@ export interface HttpServerOptions {
    */
   emChat?: EmChatService;
   /**
+   * T049 defect 5: the resident EM session's vendor/model, read fresh on
+   * every snapshot (the model is only known once the session has reported
+   * it on `session/new`, which can happen long after the daemon started).
+   * Optional — without it the snapshot carries no `em` block.
+   */
+  emSession?(): { vendor: string; model: string } | undefined;
+  /**
    * T042: the Plan screen's panes and edits (`/api/plan/*`, `POST
    * /api/sprint/start`) plus the first-goal routing on `POST /api/chat/em`.
    * Optional — without it those routes 503, exactly like the other
@@ -544,6 +551,13 @@ interface FeedContext {
   jiraSync?: JiraSync;
   questions?: QuestionService;
   emChat?: EmChatService;
+  /**
+   * T049 defect 5: the resident EM session's vendor/model, read fresh on
+   * every snapshot (the model is only known once the session has reported
+   * it on `session/new`, which can happen long after the daemon started).
+   * Optional — without it the snapshot carries no `em` block.
+   */
+  emSession?(): { vendor: string; model: string } | undefined;
   plan?: PlanRoutesContext;
 }
 
@@ -557,6 +571,7 @@ function resolveFeedContext(options: HttpServerOptions): FeedContext | undefined
     jiraSync: options.jiraSync,
     questions: options.questions,
     emChat: options.emChat,
+    emSession: options.emSession,
     plan: options.plan,
   };
 }
@@ -672,6 +687,7 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
             feed.quota,
             feed.questions,
             dirname(options.stateRoot),
+            feed.emSession?.(),
           ),
         );
       }
@@ -1201,6 +1217,7 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
                 feed.quota,
                 feed.questions,
                 dirname(options.stateRoot),
+                feed.emSession?.(),
               ),
             ),
           );

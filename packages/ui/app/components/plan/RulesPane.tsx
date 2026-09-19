@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { PaneClose } from './PaneClose';
 import { type OracleDoc, putRule } from './plan-api';
 
 /**
@@ -58,6 +59,7 @@ export function RulesPane({ rules, onChanged }: { rules: OracleDoc[]; onChanged:
         <button type="button" className="cr-icon-btn" data-testid="rule-add" onClick={startNew}>
           Add rule
         </button>
+        <PaneClose />
       </div>
       {error && <p style={{ color: 'var(--danger)' }}>{error}</p>}
       {status && (

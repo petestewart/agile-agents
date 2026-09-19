@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { type ChatEntry, getEmChat, sendEmChat } from '../lib/api';
+import { type ChatEntry, getEmChat, getSnapshot, sendEmChat } from '../lib/api';
 import { useFeed } from '../lib/feed-context';
+import { type FeedEmInfo, emLabel } from '../lib/feed-types';
+import { Markdown } from './Markdown';
 
 interface ChatLine {
   /** The bus message id — the same id `chat_delta`/`chat_turn_end` frames carry, so a streamed reply and its stored copy are one line, never two. */
@@ -44,15 +46,38 @@ export function ChatPanel() {
   // T043: the socket is the shell's single `/ws` connection (`FeedProvider`),
   // not a second one opened by this panel — T041 left it owning its own,
   // which meant an in-page chat cost two sockets and two snapshot payloads.
-  const { connected, onChat } = useFeed();
+  const { connected, onChat, snapshot } = useFeed();
   const [lines, setLines] = useState<ChatLine[]>([]);
+  /**
+   * T049 defect 5: the resident EM session's `vendor / model` for the header.
+   * Seeded from the `/ws` snapshot (which only arrives on connect) and then
+   * re-read with the thread, because the model is reported on the session's
+   * `session/new` — i.e. on the *first* turn, long after the socket opened.
+   * `claude / unknown` is what the ticket rejects, so the header shows only
+   * what the session has actually reported.
+   */
+  const [em, setEm] = useState<FeedEmInfo | undefined>(undefined);
   const [draft, setDraft] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | undefined>(undefined);
   const logRef = useRef<HTMLDivElement | null>(null);
 
+  useEffect(() => {
+    if (snapshot?.em) setEm(snapshot.em);
+  }, [snapshot?.em]);
+
   const reload = useCallback(async () => {
     try {
+      // One extra read per turn end, and the only one that can carry a model
+      // the socket's connect-time snapshot predates.
+      void getSnapshot()
+        .then((snap) => {
+          if (snap.em) setEm(snap.em);
+        })
+        .catch(() => {
+          // The header degrades to "no session yet"; the thread read below
+          // is what this function actually exists for.
+        });
       const thread = await getEmChat();
       setLines((prev) => {
         // Keep anything still streaming: the stored copy lands only when the
@@ -133,6 +158,17 @@ export function ChatPanel() {
         }}
       >
         <strong style={{ fontSize: 13 }}>em</strong>
+        <span
+          className="cr-chat-model"
+          data-testid="chat-model"
+          title={
+            em
+              ? `The resident EM session runs on ${emLabel(em)}`
+              : 'No resident EM session has reported yet — send a message to start one'
+          }
+        >
+          {em ? emLabel(em) : 'no session yet'}
+        </span>
         <span className="cr-conn-dot" data-status={connected ? 'open' : 'closed'} />
         <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>
           {connected ? 'live' : 'reconnecting…'}
@@ -150,7 +186,11 @@ export function ChatPanel() {
             <div className="meta">
               {l.from} · {new Date(l.ts).toLocaleTimeString()}
             </div>
-            <div>{l.body}</div>
+            {/* T049 defect 6: the EM writes markdown — bold, lists, fenced
+                code — and it used to render as raw text. The human's own
+                line stays verbatim: it is not markdown and echoing it as
+                anything else would misquote them. */}
+            {l.from === 'em' ? <Markdown text={l.body} /> : <div>{l.body}</div>}
           </div>
         ))}
         {error && (

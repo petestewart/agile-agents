@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { PaneClose } from './PaneClose';
 import { type OracleDoc, publishDecision } from './plan-api';
 
 /**
@@ -50,6 +51,7 @@ export function DecisionsPane({
         >
           Record a decision
         </button>
+        <PaneClose />
       </div>
       {error && <p style={{ color: 'var(--danger)' }}>{error}</p>}
       {status && (

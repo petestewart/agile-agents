@@ -1,6 +1,7 @@
 import type { Question } from '@agile-agents/shared';
 import { useState } from 'react';
 import { answerQuestion, raiseQuestion } from '../../lib/api';
+import { PaneClose } from './PaneClose';
 
 /**
  * Questions pane — `board/questions/Q-*.yaml` (§17 v2 "Questions vs
@@ -51,6 +52,7 @@ export function QuestionsPane({
       <div className="dochd">
         <span className="eyebrow">Open questions ({open.length})</span>
         <span className="file">board/questions/Q-*.yaml</span>
+        <PaneClose />
       </div>
       {error && <p style={{ color: 'var(--danger)' }}>{error}</p>}
       <div className="rule">

@@ -73,7 +73,7 @@ export function ShellProvider({
   initialView = 'sprint',
   children,
 }: PropsWithChildren<{ initialView?: ShellView }>): JSX.Element {
-  const [view, setView] = useState<ShellView>(initialView);
+  const [view, setViewState] = useState<ShellView>(initialView);
   const [railCollapsed, setRailCollapsed] = useState<boolean>(readStoredRail);
   const [chatMode, setChatModeState] = useState<ChatMode>('panel');
   const [middleOpen, setMiddleOpenState] = useState(true);
@@ -90,6 +90,22 @@ export function ShellProvider({
     setChatModeState(mode);
     // "Chat maximize hides the middle pane" — the pane's own open flag is
     // left alone so restoring brings back exactly what was there.
+  }, []);
+
+  /**
+   * T049 defect 3: switching view always leaves a usable frame.
+   *
+   * Before this, `middleOpen` was global but only the Plan screen could
+   * clear it, so closing the last pane and then clicking Plan / Sprint /
+   * Settings left the shell with nothing but the chat — the tabs "did
+   * nothing" until a reload. A view switch is an explicit "show me this",
+   * so it re-opens the middle pane and pulls the chat out of `max`, which
+   * is exactly what selecting a rail entry already did.
+   */
+  const setView = useCallback((next: ShellView) => {
+    setViewState(next);
+    setMiddleOpenState(true);
+    setChatModeState((mode) => (mode === 'max' ? 'panel' : mode));
   }, []);
 
   const setMiddleOpen = useCallback((open: boolean) => {
@@ -113,7 +129,7 @@ export function ShellProvider({
       middleOpen,
       setMiddleOpen,
     }),
-    [view, railCollapsed, chatMode, setChatMode, middleOpen, setMiddleOpen],
+    [view, setView, railCollapsed, chatMode, setChatMode, middleOpen, setMiddleOpen],
   );
 
   return <ShellContext.Provider value={value}>{children}</ShellContext.Provider>;
