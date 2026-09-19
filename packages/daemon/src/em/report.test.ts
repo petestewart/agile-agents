@@ -35,6 +35,12 @@ afterEach(() => {
   rmSync(repo, { recursive: true, force: true });
 });
 
+/**
+ * A sprint that has stopped: `em/review.ts` stamps `review_at` (and the
+ * retro block) when the `sprint_review` gate resolves, and T050 makes that
+ * the difference between the review narrative and a progress report — so
+ * the fixture for the narrative has to carry it.
+ */
 async function seedFinishedSprint(): Promise<void> {
   await store.putSprint({
     id: 'S-1',
@@ -42,6 +48,7 @@ async function seedFinishedSprint(): Promise<void> {
     tickets: ['TKT-0001', 'TKT-0002'],
     budget_tokens: 1000,
     started: new Date().toISOString(),
+    review_at: new Date().toISOString(),
     carried_over: [],
   });
   for (const [id, title] of [
@@ -223,4 +230,98 @@ test('an unfinished ticket is proposed for carry-over, not silently dropped', as
   expect(report.proposes_next.some((line) => line.includes('TKT-0003'))).toBe(true);
   // An unfinished ticket is carried, not reported as a failure.
   expect(report.went_wrong).not.toContain('TKT-0003');
+});
+
+/**
+ * T050 — the defect this closes: 1m27s into a live sprint, with every
+ * ticket `in_progress` and no `sprint_review` gate anywhere, the narrative
+ * read "0 of 3 ticket(s) finished", "Nothing went wrong" and "Carry
+ * TKT-2001, TKT-2002 and TKT-2003 into the next sprint — 3 tickets did not
+ * finish", and the control room offered it as a review to accept.
+ */
+async function seedRunningSprint(): Promise<void> {
+  await store.putSprint({
+    id: 'S-1',
+    goal: 'Transfers, reversals, category report',
+    tickets: ['TKT-0001', 'TKT-0002', 'TKT-0003'],
+    budget_tokens: 1000,
+    started: new Date().toISOString(),
+    carried_over: [],
+  });
+  for (const id of ['TKT-0001', 'TKT-0002', 'TKT-0003'] as const) {
+    await store.putTicket({
+      id,
+      title: `Ticket ${id}`,
+      status: 'draft',
+      sprint: 'S-1',
+      contract: { inputs: [], outputs: [], acceptance: ['it works'], done: [], env: 'clone' },
+      depends: [],
+      oracle_refs: [],
+      kb_refs: [],
+      history: [],
+      security: false,
+    });
+    for (const to of ['ready', 'assigned', 'in_progress'] as const) {
+      await store.transitionTicket(id, to, { by: 'em' });
+    }
+  }
+}
+
+test('a running sprint is phase "running", has no proposal, and never reads like a finished sprint', async () => {
+  await seedRunningSprint();
+  const report = buildSprintReport(store, { gates: new GateService(store) });
+
+  expect(report.phase).toBe('running');
+  expect(report.decision).toBeUndefined();
+  // The three sentences from the screenshot, none of which may appear.
+  expect(report.proposes_next).toEqual([]);
+  expect(report.built).not.toContain('0 of 3 ticket(s) finished and');
+  expect(report.went_wrong).not.toContain('Nothing went wrong');
+  expect(JSON.stringify(report)).not.toContain('did not finish');
+  // What it says instead: the same facts, labelled as in progress.
+  expect(report.built).toContain('In progress');
+  expect(report.built).toContain('0 of 3 finished so far');
+  expect(report.built).toContain('3 tickets still in flight');
+  expect(report.went_wrong).toContain('still running');
+  expect(report.per_ticket).toHaveLength(3);
+
+  const markdown = renderSprintReportMarkdown(report);
+  expect(markdown).toContain('# Sprint progress');
+  expect(markdown).toContain('**Status:** the sprint is still running');
+  expect(markdown).not.toContain('## What the EM proposes next');
+});
+
+test('a pending sprint_review gate flips the phase to review_pending and brings the proposal back', async () => {
+  await seedRunningSprint();
+  const gates = new GateService(store);
+  await gates.request('sprint_review', {
+    policy: { gates: { sprint_review: 'human' }, breaker_signals: [] },
+    hilKind: 'approve_decision',
+    summary: 'S-1 is ready for your review',
+  });
+
+  const report = buildSprintReport(store, { gates });
+  expect(report.phase).toBe('review_pending');
+  expect(report.built).toContain('0 of 3 ticket(s) finished and');
+  expect(report.went_wrong).toContain('Nothing went wrong');
+  expect(report.proposes_next[0]).toBe('S-1 is ready for your review');
+  expect(report.proposes_next.some((line) => line.includes('did not finish'))).toBe(true);
+});
+
+test('a resolved sprint_review gate makes the report a read-only retrospective carrying the decision', async () => {
+  await seedRunningSprint();
+  const gates = new GateService(store);
+  const request = await gates.request('sprint_review', {
+    policy: { gates: { sprint_review: 'human' }, breaker_signals: [] },
+    hilKind: 'approve_decision',
+    summary: 'S-1 is ready for your review',
+  });
+  await gates.respond(request.id, 'approve', 'human', 'ship it');
+
+  const report = buildSprintReport(store, { gates });
+  expect(report.phase).toBe('reviewed');
+  expect(report.decision?.decision).toBe('approve');
+  expect(report.decision?.decided_by).toBe('human');
+  expect(report.decision?.note).toBe('ship it');
+  expect(renderSprintReportMarkdown(report)).toContain('**Decision:** accepted by human');
 });

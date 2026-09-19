@@ -21,6 +21,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { MESSAGE_BODY_MAX_CHARS, type Message, ulid, validateMessage } from '@agile-agents/shared';
 import type { Bus } from '../bus';
+import { pickCurrentSprint } from '../feed/snapshot';
 import type { GateService } from '../gates';
 import type { QuestionService } from '../questions';
 import type { StateStore } from '../store';
@@ -142,6 +143,32 @@ export function renderAttentionQueue(gates?: GateService, questions?: QuestionSe
   return lines.join('\n');
 }
 
+/**
+ * T050: one line of sprint state, injected beside the attention queue.
+ *
+ * Seen live on ledger-lite (2026-09-19): with all three tickets `in_qa` the
+ * resident EM offered "Want me to run sprint review on the layer?". The
+ * daemon already refuses that (`em/review.ts`'s `SprintNotDoneError`), so
+ * the gap is purely one of grounding — the model had no idea how far the
+ * sprint had got. This is the fact it needs, on every turn, in one line.
+ */
+export function renderSprintState(store: StateStore, gates?: GateService): string {
+  const sprint = pickCurrentSprint(store.listSprints());
+  if (!sprint) return 'No sprint is running; there is nothing to review.';
+  const inSprint = new Set<string>(sprint.tickets);
+  const tickets = store.listTickets().filter((t) => inSprint.has(t.id));
+  const done = tickets.filter((t) => t.status === 'done').length;
+  const head = `Sprint ${sprint.id}: ${done} of ${tickets.length} tickets done`;
+  const pending = (gates?.list() ?? []).some(
+    (r) => r.gate === 'sprint_review' && r.status === 'pending',
+  );
+  if (pending)
+    return `${head}; sprint review pending — the gate is open and waiting on a decision.`;
+  if (sprint.review_at !== undefined) return `${head}; sprint review already taken.`;
+  if (tickets.length > 0 && done === tickets.length) return `${head}; sprint review is available.`;
+  return `${head}; sprint review not available until all are done and merged.`;
+}
+
 export interface EmChatDeps {
   store: StateStore;
   bus: Bus;
@@ -189,6 +216,7 @@ export class EmChatService {
   /** Builds the prompt one chat turn gets: the attention queue, then the human's line. The role brief itself is the session's first turn (`ResidentEm` is seeded with it by the daemon). */
   buildPrompt(body: string): string {
     return [
+      renderSprintState(this.deps.store, this.deps.gates),
       renderAttentionQueue(this.deps.gates, this.deps.questions),
       '',
       'The human just wrote to you in the control room chat. Answer them directly and concisely; use your `agile` verbs to read the board when you need facts rather than guessing.',

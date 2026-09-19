@@ -13,7 +13,7 @@ import { GateService } from '../gates';
 import { runInit } from '../init';
 import { QuestionService } from '../questions';
 import { StateStore } from '../store';
-import { EmChatService, renderAttentionQueue, renderReplyBody } from './chat';
+import { EmChatService, renderAttentionQueue, renderReplyBody, renderSprintState } from './chat';
 
 let repo: string;
 let stateRoot: string;
@@ -198,5 +198,82 @@ describe('renderReplyBody / renderAttentionQueue', () => {
 
   test('an empty attention queue says so rather than emitting a bare header', () => {
     expect(renderAttentionQueue()).toBe('Attention queue: empty.');
+  });
+});
+
+/**
+ * T050 — the EM offered "Want me to run sprint review on the layer?" with
+ * all three tickets still `in_qa`. The daemon refuses that
+ * (`SprintNotDoneError`); this line is what stops the model proposing it.
+ */
+describe('renderSprintState (the injected sprint-state line)', () => {
+  async function seed(statuses: Array<'in_progress' | 'done'>): Promise<void> {
+    const ids = statuses.map((_, i) => `TKT-000${i + 1}` as const);
+    await store.putSprint({
+      id: 'S-1',
+      goal: 'Transfers',
+      tickets: ids,
+      budget_tokens: 1000,
+      started: new Date().toISOString(),
+      carried_over: [],
+    });
+    for (const [i, id] of ids.entries()) {
+      await store.putTicket({
+        id,
+        title: `Ticket ${id}`,
+        status: 'draft',
+        sprint: 'S-1',
+        contract: { inputs: [], outputs: [], acceptance: ['it works'], done: [], env: 'clone' },
+        depends: [],
+        oracle_refs: [],
+        kb_refs: [],
+        history: [],
+        security: false,
+      });
+      const path =
+        statuses[i] === 'done'
+          ? (['ready', 'assigned', 'in_progress', 'in_review', 'in_qa', 'done'] as const)
+          : (['ready', 'assigned', 'in_progress'] as const);
+      for (const to of path) await store.transitionTicket(id, to, { by: 'em' });
+    }
+  }
+
+  test('no sprint at all', () => {
+    expect(renderSprintState(store)).toBe('No sprint is running; there is nothing to review.');
+  });
+
+  test('an unfinished sprint says the review is not available', async () => {
+    await seed(['in_progress', 'in_progress', 'done']);
+    expect(renderSprintState(store)).toBe(
+      'Sprint S-1: 1 of 3 tickets done; sprint review not available until all are done and merged.',
+    );
+  });
+
+  test('every ticket done makes the review available', async () => {
+    await seed(['done', 'done']);
+    expect(renderSprintState(store)).toBe(
+      'Sprint S-1: 2 of 2 tickets done; sprint review is available.',
+    );
+  });
+
+  test('an open sprint_review gate is reported as pending', async () => {
+    await seed(['done', 'done']);
+    const gates = new GateService(store);
+    await gates.request('sprint_review', {
+      policy: { gates: { sprint_review: 'human' }, breaker_signals: [] },
+      hilKind: 'approve_decision',
+      summary: 'S-1 is ready for your review',
+    });
+    expect(renderSprintState(store, gates)).toContain('sprint review pending');
+  });
+
+  test('every chat turn carries the line', async () => {
+    await seed(['in_progress', 'in_progress', 'done']);
+    const resident = fakeResident(['ok']);
+    const chat = new EmChatService({ store, bus, repoRoot: repo, resident });
+    await chat.send({ body: 'what is next?' }, { onDelta() {}, onEnd() {} });
+    expect(resident.prompts[0] ?? '').toContain(
+      'Sprint S-1: 1 of 3 tickets done; sprint review not available until all are done and merged.',
+    );
   });
 });
