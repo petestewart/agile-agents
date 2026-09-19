@@ -96,12 +96,12 @@ Build order: Phase 0 → 1 → 2 → 3 → 4 → 5 → 6. Within a phase, ticket
 
 ### Ticket: T101 Rewrite the design doc around streams, rules, and the classifier tier
 - **Priority:** P0
-- **Status:** In Progress
+- **Status:** Done
 - **Owner:** opus:worker-T101
 - **Scope:** New `design/cockpit-design.md`: §1 problem and operator journey (the three stream types and the question flow), §2 stream model and the two-writer field split, §3 inbox, §4 agents as attachments (worker, reviewer, gates), §5 rules (record, tiers, bands, lessons, pruning), §6 classifier (Jev call shape, thresholds, fail policy, scrub, opt-out), §7 state home and file formats, §8 hook path and landing path, §9 UI (inbox, tree, stream page), §10 what was deleted and why. `design/agile-agents-design.md` gets a top banner "superseded by cockpit-design.md; kept for §8 adapter contract and §6 hook catalog, which remain valid".
 - **Acceptance Criteria:** Every decision D1–D11 appears in the new design with its rationale. `CLAUDE.md` "Source of truth" points at the new design.
 - **Validation Steps:** Review by Pete; no code.
-- **Notes:** Do not fold the Jev material into the old doc; write the new one.
+- **Notes:** Do not fold the Jev material into the old doc; write the new one. Branch `T101-cockpit-design-doc`; review (sonnet) PASS, 2 nits (rule `stage?` shown in §5.1 though added by T152; `question` listed beside gate kinds in §3.1). merge: 1ef2fed.
 
 ### Phase 1 — One persistent daemon, many roots
 
