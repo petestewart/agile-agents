@@ -180,7 +180,14 @@ export function getEmChat(): Promise<ChatEntry[]> {
 export function sendEmChat(
   body: string,
   ticket?: TicketId,
-): Promise<{ ok: boolean; streaming?: boolean; reply_id?: string; reason?: string }> {
+): Promise<{
+  ok: boolean;
+  streaming?: boolean;
+  /** The human's line as filed on the bus — T051 adopts its id onto the optimistically-appended line. */
+  message?: { id: string };
+  reply_id?: string;
+  reason?: string;
+}> {
   return fetch('/api/chat/em', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },

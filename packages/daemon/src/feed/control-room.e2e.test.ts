@@ -46,11 +46,28 @@ const FAKE_AGENT_PATH = join(import.meta.dir, '..', 'runner', 'fake-agent.ts');
  * uses, scripted to answer any prompt with one canned reply. No vendor
  * login, no `AGILE_LIVE`.
  */
-function cannedEmSpawn(repo: string, reply: string): (opts: SpawnSessionOptions) => SpawnedSession {
+function cannedEmSpawn(
+  repo: string,
+  reply: string,
+  /**
+   * T051: how long the scripted vendor takes before it says anything. The
+   * default 0 keeps every earlier test's timing; a non-zero delay is what
+   * makes "what the panel shows *while* a turn runs" observable at all —
+   * without it the reply lands in the same frame as the click.
+   */
+  options?: { replyAfterMs?: number },
+): (opts: SpawnSessionOptions) => SpawnedSession {
   const scriptPath = join(repo, 'em-chat-script.json');
+  const replyAfterMs = options?.replyAfterMs ?? 0;
   writeFileSync(
     scriptPath,
-    JSON.stringify({ steps: [{ type: 'agent_text', text: reply }, { type: 'end_turn' }] }),
+    JSON.stringify({
+      steps: [
+        ...(replyAfterMs > 0 ? [{ type: 'delay', ms: replyAfterMs }] : []),
+        { type: 'agent_text', text: reply },
+        { type: 'end_turn' },
+      ],
+    }),
   );
   return (opts: SpawnSessionOptions) =>
     spawnSession({
@@ -326,6 +343,24 @@ async function waitForChatText(page: Page, text: string, timeoutMs = 15000): Pro
   for (;;) {
     if ((await page.locator('.cr-chat-msg', { hasText: text }).count()) > 0) return;
     if (Date.now() > deadline) throw new Error(`chat log never showed ${JSON.stringify(text)}`);
+    await page.waitForTimeout(100);
+  }
+}
+
+/** T051: polls until `selector` matches exactly `count` elements — the chat's own states (a bubble that stops being pending, an in-flight note that goes) arrive on a socket frame, so "not yet" is a real state here too. */
+async function waitForChatCount(
+  page: Page,
+  selector: string,
+  count: number,
+  timeoutMs = 15000,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const seen = await page.locator(selector).count();
+    if (seen === count) return;
+    if (Date.now() > deadline) {
+      throw new Error(`${selector} never reached ${count} elements (last saw ${seen})`);
+    }
     await page.waitForTimeout(100);
   }
 }
@@ -1348,6 +1383,162 @@ describe('control room SPA (Playwright e2e)', () => {
         expect(handle.residentEm?.alive).toBe(true);
       } finally {
         await teardown([page, popout]);
+        await handle?.stop();
+        rmSync(repo, { recursive: true, force: true });
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+
+  /**
+   * T051 (Pete, 2026-09-19: "on Send the EM's pending bubble appears instantly
+   * filled with the text of its previous reply"; "it should have a spinner or
+   * thinking verb or something until it streams its response").
+   *
+   * This is the reproduction that found the cause, kept as the regression:
+   * turn 1 runs first so there IS a previous reply, the scripted vendor then
+   * takes `replyAfterMs` before it says anything, and the assertions are all
+   * made in that window. On the pre-fix code the pending bubble already held
+   * turn 1's text here, because `acp-client`'s `session.on()` replays the
+   * event ring and `ResidentEm.runTurn` attached a listener per turn — so the
+   * new turn's first deltas were the previous turn's reply (see
+   * `em/resident.test.ts`, which pins the daemon half).
+   */
+  browserTest(
+    'T051: the pending bubble shows a thinking indicator, never the previous reply',
+    async () => {
+      const repo = initRepo();
+      let handle: DaemonHandle | undefined;
+      let page: Page | undefined;
+      const reply = 'TKT-1001 is in review; TKT-1002 is unassigned.';
+
+      try {
+        runInit(repo);
+        handle = await startDaemon({
+          cwd: repo,
+          port: 0,
+          socketPath: join(repo, '.agile-daemon.sock'),
+          // Slow enough that the in-flight window is observable, short enough
+          // that two turns fit well inside this file's per-test budget.
+          emChatSpawn: cannedEmSpawn(repo, reply, { replyAfterMs: 3000 }),
+        });
+        const base = `http://127.0.0.1:${handle.http.port}`;
+
+        // Turn 1 over plain HTTP (same warm-up shape as the test above): the
+        // resident session is live and its reply is on the thread before the
+        // browser exists, which is the precondition the defect needed.
+        const warmup = await fetch(`${base}/api/chat/em`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ body: 'warm up the resident EM session' }),
+        });
+        expect(warmup.status).toBe(200);
+        await waitForThread(base, 2);
+
+        page = await openPage();
+        await page.goto(`${base}/control-room?view=sprint`);
+        await waitForChatText(page, reply);
+        expect(await page.locator('.cr-chat-msg[data-from="em"]').count()).toBe(1);
+
+        await page.locator('.cr-chat-input textarea').fill('what is left on all tickets');
+        await page.locator('[data-testid="chat-send"]').click();
+
+        // Immediately after Send, inside the vendor's own delay: the human's
+        // line is up, and the EM's bubble is a thinking indicator with NO
+        // body — this is the assertion the pre-fix code fails, because the
+        // bubble held `reply` already.
+        // Located as "the EM's second bubble", NOT as "the pending one", so a
+        // bubble that is wrongly full of text still gets inspected and the
+        // failure names the stale text instead of timing out on a selector.
+        await waitForChatCount(page, '.cr-chat-msg[data-from="em"]', 2);
+        const pending = page.locator('.cr-chat-msg[data-from="em"]').nth(1);
+        const pendingText = (await pending.textContent()) ?? '';
+        expect(pendingText).not.toContain(reply);
+        expect(pendingText).toContain('thinking');
+        expect(await pending.getAttribute('data-pending')).toBe('true');
+        expect(await pending.locator('[data-testid="chat-thinking"]').count()).toBe(1);
+        expect(await page.locator('.cr-chat-msg[data-from="you"]').nth(1).textContent()).toContain(
+          'what is left on all tickets',
+        );
+
+        // A second send while the turn is in flight is refused, with the
+        // reason on screen rather than a dead button.
+        await page.locator('.cr-chat-input textarea').fill('and another thing');
+        expect(await page.locator('[data-testid="chat-send"]').isDisabled()).toBe(true);
+        expect(await page.locator('[data-testid="chat-busy"]').count()).toBe(1);
+
+        // The deltas fill that same bubble, and the indicator goes at turn end.
+        await waitForThread(base, 4);
+        await waitForChatCount(page, '.cr-chat-msg[data-from="em"]', 2);
+        await waitForChatCount(page, '.cr-chat-msg[data-pending="true"]', 0);
+        expect(await page.locator('[data-testid="chat-thinking"]').count()).toBe(0);
+        expect(await page.locator('.cr-chat-msg[data-from="em"]').nth(1).textContent()).toContain(
+          reply,
+        );
+        // Exactly one copy of the reply per turn — no stale prefix, no
+        // doubled text from a delta that landed on the wrong line.
+        expect(
+          ((await page.locator('.cr-chat-msg[data-from="em"]').nth(1).textContent()) ?? '').split(
+            reply,
+          ).length - 1,
+        ).toBe(1);
+
+        // Input is free again, and a reload shows the stored thread with no
+        // placeholder anywhere.
+        await waitForChatCount(page, '[data-testid="chat-busy"]', 0);
+        await page.reload();
+        await waitForChatText(page, reply);
+        expect(await page.locator('[data-testid="chat-thinking"]').count()).toBe(0);
+        expect(await page.locator('.cr-chat-msg[data-pending="true"]').count()).toBe(0);
+      } finally {
+        await teardown([page]);
+        await handle?.stop();
+        rmSync(repo, { recursive: true, force: true });
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+
+  /**
+   * T051, the other half: "a turn that errors (`resident EM turn failed …`) or
+   * times out shows that in the bubble instead of hanging". Forced offline by
+   * a vendor command that exits before the ACP handshake — the daemon reports
+   * it as a `chat_turn_end` with an `error`, which is the same frame a real
+   * failed or timed-out turn ends with.
+   */
+  browserTest(
+    'T051: a turn that fails renders the reason in the bubble and frees the input',
+    async () => {
+      const repo = initRepo();
+      let handle: DaemonHandle | undefined;
+      let page: Page | undefined;
+
+      try {
+        runInit(repo);
+        handle = await startDaemon({
+          cwd: repo,
+          port: 0,
+          socketPath: join(repo, '.agile-daemon.sock'),
+          emChatSpawn: (opts: SpawnSessionOptions) =>
+            spawnSession({ ...opts, cmd: 'bun', args: ['-e', 'process.exit(1)'] }),
+        });
+        const base = `http://127.0.0.1:${handle.http.port}`;
+
+        page = await openPage();
+        await page.goto(`${base}/control-room?view=sprint`);
+        await page.locator('.cr-chat-input textarea').fill('are you there?');
+        await page.locator('[data-testid="chat-send"]').click();
+
+        // The failure is in the thread, in the bubble that was waiting for the
+        // answer — not a silent spinner and not only a toast.
+        const failed = page.locator('[data-testid="chat-line-error"]');
+        await failed.waitFor({ state: 'attached', timeout: PAGE_TIMEOUT_MS });
+        expect((await failed.textContent()) ?? '').toContain('could not answer');
+        // ...and the panel is usable again: no indicator, no in-flight note.
+        await waitForChatCount(page, '[data-testid="chat-thinking"]', 0);
+        await waitForChatCount(page, '[data-testid="chat-busy"]', 0);
+      } finally {
+        await teardown([page]);
         await handle?.stop();
         rmSync(repo, { recursive: true, force: true });
       }
