@@ -88,6 +88,15 @@ describe('listDataFiles', () => {
   test('returns [] for a missing directory', () => {
     expect(listDataFiles(join(dir, 'nope'), '.yaml')).toEqual([]);
   });
+
+  test('is sorted with numeric collation, whatever order the filesystem returns', () => {
+    // CI (ext4) returned `S-2.yaml` before `S-1.yaml`, so `listSprints()[0]`
+    // was the wrong sprint; APFS/tmpfs happened to return them sorted.
+    for (const name of ['S-10.yaml', 'S-2.yaml', 'S-1.yaml', 'S-3.yaml']) {
+      writeFileSync(join(dir, name), '');
+    }
+    expect(listDataFiles(dir, '.yaml')).toEqual(['S-1.yaml', 'S-2.yaml', 'S-3.yaml', 'S-10.yaml']);
+  });
 });
 
 describe('sweepStaleTempFiles', () => {
