@@ -3,9 +3,11 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Policy } from '@agile-agents/shared';
+import { validateTicket } from '@agile-agents/shared';
 import { runInit } from '../init';
 import { StateStore } from '../store';
 import {
+  EmptyNoteError,
   GateAlreadyResolvedError,
   type GateDecision,
   GateNotFoundError,
@@ -209,6 +211,148 @@ describe('GateService.respond', () => {
     const service = new GateService(store, { clock });
     await expect(service.respond('HIL-nope', 'approve', 'human')).rejects.toThrow(
       GateNotFoundError,
+    );
+  });
+});
+
+// T039 (§17 "Control room v2"): every Needs-you card takes a typed answer as
+// well as its buttons.
+describe('GateService notes', () => {
+  async function seedTicket(): Promise<void> {
+    await store.putTicket(
+      validateTicket({
+        id: 'TKT-0001',
+        title: 'Ticket',
+        status: 'in_progress',
+        contract: {},
+        history: [],
+        assignee: 'eng-1',
+      }),
+    );
+  }
+
+  test('respond() persists the note, logs it, and delivers it to the waiting agent and the EM', async () => {
+    await seedTicket();
+    const service = new GateService(store, { clock });
+    const req = await service.request('unblock', ctx({ unblock: 'human' }, { ticket: 'TKT-0001' }));
+    const resolved = await service.respond(
+      req.id,
+      'approve',
+      'human',
+      '  yes, but only for the seed script  ',
+    );
+    expect(resolved.note).toBe('yes, but only for the seed script'); // trimmed
+    expect(service.get(req.id).note).toBe('yes, but only for the seed script'); // durable
+
+    const engInbox = store.listEntities(
+      'bus/inbox/eng-1',
+      (v) => v as { kind: string; priority: string; body: string },
+    );
+    expect(engInbox).toHaveLength(1);
+    expect(engInbox[0]?.kind).toBe('hil_response');
+    expect(engInbox[0]?.priority).toBe('normal');
+    expect(engInbox[0]?.body).toContain('only for the seed script');
+
+    const emInbox = store.listEntities('bus/inbox/em', (v) => v as { body: string });
+    expect(emInbox).toHaveLength(1);
+    expect(emInbox[0]?.body).toContain('only for the seed script');
+
+    const event = store.listEvents().find((e) => e.kind === 'hil_resolved');
+    expect(event?.data.note).toBe('yes, but only for the seed script');
+  });
+
+  test('respond() with no note writes no hil_response and leaves note unset', async () => {
+    await seedTicket();
+    const service = new GateService(store, { clock });
+    const req = await service.request('unblock', ctx({ unblock: 'human' }, { ticket: 'TKT-0001' }));
+    const resolved = await service.respond(req.id, 'approve', 'human', '   ');
+    expect(resolved.note).toBeUndefined();
+    expect(store.listEntities('bus/inbox/eng-1', (v) => v)).toHaveLength(0);
+  });
+
+  test('addNote() records the note WITHOUT resolving the gate, and copies the EM', async () => {
+    await seedTicket();
+    const service = new GateService(store, { clock });
+    const req = await service.request('unblock', ctx({ unblock: 'human' }, { ticket: 'TKT-0001' }));
+    const noted = await service.addNote(req.id, 'only for the seed script', 'human');
+    expect(noted.status).toBe('pending');
+    expect(noted.decision).toBeUndefined();
+    expect(noted.note).toBe('only for the seed script');
+
+    const emInbox = store.listEntities('bus/inbox/em', (v) => v as { kind: string; body: string });
+    expect(emInbox).toHaveLength(1);
+    expect(emInbox[0]?.kind).toBe('hil_response');
+    // Nothing is delivered to the engineer yet — there is no decision to deliver.
+    expect(store.listEntities('bus/inbox/eng-1', (v) => v)).toHaveLength(0);
+  });
+
+  test('addNote() hands the note to the delegate, whose decision then resolves the gate', async () => {
+    await seedTicket();
+    const seen: Array<string | undefined> = [];
+    const service = new GateService(store, {
+      clock,
+      delegate: (c) => {
+        seen.push(c.note);
+        return { decision: 'approve', by: 'em', rationale: 'scoped to the seed script' };
+      },
+    });
+    const req = await service.request('unblock', ctx({ unblock: 'human' }, { ticket: 'TKT-0001' }));
+    expect(service.get(req.id).status).toBe('pending');
+    await service.addNote(req.id, 'only for the seed script', 'human');
+    await service.settled();
+
+    expect(seen).toEqual(['only for the seed script']);
+    const after = service.get(req.id);
+    expect(after.status).toBe('resolved');
+    expect(after.decision).toBe('approve');
+    expect(after.note).toBe('only for the seed script');
+
+    // Review round 1 blocker: the agent waiting on the gate must get the note
+    // + decision on this path too, not just on the button-press path.
+    const engInbox = store.listEntities(
+      'bus/inbox/eng-1',
+      (v) => v as { kind: string; priority: string; body: string },
+    );
+    expect(engInbox).toHaveLength(1);
+    expect(engInbox[0]?.kind).toBe('hil_response');
+    expect(engInbox[0]?.priority).toBe('normal');
+    expect(engInbox[0]?.body).toContain('only for the seed script');
+    expect(engInbox[0]?.body).toContain('approved');
+    // The EM sees both the note itself and the resolution carrying it.
+    expect(
+      store
+        .listEntities('bus/inbox/em', (v) => v as { body: string })
+        .filter((m) => m.body.includes('only for the seed script')),
+    ).toHaveLength(2);
+  });
+
+  test('an invalid assignee is skipped, not thrown, after the decision is persisted', async () => {
+    await store.putTicket(
+      validateTicket({
+        id: 'TKT-0002',
+        title: 'Bad assignee',
+        status: 'in_progress',
+        contract: {},
+        history: [],
+        assignee: 'not a valid agent id',
+      }),
+    );
+    const service = new GateService(store, { clock });
+    const req = await service.request('unblock', ctx({ unblock: 'human' }, { ticket: 'TKT-0002' }));
+    const resolved = await service.respond(req.id, 'approve', 'human', 'scoped to the seed script');
+    expect(resolved.status).toBe('resolved');
+    expect(resolved.note).toBe('scoped to the seed script');
+    // EM still gets its copy; the unroutable assignee is simply skipped.
+    expect(store.listEntities('bus/inbox/em', (v) => v)).toHaveLength(1);
+  });
+
+  test('addNote() rejects an empty note and a resolved request', async () => {
+    const service = new GateService(store, { clock });
+    const req = await service.request('demo', ctx({ demo: 'human' }));
+    await expect(service.addNote(req.id, '   ', 'human')).rejects.toThrow(EmptyNoteError);
+    await service.respond(req.id, 'approve', 'human');
+    await expect(service.addNote(req.id, 'late', 'human')).rejects.toThrow(
+      GateAlreadyResolvedError,
     );
   });
 });

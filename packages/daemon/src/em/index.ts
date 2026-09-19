@@ -4,6 +4,8 @@ export * from './pi-route-candidates';
 export * from './board';
 export * from './discovery';
 export * from './delegate';
+export * from './resident';
+export * from './chat';
 // Explicit list: `Clock` is a local alias that would collide with `bus`'s
 // export of the same name in the package barrel.
 export {
@@ -14,6 +16,7 @@ export {
   type StandupReportRecord,
 } from './standup';
 export * from './review';
+export * from './report';
 export * from './retro';
 export * from './loop';
 export * from './verbs';

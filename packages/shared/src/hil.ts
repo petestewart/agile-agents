@@ -14,7 +14,7 @@
  */
 
 import { z } from 'zod';
-import { TicketIdSchema, ULID_PATTERN, formatZodError } from './ids';
+import { AgentIdSchema, TicketIdSchema, ULID_PATTERN, formatZodError } from './ids';
 import { HilKindSchema, MessageBodySchema } from './message';
 import { GateOwnerSchema } from './policy';
 
@@ -52,6 +52,16 @@ export const HilFyiSchema = z
   .strict();
 export type HilFyi = z.infer<typeof HilFyiSchema>;
 
+/**
+ * T039 (§17 "Control room v2"): every Needs-you card takes a typed answer as
+ * well as its buttons. The free text a human wrote with (or instead of) a
+ * button press — body-capped exactly like a bus message body, since that is
+ * what it becomes when `gates/service.ts` delivers it to the asking agent
+ * (`hil_response`) and to the EM. Non-empty: an empty note is the same as no
+ * note and is rejected at the boundary rather than persisted as `""`.
+ */
+export const HilNoteSchema = MessageBodySchema.min(1, 'note must not be empty');
+
 export const HilRequestSchema = z
   .object({
     id: HilIdSchema,
@@ -69,7 +79,21 @@ export const HilRequestSchema = z
     reason: z.string().min(1).optional(),
     /** What was actually asked (the command a hook refused, the permission a session requested, ...) — the part a human or delegate needs to decide on. Absent for gates that carry their own context (sprint_review). */
     summary: z.string().min(1).optional(),
+    /**
+     * T048: the agent whose blocked call raised this gate — the hook caller
+     * (`hook/service.ts`) or the ACP session (`permissions/responder.ts`).
+     * It is NOT the ticket's assignee: a QA or reviewer hook raises gates on
+     * a ticket assigned to the engineer, and the first live run of the
+     * control room delivered qa-2003's approved `unblock` into eng-2003's
+     * inbox, where the engineer refused a command outside its worktree.
+     * `gates/service.ts`'s `waitingAgent` targets this when present and
+     * falls back to the assignee only when it is absent (older records,
+     * daemon-raised gates like `sprint_review`/`promote_to_main`).
+     */
+    requested_by: AgentIdSchema.optional(),
     decision: HilDecisionSchema.optional(),
+    /** Free text a human typed with the decision, or on its own (T039). A note on its own resolves nothing — the EM delegate reads it and decides. */
+    note: HilNoteSchema.optional(),
     decided_by: z.string().min(1).optional(),
     resolved_at: z.string().datetime().optional(),
     /** True when an `em`/`architect` owner (policy or single-instance delegate) auto-decided this. */

@@ -12,7 +12,13 @@
 
 export const PACKAGE_NAME = '@agile-agents/daemon';
 
-export { discoverConfig, type AgileConfig, type DiscoverConfigOptions } from './config';
+export {
+  discoverConfig,
+  CONFIG_FILE_NAME,
+  type AgileConfig,
+  type DiscoverConfigOptions,
+  type JiraConfig,
+} from './config';
 export { DAEMON_CACHE_DIR, sandboxedSubprocessEnv } from './subprocess-env';
 export { acquireLock, LockError, type LockHandle } from './lock';
 export {
@@ -37,7 +43,38 @@ export {
   DAEMON_VERSION,
   type DaemonHandle,
 } from './daemon';
-export { runInit, AlreadyInitialisedError, STATE_BRANCH, type InitResult } from './init';
+export {
+  runInit,
+  AlreadyInitialisedError,
+  STATE_BRANCH,
+  PRODUCT_MD_STUB,
+  type InitResult,
+} from './init';
+
+/**
+ * Chromium discovery for the Playwright e2e suites. Exported so the CLI's
+ * own offline e2e (`packages/cli/src/run.e2e.test.ts`, which drives the
+ * demo sprint and then looks at the control room that narrates it) shares
+ * one implementation with `feed/*.e2e.test.ts` rather than re-deriving the
+ * per-platform browser layouts.
+ */
+export { resolveChromiumExecutable } from './feed/chromium';
+
+// Feed snapshot, ticket stories and the ticket-detail reads (T020/T044).
+export {
+  buildSnapshot,
+  buildStories,
+  buildStory,
+  buildTeam,
+  resolveTicketWorktree,
+  ticketDiff,
+  ticketThread,
+  TicketDiffError,
+  type FeedSnapshot,
+  type FeedTeamMember,
+  type TicketDiff,
+  type TicketStory,
+} from './feed';
 
 // Role briefs and ceremony templates (T013).
 export * from './briefs';
@@ -63,6 +100,9 @@ export {
 
 // Gates policy, HIL requests, circuit breaker (T018).
 export * from './gates';
+
+// Questions store (T040, §17 "Control room v2" — "Questions vs Decisions").
+export * from './questions';
 
 // ACP permission policy by role (T010).
 export * from './permissions';
@@ -107,6 +147,9 @@ export * from './sandbox';
 
 // Pi adapter: the agile Pi extension source, its installer, gate env (T022).
 export * from './pi';
+
+// External ticket sync: Jira two-way sync, sync.* RPC (T045).
+export * from './sync';
 
 // Handoff and pause: graceful/hard handoff, pause/resume, manual cooldown,
 // HandoffCoordinator, handoff.* RPC (T024).

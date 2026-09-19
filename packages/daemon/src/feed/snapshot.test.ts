@@ -8,6 +8,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { GateService } from '../gates';
 import { runInit } from '../init';
+import { QuestionService } from '../questions';
 import { QuotaService } from '../quota/records';
 import { StateStore } from '../store';
 import { buildSnapshot } from './snapshot';
@@ -77,5 +78,178 @@ describe('with a QuotaService', () => {
     const snapshot = buildSnapshot(store, gates, undefined, quota);
     const pi = snapshot.quota.find((q) => q.account === 'pi');
     expect(pi?.spend_usd).toBe(2.5);
+  });
+});
+
+describe('T040: open questions in the attention queue', () => {
+  test('without a QuestionService the array is empty (backward compatible)', () => {
+    expect(buildSnapshot(store, gates).questions).toEqual([]);
+  });
+
+  test('carries open questions only — an answered one is history, like a resolved hil_request', async () => {
+    const questions = new QuestionService(store);
+    const open = await questions.raise({ raised_by: 'eng-1', text: 'is the ticket right?' });
+    const answered = await questions.raise({ raised_by: 'em', text: 'already handled' });
+    await questions.answer(answered.id, { answer: 'yes', by: 'human', resolved_as: 'reply' });
+
+    const snapshot = buildSnapshot(store, gates, undefined, undefined, questions);
+    expect(snapshot.questions.map((q) => q.id)).toEqual([open.id]);
+  });
+});
+
+/**
+ * T043 (§17 v2 "Top bar is identical on every view ... the sprint status
+ * ('Sprint 1 · running 4m 12s', '3 agents working') and the single action").
+ * Everything the always-on top bar renders comes from these two blocks.
+ */
+describe('T043: project + status for the top bar', () => {
+  test('no project root given: no `project` block (backward compatible)', () => {
+    expect(buildSnapshot(store, gates).project).toBeUndefined();
+  });
+
+  test('project carries the repo directory name and its full path', () => {
+    const snapshot = buildSnapshot(store, gates, undefined, undefined, undefined, repo);
+    expect(snapshot.project?.path).toBe(repo);
+    expect(snapshot.project?.name).toBe(repo.split('/').pop());
+  });
+
+  test('with no sprint at all: state `none`, and the button offers Sprint 1', () => {
+    const status = buildSnapshot(store, gates).status;
+    expect(status.sprint_state).toBe('none');
+    expect(status.sprint_id).toBeUndefined();
+    expect(status.next_sprint_number).toBe(1);
+  });
+
+  test('a sprint with no retro is running and carries started_at; the button offers the NEXT number', async () => {
+    await store.putSprint({
+      id: 'S-1',
+      goal: 'first',
+      tickets: [],
+      budget_tokens: 1000,
+      started: '2026-09-12T10:00:00.000Z',
+      carried_over: [],
+    });
+    const status = buildSnapshot(store, gates).status;
+    expect(status.sprint_state).toBe('running');
+    expect(status.sprint_id).toBe('S-1');
+    expect(status.sprint_started_at).toBe('2026-09-12T10:00:00.000Z');
+    expect(status.next_sprint_number).toBe(2);
+  });
+
+  test('a sprint with a retro block reads as finished', async () => {
+    await store.putSprint({
+      id: 'S-1',
+      goal: 'first',
+      tickets: [],
+      budget_tokens: 1000,
+      started: '2026-09-12T10:00:00.000Z',
+      carried_over: [],
+      retro: { mispointed: [], global_halts: 0, escalations: 0 },
+    });
+    expect(buildSnapshot(store, gates).status.sprint_state).toBe('finished');
+  });
+
+  test('agents_working counts only registered agents holding a ticket', async () => {
+    await store.putAgent('eng-1', {
+      vendor: 'claude',
+      model: 'sonnet',
+      last_seen: new Date().toISOString(),
+      ticket: 'TKT-0001',
+    });
+    await store.putAgent('eng-2', {
+      vendor: 'claude',
+      model: 'sonnet',
+      last_seen: new Date().toISOString(),
+    });
+    expect(buildSnapshot(store, gates).status.agents_working).toBe(1);
+  });
+
+  /**
+   * Review round 1 blocker 1: the top bar's action must be disabled while a
+   * finished sprint's review is still open (mockup `#s4`).
+   */
+  test('sprint_review_pending follows an open sprint_review gate', async () => {
+    await store.putSprint({
+      id: 'S-1',
+      goal: 'first',
+      tickets: [],
+      budget_tokens: 1000,
+      started: '2026-09-12T10:00:00.000Z',
+      carried_over: [],
+      retro: { mispointed: [], global_halts: 0, escalations: 0 },
+    });
+    expect(buildSnapshot(store, gates).status.sprint_review_pending).toBe(false);
+
+    const raised = await gates.request('sprint_review', {
+      policy: { gates: { sprint_review: 'human' }, breaker_signals: [] },
+      hilKind: 'demo',
+    });
+    const pending = buildSnapshot(store, gates).status;
+    expect(pending.sprint_state).toBe('finished');
+    expect(pending.sprint_review_pending).toBe(true);
+
+    // Decided — the next sprint is startable again.
+    await gates.respond(raised.id, 'approve', 'human');
+    expect(buildSnapshot(store, gates).status.sprint_review_pending).toBe(false);
+  });
+
+  test('approve_plan_pending follows an open approve_plan gate (T042: Start Sprint writes nothing until it is decided)', async () => {
+    expect(buildSnapshot(store, gates).status.approve_plan_pending).toBe(false);
+
+    const raised = await gates.request('approve_plan', {
+      policy: { gates: { approve_plan: 'em' }, breaker_signals: [] },
+      hilKind: 'approve_decision',
+      summary: 'Start S-1: TKT-0001 — a goal',
+    });
+    const pending = buildSnapshot(store, gates).status;
+    expect(pending.approve_plan_pending).toBe(true);
+    // Nothing was started, so the bar still offers S-1.
+    expect(pending.sprint_state).toBe('none');
+    expect(pending.next_sprint_number).toBe(1);
+
+    await gates.respond(raised.id, 'approve', 'em');
+    expect(buildSnapshot(store, gates).status.approve_plan_pending).toBe(false);
+  });
+
+  test('an open gate that is not sprint_review leaves sprint_review_pending false', async () => {
+    await gates.request('unblock', {
+      policy: { gates: { unblock: 'human' }, breaker_signals: [] },
+      hilKind: 'unblock',
+    });
+    expect(buildSnapshot(store, gates).status.sprint_review_pending).toBe(false);
+    expect(buildSnapshot(store, gates).status.approve_plan_pending).toBe(false);
+  });
+
+  test('needs_you is open HIL requests plus open questions', async () => {
+    await gates.request('unblock', {
+      policy: { gates: { unblock: 'human' }, breaker_signals: [] },
+      hilKind: 'unblock',
+    });
+    const questions = new QuestionService(store);
+    await questions.raise({ raised_by: 'eng-1', text: 'which wins?' });
+    const answered = await questions.raise({ raised_by: 'em', text: 'already handled' });
+    await questions.answer(answered.id, { answer: 'yes', by: 'human', resolved_as: 'reply' });
+
+    const status = buildSnapshot(store, gates, undefined, undefined, questions).status;
+    expect(status.needs_you).toBe(2);
+  });
+});
+
+/**
+ * T049 defect 5: the chat header's `vendor / model` rides on the snapshot, so
+ * a daemon with no resident EM still ships a valid snapshot and the header
+ * says "no session yet" rather than inventing one.
+ */
+describe('the em block (T049)', () => {
+  test('is absent without a resident EM', () => {
+    expect(buildSnapshot(store, gates).em).toBeUndefined();
+  });
+
+  test('carries the resident session vendor and model when one is wired', () => {
+    const snapshot = buildSnapshot(store, gates, undefined, undefined, undefined, undefined, {
+      vendor: 'claude',
+      model: 'fake/model-1',
+    });
+    expect(snapshot.em).toEqual({ vendor: 'claude', model: 'fake/model-1' });
   });
 });

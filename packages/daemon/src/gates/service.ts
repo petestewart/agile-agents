@@ -24,6 +24,7 @@
 
 import {
   type AgentId,
+  AgentIdSchema,
   BREAKER_SIGNALS,
   type BreakerSignal,
   type BreakerState,
@@ -70,6 +71,13 @@ function newHilId(): HilId {
   return `HIL-${ulid()}` as HilId;
 }
 
+/** Trims, caps at the shared message-body cap, and maps blank to `undefined` — the one place a note is normalized before it touches the schema. */
+function normalizeNote(note: string | undefined): string | undefined {
+  if (note === undefined) return undefined;
+  const trimmed = note.trim().slice(0, MESSAGE_BODY_MAX_CHARS);
+  return trimmed.length === 0 ? undefined : trimmed;
+}
+
 function inboxPath(agent: string, messageId: string): string {
   return `bus/inbox/${agent}/${messageId}.yaml`;
 }
@@ -94,6 +102,8 @@ export interface DelegateContext {
   hilKind?: HilKind;
   /** What was asked — see `HilRequest.summary`. */
   summary?: string;
+  /** Free text the human typed on the card (T039). Present when a note was written without a button press, or when a noted decision is re-delegated. */
+  note?: string;
 }
 
 /**
@@ -129,6 +139,14 @@ export interface GateRequestContext {
   hilKind: HilKind;
   /** Who to attribute the resulting bus message to. Defaults to `'daemon'`. */
   from?: AgentId;
+  /**
+   * T048: the agent whose blocked call raised this gate (the hook caller, the
+   * ACP session), persisted as `HilRequest.requested_by` and used by
+   * `waitingAgent` to deliver the decision back to it. Leave unset for a
+   * gate the daemon raises on nobody's behalf (`sprint_review`,
+   * `promote_to_main`) — delivery then falls back to the ticket's assignee.
+   */
+  requestedBy?: AgentId;
   /** What was asked — stored on the record, shown in the notice, handed to the delegate. */
   summary?: string;
 }
@@ -151,6 +169,13 @@ export class NoDelegateConfiguredError extends Error {
   constructor(id: string) {
     super(`hil request ${id} cannot be delegated: no delegate function is configured`);
     this.name = 'NoDelegateConfiguredError';
+  }
+}
+
+export class EmptyNoteError extends Error {
+  constructor(id: string) {
+    super(`hil request ${id}: note must not be empty`);
+    this.name = 'EmptyNoteError';
   }
 }
 
@@ -246,6 +271,7 @@ export class GateService {
       requested_at: now.toISOString(),
       ...(breakerReason !== undefined ? { reason: breakerReason } : {}),
       ...(ctx.summary !== undefined ? { summary: ctx.summary } : {}),
+      ...(ctx.requestedBy !== undefined ? { requested_by: ctx.requestedBy } : {}),
     };
 
     let record: HilRequest;
@@ -336,6 +362,7 @@ export class GateService {
       ticket: base.ticket,
       hilKind: base.hil_kind,
       summary: base.summary,
+      note: base.note,
     });
   }
 
@@ -417,15 +444,40 @@ export class GateService {
       buildEvent('hil_resolved', {
         ...(req.ticket !== undefined ? { ticket: req.ticket } : {}),
         agent: req.decided_by,
-        data: { id: req.id, decision: req.decision },
+        data: {
+          id: req.id,
+          decision: req.decision,
+          ...(req.note !== undefined ? { note: req.note } : {}),
+        },
       }),
     );
+    // T039 review round 1 (blocker): a request resolved through the delegate
+    // path (`addNote` -> EM decides, single-instance delegation, or a
+    // `human_timeout` fallthrough) used to send only the human `fyi` above,
+    // so the agent actually waiting on the gate never saw the note it was
+    // answered with. Deliver it exactly as `respond()` does — this is the
+    // ticket's PRIMARY flow ("a note with no button press ... the EM delegate
+    // reads it and decides").
+    if (req.note !== undefined) {
+      await this.deliverNote(
+        req,
+        req.decided_by ?? req.owner,
+        `gate "${req.gate}" ${req.decision === 'approve' ? 'approved' : 'denied'} by ${req.decided_by ?? req.owner}`,
+      );
+    }
   }
 
-  /** A human (or anyone acting as the resolved owner) answers a pending request directly. */
-  async respond(id: HilId, decision: HilDecision, by: string): Promise<HilRequest> {
+  /**
+   * A human (or anyone acting as the resolved owner) answers a pending
+   * request directly. `note` is the free text typed on the Needs-you card
+   * (T039, §17 "Control room v2"): it is persisted on the record, carried on
+   * the `hil_resolved` event, and delivered as an `hil_response` bus message
+   * to the agent that is waiting on the gate and to the EM.
+   */
+  async respond(id: HilId, decision: HilDecision, by: string, note?: string): Promise<HilRequest> {
     const current = this.get(id);
     if (current.status !== 'pending') throw new GateAlreadyResolvedError(id);
+    const trimmed = normalizeNote(note);
     const now = this.clock();
     const { deadline: _deadline, ...withoutDeadline } = current;
     const saved = await this.persist({
@@ -434,15 +486,137 @@ export class GateService {
       decision,
       decided_by: by,
       resolved_at: now.toISOString(),
+      ...(trimmed !== undefined ? { note: trimmed } : {}),
     });
     await this.store.appendEvent(
       buildEvent('hil_resolved', {
         ...(saved.ticket !== undefined ? { ticket: saved.ticket } : {}),
         agent: by,
-        data: { id: saved.id, decision: saved.decision },
+        data: {
+          id: saved.id,
+          decision: saved.decision,
+          ...(saved.note !== undefined ? { note: saved.note } : {}),
+        },
       }),
     );
+    if (saved.note !== undefined) {
+      await this.deliverNote(
+        saved,
+        by,
+        `gate "${saved.gate}" ${saved.decision === 'approve' ? 'approved' : 'denied'} by ${by}`,
+      );
+    }
     return saved;
+  }
+
+  /**
+   * A typed answer with no button press (T039, §17 "Control room v2"): the
+   * note is stored on the still-`pending` request and handed to the EM — as
+   * an inbox message and, when a delegate is configured, as a fresh delegate
+   * call carrying the note. **It never resolves the gate by itself**; the
+   * delegate's approve/deny (or a later button press) does.
+   */
+  async addNote(id: HilId, note: string, by: string): Promise<HilRequest> {
+    const current = this.get(id);
+    if (current.status !== 'pending') throw new GateAlreadyResolvedError(id);
+    const trimmed = normalizeNote(note);
+    if (trimmed === undefined) throw new EmptyNoteError(id);
+    const saved = await this.persist({ ...current, note: trimmed });
+    await this.deliverNote(saved, by, `note on gate "${saved.gate}" (no decision yet)`, {
+      emOnly: true,
+    });
+    if (this.delegate) {
+      const outcome = this.callDelegate(saved);
+      const deciding = outcome instanceof Promise ? outcome : Promise.resolve(outcome);
+      this.settleLater(saved, deciding, 'human note');
+    }
+    return saved;
+  }
+
+  /**
+   * Writes the note into the waiting agent's inbox (the ticket's assignee —
+   * the agent whose hook raised the gate) and the EM's, as a normal-priority
+   * `hil_response` (§5 "HIL": "daemon holds ... until `hil_response`"). Same
+   * direct-to-inbox write `notifyPending`/`notifyResolved` use, so no bus
+   * routing rule is involved.
+   */
+  private async deliverNote(
+    req: HilRequest,
+    by: string,
+    headline: string,
+    options: { emOnly?: boolean } = {},
+  ): Promise<void> {
+    if (req.note === undefined) return;
+    const recipients: AgentId[] = ['em'];
+    const waiting = options.emOnly ? undefined : this.waitingAgent(req);
+    if (waiting !== undefined && waiting !== 'em') recipients.unshift(waiting);
+
+    const body = `${headline} — ${by} wrote: ${req.note}`.slice(0, MESSAGE_BODY_MAX_CHARS);
+    /**
+     * T048: the raising agent gets a message written *to* it — "your gate was
+     * decided, retry your call" — not the EM's third-person report. It
+     * deliberately does not repeat `req.summary` (the whole blocked command,
+     * already body-capped once on the record): the agent knows what it just
+     * tried, and quoting it back inside another 800-char body was the other
+     * half of the first live run's confusion.
+     */
+    const decided =
+      req.decision === 'approve' ? 'approved' : req.decision === 'deny' ? 'denied' : undefined;
+    const waitingBody =
+      decided === undefined
+        ? body
+        : `your gate "${req.gate}" was ${decided} by ${by} — ${by} wrote: ${req.note}. Retry the call it blocked.`.slice(
+            0,
+            MESSAGE_BODY_MAX_CHARS,
+          );
+    // `by` is a free string on the wire (`--by pete`); only use it as the
+    // message's `from` when it is actually a valid agent id, else attribute
+    // the note to `human` (the card it was typed on).
+    const from: AgentId = AgentIdSchema.safeParse(by).success ? (by as AgentId) : 'human';
+    const ts = this.clock().toISOString();
+    for (const to of recipients) {
+      const message: Message = {
+        id: ulid(),
+        ts,
+        from,
+        to: [to],
+        kind: 'hil_response',
+        priority: 'normal',
+        ...(req.ticket !== undefined ? { ticket: req.ticket } : {}),
+        body: to === 'em' ? body : waitingBody,
+        refs: [hilPath(req.id)],
+        requires_ack: false,
+      };
+      const validated = validateMessage(message);
+      await this.store.putEntity(inboxPath(to, validated.id), validateMessage, validated);
+    }
+  }
+
+  /**
+   * The agent waiting on this gate. `requested_by` (T048) when the raiser
+   * recorded itself — the hook caller or the ACP session whose call is parked
+   * on this decision. Only when it is absent does this fall back to the
+   * ticket's assignee, which is what this used to do unconditionally: a QA or
+   * reviewer hook raises gates on a ticket assigned to the *engineer*, so
+   * qa-2003's approved `unblock` was delivered into eng-2003's inbox and the
+   * engineer refused a command outside its own worktree (first live run of
+   * the control-room branch, 2026-09-18). `undefined` for a ticketless
+   * request with no `requested_by`.
+   */
+  private waitingAgent(req: HilRequest): AgentId | undefined {
+    if (req.requested_by !== undefined) return req.requested_by;
+    if (req.ticket === undefined) return undefined;
+    let assignee: string | undefined;
+    try {
+      assignee = this.store.getTicket(req.ticket).assignee;
+    } catch {
+      return undefined;
+    }
+    // Review nit: never cast — an assignee that isn't a valid agent id would
+    // otherwise throw out of `validateMessage` *after* the decision and its
+    // event were already persisted. Skip the delivery instead.
+    const parsed = AgentIdSchema.safeParse(assignee);
+    return parsed.success ? (parsed.data as AgentId) : undefined;
   }
 
   /**

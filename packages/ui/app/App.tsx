@@ -1,36 +1,25 @@
-import type {
-  AgentId,
-  AgentRecord,
-  Event,
-  KbIndex,
-  OracleIndex,
-  Policy,
-  Ticket,
-} from '@agile-agents/shared';
+import type { Event, KbIndex, OracleIndex, Policy, Ticket } from '@agile-agents/shared';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { BoardPanel } from './components/BoardPanel';
 import { ChatPanel } from './components/ChatPanel';
-import { FeedPanel } from './components/FeedPanel';
-import { NeedsYou } from './components/NeedsYou';
 import { OraclePanel } from './components/OraclePanel';
 import { Panel } from './components/Panel';
-import { SprintStrip } from './components/SprintStrip';
-import { TeamPanel } from './components/TeamPanel';
+import { Settings } from './components/Settings';
+import { ToolRow } from './components/ToolRow';
 import { TopBar } from './components/TopBar';
-import {
-  getAgents,
-  getKbIndex,
-  getOracleIndex,
-  getPolicy,
-  getSnapshot,
-  getTickets,
-} from './lib/api';
+import { PlanScreen } from './components/plan/PlanScreen';
+import { ReviewView } from './components/review/ReviewView';
+import { SprintView } from './components/sprint/SprintView';
+import { getKbIndex, getOracleIndex, getPolicy, getSnapshot, getTickets } from './lib/api';
+import { useFeed } from './lib/feed-context';
 import type { FeedSnapshot } from './lib/feed-types';
-import { connectFeedSocket } from './lib/ws';
+import { useShell } from './lib/shell';
 
-type Tab = 'ops' | 'oracle';
-
-const MAX_EVENTS = 500;
+/**
+ * T044: the Sprint slot carries three bodies — the sprint itself, the
+ * sprint-review narrative (which the shell switches to on its own once a
+ * `sprint_review` gate is pending), and T025's Oracle/KB reader.
+ */
+type Tab = 'ops' | 'review' | 'oracle';
 
 /**
  * QA round 1 (REJECT): an external change (e.g. a ticket status flipped
@@ -51,6 +40,26 @@ const REFRESH_TRIGGER_KINDS = new Set<Event['kind']>([
   'agent_put',
   'agent_deleted',
   'policy_put',
+  // T040: a question raised or answered elsewhere changes the Needs-you
+  // queue, which rides on `/api/snapshot`.
+  'question_raised',
+  'question_answered',
+  // T043: the top bar renders the current sprint and the halt count from
+  // `/api/snapshot`, so an externally started sprint (`agile run`, the EM
+  // loop) or a halt raised from the CLI has to reach the bar without a
+  // reload — the `/ws` snapshot frame only arrives on (re)connect.
+  'sprint_put',
+  'halt_created',
+  'halt_updated',
+  'halt_released',
+  // T050: a gate raised or decided anywhere else (the EM loop, `agile run`,
+  // the CLI's `agile approve`) changes the Needs-you queue, the top bar's
+  // `sprint_review_pending` and, with it, which of its three phases the
+  // Review tab renders. Without these two kinds the sprint review only
+  // appeared on the page after a reload, and the tab could sit on the
+  // running notice for a sprint that had already stopped.
+  'hil_requested',
+  'hil_resolved',
 ]);
 
 /** Coalesces a burst of triggering events (e.g. a ticket transition plus its stanza) into one refetch. */
@@ -75,20 +84,24 @@ function isHeartbeatOnlyEvent(event: Event): boolean {
 }
 
 /**
- * Control room shell (T025 — design §17 "Control room"; session scope:
- * "collapsible Team / Board / Feed panels ... sprint strip with gate chips
- * ... Halt button ... EM chat panel"). Reads come from the daemon's
- * `/api/snapshot` + `/ws` (live tail, same feed T020's page uses) plus the
- * new T025 read endpoints (`/api/agents`, `/api/tickets`, `/api/oracle`,
- * `/api/kb`, `/api/policy`); every write goes through an existing daemon
- * verb (see `lib/api.ts`).
+ * Control room shell.
+ *
+ * T025 built it as one screen (sprint strip + collapsible panels + chat).
+ * T043 puts the §17 v2 chrome around it: one top bar on every view
+ * (`TopBar`), a thin tool row under it (`ToolRow`), and three views — Plan
+ * (T042's), Sprint and Settings (`Settings`, spend + "Who decides"). T044
+ * replaced the Sprint slot's T025 panels with the §17 v2 bodies: the sprint
+ * itself (`components/sprint/SprintView`), the sprint-review narrative
+ * (`components/review/ReviewView`) and T025's Oracle/KB reader. The single `/ws`
+ * connection lives in `FeedProvider` (`lib/feed-context.tsx`) and the chrome
+ * state in `ShellProvider` (`lib/shell.tsx`); this component owns only the
+ * HTTP-sourced reads and the layout.
  */
-export function App() {
+export function App(): JSX.Element {
+  const { snapshot: liveSnapshot, connected, onEvent } = useFeed();
+  const { view, chatMode, middleOpen } = useShell();
   const [snapshot, setSnapshot] = useState<FeedSnapshot | undefined>(undefined);
-  const [events, setEvents] = useState<Event[]>([]);
   const [tab, setTab] = useState<Tab>('ops');
-  const [connected, setConnected] = useState(false);
-  const [agents, setAgents] = useState<Array<{ id: AgentId; record: AgentRecord }>>([]);
   const [tickets, setTickets] = useState<Ticket[]>([]);
   const [oracle, setOracle] = useState<OracleIndex>({});
   const [kb, setKb] = useState<KbIndex>({});
@@ -96,24 +109,19 @@ export function App() {
   const [error, setError] = useState<string | undefined>(undefined);
   const refreshTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
-  // Re-pulls every HTTP-sourced read, `/api/snapshot` included. The `hil`/
-  // `halts`/`quota` fields the panels read come from `snapshot` — this is
-  // called both after every write this browser makes (so its own resolved
-  // HIL request or raised halt disappears/appears immediately) and,
-  // debounced, whenever `/ws` reports one of `REFRESH_TRIGGER_KINDS` (so an
-  // *external* change — another agent flipping a ticket, say — shows up
-  // without a manual reload too).
+  // Re-pulls every HTTP-sourced read, `/api/snapshot` included. Called both
+  // after every write this browser makes (so its own resolved HIL request,
+  // raised halt or policy edit shows immediately) and, debounced, whenever
+  // `/ws` reports one of `REFRESH_TRIGGER_KINDS`.
   const refreshAux = useCallback(async () => {
     try {
-      const [a, t, o, k, p, snap] = await Promise.all([
-        getAgents(),
+      const [t, o, k, p, snap] = await Promise.all([
         getTickets(),
         getOracleIndex(),
         getKbIndex(),
         getPolicy(),
         getSnapshot(),
       ]);
-      setAgents(a);
       setTickets(t);
       setOracle(o);
       setKb(k);
@@ -134,88 +142,174 @@ export function App() {
 
   useEffect(() => {
     void refreshAux();
-    const handle = connectFeedSocket({
-      onSnapshot: (snap) => {
-        setSnapshot(snap);
-        setEvents(snap.events);
-      },
-      onEvent: (event) => {
-        setEvents((prev) => [...prev, event].slice(-MAX_EVENTS));
+    return () => {
+      if (refreshTimer.current) clearTimeout(refreshTimer.current);
+    };
+  }, [refreshAux]);
+
+  /**
+   * The `/ws` snapshot and `refreshAux`'s `GET /api/snapshot` feed ONE piece
+   * of state, newest write wins. Preferring the socket's copy would pin the
+   * page to the snapshot it got on connect, so this browser's own write (an
+   * approved HIL request, a raised halt) would never leave the screen —
+   * exactly the T025/T039 behaviour the e2e tests assert.
+   */
+  useEffect(() => {
+    if (liveSnapshot) setSnapshot(liveSnapshot);
+  }, [liveSnapshot]);
+
+  const reviewPending = snapshot?.status.sprint_review_pending ?? false;
+  const reviewAnnounced = useRef(false);
+  useEffect(() => {
+    if (reviewPending && !reviewAnnounced.current) {
+      reviewAnnounced.current = true;
+      setTab('review');
+    }
+    if (!reviewPending) reviewAnnounced.current = false;
+  }, [reviewPending]);
+
+  useEffect(
+    () =>
+      onEvent((event) => {
         if (REFRESH_TRIGGER_KINDS.has(event.kind) && !isHeartbeatOnlyEvent(event)) {
           scheduleRefresh();
         }
-      },
-      onStatusChange: (status) => setConnected(status === 'open'),
-    });
-    return () => {
-      handle.close();
-      if (refreshTimer.current) clearTimeout(refreshTimer.current);
-    };
-  }, [refreshAux, scheduleRefresh]);
+      }),
+    [onEvent, scheduleRefresh],
+  );
 
   const hil = snapshot?.hil ?? [];
+  // T040: open questions are attention-queue items alongside the pending
+  // HIL requests, so the Needs-you count covers both.
+  const questions = snapshot?.questions ?? [];
   const halts = snapshot?.halts ?? [];
   const quota = snapshot?.quota ?? [];
-  const sprint = snapshot?.sprint ?? { tickets: { done: 0, in_flight: 0, stale: 0, total: 0 } };
+  /**
+   * T044: the open `sprint_review` gate, when there is one. Its presence
+   * both enables the Review view's decision buttons and auto-selects that
+   * view once — §17 v2: the review IS the sprint's last screen, so an
+   * operator who left the room on the Sprint tab should come back to the
+   * thing that is waiting on them, without losing the ability to click back.
+   */
+  const reviewGate = hil.find((item) => item.gate === 'sprint_review');
+
+  const chatVisible = chatMode !== 'hidden';
+  /**
+   * T049 defect 3: on the Plan screen the middle *pane* is the document
+   * pane, not the whole column — the rail lives beside it and the mockup's
+   * own `.plan.nopane` grid keeps it when the pane is closed. Unmounting
+   * `cr-main` wholesale is what took the rail away with it and left the app
+   * with no way back. So a closed pane on Plan keeps the column (narrowed to
+   * the rail, `data-main="rail"`); on the other views, where nothing can
+   * close it, it stays open.
+   */
+  const railOnly = view === 'plan' && !middleOpen;
+  const mainVisible = chatMode !== 'max' && (middleOpen || railOnly);
+  const mainState = mainVisible ? (railOnly ? 'rail' : 'open') : 'closed';
 
   return (
     <div className="cr-root">
       <TopBar
-        connected={connected}
-        quota={quota}
+        snapshot={snapshot}
         haltCount={halts.length}
         activeHaltIds={halts.map((h) => h.id)}
         onChanged={refreshAux}
       />
-      <div style={{ display: 'flex', gap: 8, padding: '8px 16px 0' }}>
-        <button
-          type="button"
-          className="cr-icon-btn"
-          aria-pressed={tab === 'ops'}
-          onClick={() => setTab('ops')}
-        >
-          Ops
-        </button>
-        <button
-          type="button"
-          className="cr-icon-btn"
-          aria-pressed={tab === 'oracle'}
-          onClick={() => setTab('oracle')}
-        >
-          Oracle / KB
-        </button>
-      </div>
+      <ToolRow connected={connected} />
       {error && (
         <p style={{ color: 'var(--danger)', margin: '8px 16px 0' }} data-testid="app-error">
           {error}
         </p>
       )}
-      <div className="cr-body">
-        <div className="cr-main">
-          <SprintStrip sprint={sprint} halts={halts} gates={policy?.gates} />
-
-          {tab === 'ops' ? (
-            <>
-              <Panel title="Needs you" count={hil.length} defaultOpen>
-                <NeedsYou items={hil} onChanged={refreshAux} />
-              </Panel>
-              <Panel title="Team" count={agents.length}>
-                <TeamPanel agents={agents} halts={halts} />
-              </Panel>
-              <Panel title="Board" count={tickets.length} defaultOpen>
-                <BoardPanel tickets={tickets} halts={halts} />
-              </Panel>
-              <Panel title="Feed" count={events.length}>
-                <FeedPanel events={events} />
-              </Panel>
-            </>
-          ) : (
-            <Panel title="Oracle / KB" defaultOpen>
-              <OraclePanel oracle={oracle} kb={kb} />
-            </Panel>
-          )}
-        </div>
-        <ChatPanel connected={connected} />
+      <div className="cr-frame" data-chat={chatMode} data-main={mainState} data-view={view}>
+        {mainVisible && (
+          <div className="cr-main">
+            {view === 'plan' && <PlanScreen />}
+            {view === 'settings' && (
+              <Settings
+                policy={policy}
+                quota={quota}
+                {...(snapshot?.em ? { em: snapshot.em } : {})}
+                onChanged={refreshAux}
+              />
+            )}
+            {view === 'sprint' && (
+              <>
+                <div className="cr-view-tabs">
+                  <button
+                    type="button"
+                    className="cr-btn"
+                    data-testid="sprint-tab-sprint"
+                    aria-pressed={tab === 'ops'}
+                    onClick={() => setTab('ops')}
+                  >
+                    Sprint
+                  </button>
+                  <button
+                    type="button"
+                    className="cr-btn"
+                    data-testid="sprint-tab-review"
+                    aria-pressed={tab === 'review'}
+                    title={
+                      reviewPending
+                        ? 'The sprint is waiting on your review'
+                        : 'Where the sprint stands — the review appears when it finishes'
+                    }
+                    onClick={() => setTab('review')}
+                  >
+                    Review
+                    {/*
+                      T050: the badge reads the SAME `status.sprint_review_pending`
+                      the top bar does, so the bar and this tab can never
+                      disagree about whether a review is due.
+                    */}
+                    {reviewPending && (
+                      <span className="count" data-testid="review-tab-badge">
+                        pending
+                      </span>
+                    )}
+                  </button>
+                  <button
+                    type="button"
+                    className="cr-btn"
+                    aria-pressed={tab === 'oracle'}
+                    onClick={() => setTab('oracle')}
+                  >
+                    Oracle / KB
+                  </button>
+                </div>
+                {tab === 'ops' && (
+                  <SprintView
+                    snapshot={snapshot}
+                    hil={hil}
+                    questions={questions}
+                    halts={halts}
+                    tickets={tickets}
+                    {...(policy ? { policy } : {})}
+                    onChanged={refreshAux}
+                  />
+                )}
+                {tab === 'review' && (
+                  // T050: keyed on the gate, so raising or deciding the
+                  // sprint review re-pulls the phase-dependent narrative
+                  // instead of leaving the running notice (or the decision
+                  // buttons) on screen until a reload.
+                  <ReviewView
+                    key={reviewGate?.id ?? 'no-gate'}
+                    {...(reviewGate ? { gate: reviewGate } : {})}
+                    onChanged={refreshAux}
+                  />
+                )}
+                {tab === 'oracle' && (
+                  <Panel title="Oracle / KB" defaultOpen>
+                    <OraclePanel oracle={oracle} kb={kb} />
+                  </Panel>
+                )}
+              </>
+            )}
+          </div>
+        )}
+        {chatVisible && <ChatPanel />}
       </div>
     </div>
   );

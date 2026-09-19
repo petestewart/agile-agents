@@ -7,7 +7,7 @@
  * "Technical shape": "`agile` CLI: same client lib").
  *
  * T004 scope was `init` and `daemon start`; T008 (this file) adds
- * status/tail/send/approve/delegate/resolve/halt/resume/hook/breaker and
+ * status/tail/send/approve/deny/note/delegate/resolve/halt/resume/hook/breaker and
  * makes every verb support `--json` alongside its human-readable output.
  * `index.ts` is pure dispatch — one file per verb lives under `commands/`.
  */
@@ -16,13 +16,23 @@ import { join } from 'node:path';
 import { createEmSessionDelegate, discoverConfig } from '@agile-agents/daemon';
 import { type ParsedArgs, parseArgs } from './args';
 import { runCliDaemonStart } from './commands/daemon';
-import { runApprove, runBreakerClear, runDelegate, runGateList, runResolve } from './commands/gate';
+import {
+  runApprove,
+  runBreakerClear,
+  runDelegate,
+  runDeny,
+  runGateList,
+  runGateNote,
+  runResolve,
+} from './commands/gate';
 import { runHalt, runResume } from './commands/halt';
 import { parseHookArgs, runHook } from './commands/hook';
 import { runCliInit } from './commands/init';
+import { runQuestionAnswer, runQuestionList, runQuestionRaise } from './commands/question';
 import { runDemoSprint } from './commands/run';
 import { runSend } from './commands/send';
 import { runStatus } from './commands/status';
+import { runSync } from './commands/sync';
 import { runTail } from './commands/tail';
 
 export const PACKAGE_NAME = '@agile-agents/cli';
@@ -46,13 +56,19 @@ function usage(): string {
     '  status                     sprint/tickets/agents/spend',
     '  tail                       tail the event log (--follow, --ticket, --agent, --kind)',
     '  send                       send a bus message (--from --to --kind --priority --body [--ticket])',
-    '  approve <hil-id>           approve a HIL request [--by <agent>]',
+    '  approve <hil-id>           approve a HIL request [--by <agent>] [--note <text>]',
+    '  deny <hil-id>              deny a HIL request [--by <agent>] [--note <text>]',
+    '  note <hil-id> --note <text>   answer a HIL request in free text (no decision; the EM decides)',
     '  delegate <hil-id> --to em|architect',
-    '  resolve <hil-id> --decision approve|deny [--by <agent>]',
+    '  resolve <hil-id> --decision approve|deny [--by <agent>] [--note <text>]',
     '  gate list                  list open HIL requests',
+    '  question list              list open questions (board/questions/)',
+    '  question raise --text <text> [--ticket <id>] [--by <agent>]',
+    '  question answer <id> --answer <text> [--as reply|decision|ticket] [--edit <json>] [--ticket <id>]',
     '  halt [--scope <scope>] [--reason <text>] [--by <agent>]',
     '  resume <halt-id>',
     '  breaker clear <signal>',
+    '  sync jira link <PROJECT> | unlink | status    two-way Jira sync (credentials from $JIRA_*)',
     '  hook <event>               stdin JSON in, JSON out (e.g. hook pre-tool-use) [--fail-closed] [--timeout <ms>, default 2000]',
     "  mcp --agent <id> [--ticket <id>] [--timeout <ms>, default 60000]   stdio MCP bridge to the daemon's tool.* RPC",
     '',
@@ -161,6 +177,12 @@ export async function runCli(argv: string[], cwd: string = process.cwd()): Promi
       case 'approve':
         return await runApprove(socketPath, parseArgs(rest.slice(1)), json);
 
+      case 'deny':
+        return await runDeny(socketPath, parseArgs(rest.slice(1)), json);
+
+      case 'note':
+        return await runGateNote(socketPath, parseArgs(rest.slice(1)), json);
+
       case 'delegate':
         return await runDelegate(socketPath, parseArgs(rest.slice(1)), json);
 
@@ -169,6 +191,16 @@ export async function runCli(argv: string[], cwd: string = process.cwd()): Promi
 
       case 'gate':
         if (sub === 'list') return await runGateList(socketPath, json);
+        console.error(usage());
+        return 1;
+
+      // T040 (§17 "Control room v2" → "Questions vs Decisions"): answering
+      // one either replies to the raiser, records a `DEC-*` through the
+      // oracle write guard, or applies a ticket edit.
+      case 'question':
+        if (sub === 'list') return await runQuestionList(socketPath, json);
+        if (sub === 'answer') return await runQuestionAnswer(socketPath, parseArgs(restArgv), json);
+        if (sub === 'raise') return await runQuestionRaise(socketPath, parseArgs(restArgv), json);
         console.error(usage());
         return 1;
 
@@ -182,6 +214,9 @@ export async function runCli(argv: string[], cwd: string = process.cwd()): Promi
         if (sub === 'clear') return await runBreakerClear(socketPath, parseArgs(restArgv), json);
         console.error(usage());
         return 1;
+
+      case 'sync':
+        return await runSync(socketPath, parseArgs(rest.slice(1)), json);
 
       case 'hook': {
         const args: ParsedArgs = parseArgs(rest.slice(1));

@@ -42,6 +42,7 @@ import {
 } from '@agile-agents/acp-client';
 import type { Policy } from '@agile-agents/shared';
 import type { GateService } from '../gates';
+import { type CliInvocation, normalizeCliBin } from '../runner/cli-bin';
 
 export type ArchitectSessionMode = 'plan' | 'default';
 
@@ -54,8 +55,16 @@ export interface RunArchitectTurnOptions {
   /** The rendered brief/refinement/standup prompt — this turn's first (and only) `prompt()` call. */
   prompt: string;
   mode: ArchitectSessionMode;
-  /** `agile mcp --agent architect` — no `--ticket` (the architect isn't scoped to one). Defaults to `'agile'`. */
-  cliBin?: string;
+  /**
+   * `agile mcp --agent architect` — no `--ticket` (the architect isn't
+   * scoped to one). Defaults to `'agile'`. T042: also accepts the
+   * `CliInvocation` the daemon resolves (`runner/cli-bin.ts`), so a
+   * workspace layout's `bun run packages/cli/src/index.ts` prefix survives
+   * into the MCP server config exactly as it does for engineer sessions
+   * (`runner/session.ts`'s `mcpServerConfig`) — a bare `'agile'` is not on
+   * `$PATH` in a dev tree.
+   */
+  cliBin?: string | CliInvocation;
   socketPath?: string;
   provider?: AcpProviderConfig;
   spawn?: typeof defaultSpawnSession;
@@ -103,7 +112,7 @@ function sleep(ms: number): Promise<void> {
 /** Runs one architect turn. Resolves `exited` once the process ends (normally or on error) — never rejects, matching `runner/session.ts`'s `AgentSessionHandle` convention. */
 export function runArchitectTurn(opts: RunArchitectTurnOptions): ArchitectSessionHandle {
   const { gateService, policy, cwd, prompt, mode } = opts;
-  const cliBin = opts.cliBin ?? 'agile';
+  const cliBin: CliInvocation = normalizeCliBin(opts.cliBin ?? 'agile');
   const provider = opts.provider ?? ACP_PROVIDERS.claude;
   const spawn = opts.spawn ?? defaultSpawnSession;
   const now = opts.now ?? (() => new Date());
@@ -120,7 +129,13 @@ export function runArchitectTurn(opts: RunArchitectTurnOptions): ArchitectSessio
       ...(opts.socketPath ? { AGILE_SOCKET_PATH: opts.socketPath } : {}),
     },
     clientCapabilities: provider.clientCapabilities,
-    mcpServers: [{ name: 'agile', command: cliBin, args: ['mcp', '--agent', 'architect'] }],
+    mcpServers: [
+      {
+        name: 'agile',
+        command: cliBin.command,
+        args: [...cliBin.args, 'mcp', '--agent', 'architect'],
+      },
+    ],
     modeId: mode,
   };
   const session = spawn(spawnOptions);

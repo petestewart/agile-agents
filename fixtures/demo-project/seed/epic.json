@@ -1,5 +1,6 @@
 {
   "_comment": "T021 demo fixture seed, loaded by `agile run --seed` (packages/cli/src/commands/run.ts) via the daemon's validating StateStore — never written as raw .agile/ files. product.md is the one exception (init.ts's own stub is a plain file, not a StateStore entity).",
+  "sprintGoal": "Demo epic layer 1",
   "productMd": "# Product\n\ndemo-project is a tiny in-memory task tracker (fixtures/demo-project/src/tasks.ts) — the T021 end-to-end demo's target, not a real product. Non-goals: persistence, auth, a UI. Glossary: a *task* has a title, an ISO `dueDate`, and a `done` flag.\n",
   "oracle": [
     {

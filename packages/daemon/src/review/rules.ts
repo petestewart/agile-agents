@@ -28,6 +28,7 @@ import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { RuleIdSchema } from '@agile-agents/shared';
 import { parse as parseYaml } from 'yaml';
+import { isHiddenOrTempFile } from '../store/fs';
 
 export class RuleLoadError extends Error {
   constructor(
@@ -118,14 +119,21 @@ function loadOneRuleFile(dir: string, fileName: string, match: RegExpExecArray):
  * `loadToolRegistry`, every `StateStore.listX` on an uninitialized
  * collection).
  *
- * A file that isn't even named `RULE-###.md`/`.yaml` (a stray `README.md`,
- * `.gitkeep`, etc.) is **skipped with a warning**, not thrown on — matching
+ * A file that isn't even named `RULE-###.md`/`.yaml` (a stray `README.md`)
+ * is **skipped with a warning**, not thrown on — matching
  * `tools/registry.ts`'s tolerance (a directory with no `tool.yaml` is
  * skipped, not an error; opus review, blocker 3). A file that *is* named
  * like a rule but is malformed once opened (bad heading, filename/id
  * mismatch, invalid YAML, a duplicate id across two files) still throws,
  * naming the file — that's a rule someone meant to author and got wrong,
  * not stray repo clutter.
+ *
+ * Hidden and atomic-write temp files (`.gitkeep`, `.DS_Store`, `*.tmp-*`)
+ * are skipped **silently** — `agile init` itself seeds `rules/.gitkeep`
+ * (`init.ts`), so warning on them printed a `skipping .gitkeep` line on
+ * every single tick of a clean run (T046 defect 1). Same predicate every
+ * store directory reader already filters on (`store/fs.ts`'s
+ * `isHiddenOrTempFile`, used by `listDataFiles`).
  */
 export function loadRules(stateRoot: string): RuleDefinition[] {
   const rulesDir = join(stateRoot, 'rules');
@@ -139,6 +147,8 @@ export function loadRules(stateRoot: string): RuleDefinition[] {
   const rules: RuleDefinition[] = [];
   const seenIds = new Set<string>();
   for (const name of names) {
+    // Seeded/OS clutter is not authoring clutter: never a warning (T046).
+    if (isHiddenOrTempFile(name)) continue;
     const match = RULE_FILE_PATTERN.exec(name);
     if (!match) {
       // The one warn/log surface this pure fs loader has — it takes no

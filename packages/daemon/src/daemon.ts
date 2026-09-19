@@ -10,10 +10,25 @@ import { join } from 'node:path';
 import type { TicketId } from '@agile-agents/shared';
 import daemonPackageJson from '../package.json' with { type: 'json' };
 import { registerArchitectTools } from './architect';
+import { renderEmBrief } from './briefs';
 import { Bus, buildBusRpcMethods } from './bus';
 import { roleOf } from './bus/routing';
-import { type AgileConfig, type DiscoverConfigOptions, discoverConfig } from './config';
-import { EM_TOOLS, EmLoop, type EmToolDeps, buildEmRpcMethods } from './em';
+import {
+  type AgileConfig,
+  CONFIG_FILE_NAME,
+  type DiscoverConfigOptions,
+  discoverConfig,
+} from './config';
+import {
+  EM_TOOLS,
+  EmChatService,
+  EmLoop,
+  type EmToolDeps,
+  ResidentEm,
+  buildEmRpcMethods,
+  latestSprint,
+  policyOrDefault,
+} from './em';
 import { pickCurrentSprint } from './feed';
 import { GateService, buildGateRpcMethods } from './gates';
 import type { DelegateFn } from './gates';
@@ -24,7 +39,15 @@ import { type HttpServerHandle, startHttpServer } from './http';
 import { type LockHandle, acquireLock } from './lock';
 import { MergeOwner, buildMergeRpcMethods, sprintReviewApproved } from './merge';
 import { buildOracleRpcMethods } from './oracle';
+import {
+  type ArchitectPlanner,
+  PlanService,
+  type Reexaminer,
+  liveArchitectPlanner,
+  startPlanningTurn,
+} from './plan';
 import { QaProtocol, buildQaRpcMethods, decideQaRead, registerQaTools } from './qa';
+import { QuestionService, buildQuestionRpcMethods } from './questions';
 import { QuotaService, buildQuotaRpcMethods } from './quota';
 import {
   REVIEW_BUILTIN_TOOLS,
@@ -42,6 +65,7 @@ import {
   Runner,
   advanceArchitectInbox,
   advanceDoneTickets,
+  advanceEngineerEscalations,
   advanceEngineerVerdicts,
   advanceHilResolutions,
   advanceMergeConflicts,
@@ -57,7 +81,12 @@ import {
 } from './runner';
 import type { AgentSessionOptions } from './runner';
 import { StateStore, buildStateRpcMethods } from './store';
+import { DAEMON_CACHE_DIR } from './subprocess-env';
+import { HttpJiraClient, JiraSync, buildSyncRpcMethods, resolveJiraSettings } from './sync';
 import { LiveRunner, ToolService, buildToolRpcMethods, loadToolRegistry } from './tools';
+
+/** The ACP spawn seam `ResidentEm` takes (same shape as `em/delegate.ts`'s). */
+type ResidentEmSpawn = NonNullable<ConstructorParameters<typeof ResidentEm>[0]['spawn']>;
 
 export const DAEMON_VERSION: string = daemonPackageJson.version;
 
@@ -82,11 +111,24 @@ export interface DaemonHandle {
   store?: StateStore;
   bus?: Bus;
   gateService?: GateService;
+  questionService?: QuestionService;
   runner?: Runner;
   mergeOwner?: MergeOwner;
   reviewProtocol?: ReviewProtocol;
   qaProtocol?: QaProtocol;
   emLoop?: EmLoop;
+  /**
+   * T041: the daemon's one long-lived EM ACP session, backing the control
+   * room's chat panel. Lazily spawned (nothing runs until the first chat
+   * turn) and never used for gate decisions — those stay with the one-shot
+   * delegate, so killing this session cannot stall a gate. `undefined`
+   * pre-`agile init`.
+   */
+  residentEm?: ResidentEm;
+  /** T041: the chat thread on top of `residentEm` — what `/api/chat/em` reads and writes. `undefined` pre-`agile init`. */
+  emChat?: EmChatService;
+  /** T045: Jira two-way sync — `undefined` unless Jira is configured (base URL + credentials in the environment). */
+  jiraSync?: JiraSync;
   /**
    * One pass of the pipeline glue (`runner/pipeline-glue.ts`: review
    * requests, engineer verdicts, HIL resolutions, architect inbox, security
@@ -122,6 +164,31 @@ export interface StartDaemonOptions extends DiscoverConfigOptions {
    * `agile run`'s offline mode does, since it never spawns one.
    */
   gateDelegate?: DelegateFn;
+  /**
+   * T041 test/offline-run seam: overrides the resident EM chat session's ACP
+   * transport, exactly as `runnerSpawn` does for engineer/reviewer/qa
+   * sessions. Real usage never sets it (the default `spawnSession` spawns
+   * the operator's own vendor login). Without it — and with no vendor
+   * installed — a chat turn fails loudly into the thread rather than
+   * silently doing nothing.
+   */
+  emChatSpawn?: ResidentEmSpawn;
+  /**
+   * T042 test/offline-run seam: the architect's planning turn for the first
+   * goal typed into the control-room chat. Defaults to
+   * `liveArchitectPlanner` (one real architect ACP session in `plan` mode).
+   * Offline tests pass a double that calls the same daemon verbs the
+   * architect would, so the daemon side of the planning turn is what runs
+   * either way.
+   */
+  architectPlanner?: ArchitectPlanner;
+  /**
+   * T042: the architect's judgment in the post-decision re-examination pass
+   * (§17 v2). Without one every not-done ticket is still *recorded* — as
+   * `unchanged`, with the reason on the `ticket_reexamined` event — so the
+   * pass never silently skips a ticket.
+   */
+  reexaminer?: Reexaminer;
   /**
    * Ceremony/pipeline tick cadence. Default `CEREMONY_TICK_MS` (30 s); `0`
    * disables the daemon's own timer for a caller that drives
@@ -159,6 +226,10 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
   const gateService = store
     ? new GateService(store, options.gateDelegate ? { delegate: options.gateDelegate } : {})
     : undefined;
+  // Questions store (T040, §17 "Control room v2"): one instance backs the
+  // `question.*` RPC, the `/api/questions` routes, the attention-queue
+  // snapshot, and the engineer-escalate handler in the pipeline glue.
+  const questionService = store ? new QuestionService(store) : undefined;
   // Hoisted (T011) so `bus.*` RPC, the hook service, and the tool service's
   // `bus_send` built-in all share one `Bus` instance over the same store.
   const bus = store ? new Bus(store, config.stateRoot, { now: options.now }) : undefined;
@@ -244,6 +315,11 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
     store && bus && gateService
       ? new MergeOwner(store, bus, config.repoRoot, {
           gateApproved: () => sprintReviewApproved(gateService),
+          // T046 defect 3: a promotion blocked by `main` being checked out
+          // in the operator's own clone opens one human-owned
+          // `promote_to_main` gate (with the workaround in its summary)
+          // instead of throwing deep inside the EM's sprint review.
+          gates: gateService,
         })
       : undefined;
   // Review protocol (T016, §12) — hoisted above the ceremony timer (T021)
@@ -271,13 +347,81 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
               const outcome = await mergeOwner.mergeIntegrationToMain();
               if (outcome.status !== 'merged') {
                 throw new Error(
-                  `integration -> main merge did not land (${outcome.status}): ${outcome.summary}`,
+                  `integration -> main merge did not land (${outcome.status})${
+                    outcome.hilId ? ` [${outcome.hilId}]` : ''
+                  }: ${outcome.summary}`,
                 );
               }
             },
           },
         })
       : undefined;
+  // Resident EM chat session (T041, §17 "Technical shape" → EM chat: "the
+  // EM runs as a child process of the daemon over ACP; the daemon relays
+  // its events over the WebSocket"). Constructed eagerly, spawned lazily —
+  // a daemon nobody chats to never starts a vendor process. Its brief is
+  // rendered per spawn from the same `latestSprint`/`policyOrDefault` the
+  // gate delegate uses, so the two EM surfaces never quote different state.
+  const residentEm =
+    store && bus
+      ? new ResidentEm({
+          cwd: config.repoRoot,
+          // Backs the `em`-role ACP permission responder (design §14 EM row)
+          // and logs every verdict as a `hook_decision` event.
+          store,
+          cliBin,
+          socketPath: config.socketPath,
+          stderrLogDir: join(config.repoRoot, DAEMON_CACHE_DIR, 'sessions'),
+          brief: () =>
+            renderEmBrief({
+              agent: 'em',
+              sprint: latestSprint(store),
+              policy: policyOrDefault(store),
+            }),
+          onNotice: (line) => console.error(line),
+          ...(options.emChatSpawn ? { spawn: options.emChatSpawn } : {}),
+        })
+      : undefined;
+  const emChat =
+    store && bus
+      ? new EmChatService({
+          store,
+          bus,
+          repoRoot: config.repoRoot,
+          ...(gateService ? { gates: gateService } : {}),
+          ...(questionService ? { questions: questionService } : {}),
+          ...(residentEm ? { resident: residentEm } : {}),
+          ...(options.now ? { now: options.now } : {}),
+        })
+      : undefined;
+
+  // Plan screen (T042, §17 "Control room v2"): one service behind every
+  // `/api/plan/*` route, plus the first-goal architect planning turn. The
+  // planner is the live architect session unless a caller (a test, `agile
+  // run`'s offline mode) substitutes one — the same seam `runnerSpawn` and
+  // `emChatSpawn` already are for the other two vendor surfaces.
+  const planService = store
+    ? new PlanService({
+        store,
+        ...(bus ? { bus } : {}),
+        ...(gateService ? { gates: gateService } : {}),
+        ...(questionService ? { questions: questionService } : {}),
+        ...(options.reexaminer ? { reexaminer: options.reexaminer } : {}),
+        ...(options.now ? { now: options.now } : {}),
+      })
+    : undefined;
+  const architectPlanner =
+    options.architectPlanner ??
+    (store && gateService
+      ? liveArchitectPlanner({
+          gateService,
+          policy: policyOrDefault(store),
+          cwd: config.repoRoot,
+          cliBin,
+          socketPath: config.socketPath,
+        })
+      : undefined);
+
   // Handoff coordinator (T024, §10): exactly one instance for the daemon's
   // lifetime — its quota-event cursor is seeded once at construction, so a
   // per-tick instance would never see a `quota_low`/`quota_exhausted`.
@@ -291,6 +435,44 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
           repoRoot: config.repoRoot,
         })
       : undefined;
+  // Jira two-way sync (T045, §17 v2): constructed only when the operator has
+  // actually configured Jira (base URL + `JIRA_EMAIL`/`JIRA_API_TOKEN` in the
+  // environment — `sync/config.ts` never reads credentials from a file, and
+  // nothing here writes them anywhere). Unconfigured, every `sync.*` RPC
+  // method and the three `/api/sync/jira*` routes are simply absent/503 and
+  // no poll timer is armed: a repo that has never touched Jira pays nothing.
+  const jiraSettings = resolveJiraSettings(config);
+  const jiraSync =
+    store && jiraSettings
+      ? new JiraSync({
+          store,
+          client: new HttpJiraClient({
+            baseUrl: jiraSettings.baseUrl,
+            email: jiraSettings.email,
+            apiToken: jiraSettings.apiToken,
+          }),
+          // The link itself lives in the host-local `agile.config.yaml`
+          // (`jira.project`), which `link`/`unlink` read-modify-write —
+          // nothing new is ever written under `.agile/` (manager decision,
+          // T045 restructure); the per-ticket mapping and its shadow ride on
+          // the ticket files themselves.
+          configPath: join(config.repoRoot, CONFIG_FILE_NAME),
+          ...(jiraSettings.project ? { envProject: jiraSettings.project } : {}),
+          onError: (message) => console.error(message),
+        })
+      : undefined;
+  // Its own timer rather than a step in the ceremony tick: the pull cadence
+  // is a separate tunable (`JIRA_POLL_INTERVAL_MS`, default 60s) and a slow
+  // or unreachable Jira must not delay the EM loop. Errors are collected
+  // into the pass result and logged by `JiraSync` itself, never fatal.
+  const jiraTimer =
+    jiraSync && jiraSettings
+      ? setInterval(() => {
+          void jiraSync.tick().catch((err) => console.error('jira sync tick failed:', err));
+        }, jiraSettings.pollIntervalMs)
+      : undefined;
+  jiraTimer?.unref();
+
   // Ceremony driver: one daemon-level interval ticks the gate service (HIL
   // deadline fallthrough, §16 — nothing else calls `GateService.tick()`),
   // then the handoff coordinator over every ticket (pausing a stuck-ready
@@ -310,12 +492,25 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
   const seenArchitectInbox = new Set<string>();
   const seenSecurityReviews = new Set<string>();
   const seenReviewerEscalations = new Set<string>();
+  const seenEngineerEscalations = new Set<string>();
   const qaSpawned = new Set<TicketId>();
   const mergedDone = new Set<TicketId>();
   const conflictPrompted = new Set<TicketId>();
   const seenResumes = new Set<string>();
   const seenStandupCalls = new Set<string>();
   async function advancePipeline(): Promise<void> {
+    // T042: an `approve_plan` an EM/architect delegate (or a human answering
+    // through `agile approve`) resolved *after* the control room's Start
+    // Sprint click returned. `PlanService.startSprint` deliberately persists
+    // nothing while that gate is pending — `EmLoop.currentSprint()` would
+    // otherwise treat the unapproved sprint as live and start assigning — so
+    // this is where an approved-but-unstarted plan actually becomes a
+    // sprint. Idempotent (see `startApprovedSprint`); the EM assigns its
+    // tickets on the following tick, same as any other newly planned sprint.
+    if (planService) {
+      const started = await planService.startApprovedSprint();
+      if (started) console.error(`approve_plan approved — started ${started.id}`);
+    }
     if (store && bus && reviewProtocol && runner)
       await advanceReviewRequests(store, bus, reviewProtocol, runner, seenReviewRequests);
     if (store && bus && runner)
@@ -326,6 +521,8 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
     if (bus && runner) await advanceArchitectInbox(bus, runner, seenArchitectInbox);
     if (store && runner) await advanceSecurityReviews(store, runner, seenSecurityReviews);
     if (store && bus) await advanceReviewerEscalations(store, bus, seenReviewerEscalations);
+    if (questionService && bus)
+      await advanceEngineerEscalations(questionService, bus, seenEngineerEscalations);
     if (store && runner)
       releaseStaleTicketSessions(store, runner, (id) =>
         mergeOwner
@@ -409,7 +606,9 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
             const outcome = await mergeOwner.mergeIntegrationToMain();
             if (outcome.status !== 'merged') {
               throw new Error(
-                `integration -> main merge did not land (${outcome.status}): ${outcome.summary}`,
+                `integration -> main merge did not land (${outcome.status})${
+                  outcome.hilId ? ` [${outcome.hilId}]` : ''
+                }: ${outcome.summary}`,
               );
             }
           },
@@ -548,6 +747,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
           ...buildOracleRpcMethods(store),
           ...buildHaltRpcMethods(store),
           ...buildGateRpcMethods(gateService),
+          ...(questionService ? buildQuestionRpcMethods(questionService) : {}),
           ...buildHookRpcMethods(
             new HookService(store, bus, {
               repoRoot: config.repoRoot,
@@ -562,6 +762,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
           ...(qaProtocol ? buildQaRpcMethods(qaProtocol) : {}),
           ...(quotaService ? buildQuotaRpcMethods(quotaService, store) : {}),
           ...(handoffCoordinator ? buildHandoffRpcMethods(handoffCoordinator, store, bus) : {}),
+          ...(jiraSync ? buildSyncRpcMethods(jiraSync) : {}),
         }
       : undefined;
 
@@ -589,11 +790,47 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
       startedAt,
       store,
       gates: gateService,
+      questions: questionService,
       quota: quotaService,
       // T025 review round 1 (blocker 3, manager-granted): without this the
       // control room's EM chat and Oracle propose-edit routes 503 forever
       // — `bus` is already constructed above for the RPC `bus.*` methods.
       bus,
+      // T041: `/api/chat/em` (GET history, POST send) and the `chat_delta`/
+      // `chat_turn_end` frames on `/ws`.
+      emChat,
+      // T049: the chat header's `vendor / model`. A function, not a value:
+      // the model arrives on the resident session's `session/new`, which is
+      // lazy (first prompt), so a snapshot built before that must still see
+      // the real one afterwards.
+      ...(residentEm ? { emSession: () => residentEm.describe() } : {}),
+      // T045: backs the Tickets pane's link/unlink action.
+      jiraSync,
+      // T042: the Plan screen's panes, edits, Start Sprint, and the
+      // first-goal architect planning turn.
+      ...(planService
+        ? {
+            plan: {
+              service: planService,
+              ...(architectPlanner
+                ? {
+                    startGoal: (goal: string) =>
+                      startPlanningTurn(
+                        {
+                          store: store as StateStore,
+                          ...(bus ? { bus } : {}),
+                          planner: architectPlanner,
+                          ...(options.now ? { now: options.now } : {}),
+                          onError: (message: string) => console.error(message),
+                        },
+                        goal,
+                        config.repoRoot,
+                      ),
+                  }
+                : {}),
+            },
+          }
+        : {}),
     });
   } catch (err) {
     await rpc.close();
@@ -611,11 +848,16 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
     store,
     bus,
     gateService,
+    questionService,
     runner,
     mergeOwner,
     reviewProtocol,
     qaProtocol,
     emLoop,
+    residentEm,
+    emChat,
+    jiraSync,
+    ...(planService ? { planService } : {}),
     ...(store ? { advancePipeline } : {}),
     async stop() {
       if (stopped) return;
@@ -626,7 +868,12 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
         // does not wait on each session's own exit/crash cleanup, so this
         // never blocks shutdown on a slow-to-die agent.
         if (ceremonyTimer) clearInterval(ceremonyTimer);
+        if (jiraTimer) clearInterval(jiraTimer);
         runner?.stopAll();
+        // T041: the resident EM is not a `Runner` session, so `stopAll()`
+        // doesn't reach it — its vendor process would otherwise outlive the
+        // daemon that spawned it.
+        residentEm?.stop();
         await http.stop();
         await rpc.close();
         // Flush any pending deferred hook_decision/heartbeat commits (T009

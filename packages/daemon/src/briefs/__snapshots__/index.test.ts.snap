@@ -150,6 +150,17 @@ architect for design, human for product, a reader agent for a codebase
 fact), run the standup protocol on \`discovery\`/\`halt\`, and run sprint review
 when a layer is done.
 
+## Sprint review
+A sprint review is possible only when every ticket in the sprint is \`done\`
+and merged. Until then there is nothing to review: never offer one, never
+ask the human whether to run one, and never call the review verb early —
+the daemon refuses it (\`SprintNotDoneError\`), so the attempt is a wasted
+turn and the offer is a misleading answer. While tickets are still open,
+the honest answer to "what's next?" is which tickets are outstanding and
+what each one is waiting on. The daemon injects the current count
+(\`Sprint S-N: x of y tickets done\`) into every chat turn — read it before
+answering anything about the sprint's state.
+
 ## MCP verbs (this ticket's draft set — sprint/assignment writes land in T015)
 \`ticket_get\`, \`bus_send\` (\`assign\`, \`answer\`, \`decision\` copies, \`hil_request\`,
 \`escalate\`), \`kb_search\`, \`oracle_get\`. Sprint file writes (\`sprints/S-*.yaml\`)
@@ -170,6 +181,8 @@ question onward) for anything that needs one.
   cross-ticket coordination is your job, not theirs.
 - Never approve a gate policy marks \`human\` — delegated gates still produce
   a decision record with \`by: em\`; gates marked \`human\` wait for \`human\`.
+- Never offer or attempt a sprint review while any ticket in the sprint is
+  unfinished or unmerged — all of them \`done\` and merged first.
 - Never spawn a second engineer on a ticket that's already \`in_progress\` —
   the daemon's idempotency check exists, but don't rely on it as your plan.
 "

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ACP_PROVIDERS, type AcpProviderConfig } from '@agile-agents/acp-client';
@@ -72,6 +72,23 @@ describe('renderEmDecisionPrompt', () => {
     expect(prompt).toContain('`unblock` gate');
     expect(prompt).toContain('git push origin main');
     expect(prompt).toContain('DECISION: approve');
+    // No note written: no note paragraph.
+    expect(prompt).not.toContain('free text instead of pressing a button');
+  });
+
+  // T039: a note with no button press is what the EM decides on.
+  test("includes the human's free-text note when one was written", () => {
+    const store = StateStore.open(stateRoot);
+    const prompt = renderEmDecisionPrompt(store, {
+      gate: 'unblock',
+      owner: 'em',
+      ticket: 'TKT-0001' as never,
+      hilKind: 'unblock',
+      summary: 'eng-0001 asked to run `bun run seed`',
+      note: 'yes, but only for the seed script',
+    });
+    expect(prompt).toContain('free text instead of pressing a button');
+    expect(prompt).toContain('yes, but only for the seed script');
   });
 });
 
@@ -93,6 +110,41 @@ describe('createEmSessionDelegate (fake ACP agent)', () => {
       decision: 'approve',
       by: 'em',
       rationale: 'Scoped to the ticket branch, safe.',
+    });
+  });
+
+  /**
+   * T041 review round 1 (item 3): the delegate's session is the same
+   * daemon-owned EM vendor session, so it answers permission requests
+   * through the same `em`-role responder — a policy verdict with an audit
+   * trail, in place of acp-client's bare "no listener -> auto-refuse".
+   */
+  test('the delegate session answers a permission request with the em policy, and still decides', async () => {
+    const answerFile = join(repo, 'delegate-perm-answer.json');
+    const delegate = createEmSessionDelegate({
+      stateRoot,
+      cwd: repo,
+      provider: fakeProvider({
+        steps: [
+          {
+            type: 'request_permission',
+            toolCall: { toolCallId: 't1', kind: 'edit', title: 'Edit src/index.ts' },
+            options: [
+              { optionId: 'allow', kind: 'allow_once' },
+              { optionId: 'reject', kind: 'reject_once' },
+            ],
+            resultFile: answerFile,
+          },
+          { type: 'agent_text', text: 'Scoped to the ticket branch.\nDECISION: approve' },
+          { type: 'end_turn' },
+        ],
+      }),
+      timeoutMs: 20_000,
+    });
+    const decision = await delegate({ gate: 'unblock', owner: 'em', hilKind: 'unblock' });
+    expect(decision.decision).toBe('approve');
+    expect(JSON.parse(readFileSync(answerFile, 'utf8'))).toEqual({
+      outcome: { outcome: 'selected', optionId: 'reject' },
     });
   });
 

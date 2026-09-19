@@ -112,10 +112,69 @@ export const TicketBudgetSchema = z
   .strict();
 export type TicketBudget = z.infer<typeof TicketBudgetSchema>;
 
+/**
+ * What the daemon and Jira last *agreed* this issue's title/description were
+ * (T045). The conflict rule ("last writer wins on title/description") is a
+ * three-way compare — Jira's value, the local value, and this shadow — so
+ * one side changing is distinguishable from both changing.
+ *
+ * It lives on the ticket, next to the mapping it shadows, rather than in a
+ * record of its own: T045 names exactly one new piece of sync state, "mapping
+ * stored per ticket (`external: {jira: KEY}`)", and a ticket file is already
+ * the thing that is created, versioned and deleted with the ticket.
+ *
+ * `updated_at` is the issue's own `fields.updated` at that sync (also the
+ * pull cursor, taken as the max across all mapped tickets and clamped to the
+ * daemon's now); `status` is the issue's status name then, which the status
+ * push diffs against.
+ *
+ * It records *only what was last agreed* — never an edit time of its own.
+ * QA round 1, finding 1: an earlier version stamped the moment a tick first
+ * *noticed* the local ticket had diverged, which is always "now" and so
+ * always later than Jira's already-elapsed `updated`, making the local side
+ * win every real two-sided conflict. The real local edit time comes from
+ * `log/events.jsonl` instead (see `packages/daemon/src/sync/jira.ts`).
+ */
+export const TicketJiraSyncedSchema = z
+  .object({
+    title: z.string(),
+    description: z.string(),
+    updated_at: z.string().min(1),
+    status: z.string().optional(),
+  })
+  .strict();
+export type TicketJiraSynced = z.infer<typeof TicketJiraSyncedSchema>;
+
+/**
+ * External tracker mapping (§17 "Control room v2": "**Jira is two-way
+ * sync**, not import"). `jira` holds the plain issue key (`LED-41`) this
+ * ticket is bound to, exactly as T045 names it; `jira_synced` is the shadow
+ * above. `.strict()`, so a tracker with no field here cannot be smuggled in
+ * — adding one is a schema change, which is the point:
+ * `packages/daemon/src/sync/**` must know every tracker it syncs.
+ */
+export const TicketExternalSchema = z
+  .object({
+    jira: z.string().min(1).optional(),
+    jira_synced: TicketJiraSyncedSchema.optional(),
+  })
+  .strict();
+export type TicketExternal = z.infer<typeof TicketExternalSchema>;
+
 export const TicketSchema = z
   .object({
     id: TicketIdSchema,
     title: z.string().min(1),
+    /**
+     * DESIGN-GAP (T045): the §4 "Ticket" yaml has `title` and `contract` but
+     * no free-text body, while §17 v2 and the control-room mockup both
+     * require "an edit to the Jira title or description updates the ticket
+     * here". The contract is explicitly *not* it ("contracts and rules live
+     * only here", never synced), so a ticket needs a plain prose field of
+     * its own for the issue body to land in. Optional, so every pre-T045
+     * ticket file still validates.
+     */
+    description: z.string().optional(),
     status: TicketStatusSchema,
     sprint: SprintIdSchema.optional(),
     parent: EpicIdSchema.optional(),
@@ -140,6 +199,8 @@ export const TicketSchema = z
     // discriminated union over MSG-/TKT-/DEC- pointer forms (a review nit;
     // left for whichever ticket first needs to dereference it).
     reason: z.string().min(1).optional(),
+    /** External tracker mapping (§17 v2 Jira two-way sync) — absent on an unlinked ticket. */
+    external: TicketExternalSchema.optional(),
   })
   .strict();
 

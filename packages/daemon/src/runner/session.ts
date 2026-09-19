@@ -90,6 +90,7 @@ import {
   type AcpPermissionRequestParams,
   type PermissionResponderHandle,
   type PermissionRole,
+  type TicketPermissionRole,
   buildGrokFsPolicy,
   buildPermissionResponder,
   cursorModeIdFor,
@@ -112,7 +113,7 @@ import { type CliInvocation, cliInvocationToShell, normalizeCliBin } from './cli
  * (`LEDGER_KINDS` in `packages/shared/src/ledger.ts`; `'reader'` is the
  * other ledger-only kind, for tool-runner turns, not a spawned session).
  */
-const ROLE_LEDGER_KIND: Record<PermissionRole, LedgerKind> = {
+const ROLE_LEDGER_KIND: Record<TicketPermissionRole, LedgerKind> = {
   engineer: 'engineer',
   reviewer: 'review',
   qa: 'qa',
@@ -152,7 +153,7 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 export interface AgentSessionOptions {
   store: StateStore;
   bus: Bus;
-  role: PermissionRole;
+  role: TicketPermissionRole;
   agentId: AgentId;
   ticket: TicketId;
   /** Absolute path — the session's `cwd` and where `.claude/settings.json` is written. */
@@ -259,7 +260,7 @@ export interface AgentExitInfo {
 export interface AgentSessionHandle {
   agentId: AgentId;
   ticket: TicketId;
-  role: PermissionRole;
+  role: TicketPermissionRole;
   worktree: string;
   session: SpawnedSession;
   responder: PermissionResponderHandle;
@@ -642,6 +643,11 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
                 ticket: input.ticket,
                 hilKind: input.hilKind,
                 from: input.agent,
+                // T048: this session's own agent id — the ACP permission
+                // request is parked on the gate, so the decision must come
+                // back here and not to the ticket's assignee (a reviewer or
+                // QA session works a ticket it does not own).
+                requestedBy: input.agent,
                 summary: input.summary,
               })
               .then((req) => ({ id: req.id })),
@@ -728,10 +734,18 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
       // Ticket vanished or transition illegal from under us — nothing to ripple back.
     }
 
+    // T044 (QA round 1, finding 4): this notice is the DAEMON's, not the
+    // agent's — the agent is gone, and the daemon is reporting that. It used
+    // to go out `from: agentId`, which made `pipeline-glue.ts`'s
+    // `advanceEngineerEscalations` (T040) read every engineer's normal exit
+    // as the engineer escalating, open a `Question` for it, and leave every
+    // merged ticket "Done · blocked / Waiting on you" on the Sprint tab.
+    // `from: 'daemon'` is what `bus.ts`'s own liveness/redelivery notices
+    // already use, and `routing.ts` always allows daemon -> em.
     await bus.send({
       id: ulid(),
       ts: now().toISOString(),
-      from: agentId,
+      from: 'daemon',
       to: ['em'],
       kind: 'escalate',
       priority: 'urgent',
@@ -855,12 +869,19 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
             // but the architect session itself stays live (it can still
             // answer non-plan tool calls normally; only this one plan
             // request was denied).
+            //
+            // T048: `from: 'daemon'`, for the same reason `finish()`'s notice
+            // is (T044 QA round 1, finding 4) — a daemon-side gate failure is
+            // the daemon reporting, not the agent escalating, and every
+            // agent-authored `escalate` in em's inbox is read by
+            // `pipeline-glue.ts`'s `advanceEngineerEscalations` as a question
+            // to open. These are the only two notices this module sends.
             track(
               bus
                 .send({
                   id: ulid(),
                   ts: now().toISOString(),
-                  from: agentId,
+                  from: 'daemon',
                   to: ['em'],
                   kind: 'escalate',
                   priority: 'urgent',
@@ -884,17 +905,32 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
     if (frame.acp === 'notification' && frame.message.method === '_agile/session_state') {
       const p = asRecord(frame.message.params);
       const resolvedModel = modelFromSessionState(p);
-      if (resolvedModel !== undefined) {
-        model = resolvedModel;
-        track(recordHeartbeat({ model: resolvedModel }));
-      }
+      if (resolvedModel !== undefined) model = resolvedModel;
       const sessionId = p?.sessionId;
-      if (typeof sessionId === 'string') {
+      /**
+       * T044: the model id is written with `putAgent`, NOT through
+       * `recordHeartbeat`. `StateStore.heartbeat` coalesces — a `last_seen`
+       * less than `HEARTBEAT_COALESCE_MS` old with no ticket reassignment
+       * pending is a pure no-op (see its own doc comment) — and this
+       * notification arrives within milliseconds of the registration
+       * `putAgent` below, so every model update was being swallowed and
+       * every agent record kept the `'unknown'` fallback. That is what made
+       * the control room's Team table read `claude/unknown` for every row.
+       * One write carries both fields, since they arrive in one frame.
+       */
+      if (resolvedModel !== undefined || typeof sessionId === 'string') {
         try {
           const current = store.getAgent(agentId);
-          track(store.putAgent(agentId, { ...current, session_id: sessionId }));
+          track(
+            store.putAgent(agentId, {
+              ...current,
+              ...(resolvedModel !== undefined ? { model: resolvedModel } : {}),
+              ...(typeof sessionId === 'string' ? { session_id: sessionId } : {}),
+            }),
+          );
         } catch {
-          // Not registered yet — the initial `putAgent` below will carry session_id once known.
+          // Not registered yet — the initial `putAgent` below carries
+          // whatever `model`/`session_id` are known by the time it runs.
         }
       }
       return;
@@ -1054,6 +1090,20 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
       () => undefined,
     );
     return result;
+  }
+
+  // T044 (QA round 1, finding 1): establish the ACP session at spawn, not at
+  // the first prompt. The model id arrives on the `session/new` result (the
+  // `_agile/session_state` notification handled above), and a session that
+  // is spawned but never prompted — the architect under the demo driver —
+  // used to sit at `model: 'unknown'` forever. `open()` shares its
+  // `session/new` with the first `prompt()` below, so nothing is sent twice.
+  // Skipped for vendors that gate `session/new` behind `authenticate`
+  // (Cursor/Grok): there the prompt path's auth retry owns the handshake.
+  if (provider.authMethods.length === 0) {
+    void session.open().catch(() => {
+      // Reported through the prompt path (`runPromptTurn`) if it matters.
+    });
   }
 
   void store

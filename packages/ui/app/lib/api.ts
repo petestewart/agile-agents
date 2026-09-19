@@ -17,11 +17,13 @@ import type {
   OracleId,
   OracleIndex,
   Policy,
+  Question,
+  Sprint,
   Stanza,
   Ticket,
   TicketId,
 } from '@agile-agents/shared';
-import type { FeedSnapshot } from './feed-types';
+import type { FeedSnapshot, SprintReport, TicketDiff, TicketStory } from './feed-types';
 
 async function asJson<T>(res: Response): Promise<T> {
   if (!res.ok) {
@@ -73,11 +75,66 @@ export function getKbFact(id: KbId): Promise<{ fact: KbFact; body: string }> {
   return fetch(`/api/kb/${encodeURIComponent(id)}`).then((r) => asJson(r));
 }
 
-export function approveHil(id: string, by = 'human'): Promise<unknown> {
-  return fetch(`/api/hil/${encodeURIComponent(id)}/approve`, {
+/**
+ * T039 (§17 "Control room v2"): every Needs-you card takes a typed answer as
+ * well as its buttons. `note` rides along with approve/deny; `noteHil` sends
+ * one with no button press (it resolves nothing — the EM decides).
+ */
+export function approveHil(id: string, by = 'human', note?: string): Promise<unknown> {
+  return decideHil(id, 'approve', by, note);
+}
+
+export function denyHil(id: string, by = 'human', note?: string): Promise<unknown> {
+  return decideHil(id, 'deny', by, note);
+}
+
+function decideHil(
+  id: string,
+  action: 'approve' | 'deny',
+  by: string,
+  note?: string,
+): Promise<unknown> {
+  return fetch(`/api/hil/${encodeURIComponent(id)}/${action}`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ by }),
+    body: JSON.stringify({ by, ...(note ? { note } : {}) }),
+  }).then((r) => asJson(r));
+}
+
+export function noteHil(id: string, note: string): Promise<unknown> {
+  return fetch(`/api/hil/${encodeURIComponent(id)}/note`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ note }),
+  }).then((r) => asJson(r));
+}
+
+/**
+ * Questions (T040, §17 "Control room v2" → "Questions vs Decisions").
+ * `answerQuestion` posts the typed reply and how it should be applied — a
+ * plain reply, or a recorded `DEC-*` through the oracle write guard.
+ */
+export function getQuestions(openOnly = false): Promise<Question[]> {
+  return fetch(`/api/questions${openOnly ? '?status=open' : ''}`).then((r) => asJson(r));
+}
+
+export function raiseQuestion(text: string, ticket?: TicketId): Promise<Question> {
+  return fetch('/api/questions', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ text, ...(ticket ? { ticket } : {}) }),
+  }).then((r) => asJson(r));
+}
+
+export function answerQuestion(
+  id: string,
+  answer: string,
+  resolvedAs: 'reply' | 'decision' = 'reply',
+): Promise<{ question: Question }> {
+  return fetch(`/api/questions/${encodeURIComponent(id)}/answer`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ answer, resolved_as: resolvedAs }),
   }).then((r) => asJson(r));
 }
 
@@ -101,8 +158,36 @@ export function releaseHalt(id: string): Promise<unknown> {
   return fetch(`/api/halt/${encodeURIComponent(id)}`, { method: 'DELETE' }).then((r) => asJson(r));
 }
 
-/** EM chat panel send (steer / question) — §17: "steer -> action-set cards". */
-export function sendEmChat(body: string, ticket?: TicketId): Promise<{ ok: boolean }> {
+/**
+ * One line of the EM chat thread (T041). Local mirror of
+ * `packages/daemon/src/em/chat.ts`'s `ChatEntry`, for the same
+ * no-workspace-cycle reason `feed-types.ts` mirrors `FeedSnapshot`.
+ */
+export interface ChatEntry {
+  id: string;
+  ts: string;
+  from: 'human' | 'em';
+  body: string;
+  ref?: string;
+}
+
+/** The chat thread as the daemon has it (the bus is the source of truth) — this is what makes a reload, and the popped-out window, show the same conversation. */
+export function getEmChat(): Promise<ChatEntry[]> {
+  return fetch('/api/chat/em').then((r) => asJson(r));
+}
+
+/** EM chat panel send (steer / question) — §17: "steer -> action-set cards". The EM's reply streams back over `/ws` (`chat_delta`/`chat_turn_end`), keyed by `reply_id`. */
+export function sendEmChat(
+  body: string,
+  ticket?: TicketId,
+): Promise<{
+  ok: boolean;
+  streaming?: boolean;
+  /** The human's line as filed on the bus — T051 adopts its id onto the optimistically-appended line. */
+  message?: { id: string };
+  reply_id?: string;
+  reason?: string;
+}> {
   return fetch('/api/chat/em', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -120,3 +205,72 @@ export function proposeOracleEdit(target: OracleId | KbId, body: string): Promis
 }
 
 export type { Message };
+
+/**
+ * T043 (§17 "Control room v2" -> Settings "Who decides"): the write half of
+ * `getPolicy`. Goes to `PUT /api/policy`, which validates through the shared
+ * `PolicySchema` and persists via `StateStore.putPolicy` — so the change
+ * lands in `events.jsonl` and is what the *next* gate resolves its owner
+ * against.
+ */
+export function putPolicy(policy: Policy): Promise<Policy> {
+  return fetch('/api/policy', {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(policy),
+  }).then((r) => asJson(r));
+}
+
+/**
+ * The top bar's "Start Sprint N" action (§17 v2: "the `approve_plan` gate is
+ * raised at sprint start and means 'start this frontier ... as it stands'").
+ *
+ * T042 owns the route: it *proposes* the frontier (pure, nothing written),
+ * raises `approve_plan`, and persists the sprint only once that gate is
+ * approved — so a response can legitimately say `started: false` with the
+ * gate still pending (an EM/architect owner), and the top bar reads
+ * `status.approve_plan_pending` until the daemon's next tick starts it.
+ */
+export function startSprint(goal?: string): Promise<{
+  started: boolean;
+  sprint?: Sprint;
+  proposal: { id: string; tickets: string[]; goal: string };
+  gate: { id: string; owner: string; status: string; decision?: string };
+  reason?: string;
+}> {
+  return fetch('/api/sprint/start', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(goal ? { goal } : {}),
+  }).then((r) => asJson(r));
+}
+
+/**
+ * T044 ticket-detail reads (§17 v2 Sprint tab: "click a ticket for its
+ * diff, review and QA notes"). Each is a plain GET the daemon backs with an
+ * existing store read — `story` is the same narrative the snapshot carries,
+ * re-fetched for one ticket; `diff` is `git diff integration...HEAD` inside
+ * the ticket's own worktree, path-guarded and capped daemon-side; `thread`
+ * is the ticket's bus thread, which is where the reviewer's and QA's own
+ * words live.
+ */
+export function getTicketStory(id: TicketId): Promise<TicketStory> {
+  return fetch(`/api/tickets/${encodeURIComponent(id)}/story`).then((r) => asJson(r));
+}
+
+export function getTicketDiff(id: TicketId): Promise<TicketDiff> {
+  return fetch(`/api/tickets/${encodeURIComponent(id)}/diff`).then((r) => asJson(r));
+}
+
+export function getTicketThread(id: TicketId): Promise<Message[]> {
+  return fetch(`/api/tickets/${encodeURIComponent(id)}/thread`).then((r) => asJson(r));
+}
+
+/**
+ * T044: the sprint-review narrative. The daemon builds it with the same
+ * function that writes `runs/<ts>.md`, so what this renders and what that
+ * file says are the same text.
+ */
+export function getSprintReport(): Promise<SprintReport> {
+  return fetch('/api/sprint/review').then((r) => asJson(r));
+}

@@ -81,7 +81,6 @@ describe('loadRules', () => {
   test('skips a non-RULE file with a warning instead of throwing (opus review, blocker 3)', () => {
     const dir = rulesDir();
     writeFileSync(join(dir, 'README.md'), '# Rules\nSee individual RULE-###.md files.\n');
-    writeFileSync(join(dir, '.gitkeep'), '');
     const originalWarn = console.warn;
     const warnings: unknown[][] = [];
     console.warn = (...args: unknown[]) => {
@@ -91,6 +90,28 @@ describe('loadRules', () => {
       expect(loadRules(stateRoot)).toEqual([]);
       expect(warnings.length).toBeGreaterThan(0);
       expect(warnings.some((args) => String(args[0]).includes('README.md'))).toBe(true);
+    } finally {
+      console.warn = originalWarn;
+    }
+  });
+
+  // T046 defect 1: `agile init` seeds `rules/.gitkeep`, so the old
+  // "warn on anything not RULE-###" branch printed a `skipping .gitkeep`
+  // line on every tick of a clean run.
+  test('skips hidden/temp clutter silently — no warning for a seeded .gitkeep', () => {
+    const dir = rulesDir();
+    writeFileSync(join(dir, '.gitkeep'), '');
+    writeFileSync(join(dir, '.DS_Store'), '');
+    writeFileSync(join(dir, 'RULE-001.md'), '# RULE-001: A\ntext a\n');
+    const originalWarn = console.warn;
+    const warnings: unknown[][] = [];
+    console.warn = (...args: unknown[]) => {
+      warnings.push(args);
+    };
+    try {
+      const rules = loadRules(stateRoot);
+      expect(rules.map((r) => r.id)).toEqual(['RULE-001']);
+      expect(warnings).toEqual([]);
     } finally {
       console.warn = originalWarn;
     }

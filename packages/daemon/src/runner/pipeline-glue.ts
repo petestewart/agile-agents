@@ -34,9 +34,10 @@
  * point and make the next call."
  */
 
-import type { AgentId, TicketId } from '@agile-agents/shared';
+import type { AgentId, QuestionId, TicketId } from '@agile-agents/shared';
 import { ulid } from '@agile-agents/shared';
 import type { Bus } from '../bus/bus';
+import { roleOf } from '../bus/routing';
 import { recordStandupReport } from '../halts';
 import { validateReviewRecord } from '../review/types';
 import { reviewRecordRelPath } from '../review/types';
@@ -878,4 +879,65 @@ export function releaseStaleTicketSessions(
     }
   }
   return stopped;
+}
+
+/** The slice of `QuestionService` this glue needs (T040). */
+export interface QuestionRaiser {
+  raise(input: {
+    raised_by: AgentId;
+    text: string;
+    ticket?: TicketId;
+  }): Promise<{ id: QuestionId }>;
+}
+
+/**
+ * The missing `escalate` handler (T040 — §17 "Control room v2": "an engineer
+ * who thinks the ticket is wrong (the missing `escalate` handler lands
+ * here)"). Discovered on the 2026-09-11 ledger-lite run: an engineer's
+ * `bus_send(kind: 'escalate', to: 'em')` — the one escalation route
+ * `routing.ts` gives an engineer — lands in `em`'s inbox and stops there.
+ * The EM is a brief, not a resident session; `EmLoop` only forwards
+ * `discovery` messages, `advanceReviewerEscalations` (above) only claims a
+ * *reviewer*'s escalate on an `in_review` ticket, and `em/retro.ts` merely
+ * counts the message afterwards. Nothing ever answered the engineer.
+ *
+ * Now each one opens a `Question` (`board/questions/Q-*.yaml`), which is a
+ * Needs-you card until somebody answers it — with a reply, a recorded
+ * decision, or a ticket edit — and the answer comes back to the engineer's
+ * own inbox (`QuestionService.answer`).
+ *
+ * Only an engineer's escalate qualifies: the daemon's own liveness and
+ * redelivery escalations are `from: 'daemon'` (`bus.ts`'s
+ * `sendSystemMessage`) and a reviewer's is claimed by
+ * `advanceReviewerEscalations`, so both keep their existing "notify em"
+ * meaning. The message is acked (moved to `em`'s `done/`) once its question
+ * exists, so the question — not the unread message — is the live record;
+ * `seen` is the same process-local idempotency `Set` every function here
+ * takes, with the ack covering restarts.
+ */
+export async function advanceEngineerEscalations(
+  questions: QuestionRaiser,
+  bus: Pick<Bus, 'poll' | 'ack'>,
+  seen: Set<string>,
+): Promise<QuestionId[]> {
+  const raised: QuestionId[] = [];
+  for (const message of bus.poll('em' as AgentId)) {
+    if (message.kind !== 'escalate' || seen.has(message.id)) continue;
+    let role: string;
+    try {
+      role = roleOf(message.from);
+    } catch {
+      continue; // unrecognized sender id — not ours to claim.
+    }
+    if (role !== 'engineer') continue;
+    const question = await questions.raise({
+      raised_by: message.from,
+      text: message.body,
+      ...(message.ticket !== undefined ? { ticket: message.ticket } : {}),
+    });
+    seen.add(message.id);
+    raised.push(question.id);
+    await bus.ack('em' as AgentId, message.id);
+  }
+  return raised;
 }

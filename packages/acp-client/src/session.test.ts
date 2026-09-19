@@ -229,6 +229,22 @@ describe('spawnSession', () => {
     expect(initEvent).toBeDefined();
   });
 
+  it('open() establishes the session eagerly and shares its session/new with a concurrent prompt (T044)', async () => {
+    const session = create();
+    await answerInitialize();
+    const opened = session.open();
+    const reply = session.prompt('hello');
+    await answerSessionNew('acp-open');
+    await expect(opened).resolves.toBe('acp-open');
+    expect(sentMessages().filter((m) => m.method === 'session/new')).toHaveLength(1);
+    // A second open() is a no-op once the session exists.
+    await expect(session.open()).resolves.toBe('acp-open');
+    expect(sentMessages().filter((m) => m.method === 'session/new')).toHaveLength(1);
+    expect(sentMessages().some((m) => m.method === 'session/prompt')).toBe(true);
+    session.cancel();
+    void reply;
+  });
+
   it('forwards session/update notifications verbatim, with seq/gen stamped', async () => {
     const session = create();
     const events: AgentEvent[] = [];

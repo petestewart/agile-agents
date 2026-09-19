@@ -45,8 +45,8 @@ function hil(reason: string): PolicyVerdict {
 export interface PolicyContext {
   role: PermissionRole;
   worktreePath: string;
-  /** This ticket's id (`TKT-0001`) — the only branch a `push` may target without a human (opus should-fix 4). */
-  ticket: string;
+  /** This ticket's id (`TKT-0001`) — the only branch a `push` may target without a human (opus should-fix 4). Optional since T041 (the resident EM session has no ticket): absent means no branch is "this ticket's branch", so a push always needs a human. */
+  ticket?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -131,7 +131,7 @@ function neverWithoutHumanForAtom(
       }
       for (const refspec of refspecs) {
         const branch = cmd.refspecDestBranch(refspec);
-        if (!cmd.isTicketBranch(branch, ctx.ticket)) {
+        if (ctx.ticket === undefined || !cmd.isTicketBranch(branch, ctx.ticket)) {
           return hil(
             `push to ${branch} (not this ticket's branch) is never automatic — file a hil_request`,
           );
@@ -699,6 +699,42 @@ function architectVerdict(classified: PermissionRequest): PolicyVerdict {
   }
 }
 
+/**
+ * EM role table (T041 — design §14 EM row: read "state via daemon"; write
+ * "sprints, assignments, policy proposals"; run "none"; network "none").
+ *
+ * Like the architect's, the EM's write cell never reaches this ACP layer:
+ * `sprint_plan`/`assign`/`policy_propose` are MCP verbs on the daemon's own
+ * bridge (`em/verbs.ts`), dispatched over stdio and role-gated server-side
+ * — and `decidePermission` lets `mcp__agile__*` through before any role
+ * table runs. So an *edit* request reaching here can only be the model
+ * reaching for a raw `Write`/`Edit`/client-fs write, which the EM never
+ * needs, and an *execute* request is §14's "none" run cell outright: the
+ * resident chat session runs with `cwd` = the repo root and no ticket
+ * worktree, so there is no scope in which a shell command from it would be
+ * safe. Reads stay allowed (they are not gated by ACP anyway,
+ * spike-findings §A) so "read the board and answer me" works.
+ */
+function emVerdict(classified: PermissionRequest): PolicyVerdict {
+  switch (classified.toolClass) {
+    case 'read':
+      return ALLOW;
+    case 'edit':
+      return deny(
+        'em role never edits files directly — sprints, assignments and policy proposals go ' +
+          'through the MCP verbs (sprint_plan, assign, policy_propose), not a raw Write/Edit',
+      );
+    case 'execute':
+      return deny('em role runs nothing (design §14 EM row: Run = none) — use the agile verbs');
+    case 'fetch':
+      return deny('em role has no network access');
+    default:
+      return deny(
+        `unknown tool kind${classified.title ? ` (${classified.title})` : ''} — safe default deny`,
+      );
+  }
+}
+
 export function roleVerdict(
   role: PermissionRole,
   classified: PermissionRequest,
@@ -713,5 +749,7 @@ export function roleVerdict(
       return qaVerdict(classified);
     case 'architect':
       return architectVerdict(classified);
+    case 'em':
+      return emVerdict(classified);
   }
 }

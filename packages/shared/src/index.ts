@@ -23,6 +23,7 @@ export * from './ledger';
 export * from './message';
 export * from './event';
 export * from './hil';
+export * from './question';
 export * from './review';
 export * from './merge';
 export * from './qa';

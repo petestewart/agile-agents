@@ -67,10 +67,12 @@ import {
   DEFAULT_LIVENESS_TIMEOUT_MS,
   HookService,
   NotFoundError,
+  PRODUCT_MD_STUB,
   advanceDoneTickets,
   advanceQaSpawns,
   advanceReviewRequests,
   agentIdFor,
+  buildSprintReport,
   createEmSessionDelegate,
   createFakeSpawn,
   discoverConfig,
@@ -79,6 +81,7 @@ import {
   reRefineStale,
   registerArchitectTools,
   registerQaTools,
+  renderSprintReportMarkdown,
   reviewRecordRelPath,
   reviewSubmit,
   sandboxedSubprocessEnv,
@@ -234,6 +237,8 @@ async function preflightLiveVendor(
 }
 
 interface SeedFile {
+  /** The sprint goal the first planned sprint gets. Falls back to the product brief's first heading — see `resolveSprintGoal` (T046 defect 2). */
+  sprintGoal?: string;
   productMd?: string;
   oracle?: Array<{ entry: OracleEntry; body: string }>;
   tickets?: unknown[];
@@ -266,6 +271,40 @@ interface SeedFile {
 
 function loadSeed(path: string): SeedFile {
   return JSON.parse(readFileSync(path, 'utf8')) as SeedFile;
+}
+
+/** First `# `/`## ` heading of a markdown document, without its hashes. */
+function firstHeading(markdown: string): string | undefined {
+  for (const line of markdown.split('\n')) {
+    const match = /^#{1,6}\s+(.*\S)\s*$/.exec(line);
+    if (match) return match[1];
+  }
+  return undefined;
+}
+
+/**
+ * The goal the *first* sprint of a run is planned with (T046 defect 2 — this
+ * used to be the literal string `Demo epic layer 1`, so every run of every
+ * repo announced the demo fixture's goal). Precedence, most specific first:
+ *
+ *   1. the seed's own `sprintGoal`;
+ *   2. the product brief's first heading (`oracle/product.md`, or the seed's
+ *      `productMd` before it has been written) — but never the untouched
+ *      `agile init` stub, whose heading is the placeholder `# Product`;
+ *   3. nothing — `planSprint` then names it after the sprint id (`Sprint S-1`).
+ *
+ * Later sprints are planned by the EM (`em/review.ts`), not here.
+ */
+export function resolveSprintGoal(seed: SeedFile, stateRoot: string): string | undefined {
+  const seeded = seed.sprintGoal?.trim();
+  if (seeded) return seeded;
+  let brief = seed.productMd;
+  if (brief === undefined) {
+    const path = join(stateRoot, 'oracle', 'product.md');
+    brief = existsSync(path) ? readFileSync(path, 'utf8') : undefined;
+  }
+  if (brief === undefined || brief.trim() === PRODUCT_MD_STUB.trim()) return undefined;
+  return firstHeading(brief);
 }
 
 /** `oracle/product.md` is a plain bootstrap file (`init.ts`'s own stub, not a `StateStore` entity) — seeding it follows the same convention. */
@@ -884,6 +923,15 @@ export async function runDemoSprint(opts: RunOptions): Promise<RunResult> {
     // (fourth live run).
     ceremonyTickMs: 0,
     runnerSpawn: fake ? createFakeSpawn() : opts.liveSpawnForTest,
+    // T041: the resident EM chat session (the control room's chat panel).
+    // `--fake`/test runs point it at the same fake ACP transport every other
+    // session uses, so an offline run never tries to spawn a real vendor;
+    // `--live` leaves it unset, i.e. the operator's own vendor login.
+    ...(fake
+      ? { emChatSpawn: createFakeSpawn() }
+      : opts.liveSpawnForTest
+        ? { emChatSpawn: opts.liveSpawnForTest }
+        : {}),
     gateDelegate: fake
       ? () => ({ decision: 'approve', by: 'em', rationale: 'automated (agile run --fake)' })
       : (opts.gateDelegate ??
@@ -960,7 +1008,8 @@ export async function runDemoSprint(opts: RunOptions): Promise<RunResult> {
       const trackedIds = seedTicketIds(seed);
 
       if (store.listSprints().length === 0) {
-        await planSprint(store, { goal: 'Demo epic layer 1' });
+        const goal = resolveSprintGoal(seed, handle.config.stateRoot);
+        await planSprint(store, { ...(goal !== undefined ? { goal } : {}) });
       }
 
       const seenReview = new Set<string>();
@@ -1018,9 +1067,23 @@ export async function runDemoSprint(opts: RunOptions): Promise<RunResult> {
           };
         });
         const reportPath = join(reportDir, `${new Date().toISOString().replace(/[:.]/g, '-')}.md`);
+        // T044: the run report IS the sprint-review narrative the control
+        // room's Review tab renders — one builder, one renderer
+        // (`packages/daemon/src/em/report.ts`), so the two cannot drift.
+        // The run harness's own diagnostics ride along under their own
+        // heading; the line-per-event dump this replaced is gone.
         writeFileSync(
           reportPath,
-          renderReport(handle, ticketOutcomes, oversizedReadDecision, ticksUsed),
+          renderSprintReportMarkdown(
+            buildSprintReport(store, {
+              gates: gateService,
+              tickets: trackedIds,
+              diagnostics: [
+                `Ceremony ticks used: ${ticksUsed}`,
+                `Oversized-file hook check: ${oversizedReadDecision}`,
+              ],
+            }),
+          ),
         );
         return { reportPath, ticketOutcomes };
       };
@@ -1323,56 +1386,4 @@ function describeStall(
     `\nVendor stderr, per session: ${join(cwd, '.agile-daemon-cache', 'sessions')}/<agent>-<ts>.stderr.log`,
   );
   return lines.join('\n');
-}
-
-function renderReport(
-  handle: DaemonHandle,
-  outcomes: RunResult['ticketOutcomes'],
-  oversizedReadDecision: string,
-  ticksUsed: number,
-): string {
-  const sprints = handle.store?.listSprints() ?? [];
-  const spendByRole = new Map<string, { in: number; out: number; cost: number }>();
-  for (const sprint of sprints) {
-    for (const line of handle.store?.listLedger(sprint.id) ?? []) {
-      const cur = spendByRole.get(line.kind) ?? { in: 0, out: 0, cost: 0 };
-      cur.in += line.in_tokens;
-      cur.out += line.out_tokens;
-      cur.cost += line.cost_usd;
-      spendByRole.set(line.kind, cur);
-    }
-  }
-  const spendLines =
-    spendByRole.size === 0
-      ? ['(no ledger lines — fake-agent sessions default to a single `usage_update`; see notes)']
-      : [...spendByRole.entries()].map(
-          ([role, s]) => `- ${role}: ${s.in} in / ${s.out} out tokens, $${s.cost.toFixed(4)}`,
-        );
-
-  const ticketLines = outcomes.map(
-    (o) => `- ${o.ticket}: status=${o.status}, merged=${o.merged ? 'yes' : 'no'}`,
-  );
-  const reviewRoundLines = outcomes.map(
-    (o) =>
-      `- ${o.ticket}: ${o.reviewRounds} round${o.reviewRounds === 1 ? '' : 's'}${o.reviewVerdicts.length > 0 ? ` (${o.reviewVerdicts.join(' then ')})` : ''}`,
-  );
-
-  return [
-    `# agile run report — ${new Date().toISOString()}`,
-    '',
-    `Ceremony ticks used: ${ticksUsed}`,
-    '',
-    '## Per-ticket outcome',
-    ...ticketLines,
-    '',
-    '## Review rounds per ticket',
-    ...reviewRoundLines,
-    '',
-    '## Token spend per role (ledger)',
-    ...spendLines,
-    '',
-    '## Oversized-file hook check',
-    `- ${oversizedReadDecision}`,
-    '',
-  ].join('\n');
 }

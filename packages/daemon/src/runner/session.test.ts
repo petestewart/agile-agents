@@ -240,6 +240,14 @@ describe('startAgentSession', () => {
     expect(agent.role).toBe('engineer');
     expect(agent.worktree).toBe(worktree);
     expect(agent.vendor).toBe('claude');
+    // T044: the model id is captured off the ACP `session/new` result's
+    // `configOptions` (`_agile/session_state` -> `modelFromSessionState`),
+    // not left at the `'unknown'` fallback — the Team table names
+    // vendor/model, and every row used to read `claude/unknown`. The fake
+    // vendor reports `DEFAULT_FAKE_MODEL`, which is what makes the offline
+    // e2e able to prove it.
+    expect(agent.model).toBe('fake/model-1');
+    expect(agent.model).not.toBe('unknown');
     // T012 QA round fix: the recorded pid is the fake agent's own OS pid,
     // not the daemon's/test's own — see `session.ts`'s registration and
     // `@agile-agents/acp-client`'s `SpawnedSession.pid`.
@@ -665,11 +673,17 @@ describe('T027: per-vendor session wiring (Cursor ask mode, Grok client-fs gate,
     expect(store.getTicket('TKT-0231').status).toBe('ready');
 
     const inbox = await bus.poll('em' as never);
-    expect(
-      inbox.some(
-        (m) => m.kind === 'escalate' && m.ticket === 'TKT-0231' && /prompt failed/.test(m.body),
-      ),
-    ).toBe(true);
+    const notice = inbox.find(
+      (m) => m.kind === 'escalate' && m.ticket === 'TKT-0231' && /prompt failed/.test(m.body),
+    );
+    expect(notice).toBeDefined();
+    // T048 defect (1): the notice is the DAEMON's report of an exit, never the
+    // agent escalating. An agent-authored one is read by
+    // `pipeline-glue.ts`'s `advanceEngineerEscalations` as a question to open,
+    // which is how the 2026-09-18 live run got a `Q-*` "session ended" per
+    // engineer exit. `finish()` is the single place this notice is sent from.
+    expect(notice?.from).toBe('daemon');
+    expect(notice?.body).toMatch(/^eng-0231 \(engineer\) session ended: prompt failed/);
 
     const events = store.listEvents();
     expect(

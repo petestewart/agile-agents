@@ -47,7 +47,8 @@ export interface PermissionResponderSession {
 
 /** What a `hil` verdict needs persisted somewhere a human (or T018's `GateService`) can see and eventually answer. */
 export interface HilRequestInput {
-  ticket: TicketId;
+  /** Absent for a session that is not a ticket session (T041's resident EM chat session). */
+  ticket?: TicketId;
   agent: AgentId;
   hilKind: 'unblock';
   summary: string;
@@ -60,7 +61,8 @@ export type RequestHil = (input: HilRequestInput) => Promise<{ id: string }>;
 
 export interface PermissionResponderContext {
   role: PermissionRole;
-  ticket: TicketId;
+  /** The session's ticket. Optional since T041: the EM's chat/gate sessions are not ticket sessions, and every policy path this module drives already treats an absent ticket as "no branch is this ticket's branch". */
+  ticket?: TicketId;
   /** Concrete bus identity of the agent this session belongs to (e.g. `eng-3`) — `role` alone isn't a valid `AgentId`. */
   agent: AgentId;
   worktreePath: string;
@@ -114,7 +116,7 @@ async function defaultRequestHil(
     // `standup_call` explicitly but not `hil_request`; DESIGN-GAP,
     // resolved by analogy since this, too, blocks progress).
     priority: 'urgent',
-    ticket: input.ticket,
+    ...(input.ticket !== undefined ? { ticket: input.ticket } : {}),
     body: input.summary,
     refs: [],
     requires_ack: true,
@@ -139,7 +141,7 @@ export function buildPermissionResponder(
     const classified = classifyPermissionRequest(request);
     await store.appendEvent(
       buildEvent('hook_decision', {
-        ticket: ctx.ticket,
+        ...(ctx.ticket !== undefined ? { ticket: ctx.ticket } : {}),
         agent: ctx.agent,
         data: {
           role: ctx.role,
@@ -159,7 +161,7 @@ export function buildPermissionResponder(
     async handleRequest(requestId, request) {
       const decision = decidePermission({
         role: ctx.role,
-        ticket: ctx.ticket,
+        ...(ctx.ticket !== undefined ? { ticket: ctx.ticket } : {}),
         worktreePath: ctx.worktreePath,
         request,
       });
@@ -178,7 +180,7 @@ export function buildPermissionResponder(
         Date.now() + (ctx.hilDeadlineMs ?? DEFAULT_HIL_DEADLINE_MS),
       ).toISOString();
       const { id } = await requestHil({
-        ticket: ctx.ticket,
+        ...(ctx.ticket !== undefined ? { ticket: ctx.ticket } : {}),
         agent: ctx.agent,
         hilKind: decision.hilRequest.hilKind,
         summary: decision.hilRequest.summary,

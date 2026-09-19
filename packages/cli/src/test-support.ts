@@ -18,6 +18,9 @@ import {
   Bus,
   FakeRunner,
   GateService,
+  type JiraClient,
+  JiraSync,
+  QuestionService,
   type RpcServerHandle,
   StateStore,
   ToolService,
@@ -25,7 +28,9 @@ import {
   buildGateRpcMethods,
   buildHaltRpcMethods,
   buildOracleRpcMethods,
+  buildQuestionRpcMethods,
   buildStateRpcMethods,
+  buildSyncRpcMethods,
   buildToolRpcMethods,
   loadToolRegistry,
   runInit,
@@ -44,8 +49,33 @@ export interface TestDaemon {
    * does, since there is no `gate.request` RPC for an external client to
    * create one through. */
   gateService: GateService;
+  /** Same instance wired into `sync.*` RPC — `agile sync jira link|unlink|status`
+   * round-trips against it. Its Jira client is inert (see `INERT_JIRA_CLIENT`):
+   * link/unlink/status are pure local state, so no test needs a fake server. */
+  jiraSync: JiraSync;
+  /** Same instance wired into `question.*` RPC (T040) — tests seed an open question through it. */
+  questionService: QuestionService;
   cleanup(): Promise<void>;
 }
+
+/**
+ * `link`/`unlink`/`status` never call Jira — they read and write the
+ * host-local `agile.config.yaml` and the store. Only `tick()` talks to a
+ * server, and no CLI verb ticks. Throwing here keeps that true: a future verb
+ * that does reach Jira fails loudly in tests rather than silently hitting the
+ * network.
+ */
+const INERT_JIRA_CLIENT: JiraClient = {
+  searchUpdatedSince() {
+    throw new Error('test daemon: no Jira server is configured');
+  },
+  updateIssue() {
+    throw new Error('test daemon: no Jira server is configured');
+  },
+  transitionIssue() {
+    throw new Error('test daemon: no Jira server is configured');
+  },
+};
 
 export async function startTestDaemon(prefix = 'agile-cli-test-'): Promise<TestDaemon> {
   const repo = mkdtempSync(join(tmpdir(), prefix));
@@ -61,6 +91,7 @@ export async function startTestDaemon(prefix = 'agile-cli-test-'): Promise<TestD
   // tests that need auto-delegation pass their own `GateService` instead of
   // using this helper.
   const gateService = new GateService(store);
+  const questionService = new QuestionService(store);
   // `FakeRunner` (never a real vendor session) so `tool.*` tests never need
   // `AGILE_LIVE=1` — same reasoning as the daemon's own tool tests.
   const toolService = new ToolService({
@@ -69,6 +100,13 @@ export async function startTestDaemon(prefix = 'agile-cli-test-'): Promise<TestD
     registry: loadToolRegistry(init.stateRoot),
     runner: new FakeRunner(),
     repoRoot: repo,
+  });
+
+  const jiraSync = new JiraSync({
+    store,
+    client: INERT_JIRA_CLIENT,
+    configPath: join(repo, 'agile.config.yaml'),
+    onError: () => {},
   });
 
   const rpc = startRpcServer({
@@ -82,7 +120,9 @@ export async function startTestDaemon(prefix = 'agile-cli-test-'): Promise<TestD
       ...buildOracleRpcMethods(store),
       ...buildHaltRpcMethods(store),
       ...buildGateRpcMethods(gateService),
+      ...buildQuestionRpcMethods(questionService),
       ...buildToolRpcMethods(toolService),
+      ...buildSyncRpcMethods(jiraSync),
     },
   });
   await rpc.listening;
@@ -109,6 +149,8 @@ export async function startTestDaemon(prefix = 'agile-cli-test-'): Promise<TestD
     store,
     rpc,
     gateService,
+    jiraSync,
+    questionService,
     async cleanup() {
       await rpc.close();
       rmSync(repo, { recursive: true, force: true });

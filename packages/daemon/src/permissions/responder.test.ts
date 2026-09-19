@@ -180,7 +180,9 @@ describe('buildPermissionResponder', () => {
   test('requestHil is injectable, so T018 can own persistence instead of the default store writer', async () => {
     const session = fakeSession();
     const calls: Array<{
-      ticket: string;
+      // T041: optional on the interface (the resident EM session has no
+      // ticket); this engineer session always sets it, asserted below.
+      ticket?: string;
       agent: string;
       hilKind: string;
       summary: string;

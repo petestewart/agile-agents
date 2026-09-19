@@ -56,8 +56,8 @@ export interface FakeAgentScript {
    */
   requireAuthMethod?: string;
   /**
-   * T027: path to append one JSON line per `session/set_mode` and
-   * `authenticate` request this process receives — a test's way to observe
+   * T027: path to append one JSON line per `session/set_mode`,
+   * `authenticate` and (T041) `session/prompt` request this process receives — a test's way to observe
    * what `runner/session.ts` actually sent without a fragile process-exit
    * race, the same pattern `request_permission`'s `resultFile` already
    * uses for the client's answer. Omitted: no logging (default, matches
@@ -79,6 +79,17 @@ export interface FakeAgentScript {
    * validation).
    */
   validModes?: string[];
+  /**
+   * T044: the model id this simulated vendor reports in its `session/new` /
+   * `session/load` result, as one `configOptions` entry — the same shape the
+   * Claude bridge reports the live model in (`acp-client/src/types.ts` on
+   * `_agile/session_state`: "configOptions, where the Claude bridge reports
+   * the live model"), which is what `runner/session.ts`'s
+   * `modelFromSessionState` reads. Defaults to `DEFAULT_FAKE_MODEL` so every
+   * offline run has a real model id on its agent records instead of the
+   * `'unknown'` fallback; a script may override it to test another shape.
+   */
+  model?: string;
   /** Written to this process's stderr once at startup — simulates a vendor's own startup diagnostics, for testing the daemon's per-session stderr log (`runner/session.ts`'s `stderrLogDir`). */
   stderrBanner?: string;
 }
@@ -134,6 +145,14 @@ function notify(method: string, params: unknown): void {
 }
 
 let sessionId = 'fake-session-1';
+
+/** T044: the model id the fake vendor reports when a script does not name one. */
+export const DEFAULT_FAKE_MODEL = 'fake/model-1';
+
+/** The `configOptions` block of a `session/new`/`session/load` result — see `FakeAgentScript.model`. */
+function sessionConfigOptions(): Array<{ id: string; name: string; currentValue: string }> {
+  return [{ id: 'model', name: 'Model', currentValue: script.model ?? DEFAULT_FAKE_MODEL }];
+}
 
 async function runScript(promptRequestId: number | string): Promise<void> {
   for (const step of script.steps) {
@@ -241,11 +260,17 @@ function handleLine(line: string): void {
         });
         return;
       }
-      write({ id: message.id, result: { sessionId, modes: null, configOptions: null } });
+      write({
+        id: message.id,
+        result: { sessionId, modes: null, configOptions: sessionConfigOptions() },
+      });
       return;
     case 'session/load':
       sessionId = (message.params as { sessionId?: string } | undefined)?.sessionId ?? sessionId;
-      write({ id: message.id, result: { sessionId, modes: null, configOptions: null } });
+      write({
+        id: message.id,
+        result: { sessionId, modes: null, configOptions: sessionConfigOptions() },
+      });
       return;
     case 'session/set_mode': {
       appendLog(script, { method: 'session/set_mode', params: message.params });
@@ -258,6 +283,10 @@ function handleLine(line: string): void {
       return;
     }
     case 'session/prompt':
+      // T041: logged like `session/set_mode`/`authenticate` above, so a test
+      // can assert what a session was actually prompted with (the resident
+      // EM's brief-on-first-turn-only rule) without a process-exit race.
+      appendLog(script, { method: 'session/prompt', params: message.params });
       if (message.id !== undefined) void runScript(message.id);
       return;
     case 'session/cancel':
