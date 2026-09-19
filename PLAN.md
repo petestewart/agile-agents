@@ -134,12 +134,12 @@ Build order: Phase 0 → 1 → 2 → 3 → 4 → 5 → 6. Within a phase, ticket
 
 ### Ticket: T113 ∥ Hardened worktree creation
 - **Priority:** P1
-- **Status:** In Progress
+- **Status:** Done
 - **Owner:** opus:worker-T113
 - **Scope:** `runner/worktrees.ts`: create via git plumbing with no shell, `core.hooksPath` pointed at an empty dir for the checkout, refuse repos with filter drivers configured, claim the branch atomically (`git update-ref` with the expected-old-value form), fail if the branch already exists anywhere. Worktree path `<repo>/.worktrees/<stream-id>-<slug>`, ensured in `.gitignore`.
 - **Acceptance Criteria:** Two concurrent creates for the same stream: exactly one succeeds. A repo with a `.gitattributes` filter is refused with a reason.
 - **Validation Steps:** `bun test packages/daemon/src/runner/worktrees.test.ts`.
-- **Notes:** Design borrowed from KiroCrew's worktree handler (D11).
+- **Notes:** Design borrowed from KiroCrew's worktree handler (D11). Branch `T113-hardened-worktree-creation`; new `createWorktree` beside the old ticket helpers (deleted with their callers in T122/T130). Review (sonnet) PASS, 2 nits (`.gitignore` append not rolled back on failed add; `pre-checkout` is not a real hook name, the `post-checkout` half of that test is the live one). merge: dfebb27.
 
 ### Phase 2 — Streams replace sprints and tickets
 
