@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { Markdown } from '../Markdown';
 import { PaneClose } from './PaneClose';
 import { type OracleDoc, publishDecision } from './plan-api';
 
@@ -90,7 +91,10 @@ export function DecisionsPane({
         <div className="rule" key={doc.entry.id} data-testid={`decision-${doc.entry.id}`}>
           <span className="id">{doc.entry.id}</span> <b>{doc.entry.title}</b>{' '}
           <span className="cr-badge">{`${doc.entry.status} · ${doc.entry.by}`}</span>
-          <p style={{ whiteSpace: 'pre-wrap' }}>{doc.body}</p>
+          {/* Markdown prose, for the same reason as the Rules pane (T049):
+              `oracle/decisions/DEC-*.md` is a markdown file. The raw text is
+              what the Record-a-decision textarea above holds. */}
+          <Markdown text={doc.body} testId={`decision-body-${doc.entry.id}`} />
         </div>
       ))}
       {decisions.length === 0 && <p style={{ color: 'var(--text-dim)' }}>No decisions yet.</p>}

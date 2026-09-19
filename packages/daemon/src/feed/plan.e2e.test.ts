@@ -926,6 +926,40 @@ describe('Chat header and markdown (T049)', () => {
           'oracle/product.md',
           '# Product\n\nledger-lite is a tiny personal ledger.\n\n## Non-goals\n\n- persistence\n- auth\n',
         );
+        // A SPEC and a DEC with the shape the ticket's screenshot shows
+        // rendered as literal text: a `#` heading, a numbered list, a
+        // backticked symbol. Written through the architect's own verb, so
+        // the oracle index and the write guard are what put them there.
+        const oracle = registerArchitectTools({ store });
+        const architect = { agent: 'architect' as const };
+        await oracle.callTool(architect, 'decision_publish', {
+          entry: {
+            id: 'SPEC-ledger-002',
+            title: 'Transactions are immutable once recorded',
+            status: 'active',
+            supersedes: [],
+            depends: [],
+            affects: [],
+            decided: new Date().toISOString(),
+            by: 'architect',
+            rationale: 'Drafted from README.md.',
+          },
+          body: '# SPEC-ledger-002: Transactions are immutable\n\n1. Once recorded, a transaction is never edited.\n2. A correction is a new transaction that reverses the original.\n\nNever call `Ledger.mutate()`.\n',
+        });
+        await oracle.callTool(architect, 'decision_publish', {
+          entry: {
+            id: 'DEC-0001',
+            title: 'Amounts are integer cents',
+            status: 'active',
+            supersedes: [],
+            depends: [],
+            affects: [],
+            decided: new Date().toISOString(),
+            by: 'architect',
+            rationale: 'Floating point lost a cent in the spike.',
+          },
+          body: '# DEC-0001: Integer cents\n\n1. Every amount is an integer number of cents.\n2. No floating-point arithmetic on money.\n',
+        });
 
         const reply = [
           'Two tickets are open right now.',
@@ -969,6 +1003,27 @@ describe('Chat header and markdown (T049)', () => {
         );
         expect(await page.locator('[data-testid="brief-body"]').count()).toBe(0);
         await page.locator('.cr-plan .dochd button', { hasText: 'Cancel' }).click();
+
+        // --- The same rule for the other markdown files the plan keeps: a
+        // SPEC body's `#` heading is an <h1> and its numbered list is an
+        // <ol>, not the literal hashes and digits of the ticket's screenshot.
+        await page.locator('[data-testid="rail-rules"]').click();
+        const ruleBody = page.locator('[data-testid="rule-body-SPEC-ledger-002"]');
+        await ruleBody.waitFor({ state: 'attached', timeout: 10000 });
+        expect(await ruleBody.locator('h1').count()).toBe(1);
+        expect(await ruleBody.locator('h1').textContent()).toBe(
+          'SPEC-ledger-002: Transactions are immutable',
+        );
+        expect(await ruleBody.locator('ol li').count()).toBe(2);
+        expect(await ruleBody.locator('code').count()).toBe(1);
+        expect(await ruleBody.textContent()).not.toContain('`');
+
+        // --- And the Decisions pane, which reads the same kind of file.
+        await page.locator('[data-testid="rail-decisions"]').click();
+        const decisionBody = page.locator('[data-testid="decision-body-DEC-0001"]');
+        await decisionBody.waitFor({ state: 'attached', timeout: 10000 });
+        expect(await decisionBody.locator('h1').count()).toBe(1);
+        expect(await decisionBody.locator('ol li').count()).toBe(2);
 
         // --- Defects 5 and 6: one chat turn against the fake vendor.
         const textarea = page.locator('.cr-chat-input textarea');

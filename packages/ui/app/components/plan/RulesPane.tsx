@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { Markdown } from '../Markdown';
 import { PaneClose } from './PaneClose';
 import { type OracleDoc, putRule } from './plan-api';
 
@@ -9,6 +10,10 @@ import { type OracleDoc, putRule } from './plan-api';
  * decision, so those tickets get re-checked" — that rule is enforced
  * daemon-side (`plan/service.ts`'s `putRule`); this pane shows which tickets
  * cite a rule up front, and reports which of the two happened after a save.
+ *
+ * Bodies render as markdown prose (T049) — they are `.md` files, and the
+ * screenshot on the ticket shows `# SPEC-ledger-002: …` and a numbered list
+ * printed as literal text. The raw file is shown only in the Edit textarea.
  */
 export function RulesPane({ rules, onChanged }: { rules: OracleDoc[]; onChanged: () => void }) {
   const [editing, setEditing] = useState<string | undefined>(undefined);
@@ -93,7 +98,11 @@ export function RulesPane({ rules, onChanged }: { rules: OracleDoc[]; onChanged:
         <div className="rule" key={doc.entry.id} data-testid={`rule-${doc.entry.id}`}>
           <span className="id">{doc.entry.id}</span> <b>{doc.entry.title}</b>{' '}
           <span className="cr-badge">{doc.entry.status}</span>
-          <p style={{ whiteSpace: 'pre-wrap' }}>{doc.body}</p>
+          {/* T049 defect 7's rule, applied to the other markdown file the
+              plan keeps: `oracle/specs/SPEC-*.md` is markdown, so a `#`
+              heading and a numbered list are a heading and a list here. The
+              raw file is what the Edit textarea above holds. */}
+          <Markdown text={doc.body} testId={`rule-body-${doc.entry.id}`} />
           <div className="src">
             {doc.cited_by.length > 0
               ? `Applies to: ${doc.cited_by.join(', ')} — an edit here becomes a proposed decision`

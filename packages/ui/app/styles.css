@@ -1428,3 +1428,15 @@ button.cr-link {
   color: var(--accent);
   font-size: 12.5px;
 }
+
+/* T049: the Rules, Decisions and Knowledge bodies render through the same
+   `Markdown` component as the Brief and the chat. They keep the dim,
+   secondary look the raw `<p>` had, and a fact inside a table cell takes no
+   trailing margin (the row is the spacing there). */
+.cr-plan .rule .cr-md {
+  margin-top: 4px;
+  color: var(--text-dim);
+}
+.cr-plan td .cr-md > *:last-child {
+  margin-bottom: 0;
+}
