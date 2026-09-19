@@ -393,4 +393,5 @@ Daemon: `em/`, `architect/`, `oracle/`, `qa/`, `halts/`, `quota/`, `handoff/`, `
 - Q1 assumption in force: a coding stream's target is the repo's default branch when the repo has no integration branch (T132).
 - Q4 assumption in force: repo docs are tracked in `<repo>/.agile-docs/` (T134).
 - Playwright e2e suites are load-sensitive: run concurrently with a full `bun test` one of them times out (a different test each time). Unloaded they are green. Pre-existing; noted at T111.
+- Phase 1 complete on `claude/reshape` (2026-09-19): T101, T110, T111, T112, T113 merged. Verification on the merged tip: build/typecheck/lint clean; `bun test` 2269 pass / 3 skip / 0 fail (163 files); `test:integration` 5 suites, 31 pass, 0 fail. Daemon source 34,975 lines (from 35,932). Note T101 (Phase 0, docs only) ran alongside Phase 1 rather than as a separate stop; Pete reviews `design/cockpit-design.md` with this phase.
 - Baseline before Phase 1: daemon source (non-test `.ts` under `packages/daemon/src`) = 35,932 lines.
