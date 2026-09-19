@@ -10,30 +10,40 @@ test('PACKAGE_NAME identifies the package', () => {
 });
 
 let repo: string;
+let home: string;
+let previousHome: string | undefined;
 
 beforeEach(() => {
   repo = mkdtempSync(join(tmpdir(), 'agile-cli-init-'));
   Bun.spawnSync(['git', 'init', '-q'], { cwd: repo });
   Bun.spawnSync(['git', 'config', 'user.email', 'test@example.com'], { cwd: repo });
   Bun.spawnSync(['git', 'config', 'user.name', 'Test'], { cwd: repo });
+  // T111: the state home is never inside the repo. Point `AGILE_HOME` at a
+  // temp dir so `agile init` cannot touch the operator's real `~/.agile/`.
+  home = join(mkdtempSync(join(tmpdir(), 'agile-cli-home-')), 'home');
+  previousHome = process.env.AGILE_HOME;
+  process.env.AGILE_HOME = home;
 });
 
 afterEach(() => {
+  if (previousHome === undefined) Reflect.deleteProperty(process.env, 'AGILE_HOME');
+  else process.env.AGILE_HOME = previousHome;
   rmSync(repo, { recursive: true, force: true });
+  rmSync(home, { recursive: true, force: true });
 });
 
 describe('runCliInit', () => {
-  test('bootstraps .agile/ in the given repo', () => {
+  test('creates the state home and never a .agile/ inside the repo', () => {
     const result = runCliInit(repo);
-    expect(result.message).toContain('bootstrapped');
+    expect(result.message).toContain(home);
     expect(result.alreadyInitialised).toBe(false);
-    expect(existsSync(join(repo, '.agile'))).toBe(true);
+    expect(existsSync(join(home, 'repos.yaml'))).toBe(true);
+    expect(existsSync(join(repo, '.agile'))).toBe(false);
   });
 
-  test('a second call reports already-initialised instead of throwing', () => {
+  test('a second call is an idempotent no-op', () => {
     runCliInit(repo);
     const result = runCliInit(repo);
-    expect(result.message).toContain('already initialised');
     expect(result.alreadyInitialised).toBe(true);
   });
 });
@@ -50,11 +60,11 @@ describe('runCli init exit code', () => {
     }
   });
 
-  test('re-init on an already-initialised repo exits non-zero', async () => {
+  test('re-init is idempotent and still exits 0', async () => {
     process.chdir(repo);
     try {
       expect(await runCli(['init'])).toBe(0);
-      expect(await runCli(['init'])).not.toBe(0);
+      expect(await runCli(['init'])).toBe(0);
     } finally {
       process.chdir(originalCwd);
     }

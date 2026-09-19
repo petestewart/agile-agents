@@ -47,6 +47,7 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'n
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import type { Ticket } from '@agile-agents/shared';
 import { TicketIdSchema } from '@agile-agents/shared';
+import { stateHome } from '../config';
 import { activeHaltsFor } from '../halts';
 import { StateStore } from '../store';
 import { sandboxedSubprocessEnvOrTemp } from '../subprocess-env';
@@ -230,7 +231,7 @@ export function installPreCommitHook(
   const rawCommonDir = gitCommonDir(worktreePath);
   const commonDir = isAbsolute(rawCommonDir) ? rawCommonDir : resolve(worktreePath, rawCommonDir);
   const repoRoot = dirname(commonDir);
-  const stateRoot = join(repoRoot, '.agile');
+  const stateRoot = stateHome();
   const mergeIndexPath = resolveMergeIndexPath();
 
   const hooksDir = join(commonDir, 'hooks');

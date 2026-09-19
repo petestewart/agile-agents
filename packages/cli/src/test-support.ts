@@ -40,6 +40,8 @@ import { RpcConnectionError, callRpc } from './client';
 
 export interface TestDaemon {
   repo: string;
+  /** The temp state home this daemon serves (T111) — `AGILE_HOME` for its lifetime. */
+  home: string;
   stateRoot: string;
   socketPath: string;
   store: StateStore;
@@ -83,7 +85,13 @@ export async function startTestDaemon(prefix = 'agile-cli-test-'): Promise<TestD
   Bun.spawnSync(['git', 'config', 'user.email', 'test@example.com'], { cwd: repo });
   Bun.spawnSync(['git', 'config', 'user.name', 'Test'], { cwd: repo });
 
-  const init = runInit(repo);
+  // T111: the state home lives outside the repo. `AGILE_HOME` is exported
+  // for the duration so `discoverConfig` (and any CLI subprocess this test
+  // daemon spawns) resolves the same home, never the operator's `~/.agile/`.
+  const home = join(repo, 'home');
+  const previousHome = process.env.AGILE_HOME;
+  process.env.AGILE_HOME = home;
+  const init = runInit(home);
   const store = StateStore.open(init.stateRoot);
   const socketPath = join(repo, '.agile-daemon.sock');
 
@@ -151,8 +159,11 @@ export async function startTestDaemon(prefix = 'agile-cli-test-'): Promise<TestD
     gateService,
     jiraSync,
     questionService,
+    home,
     async cleanup() {
       await rpc.close();
+      if (previousHome === undefined) Reflect.deleteProperty(process.env, 'AGILE_HOME');
+      else process.env.AGILE_HOME = previousHome;
       rmSync(repo, { recursive: true, force: true });
     },
   };

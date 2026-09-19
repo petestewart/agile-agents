@@ -12,6 +12,7 @@
  */
 
 import { existsSync, readFileSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { parse as parseYaml } from 'yaml';
 import { sandboxedSubprocessEnvOrTemp } from './subprocess-env';
@@ -37,9 +38,15 @@ export interface JiraConfig {
 }
 
 export interface AgileConfig {
-  /** Repo toplevel (git rev-parse --show-toplevel), i.e. where `.agile/` lives. */
+  /** Repo toplevel (git rev-parse --show-toplevel) the command was run from. */
   repoRoot: string;
-  /** `<repoRoot>/.agile` — the state worktree root. */
+  /**
+   * The state home (T111, PLAN.md §5, D9): `AGILE_HOME` if set, else
+   * `~/.agile/`. One home serves every registered repo; nothing is written
+   * under the repo any more.
+   */
+  home: string;
+  /** Alias for `home` — the root every store path is relative to. */
   stateRoot: string;
   /** HTTP port for the localhost UI/CLI API. 0 lets the OS pick an ephemeral port. */
   port: number;
@@ -52,6 +59,17 @@ export interface AgileConfig {
 }
 
 const DEFAULT_PORT = 4600;
+
+/**
+ * The state home (T111, PLAN.md §5, D9): `$AGILE_HOME` if set, else
+ * `~/.agile/`. One home serves every registered repo; nothing daemon-owned
+ * is ever written inside a repo. Exported so the handful of callers that
+ * only have a repo root in hand (the runner's brief assembly, the
+ * pre-commit hook renderer) resolve the same home as `discoverConfig`.
+ */
+export function stateHome(): string {
+  return process.env.AGILE_HOME ?? join(homedir(), '.agile');
+}
 export const CONFIG_FILE_NAME = 'agile.config.yaml';
 
 interface RawConfigFile {
@@ -120,6 +138,8 @@ export interface DiscoverConfigOptions {
   /** Overrides applied after file + env — used by tests and CLI flags. */
   port?: number;
   socketPath?: string;
+  /** Overrides the state home (env: `AGILE_HOME`, default `~/.agile/`). */
+  home?: string;
   /**
    * Test-only seam (review round 3 B3): overrides where `findRepoRoot`'s
    * no-repo-root sandbox fallback `mkdtempSync`s its temp directory —
@@ -137,7 +157,8 @@ export interface DiscoverConfigOptions {
 export function discoverConfig(options: DiscoverConfigOptions = {}): AgileConfig {
   const cwd = options.cwd ?? process.cwd();
   const repoRoot = findRepoRoot(cwd, options.tempDirBase);
-  const stateRoot = join(repoRoot, '.agile');
+  const home = options.home ?? stateHome();
+  const stateRoot = home;
   const fileConfig = readConfigFile(repoRoot);
 
   const envPort = process.env.AGILE_PORT ? Number(process.env.AGILE_PORT) : undefined;
@@ -171,6 +192,7 @@ export function discoverConfig(options: DiscoverConfigOptions = {}): AgileConfig
 
   return {
     repoRoot,
+    home,
     stateRoot,
     port,
     socketPath,

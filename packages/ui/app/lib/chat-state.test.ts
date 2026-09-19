@@ -244,4 +244,32 @@ describe('chatReducer — history', () => {
     expect(state.lines[1]?.error).toContain('timed out');
     expect(state.lines.some((l) => l.pending)).toBe(false);
   });
+
+  /**
+   * T111: the state home has no git commit per write any more, so a turn
+   * that fails on spawn can end *before* the browser's own POST response
+   * lands. `turn_started` used to re-arm `turnId` unconditionally, which
+   * left the panel waiting forever on an end frame that had already been
+   * delivered (the control-room e2e's "T051: a turn that fails ... frees the
+   * input" caught this as a load-dependent hang).
+   */
+  test('an end frame that beats the POST response does not re-arm the turn', () => {
+    const state = fold(
+      initialChatState,
+      send(),
+      {
+        type: 'frame',
+        frame: {
+          type: 'chat_turn_end',
+          thread: 'em',
+          message_id: '01H3',
+          error: 'ACP agent exited',
+        },
+      },
+      { type: 'turn_started', messageId: '01H2', replyId: '01H3' },
+    );
+    expect(state.turnId).toBeUndefined();
+    expect(state.lines.some((l) => l.pending)).toBe(false);
+    expect(state.lines.at(-1)?.error).toContain('ACP agent exited');
+  });
 });

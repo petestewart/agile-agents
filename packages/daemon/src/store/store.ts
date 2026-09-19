@@ -1,33 +1,23 @@
 /**
- * `StateStore` — the validating read/write layer over `.agile/` (T005; design
- * agile-agents-design.md §4 "State model", §5 "Storage" (ordering/failure),
- * §15 "Git model and teams").
+ * `StateStore` — the validating read/write layer over the state home
+ * (T005, T111; PLAN.md §5 "State home").
  *
  * Every write: validate with the shared zod schema first (so a failing
- * validation touches no file), then an atomic file write (fs.ts), then one
- * git commit on the `agile-state` worktree batching every file that one
- * logical operation touched, plus the one `Event` line that operation mints
- * in `log/events.jsonl` (git.ts) — the commit message is that event's
- * `kind`, so the commit log and the event log share one vocabulary (review
- * fix, manager decision B1). Reads never mutate.
+ * validation touches no file), then an atomic file write (fs.ts), plus the
+ * one `Event` line that operation mints in `log/events.jsonl`. T111: the
+ * home is `$AGILE_HOME` (default `~/.agile/`), a plain directory, so there
+ * is no commit step and no `agile-state` branch — the event log is the
+ * audit trail. Reads never mutate.
  *
- * Concurrency: one daemon process per repo (§15), so a plain async mutex
- * around each mutation method is enough — it only needs to serialize this
- * process's own concurrent RPC calls against each other, not guard against
- * another process (that's the daemon-wide lock file, lock.ts). All the
- * actual file/git work below is synchronous (Bun.spawnSync, *Sync fs calls),
- * so nothing else runs on the single JS thread while a mutation is
- * mid-flight anyway; the mutex exists so a caller can safely fire mutations
- * concurrently (e.g. two RPC requests racing) without reasoning about
- * interleaving, and so a slower future implementation (real async I/O)
- * doesn't silently reintroduce a race.
- *
- * Partial-state note (review nit, documented not fully solved): every
- * mutation writes its entity file(s) first, then commits. If the commit
- * step throws (see git.ts's header), the write already landed on disk (and
- * in `log/events.jsonl`) ahead of `agile-state`'s committed history — the
- * error surfaces to the caller rather than being swallowed, but no
- * automatic rollback of the just-written bytes is implemented.
+ * Concurrency: one daemon process, so a plain async mutex around each
+ * mutation method is enough — it only needs to serialize this process's own
+ * concurrent RPC calls against each other, not guard against another
+ * process (that's the daemon-wide lock file, lock.ts). All the actual file
+ * work below is synchronous (*Sync fs calls), so nothing else runs on the
+ * single JS thread while a mutation is mid-flight anyway; the mutex exists
+ * so a caller can safely fire mutations concurrently (e.g. two RPC requests
+ * racing) without reasoning about interleaving, and so a slower future
+ * implementation (real async I/O) doesn't silently reintroduce a race.
  */
 
 import {
@@ -54,6 +44,7 @@ import {
   type OracleIndex,
   type Policy,
   type Quota,
+  type ReposConfig,
   type Sprint,
   type SprintId,
   type Stanza,
@@ -73,6 +64,8 @@ import {
   validateOracleIndex,
   validatePolicy,
   validateQuota,
+  validateRepoEntry,
+  validateReposConfig,
   validateSprint,
   validateStanza,
   validateTicket,
@@ -94,7 +87,6 @@ import {
   writeJsonFileAtomic,
   writeYamlFileAtomic,
 } from './fs';
-import { commitPaths } from './git';
 
 export class IllegalTransitionError extends Error {
   constructor(
@@ -243,32 +235,18 @@ interface MutationResult<T> {
 }
 
 /**
- * Deferred-commit batching (T009 review round, "Hot-path decision"): a
- * pre-tool-use hook call previously cost one `git commit` for its
- * `hook_decision` event and another for its heartbeat — two commits per
- * tool call is not sustainable. `appendEvent(event, {commit:'deferred'})`
- * (and `heartbeat`, below) append their line/file write immediately (so a
- * reader of `log/events.jsonl`/`bus/agents/<id>.yaml` sees it right away)
- * but queue the relative path instead of committing — a debounced timer
- * (`DEFERRED_FLUSH_MS`) batches every queued path into one commit, and any
- * *regular* (non-deferred) mutation flushes whatever is queued first, as
- * its own preceding commit, so the audit trail never silently drops a
- * deferred write behind a later one. `StateStore.flush()` (called by
- * `daemon.ts` on shutdown) flushes on demand for tests/graceful stop.
+ * T111: the state home (`AGILE_HOME`, default `~/.agile/`) is a plain
+ * directory of YAML/JSONL files, not a git worktree. The orphan
+ * `agile-state` branch and the per-mutation commit that went with it are
+ * gone, so a "deferred commit" has nothing left to defer: every write lands
+ * on disk immediately, and `log/events.jsonl` is the audit trail.
+ * `appendEvent`'s `{commit}` option is accepted and ignored.
  */
-const DEFERRED_FLUSH_MS = 5000;
-const DEFERRED_COMMIT_MESSAGE = 'deferred_batch';
 /** CLAUDE.md tunable: "heartbeat 30 s" — `StateStore.heartbeat`'s coalescing window. */
 export const HEARTBEAT_COALESCE_MS = 30 * 1000;
 
 export class StateStore {
   private readonly mutex = new Mutex();
-  private readonly deferredRelPaths = new Set<string>();
-  private deferredTimer: ReturnType<typeof setTimeout> | null = null;
-  // Review fix (T012 QA/review round): once closed, no *new* deferred-flush
-  // timer is armed — see `scheduleDeferredFlush` — so a caller that has torn
-  // this store down (a test's `afterEach`, a daemon shutdown) can be sure no
-  // stray timer outlives it.
   private closed = false;
 
   // Round 5 review (opus) B1: an absolute symlink target is walked from the
@@ -287,40 +265,9 @@ export class StateStore {
     this.realStateRoot = realpathSync(stateRoot);
   }
 
-  /**
-   * Marks this store closed (so `scheduleDeferredFlush` becomes a no-op
-   * from this point on — no *new* timer can ever be armed again) and routes
-   * a flush of whatever's currently queued through the mutex, respecting
-   * FIFO order with any mutation already in flight or queued ahead of it.
-   *
-   * Review round 3 (opus, nit from round 2 promoted to a required fix):
-   * round 2 called `flushDeferredNow()` directly here, bypassing the
-   * mutex — harmless in practice (the store's git work is synchronous, and
-   * every real caller already `await`s `flush()` first, which itself runs
-   * under the mutex and leaves it idle), but it was the one place this
-   * class's own "every mutation is serialized" invariant didn't actually
-   * hold. Fire-and-forget is intentional: `close()` stays a synchronous,
-   * void-returning method (every call site — `daemon.ts` shutdown, both
-   * runner test files' `afterEach`, `store.test.ts` — calls it bare, with
-   * no `await`) so a caller that wants a *guaranteed*-drained store before
-   * proceeding synchronously must call `await store.flush()` first, same as
-   * before; `close()` is the belt-and-suspenders timer-cancellation/backstop
-   * flush, not the primary drain path. `git.ts`'s `commitPaths` still
-   * no-ops (logging, not throwing) instead of crashing if `stateRoot` is
-   * gone by the time this queued flush actually runs, so a caller that
-   * immediately removes the worktree right after `close()` (exactly what
-   * the round-1 QA race reproduces) is still safe either way.
-   */
+  /** Marks this store closed. Kept as a lifecycle hook for callers (daemon shutdown, test teardown); nothing is buffered any more. */
   close(): void {
     this.closed = true;
-    this.mutex
-      .run(() => this.flushDeferredNow())
-      .catch(() => {
-        // Swallowed deliberately — same reasoning as `scheduleDeferredFlush`'s
-        // own timer callback: a failed flush here has nowhere useful to
-        // report to (this is teardown), and `commitPaths`'s missing-worktree
-        // guard means it shouldn't normally even reject.
-      });
   }
 
   static open(stateRoot: string): StateStore {
@@ -604,45 +551,15 @@ export class StateStore {
     return normalized;
   }
 
-  /** Commits whatever deferred paths are queued (if any) as one commit, and clears the queue/timer. Synchronous — callers already hold the mutex. */
-  private flushDeferredNow(): void {
-    if (this.deferredTimer !== null) {
-      clearTimeout(this.deferredTimer);
-      this.deferredTimer = null;
-    }
-    if (this.deferredRelPaths.size === 0) return;
-    const paths = [...this.deferredRelPaths];
-    this.deferredRelPaths.clear();
-    commitPaths(this.stateRoot, paths, DEFERRED_COMMIT_MESSAGE);
+  /** Appends `event`'s line to `log/events.jsonl`. Synchronous — callers already hold the mutex. */
+  private deferEventSync(event: Event, _extraRelPaths: string[] = []): void {
+    appendJsonlLine(this.abs(join('log', 'events.jsonl')), event);
   }
 
-  /** Arms the debounce timer (if not already armed) to flush queued deferred paths after `DEFERRED_FLUSH_MS`. `unref`d so it never keeps the process alive on its own. No-op once `close()` has been called (see its doc comment). */
-  private scheduleDeferredFlush(): void {
-    if (this.closed || this.deferredTimer !== null) return;
-    const timer = setTimeout(() => {
-      this.mutex.run(() => this.flushDeferredNow()).catch(() => {});
-    }, DEFERRED_FLUSH_MS);
-    timer.unref?.();
-    this.deferredTimer = timer;
-  }
-
-  /** Appends `event`'s line to `log/events.jsonl` immediately and queues the path for the next flush — no commit yet. Synchronous — callers already hold the mutex. */
-  private deferEventSync(event: Event, extraRelPaths: string[] = []): void {
-    const eventsRel = join('log', 'events.jsonl');
-    appendJsonlLine(this.abs(eventsRel), event);
-    this.deferredRelPaths.add(eventsRel);
-    for (const p of extraRelPaths) this.deferredRelPaths.add(p);
-    this.scheduleDeferredFlush();
-  }
-
-  /** Appends `event` to `log/events.jsonl` and commits `relPaths` (plus that file) with message = event.kind — flushing any pending deferred paths first (as their own preceding commit), so a batched write is never silently absorbed into an unrelated commit message. */
-  private commitEvent(relPaths: string[], event: Event): void {
-    this.flushDeferredNow();
+  /** Appends `event` to `log/events.jsonl` — the home's audit trail (T111: no commit, the home is not a git worktree). */
+  private commitEvent(_relPaths: string[], event: Event): void {
     const validated = validateEvent(event);
-    const eventsRel = join('log', 'events.jsonl');
-    appendJsonlLine(this.abs(eventsRel), validated);
-    const paths = relPaths.includes(eventsRel) ? relPaths : [...relPaths, eventsRel];
-    commitPaths(this.stateRoot, paths, validated.kind);
+    appendJsonlLine(this.abs(join('log', 'events.jsonl')), validated);
   }
 
   /** Runs one mutation under the mutex: `fn` does the validated file write(s) and builds its one Event; this commits it. */
@@ -655,13 +572,13 @@ export class StateStore {
   }
 
   /**
-   * Flushes any pending deferred writes into one commit right now. Called by
-   * `daemon.ts` on graceful shutdown (so a deferred hook_decision/heartbeat
-   * batch is never lost) and by tests that want a deterministic flush point
-   * instead of waiting `DEFERRED_FLUSH_MS`.
+   * Drains in-flight mutations. Every write is already on disk (T111: no
+   * deferred commit), so this only waits for the mutex to go idle — kept
+   * because `daemon.ts` and tests call it as their deterministic
+   * "everything has landed" point.
    */
   async flush(): Promise<void> {
-    return this.mutex.run(() => this.flushDeferredNow());
+    return this.mutex.run(() => {});
   }
 
   /**
@@ -1248,6 +1165,39 @@ export class StateStore {
       const event = buildEvent('vendors_put');
       return { result: validated, relPaths: [relPath], event };
     });
+  }
+
+  // ---------------------------------------------------------- Repo registry
+
+  /**
+   * `repos.yaml` in the state home (PLAN.md §5, D9): the repos this one
+   * daemon serves. Absent file = no repos registered yet, which is a normal
+   * state for a fresh home, so this returns `{}` rather than throwing.
+   */
+  getRepos(): ReposConfig {
+    const path = this.abs('repos.yaml');
+    if (!fileExists(path)) return {};
+    return validateReposConfig(readYamlFile(path) ?? {});
+  }
+
+  async putRepos(repos: unknown): Promise<ReposConfig> {
+    return this.mutate(() => {
+      const validated = validateReposConfig(repos);
+      const relPath = 'repos.yaml';
+      writeYamlFileAtomic(this.abs(relPath), validated);
+      const event = buildEvent('repos_put');
+      return { result: validated, relPaths: [relPath], event };
+    });
+  }
+
+  /**
+   * Registers (or re-registers) one repo under `name`. Merges into the
+   * existing registry so `agile repo add` is additive; re-adding the same
+   * name replaces that entry.
+   */
+  async addRepo(name: string, entry: unknown): Promise<ReposConfig> {
+    const next = { ...this.getRepos(), [name]: validateRepoEntry(entry) };
+    return this.putRepos(next);
   }
 
   // -------------------------------------------------------- Generic entity

@@ -82,8 +82,15 @@ export interface HttpServerOptions {
   hostname?: string;
   version: string;
   stateRoot: string;
+  /**
+   * T111: the repo this daemon was started from. The state home is no
+   * longer `<repoRoot>/.agile`, so the repo root can't be derived from
+   * `stateRoot` any more — routes that need it (the ticket diff, the top
+   * bar's project block) take it from here.
+   */
+  repoRoot?: string;
   startedAt: number;
-  /** When present (i.e. `.agile/` exists), enables the feed routes and `/ws` live tail. */
+  /** When present (i.e. the state home exists), enables the feed routes and `/ws` live tail. */
   store?: StateStore;
   /** Required alongside `store` to serve the HIL attention-queue snapshot + approve/delegate actions. */
   gates?: GateService;
@@ -686,7 +693,7 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
             undefined,
             feed.quota,
             feed.questions,
-            dirname(options.stateRoot),
+            options.repoRoot ?? dirname(options.stateRoot),
             feed.emSession?.(),
           ),
         );
@@ -718,7 +725,7 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
        * validated through the *shared* `PolicySchema` so a browser cannot
        * write a gates block the daemon would later refuse to read, and
        * persisted through `StateStore.putPolicy` so it lands in
-       * `events.jsonl` (`policy_put`) and on the `agile-state` branch like
+       * `events.jsonl` (`policy_put`) like
        * any other mutation. The actor is hardcoded `human` for the same
        * reason `/api/halt`'s `raised_by` is: a page must not be able to
        * sign a policy change as the architect.
@@ -780,7 +787,7 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
         if (!feed) return errorResponse(503, 'state store not initialised (run `agile init`)');
         const parsedId = TicketIdSchema.safeParse(ticketSub.id);
         if (!parsedId.success) return errorResponse(400, `invalid ticket id: ${ticketSub.id}`);
-        const repoRoot = dirname(options.stateRoot);
+        const repoRoot = options.repoRoot ?? dirname(options.stateRoot);
         try {
           if (ticketSub.sub === 'thread') {
             return jsonResponse(ticketThread(feed.store, parsedId.data));
@@ -1167,7 +1174,7 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
 
       // ---- Plan screen (T042, §17 "Control room v2") — one route family
       // per pane, every write through `PlanService` (and so through the
-      // validating store: `log/events.jsonl` + the `agile-state` commit).
+      // validating store: `log/events.jsonl`).
       if (url.pathname.startsWith('/api/plan') || url.pathname === '/api/sprint/start') {
         // CSRF check first, before the wiring check: a cross-origin write is
         // rejected as such whether or not this daemon has a plan service, so
@@ -1216,7 +1223,7 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
                 undefined,
                 feed.quota,
                 feed.questions,
-                dirname(options.stateRoot),
+                options.repoRoot ?? dirname(options.stateRoot),
                 feed.emSession?.(),
               ),
             ),

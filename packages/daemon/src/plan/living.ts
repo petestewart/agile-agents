@@ -148,8 +148,8 @@ export function summarizeEdit(before: Ticket, after: Ticket): string {
 
 /**
  * Applies one Plan-screen ticket edit under the living-plan rules. Every
- * path writes through the store (so `events.jsonl` and the `agile-state`
- * commit both carry it) and returns which rule fired, so the UI can say so
+ * path writes through the store (so `events.jsonl` carries it) and returns
+ * which rule fired, so the UI can say so
  * rather than pretending every edit is the same.
  */
 export async function applyPlanTicketEdit(

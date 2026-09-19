@@ -91,10 +91,6 @@ function seedTicket(id: TicketId, title: string, status: Ticket['status']): Tick
   };
 }
 
-function git(args: string[], cwd: string): string {
-  return new TextDecoder().decode(Bun.spawnSync(['git', ...args], { cwd }).stdout).trim();
-}
-
 /**
  * The offline stand-in for a real architect planning turn: it calls exactly
  * the verbs `renderPlanningPrompt` asks the architect for — the same
@@ -310,16 +306,28 @@ async function openPlan(port: number): Promise<Page> {
   return page;
 }
 
+/**
+ * T111: the daemon's state lives in `$AGILE_HOME`, never inside the repo.
+ * Each test gets a fresh temp home and points `AGILE_HOME` at it so the
+ * daemon it starts (via `discoverConfig`) opens the same home this test
+ * seeded.
+ */
+function freshHome(): string {
+  const home = mkdtempSync(join(tmpdir(), 'agile-e2e-home-'));
+  process.env.AGILE_HOME = home;
+  return home;
+}
+
 describe('Plan screen (Playwright e2e)', () => {
   browserTest(
-    'every pane renders daemon data, and every edit lands in events.jsonl and on agile-state',
+    'every pane renders daemon data, and every edit lands in events.jsonl',
     async () => {
       const repo = initRepo();
       let handle: DaemonHandle | undefined;
       let openedPage: Page | undefined;
 
       try {
-        const init = runInit(repo);
+        const init = runInit(freshHome());
         const store = StateStore.open(init.stateRoot);
         await store.putTicket({
           id: 'TKT-9001',
@@ -471,13 +479,14 @@ describe('Plan screen (Playwright e2e)', () => {
           new Set(['TKT-9001', 'TKT-9002'] as TicketId[]),
         );
 
-        // Every one of those writes is a commit on the agile-state worktree.
+        // T111: every one of those writes is a line in the home's event log
+        // (the audit trail the `agile-state` commit used to be).
         await store.flush();
-        const subjects = git(['log', '--format=%s'], init.stateRoot).split('\n');
-        expect(subjects).toContain('entity_put');
-        expect(subjects).toContain('oracle_put');
-        expect(subjects).toContain('kb_put');
-        expect(subjects).toContain('ticket_put');
+        const kinds = store.listEvents().map((e) => e.kind);
+        expect(kinds).toContain('entity_put');
+        expect(kinds).toContain('oracle_put');
+        expect(kinds).toContain('kb_put');
+        expect(kinds).toContain('ticket_put');
       } finally {
         await teardown([openedPage]);
         await handle?.stop();
@@ -495,7 +504,7 @@ describe('Plan screen (Playwright e2e)', () => {
       let openedPage: Page | undefined;
 
       try {
-        const init = runInit(repo);
+        const init = runInit(freshHome());
         const store = StateStore.open(init.stateRoot);
         await store.putTicket({
           id: 'TKT-9301',
@@ -562,7 +571,7 @@ describe('Plan screen (Playwright e2e)', () => {
       let openedPage: Page | undefined;
 
       try {
-        const init = runInit(repo);
+        const init = runInit(freshHome());
         const store = StateStore.open(init.stateRoot);
         expect(store.listTickets()).toHaveLength(0);
 
@@ -659,7 +668,7 @@ describe('Control room defects (T049)', () => {
       let openedPage: Page | undefined;
 
       try {
-        runInit(repo);
+        runInit(freshHome());
         handle = await startDaemon({
           cwd: repo,
           port: 0,
@@ -752,7 +761,7 @@ describe('Tickets pane editor (T049)', () => {
       let openedPage: Page | undefined;
 
       try {
-        const init = runInit(repo);
+        const init = runInit(freshHome());
         const store = StateStore.open(init.stateRoot);
         await store.putTicket(seedTicket('TKT-9101', 'Add Ledger.transfer', 'draft'));
         await store.putTicket(seedTicket('TKT-9102', 'Reverse a transfer as a pair', 'draft'));
@@ -837,7 +846,7 @@ describe('Tickets pane editor (T049)', () => {
       let openedPage: Page | undefined;
 
       try {
-        const init = runInit(repo);
+        const init = runInit(freshHome());
         const store = StateStore.open(init.stateRoot);
         await store.putTicket(seedTicket('TKT-9201', 'Add Ledger.transfer', 'done'));
 
@@ -917,7 +926,7 @@ describe('Chat header and markdown (T049)', () => {
       let openedPage: Page | undefined;
 
       try {
-        const init = runInit(repo);
+        const init = runInit(freshHome());
         const store = StateStore.open(init.stateRoot);
         // A seeded ticket keeps this out of the first-goal path: the chat post
         // below is an ordinary EM turn, not the architect's planning turn.

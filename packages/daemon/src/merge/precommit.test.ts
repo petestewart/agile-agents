@@ -10,6 +10,8 @@ import { StateStore } from '../store';
 import { checkCommitAllowed, installPreCommitHook } from './precommit';
 
 let repo: string;
+let home: string;
+let previousHome: string | undefined;
 let stateRoot: string;
 let store: StateStore;
 
@@ -30,6 +32,11 @@ function runGit(args: string[], cwd: string): string {
 
 beforeEach(() => {
   repo = mkdtempSync(join(tmpdir(), 'agile-precommit-'));
+  // T111: `installPreCommitHook` renders the hook against `stateHome()`, so
+  // the store this test seeds must be that same home.
+  home = mkdtempSync(join(tmpdir(), 'agile-precommit-home-'));
+  previousHome = process.env.AGILE_HOME;
+  process.env.AGILE_HOME = home;
   runGit(['init', '-q', '-b', 'main'], repo);
   runGit(['config', 'user.email', 'test@example.com'], repo);
   runGit(['config', 'user.name', 'Test'], repo);
@@ -38,13 +45,16 @@ beforeEach(() => {
   runGit(['commit', '-q', '-m', 'init'], repo);
   ensureIntegrationBranch(repo);
 
-  const init = runInit(repo);
+  const init = runInit(home);
   stateRoot = init.stateRoot;
   store = StateStore.open(stateRoot);
 });
 
 afterEach(() => {
+  if (previousHome === undefined) Reflect.deleteProperty(process.env, 'AGILE_HOME');
+  else process.env.AGILE_HOME = previousHome;
   rmSync(repo, { recursive: true, force: true });
+  rmSync(home, { recursive: true, force: true });
 });
 
 const ticket = validateTicket({

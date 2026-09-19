@@ -432,7 +432,7 @@ async function withChrome(body: (fixture: ChromeFixture) => Promise<void>): Prom
   let page: Page | undefined;
 
   try {
-    const init = runInit(repo);
+    const init = runInit(freshHome());
     const store = StateStore.open(init.stateRoot);
     const gates = new GateService(store);
     const seeded = await gates.request('unblock', {
@@ -489,6 +489,18 @@ async function withChrome(body: (fixture: ChromeFixture) => Promise<void>): Prom
     await handle?.stop();
     rmSync(repo, { recursive: true, force: true });
   }
+}
+
+/**
+ * T111: the daemon's state lives in `$AGILE_HOME`, never inside the repo.
+ * Each test gets a fresh temp home and points `AGILE_HOME` at it so the
+ * daemon it starts (via `discoverConfig`) opens the same home this test
+ * seeded.
+ */
+function freshHome(): string {
+  const home = mkdtempSync(join(tmpdir(), 'agile-e2e-home-'));
+  process.env.AGILE_HOME = home;
+  return home;
 }
 
 describe('control room SPA (Playwright e2e)', () => {
@@ -710,7 +722,7 @@ describe('control room SPA (Playwright e2e)', () => {
       let page: Page | undefined;
 
       try {
-        const init = runInit(repo);
+        const init = runInit(freshHome());
         const store = StateStore.open(init.stateRoot);
         const gates = new GateService(store);
 
@@ -853,7 +865,7 @@ describe('control room SPA (Playwright e2e)', () => {
       let page: Page | undefined;
 
       try {
-        const init = runInit(repo);
+        const init = runInit(freshHome());
         const store = StateStore.open(init.stateRoot);
         const gates = new GateService(store);
 
@@ -962,7 +974,7 @@ describe('control room SPA (Playwright e2e)', () => {
       let page: Page | undefined;
 
       try {
-        const init = runInit(repo);
+        const init = runInit(freshHome());
         const store = StateStore.open(init.stateRoot);
         const bus = new Bus(store, init.stateRoot);
 
@@ -1022,7 +1034,7 @@ describe('control room SPA (Playwright e2e)', () => {
       let page: Page | undefined;
 
       try {
-        const init = runInit(repo);
+        const init = runInit(freshHome());
         const store = StateStore.open(init.stateRoot);
         const bus = new Bus(store, init.stateRoot);
         await store.putOracleEntry(
@@ -1091,7 +1103,7 @@ describe('control room SPA (Playwright e2e)', () => {
       let page: Page | undefined;
 
       try {
-        const init = runInit(repo);
+        const init = runInit(freshHome());
         const store = StateStore.open(init.stateRoot);
         await store.putTicket({
           id: 'TKT-9103',
@@ -1157,7 +1169,7 @@ describe('control room SPA (Playwright e2e)', () => {
       let page: Page | undefined;
 
       try {
-        const init = runInit(repo);
+        const init = runInit(freshHome());
         const store = StateStore.open(init.stateRoot);
         const agentId = 'agent-heartbeat-e2e' as never;
         await store.putAgent(agentId, {
@@ -1240,7 +1252,7 @@ describe('control room SPA (Playwright e2e)', () => {
       let page: Page | undefined;
 
       try {
-        const init = runInit(repo);
+        const init = runInit(freshHome());
         const store = StateStore.open(init.stateRoot);
         const questions = new QuestionService(store);
 
@@ -1306,7 +1318,7 @@ describe('control room SPA (Playwright e2e)', () => {
       const reply = 'TKT-1001 is in review; TKT-1002 is unassigned.';
 
       try {
-        runInit(repo);
+        runInit(freshHome());
         handle = await startDaemon({
           cwd: repo,
           port: 0,
@@ -1413,7 +1425,7 @@ describe('control room SPA (Playwright e2e)', () => {
       const reply = 'TKT-1001 is in review; TKT-1002 is unassigned.';
 
       try {
-        runInit(repo);
+        runInit(freshHome());
         handle = await startDaemon({
           cwd: repo,
           port: 0,
@@ -1514,7 +1526,7 @@ describe('control room SPA (Playwright e2e)', () => {
       let page: Page | undefined;
 
       try {
-        runInit(repo);
+        runInit(freshHome());
         handle = await startDaemon({
           cwd: repo,
           port: 0,
@@ -1567,7 +1579,7 @@ describe('control room SPA (Playwright e2e)', () => {
       let page: Page | undefined;
 
       try {
-        const init = runInit(repo);
+        const init = runInit(freshHome());
         const store = StateStore.open(init.stateRoot);
         const gates = new GateService(store);
         const bus = new Bus(store, init.stateRoot);
@@ -1766,7 +1778,7 @@ describe('control room — the Review tab across a sprint’s phases', () => {
       let page: Page | undefined;
 
       try {
-        const init = runInit(repo);
+        const init = runInit(freshHome());
         const store = StateStore.open(init.stateRoot);
 
         await store.putSprint({

@@ -9,6 +9,7 @@ import { StateStore } from '../store';
 import { OracleWriteRefusedError, oracleWrite, rippleWalk } from './index';
 
 let repo: string;
+let stateRoot: string;
 let store: StateStore;
 
 beforeEach(() => {
@@ -17,7 +18,9 @@ beforeEach(() => {
   Bun.spawnSync(['git', 'config', 'user.email', 'test@example.com'], { cwd: repo });
   Bun.spawnSync(['git', 'config', 'user.name', 'Test'], { cwd: repo });
   Bun.spawnSync(['git', 'commit', '--allow-empty', '-q', '-m', 'init'], { cwd: repo });
-  const init = runInit(repo);
+  // T111: a state home of its own, outside the repo.
+  const init = runInit(join(repo, 'home'));
+  stateRoot = init.stateRoot;
   store = StateStore.open(init.stateRoot);
 });
 
@@ -229,7 +232,7 @@ describe('oracleWrite — graph validation', () => {
       entry: makeEntry({ id: 'DEC-0050' }),
       body: 'x',
     });
-    const changelogPath = join(repo, '.agile', 'oracle', 'changelog.md');
+    const changelogPath = join(stateRoot, 'oracle', 'changelog.md');
     const text = await Bun.file(changelogPath).text();
     expect(text).toContain('DEC-0050');
   });

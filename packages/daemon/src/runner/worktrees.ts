@@ -127,9 +127,9 @@ export function ticketBranch(repoRoot: string, ticket: Ticket): string {
  * missing — document", per the ticket's Design note). DESIGN-GAP: neither
  * the design nor the ticket says how to resolve "the repo's default branch"
  * when there's no remote to ask — this reads it as whatever `repoRoot`
- * itself has checked out (the state worktree lives at `.agile/` on its own
- * `agile-state` branch and never touches `repoRoot`'s HEAD, so this is safe
- * to call at any point after `agile init`).
+ * itself has checked out (T111: state lives in the state home, outside the
+ * repo, so nothing here touches `repoRoot`'s HEAD — safe to call at any
+ * point after `agile init`).
  */
 export function ensureIntegrationBranch(repoRoot: string): void {
   if (branchExists(repoRoot, INTEGRATION_BRANCH)) return;

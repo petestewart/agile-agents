@@ -22,20 +22,20 @@ import { IllegalTransitionError, NotFoundError, StateStore } from './store';
 let repo: string;
 let stateRoot: string;
 
-function git(args: string[], cwd: string): string {
-  const result = Bun.spawnSync(['git', ...args], { cwd, stdout: 'pipe' });
-  return new TextDecoder().decode(result.stdout).trim();
+/**
+ * T111: the state home is a plain directory, not a git worktree, so the
+ * audit trail `git log` used to provide is `log/events.jsonl` alone. Every
+ * assertion that used to read a commit subject now reads the last event kind
+ * through this helper.
+ */
+function lastEventKind(): string | undefined {
+  return StateStore.open(stateRoot).listEvents().at(-1)?.kind;
 }
 
 beforeEach(() => {
+  // A temp *home* (`AGILE_HOME`-shaped), never a `.agile/` inside a repo.
   repo = mkdtempSync(join(tmpdir(), 'agile-store-'));
-  Bun.spawnSync(['git', 'init', '-q'], { cwd: repo });
-  Bun.spawnSync(['git', 'config', 'user.email', 'test@example.com'], { cwd: repo });
-  Bun.spawnSync(['git', 'config', 'user.name', 'Test'], { cwd: repo });
-  writeFileSync(join(repo, 'README.md'), '# fixture repo\n');
-  Bun.spawnSync(['git', 'add', '-A'], { cwd: repo });
-  Bun.spawnSync(['git', 'commit', '-q', '-m', 'initial commit'], { cwd: repo });
-  const init = runInit(repo);
+  const init = runInit(join(repo, 'home'));
   stateRoot = init.stateRoot;
 });
 
@@ -107,8 +107,7 @@ describe('Ticket get/list/put', () => {
     expect(events[0]?.kind).toBe('ticket_put');
     expect(events[0]?.ticket).toBe('TKT-0001');
     expect(events[0]?.agent).toBe('architect');
-    const subject = git(['log', '-1', '--format=%s'], stateRoot);
-    expect(subject).toBe('ticket_put');
+    expect(lastEventKind()).toBe('ticket_put');
   });
 });
 
@@ -121,18 +120,16 @@ describe('transitionTicket — illegal transitions', () => {
     );
   });
 
-  test('an illegal transition leaves the ticket, events, and commit log untouched', async () => {
+  test('an illegal transition leaves the ticket and the event log untouched', async () => {
     const store = StateStore.open(stateRoot);
     await store.putTicket(makeTicket('TKT-0001', { status: 'draft' }));
     const eventsBefore = store.listEvents().length;
-    const beforeLog = git(['log', '--format=%H'], stateRoot);
 
     await expect(store.transitionTicket('TKT-0001', 'done', { by: 'architect' })).rejects.toThrow();
 
     expect(store.getTicket('TKT-0001').status).toBe('draft');
     expect(store.getTicket('TKT-0001').history).toEqual([]);
     expect(store.listEvents()).toHaveLength(eventsBefore);
-    expect(git(['log', '--format=%H'], stateRoot)).toBe(beforeLog);
   });
 });
 
@@ -143,12 +140,11 @@ describe('transitionTicket — every legal edge (exhaustive coverage)', () => {
   >) {
     for (const to of tos) {
       const id = `TKT-${9000 + edgeCounter++}`;
-      test(`${from} -> ${to} produces exactly one event and one commit`, async () => {
+      test(`${from} -> ${to} produces exactly one event`, async () => {
         const store = StateStore.open(stateRoot);
         await store.putTicket(makeTicket(id, { status: from }));
 
         const eventsBefore = store.listEvents().length;
-        const commitsBefore = git(['rev-list', '--count', 'HEAD'], stateRoot);
 
         const updated = await store.transitionTicket(id, to, { by: 'em', reason: 'test' });
 
@@ -162,18 +158,14 @@ describe('transitionTicket — every legal edge (exhaustive coverage)', () => {
         expect(event?.ticket).toBe(id);
         expect(event?.data).toEqual({ from, to, reason: 'test' });
 
-        const commitsAfter = git(['rev-list', '--count', 'HEAD'], stateRoot);
-        expect(Number(commitsAfter)).toBe(Number(commitsBefore) + 1);
-
-        const subject = git(['log', '-1', '--format=%s'], stateRoot);
-        expect(subject).toBe('state_transition');
+        expect(lastEventKind()).toBe('state_transition');
       });
     }
   }
 });
 
 describe('transitionTicket — audit trail', () => {
-  test('git log --format=%s reproduces the event kind sequence for a run of transitions', async () => {
+  test('the event log reproduces the event kind sequence for a run of transitions', async () => {
     const store = StateStore.open(stateRoot);
     await store.putTicket(makeTicket('TKT-0001', { status: 'draft' }));
 
@@ -190,16 +182,13 @@ describe('transitionTicket — audit trail', () => {
       'state_transition',
     ]);
 
-    // Most recent 3 commits are exactly the 3 transitions, in order
-    // (newest first); the commit before that is the ticket_put, then
-    // agile init's bootstrap commit.
-    const subjects = git(['log', '--format=%s'], stateRoot).split('\n');
-    expect(subjects.slice(0, 3)).toEqual([
+    // The whole log, oldest first: the ticket_put, then the 3 transitions.
+    expect(store.listEvents().map((e) => e.kind)).toEqual([
+      'ticket_put',
       'state_transition',
       'state_transition',
       'state_transition',
     ]);
-    expect(subjects[3]).toBe('ticket_put');
   });
 });
 
@@ -257,14 +246,16 @@ describe('property test — random legal transition sequences', () => {
       expect(ticketEvents).toHaveLength(path.length);
       expect(ticketEvents.map((e) => e.data.to)).toEqual(path);
 
-      // git log --format=%s, restricted to this ticket's own N most
-      // recent state_transition commits (there is exactly one commit per
-      // transition and each commit's subject is the event kind), matches
-      // the walk length — folds the audit-trail property into this loop
-      // too (review nit #12), not only the separate 3-step example test.
-      const recentSubjects = git(['log', `-${path.length}`, '--format=%s'], stateRoot).split('\n');
+      // The N most recent events are exactly this ticket's N transitions —
+      // folds the audit-trail property into this loop too (review nit #12),
+      // not only the separate 3-step example test.
       if (path.length > 0) {
-        expect(recentSubjects).toEqual(path.map(() => 'state_transition'));
+        expect(
+          store
+            .listEvents()
+            .slice(-path.length)
+            .map((e) => e.kind),
+        ).toEqual(path.map(() => 'state_transition'));
       }
     }
     // Review B3: timeout set well clear (>=3x) of the measured wall time —
@@ -313,7 +304,7 @@ describe('atomic write on failed validation', () => {
 });
 
 describe('Board: appendStanza', () => {
-  test('appends a validated stanza and commits it (message == event kind)', async () => {
+  test('appends a validated stanza and mints one stanza_appended event', async () => {
     const store = StateStore.open(stateRoot);
     const stanza = await store.appendStanza({
       ts: '2026-09-08T00:00:00Z',
@@ -323,8 +314,7 @@ describe('Board: appendStanza', () => {
       summary: 'started work',
     });
     expect(store.listStanzas('TKT-0001')).toEqual([stanza]);
-    const subject = git(['log', '-1', '--format=%s'], stateRoot);
-    expect(subject).toBe('stanza_appended');
+    expect(lastEventKind()).toBe('stanza_appended');
 
     const events = store.listEvents();
     expect(events).toHaveLength(1);
@@ -386,8 +376,47 @@ describe('Board: appendStanza', () => {
   });
 });
 
+describe('Repo registry (T111): repos.yaml in the state home', () => {
+  test('an untouched home lists no repos', () => {
+    expect(StateStore.open(stateRoot).getRepos()).toEqual({});
+  });
+
+  test('addRepo defaults protected_branches to main + master (D8) and mints repos_put', async () => {
+    const store = StateStore.open(stateRoot);
+    await store.addRepo('ledger-lite', { path: '/tmp/ledger-lite' });
+    expect(store.getRepos()).toEqual({
+      'ledger-lite': { path: '/tmp/ledger-lite', protected_branches: ['main', 'master'] },
+    });
+    expect(lastEventKind()).toBe('repos_put');
+  });
+
+  test('addRepo is additive across repos and replaces an entry re-added by the same name', async () => {
+    const store = StateStore.open(stateRoot);
+    await store.addRepo('a', { path: '/tmp/a' });
+    await store.addRepo('b', { path: '/tmp/b', target_branch: 'integration', vendor: 'claude' });
+    await store.addRepo('a', { path: '/tmp/a', protected_branches: ['trunk'] });
+
+    const repos = store.getRepos();
+    expect(Object.keys(repos).sort()).toEqual(['a', 'b']);
+    expect(repos.a?.protected_branches).toEqual(['trunk']);
+    expect(repos.b?.target_branch).toBe('integration');
+    expect(repos.b?.vendor).toBe('claude');
+  });
+
+  test('an unknown field is rejected (.strict) and nothing is written', async () => {
+    const store = StateStore.open(stateRoot);
+    await expect(store.addRepo('a', { path: '/tmp/a', nope: 1 })).rejects.toThrow(/repo entry/);
+    expect(store.getRepos()).toEqual({});
+  });
+
+  test('survives a restart — a fresh store over the same home reads it back', async () => {
+    await StateStore.open(stateRoot).addRepo('a', { path: '/tmp/a' });
+    expect(StateStore.open(stateRoot).getRepos().a?.path).toBe('/tmp/a');
+  });
+});
+
 describe('Ledger: appendLedgerLine', () => {
-  test('appends a validated ledger line and commits it (message == event kind)', async () => {
+  test('appends a validated ledger line and mints one ledger_appended event', async () => {
     const store = StateStore.open(stateRoot);
     const line = await store.appendLedgerLine('S-07', {
       ts: '2026-09-08T00:00:00Z',
@@ -401,8 +430,7 @@ describe('Ledger: appendLedgerLine', () => {
       kind: 'engineer',
     });
     expect(store.listLedger('S-07')).toEqual([line]);
-    const subject = git(['log', '-1', '--format=%s'], stateRoot);
-    expect(subject).toBe('ledger_appended');
+    expect(lastEventKind()).toBe('ledger_appended');
 
     const events = store.listEvents();
     expect(events).toHaveLength(1);
@@ -483,8 +511,7 @@ describe('Oracle index maintenance', () => {
     const events = store.listEvents();
     expect(events).toHaveLength(1);
     expect(events[0]?.kind).toBe('oracle_put');
-    const subject = git(['log', '-1', '--format=%s'], stateRoot);
-    expect(subject).toBe('oracle_put');
+    expect(lastEventKind()).toBe('oracle_put');
   });
 
   test('a superseded write drops the entry from the index but keeps the file', async () => {
@@ -594,14 +621,14 @@ describe('Halt: putHalt / getHalt / listHalts / deleteHalt', () => {
     };
   }
 
-  test('putHalt creates the file, mints halt_created, one commit', async () => {
+  test('putHalt creates the file and mints halt_created', async () => {
     const store = StateStore.open(stateRoot);
     await store.putHalt(makeHalt() as never);
     expect(store.getHalt('H-12' as never).quorum).toBe('pending');
     const events = store.listEvents();
     expect(events).toHaveLength(1);
     expect(events[0]?.kind).toBe('halt_created');
-    expect(git(['log', '-1', '--format=%s'], stateRoot)).toBe('halt_created');
+    expect(lastEventKind()).toBe('halt_created');
   });
 
   test('listHalts returns every halt file', async () => {
@@ -1359,10 +1386,9 @@ describe('Generic entity trio: putEntity / getEntity / deleteEntity', () => {
     expect(() => store.getEntity(relPath, validateWidget)).toThrow(NotFoundError);
   });
 
-  test('putEntities writes every file, mints exactly one caller-supplied event and one commit', async () => {
+  test('putEntities writes every file and mints exactly one caller-supplied event', async () => {
     const store = StateStore.open(stateRoot);
     const before = store.listEvents().length;
-    const commitsBefore = git(['log', '--format=%s'], stateRoot).split('\n').length;
     await store.putEntities(
       [
         { relPath: 'bus/inbox/em/w1.yaml', validator: validateWidget, data: { id: 'w1', n: 1 } },
@@ -1374,9 +1400,6 @@ describe('Generic entity trio: putEntity / getEntity / deleteEntity', () => {
     expect(store.getEntity('bus/inbox/qa/w1.yaml', validateWidget)).toEqual({ id: 'w1', n: 1 });
     expect(store.listEvents().length - before).toBe(1);
     expect(store.listEvents().at(-1)?.kind).toBe('message');
-    const subjects = git(['log', '--format=%s'], stateRoot).split('\n');
-    expect(subjects.length - commitsBefore).toBe(1);
-    expect(subjects[0]).toBe('message');
   });
 
   test('putEntities validates everything before writing anything', async () => {
@@ -1464,7 +1487,7 @@ describe('Generic entity trio: putEntity / getEntity / deleteEntity', () => {
 });
 
 describe('appendEvent — public escape hatch for message/hook_decision events', () => {
-  test('appends and commits a message event with message == kind', async () => {
+  test('appends a message event', async () => {
     const store = StateStore.open(stateRoot);
     const event = await store.appendEvent({
       ts: '2026-09-08T00:00:00Z',
@@ -1472,7 +1495,6 @@ describe('appendEvent — public escape hatch for message/hook_decision events',
       data: { from: 'eng-1', to: ['em'] },
     });
     expect(store.listEvents()).toEqual([event]);
-    expect(git(['log', '-1', '--format=%s'], stateRoot)).toBe('message');
   });
 
   test('appends a hook_decision event', async () => {
@@ -1524,50 +1546,18 @@ describe('unknown-key rejection round trip', () => {
   });
 });
 
-describe('deferred-commit batching (T009 review round, hot-path decision)', () => {
-  test('several deferred appendEvent calls land in exactly one commit, only once flushed', async () => {
+describe('appendEvent {commit: "deferred"} (T111: accepted and ignored — nothing is batched any more)', () => {
+  test('deferred appends are on disk immediately', async () => {
     const store = StateStore.open(stateRoot);
-    const before = git(['rev-list', '--count', 'HEAD'], stateRoot);
-
     for (let i = 0; i < 5; i++) {
       await store.appendEvent(
         { ts: new Date().toISOString(), kind: 'hook_decision', data: { i } },
         { commit: 'deferred' },
       );
     }
-    // Not committed yet — the whole point of deferring.
-    expect(git(['rev-list', '--count', 'HEAD'], stateRoot)).toBe(before);
-    // But already durable on disk (readable) before any commit happens.
     expect(store.listEvents().filter((e) => e.kind === 'hook_decision')).toHaveLength(5);
-
     await store.flush();
-    const after = git(['rev-list', '--count', 'HEAD'], stateRoot);
-    expect(Number(after) - Number(before)).toBe(1);
-    // A second flush with nothing queued is a true no-op (no empty commit).
-    await store.flush();
-    expect(git(['rev-list', '--count', 'HEAD'], stateRoot)).toBe(after);
-  });
-
-  test('a regular mutation flushes pending deferred paths first, as a separate preceding commit', async () => {
-    const store = StateStore.open(stateRoot);
-    const beforeSha = git(['rev-parse', 'HEAD'], stateRoot);
-    const before = git(['rev-list', '--count', 'HEAD'], stateRoot);
-
-    await store.appendEvent(
-      { ts: new Date().toISOString(), kind: 'hook_decision', data: {} },
-      { commit: 'deferred' },
-    );
-    expect(git(['rev-list', '--count', 'HEAD'], stateRoot)).toBe(before);
-
-    // A regular (non-deferred) mutation must not silently swallow the
-    // deferred write into its own commit message.
-    await store.putTicket(makeTicket('TKT-0001'));
-    const after = git(['rev-list', '--count', 'HEAD'], stateRoot);
-    expect(Number(after) - Number(before)).toBe(2);
-
-    const log = git(['log', '--format=%s', `${beforeSha}..HEAD`], stateRoot);
-    const messages = log.split('\n').filter(Boolean).reverse();
-    expect(messages).toEqual(['deferred_batch', 'ticket_put']);
+    expect(store.listEvents().filter((e) => e.kind === 'hook_decision')).toHaveLength(5);
   });
 
   describe('StateStore.heartbeat', () => {
@@ -1599,15 +1589,13 @@ describe('deferred-commit batching (T009 review round, hot-path decision)', () =
       await expect(store.heartbeat('eng-1' as never)).rejects.toThrow(/not found/i);
     });
 
-    test('bumps last_seen (deferred, not committed until flush) on an existing record', async () => {
+    test('bumps last_seen on an existing record', async () => {
       const store = StateStore.open(stateRoot);
       await registerAgent(store);
-      const before = git(['rev-list', '--count', 'HEAD'], stateRoot);
       const record = await store.heartbeat('eng-1' as never);
       expect(record.last_seen).not.toBe(new Date(0).toISOString());
-      expect(git(['rev-list', '--count', 'HEAD'], stateRoot)).toBe(before); // deferred, not committed
       await store.flush();
-      expect(Number(git(['rev-list', '--count', 'HEAD'], stateRoot)) - Number(before)).toBe(1);
+      expect(store.getAgent('eng-1' as never).last_seen).toBe(record.last_seen);
     });
 
     // The exact regression QA round 3 found: `role`/`worktree`/`session_id`
@@ -1669,60 +1657,17 @@ describe('deferred-commit batching (T009 review round, hot-path decision)', () =
   });
 });
 
-describe('StateStore.close (T012 QA round — deferred-flush-after-teardown race)', () => {
-  test('close() cancels a pending deferred-flush timer outright', async () => {
+describe('StateStore.close / flush (T111: nothing is buffered)', () => {
+  test('close() then flush() is safe even after the home is removed', async () => {
     const store = StateStore.open(stateRoot);
-    await store.appendEvent(
-      { ts: new Date().toISOString(), kind: 'hook_decision', data: {} },
-      { commit: 'deferred' },
-    );
-    const before = git(['rev-list', '--count', 'HEAD'], stateRoot);
-
-    store.close();
-    // Removing the worktree simulates a test's own teardown racing the
-    // timer this reproduces the QA-reported failure without waiting the
-    // real 5s DEFERRED_FLUSH_MS: if `close()` didn't cancel the timer, the
-    // commit attempt below would throw "not a git repository" once it
-    // eventually fired.
-    rmSync(stateRoot, { recursive: true, force: true });
-
-    // Nothing to assert via git any more (the worktree is gone) — the
-    // absence of an unhandled rejection/exception *is* the assertion here;
-    // bun:test fails the run on an unhandled error between tests, which is
-    // exactly the failure mode this closes off. Re-create a harmless no-op
-    // check so the test has an explicit assertion too.
-    expect(before.length).toBeGreaterThan(0);
-  });
-
-  test('scheduleDeferredFlush is a no-op after close() — a later deferred write never re-arms the timer', async () => {
-    const store = StateStore.open(stateRoot);
-    store.close();
-    // A deferred write after close() still lands on disk (appendEvent's
-    // own contract) but must not arm a new flush timer that could outlive
-    // whatever tore this store down.
     await store.appendEvent(
       { ts: new Date().toISOString(), kind: 'hook_decision', data: {} },
       { commit: 'deferred' },
     );
     expect(store.listEvents().some((e) => e.kind === 'hook_decision')).toBe(true);
-    // No thrown/unhandled error even once real time would have let a timer
-    // fire — proven by the process not crashing between tests; nothing
-    // further to poll since `close()` guarantees no timer was armed at all.
-  });
-});
 
-describe('commitPaths guards against a missing worktree (T012 QA round)', () => {
-  test('a deferred flush against an already-removed stateRoot no-ops instead of throwing', async () => {
-    const store = StateStore.open(stateRoot);
-    await store.appendEvent(
-      { ts: new Date().toISOString(), kind: 'hook_decision', data: {} },
-      { commit: 'deferred' },
-    );
+    store.close();
     rmSync(stateRoot, { recursive: true, force: true });
-    // Directly exercises the exact call shape `flushDeferredNow` makes
-    // (`commitPaths` is not itself exported for a unit-level check here,
-    // but `flush()` is StateStore's own public surface over it) — must not
-    // throw even though `stateRoot` no longer exists.
     await expect(store.flush()).resolves.toBeUndefined();
   });
 });

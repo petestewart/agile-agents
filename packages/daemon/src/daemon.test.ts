@@ -10,16 +10,25 @@ import type { JsonRpcResponse } from './rpc';
 import { StateStore } from './store';
 
 let repo: string;
+let home: string;
+let previousHome: string | undefined;
 let handle: DaemonHandle | undefined;
 
 beforeEach(() => {
   repo = mkdtempSync(join(tmpdir(), 'agile-daemon-'));
   Bun.spawnSync(['git', 'init', '-q'], { cwd: repo });
+  // T111: the state home is `$AGILE_HOME`, outside the repo.
+  home = mkdtempSync(join(tmpdir(), 'agile-daemon-home-'));
+  previousHome = process.env.AGILE_HOME;
+  process.env.AGILE_HOME = home;
 });
 
 afterEach(async () => {
   await handle?.stop();
+  if (previousHome === undefined) Reflect.deleteProperty(process.env, 'AGILE_HOME');
+  else process.env.AGILE_HOME = previousHome;
   rmSync(repo, { recursive: true, force: true });
+  rmSync(home, { recursive: true, force: true });
 });
 
 describe('startDaemon', () => {
@@ -113,9 +122,9 @@ function call(socketPath: string, request: Record<string, unknown>): Promise<Jso
 }
 
 describe('state.* RPC methods (T005)', () => {
-  test('state.ticket_get/state.ticket_list are real once .agile/ exists; other state.* stay stubbed', async () => {
-    runInit(repo);
-    const store = StateStore.open(join(repo, '.agile'));
+  test('state.ticket_get/state.ticket_list are real once the state home exists; other state.* stay stubbed', async () => {
+    runInit(home);
+    const store = StateStore.open(home);
     await store.putTicket({
       id: 'TKT-0001',
       title: 'Test',
@@ -160,7 +169,7 @@ describe('state.* RPC methods (T005)', () => {
 
 describe('tool.* RPC methods (T011)', () => {
   test('a tool call resolves the live sprint and writes ledger/<sprint>.jsonl, not ledger/nosprint.jsonl', async () => {
-    const init = runInit(repo);
+    const init = runInit(home);
     const store = StateStore.open(init.stateRoot);
     await store.putTicket({
       id: 'TKT-0001',
@@ -220,8 +229,8 @@ describe('handle.advancePipeline (the one pipeline list)', () => {
     // Eleventh live run (2026-09-10): `agile run --live` re-listed the glue
     // by hand and dropped `advanceReviewerEscalations`/`releaseStaleTicketSessions`;
     // with `ceremonyTickMs: 0` the daemon's own list never ran either.
-    runInit(repo);
-    const store = StateStore.open(join(repo, '.agile'));
+    runInit(home);
+    const store = StateStore.open(home);
     await store.putTicket({
       id: 'TKT-0001',
       title: 'Test',
@@ -269,7 +278,7 @@ describe('handle.advancePipeline (the one pipeline list)', () => {
    * gates — so this asserts the split holds even with the resident dead.
    */
   test('T041: killing the resident EM session does not stall an em-owned gate', async () => {
-    runInit(repo);
+    runInit(home);
     handle = await startDaemon({
       cwd: repo,
       port: 0,
@@ -297,7 +306,7 @@ describe('handle.advancePipeline (the one pipeline list)', () => {
   });
 
   test('T041: the resident EM never spawns a vendor process until someone chats', async () => {
-    runInit(repo);
+    runInit(home);
     handle = await startDaemon({
       cwd: repo,
       port: 0,

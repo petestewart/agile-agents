@@ -3,7 +3,7 @@
  * room v2" → "Plan screen = the documents + the EM chat", and the mockup's
  * Plan tab). One service behind the `/api/plan/*` routes, so every pane is
  * backed by daemon data and every edit goes through the validating store
- * (and therefore `log/events.jsonl` + the `agile-state` commit) rather than
+ * (and therefore `log/events.jsonl`) rather than
  * through the browser writing files.
  *
  * Panes → data:

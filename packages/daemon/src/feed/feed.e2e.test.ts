@@ -187,6 +187,18 @@ function initRepo(): string {
   return repo;
 }
 
+/**
+ * T111: the daemon's state lives in `$AGILE_HOME`, never inside the repo.
+ * Each test gets a fresh temp home and points `AGILE_HOME` at it so the
+ * daemon it starts (via `discoverConfig`) opens the same home this test
+ * seeded.
+ */
+function freshHome(): string {
+  const home = mkdtempSync(join(tmpdir(), 'agile-e2e-home-'));
+  process.env.AGILE_HOME = home;
+  return home;
+}
+
 describe('feed page (Playwright e2e)', () => {
   browserTest(
     'shows a live event within 1s and Approve resolves a real hil_request on disk',
@@ -197,7 +209,7 @@ describe('feed page (Playwright e2e)', () => {
       let browser: Browser | undefined;
 
       try {
-        const init = runInit(repo);
+        const init = runInit(freshHome());
         const store = StateStore.open(init.stateRoot);
         const gates = new GateService(store);
 
@@ -276,7 +288,7 @@ describe('feed page (Playwright e2e)', () => {
       let browser: Browser | undefined;
 
       try {
-        const init = runInit(repo);
+        const init = runInit(freshHome());
         const store = StateStore.open(init.stateRoot);
 
         handle = await startDaemon({

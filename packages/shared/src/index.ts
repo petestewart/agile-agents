@@ -28,3 +28,4 @@ export * from './question';
 export * from './review';
 export * from './merge';
 export * from './qa';
+export * from './repos';

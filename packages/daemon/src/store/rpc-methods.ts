@@ -14,6 +14,16 @@ import type { StateStore } from './store';
 
 export function buildStateRpcMethods(store: StateStore): Record<string, RpcMethodHandler> {
   return {
+    // T111 — the repo registry (`repos.yaml` in the state home). One daemon,
+    // many repos (D9); `agile repo add|list` is the only client today.
+    'state.repo_list': () => store.getRepos(),
+    'state.repo_add': async (params) => {
+      const { name, ...entry } = params as { name?: string } & Record<string, unknown>;
+      if (typeof name !== 'string' || name.length === 0) {
+        throw new Error('state.repo_add: name is required');
+      }
+      return store.addRepo(name, entry);
+    },
     'state.ticket_get': (params) => {
       const { id } = params as { id: string };
       return store.getTicket(id as TicketId);
