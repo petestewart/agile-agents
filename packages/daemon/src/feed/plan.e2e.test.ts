@@ -91,10 +91,6 @@ function seedTicket(id: TicketId, title: string, status: Ticket['status']): Tick
   };
 }
 
-function git(args: string[], cwd: string): string {
-  return new TextDecoder().decode(Bun.spawnSync(['git', ...args], { cwd }).stdout).trim();
-}
-
 /**
  * The offline stand-in for a real architect planning turn: it calls exactly
  * the verbs `renderPlanningPrompt` asks the architect for — the same
@@ -324,7 +320,7 @@ function freshHome(): string {
 
 describe('Plan screen (Playwright e2e)', () => {
   browserTest(
-    'every pane renders daemon data, and every edit lands in events.jsonl and on agile-state',
+    'every pane renders daemon data, and every edit lands in events.jsonl',
     async () => {
       const repo = initRepo();
       let handle: DaemonHandle | undefined;
@@ -483,13 +479,14 @@ describe('Plan screen (Playwright e2e)', () => {
           new Set(['TKT-9001', 'TKT-9002'] as TicketId[]),
         );
 
-        // Every one of those writes is a commit on the agile-state worktree.
+        // T111: every one of those writes is a line in the home's event log
+        // (the audit trail the `agile-state` commit used to be).
         await store.flush();
-        const subjects = git(['log', '--format=%s'], init.stateRoot).split('\n');
-        expect(subjects).toContain('entity_put');
-        expect(subjects).toContain('oracle_put');
-        expect(subjects).toContain('kb_put');
-        expect(subjects).toContain('ticket_put');
+        const kinds = store.listEvents().map((e) => e.kind);
+        expect(kinds).toContain('entity_put');
+        expect(kinds).toContain('oracle_put');
+        expect(kinds).toContain('kb_put');
+        expect(kinds).toContain('ticket_put');
       } finally {
         await teardown([openedPage]);
         await handle?.stop();
