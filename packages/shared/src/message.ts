@@ -83,6 +83,7 @@ export const HIL_KINDS = ['approve_decision', 'steer', 'demo', 'unblock'] as con
 export const HilKindSchema = z.enum(HIL_KINDS);
 export type HilKind = z.infer<typeof HilKindSchema>;
 
+/** @deprecated — removed by T122/T125 (PLAN.md §5: streams replace this entity). */
 export const MessageSchema = z
   .object({
     id: UlidSchema,

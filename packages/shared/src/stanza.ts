@@ -52,6 +52,7 @@ export type StanzaHandoff = z.infer<typeof StanzaHandoffSchema>;
 // `StanzaSchema` directly (T005's store, an MCP tool definition) still gets
 // the check — a plain `.parse()` used to accept `kind: 'discovery'` with no
 // `discovery` block.
+/** @deprecated — removed by T122/T125 (PLAN.md §5: streams replace this entity). */
 export const StanzaSchema = z
   .object({
     ts: z.string().min(1),
