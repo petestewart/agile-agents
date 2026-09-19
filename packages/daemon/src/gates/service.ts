@@ -139,6 +139,14 @@ export interface GateRequestContext {
   hilKind: HilKind;
   /** Who to attribute the resulting bus message to. Defaults to `'daemon'`. */
   from?: AgentId;
+  /**
+   * T048: the agent whose blocked call raised this gate (the hook caller, the
+   * ACP session), persisted as `HilRequest.requested_by` and used by
+   * `waitingAgent` to deliver the decision back to it. Leave unset for a
+   * gate the daemon raises on nobody's behalf (`sprint_review`,
+   * `promote_to_main`) — delivery then falls back to the ticket's assignee.
+   */
+  requestedBy?: AgentId;
   /** What was asked — stored on the record, shown in the notice, handed to the delegate. */
   summary?: string;
 }
@@ -263,6 +271,7 @@ export class GateService {
       requested_at: now.toISOString(),
       ...(breakerReason !== undefined ? { reason: breakerReason } : {}),
       ...(ctx.summary !== undefined ? { summary: ctx.summary } : {}),
+      ...(ctx.requestedBy !== undefined ? { requested_by: ctx.requestedBy } : {}),
     };
 
     let record: HilRequest;
@@ -543,6 +552,23 @@ export class GateService {
     if (waiting !== undefined && waiting !== 'em') recipients.unshift(waiting);
 
     const body = `${headline} — ${by} wrote: ${req.note}`.slice(0, MESSAGE_BODY_MAX_CHARS);
+    /**
+     * T048: the raising agent gets a message written *to* it — "your gate was
+     * decided, retry your call" — not the EM's third-person report. It
+     * deliberately does not repeat `req.summary` (the whole blocked command,
+     * already body-capped once on the record): the agent knows what it just
+     * tried, and quoting it back inside another 800-char body was the other
+     * half of the first live run's confusion.
+     */
+    const decided =
+      req.decision === 'approve' ? 'approved' : req.decision === 'deny' ? 'denied' : undefined;
+    const waitingBody =
+      decided === undefined
+        ? body
+        : `your gate "${req.gate}" was ${decided} by ${by} — ${by} wrote: ${req.note}. Retry the call it blocked.`.slice(
+            0,
+            MESSAGE_BODY_MAX_CHARS,
+          );
     // `by` is a free string on the wire (`--by pete`); only use it as the
     // message's `from` when it is actually a valid agent id, else attribute
     // the note to `human` (the card it was typed on).
@@ -557,7 +583,7 @@ export class GateService {
         kind: 'hil_response',
         priority: 'normal',
         ...(req.ticket !== undefined ? { ticket: req.ticket } : {}),
-        body,
+        body: to === 'em' ? body : waitingBody,
         refs: [hilPath(req.id)],
         requires_ack: false,
       };
@@ -566,8 +592,19 @@ export class GateService {
     }
   }
 
-  /** The agent waiting on this gate: the assignee of the request's ticket (the hook that raised an `unblock` runs in that agent's worktree). `undefined` for a ticketless or unassigned request. */
+  /**
+   * The agent waiting on this gate. `requested_by` (T048) when the raiser
+   * recorded itself — the hook caller or the ACP session whose call is parked
+   * on this decision. Only when it is absent does this fall back to the
+   * ticket's assignee, which is what this used to do unconditionally: a QA or
+   * reviewer hook raises gates on a ticket assigned to the *engineer*, so
+   * qa-2003's approved `unblock` was delivered into eng-2003's inbox and the
+   * engineer refused a command outside its own worktree (first live run of
+   * the control-room branch, 2026-09-18). `undefined` for a ticketless
+   * request with no `requested_by`.
+   */
   private waitingAgent(req: HilRequest): AgentId | undefined {
+    if (req.requested_by !== undefined) return req.requested_by;
     if (req.ticket === undefined) return undefined;
     let assignee: string | undefined;
     try {

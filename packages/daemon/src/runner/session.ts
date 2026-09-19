@@ -643,6 +643,11 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
                 ticket: input.ticket,
                 hilKind: input.hilKind,
                 from: input.agent,
+                // T048: this session's own agent id — the ACP permission
+                // request is parked on the gate, so the decision must come
+                // back here and not to the ticket's assignee (a reviewer or
+                // QA session works a ticket it does not own).
+                requestedBy: input.agent,
                 summary: input.summary,
               })
               .then((req) => ({ id: req.id })),
@@ -864,12 +869,19 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
             // but the architect session itself stays live (it can still
             // answer non-plan tool calls normally; only this one plan
             // request was denied).
+            //
+            // T048: `from: 'daemon'`, for the same reason `finish()`'s notice
+            // is (T044 QA round 1, finding 4) — a daemon-side gate failure is
+            // the daemon reporting, not the agent escalating, and every
+            // agent-authored `escalate` in em's inbox is read by
+            // `pipeline-glue.ts`'s `advanceEngineerEscalations` as a question
+            // to open. These are the only two notices this module sends.
             track(
               bus
                 .send({
                   id: ulid(),
                   ts: now().toISOString(),
-                  from: agentId,
+                  from: 'daemon',
                   to: ['em'],
                   kind: 'escalate',
                   priority: 'urgent',

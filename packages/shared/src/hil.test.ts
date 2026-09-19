@@ -106,6 +106,20 @@ describe('HilRequest.note', () => {
     ).toThrow(/cap/);
     expect(() => validateHilRequest({ ...baseRequest(), notes: 'typo' })).toThrow();
   });
+
+  // T048: the raising agent, so `gates/service.ts` delivers the decision back
+  // to it instead of to the ticket's assignee. Optional (older records and
+  // daemon-raised gates carry none) and still `.strict()`.
+  test('accepts an optional requested_by agent id, rejects a malformed one, stays strict', () => {
+    expect(validateHilRequest({ ...baseRequest(), requested_by: 'qa-2003' }).requested_by).toBe(
+      'qa-2003',
+    );
+    expect(validateHilRequest(baseRequest()).requested_by).toBeUndefined();
+    expect(() => validateHilRequest({ ...baseRequest(), requested_by: 'Not An Agent' })).toThrow(
+      /requested_by/,
+    );
+    expect(() => validateHilRequest({ ...baseRequest(), requested_bye: 'qa-2003' })).toThrow();
+  });
 });
 
 describe('validateBreakerState', () => {
