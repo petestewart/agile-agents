@@ -1,17 +1,20 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Ticket } from '@agile-agents/shared';
 import { validateTicket } from '@agile-agents/shared';
 import {
   INTEGRATION_BRANCH,
+  WorktreeRefusedError,
+  createWorktree,
   ensureIntegrationBranch,
   ensureQaClone,
   ensureTicketWorktree,
   slugify,
   ticketBranch,
   ticketBranchName,
+  worktreePathFor,
 } from './worktrees';
 
 let repo: string;
@@ -168,5 +171,83 @@ describe('T034: git spawns in this module are sandboxed, never the real $HOME', 
     expect(existsSync(join(repo, '.agile-daemon-cache', 'git', 'home'))).toBe(true);
     expect(existsSync(join(worktree.path, '.agile-daemon-cache'))).toBe(false);
     expect(existsSync(join(qa.path, '.agile-daemon-cache'))).toBe(false);
+  });
+});
+
+describe('T113: hardened worktree creation', () => {
+  const name = { id: 'str-7', slug: 'hardened creation' };
+
+  test('creates <repo>/.worktrees/<id>-<slug> on a freshly claimed branch', async () => {
+    const result = await createWorktree(repo, name);
+    expect(result.path).toBe(join(repo, '.worktrees', 'str-7-hardened-creation'));
+    expect(result.branch).toBe('str-7-hardened-creation');
+    expect(result.head).toBe(git(['rev-parse', 'HEAD']));
+    expect(existsSync(join(result.path, 'README.md'))).toBe(true);
+    expect(git(['rev-parse', '--abbrev-ref', 'HEAD'], result.path)).toBe(result.branch);
+    expect(worktreePathFor(repo, name)).toBe(result.path);
+  });
+
+  test('ensures .worktrees/ is in the repo .gitignore, appending once', async () => {
+    writeFileSync(join(repo, '.gitignore'), 'node_modules\n');
+    await createWorktree(repo, name);
+    expect(readFileSync(join(repo, '.gitignore'), 'utf8')).toBe('node_modules\n.worktrees/\n');
+    await createWorktree(repo, { id: 'str-8', slug: 'second' });
+    expect(readFileSync(join(repo, '.gitignore'), 'utf8')).toBe('node_modules\n.worktrees/\n');
+  });
+
+  test('two concurrent creates for the same id: exactly one succeeds', async () => {
+    const results = await Promise.allSettled([
+      createWorktree(repo, name),
+      createWorktree(repo, name),
+    ]);
+    const fulfilled = results.filter((r) => r.status === 'fulfilled');
+    const rejected = results.filter((r) => r.status === 'rejected');
+    expect(fulfilled.length).toBe(1);
+    expect(rejected.length).toBe(1);
+    const error = (rejected[0] as PromiseRejectedResult).reason as WorktreeRefusedError;
+    expect(error).toBeInstanceOf(WorktreeRefusedError);
+    expect(['branch-exists', 'branch-claim-lost', 'worktree-exists']).toContain(error.reason);
+    expect(error.message).toContain('str-7-hardened-creation');
+  });
+
+  test('refuses a repo with a .gitattributes filter driver, with a reason', async () => {
+    writeFileSync(join(repo, '.gitattributes'), '# lfs\n*.bin filter=lfs diff=lfs -text\n');
+    const error = (await createWorktree(repo, name).catch((e) => e)) as WorktreeRefusedError;
+    expect(error).toBeInstanceOf(WorktreeRefusedError);
+    expect(error.reason).toBe('filter-driver');
+    expect(error.message).toContain('filter=lfs');
+    expect(existsSync(join(repo, '.worktrees', 'str-7-hardened-creation'))).toBe(false);
+  });
+
+  test('refuses a repo with a filter.* git config entry', async () => {
+    git(['config', 'filter.lfs.smudge', 'git-lfs smudge -- %f']);
+    const error = (await createWorktree(repo, name).catch((e) => e)) as WorktreeRefusedError;
+    expect(error.reason).toBe('filter-driver');
+    expect(error.message).toContain('filter.lfs.smudge');
+  });
+
+  test('refuses when the branch already exists locally', async () => {
+    git(['branch', 'str-7-hardened-creation']);
+    const error = (await createWorktree(repo, name).catch((e) => e)) as WorktreeRefusedError;
+    expect(error.reason).toBe('branch-exists');
+    expect(error.message).toContain('refs/heads/str-7-hardened-creation');
+  });
+
+  test('refuses when the branch exists only as a remote-tracking ref', async () => {
+    git(['update-ref', 'refs/remotes/origin/str-7-hardened-creation', git(['rev-parse', 'HEAD'])]);
+    const error = (await createWorktree(repo, name).catch((e) => e)) as WorktreeRefusedError;
+    expect(error.reason).toBe('branch-exists');
+    expect(error.message).toContain('refs/remotes/origin/str-7-hardened-creation');
+  });
+
+  test('repo hooks do not run during the checkout', async () => {
+    const marker = join(repo, 'hook-ran.txt');
+    for (const hook of ['pre-checkout', 'post-checkout']) {
+      const file = join(repo, '.git', 'hooks', hook);
+      writeFileSync(file, `#!/bin/sh\necho ${hook} >> ${marker}\n`, { mode: 0o755 });
+    }
+    const result = await createWorktree(repo, name);
+    expect(existsSync(result.path)).toBe(true);
+    expect(existsSync(marker)).toBe(false);
   });
 });
