@@ -107,12 +107,12 @@ Build order: Phase 0 → 1 → 2 → 3 → 4 → 5 → 6. Within a phase, ticket
 
 ### Ticket: T110 Stream and Thread schemas
 - **Priority:** P0
-- **Status:** In Progress
+- **Status:** Done
 - **Owner:** opus:worker-T110
 - **Scope:** `packages/shared/src/stream.ts`: `Stream` = `{ id, title, goal, parent?, repo?, branch?, worktree?, target_branch?, created_at, agent: { status: 'idle'|'working'|'blocked'|'question'|'done', progress?, findings?, proposed_next?, updated_at }, human: { status: 'open'|'waiting_on_you'|'landed'|'closed', decision?, answered_at?, note? }, sessions: SessionRef[] }`. Two sub-objects, `agent` and `human`, are the two-writer split (D11): the store rejects an agent principal writing `human.*` and a human principal writing `agent.*`. `Thread entry` = `{ ts, by: 'human'|'agent:<id>'|'daemon', kind: 'line'|'question'|'answer'|'event'|'finding'|'proposal', body (capped), ref? }`. `SessionRef` = `{ id, vendor, model, role: 'worker'|'reviewer', status, worktree? }`. Remove `Ticket`, `Sprint`, `Stanza`, `Message`, `Halt`, `Quota`, `Review`, `Qa`, `Oracle`, `Kb` schemas in the same ticket only if nothing still imports them; otherwise mark `@deprecated` and delete in T125.
 - **Acceptance Criteria:** Unit tests for the principal check on both directions; nesting depth unlimited but a cycle is rejected; `.strict()` on all.
 - **Validation Steps:** `bun test packages/shared`.
-- **Notes:** Numbering stays ULID-based (`ids.ts`).
+- **Notes:** Numbering stays ULID-based (`ids.ts`). Branch `T110-stream-and-thread-schemas`. All ten old schemas are still imported by daemon/ui, so they carry `@deprecated` and are deleted in T122. Review (sonnet) round 1 FAIL: `agent.findings` was a string; fixed to `StreamFinding[]` (`{ severity, file, line?, text }`, exported as `StreamFinding` because `review.ts` still owns `Finding` until T122) and `proposed_next: string[]`; round 2 PASS. merge: 4e8c52e.
 
 ### Ticket: T111 State home and the repo registry
 - **Priority:** P0
