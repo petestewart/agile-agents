@@ -4,8 +4,9 @@ Agile Agents — a multi-agent coding orchestrator modeled on an Agile engineeri
 
 ## Source of truth
 
-- `PLAN.md` — the implementation plan **and the live board**. Every ticket is a `### Ticket: T###` block; its `Status:` line is the ticket's state. Read it first.
-- `design/agile-agents-design.md` — the design (state model §4, bus §5, enforcement tiers §6, tools §7, protocols §9–16, UI §17, build decisions §18). When code and design disagree, the design wins unless the PLAN's Decisions log says otherwise.
+- `PLAN.md` — the reshape plan **and the live board** (tickets T100–T164). Every ticket is a `### Ticket: T###` block; its `Status:` line is the ticket's state. Read it first. `PLAN-v1.md` is the frozen old plan (T001–T051), history only.
+- `design/cockpit-design.md` — the design (streams §2, inbox §3, agents §4, rules §5, classifier §6, state home §7, hook and landing paths §8, UI §9, deletions §10). When code and design disagree, the design wins unless the PLAN's Decisions log says otherwise.
+- `design/agile-agents-design.md` — the superseded design, kept for **§8 adapter contract** and **§6 hook catalog**, which remain valid. Nothing else in it is current.
 - `design/spike-findings.md` — measured per-vendor behaviour (what ACP actually gates, hooks, cancel/resume, Pi). Don't re-derive these; cite them.
 - `vendor/terma/` — read-only snapshot of Terma's ACP layer, the input to T003. Never import from it at runtime; extract into `packages/acp-client` and adapt.
 - `spike/` — the vendor spike harness (`permission-matrix.ts`) and raw reports. Reusable for T009/T014 checks.

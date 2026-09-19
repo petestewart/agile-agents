@@ -67,6 +67,8 @@ Validation: `agile status` shows the sprint, tickets, agents, and spend; the fee
 
 ## 7. Task Backlog
 
+> **Frozen 2026-09-19 — see `PLAN.md` (the reshape plan, also `design/reshape-plan.md`). No new T0xx tickets.**
+
 Priority encodes dependency layer as well as importance: P0 tickets are v0-blocking foundations, P1 complete v0, P2 are the first post-v0 layer. Depends-on is listed in Scope.
 
 ### Ticket: T001 Monorepo scaffold
