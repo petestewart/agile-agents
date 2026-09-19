@@ -57,6 +57,9 @@ export function ChatPanel() {
    * what the session has actually reported.
    */
   const [em, setEm] = useState<FeedEmInfo | undefined>(undefined);
+  /** Lets `reload` (which has no deps, by design) tell whether the model is still outstanding. */
+  const emRef = useRef<FeedEmInfo | undefined>(undefined);
+  emRef.current = em;
   const [draft, setDraft] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | undefined>(undefined);
@@ -68,16 +71,20 @@ export function ChatPanel() {
 
   const reload = useCallback(async () => {
     try {
-      // One extra read per turn end, and the only one that can carry a model
-      // the socket's connect-time snapshot predates.
-      void getSnapshot()
-        .then((snap) => {
-          if (snap.em) setEm(snap.em);
-        })
-        .catch(() => {
-          // The header degrades to "no session yet"; the thread read below
-          // is what this function actually exists for.
-        });
+      // The socket's snapshot arrives on connect, which is before the
+      // session has reported a model, so the header needs one more read —
+      // but only while the model is still outstanding, never once per turn
+      // forever (the snapshot carries the event window with it).
+      if (emRef.current === undefined || emRef.current.model === 'unknown') {
+        void getSnapshot()
+          .then((snap) => {
+            if (snap.em) setEm(snap.em);
+          })
+          .catch(() => {
+            // The header degrades to "no session yet"; the thread read below
+            // is what this function actually exists for.
+          });
+      }
       const thread = await getEmChat();
       setLines((prev) => {
         // Keep anything still streaming: the stored copy lands only when the
