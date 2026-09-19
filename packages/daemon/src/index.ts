@@ -14,7 +14,13 @@ export const PACKAGE_NAME = '@agile-agents/daemon';
 
 export {
   discoverConfig,
+  resolveHomePaths,
+  readHomeConfigFile,
+  stateHome,
   CONFIG_FILE_NAME,
+  HOME_CONFIG_FILE_NAME,
+  type HomePaths,
+  type ResolveHomePathsOptions,
   type AgileConfig,
   type DiscoverConfigOptions,
   type JiraConfig,
@@ -50,11 +56,9 @@ export {
 } from './init';
 
 /**
- * Chromium discovery for the Playwright e2e suites. Exported so the CLI's
- * own offline e2e (`packages/cli/src/run.e2e.test.ts`, which drives the
- * demo sprint and then looks at the control room that narrates it) shares
- * one implementation with `feed/*.e2e.test.ts` rather than re-deriving the
- * per-platform browser layouts.
+ * Chromium discovery for the Playwright e2e suites. Exported so every e2e
+ * suite shares one implementation rather than re-deriving the per-platform
+ * browser layouts.
  */
 export { resolveChromiumExecutable } from './feed/chromium';
 

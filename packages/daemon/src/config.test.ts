@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { discoverConfig } from './config';
+import { discoverConfig, resolveHomePaths } from './config';
 
 let repo: string;
 const originalEnv = { ...process.env };
@@ -28,7 +28,8 @@ describe('discoverConfig', () => {
     // T111: the state home is never inside the repo.
     expect(config.home).not.toContain(config.repoRoot);
     expect(config.stateRoot).toBe(config.home);
-    expect(config.lockPath).toBe(join(config.repoRoot, '.agile-daemon.lock'));
+    // T112 (D9): the pidfile belongs to the home, not the repo.
+    expect(config.lockPath).toBe(join(config.home, 'agiled.pid'));
   });
 
   // T111 (PLAN.md §5, D9): one state home, `$AGILE_HOME` or `~/.agile/`.
@@ -48,9 +49,12 @@ describe('discoverConfig', () => {
   });
 
   test('defaults port and socket path when nothing is configured', () => {
+    process.env.AGILE_HOME = join(repo, '..', 'a-home-defaults');
     const config = discoverConfig({ cwd: repo });
     expect(config.port).toBe(4600);
-    expect(config.socketPath).toBe(join(config.repoRoot, '.agile-daemon.sock'));
+    // T112 (D9): the socket belongs to the home, so a client with no repo
+    // cwd can find the one long-lived daemon.
+    expect(config.socketPath).toBe(join(config.home, 'agiled.sock'));
   });
 
   test('reads agile.config.yaml when present', () => {
@@ -113,6 +117,42 @@ describe('discoverConfig', () => {
     } finally {
       rmSync(outside, { recursive: true, force: true });
       rmSync(tempDirBase, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('resolveHomePaths (no repo needed — T112, D9)', () => {
+  test('resolves port, socket, pidfile and log paths from the home alone', () => {
+    const home = join(repo, 'home');
+    const paths = resolveHomePaths({ home });
+    expect(paths.home).toBe(home);
+    expect(paths.port).toBe(4600);
+    expect(paths.socketPath).toBe(join(home, 'agiled.sock'));
+    expect(paths.pidPath).toBe(join(home, 'agiled.pid'));
+    expect(paths.logPath).toBe(join(home, 'log', 'agiled.log'));
+    expect(paths.eventsPath).toBe(join(home, 'log', 'events.jsonl'));
+  });
+
+  test('<home>/config.yaml sets the port and socket; env beats the file', () => {
+    const home = mkdtempSync(join(tmpdir(), 'agile-home-config-'));
+    try {
+      writeFileSync(join(home, 'config.yaml'), 'port: 5100\nsocketPath: /tmp/from-home.sock\n');
+      expect(resolveHomePaths({ home }).port).toBe(5100);
+      expect(resolveHomePaths({ home }).socketPath).toBe('/tmp/from-home.sock');
+      process.env.AGILE_PORT = '5101';
+      expect(resolveHomePaths({ home }).port).toBe(5101);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test('an unknown key in <home>/config.yaml is refused, never silently ignored', () => {
+    const home = mkdtempSync(join(tmpdir(), 'agile-home-config-bad-'));
+    try {
+      writeFileSync(join(home, 'config.yaml'), 'prot: 5100\n');
+      expect(() => resolveHomePaths({ home })).toThrow(/home config/);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
     }
   });
 });

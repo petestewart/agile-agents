@@ -224,53 +224,7 @@ describe('tool.* RPC methods (T011)', () => {
   });
 });
 
-describe('handle.advancePipeline (the one pipeline list)', () => {
-  test("a reviewer escalate in em's inbox stales the in_review ticket through the handle, with the ceremony timer off", async () => {
-    // Eleventh live run (2026-09-10): `agile run --live` re-listed the glue
-    // by hand and dropped `advanceReviewerEscalations`/`releaseStaleTicketSessions`;
-    // with `ceremonyTickMs: 0` the daemon's own list never ran either.
-    runInit(home);
-    const store = StateStore.open(home);
-    await store.putTicket({
-      id: 'TKT-0001',
-      title: 'Test',
-      status: 'in_review',
-      contract: { inputs: [], outputs: [], acceptance: [], done: [], env: 'clone' },
-      depends: [],
-      oracle_refs: [],
-      kb_refs: [],
-      history: [],
-      security: false,
-    });
-    handle = await startDaemon({
-      cwd: repo,
-      port: 0,
-      socketPath: join(repo, '.agile-daemon.sock'),
-      ceremonyTickMs: 0,
-    });
-    expect(typeof handle.advancePipeline).toBe('function');
-    const bus = handle.bus;
-    if (!bus) throw new Error('daemon has no bus');
-    const sent = await bus.send({
-      id: ulid(),
-      ts: new Date().toISOString(),
-      from: 'reviewer-0001',
-      to: ['em'],
-      kind: 'escalate',
-      priority: 'normal',
-      ticket: 'TKT-0001',
-      body: 'reviewer escalates round 1: ticket/contract issue',
-      refs: [],
-      requires_ack: false,
-    });
-    expect(sent.ok).toBe(true);
-
-    await handle.advancePipeline?.();
-
-    expect(handle.store?.getTicket('TKT-0001').status).toBe('stale');
-    expect(bus.poll('architect').some((m) => m.kind === 'escalate')).toBe(true);
-  });
-
+describe('daemon lifecycle extras', () => {
   /**
    * T041 acceptance: "killing the resident session does not stall gates
    * (delegate path still decides)". The two are deliberately separate

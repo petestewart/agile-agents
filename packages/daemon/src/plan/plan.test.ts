@@ -277,7 +277,7 @@ describe('Start Sprint N', () => {
     expect(fx.store.listSprints()).toEqual([]);
 
     await gates.settled();
-    // The pickup the daemon's `advancePipeline` runs every tick.
+    // The pickup `PlanService.startApprovedSprint` performs once the gate resolves.
     const started = await plan.startApprovedSprint();
     expect(started?.id).toBe('S-1');
     expect(started?.tickets).toEqual(['TKT-0001']);

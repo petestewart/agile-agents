@@ -61,24 +61,7 @@ import {
   rulesList,
 } from './review';
 import { type RpcServerHandle, startRpcServer } from './rpc';
-import {
-  Runner,
-  advanceArchitectInbox,
-  advanceDoneTickets,
-  advanceEngineerEscalations,
-  advanceEngineerVerdicts,
-  advanceHilResolutions,
-  advanceMergeConflicts,
-  advanceQaSpawns,
-  advanceResumes,
-  advanceReviewRequests,
-  advanceReviewerEscalations,
-  advanceSecurityReviews,
-  advanceStandupCalls,
-  buildRunnerRpcMethods,
-  releaseStaleTicketSessions,
-  resolveCliBin,
-} from './runner';
+import { Runner, buildRunnerRpcMethods, resolveCliBin } from './runner';
 import type { AgentSessionOptions } from './runner';
 import { StateStore, buildStateRpcMethods } from './store';
 import { DAEMON_CACHE_DIR } from './subprocess-env';
@@ -100,13 +83,11 @@ export interface DaemonHandle {
   http: HttpServerHandle;
   startedAt: number;
   /**
-   * The daemon's own internal object graph, exposed for a caller that
-   * wants to drive ceremonies directly in-process rather than over the
-   * unix socket (T021's `agile run`: an unattended sprint has no human/
-   * live-vendor EM session to poll `gate.*`/`em.*` RPC on its own timer,
-   * so a driver calls `emLoop.tick()`/`gateService` itself). `undefined`
-   * for every field when `.agile/` doesn't exist yet (pre-`agile init`),
-   * same condition `extraMethods` below already gates on.
+   * The daemon's own internal object graph, exposed for a caller (a test,
+   * or a Phase 3 per-stream driver) that wants to drive the daemon directly
+   * in-process rather than over the unix socket. `undefined` for every field
+   * when the state home doesn't exist yet (pre-`agile init`), same condition
+   * `extraMethods` below already gates on.
    */
   store?: StateStore;
   bus?: Bus;
@@ -129,17 +110,6 @@ export interface DaemonHandle {
   emChat?: EmChatService;
   /** T045: Jira two-way sync — `undefined` unless Jira is configured (base URL + credentials in the environment). */
   jiraSync?: JiraSync;
-  /**
-   * One pass of the pipeline glue (`runner/pipeline-glue.ts`: review
-   * requests, engineer verdicts, HIL resolutions, architect inbox, security
-   * reviews, reviewer escalations, stale-session release, QA spawns, done
-   * merges) — the same list the ceremony timer drives. `agile run --live`
-   * (`ceremonyTickMs: 0`, no timer) calls this from its own loop instead of
-   * re-listing the glue itself: its hand-rolled copy silently dropped the
-   * two steps added in `b0eb02a`/`81ba3f8`, so neither ever ran live
-   * (eleventh live run, 2026-09-10). `undefined` pre-`agile init`.
-   */
-  advancePipeline?: () => Promise<void>;
   /** Graceful shutdown: closes both servers, then releases the lock. */
   stop(): Promise<void>;
 }
@@ -150,9 +120,8 @@ export interface StartDaemonOptions extends DiscoverConfigOptions {
    * session's underlying ACP transport (forwarded to `Runner`'s own
    * `spawn` option, `runner/session.ts`'s `AgentSessionOptions['spawn']`).
    * Real usage never sets this — `LiveRunner`/the default `spawnSession`
-   * stay in effect. `agile run`'s offline/fixture mode is the one caller
-   * (T021): no vendor login in this container, so the demo e2e substitutes
-   * the same fake-agent transport `runner/*.test.ts` already uses.
+   * stay in effect. Offline tests substitute the same fake-agent transport
+   * `runner/*.test.ts` already uses.
    */
   runnerSpawn?: AgentSessionOptions['spawn'];
   /**
@@ -161,7 +130,7 @@ export interface StartDaemonOptions extends DiscoverConfigOptions {
    * `architect`) is decided synchronously by this function instead of
    * waiting on a live EM/architect session to call `gate.respond` itself.
    * Real usage never sets this (a live EM session answers its own gates);
-   * `agile run`'s offline mode does, since it never spawns one.
+   * offline tests do, since they never spawn one.
    */
   gateDelegate?: DelegateFn;
   /**
@@ -190,11 +159,10 @@ export interface StartDaemonOptions extends DiscoverConfigOptions {
    */
   reexaminer?: Reexaminer;
   /**
-   * Ceremony/pipeline tick cadence. Default `CEREMONY_TICK_MS` (30 s); `0`
-   * disables the daemon's own timer for a caller that drives
-   * `gateService.tick()`/`emLoop.tick()`/the pipeline glue itself
-   * (`agile run` — two concurrent drivers over the same inboxes double-
-   * prompted and double-acked on the fourth live run, 2026-09-10).
+   * Ceremony tick cadence. Default `CEREMONY_TICK_MS` (30 s); `0` disables
+   * the daemon's own timer for a caller (a test) that drives
+   * `gateService.tick()`/`emLoop.tick()` itself — two concurrent drivers
+   * over the same inboxes double-prompt and double-ack.
    */
   ceremonyTickMs?: number;
   /**
@@ -477,63 +445,9 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
   // deadline fallthrough, §16 — nothing else calls `GateService.tick()`),
   // then the handoff coordinator over every ticket (pausing a stuck-ready
   // ticket must precede `assignReady`, which runs inside the EM tick), then
-  // the EM loop, then this pipeline glue. Cadence matches the runner sweep
-  // / heartbeat tunable (30 s); errors are logged, never fatal to the
-  // daemon.
-  // T021 "wiring gaps": the three hand-offs off the architecture sketch's
-  // data-flow paragraph nothing else drives (see `runner/pipeline-glue.ts`'s
-  // header) — an engineer's `review_request`, a reviewer's approve-into-
-  // `in_qa`, and QA landing a ticket on `done`. Each `Set` is process-local
-  // idempotency bookkeeping, same rationale as `EmLoop`'s own
-  // `calledHalts`/`escalatedHalts`/`seenDiscoveryStanzas`.
-  const seenReviewRequests = new Set<string>();
-  const seenEngineerVerdicts = new Set<string>();
-  const seenHilResolutions = new Set<string>();
-  const seenArchitectInbox = new Set<string>();
-  const seenSecurityReviews = new Set<string>();
-  const seenReviewerEscalations = new Set<string>();
-  const seenEngineerEscalations = new Set<string>();
-  const qaSpawned = new Set<TicketId>();
-  const mergedDone = new Set<TicketId>();
-  const conflictPrompted = new Set<TicketId>();
-  const seenResumes = new Set<string>();
-  const seenStandupCalls = new Set<string>();
-  async function advancePipeline(): Promise<void> {
-    // T042: an `approve_plan` an EM/architect delegate (or a human answering
-    // through `agile approve`) resolved *after* the control room's Start
-    // Sprint click returned. `PlanService.startSprint` deliberately persists
-    // nothing while that gate is pending — `EmLoop.currentSprint()` would
-    // otherwise treat the unapproved sprint as live and start assigning — so
-    // this is where an approved-but-unstarted plan actually becomes a
-    // sprint. Idempotent (see `startApprovedSprint`); the EM assigns its
-    // tickets on the following tick, same as any other newly planned sprint.
-    if (planService) {
-      const started = await planService.startApprovedSprint();
-      if (started) console.error(`approve_plan approved — started ${started.id}`);
-    }
-    if (store && bus && reviewProtocol && runner)
-      await advanceReviewRequests(store, bus, reviewProtocol, runner, seenReviewRequests);
-    if (store && bus && runner)
-      await advanceEngineerVerdicts(store, bus, runner, seenEngineerVerdicts);
-    if (store && bus && runner) await advanceStandupCalls(store, bus, runner, seenStandupCalls);
-    if (store && bus && runner) await advanceResumes(store, bus, runner, seenResumes);
-    if (gateService && runner) await advanceHilResolutions(gateService, runner, seenHilResolutions);
-    if (bus && runner) await advanceArchitectInbox(bus, runner, seenArchitectInbox);
-    if (store && runner) await advanceSecurityReviews(store, runner, seenSecurityReviews);
-    if (store && bus) await advanceReviewerEscalations(store, bus, seenReviewerEscalations);
-    if (questionService && bus)
-      await advanceEngineerEscalations(questionService, bus, seenEngineerEscalations);
-    if (store && runner)
-      releaseStaleTicketSessions(store, runner, (id) =>
-        mergeOwner
-          ? (mergeOwner.status(id) as { status?: string } | undefined)?.status === 'merged'
-          : false,
-      );
-    if (store && runner) await advanceQaSpawns(store, runner, qaSpawned);
-    if (store && mergeOwner) await advanceDoneTickets(store, mergeOwner, mergedDone);
-    if (store && runner && mergeOwner)
-      await advanceMergeConflicts(store, runner, mergeOwner, conflictPrompted);
-  }
+  // the EM loop. Cadence matches the runner sweep / heartbeat tunable
+  // (30 s); errors are logged, never fatal to the daemon — the daemon is
+  // long-lived (D9) and never exits because work finished.
   const ceremonyTickMs = options.ceremonyTickMs ?? CEREMONY_TICK_MS;
   const ceremonyTimer =
     gateService && emLoop && ceremonyTickMs > 0
@@ -545,7 +459,14 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
                 await handoffCoordinator.tick(store.listTickets().map((t) => t.id));
               }
               await emLoop.tick();
-              await advancePipeline();
+              // T042: an `approve_plan` resolved after the cockpit's Start
+              // Sprint click returned — `PlanService.startSprint` persists
+              // nothing while that gate is pending, so this is where an
+              // approved-but-unstarted plan becomes a sprint. Idempotent.
+              if (planService) {
+                const started = await planService.startApprovedSprint();
+                if (started) console.error(`approve_plan approved — started ${started.id}`);
+              }
             } catch (err) {
               console.error('ceremony tick failed:', err);
             }
@@ -859,7 +780,6 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
     emChat,
     jiraSync,
     ...(planService ? { planService } : {}),
-    ...(store ? { advancePipeline } : {}),
     async stop() {
       if (stopped) return;
       stopped = true;

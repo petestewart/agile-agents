@@ -27,6 +27,7 @@ bun run build        # all workspaces
 bun run typecheck
 bun test             # plain bun test, no native modules — must stay green
 bun run test:integration   # offline end-to-end (real daemon + real browser, no vendor) — must stay green
+                           # includes the daemon lifecycle e2e (packages/cli/src/daemon.e2e.test.ts)
 bun run test:live          # AGILE_LIVE=1; spawns real vendor sessions — manual/nightly only
 ```
 
@@ -49,9 +50,6 @@ what keeps `test:integration` honest:
   Code's own `~/Library/Caches/claude-cli-nodejs/<worktree>/mcp-logs-agile/`
   (`grep -h '"error"' *.jsonl`). A verb called many times in a burst is a
   model retrying a schema rejection; read those errors first.
-  `agile run --live` drives the pipeline through `handle.advancePipeline()`
-  (`daemon.ts` — the one list of glue steps); never re-list the glue in
-  `run.ts`, the hand-rolled copy silently drifted twice.
   `em`-owned gates (`unblock` from the hook, `approve_plan`, ...) are decided
   by a one-shot EM vendor session (`packages/daemon/src/em/delegate.ts`) —
   the run prints `EM deciding gate …` / `EM approved|denied gate …`; without
@@ -74,7 +72,7 @@ If `bun` is missing in a fresh container: `curl -fsSL https://bun.sh/install | b
 packages/shared      zod schemas + types, defined once, imported everywhere
 packages/acp-client  ACP session client lifted from vendor/terma (T003)
 packages/daemon      agiled: state store, bus, halts/ripple, gates, agent runner, worktrees, hook endpoint, MCP tools, feed
-packages/cli         agile: init · run · status · tail · send · approve · halt · hook <event>
+packages/cli         agile: init · daemon start|stop|status · status · tail · send · approve · halt · hook <event>
 packages/ui          v0: static feed.html
 fixtures/demo-project  seeded repo for the e2e run
 ```

@@ -1,10 +1,14 @@
 /**
  * Config discovery (design/agile-agents-design.md §18 "Technical shape").
  *
- * Walks up from cwd to the git toplevel, then reads an optional
- * `agile.config.yaml` at the repo root plus env overrides. Kept minimal:
- * the only settings v0 needs are the daemon's HTTP port and unix socket
- * path, and the state root itself.
+ * Two resolvers live here:
+ *
+ *  - `resolveHomePaths` — port, socket, pidfile and log paths from the state
+ *    home alone (T112, D9). No repo needed; this is what a client with no
+ *    repo cwd uses to find the one long-lived daemon.
+ *  - `discoverConfig` — the above plus the git toplevel of the cwd and the
+ *    optional per-repo `agile.config.yaml` overlay, for the code paths that
+ *    genuinely operate on a repo.
  *
  * DESIGN-GAP: the design does not specify a config file name or shape;
  * `agile.config.yaml` with `{ port?, socketPath? }` is the smallest thing
@@ -14,6 +18,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { DEFAULT_DAEMON_PORT, type HomeConfig, validateHomeConfig } from '@agile-agents/shared';
 import { parse as parseYaml } from 'yaml';
 import { sandboxedSubprocessEnvOrTemp } from './subprocess-env';
 
@@ -58,8 +63,6 @@ export interface AgileConfig {
   jira?: JiraConfig;
 }
 
-const DEFAULT_PORT = 4600;
-
 /**
  * The state home (T111, PLAN.md §5, D9): `$AGILE_HOME` if set, else
  * `~/.agile/`. One home serves every registered repo; nothing daemon-owned
@@ -71,6 +74,78 @@ export function stateHome(): string {
   return process.env.AGILE_HOME ?? join(homedir(), '.agile');
 }
 export const CONFIG_FILE_NAME = 'agile.config.yaml';
+
+/** `<home>/config.yaml` — the state home's own config (T112). */
+export const HOME_CONFIG_FILE_NAME = 'config.yaml';
+
+/**
+ * Everything a client needs to reach the daemon, resolved from the state
+ * home **alone** — no repo cwd (T112, design/cockpit-design.md §7.1). This
+ * is what `agile status`/`agile tail`/`agile daemon status` use: the daemon
+ * is one process for every registered repo, so "which daemon" is a question
+ * the home answers, not the directory the operator happens to be standing
+ * in.
+ */
+export interface HomePaths {
+  /** The state home itself (`$AGILE_HOME`, default `~/.agile/`). */
+  home: string;
+  /** HTTP port for the cockpit/API. */
+  port: number;
+  /** Unix socket path for the JSON-RPC API. */
+  socketPath: string;
+  /** Pidfile for the detached daemon — in the home, one daemon per home. */
+  pidPath: string;
+  /** `<home>/log/` — where the detached daemon's stdio is redirected. */
+  logDir: string;
+  /** `<home>/log/agiled.log` — the detached daemon's stdout+stderr. */
+  logPath: string;
+  /** `<home>/log/events.jsonl` — the append-only event log `agile tail` reads. */
+  eventsPath: string;
+}
+
+/** Reads `<home>/config.yaml` through the strict schema. Missing file = `{}`. */
+export function readHomeConfigFile(home: string): HomeConfig {
+  const path = join(home, HOME_CONFIG_FILE_NAME);
+  if (!existsSync(path)) return {};
+  const parsed = parseYaml(readFileSync(path, 'utf8'));
+  if (parsed === null || parsed === undefined) return {};
+  if (typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error(`${path}: ${HOME_CONFIG_FILE_NAME} must be a mapping, got ${typeof parsed}`);
+  }
+  return validateHomeConfig(parsed);
+}
+
+export interface ResolveHomePathsOptions {
+  home?: string;
+  port?: number;
+  socketPath?: string;
+}
+
+/**
+ * Precedence (highest first): explicit options, env (`AGILE_PORT`,
+ * `AGILE_SOCKET_PATH`), `<home>/config.yaml`, built-in default.
+ */
+export function resolveHomePaths(options: ResolveHomePathsOptions = {}): HomePaths {
+  const home = options.home ?? stateHome();
+  const file = readHomeConfigFile(home);
+  const envPort = process.env.AGILE_PORT ? Number(process.env.AGILE_PORT) : undefined;
+  const port = options.port ?? envPort ?? file.port ?? DEFAULT_DAEMON_PORT;
+  const socketPath =
+    options.socketPath ??
+    process.env.AGILE_SOCKET_PATH ??
+    file.socketPath ??
+    join(home, 'agiled.sock');
+  const logDir = join(home, 'log');
+  return {
+    home,
+    port,
+    socketPath,
+    pidPath: join(home, 'agiled.pid'),
+    logDir,
+    logPath: join(logDir, 'agiled.log'),
+    eventsPath: join(logDir, 'events.jsonl'),
+  };
+}
 
 interface RawConfigFile {
   port?: number;
@@ -161,18 +236,22 @@ export function discoverConfig(options: DiscoverConfigOptions = {}): AgileConfig
   const stateRoot = home;
   const fileConfig = readConfigFile(repoRoot);
 
+  // T112 (D9): the port, the socket and the pidfile belong to the *home*,
+  // not to a repo — one long-lived daemon serves every registered repo, and
+  // a client with no repo cwd has to be able to find it (`resolveHomePaths`,
+  // which `agile status`/`agile daemon *` use on their own). The per-repo
+  // `agile.config.yaml` stays an overlay between the env and the home for an
+  // operator who wants a repo-specific socket or port.
+  const homePaths = resolveHomePaths({ home });
   const envPort = process.env.AGILE_PORT ? Number(process.env.AGILE_PORT) : undefined;
-  const port = options.port ?? envPort ?? fileConfig.port ?? DEFAULT_PORT;
-
-  const defaultSocketPath = join(repoRoot, '.agile-daemon.sock');
+  const port = options.port ?? envPort ?? fileConfig.port ?? homePaths.port;
   const socketPath =
     options.socketPath ??
     process.env.AGILE_SOCKET_PATH ??
     fileConfig.socketPath ??
-    defaultSocketPath;
+    homePaths.socketPath;
 
-  // See lock.ts for why this lives at the repo root, not inside `.agile/`.
-  const lockPath = join(repoRoot, '.agile-daemon.lock');
+  const lockPath = homePaths.pidPath;
 
   // T045: env wins over the file, same precedence as `port`/`socketPath`
   // above. Credentials are *not* read here — `sync/config.ts` pulls
