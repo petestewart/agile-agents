@@ -52,6 +52,14 @@ const REFRESH_TRIGGER_KINDS = new Set<Event['kind']>([
   'halt_created',
   'halt_updated',
   'halt_released',
+  // T050: a gate raised or decided anywhere else (the EM loop, `agile run`,
+  // the CLI's `agile approve`) changes the Needs-you queue, the top bar's
+  // `sprint_review_pending` and, with it, which of its three phases the
+  // Review tab renders. Without these two kinds the sprint review only
+  // appeared on the page after a reload, and the tab could sit on the
+  // running notice for a sprint that had already stopped.
+  'hil_requested',
+  'hil_resolved',
 ]);
 
 /** Coalesces a burst of triggering events (e.g. a ticket transition plus its stanza) into one refetch. */
@@ -243,13 +251,23 @@ export function App(): JSX.Element {
                     data-testid="sprint-tab-review"
                     aria-pressed={tab === 'review'}
                     title={
-                      reviewGate
+                      reviewPending
                         ? 'The sprint is waiting on your review'
-                        : 'The sprint report so far'
+                        : 'Where the sprint stands — the review appears when it finishes'
                     }
                     onClick={() => setTab('review')}
                   >
-                    Review{reviewGate ? ' ·' : ''}
+                    Review
+                    {/*
+                      T050: the badge reads the SAME `status.sprint_review_pending`
+                      the top bar does, so the bar and this tab can never
+                      disagree about whether a review is due.
+                    */}
+                    {reviewPending && (
+                      <span className="count" data-testid="review-tab-badge">
+                        pending
+                      </span>
+                    )}
                   </button>
                   <button
                     type="button"
@@ -272,7 +290,12 @@ export function App(): JSX.Element {
                   />
                 )}
                 {tab === 'review' && (
+                  // T050: keyed on the gate, so raising or deciding the
+                  // sprint review re-pulls the phase-dependent narrative
+                  // instead of leaving the running notice (or the decision
+                  // buttons) on screen until a reload.
                   <ReviewView
+                    key={reviewGate?.id ?? 'no-gate'}
                     {...(reviewGate ? { gate: reviewGate } : {})}
                     onChanged={refreshAux}
                   />

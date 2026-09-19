@@ -57,6 +57,13 @@ describe('role briefs render against fixture data and stay under the token ceili
     });
     expect(text).toContain('S-07');
     expect(text).toContain('approve_plan');
+    // T050: the intent half of "no sprint review while the sprint runs" —
+    // the daemon's `SprintNotDoneError` is the enforcement half, and this
+    // brief is what stops the EM offering one in the first place.
+    expect(text).toContain(
+      'A sprint review is possible only when every ticket in the sprint is `done`',
+    );
+    expect(text).toContain('never offer one');
     expect(approxTokenCount(text)).toBeLessThanOrEqual(ROLE_BRIEF_TOKEN_CEILING);
     expect(text).toMatchSnapshot();
   });

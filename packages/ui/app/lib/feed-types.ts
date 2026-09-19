@@ -155,8 +155,20 @@ export interface ReportTicketLine {
   text: string;
 }
 
+/** T050 — the sprint's phase, and the decision that closed its review. */
+export type SprintPhase = 'running' | 'review_pending' | 'reviewed';
+
+export interface ReportReviewDecision {
+  at: string;
+  decision: 'approve' | 'deny';
+  decided_by: string;
+  note?: string;
+}
+
 export interface SprintReport {
   sprint?: string;
+  phase: SprintPhase;
+  decision?: ReportReviewDecision;
   goal: string;
   asked: string;
   built: string;

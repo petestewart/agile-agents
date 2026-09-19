@@ -66,6 +66,22 @@ export interface ReportTicketLine {
   text: string;
 }
 
+export type SprintPhase = 'running' | 'review_pending' | 'reviewed';
+
+/**
+ * T050: the decision that closed a sprint review, for the read-only
+ * retrospective the Review tab keeps showing afterwards. Read off the
+ * resolved `sprint_review` gate — the same record `delegatedDecisions`
+ * walks — so nothing new is stored.
+ */
+export interface ReportReviewDecision {
+  /** ISO-8601 — when it was decided. */
+  at: string;
+  decision: 'approve' | 'deny';
+  decided_by: string;
+  note?: string;
+}
+
 /**
  * The whole narrative. The four `asked`/`built`/`went_wrong`/`where`
  * paragraphs are the ones the Review tab renders verbatim and the markdown
@@ -73,6 +89,20 @@ export interface ReportTicketLine {
  */
 export interface SprintReport {
   sprint?: string;
+  /**
+   * T050: which of the three states this narrative describes. `running` is
+   * the one that used to be indistinguishable from a finished sprint —
+   * "0 of 3 finished", "nothing went wrong" and "carry all three into the
+   * next sprint" were produced 1m27s into a live sprint and offered to the
+   * operator as a review. The phase is derived from state the top bar
+   * already reads (`sprint_review` gates + `sprint.review_at`/`retro`), so
+   * bar and tab cannot disagree, and the running phrasing and the empty
+   * `proposes_next` below are enforced here, once, for both the tab and
+   * `runs/*.md`.
+   */
+  phase: SprintPhase;
+  /** Set only in the `reviewed` phase — the decision that was taken. */
+  decision?: ReportReviewDecision;
   goal: string;
   asked: string;
   built: string;
@@ -204,6 +234,35 @@ export function buildSprintReport(
 ): SprintReport {
   const now = inputs.now ?? (() => new Date());
   const sprint: Sprint | undefined = pickCurrentSprint(store.listSprints());
+
+  /**
+   * T050 — the phase. `review_pending` is exactly what the top bar's
+   * `status.sprint_review_pending` reads (an open `sprint_review` gate);
+   * `reviewed` is a resolved one, or a sprint the review already stamped
+   * (`em/review.ts` writes `review_at` + `retro` when it resolves).
+   * Everything else is a sprint that is still running, and a running sprint
+   * gets no review narrative and no proposal.
+   */
+  const sprintReviewGates = (inputs.gates?.list() ?? []).filter((r) => r.gate === 'sprint_review');
+  const pendingReview = sprintReviewGates.find((r) => r.status === 'pending');
+  const resolvedReview = sprintReviewGates
+    .filter((r) => r.status === 'resolved')
+    .sort((a, b) => (a.resolved_at ?? '').localeCompare(b.resolved_at ?? ''))
+    .pop();
+  const phase: SprintPhase = pendingReview
+    ? 'review_pending'
+    : resolvedReview || sprint?.review_at !== undefined || sprint?.retro !== undefined
+      ? 'reviewed'
+      : 'running';
+  const running = phase === 'running';
+  const decision: ReportReviewDecision | undefined = resolvedReview
+    ? {
+        at: resolvedReview.resolved_at ?? resolvedReview.requested_at,
+        decision: resolvedReview.decision === 'approve' ? 'approve' : 'deny',
+        decided_by: resolvedReview.decided_by ?? 'human',
+        ...(resolvedReview.note ? { note: resolvedReview.note } : {}),
+      }
+    : undefined;
   const all = store.listTickets();
   const selected = inputs.tickets
     ? all.filter((t) => inputs.tickets?.includes(t.id))
@@ -224,11 +283,17 @@ export function buildSprintReport(
 
   const reviewRounds = lines.reduce((sum, l) => sum + l.review_rounds, 0);
   const qaAccepted = lines.filter((l) => l.qa_verdict === 'accept').length;
+  const inFlight = tickets.filter((t) => t.status !== 'done').length;
   const built =
     tickets.length === 0
-      ? 'Nothing was built.'
-      : `${done.length} of ${tickets.length} ticket(s) finished and ${merged.length} merged onto integration. ` +
-        `${plural(reviewRounds, 'review round')} in total; QA accepted ${qaAccepted}.`;
+      ? running
+        ? 'Nothing is on the board yet.'
+        : 'Nothing was built.'
+      : running
+        ? `In progress: ${done.length} of ${tickets.length} finished so far, ${merged.length} merged onto integration, ` +
+          `${plural(inFlight, 'ticket')} still in flight. ${plural(reviewRounds, 'review round')} so far; QA accepted ${qaAccepted}.`
+        : `${done.length} of ${tickets.length} ticket(s) finished and ${merged.length} merged onto integration. ` +
+          `${plural(reviewRounds, 'review round')} in total; QA accepted ${qaAccepted}.`;
 
   const troubles: string[] = [];
   for (const line of lines) {
@@ -263,12 +328,16 @@ export function buildSprintReport(
   }
   const went_wrong =
     troubles.length === 0
-      ? 'Nothing went wrong: no halts, no rejected rounds, no unmerged work.'
+      ? running
+        ? 'Nothing has gone wrong so far: no halts and no rejected rounds. The sprint is still running.'
+        : 'Nothing went wrong: no halts, no rejected rounds, no unmerged work.'
       : `${list(troubles)}.`;
 
   const where =
     merged.length > 0
-      ? `On the integration branch (${list(merged.map((l) => l.ticket))}). Accepting this review merges integration into main.`
+      ? running
+        ? `On the integration branch so far (${list(merged.map((l) => l.ticket))}); the rest is still on each ticket’s own branch under .worktrees/.`
+        : `On the integration branch (${list(merged.map((l) => l.ticket))}). Accepting this review merges integration into main.`
       : 'Nothing has reached the integration branch yet; the work is on each ticket’s own branch under .worktrees/.';
 
   const spendByKind = new Map<string, { in: number; out: number; cost: number }>();
@@ -288,23 +357,30 @@ export function buildSprintReport(
           ([kind, s]) => `${kind}: ${s.in} in / ${s.out} out tokens, $${s.cost.toFixed(4)}`,
         );
 
-  const pendingReview = (inputs.gates?.list() ?? []).find(
-    (r) => r.gate === 'sprint_review' && r.status === 'pending',
-  );
+  /**
+   * T050: only a sprint that has actually stopped gets a proposal. While it
+   * runs, "carry all three into the next sprint — 3 tickets did not finish"
+   * is not a proposal, it is a description of a sprint that is 90 seconds
+   * old, so there is nothing to say and the Review tab renders no section.
+   */
   const proposes_next: string[] = [];
-  if (pendingReview?.summary) proposes_next.push(pendingReview.summary);
-  const carried = tickets.filter((t) => t.status !== 'done');
-  if (carried.length > 0) {
-    proposes_next.push(
-      `Carry ${list(carried.map((t) => t.id))} into the next sprint — ${plural(carried.length, 'ticket')} did not finish.`,
-    );
+  if (!running) {
+    if (pendingReview?.summary) proposes_next.push(pendingReview.summary);
+    const carried = tickets.filter((t) => t.status !== 'done');
+    if (carried.length > 0) {
+      proposes_next.push(
+        `Carry ${list(carried.map((t) => t.id))} into the next sprint — ${plural(carried.length, 'ticket')} did not finish.`,
+      );
+    }
+    if (merged.length > 0) proposes_next.push('Accept this review to merge integration into main.');
+    if (proposes_next.length === 0)
+      proposes_next.push('No proposal on record — ask the EM in the chat.');
   }
-  if (merged.length > 0) proposes_next.push('Accept this review to merge integration into main.');
-  if (proposes_next.length === 0)
-    proposes_next.push('No proposal on record — ask the EM in the chat.');
 
   return {
     ...(sprint ? { sprint: sprint.id } : {}),
+    phase,
+    ...(decision ? { decision } : {}),
     goal: sprint?.goal ?? '(no sprint goal recorded)',
     asked,
     built,
@@ -328,8 +404,26 @@ export function buildSprintReport(
  */
 export function renderSprintReportMarkdown(report: SprintReport): string {
   const lines: string[] = [
-    `# Sprint review${report.sprint ? ` — ${report.sprint}` : ''} — ${report.generated_at}`,
+    `# Sprint ${report.phase === 'running' ? 'progress' : 'review'}${
+      report.sprint ? ` — ${report.sprint}` : ''
+    } — ${report.generated_at}`,
     '',
+    // T050: a report built mid-sprint (an aborted `agile run`) says so on
+    // its first line rather than reading like a sprint that ended.
+    ...(report.phase === 'running'
+      ? [
+          '**Status:** the sprint is still running — this is a progress report, not a sprint review.',
+          '',
+        ]
+      : []),
+    ...(report.decision
+      ? [
+          `**Decision:** ${report.decision.decision === 'approve' ? 'accepted' : 'sent back'} by ${
+            report.decision.decided_by
+          } at ${report.decision.at}${report.decision.note ? ` — “${report.decision.note}”` : ''}.`,
+          '',
+        ]
+      : []),
     `**What was asked:** ${report.asked}`,
     '',
     `**What was built:** ${report.built}`,
@@ -348,9 +442,10 @@ export function renderSprintReportMarkdown(report: SprintReport): string {
           (d) => `- ${d.at} · ${d.gate} · decided by ${d.decided_by} · ${d.outcome}`,
         )),
     '',
-    '## What the EM proposes next',
-    ...report.proposes_next.map((p) => `- ${p}`),
-    '',
+    // Only a stopped sprint has a proposal (T050), so the heading goes with it.
+    ...(report.proposes_next.length > 0
+      ? ['## What the EM proposes next', ...report.proposes_next.map((p) => `- ${p}`), '']
+      : []),
     '## Per-ticket outcome',
     ...report.per_ticket.map(
       (l) => `- ${l.ticket}: status=${l.status}, merged=${l.merged ? 'yes' : 'no'}`,

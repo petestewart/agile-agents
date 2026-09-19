@@ -1553,3 +1553,117 @@ describe('control room SPA (Playwright e2e)', () => {
     TEST_BUDGET_MS,
   );
 });
+
+/**
+ * T050: the Review sub-tab must not offer a sprint review while the sprint
+ * is still running. Seen live on ledger-lite (2026-09-19): 1m27s into
+ * Sprint 1, with five agents working and every ticket `in_progress`, the
+ * tab showed "S-1 is ready for your review", "0 of 3 ticket(s) finished",
+ * "Nothing went wrong", the Accept/Send-it-back buttons and "carry all
+ * three into the next sprint — 3 tickets did not finish".
+ *
+ * The three phases are driven by daemon state alone (`SprintReport.phase`,
+ * derived from the `sprint_review` gate and `sprint.review_at`), which is
+ * the same thing the top bar reads — so tab and bar cannot disagree.
+ */
+describe('control room — the Review tab across a sprint’s phases', () => {
+  browserTest(
+    'running: a notice and no decision; pending: the narrative and both buttons; decided: read-only with the decision',
+    async () => {
+      const repo = initRepo();
+      let handle: DaemonHandle | undefined;
+      let page: Page | undefined;
+
+      try {
+        const init = runInit(repo);
+        const store = StateStore.open(init.stateRoot);
+
+        await store.putSprint({
+          id: 'S-1',
+          goal: 'Transfers, reversals, category report',
+          tickets: ['TKT-9301', 'TKT-9302'],
+          budget_tokens: 1000,
+          started: new Date().toISOString(),
+          carried_over: [],
+        });
+        for (const [id, title] of [
+          ['TKT-9301', 'Add Ledger.transfer between accounts'],
+          ['TKT-9302', 'Add Ledger.reverse(txId, date)'],
+        ] as const) {
+          await store.putTicket({
+            id,
+            title,
+            status: 'draft',
+            sprint: 'S-1',
+            contract: { inputs: [], outputs: [], acceptance: ['it works'], done: [], env: 'clone' },
+            depends: [],
+            oracle_refs: [],
+            kb_refs: [],
+            history: [],
+            security: false,
+          });
+          for (const to of ['ready', 'assigned', 'in_progress'] as const) {
+            await store.transitionTicket(id, to, { by: 'em' });
+          }
+        }
+
+        handle = await startDaemon({
+          cwd: repo,
+          port: 0,
+          socketPath: join(repo, '.agile-daemon.sock'),
+        });
+        const gates = handle.gateService;
+        if (!gates) throw new Error('daemon started without a GateService');
+
+        page = await openPage();
+        await page.goto(`http://127.0.0.1:${handle.http.port}/control-room?view=sprint`);
+
+        // Phase 1 — running. The tab is reachable, and says so.
+        await page
+          .locator('[data-testid="sprint-tab-review"]')
+          .waitFor({ state: 'attached', timeout: PAGE_TIMEOUT_MS });
+        await page.locator('[data-testid="sprint-tab-review"]').click();
+        const running = page.locator('[data-testid="review-running"]');
+        await running.waitFor({ state: 'attached', timeout: PAGE_TIMEOUT_MS });
+        expect(await running.textContent()).toContain('is running');
+        expect(await page.locator('[data-testid="review-accept"]').count()).toBe(0);
+        expect(await page.locator('[data-testid="review-send-back"]').count()).toBe(0);
+        expect(await page.locator('[data-testid="review-note"]').count()).toBe(0);
+        expect(await page.locator('[data-testid="review-proposes"]').count()).toBe(0);
+        const progress =
+          (await page.locator('[data-testid="review-progress"]').textContent()) ?? '';
+        expect(progress).toContain('in progress');
+        expect(progress).not.toContain('Nothing went wrong');
+
+        // Phase 2 — the gate is raised: the narrative and both buttons.
+        await gates.request('sprint_review', {
+          policy: { gates: { sprint_review: 'human' }, breaker_signals: [] },
+          hilKind: 'approve_decision',
+          summary: 'Sprint 1 is ready for your review',
+        });
+        const accept = page.locator('[data-testid="review-accept"]');
+        await accept.waitFor({ state: 'attached', timeout: PAGE_TIMEOUT_MS });
+        expect(await page.locator('[data-testid="review-send-back"]').count()).toBe(1);
+        expect(await page.locator('[data-testid="review-note"]').count()).toBe(1);
+        expect(await page.locator('[data-testid="review-running"]').count()).toBe(0);
+        expect(await page.locator('[data-testid="review-built"]').textContent()).toContain(
+          '0 of 2',
+        );
+
+        // Phase 3 — decided: read-only, with the decision that was taken.
+        await accept.click();
+        const decision = page.locator('[data-testid="review-decision"]');
+        await decision.waitFor({ state: 'attached', timeout: PAGE_TIMEOUT_MS });
+        expect(await decision.textContent()).toContain('Accepted');
+        expect(await page.locator('[data-testid="review-accept"]').count()).toBe(0);
+        expect(await page.locator('[data-testid="review-send-back"]').count()).toBe(0);
+        expect(await page.locator('[data-testid="review-summary"]').count()).toBe(1);
+      } finally {
+        await teardown([page]);
+        await handle?.stop();
+        rmSync(repo, { recursive: true, force: true });
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+});
