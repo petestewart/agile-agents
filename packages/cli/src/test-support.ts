@@ -93,7 +93,9 @@ export async function startTestDaemon(prefix = 'agile-cli-test-'): Promise<TestD
   process.env.AGILE_HOME = home;
   const init = runInit(home);
   const store = StateStore.open(init.stateRoot);
-  const socketPath = join(repo, '.agile-daemon.sock');
+  // T112 (D9): the socket belongs to the home, which is where every CLI
+  // verb now looks for it (`resolveHomePaths`) — never a repo cwd.
+  const socketPath = join(home, 'agiled.sock');
 
   // A no-op delegate (never auto-approves) matches production's default —
   // tests that need auto-delegation pass their own `GateService` instead of

@@ -1,34 +1,187 @@
 /**
- * `agile daemon start` — start `agiled` in the foreground for this repo
- * (T004). Unchanged behaviour from T004; moved here so `index.ts` is pure
- * dispatch.
+ * `agile daemon start|stop|status` (T112 — D9, design/cockpit-design.md
+ * §7.1: "started once (`agile daemon start`, detached, pidfile and port in
+ * `config.yaml`) and **never exits because work finished**").
+ *
+ * `start` spawns a detached child that runs the daemon in the foreground
+ * (`agile daemon start --foreground`, the same process this file's
+ * `runDaemonForeground` serves) with its stdio redirected to
+ * `<home>/log/agiled.log`. The child writes the pidfile itself — it holds
+ * the per-home lock (`daemon/lock.ts`), so the pidfile and the lock are one
+ * file and cannot disagree. The parent waits for that file to appear, prints
+ * the pid, and exits; closing the terminal does not take the daemon with it
+ * (`detached: true` puts the child in its own process group, so a terminal
+ * SIGHUP never reaches it).
+ *
+ * A second `start` is a no-op that prints the running pid.
  */
 
+import { spawn } from 'node:child_process';
+import { existsSync, mkdirSync, openSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import {
+  type HomePaths,
   createEmSessionDelegate,
-  discoverConfig,
   installShutdownSignals,
+  resolveHomePaths,
   startDaemon,
 } from '@agile-agents/daemon';
 
-export async function runCliDaemonStart(cwd: string = process.cwd()): Promise<string> {
-  // em-owned gates (`unblock` from the hook, `approve_plan`, ...) are decided
-  // by a one-shot EM vendor session (`em/delegate.ts`) — without a delegate
+/** How long `start` waits for the child to write its pidfile before giving up. */
+const START_TIMEOUT_MS = 20_000;
+/** How long `stop` waits for the daemon to exit after SIGTERM. */
+const STOP_TIMEOUT_MS = 10_000;
+const POLL_MS = 50;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === 'EPERM') return true;
+    return false;
+  }
+}
+
+/** The pid in `<home>/agiled.pid`, or `undefined` when there is no live daemon. */
+export function runningPid(paths: HomePaths): number | undefined {
+  if (!existsSync(paths.pidPath)) return undefined;
+  const pid = Number.parseInt(readFileSync(paths.pidPath, 'utf8').trim(), 10);
+  if (!Number.isFinite(pid)) return undefined;
+  return isAlive(pid) ? pid : undefined;
+}
+
+/**
+ * The detached child's entry point: the daemon in the foreground, for the
+ * life of the process. Nothing here ever resolves — the daemon does not exit
+ * because work finished; it exits on SIGINT/SIGTERM (`agile daemon stop`).
+ */
+export async function runDaemonForeground(cwd: string = process.cwd()): Promise<never> {
+  // em-owned gates (`unblock`, `approve_plan`, ...) are decided by a
+  // one-shot EM vendor session (`em/delegate.ts`) — without a delegate
   // `GateService` fails closed and every such request parks as pending.
   const handle = await startDaemon({
     cwd,
     gateDelegate: createEmSessionDelegate({
-      stateRoot: discoverConfig({ cwd }).stateRoot,
+      stateRoot: resolveHomePaths().home,
       cwd,
       onNotice: (line) => console.error(line),
       stderrLogDir: join(cwd, '.agile-daemon-cache', 'sessions'),
     }),
   });
   installShutdownSignals(handle);
-  return (
+  console.log(
     `agiled started: pid=${handle.lock.pid} ` +
-    `http=http://127.0.0.1:${handle.http.port} socket=${handle.rpc.socketPath} ` +
-    `state=${handle.config.stateRoot}`
+      `http=http://127.0.0.1:${handle.http.port} socket=${handle.rpc.socketPath} ` +
+      `home=${handle.config.home}`,
+  );
+  return new Promise<never>(() => {});
+}
+
+export interface DaemonStartOptions {
+  cwd?: string;
+  home?: string;
+}
+
+export async function runDaemonStart(options: DaemonStartOptions = {}): Promise<string> {
+  const cwd = options.cwd ?? process.cwd();
+  const paths = resolveHomePaths(options.home ? { home: options.home } : {});
+
+  const already = runningPid(paths);
+  if (already !== undefined) {
+    return `agiled already running: pid=${already} home=${paths.home}`;
+  }
+  // A pidfile whose holder is gone would otherwise make the child fail to
+  // take the lock for a process that no longer exists.
+  if (existsSync(paths.pidPath)) rmSync(paths.pidPath, { force: true });
+
+  mkdirSync(paths.logDir, { recursive: true });
+  const logFd = openSync(paths.logPath, 'a');
+
+  const child = spawn(
+    process.execPath,
+    [process.argv[1] ?? 'agile', 'daemon', 'start', '--foreground'],
+    {
+      cwd,
+      detached: true,
+      stdio: ['ignore', logFd, logFd],
+      env: { ...process.env, ...(options.home ? { AGILE_HOME: options.home } : {}) },
+    },
+  );
+  child.unref();
+
+  const deadline = Date.now() + START_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    const pid = runningPid(paths);
+    if (pid !== undefined) {
+      return (
+        `agiled started: pid=${pid} http=http://127.0.0.1:${paths.port} ` +
+        `socket=${paths.socketPath} home=${paths.home} log=${paths.logPath}`
+      );
+    }
+    if (child.exitCode !== null) break;
+    await sleep(POLL_MS);
+  }
+  throw new Error(
+    `agiled did not start (no pidfile at ${paths.pidPath} after ${START_TIMEOUT_MS}ms). See ${paths.logPath}.`,
+  );
+}
+
+export async function runDaemonStop(home?: string): Promise<string> {
+  const paths = resolveHomePaths(home ? { home } : {});
+  const pid = runningPid(paths);
+  if (pid === undefined) {
+    // Clear a stale pidfile so the next `start` doesn't have to.
+    if (existsSync(paths.pidPath)) rmSync(paths.pidPath, { force: true });
+    return `agiled is not running (home=${paths.home})`;
+  }
+  process.kill(pid, 'SIGTERM');
+  const deadline = Date.now() + STOP_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    if (!isAlive(pid)) {
+      // The daemon releases its own lock on a graceful shutdown; a crash
+      // between SIGTERM and release would leave the file behind.
+      if (existsSync(paths.pidPath)) rmSync(paths.pidPath, { force: true });
+      return `agiled stopped: pid=${pid}`;
+    }
+    await sleep(POLL_MS);
+  }
+  throw new Error(`agiled (pid ${pid}) did not exit within ${STOP_TIMEOUT_MS}ms`);
+}
+
+export interface DaemonStatusReport {
+  running: boolean;
+  pid?: number;
+  home: string;
+  port: number;
+  socketPath: string;
+  pidPath: string;
+  logPath: string;
+}
+
+export function daemonStatusReport(home?: string): DaemonStatusReport {
+  const paths = resolveHomePaths(home ? { home } : {});
+  const pid = runningPid(paths);
+  return {
+    running: pid !== undefined,
+    ...(pid !== undefined ? { pid } : {}),
+    home: paths.home,
+    port: paths.port,
+    socketPath: paths.socketPath,
+    pidPath: paths.pidPath,
+    logPath: paths.logPath,
+  };
+}
+
+export function formatDaemonStatus(report: DaemonStatusReport): string {
+  if (!report.running) return `agiled is not running (home=${report.home})`;
+  return (
+    `agiled running: pid=${report.pid} http=http://127.0.0.1:${report.port} ` +
+    `socket=${report.socketPath} home=${report.home}`
   );
 }

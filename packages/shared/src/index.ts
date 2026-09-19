@@ -29,3 +29,4 @@ export * from './review';
 export * from './merge';
 export * from './qa';
 export * from './repos';
+export * from './home-config';

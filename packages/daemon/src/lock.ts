@@ -1,17 +1,13 @@
 /**
- * PID/lock file — one `agiled` per repo (design/agile-agents-design.md §15
- * "Git model and teams": "One daemon per repo (it locks the state worktree
- * at start)").
+ * PID/lock file — one long-lived `agiled` per **state home** (D9,
+ * design/cockpit-design.md §7.1: "the tool is not a per-repo process").
  *
- * Location decision: the lock file lives at `<repo>/.agile-daemon.lock`,
- * *outside* `.agile/` (the state worktree, tracked on the orphan
- * state home). A lock file is host/process-instance information,
- * not repo state — it must never be committed, diffed, or shared between
- * clones, so it does not belong on a branch at all. Keeping it at the repo
- * root (sibling to `.agile/`, `.git/`) also means it exists before `.agile/`
- * does (a daemon can hold the lock while `agile init` runs) and survives
- * `.agile/` being an entirely separate worktree checkout. It is added to the
- * repo's `.gitignore` by `agile init` (see init.ts).
+ * T112: the pidfile is `<home>/agiled.pid`. It used to sit at
+ * `<repo>/.agile-daemon.lock`, back when a daemon belonged to a repo; one
+ * daemon serving every registered repo means the mutual exclusion it
+ * enforces is per-home, and `agile daemon status|stop` (which may run from
+ * anywhere, including outside any repo) reads it from the home too.
+ * Host/process-instance information, never committed or shared.
  */
 
 import { existsSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
@@ -41,14 +37,14 @@ export class LockError extends Error {
     public readonly holderPid: number,
   ) {
     super(
-      `agiled is already running for this repo (pid ${holderPid}, lock at ${lockPath}). Stop that daemon first, or remove the lock file if it is stale.`,
+      `agiled is already running (pid ${holderPid}, lock at ${lockPath}). Stop that daemon first, or remove the lock file if it is stale.`,
     );
     this.name = 'LockError';
   }
 }
 
 /**
- * Acquires the per-repo daemon lock. Throws `LockError` if a live process
+ * Acquires the per-home daemon lock. Throws `LockError` if a live process
  * already holds it; silently reclaims a stale lock (holder no longer alive).
  */
 export function acquireLock(lockPath: string): LockHandle {

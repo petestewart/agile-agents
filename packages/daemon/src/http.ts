@@ -646,7 +646,17 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
         return Response.json(payload);
       }
 
-      if (url.pathname === '/' || url.pathname === '/feed') {
+      /**
+       * T112: the cockpit is the product, so it is served at `/` — the one
+       * URL an operator types. The v0 static feed page keeps `/feed`.
+       */
+      if (url.pathname === '/') {
+        return new Response(Bun.file(join(CONTROL_ROOM_DIST_DIR, 'index.html')), {
+          headers: { 'content-type': 'text/html; charset=utf-8' },
+        });
+      }
+
+      if (url.pathname === '/feed') {
         return new Response(Bun.file(FEED_HTML_PATH), {
           headers: { 'content-type': 'text/html; charset=utf-8' },
         });
@@ -654,10 +664,9 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
 
       /**
        * Control room SPA (T025 — §17 "Control room", §18 "UI: React + Vite
-       * SPA ... serves the built UI as static files"). `/` and `/feed` stay
-       * the T020 static page above; the React app lives at its own prefix
-       * (`vite.config.ts`'s `base: '/control-room/'`) so both v0 UIs can be
-       * served side by side.
+       * SPA ... serves the built UI as static files"). Its assets keep their
+       * own `/control-room/` prefix (`vite.config.ts`'s `base`), which is why
+       * the index.html served at `/` above resolves them correctly.
        */
       /**
        * T041: the chat panel as its own route, so the control room can pop
@@ -672,10 +681,16 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
           headers: { 'content-type': 'text/html; charset=utf-8' },
         });
       }
+      /**
+       * T112: `/control-room` moved to `/`; this stays a redirect so old
+       * links, bookmarks and the design docs keep working. The query string
+       * is preserved — `?view=sprint` is how the cockpit is deep-linked.
+       */
       if (url.pathname === '/control-room' || url.pathname === '/control-room/') {
-        return new Response(Bun.file(join(CONTROL_ROOM_DIST_DIR, 'index.html')), {
-          headers: { 'content-type': 'text/html; charset=utf-8' },
-        });
+        // A relative `Location` is legal (RFC 7231 §7.1.2) and avoids
+        // baking the host into the redirect; `Response.redirect` itself
+        // requires an absolute URL, so the header is set by hand.
+        return new Response(null, { status: 302, headers: { location: `/${url.search}` } });
       }
       if (url.pathname.startsWith('/control-room/')) {
         const rel = url.pathname.slice('/control-room/'.length);

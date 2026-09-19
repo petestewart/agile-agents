@@ -70,17 +70,28 @@ describe('WebSocket /ws', () => {
   });
 });
 
-describe('GET / and /feed', () => {
-  test('serve the static feed page without a store (feed routes just 503 for data)', async () => {
+describe('GET /, /feed and the /control-room redirect (T112)', () => {
+  test('/feed serves the static feed page without a store (feed routes just 503 for data)', async () => {
     const res = await fetch(`http://127.0.0.1:${server.port}/feed`);
     expect(res.status).toBe(200);
     expect(res.headers.get('content-type')).toContain('text/html');
     const body = await res.text();
     expect(body).toContain('<title>Agile Agents');
     expect(body).toContain('/ws');
+  });
 
+  test('/ serves the control room, and /control-room redirects to it keeping the query', async () => {
     const root = await fetch(`http://127.0.0.1:${server.port}/`);
     expect(root.status).toBe(200);
+    expect(root.headers.get('content-type')).toContain('text/html');
+    // The SPA's assets keep their own `/control-room/` base.
+    expect(await root.text()).toContain('/control-room/assets/');
+
+    const moved = await fetch(`http://127.0.0.1:${server.port}/control-room?view=sprint`, {
+      redirect: 'manual',
+    });
+    expect(moved.status).toBe(302);
+    expect(moved.headers.get('location')).toBe('/?view=sprint');
   });
 });
 

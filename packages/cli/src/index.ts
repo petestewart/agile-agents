@@ -12,10 +12,15 @@
  * `index.ts` is pure dispatch — one file per verb lives under `commands/`.
  */
 
-import { join } from 'node:path';
-import { createEmSessionDelegate, discoverConfig } from '@agile-agents/daemon';
+import { resolveHomePaths } from '@agile-agents/daemon';
 import { type ParsedArgs, parseArgs } from './args';
-import { runCliDaemonStart } from './commands/daemon';
+import {
+  daemonStatusReport,
+  formatDaemonStatus,
+  runDaemonForeground,
+  runDaemonStart,
+  runDaemonStop,
+} from './commands/daemon';
 import {
   runApprove,
   runBreakerClear,
@@ -30,7 +35,6 @@ import { parseHookArgs, runHook } from './commands/hook';
 import { runCliInit } from './commands/init';
 import { runQuestionAnswer, runQuestionList, runQuestionRaise } from './commands/question';
 import { runRepoAdd, runRepoList } from './commands/repo';
-import { runDemoSprint } from './commands/run';
 import { runSend } from './commands/send';
 import { runStatus } from './commands/status';
 import { runSync } from './commands/sync';
@@ -41,9 +45,7 @@ export const PACKAGE_NAME = '@agile-agents/cli';
 // Re-exported for the existing T004 test suite and any embedder that wants
 // the pieces directly rather than going through `runCli`.
 export { runCliInit };
-export { runCliDaemonStart };
-export { runDemoSprint };
-export type { RunOptions, RunResult } from './commands/run';
+export { runDaemonStart, runDaemonStop, runDaemonForeground, daemonStatusReport };
 export type { CliInitResult } from './commands/init';
 
 function usage(): string {
@@ -54,8 +56,9 @@ function usage(): string {
     '  init                       create the state home ($AGILE_HOME, default ~/.agile/) if missing',
     '  repo add <path> [--name <n>] [--protected a,b] [--target-branch <b>] [--vendor <v>]',
     '  repo list                  list registered repos',
-    '  daemon start               start agiled in the foreground for this repo',
-    '  run [--seed <path>] [--live] [--port <n>] [--max-ticks <n>]   drive one sprint layer unattended (T021)',
+    '  daemon start               start agiled detached (pidfile + log in the state home)',
+    '  daemon stop                stop the running agiled',
+    '  daemon status              is agiled running? pid, port, socket, home',
     '  status                     sprint/tickets/agents/spend',
     '  tail                       tail the event log (--follow, --ticket, --agent, --kind)',
     '  send                       send a bus message (--from --to --kind --priority --body [--ticket])',
@@ -80,8 +83,14 @@ function usage(): string {
   ].join('\n');
 }
 
-function socketPathFor(cwd: string): string {
-  return discoverConfig({ cwd }).socketPath;
+/**
+ * T112 (D9): every client verb resolves the daemon from the **state home**,
+ * never from a repo cwd — one long-lived daemon serves every registered
+ * repo, so `agile status`/`agile tail` work from anywhere, including outside
+ * any git repository.
+ */
+function socketPathFor(): string {
+  return resolveHomePaths().socketPath;
 }
 
 function reportError(err: unknown): number {
@@ -99,46 +108,33 @@ export async function runCli(argv: string[], cwd: string = process.cwd()): Promi
     return 0;
   }
 
-  if (command === 'daemon' && sub === 'start') {
-    console.log(await runCliDaemonStart(cwd));
-    // Foreground process: keep the event loop alive until shutdown signals fire.
-    return new Promise(() => {});
-  }
-
-  if (command === 'run') {
-    const args = parseArgs(rest.slice(1));
-    const live = args.options.live !== undefined;
-    const result = await runDemoSprint({
-      cwd,
-      seed: typeof args.options.seed === 'string' ? args.options.seed : undefined,
-      fake: !live,
-      // Live: em-owned gates are decided by a one-shot EM vendor session
-      // (`em/delegate.ts`); without it they park forever as pending.
-      gateDelegate: live
-        ? createEmSessionDelegate({
-            stateRoot: discoverConfig({ cwd }).stateRoot,
-            cwd,
-            onNotice: (line) => console.error(line),
-            stderrLogDir: join(cwd, '.agile-daemon-cache', 'sessions'),
-          })
-        : undefined,
-      maxTicks:
-        typeof args.options['max-ticks'] === 'string'
-          ? Number(args.options['max-ticks'])
-          : undefined,
-      port: typeof args.options.port === 'string' ? Number(args.options.port) : undefined,
-    });
-    if (json) {
-      console.log(JSON.stringify(result, null, 2));
-    } else {
-      console.log(`report: ${result.reportPath}`);
-      for (const o of result.ticketOutcomes) {
-        console.log(`  ${o.ticket}: status=${o.status} merged=${o.merged}`);
+  if (command === 'daemon') {
+    try {
+      if (sub === 'start') {
+        // Internal: the detached child re-invokes itself with this flag and
+        // *is* the daemon. Never typed by an operator.
+        if (rest.includes('--foreground')) {
+          await runDaemonForeground(cwd);
+          return 0;
+        }
+        console.log(await runDaemonStart({ cwd }));
+        return 0;
       }
-      console.log(`oversized-file hook check: ${result.oversizedReadDecision}`);
+      if (sub === 'stop') {
+        console.log(await runDaemonStop());
+        return 0;
+      }
+      if (sub === 'status') {
+        const report = daemonStatusReport();
+        if (json) console.log(JSON.stringify(report, null, 2));
+        else console.log(formatDaemonStatus(report));
+        return report.running ? 0 : 1;
+      }
+    } catch (err) {
+      return reportError(err);
     }
-    const allDone = result.ticketOutcomes.every((o) => o.merged);
-    return allDone || result.ticketOutcomes.length === 0 ? 0 : 1;
+    console.error(usage());
+    return 1;
   }
 
   if (!command) {
@@ -147,7 +143,7 @@ export async function runCli(argv: string[], cwd: string = process.cwd()): Promi
   }
 
   // Every remaining command is a client of the running daemon's socket.
-  const socketPath = socketPathFor(cwd);
+  const socketPath = socketPathFor();
 
   try {
     switch (command) {
@@ -156,7 +152,7 @@ export async function runCli(argv: string[], cwd: string = process.cwd()): Promi
 
       case 'tail': {
         const args = parseArgs(rest.slice(1));
-        const eventsPath = join(discoverConfig({ cwd }).stateRoot, 'log', 'events.jsonl');
+        const eventsPath = resolveHomePaths().eventsPath;
         return await runTail({
           eventsPath,
           follow: args.options.follow !== undefined,
