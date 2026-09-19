@@ -1,5 +1,7 @@
 # Agile Agents — Design Doc
 
+> **Superseded by `design/cockpit-design.md` (2026-09-19); kept for §8 adapter contract and §6 hook catalog, which remain valid.**
+
 Multi-agent coding orchestration modeled on an Agile engineering team. Living doc; reads as the current plan, not a history.
 
 Last updated: 2026-09-08 (design decisions closed; vendor spike complete incl. Pi; build decisions in §18 — ready for an implementation plan)
