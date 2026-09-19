@@ -125,12 +125,12 @@ Build order: Phase 0 → 1 → 2 → 3 → 4 → 5 → 6. Within a phase, ticket
 
 ### Ticket: T112 Long-lived `agiled` and thin CLI
 - **Priority:** P0
-- **Status:** In Progress
+- **Status:** Done
 - **Owner:** opus:worker-T112
 - **Scope:** `agile daemon start|stop|status` runs the daemon detached with a pidfile and a port in `config.yaml`; it never exits because work finished. `agile run` is deleted; its `advancePipeline` glue is replaced by per-stream drivers in Phase 3. `agile status`, `agile tail` talk to the daemon over the existing RPC. The control room is served at `/` (the `/control-room` path stays as a redirect).
 - **Acceptance Criteria:** Daemon survives the last stream closing; `agile status` works with no repo cwd; a second `start` is a no-op with the pid printed.
 - **Validation Steps:** `bun run test:integration` (daemon lifecycle test); manual: start, close the terminal, open the URL.
-- **Notes:** Delete `cli/src/commands/run.ts` and `runner/pipeline-glue.ts` here; do not port the glue.
+- **Notes:** Delete `cli/src/commands/run.ts` and `runner/pipeline-glue.ts` here; do not port the glue. Branch `T112-long-lived-daemon-thin-cli`. Deleted `run.ts` (1,378 lines), `run.e2e.test.ts`, `pipeline-glue.ts` (+ tests), `advancePipeline`, the `e2e` script. `agile daemon start` detaches (pidfile = lock, `<home>/log/agiled.log`), `stop`, `status`; `HomeConfigSchema` in shared; `resolveHomePaths()` for repo-less clients; `/` serves the control room, `/control-room` 302. `daemon.e2e.test.ts` replaces the run e2e in `test:integration`. Judgement calls: `daemon start` still resolves a repo cwd (18 subsystems need `repoRoot` until Phase 3); `startApprovedSprint()` moved to the ceremony tick (T122 deletes it). Review (sonnet) PASS, 1 nit (parent leaves the log fd open). Daemon source 34975 lines. merge: 3365208.
 
 ### Ticket: T113 ∥ Hardened worktree creation
 - **Priority:** P1
