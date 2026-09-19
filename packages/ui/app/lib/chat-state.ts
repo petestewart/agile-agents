@@ -158,8 +158,19 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       // The reply id names the turn from here on: `chat_delta` frames carry
       // it, and so does the stored reply, so adopting it is what makes the
       // streamed bubble and its bus copy one line.
-      lines = replaceLine(lines, state.turnId ?? PENDING_LINE_ID, { id: action.replyId });
-      return { lines, turnId: action.replyId };
+      const target = state.turnId ?? PENDING_LINE_ID;
+      // T111: the turn can already be over by the time this POST response
+      // lands — a session that fails on spawn ends before the browser learns
+      // the reply id, and `chat_turn_end` has already patched the
+      // placeholder and cleared `turnId`. Re-arming it here would leave the
+      // panel waiting forever for an end frame that has been and gone (the
+      // input stays disabled, "the EM is answering" stays on screen). Adopt
+      // the id either way, but only re-arm a turn still in flight.
+      const ended =
+        state.turnId === undefined &&
+        lines.some((l) => l.id === target && l.pending !== true && l.streaming !== true);
+      lines = replaceLine(lines, target, { id: action.replyId });
+      return ended ? { lines } : { lines, turnId: action.replyId };
     }
 
     // Both end the turn the same way: the reason goes in the bubble, and the
