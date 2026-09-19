@@ -127,6 +127,42 @@ describe('ResidentEm', () => {
     }
   }, 20000);
 
+  /**
+   * T051 root cause: `acp-client`'s `session.on()` replays the event ring to
+   * every new listener, and `runTurn` used to attach one per turn — so turn
+   * N's first deltas were turn N-1's reply, which the control room rendered
+   * as an instantly-filled "pending" bubble holding the previous answer. Each
+   * turn must see only its own chunks (and `done` must not carry the stale
+   * prefix when the vendor reports no final text).
+   */
+  test('T051: a later turn streams only its own deltas, never a replay of the previous reply', async () => {
+    const em = new ResidentEm({
+      cwd: repo,
+      store,
+      provider: fakeProvider({
+        steps: [
+          { type: 'agent_text', text: 'REPLY-' },
+          { type: 'agent_text', text: 'TEXT' },
+          { type: 'end_turn' },
+        ],
+      }),
+    });
+    try {
+      const first = em.prompt('first');
+      expect(await collect(first)).toEqual(['REPLY-', 'TEXT']);
+      expect(await first.done).toBe('REPLY-TEXT');
+
+      const second = em.prompt('second');
+      expect(await collect(second)).toEqual(['REPLY-', 'TEXT']);
+      expect(await second.done).toBe('REPLY-TEXT');
+
+      const third = em.prompt('third');
+      expect(await collect(third)).toEqual(['REPLY-', 'TEXT']);
+    } finally {
+      em.stop();
+    }
+  }, 20000);
+
   test('serialises concurrent prompts — one turn at a time, in order', async () => {
     const em = new ResidentEm({
       cwd: repo,

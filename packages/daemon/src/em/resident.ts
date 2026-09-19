@@ -247,6 +247,22 @@ export class ResidentEm {
   private needsBrief = false;
   /** T049: the model this session reported on `session/new`; `'unknown'` until it has. */
   private model = 'unknown';
+  /**
+   * T051: the turn currently collecting this session's message chunks.
+   *
+   * The chunk listener is attached ONCE per spawn (`ensureSession`), never
+   * per turn: `acp-client`'s `session.on()` replays the event ring to every
+   * new listener (session.ts — "so a listener attached after the handshake
+   * still sees `initialized`, anything since"), so a listener added at the
+   * top of turn N was handed turn N-1's `agent_message_chunk` frames as its
+   * first deltas. The control room rendered that as "the EM's reply appears
+   * instantly, filled with its previous answer" (Pete, 2026-09-19), and a
+   * turn whose vendor reported no final text got the stale prefix on the bus
+   * too (`runTurn` falls back to the streamed text). Routing the one
+   * subscription into whichever turn is live keeps every delta inside its
+   * own turn.
+   */
+  private active: { queue: DeltaQueue; streamed: string } | undefined;
 
   constructor(private readonly options: ResidentEmOptions) {
     this.provider = options.provider ?? resolveAcpProvider(undefined);
@@ -298,26 +314,24 @@ export class ResidentEm {
 
   private async runTurn(text: string, queue: DeltaQueue): Promise<string> {
     let timer: ReturnType<typeof setTimeout> | undefined;
-    let streamed = '';
+    const active: { queue: DeltaQueue; streamed: string } = { queue, streamed: '' };
     try {
       const session = await this.ensureSession();
       const prompt =
         this.needsBrief && this.options.brief ? `${this.options.brief()}\n\n${text}` : text;
       this.needsBrief = false;
-      const unsubscribe = session.on((event) => {
-        const chunk = messageChunkText(event);
-        if (chunk !== undefined) {
-          streamed += chunk;
-          queue.push(chunk);
-        }
-      });
+      // Claim the session's chunk stream for this turn (turns are serialised
+      // by `this.chain`, so at most one claim is live). Set AFTER
+      // `ensureSession` so a respawn's handshake frames are never folded into
+      // a turn, and released in the `finally` below.
+      this.active = active;
       try {
         const turn = (async () => {
           const reply = await session.prompt(prompt);
           if (reply.status !== 'completed' && reply.error) {
             throw new Error(`resident EM turn failed: ${reply.error.message ?? reply.status}`);
           }
-          return reply.text.length > 0 ? reply.text : streamed;
+          return reply.text.length > 0 ? reply.text : active.streamed;
         })();
         const timeout = new Promise<never>((_resolve, reject) => {
           timer = setTimeout(
@@ -329,7 +343,7 @@ export class ResidentEm {
         queue.close();
         return full;
       } finally {
-        unsubscribe();
+        if (this.active === active) this.active = undefined;
       }
     } catch (err) {
       const error = err instanceof Error ? err : new Error(String(err));
@@ -374,6 +388,16 @@ export class ResidentEm {
     // A vendor that dies (crash, `kill -9`, operator closing it) must not
     // leave a dead handle behind: the next prompt respawns instead.
     this.unsubscribe = session.on((event) => {
+      // T051: the session's ONE chunk listener, feeding whichever turn is
+      // live (`this.active`). Attached here, before `initialized`, so the
+      // ring it replays holds nothing but this session's own handshake — a
+      // listener added per turn replayed the previous turn's reply as the new
+      // turn's first deltas.
+      const chunk = messageChunkText(event);
+      if (chunk !== undefined && this.active) {
+        this.active.streamed += chunk;
+        this.active.queue.push(chunk);
+      }
       // T049: the model arrives once, on the `session/new` result — captured
       // here rather than in `runTurn` so it is known as soon as the session
       // is ready, not only after the first reply.
