@@ -519,6 +519,15 @@ Priority encodes dependency layer as well as importance: P0 tickets are v0-block
 - **Validation Steps:** `bun test packages/daemon/src/em/report.test.ts packages/daemon/src/feed`; `bun run test:e2e`; `bun run test:integration`.
 - **Notes:** Pete: "why does this appear when the sprint is not done".
 
+### Ticket: T051 EM chat: pending reply shows a thinking indicator, never stale text
+- **Priority:** P1
+- **Status:** In Progress
+- **Owner:** opus:worker-T051
+- **Scope:** Depends on T049. Seen live (2026-09-19): on Send, the EM's pending bubble appears instantly filled with the text of its previous reply, then is replaced when the real stream arrives. Required in `packages/ui/app/components/ChatPanel.tsx` (and the shared ws/chat state it uses): on send, append the human line and an EM placeholder bubble with a thinking indicator (animated dots or a "thinking…" verb, `aria-live=polite`) whose body is empty; `chat_delta` frames append text to that bubble only when their `message_id` matches the turn that was started (or the first delta after the send); `chat_turn_end` finalizes it; a turn that errors (`resident EM turn failed …`) or times out shows that in the bubble instead of hanging; history reload never shows a placeholder. Find the actual cause (likely the pending bubble reuses the last EM message object / index, or deltas are keyed by position) and fix it at the source, not by clearing text on send.
+- **Acceptance Criteria:** Playwright with the fake EM: after Send the placeholder shows the indicator and no previous text; deltas fill it; turn end removes the indicator; a second send while a turn is in flight is queued or disabled with a visible reason; a forced turn failure renders an error line in the bubble. Unit test on the chat reducer/state for the delta-to-turn matching.
+- **Validation Steps:** `bun run test:e2e`; `bun test packages/ui packages/daemon/src/feed`.
+- **Notes:** Pete: "it should have a spinner or thinking verb or something until it streams its response".
+
 ## 8. Open Questions
 
 - **Name.** `agile` / `agiled` / `.agile/` are placeholders. Decide before T008 lands so the CLI name is stable.
