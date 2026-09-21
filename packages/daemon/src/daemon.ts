@@ -3,80 +3,36 @@
  * unix-socket JSON-RPC server, and the localhost HTTP+WebSocket server into
  * one start/stop lifecycle (design/agile-agents-design.md §18 "Technical
  * shape", §15 "one daemon per repo").
+ *
+ * T122 deleted the role and ceremony layer that used to be assembled here
+ * (the resident EM and its loop, the architect planning turn, the oracle, QA,
+ * halts/ripple, quota and handoff, the merge owner's promote-to-main path and
+ * the review round machine). What is left is the substrate the reshape keeps:
+ * streams, questions, gates, the inbox, the hook endpoint, tools and the two
+ * servers.
  */
 
 import { existsSync } from 'node:fs';
-import { join } from 'node:path';
-import type { TicketId } from '@agile-agents/shared';
 import daemonPackageJson from '../package.json' with { type: 'json' };
-import { registerArchitectTools } from './architect';
-import { renderEmBrief } from './briefs';
 import { Bus, buildBusRpcMethods } from './bus';
-import { roleOf } from './bus/routing';
-import {
-  type AgileConfig,
-  CONFIG_FILE_NAME,
-  type DiscoverConfigOptions,
-  discoverConfig,
-} from './config';
-import {
-  EM_TOOLS,
-  EmChatService,
-  EmLoop,
-  type EmToolDeps,
-  ResidentEm,
-  buildEmRpcMethods,
-  latestSprint,
-  policyOrDefault,
-} from './em';
-import { pickCurrentSprint } from './feed';
+import { type AgileConfig, type DiscoverConfigOptions, discoverConfig } from './config';
 import { GateService, buildGateRpcMethods } from './gates';
 import type { DelegateFn } from './gates';
-import { buildHaltRpcMethods } from './halts';
-import { HandoffCoordinator, buildHandoffRpcMethods, registerHandoffTools } from './handoff';
 import { HookService, buildHookRpcMethods } from './hook';
 import { type HttpServerHandle, startHttpServer } from './http';
 import { InboxService, buildInboxRpcMethods } from './inbox';
 import { type LockHandle, acquireLock } from './lock';
-import { MergeOwner, buildMergeRpcMethods, sprintReviewApproved } from './merge';
-import { buildOracleRpcMethods } from './oracle';
-import {
-  type ArchitectPlanner,
-  PlanService,
-  type Reexaminer,
-  liveArchitectPlanner,
-  startPlanningTurn,
-} from './plan';
-import { QaProtocol, buildQaRpcMethods, decideQaRead, registerQaTools } from './qa';
 import { QuestionService, buildQuestionRpcMethods } from './questions';
-import { QuotaService, buildQuotaRpcMethods } from './quota';
-import {
-  REVIEW_BUILTIN_TOOLS,
-  ReviewProtocol,
-  type ReviewVerbDeps,
-  buildReviewRpcMethods,
-  qaGet,
-  reviewDispute,
-  reviewGet,
-  reviewSubmit,
-  rulesList,
-} from './review';
 import { type RpcServerHandle, startRpcServer } from './rpc';
-import { Runner, buildRunnerRpcMethods, resolveCliBin } from './runner';
-import type { AgentSessionOptions } from './runner';
+import { resolveCliBin } from './runner';
 import { StateStore, buildStateRpcMethods } from './store';
 import { StreamService, buildStreamRpcMethods } from './streams';
-import { DAEMON_CACHE_DIR } from './subprocess-env';
-import { HttpJiraClient, JiraSync, buildSyncRpcMethods, resolveJiraSettings } from './sync';
 import { LiveRunner, ToolService, buildToolRpcMethods, loadToolRegistry } from './tools';
-
-/** The ACP spawn seam `ResidentEm` takes (same shape as `em/delegate.ts`'s). */
-type ResidentEmSpawn = NonNullable<ConstructorParameters<typeof ResidentEm>[0]['spawn']>;
 
 export const DAEMON_VERSION: string = daemonPackageJson.version;
 
-/** Gate + EM ceremony tick cadence — same 30 s as the heartbeat tunable (CLAUDE.md). */
-export const CEREMONY_TICK_MS = 30 * 1000;
+/** Gate tick cadence — same 30 s as the heartbeat tunable (CLAUDE.md). */
+export const GATE_TICK_MS = 30 * 1000;
 
 export interface DaemonHandle {
   config: AgileConfig;
@@ -94,87 +50,31 @@ export interface DaemonHandle {
   store?: StateStore;
   bus?: Bus;
   gateService?: GateService;
+  streamService?: StreamService;
   questionService?: QuestionService;
-  runner?: Runner;
-  mergeOwner?: MergeOwner;
-  reviewProtocol?: ReviewProtocol;
-  qaProtocol?: QaProtocol;
-  emLoop?: EmLoop;
-  /**
-   * T041: the daemon's one long-lived EM ACP session, backing the control
-   * room's chat panel. Lazily spawned (nothing runs until the first chat
-   * turn) and never used for gate decisions — those stay with the one-shot
-   * delegate, so killing this session cannot stall a gate. `undefined`
-   * pre-`agile init`.
-   */
-  residentEm?: ResidentEm;
-  /** T041: the chat thread on top of `residentEm` — what `/api/chat/em` reads and writes. `undefined` pre-`agile init`. */
-  emChat?: EmChatService;
-  /** T045: Jira two-way sync — `undefined` unless Jira is configured (base URL + credentials in the environment). */
-  jiraSync?: JiraSync;
+  inboxService?: InboxService;
   /** Graceful shutdown: closes both servers, then releases the lock. */
   stop(): Promise<void>;
 }
 
 export interface StartDaemonOptions extends DiscoverConfigOptions {
   /**
-   * Test/offline-run seam: overrides every spawned engineer/reviewer/qa
-   * session's underlying ACP transport (forwarded to `Runner`'s own
-   * `spawn` option, `runner/session.ts`'s `AgentSessionOptions['spawn']`).
-   * Real usage never sets this — `LiveRunner`/the default `spawnSession`
-   * stay in effect. Offline tests substitute the same fake-agent transport
-   * `runner/*.test.ts` already uses.
-   */
-  runnerSpawn?: AgentSessionOptions['spawn'];
-  /**
    * Test/offline-run seam: `GateService`'s own decision delegate
-   * (`gates/service.ts`) — a gate whose policy owner resolves to `em` (or
-   * `architect`) is decided synchronously by this function instead of
-   * waiting on a live EM/architect session to call `gate.respond` itself.
-   * Real usage never sets this (a live EM session answers its own gates);
-   * offline tests do, since they never spawn one.
+   * (`gates/service.ts`) — a gate whose policy owner does not resolve to the
+   * human is decided synchronously by this function instead of waiting for a
+   * `gate.respond` call. Real usage leaves it unset.
    */
   gateDelegate?: DelegateFn;
   /**
-   * T041 test/offline-run seam: overrides the resident EM chat session's ACP
-   * transport, exactly as `runnerSpawn` does for engineer/reviewer/qa
-   * sessions. Real usage never sets it (the default `spawnSession` spawns
-   * the operator's own vendor login). Without it — and with no vendor
-   * installed — a chat turn fails loudly into the thread rather than
-   * silently doing nothing.
+   * Gate tick cadence. Default `GATE_TICK_MS` (30 s); `0` disables the
+   * daemon's own timer for a caller (a test) that drives `gateService.tick()`
+   * itself — two concurrent drivers over the same gates double-decide.
    */
-  emChatSpawn?: ResidentEmSpawn;
-  /**
-   * T042 test/offline-run seam: the architect's planning turn for the first
-   * goal typed into the control-room chat. Defaults to
-   * `liveArchitectPlanner` (one real architect ACP session in `plan` mode).
-   * Offline tests pass a double that calls the same daemon verbs the
-   * architect would, so the daemon side of the planning turn is what runs
-   * either way.
-   */
-  architectPlanner?: ArchitectPlanner;
-  /**
-   * T042: the architect's judgment in the post-decision re-examination pass
-   * (§17 v2). Without one every not-done ticket is still *recorded* — as
-   * `unchanged`, with the reason on the `ticket_reexamined` event — so the
-   * pass never silently skips a ticket.
-   */
-  reexaminer?: Reexaminer;
-  /**
-   * Ceremony tick cadence. Default `CEREMONY_TICK_MS` (30 s); `0` disables
-   * the daemon's own timer for a caller (a test) that drives
-   * `gateService.tick()`/`emLoop.tick()` itself — two concurrent drivers
-   * over the same inboxes double-prompt and double-ack.
-   */
-  ceremonyTickMs?: number;
+  gateTickMs?: number;
   /**
    * Test-only seam: the daemon's own clock, threaded to `Bus` (heartbeat
-   * timestamps + coalescing, `bus/bus.ts`) and `Runner` (forwarded to every
-   * spawned session's own `now`, `runner/session.ts`) so a test can run a
-   * real heartbeat-coalescing window (`StateStore.heartbeat`'s
-   * `HEARTBEAT_COALESCE_MS`, 30s) or a real liveness timeout in
-   * well-under-a-second of actual wall-clock time — e.g. an accelerated
-   * clock, not a counter mock, so ordering/proportional gaps stay real.
+   * timestamps + coalescing, `bus/bus.ts`) so a test can run a real
+   * heartbeat-coalescing window in well-under-a-second of wall-clock time.
    * Real usage never sets this (the daemon runs on the system clock).
    */
   now?: () => Date;
@@ -188,25 +88,18 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
   // `.agile/` may not exist yet (before `agile init`); state.* stays fully
   // stubbed in that case, same as T004 — only wire the real handlers when
   // there's a state root to open them against.
-  // One StateStore instance is shared by every RPC namespace (same mutex,
-  // same agile-state worktree).
   const store = existsSync(config.stateRoot) ? StateStore.open(config.stateRoot) : undefined;
   // Hoisted (T020) so the same GateService instance backs both `gate.*` RPC
-  // and the feed page's HIL snapshot/approve/delegate HTTP routes.
+  // and the HIL snapshot/approve HTTP routes.
   const gateService = store
     ? new GateService(store, options.gateDelegate ? { delegate: options.gateDelegate } : {})
     : undefined;
   // T120/T121: one `StreamService` behind `stream.*` RPC, the questions
   // service (which writes thread entries and status flips) and the inbox.
   const streamService = store ? new StreamService(store) : undefined;
-  // Questions store (T121, cockpit design §1.4): one instance backs the
-  // `question.*` RPC, the `/api/questions` routes and the inbox.
   const questionService =
     store && streamService ? new QuestionService(store, streamService) : undefined;
   // The inbox (§3): everything waiting on the human, across all streams.
-  // Derived per call from questions, gates and the streams themselves —
-  // never from the bus, which is why a stale message from a previous run
-  // cannot appear as an item.
   const inboxService =
     streamService && questionService && gateService
       ? new InboxService({
@@ -215,475 +108,47 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
           gates: gateService,
         })
       : undefined;
-  // Hoisted (T011) so `bus.*` RPC, the hook service, and the tool service's
-  // `bus_send` built-in all share one `Bus` instance over the same store.
+  // Hoisted (T011) so `bus.*` RPC and the hook service share one `Bus`
+  // instance over the same store.
   const bus = store ? new Bus(store, config.stateRoot, { now: options.now }) : undefined;
-  // Quota records + routing data (T023): fed by every session's
-  // `usage_update` through the runner; read by `quota.*` RPC, `agile
-  // status`, and the feed header.
-  const quotaService = store && bus ? new QuotaService({ store, bus }) : undefined;
-  // QA protocol (T017, §13): fresh clone per ticket, contract-path deny,
-  // criteria runs, verdicts. Constructed before the tool service and the
-  // runner because both take closures over it.
-  const qaProtocol =
-    store && bus ? new QaProtocol({ store, bus, repoRoot: config.repoRoot }) : undefined;
-  // Tool registry (§7 "Tool framework"): loaded once at startup from
-  // `.agile/tools/*/tool.yaml`. `LiveRunner` spawns a real short-lived Claude
-  // ACP session per `runner.tier` call — the daemon's actual runtime path;
-  // `FakeRunner` exists only for this package's own tests.
-  const toolService =
-    store && bus
-      ? new ToolService({
-          store,
-          bus,
-          registry: loadToolRegistry(config.stateRoot),
-          runner: new LiveRunner(),
-          repoRoot: config.repoRoot,
-          // Review fix (T011): resolved per call, not memoized — the current
-          // sprint can change over the daemon's life. Same "latest started,
-          // ties by id" rule the feed snapshot uses (`pickCurrentSprint`),
-          // reused rather than re-derived so the two never drift apart.
-          currentSprintId: () => pickCurrentSprint(store.listSprints())?.id,
-          // T017: `read_summary` reads the file itself, so a QA session
-          // could otherwise bypass the hook-tier contract-path deny (§13)
-          // through this tool. Same `decideQaRead` the hook tier relies on,
-          // resolved against the QA clone (`runner/worktrees.ts`'s
-          // `.worktrees/<TKT>-qa` convention).
-          pathGuard: (ctx, absolutePath) => {
-            if (roleOf(ctx.agent) !== 'qa' || !ctx.ticket) return { allow: true };
-            const ticket = store.getTicket(ctx.ticket as TicketId);
-            return decideQaRead(
-              {
-                role: 'qa',
-                ticket,
-                worktreePath: join(config.repoRoot, '.worktrees', `${ticket.id}-qa`),
-              },
-              absolutePath,
-            );
-          },
-        })
-      : undefined;
-  // Agent runner (T012): worktree placement, brief assembly, ACP session
-  // wiring, and the periodic liveness/redelivery sweep — see runner/runner.ts.
+  // Tool registry: loaded once at startup from `.agile/tools/*/tool.yaml`.
+  // `LiveRunner` spawns a real short-lived Claude ACP session per
+  // `runner.tier` call; `FakeRunner` exists only for this package's tests.
+  const toolService = store
+    ? new ToolService({
+        registry: loadToolRegistry(config.stateRoot),
+        runner: new LiveRunner(),
+        repoRoot: config.repoRoot,
+      })
+    : undefined;
+  // How spawned sessions reach this daemon's own CLI for their hook command
+  // and MCP server — resolved to something that actually runs on this host
+  // (`runner/cli-bin.ts`), never assumed on $PATH.
   const cliBin = resolveCliBin();
   if (cliBin.source === 'missing') {
     console.error(
       'agiled: no `agile` CLI found (no AGILE_CLI_BIN, no workspace entry, nothing on $PATH) — spawned sessions will have no hooks or MCP tools; set AGILE_CLI_BIN',
     );
   }
-  const runner =
-    store && bus
-      ? new Runner({
-          store,
-          bus,
-          repoRoot: config.repoRoot,
-          // How spawned sessions reach this daemon's own CLI for their hook
-          // command and MCP server — resolved to something that actually
-          // runs on this host (`runner/cli-bin.ts`), never assumed on $PATH.
-          cliBin,
-          socketPath: config.socketPath,
-          gateService,
-          // T017: a QA spawn opens the protocol's round for that ticket
-          // (criteria parsing, env resolution) against the fresh clone.
-          onQaSpawn: qaProtocol
-            ? (ticket, worktree) => qaProtocol.start(ticket, worktree)
-            : undefined,
-          spawn: options.runnerSpawn,
-          now: options.now,
-        })
-      : undefined;
-  runner?.startSweep();
-  // Merge and integration owner (T019, §15): ticket branch -> integration
-  // on QA accept (`merge.ticket`), integration -> main gated on the latest
-  // `sprint_review` HIL decision (fail-closed via `sprintReviewApproved`).
-  const mergeOwner =
-    store && bus && gateService
-      ? new MergeOwner(store, bus, config.repoRoot, {
-          gateApproved: () => sprintReviewApproved(gateService),
-          // T046 defect 3: a promotion blocked by `main` being checked out
-          // in the operator's own clone opens one human-owned
-          // `promote_to_main` gate (with the workaround in its summary)
-          // instead of throwing deep inside the EM's sprint review.
-          gates: gateService,
-        })
-      : undefined;
-  // Review protocol (T016, §12) — hoisted above the ceremony timer (T021)
-  // so the pipeline glue below can call `reviewProtocol.start` on an
-  // engineer's `review_request`; re-used, not re-constructed, by the
-  // role-scoped verb provider block further down.
-  const reviewProtocol =
-    store && bus && runner
-      ? new ReviewProtocol({ store, bus, runner, repoRoot: config.repoRoot })
-      : undefined;
 
-  // EM protocol loop (T015, §9–§11/§16): sprint planning, assignment,
-  // standups/quorum, discovery triage hand-off, sprint review. Its delegated
-  // sprint-review path merges integration -> main through the merge owner
-  // and only plans the next sprint once that merge actually landed.
-  const emLoop =
-    store && bus && runner && gateService && mergeOwner
-      ? new EmLoop({
-          store,
-          bus,
-          runner,
-          gateService,
-          sprintReview: {
-            mergeIntegrationToMain: async () => {
-              const outcome = await mergeOwner.mergeIntegrationToMain();
-              if (outcome.status !== 'merged') {
-                throw new Error(
-                  `integration -> main merge did not land (${outcome.status})${
-                    outcome.hilId ? ` [${outcome.hilId}]` : ''
-                  }: ${outcome.summary}`,
-                );
-              }
-            },
-          },
-        })
-      : undefined;
-  // Resident EM chat session (T041, §17 "Technical shape" → EM chat: "the
-  // EM runs as a child process of the daemon over ACP; the daemon relays
-  // its events over the WebSocket"). Constructed eagerly, spawned lazily —
-  // a daemon nobody chats to never starts a vendor process. Its brief is
-  // rendered per spawn from the same `latestSprint`/`policyOrDefault` the
-  // gate delegate uses, so the two EM surfaces never quote different state.
-  const residentEm =
-    store && bus
-      ? new ResidentEm({
-          cwd: config.repoRoot,
-          // Backs the `em`-role ACP permission responder (design §14 EM row)
-          // and logs every verdict as a `hook_decision` event.
-          store,
-          cliBin,
-          socketPath: config.socketPath,
-          stderrLogDir: join(config.repoRoot, DAEMON_CACHE_DIR, 'sessions'),
-          brief: () =>
-            renderEmBrief({
-              agent: 'em',
-              sprint: latestSprint(store),
-              policy: policyOrDefault(store),
-            }),
-          onNotice: (line) => console.error(line),
-          ...(options.emChatSpawn ? { spawn: options.emChatSpawn } : {}),
-        })
-      : undefined;
-  const emChat =
-    store && bus
-      ? new EmChatService({
-          store,
-          bus,
-          repoRoot: config.repoRoot,
-          ...(gateService ? { gates: gateService } : {}),
-          ...(questionService ? { questions: questionService } : {}),
-          ...(residentEm ? { resident: residentEm } : {}),
-          ...(options.now ? { now: options.now } : {}),
-        })
-      : undefined;
-
-  // Plan screen (T042, §17 "Control room v2"): one service behind every
-  // `/api/plan/*` route, plus the first-goal architect planning turn. The
-  // planner is the live architect session unless a caller (a test, `agile
-  // run`'s offline mode) substitutes one — the same seam `runnerSpawn` and
-  // `emChatSpawn` already are for the other two vendor surfaces.
-  const planService = store
-    ? new PlanService({
-        store,
-        ...(bus ? { bus } : {}),
-        ...(gateService ? { gates: gateService } : {}),
-        ...(questionService ? { questions: questionService } : {}),
-        ...(options.reexaminer ? { reexaminer: options.reexaminer } : {}),
-        ...(options.now ? { now: options.now } : {}),
-      })
-    : undefined;
-  const architectPlanner =
-    options.architectPlanner ??
-    (store && gateService
-      ? liveArchitectPlanner({
-          gateService,
-          policy: policyOrDefault(store),
-          cwd: config.repoRoot,
-          cliBin,
-          socketPath: config.socketPath,
-        })
-      : undefined);
-
-  // Handoff coordinator (T024, §10): exactly one instance for the daemon's
-  // lifetime — its quota-event cursor is seeded once at construction, so a
-  // per-tick instance would never see a `quota_low`/`quota_exhausted`.
-  const handoffCoordinator =
-    store && bus && runner && quotaService
-      ? new HandoffCoordinator({
-          store,
-          bus,
-          runner,
-          quota: quotaService,
-          repoRoot: config.repoRoot,
-        })
-      : undefined;
-  // Jira two-way sync (T045, §17 v2): constructed only when the operator has
-  // actually configured Jira (base URL + `JIRA_EMAIL`/`JIRA_API_TOKEN` in the
-  // environment — `sync/config.ts` never reads credentials from a file, and
-  // nothing here writes them anywhere). Unconfigured, every `sync.*` RPC
-  // method and the three `/api/sync/jira*` routes are simply absent/503 and
-  // no poll timer is armed: a repo that has never touched Jira pays nothing.
-  const jiraSettings = resolveJiraSettings(config);
-  const jiraSync =
-    store && jiraSettings
-      ? new JiraSync({
-          store,
-          client: new HttpJiraClient({
-            baseUrl: jiraSettings.baseUrl,
-            email: jiraSettings.email,
-            apiToken: jiraSettings.apiToken,
-          }),
-          // The link itself lives in the host-local `agile.config.yaml`
-          // (`jira.project`), which `link`/`unlink` read-modify-write —
-          // nothing new is ever written under `.agile/` (manager decision,
-          // T045 restructure); the per-ticket mapping and its shadow ride on
-          // the ticket files themselves.
-          configPath: join(config.repoRoot, CONFIG_FILE_NAME),
-          ...(jiraSettings.project ? { envProject: jiraSettings.project } : {}),
-          onError: (message) => console.error(message),
-        })
-      : undefined;
-  // Its own timer rather than a step in the ceremony tick: the pull cadence
-  // is a separate tunable (`JIRA_POLL_INTERVAL_MS`, default 60s) and a slow
-  // or unreachable Jira must not delay the EM loop. Errors are collected
-  // into the pass result and logged by `JiraSync` itself, never fatal.
-  const jiraTimer =
-    jiraSync && jiraSettings
+  // One daemon-level interval ticks the gate service (HIL deadline
+  // fallthrough, §16 — nothing else calls `GateService.tick()`). Errors are
+  // logged, never fatal: the daemon is long-lived (D9) and never exits
+  // because work finished.
+  const gateTickMs = options.gateTickMs ?? GATE_TICK_MS;
+  const gateTimer =
+    gateService && gateTickMs > 0
       ? setInterval(() => {
-          void jiraSync.tick().catch((err) => console.error('jira sync tick failed:', err));
-        }, jiraSettings.pollIntervalMs)
+          void gateService.tick().catch((err) => console.error('gate tick failed:', err));
+        }, gateTickMs)
       : undefined;
-  jiraTimer?.unref();
-
-  // Ceremony driver: one daemon-level interval ticks the gate service (HIL
-  // deadline fallthrough, §16 — nothing else calls `GateService.tick()`),
-  // then the handoff coordinator over every ticket (pausing a stuck-ready
-  // ticket must precede `assignReady`, which runs inside the EM tick), then
-  // the EM loop. Cadence matches the runner sweep / heartbeat tunable
-  // (30 s); errors are logged, never fatal to the daemon — the daemon is
-  // long-lived (D9) and never exits because work finished.
-  const ceremonyTickMs = options.ceremonyTickMs ?? CEREMONY_TICK_MS;
-  const ceremonyTimer =
-    gateService && emLoop && ceremonyTickMs > 0
-      ? setInterval(() => {
-          void (async () => {
-            try {
-              await gateService.tick();
-              if (handoffCoordinator && store) {
-                await handoffCoordinator.tick(store.listTickets().map((t) => t.id));
-              }
-              await emLoop.tick();
-              // T042: an `approve_plan` resolved after the cockpit's Start
-              // Sprint click returned — `PlanService.startSprint` persists
-              // nothing while that gate is pending, so this is where an
-              // approved-but-unstarted plan becomes a sprint. Idempotent.
-              if (planService) {
-                const started = await planService.startApprovedSprint();
-                if (started) console.error(`approve_plan approved — started ${started.id}`);
-              }
-            } catch (err) {
-              console.error('ceremony tick failed:', err);
-            }
-          })();
-        }, ceremonyTickMs)
-      : undefined;
-  ceremonyTimer?.unref();
-
-  // Role-scoped verb providers (T014 architect; T016 review; T015 em; T017
-  // adds qa). Each provider is only *listed* for its roles; the verbs
-  // themselves re-check the caller's role, so a mis-scoped listing can never
-  // widen what an agent may do.
-  let reviewDeps: ReviewVerbDeps | undefined;
-  if (toolService && store && bus && runner) {
-    const architect = registerArchitectTools({ store });
-    if (qaProtocol) {
-      const qaTools = registerQaTools(qaProtocol);
-      toolService.registerProvider({
-        roles: ['qa'],
-        listTools: () =>
-          qaTools.map((t) => ({
-            name: t.name,
-            description: t.description,
-            inputSpec: t.inputSpec,
-          })),
-        callTool: (ctx, name, input) => {
-          const tool = qaTools.find((t) => t.name === name);
-          if (!tool) throw new Error(`unknown qa verb: ${name}`);
-          return tool.handler(ctx, input);
-        },
-      });
-    }
-    if (handoffCoordinator) {
-      const handoffTools = registerHandoffTools();
-      toolService.registerProvider({
-        roles: ['em', 'human'],
-        listTools: () =>
-          handoffTools.map((t) => ({
-            name: t.name,
-            description: t.description,
-            inputSpec: t.inputSpec,
-          })),
-        callTool: (ctx, name, input) => {
-          const tool = handoffTools.find((t) => t.name === name);
-          if (!tool) throw new Error(`unknown handoff verb: ${name}`);
-          return tool.handler({ store, bus }, ctx, input);
-        },
-      });
-    }
-    if (emLoop && gateService && mergeOwner) {
-      const emDeps: EmToolDeps = {
-        store,
-        bus,
-        gateService,
-        runner,
-        sprintReview: {
-          mergeIntegrationToMain: async () => {
-            const outcome = await mergeOwner.mergeIntegrationToMain();
-            if (outcome.status !== 'merged') {
-              throw new Error(
-                `integration -> main merge did not land (${outcome.status})${
-                  outcome.hilId ? ` [${outcome.hilId}]` : ''
-                }: ${outcome.summary}`,
-              );
-            }
-          },
-        },
-      };
-      toolService.registerProvider({
-        roles: ['em'],
-        listTools: () =>
-          EM_TOOLS.map((t) => ({
-            name: t.name,
-            description: t.description,
-            inputSpec: t.inputSpec,
-          })),
-        callTool: (ctx, name, input) => {
-          const tool = EM_TOOLS.find((t) => t.name === name);
-          if (!tool) throw new Error(`unknown em verb: ${name}`);
-          return tool.handler(emDeps, ctx, input);
-        },
-      });
-    }
-    toolService.registerProvider({
-      roles: ['architect'],
-      listTools: () =>
-        architect
-          .listTools()
-          .map((t) => ({ name: t.name, description: t.description, inputSpec: t.inputSpec })),
-      callTool: (ctx, name, input) =>
-        architect.callTool({ agent: ctx.agent, ticket: ctx.ticket }, name, input),
-    });
-
-    // Review protocol (T016, §12): `diff_summary` + reviewer verbs for the
-    // reviewer role, `review_dispute` (+ `review_get`) for the engineer
-    // role. Reuses the instance hoisted above the ceremony timer (T021) —
-    // guaranteed constructed here, since it shares this block's exact
-    // `store && bus && runner` guard.
-    reviewDeps = { protocol: reviewProtocol as ReviewProtocol, store, stateRoot: config.stateRoot };
-    const deps = reviewDeps;
-    const reviewToolDeps = { store, bus, repoRoot: config.repoRoot };
-    const STRING = { type: 'string', optional: false } as const;
-    const STRING_OPT = { type: 'string', optional: true } as const;
-    const NUMBER = { type: 'number', optional: false } as const;
-    const ARRAY_OPT = { type: 'array', optional: true } as const;
-    const OBJECT = { type: 'object', optional: false } as const;
-    const reviewGetTool = {
-      name: 'review_get',
-      description: "Read one round's stored review verdict for the caller's ticket.",
-      inputSpec: { round: NUMBER, pass: STRING_OPT },
-      handler: reviewGet,
-    };
-    const qaGetTool = {
-      name: 'qa_get',
-      description:
-        "Read one round's stored QA report for the caller's ticket: every criterion with its status (pass/fail/flaky/skipped), the command run and the evidence. The qa_verdict message names only the round — read the failing lines here.",
-      inputSpec: { round: NUMBER },
-      handler: (ctx: { agent: string; ticket?: string }, input: unknown) => qaGet(deps, ctx, input),
-    };
-    const reviewerVerbs = [
-      qaGetTool,
-      ...REVIEW_BUILTIN_TOOLS.map((t) => ({
-        name: t.name,
-        description: t.description,
-        inputSpec: t.inputSpec,
-        handler: (ctx: { agent: string; ticket?: string }, input: unknown) =>
-          t.handler(reviewToolDeps, ctx, input),
-      })),
-      {
-        name: 'review_submit',
-        // Measured on the first live run with verbs (2026-09-10): this spec
-        // advertised `verdict` as an OBJECT while `VerdictSchema` requires
-        // the string enum, and `pass` as required — the reviewer retried
-        // review_submit 34 times against the zod rejection and no review
-        // record ever landed. The description now spells out the exact
-        // shape so the model gets it right on the first call.
-        description:
-          "Submit this round's verdict for the caller's ticket (reviewer-only). " +
-          'Input: { round: 1-based integer, verdict: "approve" | "request_changes" | "escalate", ' +
-          'findings?: [{ severity: "blocker" | "major" | "minor" | "nit", location: { path, line? }, ' +
-          'message, rule?: "RULE-###" | oracle_ref?: "DEC-####" (exactly one of the two) }], ' +
-          'pass?: "primary" (default) | "security" }. Findings default to []; a clean pass is ' +
-          'verdict "approve" with findings [].',
-        inputSpec: { round: NUMBER, pass: STRING_OPT, verdict: STRING, findings: ARRAY_OPT },
-        handler: (ctx: { agent: string; ticket?: string }, input: unknown) =>
-          reviewSubmit(deps, ctx, input),
-      },
-      {
-        ...reviewGetTool,
-        handler: (ctx: { agent: string; ticket?: string }, input: unknown) =>
-          reviewGet(deps, ctx, input),
-      },
-      {
-        name: 'rules_list',
-        description: 'List the review rules a finding must cite (reviewer-only).',
-        inputSpec: {},
-        handler: (ctx: { agent: string; ticket?: string }, input: unknown) =>
-          rulesList(deps, ctx, input),
-      },
-    ];
-    const engineerVerbs = [
-      qaGetTool,
-      {
-        ...reviewGetTool,
-        handler: (ctx: { agent: string; ticket?: string }, input: unknown) =>
-          reviewGet(deps, ctx, input),
-      },
-      {
-        name: 'review_dispute',
-        description:
-          'Dispute one review finding by its round-trip identity (path/line + citation) (engineer-only).',
-        inputSpec: { finding: OBJECT },
-        handler: (ctx: { agent: string; ticket?: string }, input: unknown) =>
-          reviewDispute(deps, ctx, input),
-      },
-    ];
-    for (const [roles, verbs] of [
-      [['reviewer'], reviewerVerbs],
-      [['engineer'], engineerVerbs],
-    ] as const) {
-      toolService.registerProvider({
-        roles,
-        listTools: () =>
-          verbs.map((v) => ({ name: v.name, description: v.description, inputSpec: v.inputSpec })),
-        callTool: (ctx, name, input) => {
-          const verb = verbs.find((v) => v.name === name);
-          if (!verb) throw new Error(`unknown review verb: ${name}`);
-          return verb.handler(ctx, input);
-        },
-      });
-    }
-  }
+  gateTimer?.unref();
 
   const extraMethods =
-    store && gateService && bus && toolService && runner && mergeOwner
+    store && gateService && bus && toolService
       ? {
           ...buildStateRpcMethods(store),
           ...buildBusRpcMethods(bus),
-          ...buildOracleRpcMethods(store),
-          ...buildHaltRpcMethods(store),
           ...buildGateRpcMethods(gateService),
           ...(questionService ? buildQuestionRpcMethods(questionService) : {}),
           ...(streamService ? buildStreamRpcMethods(streamService) : {}),
@@ -694,14 +159,6 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
             }),
           ),
           ...buildToolRpcMethods(toolService),
-          ...buildRunnerRpcMethods(runner),
-          ...(reviewDeps ? buildReviewRpcMethods(reviewDeps) : {}),
-          ...buildMergeRpcMethods(mergeOwner),
-          ...(emLoop ? buildEmRpcMethods(emLoop, store) : {}),
-          ...(qaProtocol ? buildQaRpcMethods(qaProtocol) : {}),
-          ...(quotaService ? buildQuotaRpcMethods(quotaService, store) : {}),
-          ...(handoffCoordinator ? buildHandoffRpcMethods(handoffCoordinator, store, bus) : {}),
-          ...(jiraSync ? buildSyncRpcMethods(jiraSync) : {}),
         }
       : undefined;
 
@@ -730,48 +187,10 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
       startedAt,
       store,
       gates: gateService,
+      streams: streamService,
       questions: questionService,
       inbox: inboxService,
-      quota: quotaService,
-      // T025 review round 1 (blocker 3, manager-granted): without this the
-      // control room's EM chat and Oracle propose-edit routes 503 forever
-      // — `bus` is already constructed above for the RPC `bus.*` methods.
       bus,
-      // T041: `/api/chat/em` (GET history, POST send) and the `chat_delta`/
-      // `chat_turn_end` frames on `/ws`.
-      emChat,
-      // T049: the chat header's `vendor / model`. A function, not a value:
-      // the model arrives on the resident session's `session/new`, which is
-      // lazy (first prompt), so a snapshot built before that must still see
-      // the real one afterwards.
-      ...(residentEm ? { emSession: () => residentEm.describe() } : {}),
-      // T045: backs the Tickets pane's link/unlink action.
-      jiraSync,
-      // T042: the Plan screen's panes, edits, Start Sprint, and the
-      // first-goal architect planning turn.
-      ...(planService
-        ? {
-            plan: {
-              service: planService,
-              ...(architectPlanner
-                ? {
-                    startGoal: (goal: string) =>
-                      startPlanningTurn(
-                        {
-                          store: store as StateStore,
-                          ...(bus ? { bus } : {}),
-                          planner: architectPlanner,
-                          ...(options.now ? { now: options.now } : {}),
-                          onError: (message: string) => console.error(message),
-                        },
-                        goal,
-                        config.repoRoot,
-                      ),
-                  }
-                : {}),
-            },
-          }
-        : {}),
     });
   } catch (err) {
     await rpc.close();
@@ -789,31 +208,14 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
     store,
     bus,
     gateService,
+    streamService,
     questionService,
-    runner,
-    mergeOwner,
-    reviewProtocol,
-    qaProtocol,
-    emLoop,
-    residentEm,
-    emChat,
-    jiraSync,
-    ...(planService ? { planService } : {}),
+    inboxService,
     async stop() {
       if (stopped) return;
       stopped = true;
       try {
-        // Stops the sweep and every live session's underlying process
-        // (graceful — same `stop()` path a `runner.stop` RPC call takes);
-        // does not wait on each session's own exit/crash cleanup, so this
-        // never blocks shutdown on a slow-to-die agent.
-        if (ceremonyTimer) clearInterval(ceremonyTimer);
-        if (jiraTimer) clearInterval(jiraTimer);
-        runner?.stopAll();
-        // T041: the resident EM is not a `Runner` session, so `stopAll()`
-        // doesn't reach it — its vendor process would otherwise outlive the
-        // daemon that spawned it.
-        residentEm?.stop();
+        if (gateTimer) clearInterval(gateTimer);
         await http.stop();
         await rpc.close();
         // Flush any pending deferred hook_decision/heartbeat commits (T009

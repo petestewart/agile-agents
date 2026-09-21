@@ -52,11 +52,8 @@ import {
   validateMergeRecord,
 } from '@agile-agents/shared';
 import type { Bus } from '../bus';
-import { activeHaltsFor } from '../halts';
-import { mergeRecordPath } from '../merge/owner';
 import type { PermissionRole } from '../permissions';
 import { isPathInside } from '../permissions/command';
-import { qaReadDenyList } from '../qa/deny';
 import { NotFoundError, type StateStore, buildEvent } from '../store';
 import { decidePreToolUse } from './decide';
 import {
@@ -238,29 +235,8 @@ export class HookService {
     return now.getTime() - lastSeenMs >= this.bus.getLivenessTimeoutMs();
   }
 
-  /**
-   * §4's live-status set, plus one case it predates: a `done` ticket whose
-   * merge hit a conflict is back in its engineer's hands for the rebase
-   * (`MergeOwner.haltAndRecord` -> `advanceMergeConflicts`). Seventeenth
-   * live run (2026-09-11): the engineer was prompted with the conflict and
-   * every tool call it made was denied "cwd is not a registered ticket
-   * worktree" — this resolver refused the `done` ticket — so the fix cycle
-   * never started.
-   */
   private isLiveTicket(ticket: Ticket): boolean {
-    if (LIVE_TICKET_STATUSES.includes(ticket.status)) return true;
-    return ticket.status === 'done' && this.hasMergeConflict(ticket.id);
-  }
-
-  private hasMergeConflict(ticket: TicketId): boolean {
-    try {
-      return (
-        this.store.getEntity(mergeRecordPath(ticket), validateMergeRecord).status === 'conflict'
-      );
-    } catch (err) {
-      if (err instanceof NotFoundError) return false;
-      throw err;
-    }
+    return LIVE_TICKET_STATUSES.includes(ticket.status);
   }
 
   private resolveAgentByCwd(
@@ -391,18 +367,12 @@ export class HookService {
       ticket: ticketId,
       role,
       worktreePath,
-      halts: activeHaltsFor(this.store, ticketId),
       inbox: noAdditionalContextChannel
         ? this.bus.poll(agent).filter((m) => m.priority !== 'normal')
         : this.bus.poll(agent),
       ticketBudget: ticket.budget,
       limits: this.limits,
       fileSize: this.fileSize,
-      // Role-extension seam (T017 review round) — only QA has a deny list
-      // today; `qaReadDenyList` itself no-ops on the contract shape alone
-      // (it doesn't check `role`), so gate it here rather than let an empty
-      // list leak through for every other role.
-      denyReadPaths: role === 'qa' ? qaReadDenyList(ticket) : undefined,
     };
   }
 
