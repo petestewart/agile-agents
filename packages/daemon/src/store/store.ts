@@ -58,7 +58,7 @@ import {
   validateVendorsConfig,
 } from '@agile-agents/shared';
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
-import { buildEvent, buildStateTransitionEvent } from './events';
+import { buildEvent, needsFsync } from './events';
 import {
   appendJsonlLine,
   atomicWriteFile,
@@ -146,6 +146,20 @@ function writeEntityFile(absPath: string, data: unknown): void {
 function readEntityFile<T>(absPath: string): T {
   if (absPath.endsWith('.json')) return readJsonFile<T>(absPath);
   return readYamlFile<T>(absPath);
+}
+
+/**
+ * The state every stream event carries in `data` (T123, cockpit design
+ * §7.4): the status pair *after* the mutation plus the archived flag, which
+ * is exactly what `reconstructStreams` needs to rebuild every stream's
+ * state from `log/events.jsonl` alone.
+ */
+function streamStateData(stream: Stream): Record<string, unknown> {
+  return {
+    agent_status: stream.agent.status,
+    human_status: stream.human.status,
+    archived: stream.archived === true,
+  };
 }
 
 /** The pieces one mutation needs: its return value, the paths it touched, and its one Event. */
@@ -474,13 +488,22 @@ export class StateStore {
 
   /** Appends `event`'s line to `log/events.jsonl`. Synchronous — callers already hold the mutex. */
   private deferEventSync(event: Event, _extraRelPaths: string[] = []): void {
-    appendJsonlLine(this.abs(join('log', 'events.jsonl')), event);
+    this.writeEventLine(event);
   }
 
   /** Appends `event` to `log/events.jsonl` — the home's audit trail (T111: no commit, the home is not a git worktree). */
   private commitEvent(_relPaths: string[], event: Event): void {
-    const validated = validateEvent(event);
-    appendJsonlLine(this.abs(join('log', 'events.jsonl')), validated);
+    this.writeEventLine(validateEvent(event));
+  }
+
+  /**
+   * The one writer of `log/events.jsonl` (§7.4: "append-only, one writer").
+   * Gate and land events are fsynced — see `needsFsync` in `events.ts`.
+   */
+  private writeEventLine(event: Event): void {
+    appendJsonlLine(this.abs(join('log', 'events.jsonl')), event, {
+      fsync: needsFsync(event.kind),
+    });
   }
 
   /** Runs one mutation under the mutex: `fn` does the validated file write(s) and builds its one Event; this commits it. */
@@ -673,7 +696,6 @@ export class StateStore {
       removeFile(this.abs(relPath));
       const event = buildEvent('agent_deleted', {
         agent: id,
-        ...(record.ticket !== undefined ? { ticket: record.ticket } : {}),
         data: {
           vendor: record.vendor,
           model: record.model,
@@ -848,8 +870,9 @@ export class StateStore {
       assertNoStreamCycle(validated.id, validated.parent, (sid) => this.lookupStreamParent(sid));
       writeYamlFileAtomic(this.abs(relPath), validated);
       const event = buildEvent('stream_created', {
+        stream: validated.id,
         data: {
-          stream: validated.id,
+          ...streamStateData(validated),
           ...(validated.parent !== undefined ? { parent: validated.parent } : {}),
           ...(validated.repo !== undefined ? { repo: validated.repo } : {}),
         },
@@ -890,7 +913,8 @@ export class StateStore {
       );
       writeYamlFileAtomic(this.abs(relPath), after);
       const event = buildEvent(options.kind ?? 'stream_updated', {
-        data: { stream: after.id, principal },
+        stream: after.id,
+        data: { ...streamStateData(after), principal },
       });
       return { result: after, relPaths: [relPath], event };
     });
@@ -905,7 +929,8 @@ export class StateStore {
       const relPath = this.threadRelPath(streamId);
       appendJsonlLine(this.abs(relPath), validated);
       const event = buildEvent('thread_appended', {
-        data: { stream: streamId, by: validated.by, entry_kind: validated.kind },
+        stream: streamId,
+        data: { by: validated.by, entry_kind: validated.kind },
       });
       return { result: validated, relPaths: [relPath], event };
     });

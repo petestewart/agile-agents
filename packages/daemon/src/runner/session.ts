@@ -668,9 +668,9 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
         track(
           store.appendEvent(
             buildEvent('tool_call', {
-              ticket,
               agent: agentId,
               data: {
+                ...(ticket !== undefined ? { ticket } : {}),
                 toolCallId: update?.toolCallId,
                 kind: update?.kind,
                 title: update?.title,
@@ -737,8 +737,10 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
           .appendEvent(
             buildEvent('agent_put', {
               agent: agentId,
-              ticket,
-              data: { warning: `prompt failed, stopping session: ${message}` },
+              data: {
+                ...(ticket !== undefined ? { ticket } : {}),
+                warning: `prompt failed, stopping session: ${message}`,
+              },
             }),
             { commit: 'deferred' },
           )
@@ -793,8 +795,8 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
       return store.appendEvent(
         buildEvent('agent_put', {
           agent: agentId,
-          ticket,
           data: {
+            ...(ticket !== undefined ? { ticket } : {}),
             warning:
               'spawned agent pid unknown at registration; AgentRecord.pid omitted (never falls back to the daemon pid)',
           },

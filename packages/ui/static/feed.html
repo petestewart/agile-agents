@@ -220,14 +220,14 @@
   <section id="events-section">
     <h2>Event feed</h2>
     <div class="filters">
-      <input id="filter-ticket" placeholder="ticket (TKT-…)" />
+      <input id="filter-stream" placeholder="stream (ULID)" />
       <input id="filter-agent" placeholder="agent" />
       <input id="filter-kind" placeholder="kind" />
     </div>
     <div id="events">
       <table>
         <thead>
-          <tr><th>time</th><th>kind</th><th>ticket</th><th>agent</th><th>data</th></tr>
+          <tr><th>time</th><th>kind</th><th>stream</th><th>agent</th><th>data</th></tr>
         </thead>
         <tbody id="events-body"></tbody>
       </table>
@@ -249,7 +249,7 @@
   var MAX_EVENTS = 500;
   var SNAPSHOT_URL = '/api/snapshot';
 
-  /** @type {Array<{ts:string, kind:string, ticket?:string, agent?:string, data?:object}>} */
+  /** @type {Array<{ts:string, kind:string, stream?:string, agent?:string, data?:object}>} */
   var events = [];
   /** @type {Map<string, object>} keyed by hil request id */
   var hilRequests = new Map();
@@ -263,7 +263,7 @@
   var elEmptyHil = document.getElementById('empty-hil');
   var elHilError = document.getElementById('hil-error');
   var elSprintStrip = document.getElementById('sprint-strip');
-  var filterTicket = document.getElementById('filter-ticket');
+  var filterStream = document.getElementById('filter-stream');
   var filterAgent = document.getElementById('filter-agent');
   var filterKind = document.getElementById('filter-kind');
 
@@ -293,10 +293,10 @@
   }
 
   function matchesFilters(evt) {
-    var t = filterTicket.value.trim().toLowerCase();
+    var t = filterStream.value.trim().toLowerCase();
     var a = filterAgent.value.trim().toLowerCase();
     var k = filterKind.value.trim().toLowerCase();
-    if (t && !(evt.ticket || '').toLowerCase().includes(t)) return false;
+    if (t && !(evt.stream || '').toLowerCase().includes(t)) return false;
     if (a && !(evt.agent || '').toLowerCase().includes(a)) return false;
     if (k && !(evt.kind || '').toLowerCase().includes(k)) return false;
     return true;
@@ -316,7 +316,7 @@
         '<tr>' +
         '<td class="ts">' + escapeHtml(fmtTime(e.ts)) + '</td>' +
         '<td class="kind">' + escapeHtml(e.kind || '') + '</td>' +
-        '<td>' + escapeHtml(e.ticket || '') + '</td>' +
+        '<td>' + escapeHtml(e.stream || '') + '</td>' +
         '<td>' + escapeHtml(e.agent || '') + '</td>' +
         '<td class="data">' + escapeHtml(dataStr) + '</td>' +
         '</tr>';
@@ -441,7 +441,7 @@
       .catch(function () { /* daemon not reachable over HTTP yet; WS retry will catch up */ });
   }
 
-  [filterTicket, filterAgent, filterKind].forEach(function (input) {
+  [filterStream, filterAgent, filterKind].forEach(function (input) {
     input.addEventListener('input', renderEvents);
   });
 

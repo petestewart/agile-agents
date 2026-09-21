@@ -197,7 +197,8 @@ describe('GateService.request', () => {
     const service = new GateService(store, { clock });
     const req = await service.request('land', ctx({ land: 'human' }));
     const event = store.listEvents().find((e) => e.kind === 'gate_raised');
-    expect(event?.data).toMatchObject({ id: req.id, gate: 'land', stream: STREAM });
+    expect(event?.stream).toBe(STREAM);
+    expect(event?.data).toMatchObject({ id: req.id, gate: 'land' });
   });
 });
 

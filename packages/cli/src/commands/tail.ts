@@ -1,6 +1,6 @@
 /**
- * `agile tail` — reads `.agile/log/events.jsonl` directly off disk (T008
- * scope: "reads the event log, follow, filters by ticket/agent/kind"). No
+ * `agile tail` — reads `<home>/log/events.jsonl` directly off disk (T008,
+ * T123: "reads the event log, follow, filters by stream/kind/session"). No
  * RPC round trip: the log is the daemon's own append-only audit file
  * (`packages/daemon/src/store/store.ts`'s `log/events.jsonl`), readable by
  * any process with filesystem access to `.agile/`, same as `git log` on the
@@ -26,16 +26,22 @@ import { existsSync, statSync } from 'node:fs';
 import type { Event } from '@agile-agents/shared';
 import { printJson } from '../format';
 
+/**
+ * T123 (cockpit design §7.4: "`agile tail` filters by stream"): the filters
+ * are the event's own scopes — `--stream`, `--kind`, `--session`. `--ticket`
+ * went with the ticket layer, and `--agent` with it: the agent id is a
+ * pre-reshape scope T130 replaces with the session.
+ */
 export interface TailFilters {
-  ticket?: string;
-  agent?: string;
+  stream?: string;
   kind?: string;
+  session?: string;
 }
 
 function matchesFilters(event: Event, filters: TailFilters): boolean {
-  if (filters.ticket && event.ticket !== filters.ticket) return false;
-  if (filters.agent && event.agent !== filters.agent) return false;
+  if (filters.stream && event.stream !== filters.stream) return false;
   if (filters.kind && event.kind !== filters.kind) return false;
+  if (filters.session && event.session !== filters.session) return false;
   return true;
 }
 
@@ -70,7 +76,7 @@ export function splitComplete(carry: string, chunk: string): { complete: string[
 }
 
 function printEventHuman(event: Event): void {
-  const scope = [event.ticket, event.agent].filter(Boolean).join(' ');
+  const scope = [event.stream, event.session, event.agent].filter(Boolean).join(' ');
   const data = Object.keys(event.data ?? {}).length > 0 ? ` ${JSON.stringify(event.data)}` : '';
   console.log(`${event.ts} ${event.kind}${scope ? ` [${scope}]` : ''}${data}`);
 }

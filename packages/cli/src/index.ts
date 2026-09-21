@@ -64,7 +64,7 @@ function usage(): string {
     '  daemon stop                stop the running agiled',
     '  daemon status              is agiled running? pid, port, socket, home',
     '  status                     daemon, streams and what is waiting on you',
-    '  tail                       tail the event log (--follow, --ticket, --agent, --kind)',
+    '  tail                       tail the event log (--follow, --stream, --kind, --session)',
     '  gate list                  list open HIL requests',
     '  inbox                      everything waiting on you, across all streams, oldest first',
     '  answer <question-id> <text>   answer an open question; the answer reaches the waiting session',
@@ -155,9 +155,9 @@ export async function runCli(argv: string[], cwd: string = process.cwd()): Promi
           follow: args.options.follow !== undefined,
           json,
           filters: {
-            ticket: typeof args.options.ticket === 'string' ? args.options.ticket : undefined,
-            agent: typeof args.options.agent === 'string' ? args.options.agent : undefined,
+            stream: typeof args.options.stream === 'string' ? args.options.stream : undefined,
             kind: typeof args.options.kind === 'string' ? args.options.kind : undefined,
+            session: typeof args.options.session === 'string' ? args.options.session : undefined,
           },
         });
       }

@@ -1,11 +1,12 @@
 import { describe, expect, test } from 'bun:test';
 import { EVENT_KINDS, validateEvent } from './event';
 
-describe('Event — §3/§4 log/events.jsonl', () => {
+describe('Event — cockpit design §7.4 log/events.jsonl', () => {
   test('accepts the minimal shape (ts, kind, default data)', () => {
     const event = validateEvent({ ts: '2026-09-08T00:00:00Z', kind: 'message' });
     expect(event.data).toEqual({});
-    expect(event.ticket).toBeUndefined();
+    expect(event.stream).toBeUndefined();
+    expect(event.session).toBeUndefined();
     expect(event.agent).toBeUndefined();
   });
 
@@ -21,55 +22,94 @@ describe('Event — §3/§4 log/events.jsonl', () => {
     );
   });
 
-  // T005 review fix (manager decision B1): every StateStore mutation kind
-  // gets its own EVENT_KINDS entry, named after the method that mints it.
+  // T122/T123: the ticket layer is gone, and with it the top-level `ticket`
+  // scope and every ticket/sprint/halt/quota/merge event kind.
   test.each([
     'ticket_put',
     'stanza_appended',
-    'oracle_put',
-    'kb_put',
-    'ledger_appended',
+    'state_transition',
     'halt_created',
-    'halt_updated',
-    'halt_released',
     'sprint_put',
-    'quota_put',
+    'hil_requested',
+    'hil_resolved',
+    'merge_completed',
+  ])('%s is no longer an EVENT_KINDS entry', (kind) => {
+    expect(EVENT_KINDS).not.toContain(kind as (typeof EVENT_KINDS)[number]);
+    expect(() => validateEvent({ ts: '2026-09-08T00:00:00Z', kind })).toThrow(/invalid Event/);
+  });
+
+  test('rejects the removed top-level ticket scope', () => {
+    expect(() =>
+      validateEvent({ ts: '2026-09-08T00:00:00Z', kind: 'message', ticket: 'TKT-0001' }),
+    ).toThrow(/invalid Event/);
+  });
+
+  // §7.4's eight families. Every kind below has at least one emitter in the
+  // daemon today (`store/events.test.ts` asserts the other direction: every
+  // event the services actually write is one of these).
+  test.each([
+    'stream_created',
+    'stream_updated',
+    'stream_closed',
+    'stream_archived',
+    'thread_appended',
+    'tool_call',
     'agent_put',
     'agent_deleted',
-    'policy_put',
+    'question_raised',
+    'question_answered',
+    'gate_raised',
+    'gate_resolved',
+    'breaker_tripped',
+    'breaker_cleared',
+    'hook_decision',
+    'repos_put',
     'vendors_put',
+    'policy_put',
     'entity_put',
     'entity_deleted',
-    // T012 QA round: dedicated kinds for observing an ACP tool_call and for
-    // flagging a usage_update that arrived before any sprint existed.
-    'tool_call',
-    'ledger_no_sprint',
-    // T019 merge/integration owner: onTicketDone's three outcomes plus the
-    // sprint-review integration -> main merge.
-    'merge_completed',
-    'merge_conflict',
-    'merge_tests_failed',
-    'integration_merged_to_main',
+    'message',
   ])('%s is a valid EVENT_KINDS entry', (kind) => {
     expect(EVENT_KINDS).toContain(kind as (typeof EVENT_KINDS)[number]);
     expect(() => validateEvent({ ts: '2026-09-08T00:00:00Z', kind })).not.toThrow();
   });
 
-  test('a tool_call event carries {agent, ticket, toolCallId, kind, title, status} in data', () => {
+  test('the enum holds exactly the kinds listed above — nothing orphaned', () => {
+    expect(EVENT_KINDS).toHaveLength(21);
+  });
+
+  test('a stream event carries {stream} plus the status pair in data', () => {
+    const event = validateEvent({
+      ts: '2026-09-08T00:00:00Z',
+      kind: 'stream_updated',
+      stream: '01J9ZZZZZZZZZZZZZZZZZZZZZZ',
+      data: { agent_status: 'working', human_status: 'open', archived: false },
+    });
+    expect(event.stream).toBe('01J9ZZZZZZZZZZZZZZZZZZZZZZ');
+    expect(event.data.agent_status).toBe('working');
+  });
+
+  test('a tool_call event carries {agent, session, toolCallId, …}', () => {
     const event = validateEvent({
       ts: '2026-09-08T00:00:00Z',
       kind: 'tool_call',
-      ticket: 'TKT-0231',
+      session: '01J9ZZZZZZZZZZZZZZZZZZZZZZ',
       agent: 'eng-0231',
       data: { toolCallId: 't1', kind: 'edit', title: 'Edit foo.ts', status: 'completed' },
     });
-    expect(event.ticket).toBe('TKT-0231');
     expect(event.agent).toBe('eng-0231');
+    expect(event.session).toBe('01J9ZZZZZZZZZZZZZZZZZZZZZZ');
     expect(event.data).toEqual({
       toolCallId: 't1',
       kind: 'edit',
       title: 'Edit foo.ts',
       status: 'completed',
     });
+  });
+
+  test('rejects a stream scope that is not a ULID', () => {
+    expect(() =>
+      validateEvent({ ts: '2026-09-08T00:00:00Z', kind: 'stream_created', stream: 'nope' }),
+    ).toThrow(/invalid Event/);
   });
 });
