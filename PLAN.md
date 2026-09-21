@@ -268,12 +268,12 @@ Build order: Phase 0 → 1 → 2 → 3 → 4 → 5 → 6. Within a phase, ticket
 
 ### Ticket: T134 ∥ Docs per repo and per stream
 - **Priority:** P2
-- **Status:** In Progress
+- **Status:** Done
 - **Owner:** opus:worker-T134
 - **Scope:** Replace `oracle/` and `kb/` with plain Markdown docs: `<repo>/.agile-docs/*.md` (tracked in the repo, the old oracle brief moves here) and `~/.agile/streams/<id>.docs/*.md`. `search_docs` verb does a plain text search. The UI Brief/Knowledge panes become one Docs pane in Phase 6.
 - **Acceptance Criteria:** A doc added to a repo shows up in the next brief; `search_docs` returns file and line.
 - **Validation Steps:** `bun test packages/daemon/src/docs`.
-- **Notes:** `.agile-docs/` inside a repo is the one new tracked directory this plan introduces; approved by D9.
+- **Notes:** `.agile-docs/` inside a repo is the one new tracked directory this plan introduces; approved by D9. Branch `T134-docs-per-repo-and-stream`. `daemon/src/docs/` (`DocsService(store, streams, home)`: `listRepoDocs`, `listStreamDocs`, `docsForStream` repo then stream docs root→leaf with a 16 KiB per-file cap, `search` literal case-insensitive max 50; `DocsSearch` interface for T130's `search_docs`; `docs.list`/`docs.search` RPC). Ran alongside T127, before T130/T133. Review (sonnet) PASS, 1 nit (symlinked `.md` followed). `bun test packages/daemon/src/docs` 14 pass; full `bun test` 1301 pass / 2 skip / 0 fail. merge: d456b10.
 
 ### Ticket: T135 Phase 3 QA and Pete's look
 - **Priority:** P0
