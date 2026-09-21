@@ -241,12 +241,12 @@ Build order: Phase 0 → 1 → 2 → 3 → 4 → 5 → 6. Within a phase, ticket
 
 ### Ticket: T131 Reviewer on demand
 - **Priority:** P0
-- **Status:** In Progress
+- **Status:** Done
 - **Owner:** opus:worker-T131
 - **Scope:** `agile review <stream>` / a Review button spawns a reviewer session (read-only permission policy, worktree as cwd) with `briefs/reviewer.md`; its findings go to the thread as `finding` entries and to `agent.findings` as structured items `{ severity, file, line?, text }`. Findings are input to lessons (T141). Optional auto-review on `agent.status: done` per repo setting.
 - **Acceptance Criteria:** A reviewer cannot write in the worktree (hook deny proven by test); findings appear on the stream page.
 - **Validation Steps:** `bun test packages/daemon/src/runner`; e2e.
-- **Notes:** Review rounds, max rounds, and PASS/FAIL verdict states are gone; the human reads findings and decides.
+- **Notes:** Review rounds, max rounds, and PASS/FAIL verdict states are gone; the human reads findings and decides. Branch `T131-reviewer-on-demand`. `attach(stream, {role:'reviewer'})` spawns a second session on the same worktree; `liveSession` role-scoped (one worker + one reviewer, never two of either); reviewer never cuts a branch/worktree or writes `agent.status` on attach; exit appends `review finished: N findings (<reason>)` and sets `done` only when no worker is live; `RepoEntry.auto_review?` starts a reviewer after a clean worker exit (no loop: only the worker exit path triggers it); `stop` with no role stops every role; `agile review <stream>`; `attach --role reviewer`. No change to `permissions/*` or `runner/session.ts` was needed: the reviewer policy and `permissionRoleFor` routing already existed; the denial is proven through `HookService.preToolUse` in `hook/reviewer-readonly.test.ts`. Review (sonnet) PASS with 1 nit (no test for detach with both roles live). 574 pass in scope; `bun test` 1306 pass / 2 skip / 0 fail; integration green. merge: bb94105 (conflict in `cli/src/index.ts` with T132's `land` case, resolved keeping both).
 
 ### Ticket: T132 Landing
 - **Priority:** P0
