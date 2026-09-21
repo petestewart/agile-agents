@@ -23,6 +23,7 @@ Target shape, in one paragraph: a **stream** is the unit (goal, status, parent, 
 - D9. The tool is not a per-repo process. One long-lived daemon, state in one home directory, worktrees inside each repo.
 - D10. Build process for the reshape: short tickets; one reviewer on close; QA only at phase boundaries; Pete looks at the UI after every UI ticket. No `--yolo` runs longer than one phase without a human look.
 - D12 (2026-09-21, Pete). Sessions carry `vendor`, `model` and `effort` chosen at attach time (`agile attach --vendor --model --effort`, and the Attach control in the sessions strip); defaults per repo, then per home. Effort is a closed enum mapped per vendor by the provider registry and ignored with a thread note where the vendor has no equivalent. Adding a vendor is one `AcpProviderConfig` entry plus a `vendors.yaml`/`config.yaml` stanza, never a code path (old design §8, still valid).
+- **D13** (T120): a stream is archived by a boolean `archived: true` on the record, not by a fifth `human.status` value; `human.status` keeps the four states the tree dot reads (§9.2). `stream.list` hides archived streams unless `include_archived`; a live child of an archived parent re-roots in the tree.
 - D11. KiroCrew is not adopted. Borrowed as designs only: hardened worktree creation, the push detector that cannot be dodged by spelling, agent-owned vs human-owned ledger fields, a fail-closed credential scrub before the external classifier, mechanical scope filtering of injected rules, an append-only log.
 
 ## 3. Non-goals for the reshape
@@ -146,12 +147,12 @@ Build order: Phase 0 → 1 → 2 → 3 → 4 → 5 → 6. Within a phase, ticket
 
 ### Ticket: T120 Stream service and RPC
 - **Priority:** P0
-- **Status:** In Progress
+- **Status:** Done
 - **Owner:** opus:worker-T120
 - **Scope:** `daemon/src/streams/`: create, get, list (tree), update with principal, close, archive; thread append and read (paged); events for every change. RPC methods and `agile stream new|list|show|close`. A stream with `repo` gets a branch and worktree on first attach (T130), not on create.
 - **Acceptance Criteria:** A stream without a repo is fully usable (thread, questions) and never touches git. Tree listing returns parent/child structure. Principal checks from T110 are exercised end to end.
 - **Validation Steps:** `bun test packages/daemon/src/streams packages/cli`.
-- **Notes:** —
+- **Notes:** Branch `T120-stream-service-and-rpc`. `StreamService` (principal-taking API for T130's agent verbs), `stream.create|get|list|update|close|archive|thread_append|thread_read` RPC with `human` stamped at the edge, `agile stream new|list|show|close|archive|say`. `archived?: true` boolean on `StreamSchema` rather than a fifth human status (manager call, see D13). Review (sonnet) PASS, 2 nits (create's record write and its thread event are two mutex acquisitions; `human` patch shape validated by the store, not the edge). Full `bun test` 2302 pass / 3 skip / 0 fail; integration 36 pass. merge: 19c6edd.
 
 ### Ticket: T121 Inbox: questions and gates re-keyed to streams
 - **Priority:** P0
