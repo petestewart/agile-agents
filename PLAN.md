@@ -210,12 +210,12 @@ Build order: Phase 0 → 1 → 2 → 3 → 4 → 5 → 6. Within a phase, ticket
 
 ### Ticket: T127 Daemon start fails fast on a busy port
 - **Priority:** P1
-- **Status:** In Progress
+- **Status:** Done
 - **Owner:** opus:worker-T127
 - **Scope:** Pete's Phase 2 hand test (2026-09-21): with a stale `agiled` from another home holding 4600, `agile daemon start` waits the full 20 s for a pidfile, then reports "no pidfile … see the log", and the log's whole content is `Failed to start server. Is port 4600 in use?`. Make the daemon's bind failure a typed error that names the port and, when a pidfile in *any* home cannot be known, the `lsof -nP -iTCP:<port> -sTCP:LISTEN` line to run; have the child write that reason where `daemon start` reads it (the log is fine) and have `daemon start` stop waiting the moment the child exits, printing the reason, the home's `config.yaml` `port` key and `AGILE_PORT` as the way to run a second daemon. `daemon status` and `agile status` stay as they are.
 - **Acceptance Criteria:** With the port held by another process, `agile daemon start` exits non-zero in under 2 s with a message that names the port, the way to find its holder and the way to pick another. Unit test with a listener on a free port; lifecycle e2e unchanged.
 - **Validation Steps:** `bun test packages/cli packages/daemon/src/daemon`; `bun run test:integration`.
-- **Notes:** —
+- **Notes:** Branch `T127-daemon-start-busy-port`. Root cause of the 20 s wait: the foreground child never exited on a failed bind (rejection only set `exitCode`, timers and the RPC socket kept the loop alive) and the parent's `exitCode` poll on an `unref()`ed child saw nothing; a second defect took the lock (the pidfile) before binding, so a dying daemon could report `agiled started`. Fix: HTTP binds before the lock, `PortInUseError` (one line: address, `lsof` command, `config.yaml` `port`, `AGILE_PORT`), child exits 1 at once, parent listens for `exit` and throws `agiled did not start: <last log line>`. Review (sonnet) PASS, 1 nit (a child that dies without logging could surface a stale last line). Tests 10 pass; `bun test` 1289 pass / 0 fail; integration green. merge: 976a50d.
 
 ### Ticket: T128 ∥ CLI polish from Pete's Phase 2 look
 - **Priority:** P2
@@ -232,8 +232,8 @@ Build order: Phase 0 → 1 → 2 → 3 → 4 → 5 → 6. Within a phase, ticket
 
 ### Ticket: T130 Worker attach and the stream driver
 - **Priority:** P0
-- **Status:** Todo
-- **Owner:** —
+- **Status:** In Progress
+- **Owner:** opus:worker-T130
 - **Scope:** `agile attach <stream> [--vendor] [--model] [--effort] [--role worker]` and the RPC behind it. `--effort` (D12): a closed enum `low | medium | high | max` stored on `SessionRef.effort?` (add the optional field to T110's schema here, `.strict()` kept); the runner maps it per vendor in the provider registry (`AcpProviderConfig.effort?: (level) => env/args`, Claude via its settings env, others `undefined`); a vendor with no mapping gets a `line` thread entry "effort ignored by <vendor>" and the session still starts. Defaults resolve `--flag` → stream's repo entry in `repos.yaml` (`vendor?`, `model?`, `effort?`) → home `config.yaml` (`default_vendor`, `default_model`, `default_effort`) → provider default. Add `model?`/`effort?` to `RepoEntry` and the three defaults to `HomeConfigSchema`. The daemon creates the branch and worktree (T113) if the stream has a repo, assembles the brief (T133), spawns the ACP session, streams its output to the thread, routes `ask` to the inbox, and updates `agent.*` on the stream. Session lifecycle in `runner/session.ts` is reused; the runner's ticket assumptions are removed. A stream may have one live worker at a time.
 - **Acceptance Criteria:** Attach on a no-repo stream works (a planning conversation); attach on a repo stream produces a worktree and the session's cwd is that worktree; the session's exit writes `agent.status: done` and a thread entry.
 - **Validation Steps:** integration test with the fake agent; e2e: thread streams in the UI.
