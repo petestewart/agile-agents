@@ -77,14 +77,14 @@ export const POLICY_PRESETS: ReadonlyArray<{
   },
   {
     id: 'gates-to-em',
-    label: 'Plans and reviews',
-    help: 'You decide the plan, rule changes and the sprint review; the EM handles blocked agents and demos.',
+    label: 'Landing and rules',
+    help: 'You decide what lands and which rules stick; the EM handles the guardrail routes.',
+    // T121: the middle preset keeps the two gates that change the record with
+    // the human and delegates the per-action one (cockpit design §3.1).
     gates: {
-      approve_plan: 'human',
-      approve_decision: 'human',
-      sprint_review: 'human',
-      unblock: 'em',
-      demo: 'em',
+      land: 'human',
+      rule_accept: 'human',
+      classifier_review: 'em',
     },
   },
   {
