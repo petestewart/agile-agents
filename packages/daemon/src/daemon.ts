@@ -83,7 +83,6 @@ export interface StartDaemonOptions extends DiscoverConfigOptions {
 
 export async function startDaemon(options: StartDaemonOptions = {}): Promise<DaemonHandle> {
   const config = discoverConfig(options);
-  const lock = acquireLock(config.lockPath);
   const startedAt = Date.now();
 
   // `.agile/` may not exist yet (before `agile init`); state.* stays fully
@@ -172,8 +171,40 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
         }
       : undefined;
 
+  /**
+   * Bind the port **before** taking the lock (T127). The lock file is the
+   * pidfile, and `agile daemon start` waits for that file to appear: taking
+   * it first meant a daemon that then failed to bind had already published
+   * a pidfile, and the parent reported `agiled started` for a process that
+   * was dying. Binding first means the pidfile only ever appears for a
+   * daemon that is actually serving. The unix socket still comes *after*
+   * the lock — `startRpcServer` unlinks a stale socket path, which a second
+   * daemon on the same home must never do to the live one.
+   */
+  const http: HttpServerHandle = startHttpServer({
+    port: config.port,
+    hostname: '127.0.0.1',
+    version: DAEMON_VERSION,
+    stateRoot: config.stateRoot,
+    home: config.home,
+    startedAt,
+    store,
+    gates: gateService,
+    streams: streamService,
+    questions: questionService,
+    inbox: inboxService,
+    bus,
+  });
+
+  let lock: LockHandle;
+  try {
+    lock = acquireLock(config.lockPath);
+  } catch (err) {
+    await http.stop();
+    throw err;
+  }
+
   let rpc: RpcServerHandle;
-  let http: HttpServerHandle;
   try {
     rpc = startRpcServer({
       socketPath: config.socketPath,
@@ -185,25 +216,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
     await rpc.listening;
   } catch (err) {
     lock.release();
-    throw err;
-  }
-
-  try {
-    http = startHttpServer({
-      port: config.port,
-      version: DAEMON_VERSION,
-      stateRoot: config.stateRoot,
-      startedAt,
-      store,
-      gates: gateService,
-      streams: streamService,
-      questions: questionService,
-      inbox: inboxService,
-      bus,
-    });
-  } catch (err) {
-    await rpc.close();
-    lock.release();
+    await http.stop();
     throw err;
   }
 

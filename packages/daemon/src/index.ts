@@ -37,6 +37,7 @@ export {
 } from './rpc';
 export {
   startHttpServer,
+  PortInUseError,
   type HttpServerHandle,
   type HttpServerOptions,
   type HealthPayload,

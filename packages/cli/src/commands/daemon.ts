@@ -64,7 +64,22 @@ export async function runDaemonForeground(): Promise<never> {
   // human parks as pending until something decides it (T140's landing path).
   // T125: no cwd — the daemon's config comes from the state home alone, so
   // it starts from any directory, git repo or not.
-  const handle = await startDaemon();
+  /**
+   * T127: a daemon that cannot start must *exit*, promptly. Letting the
+   * rejection propagate only set `process.exitCode` and left the loop to
+   * drain — with a state home open (store flush timer, gate tick, an
+   * already-bound listener) the child could stay alive with nothing
+   * serving, which is exactly what made `agile daemon start` wait out its
+   * full pidfile timeout. One line to stderr (the child's stdio is the
+   * home's log, which is where `start` reads the reason from) and out.
+   */
+  let handle: Awaited<ReturnType<typeof startDaemon>>;
+  try {
+    handle = await startDaemon();
+  } catch (err) {
+    console.error(err instanceof Error ? err.message : String(err));
+    process.exit(1);
+  }
   installShutdownSignals(handle);
   console.log(
     `agiled started: pid=${handle.lock.pid} ` +
@@ -77,6 +92,29 @@ export async function runDaemonForeground(): Promise<never> {
 export interface DaemonStartOptions {
   cwd?: string;
   home?: string;
+  /**
+   * The CLI entry the detached child re-invokes (`<entry> daemon start
+   * --foreground`). Defaults to this process's own entry, which is what the
+   * real `agile` binary wants; a test that calls `runDaemonStart` from the
+   * test runner has to name the entry itself.
+   */
+  cliEntry?: string;
+}
+
+/**
+ * The last non-empty line of the child's log — the reason a child that died
+ * before writing its pidfile gives for dying (T127). `agiled`'s own typed
+ * errors (`PortInUseError`, `LockError`) are one line each and are the last
+ * thing written, so this is the message the operator needs; Bun's own
+ * `Failed to start server.` line sits above it.
+ */
+function lastLogLine(logPath: string): string | undefined {
+  if (!existsSync(logPath)) return undefined;
+  const lines = readFileSync(logPath, 'utf8')
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+  return lines.at(-1);
 }
 
 export async function runDaemonStart(options: DaemonStartOptions = {}): Promise<string> {
@@ -96,7 +134,7 @@ export async function runDaemonStart(options: DaemonStartOptions = {}): Promise<
 
   const child = spawn(
     process.execPath,
-    [process.argv[1] ?? 'agile', 'daemon', 'start', '--foreground'],
+    [options.cliEntry ?? process.argv[1] ?? 'agile', 'daemon', 'start', '--foreground'],
     {
       cwd,
       detached: true,
@@ -104,23 +142,48 @@ export async function runDaemonStart(options: DaemonStartOptions = {}): Promise<
       env: { ...process.env, ...(options.home ? { AGILE_HOME: options.home } : {}) },
     },
   );
-  child.unref();
 
-  const deadline = Date.now() + START_TIMEOUT_MS;
-  while (Date.now() < deadline) {
-    const pid = runningPid(paths);
-    if (pid !== undefined) {
-      return (
-        `agiled started: pid=${pid} http=http://127.0.0.1:${paths.port} ` +
-        `socket=${paths.socketPath} home=${paths.home} log=${paths.logPath}`
-      );
+  /**
+   * T127: the child's exit is *evented*, not polled. `child.exitCode` is
+   * only filled in once the runtime has reaped the child, and the child was
+   * `unref()`ed immediately after `spawn` — on a platform where the unref'd
+   * process watcher is no longer polled, the poll never saw the exit and
+   * `start` sat out the full 20 s even though the daemon had died in under
+   * a second. The child stays ref'd until the outcome is known and is
+   * unref'd on the way out, which is all `detached` needs to survive the
+   * parent anyway.
+   */
+  let exited = false;
+  child.once('exit', () => {
+    exited = true;
+  });
+
+  try {
+    const deadline = Date.now() + START_TIMEOUT_MS;
+    while (Date.now() < deadline) {
+      // Exit first: a child that died may have published a transient
+      // pidfile on the way, and a dead daemon is never a started one.
+      if (exited) {
+        const reason =
+          lastLogLine(paths.logPath) ??
+          `it exited before writing a pidfile and wrote nothing to ${paths.logPath}`;
+        throw new Error(`agiled did not start: ${reason}`);
+      }
+      const pid = runningPid(paths);
+      if (pid !== undefined) {
+        return (
+          `agiled started: pid=${pid} http=http://127.0.0.1:${paths.port} ` +
+          `socket=${paths.socketPath} home=${paths.home} log=${paths.logPath}`
+        );
+      }
+      await sleep(POLL_MS);
     }
-    if (child.exitCode !== null) break;
-    await sleep(POLL_MS);
+    throw new Error(
+      `agiled did not start (no pidfile at ${paths.pidPath} after ${START_TIMEOUT_MS}ms, and the process is still running). See ${paths.logPath}.`,
+    );
+  } finally {
+    child.unref();
   }
-  throw new Error(
-    `agiled did not start (no pidfile at ${paths.pidPath} after ${START_TIMEOUT_MS}ms). See ${paths.logPath}.`,
-  );
 }
 
 export async function runDaemonStop(home?: string): Promise<string> {
