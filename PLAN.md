@@ -277,8 +277,8 @@ Build order: Phase 0 → 1 → 2 → 3 → 4 → 5 → 6. Within a phase, ticket
 
 ### Ticket: T135 Phase 3 QA and Pete's look
 - **Priority:** P0
-- **Status:** Todo
-- **Owner:** —
+- **Status:** In Progress
+- **Owner:** sonnet:qa-T135
 - **Scope:** Fake-transport QA of attach, review, land on nested streams; Pete runs one real worker on ledger-lite via the CLI.
 - **Acceptance Criteria:** QA ACCEPT; live: one stream landed on ledger-lite.
 - **Validation Steps:** —
@@ -445,3 +445,4 @@ Daemon: `em/`, `architect/`, `oracle/`, `qa/`, `halts/`, `quota/`, `handoff/`, `
 - (Pete's Phase 2 look, 2026-09-21, tip 8694c86) His local agent ran the 26-step hand test on `~/Projects/ledger-lite` with `AGILE_HOME=~/.agile-reshape`: 25 of 26 steps matched; the one failure was `daemon start` against a stale daemon on 4600 → T127. Two reported gaps are not defects: `close --note` does land on the thread (the agent closed the child and only ran `show` on the parent), and the port is already per-home (`config.yaml` `port`, `AGILE_PORT`) — the gap is that nothing tells the user so; T127 prints it and T164 documents it. `stream list` header, `status` with no stream summary, repo-less `show` placeholders and inbox age without a timestamp → T128. Raw event names in the web UI (`entity_put`, `repos_put`) and no link from a feed row to its stream are the expected pre-Phase-6 state (T160–T163). The residue in ledger-lite (`.worktrees/`, `runs/`, `tkt/*` branches) is dated 2026-09-18 from the pre-reshape live run; this run wrote nothing there.
 - (Phase 2 manager check) Answering a human-raised question flips `agent.status` to `working` although no agent is attached. `QuestionService.answer` should only leave `question` for `working` when the stream has a session; otherwise back to `idle`. Fold into T130 (which introduces sessions on streams).
 - (T132) Landing emits no `land_*` event kind, so the store's fsync-on-land rule (§7.4) is not exercised; add a `stream_landed` kind (fsynced) in T141 when lessons need the landing as an event anyway. (T132) `GateService` has no resolution hook; landing wraps `respond` at wiring time. Add `onResolved` when T140/T152 need a second subscriber.
+- (T131 merge) The merge commit bb94105 carries git's `# Conflicts:` comment after the two trailer lines (a `--no-edit` conflict merge keeps it); the force-push to rewrite it was blocked by the session's permission policy, so it stays. Message-only; the tree is correct.
