@@ -134,11 +134,9 @@ exports[`role briefs render against fixture data and stay under the token ceilin
 - **S-07** — Auth works end to end
 - Tickets: \`TKT-0230\` \`TKT-0231\` 
 - Gates in force for this sprint:
-  - \`approve_plan\`: human
-  - \`approve_decision\`: human
-  - \`sprint_review\`: human
-  - \`unblock\`: em
-  - \`demo\`: human
+  - \`land\`: human
+  - \`rule_accept\`: human
+  - \`classifier_review\`: em
 
 
 ## Contract
@@ -424,7 +422,7 @@ that stale'd it goes back to \`ready\` as-is; otherwise split it or add a
 "
 `;
 
-exports[`ceremony templates render against fixture data and stay under the token ceiling sprint review — sprint override wins over the repo default 1`] = `
+exports[`ceremony templates render against fixture data and stay under the token ceiling sprint review — the repo default is the only level left 1`] = `
 "# Sprint review — S-07
 
 Goal: Auth works end to end
@@ -434,7 +432,7 @@ Goal: Auth works end to end
 
 
 ## Gate
-\`sprint_review\` owner for this sprint: architect (sprint override — repo default: human)
+\`sprint_review\` owner for this sprint: human
 
 ## Protocol
 - Owner \`human\`: in-flight work finishes, engineers idle, and you (EM)

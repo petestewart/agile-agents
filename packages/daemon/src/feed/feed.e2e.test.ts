@@ -234,7 +234,7 @@ describe('feed page (Playwright e2e)', () => {
         // The seeded HIL request renders from the initial snapshot.
         const hilItem = page.locator(`.hil-item[data-id="${seeded.id}"]`);
         await hilItem.waitFor({ state: 'attached', timeout: PAGE_TIMEOUT_MS });
-        expect(await hilItem.textContent()).toContain('unblock');
+        expect(await hilItem.textContent()).toContain('classifier_review');
 
         // A synthetic event, appended after the page is live, must show up
         // in the feed within 1s (T020 acceptance criterion).
