@@ -174,17 +174,17 @@ Build order: Phase 0 → 1 → 2 → 3 → 4 → 5 → 6. Within a phase, ticket
 
 ### Ticket: T123 ∥ Events and the append-only log
 - **Priority:** P1
-- **Status:** In Progress
+- **Status:** Done
 - **Owner:** opus:worker-T123
 - **Scope:** `Event` kinds reduced to stream/thread/session/question/gate/rule/hook/land events. `log/events.jsonl` in the home, append-only, one writer, fsync on gate and land events. `agile tail` filters by stream.
 - **Acceptance Criteria:** Every state change in T120–T122 emits an event; a reconstruct test rebuilds stream statuses from the log alone.
 - **Validation Steps:** `bun test packages/daemon/src/store/events.test.ts`.
-- **Notes:** —
+- **Notes:** — Branch `T123-events-and-append-only-log`. `EVENT_KINDS` pruned to 21 kinds with live emitters (19 deleted); `Event` = ts, kind, data + optional `stream` (ULID), `session`, `agent` (agent/`agent_put`/`message` go with T130's bus and registry pruning). Store is the one writer of `log/events.jsonl`; gate and `land_*` events fsync through an fd. Stream events carry the resulting status pair; `reconstructStreams()` + reconstruction test over the real services. `agile tail --stream|--kind|--session`. Review (sonnet) PASS, 0 blocking. Full `bun test` 1275 pass / 2 skip / 0 fail; integration 16 pass. merge: d1bc6e1.
 
 ### Ticket: T124 Phase 2 QA and Pete's look
 - **Priority:** P0
-- **Status:** Todo
-- **Owner:** —
+- **Status:** In Progress
+- **Owner:** sonnet:qa-T124
 - **Scope:** Black-box QA of streams, inbox, and thread via the CLI and RPC against a real daemon with the fake ACP transport; then Pete drives `agile stream` and `agile answer` by hand on a scratch repo. Findings become tickets T125+.
 - **Acceptance Criteria:** QA ACCEPT; Pete's list recorded.
 - **Validation Steps:** —
