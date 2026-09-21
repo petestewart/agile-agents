@@ -156,17 +156,17 @@ Build order: Phase 0 → 1 → 2 → 3 → 4 → 5 → 6. Within a phase, ticket
 
 ### Ticket: T121 Inbox: questions and gates re-keyed to streams
 - **Priority:** P0
-- **Status:** In Progress
+- **Status:** Done
 - **Owner:** opus:worker-T121
 - **Scope:** `questions/` and `gates/` keep their services but every request carries `stream` instead of `ticket`/`sprint`. One `inbox` RPC returns everything waiting on the human across all streams, sorted oldest first, each item with the stream path and a one-line context. Answering a question writes the answer to the thread and unblocks the waiting session (existing `deliverNote`/`waitingAgent` path). Gate kinds shrink to `land`, `rule_accept`, `classifier_review`; every other gate kind (`approve_plan`, `sprint_review`, `unblock`, `promote_to_main`, …) is deleted with its policy rows.
 - **Acceptance Criteria:** An agent question on a stream with no repo shows in the inbox and the answer reaches the session. Stale mail from a previous daemon run cannot appear as a question (questions are records with status, not bus mail; the bus drain at start is gone).
 - **Validation Steps:** `bun test packages/daemon/src/questions packages/daemon/src/gates`; e2e: inbox card appears without reload (`hil_requested` trigger from T050 stays).
-- **Notes:** This fixes the 2026-09-11 stale-question defect from the live run at the root.
+- **Notes:** This fixes the 2026-09-11 stale-question defect from the live run at the root. Branch `T121-inbox-rekeyed-to-streams`, 4 commits. Questions moved to `<home>/questions/<id>.yaml`, `stream` required on questions and gates, `HIL_KINDS` = land|rule_accept|classifier_review, new `daemon/src/inbox/` (`inbox.list`, `GET /api/inbox`) derived per call from records, `agile inbox` and `agile answer`. No bus drain existed to delete; the acceptance property is asserted structurally (leftover bus mail never surfaces). Hook `ask` verdict is a plain deny until T151 (see Discovered Issues). Gate records still in repo `.agile/board/hil/` (T122/T123). Review (sonnet) PASS, 3 nits (unblock delivery routes by role id, not session; report undercounted removed hook tests; gate path). Full `bun test` 2292 pass / 3 skip / 0 fail; integration 37 pass. merge: f5c55eb.
 
 ### Ticket: T122 Delete the ceremony and role layer
 - **Priority:** P0
-- **Status:** Todo
-- **Owner:** —
+- **Status:** In Progress
+- **Owner:** opus:worker-T122
 - **Scope:** Delete `daemon/src/em/` (resident, delegate, chat, review, report), `daemon/src/architect/`, `daemon/src/oracle/`, `daemon/src/qa/`, `daemon/src/halts/`, `daemon/src/quota/`, `daemon/src/handoff/`, `daemon/src/pi/` (unless a provider still needs it), `daemon/src/plan/`, `daemon/src/review/` (the round-tracking part; the reviewer role is rebuilt in T131), `daemon/src/merge/` sprint parts, `briefs/{em,architect,qa,reader,refinement,retro,sprint-review,standup}.md`, `feed/stories.ts`, `runs/` writer. Delete `cli` commands `send`, `halt`, `approve` (replaced by `answer` and `land`). Delete the `bus` except the part the thread needs, or delete it entirely if T120's thread covers it. Delete the `Sprints`, `Tickets`, `Policy`, `Questions` panes and the `sprint/` and `review/` UI directories; the UI is rebuilt in Phase 6, so the app may be visually broken between T122 and T160 on the integration branch (never on `main`).
 - **Acceptance Criteria:** `bun test` and typecheck green; daemon source line count reported in the ticket Notes; no import of a deleted module remains; `grep -ri sprint packages/daemon/src | wc -l` is 0.
 - **Validation Steps:** the three suites; `cloc`-style count via `find … | xargs wc -l`.
@@ -397,3 +397,7 @@ Daemon: `em/`, `architect/`, `oracle/`, `qa/`, `halts/`, `quota/`, `handoff/`, `
 - Playwright e2e suites are load-sensitive: run concurrently with a full `bun test` one of them times out (a different test each time). Unloaded they are green. Pre-existing; noted at T111.
 - Phase 1 complete on `claude/reshape` (2026-09-19): T101, T110, T111, T112, T113 merged. Verification on the merged tip: build/typecheck/lint clean; `bun test` 2269 pass / 3 skip / 0 fail (163 files); `test:integration` 5 suites, 31 pass, 0 fail. Daemon source 34,975 lines (from 35,932). Note T101 (Phase 0, docs only) ran alongside Phase 1 rather than as a separate stop; Pete reviews `design/cockpit-design.md` with this phase.
 - Baseline before Phase 1: daemon source (non-test `.ts` under `packages/daemon/src`) = 35,932 lines.
+
+- (T121) The hook's `ask` verdict no longer files an `unblock` gate; it is a plain deny naming the rule until T151 rebuilds it as the `classifier_review` route band. Strictly more restrictive in the interim; the six removed `hook/service.test.ts` cases describe the behaviour T151 must restore.
+- (T121) `waitingAgent` delivers answers to the raiser's role mailbox, not the stored `session`; T130's `ask` verb must route by session.
+- (T121) HIL gate records still live in the repo's `.agile/board/hil/`; move to the state home in T122 or T123.
