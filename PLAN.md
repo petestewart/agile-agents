@@ -188,7 +188,7 @@ Build order: Phase 0 → 1 → 2 → 3 → 4 → 5 → 6. Within a phase, ticket
 - **Scope:** Black-box QA of streams, inbox, and thread via the CLI and RPC against a real daemon with the fake ACP transport; then Pete drives `agile stream` and `agile answer` by hand on a scratch repo. Findings become tickets T125+.
 - **Acceptance Criteria:** QA ACCEPT; Pete's list recorded.
 - **Validation Steps:** —
-- **Notes:** — QA (sonnet) round 1 REJECT, 1 failure: daemon start needs a git cwd → T125; three rough edges → T126. All stream/inbox/thread/RPC/persistence/robustness scenarios passed. Round 2 after T125/T126.
+- **Notes:** — QA (sonnet) round 1 REJECT, 1 failure: daemon start needs a git cwd → T125; three rough edges → T126. All stream/inbox/thread/RPC/persistence/robustness scenarios passed. Round 2 after T125/T126. Round 2 (after T125/T126) ACCEPT, 0 failures: every scenario re-run from a non-git cwd and a git scratch repo. Reports in the manager scratchpad. Pete's look pending; his list goes here as T127+.
 
 ### Ticket: T125 Daemon starts from any cwd
 - **Priority:** P0
@@ -207,6 +207,8 @@ Build order: Phase 0 → 1 → 2 → 3 → 4 → 5 → 6. Within a phase, ticket
 - **Acceptance Criteria:** Each edge has a test; QA's exact commands from `qa-T124.report.md` behave as described.
 - **Validation Steps:** `bun test packages/daemon/src/streams packages/cli`.
 - **Notes:** Branch `T126-phase2-rough-edges`. Typed `StreamCycleError` (shared, beside its throw site), `AlreadyExistsError`, `UnknownParentStreamError`, `UnknownRepoError` mapped to -32602 at the edge; `close --note` appends `closed: <note>` to the thread; `agile status` shares `daemon status`'s not-running sentence. Review (sonnet) PASS. Full `bun test` 1283 pass / 2 skip / 0 fail. merge: 6490b26.
+
+**Phase 2 verification (2026-09-21, tip a210a24):** build, typecheck, lint clean; `bun test` 1287 pass / 2 skip / 0 fail (95 files); `test:integration` 16 pass / 0 fail (6 suites, run alone). Daemon source 16,002 lines (Phase 1: 34,975; baseline 35,932). Phase 2 stops here for Pete's look (T124); Phase 3 does not start until he says go.
 
 ### Phase 3 — Agents as attachments
 
