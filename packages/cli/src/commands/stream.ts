@@ -13,6 +13,7 @@ import type { ParsedArgs } from '../args';
 import { hasFlag, optionalString, requireOption, requirePositional } from '../args';
 import { callRpc } from '../client';
 import { printFields, printJson } from '../format';
+import { formatSession } from './attach';
 
 interface StreamNode {
   stream: Stream;
@@ -124,9 +125,12 @@ export async function runStreamShow(
     ['repo', stream.repo ?? '- (no repo: nothing git-backed)'],
     ['branch', stream.branch ?? '- (created on first attach)'],
     ['worktree', stream.worktree ?? '- (created on first attach)'],
-    ['sessions', stream.sessions.length === 0 ? '-' : String(stream.sessions.length)],
     ['created_at', stream.created_at],
   ]);
+  console.log('');
+  // T130: the sessions strip — `id vendor/model effort status`, one line each.
+  console.log(`sessions (${stream.sessions.length}):`);
+  for (const session of stream.sessions) console.log(`  ${formatSession(session)}`);
   console.log('');
   console.log(`thread (${page.entries.length} of ${page.total}):`);
   if (page.entries.length === 0) console.log('  (empty)');

@@ -96,9 +96,13 @@ export * from './permissions';
 // decisions, hook.* RPC methods (T009).
 export * from './hook';
 
-// Tool framework: registry, cache, runner, read_summary/test_run, MCP server
-// factory, tool.* RPC methods (T011).
+// What is left of the tool framework: `test_run` and the MCP server over
+// the eight verbs (T011, reshaped by T130).
 export * from './tools';
+
+// Attaching a worker to a stream, the eight MCP verbs, and the attach.*/
+// agent.* RPC families (T130).
+export * from './attach';
 
 // Agent session lifecycle and worktree manager (T012).
 export * from './runner';

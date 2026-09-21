@@ -21,7 +21,13 @@ describe('effort', () => {
   });
 
   test('SessionRef carries it, optionally, and stays strict', () => {
-    const base = { id: session, vendor: 'claude', model: 'default', role: 'worker', status: 'running' };
+    const base = {
+      id: session,
+      vendor: 'claude',
+      model: 'default',
+      role: 'worker',
+      status: 'running',
+    };
     expect(SessionRefSchema.safeParse(base).success).toBe(true);
     expect(SessionRefSchema.safeParse({ ...base, effort: 'high' }).success).toBe(true);
     expect(SessionRefSchema.safeParse({ ...base, effort: 'huge' }).success).toBe(false);
@@ -64,9 +70,13 @@ describe('agent verbs', () => {
         .severity,
     ).toBe('major');
     expect(validateVerbInput('read_stream', { session }).limit).toBeUndefined();
-    expect(validateVerbInput('test_run', { session, command: 'bun test' }).command).toBe('bun test');
+    expect(validateVerbInput('test_run', { session, command: 'bun test' }).command).toBe(
+      'bun test',
+    );
     expect(() => validateVerbInput('progress', { session, text: 'x', ticket: 'TKT-1' })).toThrow();
-    expect(() => validateVerbInput('finding', { session, severity: 'huge', file: 'a', text: 'x' })).toThrow();
+    expect(() =>
+      validateVerbInput('finding', { session, severity: 'huge', file: 'a', text: 'x' }),
+    ).toThrow();
   });
 
   test('bodies are capped at the thread body cap', () => {

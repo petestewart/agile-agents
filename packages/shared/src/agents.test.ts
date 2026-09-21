@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import { validateAgentRecord } from './agents';
 
 describe('AgentRecord schema', () => {
-  test('validates a minimal legal record (idle agent, no ticket)', () => {
+  test('validates a minimal legal record (a session with no stream yet)', () => {
     expect(() =>
       validateAgentRecord({
         vendor: 'claude',
@@ -13,12 +13,12 @@ describe('AgentRecord schema', () => {
     ).not.toThrow();
   });
 
-  test('validates a busy agent with a ticket', () => {
+  test('validates a session attached to a stream', () => {
     expect(() =>
       validateAgentRecord({
         vendor: 'claude',
         model: 'claude-sonnet-4-5',
-        ticket: 'TKT-0231',
+        stream: '01J9ZZZZZZZZZZZZZZZZZZZZZZ',
         pid: 4242,
         last_seen: '2026-09-07T18:00:00Z',
       }),
@@ -37,29 +37,29 @@ describe('AgentRecord schema', () => {
     ).toThrow();
   });
 
-  test('validates the T012 additive fields (role/worktree/session_id)', () => {
+  test('validates role/worktree/session_id', () => {
     expect(() =>
       validateAgentRecord({
         vendor: 'claude',
         model: 'claude-sonnet-4-5',
-        ticket: 'TKT-0231',
+        stream: '01J9ZZZZZZZZZZZZZZZZZZZZZZ',
         pid: 4242,
         last_seen: '2026-09-07T18:00:00Z',
-        role: 'engineer',
+        role: 'worker',
         worktree: '.worktrees/TKT-0231',
         session_id: 'sess-abc123',
       }),
     ).not.toThrow();
   });
 
-  test('accepts the architect role (T031 — a singleton spawned session, not a per-ticket one)', () => {
+  test('accepts the reviewer role (D3: two roles, worker and reviewer)', () => {
     expect(() =>
       validateAgentRecord({
         vendor: 'claude',
         model: 'claude-sonnet-4-5',
         pid: 4242,
         last_seen: '2026-09-07T18:00:00Z',
-        role: 'architect',
+        role: 'reviewer',
       }),
     ).not.toThrow();
   });
@@ -71,7 +71,7 @@ describe('AgentRecord schema', () => {
         model: 'claude-sonnet-4-5',
         pid: 4242,
         last_seen: '2026-09-07T18:00:00Z',
-        role: 'em',
+        role: 'engineer',
       }),
     ).toThrow();
   });

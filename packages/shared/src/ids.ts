@@ -146,8 +146,16 @@ export type RuleId = z.infer<typeof RuleIdSchema>;
  * EM's standup_call to a global halt's affected set threw
  * "to.1: must be a valid agent id" and aborted the twenty-fifth live run.
  */
+/**
+ * T130: a bus identity is either one of the named principals, one of the
+ * legacy role ids, or **a session's own ULID**. An attached session is the
+ * routable identity now (cockpit design §4: "an agent is not a member of a
+ * team; it is a session attached to a stream"), and it is what a question's
+ * answer is delivered to (`questions/service.ts`) and what the hook's agent
+ * registry is keyed by.
+ */
 export const AGENT_ID_PATTERN =
-  /^(em|architect|human|daemon|eng-\d+|reviewer-(?:sec-)?\d+|qa-\d+)$/;
+  /^(em|architect|human|daemon|eng-\d+|reviewer-(?:sec-)?\d+|qa-\d+|[0-9A-HJKMNP-TV-Z]{26})$/;
 export const AgentIdSchema = z.string().regex(AGENT_ID_PATTERN, 'must be a valid agent id');
 export type AgentId = z.infer<typeof AgentIdSchema>;
 

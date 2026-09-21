@@ -15,7 +15,6 @@ export * from './agents';
 export * from './ticket';
 export * from './policy';
 export * from './vendors';
-export * from './tool';
 export * from './message';
 export * from './event';
 export * from './hil';

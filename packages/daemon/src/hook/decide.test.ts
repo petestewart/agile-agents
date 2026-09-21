@@ -5,12 +5,11 @@ import { DEFAULT_MAX_READ_BYTES, type HookDecisionContext } from './types';
 
 function baseCtx(overrides: Partial<HookDecisionContext> = {}): HookDecisionContext {
   return {
-    agent: 'eng-1',
-    ticket: 'TKT-0001',
-    role: 'engineer',
+    session: '01J9AAAAAAAAAAAAAAAAAAAAAA',
+    stream: '01J9BBBBBBBBBBBBBBBBBBBBBB',
+    role: 'worker',
     worktreePath: '/repo/.worktrees/TKT-0001',
     inbox: [],
-    ticketBudget: undefined,
     limits: { maxReadBytes: DEFAULT_MAX_READ_BYTES },
     fileSize: () => undefined,
     ...overrides,
@@ -45,18 +44,6 @@ describe('decidePreToolUse — normal inbox is additive, never overrides the gat
     expect(result.decision).toBe('deny');
     expect(result.reason).toMatch(/read_summary/);
     // Still delivered: attached to the deny output, and acked.
-    expect(result.additionalContext).toContain('use the JWT approach');
-    expect(result.ack).toEqual(['norm-1']);
-  });
-
-  test('a pending normal message does NOT turn a budget denial into an allow', () => {
-    const ctx = baseCtx({
-      inbox: [normal],
-      ticketBudget: { ceiling_tokens: 1000, spent_tokens: 1000 },
-    });
-    const result = decidePreToolUse(ctx, { tool_name: 'Read', tool_input: { file_path: 'x.txt' } });
-    expect(result.decision).toBe('deny');
-    expect(result.reason).toMatch(/budget exhausted/);
     expect(result.additionalContext).toContain('use the JWT approach');
     expect(result.ack).toEqual(['norm-1']);
   });
@@ -99,16 +86,6 @@ describe('decidePreToolUse — role × tool policy (review round 3, reuses decid
     }
   });
 
-  test('QA Edit denies — QA writes test files only, not source', () => {
-    const ctx = baseCtx({ role: 'qa', worktreePath: '/repo/.worktrees/TKT-0001-qa' });
-    const result = decidePreToolUse(ctx, {
-      tool_name: 'Edit',
-      tool_input: { file_path: '/repo/.worktrees/TKT-0001-qa/src.ts' },
-    });
-    expect(result.decision).toBe('deny');
-    expect(result.reason).toMatch(/QA role denies edits to source/);
-  });
-
   test('a generic tool reporting tool_input.kind === "edit" is gated the same as a named edit tool', () => {
     const ctx = baseCtx({ role: 'reviewer', worktreePath: '/repo/.worktrees/TKT-0001' });
     const result = decidePreToolUse(ctx, {
@@ -118,8 +95,8 @@ describe('decidePreToolUse — role × tool policy (review round 3, reuses decid
     expect(result.decision).toBe('deny');
   });
 
-  test('engineer Edit inside its own worktree allows', () => {
-    const ctx = baseCtx({ role: 'engineer', worktreePath: '/repo/.worktrees/TKT-0001' });
+  test('worker Edit inside its own worktree allows', () => {
+    const ctx = baseCtx({ role: 'worker', worktreePath: '/repo/.worktrees/TKT-0001' });
     const result = decidePreToolUse(ctx, {
       tool_name: 'Edit',
       tool_input: { file_path: '/repo/.worktrees/TKT-0001/a.ts' },
@@ -127,8 +104,8 @@ describe('decidePreToolUse — role × tool policy (review round 3, reuses decid
     expect(result).toEqual({ decision: 'allow' });
   });
 
-  test('engineer Edit outside its own worktree denies', () => {
-    const ctx = baseCtx({ role: 'engineer', worktreePath: '/repo/.worktrees/TKT-0001' });
+  test('worker Edit outside its own worktree denies', () => {
+    const ctx = baseCtx({ role: 'worker', worktreePath: '/repo/.worktrees/TKT-0001' });
     const result = decidePreToolUse(ctx, {
       tool_name: 'Edit',
       tool_input: { file_path: '/repo/other-ticket/a.ts' },

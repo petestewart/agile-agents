@@ -8,8 +8,18 @@ import {
   resolveSessionSettings,
 } from './resolve';
 
-const repo = { path: '/repo', protected_branches: ['main'], vendor: 'pi', model: 'pi-1', effort: 'high' } as const;
-const home = { default_vendor: 'cursor', default_model: 'cursor-1', default_effort: 'low' } as const;
+const repo = {
+  path: '/repo',
+  protected_branches: ['main'],
+  vendor: 'pi',
+  model: 'pi-1',
+  effort: 'high' as const,
+};
+const home = {
+  default_vendor: 'cursor',
+  default_model: 'cursor-1',
+  default_effort: 'low' as const,
+};
 
 describe('resolveSessionSettings', () => {
   test('falls back to claude / the provider default model / medium', () => {

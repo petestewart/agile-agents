@@ -1,69 +1,39 @@
 /**
- * AgentRecord — bus agent registry entry (design/agile-agents-design.md §5
- * "Comms bus" → "Storage": "`agents/<agent>.yaml   # registry: vendor,
- * model, ticket, pid, last_seen`"; `last_seen` is the input to the
- * dead-agent path in §5 "Liveness": "`last_seen` older than N minutes with
- * ticket `in_progress` → daemon sends `escalate` to em, ticket back to
- * `ready`").
+ * `AgentRecord` — the registry entry for one **attached session**
+ * (`bus/agents/<session id>.yaml`).
  *
- * DESIGN-GAP: no literal yaml block is given for this file anywhere in
- * §4–§5 (only the one-line directory-listing comment above); the schema is
- * the five named fields directly, nothing added.
+ * T130 re-keyed this from the ticket model to streams. The record is what
+ * the hook path resolves a tool call's `cwd` to (design/cockpit-design.md
+ * §8.1 step 1: "resolve the session → stream → repo. Unresolvable ⇒ DENY"),
+ * so it carries exactly what that resolution needs: which stream, which
+ * role, which worktree, plus the vendor/model/pid/last_seen the registry
+ * has always had. `ticket` and the four ticket-era roles
+ * (engineer/reviewer/qa/architect) are gone with the ticket model; `role`
+ * is the two-role `SessionRole` (**D3**).
  *
- * DESIGN-GAP (T012): `role`/`worktree`/`session_id` are additive optional
- * fields granted to this ticket for the agent runner (design/
- * agile-agents-design.md §8 "Adapter contract" needs to record which role a
- * registered agent is playing, which worktree it's running in, and the live
- * ACP `session/new` id for `session/load` recovery). All three are optional
- * so every pre-T012 `AgentRecord` (and every write through
- * `StateStore.heartbeat`/`Bus.heartbeat`, which reconstruct the record from
- * only the five original fields and do not thread these three through) still
- * validates — `packages/daemon/src/runner/session.ts` documents how it keeps
- * them from being silently dropped by an intervening heartbeat rewrite.
- *
- * `pid` (T012 review round 3, opus item 3): made optional. It used to be
- * `z.number().int().positive()` with every writer (`runner/session.ts`'s
- * registration, `StateStore.heartbeat`, `Bus.heartbeat`) falling back to
- * `process.pid` — the *daemon's own* pid — whenever a spawned agent's real
- * pid wasn't known yet. That silently pointed an operator's "kill -9 the
- * pid on record" recovery step at the daemon itself in exactly the case
- * (a spawn failure, or a fresh registration racing the child's first
- * scheduler tick) it's least safe to guess. Now: no pid at all is a valid,
- * honest `AgentRecord` — every writer omits the field (and logs a warning
- * event) rather than substituting the daemon's pid — and every reader
- * (the crash-recovery path included) must treat `pid: undefined` as "not
- * yet known", never as "assume the daemon".
+ * `last_seen` is still the liveness input (`hook/service.ts` refuses to
+ * resolve a stale record). `pid` stays optional and is never substituted
+ * with the daemon's own pid — "no pid at all is a valid, honest
+ * `AgentRecord`", so an operator's "kill the pid on record" can never point
+ * at `agiled` itself.
  */
 
 import { z } from 'zod';
-import { TicketIdSchema, formatZodError } from './ids';
-
-/**
- * Roles T012's runner spawns a session for. EM registration is still out of
- * scope (§8 names engineer/reviewer/qa/architect as the spawned role
- * sessions; EM's own ceremony loop, `em/loop.ts`, never goes through
- * `runner/session.ts`'s `AgentRecord` registration path). `architect` added
- * T031 (design §14's Architect row + CLAUDE.md's v0 default) — the
- * architect is now a spawned `Runner.spawn('architect', ticket)` session
- * like the other three, with a singleton `AgentId` ('architect', per
- * `AGENT_ID_PATTERN`) rather than a per-ticket one.
- */
-export const AGENT_RUNNER_ROLES = ['engineer', 'reviewer', 'qa', 'architect'] as const;
-export const AgentRunnerRoleSchema = z.enum(AGENT_RUNNER_ROLES);
-export type AgentRunnerRole = z.infer<typeof AgentRunnerRoleSchema>;
+import { UlidSchema, formatZodError } from './ids';
+import { SessionRoleSchema } from './stream';
 
 export const AgentRecordSchema = z
   .object({
     vendor: z.string().min(1),
     model: z.string().min(1),
-    // An idle agent (just spawned, or between tickets) has none.
-    ticket: TicketIdSchema.optional(),
-    // Optional (T012 round 3) — see this file's header. Still a positive
-    // int whenever it IS set; never a sentinel like 0/-1 for "unknown".
+    /** The stream this session is attached to. */
+    stream: UlidSchema.optional(),
+    /** Still a positive int whenever set; never a sentinel like 0/-1 for "unknown". */
     pid: z.number().int().positive().optional(),
     last_seen: z.string().min(1),
-    role: AgentRunnerRoleSchema.optional(),
+    role: SessionRoleSchema.optional(),
     worktree: z.string().min(1).optional(),
+    /** The vendor's own ACP `session/new` id, for `session/load` recovery. */
     session_id: z.string().min(1).optional(),
   })
   .strict();

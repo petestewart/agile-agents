@@ -12,10 +12,8 @@ import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import {
   type Policy,
-  type ToolDefinition,
   type VendorsConfig,
   validatePolicy,
-  validateToolDefinition,
   validateVendorsConfig,
 } from '@agile-agents/shared';
 import { stringify as stringifyYaml } from 'yaml';
@@ -105,90 +103,6 @@ function writeFile(path: string, content: string): void {
 }
 
 /**
- * Starter tool set (T011 — design/agile-agents-design.md §7 "Tool framework":
- * "Starter set: read_summary ... test_run ..."; this ticket's scope names
- * exactly these two). Seeded through `validateToolDefinition` so a broken
- * seed can never itself fail `loadToolRegistry`'s validation on the very
- * first daemon start after `agile init`.
- */
-function starterToolDefinition(def: ToolDefinition): ToolDefinition {
-  return validateToolDefinition(def);
-}
-
-const READ_SUMMARY_TOOL: ToolDefinition = starterToolDefinition({
-  name: 'read_summary',
-  kind: 'reader',
-  trigger: {
-    hook: 'pre-tool-use',
-    match: 'tool in [Read, Grep] and (file.size > 30KB or files > 5)',
-  },
-  action: 'redirect',
-  runner: { tier: 'trivial', max_output_tokens: 400 },
-  input: { path: 'string', question: 'string?' },
-  output: { summary: 'string', refs: '[{path, lines}]' },
-  cache: { key: ['file_hash', 'question'], ttl: 'content-hash' },
-  promote_to_kb: 'optional',
-});
-
-const READ_SUMMARY_PROMPT = `# read_summary
-
-You are a reader agent. You are given a file's full contents and, optionally,
-a question about it. Produce:
-
-- \`summary\`: at most 400 tokens (~1600 characters). Describe what the file
-  does; if a question was given, answer it directly.
-- \`refs\`: a list of \`{"path": "...", "lines": "<start>-<end>"}\` pointers
-  backing the claims in your summary.
-
-Respond with **only** a JSON object of the shape
-\`{"summary": "...", "refs": [{"path": "...", "lines": "12-40"}]}\`.
-No prose outside the JSON.
-`;
-
-const TEST_RUN_TOOL: ToolDefinition = starterToolDefinition({
-  name: 'test_run',
-  kind: 'reader',
-  trigger: {
-    hook: 'pre-tool-use',
-    match: 'tool in [Bash] and command matches test_runner',
-  },
-  action: 'augment',
-  runner: { tier: 'trivial', max_output_tokens: 500 },
-  input: { command: 'string', cwd: 'string?' },
-  output: {
-    ok: 'boolean',
-    failures: '[{name, message, frames}]',
-    summary: 'string',
-    exit_code: 'number',
-  },
-  promote_to_kb: 'never',
-});
-
-const TEST_RUN_PROMPT = `# test_run
-
-Not a runner-tier prompt: \`test_run\` executes \`command\` directly in the
-ticket worktree (\`Bun.spawn\`, no ACP session) and parses its own output for
-failing test names, assertion messages, and relevant frames — never a green
-log. This file exists for the registry's "tool.yaml + prompt" convention;
-nothing reads it at runtime.
-`;
-
-/** Writes `tool.yaml` + `prompt.md` for one starter tool, unless a `tool.yaml` is already there — "keep it idempotent" (this ticket's file-ownership note). */
-function starterToolFiles(
-  toolsDir: string,
-  def: ToolDefinition,
-  prompt: string,
-): Array<[string, string]> {
-  const dir = join(toolsDir, def.name);
-  const yamlPath = join(dir, 'tool.yaml');
-  if (existsSync(yamlPath)) return [];
-  return [
-    [yamlPath, stringifyYaml(def)],
-    [join(dir, 'prompt.md'), prompt],
-  ];
-}
-
-/**
  * `oracle/product.md` as `agile init` first writes it. Exported so callers
  * that *derive* something from the product brief (T046
  * defect 2) can tell "the architect hasn't written a brief yet" from a real
@@ -210,10 +124,11 @@ function layoutFiles(stateRoot: string): Array<[string, string]> {
     [p('vendors.yaml'), stringifyYaml(defaultVendorsConfig())],
     // T111: the repos this daemon serves. Empty until `agile repo add`.
     [p('repos.yaml'), '{}\n'],
-    [p('tools', '.gitkeep'), ''],
-    ...starterToolFiles(p('tools'), READ_SUMMARY_TOOL, READ_SUMMARY_PROMPT),
-    ...starterToolFiles(p('tools'), TEST_RUN_TOOL, TEST_RUN_PROMPT),
+    // T130: no `tools/` any more — the verb surface is a fixed table of
+    // eight (cockpit design §4.1), not a directory of `tool.yaml` folders.
     [p('rules', '.gitkeep'), ''],
+    // Each attached session's logs (`stderr.log`, `output.log`), §7.2.
+    [p('sessions', '.gitkeep'), ''],
     [p('log', 'events.jsonl'), ''],
     [p('bus', 'inbox', '.gitkeep'), ''],
     [p('bus', 'threads', '.gitkeep'), ''],

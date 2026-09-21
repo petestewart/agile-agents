@@ -14,7 +14,6 @@ import { validateAgentRecord } from './agents';
 import { validateMessage } from './message';
 import { validatePolicy } from './policy';
 import { validateTicket } from './ticket';
-import { validateToolDefinition } from './tool';
 import { validateVendorsConfig } from './vendors';
 
 const FIXTURES_DIR = join(import.meta.dir, '__fixtures__');
@@ -34,10 +33,6 @@ describe('design doc fixtures parse (§4–§5)', () => {
 
   test('VendorsConfig — §8 Adapter contract / Auth', () => {
     expect(() => validateVendorsConfig(loadYaml('vendors.yaml'))).not.toThrow();
-  });
-
-  test('ToolDefinition — §7 Tool framework', () => {
-    expect(() => validateToolDefinition(loadYaml('tool.yaml'))).not.toThrow();
   });
 
   test('Message — §5 Comms bus / Message', () => {

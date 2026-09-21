@@ -45,11 +45,9 @@ import {
   type AgentRecord,
   MESSAGE_BODY_MAX_CHARS,
   type Message,
-  type Policy,
-  type TicketId,
+  type SessionRole,
 } from '@agile-agents/shared';
 import type { Bus } from '../bus';
-import type { PermissionRole } from '../permissions';
 import { isPathInside } from '../permissions/command';
 import { NotFoundError, type StateStore, buildEvent } from '../store';
 import { decidePreToolUse } from './decide';
@@ -155,7 +153,7 @@ function safeRealpath(path: string): string {
   }
 }
 
-const UNRESOLVED_CWD_REASON = 'agile: cwd is not a registered ticket worktree';
+const UNRESOLVED_CWD_REASON = 'agile: cwd is not a registered stream worktree';
 
 /**
  * Reads the disambiguation hint (T012 QA/review round — see this file's
@@ -167,6 +165,14 @@ const UNRESOLVED_CWD_REASON = 'agile: cwd is not a registered ticket worktree';
  */
 function agentHintFrom(payload: Record<string, unknown>): string | undefined {
   return typeof payload.agile_agent === 'string' ? payload.agile_agent : undefined;
+}
+
+/** What a hook call's `cwd` resolves to: the session, its stream, its role and its worktree (T130). */
+export interface ResolvedHookIdentity {
+  session: string;
+  stream: string;
+  role: SessionRole;
+  worktreePath: string;
 }
 
 export class HookService {
@@ -225,7 +231,7 @@ export class HookService {
   private resolveAgentByCwd(
     cwd: string | undefined,
     agentHint: string | undefined,
-  ): { agent: AgentId; ticket: TicketId; role: PermissionRole; worktreePath: string } | undefined {
+  ): ResolvedHookIdentity | undefined {
     if (cwd === undefined) return undefined;
     const realCwd = safeRealpath(cwd);
     const now = this.now();
@@ -251,25 +257,18 @@ export class HookService {
       // More than one candidate and no (matching) hint — fail closed rather
       // than guess which agent is really calling (this file's header).
       if (chosen === undefined) return undefined;
-      const ticketId = chosen.record.ticket;
-      if (ticketId === undefined) return undefined;
-      // T031: the architect isn't scoped to one ticket's own lifecycle the
-      // way engineer/reviewer/qa are — `AgentRecord.ticket` on an architect
-      // session is only ever "whichever ticket its brief/ledger context was
-      // rendered for" (`runner/brief.ts`), not a status this hook should
-      // gate a tool call on. An architect calling from its own worktree
-      // (`.worktrees/architect`, the containment check above) must resolve
-      // regardless of that ticket's current status — a `done`/`ready`
-      // ticket here is normal, not a stale/crashed registration the way it
-      // would be for the other three roles.
+      const streamId = chosen.record.stream;
+      // A registry entry with no stream cannot be placed (§8.1 step 1:
+      // "resolve the session → stream → repo. Unresolvable ⇒ DENY").
+      if (streamId === undefined) return undefined;
       // Always defined: `covering` only keeps records whose worktree this
       // resolved above. Fail closed rather than substitute a root.
       const worktreePath = this.absWorktree(chosen.record.worktree);
       if (worktreePath === undefined) return undefined;
       return {
-        agent: chosen.id as AgentId,
-        ticket: ticketId,
-        role: chosen.record.role ?? 'engineer',
+        session: chosen.id,
+        stream: streamId,
+        role: chosen.record.role ?? 'worker',
         worktreePath,
       };
     }
@@ -288,7 +287,7 @@ export class HookService {
   ): Promise<HookDecisionContext | undefined> {
     const resolved = this.resolveAgentByCwd(cwd, agentHint);
     if (resolved === undefined) return undefined;
-    const { agent, ticket: ticketId, role, worktreePath } = resolved;
+    const { session, stream, role, worktreePath } = resolved;
 
     // Liveness heartbeat rides on the pre-tool-use hook (§5 "Liveness":
     // "bus.heartbeat rides on the pre-tool-use hook") — done here so every
@@ -317,20 +316,19 @@ export class HookService {
     // tested path with no registry entry to heartbeat at all. That's not a
     // bug here, just nothing to update — swallow only that specific error.
     try {
-      await this.store.heartbeat(agent, { ticket: ticketId }, this.now);
+      await this.store.heartbeat(session as AgentId, { stream }, this.now);
     } catch (err) {
       if (!(err instanceof NotFoundError)) throw err;
     }
 
     return {
-      agent,
-      ticket: ticketId,
+      session,
+      stream,
       role,
       worktreePath,
       inbox: noAdditionalContextChannel
-        ? this.bus.poll(agent).filter((m) => m.priority !== 'normal')
-        : this.bus.poll(agent),
-      ticketBudget: undefined,
+        ? this.bus.poll(session as AgentId).filter((m) => m.priority !== 'normal')
+        : this.bus.poll(session as AgentId),
       limits: this.limits,
       fileSize: this.fileSize,
     };
@@ -338,16 +336,16 @@ export class HookService {
 
   /** Every hook decision is logged, deferred-commit (T009 review round, hot-path decision) — batched by the store rather than one `git commit` per tool call. */
   private async logDecision(
-    ctx: { ticket?: TicketId; agent?: AgentId } | undefined,
+    ctx: { stream?: string; session?: string } | undefined,
     event: string,
     decision: HookDecision,
     detail: { tool?: string; command?: string } = {},
   ): Promise<void> {
     await this.store.appendEvent(
       buildEvent('hook_decision', {
-        ...(ctx?.agent !== undefined ? { agent: ctx.agent } : {}),
+        ...(ctx?.session !== undefined ? { agent: ctx.session as AgentId } : {}),
         data: {
-          ...(ctx?.ticket !== undefined ? { ticket: ctx.ticket } : {}),
+          ...(ctx?.stream !== undefined ? { stream: ctx.stream } : {}),
           event,
           decision: decision.decision,
           reason: decision.reason,
@@ -418,7 +416,7 @@ export class HookService {
       };
     }
 
-    await this.ackAll(ctx.agent, decision.ack);
+    await this.ackAll(ctx.session as AgentId, decision.ack);
     await this.logDecision(ctx, 'pre_tool_use', decision);
 
     return {
@@ -479,14 +477,14 @@ export class HookService {
     const ctx = await this.buildContext(payload.cwd, agentHintFrom(payload));
     if (ctx === undefined) return {};
 
-    const low = this.bus.poll(ctx.agent, { priority: 'low' });
+    const low = this.bus.poll(ctx.session as AgentId, { priority: 'low' });
     if (low.length === 0) {
       await this.logDecision(ctx, 'stop', { decision: 'allow' });
       return {};
     }
 
     await this.ackAll(
-      ctx.agent,
+      ctx.session as AgentId,
       low.map((m) => m.id),
     );
     const summary = summarizeLowPriority(low);

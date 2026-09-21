@@ -16,23 +16,22 @@ import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
+  AttachService,
   Bus,
-  FakeRunner,
   GateService,
   InboxService,
   QuestionService,
   type RpcServerHandle,
   StateStore,
   StreamService,
-  ToolService,
+  VerbService,
+  buildAttachRpcMethods,
   buildBusRpcMethods,
   buildGateRpcMethods,
   buildInboxRpcMethods,
   buildQuestionRpcMethods,
   buildStateRpcMethods,
   buildStreamRpcMethods,
-  buildToolRpcMethods,
-  loadToolRegistry,
   runInit,
   startRpcServer,
 } from '@agile-agents/daemon';
@@ -91,6 +90,7 @@ export interface TestDaemon {
    * does, since there is no `gate.request` RPC for an external client to
    * create one through. */
   gateService: GateService;
+  attachService: AttachService;
   /** Same instance wired into `question.*` RPC (T040) — tests seed an open question through it. */
   questionService: QuestionService;
   streamService: StreamService;
@@ -121,13 +121,14 @@ export async function startTestDaemon(prefix = 'agile-cli-test-'): Promise<TestD
   const gateService = new GateService(store);
   const streamService = new StreamService(store);
   const questionService = new QuestionService(store, streamService);
-  // `FakeRunner` (never a real vendor session) so `tool.*` tests never need
-  // `AGILE_LIVE=1` — same reasoning as the daemon's own tool tests.
-  const toolService = new ToolService({
-    registry: loadToolRegistry(init.stateRoot),
-    runner: new FakeRunner(),
-    repoRoot: repo,
+  // T130: attach + the eight verbs. Nothing here spawns a vendor — a test
+  // that wants a live session injects its own `spawn` seam.
+  const verbService = new VerbService({
+    store,
+    streams: streamService,
+    questions: questionService,
   });
+  const attachService = new AttachService({ store, streams: streamService, home, socketPath });
 
   const rpc = startRpcServer({
     socketPath,
@@ -147,7 +148,7 @@ export async function startTestDaemon(prefix = 'agile-cli-test-'): Promise<TestD
       ...buildBusRpcMethods(new Bus(store, init.stateRoot)),
       ...buildGateRpcMethods(gateService),
       ...buildQuestionRpcMethods(questionService),
-      ...buildToolRpcMethods(toolService),
+      ...buildAttachRpcMethods(attachService, verbService),
     },
   });
   await rpc.listening;
@@ -174,6 +175,7 @@ export async function startTestDaemon(prefix = 'agile-cli-test-'): Promise<TestD
     store,
     rpc,
     gateService,
+    attachService,
     questionService,
     streamService,
     home,

@@ -3,6 +3,10 @@
  * §6 "Enforcement tiers and hook catalog" tier 1, §5 "Comms bus" → "Delivery
  * by priority", §4 "Ticket" → `budget`, §7 "Tool framework" → `read_summary`).
  *
+ * T130 re-keyed the context from `{agent, ticket}` to `{session, stream}`:
+ * a tool call is made by a session attached to a stream, and the ticket
+ * model (with its per-ticket token budget tier) is gone.
+ *
  * `decide.ts` is pure: everything it needs about the world is packed into
  * `HookDecisionContext` by `service.ts`, which is the only place that reads
  * `StateStore`/`Bus`/the filesystem. `HookDecision` is the pure function's
@@ -12,8 +16,7 @@
  * `hook_decision` event) the decision implies.
  */
 
-import type { AgentId, Message, TicketBudget, TicketId } from '@agile-agents/shared';
-import type { PermissionRole } from '../permissions';
+import type { Message, SessionRole } from '@agile-agents/shared';
 
 /** The three decision outcomes a Claude PreToolUse hook can render (spike-findings.md §B; `spike/permission-matrix.ts:119`). */
 export type HookVerdict = 'allow' | 'deny' | 'ask';
@@ -32,13 +35,14 @@ export const DEFAULT_MAX_READ_BYTES = 64 * 1024;
  * resolved by `HookService` before the pure decision runs.
  */
 export interface HookDecisionContext {
-  agent: AgentId;
-  ticket: TicketId;
-  role: PermissionRole;
+  /** The attached session this call came from — the hook's identity since T130 (design §8.1 step 1: "resolve the session → stream → repo"). */
+  session: string;
+  /** The stream that session is attached to. */
+  stream: string;
+  role: SessionRole;
   worktreePath: string;
-  /** This agent's unread inbox, urgent/normal first (§5's poll ordering) — `bus.poll(agent)`. */
+  /** This session's unread inbox, urgent/normal first (§5's poll ordering) — `bus.poll(session)`. */
   inbox: Message[];
-  ticketBudget: TicketBudget | undefined;
   limits: HookLimits;
   /** Returns a file's size in bytes, or `undefined` if it doesn't exist / isn't a plain file (e.g. a directory — Grep-over-directory must not size-gate). Injectable for tests; `service.ts` wires `node:fs.statSync`. */
   fileSize: (path: string) => number | undefined;

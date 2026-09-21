@@ -64,12 +64,11 @@ const withHook = loadCapture('claude-default-perm-hooks');
 
 function baseCtx(overrides: Partial<HookDecisionContext> = {}): HookDecisionContext {
   return {
-    agent: 'eng-1',
-    ticket: 'TKT-0001',
-    role: 'engineer',
+    session: '01J9AAAAAAAAAAAAAAAAAAAAAA',
+    stream: '01J9BBBBBBBBBBBBBBBBBBBBBB',
+    role: 'worker',
     worktreePath: '/repo/.worktrees/TKT-0001',
     inbox: [],
-    ticketBudget: undefined,
     limits: { maxReadBytes: DEFAULT_MAX_READ_BYTES },
     fileSize: () => undefined,
     ...overrides,
