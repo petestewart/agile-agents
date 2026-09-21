@@ -165,17 +165,17 @@ Build order: Phase 0 → 1 → 2 → 3 → 4 → 5 → 6. Within a phase, ticket
 
 ### Ticket: T122 Delete the ceremony and role layer
 - **Priority:** P0
-- **Status:** In Progress
+- **Status:** Done
 - **Owner:** opus:worker-T122
 - **Scope:** Delete `daemon/src/em/` (resident, delegate, chat, review, report), `daemon/src/architect/`, `daemon/src/oracle/`, `daemon/src/qa/`, `daemon/src/halts/`, `daemon/src/quota/`, `daemon/src/handoff/`, `daemon/src/pi/` (unless a provider still needs it), `daemon/src/plan/`, `daemon/src/review/` (the round-tracking part; the reviewer role is rebuilt in T131), `daemon/src/merge/` sprint parts, `briefs/{em,architect,qa,reader,refinement,retro,sprint-review,standup}.md`, `feed/stories.ts`, `runs/` writer. Delete `cli` commands `send`, `halt`, `approve` (replaced by `answer` and `land`). Delete the `bus` except the part the thread needs, or delete it entirely if T120's thread covers it. Delete the `Sprints`, `Tickets`, `Policy`, `Questions` panes and the `sprint/` and `review/` UI directories; the UI is rebuilt in Phase 6, so the app may be visually broken between T122 and T160 on the integration branch (never on `main`).
 - **Acceptance Criteria:** `bun test` and typecheck green; daemon source line count reported in the ticket Notes; no import of a deleted module remains; `grep -ri sprint packages/daemon/src | wc -l` is 0.
 - **Validation Steps:** the three suites; `cloc`-style count via `find … | xargs wc -l`.
-- **Notes:** The largest single deletion in the plan. Do it in one ticket so nothing half-alive survives.
+- **Notes:** The largest single deletion in the plan. Do it in one ticket so nothing half-alive survives. Branch `T122-delete-ceremony-and-role-layer`, 9 commits, 272 files, −50,449 / +481. Daemon source 35,474 → 15899 lines (target < 18,000 already met). `grep -ri sprint packages/daemon/src` = 0; 78 `ticket` hits remain as types on `AgentRecord`/hook context/`agile mcp --ticket`, re-keyed in T130–T132. Manager calls: `agile approve|deny|note|delegate|resolve` deleted now (plan and §10 say `answer`+`land` replace them; gates are decided over `POST /api/hil/:id/*` or `gate.*` RPC until T140); `merge/precommit.ts` deleted (its only enforcement was the halt guard). Survivors: `pi/` whole (runner imports it for Pi hook enforcement), `bus/` whole (hook, runner session and Pi `bus_send` still route through it; T123/T130 prune), `merge/git.ts`, `briefs/template.ts` + engineer/reviewer briefs. Gate records moved to `<home>/gates/`, breaker to `<home>/breaker.yaml`. UI is a minimal shell until Phase 6. Review (sonnet) PASS, 0 blocking. Full `bun test` 1250 pass / 2 skip / 0 fail (94 files); integration 16 pass (6 files). merge: dc4b3f7.
 
 ### Ticket: T123 ∥ Events and the append-only log
 - **Priority:** P1
-- **Status:** Todo
-- **Owner:** —
+- **Status:** In Progress
+- **Owner:** opus:worker-T123
 - **Scope:** `Event` kinds reduced to stream/thread/session/question/gate/rule/hook/land events. `log/events.jsonl` in the home, append-only, one writer, fsync on gate and land events. `agile tail` filters by stream.
 - **Acceptance Criteria:** Every state change in T120–T122 emits an event; a reconstruct test rebuilds stream statuses from the log alone.
 - **Validation Steps:** `bun test packages/daemon/src/store/events.test.ts`.
@@ -400,4 +400,6 @@ Daemon: `em/`, `architect/`, `oracle/`, `qa/`, `halts/`, `quota/`, `handoff/`, `
 
 - (T121) The hook's `ask` verdict no longer files an `unblock` gate; it is a plain deny naming the rule until T151 rebuilds it as the `classifier_review` route band. Strictly more restrictive in the interim; the six removed `hook/service.test.ts` cases describe the behaviour T151 must restore.
 - (T121) `waitingAgent` delivers answers to the raiser's role mailbox, not the stored `session`; T130's `ask` verb must route by session.
-- (T121) HIL gate records still live in the repo's `.agile/board/hil/`; move to the state home in T122 or T123.
+- (T121) HIL gate records still live in the repo's `.agile/board/hil/`; move to the state home in T122 or T123. **Resolved in T122**: gates now at `<home>/gates/HIL-*.yaml`.
+- (T122) `agile approve` is gone before `agile land` (T140) exists; gates are decided over HTTP or `gate.*` RPC in between. CLAUDE.md's live-run text still names `agile approve`; T164 rewrites it.
+- (T122) T123 ran after T122 rather than in parallel (the ∥ mark): its event pruning depends on T122's deletions.
