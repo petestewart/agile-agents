@@ -9,7 +9,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { HilRequest, Stream } from '@agile-agents/shared';
@@ -342,6 +342,35 @@ describe('diff-level rules (T152 plugs in; the default is a no-op)', () => {
 });
 
 describe('the operator checkout', () => {
+  test('a clean checkout on the target is fast-forwarded, and unrelated untracked files survive', async () => {
+    const work = branchWithWork('s-ff', 'feature.txt', 'feature\n');
+    const stream = await makeStream(work);
+    writeFileSync(join(repo, 'scratch.txt'), 'my notes\n'); // untracked, unrelated
+
+    const outcome = await landing.land(stream.id);
+    if (outcome.status !== 'landed') throw new Error('expected a landing');
+    expect(git(['rev-parse', 'HEAD'])).toBe(outcome.sha);
+    expect(existsSync(join(repo, 'feature.txt'))).toBe(true);
+    // `reset --hard` never touches untracked files; the notes are still there.
+    expect(readFileSync(join(repo, 'scratch.txt'), 'utf8')).toBe('my notes\n');
+    expect(git(['status', '--porcelain'])).toBe('?? scratch.txt');
+  });
+
+  test('refuses (and publishes nothing) when the merge would overwrite an untracked file in that checkout', async () => {
+    const work = branchWithWork('s-collide', 'feature.txt', 'from the stream\n');
+    const stream = await makeStream(work);
+    // The operator has their own, untracked, file at the path the merge
+    // introduces — `reset --hard` would silently overwrite it.
+    writeFileSync(join(repo, 'feature.txt'), 'my own draft\n');
+    const mainBefore = git(['rev-parse', 'refs/heads/main']);
+
+    expect(landing.land(stream.id)).rejects.toThrow(/would overwrite untracked feature.txt/);
+    expect(readFileSync(join(repo, 'feature.txt'), 'utf8')).toBe('my own draft\n');
+    expect(git(['rev-parse', 'refs/heads/main'])).toBe(mainBefore);
+    expect(streams.get(stream.id).human.status).toBe('open');
+    expect(existsSync(work.worktree)).toBe(true);
+  });
+
   test('refuses rather than merging when the target is checked out with uncommitted changes', async () => {
     const work = branchWithWork('s-dirty', 'a.txt', 'a\n');
     const stream = await makeStream(work);

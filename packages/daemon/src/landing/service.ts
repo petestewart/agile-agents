@@ -34,7 +34,7 @@
  * default branch.
  */
 
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { HilRequest, RepoEntry, Stream } from '@agile-agents/shared';
@@ -305,7 +305,13 @@ export class LandingService {
    * would otherwise leave it showing the merge as a pending *deletion*. It
    * is fast-forwarded only while it is clean, and a dirty one refuses the
    * land outright — checked before the merge, so nothing has happened yet
-   * when it refuses.
+   * when it refuses. Review round 1 (blocker): "clean" is not enough on its
+   * own, because `reset --hard` also overwrites an *untracked* file whose
+   * path the merge introduces. The paths the merge touches are therefore
+   * intersected with each checkout's untracked files before the ref moves,
+   * and a collision refuses the land with those paths named — nothing has
+   * been published at that point, so the refusal costs the operator only
+   * the merge we throw away.
    */
   private merge(
     repoRoot: string,
@@ -322,13 +328,16 @@ export class LandingService {
       );
     }
     const before = runGit(['rev-parse', `refs/heads/${target}`], repoRoot, repoRoot);
-    const temp = mkdtempSync(join(tmpdir(), 'agile-land-'));
-    const worktree = join(temp, 'target');
-    const added = git(['worktree', 'add', '--detach', worktree, target], repoRoot, repoRoot);
-    if (added.exitCode !== 0) {
-      return { ok: false, conflicts: [], reason: added.stderr };
-    }
+    // Created inside the try so a throw (or a refused `worktree add`) can
+    // never leak the temp directory — the `finally` owns it from here on.
+    let temp: string | undefined;
     try {
+      temp = mkdtempSync(join(tmpdir(), 'agile-land-'));
+      const worktree = join(temp, 'target');
+      const added = git(['worktree', 'add', '--detach', worktree, target], repoRoot, repoRoot);
+      if (added.exitCode !== 0) {
+        return { ok: false, conflicts: [], reason: added.stderr };
+      }
       const merge = gitWrite(
         ['merge', '--no-ff', '-m', `land ${branch} into ${target} (${stream.id})`, branch],
         worktree,
@@ -342,6 +351,28 @@ export class LandingService {
         return { ok: false, conflicts, reason: merge.stderr || merge.stdout };
       }
       const sha = runGit(['rev-parse', 'HEAD'], worktree, repoRoot);
+
+      // Before the ref moves: would bringing a checkout along overwrite an
+      // untracked file there? If so, refuse — the merge commit is still
+      // unreferenced and gets garbage collected.
+      const touched = new Set(
+        runGit(['diff', '--name-only', before, sha], repoRoot, repoRoot)
+          .split('\n')
+          .filter((line) => line.length > 0),
+      );
+      for (const checkout of checkouts) {
+        if (checkout.dirty) continue;
+        const collisions = untrackedFiles(repoRoot, checkout.path).filter((file) =>
+          touched.has(file),
+        );
+        if (collisions.length > 0) {
+          throw new LandRefusedError(
+            stream.id,
+            `landing ${branch} into ${target} would overwrite untracked ${collisions.join(', ')} in ${checkout.path}; move or commit them before landing`,
+          );
+        }
+      }
+
       const updated = git(['update-ref', `refs/heads/${target}`, sha, before], repoRoot, repoRoot);
       if (updated.exitCode !== 0) {
         return {
@@ -361,8 +392,11 @@ export class LandingService {
       }
       return { ok: true, sha };
     } finally {
-      removeWorktreeSafely(repoRoot, worktree);
-      git(['worktree', 'prune'], repoRoot, repoRoot);
+      if (temp !== undefined) {
+        removeWorktreeSafely(repoRoot, join(temp, 'target'));
+        git(['worktree', 'prune'], repoRoot, repoRoot);
+        rmSync(temp, { recursive: true, force: true });
+      }
     }
   }
 }
@@ -401,6 +435,13 @@ function worktreesOn(repoRoot: string, branch: string): { path: string; dirty: b
     }
   }
   return found;
+}
+
+/** A worktree's untracked, non-ignored files, repo-relative (the same paths `git diff --name-only` prints). */
+function untrackedFiles(repoRoot: string, worktreePath: string): string[] {
+  const listed = git(['ls-files', '--others', '--exclude-standard'], worktreePath, repoRoot);
+  if (listed.exitCode !== 0) return [];
+  return listed.stdout.split('\n').filter((line) => line.length > 0);
 }
 
 /** Uncommitted *tracked* changes only — untracked scratch files never block a land. */
