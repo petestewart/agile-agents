@@ -8,6 +8,7 @@
  */
 
 import { z } from 'zod';
+import { EffortSchema } from './effort';
 import { formatZodError } from './ids';
 
 /** D8: pushing to (or merging into) these is prohibited by default. */
@@ -23,6 +24,10 @@ export const RepoEntrySchema = z
     target_branch: z.string().min(1).optional(),
     /** Default vendor for sessions attached to streams in this repo. */
     vendor: z.string().min(1).optional(),
+    /** Default model for those sessions (T130, D12) — second in the resolution order, after the `--model` flag. */
+    model: z.string().min(1).optional(),
+    /** Default effort for those sessions (T130, D12). */
+    effort: EffortSchema.optional(),
   })
   .strict();
 

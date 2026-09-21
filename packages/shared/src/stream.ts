@@ -12,6 +12,7 @@
  */
 
 import { z } from 'zod';
+import { EffortSchema } from './effort';
 import { UlidSchema, formatZodError } from './ids';
 
 /**
@@ -61,6 +62,14 @@ export const SessionRefSchema = z
     model: z.string().min(1),
     role: SessionRoleSchema,
     status: SessionStatusSchema,
+    /**
+     * T130 (**D12**): the effort level this session was attached with, when
+     * the operator (or a default) named one. Optional because a vendor with
+     * no effort mapping in the provider registry still starts — the daemon
+     * writes an "effort <level> ignored by <vendor>" thread line instead of
+     * recording a level the session is not actually running at.
+     */
+    effort: EffortSchema.optional(),
     worktree: z.string().min(1).optional(),
   })
   .strict();

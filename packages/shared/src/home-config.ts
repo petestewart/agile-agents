@@ -14,6 +14,7 @@
  */
 
 import { z } from 'zod';
+import { EffortSchema } from './effort';
 import { formatZodError } from './ids';
 
 /** Built-in default HTTP port for the cockpit/API when `config.yaml` names none. */
@@ -25,6 +26,14 @@ export const HomeConfigSchema = z
     port: z.number().int().min(0).max(65535).optional(),
     /** Unix socket path for the JSON-RPC API. Defaults to `<home>/agiled.sock`. */
     socketPath: z.string().min(1).optional(),
+    /**
+     * T130 (**D12**): home-wide session defaults — the third step of the
+     * resolution order (`--flag` → the stream's repo entry in `repos.yaml`
+     * → here → the provider's own default).
+     */
+    default_vendor: z.string().min(1).optional(),
+    default_model: z.string().min(1).optional(),
+    default_effort: EffortSchema.optional(),
   })
   .strict();
 
