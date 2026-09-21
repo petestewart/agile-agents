@@ -156,8 +156,8 @@ Build order: Phase 0 → 1 → 2 → 3 → 4 → 5 → 6. Within a phase, ticket
 
 ### Ticket: T121 Inbox: questions and gates re-keyed to streams
 - **Priority:** P0
-- **Status:** Todo
-- **Owner:** —
+- **Status:** In Progress
+- **Owner:** opus:worker-T121
 - **Scope:** `questions/` and `gates/` keep their services but every request carries `stream` instead of `ticket`/`sprint`. One `inbox` RPC returns everything waiting on the human across all streams, sorted oldest first, each item with the stream path and a one-line context. Answering a question writes the answer to the thread and unblocks the waiting session (existing `deliverNote`/`waitingAgent` path). Gate kinds shrink to `land`, `rule_accept`, `classifier_review`; every other gate kind (`approve_plan`, `sprint_review`, `unblock`, `promote_to_main`, …) is deleted with its policy rows.
 - **Acceptance Criteria:** An agent question on a stream with no repo shows in the inbox and the answer reaches the session. Stale mail from a previous daemon run cannot appear as a question (questions are records with status, not bus mail; the bus drain at start is gone).
 - **Validation Steps:** `bun test packages/daemon/src/questions packages/daemon/src/gates`; e2e: inbox card appears without reload (`hil_requested` trigger from T050 stays).
