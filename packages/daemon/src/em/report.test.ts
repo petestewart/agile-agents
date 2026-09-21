@@ -9,7 +9,7 @@ import { afterEach, beforeEach, expect, test } from 'bun:test';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { qaReportRelPath, validateMergeRecord, validateQaReport } from '@agile-agents/shared';
+import { qaReportRelPath, ulid, validateMergeRecord, validateQaReport } from '@agile-agents/shared';
 import { GateService } from '../gates';
 import { runInit } from '../init';
 import { mergeRecordPath } from '../merge/owner';
@@ -165,17 +165,16 @@ test('"decisions made without you" lists only delegated, resolved gates, with th
       rationale: "QA's tests run only in its clone",
     }),
   });
-  const mine = await gates.request('unblock', {
-    policy: { gates: { unblock: 'human' }, breaker_signals: [] },
-    hilKind: 'unblock',
+  const mine = await gates.request('classifier_review', {
+    policy: { gates: { classifier_review: 'human' }, breaker_signals: [] },
+    stream: ulid(),
     summary: 'QA wants to create a test file',
   });
   await gates.respond(mine.id, 'approve', 'human');
 
-  const delegated = await gates.request('unblock', {
-    policy: { gates: { unblock: 'em' }, breaker_signals: [] },
-    hilKind: 'unblock',
-    ticket: 'TKT-0002',
+  const delegated = await gates.request('classifier_review', {
+    policy: { gates: { classifier_review: 'em' }, breaker_signals: [] },
+    stream: ulid(),
     summary: 'QA wants to create a test file',
   });
   expect(delegated.status).toBe('resolved');
@@ -185,7 +184,6 @@ test('"decisions made without you" lists only delegated, resolved gates, with th
   expect(report.decisions[0]?.decided_by).toBe('em');
   expect(report.decisions[0]?.gate).toContain('QA wants to create a test file');
   expect(report.decisions[0]?.outcome).toContain('Allowed');
-  expect(report.decisions[0]?.ticket).toBe('TKT-0002');
 });
 
 test('the markdown body carries every section, the narrative verbatim, and the greppable summary the run report has always had', async () => {
@@ -291,37 +289,18 @@ test('a running sprint is phase "running", has no proposal, and never reads like
   expect(markdown).not.toContain('## What the EM proposes next');
 });
 
-test('a pending sprint_review gate flips the phase to review_pending and brings the proposal back', async () => {
+// T121: `sprint_review` is a deleted gate kind (cockpit design §3.1), so no
+// gate can flip the report into a review phase any more. T122 deletes this
+// module with the rest of the ceremony layer.
+test('no gate flips the report out of the running phase any more', async () => {
   await seedRunningSprint();
   const gates = new GateService(store);
-  await gates.request('sprint_review', {
-    policy: { gates: { sprint_review: 'human' }, breaker_signals: [] },
-    hilKind: 'approve_decision',
+  const request = await gates.request('land', {
+    policy: { gates: { land: 'human' }, breaker_signals: [] },
+    stream: ulid(),
     summary: 'S-1 is ready for your review',
   });
-
-  const report = buildSprintReport(store, { gates });
-  expect(report.phase).toBe('review_pending');
-  expect(report.built).toContain('0 of 3 ticket(s) finished and');
-  expect(report.went_wrong).toContain('Nothing went wrong');
-  expect(report.proposes_next[0]).toBe('S-1 is ready for your review');
-  expect(report.proposes_next.some((line) => line.includes('did not finish'))).toBe(true);
-});
-
-test('a resolved sprint_review gate makes the report a read-only retrospective carrying the decision', async () => {
-  await seedRunningSprint();
-  const gates = new GateService(store);
-  const request = await gates.request('sprint_review', {
-    policy: { gates: { sprint_review: 'human' }, breaker_signals: [] },
-    hilKind: 'approve_decision',
-    summary: 'S-1 is ready for your review',
-  });
+  expect(buildSprintReport(store, { gates }).phase).toBe('running');
   await gates.respond(request.id, 'approve', 'human', 'ship it');
-
-  const report = buildSprintReport(store, { gates });
-  expect(report.phase).toBe('reviewed');
-  expect(report.decision?.decision).toBe('approve');
-  expect(report.decision?.decided_by).toBe('human');
-  expect(report.decision?.note).toBe('ship it');
-  expect(renderSprintReportMarkdown(report)).toContain('**Decision:** accepted by human');
+  expect(buildSprintReport(store, { gates }).phase).toBe('running');
 });

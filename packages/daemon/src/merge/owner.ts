@@ -56,6 +56,7 @@ import { join, resolve } from 'node:path';
 import {
   type HaltId,
   type HilId,
+  type HilRequest,
   MESSAGE_BODY_MAX_CHARS,
   type MergeOutcomeStatus,
   type MergeRecord,
@@ -177,7 +178,8 @@ const SPRINT_REVIEW_GATE = 'sprint_review';
  * `approve`, never `deny`.
  */
 export function sprintReviewApproved(gates: Pick<GateService, 'list'>): GateApproval {
-  const requests = gates.list().filter((r) => r.gate === SPRINT_REVIEW_GATE);
+  // T121: `sprint_review` is a deleted gate kind; T122 deletes this module's sprint parts.
+  const requests: HilRequest[] = [];
   if (requests.length === 0) return { approved: false };
   const latest = requests.reduce((a, b) => (a.requested_at <= b.requested_at ? b : a));
   if (latest.status !== 'resolved') return { approved: false, hilId: latest.id };
@@ -317,7 +319,6 @@ const MAIN_BRANCH = 'main';
  * is the operator moving their own checkout off `main`. If a policy ever
  * does name it, that is the operator's explicit choice.
  */
-export const PROMOTE_TO_MAIN_GATE = 'promote_to_main';
 
 export class MergeOwner {
   private readonly runTests: RunTestsFn;
@@ -705,39 +706,16 @@ export class MergeOwner {
    * `GateService` is wired (unit tests), leaving the throw intact.
    */
   private async gateBlockedPromotion(
-    err: BranchCheckedOutElsewhereError,
+    _err: BranchCheckedOutElsewhereError,
   ): Promise<MergeOutcome | undefined> {
-    if (!this.gates) return undefined;
-    // `err.branch` is always `main` here — `doMergeIntegrationToMain` only
-    // ever asks for the `_main` worktree — but it is read off the error
-    // rather than re-asserted, so this stays honest if that changes.
-    const summary =
-      `Cannot promote ${INTEGRATION_BRANCH} -> ${MAIN_BRANCH}: "${err.branch}" is checked out in this repo ` +
-      `(${this.repoRoot}), so the daemon cannot create the .worktrees/${MAIN_WORKTREE_DIR} worktree it merges in. ` +
-      `Fix: switch that checkout off "${err.branch}" (git switch --detach) and retry, ` +
-      `or promote by hand in that checkout: git merge --no-ff ${INTEGRATION_BRANCH}`;
-    // Reuse a still-pending request rather than opening one per tick
-    // (`hook/service.ts`'s `resolveOrCreateHil` precedent).
-    const existing = this.gates
-      .list()
-      .find((r) => r.status === 'pending' && r.gate === PROMOTE_TO_MAIN_GATE);
-    if (existing) return { status: 'gated', hilId: existing.id, summary };
-    let policy: Policy;
-    try {
-      policy = this.store.getPolicy();
-    } catch (policyErr) {
-      // Same tolerance as `hook/service.ts`'s `loadPolicyOrDefault`: no
-      // `policy.yaml` yet means no gate is named anywhere, which resolves
-      // this gate to `human` — exactly what it needs to be.
-      if (!(policyErr instanceof NotFoundError)) throw policyErr;
-      policy = { gates: {}, breaker_signals: [] };
-    }
-    const request = await this.gates.request(PROMOTE_TO_MAIN_GATE, {
-      policy,
-      hilKind: 'unblock',
-      summary,
-    });
-    return { status: 'gated', hilId: request.id, summary };
+    // T121: the `promote_to_main` gate kind is deleted with the rest of the
+    // ceremony gates (cockpit design §3.1), and a gate is now raised on a
+    // stream this ticket-keyed module cannot name. Returning `undefined`
+    // takes the path this method already documents — the original
+    // `BranchCheckedOutElsewhereError` is rethrown by the caller, with its
+    // own message, instead of being turned into a "Needs you" item.
+    // T122 deletes this module's sprint/promotion parts wholesale.
+    return undefined;
   }
 
   private async recordMerge(

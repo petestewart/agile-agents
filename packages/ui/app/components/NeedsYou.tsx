@@ -102,8 +102,7 @@ export function NeedsYou({
       {items.map((item) => (
         <article className="cr-card hil-item" key={item.id} data-id={item.id}>
           <div className="kind">
-            {item.hil_kind} · {item.gate}
-            {item.ticket ? ` · ${item.ticket}` : ''} · {waitingFor(item.requested_at)}
+            {item.hil_kind} · {item.gate} · {item.stream} · {waitingFor(item.requested_at)}
           </div>
           <h3>{headlineFor(item)}</h3>
           <p>
@@ -127,7 +126,7 @@ export function NeedsYou({
                 )
               }
             >
-              {item.hil_kind === 'unblock' ? 'Allow once' : 'Approve'}
+              {item.hil_kind === 'classifier_review' ? 'Allow once' : 'Approve'}
             </button>
             <button
               type="button"
@@ -181,8 +180,7 @@ export function NeedsYou({
       {questions.map((question) => (
         <article className="cr-card question-item" key={question.id} data-id={question.id}>
           <div className="kind">
-            question · {question.raised_by}
-            {question.ticket ? ` · ${question.ticket}` : ''}
+            question · {question.raised_by} · {question.stream}
           </div>
           <h3 data-testid="question-text">{question.text}</h3>
           {question.options && (

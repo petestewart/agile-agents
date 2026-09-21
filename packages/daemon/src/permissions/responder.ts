@@ -50,7 +50,7 @@ export interface HilRequestInput {
   /** Absent for a session that is not a ticket session (T041's resident EM chat session). */
   ticket?: TicketId;
   agent: AgentId;
-  hilKind: 'unblock';
+  hilKind: 'classifier_review';
   summary: string;
   /** ISO timestamp — computed here (from `hilDeadlineMs`), enforced by whoever owns the lifecycle (see file header). */
   deadline: string;

@@ -164,20 +164,11 @@ export function runArchitectTurn(opts: RunArchitectTurnOptions): ArchitectSessio
    * plain `setTimeout`-based and small enough for `bun test` defaults.
    */
   async function awaitPlanApproval(): Promise<boolean> {
-    const request = await gateService.request('approve_plan', {
-      policy,
-      hilKind: 'approve_decision',
-      from: 'architect',
-    });
-    if (request.status === 'resolved') return request.decision === 'approve';
-
-    const start = now().getTime();
-    while (true) {
-      const current = gateService.get(request.id);
-      if (current.status === 'resolved') return current.decision === 'approve';
-      if (now().getTime() - start >= gateTimeoutMs) return false;
-      await sleep(gatePollMs);
-    }
+    // T121: the `approve_plan` gate is deleted (cockpit design §3.1 — "there
+    // is no planning turn that needs approving, because the human writes the
+    // goal themselves"), so the plan proceeds without one.
+    // T122 deletes this module.
+    return true;
   }
 
   const unsubscribe = session.on((event: AgentEvent) => {

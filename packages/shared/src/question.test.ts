@@ -6,6 +6,7 @@ import { type Question, QuestionSchema, validateQuestion } from './question';
 function open(overrides: Partial<Question> = {}): unknown {
   return {
     id: `Q-${ulid()}`,
+    stream: ulid(),
     raised_by: 'eng-1',
     text: 'this ticket contradicts SPEC-auth-003 — which wins?',
     status: 'open',
@@ -50,31 +51,36 @@ describe('QuestionSchema', () => {
       open({
         status: 'answered',
         answer: 'the spec wins; refine the ticket',
-        resolved_as: 'DEC-0042',
+        resolved_as: 'reply',
         answered_by: 'human',
         answered_at: new Date().toISOString(),
       } as Partial<Question>),
     );
-    expect(answered.resolved_as).toBe('DEC-0042');
+    expect(answered.resolved_as).toBe('reply');
   });
 
-  test('resolved_as takes a decision id, a ticket id, or the literal "reply"', () => {
-    for (const value of ['reply', 'DEC-0042', 'TKT-0231']) {
-      expect(
-        QuestionSchema.safeParse(
-          open({
-            status: 'answered',
-            answer: 'answered',
-            resolved_as: value,
-          } as Partial<Question>),
-        ).success,
-      ).toBe(true);
-    }
+  // T121: `resolved_as` shrank to the single literal `reply` — the decision
+  // and ticket-edit resolutions went with the oracle and the ticket model.
+  test('resolved_as takes only the literal "reply"', () => {
     expect(
       QuestionSchema.safeParse(
-        open({ status: 'answered', answer: 'a', resolved_as: 'KB-0117' } as Partial<Question>),
+        open({ status: 'answered', answer: 'a', resolved_as: 'reply' } as Partial<Question>),
       ).success,
-    ).toBe(false);
+    ).toBe(true);
+    for (const value of ['DEC-0042', 'TKT-0231', 'KB-0117']) {
+      expect(
+        QuestionSchema.safeParse({
+          ...(open({ status: 'answered', answer: 'a' }) as object),
+          resolved_as: value,
+        }).success,
+      ).toBe(false);
+    }
+  });
+
+  test('stream is required and must be a ULID', () => {
+    const { stream: _stream, ...noStream } = open() as Record<string, unknown>;
+    expect(QuestionSchema.safeParse(noStream).success).toBe(false);
+    expect(QuestionSchema.safeParse(open({ stream: 'TKT-0231' })).success).toBe(false);
   });
 
   test('options, when present, must be a non-empty array of non-empty strings', () => {

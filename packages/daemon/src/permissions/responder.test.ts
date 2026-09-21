@@ -143,7 +143,7 @@ describe('buildPermissionResponder', () => {
 
     const message = store.getEntity(join('bus', 'inbox', 'human', `${id}.yaml`), validateMessage);
     expect(message.kind).toBe('hil_request');
-    expect(message.hil_kind).toBe('unblock');
+    expect(message.hil_kind).toBe('classifier_review');
     expect(message.to).toEqual(['human']);
     expect(message.deadline).toBeDefined();
     expect(message.ticket).toBe('TKT-0001');
@@ -208,7 +208,7 @@ describe('buildPermissionResponder', () => {
     expect(calls).toHaveLength(1);
     expect(calls[0]?.ticket).toBe('TKT-0001');
     expect(calls[0]?.agent).toBe('eng-1');
-    expect(calls[0]?.hilKind).toBe('unblock');
+    expect(calls[0]?.hilKind).toBe('classifier_review');
 
     // No message was written to the default bus path — the injected
     // callback owns persistence entirely.

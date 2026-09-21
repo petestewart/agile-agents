@@ -134,8 +134,8 @@ describe('ceremony templates render against fixture data and stay under the toke
 
   test('sprint review — sprint override wins over the repo default', () => {
     const text = renderSprintReview({
-      sprint: { ...FIXTURE_SPRINT, gates: { sprint_review: 'architect' } },
-      policy: FIXTURE_POLICY, // repo default sprint_review: 'human'
+      sprint: { ...FIXTURE_SPRINT, gates: { land: 'architect' } },
+      policy: FIXTURE_POLICY, // repo default land: 'human'
       doneTickets: [FIXTURE_TICKET],
     });
     expect(text).toContain('Auth works end to end');
@@ -149,7 +149,7 @@ describe('ceremony templates render against fixture data and stay under the toke
     const { gates: _gates, ...sprintWithoutGates } = FIXTURE_SPRINT;
     const text = renderSprintReview({
       sprint: sprintWithoutGates,
-      policy: FIXTURE_POLICY, // repo default sprint_review: 'human'
+      policy: FIXTURE_POLICY, // repo default land: 'human'
       doneTickets: [FIXTURE_TICKET],
     });
     expect(text).toContain('owner for this sprint: human');

@@ -14,6 +14,7 @@ import { describe, expect, test } from 'bun:test';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { ulid } from '@agile-agents/shared';
 import { type Browser, type Page, chromium } from 'playwright-core';
 import { type DaemonHandle, startDaemon } from '../daemon';
 import { GateService } from '../gates';
@@ -215,9 +216,9 @@ describe('feed page (Playwright e2e)', () => {
 
         // Seed one open HIL request before the daemon (and the page) ever
         // starts, so the page's initial snapshot already carries it.
-        const seeded = await gates.request('unblock', {
-          policy: { gates: { unblock: 'human' }, breaker_signals: [] },
-          hilKind: 'unblock',
+        const seeded = await gates.request('classifier_review', {
+          policy: { gates: { classifier_review: 'human' }, breaker_signals: [] },
+          stream: ulid(),
         });
         expect(seeded.status).toBe('pending');
 

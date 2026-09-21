@@ -790,11 +790,9 @@ describe('T031: architect session (plan mode -> approve_plan gate; edits/exec de
     await store.putTicket(architectTicket(), { by: 'test' });
     await store.putPolicy({
       gates: {
-        approve_plan: 'em',
-        approve_decision: 'human',
-        sprint_review: 'human',
-        unblock: 'human',
-        demo: 'human',
+        land: 'em',
+        rule_accept: 'human',
+        classifier_review: 'human',
       },
       breaker_signals: [],
     });
@@ -1021,72 +1019,10 @@ describe('T031: architect session (plan mode -> approve_plan gate; edits/exec de
     await handle.exited;
   }, 90000);
 
-  test('a GateService that throws on request() denies the plan (fail-closed), still answers the request, and escalates to em', async () => {
-    await store.putTicket(architectTicket(), { by: 'test' });
-
-    class ThrowingGateService extends GateService {
-      async request(): Promise<never> {
-        throw new Error('gate store write failed (simulated)');
-      }
-    }
-    const gateService = new ThrowingGateService(store);
-
-    const resultFile = join(scratch, 'plan-throwing-gate-result.json');
-    const handle = startTrackedSession({
-      store,
-      bus,
-      role: 'architect',
-      agentId: 'architect',
-      ticket: 'TKT-0231',
-      worktreePath: worktree,
-      brief: 'plan the sprint',
-      currentSprintId: () => 'S-01',
-      gateService,
-      provider: fakeProvider({
-        steps: [
-          {
-            type: 'request_permission',
-            toolCall: { toolCallId: 'plan-1', kind: 'switch_mode', title: 'Approve Plan' },
-            options: [
-              { optionId: 'allow', kind: 'allow_once' },
-              { optionId: 'reject', kind: 'reject_once' },
-            ],
-            resultFile,
-          },
-          { type: 'end_turn' },
-        ],
-      }),
-    });
-
-    await handle.session.initialized;
-    await waitFor(() => existsSync(resultFile));
-    const result = JSON.parse(readFileSync(resultFile, 'utf8')) as {
-      outcome: { outcome: string; optionId?: string };
-    };
-    expect(result.outcome).toEqual({ outcome: 'selected', optionId: 'reject' });
-
-    await waitFor(() =>
-      store
-        .listEvents()
-        .some(
-          (e) => e.kind === 'hook_decision' && (e.data as { role?: string })?.role === 'architect',
-        ),
-    );
-    const decisionEvent = store
-      .listEvents()
-      .find(
-        (e) => e.kind === 'hook_decision' && (e.data as { role?: string })?.role === 'architect',
-      );
-    expect((decisionEvent?.data as { decision?: string })?.decision).toBe('deny');
-    expect((decisionEvent?.data as { reason?: string })?.reason).toMatch(
-      /gate store write failed \(simulated\)/,
-    );
-
-    await waitFor(() => bus.poll('em' as never).some((m) => m.kind === 'escalate'));
-
-    handle.stop();
-    await handle.exited;
-  }, 90000);
+  // T121: the `approve_plan` gate is deleted (cockpit design §3.1), so a
+  // failing GateService can no longer leave the ACP request unanswered —
+  // the plan is allowed without a gate at all. T122 deletes the architect
+  // code in this module.
 
   test('the vendor process stderr lands in a per-session log under stderrLogDir; a missing dir means no log, never a failed spawn', async () => {
     await store.putTicket(makeTicket({ status: 'done' }), { by: 'test' });

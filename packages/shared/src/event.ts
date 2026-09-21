@@ -81,13 +81,19 @@ export const EVENT_KINDS = [
   'entity_deleted',
   'hil_requested',
   'hil_resolved',
+  // T121 (cockpit design §3): the reshaped gate lifecycle. `hil_requested`/
+  // `hil_resolved` above are the pre-reshape names and T123 prunes them;
+  // every gate raised or decided after T121 mints these two instead, so the
+  // UI's refresh set and the inbox push have one name to watch.
+  'gate_raised',
+  'gate_resolved',
   // T040 (§17 "Control room v2" — "Questions vs Decisions"): a `Question`
-  // (`board/questions/Q-*.yaml`) is opened and answered through the generic
+  // (`questions/Q-*.yaml`) is opened and answered through the generic
   // entity trio, which mints only `entity_put`. These two semantic kinds are
   // minted alongside it for exactly the reason `hil_requested`/`hil_resolved`
   // are — so a `log/events.jsonl` consumer (and the feed) can filter on "a
   // question was raised/answered" without grepping generic-entity payloads
-  // for a `board/questions/` path prefix.
+  // for a `questions/` in the state home path prefix.
   'question_raised',
   'question_answered',
   'breaker_tripped',

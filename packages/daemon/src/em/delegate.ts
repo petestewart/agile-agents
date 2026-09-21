@@ -101,7 +101,7 @@ export function renderEmDecisionPrompt(store: StateStore, ctx: DelegateContext):
     sprint: latestSprint(store),
     policy: policyOrDefault(store),
   });
-  const ticket = ctx.ticket ? ` for ticket ${ctx.ticket}` : '';
+  const ticket = ` on stream ${ctx.stream}`;
   return [
     brief,
     '',
@@ -134,9 +134,7 @@ export function createEmSessionDelegate(options: EmSessionDelegateOptions): Dele
   return async (ctx): Promise<GateDecision> => {
     const store = StateStore.open(options.stateRoot);
     const prompt = renderEmDecisionPrompt(store, ctx);
-    notice(
-      `agile run --live: EM deciding gate ${ctx.gate}${ctx.ticket ? ` (${ctx.ticket})` : ''}...`,
-    );
+    notice(`agile run --live: EM deciding gate ${ctx.gate} (${ctx.stream})...`);
     let session: SpawnedSession | undefined;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let unsubscribePermissions: (() => void) | undefined;
@@ -189,7 +187,7 @@ export function createEmSessionDelegate(options: EmSessionDelegateOptions): Dele
       });
       const parsed = await Promise.race([decided, timeout]);
       notice(
-        `agile run --live: EM ${parsed.decision === 'approve' ? 'approved' : 'denied'} gate ${ctx.gate}${ctx.ticket ? ` (${ctx.ticket})` : ''}${parsed.rationale ? ` — ${parsed.rationale.slice(0, 200)}` : ''}`,
+        `agile run --live: EM ${parsed.decision === 'approve' ? 'approved' : 'denied'} gate ${ctx.gate} (${ctx.stream})${parsed.rationale ? ` — ${parsed.rationale.slice(0, 200)}` : ''}`,
       );
       return { decision: parsed.decision, by: 'em', rationale: parsed.rationale || undefined };
     } catch (err) {

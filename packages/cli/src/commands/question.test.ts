@@ -4,9 +4,11 @@ import { type TestDaemon, startTestDaemon } from '../test-support';
 import { runQuestionAnswer, runQuestionList, runQuestionRaise } from './question';
 
 let daemon: TestDaemon;
+let stream: string;
 
 beforeEach(async () => {
   daemon = await startTestDaemon('agile-cli-question-');
+  stream = (await daemon.streamService.create('human', { title: 's', goal: 'g' })).id;
 });
 
 afterEach(async () => {
@@ -31,14 +33,22 @@ describe('agile question', () => {
     const empty = await capture(() => runQuestionList(daemon.socketPath, false));
     expect(empty.out).toContain('(none open)');
 
-    await daemon.questionService.raise({ raised_by: 'eng-1', text: 'is the ticket right?' });
+    await daemon.questionService.raise({
+      stream,
+      raised_by: 'eng-1',
+      text: 'is the ticket right?',
+    });
     const listed = await capture(() => runQuestionList(daemon.socketPath, false));
     expect(listed.out).toContain('is the ticket right?');
     expect(listed.out).toContain('eng-1');
   });
 
   test('answer --answer replies and marks the question answered', async () => {
-    const q = await daemon.questionService.raise({ raised_by: 'eng-1', text: 'which wins?' });
+    const q = await daemon.questionService.raise({
+      stream,
+      raised_by: 'eng-1',
+      text: 'which wins?',
+    });
     const { code, out } = await capture(() =>
       runQuestionAnswer(
         daemon.socketPath,
@@ -52,30 +62,34 @@ describe('agile question', () => {
     expect(daemon.questionService.get(q.id).resolved_as).toBe('reply');
   });
 
-  test('answer --as decision records a DEC-* and links it', async () => {
-    const q = await daemon.questionService.raise({ raised_by: 'eng-1', text: 'sqlite or files?' });
-    const { out } = await capture(() =>
+  // T121: `decision` and `ticket` resolutions are deleted with the oracle
+  // and the ticket model; `reply` is all there is.
+  test('answer refuses any resolution other than reply', async () => {
+    const q = await daemon.questionService.raise({ stream, raised_by: 'eng-1', text: 'sqlite?' });
+    expect(
       runQuestionAnswer(
         daemon.socketPath,
         parseArgs([q.id, '--answer', 'files for v0', '--as', 'decision']),
         true,
       ),
-    );
-    const parsed = JSON.parse(out) as { question: { resolved_as: string } };
-    expect(parsed.question.resolved_as).toMatch(/^DEC-\d{4}$/);
-    expect(Object.keys(daemon.store.listOracleIndex())).toContain(parsed.question.resolved_as);
+    ).resolves.toBe(0);
+    expect(daemon.questionService.get(q.id).resolved_as).toBe('reply');
   });
 
   test('raise opens a question over RPC', async () => {
     const { code } = await capture(() =>
-      runQuestionRaise(daemon.socketPath, parseArgs(['--text', 'a gap in the plan']), true),
+      runQuestionRaise(
+        daemon.socketPath,
+        parseArgs(['--stream', stream, '--text', 'a gap in the plan']),
+        true,
+      ),
     );
     expect(code).toBe(0);
     expect(daemon.questionService.listOpen().map((q) => q.text)).toEqual(['a gap in the plan']);
   });
 
   test('--answer is required', async () => {
-    const q = await daemon.questionService.raise({ raised_by: 'em', text: 'q' });
+    const q = await daemon.questionService.raise({ stream, raised_by: 'em', text: 'q' });
     expect(runQuestionAnswer(daemon.socketPath, parseArgs([q.id]), false)).rejects.toThrow(
       /--answer is required/,
     );

@@ -15,6 +15,7 @@ import { runInit } from '../init';
 import { QuestionService } from '../questions';
 import { reviewRecordRelPath, validateReviewRecord } from '../review/types';
 import { StateStore } from '../store';
+import { StreamService } from '../streams';
 import { buildTeam } from './snapshot';
 import { buildStories } from './stories';
 
@@ -120,33 +121,24 @@ test('a ticket that was built, reviewed and accepted reads as one timestamped st
   expect([...timestamps].sort()).toEqual(timestamps);
 });
 
-test('a pending hil_request on the ticket becomes a "Waiting on you" step and marks the stage blocked', async () => {
+// T121: gates and questions are keyed to streams, not tickets, so a ticket
+// story can no longer claim either of them. T122 deletes this module.
+test('a pending gate and an open question no longer attach to a ticket story', async () => {
   await seedTicket();
   const gates = new GateService(store);
-  await gates.request('unblock', {
-    policy: { gates: { unblock: 'human' }, breaker_signals: [] },
-    hilKind: 'unblock',
-    ticket: 'TKT-0001',
+  const streams = new StreamService(store);
+  const questions = new QuestionService(store, streams);
+  const stream = await streams.create('human', { title: 's', goal: 'g' });
+  await gates.request('classifier_review', {
+    policy: { gates: { classifier_review: 'human' }, breaker_signals: [] },
+    stream: stream.id,
     summary: 'QA wants to create a test file',
   });
+  await questions.raise({ stream: stream.id, raised_by: 'eng-0001', text: 'which spec wins?' });
 
-  const [story] = buildStories(store, { gates });
-  expect(story?.needs_you).toBe(1);
-  expect(story?.stage.tone).toBe('warn');
-  expect(story?.stage.label).toContain('blocked');
-  const waiting = story?.steps.find((s) => s.headline === 'Waiting on you:');
-  expect(waiting?.text).toBe('QA wants to create a test file');
-  // A blocked ticket shows the ask, not a "now" line that contradicts it.
-  expect(story?.steps.some((s) => s.tone === 'now')).toBe(false);
-});
-
-test('an open question on the ticket is a waiting step too', async () => {
-  await seedTicket();
-  const questions = new QuestionService(store);
-  await questions.raise({ raised_by: 'eng-0001', ticket: 'TKT-0001', text: 'which spec wins?' });
-  const [story] = buildStories(store, { questions });
-  expect(story?.needs_you).toBe(1);
-  expect(story?.steps.some((s) => s.text === 'which spec wins?')).toBe(true);
+  const [story] = buildStories(store, { gates, questions });
+  expect(story?.needs_you).toBe(0);
+  expect(story?.steps.some((s) => s.headline === 'Waiting on you:')).toBe(false);
 });
 
 test('buildTeam keeps a finished agent, with the vendor/model it ran on and its ledger tokens', async () => {

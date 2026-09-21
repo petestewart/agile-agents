@@ -14,7 +14,7 @@
  */
 
 import { z } from 'zod';
-import { AgentIdSchema, TicketIdSchema, ULID_PATTERN, formatZodError } from './ids';
+import { AgentIdSchema, ULID_PATTERN, UlidSchema, formatZodError } from './ids';
 import { HilKindSchema, MessageBodySchema } from './message';
 import { GateOwnerSchema } from './policy';
 
@@ -65,10 +65,12 @@ export const HilNoteSchema = MessageBodySchema.min(1, 'note must not be empty');
 export const HilRequestSchema = z
   .object({
     id: HilIdSchema,
-    gate: z.string().min(1),
-    // "`hil_request` has `kind: approve_decision | steer | demo | unblock`" (§5 "HIL").
+    /** T121: the gate name is one of the three surviving kinds, exactly like `hil_kind` — `GatesBlockSchema` is keyed by the same closed set, so a policy row and a request can never drift apart. */
+    gate: HilKindSchema,
+    /** One of the three surviving gate kinds (`message.ts`'s `HIL_KINDS`, cockpit design §3.1). */
     hil_kind: HilKindSchema,
-    ticket: TicketIdSchema.optional(),
+    /** T121: a gate is raised **on a stream** — the reshape's unit of work. `ticket`/`sprint` are gone with the ticket model. */
+    stream: UlidSchema,
     /** Owner this request actually resolved to (post-breaker-override). */
     owner: GateOwnerSchema,
     status: HilRequestStatusSchema,
@@ -77,7 +79,7 @@ export const HilRequestSchema = z
     deadline: z.string().datetime().optional(),
     /** Names the tripped breaker signal(s), or "no delegate configured" (§16 fail-closed rule). */
     reason: z.string().min(1).optional(),
-    /** What was actually asked (the command a hook refused, the permission a session requested, ...) — the part a human or delegate needs to decide on. Absent for gates that carry their own context (sprint_review). */
+    /** What was actually asked (the command a hook refused, the permission a session requested, ...) — the part a human or delegate needs to decide on. Absent for a gate that carries its own context. */
     summary: z.string().min(1).optional(),
     /**
      * T048: the agent whose blocked call raised this gate — the hook caller
@@ -86,9 +88,9 @@ export const HilRequestSchema = z
      * a ticket assigned to the engineer, and the first live run of the
      * control room delivered qa-2003's approved `unblock` into eng-2003's
      * inbox, where the engineer refused a command outside its worktree.
-     * `gates/service.ts`'s `waitingAgent` targets this when present and
-     * falls back to the assignee only when it is absent (older records,
-     * daemon-raised gates like `sprint_review`/`promote_to_main`).
+     * `gates/service.ts`'s `waitingAgent` is now exactly this field: the
+     * ticket-assignee fallback went with the ticket model (T121), so a gate
+     * the daemon raises on nobody's behalf simply has nobody waiting.
      */
     requested_by: AgentIdSchema.optional(),
     decision: HilDecisionSchema.optional(),

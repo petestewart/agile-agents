@@ -135,19 +135,18 @@ export const FIXTURE_SPRINT: Sprint = {
     escalations: 2,
   },
   team: 'auth-team',
+  // T121: the three surviving gate kinds (cockpit design §3.1).
   gates: {
-    sprint_review: 'human',
+    land: 'human',
   },
 };
 
 /** design/agile-agents-design.md §16 "HIL gates policy" (verbatim). */
 export const FIXTURE_POLICY: Policy = {
   gates: {
-    approve_plan: 'human',
-    approve_decision: 'human',
-    sprint_review: 'human',
-    unblock: 'em',
-    demo: 'human',
+    land: 'human',
+    rule_accept: 'human',
+    classifier_review: 'em',
   },
   breaker_signals: [],
 };

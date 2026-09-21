@@ -14,6 +14,7 @@
 
 import { resolveHomePaths } from '@agile-agents/daemon';
 import { type ParsedArgs, parseArgs } from './args';
+import { runAnswer } from './commands/answer';
 import {
   daemonStatusReport,
   formatDaemonStatus,
@@ -32,6 +33,7 @@ import {
 } from './commands/gate';
 import { runHalt, runResume } from './commands/halt';
 import { parseHookArgs, runHook } from './commands/hook';
+import { runInbox } from './commands/inbox';
 import { runCliInit } from './commands/init';
 import { runQuestionAnswer, runQuestionList, runQuestionRaise } from './commands/question';
 import { runRepoAdd, runRepoList } from './commands/repo';
@@ -82,9 +84,11 @@ function usage(): string {
     '  delegate <hil-id> --to em|architect',
     '  resolve <hil-id> --decision approve|deny [--by <agent>] [--note <text>]',
     '  gate list                  list open HIL requests',
-    '  question list              list open questions (board/questions/)',
-    '  question raise --text <text> [--ticket <id>] [--by <agent>]',
-    '  question answer <id> --answer <text> [--as reply|decision|ticket] [--edit <json>] [--ticket <id>]',
+    '  inbox                      everything waiting on you, across all streams, oldest first',
+    '  answer <question-id> <text>   answer an open question; the answer reaches the waiting session',
+    '  question list              list open questions (questions/ in the state home)',
+    '  question raise --stream <id> --text <text> [--by <agent>]',
+    '  question answer <id> --answer <text> [--by <agent>]',
     '  halt [--scope <scope>] [--reason <text>] [--by <agent>]',
     '  resume <halt-id>',
     '  breaker clear <signal>',
@@ -197,14 +201,19 @@ export async function runCli(argv: string[], cwd: string = process.cwd()): Promi
       case 'resolve':
         return await runResolve(socketPath, parseArgs(rest.slice(1)), json);
 
+      case 'inbox':
+        return await runInbox(socketPath, json);
+
+      case 'answer':
+        return await runAnswer(socketPath, parseArgs(rest.slice(1)), json);
+
       case 'gate':
         if (sub === 'list') return await runGateList(socketPath, json);
         console.error(usage());
         return 1;
 
-      // T040 (§17 "Control room v2" → "Questions vs Decisions"): answering
-      // one either replies to the raiser, records a `DEC-*` through the
-      // oracle write guard, or applies a ticket edit.
+      // T121: a question is raised on a stream and answering one is a reply
+      // that reaches the waiting session (cockpit design §1.4).
       case 'question':
         if (sub === 'list') return await runQuestionList(socketPath, json);
         if (sub === 'answer') return await runQuestionAnswer(socketPath, parseArgs(restArgv), json);

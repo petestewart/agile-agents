@@ -45,6 +45,7 @@ import {
   QuestionIdSchema,
   type TicketId,
   TicketIdSchema,
+  UlidSchema,
   ulid,
   validatePolicy,
 } from '@agile-agents/shared';
@@ -58,6 +59,7 @@ import { TicketDiffError, ticketDiff, ticketThread } from './feed/diff';
 import { buildStory } from './feed/stories';
 import { GateAlreadyResolvedError, GateNotFoundError, type GateService } from './gates';
 import { createHalt, releaseHalt } from './halts';
+import type { InboxService } from './inbox';
 import { PlanRefused, type PlanService, isFirstGoal } from './plan';
 import {
   QuestionAlreadyAnsweredError,
@@ -96,6 +98,8 @@ export interface HttpServerOptions {
   gates?: GateService;
   /** T040: serves `/api/questions` (read + raise + answer) and the open-questions half of the attention queue. Optional — without it those routes 503 and the snapshot's `questions` array is empty. */
   questions?: QuestionService;
+  /** T121: serves `GET /api/inbox` (cockpit design §3). Optional — without it the route 503s. */
+  inbox?: InboxService;
   /** T023: live quota/barometer data for the feed header; optional (empty `quota` array without it). */
   quota?: QuotaService;
   /**
@@ -325,11 +329,9 @@ async function handleQuestionRaise(req: Request, questions: QuestionService): Pr
   }
   const text = readQuestionText(body.text, 'text');
   if (typeof text !== 'string') return errorResponse(400, text.error);
-  let ticket: string | undefined;
-  if (body.ticket !== undefined && body.ticket !== null) {
-    const parsed = TicketIdSchema.safeParse(body.ticket);
-    if (!parsed.success) return errorResponse(400, `invalid ticket id: ${String(body.ticket)}`);
-    ticket = parsed.data;
+  const stream = UlidSchema.safeParse(body.stream);
+  if (!stream.success) {
+    return errorResponse(400, `invalid stream id: ${String(body.stream)}`);
   }
   let options: string[] | undefined;
   if (body.options !== undefined && body.options !== null) {
@@ -343,9 +345,9 @@ async function handleQuestionRaise(req: Request, questions: QuestionService): Pr
   }
   try {
     const raised = await questions.raise({
+      stream: stream.data,
       raised_by: 'human',
       text,
-      ...(ticket !== undefined ? { ticket: ticket as TicketId } : {}),
       ...(options !== undefined ? { options } : {}),
     });
     return jsonResponse(raised, 201);
@@ -355,8 +357,8 @@ async function handleQuestionRaise(req: Request, questions: QuestionService): Pr
 }
 
 /**
- * `POST /api/questions/<id>/answer` — `{ answer, resolved_as: 'reply' |
- * 'decision' | 'ticket', ... }`. Params are parsed by the same
+ * `POST /api/questions/<id>/answer` — `{ answer }` (T121: `reply` is the
+ * only resolution left). Params are parsed by the same
  * `parseAnswerParams` the `question.answer` RPC uses, so the browser and the
  * CLI cannot disagree about the shape; `by` is forced to `human` (T032).
  */
@@ -557,6 +559,7 @@ interface FeedContext {
   bus?: Bus;
   jiraSync?: JiraSync;
   questions?: QuestionService;
+  inbox?: InboxService;
   emChat?: EmChatService;
   /**
    * T049 defect 5: the resident EM session's vendor/model, read fresh on
@@ -577,6 +580,7 @@ function resolveFeedContext(options: HttpServerOptions): FeedContext | undefined
     bus: options.bus,
     jiraSync: options.jiraSync,
     questions: options.questions,
+    inbox: options.inbox,
     emChat: options.emChat,
     emSession: options.emSession,
     plan: options.plan,
@@ -1158,6 +1162,13 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
         } catch (err) {
           return errorResponse(400, err instanceof Error ? err.message : String(err));
         }
+      }
+
+      // ---- inbox (T121, cockpit design §3): one list, oldest first,
+      // across every stream. Same same-origin rules as the routes above.
+      if (url.pathname === '/api/inbox' && req.method === 'GET') {
+        if (!feed?.inbox) return errorResponse(503, 'inbox not available');
+        return jsonResponse({ items: feed.inbox.list() });
       }
 
       // ---- questions (T040, §17 "Control room v2") — read + raise + answer.

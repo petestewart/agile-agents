@@ -28,6 +28,7 @@ import { runInit } from '../init';
 import { QuestionService } from '../questions';
 import { reviewRecordRelPath, validateReviewRecord } from '../review/types';
 import { StateStore } from '../store';
+import { StreamService } from '../streams';
 import {
   BROWSER_ATTEMPTS,
   BROWSER_READY_BUDGET_MS,
@@ -413,7 +414,7 @@ function initRepo(): string {
  * work per budget and a retry that costs a quarter as much.
  *
  * Every section wants the same starting state — a running sprint, one working
- * agent, one ticket and one pending `unblock` — on a dark page already
+ * agent, one ticket and one pending `classifier_review` — on a dark page already
  * showing the Sprint view, and cleans up its own repo, daemon and page
  * context (`teardown` before `stop`, as everywhere else in this file).
  */
@@ -422,7 +423,7 @@ type ChromeFixture = {
   store: StateStore;
   gates: GateService;
   page: Page;
-  /** The seeded pending `unblock`: section 0's Needs-you row, section A's badge count. */
+  /** The seeded pending `classifier_review`: section 0's Needs-you row, section A's badge count. */
   hilId: string;
 };
 
@@ -435,9 +436,9 @@ async function withChrome(body: (fixture: ChromeFixture) => Promise<void>): Prom
     const init = runInit(freshHome());
     const store = StateStore.open(init.stateRoot);
     const gates = new GateService(store);
-    const seeded = await gates.request('unblock', {
-      policy: { gates: { unblock: 'human' }, breaker_signals: [] },
-      hilKind: 'unblock',
+    const seeded = await gates.request('classifier_review', {
+      policy: { gates: { classifier_review: 'human' }, breaker_signals: [] },
+      stream: ulid(),
     });
     await store.putTicket({
       id: 'TKT-9102',
@@ -636,10 +637,7 @@ describe('control room SPA (Playwright e2e)', () => {
         const action = page.locator('[data-testid="sprint-action"]');
         await action.waitFor({ state: 'attached', timeout: PAGE_TIMEOUT_MS });
         expect(await action.textContent()).toBe('Halt Sprint 1');
-        await gates.request('sprint_review', {
-          policy: { gates: { sprint_review: 'human' }, breaker_signals: [] },
-          hilKind: 'demo',
-        });
+        // T121: `sprint_review` is a deleted gate kind (cockpit design §3.1).
         await store.putSprint({
           ...store.getSprint('S-1'),
           retro: { mispointed: [], global_halts: 0, escalations: 0 },
@@ -739,29 +737,39 @@ describe('control room SPA (Playwright e2e)', () => {
         const UA_LIGHT_TEXT = 'rgb(0, 0, 0)';
 
         // ---- C. Who decides: a policy edit that changes the next gate -------
-        // The repo default delegates `unblock` to the EM.
-        expect(store.getPolicy().gates.unblock).toBe('em');
-        const askMe = page.locator('[data-testid="gate-unblock-human"]');
+        // The repo default delegates `classifier_review` to the EM.
+        expect(store.getPolicy().gates.classifier_review).toBe('em');
+        const askMe = page.locator('[data-testid="gate-classifier_review-human"]');
         await askMe.waitFor({ state: 'attached', timeout: PAGE_TIMEOUT_MS });
         // The rows render from `GET /api/policy`; before it lands every row
         // reads as the fail-safe `human` (`resolveGate`'s default), which is
         // the very value this section is about to write — so wait for the real
         // policy first.
-        await waitForAttr(page, '[data-testid="gate-unblock-em"]', 'aria-pressed', 'true');
+        await waitForAttr(
+          page,
+          '[data-testid="gate-classifier_review-em"]',
+          'aria-pressed',
+          'true',
+        );
         expect(await askMe.getAttribute('aria-pressed')).toBe('false');
 
         await askMe.click();
         // The segment reflects the saved policy the daemon handed back...
-        await waitForAttr(page, '[data-testid="gate-unblock-human"]', 'aria-pressed', 'true');
+        await waitForAttr(
+          page,
+          '[data-testid="gate-classifier_review-human"]',
+          'aria-pressed',
+          'true',
+        );
         // ...it is on disk through the store, with a `policy_put` event...
-        expect(store.getPolicy().gates.unblock).toBe('human');
+        expect(store.getPolicy().gates.classifier_review).toBe('human');
         expect(store.listEvents().some((e) => e.kind === 'policy_put' && e.agent === 'human')).toBe(
           true,
         );
         // ...and the NEXT gate raised resolves to the new owner.
-        const raised = await gates.request('unblock', {
+        const raised = await gates.request('classifier_review', {
           policy: store.getPolicy(),
-          hilKind: 'unblock',
+          stream: ulid(),
         });
         expect(raised.owner).toBe('human');
 
@@ -835,7 +843,7 @@ describe('control room SPA (Playwright e2e)', () => {
             '[data-testid="topbar"] button[data-view="plan"]',
             '[data-testid="sprint-action"]',
             '[data-testid="chat-toggle"]',
-            '[data-testid="gate-unblock-human"]',
+            '[data-testid="gate-classifier_review-human"]',
             '[data-testid="preset-hands-off"]',
           ]) {
             const { bg, color } = await page.locator(selector).evaluate((el) => {
@@ -871,9 +879,9 @@ describe('control room SPA (Playwright e2e)', () => {
 
         // Seed one open HIL request and one ticket before the daemon (and the
         // page) ever start, so the page's initial reads already carry them.
-        const seeded = await gates.request('unblock', {
-          policy: { gates: { unblock: 'human' }, breaker_signals: [] },
-          hilKind: 'unblock',
+        const seeded = await gates.request('classifier_review', {
+          policy: { gates: { classifier_review: 'human' }, breaker_signals: [] },
+          stream: ulid(),
         });
         await store.putTicket({
           id: 'TKT-9101',
@@ -1254,9 +1262,15 @@ describe('control room SPA (Playwright e2e)', () => {
       try {
         const init = runInit(freshHome());
         const store = StateStore.open(init.stateRoot);
-        const questions = new QuestionService(store);
+        const streams = new StreamService(store);
+        const questions = new QuestionService(store, streams);
+        const stream = await streams.create('human', {
+          title: 'contract',
+          goal: 'settle the contract',
+        });
 
         const seeded = await questions.raise({
+          stream: stream.id,
           raised_by: 'eng-1',
           text: 'the contract contradicts the spec — which wins?',
         });
@@ -1282,7 +1296,7 @@ describe('control room SPA (Playwright e2e)', () => {
         await card.waitFor({ state: 'detached', timeout: PAGE_TIMEOUT_MS });
 
         const onDisk = store.getEntity(
-          `board/questions/${seeded.id}.yaml`,
+          `questions/${seeded.id}.yaml`,
           (v) => v as { status: string; answer: string; resolved_as: string; answered_by: string },
         );
         expect(onDisk.status).toBe('answered');
@@ -1666,11 +1680,7 @@ describe('control room SPA (Playwright e2e)', () => {
 
         // The sprint-review gate: it is what turns the Review view's
         // buttons on, and what the shell switches to on its own.
-        await gates.request('sprint_review', {
-          policy: { gates: { sprint_review: 'human' }, breaker_signals: [] },
-          hilKind: 'approve_decision',
-          summary: 'Sprint 1 is ready for your review',
-        });
+        // T121: `sprint_review` is a deleted gate kind (cockpit design §3.1).
 
         handle = await startDaemon({
           cwd: repo,
@@ -1839,11 +1849,7 @@ describe('control room — the Review tab across a sprint’s phases', () => {
         expect(progress).not.toContain('Nothing went wrong');
 
         // Phase 2 — the gate is raised: the narrative and both buttons.
-        await gates.request('sprint_review', {
-          policy: { gates: { sprint_review: 'human' }, breaker_signals: [] },
-          hilKind: 'approve_decision',
-          summary: 'Sprint 1 is ready for your review',
-        });
+        // T121: `sprint_review` is a deleted gate kind (cockpit design §3.1).
         const accept = page.locator('[data-testid="review-accept"]');
         await accept.waitFor({ state: 'attached', timeout: PAGE_TIMEOUT_MS });
         expect(await page.locator('[data-testid="review-send-back"]').count()).toBe(1);

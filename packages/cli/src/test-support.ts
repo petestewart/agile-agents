@@ -18,6 +18,7 @@ import {
   Bus,
   FakeRunner,
   GateService,
+  InboxService,
   type JiraClient,
   JiraSync,
   QuestionService,
@@ -28,6 +29,7 @@ import {
   buildBusRpcMethods,
   buildGateRpcMethods,
   buildHaltRpcMethods,
+  buildInboxRpcMethods,
   buildOracleRpcMethods,
   buildQuestionRpcMethods,
   buildStateRpcMethods,
@@ -59,6 +61,7 @@ export interface TestDaemon {
   jiraSync: JiraSync;
   /** Same instance wired into `question.*` RPC (T040) — tests seed an open question through it. */
   questionService: QuestionService;
+  streamService: StreamService;
   cleanup(): Promise<void>;
 }
 
@@ -103,7 +106,8 @@ export async function startTestDaemon(prefix = 'agile-cli-test-'): Promise<TestD
   // tests that need auto-delegation pass their own `GateService` instead of
   // using this helper.
   const gateService = new GateService(store);
-  const questionService = new QuestionService(store);
+  const streamService = new StreamService(store);
+  const questionService = new QuestionService(store, streamService);
   // `FakeRunner` (never a real vendor session) so `tool.*` tests never need
   // `AGILE_LIVE=1` — same reasoning as the daemon's own tool tests.
   const toolService = new ToolService({
@@ -128,7 +132,14 @@ export async function startTestDaemon(prefix = 'agile-cli-test-'): Promise<TestD
     startedAt: Date.now(),
     extraMethods: {
       ...buildStateRpcMethods(store),
-      ...buildStreamRpcMethods(new StreamService(store)),
+      ...buildStreamRpcMethods(streamService),
+      ...buildInboxRpcMethods(
+        new InboxService({
+          streams: streamService,
+          questions: questionService,
+          gates: gateService,
+        }),
+      ),
       ...buildBusRpcMethods(new Bus(store, init.stateRoot)),
       ...buildOracleRpcMethods(store),
       ...buildHaltRpcMethods(store),
@@ -164,6 +175,7 @@ export async function startTestDaemon(prefix = 'agile-cli-test-'): Promise<TestD
     gateService,
     jiraSync,
     questionService,
+    streamService,
     home,
     async cleanup() {
       await rpc.close();

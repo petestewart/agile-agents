@@ -108,6 +108,7 @@ export * from './streams';
 
 // Questions store (T040, §17 "Control room v2" — "Questions vs Decisions").
 export * from './questions';
+export * from './inbox';
 
 // ACP permission policy by role (T010).
 export * from './permissions';

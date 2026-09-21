@@ -134,11 +134,11 @@ export function renderAttentionQueue(gates?: GateService, questions?: QuestionSe
   const lines = ['Attention queue (daemon-injected, current as of this turn):'];
   for (const req of hil) {
     lines.push(
-      `- hil ${req.id}: gate ${req.gate}${req.ticket ? ` (${req.ticket})` : ''} — ${req.summary ?? 'no summary'}`,
+      `- hil ${req.id}: gate ${req.gate} (stream ${req.stream}) — ${req.summary ?? 'no summary'}`,
     );
   }
   for (const q of open) {
-    lines.push(`- question ${q.id}${q.ticket ? ` (${q.ticket})` : ''}: ${q.text}`);
+    lines.push(`- question ${q.id} (stream ${q.stream}): ${q.text}`);
   }
   return lines.join('\n');
 }
@@ -159,9 +159,8 @@ export function renderSprintState(store: StateStore, gates?: GateService): strin
   const tickets = store.listTickets().filter((t) => inSprint.has(t.id));
   const done = tickets.filter((t) => t.status === 'done').length;
   const head = `Sprint ${sprint.id}: ${done} of ${tickets.length} tickets done`;
-  const pending = (gates?.list() ?? []).some(
-    (r) => r.gate === 'sprint_review' && r.status === 'pending',
-  );
+  // T121: `sprint_review` is a deleted gate kind; T122 deletes this module.
+  const pending = false;
   if (pending)
     return `${head}; sprint review pending — the gate is open and waiting on a decision.`;
   if (sprint.review_at !== undefined) return `${head}; sprint review already taken.`;

@@ -53,18 +53,18 @@ describe('Message schema', () => {
     const hilRequest = validateMessage({
       ...baseMessage,
       kind: 'hil_request',
-      hil_kind: 'approve_decision',
+      hil_kind: 'classifier_review',
       deadline: '2026-09-08T12:00:00Z',
     });
     expect(hilRequest.kind).toBe('hil_request');
-    expect(hilRequest.hil_kind).toBe('approve_decision');
+    expect(hilRequest.hil_kind).toBe('classifier_review');
     expect(hilRequest.deadline).toBe('2026-09-08T12:00:00Z');
   });
 
   test('hil_request without hil_kind or deadline is rejected', () => {
     expect(() => validateMessage({ ...baseMessage, kind: 'hil_request' })).toThrow();
     expect(() =>
-      validateMessage({ ...baseMessage, kind: 'hil_request', hil_kind: 'demo' }),
+      validateMessage({ ...baseMessage, kind: 'hil_request', hil_kind: 'land' }),
     ).toThrow();
   });
 

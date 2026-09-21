@@ -14,38 +14,31 @@
  * back from the daemon and replaces what the page was showing.
  */
 
-import { type GateOwner, KNOWN_GATES, type Policy } from '@agile-agents/shared';
+import { GATE_KINDS, type GateKind, type GateOwner, type Policy } from '@agile-agents/shared';
 import { useState } from 'react';
 import { putPolicy } from '../lib/api';
 import { type FeedEmInfo, type FeedQuotaInfo, emLabel } from '../lib/feed-types';
 import { PopOutIcon } from './icons';
 
 /** One row per gate kind, worded as the mockup words them (`#s5`). */
-const GATE_ROWS: ReadonlyArray<{ gate: string; title: string; what: string }> = [
+// T121: the three surviving gate kinds (cockpit design §3.1). Every other
+// row — approve_plan, approve_decision, unblock, sprint_review, demo — is
+// deleted with the ceremony that needed it.
+const GATE_ROWS: ReadonlyArray<{ gate: GateKind; title: string; what: string }> = [
   {
-    gate: 'approve_plan',
-    title: 'Plan for a sprint',
-    what: "The architect's proposed tickets and rules before any work starts.",
+    gate: 'land',
+    title: 'Landing a stream',
+    what: 'Merging a finished stream into its target branch.',
   },
   {
-    gate: 'approve_decision',
-    title: 'Rule change mid-sprint',
-    what: 'The architect wants to add or change a rule because the code contradicted the spec.',
+    gate: 'rule_accept',
+    title: 'A proposed rule',
+    what: 'A lesson from a finished stream, or a rule an agent proposed. Accept, edit or retire.',
   },
   {
-    gate: 'unblock',
-    title: 'Guardrail blocked an agent',
-    what: 'An agent tried something the rules stop, like QA creating a file. Allow once or deny.',
-  },
-  {
-    gate: 'sprint_review',
-    title: 'Sprint review',
-    what: 'The merged work and the report. Accept, or send tickets back.',
-  },
-  {
-    gate: 'demo',
-    title: 'Demo before main',
-    what: "A walkthrough of the finished feature before it's promoted.",
+    gate: 'classifier_review',
+    title: 'Guardrail routed an action to you',
+    what: 'An agent tried something the rules are unsure about. Allow once or deny.',
   },
 ];
 
@@ -66,7 +59,7 @@ const GATE_ROWS: ReadonlyArray<{ gate: string; title: string; what: string }> = 
  * screen shows.
  *
  * The mockup's other three rows — engineer escalation, halt, and the spend
- * threshold — have no gate name in `KNOWN_GATES`/§16 yet, so nothing here
+ * threshold — have no gate name in `GATE_KINDS`/§16 yet, so nothing here
  * writes them; when they get one, "Ask me" / "Ask me" / "EM decides, then
  * tells me" is what that screen shows for them.
  */
@@ -80,7 +73,7 @@ export const POLICY_PRESETS: ReadonlyArray<{
     id: 'everything-to-me',
     label: 'Everything',
     help: 'Every gate stops and waits for you.',
-    gates: Object.fromEntries(KNOWN_GATES.map((g) => [g, 'human' as GateOwner])),
+    gates: Object.fromEntries(GATE_KINDS.map((g) => [g, 'human' as GateOwner])),
   },
   {
     id: 'gates-to-em',
@@ -98,7 +91,7 @@ export const POLICY_PRESETS: ReadonlyArray<{
     id: 'hands-off',
     label: 'Nothing, just tell me',
     help: 'The EM decides every gate. Nothing waits on you; it all shows up in the review.',
-    gates: Object.fromEntries(KNOWN_GATES.map((g) => [g, 'em' as GateOwner])),
+    gates: Object.fromEntries(GATE_KINDS.map((g) => [g, 'em' as GateOwner])),
   },
 ];
 
@@ -106,11 +99,11 @@ export const POLICY_PRESETS: ReadonlyArray<{
 export function matchPreset(policy: Policy | undefined): string | undefined {
   if (!policy) return undefined;
   return POLICY_PRESETS.find((preset) =>
-    KNOWN_GATES.every((gate) => (policy.gates[gate] ?? 'human') === preset.gates[gate]),
+    GATE_KINDS.every((gate) => (policy.gates[gate] ?? 'human') === preset.gates[gate]),
   )?.id;
 }
 
-function ownerOf(policy: Policy | undefined, gate: string): GateOwner {
+function ownerOf(policy: Policy | undefined, gate: GateKind): GateOwner {
   return policy?.gates[gate] ?? 'human';
 }
 

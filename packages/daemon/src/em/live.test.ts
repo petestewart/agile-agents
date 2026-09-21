@@ -39,11 +39,11 @@ describe('live: EM brief end-to-end', () => {
   live(
     'a real Claude session, briefed as em, refuses to approve a human-owned gate',
     async () => {
-      const sprint = makeSprint('S-1', { goal: 'ship auth', gates: { approve_decision: 'human' } });
+      const sprint = makeSprint('S-1', { goal: 'ship auth', gates: { land: 'human' } });
       const brief = renderEmBrief({
         agent: 'em',
         sprint,
-        policy: { gates: { approve_decision: 'human' }, breaker_signals: [] },
+        policy: { gates: { land: 'human' }, breaker_signals: [] },
       });
 
       const claude = ACP_PROVIDERS.claude;

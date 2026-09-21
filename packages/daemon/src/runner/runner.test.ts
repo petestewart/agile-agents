@@ -332,16 +332,14 @@ describe('Runner.spawn', () => {
   // selectable behaviour, not dead code.
   test('RunnerOptions.architectMode "default" reaches the spawned session (modeId is not forced to "plan") and the approve_plan gate still runs', async () => {
     // `runInit` (this file's `beforeEach`) seeds the repo default
-    // `approve_plan: human` — re-point it at `em` so the delegate below
+    // `land: human` — re-point it at `em` so the delegate below
     // actually resolves the gate instead of leaving it pending on a human
     // nobody in this test answers.
     await store.putPolicy({
       gates: {
-        approve_plan: 'em',
-        approve_decision: 'human',
-        sprint_review: 'human',
-        unblock: 'human',
-        demo: 'human',
+        land: 'em',
+        rule_accept: 'human',
+        classifier_review: 'human',
       },
       breaker_signals: [],
     });

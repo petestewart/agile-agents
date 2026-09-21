@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import type { Policy } from '@agile-agents/shared';
+import { type Policy, ulid } from '@agile-agents/shared';
 import { parseArgs } from '../args';
 import { type TestDaemon, startTestDaemon } from '../test-support';
 import {
@@ -22,13 +22,16 @@ afterEach(async () => {
   await daemon.cleanup();
 });
 
+/** T121: every gate is raised on a stream; these tests only need a stable id. */
+const STREAM = ulid();
+
 function ctx(gates: Policy['gates']) {
-  return { policy: { gates, breaker_signals: [] }, hilKind: 'unblock' as const };
+  return { policy: { gates, breaker_signals: [] }, stream: STREAM };
 }
 
 describe('runApprove', () => {
   test('approves a pending HIL request', async () => {
-    const req = await daemon.gateService.request('demo', ctx({ demo: 'human' }));
+    const req = await daemon.gateService.request('land', ctx({ land: 'human' }));
 
     const lines: string[] = [];
     const original = console.log;
@@ -44,7 +47,7 @@ describe('runApprove', () => {
   });
 
   test('json mode returns the resolved request', async () => {
-    const req = await daemon.gateService.request('demo', ctx({ demo: 'human' }));
+    const req = await daemon.gateService.request('land', ctx({ land: 'human' }));
     const lines: string[] = [];
     const original = console.log;
     console.log = (msg: string) => lines.push(msg);
@@ -74,7 +77,7 @@ describe('gate decision notes (T039)', () => {
   }
 
   test('approve --note stores the note on the request', async () => {
-    const req = await daemon.gateService.request('demo', ctx({ demo: 'human' }));
+    const req = await daemon.gateService.request('land', ctx({ land: 'human' }));
     const out = await capture(() =>
       runApprove(
         daemon.socketPath,
@@ -89,7 +92,7 @@ describe('gate decision notes (T039)', () => {
   });
 
   test('deny resolves with deny, and prints the note in human-readable mode', async () => {
-    const req = await daemon.gateService.request('demo', ctx({ demo: 'human' }));
+    const req = await daemon.gateService.request('land', ctx({ land: 'human' }));
     const out = await capture(() =>
       runDeny(daemon.socketPath, parseArgs([req.id, '--note', 'not on a shared branch']), false),
     );
@@ -98,7 +101,7 @@ describe('gate decision notes (T039)', () => {
   });
 
   test('note records a typed answer without resolving the gate', async () => {
-    const req = await daemon.gateService.request('demo', ctx({ demo: 'human' }));
+    const req = await daemon.gateService.request('land', ctx({ land: 'human' }));
     const out = await capture(() =>
       runGateNote(
         daemon.socketPath,
@@ -113,7 +116,7 @@ describe('gate decision notes (T039)', () => {
   });
 
   test('note without --note is a CLI-level error', async () => {
-    const req = await daemon.gateService.request('demo', ctx({ demo: 'human' }));
+    const req = await daemon.gateService.request('land', ctx({ land: 'human' }));
     await expect(runGateNote(daemon.socketPath, parseArgs([req.id]), true)).rejects.toThrow(
       /--note is required/,
     );
@@ -122,7 +125,10 @@ describe('gate decision notes (T039)', () => {
 
 describe('runDelegate', () => {
   test('fails closed when no delegate is configured (T018 decision: never auto-approve)', async () => {
-    const req = await daemon.gateService.request('unblock', ctx({ unblock: 'human' }));
+    const req = await daemon.gateService.request(
+      'classifier_review',
+      ctx({ classifier_review: 'human' }),
+    );
     await expect(
       runDelegate(daemon.socketPath, parseArgs([req.id, '--to', 'architect']), true),
     ).rejects.toThrow(/no delegate function is configured/);
@@ -131,7 +137,7 @@ describe('runDelegate', () => {
 
 describe('runResolve', () => {
   test('resolves with an explicit deny decision', async () => {
-    const req = await daemon.gateService.request('demo', ctx({ demo: 'human' }));
+    const req = await daemon.gateService.request('land', ctx({ land: 'human' }));
     const lines: string[] = [];
     const original = console.log;
     console.log = (msg: string) => lines.push(msg);

@@ -377,8 +377,10 @@ export function buildSnapshot(
     next_sprint_number: highestSprint + 1,
     agents_working: countAgentsWorking(store.listAgents()),
     needs_you: hil.length + openQuestions.length,
-    sprint_review_pending: hil.some((request) => request.gate === 'sprint_review'),
-    approve_plan_pending: hil.some((request) => request.gate === 'approve_plan'),
+    // T121: both gate kinds are deleted (cockpit design §3.1); T122 takes
+    // the panes that read these two flags.
+    sprint_review_pending: false,
+    approve_plan_pending: false,
   };
 
   // `allEvents` is read once and shared: the snapshot ships only the last

@@ -442,32 +442,17 @@ function planSummaryFrom(params: unknown): string | undefined {
 }
 
 async function awaitArchitectPlanApproval(
-  gateService: GateService,
-  policy: Policy,
-  pollMs: number,
-  timeoutMs: number,
-  now: () => Date,
-  summary?: string,
+  _gateService: GateService,
+  _policy: Policy,
+  _pollMs: number,
+  _timeoutMs: number,
+  _now: () => Date,
+  _summary?: string,
 ): Promise<boolean> {
-  const request = await gateService.request('approve_plan', {
-    policy,
-    hilKind: 'approve_decision',
-    from: 'architect',
-    // What the architect is asking to have approved — the plan text when
-    // the vendor put it in the request, else the tool title. The EM
-    // delegate decided the first live approve_plan with "no summary text
-    // was recorded" (fifth run).
-    ...(summary !== undefined ? { summary } : {}),
-  });
-  if (request.status === 'resolved') return request.decision === 'approve';
-
-  const start = now().getTime();
-  while (true) {
-    const current = gateService.get(request.id);
-    if (current.status === 'resolved') return current.decision === 'approve';
-    if (now().getTime() - start >= timeoutMs) return false;
-    await sleep(pollMs);
-  }
+  // T121: the `approve_plan` gate is deleted (cockpit design §3.1 — the
+  // human writes the goal themselves, so there is no planning turn to
+  // approve). T122 deletes the architect/sprint code in this module.
+  return true;
 }
 
 /** Best-effort model id from the `_agile/session_state` notification's `configOptions` — shape is vendor-specific and not modeled anywhere; falls back to `'unknown'` rather than guessing at a field name that isn't there. */
@@ -634,25 +619,12 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
     agent: agentId,
     worktreePath,
     session,
-    ...(gateService
-      ? {
-          requestHil: (input) =>
-            gateService
-              .request(`permission:${role}`, {
-                policy: store.getPolicy(),
-                ticket: input.ticket,
-                hilKind: input.hilKind,
-                from: input.agent,
-                // T048: this session's own agent id — the ACP permission
-                // request is parked on the gate, so the decision must come
-                // back here and not to the ticket's assignee (a reviewer or
-                // QA session works a ticket it does not own).
-                requestedBy: input.agent,
-                summary: input.summary,
-              })
-              .then((req) => ({ id: req.id })),
-        }
-      : {}),
+    // T121: an ACP permission request used to open a `permission:<role>`
+    // gate. Gate names are now the closed set `land | rule_accept |
+    // classifier_review` (cockpit design §3.1) and a gate is raised on a
+    // stream, which this ticket-keyed runner cannot name; T151 rebuilds
+    // this as the classifier route band. Until then the responder falls
+    // back to its own `bus/inbox/human` `hil_request` write.
   });
 
   let model = 'unknown';

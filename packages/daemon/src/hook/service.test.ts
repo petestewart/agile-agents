@@ -60,7 +60,7 @@ async function seedTicket(overrides: Partial<Ticket> = {}) {
 function service(
   overrides: Partial<ConstructorParameters<typeof HookService>[2]> = {},
 ): HookService {
-  return new HookService(store, bus, { repoRoot: repo, gates, ...overrides });
+  return new HookService(store, bus, { repoRoot: repo, ...overrides });
 }
 
 function agentRecord(overrides: Partial<AgentRecord> = {}): AgentRecord {
@@ -436,7 +436,14 @@ describe('HookService.preToolUse', () => {
     expect(result.hookSpecificOutput.additionalContext).toContain('use the JWT approach');
   });
 
-  test('git push origin main via Bash denies naming a durable HIL request (QA round: Claude cannot answer ask)', async () => {
+  // T121: an `ask` verdict used to file a durable `unblock` HIL request and
+  // tell the model to wait for it. `unblock` is a deleted gate kind
+  // (cockpit design §3.1) and a gate is raised on a stream this ticket-keyed
+  // hook cannot name, so `ask` is a plain deny that names the rule. T151
+  // rebuilds the routing as a `classifier_review` inbox item on the stream,
+  // which is when the reuse / approve-retry / note-drain behaviour this
+  // block used to cover comes back.
+  test('git push origin main via Bash denies naming the rule, and files no gate', async () => {
     await seedTicket();
     const svc = service();
     const result = await svc.preToolUse({
@@ -446,211 +453,9 @@ describe('HookService.preToolUse', () => {
     });
     expect(result.hookSpecificOutput.permissionDecision).toBe('deny');
     const reason = result.hookSpecificOutput.permissionDecisionReason ?? '';
-    expect(reason).toMatch(/HIL-/);
-
-    const hilIdMatch = /HIL-[0-9A-HJKMNP-TV-Z]{26}/.exec(reason);
-    expect(hilIdMatch).not.toBeNull();
-    const hilId = hilIdMatch?.[0] as never;
-
-    const requests = gates.list();
-    expect(requests).toHaveLength(1);
-    expect(requests[0]?.id).toBe(hilId);
-    expect(requests[0]?.ticket).toBe('TKT-0001');
-    expect(requests[0]?.gate).toBe('unblock');
-    expect(requests[0]?.status).toBe('pending');
-    // What was asked travels with the request (first live run: the record
-    // only said "no delegate configured" and nobody could decide on it).
-    expect(requests[0]?.summary).toContain('git push origin main');
-    expect(reason).toContain('the daemon prompts you with the decision');
-
-    // A real hil_request message landed in the human inbox.
-    const humanInbox = bus.poll('human' as never);
-    expect(humanInbox.some((m) => m.kind === 'hil_request')).toBe(true);
-  });
-
-  test('a second identical never-without-human call while pending reuses the same HIL id (no duplicate)', async () => {
-    await seedTicket();
-    const svc = service();
-    const first = await svc.preToolUse({
-      cwd: worktree,
-      tool_name: 'Bash',
-      tool_input: { command: 'git push origin main' },
-    });
-    const second = await svc.preToolUse({
-      cwd: worktree,
-      tool_name: 'Bash',
-      tool_input: { command: 'git push origin main' },
-    });
-    expect(first.hookSpecificOutput.permissionDecisionReason).toBe(
-      second.hookSpecificOutput.permissionDecisionReason,
-    );
-    expect(gates.list()).toHaveLength(1);
-  });
-
-  test('an approved unblock lets the identical command through on retry; a denied one denies without a new request', async () => {
-    await seedTicket();
-    const svc = service();
-    const run = () =>
-      svc.preToolUse({
-        cwd: worktree,
-        tool_name: 'Bash',
-        tool_input: { command: 'git push origin main' },
-      });
-    const first = await run();
-    expect(first.hookSpecificOutput.permissionDecision).toBe('deny');
-    const [request] = gates.list();
-    if (!request) throw new Error('no HIL request filed');
-    await gates.respond(request.id, 'approve', 'em');
-    const retried = await run();
-    expect(retried.hookSpecificOutput.permissionDecision).toBe('allow');
-    expect(gates.list()).toHaveLength(1);
-
-    // A later denial of the same command is honoured too, with no new request.
-    await gates.request('unblock', {
-      policy: store.getPolicy(),
-      ticket: 'TKT-0001' as TicketId,
-      hilKind: 'unblock',
-      from: 'eng-0001' as AgentId,
-      summary: request.summary,
-    });
-    const second = gates.list().find((r) => r.status === 'pending');
-    if (!second) throw new Error('no second request');
-    await gates.respond(second.id, 'deny', 'em');
-    const denied = await run();
-    expect(denied.hookSpecificOutput.permissionDecision).toBe('deny');
-    expect(denied.hookSpecificOutput.permissionDecisionReason).toContain('already denied');
-    expect(gates.list()).toHaveLength(2);
-  });
-
-  // T039 (§17 "Control room v2"): a Needs-you card answered in free text.
-  test("a pending unblock answered with a note resolves the gate and the engineer's next hook call drains the note into its inbox", async () => {
-    await seedTicket();
-    const svc = service();
-    const run = () =>
-      svc.preToolUse({
-        cwd: worktree,
-        tool_name: 'Bash',
-        tool_input: { command: 'git push origin main' },
-      });
-    await run();
-    const [request] = gates.list();
-    if (!request) throw new Error('no HIL request filed');
-
-    const resolved = await gates.respond(
-      request.id,
-      'approve',
-      'human',
-      'yes, but only for the seed script',
-    );
-    expect(resolved.status).toBe('resolved');
-    expect(resolved.note).toBe('yes, but only for the seed script');
-
-    // The note is in the engineer's inbox as a normal-priority hil_response...
-    const inbox = bus.poll('eng-1' as AgentId);
-    const reply = inbox.find((m) => m.kind === 'hil_response');
-    expect(reply).toBeDefined();
-    expect(reply?.priority).toBe('normal');
-    expect(reply?.body).toContain('yes, but only for the seed script');
-    // ...and a copy reached the EM.
-    expect(bus.poll('em' as AgentId).some((m) => m.body.includes('only for the seed script'))).toBe(
-      true,
-    );
-
-    // ...and the engineer's next hook call drains (acks) it into context.
-    const retried = await run();
-    expect(retried.hookSpecificOutput.permissionDecision).toBe('allow');
-    expect(retried.hookSpecificOutput.additionalContext).toContain(
-      'yes, but only for the seed script',
-    );
-    expect(bus.poll('eng-1' as AgentId).some((m) => m.kind === 'hil_response')).toBe(false);
-
-    // The event log carries the note.
-    const resolvedEvent = store.listEvents().find((e) => e.kind === 'hil_resolved');
-    expect(resolvedEvent?.data.note).toBe('yes, but only for the seed script');
-  });
-
-  /**
-   * T048 defect (2): the first live run of the control-room branch
-   * (2026-09-18) delivered qa-2003's approved `unblock` into eng-2003's
-   * inbox, because `GateService.waitingAgent` was the ticket's *assignee*.
-   * The engineer then refused a command outside its own worktree. The gate
-   * must come back to the agent whose call it blocked.
-   */
-  test("a gate raised by a QA hook is delivered to the QA agent (and the EM), not the ticket's engineer", async () => {
-    await seedTicket({ status: 'in_qa', assignee: 'eng-3' });
-    const qaWorktree = join(repo, '.worktrees', 'TKT-0001-qa');
-    mkdirSync(qaWorktree, { recursive: true });
-    await store.putAgent(
-      'qa-3' as AgentId,
-      agentRecord({ role: 'qa', worktree: qaWorktree, ticket: 'TKT-0001' }),
-    );
-    const svc = service();
-    const run = () =>
-      svc.preToolUse({
-        cwd: qaWorktree,
-        tool_name: 'Bash',
-        tool_input: { command: 'git push origin main' },
-        agile_agent: 'qa-3',
-      });
-
-    const first = await run();
-    expect(first.hookSpecificOutput.permissionDecision).toBe('deny');
-    const [request] = gates.list();
-    if (!request) throw new Error('no HIL request filed');
-    expect(request.requested_by).toBe('qa-3');
-
-    await gates.respond(request.id, 'approve', 'human', 'fine, push the QA fixture tag');
-
-    // The QA agent that asked gets it, told it is its own gate and to retry...
-    const qaInbox = bus.poll('qa-3' as AgentId).filter((m) => m.kind === 'hil_response');
-    expect(qaInbox).toHaveLength(1);
-    expect(qaInbox[0]?.body).toContain('your gate "unblock" was approved');
-    expect(qaInbox[0]?.body).toContain('fine, push the QA fixture tag');
-    expect(qaInbox[0]?.body).toContain('Retry the call it blocked');
-    // ...and it does NOT quote the blocked command back at it.
-    expect(qaInbox[0]?.body).not.toContain('git push origin main');
-    // ...the EM is copied...
-    expect(
-      bus.poll('em' as AgentId).some((m) => m.body.includes('fine, push the QA fixture tag')),
-    ).toBe(true);
-    // ...and the engineer that owns the ticket is left out of it entirely.
-    expect(bus.poll('eng-3' as AgentId)).toHaveLength(0);
-
-    // The QA agent's next hook call drains it into context.
-    const retried = await run();
-    expect(retried.hookSpecificOutput.additionalContext).toContain('fine, push the QA fixture tag');
-    expect(bus.poll('qa-3' as AgentId).some((m) => m.kind === 'hil_response')).toBe(false);
-  });
-
-  // T039 review round 1: the note-only flow ("no button press") must reach the
-  // engineer too, once the EM delegate decides.
-  test('a note with no button press, resolved by the EM delegate, still drains into the engineer inbox', async () => {
-    await seedTicket();
-    // `unblock` is human-owned here, so the request parks pending and the note
-    // (not the gate policy) is what reaches the delegate.
-    await store.putPolicy({ gates: { unblock: 'human' }, breaker_signals: [] });
-    const delegated = new GateService(store, {
-      delegate: () => ({ decision: 'approve', by: 'em', rationale: 'scoped to the seed script' }),
-    });
-    const svc = new HookService(store, bus, { repoRoot: repo, gates: delegated });
-    const run = () =>
-      svc.preToolUse({
-        cwd: worktree,
-        tool_name: 'Bash',
-        tool_input: { command: 'git push origin main' },
-      });
-    await run();
-    const [request] = delegated.list();
-    if (!request) throw new Error('no HIL request filed');
-
-    const noted = await delegated.addNote(request.id, 'only for the seed script', 'human');
-    expect(noted.status).toBe('pending'); // the note alone resolves nothing
-    await delegated.settled();
-    expect(delegated.get(request.id).status).toBe('resolved');
-
-    const retried = await run();
-    expect(retried.hookSpecificOutput.permissionDecision).toBe('allow');
-    expect(retried.hookSpecificOutput.additionalContext).toContain('only for the seed script');
+    expect(reason).not.toMatch(/HIL-/);
+    expect(reason).toContain('ask the operator on the stream before retrying');
+    expect(gates.list()).toHaveLength(0);
   });
 
   test('an ordinary Bash command allows', async () => {

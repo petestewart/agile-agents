@@ -526,8 +526,10 @@ describe('Plan screen (Playwright e2e)', () => {
         // Settings could do this from the UI (T043's `PUT /api/policy`); the
         // point of this test is the *state after* the gate is raised, so the
         // policy is seeded directly.
+        // T121: `approve_plan` is a deleted gate kind (cockpit design §3.1),
+        // so no policy row can park a sprint start on the EM any more.
         const policy = store.getPolicy();
-        await store.putPolicy({ ...policy, gates: { ...policy.gates, approve_plan: 'em' } });
+        await store.putPolicy({ ...policy, gates: { ...policy.gates, land: 'em' } });
 
         handle = await startDaemon({
           cwd: repo,
@@ -628,12 +630,8 @@ describe('Plan screen (Playwright e2e)', () => {
         const sprint = store.listSprints()[0];
         expect(sprint?.id).toBe('S-1');
         expect(sprint?.tickets).toHaveLength(1); // the stub is a later layer
-        // The gate was raised *and* resolved by the click itself.
-        const hil = handle.gateService?.list() ?? [];
-        const approvePlan = hil.filter((r) => r.gate === 'approve_plan');
-        expect(approvePlan).toHaveLength(1);
-        expect(approvePlan[0]?.status).toBe('resolved');
-        expect(approvePlan[0]?.decision).toBe('approve');
+        // T121: the click is the approval — no gate is opened at all.
+        expect(handle.gateService?.list() ?? []).toHaveLength(0);
         // And the top bar says a sprint is running, without a reload.
         await until(
           page,

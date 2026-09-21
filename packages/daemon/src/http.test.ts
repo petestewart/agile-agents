@@ -12,6 +12,11 @@ import { PlanService } from './plan';
 import { QuestionService } from './questions';
 import { ensureTicketWorktree } from './runner/worktrees';
 import { StateStore } from './store';
+import { StreamService } from './streams';
+
+// T121: gates are raised on a stream; the HIL routes only need an id, the
+// question routes need a real one (the questions suite creates it).
+let STREAM = ulid();
 import { type FakeJiraHandle, HttpJiraClient, JiraSync, startFakeJira } from './sync';
 
 let server: HttpServerHandle;
@@ -130,7 +135,7 @@ describe('feed with a real store', () => {
   let feedServer: HttpServerHandle;
 
   function policy(overrides: Partial<Policy['gates']> = {}): Policy {
-    return { gates: { unblock: 'human', ...overrides }, breaker_signals: [] };
+    return { gates: { classifier_review: 'human', ...overrides }, breaker_signals: [] };
   }
 
   beforeEach(() => {
@@ -145,7 +150,7 @@ describe('feed with a real store', () => {
     const init = runInit(join(repo, 'home'));
     store = StateStore.open(init.stateRoot);
     gates = new GateService(store);
-    questions = new QuestionService(store);
+    questions = new QuestionService(store, new StreamService(store));
     feedServer = startHttpServer({
       port: 0,
       version: '0.0.0-test',
@@ -176,7 +181,7 @@ describe('feed with a real store', () => {
       history: [],
       security: false,
     });
-    await gates.request('unblock', { policy: policy(), hilKind: 'unblock' });
+    await gates.request('classifier_review', { policy: policy(), stream: STREAM });
 
     const res = await fetch(`http://127.0.0.1:${feedServer.port}/api/snapshot`);
     expect(res.status).toBe(200);
@@ -245,7 +250,7 @@ describe('feed with a real store', () => {
   });
 
   test('POST /api/hil/:id/approve resolves a real pending request created through the GateService', async () => {
-    const created = await gates.request('unblock', { policy: policy(), hilKind: 'unblock' });
+    const created = await gates.request('classifier_review', { policy: policy(), stream: STREAM });
     expect(created.status).toBe('pending');
 
     const res = await fetch(`http://127.0.0.1:${feedServer.port}/api/hil/${created.id}/approve`, {
@@ -270,7 +275,7 @@ describe('feed with a real store', () => {
 
   // T039 (§17 "Control room v2"): the Needs-you card's typed answer.
   test('POST /api/hil/:id/approve carries a note; /deny resolves with deny; /note stores without resolving', async () => {
-    const approved = await gates.request('unblock', { policy: policy(), hilKind: 'unblock' });
+    const approved = await gates.request('classifier_review', { policy: policy(), stream: STREAM });
     const withNote = await fetch(
       `http://127.0.0.1:${feedServer.port}/api/hil/${approved.id}/approve`,
       {
@@ -286,7 +291,7 @@ describe('feed with a real store', () => {
       note: 'yes, but only for the seed script',
     });
 
-    const denied = await gates.request('unblock', { policy: policy(), hilKind: 'unblock' });
+    const denied = await gates.request('classifier_review', { policy: policy(), stream: STREAM });
     const denyRes = await fetch(`http://127.0.0.1:${feedServer.port}/api/hil/${denied.id}/deny`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -299,7 +304,7 @@ describe('feed with a real store', () => {
     });
 
     // A note with no button press resolves nothing.
-    const noted = await gates.request('unblock', { policy: policy(), hilKind: 'unblock' });
+    const noted = await gates.request('classifier_review', { policy: policy(), stream: STREAM });
     const noteRes = await fetch(`http://127.0.0.1:${feedServer.port}/api/hil/${noted.id}/note`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -331,7 +336,7 @@ describe('feed with a real store', () => {
   // otherwise forge the audit trail's actor. Same hardcode as T025's
   // halt/chat/propose routes; this asserts it holds for approve too.
   test('POST /api/hil/:id/approve ignores a forged `by` in the body and always records `human`', async () => {
-    const created = await gates.request('unblock', { policy: policy(), hilKind: 'unblock' });
+    const created = await gates.request('classifier_review', { policy: policy(), stream: STREAM });
     const res = await fetch(`http://127.0.0.1:${feedServer.port}/api/hil/${created.id}/approve`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -343,7 +348,7 @@ describe('feed with a real store', () => {
   });
 
   test('POST /api/hil/:id/approve twice: the second call 409s (already resolved)', async () => {
-    const created = await gates.request('unblock', { policy: policy(), hilKind: 'unblock' });
+    const created = await gates.request('classifier_review', { policy: policy(), stream: STREAM });
     const url = `http://127.0.0.1:${feedServer.port}/api/hil/${created.id}/approve`;
     const first = await fetch(url, { method: 'POST', body: JSON.stringify({ by: 'a' }) });
     expect(first.status).toBe(200);
@@ -352,7 +357,7 @@ describe('feed with a real store', () => {
   });
 
   test('POST /api/hil/:id/delegate delegates a pending request without a configured delegate fn (fails closed, 4xx)', async () => {
-    const created = await gates.request('unblock', { policy: policy(), hilKind: 'unblock' });
+    const created = await gates.request('classifier_review', { policy: policy(), stream: STREAM });
     const res = await fetch(`http://127.0.0.1:${feedServer.port}/api/hil/${created.id}/delegate`, {
       method: 'POST',
       body: JSON.stringify({ to: 'em' }),
@@ -373,7 +378,10 @@ describe('feed with a real store', () => {
 
   describe('cross-origin protection on HIL POSTs (review nit)', () => {
     test('a same-origin Origin header is accepted', async () => {
-      const created = await gates.request('unblock', { policy: policy(), hilKind: 'unblock' });
+      const created = await gates.request('classifier_review', {
+        policy: policy(),
+        stream: STREAM,
+      });
       const res = await fetch(`http://127.0.0.1:${feedServer.port}/api/hil/${created.id}/approve`, {
         method: 'POST',
         headers: { origin: `http://127.0.0.1:${feedServer.port}` },
@@ -383,7 +391,10 @@ describe('feed with a real store', () => {
     });
 
     test('an Origin naming a different origin is rejected with 403 and does not resolve the request', async () => {
-      const created = await gates.request('unblock', { policy: policy(), hilKind: 'unblock' });
+      const created = await gates.request('classifier_review', {
+        policy: policy(),
+        stream: STREAM,
+      });
       const res = await fetch(`http://127.0.0.1:${feedServer.port}/api/hil/${created.id}/approve`, {
         method: 'POST',
         headers: { origin: 'http://evil.example' },
@@ -394,7 +405,10 @@ describe('feed with a real store', () => {
     });
 
     test('no Origin header at all (e.g. a CLI/server client) is accepted', async () => {
-      const created = await gates.request('unblock', { policy: policy(), hilKind: 'unblock' });
+      const created = await gates.request('classifier_review', {
+        policy: policy(),
+        stream: STREAM,
+      });
       const res = await fetch(`http://127.0.0.1:${feedServer.port}/api/hil/${created.id}/approve`, {
         method: 'POST',
         body: JSON.stringify({ by: 'a' }),
@@ -403,7 +417,10 @@ describe('feed with a real store', () => {
     });
 
     test('Sec-Fetch-Site: same-origin is accepted, cross-site is rejected with 403', async () => {
-      const sameOrigin = await gates.request('unblock', { policy: policy(), hilKind: 'unblock' });
+      const sameOrigin = await gates.request('classifier_review', {
+        policy: policy(),
+        stream: STREAM,
+      });
       const ok = await fetch(
         `http://127.0.0.1:${feedServer.port}/api/hil/${sameOrigin.id}/approve`,
         {
@@ -414,7 +431,10 @@ describe('feed with a real store', () => {
       );
       expect(ok.status).toBe(200);
 
-      const crossSite = await gates.request('unblock', { policy: policy(), hilKind: 'unblock' });
+      const crossSite = await gates.request('classifier_review', {
+        policy: policy(),
+        stream: STREAM,
+      });
       const rejected = await fetch(
         `http://127.0.0.1:${feedServer.port}/api/hil/${crossSite.id}/approve`,
         {
@@ -444,7 +464,7 @@ describe('T025 control room routes', () => {
   let emChat: EmChatService;
 
   function policy(overrides: Partial<Policy['gates']> = {}): Policy {
-    return { gates: { unblock: 'human', ...overrides }, breaker_signals: [] };
+    return { gates: { classifier_review: 'human', ...overrides }, breaker_signals: [] };
   }
 
   beforeEach(() => {
@@ -1082,7 +1102,7 @@ describe('T040 question routes', () => {
   let questions: QuestionService;
   let qServer: HttpServerHandle;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     repo = mkdtempSync(join(tmpdir(), 'agile-questions-http-'));
     Bun.spawnSync(['git', 'init', '-q'], { cwd: repo });
     Bun.spawnSync(['git', 'config', 'user.email', 'test@example.com'], { cwd: repo });
@@ -1093,7 +1113,9 @@ describe('T040 question routes', () => {
     // T111: the state home lives outside the repo.
     const init = runInit(join(repo, 'home'));
     store = StateStore.open(init.stateRoot);
-    questions = new QuestionService(store);
+    const streams = new StreamService(store);
+    questions = new QuestionService(store, streams);
+    STREAM = (await streams.create('human', { title: 'q', goal: 'g' })).id;
     qServer = startHttpServer({
       port: 0,
       version: '0.0.0-test',
@@ -1121,7 +1143,7 @@ describe('T040 question routes', () => {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       // T032: a forged raised_by in the body must be ignored.
-      body: JSON.stringify({ text: 'which storage wins?', raised_by: 'architect' }),
+      body: JSON.stringify({ stream: STREAM, text: 'which storage wins?', raised_by: 'architect' }),
     });
     expect(res.status).toBe(201);
     const raised = (await res.json()) as { id: string; raised_by: string; status: string };
@@ -1135,7 +1157,11 @@ describe('T040 question routes', () => {
   });
 
   test('POST /api/questions/:id/answer with a reply answers it and delivers to the raiser', async () => {
-    const q = await questions.raise({ raised_by: 'eng-1', text: 'is the ticket right?' });
+    const q = await questions.raise({
+      stream: STREAM,
+      raised_by: 'eng-1',
+      text: 'is the ticket right?',
+    });
     const res = await fetch(url(`/api/questions/${q.id}/answer`), {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -1149,21 +1175,22 @@ describe('T040 question routes', () => {
     expect(store.listEntities('bus/inbox/eng-1', (v) => v)).toHaveLength(1);
   });
 
-  test('answering with "record as decision" publishes a DEC-* and links it', async () => {
-    const q = await questions.raise({ raised_by: 'eng-1', text: 'sqlite or files?' });
-    const res = await fetch(url(`/api/questions/${q.id}/answer`), {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ answer: 'files for v0', resolved_as: 'decision' }),
-    });
-    expect(res.status).toBe(200);
-    const body = (await res.json()) as { question: { resolved_as: string } };
-    expect(body.question.resolved_as).toMatch(/^DEC-\d{4}$/);
-    expect(Object.keys(store.listOracleIndex())).toContain(body.question.resolved_as);
+  // T121: `decision` and `ticket` resolutions are deleted with the oracle
+  // and the ticket model — `reply` is the only one left.
+  test('answering with any resolution other than "reply" is a 400', async () => {
+    const q = await questions.raise({ stream: STREAM, raised_by: 'eng-1', text: 'sqlite?' });
+    for (const resolved_as of ['decision', 'ticket']) {
+      const res = await fetch(url(`/api/questions/${q.id}/answer`), {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ answer: 'files for v0', resolved_as }),
+      });
+      expect(res.status).toBe(400);
+    }
   });
 
   test('bad ids, empty answers, double answers and cross-origin posts are refused', async () => {
-    const q = await questions.raise({ raised_by: 'eng-1', text: 'q' });
+    const q = await questions.raise({ stream: STREAM, raised_by: 'eng-1', text: 'q' });
     expect(
       (
         await fetch(url('/api/questions/Q-nope/answer'), {
@@ -1280,12 +1307,17 @@ describe('T043 chrome routes', () => {
   });
 
   test('PUT /api/policy round-trips through the store and changes the NEXT gate’s owner', async () => {
-    // Before: the repo default has `unblock: em`, so a raised gate is the
-    // EM's (and, with no delegate wired, stays pending for the EM).
-    expect(store.getPolicy().gates.unblock).toBe('em');
-    const before = await gates.request('unblock', {
+    // Before: the shipped default owns every gate to the human; this test
+    // points `classifier_review` at the EM first so the PUT has something to
+    // change (T121: `defaultPolicy()` is the three surviving kinds).
+    await store.putPolicy({
+      gates: { ...store.getPolicy().gates, classifier_review: 'em' },
+      breaker_signals: [],
+    });
+    expect(store.getPolicy().gates.classifier_review).toBe('em');
+    const before = await gates.request('classifier_review', {
       policy: store.getPolicy(),
-      hilKind: 'unblock',
+      stream: STREAM,
     });
     expect(before.owner).toBe('em');
 
@@ -1293,14 +1325,14 @@ describe('T043 chrome routes', () => {
       method: 'PUT',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
-        gates: { ...store.getPolicy().gates, unblock: 'human' },
+        gates: { ...store.getPolicy().gates, classifier_review: 'human' },
         breaker_signals: [],
       }),
     });
     expect(res.status).toBe(200);
 
     // It landed on disk through the store (not just in the response)...
-    expect(store.getPolicy().gates.unblock).toBe('human');
+    expect(store.getPolicy().gates.classifier_review).toBe('human');
     // ...and in the event log, attributed to the human.
     const policyEvent = store
       .listEvents()
@@ -1309,7 +1341,10 @@ describe('T043 chrome routes', () => {
     expect(policyEvent?.agent).toBe('human');
 
     // ...and the NEXT gate raised against it resolves to the new owner.
-    const after = await gates.request('unblock', { policy: store.getPolicy(), hilKind: 'unblock' });
+    const after = await gates.request('classifier_review', {
+      policy: store.getPolicy(),
+      stream: STREAM,
+    });
     expect(after.owner).toBe('human');
   });
 
@@ -1317,23 +1352,23 @@ describe('T043 chrome routes', () => {
     const res = await fetch(`${base()}/api/policy`, {
       method: 'PUT',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ gates: { unblock: 'the-intern' }, breaker_signals: [] }),
+      body: JSON.stringify({ gates: { classifier_review: 'the-intern' }, breaker_signals: [] }),
     });
     expect(res.status).toBe(400);
-    expect(store.getPolicy().gates.unblock).toBe('em');
+    expect(store.getPolicy().gates.classifier_review).toBe('human');
   });
 
   test('PUT /api/policy rejects a cross-origin write with 403', async () => {
     const res = await fetch(`${base()}/api/policy`, {
       method: 'PUT',
       headers: { 'content-type': 'application/json', origin: 'http://evil.example' },
-      body: JSON.stringify({ gates: { unblock: 'human' }, breaker_signals: [] }),
+      body: JSON.stringify({ gates: { classifier_review: 'human' }, breaker_signals: [] }),
     });
     expect(res.status).toBe(403);
-    expect(store.getPolicy().gates.unblock).toBe('em');
+    expect(store.getPolicy().gates.classifier_review).toBe('human');
   });
 
-  test('POST /api/sprint/start proposes the frontier, raises approve_plan, and starts it when the human owns the gate', async () => {
+  test('POST /api/sprint/start proposes the frontier and starts it — the click is the approval', async () => {
     await store.putTicket({
       id: 'TKT-0501',
       title: 'Frontier ticket',
@@ -1373,7 +1408,8 @@ describe('T043 chrome routes', () => {
     expect(body.gate.owner).toBe('human');
     expect(body.gate.status).toBe('resolved');
     expect(body.gate.decision).toBe('approve');
-    expect(gates.list().some((r) => r.gate === 'approve_plan')).toBe(true);
+    // T121: no gate is opened at all any more.
+    expect(gates.list()).toHaveLength(0);
 
     // The top bar now reads "running", and offers Sprint 2 next.
     const snap = (await (await fetch(`${base()}/api/snapshot`)).json()) as {
@@ -1390,52 +1426,9 @@ describe('T043 chrome routes', () => {
     expect(snap.status.approve_plan_pending).toBe(false);
   });
 
-  test('POST /api/sprint/start respects a Settings policy edit: approve_plan goes to the EM, and nothing is written until it decides', async () => {
-    await store.putTicket({
-      id: 'TKT-0502',
-      title: 'Frontier ticket',
-      status: 'ready',
-      contract: { inputs: [], outputs: [], acceptance: [], done: [], env: 'clone' },
-      depends: [],
-      oracle_refs: [],
-      kb_refs: [],
-      history: [],
-      security: false,
-    });
-    await fetch(`${base()}/api/policy`, {
-      method: 'PUT',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        gates: { ...store.getPolicy().gates, approve_plan: 'em' },
-        breaker_signals: [],
-      }),
-    });
-    const res = await fetch(`${base()}/api/sprint/start`, { method: 'POST' });
-    expect(res.status).toBe(200);
-    const body = (await res.json()) as {
-      started: boolean;
-      gate: { owner: string; status: string };
-    };
-    expect(body.gate.owner).toBe('em');
-    expect(body.gate.status).toBe('pending');
-    // T042 review round 1: an undecided gate starts nothing.
-    expect(body.started).toBe(false);
-    expect(store.listSprints()).toHaveLength(0);
-    expect(store.getTicket('TKT-0502').sprint).toBeUndefined();
-
-    // ...and the top bar says so, rather than offering a second start.
-    const snap = (await (await fetch(`${base()}/api/snapshot`)).json()) as {
-      status: { approve_plan_pending: boolean; sprint_state: string };
-    };
-    expect(snap.status.approve_plan_pending).toBe(true);
-    expect(snap.status.sprint_state).toBe('none');
-
-    // A second click is refused rather than raising a duplicate gate.
-    const second = await fetch(`${base()}/api/sprint/start`, { method: 'POST' });
-    expect(second.status).toBe(400);
-    expect(gates.list().filter((r) => r.gate === 'approve_plan')).toHaveLength(1);
-  });
-
+  // T121: the `approve_plan` gate is deleted (cockpit design §3.1), so a
+  // policy edit can no longer park a sprint start on the EM — the click is
+  // the approval. T122 deletes the Sprints pane and this route with it.
   test('POST /api/sprint/start refuses an empty frontier with 400 and a reason', async () => {
     const res = await fetch(`${base()}/api/sprint/start`, { method: 'POST' });
     expect(res.status).toBe(400);

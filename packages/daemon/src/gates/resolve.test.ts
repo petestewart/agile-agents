@@ -1,52 +1,30 @@
 import { describe, expect, test } from 'bun:test';
-import type { Policy } from '@agile-agents/shared';
+import { GATE_KINDS, type Policy } from '@agile-agents/shared';
 import { resolveGate } from './resolve';
 
 function policy(gates: Policy['gates']): Policy {
   return { gates, breaker_signals: [] };
 }
 
+/**
+ * T121: the sprint → epic → team → repo-default walk is gone with sprints,
+ * epics and teams. One lookup, one fail-safe default.
+ */
 describe('resolveGate', () => {
-  test('falls back to the repo-default policy when no override names the gate', () => {
-    const ctx = { policy: policy({ demo: 'human' }) };
-    expect(resolveGate('demo', ctx)).toBe('human');
+  test('reads the owner off the repo-default policy', () => {
+    expect(resolveGate('land', { policy: policy({ land: 'em' }) })).toBe('em');
+    expect(
+      resolveGate('rule_accept', { policy: policy({ rule_accept: 'human_timeout:2h' }) }),
+    ).toBe('human_timeout:2h');
   });
 
-  test('team beats the repo default', () => {
-    const ctx = { policy: policy({ unblock: 'em' }), team: { unblock: 'architect' } };
-    expect(resolveGate('unblock', ctx)).toBe('architect');
+  test('a gate with no policy row resolves to human, never to a silent auto-approve', () => {
+    for (const gate of GATE_KINDS) {
+      expect(resolveGate(gate, { policy: policy({}) })).toBe('human');
+    }
   });
 
-  test('epic beats team and the repo default', () => {
-    const ctx = {
-      policy: policy({ unblock: 'em' }),
-      team: { unblock: 'architect' },
-      epic: { unblock: 'human' },
-    };
-    expect(resolveGate('unblock', ctx)).toBe('human');
-  });
-
-  test('sprint beats epic, team, and the repo default (most specific wins)', () => {
-    const ctx = {
-      policy: policy({ unblock: 'em' }),
-      team: { unblock: 'architect' },
-      epic: { unblock: 'human' },
-      sprint: { unblock: 'human_timeout:2h' },
-    };
-    expect(resolveGate('unblock', ctx)).toBe('human_timeout:2h');
-  });
-
-  test('missing levels fall through to the next-most-specific level', () => {
-    const ctx = {
-      policy: policy({ unblock: 'em' }),
-      // no team, no epic
-      sprint: { demo: 'human_timeout:1d' }, // sprint overrides a different gate
-    };
-    expect(resolveGate('unblock', ctx)).toBe('em');
-  });
-
-  test('an unknown gate name (absent at every level) resolves to human', () => {
-    const ctx = { policy: policy({ demo: 'human' }) };
-    expect(resolveGate('some_gate_nobody_configured', ctx)).toBe('human');
+  test('the closed set is exactly the three surviving kinds (§3.1)', () => {
+    expect([...GATE_KINDS]).toEqual(['land', 'rule_accept', 'classifier_review']);
   });
 });

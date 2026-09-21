@@ -3,6 +3,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ACP_PROVIDERS, type AcpProviderConfig } from '@agile-agents/acp-client';
+import { ulid } from '@agile-agents/shared';
 import { runInit } from '../init';
 import type { FakeAgentScript } from '../runner/fake-agent';
 import { StateStore } from '../store';
@@ -57,19 +58,21 @@ describe('parseEmDecision', () => {
   });
 });
 
+const STREAM = ulid();
+
 describe('renderEmDecisionPrompt', () => {
   test('is the real EM brief plus the request, and asks for the DECISION line', () => {
     const store = StateStore.open(stateRoot);
     const prompt = renderEmDecisionPrompt(store, {
-      gate: 'unblock',
+      gate: 'classifier_review',
       owner: 'em',
-      ticket: 'TKT-0001' as never,
-      hilKind: 'unblock',
+      stream: STREAM,
+      hilKind: 'classifier_review',
       summary: 'eng-0001 asked to run `git push origin main` — push to main is never automatic',
     });
     expect(prompt).toContain('# EM brief — em');
     expect(prompt).toContain('## Gate decision requested');
-    expect(prompt).toContain('`unblock` gate');
+    expect(prompt).toContain('`classifier_review` gate');
     expect(prompt).toContain('git push origin main');
     expect(prompt).toContain('DECISION: approve');
     // No note written: no note paragraph.
@@ -80,10 +83,10 @@ describe('renderEmDecisionPrompt', () => {
   test("includes the human's free-text note when one was written", () => {
     const store = StateStore.open(stateRoot);
     const prompt = renderEmDecisionPrompt(store, {
-      gate: 'unblock',
+      gate: 'classifier_review',
       owner: 'em',
-      ticket: 'TKT-0001' as never,
-      hilKind: 'unblock',
+      stream: STREAM,
+      hilKind: 'classifier_review',
       summary: 'eng-0001 asked to run `bun run seed`',
       note: 'yes, but only for the seed script',
     });
@@ -105,7 +108,12 @@ describe('createEmSessionDelegate (fake ACP agent)', () => {
       }),
       timeoutMs: 20_000,
     });
-    const decision = await delegate({ gate: 'unblock', owner: 'em', hilKind: 'unblock' });
+    const decision = await delegate({
+      gate: 'classifier_review',
+      owner: 'em',
+      stream: STREAM,
+      hilKind: 'classifier_review',
+    });
     expect(decision).toEqual({
       decision: 'approve',
       by: 'em',
@@ -141,7 +149,12 @@ describe('createEmSessionDelegate (fake ACP agent)', () => {
       }),
       timeoutMs: 20_000,
     });
-    const decision = await delegate({ gate: 'unblock', owner: 'em', hilKind: 'unblock' });
+    const decision = await delegate({
+      gate: 'classifier_review',
+      owner: 'em',
+      stream: STREAM,
+      hilKind: 'classifier_review',
+    });
     expect(decision.decision).toBe('approve');
     expect(JSON.parse(readFileSync(answerFile, 'utf8'))).toEqual({
       outcome: { outcome: 'selected', optionId: 'reject' },
@@ -160,7 +173,7 @@ describe('createEmSessionDelegate (fake ACP agent)', () => {
       }),
       timeoutMs: 20_000,
     });
-    const decision = await delegate({ gate: 'unblock', owner: 'em' });
+    const decision = await delegate({ gate: 'classifier_review', owner: 'em', stream: STREAM });
     expect(decision.decision).toBe('deny');
     expect(decision.rationale).toBe('Touches main.');
   });
@@ -174,7 +187,7 @@ describe('createEmSessionDelegate (fake ACP agent)', () => {
       }),
       timeoutMs: 20_000,
     });
-    const decision = await delegate({ gate: 'unblock', owner: 'em' });
+    const decision = await delegate({ gate: 'classifier_review', owner: 'em', stream: STREAM });
     expect(decision.decision).toBe('deny');
     expect(decision.rationale).toContain('without a DECISION line');
   });
@@ -188,7 +201,7 @@ describe('createEmSessionDelegate (fake ACP agent)', () => {
       timeoutMs: 1_500,
       onNotice: (line) => notices.push(line),
     });
-    const decision = await delegate({ gate: 'unblock', owner: 'em' });
+    const decision = await delegate({ gate: 'classifier_review', owner: 'em', stream: STREAM });
     expect(decision.decision).toBe('deny');
     expect(decision.rationale).toContain('timed out');
     expect(notices.some((n) => n.includes('denying (fail closed)'))).toBe(true);
