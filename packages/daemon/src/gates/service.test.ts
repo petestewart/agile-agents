@@ -89,7 +89,7 @@ describe('GateService.request', () => {
     expect(req.deadline).toBeUndefined();
 
     // The decision artifact is durable, not just in-memory.
-    const reloaded = store.getEntity(`board/hil/${req.id}.yaml`, (v) => v as typeof req);
+    const reloaded = store.getEntity(`gates/${req.id}.yaml`, (v) => v as typeof req);
     expect(reloaded.status).toBe('resolved');
 
     const inbox = store.listEntities(

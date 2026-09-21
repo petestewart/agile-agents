@@ -35,7 +35,6 @@ describe('agile mcp (stdio bridge, real CLI subprocess)', () => {
     const names = tools.map((t) => t.name).sort();
     expect(names).toContain('read_summary');
     expect(names).toContain('test_run');
-    expect(names).toContain('board_post');
   });
 
   test('`--socket <path>` reaches the daemon from a cwd whose own repo root is NOT where the socket lives, with no AGILE_SOCKET_PATH in the env', async () => {
@@ -62,7 +61,7 @@ describe('agile mcp (stdio bridge, real CLI subprocess)', () => {
       client = new Client({ name: 'test-client', version: '0.0.0' });
       await client.connect(transport);
       const { tools } = await client.listTools();
-      expect(tools.map((t) => t.name)).toContain('board_post');
+      expect(tools.map((t) => t.name)).toContain('read_summary');
     } finally {
       rmSync(worktreeLike, { recursive: true, force: true });
     }
@@ -77,9 +76,12 @@ describe('agile mcp (stdio bridge, real CLI subprocess)', () => {
     client = new Client({ name: 'test-client', version: '0.0.0' });
     await client.connect(transport);
 
-    const result = await client.callTool({ name: 'ticket_get', arguments: { id: 'TKT-9999' } });
-    // No such ticket — the daemon-side NotFoundError comes back as an MCP
-    // tool error, not a broken pipe or a crashed bridge process.
+    const result = await client.callTool({
+      name: 'read_summary',
+      arguments: { path: 'no/such/file.ts' },
+    });
+    // No such file — the daemon-side error comes back as an MCP tool error,
+    // not a broken pipe or a crashed bridge process.
     expect(result.isError).toBe(true);
   });
 });

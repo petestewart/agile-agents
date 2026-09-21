@@ -419,9 +419,7 @@ describe('control room shell (Playwright e2e)', () => {
           .locator('.cr-needs-you')
           .waitFor({ state: 'attached', timeout: PAGE_TIMEOUT_MS });
 
-        expect(await page.locator('.cr-project').textContent()).toBe(
-          init.home.split('/').pop() ?? '',
-        );
+        expect(await page.locator('.cr-project').textContent()).toBe(repo.split('/').pop() ?? '');
         expect(await page.locator('.cr-needs-you').textContent()).toContain('2');
         const body = (await page.locator('.cr-root').textContent()) ?? '';
         expect(body).toContain(seeded.id);
