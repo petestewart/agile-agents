@@ -42,6 +42,28 @@ import {
 import type { StateStore } from './store';
 import type { StreamService } from './streams';
 
+/**
+ * The port the daemon was told to listen on is already taken (T127). Typed,
+ * so `agile daemon start` can print one actionable line instead of Bun's
+ * bare "Failed to start server. Is port 4600 in use?" — it names the
+ * address, how to find the holder, and both ways to pick another port.
+ */
+export class PortInUseError extends Error {
+  constructor(
+    readonly port: number,
+    readonly hostname: string,
+    readonly home?: string,
+  ) {
+    const configPath = home ? `${home}/config.yaml` : '<home>/config.yaml';
+    super(
+      `agiled cannot listen on ${hostname}:${port}: address in use. ` +
+        `Find the holder: lsof -nP -iTCP:${port} -sTCP:LISTEN. ` +
+        `Use another port: set port: in ${configPath} or AGILE_PORT=<n>.`,
+    );
+    this.name = 'PortInUseError';
+  }
+}
+
 export interface HealthPayload {
   version: string;
   stateRoot: string;
@@ -64,6 +86,8 @@ export interface HttpServerOptions {
    */
   repoRoot?: string;
   startedAt: number;
+  /** The state home, named in a `PortInUseError` so the operator is pointed at the right `config.yaml` (T127). */
+  home?: string;
   /** When present (i.e. the state home exists), enables the feed routes and `/ws` live tail. */
   store?: StateStore;
   /** Required alongside `store` to serve the HIL attention-queue snapshot + approve/delegate actions. */
@@ -355,163 +379,188 @@ function resolveFeedContext(options: HttpServerOptions): FeedContext | undefined
   };
 }
 
+/**
+ * Runs `bind`, retyping Bun's `EADDRINUSE` as `PortInUseError` (T127).
+ * Generic so the caller keeps `Bun.serve`'s own inferred server type
+ * (`srv.upgrade(req)` needs the websocket data generic).
+ */
+function rethrowPortInUse<T>(options: HttpServerOptions, hostname: string, bind: () => T): T {
+  try {
+    return bind();
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'EADDRINUSE') {
+      throw new PortInUseError(options.port, hostname, options.home);
+    }
+    throw err;
+  }
+}
+
 export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
   const hostname = options.hostname ?? '127.0.0.1';
   const feed = resolveFeedContext(options);
 
   let tailer: EventTailerHandle | undefined;
 
-  const server = Bun.serve({
-    port: options.port,
-    hostname,
-    async fetch(req, srv) {
-      const url = new URL(req.url);
+  /**
+   * T127: Bun throws `EADDRINUSE` here when the home's port is already
+   * taken (by a stale `agiled` from another home, or anything else). That
+   * error reaches the operator through `agile daemon start`, so it is
+   * retyped into one actionable line rather than Bun's bare "Failed to
+   * start server".
+   */
+  const server = rethrowPortInUse(options, hostname, () =>
+    Bun.serve({
+      port: options.port,
+      hostname,
+      async fetch(req, srv) {
+        const url = new URL(req.url);
 
-      if (url.pathname === '/health') {
-        const payload: HealthPayload = {
-          version: options.version,
-          stateRoot: options.stateRoot,
-          pid: process.pid,
-          uptime: (Date.now() - options.startedAt) / 1000,
-        };
-        return Response.json(payload);
-      }
-
-      /**
-       * T112: the cockpit is the product, so it is served at `/` — the one
-       * URL an operator types. The v0 static feed page keeps `/feed`.
-       */
-      if (url.pathname === '/') {
-        return new Response(Bun.file(join(CONTROL_ROOM_DIST_DIR, 'index.html')), {
-          headers: { 'content-type': 'text/html; charset=utf-8' },
-        });
-      }
-
-      if (url.pathname === '/feed') {
-        return new Response(Bun.file(FEED_HTML_PATH), {
-          headers: { 'content-type': 'text/html; charset=utf-8' },
-        });
-      }
-
-      /**
-       * Control room SPA (T025 — §17 "Control room", §18 "UI: React + Vite
-       * SPA ... serves the built UI as static files"). Its assets keep their
-       * own `/control-room/` prefix (`vite.config.ts`'s `base`), which is why
-       * the index.html served at `/` above resolves them correctly.
-       */
-      /**
-       * T041: the chat panel as its own route, so the control room can pop
-       * it out into a separate window (`window.open('/control-room/chat')`)
-       * and keep one conversation across both. Same bundle — the SPA reads
-       * `location.pathname` and renders chat-only (`packages/ui/app/
-       * main.tsx`) — so this is an `index.html` rewrite, exactly like the
-       * bare `/control-room` above, not a second build.
-       */
-      if (url.pathname === '/control-room/chat' || url.pathname === '/control-room/chat/') {
-        return new Response(Bun.file(join(CONTROL_ROOM_DIST_DIR, 'index.html')), {
-          headers: { 'content-type': 'text/html; charset=utf-8' },
-        });
-      }
-      /**
-       * T112: `/control-room` moved to `/`; this stays a redirect so old
-       * links, bookmarks and the design docs keep working. The query string
-       * is preserved — `?view=` is how the cockpit is deep-linked.
-       */
-      if (url.pathname === '/control-room' || url.pathname === '/control-room/') {
-        // A relative `Location` is legal (RFC 7231 §7.1.2) and avoids
-        // baking the host into the redirect; `Response.redirect` itself
-        // requires an absolute URL, so the header is set by hand.
-        return new Response(null, { status: 302, headers: { location: `/${url.search}` } });
-      }
-      if (url.pathname.startsWith('/control-room/')) {
-        const rel = url.pathname.slice('/control-room/'.length);
-        const file = Bun.file(join(CONTROL_ROOM_DIST_DIR, rel));
-        if (await file.exists()) return new Response(file);
-        return new Response('not found', { status: 404 });
-      }
-
-      if (url.pathname === '/api/snapshot') {
-        if (!feed) return errorResponse(503, 'state store not initialised (run `agile init`)');
-        return jsonResponse(
-          buildSnapshot(feed.store, feed.gates, undefined, feed.questions, options.repoRoot),
-        );
-      }
-
-      // ---- inbox (T121, cockpit design §3): one list, oldest first,
-      // across every stream. Same same-origin rules as the routes above.
-      if (url.pathname === '/api/inbox' && req.method === 'GET') {
-        if (!feed?.inbox) return errorResponse(503, 'inbox not available');
-        return jsonResponse({ items: feed.inbox.list() });
-      }
-
-      // ---- questions (T040, §17 "Control room v2") — read + raise + answer.
-      if (url.pathname === '/api/questions' && req.method === 'GET') {
-        if (!feed?.questions) return errorResponse(503, 'questions store not available');
-        return jsonResponse(
-          url.searchParams.get('status') === 'open'
-            ? feed.questions.listOpen()
-            : feed.questions.list(),
-        );
-      }
-
-      if (url.pathname === '/api/questions' && req.method === 'POST') {
-        if (!feed?.questions) return errorResponse(503, 'questions store not available');
-        if (!isSameOriginRequest(req, srv.port ?? options.port)) {
-          return errorResponse(403, 'cross-origin request rejected');
+        if (url.pathname === '/health') {
+          const payload: HealthPayload = {
+            version: options.version,
+            stateRoot: options.stateRoot,
+            pid: process.pid,
+            uptime: (Date.now() - options.startedAt) / 1000,
+          };
+          return Response.json(payload);
         }
-        return handleQuestionRaise(req, feed.questions);
-      }
 
-      const questionAnswerMatch = matchQuestionAnswer(url.pathname);
-      if (questionAnswerMatch && req.method === 'POST') {
-        if (!feed?.questions) return errorResponse(503, 'questions store not available');
-        if (!isSameOriginRequest(req, srv.port ?? options.port)) {
-          return errorResponse(403, 'cross-origin request rejected');
+        /**
+         * T112: the cockpit is the product, so it is served at `/` — the one
+         * URL an operator types. The v0 static feed page keeps `/feed`.
+         */
+        if (url.pathname === '/') {
+          return new Response(Bun.file(join(CONTROL_ROOM_DIST_DIR, 'index.html')), {
+            headers: { 'content-type': 'text/html; charset=utf-8' },
+          });
         }
-        return handleQuestionAnswer(req, feed.questions, questionAnswerMatch);
-      }
 
-      const hilMatch = matchHilAction(url.pathname);
-      if (hilMatch && req.method === 'POST') {
-        if (!feed) return errorResponse(503, 'state store not initialised (run `agile init`)');
-        if (!isSameOriginRequest(req, srv.port ?? options.port)) {
-          return errorResponse(403, 'cross-origin request rejected');
+        if (url.pathname === '/feed') {
+          return new Response(Bun.file(FEED_HTML_PATH), {
+            headers: { 'content-type': 'text/html; charset=utf-8' },
+          });
         }
-        return handleHilAction(req, feed.gates, hilMatch.id, hilMatch.action);
-      }
 
-      if (url.pathname === '/ws') {
-        if (srv.upgrade(req)) {
-          return undefined;
+        /**
+         * Control room SPA (T025 — §17 "Control room", §18 "UI: React + Vite
+         * SPA ... serves the built UI as static files"). Its assets keep their
+         * own `/control-room/` prefix (`vite.config.ts`'s `base`), which is why
+         * the index.html served at `/` above resolves them correctly.
+         */
+        /**
+         * T041: the chat panel as its own route, so the control room can pop
+         * it out into a separate window (`window.open('/control-room/chat')`)
+         * and keep one conversation across both. Same bundle — the SPA reads
+         * `location.pathname` and renders chat-only (`packages/ui/app/
+         * main.tsx`) — so this is an `index.html` rewrite, exactly like the
+         * bare `/control-room` above, not a second build.
+         */
+        if (url.pathname === '/control-room/chat' || url.pathname === '/control-room/chat/') {
+          return new Response(Bun.file(join(CONTROL_ROOM_DIST_DIR, 'index.html')), {
+            headers: { 'content-type': 'text/html; charset=utf-8' },
+          });
         }
-        return new Response('WebSocket upgrade failed', { status: 400 });
-      }
+        /**
+         * T112: `/control-room` moved to `/`; this stays a redirect so old
+         * links, bookmarks and the design docs keep working. The query string
+         * is preserved — `?view=` is how the cockpit is deep-linked.
+         */
+        if (url.pathname === '/control-room' || url.pathname === '/control-room/') {
+          // A relative `Location` is legal (RFC 7231 §7.1.2) and avoids
+          // baking the host into the redirect; `Response.redirect` itself
+          // requires an absolute URL, so the header is set by hand.
+          return new Response(null, { status: 302, headers: { location: `/${url.search}` } });
+        }
+        if (url.pathname.startsWith('/control-room/')) {
+          const rel = url.pathname.slice('/control-room/'.length);
+          const file = Bun.file(join(CONTROL_ROOM_DIST_DIR, rel));
+          if (await file.exists()) return new Response(file);
+          return new Response('not found', { status: 404 });
+        }
 
-      return new Response('not found', { status: 404 });
-    },
-    websocket: {
-      open(ws) {
-        const hello: WsHelloFrame = {
-          type: 'hello',
-          version: options.version,
-          stateRoot: options.stateRoot,
-        };
-        ws.send(JSON.stringify(hello));
-
-        if (feed) {
-          ws.subscribe(FEED_WS_TOPIC);
-          ws.send(
-            JSON.stringify(
-              buildSnapshot(feed.store, feed.gates, undefined, feed.questions, options.repoRoot),
-            ),
+        if (url.pathname === '/api/snapshot') {
+          if (!feed) return errorResponse(503, 'state store not initialised (run `agile init`)');
+          return jsonResponse(
+            buildSnapshot(feed.store, feed.gates, undefined, feed.questions, options.repoRoot),
           );
         }
+
+        // ---- inbox (T121, cockpit design §3): one list, oldest first,
+        // across every stream. Same same-origin rules as the routes above.
+        if (url.pathname === '/api/inbox' && req.method === 'GET') {
+          if (!feed?.inbox) return errorResponse(503, 'inbox not available');
+          return jsonResponse({ items: feed.inbox.list() });
+        }
+
+        // ---- questions (T040, §17 "Control room v2") — read + raise + answer.
+        if (url.pathname === '/api/questions' && req.method === 'GET') {
+          if (!feed?.questions) return errorResponse(503, 'questions store not available');
+          return jsonResponse(
+            url.searchParams.get('status') === 'open'
+              ? feed.questions.listOpen()
+              : feed.questions.list(),
+          );
+        }
+
+        if (url.pathname === '/api/questions' && req.method === 'POST') {
+          if (!feed?.questions) return errorResponse(503, 'questions store not available');
+          if (!isSameOriginRequest(req, srv.port ?? options.port)) {
+            return errorResponse(403, 'cross-origin request rejected');
+          }
+          return handleQuestionRaise(req, feed.questions);
+        }
+
+        const questionAnswerMatch = matchQuestionAnswer(url.pathname);
+        if (questionAnswerMatch && req.method === 'POST') {
+          if (!feed?.questions) return errorResponse(503, 'questions store not available');
+          if (!isSameOriginRequest(req, srv.port ?? options.port)) {
+            return errorResponse(403, 'cross-origin request rejected');
+          }
+          return handleQuestionAnswer(req, feed.questions, questionAnswerMatch);
+        }
+
+        const hilMatch = matchHilAction(url.pathname);
+        if (hilMatch && req.method === 'POST') {
+          if (!feed) return errorResponse(503, 'state store not initialised (run `agile init`)');
+          if (!isSameOriginRequest(req, srv.port ?? options.port)) {
+            return errorResponse(403, 'cross-origin request rejected');
+          }
+          return handleHilAction(req, feed.gates, hilMatch.id, hilMatch.action);
+        }
+
+        if (url.pathname === '/ws') {
+          if (srv.upgrade(req)) {
+            return undefined;
+          }
+          return new Response('WebSocket upgrade failed', { status: 400 });
+        }
+
+        return new Response('not found', { status: 404 });
       },
-      message() {
-        // v0: no client -> server protocol yet (tail-only). Ignore inbound.
+      websocket: {
+        open(ws) {
+          const hello: WsHelloFrame = {
+            type: 'hello',
+            version: options.version,
+            stateRoot: options.stateRoot,
+          };
+          ws.send(JSON.stringify(hello));
+
+          if (feed) {
+            ws.subscribe(FEED_WS_TOPIC);
+            ws.send(
+              JSON.stringify(
+                buildSnapshot(feed.store, feed.gates, undefined, feed.questions, options.repoRoot),
+              ),
+            );
+          }
+        },
+        message() {
+          // v0: no client -> server protocol yet (tail-only). Ignore inbound.
+        },
       },
-    },
-  });
+    }),
+  );
 
   if (feed) {
     tailer = startEventTailer({
