@@ -188,6 +188,24 @@ Build order: Phase 0 → 1 → 2 → 3 → 4 → 5 → 6. Within a phase, ticket
 - **Scope:** Black-box QA of streams, inbox, and thread via the CLI and RPC against a real daemon with the fake ACP transport; then Pete drives `agile stream` and `agile answer` by hand on a scratch repo. Findings become tickets T125+.
 - **Acceptance Criteria:** QA ACCEPT; Pete's list recorded.
 - **Validation Steps:** —
+- **Notes:** — QA (sonnet) round 1 REJECT, 1 failure: daemon start needs a git cwd → T125; three rough edges → T126. All stream/inbox/thread/RPC/persistence/robustness scenarios passed. Round 2 after T125/T126.
+
+### Ticket: T125 Daemon starts from any cwd
+- **Priority:** P0
+- **Status:** In Progress
+- **Owner:** opus:worker-T125
+- **Scope:** T124 QA finding. `agile daemon start` (and `--foreground`) fails with "not a git repository" outside a repo because `discoverConfig` still resolves a `repoRoot` from cwd and reads a per-repo `agile.config.yaml` overlay (deleted by design §7.5). Make `repoRoot` optional: `discoverConfig` never runs `git rev-parse`, the per-repo overlay is deleted, port comes from home `config.yaml` only. Survivors that took `config.repoRoot` (`ToolService`, `HookService`, http snapshot) take the repo from the caller (registered repo path for the agent's stream via `repos.yaml`) or, until T130/T131 re-key them, an optional root that fails closed (hook denies with a reason; tool runner refuses) when absent. `daemon.e2e.test.ts` starts the daemon from a non-git temp dir.
+- **Acceptance Criteria:** `agile daemon start` from `/tmp` with an empty registered-repo list starts, serves `stream.*`/`inbox.list`, and stops. No `git` subprocess runs during daemon start.
+- **Validation Steps:** `bun run test:integration` (daemon lifecycle e2e from a non-git cwd).
+- **Notes:** —
+
+### Ticket: T126 ∥ Phase 2 rough edges from QA
+- **Priority:** P2
+- **Status:** In Progress
+- **Owner:** opus:worker-T126
+- **Scope:** T124 QA rough edges: (1) a parent-cycle refusal over `stream.update` returns -32603 with a stray `null` in the message; make it -32602 with the cycle path in the message (same for duplicate id and unknown repo on create). (2) `agile stream close --note` records nothing: append a `line` thread entry `by: human` with the note and put it on `human.note`. (3) `agile status` after `daemon stop` prints a raw socket error: print `agiled is not running (home <path>)` and exit 1, same as `daemon status`.
+- **Acceptance Criteria:** Each edge has a test; QA's exact commands from `qa-T124.report.md` behave as described.
+- **Validation Steps:** `bun test packages/daemon/src/streams packages/cli`.
 - **Notes:** —
 
 ### Phase 3 — Agents as attachments
@@ -403,3 +421,4 @@ Daemon: `em/`, `architect/`, `oracle/`, `qa/`, `halts/`, `quota/`, `handoff/`, `
 - (T121) HIL gate records still live in the repo's `.agile/board/hil/`; move to the state home in T122 or T123. **Resolved in T122**: gates now at `<home>/gates/HIL-*.yaml`.
 - (T122) `agile approve` is gone before `agile land` (T140) exists; gates are decided over HTTP or `gate.*` RPC in between. CLAUDE.md's live-run text still names `agile approve`; T164 rewrites it.
 - (T122) T123 ran after T122 rather than in parallel (the ∥ mark): its event pruning depends on T122's deletions.
+- (Phase 2 verification) The CLI e2e tests start a real daemon on the home's default port 4600; two daemons on one machine (QA agent + `bun test`) collide and the lifecycle e2e fails with a vanished pidfile. Not a code defect (one daemon per machine is the design), but the e2e should set `port` in its temp home's `config.yaml` to a free port; fold into T125.
