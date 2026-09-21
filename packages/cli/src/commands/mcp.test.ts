@@ -2,9 +2,13 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { AGENT_VERBS } from '@agile-agents/shared';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { type TestDaemon, startTestDaemon } from '../test-support';
+
+/** A well-formed session ULID that nothing is attached under. */
+const SESSION = '01J9AAAAAAAAAAAAAAAAAAAAAA';
 
 const CLI_ENTRY = join(import.meta.dir, '..', '..', 'src', 'index.ts');
 
@@ -22,19 +26,22 @@ afterEach(async () => {
 });
 
 describe('agile mcp (stdio bridge, real CLI subprocess)', () => {
-  test("speaks MCP over stdio and lists the daemon's tools", async () => {
+  test('speaks MCP over stdio and publishes exactly the eight verbs', async () => {
     transport = new StdioClientTransport({
       command: 'bun',
-      args: [CLI_ENTRY, 'mcp', '--agent', 'eng-1'],
+      args: [CLI_ENTRY, 'mcp', '--session', SESSION],
       env: { ...process.env, AGILE_SOCKET_PATH: daemon.socketPath },
     });
     client = new Client({ name: 'test-client', version: '0.0.0' });
     await client.connect(transport);
 
     const { tools } = await client.listTools();
-    const names = tools.map((t) => t.name).sort();
-    expect(names).toContain('read_summary');
-    expect(names).toContain('test_run');
+    expect(tools.map((t) => t.name).sort()).toEqual([...AGENT_VERBS].sort());
+    // The model never supplies its own identity: `session` is fixed by the
+    // bridge's own flag and is not part of any published schema.
+    for (const tool of tools) {
+      expect(Object.keys(tool.inputSchema.properties ?? {})).not.toContain('session');
+    }
   });
 
   test('`--socket <path>` reaches the daemon from a cwd whose own repo root is NOT where the socket lives, with no AGILE_SOCKET_PATH in the env', async () => {
@@ -54,34 +61,33 @@ describe('agile mcp (stdio bridge, real CLI subprocess)', () => {
       ) as Record<string, string>;
       transport = new StdioClientTransport({
         command: 'bun',
-        args: [CLI_ENTRY, 'mcp', '--agent', 'eng-1', '--socket', daemon.socketPath],
+        args: [CLI_ENTRY, 'mcp', '--session', SESSION, '--socket', daemon.socketPath],
         cwd: worktreeLike,
         env,
       });
       client = new Client({ name: 'test-client', version: '0.0.0' });
       await client.connect(transport);
       const { tools } = await client.listTools();
-      expect(tools.map((t) => t.name)).toContain('read_summary');
+      expect(tools.map((t) => t.name)).toContain('progress');
     } finally {
       rmSync(worktreeLike, { recursive: true, force: true });
     }
   });
 
-  test('forwards a tool call to the daemon and returns its result', async () => {
+  test('forwards a verb call to the daemon and returns its result', async () => {
     transport = new StdioClientTransport({
       command: 'bun',
-      args: [CLI_ENTRY, 'mcp', '--agent', 'eng-1'],
+      args: [CLI_ENTRY, 'mcp', '--session', SESSION],
       env: { ...process.env, AGILE_SOCKET_PATH: daemon.socketPath },
     });
     client = new Client({ name: 'test-client', version: '0.0.0' });
     await client.connect(transport);
 
-    const result = await client.callTool({
-      name: 'read_summary',
-      arguments: { path: 'no/such/file.ts' },
-    });
-    // No such file — the daemon-side error comes back as an MCP tool error,
-    // not a broken pipe or a crashed bridge process.
+    const result = await client.callTool({ name: 'progress', arguments: { text: 'hello' } });
+    // No session is attached under that id, so the daemon refuses — and the
+    // refusal comes back as an MCP tool error, not a broken pipe or a
+    // crashed bridge process.
     expect(result.isError).toBe(true);
+    expect(JSON.stringify(result.content)).toContain('unknown session');
   });
 });

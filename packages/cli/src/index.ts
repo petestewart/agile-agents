@@ -14,6 +14,7 @@
 import { resolveHomePaths } from '@agile-agents/daemon';
 import { type ParsedArgs, parseArgs } from './args';
 import { runAnswer } from './commands/answer';
+import { runAttach, runDetach } from './commands/attach';
 import {
   daemonStatusReport,
   formatDaemonStatus,
@@ -60,6 +61,8 @@ function usage(): string {
     '  stream close <id> [--note <text>]',
     '  stream archive <id>        hide from `stream list` (nothing moves on disk)',
     '  stream say <id> <text>     append one human line to the stream thread',
+    '  attach <stream> [--vendor v] [--model m] [--effort low|medium|high|max] [--role worker]',
+    '  detach <stream>            stop the live session on a stream',
     '  daemon start               start agiled detached (pidfile + log in the state home)',
     '  daemon stop                stop the running agiled',
     '  daemon status              is agiled running? pid, port, socket, home',
@@ -73,7 +76,7 @@ function usage(): string {
     '  question answer <id> --answer <text> [--by <agent>]',
     '  breaker clear <signal>',
     '  hook <event>               stdin JSON in, JSON out (e.g. hook pre-tool-use) [--fail-closed] [--timeout <ms>, default 2000]',
-    "  mcp --agent <id> [--ticket <id>] [--timeout <ms>, default 60000]   stdio MCP bridge to the daemon's tool.* RPC",
+    "  mcp --session <id> [--timeout <ms>, default 60000]   stdio MCP bridge to the daemon's agent.* verbs",
     '',
     'flags:',
     '  --json                     machine-readable output for any verb above',
@@ -200,6 +203,13 @@ export async function runCli(argv: string[], cwd: string = process.cwd()): Promi
         console.error(usage());
         return 1;
 
+      // T130: an agent is a session attached to a stream (cockpit design §4).
+      case 'attach':
+        return await runAttach(socketPath, parseArgs(rest.slice(1)), json);
+
+      case 'detach':
+        return await runDetach(socketPath, parseArgs(rest.slice(1)), json);
+
       case 'breaker':
         if (sub === 'clear') return await runBreakerClear(socketPath, parseArgs(restArgv), json);
         console.error(usage());
@@ -225,13 +235,12 @@ export async function runCli(argv: string[], cwd: string = process.cwd()): Promi
         // needs it.
         const { parseMcpArgs, runCliMcp } = await import('./commands/mcp');
         const args: ParsedArgs = parseArgs(rest.slice(1));
-        const { agent, ticket, timeoutMs, socketPath: explicitSocket } = parseMcpArgs(args);
+        const { session, timeoutMs, socketPath: explicitSocket } = parseMcpArgs(args);
         // Foreground process, same as `daemon start`: keep the event loop
         // alive for the life of the stdio MCP session.
         return await runCliMcp({
           socketPath: explicitSocket ?? socketPath,
-          agent,
-          ticket,
+          session,
           timeoutMs,
         });
       }

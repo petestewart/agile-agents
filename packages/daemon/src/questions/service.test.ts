@@ -117,7 +117,18 @@ describe('QuestionService.answer', () => {
     });
   }
 
+  /** A live `SessionRef` on the fixture stream — `answer` only returns a stream to `working` when there is still a session to go back to (T130). */
+  async function attachLiveSession(): Promise<void> {
+    await store.updateStream('daemon', stream.id, (before) => ({
+      ...before,
+      sessions: [
+        { id: SESSION, vendor: 'claude', model: 'default', role: 'worker', status: 'running' },
+      ],
+    }));
+  }
+
   test('records the answer, appends the thread entry, and puts the stream back to work', async () => {
+    await attachLiveSession();
     const q = await raised();
     const result = await questions.answer(q.id, { answer: 'semicolon', by: 'human' });
     expect(result.question.status).toBe('answered');
@@ -132,6 +143,15 @@ describe('QuestionService.answer', () => {
     expect(answer?.body).toBe('semicolon');
     expect(answer?.by).toBe('human');
     expect(eventKinds()).toContain('question_answered');
+  });
+
+  test('a stream with no live session goes back to idle, not working', async () => {
+    const q = await raised();
+    await questions.answer(q.id, { answer: 'semicolon', by: 'human' });
+    // Nothing is attached: claiming `working` would show an agent at work
+    // on a stream with no process behind it (Phase 2 Discovered Issues).
+    expect(streams.get(stream.id).agent.status).toBe('idle');
+    expect(streams.get(stream.id).human.status).toBe('open');
   });
 
   test('delivers the answer to the waiting session (the deliverNote path)', async () => {

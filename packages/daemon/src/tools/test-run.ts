@@ -26,8 +26,21 @@ import {
   tokenizeSegment,
 } from '../permissions/command';
 import { DAEMON_CACHE_DIR, sandboxedSubprocessEnv } from '../subprocess-env';
-import { rawOutputPath } from './cache';
-import { charsPerToken } from './runner';
+
+/**
+ * Host-local raw-output path for a tool's full log — a `raw/<tool>/`
+ * subtree of the daemon cache, kept apart from anything else under it.
+ * Inlined here (T130) when the tool framework's `cache.ts` went with the
+ * registry: `test_run` is the only writer left.
+ */
+function rawOutputPath(repoRoot: string, toolName: string, fileName: string): string {
+  return join(repoRoot, DAEMON_CACHE_DIR, 'raw', toolName, fileName);
+}
+
+/** ~4 chars/token — the convention behind this tool's "under 500 tokens" output cap. */
+function charsPerToken(): number {
+  return 4;
+}
 
 export interface TestRunInput {
   command: string;

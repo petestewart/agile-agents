@@ -160,3 +160,49 @@ describe('agile stream against a daemon on a temp AGILE_HOME', () => {
     expect(errors.join('\n')).toContain('the cap is 800');
   });
 });
+
+describe('agile attach (T130) on a no-repo stream, against the fake driver', () => {
+  test('prints the session line, records it, streams output onto the thread, and refuses a second attach', async () => {
+    const stream = await newStream('Plan the migration');
+
+    const attached = await cli(['attach', stream.id]);
+    expect(attached.code).toBe(0);
+    expect(attached.out).toMatch(
+      new RegExp(
+        `^agile attach: [0-9A-HJKMNP-TV-Z]{26} claude/default effort=\\w+ on ${stream.id}$`,
+        'm',
+      ),
+    );
+    // No repo, so no worktree line and nothing git-backed.
+    expect(attached.out).not.toContain('worktree=');
+
+    const shown = await cli(['stream', 'show', stream.id, '--json']);
+    const record = (JSON.parse(shown.out) as { stream: Stream }).stream;
+    expect(record.sessions.length).toBe(1);
+    expect(record.sessions[0]?.role).toBe('worker');
+    expect(record.agent.status).toBe('working');
+    expect(record.branch).toBeUndefined();
+
+    // The sessions strip prints `id vendor/model effort status`.
+    const human = await cli(['stream', 'show', stream.id]);
+    expect(human.out).toContain(`${record.sessions[0]?.id}  claude/default`);
+
+    // §2.3: one live worker at a time.
+    const second = await cli(['attach', stream.id]);
+    expect(second.code).toBe(1);
+
+    // The thread carries the daemon's own attach line.
+    const thread = readFileSync(join(daemon.home, 'threads', `${stream.id}.jsonl`), 'utf8');
+    expect(thread).toContain('worker attached: claude/default');
+
+    expect((await cli(['detach', stream.id])).code).toBe(0);
+  }, 20_000);
+
+  test('rejects an effort outside the D12 enum and a role other than worker, without calling the daemon', async () => {
+    const stream = await newStream('Plan something else');
+    expect((await cli(['attach', stream.id, '--effort', 'extreme'])).code).toBe(1);
+    expect((await cli(['attach', stream.id, '--role', 'reviewer'])).code).toBe(1);
+    const shown = await cli(['stream', 'show', stream.id, '--json']);
+    expect((JSON.parse(shown.out) as { stream: Stream }).stream.sessions.length).toBe(0);
+  });
+});

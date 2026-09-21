@@ -10,8 +10,7 @@
  *   3. normal inbox -> additionalContext with the bodies (capped), ack them.
  *   4. big raw Read/Grep (over `limits.maxReadBytes`/`maxGrepBytes`) -> deny
  *      "use read_summary(path, question)".
- *   5. budget: `spent_tokens >= ceiling_tokens` -> deny.
- *   6. role × tool policy via `decidePermission`, T010's whole pipeline
+ *   5. role × tool policy via `decidePermission`, T010's whole pipeline
  *      reused whole (classify -> never-without-human -> role table — see
  *      `roleToolVerdict`'s doc comment below) for every edit-kind tool
  *      (`Edit`/`Write`/`MultiEdit`/`NotebookEdit`, or any tool reporting
@@ -26,15 +25,15 @@
  *      backstop per that module's own file header) did not. Every role's
  *      command/edit policy — including the engineer's (git + repo scripts,
  *      per §14) — is now enforced here too, not only at ACP's tier 2.
- *   7. else allow.
+ *   6. else allow.
  *
  * Review round fix (blocker 1): tier 3 (normal inbox) used to *return*
  * before tiers 4–6 ever ran, so a pending `answer` message let a big Read,
- * an over-budget ticket, or a `git push origin main` sail through as
+ * or a `git push origin main` sail through as
  * `allow` — context injection was silently overriding the gate. Tiers 1–2
  * still short-circuit (a halt or an urgent message pre-empts everything,
  * §6's tier table), but tier 3 is now **additive**: the gate verdict is
- * computed first from tiers 4–6 (`computeGateVerdict`), and a pending
+ * computed first from tiers 4–5 (`computeGateVerdict`), and a pending
  * normal message only ever *adds* `additionalContext` (+ acks) on top of
  * whatever that verdict already was — it can turn an `allow` into an
  * `allow` with context, or a `deny`/`ask` into the same `deny`/`ask` with
@@ -49,7 +48,7 @@
  * treats `ack` as this function's decision, not an unconditional side
  * effect) rather than silently losing them.
  *
- * Only one tier among 1/2/4/5/6 fires per call — the first one that matches
+ * Only one tier among 1/2/4/5 fires per call — the first one that matches
  * wins, same as §6's tier table reads (a halt pre-empts everything else, an
  * urgent message pre-empts the budget check, etc.). This mirrors
  * `decidePermission` (T010): a single pure function, side effects performed
@@ -67,6 +66,7 @@
  * falls through to the lower tiers.
  */
 
+import type { SessionRole } from '@agile-agents/shared';
 import { decidePermission } from '../permissions';
 import type {
   AcpPermissionOption,
@@ -74,7 +74,19 @@ import type {
   AcpToolCall,
   AcpToolKind,
 } from '../permissions';
+import type { PermissionRole } from '../permissions';
 import type { ClaudePreToolUsePayload, HookDecision, HookDecisionContext } from './types';
+
+/**
+ * The permission-table role a session role is judged under. The table
+ * (`permissions/policy-tables.ts`) still speaks the ticket-era vocabulary;
+ * a worker is judged as the old engineer, a reviewer as the old reviewer.
+ * T131 owns replacing the reviewer half with the read-only policy of
+ * cockpit design §4.2 — this mapping is the seam it lands on.
+ */
+export function permissionRoleFor(role: SessionRole): PermissionRole {
+  return role === 'reviewer' ? 'reviewer' : 'engineer';
+}
 
 /** §5 "Delivery by priority": normal inbox is injected, capped so a burst of messages can't blow past the message-body-cap spirit for the whole context injection. Pointer, not payload — bodies are already ≤800 chars each (`MESSAGE_BODY_MAX_CHARS`), this just bounds how many get concatenated. */
 const ADDITIONAL_CONTEXT_MAX_CHARS = 4000;
@@ -215,8 +227,7 @@ function roleToolVerdict(
   };
   const request: AcpPermissionRequestParams = { toolCall, options: SYNTHETIC_OPTIONS };
   const decision = decidePermission({
-    role: ctx.role,
-    ticket: ctx.ticket,
+    role: permissionRoleFor(ctx.role),
     worktreePath: ctx.worktreePath,
     request,
   });
@@ -227,7 +238,7 @@ function roleToolVerdict(
   return undefined;
 }
 
-/** Tiers 4–6: the gate verdict, computed independently of any normal-priority inbox message pending — see this file's header, review round fix (blocker 1). */
+/** Tiers 4–5: the gate verdict, computed independently of any normal-priority inbox message pending — see this file's header, review round fix (blocker 1). */
 function computeGateVerdict(
   ctx: HookDecisionContext,
   payload: ClaudePreToolUsePayload,
@@ -253,16 +264,7 @@ function computeGateVerdict(
     // hook can't stat) — never size-gated; falls through to allow below.
   }
 
-  // 5. Budget.
-  const budget = ctx.ticketBudget;
-  if (budget !== undefined && budget.spent_tokens >= budget.ceiling_tokens) {
-    return {
-      decision: 'deny',
-      reason: `ticket ${ctx.ticket} budget exhausted (${budget.spent_tokens}/${budget.ceiling_tokens} tokens) — escalate rather than continue`,
-    };
-  }
-
-  // 6. Role × tool policy (review round 3, opus item 1) — reuses T010's
+  // 5. Role × tool policy (review round 3, opus item 1) — reuses T010's
   // whole `decidePermission` pipeline for every edit-kind tool and for
   // `Bash`, replacing the old Bash-only `checkNeverWithoutHuman` branch.
   // See `roleToolVerdict`'s doc comment above for the mapping; `undefined`
@@ -270,7 +272,7 @@ function computeGateVerdict(
   const roleTool = roleToolVerdict(ctx, payload);
   if (roleTool !== undefined) return roleTool;
 
-  // 7. Else allow.
+  // 6. Else allow.
   return { decision: 'allow' };
 }
 
@@ -285,7 +287,7 @@ export function decidePreToolUse(
     return { decision: 'deny', reason: urgent.body, ack: [urgent.id] };
   }
 
-  // Tiers 4–6, computed BEFORE tier 3 so a pending normal message can never
+  // Tiers 4–5, computed BEFORE tier 3 so a pending normal message can never
   // change the verdict (review round fix, blocker 1).
   const gate = computeGateVerdict(ctx, payload);
 

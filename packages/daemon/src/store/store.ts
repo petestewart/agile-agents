@@ -611,7 +611,11 @@ export class StateStore {
    * "Deferred-commit batching" header), and (2) CLAUDE.md's 30s heartbeat
    * tunable means a `last_seen` less than `HEARTBEAT_COALESCE_MS` old with no
    * ticket reassignment pending is a pure no-op: no file write, no event,
-   * nothing queued — the existing record is returned unchanged.
+   * nothing queued — the existing record is returned unchanged. The only
+   * fields it may touch are `last_seen` and `stream`; every other field is
+   * carried over from the record on disk verbatim (T012 round 4: a rebuilt
+   * record silently dropped `role`/`worktree` and decayed a live session's
+   * hook policy mid-run).
    *
    * Round 4 (QA round 3 REJECT — a real regression, not a test-harness
    * artifact): this used to reconstruct the WHOLE `AgentRecord` from only
@@ -637,7 +641,7 @@ export class StateStore {
    */
   async heartbeat(
     id: AgentId,
-    patch: { ticket?: TicketId } = {},
+    patch: { stream?: string } = {},
     now: () => Date = () => new Date(),
   ): Promise<AgentRecord> {
     return this.mutex.run(() => {
@@ -647,10 +651,10 @@ export class StateStore {
       const existing = this.getAgent(id);
 
       const nowDate = now();
-      const ticketChanged = patch.ticket !== undefined && patch.ticket !== existing.ticket;
+      const streamChanged = patch.stream !== undefined && patch.stream !== existing.stream;
       const lastSeenMs = Date.parse(existing.last_seen);
       if (
-        !ticketChanged &&
+        !streamChanged &&
         !Number.isNaN(lastSeenMs) &&
         nowDate.getTime() - lastSeenMs < HEARTBEAT_COALESCE_MS
       ) {
@@ -662,7 +666,9 @@ export class StateStore {
       // reconstruct the record from a patch, only ever patch it.
       const record: AgentRecord = {
         ...existing,
-        ticket: patch.ticket ?? existing.ticket,
+        ...((patch.stream ?? existing.stream) !== undefined
+          ? { stream: patch.stream ?? existing.stream }
+          : {}),
         last_seen: nowDate.toISOString(),
       };
       const validated = validateAgentRecord(record);
@@ -712,7 +718,7 @@ export class StateStore {
           vendor: record.vendor,
           model: record.model,
           ...(record.role !== undefined ? { role: record.role } : {}),
-          ...(record.ticket !== undefined ? { ticket: record.ticket } : {}),
+          ...(record.stream !== undefined ? { stream: record.stream } : {}),
         },
       });
       return { result: undefined, relPaths: [relPath], event };

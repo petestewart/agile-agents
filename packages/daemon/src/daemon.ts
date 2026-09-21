@@ -14,6 +14,7 @@
 
 import { existsSync } from 'node:fs';
 import daemonPackageJson from '../package.json' with { type: 'json' };
+import { AttachService, VerbService, buildAttachRpcMethods } from './attach';
 import { Bus, buildBusRpcMethods } from './bus';
 import { type AgileConfig, type DiscoverConfigOptions, discoverConfig } from './config';
 import { DocsService, buildDocsRpcMethods } from './docs';
@@ -28,7 +29,6 @@ import { type RpcServerHandle, startRpcServer } from './rpc';
 import { resolveCliBin } from './runner';
 import { StateStore, buildStateRpcMethods } from './store';
 import { StreamService, buildStreamRpcMethods } from './streams';
-import { LiveRunner, ToolService, buildToolRpcMethods, loadToolRegistry } from './tools';
 
 export const DAEMON_VERSION: string = daemonPackageJson.version;
 
@@ -54,6 +54,8 @@ export interface DaemonHandle {
   streamService?: StreamService;
   questionService?: QuestionService;
   inboxService?: InboxService;
+  attachService?: AttachService;
+  verbService?: VerbService;
   /** Graceful shutdown: closes both servers, then releases the lock. */
   stop(): Promise<void>;
 }
@@ -115,22 +117,32 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
   // Hoisted (T011) so `bus.*` RPC and the hook service share one `Bus`
   // instance over the same store.
   const bus = store ? new Bus(store, config.stateRoot, { now: options.now }) : undefined;
-  // Tool registry: loaded once at startup from `.agile/tools/*/tool.yaml`.
-  // `LiveRunner` spawns a real short-lived Claude ACP session per
-  // `runner.tier` call; `FakeRunner` exists only for this package's tests.
-  const toolService = store
-    ? new ToolService({
-        registry: loadToolRegistry(config.stateRoot),
-        runner: new LiveRunner(),
-        // T125: no repo root — the daemon starts from any cwd and serves
-        // every *registered* repo. Registry tools refuse until T132 resolves
-        // a worktree per call from the calling agent's stream.
-      })
-    : undefined;
+  // T130: attaching a worker to a stream, and the eight verbs an attached
+  // session gets (cockpit design §4.1). The verb surface is fixed — there
+  // is no tool registry any more.
+  const verbService =
+    store && streamService && questionService
+      ? new VerbService({
+          store,
+          streams: streamService,
+          questions: questionService,
+          ...(docsService ? { docs: docsService } : {}),
+        })
+      : undefined;
   // How spawned sessions reach this daemon's own CLI for their hook command
   // and MCP server — resolved to something that actually runs on this host
   // (`runner/cli-bin.ts`), never assumed on $PATH.
   const cliBin = resolveCliBin();
+  const attachService =
+    store && streamService
+      ? new AttachService({
+          store,
+          streams: streamService,
+          home: config.home,
+          socketPath: config.socketPath,
+          cliBin: { command: cliBin.command, args: cliBin.args },
+        })
+      : undefined;
   if (cliBin.source === 'missing') {
     console.error(
       'agiled: no `agile` CLI found (no AGILE_CLI_BIN, no workspace entry, nothing on $PATH) — spawned sessions will have no hooks or MCP tools; set AGILE_CLI_BIN',
@@ -151,7 +163,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
   gateTimer?.unref();
 
   const extraMethods =
-    store && gateService && bus && toolService
+    store && gateService && bus
       ? {
           ...buildStateRpcMethods(store),
           ...buildBusRpcMethods(bus),
@@ -167,7 +179,9 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
             // started in.
             new HookService(store, bus, {}),
           ),
-          ...buildToolRpcMethods(toolService),
+          ...(attachService && verbService
+            ? buildAttachRpcMethods(attachService, verbService)
+            : {}),
         }
       : undefined;
 
@@ -233,11 +247,16 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
     streamService,
     questionService,
     inboxService,
+    attachService,
+    verbService,
     async stop() {
       if (stopped) return;
       stopped = true;
       try {
         if (gateTimer) clearInterval(gateTimer);
+        // Every attached session is a child process of this daemon: stop
+        // them before the servers go, so their exit writes still land.
+        await attachService?.stopAll();
         await http.stop();
         await rpc.close();
         // Flush any pending deferred hook_decision/heartbeat commits (T009

@@ -48,8 +48,8 @@ async function seedTicket(): Promise<void> {
   await store.putAgent('eng-1', {
     vendor: 'claude',
     model: 'claude-sonnet-4-5',
-    role: 'engineer',
-    ticket: 'TKT-0001',
+    role: 'worker',
+    stream: '01J9BBBBBBBBBBBBBBBBBBBBBB',
     worktree: join('.worktrees', 'TKT-0001'),
     last_seen: new Date().toISOString(),
   });

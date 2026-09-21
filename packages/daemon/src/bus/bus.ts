@@ -35,7 +35,6 @@ import { join } from 'node:path';
 import {
   type AgentId,
   type AgentRecord,
-  type AgentRunnerRole,
   type Message,
   type MessagePriority,
   type MessageRecipient,
@@ -52,30 +51,6 @@ export type Clock = () => Date;
 
 /** CLAUDE.md tunable: "liveness timeout 5 min". */
 export const DEFAULT_LIVENESS_TIMEOUT_MS = 5 * 60 * 1000;
-
-/**
- * "`last_seen` older than N minutes with ticket `in_progress` → daemon
- * sends `escalate` to em, ticket back to `ready`" (§5 "Liveness"). The
- * ticket text broadens this to "(or any live status)" — read as every
- * status the dead-agent-reassignment edge table in `ticket.ts` names as a
- * valid `-> ready` source for this exact path: assigned, in_progress,
- * in_review, in_qa, blocked.
- */
-/** Which runner role is expected to be *active* (producing events) at each live ticket stage — see `checkLiveness`. `assigned`/`in_progress`: the engineer; `in_review`: the reviewer; `in_qa`: QA. */
-const ACTIVE_ROLE_FOR_STATUS: Partial<Record<TicketStatus, AgentRunnerRole>> = {
-  assigned: 'engineer',
-  in_progress: 'engineer',
-  in_review: 'reviewer',
-  in_qa: 'qa',
-};
-
-const LIVE_TICKET_STATUSES: readonly TicketStatus[] = [
-  'assigned',
-  'in_progress',
-  'in_review',
-  'in_qa',
-  'blocked',
-];
 
 const PRIORITY_LADDER: readonly MessagePriority[] = ['low', 'normal', 'urgent'];
 
@@ -107,11 +82,6 @@ export type SendResult = SendAccepted | SendRejected;
 
 export interface PollOptions {
   priority?: MessagePriority;
-}
-
-export interface LivenessEscalation {
-  agent: AgentId;
-  ticket: TicketId;
 }
 
 export interface RedeliveryResult {
@@ -210,9 +180,6 @@ export class Bus {
       } catch {
         // Ticket doesn't exist (yet, or ever) — fan-out degrades to whoever
         // the registry already has on it, rather than failing the send.
-      }
-      for (const agent of this.store.listAgents()) {
-        if (agent.record.ticket === ticketId) recipients.add(agent.id);
       }
       return [...recipients] as AgentId[];
     }
@@ -367,67 +334,17 @@ export class Bus {
       const record: AgentRecord = {
         vendor: patch.vendor ?? 'unknown',
         model: patch.model ?? 'unknown',
-        ticket: patch.ticket,
+        ...(patch.stream !== undefined ? { stream: patch.stream } : {}),
         pid: patch.pid,
-        // `role` matters to `checkLiveness` (which role is expected to be
-        // active at the ticket's stage); dropping it here made every
-        // bus-registered agent look role-less.
+        // `role` is what the hook path resolves a tool call's policy from
+        // (`hook/service.ts`); dropping it here made every bus-registered
+        // agent look role-less.
         ...(patch.role !== undefined ? { role: patch.role } : {}),
         last_seen: this.now().toISOString(),
       };
       return this.store.putAgent(agent, record);
     }
-    return this.store.heartbeat(agent, { ticket: patch.ticket }, this.now);
-  }
-
-  /**
-   * Sweeps every registered agent for a stale `last_seen` against an
-   * in-flight ticket: sends `escalate` to `em`, transitions the ticket back
-   * to `ready`, and removes the agent record ("registry heartbeat timeout
-   * emits an `escalate` to `em` and returns the ticket to `ready`" —
-   * acceptance criterion). `now` is injectable for the fake-clock test.
-   */
-  async checkLiveness(now: Date = this.now()): Promise<LivenessEscalation[]> {
-    const escalations: LivenessEscalation[] = [];
-    for (const { id, record } of this.store.listAgents()) {
-      if (!record.ticket) continue;
-      const lastSeenMs = Date.parse(record.last_seen);
-      if (Number.isNaN(lastSeenMs) || now.getTime() - lastSeenMs < this.livenessTimeoutMs) {
-        continue;
-      }
-
-      let ticket: TicketId | undefined;
-      try {
-        const found = this.store.getTicket(record.ticket);
-        if (LIVE_TICKET_STATUSES.includes(found.status)) ticket = found.id;
-        // A role that isn't the one working the ticket's current stage is
-        // idle *by design*, not unresponsive: the engineer waits (turn
-        // ended) while its ticket is `in_review`/`in_qa`, the reviewer
-        // waits between rounds while it is `in_progress`. The first live
-        // run (2026-09-10) reaped all three engineers exactly one liveness
-        // period after they handed off for review and re-spawned them cold.
-        // Records with no `role` (pre-T012 shape) keep the old behaviour.
-        if (ticket && record.role && ACTIVE_ROLE_FOR_STATUS[found.status] !== record.role) {
-          continue;
-        }
-      } catch {
-        // Ticket vanished from under the agent — nothing to ripple back.
-      }
-      if (!ticket) continue;
-
-      await this.sendSystemMessage({
-        from: 'daemon',
-        to: ['em'],
-        kind: 'escalate',
-        priority: 'urgent',
-        ticket,
-        body: `agent ${id} unresponsive since ${record.last_seen} (liveness timeout) on ${ticket}`,
-        now,
-      });
-      await this.store.deleteAgent(id as AgentId);
-      escalations.push({ agent: id as AgentId, ticket });
-    }
-    return escalations;
+    return this.store.heartbeat(agent, { stream: patch.stream }, this.now);
   }
 
   /**

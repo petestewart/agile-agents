@@ -108,10 +108,10 @@ describe('Bus.heartbeat', () => {
       vendor: 'claude',
       model: 'sonnet',
       pid: 42,
-      ticket: 'TKT-0001',
+      stream: '01J9ZZZZZZZZZZZZZZZZZZZZZZ',
     });
     expect(store.getAgent('eng-1').last_seen).toBe(now.toISOString());
-    expect(store.getAgent('eng-1').ticket).toBe('TKT-0001');
+    expect(store.getAgent('eng-1').stream).toBe('01J9ZZZZZZZZZZZZZZZZZZZZZZ');
 
     now = new Date('2026-01-01T00:05:00.000Z');
     await bus.heartbeat('eng-1');
@@ -119,7 +119,7 @@ describe('Bus.heartbeat', () => {
     expect(record.last_seen).toBe(now.toISOString());
     // Fields not in the patch survive the update.
     expect(record.vendor).toBe('claude');
-    expect(record.ticket).toBe('TKT-0001');
+    expect(record.stream).toBe('01J9ZZZZZZZZZZZZZZZZZZZZZZ');
   });
 });
 
