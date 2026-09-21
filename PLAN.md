@@ -278,11 +278,22 @@ Build order: Phase 0 → 1 → 2 → 3 → 4 → 5 → 6. Within a phase, ticket
 ### Ticket: T135 Phase 3 QA and Pete's look
 - **Priority:** P0
 - **Status:** In Progress
-- **Owner:** sonnet:qa-T135
+- **Owner:** sonnet:qa-T135 → Pete
 - **Scope:** Fake-transport QA of attach, review, land on nested streams; Pete runs one real worker on ledger-lite via the CLI.
 - **Acceptance Criteria:** QA ACCEPT; live: one stream landed on ledger-lite.
 - **Validation Steps:** —
-- **Notes:** First live milestone.
+- **Notes:** First live milestone. QA (sonnet, fake transport) ACCEPT, 2 low defects → T136; the fake ACP transport is an in-process seam only, so attach/review/land were exercised through in-process daemons and the CLI shapes against a detached one; review-completion line, landing conflict/refusal cases, `tail --session`, brief doc inclusion and `auto_review` were verified by reading their passing tests, not re-run live (coverage gaps listed in `qa-T135.report.md`). Waiting on Pete's live run on ledger-lite.
+
+### Ticket: T136 ∥ Phase 3 rough edges from QA
+- **Priority:** P2
+- **Status:** Todo
+- **Owner:** —
+- **Scope:** (1) `agile repo add <path>` refuses a directory that is not a git repository (typed error → -32602, message names the path) instead of failing later. (2) The `hook` usage line stops presenting `--fail-closed` as required and names the real opt-out `--fail-open`. (3) `agile detach` on a stream with no live session says so in one line and exits 1. Plus anything Pete's live run turns up that fits in a day.
+- **Acceptance Criteria:** Each has a CLI test.
+- **Validation Steps:** `bun test packages/cli packages/daemon/src/store`.
+- **Notes:** May run alongside Phase 4.
+
+**Phase 3 verification (2026-09-21, tip c15b4ba):** build, typecheck, lint clean; `bun test` 1330 pass / 2 skip / 0 fail; `test:integration` 6 suites, 0 fail (run alone). Daemon source 16,338 lines (Phase 2: 16,002; the attach/landing/docs services are new code, the tool framework and ticket helpers are gone). Phase 3 stops here for Pete's live run (T135); Phase 4 does not start until he says go.
 
 ### Phase 4 — Rules with three tiers
 
