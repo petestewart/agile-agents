@@ -9,7 +9,7 @@
  * CLI has been linked onto `$PATH`. When it hasn't, the hooks fail (and a
  * missing binary is a non-blocking hook error to Claude, so the session
  * runs *ungated*) and the MCP server never starts, so no agent can reach a
- * single daemon verb: the sprint silently never converges and the liveness
+ * single daemon verb: the work silently never converges and the liveness
  * watchdog aborts the run five minutes later.
  *
  * Resolution order (first hit wins):

@@ -1,6 +1,6 @@
 /**
- * Tool result cache — "cache by content hash so a file is summarized once
- * per sprint, not once per agent" (§7 "Tool framework").
+ * Tool result cache — cache by content hash so a file is summarized once,
+ * not once per agent.
  *
  * Decision (manager, T011 session): cache files are host-local, not
  * `.agile/` git-tracked state — they're a pure performance optimization with
@@ -39,20 +39,9 @@ export function sha256Hex(content: string | Buffer): string {
   return createHash('sha256').update(content).digest('hex');
 }
 
-/**
- * `<repoRoot>/.agile-daemon-cache/tools/<toolName>/<sprint|nosprint>/<key>.json`
- * — "cache ... ttl: sprint" (§7): scoping the cache under the current sprint
- * id (or the literal `nosprint` when none is set, e.g. before the first
- * sprint exists) means a new sprint starts with a cold cache without this
- * module needing its own expiry/eviction logic.
- */
-export function cacheEntryPath(
-  repoRoot: string,
-  toolName: string,
-  sprintId: string | undefined,
-  key: string,
-): string {
-  return join(toolCacheRoot(repoRoot), toolName, sprintId ?? 'nosprint', `${key}.json`);
+/** `<repoRoot>/.agile-daemon-cache/tools/<toolName>/<key>.json` — the key is a content hash, so an entry is only ever stale if the file changed, and then the key changes with it. */
+export function cacheEntryPath(repoRoot: string, toolName: string, key: string): string {
+  return join(toolCacheRoot(repoRoot), toolName, `${key}.json`);
 }
 
 export function readCacheEntry<T>(path: string): T | undefined {

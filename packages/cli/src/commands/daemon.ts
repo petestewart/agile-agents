@@ -18,10 +18,8 @@
 
 import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, openSync, readFileSync, rmSync } from 'node:fs';
-import { join } from 'node:path';
 import {
   type HomePaths,
-  createEmSessionDelegate,
   installShutdownSignals,
   resolveHomePaths,
   startDaemon,
@@ -62,18 +60,9 @@ export function runningPid(paths: HomePaths): number | undefined {
  * because work finished; it exits on SIGINT/SIGTERM (`agile daemon stop`).
  */
 export async function runDaemonForeground(cwd: string = process.cwd()): Promise<never> {
-  // em-owned gates (`unblock`, `approve_plan`, ...) are decided by a
-  // one-shot EM vendor session (`em/delegate.ts`) — without a delegate
-  // `GateService` fails closed and every such request parks as pending.
-  const handle = await startDaemon({
-    cwd,
-    gateDelegate: createEmSessionDelegate({
-      stateRoot: resolveHomePaths().home,
-      cwd,
-      onNotice: (line) => console.error(line),
-      stderrLogDir: join(cwd, '.agile-daemon-cache', 'sessions'),
-    }),
-  });
+  // T122: the EM delegate is gone, so every gate whose owner is not the
+  // human parks as pending until something decides it (T140's landing path).
+  const handle = await startDaemon({ cwd });
   installShutdownSignals(handle);
   console.log(
     `agiled started: pid=${handle.lock.pid} ` +

@@ -2,8 +2,6 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { Ticket } from '@agile-agents/shared';
-import { validateTicket } from '@agile-agents/shared';
 import { Bus } from '../bus';
 import { GateService } from '../gates';
 import { runInit } from '../init';
@@ -41,19 +39,20 @@ afterEach(() => {
   rmSync(repo, { recursive: true, force: true });
 });
 
-async function seedTicket(overrides: Partial<Ticket> = {}) {
-  await store.putTicket(
-    validateTicket({
-      id: 'TKT-0001',
-      title: 'Ticket',
-      status: 'in_progress',
-      contract: {},
-      history: [],
-      assignee: 'eng-1',
-      worktree: join('.worktrees', 'TKT-0001'),
-      ...overrides,
-    }),
-  );
+/**
+ * T122: a hook call resolves from the agent registry alone — ticket files
+ * are gone with the ceremony layer — so the fixture is an `AgentRecord`
+ * whose worktree contains the call's cwd.
+ */
+async function seedTicket(): Promise<void> {
+  await store.putAgent('eng-1', {
+    vendor: 'claude',
+    model: 'claude-sonnet-4-5',
+    role: 'engineer',
+    ticket: 'TKT-0001',
+    worktree: join('.worktrees', 'TKT-0001'),
+    last_seen: new Date().toISOString(),
+  });
 }
 
 describe('hook.* RPC round trip (via dispatch)', () => {
@@ -141,65 +140,3 @@ async function runHookCli(spawnArgs: {
     rmSync(dir, { recursive: true, force: true });
   }
 }
-
-describe('hook.* RPC round trip through the CLI subprocess', () => {
-  const CLI_ENTRY = join(import.meta.dir, '..', '..', '..', 'cli', 'src', 'index.ts');
-  let rpc: RpcServerHandle;
-  let socketPath: string;
-
-  beforeEach(() => {
-    socketPath = join(repo, 'test.sock');
-    rpc = startRpcServer({
-      socketPath,
-      version: 'test',
-      stateRoot: repo,
-      startedAt: Date.now(),
-      extraMethods: methods,
-    });
-  });
-
-  afterEach(async () => {
-    await rpc.close();
-  });
-
-  test('`agile hook pre-tool-use` prints the daemon reply verbatim', async () => {
-    await seedTicket();
-    const { stdout, stderr, exitCode } = await runHookCli({
-      cmd: ['bun', CLI_ENTRY, 'hook', 'pre-tool-use'],
-      stdin: new Response(
-        JSON.stringify({ cwd: worktree, tool_name: 'Read', tool_input: { file_path: 'x.txt' } }),
-      ),
-      env: { ...process.env, AGILE_SOCKET_PATH: socketPath },
-    });
-    expect(exitCode, stderr).toBe(0);
-    expect(JSON.parse(stdout)).toEqual({
-      hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'allow' },
-    });
-  });
-
-  test('`agile hook pre-tool-use` denies with the halt reason through the whole stack', async () => {
-    const { createHalt } = await import('../halts');
-    await seedTicket();
-    await createHalt(store, {
-      scope: 'global',
-      reason: 'AGILE-HALT: stand down',
-      raised_by: 'architect',
-    });
-
-    const { stdout, stderr, exitCode } = await runHookCli({
-      cmd: ['bun', CLI_ENTRY, 'hook', 'pre-tool-use'],
-      stdin: new Response(
-        JSON.stringify({ cwd: worktree, tool_name: 'Read', tool_input: { file_path: 'x.txt' } }),
-      ),
-      env: { ...process.env, AGILE_SOCKET_PATH: socketPath },
-    });
-    expect(exitCode, stderr).toBe(0);
-    expect(JSON.parse(stdout)).toEqual({
-      hookSpecificOutput: {
-        hookEventName: 'PreToolUse',
-        permissionDecision: 'deny',
-        permissionDecisionReason: expect.stringContaining('AGILE-HALT: stand down'),
-      },
-    });
-  });
-});

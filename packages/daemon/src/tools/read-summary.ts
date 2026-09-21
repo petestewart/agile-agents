@@ -94,8 +94,6 @@ export interface RunReadSummaryOptions {
   worktree: string;
   /** For the host-local cache path — see `cache.ts`. */
   repoRoot: string;
-  /** Cache TTL scope (§7: "ttl: sprint") — `undefined` reads/writes under `nosprint`. */
-  sprintId: string | undefined;
   runner: ToolRunner;
 }
 
@@ -115,7 +113,7 @@ export async function runReadSummary(opts: RunReadSummaryOptions): Promise<RunRe
   const question = input.question ?? '';
 
   const key = cacheKey([fileHash, question]);
-  const cachePath = cacheEntryPath(opts.repoRoot, tool.definition.name, opts.sprintId, key);
+  const cachePath = cacheEntryPath(opts.repoRoot, tool.definition.name, key);
   const cached = readCacheEntry<ReadSummaryOutput>(cachePath);
   if (cached) {
     return { output: cached, cache: 'hit', inTokens: 0, outTokens: 0, model: '' };

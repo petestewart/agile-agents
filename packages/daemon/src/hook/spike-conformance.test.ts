@@ -68,7 +68,6 @@ function baseCtx(overrides: Partial<HookDecisionContext> = {}): HookDecisionCont
     ticket: 'TKT-0001',
     role: 'engineer',
     worktreePath: '/repo/.worktrees/TKT-0001',
-    halts: [],
     inbox: [],
     ticketBudget: undefined,
     limits: { maxReadBytes: DEFAULT_MAX_READ_BYTES },

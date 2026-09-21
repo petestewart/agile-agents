@@ -1,7 +1,7 @@
 /**
  * Thin git wrapper for the merge/integration owner (T019 — design/
  * agile-agents-design.md §15 "Git model and teams": "ticket -> integration
- * on done ... integration -> main at sprint review"). `Bun.spawnSync` only,
+ * on done ... integration -> main at landing"). `Bun.spawnSync` only,
  * never a shell string (session brief) — every argument is passed as its
  * own array element, so a branch/title/path with spaces or shell
  * metacharacters is never re-interpreted.

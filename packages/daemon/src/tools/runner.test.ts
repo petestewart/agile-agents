@@ -12,7 +12,6 @@ function makeInput(overrides: Partial<ToolRunInput> = {}): ToolRunInput {
     runner: { tier: 'trivial', max_output_tokens: 400 },
     input: {},
     output: {},
-    ledger_kind: 'reader',
     promote_to_kb: 'never',
   };
   return {

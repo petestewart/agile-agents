@@ -12,6 +12,5 @@ input:  { path: string, question?: string }
 output: { summary: string, refs: [{path, lines}] }
 cache:
   key: [file_hash, question]
-  ttl: sprint
-ledger_kind: reader
+  ttl: content-hash
 promote_to_kb: optional   # summaries can be proposed as KB facts

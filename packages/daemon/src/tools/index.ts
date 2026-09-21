@@ -43,12 +43,6 @@ export {
   runTestRun,
 } from './test-run';
 export {
-  BUILTIN_TOOLS,
-  BuiltinToolError,
-  type BuiltinToolDeps,
-  type BuiltinToolInfo,
-} from './builtins';
-export {
   ToolService,
   UnknownToolError,
   type ToolListEntry,

@@ -6,7 +6,6 @@
  *
  * Order (§6, this ticket's Scope line, in the order given):
  *   1. halt covering the agent's ticket -> deny with the halt reason plus
- *      the standup_report to send; that one bus_send is allowed (`haltVerdict`).
  *   2. urgent unacked inbox -> deny with the message body as the reason.
  *   3. normal inbox -> additionalContext with the bodies (capped), ack them.
  *   4. big raw Read/Grep (over `limits.maxReadBytes`/`maxGrepBytes`) -> deny
@@ -68,7 +67,6 @@
  * falls through to the lower tiers.
  */
 
-import type { Halt } from '@agile-agents/shared';
 import { decidePermission } from '../permissions';
 import type {
   AcpPermissionOption,
@@ -76,10 +74,6 @@ import type {
   AcpToolCall,
   AcpToolKind,
 } from '../permissions';
-// Not re-exported from `../permissions` (its `index.ts` is out of this
-// ticket's ownership) — imported directly from the module that defines it.
-import { qaBashPathVerdict } from '../permissions/policy-tables';
-import { matchesAnyPattern, resolveRelToWorktree } from '../qa/deny';
 import type { ClaudePreToolUsePayload, HookDecision, HookDecisionContext } from './types';
 
 /** §5 "Delivery by priority": normal inbox is injected, capped so a burst of messages can't blow past the message-body-cap spirit for the whole context injection. Pointer, not payload — bodies are already ≤800 chars each (`MESSAGE_BODY_MAX_CHARS`), this just bounds how many get concatenated. */
@@ -230,32 +224,6 @@ function roleToolVerdict(
   if (decision.kind === 'deny') return { decision: 'deny', reason: decision.reason };
   if (decision.kind === 'hil') return { decision: 'ask', reason: decision.reason };
 
-  // `decidePermission`'s own `PolicyContext` (built inside
-  // `permissions/decide.ts`, out of this ticket's ownership) carries only
-  // `{role, worktreePath, ticket}` — no room for a per-ticket deny list
-  // without touching that module. So the QA Bash-path check (§14: `cat`/
-  // `head`/`grep` of a contract path reaches the file just as readily as a
-  // raw `Read`) runs as an ADDITIONAL check here, using the deny list
-  // `service.ts` already resolved onto `ctx.denyReadPaths` for the read-path
-  // seam above — not folded into `decidePermission`'s own role-table walk.
-  if (
-    kind === 'execute' &&
-    ctx.role === 'qa' &&
-    ctx.denyReadPaths &&
-    ctx.denyReadPaths.length > 0 &&
-    payload.tool_input?.command !== undefined &&
-    typeof payload.tool_input.command === 'string'
-  ) {
-    const bashVerdict = qaBashPathVerdict(
-      payload.tool_input.command,
-      ctx.worktreePath,
-      ctx.denyReadPaths,
-    );
-    if (bashVerdict?.action === 'deny') {
-      return { decision: 'deny', reason: bashVerdict.reason };
-    }
-  }
-
   return undefined;
 }
 
@@ -264,27 +232,6 @@ function computeGateVerdict(
   ctx: HookDecisionContext,
   payload: ClaudePreToolUsePayload,
 ): HookDecision {
-  // 0. Role-extension seam (§13/§14): a per-role path deny-list
-  // (`ctx.denyReadPaths`, resolved by `service.ts` — today only for QA's
-  // `contract.inputs ∪ outputs`) checked for every path-bearing tool
-  // (Read/Grep/Glob/Edit/Write/MultiEdit/NotebookEdit), BEFORE the size
-  // gate below — so a denied contract read renders as a clear, correctly-
-  // reasoned deny rather than being redirected to `read_summary` (which
-  // would just read the file by another door) or silently allowed because
-  // it happens to be under the size cap. This function has no QA-specific
-  // knowledge: `denyReadPaths` is opaque per-role data.
-  if (ctx.denyReadPaths && ctx.denyReadPaths.length > 0) {
-    for (const path of pathsForToolCall(payload)) {
-      const relPath = resolveRelToWorktree(path, ctx.worktreePath);
-      if (matchesAnyPattern(relPath, ctx.denyReadPaths)) {
-        return {
-          decision: 'deny',
-          reason: 'QA may not read contract inputs/outputs (§13)',
-        };
-      }
-    }
-  }
-
   // 4. Big raw Read/Grep — §7 "Tool framework": a matched raw call is
   // denied with the tool's redirect already named.
   if (isReadLikeTool(payload.tool_name)) {
@@ -327,97 +274,10 @@ function computeGateVerdict(
   return { decision: 'allow' };
 }
 
-/** True for the daemon's merge-conflict halt on this engineer's own ticket — see tier 1 in `decidePreToolUse`. */
-function isOwnMergeHalt(ctx: HookDecisionContext, halt: Halt): boolean {
-  return (
-    ctx.role === 'engineer' &&
-    halt.raised_by === 'daemon' &&
-    Array.isArray(halt.scope) &&
-    halt.scope.length === 1 &&
-    halt.scope[0] === ctx.ticket
-  );
-}
-
-/** The one MCP verb an affected agent may still call under a halt: its `standup_report` (§5 step 3). */
-const BUS_SEND_TOOL = 'mcp__agile__bus_send';
-
-function haltScopeLabel(halt: Halt): string {
-  return Array.isArray(halt.scope) ? halt.scope.join(',') : halt.scope;
-}
-
-/**
- * Tier 1 — a halt covering this agent. §5 step 3: "Affected agents' next
- * tool call is blocked; they commit/stash WIP and reply `standup_report`."
- * Quorum (`halts/index.ts`) reaches when every affected agent has reported,
- * or on the 10-minute timeout. Fifteen live runs before this fix reached it
- * only by the timeout — `reported: []` on every halt file — because this
- * tier denied *every* tool, the `bus_send` carrying the report included, and
- * the deny reason was the bare halt reason, which never told the agent to
- * report. Every halt therefore cost the full ten minutes of a denied,
- * re-spawned, re-denied team.
- *
- * Now: a `bus_send` whose `kind` is `standup_report` and whose `refs` name
- * this halt is allowed (and only that — `processStandupReports` needs the
- * `H-<n>` ref to fold the report into the halt, so a report without it is
- * denied with the exact shape to send instead). Everything else is still
- * denied, and the reason says what to do. The urgent `standup_call` for this
- * halt is acked in the same decision: it *is* the delivery, and left unacked
- * it would deny the agent once more (tier 2) after the halt is released.
- * Hooks are the enforcement layer, prompts the intent layer — the
- * instruction rides on the deny so no brief has to carry it.
- */
-function haltVerdict(
-  ctx: HookDecisionContext,
-  halt: Halt,
-  payload: ClaudePreToolUsePayload,
-): HookDecision {
-  const ack = ctx.inbox
-    .filter((m) => m.kind === 'standup_call' && (m.refs ?? []).includes(halt.id))
-    .map((m) => m.id);
-  const withAck = (decision: HookDecision): HookDecision =>
-    ack.length > 0 ? { ...decision, ack } : decision;
-
-  const reportShape = `mcp__agile__bus_send { to: ["em"], kind: "standup_report", refs: ["${halt.id}"], body: "<one line: what you were doing, what is uncommitted>" }`;
-
-  if (payload.tool_name === BUS_SEND_TOOL && payload.tool_input?.kind === 'standup_report') {
-    const refs = payload.tool_input.refs;
-    if (Array.isArray(refs) && refs.includes(halt.id)) return withAck({ decision: 'allow' });
-    return withAck({
-      decision: 'deny',
-      reason: `standup_report for halt ${halt.id} must name it in refs, or the EM cannot count it: send ${reportShape}`,
-    });
-  }
-
-  return withAck({
-    decision: 'deny',
-    reason: `halt ${halt.id} (${haltScopeLabel(halt)}): ${halt.reason}\nEvery tool is blocked until this halt is released. Report in now with exactly one call: ${reportShape} — then stop and end your turn. Your worktree is kept; you will be re-prompted with the ruling.`,
-  });
-}
-
 export function decidePreToolUse(
   ctx: HookDecisionContext,
   payload: ClaudePreToolUsePayload,
 ): HookDecision {
-  // 1. Halt covering this ticket (global or ticket-scoped) — §4 "Halts":
-  // "Engineer-side pre-tool-use hook checks this directory before every
-  // write or ticket pickup." `ctx.halts` is already `activeHaltsFor`'s
-  // result, so any entry means a covering halt exists.
-  // The architect is exempt: it is the role that *raises* a halt
-  // (`discovery_triage`) and the only one that can release it
-  // (`decision_publish`). On the fourth live run the architect triaged the
-  // planted contradiction, its own halt then denied every tool call it
-  // made afterwards — the ruling it had reached survived only as hook deny
-  // reasons in the event log and never reached the oracle.
-  // A merge-conflict halt (raised by the daemon, scoped to exactly this
-  // ticket) is addressed *to* this ticket's engineer — it stops everyone
-  // else while the owner rebases (design §15: "conflicts bounce to the
-  // ticket owner as a scoped halt"). Denying the owner too made every
-  // conflict terminal (fourteenth live run); the owner works through it.
-  const halt = ctx.halts.find((h) => !isOwnMergeHalt(ctx, h));
-  if (halt && ctx.role !== 'architect') {
-    return haltVerdict(ctx, halt, payload);
-  }
-
   // 2. Urgent unacked inbox — oldest first (ctx.inbox is already ordered
   // urgent -> normal -> low, ties broken by ulid/send order per Bus.poll).
   const urgent = ctx.inbox.find((m) => m.priority === 'urgent');

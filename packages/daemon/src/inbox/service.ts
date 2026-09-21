@@ -4,7 +4,7 @@
  *
  * The list is **derived on every call** from records that already exist:
  *  - `questions/Q-*.yaml` with `status: open`          → `question`
- *  - `board/hil/HIL-*.yaml` with `status: pending`     → `gate`
+ *  - `gates/HIL-*.yaml` with `status: pending`     → `gate`
  *  - streams whose `agent.status` is `blocked`/`done`
  *    while `human.status` is still `open`              → `blocked` / `done`
  *
@@ -103,7 +103,7 @@ export class InboxService {
       context: inboxContext(
         `${gate.gate}: ${gate.summary ?? gate.reason ?? 'needs your decision'}`,
       ),
-      ref: `board/hil/${gate.id}.yaml`,
+      ref: `gates/${gate.id}.yaml`,
     };
   }
 

@@ -217,7 +217,7 @@ describe('feed page (Playwright e2e)', () => {
         // Seed one open HIL request before the daemon (and the page) ever
         // starts, so the page's initial snapshot already carries it.
         const seeded = await gates.request('classifier_review', {
-          policy: { gates: { classifier_review: 'human' }, breaker_signals: [] },
+          policy: store.getPolicy(),
           stream: ulid(),
         });
         expect(seeded.status).toBe('pending');
@@ -238,34 +238,31 @@ describe('feed page (Playwright e2e)', () => {
 
         // A synthetic event, appended after the page is live, must show up
         // in the feed within 1s (T020 acceptance criterion).
-        const ticketId = 'TKT-9001';
+        // T122: `agent_put` is the cheapest real store write left — the
+        // ticket writers went with the ceremony layer. Any event kind does:
+        // what is under test is the tail's latency, not the entity.
+        const agentId = 'eng-9001';
         const start = Date.now();
-        await store.putTicket({
-          id: ticketId,
-          title: 'Synthetic e2e event',
-          status: 'draft',
-          contract: { inputs: [], outputs: [], acceptance: [], done: [], env: 'clone' },
-          depends: [],
-          oracle_refs: [],
-          kb_refs: [],
-          history: [],
-          security: false,
+        await store.putAgent(agentId, {
+          vendor: 'claude',
+          model: 'claude-sonnet-4-5',
+          last_seen: new Date().toISOString(),
         });
 
-        const eventRow = page.locator('#events-body tr', { hasText: ticketId });
+        const eventRow = page.locator('#events-body tr', { hasText: agentId });
         await eventRow.waitFor({ state: 'attached', timeout: 1000 });
         const latencyMs = Date.now() - start;
         expect(latencyMs).toBeLessThan(1000);
         // Recorded for the pipeline report.
         console.log(`feed.e2e: live event latency ${latencyMs}ms`);
-        expect(await eventRow.textContent()).toContain('ticket_put');
+        expect(await eventRow.textContent()).toContain('agent_put');
 
         // Approve resolves the real hil_request the daemon's GateService owns.
         await hilItem.locator('button.approve').click();
         await hilItem.waitFor({ state: 'detached', timeout: PAGE_TIMEOUT_MS });
 
         const onDisk = store.getEntity(
-          `board/hil/${seeded.id}.yaml`,
+          `gates/${seeded.id}.yaml`,
           (v) => v as { status: string; decision: string; decided_by: string },
         );
         expect(onDisk.status).toBe('resolved');
@@ -311,20 +308,14 @@ describe('feed page (Playwright e2e)', () => {
 
         await page.goto(`http://127.0.0.1:${handle.http.port}/feed`);
 
-        const ticketId = 'TKT-9002';
-        await store.putTicket({
-          id: ticketId,
-          title: 'Race guard e2e event',
-          status: 'draft',
-          contract: { inputs: [], outputs: [], acceptance: [], done: [], env: 'clone' },
-          depends: [],
-          oracle_refs: [],
-          kb_refs: [],
-          history: [],
-          security: false,
+        const agentId = 'eng-9002';
+        await store.putAgent(agentId, {
+          vendor: 'claude',
+          model: 'claude-sonnet-4-5',
+          last_seen: new Date().toISOString(),
         });
 
-        const eventRow = page.locator('#events-body tr', { hasText: ticketId });
+        const eventRow = page.locator('#events-body tr', { hasText: agentId });
         // Arrives over the WS well within 1s, long before the delayed HTTP
         // fallback below resolves.
         await eventRow.waitFor({ state: 'attached', timeout: 1000 });

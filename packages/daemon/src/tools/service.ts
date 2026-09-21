@@ -1,17 +1,11 @@
 /**
  * `ToolService` — the one daemon-side object the `tool.*` RPC methods and
  * the in-process `createToolMcpServer` factory both call into (T011). Owns
- * the loaded registry, the runner, and wiring to `StateStore`/`Bus` for the
- * built-in verbs and the ledger.
+ * the loaded registry and the runner.
  */
 
 import { readFileSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
-import type { LedgerKind, TicketId } from '@agile-agents/shared';
-import type { Bus } from '../bus/bus';
-import { roleOf } from '../bus/routing';
-import type { StateStore } from '../store/store';
-import { BUILTIN_TOOLS, type BuiltinToolDeps } from './builtins';
 import { cacheEntryPath, cacheKey, readCacheEntry, sha256Hex, writeCacheEntry } from './cache';
 import { runReadSummary } from './read-summary';
 import { type ToolInputSpec, inputSpecFromToolIo } from './schema';
@@ -28,17 +22,15 @@ export class UnknownToolError extends Error {
 export interface ToolListEntry {
   name: string;
   description: string;
-  /** `builtin` (board_post/bus_send/ticket_get/oracle_get/kb_search) or `registry` (loaded from `.agile/tools/<name>/tool.yaml`). */
-  source: 'builtin' | 'registry' | 'provider';
+  /** `registry` (loaded from `.agile/tools/<name>/tool.yaml`) or `provider` (plugged in by the daemon). */
+  source: 'registry' | 'provider';
   /** Real per-field shape (review fix, T011) — see `schema.ts`'s header. RPC-safe: plain strings/booleans, no zod instances, so `tool.list` can ship it verbatim to a remote MCP bridge. */
   inputSpec: ToolInputSpec;
 }
 
 /**
- * Result of a path-based guard check — deliberately the same tiny shape
- * `qa/deny.ts`'s `QaReadDecision` uses (`{allow: true} | {allow: false,
- * reason}`), but this module has no QA-specific knowledge: `pathGuard` is a
- * plain function, wired by whoever constructs `ToolService`.
+ * Result of a path-based guard check. `pathGuard` is a plain function,
+ * wired by whoever constructs `ToolService`.
  */
 export type ToolPathGuardResult = { allow: true } | { allow: false; reason: string };
 export type ToolPathGuard = (ctx: ToolCallContext, absolutePath: string) => ToolPathGuardResult;
@@ -47,59 +39,47 @@ export type ToolPathGuard = (ctx: ToolCallContext, absolutePath: string) => Tool
 export class ToolPathDeniedError extends Error {}
 
 export interface ToolServiceOptions {
-  store: StateStore;
-  bus: Bus;
   registry: LoadedTool[];
   runner: ToolRunner;
   /** Repo root — the cache/raw-output host-local root (`cache.ts`), and the fallback worktree when a ticket has none on record yet. */
   repoRoot: string;
-  /** Resolves the current sprint id for cache TTL scoping (§7: "ttl: sprint"); `undefined` when no sprint is active. */
-  currentSprintId?: () => string | undefined;
-  /** Optional path-based guard consulted before a reader tool exposes file content (today: only `read_summary`'s `path`) — e.g. QA's contract-input/output deny list. This module stays role-agnostic; the daemon wires a role-specific closure at construction. */
+  /** Optional path-based guard consulted before a reader tool exposes file content (today: only `read_summary`'s `path`). This module stays caller-agnostic; whoever constructs the service wires the closure. */
   pathGuard?: ToolPathGuard;
 }
 
 /**
- * A role-scoped tool provider plugged into the service by the daemon at
- * startup (architect/EM/review/QA verbs live in their own areas — T014–T017).
- * `roles` restricts who sees and may call the provider's tools; the caller's
- * role is derived from the agent id like everywhere else (`roleOf`).
+ * A tool provider plugged into the service by the daemon at startup.
+ * `agents` restricts who sees and may call the provider's tools, by agent id;
+ * an empty list means every caller.
  */
 export interface ToolProvider {
-  roles: readonly string[];
+  agents: readonly string[];
   listTools(): Array<{ name: string; description: string; inputSpec: ToolInputSpec }>;
   callTool(ctx: ToolCallContext, name: string, input: unknown): Promise<unknown>;
 }
 
 export class ToolService {
   private readonly providers: ToolProvider[] = [];
-  private readonly store: StateStore;
-  private readonly bus: Bus;
   private readonly registry: LoadedTool[];
   private readonly runner: ToolRunner;
   private readonly repoRoot: string;
-  private readonly currentSprintId: () => string | undefined;
   private readonly pathGuard?: ToolPathGuard;
 
   constructor(opts: ToolServiceOptions) {
-    this.store = opts.store;
-    this.bus = opts.bus;
     this.registry = opts.registry;
     this.runner = opts.runner;
     this.repoRoot = opts.repoRoot;
-    this.currentSprintId = opts.currentSprintId ?? (() => undefined);
     this.pathGuard = opts.pathGuard;
   }
 
-  /** Plug a role-scoped provider in (idempotent by identity). */
+  /** Plug a provider in (idempotent by identity). */
   registerProvider(provider: ToolProvider): void {
     if (!this.providers.includes(provider)) this.providers.push(provider);
   }
 
   private providersFor(agent: string | undefined): ToolProvider[] {
     if (agent === undefined) return this.providers;
-    const role = roleOf(agent);
-    return this.providers.filter((p) => p.roles.includes(role) || p.roles.includes(agent));
+    return this.providers.filter((p) => p.agents.length === 0 || p.agents.includes(agent));
   }
 
   listTools(agent?: string): ToolListEntry[] {
@@ -111,35 +91,17 @@ export class ToolService {
         inputSpec: t.inputSpec,
       })),
     );
-    const builtins: ToolListEntry[] = BUILTIN_TOOLS.map((t) => ({
-      name: t.name,
-      description: t.description,
-      source: 'builtin',
-      inputSpec: t.inputSpec,
-    }));
     const registered: ToolListEntry[] = this.registry.map((t) => ({
       name: t.definition.name,
-      description: `${t.definition.kind} tool (${t.definition.action}); ledger_kind=${t.definition.ledger_kind}`,
+      description: `${t.definition.kind} tool (${t.definition.action})`,
       source: 'registry',
       inputSpec: inputSpecFromToolIo(t.definition.input),
     }));
-    return [...builtins, ...registered, ...provided];
+    return [...registered, ...provided];
   }
 
-  /** The ticket's worktree if one is on record, else the repo root — see `ReadSummaryOptions`/`RunTestRunOptions`'s worktree contract. */
-  private resolveWorktree(ctx: ToolCallContext): string {
-    if (ctx.ticket) {
-      try {
-        const ticket = this.store.getTicket(ctx.ticket as TicketId);
-        if (ticket.worktree) {
-          return isAbsolute(ticket.worktree)
-            ? ticket.worktree
-            : join(this.repoRoot, ticket.worktree);
-        }
-      } catch {
-        // No such ticket (yet), or no worktree recorded — fall back below.
-      }
-    }
+  /** Tools run at the repo root until a caller supplies a worktree of its own (T132 rewires this to the stream's worktree). */
+  private resolveWorktree(_ctx: ToolCallContext): string {
     return this.repoRoot;
   }
 
@@ -149,12 +111,6 @@ export class ToolService {
         return provider.callTool(ctx, name, input);
       }
     }
-    const builtin = BUILTIN_TOOLS.find((t) => t.name === name);
-    if (builtin) {
-      const deps: BuiltinToolDeps = { store: this.store, bus: this.bus };
-      return builtin.handler(deps, ctx, input);
-    }
-
     const loaded = this.registry.find((t) => t.definition.name === name);
     if (!loaded) throw new UnknownToolError(name);
 
@@ -174,11 +130,6 @@ export class ToolService {
       input: input as { command: string; cwd?: string },
       worktree,
       repoRoot: this.repoRoot,
-    });
-    await this.writeLedgerLine(ctx, loaded.definition.ledger_kind, {
-      model: '',
-      inTokens: 0,
-      outTokens: 0,
     });
     return output;
   }
@@ -213,13 +164,7 @@ export class ToolService {
         input: typedInput,
         worktree,
         repoRoot: this.repoRoot,
-        sprintId: this.currentSprintId(),
         runner: this.runner,
-      });
-      await this.writeLedgerLine(ctx, loaded.definition.ledger_kind, {
-        model: result.model,
-        inTokens: result.inTokens,
-        outTokens: result.outTokens,
       });
       return result.output;
     }
@@ -251,13 +196,10 @@ export class ToolService {
 
     const cachePath =
       keyFields.length > 0
-        ? cacheEntryPath(this.repoRoot, def.name, this.currentSprintId(), cacheKey(keyParts))
+        ? cacheEntryPath(this.repoRoot, def.name, cacheKey(keyParts))
         : undefined;
     const cached = cachePath ? readCacheEntry<unknown>(cachePath) : undefined;
-    if (cached !== undefined) {
-      await this.writeLedgerLine(ctx, def.ledger_kind, { model: '', inTokens: 0, outTokens: 0 });
-      return cached;
-    }
+    if (cached !== undefined) return cached;
 
     const result = await this.runner.run({
       tool: def,
@@ -273,46 +215,6 @@ export class ToolService {
       output = { text: result.text };
     }
     if (cachePath) writeCacheEntry(cachePath, output);
-    await this.writeLedgerLine(ctx, def.ledger_kind, {
-      model: result.model,
-      inTokens: result.inTokens,
-      outTokens: result.outTokens,
-    });
     return output;
-  }
-
-  /**
-   * DESIGN-GAP: §7's ledger example ("appendLedgerLine(sprint, {...,
-   * ledger_kind: tool.ledger_kind, tokens, cache})") names a `cache` field
-   * the shared `LedgerLineSchema` (T005, not owned by this ticket) doesn't
-   * have — only `in_tokens`/`out_tokens`/`cost_usd`. Rather than extend a
-   * file outside this ticket's granted ownership, "zero runner cost" is
-   * represented the way the existing schema already can: a cache hit writes
-   * `in_tokens: 0, out_tokens: 0, model: ''`, which is externally
-   * distinguishable from a real (however cheap) runner call without a new
-   * field. A literal `cache: hit/miss` marker is left for whoever next edits
-   * `ledger.ts`.
-   */
-  private async writeLedgerLine(
-    ctx: ToolCallContext,
-    kind: LedgerKind,
-    usage: { model: string; inTokens: number; outTokens: number },
-  ): Promise<void> {
-    const sprint = this.currentSprintId() ?? 'nosprint';
-    await this.store.appendLedgerLine(
-      sprint,
-      {
-        ts: new Date().toISOString(),
-        sprint,
-        ticket: ctx.ticket ?? '',
-        agent: ctx.agent,
-        model: usage.model,
-        in_tokens: usage.inTokens,
-        out_tokens: usage.outTokens,
-        cost_usd: 0,
-        kind,
-      },
-      { commit: 'deferred' },
-    );
   }
 }

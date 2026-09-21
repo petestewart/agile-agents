@@ -121,7 +121,7 @@ export function removeFile(path: string): void {
 export function listDataFiles(dirPath: string, extension: string): string[] {
   if (!existsSync(dirPath)) return [];
   // Sorted, numeric-aware: `readdirSync` returns filesystem order, which
-  // differs between ext4 (CI) and APFS/tmpfs (dev), so `listSprints()[0]`
+  // differs between ext4 (CI) and APFS/tmpfs (dev), so a caller taking the first entry
   // was `S-2` on CI and `S-1` locally. Numeric collation keeps `S-2` before
   // `S-10`.
   return readdirSync(dirPath)

@@ -34,7 +34,7 @@ describe('sha256Hex', () => {
 
 describe('cache read/write round trip', () => {
   test('a miss reads undefined; a write is read back exactly', () => {
-    const path = cacheEntryPath(repo, 'read_summary', 'S-01', cacheKey(['h', 'q']));
+    const path = cacheEntryPath(repo, 'read_summary', cacheKey(['h', 'q']));
     const data = { summary: 'x', refs: [{ path: 'a.ts', lines: '1-2' }] };
     expect(readCacheEntry<typeof data>(path)).toBeUndefined();
 
@@ -42,19 +42,8 @@ describe('cache read/write round trip', () => {
     expect(readCacheEntry<typeof data>(path)).toEqual(data);
   });
 
-  test('scopes under the sprint id, and `nosprint` when none is given', () => {
-    const key = cacheKey(['h', 'q']);
-    const withSprint = cacheEntryPath(repo, 'read_summary', 'S-01', key);
-    const noSprint = cacheEntryPath(repo, 'read_summary', undefined, key);
-    expect(withSprint).not.toBe(noSprint);
-    expect(noSprint).toContain('nosprint');
-
-    writeCacheEntry(withSprint, { summary: 'sprint-scoped' });
-    expect(readCacheEntry(noSprint)).toBeUndefined();
-  });
-
   test('a corrupted cache file reads as a miss, not a crash', () => {
-    const path = cacheEntryPath(repo, 'read_summary', undefined, 'deadbeef');
+    const path = cacheEntryPath(repo, 'read_summary', 'deadbeef');
     writeCacheEntry(path, 'placeholder'); // valid JSON so the dir exists
     Bun.write(path, '{not valid json');
     expect(readCacheEntry(path)).toBeUndefined();

@@ -21,7 +21,7 @@
  * this case), and `resolveHil` no longer deletes/acks the written message
  * on resolve — acking a bus message is T006's job (`bus/inbox/<agent>/
  * done/`), and T018's `GateService` may track the same request under its
- * own `board/hil/<id>.yaml` record. `requestHil` is injectable
+ * own `gates/<id>.yaml` record. `requestHil` is injectable
  * specifically so the manager can wire T018's `GateService` in as the
  * single owner of persistence/acking/timeout instead of this module's
  * default store-backed writer — this module then only needs the `{id}`

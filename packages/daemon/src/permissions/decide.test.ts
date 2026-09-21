@@ -300,7 +300,7 @@ describe('decidePermission — role table', () => {
     ).toBe('deny');
   });
 
-  // T041 — design §14 EM row: read "state via daemon"; write "sprints,
+  // T041 — design §14 EM row: read "state via daemon"; write "state,
   // assignments, policy proposals" (MCP verbs only, never a raw edit); run
   // "none"; network "none". This row exists because T041's resident EM chat
   // session is the first EM ACP session in the system.
@@ -329,7 +329,7 @@ describe('decidePermission — role table', () => {
   });
 
   test("em: the daemon's own MCP verbs are still allowed (that is how the EM works)", () => {
-    expect(decide('em', request('other', { title: 'mcp__agile__sprint_plan' })).kind).toBe('allow');
+    expect(decide('em', request('other', { title: 'mcp__agile__stream_new' })).kind).toBe('allow');
   });
 
   test('em: a never-without-human command is a hil verdict, not a silent allow', () => {
