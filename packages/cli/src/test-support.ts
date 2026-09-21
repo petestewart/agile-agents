@@ -23,6 +23,7 @@ import {
   QuestionService,
   type RpcServerHandle,
   StateStore,
+  StreamService,
   ToolService,
   buildBusRpcMethods,
   buildGateRpcMethods,
@@ -30,6 +31,7 @@ import {
   buildOracleRpcMethods,
   buildQuestionRpcMethods,
   buildStateRpcMethods,
+  buildStreamRpcMethods,
   buildSyncRpcMethods,
   buildToolRpcMethods,
   loadToolRegistry,
@@ -126,6 +128,7 @@ export async function startTestDaemon(prefix = 'agile-cli-test-'): Promise<TestD
     startedAt: Date.now(),
     extraMethods: {
       ...buildStateRpcMethods(store),
+      ...buildStreamRpcMethods(new StreamService(store)),
       ...buildBusRpcMethods(new Bus(store, init.stateRoot)),
       ...buildOracleRpcMethods(store),
       ...buildHaltRpcMethods(store),

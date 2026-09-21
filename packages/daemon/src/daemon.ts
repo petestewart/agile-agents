@@ -64,6 +64,7 @@ import { type RpcServerHandle, startRpcServer } from './rpc';
 import { Runner, buildRunnerRpcMethods, resolveCliBin } from './runner';
 import type { AgentSessionOptions } from './runner';
 import { StateStore, buildStateRpcMethods } from './store';
+import { StreamService, buildStreamRpcMethods } from './streams';
 import { DAEMON_CACHE_DIR } from './subprocess-env';
 import { HttpJiraClient, JiraSync, buildSyncRpcMethods, resolveJiraSettings } from './sync';
 import { LiveRunner, ToolService, buildToolRpcMethods, loadToolRegistry } from './tools';
@@ -669,6 +670,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
           ...buildHaltRpcMethods(store),
           ...buildGateRpcMethods(gateService),
           ...(questionService ? buildQuestionRpcMethods(questionService) : {}),
+          ...buildStreamRpcMethods(new StreamService(store)),
           ...buildHookRpcMethods(
             new HookService(store, bus, {
               repoRoot: config.repoRoot,

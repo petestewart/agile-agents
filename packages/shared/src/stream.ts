@@ -174,6 +174,16 @@ export const StreamSchema = z
     worktree: z.string().min(1).optional(),
     target_branch: z.string().min(1).optional(),
     created_at: z.string().min(1),
+    /**
+     * T120: archived streams stay on disk (archiving moves nothing —
+     * cockpit design §7.2's home layout has one file per stream and no
+     * archive directory); they are simply hidden from `stream.list` unless
+     * `include_archived` is set. A boolean rather than a fifth
+     * `human.status`, because archiving is orthogonal to where the human
+     * put the stream: a `landed` stream and a `closed` one are both
+     * archivable and both keep their status when they are.
+     */
+    archived: z.literal(true).optional(),
     agent: StreamAgentStateSchema,
     human: StreamHumanStateSchema,
     sessions: z.array(SessionRefSchema).default([]),
@@ -182,6 +192,31 @@ export const StreamSchema = z
 export type Stream = z.infer<typeof StreamSchema>;
 /** Pre-validation shape: `sessions` is optional on input (defaults to `[]`). */
 export type StreamInput = z.input<typeof StreamSchema>;
+
+/**
+ * What a caller may supply when *creating* a stream (T120). Everything the
+ * daemon owns — `id`, `created_at`, both status halves, `sessions`,
+ * `branch`/`worktree` (created on first attach, not on create) — is absent
+ * on purpose: the store mints them, so an RPC client cannot forge them.
+ */
+export const StreamCreateInputSchema = z
+  .object({
+    title: z.string().min(1),
+    goal: z.string().min(1),
+    parent: UlidSchema.optional(),
+    repo: z.string().min(1).optional(),
+    target_branch: z.string().min(1).optional(),
+  })
+  .strict();
+export type StreamCreateInput = z.infer<typeof StreamCreateInputSchema>;
+
+export function validateStreamCreateInput(input: unknown): StreamCreateInput {
+  const result = StreamCreateInputSchema.safeParse(input);
+  if (!result.success) {
+    throw new Error(formatZodError('StreamCreateInput', result.error));
+  }
+  return result.data;
+}
 
 export function validateStream(input: unknown): Stream {
   const result = StreamSchema.safeParse(input);

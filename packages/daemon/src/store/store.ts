@@ -48,11 +48,17 @@ import {
   type Sprint,
   type SprintId,
   type Stanza,
+  type Stream,
+  type StreamPrincipal,
+  type ThreadEntry,
   type Ticket,
   type TicketId,
   type TicketStatus,
+  UlidSchema,
   type VendorsConfig,
   type VendorsConfigInput,
+  assertNoStreamCycle,
+  assertStreamWrite,
   isLegalTransition,
   validateAgentRecord,
   validateEvent,
@@ -68,6 +74,8 @@ import {
   validateReposConfig,
   validateSprint,
   validateStanza,
+  validateStream,
+  validateThreadEntry,
   validateTicket,
   validateVendorsConfig,
 } from '@agile-agents/shared';
@@ -1198,6 +1206,185 @@ export class StateStore {
   async addRepo(name: string, entry: unknown): Promise<ReposConfig> {
     const next = { ...this.getRepos(), [name]: validateRepoEntry(entry) };
     return this.putRepos(next);
+  }
+
+  // ------------------------------------------------------ Streams + threads
+
+  /**
+   * T120 (cockpit design §2, §7.2): `streams/<id>.yaml` is the stream
+   * record and `threads/<id>.jsonl` its append-only thread. Same shape as
+   * the repo registry above — home-relative paths through `abs()`,
+   * validated on every read, one event per mutation — plus the two checks
+   * that are structural rather than schema-level: the two-writer split
+   * (`assertStreamWrite`, D11) and the parent-cycle check
+   * (`assertNoStreamCycle`, D1). Both live in shared as pure functions;
+   * this is the one place they are applied.
+   *
+   * No git, ever: a stream's `branch`/`worktree` are created on first
+   * attach (T130), not here, so a stream without a repo never touches a
+   * repository at all.
+   */
+  private streamRelPath(id: string): string {
+    return join('streams', `${this.streamIdSegment(id)}.yaml`);
+  }
+
+  private threadRelPath(id: string): string {
+    return join('threads', `${this.streamIdSegment(id)}.jsonl`);
+  }
+
+  /** A stream id is a ULID; reject anything else before it reaches a path. */
+  private streamIdSegment(id: string): string {
+    const result = UlidSchema.safeParse(id);
+    if (!result.success) {
+      throw new Error(`invalid Stream id: ${id} must be a 26-character Crockford-base32 ULID`);
+    }
+    return result.data;
+  }
+
+  /**
+   * §7.3: "A corrupt file is refused **with the path and the line number**,
+   * never silently defaulted." A YAML record has no one line to blame, so
+   * the path plus the validation error is the most a record read can say;
+   * `readThread` below does name the line.
+   */
+  private readStreamFile(absPath: string): Stream {
+    let raw: unknown;
+    try {
+      raw = readYamlFile(absPath);
+    } catch (err) {
+      throw new Error(
+        `corrupt stream file ${absPath}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+    try {
+      return validateStream(raw);
+    } catch (err) {
+      throw new Error(
+        `corrupt stream file ${absPath}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+
+  getStream(id: string): Stream {
+    const path = this.abs(this.streamRelPath(id));
+    if (!fileExists(path)) throw new NotFoundError('Stream', id);
+    return this.readStreamFile(path);
+  }
+
+  hasStream(id: string): boolean {
+    return fileExists(this.abs(this.streamRelPath(id)));
+  }
+
+  /** Every stream record in the home, oldest id first (ULIDs sort by time). */
+  listStreams(): Stream[] {
+    const dir = this.abs('streams');
+    return listDataFiles(dir, '.yaml')
+      .map((name) => this.readStreamFile(join(dir, name)))
+      .sort((a, b) => a.id.localeCompare(b.id));
+  }
+
+  /**
+   * Creates one stream. The caller supplies the whole record (the service
+   * mints `id`/`created_at`/both status halves); this validates it, refuses
+   * a duplicate id and a parent cycle, and mints `stream_created`.
+   */
+  async createStream(stream: unknown): Promise<Stream> {
+    return this.mutate(() => {
+      const validated = validateStream(stream);
+      const relPath = this.streamRelPath(validated.id);
+      if (fileExists(this.abs(relPath))) {
+        throw new Error(`Stream ${validated.id} already exists`);
+      }
+      assertNoStreamCycle(validated.id, validated.parent, (sid) => this.lookupStreamParent(sid));
+      writeYamlFileAtomic(this.abs(relPath), validated);
+      const event = buildEvent('stream_created', {
+        data: {
+          stream: validated.id,
+          ...(validated.parent !== undefined ? { parent: validated.parent } : {}),
+          ...(validated.repo !== undefined ? { repo: validated.repo } : {}),
+        },
+      });
+      return { result: validated, relPaths: [relPath], event };
+    });
+  }
+
+  private lookupStreamParent(id: string): string | undefined {
+    const path = this.abs(this.streamRelPath(id));
+    if (!fileExists(path)) return undefined;
+    return this.readStreamFile(path).parent;
+  }
+
+  /**
+   * Read-modify-write of one stream under the mutex, so the two-writer
+   * check sees the same `before` the write lands on. `mutator` returns the
+   * whole next record; `assertStreamWrite` decides whether this principal
+   * was allowed to change what it changed.
+   */
+  async updateStream(
+    principal: StreamPrincipal,
+    id: string,
+    mutator: (before: Stream) => Stream,
+    options: { kind?: 'stream_updated' | 'stream_closed' | 'stream_archived' } = {},
+  ): Promise<Stream> {
+    return this.mutate(() => {
+      const relPath = this.streamRelPath(id);
+      if (!fileExists(this.abs(relPath))) throw new NotFoundError('Stream', id);
+      const before = this.readStreamFile(this.abs(relPath));
+      const after = validateStream(mutator(before));
+      if (after.id !== before.id) {
+        throw new Error(`invalid Stream write: id ${before.id} may not change to ${after.id}`);
+      }
+      assertStreamWrite(principal, before, after);
+      assertNoStreamCycle(after.id, after.parent, (sid) =>
+        sid === after.id ? after.parent : this.lookupStreamParent(sid),
+      );
+      writeYamlFileAtomic(this.abs(relPath), after);
+      const event = buildEvent(options.kind ?? 'stream_updated', {
+        data: { stream: after.id, principal },
+      });
+      return { result: after, relPaths: [relPath], event };
+    });
+  }
+
+  /** Appends one validated entry to `threads/<stream>.jsonl`. */
+  async appendThreadEntry(streamId: string, entry: unknown): Promise<ThreadEntry> {
+    return this.mutate(() => {
+      const streamRel = this.streamRelPath(streamId);
+      if (!fileExists(this.abs(streamRel))) throw new NotFoundError('Stream', streamId);
+      const validated = validateThreadEntry(entry);
+      const relPath = this.threadRelPath(streamId);
+      appendJsonlLine(this.abs(relPath), validated);
+      const event = buildEvent('thread_appended', {
+        data: { stream: streamId, by: validated.by, entry_kind: validated.kind },
+      });
+      return { result: validated, relPaths: [relPath], event };
+    });
+  }
+
+  /**
+   * Reads the thread, validating every line and naming the file *and the
+   * line number* of the first bad one (§7.3). Missing file = empty thread,
+   * which is the normal state of a freshly created stream.
+   */
+  readThread(streamId: string): ThreadEntry[] {
+    const absPath = this.abs(this.threadRelPath(streamId));
+    if (!fileExists(absPath)) return [];
+    const lines = readFileSync(absPath, 'utf8').split('\n');
+    const entries: ThreadEntry[] = [];
+    for (let i = 0; i < lines.length; i++) {
+      const line = (lines[i] ?? '').trim();
+      if (line.length === 0) continue;
+      try {
+        entries.push(validateThreadEntry(JSON.parse(line)));
+      } catch (err) {
+        throw new Error(
+          `corrupt thread file ${absPath}:${i + 1}: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      }
+    }
+    return entries;
   }
 
   // -------------------------------------------------------- Generic entity
