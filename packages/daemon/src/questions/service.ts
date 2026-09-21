@@ -37,6 +37,9 @@ import {
 import { NotFoundError, type StateStore, buildEvent } from '../store';
 import type { StreamService } from '../streams/service';
 
+/** Session statuses that mean "there is still a process to answer to" (§2.3). */
+const LIVE_SESSION_STATUSES: readonly string[] = ['starting', 'running', 'idle'];
+
 /** `questions/` in the state home — a sibling of `streams/` and `threads/` (§7.2). */
 export const QUESTIONS_DIR = 'questions';
 
@@ -211,8 +214,16 @@ export class QuestionService {
       body: answer,
       ref: questionPath(saved.id),
     });
+    // T130 (Phase 2 Discovered Issues): back to `working` only if there is
+    // still a live session to go back to work. A question answered after
+    // the session exited (or on a stream that was never attached) leaves
+    // the stream `idle` — claiming an agent is working when no process
+    // exists is exactly the kind of lie the two-writer split exists to stop.
+    const liveSession = this.streams
+      .get(saved.stream)
+      .sessions.some((session) => LIVE_SESSION_STATUSES.includes(session.status));
     await this.streams.update('daemon', saved.stream, {
-      agent: { status: 'working' },
+      agent: { status: liveSession ? 'working' : 'idle' },
       human: { status: 'open' },
     });
 

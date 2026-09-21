@@ -442,7 +442,12 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
 
   const unsubscribe = spawned.on((event: AgentEvent) => {
     if (event.type === 'exit') {
-      void finish(`process exited (code ${event.exitCode})`, event.exitCode === 0);
+      // §2.3: "session exit ──► agent.status: done". A non-zero code is
+      // normal here — it is what a `agile detach` (SIGTERM) and an ended
+      // turn both look like — so the code goes in the reason, not into a
+      // `blocked` verdict. Only a transport error or a failed prompt, where
+      // the session never got to do its work, blocks the stream.
+      void finish(`process exited (code ${event.exitCode})`, true);
       return;
     }
     if (event.type === 'error') {

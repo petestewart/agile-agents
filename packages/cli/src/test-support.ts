@@ -32,6 +32,7 @@ import {
   buildQuestionRpcMethods,
   buildStateRpcMethods,
   buildStreamRpcMethods,
+  createFakeSpawn,
   runInit,
   startRpcServer,
 } from '@agile-agents/daemon';
@@ -128,7 +129,15 @@ export async function startTestDaemon(prefix = 'agile-cli-test-'): Promise<TestD
     streams: streamService,
     questions: questionService,
   });
-  const attachService = new AttachService({ store, streams: streamService, home, socketPath });
+  // `createFakeSpawn` (the `fake-agent.ts` transport) so an `attach` in a
+  // CLI test never spawns a real vendor and never needs a login.
+  const attachService = new AttachService({
+    store,
+    streams: streamService,
+    home,
+    socketPath,
+    spawn: createFakeSpawn(),
+  });
 
   const rpc = startRpcServer({
     socketPath,
@@ -180,6 +189,7 @@ export async function startTestDaemon(prefix = 'agile-cli-test-'): Promise<TestD
     streamService,
     home,
     async cleanup() {
+      await attachService.stopAll();
       await rpc.close();
       if (previousHome === undefined) Reflect.deleteProperty(process.env, 'AGILE_HOME');
       else process.env.AGILE_HOME = previousHome;

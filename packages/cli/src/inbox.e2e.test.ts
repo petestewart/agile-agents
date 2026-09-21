@@ -103,7 +103,9 @@ describe('agile inbox / agile answer against a daemon on a temp AGILE_HOME', () 
     expect(answered.out).toContain('answered');
 
     const after = daemon.streamService.get(child.id);
-    expect(after.agent.status).toBe('working');
+    // T130: nothing is attached to this stream, so answering hands it back
+    // to `idle` rather than claiming an agent is at work on it.
+    expect(after.agent.status).toBe('idle');
     expect(after.human.status).toBe('open');
 
     const entries: ThreadEntry[] = daemon.streamService.readThread(child.id).entries;
