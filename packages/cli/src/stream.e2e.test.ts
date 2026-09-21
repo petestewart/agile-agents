@@ -63,12 +63,13 @@ describe('agile stream against a daemon on a temp AGILE_HOME', () => {
 
     const listed = await cli(['stream', 'list']);
     expect(listed.code).toBe(0);
-    // Indented tree: the child line is indented under the root line.
+    // T128: a header row, then the indented tree under it.
     const lines = listed.out.split('\n');
-    expect(lines[0]).toContain(root.id);
-    expect(lines[0]).toContain('idle/open');
-    expect(lines[1]?.startsWith('  ')).toBe(true);
-    expect(lines[1]).toContain(child.id);
+    expect(lines[0]?.trimEnd().split(/\s{2,}/)).toEqual(['id', 'title', 'agent/human']);
+    expect(lines[1]).toContain(root.id);
+    expect(lines[1]).toContain('idle/open');
+    expect(lines[2]?.startsWith('  ')).toBe(true);
+    expect(lines[2]).toContain(child.id);
 
     expect((await cli(['stream', 'say', root.id, 'let us start with the tree'])).code).toBe(0);
 
@@ -76,7 +77,11 @@ describe('agile stream against a daemon on a temp AGILE_HOME', () => {
     expect(shown.code).toBe(0);
     expect(shown.out).toContain('Ship the cockpit');
     expect(shown.out).toContain('let us start with the tree');
-    expect(shown.out).toContain('created on first attach');
+    // T128: no repo, so `repo -` and no branch/worktree placeholders.
+    expect(shown.out).toMatch(/^repo\s+-$/m);
+    expect(shown.out).not.toContain('created on first attach');
+    expect(shown.out).not.toMatch(/^branch\s/m);
+    expect(shown.out).not.toMatch(/^worktree\s/m);
 
     const closed = await cli(['stream', 'close', root.id, '--note', 'parked']);
     expect(closed.code).toBe(0);
@@ -129,6 +134,12 @@ describe('agile stream against a daemon on a temp AGILE_HOME', () => {
     expect(stream.repo).toBe('alpha');
     expect(stream.branch).toBeUndefined();
     expect(existsSync(join(daemon.repo, '.worktrees'))).toBe(false);
+
+    // T128: with a repo the three git lines stay, placeholders and all.
+    const shown = await cli(['stream', 'show', stream.id]);
+    expect(shown.out).toMatch(/^repo\s+alpha$/m);
+    expect(shown.out).toMatch(/^branch\s+- \(created on first attach\)$/m);
+    expect(shown.out).toMatch(/^worktree\s+- \(created on first attach\)$/m);
   });
 
   test('archived streams drop out of list until --all', async () => {

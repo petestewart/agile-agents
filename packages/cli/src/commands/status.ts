@@ -12,6 +12,7 @@ import type { HilRequest, Question } from '@agile-agents/shared';
 import { RpcConnectionError, callRpc } from '../client';
 import { printFields, printJson, printTable } from '../format';
 import { type DaemonStatusReport, daemonStatusReport, formatDaemonStatus } from './daemon';
+import { STREAM_HEADERS, type StreamNode, streamRows } from './stream';
 
 export interface StatusResult {
   daemon: DaemonStatus;
@@ -19,6 +20,8 @@ export interface StatusResult {
   questions: Question[];
   /** Pending gates (`gates/` in the state home). */
   gates: HilRequest[];
+  /** Streams as `stream.list` returns them (archived excluded); `inFlight` narrows them for the human view (T128). */
+  streams: StreamNode[];
 }
 
 /** Degrade, don't throw: a daemon started before `agile init` keeps `agile status` working. */
@@ -34,11 +37,38 @@ async function fetchOrEmpty<T>(
   }
 }
 
+/**
+ * In flight = the human still has it: `open` or `waiting_on_you`. `closed`
+ * and `landed` are done, and archived never comes back from `stream.list`
+ * (§7.2). A dropped node's children are promoted, so an open child under a
+ * closed parent is still listed.
+ */
+export function inFlight(nodes: StreamNode[]): StreamNode[] {
+  const kept: StreamNode[] = [];
+  for (const node of nodes) {
+    const children = inFlight(node.children);
+    const status = node.stream.human.status;
+    if (status === 'open' || status === 'waiting_on_you') kept.push({ ...node, children });
+    else kept.push(...children);
+  }
+  return kept;
+}
+
+/** `stream.list` without `include_archived`: archived streams stay hidden (§7.2). */
+async function fetchStreams(socketPath: string): Promise<StreamNode[]> {
+  try {
+    return (await callRpc<{ tree: StreamNode[] }>(socketPath, 'stream.list', {})).tree;
+  } catch {
+    return [];
+  }
+}
+
 export async function fetchStatus(socketPath: string): Promise<StatusResult> {
   const daemon = await callRpc<DaemonStatus>(socketPath, 'daemon.status');
   const questions = await fetchOrEmpty<Question>(socketPath, 'question.list', { open: true });
   const gates = await fetchOrEmpty<HilRequest>(socketPath, 'gate.list');
-  return { daemon, questions, gates };
+  const streams = await fetchStreams(socketPath);
+  return { daemon, questions, gates, streams };
 }
 
 export function printStatusHuman(status: StatusResult): void {
@@ -49,8 +79,20 @@ export function printStatusHuman(status: StatusResult): void {
       `pid=${status.daemon.pid} version=${status.daemon.version} uptime=${status.daemon.uptime.toFixed(1)}s`,
     ],
     ['state', status.daemon.stateRoot],
-    ['needs you', String(pending.length + status.questions.length)],
   ]);
+  // T128: what is in flight, between the daemon block and the needs-you
+  // count — the same `id title agent/human` shape as `agile stream list`.
+  const rows = streamRows(inFlight(status.streams));
+  if (rows.length === 0) {
+    console.log('streams: (none open)');
+  } else {
+    console.log(`streams (${rows.length}):`);
+    printTable(
+      STREAM_HEADERS.map((h) => `  ${h}`),
+      rows.map((r) => [`  ${r[0] ?? ''}`, ...r.slice(1)]),
+    );
+  }
+  printFields([['needs you', String(pending.length + status.questions.length)]]);
   console.log('');
 
   if (pending.length === 0) {
