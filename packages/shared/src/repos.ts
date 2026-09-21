@@ -22,6 +22,12 @@ export const RepoEntrySchema = z
     protected_branches: z.array(z.string().min(1)).default([...DEFAULT_PROTECTED_BRANCHES]),
     /** Where streams in this repo land by default (an integration branch, if the repo has one). */
     target_branch: z.string().min(1).optional(),
+    /**
+     * T132, §8.2: raise a `land` gate before merging a stream in this repo.
+     * Off by default on purpose — "the button IS the decision", and a gate
+     * on top of a button is a confirmation dialog.
+     */
+    land_gate: z.boolean().optional(),
     /** Default vendor for sessions attached to streams in this repo. */
     vendor: z.string().min(1).optional(),
     /** Default model for those sessions (T130, D12) — second in the resolution order, after the `--model` flag. */

@@ -26,6 +26,7 @@ import { runBreakerClear, runGateList } from './commands/gate';
 import { parseHookArgs, runHook } from './commands/hook';
 import { runInbox } from './commands/inbox';
 import { runCliInit } from './commands/init';
+import { runLand } from './commands/land';
 import { runQuestionAnswer, runQuestionList, runQuestionRaise } from './commands/question';
 import { runRepoAdd, runRepoList } from './commands/repo';
 import { runStatus } from './commands/status';
@@ -63,6 +64,7 @@ function usage(): string {
     '  stream say <id> <text>     append one human line to the stream thread',
     '  attach <stream> [--vendor v] [--model m] [--effort low|medium|high|max] [--role worker]',
     '  detach <stream>            stop the live session on a stream',
+    '  land <stream>              merge the stream branch into its target, close the stream, remove the worktree',
     '  daemon start               start agiled detached (pidfile + log in the state home)',
     '  daemon stop                stop the running agiled',
     '  daemon status              is agiled running? pid, port, socket, home',
@@ -209,6 +211,10 @@ export async function runCli(argv: string[], cwd: string = process.cwd()): Promi
 
       case 'detach':
         return await runDetach(socketPath, parseArgs(rest.slice(1)), json);
+
+      // T132: landing — the human's merge (cockpit design §8.2).
+      case 'land':
+        return await runLand(socketPath, parseArgs(rest.slice(1)), json);
 
       case 'breaker':
         if (sub === 'clear') return await runBreakerClear(socketPath, parseArgs(restArgv), json);

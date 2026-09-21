@@ -23,6 +23,7 @@ import type { DelegateFn } from './gates';
 import { HookService, buildHookRpcMethods } from './hook';
 import { type HttpServerHandle, startHttpServer } from './http';
 import { InboxService, buildInboxRpcMethods } from './inbox';
+import { LandingService, buildLandingRpcMethods, wireLandGateResolution } from './landing';
 import { type LockHandle, acquireLock } from './lock';
 import { QuestionService, buildQuestionRpcMethods } from './questions';
 import { type RpcServerHandle, startRpcServer } from './rpc';
@@ -114,6 +115,18 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
   // `<home>/streams/<id>.docs/` — read-only, no index, no state of their own.
   const docsService =
     store && streamService ? new DocsService(store, streamService, config.stateRoot) : undefined;
+  // T132: the landing path (§8.2). A repo with `land_gate: true` raises its
+  // gate through the same `GateService`, and approving that gate is what
+  // performs the merge — hence the wiring call below.
+  const landingService =
+    store && streamService
+      ? new LandingService({
+          store,
+          streams: streamService,
+          ...(gateService ? { gates: gateService } : {}),
+        })
+      : undefined;
+  if (gateService && landingService) wireLandGateResolution(gateService, landingService);
   // Hoisted (T011) so `bus.*` RPC and the hook service share one `Bus`
   // instance over the same store.
   const bus = store ? new Bus(store, config.stateRoot, { now: options.now }) : undefined;
@@ -173,6 +186,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
           ...(streamService ? buildStreamRpcMethods(streamService) : {}),
           ...(inboxService ? buildInboxRpcMethods(inboxService) : {}),
           ...(docsService ? buildDocsRpcMethods(docsService) : {}),
+          ...(landingService ? buildLandingRpcMethods(landingService) : {}),
           ...buildHookRpcMethods(
             // T125: no repo root either — an agent record's worktree is
             // absolute in practice, and a relative one now fails closed

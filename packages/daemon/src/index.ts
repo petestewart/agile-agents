@@ -107,8 +107,8 @@ export * from './attach';
 // Agent session lifecycle and worktree manager (T012).
 export * from './runner';
 
-// Git plumbing for the landing path (T019).
-export * from './merge';
+// The landing path: git plumbing, LandingService, land.* RPC (T019/T132).
+export * from './landing';
 
 // Tier-0 sandbox: profiles, backend detection, sandbox-exec/container
 // renderers, wrapAgentCommand (T026).
