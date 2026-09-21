@@ -37,6 +37,14 @@ import { runQuestionAnswer, runQuestionList, runQuestionRaise } from './commands
 import { runRepoAdd, runRepoList } from './commands/repo';
 import { runSend } from './commands/send';
 import { runStatus } from './commands/status';
+import {
+  runStreamArchive,
+  runStreamClose,
+  runStreamList,
+  runStreamNew,
+  runStreamSay,
+  runStreamShow,
+} from './commands/stream';
 import { runSync } from './commands/sync';
 import { runTail } from './commands/tail';
 
@@ -56,6 +64,12 @@ function usage(): string {
     '  init                       create the state home ($AGILE_HOME, default ~/.agile/) if missing',
     '  repo add <path> [--name <n>] [--protected a,b] [--target-branch <b>] [--vendor <v>]',
     '  repo list                  list registered repos',
+    '  stream new --title <t> --goal <g> [--parent <id>] [--repo <name>] [--target-branch <b>]',
+    '  stream list [--all]        the stream tree (--all includes archived)',
+    '  stream show <id>           the record plus the last 20 thread lines',
+    '  stream close <id> [--note <text>]',
+    '  stream archive <id>        hide from `stream list` (nothing moves on disk)',
+    '  stream say <id> <text>     append one human line to the stream thread',
     '  daemon start               start agiled detached (pidfile + log in the state home)',
     '  daemon stop                stop the running agiled',
     '  daemon status              is agiled running? pid, port, socket, home',
@@ -202,6 +216,17 @@ export async function runCli(argv: string[], cwd: string = process.cwd()): Promi
       case 'repo':
         if (sub === 'list') return await runRepoList(socketPath, json);
         if (sub === 'add') return await runRepoAdd(socketPath, parseArgs(restArgv), json, cwd);
+        console.error(usage());
+        return 1;
+
+      // T120: streams — the reshape's unit of work (cockpit design §2).
+      case 'stream':
+        if (sub === 'new') return await runStreamNew(socketPath, parseArgs(restArgv), json);
+        if (sub === 'list') return await runStreamList(socketPath, parseArgs(restArgv), json);
+        if (sub === 'show') return await runStreamShow(socketPath, parseArgs(restArgv), json);
+        if (sub === 'close') return await runStreamClose(socketPath, parseArgs(restArgv), json);
+        if (sub === 'archive') return await runStreamArchive(socketPath, parseArgs(restArgv), json);
+        if (sub === 'say') return await runStreamSay(socketPath, parseArgs(restArgv), json);
         console.error(usage());
         return 1;
 

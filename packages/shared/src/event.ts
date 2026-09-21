@@ -139,6 +139,20 @@ export const EVENT_KINDS = [
   // `data`: `{decision, verdict: 'unchanged'|'updated'|'split', note?,
   // children?}`.
   'ticket_reexamined',
+  // T120 (cockpit design §7.4: "Event kinds reduce to: stream · thread ·
+  // session · question · gate · rule · hook · land"): the stream service's
+  // own mutations. Only the five the service actually emits are added here;
+  // T123 prunes the kinds the reshape leaves behind.
+  //  - `stream_created`  data: {stream, parent?, repo?}
+  //  - `stream_updated`  data: {stream, principal}
+  //  - `stream_closed`   data: {stream, principal}
+  //  - `stream_archived` data: {stream, principal}
+  //  - `thread_appended` data: {stream, by, entry_kind}
+  'stream_created',
+  'stream_updated',
+  'stream_closed',
+  'stream_archived',
+  'thread_appended',
   'merge_completed',
   'merge_conflict',
   'merge_tests_failed',

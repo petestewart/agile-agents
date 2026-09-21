@@ -1,0 +1,187 @@
+/**
+ * `agile stream new|list|show|close|say` (T120) — the CLI over the daemon's
+ * `stream.*` RPC (cockpit design §2). Thin, like `repo.ts`: parse argv,
+ * call one method, print human or `--json`.
+ *
+ * Every write here is the human's: the daemon stamps the `human` principal
+ * at the RPC edge and never accepts one from params (§2.2), so there is no
+ * `--as` flag and never will be one on this path.
+ */
+
+import type { Stream, ThreadEntry } from '@agile-agents/shared';
+import type { ParsedArgs } from '../args';
+import { hasFlag, optionalString, requireOption, requirePositional } from '../args';
+import { callRpc } from '../client';
+import { printFields, printJson } from '../format';
+
+interface StreamNode {
+  stream: Stream;
+  children: StreamNode[];
+}
+
+interface ThreadPage {
+  entries: ThreadEntry[];
+  from: number;
+  total: number;
+  next?: number;
+}
+
+/** `agent/human` status pair — the two halves the UI colours a dot from (§2.2). */
+function statusPair(stream: Stream): string {
+  return `${stream.agent.status}/${stream.human.status}${stream.archived ? ' (archived)' : ''}`;
+}
+
+export async function runStreamNew(
+  socketPath: string,
+  args: ParsedArgs,
+  json: boolean,
+): Promise<number> {
+  const title = requireOption(args.options, 'title');
+  const goal = requireOption(args.options, 'goal');
+  const parent = optionalString(args.options, 'parent');
+  const repo = optionalString(args.options, 'repo');
+  const targetBranch = optionalString(args.options, 'target-branch');
+
+  const stream = await callRpc<Stream>(socketPath, 'stream.create', {
+    title,
+    goal,
+    ...(parent !== undefined ? { parent } : {}),
+    ...(repo !== undefined ? { repo } : {}),
+    ...(targetBranch !== undefined ? { target_branch: targetBranch } : {}),
+  });
+
+  if (json) printJson(stream);
+  else console.log(`agile stream new: ${stream.id}  ${stream.title}`);
+  return 0;
+}
+
+function printTree(nodes: StreamNode[], depth: number): void {
+  for (const node of nodes) {
+    console.log(
+      `${'  '.repeat(depth)}${node.stream.id}  ${node.stream.title}  ${statusPair(node.stream)}`,
+    );
+    printTree(node.children, depth + 1);
+  }
+}
+
+/** `--all` includes archived streams (hidden by default, §7.2). */
+export async function runStreamList(
+  socketPath: string,
+  args: ParsedArgs,
+  json: boolean,
+): Promise<number> {
+  const includeArchived = hasFlag(args.options, 'all');
+  const result = await callRpc<{ tree: StreamNode[] }>(socketPath, 'stream.list', {
+    ...(includeArchived ? { include_archived: true } : {}),
+  });
+  if (json) {
+    printJson(result);
+    return 0;
+  }
+  if (result.tree.length === 0) {
+    console.log('streams: (none)');
+    return 0;
+  }
+  printTree(result.tree, 0);
+  return 0;
+}
+
+const SHOW_THREAD_LINES = 20;
+
+export async function runStreamShow(
+  socketPath: string,
+  args: ParsedArgs,
+  json: boolean,
+): Promise<number> {
+  const id = requirePositional(args, 0, 'stream-id');
+  const stream = await callRpc<Stream>(socketPath, 'stream.get', { id });
+  // Read the tail: ask for the total first, then the last N lines.
+  const head = await callRpc<ThreadPage>(socketPath, 'stream.thread_read', { id, limit: 1 });
+  const after = Math.max(0, head.total - SHOW_THREAD_LINES) - 1;
+  const page =
+    head.total <= SHOW_THREAD_LINES
+      ? await callRpc<ThreadPage>(socketPath, 'stream.thread_read', {
+          id,
+          limit: SHOW_THREAD_LINES,
+        })
+      : await callRpc<ThreadPage>(socketPath, 'stream.thread_read', {
+          id,
+          after,
+          limit: SHOW_THREAD_LINES,
+        });
+
+  if (json) {
+    printJson({ stream, thread: page });
+    return 0;
+  }
+
+  printFields([
+    ['id', stream.id],
+    ['title', stream.title],
+    ['goal', stream.goal],
+    ['status', statusPair(stream)],
+    ['parent', stream.parent ?? '-'],
+    ['repo', stream.repo ?? '- (no repo: nothing git-backed)'],
+    ['branch', stream.branch ?? '- (created on first attach)'],
+    ['worktree', stream.worktree ?? '- (created on first attach)'],
+    ['sessions', stream.sessions.length === 0 ? '-' : String(stream.sessions.length)],
+    ['created_at', stream.created_at],
+  ]);
+  console.log('');
+  console.log(`thread (${page.entries.length} of ${page.total}):`);
+  if (page.entries.length === 0) console.log('  (empty)');
+  for (const entry of page.entries) {
+    console.log(
+      `  ${entry.ts}  ${entry.by}  ${entry.kind}  ${entry.body}${entry.ref ? `  [${entry.ref}]` : ''}`,
+    );
+  }
+  return 0;
+}
+
+export async function runStreamClose(
+  socketPath: string,
+  args: ParsedArgs,
+  json: boolean,
+): Promise<number> {
+  const id = requirePositional(args, 0, 'stream-id');
+  const note = optionalString(args.options, 'note');
+  const stream = await callRpc<Stream>(socketPath, 'stream.close', {
+    id,
+    ...(note !== undefined ? { note } : {}),
+  });
+  if (json) printJson(stream);
+  else console.log(`agile stream close: ${stream.id} is ${stream.human.status}`);
+  return 0;
+}
+
+export async function runStreamArchive(
+  socketPath: string,
+  args: ParsedArgs,
+  json: boolean,
+): Promise<number> {
+  const id = requirePositional(args, 0, 'stream-id');
+  const stream = await callRpc<Stream>(socketPath, 'stream.archive', { id });
+  if (json) printJson(stream);
+  else console.log(`agile stream archive: ${stream.id} archived`);
+  return 0;
+}
+
+/** `agile stream say <id> <text>` — one human `line` on the thread. */
+export async function runStreamSay(
+  socketPath: string,
+  args: ParsedArgs,
+  json: boolean,
+): Promise<number> {
+  const id = requirePositional(args, 0, 'stream-id');
+  // Everything after the id is the text, so an unquoted sentence works.
+  const text = args.positionals.slice(1).join(' ').trim();
+  if (text.length === 0) throw new Error('agile stream say: <text> is required');
+  const entry = await callRpc<ThreadEntry>(socketPath, 'stream.thread_append', {
+    id,
+    kind: 'line',
+    body: text,
+  });
+  if (json) printJson(entry);
+  else console.log(`agile stream say: appended to ${id}`);
+  return 0;
+}

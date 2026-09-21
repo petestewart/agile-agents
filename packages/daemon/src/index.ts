@@ -103,6 +103,9 @@ export {
 // Gates policy, HIL requests, circuit breaker (T018).
 export * from './gates';
 
+// Streams: the reshape's unit of work — stream service + stream.* RPC (T120).
+export * from './streams';
+
 // Questions store (T040, §17 "Control room v2" — "Questions vs Decisions").
 export * from './questions';
 
