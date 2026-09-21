@@ -219,8 +219,8 @@ Build order: Phase 0 → 1 → 2 → 3 → 4 → 5 → 6. Within a phase, ticket
 
 ### Ticket: T128 ∥ CLI polish from Pete's Phase 2 look
 - **Priority:** P2
-- **Status:** Todo
-- **Owner:** —
+- **Status:** In Progress
+- **Owner:** opus:worker-T128
 - **Scope:** (1) `agile stream list` gets a header row (`id  title  agent/human`) like `inbox` has. (2) `agile status` adds one line per open stream (`id title agent/human`, tree-indented, archived hidden) between the daemon line and "needs you", so it answers "what is in flight". (3) `agile stream show` on a repo-less stream prints one line `repo -` and drops the branch/worktree placeholder lines; on a stream with a repo the three lines stay. (4) `inbox` age column becomes `age (ts)`: relative plus ISO time, and `--json` already carries `ts`. No new commands, no RPC changes except whatever `status` needs to list streams (reuse `stream.list`).
 - **Acceptance Criteria:** Each of the four has a CLI test asserting the printed shape; `stream.e2e`/`inbox.e2e` updated, not loosened.
 - **Validation Steps:** `bun test packages/cli`; `bun run test:integration`.
@@ -241,8 +241,8 @@ Build order: Phase 0 → 1 → 2 → 3 → 4 → 5 → 6. Within a phase, ticket
 
 ### Ticket: T131 Reviewer on demand
 - **Priority:** P0
-- **Status:** Todo
-- **Owner:** —
+- **Status:** In Progress
+- **Owner:** opus:worker-T131
 - **Scope:** `agile review <stream>` / a Review button spawns a reviewer session (read-only permission policy, worktree as cwd) with `briefs/reviewer.md`; its findings go to the thread as `finding` entries and to `agent.findings` as structured items `{ severity, file, line?, text }`. Findings are input to lessons (T141). Optional auto-review on `agent.status: done` per repo setting.
 - **Acceptance Criteria:** A reviewer cannot write in the worktree (hook deny proven by test); findings appear on the stream page.
 - **Validation Steps:** `bun test packages/daemon/src/runner`; e2e.
@@ -250,8 +250,8 @@ Build order: Phase 0 → 1 → 2 → 3 → 4 → 5 → 6. Within a phase, ticket
 
 ### Ticket: T132 Landing
 - **Priority:** P0
-- **Status:** Todo
-- **Owner:** —
+- **Status:** In Progress
+- **Owner:** opus:worker-T132
 - **Scope:** `agile land <stream>` / Land button: raises a `land` gate if the repo policy asks for one (default: no gate, the button is the decision), runs diff-level rules (T152, no-op until then), merges the stream branch `--no-ff` into `target_branch` (default from `repos.yaml`, else the repo's default branch), closes the stream (`human.status: landed`), removes the worktree, keeps the branch. If the stream has a parent with a repo, landing a child merges into the parent's branch instead.
 - **Acceptance Criteria:** Conflict on merge: stream goes `agent.status: blocked` with the conflict files in the thread and the worktree kept; no partial merge. Child-into-parent path tested.
 - **Validation Steps:** `bun test packages/daemon/src/merge` (renamed `landing`).
@@ -259,8 +259,8 @@ Build order: Phase 0 → 1 → 2 → 3 → 4 → 5 → 6. Within a phase, ticket
 
 ### Ticket: T133 ∥ Brief assembly
 - **Priority:** P1
-- **Status:** Todo
-- **Owner:** —
+- **Status:** In Progress
+- **Owner:** opus:worker-T133
 - **Scope:** `runner/brief.ts` builds a session's first turn from: `briefs/worker.md` or `reviewer.md`, the stream goal and ancestors' goals, the last N thread entries, repo docs (T134), and accepted rules in scope (T140; empty until then). Token ceiling test kept. Fold the useful architect/oracle/QA brief text into `worker.md`.
 - **Acceptance Criteria:** Snapshot tests for both briefs; the ceiling test; a rule out of scope never appears.
 - **Validation Steps:** `bun test packages/daemon/src/runner/brief.test.ts packages/daemon/src/briefs`.
