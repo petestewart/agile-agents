@@ -7,7 +7,7 @@
 
 import { z } from 'zod';
 import { formatZodError } from './ids';
-import { LedgerKindSchema } from './ledger';
+
 import { TicketTierSchema } from './ticket';
 
 /**
@@ -78,7 +78,7 @@ export const ToolDefinitionSchema = z
     input: ToolIoSchema.default({}),
     output: ToolIoSchema.default({}),
     cache: ToolCacheSchema.optional(),
-    ledger_kind: LedgerKindSchema,
+
     promote_to_kb: PromoteToKbSchema,
   })
   .strict();

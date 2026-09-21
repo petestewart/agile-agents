@@ -193,8 +193,6 @@ export interface AgentExitInfo {
   ticket: TicketId;
   /** Human-readable reason recorded on the ticket's history and the escalate message. */
   reason: string;
-  /** Whether the ticket was actually transitioned back to `ready` (false if it wasn't in a live status any more — already reviewed/QA'd/done out from under the exit). */
-  ticketReadied: boolean;
 }
 
 export interface AgentSessionHandle {
@@ -572,18 +570,6 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
     // write still in flight, not just the most recently started one.
     await Promise.all([...pendingWrites]);
 
-    let ticketReadied = false;
-    try {
-      const current = store.getTicket(ticket);
-      const LIVE_STATUSES = new Set(['assigned', 'in_progress', 'in_review', 'in_qa', 'blocked']);
-      if (LIVE_STATUSES.has(current.status)) {
-        await store.transitionTicket(ticket, 'ready', { by: agentId, reason });
-        ticketReadied = true;
-      }
-    } catch {
-      // Ticket vanished or transition illegal from under us — nothing to ripple back.
-    }
-
     // T044 (QA round 1, finding 4): this notice is the DAEMON's, not the
     // agent's — the agent is gone, and the daemon is reporting that. It used
     // to go out `from: agentId`, which made `pipeline-glue.ts`'s
@@ -617,7 +603,7 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
     // due, and a caller that tears down the worktree/repo right after
     // `exited` races that timer into a "not a git repository" failure.
     await store.flush();
-    resolveExited({ agentId, ticket, reason, ticketReadied });
+    resolveExited({ agentId, ticket, reason });
   }
 
   const unsubscribe = session.on((event: AgentEvent) => {

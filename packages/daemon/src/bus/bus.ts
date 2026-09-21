@@ -424,10 +424,6 @@ export class Bus {
         body: `agent ${id} unresponsive since ${record.last_seen} (liveness timeout) on ${ticket}`,
         now,
       });
-      await this.store.transitionTicket(ticket, 'ready', {
-        by: 'daemon',
-        reason: `liveness timeout: ${id} unresponsive since ${record.last_seen}`,
-      });
       await this.store.deleteAgent(id as AgentId);
       escalations.push({ agent: id as AgentId, ticket });
     }

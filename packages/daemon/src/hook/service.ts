@@ -49,7 +49,6 @@ import {
   type Ticket,
   type TicketId,
   type TicketStatus,
-  validateMergeRecord,
 } from '@agile-agents/shared';
 import type { Bus } from '../bus';
 import type { PermissionRole } from '../permissions';
@@ -489,35 +488,6 @@ export class HookService {
         : JSON.stringify(payload.tool_response ?? '');
     const bytes = Buffer.byteLength(responseText, 'utf8');
     const oversized = bytes > this.limits.maxReadBytes;
-
-    let agentRecord: { model: string; vendor: string } | undefined;
-    try {
-      agentRecord = this.store.getAgent(ctx.agent);
-    } catch {
-      // No registry entry yet — ledger line still gets written with
-      // "unknown", never skipped (usage must still be recorded).
-    }
-
-    let sprint = '';
-    try {
-      sprint = this.store.getTicket(ctx.ticket).sprint ?? '';
-    } catch {
-      // Ticket vanished between context resolution and here — sprint stays ''.
-    }
-
-    await this.store.appendLedgerLine(sprint, {
-      ts: this.now().toISOString(),
-      sprint,
-      ticket: ctx.ticket,
-      agent: ctx.agent,
-      model: agentRecord?.model ?? 'unknown',
-      in_tokens: 0,
-      // Signal-over-volume rule (CLAUDE.md): tokens approximated by chars/4
-      // (session brief), never the raw output itself.
-      out_tokens: Math.ceil(responseText.length / 4),
-      cost_usd: 0,
-      kind: 'engineer',
-    });
 
     const decision: HookDecision = oversized
       ? {

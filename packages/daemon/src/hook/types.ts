@@ -12,7 +12,7 @@
  * `hook_decision` event) the decision implies.
  */
 
-import type { AgentId, Halt, Message, TicketBudget, TicketId } from '@agile-agents/shared';
+import type { AgentId, Message, TicketBudget, TicketId } from '@agile-agents/shared';
 import type { PermissionRole } from '../permissions';
 
 /** The three decision outcomes a Claude PreToolUse hook can render (spike-findings.md §B; `spike/permission-matrix.ts:119`). */

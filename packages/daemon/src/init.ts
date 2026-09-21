@@ -126,8 +126,7 @@ const READ_SUMMARY_TOOL: ToolDefinition = starterToolDefinition({
   runner: { tier: 'trivial', max_output_tokens: 400 },
   input: { path: 'string', question: 'string?' },
   output: { summary: 'string', refs: '[{path, lines}]' },
-  cache: { key: ['file_hash', 'question'], ttl: 'sprint' },
-  ledger_kind: 'reader',
+  cache: { key: ['file_hash', 'question'], ttl: 'content-hash' },
   promote_to_kb: 'optional',
 });
 
@@ -162,7 +161,6 @@ const TEST_RUN_TOOL: ToolDefinition = starterToolDefinition({
     summary: 'string',
     exit_code: 'number',
   },
-  ledger_kind: 'reader',
   promote_to_kb: 'never',
 });
 
@@ -204,17 +202,10 @@ export const PRODUCT_MD_STUB =
 function layoutFiles(stateRoot: string): Array<[string, string]> {
   const p = (...parts: string[]) => join(stateRoot, ...parts);
   return [
-    [p('oracle', 'product.md'), PRODUCT_MD_STUB],
-    [p('oracle', 'decisions', '.gitkeep'), ''],
-    [p('oracle', 'specs', '.gitkeep'), ''],
-    [p('oracle', 'index.yaml'), '{}\n'],
-    [p('oracle', 'changelog.md'), '# Oracle changelog\n\n(append-only)\n'],
-    [p('knowledge', 'facts', '.gitkeep'), ''],
-    [p('knowledge', 'index.yaml'), '{}\n'],
-    [p('tickets', '.gitkeep'), ''],
-    [p('board', 'status', '.gitkeep'), ''],
-    [p('board', 'halts', '.gitkeep'), ''],
-    [p('sprints', '.gitkeep'), ''],
+    [p('gates', '.gitkeep'), ''],
+    [p('streams', '.gitkeep'), ''],
+    [p('threads', '.gitkeep'), ''],
+    [p('questions', '.gitkeep'), ''],
     [p('policy.yaml'), stringifyYaml(defaultPolicy())],
     [p('vendors.yaml'), stringifyYaml(defaultVendorsConfig())],
     // T111: the repos this daemon serves. Empty until `agile repo add`.
@@ -223,7 +214,6 @@ function layoutFiles(stateRoot: string): Array<[string, string]> {
     ...starterToolFiles(p('tools'), READ_SUMMARY_TOOL, READ_SUMMARY_PROMPT),
     ...starterToolFiles(p('tools'), TEST_RUN_TOOL, TEST_RUN_PROMPT),
     [p('rules', '.gitkeep'), ''],
-    [p('ledger', '.gitkeep'), ''],
     [p('log', 'events.jsonl'), ''],
     [p('bus', 'inbox', '.gitkeep'), ''],
     [p('bus', 'threads', '.gitkeep'), ''],

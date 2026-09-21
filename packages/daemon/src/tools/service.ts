@@ -93,7 +93,7 @@ export class ToolService {
     );
     const registered: ToolListEntry[] = this.registry.map((t) => ({
       name: t.definition.name,
-      description: `${t.definition.kind} tool (${t.definition.action}); ledger_kind=${t.definition.ledger_kind}`,
+      description: `${t.definition.kind} tool (${t.definition.action})`,
       source: 'registry',
       inputSpec: inputSpecFromToolIo(t.definition.input),
     }));

@@ -15,7 +15,7 @@
  *  4. No default delegate: without one injected, an `em`/`architect`-owned
  *     gate (or a timed-out `human_timeout` gate) stays `pending` with
  *     `reason: "no delegate configured"` instead of auto-approving.
- *  6. `list()`/`tick()`/`get()` read `board/hil/**` from disk via the new
+ *  6. `list()`/`tick()`/`get()` read `gates/**` from disk via the new
  *     `StateStore.listEntities`, so they survive a daemon restart — no more
  *     in-process-only index.
  *
@@ -47,11 +47,11 @@ import { parseDurationMs } from './duration';
 import { resolveGate } from './resolve';
 import { humanTimeoutDuration, isHumanTimeoutOwner } from './types';
 
-const HIL_DIR = 'board/hil';
-// Sibling of board/hil/, board/halts/, board/status/ — deliberately NOT
-// nested under board/hil/ so `StateStore.listEntities(HIL_DIR, ...)` never
+const HIL_DIR = 'gates';
+// A sibling of `gates/`, deliberately NOT
+// nested inside it so `StateStore.listEntities(HIL_DIR, ...)` never
 // has to special-case it (review nit).
-const BREAKER_PATH = 'board/breaker.yaml';
+const BREAKER_PATH = 'breaker.yaml';
 const NO_DELEGATE_REASON = 'no delegate configured';
 /** `reason` on a pending request an async delegate is still deciding. */
 export const DELEGATE_DECIDING_REASON = 'delegate deciding';
@@ -662,7 +662,7 @@ export class GateService {
     }
   }
 
-  /** Durable: reads `board/hil/**` fresh from disk every call (review finding 6). */
+  /** Durable: reads `gates/**` fresh from disk every call (review finding 6). */
   list(): HilRequest[] {
     return this.store.listEntities(HIL_DIR, validateHilRequest);
   }
