@@ -210,8 +210,8 @@ Build order: Phase 0 → 1 → 2 → 3 → 4 → 5 → 6. Within a phase, ticket
 
 ### Ticket: T127 Daemon start fails fast on a busy port
 - **Priority:** P1
-- **Status:** Todo
-- **Owner:** —
+- **Status:** In Progress
+- **Owner:** opus:worker-T127
 - **Scope:** Pete's Phase 2 hand test (2026-09-21): with a stale `agiled` from another home holding 4600, `agile daemon start` waits the full 20 s for a pidfile, then reports "no pidfile … see the log", and the log's whole content is `Failed to start server. Is port 4600 in use?`. Make the daemon's bind failure a typed error that names the port and, when a pidfile in *any* home cannot be known, the `lsof -nP -iTCP:<port> -sTCP:LISTEN` line to run; have the child write that reason where `daemon start` reads it (the log is fine) and have `daemon start` stop waiting the moment the child exits, printing the reason, the home's `config.yaml` `port` key and `AGILE_PORT` as the way to run a second daemon. `daemon status` and `agile status` stay as they are.
 - **Acceptance Criteria:** With the port held by another process, `agile daemon start` exits non-zero in under 2 s with a message that names the port, the way to find its holder and the way to pick another. Unit test with a listener on a free port; lifecycle e2e unchanged.
 - **Validation Steps:** `bun test packages/cli packages/daemon/src/daemon`; `bun run test:integration`.
