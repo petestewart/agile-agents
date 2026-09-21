@@ -2,7 +2,6 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { Ticket } from '@agile-agents/shared';
 import { Bus } from '../bus';
 import { GateService } from '../gates';
 import { runInit } from '../init';
@@ -40,8 +39,21 @@ afterEach(() => {
   rmSync(repo, { recursive: true, force: true });
 });
 
-/** T122: the hook resolves from the agent registry alone; ticket files are gone. */
-async function seedTicket(_overrides: Partial<Ticket> = {}): Promise<void> {}
+/**
+ * T122: a hook call resolves from the agent registry alone — ticket files
+ * are gone with the ceremony layer — so the fixture is an `AgentRecord`
+ * whose worktree contains the call's cwd.
+ */
+async function seedTicket(): Promise<void> {
+  await store.putAgent('eng-1', {
+    vendor: 'claude',
+    model: 'claude-sonnet-4-5',
+    role: 'engineer',
+    ticket: 'TKT-0001',
+    worktree: join('.worktrees', 'TKT-0001'),
+    last_seen: new Date().toISOString(),
+  });
+}
 
 describe('hook.* RPC round trip (via dispatch)', () => {
   test('hook.pre_tool_use returns the exact Claude output JSON', async () => {
