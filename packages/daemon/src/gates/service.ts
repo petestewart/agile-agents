@@ -471,7 +471,7 @@ export class GateService {
    * A human (or anyone acting as the resolved owner) answers a pending
    * request directly. `note` is the free text typed on the Needs-you card
    * (T039, §17 "Control room v2"): it is persisted on the record, carried on
-   * the `hil_resolved` event, and delivered as an `hil_response` bus message
+   * the `gate_resolved` event, and delivered as an `hil_response` bus message
    * to the agent that is waiting on the gate and to the EM.
    */
   async respond(id: HilId, decision: HilDecision, by: string, note?: string): Promise<HilRequest> {
