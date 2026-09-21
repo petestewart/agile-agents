@@ -209,3 +209,44 @@ describe('HookService — heartbeat preserves agent identity across the coalesci
 // `buildContext` actually resolves and forwards `ctx.denyReadPaths` for a
 // QA session, and that a Claude ABSOLUTE `file_path` under the clone is
 // correctly matched against the ticket's repo-relative contract globs.
+
+// T125: the daemon no longer derives a repo root from its own cwd
+// (`config.ts`), so `HookService` may be built without one. A *relative*
+// `worktree` on an agent record then has nothing to resolve against, and the
+// hook path's first rule applies — "unresolvable ⇒ DENY" (cockpit design
+// §8.1, fail closed). The alternative, resolving it against whatever
+// directory `agiled` happened to be started in, would authorize a tool call
+// from a directory nobody registered.
+describe('HookService without a repoRoot (T125)', () => {
+  test('a relative worktree is unresolvable and denies, rather than resolving against the daemon cwd', async () => {
+    await store.putAgent(
+      'eng-1',
+      agentRecord({ role: 'engineer', worktree: '.worktrees/TKT-0001' }),
+    );
+    const svc = new HookService(store, bus, {});
+
+    const result = await svc.preToolUse({
+      cwd: worktree,
+      tool_name: 'Read',
+      tool_input: { file_path: join(worktree, 'README.md') },
+    });
+
+    expect(result.hookSpecificOutput.permissionDecision).toBe('deny');
+    expect(result.hookSpecificOutput.permissionDecisionReason).toMatch(
+      /not a registered ticket worktree/,
+    );
+  });
+
+  test('an absolute worktree still resolves without a repoRoot', async () => {
+    await store.putAgent('eng-1', agentRecord({ role: 'engineer', worktree }));
+    const svc = new HookService(store, bus, {});
+
+    const result = await svc.preToolUse({
+      cwd: worktree,
+      tool_name: 'Read',
+      tool_input: { file_path: join(worktree, 'README.md') },
+    });
+
+    expect(result.hookSpecificOutput.permissionDecision).toBe('allow');
+  });
+});

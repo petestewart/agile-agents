@@ -101,7 +101,7 @@ export async function runCli(argv: string[], cwd: string = process.cwd()): Promi
   const [command, sub, ...restArgv] = rest;
 
   if (command === 'init') {
-    console.log(runCliInit(cwd).message);
+    console.log(runCliInit().message);
     return 0;
   }
 
@@ -111,7 +111,7 @@ export async function runCli(argv: string[], cwd: string = process.cwd()): Promi
         // Internal: the detached child re-invokes itself with this flag and
         // *is* the daemon. Never typed by an operator.
         if (rest.includes('--foreground')) {
-          await runDaemonForeground(cwd);
+          await runDaemonForeground();
           return 0;
         }
         console.log(await runDaemonStart({ cwd }));

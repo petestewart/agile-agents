@@ -408,7 +408,6 @@ describe('control room shell (Playwright e2e)', () => {
         });
 
         handle = await startDaemon({
-          cwd: repo,
           port: 0,
           socketPath: join(repo, '.agile-daemon.sock'),
         });
@@ -419,7 +418,12 @@ describe('control room shell (Playwright e2e)', () => {
           .locator('.cr-needs-you')
           .waitFor({ state: 'attached', timeout: PAGE_TIMEOUT_MS });
 
-        expect(await page.locator('.cr-project').textContent()).toBe(repo.split('/').pop() ?? '');
+        // T125: the daemon has no repo root any more — it starts from any
+        // cwd and serves every *registered* repo — so the snapshot carries
+        // no `project` and the top bar falls back to its own name rather
+        // than showing whatever directory `agiled` was launched in.
+        // T130/T131 re-key this to the stream's registered repo.
+        expect(await page.locator('.cr-project').textContent()).toBe('agile');
         expect(await page.locator('.cr-needs-you').textContent()).toContain('2');
         const body = (await page.locator('.cr-root').textContent()) ?? '';
         expect(body).toContain(seeded.id);

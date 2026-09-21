@@ -38,11 +38,33 @@ export type ToolPathGuard = (ctx: ToolCallContext, absolutePath: string) => Tool
 /** Thrown when `pathGuard` denies a reader tool's path (today: `read_summary`) — QA round fix: `read_summary` reads the file itself and returns a summary of it, so it would otherwise bypass the raw-`Read` contract-input/output deny list (§13) by another door. */
 export class ToolPathDeniedError extends Error {}
 
+/**
+ * Thrown when a registry tool needs a repo to run in and the service has
+ * none (T125). The daemon no longer infers a repo from its own cwd, so a
+ * `ToolService` built without an explicit root refuses the repo-dependent
+ * verbs with a reason instead of running them somewhere arbitrary. T132
+ * resolves the worktree per call from the calling agent's stream.
+ */
+export class ToolRepoUnavailableError extends Error {
+  constructor(toolName: string) {
+    super(
+      `${toolName}: no repo is attached to this daemon — tools that read or run inside a repo need one (register it with \`agile repo add\` and call from a stream attached to it)`,
+    );
+    this.name = 'ToolRepoUnavailableError';
+  }
+}
+
 export interface ToolServiceOptions {
   registry: LoadedTool[];
   runner: ToolRunner;
-  /** Repo root — the cache/raw-output host-local root (`cache.ts`), and the fallback worktree when a ticket has none on record yet. */
-  repoRoot: string;
+  /**
+   * Repo root — the cache/raw-output host-local root (`cache.ts`), and the
+   * fallback worktree when a ticket has none on record yet. T125: optional,
+   * because the daemon no longer derives one from its own cwd. Without it
+   * every registry tool refuses with `ToolRepoUnavailableError`; providers
+   * (which bring their own context) are unaffected.
+   */
+  repoRoot?: string;
   /** Optional path-based guard consulted before a reader tool exposes file content (today: only `read_summary`'s `path`). This module stays caller-agnostic; whoever constructs the service wires the closure. */
   pathGuard?: ToolPathGuard;
 }
@@ -62,7 +84,7 @@ export class ToolService {
   private readonly providers: ToolProvider[] = [];
   private readonly registry: LoadedTool[];
   private readonly runner: ToolRunner;
-  private readonly repoRoot: string;
+  private readonly repoRoot: string | undefined;
   private readonly pathGuard?: ToolPathGuard;
 
   constructor(opts: ToolServiceOptions) {
@@ -101,7 +123,13 @@ export class ToolService {
   }
 
   /** Tools run at the repo root until a caller supplies a worktree of its own (T132 rewires this to the stream's worktree). */
-  private resolveWorktree(_ctx: ToolCallContext): string {
+  private resolveWorktree(_ctx: ToolCallContext, toolName: string): string {
+    return this.requireRepoRoot(toolName);
+  }
+
+  /** The repo root, or a refusal naming the tool (T125). */
+  private requireRepoRoot(toolName: string): string {
+    if (this.repoRoot === undefined) throw new ToolRepoUnavailableError(toolName);
     return this.repoRoot;
   }
 
@@ -125,11 +153,12 @@ export class ToolService {
     ctx: ToolCallContext,
     input: unknown,
   ): Promise<unknown> {
-    const worktree = this.resolveWorktree(ctx);
+    const toolName = loaded.definition.name;
+    const worktree = this.resolveWorktree(ctx, toolName);
     const output = await runTestRun({
       input: input as { command: string; cwd?: string },
       worktree,
-      repoRoot: this.repoRoot,
+      repoRoot: this.requireRepoRoot(toolName),
     });
     return output;
   }
@@ -147,7 +176,7 @@ export class ToolService {
     input: unknown,
   ): Promise<unknown> {
     if (loaded.definition.name === 'read_summary') {
-      const worktree = this.resolveWorktree(ctx);
+      const worktree = this.resolveWorktree(ctx, loaded.definition.name);
       const typedInput = input as { path: string; question?: string };
       if (this.pathGuard) {
         const absPath = isAbsolute(typedInput.path)
@@ -163,7 +192,7 @@ export class ToolService {
         ctx,
         input: typedInput,
         worktree,
-        repoRoot: this.repoRoot,
+        repoRoot: this.requireRepoRoot(loaded.definition.name),
         runner: this.runner,
       });
       return result.output;
@@ -185,7 +214,9 @@ export class ToolService {
         }
         return sha256Hex(
           readFileSync(
-            isAbsolute(pathValue) ? pathValue : join(this.resolveWorktree(ctx), pathValue),
+            isAbsolute(pathValue)
+              ? pathValue
+              : join(this.resolveWorktree(ctx, def.name), pathValue),
             'utf8',
           ),
         );
@@ -196,7 +227,7 @@ export class ToolService {
 
     const cachePath =
       keyFields.length > 0
-        ? cacheEntryPath(this.repoRoot, def.name, cacheKey(keyParts))
+        ? cacheEntryPath(this.requireRepoRoot(def.name), def.name, cacheKey(keyParts))
         : undefined;
     const cached = cachePath ? readCacheEntry<unknown>(cachePath) : undefined;
     if (cached !== undefined) return cached;
@@ -205,7 +236,7 @@ export class ToolService {
       tool: def,
       prompt: loaded.prompt,
       input: rawInput,
-      cwd: this.resolveWorktree(ctx),
+      cwd: this.resolveWorktree(ctx, def.name),
       maxOutputTokens: def.runner.max_output_tokens,
     });
     let output: unknown;

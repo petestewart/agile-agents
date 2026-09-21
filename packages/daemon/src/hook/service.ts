@@ -120,7 +120,17 @@ export interface StopHookOutput {
 }
 
 export interface HookServiceOptions {
-  repoRoot: string;
+  /**
+   * T125: optional. The daemon no longer derives a repo root from its own
+   * cwd (`config.ts`), so this is only set by a caller that genuinely has
+   * one in hand. Without it a *relative* `worktree` on an agent record
+   * cannot be resolved, and the hook fails closed — the call is
+   * unattributable and denied with `UNRESOLVED_CWD_REASON`, same as any
+   * other cwd this daemon can't place. T130/T131 re-key agent records to
+   * their stream's registered repo, at which point the resolution stops
+   * needing a root at all.
+   */
+  repoRoot?: string;
   limits?: HookLimits;
   /** Injectable for tests; defaults to `node:fs.statSync`. */
   fileSize?: (path: string) => number | undefined;
@@ -174,10 +184,17 @@ export class HookService {
     this.now = options.now ?? (() => new Date());
   }
 
-  /** Resolves an absolute worktree path, `undefined`-safe, relative to `repoRoot`. */
+  /**
+   * Resolves an absolute worktree path, `undefined`-safe. A relative path
+   * needs a `repoRoot` to resolve against; without one (T125) it stays
+   * unresolved rather than being resolved against the daemon's cwd, and the
+   * caller treats that as "not a registered ticket worktree".
+   */
   private absWorktree(worktree: string | undefined): string | undefined {
     if (worktree === undefined) return undefined;
-    return isAbsolute(worktree) ? worktree : resolve(this.options.repoRoot, worktree);
+    if (isAbsolute(worktree)) return worktree;
+    const repoRoot = this.options.repoRoot;
+    return repoRoot === undefined ? undefined : resolve(repoRoot, worktree);
   }
 
   /**
@@ -245,7 +262,10 @@ export class HookService {
       // regardless of that ticket's current status — a `done`/`ready`
       // ticket here is normal, not a stale/crashed registration the way it
       // would be for the other three roles.
-      const worktreePath = this.absWorktree(chosen.record.worktree) ?? this.options.repoRoot;
+      // Always defined: `covering` only keeps records whose worktree this
+      // resolved above. Fail closed rather than substitute a root.
+      const worktreePath = this.absWorktree(chosen.record.worktree);
+      if (worktreePath === undefined) return undefined;
       return {
         agent: chosen.id as AgentId,
         ticket: ticketId,

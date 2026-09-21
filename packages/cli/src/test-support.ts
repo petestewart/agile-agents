@@ -11,7 +11,8 @@
  * listeners per test would slow the suite for no coverage gained.
  */
 
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -36,6 +37,46 @@ import {
   startRpcServer,
 } from '@agile-agents/daemon';
 import { RpcConnectionError, callRpc } from './client';
+
+/**
+ * A port nothing is listening on right now: bind `0`, read what the OS
+ * handed out, close. Test-only.
+ *
+ * T125: an e2e that starts a **real** `agiled` has to override the built-in
+ * default port (4600), or two suites running at once on one machine — a
+ * second worker's `test:integration`, or an operator's own daemon — collide
+ * on the bind and the test fails for a reason that has nothing to do with
+ * what it is testing.
+ */
+export function freePort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const server = createServer();
+    server.on('error', reject);
+    server.listen(0, '127.0.0.1', () => {
+      const address = server.address();
+      if (address === null || typeof address === 'string') {
+        server.close();
+        reject(new Error('could not resolve a free port'));
+        return;
+      }
+      const { port } = address;
+      server.close(() => resolve(port));
+    });
+  });
+}
+
+/**
+ * Writes `port: <free port>` into `<home>/config.yaml` and returns it, so a
+ * real daemon started against that home binds somewhere nothing else is
+ * (T125). Creates the home if it does not exist yet — this runs before
+ * `agile init`.
+ */
+export async function writeFreePortConfig(home: string): Promise<number> {
+  const port = await freePort();
+  mkdirSync(home, { recursive: true });
+  writeFileSync(join(home, 'config.yaml'), `port: ${port}\n`);
+  return port;
+}
 
 export interface TestDaemon {
   repo: string;

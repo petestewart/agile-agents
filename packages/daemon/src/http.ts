@@ -19,7 +19,7 @@
  * Jira route families along with the subsystems behind them.
  */
 
-import { dirname, join } from 'node:path';
+import { join } from 'node:path';
 import {
   type HilDecision,
   HilIdSchema,
@@ -55,10 +55,12 @@ export interface HttpServerOptions {
   version: string;
   stateRoot: string;
   /**
-   * T111: the repo this daemon was started from. The state home is no
-   * longer `<repoRoot>/.agile`, so the repo root can't be derived from
-   * `stateRoot` any more — routes that need it (the ticket diff, the top
-   * bar's project block) take it from here.
+   * T111: a repo root for the routes that need one (the ticket diff, the
+   * top bar's project block). T125: the daemon no longer has one — it
+   * starts from any cwd and serves every registered repo — so this is
+   * absent in practice and those routes simply omit the repo-derived
+   * payload rather than guessing a directory. T130/T131 re-key them to the
+   * stream's registered repo.
    */
   repoRoot?: string;
   startedAt: number;
@@ -431,13 +433,7 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
       if (url.pathname === '/api/snapshot') {
         if (!feed) return errorResponse(503, 'state store not initialised (run `agile init`)');
         return jsonResponse(
-          buildSnapshot(
-            feed.store,
-            feed.gates,
-            undefined,
-            feed.questions,
-            options.repoRoot ?? dirname(options.stateRoot),
-          ),
+          buildSnapshot(feed.store, feed.gates, undefined, feed.questions, options.repoRoot),
         );
       }
 
@@ -506,13 +502,7 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
           ws.subscribe(FEED_WS_TOPIC);
           ws.send(
             JSON.stringify(
-              buildSnapshot(
-                feed.store,
-                feed.gates,
-                undefined,
-                feed.questions,
-                options.repoRoot ?? dirname(options.stateRoot),
-              ),
+              buildSnapshot(feed.store, feed.gates, undefined, feed.questions, options.repoRoot),
             ),
           );
         }

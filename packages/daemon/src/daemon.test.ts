@@ -34,7 +34,6 @@ afterEach(async () => {
 describe('startDaemon', () => {
   test('acquires the lock, and /health serves version + stateRoot', async () => {
     handle = await startDaemon({
-      cwd: repo,
       port: 0,
       socketPath: join(repo, '.agile-daemon.sock'),
     });
@@ -48,18 +47,16 @@ describe('startDaemon', () => {
 
   test('a second daemon for the same repo fails with a clear lock error', async () => {
     handle = await startDaemon({
-      cwd: repo,
       port: 0,
       socketPath: join(repo, '.agile-daemon.sock'),
     });
     await expect(
-      startDaemon({ cwd: repo, port: 0, socketPath: join(repo, '.agile-daemon.sock') }),
+      startDaemon({ port: 0, socketPath: join(repo, '.agile-daemon.sock') }),
     ).rejects.toThrow(/already running/);
   });
 
   test('graceful shutdown removes the lock and closes the listeners', async () => {
     handle = await startDaemon({
-      cwd: repo,
       port: 0,
       socketPath: join(repo, '.agile-daemon.sock'),
     });
@@ -77,7 +74,6 @@ describe('startDaemon', () => {
 
   test('stop() is idempotent', async () => {
     handle = await startDaemon({
-      cwd: repo,
       port: 0,
       socketPath: join(repo, '.agile-daemon.sock'),
     });
@@ -87,13 +83,11 @@ describe('startDaemon', () => {
 
   test('after shutdown, a fresh daemon can start for the same repo', async () => {
     handle = await startDaemon({
-      cwd: repo,
       port: 0,
       socketPath: join(repo, '.agile-daemon.sock'),
     });
     await handle.stop();
     handle = await startDaemon({
-      cwd: repo,
       port: 0,
       socketPath: join(repo, '.agile-daemon.sock'),
     });

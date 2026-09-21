@@ -11,8 +11,12 @@ export interface CliInitResult {
   alreadyInitialised: boolean;
 }
 
-export function runCliInit(cwd: string = process.cwd()): CliInitResult {
-  const { home } = discoverConfig({ cwd });
+/**
+ * T125: takes no cwd. The home is the only input, and it comes from
+ * `$AGILE_HOME`/the default — `agile init` works from any directory.
+ */
+export function runCliInit(): CliInitResult {
+  const { home } = discoverConfig();
   const result = runInit(home);
   return {
     message: `agile init: state home ${result.home} ready (${result.filesWritten.length} files written)`,

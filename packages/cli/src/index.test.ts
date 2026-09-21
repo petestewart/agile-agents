@@ -34,7 +34,7 @@ afterEach(() => {
 
 describe('runCliInit', () => {
   test('creates the state home and never a .agile/ inside the repo', () => {
-    const result = runCliInit(repo);
+    const result = runCliInit();
     expect(result.message).toContain(home);
     expect(result.alreadyInitialised).toBe(false);
     expect(existsSync(join(home, 'repos.yaml'))).toBe(true);
@@ -42,8 +42,8 @@ describe('runCliInit', () => {
   });
 
   test('a second call is an idempotent no-op', () => {
-    runCliInit(repo);
-    const result = runCliInit(repo);
+    runCliInit();
+    const result = runCliInit();
     expect(result.alreadyInitialised).toBe(true);
   });
 });
