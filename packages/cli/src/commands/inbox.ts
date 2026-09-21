@@ -20,6 +20,14 @@ export function ageOf(ts: string, now: number = Date.now()): string {
   return `${Math.floor(hours / 24)}d`;
 }
 
+/**
+ * The `age (ts)` cell: the coarse age plus the exact ISO timestamp, so the
+ * human view carries what `--json` already carries in `ts` (T128).
+ */
+export function ageWithTs(ts: string, now: number = Date.now()): string {
+  return `${ageOf(ts, now)} (${ts})`;
+}
+
 export async function runInbox(socketPath: string, json: boolean): Promise<number> {
   const result = await callRpc<{ items: InboxItem[] }>(socketPath, 'inbox.list', {});
   if (json) {
@@ -31,11 +39,11 @@ export async function runInbox(socketPath: string, json: boolean): Promise<numbe
     return 0;
   }
   printTable(
-    ['kind', 'stream', 'age', 'context', 'id'],
+    ['kind', 'stream', 'age (ts)', 'context', 'id'],
     result.items.map((item) => [
       item.kind,
       item.stream_path.join(' / '),
-      ageOf(item.ts),
+      ageWithTs(item.ts),
       item.context,
       item.id,
     ]),

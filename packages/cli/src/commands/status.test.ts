@@ -30,6 +30,18 @@ async function seedQuestion(): Promise<void> {
   });
 }
 
+async function capture(fn: () => Promise<void>): Promise<string[]> {
+  const lines: string[] = [];
+  const original = console.log;
+  console.log = (...args: unknown[]) => lines.push(args.join(' '));
+  try {
+    await fn();
+  } finally {
+    console.log = original;
+  }
+  return lines;
+}
+
 describe('fetchStatus', () => {
   test('reports the running daemon and empty queues on a fresh home', async () => {
     const status = await fetchStatus(daemon.socketPath);
@@ -47,6 +59,47 @@ describe('fetchStatus', () => {
 });
 
 describe('printStatusHuman', () => {
+  /** T128: the in-flight streams sit between the daemon block and `needs you`. */
+  test('lists the open streams between the daemon block and needs you', async () => {
+    const root = await daemon.streamService.create('human', {
+      title: 'Ship the cockpit',
+      goal: 'do the thing',
+    });
+    const child = await daemon.streamService.create('human', {
+      title: 'Design the tree',
+      goal: 'a tree',
+      parent: root.id,
+    });
+    const gone = await daemon.streamService.create('human', {
+      title: 'Archive me',
+      goal: 'gone',
+    });
+    await daemon.streamService.archive('human', gone.id);
+
+    const lines = await capture(async () => printStatusHuman(await fetchStatus(daemon.socketPath)));
+    const streamsAt = lines.findIndex((l) => l.startsWith('streams ('));
+    const needsAt = lines.findIndex((l) => l.startsWith('needs you'));
+    const stateAt = lines.findIndex((l) => l.startsWith('state'));
+    expect(stateAt).toBeLessThan(streamsAt);
+    expect(streamsAt).toBeLessThan(needsAt);
+    expect(lines[streamsAt]).toBe('streams (2):');
+    expect(lines[streamsAt + 1]).toContain('id');
+    expect(lines[streamsAt + 1]).toContain('agent/human');
+    expect(lines[streamsAt + 2]).toContain(root.id);
+    expect(lines[streamsAt + 2]).toContain('idle/open');
+    // The child is indented one level deeper than its parent.
+    expect(lines[streamsAt + 3]).toContain(child.id);
+    const indent = (l: string) => l.length - l.trimStart().length;
+    expect(indent(lines[streamsAt + 3] ?? '')).toBeGreaterThan(indent(lines[streamsAt + 2] ?? ''));
+    // Archived stays hidden.
+    expect(lines.join('\n')).not.toContain(gone.id);
+  });
+
+  test('says so when no stream is open', async () => {
+    const lines = await capture(async () => printStatusHuman(await fetchStatus(daemon.socketPath)));
+    expect(lines.join('\n')).toContain('streams: (none open)');
+  });
+
   test('names the empty queues rather than printing nothing', async () => {
     const lines: string[] = [];
     const original = console.log;

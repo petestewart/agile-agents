@@ -12,10 +12,10 @@ import type { Stream, ThreadEntry } from '@agile-agents/shared';
 import type { ParsedArgs } from '../args';
 import { hasFlag, optionalString, requireOption, requirePositional } from '../args';
 import { callRpc } from '../client';
-import { printFields, printJson } from '../format';
+import { printFields, printJson, printTable } from '../format';
 import { formatSession } from './attach';
 
-interface StreamNode {
+export interface StreamNode {
   stream: Stream;
   children: StreamNode[];
 }
@@ -56,14 +56,25 @@ export async function runStreamNew(
   return 0;
 }
 
-function printTree(nodes: StreamNode[], depth: number): void {
+/**
+ * Flattens the tree into `id title agent/human` rows, the indentation
+ * carried in the id cell so the table still reads as a tree (T128).
+ */
+export function streamRows(nodes: StreamNode[], depth = 0): string[][] {
+  const rows: string[][] = [];
   for (const node of nodes) {
-    console.log(
-      `${'  '.repeat(depth)}${node.stream.id}  ${node.stream.title}  ${statusPair(node.stream)}`,
-    );
-    printTree(node.children, depth + 1);
+    rows.push([
+      `${'  '.repeat(depth)}${node.stream.id}`,
+      node.stream.title,
+      statusPair(node.stream),
+    ]);
+    rows.push(...streamRows(node.children, depth + 1));
   }
+  return rows;
 }
+
+/** The header the tree and `agile status`'s stream block share (T128). */
+export const STREAM_HEADERS = ['id', 'title', 'agent/human'];
 
 /** `--all` includes archived streams (hidden by default, §7.2). */
 export async function runStreamList(
@@ -83,11 +94,37 @@ export async function runStreamList(
     console.log('streams: (none)');
     return 0;
   }
-  printTree(result.tree, 0);
+  printTable(STREAM_HEADERS, streamRows(result.tree));
   return 0;
 }
 
 const SHOW_THREAD_LINES = 20;
+
+/**
+ * The `stream show` field block. A repo-less stream can never gain a branch
+ * or a worktree, so it prints `repo -` and nothing else git-shaped (T128);
+ * with a repo, all three lines stay, placeholders and all.
+ */
+export function showFields(stream: Stream): Array<[string, string]> {
+  const fields: Array<[string, string]> = [
+    ['id', stream.id],
+    ['title', stream.title],
+    ['goal', stream.goal],
+    ['status', statusPair(stream)],
+    ['parent', stream.parent ?? '-'],
+  ];
+  if (stream.repo === undefined) {
+    fields.push(['repo', '-']);
+  } else {
+    fields.push(
+      ['repo', stream.repo],
+      ['branch', stream.branch ?? '- (created on first attach)'],
+      ['worktree', stream.worktree ?? '- (created on first attach)'],
+    );
+  }
+  fields.push(['created_at', stream.created_at]);
+  return fields;
+}
 
 export async function runStreamShow(
   socketPath: string,
@@ -116,17 +153,7 @@ export async function runStreamShow(
     return 0;
   }
 
-  printFields([
-    ['id', stream.id],
-    ['title', stream.title],
-    ['goal', stream.goal],
-    ['status', statusPair(stream)],
-    ['parent', stream.parent ?? '-'],
-    ['repo', stream.repo ?? '- (no repo: nothing git-backed)'],
-    ['branch', stream.branch ?? '- (created on first attach)'],
-    ['worktree', stream.worktree ?? '- (created on first attach)'],
-    ['created_at', stream.created_at],
-  ]);
+  printFields(showFields(stream));
   console.log('');
   // T130: the sessions strip — `id vendor/model effort status`, one line each.
   console.log(`sessions (${stream.sessions.length}):`);

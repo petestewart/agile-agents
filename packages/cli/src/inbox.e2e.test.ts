@@ -79,6 +79,13 @@ describe('agile inbox / agile answer against a daemon on a temp AGILE_HOME', () 
     expect(listed.out).toContain('ledger-lite / parser');
     expect(listed.out).toContain('comma or semicolon');
     expect(listed.out).toContain(question.id);
+    // T128: the age column is `age (ts)` — relative age plus the ISO time.
+    const header = listed.out
+      .split('\n')[0]
+      ?.trimEnd()
+      .split(/\s{2,}/);
+    expect(header).toEqual(['kind', 'stream', 'age (ts)', 'context', 'id']);
+    expect(listed.out).toContain(`(${question.raised_at})`);
 
     const asJson = await cli(['inbox', '--json']);
     const items = (JSON.parse(asJson.out) as { items: InboxItem[] }).items;
