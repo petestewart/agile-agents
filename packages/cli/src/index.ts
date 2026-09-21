@@ -29,6 +29,7 @@ import { runCliInit } from './commands/init';
 import { runLand } from './commands/land';
 import { runQuestionAnswer, runQuestionList, runQuestionRaise } from './commands/question';
 import { runRepoAdd, runRepoList } from './commands/repo';
+import { runReview } from './commands/review';
 import { runStatus } from './commands/status';
 import {
   runStreamArchive,
@@ -62,7 +63,8 @@ function usage(): string {
     '  stream close <id> [--note <text>]',
     '  stream archive <id>        hide from `stream list` (nothing moves on disk)',
     '  stream say <id> <text>     append one human line to the stream thread',
-    '  attach <stream> [--vendor v] [--model m] [--effort low|medium|high|max] [--role worker]',
+    '  attach <stream> [--vendor v] [--model m] [--effort low|medium|high|max] [--role worker|reviewer]',
+    '  review <stream> [--vendor v] [--model m] [--effort ...]   read-only reviewer session',
     '  detach <stream>            stop the live session on a stream',
     '  land <stream>              merge the stream branch into its target, close the stream, remove the worktree',
     '  daemon start               start agiled detached (pidfile + log in the state home)',
@@ -215,6 +217,9 @@ export async function runCli(argv: string[], cwd: string = process.cwd()): Promi
       // T132: landing — the human's merge (cockpit design §8.2).
       case 'land':
         return await runLand(socketPath, parseArgs(rest.slice(1)), json);
+      // T131: a reviewer is a second, read-only session (cockpit design §4.2).
+      case 'review':
+        return await runReview(socketPath, parseArgs(rest.slice(1)), json);
 
       case 'breaker':
         if (sub === 'clear') return await runBreakerClear(socketPath, parseArgs(restArgv), json);

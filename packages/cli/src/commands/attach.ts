@@ -42,11 +42,8 @@ export async function runAttach(
   if (effort !== undefined && !(EFFORT_LEVELS as readonly string[]).includes(effort)) {
     throw new Error(`--effort must be one of ${EFFORT_LEVELS.join(', ')}, got ${effort}`);
   }
-  // T131 lands the reviewer's read-only policy; until then attaching one
-  // would run a reviewer under the worker's permissions, which is worse
-  // than refusing.
-  if (role !== undefined && role !== 'worker') {
-    throw new Error(`--role ${role} is not supported yet (T131); only --role worker`);
+  if (role !== undefined && role !== 'worker' && role !== 'reviewer') {
+    throw new Error(`--role must be worker or reviewer, got ${role}`);
   }
 
   const result = await callRpc<AttachResult>(socketPath, 'attach.start', {

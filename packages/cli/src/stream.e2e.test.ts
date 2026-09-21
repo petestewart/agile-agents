@@ -209,10 +209,11 @@ describe('agile attach (T130) on a no-repo stream, against the fake driver', () 
     expect((await cli(['detach', stream.id])).code).toBe(0);
   }, 20_000);
 
-  test('rejects an effort outside the D12 enum and a role other than worker, without calling the daemon', async () => {
+  test('rejects an effort outside the D12 enum and an unknown role, without calling the daemon', async () => {
     const stream = await newStream('Plan something else');
     expect((await cli(['attach', stream.id, '--effort', 'extreme'])).code).toBe(1);
-    expect((await cli(['attach', stream.id, '--role', 'reviewer'])).code).toBe(1);
+    // T131 made `reviewer` a real role; anything else is still refused here.
+    expect((await cli(['attach', stream.id, '--role', 'architect'])).code).toBe(1);
     const shown = await cli(['stream', 'show', stream.id, '--json']);
     expect((JSON.parse(shown.out) as { stream: Stream }).stream.sessions.length).toBe(0);
   });
