@@ -259,12 +259,12 @@ Build order: Phase 0 → 1 → 2 → 3 → 4 → 5 → 6. Within a phase, ticket
 
 ### Ticket: T133 ∥ Brief assembly
 - **Priority:** P1
-- **Status:** In Progress
+- **Status:** Done
 - **Owner:** opus:worker-T133
 - **Scope:** `runner/brief.ts` builds a session's first turn from: `briefs/worker.md` or `reviewer.md`, the stream goal and ancestors' goals, the last N thread entries, repo docs (T134), and accepted rules in scope (T140; empty until then). Token ceiling test kept. Fold the useful architect/oracle/QA brief text into `worker.md`.
 - **Acceptance Criteria:** Snapshot tests for both briefs; the ceiling test; a rule out of scope never appears.
 - **Validation Steps:** `bun test packages/daemon/src/runner/brief.test.ts packages/daemon/src/briefs`.
-- **Notes:** —
+- **Notes:** Branch `T133-brief-assembly`. `buildBrief`: role brief → goal → ancestor goals root→leaf → rules in scope ("none yet" when empty) → docs → last 20 thread entries; `BRIEF_CHAR_CEILING = 24_000`, trims thread oldest-first then doc bodies, never goal or rules; `rulesInScope` (global / path prefix / glob, `*` does not cross `/`) applied inside `buildBrief`. `worker.md` absorbs the old architect/engineer/QA text; `reviewer.md` rewritten (it still had mustache fields). `briefs/template.ts` deleted. Docs wired from T134's `DocsService` through `AttachService` (one additive line in `daemon.ts`, accepted). Review (sonnet) PASS with 1 nit (rules rendered before docs, contrary to the note; harmless). 43 pass in scope; `bun test` 1284 pass / 0 fail. merge: 2d48f63.
 
 ### Ticket: T134 ∥ Docs per repo and per stream
 - **Priority:** P2
