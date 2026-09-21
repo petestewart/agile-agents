@@ -208,6 +208,24 @@ Build order: Phase 0 → 1 → 2 → 3 → 4 → 5 → 6. Within a phase, ticket
 - **Validation Steps:** `bun test packages/daemon/src/streams packages/cli`.
 - **Notes:** Branch `T126-phase2-rough-edges`. Typed `StreamCycleError` (shared, beside its throw site), `AlreadyExistsError`, `UnknownParentStreamError`, `UnknownRepoError` mapped to -32602 at the edge; `close --note` appends `closed: <note>` to the thread; `agile status` shares `daemon status`'s not-running sentence. Review (sonnet) PASS. Full `bun test` 1283 pass / 2 skip / 0 fail. merge: 6490b26.
 
+### Ticket: T127 Daemon start fails fast on a busy port
+- **Priority:** P1
+- **Status:** Todo
+- **Owner:** —
+- **Scope:** Pete's Phase 2 hand test (2026-09-21): with a stale `agiled` from another home holding 4600, `agile daemon start` waits the full 20 s for a pidfile, then reports "no pidfile … see the log", and the log's whole content is `Failed to start server. Is port 4600 in use?`. Make the daemon's bind failure a typed error that names the port and, when a pidfile in *any* home cannot be known, the `lsof -nP -iTCP:<port> -sTCP:LISTEN` line to run; have the child write that reason where `daemon start` reads it (the log is fine) and have `daemon start` stop waiting the moment the child exits, printing the reason, the home's `config.yaml` `port` key and `AGILE_PORT` as the way to run a second daemon. `daemon status` and `agile status` stay as they are.
+- **Acceptance Criteria:** With the port held by another process, `agile daemon start` exits non-zero in under 2 s with a message that names the port, the way to find its holder and the way to pick another. Unit test with a listener on a free port; lifecycle e2e unchanged.
+- **Validation Steps:** `bun test packages/cli packages/daemon/src/daemon`; `bun run test:integration`.
+- **Notes:** —
+
+### Ticket: T128 ∥ CLI polish from Pete's Phase 2 look
+- **Priority:** P2
+- **Status:** Todo
+- **Owner:** —
+- **Scope:** (1) `agile stream list` gets a header row (`id  title  agent/human`) like `inbox` has. (2) `agile status` adds one line per open stream (`id title agent/human`, tree-indented, archived hidden) between the daemon line and "needs you", so it answers "what is in flight". (3) `agile stream show` on a repo-less stream prints one line `repo -` and drops the branch/worktree placeholder lines; on a stream with a repo the three lines stay. (4) `inbox` age column becomes `age (ts)`: relative plus ISO time, and `--json` already carries `ts`. No new commands, no RPC changes except whatever `status` needs to list streams (reuse `stream.list`).
+- **Acceptance Criteria:** Each of the four has a CLI test asserting the printed shape; `stream.e2e`/`inbox.e2e` updated, not loosened.
+- **Validation Steps:** `bun test packages/cli`; `bun run test:integration`.
+- **Notes:** May run alongside Phase 3 tickets; touches only `packages/cli`.
+
 **Phase 2 verification (2026-09-21, tip a210a24):** build, typecheck, lint clean; `bun test` 1287 pass / 2 skip / 0 fail (95 files); `test:integration` 16 pass / 0 fail (6 suites, run alone). Daemon source 16,002 lines (Phase 1: 34,975; baseline 35,932). Phase 2 stops here for Pete's look (T124); Phase 3 does not start until he says go.
 
 ### Phase 3 — Agents as attachments
@@ -424,3 +442,5 @@ Daemon: `em/`, `architect/`, `oracle/`, `qa/`, `halts/`, `quota/`, `handoff/`, `
 - (T122) `agile approve` is gone before `agile land` (T140) exists; gates are decided over HTTP or `gate.*` RPC in between. CLAUDE.md's live-run text still names `agile approve`; T164 rewrites it.
 - (T122) T123 ran after T122 rather than in parallel (the ∥ mark): its event pruning depends on T122's deletions.
 - (Phase 2 verification) The CLI e2e tests start a real daemon on the home's default port 4600; two daemons on one machine (QA agent + `bun test`) collide and the lifecycle e2e fails with a vanished pidfile. Not a code defect (one daemon per machine is the design), but the e2e should set `port` in its temp home's `config.yaml` to a free port; fold into T125.
+- (Pete's Phase 2 look, 2026-09-21, tip 8694c86) His local agent ran the 26-step hand test on `~/Projects/ledger-lite` with `AGILE_HOME=~/.agile-reshape`: 25 of 26 steps matched; the one failure was `daemon start` against a stale daemon on 4600 → T127. Two reported gaps are not defects: `close --note` does land on the thread (the agent closed the child and only ran `show` on the parent), and the port is already per-home (`config.yaml` `port`, `AGILE_PORT`) — the gap is that nothing tells the user so; T127 prints it and T164 documents it. `stream list` header, `status` with no stream summary, repo-less `show` placeholders and inbox age without a timestamp → T128. Raw event names in the web UI (`entity_put`, `repos_put`) and no link from a feed row to its stream are the expected pre-Phase-6 state (T160–T163). The residue in ledger-lite (`.worktrees/`, `runs/`, `tkt/*` branches) is dated 2026-09-18 from the pre-reshape live run; this run wrote nothing there.
+- (Phase 2 manager check) Answering a human-raised question flips `agent.status` to `working` although no agent is attached. `QuestionService.answer` should only leave `question` for `working` when the stream has a session; otherwise back to `idle`. Fold into T130 (which introduces sessions on streams).
