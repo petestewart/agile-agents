@@ -6,10 +6,9 @@
  * agiled's unix-socket JSON-RPC API (design/agile-agents-design.md §18
  * "Technical shape": "`agile` CLI: same client lib").
  *
- * T004 scope was `init` and `daemon start`; T008 (this file) adds
- * status/tail/send/approve/deny/note/delegate/resolve/halt/resume/hook/breaker and
- * makes every verb support `--json` alongside its human-readable output.
  * `index.ts` is pure dispatch — one file per verb lives under `commands/`.
+ * T122 deleted the `send`/`halt`/`resume`/`sync` verbs and the gate-decision
+ * verbs with the subsystems behind them.
  */
 
 import { resolveHomePaths } from '@agile-agents/daemon';
@@ -22,22 +21,12 @@ import {
   runDaemonStart,
   runDaemonStop,
 } from './commands/daemon';
-import {
-  runApprove,
-  runBreakerClear,
-  runDelegate,
-  runDeny,
-  runGateList,
-  runGateNote,
-  runResolve,
-} from './commands/gate';
-import { runHalt, runResume } from './commands/halt';
+import { runBreakerClear, runGateList } from './commands/gate';
 import { parseHookArgs, runHook } from './commands/hook';
 import { runInbox } from './commands/inbox';
 import { runCliInit } from './commands/init';
 import { runQuestionAnswer, runQuestionList, runQuestionRaise } from './commands/question';
 import { runRepoAdd, runRepoList } from './commands/repo';
-import { runSend } from './commands/send';
 import { runStatus } from './commands/status';
 import {
   runStreamArchive,
@@ -47,7 +36,6 @@ import {
   runStreamSay,
   runStreamShow,
 } from './commands/stream';
-import { runSync } from './commands/sync';
 import { runTail } from './commands/tail';
 
 export const PACKAGE_NAME = '@agile-agents/cli';
@@ -75,24 +63,15 @@ function usage(): string {
     '  daemon start               start agiled detached (pidfile + log in the state home)',
     '  daemon stop                stop the running agiled',
     '  daemon status              is agiled running? pid, port, socket, home',
-    '  status                     sprint/tickets/agents/spend',
+    '  status                     daemon, streams and what is waiting on you',
     '  tail                       tail the event log (--follow, --ticket, --agent, --kind)',
-    '  send                       send a bus message (--from --to --kind --priority --body [--ticket])',
-    '  approve <hil-id>           approve a HIL request [--by <agent>] [--note <text>]',
-    '  deny <hil-id>              deny a HIL request [--by <agent>] [--note <text>]',
-    '  note <hil-id> --note <text>   answer a HIL request in free text (no decision; the EM decides)',
-    '  delegate <hil-id> --to em|architect',
-    '  resolve <hil-id> --decision approve|deny [--by <agent>] [--note <text>]',
     '  gate list                  list open HIL requests',
     '  inbox                      everything waiting on you, across all streams, oldest first',
     '  answer <question-id> <text>   answer an open question; the answer reaches the waiting session',
     '  question list              list open questions (questions/ in the state home)',
     '  question raise --stream <id> --text <text> [--by <agent>]',
     '  question answer <id> --answer <text> [--by <agent>]',
-    '  halt [--scope <scope>] [--reason <text>] [--by <agent>]',
-    '  resume <halt-id>',
     '  breaker clear <signal>',
-    '  sync jira link <PROJECT> | unlink | status    two-way Jira sync (credentials from $JIRA_*)',
     '  hook <event>               stdin JSON in, JSON out (e.g. hook pre-tool-use) [--fail-closed] [--timeout <ms>, default 2000]',
     "  mcp --agent <id> [--ticket <id>] [--timeout <ms>, default 60000]   stdio MCP bridge to the daemon's tool.* RPC",
     '',
@@ -183,24 +162,6 @@ export async function runCli(argv: string[], cwd: string = process.cwd()): Promi
         });
       }
 
-      case 'send':
-        return await runSend(socketPath, parseArgs(rest.slice(1)), json);
-
-      case 'approve':
-        return await runApprove(socketPath, parseArgs(rest.slice(1)), json);
-
-      case 'deny':
-        return await runDeny(socketPath, parseArgs(rest.slice(1)), json);
-
-      case 'note':
-        return await runGateNote(socketPath, parseArgs(rest.slice(1)), json);
-
-      case 'delegate':
-        return await runDelegate(socketPath, parseArgs(rest.slice(1)), json);
-
-      case 'resolve':
-        return await runResolve(socketPath, parseArgs(rest.slice(1)), json);
-
       case 'inbox':
         return await runInbox(socketPath, json);
 
@@ -239,19 +200,10 @@ export async function runCli(argv: string[], cwd: string = process.cwd()): Promi
         console.error(usage());
         return 1;
 
-      case 'halt':
-        return await runHalt(socketPath, parseArgs(rest.slice(1)), json);
-
-      case 'resume':
-        return await runResume(socketPath, parseArgs(rest.slice(1)), json);
-
       case 'breaker':
         if (sub === 'clear') return await runBreakerClear(socketPath, parseArgs(restArgv), json);
         console.error(usage());
         return 1;
-
-      case 'sync':
-        return await runSync(socketPath, parseArgs(rest.slice(1)), json);
 
       case 'hook': {
         const args: ParsedArgs = parseArgs(rest.slice(1));
