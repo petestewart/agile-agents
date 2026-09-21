@@ -28,6 +28,13 @@ export const RepoEntrySchema = z
     model: z.string().min(1).optional(),
     /** Default effort for those sessions (T130, D12). */
     effort: EffortSchema.optional(),
+    /**
+     * T131 (cockpit design §4.2, "Optional per repo: auto-review when
+     * `agent.status` becomes `done`"): when true, a worker session that
+     * exits cleanly on a stream in this repo is followed by a reviewer
+     * session on the same worktree. Absent means off.
+     */
+    auto_review: z.boolean().optional(),
   })
   .strict();
 

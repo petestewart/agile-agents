@@ -18,12 +18,7 @@ import type { RpcMethodHandler } from '../rpc';
 import { WorktreeRefusedError } from '../runner/worktrees';
 import { NotFoundError } from '../store/store';
 import { UnknownVendorError } from './resolve';
-import {
-  type AttachService,
-  StreamBusyError,
-  UnregisteredRepoError,
-  UnsupportedRoleError,
-} from './service';
+import { type AttachService, StreamBusyError, UnregisteredRepoError } from './service';
 import { NoWorktreeError, UnknownSessionError, type VerbService, verbHandlers } from './verbs';
 
 function requireObject(params: unknown): Record<string, unknown> {
@@ -69,7 +64,6 @@ async function asParamErrors<T>(run: () => Promise<T>): Promise<T> {
   } catch (err) {
     if (
       err instanceof StreamBusyError ||
-      err instanceof UnsupportedRoleError ||
       err instanceof UnregisteredRepoError ||
       err instanceof UnknownVendorError ||
       err instanceof UnknownSessionError ||
@@ -88,7 +82,7 @@ export function buildAttachRpcMethods(
   verbs: VerbService,
 ): Record<string, RpcMethodHandler> {
   const methods: Record<string, RpcMethodHandler> = {
-    /** `agile attach <stream> [--vendor] [--model] [--effort] [--role worker]`. */
+    /** `agile attach <stream>` / `agile review <stream>` [--vendor] [--model] [--effort] [--role worker|reviewer]. */
     'attach.start': async (params) => {
       const p = requireObject(params);
       const stream = requireStreamId(p.stream);

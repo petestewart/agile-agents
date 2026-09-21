@@ -17,7 +17,7 @@ import { QuestionService } from '../questions/service';
 import type { FakeAgentScript } from '../runner/fake-agent';
 import { StateStore } from '../store';
 import { StreamService } from '../streams/service';
-import { AttachService, StreamBusyError, UnsupportedRoleError } from './service';
+import { AttachService, StreamBusyError } from './service';
 import { VerbService } from './verbs';
 
 const FAKE_AGENT_PATH = join(import.meta.dir, '..', 'runner', 'fake-agent.ts');
@@ -202,12 +202,126 @@ describe('one live worker per stream (§2.3)', () => {
     expect(streams.get(stream.id).sessions.length).toBe(1);
   });
 
-  test('a role other than worker is refused until T131', async () => {
+  test('a reviewer may run beside a live worker, but only one reviewer at a time', async () => {
+    attachService = buildAttachService(fakeProviderFor(ACP_PROVIDERS.claude, SPEAKS_THEN_HANGS));
     const stream = await makeStream();
-    await expect(attachService.attach(stream.id, { role: 'reviewer' })).rejects.toThrow(
-      UnsupportedRoleError,
+    await attachService.attach(stream.id);
+    await waitFor(() => streams.get(stream.id).sessions.some((s) => s.status === 'running'));
+
+    const review = await attachService.attach(stream.id, { role: 'reviewer' });
+    expect(review.session.role).toBe('reviewer');
+    await waitFor(
+      () => streams.get(stream.id).sessions.filter((s) => s.status === 'running').length === 2,
     );
-  });
+
+    await expect(attachService.attach(stream.id, { role: 'reviewer' })).rejects.toThrow(
+      StreamBusyError,
+    );
+    // The worker slot is still taken too — one live session per role.
+    await expect(attachService.attach(stream.id)).rejects.toThrow(StreamBusyError);
+    expect(streams.get(stream.id).sessions.length).toBe(2);
+  }, 30_000);
+});
+
+describe('the reviewer (§4.2)', () => {
+  test("runs on the worker's worktree under the reviewer role, and never cuts a branch of its own", async () => {
+    await store.putRepos({ demo: { path: repo, protected_branches: ['main'] } });
+    const stream = await makeStream('demo');
+    const { handle } = await attachService.attach(stream.id);
+    handle.stop();
+    await handle.exited;
+    const worktree = streams.get(stream.id).worktree;
+    expect(worktree).toBeDefined();
+    const branch = streams.get(stream.id).branch;
+
+    const { session } = await attachService.attach(stream.id, { role: 'reviewer' });
+    expect(session.worktree).toBe(worktree ?? '');
+    expect(streams.get(stream.id).branch).toBe(branch ?? '');
+
+    // The registry entry is what the hook resolves a tool call's cwd
+    // through — it must say `reviewer`, or the read-only table never runs.
+    await waitFor(() => store.listAgents().some((a) => a.id === session.id));
+    expect(store.listAgents().find((a) => a.id === session.id)?.record.role).toBe('reviewer');
+  }, 30_000);
+
+  test("the reviewer exit reports its findings and leaves a live worker's agent.status alone", async () => {
+    attachService = buildAttachService(fakeProviderFor(ACP_PROVIDERS.claude, SPEAKS_THEN_HANGS));
+    const stream = await makeStream();
+    await attachService.attach(stream.id);
+    await waitFor(() => streams.get(stream.id).agent.status === 'working');
+
+    const { session, handle } = await attachService.attach(stream.id, { role: 'reviewer' });
+    await waitFor(() => store.listAgents().some((a) => a.id === session.id));
+    await verbs.finding({
+      session: session.id,
+      severity: 'major',
+      file: 'src/parse.ts',
+      line: 12,
+      text: 'the dialect sniffer ignores quoted separators',
+    });
+
+    handle.stop();
+    await handle.exited;
+    await waitFor(() => threadBodies(stream.id).some((b) => b.startsWith('review finished:')));
+
+    const after = streams.get(stream.id);
+    expect(threadBodies(stream.id).some((b) => b.startsWith('review finished: 1 finding '))).toBe(
+      true,
+    );
+    // Both halves of §4.2: the thread narrative and the structured list.
+    expect(
+      streams
+        .readThread(stream.id, { limit: 500 })
+        .entries.some((e) => e.kind === 'finding' && e.by === `agent:${session.id}`),
+    ).toBe(true);
+    expect(after.agent.findings?.at(-1)).toMatchObject({
+      severity: 'major',
+      file: 'src/parse.ts',
+      line: 12,
+    });
+    // The worker is still live: its field, its call.
+    expect(after.agent.status).toBe('working');
+    expect(after.sessions.find((s) => s.id === session.id)?.status).not.toBe('running');
+  }, 30_000);
+
+  test('a reviewer on a stream with no worker left moves agent.status to done', async () => {
+    const stream = await makeStream();
+    const { handle } = await attachService.attach(stream.id, { role: 'reviewer' });
+    // No worker ever attached, so `agent.status` is still `idle` here.
+    expect(streams.get(stream.id).agent.status).toBe('idle');
+    handle.stop();
+    await handle.exited;
+    await waitFor(() => streams.get(stream.id).agent.status === 'done');
+    expect(threadBodies(stream.id).some((b) => b.startsWith('review finished: 0 findings'))).toBe(
+      true,
+    );
+  }, 20_000);
+
+  test('auto_review starts a reviewer when the worker exits done', async () => {
+    await store.putRepos({
+      demo: { path: repo, protected_branches: ['main'], auto_review: true },
+    });
+    const stream = await makeStream('demo');
+    const { session, handle } = await attachService.attach(stream.id);
+    handle.stop();
+    await handle.exited;
+
+    await waitFor(() => streams.get(stream.id).sessions.length === 2);
+    const reviewer = streams.get(stream.id).sessions.find((s) => s.id !== session.id);
+    expect(reviewer?.role).toBe('reviewer');
+    expect(reviewer?.worktree).toBe(streams.get(stream.id).worktree ?? '');
+  }, 30_000);
+
+  test('no auto_review means no second session', async () => {
+    await store.putRepos({ demo: { path: repo, protected_branches: ['main'] } });
+    const stream = await makeStream('demo');
+    const { handle } = await attachService.attach(stream.id);
+    handle.stop();
+    await handle.exited;
+    await waitFor(() => streams.get(stream.id).agent.status === 'done');
+    await Bun.sleep(200);
+    expect(streams.get(stream.id).sessions.length).toBe(1);
+  }, 30_000);
 });
 
 describe('effort (D12)', () => {

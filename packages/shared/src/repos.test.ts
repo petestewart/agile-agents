@@ -26,6 +26,14 @@ describe('RepoEntry (T111)', () => {
     );
   });
 
+  test('auto_review is optional and boolean (T131, cockpit design §4.2)', () => {
+    expect(validateRepoEntry({ path: '/a' }).auto_review).toBeUndefined();
+    expect(validateRepoEntry({ path: '/a', auto_review: true }).auto_review).toBe(true);
+    expect(() => validateRepoEntry({ path: '/a', auto_review: 'yes' })).toThrow(
+      /invalid repo entry/,
+    );
+  });
+
   test('an empty path is rejected', () => {
     expect(() => validateRepoEntry({ path: '' })).toThrow(/invalid repo entry/);
   });
