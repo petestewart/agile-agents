@@ -201,12 +201,12 @@ Build order: Phase 0 → 1 → 2 → 3 → 4 → 5 → 6. Within a phase, ticket
 
 ### Ticket: T126 ∥ Phase 2 rough edges from QA
 - **Priority:** P2
-- **Status:** In Progress
+- **Status:** Done
 - **Owner:** opus:worker-T126
 - **Scope:** T124 QA rough edges: (1) a parent-cycle refusal over `stream.update` returns -32603 with a stray `null` in the message; make it -32602 with the cycle path in the message (same for duplicate id and unknown repo on create). (2) `agile stream close --note` records nothing: append a `line` thread entry `by: human` with the note and put it on `human.note`. (3) `agile status` after `daemon stop` prints a raw socket error: print `agiled is not running (home <path>)` and exit 1, same as `daemon status`.
 - **Acceptance Criteria:** Each edge has a test; QA's exact commands from `qa-T124.report.md` behave as described.
 - **Validation Steps:** `bun test packages/daemon/src/streams packages/cli`.
-- **Notes:** —
+- **Notes:** Branch `T126-phase2-rough-edges`. Typed `StreamCycleError` (shared, beside its throw site), `AlreadyExistsError`, `UnknownParentStreamError`, `UnknownRepoError` mapped to -32602 at the edge; `close --note` appends `closed: <note>` to the thread; `agile status` shares `daemon status`'s not-running sentence. Review (sonnet) PASS. Full `bun test` 1283 pass / 2 skip / 0 fail. merge: 6490b26.
 
 ### Phase 3 — Agents as attachments
 
