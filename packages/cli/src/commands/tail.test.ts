@@ -8,6 +8,9 @@ import { runTail, splitComplete } from './tail';
 let dir: string;
 let eventsPath: string;
 
+const STREAM_A = '01J9AAAAAAAAAAAAAAAAAAAAAA';
+const STREAM_B = '01J9BBBBBBBBBBBBBBBBBBBBBB';
+
 function line(event: Partial<Event> & Pick<Event, 'kind'>): string {
   return `${JSON.stringify({ ts: new Date().toISOString(), data: {}, ...event })}\n`;
 }
@@ -26,7 +29,7 @@ describe('runTail (no --follow)', () => {
   test('prints every existing line, unfiltered', async () => {
     writeFileSync(
       eventsPath,
-      line({ kind: 'ticket_put', ticket: 'TKT-0001' }) + line({ kind: 'message', agent: 'em' }),
+      line({ kind: 'stream_created', stream: STREAM_A }) + line({ kind: 'message', agent: 'em' }),
     );
     const lines: string[] = [];
     const original = console.log;
@@ -40,23 +43,41 @@ describe('runTail (no --follow)', () => {
     expect(lines).toHaveLength(2);
   });
 
-  test('filters by ticket/agent/kind', async () => {
+  test('filters by stream/kind/session', async () => {
     writeFileSync(
       eventsPath,
-      line({ kind: 'ticket_put', ticket: 'TKT-0001' }) +
-        line({ kind: 'ticket_put', ticket: 'TKT-0002' }) +
+      line({ kind: 'stream_created', stream: STREAM_A }) +
+        line({ kind: 'stream_created', stream: STREAM_B }) +
         line({ kind: 'message', agent: 'em' }),
     );
     const lines: string[] = [];
     const original = console.log;
     console.log = (msg: string) => lines.push(msg);
     try {
-      await runTail({ eventsPath, filters: { ticket: 'TKT-0001' }, follow: false, json: true });
+      await runTail({ eventsPath, filters: { stream: STREAM_A }, follow: false, json: true });
     } finally {
       console.log = original;
     }
     expect(lines).toHaveLength(1);
-    expect(JSON.parse(lines[0] as string).ticket).toBe('TKT-0001');
+    expect(JSON.parse(lines[0] as string).stream).toBe(STREAM_A);
+  });
+
+  test('filters by session', async () => {
+    writeFileSync(
+      eventsPath,
+      line({ kind: 'tool_call', session: STREAM_A }) +
+        line({ kind: 'tool_call', session: STREAM_B }),
+    );
+    const lines: string[] = [];
+    const original = console.log;
+    console.log = (msg: string) => lines.push(msg);
+    try {
+      await runTail({ eventsPath, filters: { session: STREAM_B }, follow: false, json: true });
+    } finally {
+      console.log = original;
+    }
+    expect(lines).toHaveLength(1);
+    expect(JSON.parse(lines[0] as string).session).toBe(STREAM_B);
   });
 
   test('a missing events file is not an error — nothing to print', async () => {
@@ -72,7 +93,7 @@ describe('runTail (no --follow)', () => {
 
 describe('runTail --follow', () => {
   test('picks up lines appended after start, then stops on abort', async () => {
-    writeFileSync(eventsPath, line({ kind: 'ticket_put', ticket: 'TKT-0001' }));
+    writeFileSync(eventsPath, line({ kind: 'stream_created', stream: STREAM_A }));
     const lines: string[] = [];
     const original = console.log;
     console.log = (msg: string) => lines.push(msg);
@@ -88,14 +109,14 @@ describe('runTail --follow', () => {
     });
 
     await new Promise((resolve) => setTimeout(resolve, 40));
-    appendFileSync(eventsPath, line({ kind: 'halt_created' }));
+    appendFileSync(eventsPath, line({ kind: 'gate_raised' }));
     await new Promise((resolve) => setTimeout(resolve, 80));
     controller.abort();
     await run;
     console.log = original;
 
     expect(lines.length).toBeGreaterThanOrEqual(2);
-    expect(lines.some((l) => JSON.parse(l).kind === 'halt_created')).toBe(true);
+    expect(lines.some((l) => JSON.parse(l).kind === 'gate_raised')).toBe(true);
   });
 
   test('a line appended in two chunks (torn across polls) is printed exactly once', async () => {
@@ -114,7 +135,7 @@ describe('runTail --follow', () => {
       signal: controller.signal,
     });
 
-    const full = line({ kind: 'halt_created' });
+    const full = line({ kind: 'gate_raised' });
     const splitAt = Math.floor(full.length / 2);
 
     // First chunk: no trailing newline — a poll landing here must not emit
@@ -132,7 +153,7 @@ describe('runTail --follow', () => {
     console.log = original;
 
     expect(lines).toHaveLength(1);
-    expect(JSON.parse(lines[0] as string).kind).toBe('halt_created');
+    expect(JSON.parse(lines[0] as string).kind).toBe('gate_raised');
   });
 });
 

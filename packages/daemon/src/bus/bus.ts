@@ -262,9 +262,9 @@ export class Bus {
     await this.store.putEntities(writes, {
       ts: this.now().toISOString(),
       kind: 'message',
-      ticket: message.ticket,
       agent: message.from,
       data: {
+        ...(message.ticket !== undefined ? { ticket: message.ticket } : {}),
         id: message.id,
         to: message.to,
         kind: message.kind,

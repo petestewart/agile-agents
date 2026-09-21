@@ -31,13 +31,17 @@
  */
 
 import {
+  closeSync,
   existsSync,
+  fsyncSync,
   mkdirSync,
+  openSync,
   readFileSync,
   readdirSync,
   renameSync,
   unlinkSync,
   writeFileSync,
+  writeSync,
 } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
@@ -87,10 +91,32 @@ export function writeJsonFileAtomic(path: string, data: unknown): void {
  * dirs) if missing. Single-daemon-process assumption (see store.ts's
  * mutex): appends are serialized in-process, so a plain `appendFileSync`
  * needs no temp-file dance — there is never a concurrent writer to race.
+ *
+ * `{fsync: true}` (T123, cockpit design §7.4 "fsync on gate and land
+ * events") forces the line to stable storage before returning: the write
+ * goes through an explicit fd so `fsyncSync` can be called on it, which
+ * `appendFileSync` gives no handle for. Everything else keeps the cheap
+ * page-cache append — an fsync per hook decision or thread line would cost
+ * a disk round trip on the daemon's hottest path.
  */
-export function appendJsonlLine(path: string, value: unknown): void {
+export function appendJsonlLine(
+  path: string,
+  value: unknown,
+  options: { fsync?: boolean } = {},
+): void {
   ensureDir(dirname(path));
-  writeFileSync(path, `${JSON.stringify(value)}\n`, { flag: 'a' });
+  const line = `${JSON.stringify(value)}\n`;
+  if (options.fsync !== true) {
+    writeFileSync(path, line, { flag: 'a' });
+    return;
+  }
+  const fd = openSync(path, 'a');
+  try {
+    writeSync(fd, line);
+    fsyncSync(fd);
+  } finally {
+    closeSync(fd);
+  }
 }
 
 /** Reads every non-empty line of a JSONL file as JSON. Missing file → []. */

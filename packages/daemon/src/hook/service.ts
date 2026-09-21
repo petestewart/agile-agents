@@ -325,9 +325,9 @@ export class HookService {
   ): Promise<void> {
     await this.store.appendEvent(
       buildEvent('hook_decision', {
-        ticket: ctx?.ticket,
-        agent: ctx?.agent,
+        ...(ctx?.agent !== undefined ? { agent: ctx.agent } : {}),
         data: {
+          ...(ctx?.ticket !== undefined ? { ticket: ctx.ticket } : {}),
           event,
           decision: decision.decision,
           reason: decision.reason,

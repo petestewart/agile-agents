@@ -141,9 +141,9 @@ export function buildPermissionResponder(
     const classified = classifyPermissionRequest(request);
     await store.appendEvent(
       buildEvent('hook_decision', {
-        ...(ctx.ticket !== undefined ? { ticket: ctx.ticket } : {}),
         agent: ctx.agent,
         data: {
+          ...(ctx.ticket !== undefined ? { ticket: ctx.ticket } : {}),
           role: ctx.role,
           toolClass: classified.toolClass,
           ...(classified.targetPath !== undefined ? { targetPath: classified.targetPath } : {}),

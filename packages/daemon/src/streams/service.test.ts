@@ -78,7 +78,14 @@ describe('create', () => {
     expect(kinds).toContain('stream_created');
     expect(kinds).toContain('thread_appended');
     const created = store.listEvents().find((e) => e.kind === 'stream_created');
-    expect(created?.data.stream).toBe(stream.id);
+    // T123: the stream id is the event's own `stream` scope (what
+    // `agile tail --stream` filters on); `data` carries the status pair.
+    expect(created?.stream).toBe(stream.id);
+    expect(created?.data).toMatchObject({
+      agent_status: 'idle',
+      human_status: 'open',
+      archived: false,
+    });
   });
 });
 

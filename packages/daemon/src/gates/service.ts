@@ -301,7 +301,8 @@ export class GateService {
     const saved = await this.persist(record);
     await this.store.appendEvent(
       buildEvent('gate_raised', {
-        data: { id: saved.id, gate: saved.gate, owner: saved.owner, stream: saved.stream },
+        stream: saved.stream,
+        data: { id: saved.id, gate: saved.gate, owner: saved.owner },
       }),
     );
 
@@ -442,10 +443,10 @@ export class GateService {
     await this.store.putEntity(inboxPath('human', validated.id), validateMessage, validated);
     await this.store.appendEvent(
       buildEvent('gate_resolved', {
+        stream: req.stream,
         agent: req.decided_by,
         data: {
           id: req.id,
-          stream: req.stream,
           decision: req.decision,
           ...(req.note !== undefined ? { note: req.note } : {}),
         },
@@ -490,10 +491,10 @@ export class GateService {
     });
     await this.store.appendEvent(
       buildEvent('gate_resolved', {
+        stream: saved.stream,
         agent: by,
         data: {
           id: saved.id,
-          stream: saved.stream,
           decision: saved.decision,
           ...(saved.note !== undefined ? { note: saved.note } : {}),
         },

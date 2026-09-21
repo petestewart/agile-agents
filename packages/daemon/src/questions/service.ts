@@ -174,8 +174,10 @@ export class QuestionService {
 
     await this.store.appendEvent(
       buildEvent('question_raised', {
+        stream: saved.stream,
         agent: saved.raised_by,
-        data: { id: saved.id, stream: saved.stream, text: saved.text },
+        ...(input.session !== undefined ? { session: input.session } : {}),
+        data: { id: saved.id, text: saved.text },
       }),
     );
     return saved;
@@ -216,8 +218,9 @@ export class QuestionService {
 
     await this.store.appendEvent(
       buildEvent('question_answered', {
+        stream: saved.stream,
         agent: input.by,
-        data: { id: saved.id, stream: saved.stream, answer: saved.answer },
+        data: { id: saved.id, answer: saved.answer },
       }),
     );
 
