@@ -20,7 +20,7 @@ export interface StatusResult {
   questions: Question[];
   /** Pending gates (`gates/` in the state home). */
   gates: HilRequest[];
-  /** Open streams, archived excluded — what is in flight (T128). */
+  /** Streams as `stream.list` returns them (archived excluded); `inFlight` narrows them for the human view (T128). */
   streams: StreamNode[];
 }
 
@@ -35,6 +35,23 @@ async function fetchOrEmpty<T>(
   } catch {
     return [];
   }
+}
+
+/**
+ * In flight = the human still has it: `open` or `waiting_on_you`. `closed`
+ * and `landed` are done, and archived never comes back from `stream.list`
+ * (§7.2). A dropped node's children are promoted, so an open child under a
+ * closed parent is still listed.
+ */
+export function inFlight(nodes: StreamNode[]): StreamNode[] {
+  const kept: StreamNode[] = [];
+  for (const node of nodes) {
+    const children = inFlight(node.children);
+    const status = node.stream.human.status;
+    if (status === 'open' || status === 'waiting_on_you') kept.push({ ...node, children });
+    else kept.push(...children);
+  }
+  return kept;
 }
 
 /** `stream.list` without `include_archived`: archived streams stay hidden (§7.2). */
@@ -65,7 +82,7 @@ export function printStatusHuman(status: StatusResult): void {
   ]);
   // T128: what is in flight, between the daemon block and the needs-you
   // count — the same `id title agent/human` shape as `agile stream list`.
-  const rows = streamRows(status.streams);
+  const rows = streamRows(inFlight(status.streams));
   if (rows.length === 0) {
     console.log('streams: (none open)');
   } else {

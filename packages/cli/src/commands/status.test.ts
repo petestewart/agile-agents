@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { join } from 'node:path';
 import { type TestDaemon, startTestDaemon } from '../test-support';
 import { fetchStatus, printStatusHuman, runStatus } from './status';
+import { runStreamList } from './stream';
 
 let daemon: TestDaemon;
 
@@ -93,6 +94,26 @@ describe('printStatusHuman', () => {
     expect(indent(lines[streamsAt + 3] ?? '')).toBeGreaterThan(indent(lines[streamsAt + 2] ?? ''));
     // Archived stays hidden.
     expect(lines.join('\n')).not.toContain(gone.id);
+  });
+
+  /** T128: closed and landed are not in flight, but `stream list` still shows them. */
+  test('omits a closed stream that `stream list` still shows', async () => {
+    const open = await daemon.streamService.create('human', { title: 'Still going', goal: 'g' });
+    const done = await daemon.streamService.create('human', { title: 'All done', goal: 'g' });
+    await daemon.streamService.close('human', done.id);
+    expect(daemon.streamService.get(done.id).human.status).toBe('closed');
+
+    const lines = await capture(async () => printStatusHuman(await fetchStatus(daemon.socketPath)));
+    const text = lines.join('\n');
+    expect(text).toContain('streams (1):');
+    expect(text).toContain(open.id);
+    expect(text).not.toContain(done.id);
+
+    // `agile stream list` is unchanged: the closed stream is still listed.
+    const listed = await capture(async () => {
+      await runStreamList(daemon.socketPath, { positionals: [], options: {} }, false);
+    });
+    expect(listed.join('\n')).toContain(done.id);
   });
 
   test('says so when no stream is open', async () => {
