@@ -11,8 +11,10 @@ export {
   ACP_PROVIDERS,
   isAcpProviderId,
   resolveAcpProvider,
+  type AcpEffortLevel,
   type AcpProviderConfig,
   type AcpProviderId,
+  type AcpSpawnContribution,
 } from './providers';
 
 export { LineFramer, FramingOverflowError, DEFAULT_MAX_BUFFER_BYTES } from './framing';
