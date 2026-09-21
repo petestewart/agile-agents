@@ -219,12 +219,12 @@ Build order: Phase 0 → 1 → 2 → 3 → 4 → 5 → 6. Within a phase, ticket
 
 ### Ticket: T128 ∥ CLI polish from Pete's Phase 2 look
 - **Priority:** P2
-- **Status:** In Progress
+- **Status:** Done
 - **Owner:** opus:worker-T128
 - **Scope:** (1) `agile stream list` gets a header row (`id  title  agent/human`) like `inbox` has. (2) `agile status` adds one line per open stream (`id title agent/human`, tree-indented, archived hidden) between the daemon line and "needs you", so it answers "what is in flight". (3) `agile stream show` on a repo-less stream prints one line `repo -` and drops the branch/worktree placeholder lines; on a stream with a repo the three lines stay. (4) `inbox` age column becomes `age (ts)`: relative plus ISO time, and `--json` already carries `ts`. No new commands, no RPC changes except whatever `status` needs to list streams (reuse `stream.list`).
 - **Acceptance Criteria:** Each of the four has a CLI test asserting the printed shape; `stream.e2e`/`inbox.e2e` updated, not loosened.
 - **Validation Steps:** `bun test packages/cli`; `bun run test:integration`.
-- **Notes:** May run alongside Phase 3 tickets; touches only `packages/cli`.
+- **Notes:** May run alongside Phase 3 tickets; touches only `packages/cli`. Branch `T128-cli-polish`, 2 commits, `packages/cli` only. `stream list` header row; `status` lists in-flight streams (`open|waiting_on_you`, archived hidden, open children of a closed parent promoted; manager call) and `--json` gains `streams`; repo-less `show` prints `repo -` only; inbox `age (ts)`. Review (sonnet) PASS with 1 nit (the additive `streams` field in `status --json`). `bun test packages/cli` 88 pass; `bun test` 1302 pass / 2 skip / 0 fail; integration green. merge: efc8509.
 
 **Phase 2 verification (2026-09-21, tip a210a24):** build, typecheck, lint clean; `bun test` 1287 pass / 2 skip / 0 fail (95 files); `test:integration` 16 pass / 0 fail (6 suites, run alone). Daemon source 16,002 lines (Phase 1: 34,975; baseline 35,932). Phase 2 stops here for Pete's look (T124); Phase 3 does not start until he says go.
 
