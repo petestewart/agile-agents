@@ -1,195 +1,40 @@
 /**
- * Local mirror of `packages/daemon/src/feed/snapshot.ts`'s `FeedSnapshot` /
- * `FeedQuotaInfo` (`GET /api/snapshot`, `/ws`'s `{type:'snapshot', ...}`
- * frame). `packages/ui` cannot import them from `@agile-agents/daemon` —
- * `daemon` already imports `@agile-agents/ui` (`FEED_HTML_PATH`,
+ * Local mirror of `packages/daemon/src/feed/snapshot.ts`'s `FeedSnapshot`
+ * (`GET /api/snapshot`, `/ws`'s `{type:'snapshot', ...}` frame).
+ * `packages/ui` cannot import it from `@agile-agents/daemon` — `daemon`
+ * already imports `@agile-agents/ui` (`FEED_HTML_PATH`,
  * `CONTROL_ROOM_DIST_DIR`), so the reverse import would be a workspace
- * cycle (repo rule: "no workspace cycles — `ui` never imports `daemon` at
- * runtime, HTTP/WebSocket/RPC only"). Neither type is a zod schema —
- * `packages/shared` is for "schemas + types, defined once" in the zod
- * sense; these are plain wire-shape interfaces already defined once in
- * `daemon`, so this file is a type-only mirror of that JSON shape, not a
- * second definition of a schema. Keep in sync with `feed/snapshot.ts` by
- * hand; a drift here shows up as a `bun run typecheck`/build failure the
- * moment a component reads a field this mirror doesn't have.
+ * cycle. Keep in sync with `feed/snapshot.ts` by hand; a drift here shows up
+ * as a `bun run typecheck`/build failure the moment a component reads a
+ * field this mirror doesn't have.
  */
 
-import type { Event, Halt, HilRequest, Question, Sprint, SprintId } from '@agile-agents/shared';
+import type { Event, HilRequest, Question } from '@agile-agents/shared';
 
-export interface TicketsSummary {
-  done: number;
-  in_flight: number;
-  stale: number;
-  total: number;
-}
-
-export interface FeedSprintInfo {
-  sprint?: Sprint;
-  tickets: TicketsSummary;
-}
-
-export interface FeedQuotaInfo {
-  vendor: string;
-  account: string;
-  remaining_fraction: number;
-  cooldown_until: string | null;
-  confidence: 'reported' | 'estimated' | 'low';
-  spend_usd?: number;
-}
-
-/** T043: the project the daemon drives — the top bar's name, and its path on hover. */
+/** The project the daemon drives — the header's name, and its path on hover. */
 export interface FeedProjectInfo {
   name: string;
   path: string;
 }
 
-/** T043: everything the always-on top bar renders. Mirror of `feed/snapshot.ts`'s `FeedStatusInfo`. */
 export interface FeedStatusInfo {
-  sprint_id?: SprintId;
-  sprint_state: 'none' | 'running' | 'finished';
-  sprint_started_at?: string;
-  next_sprint_number: number;
-  agents_working: number;
   needs_you: number;
-  /** A `sprint_review` gate is open — the top bar's action stays disabled ("Review Sprint N first") until it is decided. */
-  sprint_review_pending: boolean;
-  /** T042: an `approve_plan` request is open — Start Sprint has proposed a frontier and is waiting on its owner. */
-  approve_plan_pending: boolean;
-}
-
-/**
- * T049: the resident EM session's vendor and model, for the chat header's
- * `vendor / model` next to the live dot. `model` is `'unknown'` until the
- * session has reported one on `session/new`; `.agile/vendors.yaml` carries
- * no per-role model field, so the live session is the only source.
- */
-export interface FeedEmInfo {
-  vendor: string;
-  model: string;
-}
-
-/**
- * T049 defect 5: `vendor / model` for the chat header. The vendor is known
- * before anything is spawned; the model only once the session has reported it
- * on `session/new`, and `'unknown'` is the daemon's sentinel for "not yet"
- * — the ticket is explicit that `claude / unknown` is not acceptable, so the
- * header says the session is still coming up instead of naming a fake model.
- */
-export function emLabel(em: FeedEmInfo): string {
-  return em.model === 'unknown' ? `${em.vendor} / starting…` : `${em.vendor} / ${em.model}`;
 }
 
 export interface FeedSnapshot {
   type: 'snapshot';
   events: Event[];
-  sprint: FeedSprintInfo;
-  halts: Halt[];
   hil: HilRequest[];
-  /** T040: the open questions (`questions/Q-*.yaml`) — Needs-you cards alongside the pending HIL requests. */
   questions: Question[];
-  quota: FeedQuotaInfo[];
-  /** T043: absent only when the daemon was started without a project root. */
   project?: FeedProjectInfo;
   status: FeedStatusInfo;
-  /** T044: one story per ticket — the Sprint tab's ticket list. */
-  stories: TicketStory[];
-  /** T044: the Team table, departed agents included. */
-  team: FeedTeamMember[];
-  /** T049: the resident EM session's vendor/model. Absent when no resident EM is wired. */
-  em?: FeedEmInfo;
 }
 
-/**
- * T044 — mirrors of `packages/daemon/src/feed/stories.ts`'s `TicketStory` /
- * `StoryStep` and `feed/snapshot.ts`'s `FeedTeamMember`, for the same
- * no-workspace-cycle reason the rest of this file mirrors `FeedSnapshot`.
- */
-export type StoryTone = 'good' | 'now' | 'warn' | 'plain';
-
-export interface StoryStep {
-  ts: string;
-  tone: StoryTone;
-  headline?: string;
-  text: string;
-}
-
-export interface TicketStory {
-  ticket: string;
-  title: string;
-  status: string;
-  stage: { label: string; tone: 'info' | 'warn' | 'good' };
-  who?: string;
-  steps: StoryStep[];
-  needs_you: number;
-}
-
-export interface FeedTeamMember {
-  id: string;
-  vendor: string;
-  model: string;
-  role?: string;
-  ticket?: string;
-  state: 'working' | 'idle' | 'left';
-  last_seen: string;
-  left_at?: string;
-  doing: string;
-  tokens: number;
-}
-
-/** T044 — mirror of `packages/daemon/src/em/report.ts`'s `SprintReport` (`GET /api/sprint/review`). */
-export interface ReportDecision {
-  at: string;
-  gate: string;
-  ticket?: string;
-  decided_by: string;
-  outcome: string;
-}
-
-export interface ReportTicketLine {
-  ticket: string;
-  status: string;
-  merged: boolean;
-  review_rounds: number;
-  review_verdicts: string[];
-  qa_verdict?: string;
-  text: string;
-}
-
-/** T050 — the sprint's phase, and the decision that closed its review. */
-export type SprintPhase = 'running' | 'review_pending' | 'reviewed';
-
-export interface ReportReviewDecision {
-  at: string;
-  decision: 'approve' | 'deny';
-  decided_by: string;
-  note?: string;
-}
-
-export interface SprintReport {
-  sprint?: string;
-  phase: SprintPhase;
-  decision?: ReportReviewDecision;
-  goal: string;
-  asked: string;
-  built: string;
-  went_wrong: string;
-  where: string;
-  per_ticket: ReportTicketLine[];
-  decisions: ReportDecision[];
-  proposes_next: string[];
-  spend: string[];
-  diagnostics: string[];
-  generated_at: string;
-}
-
-/** T044 — mirror of `packages/daemon/src/feed/diff.ts`'s `TicketDiff` (`GET /api/tickets/:id/diff`). */
-export interface TicketDiff {
-  ticket: string;
-  range: string;
-  worktree: string;
-  branch?: string;
-  stat: string;
-  patch: string;
-  truncated: boolean;
-  ref?: string;
+export function isFeedSnapshot(value: unknown): value is FeedSnapshot {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    (value as { type?: unknown }).type === 'snapshot' &&
+    Array.isArray((value as { events?: unknown }).events)
+  );
 }
