@@ -5,7 +5,7 @@
  * connection, so a client that just opened the page (or just reconnected
  * after a drop) gets caught up without replaying the whole event log itself.
  *
- * T122 cut the sprint strip, the ticket stories, the Team table and the
+ * T122 cut the top strip, the ticket stories, the Team table and the
  * vendor barometer out of it with the subsystems that fed them; what is left
  * is the event tail, the open gates, the open questions and the top bar's
  * project block. The cockpit's own shell is rebuilt in Phase 6.

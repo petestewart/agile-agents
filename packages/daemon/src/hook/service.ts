@@ -46,9 +46,7 @@ import {
   MESSAGE_BODY_MAX_CHARS,
   type Message,
   type Policy,
-  type Ticket,
   type TicketId,
-  type TicketStatus,
 } from '@agile-agents/shared';
 import type { Bus } from '../bus';
 import type { PermissionRole } from '../permissions';
@@ -147,14 +145,6 @@ function safeRealpath(path: string): string {
   }
 }
 
-/** A ticket only resolves an active hook call while it's actually in flight — §4's live-status set (assigned/in_progress/in_review/in_qa), matching `bus.ts`'s own `LIVE_TICKET_STATUSES` reasoning for "an agent is really working this ticket right now". */
-const LIVE_TICKET_STATUSES: readonly TicketStatus[] = [
-  'assigned',
-  'in_progress',
-  'in_review',
-  'in_qa',
-];
-
 const UNRESOLVED_CWD_REASON = 'agile: cwd is not a registered ticket worktree';
 
 /**
@@ -191,25 +181,6 @@ export class HookService {
   }
 
   /**
-   * Finds the live-status ticket whose `worktree` (resolved against
-   * `repoRoot`, both sides `realpath`d) contains `cwd` — the fallback path
-   * for a caller/test with no `AgentRecord` on file (see this file's header).
-   */
-  private resolveTicketByCwd(cwd: string | undefined): Ticket | undefined {
-    if (cwd === undefined) return undefined;
-    const realCwd = safeRealpath(cwd);
-    for (const ticket of this.store.listTickets()) {
-      if (ticket.worktree === undefined || ticket.assignee === undefined) continue;
-      if (!this.isLiveTicket(ticket)) continue;
-      const worktreeAbs = this.absWorktree(ticket.worktree);
-      if (worktreeAbs !== undefined && isPathInside(realCwd, safeRealpath(worktreeAbs))) {
-        return ticket;
-      }
-    }
-    return undefined;
-  }
-
-  /**
    * Resolves `{agent, ticket, role, worktreePath}` from the payload's `cwd`
    * (registry-first — see this file's header) — or `undefined` if this call
    * can't be attributed to a known, live agent. `agentHint` (the payload's
@@ -232,10 +203,6 @@ export class HookService {
     const lastSeenMs = Date.parse(record.last_seen);
     if (Number.isNaN(lastSeenMs)) return true;
     return now.getTime() - lastSeenMs >= this.bus.getLivenessTimeoutMs();
-  }
-
-  private isLiveTicket(ticket: Ticket): boolean {
-    return LIVE_TICKET_STATUSES.includes(ticket.status);
   }
 
   private resolveAgentByCwd(
@@ -278,14 +245,6 @@ export class HookService {
       // regardless of that ticket's current status — a `done`/`ready`
       // ticket here is normal, not a stale/crashed registration the way it
       // would be for the other three roles.
-      if (chosen.record.role !== 'architect') {
-        try {
-          const ticket = this.store.getTicket(ticketId);
-          if (!this.isLiveTicket(ticket)) return undefined;
-        } catch {
-          return undefined;
-        }
-      }
       const worktreePath = this.absWorktree(chosen.record.worktree) ?? this.options.repoRoot;
       return {
         agent: chosen.id as AgentId,
@@ -295,17 +254,7 @@ export class HookService {
       };
     }
 
-    // Fallback: no registered agent's worktree matches — the older
-    // ticket-worktree-based resolution, engineer-only (no role signal
-    // exists on `Ticket` itself).
-    const ticket = this.resolveTicketByCwd(cwd);
-    if (ticket === undefined || ticket.assignee === undefined) return undefined;
-    return {
-      agent: ticket.assignee as AgentId,
-      ticket: ticket.id,
-      role: 'engineer',
-      worktreePath: this.absWorktree(ticket.worktree) ?? this.options.repoRoot,
-    };
+    return undefined;
   }
 
   private async buildContext(
@@ -320,14 +269,6 @@ export class HookService {
     const resolved = this.resolveAgentByCwd(cwd, agentHint);
     if (resolved === undefined) return undefined;
     const { agent, ticket: ticketId, role, worktreePath } = resolved;
-
-    let ticket: Ticket;
-    try {
-      ticket = this.store.getTicket(ticketId);
-    } catch (err) {
-      if (err instanceof NotFoundError) return undefined;
-      throw err;
-    }
 
     // Liveness heartbeat rides on the pre-tool-use hook (§5 "Liveness":
     // "bus.heartbeat rides on the pre-tool-use hook") — done here so every
@@ -369,7 +310,7 @@ export class HookService {
       inbox: noAdditionalContextChannel
         ? this.bus.poll(agent).filter((m) => m.priority !== 'normal')
         : this.bus.poll(agent),
-      ticketBudget: ticket.budget,
+      ticketBudget: undefined,
       limits: this.limits,
       fileSize: this.fileSize,
     };

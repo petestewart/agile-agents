@@ -57,7 +57,7 @@ export function printStatusHuman(status: StatusResult): void {
   } else {
     printTable(
       ['id', 'kind', 'owner', 'summary'],
-      pending.map((g) => [g.id, g.hil_kind, g.owner, g.summary]),
+      pending.map((g) => [g.id, g.hil_kind, g.owner, g.summary ?? '-']),
     );
   }
   console.log('');

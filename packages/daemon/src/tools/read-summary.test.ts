@@ -46,7 +46,6 @@ describe('runReadSummary', () => {
       input: { path: 'a.ts', question: 'what does this export?' },
       worktree: repo,
       repoRoot: repo,
-      sprintId: 'S-01',
       runner,
     });
 
@@ -70,7 +69,6 @@ describe('runReadSummary', () => {
       input: { path: 'a.ts', question: 'what does this export?' },
       worktree: repo,
       repoRoot: repo,
-      sprintId: 'S-01',
       runner,
     };
 
@@ -91,7 +89,6 @@ describe('runReadSummary', () => {
       tool: readSummaryTool,
       worktree: repo,
       repoRoot: repo,
-      sprintId: 'S-01',
       runner,
       ctx: { agent: 'eng-1', ticket: 'TKT-0001' },
     };
@@ -106,7 +103,6 @@ describe('runReadSummary', () => {
       tool: readSummaryTool,
       worktree: repo,
       repoRoot: repo,
-      sprintId: 'S-01',
       runner,
       ctx: { agent: 'eng-1', ticket: 'TKT-0001' },
     };
@@ -130,7 +126,6 @@ describe('runReadSummary', () => {
       input: { path: 'a.ts' },
       worktree: repo,
       repoRoot: repo,
-      sprintId: undefined,
       runner,
     });
     expect(result.output.summary.length).toBeLessThanOrEqual(400 * 4);
@@ -149,7 +144,6 @@ describe('runReadSummary', () => {
       input: { path: 'a.ts' },
       worktree: repo,
       repoRoot: repo,
-      sprintId: undefined,
       runner,
     });
     expect(result.output.summary).toBe('not json at all');
@@ -179,7 +173,6 @@ describe('runReadSummary', () => {
       input: { path: diffPath },
       worktree: join(repo, '.worktrees', 'TKT-0001'),
       repoRoot: repo,
-      sprintId: undefined,
       runner,
     });
     expect(viaAbsolute.output.summary).toBe('ok');
@@ -189,7 +182,6 @@ describe('runReadSummary', () => {
       input: { path: 'test_run/bun/run1.log' },
       worktree: join(repo, '.worktrees', 'TKT-0001'),
       repoRoot: repo,
-      sprintId: undefined,
       runner,
     });
     expect(viaRelative.output.summary).toBe('ok');
@@ -205,7 +197,6 @@ describe('runReadSummary', () => {
         input: { path: '../../etc/passwd' },
         worktree: repo,
         repoRoot: repo,
-        sprintId: undefined,
         runner,
       }),
     ).rejects.toThrow(ReadSummaryError);

@@ -15,14 +15,14 @@
  * `{type:'hello'}` + `{type:'snapshot', ...}`. Without a store the feed
  * routes 503 and `/ws` still sends only the hello frame.
  *
- * T122 deleted the ticket/oracle/kb/halt/policy/plan/sprint-review/chat and
+ * T122 deleted the ticket/oracle/kb/halt/policy/plan/review/chat and
  * Jira route families along with the subsystems behind them.
  */
 
 import { dirname, join } from 'node:path';
 import {
-  HilIdSchema,
   type HilDecision,
+  HilIdSchema,
   MESSAGE_BODY_MAX_CHARS,
   type QuestionId,
   QuestionIdSchema,
@@ -413,7 +413,7 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
       /**
        * T112: `/control-room` moved to `/`; this stays a redirect so old
        * links, bookmarks and the design docs keep working. The query string
-       * is preserved — `?view=sprint` is how the cockpit is deep-linked.
+       * is preserved — `?view=` is how the cockpit is deep-linked.
        */
       if (url.pathname === '/control-room' || url.pathname === '/control-room/') {
         // A relative `Location` is legal (RFC 7231 §7.1.2) and avoids

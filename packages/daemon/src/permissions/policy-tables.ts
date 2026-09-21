@@ -640,10 +640,10 @@ function architectVerdict(classified: PermissionRequest): PolicyVerdict {
 
 /**
  * EM role table (T041 — design §14 EM row: read "state via daemon"; write
- * "sprints, assignments, policy proposals"; run "none"; network "none").
+ * "state changes, not files"; run "none"; network "none").
  *
  * Like the architect's, the EM's write cell never reaches this ACP layer:
- * `sprint_plan`/`assign`/`policy_propose` are MCP verbs on the daemon's own
+ * The em role's writes are MCP verbs on the daemon's own
  * bridge (`em/verbs.ts`), dispatched over stdio and role-gated server-side
  * — and `decidePermission` lets `mcp__agile__*` through before any role
  * table runs. So an *edit* request reaching here can only be the model
@@ -660,8 +660,7 @@ function emVerdict(classified: PermissionRequest): PolicyVerdict {
       return ALLOW;
     case 'edit':
       return deny(
-        'em role never edits files directly — sprints, assignments and policy proposals go ' +
-          'through the MCP verbs (sprint_plan, assign, policy_propose), not a raw Write/Edit',
+        'em role never edits files directly — its writes go through the MCP verbs, not a raw Write/Edit',
       );
     case 'execute':
       return deny('em role runs nothing (design §14 EM row: Run = none) — use the agile verbs');

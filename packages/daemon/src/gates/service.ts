@@ -135,7 +135,7 @@ export interface GateRequestContext {
    * T121: the stream this gate is raised on. Required — a gate with no
    * stream has nowhere to show in the inbox (`stream_path` is how the
    * operator tells their eleven things apart, cockpit design §3.2).
-   * `sprint`/`epic`/`team` overrides went with the ceremony layer.
+   * The per-container gate overrides went with the ceremony layer.
    */
   stream: string;
   /** Who to attribute the resulting bus message to. Defaults to `'daemon'`. */

@@ -134,7 +134,6 @@ function formatHistoryLine(
   return reason ? `${base} — ${reason}` : base;
 }
 
-
 /** Generic entity (de)serialization by extension — `.json` or yaml (everything else). */
 function writeEntityFile(absPath: string, data: unknown): void {
   if (absPath.endsWith('.json')) {
@@ -657,7 +656,7 @@ export class StateStore {
   /**
    * T044: the `agent_deleted` event carries the record that was removed
    * (`vendor`/`model`/`role`/`ticket`). §17 v2's Team table "keeps finished
-   * agents ... for the sprint", and a session's exit path
+   * agents ...", and a session's exit path
    * (`runner/session.ts`'s `finish()`) *deletes* the registry file — so
    * after a departure the only remaining trace of who that agent was, and
    * on what model, is this line in `log/events.jsonl`. `AgentRecord` itself

@@ -90,8 +90,8 @@ describe('listDataFiles', () => {
   });
 
   test('is sorted with numeric collation, whatever order the filesystem returns', () => {
-    // CI (ext4) returned `S-2.yaml` before `S-1.yaml`, so `listSprints()[0]`
-    // was the wrong sprint; APFS/tmpfs happened to return them sorted.
+    // CI (ext4) returned `b.yaml` before `a.yaml`, so a caller taking the
+    // first entry got the wrong file; APFS/tmpfs happened to return them sorted.
     for (const name of ['S-10.yaml', 'S-2.yaml', 'S-1.yaml', 'S-3.yaml']) {
       writeFileSync(join(dir, name), '');
     }

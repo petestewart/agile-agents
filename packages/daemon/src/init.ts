@@ -24,7 +24,7 @@ import { stringify as stringifyYaml } from 'yaml';
 function defaultPolicy(): Policy {
   return validatePolicy({
     // T121: the three surviving gate kinds (cockpit design §3.1). Every
-    // other row — approve_plan, approve_decision, sprint_review, unblock,
+    // other row — approve_plan, approve_decision, review, unblock,
     // demo, promote_to_main — is deleted with the ceremony that needed it.
     gates: {
       land: 'human',
@@ -190,7 +190,7 @@ function starterToolFiles(
 
 /**
  * `oracle/product.md` as `agile init` first writes it. Exported so callers
- * that *derive* something from the product brief (the sprint goal, T046
+ * that *derive* something from the product brief (T046
  * defect 2) can tell "the architect hasn't written a brief yet" from a real
  * one, rather than lifting the placeholder `# Product` heading.
  */

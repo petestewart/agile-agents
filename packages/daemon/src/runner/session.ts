@@ -575,7 +575,7 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
     // to go out `from: agentId`, which made `pipeline-glue.ts`'s
     // `advanceEngineerEscalations` (T040) read every engineer's normal exit
     // as the engineer escalating, open a `Question` for it, and leave every
-    // merged ticket "Done · blocked / Waiting on you" on the Sprint tab.
+    // merged ticket "Done · blocked / Waiting on you" in the cockpit.
     // `from: 'daemon'` is what `bus.ts`'s own liveness/redelivery notices
     // already use, and `routing.ts` always allows daemon -> em.
     await bus.send({

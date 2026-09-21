@@ -47,7 +47,7 @@
  * answered by nothing, and a vendor that does NOT gate exec/fs at the ACP
  * layer (Codex, design/spike-findings.md) would leave a daemon-lifetime
  * session with unrestricted access to the repo root. §14's EM row is read
- * "state via daemon", write "sprints, assignments, policy proposals" (all
+ * "state via daemon", write "state, not files" (all
  * MCP verbs, never a raw edit), run "none", network "none" — see
  * `emVerdict` in `policy-tables.ts`.
  */

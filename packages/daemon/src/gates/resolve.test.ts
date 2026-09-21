@@ -7,7 +7,7 @@ function policy(gates: Policy['gates']): Policy {
 }
 
 /**
- * T121: the sprint → epic → team → repo-default walk is gone with sprints,
+ * T121: the multi-level override walk is gone with the ceremony layer,
  * epics and teams. One lookup, one fail-safe default.
  */
 describe('resolveGate', () => {
