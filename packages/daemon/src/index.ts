@@ -85,6 +85,9 @@ export * from './streams';
 export * from './questions';
 export * from './inbox';
 
+// Markdown docs per repo and per stream (T134).
+export * from './docs';
+
 // ACP permission policy by role (T010).
 export * from './permissions';
 
