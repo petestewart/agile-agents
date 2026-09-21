@@ -1,7 +1,7 @@
 /**
- * Thin git wrapper for the merge/integration owner (T019 — design/
- * agile-agents-design.md §15 "Git model and teams": "ticket -> integration
- * on done ... integration -> main at landing"). `Bun.spawnSync` only,
+ * Thin git wrapper for the landing path (T019, renamed from `merge/` by
+ * T132 — design/cockpit-design.md §8.2 "Landing path, per stream").
+ * `Bun.spawnSync` only,
  * never a shell string (session brief) — every argument is passed as its
  * own array element, so a branch/title/path with spaces or shell
  * metacharacters is never re-interpreted.
@@ -37,8 +37,7 @@
  * heuristic is exactly the kind of thing that quietly breaks the day a
  * repo root or worktree happens to contain that literal substring itself,
  * or the layout changes). Every caller already knows its own repo root
- * (`merge/owner.ts`'s `this.repoRoot`, `merge/precommit.ts`'s threaded
- * `repoRoot` parameter) — passing it explicitly is strictly simpler than
+ * (`landing/service.ts`'s resolved repo root) — passing it explicitly is strictly simpler than
  * recovering it.
  */
 

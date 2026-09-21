@@ -29,7 +29,7 @@
  * daemon module living beside the domain it serves rather than folded into
  * one particular caller — this one started life inline in
  * `merge/owner.ts` (T021) and is promoted here so `tools/test-run.ts`,
- * `sandbox/backend.ts`, `merge/git.ts` and `runner/worktrees.ts` share one
+ * `sandbox/backend.ts`, `landing/git.ts` and `runner/worktrees.ts` share one
  * implementation instead of five near-identical copies (T034).
  *
  * Vendor ACP session spawns (`runner/session.ts` / `acp-client`) never use

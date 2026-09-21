@@ -14,7 +14,7 @@ function rawGit(args: string[], cwd: string): void {
 }
 
 beforeEach(() => {
-  repoRoot = mkdtempSync(join(tmpdir(), 'agile-merge-git-'));
+  repoRoot = mkdtempSync(join(tmpdir(), 'agile-landing-git-'));
   rawGit(['init', '-q', '-b', 'main'], repoRoot);
   rawGit(['config', 'user.email', 'test@example.com'], repoRoot);
   rawGit(['config', 'user.name', 'Test'], repoRoot);
@@ -52,7 +52,7 @@ describe('T034: git()/gitWrite()/runGit() spawn with a sandboxed HOME, never the
   });
 
   test('an explicit repoRoot that differs from cwd is honoured exactly, not silently corrected', () => {
-    const otherRoot = mkdtempSync(join(tmpdir(), 'agile-merge-git-other-'));
+    const otherRoot = mkdtempSync(join(tmpdir(), 'agile-landing-git-other-'));
     try {
       const result = git(['rev-parse', 'HEAD'], repoRoot, otherRoot);
       expect(result.exitCode).toBe(0);
