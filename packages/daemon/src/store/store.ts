@@ -92,6 +92,18 @@ export class NotFoundError extends Error {
   }
 }
 
+/**
+ * A create that collides with an existing record. Typed so the RPC edge can
+ * report it as `invalid params` (-32602) rather than an internal error
+ * (T126): a duplicate id is caller input, not a daemon fault.
+ */
+export class AlreadyExistsError extends Error {
+  constructor(entity: string, id: string) {
+    super(`${entity} ${id} already exists`);
+    this.name = 'AlreadyExistsError';
+  }
+}
+
 /** Serializes async mutation calls against each other, in FIFO order. See file header. */
 class Mutex {
   private tail: Promise<unknown> = Promise.resolve();
@@ -865,7 +877,7 @@ export class StateStore {
       const validated = validateStream(stream);
       const relPath = this.streamRelPath(validated.id);
       if (fileExists(this.abs(relPath))) {
-        throw new Error(`Stream ${validated.id} already exists`);
+        throw new AlreadyExistsError('Stream', validated.id);
       }
       assertNoStreamCycle(validated.id, validated.parent, (sid) => this.lookupStreamParent(sid));
       writeYamlFileAtomic(this.abs(relPath), validated);

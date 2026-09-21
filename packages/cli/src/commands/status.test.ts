@@ -4,6 +4,7 @@
  * with the subsystems behind them.
  */
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
+import { join } from 'node:path';
 import { type TestDaemon, startTestDaemon } from '../test-support';
 import { fetchStatus, printStatusHuman, runStatus } from './status';
 
@@ -71,6 +72,33 @@ describe('runStatus', () => {
       expect(await runStatus(daemon.socketPath, true)).toBe(0);
     } finally {
       console.log = original;
+    }
+  });
+
+  /**
+   * T126 (QA rough edge 3): a dead daemon used to surface as the raw
+   * `could not reach daemon at ...: connect ENOENT`. It now says what
+   * `agile daemon status` says, and exits 1.
+   */
+  test('says agiled is not running and exits 1 when the socket is dead', async () => {
+    const errors: string[] = [];
+    const logs: string[] = [];
+    const originalError = console.error;
+    const originalLog = console.log;
+    console.error = (msg: string) => errors.push(String(msg));
+    console.log = (msg: string) => logs.push(String(msg));
+    try {
+      const dead = join(daemon.home, 'no-such-daemon.sock');
+      expect(await runStatus(dead, false)).toBe(1);
+      expect(errors.join('\n')).toMatch(/^agiled is not running \(home=/);
+      expect(errors.join('\n')).not.toContain('ENOENT');
+      expect(await runStatus(dead, true)).toBe(1);
+      expect(JSON.parse(logs.join('\n')) as { running: boolean }).toMatchObject({
+        running: false,
+      });
+    } finally {
+      console.error = originalError;
+      console.log = originalLog;
     }
   });
 });

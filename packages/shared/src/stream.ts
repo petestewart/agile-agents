@@ -280,9 +280,25 @@ export function assertStreamWrite(
 }
 
 /**
+ * Thrown when a proposed `parent` would make a stream its own ancestor.
+ * A distinct class so the RPC edge can map it to `invalid params`
+ * (-32602): a cycle is bad caller input, not a daemon-internal fault.
+ */
+export class StreamCycleError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'StreamCycleError';
+  }
+}
+
+/**
  * Rejects a parent cycle. Nesting depth is unlimited (D1); a stream that is
  * its own ancestor is not. `lookupParent` returns the stored parent of a
  * stream id, or `undefined` for a root (or unknown) stream.
+ *
+ * The message names the whole ancestor chain it walked, so a caller can see
+ * *where* the cycle closes; every segment is a known stream id, so nothing
+ * interpolates as `undefined`.
  */
 export function assertNoStreamCycle(
   id: string,
@@ -291,14 +307,16 @@ export function assertNoStreamCycle(
 ): void {
   if (parent === undefined) return;
   if (parent === id) {
-    throw new Error(`invalid Stream parent: ${id} cannot be its own parent`);
+    throw new StreamCycleError(`invalid Stream parent: ${id} cannot be its own parent`);
   }
-  const seen = new Set<string>([id]);
-  let current: string | undefined = parent;
+  const chain: string[] = [id, parent];
+  const seen = new Set<string>([id, parent]);
+  let current: string | undefined = lookupParent(parent);
   while (current !== undefined) {
+    chain.push(current);
     if (seen.has(current)) {
-      throw new Error(
-        `invalid Stream parent: ${parent} would create a parent cycle through ${current}`,
+      throw new StreamCycleError(
+        `invalid Stream parent: ${parent} would create a parent cycle: ${chain.join(' -> ')}`,
       );
     }
     seen.add(current);

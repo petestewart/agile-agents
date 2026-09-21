@@ -12,6 +12,7 @@
  */
 
 import {
+  StreamCycleError,
   THREAD_ENTRY_KINDS,
   type ThreadEntryKind,
   UlidSchema,
@@ -19,7 +20,14 @@ import {
 } from '@agile-agents/shared';
 import { RpcParamError } from '../gates/rpc';
 import type { RpcMethodHandler } from '../rpc';
-import type { StreamNode, StreamPatch, StreamService } from './service';
+import { AlreadyExistsError } from '../store/store';
+import {
+  type StreamNode,
+  type StreamPatch,
+  type StreamService,
+  UnknownParentStreamError,
+  UnknownRepoError,
+} from './service';
 
 /** Every `stream.*` write from this edge is the human's (design §2.2). */
 const EDGE_PRINCIPAL = 'human' as const;
@@ -111,10 +119,37 @@ function requireHumanPatch(params: Record<string, unknown>): StreamPatch {
   return patch;
 }
 
+/**
+ * Errors the service/store raise for **caller input** — a parent cycle, a
+ * duplicate id, an unknown parent or an unregistered repo. `dispatch()`
+ * only reads a `code` off the thrown error, so without this they surfaced
+ * as -32603 "internal error" while every other validation failure on this
+ * surface is -32602 (T126, QA rough edge 1). Everything else still
+ * propagates untouched: a real internal fault must not be relabelled as
+ * the caller's fault.
+ */
+async function asParamErrors<T>(run: () => Promise<T>): Promise<T> {
+  try {
+    return await run();
+  } catch (err) {
+    if (
+      err instanceof StreamCycleError ||
+      err instanceof AlreadyExistsError ||
+      err instanceof UnknownParentStreamError ||
+      err instanceof UnknownRepoError
+    ) {
+      throw new RpcParamError(err.message);
+    }
+    throw err;
+  }
+}
+
 export function buildStreamRpcMethods(service: StreamService): Record<string, RpcMethodHandler> {
   return {
     'stream.create': async (params) =>
-      service.create(EDGE_PRINCIPAL, validateStreamCreateInput(requireObject(params))),
+      asParamErrors(() =>
+        service.create(EDGE_PRINCIPAL, validateStreamCreateInput(requireObject(params))),
+      ),
 
     'stream.get': (params) => {
       const p = requireObject(params);
@@ -134,7 +169,9 @@ export function buildStreamRpcMethods(service: StreamService): Record<string, Rp
 
     'stream.update': async (params) => {
       const { id, ...rest } = requireObject(params);
-      return service.update(EDGE_PRINCIPAL, requireStreamId(id), requireHumanPatch(rest));
+      const streamId = requireStreamId(id);
+      const patch = requireHumanPatch(rest);
+      return asParamErrors(() => service.update(EDGE_PRINCIPAL, streamId, patch));
     },
 
     'stream.close': async (params) => {
