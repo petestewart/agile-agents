@@ -12,7 +12,7 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { THREAD_BODY_MAX_CHARS, ulid } from '@agile-agents/shared';
+import { StreamCycleError, THREAD_BODY_MAX_CHARS, ulid } from '@agile-agents/shared';
 import { runInit } from '../init';
 import { StateStore } from '../store';
 import { StreamService } from './service';
@@ -177,10 +177,40 @@ describe('principal checks (design §2.2, T110)', () => {
     expect(store.listEvents().some((e) => e.kind === 'stream_closed')).toBe(true);
   });
 
+  test('close records its note as one thread line and one stream_closed event', async () => {
+    const stream = await newStream();
+    const before = streams.readThread(stream.id).total;
+    await streams.close('human', stream.id, 'not worth doing');
+    const thread = streams.readThread(stream.id);
+    expect(thread.total).toBe(before + 1);
+    const last = thread.entries[thread.entries.length - 1];
+    expect(last?.by).toBe('human');
+    expect(last?.kind).toBe('line');
+    expect(last?.body).toBe('closed: not worth doing');
+    expect(store.listEvents().filter((e) => e.kind === 'stream_closed')).toHaveLength(1);
+  });
+
+  test('close without a note leaves the thread alone', async () => {
+    const stream = await newStream();
+    const before = streams.readThread(stream.id).total;
+    const closed = await streams.close('human', stream.id);
+    expect(closed.human.status).toBe('closed');
+    expect(streams.readThread(stream.id).total).toBe(before);
+  });
+
   test('a parent cycle is refused by the store, not by caller discipline', async () => {
     const a = await newStream('a');
     const b = await streams.create('human', { title: 'b', goal: 'g', parent: a.id });
-    await expect(streams.update('human', a.id, { parent: b.id })).rejects.toThrow(/cycle/);
+    await expect(streams.update('human', a.id, { parent: b.id })).rejects.toThrow(StreamCycleError);
+    // The message names the chain it walked, with no `undefined`/`null` in it
+    // (T126, QA rough edge 1).
+    const cycle = (await streams.update('human', a.id, { parent: b.id }).then(
+      () => undefined,
+      (e: unknown) => e as Error,
+    )) as Error;
+    expect(cycle.message).toContain(`${a.id} -> ${b.id} -> ${a.id}`);
+    expect(cycle.message).not.toContain('undefined');
+    expect(cycle.message).not.toContain('null');
     await expect(streams.update('human', a.id, { parent: a.id })).rejects.toThrow(
       /cannot be its own parent/,
     );

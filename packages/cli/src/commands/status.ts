@@ -9,8 +9,9 @@
 
 import type { DaemonStatus } from '@agile-agents/daemon';
 import type { HilRequest, Question } from '@agile-agents/shared';
-import { callRpc } from '../client';
+import { RpcConnectionError, callRpc } from '../client';
 import { printFields, printJson, printTable } from '../format';
+import { type DaemonStatusReport, daemonStatusReport, formatDaemonStatus } from './daemon';
 
 export interface StatusResult {
   daemon: DaemonStatus;
@@ -72,8 +73,27 @@ export function printStatusHuman(status: StatusResult): void {
   }
 }
 
+/**
+ * A dead daemon is not an error to spill: `agile status` used to print the
+ * raw `could not reach daemon at <sock>: connect ENOENT ...` while `agile
+ * daemon status` said `agiled is not running (home=...)` for the same fact
+ * (T126, QA rough edge 3). Both now say the same sentence, from the same
+ * formatter, and exit 1.
+ */
 export async function runStatus(socketPath: string, json: boolean): Promise<number> {
-  const status = await fetchStatus(socketPath);
+  let status: StatusResult;
+  try {
+    status = await fetchStatus(socketPath);
+  } catch (err) {
+    if (!(err instanceof RpcConnectionError)) throw err;
+    // Drop any pid: the socket is unreachable, so whatever the pidfile
+    // claims, there is no daemon answering here.
+    const { pid: _pid, ...paths } = daemonStatusReport();
+    const report: DaemonStatusReport = { ...paths, running: false };
+    if (json) console.log(JSON.stringify(report, null, 2));
+    else console.error(formatDaemonStatus(report));
+    return 1;
+  }
   if (json) printJson(status);
   else printStatusHuman(status);
   return 0;

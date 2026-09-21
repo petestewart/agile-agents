@@ -12,7 +12,7 @@ import type { Stream, ThreadEntry } from '@agile-agents/shared';
 import { ulid } from '@agile-agents/shared';
 import { runInit } from '../init';
 import type { RpcMethodHandler } from '../rpc';
-import { StateStore } from '../store';
+import { AlreadyExistsError, StateStore } from '../store';
 import { buildStreamRpcMethods } from './rpc';
 import { StreamService } from './service';
 
@@ -52,6 +52,67 @@ test('the method table is exactly the eight stream verbs', () => {
     'stream.thread_read',
     'stream.update',
   ]);
+});
+
+describe('caller-input errors are invalid params, not internal errors (T126)', () => {
+  const codeOf = async (run: () => Promise<unknown>): Promise<number | undefined> => {
+    const err = (await run().then(
+      () => undefined,
+      (e: unknown) => e,
+    )) as { code?: number; message: string } | undefined;
+    expect(err).toBeDefined();
+    expect(err?.message).not.toContain('undefined');
+    expect(err?.message).not.toContain('null');
+    return err?.code;
+  };
+
+  test('a parent cycle on stream.update is -32602 and names the chain', async () => {
+    const a = await create('a');
+    const b = await call<Stream>('stream.create', { title: 'b', goal: 'g', parent: a.id });
+    const err = (await call('stream.update', { id: a.id, parent: b.id }).then(
+      () => undefined,
+      (e: unknown) => e,
+    )) as { code?: number; message: string };
+    expect(err.code).toBe(-32602);
+    expect(err.message).toContain('parent cycle');
+    expect(err.message).toContain(`${a.id} -> ${b.id} -> ${a.id}`);
+    expect(err.message).not.toContain('undefined');
+    expect(err.message).not.toContain('null');
+  });
+
+  test('self-parent on stream.update is -32602', async () => {
+    const a = await create('a');
+    expect(await codeOf(() => call('stream.update', { id: a.id, parent: a.id }))).toBe(-32602);
+  });
+
+  test('an unknown parent on stream.create is -32602', async () => {
+    expect(
+      await codeOf(() => call('stream.create', { title: 't', goal: 'g', parent: ulid() })),
+    ).toBe(-32602);
+  });
+
+  test('an unregistered repo on stream.create is -32602', async () => {
+    expect(await codeOf(() => call('stream.create', { title: 't', goal: 'g', repo: 'nope' }))).toBe(
+      -32602,
+    );
+  });
+
+  test('a duplicate stream id is -32602, and a real fault stays internal', async () => {
+    const createThrowing = async (err: Error): Promise<{ code?: number } | undefined> => {
+      const service = new StreamService(store);
+      service.create = () => Promise.reject(err);
+      const handler = buildStreamRpcMethods(service)['stream.create'];
+      if (!handler) throw new Error('no stream.create');
+      return (await Promise.resolve(handler({ title: 't', goal: 'g' })).then(
+        () => undefined,
+        (e: unknown) => e,
+      )) as { code?: number } | undefined;
+    };
+    expect((await createThrowing(new AlreadyExistsError('Stream', ulid())))?.code).toBe(-32602);
+    // A genuine fault must not be relabelled as the caller's fault: no code,
+    // so `dispatch()` reports -32603.
+    expect((await createThrowing(new Error('disk on fire')))?.code).toBeUndefined();
+  });
 });
 
 describe('principal (design §2.2)', () => {

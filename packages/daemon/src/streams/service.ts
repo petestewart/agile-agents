@@ -64,6 +64,33 @@ export interface ThreadPage {
 const DEFAULT_THREAD_LIMIT = 100;
 
 /**
+ * `create` was given a `parent` that is not a stream in this home. Typed so
+ * the RPC edge reports it as `invalid params` (-32602) — bad caller input,
+ * not an internal fault (T126).
+ */
+export class UnknownParentStreamError extends Error {
+  constructor(public readonly parent: string) {
+    super(`unknown parent stream: ${parent}`);
+    this.name = 'UnknownParentStreamError';
+  }
+}
+
+/** `create` was given a `repo` that is not registered in `repos.yaml`. */
+export class UnknownRepoError extends Error {
+  constructor(
+    public readonly repo: string,
+    known: readonly string[],
+  ) {
+    super(
+      `unknown repo: ${repo} is not registered in repos.yaml${
+        known.length > 0 ? ` (registered: ${known.join(', ')})` : ' (none registered)'
+      }`,
+    );
+    this.name = 'UnknownRepoError';
+  }
+}
+
+/**
  * The thread author a principal writes as. `agent` needs its session id
  * (`agent:<ulid>`, §2.1) — a bare `agent` principal has no thread identity,
  * so callers pass the session explicitly.
@@ -87,17 +114,12 @@ export class StreamService {
   async create(principal: StreamPrincipal, rawInput: unknown): Promise<Stream> {
     const input: StreamCreateInput = validateStreamCreateInput(rawInput);
     if (input.parent !== undefined && !this.store.hasStream(input.parent)) {
-      throw new Error(`unknown parent stream: ${input.parent}`);
+      throw new UnknownParentStreamError(input.parent);
     }
     if (input.repo !== undefined) {
       const repos = this.store.getRepos();
       if (repos[input.repo] === undefined) {
-        const known = Object.keys(repos).sort();
-        throw new Error(
-          `unknown repo: ${input.repo} is not registered in repos.yaml${
-            known.length > 0 ? ` (registered: ${known.join(', ')})` : ' (none registered)'
-          }`,
-        );
+        throw new UnknownRepoError(input.repo, Object.keys(repos).sort());
       }
     }
     const now = new Date().toISOString();
@@ -165,14 +187,27 @@ export class StreamService {
     return this.store.updateStream(principal, id, (before) => applyPatch(before, patch), options);
   }
 
-  /** §2.3's human end state: `human.status: closed` (never an agent write). */
+  /**
+   * §2.3's human end state: `human.status: closed` (never an agent write).
+   *
+   * A `note` lands in two places: on `human.note` (the current record) and
+   * as one `line` on the thread (the durable record of *why* it closed) —
+   * T126, QA rough edge 2: the note used to vanish from the thread, leaving
+   * a later reader no trace of the close. The close itself still emits a
+   * single `stream_closed` event; the thread line is its own
+   * `thread_appended`, exactly like any other line.
+   */
   async close(principal: StreamPrincipal, id: string, note?: string): Promise<Stream> {
-    return this.update(
+    const closed = await this.update(
       principal,
       id,
       { human: { status: 'closed', ...(note !== undefined ? { note } : {}) } },
       { kind: 'stream_closed' },
     );
+    if (note !== undefined) {
+      await this.appendThread(principal, id, { kind: 'line', body: `closed: ${note}` });
+    }
+    return closed;
   }
 
   /**

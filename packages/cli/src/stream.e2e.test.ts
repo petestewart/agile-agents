@@ -85,6 +85,11 @@ describe('agile stream against a daemon on a temp AGILE_HOME', () => {
     expect(record.human.status).toBe('closed');
     expect(record.human.note).toBe('parked');
     expect(record.agent.status).toBe('idle');
+    // T126 (QA rough edge 2): the note is on the thread too, so a later
+    // reader sees that — and why — the stream was closed.
+    expect(after.out).toContain('closed: parked');
+    const shownAfter = await cli(['stream', 'show', root.id]);
+    expect(shownAfter.out).toContain('closed: parked');
   });
 
   test('a stream with no repo never touches git', async () => {
