@@ -192,12 +192,12 @@ Build order: Phase 0 → 1 → 2 → 3 → 4 → 5 → 6. Within a phase, ticket
 
 ### Ticket: T125 Daemon starts from any cwd
 - **Priority:** P0
-- **Status:** In Progress
+- **Status:** Done
 - **Owner:** opus:worker-T125
 - **Scope:** T124 QA finding. `agile daemon start` (and `--foreground`) fails with "not a git repository" outside a repo because `discoverConfig` still resolves a `repoRoot` from cwd and reads a per-repo `agile.config.yaml` overlay (deleted by design §7.5). Make `repoRoot` optional: `discoverConfig` never runs `git rev-parse`, the per-repo overlay is deleted, port comes from home `config.yaml` only. Survivors that took `config.repoRoot` (`ToolService`, `HookService`, http snapshot) take the repo from the caller (registered repo path for the agent's stream via `repos.yaml`) or, until T130/T131 re-key them, an optional root that fails closed (hook denies with a reason; tool runner refuses) when absent. `daemon.e2e.test.ts` starts the daemon from a non-git temp dir.
 - **Acceptance Criteria:** `agile daemon start` from `/tmp` with an empty registered-repo list starts, serves `stream.*`/`inbox.list`, and stops. No `git` subprocess runs during daemon start.
 - **Validation Steps:** `bun run test:integration` (daemon lifecycle e2e from a non-git cwd).
-- **Notes:** —
+- **Notes:** Branch `T125-daemon-starts-from-any-cwd`. `discoverConfig` is a wrapper over `resolveHomePaths()`, spawns nothing, per-repo `agile.config.yaml` overlay and dead Jira config deleted. `ToolService`/`HookService` take an optional repo root and fail closed without one (relative worktree denied; registry verbs refuse with `ToolRepoUnavailableError`) until T130–T132 re-key them per stream. Daemon e2e runs from a non-git dir on a free port (`freePort`/`writeFreePortConfig` in cli test-support). Control-room project block reads `agile` until it is re-keyed to the stream's repo. Review (sonnet) PASS. Full `bun test` 1279 pass / 2 skip / 0 fail; integration 16 pass. merge: 3242f5a.
 
 ### Ticket: T126 ∥ Phase 2 rough edges from QA
 - **Priority:** P2
