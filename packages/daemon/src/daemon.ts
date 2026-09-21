@@ -16,6 +16,7 @@ import { existsSync } from 'node:fs';
 import daemonPackageJson from '../package.json' with { type: 'json' };
 import { Bus, buildBusRpcMethods } from './bus';
 import { type AgileConfig, type DiscoverConfigOptions, discoverConfig } from './config';
+import { DocsService, buildDocsRpcMethods } from './docs';
 import { GateService, buildGateRpcMethods } from './gates';
 import type { DelegateFn } from './gates';
 import { HookService, buildHookRpcMethods } from './hook';
@@ -108,6 +109,10 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
           gates: gateService,
         })
       : undefined;
+  // T134: docs are plain Markdown under `<repo>/.agile-docs/` and
+  // `<home>/streams/<id>.docs/` — read-only, no index, no state of their own.
+  const docsService =
+    store && streamService ? new DocsService(store, streamService, config.stateRoot) : undefined;
   // Hoisted (T011) so `bus.*` RPC and the hook service share one `Bus`
   // instance over the same store.
   const bus = store ? new Bus(store, config.stateRoot, { now: options.now }) : undefined;
@@ -155,6 +160,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
           ...(questionService ? buildQuestionRpcMethods(questionService) : {}),
           ...(streamService ? buildStreamRpcMethods(streamService) : {}),
           ...(inboxService ? buildInboxRpcMethods(inboxService) : {}),
+          ...(docsService ? buildDocsRpcMethods(docsService) : {}),
           ...buildHookRpcMethods(
             // T125: no repo root either — an agent record's worktree is
             // absolute in practice, and a relative one now fails closed
