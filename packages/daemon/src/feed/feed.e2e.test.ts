@@ -14,6 +14,7 @@ import { describe, expect, test } from 'bun:test';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { ulid } from '@agile-agents/shared';
 import { type Browser, type Page, chromium } from 'playwright-core';
 import { type DaemonHandle, startDaemon } from '../daemon';
 import { GateService } from '../gates';
@@ -215,9 +216,9 @@ describe('feed page (Playwright e2e)', () => {
 
         // Seed one open HIL request before the daemon (and the page) ever
         // starts, so the page's initial snapshot already carries it.
-        const seeded = await gates.request('unblock', {
-          policy: { gates: { unblock: 'human' }, breaker_signals: [] },
-          hilKind: 'unblock',
+        const seeded = await gates.request('classifier_review', {
+          policy: { gates: { classifier_review: 'human' }, breaker_signals: [] },
+          stream: ulid(),
         });
         expect(seeded.status).toBe('pending');
 
@@ -233,7 +234,7 @@ describe('feed page (Playwright e2e)', () => {
         // The seeded HIL request renders from the initial snapshot.
         const hilItem = page.locator(`.hil-item[data-id="${seeded.id}"]`);
         await hilItem.waitFor({ state: 'attached', timeout: PAGE_TIMEOUT_MS });
-        expect(await hilItem.textContent()).toContain('unblock');
+        expect(await hilItem.textContent()).toContain('classifier_review');
 
         // A synthetic event, appended after the page is live, must show up
         // in the feed within 1s (T020 acceptance criterion).

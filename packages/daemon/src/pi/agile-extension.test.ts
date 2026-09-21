@@ -484,10 +484,7 @@ describe('createAgileExtension: inbox delivery', () => {
           worktree: join('.worktrees', 'TKT-0001'),
         }),
       );
-      const hookService = new HookService(store, bus, {
-        repoRoot: repo,
-        gates: new GateService(store),
-      });
+      const hookService = new HookService(store, bus, { repoRoot: repo });
 
       await bus.send({
         id: ulid(),

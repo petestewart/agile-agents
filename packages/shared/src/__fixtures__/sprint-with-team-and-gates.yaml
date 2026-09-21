@@ -8,6 +8,6 @@ budget_tokens: 5000000
 started: 2026-09-01T00:00:00Z
 carried_over: []
 team: team-alpha
+# T121: the closed set of gate kinds (cockpit design §3.1).
 gates:
-  approve_plan: human
-  sprint_review: human_timeout:4h
+  land: human_timeout:4h

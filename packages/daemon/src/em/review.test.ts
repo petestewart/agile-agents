@@ -41,9 +41,12 @@ describe('resolveSprintReview', () => {
     await fx.store.putTicket(makeTicket('TKT-0002', { depends: ['TKT-0001'] as never }));
     const sprint = makeSprint('S-1', {
       tickets: ['TKT-0001'] as never,
-      gates: { sprint_review: 'em' },
+      gates: { land: 'em' },
     });
     await fx.store.putSprint(sprint);
+    // T121: the sprint-level `gates:` override is deleted with the
+    // most-specific-wins walk — the repo policy is the only level left.
+    await fx.store.putPolicy({ gates: { land: 'em' }, breaker_signals: [] });
     await fx.store.appendLedgerLine(sprint.id, {
       ts: new Date().toISOString(),
       sprint: sprint.id,
@@ -83,7 +86,7 @@ describe('resolveSprintReview', () => {
     await fx.store.putTicket(makeTicket('TKT-0002', { depends: ['TKT-0001'] as never }));
     const sprint = makeSprint('S-1', {
       tickets: ['TKT-0001'] as never,
-      gates: { sprint_review: 'human' },
+      gates: { land: 'human' },
     });
     await fx.store.putSprint(sprint);
 
@@ -112,7 +115,7 @@ describe('resolveSprintReview', () => {
     await fx.store.putTicket(makeTicket('TKT-0001', { status: 'done' }));
     const sprint = makeSprint('S-1', {
       tickets: ['TKT-0001'] as never,
-      gates: { sprint_review: 'human' },
+      gates: { land: 'human' },
     });
     await fx.store.putSprint(sprint);
 
@@ -157,9 +160,12 @@ describe('resolveSprintReview', () => {
     await fx.store.putTicket(makeTicket('TKT-0001', { status: 'done' }));
     const sprint = makeSprint('S-1', {
       tickets: ['TKT-0001'] as never,
-      gates: { sprint_review: 'em' },
+      gates: { land: 'em' },
     });
     await fx.store.putSprint(sprint);
+    // T121: the sprint-level `gates:` override is deleted with the
+    // most-specific-wins walk — the repo policy is the only level left.
+    await fx.store.putPolicy({ gates: { land: 'em' }, breaker_signals: [] });
 
     const gateService = new GateService(fx.store, { delegate: denyDelegate });
     let merged = false;

@@ -12,7 +12,7 @@ import { runArchitectTurn } from './session';
 let repo: string;
 let store: StateStore;
 
-const POLICY: Policy = { gates: { approve_plan: 'human' }, breaker_signals: [] };
+const POLICY: Policy = { gates: { land: 'human' }, breaker_signals: [] };
 
 beforeEach(() => {
   repo = mkdtempSync(join(tmpdir(), 'agile-architect-session-'));
@@ -73,7 +73,10 @@ function fakeSpawnedSession() {
 }
 
 describe('runArchitectTurn — approve_plan gate routing', () => {
-  test('ExitPlanMode ("Approve Plan") request approved by a human respond() selects allow_once', async () => {
+  // T121: the `approve_plan` gate is deleted (cockpit design §3.1), so an
+  // ExitPlanMode request is approved without opening one. T122 deletes this
+  // module.
+  test('ExitPlanMode ("Approve Plan") is allowed without opening a gate', async () => {
     const fake = fakeSpawnedSession();
     const gateService = new GateService(store);
     const handle = runArchitectTurn({
@@ -102,13 +105,8 @@ describe('runArchitectTurn — approve_plan gate routing', () => {
       },
     } as unknown as AgentEvent);
 
-    // Human answers the pending hil request directly.
-    await Bun.sleep(10);
-    const [pending] = gateService.list();
-    if (!pending) throw new Error('expected a pending approve_plan gate request');
-    await gateService.respond(pending.id, 'approve', 'human');
-
     await Bun.sleep(20);
+    expect(gateService.list()).toHaveLength(0);
     expect(fake.responded).toHaveLength(1);
     expect(fake.responded[0]?.result).toEqual({
       outcome: { outcome: 'selected', optionId: 'allow' },
@@ -117,50 +115,6 @@ describe('runArchitectTurn — approve_plan gate routing', () => {
     fake.emit({ type: 'exit', exitCode: 0 } as unknown as AgentEvent);
     const info = await handle.exited;
     expect(info.planApproved).toBe(true);
-  });
-
-  test('a rejected plan selects reject_once', async () => {
-    const fake = fakeSpawnedSession();
-    const gateService = new GateService(store);
-    const handle = runArchitectTurn({
-      gateService,
-      policy: POLICY,
-      cwd: repo,
-      prompt: 'architect brief',
-      mode: 'plan',
-      spawn: () => fake.session,
-      gatePollMs: 5,
-    });
-
-    fake.emit({
-      type: 'event',
-      event: {
-        acp: 'request',
-        id: 'req-1',
-        method: 'session/request_permission',
-        params: {
-          toolCall: { kind: 'switch_mode', title: 'Approve Plan' },
-          options: [
-            { optionId: 'allow', kind: 'allow_once' },
-            { optionId: 'reject', kind: 'reject_once' },
-          ],
-        },
-      },
-    } as unknown as AgentEvent);
-
-    await Bun.sleep(10);
-    const [pending] = gateService.list();
-    if (!pending) throw new Error('expected a pending approve_plan gate request');
-    await gateService.respond(pending.id, 'deny', 'human');
-
-    await Bun.sleep(20);
-    expect(fake.responded[0]?.result).toEqual({
-      outcome: { outcome: 'selected', optionId: 'reject' },
-    });
-
-    fake.emit({ type: 'exit', exitCode: 0 } as unknown as AgentEvent);
-    const info = await handle.exited;
-    expect(info.planApproved).toBe(false);
   });
 
   test('a non-plan permission request (edit/execute) is denied outright, never routed to the gate', async () => {

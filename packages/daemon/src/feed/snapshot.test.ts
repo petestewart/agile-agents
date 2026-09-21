@@ -6,11 +6,13 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { ulid } from '@agile-agents/shared';
 import { GateService } from '../gates';
 import { runInit } from '../init';
 import { QuestionService } from '../questions';
 import { QuotaService } from '../quota/records';
 import { StateStore } from '../store';
+import { StreamService } from '../streams';
 import { buildSnapshot } from './snapshot';
 
 let repo: string;
@@ -87,9 +89,19 @@ describe('T040: open questions in the attention queue', () => {
   });
 
   test('carries open questions only — an answered one is history, like a resolved hil_request', async () => {
-    const questions = new QuestionService(store);
-    const open = await questions.raise({ raised_by: 'eng-1', text: 'is the ticket right?' });
-    const answered = await questions.raise({ raised_by: 'em', text: 'already handled' });
+    const streams = new StreamService(store);
+    const questions = new QuestionService(store, streams);
+    const stream = await streams.create('human', { title: 's', goal: 'g' });
+    const open = await questions.raise({
+      stream: stream.id,
+      raised_by: 'eng-1',
+      text: 'is the ticket right?',
+    });
+    const answered = await questions.raise({
+      stream: stream.id,
+      raised_by: 'em',
+      text: 'already handled',
+    });
     await questions.answer(answered.id, { answer: 'yes', by: 'human', resolved_as: 'reply' });
 
     const snapshot = buildSnapshot(store, gates, undefined, undefined, questions);
@@ -180,54 +192,42 @@ describe('T043: project + status for the top bar', () => {
     });
     expect(buildSnapshot(store, gates).status.sprint_review_pending).toBe(false);
 
-    const raised = await gates.request('sprint_review', {
-      policy: { gates: { sprint_review: 'human' }, breaker_signals: [] },
-      hilKind: 'demo',
+    // T121: `sprint_review` and `approve_plan` are deleted gate kinds
+    // (cockpit design §3.1), so neither flag can ever be true again. The
+    // panes that read them go in T122.
+    const raised = await gates.request('land', {
+      policy: { gates: { land: 'human' }, breaker_signals: [] },
+      stream: ulid(),
     });
-    const pending = buildSnapshot(store, gates).status;
-    expect(pending.sprint_state).toBe('finished');
-    expect(pending.sprint_review_pending).toBe(true);
-
-    // Decided — the next sprint is startable again.
+    expect(buildSnapshot(store, gates).status.sprint_review_pending).toBe(false);
+    expect(buildSnapshot(store, gates).status.approve_plan_pending).toBe(false);
     await gates.respond(raised.id, 'approve', 'human');
     expect(buildSnapshot(store, gates).status.sprint_review_pending).toBe(false);
   });
 
-  test('approve_plan_pending follows an open approve_plan gate (T042: Start Sprint writes nothing until it is decided)', async () => {
-    expect(buildSnapshot(store, gates).status.approve_plan_pending).toBe(false);
-
-    const raised = await gates.request('approve_plan', {
-      policy: { gates: { approve_plan: 'em' }, breaker_signals: [] },
-      hilKind: 'approve_decision',
-      summary: 'Start S-1: TKT-0001 — a goal',
-    });
-    const pending = buildSnapshot(store, gates).status;
-    expect(pending.approve_plan_pending).toBe(true);
-    // Nothing was started, so the bar still offers S-1.
-    expect(pending.sprint_state).toBe('none');
-    expect(pending.next_sprint_number).toBe(1);
-
-    await gates.respond(raised.id, 'approve', 'em');
-    expect(buildSnapshot(store, gates).status.approve_plan_pending).toBe(false);
-  });
-
   test('an open gate that is not sprint_review leaves sprint_review_pending false', async () => {
-    await gates.request('unblock', {
-      policy: { gates: { unblock: 'human' }, breaker_signals: [] },
-      hilKind: 'unblock',
+    await gates.request('classifier_review', {
+      policy: { gates: { classifier_review: 'human' }, breaker_signals: [] },
+      stream: ulid(),
     });
     expect(buildSnapshot(store, gates).status.sprint_review_pending).toBe(false);
     expect(buildSnapshot(store, gates).status.approve_plan_pending).toBe(false);
   });
 
   test('needs_you is open HIL requests plus open questions', async () => {
-    await gates.request('unblock', {
-      policy: { gates: { unblock: 'human' }, breaker_signals: [] },
-      hilKind: 'unblock',
+    await gates.request('classifier_review', {
+      policy: { gates: { classifier_review: 'human' }, breaker_signals: [] },
+      stream: ulid(),
     });
-    const questions = new QuestionService(store);
-    await questions.raise({ raised_by: 'eng-1', text: 'which wins?' });
-    const answered = await questions.raise({ raised_by: 'em', text: 'already handled' });
+    const streams = new StreamService(store);
+    const questions = new QuestionService(store, streams);
+    const stream = await streams.create('human', { title: 's', goal: 'g' });
+    await questions.raise({ stream: stream.id, raised_by: 'eng-1', text: 'which wins?' });
+    const answered = await questions.raise({
+      stream: stream.id,
+      raised_by: 'em',
+      text: 'already handled',
+    });
     await questions.answer(answered.id, { answer: 'yes', by: 'human', resolved_as: 'reply' });
 
     const status = buildSnapshot(store, gates, undefined, undefined, questions).status;

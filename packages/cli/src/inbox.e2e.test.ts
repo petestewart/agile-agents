@@ -1,0 +1,149 @@
+/**
+ * T121 acceptance, end to end: an agent question on a stream **with no
+ * repo** shows in `agile inbox` with its stream path, and `agile answer`
+ * writes the thread entry, flips the stream statuses and reaches the
+ * waiting session. Real in-process daemon, real unix socket, temp
+ * `AGILE_HOME`; no vendor, no network, no git.
+ */
+
+import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import type { InboxItem, Question, Stream, ThreadEntry } from '@agile-agents/shared';
+import { ulid } from '@agile-agents/shared';
+import { runCli } from './index';
+import { type TestDaemon, startTestDaemon } from './test-support';
+
+let daemon: TestDaemon;
+
+async function cli(argv: string[]): Promise<{ code: number; out: string }> {
+  const lines: string[] = [];
+  const original = console.log;
+  console.log = (msg: string) => lines.push(String(msg));
+  try {
+    const code = await runCli(argv, daemon.repo);
+    return { code, out: lines.join('\n') };
+  } finally {
+    console.log = original;
+  }
+}
+
+async function newStream(title: string, extra: string[] = []): Promise<Stream> {
+  const result = await cli([
+    'stream',
+    'new',
+    '--title',
+    title,
+    '--goal',
+    `goal: ${title}`,
+    ...extra,
+    '--json',
+  ]);
+  expect(result.code).toBe(0);
+  return JSON.parse(result.out) as Stream;
+}
+
+beforeEach(async () => {
+  daemon = await startTestDaemon('agile-inbox-e2e-');
+});
+
+afterEach(async () => {
+  await daemon.cleanup();
+});
+
+describe('agile inbox / agile answer against a daemon on a temp AGILE_HOME', () => {
+  test('a question on a repo-less stream reaches the inbox and the answer reaches the session', async () => {
+    const root = await newStream('ledger-lite');
+    const child = await newStream('parser', ['--parent', root.id]);
+    // Neither stream has a repo, so nothing anywhere gained a worktree.
+    expect(existsSync(join(daemon.home, '.worktrees'))).toBe(false);
+
+    const empty = await cli(['inbox']);
+    expect(empty.out).toContain('(empty)');
+
+    // The agent asks — through the service, the path T130's MCP `ask` verb
+    // will take (the RPC edge is the human's).
+    const session = ulid();
+    const question: Question = await daemon.questionService.raise({
+      stream: child.id,
+      raised_by: 'eng-1',
+      session,
+      text: 'comma or semicolon for the CSV dialect?',
+    });
+    // The record lives in the home, not on the bus.
+    expect(existsSync(join(daemon.home, 'questions', `${question.id}.yaml`))).toBe(true);
+
+    const listed = await cli(['inbox']);
+    expect(listed.code).toBe(0);
+    expect(listed.out).toContain('question');
+    expect(listed.out).toContain('ledger-lite / parser');
+    expect(listed.out).toContain('comma or semicolon');
+    expect(listed.out).toContain(question.id);
+
+    const asJson = await cli(['inbox', '--json']);
+    const items = (JSON.parse(asJson.out) as { items: InboxItem[] }).items;
+    expect(items).toHaveLength(1);
+    expect(items[0]?.stream_path).toEqual(['ledger-lite', 'parser']);
+    expect(items[0]?.ref).toBe(`questions/${question.id}.yaml`);
+
+    // The asking stream is the one waiting on the human.
+    expect(daemon.streamService.get(child.id).agent.status).toBe('question');
+    expect(daemon.streamService.get(child.id).human.status).toBe('waiting_on_you');
+
+    const answered = await cli([
+      'answer',
+      question.id,
+      'semicolon',
+      '—',
+      'the',
+      'export',
+      'uses it',
+    ]);
+    expect(answered.code).toBe(0);
+    expect(answered.out).toContain('answered');
+
+    const after = daemon.streamService.get(child.id);
+    expect(after.agent.status).toBe('working');
+    expect(after.human.status).toBe('open');
+
+    const entries: ThreadEntry[] = daemon.streamService.readThread(child.id).entries;
+    expect(entries.find((e) => e.kind === 'question')?.by).toBe(`agent:${session}`);
+    const answer = entries.find((e) => e.kind === 'answer');
+    expect(answer?.by).toBe('human');
+    expect(answer?.body).toBe('semicolon — the export uses it');
+
+    // ...and it reached the waiting session's mailbox.
+    expect(daemon.store.listEntities('bus/inbox/eng-1', (v) => v)).toHaveLength(1);
+
+    // Answered: out of the inbox for good.
+    expect((await cli(['inbox'])).out).toContain('(empty)');
+  });
+
+  test('stale mail from a previous daemon run never becomes an inbox item', async () => {
+    await newStream('ledger-lite');
+    const dir = join(daemon.home, 'bus', 'inbox', 'human');
+    mkdirSync(dir, { recursive: true });
+    const id = ulid();
+    writeFileSync(
+      join(dir, `${id}.yaml`),
+      [
+        `id: ${id}`,
+        `ts: '${new Date(0).toISOString()}'`,
+        'from: eng-1',
+        'to:',
+        '  - human',
+        'kind: hil_request',
+        'priority: urgent',
+        "body: 'stale question from the previous run'",
+        'refs: []',
+        'requires_ack: true',
+        `deadline: '${new Date().toISOString()}'`,
+        'hil_kind: classifier_review',
+        '',
+      ].join('\n'),
+    );
+    const listed = await cli(['inbox']);
+    expect(listed.out).toContain('(empty)');
+    expect(listed.out).not.toContain('stale question');
+  });
+});

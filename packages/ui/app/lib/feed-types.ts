@@ -85,7 +85,7 @@ export interface FeedSnapshot {
   sprint: FeedSprintInfo;
   halts: Halt[];
   hil: HilRequest[];
-  /** T040: the open questions (`board/questions/Q-*.yaml`) — Needs-you cards alongside the pending HIL requests. */
+  /** T040: the open questions (`questions/Q-*.yaml`) — Needs-you cards alongside the pending HIL requests. */
   questions: Question[];
   quota: FeedQuotaInfo[];
   /** T043: absent only when the daemon was started without a project root. */

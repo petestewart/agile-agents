@@ -5,8 +5,10 @@ import { MESSAGE_BODY_MAX_CHARS } from './message';
 function baseRequest(overrides: Record<string, unknown> = {}) {
   return {
     id: 'HIL-01ARZ3NDEKTSV4RRFFQ69G5FAV',
-    gate: 'demo',
-    hil_kind: 'demo',
+    gate: 'land',
+    hil_kind: 'land',
+    // T121: a gate is raised on a stream — required, never a ticket.
+    stream: '01ARZ3NDEKTSV4RRFFQ69G5FAV',
     owner: 'human',
     status: 'pending',
     requested_at: '2026-01-01T00:00:00.000Z',
@@ -59,7 +61,7 @@ describe('validateHilRequest', () => {
           delegated: true,
           fyi: {
             to: 'human',
-            body: 'gate "demo" approved by em',
+            body: 'gate "land" approved by em',
             sent_at: '2026-01-01T00:00:01.000Z',
           },
         }),

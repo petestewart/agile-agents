@@ -74,12 +74,20 @@ export const PromoteToSchema = z.enum(PROMOTE_TO_VALUES);
 export type PromoteTo = z.infer<typeof PromoteToSchema>;
 
 /**
- * "`hil_request` has `kind: approve_decision | steer | demo | unblock`"
- * (§5 "HIL"). Named `hil_kind` (a distinct field, not nested) to avoid
- * colliding with the envelope-level `kind` (`hil_request`/`hil_response`
- * etc.) that every message carries.
+ * The closed set of gate kinds after the reshape (design/cockpit-design.md
+ * §3.1): `land` (the Land button, when the repo policy asks for a gate),
+ * `rule_accept` (lessons at stream close, or an agent's `propose_rule`) and
+ * `classifier_review` (the hook's route band, §6.3). Every other kind —
+ * `approve_plan`, `approve_decision`, `sprint_review`, `demo`, `steer`,
+ * `unblock`, `promote_to_main`, budget-threshold, escalation — is deleted
+ * with its policy rows (T121): each existed so a simulated manager could
+ * ask permission for a ceremony that no longer happens.
+ *
+ * Kept as `hil_kind` (a distinct field, not nested) to avoid colliding with
+ * the envelope-level `kind` (`hil_request`/`hil_response`) every message
+ * carries.
  */
-export const HIL_KINDS = ['approve_decision', 'steer', 'demo', 'unblock'] as const;
+export const HIL_KINDS = ['land', 'rule_accept', 'classifier_review'] as const;
 export const HilKindSchema = z.enum(HIL_KINDS);
 export type HilKind = z.infer<typeof HilKindSchema>;
 

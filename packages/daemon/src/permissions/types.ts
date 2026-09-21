@@ -166,7 +166,7 @@ export type Decision =
  * function, so `decidePermission` stays free of clock/ID concerns.
  */
 export interface HilRequestDraft {
-  hilKind: 'unblock';
+  hilKind: 'classifier_review';
   /** One-line summary for the message body (kept under the 800-char cap by construction). */
   summary: string;
   classified: PermissionRequest;

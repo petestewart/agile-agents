@@ -36,6 +36,7 @@ import { buildHaltRpcMethods } from './halts';
 import { HandoffCoordinator, buildHandoffRpcMethods, registerHandoffTools } from './handoff';
 import { HookService, buildHookRpcMethods } from './hook';
 import { type HttpServerHandle, startHttpServer } from './http';
+import { InboxService, buildInboxRpcMethods } from './inbox';
 import { type LockHandle, acquireLock } from './lock';
 import { MergeOwner, buildMergeRpcMethods, sprintReviewApproved } from './merge';
 import { buildOracleRpcMethods } from './oracle';
@@ -195,10 +196,25 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
   const gateService = store
     ? new GateService(store, options.gateDelegate ? { delegate: options.gateDelegate } : {})
     : undefined;
-  // Questions store (T040, §17 "Control room v2"): one instance backs the
-  // `question.*` RPC, the `/api/questions` routes, the attention-queue
-  // snapshot, and the engineer-escalate handler in the pipeline glue.
-  const questionService = store ? new QuestionService(store) : undefined;
+  // T120/T121: one `StreamService` behind `stream.*` RPC, the questions
+  // service (which writes thread entries and status flips) and the inbox.
+  const streamService = store ? new StreamService(store) : undefined;
+  // Questions store (T121, cockpit design §1.4): one instance backs the
+  // `question.*` RPC, the `/api/questions` routes and the inbox.
+  const questionService =
+    store && streamService ? new QuestionService(store, streamService) : undefined;
+  // The inbox (§3): everything waiting on the human, across all streams.
+  // Derived per call from questions, gates and the streams themselves —
+  // never from the bus, which is why a stale message from a previous run
+  // cannot appear as an item.
+  const inboxService =
+    streamService && questionService && gateService
+      ? new InboxService({
+          streams: streamService,
+          questions: questionService,
+          gates: gateService,
+        })
+      : undefined;
   // Hoisted (T011) so `bus.*` RPC, the hook service, and the tool service's
   // `bus_send` built-in all share one `Bus` instance over the same store.
   const bus = store ? new Bus(store, config.stateRoot, { now: options.now }) : undefined;
@@ -670,11 +686,11 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
           ...buildHaltRpcMethods(store),
           ...buildGateRpcMethods(gateService),
           ...(questionService ? buildQuestionRpcMethods(questionService) : {}),
-          ...buildStreamRpcMethods(new StreamService(store)),
+          ...(streamService ? buildStreamRpcMethods(streamService) : {}),
+          ...(inboxService ? buildInboxRpcMethods(inboxService) : {}),
           ...buildHookRpcMethods(
             new HookService(store, bus, {
               repoRoot: config.repoRoot,
-              gates: gateService,
             }),
           ),
           ...buildToolRpcMethods(toolService),
@@ -715,6 +731,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
       store,
       gates: gateService,
       questions: questionService,
+      inbox: inboxService,
       quota: quotaService,
       // T025 review round 1 (blocker 3, manager-granted): without this the
       // control room's EM chat and Oracle propose-edit routes 503 forever

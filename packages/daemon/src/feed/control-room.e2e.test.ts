@@ -28,6 +28,7 @@ import { runInit } from '../init';
 import { QuestionService } from '../questions';
 import { reviewRecordRelPath, validateReviewRecord } from '../review/types';
 import { StateStore } from '../store';
+import { StreamService } from '../streams';
 import {
   BROWSER_ATTEMPTS,
   BROWSER_READY_BUDGET_MS,
@@ -388,6 +389,28 @@ async function waitForAttr(
   }
 }
 
+/** Polls one locator's text until it matches — the sibling of `waitForAttr`. */
+async function waitForText(
+  page: Page,
+  selector: string,
+  text: string,
+  timeoutMs = 10000,
+): Promise<void> {
+  const locator = page.locator(selector);
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    if ((await locator.textContent()) === text) return;
+    if (Date.now() > deadline) {
+      throw new Error(
+        `${selector} never read ${JSON.stringify(text)} (last saw ${JSON.stringify(
+          await locator.textContent(),
+        )})`,
+      );
+    }
+    await page.waitForTimeout(100);
+  }
+}
+
 function initRepo(): string {
   const repo = mkdtempSync(join(tmpdir(), 'agile-control-room-e2e-'));
   Bun.spawnSync(['git', 'init', '-q'], { cwd: repo });
@@ -413,7 +436,7 @@ function initRepo(): string {
  * work per budget and a retry that costs a quarter as much.
  *
  * Every section wants the same starting state — a running sprint, one working
- * agent, one ticket and one pending `unblock` — on a dark page already
+ * agent, one ticket and one pending `classifier_review` — on a dark page already
  * showing the Sprint view, and cleans up its own repo, daemon and page
  * context (`teardown` before `stop`, as everywhere else in this file).
  */
@@ -422,7 +445,7 @@ type ChromeFixture = {
   store: StateStore;
   gates: GateService;
   page: Page;
-  /** The seeded pending `unblock`: section 0's Needs-you row, section A's badge count. */
+  /** The seeded pending `classifier_review`: section 0's Needs-you row, section A's badge count. */
   hilId: string;
 };
 
@@ -435,9 +458,9 @@ async function withChrome(body: (fixture: ChromeFixture) => Promise<void>): Prom
     const init = runInit(freshHome());
     const store = StateStore.open(init.stateRoot);
     const gates = new GateService(store);
-    const seeded = await gates.request('unblock', {
-      policy: { gates: { unblock: 'human' }, breaker_signals: [] },
-      hilKind: 'unblock',
+    const seeded = await gates.request('classifier_review', {
+      policy: { gates: { classifier_review: 'human' }, breaker_signals: [] },
+      stream: ulid(),
     });
     await store.putTicket({
       id: 'TKT-9102',
@@ -636,23 +659,17 @@ describe('control room SPA (Playwright e2e)', () => {
         const action = page.locator('[data-testid="sprint-action"]');
         await action.waitFor({ state: 'attached', timeout: PAGE_TIMEOUT_MS });
         expect(await action.textContent()).toBe('Halt Sprint 1');
-        await gates.request('sprint_review', {
-          policy: { gates: { sprint_review: 'human' }, breaker_signals: [] },
-          hilKind: 'demo',
-        });
+        // T121: `sprint_review` is a deleted gate kind (cockpit design §3.1),
+        // so a finished sprint can no longer be "review pending" — the action
+        // simply offers the next sprint. T122 deletes the Sprints pane.
         await store.putSprint({
           ...store.getSprint('S-1'),
           retro: { mispointed: [], global_halts: 0, escalations: 0 },
         });
-        await waitForAttr(page, '[data-testid="sprint-action"]', 'disabled', '');
-        expect(await action.textContent()).toBe('Start Sprint 2');
-        expect(await action.getAttribute('title')).toBe('Review Sprint 1 first');
-        expect(await page.locator('[data-testid="sprint-status"]').textContent()).toBe(
-          'Sprint 1 · finished · review pending',
+        await waitForText(page, '[data-testid="sprint-action"]', 'Start Sprint 2');
+        expect(await page.locator('[data-testid="sprint-status"]').textContent()).not.toContain(
+          'review pending',
         );
-        // Clicking a disabled button does nothing — no sprint is started.
-        await action.click({ force: true }).catch(() => {});
-        expect(store.listSprints().map((sp) => sp.id)).toEqual(['S-1']);
       }),
     TEST_BUDGET_MS,
   );
@@ -739,29 +756,45 @@ describe('control room SPA (Playwright e2e)', () => {
         const UA_LIGHT_TEXT = 'rgb(0, 0, 0)';
 
         // ---- C. Who decides: a policy edit that changes the next gate -------
-        // The repo default delegates `unblock` to the EM.
-        expect(store.getPolicy().gates.unblock).toBe('em');
-        const askMe = page.locator('[data-testid="gate-unblock-human"]');
+        // T121: the shipped default owns every one of the three surviving
+        // gates to the human, so this section points `classifier_review` at
+        // the EM first and then watches the page move it back.
+        await store.putPolicy({
+          gates: { ...store.getPolicy().gates, classifier_review: 'em' },
+          breaker_signals: [],
+        });
+        expect(store.getPolicy().gates.classifier_review).toBe('em');
+        const askMe = page.locator('[data-testid="gate-classifier_review-human"]');
         await askMe.waitFor({ state: 'attached', timeout: PAGE_TIMEOUT_MS });
         // The rows render from `GET /api/policy`; before it lands every row
         // reads as the fail-safe `human` (`resolveGate`'s default), which is
         // the very value this section is about to write — so wait for the real
         // policy first.
-        await waitForAttr(page, '[data-testid="gate-unblock-em"]', 'aria-pressed', 'true');
+        await waitForAttr(
+          page,
+          '[data-testid="gate-classifier_review-em"]',
+          'aria-pressed',
+          'true',
+        );
         expect(await askMe.getAttribute('aria-pressed')).toBe('false');
 
         await askMe.click();
         // The segment reflects the saved policy the daemon handed back...
-        await waitForAttr(page, '[data-testid="gate-unblock-human"]', 'aria-pressed', 'true');
+        await waitForAttr(
+          page,
+          '[data-testid="gate-classifier_review-human"]',
+          'aria-pressed',
+          'true',
+        );
         // ...it is on disk through the store, with a `policy_put` event...
-        expect(store.getPolicy().gates.unblock).toBe('human');
+        expect(store.getPolicy().gates.classifier_review).toBe('human');
         expect(store.listEvents().some((e) => e.kind === 'policy_put' && e.agent === 'human')).toBe(
           true,
         );
         // ...and the NEXT gate raised resolves to the new owner.
-        const raised = await gates.request('unblock', {
+        const raised = await gates.request('classifier_review', {
           policy: store.getPolicy(),
-          hilKind: 'unblock',
+          stream: ulid(),
         });
         expect(raised.owner).toBe('human');
 
@@ -785,29 +818,24 @@ describe('control room SPA (Playwright e2e)', () => {
         await page.locator('[data-testid="preset-hands-off"]').click();
         await waitForAttr(page, '[data-testid="preset-hands-off"]', 'aria-pressed', 'true');
         expect(store.getPolicy().gates).toMatchObject({
-          approve_plan: 'em',
-          approve_decision: 'em',
-          unblock: 'em',
-          sprint_review: 'em',
-          demo: 'em',
+          land: 'em',
+          rule_accept: 'em',
+          classifier_review: 'em',
         });
 
-        // Review round 1 blocker 2: the middle preset is the mockup's rendered
-        // "Plans and reviews" state — the rule-change gate (`approve_decision`)
-        // stays with the human, it is not delegated with the rest.
+        // T121: the middle preset keeps the two gates that change the record
+        // (`land`, `rule_accept`) with the human and delegates the per-action
+        // `classifier_review` — the same shape as before, on the three
+        // surviving kinds.
         await page.locator('[data-testid="preset-gates-to-em"]').click();
         await waitForAttr(page, '[data-testid="preset-gates-to-em"]', 'aria-pressed', 'true');
         expect(store.getPolicy().gates).toMatchObject({
-          approve_plan: 'human',
-          approve_decision: 'human',
-          sprint_review: 'human',
-          unblock: 'em',
-          demo: 'em',
+          land: 'human',
+          rule_accept: 'human',
+          classifier_review: 'em',
         });
         expect(
-          await page
-            .locator('[data-testid="gate-approve_decision-human"]')
-            .getAttribute('aria-pressed'),
+          await page.locator('[data-testid="gate-rule_accept-human"]').getAttribute('aria-pressed'),
         ).toBe('true');
 
         // ---- D. dark and light both render ---------------------------------
@@ -835,7 +863,7 @@ describe('control room SPA (Playwright e2e)', () => {
             '[data-testid="topbar"] button[data-view="plan"]',
             '[data-testid="sprint-action"]',
             '[data-testid="chat-toggle"]',
-            '[data-testid="gate-unblock-human"]',
+            '[data-testid="gate-classifier_review-human"]',
             '[data-testid="preset-hands-off"]',
           ]) {
             const { bg, color } = await page.locator(selector).evaluate((el) => {
@@ -871,9 +899,9 @@ describe('control room SPA (Playwright e2e)', () => {
 
         // Seed one open HIL request and one ticket before the daemon (and the
         // page) ever start, so the page's initial reads already carry them.
-        const seeded = await gates.request('unblock', {
-          policy: { gates: { unblock: 'human' }, breaker_signals: [] },
-          hilKind: 'unblock',
+        const seeded = await gates.request('classifier_review', {
+          policy: { gates: { classifier_review: 'human' }, breaker_signals: [] },
+          stream: ulid(),
         });
         await store.putTicket({
           id: 'TKT-9101',
@@ -900,7 +928,7 @@ describe('control room SPA (Playwright e2e)', () => {
         // queue": one line per item, deadline, approve/delegate).
         const hilItem = page.locator(`.hil-item[data-id="${seeded.id}"]`);
         await hilItem.waitFor({ state: 'attached', timeout: PAGE_TIMEOUT_MS });
-        expect(await hilItem.textContent()).toContain('unblock');
+        expect(await hilItem.textContent()).toContain('classifier_review');
 
         // Board renders the seeded ticket from GET /api/tickets (a T025 read
         // endpoint that did not exist before this ticket).
@@ -1254,9 +1282,15 @@ describe('control room SPA (Playwright e2e)', () => {
       try {
         const init = runInit(freshHome());
         const store = StateStore.open(init.stateRoot);
-        const questions = new QuestionService(store);
+        const streams = new StreamService(store);
+        const questions = new QuestionService(store, streams);
+        const stream = await streams.create('human', {
+          title: 'contract',
+          goal: 'settle the contract',
+        });
 
         const seeded = await questions.raise({
+          stream: stream.id,
           raised_by: 'eng-1',
           text: 'the contract contradicts the spec — which wins?',
         });
@@ -1282,7 +1316,7 @@ describe('control room SPA (Playwright e2e)', () => {
         await card.waitFor({ state: 'detached', timeout: PAGE_TIMEOUT_MS });
 
         const onDisk = store.getEntity(
-          `board/questions/${seeded.id}.yaml`,
+          `questions/${seeded.id}.yaml`,
           (v) => v as { status: string; answer: string; resolved_as: string; answered_by: string },
         );
         expect(onDisk.status).toBe('answered');
@@ -1666,11 +1700,7 @@ describe('control room SPA (Playwright e2e)', () => {
 
         // The sprint-review gate: it is what turns the Review view's
         // buttons on, and what the shell switches to on its own.
-        await gates.request('sprint_review', {
-          policy: { gates: { sprint_review: 'human' }, breaker_signals: [] },
-          hilKind: 'approve_decision',
-          summary: 'Sprint 1 is ready for your review',
-        });
+        // T121: `sprint_review` is a deleted gate kind (cockpit design §3.1).
 
         handle = await startDaemon({
           cwd: repo,
@@ -1681,27 +1711,11 @@ describe('control room SPA (Playwright e2e)', () => {
         page = await openPage();
         await page.goto(`http://127.0.0.1:${handle.http.port}/control-room?view=sprint`);
 
-        // A pending sprint_review opens on the Review view; the Sprint view
-        // is one click away.
-        const summary = page.locator('[data-testid="review-summary"]');
-        await summary.waitFor({ state: 'attached', timeout: PAGE_TIMEOUT_MS });
-        expect(await page.locator('[data-testid="review-asked"]').textContent()).toContain(
-          'Transfers, reversals, category report',
-        );
-        expect(await page.locator('[data-testid="review-where"]').textContent()).toBeTruthy();
-        // The narrative the page shows is the one the daemon built — the
-        // same function that writes `runs/*.md` (asserted against the real
-        // file in the CLI's own e2e).
-        const narrative = (await (
-          await fetch(`http://127.0.0.1:${handle.http.port}/api/sprint/review`)
-        ).json()) as { asked: string; built: string };
-        expect(await page.locator('[data-testid="review-asked"]').textContent()).toBe(
-          `What was asked: ${narrative.asked}`,
-        );
-        expect(await page.locator('[data-testid="review-built"]').textContent()).toBe(
-          `What was built: ${narrative.built}`,
-        );
-
+        // T121: `sprint_review` is a deleted gate kind (cockpit design §3.1),
+        // so nothing opens the Review view any more and the review narrative
+        // has no gate to hang off. The Sprint view — the stories, the team
+        // and the ticket detail below — is what this test still covers;
+        // T122 deletes the Review tab outright.
         await page.locator('[data-testid="sprint-tab-sprint"]').click();
 
         // The story: timestamped steps, the verdict quoted from the
@@ -1771,7 +1785,7 @@ describe('control room SPA (Playwright e2e)', () => {
  */
 describe('control room — the Review tab across a sprint’s phases', () => {
   browserTest(
-    'running: a notice and no decision; pending: the narrative and both buttons; decided: read-only with the decision',
+    'running: a notice and no decision (T050 regression; T121 deleted the later phases)',
     async () => {
       const repo = initRepo();
       let handle: DaemonHandle | undefined;
@@ -1815,9 +1829,6 @@ describe('control room — the Review tab across a sprint’s phases', () => {
           port: 0,
           socketPath: join(repo, '.agile-daemon.sock'),
         });
-        const gates = handle.gateService;
-        if (!gates) throw new Error('daemon started without a GateService');
-
         page = await openPage();
         await page.goto(`http://127.0.0.1:${handle.http.port}/control-room?view=sprint`);
 
@@ -1838,29 +1849,12 @@ describe('control room — the Review tab across a sprint’s phases', () => {
         expect(progress).toContain('in progress');
         expect(progress).not.toContain('Nothing went wrong');
 
-        // Phase 2 — the gate is raised: the narrative and both buttons.
-        await gates.request('sprint_review', {
-          policy: { gates: { sprint_review: 'human' }, breaker_signals: [] },
-          hilKind: 'approve_decision',
-          summary: 'Sprint 1 is ready for your review',
-        });
-        const accept = page.locator('[data-testid="review-accept"]');
-        await accept.waitFor({ state: 'attached', timeout: PAGE_TIMEOUT_MS });
-        expect(await page.locator('[data-testid="review-send-back"]').count()).toBe(1);
-        expect(await page.locator('[data-testid="review-note"]').count()).toBe(1);
-        expect(await page.locator('[data-testid="review-running"]').count()).toBe(0);
-        expect(await page.locator('[data-testid="review-built"]').textContent()).toContain(
-          '0 of 2',
-        );
-
-        // Phase 3 — decided: read-only, with the decision that was taken.
-        await accept.click();
-        const decision = page.locator('[data-testid="review-decision"]');
-        await decision.waitFor({ state: 'attached', timeout: PAGE_TIMEOUT_MS });
-        expect(await decision.textContent()).toContain('Accepted');
-        expect(await page.locator('[data-testid="review-accept"]').count()).toBe(0);
-        expect(await page.locator('[data-testid="review-send-back"]').count()).toBe(0);
-        expect(await page.locator('[data-testid="review-summary"]').count()).toBe(1);
+        // T121: `sprint_review` is a deleted gate kind (cockpit design §3.1),
+        // so there is no phase 2 ("the gate is raised") or phase 3
+        // ("decided") left to drive — the running notice, which is the T050
+        // regression this test exists for, is what survives. T122 deletes
+        // the Review tab.
+        expect(await page.locator('[data-testid="review-decision"]').count()).toBe(0);
       } finally {
         await teardown([page]);
         await handle?.stop();

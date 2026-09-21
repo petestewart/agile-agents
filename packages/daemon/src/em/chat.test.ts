@@ -13,6 +13,7 @@ import { GateService } from '../gates';
 import { runInit } from '../init';
 import { QuestionService } from '../questions';
 import { StateStore } from '../store';
+import { StreamService } from '../streams';
 import { EmChatService, renderAttentionQueue, renderReplyBody, renderSprintState } from './chat';
 
 let repo: string;
@@ -171,13 +172,19 @@ describe('EmChatService', () => {
 
   test('the prompt carries the daemon-injected attention queue', async () => {
     const gates = new GateService(store);
-    const questions = new QuestionService(store);
-    const hil = await gates.request('unblock', {
-      policy: { gates: { unblock: 'human' }, breaker_signals: [] },
-      hilKind: 'unblock',
+    const streams = new StreamService(store);
+    const questions = new QuestionService(store, streams);
+    const stream = await streams.create('human', { title: 'push', goal: 'get it out' });
+    const hil = await gates.request('classifier_review', {
+      policy: { gates: { classifier_review: 'human' }, breaker_signals: [] },
+      stream: stream.id,
       summary: 'eng-0001 wants to run `git push origin main`',
     });
-    const question = await questions.raise({ raised_by: 'human', text: 'ship Friday or Monday?' });
+    const question = await questions.raise({
+      stream: stream.id,
+      raised_by: 'human',
+      text: 'ship Friday or Monday?',
+    });
 
     const resident = fakeResident(['ok']);
     const chat = new EmChatService({ store, bus, repoRoot: repo, resident, gates, questions });
@@ -256,15 +263,12 @@ describe('renderSprintState (the injected sprint-state line)', () => {
     );
   });
 
-  test('an open sprint_review gate is reported as pending', async () => {
+  // T121: `sprint_review` is a deleted gate kind, so the sprint line can no
+  // longer report one pending. T122 deletes this module.
+  test('no gate can report a sprint review as pending any more', async () => {
     await seed(['done', 'done']);
     const gates = new GateService(store);
-    await gates.request('sprint_review', {
-      policy: { gates: { sprint_review: 'human' }, breaker_signals: [] },
-      hilKind: 'approve_decision',
-      summary: 'S-1 is ready for your review',
-    });
-    expect(renderSprintState(store, gates)).toContain('sprint review pending');
+    expect(renderSprintState(store, gates)).not.toContain('sprint review pending');
   });
 
   test('every chat turn carries the line', async () => {

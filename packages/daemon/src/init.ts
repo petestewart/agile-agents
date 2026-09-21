@@ -23,12 +23,13 @@ import { stringify as stringifyYaml } from 'yaml';
 /** Default `policy.yaml` — verbatim repo-default example (§16). */
 function defaultPolicy(): Policy {
   return validatePolicy({
+    // T121: the three surviving gate kinds (cockpit design §3.1). Every
+    // other row — approve_plan, approve_decision, sprint_review, unblock,
+    // demo, promote_to_main — is deleted with the ceremony that needed it.
     gates: {
-      approve_plan: 'human',
-      approve_decision: 'human',
-      sprint_review: 'human',
-      unblock: 'em',
-      demo: 'human',
+      land: 'human',
+      rule_accept: 'human',
+      classifier_review: 'human',
     },
     breaker_signals: [],
   });

@@ -63,7 +63,7 @@ describe('EmLoop.tick', () => {
     // this scenario so the delegated (merge-and-plan) branch is exercised.
     await fx.store.putPolicy({
       ...fx.store.getPolicy(),
-      gates: { ...fx.store.getPolicy().gates, sprint_review: 'em' },
+      gates: { ...fx.store.getPolicy().gates, land: 'em' },
     });
     const sprint = await planSprint(fx.store, { goal: 'layer 1', cap: 1, now: clock });
     expect(sprint.tickets).toEqual(['TKT-0001']);
@@ -152,7 +152,7 @@ describe('EmLoop.tick', () => {
   test('human-owned sprint review: request -> tick (still pending) -> approve via GateService -> tick -> merged + next sprint (review-round blocker 1)', async () => {
     await fx.store.putTicket(makeTicket('TKT-0001'));
     await fx.store.putTicket(makeTicket('TKT-0002', { depends: ['TKT-0001'] as never }));
-    // Repo default is sprint_review: human already (see init.ts) — no override needed.
+    // Repo default is land: human already (see init.ts) — no override needed.
     const sprint = await planSprint(fx.store, { goal: 'layer 1', cap: 1, now: clock });
     await fastForwardToDone(fx.store, 'TKT-0001');
 

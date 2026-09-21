@@ -12,6 +12,7 @@ import { type Fixture, fakeRunner, makeFixture, makeTicket } from '../em/test-he
 import { GateService } from '../gates';
 import { PRODUCT_MD_STUB } from '../init';
 import { QuestionService } from '../questions';
+import { StreamService } from '../streams';
 import { editModeFor } from './living';
 import { isFirstGoal, startPlanningTurn } from './planning-turn';
 import { buildSprintBoard, projectLayers } from './projection';
@@ -35,7 +36,7 @@ function service(overrides: Partial<ConstructorParameters<typeof PlanService>[0]
     store: fx.store,
     bus,
     gates: new GateService(fx.store),
-    questions: new QuestionService(fx.store),
+    questions: new QuestionService(fx.store, new StreamService(fx.store)),
     ...overrides,
   });
 }
@@ -200,14 +201,14 @@ describe('sprints pane', () => {
 });
 
 describe('Start Sprint N', () => {
-  /** `policy.yaml` with `approve_plan` owned by someone other than the human. */
-  async function ownApprovePlanBy(owner: 'em' | 'architect'): Promise<void> {
-    const policy = fx.store.getPolicy();
-    await fx.store.putPolicy({ ...policy, gates: { ...policy.gates, approve_plan: owner } });
-  }
-
-  test('plans the frontier and raises approve_plan, which the click itself resolves', async () => {
-    const plan = service();
+  // T121: the `approve_plan` gate is deleted (cockpit design §3.1 — "there
+  // is no planning turn that needs approving ... the human writes the goal
+  // themselves"). The click is the approval, no HIL request is opened, and
+  // the delegate/pickup/denial paths this block used to cover are gone with
+  // it. T122 deletes this module.
+  test('plans the frontier and starts it — the click is the approval, and no gate is opened', async () => {
+    const gates = new GateService(fx.store);
+    const plan = service({ gates });
     await fx.store.putTicket(makeTicket('TKT-0001' as TicketId));
     await fx.store.putTicket(makeTicket('TKT-0002' as TicketId, { status: 'draft' }));
 
@@ -217,111 +218,12 @@ describe('Start Sprint N', () => {
     expect(result.sprint?.tickets).toEqual(['TKT-0001']);
     expect(result.gate.status).toBe('resolved');
     expect(result.gate.decision).toBe('approve');
-    // The gate is still on the record, not skipped.
-    expect(fx.store.listEvents().some((e) => e.kind === 'hil_requested')).toBe(true);
+    expect(gates.list()).toEqual([]);
+    expect(fx.store.listEvents().some((e) => e.kind === 'gate_raised')).toBe(false);
     expect(fx.store.listEvents().some((e) => e.kind === 'sprint_put')).toBe(true);
     expect(fx.store.getTicket('TKT-0001' as TicketId).sprint).toBe('S-1');
-  });
-
-  /**
-   * Round-1 review blocker: `planSprint` persists the sprint file and stamps
-   * `ticket.sprint`, and `EmLoop.currentSprint()` treats any sprint without a
-   * `review_at` as live — so a sprint planned before the gate resolved was
-   * already being assigned while `approve_plan` sat pending (and nothing
-   * rolled it back on a denial).
-   */
-  test('an em-owned gate with no delegate starts nothing: no sprint file, no stamped ticket, nothing to assign', async () => {
-    await ownApprovePlanBy('em');
-    const plan = service();
-    await fx.store.putTicket(makeTicket('TKT-0001' as TicketId));
-
-    const result = await plan.startSprint();
-    expect(result.started).toBe(false);
-    expect(result.sprint).toBeUndefined();
-    expect(result.gate.status).toBe('pending');
-    expect(result.proposal.tickets).toEqual(['TKT-0001']);
-    expect(fx.store.listSprints()).toEqual([]);
-    expect(fx.store.getTicket('TKT-0001' as TicketId).sprint).toBeUndefined();
-    expect(fx.store.listEvents().some((e) => e.kind === 'sprint_put')).toBe(false);
-
-    // The EM loop has nothing live to assign, because nothing is live.
-    const runner = fakeRunner(fx.store);
-    const loop = new EmLoop({
-      store: fx.store,
-      bus,
-      runner,
-      gateService: new GateService(fx.store),
-      sprintReview: { mergeIntegrationToMain: () => {} },
-    });
-    const tick = await loop.tick();
-    expect(tick.assigned).toEqual([]);
-    expect(runner.live.size).toBe(0);
-    expect(fx.store.getTicket('TKT-0001' as TicketId).status).toBe('ready');
-  });
-
-  test('a delegate that approves starts the sprint on the ceremony tick that follows the decision', async () => {
-    await ownApprovePlanBy('em');
-    // Async delegate: `request()` returns pending ("delegate deciding") and
-    // the decision lands later, exactly like a real one-shot EM session.
-    const gates = new GateService(fx.store, {
-      delegate: async () => {
-        await Bun.sleep(5);
-        return { decision: 'approve', by: 'em', reason: 'frontier looks right' };
-      },
-    });
-    const plan = service({ gates });
-    await fx.store.putTicket(makeTicket('TKT-0001' as TicketId));
-
-    const result = await plan.startSprint();
-    expect(result.started).toBe(false);
-    expect(fx.store.listSprints()).toEqual([]);
-
-    await gates.settled();
-    // The pickup `PlanService.startApprovedSprint` performs once the gate resolves.
-    const started = await plan.startApprovedSprint();
-    expect(started?.id).toBe('S-1');
-    expect(started?.tickets).toEqual(['TKT-0001']);
-    expect(fx.store.getTicket('TKT-0001' as TicketId).sprint).toBe('S-1');
-    // Idempotent: a second tick does not plan a second sprint.
+    expect(plan.pendingApprovePlan()).toBeUndefined();
     expect(await plan.startApprovedSprint()).toBeUndefined();
-    expect(fx.store.listSprints()).toHaveLength(1);
-  });
-
-  test('a delegate that denies starts nothing, and the pickup never starts it later', async () => {
-    await ownApprovePlanBy('em');
-    const gates = new GateService(fx.store, {
-      delegate: () => ({ decision: 'deny', by: 'em', reason: 'the brief has an open question' }),
-    });
-    const plan = service({ gates });
-    await fx.store.putTicket(makeTicket('TKT-0001' as TicketId));
-
-    const result = await plan.startSprint();
-    expect(result.started).toBe(false);
-    expect(result.gate.decision).toBe('deny');
-    expect(result.reason).toContain('denied');
-    expect(fx.store.listSprints()).toEqual([]);
-    expect(fx.store.getTicket('TKT-0001' as TicketId).sprint).toBeUndefined();
-    // The denial is on the record as the gate's own resolution event.
-    expect(fx.store.listEvents().some((e) => e.kind === 'hil_resolved')).toBe(true);
-    expect(await plan.startApprovedSprint()).toBeUndefined();
-  });
-
-  test('an approval of an older frontier cannot start a different sprint later', async () => {
-    await ownApprovePlanBy('em');
-    const gates = new GateService(fx.store, {
-      delegate: () => ({ decision: 'approve', by: 'em' }),
-    });
-    const plan = service({ gates });
-    await fx.store.putTicket(makeTicket('TKT-0001' as TicketId));
-    await plan.startSprint();
-    expect(fx.store.listSprints()).toHaveLength(1);
-
-    // A new ticket readied afterwards is a *different* frontier: the old
-    // approval's summary no longer matches, so nothing auto-starts.
-    await fx.store.putTicket(makeTicket('TKT-0002' as TicketId));
-    await fx.store.transitionTicket('TKT-0001' as TicketId, 'assigned', { by: 'em' });
-    expect(await plan.startApprovedSprint()).toBeUndefined();
-    expect(fx.store.listSprints()).toHaveLength(1);
   });
 
   test('refuses while a sprint is still running', async () => {

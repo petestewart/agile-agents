@@ -210,7 +210,7 @@ export function delegatedDecisions(gates: GateService | undefined): ReportDecisi
     .map((r) => ({
       at: r.resolved_at ?? r.requested_at,
       gate: r.summary ? `${r.gate} · ${r.summary}` : r.gate,
-      ...(r.ticket ? { ticket: r.ticket } : {}),
+
       decided_by: r.decided_by ?? 'em',
       outcome: `${r.decision === 'approve' ? 'Allowed' : 'Denied'}${r.note ? `. "${r.note}"` : ''}${
         r.reason ? ` (${r.reason})` : ''
@@ -243,7 +243,8 @@ export function buildSprintReport(
    * Everything else is a sprint that is still running, and a running sprint
    * gets no review narrative and no proposal.
    */
-  const sprintReviewGates = (inputs.gates?.list() ?? []).filter((r) => r.gate === 'sprint_review');
+  // T121: `sprint_review` is a deleted gate kind; T122 deletes this module.
+  const sprintReviewGates: HilRequest[] = [];
   const pendingReview = sprintReviewGates.find((r) => r.status === 'pending');
   const resolvedReview = sprintReviewGates
     .filter((r) => r.status === 'resolved')

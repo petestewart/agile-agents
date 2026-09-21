@@ -58,8 +58,10 @@ const REFRESH_TRIGGER_KINDS = new Set<Event['kind']>([
   // Review tab renders. Without these two kinds the sprint review only
   // appeared on the page after a reload, and the tab could sit on the
   // running notice for a sprint that had already stopped.
-  'hil_requested',
-  'hil_resolved',
+  // T121: gates mint `gate_raised`/`gate_resolved`; `hil_*` are the
+  // pre-reshape names T123 prunes.
+  'gate_raised',
+  'gate_resolved',
 ]);
 
 /** Coalesces a burst of triggering events (e.g. a ticket transition plus its stanza) into one refetch. */
@@ -191,7 +193,8 @@ export function App(): JSX.Element {
    * operator who left the room on the Sprint tab should come back to the
    * thing that is waiting on them, without losing the ability to click back.
    */
-  const reviewGate = hil.find((item) => item.gate === 'sprint_review');
+  // T121: `sprint_review` is a deleted gate kind, so nothing pre-selects the
+  // review view any more; the Sprints/Review panes go in T122.
 
   const chatVisible = chatMode !== 'hidden';
   /**
@@ -294,11 +297,7 @@ export function App(): JSX.Element {
                   // sprint review re-pulls the phase-dependent narrative
                   // instead of leaving the running notice (or the decision
                   // buttons) on screen until a reload.
-                  <ReviewView
-                    key={reviewGate?.id ?? 'no-gate'}
-                    {...(reviewGate ? { gate: reviewGate } : {})}
-                    onChanged={refreshAux}
-                  />
+                  <ReviewView key="no-gate" onChanged={refreshAux} />
                 )}
                 {tab === 'oracle' && (
                   <Panel title="Oracle / KB" defaultOpen>

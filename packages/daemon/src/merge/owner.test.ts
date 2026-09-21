@@ -18,7 +18,6 @@ import {
   BranchCheckedOutElsewhereError,
   type MergeOutcome,
   MergeOwner,
-  PROMOTE_TO_MAIN_GATE,
   type RunTestsFn,
   TicketNotReadyForMergeError,
   defaultRunTests,
@@ -473,7 +472,7 @@ describe('mergeIntegrationToMain', () => {
       // `promote_to_main` is deliberately not in it, so it resolves to
       // `human` and no delegate can wave it through.
       await store.putPolicy({
-        gates: { sprint_review: 'em', unblock: 'em', approve_plan: 'em' },
+        gates: { land: 'em', classifier_review: 'em', rule_accept: 'em' },
         breaker_signals: [],
       });
     });
@@ -486,36 +485,19 @@ describe('mergeIntegrationToMain', () => {
       });
     }
 
-    test('raises one human-owned gate with the `git merge integration` workaround instead of throwing', async () => {
+    // T121: `promote_to_main` is a deleted gate kind (cockpit design §3.1)
+    // and a gate is now raised on a stream this ticket-keyed module cannot
+    // name, so the blocked promotion is reported by the original error
+    // again instead of a "Needs you" item. T122 deletes this module's
+    // sprint/promotion parts.
+    test('a blocked promotion throws BranchCheckedOutElsewhereError and raises no gate', async () => {
       const owner = blockedOwner();
-      const outcome = await owner.mergeIntegrationToMain();
-
-      expect(outcome.status).toBe('gated');
-      expect(outcome.hilId).toBeTruthy();
-      expect(outcome.summary).toContain('is checked out in this repo');
-      expect(outcome.summary).toContain(`git merge --no-ff ${INTEGRATION_BRANCH}`);
-      expect(outcome.summary).toContain('_main');
-
-      const raised = gateService.list().filter((r) => r.gate === PROMOTE_TO_MAIN_GATE);
-      expect(raised).toHaveLength(1);
-      expect(raised[0]?.status).toBe('pending');
-      // Nothing can auto-decide it: the fix is the operator's own checkout.
-      expect(raised[0]?.owner).toBe('human');
-      expect(raised[0]?.summary).toContain('git merge --no-ff');
+      await expect(owner.mergeIntegrationToMain()).rejects.toThrow(BranchCheckedOutElsewhereError);
+      expect(gateService.list()).toHaveLength(0);
       // `main` really did not move, and the operator's uncommitted WIP in
       // the clone it is checked out in is untouched.
       expect(git(['rev-parse', 'main'])).toBe(git(['rev-parse', 'HEAD']));
       expect(readFileSync(join(repo, WIP_FILE), 'utf8')).toBe(WIP_CONTENT);
-    });
-
-    test('a retried tick reuses the open gate rather than opening a second one', async () => {
-      const owner = blockedOwner();
-      const first = await owner.mergeIntegrationToMain();
-      const second = await owner.mergeIntegrationToMain();
-
-      expect(second.status).toBe('gated');
-      expect(second.hilId).toBe(first.hilId as HilId);
-      expect(gateService.list().filter((r) => r.gate === PROMOTE_TO_MAIN_GATE)).toHaveLength(1);
     });
 
     test('promotes for real once the branch is free again — the gate is the blocker, not a permanent refusal', async () => {
@@ -530,7 +512,7 @@ describe('mergeIntegrationToMain', () => {
       await owner.onTicketDone(ticket.id);
 
       git(['checkout', 'main']);
-      expect((await owner.mergeIntegrationToMain()).status).toBe('gated');
+      await expect(owner.mergeIntegrationToMain()).rejects.toThrow(BranchCheckedOutElsewhereError);
 
       // The operator applies the workaround's first half: get off `main`.
       git(['checkout', '--detach']);
@@ -547,30 +529,21 @@ describe('sprintReviewApproved', () => {
     expect(result.approved).toBe(false);
   });
 
-  test('approved only for a resolved approve decision, picking the most recent', () => {
+  // T121: `sprint_review` is a deleted gate kind, so no request can approve
+  // a sprint review any more — this always fails closed. T122 deletes it.
+  test('no request approves a sprint review any more', () => {
     const requests = [
       {
-        id: 'HIL-01J9AAAAAAAAAAAAAAAAAAAAAA',
-        gate: 'sprint_review',
-        hil_kind: 'demo',
-        owner: 'human',
-        status: 'resolved',
-        requested_at: '2026-09-01T00:00:00.000Z',
-        decision: 'deny',
-      },
-      {
         id: 'HIL-01J9BBBBBBBBBBBBBBBBBBBBBB',
-        gate: 'sprint_review',
-        hil_kind: 'demo',
+        gate: 'land',
+        hil_kind: 'land',
         owner: 'human',
         status: 'resolved',
         requested_at: '2026-09-02T00:00:00.000Z',
         decision: 'approve',
       },
     ];
-    const result = sprintReviewApproved({ list: () => requests as never });
-    expect(result.approved).toBe(true);
-    expect(result.hilId).toBe('HIL-01J9BBBBBBBBBBBBBBBBBBBBBB');
+    expect(sprintReviewApproved({ list: () => requests as never }).approved).toBe(false);
   });
 });
 

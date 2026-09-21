@@ -204,11 +204,17 @@ describe('fetchStatus — open questions (T040)', () => {
   });
 
   test('lists open questions and drops answered ones', async () => {
+    const stream = (await daemon.streamService.create('human', { title: 's', goal: 'g' })).id;
     const open = await daemon.questionService.raise({
+      stream,
       raised_by: 'eng-1',
       text: 'is the ticket right?',
     });
-    const answered = await daemon.questionService.raise({ raised_by: 'em', text: 'handled' });
+    const answered = await daemon.questionService.raise({
+      stream,
+      raised_by: 'em',
+      text: 'handled',
+    });
     await daemon.questionService.answer(answered.id, {
       answer: 'yes',
       by: 'human',

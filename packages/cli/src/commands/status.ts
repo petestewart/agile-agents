@@ -52,7 +52,7 @@ export interface StatusResult {
   halts: Halt[];
   agents: 'n/a (no RPC yet)';
   spend: StatusQuotaEntry[] | 'n/a (no RPC yet)';
-  /** T040: the open questions (`board/questions/`) — "`agile status` lists open questions" (ticket scope). */
+  /** T040: the open questions (`questions/` in the state home) — "`agile status` lists open questions" (ticket scope). */
   questions: Question[];
 }
 
@@ -133,8 +133,8 @@ export function printStatusHuman(status: StatusResult): void {
     console.log('open questions: (none)');
   } else {
     printTable(
-      ['id', 'raised_by', 'ticket', 'question'],
-      status.questions.map((q) => [q.id, q.raised_by, q.ticket ?? '-', q.text]),
+      ['id', 'raised_by', 'stream', 'question'],
+      status.questions.map((q) => [q.id, q.raised_by, q.stream, q.text]),
     );
   }
   console.log('');

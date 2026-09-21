@@ -52,7 +52,6 @@ import {
   validateMergeRecord,
 } from '@agile-agents/shared';
 import type { Bus } from '../bus';
-import type { GateService } from '../gates';
 import { activeHaltsFor } from '../halts';
 import { mergeRecordPath } from '../merge/owner';
 import type { PermissionRole } from '../permissions';
@@ -128,8 +127,6 @@ export interface StopHookOutput {
 
 export interface HookServiceOptions {
   repoRoot: string;
-  /** Never-without-human Bash commands need a durable HIL request (QA round: Claude can't answer an interactive `ask`) — see `resolveOrCreateHil`. */
-  gates: GateService;
   limits?: HookLimits;
   /** Injectable for tests; defaults to `node:fs.statSync`. */
   fileSize?: (path: string) => number | undefined;
@@ -163,7 +160,6 @@ const LIVE_TICKET_STATUSES: readonly TicketStatus[] = [
 ];
 
 const UNRESOLVED_CWD_REASON = 'agile: cwd is not a registered ticket worktree';
-const UNBLOCK_GATE = 'unblock';
 
 /**
  * Reads the disambiguation hint (T012 QA/review round — see this file's
@@ -448,53 +444,6 @@ export class HookService {
     }
   }
 
-  /** `.agile/policy.yaml` may not exist (pre-T0xx-init repos, or a fixture that never seeded one) — an absent policy resolves every unnamed gate to `human` via `resolveGate`'s own default, so an empty policy is a safe stand-in, not a special case. */
-  private loadPolicyOrDefault(): Policy {
-    try {
-      return this.store.getPolicy();
-    } catch (err) {
-      if (err instanceof NotFoundError) return { gates: {}, breaker_signals: [] };
-      throw err;
-    }
-  }
-
-  /**
-   * Never-without-human Bash commands cannot be answered interactively —
-   * Claude under ACP only ever sees this hook's stdout, so an `ask` verdict
-   * from `decide.ts` is translated here into a **durable** `HIL-...`
-   * request (QA round finding (g)/(h)) plus a `deny` naming it, rather than
-   * a bare "ask a human" that leaves no record anywhere. Reuses a still-
-   * `pending` `unblock` request already open for this ticket instead of
-   * opening a second one for a retried/identical call — "no duplicate" per
-   * the QA test.
-   */
-  private async resolveOrCreateHil(
-    ticket: TicketId,
-    agent: AgentId,
-    summary: string,
-  ): Promise<string> {
-    const existing = this.options.gates
-      .list()
-      .find((r) => r.status === 'pending' && r.ticket === ticket && r.gate === UNBLOCK_GATE);
-    if (existing) return existing.id;
-
-    const policy = this.loadPolicyOrDefault();
-    const created = await this.options.gates.request(UNBLOCK_GATE, {
-      policy,
-      ticket,
-      hilKind: 'unblock',
-      from: agent,
-      // T048: the hook caller, not the ticket's assignee, is the agent parked
-      // on this decision — a QA or reviewer hook raises `unblock` gates on a
-      // ticket assigned to the engineer.
-      requestedBy: agent,
-      // What was asked, so the notice/delegate/human can decide on it —
-      // the first live run's requests only said "no delegate configured".
-      summary,
-    });
-    return created.id;
-  }
-
   /**
    * `hook.pre_tool_use`. Review round fix (blocker 2): an unresolved `cwd`
    * is no longer a silent allow — it denies with a fixed reason and always
@@ -522,50 +471,21 @@ export class HookService {
 
     let decision = decidePreToolUse(ctx, payload);
     if (decision.decision === 'ask') {
-      const command =
-        typeof payload.tool_input?.command === 'string'
-          ? payload.tool_input.command
-          : `${payload.tool_name ?? 'tool'} call`;
+      // T121: an `ask` verdict used to open a durable `unblock` gate for
+      // this ticket and tell the model to wait. `unblock` is deleted with
+      // the rest of the ceremony gate kinds (cockpit design §3.1), and a
+      // gate is now raised **on a stream**, which this ticket-keyed hook
+      // has no way to name. Until T151 rebuilds this as the classifier
+      // route band — a `classifier_review` inbox item on the stream, with
+      // the session blocked until it is answered — an `ask` is a plain
+      // deny that names the rule, which is the behaviour the model already
+      // handles (`permissionDecisionReason` reaches it verbatim).
       const why = decision.reason ?? 'never-without-human command';
-      // The whole command up to the message-body cap: a 400-char cut left
-      // the human/EM deciding on a commit command they could only half see.
-      const summary = `${ctx.agent} asked to run \`${command}\` — ${why}`.slice(
-        0,
-        MESSAGE_BODY_MAX_CHARS,
-      );
-      // An `unblock` already decided for this ticket and this exact command
-      // is the answer — the gate is only a gate if approval opens it.
-      // Twenty-eighth live run (2026-09-11): the EM delegate approved the
-      // engineer's `bunx tsc` three times and `bun install` once; every
-      // re-run of the identical command filed a brand-new pending request,
-      // the engineer wrote "approving can never let it through" and gave up.
-      const decided = this.options.gates
-        .list()
-        .filter(
-          (r) =>
-            r.status === 'resolved' &&
-            r.ticket === ctx.ticket &&
-            r.gate === UNBLOCK_GATE &&
-            r.summary === summary,
-        )
-        .sort((a, b) => (a.resolved_at ?? '').localeCompare(b.resolved_at ?? ''))
-        .at(-1);
-      if (decided?.decision === 'approve') {
-        decision = { ...decision, decision: 'allow', reason: undefined };
-      } else if (decided?.decision === 'deny') {
-        decision = {
-          ...decision,
-          decision: 'deny',
-          reason: `${why} — ${decided.id} already denied this exact command; do not retry it`,
-        };
-      } else {
-        const hilId = await this.resolveOrCreateHil(ctx.ticket, ctx.agent, summary);
-        decision = {
-          ...decision,
-          decision: 'deny',
-          reason: `${why} — filed ${hilId} for the gate owner; do other work or wait, the daemon prompts you with the decision`,
-        };
-      }
+      decision = {
+        ...decision,
+        decision: 'deny',
+        reason: `${why} — ask the operator on the stream before retrying`,
+      };
     }
 
     await this.ackAll(ctx.agent, decision.ack);

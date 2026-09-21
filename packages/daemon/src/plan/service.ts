@@ -10,7 +10,7 @@
  *
  *   Brief        `oracle/product.md`        `store.getDoc`/`putDoc`
  *   Rules        `oracle/specs/SPEC-*.md`   oracle index + write guard
- *   Questions    `board/questions/Q-*.yaml` `QuestionService` (T040)
+ *   Questions    `questions/Q-*.yaml` `QuestionService` (T040)
  *   Decisions    `oracle/decisions/DEC-*.md` oracle index + write guard
  *   Tickets      `tickets/TKT-*.yaml`       store + living-plan rules
  *   Sprints      `sprints/S-*.yaml`         `projection.ts` (pure, read-only)
@@ -592,43 +592,16 @@ export class PlanService {
       );
     }
 
-    const request = await this.deps.gates.request('approve_plan', {
-      policy: this.policy(),
-      hilKind: 'approve_decision',
-      summary: PlanService.summaryFor(proposal),
-    });
-    let gate = request;
-    if (gate.status === 'pending' && gate.owner === 'human') {
-      gate = await this.deps.gates.respond(
-        gate.id,
-        'approve',
-        by,
-        'Start Sprint clicked in the control room — the click is the approval (§17 v2).',
-      );
-    }
-
+    // T121: the `approve_plan` gate is deleted (cockpit design §3.1 — "there
+    // is no planning turn that needs approving ... the human writes the goal
+    // themselves"), so the click that got here *is* the approval and no HIL
+    // request is opened. T122 deletes this module.
     const gateView = {
-      id: gate.id,
-      owner: gate.owner,
-      status: gate.status,
-      ...(gate.decision !== undefined ? { decision: gate.decision } : {}),
+      id: `approve_plan-deleted-${by}`,
+      owner: 'human',
+      status: 'resolved' as const,
+      decision: 'approve' as const,
     };
-    if (gate.status !== 'resolved') {
-      return {
-        started: false,
-        proposal,
-        gate: gateView,
-        reason: `approve_plan is owned by ${gate.owner} and is still pending — the sprint starts when it is approved`,
-      };
-    }
-    if (gate.decision !== 'approve') {
-      return {
-        started: false,
-        proposal,
-        gate: gateView,
-        reason: `approve_plan was denied by ${gate.decided_by ?? gate.owner} — nothing was started`,
-      };
-    }
 
     const sprint = await this.planProposal(proposal, options.cap);
     return { started: true, sprint, proposal, gate: gateView };
@@ -643,37 +616,18 @@ export class PlanService {
    * one stamps those tickets (so the next call's proposal no longer
    * matches). Returns the sprint it started, if any.
    */
-  /** The `approve_plan` request still waiting on a decision, if any — what the top bar's disabled "Start Sprint N" reports. */
+  /** T121: `approve_plan` is a deleted gate kind, so nothing is ever waiting on one. T122 deletes this module. */
   pendingApprovePlan(): { id: string; owner: string; summary?: string } | undefined {
-    const request = this.deps.gates
-      ?.list()
-      .find((r) => r.gate === 'approve_plan' && r.status === 'pending');
-    if (!request) return undefined;
-    return {
-      id: request.id,
-      owner: request.owner,
-      ...(request.summary !== undefined ? { summary: request.summary } : {}),
-    };
+    return undefined;
   }
 
   async startApprovedSprint(): Promise<Sprint | undefined> {
     if (!this.deps.gates) return undefined;
     const board = this.sprints();
     if (board.running !== undefined) return undefined;
-    const proposal = this.proposeSprint();
-    if (!proposal) return undefined;
-    const summary = PlanService.summaryFor(proposal);
-    const approved = this.deps.gates
-      .list()
-      .find(
-        (r) =>
-          r.gate === 'approve_plan' &&
-          r.status === 'resolved' &&
-          r.decision === 'approve' &&
-          r.summary === summary,
-      );
-    if (!approved) return undefined;
-    return this.planProposal(proposal);
+    // T121: there is no `approve_plan` gate to pick up any more — a sprint
+    // is started by `startSprint` alone. T122 deletes this module.
+    return undefined;
   }
 
   /** Persists the approved proposal. The only caller of `planSprint` in this module. */

@@ -61,7 +61,7 @@ export function decidePermission(ctx: DecisionContext): Decision {
           kind: 'hil',
           reason: 'no allow_once/reject_once option offered for an allow verdict',
           hilRequest: {
-            hilKind: 'unblock',
+            hilKind: 'classifier_review',
             summary: summarize(classified, 'no safe option offered by the agent'),
             classified,
           },
@@ -79,7 +79,7 @@ export function decidePermission(ctx: DecisionContext): Decision {
         kind: 'hil',
         reason: `${verdict.reason} (no reject_once option offered)`,
         hilRequest: {
-          hilKind: 'unblock',
+          hilKind: 'classifier_review',
           summary: summarize(classified, verdict.reason),
           classified,
         },
@@ -92,7 +92,7 @@ export function decidePermission(ctx: DecisionContext): Decision {
     kind: 'hil',
     reason: verdict.reason,
     hilRequest: {
-      hilKind: 'unblock',
+      hilKind: 'classifier_review',
       summary: summarize(classified, verdict.reason),
       classified,
     },

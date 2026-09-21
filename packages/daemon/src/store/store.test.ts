@@ -1329,16 +1329,16 @@ describe('AgentRecord: putAgent / getAgent / listAgents / deleteAgent', () => {
 describe('Policy / Vendors singletons', () => {
   test('getPolicy reads what agile init wrote', () => {
     const store = StateStore.open(stateRoot);
-    expect(store.getPolicy().gates.approve_plan).toBe('human');
+    expect(store.getPolicy().gates.land).toBe('human');
   });
 
   test('putPolicy overwrites it and mints policy_put', async () => {
     const store = StateStore.open(stateRoot);
     await store.putPolicy({
-      gates: { approve_plan: 'em' },
+      gates: { land: 'em' },
       breaker_signals: [],
     } as never);
-    expect(store.getPolicy().gates.approve_plan).toBe('em');
+    expect(store.getPolicy().gates.land).toBe('em');
     expect(store.listEvents()[0]?.kind).toBe('policy_put');
   });
 

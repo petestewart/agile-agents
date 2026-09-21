@@ -8,6 +8,7 @@
 
 import { z } from 'zod';
 import { formatZodError } from './ids';
+import { HIL_KINDS, type HilKind, HilKindSchema } from './message';
 
 /**
  * "Owner: human | em | architect | human_timeout: <duration> (ask the human;
@@ -27,20 +28,19 @@ export const GateOwnerSchema = z.union([
 export type GateOwner = z.infer<typeof GateOwnerSchema>;
 
 /**
- * Named gates in the repo-default example (§16): approve_plan,
- * approve_decision, sprint_review, unblock, demo. DESIGN-GAP: kept as
- * documentation only — `gates` is a permissive record so a sprint/epic/team
- * override can add gate names the repo default doesn't list.
+ * T121: `gates` is a **closed** set, not a free-form record. The three
+ * surviving gate kinds are design/cockpit-design.md §3.1's — `land`,
+ * `rule_accept`, `classifier_review` — and they are exactly `HIL_KINDS`
+ * (`message.ts`), so a policy row and a `hil_kind` can never drift apart.
+ * A policy naming any other gate (`approve_plan`, `sprint_review`,
+ * `unblock`, `demo`, `promote_to_main`, …) is rejected at the boundary
+ * rather than silently resolving to `human`.
  */
-export const KNOWN_GATES = [
-  'approve_plan',
-  'approve_decision',
-  'sprint_review',
-  'unblock',
-  'demo',
-] as const;
+export const GATE_KINDS = HIL_KINDS;
+export const GateKindSchema = HilKindSchema;
+export type GateKind = HilKind;
 
-export const GatesBlockSchema = z.record(z.string().min(1), GateOwnerSchema);
+export const GatesBlockSchema = z.record(GateKindSchema, GateOwnerSchema);
 export type GatesBlock = z.infer<typeof GatesBlockSchema>;
 
 /**

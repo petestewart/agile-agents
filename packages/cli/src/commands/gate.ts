@@ -19,7 +19,7 @@ export type GateList = ReturnType<GateService['list']>;
 /**
  * `agile approve <id> [--note "..."]` / `agile deny <id> [--note "..."]`
  * (T039, §17 "Control room v2"): the free text is stored on the request,
- * carried on the `hil_resolved` event, and delivered to the waiting agent
+ * carried on the `gate_resolved` event, and delivered to the waiting agent
  * and the EM.
  */
 async function runDecision(

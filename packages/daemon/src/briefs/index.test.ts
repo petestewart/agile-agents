@@ -56,7 +56,7 @@ describe('role briefs render against fixture data and stay under the token ceili
       policy: FIXTURE_POLICY,
     });
     expect(text).toContain('S-07');
-    expect(text).toContain('approve_plan');
+    expect(text).toContain('land');
     // T050: the intent half of "no sprint review while the sprint runs" —
     // the daemon's `SprintNotDoneError` is the enforcement half, and this
     // brief is what stops the EM offering one in the first place.
@@ -132,15 +132,17 @@ describe('ceremony templates render against fixture data and stay under the toke
     expect(text).toMatchSnapshot();
   });
 
-  test('sprint review — sprint override wins over the repo default', () => {
+  // T121: the sprint-level `gates:` override is deleted with the
+  // most-specific-wins walk, so the repo default is the only level left.
+  test('sprint review — the repo default is the only level left', () => {
     const text = renderSprintReview({
-      sprint: { ...FIXTURE_SPRINT, gates: { sprint_review: 'architect' } },
-      policy: FIXTURE_POLICY, // repo default sprint_review: 'human'
+      sprint: { ...FIXTURE_SPRINT, gates: { land: 'architect' } },
+      policy: FIXTURE_POLICY, // repo default land: 'human'
       doneTickets: [FIXTURE_TICKET],
     });
     expect(text).toContain('Auth works end to end');
-    expect(text).toContain('owner for this sprint: architect');
-    expect(text).toContain('sprint override — repo default: human');
+    expect(text).toContain('owner for this sprint: human');
+    expect(text).not.toContain('sprint override');
     expect(approxTokenCount(text)).toBeLessThanOrEqual(CEREMONY_TEMPLATE_TOKEN_CEILING);
     expect(text).toMatchSnapshot();
   });
@@ -149,7 +151,7 @@ describe('ceremony templates render against fixture data and stay under the toke
     const { gates: _gates, ...sprintWithoutGates } = FIXTURE_SPRINT;
     const text = renderSprintReview({
       sprint: sprintWithoutGates,
-      policy: FIXTURE_POLICY, // repo default sprint_review: 'human'
+      policy: FIXTURE_POLICY, // repo default land: 'human'
       doneTickets: [FIXTURE_TICKET],
     });
     expect(text).toContain('owner for this sprint: human');
@@ -250,13 +252,13 @@ describe('missing fields throw instead of rendering silently', () => {
     ).toThrow(/missing required field/);
   });
 
-  test('sprint review throws when the gate owner is unresolvable (no sprint override, no repo default)', () => {
+  test('sprint review throws when the gate owner is unresolvable (no repo default)', () => {
     const { gates: _gates, ...sprintWithoutGates } = FIXTURE_SPRINT;
     const brokenPolicy = {
       ...FIXTURE_POLICY,
       gates: { ...FIXTURE_POLICY.gates } as Record<string, unknown>,
     };
-    brokenPolicy.gates.sprint_review = undefined;
+    brokenPolicy.gates.land = undefined;
     expect(() =>
       renderSprintReview({
         sprint: sprintWithoutGates,

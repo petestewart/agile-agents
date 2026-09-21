@@ -126,9 +126,12 @@ export function renderSprintReview(ctx: SprintReviewContext): string {
   // Most-specific-wins resolution (§16): sprint override, then repo default.
   // Resolved here, not in the template, so an unresolvable owner fails the
   // same way any other missing required field does (render() throws).
-  const sprintOwner = ctx.sprint.gates?.sprint_review;
-  const repoDefault = ctx.policy.gates.sprint_review;
-  const gateOwner = sprintOwner ?? repoDefault;
+  // T121: `sprint_review` is a deleted gate kind and the sprint-level
+  // override went with the most-specific-wins walk, so the surviving `land`
+  // gate's repo-default owner is the closest thing to "who signs this off".
+  // T122 deletes this brief with the ceremony.
+  const repoDefault = ctx.policy.gates.land;
+  const gateOwner = repoDefault;
   return render(loadTemplate('sprint-review'), {
     sprint: ctx.sprint,
     policy: ctx.policy,
@@ -136,7 +139,7 @@ export function renderSprintReview(ctx: SprintReviewContext): string {
     gateOwner,
     repoDefault,
     // The override note needs both values; degrade to no note when the repo policy has no default.
-    overridden: sprintOwner !== undefined && repoDefault !== undefined,
+    overridden: false,
   });
 }
 

@@ -29,8 +29,10 @@
 
 import {
   type Event,
+  type HilRequest,
   type Message,
   type QaReport,
+  type Question,
   type Stanza,
   type Ticket,
   type TicketId,
@@ -408,9 +410,9 @@ export function buildStory(
     steps.push(qaStep(report, thread, ts));
   }
 
-  const pendingHil = (inputs.gates?.list() ?? []).filter(
-    (r) => r.status === 'pending' && r.ticket === ticket.id,
-  );
+  // T121: gates and questions are keyed to streams, not tickets, so a
+  // ticket story can no longer claim either. T122 deletes this module.
+  const pendingHil: HilRequest[] = [];
   for (const request of pendingHil) {
     steps.push({
       ts: request.requested_at,
@@ -419,7 +421,7 @@ export function buildStory(
       text: cap(request.summary ?? `${request.gate} needs a decision`),
     });
   }
-  const openQuestions = (inputs.questions?.listOpen() ?? []).filter((q) => q.ticket === ticket.id);
+  const openQuestions: Question[] = [];
   for (const question of openQuestions) {
     steps.push({
       ts: question.raised_at,

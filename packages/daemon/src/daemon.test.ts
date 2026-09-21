@@ -248,9 +248,9 @@ describe('daemon lifecycle extras', () => {
 
     const gates = handle.gateService;
     if (!gates) throw new Error('daemon has no gate service');
-    const request = await gates.request('unblock', {
-      policy: { gates: { unblock: 'em' }, breaker_signals: [] },
-      hilKind: 'unblock',
+    const request = await gates.request('classifier_review', {
+      policy: { gates: { classifier_review: 'em' }, breaker_signals: [] },
+      stream: ulid(),
       summary: 'eng-0001 wants to install a dependency in its own worktree',
     });
     await gates.settled();

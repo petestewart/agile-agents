@@ -4,7 +4,7 @@ import { answerQuestion, raiseQuestion } from '../../lib/api';
 import { PaneClose } from './PaneClose';
 
 /**
- * Questions pane — `board/questions/Q-*.yaml` (§17 v2 "Questions vs
+ * Questions pane — `questions/Q-*.yaml` (§17 v2 "Questions vs
  * Decisions"; mockup `#p-q`). The store and its routes are T040's; this pane
  * is the Plan-screen view of them: open questions first, each answerable in
  * the operator's own words, either as a plain reply or recorded as a
@@ -51,7 +51,7 @@ export function QuestionsPane({
     <div className="pane" data-testid="pane-questions">
       <div className="dochd">
         <span className="eyebrow">Open questions ({open.length})</span>
-        <span className="file">board/questions/Q-*.yaml</span>
+        <span className="file">questions/Q-*.yaml</span>
         <PaneClose />
       </div>
       {error && <p style={{ color: 'var(--danger)' }}>{error}</p>}
@@ -72,8 +72,7 @@ export function QuestionsPane({
         <div className="rule" key={q.id} data-testid={`question-${q.id}`}>
           <span className="id">{q.id}</span> <b>{q.text}</b>
           <div className="src">
-            Raised by {q.raised_by}
-            {q.ticket ? ` · ${q.ticket}` : ''}
+            Raised by {q.raised_by} · {q.stream}
           </div>
           <div className="reply">
             <input

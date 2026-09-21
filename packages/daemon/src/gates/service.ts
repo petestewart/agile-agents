@@ -28,8 +28,8 @@ import {
   BREAKER_SIGNALS,
   type BreakerSignal,
   type BreakerState,
+  type GateKind,
   type GateOwner,
-  type GatesBlock,
   type HilDecision,
   type HilId,
   type HilKind,
@@ -37,7 +37,6 @@ import {
   MESSAGE_BODY_MAX_CHARS,
   type Message,
   type Policy,
-  type TicketId,
   ulid,
   validateBreakerState,
   validateHilRequest,
@@ -96,9 +95,10 @@ export interface GateDecision {
  * `GateServiceOptions.delegate`'s header (finding 4: fail closed, not open).
  */
 export interface DelegateContext {
-  gate: string;
+  gate: GateKind;
   owner: GateOwner;
-  ticket?: TicketId;
+  /** The stream the gate was raised on (T121) — never a ticket. */
+  stream: string;
   hilKind?: HilKind;
   /** What was asked — see `HilRequest.summary`. */
   summary?: string;
@@ -131,20 +131,21 @@ export interface GateServiceOptions {
 
 export interface GateRequestContext {
   policy: Policy;
-  sprint?: GatesBlock;
-  epic?: GatesBlock;
-  team?: GatesBlock;
-  ticket?: TicketId;
-  /** `hil_request` kind (§5 "HIL"): approve_decision | steer | demo | unblock. Required. */
-  hilKind: HilKind;
+  /**
+   * T121: the stream this gate is raised on. Required — a gate with no
+   * stream has nowhere to show in the inbox (`stream_path` is how the
+   * operator tells their eleven things apart, cockpit design §3.2).
+   * `sprint`/`epic`/`team` overrides went with the ceremony layer.
+   */
+  stream: string;
   /** Who to attribute the resulting bus message to. Defaults to `'daemon'`. */
   from?: AgentId;
   /**
    * T048: the agent whose blocked call raised this gate (the hook caller, the
    * ACP session), persisted as `HilRequest.requested_by` and used by
    * `waitingAgent` to deliver the decision back to it. Leave unset for a
-   * gate the daemon raises on nobody's behalf (`sprint_review`,
-   * `promote_to_main`) — delivery then falls back to the ticket's assignee.
+   * gate the daemon raises on nobody's behalf — nobody is then waiting on it
+   * (T121 deleted the ticket-assignee fallback with the ticket model).
    */
   requestedBy?: AgentId;
   /** What was asked — stored on the record, shown in the notice, handed to the delegate. */
@@ -251,7 +252,7 @@ export class GateService {
    * outcome also writes an urgent `hil_request` bus message to the human's
    * inbox (§5 "HIL").
    */
-  async request(gate: string, ctx: GateRequestContext): Promise<HilRequest> {
+  async request(gate: GateKind, ctx: GateRequestContext): Promise<HilRequest> {
     const resolved = resolveGate(gate, ctx);
     const tripped = this.trippedSignals();
     const breakerActive = tripped.length > 0;
@@ -264,8 +265,10 @@ export class GateService {
     const base: HilRequest = {
       id: newHilId(),
       gate,
-      hil_kind: ctx.hilKind,
-      ...(ctx.ticket !== undefined ? { ticket: ctx.ticket } : {}),
+      // The gate name and the kind are the same closed set after T121, so
+      // they can never drift apart (`GatesBlockSchema` is keyed by it).
+      hil_kind: gate,
+      stream: ctx.stream,
       owner,
       status: 'pending',
       requested_at: now.toISOString(),
@@ -297,9 +300,8 @@ export class GateService {
 
     const saved = await this.persist(record);
     await this.store.appendEvent(
-      buildEvent('hil_requested', {
-        ...(saved.ticket !== undefined ? { ticket: saved.ticket } : {}),
-        data: { id: saved.id, gate: saved.gate, owner: saved.owner },
+      buildEvent('gate_raised', {
+        data: { id: saved.id, gate: saved.gate, owner: saved.owner, stream: saved.stream },
       }),
     );
 
@@ -359,7 +361,7 @@ export class GateService {
     return delegate({
       gate: base.gate,
       owner: base.owner,
-      ticket: base.ticket,
+      stream: base.stream,
       hilKind: base.hil_kind,
       summary: base.summary,
       note: base.note,
@@ -410,7 +412,6 @@ export class GateService {
       to: ['human'],
       kind: 'hil_request',
       priority: 'urgent',
-      ...(req.ticket !== undefined ? { ticket: req.ticket } : {}),
       body: `gate "${req.gate}" needs a human decision (${req.hil_kind})${req.summary ? `: ${req.summary}` : ''}${req.reason ? ` — ${req.reason}` : ''}`.slice(
         0,
         MESSAGE_BODY_MAX_CHARS,
@@ -433,7 +434,6 @@ export class GateService {
       to: ['human'],
       kind: 'fyi',
       priority: 'low',
-      ...(req.ticket !== undefined ? { ticket: req.ticket } : {}),
       body: req.fyi.body,
       refs: [hilPath(req.id)],
       requires_ack: false,
@@ -441,11 +441,11 @@ export class GateService {
     const validated = validateMessage(message);
     await this.store.putEntity(inboxPath('human', validated.id), validateMessage, validated);
     await this.store.appendEvent(
-      buildEvent('hil_resolved', {
-        ...(req.ticket !== undefined ? { ticket: req.ticket } : {}),
+      buildEvent('gate_resolved', {
         agent: req.decided_by,
         data: {
           id: req.id,
+          stream: req.stream,
           decision: req.decision,
           ...(req.note !== undefined ? { note: req.note } : {}),
         },
@@ -456,7 +456,7 @@ export class GateService {
     // `human_timeout` fallthrough) used to send only the human `fyi` above,
     // so the agent actually waiting on the gate never saw the note it was
     // answered with. Deliver it exactly as `respond()` does — this is the
-    // ticket's PRIMARY flow ("a note with no button press ... the EM delegate
+    // T039's PRIMARY flow ("a note with no button press ... the EM delegate
     // reads it and decides").
     if (req.note !== undefined) {
       await this.deliverNote(
@@ -471,7 +471,7 @@ export class GateService {
    * A human (or anyone acting as the resolved owner) answers a pending
    * request directly. `note` is the free text typed on the Needs-you card
    * (T039, §17 "Control room v2"): it is persisted on the record, carried on
-   * the `hil_resolved` event, and delivered as an `hil_response` bus message
+   * the `gate_resolved` event, and delivered as an `hil_response` bus message
    * to the agent that is waiting on the gate and to the EM.
    */
   async respond(id: HilId, decision: HilDecision, by: string, note?: string): Promise<HilRequest> {
@@ -489,11 +489,11 @@ export class GateService {
       ...(trimmed !== undefined ? { note: trimmed } : {}),
     });
     await this.store.appendEvent(
-      buildEvent('hil_resolved', {
-        ...(saved.ticket !== undefined ? { ticket: saved.ticket } : {}),
+      buildEvent('gate_resolved', {
         agent: by,
         data: {
           id: saved.id,
+          stream: saved.stream,
           decision: saved.decision,
           ...(saved.note !== undefined ? { note: saved.note } : {}),
         },
@@ -534,8 +534,8 @@ export class GateService {
   }
 
   /**
-   * Writes the note into the waiting agent's inbox (the ticket's assignee —
-   * the agent whose hook raised the gate) and the EM's, as a normal-priority
+   * Writes the note into the waiting agent's inbox (the agent whose hook or
+   * session raised the gate) and the EM's, as a normal-priority
    * `hil_response` (§5 "HIL": "daemon holds ... until `hil_response`"). Same
    * direct-to-inbox write `notifyPending`/`notifyResolved` use, so no bus
    * routing rule is involved.
@@ -582,7 +582,6 @@ export class GateService {
         to: [to],
         kind: 'hil_response',
         priority: 'normal',
-        ...(req.ticket !== undefined ? { ticket: req.ticket } : {}),
         body: to === 'em' ? body : waitingBody,
         refs: [hilPath(req.id)],
         requires_ack: false,
@@ -593,30 +592,15 @@ export class GateService {
   }
 
   /**
-   * The agent waiting on this gate. `requested_by` (T048) when the raiser
-   * recorded itself — the hook caller or the ACP session whose call is parked
-   * on this decision. Only when it is absent does this fall back to the
-   * ticket's assignee, which is what this used to do unconditionally: a QA or
-   * reviewer hook raises gates on a ticket assigned to the *engineer*, so
-   * qa-2003's approved `unblock` was delivered into eng-2003's inbox and the
-   * engineer refused a command outside its own worktree (first live run of
-   * the control-room branch, 2026-09-18). `undefined` for a ticketless
-   * request with no `requested_by`.
+   * The agent waiting on this gate: `requested_by` (T048) — the hook caller
+   * or the ACP session whose call is parked on this decision — and nothing
+   * else. T121 deleted the ticket-assignee fallback along with the ticket
+   * model: the delivery key is now the stream plus the session that raised
+   * the gate, so a gate the daemon raised on nobody's behalf simply has
+   * nobody to deliver to.
    */
   private waitingAgent(req: HilRequest): AgentId | undefined {
-    if (req.requested_by !== undefined) return req.requested_by;
-    if (req.ticket === undefined) return undefined;
-    let assignee: string | undefined;
-    try {
-      assignee = this.store.getTicket(req.ticket).assignee;
-    } catch {
-      return undefined;
-    }
-    // Review nit: never cast — an assignee that isn't a valid agent id would
-    // otherwise throw out of `validateMessage` *after* the decision and its
-    // event were already persisted. Skip the delivery instead.
-    const parsed = AgentIdSchema.safeParse(assignee);
-    return parsed.success ? (parsed.data as AgentId) : undefined;
+    return req.requested_by;
   }
 
   /**

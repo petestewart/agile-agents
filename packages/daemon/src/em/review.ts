@@ -39,7 +39,7 @@ import type {
   Ticket,
   TicketId,
 } from '@agile-agents/shared';
-import { validateSprint } from '@agile-agents/shared';
+import { ulid, validateSprint } from '@agile-agents/shared';
 import type { GateService } from '../gates';
 import type { StateStore } from '../store';
 import { computeRetro } from './retro';
@@ -121,11 +121,16 @@ export async function requestSprintReview(
   const pending = tickets.filter((t) => t.status !== 'done').map((t) => t.id);
   if (pending.length > 0) throw new SprintNotDoneError(sprint.id, pending);
 
-  const policy = store.getPolicy();
-  return gateService.request('sprint_review', {
-    policy,
-    sprint: sprint.gates,
-    hilKind: 'demo',
+  // T121: `sprint_review` is a deleted gate kind and a gate is now raised on
+  // a stream (cockpit design §3.1, §3.2). This ceremony has no stream — it
+  // is a sprint — so it raises the surviving `land` gate against a synthetic
+  // id that matches no stream, which keeps the loop's tracking working while
+  // deliberately keeping the request out of the inbox (`InboxService` skips
+  // an item whose stream it cannot place). T122 deletes this module.
+  return gateService.request('land', {
+    policy: store.getPolicy(),
+    stream: ulid(),
+    summary: `sprint ${sprint.id} is ready for review`,
   });
 }
 

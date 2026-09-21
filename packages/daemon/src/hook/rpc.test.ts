@@ -30,7 +30,7 @@ beforeEach(() => {
   const init = runInit(repo);
   store = StateStore.open(init.stateRoot);
   bus = new Bus(store, init.stateRoot);
-  hookService = new HookService(store, bus, { repoRoot: repo, gates: new GateService(store) });
+  hookService = new HookService(store, bus, { repoRoot: repo });
   methods = buildHookRpcMethods(hookService);
 
   worktree = join(repo, '.worktrees', 'TKT-0001');
