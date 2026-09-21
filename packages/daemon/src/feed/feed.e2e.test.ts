@@ -223,7 +223,6 @@ describe('feed page (Playwright e2e)', () => {
         expect(seeded.status).toBe('pending');
 
         handle = await startDaemon({
-          cwd: repo,
           port: 0,
           socketPath: join(repo, '.agile-daemon.sock'),
         });
@@ -290,7 +289,6 @@ describe('feed page (Playwright e2e)', () => {
         const store = StateStore.open(init.stateRoot);
 
         handle = await startDaemon({
-          cwd: repo,
           port: 0,
           socketPath: join(repo, '.agile-daemon.sock'),
         });

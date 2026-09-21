@@ -6,6 +6,13 @@
  * not a git repo at all, the daemon is still alive with no work to do, and
  * `agile daemon stop` ends it and clears the pidfile.
  *
+ * T125 acceptance on top of that: **every** command here runs from a plain
+ * non-git directory, `agile daemon start` included, with no registered repo
+ * at all — the daemon is one process for every registered repo (§7.1), so
+ * the operator's cwd is not an input to starting it. The port comes from
+ * `<home>/config.yaml` (a free one picked per run) so a daemon someone else
+ * left on the default 4600 cannot fail this test.
+ *
  * Offline: no vendor, no network. Replaces the deleted `run.e2e.test.ts`
  * (which drove the deleted `agile run`) in `test:integration`.
  */
@@ -14,13 +21,15 @@ import { afterEach, beforeEach, expect, test } from 'bun:test';
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { writeFreePortConfig } from './test-support';
 
 const CLI_ENTRY = join(import.meta.dir, 'index.ts');
 
 let home: string;
-/** A real git repo to start the daemon from (the daemon still resolves a repo root). */
-let repo: string;
-/** A directory that is deliberately **not** a git repo — `agile status` must still work there. */
+/**
+ * A directory that is deliberately **not** a git repo. T125: this is the
+ * cwd for every command in this file, `daemon start` included.
+ */
 let nonRepo: string;
 
 function runCli(
@@ -54,12 +63,11 @@ async function sleep(ms: number): Promise<void> {
   await new Promise((r) => setTimeout(r, ms));
 }
 
-beforeEach(() => {
-  repo = mkdtempSync(join(tmpdir(), 'agile-daemon-e2e-repo-'));
-  Bun.spawnSync(['git', 'init', '-q'], { cwd: repo });
-  Bun.spawnSync(['git', 'config', 'user.email', 'test@example.com'], { cwd: repo });
-  Bun.spawnSync(['git', 'config', 'user.name', 'Test'], { cwd: repo });
+beforeEach(async () => {
   home = mkdtempSync(join(tmpdir(), 'agile-daemon-e2e-home-'));
+  // Bind somewhere nothing else is, not the default 4600 — another
+  // worker's suite (or the operator's own daemon) may hold it.
+  await writeFreePortConfig(home);
   nonRepo = mkdtempSync(join(tmpdir(), 'agile-daemon-e2e-nonrepo-'));
   // A directory inside `nonRepo` could still find a git toplevel if the OS
   // temp dir happened to sit inside a repo; assert it does not.
@@ -84,11 +92,11 @@ afterEach(() => {
       }
     }
   }
-  for (const dir of [repo, home, nonRepo]) rmSync(dir, { recursive: true, force: true });
+  for (const dir of [home, nonRepo]) rmSync(dir, { recursive: true, force: true });
 });
 
 test('daemon start|status|stop lifecycle on a temp AGILE_HOME', async () => {
-  expect(runCli(['init'], { cwd: repo }).code).toBe(0);
+  expect(runCli(['init'], { cwd: nonRepo }).code).toBe(0);
 
   // Nothing running yet: `daemon status` says so and exits non-zero.
   const before = runCli(['daemon', 'status'], { cwd: nonRepo });
@@ -96,7 +104,7 @@ test('daemon start|status|stop lifecycle on a temp AGILE_HOME', async () => {
   expect(before.stdout).toContain('not running');
 
   // start — detached; the CLI returns while the daemon keeps running.
-  const started = runCli(['daemon', 'start'], { cwd: repo });
+  const started = runCli(['daemon', 'start'], { cwd: nonRepo });
   expect(started.stderr + started.stdout).toContain('agiled started');
   expect(started.code).toBe(0);
   const pid = Number(/pid=(\d+)/.exec(started.stdout)?.[1]);
@@ -106,7 +114,7 @@ test('daemon start|status|stop lifecycle on a temp AGILE_HOME', async () => {
   // The pidfile is in the home, not in any repo.
   expect(existsSync(join(home, 'agiled.pid'))).toBe(true);
   expect(readFileSync(join(home, 'agiled.pid'), 'utf8').trim()).toBe(String(pid));
-  expect(existsSync(join(repo, '.agile-daemon.lock'))).toBe(false);
+  expect(existsSync(join(nonRepo, '.agile-daemon.lock'))).toBe(false);
   // stdio went to a log file under `<home>/log/`.
   expect(existsSync(join(home, 'log', 'agiled.log'))).toBe(true);
 
@@ -116,7 +124,7 @@ test('daemon start|status|stop lifecycle on a temp AGILE_HOME', async () => {
   expect(status.stdout).toContain(`pid=${pid}`);
 
   // A second `start` is a no-op that prints the running pid.
-  const again = runCli(['daemon', 'start'], { cwd: repo });
+  const again = runCli(['daemon', 'start'], { cwd: nonRepo });
   expect(again.code).toBe(0);
   expect(again.stdout).toContain('already running');
   expect(again.stdout).toContain(`pid=${pid}`);
@@ -148,12 +156,15 @@ test('daemon start|status|stop lifecycle on a temp AGILE_HOME', async () => {
   expect(after.stdout).toContain('not running');
 }, 60_000);
 
-test('the state home holds the daemon, not the repo: no .agile/ is created in it', () => {
-  expect(runCli(['init'], { cwd: repo }).code).toBe(0);
-  const started = runCli(['daemon', 'start'], { cwd: repo });
+test('the state home holds the daemon, not the cwd: no .agile/ is created there', () => {
+  expect(runCli(['init'], { cwd: nonRepo }).code).toBe(0);
+  const started = runCli(['daemon', 'start'], { cwd: nonRepo });
   expect(started.code).toBe(0);
   try {
-    expect(existsSync(join(repo, '.agile'))).toBe(false);
+    expect(existsSync(join(nonRepo, '.agile'))).toBe(false);
+    // T125: nor is anything else — the deleted `agile.config.yaml` overlay
+    // and the git probe that looked for it both wrote/read here.
+    expect(existsSync(join(nonRepo, '.agile-daemon-cache'))).toBe(false);
     expect(existsSync(join(dirname(home), '.agile'))).toBe(false);
   } finally {
     runCli(['daemon', 'stop'], { cwd: nonRepo });

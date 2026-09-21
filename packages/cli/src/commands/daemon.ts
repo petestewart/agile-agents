@@ -59,10 +59,12 @@ export function runningPid(paths: HomePaths): number | undefined {
  * life of the process. Nothing here ever resolves — the daemon does not exit
  * because work finished; it exits on SIGINT/SIGTERM (`agile daemon stop`).
  */
-export async function runDaemonForeground(cwd: string = process.cwd()): Promise<never> {
+export async function runDaemonForeground(): Promise<never> {
   // T122: the EM delegate is gone, so every gate whose owner is not the
   // human parks as pending until something decides it (T140's landing path).
-  const handle = await startDaemon({ cwd });
+  // T125: no cwd — the daemon's config comes from the state home alone, so
+  // it starts from any directory, git repo or not.
+  const handle = await startDaemon();
   installShutdownSignals(handle);
   console.log(
     `agiled started: pid=${handle.lock.pid} ` +

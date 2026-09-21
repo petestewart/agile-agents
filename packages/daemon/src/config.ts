@@ -1,18 +1,23 @@
 /**
- * Config discovery (design/agile-agents-design.md §18 "Technical shape").
+ * Config discovery (design/cockpit-design.md §7.1, §7.5).
  *
- * Two resolvers live here:
+ * Two resolvers live here, and neither one touches a repo:
  *
  *  - `resolveHomePaths` — port, socket, pidfile and log paths from the state
  *    home alone (T112, D9). No repo needed; this is what a client with no
  *    repo cwd uses to find the one long-lived daemon.
- *  - `discoverConfig` — the above plus the git toplevel of the cwd and the
- *    optional per-repo `agile.config.yaml` overlay, for the code paths that
- *    genuinely operate on a repo.
+ *  - `discoverConfig` — the same paths, packaged as the `AgileConfig` the
+ *    daemon starts from.
  *
- * DESIGN-GAP: the design does not specify a config file name or shape;
- * `agile.config.yaml` with `{ port?, socketPath? }` is the smallest thing
- * that satisfies "config discovery" in the T004 scope line.
+ * T125: the per-repo `agile.config.yaml` overlay and the `git rev-parse
+ * --show-toplevel` probe that used to find the repo it lived in are both
+ * gone — §7.5 deletes "the host-local `.agile-daemon.lock` /
+ * `.agile-daemon.sock` / `agile.config.yaml` triple". The daemon is one
+ * process for every *registered* repo (`repos.yaml`), so the directory the
+ * operator happens to be standing in when they run `agile daemon start` is
+ * not an input at all: `agile daemon start` from `/tmp` starts a daemon.
+ * Config comes from `<home>/config.yaml`, the environment and explicit
+ * options, in that order of increasing precedence.
  */
 
 import { existsSync, readFileSync } from 'node:fs';
@@ -20,31 +25,8 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { DEFAULT_DAEMON_PORT, type HomeConfig, validateHomeConfig } from '@agile-agents/shared';
 import { parse as parseYaml } from 'yaml';
-import { sandboxedSubprocessEnvOrTemp } from './subprocess-env';
-
-/**
- * Host-local Jira link settings (T045, §17 v2 "Jira is two-way sync"). Only
- * the *non-secret* half lives in `agile.config.yaml`: the credentials
- * (`JIRA_EMAIL`, `JIRA_API_TOKEN`) are read from the operator's environment
- * and never written anywhere under `.agile/`, per the ticket scope.
- */
-export interface JiraConfig {
-  /** e.g. `https://acme.atlassian.net` (env: `JIRA_BASE_URL`). */
-  baseUrl?: string;
-  /**
-   * The linked Jira project key, e.g. `LED` (env: `JIRA_PROJECT_KEY`).
-   * Written by `agile sync jira link|unlink` — this file, not anything under
-   * `.agile/`, is where "which project is this repo linked to" lives. A
-   * project key is not a secret; the credentials never come from here.
-   */
-  project?: string;
-  /** Poll cadence for the pull direction (env: `JIRA_POLL_INTERVAL_MS`). */
-  pollIntervalMs?: number;
-}
 
 export interface AgileConfig {
-  /** Repo toplevel (git rev-parse --show-toplevel) the command was run from. */
-  repoRoot: string;
   /**
    * The state home (T111, PLAN.md §5, D9): `AGILE_HOME` if set, else
    * `~/.agile/`. One home serves every registered repo; nothing is written
@@ -59,8 +41,6 @@ export interface AgileConfig {
   socketPath: string;
   /** PID/lock file path — see lock.ts for why it lives outside `.agile/`. */
   lockPath: string;
-  /** T045: `jira:` block from `agile.config.yaml`, overlaid with env. Absent when nothing is configured. */
-  jira?: JiraConfig;
 }
 
 /**
@@ -73,7 +53,6 @@ export interface AgileConfig {
 export function stateHome(): string {
   return process.env.AGILE_HOME ?? join(homedir(), '.agile');
 }
-export const CONFIG_FILE_NAME = 'agile.config.yaml';
 
 /** `<home>/config.yaml` — the state home's own config (T112). */
 export const HOME_CONFIG_FILE_NAME = 'config.yaml';
@@ -147,135 +126,32 @@ export function resolveHomePaths(options: ResolveHomePathsOptions = {}): HomePat
   };
 }
 
-interface RawConfigFile {
-  port?: number;
-  socketPath?: string;
-  jira?: JiraConfig;
-}
-
-function findRepoRoot(startDir: string, tempDirBase?: string): string {
-  // Review round 1 blocker B2: this call is what *discovers* the repo
-  // root, so there's no `repoRoot` in hand yet to sandbox under — an
-  // earlier version used `startDir` itself, which materializes
-  // `<startDir>/.agile-daemon-cache/` even when `startDir` isn't inside any
-  // repo at all (e.g. `agile status` run from the operator's own `$HOME`),
-  // and leaves it behind even though this call then throws. Fixed with
-  // `sandboxedSubprocessEnvOrTemp`'s no-repo-root fallback (the same
-  // `mkdtempSync` + `cleanup()` shape `sandbox/backend.ts`'s
-  // `dockerProbeEnv` already uses for its own "no repo root in hand"
-  // case): a fresh, uid/pid-unique temp directory instead of the caller's
-  // own cwd, removed again once this one bootstrap call is done with it.
-  //
-  // Review round 3 blocker B3: `tempDirBase` (defaults to `os.tmpdir()` via
-  // `sandboxedSubprocessEnvOrTemp` itself, same DI seam T037 round 4 built
-  // for `sandbox/backend.ts`) exists purely so a test can point this at its
-  // own `mkdtempSync`'d directory instead of the real, shared OS temp dir —
-  // round 3's own non-repo-leak regression test used to snapshot
-  // `readdirSync(tmpdir())` before/after and assert no *other* entry
-  // appeared, which is racy against every other process (and every other
-  // test file in the same `bun test` run) also using the real temp dir.
-  const probe = sandboxedSubprocessEnvOrTemp(undefined, 'git', tempDirBase);
-  try {
-    const result = Bun.spawnSync(['git', 'rev-parse', '--show-toplevel'], {
-      cwd: startDir,
-      stdout: 'pipe',
-      stderr: 'pipe',
-      env: probe.env,
-    });
-    if (result.exitCode !== 0) {
-      const stderr = new TextDecoder().decode(result.stderr).trim();
-      throw new Error(`not a git repository (looked from ${startDir}): ${stderr}`);
-    }
-    return new TextDecoder().decode(result.stdout).trim();
-  } finally {
-    probe.cleanup();
-  }
-}
-
-function readConfigFile(repoRoot: string): RawConfigFile {
-  const configPath = join(repoRoot, CONFIG_FILE_NAME);
-  if (!existsSync(configPath)) {
-    return {};
-  }
-  const raw = readFileSync(configPath, 'utf8');
-  const parsed = parseYaml(raw);
-  if (parsed === null || parsed === undefined) {
-    return {};
-  }
-  if (typeof parsed !== 'object' || Array.isArray(parsed)) {
-    throw new Error(`${CONFIG_FILE_NAME} must be a mapping, got ${typeof parsed}`);
-  }
-  return parsed as RawConfigFile;
-}
-
 export interface DiscoverConfigOptions {
-  cwd?: string;
-  /** Overrides applied after file + env — used by tests and CLI flags. */
+  /** Overrides applied after env + `<home>/config.yaml` — used by tests and CLI flags. */
   port?: number;
   socketPath?: string;
   /** Overrides the state home (env: `AGILE_HOME`, default `~/.agile/`). */
   home?: string;
-  /**
-   * Test-only seam (review round 3 B3): overrides where `findRepoRoot`'s
-   * no-repo-root sandbox fallback `mkdtempSync`s its temp directory —
-   * defaults to `os.tmpdir()`. Production never sets this; a test points it
-   * at its own `mkdtempSync`'d directory so it can assert *that* directory
-   * (never the real, shared OS temp dir) is empty afterwards.
-   */
-  tempDirBase?: string;
 }
 
 /**
- * Precedence (highest first): explicit `options`, env vars
- * (`AGILE_PORT`, `AGILE_SOCKET_PATH`), `agile.config.yaml`, built-in default.
+ * Precedence (highest first): explicit `options`, env vars (`AGILE_PORT`,
+ * `AGILE_SOCKET_PATH`), `<home>/config.yaml`, built-in default. No git, no
+ * cwd, no per-repo file — see this module's header (T125).
  */
 export function discoverConfig(options: DiscoverConfigOptions = {}): AgileConfig {
-  const cwd = options.cwd ?? process.cwd();
-  const repoRoot = findRepoRoot(cwd, options.tempDirBase);
   const home = options.home ?? stateHome();
-  const stateRoot = home;
-  const fileConfig = readConfigFile(repoRoot);
-
-  // T112 (D9): the port, the socket and the pidfile belong to the *home*,
-  // not to a repo — one long-lived daemon serves every registered repo, and
-  // a client with no repo cwd has to be able to find it (`resolveHomePaths`,
-  // which `agile status`/`agile daemon *` use on their own). The per-repo
-  // `agile.config.yaml` stays an overlay between the env and the home for an
-  // operator who wants a repo-specific socket or port.
-  const homePaths = resolveHomePaths({ home });
-  const envPort = process.env.AGILE_PORT ? Number(process.env.AGILE_PORT) : undefined;
-  const port = options.port ?? envPort ?? fileConfig.port ?? homePaths.port;
-  const socketPath =
-    options.socketPath ??
-    process.env.AGILE_SOCKET_PATH ??
-    fileConfig.socketPath ??
-    homePaths.socketPath;
-
-  const lockPath = homePaths.pidPath;
-
-  // T045: env wins over the file, same precedence as `port`/`socketPath`
-  // above. Credentials are *not* read here — `sync/config.ts` pulls
-  // `JIRA_EMAIL`/`JIRA_API_TOKEN` straight from the environment so they
-  // never live on an object that anything might serialise into `.agile/`.
-  const envPollInterval = process.env.JIRA_POLL_INTERVAL_MS
-    ? Number(process.env.JIRA_POLL_INTERVAL_MS)
-    : undefined;
-  const jira: JiraConfig = {
-    ...(fileConfig.jira ?? {}),
-    ...(process.env.JIRA_BASE_URL ? { baseUrl: process.env.JIRA_BASE_URL } : {}),
-    ...(process.env.JIRA_PROJECT_KEY ? { project: process.env.JIRA_PROJECT_KEY } : {}),
-    ...(envPollInterval !== undefined && Number.isFinite(envPollInterval)
-      ? { pollIntervalMs: envPollInterval }
-      : {}),
-  };
+  const homePaths = resolveHomePaths({
+    home,
+    ...(options.port !== undefined ? { port: options.port } : {}),
+    ...(options.socketPath !== undefined ? { socketPath: options.socketPath } : {}),
+  });
 
   return {
-    repoRoot,
     home,
-    stateRoot,
-    port,
-    socketPath,
-    lockPath,
-    ...(Object.keys(jira).length > 0 ? { jira } : {}),
+    stateRoot: home,
+    port: homePaths.port,
+    socketPath: homePaths.socketPath,
+    lockPath: homePaths.pidPath,
   };
 }

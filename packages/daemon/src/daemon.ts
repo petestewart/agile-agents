@@ -118,7 +118,9 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
     ? new ToolService({
         registry: loadToolRegistry(config.stateRoot),
         runner: new LiveRunner(),
-        repoRoot: config.repoRoot,
+        // T125: no repo root — the daemon starts from any cwd and serves
+        // every *registered* repo. Registry tools refuse until T132 resolves
+        // a worktree per call from the calling agent's stream.
       })
     : undefined;
   // How spawned sessions reach this daemon's own CLI for their hook command
@@ -154,9 +156,11 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
           ...(streamService ? buildStreamRpcMethods(streamService) : {}),
           ...(inboxService ? buildInboxRpcMethods(inboxService) : {}),
           ...buildHookRpcMethods(
-            new HookService(store, bus, {
-              repoRoot: config.repoRoot,
-            }),
+            // T125: no repo root either — an agent record's worktree is
+            // absolute in practice, and a relative one now fails closed
+            // rather than resolving against whatever cwd `agiled` was
+            // started in.
+            new HookService(store, bus, {}),
           ),
           ...buildToolRpcMethods(toolService),
         }
@@ -183,7 +187,6 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
       port: config.port,
       version: DAEMON_VERSION,
       stateRoot: config.stateRoot,
-      repoRoot: config.repoRoot,
       startedAt,
       store,
       gates: gateService,

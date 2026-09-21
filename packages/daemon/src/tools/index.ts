@@ -45,6 +45,7 @@ export {
 export {
   ToolService,
   UnknownToolError,
+  ToolRepoUnavailableError,
   type ToolListEntry,
   type ToolServiceOptions,
 } from './service';

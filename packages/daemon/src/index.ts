@@ -17,13 +17,11 @@ export {
   resolveHomePaths,
   readHomeConfigFile,
   stateHome,
-  CONFIG_FILE_NAME,
   HOME_CONFIG_FILE_NAME,
   type HomePaths,
   type ResolveHomePathsOptions,
   type AgileConfig,
   type DiscoverConfigOptions,
-  type JiraConfig,
 } from './config';
 export { DAEMON_CACHE_DIR, sandboxedSubprocessEnv } from './subprocess-env';
 export { acquireLock, LockError, type LockHandle } from './lock';
