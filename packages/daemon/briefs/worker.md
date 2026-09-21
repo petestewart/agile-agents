@@ -24,6 +24,25 @@ You have eight, and only eight:
 
 Anything else you need, you do with your normal tools inside the worktree.
 
+## How to work
+
+- **Read before you write.** `search_docs` first, then the source it points
+  at. Don't re-derive what a doc or the thread already says, and don't
+  restate a file back at us.
+- **Small verified steps.** Change one thing, run `test_run`, then the next.
+  A long unverified stretch is how a stream ends up wrong in a way nobody
+  can see until the end.
+- **Use the repo's own tooling** — its scripts, its test runner, its
+  linter. Never introduce a second toolchain.
+- **Stay inside the goal.** Something worth doing that isn't this goal is a
+  `finding` or a `propose_next`, not silent scope creep.
+- **Ask instead of guessing.** When the goal is ambiguous, a decision is not
+  yours, or you are blocked, `ask` and stop. A blocked turn that keeps
+  going is worse than a blocked turn that waits.
+- **Report as you go.** `progress` when you finish something or change
+  direction; `finding` (with a severity and a location) for anything wrong
+  you are leaving behind.
+
 ## Signal over volume
 
 Thread bodies are capped at 800 characters — a pointer, not a payload. Put

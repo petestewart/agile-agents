@@ -36,6 +36,7 @@ import {
   ulid,
 } from '@agile-agents/shared';
 import { readHomeConfigFile } from '../config';
+import type { BriefDoc } from '../runner/brief';
 import { buildBrief } from '../runner/brief';
 import type { CliInvocation } from '../runner/cli-bin';
 import { type AgentSessionHandle, startAgentSession } from '../runner/session';
@@ -79,6 +80,11 @@ export function liveSession(stream: Stream): SessionRef | undefined {
   return stream.sessions.find((session) => LIVE_SESSION_STATUSES.includes(session.status));
 }
 
+/** The slice of T134's `DocsService` the brief needs: the docs a stream sees. */
+export interface BriefDocsSource {
+  docsForStream(streamId: string): BriefDoc[];
+}
+
 export interface AttachOptions extends AttachFlags {
   role?: SessionRole;
 }
@@ -98,6 +104,8 @@ export interface AttachServiceOptions {
   socketPath?: string;
   /** How a spawned session invokes the `agile` CLI (`runner/cli-bin.ts`). */
   cliBin?: string | CliInvocation;
+  /** T134's `DocsService` (or any read side shaped like it) — supplies the brief's docs. */
+  docs?: BriefDocsSource;
   /** Test seam: inject a fake `spawnSession`. */
   spawn?: typeof spawnSession;
   /** Test seam: override the provider the resolved vendor maps to (the fake-agent transport). */
@@ -187,7 +195,8 @@ export class AttachService {
       stream,
       ancestors,
       thread: streams.readThread(stream.id, { limit: 500 }).entries,
-      docs: [],
+      docs: this.options.docs?.docsForStream(stream.id) ?? [],
+      // T140 stores rules; until then there are none to be in scope.
       rules: [],
     });
 

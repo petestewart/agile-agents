@@ -141,6 +141,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
           home: config.home,
           socketPath: config.socketPath,
           cliBin: { command: cliBin.command, args: cliBin.args },
+          ...(docsService ? { docs: docsService } : {}),
         })
       : undefined;
   if (cliBin.source === 'missing') {
