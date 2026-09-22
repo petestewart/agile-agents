@@ -69,12 +69,19 @@ async function answerGate(
   by: string,
   json: boolean,
 ): Promise<number> {
-  const verdict = (rest[0] ?? '').toLowerCase();
+  // T145: `agile answer HIL-… "yes go ahead"` — decision and note in one
+  // quoted argument — is what an operator types, and it was a usage error.
+  // A first positional that carries whitespace is split on its first space.
+  const first = (rest[0] ?? '').trim();
+  const space = first.search(/\s/);
+  const parts =
+    space === -1 ? rest : [first.slice(0, space), first.slice(space + 1), ...rest.slice(1)];
+  const verdict = (parts[0] ?? '').toLowerCase();
   const approve = YES.has(verdict);
   if (!approve && !NO.has(verdict)) {
     throw new Error(`usage: agile answer ${id} yes|no [note]`);
   }
-  const note = rest.slice(1).join(' ').trim();
+  const note = parts.slice(1).join(' ').trim();
   const result = await callRpc<HilRequest>(socketPath, approve ? 'gate.approve' : 'gate.deny', {
     id,
     by,

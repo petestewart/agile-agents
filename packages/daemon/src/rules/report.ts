@@ -37,6 +37,8 @@ export type RuleReportFlag = 'never fired' | 'never violated' | 'routes often' |
 
 export interface RuleReportRow {
   id: string;
+  /** The built-in's §5.4 name, absent for every rule a human or agent wrote (T145). */
+  name?: string;
   /** The enforcement tier, `!`-marked when critical — as `agile rules list` prints it. */
   tier: string;
   status: RuleStatus;
@@ -85,7 +87,20 @@ function flagOf(rule: Rule, days: number, now: Date): RuleReportFlag {
   if (rule.status === 'accepted' && fired === 0 && ageInDays(rule, now) >= days) {
     return 'never fired';
   }
-  if (fired >= RULE_REPORT_NEVER_VIOLATED_MIN_FIRED && violated === 0) return 'never violated';
+  // T145: `never violated` is a prune signal only where a violation is a
+  // thing that can be *recorded without being stopped* — a classifier (or a
+  // guidance) rule the model judges each call against. A pattern rule that
+  // fires is doing its job: the pattern matched and the call was denied, so
+  // `violated: 0` over a thousand firings means the rule works, not that it
+  // is dead weight. Flagging those was telling the operator to retire
+  // `no_push_protected` for being effective.
+  if (
+    rule.enforcement !== 'pattern' &&
+    fired >= RULE_REPORT_NEVER_VIOLATED_MIN_FIRED &&
+    violated === 0
+  ) {
+    return 'never violated';
+  }
   if (fired >= RULE_REPORT_ROUTE_MIN_FIRED && routed / fired >= RULE_REPORT_ROUTE_RATIO) {
     return 'routes often';
   }
@@ -107,6 +122,7 @@ export function ruleReportRows(
     const flag = flagOf(rule, days, now);
     return {
       id: rule.id,
+      ...(rule.name !== undefined ? { name: rule.name } : {}),
       tier: tierOf(rule),
       status: rule.status,
       fired: rule.stats.fired,

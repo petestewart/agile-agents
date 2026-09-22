@@ -11,9 +11,11 @@ import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSy
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ACP_PROVIDERS, type AcpProviderConfig } from '@agile-agents/acp-client';
-import type { Question, Stream } from '@agile-agents/shared';
+import type { HilId, Policy, Question, Stream } from '@agile-agents/shared';
+import { GateService } from '../gates/service';
 import { runInit } from '../init';
 import { QuestionService } from '../questions/service';
+import { wireQuestionSupersession } from '../questions/supersede';
 import type { FakeAgentScript } from '../runner/fake-agent';
 import { StateStore } from '../store';
 import { StreamService } from '../streams/service';
@@ -30,6 +32,7 @@ let streams: StreamService;
 let questions: QuestionService;
 let verbs: VerbService;
 let attachService: AttachService;
+let gates: GateService;
 
 function git(args: string[], cwd = repo): string {
   const result = Bun.spawnSync(['git', ...args], { cwd, stdout: 'pipe', stderr: 'pipe' });
@@ -80,6 +83,7 @@ function buildAttachService(provider: AcpProviderConfig): AttachService {
     home,
     provider: () => provider,
     questions: { listOpen: () => questions.listOpen() },
+    gates: { list: () => gates.list() },
   });
 }
 
@@ -124,6 +128,10 @@ beforeEach(() => {
     deliver: (sessionId, question) => attachService.deliverAnswer(sessionId, question),
   });
   verbs = new VerbService({ store, streams, questions });
+  gates = new GateService(store);
+  // T145: wired exactly as `daemon.ts` wires it — deciding a gate closes
+  // whatever question the same session still has open.
+  wireQuestionSupersession(gates, questions);
   attachService = buildAttachService(fakeProviderFor(ACP_PROVIDERS.claude, SPEAKS));
 });
 
@@ -457,5 +465,114 @@ describe('ask → answer → continue (T137)', () => {
       threadBodies(stream.id).some((b) => b.startsWith('answer recorded with no live session')),
     );
     expect(streams.get(stream.id).agent.status).toBe('idle');
+  }, 30_000);
+});
+
+describe('the brief is written beside the session logs (T145)', () => {
+  test('`<home>/sessions/<id>/brief.md` is what the agent was handed', async () => {
+    const stream = await makeStream();
+    const { session } = await attachService.attach(stream.id);
+    const path = join(home, 'sessions', session.id, 'brief.md');
+    await waitFor(() => existsSync(path));
+    const brief = readFileSync(path, 'utf8');
+    // "What did the agent see" without the vendor's transcript: the rules
+    // in scope, the goal, and anything else the assembler put in.
+    expect(brief).toContain('## Rules in scope');
+    expect(brief).toContain('decide the dialect and implement it');
+  }, 20_000);
+});
+
+describe('a gate and a question in the same turn (T145)', () => {
+  const POLICY: Policy = {
+    gates: { land: 'human', rule_accept: 'human', classifier_review: 'human' },
+    breaker_signals: [],
+  };
+
+  test('approving the gate closes the question too, and the turn ends the session', async () => {
+    // Pete's `--help` run, exactly: the worker raised a plain `ask` and hit
+    // the route-band gate in the same turn, the operator answered the gate,
+    // the worker retried and ended its turn — and the question nobody ever
+    // closed held the stream `working/open` for eleven minutes.
+    const sentinel = join(scratch, 'decided.flag');
+    attachService = buildAttachService(
+      fakeProviderFor(ACP_PROVIDERS.claude, {
+        steps: [
+          { type: 'agent_text', text: 'asking and trying an edit' },
+          { type: 'tool_call', toolCallId: 'ask-1', title: 'ask' },
+          { type: 'wait_for_file', path: sentinel },
+          { type: 'end_turn' },
+        ],
+      }),
+    );
+    const stream = await makeStream();
+    const { session } = await attachService.attach(stream.id);
+    await waitFor(() => store.listAgents().some((a) => a.id === session.id));
+
+    const { id: questionId } = await verbs.ask({
+      session: session.id,
+      text: 'comma or semicolon?',
+    });
+    const gate = await gates.request('classifier_review', {
+      policy: POLICY,
+      stream: stream.id,
+      session: session.id,
+      summary: 'editing a dependency manifest is never automatic',
+      call: { tool: 'Edit', path: join(scratch, 'package.json'), fingerprint: '0123456789abcdef' },
+    });
+    expect(questions.listOpen().map((q: Question) => q.id)).toContain(questionId);
+
+    // `agile answer HIL-… yes`, and then the retry the approval allows —
+    // which is what spends the gate (`hook/route-band.ts` calls `consume`).
+    await gates.respond(gate.id as HilId, 'approve', 'pete');
+    await gates.consume(gate.id as HilId);
+
+    // The question is closed by the decision, not left for nobody.
+    const answered = questions.get(questionId as Question['id']);
+    expect(answered.status).toBe('answered');
+    expect(answered.resolved_as).toBe('superseded');
+    expect(questions.listOpen()).toEqual([]);
+    expect(
+      threadBodies(stream.id).some((b) => b === `question ${questionId} superseded by ${gate.id}`),
+    ).toBe(true);
+
+    // The turn now ends with nothing open: the worker is finished, so the
+    // session is stopped and the exit path writes `done`.
+    writeFileSync(sentinel, '');
+    await waitFor(() => streams.get(stream.id).agent.status === 'done');
+    const after = streams.get(stream.id);
+    expect(after.sessions.find((s) => s.id === session.id)?.status).toBe('stopped');
+    expect(store.listAgents().some((a) => a.id === session.id)).toBe(false);
+  }, 30_000);
+
+  test('a turn that ends on a still-open question says `question`, never `working`', async () => {
+    const sentinel = join(scratch, 'asked-only.flag');
+    attachService = buildAttachService(
+      fakeProviderFor(ACP_PROVIDERS.claude, {
+        steps: [
+          { type: 'agent_text', text: 'asking' },
+          { type: 'tool_call', toolCallId: 'ask-2', title: 'ask' },
+          { type: 'wait_for_file', path: sentinel },
+          { type: 'end_turn' },
+        ],
+      }),
+    );
+    const stream = await makeStream();
+    const { session } = await attachService.attach(stream.id);
+    await waitFor(() => store.listAgents().some((a) => a.id === session.id));
+    const { id: questionId } = await verbs.ask({ session: session.id, text: 'which delimiter?' });
+
+    // The stream is dragged back to `working` mid-turn (an answer delivery,
+    // a status write from elsewhere): the turn-end rule must put it back.
+    await streams.update('daemon', stream.id, {
+      agent: { status: 'working' },
+      human: { status: 'open' },
+    });
+    writeFileSync(sentinel, '');
+    await waitFor(
+      () => streams.get(stream.id).sessions.find((s) => s.id === session.id)?.status === 'idle',
+    );
+    expect(streams.get(stream.id).agent.status).toBe('question');
+    expect(streams.get(stream.id).human.status).toBe('waiting_on_you');
+    expect(questions.get(questionId as Question['id']).status).toBe('open');
   }, 30_000);
 });

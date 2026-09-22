@@ -216,3 +216,48 @@ describe('listOpen', () => {
     expect(new QuestionService(store, streams).listOpen().map((q) => q.text)).toEqual(['second']);
   });
 });
+
+describe('a gate decision supersedes the questions the same session left open (T145)', () => {
+  test('resolves them as superseded, with a thread line naming the gate', async () => {
+    const mine = await questions.raise({
+      stream: stream.id,
+      raised_by: 'eng-1',
+      session: SESSION,
+      text: 'comma or semicolon?',
+    });
+    const other = await questions.raise({
+      stream: stream.id,
+      raised_by: 'eng-1',
+      session: ulid(),
+      text: 'another session, untouched',
+    });
+
+    const superseded = await questions.supersede(SESSION, 'HIL-01ABCDEFGHJKMNPQRSTVWXYZ');
+    expect(superseded.map((q) => q.id)).toEqual([mine.id]);
+
+    const after = questions.get(mine.id as QuestionId);
+    expect(after.status).toBe('answered');
+    expect(after.resolved_as).toBe('superseded');
+    expect(after.answer).toBe('superseded by HIL-01ABCDEFGHJKMNPQRSTVWXYZ');
+    expect(after.answered_by).toBe('daemon');
+    expect(questions.get(other.id as QuestionId).status).toBe('open');
+    expect(questions.listOpen().map((q) => q.id)).toEqual([other.id]);
+
+    const bodies = streams.readThread(stream.id, { limit: 100 }).entries.map((e) => e.body);
+    expect(bodies).toContain(`question ${mine.id} superseded by HIL-01ABCDEFGHJKMNPQRSTVWXYZ`);
+  });
+
+  test('an already answered question is left exactly as it was', async () => {
+    const q = await questions.raise({
+      stream: stream.id,
+      raised_by: 'eng-1',
+      session: SESSION,
+      text: 'comma or semicolon?',
+    });
+    await questions.answer(q.id as QuestionId, { answer: 'semicolon', by: 'pete' });
+    expect(await questions.supersede(SESSION, 'HIL-01ABCDEFGHJKMNPQRSTVWXYZ')).toEqual([]);
+    const after = questions.get(q.id as QuestionId);
+    expect(after.resolved_as).toBe('reply');
+    expect(after.answer).toBe('semicolon');
+  });
+});

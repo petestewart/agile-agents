@@ -79,6 +79,29 @@ describe('the three pruning signals (§5.7)', () => {
     expect(flagOf(fixture({ stats: { fired: 40, violated: 1 } }))).toBe('-');
   });
 
+  test('a pattern rule that fires is never flagged never violated (T145)', () => {
+    // A pattern rule's firing *is* the enforcement: it matched and the call
+    // was denied, so `violated: 0` means the rule works. Flagging it told
+    // the operator to retire `no_push_protected` for being effective.
+    const pattern: Partial<RuleInput> = {
+      enforcement: 'pattern',
+      pattern: { kind: 'no_push_protected', args: {} },
+      name: 'no_push_protected',
+    };
+    expect(flagOf(fixture({ ...pattern, stats: { fired: 500, violated: 0 } }))).toBe('-');
+    // …and it keeps the two signals that still mean something for it.
+    expect(flagOf(fixture({ ...pattern, stats: { fired: 0 } }))).toBe('never fired');
+    expect(flagOf(fixture({ ...pattern, stats: { fired: 10, violated: 0, routed: 5 } }))).toBe(
+      'routes often',
+    );
+  });
+
+  test('the built-in’s name rides on the row, and nothing else has one (T145)', () => {
+    const [named] = ruleReportRows([fixture({ name: 'no_push_protected' })], { now: NOW });
+    expect(named?.name).toBe('no_push_protected');
+    expect(ruleReportRows([fixture()], { now: NOW })[0]?.name).toBeUndefined();
+  });
+
   test('routing a third of its firings is flagged: the rule is ambiguous', () => {
     expect(flagOf(fixture({ stats: { fired: 10, violated: 2, routed: 3 } }))).toBe('routes often');
     expect(flagOf(fixture({ stats: { fired: 10, violated: 2, routed: 2 } }))).toBe('-');

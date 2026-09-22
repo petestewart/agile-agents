@@ -34,8 +34,8 @@ function rule(over: Partial<RuleInput> = {}): Rule {
 }
 
 describe('rules list rows', () => {
-  test('carry the id/status/tier/scope/text header (T140)', () => {
-    expect(RULE_HEADERS).toEqual(['id', 'status', 'tier', 'scope', 'text']);
+  test('carry the id/name/status/tier/scope/text header (T140, T145)', () => {
+    expect(RULE_HEADERS).toEqual(['id', 'name', 'status', 'tier', 'scope', 'text']);
   });
 
   test('one row per rule, with the tier and the rendered scope', () => {
@@ -45,6 +45,7 @@ describe('rules list rows', () => {
         id: 'R-01ABCDEFGHJKMNPQRSTVWXYZ01',
         status: 'accepted',
         enforcement: 'pattern',
+        name: 'no_push_protected',
         pattern: { kind: 'no_push_protected' },
         critical: true,
         scope: { kind: 'repo', ref: 'alpha' },
@@ -54,12 +55,21 @@ describe('rules list rows', () => {
     expect(rows).toEqual([
       [
         'R-01ABCDEFGHJKMNPQRSTVWXYZ00',
+        // T145: only a built-in carries a name; a hand-written rule prints `-`.
+        '-',
         'proposed',
         'guidance',
         'global',
         'never push to a protected branch',
       ],
-      ['R-01ABCDEFGHJKMNPQRSTVWXYZ01', 'accepted', 'pattern!', 'repo:alpha', 'no pushes to main'],
+      [
+        'R-01ABCDEFGHJKMNPQRSTVWXYZ01',
+        'no_push_protected',
+        'accepted',
+        'pattern!',
+        'repo:alpha',
+        'no pushes to main',
+      ],
     ]);
   });
 });
@@ -72,6 +82,14 @@ describe('rules show fields', () => {
     expect(fields).toContainEqual(['decided', '-']);
     expect(fields.map(([k]) => k)).not.toContain('question');
     expect(fields.map(([k]) => k)).not.toContain('pattern');
+  });
+
+  test('a built-in prints its name; everything else prints `-` (T145)', () => {
+    expect(showFields(rule({ name: 'no_push_protected' }))).toContainEqual([
+      'name',
+      'no_push_protected',
+    ]);
+    expect(showFields(rule())).toContainEqual(['name', '-']);
   });
 
   test('a classifier rule prints the default question; a decided rule prints who', () => {
@@ -182,6 +200,7 @@ describe('rules report table (T142, §5.7)', () => {
   test('carries §5.7’s columns', () => {
     expect(RULE_REPORT_HEADERS).toEqual([
       'id',
+      'name',
       'tier',
       'status',
       'fired',
@@ -213,6 +232,7 @@ describe('rules report table (T142, §5.7)', () => {
     expect(ruleReportRows(rows)).toEqual([
       [
         'R-01ABCDEFGHJKMNPQRSTVWXYZ00',
+        '-',
         'guidance',
         'accepted',
         '0',
@@ -223,6 +243,7 @@ describe('rules report table (T142, §5.7)', () => {
       ],
       [
         'R-01ABCDEFGHJKMNPQRSTVWXYZ01',
+        '-',
         'classifier!',
         'accepted',
         '4',

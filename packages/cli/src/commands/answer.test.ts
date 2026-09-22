@@ -76,6 +76,29 @@ describe('agile answer', () => {
     expect(resolved.note).toBe('pin the version');
   });
 
+  test('decision and note in one quoted argument is accepted (T145)', async () => {
+    const gate = await routedGate();
+    const { code, out } = await capture(() =>
+      runAnswer(daemon.socketPath, parseArgs([gate.id, 'yes pin the version']), false),
+    );
+    expect(code).toBe(0);
+    expect(out).toContain('approve');
+    const resolved = daemon.gateService.get(gate.id);
+    expect(resolved.decision).toBe('approve');
+    expect(resolved.note).toBe('pin the version');
+  });
+
+  test('a single quoted word still decides, with no note (T145)', async () => {
+    const gate = await routedGate();
+    const { code } = await capture(() =>
+      runAnswer(daemon.socketPath, parseArgs([gate.id, 'no']), false),
+    );
+    expect(code).toBe(0);
+    const resolved = daemon.gateService.get(gate.id);
+    expect(resolved.decision).toBe('deny');
+    expect(resolved.note).toBeUndefined();
+  });
+
   test('a HIL- id with no denies it, and a bare note with no verdict is a usage error', async () => {
     const gate = await routedGate();
     await expect(

@@ -53,6 +53,24 @@ test('the three §5.4 built-ins are created as global pattern rules on first sta
   expect(worktree?.critical).toBe(true);
 });
 
+test('each built-in carries its §5.4 name, and a nameless one is backfilled (T145)', async () => {
+  const created = await ensureBuiltinRules(store);
+  expect(created.map((rule) => rule.name)).toEqual(['no_push_protected', 'no_push', 'path_deny']);
+
+  // A built-in written before `name` existed: the next daemon start names
+  // it in place rather than creating a second one or leaving `-` forever.
+  const target = created[0];
+  if (target === undefined) throw new Error('no built-in');
+  const { name: _dropped, ...nameless } = target;
+  await store.updateRule('daemon', target.id, () => nameless);
+  expect(store.getRule(target.id).name).toBeUndefined();
+
+  const again = await ensureBuiltinRules(store);
+  expect(again.map((r) => r.id)).toEqual(created.map((r) => r.id));
+  expect(store.getRule(target.id).name).toBe('no_push_protected');
+  expect(store.listRules()).toHaveLength(3);
+});
+
 test('a second daemon start creates nothing (idempotent by kind + builtin provenance)', async () => {
   const first = await ensureBuiltinRules(store);
   const second = await ensureBuiltinRules(store);

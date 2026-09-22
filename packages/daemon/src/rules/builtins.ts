@@ -91,12 +91,25 @@ export async function ensureBuiltinRules(
   for (const spec of BUILTIN_RULES) {
     const found = existing.find((rule) => isBuiltin(rule, spec.pattern.kind));
     if (found !== undefined) {
-      result.push(found);
+      // T145: a built-in created before `name` existed is backfilled in
+      // place, so `agile rules list` names it on the next daemon start
+      // rather than only in a fresh home. Nothing else on the record is
+      // touched — a retired built-in stays retired.
+      result.push(
+        found.name === spec.pattern.kind
+          ? found
+          : await store.updateRule('daemon', found.id, (before) => ({
+              ...before,
+              name: spec.pattern.kind,
+            })),
+      );
       continue;
     }
     const now = clock().toISOString();
     const record: RuleInput = {
       id: `R-${ulid()}`,
+      // T145: the §5.4 name the operator knows the rule by, beside its ulid.
+      name: spec.pattern.kind,
       text: spec.text,
       scope: { kind: 'global' },
       status: spec.status,

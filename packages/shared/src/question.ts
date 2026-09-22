@@ -41,8 +41,16 @@ export type QuestionStatus = z.infer<typeof QuestionStatusSchema>;
  * `ticket` (a `TKT-####` edit) went with the oracle and the ticket model;
  * an answer is a reply that reaches the waiting session, and the permanent
  * record is the stream thread.
+ *
+ * T145 adds the one resolution a human never types: `superseded`, written
+ * by the daemon when a gate on the same session is decided while this
+ * question is still open. The live run left such a question open forever —
+ * the operator had already answered the thing in front of them (the gate),
+ * and nothing closed the `ask` beside it. The RPC edge still accepts
+ * `reply` and nothing else (`questions/rpc.ts`): only the daemon supersedes.
  */
-export const QuestionResolvedAsSchema = z.literal('reply');
+export const QUESTION_RESOLUTIONS = ['reply', 'superseded'] as const;
+export const QuestionResolvedAsSchema = z.enum(QUESTION_RESOLUTIONS);
 export type QuestionResolvedAs = z.infer<typeof QuestionResolvedAsSchema>;
 
 /**

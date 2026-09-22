@@ -32,8 +32,12 @@ import { hasFlag, optionalString, requireOption, requirePositional } from '../ar
 import { callRpc } from '../client';
 import { printFields, printJson, printTable } from '../format';
 
-/** `id status tier scope text` — the table shape of `agile rules list`. */
-export const RULE_HEADERS = ['id', 'status', 'tier', 'scope', 'text'];
+/**
+ * `id name status tier scope text` — the table shape of `agile rules list`.
+ * T145: `name` is the built-in's §5.4 name (`no_push_protected`, …) and `-`
+ * for every rule a human or an agent wrote, which have no name but their id.
+ */
+export const RULE_HEADERS = ['id', 'name', 'status', 'tier', 'scope', 'text'];
 
 /**
  * The `tier` cell is the enforcement tier (§5.2), with `!` marking a
@@ -42,6 +46,7 @@ export const RULE_HEADERS = ['id', 'status', 'tier', 'scope', 'text'];
 export function ruleRows(rules: readonly Rule[]): string[][] {
   return rules.map((rule) => [
     rule.id,
+    rule.name ?? '-',
     rule.status,
     `${rule.enforcement}${rule.critical ? '!' : ''}`,
     formatRuleScope(rule.scope),
@@ -53,6 +58,7 @@ export function ruleRows(rules: readonly Rule[]): string[][] {
 export function showFields(rule: Rule): Array<[string, string]> {
   const fields: Array<[string, string]> = [
     ['id', rule.id],
+    ['name', rule.name ?? '-'],
     ['status', rule.status],
     ['text', rule.text],
     ['scope', formatRuleScope(rule.scope)],
@@ -293,9 +299,10 @@ export async function runRulesSeed(
   return 0;
 }
 
-/** `id tier status fired violated routed last_fired flag` — §5.7's columns. */
+/** `id name tier status fired violated routed last_fired flag` — §5.7's columns. */
 export const RULE_REPORT_HEADERS = [
   'id',
+  'name',
   'tier',
   'status',
   'fired',
@@ -308,6 +315,7 @@ export const RULE_REPORT_HEADERS = [
 export function ruleReportRows(rows: readonly RuleReportRow[]): string[][] {
   return rows.map((row) => [
     row.id,
+    row.name ?? '-',
     row.tier,
     row.status,
     String(row.fired),
