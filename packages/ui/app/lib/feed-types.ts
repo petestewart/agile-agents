@@ -9,7 +9,7 @@
  * field this mirror doesn't have.
  */
 
-import type { Event, HilRequest, Question } from '@agile-agents/shared';
+import type { Event, HilRequest, InboxItem, Question, Stream } from '@agile-agents/shared';
 
 /** The project the daemon drives — the header's name, and its path on hover. */
 export interface FeedProjectInfo {
@@ -37,4 +37,23 @@ export function isFeedSnapshot(value: unknown): value is FeedSnapshot {
     (value as { type?: unknown }).type === 'snapshot' &&
     Array.isArray((value as { events?: unknown }).events)
   );
+}
+
+/**
+ * T160: mirror of `feed/snapshot.ts`'s `CockpitStreamRow` — one row of the
+ * stream tree, carrying the two-writer status pair the dot reads (§9.2).
+ */
+export interface CockpitStreamRow {
+  id: string;
+  title: string;
+  parent?: string;
+  agent_status: Stream['agent']['status'];
+  human_status: Stream['human']['status'];
+}
+
+/** T160: mirror of `feed/snapshot.ts`'s `CockpitFrame` — the inbox and the tree, pushed on connect and after every event batch. */
+export interface CockpitFrame {
+  type: 'cockpit';
+  inbox: InboxItem[];
+  streams: CockpitStreamRow[];
 }

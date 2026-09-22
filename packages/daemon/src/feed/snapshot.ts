@@ -12,10 +12,12 @@
  */
 
 import { basename } from 'node:path';
-import type { Event, HilRequest, Question } from '@agile-agents/shared';
+import type { Event, HilRequest, InboxItem, Question, Stream } from '@agile-agents/shared';
 import type { GateService } from '../gates';
+import type { InboxService } from '../inbox';
 import type { QuestionService } from '../questions';
 import type { StateStore } from '../store';
+import type { StreamService } from '../streams';
 
 /** Default cap on how many recent events a snapshot carries (ticket: "last N (e.g. 200)"). */
 export const DEFAULT_SNAPSHOT_EVENT_LIMIT = 200;
@@ -76,5 +78,45 @@ export function buildSnapshot(
       ? { project: { name: basename(projectRoot) || projectRoot, path: projectRoot } }
       : {}),
     status: { needs_you: hil.length + openQuestions.length },
+  };
+}
+
+/**
+ * T160: one row of the cockpit's stream tree (design/cockpit-design.md
+ * §9.2). Only what the rail renders: the title, where it nests, and the
+ * two-writer status pair (§2.2) the dot is coloured from — the dot is
+ * derived client-side from these two fields, never stored.
+ */
+export interface CockpitStreamRow {
+  id: string;
+  title: string;
+  parent?: string;
+  agent_status: Stream['agent']['status'];
+  human_status: Stream['human']['status'];
+}
+
+/**
+ * T160: the cockpit's live frame — the inbox (§3) and the stream tree
+ * (§9.2) in one push. Sent on every `/ws` connect and again after every
+ * batch of new `events.jsonl` lines, so a question raised anywhere appears
+ * without a reload (§3.3 "Push, do not poll").
+ */
+export interface CockpitFrame {
+  type: 'cockpit';
+  inbox: InboxItem[];
+  streams: CockpitStreamRow[];
+}
+
+export function buildCockpitFrame(streams: StreamService, inbox?: InboxService): CockpitFrame {
+  return {
+    type: 'cockpit',
+    inbox: inbox?.list() ?? [],
+    streams: streams.list().map((s) => ({
+      id: s.id,
+      title: s.title,
+      ...(s.parent !== undefined ? { parent: s.parent } : {}),
+      agent_status: s.agent.status,
+      human_status: s.human.status,
+    })),
   };
 }
