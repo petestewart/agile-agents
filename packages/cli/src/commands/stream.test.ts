@@ -5,7 +5,15 @@
  */
 import { describe, expect, test } from 'bun:test';
 import type { Stream, ThreadEntry } from '@agile-agents/shared';
-import { STREAM_HEADERS, formatThreadEntry, showFields, streamRows } from './stream';
+import {
+  STREAM_HEADERS,
+  STREAM_STATUS_VALUES,
+  filterStreamTree,
+  formatThreadEntry,
+  showFields,
+  streamRows,
+  streamStatusMatches,
+} from './stream';
 
 function stream(over: Partial<Stream> = {}): Stream {
   return {
@@ -81,5 +89,36 @@ describe('stream show thread entries (T137)', () => {
       '  2026-01-01T00:00:00.000Z  agent:01SESSION0000000000000000  line  Plan:',
       '    - read the parser',
     ]);
+  });
+});
+
+describe('stream list --status/--landed filtering (T136)', () => {
+  test('matches either half of the agent/human pair', () => {
+    const landed = stream({ human: { status: 'landed' } });
+    expect(streamStatusMatches(landed, 'landed')).toBe(true);
+    expect(streamStatusMatches(landed, 'idle')).toBe(true);
+    expect(streamStatusMatches(landed, 'done')).toBe(false);
+    expect(STREAM_STATUS_VALUES).toContain('landed');
+    expect(STREAM_STATUS_VALUES).toContain('done');
+  });
+
+  test('keeps a non-matching parent when a descendant matches', () => {
+    const parent = stream({ id: '01PARENT000000000000000000' });
+    const child = stream({ id: '01CHILD0000000000000000000', human: { status: 'landed' } });
+    const kept = filterStreamTree(
+      [{ stream: parent, children: [{ stream: child, children: [] }] }],
+      'landed',
+    );
+    expect(kept.length).toBe(1);
+    expect(kept[0]?.stream.id).toBe(parent.id);
+    expect(kept[0]?.children[0]?.stream.id).toBe(child.id);
+  });
+
+  test('drops a subtree with no match anywhere', () => {
+    const parent = stream({ id: '01PARENT000000000000000000' });
+    const child = stream({ id: '01CHILD0000000000000000000' });
+    expect(
+      filterStreamTree([{ stream: parent, children: [{ stream: child, children: [] }] }], 'landed'),
+    ).toEqual([]);
   });
 });

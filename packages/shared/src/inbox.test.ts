@@ -46,4 +46,15 @@ describe('InboxItemSchema', () => {
     expect(capped.length).toBe(INBOX_CONTEXT_MAX_CHARS);
     expect(capped.endsWith('…')).toBe(true);
   });
+
+  // T136 (QA rough edge 4): the cut lands between words, not inside one.
+  test('context is elided at a word boundary', () => {
+    const cut = inboxContext(`${'dialect '.repeat(40)}end`);
+    expect(cut.length).toBeLessThanOrEqual(INBOX_CONTEXT_MAX_CHARS);
+    expect(cut).toMatch(/dialect…$/);
+    expect(cut).not.toMatch(/dial…$|diale…$|di…$/);
+    // A single word longer than the budget still gets a hard cut: there is
+    // no boundary to find.
+    expect(inboxContext('y'.repeat(400))).toBe(`${'y'.repeat(INBOX_CONTEXT_MAX_CHARS - 1)}…`);
+  });
 });

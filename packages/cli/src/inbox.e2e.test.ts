@@ -131,6 +131,38 @@ describe('agile inbox / agile answer against a daemon on a temp AGILE_HOME', () 
     expect((await cli(['inbox'])).out).toContain('(empty)');
   });
 
+  /**
+   * T136 (QA rough edges 4 and 7): the context cell is elided at a word
+   * boundary, and a `done` stream's item names both exits — landing and
+   * closing — so an item you decide not to land still has a way out.
+   */
+  test('a long context is cut at a word boundary and a done item says what clears it', async () => {
+    const stream = await newStream('ledger-lite');
+    // Long enough to be cut, with a word boundary near the 200-char budget
+    // so a mid-word slice would be visible.
+    const words = 'dialect '.repeat(40);
+    const question: Question = await daemon.questionService.raise({
+      stream: stream.id,
+      raised_by: 'eng-1',
+      text: `${words}end`,
+    });
+    const listed = await cli(['inbox', '--json']);
+    const items = (JSON.parse(listed.out) as { items: InboxItem[] }).items;
+    const cut = items.find((i) => i.id === question.id)?.context ?? '';
+    expect(cut.endsWith('…')).toBe(true);
+    // Whole words only: no half word before the ellipsis.
+    expect(cut).toMatch(/(^|\s)dialect…$/);
+    expect(cut.length).toBeLessThanOrEqual(200);
+
+    // The `done` item names both exits (§3.2's one line of context). A
+    // fresh stream: raising a question above flipped this one's human half
+    // to `waiting_on_you`, and only an `open` human half is a stream item.
+    const finished = await newStream('parser');
+    await daemon.streamService.update('daemon', finished.id, { agent: { status: 'done' } });
+    const done = await cli(['inbox']);
+    expect(done.out).toContain('worker finished — land or close the stream');
+  });
+
   test('stale mail from a previous daemon run never becomes an inbox item', async () => {
     await newStream('ledger-lite');
     const dir = join(daemon.home, 'bus', 'inbox', 'human');

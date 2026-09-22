@@ -8,7 +8,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { ReposConfig } from '@agile-agents/shared';
@@ -99,6 +99,31 @@ describe('agile repo add/list against a daemon on a temp AGILE_HOME', () => {
     expect(Object.keys(repos).sort()).toEqual(['alpha', 'beta']);
     expect(repos.alpha?.protected_branches).toEqual(['main', 'release']);
     expect(repos.beta?.protected_branches).toEqual(['main', 'master']);
+  });
+
+  /**
+   * T136 (QA rough edge 1): a directory that is not a git repository is
+   * refused at the `state.repo_add` edge as invalid params, with the path
+   * in the message, instead of being registered and failing later when a
+   * stream tries to cut a branch in it.
+   */
+  test('adding a directory that is not a git repository is refused, naming the path', async () => {
+    const plain = realpathSync(mkdtempSync(join(tmpdir(), 'agile-repo-e2e-plain-')));
+    const errors: string[] = [];
+    const original = console.error;
+    console.error = (msg: string) => errors.push(String(msg));
+    try {
+      expect(await runCli(['repo', 'add', plain, '--name', 'plain'], daemon.repo)).toBe(1);
+    } finally {
+      console.error = original;
+      rmSync(plain, { recursive: true, force: true });
+    }
+    const message = errors.join('\n');
+    expect(message).toContain('not a git repository');
+    expect(message).toContain(plain);
+    // Nothing was registered.
+    const repos = await callRpc<ReposConfig>(daemon.socketPath, 'state.repo_list', {});
+    expect(Object.keys(repos)).toEqual([]);
   });
 
   test('adding a path that does not exist fails with a clear message', async () => {

@@ -50,10 +50,22 @@ export function validateInboxItem(input: unknown): InboxItem {
   return result.data;
 }
 
-/** Trims to one line and to the §3.2 cap — the one place a context string is normalized. */
+/**
+ * Trims to one line and to the §3.2 cap — the one place a context string is
+ * normalized.
+ *
+ * T136 (QA rough edge 4): the cut lands on a word boundary. Slicing at the
+ * character budget chopped the last word in half ("…the parser diale…"),
+ * which reads as corruption rather than as elision. The whole-word prefix
+ * is used only when there is one inside the budget; a single word longer
+ * than the budget still gets a hard cut, because there is no boundary to
+ * find.
+ */
 export function inboxContext(text: string): string {
   const oneLine = text.replace(/\s+/g, ' ').trim();
-  return oneLine.length > INBOX_CONTEXT_MAX_CHARS
-    ? `${oneLine.slice(0, INBOX_CONTEXT_MAX_CHARS - 1)}…`
-    : oneLine;
+  if (oneLine.length <= INBOX_CONTEXT_MAX_CHARS) return oneLine;
+  const hard = oneLine.slice(0, INBOX_CONTEXT_MAX_CHARS - 1);
+  const lastSpace = hard.lastIndexOf(' ');
+  const body = lastSpace > 0 ? hard.slice(0, lastSpace) : hard;
+  return `${body.trimEnd()}…`;
 }

@@ -158,6 +158,49 @@ describe('agile stream against a daemon on a temp AGILE_HOME', () => {
     expect(existsSync(join(daemon.home, 'streams', `${gone.id}.yaml`))).toBe(true);
   });
 
+  /**
+   * T136 (QA rough edge 6): finished streams stop mixing with active ones.
+   * `--status` matches either half of the §2.2 pair and `--landed` is the
+   * shortcut for the one an operator filters on most.
+   */
+  test('list --status/--landed filters the tree, and an unknown status is refused', async () => {
+    const active = await newStream('Still going');
+    const finished = await newStream('All done');
+    await daemon.streamService.update('human', finished.id, { human: { status: 'landed' } });
+
+    const all = await cli(['stream', 'list']);
+    expect(all.out).toContain(active.id);
+    expect(all.out).toContain(finished.id);
+
+    const landed = await cli(['stream', 'list', '--landed']);
+    expect(landed.code).toBe(0);
+    expect(landed.out).toContain(finished.id);
+    expect(landed.out).not.toContain(active.id);
+
+    const open = await cli(['stream', 'list', '--status', 'open']);
+    expect(open.out).toContain(active.id);
+    expect(open.out).not.toContain(finished.id);
+
+    // An agent-half value works through the same flag.
+    const idle = await cli(['stream', 'list', '--status', 'idle']);
+    expect(idle.out).toContain(active.id);
+
+    // A status nothing matches says so rather than printing an empty table.
+    const none = await cli(['stream', 'list', '--status', 'closed']);
+    expect(none.code).toBe(0);
+    expect(none.out).toContain('(none closed)');
+
+    const errors: string[] = [];
+    const original = console.error;
+    console.error = (msg: string) => errors.push(String(msg));
+    try {
+      expect(await runCli(['stream', 'list', '--status', 'nope'], daemon.repo)).toBe(1);
+    } finally {
+      console.error = original;
+    }
+    expect(errors.join('\n')).toContain('--status must be one of');
+  });
+
   test('a thread body over the cap is refused with a clear message', async () => {
     const stream = await newStream('Cap');
     const errors: string[] = [];
@@ -223,6 +266,30 @@ describe('agile attach (T130) on a no-repo stream, against the fake driver', () 
     // A second detach has nothing to stop: that is a failure, not a shrug.
     expect((await cli(['detach', stream.id])).code).toBe(1);
   }, 20_000);
+
+  /**
+   * T136 (QA rough edge 3): `detach` on a stream that never had a session
+   * says so in one line, on stderr, and exits 1 — the T137 behaviour,
+   * confirmed here for a stream that was never attached at all (the T130
+   * test above only covers a second detach after a real one).
+   */
+  test('detach on a stream with no live session says so in one line and exits 1', async () => {
+    const stream = await newStream('Never attached');
+    const errors: string[] = [];
+    const originalError = console.error;
+    const logged: string[] = [];
+    const originalLog = console.log;
+    console.error = (msg: string) => errors.push(String(msg));
+    console.log = (msg: string) => logged.push(String(msg));
+    try {
+      expect(await runCli(['detach', stream.id], daemon.repo)).toBe(1);
+    } finally {
+      console.error = originalError;
+      console.log = originalLog;
+    }
+    expect(errors).toEqual([`agile detach: ${stream.id} has no live session`]);
+    expect(logged).toEqual([]);
+  });
 
   test('rejects an effort outside the D12 enum and an unknown role, without calling the daemon', async () => {
     const stream = await newStream('Plan something else');
