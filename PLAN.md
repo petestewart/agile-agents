@@ -510,7 +510,7 @@ Build order: Phase 0 → 1 → 2 → 3 → 4 → 5 → 6. Within a phase, ticket
 
 ### Ticket: T162 New stream and quick capture
 - **Priority:** P1
-- **Status:** Todo
+- **Status:** In Progress
 - **Owner:** —
 - **Scope:** "New stream" from anywhere (title, optional parent, optional repo); a quick-capture box in the top bar that creates a stream from one line, for the support question that arrives mid-task. Keyboard: `n` new, `/` search streams.
 - **Acceptance Criteria:** Playwright: quick capture creates a stream with no repo in under two interactions.
@@ -537,7 +537,7 @@ Build order: Phase 0 → 1 → 2 → 3 → 4 → 5 → 6. Within a phase, ticket
 
 ### Ticket: T166 ∥ Stream page rough edges from Pete's T161 look
 - **Priority:** P2
-- **Status:** Todo
+- **Status:** In Progress
 - **Owner:** —
 - **Scope:** (1) "Needs you" always renders, with "nothing waiting on you" when empty. (2) A stream whose branch is already merged into its target (landed outside `land`, e.g. the Phase 4 `--help` stream, merge f4675a2) shows "already merged into <target>" in the Land panel and offers "Mark landed", which sets `human.status: landed` through `streams.update` as `human`, instead of "nothing to land" with the stream stuck `open`. (3) A Close button on the stream page (existing close path, actor `human`). (4) `agile daemon status` prints the state home path first.
 - **Acceptance Criteria:** UI tests for (1) and (3); service test for the merged-outside detection and mark-landed; CLI test for (4).
@@ -546,7 +546,7 @@ Build order: Phase 0 → 1 → 2 → 3 → 4 → 5 → 6. Within a phase, ticket
 
 ### Ticket: T165 Cockpit as an installable app
 - **Priority:** P2
-- **Status:** Todo
+- **Status:** In Progress
 - **Owner:** —
 - **Scope:** Per D15. Step 1: web app manifest + icon + service worker shell so the browser installs the cockpit as its own app window (Dock/home-screen icon), no new toolchain. Step 2 (only if step 1 isn't enough for Pete): a thin desktop shell that starts `agiled` if it isn't running and opens the page in its own window, with native notifications for new inbox items. Choice of shell (Tauri vs Electron) is escalated to Pete before any code; it is a new toolchain and needs explicit approval. The daemon stays the only process that holds state; the shell holds none.
 - **Acceptance Criteria:** Step 1: Chromium reports the page installable (Playwright); installed window opens on the inbox. Step 2: defined when approved.
