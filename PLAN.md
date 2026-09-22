@@ -286,12 +286,12 @@ Build order: Phase 0 → 1 → 2 → 3 → 4 → 5 → 6. Within a phase, ticket
 
 ### Ticket: T136 ∥ Phase 3 rough edges from QA
 - **Priority:** P2
-- **Status:** In Progress
+- **Status:** Done
 - **Owner:** opus:worker-T136
 - **Scope:** (1) `agile repo add <path>` refuses a directory that is not a git repository (typed error → -32602, message names the path) instead of failing later. (2) The `hook` usage line stops presenting `--fail-closed` as required and names the real opt-out `--fail-open`. (3) `agile detach` on a stream with no live session says so in one line and exits 1. Plus anything Pete's live run turns up that fits in a day. (4) `inbox` context truncation cuts mid-word; truncate at a word boundary. (5) Pete's live run: the ledger-lite goal named a CLI the repo does not have; the worker correctly asked instead of inventing one, twice. Not a defect; noted so the next live goal is unambiguous. (6) `stream list` gains `--landed`/`--status` filtering so finished streams stop mixing with active ones. (7) The inbox `done` item says what clears it (land or close the stream).
 - **Acceptance Criteria:** Each has a CLI test.
 - **Validation Steps:** `bun test packages/cli packages/daemon/src/store`.
-- **Notes:** May run alongside Phase 4.
+- **Notes:** May run alongside Phase 4. Branch `T136-phase3-rough-edges`. `state.repo_add` refuses a non-git dir at the RPC edge (`Bun.spawnSync` argv, -32602); `hook` usage shows `--fail-open`; detach-with-nothing test; inbox context elides at a word boundary (`shared/src/inbox.ts`); `stream list --status <s>` / `--landed` client-side with ancestors kept; inbox `done` context `worker finished — land or close the stream`. Review (sonnet) PASS, 2 nits. 310 pass in scope; `bun test` 1345 pass / 2 skip / 0 fail; integration green. merge: 39dc7c4.
 
 ### Ticket: T137 An answer reaches the waiting session
 - **Priority:** P0
