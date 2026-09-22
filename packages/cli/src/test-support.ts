@@ -144,6 +144,9 @@ export async function startTestDaemon(prefix = 'agile-cli-test-'): Promise<TestD
     socketPath,
     spawn: createFakeSpawn({ scriptPath: fakeScript }),
     questions: { listOpen: () => questionService.listOpen() },
+    // T138: same wiring as `daemon.ts` — an open routed call keeps a
+    // session alive at turn end.
+    gates: gateService,
   });
   // T137: an answer is delivered by prompting the live session, exactly as
   // `daemon.ts` wires it.

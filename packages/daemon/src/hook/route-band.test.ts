@@ -37,6 +37,7 @@ let repo: string;
 let scratch: string;
 let promptLog: string;
 let sentinel: string;
+let finishSentinel: string;
 let store: StateStore;
 let bus: Bus;
 let streams: StreamService;
@@ -63,16 +64,17 @@ function fakeProviderFor(script: FakeAgentScript): AcpProviderConfig {
 }
 
 /**
- * The live run's shape: the worker makes the call the hook refuses, asks
- * the operator about it, and ends its turn — which leaves the session live
- * and idle (T137: a turn that ends on an open question ends nothing).
- * `sentinel` is how the test decides when that turn ends; turn two is the
- * retry the gate's decision prompts, and it hangs so the session stays live
- * for the rest of the test.
+ * What a real Claude session does with the deny: it makes the refused call,
+ * says it is blocked pending the approval, and **ends its turn**. `sentinel`
+ * is how the test decides when that turn ends. Turn two is the retry the
+ * gate's decision prompts; it waits on `finishSentinel` so a test can hold
+ * the session live for further hook calls, or let the turn end and watch the
+ * session finish.
  *
- * Turns are serialized by the ACP client, so this is also the only state in
- * which a second prompt is deliverable at all — a session mid-turn queues
- * it behind the turn it is already running.
+ * Turns are serialized by the ACP client, so an idle session is also the
+ * only state in which a second prompt is deliverable at all — a session
+ * mid-turn queues it behind the turn it is already running, which is the
+ * other half of why the turn-end rule has to keep this session alive.
  */
 function workerScript(): FakeAgentScript {
   return {
@@ -84,7 +86,13 @@ function workerScript(): FakeAgentScript {
         { type: 'wait_for_file', path: sentinel },
         { type: 'end_turn' },
       ],
-      [{ type: 'agent_text', text: 'retrying the edit' }, { type: 'hang' }],
+      [
+        { type: 'agent_text', text: 'retrying the edit' },
+        // Long enough that the turn cannot end on its own inside a loaded
+        // full-suite run — the test is what ends it, by touching the file.
+        { type: 'wait_for_file', path: finishSentinel, timeoutMs: 60_000 },
+        { type: 'end_turn' },
+      ],
     ],
     steps: [{ type: 'hang' }],
   };
@@ -92,7 +100,10 @@ function workerScript(): FakeAgentScript {
 
 async function waitFor(
   predicate: () => boolean,
-  { timeoutMs = 20_000, intervalMs = 20 }: { timeoutMs?: number; intervalMs?: number } = {},
+  // 40 s, not the usual few seconds: a full `bun test` run has a Playwright
+  // browser and 100 other files competing for the CPU, and a real vendor
+  // turn ending is a subprocess round trip. The test budget below is 90 s.
+  { timeoutMs = 40_000, intervalMs = 20 }: { timeoutMs?: number; intervalMs?: number } = {},
 ): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (!predicate()) {
@@ -107,6 +118,7 @@ beforeEach(() => {
   repo = mkdtempSync(join(tmpdir(), 'agile-route-repo-'));
   promptLog = join(scratch, 'prompts.jsonl');
   sentinel = join(scratch, 'turn-one-ends.flag');
+  finishSentinel = join(scratch, 'turn-two-ends.flag');
   git(['init', '-q']);
   git(['config', 'user.email', 'test@example.com']);
   git(['config', 'user.name', 'Test']);
@@ -129,6 +141,9 @@ beforeEach(() => {
     home,
     provider: () => fakeProviderFor(workerScript()),
     questions: { listOpen: () => questions.listOpen() },
+    // T138, as `daemon.ts` wires it: an open routed call is what keeps a
+    // denied session alive at turn end.
+    gates,
   });
   // Exactly `daemon.ts`'s wiring: the hook raises the gate, resolving it
   // prompts the session that is waiting on it.
@@ -143,32 +158,37 @@ afterEach(async () => {
   for (const dir of [home, repo, scratch]) rmSync(dir, { recursive: true, force: true });
 });
 
-async function liveSession(): Promise<{ stream: Stream; session: string; worktree: string }> {
-  await store.putRepos({ demo: { path: repo, protected_branches: ['main'] } });
+/**
+ * An attached, live worker session and the directory its hook calls come
+ * from. `withRepo` cuts a real worktree (the headline acceptance path runs
+ * there); without it the stream is a planning stream whose session runs in
+ * `<home>/sessions/<id>/`, which is what the hook resolves `cwd` through
+ * either way. The route band cares about neither — and a repo-less stream
+ * spawns no `git`, which keeps this file off `runner/worktrees.ts`'s known
+ * piped-stdio flake (PLAN-v1 T033's `EBADF epoll_ctl`) more often than not.
+ */
+async function liveSession({
+  withRepo,
+}: { withRepo?: boolean } = {}): Promise<{ stream: Stream; session: string; worktree: string }> {
+  if (withRepo === true)
+    await store.putRepos({ demo: { path: repo, protected_branches: ['main'] } });
   const stream = await streams.create('human', {
     title: 'ledger-lite',
     goal: 'add the dependency',
-    repo: 'demo',
+    ...(withRepo === true ? { repo: 'demo' } : {}),
   });
   const attached = await attachService.attach(stream.id);
   await waitFor(() => store.listAgents().some((a) => a.id === attached.session.id));
-  const worktree = attached.session.worktree;
-  if (worktree === undefined) throw new Error('expected a worktree');
+  const worktree = attached.session.worktree ?? join(home, 'sessions', attached.session.id);
   return { stream: attached.stream, session: attached.session.id, worktree };
 }
 
 /**
- * Ends the worker's first turn the way the live run did — it asks about the
- * refused call, so the session stays live and idle instead of being stopped
- * by the turn-end rule — and waits until it really is idle.
+ * Ends the worker's first turn — nothing is asked, it simply reports itself
+ * blocked on the gate — and waits until the session is idle. The turn-end
+ * rule keeps it alive because the routed call is still open (T138).
  */
 async function endFirstTurnHolding(streamId: string, session: string): Promise<void> {
-  await questions.raise({
-    stream: streamId,
-    raised_by: session,
-    session,
-    text: 'the manifest edit is blocked — can I add the dependency?',
-  });
   writeFileSync(sentinel, '');
   await waitFor(
     () => streams.get(streamId).sessions.find((s) => s.id === session)?.status === 'idle',
@@ -198,13 +218,17 @@ function prompts(): string[] {
     .filter((line) => line.includes('"session/prompt"'));
 }
 
+function threadBodies(streamId: string): string[] {
+  return streams.readThread(streamId, { limit: 500 }).entries.map((entry) => entry.body);
+}
+
 function openGates(): HilRequest[] {
   return gates.list().filter((g) => g.status === 'pending');
 }
 
 describe('T138 route band — a routed manifest edit, approved, retried once', () => {
   test('denied → gate in the inbox → approved → the same edit allowed once, a different edit still denied', async () => {
-    const { stream, session, worktree } = await liveSession();
+    const { stream, session, worktree } = await liveSession({ withRepo: true });
 
     // 1. The call Pete's run died on: a dependency-manifest edit.
     const first = await hooks.preToolUse(editPayload(session, worktree, 'package.json'));
@@ -239,9 +263,9 @@ describe('T138 route band — a routed manifest edit, approved, retried once', (
     expect(reasonOf(again)).toContain(gate.id);
     expect(openGates()).toHaveLength(1);
 
-    // 4. The worker holds: it asks about the blocked call and ends its turn,
-    //    live and idle. Then the human approves, and the session is prompted
-    //    to retry.
+    // 4. The worker holds: it reports itself blocked and ends its turn,
+    //    live and idle (the open gate is what keeps it alive). Then the
+    //    human approves, and the session is prompted to retry.
     await endFirstTurnHolding(stream.id, session);
     await gates.respond(gate.id, 'approve', 'pete');
     await waitFor(() => prompts().some((line) => line.includes(gate.id)));
@@ -271,7 +295,7 @@ describe('T138 route band — a routed manifest edit, approved, retried once', (
     expect(other.hookSpecificOutput.permissionDecision).toBe('deny');
     expect(reasonOf(other)).not.toContain(gate.id);
     expect(openGates()).toHaveLength(2);
-  }, 60_000);
+  }, 90_000);
 
   test('a denied gate reaches the session with the note, and the retry says so', async () => {
     const { stream, session, worktree } = await liveSession();
@@ -294,7 +318,48 @@ describe('T138 route band — a routed manifest edit, approved, retried once', (
     expect(reasonOf(retry)).toContain(`${gate.id} was denied`);
     expect(reasonOf(retry)).toContain('use the version already in the lockfile');
     expect(openGates()).toHaveLength(0);
-  }, 60_000);
+  }, 90_000);
+
+  test('the deny does not end the session: it holds idle, the approval prompts the retry, then it finishes', async () => {
+    const { stream, session, worktree } = await liveSession();
+
+    // The refused call, then the session says it is blocked and ends its
+    // turn — what a real Claude session does with this deny.
+    const denied = await hooks.preToolUse(editPayload(session, worktree, 'package.json'));
+    expect(denied.hookSpecificOutput.permissionDecision).toBe('deny');
+    const gate = openGates()[0] as HilRequest;
+
+    writeFileSync(sentinel, '');
+    await waitFor(
+      () => streams.get(stream.id).sessions.find((s) => s.id === session)?.status === 'idle',
+    );
+    // Alive, not stopped — and the stream says whose move it is. Without
+    // this the turn-end rule would have killed the session and the approval
+    // could only ever land as a thread line for the next attach.
+    expect(store.listAgents().some((a) => a.id === session)).toBe(true);
+    expect(streams.get(stream.id).agent.status).toBe('question');
+    expect(streams.get(stream.id).human.status).toBe('waiting_on_you');
+
+    // The human answers the card, and the session is prompted to retry.
+    await gates.respond(gate.id, 'approve', 'pete');
+    // Decided: the human half is done with it and the session is back at
+    // work, prompted with the retry.
+    expect(streams.get(stream.id).human.status).toBe('open');
+    expect(streams.get(stream.id).agent.status).toBe('working');
+    await waitFor(() => prompts().some((line) => line.includes(gate.id)));
+
+    // The retry goes through, once.
+    const allowed = await hooks.preToolUse(editPayload(session, worktree, 'package.json'));
+    expect(allowed.hookSpecificOutput.permissionDecision).toBe('allow');
+    expect(gates.get(gate.id).consumed_at).toBeDefined();
+
+    // Now the turn ends with nothing open: the normal rule applies again —
+    // the session is stopped and the exit path writes `done`.
+    writeFileSync(finishSentinel, '');
+    await waitFor(() => streams.get(stream.id).agent.status === 'done');
+    expect(threadBodies(stream.id).some((b) => b.includes('retrying the edit'))).toBe(true);
+    expect(store.listAgents().some((a) => a.id === session)).toBe(false);
+  }, 90_000);
 
   test('with no live session the decision stays on the thread and says so', async () => {
     // A planning stream: no repo, so the session runs in its own directory
@@ -315,5 +380,5 @@ describe('T138 route band — a routed manifest edit, approved, retried once', (
     expect(bodies.some((b) => b.startsWith('gate decision recorded with no live session'))).toBe(
       true,
     );
-  }, 60_000);
+  }, 90_000);
 });

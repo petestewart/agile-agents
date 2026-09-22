@@ -120,6 +120,10 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
           // below, and are only ever called once the daemon is serving.
           docs: { docsForStream: (id) => docsService?.docsForStream(id) ?? [] },
           questions: { listOpen: () => questionService?.listOpen() ?? [] },
+          // T138: the turn-end rule treats an open routed call like an
+          // open question — a denied session that reports itself blocked
+          // and ends its turn is waiting, not finished.
+          ...(gateService ? { gates: gateService } : {}),
         })
       : undefined;
   const questionService: QuestionService | undefined =
