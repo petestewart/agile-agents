@@ -461,7 +461,7 @@ Rationale: fail-closed on everything means one API outage stops every agent in e
 
 The same policy covers the opt-out and a missing key: no classifier configured means no classifier tier, critical classifier rules deny, everything else proceeds with the thread entry.
 
-**Vendors with no pre-tool-use hook** (Cursor, Codex; Grok has only the client-fs surface) never reach this tier at all: they get the diff-level rules at landing (§8.2) and guidance in the brief, plus the `hook_unchecked` thread entry the daemon writes when such a session attaches. See §4.3 and `spike-findings.md` — do not re-derive.
+**Vendors with no pre-tool-use hook** (Cursor, Codex; Grok has only the client-fs surface) never reach this tier at all: they get the diff-level rules at landing (§8.2) and guidance in the brief. See §4.3 and `spike-findings.md` — do not re-derive. Nothing marks such a session's thread at attach time today; making the gap visible there is worth doing and is not yet built.
 
 **Opt-out** is per stream (`classifier: off`) with a per-repo default in `repos.yaml`. A stream working on something the operator does not want leaving the machine turns the tier off; pattern rules and guidance still apply.
 
