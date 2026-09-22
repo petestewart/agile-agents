@@ -21,12 +21,7 @@ import {
 import { RpcParamError } from '../gates/rpc';
 import type { RpcMethodHandler } from '../rpc';
 import { AlreadyExistsError } from '../store/store';
-import {
-  RuleAlreadyDecidedError,
-  type RulesService,
-  UnknownRuleScopeError,
-  formatRuleScope,
-} from './service';
+import { RuleAlreadyDecidedError, type RulesService, UnknownRuleScopeError } from './service';
 
 /** Every `rule.*` write from this edge is the human's (design §2.2). */
 const EDGE_PRINCIPAL = 'human' as const;
@@ -181,5 +176,3 @@ export function buildRuleRpcMethods(service: RulesService): Record<string, RpcMe
     },
   };
 }
-
-export { formatRuleScope };

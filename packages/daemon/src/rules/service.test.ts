@@ -11,7 +11,15 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { type Rule, type RuleInput, type Stream, ulid, validateRule } from '@agile-agents/shared';
+import {
+  type Rule,
+  type RuleInput,
+  type Stream,
+  formatRuleScope,
+  parseRuleScope,
+  ulid,
+  validateRule,
+} from '@agile-agents/shared';
 import { runInit } from '../init';
 import { StateStore } from '../store';
 import { StreamService } from '../streams/service';
@@ -19,7 +27,6 @@ import {
   RuleAlreadyDecidedError,
   RulesService,
   UnknownRuleScopeError,
-  formatRuleScope,
   rulesInScope,
 } from './service';
 
@@ -137,10 +144,12 @@ describe('rulesInScope (§5.3)', () => {
     expect(rulesInScope(all, stream).map((r) => r.text)).toEqual(['accepted']);
   });
 
-  test('formatRuleScope renders the three kinds', () => {
-    expect(formatRuleScope({ kind: 'global' })).toBe('global');
-    expect(formatRuleScope({ kind: 'repo', ref: 'alpha' })).toBe('repo:alpha');
-    expect(formatRuleScope({ kind: 'stream', ref: 'S' })).toBe('stream:S');
+  test('formatRuleScope and parseRuleScope round-trip the three kinds', () => {
+    for (const text of ['global', 'repo:alpha', 'stream:01ABCDEFGHJKMNPQRSTVWXYZ00']) {
+      expect(formatRuleScope(parseRuleScope(text))).toBe(text);
+    }
+    expect(() => parseRuleScope('repo')).toThrow(/invalid rule scope/);
+    expect(() => parseRuleScope('everything')).toThrow(/invalid rule scope/);
   });
 });
 

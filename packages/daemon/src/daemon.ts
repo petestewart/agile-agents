@@ -146,6 +146,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
           streams: streamService,
           questions: questionService,
           gates: gateService,
+          ...(rulesService ? { rules: rulesService } : {}),
         })
       : undefined;
   // T134: docs are plain Markdown under `<repo>/.agile-docs/` and
@@ -177,6 +178,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
           streams: streamService,
           questions: questionService,
           ...(docsService ? { docs: docsService } : {}),
+          ...(rulesService ? { rules: rulesService } : {}),
         })
       : undefined;
   if (cliBin.source === 'missing') {

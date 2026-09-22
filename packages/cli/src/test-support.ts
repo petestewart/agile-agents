@@ -22,6 +22,7 @@ import {
   InboxService,
   QuestionService,
   type RpcServerHandle,
+  RulesService,
   StateStore,
   StreamService,
   VerbService,
@@ -30,6 +31,7 @@ import {
   buildGateRpcMethods,
   buildInboxRpcMethods,
   buildQuestionRpcMethods,
+  buildRuleRpcMethods,
   buildStateRpcMethods,
   buildStreamRpcMethods,
   createFakeSpawn,
@@ -95,6 +97,8 @@ export interface TestDaemon {
   /** Same instance wired into `question.*` RPC (T040) — tests seed an open question through it. */
   questionService: QuestionService;
   streamService: StreamService;
+  /** Same instance wired into `rule.*` RPC (T140) — tests seed a rule through it. */
+  rulesService: RulesService;
   cleanup(): Promise<void>;
 }
 
@@ -154,10 +158,14 @@ export async function startTestDaemon(prefix = 'agile-cli-test-'): Promise<TestD
   });
   // T130: attach + the eight verbs. Nothing here spawns a vendor — a test
   // that wants a live session injects its own `spawn` seam.
+  // T140: rules (cockpit design §5) — the same service behind `rule.*` RPC,
+  // the inbox's `rule_accept` items and the `propose_rule` verb.
+  const rulesService = new RulesService({ store, streams: streamService });
   const verbService = new VerbService({
     store,
     streams: streamService,
     questions: questionService,
+    rules: rulesService,
   });
 
   const rpc = startRpcServer({
@@ -173,8 +181,10 @@ export async function startTestDaemon(prefix = 'agile-cli-test-'): Promise<TestD
           streams: streamService,
           questions: questionService,
           gates: gateService,
+          rules: rulesService,
         }),
       ),
+      ...buildRuleRpcMethods(rulesService),
       ...buildBusRpcMethods(new Bus(store, init.stateRoot)),
       ...buildGateRpcMethods(gateService),
       ...buildQuestionRpcMethods(questionService),
@@ -208,6 +218,7 @@ export async function startTestDaemon(prefix = 'agile-cli-test-'): Promise<TestD
     attachService,
     questionService,
     streamService,
+    rulesService,
     home,
     async cleanup() {
       await attachService.stopAll();

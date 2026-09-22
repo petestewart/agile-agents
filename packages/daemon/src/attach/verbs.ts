@@ -22,13 +22,17 @@
 import {
   type AgentId,
   type AgentVerb,
+  type RuleScope,
   type SessionRole,
   type StreamFinding,
   type ThreadEntry,
+  formatRuleScope,
+  parseRuleScope,
   validateVerbInput,
 } from '@agile-agents/shared';
 import type { DocsSearch, SearchHit } from '../docs/service';
 import type { QuestionService } from '../questions/service';
+import type { RulesService } from '../rules/service';
 import { NotFoundError, type StateStore } from '../store';
 import type { StreamService } from '../streams/service';
 import { type TestRunOutput, runTestRun } from '../tools/test-run';
@@ -63,6 +67,8 @@ export interface VerbServiceOptions {
   questions: QuestionService;
   /** T134's `DocsService` — `search_docs` is typed against the read side only. */
   docs?: DocsSearch;
+  /** T140's `RulesService` — what `propose_rule` writes its proposal through. */
+  rules?: RulesService;
 }
 
 export class VerbService {
@@ -138,24 +144,61 @@ export class VerbService {
   }
 
   /**
-   * A record, and nothing more: an agent may *propose* a rule, but
-   * `status`, `decided_at` and `decided_by` are human-only (§5.1, **D4**).
-   * T140 owns the rule records themselves; until then the proposal lives
-   * on the thread where the operator can see it.
+   * §5.1/**D4**: an agent may *propose* a rule — the record is written with
+   * `status: 'proposed'` and provenance pointing back at this stream and
+   * session, and `status`/`decided_*` stay human-only (the store rejects an
+   * agent that tries). The proposal also keeps its thread entry, `ref`'d to
+   * the rule's file: the thread is where a later reader sees *when* in the
+   * work the rule was proposed, and the inbox `rule_accept` item (§3.1) is
+   * where the human decides it.
+   *
+   * Scope (§5.1: "a rule learned on one repo must not silently govern
+   * another") is taken from the verb's `scope` string — `global`,
+   * `repo:<name>`, `stream:<id>`, or the bare words `repo`/`stream` meaning
+   * *this* session's repo or stream. Omitted, it defaults to the narrowest
+   * honest scope: this stream's repo when it has one, the stream itself
+   * otherwise. Never global by default — widening a rule is the human's
+   * call, and it is one edit away in the inbox.
    */
   async proposeRule(input: unknown): Promise<ThreadEntry> {
     const { session, text, scope } = validateVerbInput('propose_rule', input);
     const caller = this.caller(session);
+    const rule = await this.options.rules?.create('agent', {
+      text,
+      scope: this.resolveProposedScope(caller, scope),
+      provenance: { stream: caller.stream, session, by: `agent:${session}` },
+    });
     return this.options.streams.appendThread(
       'agent',
       caller.stream,
       {
         kind: 'proposal',
-        body: scope === undefined ? `rule proposed: ${text}` : `rule proposed (${scope}): ${text}`,
-        ref: 'rule_proposed',
+        body:
+          rule === undefined
+            ? `rule proposed: ${text}`
+            : `rule proposed (${formatRuleScope(rule.scope)}): ${text}`,
+        ref: rule === undefined ? 'rule_proposed' : `rules/${rule.id}.yaml`,
       },
       session,
     );
+  }
+
+  /** The scope grammar of `propose_rule`, resolved against the calling session's stream. */
+  private resolveProposedScope(caller: VerbCaller, scope: string | undefined): RuleScope {
+    const stream = this.options.streams.get(caller.stream);
+    const repoScope = (): RuleScope => {
+      if (stream.repo === undefined) {
+        throw new Error(`propose_rule: scope "repo" needs a stream with a repo; this one has none`);
+      }
+      return { kind: 'repo', ref: stream.repo };
+    };
+    if (scope === undefined) {
+      return stream.repo === undefined ? { kind: 'stream', ref: stream.id } : repoScope();
+    }
+    const trimmed = scope.trim();
+    if (trimmed === 'repo') return repoScope();
+    if (trimmed === 'stream') return { kind: 'stream', ref: stream.id };
+    return parseRuleScope(trimmed);
   }
 
   /** A follow-up worth its own stream. A human creates the child; this only records the proposal (§4.1). */

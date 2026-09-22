@@ -214,6 +214,29 @@ export function validateRulePatch(input: unknown): RulePatch {
   return result.data;
 }
 
+/**
+ * `global` · `repo:<name>` · `stream:<ulid>` — the one wire/CLI spelling of
+ * a scope, parsed back into the record's `{kind, ref}`. Both the `agile
+ * rules` CLI and the `propose_rule` verb take a scope as this string, so
+ * the grammar is written once.
+ */
+export function parseRuleScope(text: string): RuleScope {
+  const trimmed = text.trim();
+  if (trimmed === 'global') return { kind: 'global' };
+  const separator = trimmed.indexOf(':');
+  const kind = separator === -1 ? trimmed : trimmed.slice(0, separator);
+  const ref = separator === -1 ? '' : trimmed.slice(separator + 1).trim();
+  if ((kind === 'repo' || kind === 'stream') && ref.length > 0) return { kind, ref };
+  throw new Error(
+    `invalid rule scope "${text}": must be "global", "repo:<name>" or "stream:<stream id>"`,
+  );
+}
+
+/** `global` / `repo:alpha` / `stream:<ulid>` — the inverse of `parseRuleScope`. */
+export function formatRuleScope(scope: RuleScope): string {
+  return scope.ref === undefined ? scope.kind : `${scope.kind}:${scope.ref}`;
+}
+
 /** §5.1: "defaults to 'Does this action violate: <text>?'". */
 export function classifierQuestion(rule: Pick<Rule, 'text' | 'question'>): string {
   return rule.question ?? `Does this action violate: ${rule.text}?`;

@@ -30,6 +30,14 @@ import { runLand } from './commands/land';
 import { runQuestionAnswer, runQuestionList, runQuestionRaise } from './commands/question';
 import { runRepoAdd, runRepoList } from './commands/repo';
 import { runReview } from './commands/review';
+import {
+  runRulesAccept,
+  runRulesAdd,
+  runRulesList,
+  runRulesRetire,
+  runRulesSeed,
+  runRulesShow,
+} from './commands/rules';
 import { runStatus } from './commands/status';
 import {
   runStreamArchive,
@@ -63,6 +71,13 @@ function usage(): string {
     '  stream close <id> [--note <text>]',
     '  stream archive <id>        hide from `stream list` (nothing moves on disk)',
     '  stream say <id> <text>     append one human line to the stream thread',
+    '  rules list [--status proposed|accepted|retired] [--scope global|repo:<n>|stream:<id>]',
+    '  rules show <id>            one rule: tier, scope, provenance, stats, examples',
+    '  rules add --text "…" [--scope …] [--enforcement pattern|classifier|guidance] [--critical]',
+    '                             [--question "…"] [--example "<action>::<true|false>"]…   (proposes it)',
+    '  rules accept <id> [--by <who>]   accept a proposed rule (human-only, D4)',
+    '  rules retire <id> [--by <who>]   retire a rule (a status change; nothing is deleted)',
+    '  rules seed --from PLAN-v1.md     import that plan\u2019s decisions as proposed rules',
     '  attach <stream> [--vendor v] [--model m] [--effort low|medium|high|max] [--role worker|reviewer]',
     '  review <stream> [--vendor v] [--model m] [--effort ...]   read-only reviewer session',
     '  detach <stream>            stop the live session on a stream',
@@ -206,6 +221,19 @@ export async function runCli(argv: string[], cwd: string = process.cwd()): Promi
         if (sub === 'say') return await runStreamSay(socketPath, parseArgs(restArgv), json);
         console.error(usage());
         return 1;
+
+      // T140: rules — the system's memory of decisions (cockpit design §5).
+      case 'rules': {
+        const ruleArgs = parseArgs(restArgv);
+        if (sub === 'list') return await runRulesList(socketPath, ruleArgs, json);
+        if (sub === 'show') return await runRulesShow(socketPath, ruleArgs, json);
+        if (sub === 'add') return await runRulesAdd(socketPath, ruleArgs, json, restArgv);
+        if (sub === 'accept') return await runRulesAccept(socketPath, ruleArgs, json);
+        if (sub === 'retire') return await runRulesRetire(socketPath, ruleArgs, json);
+        if (sub === 'seed') return await runRulesSeed(socketPath, ruleArgs, json);
+        console.error(usage());
+        return 1;
+      }
 
       // T130: an agent is a session attached to a stream (cockpit design §4).
       case 'attach':

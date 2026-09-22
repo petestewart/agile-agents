@@ -24,6 +24,7 @@ import {
   type RuleScope,
   type RuleStatus,
   type Stream,
+  formatRuleScope,
   ulid,
   validateRuleProposal,
 } from '@agile-agents/shared';
@@ -67,11 +68,6 @@ export interface RulesServiceOptions {
   streams: StreamService;
   /** Test seam; real usage runs on the system clock. */
   clock?: () => Date;
-}
-
-/** `global` / `repo:alpha` / `stream:<ulid>` — one rendering, used by the CLI and the event log. */
-export function formatRuleScope(scope: RuleScope): string {
-  return scope.ref === undefined ? scope.kind : `${scope.kind}:${scope.ref}`;
 }
 
 /**
