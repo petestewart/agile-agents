@@ -24,6 +24,7 @@ import { HookService, buildHookRpcMethods } from './hook';
 import { type HttpServerHandle, startHttpServer } from './http';
 import { InboxService, buildInboxRpcMethods } from './inbox';
 import { LandingService, buildLandingRpcMethods, wireLandGateResolution } from './landing';
+import { LessonsService } from './lessons';
 import { type LockHandle, acquireLock } from './lock';
 import { QuestionService, buildQuestionRpcMethods } from './questions';
 import { type RpcServerHandle, startRpcServer } from './rpc';
@@ -56,6 +57,7 @@ export interface DaemonHandle {
   streamService?: StreamService;
   questionService?: QuestionService;
   rulesService?: RulesService;
+  lessonsService?: LessonsService;
   inboxService?: InboxService;
   attachService?: AttachService;
   verbService?: VerbService;
@@ -101,7 +103,16 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
     : undefined;
   // T120/T121: one `StreamService` behind `stream.*` RPC, the questions
   // service (which writes thread entries and status flips) and the inbox.
-  const streamService = store ? new StreamService(store) : undefined;
+  // T141 (§5.5): `close` and `land` both end a stream, and both hand it to
+  // the retro. Read lazily — `lessonsService` is built below, once the
+  // services it drives exist.
+  const streamService = store
+    ? new StreamService(store, {
+        onStreamEnd: async (id) => {
+          await lessonsService?.onStreamEnd(id);
+        },
+      })
+    : undefined;
   // How spawned sessions reach this daemon's own CLI for their hook command
   // and MCP server — resolved to something that actually runs on this host
   // (`runner/cli-bin.ts`), never assumed on $PATH.
@@ -162,9 +173,25 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
           store,
           streams: streamService,
           ...(gateService ? { gates: gateService } : {}),
+          onStreamEnd: async (id) => {
+            await lessonsService?.onStreamEnd(id);
+          },
         })
       : undefined;
   if (gateService && landingService) wireLandGateResolution(gateService, landingService);
+  // T141: the retro (§5.5). It reads the stream's findings, denials and
+  // questions and starts one read-only `lessons` session over them; the
+  // proposals it makes are ordinary `propose_rule` writes, capped at three.
+  const lessonsService: LessonsService | undefined =
+    store && streamService && attachService && rulesService
+      ? new LessonsService({
+          store,
+          streams: streamService,
+          attach: attachService,
+          rules: rulesService,
+          questions: { list: () => questionService?.list() ?? [] },
+        })
+      : undefined;
   // Hoisted (T011) so `bus.*` RPC and the hook service share one `Bus`
   // instance over the same store.
   const bus = store ? new Bus(store, config.stateRoot, { now: options.now }) : undefined;
@@ -179,6 +206,11 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
           questions: questionService,
           ...(docsService ? { docs: docsService } : {}),
           ...(rulesService ? { rules: rulesService } : {}),
+          // T141's three-proposal cap, read lazily like every other
+          // back-reference in this graph.
+          proposalLimit: {
+            assertCanPropose: (caller) => lessonsService?.assertCanPropose(caller),
+          },
         })
       : undefined;
   if (cliBin.source === 'missing') {
@@ -287,6 +319,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
     streamService,
     questionService,
     rulesService,
+    lessonsService,
     inboxService,
     attachService,
     verbService,

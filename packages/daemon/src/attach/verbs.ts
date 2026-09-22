@@ -69,6 +69,13 @@ export interface VerbServiceOptions {
   docs?: DocsSearch;
   /** T140's `RulesService` — what `propose_rule` writes its proposal through. */
   rules?: RulesService;
+  /**
+   * T141's `LessonsService` (read as a gate, not a sentence in a brief):
+   * §5.5's "at most three" proposals out of one retro. It refuses the
+   * fourth `propose_rule` call from a `lessons` session and leaves every
+   * other role alone.
+   */
+  proposalLimit?: { assertCanPropose(caller: Pick<VerbCaller, 'session' | 'role'>): void };
 }
 
 export class VerbService {
@@ -152,6 +159,13 @@ export class VerbService {
    * work the rule was proposed, and the inbox `rule_accept` item (§3.1) is
    * where the human decides it.
    *
+   * `examples`, `enforcement` and `critical` ride along when the caller
+   * states them (T141): a rule proposed with two example actions is one the
+   * human can read and the classifier can be evaluated against (§5.6), and
+   * a tier guessed by the proposer is one fewer thing for the human to
+   * supply before accepting. None of them can smuggle in a decision —
+   * `status` is minted `proposed` whatever the input says.
+   *
    * Scope (§5.1: "a rule learned on one repo must not silently govern
    * another") is taken from the verb's `scope` string — `global`,
    * `repo:<name>`, `stream:<id>`, or the bare words `repo`/`stream` meaning
@@ -161,11 +175,20 @@ export class VerbService {
    * call, and it is one edit away in the inbox.
    */
   async proposeRule(input: unknown): Promise<ThreadEntry> {
-    const { session, text, scope } = validateVerbInput('propose_rule', input);
+    const { session, text, scope, examples, enforcement, critical } = validateVerbInput(
+      'propose_rule',
+      input,
+    );
     const caller = this.caller(session);
+    // T141/§5.5: the retro's three-proposal budget, checked before anything
+    // is written — the fourth call is refused with the reason the model reads.
+    this.options.proposalLimit?.assertCanPropose(caller);
     const rule = await this.options.rules?.create('agent', {
       text,
       scope: this.resolveProposedScope(caller, scope),
+      ...(examples !== undefined ? { examples } : {}),
+      ...(enforcement !== undefined ? { enforcement } : {}),
+      ...(critical !== undefined ? { critical } : {}),
       provenance: { stream: caller.stream, session, by: `agent:${session}` },
     });
     return this.options.streams.appendThread(

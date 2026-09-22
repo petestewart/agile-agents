@@ -45,8 +45,13 @@ export const STREAM_HUMAN_STATUSES = ['open', 'waiting_on_you', 'landed', 'close
 export const StreamHumanStatusSchema = z.enum(STREAM_HUMAN_STATUSES);
 export type StreamHumanStatus = z.infer<typeof StreamHumanStatusSchema>;
 
-/** Roles collapse to worker and reviewer (D3). */
-export const SESSION_ROLES = ['worker', 'reviewer'] as const;
+/**
+ * Roles collapse to worker and reviewer (D3). `lessons` is the third and
+ * last: the per-stream retro of §5.5, a one-shot read-only session the
+ * daemon starts itself on land or close. It is not a role a human attaches
+ * — `agile attach` and `stream.attach` accept `worker` and `reviewer` only.
+ */
+export const SESSION_ROLES = ['worker', 'reviewer', 'lessons'] as const;
 export const SessionRoleSchema = z.enum(SESSION_ROLES);
 export type SessionRole = z.infer<typeof SessionRoleSchema>;
 

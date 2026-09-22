@@ -85,7 +85,9 @@ import type { ClaudePreToolUsePayload, HookDecision, HookDecisionContext } from 
  * cockpit design §4.2 — this mapping is the seam it lands on.
  */
 export function permissionRoleFor(role: SessionRole): PermissionRole {
-  return role === 'reviewer' ? 'reviewer' : 'engineer';
+  // T141: the lessons session reads the stream's material and writes
+  // nothing but proposals, so it runs under the reviewer's read-only policy.
+  return role === 'reviewer' || role === 'lessons' ? 'reviewer' : 'engineer';
 }
 
 /** §5 "Delivery by priority": normal inbox is injected, capped so a burst of messages can't blow past the message-body-cap spirit for the whole context injection. Pointer, not payload — bodies are already ≤800 chars each (`MESSAGE_BODY_MAX_CHARS`), this just bounds how many get concatenated. */
