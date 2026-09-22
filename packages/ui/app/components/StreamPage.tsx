@@ -381,7 +381,7 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
         </section>
       )}
 
-      <LandPanel page={page} onChanged={load} />
+      <LandPanel key={stream.id} page={page} onChanged={load} />
 
       <nav className="cr-tabs" aria-label="Stream views">
         {TABS.map((each) => (
