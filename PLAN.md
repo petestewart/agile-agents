@@ -416,8 +416,8 @@ Build order: Phase 0 → 1 → 2 → 3 → 4 → 5 → 6. Within a phase, ticket
 
 ### Ticket: T154 Phase 4+5 QA and Pete's look
 - **Priority:** P0
-- **Status:** Todo
-- **Owner:** —
+- **Status:** In Progress
+- **Owner:** sonnet:qa-T154 → Pete
 - **Scope:** Black-box QA of rules, lessons, the hook bands, and landing with the fake classifier; Pete accepts a rule and watches it deny a real worker on ledger-lite with the real key.
 - **Acceptance Criteria:** QA ACCEPT; live denial observed and recorded.
 - **Validation Steps:** —
