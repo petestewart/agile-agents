@@ -720,3 +720,70 @@ body {
     padding: 12px 16px;
   }
 }
+
+/* ---- T162: quick capture, the tree filter, the "New stream" dialog ---- */
+.cr-capture input,
+.cr-tree-filter,
+.cr-modal input,
+.cr-modal select {
+  font: inherit;
+  color: var(--text);
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 5px 8px;
+  min-width: 0;
+}
+.cr-capture input {
+  width: 16em;
+  max-width: 40vw;
+}
+.cr-capture input[aria-invalid="true"] {
+  border-color: var(--danger);
+}
+.cr-tree-filter {
+  box-sizing: border-box;
+  width: 100%;
+  margin-bottom: 8px;
+}
+.cr-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 10vh 16px 16px;
+  background: rgb(0 0 0 / 0.35);
+}
+.cr-modal-card {
+  width: 100%;
+  max-width: 420px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-panel);
+}
+.cr-modal-card h2 {
+  margin: 0;
+  font-size: 16px;
+}
+.cr-modal-card label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 13px;
+  font-weight: 600;
+}
+.cr-modal-card label span {
+  color: var(--text-dim);
+  font-weight: 400;
+}
+.cr-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}

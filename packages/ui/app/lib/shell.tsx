@@ -29,6 +29,9 @@ export interface ShellValue {
   /** Phone width only: the stream tree is a drawer. Ignored on a wide screen, where the rail is always shown. */
   railOpen: boolean;
   toggleRail(): void;
+  /** T162: the "New stream" dialog — opened by the top bar's button or `n`. */
+  newStreamOpen: boolean;
+  setNewStreamOpen(open: boolean): void;
 }
 
 const ShellContext = createContext<ShellValue | undefined>(undefined);
@@ -40,6 +43,7 @@ export function ShellProvider({
   const [view, setView] = useState<ShellView>(initialView);
   const [selected, setSelected] = useState<string | undefined>(undefined);
   const [railOpen, setRailOpen] = useState(false);
+  const [newStreamOpen, setNewStreamOpen] = useState(false);
 
   const value = useMemo<ShellValue>(
     () => ({
@@ -55,8 +59,10 @@ export function ShellProvider({
       },
       railOpen,
       toggleRail: () => setRailOpen((open) => !open),
+      newStreamOpen,
+      setNewStreamOpen,
     }),
-    [view, selected, railOpen],
+    [view, selected, railOpen, newStreamOpen],
   );
 
   return <ShellContext.Provider value={value}>{children}</ShellContext.Provider>;
@@ -66,4 +72,17 @@ export function useShell(): ShellValue {
   const value = useContext(ShellContext);
   if (!value) throw new Error('useShell must be used inside a <ShellProvider>');
   return value;
+}
+
+/**
+ * T162: the cockpit's single-key shortcuts (`n`, `/`) never fire while the
+ * operator is typing — in an input, a textarea, a select or anything
+ * contenteditable — nor with a modifier held.
+ */
+export function isShortcut(event: KeyboardEvent, key: string): boolean {
+  if (event.key !== key || event.metaKey || event.ctrlKey || event.altKey) return false;
+  const target = event.target as HTMLElement | null;
+  if (!target || typeof target.tagName !== 'string') return true;
+  const tag = target.tagName.toLowerCase();
+  return !(tag === 'input' || tag === 'textarea' || tag === 'select' || target.isContentEditable);
 }

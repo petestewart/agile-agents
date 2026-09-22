@@ -10,6 +10,7 @@
  */
 
 import { Inbox } from './components/Inbox';
+import { NewStream } from './components/NewStream';
 import { Settings } from './components/Settings';
 import { StreamPage } from './components/StreamPage';
 import { StreamTree } from './components/StreamTree';
@@ -38,6 +39,7 @@ export function App(): JSX.Element {
           )}
         </main>
       </div>
+      <NewStream rows={rows} />
     </div>
   );
 }

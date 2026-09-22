@@ -2,8 +2,12 @@
  * The one top bar (T043's, re-cut for the cockpit in T160): project name,
  * the view switch (Inbox carries the waiting count), the live dot, and —
  * at phone width only — the button that opens the stream-tree drawer.
+ * T162: the quick-capture box (one line → a stream with no repo, its page
+ * opened) and the "New stream" button.
  */
 
+import { type FormEvent, useState } from 'react';
+import { createStream } from '../lib/api';
 import type { FeedSnapshot } from '../lib/feed-types';
 import { type ShellView, useShell } from '../lib/shell';
 
@@ -21,8 +25,24 @@ export function TopBar({
   inboxCount: number;
   connected: boolean;
 }): JSX.Element {
-  const { view, setView, railOpen, toggleRail } = useShell();
+  const { view, setView, railOpen, toggleRail, select, setNewStreamOpen } = useShell();
   const project = snapshot?.project;
+  const [capture, setCapture] = useState('');
+  const [captureError, setCaptureError] = useState<string | undefined>(undefined);
+
+  const quickCapture = async (event: FormEvent): Promise<void> => {
+    event.preventDefault();
+    const line = capture.trim();
+    if (!line) return;
+    try {
+      const created = await createStream({ title: line, goal: line });
+      setCapture('');
+      setCaptureError(undefined);
+      select(created.id);
+    } catch (err) {
+      setCaptureError(err instanceof Error ? err.message : String(err));
+    }
+  };
 
   return (
     <header className="cr-topbar" data-testid="topbar">
@@ -59,6 +79,26 @@ export function TopBar({
         ))}
       </nav>
       <div className="grow" />
+      <form className="cr-capture" onSubmit={quickCapture} aria-label="Quick capture">
+        <input
+          data-testid="quick-capture"
+          placeholder="Capture a stream…"
+          aria-label="Capture a stream"
+          title={captureError ?? 'One line becomes a new stream'}
+          aria-invalid={captureError ? 'true' : undefined}
+          value={capture}
+          onChange={(e) => setCapture(e.target.value)}
+        />
+      </form>
+      <button
+        type="button"
+        className="cr-btn"
+        data-testid="new-stream-open"
+        title="New stream (n)"
+        onClick={() => setNewStreamOpen(true)}
+      >
+        New stream
+      </button>
       <span className="cr-conn" data-testid="conn">
         <span className="cr-conn-dot" data-status={connected ? 'open' : 'closed'} />
         {connected ? 'live' : 'reconnecting…'}

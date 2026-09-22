@@ -9,6 +9,7 @@ import type { CockpitStreamRow } from './feed-types';
 import {
   buildStreamTree,
   diffLineKind,
+  filterStreamRows,
   groupInbox,
   isLiveSession,
   isThinking,
@@ -56,6 +57,25 @@ describe('buildStreamTree', () => {
     expect(tree.map((n) => n.row.id)).toEqual(['root', 'orphan']);
     expect(tree[0]?.children[0]?.row.id).toBe('mid');
     expect(tree[0]?.children[0]?.children[0]?.row.id).toBe('leaf');
+  });
+});
+
+describe('filterStreamRows (T162)', () => {
+  const rows = [
+    row('root', { title: 'ledger-lite' }),
+    row('mid', { title: 'import CSV', parent: 'root' }),
+    row('leaf', { title: 'Parser', parent: 'mid' }),
+    row('other', { title: 'docs' }),
+  ];
+
+  test('an empty query keeps every row', () => {
+    expect(filterStreamRows(rows, '  ')).toBe(rows);
+  });
+
+  test('keeps case-insensitive matches and their ancestors', () => {
+    expect(filterStreamRows(rows, 'parser').map((r) => r.id)).toEqual(['root', 'mid', 'leaf']);
+    expect(filterStreamRows(rows, 'DOC').map((r) => r.id)).toEqual(['other']);
+    expect(filterStreamRows(rows, 'nothing')).toEqual([]);
   });
 });
 

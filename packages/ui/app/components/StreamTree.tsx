@@ -2,11 +2,20 @@
  * The left rail (cockpit design §9.2): every stream, nested, each with the
  * dot that says who must act. Clicking a stream opens its page (T161,
  * §9.3); "All streams" goes back to the whole inbox.
+ * T162: a filter box (`/` focuses it) narrows the tree to matching titles,
+ * keeping each match's ancestors so the nesting still reads.
  */
 
+import { useEffect, useRef, useState } from 'react';
 import type { CockpitStreamRow } from '../lib/feed-types';
-import { useShell } from '../lib/shell';
-import { DOT_LABEL, type StreamTreeNode, buildStreamTree, streamDot } from '../lib/streams';
+import { isShortcut, useShell } from '../lib/shell';
+import {
+  DOT_LABEL,
+  type StreamTreeNode,
+  buildStreamTree,
+  filterStreamRows,
+  streamDot,
+} from '../lib/streams';
 
 function Node({ node }: { node: StreamTreeNode }): JSX.Element {
   const { selected, select } = useShell();
@@ -36,11 +45,41 @@ function Node({ node }: { node: StreamTreeNode }): JSX.Element {
 }
 
 export function StreamTree({ rows }: { rows: readonly CockpitStreamRow[] }): JSX.Element {
-  const { selected, select } = useShell();
-  const tree = buildStreamTree(rows);
+  const { selected, select, railOpen, toggleRail } = useShell();
+  const [filter, setFilter] = useState('');
+  const filterRef = useRef<HTMLInputElement>(null);
+  const tree = buildStreamTree(filterStreamRows(rows, filter));
+
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent): void => {
+      if (!isShortcut(event, '/')) return;
+      event.preventDefault();
+      if (!railOpen) toggleRail();
+      filterRef.current?.focus();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [railOpen, toggleRail]);
+
   return (
     <aside className="cr-rail" id="cr-rail" data-testid="stream-tree">
       <h2>Streams</h2>
+      <input
+        ref={filterRef}
+        type="search"
+        className="cr-tree-filter"
+        data-testid="stream-filter"
+        placeholder="Filter streams (/)"
+        aria-label="Filter streams"
+        value={filter}
+        onChange={(e) => setFilter(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Escape') {
+            setFilter('');
+            e.currentTarget.blur();
+          }
+        }}
+      />
       {rows.length === 0 ? (
         <p className="cr-tree-empty">No streams yet.</p>
       ) : (
