@@ -43,6 +43,7 @@ import type {
   Policy,
   RepoEntry,
   Rule,
+  RuleId,
   Stream,
 } from '@agile-agents/shared';
 import { MESSAGE_BODY_MAX_CHARS, classifierQuestion } from '@agile-agents/shared';
@@ -388,6 +389,10 @@ export class ClassifierDiffRules implements DiffRules {
       stream: ctx.stream.id,
       call,
       summary,
+      // T155: the rule that routed, so `wireClassifierRouteStats` can turn
+      // the human's deny into that rule's `violated` — the same attribution
+      // the hook's route band makes.
+      rule: rule.id as RuleId,
     });
     return {
       decision: 'route',

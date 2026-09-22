@@ -12,11 +12,14 @@ import { type Rule, type RuleInput, ulid, validateRule } from '@agile-agents/sha
 import {
   RULE_HEADERS,
   RULE_REPORT_HEADERS,
+  RULE_TEST_ACTION_MAX_CHARS,
   RULE_TEST_HEADERS,
+  oneLine,
   parseExample,
   parseExamples,
   ruleReportRows,
   ruleRows,
+  ruleTestDeadlineMs,
   ruleTestRows,
   showFields,
 } from './rules';
@@ -260,6 +263,58 @@ describe('rules report table (T142, §5.7)', () => {
 });
 
 describe('rules test table (T153, §5.6)', () => {
+  test('a multi-line diff example collapses to one truncated line (T155)', () => {
+    const diff = [
+      'diff --git a/src/index.ts b/src/index.ts',
+      '--- a/src/index.ts',
+      '+++ b/src/index.ts',
+      '@@ -1 +1 @@',
+      '-export const a = 1;',
+      '+export const a = 2;',
+    ].join('\n');
+    const report: RuleEvalReport = {
+      bands: { deny_at: 0.8, allow_below: 0.4, confidence_floor: 0.5 },
+      generated_at: '2026-09-22T00:00:00.000Z',
+      rules: [
+        {
+          id: 'R-01ABCDEFGHJKMNPQRSTVWXYZ00',
+          question: 'Does this diff change a public export?',
+          critical: false,
+          examples: [
+            {
+              action: diff,
+              expected_violates: true,
+              expected_band: 'deny',
+              probability: 0.9,
+              confidence: 0.9,
+              band: 'deny',
+              agree: true,
+            },
+          ],
+          agreed: 1,
+          disagreed: 0,
+          errors: 0,
+        },
+      ],
+      total: 1,
+      agreed: 1,
+      disagreed: 0,
+      errors: 0,
+      agreement_rate: 1,
+    };
+    const cell = ruleTestRows(report)[0]?.[1] ?? '';
+    expect(cell).not.toContain('\n');
+    expect(cell.startsWith('diff --git a/src/index.ts b/src/index.ts --- a/src')).toBe(true);
+    expect(cell.length).toBe(RULE_TEST_ACTION_MAX_CHARS);
+    expect(cell.endsWith('…')).toBe(true);
+    expect(oneLine('git push origin main')).toBe('git push origin main');
+  });
+
+  test('the deadline is examples × the classifier timeout, never under 5 s (T155)', () => {
+    expect(ruleTestDeadlineMs({ rules: 2, examples: 4, timeout_ms: 25_000 })).toBe(105_000);
+    expect(ruleTestDeadlineMs({ rules: 0, examples: 0, timeout_ms: 25_000 })).toBe(5_000);
+  });
+
   test('carries §5.6’s columns', () => {
     expect(RULE_TEST_HEADERS).toEqual([
       'rule',

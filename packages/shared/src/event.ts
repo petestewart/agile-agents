@@ -71,8 +71,10 @@ export const EVENT_KINDS = [
   // data: {event, decision, reason, tool?, command?}
   'hook_decision',
   // T151 (§6.2, "latency is recorded per call as an event"): one per
-  // classifier call made from the hook path.
+  // classifier call made from the hook path. T155: `agile rules test` writes
+  // one per eval call too, marked `source: 'eval'` with the rule it asked.
   // data: {stream, rules, questions, latency_ms, outcome, error?}
+  //    or {source: 'eval', rule, rules, questions, latency_ms, outcome?, error?}
   'classifier_call',
 
   // -- land --  none yet; T141 adds `land_*` with its emitter.

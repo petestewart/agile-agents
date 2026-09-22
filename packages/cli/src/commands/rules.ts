@@ -10,6 +10,7 @@
  */
 
 import {
+  type RuleEvalPlan,
   type RuleEvalReport,
   type RuleReport,
   type RuleReportRow,
@@ -221,6 +222,42 @@ export async function runRulesAdd(
   return 0;
 }
 
+/**
+ * `agile rules edit <id> [--text …] [--question …] [--enforcement …]
+ * [--stage …] [--example "action::bool" …]` — §3.1's edit-then-accept over
+ * `rule.update` (T155). Only the flags given are sent; `--example`
+ * replaces the whole example list, as `rule.update` does.
+ */
+export async function runRulesEdit(
+  socketPath: string,
+  args: ParsedArgs,
+  json: boolean,
+  argv: readonly string[] = [],
+): Promise<number> {
+  const id = requirePositional(args, 0, 'rule-id');
+  const text = optionalString(args.options, 'text');
+  const question = optionalString(args.options, 'question');
+  const enforcement = optionalEnforcement(args);
+  const stage = optionalString(args.options, 'stage') as RuleStage | undefined;
+  const examples = parseExamples(argv);
+  const patch = {
+    ...(text !== undefined ? { text } : {}),
+    ...(question !== undefined ? { question } : {}),
+    ...(enforcement !== undefined ? { enforcement } : {}),
+    ...(stage !== undefined ? { stage } : {}),
+    ...(examples.length > 0 ? { examples } : {}),
+  };
+  if (Object.keys(patch).length === 0) {
+    throw new Error(
+      'agile rules edit: nothing to change (give --text, --question, --enforcement, --stage or --example)',
+    );
+  }
+  const rule = await callRpc<Rule>(socketPath, 'rule.update', { id, ...patch });
+  if (json) printJson(rule);
+  else console.log(`agile rules edit: ${rule.id} updated (${Object.keys(patch).join(', ')})`);
+  return 0;
+}
+
 async function decide(
   socketPath: string,
   args: ParsedArgs,
@@ -369,6 +406,27 @@ export const RULE_TEST_HEADERS = [
   'verdict',
 ];
 
+/** Slack over the classifier's own budget: the RPC round trip and the store. */
+export const RULE_TEST_DEADLINE_SLACK_MS = 5_000;
+
+/** T155: examples × the classifier timeout, plus slack — never under the default 5 s. */
+export function ruleTestDeadlineMs(plan: RuleEvalPlan): number {
+  return Math.max(5_000, plan.examples * plan.timeout_ms + RULE_TEST_DEADLINE_SLACK_MS);
+}
+
+/** Widest an example action gets in the plain table; `--json` has the whole thing. */
+export const RULE_TEST_ACTION_MAX_CHARS = 60;
+
+/**
+ * T155: an example action can be a whole diff. The plain table is one row
+ * per example, so its newlines collapse to spaces and it is cut to one
+ * readable line; the `--json` report keeps the action verbatim.
+ */
+export function oneLine(text: string, max = RULE_TEST_ACTION_MAX_CHARS): string {
+  const flat = text.replace(/\s+/g, ' ').trim();
+  return flat.length <= max ? flat : `${flat.slice(0, max - 1)}…`;
+}
+
 /** Three decimals: a probability of 0.8 and one of 0.804 band differently. */
 function num(value: number | undefined): string {
   return value === undefined ? '-' : value.toFixed(3);
@@ -380,7 +438,7 @@ export function ruleTestRows(report: RuleEvalReport): string[][] {
     for (const example of rule.examples) {
       rows.push([
         rule.name ?? rule.id,
-        example.action,
+        oneLine(example.action),
         example.expected_band,
         num(example.probability),
         num(example.confidence),
@@ -417,8 +475,13 @@ export async function runRulesTest(
   json: boolean,
 ): Promise<number> {
   const id = args.positionals[0];
-  const report = await callRpc<RuleEvalReport>(socketPath, 'rule.test', {
-    ...(id !== undefined ? { id } : {}),
+  const params = id !== undefined ? { id } : {};
+  // T155: one classifier call per example, each allowed its own timeout —
+  // the default 5 s RPC deadline gave up on a real suite while the daemon
+  // kept going. Ask what the run costs first, and wait for all of it.
+  const plan = await callRpc<RuleEvalPlan>(socketPath, 'rule.test', { ...params, plan: true });
+  const report = await callRpc<RuleEvalReport>(socketPath, 'rule.test', params, {
+    timeoutMs: ruleTestDeadlineMs(plan),
   });
   const failed = report.disagreed + report.errors;
   if (json) {

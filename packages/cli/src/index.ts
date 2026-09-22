@@ -33,6 +33,7 @@ import { runReview } from './commands/review';
 import {
   runRulesAccept,
   runRulesAdd,
+  runRulesEdit,
   runRulesList,
   runRulesReport,
   runRulesRetire,
@@ -77,6 +78,7 @@ function usage(): string {
     '  rules show <id>            one rule: tier, scope, provenance, stats, examples',
     '  rules add --text "…" [--scope …] [--enforcement pattern|classifier|guidance] [--critical]',
     '                             [--question "…"] [--example "<action>::<true|false>"]…   (proposes it)',
+    '  rules edit <id> [--text …] [--question …] [--enforcement …] [--stage …] [--example "a::true" …]',
     '  rules accept <id> [--by <who>]   accept a proposed rule (human-only, D4)',
     '  rules retire <id> [--by <who>]   retire a rule (a status change; nothing is deleted)',
     '  rules report [--days N]         per-rule fired/violated/routed counts and prune flags',
@@ -232,6 +234,7 @@ export async function runCli(argv: string[], cwd: string = process.cwd()): Promi
         if (sub === 'list') return await runRulesList(socketPath, ruleArgs, json);
         if (sub === 'show') return await runRulesShow(socketPath, ruleArgs, json);
         if (sub === 'add') return await runRulesAdd(socketPath, ruleArgs, json, restArgv);
+        if (sub === 'edit') return await runRulesEdit(socketPath, ruleArgs, json, restArgv);
         if (sub === 'accept') return await runRulesAccept(socketPath, ruleArgs, json);
         if (sub === 'retire') return await runRulesRetire(socketPath, ruleArgs, json);
         if (sub === 'report') return await runRulesReport(socketPath, ruleArgs, json);

@@ -306,6 +306,8 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
             ? buildRuleRpcMethods(rulesService, {
                 classifier,
                 bands: config.classifier.bands,
+                timeout_ms: config.classifier.timeout_ms,
+                events: store,
               })
             : {}),
           ...(docsService ? buildDocsRpcMethods(docsService) : {}),

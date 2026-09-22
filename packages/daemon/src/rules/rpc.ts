@@ -13,6 +13,8 @@
 
 import {
   type ClassifierBands,
+  DEFAULT_CLASSIFIER_TIMEOUT_MS,
+  type Event,
   RULE_STATUSES,
   type RuleStatus,
   RuleWriteError,
@@ -22,8 +24,9 @@ import {
 import type { Classifier } from '../classifier';
 import { RpcParamError } from '../gates/rpc';
 import type { RpcMethodHandler } from '../rpc';
+import { buildEvent } from '../store/events';
 import { AlreadyExistsError } from '../store/store';
-import { runRuleEvals } from './evals';
+import { evaluableRules, runRuleEvals } from './evals';
 import { RULE_REPORT_DEFAULT_DAYS, buildRuleReport } from './report';
 import { RuleAlreadyDecidedError, type RulesService, UnknownRuleScopeError } from './service';
 
@@ -126,6 +129,21 @@ async function asParamErrors<T>(run: () => Promise<T> | T): Promise<T> {
 export interface RuleRpcEvalDeps {
   classifier: Classifier;
   bands: ClassifierBands;
+  /**
+   * T155: the classifier's per-call timeout, reported by `rule.test
+   * {plan: true}` so the CLI can size its RPC deadline to the run (one call
+   * per example). Defaults to the config default.
+   */
+  timeout_ms?: number;
+  /** T155: where each eval call's `classifier_call` event goes (§6.2). */
+  events?: { appendEvent(event: Event, options?: { commit?: 'deferred' }): Promise<unknown> };
+}
+
+/** `rule.test {plan: true}`: what a run would cost, without making a call. */
+export interface RuleEvalPlan {
+  rules: number;
+  examples: number;
+  timeout_ms: number;
 }
 
 export function buildRuleRpcMethods(
@@ -191,17 +209,50 @@ export function buildRuleRpcMethods(
     'rule.test': async (params) => {
       const p = params === undefined ? {} : requireObject(params);
       const id = optionalString(p.id, 'id');
+      if (p.plan !== undefined && typeof p.plan !== 'boolean') {
+        throw new RpcParamError('invalid "plan": must be a boolean', { plan: p.plan });
+      }
       if (evals === undefined) {
         throw new RpcParamError(
           'rule.test needs a classifier: set classifier.provider and a key in config.yaml (§6.2)',
         );
       }
+      if (p.plan === true) {
+        return asParamErrors((): RuleEvalPlan => {
+          const selected = evaluableRules(service, id);
+          return {
+            rules: selected.length,
+            examples: selected.reduce((n, rule) => n + rule.examples.length, 0),
+            timeout_ms: evals.timeout_ms ?? DEFAULT_CLASSIFIER_TIMEOUT_MS,
+          };
+        });
+      }
+      const events = evals.events;
       return asParamErrors(() =>
         runRuleEvals({
           rules: service,
           classifier: evals.classifier,
           bands: evals.bands,
           ...(id !== undefined ? { ruleId: id } : {}),
+          ...(events !== undefined
+            ? {
+                onCall: (call) =>
+                  events.appendEvent(
+                    buildEvent('classifier_call', {
+                      data: {
+                        source: 'eval',
+                        rule: call.rule,
+                        rules: 1,
+                        questions: 1,
+                        latency_ms: call.latency_ms,
+                        ...(call.band !== undefined ? { outcome: call.band } : {}),
+                        ...(call.error !== undefined ? { error: call.error } : {}),
+                      },
+                    }),
+                    { commit: 'deferred' },
+                  ),
+              }
+            : {}),
         }),
       );
     },

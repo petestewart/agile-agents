@@ -91,6 +91,22 @@ export interface RunRuleEvalsOptions {
   ruleId?: string;
   /** Test seam; real usage runs on the system clock. */
   clock?: () => Date;
+  /**
+   * T155 (§6.2, "latency is recorded per call as an event"): called once per
+   * classifier call, answered or not, so the eval path leaves the same
+   * `classifier_call` trail the hook path does. Awaited; a failure in it is
+   * swallowed — telemetry never turns an eval into an error.
+   */
+  onCall?: (call: RuleEvalCall) => Promise<unknown> | unknown;
+}
+
+/** One eval call, as `onCall` sees it. */
+export interface RuleEvalCall {
+  rule: string;
+  latency_ms: number;
+  /** Absent when the call failed or returned nothing for the rule. */
+  band?: ClassifierBand;
+  error?: string;
 }
 
 /**
@@ -178,6 +194,20 @@ async function evalExample(
 ): Promise<RuleEvalExample> {
   const expected_band: Exclude<ClassifierBand, 'route'> = violates ? 'deny' : 'allow';
   const base = { action, expected_violates: violates, expected_band };
+  const started = Date.now();
+  const record = async (band?: ClassifierBand, error?: string): Promise<void> => {
+    if (options.onCall === undefined) return;
+    try {
+      await options.onCall({
+        rule: rule.id,
+        latency_ms: Date.now() - started,
+        ...(band !== undefined ? { band } : {}),
+        ...(error !== undefined ? { error } : {}),
+      });
+    } catch {
+      // Telemetry: losing one event must not fail the eval.
+    }
+  };
   let answers: Awaited<ReturnType<Classifier['ask']>>;
   try {
     answers = await options.classifier.ask(action, [{ id: rule.id, question }]);
@@ -185,22 +215,23 @@ async function evalExample(
     // §6.4's fail policy is about *gating an action*; an eval has no action
     // to gate, so an unavailable classifier is simply an example with no
     // answer — reported, counted as an error, and never silently agreed.
-    return {
-      ...base,
-      agree: false,
-      error:
-        error instanceof ClassifierUnavailableError
-          ? `classifier unavailable (${error.reason}): ${error.message}`
-          : error instanceof Error
-            ? error.message
-            : String(error),
-    };
+    const message =
+      error instanceof ClassifierUnavailableError
+        ? `classifier unavailable (${error.reason}): ${error.message}`
+        : error instanceof Error
+          ? error.message
+          : String(error);
+    await record(undefined, message);
+    return { ...base, agree: false, error: message };
   }
   const answer = answers.find((a) => a.id === rule.id);
   if (answer === undefined) {
-    return { ...base, agree: false, error: 'the classifier returned no answer for this rule' };
+    const message = 'the classifier returned no answer for this rule';
+    await record(undefined, message);
+    return { ...base, agree: false, error: message };
   }
   const band = bandFor(answer, options.bands);
+  await record(band);
   return {
     ...base,
     probability: answer.probability,

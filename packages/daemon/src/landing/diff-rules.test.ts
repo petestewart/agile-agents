@@ -15,6 +15,7 @@ import { join } from 'node:path';
 import type { Rule, Stream } from '@agile-agents/shared';
 import { ClassifierUnavailableError, FakeClassifier } from '../classifier';
 import { GateService } from '../gates/service';
+import { wireClassifierRouteStats } from '../hook/route-band';
 import { runInit } from '../init';
 import { RulesService } from '../rules/service';
 import { StateStore } from '../store';
@@ -185,6 +186,20 @@ describe('ClassifierDiffRules (§8.2)', () => {
     expect(verdict.decision).toBe('deny');
     if (verdict.decision === 'allow') throw new Error('unreachable');
     expect(verdict.reason).toContain('not this way');
+  });
+
+  test('a denied landing route is attributed to the rule that routed it (T155)', async () => {
+    const rule = await acceptRule('do not rename public exports');
+    wireClassifierRouteStats(gates, rules);
+    const classifier = new FakeClassifier([{ id: rule.id, probability: 0.6, confidence: 0.9 }]);
+    const routed = await tier(classifier).check(contextFor(FILE_A));
+    if (routed.decision === 'allow') throw new Error('unreachable');
+    expect(routed.gate?.rule).toBe(rule.id);
+
+    await gates.respond(routed.gate?.id ?? '', 'deny', 'pete', 'no');
+    await rules.flushStats();
+
+    expect(rules.get(rule.id).stats).toMatchObject({ fired: 1, routed: 1, violated: 1 });
   });
 
   test('over the budget the diff is split per file and the MAX is taken', async () => {
