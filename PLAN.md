@@ -466,6 +466,15 @@ Build order: Phase 0 → 1 → 2 → 3 → 4 → 5 → 6. Within a phase, ticket
 - **Where the disagreements come from.** The floor is not the main source. The diff-stage rules whose seeded text is a sentence fragment lacking context (…GR77MM "browser writes are always actor human…" and …8CMD5B ".strict() by default…") put both of their examples near 0.5 (conf ≤ 0.14), should-fire and should-not alike. Those rules need a `question` written for the classifier, not a band change. Action-stage rules with concrete text (dependencies, `.agile/sync/`, the user's checkout) reached 0.85–0.92 on clear violations.
 - **Recommendation on the floor: take it out while confidence is derived.** Set `classifier.bands.confidence_floor: 0` (config only, no code change), and restore it only if Jev starts returning a real Noul `confidence`, which `parseJevResponse` already prefers. As written, the floor cannot do the job §6.3 gives it ("0.9 with confidence 0.2 is a shrug") and is a hidden second `allow_below`. Here it cost 5 needless routes for 2 saves. If the dependency-cycle kind of miss matters, lower `allow_below` in the open, where it reads as what it is. Don't do that yet: 24 examples, a third of them deliberately borderline, is too thin to move `allow_below` or `deny_at`. The 0.76–0.79 should-fire cluster (`mock.module`, the npm fallback) is worth watching before `deny_at` moves. Record this as a §6.3 decision once Pete agrees.
 
+### Ticket: T155 ∥ Phase 5 rough edges from the agreement check
+- **Priority:** P2
+- **Status:** Todo
+- **Owner:** -
+- **Scope:** (1) `rule.test` gets an RPC deadline scaled to example count × classifier timeout, so `agile rules test` finishes a real suite instead of exiting 1 after 5 s while the daemon keeps going. (2) The eval path writes a `classifier_call` event per call (latency, rule, band), as the hook path does. (3) The plain `rules test` table collapses multi-line example actions to one truncated line. (4) `agile rules edit <id>` over `rule.update` (text, question, enforcement, stage, examples), so edit-then-accept needs no raw RPC. (5) `landing/diff-rules.ts` raises its `classifier_review` gate with the rule id, so `wireClassifierRouteStats` attributes denied landing routes (T153 review).
+- **Acceptance Criteria:** CLI test with a `FakeClassifier` delayed past 5 s total completes; eval run leaves `classifier_call` events; table test with a diff example; CLI test for `rules edit`; stats test for a denied landing route.
+- **Validation Steps:** `bun test packages/daemon/src/rules packages/daemon/src/landing packages/cli`; `bun run test:integration`.
+- **Notes:** May run alongside Phase 6. Source: the T154 agreement check above. The floor decision is not in scope; it is Pete's §6.3 call.
+
 **Phase 5 verification (2026-09-22, tip ccd5049):** build, typecheck, lint clean; `bun test` 1763 pass / 2 skip / 0 fail (124 files); `test:integration` 7 suites, 0 fail. Daemon source 21665 lines (Phase 4: 19,457). QA (T154) ACCEPT, 0 defects. Phase 5 stops here for Pete's live run; Phase 6 does not start until he says go.
 
 ### Phase 6 — The cockpit
