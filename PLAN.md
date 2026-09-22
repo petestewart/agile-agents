@@ -481,7 +481,7 @@ Build order: Phase 0 → 1 → 2 → 3 → 4 → 5 → 6. Within a phase, ticket
 
 ### Ticket: T160 Shell, inbox, and stream tree
 - **Priority:** P0
-- **Status:** In Progress
+- **Status:** Done
 - **Owner:** —
 - **Scope:** Reuse `ui/app/lib/shell.tsx`, the single ws, `Markdown`, `NeedsYou` (renamed Inbox), `TopBar`, `Settings`. Left rail: stream tree with status dots (who must act). Main: Inbox by default, grouped by stream, each card answerable inline (question, land, rule accept, classifier review). Delete the Plan/Sprint/Review screens and their components.
 - **Acceptance Criteria:** Playwright: an agent question on a nested stream appears in the inbox without reload, the answer reaches the session, the tree dot changes. Phone-width layout works.
