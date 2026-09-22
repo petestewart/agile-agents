@@ -535,6 +535,15 @@ Build order: Phase 0 → 1 → 2 → 3 → 4 → 5 → 6. Within a phase, ticket
 - **Validation Steps:** Manual.
 - **Notes:** Final milestone.
 
+### Ticket: T166 ∥ Stream page rough edges from Pete's T161 look
+- **Priority:** P2
+- **Status:** Todo
+- **Owner:** —
+- **Scope:** (1) "Needs you" always renders, with "nothing waiting on you" when empty. (2) A stream whose branch is already merged into its target (landed outside `land`, e.g. the Phase 4 `--help` stream, merge f4675a2) shows "already merged into <target>" in the Land panel and offers "Mark landed", which sets `human.status: landed` through `streams.update` as `human`, instead of "nothing to land" with the stream stuck `open`. (3) A Close button on the stream page (existing close path, actor `human`). (4) `agile daemon status` prints the state home path first.
+- **Acceptance Criteria:** UI tests for (1) and (3); service test for the merged-outside detection and mark-landed; CLI test for (4).
+- **Validation Steps:** `bun test packages/daemon/src/landing packages/ui packages/cli`; `bun run test:e2e`.
+- **Notes:** May run alongside T162. Source: Pete, 2026-09-22.
+
 ### Ticket: T165 Cockpit as an installable app
 - **Priority:** P2
 - **Status:** Todo
