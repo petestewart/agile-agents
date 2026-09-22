@@ -22,6 +22,7 @@ import {
   type RulePrincipal,
   type RuleProposal,
   type RuleScope,
+  type RuleStage,
   type RuleStatus,
   type Stream,
   formatRuleScope,
@@ -108,15 +109,25 @@ interface PendingRuleStats {
  * session with no restart; a nested stream inherits its ancestors'
  * stream-scoped rules. `ancestors` is the chain the caller already has
  * (root→leaf or leaf→root — only membership is read).
+ *
+ * T152 adds the **stage** filter on the same function rather than beside
+ * it, because §5.3 asks for one scope filter and nothing else: `stage`
+ * selects the rules checked at a given point — `'action'` for the
+ * per-tool-call hook (§8.1), `'diff'` for the check at landing (§8.2) — and
+ * a rule with `stage: 'both'` matches either. Omitting it keeps every rule
+ * in scope, which is what the brief assembler wants (guidance is injected
+ * whatever stage it is checked at).
  */
 export function rulesInScope(
   rules: readonly Rule[],
   stream: Stream,
   ancestors: readonly Stream[] = [],
+  stage?: RuleStage,
 ): Rule[] {
   const streamIds = new Set<string>([stream.id, ...ancestors.map((a) => a.id)]);
   return rules.filter((rule) => {
     if (rule.status !== 'accepted') return false;
+    if (stage !== undefined && rule.stage !== stage && rule.stage !== 'both') return false;
     if (rule.scope.kind === 'global') return true;
     if (rule.scope.ref === undefined) return false;
     if (rule.scope.kind === 'repo') return stream.repo === rule.scope.ref;
@@ -194,9 +205,9 @@ export class RulesService {
    * resolves the stream and its ancestor chain, `rulesInScope` does the
    * filtering. This is what the brief and the hook call.
    */
-  inScope(streamId: string): Rule[] {
+  inScope(streamId: string, stage?: RuleStage): Rule[] {
     const stream = this.options.streams.get(streamId);
-    return rulesInScope(this.options.store.listRules(), stream, this.ancestorsOf(stream));
+    return rulesInScope(this.options.store.listRules(), stream, this.ancestorsOf(stream), stage);
   }
 
   /** Root→leaf ancestor chain, excluding the stream itself. Cycles are impossible (the store rejects them). */

@@ -24,7 +24,12 @@ import type { DelegateFn } from './gates';
 import { HookService, buildHookRpcMethods, wireGateDecisionDelivery } from './hook';
 import { type HttpServerHandle, startHttpServer } from './http';
 import { InboxService, buildInboxRpcMethods } from './inbox';
-import { LandingService, buildLandingRpcMethods, wireLandGateResolution } from './landing';
+import {
+  ClassifierDiffRules,
+  LandingService,
+  buildLandingRpcMethods,
+  wireLandGateResolution,
+} from './landing';
 import { LessonsService } from './lessons';
 import { type LockHandle, acquireLock } from './lock';
 import { QuestionService, buildQuestionRpcMethods, wireQuestionSupersession } from './questions';
@@ -190,11 +195,27 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
   // T132: the landing path (§8.2). A repo with `land_gate: true` raises its
   // gate through the same `GateService`, and approving that gate is what
   // performs the merge — hence the wiring call below.
+  // T152 (§8.2): the diff-level rule tier. Only with a rules service to
+  // ask — without one there are no accepted rules to check, and the
+  // landing path keeps its allow-all default.
+  const diffRules =
+    store && streamService && rulesService
+      ? new ClassifierDiffRules({
+          rules: rulesService,
+          classifier,
+          config: config.classifier,
+          streams: streamService,
+          policy: () => store.getPolicy(),
+          repos: () => store.getRepos(),
+          ...(gateService ? { gates: gateService } : {}),
+        })
+      : undefined;
   const landingService =
     store && streamService
       ? new LandingService({
           store,
           streams: streamService,
+          ...(diffRules ? { diffRules } : {}),
           ...(gateService ? { gates: gateService } : {}),
           onStreamEnd: async (id) => {
             await lessonsService?.onStreamEnd(id);

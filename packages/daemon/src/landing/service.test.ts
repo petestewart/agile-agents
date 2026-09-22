@@ -313,7 +313,7 @@ describe('the land gate (repos.yaml `land_gate: true`)', () => {
   });
 });
 
-describe('diff-level rules (T152 plugs in; the default is a no-op)', () => {
+describe('diff-level rules (T152, §8.2)', () => {
   test('a denying rule blocks the merge and names itself on the thread', async () => {
     const work = branchWithWork('s-rules', 'todo.txt', 'TODO: finish\n');
     const stream = await makeStream(work);
@@ -338,6 +338,70 @@ describe('diff-level rules (T152 plugs in; the default is a no-op)', () => {
     ).toBe(true);
     // The worktree stays: the stream is still live work.
     expect(existsSync(work.worktree)).toBe(true);
+  });
+
+  test('a routed rule holds the land on its gate: nothing merged, landing waits', async () => {
+    const gates = new GateService(store);
+    const work = branchWithWork('s-routed', 'dep.txt', 'new dependency\n');
+    const stream = await makeStream(work);
+    const gate = await gates.request('classifier_review', {
+      policy: store.getPolicy(),
+      stream: stream.id,
+      summary: 'adds a dependency',
+      call: { tool: 'land', fingerprint: '0123456789abcdef' },
+    });
+    landing = new LandingService({
+      store,
+      streams,
+      gates,
+      diffRules: {
+        check: () => ({ decision: 'route', reason: 'adds a dependency', rule: 'RULE-2', gate }),
+      },
+    });
+
+    const outcome = await landing.land(stream.id);
+
+    expect(outcome.status).toBe('gated');
+    expect(outcome.status === 'gated' && outcome.gate.id).toBe(gate.id);
+    expect(git(['rev-list', '--count', '--merges', 'main'])).toBe('0');
+    expect(existsSync(work.worktree)).toBe(true);
+    expect(threadBodies(stream.id).some((b) => b.includes('routed by diff rule RULE-2'))).toBe(
+      true,
+    );
+  });
+
+  test("approving the diff tier's gate lands the stream (wireLandGateResolution)", async () => {
+    const gates = new GateService(store);
+    const work = branchWithWork('s-routed-ok', 'dep2.txt', 'new dependency\n');
+    const stream = await makeStream(work);
+    const gate = await gates.request('classifier_review', {
+      policy: store.getPolicy(),
+      stream: stream.id,
+      summary: 'adds a dependency',
+      call: { tool: 'land', fingerprint: 'fedcba9876543210' },
+    });
+    let answered = false;
+    landing = new LandingService({
+      store,
+      streams,
+      gates,
+      diffRules: {
+        // Before the human answers: routed. After: allowed — exactly what
+        // `ClassifierDiffRules` does when it spends the approval.
+        check: () =>
+          answered
+            ? { decision: 'allow' }
+            : { decision: 'route', reason: 'adds a dependency', rule: 'RULE-3', gate },
+      },
+    });
+    wireLandGateResolution(gates, landing);
+
+    expect((await landing.land(stream.id)).status).toBe('gated');
+    answered = true;
+    await gates.respond(gate.id, 'approve', 'pete');
+
+    expect(git(['rev-list', '--count', '--merges', 'main'])).toBe('1');
+    expect(streams.get(stream.id).human.status).toBe('landed');
   });
 });
 

@@ -4,6 +4,7 @@ import {
   DEFAULT_CLASSIFIER_BASE_URL,
   DEFAULT_CLASSIFIER_CONFIDENCE_FLOOR,
   DEFAULT_CLASSIFIER_DENY_AT,
+  DEFAULT_CLASSIFIER_STATE_MAX_CHARS,
   DEFAULT_CLASSIFIER_TIMEOUT_MS,
   validateClassifierConfig,
   validateHomeConfig,
@@ -15,6 +16,7 @@ describe('classifier config (T150, cockpit design §6.2/§6.3)', () => {
       provider: 'jev',
       base_url: DEFAULT_CLASSIFIER_BASE_URL,
       timeout_ms: DEFAULT_CLASSIFIER_TIMEOUT_MS,
+      state_max_chars: DEFAULT_CLASSIFIER_STATE_MAX_CHARS,
       bands: {
         deny_at: DEFAULT_CLASSIFIER_DENY_AT,
         allow_below: DEFAULT_CLASSIFIER_ALLOW_BELOW,
