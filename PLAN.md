@@ -304,6 +304,8 @@ Build order: Phase 0 → 1 → 2 → 3 → 4 → 5 → 6. Within a phase, ticket
 
 **Phase 3 verification (2026-09-21, tip c15b4ba):** build, typecheck, lint clean; `bun test` 1330 pass / 2 skip / 0 fail; `test:integration` 6 suites, 0 fail (run alone). Daemon source 16,338 lines (Phase 2: 16,002; the attach/landing/docs services are new code, the tool framework and ticket helpers are gone). Phase 3 stops here for Pete's live run (T135); Phase 4 does not start until he says go.
 
+**Phase 3 re-verification after T137 (2026-09-22, tip 370aa3b):** build, typecheck, lint clean; `bun test` 1336 pass / 2 skip / 0 fail; `test:integration` 6 suites, 0 fail. Daemon source 16,556 lines. Waiting on Pete's second live run (T135).
+
 ### Phase 4 — Rules with three tiers
 
 ### Ticket: T140 Rule schema, store, and CLI
