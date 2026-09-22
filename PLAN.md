@@ -363,6 +363,8 @@ Build order: Phase 0 → 1 → 2 → 3 → 4 → 5 → 6. Within a phase, ticket
 - **Validation Steps:** —
 - **Notes:** Added by the manager for symmetry with T124/T135 (D10: QA at every phase boundary).
 
+**Phase 4 verification (2026-09-22, tip b2a4659):** build, typecheck, lint clean; `bun test` 1614 pass / 2 skip / 0 fail; `test:integration` 7 suites, 0 fail. Daemon source 19,457 lines (Phase 3: 16,556; rules, lessons, route band, push detector and rule checkers are new; the hardcoded push/`-C` verdicts are gone). Phase 4 stops here for QA (T144) and Pete's look; Phase 5 does not start until he says go.
+
 ### Phase 5 — The classifier tier
 
 ### Ticket: T150 Classifier interface, fake, and Jev adapter
