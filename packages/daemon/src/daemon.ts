@@ -20,7 +20,7 @@ import { type AgileConfig, type DiscoverConfigOptions, discoverConfig } from './
 import { DocsService, buildDocsRpcMethods } from './docs';
 import { GateService, buildGateRpcMethods } from './gates';
 import type { DelegateFn } from './gates';
-import { HookService, buildHookRpcMethods } from './hook';
+import { HookService, buildHookRpcMethods, wireGateDecisionDelivery } from './hook';
 import { type HttpServerHandle, startHttpServer } from './http';
 import { InboxService, buildInboxRpcMethods } from './inbox';
 import { LandingService, buildLandingRpcMethods, wireLandGateResolution } from './landing';
@@ -128,6 +128,10 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
           docs: { docsForStream: (id) => docsService?.docsForStream(id) ?? [] },
           questions: { listOpen: () => questionService?.listOpen() ?? [] },
           ...(rulesService ? { rules: rulesService } : {}),
+          // T138: the turn-end rule treats an open routed call like an
+          // open question — a denied session that reports itself blocked
+          // and ends its turn is waiting, not finished.
+          ...(gateService ? { gates: gateService } : {}),
         })
       : undefined;
   const questionService: QuestionService | undefined =
@@ -165,6 +169,10 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
         })
       : undefined;
   if (gateService && landingService) wireLandGateResolution(gateService, landingService);
+  // T138: deciding a `classifier_review` gate (the hook's route band, §8.1)
+  // prompts the session whose tool call it blocked — the same delivery path
+  // T137 built for an answer.
+  if (gateService && attachService) wireGateDecisionDelivery(gateService, attachService);
   // Hoisted (T011) so `bus.*` RPC and the hook service share one `Bus`
   // instance over the same store.
   const bus = store ? new Bus(store, config.stateRoot, { now: options.now }) : undefined;
@@ -217,7 +225,10 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
             // absolute in practice, and a relative one now fails closed
             // rather than resolving against whatever cwd `agiled` was
             // started in.
-            new HookService(store, bus, {}),
+            // T138: the route band needs the gate service — a `hil`
+            // verdict becomes a `classifier_review` item in the human's
+            // inbox, and their yes lets that one call through once.
+            new HookService(store, bus, { gates: gateService }),
           ),
           ...(attachService && verbService
             ? buildAttachRpcMethods(attachService, verbService)

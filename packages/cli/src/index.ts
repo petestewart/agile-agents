@@ -89,7 +89,7 @@ function usage(): string {
     '  tail                       tail the event log (--follow, --stream, --kind, --session)',
     '  gate list                  list open HIL requests',
     '  inbox                      everything waiting on you, across all streams, oldest first',
-    '  answer <question-id> <text>   answer an open question; the answer reaches the waiting session',
+    '  answer <id> <text|yes|no>  answer an inbox item: Q-… takes the answer text, HIL-… takes yes|no [note]',
     '  question list              list open questions (questions/ in the state home)',
     '  question raise --stream <id> --text <text> [--by <agent>]',
     '  question answer <id> --answer <text> [--by <agent>]',

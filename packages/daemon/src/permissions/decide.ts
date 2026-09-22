@@ -18,7 +18,7 @@ function findOption(
   return options.find((o) => o.kind === kind);
 }
 
-/** One line under the message body cap, for the `hil_request`'s summary and the logged reason. */
+/** One line under the message body cap, for the gate's summary and the logged reason. */
 function summarize(classified: PermissionRequest, reason: string): string {
   const target =
     classified.command ?? classified.targetPath ?? classified.url ?? classified.title ?? '';

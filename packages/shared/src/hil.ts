@@ -62,6 +62,37 @@ export type HilFyi = z.infer<typeof HilFyiSchema>;
  */
 export const HilNoteSchema = MessageBodySchema.min(1, 'note must not be empty');
 
+/**
+ * T138 (design/cockpit-design.md §8.1 route band): the tool call a
+ * `classifier_review` gate was raised on. `fingerprint` is what makes the
+ * gate answerable at all — an approval is not "this session may edit
+ * manifests from now on", it is "this one call may go through once" — so it
+ * is stored on the record and matched again when the session retries.
+ * `tool` plus `path`/`command` are the human-readable half: the inbox card
+ * shows the call ("edit package.json", "bash: git push …") so the operator
+ * can decide without leaving the list (§3.2).
+ */
+export const GateCallSchema = z
+  .object({
+    /** Vendor tool name as the hook saw it (`Edit`, `Write`, `Bash`, …). */
+    tool: z.string().min(1),
+    /** Normalised absolute path, for an edit-kind call. */
+    path: z.string().min(1).optional(),
+    /** The exact command, for an execute-kind call — body-capped like every other persisted payload. */
+    command: MessageBodySchema.min(1).optional(),
+    /** Stable digest of `tool` + path/command — see `packages/daemon/src/hook/fingerprint.ts`. */
+    fingerprint: z.string().regex(/^[0-9a-f]{16}$/, 'must be a 16-char hex digest'),
+  })
+  .strict();
+export type GateCall = z.infer<typeof GateCallSchema>;
+
+/** The call as one line for an inbox card or a thread entry ("edit package.json", "bash: git push origin main"). */
+export function describeGateCall(call: GateCall): string {
+  if (call.command !== undefined) return `bash: ${call.command}`;
+  if (call.path !== undefined) return `${call.tool.toLowerCase()} ${call.path}`;
+  return call.tool;
+}
+
 export const HilRequestSchema = z
   .object({
     id: HilIdSchema,
@@ -93,6 +124,18 @@ export const HilRequestSchema = z
      * the daemon raises on nobody's behalf simply has nobody waiting.
      */
     requested_by: AgentIdSchema.optional(),
+    /**
+     * T138: the tool call this gate blocks, and the session that made it.
+     * `session` is the fingerprint's other half — an approval unlocks the
+     * same call *from the session that asked*, never every session on the
+     * stream — and is kept as its own field rather than read off
+     * `requested_by` so a gate raised on someone's behalf by the daemon can
+     * never be mistaken for one the session itself is waiting on.
+     */
+    call: GateCallSchema.optional(),
+    session: AgentIdSchema.optional(),
+    /** T138: set when an approved gate's one allowed retry has been spent — the allowance is once, not standing. */
+    consumed_at: z.string().datetime().optional(),
     decision: HilDecisionSchema.optional(),
     /** Free text a human typed with the decision, or on its own (T039). A note on its own resolves nothing — the EM delegate reads it and decides. */
     note: HilNoteSchema.optional(),

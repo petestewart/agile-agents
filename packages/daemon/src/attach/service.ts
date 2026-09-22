@@ -29,6 +29,7 @@ import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import type { AcpProviderConfig, spawnSession } from '@agile-agents/acp-client';
 import {
+  type HilRequest,
   type Question,
   type Rule,
   type SessionRef,
@@ -98,6 +99,17 @@ export interface OpenQuestionsSource {
   listOpen(): Question[];
 }
 
+/**
+ * T138: the gates the turn-end rule has to treat like an open question. A
+ * real Claude Code session, denied and told to wait for `HIL-…`, says
+ * "blocked pending approval" and **ends its turn** — so without this the
+ * turn-end rule would stop it and the approval could only ever land as a
+ * thread line for the next attach to read.
+ */
+export interface OpenGatesSource {
+  list(): HilRequest[];
+}
+
 /** The slice of T134's `DocsService` the brief needs: the docs a stream sees. */
 export interface BriefDocsSource {
   docsForStream(streamId: string): BriefDoc[];
@@ -138,6 +150,8 @@ export interface AttachServiceOptions {
   questions?: OpenQuestionsSource;
   /** T140's `RulesService` (or any read side shaped like it) — supplies the brief's rules in scope. */
   rules?: BriefRulesSource;
+  /** T138: the gates, for the same rule — a session waiting on a routed call is waiting, not finished. */
+  gates?: OpenGatesSource;
   /** Test seam: inject a fake `spawnSession`. */
   spawn?: typeof spawnSession;
   /** Test seam: override the provider the resolved vendor maps to (the fake-agent transport). */
@@ -375,19 +389,68 @@ export class AttachService {
   }
 
   /**
-   * What the end of a prompt turn means (T137, §2.3). A turn that ends
-   * while this session has an open question is a session *waiting*: it
-   * stays alive, `SessionRef.status` goes `idle` and the stream keeps
-   * `agent.status: question` until the answer is prompted in. A turn that
-   * ends with nothing open is a worker (or a reviewer) that is finished,
-   * so the session is stopped and the exit path — the single writer of
+   * The routed call this session is still waiting on, if any (T138). A gate
+   * counts as open while it is `pending` **and** while it is approved but
+   * not yet spent: the human said yes and the retry has not happened, so
+   * the session that has to make that retry must not be stopped.
+   */
+  private openGateFor(streamId: string, sessionId: string): HilRequest | undefined {
+    try {
+      return this.options.gates
+        ?.list()
+        .find(
+          (gate) =>
+            gate.gate === 'classifier_review' &&
+            gate.stream === streamId &&
+            gate.session === sessionId &&
+            (gate.status === 'pending' ||
+              (gate.decision === 'approve' && gate.consumed_at === undefined)),
+        );
+    } catch {
+      // The gates dir is gone (the home was torn down) — "nothing open",
+      // which ends the session rather than stranding it.
+      return undefined;
+    }
+  }
+
+  /**
+   * What the end of a prompt turn means (T137, §2.3; T138 for gates). A
+   * turn that ends while this session has an open question — or an open
+   * routed call (a `classifier_review` gate, §8.1) — is a session
+   * *waiting*: it stays alive, `SessionRef.status` goes `idle` and the
+   * stream says `agent.status: question` / `human.status: waiting_on_you`
+   * until the answer or the decision is prompted in. A turn that ends with
+   * nothing open is a worker (or a reviewer) that is finished, so the
+   * session is stopped and the exit path — the single writer of
    * `done`/`blocked` — records it.
+   *
+   * The gate half is not a nicety: a Claude session that is denied with
+   * "wait for HIL-…, then retry this exact call" reports itself blocked and
+   * ends the turn, so this is the normal path, not an edge case.
    */
   private async onTurnEnd(streamId: string, sessionId: string, role: SessionRole): Promise<void> {
     const handle = this.handles(role).get(streamId);
     if (handle === undefined || handle.sessionId !== sessionId) return;
-    if (this.openQuestionFor(streamId, sessionId) !== undefined) {
+    const waitingOnQuestion = this.openQuestionFor(streamId, sessionId) !== undefined;
+    const waitingOnGate = this.openGateFor(streamId, sessionId) !== undefined;
+    if (waitingOnQuestion || waitingOnGate) {
       try {
+        // A question's own raise path already wrote these (`questions/
+        // service.ts`); a gate is raised by the hook, which knows nothing
+        // about stream statuses, so the turn-end rule writes them here.
+        // Only a worker moves `agent.status` (§4.2).
+        //
+        // Written BEFORE the session's own `idle`, so `idle` is the last
+        // write of this rule: a caller (or a human answering the card the
+        // moment it appears) that sees `idle` sees the finished state, and
+        // a decision delivered right then cannot have its `working`/`open`
+        // overwritten by this turn's trailing write.
+        if (waitingOnGate && role === 'worker') {
+          await this.options.streams.update('daemon', streamId, {
+            agent: { status: 'question' },
+            human: { status: 'waiting_on_you' },
+          });
+        }
         await this.setSessionStatus(streamId, sessionId, 'idle');
       } catch {
         // The stream is gone; the exit path below is what cleans up.
@@ -433,6 +496,46 @@ export class AttachService {
         // `runPromptTurn` already stopped the session and recorded why; the
         // exit path writes `blocked` on the stream.
       });
+  }
+
+  /**
+   * T138: a `classifier_review` gate was decided, and the session whose
+   * tool call it blocked is (usually) still live, mid-turn, holding after a
+   * deny. Delivery is the same prompt path T137 built for an answer — the
+   * only thing that actually makes a waiting vendor process continue. With
+   * no live session the decision stays on the thread, where the next
+   * attach's brief carries it, and the thread says so.
+   */
+  async deliverGateDecision(sessionId: string, gate: HilRequest): Promise<void> {
+    const approved = gate.decision === 'approve';
+    const note = gate.note !== undefined ? `: ${gate.note}` : '';
+    const line = approved
+      ? `${gate.id} approved${note} — retry the call now.`
+      : `${gate.id} denied${note} — do not retry it; do the work another way or ask on the stream.`;
+    const handle = [...this.live.values()]
+      .flatMap((byStream) => [...byStream.values()])
+      .find((each) => each.sessionId === sessionId);
+    if (handle === undefined) {
+      await this.options.streams.appendThread('daemon', gate.stream, {
+        kind: 'event',
+        body: `gate decision recorded with no live session (${sessionId}): ${line}`.slice(0, 800),
+        ref: sessionId,
+      });
+      return;
+    }
+    await this.setSessionStatus(gate.stream, sessionId, 'running').catch(() => {
+      // Best effort: the prompt below is what matters.
+    });
+    // Symmetric with an answered question: the human half is done with
+    // this one, and there is a live session to go back to work.
+    await this.options.streams
+      .update('daemon', gate.stream, { agent: { status: 'working' }, human: { status: 'open' } })
+      .catch(() => {
+        // Same best effort — the prompt is the delivery.
+      });
+    void handle.prompt(`${line}\n\nContinue the work.`).catch(() => {
+      // `runPromptTurn` already stopped the session and recorded why.
+    });
   }
 
   /** The exit path: what the session's end means for the stream (§2.3). */

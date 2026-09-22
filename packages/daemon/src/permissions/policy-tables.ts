@@ -102,54 +102,52 @@ function neverWithoutHumanForAtom(
 
   const parsedGit = cmd.parseGitInvocation(tokens);
   if (parsedGit.cPaths.some((p) => !isPathInside(p, ctx.worktreePath))) {
-    return hil('git -C outside the worktree is never automatic — file a hil_request');
+    return hil('git -C outside the worktree is never automatic');
   }
   const args = parsedGit.args;
   if (args !== undefined) {
     if (cmd.isForcePush(args)) {
-      return hil('force-push is never automatic — file a hil_request');
+      return hil('force-push is never automatic');
     }
     if (cmd.isBranchDelete(args)) {
-      return hil('branch deletion is never automatic — file a hil_request');
+      return hil('branch deletion is never automatic');
     }
     if (cmd.isGitResetHard(args)) {
-      return hil('git reset --hard is never automatic — file a hil_request');
+      return hil('git reset --hard is never automatic');
     }
     if (args[0] === 'push') {
       const refspecs = cmd.pushRefspecs(args);
       if (refspecs.length === 0) {
         return hil(
-          'push with no explicit branch (current branch/default remote) is never automatic — file a hil_request',
+          'push with no explicit branch (current branch/default remote) is never automatic',
         );
       }
       for (const refspec of refspecs) {
         const branch = cmd.refspecDestBranch(refspec);
         if (ctx.ticket === undefined || !cmd.isTicketBranch(branch, ctx.ticket)) {
-          return hil(
-            `push to ${branch} (not this ticket's branch) is never automatic — file a hil_request`,
-          );
+          return hil(`push to ${branch} (not this ticket's branch) is never automatic`);
         }
       }
     }
   }
 
   if (cmd.isNewDependencyInstall(tokens)) {
-    return hil('installing a new dependency is never automatic — file a discovery/hil_request');
+    return hil('installing a new dependency is never automatic');
   }
   if (cmd.isRmMinusRf(tokens)) {
     const outside = cmd.rmTargets(tokens).some((t) => !isPathInside(t, ctx.worktreePath));
     if (outside) {
-      return hil('rm -rf outside the worktree is never automatic — file a hil_request');
+      return hil('rm -rf outside the worktree is never automatic');
     }
   }
   if (cmd.isPipedIntoBareShell(atom)) {
-    return hil('piping a remote fetch into a shell is never automatic — file a hil_request');
+    return hil('piping a remote fetch into a shell is never automatic');
   }
   if (cmd.isSudo(tokens)) {
-    return hil('sudo is never automatic — file a hil_request');
+    return hil('sudo is never automatic');
   }
   if (cmd.isChmodRecursive777(tokens)) {
-    return hil('chmod -R 777 is never automatic — file a hil_request');
+    return hil('chmod -R 777 is never automatic');
   }
 
   return undefined;
@@ -173,20 +171,16 @@ export function checkNeverWithoutHuman(
     // still hit these gates.
     const paths = allTargetPaths(classified);
     if (paths.some((p) => cmd.touchesAgileState(p))) {
-      return hil('direct writes to .agile/ are never automatic — file a hil_request');
+      return hil('direct writes to .agile/ are never automatic');
     }
     if (paths.some((p) => cmd.isManifestPath(p))) {
-      return hil(
-        'editing a dependency manifest/lockfile is never automatic — file a discovery/hil_request',
-      );
+      return hil('editing a dependency manifest/lockfile is never automatic');
     }
   }
 
   if (classified.toolClass === 'execute' && classified.command !== undefined) {
     if (cmd.hasUnsafeShellConstruct(classified.command)) {
-      return hil(
-        'command substitution/backticks/eval/unbalanced quotes are unclassifiable — file a hil_request',
-      );
+      return hil('command substitution/backticks/eval/unbalanced quotes are unclassifiable');
     }
     for (const atom of cmd.parseCommandIntoAtoms(classified.command)) {
       const verdict = neverWithoutHumanForAtom(atom, ctx);
@@ -258,7 +252,7 @@ function verifyBenignPaths(paths: string[], ctx: PolicyContext): PolicyVerdict {
     const resolved = cmd.resolveTargetPath(raw);
     if (!resolved.safe) {
       return hil(
-        `"${raw}" contains an unresolved shell variable/backtick/home-directory reference — file a hil_request`,
+        `"${raw}" contains an unresolved shell variable/backtick/home-directory reference`,
       );
     }
     if (!isPathInside(resolved.path, ctx.worktreePath)) {
@@ -308,19 +302,17 @@ function engineerBenignCommandVerdict(
     // so they're always hil regardless of `isRepoLocalBin`.
     if (dlx.forcesInstall) {
       return hil(
-        `"${dlx.bin}" forces a package install/global run (-p/--package/-y/--yes/-g/--global) — file a hil_request`,
+        `"${dlx.bin}" forces a package install/global run (-p/--package/-y/--yes/-g/--global)`,
       );
     }
     if (dlx.neverLocal) {
       return hil(
-        `"${dlx.bin}" via dlx always fetches into a temporary store, never the local node_modules/.bin — file a hil_request`,
+        `"${dlx.bin}" via dlx always fetches into a temporary store, never the local node_modules/.bin`,
       );
     }
     return cmd.isRepoLocalBin(dlx.bin, ctx.worktreePath)
       ? ALLOW
-      : hil(
-          `"${dlx.bin}" is not an existing repo-local bin (node_modules/.bin) — file a hil_request (new dependency execution)`,
-        );
+      : hil(`"${dlx.bin}" is not an existing repo-local bin (node_modules/.bin)`);
   }
 
   if (head === 'find') {
@@ -370,7 +362,7 @@ function engineerExecuteVerdict(command: string, ctx: PolicyContext): PolicyVerd
         const resolved = cmd.resolveTargetPath(raw);
         if (!resolved.safe) {
           return hil(
-            `"${raw}" contains an unresolved shell variable/backtick/home-directory reference — file a hil_request`,
+            `"${raw}" contains an unresolved shell variable/backtick/home-directory reference`,
           );
         }
         if (!isPathInside(resolved.path, ctx.worktreePath)) {
@@ -580,7 +572,7 @@ function qaVerdict(classified: PermissionRequest): PolicyVerdict {
       // layer yet (DecisionContext has no envBaseUrl field) — treat as
       // outside the allowlist until one is, rather than allow blindly.
       return hil(
-        'QA network access is scoped to the env base URL — file a hil_request until env base URL is wired in',
+        'QA network access is scoped to the env base URL, which is not wired in yet — a human decides this one',
       );
     default:
       return deny(

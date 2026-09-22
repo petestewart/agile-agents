@@ -22,6 +22,7 @@ import {
   type Question,
   type Rule,
   type Stream,
+  describeGateCall,
   formatRuleScope,
   inboxContext,
 } from '@agile-agents/shared';
@@ -127,8 +128,14 @@ export class InboxService {
       stream: stream.id,
       stream_path: this.path(stream, byId),
       ts: gate.requested_at,
+      // T138: a routed tool call is decided on the call itself, so the card
+      // leads with it ("edit /…/package.json — editing a dependency
+      // manifest…") rather than making the operator open the record (§3.2:
+      // "enough to decide in ten seconds without leaving the list").
       context: inboxContext(
-        `${gate.gate}: ${gate.summary ?? gate.reason ?? 'needs your decision'}`,
+        `${gate.gate}: ${gate.call !== undefined ? `${describeGateCall(gate.call)} — ` : ''}${
+          gate.summary ?? gate.reason ?? 'needs your decision'
+        }`,
       ),
       ref: `gates/${gate.id}.yaml`,
     };
