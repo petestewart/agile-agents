@@ -510,7 +510,7 @@ Build order: Phase 0 → 1 → 2 → 3 → 4 → 5 → 6. Within a phase, ticket
 
 ### Ticket: T162 New stream and quick capture
 - **Priority:** P1
-- **Status:** In Progress
+- **Status:** Done
 - **Owner:** —
 - **Scope:** "New stream" from anywhere (title, optional parent, optional repo); a quick-capture box in the top bar that creates a stream from one line, for the support question that arrives mid-task. Keyboard: `n` new, `/` search streams.
 - **Acceptance Criteria:** Playwright: quick capture creates a stream with no repo in under two interactions.
@@ -537,7 +537,7 @@ Build order: Phase 0 → 1 → 2 → 3 → 4 → 5 → 6. Within a phase, ticket
 
 ### Ticket: T166 ∥ Stream page rough edges from Pete's T161 look
 - **Priority:** P2
-- **Status:** In Progress
+- **Status:** Done
 - **Owner:** —
 - **Scope:** (1) "Needs you" always renders, with "nothing waiting on you" when empty. (2) A stream whose branch is already merged into its target (landed outside `land`, e.g. the Phase 4 `--help` stream, merge f4675a2) shows "already merged into <target>" in the Land panel and offers "Mark landed", which sets `human.status: landed` through `streams.update` as `human`, instead of "nothing to land" with the stream stuck `open`. (3) A Close button on the stream page (existing close path, actor `human`). (4) `agile daemon status` prints the state home path first.
 - **Acceptance Criteria:** UI tests for (1) and (3); service test for the merged-outside detection and mark-landed; CLI test for (4).
@@ -546,7 +546,7 @@ Build order: Phase 0 → 1 → 2 → 3 → 4 → 5 → 6. Within a phase, ticket
 
 ### Ticket: T165 Cockpit as an installable app
 - **Priority:** P2
-- **Status:** In Progress
+- **Status:** Todo (step 1 done 2026-09-22, merge 8121113; step 2 awaits Pete)
 - **Owner:** —
 - **Scope:** Per D15. Step 1: web app manifest + icon + service worker shell so the browser installs the cockpit as its own app window (Dock/home-screen icon), no new toolchain. Step 2 (only if step 1 isn't enough for Pete): a thin desktop shell that starts `agiled` if it isn't running and opens the page in its own window, with native notifications for new inbox items. Choice of shell (Tauri vs Electron) is escalated to Pete before any code; it is a new toolchain and needs explicit approval. The daemon stays the only process that holds state; the shell holds none.
 - **Acceptance Criteria:** Step 1: Chromium reports the page installable (Playwright); installed window opens on the inbox. Step 2: defined when approved.
@@ -608,3 +608,5 @@ Daemon: `em/`, `architect/`, `oracle/`, `qa/`, `halts/`, `quota/`, `handoff/`, `
 - (T161 QA) `agile init` on a directory pre-created with `mkdir -p` once exited 2 while printing a success line. Seen once, not reproduced; outside T161 scope.
 - (T161) Gaps against §9.3 accepted for now: thread updates per message not per token; Land preflight lists diff rules but does not run them; Attach/Review use default vendor/model/effort (no picker); diffs over 20k chars truncated with no pointer; no close/archive on the stream page; thread shows the newest 500 lines. Tree click opens the stream page; inbox cards open it only via an explicit "Open stream" button (answering stays inline, §3.3).
 - (T165) `packages/cli/src/stream.e2e.test.ts` ("agile attach (T130) on a no-repo stream") failed 1 of 2 isolated runs while three workers ran suites concurrently; 4/4 on base and 4/4 on the branch unloaded. Load-sensitive like the Playwright suites; watch it.
+- (T162 review) New stream dialog lacks role="dialog"/aria-modal and a focus trap. Quick-capture errors show only as a red border; repo is free text (no picker).
+- (T166) Merged-outside detection: fast-forward merges rely on the branch reflog; an untouched branch forked off a non-first-parent commit could read as merged (cosmetic, needs a click). Close/mark-landed check the id before the cross-origin check (400 vs 403 on a bad id; nothing mutates).
