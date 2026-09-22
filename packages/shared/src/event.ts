@@ -59,7 +59,13 @@ export const EVENT_KINDS = [
   'breaker_tripped',
   'breaker_cleared',
 
-  // -- rule --  none yet; T140 adds `rule_*` with its emitter.
+  // -- rule (StateStore.createRule / updateRule, via RulesService) --
+  // data: {id, status, enforcement, scope, principal?} — `rule_decided` is
+  // the human's accept/retire (the one write that moves `status`), and it is
+  // split from `rule_put` so the audit trail shows a decision as a decision
+  // rather than as another edit.
+  'rule_put',
+  'rule_decided',
 
   // -- hook (HookService + the ACP permission responder) --
   // data: {event, decision, reason, tool?, command?}

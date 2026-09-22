@@ -12,13 +12,15 @@ import { z } from 'zod';
 import { UlidSchema, formatZodError } from './ids';
 
 /**
- * §3.1's four kinds. `question` and `gate` are the two that carry a
- * decision; `blocked` and `done` are streams whose agent half has stopped
- * with the human half still open — the "waiting for me" states of §2.2.
- * Every other gate kind (`approve_plan`, `sprint_review`, `unblock`,
+ * §3.1's kinds. `question` and `gate` are the two that carry a decision;
+ * `blocked` and `done` are streams whose agent half has stopped with the
+ * human half still open — the "waiting for me" states of §2.2. T140 adds
+ * `rule_accept`: a rule with `status: 'proposed'`, which is the one item
+ * whose decision is the human's authority itself (§5.1, **D4**). Every
+ * other gate kind (`approve_plan`, `sprint_review`, `unblock`,
  * `promote_to_main`, …) is deleted with its policy rows (T121).
  */
-export const INBOX_ITEM_KINDS = ['question', 'gate', 'blocked', 'done'] as const;
+export const INBOX_ITEM_KINDS = ['question', 'gate', 'rule_accept', 'blocked', 'done'] as const;
 export const InboxItemKindSchema = z.enum(INBOX_ITEM_KINDS);
 export type InboxItemKind = z.infer<typeof InboxItemKindSchema>;
 
@@ -28,18 +30,33 @@ export const INBOX_CONTEXT_MAX_CHARS = 200;
 export const InboxItemSchema = z
   .object({
     kind: InboxItemKindSchema,
-    /** The underlying record's id — `Q-<ulid>`, `HIL-<ulid>`, or the stream's own id for `blocked`/`done`. */
+    /** The underlying record's id — `Q-<ulid>`, `HIL-<ulid>`, `R-<ulid>`, or the stream's own id for `blocked`/`done`. */
     id: z.string().min(1),
-    stream: UlidSchema,
+    /**
+     * The stream the item is about. Optional for one kind only: a
+     * `rule_accept` item for a rule that belongs to no stream (a global
+     * rule proposed by the human or imported by `agile rules seed`) still
+     * needs deciding, and the refinement below keeps it required for every
+     * other kind.
+     */
+    stream: UlidSchema.optional(),
     /** Ancestor chain rendered root→leaf, as titles: "ledger-lite / import CSV / parser" (§3.2). */
-    stream_path: z.array(z.string().min(1)).min(1),
+    stream_path: z.array(z.string().min(1)),
     /** ISO-8601; the list is sorted on this, oldest first (§3.3). */
     ts: z.string().datetime(),
     context: z.string().min(1).max(INBOX_CONTEXT_MAX_CHARS),
     /** Pointer to the full artifact, when there is one (a home-relative path). */
     ref: z.string().min(1).optional(),
   })
-  .strict();
+  .strict()
+  .refine((item) => item.kind === 'rule_accept' || item.stream !== undefined, {
+    message: 'must name its stream',
+    path: ['stream'],
+  })
+  .refine((item) => item.kind === 'rule_accept' || item.stream_path.length > 0, {
+    message: 'must carry the stream path',
+    path: ['stream_path'],
+  });
 export type InboxItem = z.infer<typeof InboxItemSchema>;
 
 export function validateInboxItem(input: unknown): InboxItem {

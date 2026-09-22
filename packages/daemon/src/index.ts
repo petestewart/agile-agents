@@ -82,6 +82,10 @@ export * from './gates';
 // Streams: the reshape's unit of work — stream service + stream.* RPC (T120).
 export * from './streams';
 
+// Rules: the system's memory of decisions — record, store, scope filter,
+// rule.* RPC (T140, cockpit design §5).
+export * from './rules';
+
 // Questions store, and the inbox over questions/gates/streams (T040/T121).
 export * from './questions';
 export * from './inbox';

@@ -35,6 +35,9 @@ import {
   type Event,
   type Policy,
   type ReposConfig,
+  type Rule,
+  RuleIdSchema,
+  type RulePrincipal,
   type Stream,
   type StreamPrincipal,
   type ThreadEntry,
@@ -45,6 +48,8 @@ import {
   type VendorsConfig,
   type VendorsConfigInput,
   assertNoStreamCycle,
+  assertRuleAcceptable,
+  assertRuleWrite,
   assertStreamWrite,
   isLegalTransition,
   validateAgentRecord,
@@ -52,6 +57,7 @@ import {
   validatePolicy,
   validateRepoEntry,
   validateReposConfig,
+  validateRule,
   validateStream,
   validateThreadEntry,
   validateTicket,
@@ -172,6 +178,30 @@ function streamStateData(stream: Stream): Record<string, unknown> {
     human_status: stream.human.status,
     archived: stream.archived === true,
   };
+}
+
+/**
+ * What every rule event carries in `data` (T140, §7.4): the id, the state
+ * a reader needs to follow a rule's life (`status`, `enforcement`, the
+ * rendered scope) and the principal that wrote it. A rule is not
+ * stream-scoped in general (a global rule belongs to none), so the event's
+ * `stream` scope is set only for a stream-scoped rule.
+ */
+function ruleEventData(rule: Rule, principal: RulePrincipal): Record<string, unknown> {
+  return {
+    id: rule.id,
+    status: rule.status,
+    enforcement: rule.enforcement,
+    scope: rule.scope.ref === undefined ? rule.scope.kind : `${rule.scope.kind}:${rule.scope.ref}`,
+    principal,
+  };
+}
+
+/** A rule event's `stream` scope — only a stream-scoped rule has one. */
+function ruleEventStream(rule: Rule): { stream?: string } {
+  return rule.scope.kind === 'stream' && rule.scope.ref !== undefined
+    ? { stream: rule.scope.ref }
+    : {};
 }
 
 /** The pieces one mutation needs: its return value, the paths it touched, and its one Event. */
@@ -951,6 +981,130 @@ export class StateStore {
         data: { by: validated.by, entry_kind: validated.kind },
       });
       return { result: validated, relPaths: [relPath], event };
+    });
+  }
+
+  // ------------------------------------------------------------------ Rules
+
+  /**
+   * T140 (cockpit design §5): `rules/R-<ulid>.yaml`, one file per rule.
+   * Same shape as the streams block above — home-relative paths through
+   * `abs()`, validated on every read, one event per mutation — plus the two
+   * structural checks that are not schema-level and live in shared as pure
+   * functions: the principal split (`assertRuleWrite`, **D4**: agents may
+   * create `proposed` only; `status`/`decided_at`/`decided_by` are
+   * human-only) and the tier invariants (`assertRuleAcceptable`, §5.2/§5.6).
+   * This is the one place both are applied.
+   *
+   * Scope *refs* are not checked here: whether a `repo` ref is in
+   * `repos.yaml` and a `stream` ref is a stream in this home is
+   * `RulesService`'s check, beside the rest of its input validation.
+   */
+  private ruleRelPath(id: string): string {
+    return join('rules', `${this.ruleIdSegment(id)}.yaml`);
+  }
+
+  /** A rule id is `R-<ulid>`; reject anything else before it reaches a path. */
+  private ruleIdSegment(id: string): string {
+    const result = RuleIdSchema.safeParse(id);
+    if (!result.success) {
+      throw new Error(`invalid Rule id: ${id} must look like R-<ulid>`);
+    }
+    return result.data;
+  }
+
+  /** §7.3: a corrupt record is refused with its path, never silently defaulted. */
+  private readRuleFile(absPath: string): Rule {
+    let raw: unknown;
+    try {
+      raw = readYamlFile(absPath);
+    } catch (err) {
+      throw new Error(
+        `corrupt rule file ${absPath}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+    try {
+      return validateRule(raw);
+    } catch (err) {
+      throw new Error(
+        `corrupt rule file ${absPath}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+
+  getRule(id: string): Rule {
+    const path = this.abs(this.ruleRelPath(id));
+    if (!fileExists(path)) throw new NotFoundError('Rule', id);
+    return this.readRuleFile(path);
+  }
+
+  hasRule(id: string): boolean {
+    return fileExists(this.abs(this.ruleRelPath(id)));
+  }
+
+  /** Every rule in the home, oldest id first (ULIDs sort by time). */
+  listRules(): Rule[] {
+    const dir = this.abs('rules');
+    return listDataFiles(dir, '.yaml')
+      .map((name) => this.readRuleFile(join(dir, name)))
+      .sort((a, b) => a.id.localeCompare(b.id));
+  }
+
+  /**
+   * Creates one rule. The caller supplies the whole record (the service
+   * mints `id`/`created_at`/`status`/`stats`); this validates it, applies
+   * both structural checks for the creating principal, refuses a duplicate
+   * id, and mints `rule_put`.
+   */
+  async createRule(principal: RulePrincipal, rule: unknown): Promise<Rule> {
+    return this.mutate(() => {
+      const validated = assertRuleAcceptable(
+        assertRuleWrite(principal, undefined, validateRule(rule)),
+      );
+      const relPath = this.ruleRelPath(validated.id);
+      if (fileExists(this.abs(relPath))) {
+        throw new AlreadyExistsError('Rule', validated.id);
+      }
+      writeYamlFileAtomic(this.abs(relPath), validated);
+      return {
+        result: validated,
+        relPaths: [relPath],
+        event: buildEvent('rule_put', {
+          ...ruleEventStream(validated),
+          data: ruleEventData(validated, principal),
+        }),
+      };
+    });
+  }
+
+  /**
+   * Read-modify-write of one rule under the mutex, so the principal check
+   * sees the same `before` the write lands on. `mutator` returns the whole
+   * next record. `options.kind` is `rule_decided` for the human's
+   * accept/retire and `rule_put` for every other edit (§7.4).
+   */
+  async updateRule(
+    principal: RulePrincipal,
+    id: string,
+    mutator: (before: Rule) => Rule,
+    options: { kind?: 'rule_put' | 'rule_decided' } = {},
+  ): Promise<Rule> {
+    return this.mutate(() => {
+      const relPath = this.ruleRelPath(id);
+      if (!fileExists(this.abs(relPath))) throw new NotFoundError('Rule', id);
+      const before = this.readRuleFile(this.abs(relPath));
+      const after = assertRuleAcceptable(
+        assertRuleWrite(principal, before, validateRule(mutator(before))),
+      );
+      writeYamlFileAtomic(this.abs(relPath), after);
+      return {
+        result: after,
+        relPaths: [relPath],
+        event: buildEvent(options.kind ?? 'rule_put', {
+          ...ruleEventStream(after),
+          data: ruleEventData(after, principal),
+        }),
+      };
     });
   }
 

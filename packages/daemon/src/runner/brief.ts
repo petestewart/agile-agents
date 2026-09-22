@@ -15,7 +15,8 @@
  * Rules are filtered through `rulesInScope` here rather than by the caller:
  * design §5.3 has exactly one scope filter, shared by the brief assembler
  * and the hook, so an out-of-scope rule cannot reach a brief by a caller
- * forgetting to filter. Callers pass `[]` until T140 stores rules.
+ * forgetting to filter. T140 makes that filter `rules/service.ts`'s — the
+ * brief holds no scope logic of its own any more.
  *
  * Pure apart from reading the role file off disk: everything else is
  * handed in, so a brief is a function of the stream, not of the daemon's
@@ -24,7 +25,8 @@
 
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import type { SessionRole, Stream, ThreadEntry } from '@agile-agents/shared';
+import type { Rule, SessionRole, Stream, ThreadEntry } from '@agile-agents/shared';
+import { rulesInScope } from '../rules/service';
 
 /** `packages/daemon/briefs/` — one Markdown file per role. */
 export const BRIEFS_DIR = join(import.meta.dir, '..', '..', 'briefs');
@@ -48,21 +50,6 @@ export interface BriefDoc {
   body: string;
 }
 
-/**
- * An accepted rule as the brief renders it. `scope` is a path prefix or a
- * glob (design §5.3); a rule without one is global and always in scope.
- */
-export interface BriefRule {
-  text: string;
-  scope?: string;
-}
-
-/** What `rulesInScope` matches a rule's scope against. */
-export interface RuleScopeTarget {
-  repo?: string;
-  worktree?: string;
-}
-
 export interface BuildBriefInput {
   role: SessionRole;
   stream: Stream;
@@ -71,8 +58,8 @@ export interface BuildBriefInput {
   /** The stream's thread, oldest first; only the tail is rendered. */
   thread: ThreadEntry[];
   docs: BriefDoc[];
-  /** Accepted rules; out-of-scope ones are filtered out here, not by the caller. */
-  rules: BriefRule[];
+  /** Every rule in the home; `rulesInScope` filters them here, not the caller. */
+  rules: readonly Rule[];
   /** Overrides `BRIEF_THREAD_ENTRIES`. */
   threadEntries?: number;
   /** Overrides `BRIEF_CHAR_CEILING`. Test seam. */
@@ -88,60 +75,25 @@ export function readRoleBrief(role: SessionRole, briefsDir = BRIEFS_DIR): string
   return readFileSync(path, 'utf8').trimEnd();
 }
 
-/** `a/b/*.ts` / `a/**` → a regexp anchored at both ends. `*` never crosses `/`, `**` does. */
-function globToRegExp(glob: string): RegExp {
-  let source = '';
-  for (let i = 0; i < glob.length; i++) {
-    const char = glob[i] as string;
-    if (char === '*') {
-      if (glob[i + 1] === '*') {
-        source += '.*';
-        i++;
-        if (glob[i + 1] === '/') i++;
-      } else {
-        source += '[^/]*';
-      }
-      continue;
-    }
-    if (char === '?') {
-      source += '[^/]';
-      continue;
-    }
-    source += char.replace(/[.+^${}()|[\]\\]/g, '\\$&');
-  }
-  return new RegExp(`^${source}$`);
-}
-
-function matchesPath(scope: string, path: string): boolean {
-  if (scope.includes('*') || scope.includes('?')) return globToRegExp(scope).test(path);
-  const normalized = scope.endsWith('/') ? scope.slice(0, -1) : scope;
-  return path === normalized || path.startsWith(`${normalized}/`);
-}
-
-/**
- * Design §5.3's one scope filter: a rule with no scope is global and always
- * applies; a scoped rule applies only when its scope matches the target's
- * repo or worktree path. Mechanical, never a judgement call — and the only
- * implementation, shared with the hook.
- */
-export function rulesInScope(rules: readonly BriefRule[], target: RuleScopeTarget): BriefRule[] {
-  const paths = [target.repo, target.worktree].filter((path): path is string => path !== undefined);
-  return rules.filter((rule) => {
-    const scope = rule.scope;
-    if (scope === undefined || scope.length === 0 || scope === 'global') return true;
-    return paths.some((path) => matchesPath(scope, path));
-  });
-}
-
 function section(heading: string, body: string): string {
   return `## ${heading}\n\n${body}`;
 }
 
-function renderRules(rules: readonly BriefRule[]): string {
+/**
+ * §5.2: a `guidance` rule *is* its text and nothing more — the brief is the
+ * whole mechanism. A `pattern` or `classifier` rule is enforced by the hook,
+ * so the brief says so: the session should know which lines it will be
+ * stopped at rather than merely advised about.
+ */
+function renderRule(rule: Rule): string {
+  if (rule.enforcement === 'guidance') return `- ${rule.text}`;
+  const marks = [`enforced: ${rule.enforcement}`, ...(rule.critical ? ['critical'] : [])];
+  return `- ${rule.text} (${marks.join(', ')})`;
+}
+
+function renderRules(rules: readonly Rule[]): string {
   if (rules.length === 0) return 'none yet';
-  return rules
-    .map((rule) => (rule.scope === undefined ? `- ${rule.text}` : `- (${rule.scope}) ${rule.text}`))
-    .join('\n');
+  return rules.map(renderRule).join('\n');
 }
 
 function renderDoc(doc: BriefDoc, bodyCap: number): string {
@@ -158,7 +110,7 @@ function renderEntry(entry: ThreadEntry): string {
 /** One pass of the assembler at a given thread-tail length and doc body cap. */
 function assemble(
   input: BuildBriefInput,
-  rules: readonly BriefRule[],
+  rules: readonly Rule[],
   tailLength: number,
   docBodyCap: number,
 ): string {
@@ -197,10 +149,7 @@ function assemble(
 }
 
 export function buildBrief(input: BuildBriefInput): string {
-  const rules = rulesInScope(input.rules, {
-    ...(input.stream.repo !== undefined ? { repo: input.stream.repo } : {}),
-    ...(input.stream.worktree !== undefined ? { worktree: input.stream.worktree } : {}),
-  });
+  const rules = rulesInScope(input.rules, input.stream, input.ancestors);
   const ceiling = input.ceiling ?? BRIEF_CHAR_CEILING;
   const maxTail = Math.min(input.threadEntries ?? BRIEF_THREAD_ENTRIES, input.thread.length);
   const docCap = Number.MAX_SAFE_INTEGER;

@@ -1,14 +1,27 @@
 import { describe, expect, test } from 'bun:test';
-import type { Stream, ThreadEntry } from '@agile-agents/shared';
-import { ulid } from '@agile-agents/shared';
-import {
-  BRIEF_CHAR_CEILING,
-  BRIEF_THREAD_ENTRIES,
-  type BriefRule,
-  buildBrief,
-  readRoleBrief,
-  rulesInScope,
-} from './brief';
+import type { Rule, RuleInput, Stream, ThreadEntry } from '@agile-agents/shared';
+import { ulid, validateRule } from '@agile-agents/shared';
+import { BRIEF_CHAR_CEILING, BRIEF_THREAD_ENTRIES, buildBrief, readRoleBrief } from './brief';
+
+/**
+ * T140: the brief takes real `Rule` records and filters them through
+ * `rules/service.ts`'s `rulesInScope` (design §5.3). Scope filtering itself
+ * is tested there; these tests only assert what the brief *renders*.
+ */
+function makeRule(text: string, over: Partial<RuleInput> = {}): Rule {
+  return validateRule({
+    id: `R-${ulid()}`,
+    text,
+    scope: { kind: 'global' },
+    status: 'accepted',
+    enforcement: 'guidance',
+    critical: false,
+    provenance: { by: 'human' },
+    stats: {},
+    created_at: '2026-09-21T00:00:00Z',
+    ...over,
+  });
+}
 
 function makeStream(overrides: Partial<Stream> = {}): Stream {
   return {
@@ -60,7 +73,7 @@ describe('buildBrief', () => {
       ancestors: [root],
       thread: [entry('start with the dialect')],
       docs: [{ name: 'brief.md', body: 'the product is a cockpit\n' }],
-      rules: [{ text: 'never push to main', scope: '/srv/repo' }],
+      rules: [makeRule('never push to main', { scope: { kind: 'repo', ref: '/srv/repo' } })],
       briefsDir: '/no/such/dir',
     });
 
@@ -78,7 +91,7 @@ describe('buildBrief', () => {
         '',
         '## Rules in scope',
         '',
-        '- (/srv/repo) never push to main',
+        '- never push to main',
         '',
         '## Docs',
         '',
@@ -152,7 +165,7 @@ describe('buildBrief', () => {
       ancestors: [],
       thread: [],
       docs: [{ name: 'brief.md', body: 'the product is a cockpit' }],
-      rules: [{ text: 'prefer zod schemas' }],
+      rules: [makeRule('prefer zod schemas')],
     });
     expect(full).toContain('### brief.md');
     expect(full).toContain('the product is a cockpit');
@@ -182,20 +195,68 @@ describe('buildBrief', () => {
       thread: [],
       docs: [],
       rules: [
-        { text: 'in scope by repo', scope: '/srv/repo' },
-        { text: 'in scope by glob', scope: '/srv/repo/.worktrees/*' },
-        { text: 'global rule' },
-        { text: 'other repo', scope: '/srv/other' },
-        { text: 'sibling glob', scope: '/srv/other/**' },
+        makeRule('in scope by repo', { scope: { kind: 'repo', ref: '/srv/repo' } }),
+        makeRule('global rule'),
+        makeRule('still proposed', { status: 'proposed' }),
+        makeRule('already retired', { status: 'retired' }),
+        makeRule('other repo', { scope: { kind: 'repo', ref: '/srv/other' } }),
       ],
       briefsDir: '/no/such/dir',
     });
 
     expect(brief).toContain('in scope by repo');
-    expect(brief).toContain('in scope by glob');
     expect(brief).toContain('global rule');
+    expect(brief).not.toContain('still proposed');
+    expect(brief).not.toContain('already retired');
     expect(brief).not.toContain('other repo');
-    expect(brief).not.toContain('sibling glob');
+  });
+
+  test('a stream-scoped rule reaches a nested stream through its ancestors (§5.3)', () => {
+    const root = makeStream({ title: 'Cockpit' });
+    const child = makeStream({ parent: root.id });
+    const brief = buildBrief({
+      role: 'worker',
+      stream: child,
+      ancestors: [root],
+      thread: [],
+      docs: [],
+      rules: [
+        makeRule('inherited from the parent', { scope: { kind: 'stream', ref: root.id } }),
+        makeRule('someone else\u2019s stream', { scope: { kind: 'stream', ref: ulid() } }),
+      ],
+      briefsDir: '/no/such/dir',
+    });
+    expect(brief).toContain('inherited from the parent');
+    expect(brief).not.toContain('someone else');
+  });
+
+  test('a guidance rule is its text and nothing else; an enforced rule says so (§5.2)', () => {
+    const brief = buildBrief({
+      role: 'worker',
+      stream: makeStream(),
+      ancestors: [],
+      thread: [],
+      docs: [],
+      rules: [
+        makeRule('prefer the repo scripts'),
+        makeRule('never push to a protected branch', {
+          enforcement: 'pattern',
+          pattern: { kind: 'no_push_protected' },
+          critical: true,
+        }),
+        makeRule('do not add a dependency without asking', {
+          enforcement: 'classifier',
+          examples: [
+            { action: 'bun add lodash', violates: true },
+            { action: 'read a file', violates: false },
+          ],
+        }),
+      ],
+      briefsDir: '/no/such/dir',
+    });
+    expect(brief).toContain('- prefer the repo scripts\n');
+    expect(brief).toContain('- never push to a protected branch (enforced: pattern, critical)');
+    expect(brief).toContain('- do not add a dependency without asking (enforced: classifier)');
   });
 });
 
@@ -212,7 +273,7 @@ describe('the token ceiling', () => {
       ancestors: [],
       thread,
       docs: [],
-      rules: [{ text: 'never push to main' }],
+      rules: [makeRule('never push to main')],
     });
 
     expect(brief.length).toBeLessThanOrEqual(BRIEF_CHAR_CEILING);
@@ -233,7 +294,7 @@ describe('the token ceiling', () => {
         { name: 'one.md', body: 'ONE-HEAD'.padEnd(60_000, 'a') },
         { name: 'two.md', body: 'TWO-HEAD'.padEnd(60_000, 'b') },
       ],
-      rules: [{ text: 'never push to main' }],
+      rules: [makeRule('never push to main')],
     });
 
     expect(brief.length).toBeLessThanOrEqual(BRIEF_CHAR_CEILING);
@@ -257,50 +318,5 @@ describe('the token ceiling', () => {
     expect(brief).toContain('a line');
     expect(brief).toContain('short doc');
     expect(brief).not.toContain('truncated to fit the brief');
-  });
-});
-
-describe('rulesInScope', () => {
-  const rules: BriefRule[] = [
-    { text: 'global, no scope' },
-    { text: 'global, named', scope: 'global' },
-    { text: 'repo prefix', scope: '/srv/repo' },
-    { text: 'repo prefix with slash', scope: '/srv/repo/' },
-    { text: 'nested path', scope: '/srv/repo/packages' },
-    { text: 'single-star glob', scope: '/srv/repo/.worktrees/*' },
-    { text: 'double-star glob', scope: '/srv/**' },
-    { text: 'other repo', scope: '/srv/other' },
-  ];
-
-  test('a stream with no repo sees only global rules', () => {
-    expect(rulesInScope(rules, {}).map((rule) => rule.text)).toEqual([
-      'global, no scope',
-      'global, named',
-    ]);
-  });
-
-  test('a repo scope matches the repo itself and paths under it', () => {
-    const texts = rulesInScope(rules, { repo: '/srv/repo' }).map((rule) => rule.text);
-    expect(texts).toContain('repo prefix');
-    expect(texts).toContain('repo prefix with slash');
-    expect(texts).toContain('double-star glob');
-    expect(texts).not.toContain('nested path');
-    expect(texts).not.toContain('other repo');
-  });
-
-  test('a glob scope matches the worktree path, and `*` does not cross a slash', () => {
-    const texts = rulesInScope(rules, {
-      repo: '/srv/repo',
-      worktree: '/srv/repo/.worktrees/csv',
-    }).map((rule) => rule.text);
-    expect(texts).toContain('single-star glob');
-    expect(texts).toContain('double-star glob');
-    expect(texts).not.toContain('other repo');
-
-    expect(
-      rulesInScope([{ text: 'one segment', scope: '/srv/*' }], {
-        repo: '/srv/repo/deep',
-      }),
-    ).toEqual([]);
   });
 });

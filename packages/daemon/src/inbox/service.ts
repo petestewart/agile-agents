@@ -5,6 +5,7 @@
  * The list is **derived on every call** from records that already exist:
  *  - `questions/Q-*.yaml` with `status: open`          → `question`
  *  - `gates/HIL-*.yaml` with `status: pending`     → `gate`
+ *  - `rules/R-*.yaml` with `status: proposed`            → `rule_accept`
  *  - streams whose `agent.status` is `blocked`/`done`
  *    while `human.status` is still `open`              → `blocked` / `done`
  *
@@ -19,17 +20,22 @@ import {
   type HilRequest,
   type InboxItem,
   type Question,
+  type Rule,
   type Stream,
+  formatRuleScope,
   inboxContext,
 } from '@agile-agents/shared';
 import type { GateService } from '../gates/service';
 import type { QuestionService } from '../questions/service';
+import type { RulesService } from '../rules/service';
 import type { StreamService } from '../streams/service';
 
 export interface InboxServiceDeps {
   streams: StreamService;
   questions: QuestionService;
   gates: GateService;
+  /** T140's rules — a proposed rule is a `rule_accept` item (§3.1). */
+  rules?: RulesService;
 }
 
 export class InboxService {
@@ -55,6 +61,13 @@ export class InboxService {
       if (gate.status !== 'pending') continue;
       const item = this.gateItem(gate, byId);
       if (item) items.push(item);
+    }
+    // T140: every rule still awaiting the human's decision (§3.1,
+    // §5.1). Unlike every other item, a `rule_accept` item may name no
+    // stream: a global rule proposed by the human, or one imported by
+    // `agile rules seed`, belongs to no stream and still needs deciding.
+    for (const rule of this.deps.rules?.listProposed() ?? []) {
+      items.push(this.ruleItem(rule, byId));
     }
     for (const stream of byId.values()) {
       const item = this.streamItem(stream, byId);
@@ -88,6 +101,20 @@ export class InboxService {
       ts: question.raised_at,
       context: inboxContext(question.text),
       ref: `questions/${question.id}.yaml`,
+    };
+  }
+
+  private ruleItem(rule: Rule, byId: Map<string, Stream>): InboxItem {
+    const stream =
+      rule.provenance.stream === undefined ? undefined : byId.get(rule.provenance.stream);
+    return {
+      kind: 'rule_accept',
+      id: rule.id,
+      ...(stream ? { stream: stream.id } : {}),
+      stream_path: stream ? this.path(stream, byId) : [],
+      ts: rule.created_at,
+      context: inboxContext(`${formatRuleScope(rule.scope)}: ${rule.text}`),
+      ref: `rules/${rule.id}.yaml`,
     };
   }
 

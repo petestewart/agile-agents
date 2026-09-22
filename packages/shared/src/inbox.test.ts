@@ -22,8 +22,8 @@ function item(overrides: Partial<InboxItem> = {}): unknown {
 }
 
 describe('InboxItemSchema', () => {
-  test('the four §3.1 kinds and nothing else', () => {
-    expect([...INBOX_ITEM_KINDS]).toEqual(['question', 'gate', 'blocked', 'done']);
+  test('the §3.1 kinds and nothing else', () => {
+    expect([...INBOX_ITEM_KINDS]).toEqual(['question', 'gate', 'rule_accept', 'blocked', 'done']);
     expect(InboxItemSchema.safeParse(item({ kind: 'approve_plan' as never })).success).toBe(false);
   });
 
@@ -37,6 +37,16 @@ describe('InboxItemSchema', () => {
   test('stream must be a ULID and stream_path must not be empty', () => {
     expect(InboxItemSchema.safeParse(item({ stream: 'TKT-0231' })).success).toBe(false);
     expect(InboxItemSchema.safeParse(item({ stream_path: [] })).success).toBe(false);
+    expect(InboxItemSchema.safeParse(item({ stream: undefined })).success).toBe(false);
+  });
+
+  // T140: a global proposed rule belongs to no stream and still needs
+  // deciding, so `rule_accept` is the one kind that may carry neither.
+  test('a rule_accept item may have no stream at all', () => {
+    const streamless = InboxItemSchema.safeParse(
+      item({ kind: 'rule_accept', id: `R-${ulid()}`, stream: undefined, stream_path: [] }),
+    );
+    expect(streamless.success).toBe(true);
   });
 
   test('context is one line, capped at the §3.2 budget', () => {
