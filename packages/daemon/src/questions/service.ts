@@ -242,6 +242,54 @@ export class QuestionService {
     return { question: saved };
   }
 
+  /**
+   * T145: **resolving a gate resolves every question the same session
+   * still has open at that moment**, as `superseded`.
+   *
+   * The live `--help` run is the whole argument: the worker raised a plain
+   * `ask` and hit the route-band gate in the same turn, the operator
+   * approved the gate (the thing the inbox put in front of them), the
+   * worker carried on — and the question stayed open forever, holding the
+   * stream `working/open` with nobody working. One decision from the
+   * operator, one session, one moment: whatever that session was still
+   * asking is answered by the decision it just got.
+   *
+   * Writes the record, a `question Q-… superseded by HIL-…` thread line,
+   * and a `question_answered` event; it deliberately does NOT deliver
+   * anything to the session (the gate decision is the delivery) and does
+   * not touch the stream statuses (the turn-end rule owns those now).
+   */
+  async supersede(sessionId: string, byGateId: string): Promise<Question[]> {
+    const open = this.listOpen().filter((question) => question.session === sessionId);
+    const superseded: Question[] = [];
+    for (const question of open) {
+      const now = this.clock();
+      const saved = await this.persist({
+        ...question,
+        status: 'answered',
+        answer: `superseded by ${byGateId}`,
+        resolved_as: 'superseded',
+        answered_by: 'daemon',
+        answered_at: now.toISOString(),
+      });
+      await this.streams.appendThread('daemon', saved.stream, {
+        kind: 'event',
+        body: `question ${saved.id} superseded by ${byGateId}`,
+        ref: questionPath(saved.id),
+      });
+      await this.store.appendEvent(
+        buildEvent('question_answered', {
+          stream: saved.stream,
+          agent: 'daemon',
+          session: sessionId,
+          data: { id: saved.id, superseded_by: byGateId },
+        }),
+      );
+      superseded.push(saved);
+    }
+    return superseded;
+  }
+
   get(id: QuestionId): Question {
     try {
       return this.store.getEntity(questionPath(id), validateQuestion);

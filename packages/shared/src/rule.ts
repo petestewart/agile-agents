@@ -165,6 +165,13 @@ export type RuleStats = z.infer<typeof RuleStatsSchema>;
 export const RuleSchema = z
   .object({
     id: RuleIdSchema,
+    /**
+     * T145: the stable short name of a built-in (`no_push_protected`, …),
+     * set only by the daemon when it creates §5.4's rules. A rule a human
+     * or an agent wrote has no name — `R-<ulid>` is its only identity, and
+     * the CLI prints `-` for it.
+     */
+    name: z.string().min(1).max(64).optional(),
     text: z.string().min(1).max(RULE_TEXT_MAX_CHARS),
     /** The classifier question; `classifierQuestion` supplies the default. */
     question: z.string().min(1).max(RULE_TEXT_MAX_CHARS).optional(),

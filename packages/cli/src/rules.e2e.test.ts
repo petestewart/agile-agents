@@ -51,7 +51,14 @@ describe('agile rules against a daemon on a temp AGILE_HOME', () => {
 
     const listed = await cli(['rules', 'list']);
     const lines = listed.out.split('\n');
-    expect(lines[0]?.trimEnd().split(/\s{2,}/)).toEqual(['id', 'status', 'tier', 'scope', 'text']);
+    expect(lines[0]?.trimEnd().split(/\s{2,}/)).toEqual([
+      'id',
+      'name',
+      'status',
+      'tier',
+      'scope',
+      'text',
+    ]);
     expect(lines[1]).toContain(rule.id);
     expect(lines[1]).toContain('proposed');
     expect(lines[1]).toContain('global');
@@ -59,6 +66,8 @@ describe('agile rules against a daemon on a temp AGILE_HOME', () => {
     const shown = await cli(['rules', 'show', rule.id]);
     expect(shown.out).toContain('prefer the repo scripts over a second toolchain');
     expect(shown.out).toContain('enforcement  guidance');
+    // T145: only a built-in has a name; a rule a human wrote prints `-`.
+    expect(shown.out).toContain('name         -');
 
     const accepted = await cli(['rules', 'accept', rule.id, '--by', 'pete']);
     expect(accepted.code).toBe(0);

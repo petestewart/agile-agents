@@ -25,7 +25,7 @@
  * principal for.
  */
 
-import { existsSync, mkdirSync } from 'node:fs';
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { AcpProviderConfig, spawnSession } from '@agile-agents/acp-client';
 import {
@@ -299,6 +299,16 @@ export class AttachService {
     // brief's own parts, and the caller caps what it appends.
     const prompt =
       options.briefAppendix === undefined ? brief : `${brief}\n\n${options.briefAppendix}`;
+    // T145: what the agent was actually handed, beside its `output.log` in
+    // the same session dir (§7.2) — "what did the agent see" is then a file
+    // read, not an archaeology dig through the vendor's own transcript.
+    // Best-effort, exactly like the session logs: a full disk must never
+    // stop a session from starting.
+    try {
+      writeFileSync(join(sessionDir, 'brief.md'), prompt);
+    } catch {
+      // Diagnostics only.
+    }
 
     // 5. Record the session before it can produce anything, so a stream
     // never has a running process it doesn't know about. A reviewer never
@@ -470,7 +480,11 @@ export class AttachService {
         // moment it appears) that sees `idle` sees the finished state, and
         // a decision delivered right then cannot have its `working`/`open`
         // overwritten by this turn's trailing write.
-        if (waitingOnGate && role === 'worker') {
+        // T145: an open question or an open gate, either way this stream
+        // is waiting on the human — the live `--help` run ended its turn
+        // on a still-open question and left `agent.status: working` for
+        // eleven minutes, because only the gate half wrote a status here.
+        if (role === 'worker') {
           await this.options.streams.update('daemon', streamId, {
             agent: { status: 'question' },
             human: { status: 'waiting_on_you' },

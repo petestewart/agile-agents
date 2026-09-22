@@ -26,7 +26,7 @@ import { InboxService, buildInboxRpcMethods } from './inbox';
 import { LandingService, buildLandingRpcMethods, wireLandGateResolution } from './landing';
 import { LessonsService } from './lessons';
 import { type LockHandle, acquireLock } from './lock';
-import { QuestionService, buildQuestionRpcMethods } from './questions';
+import { QuestionService, buildQuestionRpcMethods, wireQuestionSupersession } from './questions';
 import { type RpcServerHandle, startRpcServer } from './rpc';
 import { RulesService, buildRuleRpcMethods, ensureBuiltinRules } from './rules';
 import { resolveCliBin } from './runner';
@@ -183,6 +183,10 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
         })
       : undefined;
   if (gateService && landingService) wireLandGateResolution(gateService, landingService);
+  // T145: deciding a gate also closes whatever question the same session
+  // left open — wired before the delivery below so the question is already
+  // superseded when the session is prompted to carry on.
+  if (gateService && questionService) wireQuestionSupersession(gateService, questionService);
   // T138: deciding a `classifier_review` gate (the hook's route band, §8.1)
   // prompts the session whose tool call it blocked — the same delivery path
   // T137 built for an answer.
