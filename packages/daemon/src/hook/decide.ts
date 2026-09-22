@@ -66,10 +66,8 @@
  * falls through to the lower tiers.
  */
 
-import { DEFAULT_PROTECTED_BRANCHES, type Rule, type SessionRole } from '@agile-agents/shared';
+import { DEFAULT_PROTECTED_BRANCHES, type SessionRole } from '@agile-agents/shared';
 import { decidePermission } from '../permissions';
-import type { RuleCheckContext } from '../permissions/rule-checks';
-import { checkPatternRule } from '../permissions/rule-checks';
 import type {
   AcpPermissionOption,
   AcpPermissionRequestParams,
@@ -77,6 +75,8 @@ import type {
   AcpToolKind,
 } from '../permissions';
 import type { PermissionRole } from '../permissions';
+import type { RuleCheckContext } from '../permissions/rule-checks';
+import { patternRulesOf, runPatternRules } from '../permissions/rule-checks';
 import type { ClaudePreToolUsePayload, HookDecision, HookDecisionContext } from './types';
 
 /**
@@ -259,28 +259,23 @@ function isWritingToolCall(payload: ClaudePreToolUsePayload): boolean {
   return payload.tool_input?.kind === 'edit';
 }
 
-function patternRulesOf(ctx: HookDecisionContext): Rule[] {
-  return (ctx.patternRules ?? []).filter(
-    (rule) => rule.enforcement === 'pattern' && rule.pattern !== undefined,
-  );
-}
-
 /**
- * Tier 5b: the pattern rules in scope, in order. `undefined` when there are
- * none; otherwise an `allow` carrying every rule that was evaluated, or the
- * first rule's deny — "match ⇒ DENY with the rule named. Detector uncertain
- * ⇒ DENY" (§8.1).
+ * Tier 5b: the pattern rules in scope, in order, through the same
+ * `runPatternRules` the ACP responder tier uses — so the deny wording and
+ * the stats accounting cannot drift between the two enforcement tiers.
+ * `undefined` when no pattern rule is in scope.
  */
 function patternRuleVerdict(
   ctx: HookDecisionContext,
   payload: ClaudePreToolUsePayload,
 ): HookDecision | undefined {
-  const rules = patternRulesOf(ctx);
+  const rules = patternRulesOf(ctx.patternRules);
   if (rules.length === 0) return undefined;
 
+  const command = commandOf(payload);
   const checkCtx: RuleCheckContext = {
     worktreePath: ctx.worktreePath,
-    ...(commandOf(payload) !== undefined ? { command: commandOf(payload) } : {}),
+    ...(command !== undefined ? { command } : {}),
     paths: pathsForToolCall(payload),
     writes: isWritingToolCall(payload),
     protectedBranches: ctx.protectedBranches ?? DEFAULT_PROTECTED_BRANCHES,
@@ -288,20 +283,16 @@ function patternRuleVerdict(
     head: ctx.headBranch ?? (() => undefined),
   };
 
-  const rulesEvaluated: string[] = [];
-  for (const rule of rules) {
-    rulesEvaluated.push(rule.id);
-    const reason = checkPatternRule(rule, checkCtx);
-    if (reason !== undefined) {
-      return {
-        decision: 'deny',
-        reason: `rule ${rule.id} (${rule.pattern?.kind}): ${reason}`,
-        rulesEvaluated,
-        ruleViolated: rule.id,
-      };
-    }
+  const outcome = runPatternRules(rules, checkCtx);
+  if (outcome.reason !== undefined) {
+    return {
+      decision: 'deny',
+      reason: outcome.reason,
+      rulesEvaluated: outcome.rulesEvaluated,
+      ...(outcome.ruleViolated !== undefined ? { ruleViolated: outcome.ruleViolated } : {}),
+    };
   }
-  return { decision: 'allow', rulesEvaluated };
+  return { decision: 'allow', rulesEvaluated: outcome.rulesEvaluated };
 }
 
 /** Tiers 4–5: the gate verdict, computed independently of any normal-priority inbox message pending — see this file's header, review round fix (blocker 1). */

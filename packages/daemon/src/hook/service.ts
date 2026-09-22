@@ -52,6 +52,8 @@ import {
 } from '@agile-agents/shared';
 import type { Bus } from '../bus';
 import { isPathInside } from '../permissions/command';
+import { worktreeBranchLookups } from '../permissions/push-detector';
+import { patternRulesOf, protectedBranchesFor } from '../permissions/rule-checks';
 import { NotFoundError, type StateStore, buildEvent } from '../store';
 import { decidePreToolUse } from './decide';
 import { fingerprintCall } from './fingerprint';
@@ -162,42 +164,6 @@ export interface HookRules {
   inScope(streamId: string): Rule[];
   /** §5.7's counters, bumped for every rule the decision evaluated. */
   recordFired(id: string, outcome: 'fired' | 'violated' | 'routed'): Promise<unknown>;
-}
-
-/**
- * One `git rev-parse --abbrev-ref <rev>` in the worktree — argv, never a
- * shell string (D11's argv floor), so a branch name can never be
- * interpreted. `undefined` for any non-zero exit (no upstream configured, a
- * detached HEAD, not a repo at all), which the push detector treats as
- * "unresolvable" and denies.
- */
-function revParseAbbrevRef(cwd: string, rev: string): string | undefined {
-  try {
-    const result = Bun.spawnSync(['git', 'rev-parse', '--abbrev-ref', rev], {
-      cwd,
-      stdin: 'ignore',
-      stdout: 'pipe',
-      stderr: 'ignore',
-    });
-    if (result.exitCode !== 0) return undefined;
-    const out = result.stdout.toString().trim();
-    return out.length > 0 && out !== 'HEAD' ? out : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-/** Calls `resolve` at most once, however many rules ask for the answer. */
-function memoized(resolve: () => string | undefined): () => string | undefined {
-  let done = false;
-  let value: string | undefined;
-  return () => {
-    if (!done) {
-      value = resolve();
-      done = true;
-    }
-    return value;
-  };
 }
 
 function defaultFileSize(path: string): number | undefined {
@@ -386,6 +352,7 @@ export class HookService {
       if (!(err instanceof NotFoundError)) throw err;
     }
 
+    const branches = worktreeBranchLookups(worktreePath);
     return {
       session,
       stream,
@@ -401,9 +368,9 @@ export class HookService {
       // lazy *and* memoized — an ordinary `git push origin <branch>` or a
       // file edit never spawns one.
       patternRules: this.patternRulesFor(stream),
-      protectedBranches: this.protectedBranchesFor(stream),
-      upstreamBranch: memoized(() => revParseAbbrevRef(worktreePath, '@{upstream}')),
-      headBranch: memoized(() => revParseAbbrevRef(worktreePath, 'HEAD')),
+      protectedBranches: protectedBranchesFor(this.store, stream),
+      upstreamBranch: branches.upstream,
+      headBranch: branches.head,
     };
   }
 
@@ -412,29 +379,13 @@ export class HookService {
     const rules = this.options.rules;
     if (rules === undefined) return [];
     try {
-      return rules.inScope(stream).filter((rule) => rule.enforcement === 'pattern');
+      return patternRulesOf(rules.inScope(stream));
     } catch {
       // A stream that has gone (resolved from a stale agent record) is not
       // a reason to crash the hook — the call is gated by the role policy
       // either way, and `buildContext` already failed closed on anything
       // it could not resolve at all.
       return [];
-    }
-  }
-
-  /**
-   * The stream's repo `protected_branches` (D8). A stream with no repo, or
-   * a repo that has gone from `repos.yaml`, falls back to the same
-   * `[main, master]` default the schema applies — never to "nothing is
-   * protected", which would make a missing repo entry an allow.
-   */
-  private protectedBranchesFor(stream: string): readonly string[] {
-    try {
-      const repo = this.store.getStream(stream).repo;
-      const entry = repo === undefined ? undefined : this.store.getRepos()[repo];
-      return entry?.protected_branches ?? DEFAULT_PROTECTED_BRANCHES;
-    } catch {
-      return DEFAULT_PROTECTED_BRANCHES;
     }
   }
 

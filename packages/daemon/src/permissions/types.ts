@@ -32,6 +32,8 @@
  * (deny/hil, never allow, on an unidentifiable target).
  */
 
+import type { Rule } from '@agile-agents/shared';
+
 /**
  * The five roles this table covers (§14's Reader row is still out of scope
  * — a `read_summary` tool-runner turn has no session of its own).
@@ -150,12 +152,35 @@ export interface DecisionContext {
   ticket?: string;
   worktreePath: string;
   request: AcpPermissionRequestParams;
+  /**
+   * T143: the **pattern** rules in scope for this session's stream (§5.3),
+   * plus what their detectors need about the world. This tier is the ONLY
+   * gate for a vendor with no pre-tool-use hook (Cursor, Codex, Grok —
+   * §4.3), so it evaluates the same rule set the hook tier does rather
+   * than a narrower hardcoded table. Absent means no pattern rule is in
+   * scope and only §14's never-without-human list plus the role table run.
+   */
+  patternRules?: readonly Rule[];
+  /** The stream's repo `protected_branches` (D8); defaults to `[main, master]`. */
+  protectedBranches?: readonly string[];
+  /** `git rev-parse --abbrev-ref @{upstream}` in the worktree — see `worktreeBranchLookups`. */
+  upstreamBranch?: () => string | undefined;
+  /** `git rev-parse --abbrev-ref HEAD` in the worktree. */
+  headBranch?: () => string | undefined;
 }
 
 /** `decidePermission`'s three possible outcomes (ticket "Export" list). */
 export type Decision =
-  | { kind: 'allow'; optionId: string }
-  | { kind: 'deny'; optionId: string; reason: string }
+  | { kind: 'allow'; optionId: string; rulesEvaluated?: string[] }
+  | {
+      kind: 'deny';
+      optionId: string;
+      reason: string;
+      /** T143: every pattern rule this decision evaluated (`stats.fired`). */
+      rulesEvaluated?: string[];
+      /** The rule the reason names (`stats.violated`). */
+      ruleViolated?: string;
+    }
   | { kind: 'hil'; reason: string; hilRequest: HilRequestDraft };
 
 /**

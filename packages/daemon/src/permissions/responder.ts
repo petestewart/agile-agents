@@ -35,6 +35,8 @@ import type { StateStore } from '../store';
 import { buildEvent } from '../store';
 import { classifyPermissionRequest } from './classify';
 import { decidePermission } from './decide';
+import { worktreeBranchLookups } from './push-detector';
+import type { PatternRuleGate } from './rule-checks';
 import type { AcpPermissionRequestParams, Decision, PermissionRole } from './types';
 
 /** Default time a human has to answer a `hil_request` before it's overdue. Not a CLAUDE.md tunable (none listed for this); kept local and overridable per ctx. Enforcing this deadline (ticking, escalating) is T018's `GateService`, not this module — see the file header. */
@@ -70,6 +72,14 @@ export interface PermissionResponderContext {
   hilDeadlineMs?: number;
   /** Defaults to writing a `Message` at `bus/inbox/human/<ulid>.yaml` via `store.putEntity`. Override to hand persistence to T018's `GateService`. */
   requestHil?: RequestHil;
+  /**
+   * T143: the pattern rules this session is judged by (§5.2, §5.4), bound
+   * to its stream by `runner/session.ts` (`patternRuleGate`). This tier is
+   * the only gate a vendor without a pre-tool-use hook has (Cursor, Codex,
+   * Grok — §4.3), so without this wired `no_push_protected` would not
+   * exist for them. Absent means role table only, as before T143.
+   */
+  patternRules?: PatternRuleGate;
 }
 
 /** What `resolveHil` needs from the eventual `hil_response` (T018 decides how/when it arrives). */
@@ -134,6 +144,20 @@ export function buildPermissionResponder(
   const pending = new Map<string, AcpRequestId>();
   const requestHil: RequestHil = ctx.requestHil ?? ((input) => defaultRequestHil(store, input));
 
+  // Lazy + memoized per session: an ordinary allow, or a push naming an
+  // explicit branch, never spawns a `git rev-parse` at all.
+  const branches = worktreeBranchLookups(ctx.worktreePath);
+
+  /** §5.7's counters for every rule the decision evaluated — `fired` always, `violated` for the one it denied on. */
+  async function recordRuleStats(decision: Decision): Promise<void> {
+    const gate = ctx.patternRules;
+    if (gate === undefined || decision.kind === 'hil') return;
+    for (const id of decision.rulesEvaluated ?? []) {
+      const violated = decision.kind === 'deny' && id === decision.ruleViolated;
+      await gate.record(id, violated ? 'violated' : 'fired');
+    }
+  }
+
   async function logDecision(
     request: AcpPermissionRequestParams,
     decision: Decision,
@@ -152,6 +176,11 @@ export function buildPermissionResponder(
           decision: decision.kind,
           ...(decision.kind !== 'hil' ? { optionId: decision.optionId } : {}),
           ...(decision.kind !== 'allow' ? { reason: decision.reason } : {}),
+          // T143: which rule refused this call, so "why was I denied" is
+          // answerable from the log alone at this tier too.
+          ...(decision.kind === 'deny' && decision.ruleViolated !== undefined
+            ? { rule: decision.ruleViolated }
+            : {}),
         },
       }),
     );
@@ -159,11 +188,20 @@ export function buildPermissionResponder(
 
   return {
     async handleRequest(requestId, request) {
+      const gate = ctx.patternRules;
       const decision = decidePermission({
         role: ctx.role,
         ...(ctx.ticket !== undefined ? { ticket: ctx.ticket } : {}),
         worktreePath: ctx.worktreePath,
         request,
+        ...(gate !== undefined
+          ? {
+              patternRules: gate.rules(),
+              protectedBranches: gate.protectedBranches(),
+              upstreamBranch: branches.upstream,
+              headBranch: branches.head,
+            }
+          : {}),
       });
 
       if (decision.kind === 'allow' || decision.kind === 'deny') {
@@ -171,6 +209,7 @@ export function buildPermissionResponder(
         // should-fix 9): a store hiccup must not leave the agent's turn
         // hung on an already-decided answer.
         ctx.session.respondPermission(requestId, selectOption(decision.optionId));
+        await recordRuleStats(decision);
         await logDecision(request, decision);
         return decision;
       }

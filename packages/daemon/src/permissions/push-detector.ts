@@ -183,7 +183,6 @@ export function detectProtectedBranchWrite(
       if (protectedBranches.includes(onto)) {
         return `merging into ${onto} is the same act as pushing to it (a protected branch)`;
       }
-      continue;
     }
   }
 
@@ -204,4 +203,61 @@ export function detectPush(command: string): string | undefined {
     if (git.args[0] === 'push') return 'git push is not allowed in this repo';
   }
   return undefined;
+}
+
+// ---------------------------------------------------------------------------
+// Building the detector's context out of a real worktree. Lives here so
+// both enforcement tiers (the hook and the ACP responder) resolve the two
+// branch lookups the same way, and neither spawns git for a call that
+// never asks.
+// ---------------------------------------------------------------------------
+
+/**
+ * One `git rev-parse --abbrev-ref <rev>` in the worktree — argv, never a
+ * shell string (D11's argv floor), so a branch name can never be
+ * interpreted. `undefined` for any non-zero exit (no upstream configured, a
+ * detached HEAD, not a repo at all), which the detector treats as
+ * "unresolvable" and denies.
+ */
+export function revParseAbbrevRef(cwd: string, rev: string): string | undefined {
+  try {
+    const result = Bun.spawnSync(['git', 'rev-parse', '--abbrev-ref', rev], {
+      cwd,
+      stdin: 'ignore',
+      stdout: 'pipe',
+      stderr: 'ignore',
+    });
+    if (result.exitCode !== 0) return undefined;
+    const out = result.stdout.toString().trim();
+    return out.length > 0 && out !== 'HEAD' ? out : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Calls `resolve` at most once, however many rules ask for the answer. */
+function memoized(resolve: () => string | undefined): () => string | undefined {
+  let done = false;
+  let value: string | undefined;
+  return () => {
+    if (!done) {
+      value = resolve();
+      done = true;
+    }
+    return value;
+  };
+}
+
+/**
+ * The `upstream`/`head` half of a `PushDetectorContext` for one worktree,
+ * both lazy *and* memoized: an ordinary `git push origin <branch>`, a file
+ * edit, or any non-git command spawns nothing at all.
+ */
+export function worktreeBranchLookups(
+  worktreePath: string,
+): Pick<PushDetectorContext, 'upstream' | 'head'> {
+  return {
+    upstream: memoized(() => revParseAbbrevRef(worktreePath, '@{upstream}')),
+    head: memoized(() => revParseAbbrevRef(worktreePath, 'HEAD')),
+  };
 }

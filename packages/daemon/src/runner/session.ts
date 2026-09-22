@@ -52,6 +52,8 @@ import {
   buildPermissionResponder,
   cursorModeIdFor,
 } from '../permissions';
+import type { PatternRuleRules } from '../permissions/rule-checks';
+import { patternRuleGate } from '../permissions/rule-checks';
 import {
   ForeignPiExtensionError,
   GATE_ENV_VAR as PI_GATE_ENV_VAR,
@@ -132,6 +134,13 @@ export interface AgentSessionOptions {
    * `exited` carries that outcome.
    */
   onTurnEnd?: (info: { session: string; stream: string; turn: number }) => void;
+  /**
+   * T143: T140's `RulesService` (or any read side shaped like it). The ACP
+   * permission responder below runs the pattern rules in scope through it,
+   * which is what gives a vendor with no pre-tool-use hook (Cursor, Codex,
+   * Grok — §4.3) the §5.4 built-ins at all.
+   */
+  rules?: PatternRuleRules;
 }
 
 export interface AgentExitInfo {
@@ -374,6 +383,12 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
     agent: sessionId as AgentId,
     worktreePath,
     session: spawned,
+    // T143: the same rule set the hook tier enforces, bound to this
+    // session's stream. Both tiers evaluate one set of rules — this tier is
+    // the only one a vendor without a pre-tool-use hook has.
+    ...(opts.rules !== undefined
+      ? { patternRules: patternRuleGate({ store, rules: opts.rules, stream: stream.id }) }
+      : {}),
     // T151 rebuilds an ACP permission request as the classifier route band
     // on the stream; until then the responder falls back to its own
     // `hil_request` write.

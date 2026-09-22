@@ -6,7 +6,13 @@
  */
 
 import { describe, expect, test } from 'bun:test';
-import { type Rule, type RuleInput, type RulePattern, ulid, validateRule } from '@agile-agents/shared';
+import {
+  type Rule,
+  type RuleInput,
+  type RulePattern,
+  ulid,
+  validateRule,
+} from '@agile-agents/shared';
 import { type RuleCheckContext, checkPatternRule } from './rule-checks';
 
 const WORKTREE = '/tmp/agile-worktree-fixture';
@@ -71,10 +77,7 @@ describe('path_deny (no_worktree_escape)', () => {
   const worktreeEscape = rule({ kind: 'path_deny', args: { globs: [] } });
 
   test('a write outside the worktree is denied', () => {
-    const reason = checkPatternRule(
-      worktreeEscape,
-      ctx({ paths: ['/etc/hosts'], writes: true }),
-    );
+    const reason = checkPatternRule(worktreeEscape, ctx({ paths: ['/etc/hosts'], writes: true }));
     expect(reason).toContain('/etc/hosts');
   });
 
