@@ -131,6 +131,39 @@ describe('agile inbox / agile answer against a daemon on a temp AGILE_HOME', () 
     expect((await cli(['inbox'])).out).toContain('(empty)');
   });
 
+  test('a routed tool call shows as a gate card and `agile answer <HIL-id> yes` decides it (T138)', async () => {
+    const root = await newStream('ledger-lite');
+
+    // The gate the hook's route band raises (`hook/route-band.ts`), created
+    // here through the same service the hook calls.
+    const gate = await daemon.gateService.request('classifier_review', {
+      policy: {
+        gates: { land: 'human', rule_accept: 'human', classifier_review: 'human' },
+        breaker_signals: [],
+      },
+      stream: root.id,
+      summary: 'editing a dependency manifest/lockfile is never automatic',
+      call: { tool: 'Edit', path: '/tmp/wt/package.json', fingerprint: '0123456789abcdef' },
+    });
+
+    const listed = await cli(['inbox']);
+    expect(listed.code).toBe(0);
+    expect(listed.out).toContain('gate');
+    expect(listed.out).toContain('ledger-lite');
+    // The card shows the call, so the decision needs nothing else (§3.2).
+    expect(listed.out).toContain('edit /tmp/wt/package.json');
+    expect(listed.out).toContain('dependency manifest');
+    expect(listed.out).toContain(gate.id);
+
+    const answered = await cli(['answer', gate.id, 'yes', 'pin', 'it', 'to', '1.2.3']);
+    expect(answered.code).toBe(0);
+    expect(answered.out).toContain('approve');
+    expect(daemon.gateService.get(gate.id).note).toBe('pin it to 1.2.3');
+
+    // Decided: out of the inbox.
+    expect((await cli(['inbox'])).out).toContain('(empty)');
+  });
+
   test('stale mail from a previous daemon run never becomes an inbox item', async () => {
     await newStream('ledger-lite');
     const dir = join(daemon.home, 'bus', 'inbox', 'human');

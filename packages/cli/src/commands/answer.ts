@@ -1,12 +1,20 @@
 /**
- * `agile answer <question-id> <text>` (T121) — the operator answering an
- * agent's question from the terminal (cockpit design §1.4). A thin wrapper
- * over the `question.answer` RPC with the only resolution there is,
- * `reply`: the answer lands on the stream thread and reaches the waiting
- * session.
+ * `agile answer <id> …` — the operator answering whatever the inbox put in
+ * front of them, from the terminal (cockpit design §1.4, §3).
+ *
+ * One verb for one list (T138). The inbox is a single queue of two kinds of
+ * item, and it prints one id column; making the operator remember which
+ * verb goes with which prefix would be the list's own shape leaking into
+ * the CLI:
+ *
+ *  - `agile answer Q-… <text>` — the answer text lands on the stream thread
+ *    and reaches the waiting session (`question.answer`).
+ *  - `agile answer HIL-… yes|no [note]` — approves or denies the gate
+ *    (`gate.approve`/`gate.deny`), and the note reaches the session with
+ *    the decision. The `gate.*` RPC namespace is unchanged.
  */
 
-import type { Question } from '@agile-agents/shared';
+import type { HilRequest, Question } from '@agile-agents/shared';
 import type { ParsedArgs } from '../args';
 import { optionalString, requirePositional } from '../args';
 import { callRpc } from '../client';
@@ -16,15 +24,24 @@ export interface AnswerQuestionRpcResult {
   question: Question;
 }
 
+/** `yes`/`no` and the obvious synonyms an operator types instead. Anything else is a usage error, never a guess. */
+const YES = new Set(['yes', 'y', 'approve', 'approved', 'allow', 'ok']);
+const NO = new Set(['no', 'n', 'deny', 'denied', 'reject', 'block']);
+
 export async function runAnswer(
   socketPath: string,
   args: ParsedArgs,
   json: boolean,
 ): Promise<number> {
-  const id = requirePositional(args, 0, 'question-id');
+  const id = requirePositional(args, 0, 'id');
   // The answer is the rest of the line, so `agile answer Q-… use the second
   // option` works without quoting.
-  const text = args.positionals.slice(1).join(' ').trim();
+  const rest = args.positionals.slice(1);
+  const by = optionalString(args.options, 'by') ?? 'human';
+
+  if (id.startsWith('HIL-')) return await answerGate(socketPath, id, rest, by, json);
+
+  const text = rest.join(' ').trim();
   if (text.length === 0) {
     throw new Error('usage: agile answer <question-id> <text>');
   }
@@ -32,7 +49,7 @@ export async function runAnswer(
     id,
     answer: text,
     resolved_as: 'reply',
-    by: optionalString(args.options, 'by') ?? 'human',
+    by,
   });
   if (json) printJson(result);
   else
@@ -41,6 +58,36 @@ export async function runAnswer(
       ['stream', result.question.stream],
       ['status', result.question.status],
       ['answer', result.question.answer ?? '-'],
+    ]);
+  return 0;
+}
+
+async function answerGate(
+  socketPath: string,
+  id: string,
+  rest: string[],
+  by: string,
+  json: boolean,
+): Promise<number> {
+  const verdict = (rest[0] ?? '').toLowerCase();
+  const approve = YES.has(verdict);
+  if (!approve && !NO.has(verdict)) {
+    throw new Error(`usage: agile answer ${id} yes|no [note]`);
+  }
+  const note = rest.slice(1).join(' ').trim();
+  const result = await callRpc<HilRequest>(socketPath, approve ? 'gate.approve' : 'gate.deny', {
+    id,
+    by,
+    ...(note.length > 0 ? { note } : {}),
+  });
+  if (json) printJson(result);
+  else
+    printFields([
+      ['id', result.id],
+      ['stream', result.stream],
+      ['status', result.status],
+      ['decision', result.decision ?? '-'],
+      ['note', result.note ?? '-'],
     ]);
   return 0;
 }
