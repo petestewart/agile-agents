@@ -18,6 +18,7 @@ import { join } from 'node:path';
 import {
   AttachService,
   Bus,
+  FakeClassifier,
   GateService,
   InboxService,
   QuestionService,
@@ -38,6 +39,11 @@ import {
   runInit,
   startRpcServer,
 } from '@agile-agents/daemon';
+import {
+  DEFAULT_CLASSIFIER_ALLOW_BELOW,
+  DEFAULT_CLASSIFIER_CONFIDENCE_FLOOR,
+  DEFAULT_CLASSIFIER_DENY_AT,
+} from '@agile-agents/shared';
 import { RpcConnectionError, callRpc } from './client';
 
 /**
@@ -99,10 +105,19 @@ export interface TestDaemon {
   streamService: StreamService;
   /** Same instance wired into `rule.*` RPC (T140) — tests seed a rule through it. */
   rulesService: RulesService;
+  /**
+   * T153: the classifier behind `rule.test` (§5.6). Always the fake — the
+   * suite never calls the real API — and re-scriptable per test through
+   * `setScript`, so one daemon can answer differently in two evals.
+   */
+  classifier: FakeClassifier;
   cleanup(): Promise<void>;
 }
 
 export async function startTestDaemon(prefix = 'agile-cli-test-'): Promise<TestDaemon> {
+  // T153: the only classifier any test ever gets (§6.2). Unscripted it
+  // answers nothing, which is what `rule.test` reports as an error.
+  const classifier = new FakeClassifier();
   const repo = mkdtempSync(join(tmpdir(), prefix));
   Bun.spawnSync(['git', 'init', '-q'], { cwd: repo });
   Bun.spawnSync(['git', 'config', 'user.email', 'test@example.com'], { cwd: repo });
@@ -187,7 +202,14 @@ export async function startTestDaemon(prefix = 'agile-cli-test-'): Promise<TestD
           rules: rulesService,
         }),
       ),
-      ...buildRuleRpcMethods(rulesService),
+      ...buildRuleRpcMethods(rulesService, {
+        classifier,
+        bands: {
+          deny_at: DEFAULT_CLASSIFIER_DENY_AT,
+          allow_below: DEFAULT_CLASSIFIER_ALLOW_BELOW,
+          confidence_floor: DEFAULT_CLASSIFIER_CONFIDENCE_FLOOR,
+        },
+      }),
       ...buildBusRpcMethods(new Bus(store, init.stateRoot)),
       ...buildGateRpcMethods(gateService),
       ...buildQuestionRpcMethods(questionService),
@@ -222,6 +244,7 @@ export async function startTestDaemon(prefix = 'agile-cli-test-'): Promise<TestD
     questionService,
     streamService,
     rulesService,
+    classifier,
     home,
     async cleanup() {
       await attachService.stopAll();

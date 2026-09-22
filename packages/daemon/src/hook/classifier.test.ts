@@ -26,6 +26,7 @@ import { Bus } from '../bus';
 import { type Answer, ClassifierUnavailableError, FakeClassifier } from '../classifier';
 import { GateService } from '../gates';
 import { runInit } from '../init';
+import type { RuleStatsOutcome } from '../rules/service';
 import { StateStore } from '../store';
 import { StreamService } from '../streams/service';
 import { wireClassifierRouteStats } from './route-band';
@@ -45,7 +46,7 @@ const CONFIG: ClassifierConfig = validateClassifierConfig({ api_key: 'test-key' 
 /** A rules service double — the hook only ever needs the scope read and the counter write. */
 interface StatCall {
   id: string;
-  outcome: 'fired' | 'violated' | 'routed';
+  outcome: RuleStatsOutcome;
 }
 let ruleSet: Rule[];
 let stats: StatCall[];
@@ -195,7 +196,14 @@ describe('§6.3 bands', () => {
     expect(third.hookSpecificOutput?.permissionDecision).toBe('deny');
   });
 
-  test("the human's deny on a routed call bumps the rule's violated count", async () => {
+  /**
+   * T153: the deny is recorded as `resolved_violation`, not `violated`.
+   * The hook already counted this call as a firing when it routed it, so
+   * an ordinary `violated` here counted one logical action twice — the
+   * rule read `fired: 2, routed: 1, violated: 1`, which is the number
+   * §5.7's pruning report divides by.
+   */
+  test("the human's deny on a routed call bumps violated without a second firing", async () => {
     const rule = classifierRule();
     ruleSet = [rule];
     wireClassifierRouteStats(gates, rulesDouble);
@@ -204,7 +212,10 @@ describe('§6.3 bands', () => {
     const gate = gates.list().find((g) => g.gate === 'classifier_review');
     await gates.respond(gate?.id as HilId, 'deny', 'human', 'no');
 
-    expect(stats).toContainEqual({ id: rule.id, outcome: 'violated' });
+    expect(stats).toEqual([
+      { id: rule.id, outcome: 'routed' },
+      { id: rule.id, outcome: 'resolved_violation' },
+    ]);
   });
 });
 

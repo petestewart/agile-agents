@@ -61,6 +61,7 @@ import { type Classifier, ClassifierUnavailableError, classifierEnabled } from '
 import { isPathInside } from '../permissions/command';
 import { worktreeBranchLookups } from '../permissions/push-detector';
 import { patternRulesOf, protectedBranchesFor } from '../permissions/rule-checks';
+import type { RuleStatsOutcome } from '../rules/service';
 import { NotFoundError, type StateStore, buildEvent } from '../store';
 import {
   type ClassifierTierOutcome,
@@ -185,7 +186,7 @@ export interface HookRules {
   /** §5.3's one scope filter, for this session's stream. */
   inScope(streamId: string): Rule[];
   /** §5.7's counters, bumped for every rule the decision evaluated. */
-  recordFired(id: string, outcome: 'fired' | 'violated' | 'routed'): Promise<unknown>;
+  recordFired(id: string, outcome: RuleStatsOutcome): Promise<unknown>;
 }
 
 /** The classifier tier as the hook needs it: something to ask, and the config the bands and the opt-out come from. */

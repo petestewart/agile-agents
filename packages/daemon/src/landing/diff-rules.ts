@@ -49,12 +49,13 @@ import { MESSAGE_BODY_MAX_CHARS, classifierQuestion } from '@agile-agents/shared
 import type { Answer, Classifier, Noul } from '../classifier';
 import { bandFor, classifierEnabled, scrub } from '../classifier';
 import type { GateRequestContext } from '../gates/service';
+import type { RuleStatsOutcome } from '../rules/service';
 import type { DiffRuleContext, DiffRuleVerdict, DiffRules } from './service';
 
 /** The slice of `RulesService` this tier needs (the hook's `RuleSource` precedent). */
 export interface DiffRuleRules {
   inScope(streamId: string, stage?: 'action' | 'diff' | 'both'): Rule[];
-  recordFired(id: string, outcome: 'fired' | 'violated' | 'routed'): Promise<void>;
+  recordFired(id: string, outcome: RuleStatsOutcome): Promise<void>;
 }
 
 /** The slice of `GateService` a routed diff needs — the same three methods the route band takes. */

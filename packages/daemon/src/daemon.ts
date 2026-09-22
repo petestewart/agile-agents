@@ -302,7 +302,12 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
           ...(questionService ? buildQuestionRpcMethods(questionService) : {}),
           ...(streamService ? buildStreamRpcMethods(streamService) : {}),
           ...(inboxService ? buildInboxRpcMethods(inboxService) : {}),
-          ...(rulesService ? buildRuleRpcMethods(rulesService) : {}),
+          ...(rulesService
+            ? buildRuleRpcMethods(rulesService, {
+                classifier,
+                bands: config.classifier.bands,
+              })
+            : {}),
           ...(docsService ? buildDocsRpcMethods(docsService) : {}),
           ...(landingService ? buildLandingRpcMethods(landingService) : {}),
           ...buildHookRpcMethods(

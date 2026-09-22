@@ -87,6 +87,17 @@ export interface RulesServiceOptions {
  */
 export const DEFAULT_STATS_FLUSH_MS = 5_000;
 
+/**
+ * What one `recordFired` call says happened (§5.7's pruning input).
+ *
+ * The first three are *firings* — a rule evaluated against a real action:
+ * it passed (`fired`), it denied (`violated`), or its band sent the call to
+ * the human (`routed`). `resolved_violation` is not a firing at all: it is
+ * the human's later deny on a call that was already counted as `routed`,
+ * and it records the violation without counting the action twice.
+ */
+export type RuleStatsOutcome = 'fired' | 'violated' | 'routed' | 'resolved_violation';
+
 /** Counters accumulated since the last flush, for one rule. */
 interface PendingRuleStats {
   fired: number;
@@ -271,6 +282,14 @@ export class RulesService {
    * refinements on top: a pattern rule that denied, and a classifier rule
    * whose band routed the call to the human (T151).
    *
+   * `'resolved_violation'` is the one outcome that does **not** bump
+   * `fired`, because it is not a firing: it is the human's later decision
+   * on a call this rule already routed (T151's gate-deny wiring). Bumping
+   * `fired` again would count one logical action twice — a routed call the
+   * human denied read `fired: 2, routed: 1, violated: 1` — and §5.7's
+   * pruning report divides by `fired`, so the corruption is not cosmetic.
+   * It leaves `last_fired_at` alone for the same reason.
+   *
    * **Coalesced, not written through.** A gated tool call evaluates every
    * pattern rule in scope, so writing here would mean a YAML rewrite and a
    * `rule_put` event per rule per call. Counters accumulate in memory and
@@ -285,17 +304,21 @@ export class RulesService {
    * Always written as `daemon`: stats are the daemon's own field, not a
    * decision, so no human is involved and no agent can forge one.
    */
-  async recordFired(id: string, outcome: 'fired' | 'violated' | 'routed'): Promise<void> {
+  async recordFired(id: string, outcome: RuleStatsOutcome): Promise<void> {
     const pending = this.pendingStats.get(id) ?? {
       fired: 0,
       violated: 0,
       routed: 0,
       last_fired_at: '',
     };
-    pending.fired += 1;
-    if (outcome === 'violated') pending.violated += 1;
-    if (outcome === 'routed') pending.routed += 1;
-    pending.last_fired_at = this.clock().toISOString();
+    if (outcome === 'resolved_violation') {
+      pending.violated += 1;
+    } else {
+      pending.fired += 1;
+      if (outcome === 'violated') pending.violated += 1;
+      if (outcome === 'routed') pending.routed += 1;
+      pending.last_fired_at = this.clock().toISOString();
+    }
     this.pendingStats.set(id, pending);
     this.armStatsTimer();
   }
@@ -310,7 +333,11 @@ export class RulesService {
         fired: rule.stats.fired + pending.fired,
         violated: rule.stats.violated + pending.violated,
         routed: rule.stats.routed + pending.routed,
-        last_fired_at: pending.last_fired_at,
+        ...(pending.last_fired_at !== ''
+          ? { last_fired_at: pending.last_fired_at }
+          : rule.stats.last_fired_at !== undefined
+            ? { last_fired_at: rule.stats.last_fired_at }
+            : {}),
       },
     };
   }
@@ -358,7 +385,11 @@ export class RulesService {
             fired: before.stats.fired + delta.fired,
             violated: before.stats.violated + delta.violated,
             routed: before.stats.routed + delta.routed,
-            last_fired_at: delta.last_fired_at,
+            ...(delta.last_fired_at !== ''
+              ? { last_fired_at: delta.last_fired_at }
+              : before.stats.last_fired_at !== undefined
+                ? { last_fired_at: before.stats.last_fired_at }
+                : {}),
           },
         }));
       } catch {

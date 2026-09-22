@@ -7,14 +7,17 @@
 import { describe, expect, test } from 'bun:test';
 import { parsePlanV1Decisions, seedProposal } from '@agile-agents/daemon';
 import { ruleReportRows as reportRowsFromDaemon } from '@agile-agents/daemon';
+import type { RuleEvalReport } from '@agile-agents/daemon';
 import { type Rule, type RuleInput, ulid, validateRule } from '@agile-agents/shared';
 import {
   RULE_HEADERS,
   RULE_REPORT_HEADERS,
+  RULE_TEST_HEADERS,
   parseExample,
   parseExamples,
   ruleReportRows,
   ruleRows,
+  ruleTestRows,
   showFields,
 } from './rules';
 
@@ -251,6 +254,91 @@ describe('rules report table (T142, §5.7)', () => {
         '1',
         '2026-09-21T10:00:00.000Z',
         '-',
+      ],
+    ]);
+  });
+});
+
+describe('rules test table (T153, §5.6)', () => {
+  test('carries §5.6’s columns', () => {
+    expect(RULE_TEST_HEADERS).toEqual([
+      'rule',
+      'example',
+      'expected',
+      'probability',
+      'confidence',
+      'band',
+      'verdict',
+    ]);
+  });
+
+  test('one row per example: the numbers, the band, and the verdict', () => {
+    const report: RuleEvalReport = {
+      bands: { deny_at: 0.8, allow_below: 0.4, confidence_floor: 0.5 },
+      generated_at: '2026-09-22T00:00:00.000Z',
+      rules: [
+        {
+          id: 'R-01ABCDEFGHJKMNPQRSTVWXYZ00',
+          name: 'no_push_protected',
+          question: 'Does this action violate: never push to a protected branch?',
+          critical: true,
+          examples: [
+            {
+              action: 'git push origin main',
+              expected_violates: true,
+              expected_band: 'deny',
+              probability: 0.93,
+              confidence: 0.81,
+              band: 'deny',
+              agree: true,
+            },
+            {
+              action: 'git push origin feature',
+              expected_violates: false,
+              expected_band: 'allow',
+              probability: 0.62,
+              confidence: 0.4,
+              band: 'route',
+              agree: false,
+            },
+            {
+              action: 'git push --force',
+              expected_violates: true,
+              expected_band: 'deny',
+              agree: false,
+              error: 'classifier unavailable (timeout): it timed out',
+            },
+          ],
+          agreed: 1,
+          disagreed: 1,
+          errors: 1,
+        },
+      ],
+      total: 3,
+      agreed: 1,
+      disagreed: 1,
+      errors: 1,
+      agreement_rate: 0.5,
+    };
+    expect(ruleTestRows(report)).toEqual([
+      ['no_push_protected', 'git push origin main', 'deny', '0.930', '0.810', 'deny', 'agree'],
+      [
+        'no_push_protected',
+        'git push origin feature',
+        'allow',
+        '0.620',
+        '0.400',
+        'route',
+        'DISAGREE',
+      ],
+      [
+        'no_push_protected',
+        'git push --force',
+        'deny',
+        '-',
+        '-',
+        '-',
+        'error: classifier unavailable (timeout): it timed out',
       ],
     ]);
   });

@@ -12,15 +12,18 @@
  */
 
 import {
+  type ClassifierBands,
   RULE_STATUSES,
   type RuleStatus,
   RuleWriteError,
   validateRulePatch,
   validateRuleProposal,
 } from '@agile-agents/shared';
+import type { Classifier } from '../classifier';
 import { RpcParamError } from '../gates/rpc';
 import type { RpcMethodHandler } from '../rpc';
 import { AlreadyExistsError } from '../store/store';
+import { runRuleEvals } from './evals';
 import { RULE_REPORT_DEFAULT_DAYS, buildRuleReport } from './report';
 import { RuleAlreadyDecidedError, type RulesService, UnknownRuleScopeError } from './service';
 
@@ -113,7 +116,22 @@ async function asParamErrors<T>(run: () => Promise<T> | T): Promise<T> {
   }
 }
 
-export function buildRuleRpcMethods(service: RulesService): Record<string, RpcMethodHandler> {
+/**
+ * What `rule.test` (§5.6) needs beyond the service: the configured
+ * classifier and the bands to read its answers with. Optional, because a
+ * home with no classifier still gets every other `rule.*` method — the
+ * eval verb is the only one that needs to make a call, and it says so
+ * rather than the whole table disappearing.
+ */
+export interface RuleRpcEvalDeps {
+  classifier: Classifier;
+  bands: ClassifierBands;
+}
+
+export function buildRuleRpcMethods(
+  service: RulesService,
+  evals?: RuleRpcEvalDeps,
+): Record<string, RpcMethodHandler> {
   return {
     /**
      * A create is always a *proposal*, whoever calls it (§5.1): the human's
@@ -163,6 +181,29 @@ export function buildRuleRpcMethods(service: RulesService): Record<string, RpcMe
       const p = params === undefined ? {} : requireObject(params);
       const days = optionalPositiveInt(p.days, 'days') ?? RULE_REPORT_DEFAULT_DAYS;
       return buildRuleReport(service, { days });
+    },
+
+    /**
+     * §5.6's evals: every accepted classifier rule's examples through the
+     * configured classifier, or the one rule named. Read-only — an eval is
+     * not a firing, so nothing here touches `stats`.
+     */
+    'rule.test': async (params) => {
+      const p = params === undefined ? {} : requireObject(params);
+      const id = optionalString(p.id, 'id');
+      if (evals === undefined) {
+        throw new RpcParamError(
+          'rule.test needs a classifier: set classifier.provider and a key in config.yaml (§6.2)',
+        );
+      }
+      return asParamErrors(() =>
+        runRuleEvals({
+          rules: service,
+          classifier: evals.classifier,
+          bands: evals.bands,
+          ...(id !== undefined ? { ruleId: id } : {}),
+        }),
+      );
     },
 
     'rule.accept': async (params) => {

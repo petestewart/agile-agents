@@ -15,6 +15,7 @@
  */
 
 import { DEFAULT_PROTECTED_BRANCHES, type Rule, type RulePattern } from '@agile-agents/shared';
+import type { RuleStatsOutcome } from '../rules/service';
 import { isPathInside, parseCommandIntoAtoms, parseGitInvocation } from './command';
 import { type PushDetectorContext, detectProtectedBranchWrite, detectPush } from './push-detector';
 
@@ -191,7 +192,7 @@ export function protectedBranchesFor(
 /** The read/write sides of `RulesService` this pass uses (§5.3 and §5.7). */
 export interface PatternRuleRules {
   inScope(streamId: string): Rule[];
-  recordFired?(id: string, outcome: 'fired' | 'violated' | 'routed'): Promise<unknown>;
+  recordFired?(id: string, outcome: RuleStatsOutcome): Promise<unknown>;
 }
 
 /**
