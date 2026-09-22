@@ -178,7 +178,6 @@ describe('the classifier block (T150, cockpit design §6.2)', () => {
       expect(config.classifier.bands).toEqual({
         deny_at: 0.8,
         allow_below: 0.4,
-        confidence_floor: 0.5,
       });
       // "Not configured" is the absence of a key, not the absence of a block.
       expect(config.classifier.api_key).toBeUndefined();

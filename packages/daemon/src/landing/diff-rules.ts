@@ -46,9 +46,9 @@ import type {
   RuleId,
   Stream,
 } from '@agile-agents/shared';
-import { MESSAGE_BODY_MAX_CHARS, classifierQuestion } from '@agile-agents/shared';
+import { MESSAGE_BODY_MAX_CHARS } from '@agile-agents/shared';
 import type { Answer, Classifier, Noul } from '../classifier';
-import { bandFor, classifierEnabled, scrub } from '../classifier';
+import { bandFor, classifierEnabled, noulFor, scrub } from '../classifier';
 import type { GateRequestContext } from '../gates/service';
 import type { RuleStatsOutcome } from '../rules/service';
 import type { DiffRuleContext, DiffRuleVerdict, DiffRules } from './service';
@@ -216,9 +216,7 @@ export class ClassifierDiffRules implements DiffRules {
         verdict = {
           decision: 'deny',
           rule: nameOf(rule),
-          reason: cap(
-            `${nameOf(rule)}: ${rule.text} (probability ${answer.probability}, confidence ${answer.confidence})`,
-          ),
+          reason: cap(`${nameOf(rule)}: ${rule.text} (probability ${answer.probability})`),
         };
       }
       if (band === 'route' && routed === undefined) routed = { rule, answer };
@@ -231,10 +229,8 @@ export class ClassifierDiffRules implements DiffRules {
   /**
    * One call for the whole diff, or — over the budget — one per file with
    * the **max** taken per rule ("one bad file makes the whole diff bad").
-   * The whole answer with the highest probability is kept, not a max of
-   * each axis independently: a probability and the confidence in it are one
-   * reading, and pairing the highest probability with some other file's
-   * confidence would invent an answer nobody gave.
+   * The answer with the highest raw Noul value is kept (D14: that value is
+   * the whole reading).
    */
   private async ask(
     ctx: DiffRuleContext,
@@ -244,10 +240,7 @@ export class ClassifierDiffRules implements DiffRules {
     if (!this.enabled(ctx.stream)) {
       throw new Error('classifier tier is off for this stream');
     }
-    const questions: Noul[] = rules.map((rule) => ({
-      id: rule.id,
-      question: classifierQuestion(rule),
-    }));
+    const questions: Noul[] = rules.map(noulFor);
     const header = `Stream ${ctx.stream.id} (${ctx.stream.title}) landing ${ctx.branch} into ${ctx.target}.`;
     const budget = this.options.config.state_max_chars;
     const whole = scrub(`${header}\n\n${diff}`);
@@ -376,9 +369,7 @@ export class ClassifierDiffRules implements DiffRules {
     rule: Rule,
     answer: Answer,
   ): Promise<DiffRuleVerdict> {
-    const summary = cap(
-      `${nameOf(rule)}: ${rule.text} (probability ${answer.probability}, confidence ${answer.confidence})`,
-    );
+    const summary = cap(`${nameOf(rule)}: ${rule.text} (probability ${answer.probability})`);
     const gates = this.options.gates;
     if (gates === undefined) {
       // Nowhere to put the card: refuse rather than merge unreviewed.

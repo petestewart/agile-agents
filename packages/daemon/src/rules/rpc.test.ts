@@ -12,7 +12,6 @@ import { join } from 'node:path';
 import type { Rule } from '@agile-agents/shared';
 import {
   DEFAULT_CLASSIFIER_ALLOW_BELOW,
-  DEFAULT_CLASSIFIER_CONFIDENCE_FLOOR,
   DEFAULT_CLASSIFIER_DENY_AT,
   ulid,
 } from '@agile-agents/shared';
@@ -80,13 +79,11 @@ test('rule.test evaluates the accepted classifier rules through the fake', async
       questions.map((q) => ({
         id: q.id,
         probability: state.startsWith('bun add') ? 0.95 : 0.05,
-        confidence: 0.9,
       })),
     ),
     bands: {
       deny_at: DEFAULT_CLASSIFIER_DENY_AT,
       allow_below: DEFAULT_CLASSIFIER_ALLOW_BELOW,
-      confidence_floor: DEFAULT_CLASSIFIER_CONFIDENCE_FLOOR,
     },
   });
   const proposed = (await methodsWithClassifier['rule.create']?.({

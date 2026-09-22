@@ -5,8 +5,11 @@
  * probability >= deny_at            → DENY, with the rule named in the reason
  * probability <  allow_below        → ALLOW
  * otherwise                         → ROUTE to the inbox
- * confidence  <  confidence_floor   → ROUTE, whatever the probability
  * ```
+ *
+ * **D14**: `probability` is the raw Noul value, which is the answer and its
+ * certainty in one. There is no second confidence axis; the route band is
+ * the low-confidence case.
  *
  * The thresholds are read from `classifier.bands` in `<home>/config.yaml`
  * (T150), never hard-coded here: "the numbers live in config precisely so
@@ -22,16 +25,11 @@ import type { Answer } from './types';
 /** What a banded answer says to do. */
 export type ClassifierBand = 'deny' | 'allow' | 'route';
 
-/**
- * The band for one answer. The confidence floor is checked first because it
- * overrides the probability entirely: "a probability of 0.9 with confidence
- * 0.2 is not a 0.9; it is a shrug".
- */
+/** The band for one answer, on its raw Noul value only. */
 export function bandFor(
-  answer: Pick<Answer, 'probability' | 'confidence'>,
+  answer: Pick<Answer, 'probability'>,
   bands: ClassifierBands,
 ): ClassifierBand {
-  if (answer.confidence < bands.confidence_floor) return 'route';
   if (answer.probability >= bands.deny_at) return 'deny';
   if (answer.probability < bands.allow_below) return 'allow';
   return 'route';

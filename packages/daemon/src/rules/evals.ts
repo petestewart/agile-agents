@@ -29,7 +29,7 @@ import {
   RuleWriteError,
   classifierQuestion,
 } from '@agile-agents/shared';
-import { type Classifier, ClassifierUnavailableError, bandFor } from '../classifier';
+import { type Classifier, ClassifierUnavailableError, bandFor, noulFor } from '../classifier';
 import type { ClassifierBand } from '../classifier';
 
 /** One example, asked and answered. */
@@ -40,8 +40,8 @@ export interface RuleEvalExample {
   /** The band the label asks for — `deny` for a violation, `allow` for a clean action. */
   expected_band: Exclude<ClassifierBand, 'route'>;
   /** Absent when the call failed. */
+  /** The raw Noul value (D14). */
   probability?: number;
-  confidence?: number;
   /** `bandFor(answer, bands)`; absent when the call failed. */
   band?: ClassifierBand;
   /** True when `band === expected_band`. A `route` is a disagreement: the example has a verdict. */
@@ -210,7 +210,7 @@ async function evalExample(
   };
   let answers: Awaited<ReturnType<Classifier['ask']>>;
   try {
-    answers = await options.classifier.ask(action, [{ id: rule.id, question }]);
+    answers = await options.classifier.ask(action, [noulFor(rule)]);
   } catch (error) {
     // §6.4's fail policy is about *gating an action*; an eval has no action
     // to gate, so an unavailable classifier is simply an example with no
@@ -235,7 +235,6 @@ async function evalExample(
   return {
     ...base,
     probability: answer.probability,
-    confidence: answer.confidence,
     band,
     agree: band === expected_band,
   };

@@ -409,7 +409,7 @@ describe('T151 classifier tier — a routed classifier answer, through the same 
       created_at: new Date().toISOString(),
     });
     const classifier = new FakeClassifier((_state, questions) =>
-      questions.map((q) => ({ id: q.id, probability: 0.6, confidence: 0.9 })),
+      questions.map((q) => ({ id: q.id, probability: 0.6 })),
     );
     const classifierHooks = new HookService(store, bus, {
       gates,
@@ -439,7 +439,7 @@ describe('T151 classifier tier — a routed classifier answer, through the same 
 
     // And the same tier's deny band reaches the model verbatim.
     classifier.setScript((_state, questions) =>
-      questions.map((q) => ({ id: q.id, probability: 0.95, confidence: 0.95 })),
+      questions.map((q) => ({ id: q.id, probability: 0.95 })),
     );
     const denied = await classifierHooks.preToolUse(editPayload(session, worktree, 'src/other.ts'));
     expect(denied.hookSpecificOutput.permissionDecision).toBe('deny');

@@ -175,6 +175,7 @@ export class RulesService {
       id: `R-${ulid()}`,
       text: input.text,
       ...(input.question !== undefined ? { question: input.question } : {}),
+      ...(input.criteria !== undefined ? { criteria: input.criteria } : {}),
       scope,
       status: 'proposed',
       enforcement: input.enforcement ?? 'guidance',

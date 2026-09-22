@@ -22,13 +22,14 @@ export const DEFAULT_DAEMON_PORT = 4600;
 
 /**
  * §6.3's bands (**D6**): a classifier answer either denies, allows, or
- * routes to the human inbox, and a low-confidence answer routes whatever
- * its probability. The numbers live in config precisely so moving them is
- * not a code change (§6.3, "these are starting points").
+ * routes to the human inbox. **D14**: a Noul's single value is the answer
+ * and its certainty in one, so the bands read that raw value and nothing
+ * else — the route band *is* the low-confidence case. The numbers live in
+ * config precisely so moving them is not a code change (§6.3, "these are
+ * starting points").
  */
 export const DEFAULT_CLASSIFIER_DENY_AT = 0.8;
 export const DEFAULT_CLASSIFIER_ALLOW_BELOW = 0.4;
-export const DEFAULT_CLASSIFIER_CONFIDENCE_FLOOR = 0.5;
 /** §6.2's transport: `https://api.typesafe.ai`, 25 s timeout. */
 export const DEFAULT_CLASSIFIER_BASE_URL = 'https://api.typesafe.ai';
 export const DEFAULT_CLASSIFIER_TIMEOUT_MS = 25_000;
@@ -41,18 +42,32 @@ export const DEFAULT_CLASSIFIER_TIMEOUT_MS = 25_000;
  */
 export const DEFAULT_CLASSIFIER_STATE_MAX_CHARS = 60_000;
 
-/** A band threshold — a probability or a confidence, both in `[0, 1]`. */
+/** A band threshold on the raw Noul value, in `[0, 1]`. */
 const BandNumberSchema = z.number().min(0).max(1);
 
+/**
+ * The key D14 removed (T156). An old `config.yaml` that still carries it is
+ * refused with a message naming the decision rather than a bare "unrecognized
+ * key", and it is never silently dropped: the human deletes the line.
+ */
+const REMOVED_BAND_KEY = 'confidence_floor';
+export const REMOVED_BAND_KEY_MESSAGE = `classifier.bands.${REMOVED_BAND_KEY} was removed by D14 (T156): a Noul has no separate confidence, the bands read the raw value only — delete this key from config.yaml`;
+
 export const ClassifierBandsSchema = z
-  .object({
-    /** `probability >= deny_at` → DENY, with the rule named in the reason. */
-    deny_at: BandNumberSchema.default(DEFAULT_CLASSIFIER_DENY_AT),
-    /** `probability < allow_below` → ALLOW. Everything between the two routes. */
-    allow_below: BandNumberSchema.default(DEFAULT_CLASSIFIER_ALLOW_BELOW),
-    /** `confidence < confidence_floor` → ROUTE, whatever the probability. */
-    confidence_floor: BandNumberSchema.default(DEFAULT_CLASSIFIER_CONFIDENCE_FLOOR),
-  })
+  .object(
+    {
+      /** `probability >= deny_at` → DENY, with the rule named in the reason. */
+      deny_at: BandNumberSchema.default(DEFAULT_CLASSIFIER_DENY_AT),
+      /** `probability < allow_below` → ALLOW. Everything between the two routes. */
+      allow_below: BandNumberSchema.default(DEFAULT_CLASSIFIER_ALLOW_BELOW),
+    },
+    {
+      errorMap: (issue, ctx) =>
+        issue.code === 'unrecognized_keys' && issue.keys.includes(REMOVED_BAND_KEY)
+          ? { message: REMOVED_BAND_KEY_MESSAGE }
+          : { message: ctx.defaultError },
+    },
+  )
   .strict();
 export type ClassifierBands = z.infer<typeof ClassifierBandsSchema>;
 
