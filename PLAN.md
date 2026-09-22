@@ -329,12 +329,12 @@ Build order: Phase 0 → 1 → 2 → 3 → 4 → 5 → 6. Within a phase, ticket
 
 ### Ticket: T141 Lessons at stream close
 - **Priority:** P0
-- **Status:** In Progress
+- **Status:** Done
 - **Owner:** opus:worker-T141
 - **Scope:** On land or close, the daemon runs a short one-shot session (worker vendor, `briefs/lessons.md`) over the stream's findings, questions, and hook denials, and asks for at most three proposed rules, each with two example actions. They are written as `proposed` with provenance and appear in the inbox as `rule_accept` items. No proposal is made when there were no findings, no denials, and no questions.
 - **Acceptance Criteria:** With the fake transport scripted to propose two rules, both appear in the inbox with provenance pointing at the stream; accepting one moves it to `accepted` and the next brief in scope contains it.
 - **Validation Steps:** integration test; e2e for the inbox card.
-- **Notes:** This is the retro, per stream, with the human as the only decider.
+- **Notes:** This is the retro, per stream, with the human as the only decider. Branch `T141-lessons-at-stream-close`. `daemon/src/lessons/` + `briefs/lessons.md`; `SESSION_ROLES` gains `lessons` (read-only policy, daemon-started only); `propose_rule` takes `examples`/`enforcement`/`critical`; cap of three enforced in `VerbService` (fourth refused with a reason); `onStreamEnd` hook on land and close, errors become a thread line; smooth stream → `no lessons: nothing to learn from`; the retro starts even with a worker still live. Review (sonnet) PASS, 1 nit (`examples` schema allows up to 8; the brief says two). 322 pass in scope; `bun test` 1463 pass / 2 skip / 0 fail; integration green. merge: 03e84ab (committed with the board message and an unresolved `daemon.ts` hunk; repaired in 934437b — see Discovered Issues).
 
 ### Ticket: T142 Rules view and pruning
 - **Priority:** P1
@@ -357,11 +357,11 @@ Build order: Phase 0 → 1 → 2 → 3 → 4 → 5 → 6. Within a phase, ticket
 ### Ticket: T144 Phase 4 QA and Pete's look
 - **Priority:** P0
 - **Status:** In Progress
-- **Owner:** sonnet:qa-T144
+- **Owner:** sonnet:qa-T144 → Pete
 - **Scope:** Fake-transport QA of the route band (T138), rules CLI and store (T140), lessons (T141), the report (T142) and the built-in pattern rules and push detector (T143) on a real daemon; Pete runs one live stream on ledger-lite that hits the manifest gate and answers it from the inbox, then accepts one proposed rule and sees it in the next brief.
 - **Acceptance Criteria:** QA ACCEPT; live: the gate approved from the inbox lets the edit through, the lessons session proposes a rule, `agile rules accept` puts it in the next brief.
 - **Validation Steps:** —
-- **Notes:** Added by the manager for symmetry with T124/T135 (D10: QA at every phase boundary).
+- **Notes:** Added by the manager for symmetry with T124/T135 (D10: QA at every phase boundary). QA (sonnet) ACCEPT, 1 process defect (T141 shown In Progress on the board after the merge mishap; fixed). Built-ins and rules CLI driven live on a detached daemon (idempotent across restarts, retired stays retired, seed idempotent, report flags); route band, push detector, lessons and the Phase 3 loop verified through the shipped suites and `test:integration` (29/29); scope filtering in a live brief not re-derived (coverage gap). Waiting on Pete's live run.
 
 **Phase 4 verification (2026-09-22, tip b2a4659):** build, typecheck, lint clean; `bun test` 1614 pass / 2 skip / 0 fail; `test:integration` 7 suites, 0 fail. Daemon source 19,457 lines (Phase 3: 16,556; rules, lessons, route band, push detector and rule checkers are new; the hardcoded push/`-C` verdicts are gone). Phase 4 stops here for QA (T144) and Pete's look; Phase 5 does not start until he says go.
 
