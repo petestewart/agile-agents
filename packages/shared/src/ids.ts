@@ -134,10 +134,6 @@ export type HaltId = z.infer<typeof HaltIdSchema>;
 export const SprintIdSchema = z.string().regex(/^S-\d+$/, 'must look like S-07');
 export type SprintId = z.infer<typeof SprintIdSchema>;
 
-/** RULE-012 — coding-standard rule id (§4 layout, §12 "Review protocol"). */
-export const RuleIdSchema = z.string().regex(/^RULE-\d{3,}$/, 'must look like RULE-012');
-export type RuleId = z.infer<typeof RuleIdSchema>;
-
 /**
  * Bus agent identity: `em | architect | eng-N | reviewer-N | reviewer-sec-N |
  * qa-N | human | daemon` (§5 "Message" — the `from` field enumeration).

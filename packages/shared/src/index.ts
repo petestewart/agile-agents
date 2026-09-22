@@ -11,6 +11,7 @@ export const PACKAGE_NAME = '@agile-agents/shared';
 export * from './ids';
 export * from './effort';
 export * from './stream';
+export * from './rule';
 export * from './agents';
 export * from './ticket';
 export * from './policy';
