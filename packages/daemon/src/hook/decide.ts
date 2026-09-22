@@ -73,7 +73,13 @@ import {
   type SessionRole,
   classifierQuestion,
 } from '@agile-agents/shared';
-import type { Answer, Classifier, Noul } from '../classifier';
+import {
+  type Answer,
+  type Classifier,
+  type ClassifierBand,
+  type Noul,
+  bandFor as classifierBand,
+} from '../classifier';
 import { decidePermission } from '../permissions';
 import type {
   AcpPermissionOption,
@@ -398,28 +404,13 @@ export function classifierRulesOf(rules: readonly Rule[] | undefined): Rule[] {
   );
 }
 
-/** §6.3's three bands, for one answer. */
-export type ClassifierBand = 'deny' | 'allow' | 'route';
-
 /**
- * §6.3 exactly:
- *
- * ```
- * confidence  <  confidence_floor → ROUTE, whatever the probability
- * probability ≥  deny_at          → DENY
- * probability <  allow_below      → ALLOW
- * otherwise                       → ROUTE
- * ```
- *
- * The confidence floor is checked first because it overrides the other two
- * ("a probability of 0.9 with confidence 0.2 is not a 0.9; it is a shrug").
+ * §6.3's bands live in `classifier/bands.ts` and are re-exported here for
+ * the hook's callers. T151 and T152 each grew a copy on their own branch;
+ * one implementation is what §6.3 requires, so the hook uses the
+ * classifier's — "the two can never disagree about what 0.8 means".
  */
-export function classifierBand(answer: Answer, bands: ClassifierBands): ClassifierBand {
-  if (answer.confidence < bands.confidence_floor) return 'route';
-  if (answer.probability >= bands.deny_at) return 'deny';
-  if (answer.probability < bands.allow_below) return 'allow';
-  return 'route';
-}
+export { bandFor as classifierBand, type ClassifierBand } from '../classifier';
 
 /** How much of a diff or a file body goes into the state — enough to judge, not the whole file. */
 const CLASSIFIER_STATE_MAX_CHARS = 4000;
