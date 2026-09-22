@@ -137,6 +137,20 @@ export const RuleExampleSchema = z
   .strict();
 export type RuleExample = z.infer<typeof RuleExampleSchema>;
 
+/**
+ * T156 (**D14**): what "yes" and "no" mean for a rule's classifier question,
+ * for a line too subtle for the question alone. Passed through to the Noul
+ * request as the TypeSafe docs describe; `true` describes a state where the
+ * rule is broken (the question's "yes"), `false` one where it holds.
+ */
+export const RuleCriteriaSchema = z
+  .object({
+    true: z.string().min(1).max(RULE_TEXT_MAX_CHARS),
+    false: z.string().min(1).max(RULE_TEXT_MAX_CHARS),
+  })
+  .strict();
+export type RuleCriteria = z.infer<typeof RuleCriteriaSchema>;
+
 /** §5.1: "six months later, 'why does this rule exist' must be answerable". */
 export const RuleProvenanceSchema = z
   .object({
@@ -175,6 +189,8 @@ export const RuleSchema = z
     text: z.string().min(1).max(RULE_TEXT_MAX_CHARS),
     /** The classifier question; `classifierQuestion` supplies the default. */
     question: z.string().min(1).max(RULE_TEXT_MAX_CHARS).optional(),
+    /** T156: optional true/false descriptions sent with the question (D14). */
+    criteria: RuleCriteriaSchema.optional(),
     scope: RuleScopeSchema,
     status: RuleStatusSchema,
     enforcement: RuleEnforcementSchema,
@@ -203,6 +219,7 @@ export const RuleProposalSchema = z
   .object({
     text: z.string().min(1).max(RULE_TEXT_MAX_CHARS),
     question: z.string().min(1).max(RULE_TEXT_MAX_CHARS).optional(),
+    criteria: RuleCriteriaSchema.optional(),
     scope: RuleScopeSchema.optional(),
     enforcement: RuleEnforcementSchema.optional(),
     stage: RuleStageSchema.optional(),

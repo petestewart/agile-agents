@@ -11,10 +11,10 @@ import rawRecordedRequest from './__fixtures__/jev-request.json' with { type: 'j
 import recordedResponse from './__fixtures__/jev-response.json' with { type: 'json' };
 import { JevClassifier } from './jev';
 import {
+  JEV_CRITERIA_FIELD,
   JEV_MODEL,
   buildJevRequest,
   jevEndpoint,
-  noulConfidence,
   parseJevResponse,
 } from './jev-wire';
 import type { JevRequest } from './jev-wire';
@@ -51,8 +51,8 @@ describe('the recorded wire shape', () => {
 
   test('the response parser reads the recorded response', () => {
     expect(parseJevResponse(recordedResponse, QUESTIONS)).toEqual([
-      { id: 'RULE-NO-NEW-DEPS', probability: 0.95, confidence: noulConfidence(0.95) },
-      { id: 'RULE-NO-MIGRATIONS', probability: 0.12, confidence: noulConfidence(0.12) },
+      { id: 'RULE-NO-NEW-DEPS', probability: 0.95 },
+      { id: 'RULE-NO-MIGRATIONS', probability: 0.12 },
     ]);
   });
 
@@ -61,16 +61,25 @@ describe('the recorded wire shape', () => {
     expect(jevEndpoint('https://api.typesafe.ai/')).toBe('https://api.typesafe.ai/v1/systemone');
   });
 
-  test('a Noul confidence is derived from the probability, and a reported one wins', () => {
-    // A Noul answer carries no `confidence` in the documented shape; §6.3's
-    // bands need one, so it is derived (see `jev-wire.ts`).
-    expect(noulConfidence(0.5)).toBe(0);
-    expect(noulConfidence(1)).toBe(1);
-    expect(noulConfidence(0)).toBe(1);
-    const withConfidence = { answers: { a: { type: 'noul', noul: 0.9, confidence: 0.2 } } };
-    expect(parseJevResponse(withConfidence, [{ id: 'a', question: 'q?' }])).toEqual([
-      { id: 'a', probability: 0.9, confidence: 0.2 },
+  test('an answer is the raw Noul value only; a stray confidence field is ignored (D14)', () => {
+    const body = { answers: { a: { type: 'noul', noul: 0.9, confidence: 0.2 } } };
+    expect(parseJevResponse(body, [{ id: 'a', question: 'q?' }])).toEqual([
+      { id: 'a', probability: 0.9 },
     ]);
+  });
+
+  test("a rule's criteria ride on its Noul question (T156; field name unverified live)", () => {
+    const criteria = { true: 'the rule is broken', false: 'the rule holds' };
+    const request = buildJevRequest('state', [
+      { id: 'a', question: 'Is it broken?', criteria },
+      { id: 'b', question: 'Plain?' },
+    ]);
+    expect(request.questions.a).toEqual({
+      type: 'noul',
+      instructions: 'Is it broken?',
+      [JEV_CRITERIA_FIELD]: criteria,
+    });
+    expect(request.questions.b).toEqual({ type: 'noul', instructions: 'Plain?' });
   });
 
   test('a duplicate question id is refused rather than silently collapsed', () => {

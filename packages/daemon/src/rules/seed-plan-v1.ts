@@ -22,7 +22,7 @@
  */
 
 import { readFileSync } from 'node:fs';
-import { RULE_TEXT_MAX_CHARS } from '@agile-agents/shared';
+import { RULE_TEXT_MAX_CHARS, type RuleCriteria } from '@agile-agents/shared';
 import type { RulesService } from './service';
 
 /** The §9 heading, matched on its text rather than its number. */
@@ -92,20 +92,72 @@ export function parsePlanV1Decisions(markdown: string): string[] {
 export const SEED_PROVENANCE = 'seed:PLAN-v1';
 
 /**
+ * T156 (**D14**): classifier wording for seeded decisions whose sentence,
+ * lifted out of the log, is too thin to ask as-is. The Phase 5 agreement
+ * check (PLAN T154 note) put both examples of each of these near 0.5 under
+ * the default "Does this action violate: <text>?". Each is rewritten as one
+ * yes/no question where **yes means the rule is broken**, with `criteria`
+ * because both lines are subtle. Matched on the seeded text, so a fresh
+ * `agile rules seed` proposes them already worded; the rules already in a
+ * home (…GR77MM, …8CMD5B) take the same wording through `agile rules edit`.
+ */
+export interface SeedClassifierWording {
+  /** Matches the seeded decision sentence. */
+  match: RegExp;
+  question: string;
+  criteria: RuleCriteria;
+}
+
+export const SEED_CLASSIFIER_WORDING: readonly SeedClassifierWording[] = [
+  {
+    // PLAN-v1 §9, 2026-09-09 (T025): "browser writes are always actor `human` …"
+    match: /^browser writes are always actor `human`/,
+    question:
+      'Does this change let an HTTP request from the browser decide which actor a write is recorded as, instead of always recording it as `human`?',
+    criteria: {
+      true: 'Code on a browser/HTTP write path takes the actor (or principal, author, by) from the request body, query or headers, even as an optional override that falls back to `human`.',
+      false:
+        'The browser write path always records the actor as the constant `human` and ignores or rejects any actor field in the request, or the change does not touch a browser write path at all.',
+    },
+  },
+  {
+    // PLAN-v1 §9, 2026-09-08 (T002): "all shared schemas are `.strict()` by default …"
+    match: /^all shared schemas are `\.strict\(\)` by default/,
+    question:
+      'Does this change define or modify a zod object schema in packages/shared without `.strict()`, so that unknown keys would be silently dropped?',
+    criteria: {
+      true: 'A `z.object({...})` in packages/shared is added or changed and is not made `.strict()`.',
+      false:
+        'Every `z.object` the change touches in packages/shared is `.strict()`. A deliberately free-form field such as `z.record(...)` inside a strict object, or a schema outside packages/shared, does not break the rule.',
+    },
+  },
+];
+
+/** The rewritten wording for a seeded sentence, when it has one. */
+export function seedClassifierWording(text: string): SeedClassifierWording | undefined {
+  return SEED_CLASSIFIER_WORDING.find((wording) => wording.match.test(text));
+}
+
+/**
  * The proposal `agile rules seed` sends for one decision sentence.
  * Guidance and global on purpose: these are the project's own decisions,
  * written as prose, with no pattern to check and no repo to pin them to —
  * the human narrows or promotes one when accepting it (§3.1's
- * edit-then-accept).
+ * edit-then-accept). A sentence with rewritten wording (T156) carries its
+ * `question` and `criteria`, ready for a promotion to `classifier`.
  */
 export function seedProposal(text: string): {
   text: string;
+  question?: string;
+  criteria?: RuleCriteria;
   scope: { kind: 'global' };
   enforcement: 'guidance';
   provenance: { by: string };
 } {
+  const wording = seedClassifierWording(text);
   return {
     text,
+    ...(wording !== undefined ? { question: wording.question, criteria: wording.criteria } : {}),
     scope: { kind: 'global' },
     enforcement: 'guidance',
     provenance: { by: SEED_PROVENANCE },

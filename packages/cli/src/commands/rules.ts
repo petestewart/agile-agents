@@ -21,6 +21,7 @@ import {
   RULE_ENFORCEMENTS,
   RULE_STATUSES,
   type Rule,
+  type RuleCriteria,
   type RuleEnforcement,
   type RuleExample,
   type RuleStage,
@@ -69,6 +70,9 @@ export function showFields(rule: Rule): Array<[string, string]> {
     ['critical', String(rule.critical)],
   ];
   if (rule.enforcement === 'classifier') fields.push(['question', classifierQuestion(rule)]);
+  if (rule.criteria !== undefined) {
+    fields.push(['criteria true', rule.criteria.true], ['criteria false', rule.criteria.false]);
+  }
   if (rule.pattern !== undefined) {
     fields.push(['pattern', `${rule.pattern.kind} ${JSON.stringify(rule.pattern.args)}`]);
   }
@@ -192,6 +196,20 @@ export async function runRulesShow(
 }
 
 /**
+ * T156: `--criteria-true "…" --criteria-false "…"` — the rule's criteria
+ * (D14), both or neither: a Noul criteria pair describes both answers.
+ */
+export function parseCriteria(args: ParsedArgs): RuleCriteria | undefined {
+  const yes = optionalString(args.options, 'criteria-true');
+  const no = optionalString(args.options, 'criteria-false');
+  if (yes === undefined && no === undefined) return undefined;
+  if (yes === undefined || no === undefined) {
+    throw new Error('--criteria-true and --criteria-false must be given together');
+  }
+  return { true: yes, false: no };
+}
+
+/**
  * `agile rules add` writes a **proposal**, like every other create (§5.1):
  * the human's authority lives in `agile rules accept`, which is a second,
  * explicit act. `--stage` mirrors §5.1's `stage` default of `action`.
@@ -207,6 +225,7 @@ export async function runRulesAdd(
   const enforcement = optionalEnforcement(args);
   const stage = optionalString(args.options, 'stage') as RuleStage | undefined;
   const question = optionalString(args.options, 'question');
+  const criteria = parseCriteria(args);
   const examples = parseExamples(argv);
   const rule = await callRpc<Rule>(socketPath, 'rule.create', {
     text,
@@ -214,6 +233,7 @@ export async function runRulesAdd(
     ...(enforcement !== undefined ? { enforcement } : {}),
     ...(stage !== undefined ? { stage } : {}),
     ...(question !== undefined ? { question } : {}),
+    ...(criteria !== undefined ? { criteria } : {}),
     ...(examples.length > 0 ? { examples } : {}),
     ...(hasFlag(args.options, 'critical') ? { critical: true } : {}),
   });
@@ -223,8 +243,8 @@ export async function runRulesAdd(
 }
 
 /**
- * `agile rules edit <id> [--text …] [--question …] [--enforcement …]
- * [--stage …] [--example "action::bool" …]` — §3.1's edit-then-accept over
+ * `agile rules edit <id> [--text …] [--question …] [--criteria-true …
+ * --criteria-false …] [--enforcement …] [--stage …] [--example "action::bool" …]` — §3.1's edit-then-accept over
  * `rule.update` (T155). Only the flags given are sent; `--example`
  * replaces the whole example list, as `rule.update` does.
  */
@@ -237,19 +257,21 @@ export async function runRulesEdit(
   const id = requirePositional(args, 0, 'rule-id');
   const text = optionalString(args.options, 'text');
   const question = optionalString(args.options, 'question');
+  const criteria = parseCriteria(args);
   const enforcement = optionalEnforcement(args);
   const stage = optionalString(args.options, 'stage') as RuleStage | undefined;
   const examples = parseExamples(argv);
   const patch = {
     ...(text !== undefined ? { text } : {}),
     ...(question !== undefined ? { question } : {}),
+    ...(criteria !== undefined ? { criteria } : {}),
     ...(enforcement !== undefined ? { enforcement } : {}),
     ...(stage !== undefined ? { stage } : {}),
     ...(examples.length > 0 ? { examples } : {}),
   };
   if (Object.keys(patch).length === 0) {
     throw new Error(
-      'agile rules edit: nothing to change (give --text, --question, --enforcement, --stage or --example)',
+      'agile rules edit: nothing to change (give --text, --question, --criteria-true/--criteria-false, --enforcement, --stage or --example)',
     );
   }
   const rule = await callRpc<Rule>(socketPath, 'rule.update', { id, ...patch });
@@ -395,16 +417,8 @@ export async function runRulesReport(
   return 0;
 }
 
-/** `rule example expected probability confidence band verdict` — §5.6's eval columns. */
-export const RULE_TEST_HEADERS = [
-  'rule',
-  'example',
-  'expected',
-  'probability',
-  'confidence',
-  'band',
-  'verdict',
-];
+/** `rule example expected probability band verdict` — §5.6's eval columns (D14: no confidence). */
+export const RULE_TEST_HEADERS = ['rule', 'example', 'expected', 'probability', 'band', 'verdict'];
 
 /** Slack over the classifier's own budget: the RPC round trip and the store. */
 export const RULE_TEST_DEADLINE_SLACK_MS = 5_000;
@@ -441,7 +455,6 @@ export function ruleTestRows(report: RuleEvalReport): string[][] {
         oneLine(example.action),
         example.expected_band,
         num(example.probability),
-        num(example.confidence),
         example.band ?? '-',
         example.error !== undefined
           ? `error: ${example.error}`
@@ -464,10 +477,8 @@ export function ruleTestRows(report: RuleEvalReport): string[][] {
  * an accepted classifier rule that no longer agrees with its own examples
  * is a gate that has started misfiring, and a silent zero would hide it.
  *
- * The probability *and* the confidence are printed for every example, not
- * only for disagreements: the confidence floor's fate (PLAN Discovered
- * Issues) depends on knowing what confidences the real API actually
- * returns, and a live run of this command is where that data comes from.
+ * The raw Noul value is printed for every example, not only for
+ * disagreements: it is the data `allow_below`/`deny_at` move on (D14).
  */
 export async function runRulesTest(
   socketPath: string,
@@ -499,8 +510,6 @@ export async function runRulesTest(
   console.log(
     `${report.rules.length} rules · ${report.total} examples · ${report.agreed} agree · ${report.disagreed} disagree · ${report.errors} errors · agreement ${rate}`,
   );
-  console.log(
-    `bands: deny >= ${report.bands.deny_at} · allow < ${report.bands.allow_below} · confidence floor ${report.bands.confidence_floor}`,
-  );
+  console.log(`bands: deny >= ${report.bands.deny_at} · allow < ${report.bands.allow_below}`);
   return failed > 0 ? 1 : 0;
 }

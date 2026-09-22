@@ -39,11 +39,7 @@ import {
   runInit,
   startRpcServer,
 } from '@agile-agents/daemon';
-import {
-  DEFAULT_CLASSIFIER_ALLOW_BELOW,
-  DEFAULT_CLASSIFIER_CONFIDENCE_FLOOR,
-  DEFAULT_CLASSIFIER_DENY_AT,
-} from '@agile-agents/shared';
+import { DEFAULT_CLASSIFIER_ALLOW_BELOW, DEFAULT_CLASSIFIER_DENY_AT } from '@agile-agents/shared';
 import { RpcConnectionError, callRpc } from './client';
 
 /**
@@ -208,7 +204,6 @@ export async function startTestDaemon(prefix = 'agile-cli-test-'): Promise<TestD
         bands: {
           deny_at: DEFAULT_CLASSIFIER_DENY_AT,
           allow_below: DEFAULT_CLASSIFIER_ALLOW_BELOW,
-          confidence_floor: DEFAULT_CLASSIFIER_CONFIDENCE_FLOOR,
         },
       }),
       ...buildBusRpcMethods(new Bus(store, init.stateRoot)),

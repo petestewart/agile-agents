@@ -106,7 +106,7 @@ function tier(
       base_url: 'https://api.typesafe.ai',
       timeout_ms: 25_000,
       state_max_chars: over.stateMaxChars ?? 60_000,
-      bands: { deny_at: 0.8, allow_below: 0.4, confidence_floor: 0.5 },
+      bands: { deny_at: 0.8, allow_below: 0.4 },
     },
     streams,
     policy: () => store.getPolicy(),
@@ -123,7 +123,7 @@ function threadBodies(): string[] {
 describe('ClassifierDiffRules (§8.2)', () => {
   test('a high-probability answer denies the land, naming the rule', async () => {
     const rule = await acceptRule('do not leave a TODO in shipped code');
-    const classifier = new FakeClassifier([{ id: rule.id, probability: 0.95, confidence: 0.9 }]);
+    const classifier = new FakeClassifier([{ id: rule.id, probability: 0.95 }]);
 
     const verdict = await tier(classifier).check(contextFor(FILE_A));
 
@@ -140,7 +140,7 @@ describe('ClassifierDiffRules (§8.2)', () => {
 
   test('a low-probability answer allows the land', async () => {
     const rule = await acceptRule('do not broaden the public API');
-    const classifier = new FakeClassifier([{ id: rule.id, probability: 0.05, confidence: 0.9 }]);
+    const classifier = new FakeClassifier([{ id: rule.id, probability: 0.05 }]);
 
     expect(await tier(classifier).check(contextFor(FILE_A))).toEqual({ decision: 'allow' });
     expect(rules.get(rule.id).stats).toMatchObject({ fired: 1, violated: 0, routed: 0 });
@@ -148,7 +148,7 @@ describe('ClassifierDiffRules (§8.2)', () => {
 
   test('a middle-band answer routes: a classifier_review gate, and landing waits', async () => {
     const rule = await acceptRule('do not add a dependency without asking');
-    const classifier = new FakeClassifier([{ id: rule.id, probability: 0.6, confidence: 0.9 }]);
+    const classifier = new FakeClassifier([{ id: rule.id, probability: 0.6 }]);
     const subject = tier(classifier);
 
     const verdict = await subject.check(contextFor(FILE_A));
@@ -175,7 +175,7 @@ describe('ClassifierDiffRules (§8.2)', () => {
 
   test('a routed gate answered "deny" keeps refusing that diff', async () => {
     const rule = await acceptRule('do not touch the migration files');
-    const classifier = new FakeClassifier([{ id: rule.id, probability: 0.6, confidence: 0.9 }]);
+    const classifier = new FakeClassifier([{ id: rule.id, probability: 0.6 }]);
     const subject = tier(classifier);
     const routed = await subject.check(contextFor(FILE_A));
     if (routed.decision === 'allow') throw new Error('unreachable');
@@ -191,7 +191,7 @@ describe('ClassifierDiffRules (§8.2)', () => {
   test('a denied landing route is attributed to the rule that routed it (T155)', async () => {
     const rule = await acceptRule('do not rename public exports');
     wireClassifierRouteStats(gates, rules);
-    const classifier = new FakeClassifier([{ id: rule.id, probability: 0.6, confidence: 0.9 }]);
+    const classifier = new FakeClassifier([{ id: rule.id, probability: 0.6 }]);
     const routed = await tier(classifier).check(contextFor(FILE_A));
     if (routed.decision === 'allow') throw new Error('unreachable');
     expect(routed.gate?.rule).toBe(rule.id);
@@ -205,7 +205,7 @@ describe('ClassifierDiffRules (§8.2)', () => {
   test('over the budget the diff is split per file and the MAX is taken', async () => {
     const rule = await acceptRule('one bad file makes the whole diff bad');
     const perFile = new FakeClassifier((state) => [
-      { id: rule.id, probability: state.includes('b.ts') ? 0.95 : 0.01, confidence: 0.9 },
+      { id: rule.id, probability: state.includes('b.ts') ? 0.95 : 0.01 },
     ]);
 
     const verdict = await tier(perFile, { stateMaxChars: 200 }).check(contextFor(FILE_A + FILE_B));
@@ -222,7 +222,7 @@ describe('ClassifierDiffRules (§8.2)', () => {
 
   test('a diff inside the budget is one call, whole', async () => {
     const rule = await acceptRule('inside the budget');
-    const classifier = new FakeClassifier([{ id: rule.id, probability: 0.1, confidence: 0.9 }]);
+    const classifier = new FakeClassifier([{ id: rule.id, probability: 0.1 }]);
 
     await tier(classifier).check(contextFor(FILE_A + FILE_B));
 
@@ -245,7 +245,7 @@ describe('ClassifierDiffRules (§8.2)', () => {
       ],
     });
     const classifier = new FakeClassifier((_state, questions) =>
-      questions.map((q) => ({ id: q.id, probability: 0.1, confidence: 0.9 })),
+      questions.map((q) => ({ id: q.id, probability: 0.1 })),
     );
 
     await tier(classifier).check(contextFor(FILE_A));
@@ -266,7 +266,7 @@ describe('ClassifierDiffRules (§8.2)', () => {
   test('one file over the budget is truncated with a marker, not sent whole', async () => {
     const rule = await acceptRule('one enormous file');
     const huge = `diff --git a/huge.ts b/huge.ts\n+${'x'.repeat(5_000)}\n`;
-    const classifier = new FakeClassifier([{ id: rule.id, probability: 0.1, confidence: 0.9 }]);
+    const classifier = new FakeClassifier([{ id: rule.id, probability: 0.1 }]);
 
     await tier(classifier, { stateMaxChars: 500 }).check(contextFor(huge));
 
@@ -282,7 +282,7 @@ describe('ClassifierDiffRules (§8.2)', () => {
     const critical = await acceptRule('never ship a secret', { critical: true });
     const other = await acceptRule('a nice-to-have');
     // A well-formed answer set that simply omits one of the questions.
-    const classifier = new FakeClassifier([{ id: other.id, probability: 0.1, confidence: 0.9 }]);
+    const classifier = new FakeClassifier([{ id: other.id, probability: 0.1 }]);
 
     const verdict = await tier(classifier).check(contextFor(FILE_A));
 
@@ -313,7 +313,7 @@ describe('ClassifierDiffRules (§8.2)', () => {
       summary: 'a per-action call',
       call: { tool: 'land', command: 'land --now', fingerprint: 'aaaaaaaaaaaaaaaa' },
     });
-    const classifier = new FakeClassifier([{ id: rule.id, probability: 0.6, confidence: 0.9 }]);
+    const classifier = new FakeClassifier([{ id: rule.id, probability: 0.6 }]);
 
     const verdict = await tier(classifier).check(contextFor(FILE_A));
 
@@ -361,7 +361,7 @@ describe('ClassifierDiffRules (§8.2)', () => {
           base_url: 'https://api.typesafe.ai',
           timeout_ms: 25_000,
           state_max_chars: 60_000,
-          bands: { deny_at: 0.8, allow_below: 0.4, confidence_floor: 0.5 },
+          bands: { deny_at: 0.8, allow_below: 0.4 },
         },
         streams,
         policy: () => store.getPolicy(),
@@ -387,7 +387,7 @@ describe('ClassifierDiffRules (§8.2)', () => {
           base_url: 'https://api.typesafe.ai',
           timeout_ms: 25_000,
           state_max_chars: 60_000,
-          bands: { deny_at: 0.8, allow_below: 0.4, confidence_floor: 0.5 },
+          bands: { deny_at: 0.8, allow_below: 0.4 },
         },
         streams,
         policy: () => store.getPolicy(),

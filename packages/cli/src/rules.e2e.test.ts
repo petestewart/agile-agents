@@ -251,13 +251,12 @@ describe('agile rules against a daemon on a temp AGILE_HOME', () => {
       return rule;
     }
 
-    test('agreement exits 0 and prints probability, confidence and band per example', async () => {
+    test('agreement exits 0 and prints the raw probability and band per example (no confidence, D14)', async () => {
       await acceptedClassifierRule();
       daemon.classifier.setScript((state, questions) =>
         questions.map((q) => ({
           id: q.id,
           probability: state.startsWith('bun add') ? 0.95 : 0.05,
-          confidence: 0.91,
         })),
       );
       const result = await cli(['rules', 'test']);
@@ -268,32 +267,28 @@ describe('agile rules against a daemon on a temp AGILE_HOME', () => {
         'example',
         'expected',
         'probability',
-        'confidence',
         'band',
         'verdict',
       ]);
       expect(result.out).toContain('bun add lodash');
       expect(result.out).toContain('0.950');
-      // The confidence is printed on every row, agreement or not: it is the
-      // evidence the confidence-floor question needs from the live run.
-      expect(result.out).toContain('0.910');
       expect(result.out).toContain('agree');
       expect(result.out).toContain('2 examples · 2 agree');
       expect(result.out).toContain('agreement 100.0%');
-      expect(result.out).toContain('confidence floor 0.5');
+      expect(result.out).toContain('bands: deny >= 0.8 · allow < 0.4');
+      expect(result.out).not.toContain('confidence');
     });
 
     test('a disagreement is listed with its numbers and exits non-zero', async () => {
       await acceptedClassifierRule();
       // A confident allow on the example that is supposed to violate.
       daemon.classifier.setScript((_state, questions) =>
-        questions.map((q) => ({ id: q.id, probability: 0.12, confidence: 0.88 })),
+        questions.map((q) => ({ id: q.id, probability: 0.12 })),
       );
       const result = await cli(['rules', 'test']);
       expect(result.code).toBe(1);
       expect(result.out).toContain('DISAGREE');
       expect(result.out).toContain('0.120');
-      expect(result.out).toContain('0.880');
       expect(result.out).toContain('1 agree · 1 disagree');
       expect(result.out).toContain('agreement 50.0%');
     });
@@ -301,11 +296,10 @@ describe('agile rules against a daemon on a temp AGILE_HOME', () => {
     test('--json carries the same verdicts, and the exit code with them', async () => {
       const rule = await acceptedClassifierRule();
       daemon.classifier.setScript((_state, questions) =>
-        questions.map((q) => ({ id: q.id, probability: 0.95, confidence: 0.2 })),
+        questions.map((q) => ({ id: q.id, probability: 0.6 })),
       );
       const result = await cli(['rules', 'test', rule.id, '--json']);
-      // Below the confidence floor: §6.3 routes it, which is not the
-      // verdict either example claims.
+      // The middle band routes, which is not the verdict either example claims.
       expect(result.code).toBe(1);
       const report = JSON.parse(result.out) as {
         rules: Array<{
@@ -315,7 +309,6 @@ describe('agile rules against a daemon on a temp AGILE_HOME', () => {
             band: string;
             agree: boolean;
             probability: number;
-            confidence: number;
           }>;
         }>;
         disagreed: number;
@@ -324,9 +317,9 @@ describe('agile rules against a daemon on a temp AGILE_HOME', () => {
       expect(report.rules[0]?.question).toBe(
         'Does this action violate: do not add a dependency without asking?',
       );
-      expect(report.rules[0]?.examples.map((e) => [e.band, e.agree, e.confidence])).toEqual([
-        ['route', false, 0.2],
-        ['route', false, 0.2],
+      expect(report.rules[0]?.examples.map((e) => [e.band, e.agree, e.probability])).toEqual([
+        ['route', false, 0.6],
+        ['route', false, 0.6],
       ]);
       expect(report.disagreed).toBe(2);
     });
@@ -353,7 +346,6 @@ describe('agile rules against a daemon on a temp AGILE_HOME', () => {
           questions.map((q) => ({
             id: q.id,
             probability: state.startsWith('bun add') || state.includes('apiKey') ? 0.95 : 0.05,
-            confidence: 0.9,
           })),
         { delayMs: 1_500 },
       );
@@ -368,7 +360,6 @@ describe('agile rules against a daemon on a temp AGILE_HOME', () => {
         questions.map((q) => ({
           id: q.id,
           probability: state.startsWith('bun add') ? 0.95 : 0.05,
-          confidence: 0.9,
         })),
       );
       await cli(['rules', 'test']);
@@ -394,7 +385,7 @@ describe('agile rules against a daemon on a temp AGILE_HOME', () => {
     test('an eval is not a firing: stats stay at zero (§5.7)', async () => {
       const rule = await acceptedClassifierRule();
       daemon.classifier.setScript((_state, questions) =>
-        questions.map((q) => ({ id: q.id, probability: 0.95, confidence: 0.9 })),
+        questions.map((q) => ({ id: q.id, probability: 0.95 })),
       );
       await cli(['rules', 'test']);
       await daemon.rulesService.flushStats();

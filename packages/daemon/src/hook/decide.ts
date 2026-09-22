@@ -71,7 +71,6 @@ import {
   DEFAULT_PROTECTED_BRANCHES,
   type Rule,
   type SessionRole,
-  classifierQuestion,
 } from '@agile-agents/shared';
 import {
   type Answer,
@@ -79,6 +78,7 @@ import {
   type ClassifierBand,
   type Noul,
   bandFor as classifierBand,
+  noulFor,
 } from '../classifier';
 import { decidePermission } from '../permissions';
 import type {
@@ -509,10 +509,7 @@ export async function decideClassifierTier(
 ): Promise<ClassifierTierOutcome> {
   const now = input.now ?? Date.now;
   const rules = input.rules;
-  const questions: Noul[] = rules.map((rule) => ({
-    id: rule.id,
-    question: classifierQuestion(rule),
-  }));
+  const questions: Noul[] = rules.map(noulFor);
   const evaluated = rules.map((rule) => rule.id);
 
   const started = now();

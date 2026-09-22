@@ -4,8 +4,13 @@
  * ```ts
  * interface Classifier { ask(state: string, questions: Noul[]): Promise<Answer[]> }
  * Noul   = { id: string, question: string }
- * Answer = { id: string, probability: number, confidence: number }
+ * Answer = { id: string, probability: number }
  * ```
+ *
+ * T156 (**D14**) amends the design's `Answer`: a Noul has no separate
+ * confidence ("There is no separate `confidence` value for a Noul" — the
+ * TypeSafe docs), so `Answer` carries the Noul value only, and a `Noul`
+ * may carry the rule's optional `criteria`.
  *
  * These types are **not persisted state** — a classifier call is a question
  * asked and answered inside one gated action, and nothing about it reaches
@@ -15,23 +20,32 @@
  * per-stream opt-out) has its schemas there, as the convention requires.
  */
 
+import { type Rule, type RuleCriteria, classifierQuestion } from '@agile-agents/shared';
+
 /** One yes/no question about the state. `id` is the rule's id in practice. */
 export interface Noul {
   id: string;
   question: string;
+  /** T156: what "yes" (the rule is broken) and "no" look like, when the line is subtle. */
+  criteria?: RuleCriteria;
+}
+
+/** The Noul for one rule: its classifier question plus its criteria, if any. */
+export function noulFor(rule: Pick<Rule, 'id' | 'text' | 'question' | 'criteria'>): Noul {
+  return {
+    id: rule.id,
+    question: classifierQuestion(rule),
+    ...(rule.criteria !== undefined ? { criteria: rule.criteria } : {}),
+  };
 }
 
 /**
- * One answer, keyed back to the question's `id`.
- *
- * `probability` is "how likely is the answer yes" and `confidence` is "how
- * sure is the model of that" — two axes, because §6.3's bands read both: a
- * probability of 0.9 with confidence 0.2 is not a 0.9, it is a shrug.
+ * One answer, keyed back to the question's `id`. `probability` is the raw
+ * Noul value — answer and certainty in one (D14); the bands read it alone.
  */
 export interface Answer {
   id: string;
   probability: number;
-  confidence: number;
 }
 
 /** What `onCall` is handed after every attempt, successful or not (§6.2, latency). */

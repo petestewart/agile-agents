@@ -126,15 +126,15 @@ function call(): Record<string, unknown> {
   return { ...CALL, cwd: worktree };
 }
 
-function answer(id: string, probability: number, confidence: number): Answer {
-  return { id, probability, confidence };
+function answer(id: string, probability: number): Answer {
+  return { id, probability };
 }
 
 describe('§6.3 bands', () => {
   test('probability ≥ deny_at denies, and the reason names the rule', async () => {
     const rule = classifierRule({ name: 'no_new_deps' });
     ruleSet = [rule];
-    const fake = new FakeClassifier([answer(rule.id, 0.91, 0.9)]);
+    const fake = new FakeClassifier([answer(rule.id, 0.91)]);
     const out = await (await svc(fake)).preToolUse(call());
 
     expect(out.hookSpecificOutput?.permissionDecision).toBe('deny');
@@ -149,7 +149,7 @@ describe('§6.3 bands', () => {
   test('probability < allow_below allows, and the rule only fires', async () => {
     const rule = classifierRule();
     ruleSet = [rule];
-    const fake = new FakeClassifier([answer(rule.id, 0.05, 0.99)]);
+    const fake = new FakeClassifier([answer(rule.id, 0.05)]);
     const out = await (await svc(fake)).preToolUse(call());
 
     expect(out.hookSpecificOutput?.permissionDecision).toBe('allow');
@@ -159,7 +159,7 @@ describe('§6.3 bands', () => {
   test('the middle band routes: a classifier_review gate, and the session blocked until answered', async () => {
     const rule = classifierRule();
     ruleSet = [rule];
-    const fake = new FakeClassifier([answer(rule.id, 0.6, 0.9)]);
+    const fake = new FakeClassifier([answer(rule.id, 0.6)]);
     const out = await (await svc(fake)).preToolUse(call());
 
     expect(out.hookSpecificOutput?.permissionDecision).toBe('deny');
@@ -171,20 +171,10 @@ describe('§6.3 bands', () => {
     expect(stats).toContainEqual({ id: rule.id, outcome: 'routed' });
   });
 
-  test('confidence < the floor routes whatever the probability — a 0.95 shrug is not a deny', async () => {
-    const rule = classifierRule();
-    ruleSet = [rule];
-    const fake = new FakeClassifier([answer(rule.id, 0.95, 0.2)]);
-    const out = await (await svc(fake)).preToolUse(call());
-
-    expect(out.hookSpecificOutput?.permissionDecisionReason).toContain('routed to your inbox');
-    expect(gates.list().some((g) => g.gate === 'classifier_review')).toBe(true);
-  });
-
   test("the human's approval lets exactly that call through once", async () => {
     const rule = classifierRule();
     ruleSet = [rule];
-    const fake = new FakeClassifier([answer(rule.id, 0.6, 0.9)]);
+    const fake = new FakeClassifier([answer(rule.id, 0.6)]);
     const hook = await svc(fake);
     await hook.preToolUse(call());
     const gate = gates.list().find((g) => g.gate === 'classifier_review');
@@ -207,7 +197,7 @@ describe('§6.3 bands', () => {
     const rule = classifierRule();
     ruleSet = [rule];
     wireClassifierRouteStats(gates, rulesDouble);
-    const fake = new FakeClassifier([answer(rule.id, 0.6, 0.9)]);
+    const fake = new FakeClassifier([answer(rule.id, 0.6)]);
     await (await svc(fake)).preToolUse(call());
     const gate = gates.list().find((g) => g.gate === 'classifier_review');
     await gates.respond(gate?.id as HilId, 'deny', 'human', 'no');
@@ -222,9 +212,7 @@ describe('§6.3 bands', () => {
 describe('§6.2 one call, N questions', () => {
   test('ten rules in scope are one round trip with ten Nouls', async () => {
     ruleSet = Array.from({ length: 10 }, () => classifierRule());
-    const fake = new FakeClassifier((_state, questions) =>
-      questions.map((q) => answer(q.id, 0.1, 0.9)),
-    );
+    const fake = new FakeClassifier((_state, questions) => questions.map((q) => answer(q.id, 0.1)));
     await (await svc(fake)).preToolUse(call());
 
     expect(fake.calls).toHaveLength(1);
@@ -235,9 +223,7 @@ describe('§6.2 one call, N questions', () => {
     const plain = classifierRule();
     const asked = classifierRule({ question: 'Is this a dependency change?' });
     ruleSet = [plain, asked];
-    const fake = new FakeClassifier((_s, questions) =>
-      questions.map((q) => answer(q.id, 0.1, 0.9)),
-    );
+    const fake = new FakeClassifier((_s, questions) => questions.map((q) => answer(q.id, 0.1)));
     await (await svc(fake)).preToolUse(call());
 
     expect(fake.calls[0]?.questions[0]?.question).toBe(`Does this action violate: ${plain.text}?`);
@@ -246,9 +232,7 @@ describe('§6.2 one call, N questions', () => {
 
   test('the state carries the tool, the command and the stream line', async () => {
     ruleSet = [classifierRule()];
-    const fake = new FakeClassifier((_s, questions) =>
-      questions.map((q) => answer(q.id, 0.1, 0.9)),
-    );
+    const fake = new FakeClassifier((_s, questions) => questions.map((q) => answer(q.id, 0.1)));
     await (await svc(fake)).preToolUse(call());
 
     const state = fake.calls[0]?.state ?? '';
@@ -259,9 +243,7 @@ describe('§6.2 one call, N questions', () => {
 
   test('an edit call carries the path and the diff hunk instead of a command', async () => {
     ruleSet = [classifierRule()];
-    const fake = new FakeClassifier((_s, questions) =>
-      questions.map((q) => answer(q.id, 0.1, 0.9)),
-    );
+    const fake = new FakeClassifier((_s, questions) => questions.map((q) => answer(q.id, 0.1)));
     await (await svc(fake)).preToolUse({
       cwd: worktree,
       tool_name: 'Edit',
@@ -290,7 +272,7 @@ describe('§6.2 one call, N questions', () => {
   test('latency is recorded per call as a classifier_call event', async () => {
     const rule = classifierRule();
     ruleSet = [rule];
-    const fake = new FakeClassifier([answer(rule.id, 0.1, 0.9)]);
+    const fake = new FakeClassifier([answer(rule.id, 0.1)]);
     await (await svc(fake)).preToolUse(call());
     await store.flush();
 
@@ -352,7 +334,7 @@ describe('§6.4 fail policy', () => {
     const answered = classifierRule();
     const ignored = classifierRule({ critical: true, name: 'critical_rule' });
     ruleSet = [answered, ignored];
-    const fake = new FakeClassifier([answer(answered.id, 0.1, 0.9)]);
+    const fake = new FakeClassifier([answer(answered.id, 0.1)]);
     const out = await (await svc(fake)).preToolUse(call());
 
     expect(out.hookSpecificOutput?.permissionDecision).toBe('deny');
@@ -364,7 +346,7 @@ describe('§6.4 fail policy', () => {
     const critical = classifierRule({ critical: true });
     const ordinary = classifierRule();
     ruleSet = [critical, ordinary];
-    const fake = new FakeClassifier([answer(critical.id, 0.01, 0.99)]);
+    const fake = new FakeClassifier([answer(critical.id, 0.01)]);
     const out = await (await svc(fake)).preToolUse(call());
 
     expect(fake.calls).toHaveLength(0);

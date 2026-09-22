@@ -9,12 +9,14 @@ import { parsePlanV1Decisions, seedProposal } from '@agile-agents/daemon';
 import { ruleReportRows as reportRowsFromDaemon } from '@agile-agents/daemon';
 import type { RuleEvalReport } from '@agile-agents/daemon';
 import { type Rule, type RuleInput, ulid, validateRule } from '@agile-agents/shared';
+import { parseArgs } from '../args';
 import {
   RULE_HEADERS,
   RULE_REPORT_HEADERS,
   RULE_TEST_ACTION_MAX_CHARS,
   RULE_TEST_HEADERS,
   oneLine,
+  parseCriteria,
   parseExample,
   parseExamples,
   ruleReportRows,
@@ -273,7 +275,7 @@ describe('rules test table (T153, §5.6)', () => {
       '+export const a = 2;',
     ].join('\n');
     const report: RuleEvalReport = {
-      bands: { deny_at: 0.8, allow_below: 0.4, confidence_floor: 0.5 },
+      bands: { deny_at: 0.8, allow_below: 0.4 },
       generated_at: '2026-09-22T00:00:00.000Z',
       rules: [
         {
@@ -286,7 +288,6 @@ describe('rules test table (T153, §5.6)', () => {
               expected_violates: true,
               expected_band: 'deny',
               probability: 0.9,
-              confidence: 0.9,
               band: 'deny',
               agree: true,
             },
@@ -321,7 +322,6 @@ describe('rules test table (T153, §5.6)', () => {
       'example',
       'expected',
       'probability',
-      'confidence',
       'band',
       'verdict',
     ]);
@@ -329,7 +329,7 @@ describe('rules test table (T153, §5.6)', () => {
 
   test('one row per example: the numbers, the band, and the verdict', () => {
     const report: RuleEvalReport = {
-      bands: { deny_at: 0.8, allow_below: 0.4, confidence_floor: 0.5 },
+      bands: { deny_at: 0.8, allow_below: 0.4 },
       generated_at: '2026-09-22T00:00:00.000Z',
       rules: [
         {
@@ -343,7 +343,6 @@ describe('rules test table (T153, §5.6)', () => {
               expected_violates: true,
               expected_band: 'deny',
               probability: 0.93,
-              confidence: 0.81,
               band: 'deny',
               agree: true,
             },
@@ -352,7 +351,6 @@ describe('rules test table (T153, §5.6)', () => {
               expected_violates: false,
               expected_band: 'allow',
               probability: 0.62,
-              confidence: 0.4,
               band: 'route',
               agree: false,
             },
@@ -376,25 +374,26 @@ describe('rules test table (T153, §5.6)', () => {
       agreement_rate: 0.5,
     };
     expect(ruleTestRows(report)).toEqual([
-      ['no_push_protected', 'git push origin main', 'deny', '0.930', '0.810', 'deny', 'agree'],
-      [
-        'no_push_protected',
-        'git push origin feature',
-        'allow',
-        '0.620',
-        '0.400',
-        'route',
-        'DISAGREE',
-      ],
+      ['no_push_protected', 'git push origin main', 'deny', '0.930', 'deny', 'agree'],
+      ['no_push_protected', 'git push origin feature', 'allow', '0.620', 'route', 'DISAGREE'],
       [
         'no_push_protected',
         'git push --force',
         'deny',
         '-',
         '-',
-        '-',
         'error: classifier unavailable (timeout): it timed out',
       ],
     ]);
+  });
+});
+
+describe('--criteria-true / --criteria-false (T156)', () => {
+  test('both give a criteria pair; neither gives none; one alone is refused', () => {
+    expect(
+      parseCriteria(parseArgs(['--criteria-true', 'broken', '--criteria-false', 'holds'])),
+    ).toEqual({ true: 'broken', false: 'holds' });
+    expect(parseCriteria(parseArgs(['--text', 'x']))).toBeUndefined();
+    expect(() => parseCriteria(parseArgs(['--criteria-true', 'broken']))).toThrow(/together/);
   });
 });

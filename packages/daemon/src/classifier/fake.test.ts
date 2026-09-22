@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import { FakeClassifier } from './fake';
 import type { Answer } from './types';
 
-const ANSWERS: Answer[] = [{ id: 'RULE-1', probability: 0.9, confidence: 0.8 }];
+const ANSWERS: Answer[] = [{ id: 'RULE-1', probability: 0.9 }];
 
 describe('FakeClassifier', () => {
   test('returns the scripted answers and records the call', async () => {
@@ -18,7 +18,6 @@ describe('FakeClassifier', () => {
       questions.map((q) => ({
         id: q.id,
         probability: q.id === 'deny' ? 0.95 : 0.1,
-        confidence: 0.9,
       })),
     );
     const answers = await fake.ask('s', [
@@ -46,7 +45,7 @@ describe('FakeClassifier', () => {
 
   test('re-scripts between rounds', async () => {
     const fake = new FakeClassifier(ANSWERS);
-    fake.setScript([{ id: 'RULE-1', probability: 0.1, confidence: 0.9 }]);
+    fake.setScript([{ id: 'RULE-1', probability: 0.1 }]);
     const answers = await fake.ask('s', [{ id: 'RULE-1', question: 'q?' }]);
     expect(answers[0]?.probability).toBe(0.1);
     expect(fake.calls).toHaveLength(1);
