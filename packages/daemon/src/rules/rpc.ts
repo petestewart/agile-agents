@@ -21,6 +21,7 @@ import {
 import { RpcParamError } from '../gates/rpc';
 import type { RpcMethodHandler } from '../rpc';
 import { AlreadyExistsError } from '../store/store';
+import { RULE_REPORT_DEFAULT_DAYS, buildRuleReport } from './report';
 import { RuleAlreadyDecidedError, type RulesService, UnknownRuleScopeError } from './service';
 
 /** Every `rule.*` write from this edge is the human's (design §2.2). */
@@ -60,6 +61,18 @@ function optionalStatus(value: unknown): RuleStatus | undefined {
     });
   }
   return value as RuleStatus;
+}
+
+/** `--days N` for the pruning report: a positive whole number of days. */
+function optionalPositiveInt(value: unknown, field: string): number | undefined {
+  if (value === undefined) return undefined;
+  const n = typeof value === 'string' ? Number(value) : value;
+  if (typeof n !== 'number' || !Number.isInteger(n) || n <= 0) {
+    throw new RpcParamError(`invalid "${field}": must be a positive whole number of days`, {
+      [field]: value,
+    });
+  }
+  return n;
 }
 
 /**
@@ -139,6 +152,17 @@ export function buildRuleRpcMethods(service: RulesService): Record<string, RpcMe
         throw new RpcParamError('invalid "stream": must be a stream id', { stream: p.stream });
       }
       return { rules: service.inScope(stream) };
+    },
+
+    /**
+     * §5.7's pruning view. Read-only and derived: it reports the `stats`
+     * the hook path and the diff check wrote, and never retires anything —
+     * the prune itself is `rule.retire`, a human decision.
+     */
+    'rule.report': (params) => {
+      const p = params === undefined ? {} : requireObject(params);
+      const days = optionalPositiveInt(p.days, 'days') ?? RULE_REPORT_DEFAULT_DAYS;
+      return buildRuleReport(service, { days });
     },
 
     'rule.accept': async (params) => {

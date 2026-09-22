@@ -9,7 +9,12 @@
  * through its `propose_rule` verb.
  */
 
-import { readPlanV1Decisions, seedProposal } from '@agile-agents/daemon';
+import {
+  type RuleReport,
+  type RuleReportRow,
+  readPlanV1Decisions,
+  seedProposal,
+} from '@agile-agents/daemon';
 import {
   RULE_ENFORCEMENTS,
   RULE_STATUSES,
@@ -285,5 +290,61 @@ export async function runRulesSeed(
     );
     console.log('review them with `agile rules list --status proposed`');
   }
+  return 0;
+}
+
+/** `id tier status fired violated routed last_fired flag` — §5.7's columns. */
+export const RULE_REPORT_HEADERS = [
+  'id',
+  'tier',
+  'status',
+  'fired',
+  'violated',
+  'routed',
+  'last_fired',
+  'flag',
+];
+
+export function ruleReportRows(rows: readonly RuleReportRow[]): string[][] {
+  return rows.map((row) => [
+    row.id,
+    row.tier,
+    row.status,
+    String(row.fired),
+    String(row.violated),
+    String(row.routed),
+    row.last_fired ?? '-',
+    row.flag_detail,
+  ]);
+}
+
+/**
+ * `agile rules report [--days N]` — the pruning view of §5.7. The daemon
+ * computes the flags (one implementation, shared with the UI of T163);
+ * this prints them, flagged rules first.
+ */
+export async function runRulesReport(
+  socketPath: string,
+  args: ParsedArgs,
+  json: boolean,
+): Promise<number> {
+  const days = optionalString(args.options, 'days');
+  const report = await callRpc<RuleReport>(socketPath, 'rule.report', {
+    ...(days !== undefined ? { days } : {}),
+  });
+  if (json) {
+    printJson(report);
+    return 0;
+  }
+  if (report.rows.length === 0) {
+    console.log('rules: (none)');
+    return 0;
+  }
+  printTable(RULE_REPORT_HEADERS, ruleReportRows(report.rows));
+  const flagged = report.rows.filter((row) => row.flag !== '-').length;
+  console.log('');
+  console.log(
+    `${report.rows.length} rules · ${flagged} flagged for pruning (never-fired window ${report.days} days)`,
+  );
   return 0;
 }
