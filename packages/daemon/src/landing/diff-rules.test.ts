@@ -19,7 +19,7 @@ import { runInit } from '../init';
 import { RulesService } from '../rules/service';
 import { StateStore } from '../store';
 import { StreamService } from '../streams/service';
-import { ClassifierDiffRules, splitDiffByFile } from './diff-rules';
+import { ClassifierDiffRules, TRUNCATION_MARKER, splitDiffByFile, truncateTo } from './diff-rules';
 import type { DiffRuleContext } from './service';
 
 let home: string;
@@ -248,6 +248,67 @@ describe('ClassifierDiffRules (§8.2)', () => {
     expect(classifier.calls).toHaveLength(0);
   });
 
+  test('one file over the budget is truncated with a marker, not sent whole', async () => {
+    const rule = await acceptRule('one enormous file');
+    const huge = `diff --git a/huge.ts b/huge.ts\n+${'x'.repeat(5_000)}\n`;
+    const classifier = new FakeClassifier([{ id: rule.id, probability: 0.1, confidence: 0.9 }]);
+
+    await tier(classifier, { stateMaxChars: 500 }).check(contextFor(huge));
+
+    // Still exactly one call — a file is the finest split §8.2 has — but it
+    // fits the budget and says that it was cut.
+    expect(classifier.calls).toHaveLength(1);
+    const state = classifier.calls[0]?.state ?? '';
+    expect(state.length).toBeLessThanOrEqual(500);
+    expect(state.endsWith(TRUNCATION_MARKER)).toBe(true);
+  });
+
+  test('the critical rule the classifier skipped denies, and counts as violated', async () => {
+    const critical = await acceptRule('never ship a secret', { critical: true });
+    const other = await acceptRule('a nice-to-have');
+    // A well-formed answer set that simply omits one of the questions.
+    const classifier = new FakeClassifier([{ id: other.id, probability: 0.1, confidence: 0.9 }]);
+
+    const verdict = await tier(classifier).check(contextFor(FILE_A));
+
+    expect(verdict.decision).toBe('deny');
+    if (verdict.decision === 'allow') throw new Error('unreachable');
+    expect(verdict.rule).toBe(critical.id);
+    // The rule that caused the deny is `violated`, not merely `fired` —
+    // the same convention `failPolicy` and the hook's stats keep.
+    expect(rules.get(critical.id).stats).toMatchObject({ fired: 1, violated: 1 });
+    expect(threadBodies().some((body) => body.startsWith('hook_unchecked:'))).toBe(true);
+  });
+
+  test('a non-critical rule the classifier skipped is unchecked, not violated', async () => {
+    const skipped = await acceptRule('a nice-to-have');
+    const classifier = new FakeClassifier([]);
+
+    expect(await tier(classifier).check(contextFor(FILE_A))).toEqual({ decision: 'allow' });
+    expect(rules.get(skipped.id).stats).toMatchObject({ fired: 1, violated: 0, routed: 0 });
+  });
+
+  test('a gate from the per-action route band is never mistaken for a diff-tier one', async () => {
+    const rule = await acceptRule('do not add a dependency without asking');
+    // What the hook's route band raises: a real tool call, no `origin`.
+    // Named `land` on purpose — the marker must not be a naming coincidence.
+    await gates.request('classifier_review', {
+      policy: store.getPolicy(),
+      stream: stream.id,
+      summary: 'a per-action call',
+      call: { tool: 'land', command: 'land --now', fingerprint: 'aaaaaaaaaaaaaaaa' },
+    });
+    const classifier = new FakeClassifier([{ id: rule.id, probability: 0.6, confidence: 0.9 }]);
+
+    const verdict = await tier(classifier).check(contextFor(FILE_A));
+
+    // The diff tier raised its own gate rather than reading the hook's.
+    expect(verdict.decision).toBe('route');
+    if (verdict.decision === 'allow') throw new Error('unreachable');
+    expect(verdict.gate?.call?.origin).toBe('diff_rules');
+    expect(gates.list().filter((g) => g.gate === 'classifier_review')).toHaveLength(2);
+  });
+
   describe('§6.4 fail policy', () => {
     test('a critical rule denies when the classifier is unavailable', async () => {
       const critical = await acceptRule('never ship a secret', { critical: true });
@@ -274,6 +335,58 @@ describe('ClassifierDiffRules (§8.2)', () => {
       expect(rules.get(rule.id).stats).toMatchObject({ fired: 1, violated: 0 });
     });
 
+    test('a missing key is the same policy, with no call made', async () => {
+      const rule = await acceptRule('a nice-to-have');
+      const classifier = new FakeClassifier([]);
+      const noKey = new ClassifierDiffRules({
+        rules,
+        classifier,
+        config: {
+          provider: 'jev',
+          base_url: 'https://api.typesafe.ai',
+          timeout_ms: 25_000,
+          state_max_chars: 60_000,
+          bands: { deny_at: 0.8, allow_below: 0.4, confidence_floor: 0.5 },
+        },
+        streams,
+        policy: () => store.getPolicy(),
+        repos: () => store.getRepos(),
+        gates,
+        env: {}, // no TYPESAFE_API_KEY, and no `api_key` in config
+      });
+
+      expect(await noKey.check(contextFor(FILE_A))).toEqual({ decision: 'allow' });
+      expect(classifier.calls).toHaveLength(0);
+      expect(threadBodies().some((body) => body.startsWith('hook_unchecked:'))).toBe(true);
+      expect(rules.get(rule.id).stats).toMatchObject({ fired: 1, violated: 0 });
+    });
+
+    test('a missing key still denies for a critical rule', async () => {
+      const critical = await acceptRule('never ship a secret', { critical: true });
+      const classifier = new FakeClassifier([]);
+      const noKey = new ClassifierDiffRules({
+        rules,
+        classifier,
+        config: {
+          provider: 'jev',
+          base_url: 'https://api.typesafe.ai',
+          timeout_ms: 25_000,
+          state_max_chars: 60_000,
+          bands: { deny_at: 0.8, allow_below: 0.4, confidence_floor: 0.5 },
+        },
+        streams,
+        policy: () => store.getPolicy(),
+        repos: () => store.getRepos(),
+        gates,
+        env: {},
+      });
+
+      const verdict = await noKey.check(contextFor(FILE_A));
+      expect(verdict.decision).toBe('deny');
+      expect(classifier.calls).toHaveLength(0);
+      expect(rules.get(critical.id).stats).toMatchObject({ violated: 1 });
+    });
+
     test('the per-stream opt-out is the same policy, with no call made', async () => {
       await acceptRule('a nice-to-have');
       await streams.update('human', stream.id, { classifier: 'off' });
@@ -294,6 +407,13 @@ describe('splitDiffByFile', () => {
     expect(parts[0]).toContain('a/a.ts');
     expect(parts[1]).toContain('a/b.ts');
     expect(parts.join('\n')).toContain('+const b = 2;');
+  });
+
+  test('truncateTo cuts to the budget and says so', () => {
+    expect(truncateTo('short', 500)).toBe('short');
+    const cut = truncateTo('y'.repeat(1_000), 100);
+    expect(cut).toHaveLength(100);
+    expect(cut.endsWith(TRUNCATION_MARKER)).toBe(true);
   });
 
   test('a fragment with no header is still one part', () => {

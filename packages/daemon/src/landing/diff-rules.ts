@@ -91,6 +91,28 @@ function cap(text: string): string {
   return text.length > MESSAGE_BODY_MAX_CHARS ? text.slice(0, MESSAGE_BODY_MAX_CHARS) : text;
 }
 
+/**
+ * The end of the split, for the case the file boundary cannot fix: one file
+ * whose own diff is over the budget. §8.2 splits per file and no finer, so
+ * the choice is send it oversized or send a prefix that fits. It sends the
+ * prefix, with a marker that says so: a call the provider rejects for length
+ * is a call that falls into §6.4 and quietly stops checking the rule at all,
+ * whereas a truncated state still answers the question for the part of the
+ * file that fits, and the marker keeps the classifier (and anyone reading
+ * the recorded state) from mistaking a prefix for the whole change.
+ *
+ * Truncation happens **after** the scrub, never before: cutting the state
+ * first could split a secret across the boundary and leave the tail of it
+ * unredacted (§6.5 is fail-closed, and this keeps it that way).
+ */
+export const TRUNCATION_MARKER = '\n[truncated: file diff exceeds the classifier budget]';
+
+export function truncateTo(state: string, budget: number): string {
+  if (state.length <= budget) return state;
+  const room = Math.max(0, budget - TRUNCATION_MARKER.length);
+  return `${state.slice(0, room)}${TRUNCATION_MARKER}`;
+}
+
 /** `R-…` is unreadable on an inbox card; a built-in's `name` is not. */
 function nameOf(rule: Rule): string {
   return rule.name ?? rule.id;
@@ -116,13 +138,26 @@ export function splitDiffByFile(diff: string): string[] {
   return parts.filter((part) => part.trim().length > 0);
 }
 
-/** `land`-kind gate call: the diff is the "call", and its digest is what an approval is good for. */
+/**
+ * The gate call for a routed diff: the diff *is* the "call", and its digest
+ * is what an approval is good for. `origin: 'diff_rules'` is the structural
+ * marker `wireLandGateResolution` keys on — answering one of these gates
+ * performs a merge, so what tells it apart from the route band's per-tool
+ * gates must be something the hook path cannot emit. `tool` is the vendor's
+ * own `tool_name` and would have been a naming coincidence, not a
+ * guarantee; `fingerprintCall` never sets `origin`.
+ */
 function diffCall(ctx: DiffRuleContext, diff: string): GateCall {
   const fingerprint = createHash('sha256')
     .update([ctx.stream.id, ctx.branch, ctx.target, diff].join('\0'))
     .digest('hex')
     .slice(0, 16);
-  return { tool: 'land', path: `${ctx.branch} → ${ctx.target}`, fingerprint };
+  return {
+    tool: 'land',
+    path: `${ctx.branch} → ${ctx.target}`,
+    fingerprint,
+    origin: 'diff_rules',
+  };
 }
 
 export class ClassifierDiffRules implements DiffRules {
@@ -156,8 +191,11 @@ export class ClassifierDiffRules implements DiffRules {
       const answer = answers.get(rule.id);
       if (answer === undefined) {
         // A classifier that skipped a question answered nothing about it;
-        // §6.4's split applies to that rule alone.
-        await this.unchecked(ctx.stream, [rule], 'no answer for this rule');
+        // §6.4's split applies to that rule alone. The rule that *causes*
+        // the deny is recorded `violated`, never merely `fired` — the same
+        // convention `failPolicy` and the hook's `recordRuleStats` keep.
+        await this.noteUnchecked(ctx.stream, [rule], 'no answer for this rule');
+        await this.options.rules.recordFired(rule.id, rule.critical ? 'violated' : 'fired');
         if (rule.critical) {
           return {
             decision: 'deny',
@@ -214,7 +252,7 @@ export class ClassifierDiffRules implements DiffRules {
     const states =
       whole.length <= budget
         ? [whole]
-        : splitDiffByFile(diff).map((part) => scrub(`${header}\n\n${part}`));
+        : splitDiffByFile(diff).map((part) => truncateTo(scrub(`${header}\n\n${part}`), budget));
 
     const best = new Map<string, Answer>();
     for (const state of states) {
@@ -253,7 +291,10 @@ export class ClassifierDiffRules implements DiffRules {
     const why = error instanceof Error ? error.message : String(error);
     const critical = rules.filter((rule) => rule.critical);
     const rest = rules.filter((rule) => !rule.critical);
-    if (rest.length > 0) await this.unchecked(stream, rest, why);
+    if (rest.length > 0) {
+      await this.noteUnchecked(stream, rest, why);
+      for (const rule of rest) await this.options.rules.recordFired(rule.id, 'fired');
+    }
     if (critical.length === 0) return { decision: 'allow' };
     for (const rule of critical) await this.options.rules.recordFired(rule.id, 'violated');
     const named = critical.map(nameOf).join(', ');
@@ -264,8 +305,14 @@ export class ClassifierDiffRules implements DiffRules {
     };
   }
 
-  private async unchecked(stream: Stream, rules: Rule[], why: string): Promise<void> {
-    for (const rule of rules) await this.options.rules.recordFired(rule.id, 'fired');
+  /**
+   * §6.4's visible mark: the tier ran but these rules were not checked. It
+   * writes the thread entry only — the caller records the stats, because
+   * what a rule's counter should say depends on what the caller then did
+   * with it (a critical rule that goes on to deny is `violated`, not
+   * `fired`).
+   */
+  private async noteUnchecked(stream: Stream, rules: Rule[], why: string): Promise<void> {
     await this.options.streams.appendThread('daemon', stream.id, {
       kind: 'event',
       body: cap(`hook_unchecked: diff rules ${rules.map(nameOf).join(', ')} not checked — ${why}`),
@@ -282,6 +329,7 @@ export class ClassifierDiffRules implements DiffRules {
         (gate) =>
           gate.gate === 'classifier_review' &&
           gate.stream === stream.id &&
+          gate.call?.origin === 'diff_rules' &&
           gate.call?.fingerprint === call.fingerprint,
       )
       .sort((a, b) =>

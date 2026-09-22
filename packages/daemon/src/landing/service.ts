@@ -497,14 +497,20 @@ export function wireLandGateResolution(gates: GateService, landing: LandingServi
     }
     // T152: a `classifier_review` gate raised by the diff tier is the other
     // gate landing waits on. It is told apart from the route band's
-    // per-tool-call gates by its `call.tool` — `land`, the only "call" that
-    // is not a vendor tool — so answering a routed *tool* call never
-    // triggers a merge. The land re-runs the whole check, which is how the
-    // approval gets spent (`ClassifierDiffRules.answeredGate`).
+    // per-tool-call gates by `call.origin === 'diff_rules'`, a marker only
+    // `ClassifierDiffRules` sets. It is deliberately NOT a sentinel on
+    // `call.tool`: that field is the vendor's reported `tool_name`, an
+    // unconstrained string, so a vendor or MCP tool that happened to be
+    // called `land` would have turned an approval for one edit into a merge
+    // into a protected branch. `origin` is never sourced from vendor data,
+    // so answering a routed *tool* call cannot reach this path however the
+    // tool is named (`service.test.ts` asserts exactly that). The land
+    // re-runs the whole check, which is how the approval gets spent
+    // (`ClassifierDiffRules.answeredGate`).
     if (
       resolved.gate === 'classifier_review' &&
       resolved.decision === 'approve' &&
-      resolved.call?.tool === 'land'
+      resolved.call?.origin === 'diff_rules'
     ) {
       await landing.land(resolved.stream);
     }

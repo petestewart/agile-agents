@@ -82,6 +82,19 @@ export const GateCallSchema = z
     command: MessageBodySchema.min(1).optional(),
     /** Stable digest of `tool` + path/command — see `packages/daemon/src/hook/fingerprint.ts`. */
     fingerprint: z.string().regex(/^[0-9a-f]{16}$/, 'must be a 16-char hex digest'),
+    /**
+     * T152: which tier raised this gate, when it matters who may act on the
+     * answer. Only `landing/diff-rules.ts` sets `diff_rules`, and answering
+     * such a gate performs a **merge** (§8.2) — so the marker must be one
+     * the per-action hook path cannot produce. `tool` cannot be that marker:
+     * it is `payload.tool_name` verbatim, an arbitrary vendor-reported
+     * string, so a vendor or MCP tool literally named `land` would have
+     * matched a sentinel on it and turned an approval for one edit into a
+     * merge into a protected branch. This field is never sourced from
+     * vendor data — `fingerprintCall` does not set it and cannot — which
+     * makes the distinction structural rather than a coincidence of naming.
+     */
+    origin: z.literal('diff_rules').optional(),
   })
   .strict();
 export type GateCall = z.infer<typeof GateCallSchema>;
