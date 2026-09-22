@@ -25,11 +25,24 @@ import {
   describeGateCall,
   formatRuleScope,
   inboxContext,
+  inboxDetail,
 } from '@agile-agents/shared';
 import type { GateService } from '../gates/service';
 import type { QuestionService } from '../questions/service';
 import type { RulesService } from '../rules/service';
 import type { StreamService } from '../streams/service';
+
+/** T161: the full text behind a clipped context, as a spreadable field. */
+function withDetail(text: string): { detail?: string } {
+  const detail = inboxDetail(text);
+  return detail === undefined ? {} : { detail };
+}
+
+function gateText(gate: HilRequest): string {
+  return `${gate.gate}: ${gate.call !== undefined ? `${describeGateCall(gate.call)} — ` : ''}${
+    gate.summary ?? gate.reason ?? 'needs your decision'
+  }`;
+}
 
 export interface InboxServiceDeps {
   streams: StreamService;
@@ -101,6 +114,7 @@ export class InboxService {
       stream_path: this.path(stream, byId),
       ts: question.raised_at,
       context: inboxContext(question.text),
+      ...withDetail(question.text),
       ref: `questions/${question.id}.yaml`,
     };
   }
@@ -115,6 +129,7 @@ export class InboxService {
       stream_path: stream ? this.path(stream, byId) : [],
       ts: rule.created_at,
       context: inboxContext(`${formatRuleScope(rule.scope)}: ${rule.text}`),
+      ...withDetail(`${formatRuleScope(rule.scope)}: ${rule.text}`),
       ref: `rules/${rule.id}.yaml`,
     };
   }
@@ -132,11 +147,8 @@ export class InboxService {
       // leads with it ("edit /…/package.json — editing a dependency
       // manifest…") rather than making the operator open the record (§3.2:
       // "enough to decide in ten seconds without leaving the list").
-      context: inboxContext(
-        `${gate.gate}: ${gate.call !== undefined ? `${describeGateCall(gate.call)} — ` : ''}${
-          gate.summary ?? gate.reason ?? 'needs your decision'
-        }`,
-      ),
+      context: inboxContext(gateText(gate)),
+      ...withDetail(gateText(gate)),
       ref: `gates/${gate.id}.yaml`,
     };
   }
@@ -167,6 +179,7 @@ export class InboxService {
               'worker finished — land or close the stream'
             : 'blocked'),
       ),
+      ...(stream.agent.progress !== undefined ? withDetail(stream.agent.progress) : {}),
     };
   }
 }

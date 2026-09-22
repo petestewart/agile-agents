@@ -5,7 +5,7 @@
  * covers them.
  */
 
-import type { InboxItem } from '@agile-agents/shared';
+import type { InboxItem, SessionRef, Stream } from '@agile-agents/shared';
 import type { CockpitStreamRow } from './feed-types';
 
 /** §9.2's five dots. */
@@ -60,22 +60,6 @@ export function buildStreamTree(rows: readonly CockpitStreamRow[]): StreamTreeNo
   return roots;
 }
 
-/** The id and every descendant id of `id` — what "narrow the inbox to this stream" covers. */
-export function subtreeIds(rows: readonly CockpitStreamRow[], id: string): Set<string> {
-  const out = new Set<string>([id]);
-  let grew = true;
-  while (grew) {
-    grew = false;
-    for (const row of rows) {
-      if (row.parent !== undefined && out.has(row.parent) && !out.has(row.id)) {
-        out.add(row.id);
-        grew = true;
-      }
-    }
-  }
-  return out;
-}
-
 export interface InboxGroup {
   /** The stream id, or `''` for items that belong to no stream (a global `rule_accept`). */
   key: string;
@@ -105,4 +89,46 @@ export function groupInbox(items: readonly InboxItem[]): InboxGroup[] {
     group.items.push(item);
   }
   return [...groups.values()];
+}
+
+// ---- T161: the stream page (§9.3) ----------------------------------------
+
+/** A session that is still attached: it can be prompted, and Stop stops it. */
+export function isLiveSession(session: Pick<SessionRef, 'status'>): boolean {
+  return session.status === 'starting' || session.status === 'running' || session.status === 'idle';
+}
+
+/**
+ * The thread's thinking indicator: a session is mid-turn — a worker or a
+ * reviewer `starting`/`running`. An `idle` session is waiting on the human
+ * (an open question or gate), so it is not thinking; the inbox card says
+ * what it waits for.
+ */
+export function isThinking(stream: Pick<Stream, 'sessions'>): boolean {
+  return stream.sessions.some(
+    (session) =>
+      (session.role === 'worker' || session.role === 'reviewer') &&
+      (session.status === 'starting' || session.status === 'running'),
+  );
+}
+
+/** Who wrote a thread line, in words: `you`, `daemon`, or the session's role and vendor. */
+export function threadAuthorLabel(by: string, sessions: readonly SessionRef[]): string {
+  if (by === 'human') return 'you';
+  if (by === 'daemon') return 'daemon';
+  const id = by.startsWith('agent:') ? by.slice('agent:'.length) : by;
+  const session = sessions.find((each) => each.id === id);
+  return session ? `${session.role} · ${session.vendor}` : 'agent';
+}
+
+export type DiffLineKind = 'add' | 'del' | 'hunk' | 'meta' | 'ctx';
+
+/** One line of a unified diff, classified for colouring. */
+export function diffLineKind(line: string): DiffLineKind {
+  if (line.startsWith('+++') || line.startsWith('---')) return 'meta';
+  if (line.startsWith('diff ') || line.startsWith('index ')) return 'meta';
+  if (line.startsWith('@@')) return 'hunk';
+  if (line.startsWith('+')) return 'add';
+  if (line.startsWith('-')) return 'del';
+  return 'ctx';
 }

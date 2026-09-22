@@ -576,3 +576,32 @@ describe('a gate and a question in the same turn (T145)', () => {
     expect(questions.get(questionId as Question['id']).status).toBe('open');
   }, 30_000);
 });
+
+describe('say — the stream page composer (T161)', () => {
+  test('with no worker the line is only a human thread line', async () => {
+    const stream = await makeStream();
+    const result = await attachService.say(stream.id, 'thinking about dialects');
+    expect(result.prompted).toBeUndefined();
+    expect(result.entry).toMatchObject({ by: 'human', kind: 'line' });
+  });
+
+  test('with a live worker the line is also prompted into it', async () => {
+    const log = join(scratch, 'say-prompts.jsonl');
+    attachService = buildAttachService(
+      fakeProviderFor(ACP_PROVIDERS.claude, { ...SPEAKS_THEN_HANGS, logFile: log }),
+    );
+    const stream = await makeStream();
+    const { session } = await attachService.attach(stream.id);
+    await waitFor(() => threadBodies(stream.id).some((b) => b.includes('looking at the parser')));
+    const result = await attachService.say(stream.id, 'use RFC 4180 quoting');
+    expect(result.prompted).toBe(session.id);
+    expect(
+      streams
+        .readThread(stream.id, { limit: 500 })
+        .entries.some((e) => e.by === 'human' && e.body === 'use RFC 4180 quoting'),
+    ).toBe(true);
+    // Queued behind the hanging first turn: stopping ends both; the log
+    // shows the brief was sent, and the say was accepted for delivery.
+    expect(existsSync(log) && readFileSync(log, 'utf8').includes('"session/prompt"')).toBe(true);
+  }, 30_000);
+});

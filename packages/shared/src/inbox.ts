@@ -27,6 +27,9 @@ export type InboxItemKind = z.infer<typeof InboxItemKindSchema>;
 /** "one line, never the whole diff, never the whole question" (§3.2). */
 export const INBOX_CONTEXT_MAX_CHARS = 200;
 
+/** T161: the ceiling on an item's `detail` (the full text behind a clipped `context`). */
+export const INBOX_DETAIL_MAX_CHARS = 4000;
+
 export const InboxItemSchema = z
   .object({
     kind: InboxItemKindSchema,
@@ -45,6 +48,13 @@ export const InboxItemSchema = z
     /** ISO-8601; the list is sorted on this, oldest first (§3.3). */
     ts: z.string().datetime(),
     context: z.string().min(1).max(INBOX_CONTEXT_MAX_CHARS),
+    /**
+     * T161: the full text `context` was clipped from — the whole question,
+     * gate summary or rule — present only when the clip lost something, so
+     * a clipped card can expand in place and the stream page can show it
+     * whole. Still bounded: an item is a pointer, not the artifact.
+     */
+    detail: z.string().min(1).max(INBOX_DETAIL_MAX_CHARS).optional(),
     /** Pointer to the full artifact, when there is one (a home-relative path). */
     ref: z.string().min(1).optional(),
   })
@@ -85,4 +95,18 @@ export function inboxContext(text: string): string {
   const lastSpace = hard.lastIndexOf(' ');
   const body = lastSpace > 0 ? hard.slice(0, lastSpace) : hard;
   return `${body.trimEnd()}…`;
+}
+
+/**
+ * T161: the full text behind `inboxContext(text)`, or `undefined` when the
+ * context already says everything (nothing was clipped). Line breaks are
+ * kept — the detail is rendered as Markdown — and the result is bounded by
+ * `INBOX_DETAIL_MAX_CHARS`.
+ */
+export function inboxDetail(text: string): string | undefined {
+  const trimmed = text.trim();
+  if (trimmed.replace(/\s+/g, ' ').length <= INBOX_CONTEXT_MAX_CHARS) return undefined;
+  return trimmed.length <= INBOX_DETAIL_MAX_CHARS
+    ? trimmed
+    : `${trimmed.slice(0, INBOX_DETAIL_MAX_CHARS - 1)}…`;
 }

@@ -442,6 +442,241 @@ body {
   padding: 7px 10px;
 }
 
+.cr-card-links {
+  display: flex;
+  gap: 12px;
+  margin-top: 6px;
+}
+.cr-link {
+  border: 0;
+  background: transparent;
+  color: var(--info);
+  font: inherit;
+  font-size: 13px;
+  padding: 0;
+  cursor: pointer;
+}
+.cr-link:hover {
+  text-decoration: underline;
+}
+.cr-dim {
+  color: var(--text-dim);
+  font-size: 13px;
+}
+.cr-error {
+  color: var(--danger);
+  font-size: 13px;
+}
+
+/* ---- stream page (§9.3, T161) ---- */
+.cr-stream {
+  max-width: 900px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.cr-stream h2 {
+  font-size: 13px;
+  color: var(--text-dim);
+  margin: 0 0 8px;
+  font-weight: 600;
+}
+.cr-stream-hd h1 {
+  font-size: 19px;
+  margin: 2px 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  overflow-wrap: anywhere;
+}
+.cr-stream-hd p {
+  margin: 0;
+}
+.cr-path {
+  overflow-wrap: anywhere;
+}
+.cr-goal {
+  margin-top: 6px;
+}
+.cr-sessions ul,
+.cr-findings ul,
+.cr-rules,
+.cr-docs,
+.cr-thread {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.cr-sessions li {
+  font-size: 13px;
+  padding: 2px 0;
+  overflow-wrap: anywhere;
+}
+.cr-findings li {
+  padding: 4px 0;
+  overflow-wrap: anywhere;
+}
+.cr-findings .sev {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  color: var(--danger);
+}
+.cr-land {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 10px 14px;
+  background: var(--bg-panel);
+}
+.cr-land p {
+  margin: 4px 0 0;
+  overflow-wrap: anywhere;
+}
+.cr-land-hd {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.cr-land-hd h2 {
+  margin: 0;
+}
+.cr-land-result {
+  font-weight: 600;
+  padding: 6px 10px;
+  border-radius: 6px;
+}
+.cr-land-result.ok {
+  color: var(--ok);
+  background: var(--bg-raised);
+}
+.cr-land-result.bad {
+  color: var(--danger);
+  background: var(--danger-weak);
+}
+.cr-tabs {
+  display: flex;
+  gap: 2px;
+  border-bottom: 1px solid var(--border);
+  flex-wrap: wrap;
+}
+.cr-tabs button {
+  border: 0;
+  background: transparent;
+  color: var(--text-dim);
+  padding: 6px 10px;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+}
+.cr-tabs button.on {
+  color: var(--text);
+  border-bottom-color: var(--accent);
+}
+.cr-thread {
+  max-height: 60vh;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.cr-thread li {
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  overflow-wrap: anywhere;
+}
+.cr-thread li[data-by="human"] {
+  background: var(--accent-weak);
+}
+.cr-thread li[data-by="daemon"] {
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 13px;
+}
+.cr-thread .who {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.cr-thinking {
+  display: flex;
+  gap: 4px;
+  width: max-content;
+}
+.cr-thinking span {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--text-dim);
+  animation: cr-blink 1.2s infinite ease-in-out;
+}
+.cr-thinking span:nth-child(2) {
+  animation-delay: 0.2s;
+}
+.cr-thinking span:nth-child(3) {
+  animation-delay: 0.4s;
+}
+@keyframes cr-blink {
+  0%,
+  80%,
+  100% {
+    opacity: 0.25;
+  }
+  40% {
+    opacity: 1;
+  }
+}
+.cr-composer {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+  align-items: flex-end;
+}
+.cr-composer textarea {
+  flex: 1;
+  min-width: 0;
+  font: inherit;
+  background: var(--bg-raised);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 7px 10px;
+  resize: vertical;
+}
+.cr-diff {
+  font-family: ui-monospace, Menlo, monospace;
+  font-size: 12px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px;
+  overflow-x: auto;
+  max-width: 100%;
+}
+.cr-diff [data-line="add"] {
+  color: var(--ok);
+}
+.cr-diff [data-line="del"] {
+  color: var(--danger);
+}
+.cr-diff [data-line="hunk"] {
+  color: var(--info);
+}
+.cr-diff [data-line="meta"] {
+  color: var(--text-dim);
+}
+.cr-rules li,
+.cr-docs li {
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border);
+  overflow-wrap: anywhere;
+}
+
 /* ---- settings ---- */
 .cr-settings {
   max-width: 640px;

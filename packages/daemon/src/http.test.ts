@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { type Policy, ulid } from '@agile-agents/shared';
 import { Bus } from './bus';
-import type { CockpitFrame } from './feed';
+import type { CockpitFrame, StreamPagePayload } from './feed';
 import { GateService } from './gates';
 import { type HttpServerHandle, startHttpServer } from './http';
 import { InboxService } from './inbox';
@@ -170,6 +170,76 @@ describe('T160 cockpit routes', () => {
     expect((await fetch(url(`/api/streams/${stream.id}/land`), { method: 'POST' })).status).toBe(
       503,
     );
+  });
+
+  test('T161: GET /api/streams/:id is the stream page read — record, path, thread, rules in scope', async () => {
+    const root = await streams.create('human', { title: 'root', goal: 'g' });
+    const leaf = await streams.create('human', { title: 'leaf', goal: 'g', parent: root.id });
+    await streams.appendThread('daemon', leaf.id, { kind: 'event', body: 'created' });
+    const rule = await rules.create('human', {
+      text: 'never push to main',
+      scope: { kind: 'stream', ref: root.id },
+    });
+    await rules.accept(rule.id, 'human');
+    const res = await fetch(url(`/api/streams/${leaf.id}`));
+    expect(res.status).toBe(200);
+    const page = (await res.json()) as StreamPagePayload;
+    expect(page.stream.id).toBe(leaf.id);
+    expect(page.path).toEqual(['root', 'leaf']);
+    expect(page.thread.at(-1)?.body).toBe('created');
+    expect(page.thread_total).toBe(page.thread.length);
+    // Inherited from the ancestor: exactly `rulesInScope(stream)`.
+    expect(page.rules.map((r) => r.id)).toEqual([rule.id]);
+    expect(page.docs).toEqual([]);
+    expect((await fetch(url(`/api/streams/${ulid()}`))).status).toBe(404);
+    expect((await fetch(url('/api/streams/nope'))).status).toBe(400);
+  });
+
+  test('T161: POST /api/streams/:id/say writes a human line; the actor is never read from the body; cross-origin is 403', async () => {
+    const stream = await streams.create('human', { title: 's', goal: 'g' });
+    const foreign = await fetch(url(`/api/streams/${stream.id}/say`), {
+      method: 'POST',
+      headers: { origin: 'http://evil.example', 'content-type': 'application/json' },
+      body: JSON.stringify({ body: 'hello' }),
+    });
+    expect(foreign.status).toBe(403);
+    const forged = await fetch(url(`/api/streams/${stream.id}/say`), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ body: 'hello', by: 'daemon' }),
+    });
+    expect(forged.status).toBe(400);
+    const ok = await fetch(url(`/api/streams/${stream.id}/say`), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ body: 'use semicolons' }),
+    });
+    expect(ok.status).toBe(201);
+    const entries = streams.readThread(stream.id).entries;
+    expect(entries.filter((e) => e.kind === 'line').map((e) => [e.by, e.body])).toEqual([
+      ['human', 'use semicolons'],
+    ]);
+    const long = await fetch(url(`/api/streams/${stream.id}/say`), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ body: 'x'.repeat(801) }),
+    });
+    expect(long.status).toBe(400);
+  });
+
+  test('T161: attach/stop without an attach service are 503, and are same-origin only', async () => {
+    const stream = await streams.create('human', { title: 's', goal: 'g' });
+    for (const action of ['attach', 'stop']) {
+      const foreign = await fetch(url(`/api/streams/${stream.id}/${action}`), {
+        method: 'POST',
+        headers: { 'sec-fetch-site': 'cross-site' },
+      });
+      expect(foreign.status).toBe(403);
+      expect(
+        (await fetch(url(`/api/streams/${stream.id}/${action}`), { method: 'POST' })).status,
+      ).toBe(503);
+    }
+    expect((await fetch(url(`/api/streams/${stream.id}/diff`))).status).toBe(503);
   });
 
   test('GET /api/policy returns the gates block', async () => {

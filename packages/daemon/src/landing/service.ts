@@ -34,7 +34,7 @@
  * default branch.
  */
 
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { HilRequest, RepoEntry, Stream } from '@agile-agents/shared';
@@ -117,6 +117,35 @@ export type LandOutcome =
   /** Merge conflict: nothing merged, worktree kept, stream blocked. */
   | { status: 'blocked'; target: string; conflicts: string[]; line: string }
   | { status: 'landed'; target: string; sha: string; line: string };
+
+/** T161: the Land button's "before" read — see `LandingService.preflight`. */
+export interface LandPreflight {
+  ready: boolean;
+  /** Why `land` would refuse right now; absent when `ready`. */
+  reason?: string;
+  branch?: string;
+  target?: string;
+  /** Commits on the branch beyond the target. */
+  ahead?: number;
+  /** The repo asks for a `land` gate: Land raises an inbox item rather than merging. */
+  gated?: true;
+}
+
+/** How much of a stream diff travels in one response (the old ticket diff's cap). */
+export const STREAM_DIFF_MAX_CHARS = 20_000;
+
+/** T161: the stream page's diff tab — see `LandingService.diff`. */
+export interface StreamDiff {
+  stream: string;
+  branch: string;
+  target: string;
+  /** Present while the worktree exists (uncommitted edits are included). */
+  worktree?: string;
+  /** `git diff --stat`. */
+  stat: string;
+  patch: string;
+  truncated: boolean;
+}
 
 export interface LandOptions {
   /** Set by the gate-resolution callback: the `land` gate was approved, don't raise another. */
@@ -222,6 +251,111 @@ export class LandingService {
       // `onStreamEnd` is contractually non-throwing; this is belt and braces.
     });
     return { status: 'landed', target, sha: merged.sha, line };
+  }
+
+  /**
+   * T161: the stream page's "before" half of the Land button (cockpit
+   * design §9.3): every refusal `land` would raise *before* the diff rules
+   * run — no repo, already landed, a live session, a missing target,
+   * nothing to land, a dirty checkout of the target — checked without
+   * writing anything. The diff rules themselves are not run here: they may
+   * call the classifier and raise a gate, which is a decision, not a
+   * preview; the page lists which diff-stage rules Land will check.
+   */
+  preflight(streamId: string): LandPreflight {
+    const stream = this.options.streams.get(streamId);
+    try {
+      const { repoEntry, branch } = this.requireLandable(stream);
+      const repoRoot = repoEntry.path;
+      const target = this.resolveTarget(stream, repoEntry, repoRoot);
+      if (
+        git(['rev-parse', '--verify', `refs/heads/${target}`], repoRoot, repoRoot).exitCode !== 0
+      ) {
+        return {
+          ready: false,
+          branch,
+          target,
+          reason: `target branch ${target} does not exist in ${repoRoot}`,
+        };
+      }
+      const ahead = Number(
+        runGit(['rev-list', '--count', `${target}..${branch}`], repoRoot, repoRoot),
+      );
+      if (!(ahead > 0)) {
+        return {
+          ready: false,
+          branch,
+          target,
+          ahead: 0,
+          reason: `${branch} has no commits beyond ${target} — nothing to land`,
+        };
+      }
+      const dirty = worktreesOn(repoRoot, target).find((checkout) => checkout.dirty);
+      if (dirty !== undefined) {
+        return {
+          ready: false,
+          branch,
+          target,
+          ahead,
+          reason: `${target} is checked out with uncommitted changes at ${dirty.path}; commit or stash them before landing`,
+        };
+      }
+      return {
+        ready: true,
+        branch,
+        target,
+        ahead,
+        ...(repoEntry.land_gate === true ? { gated: true } : {}),
+      };
+    } catch (err) {
+      return { ready: false, reason: err instanceof Error ? err.message : String(err) };
+    }
+  }
+
+  /**
+   * T161: the stream page's diff tab — what the stream's work changes
+   * against its landing target: committed and uncommitted edits in the
+   * worktree (`git diff <merge-base>` run inside it), or the branch alone
+   * once the worktree is gone. Capped (signal over volume); `truncated`
+   * says so.
+   */
+  diff(streamId: string): StreamDiff {
+    const stream = this.options.streams.get(streamId);
+    if (stream.repo === undefined || stream.branch === undefined) {
+      throw new LandRefusedError(stream.id, 'this stream has no repo branch yet — nothing to diff');
+    }
+    const repoEntry = this.options.store.getRepos()[stream.repo];
+    if (repoEntry === undefined) {
+      throw new LandRefusedError(
+        stream.id,
+        `stream repo ${stream.repo} is not registered in repos.yaml`,
+      );
+    }
+    const repoRoot = repoEntry.path;
+    const target = this.resolveTarget(stream, repoEntry, repoRoot);
+    const inWorktree = stream.worktree !== undefined && existsSync(stream.worktree);
+    const cwd = inWorktree ? (stream.worktree as string) : repoRoot;
+    const head = inWorktree ? 'HEAD' : stream.branch;
+    const base = git(['merge-base', target, head], cwd, repoRoot);
+    if (base.exitCode !== 0) {
+      throw new LandRefusedError(stream.id, `no merge base between ${target} and ${stream.branch}`);
+    }
+    const range = inWorktree ? [base.stdout] : [base.stdout, stream.branch];
+    const stat = git(['diff', '--stat', ...range], cwd, repoRoot);
+    const patch = git(['diff', ...range], cwd, repoRoot);
+    if (patch.exitCode !== 0) {
+      throw new LandRefusedError(stream.id, `git diff failed: ${patch.stderr || 'unknown error'}`);
+    }
+    const truncated = patch.stdout.length > STREAM_DIFF_MAX_CHARS;
+    return {
+      stream: stream.id,
+      branch: stream.branch,
+      target,
+      ...(inWorktree ? { worktree: stream.worktree } : {}),
+      stat: stat.exitCode === 0 ? stat.stdout : '',
+      patch: truncated ? patch.stdout.slice(0, STREAM_DIFF_MAX_CHARS) : patch.stdout,
+      truncated,
+    };
   }
 
   /**

@@ -6,6 +6,7 @@
  */
 
 import type { Policy } from '@agile-agents/shared';
+import type { LandOutcome, StreamDiff, StreamPagePayload } from './feed-types';
 
 async function post(path: string, body: unknown = {}): Promise<unknown> {
   const res = await fetch(path, {
@@ -42,9 +43,43 @@ export function decideRule(id: string, decision: 'accept' | 'retire'): Promise<u
   return post(`/api/rules/${encodeURIComponent(id)}/${decision}`);
 }
 
-/** A `done` card's Land button (§8.2). */
-export function landStream(id: string): Promise<unknown> {
-  return post(`/api/streams/${encodeURIComponent(id)}/land`);
+/** A `done` card's Land button, and the stream page's (§8.2). A refusal rejects with the daemon's reason. */
+export function landStream(id: string): Promise<LandOutcome> {
+  return post(`/api/streams/${encodeURIComponent(id)}/land`) as Promise<LandOutcome>;
+}
+
+async function get<T>(path: string): Promise<T> {
+  const res = await fetch(path);
+  const payload = (await res.json().catch(() => ({}))) as T & { error?: string };
+  if (!res.ok) throw new Error(payload.error ?? `${path} failed (${res.status})`);
+  return payload;
+}
+
+/** T161: the stream page's one read. */
+export function getStreamPage(id: string): Promise<StreamPagePayload> {
+  return get(`/api/streams/${encodeURIComponent(id)}`);
+}
+
+/** T161: the diff tab. */
+export function getStreamDiff(id: string): Promise<StreamDiff> {
+  return get(`/api/streams/${encodeURIComponent(id)}/diff`);
+}
+
+/** T161: the composer — a human line on the thread, and a prompt to the attached worker if there is one. */
+export function sayOnStream(id: string, body: string): Promise<{ prompted?: string }> {
+  return post(`/api/streams/${encodeURIComponent(id)}/say`, { body }) as Promise<{
+    prompted?: string;
+  }>;
+}
+
+/** T161: the sessions strip's Attach (a worker) and Review (a reviewer). */
+export function attachSession(id: string, role: 'worker' | 'reviewer'): Promise<unknown> {
+  return post(`/api/streams/${encodeURIComponent(id)}/attach`, { role });
+}
+
+/** T161: the sessions strip's Stop — detaches whatever is live on the stream. */
+export function stopSessions(id: string): Promise<unknown> {
+  return post(`/api/streams/${encodeURIComponent(id)}/stop`);
 }
 
 export async function getPolicy(): Promise<Policy> {

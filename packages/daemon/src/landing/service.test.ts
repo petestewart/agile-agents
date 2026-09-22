@@ -471,3 +471,43 @@ describe('the operator checkout', () => {
     expect(git(['rev-list', '--count', '--merges', 'main'])).toBe('0');
   });
 });
+
+describe('T161: the stream page reads (preflight and diff)', () => {
+  test('preflight says why land would refuse, without writing anything', async () => {
+    const never = await makeStream();
+    expect(landing.preflight(never.id)).toMatchObject({ ready: false });
+    expect(landing.preflight(never.id).reason).toMatch(/has no branch/);
+
+    const work = branchWithWork('s-pre', 'a.txt', 'a\n');
+    const stream = await makeStream(work);
+    const before = threadBodies(stream.id);
+    expect(landing.preflight(stream.id)).toEqual({
+      ready: true,
+      branch: 's-pre',
+      target: 'main',
+      ahead: 1,
+    });
+
+    // A dirty checkout of the target is the refusal `land` would raise.
+    writeFileSync(join(repo, 'README.md'), '# dirty\n');
+    const dirty = landing.preflight(stream.id);
+    expect(dirty.ready).toBe(false);
+    expect(dirty.reason).toMatch(/uncommitted changes/);
+    expect(threadBodies(stream.id)).toEqual(before);
+  });
+
+  test('diff shows the worktree against the target, uncommitted edits included', async () => {
+    const work = branchWithWork('s-diff', 'a.txt', 'a\n');
+    const stream = await makeStream(work);
+    writeFileSync(join(work.worktree, 'b.txt'), 'uncommitted\n');
+    git(['add', 'b.txt'], work.worktree);
+    const diff = landing.diff(stream.id);
+    expect(diff.target).toBe('main');
+    expect(diff.worktree).toBe(work.worktree);
+    expect(diff.patch).toContain('+a');
+    expect(diff.patch).toContain('+uncommitted');
+    expect(diff.truncated).toBe(false);
+    const unattached = await makeStream({ title: 'never attached' });
+    expect(() => landing.diff(unattached.id)).toThrow(LandRefusedError);
+  });
+});
