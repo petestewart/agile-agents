@@ -297,17 +297,15 @@ describe('T138 route band — a routed manifest edit, approved, retried once', (
   }, 60_000);
 
   test('with no live session the decision stays on the thread and says so', async () => {
-    await store.putRepos({ demo: { path: repo, protected_branches: ['main'] } });
-    const stream = await streams.create('human', {
-      title: 'ledger-lite',
-      goal: 'add the dependency',
-      repo: 'demo',
-    });
+    // A planning stream: no repo, so the session runs in its own directory
+    // in the state home and that is what the hook resolves `cwd` through.
+    const stream = await streams.create('human', { title: 'ledger-lite', goal: 'plan it' });
     const attached = await attachService.attach(stream.id);
     await waitFor(() => store.listAgents().some((a) => a.id === attached.session.id));
-    const worktree = attached.session.worktree ?? '';
-    await hooks.preToolUse(editPayload(attached.session.id, worktree, 'package.json'));
+    const sessionDir = join(home, 'sessions', attached.session.id);
+    await hooks.preToolUse(editPayload(attached.session.id, sessionDir, 'package.json'));
     const gate = openGates()[0] as HilRequest;
+    expect(gate.session).toBe(attached.session.id);
 
     attached.handle.stop();
     await attached.handle.exited;
