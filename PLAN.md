@@ -338,12 +338,12 @@ Build order: Phase 0 → 1 → 2 → 3 → 4 → 5 → 6. Within a phase, ticket
 
 ### Ticket: T142 Rules view and pruning
 - **Priority:** P1
-- **Status:** In Progress
+- **Status:** Done
 - **Owner:** opus:worker-T142
 - **Scope:** RPC `rules.report`: for each rule, fired / violated / routed counts, last fired, and "never fired in N days". `agile rules report`. UI in T163.
 - **Acceptance Criteria:** Counts come from `stats` updated by the hook path (T151) and the diff check (T152); a retired rule stops being injected on the next session.
 - **Validation Steps:** `bun test packages/daemon/src/rules`.
-- **Notes:** —
+- **Notes:** Branch `T142-rules-report`. `rules/report.ts` (`buildRuleReport`: flags `never fired (N days)` default 14, `never violated` fired ≥ 10, `routes often` routed/fired ≥ 0.3 with fired ≥ 5; flagged first, then fired desc), `rule.report` RPC (`days` validated, -32602), `agile rules report [--days N]` with `id tier status fired violated routed last_fired flag`; rows carry `flag` and `flag_detail` for T163. Retire→out of scope proven end to end. Counters are written by T143 (pattern) and T151/T152. Review (sonnet) PASS. `bun test` 1471 pass / 0 fail. merge: 1ca798f.
 
 ### Ticket: T143 Built-in pattern rules
 - **Priority:** P0
