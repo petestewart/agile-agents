@@ -10,7 +10,13 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Rule } from '@agile-agents/shared';
-import { ulid } from '@agile-agents/shared';
+import {
+  DEFAULT_CLASSIFIER_ALLOW_BELOW,
+  DEFAULT_CLASSIFIER_CONFIDENCE_FLOOR,
+  DEFAULT_CLASSIFIER_DENY_AT,
+  ulid,
+} from '@agile-agents/shared';
+import { FakeClassifier } from '../classifier';
 import { runInit } from '../init';
 import type { RpcMethodHandler } from '../rpc';
 import { StateStore } from '../store';
@@ -45,7 +51,7 @@ async function create(text = 'prefer the repo scripts'): Promise<Rule> {
   return call<Rule>('rule.create', { text });
 }
 
-test('the method table is exactly the eight rule verbs', () => {
+test('the method table is exactly the nine rule verbs', () => {
   expect(Object.keys(methods).sort()).toEqual([
     'rule.accept',
     'rule.create',
@@ -54,8 +60,60 @@ test('the method table is exactly the eight rule verbs', () => {
     'rule.list',
     'rule.report',
     'rule.retire',
+    'rule.test',
     'rule.update',
   ]);
+});
+
+/**
+ * T153 (§5.6): `rule.test` is the one verb that needs a classifier. Built
+ * without one — a home with `classifier: off`, or no key — it says so as
+ * bad params rather than pretending every rule agreed.
+ */
+test('rule.test without a classifier is a param error, not a silent pass', async () => {
+  await expect(call('rule.test', {})).rejects.toThrow(/needs a classifier/);
+});
+
+test('rule.test evaluates the accepted classifier rules through the fake', async () => {
+  const methodsWithClassifier = buildRuleRpcMethods(new RulesService({ store, streams }), {
+    classifier: new FakeClassifier((state, questions) =>
+      questions.map((q) => ({
+        id: q.id,
+        probability: state.startsWith('bun add') ? 0.95 : 0.05,
+        confidence: 0.9,
+      })),
+    ),
+    bands: {
+      deny_at: DEFAULT_CLASSIFIER_DENY_AT,
+      allow_below: DEFAULT_CLASSIFIER_ALLOW_BELOW,
+      confidence_floor: DEFAULT_CLASSIFIER_CONFIDENCE_FLOOR,
+    },
+  });
+  const proposed = (await methodsWithClassifier['rule.create']?.({
+    text: 'do not add a dependency without asking',
+    enforcement: 'classifier',
+    examples: [
+      { action: 'bun add lodash', violates: true },
+      { action: 'edit src/index.ts', violates: false },
+    ],
+  })) as Rule;
+  await methodsWithClassifier['rule.accept']?.({ id: proposed.id });
+  const report = (await methodsWithClassifier['rule.test']?.({})) as {
+    agreed: number;
+    disagreed: number;
+    agreement_rate: number;
+  };
+  expect(report.agreed).toBe(2);
+  expect(report.disagreed).toBe(0);
+  expect(report.agreement_rate).toBe(1);
+
+  // Naming a rule that has no examples to evaluate is bad params (-32602).
+  const guidance = (await methodsWithClassifier['rule.create']?.({
+    text: 'a guidance rule',
+  })) as Rule;
+  await expect(methodsWithClassifier['rule.test']?.({ id: guidance.id })).rejects.toThrow(
+    /only classifier rules/,
+  );
 });
 
 describe('params validation (-32602, never a TypeError)', () => {

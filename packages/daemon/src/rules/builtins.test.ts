@@ -7,6 +7,9 @@ import { afterEach, beforeEach, expect, test } from 'bun:test';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import type { Policy, RuleId } from '@agile-agents/shared';
+import { GateService } from '../gates/service';
+import { wireClassifierRouteStats } from '../hook/route-band';
 import { runInit } from '../init';
 import { StateStore } from '../store';
 import { StreamService } from '../streams/service';
@@ -202,3 +205,55 @@ async function waitFor(predicate: () => boolean, timeoutMs = 2000): Promise<void
   }
   throw new Error('timed out waiting for the stats flush');
 }
+
+// ------------------------------------------- T153: the routed-then-denied fix
+
+/** A `classifier_review` gate the human owns — §6.3's route band. */
+const ROUTE_POLICY: Policy = { gates: { classifier_review: 'human' }, breaker_signals: [] };
+
+test('a routed call the human later denies is one firing, not two (T153)', async () => {
+  const [rule] = await ensureBuiltinRules(store);
+  if (rule === undefined) throw new Error('no built-ins created');
+  const streams = new StreamService(store);
+  const stream = await streams.create('human', { title: 'parser', goal: 'pick a dialect' });
+  const gates = new GateService(store);
+  wireClassifierRouteStats(gates, rules);
+
+  // The hook's side: the classifier's band routed this call to the human,
+  // which is one evaluation of the rule.
+  await rules.recordFired(rule.id, 'routed');
+  const gate = await gates.request('classifier_review', {
+    policy: ROUTE_POLICY,
+    stream: stream.id,
+    rule: rule.id as RuleId,
+    summary: 'the classifier routed this call',
+  });
+  // The human's side: their deny turns that routed call into a violation.
+  await gates.respond(gate.id, 'deny', 'pete', 'no');
+  await rules.flushStats();
+
+  const after = store.getRule(rule.id);
+  expect(after.stats).toMatchObject({ fired: 1, routed: 1, violated: 1 });
+  // The deny is not a firing, so it does not move the firing clock either.
+  expect(after.stats.last_fired_at).toBeString();
+});
+
+test('an approved route stays a route: nothing is added to violated', async () => {
+  const [rule] = await ensureBuiltinRules(store);
+  if (rule === undefined) throw new Error('no built-ins created');
+  const streams = new StreamService(store);
+  const stream = await streams.create('human', { title: 'parser', goal: 'pick a dialect' });
+  const gates = new GateService(store);
+  wireClassifierRouteStats(gates, rules);
+
+  await rules.recordFired(rule.id, 'routed');
+  const gate = await gates.request('classifier_review', {
+    policy: ROUTE_POLICY,
+    stream: stream.id,
+    rule: rule.id as RuleId,
+  });
+  await gates.respond(gate.id, 'approve', 'pete');
+  await rules.flushStats();
+
+  expect(store.getRule(rule.id).stats).toMatchObject({ fired: 1, routed: 1, violated: 0 });
+});

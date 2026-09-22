@@ -39,6 +39,7 @@ import {
   ulid,
 } from '@agile-agents/shared';
 import { readHomeConfigFile } from '../config';
+import type { RuleStatsOutcome } from '../rules/service';
 import type { BriefDoc } from '../runner/brief';
 import { buildBrief } from '../runner/brief';
 import type { CliInvocation } from '../runner/cli-bin';
@@ -122,7 +123,7 @@ export interface BriefRulesSource {
    * T143: §5.7's counters, bumped by the ACP permission tier for every
    * pattern rule it evaluates. Optional so a brief-only fake stays valid.
    */
-  recordFired?(id: string, outcome: 'fired' | 'violated' | 'routed'): Promise<unknown>;
+  recordFired?(id: string, outcome: RuleStatsOutcome): Promise<unknown>;
 }
 
 export interface AttachOptions extends AttachFlags {

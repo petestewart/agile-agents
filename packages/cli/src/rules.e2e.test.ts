@@ -179,4 +179,123 @@ describe('agile rules against a daemon on a temp AGILE_HOME', () => {
       'always run the integration suite',
     ]);
   });
+  /**
+   * T153 (§5.6): "examples as evals". The same path the live check runs,
+   * proven offline through `FakeClassifier` — the CLI never reaches the
+   * network and there is no key in this suite.
+   */
+  describe('agile rules test', () => {
+    async function acceptedClassifierRule(): Promise<Rule> {
+      const rule = await add('do not add a dependency without asking', [
+        '--enforcement',
+        'classifier',
+        '--example',
+        'bun add lodash::true',
+        '--example',
+        'edit src/index.ts::false',
+      ]);
+      await cli(['rules', 'accept', rule.id]);
+      return rule;
+    }
+
+    test('agreement exits 0 and prints probability, confidence and band per example', async () => {
+      await acceptedClassifierRule();
+      daemon.classifier.setScript((state, questions) =>
+        questions.map((q) => ({
+          id: q.id,
+          probability: state.startsWith('bun add') ? 0.95 : 0.05,
+          confidence: 0.91,
+        })),
+      );
+      const result = await cli(['rules', 'test']);
+      expect(result.code).toBe(0);
+      const lines = result.out.split('\n');
+      expect(lines[0]?.trimEnd().split(/\s{2,}/)).toEqual([
+        'rule',
+        'example',
+        'expected',
+        'probability',
+        'confidence',
+        'band',
+        'verdict',
+      ]);
+      expect(result.out).toContain('bun add lodash');
+      expect(result.out).toContain('0.950');
+      // The confidence is printed on every row, agreement or not: it is the
+      // evidence the confidence-floor question needs from the live run.
+      expect(result.out).toContain('0.910');
+      expect(result.out).toContain('agree');
+      expect(result.out).toContain('2 examples · 2 agree');
+      expect(result.out).toContain('agreement 100.0%');
+      expect(result.out).toContain('confidence floor 0.5');
+    });
+
+    test('a disagreement is listed with its numbers and exits non-zero', async () => {
+      await acceptedClassifierRule();
+      // A confident allow on the example that is supposed to violate.
+      daemon.classifier.setScript((_state, questions) =>
+        questions.map((q) => ({ id: q.id, probability: 0.12, confidence: 0.88 })),
+      );
+      const result = await cli(['rules', 'test']);
+      expect(result.code).toBe(1);
+      expect(result.out).toContain('DISAGREE');
+      expect(result.out).toContain('0.120');
+      expect(result.out).toContain('0.880');
+      expect(result.out).toContain('1 agree · 1 disagree');
+      expect(result.out).toContain('agreement 50.0%');
+    });
+
+    test('--json carries the same verdicts, and the exit code with them', async () => {
+      const rule = await acceptedClassifierRule();
+      daemon.classifier.setScript((_state, questions) =>
+        questions.map((q) => ({ id: q.id, probability: 0.95, confidence: 0.2 })),
+      );
+      const result = await cli(['rules', 'test', rule.id, '--json']);
+      // Below the confidence floor: §6.3 routes it, which is not the
+      // verdict either example claims.
+      expect(result.code).toBe(1);
+      const report = JSON.parse(result.out) as {
+        rules: Array<{
+          id: string;
+          question: string;
+          examples: Array<{
+            band: string;
+            agree: boolean;
+            probability: number;
+            confidence: number;
+          }>;
+        }>;
+        disagreed: number;
+      };
+      expect(report.rules.map((r) => r.id)).toEqual([rule.id]);
+      expect(report.rules[0]?.question).toBe(
+        'Does this action violate: do not add a dependency without asking?',
+      );
+      expect(report.rules[0]?.examples.map((e) => [e.band, e.agree, e.confidence])).toEqual([
+        ['route', false, 0.2],
+        ['route', false, 0.2],
+      ]);
+      expect(report.disagreed).toBe(2);
+    });
+
+    test('no accepted classifier rules is an empty report, exit 0', async () => {
+      const result = await cli(['rules', 'test']);
+      expect(result.code).toBe(0);
+      expect(result.out).toContain('no accepted classifier rules');
+    });
+
+    test('an eval is not a firing: stats stay at zero (§5.7)', async () => {
+      const rule = await acceptedClassifierRule();
+      daemon.classifier.setScript((_state, questions) =>
+        questions.map((q) => ({ id: q.id, probability: 0.95, confidence: 0.9 })),
+      );
+      await cli(['rules', 'test']);
+      await daemon.rulesService.flushStats();
+      expect(daemon.rulesService.get(rule.id).stats).toMatchObject({
+        fired: 0,
+        violated: 0,
+        routed: 0,
+      });
+    });
+  });
 });

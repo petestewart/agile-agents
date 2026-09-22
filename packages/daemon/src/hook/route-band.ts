@@ -37,6 +37,7 @@ import type {
 } from '@agile-agents/shared';
 import { MESSAGE_BODY_MAX_CHARS } from '@agile-agents/shared';
 import type { GateRequestContext, GateService } from '../gates/service';
+import type { RuleStatsOutcome } from '../rules/service';
 import type { HookDecision } from './types';
 
 /** The slice of `GateService` the route band needs — injected so `HookService` never depends on the whole gates module. */
@@ -195,7 +196,7 @@ export function wireGateDecisionDelivery(gates: GateService, attach: GateDecisio
 
 /** The write side of `RulesService` the routed-answer statistic needs (§5.7). */
 export interface RouteStatsRules {
-  recordFired(id: string, outcome: 'fired' | 'violated' | 'routed'): Promise<unknown>;
+  recordFired(id: string, outcome: RuleStatsOutcome): Promise<unknown>;
 }
 
 /**
@@ -205,6 +206,12 @@ export interface RouteStatsRules {
  * violation of the rule that asked. Wired the same way
  * `wireGateDecisionDelivery` is, so `GateService` keeps knowing nothing
  * about what a gate kind means.
+ *
+ * T153: the outcome is `resolved_violation`, not `violated`, because this
+ * is the *same* action the hook already counted as a firing when it routed
+ * it. Recording it as an ordinary firing made one routed-then-denied call
+ * read `fired: 2, routed: 1, violated: 1`, which is the number §5.7's
+ * pruning report divides by.
  */
 export function wireClassifierRouteStats(
   gates: { respond: GateService['respond'] },
@@ -219,7 +226,7 @@ export function wireClassifierRouteStats(
       resolved.rule !== undefined
     ) {
       try {
-        await rules.recordFired(resolved.rule, 'violated');
+        await rules.recordFired(resolved.rule, 'resolved_violation');
       } catch {
         // Telemetry (§5.7's pruning input): losing a counter must never
         // turn a decision the human already made into an error.

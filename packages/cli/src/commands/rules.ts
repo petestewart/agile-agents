@@ -10,6 +10,7 @@
  */
 
 import {
+  type RuleEvalReport,
   type RuleReport,
   type RuleReportRow,
   readPlanV1Decisions,
@@ -355,4 +356,88 @@ export async function runRulesReport(
     `${report.rows.length} rules · ${flagged} flagged for pruning (never-fired window ${report.days} days)`,
   );
   return 0;
+}
+
+/** `rule example expected probability confidence band verdict` — §5.6's eval columns. */
+export const RULE_TEST_HEADERS = [
+  'rule',
+  'example',
+  'expected',
+  'probability',
+  'confidence',
+  'band',
+  'verdict',
+];
+
+/** Three decimals: a probability of 0.8 and one of 0.804 band differently. */
+function num(value: number | undefined): string {
+  return value === undefined ? '-' : value.toFixed(3);
+}
+
+export function ruleTestRows(report: RuleEvalReport): string[][] {
+  const rows: string[][] = [];
+  for (const rule of report.rules) {
+    for (const example of rule.examples) {
+      rows.push([
+        rule.name ?? rule.id,
+        example.action,
+        example.expected_band,
+        num(example.probability),
+        num(example.confidence),
+        example.band ?? '-',
+        example.error !== undefined
+          ? `error: ${example.error}`
+          : example.agree
+            ? 'agree'
+            : 'DISAGREE',
+      ]);
+    }
+  }
+  return rows;
+}
+
+/**
+ * `agile rules test [rule-id]` — §5.6's "examples as evals". Every accepted
+ * classifier rule's examples go through the configured classifier and the
+ * report says, per example, what came back and whether it matches the
+ * example's own label.
+ *
+ * **Exit 1 on any disagreement or error**, so this is usable as a check:
+ * an accepted classifier rule that no longer agrees with its own examples
+ * is a gate that has started misfiring, and a silent zero would hide it.
+ *
+ * The probability *and* the confidence are printed for every example, not
+ * only for disagreements: the confidence floor's fate (PLAN Discovered
+ * Issues) depends on knowing what confidences the real API actually
+ * returns, and a live run of this command is where that data comes from.
+ */
+export async function runRulesTest(
+  socketPath: string,
+  args: ParsedArgs,
+  json: boolean,
+): Promise<number> {
+  const id = args.positionals[0];
+  const report = await callRpc<RuleEvalReport>(socketPath, 'rule.test', {
+    ...(id !== undefined ? { id } : {}),
+  });
+  const failed = report.disagreed + report.errors;
+  if (json) {
+    printJson(report);
+    return failed > 0 ? 1 : 0;
+  }
+  if (report.rules.length === 0) {
+    console.log('agile rules test: no accepted classifier rules to evaluate');
+    return 0;
+  }
+  printTable(RULE_TEST_HEADERS, ruleTestRows(report));
+  console.log('');
+  const rate =
+    report.agreement_rate === undefined ? 'n/a' : `${(report.agreement_rate * 100).toFixed(1)}%`;
+  console.log(
+    `${report.rules.length} rules · ${report.total} examples · ${report.agreed} agree · ${report.disagreed} disagree · ${report.errors} errors · agreement ${rate}`,
+  );
+  console.log(
+    `bands: deny >= ${report.bands.deny_at} · allow < ${report.bands.allow_below} · confidence floor ${report.bands.confidence_floor}`,
+  );
+  return failed > 0 ? 1 : 0;
 }
