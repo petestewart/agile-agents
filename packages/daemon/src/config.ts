@@ -23,7 +23,13 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { DEFAULT_DAEMON_PORT, type HomeConfig, validateHomeConfig } from '@agile-agents/shared';
+import {
+  type ClassifierConfig,
+  DEFAULT_DAEMON_PORT,
+  type HomeConfig,
+  validateClassifierConfig,
+  validateHomeConfig,
+} from '@agile-agents/shared';
 import { parse as parseYaml } from 'yaml';
 
 export interface AgileConfig {
@@ -41,6 +47,12 @@ export interface AgileConfig {
   socketPath: string;
   /** PID/lock file path — see lock.ts for why it lives outside `.agile/`. */
   lockPath: string;
+  /**
+   * T150 (§6.2, **D5**): the classifier tier's config, defaults applied.
+   * Always present — "not configured" is `provider: 'off'` or the absence
+   * of a key, not the absence of the block.
+   */
+  classifier: ClassifierConfig;
 }
 
 /**
@@ -153,5 +165,6 @@ export function discoverConfig(options: DiscoverConfigOptions = {}): AgileConfig
     port: homePaths.port,
     socketPath: homePaths.socketPath,
     lockPath: homePaths.pidPath,
+    classifier: validateClassifierConfig(readHomeConfigFile(home).classifier),
   };
 }

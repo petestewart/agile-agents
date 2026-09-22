@@ -201,3 +201,23 @@ describe('list / close / archive', () => {
     await expect(call('stream.close', { id: ulid() })).rejects.toThrow(/Stream/);
   });
 });
+
+describe('classifier opt-out over stream.update (T150, §6.4)', () => {
+  test('"off" sets the opt-out and "on" clears it', async () => {
+    const created = await create();
+    const off = await call<Stream>('stream.update', { id: created.id, classifier: 'off' });
+    expect(off.classifier).toBe('off');
+    const on = await call<Stream>('stream.update', { id: created.id, classifier: 'on' });
+    expect(on.classifier).toBeUndefined();
+    expect('classifier' in on).toBe(false);
+  });
+
+  test('anything else is invalid params', async () => {
+    const created = await create();
+    const err = (await call('stream.update', { id: created.id, classifier: false }).then(
+      () => undefined,
+      (e: unknown) => e,
+    )) as { code?: number } | undefined;
+    expect(err?.code).toBe(-32602);
+  });
+});

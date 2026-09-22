@@ -198,6 +198,19 @@ export const StreamSchema = z
      * archivable and both keep their status when they are.
      */
     archived: z.literal(true).optional(),
+    /**
+     * T150 (§6.4): the per-stream opt-out from the classifier tier — "a
+     * stream working on something the operator does not want leaving the
+     * machine turns the tier off; pattern rules and guidance still apply."
+     *
+     * Human-owned, but deliberately top-level rather than under `human`,
+     * exactly like `archived`: both halves of the record are *state the
+     * stream is in*, and this is a setting on the stream. Only `'off'` is
+     * representable — "on" is the absence of the opt-out, so there is no
+     * way to write a stream-level override that re-enables a tier the repo
+     * or the home turned off.
+     */
+    classifier: z.literal('off').optional(),
     agent: StreamAgentStateSchema,
     human: StreamHumanStateSchema,
     sessions: z.array(SessionRefSchema).default([]),

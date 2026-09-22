@@ -120,3 +120,7 @@ export * from './sandbox';
 
 // Pi adapter: the agile Pi extension source, its installer, gate env (T022).
 export * from './pi';
+
+// T150: the classifier tier (cockpit design §6) — the interface, the
+// credential scrub, the Jev adapter and the fake the suite uses.
+export * from './classifier';
