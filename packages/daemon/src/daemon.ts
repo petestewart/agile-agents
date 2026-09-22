@@ -183,12 +183,11 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
         })
       : undefined;
   if (gateService && landingService) wireLandGateResolution(gateService, landingService);
-<<<<<<< HEAD
   // T138: deciding a `classifier_review` gate (the hook's route band, §8.1)
   // prompts the session whose tool call it blocked — the same delivery path
   // T137 built for an answer.
   if (gateService && attachService) wireGateDecisionDelivery(gateService, attachService);
-=======
+
   // T141: the retro (§5.5). It reads the stream's findings, denials and
   // questions and starts one read-only `lessons` session over them; the
   // proposals it makes are ordinary `propose_rule` writes, capped at three.
@@ -202,7 +201,6 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
           questions: { list: () => questionService?.list() ?? [] },
         })
       : undefined;
->>>>>>> origin/T141-lessons-at-stream-close
   // Hoisted (T011) so `bus.*` RPC and the hook service share one `Bus`
   // instance over the same store.
   const bus = store ? new Bus(store, config.stateRoot, { now: options.now }) : undefined;
