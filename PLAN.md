@@ -329,8 +329,8 @@ Build order: Phase 0 → 1 → 2 → 3 → 4 → 5 → 6. Within a phase, ticket
 
 ### Ticket: T141 Lessons at stream close
 - **Priority:** P0
-- **Status:** Todo
-- **Owner:** —
+- **Status:** In Progress
+- **Owner:** opus:worker-T141
 - **Scope:** On land or close, the daemon runs a short one-shot session (worker vendor, `briefs/lessons.md`) over the stream's findings, questions, and hook denials, and asks for at most three proposed rules, each with two example actions. They are written as `proposed` with provenance and appear in the inbox as `rule_accept` items. No proposal is made when there were no findings, no denials, and no questions.
 - **Acceptance Criteria:** With the fake transport scripted to propose two rules, both appear in the inbox with provenance pointing at the stream; accepting one moves it to `accepted` and the next brief in scope contains it.
 - **Validation Steps:** integration test; e2e for the inbox card.
@@ -338,8 +338,8 @@ Build order: Phase 0 → 1 → 2 → 3 → 4 → 5 → 6. Within a phase, ticket
 
 ### Ticket: T142 Rules view and pruning
 - **Priority:** P1
-- **Status:** Todo
-- **Owner:** —
+- **Status:** In Progress
+- **Owner:** opus:worker-T142
 - **Scope:** RPC `rules.report`: for each rule, fired / violated / routed counts, last fired, and "never fired in N days". `agile rules report`. UI in T163.
 - **Acceptance Criteria:** Counts come from `stats` updated by the hook path (T151) and the diff check (T152); a retired rule stops being injected on the next session.
 - **Validation Steps:** `bun test packages/daemon/src/rules`.
@@ -480,3 +480,4 @@ Daemon: `em/`, `architect/`, `oracle/`, `qa/`, `halts/`, `quota/`, `handoff/`, `
 - (T131 merge) The merge commit bb94105 carries git's `# Conflicts:` comment after the two trailer lines (a `--no-edit` conflict merge keeps it); the force-push to rewrite it was blocked by the session's permission policy, so it stays. Message-only; the tree is correct.
 - (Pete's Phase 3 live run, 2026-09-21, tip 2410916, two attempts) Worker attached, surveyed ledger-lite, found no CLI, asked A/B/C via `ask` and ended its turn. The answer never reached the session: `deliverAnswer` writes a bus mailbox nobody reads. `agent.status` stayed `working` for 19 min (live-but-idle passes the live-session check); `detach` wrote `done` on an empty stream and printed "no live session" while killing one. Branch was `<id>-<slug>` not `stream/<id>-<slug>`; a multi-line agent message split into two thread entries; inbox context truncated mid-word. → T137 (P0, blocks the T135 milestone) and T136. Nothing landed; ledger-lite `main` untouched at 41a1a39.
 - (Pete's Phase 3 live run, 2026-09-22, tip 88cdeb4) End to end for the first time: answer delivery, self-stop, review, land all behaved; landed dc4d983 on ledger-lite main. The manifest hook's escape hatch ("file a hil_request") is unreachable from the agent → T138. `land` correctly refused a dirty target checkout. Two `done/open` streams from the failed runs sit in the inbox until closed (by design; wording → T136).
+- (T138) `hil_request` survives only as a bus message kind (`shared/src/message.ts` and its users in `bus/routing.ts`, `gates/service.ts`, `permissions/responder.ts`, `feed/snapshot.ts`); the verdict strings no longer name it. Delete the kind with the rest of the bus in Phase 6's cleanup (T160) or a small mechanical ticket.
