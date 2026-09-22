@@ -468,7 +468,7 @@ Build order: Phase 0 → 1 → 2 → 3 → 4 → 5 → 6. Within a phase, ticket
 
 ### Ticket: T155 ∥ Phase 5 rough edges from the agreement check
 - **Priority:** P2
-- **Status:** Todo
+- **Status:** In Progress
 - **Owner:** -
 - **Scope:** (1) `rule.test` gets an RPC deadline scaled to example count × classifier timeout, so `agile rules test` finishes a real suite instead of exiting 1 after 5 s while the daemon keeps going. (2) The eval path writes a `classifier_call` event per call (latency, rule, band), as the hook path does. (3) The plain `rules test` table collapses multi-line example actions to one truncated line. (4) `agile rules edit <id>` over `rule.update` (text, question, enforcement, stage, examples), so edit-then-accept needs no raw RPC. (5) `landing/diff-rules.ts` raises its `classifier_review` gate with the rule id, so `wireClassifierRouteStats` attributes denied landing routes (T153 review).
 - **Acceptance Criteria:** CLI test with a `FakeClassifier` delayed past 5 s total completes; eval run leaves `classifier_call` events; table test with a diff example; CLI test for `rules edit`; stats test for a denied landing route.
@@ -481,7 +481,7 @@ Build order: Phase 0 → 1 → 2 → 3 → 4 → 5 → 6. Within a phase, ticket
 
 ### Ticket: T160 Shell, inbox, and stream tree
 - **Priority:** P0
-- **Status:** Todo
+- **Status:** In Progress
 - **Owner:** —
 - **Scope:** Reuse `ui/app/lib/shell.tsx`, the single ws, `Markdown`, `NeedsYou` (renamed Inbox), `TopBar`, `Settings`. Left rail: stream tree with status dots (who must act). Main: Inbox by default, grouped by stream, each card answerable inline (question, land, rule accept, classifier review). Delete the Plan/Sprint/Review screens and their components.
 - **Acceptance Criteria:** Playwright: an agent question on a nested stream appears in the inbox without reload, the answer reaches the session, the tree dot changes. Phone-width layout works.
