@@ -407,8 +407,8 @@ Build order: Phase 0 → 1 → 2 → 3 → 4 → 5 → 6. Within a phase, ticket
 
 ### Ticket: T153 Rule examples as evals
 - **Priority:** P1
-- **Status:** Todo
-- **Owner:** —
+- **Status:** In Progress
+- **Owner:** opus:worker-T153
 - **Scope:** `agile rules test [rule-id]` runs every accepted classifier rule's `examples` through the configured classifier and reports agreement; the suite runs the same through the fake to prove plumbing. A rule with fewer than two examples cannot be accepted with `enforcement: classifier` (store check).
 - **Acceptance Criteria:** Store rejects the under-specified rule; the CLI report lists disagreements with probability and confidence.
 - **Validation Steps:** `bun test packages/daemon/src/rules`.
