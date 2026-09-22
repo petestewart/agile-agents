@@ -90,6 +90,7 @@ test('recordFired bumps fired, and violated/routed on top of it, as the daemon p
   await rules.recordFired(rule.id, 'fired');
   await rules.recordFired(rule.id, 'violated');
   await rules.recordFired(rule.id, 'routed');
+  await rules.flushStats();
 
   const after = store.getRule(rule.id);
   expect(after.stats.fired).toBe(3);
@@ -100,3 +101,86 @@ test('recordFired bumps fired, and violated/routed on top of it, as the daemon p
   expect(after.status).toBe('accepted');
   expect(after.decided_by).toBe(BUILTIN_PROVENANCE);
 });
+
+// ------------------------------------------------------- coalesced stats
+
+test('counters are coalesced: three fires are one write, and a read sees them before it lands', async () => {
+  const [rule] = await ensureBuiltinRules(store);
+  if (rule === undefined) throw new Error('no built-ins created');
+  // No timer: this test owns the flush point (§5.7's counters are
+  // telemetry, so "when" is a tunable, not a contract).
+  const coalescing = new RulesService({
+    store,
+    streams: new StreamService(store),
+    statsFlushMs: 0,
+  });
+  const eventsBefore = store.listEvents().filter((e) => e.kind === 'rule_put').length;
+
+  await coalescing.recordFired(rule.id, 'fired');
+  await coalescing.recordFired(rule.id, 'violated');
+  await coalescing.recordFired(rule.id, 'fired');
+
+  // Nothing on disk yet — that is the point.
+  expect(store.getRule(rule.id).stats.fired).toBe(0);
+  // But a read through the service is never stale (flush-on-read merges
+  // whatever is still pending).
+  expect(coalescing.get(rule.id).stats.fired).toBe(3);
+  expect(coalescing.get(rule.id).stats.violated).toBe(1);
+  expect(coalescing.list().find((r) => r.id === rule.id)?.stats.fired).toBe(3);
+
+  await coalescing.flushStats();
+  const after = store.getRule(rule.id);
+  expect(after.stats.fired).toBe(3);
+  expect(after.stats.violated).toBe(1);
+  expect(after.stats.last_fired_at).toBeString();
+  // One write for three fires, not three.
+  const eventsAfter = store.listEvents().filter((e) => e.kind === 'rule_put').length;
+  expect(eventsAfter - eventsBefore).toBe(1);
+
+  // A flush with nothing pending writes nothing at all.
+  await coalescing.flushStats();
+  expect(store.listEvents().filter((e) => e.kind === 'rule_put').length).toBe(eventsAfter);
+  coalescing.dispose();
+});
+
+test('a read flushes: the counters reach disk without anyone calling flushStats', async () => {
+  const [rule] = await ensureBuiltinRules(store);
+  if (rule === undefined) throw new Error('no built-ins created');
+  const coalescing = new RulesService({
+    store,
+    streams: new StreamService(store),
+    statsFlushMs: 0,
+  });
+
+  await coalescing.recordFired(rule.id, 'violated');
+  coalescing.list();
+  await waitFor(() => store.getRule(rule.id).stats.violated === 1);
+  coalescing.dispose();
+});
+
+test('the timer flushes on its own, with no read and no shutdown', async () => {
+  const [rule] = await ensureBuiltinRules(store);
+  if (rule === undefined) throw new Error('no built-ins created');
+  const ticking = new RulesService({
+    store,
+    streams: new StreamService(store),
+    statsFlushMs: 10,
+  });
+  try {
+    await ticking.recordFired(rule.id, 'fired');
+    expect(store.getRule(rule.id).stats.fired).toBe(0);
+    await waitFor(() => store.getRule(rule.id).stats.fired === 1);
+  } finally {
+    ticking.dispose();
+  }
+});
+
+/** Polls until `predicate` holds, so a timer-driven write needs no fixed sleep. */
+async function waitFor(predicate: () => boolean, timeoutMs = 2000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  throw new Error('timed out waiting for the stats flush');
+}

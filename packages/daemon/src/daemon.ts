@@ -332,6 +332,12 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
         await attachService?.stopAll();
         await http.stop();
         await rpc.close();
+        // T143: the coalesced rule `stats` counters — a graceful shutdown
+        // must not lose the window since the last 5 s flush.
+        if (rulesService) {
+          await rulesService.flushStats();
+          rulesService.dispose();
+        }
         // Flush any pending deferred hook_decision/heartbeat commits (T009
         // review round, hot-path decision) — a graceful shutdown must not
         // lose a batch that hasn't hit its 5s debounce yet.

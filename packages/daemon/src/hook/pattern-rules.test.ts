@@ -56,7 +56,8 @@ beforeEach(async () => {
   store = StateStore.open(init.stateRoot);
   bus = new Bus(store, init.stateRoot);
   const streams = new StreamService(store);
-  rules = new RulesService({ store, streams });
+  // No flush timer: these tests own the flush point.
+  rules = new RulesService({ store, streams, statsFlushMs: 0 });
 
   await store.putRepos({ demo: { path: repo, protected_branches: ['main'] } });
   const created = await streams.create('human', { title: 'rules', goal: 'gate me', repo: 'demo' });
@@ -112,10 +113,15 @@ test('a push to a protected branch is denied, the deny names the rule, and stats
   expect(reason).toContain('no_push_protected');
   expect(reason).toContain('main');
 
-  const after = store.getRule(before.id);
-  expect(after.stats.fired).toBe(1);
-  expect(after.stats.violated).toBe(1);
-  expect(after.stats.last_fired_at).toBeString();
+  // Counters are coalesced (§5.7 is telemetry, not a decision): the read
+  // side of `RulesService` merges what is still pending, and a flush is
+  // what puts it on disk.
+  const pending = rules.get(before.id);
+  expect(pending.stats.fired).toBe(1);
+  expect(pending.stats.violated).toBe(1);
+  expect(pending.stats.last_fired_at).toBeString();
+  await rules.flushStats();
+  expect(store.getRule(before.id).stats).toMatchObject({ fired: 1, violated: 1 });
 
   // The log answers "why was I denied" on its own (§5.4's built-ins are
   // global and critical, so a post-mortem must not need the transcript).
@@ -131,6 +137,7 @@ test('an allowed call still bumps fired for every rule that was evaluated, and v
   const { decision } = await decide(`git push origin ${BRANCH}`);
   expect(decision).toBe('allow');
 
+  await rules.flushStats();
   const evaluated = store.listRules().filter((rule) => rule.status === 'accepted');
   expect(evaluated).toHaveLength(2); // no_push_protected + no_worktree_escape; no_push is retired
   for (const rule of evaluated) {
