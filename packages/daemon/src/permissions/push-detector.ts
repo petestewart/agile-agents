@@ -19,7 +19,15 @@
  *    closed** with `CANNOT_DETERMINE_REASON`;
  *  - a push to an explicitly named non-protected branch is allowed (D7);
  *  - a bare `git push` is resolved against the checked-out branch's
- *    upstream and denied when that is unresolvable;
+ *    upstream and denied when that is unresolvable, and a refspec whose
+ *    destination is `HEAD`/`@` is resolved against the checked-out branch
+ *    (T143 review: `git push origin HEAD` run on `main` pushes to `main`,
+ *    but the string `"HEAD"` matches no protected name);
+ *  - a `-c alias.…=…` config override, and the plumbing commands `push` is
+ *    built on (`send-pack`, `http-push`, `remote-ext`), **fail closed**:
+ *    they reach a push without the literal `push` subcommand this detector
+ *    anchors on. Nothing else is allow-listed — an unknown subcommand is
+ *    still ordinary work;
  *  - merging into a protected branch (`git checkout main && git merge …`,
  *    or a bare `git merge` while HEAD already is one) is the same act as
  *    pushing to it and is denied by the same detector.
@@ -78,6 +86,30 @@ function destBranchNames(refspec: string): string[] {
   return last !== undefined && last !== dest ? [dest, last] : [dest];
 }
 
+/**
+ * Spellings of "the branch I am on" that git resolves for itself. As a
+ * push *destination* (`git push origin HEAD`, `git push origin @`) they
+ * name the checked-out branch's same-named remote ref, so comparing the
+ * literal token against the protected names would never match (T143
+ * review finding 1).
+ */
+const HEAD_ALIASES = new Set(['HEAD', '@']);
+
+/**
+ * Commands that reach a push without the literal `push` subcommand this
+ * detector anchors on: `send-pack` is the plumbing `push` is built on,
+ * `http-push` its dumb-HTTP twin, and `remote-ext` a transport helper that
+ * can be invoked directly. They fail closed rather than being parsed for
+ * refspecs — this is a short, named list, not an allow-list of git
+ * (an unknown subcommand still passes).
+ */
+const FAIL_CLOSED_SUBCOMMANDS = new Set(['send-pack', 'http-push', 'remote-ext']);
+
+/** `-c alias.p=push` redefines what a subcommand token means, so it cannot be checked. */
+function definesAlias(configs: readonly string[]): boolean {
+  return configs.some((config) => /^alias\./i.test(config));
+}
+
 /** The branch names an upstream ref (`origin/main`, `main`) could mean. */
 function upstreamBranchNames(upstream: string): string[] {
   const segments = upstream.split('/');
@@ -105,7 +137,7 @@ function branchAfterCheckout(args: string[]): string | undefined {
 }
 
 /** Git atoms of one command, in order, with the fail-closed check applied. */
-type GitAtom = { args: string[] };
+type GitAtom = { args: string[]; configs: string[] };
 
 function gitAtomOf(atom: CommandAtom): GitAtom | undefined | 'unknown' {
   const head = atom.tokens[0];
@@ -113,10 +145,10 @@ function gitAtomOf(atom: CommandAtom): GitAtom | undefined | 'unknown' {
   if (isUnresolvedToken(head)) return 'unknown';
   if (head !== 'git') return undefined;
   if (atom.tokens.some(isUnresolvedToken)) return 'unknown';
-  const args = parseGitInvocation(atom.tokens).args;
+  const { args, configs } = parseGitInvocation(atom.tokens);
   // `git` with global options but no subcommand at all (`git -C /repo`) is
   // not a subcommand this detector can clear.
-  return args === undefined ? 'unknown' : { args };
+  return args === undefined ? 'unknown' : { args, configs };
 }
 
 /**
@@ -139,8 +171,15 @@ export function detectProtectedBranchWrite(
     const git = gitAtomOf(atom);
     if (git === undefined) continue;
     if (git === 'unknown') return `${CANNOT_DETERMINE_REASON} in "${command}"`;
-    const { args } = git;
+    const { args, configs } = git;
     const subcommand = args[0];
+
+    if (definesAlias(configs)) {
+      return `${CANNOT_DETERMINE_REASON} in "${command}": git aliases cannot be checked`;
+    }
+    if (subcommand !== undefined && FAIL_CLOSED_SUBCOMMANDS.has(subcommand)) {
+      return `${CANNOT_DETERMINE_REASON} in "${command}": \`git ${subcommand}\` can push without the push subcommand`;
+    }
 
     if (subcommand === 'push') {
       const blanket = args.find((a) => BLANKET_PUSH_FLAGS.has(a));
@@ -159,8 +198,21 @@ export function detectProtectedBranchWrite(
         continue;
       }
       for (const refspec of refspecs) {
+        const dest = refspecDestBranch(refspec);
+        if (HEAD_ALIASES.has(dest)) {
+          // `git push origin HEAD` pushes the checked-out branch to its
+          // same-named ref on the remote, so the branch is what to match.
+          const onto = ctx.head();
+          if (onto === undefined) {
+            return `\`git push ${refspec}\` could not be resolved to a branch (HEAD is unreadable or detached) — push an explicit non-protected branch instead`;
+          }
+          if (protectedBranches.includes(onto)) {
+            return `push of ${dest} would write ${onto}, a protected branch (${protectedBranches.join(', ')})`;
+          }
+          continue;
+        }
         if (matchesProtected(destBranchNames(refspec), protectedBranches)) {
-          return `push to ${refspecDestBranch(refspec)} is a write to a protected branch (${protectedBranches.join(', ')})`;
+          return `push to ${dest} is a write to a protected branch (${protectedBranches.join(', ')})`;
         }
       }
       continue;
@@ -200,7 +252,14 @@ export function detectPush(command: string): string | undefined {
     const git = gitAtomOf(atom);
     if (git === undefined) continue;
     if (git === 'unknown') return `${CANNOT_DETERMINE_REASON} in "${command}"`;
-    if (git.args[0] === 'push') return 'git push is not allowed in this repo';
+    if (definesAlias(git.configs)) {
+      return `${CANNOT_DETERMINE_REASON} in "${command}": git aliases cannot be checked`;
+    }
+    const subcommand = git.args[0];
+    if (subcommand !== undefined && FAIL_CLOSED_SUBCOMMANDS.has(subcommand)) {
+      return `${CANNOT_DETERMINE_REASON} in "${command}": \`git ${subcommand}\` can push without the push subcommand`;
+    }
+    if (subcommand === 'push') return 'git push is not allowed in this repo';
   }
   return undefined;
 }

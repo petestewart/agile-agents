@@ -166,6 +166,34 @@ test('git stash push and git log --grep push are ordinary work', async () => {
   expect((await decide('git log --grep push')).decision).toBe('allow');
 });
 
+test('the review evasions, at the hook tier: HEAD, an alias, and the push plumbing', async () => {
+  // On `T143-x`, `HEAD` is the ticket branch — ordinary work.
+  expect((await decide('git push origin HEAD')).decision).toBe('allow');
+  // On a protected branch it is a push to that branch, resolved through the
+  // worktree's real `git rev-parse --abbrev-ref HEAD`.
+  git(['checkout', '-q', 'main']);
+  const onMain = await decide('git push origin HEAD');
+  expect(onMain.decision).toBe('deny');
+  expect(onMain.reason).toContain('main');
+  git(['checkout', '-q', BRANCH]);
+
+  for (const command of [
+    'git -c alias.p=push p origin main',
+    'git -c alias.p=push p origin T143-x',
+    'git send-pack origin refs/heads/x:refs/heads/main',
+    'git http-push https://x refs/heads/main',
+    'git remote-ext origin',
+  ]) {
+    const { decision, reason } = await decide(command);
+    expect(decision).toBe('deny');
+    expect(reason).toContain(ruleOfKind('no_push_protected').id);
+  }
+
+  // Not an allow-list of git: an unnamed subcommand still passes.
+  expect((await decide('git remote -v')).decision).toBe('allow');
+  expect((await decide('git bisect start')).decision).toBe('allow');
+});
+
 test('an obfuscated git invocation fails closed', async () => {
   const { decision, reason } = await decide('$(echo git) push origin main');
   expect(decision).toBe('deny');

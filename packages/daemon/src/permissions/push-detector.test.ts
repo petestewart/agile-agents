@@ -120,6 +120,84 @@ const ROWS: Row[] = [
     why: 'an upstream with no remote prefix is compared as-is',
   },
 
+  // --- HEAD as a destination (T143 review finding 1) ---------------------
+  {
+    command: 'git push origin HEAD',
+    expect: 'deny',
+    context: { head: () => 'main' },
+    why: 'HEAD pushes the checked-out branch to its same-named remote ref',
+  },
+  {
+    command: 'git push origin HEAD',
+    expect: 'allow',
+    why: 'on the ticket branch, HEAD is the ticket branch',
+  },
+  {
+    command: 'git push origin @',
+    expect: 'deny',
+    context: { head: () => 'master' },
+    why: '@ is the same spelling',
+  },
+  {
+    command: 'git push origin HEAD',
+    expect: 'deny',
+    context: { head: () => undefined },
+    why: 'a detached or unreadable HEAD cannot be shown to be safe',
+  },
+  {
+    command: 'git push -u origin HEAD',
+    expect: 'deny',
+    context: { head: () => 'main' },
+    why: '-u does not change what HEAD resolves to',
+  },
+
+  // --- reaching a push without the `push` subcommand (review finding 2) --
+  {
+    command: 'git -c alias.p=push p origin main',
+    expect: 'unknown',
+    why: 'an alias redefines the subcommand token',
+  },
+  {
+    command: 'git -c alias.p=push p origin T143-x',
+    expect: 'unknown',
+    why: 'fail closed even when the branch looks fine — the alias is unreadable',
+  },
+  {
+    command: 'git -c alias.co=checkout co main',
+    expect: 'unknown',
+    why: 'any alias override at all, not just a push one',
+  },
+  {
+    command: 'git send-pack origin refs/heads/x:refs/heads/main',
+    expect: 'unknown',
+    why: 'the plumbing push is built on',
+  },
+  {
+    command: 'git http-push https://x refs/heads/main',
+    expect: 'unknown',
+    why: 'the dumb-HTTP twin',
+  },
+  {
+    command: 'git remote-ext origin',
+    expect: 'unknown',
+    why: 'a transport helper invoked directly',
+  },
+  {
+    command: 'git -c core.pager=cat push origin T143-x',
+    expect: 'allow',
+    why: 'an ordinary -c override is not an alias',
+  },
+  {
+    command: 'git remote -v',
+    expect: 'allow',
+    why: 'not allow-listing git: an unnamed subcommand still passes',
+  },
+  {
+    command: 'git bisect start',
+    expect: 'allow',
+    why: 'an unknown subcommand is ordinary work, not a fail-closed deny',
+  },
+
   // --- anchored on the subcommand, not a substring ------------------------
   { command: 'git stash push', expect: 'allow', why: 'stash push is not a push' },
   { command: 'git stash push -m "wip on main"', expect: 'allow', why: 'nor with a message' },
@@ -262,6 +340,12 @@ describe('no_push detector (D7: retired by default)', () => {
     ['git stash push', false],
     ['git log --grep push', false],
     ['echo push', false],
+    // Fail-closed forms are denies here too (review finding 2).
+    ['git -c alias.p=push p origin T143-x', true],
+    ['git send-pack origin refs/heads/x:refs/heads/main', true],
+    ['git http-push https://x refs/heads/main', true],
+    ['git remote-ext origin', true],
+    ['git bisect start', false],
   ] as const)('%s -> %p', (command, denied) => {
     const reason = detectPush(command);
     expect(reason !== undefined).toBe(denied);

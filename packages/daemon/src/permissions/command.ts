@@ -395,6 +395,13 @@ export interface ParsedGitInvocation {
   args: string[] | undefined;
   /** Every `-C <path>` value seen before the subcommand (there can be more than one; git applies them left to right). */
   cPaths: string[];
+  /**
+   * Every `-c <key>=<value>` config override seen before the subcommand
+   * (T143 review): these change what the subcommand *means* —
+   * `-c alias.p=push p` resolves to a push whose subcommand token is `p` —
+   * so the push detector has to see them rather than skip past them.
+   */
+  configs: string[];
 }
 
 /**
@@ -404,19 +411,26 @@ export interface ParsedGitInvocation {
  * recognized as a `push` rather than mis-read as `args[0] === '-C'`.
  */
 export function parseGitInvocation(tokens: string[]): ParsedGitInvocation {
-  if (tokens[0] !== 'git') return { args: undefined, cPaths: [] };
+  if (tokens[0] !== 'git') return { args: undefined, cPaths: [], configs: [] };
   const cPaths: string[] = [];
+  const configs: string[] = [];
   let i = 1;
   while (i < tokens.length) {
     const t = tokens[i] ?? '';
     if (!t.startsWith('-')) {
-      return { args: tokens.slice(i), cPaths };
+      return { args: tokens.slice(i), cPaths, configs };
     }
     const eq = t.indexOf('=');
     const flagName = eq !== -1 ? t.slice(0, eq) : t;
     if (flagName === '-C') {
       const value = eq !== -1 ? t.slice(eq + 1) : tokens[i + 1];
       if (value !== undefined) cPaths.push(value);
+      i += eq !== -1 ? 1 : 2;
+      continue;
+    }
+    if (flagName === '-c') {
+      const value = eq !== -1 ? t.slice(eq + 1) : tokens[i + 1];
+      if (value !== undefined) configs.push(value);
       i += eq !== -1 ? 1 : 2;
       continue;
     }
@@ -434,7 +448,7 @@ export function parseGitInvocation(tokens: string[]): ParsedGitInvocation {
     // still catch safely (never an allow we didn't mean).
     i += 1;
   }
-  return { args: undefined, cPaths };
+  return { args: undefined, cPaths, configs };
 }
 
 /** Args from `git`'s subcommand onward, or `undefined` if this isn't a `git` invocation with one. */

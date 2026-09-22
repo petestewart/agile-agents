@@ -332,6 +332,44 @@ describe('buildPermissionResponder — pattern rules at the ACP tier', () => {
     expect(decision.kind).toBe('deny');
   });
 
+  test('the review evasions are closed at this tier too: HEAD, an alias, the push plumbing', async () => {
+    const rule = patternRule('no_push_protected');
+    // `repo`'s checked-out branch is whatever `git init` defaulted to; the
+    // responder resolves it through the same lazy `git rev-parse` lookup,
+    // so name that branch protected and `HEAD` must resolve onto it.
+    const head = Bun.spawnSync(['git', 'rev-parse', '--abbrev-ref', 'HEAD'], { cwd: repo })
+      .stdout.toString()
+      .trim();
+    const session = fakeSession();
+    const responder = buildPermissionResponder(store, {
+      role: 'engineer',
+      agent: 'eng-1',
+      worktreePath: repo,
+      session,
+      patternRules: {
+        rules: () => [rule],
+        protectedBranches: () => [head],
+        record: async () => {},
+      },
+    });
+
+    let id = 10;
+    for (const command of [
+      'git push origin HEAD',
+      'git push origin @',
+      'git -c alias.p=push p origin whatever',
+      'git send-pack origin refs/heads/x:refs/heads/main',
+      'git http-push https://x refs/heads/main',
+      'git remote-ext origin',
+    ]) {
+      const decision = await responder.handleRequest(id++, request('execute', { command }));
+      expect(decision.kind).toBe('deny');
+    }
+    // Still not an allow-list of git.
+    const ok = await responder.handleRequest(id, request('execute', { command: 'git remote -v' }));
+    expect(ok.kind).toBe('allow');
+  });
+
   test('with no rules wired the tier behaves exactly as it did before T143', async () => {
     const { responder, recorded } = gatedResponder([]);
     const decision = await responder.handleRequest(
