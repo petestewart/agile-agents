@@ -993,3 +993,69 @@ describe('stream page (Playwright e2e, T161)', () => {
     TEST_BUDGET_MS,
   );
 });
+
+describe('stream page rough edges (Playwright e2e, T166)', () => {
+  browserTest(
+    'Needs you shows "nothing waiting on you"; a branch merged by hand is marked landed; Close closes as human',
+    async () => {
+      const cockpit = await startStreamCockpit([]);
+      let page: Page | undefined;
+      try {
+        // A stream whose branch was merged into main outside `land`.
+        const worktree = join(cockpit.repo, '.worktrees', 's-merged');
+        git(['worktree', 'add', '-q', '-b', 's-merged', worktree, 'main'], cockpit.repo);
+        writeFileSync(join(worktree, 'help.txt'), '--help\n');
+        git(['add', '-A'], worktree);
+        git(['commit', '-q', '-m', 'help'], worktree);
+        git(['worktree', 'remove', worktree], cockpit.repo);
+        git(['merge', '-q', '--no-ff', '-m', 'merge by hand', 's-merged'], cockpit.repo);
+        const merged = await cockpit.streams.create('human', {
+          title: 'help flag',
+          goal: 'g',
+          repo: 'demo',
+        });
+        await cockpit.streams.update('daemon', merged.id, { branch: 's-merged' });
+        const other = await cockpit.streams.create('human', { title: 'to close', goal: 'g' });
+
+        // Cross-origin writes are rejected before anything changes.
+        for (const action of ['close', 'mark-landed']) {
+          const res = await fetch(`${cockpit.base}/api/streams/${other.id}/${action}`, {
+            method: 'POST',
+            headers: { origin: 'https://evil.example' },
+          });
+          expect(res.status).toBe(403);
+        }
+        expect(cockpit.streams.get(other.id).human.status).toBe('open');
+
+        page = await openPage();
+        await page.goto(`${cockpit.base}/`);
+        await page.locator(`[data-testid="stream-tree"] [data-stream="${merged.id}"]`).click();
+        await page.locator(`[data-testid="stream-page"][data-stream="${merged.id}"]`).waitFor();
+        await page.locator('[data-testid="stream-needs-empty"]').waitFor({ state: 'visible' });
+        expect(await page.locator('[data-testid="stream-needs"] h2').textContent()).toBe(
+          'Needs you',
+        );
+        await waitForAttr(page, '[data-testid="land-before"]', 'data-ready', 'merged');
+        expect(await page.locator('[data-testid="land-before"]').textContent()).toContain(
+          'Already merged into main',
+        );
+        expect(await page.locator('[data-testid="stream-land"]').count()).toBe(0);
+        await page.locator('[data-testid="stream-mark-landed"]').click();
+        await page.locator('[data-testid="stream-status"]', { hasText: 'you landed' }).waitFor();
+        expect(cockpit.streams.get(merged.id).human.status).toBe('landed');
+        expect(await page.locator('[data-testid="stream-close"]').count()).toBe(0);
+
+        // Close, on another stream.
+        await page.locator(`[data-testid="stream-tree"] [data-stream="${other.id}"]`).click();
+        await page.locator(`[data-testid="stream-page"][data-stream="${other.id}"]`).waitFor();
+        await page.locator('[data-testid="stream-close"]').click();
+        await page.locator('[data-testid="stream-status"]', { hasText: 'you closed' }).waitFor();
+        expect(cockpit.streams.get(other.id).human.status).toBe('closed');
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+});

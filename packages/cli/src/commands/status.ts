@@ -118,7 +118,7 @@ export function printStatusHuman(status: StatusResult): void {
 /**
  * A dead daemon is not an error to spill: `agile status` used to print the
  * raw `could not reach daemon at <sock>: connect ENOENT ...` while `agile
- * daemon status` said `agiled is not running (home=...)` for the same fact
+ * daemon status` said `agiled is not running` (after the home line) for the same fact
  * (T126, QA rough edge 3). Both now say the same sentence, from the same
  * formatter, and exit 1.
  */

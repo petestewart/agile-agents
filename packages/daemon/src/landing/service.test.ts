@@ -24,6 +24,7 @@ let repo: string;
 let store: StateStore;
 let streams: StreamService;
 let landing: LandingService;
+let stateRoot: string;
 
 function git(args: string[], cwd = repo): string {
   const result = Bun.spawnSync(['git', ...args], { cwd, stdout: 'pipe', stderr: 'pipe' });
@@ -79,7 +80,8 @@ beforeEach(async () => {
   git(['commit', '-q', '-m', 'init']);
 
   const init = runInit(home);
-  store = StateStore.open(init.stateRoot);
+  stateRoot = init.stateRoot;
+  store = StateStore.open(stateRoot);
   streams = new StreamService(store);
   await store.putRepos({ demo: { path: repo, protected_branches: ['main'] } });
   landing = new LandingService({ store, streams });
@@ -509,5 +511,49 @@ describe('T161: the stream page reads (preflight and diff)', () => {
     expect(diff.truncated).toBe(false);
     const unattached = await makeStream({ title: 'never attached' });
     expect(() => landing.diff(unattached.id)).toThrow(LandRefusedError);
+  });
+});
+
+describe('T166: a branch merged outside `land`', () => {
+  test('a --no-ff merge done by hand: preflight says merged, Mark landed records it as human', async () => {
+    const work = branchWithWork('s-merged', 'm.txt', 'm\n');
+    const stream = await makeStream(work);
+    git(['merge', '-q', '--no-ff', '-m', 'merge by hand', 's-merged']);
+    const pre = landing.preflight(stream.id);
+    expect(pre).toMatchObject({ ready: false, merged: true, target: 'main', ahead: 0 });
+    expect(pre.reason).toBe('s-merged is already merged into main');
+
+    const landed = await landing.markLanded(stream.id);
+    expect(landed.human.status).toBe('landed');
+    expect(threadBodies(stream.id).some((b) => b.startsWith('marked landed:'))).toBe(true);
+    const lines = readFileSync(join(stateRoot, 'log', 'events.jsonl'), 'utf8');
+    const updates = lines
+      .split('\n')
+      .filter(Boolean)
+      .map((line) => JSON.parse(line) as { kind: string; data?: Record<string, unknown> })
+      .filter((event) => event.kind === 'stream_updated');
+    expect(updates.at(-1)?.data).toMatchObject({ human_status: 'landed', principal: 'human' });
+  });
+
+  test('a fast-forward merge is also detected (the branch moved off its fork point)', async () => {
+    const work = branchWithWork('s-ff', 'f.txt', 'f\n');
+    const stream = await makeStream(work);
+    git(['merge', '-q', '--ff-only', 's-ff']);
+    expect(landing.preflight(stream.id).merged).toBe(true);
+  });
+
+  test('a branch with no commits of its own stays "nothing to land" and cannot be marked', async () => {
+    const worktree = join(repo, '.worktrees', 's-empty');
+    git(['worktree', 'add', '-q', '-b', 's-empty', worktree, 'main']);
+    const stream = await makeStream({ branch: 's-empty', worktree });
+    // The target moves on without it.
+    writeFileSync(join(repo, 'other.txt'), 'x\n');
+    git(['add', '-A']);
+    git(['commit', '-q', '-m', 'other work']);
+    const pre = landing.preflight(stream.id);
+    expect(pre.merged).toBeUndefined();
+    expect(pre.reason).toMatch(/nothing to land/);
+    await expect(landing.markLanded(stream.id)).rejects.toBeInstanceOf(LandRefusedError);
+    expect(streams.get(stream.id).human.status).toBe('open');
   });
 });

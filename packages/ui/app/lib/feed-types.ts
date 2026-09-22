@@ -74,6 +74,8 @@ export interface LandPreflight {
   target?: string;
   ahead?: number;
   gated?: true;
+  /** T166: already merged into the target outside `land`. */
+  merged?: true;
 }
 
 /** T161: mirror of `docs/service.ts`'s `Doc`. */

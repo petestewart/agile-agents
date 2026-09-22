@@ -164,7 +164,7 @@ describe('runStatus', () => {
     try {
       const dead = join(daemon.home, 'no-such-daemon.sock');
       expect(await runStatus(dead, false)).toBe(1);
-      expect(errors.join('\n')).toMatch(/^agiled is not running \(home=/);
+      expect(errors.join('\n')).toMatch(/^home: .+\nagiled is not running/);
       expect(errors.join('\n')).not.toContain('ENOENT');
       expect(await runStatus(dead, true)).toBe(1);
       expect(JSON.parse(logs.join('\n')) as { running: boolean }).toMatchObject({
