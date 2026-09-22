@@ -320,12 +320,12 @@ Build order: Phase 0 → 1 → 2 → 3 → 4 → 5 → 6. Within a phase, ticket
 
 ### Ticket: T140 Rule schema, store, and CLI
 - **Priority:** P0
-- **Status:** In Progress
+- **Status:** Done
 - **Owner:** opus:worker-T140
 - **Scope:** `shared/src/rule.ts`: `Rule = { id, text, question?, scope: { kind: 'global'|'repo'|'stream', ref? }, status: 'proposed'|'accepted'|'retired', enforcement: 'pattern'|'classifier'|'guidance', pattern?: { kind: 'no_push'|'no_push_protected'|'path_deny'|'command_deny', args }, critical: boolean, examples: { action, violates: boolean }[], provenance: { stream?, session?, finding?, by }, stats: { fired, violated, routed, last_fired_at? }, created_at, decided_at?, decided_by? }`. Store with the principal split: agents may create `proposed` only; `status` and `decided_*` are human-only. `agile rules list|show|accept|retire|add`. Scope filtering is one function (`rulesInScope(stream)`) used by the brief and the hook.
 - **Acceptance Criteria:** An agent principal setting `status: accepted` is rejected. `rulesInScope` unit-tested for global/repo/stream and nested streams.
 - **Validation Steps:** `bun test packages/shared packages/daemon/src/rules`.
-- **Notes:** Seed: the "Decisions" entries in `PLAN-v1.md` §9 are imported as `proposed` global rules by a one-off script in this ticket, so the first accept pass is over real material.
+- **Notes:** Seed: the "Decisions" entries in `PLAN-v1.md` §9 are imported as `proposed` global rules by a one-off script in this ticket, so the first accept pass is over real material. Branch `T140-rule-schema-store-cli`, 4 commits, 31 files. `shared/src/rule.ts` per §5.1 (`stage` default `action`), `assertRuleWrite` (D4), `assertRuleAcceptable`; store `rules/R-<ulid>.yaml`, events `rule_put`/`rule_decided`; `daemon/src/rules/` with the single `rulesInScope(rules, stream, ancestors)`; `runner/brief.ts` now takes real rules (old `BriefRule` matcher deleted); `propose_rule` writes a proposed rule (narrowest scope, agent provenance); `rule_accept` inbox items (`InboxItem.stream` optional for that kind only); `agile rules list|show|add|accept|retire|seed`; every create is a proposal, `accept` is the second act. Seed at `rules/seed-plan-v1.ts` behind `agile rules seed --from PLAN-v1.md` (no `scripts/` precedent): 74 decision sentences, idempotent by text. Review (sonnet) PASS with 2 nits (scope filter runs twice per attach; minor). 433 pass in scope; `bun test` 1443 pass / 2 skip / 0 fail; integration green (7 files, `rules.e2e` added). merge: ddaea40.
 
 ### Ticket: T141 Lessons at stream close
 - **Priority:** P0
