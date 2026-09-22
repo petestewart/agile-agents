@@ -166,3 +166,40 @@ describe('resolveHomePaths (no repo needed — T112, D9)', () => {
     }
   });
 });
+
+describe('the classifier block (T150, cockpit design §6.2)', () => {
+  test('an empty home gets the documented defaults, always present', () => {
+    const home = mkdtempSync(join(tmpdir(), 'agile-home-classifier-'));
+    try {
+      const config = discoverConfig({ home });
+      expect(config.classifier.provider).toBe('jev');
+      expect(config.classifier.base_url).toBe('https://api.typesafe.ai');
+      expect(config.classifier.timeout_ms).toBe(25_000);
+      expect(config.classifier.bands).toEqual({
+        deny_at: 0.8,
+        allow_below: 0.4,
+        confidence_floor: 0.5,
+      });
+      // "Not configured" is the absence of a key, not the absence of a block.
+      expect(config.classifier.api_key).toBeUndefined();
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test('config.yaml overrides the provider and a single band', () => {
+    const home = mkdtempSync(join(tmpdir(), 'agile-home-classifier-set-'));
+    try {
+      writeFileSync(
+        join(home, 'config.yaml'),
+        'classifier:\n  provider: off\n  bands:\n    deny_at: 0.9\n',
+      );
+      const config = discoverConfig({ home });
+      expect(config.classifier.provider).toBe('off');
+      expect(config.classifier.bands.deny_at).toBe(0.9);
+      expect(config.classifier.bands.allow_below).toBe(0.4);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+});

@@ -41,6 +41,13 @@ export const RepoEntrySchema = z
      * session on the same worktree. Absent means off.
      */
     auto_review: z.boolean().optional(),
+    /**
+     * T150 (§6.4): the per-repo default for the classifier tier. A stream's
+     * own `classifier: 'off'` still wins; absent means "fall through to
+     * `config.yaml`". Spelled `on`/`off` rather than a boolean so the repo
+     * entry reads the same way the stream field and the CLI flag do.
+     */
+    classifier: z.enum(['on', 'off']).optional(),
   })
   .strict();
 

@@ -45,3 +45,15 @@ describe('RepoEntry (T111)', () => {
     expect(() => validateReposConfig({ a: { path: 7 } })).toThrow(/invalid repos.yaml/);
   });
 });
+
+describe('classifier default (T150, cockpit design §6.4)', () => {
+  test('a repo entry may set the per-repo default', () => {
+    expect(validateRepoEntry({ path: '/repo', classifier: 'off' }).classifier).toBe('off');
+    expect(validateRepoEntry({ path: '/repo', classifier: 'on' }).classifier).toBe('on');
+  });
+
+  test('it is optional and only takes on/off', () => {
+    expect(validateRepoEntry({ path: '/repo' }).classifier).toBeUndefined();
+    expect(() => validateRepoEntry({ path: '/repo', classifier: true })).toThrow();
+  });
+});

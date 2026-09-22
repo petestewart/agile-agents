@@ -296,13 +296,25 @@ export interface StreamPatch {
   worktree?: string;
   target_branch?: string;
   archived?: true;
+  /** T150 (§6.4): `'off'` opts the stream out of the classifier tier; `null` clears the opt-out. */
+  classifier?: 'off' | null;
   agent?: Partial<Stream['agent']>;
   human?: Partial<Stream['human']>;
 }
 
 function applyPatch(before: Stream, patch: StreamPatch): Stream {
-  const { agent, human, ...rest } = patch;
-  const next: Stream = { ...before, ...rest };
+  const { agent, human, classifier, ...rest } = patch;
+  // `classifier` is the one tri-state field: absent leaves it alone,
+  // `'off'` sets the opt-out, `null` removes it. Rebuilt rather than
+  // assigned `undefined`, so a cleared opt-out leaves no key behind in the
+  // YAML at all.
+  const { classifier: existing, ...withoutOptOut } = before;
+  const optOut = classifier === undefined ? existing : (classifier ?? undefined);
+  const next: Stream = {
+    ...withoutOptOut,
+    ...(optOut !== undefined ? { classifier: optOut } : {}),
+    ...rest,
+  };
   if (agent !== undefined) {
     // Any agent-half change is a fresh observation; stamp it (§2.1's
     // `agent.updated_at`) unless the caller set it explicitly.

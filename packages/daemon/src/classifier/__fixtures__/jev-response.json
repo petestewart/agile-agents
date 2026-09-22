@@ -1,0 +1,14 @@
+{
+  "model": "jev-1.13.0",
+  "answers": {
+    "RULE-NO-NEW-DEPS": {
+      "type": "noul",
+      "noul": 0.95
+    },
+    "RULE-NO-MIGRATIONS": {
+      "type": "noul",
+      "noul": 0.12
+    }
+  },
+  "usage": { "input_tokens": 296, "output_tokens": 20 }
+}

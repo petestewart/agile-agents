@@ -110,6 +110,17 @@ function requireHumanPatch(params: Record<string, unknown>): StreamPatch {
   const targetBranch = optionalString(params.target_branch, 'target_branch');
   if (targetBranch !== undefined) patch.target_branch = targetBranch;
   if (params.parent !== undefined) patch.parent = requireStreamId(params.parent);
+  // T150 (§6.4): the per-stream classifier opt-out. `'on'` is not a
+  // stream-level override that re-enables the tier — it clears the
+  // opt-out and lets the repo/home default decide again.
+  if (params.classifier !== undefined) {
+    if (params.classifier !== 'on' && params.classifier !== 'off') {
+      throw new RpcParamError('invalid "classifier": must be "on" or "off"', {
+        classifier: params.classifier,
+      });
+    }
+    patch.classifier = params.classifier === 'off' ? 'off' : null;
+  }
   if (params.human !== undefined) {
     if (typeof params.human !== 'object' || params.human === null || Array.isArray(params.human)) {
       throw new RpcParamError('invalid "human": must be an object', { human: params.human });

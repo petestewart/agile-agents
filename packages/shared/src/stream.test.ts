@@ -255,3 +255,14 @@ describe('assertNoStreamCycle', () => {
     expect(() => assertNoStreamCycle(ROOT, GRANDCHILD, lookup)).toThrow(/cycle/);
   });
 });
+
+describe('classifier opt-out (T150, cockpit design §6.4)', () => {
+  test("a stream may carry the tier's opt-out", () => {
+    expect(validateStream(stream({ classifier: 'off' })).classifier).toBe('off');
+  });
+
+  test('absent means "no opt-out here" — there is no stream-level "on"', () => {
+    expect(validateStream(stream()).classifier).toBeUndefined();
+    expect(() => validateStream({ ...stream(), classifier: 'on' })).toThrow();
+  });
+});

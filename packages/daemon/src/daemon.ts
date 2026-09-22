@@ -16,6 +16,7 @@ import { existsSync } from 'node:fs';
 import daemonPackageJson from '../package.json' with { type: 'json' };
 import { AttachService, VerbService, buildAttachRpcMethods } from './attach';
 import { Bus, buildBusRpcMethods } from './bus';
+import { type Classifier, JevClassifier } from './classifier';
 import { type AgileConfig, type DiscoverConfigOptions, discoverConfig } from './config';
 import { DocsService, buildDocsRpcMethods } from './docs';
 import { GateService, buildGateRpcMethods } from './gates';
@@ -61,11 +62,25 @@ export interface DaemonHandle {
   inboxService?: InboxService;
   attachService?: AttachService;
   verbService?: VerbService;
+  /**
+   * T150 (§6.2): the classifier tier, built from `classifier:` in
+   * `config.yaml`. Always present — an unconfigured or opted-out tier is a
+   * `JevClassifier` whose `ask` throws `ClassifierUnavailableError`, which
+   * is exactly what §6.4's fail policy consumes. Nothing calls it yet:
+   * T151 wires it into the hook path and T152 into landing.
+   */
+  classifier: Classifier;
   /** Graceful shutdown: closes both servers, then releases the lock. */
   stop(): Promise<void>;
 }
 
 export interface StartDaemonOptions extends DiscoverConfigOptions {
+  /**
+   * Test seam: the classifier the daemon exposes. Real usage leaves it
+   * unset and gets a `JevClassifier` over `config.classifier`; the suite
+   * passes a `FakeClassifier`, because there is no network in `bun test`.
+   */
+  classifier?: Classifier;
   /**
    * Test/offline-run seam: `GateService`'s own decision delegate
    * (`gates/service.ts`) — a gate whose policy owner does not resolve to the
@@ -91,6 +106,10 @@ export interface StartDaemonOptions extends DiscoverConfigOptions {
 export async function startDaemon(options: StartDaemonOptions = {}): Promise<DaemonHandle> {
   const config = discoverConfig(options);
   const startedAt = Date.now();
+  // T150: the classifier tier (§6.2, **D5**). Constructed here and handed
+  // out on the daemon handle; the hook path that consumes it is T151's.
+  const classifier: Classifier =
+    options.classifier ?? new JevClassifier({ config: config.classifier });
 
   // `.agile/` may not exist yet (before `agile init`); state.* stays fully
   // stubbed in that case, same as T004 — only wire the real handlers when
@@ -356,6 +375,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
     inboxService,
     attachService,
     verbService,
+    classifier,
     async stop() {
       if (stopped) return;
       stopped = true;
