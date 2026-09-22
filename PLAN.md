@@ -354,6 +354,15 @@ Build order: Phase 0 → 1 → 2 → 3 → 4 → 5 → 6. Within a phase, ticket
 - **Validation Steps:** `bun test packages/daemon/src/hook`.
 - **Notes:** D7 and D8. Design borrowed from KiroCrew's argv floor (D11). Branch `T143-builtin-pattern-rules`, 7 commits. `permissions/push-detector.ts` (subcommand-anchored after `-c`/`-C`/globals; chains, subshells, `sh -c`, `eval`, backticks, `${}`, unbalanced quotes fail closed; explicit non-protected branch allowed; bare `git push` and `HEAD`/`@` destinations resolved via argv `git rev-parse` and denied when protected or unresolvable; `--all`/`--mirror`/`HEAD:main`/`+main`/`refs/heads/main` denied; `-c alias.*` and `send-pack`/`http-push`/`remote-ext` fail closed; `git stash push`, `git log --grep push` allowed; `checkout main && merge` denied), 80 table tests; `permissions/rule-checks.ts` one checker per `pattern.kind`, `runPatternRules` shared by the hook tier and the ACP responder tier (review round 1: the ACP tier had lost plain-push gating for hookless vendors); pattern rules run after the role policy at both tiers, deny names the rule; `rules/builtins.ts` creates the three §5.4 rules on start idempotently (retired stays retired); `RulesService.recordFired` with coalesced stats (one `rule_put` per rule per 5 s flush, flush on read and shutdown; review round 1); `pattern.args` typed per kind; `gitAsync` captures to `Bun.file` temp paths (the piped-stdio race). Deleted the hardcoded push/`-C` hils and `isTicketBranch`. Review (sonnet, adversarial) PASS with nits after round 2 closed `push origin HEAD` and alias/plumbing evasions. 689 pass in scope; `bun test` 1584 pass / 0 fail; integration 29 pass. merge: 205397d.
 
+### Ticket: T144 Phase 4 QA and Pete's look
+- **Priority:** P0
+- **Status:** In Progress
+- **Owner:** sonnet:qa-T144
+- **Scope:** Fake-transport QA of the route band (T138), rules CLI and store (T140), lessons (T141), the report (T142) and the built-in pattern rules and push detector (T143) on a real daemon; Pete runs one live stream on ledger-lite that hits the manifest gate and answers it from the inbox, then accepts one proposed rule and sees it in the next brief.
+- **Acceptance Criteria:** QA ACCEPT; live: the gate approved from the inbox lets the edit through, the lessons session proposes a rule, `agile rules accept` puts it in the next brief.
+- **Validation Steps:** —
+- **Notes:** Added by the manager for symmetry with T124/T135 (D10: QA at every phase boundary).
+
 ### Phase 5 — The classifier tier
 
 ### Ticket: T150 Classifier interface, fake, and Jev adapter
