@@ -277,18 +277,18 @@ Build order: Phase 0 → 1 → 2 → 3 → 4 → 5 → 6. Within a phase, ticket
 
 ### Ticket: T135 Phase 3 QA and Pete's look
 - **Priority:** P0
-- **Status:** In Progress
+- **Status:** Done
 - **Owner:** sonnet:qa-T135 → Pete
 - **Scope:** Fake-transport QA of attach, review, land on nested streams; Pete runs one real worker on ledger-lite via the CLI.
 - **Acceptance Criteria:** QA ACCEPT; live: one stream landed on ledger-lite.
 - **Validation Steps:** —
-- **Notes:** First live milestone. QA (sonnet, fake transport) ACCEPT, 2 low defects → T136; the fake ACP transport is an in-process seam only, so attach/review/land were exercised through in-process daemons and the CLI shapes against a detached one; review-completion line, landing conflict/refusal cases, `tail --session`, brief doc inclusion and `auto_review` were verified by reading their passing tests, not re-run live (coverage gaps listed in `qa-T135.report.md`). Waiting on Pete's live run on ledger-lite.
+- **Notes:** First live milestone. QA (sonnet, fake transport) ACCEPT, 2 low defects → T136; the fake ACP transport is an in-process seam only, so attach/review/land were exercised through in-process daemons and the CLI shapes against a detached one; review-completion line, landing conflict/refusal cases, `tail --session`, brief doc inclusion and `auto_review` were verified by reading their passing tests, not re-run live (coverage gaps listed in `qa-T135.report.md`). Pete's live run (2026-09-22, tip 88cdeb4, third attempt): attach → question → answer reached the session in 26 s (and 16 s the second time) → commit 6d42e80 → self-stop with `done` and `session ended` → `agile review` 4 findings (1 major, 2 minor, 1 nit, no blockers; the reviewer corrected one of its own findings) → `agile land` refused once (main checkout dirty from the Sep 18 run; Pete's agent stashed) then landed dc4d983 into main; worktree removed, branch kept, `bun test` on main 14 pass. One caveat: the package.json `bin` hunk was applied by hand because the manifest hook rule denies with "file a hil_request", which the agent has no verb for, and an answered question is not authorization → T138. Milestone met.
 
 ### Ticket: T136 ∥ Phase 3 rough edges from QA
 - **Priority:** P2
 - **Status:** Todo
 - **Owner:** —
-- **Scope:** (1) `agile repo add <path>` refuses a directory that is not a git repository (typed error → -32602, message names the path) instead of failing later. (2) The `hook` usage line stops presenting `--fail-closed` as required and names the real opt-out `--fail-open`. (3) `agile detach` on a stream with no live session says so in one line and exits 1. Plus anything Pete's live run turns up that fits in a day. (4) `inbox` context truncation cuts mid-word; truncate at a word boundary. (5) Pete's live run: the ledger-lite goal named a CLI the repo does not have; the worker correctly asked instead of inventing one, twice. Not a defect; noted so the next live goal is unambiguous.
+- **Scope:** (1) `agile repo add <path>` refuses a directory that is not a git repository (typed error → -32602, message names the path) instead of failing later. (2) The `hook` usage line stops presenting `--fail-closed` as required and names the real opt-out `--fail-open`. (3) `agile detach` on a stream with no live session says so in one line and exits 1. Plus anything Pete's live run turns up that fits in a day. (4) `inbox` context truncation cuts mid-word; truncate at a word boundary. (5) Pete's live run: the ledger-lite goal named a CLI the repo does not have; the worker correctly asked instead of inventing one, twice. Not a defect; noted so the next live goal is unambiguous. (6) `stream list` gains `--landed`/`--status` filtering so finished streams stop mixing with active ones. (7) The inbox `done` item says what clears it (land or close the stream).
 - **Acceptance Criteria:** Each has a CLI test.
 - **Validation Steps:** `bun test packages/cli packages/daemon/src/store`.
 - **Notes:** May run alongside Phase 4.
@@ -307,6 +307,16 @@ Build order: Phase 0 → 1 → 2 → 3 → 4 → 5 → 6. Within a phase, ticket
 **Phase 3 re-verification after T137 (2026-09-22, tip 370aa3b):** build, typecheck, lint clean; `bun test` 1336 pass / 2 skip / 0 fail; `test:integration` 6 suites, 0 fail. Daemon source 16,556 lines. Waiting on Pete's second live run (T135).
 
 ### Phase 4 — Rules with three tiers
+
+### Ticket: T138 Hook route band without the classifier
+- **Priority:** P1
+- **Status:** Todo
+- **Owner:** —
+- **Scope:** Pete's live run: the legacy `hil(...)` verdicts in `permissions/policy-tables.ts` (dependency manifest edit, force-push, branch delete, `reset --hard`, push to another branch, `git -C` outside the worktree) deny with "file a hil_request", a verb that no longer exists; an answered `ask` does not unlock the call, so the worker correctly held and a human applied the edit. Build the route band of design §8.1 now, without the classifier: a `hil` verdict raises a `classifier_review` gate keyed to stream + session + a tool-call fingerprint (tool name, path or command), denies with a reason the model can act on ("routed to your inbox as HIL-…; wait for approval, then retry the same call"), and shows in the inbox with the call. `agile answer <HIL-id> yes|no [note]` answers gates as well as questions (one verb for the inbox; `gate.*` RPC stays). Approval stores the fingerprint; the next matching call from that session is allowed once (`hook_decision` event says so) and the session is prompted "HIL-… approved, retry" through T137's delivery; denial prompts the reason. Rewrite the deny wordings; delete the `hil_request` text. T151 later adds the classifier as a second source of routes onto this same path.
+- **Acceptance Criteria:** Fake-agent test: manifest edit denied → gate in inbox → `answer yes` → the same edit allowed on retry, a different edit still denied; `answer no` → deny reason reaches the session. No `hil_request` string left in `packages/`.
+- **Validation Steps:** `bun test packages/daemon/src/hook packages/daemon/src/gates packages/daemon/src/inbox packages/cli`; `bun run test:integration`.
+- **Notes:** Runs first in Phase 4, before T140, since T151 builds on it.
+
 
 ### Ticket: T140 Rule schema, store, and CLI
 - **Priority:** P0
@@ -469,3 +479,4 @@ Daemon: `em/`, `architect/`, `oracle/`, `qa/`, `halts/`, `quota/`, `handoff/`, `
 - (T132) Landing emits no `land_*` event kind, so the store's fsync-on-land rule (§7.4) is not exercised; add a `stream_landed` kind (fsynced) in T141 when lessons need the landing as an event anyway. (T132) `GateService` has no resolution hook; landing wraps `respond` at wiring time. Add `onResolved` when T140/T152 need a second subscriber.
 - (T131 merge) The merge commit bb94105 carries git's `# Conflicts:` comment after the two trailer lines (a `--no-edit` conflict merge keeps it); the force-push to rewrite it was blocked by the session's permission policy, so it stays. Message-only; the tree is correct.
 - (Pete's Phase 3 live run, 2026-09-21, tip 2410916, two attempts) Worker attached, surveyed ledger-lite, found no CLI, asked A/B/C via `ask` and ended its turn. The answer never reached the session: `deliverAnswer` writes a bus mailbox nobody reads. `agent.status` stayed `working` for 19 min (live-but-idle passes the live-session check); `detach` wrote `done` on an empty stream and printed "no live session" while killing one. Branch was `<id>-<slug>` not `stream/<id>-<slug>`; a multi-line agent message split into two thread entries; inbox context truncated mid-word. → T137 (P0, blocks the T135 milestone) and T136. Nothing landed; ledger-lite `main` untouched at 41a1a39.
+- (Pete's Phase 3 live run, 2026-09-22, tip 88cdeb4) End to end for the first time: answer delivery, self-stop, review, land all behaved; landed dc4d983 on ledger-lite main. The manifest hook's escape hatch ("file a hil_request") is unreachable from the agent → T138. `land` correctly refused a dirty target checkout. Two `done/open` streams from the failed runs sit in the inbox until closed (by design; wording → T136).
