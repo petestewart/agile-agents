@@ -19,7 +19,7 @@ import {
   useRef,
   useState,
 } from 'react';
-import type { FeedSnapshot } from './feed-types';
+import type { CockpitFrame, FeedSnapshot } from './feed-types';
 import { connectFeedSocket } from './ws';
 
 /** Cap on the in-memory event tail (the Feed panel renders it). */
@@ -29,6 +29,14 @@ export interface FeedContextValue {
   snapshot: FeedSnapshot | undefined;
   events: Event[];
   connected: boolean;
+  /** T160: the latest inbox + stream tree push; `undefined` until the first frame. */
+  cockpit: CockpitFrame | undefined;
+  /**
+   * Re-reads `GET /api/cockpit` now — used right after the operator's own
+   * write so the card they acted on goes at once, rather than on the next
+   * pushed frame (which follows within one tailer tick anyway).
+   */
+  refresh(): void;
   /** Subscribe to `/ws` events. Returns an unsubscribe. */
   onEvent(handler: (event: Event) => void): () => void;
 }
@@ -39,6 +47,7 @@ export function FeedProvider({ children }: PropsWithChildren): JSX.Element {
   const [snapshot, setSnapshot] = useState<FeedSnapshot | undefined>(undefined);
   const [events, setEvents] = useState<Event[]>([]);
   const [connected, setConnected] = useState(false);
+  const [cockpit, setCockpit] = useState<CockpitFrame | undefined>(undefined);
   // Refs, not state: a new subscriber must never re-open the socket.
   const eventHandlers = useRef(new Set<(event: Event) => void>());
 
@@ -52,6 +61,7 @@ export function FeedProvider({ children }: PropsWithChildren): JSX.Element {
         setEvents((prev) => [...prev, event].slice(-MAX_EVENTS));
         for (const handler of eventHandlers.current) handler(event);
       },
+      onCockpit: (frame) => setCockpit(frame),
       onStatusChange: (status) => setConnected(status === 'open'),
     });
     return () => handle.close();
@@ -64,9 +74,20 @@ export function FeedProvider({ children }: PropsWithChildren): JSX.Element {
     };
   }, []);
 
+  const refresh = useCallback(() => {
+    fetch('/api/cockpit')
+      .then((res) => (res.ok ? (res.json() as Promise<CockpitFrame>) : undefined))
+      .then((frame) => {
+        if (frame) setCockpit(frame);
+      })
+      .catch(() => {
+        // The next pushed frame carries the same state.
+      });
+  }, []);
+
   const value = useMemo<FeedContextValue>(
-    () => ({ snapshot, events, connected, onEvent }),
-    [snapshot, events, connected, onEvent],
+    () => ({ snapshot, events, connected, cockpit, refresh, onEvent }),
+    [snapshot, events, connected, cockpit, refresh, onEvent],
   );
 
   return <FeedContext.Provider value={value}>{children}</FeedContext.Provider>;

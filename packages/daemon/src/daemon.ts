@@ -360,6 +360,8 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
     streams: streamService,
     questions: questionService,
     inbox: inboxService,
+    ...(rulesService ? { rules: rulesService } : {}),
+    ...(landingService ? { landing: landingService } : {}),
     bus,
   });
 

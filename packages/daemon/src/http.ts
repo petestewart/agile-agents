@@ -26,19 +26,23 @@ import {
   MESSAGE_BODY_MAX_CHARS,
   type QuestionId,
   QuestionIdSchema,
+  RuleIdSchema,
   UlidSchema,
+  validatePolicy,
 } from '@agile-agents/shared';
 import { CONTROL_ROOM_DIST_DIR, FEED_HTML_PATH } from '@agile-agents/ui';
 import type { Bus } from './bus';
-import { type EventTailerHandle, buildSnapshot, startEventTailer } from './feed';
+import { type EventTailerHandle, buildCockpitFrame, buildSnapshot, startEventTailer } from './feed';
 import { GateAlreadyResolvedError, GateNotFoundError, type GateService } from './gates';
 import type { InboxService } from './inbox';
+import { LandRefusedError, type LandingService } from './landing';
 import {
   QuestionAlreadyAnsweredError,
   QuestionNotFoundError,
   type QuestionService,
   parseAnswerParams,
 } from './questions';
+import { RuleAlreadyDecidedError, type RulesService } from './rules';
 import type { StateStore } from './store';
 import type { StreamService } from './streams';
 
@@ -98,6 +102,10 @@ export interface HttpServerOptions {
   inbox?: InboxService;
   /** T120: the stream service, so a route family can be hung off it without re-opening the store. Optional. */
   streams?: StreamService;
+  /** T160: the inbox's `rule_accept` cards decide through it (`POST /api/rules/:id/accept|retire`). Optional. */
+  rules?: RulesService;
+  /** T160: the inbox's `done` cards land through it (`POST /api/streams/:id/land`). Optional. */
+  landing?: LandingService;
   /**
    * T025: lets a control-room POST land on the bus (`bus.send`) so every
    * write goes through the same path an agent's RPC call would and appears
@@ -365,6 +373,8 @@ interface FeedContext {
   streams?: StreamService;
   questions?: QuestionService;
   inbox?: InboxService;
+  rules?: RulesService;
+  landing?: LandingService;
 }
 
 function resolveFeedContext(options: HttpServerOptions): FeedContext | undefined {
@@ -376,6 +386,8 @@ function resolveFeedContext(options: HttpServerOptions): FeedContext | undefined
     streams: options.streams,
     questions: options.questions,
     inbox: options.inbox,
+    rules: options.rules,
+    landing: options.landing,
   };
 }
 
@@ -448,19 +460,6 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
          * the index.html served at `/` above resolves them correctly.
          */
         /**
-         * T041: the chat panel as its own route, so the control room can pop
-         * it out into a separate window (`window.open('/control-room/chat')`)
-         * and keep one conversation across both. Same bundle — the SPA reads
-         * `location.pathname` and renders chat-only (`packages/ui/app/
-         * main.tsx`) — so this is an `index.html` rewrite, exactly like the
-         * bare `/control-room` above, not a second build.
-         */
-        if (url.pathname === '/control-room/chat' || url.pathname === '/control-room/chat/') {
-          return new Response(Bun.file(join(CONTROL_ROOM_DIST_DIR, 'index.html')), {
-            headers: { 'content-type': 'text/html; charset=utf-8' },
-          });
-        }
-        /**
          * T112: `/control-room` moved to `/`; this stays a redirect so old
          * links, bookmarks and the design docs keep working. The query string
          * is preserved — `?view=` is how the cockpit is deep-linked.
@@ -490,6 +489,72 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
         if (url.pathname === '/api/inbox' && req.method === 'GET') {
           if (!feed?.inbox) return errorResponse(503, 'inbox not available');
           return jsonResponse({ items: feed.inbox.list() });
+        }
+
+        // ---- cockpit (T160, cockpit design §9): the stream tree, the
+        // inbox's rule and land decisions, and the Settings read of the
+        // gates block. Every write stamps `human` and is same-origin only.
+        if (url.pathname === '/api/cockpit' && req.method === 'GET') {
+          if (!feed?.streams) return errorResponse(503, 'streams not available');
+          return jsonResponse(buildCockpitFrame(feed.streams, feed.inbox));
+        }
+
+        if (url.pathname === '/api/policy' && req.method === 'GET') {
+          if (!feed) return errorResponse(503, 'state store not initialised (run `agile init`)');
+          try {
+            return jsonResponse(feed.store.getPolicy());
+          } catch (err) {
+            return errorResponse(404, err instanceof Error ? err.message : String(err));
+          }
+        }
+
+        if (url.pathname === '/api/policy' && req.method === 'PUT') {
+          if (!feed) return errorResponse(503, 'state store not initialised (run `agile init`)');
+          if (!isSameOriginRequest(req, srv.port ?? options.port)) {
+            return errorResponse(403, 'cross-origin request rejected');
+          }
+          try {
+            const policy = validatePolicy(await readJsonBody(req));
+            return jsonResponse(await feed.store.putPolicy(policy, { by: 'human' }));
+          } catch (err) {
+            return errorResponse(400, err instanceof Error ? err.message : String(err));
+          }
+        }
+
+        const ruleMatch = url.pathname.match(/^\/api\/rules\/([^/]+)\/(accept|retire)$/);
+        if (ruleMatch && req.method === 'POST') {
+          if (!feed?.rules) return errorResponse(503, 'rules not available');
+          if (!isSameOriginRequest(req, srv.port ?? options.port)) {
+            return errorResponse(403, 'cross-origin request rejected');
+          }
+          const id = RuleIdSchema.safeParse(decodeURIComponent(ruleMatch[1] ?? ''));
+          if (!id.success) return errorResponse(400, `invalid rule id: ${ruleMatch[1]}`);
+          try {
+            const rule =
+              ruleMatch[2] === 'accept'
+                ? await feed.rules.accept(id.data, 'human')
+                : await feed.rules.retire(id.data, 'human');
+            return jsonResponse(rule);
+          } catch (err) {
+            if (err instanceof RuleAlreadyDecidedError) return errorResponse(409, err.message);
+            return errorResponse(400, err instanceof Error ? err.message : String(err));
+          }
+        }
+
+        const landMatch = url.pathname.match(/^\/api\/streams\/([^/]+)\/land$/);
+        if (landMatch && req.method === 'POST') {
+          if (!feed?.landing) return errorResponse(503, 'landing not available');
+          if (!isSameOriginRequest(req, srv.port ?? options.port)) {
+            return errorResponse(403, 'cross-origin request rejected');
+          }
+          const id = UlidSchema.safeParse(decodeURIComponent(landMatch[1] ?? ''));
+          if (!id.success) return errorResponse(400, `invalid stream id: ${landMatch[1]}`);
+          try {
+            return jsonResponse(await feed.landing.land(id.data));
+          } catch (err) {
+            if (err instanceof LandRefusedError) return errorResponse(409, err.message);
+            return errorResponse(400, err instanceof Error ? err.message : String(err));
+          }
         }
 
         // ---- questions (T040, §17 "Control room v2") — read + raise + answer.
@@ -553,6 +618,9 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
                 buildSnapshot(feed.store, feed.gates, undefined, feed.questions, options.repoRoot),
               ),
             );
+            if (feed.streams) {
+              ws.send(JSON.stringify(buildCockpitFrame(feed.streams, feed.inbox)));
+            }
           }
         },
         message() {
@@ -569,6 +637,19 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
       onEvents: (newEvents) => {
         for (const event of newEvents) {
           server.publish(FEED_WS_TOPIC, JSON.stringify({ type: 'event', event }));
+        }
+        // T160: every batch of new lines may have changed what waits on the
+        // human or a stream's status pair, so the cockpit's inbox and tree
+        // are re-derived and pushed once per batch (§3.3 "push, do not poll").
+        if (feed.streams && newEvents.length > 0) {
+          try {
+            server.publish(
+              FEED_WS_TOPIC,
+              JSON.stringify(buildCockpitFrame(feed.streams, feed.inbox)),
+            );
+          } catch (err) {
+            console.error(err instanceof Error ? err.message : String(err));
+          }
         }
       },
       onError: (err) => {

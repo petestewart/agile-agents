@@ -1,64 +1,38 @@
 /**
- * The control room shell.
- *
- * T122 deleted the Plan, Sprint, Review and Settings screens with the
- * ceremony layer behind them, so what is left is the smallest honest page:
- * the project the daemon is driving, what is waiting on the human, and the
- * live event tail. The cockpit proper is rebuilt in Phase 6 (T160) against
- * streams, so nothing here is a placeholder for a screen that still exists —
- * these three reads are the ones the daemon still serves.
+ * The cockpit shell (design/cockpit-design.md §9, T160): the top bar, the
+ * stream tree on the left rail, and the inbox as the default main view.
+ * Everything live arrives on the one `/ws` (`FeedProvider`): the daemon
+ * pushes a fresh inbox + tree after every batch of events, so a question
+ * raised on any stream appears here with no reload.
  */
 
-import { Panel } from './components/Panel';
+import { Inbox } from './components/Inbox';
+import { Settings } from './components/Settings';
+import { StreamTree } from './components/StreamTree';
+import { TopBar } from './components/TopBar';
 import { useFeed } from './lib/feed-context';
+import { useShell } from './lib/shell';
+import { subtreeIds } from './lib/streams';
 
 export function App(): JSX.Element {
-  const { snapshot, events, connected } = useFeed();
-  const project = snapshot?.project;
-  const gates = snapshot?.hil ?? [];
-  const questions = snapshot?.questions ?? [];
+  const { snapshot, connected, cockpit, refresh } = useFeed();
+  const { view, selected, railOpen } = useShell();
+  const rows = cockpit?.streams ?? [];
+  const allItems = cockpit?.inbox ?? [];
+  const scope = selected !== undefined ? subtreeIds(rows, selected) : undefined;
+  const items = scope
+    ? allItems.filter((item) => item.stream !== undefined && scope.has(item.stream))
+    : allItems;
 
   return (
-    <div className="cr-root">
-      <header className="cr-topbar">
-        <span className="cr-project" title={project?.path}>
-          {project?.name ?? 'agile'}
-        </span>
-        <span className="cr-needs-you">Needs you: {snapshot?.status.needs_you ?? 0}</span>
-        <span className="cr-conn">{connected ? 'live' : 'reconnecting…'}</span>
-      </header>
-
-      <Panel title="Needs you" count={gates.length + questions.length} defaultOpen>
-        {gates.length + questions.length === 0 ? (
-          <p className="cr-empty">Nothing is waiting on you.</p>
-        ) : (
-          <ul className="cr-list">
-            {gates.map((gate) => (
-              <li key={gate.id}>
-                <code>{gate.id}</code> {gate.hil_kind} — {gate.summary}
-              </li>
-            ))}
-            {questions.map((question) => (
-              <li key={question.id}>
-                <code>{question.id}</code> {question.raised_by} — {question.text}
-              </li>
-            ))}
-          </ul>
-        )}
-      </Panel>
-
-      <Panel title="Feed" count={events.length} defaultOpen>
-        <ul className="cr-list">
-          {events
-            .slice(-100)
-            .reverse()
-            .map((event, index) => (
-              <li key={`${event.ts}-${index}`}>
-                <code>{event.ts}</code> {event.kind}
-              </li>
-            ))}
-        </ul>
-      </Panel>
+    <div className="cr-root" data-rail={railOpen ? 'open' : 'closed'}>
+      <TopBar snapshot={snapshot} inboxCount={allItems.length} connected={connected} />
+      <div className="cr-frame">
+        <StreamTree rows={rows} />
+        <main className="cr-main">
+          {view === 'settings' ? <Settings /> : <Inbox items={items} onChanged={refresh} />}
+        </main>
+      </div>
     </div>
   );
 }

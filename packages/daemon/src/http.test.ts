@@ -4,10 +4,13 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { type Policy, ulid } from '@agile-agents/shared';
 import { Bus } from './bus';
+import type { CockpitFrame } from './feed';
 import { GateService } from './gates';
 import { type HttpServerHandle, startHttpServer } from './http';
+import { InboxService } from './inbox';
 import { runInit } from './init';
 import { QuestionService } from './questions';
+import { RulesService } from './rules';
 import { StateStore } from './store';
 import { StreamService } from './streams';
 
@@ -87,3 +90,116 @@ describe('WebSocket /ws', () => {
  * §17 journey step 4 ("This is `policy.yaml`'s gates block with a face") and
  * §17 v2.
  */
+
+// --- T160 cockpit routes: the stream tree + inbox frame, rule decisions,
+// the policy read, and the pushed `{type:'cockpit'}` frame. ---
+
+describe('T160 cockpit routes', () => {
+  let home: string;
+  let cockpit: HttpServerHandle;
+  let store: StateStore;
+  let streams: StreamService;
+  let questions: QuestionService;
+  let rules: RulesService;
+
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), 'agile-http-cockpit-'));
+    const init = runInit(home);
+    store = StateStore.open(init.stateRoot);
+    streams = new StreamService(store);
+    questions = new QuestionService(store, streams);
+    const gates = new GateService(store);
+    rules = new RulesService({ store, streams });
+    cockpit = startHttpServer({
+      port: 0,
+      version: '0.0.0-test',
+      stateRoot: init.stateRoot,
+      startedAt: Date.now(),
+      store,
+      gates,
+      streams,
+      questions,
+      rules,
+      inbox: new InboxService({ streams, questions, gates, rules }),
+      feedPollIntervalMs: 20,
+    });
+  });
+
+  afterEach(async () => {
+    await cockpit.stop();
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  const url = (path: string) => `http://127.0.0.1:${cockpit.port}${path}`;
+
+  test('GET /api/cockpit carries the tree rows with their status pair and the inbox', async () => {
+    const root = await streams.create('human', { title: 'root', goal: 'g' });
+    const leaf = await streams.create('human', { title: 'leaf', goal: 'g', parent: root.id });
+    await questions.raise({ stream: leaf.id, raised_by: 'eng-1', text: 'which one?' });
+    const frame = (await (await fetch(url('/api/cockpit'))).json()) as CockpitFrame;
+    expect(frame.type).toBe('cockpit');
+    const row = frame.streams.find((s) => s.id === leaf.id);
+    expect(row).toEqual({
+      id: leaf.id,
+      title: 'leaf',
+      parent: root.id,
+      agent_status: 'question',
+      human_status: 'waiting_on_you',
+    });
+    expect(frame.inbox.map((i) => i.stream_path)).toEqual([['root', 'leaf']]);
+  });
+
+  test('POST /api/rules/:id/accept decides as human; a second accept is 409; cross-origin is 403', async () => {
+    const rule = await rules.create('agent', { text: 'use the repo scripts' });
+    const foreign = await fetch(url(`/api/rules/${rule.id}/accept`), {
+      method: 'POST',
+      headers: { origin: 'http://evil.example' },
+    });
+    expect(foreign.status).toBe(403);
+    const ok = await fetch(url(`/api/rules/${rule.id}/accept`), { method: 'POST' });
+    expect(ok.status).toBe(200);
+    expect(store.getRule(rule.id).status).toBe('accepted');
+    expect(store.getRule(rule.id).decided_by).toBe('human');
+    const again = await fetch(url(`/api/rules/${rule.id}/accept`), { method: 'POST' });
+    expect(again.status).toBe(409);
+    expect((await fetch(url('/api/rules/nope/retire'), { method: 'POST' })).status).toBe(400);
+  });
+
+  test('POST /api/streams/:id/land without a landing service is 503', async () => {
+    const stream = await streams.create('human', { title: 's', goal: 'g' });
+    expect((await fetch(url(`/api/streams/${stream.id}/land`), { method: 'POST' })).status).toBe(
+      503,
+    );
+  });
+
+  test('GET /api/policy returns the gates block', async () => {
+    const policy = (await (await fetch(url('/api/policy'))).json()) as Policy;
+    expect(Object.keys(policy.gates).sort()).toEqual(['classifier_review', 'land', 'rule_accept']);
+  });
+
+  test('/ws sends a cockpit frame on connect and pushes a fresh one when a question is raised', async () => {
+    const stream = await streams.create('human', { title: 's', goal: 'g' });
+    const frames: CockpitFrame[] = [];
+    const ws = new WebSocket(`ws://127.0.0.1:${cockpit.port}/ws`);
+    ws.onmessage = (event) => {
+      const frame = JSON.parse(event.data as string) as { type: string };
+      if (frame.type === 'cockpit') frames.push(frame as CockpitFrame);
+    };
+    try {
+      const deadline = Date.now() + 5000;
+      while (frames.length === 0 && Date.now() < deadline) await Bun.sleep(10);
+      expect(frames[0]?.inbox).toEqual([]);
+      const question = await questions.raise({ stream: stream.id, raised_by: 'eng-1', text: 'q?' });
+      while (
+        !frames.some((f) => f.inbox.some((i) => i.id === question.id)) &&
+        Date.now() < deadline
+      ) {
+        await Bun.sleep(10);
+      }
+      const pushed = frames.find((f) => f.inbox.some((i) => i.id === question.id));
+      expect(pushed?.streams.find((s) => s.id === stream.id)?.human_status).toBe('waiting_on_you');
+    } finally {
+      ws.close();
+    }
+  });
+});

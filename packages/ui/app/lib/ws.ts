@@ -2,41 +2,31 @@
  * `/ws` client (same socket the T020 feed page uses — `http.ts`'s
  * `startHttpServer`): hello frame, one full `FeedSnapshot` on connect, then
  * `{type:'event', event}` per new line appended to `log/events.jsonl`.
- * Status must never cost tokens; it is read straight from daemon state
- * (§17) — this module owns the live half of that read path.
+ * T160 adds the `{type:'cockpit'}` frame — the inbox and the stream tree,
+ * re-derived by the daemon and pushed on connect and after every batch of
+ * events, so nothing in the cockpit polls (cockpit design §3.3).
  */
 import type { Event } from '@agile-agents/shared';
-import type { FeedSnapshot } from './feed-types';
-
-/**
- * T041: EM chat rides the same socket as a side channel — one `chat_delta`
- * per streamed text chunk of the EM's reply, then exactly one
- * `chat_turn_end` (carrying `error` when the turn failed). Deliberately not
- * `events.jsonl` lines: a per-chunk event would drown the feed.
- */
-export type ChatFrame =
-  | { type: 'chat_delta'; thread: string; message_id: string; text: string }
-  | { type: 'chat_turn_end'; thread: string; message_id: string; error?: string };
+import type { CockpitFrame, FeedSnapshot } from './feed-types';
 
 export type FeedFrame =
   | { type: 'hello'; version: string; stateRoot: string }
   | (FeedSnapshot & { type: 'snapshot' })
   | { type: 'event'; event: Event }
-  | ChatFrame;
+  | CockpitFrame;
 
 export interface FeedSocketHandlers {
   onSnapshot?: (snapshot: FeedSnapshot) => void;
   onEvent?: (event: Event) => void;
+  onCockpit?: (frame: CockpitFrame) => void;
   onStatusChange?: (status: 'connecting' | 'open' | 'closed') => void;
-  /** T041: EM chat frames. A subscriber that only wants chat (the popped-out window) passes just this. */
-  onChat?: (frame: ChatFrame) => void;
 }
 
 export interface FeedSocketHandle {
   close(): void;
 }
 
-/** Reconnects with a fixed backoff — a control room left open for hours must not need a manual refresh after a daemon restart. */
+/** Reconnects with a fixed backoff — a cockpit left open for hours must not need a manual refresh after a daemon restart. */
 const RECONNECT_DELAY_MS = 2000;
 
 export function connectFeedSocket(handlers: FeedSocketHandlers): FeedSocketHandle {
@@ -60,9 +50,7 @@ export function connectFeedSocket(handlers: FeedSocketHandlers): FeedSocketHandl
       }
       if (frame.type === 'snapshot') handlers.onSnapshot?.(frame);
       else if (frame.type === 'event') handlers.onEvent?.(frame.event);
-      else if (frame.type === 'chat_delta' || frame.type === 'chat_turn_end') {
-        handlers.onChat?.(frame);
-      }
+      else if (frame.type === 'cockpit') handlers.onCockpit?.(frame);
     };
     socket.onclose = () => {
       handlers.onStatusChange?.('closed');

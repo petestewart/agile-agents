@@ -1,28 +1,31 @@
 /**
- * Playwright e2e for the control room SPA, against a seeded daemon. Same
- * Chromium discovery as `feed.e2e.test.ts` (`resolveChromiumExecutable`,
- * which throws rather than skipping when no browser is installed) and the
- * same `startDaemon` harness.
+ * Playwright e2e for the cockpit shell (T160, design/cockpit-design.md §3
+ * and §9): the inbox, the stream tree and its dots, inline answers, and the
+ * phone-width layout. Same Chromium discovery as `feed.e2e.test.ts`
+ * (`resolveChromiumExecutable`, which throws rather than skipping when no
+ * browser is installed).
  *
- * T122 deleted the Plan, board, Review and Settings screens, and with them
- * every test that drove one. What survives is the shell the daemon still
- * serves — the project block, the Needs-you list and the event tail — and,
- * inside it, T121's "a pending gate and an open question are Needs-you
- * items" coverage. The cockpit's own e2e comes back with the cockpit, in
- * Phase 6.
+ * The daemon side is the real HTTP + `/ws` server (`startHttpServer`) over
+ * a real temp home and the real services, including the tailer that pushes
+ * the cockpit frame. It is started directly rather than through
+ * `startDaemon` for one reason: `QuestionService`'s `deliver` seam — the
+ * exact boundary where an answer is handed to the asking session (T137) —
+ * is observable here, so "the answer reaches the session" is asserted on
+ * the delivery call itself rather than inferred.
  */
 
 import { afterAll, describe, expect, test } from 'bun:test';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { ulid } from '@agile-agents/shared';
+import { type Question, ulid } from '@agile-agents/shared';
 import { type Browser, type Page, chromium } from 'playwright-core';
-import { Bus } from '../bus';
-import { type DaemonHandle, startDaemon } from '../daemon';
 import { GateService } from '../gates';
+import { type HttpServerHandle, startHttpServer } from '../http';
+import { InboxService } from '../inbox';
 import { runInit } from '../init';
 import { QuestionService } from '../questions';
+import { RulesService } from '../rules';
 import { StateStore } from '../store';
 import { StreamService } from '../streams';
 import {
@@ -272,47 +275,6 @@ async function teardown(pages: Array<Page | undefined>): Promise<void> {
   );
 }
 
-/** Polls `GET /api/chat/em` until the thread has at least `count` entries (each EM turn appends one). Deadline-bounded so a stuck turn fails with a readable message rather than the bun-test budget. */
-async function waitForThread(base: string, count: number, timeoutMs = 15000): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  for (;;) {
-    const thread = (await (await fetch(`${base}/api/chat/em`)).json()) as unknown[];
-    if (thread.length >= count) return;
-    if (Date.now() > deadline) {
-      throw new Error(`chat thread never reached ${count} entries (last saw ${thread.length})`);
-    }
-    await Bun.sleep(50);
-  }
-}
-
-/** Polls the rendered chat log for a line containing `text` (this package's tsconfig has no DOM lib, so `page.waitForFunction` is not available here). */
-async function waitForChatText(page: Page, text: string, timeoutMs = 15000): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  for (;;) {
-    if ((await page.locator('.cr-chat-msg', { hasText: text }).count()) > 0) return;
-    if (Date.now() > deadline) throw new Error(`chat log never showed ${JSON.stringify(text)}`);
-    await page.waitForTimeout(100);
-  }
-}
-
-/** T051: polls until `selector` matches exactly `count` elements — the chat's own states (a bubble that stops being pending, an in-flight note that goes) arrive on a socket frame, so "not yet" is a real state here too. */
-async function waitForChatCount(
-  page: Page,
-  selector: string,
-  count: number,
-  timeoutMs = 15000,
-): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  for (;;) {
-    const seen = await page.locator(selector).count();
-    if (seen === count) return;
-    if (Date.now() > deadline) {
-      throw new Error(`${selector} never reached ${count} elements (last saw ${seen})`);
-    }
-    await page.waitForTimeout(100);
-  }
-}
-
 /** Polls one attribute of one element until it reads `value` — the control room's rows render from an async `GET`, so "not yet loaded" is a real state, not a failure. */
 async function waitForAttr(
   page: Page,
@@ -358,82 +320,285 @@ async function waitForText(
   }
 }
 
-function initRepo(): string {
-  const repo = mkdtempSync(join(tmpdir(), 'agile-control-room-e2e-'));
-  Bun.spawnSync(['git', 'init', '-q'], { cwd: repo });
-  Bun.spawnSync(['git', 'config', 'user.email', 'test@example.com'], { cwd: repo });
-  Bun.spawnSync(['git', 'config', 'user.name', 'Test'], { cwd: repo });
-  Bun.spawnSync(['git', 'commit', '-q', '--allow-empty', '-m', 'initial commit'], { cwd: repo });
-  return repo;
+/** Polls until `selector` matches at least one element. */
+async function waitForCount(page: Page, selector: string, atLeast: number): Promise<void> {
+  const deadline = Date.now() + POLL_DEADLINE_MS;
+  for (;;) {
+    const seen = await page.locator(selector).count();
+    if (seen >= atLeast) return;
+    if (Date.now() > deadline) {
+      throw new Error(`${selector} never reached ${atLeast} elements (last saw ${seen})`);
+    }
+    await page.waitForTimeout(100);
+  }
+}
+
+/** A deadline-bounded poll on a plain condition (a delivery call, a store read). */
+async function waitUntil(what: string, check: () => boolean): Promise<void> {
+  const deadline = Date.now() + POLL_DEADLINE_MS;
+  while (!check()) {
+    if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
+    await Bun.sleep(50);
+  }
+}
+
+interface Cockpit {
+  home: string;
+  store: StateStore;
+  streams: StreamService;
+  questions: QuestionService;
+  gates: GateService;
+  rules: RulesService;
+  /** Every `deliver(sessionId, question)` the question service made — the hand-off to the asking session. */
+  delivered: Array<{ session: string; question: Question }>;
+  http: HttpServerHandle;
+  base: string;
+  stop(): Promise<void>;
 }
 
 /**
- * T111: the daemon's state lives in `$AGILE_HOME`, never inside the repo.
- * Each test gets a fresh temp home and points `AGILE_HOME` at it so the
- * daemon it starts (via `discoverConfig`) opens the same home this test
- * seeded.
+ * A fresh temp home with the real services and the real HTTP + `/ws`
+ * server over it, the way `startDaemon` wires them (`daemon.ts`), minus
+ * the RPC socket and the vendor runner this suite never uses.
  */
-function freshHome(): string {
-  const home = mkdtempSync(join(tmpdir(), 'agile-e2e-home-'));
-  process.env.AGILE_HOME = home;
-  return home;
+async function startCockpit(): Promise<Cockpit> {
+  const home = mkdtempSync(join(tmpdir(), 'agile-cockpit-e2e-'));
+  const init = runInit(home);
+  const store = StateStore.open(init.stateRoot);
+  const streams = new StreamService(store);
+  const delivered: Cockpit['delivered'] = [];
+  const questions = new QuestionService(store, streams, {
+    deliver: async (session, question) => {
+      delivered.push({ session, question });
+    },
+  });
+  const gates = new GateService(store);
+  const rules = new RulesService({ store, streams });
+  const inbox = new InboxService({ streams, questions, gates, rules });
+  const http = startHttpServer({
+    port: 0,
+    version: 'test',
+    stateRoot: init.stateRoot,
+    startedAt: Date.now(),
+    store,
+    gates,
+    streams,
+    questions,
+    inbox,
+    rules,
+    feedPollIntervalMs: 50,
+  });
+  return {
+    home,
+    store,
+    streams,
+    questions,
+    gates,
+    rules,
+    delivered,
+    http,
+    base: `http://127.0.0.1:${http.port}`,
+    async stop() {
+      await http.stop();
+      rmSync(home, { recursive: true, force: true });
+    },
+  };
 }
 
-describe('control room shell (Playwright e2e)', () => {
+describe('cockpit shell (Playwright e2e)', () => {
   browserTest(
-    'renders the project block, a seeded gate and an open question as Needs-you items',
+    'an agent question on a nested stream appears without reload, the answer reaches the session, and the dot changes',
     async () => {
-      const repo = initRepo();
-      let handle: DaemonHandle | undefined;
+      const cockpit = await startCockpit();
       let page: Page | undefined;
       try {
-        const init = runInit(freshHome());
-        const store = StateStore.open(init.stateRoot);
-        const streams = new StreamService(store);
-        const questions = new QuestionService(store, streams);
-        const gates = new GateService(store);
-        const stream = await streams.create('human', {
-          title: 'A stream',
-          goal: 'do the thing',
+        const root = await cockpit.streams.create('human', {
+          title: 'ledger-lite',
+          goal: 'a small ledger',
         });
-        const seeded = await gates.request('classifier_review', {
-          policy: store.getPolicy(),
-          stream: stream.id,
-          summary: 'classifier says this is a rule change',
+        const mid = await cockpit.streams.create('human', {
+          title: 'import CSV',
+          goal: 'import bank exports',
+          parent: root.id,
         });
-        await questions.raise({
-          stream: stream.id,
-          raised_by: 'human',
-          text: 'which branch should this land on?',
-        });
-
-        handle = await startDaemon({
-          port: 0,
-          socketPath: join(repo, '.agile-daemon.sock'),
+        const leaf = await cockpit.streams.create('human', {
+          title: 'parser',
+          goal: 'parse the dialects',
+          parent: mid.id,
         });
 
         page = await openPage();
-        await page.goto(`http://127.0.0.1:${handle.http.port}/`);
-        await page
-          .locator('.cr-needs-you')
-          .waitFor({ state: 'attached', timeout: PAGE_TIMEOUT_MS });
+        await page.goto(`${cockpit.base}/`);
 
-        // T125: the daemon has no repo root any more — it starts from any
-        // cwd and serves every *registered* repo — so the snapshot carries
-        // no `project` and the top bar falls back to its own name rather
-        // than showing whatever directory `agiled` was launched in.
-        // T130/T131 re-key this to the stream's registered repo.
-        expect(await page.locator('.cr-project').textContent()).toBe('agile');
-        expect(await page.locator('.cr-needs-you').textContent()).toContain('2');
-        const body = (await page.locator('.cr-root').textContent()) ?? '';
-        expect(body).toContain(seeded.id);
-        expect(body).toContain('which branch should this land on?');
+        // The inbox is the default view, and it is calmly empty.
+        await page.locator('[data-testid="inbox-empty"]').waitFor({ state: 'visible' });
+        // The tree nests all three, and the leaf is idle (grey).
+        const leafRow = `[data-testid="stream-tree"] [data-stream="${leaf.id}"]`;
+        await page.locator(leafRow).waitFor({ state: 'visible' });
+        expect(await page.locator(`${leafRow} .title`).textContent()).toBe('parser');
+        expect(
+          await page.locator(`[data-stream="${mid.id}"] + ul [data-stream="${leaf.id}"]`).count(),
+        ).toBe(1);
+        await waitForAttr(page, `${leafRow} .cr-dot`, 'data-dot', 'grey');
+
+        // The agent asks — through the service, the path the MCP `ask` verb
+        // takes — while the page is open. No reload from here on.
+        const session = ulid();
+        const question = await cockpit.questions.raise({
+          stream: leaf.id,
+          raised_by: 'eng-1',
+          session,
+          text: 'comma or semicolon for the CSV dialect?',
+        });
+
+        const card = `[data-id="${question.id}"]`;
+        await page.locator(card).waitFor({ state: 'visible' });
+        // Grouped under the stream's full path (§3.2).
+        expect(await page.locator(`.cr-group[data-stream="${leaf.id}"] h2`).textContent()).toBe(
+          'ledger-lite / import CSV / parser',
+        );
+        expect(await page.locator(`${card} [data-testid="inbox-context"]`).textContent()).toContain(
+          'comma or semicolon',
+        );
+        await waitForText(page, '[data-testid="inbox-badge"]', '1');
+        // The dot says it is the operator's move.
+        await waitForAttr(page, `${leafRow} .cr-dot`, 'data-dot', 'amber');
+
+        // Answered inline, in the operator's own words.
+        await page
+          .locator(`${card} [data-testid="answer-input"]`)
+          .fill('semicolon — the export uses it');
+        await page.locator(`${card} [data-testid="answer-send"]`).click();
+
+        // The answer reaches the asking session, verbatim.
+        await waitUntil('the answer to be delivered', () => cockpit.delivered.length > 0);
+        expect(cockpit.delivered[0]?.session).toBe(session);
+        expect(cockpit.delivered[0]?.question.id).toBe(question.id);
+        expect(cockpit.delivered[0]?.question.answer).toBe('semicolon — the export uses it');
+        const answer = cockpit.streams
+          .readThread(leaf.id)
+          .entries.find((entry) => entry.kind === 'answer');
+        expect(answer?.by).toBe('human');
+
+        // The card goes, the inbox is empty again, and the dot moves off amber.
+        await page.locator(card).waitFor({ state: 'detached' });
+        await page.locator('[data-testid="inbox-empty"]').waitFor({ state: 'visible' });
+        await waitForAttr(page, `${leafRow} .cr-dot`, 'data-dot', 'grey');
       } finally {
         await teardown([page]);
-        await handle?.stop();
-        rmSync(repo, { recursive: true, force: true });
+        await cockpit.stop();
       }
     },
-    BODY_BUDGET_MS,
+    TEST_BUDGET_MS,
+  );
+
+  browserTest(
+    'a routed call and a proposed rule are decided inline, and a stream in the tree narrows the inbox',
+    async () => {
+      const cockpit = await startCockpit();
+      let page: Page | undefined;
+      try {
+        const a = await cockpit.streams.create('human', { title: 'alpha', goal: 'a' });
+        const b = await cockpit.streams.create('human', { title: 'beta', goal: 'b' });
+        const gate = await cockpit.gates.request('classifier_review', {
+          policy: cockpit.store.getPolicy(),
+          stream: a.id,
+          summary: 'editing a dependency manifest is never automatic',
+          call: { tool: 'Edit', path: '/tmp/wt/package.json', fingerprint: '0123456789abcdef' },
+        });
+        const rule = await cockpit.rules.create('agent', {
+          text: 'run the repo scripts, never a second toolchain',
+          scope: { kind: 'stream', ref: b.id },
+          provenance: { by: 'agent', stream: b.id },
+        });
+
+        page = await openPage();
+        await page.goto(`${cockpit.base}/`);
+        await page.locator(`[data-id="${gate.id}"]`).waitFor({ state: 'visible' });
+        await page.locator(`[data-id="${rule.id}"]`).waitFor({ state: 'visible' });
+        expect(
+          await page.locator(`[data-id="${gate.id}"] [data-testid="inbox-context"]`).textContent(),
+        ).toContain('package.json');
+
+        // Narrow to beta: only the rule card is left.
+        await page.locator(`[data-testid="stream-tree"] [data-stream="${b.id}"]`).click();
+        await page.locator(`[data-id="${gate.id}"]`).waitFor({ state: 'detached' });
+        expect(await page.locator(`[data-id="${rule.id}"]`).count()).toBe(1);
+
+        await page.locator(`[data-id="${rule.id}"] [data-testid="rule-accept"]`).click();
+        await page.locator(`[data-id="${rule.id}"]`).waitFor({ state: 'detached' });
+        await waitUntil('the rule to be accepted', () => {
+          const saved = cockpit.store.getRule(rule.id);
+          return saved.status === 'accepted' && saved.decided_by === 'human';
+        });
+
+        // Back to every stream: allow the routed call with a reason.
+        await page
+          .locator('[data-testid="stream-tree"] .cr-tree-row', { hasText: 'All streams' })
+          .click();
+        const gateCard = `[data-id="${gate.id}"]`;
+        await page.locator(`${gateCard} [data-testid="gate-note"]`).fill('pin it to 1.2.3');
+        await page.locator(`${gateCard} [data-testid="gate-approve"]`).click();
+        await page.locator(gateCard).waitFor({ state: 'detached' });
+        const decided = cockpit.gates.get(gate.id);
+        expect(decided.status).not.toBe('pending');
+        expect(decided.note).toBe('pin it to 1.2.3');
+        await page.locator('[data-testid="inbox-empty"]').waitFor({ state: 'visible' });
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+
+  browserTest(
+    'phone width: no horizontal scroll, the tree is a drawer, a card is answerable',
+    async () => {
+      const cockpit = await startCockpit();
+      let page: Page | undefined;
+      try {
+        const root = await cockpit.streams.create('human', {
+          title: 'a stream with a rather long title that must not push the page sideways',
+          goal: 'g',
+        });
+        const question = await cockpit.questions.raise({
+          stream: root.id,
+          raised_by: 'eng-1',
+          text: 'which branch should this land on?',
+        });
+
+        page = await openPage();
+        await page.setViewportSize({ width: 390, height: 844 });
+        await page.goto(`${cockpit.base}/`);
+        const card = `[data-id="${question.id}"]`;
+        await page.locator(card).waitFor({ state: 'visible' });
+
+        // The drawer is closed: the inbox has the whole width.
+        expect(await page.locator('[data-testid="stream-tree"]').isVisible()).toBe(false);
+        const overflow = (await page.evaluate(
+          'document.documentElement.scrollWidth - document.documentElement.clientWidth',
+        )) as number;
+        expect(overflow).toBeLessThanOrEqual(0);
+        const box = await page.locator(card).boundingBox();
+        expect(box).not.toBeNull();
+        expect((box?.x ?? 0) + (box?.width ?? 0)).toBeLessThanOrEqual(390);
+
+        // The top bar opens the tree; picking a stream closes it again.
+        await page.locator('[data-testid="rail-toggle"]').click();
+        await page.locator('[data-testid="stream-tree"]').waitFor({ state: 'visible' });
+        await page.locator(`[data-testid="stream-tree"] [data-stream="${root.id}"]`).click();
+        await page.locator('[data-testid="stream-tree"]').waitFor({ state: 'hidden' });
+
+        await page.locator(`${card} [data-testid="answer-input"]`).fill('main');
+        await page.locator(`${card} [data-testid="answer-send"]`).click();
+        await page.locator(card).waitFor({ state: 'detached' });
+        await waitForCount(page, '[data-testid="inbox-empty"]', 1);
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
   );
 });
