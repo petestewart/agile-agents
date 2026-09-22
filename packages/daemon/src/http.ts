@@ -28,6 +28,7 @@ import {
   QuestionIdSchema,
   RuleIdSchema,
   StreamAttachRequestSchema,
+  StreamCreateInputSchema,
   StreamSayInputSchema,
   UlidSchema,
   formatZodError,
@@ -661,6 +662,24 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
             return jsonResponse(await feed.landing.land(id.data));
           } catch (err) {
             if (err instanceof LandRefusedError) return errorResponse(409, err.message);
+            return errorResponse(400, err instanceof Error ? err.message : String(err));
+          }
+        }
+
+        // T162: "New stream" and the top bar's quick capture (§9.1) — the
+        // same `StreamService.create` the `stream.create` RPC reaches,
+        // stamped `human` at this edge.
+        if (url.pathname === '/api/streams' && req.method === 'POST') {
+          if (!feed?.streams) return errorResponse(503, 'streams not available');
+          if (!isSameOriginRequest(req, srv.port ?? options.port)) {
+            return errorResponse(403, 'cross-origin request rejected');
+          }
+          try {
+            const input = StreamCreateInputSchema.safeParse(await readJsonBody(req));
+            if (!input.success) return errorResponse(400, formatZodError('stream', input.error));
+            return jsonResponse(await feed.streams.create('human', input.data), 201);
+          } catch (err) {
+            // An unknown parent or repo, or a bad body: the human's to fix.
             return errorResponse(400, err instanceof Error ? err.message : String(err));
           }
         }

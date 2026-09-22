@@ -60,6 +60,30 @@ export function buildStreamTree(rows: readonly CockpitStreamRow[]): StreamTreeNo
   return roots;
 }
 
+/**
+ * T162: the tree's filter. Keeps the rows whose title contains `query`
+ * (case-insensitive) plus their ancestors, so a match still reads under
+ * its path. An empty query keeps everything.
+ */
+export function filterStreamRows(
+  rows: readonly CockpitStreamRow[],
+  query: string,
+): readonly CockpitStreamRow[] {
+  const q = query.trim().toLowerCase();
+  if (!q) return rows;
+  const byId = new Map(rows.map((row) => [row.id, row]));
+  const keep = new Set<string>();
+  for (const row of rows) {
+    if (!row.title.toLowerCase().includes(q)) continue;
+    let at: CockpitStreamRow | undefined = row;
+    while (at && !keep.has(at.id)) {
+      keep.add(at.id);
+      at = at.parent !== undefined ? byId.get(at.parent) : undefined;
+    }
+  }
+  return rows.filter((row) => keep.has(row.id));
+}
+
 export interface InboxGroup {
   /** The stream id, or `''` for items that belong to no stream (a global `rule_accept`). */
   key: string;

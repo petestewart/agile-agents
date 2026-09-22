@@ -993,3 +993,122 @@ describe('stream page (Playwright e2e, T161)', () => {
     TEST_BUDGET_MS,
   );
 });
+
+// ---- T162: new stream, quick capture, `n` and `/` -------------------------
+
+describe('new stream and quick capture (Playwright e2e, T162)', () => {
+  browserTest(
+    'quick capture turns one line into a stream with no repo and opens its page',
+    async () => {
+      const cockpit = await startCockpit();
+      let page: Page | undefined;
+      try {
+        page = await openPage();
+        await page.goto(`${cockpit.base}/`);
+        await page.locator('[data-testid="inbox-empty"]').waitFor({ state: 'visible' });
+
+        // Interaction one: type the line. Interaction two: Enter.
+        await page.locator('[data-testid="quick-capture"]').fill('why is the nightly export slow?');
+        await page.locator('[data-testid="quick-capture"]').press('Enter');
+
+        await page.locator('[data-testid="stream-page"]').waitFor({ state: 'visible' });
+        await waitUntil('the stream to exist', () => cockpit.streams.list().length === 1);
+        const created = cockpit.streams.list()[0];
+        expect(created?.title).toBe('why is the nightly export slow?');
+        expect(created?.repo).toBeUndefined();
+        expect(created?.parent).toBeUndefined();
+        const row = `[data-testid="stream-tree"] [data-stream="${created?.id}"]`;
+        await page.locator(row).waitFor({ state: 'visible' });
+        expect(await page.locator(row).getAttribute('aria-current')).toBe('true');
+        expect(await page.locator('[data-testid="quick-capture"]').inputValue()).toBe('');
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+
+  browserTest(
+    '`n` opens "New stream"; a stream created with a parent nests under it and its page opens',
+    async () => {
+      const cockpit = await startCockpit();
+      let page: Page | undefined;
+      try {
+        const parent = await cockpit.streams.create('human', { title: 'ledger-lite', goal: 'g' });
+        page = await openPage();
+        await page.goto(`${cockpit.base}/`);
+        await page
+          .locator(`[data-testid="stream-tree"] [data-stream="${parent.id}"]`)
+          .waitFor({ state: 'visible' });
+
+        // `n` while typing does nothing: it is just a letter in the box.
+        await page.locator('[data-testid="quick-capture"]').focus();
+        await page.keyboard.press('n');
+        expect(await page.locator('[data-testid="new-stream"]').count()).toBe(0);
+        await page.locator('[data-testid="quick-capture"]').fill('');
+        await page.locator('[data-testid="quick-capture"]').blur();
+
+        await page.keyboard.press('n');
+        await page.locator('[data-testid="new-stream"]').waitFor({ state: 'visible' });
+        await page.locator('[data-testid="new-stream-title"]').fill('import CSV');
+        await page.locator('[data-testid="new-stream-parent"]').selectOption(parent.id);
+        await page.locator('[data-testid="new-stream-create"]').click();
+
+        await page.locator('[data-testid="new-stream"]').waitFor({ state: 'detached' });
+        await page.locator('[data-testid="stream-page"]').waitFor({ state: 'visible' });
+        await waitUntil('the child to exist', () => cockpit.streams.list().length === 2);
+        const child = cockpit.streams.list().find((s) => s.id !== parent.id);
+        expect(child?.title).toBe('import CSV');
+        expect(child?.parent).toBe(parent.id);
+        await page
+          .locator(`[data-stream="${parent.id}"] + ul [data-stream="${child?.id}"]`)
+          .waitFor({ state: 'visible' });
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+
+  browserTest(
+    '`/` focuses the tree filter, which keeps matches and their ancestors',
+    async () => {
+      const cockpit = await startCockpit();
+      let page: Page | undefined;
+      try {
+        const root = await cockpit.streams.create('human', { title: 'ledger-lite', goal: 'g' });
+        const leaf = await cockpit.streams.create('human', {
+          title: 'parser',
+          goal: 'g',
+          parent: root.id,
+        });
+        const other = await cockpit.streams.create('human', { title: 'docs', goal: 'g' });
+        page = await openPage();
+        await page.goto(`${cockpit.base}/`);
+        const tree = '[data-testid="stream-tree"]';
+        await page.locator(`${tree} [data-stream="${other.id}"]`).waitFor({ state: 'visible' });
+
+        await page.keyboard.press('/');
+        expect(
+          (await page.evaluate('document.activeElement?.dataset?.testid ?? null')) as string,
+        ).toBe('stream-filter');
+        await page.keyboard.type('PARS');
+        await page.locator(`${tree} [data-stream="${other.id}"]`).waitFor({ state: 'detached' });
+        expect(await page.locator(`${tree} [data-stream="${leaf.id}"]`).count()).toBe(1);
+        expect(await page.locator(`${tree} [data-stream="${root.id}"]`).count()).toBe(1);
+        // Typed into the filter, `n` stays a letter.
+        await page.keyboard.type('n');
+        expect(await page.locator('[data-testid="new-stream"]').count()).toBe(0);
+
+        await page.keyboard.press('Escape');
+        await page.locator(`${tree} [data-stream="${other.id}"]`).waitFor({ state: 'visible' });
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+});
