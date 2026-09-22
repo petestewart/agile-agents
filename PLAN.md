@@ -478,7 +478,7 @@ Build order: Phase 0 → 1 → 2 → 3 → 4 → 5 → 6. Within a phase, ticket
 
 ### Ticket: T156 ∥ Remove the confidence floor; rule criteria; rewrite the two weak rules
 - **Priority:** P2
-- **Status:** Todo
+- **Status:** In Progress
 - **Owner:** -
 - **Scope:** Per D14. (1) Delete `classifier.bands.confidence_floor` (schema, default, docs), the derived `|2p−1|` confidence, and every code path that reads either; `Answer` carries the Noul value only. Old configs carrying the key fail loudly with a message naming D14, or are migrated by the store; pick one, no silent drop. (2) Rules gain optional `criteria: {true, false}` passed through to the Noul request as the TypeSafe docs describe. (3) Rewrite the seeded rules …GR77MM and …8CMD5B as one yes/no `question` each (yes = broken), with `criteria` where the line is subtle. The design doc is not edited; D14 carries the change.
 - **Acceptance Criteria:** grep finds no `confidence_floor`/derived confidence in `packages/`; band tests cover deny/allow/route on the raw value only; a `FakeClassifier` test sees `criteria` in the request; recorded-fixture eval of the two rewritten rules.
@@ -500,9 +500,9 @@ Build order: Phase 0 → 1 → 2 → 3 → 4 → 5 → 6. Within a phase, ticket
 
 ### Ticket: T161 Stream page
 - **Priority:** P0
-- **Status:** Todo
+- **Status:** In Progress
 - **Owner:** —
-- **Scope:** Thread (streaming, markdown, thinking indicator from T051's `chat-state.ts`), a composer that writes a human line and, if a worker is attached, prompts it; sessions strip (vendor/model, attach, review, stop); diff tab (reuse `feed/diff.ts`); rules-in-scope tab; docs tab (T134); Land button with the diff-rule result.
+- **Scope:** Thread (streaming, markdown, thinking indicator from T051's `chat-state.ts`), a composer that writes a human line and, if a worker is attached, prompts it; sessions strip (vendor/model, attach, review, stop); diff tab (reuse `feed/diff.ts`); rules-in-scope tab; docs tab (T134); Land button with the diff-rule result. Added 2026-09-22 (Pete): inbox cards clipped at 200 chars must be readable in full; a clipped card expands in place, and clicking a card opens its stream page with the full question, gate or rule.
 - **Acceptance Criteria:** Playwright covering attach → question → answer → findings → land on one stream with the fake transport.
 - **Validation Steps:** `bun run test:e2e`.
 - **Notes:** Pete looks at this before T162.
