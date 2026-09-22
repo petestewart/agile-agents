@@ -32,6 +32,14 @@ export const DEFAULT_CLASSIFIER_CONFIDENCE_FLOOR = 0.5;
 /** §6.2's transport: `https://api.typesafe.ai`, 25 s timeout. */
 export const DEFAULT_CLASSIFIER_BASE_URL = 'https://api.typesafe.ai';
 export const DEFAULT_CLASSIFIER_TIMEOUT_MS = 25_000;
+/**
+ * T152 (§8.2): how much state one classifier call may carry. The diff-level
+ * check at landing sends the stream's whole diff, and a large one does not
+ * fit in a single call — "over the classifier's budget ⇒ split per file,
+ * take the MAX". A field rather than a constant in the daemon so the budget
+ * moves with the provider's limits without a code change.
+ */
+export const DEFAULT_CLASSIFIER_STATE_MAX_CHARS = 60_000;
 
 /** A band threshold — a probability or a confidence, both in `[0, 1]`. */
 const BandNumberSchema = z.number().min(0).max(1);
@@ -70,6 +78,8 @@ export const ClassifierConfigSchema = z
     api_key: z.string().min(1).optional(),
     base_url: z.string().min(1).default(DEFAULT_CLASSIFIER_BASE_URL),
     timeout_ms: z.number().int().positive().default(DEFAULT_CLASSIFIER_TIMEOUT_MS),
+    /** §8.2's budget: a state longer than this is split per file (T152). */
+    state_max_chars: z.number().int().positive().default(DEFAULT_CLASSIFIER_STATE_MAX_CHARS),
     bands: ClassifierBandsSchema.default({}),
   })
   .strict();

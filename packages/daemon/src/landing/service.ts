@@ -82,12 +82,24 @@ export interface DiffRuleContext {
  */
 export type DiffRuleVerdict =
   | { decision: 'allow' }
-  | { decision: 'deny' | 'route'; reason: string; rule?: string };
+  | {
+      decision: 'deny' | 'route';
+      reason: string;
+      rule?: string;
+      /**
+       * T152: the `classifier_review` gate a `route` raised. Its presence
+       * is what makes §8.2's "landing waits" a *wait* rather than a
+       * refusal — `land` returns `gated`, and answering the gate comes
+       * back here through `wireLandGateResolution`.
+       */
+      gate?: HilRequest;
+    };
 
 /**
- * The diff-level rule tier (§8.2). T152 implements it over the classifier;
- * until then `ALLOW_ALL_DIFF_RULES` is the default, so the landing path is
- * already shaped for it instead of growing a branch later.
+ * The diff-level rule tier (§8.2), implemented over the classifier by
+ * `ClassifierDiffRules` (`landing/diff-rules.ts`). `ALLOW_ALL_DIFF_RULES`
+ * stays the default for a daemon with no classifier wired and for the
+ * tests that are not about this tier.
  */
 export interface DiffRules {
   check(ctx: DiffRuleContext): DiffRuleVerdict | Promise<DiffRuleVerdict>;
@@ -160,7 +172,7 @@ export class LandingService {
       if (gated !== undefined) return gated;
     }
 
-    // 2. Diff-level rules (T152 plugs in; no-op default).
+    // 2. Diff-level rules (§8.2; `ClassifierDiffRules` when one is wired).
     const verdict = await this.diffRules.check({
       stream,
       repoRoot,
@@ -169,8 +181,12 @@ export class LandingService {
       diff: () => runGit(['diff', `${target}...${branch}`], repoRoot, repoRoot),
     });
     if (verdict.decision !== 'allow') {
-      const line = `landing refused by diff rule${verdict.rule ? ` ${verdict.rule}` : ''}: ${verdict.reason}`;
+      const what = verdict.decision === 'route' ? 'routed' : 'refused';
+      const line = `landing ${what} by diff rule${verdict.rule ? ` ${verdict.rule}` : ''}: ${verdict.reason}`;
       await streams.appendThread('daemon', stream.id, { kind: 'event', body: line });
+      // A route has a gate to wait on; a deny (and a route with nowhere to
+      // put the card) ends the call.
+      if (verdict.gate !== undefined) return { status: 'gated', gate: verdict.gate, line };
       return { status: 'refused', reason: verdict.reason, line };
     }
 
@@ -478,6 +494,25 @@ export function wireLandGateResolution(gates: GateService, landing: LandingServi
     const resolved = await respond(id, decision, by, note);
     if (resolved.gate === 'land' && resolved.decision === 'approve') {
       await landing.land(resolved.stream, { gateApproved: true });
+    }
+    // T152: a `classifier_review` gate raised by the diff tier is the other
+    // gate landing waits on. It is told apart from the route band's
+    // per-tool-call gates by `call.origin === 'diff_rules'`, a marker only
+    // `ClassifierDiffRules` sets. It is deliberately NOT a sentinel on
+    // `call.tool`: that field is the vendor's reported `tool_name`, an
+    // unconstrained string, so a vendor or MCP tool that happened to be
+    // called `land` would have turned an approval for one edit into a merge
+    // into a protected branch. `origin` is never sourced from vendor data,
+    // so answering a routed *tool* call cannot reach this path however the
+    // tool is named (`service.test.ts` asserts exactly that). The land
+    // re-runs the whole check, which is how the approval gets spent
+    // (`ClassifierDiffRules.answeredGate`).
+    if (
+      resolved.gate === 'classifier_review' &&
+      resolved.decision === 'approve' &&
+      resolved.call?.origin === 'diff_rules'
+    ) {
+      await landing.land(resolved.stream);
     }
     return resolved;
   };

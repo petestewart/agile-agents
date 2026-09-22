@@ -151,6 +151,28 @@ describe('rulesInScope (§5.3)', () => {
     expect(() => parseRuleScope('repo')).toThrow(/invalid rule scope/);
     expect(() => parseRuleScope('everything')).toThrow(/invalid rule scope/);
   });
+
+  test('T152: the stage filter selects action / diff, and "both" matches either', () => {
+    const stream = fixtureStream();
+    const all = [
+      fixture('default stage'), // no `stage` ⇒ 'action'
+      fixture('at the diff', { stage: 'diff' }),
+      fixture('at both', { stage: 'both' }),
+    ];
+    expect(rulesInScope(all, stream).map((r) => r.text)).toEqual([
+      'default stage',
+      'at the diff',
+      'at both',
+    ]);
+    expect(rulesInScope(all, stream, [], 'action').map((r) => r.text)).toEqual([
+      'default stage',
+      'at both',
+    ]);
+    expect(rulesInScope(all, stream, [], 'diff').map((r) => r.text)).toEqual([
+      'at the diff',
+      'at both',
+    ]);
+  });
 });
 
 // ---------------------------------------------------------------- service
