@@ -5,7 +5,7 @@
  * (cockpit design §2.2).
  */
 
-import type { Policy } from '@agile-agents/shared';
+import type { Policy, Stream, StreamCreateInput } from '@agile-agents/shared';
 import type { LandOutcome, StreamDiff, StreamPagePayload } from './feed-types';
 
 async function post(path: string, body: unknown = {}): Promise<unknown> {
@@ -17,6 +17,11 @@ async function post(path: string, body: unknown = {}): Promise<unknown> {
   const payload = (await res.json().catch(() => ({}))) as { error?: string };
   if (!res.ok) throw new Error(payload.error ?? `${path} failed (${res.status})`);
   return payload;
+}
+
+/** T162: "New stream" and the top bar's quick capture. */
+export function createStream(input: StreamCreateInput): Promise<Stream> {
+  return post('/api/streams', input) as Promise<Stream>;
 }
 
 /** A question card: the typed text reaches the asking session verbatim (§3.3). */

@@ -28,6 +28,7 @@ import {
   QuestionIdSchema,
   RuleIdSchema,
   StreamAttachRequestSchema,
+  StreamCreateInputSchema,
   StreamSayInputSchema,
   UlidSchema,
   formatZodError,
@@ -61,6 +62,16 @@ import {
 import { RuleAlreadyDecidedError, type RulesService } from './rules';
 import { NotFoundError, type StateStore } from './store';
 import type { StreamService } from './streams';
+
+/** T165: the installable-app files served at site root, with their content types. */
+const INSTALLABLE_FILES: Record<string, string> = {
+  '/manifest.webmanifest': 'application/manifest+json',
+  '/sw.js': 'text/javascript; charset=utf-8',
+  '/icons/icon-192.png': 'image/png',
+  '/icons/icon-512.png': 'image/png',
+  '/icons/maskable-512.png': 'image/png',
+  '/icons/apple-touch-icon.png': 'image/png',
+};
 
 /**
  * The port the daemon was told to listen on is already taken (T127). Typed,
@@ -565,6 +576,22 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
           });
         }
 
+        /**
+         * T165: what makes the cockpit installable as its own app window —
+         * the manifest, its icons and the pass-through service worker — is
+         * served from site root, because a service worker only controls pages
+         * under its own path and the cockpit lives at `/`. The files are the
+         * Vite `public/` copies in the built bundle.
+         */
+        const installable = INSTALLABLE_FILES[url.pathname];
+        if (installable) {
+          const file = Bun.file(join(CONTROL_ROOM_DIST_DIR, url.pathname.slice(1)));
+          if (!(await file.exists())) return new Response('not found', { status: 404 });
+          return new Response(file, {
+            headers: { 'content-type': installable, 'cache-control': 'no-cache' },
+          });
+        }
+
         if (url.pathname === '/feed') {
           return new Response(Bun.file(FEED_HTML_PATH), {
             headers: { 'content-type': 'text/html; charset=utf-8' },
@@ -591,8 +618,13 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
         if (url.pathname.startsWith('/control-room/')) {
           const rel = url.pathname.slice('/control-room/'.length);
           const file = Bun.file(join(CONTROL_ROOM_DIST_DIR, rel));
-          if (await file.exists()) return new Response(file);
-          return new Response('not found', { status: 404 });
+          if (!(await file.exists())) return new Response('not found', { status: 404 });
+          // T165: Vite rewrites index.html's manifest/icon links onto this
+          // prefix, so the installable files get their explicit types here too.
+          const type = INSTALLABLE_FILES[`/${rel}`];
+          return type
+            ? new Response(file, { headers: { 'content-type': type } })
+            : new Response(file);
         }
 
         if (url.pathname === '/api/snapshot') {
@@ -671,6 +703,24 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
             return jsonResponse(await feed.landing.land(id.data));
           } catch (err) {
             if (err instanceof LandRefusedError) return errorResponse(409, err.message);
+            return errorResponse(400, err instanceof Error ? err.message : String(err));
+          }
+        }
+
+        // T162: "New stream" and the top bar's quick capture (§9.1) — the
+        // same `StreamService.create` the `stream.create` RPC reaches,
+        // stamped `human` at this edge.
+        if (url.pathname === '/api/streams' && req.method === 'POST') {
+          if (!feed?.streams) return errorResponse(503, 'streams not available');
+          if (!isSameOriginRequest(req, srv.port ?? options.port)) {
+            return errorResponse(403, 'cross-origin request rejected');
+          }
+          try {
+            const input = StreamCreateInputSchema.safeParse(await readJsonBody(req));
+            if (!input.success) return errorResponse(400, formatZodError('stream', input.error));
+            return jsonResponse(await feed.streams.create('human', input.data), 201);
+          } catch (err) {
+            // An unknown parent or repo, or a bad body: the human's to fix.
             return errorResponse(400, err instanceof Error ? err.message : String(err));
           }
         }

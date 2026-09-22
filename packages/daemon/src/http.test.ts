@@ -227,6 +227,29 @@ describe('T160 cockpit routes', () => {
     expect(long.status).toBe(400);
   });
 
+  test('T162: POST /api/streams creates a stream stamped human; strict body; unknown parent 400; cross-origin 403', async () => {
+    const post = (body: unknown, headers: Record<string, string> = {}) =>
+      fetch(url('/api/streams'), {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', ...headers },
+        body: JSON.stringify(body),
+      });
+    expect((await post({ title: 't', goal: 'g' }, { origin: 'http://evil.example' })).status).toBe(
+      403,
+    );
+    expect((await post({ title: 't', goal: 'g', by: 'daemon' })).status).toBe(400);
+    expect((await post({ title: 't', goal: 'g', parent: ulid() })).status).toBe(400);
+    expect((await post({ title: 't', goal: 'g', repo: 'nope' })).status).toBe(400);
+    const parent = await streams.create('human', { title: 'p', goal: 'g' });
+    const res = await post({ title: 'child', goal: 'g', parent: parent.id });
+    expect(res.status).toBe(201);
+    const created = (await res.json()) as { id: string; parent?: string; repo?: string };
+    expect(created.parent).toBe(parent.id);
+    expect(created.repo).toBeUndefined();
+    const entries = streams.readThread(created.id).entries;
+    expect(entries.map((e) => [e.by, e.kind])).toEqual([['human', 'event']]);
+  });
+
   test('T161: attach/stop without an attach service are 503, and are same-origin only', async () => {
     const stream = await streams.create('human', { title: 's', goal: 'g' });
     for (const action of ['attach', 'stop']) {
