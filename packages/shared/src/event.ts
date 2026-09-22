@@ -70,6 +70,10 @@ export const EVENT_KINDS = [
   // -- hook (HookService + the ACP permission responder) --
   // data: {event, decision, reason, tool?, command?}
   'hook_decision',
+  // T151 (§6.2, "latency is recorded per call as an event"): one per
+  // classifier call made from the hook path.
+  // data: {stream, rules, questions, latency_ms, outcome, error?}
+  'classifier_call',
 
   // -- land --  none yet; T141 adds `land_*` with its emitter.
 

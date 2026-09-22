@@ -43,19 +43,32 @@ import { isAbsolute, resolve } from 'node:path';
 import {
   type AgentId,
   type AgentRecord,
+  type ClassifierConfig,
   DEFAULT_PROTECTED_BRANCHES,
   MESSAGE_BODY_MAX_CHARS,
   type Message,
   type Policy,
+  type RepoEntry,
   type Rule,
+  type RuleId,
   type SessionRole,
+  type Stream,
+  THREAD_BODY_MAX_CHARS,
+  validateClassifierConfig,
 } from '@agile-agents/shared';
 import type { Bus } from '../bus';
+import { type Classifier, ClassifierUnavailableError, classifierEnabled } from '../classifier';
 import { isPathInside } from '../permissions/command';
 import { worktreeBranchLookups } from '../permissions/push-detector';
 import { patternRulesOf, protectedBranchesFor } from '../permissions/rule-checks';
 import { NotFoundError, type StateStore, buildEvent } from '../store';
-import { decidePreToolUse } from './decide';
+import {
+  type ClassifierTierOutcome,
+  buildClassifierState,
+  classifierRulesOf,
+  decideClassifierTier,
+  decidePreToolUse,
+} from './decide';
 import { fingerprintCall } from './fingerprint';
 import { type RouteBandGates, routeCall } from './route-band';
 import {
@@ -152,6 +165,15 @@ export interface HookServiceOptions {
    * enforcement off in production (`daemon.ts` always wires it).
    */
   rules?: HookRules;
+  /**
+   * T151 (§6): the classifier tier. Without one there is no tier at all —
+   * a unit test that only cares about the pattern tier leaves it unset, and
+   * §6.4's fail policy covers a home with no key the same way (the daemon
+   * wires this only when `config.classifier` is configured, so an
+   * unconfigured home reaches `classifierUnavailable` below rather than a
+   * classifier that would throw `not_configured` on every tool call).
+   */
+  classifier?: HookClassifier;
   limits?: HookLimits;
   /** Injectable for tests; defaults to `node:fs.statSync`. */
   fileSize?: (path: string) => number | undefined;
@@ -165,6 +187,19 @@ export interface HookRules {
   /** §5.7's counters, bumped for every rule the decision evaluated. */
   recordFired(id: string, outcome: 'fired' | 'violated' | 'routed'): Promise<unknown>;
 }
+
+/** The classifier tier as the hook needs it: something to ask, and the config the bands and the opt-out come from. */
+export interface HookClassifier {
+  ask: Classifier;
+  config: ClassifierConfig;
+  /** Env for the key lookup in `classifierEnabled`. Defaults to `process.env`. */
+  env?: Record<string, string | undefined>;
+  /** Injectable clock for the latency measurement (T151 tests). */
+  now?: () => number;
+}
+
+/** The band defaults (§6.3), for a hook with no classifier wired at all — the fail policy still needs a band table to read. */
+const DEFAULT_CLASSIFIER_CONFIG = validateClassifierConfig({});
 
 function defaultFileSize(path: string): number | undefined {
   try {
@@ -395,7 +430,13 @@ export class HookService {
     if (rules === undefined || decision.rulesEvaluated === undefined) return;
     for (const id of decision.rulesEvaluated) {
       try {
-        await rules.recordFired(id, id === decision.ruleViolated ? 'violated' : 'fired');
+        const outcome =
+          id === decision.ruleViolated
+            ? 'violated'
+            : id === decision.ruleRouted
+              ? 'routed'
+              : 'fired';
+        await rules.recordFired(id, outcome);
       } catch {
         // A counter is telemetry (§5.7's pruning input): losing one must
         // never turn a decision the hook already made into an error.
@@ -491,6 +532,20 @@ export class HookService {
       allowedBy = routed.allowedBy;
     }
 
+    // 3. The classifier tier (§8.1 step 3, T151) — only when the tiers
+    // above allowed the call: a call the role policy or a pattern rule has
+    // already settled is settled, and asking about it would spend a round
+    // trip (and bump classifier rules' stats) for a call that never
+    // happened.
+    if (decision.decision === 'allow') {
+      const tier = await this.classifierTier(ctx, payload);
+      if (tier !== undefined) {
+        const applied = await this.applyClassifierTier(ctx, payload, tier, decision);
+        decision = { ...decision, ...applied.decision };
+        allowedBy = applied.allowedBy ?? allowedBy;
+      }
+    }
+
     await this.ackAll(ctx.session as AgentId, decision.ack);
     await this.recordRuleStats(decision);
     await this.logDecision(ctx, 'pre_tool_use', decision, {
@@ -515,6 +570,192 @@ export class HookService {
   }
 
   /**
+   * §8.1 step 3: the classifier rules in scope for this stream, one call,
+   * §6.3's bands. `undefined` when no classifier rule is in scope at all —
+   * the common case, and the one that must cost nothing.
+   *
+   * The opt-out and a missing key are not a special case here: they go
+   * through the very same fail policy as an outage (§6.4, "the same policy
+   * covers the opt-out and a missing key"), by failing the call with
+   * `not_configured` instead of making it.
+   */
+  private async classifierTier(
+    ctx: HookDecisionContext,
+    payload: ClaudePreToolUsePayload,
+  ): Promise<{ outcome: ClassifierTierOutcome; called: boolean } | undefined> {
+    const rules = classifierRulesOf(this.rulesInScope(ctx.stream));
+    if (rules.length === 0) return undefined;
+
+    const tier = this.options.classifier;
+    const enabled =
+      tier !== undefined &&
+      classifierEnabled({
+        stream: this.streamRecord(ctx.stream),
+        repo: this.repoEntry(ctx.stream),
+        config: tier.config,
+        ...(tier.env !== undefined ? { env: tier.env } : {}),
+      });
+
+    const state = buildClassifierState(
+      { stream: ctx.stream, worktreePath: ctx.worktreePath, ...(this.repoOf(ctx.stream) ?? {}) },
+      payload,
+    );
+    const classifier: Classifier =
+      enabled && tier !== undefined
+        ? tier.ask
+        : {
+            ask: () =>
+              Promise.reject(
+                new ClassifierUnavailableError(
+                  'not_configured',
+                  'the classifier tier is off for this stream',
+                ),
+              ),
+          };
+    const outcome = await decideClassifierTier({
+      rules,
+      bands: (tier?.config ?? DEFAULT_CLASSIFIER_CONFIG).bands,
+      classifier,
+      state,
+      ...(tier?.now !== undefined ? { now: tier.now } : {}),
+    });
+    return { outcome, called: enabled };
+  }
+
+  /**
+   * Turns one tier outcome into the decision the model sees, plus the three
+   * things it implies: the `classifier_call` event (§6.2's latency), the
+   * `hook_unchecked` thread entry (§6.4) and, for a route, T138's route
+   * band — never a second routing mechanism.
+   */
+  private async applyClassifierTier(
+    ctx: HookDecisionContext,
+    payload: ClaudePreToolUsePayload,
+    tier: { outcome: ClassifierTierOutcome; called: boolean },
+    /** The decision so far — its `rulesEvaluated` (the pattern tier's) is kept, not replaced. */
+    soFar: HookDecision,
+  ): Promise<{ decision: Partial<HookDecision>; allowedBy?: string }> {
+    const { outcome } = tier;
+    if (tier.called) await this.logClassifierCall(ctx, outcome);
+    if (outcome.unchecked !== undefined) await this.noteUnchecked(ctx, outcome);
+
+    const evaluated = [...(soFar.rulesEvaluated ?? []), ...outcome.evaluated];
+    if (outcome.band === 'deny') {
+      return {
+        decision: {
+          decision: 'deny',
+          reason: outcome.reason,
+          rulesEvaluated: evaluated,
+          ...(outcome.rule !== undefined ? { ruleViolated: outcome.rule } : {}),
+        },
+      };
+    }
+    if (outcome.band === 'route') {
+      const routed = await this.route(
+        ctx,
+        payload,
+        outcome.reason ?? 'a classifier rule needs a human',
+        outcome.rule as RuleId | undefined,
+      );
+      return {
+        decision: {
+          ...routed.decision,
+          rulesEvaluated: evaluated,
+          // A spent approval means the human already said yes to this exact
+          // call: it fired, it was not routed again.
+          ...(routed.decision.decision !== 'allow' && outcome.rule !== undefined
+            ? { ruleRouted: outcome.rule }
+            : {}),
+        },
+        ...(routed.allowedBy !== undefined ? { allowedBy: routed.allowedBy } : {}),
+      };
+    }
+    return { decision: { rulesEvaluated: evaluated } };
+  }
+
+  /** §6.2: "latency is recorded per call as an event". */
+  private async logClassifierCall(
+    ctx: HookDecisionContext,
+    outcome: ClassifierTierOutcome,
+  ): Promise<void> {
+    await this.store.appendEvent(
+      buildEvent('classifier_call', {
+        agent: ctx.session as AgentId,
+        data: {
+          stream: ctx.stream,
+          rules: outcome.evaluated.length,
+          questions: outcome.questions,
+          latency_ms: outcome.latency_ms,
+          outcome: outcome.band,
+          ...(outcome.error !== undefined ? { error: outcome.error } : {}),
+        },
+      }),
+      { commit: 'deferred' },
+    );
+  }
+
+  /**
+   * §6.4: the rules that went unchecked are marked on the stream's thread,
+   * so "observed but unchecked" is visible rather than silent.
+   */
+  private async noteUnchecked(
+    ctx: HookDecisionContext,
+    outcome: ClassifierTierOutcome,
+  ): Promise<void> {
+    const rules = outcome.unchecked ?? [];
+    if (rules.length === 0) return;
+    const body =
+      `hook_unchecked: the classifier could not answer (${outcome.error ?? 'no answer returned'}); ` +
+      `${rules.length} non-critical rule(s) went unchecked and the call was allowed: ${rules.join(', ')}`;
+    try {
+      await this.store.appendThreadEntry(ctx.stream, {
+        ts: this.now().toISOString(),
+        by: 'daemon',
+        kind: 'event',
+        body: body.slice(0, THREAD_BODY_MAX_CHARS),
+      });
+    } catch {
+      // A stream that has gone, or a thread write that raced a close: the
+      // decision is already made and must not become an error.
+    }
+  }
+
+  /** Every rule in scope for this stream, or none when no rules service is wired. */
+  private rulesInScope(stream: string): Rule[] {
+    const rules = this.options.rules;
+    if (rules === undefined) return [];
+    try {
+      return rules.inScope(stream);
+    } catch {
+      return [];
+    }
+  }
+
+  private streamRecord(stream: string): Stream | undefined {
+    try {
+      return this.store.getStream(stream);
+    } catch {
+      return undefined;
+    }
+  }
+
+  /** `{ repo }` for the state's stream/repo line, or nothing when the stream has none. */
+  private repoOf(stream: string): { repo: string } | undefined {
+    const repo = this.streamRecord(stream)?.repo;
+    return repo === undefined ? undefined : { repo };
+  }
+
+  private repoEntry(stream: string): RepoEntry | undefined {
+    const repo = this.streamRecord(stream)?.repo;
+    if (repo === undefined) return undefined;
+    try {
+      return this.store.getRepos()[repo];
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
    * One routed (`ask`) verdict: the §8.1 route band. Without a gates
    * service, or with a call this hook cannot fingerprint (no tool name at
    * all), it fails closed with a plain deny — a routed call is never
@@ -524,6 +765,7 @@ export class HookService {
     ctx: HookDecisionContext,
     payload: ClaudePreToolUsePayload,
     why: string,
+    rule?: RuleId,
   ): Promise<{ decision: HookDecision; allowedBy?: string }> {
     const gates = this.options.gates;
     const call = fingerprintCall(payload, ctx.worktreePath);
@@ -554,6 +796,7 @@ export class HookService {
       policy,
       call,
       reason: why,
+      ...(rule !== undefined ? { rule } : {}),
     });
     return {
       decision: routed.decision,

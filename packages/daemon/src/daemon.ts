@@ -21,7 +21,12 @@ import { type AgileConfig, type DiscoverConfigOptions, discoverConfig } from './
 import { DocsService, buildDocsRpcMethods } from './docs';
 import { GateService, buildGateRpcMethods } from './gates';
 import type { DelegateFn } from './gates';
-import { HookService, buildHookRpcMethods, wireGateDecisionDelivery } from './hook';
+import {
+  HookService,
+  buildHookRpcMethods,
+  wireClassifierRouteStats,
+  wireGateDecisionDelivery,
+} from './hook';
 import { type HttpServerHandle, startHttpServer } from './http';
 import { InboxService, buildInboxRpcMethods } from './inbox';
 import { LandingService, buildLandingRpcMethods, wireLandGateResolution } from './landing';
@@ -210,6 +215,9 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
   // prompts the session whose tool call it blocked — the same delivery path
   // T137 built for an answer.
   if (gateService && attachService) wireGateDecisionDelivery(gateService, attachService);
+  // T151 (§6.3): the human's answer on a routed classifier call is the
+  // rule's own statistic — a deny makes it a violation.
+  if (gateService && rulesService) wireClassifierRouteStats(gateService, rulesService);
 
   // T141: the retro (§5.5). It reads the stream's findings, denials and
   // questions and starts one read-only `lessons` session over them; the
@@ -287,9 +295,13 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
             // T143: the pattern rules the hook enforces (§5.2, §5.4) —
             // the same `rulesInScope` the brief assembler reads, so a
             // retired rule stops gating on the next tool call.
+            // T151: the classifier tier (§6). The bands and the opt-out
+            // both come from `classifier:` in `config.yaml`; a home that
+            // configured none reaches §6.4's fail policy, not a call.
             new HookService(store, bus, {
               gates: gateService,
               ...(rulesService ? { rules: rulesService } : {}),
+              classifier: { ask: classifier, config: config.classifier },
             }),
           ),
           ...(attachService && verbService

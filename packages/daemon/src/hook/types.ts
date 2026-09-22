@@ -127,4 +127,10 @@ export interface HookDecision {
   rulesEvaluated?: string[];
   /** The one rule this decision denied on — `stats.violated`, and the id its reason names. */
   ruleViolated?: string;
+  /**
+   * T151: the one classifier rule whose answer routed this call to the
+   * human — `stats.routed` (§6.3). The human's later deny is what bumps
+   * that rule's `violated` (`wireClassifierRouteStats`).
+   */
+  ruleRouted?: string;
 }
