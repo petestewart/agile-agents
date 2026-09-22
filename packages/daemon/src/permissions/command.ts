@@ -482,33 +482,10 @@ export function refspecDestBranch(refspec: string): string {
   return dest.replace(/^\+/, '');
 }
 
-const TICKET_BRANCH_PREFIX = 'tkt/';
-
-/**
- * True only for *this ticket's* branch, not any `tkt/*` (opus should-fix
- * 4): the branch must be `tkt/<ticket-id>[-slug]` or `tkt/<numeric>[-slug]`
- * — both spellings are used across this codebase's own fixtures/design
- * (§15 shows `tkt/0231-<slug>`, numeric-only; the ticket's own acceptance
- * fixture uses `tkt/TKT-0001-x`, full-id) — so both are accepted for this
- * specific ticket, but no other ticket's branch is.
- */
-export function isTicketBranch(branch: string | undefined, ticket: string): boolean {
-  if (branch === undefined || !branch.startsWith(TICKET_BRANCH_PREFIX)) return false;
-  const rest = branch.slice(TICKET_BRANCH_PREFIX.length);
-  const numeric = ticket.replace(/^TKT-/, '');
-  return (
-    rest === ticket ||
-    rest.startsWith(`${ticket}-`) ||
-    rest === numeric ||
-    rest.startsWith(`${numeric}-`)
-  );
-}
-
 // ---------------------------------------------------------------------------
 // Other never-without-human commands
 // ---------------------------------------------------------------------------
 
-/** `rm`/`rm -rf ...` targets, ignoring flags. */
 export function isRmMinusRf(tokens: string[]): boolean {
   return tokens[0] === 'rm' && tokens.includes('-rf');
 }

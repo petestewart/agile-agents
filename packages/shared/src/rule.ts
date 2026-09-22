@@ -89,12 +89,39 @@ export const RULE_PATTERN_KINDS = [
 export const RulePatternKindSchema = z.enum(RULE_PATTERN_KINDS);
 export type RulePatternKind = z.infer<typeof RulePatternKindSchema>;
 
-export const RulePatternSchema = z
-  .object({
-    kind: RulePatternKindSchema,
-    args: z.record(z.string(), z.unknown()).default({}),
-  })
-  .strict();
+/**
+ * T143: `args` is typed per kind rather than a free-form record, so a rule
+ * that claims a deterministic check cannot carry arguments its checker
+ * will never read. `no_push`/`no_push_protected` take none (the protected
+ * branches come from the stream's repo entry at check time, never frozen
+ * into the rule); `path_deny` takes optional `globs` on top of its
+ * always-on "outside the session's worktree" check; `command_deny` takes
+ * the token patterns it matches on the parsed atoms.
+ */
+const NoPatternArgsSchema = z.object({}).strict().default({});
+
+export const RulePatternSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('no_push'), args: NoPatternArgsSchema }).strict(),
+  z.object({ kind: z.literal('no_push_protected'), args: NoPatternArgsSchema }).strict(),
+  z
+    .object({
+      kind: z.literal('path_deny'),
+      args: z
+        .object({ globs: z.array(z.string().min(1)).default([]) })
+        .strict()
+        .default({}),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal('command_deny'),
+      args: z
+        .object({ patterns: z.array(z.string().min(1)).default([]) })
+        .strict()
+        .default({}),
+    })
+    .strict(),
+]);
 export type RulePattern = z.infer<typeof RulePatternSchema>;
 
 /**

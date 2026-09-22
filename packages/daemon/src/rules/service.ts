@@ -219,6 +219,30 @@ export class RulesService {
     return this.options.store.updateRule(principal, id, (before) => ({ ...before, ...patch }));
   }
 
+  /**
+   * §5.7's pruning input, written by the hook path on every rule it
+   * evaluates (T143). `fired` counts evaluations — that is what makes
+   * "fired often, never violated" a signal that the rule is dead weight —
+   * so every outcome bumps it, and `violated`/`routed` are the two
+   * refinements on top: a pattern rule that denied, and a classifier rule
+   * whose band routed the call to the human (T151).
+   *
+   * Always written as `daemon`: stats are the daemon's own field, not a
+   * decision, so no human is involved and no agent can forge one.
+   */
+  async recordFired(id: string, outcome: 'fired' | 'violated' | 'routed'): Promise<Rule> {
+    const last_fired_at = this.clock().toISOString();
+    return this.options.store.updateRule('daemon', id, (before) => ({
+      ...before,
+      stats: {
+        fired: before.stats.fired + 1,
+        violated: before.stats.violated + (outcome === 'violated' ? 1 : 0),
+        routed: before.stats.routed + (outcome === 'routed' ? 1 : 0),
+        last_fired_at,
+      },
+    }));
+  }
+
   /** A `repo` ref must be in `repos.yaml`; a `stream` ref must be a stream in this home (§5.1). */
   private assertScopeExists(scope: RuleScope): void {
     if (scope.kind === 'global' || scope.ref === undefined) return;

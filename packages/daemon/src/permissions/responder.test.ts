@@ -121,7 +121,7 @@ describe('buildPermissionResponder', () => {
 
     const decision = await responder.handleRequest(
       42,
-      request('execute', { command: 'git push origin main' }),
+      request('execute', { command: 'git push --force origin main' }),
     );
     expect(decision.kind).toBe('hil');
     expect(session.calls).toHaveLength(0); // still pending
@@ -202,7 +202,7 @@ describe('buildPermissionResponder', () => {
 
     const decision = await responder.handleRequest(
       99,
-      request('execute', { command: 'git push origin main' }),
+      request('execute', { command: 'git push --force origin main' }),
     );
     expect(decision.kind).toBe('hil');
     expect(calls).toHaveLength(1);

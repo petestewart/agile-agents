@@ -43,9 +43,11 @@ import { isAbsolute, resolve } from 'node:path';
 import {
   type AgentId,
   type AgentRecord,
+  DEFAULT_PROTECTED_BRANCHES,
   MESSAGE_BODY_MAX_CHARS,
   type Message,
   type Policy,
+  type Rule,
   type SessionRole,
 } from '@agile-agents/shared';
 import type { Bus } from '../bus';
@@ -140,10 +142,62 @@ export interface HookServiceOptions {
    * the stream — never allowed.
    */
   gates?: RouteBandGates;
+  /**
+   * T143: the rules the hook enforces (design §5.2's pattern tier, §5.4's
+   * built-ins). Without one, no pattern rule is in scope and the hook
+   * gates exactly what it gated before — this is the seam a unit test that
+   * only cares about the role policy leaves unset, not a way to switch
+   * enforcement off in production (`daemon.ts` always wires it).
+   */
+  rules?: HookRules;
   limits?: HookLimits;
   /** Injectable for tests; defaults to `node:fs.statSync`. */
   fileSize?: (path: string) => number | undefined;
   now?: () => Date;
+}
+
+/** The slice of `RulesService` the hook needs — injected so the hook never depends on the whole rules module. */
+export interface HookRules {
+  /** §5.3's one scope filter, for this session's stream. */
+  inScope(streamId: string): Rule[];
+  /** §5.7's counters, bumped for every rule the decision evaluated. */
+  recordFired(id: string, outcome: 'fired' | 'violated' | 'routed'): Promise<unknown>;
+}
+
+/**
+ * One `git rev-parse --abbrev-ref <rev>` in the worktree — argv, never a
+ * shell string (D11's argv floor), so a branch name can never be
+ * interpreted. `undefined` for any non-zero exit (no upstream configured, a
+ * detached HEAD, not a repo at all), which the push detector treats as
+ * "unresolvable" and denies.
+ */
+function revParseAbbrevRef(cwd: string, rev: string): string | undefined {
+  try {
+    const result = Bun.spawnSync(['git', 'rev-parse', '--abbrev-ref', rev], {
+      cwd,
+      stdin: 'ignore',
+      stdout: 'pipe',
+      stderr: 'ignore',
+    });
+    if (result.exitCode !== 0) return undefined;
+    const out = result.stdout.toString().trim();
+    return out.length > 0 && out !== 'HEAD' ? out : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Calls `resolve` at most once, however many rules ask for the answer. */
+function memoized(resolve: () => string | undefined): () => string | undefined {
+  let done = false;
+  let value: string | undefined;
+  return () => {
+    if (!done) {
+      value = resolve();
+      done = true;
+    }
+    return value;
+  };
 }
 
 function defaultFileSize(path: string): number | undefined {
@@ -342,7 +396,60 @@ export class HookService {
         : this.bus.poll(session as AgentId),
       limits: this.limits,
       fileSize: this.fileSize,
+      // T143: the pattern rules in scope for this stream, plus the two
+      // things their detectors need about the world. Both git lookups are
+      // lazy *and* memoized — an ordinary `git push origin <branch>` or a
+      // file edit never spawns one.
+      patternRules: this.patternRulesFor(stream),
+      protectedBranches: this.protectedBranchesFor(stream),
+      upstreamBranch: memoized(() => revParseAbbrevRef(worktreePath, '@{upstream}')),
+      headBranch: memoized(() => revParseAbbrevRef(worktreePath, 'HEAD')),
     };
+  }
+
+  /** The accepted pattern rules in scope for this stream (§5.3), or none when no rules service is wired. */
+  private patternRulesFor(stream: string): Rule[] {
+    const rules = this.options.rules;
+    if (rules === undefined) return [];
+    try {
+      return rules.inScope(stream).filter((rule) => rule.enforcement === 'pattern');
+    } catch {
+      // A stream that has gone (resolved from a stale agent record) is not
+      // a reason to crash the hook — the call is gated by the role policy
+      // either way, and `buildContext` already failed closed on anything
+      // it could not resolve at all.
+      return [];
+    }
+  }
+
+  /**
+   * The stream's repo `protected_branches` (D8). A stream with no repo, or
+   * a repo that has gone from `repos.yaml`, falls back to the same
+   * `[main, master]` default the schema applies — never to "nothing is
+   * protected", which would make a missing repo entry an allow.
+   */
+  private protectedBranchesFor(stream: string): readonly string[] {
+    try {
+      const repo = this.store.getStream(stream).repo;
+      const entry = repo === undefined ? undefined : this.store.getRepos()[repo];
+      return entry?.protected_branches ?? DEFAULT_PROTECTED_BRANCHES;
+    } catch {
+      return DEFAULT_PROTECTED_BRANCHES;
+    }
+  }
+
+  /** §5.7's counters for every rule this decision evaluated — `stats.fired`, plus `violated` for the one it denied on. */
+  private async recordRuleStats(decision: HookDecision): Promise<void> {
+    const rules = this.options.rules;
+    if (rules === undefined || decision.rulesEvaluated === undefined) return;
+    for (const id of decision.rulesEvaluated) {
+      try {
+        await rules.recordFired(id, id === decision.ruleViolated ? 'violated' : 'fired');
+      } catch {
+        // A counter is telemetry (§5.7's pruning input): losing one must
+        // never turn a decision the hook already made into an error.
+      }
+    }
   }
 
   /** Every hook decision is logged, deferred-commit (T009 review round, hot-path decision) — batched by the store rather than one `git commit` per tool call. */
@@ -350,7 +457,7 @@ export class HookService {
     ctx: { stream?: string; session?: string } | undefined,
     event: string,
     decision: HookDecision,
-    detail: { tool?: string; command?: string; allowedBy?: string } = {},
+    detail: { tool?: string; command?: string; allowedBy?: string; rule?: string } = {},
   ): Promise<void> {
     await this.store.appendEvent(
       buildEvent('hook_decision', {
@@ -370,6 +477,10 @@ export class HookService {
           // that blocked it — the one line a post-mortem needs to tell an
           // allow-once from a policy allow.
           ...(detail.allowedBy !== undefined ? { allowed_by: detail.allowedBy } : {}),
+          // T143: which rule refused this call — §5.4's built-ins are
+          // global and critical, so "why was I denied" must be answerable
+          // from the log alone.
+          ...(detail.rule !== undefined ? { rule: detail.rule } : {}),
         },
       }),
       { commit: 'deferred' },
@@ -430,12 +541,14 @@ export class HookService {
     }
 
     await this.ackAll(ctx.session as AgentId, decision.ack);
+    await this.recordRuleStats(decision);
     await this.logDecision(ctx, 'pre_tool_use', decision, {
       ...(payload.tool_name !== undefined ? { tool: payload.tool_name } : {}),
       ...(typeof payload.tool_input?.command === 'string'
         ? { command: payload.tool_input.command }
         : {}),
       ...(allowedBy !== undefined ? { allowedBy } : {}),
+      ...(decision.ruleViolated !== undefined ? { rule: decision.ruleViolated } : {}),
     });
 
     return {
