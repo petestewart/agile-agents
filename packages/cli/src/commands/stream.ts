@@ -8,7 +8,12 @@
  * `--as` flag and never will be one on this path.
  */
 
-import type { Stream, ThreadEntry } from '@agile-agents/shared';
+import {
+  STREAM_AGENT_STATUSES,
+  STREAM_HUMAN_STATUSES,
+  type Stream,
+  type ThreadEntry,
+} from '@agile-agents/shared';
 import type { ParsedArgs } from '../args';
 import { hasFlag, optionalString, requireOption, requirePositional } from '../args';
 import { callRpc } from '../client';
@@ -76,6 +81,36 @@ export function streamRows(nodes: StreamNode[], depth = 0): string[][] {
 /** The header the tree and `agile status`'s stream block share (T128). */
 export const STREAM_HEADERS = ['id', 'title', 'agent/human'];
 
+/**
+ * T136 (QA rough edge 6): a status filter for `stream list`, so finished
+ * streams stop mixing with active ones. One flag matches either half of
+ * §2.2's `agent/human` pair — the two enums are disjoint, so `--status
+ * done` (agent) and `--status landed` (human) both read naturally and
+ * neither needs the operator to know which half owns the word.
+ */
+export function streamStatusMatches(stream: Stream, status: string): boolean {
+  return stream.agent.status === status || stream.human.status === status;
+}
+
+/** Every value `--status` accepts: both halves of the pair (§2.2). */
+export const STREAM_STATUS_VALUES = [...STREAM_AGENT_STATUSES, ...STREAM_HUMAN_STATUSES] as const;
+
+/**
+ * Keeps the subtrees that contain a match. A parent that does not itself
+ * match is kept when a descendant does — dropping it would reparent the
+ * match and the indentation would lie about the tree.
+ */
+export function filterStreamTree(nodes: StreamNode[], status: string): StreamNode[] {
+  const kept: StreamNode[] = [];
+  for (const node of nodes) {
+    const children = filterStreamTree(node.children, status);
+    if (children.length > 0 || streamStatusMatches(node.stream, status)) {
+      kept.push({ stream: node.stream, children });
+    }
+  }
+  return kept;
+}
+
 /** `--all` includes archived streams (hidden by default, §7.2). */
 export async function runStreamList(
   socketPath: string,
@@ -83,18 +118,27 @@ export async function runStreamList(
   json: boolean,
 ): Promise<number> {
   const includeArchived = hasFlag(args.options, 'all');
+  // `--landed` is the shortcut for the one status an operator filters on
+  // most: the streams that are finished and out of the way.
+  const status = hasFlag(args.options, 'landed')
+    ? 'landed'
+    : optionalString(args.options, 'status');
+  if (status !== undefined && !(STREAM_STATUS_VALUES as readonly string[]).includes(status)) {
+    throw new Error(`--status must be one of ${STREAM_STATUS_VALUES.join(', ')}, got ${status}`);
+  }
   const result = await callRpc<{ tree: StreamNode[] }>(socketPath, 'stream.list', {
     ...(includeArchived ? { include_archived: true } : {}),
   });
+  const tree = status === undefined ? result.tree : filterStreamTree(result.tree, status);
   if (json) {
-    printJson(result);
+    printJson({ ...result, tree });
     return 0;
   }
-  if (result.tree.length === 0) {
-    console.log('streams: (none)');
+  if (tree.length === 0) {
+    console.log(status === undefined ? 'streams: (none)' : `streams: (none ${status})`);
     return 0;
   }
-  printTable(STREAM_HEADERS, streamRows(result.tree));
+  printTable(STREAM_HEADERS, streamRows(tree));
   return 0;
 }
 

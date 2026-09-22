@@ -126,7 +126,12 @@ export class InboxService {
       ts: stream.agent.updated_at,
       context: inboxContext(
         stream.agent.progress ??
-          (stream.agent.status === 'done' ? 'worker finished — review and land' : 'blocked'),
+          (stream.agent.status === 'done'
+            ? // T136 (QA rough edge 7): say what clears the item. "review and
+              // land" named only one of the two exits, so a stream you decide
+              // not to land looked like it had no way out of the inbox.
+              'worker finished — land or close the stream'
+            : 'blocked'),
       ),
     };
   }
