@@ -68,14 +68,34 @@ export async function runAttach(
   return 0;
 }
 
+/**
+ * `agile detach <stream>` — T137: the line says what actually happened.
+ * The old text ("has no live session or it has been stopped") was printed
+ * even when a live session had just been killed, and always exited 0; the
+ * RPC now reports whether anything was stopped, and which sessions, so
+ * "nothing was running" is an exit-1 failure a script can act on.
+ */
 export async function runDetach(
   socketPath: string,
   args: ParsedArgs,
   json: boolean,
 ): Promise<number> {
   const stream = requirePositional(args, 0, 'stream-id');
-  const result = await callRpc<{ stopped: boolean }>(socketPath, 'attach.stop', { stream });
-  if (json) printJson(result);
-  else console.log(`agile detach: ${stream} has no live session or it has been stopped`);
+  const result = await callRpc<{ stopped: boolean; sessions?: string[] }>(
+    socketPath,
+    'attach.stop',
+    { stream },
+  );
+  if (json) {
+    printJson(result);
+    return result.stopped ? 0 : 1;
+  }
+  if (!result.stopped) {
+    console.error(`agile detach: ${stream} has no live session`);
+    return 1;
+  }
+  for (const session of result.sessions ?? []) {
+    console.log(`agile detach: stopped ${session} on ${stream}`);
+  }
   return 0;
 }

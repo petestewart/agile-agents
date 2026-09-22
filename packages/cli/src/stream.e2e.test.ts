@@ -206,7 +206,22 @@ describe('agile attach (T130) on a no-repo stream, against the fake driver', () 
     const thread = readFileSync(join(daemon.home, 'threads', `${stream.id}.jsonl`), 'utf8');
     expect(thread).toContain('worker attached: claude/default');
 
-    expect((await cli(['detach', stream.id])).code).toBe(0);
+    // T137: detach says what it stopped, the stream goes back to `idle`
+    // (nothing was produced by killing it), and the thread records who did.
+    const detached = await cli(['detach', stream.id]);
+    expect(detached.code).toBe(0);
+    expect(detached.out).toBe(`agile detach: stopped ${record.sessions[0]?.id} on ${stream.id}`);
+    const afterDetach = (
+      JSON.parse((await cli(['stream', 'show', stream.id, '--json'])).out) as { stream: Stream }
+    ).stream;
+    expect(afterDetach.agent.status).toBe('idle');
+    expect(afterDetach.sessions[0]?.status).toBe('stopped');
+    expect(readFileSync(join(daemon.home, 'threads', `${stream.id}.jsonl`), 'utf8')).toContain(
+      'worker detached by human',
+    );
+
+    // A second detach has nothing to stop: that is a failure, not a shrug.
+    expect((await cli(['detach', stream.id])).code).toBe(1);
   }, 20_000);
 
   test('rejects an effort outside the D12 enum and an unknown role, without calling the daemon', async () => {
