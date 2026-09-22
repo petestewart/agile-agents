@@ -53,21 +53,33 @@ const SPEAKS: FakeAgentScript = {
   steps: [{ type: 'agent_text', text: 'looking at the parser now' }, { type: 'end_turn' }],
 };
 
-/** Hangs after speaking, so a test can assert on a *live* session before stopping it. */
+/**
+ * Hangs *inside* the turn after speaking, so a test can assert on a live
+ * session. The `tool_call` is what closes the streaming message, so the
+ * spoken line reaches the thread without the turn ending — a turn that
+ * ended with no open question would now stop the session (T137).
+ */
 const SPEAKS_THEN_HANGS: FakeAgentScript = {
   steps: [
     { type: 'agent_text', text: 'looking at the parser now' },
-    { type: 'end_turn' },
+    { type: 'tool_call', toolCallId: 'read-1', title: 'read parser.ts' },
     { type: 'hang' },
   ],
 };
 
+/**
+ * Wired the way `daemon.ts` wires it: the attach service asks the question
+ * service what is still open (the turn-end rule), and the question service
+ * delivers an answer by prompting the live session. Both sides are read
+ * lazily so a test may rebuild either one.
+ */
 function buildAttachService(provider: AcpProviderConfig): AttachService {
   return new AttachService({
     store,
     streams,
     home,
     provider: () => provider,
+    questions: { listOpen: () => questions.listOpen() },
   });
 }
 
@@ -108,7 +120,9 @@ beforeEach(() => {
   const init = runInit(home);
   store = StateStore.open(init.stateRoot);
   streams = new StreamService(store);
-  questions = new QuestionService(store, streams);
+  questions = new QuestionService(store, streams, {
+    deliver: (sessionId, question) => attachService.deliverAnswer(sessionId, question),
+  });
   verbs = new VerbService({ store, streams, questions });
   attachService = buildAttachService(fakeProviderFor(ACP_PROVIDERS.claude, SPEAKS));
 });
@@ -343,32 +357,105 @@ describe('effort (D12)', () => {
   });
 });
 
-describe('ask routes to the inbox and the answer reaches the session', () => {
-  test('a question raised by the live session, answered by the human', async () => {
-    attachService = buildAttachService(fakeProviderFor(ACP_PROVIDERS.claude, SPEAKS_THEN_HANGS));
+describe('one ACP message is one thread entry (T137)', () => {
+  test('a usage_update between two chunks does not split the message', async () => {
+    attachService = buildAttachService(
+      fakeProviderFor(ACP_PROVIDERS.claude, {
+        steps: [
+          { type: 'agent_text', text: 'Plan:\n' },
+          // Bookkeeping arriving mid-message is exactly what split the
+          // live run's message into two thread entries.
+          { type: 'usage_update', used: 10, size: 1000 },
+          { type: 'agent_text', text: '- read the parser' },
+          { type: 'end_turn' },
+        ],
+      }),
+    );
+    const stream = await makeStream();
+    await attachService.attach(stream.id);
+    await waitFor(() => threadBodies(stream.id).some((b) => b.includes('read the parser')));
+    const lines = threadBodies(stream.id).filter((b) => b.includes('read the parser'));
+    expect(lines).toEqual(['Plan:\n- read the parser']);
+  }, 20_000);
+});
+
+describe('ask → answer → continue (T137)', () => {
+  test('the answer is prompted into the waiting session, which continues and finishes', async () => {
+    const sentinel = join(scratch, 'asked.flag');
+    const log = join(scratch, 'prompts.jsonl');
+    attachService = buildAttachService(
+      fakeProviderFor(ACP_PROVIDERS.claude, {
+        logFile: log,
+        turns: [
+          [
+            { type: 'agent_text', text: 'I need to know the delimiter' },
+            { type: 'tool_call', toolCallId: 'ask-1', title: 'ask' },
+            { type: 'wait_for_file', path: sentinel },
+            { type: 'end_turn' },
+          ],
+          [{ type: 'agent_text', text: 'continuing with semicolon' }, { type: 'end_turn' }],
+        ],
+        steps: [{ type: 'end_turn' }],
+      }),
+    );
     const stream = await makeStream();
     const { session } = await attachService.attach(stream.id);
     await waitFor(() => store.listAgents().some((a) => a.id === session.id));
 
-    // The verb the MCP bridge forwards, with the session id the bridge
-    // fixes — the stream is resolved from the registry, never from input.
+    // The verb the MCP bridge forwards, with the session id the bridge fixes.
     const { id } = await verbs.ask({ session: session.id, text: 'comma or semicolon?' });
-
     const open = questions.listOpen();
     expect(open.map((q: Question) => q.id)).toContain(id);
-    expect(open[0]?.stream).toBe(stream.id);
     expect(streams.get(stream.id).agent.status).toBe('question');
     expect(streams.get(stream.id).human.status).toBe('waiting_on_you');
 
+    // Now the agent ends its turn, exactly as the live run did: the session
+    // process is alive and idle, waiting for an answer.
+    writeFileSync(sentinel, '');
+    await waitFor(
+      () => streams.get(stream.id).sessions.find((s) => s.id === session.id)?.status === 'idle',
+    );
+    // A turn that ended on an open question ends nothing: the session is
+    // still live and the stream still says `question`.
+    expect(streams.get(stream.id).agent.status).toBe('question');
+    expect(store.listAgents().some((a) => a.id === session.id)).toBe(true);
+
     await questions.answer(id as Question['id'], { answer: 'semicolon', by: 'human' });
 
-    // Delivered into the waiting session's own mailbox, and the stream is
-    // back at work because the session is still live.
-    const inboxDir = join(home, 'bus', 'inbox', session.id);
-    expect(readdirSync(inboxDir).length).toBe(1);
-    expect(readFileSync(join(inboxDir, readdirSync(inboxDir)[0] ?? ''), 'utf8')).toContain(
-      'semicolon',
+    // Delivery is a prompt, not a mailbox file: the live session gets a
+    // second `session/prompt` carrying the answer.
+    await waitFor(() => existsSync(log) && readFileSync(log, 'utf8').includes('semicolon'));
+    const prompts = readFileSync(log, 'utf8')
+      .split('\n')
+      .filter((line) => line.includes('"session/prompt"'));
+    expect(prompts.length).toBe(2);
+    expect(prompts[1]).toContain('semicolon');
+    expect(prompts[1]).toContain('comma or semicolon?');
+    // Nothing is written to a mailbox any more — the prompt *is* the delivery.
+    expect(existsSync(join(home, 'bus', 'inbox', session.id))).toBe(false);
+
+    // The second turn ends with no open question left: the worker is
+    // finished, so the service stops the session and the exit path writes
+    // `done`.
+    await waitFor(() => streams.get(stream.id).agent.status === 'done');
+    expect(threadBodies(stream.id).some((b) => b.includes('continuing with semicolon'))).toBe(true);
+    const after = streams.get(stream.id);
+    expect(after.sessions.find((s) => s.id === session.id)?.status).toBe('stopped');
+    expect(store.listAgents().some((a) => a.id === session.id)).toBe(false);
+  }, 30_000);
+
+  test('an answer with no live session stays on the thread and says so', async () => {
+    const stream = await makeStream();
+    const { session, handle } = await attachService.attach(stream.id);
+    await waitFor(() => store.listAgents().some((a) => a.id === session.id));
+    const { id } = await verbs.ask({ session: session.id, text: 'comma or semicolon?' });
+    handle.stop();
+    await handle.exited;
+
+    await questions.answer(id as Question['id'], { answer: 'semicolon', by: 'human' });
+    await waitFor(() =>
+      threadBodies(stream.id).some((b) => b.startsWith('answer recorded with no live session')),
     );
-    expect(streams.get(stream.id).agent.status).toBe('working');
-  });
+    expect(streams.get(stream.id).agent.status).toBe('idle');
+  }, 30_000);
 });

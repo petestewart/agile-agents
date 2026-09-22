@@ -4,8 +4,8 @@
  * the shape without a daemon.
  */
 import { describe, expect, test } from 'bun:test';
-import type { Stream } from '@agile-agents/shared';
-import { STREAM_HEADERS, showFields, streamRows } from './stream';
+import type { Stream, ThreadEntry } from '@agile-agents/shared';
+import { STREAM_HEADERS, formatThreadEntry, showFields, streamRows } from './stream';
 
 function stream(over: Partial<Stream> = {}): Stream {
   return {
@@ -56,5 +56,30 @@ describe('stream show fields (T128)', () => {
     expect(fields).toContainEqual(['repo', 'alpha']);
     expect(fields).toContainEqual(['branch', '- (created on first attach)']);
     expect(fields).toContainEqual(['worktree', '- (created on first attach)']);
+  });
+});
+
+describe('stream show thread entries (T137)', () => {
+  const entry = (over: Partial<ThreadEntry> = {}): ThreadEntry =>
+    ({
+      ts: '2026-01-01T00:00:00.000Z',
+      by: 'agent:01SESSION0000000000000000',
+      kind: 'line',
+      body: 'one line',
+      ...over,
+    }) as ThreadEntry;
+
+  test('a single-line body is one line, with the ref on it', () => {
+    expect(formatThreadEntry(entry({ ref: '/tmp/output.log' }))).toEqual([
+      '  2026-01-01T00:00:00.000Z  agent:01SESSION0000000000000000  line  one line  [/tmp/output.log]',
+    ]);
+  });
+
+  test('a two-line body is one entry with the continuation indented under it', () => {
+    const lines = formatThreadEntry(entry({ body: 'Plan:\n- read the parser' }));
+    expect(lines).toEqual([
+      '  2026-01-01T00:00:00.000Z  agent:01SESSION0000000000000000  line  Plan:',
+      '    - read the parser',
+    ]);
   });
 });

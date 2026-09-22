@@ -10,28 +10,24 @@
  *    `agent.status: question` / `human.status: waiting_on_you`;
  *  - answering appends an `answer` entry, flips it back to
  *    `agent.status: working` / `human.status: open`, and delivers the
- *    answer to the waiting session;
+ *    answer to the waiting session — T137: delivery is a **prompt** into
+ *    that live session (`deliver`, wired to `AttachService.deliverAnswer`
+ *    in `daemon.ts`), not a bus mailbox file nothing ever read;
  *  - `resolved_as` is `reply` and nothing else. Recording a decision
  *    (`recordAsDecision`) and editing a ticket (`applyTicketEdit`) went
  *    with the oracle and the ticket model.
  *
- * "Questions are records with a status, not mail" (§1.4): nothing here
- * reads the bus, so a leftover message from a previous daemon run can
- * never surface as a question or an inbox item. The one bus write left is
- * the *delivery* of an answer into the waiting session's inbox — the
- * existing `deliverNote`/`waitingAgent` mechanism, re-keyed from the
- * ticket's assignee to the stream plus the session that asked.
+ * "Questions are records with a status, not mail" (§1.4): this module
+ * does not touch the bus at all, so a leftover message from a previous
+ * daemon run can never surface as a question or an inbox item.
  */
 
 import {
   type AgentId,
-  AgentIdSchema,
   MESSAGE_BODY_MAX_CHARS,
-  type Message,
   type Question,
   type QuestionId,
   ulid,
-  validateMessage,
   validateQuestion,
 } from '@agile-agents/shared';
 import { NotFoundError, type StateStore, buildEvent } from '../store';
@@ -49,10 +45,6 @@ function questionPath(id: QuestionId): string {
 
 function newQuestionId(): QuestionId {
   return `Q-${ulid()}` as QuestionId;
-}
-
-function inboxPath(agent: string, messageId: string): string {
-  return `bus/inbox/${agent}/${messageId}.yaml`;
 }
 
 /** Trims and caps at the shared body cap — the one place free text is normalized before it touches the schema. */
@@ -104,12 +96,22 @@ export interface AnswerQuestionResult {
   question: Question;
 }
 
+/**
+ * How an answer reaches the session that asked (T137). `daemon.ts` wires
+ * this to `AttachService.deliverAnswer`, which prompts the live handle.
+ * Left unset (tests of the record alone) the answer stays on the thread,
+ * which is exactly what happens when the session is already gone.
+ */
+export type AnswerDelivery = (sessionId: string, question: Question) => Promise<void> | void;
+
 export interface QuestionServiceOptions {
   clock?: () => Date;
+  deliver?: AnswerDelivery;
 }
 
 export class QuestionService {
   private readonly clock: () => Date;
+  private readonly deliver: AnswerDelivery | undefined;
 
   constructor(
     private readonly store: StateStore,
@@ -117,6 +119,7 @@ export class QuestionService {
     options: QuestionServiceOptions = {},
   ) {
     this.clock = options.clock ?? (() => new Date());
+    this.deliver = options.deliver;
   }
 
   /**
@@ -263,50 +266,15 @@ export class QuestionService {
   }
 
   /**
-   * The mailbox the answer is delivered to. T121 re-keyed the lookup from
-   * "the ticket's assignee" to the question's own stream + session: the
-   * record names both, and `raised_by` is the routable identity of the
-   * session that asked (a vendor session id is a ULID, not an `AgentId`,
-   * so it identifies the turn, not the mailbox).
-   */
-  private waitingAgent(question: Question): AgentId {
-    return question.raised_by;
-  }
-
-  /**
-   * Writes the answer into the waiting session's inbox as a normal-priority
-   * `answer` message — the same direct-to-inbox write `gates/service.ts`'s
-   * `deliverNote` uses, so no bus routing rule is involved and an operator
-   * can answer an agent without `routing.ts` having to allow `human -> …`.
-   * This is a *delivery*, not the record: the record is the yaml file and
-   * the thread entry, which is why a stale message can never resurface as
-   * a question.
+   * Hands the answer to the session that asked (T137). The record is the
+   * yaml file and the thread entry; this is only the nudge that wakes the
+   * waiting process, and it is a prompt — the live run proved a mailbox
+   * file nothing reads leaves the session idle forever. A question raised
+   * by the operator (no `session`) has nobody to wake.
    */
   private async deliverAnswer(question: Question): Promise<void> {
-    if (question.answer === undefined) return;
-    const from: AgentId = AgentIdSchema.safeParse(question.answered_by).success
-      ? (question.answered_by as AgentId)
-      : 'human';
-    const message: Message = {
-      id: ulid(),
-      ts: question.answered_at ?? this.clock().toISOString(),
-      from,
-      to: [this.waitingAgent(question)],
-      kind: 'answer',
-      priority: 'normal',
-      body: `answer to ${question.id} ("${question.text}") from ${question.answered_by ?? from}: ${question.answer}`.slice(
-        0,
-        MESSAGE_BODY_MAX_CHARS,
-      ),
-      refs: [questionPath(question.id)],
-      requires_ack: false,
-      promote_to: 'none',
-    };
-    const validated = validateMessage(message);
-    await this.store.putEntity(
-      inboxPath(this.waitingAgent(question), validated.id),
-      validateMessage,
-      validated,
-    );
+    if (question.answer === undefined || question.session === undefined) return;
+    if (this.deliver === undefined) return;
+    await this.deliver(question.session, question);
   }
 }

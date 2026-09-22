@@ -106,12 +106,16 @@ export function buildAttachRpcMethods(
       return { session: result.session, stream: result.stream };
     },
 
-    /** Stops the live session on a stream, if there is one. */
+    /**
+     * `agile detach <stream>` — stops whatever is live on the stream. T137:
+     * `stopped` is the truth ("was anything actually stopped"), not a
+     * constant, and the session ids come back so the CLI can print them.
+     */
     'attach.stop': async (params) => {
       const p = requireObject(params);
       const stream = requireStreamId(p.stream);
-      await asParamErrors(() => attach.stop(stream));
-      return { stopped: true };
+      const sessions = await asParamErrors(() => attach.stop(stream, undefined, { detach: true }));
+      return { stopped: sessions.length > 0, sessions, stream };
     },
   };
 

@@ -175,7 +175,7 @@ export interface WorktreeName {
 export interface CreateWorktreeOptions {
   /** Commit-ish the new branch starts at. Default: `HEAD`. */
   baseRef?: string;
-  /** Branch name to claim. Default: `<id>-<slug>`. */
+  /** Branch name to claim. Default: `stream/<id>-<slug>`. */
   branch?: string;
 }
 
@@ -197,6 +197,9 @@ function worktreeDirName(name: WorktreeName): string {
   const slug = slugify(name.slug, 40);
   return slug ? `${id}-${slug}` : id;
 }
+
+/** T137: the namespace every daemon-cut branch lives in. */
+export const STREAM_BRANCH_PREFIX = 'stream/';
 
 /**
  * Creates `<repo>/.worktrees/<id>-<slug>` on a freshly claimed branch off
@@ -220,7 +223,10 @@ export async function createWorktree(
 
   const dirName = worktreeDirName(name);
   const path = join(repoRoot, '.worktrees', dirName);
-  const branch = options.branch ?? dirName;
+  // T137: every branch the daemon cuts lives under `stream/`, so a repo's
+  // own branch list says at a glance which branches an agent made. The
+  // worktree directory name is unchanged — `stream/` is not a path here.
+  const branch = options.branch ?? `${STREAM_BRANCH_PREFIX}${dirName}`;
 
   if (existsSync(path)) {
     throw new WorktreeRefusedError(`worktree path already exists: ${path}`, 'worktree-exists');

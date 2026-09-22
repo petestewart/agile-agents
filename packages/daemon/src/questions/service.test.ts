@@ -154,14 +154,40 @@ describe('QuestionService.answer', () => {
     expect(streams.get(stream.id).human.status).toBe('open');
   });
 
-  test('delivers the answer to the waiting session (the deliverNote path)', async () => {
-    const q = await raised();
-    await questions.answer(q.id, { answer: 'semicolon', by: 'human' });
-    const delivered = inbox('eng-1');
-    expect(delivered).toHaveLength(1);
-    expect(delivered[0]?.kind).toBe('answer');
-    expect(delivered[0]?.body).toContain('semicolon');
-    expect(delivered[0]?.refs).toContain(`questions/${q.id}.yaml`);
+  test('delivers the answer to the session that asked, and writes no mail (T137)', async () => {
+    const delivered: Array<{ session: string; answer?: string }> = [];
+    const service = new QuestionService(store, streams, {
+      deliver: (session, question) => {
+        delivered.push({
+          session,
+          ...(question.answer !== undefined ? { answer: question.answer } : {}),
+        });
+      },
+    });
+    const q = await service.raise({
+      stream: stream.id,
+      raised_by: 'eng-1',
+      session: SESSION,
+      text: 'comma or semicolon?',
+    });
+    await service.answer(q.id, { answer: 'semicolon', by: 'human' });
+    // The prompt goes to the session that asked — the record names it —
+    // and nothing is written to a mailbox nobody reads.
+    expect(delivered).toEqual([{ session: SESSION, answer: 'semicolon' }]);
+    expect(inbox('eng-1')).toHaveLength(0);
+    expect(inbox(SESSION)).toHaveLength(0);
+  });
+
+  test('a question raised by the operator has no session to deliver to', async () => {
+    const delivered: string[] = [];
+    const service = new QuestionService(store, streams, {
+      deliver: (session) => {
+        delivered.push(session);
+      },
+    });
+    const q = await service.raise({ stream: stream.id, raised_by: 'human', text: 'ship it?' });
+    await service.answer(q.id, { answer: 'yes', by: 'human' });
+    expect(delivered).toEqual([]);
   });
 
   test('answering twice is refused; an unknown id is a QuestionNotFoundError', async () => {

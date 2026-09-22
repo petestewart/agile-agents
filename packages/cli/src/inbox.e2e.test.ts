@@ -121,8 +121,11 @@ describe('agile inbox / agile answer against a daemon on a temp AGILE_HOME', () 
     expect(answer?.by).toBe('human');
     expect(answer?.body).toBe('semicolon — the export uses it');
 
-    // ...and it reached the waiting session's mailbox.
-    expect(daemon.store.listEntities('bus/inbox/eng-1', (v) => v)).toHaveLength(1);
+    // T137: delivery is a prompt into the live session, and there is none
+    // here — so nothing is written to a mailbox, and the thread carries the
+    // answer for the next attach's brief.
+    expect(existsSync(join(daemon.home, 'bus', 'inbox', 'eng-1'))).toBe(false);
+    expect(existsSync(join(daemon.home, 'bus', 'inbox', session))).toBe(false);
 
     // Answered: out of the inbox for good.
     expect((await cli(['inbox'])).out).toContain('(empty)');

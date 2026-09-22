@@ -123,6 +123,15 @@ export interface AgentSessionOptions {
   piAgentDir?: string;
   /** Test seam: inject a fake `installPiExtension`. */
   installPiExtension?: typeof installPiExtension;
+  /**
+   * T137: called every time a prompt turn resolves normally. What the end
+   * of a turn *means* — the worker is finished, or it is waiting on an
+   * answer — is a stream question, so the rule lives in
+   * `attach/service.ts` and this module stays vendor-only. A failed turn
+   * never calls it: `runPromptTurn` has already stopped the session and
+   * `exited` carries that outcome.
+   */
+  onTurnEnd?: (info: { session: string; stream: string; turn: number }) => void;
 }
 
 export interface AgentExitInfo {
@@ -239,6 +248,17 @@ function modelFromSessionState(params: unknown): string | undefined {
   if (typeof record?.model === 'string') return record.model;
   return undefined;
 }
+
+/**
+ * `session/update` kinds that report on the session rather than the turn's
+ * content: they arrive between two chunks of one streaming agent message
+ * and must not close it (T137).
+ */
+const NON_BOUNDARY_UPDATES: readonly string[] = [
+  'usage_update',
+  'current_mode_update',
+  'available_commands_update',
+];
 
 /** The text of one `agent_message_chunk`'s content, or null for anything else. */
 function chunkText(content: unknown): string | null {
@@ -500,8 +520,12 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
         return;
       }
 
-      // Any other turn item closes the streaming message (acp-client's own
-      // message-boundary rule).
+      // Bookkeeping updates are not message boundaries (T137): the live
+      // run saw one agent message split into two thread entries because a
+      // `usage_update` arrived between two chunks of it. Only a real turn
+      // item (a tool call, a plan, the user's own message) closes the
+      // streaming message.
+      if (typeof kind === 'string' && NON_BOUNDARY_UPDATES.includes(kind)) return;
       flushOutput();
 
       if (kind === 'tool_call' || kind === 'tool_call_update') {
@@ -533,10 +557,27 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
    * own turn's outcome.
    */
   let turnQueue: Promise<void> = Promise.resolve();
+  let turnCount = 0;
   async function runPromptTurn(text: string): Promise<unknown> {
     const runOnce = async (): Promise<unknown> => {
       try {
-        return await promptWithAuthRetry(spawned, provider, text);
+        // A session that has been idle for hours waiting on an answer makes
+        // no tool calls, so nothing else refreshes `last_seen`; without this
+        // the hook's stale check could drop the registry entry the answered
+        // session's next tool call has to resolve through (§8.1 step 1).
+        await putRegistryEntry().catch(() => {
+          // Not registered yet — the initial registration below covers it.
+        });
+        const reply = await promptWithAuthRetry(spawned, provider, text);
+        turnCount += 1;
+        if (!settled) {
+          try {
+            opts.onTurnEnd?.({ session: sessionId, stream: stream.id, turn: turnCount });
+          } catch {
+            // A turn-end rule that throws must not fail the turn itself.
+          }
+        }
+        return reply;
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         await store

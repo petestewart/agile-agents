@@ -40,11 +40,25 @@ export type FakeAgentStep =
   | { type: 'agent_text'; text: string }
   | { type: 'end_turn'; stopReason?: string }
   | { type: 'hang' }
+  /**
+   * T137: blocks until `path` exists on disk, then continues. The way a
+   * test makes the fake agent end its turn *after* something outside it has
+   * happened (a question raised through the MCP verb), without a sleep long
+   * enough to be a race.
+   */
+  | { type: 'wait_for_file'; path: string; timeoutMs?: number }
   /** Pauses `ms` before the next step (T021 round 4) — simulates a real long-running turn that keeps sending events over real wall-clock time, spaced out, instead of a script's steps normally firing back-to-back with no delay. */
   | { type: 'delay'; ms: number };
 
 export interface FakeAgentScript {
   steps: FakeAgentStep[];
+  /**
+   * T137: one step list per prompt turn — turn 1 runs `turns[0]`, turn 2
+   * `turns[1]`, and any turn past the end falls back to `steps`. This is
+   * what lets a script be "ask, end the turn; on the next prompt continue
+   * and end the turn", which is the ask→answer→continue flow.
+   */
+  turns?: FakeAgentStep[][];
   /**
    * T027: when set, `session/new` responds with the JSON-RPC error code/
    * shape `@agile-agents/acp-client`'s `ensureSession` maps to
@@ -154,8 +168,13 @@ function sessionConfigOptions(): Array<{ id: string; name: string; currentValue:
   return [{ id: 'model', name: 'Model', currentValue: script.model ?? DEFAULT_FAKE_MODEL }];
 }
 
+/** Prompt turns seen so far — indexes `FakeAgentScript.turns`. */
+let turnIndex = 0;
+
 async function runScript(promptRequestId: number | string): Promise<void> {
-  for (const step of script.steps) {
+  const steps = script.turns?.[turnIndex] ?? script.steps;
+  turnIndex += 1;
+  for (const step of steps) {
     switch (step.type) {
       case 'usage_update':
         notify('session/update', {
@@ -215,6 +234,13 @@ async function runScript(promptRequestId: number | string): Promise<void> {
       case 'delay':
         await new Promise((resolve) => setTimeout(resolve, step.ms));
         break;
+      case 'wait_for_file': {
+        const deadline = Date.now() + (step.timeoutMs ?? 20_000);
+        while (!existsSync(step.path) && Date.now() < deadline) {
+          await new Promise((resolve) => setTimeout(resolve, 20));
+        }
+        break;
+      }
       default:
         break;
     }

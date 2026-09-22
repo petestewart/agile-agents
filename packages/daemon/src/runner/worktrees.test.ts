@@ -50,7 +50,9 @@ describe('T113: hardened worktree creation', () => {
   test('creates <repo>/.worktrees/<id>-<slug> on a freshly claimed branch', async () => {
     const result = await createWorktree(repo, name);
     expect(result.path).toBe(join(repo, '.worktrees', 'str-7-hardened-creation'));
-    expect(result.branch).toBe('str-7-hardened-creation');
+    // T137: the branch lives under `stream/`; the worktree directory name
+    // does not — `stream/` is a ref namespace, not a path segment.
+    expect(result.branch).toBe('stream/str-7-hardened-creation');
     expect(result.head).toBe(git(['rev-parse', 'HEAD']));
     expect(existsSync(join(result.path, 'README.md'))).toBe(true);
     expect(git(['rev-parse', '--abbrev-ref', 'HEAD'], result.path)).toBe(result.branch);
@@ -77,7 +79,7 @@ describe('T113: hardened worktree creation', () => {
     const error = (rejected[0] as PromiseRejectedResult).reason as WorktreeRefusedError;
     expect(error).toBeInstanceOf(WorktreeRefusedError);
     expect(['branch-exists', 'branch-claim-lost', 'worktree-exists']).toContain(error.reason);
-    expect(error.message).toContain('str-7-hardened-creation');
+    expect(error.message).toContain('stream/str-7-hardened-creation');
   });
 
   test('refuses a repo with a .gitattributes filter driver, with a reason', async () => {
@@ -97,17 +99,26 @@ describe('T113: hardened worktree creation', () => {
   });
 
   test('refuses when the branch already exists locally', async () => {
-    git(['branch', 'str-7-hardened-creation']);
+    git(['branch', 'stream/str-7-hardened-creation']);
     const error = (await createWorktree(repo, name).catch((e) => e)) as WorktreeRefusedError;
     expect(error.reason).toBe('branch-exists');
-    expect(error.message).toContain('refs/heads/str-7-hardened-creation');
+    expect(error.message).toContain('refs/heads/stream/str-7-hardened-creation');
   });
 
   test('refuses when the branch exists only as a remote-tracking ref', async () => {
-    git(['update-ref', 'refs/remotes/origin/str-7-hardened-creation', git(['rev-parse', 'HEAD'])]);
+    git([
+      'update-ref',
+      'refs/remotes/origin/stream/str-7-hardened-creation',
+      git(['rev-parse', 'HEAD']),
+    ]);
     const error = (await createWorktree(repo, name).catch((e) => e)) as WorktreeRefusedError;
     expect(error.reason).toBe('branch-exists');
-    expect(error.message).toContain('refs/remotes/origin/str-7-hardened-creation');
+    expect(error.message).toContain('refs/remotes/origin/stream/str-7-hardened-creation');
+  });
+
+  test('an explicit branch option is used as given, with no prefix', async () => {
+    const result = await createWorktree(repo, name, { branch: 'legacy-branch' });
+    expect(result.branch).toBe('legacy-branch');
   });
 
   test('repo hooks do not run during the checkout', async () => {

@@ -121,22 +121,43 @@ export async function startTestDaemon(prefix = 'agile-cli-test-'): Promise<TestD
   // using this helper.
   const gateService = new GateService(store);
   const streamService = new StreamService(store);
-  const questionService = new QuestionService(store, streamService);
+  // `createFakeSpawn` (the `fake-agent.ts` transport) so an `attach` in a
+  // CLI test never spawns a real vendor and never needs a login. The
+  // script hangs inside its first turn: T137 ends a session whose turn
+  // ends with no open question, and these tests want a live session to
+  // look at (and to `detach`).
+  const fakeScript = join(home, 'fake-agent-script.json');
+  writeFileSync(
+    fakeScript,
+    JSON.stringify({
+      steps: [
+        { type: 'usage_update', used: 10, size: 1000 },
+        { type: 'tool_call', toolCallId: 'fake-1', title: 'fake work' },
+        { type: 'hang' },
+      ],
+    }),
+  );
+  const attachService = new AttachService({
+    store,
+    streams: streamService,
+    home,
+    socketPath,
+    spawn: createFakeSpawn({ scriptPath: fakeScript }),
+    questions: { listOpen: () => questionService.listOpen() },
+  });
+  // T137: an answer is delivered by prompting the live session, exactly as
+  // `daemon.ts` wires it.
+  const questionService: QuestionService = new QuestionService(store, streamService, {
+    deliver: async (sessionId, question): Promise<void> => {
+      await attachService.deliverAnswer(sessionId, question);
+    },
+  });
   // T130: attach + the eight verbs. Nothing here spawns a vendor — a test
   // that wants a live session injects its own `spawn` seam.
   const verbService = new VerbService({
     store,
     streams: streamService,
     questions: questionService,
-  });
-  // `createFakeSpawn` (the `fake-agent.ts` transport) so an `attach` in a
-  // CLI test never spawns a real vendor and never needs a login.
-  const attachService = new AttachService({
-    store,
-    streams: streamService,
-    home,
-    socketPath,
-    spawn: createFakeSpawn(),
   });
 
   const rpc = startRpcServer({

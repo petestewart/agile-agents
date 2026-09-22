@@ -26,11 +26,32 @@ import {
 
 const FAKE_AGENT_PATH = join(import.meta.dir, 'fake-agent.ts');
 
-export function createFakeSpawn(): (opts: SpawnSessionOptions) => SpawnedSession {
+export interface FakeSpawnOptions {
+  /**
+   * T137: a `FakeAgentScript` JSON file for the spawned fake agent
+   * (`AGILE_FAKE_AGENT_SCRIPT`). Without one it runs the default script,
+   * which ends its turn at once — and a turn that ends with no open
+   * question now ends the session (`attach/service.ts`), so a test that
+   * wants a session to stay live points this at a script that hangs.
+   */
+  scriptPath?: string;
+}
+
+export function createFakeSpawn(
+  options: FakeSpawnOptions = {},
+): (opts: SpawnSessionOptions) => SpawnedSession {
   return (opts: SpawnSessionOptions) =>
     defaultSpawnSession({
       ...opts,
       cmd: 'bun',
       args: [FAKE_AGENT_PATH],
+      ...(options.scriptPath !== undefined
+        ? {
+            envOverrides: {
+              ...opts.envOverrides,
+              AGILE_FAKE_AGENT_SCRIPT: options.scriptPath,
+            },
+          }
+        : {}),
     });
 }

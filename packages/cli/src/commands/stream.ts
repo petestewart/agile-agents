@@ -126,6 +126,24 @@ export function showFields(stream: Stream): Array<[string, string]> {
   return fields;
 }
 
+/**
+ * One thread entry as printed lines (T137). A multi-line body is one
+ * entry, not one entry per line: the header line carries the metadata and
+ * the body's first line, and every continuation line is indented under it.
+ * The live run printed a two-line agent message as two headerless-looking
+ * rows, which read as two separate events.
+ */
+export function formatThreadEntry(entry: ThreadEntry): string[] {
+  const [first = '', ...rest] = entry.body.split('\n');
+  const head = `  ${entry.ts}  ${entry.by}  ${entry.kind}  ${first}${
+    entry.ref ? `  [${entry.ref}]` : ''
+  }`;
+  return [head, ...rest.map((line) => `${THREAD_CONTINUATION_INDENT}${line}`)];
+}
+
+/** How far a continuation line of a thread body is indented under its header line. */
+const THREAD_CONTINUATION_INDENT = '    ';
+
 export async function runStreamShow(
   socketPath: string,
   args: ParsedArgs,
@@ -162,9 +180,7 @@ export async function runStreamShow(
   console.log(`thread (${page.entries.length} of ${page.total}):`);
   if (page.entries.length === 0) console.log('  (empty)');
   for (const entry of page.entries) {
-    console.log(
-      `  ${entry.ts}  ${entry.by}  ${entry.kind}  ${entry.body}${entry.ref ? `  [${entry.ref}]` : ''}`,
-    );
+    for (const line of formatThreadEntry(entry)) console.log(line);
   }
   return 0;
 }

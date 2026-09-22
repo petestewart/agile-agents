@@ -100,8 +100,37 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
   // T120/T121: one `StreamService` behind `stream.*` RPC, the questions
   // service (which writes thread entries and status flips) and the inbox.
   const streamService = store ? new StreamService(store) : undefined;
-  const questionService =
-    store && streamService ? new QuestionService(store, streamService) : undefined;
+  // How spawned sessions reach this daemon's own CLI for their hook command
+  // and MCP server — resolved to something that actually runs on this host
+  // (`runner/cli-bin.ts`), never assumed on $PATH.
+  const cliBin = resolveCliBin();
+  // T137: the attach service and the question service know about each
+  // other — the turn-end rule asks what is still open, and an answer is
+  // delivered by prompting the live session. Both directions are read
+  // lazily through closures, so neither construction order is a trap.
+  const attachService =
+    store && streamService
+      ? new AttachService({
+          store,
+          streams: streamService,
+          home: config.home,
+          socketPath: config.socketPath,
+          cliBin: { command: cliBin.command, args: cliBin.args },
+          // Both read lazily: `docsService` and `questionService` are built
+          // below, and are only ever called once the daemon is serving.
+          docs: { docsForStream: (id) => docsService?.docsForStream(id) ?? [] },
+          questions: { listOpen: () => questionService?.listOpen() ?? [] },
+        })
+      : undefined;
+  const questionService: QuestionService | undefined =
+    store && streamService
+      ? new QuestionService(store, streamService, {
+          deliver: async (sessionId, question): Promise<void> => {
+            await attachService?.deliverAnswer(sessionId, question);
+          },
+        })
+      : undefined;
+
   // The inbox (§3): everything waiting on the human, across all streams.
   const inboxService =
     streamService && questionService && gateService
@@ -139,21 +168,6 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
           store,
           streams: streamService,
           questions: questionService,
-          ...(docsService ? { docs: docsService } : {}),
-        })
-      : undefined;
-  // How spawned sessions reach this daemon's own CLI for their hook command
-  // and MCP server — resolved to something that actually runs on this host
-  // (`runner/cli-bin.ts`), never assumed on $PATH.
-  const cliBin = resolveCliBin();
-  const attachService =
-    store && streamService
-      ? new AttachService({
-          store,
-          streams: streamService,
-          home: config.home,
-          socketPath: config.socketPath,
-          cliBin: { command: cliBin.command, args: cliBin.args },
           ...(docsService ? { docs: docsService } : {}),
         })
       : undefined;
