@@ -52,6 +52,13 @@
 
 export { classifyPermissionRequest } from './classify';
 export { decidePermission } from './decide';
+export {
+  CANNOT_DETERMINE_REASON,
+  type PushDetectorContext,
+  detectProtectedBranchWrite,
+  detectPush,
+} from './push-detector';
+export { type RuleCheckContext, checkPatternRule } from './rule-checks';
 export { buildGrokFsPolicy, canWriteViaClientFs, type VendorFsImpl } from './vendor-fs';
 export { cursorModeIdFor } from './vendor-modes';
 export {

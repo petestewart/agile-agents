@@ -38,8 +38,6 @@ function hil(reason: string): PolicyVerdict {
 export interface PolicyContext {
   role: PermissionRole;
   worktreePath: string;
-  /** This ticket's id (`TKT-0001`) — the only branch a `push` may target without a human (opus should-fix 4). Optional since T041 (the resident EM session has no ticket): absent means no branch is "this ticket's branch", so a push always needs a human. */
-  ticket?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -100,11 +98,14 @@ function neverWithoutHumanForAtom(
 ): PolicyVerdict | undefined {
   const { tokens } = atom;
 
-  const parsedGit = cmd.parseGitInvocation(tokens);
-  if (parsedGit.cPaths.some((p) => !isPathInside(p, ctx.worktreePath))) {
-    return hil('git -C outside the worktree is never automatic');
-  }
-  const args = parsedGit.args;
+  // T143: `git -C` outside the worktree and the push/protected-branch
+  // verdicts that used to live here are gone — they are the
+  // `no_worktree_escape` and `no_push_protected` built-in pattern rules
+  // now (design §5.4), checked by `rule-checks.ts` on the hook path
+  // against the rules actually in scope, so a repo can retire or rescope
+  // them without a code change. What stays here is the rest of §14's
+  // never-without-human list, which T151 may turn into rules too.
+  const args = cmd.parseGitInvocation(tokens).args;
   if (args !== undefined) {
     if (cmd.isForcePush(args)) {
       return hil('force-push is never automatic');
@@ -114,20 +115,6 @@ function neverWithoutHumanForAtom(
     }
     if (cmd.isGitResetHard(args)) {
       return hil('git reset --hard is never automatic');
-    }
-    if (args[0] === 'push') {
-      const refspecs = cmd.pushRefspecs(args);
-      if (refspecs.length === 0) {
-        return hil(
-          'push with no explicit branch (current branch/default remote) is never automatic',
-        );
-      }
-      for (const refspec of refspecs) {
-        const branch = cmd.refspecDestBranch(refspec);
-        if (ctx.ticket === undefined || !cmd.isTicketBranch(branch, ctx.ticket)) {
-          return hil(`push to ${branch} (not this ticket's branch) is never automatic`);
-        }
-      }
     }
   }
 

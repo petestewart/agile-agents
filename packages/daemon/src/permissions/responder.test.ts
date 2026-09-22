@@ -2,7 +2,13 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { validateMessage } from '@agile-agents/shared';
+import {
+  type Rule,
+  type RulePattern,
+  ulid,
+  validateMessage,
+  validateRule,
+} from '@agile-agents/shared';
 import { runInit } from '../init';
 import { StateStore } from '../store';
 import { type PermissionResponderSession, buildPermissionResponder } from './responder';
@@ -121,7 +127,7 @@ describe('buildPermissionResponder', () => {
 
     const decision = await responder.handleRequest(
       42,
-      request('execute', { command: 'git push origin main' }),
+      request('execute', { command: 'git push --force origin main' }),
     );
     expect(decision.kind).toBe('hil');
     expect(session.calls).toHaveLength(0); // still pending
@@ -202,7 +208,7 @@ describe('buildPermissionResponder', () => {
 
     const decision = await responder.handleRequest(
       99,
-      request('execute', { command: 'git push origin main' }),
+      request('execute', { command: 'git push --force origin main' }),
     );
     expect(decision.kind).toBe('hil');
     expect(calls).toHaveLength(1);
@@ -217,5 +223,160 @@ describe('buildPermissionResponder', () => {
     const resolved = await responder.resolveHil('custom-id-1', { optionId: 'allow-once' });
     expect(resolved).toBe(true);
     expect(session.calls[0]?.id).toBe(99);
+  });
+});
+
+/**
+ * T143 (review round): the ACP permission tier is the **only** gate a
+ * vendor without a pre-tool-use hook has (Cursor, Codex, Grok —
+ * design/cockpit-design.md §4.3). When the protected-branch verdict moved
+ * out of `policy-tables.ts` and into the `no_push_protected` rule, this
+ * tier had to run the same rule pass rather than lose the gate — these
+ * assert it does, with the same deny wording and the same stats bump as
+ * `hook/decide.ts`.
+ */
+describe('buildPermissionResponder — pattern rules at the ACP tier', () => {
+  function patternRule(kind: RulePattern['kind'], args: Record<string, unknown> = {}): Rule {
+    return validateRule({
+      id: `R-${ulid()}`,
+      text: 'never push to a protected branch',
+      scope: { kind: 'global' },
+      status: 'accepted',
+      enforcement: 'pattern',
+      pattern: { kind, args },
+      critical: true,
+      provenance: { by: 'builtin' },
+      stats: {},
+      created_at: new Date().toISOString(),
+    });
+  }
+
+  function gatedResponder(rules: Rule[]) {
+    const recorded: Array<{ id: string; outcome: string }> = [];
+    const session = fakeSession();
+    const responder = buildPermissionResponder(store, {
+      role: 'engineer',
+      agent: 'eng-1',
+      worktreePath: repo,
+      session,
+      patternRules: {
+        rules: () => rules,
+        protectedBranches: () => ['main', 'master'],
+        record: async (id, outcome) => {
+          recorded.push({ id, outcome });
+        },
+      },
+    });
+    return { responder, session, recorded };
+  }
+
+  test('git push origin main is denied, the reason names the rule, and stats record the violation', async () => {
+    const rule = patternRule('no_push_protected');
+    const { responder, session, recorded } = gatedResponder([rule]);
+
+    const decision = await responder.handleRequest(
+      1,
+      request('execute', { command: 'git push origin main' }),
+    );
+
+    expect(decision.kind).toBe('deny');
+    if (decision.kind !== 'deny') throw new Error('expected a deny');
+    expect(decision.reason).toContain(`rule ${rule.id}`);
+    expect(decision.reason).toContain('no_push_protected');
+    expect(decision.ruleViolated).toBe(rule.id);
+    // The ACP request is answered with reject_once, not left hanging.
+    expect(session.calls[0]?.result).toEqual({
+      outcome: { outcome: 'selected', optionId: 'reject' },
+    });
+    expect(recorded).toEqual([{ id: rule.id, outcome: 'violated' }]);
+
+    const event = store
+      .listEvents()
+      .filter((e) => e.kind === 'hook_decision')
+      .at(-1);
+    expect(event?.data.rule).toBe(rule.id);
+  });
+
+  test('a push to an explicitly named non-protected branch is allowed, and bumps fired only (D7)', async () => {
+    const rule = patternRule('no_push_protected');
+    const { responder, session, recorded } = gatedResponder([rule]);
+
+    const decision = await responder.handleRequest(
+      2,
+      request('execute', { command: 'git push origin T143-x' }),
+    );
+
+    expect(decision.kind).toBe('allow');
+    expect(session.calls[0]?.result).toEqual({
+      outcome: { outcome: 'selected', optionId: 'allow-once' },
+    });
+    expect(recorded).toEqual([{ id: rule.id, outcome: 'fired' }]);
+  });
+
+  test('a merge into a protected branch is denied by the same rule at this tier', async () => {
+    const rule = patternRule('no_push_protected');
+    const { responder } = gatedResponder([rule]);
+    const decision = await responder.handleRequest(
+      3,
+      request('execute', { command: 'git checkout main && git merge T143-x' }),
+    );
+    expect(decision.kind).toBe('deny');
+  });
+
+  test('no_worktree_escape catches a git -C outside the worktree at this tier', async () => {
+    const { responder } = gatedResponder([patternRule('path_deny', { globs: [] })]);
+    const decision = await responder.handleRequest(
+      4,
+      request('execute', { command: 'git -C /somewhere/else commit -m x' }),
+    );
+    expect(decision.kind).toBe('deny');
+  });
+
+  test('the review evasions are closed at this tier too: HEAD, an alias, the push plumbing', async () => {
+    const rule = patternRule('no_push_protected');
+    // `repo`'s checked-out branch is whatever `git init` defaulted to; the
+    // responder resolves it through the same lazy `git rev-parse` lookup,
+    // so name that branch protected and `HEAD` must resolve onto it.
+    const head = Bun.spawnSync(['git', 'rev-parse', '--abbrev-ref', 'HEAD'], { cwd: repo })
+      .stdout.toString()
+      .trim();
+    const session = fakeSession();
+    const responder = buildPermissionResponder(store, {
+      role: 'engineer',
+      agent: 'eng-1',
+      worktreePath: repo,
+      session,
+      patternRules: {
+        rules: () => [rule],
+        protectedBranches: () => [head],
+        record: async () => {},
+      },
+    });
+
+    let id = 10;
+    for (const command of [
+      'git push origin HEAD',
+      'git push origin @',
+      'git -c alias.p=push p origin whatever',
+      'git send-pack origin refs/heads/x:refs/heads/main',
+      'git http-push https://x refs/heads/main',
+      'git remote-ext origin',
+    ]) {
+      const decision = await responder.handleRequest(id++, request('execute', { command }));
+      expect(decision.kind).toBe('deny');
+    }
+    // Still not an allow-list of git.
+    const ok = await responder.handleRequest(id, request('execute', { command: 'git remote -v' }));
+    expect(ok.kind).toBe('allow');
+  });
+
+  test('with no rules wired the tier behaves exactly as it did before T143', async () => {
+    const { responder, recorded } = gatedResponder([]);
+    const decision = await responder.handleRequest(
+      5,
+      request('execute', { command: 'git push origin main' }),
+    );
+    expect(decision.kind).toBe('allow');
+    expect(recorded).toEqual([]);
   });
 });

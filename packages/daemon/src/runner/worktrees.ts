@@ -12,7 +12,8 @@
  * created once on first attach, and is never created anywhere else.
  */
 
-import { existsSync, mkdirSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DAEMON_CACHE_DIR, sandboxedSubprocessEnv } from '../subprocess-env';
 
@@ -80,23 +81,45 @@ export class WorktreeRefusedError extends Error {
   }
 }
 
+/**
+ * One `git` invocation, captured to files rather than pipes.
+ *
+ * The argv array is the D11 floor: never a shell string, so no word
+ * splitting and no metacharacter interpretation — a stream slug or branch
+ * name cannot inject a command. That part is unchanged.
+ *
+ * What changed (T143) is the capture. Reading `proc.stdout`/`proc.stderr`
+ * as streams inside the same `Promise.all` as `proc.exited` races Bun's own
+ * teardown of those descriptors: PLAN-v1 T033 recorded it as an
+ * intermittent `EBADF epoll_ctl` (and, less often, truncated output) from
+ * exactly this shape, and `hook/route-band.test.ts` still carries a comment
+ * about steering around "`runner/worktrees.ts`'s known piped-stdio flake".
+ * `Bun.file()` targets have no such race — the child writes to a real fd,
+ * `await proc.exited` is the only thing to synchronise on, and the bytes are
+ * read afterwards. This is the pattern `tools/test-run.ts` already uses for
+ * the same reason.
+ */
 async function gitAsync(args: string[], cwd: string): Promise<GitResult> {
-  // argv array, never a shell string — no word splitting, no metacharacter
-  // interpretation, so a stream slug or branch name can never inject a
-  // command (D11's argv floor).
-  const proc = Bun.spawn(['git', ...args], {
-    cwd,
-    env: sandboxedSubprocessEnv(cwd, 'git'),
-    stdin: 'ignore',
-    stdout: 'pipe',
-    stderr: 'pipe',
-  });
-  const [stdout, stderr, exitCode] = await Promise.all([
-    new Response(proc.stdout).text(),
-    new Response(proc.stderr).text(),
-    proc.exited,
-  ]);
-  return { exitCode, stdout: stdout.trim(), stderr: stderr.trim() };
+  const capture = mkdtempSync(join(tmpdir(), 'agile-git-'));
+  const stdoutPath = join(capture, 'stdout');
+  const stderrPath = join(capture, 'stderr');
+  try {
+    const proc = Bun.spawn(['git', ...args], {
+      cwd,
+      env: sandboxedSubprocessEnv(cwd, 'git'),
+      stdin: 'ignore',
+      stdout: Bun.file(stdoutPath),
+      stderr: Bun.file(stderrPath),
+    });
+    const exitCode = await proc.exited;
+    const [stdout, stderr] = await Promise.all([
+      Bun.file(stdoutPath).text(),
+      Bun.file(stderrPath).text(),
+    ]);
+    return { exitCode, stdout: stdout.trim(), stderr: stderr.trim() };
+  } finally {
+    rmSync(capture, { recursive: true, force: true });
+  }
 }
 
 async function runGitAsync(args: string[], cwd: string): Promise<string> {

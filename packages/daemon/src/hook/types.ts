@@ -16,7 +16,7 @@
  * `hook_decision` event) the decision implies.
  */
 
-import type { Message, SessionRole } from '@agile-agents/shared';
+import type { Message, Rule, SessionRole } from '@agile-agents/shared';
 
 /** The three decision outcomes a Claude PreToolUse hook can render (spike-findings.md §B; `spike/permission-matrix.ts:119`). */
 export type HookVerdict = 'allow' | 'deny' | 'ask';
@@ -46,6 +46,19 @@ export interface HookDecisionContext {
   limits: HookLimits;
   /** Returns a file's size in bytes, or `undefined` if it doesn't exist / isn't a plain file (e.g. a directory — Grep-over-directory must not size-gate). Injectable for tests; `service.ts` wires `node:fs.statSync`. */
   fileSize: (path: string) => number | undefined;
+  /**
+   * T143: the **pattern** rules in scope for this session's stream (§5.3's
+   * `rulesInScope`, filtered to `enforcement: 'pattern'`), in the order
+   * they are checked. Absent/empty means no pattern rule is in scope — the
+   * hook path consults rules, so a home with none gates nothing here.
+   */
+  patternRules?: readonly Rule[];
+  /** The stream's repo `protected_branches` (D8, `repos.yaml`), resolved at check time rather than frozen into the rule. */
+  protectedBranches?: readonly string[];
+  /** `git rev-parse --abbrev-ref @{upstream}` in the worktree (argv, no shell) — only called for a push with no explicit refspec. */
+  upstreamBranch?: () => string | undefined;
+  /** `git rev-parse --abbrev-ref HEAD` in the worktree — only called for a `git merge` with no preceding checkout. */
+  headBranch?: () => string | undefined;
 }
 
 /** Raw Claude `PreToolUse` hook stdin payload (spike-findings.md §B; Claude Code hooks reference: `hook_event_name`, `tool_name`, `tool_input`, plus `cwd`/`session_id`/`transcript_path` common to every hook event). */
@@ -105,4 +118,13 @@ export interface HookDecision {
   additionalContext?: string;
   /** Message ids the caller (`service.ts`) should ack once this decision is rendered — see decide.ts's DESIGN-GAP on urgent-inbox ack semantics. */
   ack?: string[];
+  /**
+   * T143: the pattern rules this decision actually evaluated, in order —
+   * `stats.fired` for each of them (§5.7's pruning input: "fired often,
+   * never violated"). The caller (`service.ts`) does the writing, the same
+   * way it performs `ack`.
+   */
+  rulesEvaluated?: string[];
+  /** The one rule this decision denied on — `stats.violated`, and the id its reason names. */
+  ruleViolated?: string;
 }

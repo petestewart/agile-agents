@@ -96,10 +96,10 @@ describe('Cursor (§C2/§C3: ACP permission fires for every exec, never for edit
 
   test('reviewer gets the ask-mode nudge on top of tier 2 (additive, not a substitute)', () => {
     expect(cursorModeIdFor('reviewer')).toBe('ask');
-    // A push off the ticket branch is never-without-human regardless of
-    // mode or role — ask mode never changes what decidePermission returns,
-    // it only changes whether the model asks to write in the first place.
-    const decision = decide('reviewer', cursorExecRequest('git push origin main'));
+    // A force-push is never-without-human regardless of mode or role —
+    // ask mode never changes what decidePermission returns, it only
+    // changes whether the model asks to write in the first place.
+    const decision = decide('reviewer', cursorExecRequest('git push --force origin main'));
     expect(decision.kind).toBe('hil');
   });
 

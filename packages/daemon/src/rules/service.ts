@@ -68,6 +68,30 @@ export interface RulesServiceOptions {
   streams: StreamService;
   /** Test seam; real usage runs on the system clock. */
   clock?: () => Date;
+  /**
+   * How often coalesced `stats` counters are written (T143). `0` disables
+   * the timer entirely, leaving flush-on-read and flush-on-shutdown — which
+   * is what a test that wants a deterministic flush point passes.
+   */
+  statsFlushMs?: number;
+}
+
+/**
+ * The stats-flush interval. Counters are written at most this often per
+ * rule, however many tool calls fired them: a gated tool call evaluates
+ * every pattern rule in scope, and one YAML rewrite plus one `rule_put`
+ * event per rule per call would make the state home's log mostly
+ * bookkeeping. The `hook_decision` event stays per call — that is the
+ * record of what was decided; `stats` are only §5.7's pruning input.
+ */
+export const DEFAULT_STATS_FLUSH_MS = 5_000;
+
+/** Counters accumulated since the last flush, for one rule. */
+interface PendingRuleStats {
+  fired: number;
+  violated: number;
+  routed: number;
+  last_fired_at: string;
 }
 
 /**
@@ -102,9 +126,16 @@ export function rulesInScope(
 
 export class RulesService {
   private readonly clock: () => Date;
+  private readonly statsFlushMs: number;
+  /** Coalesced `stats` deltas, keyed by rule id — see `recordFired`. */
+  private readonly pendingStats = new Map<string, PendingRuleStats>();
+  private statsTimer: ReturnType<typeof setInterval> | undefined;
+  /** Serializes flushes so two of them never read the same `before` record. */
+  private flushing: Promise<void> = Promise.resolve();
 
   constructor(private readonly options: RulesServiceOptions) {
     this.clock = options.clock ?? (() => new Date());
+    this.statsFlushMs = options.statsFlushMs ?? DEFAULT_STATS_FLUSH_MS;
   }
 
   /**
@@ -137,12 +168,14 @@ export class RulesService {
   }
 
   get(id: string): Rule {
-    return this.options.store.getRule(id);
+    this.flushStatsSoon();
+    return this.withPendingStats(this.options.store.getRule(id));
   }
 
   /** Every rule, oldest first, optionally filtered by status and/or scope. */
   list(options: ListRulesOptions = {}): Rule[] {
-    return this.options.store.listRules().filter((rule) => {
+    this.flushStatsSoon();
+    return this.readRules().filter((rule) => {
       if (options.status !== undefined && rule.status !== options.status) return false;
       if (options.scope !== undefined && formatRuleScope(rule.scope) !== options.scope) {
         return false;
@@ -217,6 +250,119 @@ export class RulesService {
   async update(principal: RulePrincipal, id: string, patch: RulePatch): Promise<Rule> {
     if (patch.scope !== undefined) this.assertScopeExists(patch.scope);
     return this.options.store.updateRule(principal, id, (before) => ({ ...before, ...patch }));
+  }
+
+  /**
+   * §5.7's pruning input, recorded by both enforcement tiers on every rule
+   * they evaluate (T143). `fired` counts evaluations — that is what makes
+   * "fired often, never violated" a signal that the rule is dead weight —
+   * so every outcome bumps it, and `violated`/`routed` are the two
+   * refinements on top: a pattern rule that denied, and a classifier rule
+   * whose band routed the call to the human (T151).
+   *
+   * **Coalesced, not written through.** A gated tool call evaluates every
+   * pattern rule in scope, so writing here would mean a YAML rewrite and a
+   * `rule_put` event per rule per call. Counters accumulate in memory and
+   * are flushed as one `updateRule` per rule at most every
+   * `statsFlushMs` (5 s), on any read of the rules, and on daemon
+   * shutdown. A read never sees a stale count: `get`/`list` merge whatever
+   * is still pending into what they return (`withPendingStats`).
+   *
+   * What a crash costs: the counters since the last flush, which is the
+   * right trade for telemetry — nothing a decision depends on is in here.
+   *
+   * Always written as `daemon`: stats are the daemon's own field, not a
+   * decision, so no human is involved and no agent can forge one.
+   */
+  async recordFired(id: string, outcome: 'fired' | 'violated' | 'routed'): Promise<void> {
+    const pending = this.pendingStats.get(id) ?? {
+      fired: 0,
+      violated: 0,
+      routed: 0,
+      last_fired_at: '',
+    };
+    pending.fired += 1;
+    if (outcome === 'violated') pending.violated += 1;
+    if (outcome === 'routed') pending.routed += 1;
+    pending.last_fired_at = this.clock().toISOString();
+    this.pendingStats.set(id, pending);
+    this.armStatsTimer();
+  }
+
+  /** The record as a reader should see it: on disk plus whatever has not been flushed yet. */
+  private withPendingStats(rule: Rule): Rule {
+    const pending = this.pendingStats.get(rule.id);
+    if (pending === undefined) return rule;
+    return {
+      ...rule,
+      stats: {
+        fired: rule.stats.fired + pending.fired,
+        violated: rule.stats.violated + pending.violated,
+        routed: rule.stats.routed + pending.routed,
+        last_fired_at: pending.last_fired_at,
+      },
+    };
+  }
+
+  /** Every rule, with pending counters merged in. */
+  private readRules(): Rule[] {
+    return this.options.store.listRules().map((rule) => this.withPendingStats(rule));
+  }
+
+  private armStatsTimer(): void {
+    if (this.statsTimer !== undefined || this.statsFlushMs <= 0) return;
+    this.statsTimer = setInterval(() => {
+      void this.flushStats();
+    }, this.statsFlushMs);
+    this.statsTimer.unref?.();
+  }
+
+  /** Fire-and-forget flush, for the sync read paths — a no-op when nothing is pending. */
+  private flushStatsSoon(): void {
+    if (this.pendingStats.size === 0) return;
+    void this.flushStats();
+  }
+
+  /**
+   * Writes every pending counter as one `updateRule` per rule. Awaited by
+   * the daemon's shutdown path and by tests that want a deterministic
+   * point; called on the timer and on reads otherwise. Serialized, so two
+   * overlapping flushes never double-count.
+   */
+  flushStats(): Promise<void> {
+    const next = this.flushing.then(() => this.doFlushStats());
+    this.flushing = next.catch(() => undefined);
+    return next;
+  }
+
+  private async doFlushStats(): Promise<void> {
+    if (this.pendingStats.size === 0) return;
+    const batch = [...this.pendingStats.entries()];
+    this.pendingStats.clear();
+    for (const [id, delta] of batch) {
+      try {
+        await this.options.store.updateRule('daemon', id, (before) => ({
+          ...before,
+          stats: {
+            fired: before.stats.fired + delta.fired,
+            violated: before.stats.violated + delta.violated,
+            routed: before.stats.routed + delta.routed,
+            last_fired_at: delta.last_fired_at,
+          },
+        }));
+      } catch {
+        // The rule is gone (or unwritable): drop its counters rather than
+        // retry forever. Telemetry, not a decision.
+      }
+    }
+  }
+
+  /** Stops the flush timer. The daemon calls this after a final `flushStats()`. */
+  dispose(): void {
+    if (this.statsTimer !== undefined) {
+      clearInterval(this.statsTimer);
+      this.statsTimer = undefined;
+    }
   }
 
   /** A `repo` ref must be in `repos.yaml`; a `stream` ref must be a stream in this home (§5.1). */

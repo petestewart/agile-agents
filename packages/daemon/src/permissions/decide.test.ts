@@ -145,12 +145,25 @@ describe('decidePermission — role table', () => {
     expect(decision.kind).toBe('allow');
   });
 
-  test('engineer: git push origin main produces a hil verdict, not an allow (acceptance criterion)', () => {
-    const decision = decide('engineer', request('execute', { command: 'git push origin main' }));
+  // T143: a plain push to a protected branch is the `no_push_protected`
+  // rule's verdict on the hook path now, not a hardcoded verdict here
+  // (§5.4). Force-push is still this tier's, and carries the hil shape the
+  // old push assertion was checking.
+  test('engineer: git push --force produces a hil verdict, not an allow', () => {
+    const decision = decide(
+      'engineer',
+      request('execute', { command: 'git push --force origin main' }),
+    );
     expect(decision.kind).toBe('hil');
     if (decision.kind === 'hil') {
       expect(decision.hilRequest.classified.toolClass).toBe('execute');
     }
+  });
+
+  test('engineer: a plain push is allowed at this tier (D7) — the protected-branch rule gates it', () => {
+    expect(decide('engineer', request('execute', { command: 'git push origin main' })).kind).toBe(
+      'allow',
+    );
   });
 
   test('engineer: git push --force is a hil verdict', () => {
@@ -336,9 +349,9 @@ describe('decidePermission — role table', () => {
     // The EM session has nowhere to park a hil (no ticket, no waiting
     // engineer) — `em/permissions.ts` answers it `cancelled`. What matters
     // here is that the policy never *allows* it.
-    expect(decide('em', request('execute', { command: 'git push origin main' })).kind).not.toBe(
-      'allow',
-    );
+    expect(
+      decide('em', request('execute', { command: 'git push --force origin main' })).kind,
+    ).not.toBe('allow');
   });
 
   for (const role of ROLES) {
@@ -352,8 +365,11 @@ describe('decidePermission — role table', () => {
   }
 
   for (const role of ROLES) {
-    test(`${role}: git push origin main is a hil verdict regardless of role`, () => {
-      const decision = decide(role, request('execute', { command: 'git push origin main' }));
+    test(`${role}: git push --force is a hil verdict regardless of role`, () => {
+      const decision = decide(
+        role,
+        request('execute', { command: 'git push --force origin main' }),
+      );
       expect(decision.kind).toBe('hil');
     });
   }
@@ -377,36 +393,46 @@ describe('decidePermission — no allow_once/reject_once option offered', () => 
 // category) against the pre-fix tokenizer. Every one of these must be
 // `hil`, not `allow` and not `deny` — a human must see every one of them.
 // ---------------------------------------------------------------------------
-describe('decidePermission — push-to-main bypass spellings (review round)', () => {
+/**
+ * T143 rewrote this block. The plain "push to a protected branch" verdict
+ * is gone from `policy-tables.ts` — it is the `no_push_protected` built-in
+ * pattern rule now, checked on the hook path against the rules in scope
+ * (`push-detector.test.ts` owns its 54-row table, `rule-checks.test.ts`
+ * the dispatch). What is still this tier's business is the rest of §14's
+ * never-without-human list, and the bypass spellings are what keep it
+ * honest: the atom splitting they exercise is shared by every verdict
+ * here, so the table stays, re-pointed at force-push.
+ */
+describe('decidePermission — never-without-human bypass spellings (review round)', () => {
   const bypassCommands = [
-    'git -C . push origin main',
-    'git -C /repo push origin main',
-    'git --git-dir=/x push origin main',
-    'git -c user.name=x push origin main',
-    'git --work-tree=/x push origin main',
-    'git --no-pager push origin main',
-    'FOO=1 git push origin main',
-    'BAR=baz FOO=1 git push origin main',
-    'cd sub && git push origin main',
-    'sh -c "git push origin main"',
-    'bash -c "git push origin main"',
-    'zsh -c "git push origin main"',
-    'command git push origin main',
-    'exec git push origin main',
-    'nohup git push origin main',
-    'time git push origin main',
-    'env git push origin main',
-    '\\git push origin main',
-    'git status && git push origin main',
-    'git status; git push origin main',
-    'git status || git push origin main',
-    'echo hi\ngit push origin main',
-    'git push origin main tkt/TKT-0001-x', // laundering via a trailing good refspec
-    'git push origin HEAD:main',
+    'git -C . push --force origin main',
+    'git -C /repo push --force origin main',
+    'git --git-dir=/x push --force origin main',
+    'git -c user.name=x push --force origin main',
+    'git --work-tree=/x push --force origin main',
+    'git --no-pager push --force origin main',
+    'FOO=1 git push --force origin main',
+    'BAR=baz FOO=1 git push --force origin main',
+    'cd sub && git push --force origin main',
+    'sh -c "git push --force origin main"',
+    'bash -c "git push --force origin main"',
+    'zsh -c "git push --force origin main"',
+    'command git push --force origin main',
+    'exec git push --force origin main',
+    'nohup git push --force origin main',
+    'time git push --force origin main',
+    'env git push --force origin main',
+    '\\git push --force origin main',
+    'git status && git push --force origin main',
+    'git status; git push --force origin main',
+    'git status || git push --force origin main',
+    'echo hi\ngit push --force origin main',
+    'git push --force origin main tkt/TKT-0001-x', // laundering via a trailing good refspec
+    'git push --force origin HEAD:main',
     'git push origin +main',
     'git push --force-with-lease origin tkt/TKT-0001-x',
-    'git push', // no explicit branch — never assumed safe
-    'git push origin', // remote only, no branch
+    'git push --force', // force-push with no explicit branch
+    'git push --force origin', // remote only, no branch
   ];
 
   for (const command of bypassCommands) {
@@ -416,12 +442,12 @@ describe('decidePermission — push-to-main bypass spellings (review round)', ()
     });
   }
 
-  test('git -C <path outside the worktree> is a hil verdict on its own, even for a read-only subcommand', () => {
+  test('git -C outside the worktree is no longer gated at this tier — it is the no_worktree_escape rule (T143)', () => {
     const decision = decide(
       'engineer',
       request('execute', { command: 'git -C /somewhere/else status' }),
     );
-    expect(decision.kind).toBe('hil');
+    expect(decision.kind).toBe('allow');
   });
 
   test('git -C . (the worktree itself) does not block an otherwise-fine command', () => {
@@ -729,8 +755,11 @@ describe('decidePermission — sed --in-place / perl -i / gawk -i (review round 
 // the branch that runs against a live vendor.
 // ---------------------------------------------------------------------------
 describe('decidePermission — degraded payloads (title fallback, review round 2)', () => {
-  test('engineer: title "Run git push origin main" with empty rawInput is a hil verdict, not a silent deny', () => {
-    const decision = decide('engineer', request('execute', { title: 'Run git push origin main' }));
+  test('engineer: title "Run git push --force origin main" with empty rawInput is a hil verdict, not a silent deny', () => {
+    const decision = decide(
+      'engineer',
+      request('execute', { title: 'Run git push --force origin main' }),
+    );
     expect(decision.kind).toBe('hil');
   });
 
@@ -1067,8 +1096,11 @@ describe('decidePermission — T030 reviewer read-only additions', () => {
   });
 
   test('reviewer: still denies git push (unaffected by the read-only additions)', () => {
+    // Not the never-without-human list — the reviewer's own table, which
+    // allows only read-only subcommands, so this stays a deny even now
+    // that a plain push is no longer hil for every role (T143).
     expect(decide('reviewer', request('execute', { command: 'git push origin main' })).kind).toBe(
-      'hil',
+      'deny',
     );
   });
 });

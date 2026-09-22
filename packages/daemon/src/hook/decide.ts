@@ -66,7 +66,7 @@
  * falls through to the lower tiers.
  */
 
-import type { SessionRole } from '@agile-agents/shared';
+import { DEFAULT_PROTECTED_BRANCHES, type SessionRole } from '@agile-agents/shared';
 import { decidePermission } from '../permissions';
 import type {
   AcpPermissionOption,
@@ -75,6 +75,8 @@ import type {
   AcpToolKind,
 } from '../permissions';
 import type { PermissionRole } from '../permissions';
+import type { RuleCheckContext } from '../permissions/rule-checks';
+import { patternRulesOf, runPatternRules } from '../permissions/rule-checks';
 import type { ClaudePreToolUsePayload, HookDecision, HookDecisionContext } from './types';
 
 /**
@@ -240,6 +242,61 @@ function roleToolVerdict(
   return undefined;
 }
 
+// ---------------------------------------------------------------------------
+// Pattern rules (T143 — design §5.2's pattern tier, §5.4's built-ins, §8.1
+// step 2). The hook consults the rules in scope, not a hardcoded table:
+// each rule's `pattern.kind` has one checker in `permissions/rule-checks.ts`,
+// a deny names the rule, and every rule the pass evaluated is reported back
+// so `service.ts` can bump its `stats` (§5.7).
+// ---------------------------------------------------------------------------
+
+function commandOf(payload: ClaudePreToolUsePayload): string | undefined {
+  const command = payload.tool_input?.command;
+  return typeof command === 'string' && command.length > 0 ? command : undefined;
+}
+
+/** True when this tool call writes — the half of `no_worktree_escape` that is about paths (§5.4). */
+function isWritingToolCall(payload: ClaudePreToolUsePayload): boolean {
+  if (payload.tool_name !== undefined && EDIT_TOOL_NAMES.has(payload.tool_name)) return true;
+  return payload.tool_input?.kind === 'edit';
+}
+
+/**
+ * Tier 5b: the pattern rules in scope, in order, through the same
+ * `runPatternRules` the ACP responder tier uses — so the deny wording and
+ * the stats accounting cannot drift between the two enforcement tiers.
+ * `undefined` when no pattern rule is in scope.
+ */
+function patternRuleVerdict(
+  ctx: HookDecisionContext,
+  payload: ClaudePreToolUsePayload,
+): HookDecision | undefined {
+  const rules = patternRulesOf(ctx.patternRules);
+  if (rules.length === 0) return undefined;
+
+  const command = commandOf(payload);
+  const checkCtx: RuleCheckContext = {
+    worktreePath: ctx.worktreePath,
+    ...(command !== undefined ? { command } : {}),
+    paths: pathsForToolCall(payload),
+    writes: isWritingToolCall(payload),
+    protectedBranches: ctx.protectedBranches ?? DEFAULT_PROTECTED_BRANCHES,
+    upstream: ctx.upstreamBranch ?? (() => undefined),
+    head: ctx.headBranch ?? (() => undefined),
+  };
+
+  const outcome = runPatternRules(rules, checkCtx);
+  if (outcome.reason !== undefined) {
+    return {
+      decision: 'deny',
+      reason: outcome.reason,
+      rulesEvaluated: outcome.rulesEvaluated,
+      ...(outcome.ruleViolated !== undefined ? { ruleViolated: outcome.ruleViolated } : {}),
+    };
+  }
+  return { decision: 'allow', rulesEvaluated: outcome.rulesEvaluated };
+}
+
 /** Tiers 4–5: the gate verdict, computed independently of any normal-priority inbox message pending — see this file's header, review round fix (blocker 1). */
 function computeGateVerdict(
   ctx: HookDecisionContext,
@@ -273,6 +330,13 @@ function computeGateVerdict(
   // means this tool isn't gated at this tier and falls through to step 7.
   const roleTool = roleToolVerdict(ctx, payload);
   if (roleTool !== undefined) return roleTool;
+
+  // 5b. Pattern rules in scope (T143, §8.1 step 2). Reached only when the
+  // role policy had nothing to say: a call the role table already denied or
+  // routed is settled, and evaluating rules against it would bump their
+  // stats for a call that never happened.
+  const patternRule = patternRuleVerdict(ctx, payload);
+  if (patternRule !== undefined) return patternRule;
 
   // 6. Else allow.
   return { decision: 'allow' };

@@ -28,7 +28,7 @@ import { LessonsService } from './lessons';
 import { type LockHandle, acquireLock } from './lock';
 import { QuestionService, buildQuestionRpcMethods } from './questions';
 import { type RpcServerHandle, startRpcServer } from './rpc';
-import { RulesService, buildRuleRpcMethods } from './rules';
+import { RulesService, buildRuleRpcMethods, ensureBuiltinRules } from './rules';
 import { resolveCliBin } from './runner';
 import { StateStore, buildStateRpcMethods } from './store';
 import { StreamService, buildStreamRpcMethods } from './streams';
@@ -261,7 +261,13 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
             // T138: the route band needs the gate service — a `hil`
             // verdict becomes a `classifier_review` item in the human's
             // inbox, and their yes lets that one call through once.
-            new HookService(store, bus, { gates: gateService }),
+            // T143: the pattern rules the hook enforces (§5.2, §5.4) —
+            // the same `rulesInScope` the brief assembler reads, so a
+            // retired rule stops gating on the next tool call.
+            new HookService(store, bus, {
+              gates: gateService,
+              ...(rulesService ? { rules: rulesService } : {}),
+            }),
           ),
           ...(attachService && verbService
             ? buildAttachRpcMethods(attachService, verbService)
@@ -293,6 +299,21 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
     inbox: inboxService,
     bus,
   });
+
+  // T143: §5.4's built-in pattern rules, created on first start and
+  // idempotent on every one after — before the RPC/HTTP servers accept a
+  // call, so the first tool call of a fresh home is already gated. A
+  // retired built-in stays retired (`ensureBuiltinRules`).
+  if (store) {
+    try {
+      await ensureBuiltinRules(store);
+    } catch (err) {
+      // A home whose `rules/` cannot be written is a real problem, but not
+      // one that should stop the daemon serving everything else — the
+      // built-ins are re-attempted on the next start.
+      console.error('agiled: could not create the built-in rules:', err);
+    }
+  }
 
   let lock: LockHandle;
   try {
@@ -345,6 +366,12 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
         await attachService?.stopAll();
         await http.stop();
         await rpc.close();
+        // T143: the coalesced rule `stats` counters — a graceful shutdown
+        // must not lose the window since the last 5 s flush.
+        if (rulesService) {
+          await rulesService.flushStats();
+          rulesService.dispose();
+        }
         // Flush any pending deferred hook_decision/heartbeat commits (T009
         // review round, hot-path decision) — a graceful shutdown must not
         // lose a batch that hasn't hit its 5s debounce yet.

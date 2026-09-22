@@ -52,7 +52,7 @@ describe('decidePreToolUse — normal inbox is additive, never overrides the gat
     const ctx = baseCtx({ inbox: [normal] });
     const result = decidePreToolUse(ctx, {
       tool_name: 'Bash',
-      tool_input: { command: 'git push origin main' },
+      tool_input: { command: 'git push --force origin main' },
     });
     expect(result.decision).toBe('ask');
     expect(result.additionalContext).toContain('use the JWT approach');

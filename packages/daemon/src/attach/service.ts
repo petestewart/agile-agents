@@ -118,6 +118,11 @@ export interface BriefDocsSource {
 /** The slice of T140's `RulesService` the brief needs: the accepted rules in scope (§5.3). */
 export interface BriefRulesSource {
   inScope(streamId: string): Rule[];
+  /**
+   * T143: §5.7's counters, bumped by the ACP permission tier for every
+   * pattern rule it evaluates. Optional so a brief-only fake stays valid.
+   */
+  recordFired?(id: string, outcome: 'fired' | 'violated' | 'routed'): Promise<unknown>;
 }
 
 export interface AttachOptions extends AttachFlags {
@@ -333,6 +338,7 @@ export class AttachService {
       brief: prompt,
       sessionDir,
       provider,
+      ...(this.options.rules !== undefined ? { rules: this.options.rules } : {}),
       ...(this.options.spawn !== undefined ? { spawn: this.options.spawn } : {}),
       ...(this.options.cliBin !== undefined ? { cliBin: this.options.cliBin } : {}),
       ...(this.options.socketPath !== undefined ? { socketPath: this.options.socketPath } : {}),

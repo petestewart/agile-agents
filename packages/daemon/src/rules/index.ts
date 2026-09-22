@@ -1,3 +1,4 @@
+export * from './builtins';
 export * from './service';
 export * from './report';
 export * from './rpc';

@@ -20,7 +20,6 @@ import {
   isPathInside,
   isPipedIntoBareShell,
   isRepoLocalBin,
-  isTicketBranch,
   parseCommandIntoAtoms,
   parseDlxInvocation,
   parseGitInvocation,
@@ -140,7 +139,7 @@ describe('isForcePush / isBranchDelete', () => {
   });
 });
 
-describe('pushRefspecs / refspecDestBranch / isTicketBranch', () => {
+describe('pushRefspecs / refspecDestBranch', () => {
   test('collects every positional refspec after the remote, not just the last', () => {
     expect(pushRefspecs(['push', 'origin', 'main', 'tkt/TKT-0001-x'])).toEqual([
       'main',
@@ -157,14 +156,6 @@ describe('pushRefspecs / refspecDestBranch / isTicketBranch', () => {
     expect(refspecDestBranch('HEAD:main')).toBe('main');
     expect(refspecDestBranch('+main')).toBe('main');
     expect(refspecDestBranch('tkt/TKT-0001-x')).toBe('tkt/TKT-0001-x');
-  });
-
-  test('isTicketBranch matches only this ticket, both tkt/<full-id>-… and tkt/<numeric>-… spellings', () => {
-    expect(isTicketBranch('tkt/TKT-0001-x', 'TKT-0001')).toBe(true);
-    expect(isTicketBranch('tkt/0001-x', 'TKT-0001')).toBe(true);
-    expect(isTicketBranch('tkt/TKT-0002-x', 'TKT-0001')).toBe(false);
-    expect(isTicketBranch('main', 'TKT-0001')).toBe(false);
-    expect(isTicketBranch(undefined, 'TKT-0001')).toBe(false);
   });
 });
 

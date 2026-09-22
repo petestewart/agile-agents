@@ -1,14 +1,17 @@
 /**
  * `decidePermission` — the one pure function this ticket exports (T010).
  * Classifies the raw ACP request, runs it through the never-without-human
- * list and then the role table (policy-tables.ts), and picks the ACP
- * option id for the result: **always `allow_once` for an allow, `reject_once`
+ * list, the role table (policy-tables.ts) and then T143's **pattern rules**
+ * in scope (`rule-checks.ts`, the same pass `hook/decide.ts` runs), and
+ * picks the ACP option id for the result: **always `allow_once` for an allow, `reject_once`
  * for a deny, never `allow_always`** (§14 "Every permission decision is
  * logged with allow_once only").
  */
 
+import { DEFAULT_PROTECTED_BRANCHES } from '@agile-agents/shared';
 import { classifyPermissionRequest } from './classify';
 import { checkNeverWithoutHuman, roleVerdict } from './policy-tables';
+import { type RuleCheckContext, runPatternRules } from './rule-checks';
 import type { AcpPermissionOption, Decision, DecisionContext, PermissionRequest } from './types';
 
 function findOption(
@@ -31,6 +34,26 @@ export function isDaemonVerb(title: string | undefined): boolean {
   return title !== undefined && /^mcp__agile__[a-z_]+$/.test(title);
 }
 
+/**
+ * The `RuleCheckContext` for one classified ACP request. `toolClass:
+ * 'edit'` is the write case `path_deny`'s worktree boundary is about; every
+ * path the request names is checked, not just the first
+ * (`classified.targetPaths` is the full `toolCall.locations` list).
+ */
+function ruleCheckContext(ctx: DecisionContext, classified: PermissionRequest): RuleCheckContext {
+  const paths =
+    classified.targetPaths ?? (classified.targetPath !== undefined ? [classified.targetPath] : []);
+  return {
+    worktreePath: ctx.worktreePath,
+    ...(classified.command !== undefined ? { command: classified.command } : {}),
+    paths,
+    writes: classified.toolClass === 'edit',
+    protectedBranches: ctx.protectedBranches ?? DEFAULT_PROTECTED_BRANCHES,
+    upstream: ctx.upstreamBranch ?? (() => undefined),
+    head: ctx.headBranch ?? (() => undefined),
+  };
+}
+
 export function decidePermission(ctx: DecisionContext): Decision {
   const classified = classifyPermissionRequest(ctx.request);
   const options = ctx.request.options ?? [];
@@ -48,6 +71,43 @@ export function decidePermission(ctx: DecisionContext): Decision {
     (isDaemonVerb(classified.title)
       ? { action: 'allow' as const }
       : roleVerdict(ctx.role, classified, policyCtx));
+
+  // T143: the pattern rules in scope (§5.2's pattern tier, §5.4's
+  // built-ins), evaluated only for a call the role table already cleared —
+  // a denied or routed call is settled, and charging rules' stats for it
+  // would count a call that never happened. This tier matters because it is
+  // the *only* gate for a vendor with no pre-tool-use hook (Cursor, Codex,
+  // Grok — §4.3): without it, `no_push_protected` would not exist for them.
+  const rulePass =
+    verdict.action === 'allow'
+      ? runPatternRules(ctx.patternRules, ruleCheckContext(ctx, classified))
+      : undefined;
+  const rulesEvaluated =
+    rulePass !== undefined && rulePass.rulesEvaluated.length > 0
+      ? rulePass.rulesEvaluated
+      : undefined;
+
+  if (rulePass?.reason !== undefined) {
+    const option = findOption(options, 'reject_once');
+    if (option === undefined) {
+      return {
+        kind: 'hil',
+        reason: `${rulePass.reason} (no reject_once option offered)`,
+        hilRequest: {
+          hilKind: 'classifier_review',
+          summary: summarize(classified, rulePass.reason),
+          classified,
+        },
+      };
+    }
+    return {
+      kind: 'deny',
+      optionId: option.optionId,
+      reason: rulePass.reason,
+      ...(rulesEvaluated !== undefined ? { rulesEvaluated } : {}),
+      ...(rulePass.ruleViolated !== undefined ? { ruleViolated: rulePass.ruleViolated } : {}),
+    };
+  }
 
   if (verdict.action === 'allow') {
     const option = findOption(options, 'allow_once');
@@ -69,7 +129,11 @@ export function decidePermission(ctx: DecisionContext): Decision {
       }
       return { kind: 'deny', optionId: reject.optionId, reason: 'no allow_once option offered' };
     }
-    return { kind: 'allow', optionId: option.optionId };
+    return {
+      kind: 'allow',
+      optionId: option.optionId,
+      ...(rulesEvaluated !== undefined ? { rulesEvaluated } : {}),
+    };
   }
 
   if (verdict.action === 'deny') {
