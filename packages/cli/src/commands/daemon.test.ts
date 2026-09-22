@@ -25,7 +25,7 @@ import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { freePort } from '../test-support';
-import { runDaemonStart } from './daemon';
+import { formatDaemonStatus, runDaemonStart } from './daemon';
 
 const CLI_ENTRY = join(import.meta.dir, '..', 'index.ts');
 
@@ -95,3 +95,18 @@ test('a busy port is never reported as a started daemon, even with a state home'
   expect(Date.now() - startedAt).toBeLessThan(2_000);
   expect(existsSync(join(home, 'agiled.pid'))).toBe(false);
 }, 30_000);
+
+test('T166: daemon status prints the state home first', () => {
+  const base = {
+    home: '/h/agile',
+    port: 4777,
+    socketPath: '/h/agile/agiled.sock',
+    pidPath: '/h/agile/agiled.pid',
+    logPath: '/h/agile/log/agiled.log',
+  };
+  const stopped = formatDaemonStatus({ ...base, running: false });
+  expect(stopped.split('\n')[0]).toBe('home: /h/agile');
+  const running = formatDaemonStatus({ ...base, running: true, pid: 42 });
+  expect(running.split('\n')[0]).toBe('home: /h/agile');
+  expect(running).toContain('agiled running: pid=42');
+});

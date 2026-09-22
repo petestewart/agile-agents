@@ -434,6 +434,8 @@ function resolveFeedContext(options: HttpServerOptions): FeedContext | undefined
  *   POST /api/streams/:id/say     the composer: a human line, and a prompt to the attached worker
  *   POST /api/streams/:id/attach  the sessions strip's attach / review (`role: reviewer`)
  *   POST /api/streams/:id/stop    the sessions strip's stop (a human detach)
+ *   POST /api/streams/:id/close   the page's Close (T166)
+ *   POST /api/streams/:id/mark-landed  merged outside `land` (T166)
  *
  * `land` is matched before this (T160). Every write is same-origin only
  * and stamps `human`; no principal is ever read from the body (§2.2).
@@ -445,7 +447,9 @@ async function handleStreamRoute(
   feed: FeedContext | undefined,
   sameOrigin: () => boolean,
 ): Promise<Response | undefined> {
-  const match = url.pathname.match(/^\/api\/streams\/([^/]+)(?:\/(diff|say|attach|stop))?$/);
+  const match = url.pathname.match(
+    /^\/api\/streams\/([^/]+)(?:\/(diff|say|attach|stop|close|mark-landed))?$/,
+  );
   if (!match) return undefined;
   const action = match[2];
   const isGet = action === undefined || action === 'diff';
@@ -475,6 +479,12 @@ async function handleStreamRoute(
       return jsonResponse(feed.landing.diff(id));
     }
 
+    // T166: the stream page's Close and Mark landed take no body.
+    if (action === 'close') return jsonResponse(await feed.streams.close('human', id));
+    if (action === 'mark-landed') {
+      if (!feed.landing) return errorResponse(503, 'landing not available');
+      return jsonResponse(await feed.landing.markLanded(id));
+    }
     const body = await readJsonBody(req);
     if (action === 'say') {
       const input = StreamSayInputSchema.safeParse(body);

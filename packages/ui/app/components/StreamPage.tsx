@@ -22,9 +22,11 @@ import type { InboxItem } from '@agile-agents/shared';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   attachSession,
+  closeStream,
   getStreamDiff,
   getStreamPage,
   landStream,
+  markStreamLanded,
   sayOnStream,
   stopSessions,
 } from '../lib/api';
@@ -118,6 +120,19 @@ function LandPanel({
   if (stream.repo === undefined) return null;
   const finished = stream.human.status === 'landed' || stream.human.status === 'closed';
 
+  async function doMarkLanded(): Promise<void> {
+    setBusy(true);
+    setRefused(undefined);
+    try {
+      await markStreamLanded(stream.id);
+    } catch (err) {
+      setRefused(errorText(err));
+    } finally {
+      setBusy(false);
+      onChanged();
+    }
+  }
+
   async function doLand(): Promise<void> {
     setBusy(true);
     setOutcome(undefined);
@@ -136,7 +151,18 @@ function LandPanel({
     <section className="cr-land" data-testid="land-panel">
       <div className="cr-land-hd">
         <h2>Land</h2>
-        {!finished && (
+        {!finished && land?.merged && (
+          <button
+            type="button"
+            className="cr-btn signal"
+            data-testid="stream-mark-landed"
+            disabled={busy}
+            onClick={() => void doMarkLanded()}
+          >
+            Mark landed
+          </button>
+        )}
+        {!finished && !land?.merged && (
           <button
             type="button"
             className="cr-btn signal"
@@ -151,6 +177,10 @@ function LandPanel({
       {stream.human.status === 'landed' ? (
         <p data-testid="land-before" data-ready="landed">
           Landed.
+        </p>
+      ) : land?.merged ? (
+        <p data-testid="land-before" data-ready="merged">
+          Already merged into {land.target}.
         </p>
       ) : land ? (
         <p data-testid="land-before" data-ready={land.ready ? 'yes' : 'no'}>
@@ -289,22 +319,25 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
         <Markdown className="cr-goal" text={stream.goal} />
       </header>
 
-      {cards.length > 0 && (
-        <section className="cr-needs" data-testid="stream-needs">
-          <h2>Needs you</h2>
-          {cards.map((item) => (
-            <Card
-              key={item.id}
-              item={item}
-              full
-              onDone={() => {
-                load();
-                refresh();
-              }}
-            />
-          ))}
-        </section>
-      )}
+      <section className="cr-needs" data-testid="stream-needs">
+        <h2>Needs you</h2>
+        {cards.length === 0 && (
+          <p className="cr-dim" data-testid="stream-needs-empty">
+            Nothing waiting on you.
+          </p>
+        )}
+        {cards.map((item) => (
+          <Card
+            key={item.id}
+            item={item}
+            full
+            onDone={() => {
+              load();
+              refresh();
+            }}
+          />
+        ))}
+      </section>
 
       <section className="cr-sessions" data-testid="sessions">
         <ul>
@@ -350,6 +383,17 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
           >
             Stop
           </button>
+          {stream.human.status !== 'landed' && stream.human.status !== 'closed' && (
+            <button
+              type="button"
+              className="cr-btn"
+              data-testid="stream-close"
+              disabled={busy}
+              onClick={() => void act(() => closeStream(stream.id))}
+            >
+              Close
+            </button>
+          )}
         </div>
         {actionError && (
           <p className="cr-error" role="alert" data-testid="stream-error">

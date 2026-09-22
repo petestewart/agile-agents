@@ -87,6 +87,16 @@ export function stopSessions(id: string): Promise<unknown> {
   return post(`/api/streams/${encodeURIComponent(id)}/stop`);
 }
 
+/** T166: the stream page's Close (`human.status: closed`, actor human). */
+export function closeStream(id: string): Promise<unknown> {
+  return post(`/api/streams/${encodeURIComponent(id)}/close`);
+}
+
+/** T166: a branch merged outside `land` — record it as landed. */
+export function markStreamLanded(id: string): Promise<unknown> {
+  return post(`/api/streams/${encodeURIComponent(id)}/mark-landed`);
+}
+
 export async function getPolicy(): Promise<Policy> {
   const res = await fetch('/api/policy');
   const payload = (await res.json()) as Policy & { error?: string };

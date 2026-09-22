@@ -232,10 +232,12 @@ export function daemonStatusReport(home?: string): DaemonStatusReport {
   };
 }
 
+/** T166: the state home comes first — it is what an operator checks. */
 export function formatDaemonStatus(report: DaemonStatusReport): string {
-  if (!report.running) return `agiled is not running (home=${report.home})`;
+  const home = `home: ${report.home}`;
+  if (!report.running) return `${home}\nagiled is not running`;
   return (
-    `agiled running: pid=${report.pid} http=http://127.0.0.1:${report.port} ` +
-    `socket=${report.socketPath} home=${report.home}`
+    `${home}\nagiled running: pid=${report.pid} http=http://127.0.0.1:${report.port} ` +
+    `socket=${report.socketPath}`
   );
 }

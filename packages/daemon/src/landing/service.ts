@@ -129,6 +129,11 @@ export interface LandPreflight {
   ahead?: number;
   /** The repo asks for a `land` gate: Land raises an inbox item rather than merging. */
   gated?: true;
+  /**
+   * T166: the branch has work of its own and all of it is already in the
+   * target (merged outside `land`). The page offers "Mark landed".
+   */
+  merged?: true;
 }
 
 /** How much of a stream diff travels in one response (the old ticket diff's cap). */
@@ -282,6 +287,16 @@ export class LandingService {
         runGit(['rev-list', '--count', `${target}..${branch}`], repoRoot, repoRoot),
       );
       if (!(ahead > 0)) {
+        if (mergedOutside(repoRoot, branch, target)) {
+          return {
+            ready: false,
+            branch,
+            target,
+            ahead: 0,
+            merged: true,
+            reason: `${branch} is already merged into ${target}`,
+          };
+        }
         return {
           ready: false,
           branch,
@@ -310,6 +325,30 @@ export class LandingService {
     } catch (err) {
       return { ready: false, reason: err instanceof Error ? err.message : String(err) };
     }
+  }
+
+  /**
+   * T166: a stream whose branch was merged into its target outside `land`
+   * (by hand, by a PR) is marked landed by the human. Refuses unless the
+   * branch has work of its own that is all in the target — a branch that
+   * never moved off its fork point stays "nothing to land".
+   */
+  async markLanded(streamId: string): Promise<Stream> {
+    const { streams } = this.options;
+    const stream = streams.get(streamId);
+    const { repoEntry, branch } = this.requireLandable(stream);
+    const repoRoot = repoEntry.path;
+    const target = this.resolveTarget(stream, repoEntry, repoRoot);
+    if (!mergedOutside(repoRoot, branch, target)) {
+      throw new LandRefusedError(stream.id, `${branch} is not merged into ${target}`);
+    }
+    const updated = await streams.update('human', stream.id, { human: { status: 'landed' } });
+    await streams.appendThread('human', stream.id, {
+      kind: 'event',
+      body: `marked landed: ${branch} was already merged into ${target}`,
+    });
+    void Promise.resolve(this.options.onStreamEnd?.(stream.id)).catch(() => {});
+    return updated;
   }
 
   /**
@@ -650,4 +689,22 @@ export function wireLandGateResolution(gates: GateService, landing: LandingServi
     }
     return resolved;
   };
+}
+
+/**
+ * T166: `branch` has commits of its own and every one is in `target`. The
+ * tip must be an ancestor of the target; to tell "merged" from "never moved
+ * off its fork point", the tip must either sit off the target's first-parent
+ * line (a merge commit brought it in) or the branch's reflog must record
+ * commits after its creation (a fast-forward merge).
+ */
+export function mergedOutside(repoRoot: string, branch: string, target: string): boolean {
+  if (git(['merge-base', '--is-ancestor', branch, target], repoRoot, repoRoot).exitCode !== 0) {
+    return false;
+  }
+  const tip = git(['rev-parse', `refs/heads/${branch}`], repoRoot, repoRoot).stdout;
+  const firstParent = git(['rev-list', '--first-parent', target], repoRoot, repoRoot);
+  if (firstParent.exitCode === 0 && !firstParent.stdout.split('\n').includes(tip)) return true;
+  const reflog = git(['reflog', 'show', '--format=%H', `refs/heads/${branch}`], repoRoot, repoRoot);
+  return reflog.exitCode === 0 && reflog.stdout.split('\n').filter(Boolean).length > 1;
 }
