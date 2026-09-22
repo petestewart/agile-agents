@@ -17,6 +17,7 @@ import { z } from 'zod';
 import { AgentIdSchema, ULID_PATTERN, UlidSchema, formatZodError } from './ids';
 import { HilKindSchema, MessageBodySchema } from './message';
 import { GateOwnerSchema } from './policy';
+import { RuleIdSchema } from './rule';
 
 /**
  * `HIL-<ulid>` — reuses `ids.ts`'s ULID charset (Crockford base32, 26 chars)
@@ -134,6 +135,14 @@ export const HilRequestSchema = z
      */
     call: GateCallSchema.optional(),
     session: AgentIdSchema.optional(),
+    /**
+     * T151 (§6.3): the classifier rule whose answer routed this call. Kept
+     * on the record because the human's answer is the rule's own statistic
+     * — a deny bumps that rule's `stats.violated` (`wireClassifierRouteStats`
+     * in `hook/route-band.ts`), and nothing else in the gate record says
+     * which rule was asked.
+     */
+    rule: RuleIdSchema.optional(),
     /** T138: set when an approved gate's one allowed retry has been spent — the allowance is once, not standing. */
     consumed_at: z.string().datetime().optional(),
     decision: HilDecisionSchema.optional(),

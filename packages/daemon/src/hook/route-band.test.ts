@@ -18,8 +18,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ACP_PROVIDERS, type AcpProviderConfig } from '@agile-agents/acp-client';
 import type { HilId, HilRequest, InboxItem, Stream } from '@agile-agents/shared';
+import { ulid, validateClassifierConfig, validateRule } from '@agile-agents/shared';
 import { AttachService } from '../attach/service';
 import { Bus } from '../bus';
+import { FakeClassifier } from '../classifier';
 import { GateService } from '../gates/service';
 import { InboxService } from '../inbox/service';
 import { runInit } from '../init';
@@ -380,5 +382,70 @@ describe('T138 route band — a routed manifest edit, approved, retried once', (
     expect(bodies.some((b) => b.startsWith('gate decision recorded with no live session'))).toBe(
       true,
     );
+  }, 90_000);
+});
+
+/**
+ * T151 (§6, §8.1 step 3): the same route band, reached from the classifier
+ * tier instead of the role policy — against the real `fake-agent.ts` over a
+ * real ACP transport, with `FakeClassifier` as the only classifier.
+ */
+describe('T151 classifier tier — a routed classifier answer, through the same band', () => {
+  test('a middle-band answer routes, the approval lets that one call through, a deny reaches the model', async () => {
+    const { stream, session, worktree } = await liveSession({ withRepo: true });
+    const rule = validateRule({
+      id: `R-${ulid()}`,
+      text: 'do not touch the migration files',
+      scope: { kind: 'global' },
+      status: 'accepted',
+      enforcement: 'classifier',
+      critical: false,
+      examples: [
+        { action: 'edit db/migrations/001.sql', violates: true },
+        { action: 'edit src/index.ts', violates: false },
+      ],
+      provenance: { by: 'human' },
+      stats: {},
+      created_at: new Date().toISOString(),
+    });
+    const classifier = new FakeClassifier((_state, questions) =>
+      questions.map((q) => ({ id: q.id, probability: 0.6, confidence: 0.9 })),
+    );
+    const classifierHooks = new HookService(store, bus, {
+      gates,
+      rules: { inScope: () => [rule], recordFired: async () => undefined },
+      classifier: { ask: classifier, config: validateClassifierConfig({ api_key: 'k' }) },
+    });
+
+    // An ordinary source edit the role policy allows — the classifier is
+    // the only tier with anything to say about it.
+    const payload = editPayload(session, worktree, 'src/app.ts');
+    const routed = await classifierHooks.preToolUse(payload);
+    expect(routed.hookSpecificOutput.permissionDecision).toBe('deny');
+    expect(reasonOf(routed)).toContain(rule.id);
+    expect(classifier.calls).toHaveLength(1);
+
+    const gate = openGates()[0] as HilRequest;
+    expect(gate.gate).toBe('classifier_review');
+    expect(gate.rule).toBe(rule.id);
+    // One card per call, not per attempt: the retry reuses the open gate.
+    await classifierHooks.preToolUse(payload);
+    expect(openGates()).toHaveLength(1);
+
+    await gates.respond(gate.id, 'approve', 'pete');
+    const allowed = await classifierHooks.preToolUse(payload);
+    expect(allowed.hookSpecificOutput.permissionDecision).toBe('allow');
+    expect(gates.get(gate.id).consumed_at).toBeDefined();
+
+    // And the same tier's deny band reaches the model verbatim.
+    classifier.setScript((_state, questions) =>
+      questions.map((q) => ({ id: q.id, probability: 0.95, confidence: 0.95 })),
+    );
+    const denied = await classifierHooks.preToolUse(editPayload(session, worktree, 'src/other.ts'));
+    expect(denied.hookSpecificOutput.permissionDecision).toBe('deny');
+    expect(reasonOf(denied)).toContain(rule.text);
+
+    writeFileSync(sentinel, '');
+    writeFileSync(finishSentinel, '');
   }, 90_000);
 });

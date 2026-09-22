@@ -26,7 +26,15 @@
  * "empty is the goal state").
  */
 
-import type { AgentId, GateCall, GateKind, HilId, HilRequest, Policy } from '@agile-agents/shared';
+import type {
+  AgentId,
+  GateCall,
+  GateKind,
+  HilId,
+  HilRequest,
+  Policy,
+  RuleId,
+} from '@agile-agents/shared';
 import { MESSAGE_BODY_MAX_CHARS } from '@agile-agents/shared';
 import type { GateRequestContext, GateService } from '../gates/service';
 import type { HookDecision } from './types';
@@ -47,6 +55,8 @@ export interface RouteBandContext {
   call: GateCall;
   /** The policy reason the call was routed for ("editing a dependency manifest/lockfile is never automatic"). */
   reason: string;
+  /** T151 (§6.3): the classifier rule whose band routed this call, when one did. */
+  rule?: RuleId;
 }
 
 /** A routed verdict, plus the gate it is attributable to (for the `hook_decision` event). */
@@ -89,8 +99,7 @@ export async function routeCall(
   const approved = candidates.find(
     (gate) => gate.decision === 'approve' && gate.consumed_at === undefined,
   );
-  if (approved !== undefined) {
-    await gates.consume(approved.id);
+  if (approved !== undefined && (await spend(gates, approved.id))) {
     return {
       decision: {
         decision: 'allow',
@@ -130,6 +139,7 @@ export async function routeCall(
     session: ctx.session as AgentId,
     requestedBy: ctx.session as AgentId,
     call: ctx.call,
+    ...(ctx.rule !== undefined ? { rule: ctx.rule } : {}),
     // The call itself is on `call`, and the inbox card renders it from
     // there (`inbox/service.ts`) — the summary is why it was routed.
     summary: cap(ctx.reason),
@@ -138,6 +148,21 @@ export async function routeCall(
     decision: { decision: 'deny', reason: routedReason(raised.id, ctx.reason) },
     gate: raised.id,
   };
+}
+
+/**
+ * Spends an approval, returning false when someone else spent it first.
+ * `GateService.consume` is a compare-and-swap since T151: two identical
+ * in-flight calls used to both read the same approved-and-unconsumed record
+ * and both be allowed by the one approval. The loser routes again.
+ */
+async function spend(gates: RouteBandGates, id: HilId): Promise<boolean> {
+  try {
+    await gates.consume(id);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function routedReason(id: HilId, why: string): string {
@@ -163,6 +188,42 @@ export function wireGateDecisionDelivery(gates: GateService, attach: GateDecisio
     const resolved = await respond(id, decision, by, note);
     if (resolved.gate === 'classifier_review' && resolved.session !== undefined) {
       await attach.deliverGateDecision(resolved.session, resolved);
+    }
+    return resolved;
+  };
+}
+
+/** The write side of `RulesService` the routed-answer statistic needs (§5.7). */
+export interface RouteStatsRules {
+  recordFired(id: string, outcome: 'fired' | 'violated' | 'routed'): Promise<unknown>;
+}
+
+/**
+ * T151 (§6.3, last line): "the answer allows or denies and increments
+ * `stats`". The route itself already bumped `routed` when the gate was
+ * raised; the human's *deny* is what turns that routed call into a
+ * violation of the rule that asked. Wired the same way
+ * `wireGateDecisionDelivery` is, so `GateService` keeps knowing nothing
+ * about what a gate kind means.
+ */
+export function wireClassifierRouteStats(
+  gates: { respond: GateService['respond'] },
+  rules: RouteStatsRules,
+): void {
+  const respond = gates.respond.bind(gates as GateService);
+  gates.respond = async (id, decision, by, note) => {
+    const resolved = await respond(id, decision, by, note);
+    if (
+      resolved.gate === 'classifier_review' &&
+      resolved.decision === 'deny' &&
+      resolved.rule !== undefined
+    ) {
+      try {
+        await rules.recordFired(resolved.rule, 'violated');
+      } catch {
+        // Telemetry (§5.7's pruning input): losing a counter must never
+        // turn a decision the human already made into an error.
+      }
     }
     return resolved;
   };

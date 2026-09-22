@@ -66,7 +66,14 @@
  * falls through to the lower tiers.
  */
 
-import { DEFAULT_PROTECTED_BRANCHES, type SessionRole } from '@agile-agents/shared';
+import {
+  type ClassifierBands,
+  DEFAULT_PROTECTED_BRANCHES,
+  type Rule,
+  type SessionRole,
+  classifierQuestion,
+} from '@agile-agents/shared';
+import type { Answer, Classifier, Noul } from '../classifier';
 import { decidePermission } from '../permissions';
 import type {
   AcpPermissionOption,
@@ -370,4 +377,212 @@ export function decidePreToolUse(
     additionalContext: buildAdditionalContext(normal),
     ack: normal.map((m) => m.id),
   };
+}
+
+// ---------------------------------------------------------------------------
+// The classifier tier (T151 — design/cockpit-design.md §6, §8.1 step 3).
+//
+// Everything above is pure and synchronous; this is not, because the tier is
+// one network round trip. It is kept here, next to the other tiers, because
+// the *order* is the design (§8.1: role policy → pattern rules → classifier)
+// and a tier that lived somewhere else would drift out of it. `service.ts`
+// runs this only when the tiers above allowed the call, and owns every side
+// effect it implies (stats, the `classifier_call` event, the
+// `hook_unchecked` thread entry, the route).
+// ---------------------------------------------------------------------------
+
+/** A rule judged by the classifier, not by a pattern (§5.2). */
+export function classifierRulesOf(rules: readonly Rule[] | undefined): Rule[] {
+  return (rules ?? []).filter(
+    (rule) => rule.enforcement === 'classifier' && rule.status === 'accepted',
+  );
+}
+
+/** §6.3's three bands, for one answer. */
+export type ClassifierBand = 'deny' | 'allow' | 'route';
+
+/**
+ * §6.3 exactly:
+ *
+ * ```
+ * confidence  <  confidence_floor → ROUTE, whatever the probability
+ * probability ≥  deny_at          → DENY
+ * probability <  allow_below      → ALLOW
+ * otherwise                       → ROUTE
+ * ```
+ *
+ * The confidence floor is checked first because it overrides the other two
+ * ("a probability of 0.9 with confidence 0.2 is not a 0.9; it is a shrug").
+ */
+export function classifierBand(answer: Answer, bands: ClassifierBands): ClassifierBand {
+  if (answer.confidence < bands.confidence_floor) return 'route';
+  if (answer.probability >= bands.deny_at) return 'deny';
+  if (answer.probability < bands.allow_below) return 'allow';
+  return 'route';
+}
+
+/** How much of a diff or a file body goes into the state — enough to judge, not the whole file. */
+const CLASSIFIER_STATE_MAX_CHARS = 4000;
+
+function clip(text: string, max = CLASSIFIER_STATE_MAX_CHARS): string {
+  return text.length > max ? `${text.slice(0, max)}\n… (truncated)` : text;
+}
+
+/**
+ * §6.2's state for a per-action check: "the tool name, the command or the
+ * path plus the diff hunk, and one line naming the stream and repo".
+ *
+ * The scrub (§6.5) is **not** applied here — it runs inside the adapter, on
+ * whatever state it is handed, so no caller can route around it.
+ */
+export function buildClassifierState(
+  ctx: Pick<HookDecisionContext, 'stream' | 'worktreePath'> & { repo?: string },
+  payload: ClaudePreToolUsePayload,
+): string {
+  const lines: string[] = [`tool: ${payload.tool_name ?? 'unknown'}`];
+  const command = commandOf(payload);
+  if (command !== undefined) {
+    lines.push(`command: ${clip(command)}`);
+  } else {
+    for (const path of pathsForToolCall(payload)) lines.push(`path: ${path}`);
+    const diff = diffHunkOf(payload);
+    if (diff !== undefined) lines.push('diff:', clip(diff));
+  }
+  lines.push(`stream: ${ctx.stream}${ctx.repo !== undefined ? ` · repo: ${ctx.repo}` : ''}`);
+  return lines.join('\n');
+}
+
+/** The change an edit-kind tool call proposes, in the shapes Claude's own edit tools use. */
+function diffHunkOf(payload: ClaudePreToolUsePayload): string | undefined {
+  const input = payload.tool_input ?? {};
+  const parts: string[] = [];
+  const edits = Array.isArray(input.edits) ? input.edits : [input];
+  for (const raw of edits) {
+    const edit = (raw ?? {}) as Record<string, unknown>;
+    if (typeof edit.old_string === 'string') parts.push(prefixLines('-', edit.old_string));
+    if (typeof edit.new_string === 'string') parts.push(prefixLines('+', edit.new_string));
+  }
+  // `Write` (and `NotebookEdit`) carry the whole new body instead.
+  const content = input.content ?? input.new_source;
+  if (parts.length === 0 && typeof content === 'string') parts.push(prefixLines('+', content));
+  return parts.length === 0 ? undefined : parts.join('\n');
+}
+
+function prefixLines(marker: string, text: string): string {
+  return text
+    .split('\n')
+    .map((line) => `${marker}${line}`)
+    .join('\n');
+}
+
+/** What one classifier tier pass decided, plus everything its caller has to record. */
+export interface ClassifierTierOutcome {
+  /** `deny`/`route` name a rule; `allow` is the whole set passing. */
+  band: ClassifierBand;
+  /** Every classifier rule this pass asked about — `stats.fired` for each (§5.7). */
+  evaluated: string[];
+  /** The rule this pass denied or routed on. */
+  rule?: string;
+  /** The deny/route reason, naming the rule — it reaches the model verbatim (§8.1). */
+  reason?: string;
+  /** Wall-clock time of the one call, for the `classifier_call` event (§6.2). */
+  latency_ms: number;
+  /** How many questions the one call carried — the one-call-N-questions property. */
+  questions: number;
+  /** §6.4: the rules that went unchecked because the call failed. */
+  unchecked?: string[];
+  /** Present when the call failed at all — already stringified. */
+  error?: string;
+}
+
+export interface ClassifierTierInput {
+  /** The accepted classifier rules in scope, in order. */
+  rules: readonly Rule[];
+  bands: ClassifierBands;
+  classifier: Classifier;
+  /** §6.2's state, already built (`buildClassifierState`). */
+  state: string;
+  now?: () => number;
+}
+
+/**
+ * §8.1 step 3: one call, one Noul per rule, then §6.3's bands — with §6.4's
+ * fail policy standing in for the answers the call could not produce.
+ *
+ * Precedence between rules is deny → route → allow, in rule order: the
+ * first rule that says no is the answer, and a rule that wants a human
+ * outranks the rules that were happy.
+ */
+export async function decideClassifierTier(
+  input: ClassifierTierInput,
+): Promise<ClassifierTierOutcome> {
+  const now = input.now ?? Date.now;
+  const rules = input.rules;
+  const questions: Noul[] = rules.map((rule) => ({
+    id: rule.id,
+    question: classifierQuestion(rule),
+  }));
+  const evaluated = rules.map((rule) => rule.id);
+
+  const started = now();
+  let answers: Answer[] | undefined;
+  let error: string | undefined;
+  try {
+    answers = await input.classifier.ask(input.state, questions);
+  } catch (err) {
+    error = err instanceof Error ? err.message : String(err);
+  }
+  const latency_ms = now() - started;
+
+  const byId = new Map((answers ?? []).map((answer) => [answer.id, answer]));
+  const unchecked: string[] = [];
+  let denied: { rule: Rule; reason: string } | undefined;
+  let routed: { rule: Rule; reason: string } | undefined;
+
+  for (const rule of rules) {
+    const answer = byId.get(rule.id);
+    if (answer === undefined) {
+      // §6.4's fail policy, per rule: a rule the call could not answer for
+      // — because the whole call failed, or because the response left it
+      // out — denies when it is critical, and is otherwise unchecked.
+      if (rule.critical) {
+        denied ??= {
+          rule,
+          reason: `${ruleLabel(rule)} is a critical classifier rule and the classifier could not answer (${error ?? 'no answer returned'}); the call is denied until it can.`,
+        };
+      } else {
+        unchecked.push(rule.id);
+      }
+      continue;
+    }
+    const band = classifierBand(answer, input.bands);
+    if (band === 'deny') {
+      denied ??= {
+        rule,
+        reason: `${ruleLabel(rule)}: ${rule.text}`,
+      };
+    } else if (band === 'route') {
+      routed ??= { rule, reason: `${ruleLabel(rule)}: ${rule.text}` };
+    }
+  }
+
+  const base = {
+    evaluated,
+    latency_ms,
+    questions: questions.length,
+    ...(unchecked.length > 0 ? { unchecked } : {}),
+    ...(error !== undefined ? { error } : {}),
+  };
+  if (denied !== undefined) {
+    return { ...base, band: 'deny', rule: denied.rule.id, reason: denied.reason };
+  }
+  if (routed !== undefined) {
+    return { ...base, band: 'route', rule: routed.rule.id, reason: routed.reason };
+  }
+  return { ...base, band: 'allow' };
+}
+
+/** How a rule is named in a reason the model reads — the short name when it has one, the id otherwise. */
+function ruleLabel(rule: Rule): string {
+  return rule.name !== undefined ? `${rule.name} (${rule.id})` : rule.id;
 }

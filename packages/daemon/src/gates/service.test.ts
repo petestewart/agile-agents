@@ -8,6 +8,7 @@ import { runInit } from '../init';
 import { StateStore } from '../store';
 import {
   EmptyNoteError,
+  GateAlreadyConsumedError,
   GateAlreadyResolvedError,
   type GateDecision,
   GateNotFoundError,
@@ -355,5 +356,31 @@ describe('GateService.list', () => {
     const ids = fresh.list().map((r) => r.id);
     expect(ids).toContain(a.id);
     expect(ids).toContain(b.id);
+  });
+});
+
+describe('GateService.consume (T151 — compare-and-swap)', () => {
+  test('two identical in-flight calls cannot both be allowed by one approval', async () => {
+    const service = new GateService(store, { clock });
+    const req = await service.request('classifier_review', ctx({ classifier_review: 'human' }));
+    await service.respond(req.id, 'approve', 'human');
+
+    // Both read the same approved-and-unconsumed record, then both try to
+    // spend it — the loser must be told, not silently waved through.
+    const [first, second] = await Promise.allSettled([
+      service.consume(req.id),
+      service.consume(req.id),
+    ]);
+    expect([first.status, second.status].sort()).toEqual(['fulfilled', 'rejected']);
+    expect(service.get(req.id).consumed_at).toBeDefined();
+  });
+
+  test('a later consume of a spent approval rejects rather than returning it', async () => {
+    const service = new GateService(store, { clock });
+    const req = await service.request('classifier_review', ctx({ classifier_review: 'human' }));
+    await service.respond(req.id, 'approve', 'human');
+    await service.consume(req.id);
+
+    expect(service.consume(req.id)).rejects.toThrow(GateAlreadyConsumedError);
   });
 });

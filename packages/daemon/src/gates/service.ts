@@ -38,6 +38,7 @@ import {
   MESSAGE_BODY_MAX_CHARS,
   type Message,
   type Policy,
+  type RuleId,
   ulid,
   validateBreakerState,
   validateHilRequest,
@@ -160,6 +161,27 @@ export interface GateRequestContext {
    */
   call?: GateCall;
   session?: AgentId;
+  /**
+   * T151 (§6.3): the classifier rule whose band routed this call. Persisted
+   * so the human's answer can be attributed back to the rule
+   * (`stats.violated` on a deny).
+   */
+  rule?: RuleId;
+}
+
+/**
+ * T151: an approved gate's single allowed retry was already spent. Thrown
+ * rather than returned, because the old check-then-write `consume` was not
+ * a compare-and-swap: two identical in-flight calls both saw the same
+ * approved-and-unconsumed record and were both allowed by one approval
+ * (Discovered Issues, T138). The loser of the race now hears about it and
+ * falls back to routing.
+ */
+export class GateAlreadyConsumedError extends Error {
+  constructor(id: string) {
+    super(`hil request already consumed: ${id}`);
+    this.name = 'GateAlreadyConsumedError';
+  }
 }
 
 export class GateNotFoundError extends Error {
@@ -200,6 +222,8 @@ export class UnknownBreakerSignalError extends Error {
 export class GateService {
   private readonly clock: () => Date;
   private readonly delegate: DelegateFn | undefined;
+  /** Serializes `consume` so the read-decide-write is one critical section (T151). */
+  private consumeChain: Promise<unknown> = Promise.resolve();
 
   constructor(
     private readonly store: StateStore,
@@ -287,6 +311,7 @@ export class GateService {
       ...(ctx.requestedBy !== undefined ? { requested_by: ctx.requestedBy } : {}),
       ...(ctx.call !== undefined ? { call: ctx.call } : {}),
       ...(ctx.session !== undefined ? { session: ctx.session } : {}),
+      ...(ctx.rule !== undefined ? { rule: ctx.rule } : {}),
     };
 
     let record: HilRequest;
@@ -673,9 +698,21 @@ export class GateService {
    * call is routed again rather than waved through.
    */
   async consume(id: HilId): Promise<HilRequest> {
-    const current = this.get(id);
-    if (current.consumed_at !== undefined) return current;
-    return this.persist({ ...current, consumed_at: this.clock().toISOString() });
+    const run = this.consumeChain.then(async () => {
+      // Re-read *inside* the critical section: the caller's own check
+      // (`route-band.ts` looks for an approved, unconsumed gate) happened
+      // before this await, so it is the read here that decides.
+      const current = this.get(id);
+      if (current.consumed_at !== undefined) throw new GateAlreadyConsumedError(id);
+      return this.persist({ ...current, consumed_at: this.clock().toISOString() });
+    });
+    // Keep the chain alive even when one consume rejects (same shape as the
+    // store's own mutex).
+    this.consumeChain = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
   }
 
   get(id: HilId): HilRequest {
