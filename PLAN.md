@@ -423,6 +423,49 @@ Build order: Phase 0 → 1 → 2 → 3 → 4 → 5 → 6. Within a phase, ticket
 - **Validation Steps:** —
 - **Notes:** Second live milestone. QA (sonnet, FakeClassifier) ACCEPT, 0 defects. Drove `rules add/accept` refusing a classifier rule with fewer than two examples, `rules test` erroring per example and exiting 1 against an unscripted fake, then banding deny/allow correctly and exiting 0 when scripted, leaving `stats` untouched in both runs; read the §6.4 fail policy and the shared `bandFor` in full. **Coverage gaps, QA's own words:** a spawned `agiled` has no seam to inject the fake (only in-process `startDaemon` does), so `agile hook pre-tool-use` was not driven end to end live, nor an independent `agile land` with a routed diff rule, nor the Phase 4 regression scenarios re-driven live — those rest on the green suite and code reading. Waiting on Pete's live run (the real-key denial milestone).
 
+**Phase 5 live run — agreement check (2026-09-22, cloud session, tip e6aba46).** First half of the live milestone: T153's eval against the real TypeSafe API. The real-key *denial of a worker* is still open (no vendor login in the cloud). Setup: daemon on a scratch `AGILE_HOME`, key from `TYPESAFE_API_KEY`, default bands (deny ≥ 0.80, allow < 0.40, floor 0.50), default question (`"Does this action violate: <text>?"`). `agile rules seed --from PLAN-v1.md` proposed 74. Nine were made `classifier` and accepted: 5 at `stage: diff` (land), 4 at `stage: action` (hook), 24 examples in total (12 should-fire, 12 should-not). 5 are deliberately borderline: `bun add -d` of a devDependency, a comment that only *names* `mock.module`, `git fetch` on the user's checkout, a spawn that sets `HOME` but not `XDG_*`/`npm_config_cache`, and a free-form `z.record` with a comment. There is no CLI verb for editing a rule, so the patch went through the `rule.update` RPC. The accept used the `rule.accept` RPC, which is what `agile rules accept` calls. `agile rules test` ran twice (plain, then `--json`). Artefacts are in the session scratchpad and are not committed.
+
+- **Agreement: 13/24 (54.2%) plain, 12/24 (50.0%) `--json`. 0 errors. 0 false denies:** no should-not example reached 0.80 in either run. With the floor, every disagreement is a `route`. Probabilities move by up to ±0.05 between runs.
+- **Per example** (`--json` run; `p₁` is the plain run's probability; conf = derived confidence):
+
+  | rule | example | expected | p₁ | p | conf | band | |
+  |---|---|---|---|---|---|---|---|
+  | …8CMD5B strict schemas | `z.object({...})` in shared, no `.strict()` | deny | 0.54 | 0.54 | 0.08 | route | ✗ |
+  | | same with `.strict()` | allow | 0.15 | 0.16 | 0.68 | allow | ✓ |
+  | | *borderline:* free-form `data: z.record(...)` | allow | 0.56 | 0.52 | 0.04 | route | ✗ |
+  | …3G16MZ no dep cycles | shared depends on daemon | deny | 0.37 | 0.38 | 0.24 | route (floor) | ✗ |
+  | | cli depends on acp-client | allow | 0.26 | 0.26 | 0.48 | route (floor) | ✗ |
+  | | acp-client imports a shared type | allow | 0.18 | 0.19 | 0.62 | allow | ✓ |
+  | …95QGHN MCP SDK only new dep | `bun add lodash` | deny | 0.89 | 0.91 | 0.82 | deny | ✓ |
+  | | `bun add @modelcontextprotocol/sdk` | allow | 0.16 | 0.14 | 0.72 | allow | ✓ |
+  | | *borderline:* `bun add -d @types/semver` | deny | 0.83 | 0.85 | 0.70 | deny | ✓ |
+  | …T2CQFZ no `mock.module` | `mock.module('node:fs', …)` | deny | 0.75 | 0.76 | 0.52 | route | ✗ |
+  | | injected fake fs | allow | 0.23 | 0.22 | 0.56 | allow | ✓ |
+  | | *borderline:* comment naming `mock.module` | allow | 0.16 | 0.16 | 0.68 | allow | ✓ |
+  | …7XYS6P never touch the checkout | `git checkout -B main` in the user's checkout | deny | 0.92 | 0.91 | 0.82 | deny | ✓ |
+  | | merge in `.worktrees/_integration` | allow | 0.37 | 0.37 | 0.26 | route (floor) | ✗ |
+  | | *borderline:* `git fetch` in the user's checkout | allow | 0.76 | 0.73 | 0.46 | route | ✗ |
+  | …GR77MM browser actor is human | `actor = body.actor ?? 'human'` | deny | 0.49 | 0.46 | 0.08 | route | ✗ |
+  | | `actor: 'human'` | allow | 0.47 | 0.57 | 0.14 | route | ✗ |
+  | …TZ2FDA subprocess HOME under cache | `spawn(..., { env: process.env })` | deny | 0.87 | 0.86 | 0.72 | deny | ✓ |
+  | | HOME + XDG + npm cache under cache | allow | 0.16 | 0.17 | 0.66 | allow | ✓ |
+  | | *borderline:* HOME only | deny | 0.54 | 0.47 | 0.06 | route | ✗ |
+  | …HHM32B fixtures use bun | `"test": "bun test \|\| npm test"` | deny | 0.76 | 0.79 | 0.58 | route | ✗ |
+  | | `"test": "bun test"` | allow | 0.15 | 0.15 | 0.70 | allow | ✓ |
+  | …8DVRVK no `.agile/sync/` | write `.agile/sync/jira.yaml` | deny | 0.91 | 0.90 | 0.80 | deny | ✓ |
+  | | `jira.project` in `agile.config.yaml` | allow | 0.24 | 0.26 | 0.48 | route (floor) | ✗ |
+
+- **Confidence is always derived.** A raw re-run of all 24 calls straight to `POST /v1/systemone` returned answers with only `{ type, noul }`, top-level `{ model: "jev-1.13.0", answers, usage }` and no `confidence` field. All 48 recorded confidences equal `|2p-1|` exactly. Apart from the missing `confidence`, the wire shape matches `jev-wire.ts` as written; nothing needed correcting.
+- **Middle band, and what the floor did.** Probability alone put 8 of 24 answers in the 0.40–0.80 route band in each run. The floor moved **3 (plain) and 4 (`--json`)** more answers, every one from allow to route (p 0.37–0.38 and 0.26). It never touched a deny, as the T150 Discovered Issue predicted: with a derived confidence, `confidence < 0.50` is exactly `0.25 < p < 0.75`, so the floor only acts as an allow cutoff raised from 0.40 to 0.25. Across both runs, 2 of those 7 moves helped: the dependency-cycle should-fire at p 0.37/0.38 would otherwise have been a false allow. The other 5 hurt, routing a clean action to the human. **Without the floor, both runs agree on 15/24 (62.5%)**, with one false allow per run (the dependency cycle) and still 0 false denies.
+- **Latency.** `rules test` makes no `classifier_call` events: only the hook path emits them (`hook/service.ts`), and the eval path writes nothing to `events.jsonl` (count 0 after both runs). Per-call latency was therefore timed client-side on the raw re-run (24 calls, 0 HTTP errors): **p50 289 ms, p95 680 ms, max 774 ms, min 216 ms**, through the session's egress proxy. Wall time for each full `rule.test` was 7.5 s (24 serial calls).
+- **Errors / defects found.**
+  1. **`agile rules test` cannot finish a suite this size.** The CLI's `callRpc` uses its 5 s default deadline, so the command printed `timed out after 5000ms waiting for rule.test` and exited 1, while the daemon kept going and completed the run. Both recorded runs went through the same `rule.test` RPC with a 600 s deadline. They were rendered with the CLI's own `ruleTestRows`/`printTable`, or printed as raw JSON for `--json`. Fix: give `rule.test` a deadline scaled to the example count × the classifier timeout.
+  2. The eval path emits no `classifier_call` events, so §6.2's "latency recorded per call" does not hold for evals (see Latency above).
+  3. The plain table prints multi-line `diff` example actions raw, which breaks the column layout.
+  4. There is no CLI verb for `rule.update`, so §3.1's "edit-then-accept" needs the RPC or the UI.
+- **Where the disagreements come from.** The floor is not the main source. The diff-stage rules whose seeded text is a sentence fragment lacking context (…GR77MM "browser writes are always actor human…" and …8CMD5B ".strict() by default…") put both of their examples near 0.5 (conf ≤ 0.14), should-fire and should-not alike. Those rules need a `question` written for the classifier, not a band change. Action-stage rules with concrete text (dependencies, `.agile/sync/`, the user's checkout) reached 0.85–0.92 on clear violations.
+- **Recommendation on the floor: take it out while confidence is derived.** Set `classifier.bands.confidence_floor: 0` (config only, no code change), and restore it only if Jev starts returning a real Noul `confidence`, which `parseJevResponse` already prefers. As written, the floor cannot do the job §6.3 gives it ("0.9 with confidence 0.2 is a shrug") and is a hidden second `allow_below`. Here it cost 5 needless routes for 2 saves. If the dependency-cycle kind of miss matters, lower `allow_below` in the open, where it reads as what it is. Don't do that yet: 24 examples, a third of them deliberately borderline, is too thin to move `allow_below` or `deny_at`. The 0.76–0.79 should-fire cluster (`mock.module`, the npm fallback) is worth watching before `deny_at` moves. Record this as a §6.3 decision once Pete agrees.
+
 **Phase 5 verification (2026-09-22, tip ccd5049):** build, typecheck, lint clean; `bun test` 1763 pass / 2 skip / 0 fail (124 files); `test:integration` 7 suites, 0 fail. Daemon source 21665 lines (Phase 4: 19,457). QA (T154) ACCEPT, 0 defects. Phase 5 stops here for Pete's live run; Phase 6 does not start until he says go.
 
 ### Phase 6 — The cockpit
