@@ -204,6 +204,7 @@ export async function startTestDaemon(prefix = 'agile-cli-test-'): Promise<TestD
       ),
       ...buildRuleRpcMethods(rulesService, {
         classifier,
+        events: store,
         bands: {
           deny_at: DEFAULT_CLASSIFIER_DENY_AT,
           allow_below: DEFAULT_CLASSIFIER_ALLOW_BELOW,

@@ -179,6 +179,59 @@ describe('agile rules against a daemon on a temp AGILE_HOME', () => {
       'always run the integration suite',
     ]);
   });
+  /** T155: §3.1's edit-then-accept without a raw RPC. */
+  describe('agile rules edit', () => {
+    test('edits text, question, enforcement, stage and examples, then accepts', async () => {
+      const rule = await add('do not add deps');
+      const result = await cli([
+        'rules',
+        'edit',
+        rule.id,
+        '--text',
+        'do not add a dependency without asking',
+        '--question',
+        'Does this action add a dependency?',
+        '--enforcement',
+        'classifier',
+        '--stage',
+        'both',
+        '--example',
+        'bun add lodash::true',
+        '--example',
+        'edit src/index.ts::false',
+      ]);
+      expect(result.code).toBe(0);
+      expect(result.out).toContain(`${rule.id} updated`);
+
+      const edited = daemon.rulesService.get(rule.id);
+      expect(edited).toMatchObject({
+        text: 'do not add a dependency without asking',
+        question: 'Does this action add a dependency?',
+        enforcement: 'classifier',
+        stage: 'both',
+        status: 'proposed',
+      });
+      expect(edited.examples).toEqual([
+        { action: 'bun add lodash', violates: true },
+        { action: 'edit src/index.ts', violates: false },
+      ]);
+      expect((await cli(['rules', 'accept', rule.id])).code).toBe(0);
+      expect(daemon.rulesService.get(rule.id).status).toBe('accepted');
+    });
+
+    test('--json prints the edited rule', async () => {
+      const rule = await add('first wording');
+      const result = await cli(['rules', 'edit', rule.id, '--text', 'second wording', '--json']);
+      expect(result.code).toBe(0);
+      expect((JSON.parse(result.out) as Rule).text).toBe('second wording');
+    });
+
+    test('an edit with nothing to change is refused', async () => {
+      const rule = await add('unchanged');
+      expect((await cli(['rules', 'edit', rule.id])).code).not.toBe(0);
+    });
+  });
+
   /**
    * T153 (§5.6): "examples as evals". The same path the live check runs,
    * proven offline through `FakeClassifier` — the CLI never reaches the
@@ -282,6 +335,60 @@ describe('agile rules against a daemon on a temp AGILE_HOME', () => {
       const result = await cli(['rules', 'test']);
       expect(result.code).toBe(0);
       expect(result.out).toContain('no accepted classifier rules');
+    });
+
+    test('a run slower than the default 5 s RPC deadline still finishes (T155)', async () => {
+      await acceptedClassifierRule();
+      await add('do not log secrets', [
+        '--enforcement',
+        'classifier',
+        '--example',
+        'console.log(apiKey)::true',
+        '--example',
+        'console.log(count)::false',
+      ]).then((rule) => cli(['rules', 'accept', rule.id]));
+      // Four calls at 1.5 s each: 6 s in total, past the old 5 s deadline.
+      daemon.classifier.setScript(
+        (state, questions) =>
+          questions.map((q) => ({
+            id: q.id,
+            probability: state.startsWith('bun add') || state.includes('apiKey') ? 0.95 : 0.05,
+            confidence: 0.9,
+          })),
+        { delayMs: 1_500 },
+      );
+      const result = await cli(['rules', 'test']);
+      expect(result.code).toBe(0);
+      expect(result.out).toContain('4 examples · 4 agree');
+    }, 20_000);
+
+    test('every eval call leaves a classifier_call event (T155, §6.2)', async () => {
+      const rule = await acceptedClassifierRule();
+      daemon.classifier.setScript((state, questions) =>
+        questions.map((q) => ({
+          id: q.id,
+          probability: state.startsWith('bun add') ? 0.95 : 0.05,
+          confidence: 0.9,
+        })),
+      );
+      await cli(['rules', 'test']);
+      const calls = daemon.store.listEvents().filter((e) => e.kind === 'classifier_call');
+      expect(calls).toHaveLength(2);
+      expect(calls.map((e) => e.data.source)).toEqual(['eval', 'eval']);
+      expect(calls.map((e) => e.data.rule)).toEqual([rule.id, rule.id]);
+      expect(calls.map((e) => e.data.outcome)).toEqual(['deny', 'allow']);
+      for (const e of calls) expect(typeof e.data.latency_ms).toBe('number');
+    });
+
+    test('a failed eval call is still an event, with its error', async () => {
+      await acceptedClassifierRule();
+      // Unscripted: the fake answers nothing for the rule.
+      daemon.classifier.setScript([]);
+      await cli(['rules', 'test']);
+      const calls = daemon.store.listEvents().filter((e) => e.kind === 'classifier_call');
+      expect(calls).toHaveLength(2);
+      expect(calls[0]?.data.error).toContain('no answer');
+      expect(calls[0]?.data.outcome).toBeUndefined();
     });
 
     test('an eval is not a firing: stats stay at zero (§5.7)', async () => {
