@@ -27,6 +27,7 @@ import { LandingService, buildLandingRpcMethods, wireLandGateResolution } from '
 import { type LockHandle, acquireLock } from './lock';
 import { QuestionService, buildQuestionRpcMethods } from './questions';
 import { type RpcServerHandle, startRpcServer } from './rpc';
+import { RulesService, buildRuleRpcMethods } from './rules';
 import { resolveCliBin } from './runner';
 import { StateStore, buildStateRpcMethods } from './store';
 import { StreamService, buildStreamRpcMethods } from './streams';
@@ -54,6 +55,7 @@ export interface DaemonHandle {
   gateService?: GateService;
   streamService?: StreamService;
   questionService?: QuestionService;
+  rulesService?: RulesService;
   inboxService?: InboxService;
   attachService?: AttachService;
   verbService?: VerbService;
@@ -104,6 +106,11 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
   // and MCP server — resolved to something that actually runs on this host
   // (`runner/cli-bin.ts`), never assumed on $PATH.
   const cliBin = resolveCliBin();
+  // T140: rules — the system's memory of decisions (cockpit design §5). The
+  // attach service reads `inScope` for every brief, and T143's hook will
+  // read the same function.
+  const rulesService =
+    store && streamService ? new RulesService({ store, streams: streamService }) : undefined;
   // T137: the attach service and the question service know about each
   // other — the turn-end rule asks what is still open, and an answer is
   // delivered by prompting the live session. Both directions are read
@@ -120,6 +127,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
           // below, and are only ever called once the daemon is serving.
           docs: { docsForStream: (id) => docsService?.docsForStream(id) ?? [] },
           questions: { listOpen: () => questionService?.listOpen() ?? [] },
+          ...(rulesService ? { rules: rulesService } : {}),
         })
       : undefined;
   const questionService: QuestionService | undefined =
@@ -199,6 +207,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
           ...(questionService ? buildQuestionRpcMethods(questionService) : {}),
           ...(streamService ? buildStreamRpcMethods(streamService) : {}),
           ...(inboxService ? buildInboxRpcMethods(inboxService) : {}),
+          ...(rulesService ? buildRuleRpcMethods(rulesService) : {}),
           ...(docsService ? buildDocsRpcMethods(docsService) : {}),
           ...(landingService ? buildLandingRpcMethods(landingService) : {}),
           ...buildHookRpcMethods(
@@ -275,6 +284,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
     gateService,
     streamService,
     questionService,
+    rulesService,
     inboxService,
     attachService,
     verbService,

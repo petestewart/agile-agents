@@ -30,6 +30,7 @@ import { join } from 'node:path';
 import type { AcpProviderConfig, spawnSession } from '@agile-agents/acp-client';
 import {
   type Question,
+  type Rule,
   type SessionRef,
   type SessionRole,
   type SessionStatus,
@@ -102,6 +103,11 @@ export interface BriefDocsSource {
   docsForStream(streamId: string): BriefDoc[];
 }
 
+/** The slice of T140's `RulesService` the brief needs: the accepted rules in scope (§5.3). */
+export interface BriefRulesSource {
+  inScope(streamId: string): Rule[];
+}
+
 export interface AttachOptions extends AttachFlags {
   role?: SessionRole;
 }
@@ -130,6 +136,8 @@ export interface AttachServiceOptions {
   docs?: BriefDocsSource;
   /** T137: the open questions, for the turn-end rule. Read lazily — `daemon.ts` wires both directions. */
   questions?: OpenQuestionsSource;
+  /** T140's `RulesService` (or any read side shaped like it) — supplies the brief's rules in scope. */
+  rules?: BriefRulesSource;
   /** Test seam: inject a fake `spawnSession`. */
   spawn?: typeof spawnSession;
   /** Test seam: override the provider the resolved vendor maps to (the fake-agent transport). */
@@ -250,8 +258,8 @@ export class AttachService {
       ancestors,
       thread: streams.readThread(stream.id, { limit: 500 }).entries,
       docs: this.options.docs?.docsForStream(stream.id) ?? [],
-      // T140 stores rules; until then there are none to be in scope.
-      rules: [],
+      // §5.3: the accepted rules in scope for this stream and its ancestors.
+      rules: this.options.rules?.inScope(stream.id) ?? [],
     });
 
     // 5. Record the session before it can produce anything, so a stream

@@ -180,6 +180,16 @@ export const RuleProposalSchema = z
   .strict();
 export type RuleProposal = z.infer<typeof RuleProposalSchema>;
 
+/**
+ * What a human may *edit* on an existing rule (§3.1's "edit-then-accept"):
+ * the proposal's fields minus `provenance` (immutable — it is the answer to
+ * "why does this rule exist"), all optional. `status`, `decided_at` and
+ * `decided_by` are absent here by construction, so an edit can never carry
+ * a decision: that goes through accept/retire.
+ */
+export const RulePatchSchema = RuleProposalSchema.omit({ provenance: true }).partial().strict();
+export type RulePatch = z.infer<typeof RulePatchSchema>;
+
 export function validateRule(input: unknown): Rule {
   const result = RuleSchema.safeParse(input);
   if (!result.success) {
@@ -192,6 +202,14 @@ export function validateRuleProposal(input: unknown): RuleProposal {
   const result = RuleProposalSchema.safeParse(input);
   if (!result.success) {
     throw new Error(formatZodError('RuleProposal', result.error));
+  }
+  return result.data;
+}
+
+export function validateRulePatch(input: unknown): RulePatch {
+  const result = RulePatchSchema.safeParse(input);
+  if (!result.success) {
+    throw new Error(formatZodError('RulePatch', result.error));
   }
   return result.data;
 }
