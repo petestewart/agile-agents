@@ -25,7 +25,7 @@
  * principal for.
  */
 
-import { mkdirSync } from 'node:fs';
+import { existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import type { AcpProviderConfig, spawnSession } from '@agile-agents/acp-client';
 import {
@@ -122,6 +122,12 @@ export interface BriefRulesSource {
 
 export interface AttachOptions extends AttachFlags {
   role?: SessionRole;
+  /**
+   * T141: extra brief text appended after the assembled brief — the
+   * material the lessons session (§5.5) is asked to draw its rules from,
+   * plus its instruction. The caller owns the size of what it sends.
+   */
+  briefAppendix?: string;
 }
 
 /** T137: `detach: true` marks this stop as the human pulling the plug, not a shutdown. */
@@ -164,6 +170,8 @@ export class AttachService {
   private readonly live = new Map<SessionRole, Map<string, AgentSessionHandle>>([
     ['worker', new Map()],
     ['reviewer', new Map()],
+    // T141's one-shot retro session (§5.5) — a third role, never a second worker.
+    ['lessons', new Map()],
   ]);
 
   /**
@@ -239,6 +247,12 @@ export class AttachService {
         await streams.update('daemon', stream.id, { worktree: worktreePath, branch });
       }
     }
+    // T141 (§5.5): the retro starts after `land` has already removed the
+    // worktree, so a lessons session whose stream names a directory that is
+    // gone runs in its own session dir rather than failing to spawn.
+    if (role === 'lessons' && worktreePath !== undefined && !existsSync(worktreePath)) {
+      worktreePath = undefined;
+    }
     // A planning stream runs in the state home's own session directory: it
     // has no repo, so there is nothing to check out and nothing to cd into.
     const sessionDir = join(this.options.home, 'sessions', sessionId);
@@ -275,6 +289,11 @@ export class AttachService {
       // §5.3: the accepted rules in scope for this stream and its ancestors.
       rules: this.options.rules?.inScope(stream.id) ?? [],
     });
+    // T141: the lessons session's material rides after the brief it is
+    // assembled from, never inside it — the ceiling above protects the
+    // brief's own parts, and the caller caps what it appends.
+    const prompt =
+      options.briefAppendix === undefined ? brief : `${brief}\n\n${options.briefAppendix}`;
 
     // 5. Record the session before it can produce anything, so a stream
     // never has a running process it doesn't know about. A reviewer never
@@ -311,7 +330,7 @@ export class AttachService {
       session,
       role,
       worktreePath: cwd,
-      brief,
+      brief: prompt,
       sessionDir,
       provider,
       ...(this.options.spawn !== undefined ? { spawn: this.options.spawn } : {}),
@@ -571,6 +590,17 @@ export class AttachService {
       }
       if (role === 'reviewer') {
         await this.onReviewerExit(streamId, sessionId, reason, findingsBefore);
+        return;
+      }
+      // T141 (§5.5): the retro is not the stream's work. It reports on the
+      // thread and never touches `agent.status` — a stream that landed
+      // must not read as `done` again because its retro finished.
+      if (role === 'lessons') {
+        await this.options.streams.appendThread('daemon', streamId, {
+          kind: 'event',
+          body: `lessons session ended: ${reason}`.slice(0, 800),
+          ref: sessionId,
+        });
         return;
       }
       await this.options.streams.update('daemon', streamId, {

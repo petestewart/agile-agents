@@ -103,8 +103,20 @@ export function threadAuthorFor(principal: StreamPrincipal, sessionId?: string):
   return `agent:${sessionId}`;
 }
 
+export interface StreamServiceOptions {
+  /**
+   * T141 (§5.5): what `close` tells the retro. Fire-and-forget — a lessons
+   * session that cannot start is a thread line, never a failed close — and
+   * wired in `daemon.ts`, because `LessonsService` sits above this one.
+   */
+  onStreamEnd?: (streamId: string) => void | Promise<void>;
+}
+
 export class StreamService {
-  constructor(private readonly store: StateStore) {}
+  constructor(
+    private readonly store: StateStore,
+    private readonly options: StreamServiceOptions = {},
+  ) {}
 
   /**
    * §2.3: "create ──► human.status: open, agent.status: idle". The daemon
@@ -207,6 +219,12 @@ export class StreamService {
     if (note !== undefined) {
       await this.appendThread(principal, id, { kind: 'line', body: `closed: ${note}` });
     }
+    // §5.5: the retro runs on land *or* close. Fire-and-forget: the close
+    // has already happened, and `LessonsService.onStreamEnd` records its
+    // own failures on the thread.
+    void Promise.resolve(this.options.onStreamEnd?.(id)).catch(() => {
+      // `onStreamEnd` is contractually non-throwing; this is belt and braces.
+    });
     return closed;
   }
 

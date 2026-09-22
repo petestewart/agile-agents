@@ -118,6 +118,12 @@ export interface LandingServiceOptions {
   gates?: GateService;
   /** T152's diff-level rule tier. Defaults to `ALLOW_ALL_DIFF_RULES`. */
   diffRules?: DiffRules;
+  /**
+   * T141 (§5.5): what a successful land tells the retro. Fire-and-forget —
+   * the merge has already happened, so a lessons session that cannot start
+   * is a thread line, never a failed land.
+   */
+  onStreamEnd?: (streamId: string) => void | Promise<void>;
 }
 
 export class LandingService {
@@ -194,6 +200,11 @@ export class LandingService {
       }
     }
     void store; // the stream writes above already emit the store's events.
+    // §5.5's retro, after the worktree is gone: the lessons session runs in
+    // its own session dir when the stream's worktree has been removed.
+    void Promise.resolve(this.options.onStreamEnd?.(stream.id)).catch(() => {
+      // `onStreamEnd` is contractually non-throwing; this is belt and braces.
+    });
     return { status: 'landed', target, sha: merged.sha, line };
   }
 

@@ -21,6 +21,7 @@
 
 import { z } from 'zod';
 import { UlidSchema, formatZodError } from './ids';
+import { RuleEnforcementSchema, RuleExampleSchema } from './rule';
 import { StreamFindingSeveritySchema, THREAD_BODY_MAX_CHARS } from './stream';
 
 /** Free text an agent writes into the thread — capped like every thread body. */
@@ -46,8 +47,24 @@ export const FindingInputSchema = z
   .strict();
 export type FindingInput = z.infer<typeof FindingInputSchema>;
 
+/**
+ * §5.1's proposal, as an agent may state it. `examples` · `enforcement` ·
+ * `critical` are here because T141's lessons session is asked for exactly
+ * those: two example actions per rule (the human's documentation and the
+ * classifier's evals, §5.6), the tier it guesses, and whether it is
+ * critical. Everything the daemon owns — `status`, `provenance`, `stats` —
+ * is still absent, so no verb call can propose a rule that arrives
+ * accepted.
+ */
 export const ProposeRuleInputSchema = z
-  .object({ session: Session, text: Body, scope: z.string().min(1).optional() })
+  .object({
+    session: Session,
+    text: Body,
+    scope: z.string().min(1).optional(),
+    examples: z.array(RuleExampleSchema).max(8).optional(),
+    enforcement: RuleEnforcementSchema.optional(),
+    critical: z.boolean().optional(),
+  })
   .strict();
 export type ProposeRuleInput = z.infer<typeof ProposeRuleInputSchema>;
 
@@ -96,7 +113,8 @@ export const AGENT_VERB_DESCRIPTIONS: Record<AgentVerb, string> = {
   ask: 'Ask the operator a question and block until it is answered.',
   progress: 'Report one line of progress onto the stream thread.',
   finding: 'Record a finding ({severity, file, line?, text}) on the stream.',
-  propose_rule: 'Propose a rule for the operator to accept or reject.',
+  propose_rule:
+    'Propose a rule for the operator to accept or reject ({text, scope?, examples?: [{action, violates}], enforcement?, critical?}).',
   propose_next: 'Propose a follow-up stream ({title, goal}); a human creates it.',
   read_stream: 'Read the most recent entries of this session’s stream thread.',
   search_docs: 'Search the repo and stream docs visible to this stream.',
