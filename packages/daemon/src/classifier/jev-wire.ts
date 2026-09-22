@@ -19,16 +19,27 @@
  *    the same ids, and a Noul answer is `{ type: 'noul', noul: <number> }`.
  *  - Errors are plain HTTP status codes (401, 422, 429, 529).
  *
- * **Inferred, not from the docs:** `confidence` for a Noul. The docs are
- * explicit that "Noul answers don't carry one" — only Choice and Score
- * return a `confidence` field — but §6.3's bands need one, and the
- * confidence floor is the band that catches a shrug. A Noul is a
- * two-outcome distribution `{ yes: p, no: 1 - p }`, so we apply the docs'
- * own definition of confidence for a distribution of `n` outcomes,
- * `(n * peak - 1) / (n - 1)`, at `n = 2`: `|2p - 1|`. That is 1.0 at a
- * certain yes or no and 0.0 at a coin flip, on the same 0–1 scale as the
- * Choice and Score confidences the bands were written against. If a later
+ * **Inferred — invented here, not sourced:** `confidence` for a Noul. The
+ * docs are explicit that "Noul answers don't carry one" — only Choice and
+ * Score return a `confidence` field — but §6.3's bands need one. The docs
+ * give no general formula either: the `/confidence` page shows
+ * `(3 * peak - 1) / 2` inside a three-option interactive demo and never
+ * addresses two outcomes. `noulConfidence` generalises that demo's
+ * approximation to `n` outcomes as `(n * peak - 1) / (n - 1)` and
+ * evaluates it at `n = 2` for a Noul's `{ yes: p, no: 1 - p }`, giving
+ * `|2p - 1|`: 1.0 at a certain yes or no, 0.0 at a coin flip, on the same
+ * 0–1 scale as the Choice and Score confidences the bands were written
+ * against. That generalisation is this adapter's guess, algebraically
+ * consistent with the one case the docs show and nothing more. If a later
  * Jev version returns a Noul `confidence`, `parseJevResponse` prefers it.
+ *
+ * Known consequence for T151/T153, who own the thresholds: with this
+ * derivation `|2p - 1| >= 0.6` for every `p >= 0.80`, so a Noul-derived
+ * DENY is never below the 0.50 confidence floor — the floor cannot do the
+ * job §6.3's rationale names for it ("a probability of 0.9 with confidence
+ * 0.2 is a shrug"). It does still fire on its own for `0.25 < p < 0.40`,
+ * pulling some would-be ALLOWs into the inbox. Both effects are artefacts
+ * of the derivation, not of the bands.
  */
 
 import { ClassifierUnavailableError } from './types';
@@ -81,7 +92,7 @@ export function buildJevRequest(state: string, questions: Noul[], model = JEV_MO
   return { state, model, questions: map };
 }
 
-/** The docs' confidence definition at two outcomes. See this module's header. */
+/** The inferred two-outcome confidence. See this module's header — not a documented formula. */
 export function noulConfidence(probability: number): number {
   return Math.min(1, Math.max(0, Math.abs(2 * probability - 1)));
 }
