@@ -320,8 +320,8 @@ Build order: Phase 0 → 1 → 2 → 3 → 4 → 5 → 6. Within a phase, ticket
 
 ### Ticket: T140 Rule schema, store, and CLI
 - **Priority:** P0
-- **Status:** Todo
-- **Owner:** —
+- **Status:** In Progress
+- **Owner:** opus:worker-T140
 - **Scope:** `shared/src/rule.ts`: `Rule = { id, text, question?, scope: { kind: 'global'|'repo'|'stream', ref? }, status: 'proposed'|'accepted'|'retired', enforcement: 'pattern'|'classifier'|'guidance', pattern?: { kind: 'no_push'|'no_push_protected'|'path_deny'|'command_deny', args }, critical: boolean, examples: { action, violates: boolean }[], provenance: { stream?, session?, finding?, by }, stats: { fired, violated, routed, last_fired_at? }, created_at, decided_at?, decided_by? }`. Store with the principal split: agents may create `proposed` only; `status` and `decided_*` are human-only. `agile rules list|show|accept|retire|add`. Scope filtering is one function (`rulesInScope(stream)`) used by the brief and the hook.
 - **Acceptance Criteria:** An agent principal setting `status: accepted` is rejected. `rulesInScope` unit-tested for global/repo/stream and nested streams.
 - **Validation Steps:** `bun test packages/shared packages/daemon/src/rules`.
