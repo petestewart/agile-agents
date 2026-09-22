@@ -501,7 +501,7 @@ Build order: Phase 0 → 1 → 2 → 3 → 4 → 5 → 6. Within a phase, ticket
 
 ### Ticket: T161 Stream page
 - **Priority:** P0
-- **Status:** In Progress
+- **Status:** Done
 - **Owner:** —
 - **Scope:** Thread (streaming, markdown, thinking indicator from T051's `chat-state.ts`), a composer that writes a human line and, if a worker is attached, prompts it; sessions strip (vendor/model, attach, review, stop); diff tab (reuse `feed/diff.ts`); rules-in-scope tab; docs tab (T134); Land button with the diff-rule result. Added 2026-09-22 (Pete): inbox cards clipped at 200 chars must be readable in full; a clipped card expands in place, and clicking a card opens its stream page with the full question, gate or rule.
 - **Acceptance Criteria:** Playwright covering attach → question → answer → findings → land on one stream with the fake transport.
@@ -596,3 +596,5 @@ Daemon: `em/`, `architect/`, `oracle/`, `qa/`, `halts/`, `quota/`, `handoff/`, `
 - (T160, Pete 2026-09-22) Landing UX: `Land` on a ready card refuses with "main is checked out with uncommitted changes at <repo>" and the only remedy is the terminal. Needs improving eventually (say what's dirty, offer a fix, and don't let the daemon's own `.agile-docs/` writes be the cause). Not ticketed yet.
 - (T156) Unverified until a live call: the Jev wire field for rule criteria is guessed as `criteria` (`JEV_CRITERIA_FIELD` in `classifier/jev-wire.ts`, one place). Real agreement of the two reworded seed rules also needs a live `agile rules test`. Existing seeded rules in a state home keep their old wording until `agile rules edit`.
 - (D15) The cockpit listens on localhost with no login, so using it from a phone off the Mac needs a tunnel and auth; not in any ticket yet.
+- (T161 QA) `agile init` on a directory pre-created with `mkdir -p` once exited 2 while printing a success line. Seen once, not reproduced; outside T161 scope.
+- (T161) Gaps against §9.3 accepted for now: thread updates per message not per token; Land preflight lists diff rules but does not run them; Attach/Review use default vendor/model/effort (no picker); diffs over 20k chars truncated with no pointer; no close/archive on the stream page; thread shows the newest 500 lines. Tree click opens the stream page; inbox cards open it only via an explicit "Open stream" button (answering stays inline, §3.3).
