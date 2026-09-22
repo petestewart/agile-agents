@@ -6,8 +6,17 @@
  */
 import { describe, expect, test } from 'bun:test';
 import { parsePlanV1Decisions, seedProposal } from '@agile-agents/daemon';
+import { ruleReportRows as reportRowsFromDaemon } from '@agile-agents/daemon';
 import { type Rule, type RuleInput, ulid, validateRule } from '@agile-agents/shared';
-import { RULE_HEADERS, parseExample, parseExamples, ruleRows, showFields } from './rules';
+import {
+  RULE_HEADERS,
+  RULE_REPORT_HEADERS,
+  parseExample,
+  parseExamples,
+  ruleReportRows,
+  ruleRows,
+  showFields,
+} from './rules';
 
 function rule(over: Partial<RuleInput> = {}): Rule {
   return validateRule({
@@ -166,5 +175,62 @@ describe('rules seed (PLAN-v1 §9)', () => {
       enforcement: 'guidance',
       provenance: { by: 'seed:PLAN-v1' },
     });
+  });
+});
+
+describe('rules report table (T142, §5.7)', () => {
+  test('carries §5.7’s columns', () => {
+    expect(RULE_REPORT_HEADERS).toEqual([
+      'id',
+      'tier',
+      'status',
+      'fired',
+      'violated',
+      'routed',
+      'last_fired',
+      'flag',
+    ]);
+  });
+
+  test('one cell per column, with the flag detail and `-` for a rule that never fired', () => {
+    const rows = reportRowsFromDaemon(
+      [
+        rule({ status: 'accepted', created_at: '2026-01-01T00:00:00.000Z' }),
+        rule({
+          id: 'R-01ABCDEFGHJKMNPQRSTVWXYZ01',
+          status: 'accepted',
+          enforcement: 'classifier',
+          critical: true,
+          examples: [
+            { action: 'git push origin main', violates: true },
+            { action: 'git push origin feature', violates: false },
+          ],
+          stats: { fired: 4, violated: 2, routed: 1, last_fired_at: '2026-09-21T10:00:00.000Z' },
+        }),
+      ],
+      { now: new Date('2026-09-22T00:00:00.000Z') },
+    );
+    expect(ruleReportRows(rows)).toEqual([
+      [
+        'R-01ABCDEFGHJKMNPQRSTVWXYZ00',
+        'guidance',
+        'accepted',
+        '0',
+        '0',
+        '0',
+        '-',
+        'never fired (14 days)',
+      ],
+      [
+        'R-01ABCDEFGHJKMNPQRSTVWXYZ01',
+        'classifier!',
+        'accepted',
+        '4',
+        '2',
+        '1',
+        '2026-09-21T10:00:00.000Z',
+        '-',
+      ],
+    ]);
   });
 });

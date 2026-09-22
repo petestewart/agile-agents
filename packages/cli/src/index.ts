@@ -34,6 +34,7 @@ import {
   runRulesAccept,
   runRulesAdd,
   runRulesList,
+  runRulesReport,
   runRulesRetire,
   runRulesSeed,
   runRulesShow,
@@ -77,6 +78,7 @@ function usage(): string {
     '                             [--question "…"] [--example "<action>::<true|false>"]…   (proposes it)',
     '  rules accept <id> [--by <who>]   accept a proposed rule (human-only, D4)',
     '  rules retire <id> [--by <who>]   retire a rule (a status change; nothing is deleted)',
+    '  rules report [--days N]         per-rule fired/violated/routed counts and prune flags',
     '  rules seed --from PLAN-v1.md     import that plan\u2019s decisions as proposed rules',
     '  attach <stream> [--vendor v] [--model m] [--effort low|medium|high|max] [--role worker|reviewer]',
     '  review <stream> [--vendor v] [--model m] [--effort ...]   read-only reviewer session',
@@ -230,6 +232,7 @@ export async function runCli(argv: string[], cwd: string = process.cwd()): Promi
         if (sub === 'add') return await runRulesAdd(socketPath, ruleArgs, json, restArgv);
         if (sub === 'accept') return await runRulesAccept(socketPath, ruleArgs, json);
         if (sub === 'retire') return await runRulesRetire(socketPath, ruleArgs, json);
+        if (sub === 'report') return await runRulesReport(socketPath, ruleArgs, json);
         if (sub === 'seed') return await runRulesSeed(socketPath, ruleArgs, json);
         console.error(usage());
         return 1;

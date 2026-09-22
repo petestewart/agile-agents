@@ -45,13 +45,14 @@ async function create(text = 'prefer the repo scripts'): Promise<Rule> {
   return call<Rule>('rule.create', { text });
 }
 
-test('the method table is exactly the seven rule verbs', () => {
+test('the method table is exactly the eight rule verbs', () => {
   expect(Object.keys(methods).sort()).toEqual([
     'rule.accept',
     'rule.create',
     'rule.get',
     'rule.in_scope',
     'rule.list',
+    'rule.report',
     'rule.retire',
     'rule.update',
   ]);
