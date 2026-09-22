@@ -25,6 +25,7 @@ Target shape, in one paragraph: a **stream** is the unit (goal, status, parent, 
 - D12 (2026-09-21, Pete). Sessions carry `vendor`, `model` and `effort` chosen at attach time (`agile attach --vendor --model --effort`, and the Attach control in the sessions strip); defaults per repo, then per home. Effort is a closed enum mapped per vendor by the provider registry and ignored with a thread note where the vendor has no equivalent. Adding a vendor is one `AcpProviderConfig` entry plus a `vendors.yaml`/`config.yaml` stanza, never a code path (old design §8, still valid).
 - **D13** (T120): a stream is archived by a boolean `archived: true` on the record, not by a fifth `human.status` value; `human.status` keeps the four states the tree dot reads (§9.2). `stream.list` hides archived streams unless `include_archived`; a live child of an archived parent re-roots in the tree.
 - **D14** (2026-09-22, Pete; §6.3): a Noul has no separate confidence by design (TypeSafe docs: "There is no separate `confidence` value for a Noul"; the single value is answer and certainty in one). The three bands are the confidence handling: deny ≥ `deny_at`, allow < `allow_below`, route between. The confidence floor and the derived `|2p−1|` are removed (T156), not switched off; until T156 lands, set `classifier.bands.confidence_floor: 0`. `allow_below`/`deny_at` move only on more data (lower allow when a missed violation is costly, raise deny when a wrong block is costly). Weak rules are fixed by wording: one yes/no question per rule, yes means broken, plus `criteria` (true/false descriptions) when the line is subtle. Amends D6's "low confidence routes": the route band is the low-confidence case.
+- **D15** (2026-09-22, Pete): the cockpit stays a page served by `agiled` (§9), and becomes an installable, self-contained-feeling app eventually, at whatever point costs least without holding up implementation (T165: web app manifest first, a desktop shell only if needed and approved).
 - D11. KiroCrew is not adopted. Borrowed as designs only: hardened worktree creation, the push detector that cannot be dodged by spelling, agent-owned vs human-owned ledger fields, a fail-closed credential scrub before the external classifier, mechanical scope filtering of injected rules, an append-only log.
 
 ## 3. Non-goals for the reshape
@@ -534,6 +535,15 @@ Build order: Phase 0 → 1 → 2 → 3 → 4 → 5 → 6. Within a phase, ticket
 - **Validation Steps:** Manual.
 - **Notes:** Final milestone.
 
+### Ticket: T165 Cockpit as an installable app
+- **Priority:** P2
+- **Status:** Todo
+- **Owner:** —
+- **Scope:** Per D15. Step 1: web app manifest + icon + service worker shell so the browser installs the cockpit as its own app window (Dock/home-screen icon), no new toolchain. Step 2 (only if step 1 isn't enough for Pete): a thin desktop shell that starts `agiled` if it isn't running and opens the page in its own window, with native notifications for new inbox items. Choice of shell (Tauri vs Electron) is escalated to Pete before any code; it is a new toolchain and needs explicit approval. The daemon stays the only process that holds state; the shell holds none.
+- **Acceptance Criteria:** Step 1: Chromium reports the page installable (Playwright); installed window opens on the inbox. Step 2: defined when approved.
+- **Validation Steps:** `bun run test:e2e`; Pete installs it on his Mac.
+- **Notes:** Runs after T164 so the UI is settled; step 1 may run earlier alongside any Phase 6 ticket if a worker is idle. Phone access over the network (auth, tunnel) is out of scope; see Discovered Issues.
+
 ## 8. Deleted (must be gone from `main` by the end of Phase 6)
 
 Daemon: `em/`, `architect/`, `oracle/`, `qa/`, `halts/`, `quota/`, `handoff/`, `plan/`, `review/` rounds, `sync/` (shelved on a branch), `feed/stories.ts`, `runner/pipeline-glue.ts`, sprint parts of `merge/`, `bus/` unless the thread reuses it. CLI: `run`, `send`, `halt`, `approve`, `sync`. Shared: `Ticket`, `Sprint`, `Stanza`, `Message`, `Halt`, `Quota`, `Review`, `Qa`, `Oracle`, `Kb`, `Ledger`. Briefs: all but `worker.md`, `reviewer.md`, `lessons.md`. UI: `plan/`, `sprint/`, `review/`, `OraclePanel`. State: the `agile-state` orphan branch and per-repo `.agile/`.
@@ -585,3 +595,4 @@ Daemon: `em/`, `architect/`, `oracle/`, `qa/`, `halts/`, `quota/`, `handoff/`, `
 - (T154 QA) A detached `agiled` has no seam for injecting a `FakeClassifier`, so the classifier tier cannot be driven black-box against a real daemon: QA had to run an in-process `startDaemon` with a real socket. Everything that needs a scripted classifier through the CLI is therefore unreachable to a black-box pass, including `agile hook pre-tool-use` end to end and a routed `agile land`. Consider a test-only env var or config value naming a scripted fake, so future phase QA can drive the tier the way an operator would.
 - (T160, Pete 2026-09-22) Landing UX: `Land` on a ready card refuses with "main is checked out with uncommitted changes at <repo>" and the only remedy is the terminal. Needs improving eventually (say what's dirty, offer a fix, and don't let the daemon's own `.agile-docs/` writes be the cause). Not ticketed yet.
 - (T156) Unverified until a live call: the Jev wire field for rule criteria is guessed as `criteria` (`JEV_CRITERIA_FIELD` in `classifier/jev-wire.ts`, one place). Real agreement of the two reworded seed rules also needs a live `agile rules test`. Existing seeded rules in a state home keep their old wording until `agile rules edit`.
+- (D15) The cockpit listens on localhost with no login, so using it from a phone off the Mac needs a tunnel and auth; not in any ticket yet.
