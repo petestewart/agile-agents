@@ -387,8 +387,8 @@ Build order: Phase 0 → 1 → 2 → 3 → 4 → 5 → 6. Within a phase, ticket
 
 ### Ticket: T151 Per-action classifier check in the hook path
 - **Priority:** P0
-- **Status:** Todo
-- **Owner:** —
+- **Status:** In Progress
+- **Owner:** opus:worker-T151
 - **Scope:** `hook/decide.ts`: after pattern rules, collect accepted `classifier` rules in scope, build the state (tool name, command or path + diff, stream and repo line), one call with one Noul per rule (`rule.question` or "Does this action violate: <text>?"). Bands from `config.yaml` (defaults deny ≥ 0.80, allow < 0.40, else route; confidence < 0.50 routes). Route = `classifier_review` inbox item, session blocked until answered; the answer allows or denies and increments `stats`. Fail policy: classifier error → critical rules deny, others allow and write a `hook_unchecked` thread entry. Latency recorded per call in events.
 - **Acceptance Criteria:** Fake-classifier tests for all three bands, low confidence, error with and without a critical rule, and the opt-out; the deny reason names the rule and reaches the model (existing `permissionDecisionReason` path).
 - **Validation Steps:** `bun test packages/daemon/src/hook`; integration test with the fake agent.
@@ -396,8 +396,8 @@ Build order: Phase 0 → 1 → 2 → 3 → 4 → 5 → 6. Within a phase, ticket
 
 ### Ticket: T152 Diff-level rules at landing
 - **Priority:** P1
-- **Status:** Todo
-- **Owner:** —
+- **Status:** In Progress
+- **Owner:** opus:worker-T152
 - **Scope:** Rules may set `stage: action | diff | both` (default `action`). At land (T132), `diff` rules run once with the full stream diff (capped at the classifier's budget; larger diffs run per file and take the max) and the same bands; a deny blocks landing with the rule named; a route creates the inbox item and landing waits.
 - **Acceptance Criteria:** Fake-classifier tests for deny, allow, route, and the over-budget split.
 - **Validation Steps:** `bun test packages/daemon/src/landing`.
