@@ -416,12 +416,14 @@ Build order: Phase 0 → 1 → 2 → 3 → 4 → 5 → 6. Within a phase, ticket
 
 ### Ticket: T154 Phase 4+5 QA and Pete's look
 - **Priority:** P0
-- **Status:** In Progress
+- **Status:** Done
 - **Owner:** sonnet:qa-T154 → Pete
 - **Scope:** Black-box QA of rules, lessons, the hook bands, and landing with the fake classifier; Pete accepts a rule and watches it deny a real worker on ledger-lite with the real key.
 - **Acceptance Criteria:** QA ACCEPT; live denial observed and recorded.
 - **Validation Steps:** —
-- **Notes:** Second live milestone.
+- **Notes:** Second live milestone. QA (sonnet, FakeClassifier) ACCEPT, 0 defects. Drove `rules add/accept` refusing a classifier rule with fewer than two examples, `rules test` erroring per example and exiting 1 against an unscripted fake, then banding deny/allow correctly and exiting 0 when scripted, leaving `stats` untouched in both runs; read the §6.4 fail policy and the shared `bandFor` in full. **Coverage gaps, QA's own words:** a spawned `agiled` has no seam to inject the fake (only in-process `startDaemon` does), so `agile hook pre-tool-use` was not driven end to end live, nor an independent `agile land` with a routed diff rule, nor the Phase 4 regression scenarios re-driven live — those rest on the green suite and code reading. Waiting on Pete's live run (the real-key denial milestone).
+
+**Phase 5 verification (2026-09-22, tip ccd5049):** build, typecheck, lint clean; `bun test` 1763 pass / 2 skip / 0 fail (124 files); `test:integration` 7 suites, 0 fail. Daemon source 21665 lines (Phase 4: 19,457). QA (T154) ACCEPT, 0 defects. Phase 5 stops here for Pete's live run; Phase 6 does not start until he says go.
 
 ### Phase 6 — The cockpit
 
@@ -518,3 +520,4 @@ Daemon: `em/`, `architect/`, `oracle/`, `qa/`, `halts/`, `quota/`, `handoff/`, `
 - (T152) Pending `classifier_review` gates from a superseded diff are never closed, so stale cards accumulate in the inbox after a new commit. Verified untidy rather than unsafe: landing re-runs the check on the current diff and matches only the current fingerprint, so approving a stale card cannot merge anything. Needs `GateService.supersede(id, reason)` resolving with no decision (auto-denying would show the operator a decision they never made).
 - (T152) Commits on the T152 branch carry `Co-Authored-By: Claude Opus 5`; the worker declined the standing `Claude Fable 5.1` trailer, citing its own harness attribution instruction. Message only, not rewritten.
 - (T153 review) `landing/diff-rules.ts` raises its `classifier_review` gate without a `rule` on the record, and `wireClassifierRouteStats` guards on `resolved.rule !== undefined`, so a **denied landing route is never attributed back to its rule**: the diff tier contributes nothing to `violated`. A missing counter rather than a corrupted one (so out of T153's scope), but it undermines §5.7's pruning input for the diff tier exactly as the fixed double-count did. One line in `DiffRules.route`'s `gates.request`.
+- (T154 QA) A detached `agiled` has no seam for injecting a `FakeClassifier`, so the classifier tier cannot be driven black-box against a real daemon: QA had to run an in-process `startDaemon` with a real socket. Everything that needs a scripted classifier through the CLI is therefore unreachable to a black-box pass, including `agile hook pre-tool-use` end to end and a routed `agile land`. Consider a test-only env var or config value naming a scripted fake, so future phase QA can drive the tier the way an operator would.
