@@ -27,12 +27,28 @@ import {
   type QuestionId,
   QuestionIdSchema,
   RuleIdSchema,
+  StreamAttachRequestSchema,
+  StreamSayInputSchema,
   UlidSchema,
+  formatZodError,
   validatePolicy,
 } from '@agile-agents/shared';
 import { CONTROL_ROOM_DIST_DIR, FEED_HTML_PATH } from '@agile-agents/ui';
+import {
+  type AttachService,
+  StreamBusyError,
+  UnknownVendorError,
+  UnregisteredRepoError,
+} from './attach';
 import type { Bus } from './bus';
-import { type EventTailerHandle, buildCockpitFrame, buildSnapshot, startEventTailer } from './feed';
+import type { DocsService } from './docs';
+import {
+  type EventTailerHandle,
+  buildCockpitFrame,
+  buildSnapshot,
+  buildStreamPage,
+  startEventTailer,
+} from './feed';
 import { GateAlreadyResolvedError, GateNotFoundError, type GateService } from './gates';
 import type { InboxService } from './inbox';
 import { LandRefusedError, type LandingService } from './landing';
@@ -43,7 +59,7 @@ import {
   parseAnswerParams,
 } from './questions';
 import { RuleAlreadyDecidedError, type RulesService } from './rules';
-import type { StateStore } from './store';
+import { NotFoundError, type StateStore } from './store';
 import type { StreamService } from './streams';
 
 /**
@@ -106,6 +122,10 @@ export interface HttpServerOptions {
   rules?: RulesService;
   /** T160: the inbox's `done` cards land through it (`POST /api/streams/:id/land`). Optional. */
   landing?: LandingService;
+  /** T161: the stream page's sessions strip (attach, review, stop) and composer prompt through it. Optional. */
+  attach?: AttachService;
+  /** T161: the stream page's docs tab (T134's docs). Optional — without it the tab is empty. */
+  docs?: DocsService;
   /**
    * T025: lets a control-room POST land on the bus (`bus.send`) so every
    * write goes through the same path an agent's RPC call would and appears
@@ -375,6 +395,8 @@ interface FeedContext {
   inbox?: InboxService;
   rules?: RulesService;
   landing?: LandingService;
+  attach?: AttachService;
+  docs?: DocsService;
 }
 
 function resolveFeedContext(options: HttpServerOptions): FeedContext | undefined {
@@ -388,7 +410,93 @@ function resolveFeedContext(options: HttpServerOptions): FeedContext | undefined
     inbox: options.inbox,
     rules: options.rules,
     landing: options.landing,
+    attach: options.attach,
+    docs: options.docs,
   };
+}
+
+/**
+ * T161: the stream page's routes (cockpit design §9.3) —
+ *
+ *   GET  /api/streams/:id         the page read (`feed/stream-page.ts`)
+ *   GET  /api/streams/:id/diff    the diff tab
+ *   POST /api/streams/:id/say     the composer: a human line, and a prompt to the attached worker
+ *   POST /api/streams/:id/attach  the sessions strip's attach / review (`role: reviewer`)
+ *   POST /api/streams/:id/stop    the sessions strip's stop (a human detach)
+ *
+ * `land` is matched before this (T160). Every write is same-origin only
+ * and stamps `human`; no principal is ever read from the body (§2.2).
+ * Returns `undefined` for a path that is not one of these.
+ */
+async function handleStreamRoute(
+  req: Request,
+  url: URL,
+  feed: FeedContext | undefined,
+  sameOrigin: () => boolean,
+): Promise<Response | undefined> {
+  const match = url.pathname.match(/^\/api\/streams\/([^/]+)(?:\/(diff|say|attach|stop))?$/);
+  if (!match) return undefined;
+  const action = match[2];
+  const isGet = action === undefined || action === 'diff';
+  if (isGet ? req.method !== 'GET' : req.method !== 'POST') return undefined;
+  if (!feed?.streams) return errorResponse(503, 'streams not available');
+  const parsedId = UlidSchema.safeParse(decodeURIComponent(match[1] ?? ''));
+  if (!parsedId.success) return errorResponse(400, `invalid stream id: ${match[1]}`);
+  const id = parsedId.data;
+  if (!isGet && !sameOrigin()) return errorResponse(403, 'cross-origin request rejected');
+
+  try {
+    if (action === undefined) {
+      return jsonResponse(
+        buildStreamPage(
+          {
+            streams: feed.streams,
+            ...(feed.rules ? { rules: feed.rules } : {}),
+            ...(feed.docs ? { docs: feed.docs } : {}),
+            ...(feed.landing ? { landing: feed.landing } : {}),
+          },
+          id,
+        ),
+      );
+    }
+    if (action === 'diff') {
+      if (!feed.landing) return errorResponse(503, 'landing not available');
+      return jsonResponse(feed.landing.diff(id));
+    }
+
+    const body = await readJsonBody(req);
+    if (action === 'say') {
+      const input = StreamSayInputSchema.safeParse(body);
+      if (!input.success) return errorResponse(400, formatZodError('say', input.error));
+      if (feed.attach) return jsonResponse(await feed.attach.say(id, input.data.body), 201);
+      // No attach service: the line is still the record.
+      const entry = await feed.streams.appendThread('human', id, {
+        kind: 'line',
+        body: input.data.body,
+      });
+      return jsonResponse({ entry }, 201);
+    }
+    if (!feed.attach) return errorResponse(503, 'sessions not available');
+    if (action === 'attach') {
+      const input = StreamAttachRequestSchema.safeParse(body);
+      if (!input.success) return errorResponse(400, formatZodError('attach', input.error));
+      const result = await feed.attach.attach(id, input.data);
+      // The handle is in-process only — the wire carries the record.
+      return jsonResponse({ session: result.session, stream: result.stream }, 201);
+    }
+    const sessions = await feed.attach.stop(id, undefined, { detach: true });
+    return jsonResponse({ stopped: sessions.length > 0, sessions });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (err instanceof NotFoundError) return errorResponse(404, message);
+    if (err instanceof StreamBusyError || err instanceof LandRefusedError) {
+      return errorResponse(409, message);
+    }
+    if (err instanceof UnregisteredRepoError || err instanceof UnknownVendorError) {
+      return errorResponse(400, message);
+    }
+    return errorResponse(400, message);
+  }
 }
 
 /**
@@ -556,6 +664,11 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
             return errorResponse(400, err instanceof Error ? err.message : String(err));
           }
         }
+
+        const streamRoute = await handleStreamRoute(req, url, feed, () =>
+          isSameOriginRequest(req, srv.port ?? options.port),
+        );
+        if (streamRoute) return streamRoute;
 
         // ---- questions (T040, §17 "Control room v2") — read + raise + answer.
         if (url.pathname === '/api/questions' && req.method === 'GET') {

@@ -362,6 +362,8 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
     inbox: inboxService,
     ...(rulesService ? { rules: rulesService } : {}),
     ...(landingService ? { landing: landingService } : {}),
+    ...(attachService ? { attach: attachService } : {}),
+    ...(docsService ? { docs: docsService } : {}),
     bus,
   });
 

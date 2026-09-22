@@ -9,7 +9,15 @@
  * field this mirror doesn't have.
  */
 
-import type { Event, HilRequest, InboxItem, Question, Stream } from '@agile-agents/shared';
+import type {
+  Event,
+  HilRequest,
+  InboxItem,
+  Question,
+  Rule,
+  Stream,
+  ThreadEntry,
+} from '@agile-agents/shared';
 
 /** The project the daemon drives — the header's name, and its path on hover. */
 export interface FeedProjectInfo {
@@ -57,3 +65,51 @@ export interface CockpitFrame {
   inbox: InboxItem[];
   streams: CockpitStreamRow[];
 }
+
+/** T161: mirror of `landing/service.ts`'s `LandPreflight` — the Land button's "before". */
+export interface LandPreflight {
+  ready: boolean;
+  reason?: string;
+  branch?: string;
+  target?: string;
+  ahead?: number;
+  gated?: true;
+}
+
+/** T161: mirror of `docs/service.ts`'s `Doc`. */
+export interface StreamDoc {
+  source: 'repo' | 'stream';
+  path: string;
+  name: string;
+  body: string;
+}
+
+/** T161: mirror of `feed/stream-page.ts`'s `StreamPagePayload` (`GET /api/streams/:id`). */
+export interface StreamPagePayload {
+  stream: Stream;
+  path: string[];
+  thread: ThreadEntry[];
+  thread_total: number;
+  rules: Rule[];
+  diff_rules: string[];
+  docs: StreamDoc[];
+  land?: LandPreflight;
+}
+
+/** T161: mirror of `landing/service.ts`'s `StreamDiff` (`GET /api/streams/:id/diff`). */
+export interface StreamDiff {
+  stream: string;
+  branch: string;
+  target: string;
+  worktree?: string;
+  stat: string;
+  patch: string;
+  truncated: boolean;
+}
+
+/** T161: mirror of `landing/service.ts`'s `LandOutcome` — the Land button's "after". */
+export type LandOutcome =
+  | { status: 'gated'; gate: HilRequest; line: string }
+  | { status: 'refused'; reason: string; line: string }
+  | { status: 'blocked'; target: string; conflicts: string[]; line: string }
+  | { status: 'landed'; target: string; sha: string; line: string };

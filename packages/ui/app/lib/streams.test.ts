@@ -4,9 +4,17 @@
  */
 
 import { describe, expect, test } from 'bun:test';
-import type { InboxItem } from '@agile-agents/shared';
+import type { InboxItem, SessionRef } from '@agile-agents/shared';
 import type { CockpitStreamRow } from './feed-types';
-import { buildStreamTree, groupInbox, streamDot, subtreeIds } from './streams';
+import {
+  buildStreamTree,
+  diffLineKind,
+  groupInbox,
+  isLiveSession,
+  isThinking,
+  streamDot,
+  threadAuthorLabel,
+} from './streams';
 
 function row(id: string, extra: Partial<CockpitStreamRow> = {}): CockpitStreamRow {
   return { id, title: id, agent_status: 'idle', human_status: 'open', ...extra };
@@ -35,7 +43,7 @@ describe('streamDot', () => {
   });
 });
 
-describe('buildStreamTree / subtreeIds', () => {
+describe('buildStreamTree', () => {
   const rows = [
     row('root'),
     row('mid', { parent: 'root' }),
@@ -48,11 +56,6 @@ describe('buildStreamTree / subtreeIds', () => {
     expect(tree.map((n) => n.row.id)).toEqual(['root', 'orphan']);
     expect(tree[0]?.children[0]?.row.id).toBe('mid');
     expect(tree[0]?.children[0]?.children[0]?.row.id).toBe('leaf');
-  });
-
-  test('a subtree covers every descendant', () => {
-    expect([...subtreeIds(rows, 'root')].sort()).toEqual(['leaf', 'mid', 'root']);
-    expect([...subtreeIds(rows, 'leaf')]).toEqual(['leaf']);
   });
 });
 
@@ -75,5 +78,40 @@ describe('groupInbox', () => {
     ]);
     expect(groups.map((g) => g.label)).toEqual(['ledger / parser', 'No stream', 'ledger']);
     expect(groups[0]?.items.map((i) => i.id)).toEqual(['Q-1', 'Q-3']);
+  });
+});
+
+describe('stream page helpers (T161)', () => {
+  const session = (
+    id: string,
+    role: SessionRef['role'],
+    status: SessionRef['status'],
+  ): SessionRef => ({ id, vendor: 'claude', model: 'opus', role, status });
+
+  test('thinking means a worker or reviewer is mid-turn, not waiting on you', () => {
+    expect(isThinking({ sessions: [] })).toBe(false);
+    expect(isThinking({ sessions: [session('a', 'worker', 'running')] })).toBe(true);
+    expect(isThinking({ sessions: [session('a', 'reviewer', 'starting')] })).toBe(true);
+    expect(isThinking({ sessions: [session('a', 'worker', 'idle')] })).toBe(false);
+    expect(isThinking({ sessions: [session('a', 'lessons', 'running')] })).toBe(false);
+    expect(isLiveSession({ status: 'idle' })).toBe(true);
+    expect(isLiveSession({ status: 'stopped' })).toBe(false);
+  });
+
+  test('thread authors read as you, daemon, or the session role and vendor', () => {
+    const sessions = [session('01S', 'reviewer', 'running')];
+    expect(threadAuthorLabel('human', sessions)).toBe('you');
+    expect(threadAuthorLabel('daemon', sessions)).toBe('daemon');
+    expect(threadAuthorLabel('agent:01S', sessions)).toBe('reviewer · claude');
+    expect(threadAuthorLabel('agent:gone', sessions)).toBe('agent');
+  });
+
+  test('diff lines are classified for colouring', () => {
+    expect(diffLineKind('+++ b/x')).toBe('meta');
+    expect(diffLineKind('diff --git a/x b/x')).toBe('meta');
+    expect(diffLineKind('@@ -1 +1 @@')).toBe('hunk');
+    expect(diffLineKind('+added')).toBe('add');
+    expect(diffLineKind('-gone')).toBe('del');
+    expect(diffLineKind(' same')).toBe('ctx');
   });
 });

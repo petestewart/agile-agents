@@ -350,3 +350,30 @@ export function assertNoStreamCycle(
     current = lookupParent(current);
   }
 }
+
+/**
+ * T161: the cockpit composer's write (`POST /api/streams/:id/say`) — one
+ * human line on the thread, which also prompts the attached worker if
+ * there is one (cockpit design §9.3). The principal is stamped by the
+ * daemon; the body carries text only.
+ */
+export const StreamSayInputSchema = z
+  .object({
+    body: z.string().trim().min(1).max(THREAD_BODY_MAX_CHARS),
+  })
+  .strict();
+export type StreamSayInput = z.infer<typeof StreamSayInputSchema>;
+
+/**
+ * T161: the stream page's sessions strip (`POST /api/streams/:id/attach`).
+ * Only the two attachable roles (the `lessons` session is the daemon's).
+ */
+export const StreamAttachRequestSchema = z
+  .object({
+    role: z.enum(['worker', 'reviewer']).optional(),
+    vendor: z.string().min(1).optional(),
+    model: z.string().min(1).optional(),
+    effort: z.string().min(1).optional(),
+  })
+  .strict();
+export type StreamAttachRequest = z.infer<typeof StreamAttachRequestSchema>;

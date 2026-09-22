@@ -70,6 +70,18 @@ describe('InboxService.list', () => {
     expect(item?.ref).toBe(`questions/${q.id}.yaml`);
   });
 
+  test('T161: a clipped context carries the full text as detail; a short one carries none', async () => {
+    const text = `${'which delimiter wins in the EU exports, '.repeat(8)}TAIL?`;
+    const long = await questions.raise({ stream: child.id, raised_by: 'eng-1', text });
+    const short = await questions.raise({ stream: child.id, raised_by: 'eng-1', text: 'ok?' });
+    const items = inbox.list();
+    const longItem = items.find((i) => i.id === long.id);
+    expect(longItem?.context.length).toBeLessThanOrEqual(200);
+    expect(longItem?.context).not.toContain('TAIL?');
+    expect(longItem?.detail).toBe(text.trim());
+    expect(items.find((i) => i.id === short.id)?.detail).toBeUndefined();
+  });
+
   test('a pending gate shows; a resolved one does not', async () => {
     const gate = await gates.request('land', {
       policy: { gates: { land: 'human' }, breaker_signals: [] },

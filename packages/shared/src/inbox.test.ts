@@ -2,10 +2,12 @@ import { describe, expect, test } from 'bun:test';
 import { ulid } from './ids';
 import {
   INBOX_CONTEXT_MAX_CHARS,
+  INBOX_DETAIL_MAX_CHARS,
   INBOX_ITEM_KINDS,
   type InboxItem,
   InboxItemSchema,
   inboxContext,
+  inboxDetail,
   validateInboxItem,
 } from './inbox';
 
@@ -66,5 +68,20 @@ describe('InboxItemSchema', () => {
     // A single word longer than the budget still gets a hard cut: there is
     // no boundary to find.
     expect(inboxContext('y'.repeat(400))).toBe(`${'y'.repeat(INBOX_CONTEXT_MAX_CHARS - 1)}…`);
+  });
+
+  // T161: a clipped card must be readable in full.
+  test('detail carries the full text only when the context clipped it', () => {
+    expect(inboxDetail('a short question')).toBeUndefined();
+    expect(inboxDetail('a\n  short\n  multi-line one')).toBeUndefined();
+    const long = `${'which delimiter wins, '.repeat(15)}the end?`;
+    expect(inboxDetail(long)).toBe(long);
+    expect(inboxContext(long).length).toBeLessThanOrEqual(INBOX_CONTEXT_MAX_CHARS);
+    const huge = inboxDetail('z '.repeat(5000)) ?? '';
+    expect(huge.length).toBe(INBOX_DETAIL_MAX_CHARS);
+    expect(InboxItemSchema.safeParse(item({ detail: long })).success).toBe(true);
+    expect(
+      InboxItemSchema.safeParse(item({ detail: 'x'.repeat(INBOX_DETAIL_MAX_CHARS + 1) })).success,
+    ).toBe(false);
   });
 });

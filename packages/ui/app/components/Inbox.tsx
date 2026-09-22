@@ -1,19 +1,25 @@
 /**
  * The inbox (cockpit design §3, §9.1) — T044's "Needs you" cards, renamed
  * and re-keyed to the daemon's derived `InboxItem`s. Grouped by stream,
- * oldest first, every card answered in place: nothing here navigates.
+ * oldest first, every card answered in place.
+ *
+ * T161: a context clipped at §3.2's 200 chars carries its full text as
+ * `detail`; "Show all" expands it in place, and "Open stream" is the one
+ * deliberate navigation (the stream page shows the card with its full
+ * text, beside the thread it came from).
  *
  *  - `question`    → free text, delivered verbatim to the asking session
  *  - `gate`        → allow/deny (a `land` gate reads land/hold), with the
  *                    typed reason as the note; the text alone is a note
  *  - `rule_accept` → accept / retire
  *  - `done`        → land
- *  - `blocked`     → shown, decided on the stream page (T161)
+ *  - `blocked`     → shown, decided on the stream page
  */
 
 import type { InboxItem } from '@agile-agents/shared';
 import { useState } from 'react';
 import { answerQuestion, decideGate, decideRule, landStream, noteGate } from '../lib/api';
+import { useShell } from '../lib/shell';
 import { groupInbox } from '../lib/streams';
 import { Markdown } from './Markdown';
 
@@ -37,7 +43,21 @@ function isLandGate(item: InboxItem): boolean {
   return item.kind === 'gate' && item.context.startsWith('land:');
 }
 
-function Card({ item, onDone }: { item: InboxItem; onDone: () => void }): JSX.Element {
+/**
+ * One inbox card. `full` is the stream page's rendering: the whole text
+ * up front and no "Open stream" (it is already open).
+ */
+export function Card({
+  item,
+  onDone,
+  full = false,
+}: {
+  item: InboxItem;
+  onDone: () => void;
+  full?: boolean;
+}): JSX.Element {
+  const { select } = useShell();
+  const [expanded, setExpanded] = useState(false);
   const [draft, setDraft] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | undefined>(undefined);
@@ -64,7 +84,36 @@ function Card({ item, onDone }: { item: InboxItem; onDone: () => void }): JSX.El
       <div className="kind">
         {KIND_LABEL[item.kind]} · {waitingFor(item.ts)}
       </div>
-      <Markdown className="context" text={item.context} testId="inbox-context" />
+      <Markdown
+        className="context"
+        text={(full || expanded) && item.detail !== undefined ? item.detail : item.context}
+        testId="inbox-context"
+      />
+      {!full && (item.detail !== undefined || item.stream !== undefined) ? (
+        <div className="cr-card-links">
+          {item.detail !== undefined && (
+            <button
+              type="button"
+              className="cr-link"
+              data-testid="card-expand"
+              aria-expanded={expanded}
+              onClick={() => setExpanded((open) => !open)}
+            >
+              {expanded ? 'Show less' : 'Show all'}
+            </button>
+          )}
+          {item.stream !== undefined && (
+            <button
+              type="button"
+              className="cr-link"
+              data-testid="open-stream"
+              onClick={() => select(item.stream)}
+            >
+              Open stream
+            </button>
+          )}
+        </div>
+      ) : null}
 
       {item.kind === 'question' && (
         <form

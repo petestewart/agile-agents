@@ -36,6 +36,7 @@ import {
   type SessionRole,
   type SessionStatus,
   type Stream,
+  type ThreadEntry,
   ulid,
 } from '@agile-agents/shared';
 import { readHomeConfigFile } from '../config';
@@ -536,6 +537,32 @@ export class AttachService {
         // `runPromptTurn` already stopped the session and recorded why; the
         // exit path writes `blocked` on the stream.
       });
+  }
+
+  /**
+   * T161: the stream page's composer (cockpit design §9.3) — "writes a
+   * human line; if a worker is attached, it also prompts it. One box, two
+   * effects, no mode switch." The line is the record either way; the
+   * prompt is queued behind whatever turn the worker is in (turns are
+   * serialized in `runner/session.ts`), so a line typed mid-turn is read
+   * when that turn ends rather than refused.
+   */
+  async say(streamId: string, body: string): Promise<{ entry: ThreadEntry; prompted?: string }> {
+    const entry = await this.options.streams.appendThread('human', streamId, {
+      kind: 'line',
+      body,
+    });
+    const handle = this.handleFor(streamId, 'worker');
+    if (handle === undefined) return { entry };
+    await this.setSessionStatus(streamId, handle.sessionId, 'running').catch(() => {
+      // Best effort: the prompt below is what matters.
+    });
+    void handle
+      .prompt(`The operator says on the stream: ${body}\n\nContinue the work.`)
+      .catch(() => {
+        // `runPromptTurn` already stopped the session and recorded why.
+      });
+    return { entry, prompted: handle.sessionId };
   }
 
   /**

@@ -1,17 +1,18 @@
 /**
  * The cockpit chrome's own state (T043's shell, cut down to the cockpit in
- * T160): which view the main column shows, which stream the inbox is
- * narrowed to, and — at phone width — whether the stream-tree drawer is
- * open.
+ * T160): which view the main column shows, which stream's page is open
+ * (T161), and — at phone width — whether the stream-tree drawer is open.
  *
  * It lives in a context rather than in `App`'s props because the top bar
  * (the view switch and the drawer toggle) and the stream tree (the
- * selection) are siblings, and the inbox reads the selection.
+ * selection) are siblings, and the inbox cards open a stream too.
  */
 
 import { type PropsWithChildren, createContext, useContext, useMemo, useState } from 'react';
 
-export type ShellView = 'inbox' | 'settings';
+/** `stream` is the stream page (T161) — the stream is `selected`. */
+export type ShellView = 'inbox' | 'settings' | 'stream';
+/** The views a `?view=` deep link may name; `stream` needs an id, so it is not one. */
 export const SHELL_VIEWS: readonly ShellView[] = ['inbox', 'settings'];
 
 export function isShellView(value: string | null): value is ShellView {
@@ -21,8 +22,9 @@ export function isShellView(value: string | null): value is ShellView {
 export interface ShellValue {
   view: ShellView;
   setView(view: ShellView): void;
-  /** The stream the inbox is narrowed to (it and its descendants), or `undefined` for every stream. */
+  /** The stream whose page is open (T161), or `undefined`. */
   selected: string | undefined;
+  /** Opens a stream's page; `undefined` goes back to the whole inbox. */
   select(id: string | undefined): void;
   /** Phone width only: the stream tree is a drawer. Ignored on a wide screen, where the rail is always shown. */
   railOpen: boolean;
@@ -44,11 +46,11 @@ export function ShellProvider({
       view,
       setView,
       selected,
-      // Picking a stream is "show me what it needs": back to the inbox, and
-      // on a phone the drawer gets out of the way.
+      // T161: picking a stream opens its page (§9.3); "All streams" is the
+      // inbox. On a phone the drawer gets out of the way either way.
       select: (id) => {
         setSelected(id);
-        setView('inbox');
+        setView(id === undefined ? 'inbox' : 'stream');
         setRailOpen(false);
       },
       railOpen,

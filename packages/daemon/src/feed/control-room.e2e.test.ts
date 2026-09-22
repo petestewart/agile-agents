@@ -15,17 +15,22 @@
  */
 
 import { afterAll, describe, expect, test } from 'bun:test';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { ACP_PROVIDERS, type AcpProviderConfig } from '@agile-agents/acp-client';
 import { type Question, ulid } from '@agile-agents/shared';
 import { type Browser, type Page, chromium } from 'playwright-core';
+import { AttachService, VerbService } from '../attach';
+import { DocsService } from '../docs';
 import { GateService } from '../gates';
 import { type HttpServerHandle, startHttpServer } from '../http';
 import { InboxService } from '../inbox';
 import { runInit } from '../init';
+import { LandingService } from '../landing';
 import { QuestionService } from '../questions';
 import { RulesService } from '../rules';
+import type { FakeAgentScript } from '../runner/fake-agent';
 import { StateStore } from '../store';
 import { StreamService } from '../streams';
 import {
@@ -493,7 +498,7 @@ describe('cockpit shell (Playwright e2e)', () => {
   );
 
   browserTest(
-    'a routed call and a proposed rule are decided inline, and a stream in the tree narrows the inbox',
+    'a routed call and a proposed rule are decided inline, and a stream in the tree opens its page',
     async () => {
       const cockpit = await startCockpit();
       let page: Page | undefined;
@@ -520,10 +525,14 @@ describe('cockpit shell (Playwright e2e)', () => {
           await page.locator(`[data-id="${gate.id}"] [data-testid="inbox-context"]`).textContent(),
         ).toContain('package.json');
 
-        // Narrow to beta: only the rule card is left.
+        // T161: picking beta opens its stream page, which carries only
+        // beta's cards — the rule, not alpha's gate.
         await page.locator(`[data-testid="stream-tree"] [data-stream="${b.id}"]`).click();
+        await page.locator(`[data-testid="stream-page"][data-stream="${b.id}"]`).waitFor();
         await page.locator(`[data-id="${gate.id}"]`).waitFor({ state: 'detached' });
-        expect(await page.locator(`[data-id="${rule.id}"]`).count()).toBe(1);
+        expect(
+          await page.locator(`[data-testid="stream-needs"] [data-id="${rule.id}"]`).count(),
+        ).toBe(1);
 
         await page.locator(`[data-id="${rule.id}"] [data-testid="rule-accept"]`).click();
         await page.locator(`[data-id="${rule.id}"]`).waitFor({ state: 'detached' });
@@ -584,16 +593,398 @@ describe('cockpit shell (Playwright e2e)', () => {
         expect(box).not.toBeNull();
         expect((box?.x ?? 0) + (box?.width ?? 0)).toBeLessThanOrEqual(390);
 
-        // The top bar opens the tree; picking a stream closes it again.
+        // The top bar opens the tree; picking a stream closes it again and
+        // opens its page (T161), which fits the phone width too.
         await page.locator('[data-testid="rail-toggle"]').click();
         await page.locator('[data-testid="stream-tree"]').waitFor({ state: 'visible' });
         await page.locator(`[data-testid="stream-tree"] [data-stream="${root.id}"]`).click();
         await page.locator('[data-testid="stream-tree"]').waitFor({ state: 'hidden' });
+        await page.locator('[data-testid="stream-page"]').waitFor({ state: 'visible' });
+        const pageOverflow = (await page.evaluate(
+          'document.documentElement.scrollWidth - document.documentElement.clientWidth',
+        )) as number;
+        expect(pageOverflow).toBeLessThanOrEqual(0);
 
         await page.locator(`${card} [data-testid="answer-input"]`).fill('main');
         await page.locator(`${card} [data-testid="answer-send"]`).click();
         await page.locator(card).waitFor({ state: 'detached' });
+        await page.locator('[data-view="inbox"]').click();
         await waitForCount(page, '[data-testid="inbox-empty"]', 1);
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+});
+
+// ---- T161: the stream page (design/cockpit-design.md §9.3) ---------------
+
+const FAKE_AGENT_PATH = join(import.meta.dir, '..', 'runner', 'fake-agent.ts');
+
+function git(args: string[], cwd: string): string {
+  const result = Bun.spawnSync(['git', ...args], { cwd, stdout: 'pipe', stderr: 'pipe' });
+  if (result.exitCode !== 0) {
+    throw new Error(`git ${args.join(' ')} failed: ${new TextDecoder().decode(result.stderr)}`);
+  }
+  return new TextDecoder().decode(result.stdout).trim();
+}
+
+interface StreamCockpit {
+  home: string;
+  repo: string;
+  scratch: string;
+  store: StateStore;
+  streams: StreamService;
+  questions: QuestionService;
+  rules: RulesService;
+  verbs: VerbService;
+  attach: AttachService;
+  base: string;
+  stop(): Promise<void>;
+}
+
+/**
+ * The whole stream-page stack, wired the way `daemon.ts` wires it — attach,
+ * questions (delivering an answer by prompting the live session), verbs,
+ * docs, landing — over a real temp home and a real git repo. The one
+ * substitution is the transport: every session is `fake-agent.ts` over
+ * real ACP, the Nth attach running `scripts[N]`.
+ */
+async function startStreamCockpit(scripts: FakeAgentScript[]): Promise<StreamCockpit> {
+  const home = mkdtempSync(join(tmpdir(), 'agile-stream-e2e-'));
+  const scratch = mkdtempSync(join(tmpdir(), 'agile-stream-e2e-scratch-'));
+  const repo = mkdtempSync(join(tmpdir(), 'agile-stream-e2e-repo-'));
+  git(['init', '-q', '-b', 'main'], repo);
+  git(['config', 'user.email', 'test@example.com'], repo);
+  git(['config', 'user.name', 'Test'], repo);
+  writeFileSync(join(repo, 'README.md'), '# fixture\n');
+  writeFileSync(join(repo, '.gitignore'), '.worktrees/\n');
+  git(['add', '-A'], repo);
+  git(['commit', '-q', '-m', 'init'], repo);
+
+  const init = runInit(home);
+  const store = StateStore.open(init.stateRoot);
+  await store.putRepos({ demo: { path: repo, protected_branches: [] } });
+  const streams = new StreamService(store);
+  const gates = new GateService(store);
+  const rules = new RulesService({ store, streams });
+  const docs = new DocsService(store, streams, init.stateRoot);
+  const questions = new QuestionService(store, streams, {
+    deliver: async (session, question) => {
+      // Read lazily, exactly as `daemon.ts` does: built just below.
+      await attach.deliverAnswer(session, question);
+    },
+  });
+  let spawned = 0;
+  const providers: AcpProviderConfig[] = scripts.map((script, i) => {
+    const path = join(scratch, `script-${i}.json`);
+    writeFileSync(path, JSON.stringify(script));
+    return {
+      ...ACP_PROVIDERS.claude,
+      command: 'bun',
+      args: [FAKE_AGENT_PATH],
+      envOverrides: { AGILE_FAKE_AGENT_SCRIPT: path },
+    };
+  });
+  const attach = new AttachService({
+    store,
+    streams,
+    home,
+    provider: (_vendor, fallback) => providers[spawned++] ?? fallback,
+    docs,
+    rules,
+    questions: { listOpen: () => questions.listOpen() },
+    gates: { list: () => gates.list() },
+  });
+  const verbs = new VerbService({ store, streams, questions, docs, rules });
+  const landing = new LandingService({ store, streams, gates });
+  const inbox = new InboxService({ streams, questions, gates, rules });
+  const http = startHttpServer({
+    port: 0,
+    version: 'test',
+    stateRoot: init.stateRoot,
+    startedAt: Date.now(),
+    store,
+    gates,
+    streams,
+    questions,
+    inbox,
+    rules,
+    landing,
+    attach,
+    docs,
+    feedPollIntervalMs: 50,
+  });
+  return {
+    home,
+    repo,
+    scratch,
+    store,
+    streams,
+    questions,
+    rules,
+    verbs,
+    attach,
+    base: `http://127.0.0.1:${http.port}`,
+    async stop() {
+      await attach.stopAll();
+      await http.stop();
+      await store.flush();
+      store.close();
+      for (const dir of [home, repo, scratch]) rmSync(dir, { recursive: true, force: true });
+    },
+  };
+}
+
+/** A question well past the inbox's 200-char clip, with a tail only the full text carries. */
+const LONG_QUESTION = `The export files mix two conventions: ${'some rows quote every field and use a comma, others quote nothing and use a semicolon; '.repeat(
+  3,
+)}which delimiter should the parser treat as canonical — TAIL-MARKER-7?`;
+
+describe('stream page (Playwright e2e, T161)', () => {
+  browserTest(
+    'attach → question → answer → findings → land on one stream, with the fake transport',
+    async () => {
+      const asked = join(tmpdir(), `agile-stream-e2e-asked-${ulid()}`);
+      const reviewed = join(tmpdir(), `agile-stream-e2e-reviewed-${ulid()}`);
+      const promptLog = join(tmpdir(), `agile-stream-e2e-prompts-${ulid()}.jsonl`);
+      const worker: FakeAgentScript = {
+        logFile: promptLog,
+        turns: [
+          [
+            { type: 'agent_text', text: 'reading **the parser** now' },
+            { type: 'tool_call', toolCallId: 'read-1', title: 'read parser.ts' },
+            { type: 'wait_for_file', path: asked, timeoutMs: 60_000 },
+            { type: 'end_turn' },
+          ],
+          // The composer's line, queued behind the first turn.
+          [{ type: 'agent_text', text: 'noted: RFC 4180 quoting' }, { type: 'end_turn' }],
+          // The answer.
+          [{ type: 'agent_text', text: 'continuing with semicolon' }, { type: 'end_turn' }],
+        ],
+        steps: [{ type: 'end_turn' }],
+      };
+      const reviewer: FakeAgentScript = {
+        steps: [
+          { type: 'agent_text', text: 'reviewing the diff' },
+          { type: 'tool_call', toolCallId: 'review-1', title: 'read the diff' },
+          { type: 'wait_for_file', path: reviewed, timeoutMs: 60_000 },
+          { type: 'end_turn' },
+        ],
+      };
+      const cockpit = await startStreamCockpit([worker, reviewer]);
+      let page: Page | undefined;
+      try {
+        const stream = await cockpit.streams.create('human', {
+          title: 'CSV parser',
+          goal: 'Pick the **dialect** and implement it.',
+          repo: 'demo',
+        });
+        const rule = await cockpit.rules.create('human', {
+          text: 'run the repo scripts, never a second toolchain',
+          scope: { kind: 'stream', ref: stream.id },
+        });
+        await cockpit.rules.accept(rule.id, 'human');
+        mkdirSync(join(cockpit.home, 'streams', `${stream.id}.docs`), { recursive: true });
+        writeFileSync(
+          join(cockpit.home, 'streams', `${stream.id}.docs`, 'dialects.md'),
+          '# Dialects\n\nSemicolons in the EU exports.\n',
+        );
+
+        page = await openPage();
+        await page.goto(`${cockpit.base}/`);
+        await page.locator(`[data-testid="stream-tree"] [data-stream="${stream.id}"]`).click();
+        const root = `[data-testid="stream-page"][data-stream="${stream.id}"]`;
+        await page.locator(root).waitFor({ state: 'visible' });
+        expect(await page.locator('[data-testid="stream-title"]').textContent()).toBe('CSV parser');
+
+        // Rules in scope and docs, one click each.
+        await page.locator('.cr-tabs [data-tab="rules"]').click();
+        await page.locator(`[data-testid="rule"][data-rule="${rule.id}"]`).waitFor();
+        await page.locator('.cr-tabs [data-tab="docs"]').click();
+        await page.locator('[data-testid="doc"]', { hasText: 'dialects.md' }).waitFor();
+        await page.locator('.cr-tabs [data-tab="thread"]').click();
+
+        // ---- attach: the worker speaks onto the thread, live.
+        await page.locator('[data-testid="attach"]').click();
+        await page
+          .locator('[data-testid="session"][data-role="worker"][data-status="running"]')
+          .waitFor();
+        await page
+          .locator('[data-testid="thread-entry"][data-by="agent"]', {
+            hasText: 'reading the parser',
+          })
+          .waitFor();
+        // Markdown, not raw asterisks.
+        expect(
+          await page
+            .locator('[data-testid="thread-entry"][data-by="agent"] strong', {
+              hasText: 'the parser',
+            })
+            .count(),
+        ).toBe(1);
+        // Mid-turn: the thinking indicator is on.
+        await page.locator('[data-testid="thinking"]').waitFor({ state: 'visible' });
+
+        // ---- the composer: a human line, and a prompt to the worker.
+        await page.locator('[data-testid="composer-input"]').fill('use RFC 4180 quoting');
+        await page.locator('[data-testid="composer-send"]').click();
+        await page
+          .locator('[data-testid="thread-entry"][data-by="human"]', {
+            hasText: 'use RFC 4180 quoting',
+          })
+          .waitFor();
+
+        // ---- question: the worker asks through the `ask` verb, then ends its turn.
+        const session = cockpit.streams.get(stream.id).sessions.find((s) => s.role === 'worker');
+        expect(session).toBeDefined();
+        await waitUntil('the worker to register', () =>
+          cockpit.store.listAgents().some((a) => a.id === session?.id),
+        );
+        const { id: questionId } = await cockpit.verbs.ask({
+          session: session?.id,
+          text: LONG_QUESTION,
+        });
+        writeFileSync(asked, '');
+        // The stream page shows the question whole — the tail the inbox clips.
+        const card = `[data-testid="stream-needs"] [data-id="${questionId}"]`;
+        await page.locator(card).waitFor({ state: 'visible' });
+        expect(await page.locator(`${card} [data-testid="inbox-context"]`).textContent()).toContain(
+          'TAIL-MARKER-7',
+        );
+        // The composer's line was prompted into the worker (its queued turn ran).
+        await page
+          .locator('[data-testid="thread-entry"]', { hasText: 'noted: RFC 4180 quoting' })
+          .waitFor();
+        expect(readFileSync(promptLog, 'utf8')).toContain('use RFC 4180 quoting');
+
+        // The worker's work, committed in its worktree.
+        const worktree = cockpit.streams.get(stream.id).worktree ?? '';
+        writeFileSync(join(worktree, 'parser.ts'), 'export const DELIMITER = ";";\n');
+        git(['add', 'parser.ts'], worktree);
+        git(['commit', '-q', '-m', 'semicolon parser'], worktree);
+
+        // ---- answer, on the stream page.
+        await page.locator(`${card} [data-testid="answer-input"]`).fill('semicolon');
+        await page.locator(`${card} [data-testid="answer-send"]`).click();
+        await page.locator(card).waitFor({ state: 'detached' });
+        await page
+          .locator('[data-testid="thread-entry"]', { hasText: 'continuing with semicolon' })
+          .waitFor();
+        await waitUntil(
+          'the worker to finish',
+          () => cockpit.streams.get(stream.id).agent.status === 'done',
+        );
+        await page.locator('[data-testid="stream-status"]', { hasText: 'agent done' }).waitFor();
+        await page.locator('[data-testid="thinking"]').waitFor({ state: 'detached' });
+
+        // The diff tab: the worktree against main.
+        await page.locator('.cr-tabs [data-tab="diff"]').click();
+        await page.locator('[data-testid="diff"]', { hasText: 'parser.ts' }).waitFor();
+        expect(
+          await page
+            .locator('[data-testid="diff"] [data-line="add"]', { hasText: 'DELIMITER' })
+            .count(),
+        ).toBe(1);
+        await page.locator('.cr-tabs [data-tab="thread"]').click();
+
+        // ---- findings: Review attaches a reviewer, which reports one.
+        await page.locator('[data-testid="review"]').click();
+        await page.locator('[data-testid="session"][data-role="reviewer"]').waitFor();
+        await waitUntil('the reviewer to register', () => {
+          const reviewerSession = cockpit.streams
+            .get(stream.id)
+            .sessions.find((s) => s.role === 'reviewer');
+          return cockpit.store.listAgents().some((a) => a.id === reviewerSession?.id);
+        });
+        const reviewerId = cockpit.streams
+          .get(stream.id)
+          .sessions.find((s) => s.role === 'reviewer')?.id;
+        await cockpit.verbs.finding({
+          session: reviewerId,
+          severity: 'minor',
+          file: 'parser.ts',
+          line: 1,
+          text: 'export the delimiter as a named constant type',
+        });
+        writeFileSync(reviewed, '');
+        await page.locator('[data-testid="finding"][data-severity="minor"]').waitFor();
+        expect(await page.locator('[data-testid="finding"]').textContent()).toContain(
+          'parser.ts:1',
+        );
+        await page.locator('[data-testid="thread-entry"][data-kind="finding"]').waitFor();
+        await waitUntil('the reviewer to stop', () =>
+          cockpit.streams
+            .get(stream.id)
+            .sessions.every((s) => s.status === 'stopped' || s.status === 'error'),
+        );
+
+        // ---- land: first refused (a dirty main), the reason on the page…
+        await waitForAttr(page, '[data-testid="land-before"]', 'data-ready', 'yes');
+        writeFileSync(join(cockpit.repo, 'README.md'), '# edited by the operator\n');
+        await page.locator('[data-testid="stream-land"]').click();
+        const result = page.locator('[data-testid="land-result"]');
+        await result.waitFor({ state: 'visible' });
+        expect(await result.getAttribute('data-status')).toBe('refused');
+        expect(await result.textContent()).toContain('uncommitted changes');
+        expect(cockpit.streams.get(stream.id).human.status).toBe('open');
+
+        // …then landed once main is clean again.
+        git(['checkout', '--', 'README.md'], cockpit.repo);
+        await page.locator('[data-testid="stream-land"]').click();
+        await waitForAttr(page, '[data-testid="land-result"]', 'data-status', 'landed');
+        expect(cockpit.streams.get(stream.id).human.status).toBe('landed');
+        expect(existsSync(join(cockpit.repo, 'parser.ts'))).toBe(true);
+        await page.locator('[data-testid="stream-status"]', { hasText: 'you landed' }).waitFor();
+        await waitForAttr(
+          page,
+          `[data-testid="stream-tree"] [data-stream="${stream.id}"] .cr-dot`,
+          'data-dot',
+          'green',
+        );
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+        for (const path of [asked, reviewed, promptLog]) rmSync(path, { force: true });
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+
+  browserTest(
+    'a question over 200 chars is readable in full: the card expands in place, and its stream page shows it whole',
+    async () => {
+      const cockpit = await startCockpit();
+      let page: Page | undefined;
+      try {
+        const stream = await cockpit.streams.create('human', { title: 'import', goal: 'g' });
+        const question = await cockpit.questions.raise({
+          stream: stream.id,
+          raised_by: 'eng-1',
+          text: LONG_QUESTION,
+        });
+        expect(LONG_QUESTION.length).toBeGreaterThan(200);
+
+        page = await openPage();
+        await page.goto(`${cockpit.base}/`);
+        const card = `[data-testid="inbox"] [data-id="${question.id}"]`;
+        const context = page.locator(`${card} [data-testid="inbox-context"]`);
+        await context.waitFor({ state: 'visible' });
+        // Clipped in the list…
+        expect(await context.textContent()).not.toContain('TAIL-MARKER-7');
+        expect((await context.textContent())?.trim().endsWith('…')).toBe(true);
+        // …expanded in place, still in the list…
+        await page.locator(`${card} [data-testid="card-expand"]`).click();
+        await waitForText(page, `${card} [data-testid="inbox-context"]`, LONG_QUESTION);
+        await page.locator(`${card} [data-testid="card-expand"]`).click();
+        expect(await context.textContent()).not.toContain('TAIL-MARKER-7');
+
+        // …and whole on the stream page the card opens.
+        await page.locator(`${card} [data-testid="open-stream"]`).click();
+        const full = `[data-testid="stream-needs"] [data-id="${question.id}"] [data-testid="inbox-context"]`;
+        await waitForText(page, full, LONG_QUESTION);
       } finally {
         await teardown([page]);
         await cockpit.stop();

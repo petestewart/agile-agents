@@ -1,6 +1,8 @@
 import { describe, expect, test } from 'bun:test';
 import {
   type Stream,
+  StreamAttachRequestSchema,
+  StreamSayInputSchema,
   THREAD_BODY_MAX_CHARS,
   assertNoStreamCycle,
   assertStreamWrite,
@@ -264,5 +266,27 @@ describe('classifier opt-out (T150, cockpit design §6.4)', () => {
   test('absent means "no opt-out here" — there is no stream-level "on"', () => {
     expect(validateStream(stream()).classifier).toBeUndefined();
     expect(() => validateStream({ ...stream(), classifier: 'on' })).toThrow();
+  });
+});
+
+describe('T161 cockpit write bodies', () => {
+  test('say takes one capped body and nothing else — no principal on the wire', () => {
+    expect(StreamSayInputSchema.parse({ body: '  hi  ' }).body).toBe('hi');
+    expect(StreamSayInputSchema.safeParse({ body: '   ' }).success).toBe(false);
+    expect(
+      StreamSayInputSchema.safeParse({ body: 'x'.repeat(THREAD_BODY_MAX_CHARS + 1) }).success,
+    ).toBe(false);
+    expect(StreamSayInputSchema.safeParse({ body: 'hi', by: 'daemon' }).success).toBe(false);
+  });
+
+  test('attach takes the two attachable roles only', () => {
+    expect(StreamAttachRequestSchema.safeParse({}).success).toBe(true);
+    expect(StreamAttachRequestSchema.safeParse({ role: 'reviewer', vendor: 'codex' }).success).toBe(
+      true,
+    );
+    expect(StreamAttachRequestSchema.safeParse({ role: 'lessons' }).success).toBe(false);
+    expect(
+      StreamAttachRequestSchema.safeParse({ role: 'worker', principal: 'agent' }).success,
+    ).toBe(false);
   });
 });

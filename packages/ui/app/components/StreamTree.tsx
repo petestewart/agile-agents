@@ -1,7 +1,7 @@
 /**
  * The left rail (cockpit design §9.2): every stream, nested, each with the
- * dot that says who must act. Clicking a stream narrows the inbox to it
- * and its descendants; "All streams" clears that.
+ * dot that says who must act. Clicking a stream opens its page (T161,
+ * §9.3); "All streams" goes back to the whole inbox.
  */
 
 import type { CockpitStreamRow } from '../lib/feed-types';
@@ -19,7 +19,7 @@ function Node({ node }: { node: StreamTreeNode }): JSX.Element {
         data-stream={node.row.id}
         aria-current={selected === node.row.id ? 'true' : undefined}
         title={`${node.row.title} — ${DOT_LABEL[dot]}`}
-        onClick={() => select(selected === node.row.id ? undefined : node.row.id)}
+        onClick={() => select(node.row.id)}
       >
         <span className="cr-dot" data-dot={dot} aria-label={DOT_LABEL[dot]} />
         <span className="title">{node.row.title}</span>
