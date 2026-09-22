@@ -365,8 +365,8 @@ Build order: Phase 0 → 1 → 2 → 3 → 4 → 5 → 6. Within a phase, ticket
 
 ### Ticket: T145 ∥ Phase 4 rough edges from Pete's look
 - **Priority:** P2
-- **Status:** Todo
-- **Owner:** —
+- **Status:** In Progress
+- **Owner:** opus:worker-T145
 - **Scope:** (1) The `--help` worker never self-stopped: it raised a plain `ask` beside the gate, the gate was approved, the question stayed open, and the turn end left the session `idle` with the stream `working/open` for 11 minutes (Pete's agent detached). Resolving a gate resolves any open question from the same session raised in the same turn (thread line says so), and a turn end with an open question writes `agent.status: question`, never leaves `working`. (2) `agile rules list|show|report` print the built-in's `name` (`no_push_protected`, …) beside the id; proposals show `-`. (3) `rules report` flags `never violated` only for classifier rules; a pattern rule that fires is doing its job and is never a prune candidate. (4) The assembled brief is written to `<home>/sessions/<id>/brief.md` at attach so "what did the agent see" is auditable without the vendor's transcript. (5) `agile answer HIL-… "yes note"` (decision and note in one argument) is accepted, not a usage error.
 - **Acceptance Criteria:** Fake-agent test for (1): gate + question in one turn, `answer yes`, turn end → session stopped, stream `done`. CLI tests for (2), (3), (5); attach test reads `brief.md`.
 - **Validation Steps:** `bun test packages/daemon/src/attach packages/daemon/src/gates packages/daemon/src/rules packages/cli`; `bun run test:integration`.
@@ -378,8 +378,8 @@ Build order: Phase 0 → 1 → 2 → 3 → 4 → 5 → 6. Within a phase, ticket
 
 ### Ticket: T150 Classifier interface, fake, and Jev adapter
 - **Priority:** P0
-- **Status:** Todo
-- **Owner:** —
+- **Status:** In Progress
+- **Owner:** opus:worker-T150
 - **Scope:** `daemon/src/classifier/`: `Classifier.ask(state, questions[]) → { id, probability, confidence }[]`. `FakeClassifier` scripted per test. `JevClassifier` over `https://api.typesafe.ai` (Noul questions, one call per state, 25 s timeout, key from `config.yaml` or `TYPESAFE_API_KEY`). A credential scrub runs on the state before every call (patterns for tokens, keys, `Authorization:` headers, `.env` lines); if the scrub itself throws, nothing is sent. Per-stream `classifier: off` and per-repo default in `repos.yaml`.
 - **Acceptance Criteria:** Unit tests for the scrub (positive and negative), the timeout, and the opt-out; a recorded-fixture test for the Jev request/response shape (no network in `bun test`).
 - **Validation Steps:** `bun test packages/daemon/src/classifier`.
