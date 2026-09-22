@@ -28,6 +28,7 @@ import {
   BREAKER_SIGNALS,
   type BreakerSignal,
   type BreakerState,
+  type GateCall,
   type GateKind,
   type GateOwner,
   type HilDecision,
@@ -150,6 +151,15 @@ export interface GateRequestContext {
   requestedBy?: AgentId;
   /** What was asked — stored on the record, shown in the notice, handed to the delegate. */
   summary?: string;
+  /**
+   * T138 (design §8.1 route band): the tool call this gate blocks, and the
+   * session that made it. Both are persisted verbatim, because approving a
+   * `classifier_review` gate means "this one call, from this one session,
+   * once" — the hook matches the fingerprint again on the retry
+   * (`hook/route-band.ts`).
+   */
+  call?: GateCall;
+  session?: AgentId;
 }
 
 export class GateNotFoundError extends Error {
@@ -275,6 +285,8 @@ export class GateService {
       ...(breakerReason !== undefined ? { reason: breakerReason } : {}),
       ...(ctx.summary !== undefined ? { summary: ctx.summary } : {}),
       ...(ctx.requestedBy !== undefined ? { requested_by: ctx.requestedBy } : {}),
+      ...(ctx.call !== undefined ? { call: ctx.call } : {}),
+      ...(ctx.session !== undefined ? { session: ctx.session } : {}),
     };
 
     let record: HilRequest;
@@ -652,6 +664,18 @@ export class GateService {
       fallenThrough.push(saved);
     }
     return fallenThrough;
+  }
+
+  /**
+   * Spends an approved `classifier_review` gate's single allowed retry
+   * (T138). The allowance is once, not standing: the hook calls this in the
+   * same breath as the `allow` it renders, so a second attempt at the same
+   * call is routed again rather than waved through.
+   */
+  async consume(id: HilId): Promise<HilRequest> {
+    const current = this.get(id);
+    if (current.consumed_at !== undefined) return current;
+    return this.persist({ ...current, consumed_at: this.clock().toISOString() });
   }
 
   get(id: HilId): HilRequest {

@@ -45,12 +45,15 @@ import {
   type AgentRecord,
   MESSAGE_BODY_MAX_CHARS,
   type Message,
+  type Policy,
   type SessionRole,
 } from '@agile-agents/shared';
 import type { Bus } from '../bus';
 import { isPathInside } from '../permissions/command';
 import { NotFoundError, type StateStore, buildEvent } from '../store';
 import { decidePreToolUse } from './decide';
+import { fingerprintCall } from './fingerprint';
+import { type RouteBandGates, routeCall } from './route-band';
 import {
   type ClaudePreToolUsePayload,
   DEFAULT_MAX_READ_BYTES,
@@ -129,6 +132,14 @@ export interface HookServiceOptions {
    * needing a root at all.
    */
   repoRoot?: string;
+  /**
+   * T138: the route band (design §8.1). With a gates service wired, a
+   * `hil` verdict raises a `classifier_review` gate and the deny reason
+   * names it; without one (a unit test that only cares about the pure
+   * verdict) the call is denied outright and the model is told to ask on
+   * the stream — never allowed.
+   */
+  gates?: RouteBandGates;
   limits?: HookLimits;
   /** Injectable for tests; defaults to `node:fs.statSync`. */
   fileSize?: (path: string) => number | undefined;
@@ -339,7 +350,7 @@ export class HookService {
     ctx: { stream?: string; session?: string } | undefined,
     event: string,
     decision: HookDecision,
-    detail: { tool?: string; command?: string } = {},
+    detail: { tool?: string; command?: string; allowedBy?: string } = {},
   ): Promise<void> {
     await this.store.appendEvent(
       buildEvent('hook_decision', {
@@ -355,6 +366,10 @@ export class HookService {
           ...(decision.decision !== 'allow' && detail.command
             ? { command: detail.command.slice(0, MESSAGE_BODY_MAX_CHARS) }
             : {}),
+          // T138: this call was allowed because a human approved the gate
+          // that blocked it — the one line a post-mortem needs to tell an
+          // allow-once from a policy allow.
+          ...(detail.allowedBy !== undefined ? { allowed_by: detail.allowedBy } : {}),
         },
       }),
       { commit: 'deferred' },
@@ -398,26 +413,30 @@ export class HookService {
     }
 
     let decision = decidePreToolUse(ctx, payload);
+    let allowedBy: string | undefined;
     if (decision.decision === 'ask') {
-      // T121: an `ask` verdict used to open a durable `unblock` gate for
-      // this ticket and tell the model to wait. `unblock` is deleted with
-      // the rest of the ceremony gate kinds (cockpit design §3.1), and a
-      // gate is now raised **on a stream**, which this ticket-keyed hook
-      // has no way to name. Until T151 rebuilds this as the classifier
-      // route band — a `classifier_review` inbox item on the stream, with
-      // the session blocked until it is answered — an `ask` is a plain
-      // deny that names the rule, which is the behaviour the model already
-      // handles (`permissionDecisionReason` reaches it verbatim).
-      const why = decision.reason ?? 'never-without-human command';
-      decision = {
-        ...decision,
-        decision: 'deny',
-        reason: `${why} — ask the operator on the stream before retrying`,
-      };
+      // T138: the route band (design §8.1). `ask` is this hook's own
+      // vocabulary for "needs a human" — it never reaches the wire, because
+      // Claude under ACP cannot answer an interactive `ask`. It becomes a
+      // `classifier_review` gate in the human's inbox plus a deny the model
+      // can act on, and the human's yes lets exactly that call through once
+      // (`route-band.ts`). T121's interim was a deny that named the rule and
+      // told the model to "file a hil_request" — a verb that no longer
+      // exists, so nothing ever reached the human at all.
+      const why = decision.reason ?? 'never-without-human call';
+      const routed = await this.route(ctx, payload, why);
+      decision = { ...decision, ...routed.decision };
+      allowedBy = routed.allowedBy;
     }
 
     await this.ackAll(ctx.session as AgentId, decision.ack);
-    await this.logDecision(ctx, 'pre_tool_use', decision);
+    await this.logDecision(ctx, 'pre_tool_use', decision, {
+      ...(payload.tool_name !== undefined ? { tool: payload.tool_name } : {}),
+      ...(typeof payload.tool_input?.command === 'string'
+        ? { command: payload.tool_input.command }
+        : {}),
+      ...(allowedBy !== undefined ? { allowedBy } : {}),
+    });
 
     return {
       hookSpecificOutput: {
@@ -428,6 +447,53 @@ export class HookService {
           ? { additionalContext: decision.additionalContext }
           : {}),
       },
+    };
+  }
+
+  /**
+   * One routed (`ask`) verdict: the §8.1 route band. Without a gates
+   * service, or with a call this hook cannot fingerprint (no tool name at
+   * all), it fails closed with a plain deny — a routed call is never
+   * allowed just because the route is missing.
+   */
+  private async route(
+    ctx: HookDecisionContext,
+    payload: ClaudePreToolUsePayload,
+    why: string,
+  ): Promise<{ decision: HookDecision; allowedBy?: string }> {
+    const gates = this.options.gates;
+    const call = fingerprintCall(payload, ctx.worktreePath);
+    if (gates === undefined || call === undefined) {
+      return {
+        decision: {
+          decision: 'deny',
+          reason: `${why} — ask the operator on the stream before retrying`,
+        },
+      };
+    }
+    let policy: Policy;
+    try {
+      policy = this.store.getPolicy();
+    } catch (err) {
+      if (!(err instanceof NotFoundError)) throw err;
+      // No `policy.yaml` (a home that predates `agile init`'s default):
+      // every gate is the human's, which is what the shipped default says
+      // and the fail-safe `resolveGate` would land on anyway.
+      policy = {
+        gates: { land: 'human', rule_accept: 'human', classifier_review: 'human' },
+        breaker_signals: [],
+      };
+    }
+    const routed = await routeCall(gates, {
+      session: ctx.session,
+      stream: ctx.stream,
+      policy,
+      call,
+      reason: why,
+    });
+    return {
+      decision: routed.decision,
+      ...(routed.allowedBy !== undefined ? { allowedBy: routed.allowedBy } : {}),
     };
   }
 

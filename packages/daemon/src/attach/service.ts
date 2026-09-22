@@ -29,6 +29,7 @@ import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import type { AcpProviderConfig, spawnSession } from '@agile-agents/acp-client';
 import {
+  type HilRequest,
   type Question,
   type SessionRef,
   type SessionRole,
@@ -425,6 +426,39 @@ export class AttachService {
         // `runPromptTurn` already stopped the session and recorded why; the
         // exit path writes `blocked` on the stream.
       });
+  }
+
+  /**
+   * T138: a `classifier_review` gate was decided, and the session whose
+   * tool call it blocked is (usually) still live, mid-turn, holding after a
+   * deny. Delivery is the same prompt path T137 built for an answer — the
+   * only thing that actually makes a waiting vendor process continue. With
+   * no live session the decision stays on the thread, where the next
+   * attach's brief carries it, and the thread says so.
+   */
+  async deliverGateDecision(sessionId: string, gate: HilRequest): Promise<void> {
+    const approved = gate.decision === 'approve';
+    const note = gate.note !== undefined ? `: ${gate.note}` : '';
+    const line = approved
+      ? `${gate.id} approved${note} — retry the call now.`
+      : `${gate.id} denied${note} — do not retry it; do the work another way or ask on the stream.`;
+    const handle = [...this.live.values()]
+      .flatMap((byStream) => [...byStream.values()])
+      .find((each) => each.sessionId === sessionId);
+    if (handle === undefined) {
+      await this.options.streams.appendThread('daemon', gate.stream, {
+        kind: 'event',
+        body: `gate decision recorded with no live session (${sessionId}): ${line}`.slice(0, 800),
+        ref: sessionId,
+      });
+      return;
+    }
+    await this.setSessionStatus(gate.stream, sessionId, 'running').catch(() => {
+      // Best effort: the prompt below is what matters.
+    });
+    void handle.prompt(`${line}\n\nContinue the work.`).catch(() => {
+      // `runPromptTurn` already stopped the session and recorded why.
+    });
   }
 
   /** The exit path: what the session's end means for the stream (§2.3). */
