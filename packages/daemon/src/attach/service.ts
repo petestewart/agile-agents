@@ -29,6 +29,7 @@ import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import type { AcpProviderConfig, spawnSession } from '@agile-agents/acp-client';
 import {
+  type Question,
   type SessionRef,
   type SessionRole,
   type SessionStatus,
@@ -87,6 +88,15 @@ export function liveSession(stream: Stream, role: SessionRole = 'worker'): Sessi
   );
 }
 
+/**
+ * The slice of `QuestionService` the turn-end rule needs (T137): what is
+ * still open. A turn that ends while this session has an open question is
+ * a session waiting for an answer, not a finished worker.
+ */
+export interface OpenQuestionsSource {
+  listOpen(): Question[];
+}
+
 /** The slice of T134's `DocsService` the brief needs: the docs a stream sees. */
 export interface BriefDocsSource {
   docsForStream(streamId: string): BriefDoc[];
@@ -94,6 +104,11 @@ export interface BriefDocsSource {
 
 export interface AttachOptions extends AttachFlags {
   role?: SessionRole;
+}
+
+/** T137: `detach: true` marks this stop as the human pulling the plug, not a shutdown. */
+export interface StopOptions {
+  detach?: boolean;
 }
 
 export interface AttachResult {
@@ -113,6 +128,8 @@ export interface AttachServiceOptions {
   cliBin?: string | CliInvocation;
   /** T134's `DocsService` (or any read side shaped like it) — supplies the brief's docs. */
   docs?: BriefDocsSource;
+  /** T137: the open questions, for the turn-end rule. Read lazily — `daemon.ts` wires both directions. */
+  questions?: OpenQuestionsSource;
   /** Test seam: inject a fake `spawnSession`. */
   spawn?: typeof spawnSession;
   /** Test seam: override the provider the resolved vendor maps to (the fake-agent transport). */
@@ -126,6 +143,16 @@ export class AttachService {
     ['worker', new Map()],
     ['reviewer', new Map()],
   ]);
+
+  /**
+   * The exit handling for each live session, so `stop()` resolves only
+   * once the exit path has finished writing (T137: `detach` prints and
+   * leaves `idle`, which is written on that path).
+   */
+  private readonly exitHandled = new Map<string, Promise<void>>();
+
+  /** Sessions being stopped by `agile detach` — the exit path writes `idle`, not `done`. */
+  private readonly detaching = new Set<string>();
 
   constructor(private readonly options: AttachServiceOptions) {}
 
@@ -269,6 +296,9 @@ export class AttachService {
       ...(this.options.cliBin !== undefined ? { cliBin: this.options.cliBin } : {}),
       ...(this.options.socketPath !== undefined ? { socketPath: this.options.socketPath } : {}),
       ...(this.options.now !== undefined ? { now: this.options.now } : {}),
+      onTurnEnd: () => {
+        void this.onTurnEnd(stream.id, sessionId, role);
+      },
     });
     this.handles(role).set(stream.id, handle);
     await this.setSessionStatus(stream.id, sessionId, 'running');
@@ -276,8 +306,11 @@ export class AttachService {
     // How many findings the stream already carried, so the reviewer's exit
     // line can report the ones *this* review produced (§4.2).
     const findingsBefore = streams.get(stream.id).agent.findings?.length ?? 0;
-    void handle.exited.then((info) =>
-      this.onExit(info.stream, sessionId, info.reason, info.ok, role, findingsBefore),
+    this.exitHandled.set(
+      sessionId,
+      handle.exited.then((info) =>
+        this.onExit(info.stream, sessionId, info.reason, info.ok, role, findingsBefore),
+      ),
     );
 
     return { session, stream: streams.get(stream.id), handle };
@@ -320,6 +353,80 @@ export class AttachService {
     }));
   }
 
+  /** The open question this session is waiting on, if any (T137). */
+  private openQuestionFor(streamId: string, sessionId: string): Question | undefined {
+    try {
+      return this.options.questions
+        ?.listOpen()
+        .find((question) => question.stream === streamId && question.session === sessionId);
+    } catch {
+      // The questions dir is gone (the home was torn down) — treat it as
+      // "nothing open", which ends the session rather than stranding it.
+      return undefined;
+    }
+  }
+
+  /**
+   * What the end of a prompt turn means (T137, §2.3). A turn that ends
+   * while this session has an open question is a session *waiting*: it
+   * stays alive, `SessionRef.status` goes `idle` and the stream keeps
+   * `agent.status: question` until the answer is prompted in. A turn that
+   * ends with nothing open is a worker (or a reviewer) that is finished,
+   * so the session is stopped and the exit path — the single writer of
+   * `done`/`blocked` — records it.
+   */
+  private async onTurnEnd(streamId: string, sessionId: string, role: SessionRole): Promise<void> {
+    const handle = this.handles(role).get(streamId);
+    if (handle === undefined || handle.sessionId !== sessionId) return;
+    if (this.openQuestionFor(streamId, sessionId) !== undefined) {
+      try {
+        await this.setSessionStatus(streamId, sessionId, 'idle');
+      } catch {
+        // The stream is gone; the exit path below is what cleans up.
+      }
+      return;
+    }
+    handle.stop();
+  }
+
+  /**
+   * T137: delivery is a prompt. The answer goes into the live session as a
+   * fresh turn, which is the only thing that actually makes the waiting
+   * vendor process continue — the live run (2026-09-21) sat idle for 19
+   * minutes because the answer was written to a mailbox nothing reads.
+   * With no live session the answer stays on the thread, where the next
+   * attach's brief carries it, and the thread says so.
+   */
+  async deliverAnswer(sessionId: string, question: Question): Promise<void> {
+    const handle = [...this.live.values()]
+      .flatMap((byStream) => [...byStream.values()])
+      .find((each) => each.sessionId === sessionId);
+    if (handle === undefined) {
+      await this.options.streams.appendThread('daemon', question.stream, {
+        kind: 'event',
+        body: `answer recorded with no live session (${sessionId}); the next attach's brief carries it`.slice(
+          0,
+          800,
+        ),
+        ref: sessionId,
+      });
+      return;
+    }
+    await this.setSessionStatus(question.stream, sessionId, 'running').catch(() => {
+      // Best effort: the prompt below is what matters.
+    });
+    void handle
+      .prompt(
+        `Answer to your question "${question.text}" from ${question.answered_by ?? 'human'}: ${
+          question.answer ?? ''
+        }\n\nContinue the work.`,
+      )
+      .catch(() => {
+        // `runPromptTurn` already stopped the session and recorded why; the
+        // exit path writes `blocked` on the stream.
+      });
+  }
+
   /** The exit path: what the session's end means for the stream (§2.3). */
   private async onExit(
     streamId: string,
@@ -331,8 +438,26 @@ export class AttachService {
   ): Promise<void> {
     const handles = this.handles(role);
     if (handles.get(streamId)?.sessionId === sessionId) handles.delete(streamId);
+    const detached = this.detaching.delete(sessionId);
+    // The map only tracks live sessions; `stop()` already holds the
+    // promise it awaits, so dropping it here cannot lose a write.
+    this.exitHandled.delete(sessionId);
     try {
       await this.setSessionStatus(streamId, sessionId, ok ? 'stopped' : 'error');
+      // T137: a human pulled the plug. The stream produced nothing, so it
+      // goes back to `idle` — writing `done` would claim work was finished
+      // by the very act of killing it.
+      if (detached) {
+        if (role === 'worker') {
+          await this.options.streams.update('daemon', streamId, { agent: { status: 'idle' } });
+        }
+        await this.options.streams.appendThread('daemon', streamId, {
+          kind: 'event',
+          body: `${role} detached by human`,
+          ref: sessionId,
+        });
+        return;
+      }
       if (role === 'reviewer') {
         await this.onReviewerExit(streamId, sessionId, reason, findingsBefore);
         return;
@@ -407,18 +532,31 @@ export class AttachService {
   /**
    * Stops the live sessions on a stream — one role, or every role when no
    * role is named (`agile detach <stream>` means "stop what is running on
-   * this stream", reviewer included). Resolves once they have exited.
+   * this stream", reviewer included). Resolves once they have exited *and*
+   * the exit path has written, and returns the session ids it stopped, so
+   * `agile detach` can print them (T137).
    */
-  async stop(streamId: string, role?: SessionRole): Promise<void> {
+  async stop(streamId: string, role?: SessionRole, options: StopOptions = {}): Promise<string[]> {
     const roles = role !== undefined ? [role] : [...this.live.keys()];
+    const stopped: string[] = [];
     await Promise.all(
       roles.map(async (each) => {
         const handle = this.handles(each).get(streamId);
         if (handle === undefined) return;
+        stopped.push(handle.sessionId);
+        // Captured before the stop: the exit path deletes its own entry.
+        const handled = this.exitHandled.get(handle.sessionId);
+        // T137: the exit path must read this as a detach, not as a worker
+        // that finished, before anything can resolve `exited`.
+        if (options.detach === true) this.detaching.add(handle.sessionId);
         handle.stop();
         await handle.exited;
+        // Resolve only once the exit path has written: `agile detach`
+        // prints from the RPC result, which must already be true on disk.
+        await handled;
       }),
     );
+    return stopped;
   }
 
   /** Stops every live session — the daemon's own shutdown path. */
