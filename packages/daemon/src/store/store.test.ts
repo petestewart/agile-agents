@@ -11,9 +11,11 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
+  type RuleInput,
   TICKET_TRANSITIONS,
   type Ticket,
   type TicketStatus,
+  ulid,
   validateTicket,
 } from '@agile-agents/shared';
 import { runInit } from '../init';
@@ -210,5 +212,137 @@ describe('Policy / Vendors singletons', () => {
       claude: { accounts: [{ id: 'default', auth: 'subscription' }] },
     } as never);
     expect(store.listEvents()[0]?.kind).toBe('vendors_put');
+  });
+});
+
+/**
+ * T140 (cockpit design §5): `rules/R-<ulid>.yaml`, and the two structural
+ * checks the store is the one place to apply — the principal split (**D4**)
+ * and the tier invariants (§5.2/§5.6).
+ */
+describe('Rules (T140): rules/R-<ulid>.yaml in the state home', () => {
+  function ruleInput(over: Partial<RuleInput> = {}): RuleInput {
+    return {
+      id: `R-${ulid()}`,
+      text: 'prefer the repo scripts over a second toolchain',
+      scope: { kind: 'global' },
+      status: 'proposed',
+      enforcement: 'guidance',
+      critical: false,
+      provenance: { by: 'human' },
+      stats: {},
+      created_at: '2026-09-22T00:00:00.000Z',
+      ...over,
+    };
+  }
+
+  test('an untouched home lists no rules', () => {
+    expect(StateStore.open(stateRoot).listRules()).toEqual([]);
+  });
+
+  test('createRule writes the record, mints rule_put and is readable back', async () => {
+    const store = StateStore.open(stateRoot);
+    const created = await store.createRule('human', ruleInput());
+    expect(existsSync(join(stateRoot, 'rules', `${created.id}.yaml`))).toBe(true);
+    expect(store.getRule(created.id).text).toBe('prefer the repo scripts over a second toolchain');
+    expect(store.hasRule(created.id)).toBe(true);
+    expect(lastEventKind()).toBe('rule_put');
+    const event = StateStore.open(stateRoot).listEvents().at(-1);
+    expect(event?.data).toEqual({
+      id: created.id,
+      status: 'proposed',
+      enforcement: 'guidance',
+      scope: 'global',
+      principal: 'human',
+    });
+  });
+
+  test('a stream-scoped rule event carries the stream scope', async () => {
+    const store = StateStore.open(stateRoot);
+    const stream = ulid();
+    await store.createRule('human', ruleInput({ scope: { kind: 'stream', ref: stream } }));
+    expect(StateStore.open(stateRoot).listEvents().at(-1)?.stream).toBe(stream);
+  });
+
+  test('listRules sorts by id (ULIDs sort by time)', async () => {
+    const store = StateStore.open(stateRoot);
+    const first = await store.createRule('human', ruleInput());
+    const second = await store.createRule('human', ruleInput());
+    expect(store.listRules().map((r) => r.id)).toEqual([first.id, second.id].sort());
+  });
+
+  test('an unknown rule is a NotFoundError; a bad id never reaches a path', () => {
+    const store = StateStore.open(stateRoot);
+    expect(() => store.getRule(`R-${ulid()}`)).toThrow(NotFoundError);
+    expect(() => store.getRule('../../etc/passwd')).toThrow(/must look like R-<ulid>/);
+    expect(() => store.getRule('RULE-012')).toThrow(/must look like R-<ulid>/);
+  });
+
+  test('a duplicate id is refused', async () => {
+    const store = StateStore.open(stateRoot);
+    const input = ruleInput();
+    await store.createRule('human', input);
+    await expect(store.createRule('human', input)).rejects.toThrow(/already exists/);
+  });
+
+  // The acceptance criterion: an agent principal setting `status: accepted`
+  // is rejected, in both directions (on create and on update).
+  test('an agent principal may create only a proposed rule', async () => {
+    const store = StateStore.open(stateRoot);
+    await expect(store.createRule('agent', ruleInput({ status: 'accepted' }))).rejects.toThrow(
+      /may only create a proposed rule/,
+    );
+    const proposed = await store.createRule('agent', ruleInput());
+    expect(proposed.status).toBe('proposed');
+  });
+
+  test('an agent principal setting status: accepted on an existing rule is rejected', async () => {
+    const store = StateStore.open(stateRoot);
+    const rule = await store.createRule('agent', ruleInput());
+    await expect(
+      store.updateRule('agent', rule.id, (before) => ({ ...before, status: 'accepted' })),
+    ).rejects.toThrow(/may not change status/);
+    // and nothing was written
+    expect(store.getRule(rule.id).status).toBe('proposed');
+  });
+
+  test('a human accept mints rule_decided and lands on disk', async () => {
+    const store = StateStore.open(stateRoot);
+    const rule = await store.createRule('agent', ruleInput());
+    const accepted = await store.updateRule(
+      'human',
+      rule.id,
+      (before) => ({
+        ...before,
+        status: 'accepted',
+        decided_at: '2026-09-22T01:00:00.000Z',
+        decided_by: 'pete',
+      }),
+      { kind: 'rule_decided' },
+    );
+    expect(accepted.status).toBe('accepted');
+    expect(StateStore.open(stateRoot).getRule(rule.id).decided_by).toBe('pete');
+    expect(lastEventKind()).toBe('rule_decided');
+  });
+
+  test('the tier invariants are refused at the store, not only at the edge', async () => {
+    const store = StateStore.open(stateRoot);
+    await expect(store.createRule('human', ruleInput({ enforcement: 'pattern' }))).rejects.toThrow(
+      /must carry a pattern/,
+    );
+    const classifier = await store.createRule(
+      'human',
+      ruleInput({ enforcement: 'classifier', examples: [{ action: 'a', violates: true }] }),
+    );
+    await expect(
+      store.updateRule('human', classifier.id, (before) => ({ ...before, status: 'accepted' })),
+    ).rejects.toThrow(/at least 2 examples/);
+  });
+
+  test('a corrupt rule file is refused with its path', async () => {
+    const store = StateStore.open(stateRoot);
+    const rule = await store.createRule('human', ruleInput());
+    writeFileSync(join(stateRoot, 'rules', `${rule.id}.yaml`), 'status: nonsense\n');
+    expect(() => StateStore.open(stateRoot).getRule(rule.id)).toThrow(/corrupt rule file/);
   });
 });
