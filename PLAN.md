@@ -347,8 +347,8 @@ Build order: Phase 0 → 1 → 2 → 3 → 4 → 5 → 6. Within a phase, ticket
 
 ### Ticket: T143 Built-in pattern rules
 - **Priority:** P0
-- **Status:** Todo
-- **Owner:** —
+- **Status:** In Progress
+- **Owner:** opus:worker-T143
 - **Scope:** Global rules created on first daemon start: `no_push_protected` (accepted, critical, pattern; branches from `repos.yaml`), `no_push` (retired by default, pattern), `no_worktree_escape` (accepted, critical: no writes outside the session's worktree). The push detector is anchored on the git subcommand (not a substring), handles `-c`/`-C` prefixes, subshell and pipe glue, `$(echo git) push` forms fail closed; a push to an explicit non-protected branch is allowed; a bare `git push` is resolved against the checked-out branch's upstream, and denied if unresolvable.
 - **Acceptance Criteria:** A table-driven test of ≥ 30 command strings (allow/deny) including the evasion forms; `git stash push` and `git log --grep push` allowed; a merge into a protected branch inside the worktree (`git checkout main && git merge`) is denied by the same rule.
 - **Validation Steps:** `bun test packages/daemon/src/hook`.
