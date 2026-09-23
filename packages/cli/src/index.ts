@@ -21,6 +21,7 @@ import {
   runDaemonForeground,
   runDaemonStart,
   runDaemonStop,
+  withClassifierStatus,
 } from './commands/daemon';
 import { runBreakerClear, runGateList } from './commands/gate';
 import { parseHookArgs, runHook } from './commands/hook';
@@ -75,12 +76,15 @@ function usage(): string {
     '  stream archive <id>        hide from `stream list` (nothing moves on disk)',
     '  stream say <id> <text>     append one human line to the stream thread',
     '  rules list [--status proposed|accepted|retired] [--scope global|repo:<n>|stream:<id>]',
-    '  rules show <id>            one rule: tier, scope, provenance, stats, examples',
+    '  rules show <id>            one rule: tier, scope, pattern, provenance, stats, examples',
     '  rules add --text "…" [--scope …] [--enforcement pattern|classifier|guidance] [--critical]',
     '                             [--question "…"] [--criteria-true "…" --criteria-false "…"]',
-    '                             [--example "<action>::<true|false>"]…   (proposes it)',
+    '                             [--pattern no_push|no_push_protected|path_deny|command_deny [--pattern-arg …]…]',
+    '                             [--example "<action>::<true|false>"]…   (proposes it; at most 20 examples)',
+    '                             --enforcement pattern needs --pattern (path_deny args: globs; command_deny: tokens)',
     '  rules edit <id> [--text …] [--question …] [--criteria-true … --criteria-false …]',
-    '                             [--enforcement …] [--stage …] [--example "a::true" …]',
+    '                             [--enforcement …] [--stage …] [--pattern <kind> [--pattern-arg …]…]',
+    '                             [--example "a::true" …]   (--example replaces the list)',
     '  rules accept <id> [--by <who>]   accept a proposed rule (human-only, D4)',
     '  rules retire <id> [--by <who>]   retire a rule (a status change; nothing is deleted)',
     '  rules report [--days N]         per-rule fired/violated/routed counts and prune flags',
@@ -92,7 +96,7 @@ function usage(): string {
     '  land <stream>              merge the stream branch into its target, close the stream, remove the worktree',
     '  daemon start               start agiled detached (pidfile + log in the state home)',
     '  daemon stop                stop the running agiled',
-    '  daemon status              is agiled running? pid, port, socket, home',
+    '  daemon status              is agiled running? pid, port, socket, home, classifier key loaded?',
     '  status                     daemon, streams and what is waiting on you',
     '  tail                       tail the event log (--follow, --stream, --kind, --session)',
     '  gate list                  list open HIL requests',
@@ -152,7 +156,7 @@ export async function runCli(argv: string[], cwd: string = process.cwd()): Promi
         return 0;
       }
       if (sub === 'status') {
-        const report = daemonStatusReport();
+        const report = await withClassifierStatus(daemonStatusReport());
         if (json) console.log(JSON.stringify(report, null, 2));
         else console.log(formatDaemonStatus(report));
         return report.running ? 0 : 1;

@@ -86,6 +86,8 @@ export const EVENT_KINDS = [
   'repos_put',
   'vendors_put',
   'policy_put',
+  /** T167: `<home>/config.yaml` rewritten (the cockpit's classifier key). Carries no data — never the key. */
+  'home_config_put',
   'entity_put',
   'entity_deleted',
 

@@ -69,6 +69,7 @@ describe('Event — cockpit design §7.4 log/events.jsonl', () => {
     'repos_put',
     'vendors_put',
     'policy_put',
+    'home_config_put',
     'entity_put',
     'entity_deleted',
     'message',
@@ -78,7 +79,7 @@ describe('Event — cockpit design §7.4 log/events.jsonl', () => {
   });
 
   test('the enum holds exactly the kinds listed above — nothing orphaned', () => {
-    expect(EVENT_KINDS).toHaveLength(24);
+    expect(EVENT_KINDS).toHaveLength(25);
   });
 
   test('a stream event carries {stream} plus the status pair in data', () => {

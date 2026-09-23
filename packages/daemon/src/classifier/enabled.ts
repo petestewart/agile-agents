@@ -38,5 +38,5 @@ export function classifierEnabled(input: ClassifierEnabledInput): boolean {
   if (input.repo?.classifier === 'off') return false;
   if (input.config.provider === 'off') return false;
   const env = input.env ?? process.env;
-  return (input.config.api_key ?? env[TYPESAFE_API_KEY_ENV]) !== undefined;
+  return (input.config.api_key ?? (env[TYPESAFE_API_KEY_ENV] || undefined)) !== undefined;
 }

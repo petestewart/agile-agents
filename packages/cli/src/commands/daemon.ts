@@ -24,6 +24,8 @@ import {
   resolveHomePaths,
   startDaemon,
 } from '@agile-agents/daemon';
+import type { ClassifierKeyStatus } from '@agile-agents/shared';
+import { callRpc } from '../client';
 
 /** How long `start` waits for the child to write its pidfile before giving up. */
 const START_TIMEOUT_MS = 20_000;
@@ -216,6 +218,39 @@ export interface DaemonStatusReport {
   socketPath: string;
   pidPath: string;
   logPath: string;
+  /** T167: from the running daemon's `daemon.status` — the key's source, never the key. */
+  classifier?: ClassifierKeyStatus;
+}
+
+/**
+ * T167: asks the running daemon where its classifier key comes from. A
+ * daemon that does not answer in time leaves the line out rather than
+ * failing `status`, which is about the pidfile first.
+ */
+export async function withClassifierStatus(
+  report: DaemonStatusReport,
+): Promise<DaemonStatusReport> {
+  if (!report.running) return report;
+  try {
+    const status = await callRpc<{ classifier?: ClassifierKeyStatus }>(
+      report.socketPath,
+      'daemon.status',
+      {},
+      { timeoutMs: 2000 },
+    );
+    return status.classifier ? { ...report, classifier: status.classifier } : report;
+  } catch {
+    return report;
+  }
+}
+
+/** `classifier key: loaded (from config.yaml)` · `classifier key: none loaded` — never the key. */
+export function formatClassifierKeyLine(status: ClassifierKeyStatus): string {
+  if (status.source === 'none')
+    return 'classifier key: none loaded (set one in Settings or TYPESAFE_API_KEY)';
+  const from = status.source === 'config' ? 'config.yaml' : 'TYPESAFE_API_KEY';
+  if (!status.loaded) return `classifier key: present (from ${from}) but provider is off`;
+  return `classifier key: loaded (from ${from})`;
 }
 
 export function daemonStatusReport(home?: string): DaemonStatusReport {
@@ -236,8 +271,8 @@ export function daemonStatusReport(home?: string): DaemonStatusReport {
 export function formatDaemonStatus(report: DaemonStatusReport): string {
   const home = `home: ${report.home}`;
   if (!report.running) return `${home}\nagiled is not running`;
-  return (
+  const running =
     `${home}\nagiled running: pid=${report.pid} http=http://127.0.0.1:${report.port} ` +
-    `socket=${report.socketPath}`
-  );
+    `socket=${report.socketPath}`;
+  return report.classifier ? `${running}\n${formatClassifierKeyLine(report.classifier)}` : running;
 }

@@ -51,7 +51,7 @@ export interface JevClassifierOptions {
 
 export class JevClassifier implements Classifier {
   private readonly config: ClassifierConfig;
-  private readonly apiKey: string | undefined;
+  private readonly env: Record<string, string | undefined>;
   private readonly fetchImpl: typeof globalThis.fetch;
   private readonly now: () => number;
   private readonly scrub: (state: string) => string;
@@ -59,12 +59,21 @@ export class JevClassifier implements Classifier {
 
   constructor(options: JevClassifierOptions) {
     this.config = options.config;
-    const env = options.env ?? process.env;
-    this.apiKey = options.config.api_key ?? env[TYPESAFE_API_KEY_ENV] ?? undefined;
+    this.env = options.env ?? process.env;
     this.fetchImpl = options.fetch ?? globalThis.fetch;
     this.now = options.now ?? Date.now;
     this.scrub = options.scrub ?? defaultScrub;
     this.onCall = options.onCall;
+  }
+
+  /**
+   * Read on every call, not captured at construction (T167): the cockpit's
+   * Settings screen sets or removes `classifier.api_key` on the daemon's
+   * own config object, and the next call must see it without a restart.
+   */
+  private get apiKey(): string | undefined {
+    // An empty env var is no key (a shell that exported `TYPESAFE_API_KEY=`).
+    return this.config.api_key ?? (this.env[TYPESAFE_API_KEY_ENV] || undefined);
   }
 
   /**

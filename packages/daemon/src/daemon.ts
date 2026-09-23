@@ -16,7 +16,7 @@ import { existsSync } from 'node:fs';
 import daemonPackageJson from '../package.json' with { type: 'json' };
 import { AttachService, VerbService, buildAttachRpcMethods } from './attach';
 import { Bus, buildBusRpcMethods } from './bus';
-import { type Classifier, JevClassifier } from './classifier';
+import { type Classifier, ClassifierKeyService, JevClassifier } from './classifier';
 import { type AgileConfig, type DiscoverConfigOptions, discoverConfig } from './config';
 import { DocsService, buildDocsRpcMethods } from './docs';
 import { GateService, buildGateRpcMethods } from './gates';
@@ -293,6 +293,12 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
       : undefined;
   gateTimer?.unref();
 
+  // T167: the key behind Settings and "Test examples" — mutates
+  // `config.classifier` in place, which every key reader shares.
+  const classifierKey = store
+    ? new ClassifierKeyService({ config: config.classifier, store })
+    : undefined;
+
   // §5.6's evals, shared by `rule.test` and the cockpit's "Test examples" (T163).
   const ruleEvals = store
     ? {
@@ -365,6 +371,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
     inbox: inboxService,
     ...(rulesService ? { rules: rulesService } : {}),
     ...(rulesService && ruleEvals ? { ruleEvals } : {}),
+    ...(classifierKey ? { classifierKey } : {}),
     ...(landingService ? { landing: landingService } : {}),
     ...(attachService ? { attach: attachService } : {}),
     ...(docsService ? { docs: docsService } : {}),
@@ -402,6 +409,9 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
       stateRoot: config.stateRoot,
       startedAt,
       extraMethods,
+      // T167: `agile daemon status` says whether a key is loaded — its
+      // source, never the key.
+      ...(classifierKey ? { classifierStatus: () => classifierKey.status() } : {}),
     });
     await rpc.listening;
   } catch (err) {

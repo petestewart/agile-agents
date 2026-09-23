@@ -227,7 +227,7 @@ describe('create (a proposal, whoever calls it)', () => {
 
   test('a pattern rule without a pattern is refused', async () => {
     await expect(rules.create('human', { text: 'x', enforcement: 'pattern' })).rejects.toThrow(
-      /must carry a pattern/,
+      /a pattern rule needs a pattern/,
     );
   });
 });

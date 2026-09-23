@@ -25,10 +25,11 @@ import {
   type Question,
   type Rule,
   ulid,
+  validateClassifierConfig,
 } from '@agile-agents/shared';
 import { type Browser, type Page, chromium } from 'playwright-core';
 import { AttachService, VerbService } from '../attach';
-import { FakeClassifier } from '../classifier';
+import { ClassifierKeyService, FakeClassifier } from '../classifier';
 import { DocsService } from '../docs';
 import { GateService } from '../gates';
 import { type HttpServerHandle, startHttpServer } from '../http';
@@ -354,6 +355,15 @@ async function waitUntil(what: string, check: () => boolean): Promise<void> {
   }
 }
 
+/** T167: `waitUntil` for a condition that needs the page (an async read). */
+async function waitUntilAsync(what: string, check: () => Promise<boolean>): Promise<void> {
+  const deadline = Date.now() + POLL_DEADLINE_MS;
+  while (!(await check())) {
+    if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
+    await Bun.sleep(50);
+  }
+}
+
 interface Cockpit {
   home: string;
   store: StateStore;
@@ -373,7 +383,9 @@ interface Cockpit {
  * server over it, the way `startDaemon` wires them (`daemon.ts`), minus
  * the RPC socket and the vendor runner this suite never uses.
  */
-async function startCockpit(extra: { ruleEvals?: RuleRpcEvalDeps } = {}): Promise<Cockpit> {
+async function startCockpit(
+  extra: { ruleEvals?: RuleRpcEvalDeps; classifierKey?: boolean } = {},
+): Promise<Cockpit> {
   const home = mkdtempSync(join(tmpdir(), 'agile-cockpit-e2e-'));
   const init = runInit(home);
   const store = StateStore.open(init.stateRoot);
@@ -399,6 +411,17 @@ async function startCockpit(extra: { ruleEvals?: RuleRpcEvalDeps } = {}): Promis
     inbox,
     rules,
     ...(extra.ruleEvals ? { ruleEvals: extra.ruleEvals } : {}),
+    // T167: a key service over a fresh config and no env, so the operator's
+    // own TYPESAFE_API_KEY never counts and no real call is possible.
+    ...(extra.classifierKey
+      ? {
+          classifierKey: new ClassifierKeyService({
+            config: validateClassifierConfig({}),
+            store,
+            env: {},
+          }),
+        }
+      : {}),
     feedPollIntervalMs: 50,
   });
   return {
@@ -799,6 +822,168 @@ describe('rules screen (Playwright e2e, T163)', () => {
         expect(
           (await page.locator('[data-testid="rules-screen"]').textContent())?.toLowerCase(),
         ).not.toContain('confidence');
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+});
+
+describe('rules screen: patterns, new rule, cancel, classifier key (Playwright e2e, T167)', () => {
+  browserTest(
+    'a pattern is shown; New rule creates a proposal; edit then Cancel or Esc changes nothing',
+    async () => {
+      const cockpit = await startCockpit();
+      let page: Page | undefined;
+      try {
+        const rule = await cockpit.rules.create('human', {
+          text: 'never wipe the tree',
+          enforcement: 'pattern',
+          pattern: { kind: 'command_deny', args: { patterns: ['rm -rf', 'git reset --hard'] } },
+        });
+        page = await openPage();
+        await page.goto(`${cockpit.base}/?view=rules`);
+        const row = `[data-testid="rules-row"][data-rule="${rule.id}"]`;
+        await waitForText(
+          page,
+          `${row} [data-testid="rules-pattern"]`,
+          'command_deny: "rm -rf", "git reset --hard"',
+        );
+
+        // Edit, change everything, Cancel: nothing is sent, the editor closes.
+        const before = JSON.stringify(cockpit.store.getRule(rule.id));
+        await page.locator(`${row} [data-testid="rules-edit"]`).click();
+        await page.locator(`${row} [data-testid="rules-edit-text"]`).fill('changed text');
+        await page
+          .locator(`${row} [data-testid="rules-edit-pattern-kind"]`)
+          .selectOption('no_push');
+        await page.locator(`${row} [data-testid="rules-edit-cancel"]`).click();
+        await page.locator(`${row} [data-testid="rules-editor"]`).waitFor({ state: 'detached' });
+        // Reopened, the draft is the saved rule again, not the discarded one.
+        await page.locator(`${row} [data-testid="rules-edit"]`).click();
+        expect(await page.locator(`${row} [data-testid="rules-edit-text"]`).inputValue()).toBe(
+          'never wipe the tree',
+        );
+        await page.locator(`${row} [data-testid="rules-edit-text"]`).fill('changed by esc');
+        await page.locator(`${row} [data-testid="rules-edit-text"]`).press('Escape');
+        await page.locator(`${row} [data-testid="rules-editor"]`).waitFor({ state: 'detached' });
+        expect(JSON.stringify(cockpit.store.getRule(rule.id))).toBe(before);
+
+        // Editing the pattern's arguments does save.
+        await page.locator(`${row} [data-testid="rules-edit"]`).click();
+        await page
+          .locator(`${row} [data-testid="rules-edit-pattern-args"]`)
+          .fill('rm -rf\ngit clean -fdx');
+        await page.locator(`${row} [data-testid="rules-edit-save"]`).click();
+        await page.locator(`${row} [data-testid="rules-editor"]`).waitFor({ state: 'detached' });
+        expect(cockpit.store.getRule(rule.id).pattern).toEqual({
+          kind: 'command_deny',
+          args: { patterns: ['rm -rf', 'git clean -fdx'] },
+        });
+
+        // New rule: a pattern rule without a pattern is refused in the form.
+        await page.locator('[data-testid="rules-new"]').click();
+        const form = '[data-testid="rules-new-form"]';
+        await page.locator(`${form} [data-testid="rules-edit-text"]`).fill('keep secrets out');
+        await page
+          .locator(`${form} [data-testid="rules-edit-enforcement"]`)
+          .selectOption('pattern');
+        await page.locator(`${form} [data-testid="rules-edit-save"]`).click();
+        await waitUntilAsync('the form to refuse a pattern rule with no pattern', async () =>
+          page
+            ? ((await page.locator(`${form} [role="alert"]`).textContent()) ?? '').includes(
+                'a pattern rule needs a pattern',
+              )
+            : false,
+        );
+        await page
+          .locator(`${form} [data-testid="rules-edit-pattern-kind"]`)
+          .selectOption('path_deny');
+        await page.locator(`${form} [data-testid="rules-edit-pattern-args"]`).fill('secrets/**');
+        await page.locator(`${form} [data-testid="rules-edit-critical"]`).check();
+        await page.locator(`${form} [data-testid="rules-edit-save"]`).click();
+        await page.locator(form).waitFor({ state: 'detached' });
+        await waitUntil('the new rule to be stored', () =>
+          cockpit.store.listRules().some((r) => r.text === 'keep secrets out'),
+        );
+        const created = cockpit.store.listRules().find((r) => r.text === 'keep secrets out');
+        expect(created?.status).toBe('proposed');
+        expect(created?.provenance.by).toBe('human');
+        expect(created?.critical).toBe(true);
+        expect(created?.pattern).toEqual({ kind: 'path_deny', args: { globs: ['secrets/**'] } });
+        await waitForText(
+          page,
+          `[data-testid="rules-row"][data-rule="${created?.id}"] [data-testid="rules-pattern"]`,
+          'path_deny: "secrets/**"',
+        );
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+
+  browserTest(
+    'Settings saves a classifier key write-only; Test examples follows it; Remove turns it off',
+    async () => {
+      const fakeKey = 'fake-t167-playwright-key-7788';
+      const cockpit = await startCockpit({
+        classifierKey: true,
+        ruleEvals: {
+          classifier: new FakeClassifier(),
+          bands: {
+            deny_at: DEFAULT_CLASSIFIER_DENY_AT,
+            allow_below: DEFAULT_CLASSIFIER_ALLOW_BELOW,
+          },
+        },
+      });
+      let page: Page | undefined;
+      try {
+        const rule = await cockpit.rules.create('human', {
+          text: 'no new deps',
+          enforcement: 'classifier',
+          examples: [
+            { action: 'bun add lodash', violates: true },
+            { action: 'edit src/a.ts', violates: false },
+          ],
+        });
+        await cockpit.rules.accept(rule.id, 'human');
+        const testButton = `[data-testid="rules-row"][data-rule="${rule.id}"] [data-testid="rules-test"]`;
+
+        page = await openPage();
+        await page.goto(`${cockpit.base}/?view=rules`);
+        await page.locator(testButton).waitFor();
+        expect(await page.locator(testButton).isDisabled()).toBe(true);
+
+        await page.locator('[data-view="settings"]').click();
+        await waitForText(page, '[data-testid="settings-key-status"]', 'no key');
+        await page.locator('[data-testid="settings-key-input"]').fill(fakeKey);
+        await page.locator('[data-testid="settings-key-save"]').click();
+        await waitForText(page, '[data-testid="settings-key-status"]', 'key set (from config)');
+        expect(await page.locator('[data-testid="settings-key-input"]').inputValue()).toBe('');
+        expect(await page.content()).not.toContain(fakeKey);
+
+        await page.locator('[data-view="rules"]').click();
+        await page.locator(testButton).waitFor();
+        await waitUntilAsync('Test examples to be enabled', async () =>
+          page ? !(await page.locator(testButton).isDisabled()) : false,
+        );
+
+        await page.locator('[data-view="settings"]').click();
+        await waitForText(page, '[data-testid="settings-key-status"]', 'key set (from config)');
+        await page.locator('[data-testid="settings-key-remove"]').click();
+        await waitForText(page, '[data-testid="settings-key-status"]', 'no key');
+        await page.locator('[data-view="rules"]').click();
+        await page.locator(testButton).waitFor();
+        await waitUntilAsync('Test examples to be disabled', async () =>
+          page ? await page.locator(testButton).isDisabled() : false,
+        );
+        expect(readFileSync(join(cockpit.home, 'log', 'events.jsonl'), 'utf8')).not.toContain(
+          fakeKey,
+        );
       } finally {
         await teardown([page]);
         await cockpit.stop();

@@ -342,7 +342,18 @@ function computeGateVerdict(
   // See `roleToolVerdict`'s doc comment above for the mapping; `undefined`
   // means this tool isn't gated at this tier and falls through to step 7.
   const roleTool = roleToolVerdict(ctx, payload);
-  if (roleTool !== undefined) return roleTool;
+  if (roleTool !== undefined) {
+    // T167: when the role policy denies a call that an accepted pattern
+    // rule also denies, the deny names the rule — the human wrote that
+    // rule for exactly this call (`command_deny: "rm -rf"`), and "rm is
+    // not an allowed command" would hide it. The verdict is the same
+    // deny either way; only its reason and the rule's stats change.
+    if (roleTool.decision === 'deny') {
+      const byRule = patternRuleVerdict(ctx, payload);
+      if (byRule?.decision === 'deny') return byRule;
+    }
+    return roleTool;
+  }
 
   // 5b. Pattern rules in scope (T143, §8.1 step 2). Reached only when the
   // role policy had nothing to say: a call the role table already denied or

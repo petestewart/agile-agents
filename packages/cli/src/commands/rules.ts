@@ -18,17 +18,21 @@ import {
   seedProposal,
 } from '@agile-agents/daemon';
 import {
+  PATTERN_RULE_NEEDS_PATTERN,
   RULE_ENFORCEMENTS,
   RULE_STATUSES,
   type Rule,
   type RuleCriteria,
   type RuleEnforcement,
   type RuleExample,
+  type RulePattern,
   type RuleStage,
   type RuleStatus,
   classifierQuestion,
+  formatRulePattern,
   formatRuleScope,
   parseRuleScope,
+  rulePatternFromArgs,
 } from '@agile-agents/shared';
 import type { ParsedArgs } from '../args';
 import { hasFlag, optionalString, requireOption, requirePositional } from '../args';
@@ -74,7 +78,7 @@ export function showFields(rule: Rule): Array<[string, string]> {
     fields.push(['criteria true', rule.criteria.true], ['criteria false', rule.criteria.false]);
   }
   if (rule.pattern !== undefined) {
-    fields.push(['pattern', `${rule.pattern.kind} ${JSON.stringify(rule.pattern.args)}`]);
+    fields.push(['pattern', formatRulePattern(rule.pattern)]);
   }
   fields.push(
     ['provenance', formatProvenance(rule)],
@@ -196,6 +200,32 @@ export async function runRulesShow(
 }
 
 /**
+ * T167: `--pattern <kind> [--pattern-arg <value>]…` — a pattern-tier rule's
+ * deterministic check. `--pattern-arg` repeats (a glob for `path_deny`, a
+ * token pattern for `command_deny`); a `--pattern-arg` with no `--pattern`
+ * is refused rather than ignored.
+ */
+export function parsePattern(args: ParsedArgs, argv: readonly string[]): RulePattern | undefined {
+  const values: string[] = [];
+  for (let i = 0; i < argv.length; i++) {
+    if (argv[i] !== '--pattern-arg') continue;
+    const value = argv[i + 1];
+    if (value === undefined || value.startsWith('--')) {
+      throw new Error('--pattern-arg needs a value');
+    }
+    values.push(value);
+    i++;
+  }
+  const kind = args.options.pattern;
+  if (kind === undefined) {
+    if (values.length > 0) throw new Error('--pattern-arg needs --pattern <kind>');
+    return undefined;
+  }
+  if (kind === true) throw new Error('--pattern needs a kind');
+  return rulePatternFromArgs(kind, values);
+}
+
+/**
  * T156: `--criteria-true "…" --criteria-false "…"` — the rule's criteria
  * (D14), both or neither: a Noul criteria pair describes both answers.
  */
@@ -227,6 +257,10 @@ export async function runRulesAdd(
   const question = optionalString(args.options, 'question');
   const criteria = parseCriteria(args);
   const examples = parseExamples(argv);
+  const pattern = parsePattern(args, argv);
+  if (enforcement === 'pattern' && pattern === undefined) {
+    throw new Error(`agile rules add: ${PATTERN_RULE_NEEDS_PATTERN}`);
+  }
   const rule = await callRpc<Rule>(socketPath, 'rule.create', {
     text,
     ...(scopeText !== undefined ? { scope: parseRuleScope(scopeText) } : {}),
@@ -235,6 +269,7 @@ export async function runRulesAdd(
     ...(question !== undefined ? { question } : {}),
     ...(criteria !== undefined ? { criteria } : {}),
     ...(examples.length > 0 ? { examples } : {}),
+    ...(pattern !== undefined ? { pattern } : {}),
     ...(hasFlag(args.options, 'critical') ? { critical: true } : {}),
   });
   if (json) printJson(rule);
@@ -261,6 +296,7 @@ export async function runRulesEdit(
   const enforcement = optionalEnforcement(args);
   const stage = optionalString(args.options, 'stage') as RuleStage | undefined;
   const examples = parseExamples(argv);
+  const pattern = parsePattern(args, argv);
   const patch = {
     ...(text !== undefined ? { text } : {}),
     ...(question !== undefined ? { question } : {}),
@@ -268,10 +304,11 @@ export async function runRulesEdit(
     ...(enforcement !== undefined ? { enforcement } : {}),
     ...(stage !== undefined ? { stage } : {}),
     ...(examples.length > 0 ? { examples } : {}),
+    ...(pattern !== undefined ? { pattern } : {}),
   };
   if (Object.keys(patch).length === 0) {
     throw new Error(
-      'agile rules edit: nothing to change (give --text, --question, --criteria-true/--criteria-false, --enforcement, --stage or --example)',
+      'agile rules edit: nothing to change (give --text, --question, --criteria-true/--criteria-false, --enforcement, --stage, --pattern or --example)',
     );
   }
   const rule = await callRpc<Rule>(socketPath, 'rule.update', { id, ...patch });

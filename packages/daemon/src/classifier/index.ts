@@ -5,3 +5,4 @@ export * from './jev';
 export * from './fake';
 export * from './enabled';
 export * from './bands';
+export * from './key';

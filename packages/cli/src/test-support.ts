@@ -20,6 +20,7 @@ import {
   Bus,
   FakeClassifier,
   GateService,
+  HookService,
   InboxService,
   QuestionService,
   type RpcServerHandle,
@@ -30,6 +31,7 @@ import {
   buildAttachRpcMethods,
   buildBusRpcMethods,
   buildGateRpcMethods,
+  buildHookRpcMethods,
   buildInboxRpcMethods,
   buildQuestionRpcMethods,
   buildRuleRpcMethods,
@@ -182,6 +184,7 @@ export async function startTestDaemon(prefix = 'agile-cli-test-'): Promise<TestD
     rules: rulesService,
   });
 
+  const bus = new Bus(store, init.stateRoot);
   const rpc = startRpcServer({
     socketPath,
     version: 'test',
@@ -206,7 +209,12 @@ export async function startTestDaemon(prefix = 'agile-cli-test-'): Promise<TestD
           allow_below: DEFAULT_CLASSIFIER_ALLOW_BELOW,
         },
       }),
-      ...buildBusRpcMethods(new Bus(store, init.stateRoot)),
+      ...buildBusRpcMethods(bus),
+      // T167: the hook path, with the same rules service, so a CLI test can
+      // accept a pattern rule and watch the very next tool call be denied.
+      ...buildHookRpcMethods(
+        new HookService(store, bus, { gates: gateService, rules: rulesService }),
+      ),
       ...buildGateRpcMethods(gateService),
       ...buildQuestionRpcMethods(questionService),
       ...buildAttachRpcMethods(attachService, verbService),

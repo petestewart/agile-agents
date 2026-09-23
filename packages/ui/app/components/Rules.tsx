@@ -10,28 +10,38 @@
  *    `rule.update`'s patch, stamped `human` by the daemon.
  *  - Test examples: `rule.test {id}` (T153/T155), per example the expected
  *    band, the Noul value and the band it fell in. No confidence (D14).
+ *    Enabled only when the daemon holds a classifier key (T167).
+ *  - T167: a pattern rule shows its check under the text; the editor edits
+ *    its kind and arguments and has Cancel (and Esc), which discards; "New
+ *    rule" creates any rule as a proposal (`POST /api/rules`).
  *
  * Every write reaches the same `RulesService` the CLI's `agile rules` does.
  */
 
 import {
   RULE_ENFORCEMENTS,
+  RULE_EXAMPLES_MAX,
+  RULE_PATTERN_KINDS,
   RULE_STAGES,
   type Rule,
   type RuleEnforcement,
+  type RulePatternKind,
   type RuleStage,
   type RuleStatus,
+  formatRulePattern,
   formatRuleScope,
 } from '@agile-agents/shared';
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { decideRule, getRules, testRule, updateRule } from '../lib/api';
+import { createRule, decideRule, getRules, testRule, updateRule } from '../lib/api';
 import { useFeed } from '../lib/feed-context';
 import type { RuleEvalReport, RuleReportRow, RulesPayload } from '../lib/feed-types';
 import {
   RULE_STATUS_FILTERS,
   type RuleDraft,
   type RulesSort,
+  createOf,
   draftOf,
+  emptyDraft,
   evalDeadlineMs,
   filterRules,
   patchOf,
@@ -54,6 +64,7 @@ export function Rules(): JSX.Element {
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
   const [busy, setBusy] = useState(false);
   const [bulkErrors, setBulkErrors] = useState<string[]>([]);
+  const [creating, setCreating] = useState(false);
 
   const load = useCallback(() => {
     getRules()
@@ -70,7 +81,8 @@ export function Rules(): JSX.Element {
   useEffect(
     () =>
       onEvent((event) => {
-        if (event.kind.startsWith('rule')) load();
+        // T167: a key saved or removed in Settings changes "Test examples".
+        if (event.kind.startsWith('rule') || event.kind === 'home_config_put') load();
       }),
     [onEvent, load],
   );
@@ -117,7 +129,32 @@ export function Rules(): JSX.Element {
         <span className="cr-count" data-testid="rules-count">
           {shown.length}
         </span>
+        <button
+          type="button"
+          className="cr-btn"
+          data-testid="rules-new"
+          aria-expanded={creating}
+          onClick={() => setCreating((open) => !open)}
+        >
+          New rule
+        </button>
       </div>
+      {creating && (
+        <RuleEditor
+          mode="create"
+          initial={emptyDraft()}
+          submit={async (draft) => {
+            const built = createOf(draft);
+            if ('error' in built) throw new Error(built.error);
+            await createRule(built.input);
+          }}
+          onDone={() => {
+            setCreating(false);
+            load();
+          }}
+          onCancel={() => setCreating(false)}
+        />
+      )}
 
       <div className="cr-rules-filters">
         <label>
@@ -323,6 +360,11 @@ function RuleCard({
         <span>from {rule.provenance.by}</span>
       </div>
       <Markdown className="context" text={rule.text} />
+      {rule.pattern !== undefined && (
+        <p className="cr-dim" data-testid="rules-pattern">
+          <code>{formatRulePattern(rule.pattern)}</code>
+        </p>
+      )}
       {rule.question !== undefined && (
         <p className="cr-dim" data-testid="rules-question">
           Q: {rule.question}
@@ -383,7 +425,7 @@ function RuleCard({
             disabled={testing || !testable || !evals.available}
             title={
               !evals.available
-                ? 'No classifier configured (config.yaml classifier:)'
+                ? 'No classifier key loaded: set one in Settings (or TYPESAFE_API_KEY)'
                 : !testable
                   ? 'Only accepted classifier rules are evaluated'
                   : `One classifier call per example (${rule.examples.length})`
@@ -397,11 +439,18 @@ function RuleCard({
 
       {editing && (
         <RuleEditor
-          rule={rule}
-          onSaved={() => {
+          mode="edit"
+          initial={draftOf(rule)}
+          submit={async (draft) => {
+            const built = patchOf(draft);
+            if ('error' in built) throw new Error(built.error);
+            await updateRule(rule.id, built.patch);
+          }}
+          onDone={() => {
             setEditing(false);
             onChanged();
           }}
+          onCancel={() => setEditing(false)}
         />
       )}
       {report && <EvalResults report={report} />}
@@ -414,23 +463,36 @@ function RuleCard({
   );
 }
 
-function RuleEditor({ rule, onSaved }: { rule: Rule; onSaved: () => void }): JSX.Element {
-  const [draft, setDraft] = useState<RuleDraft>(() => draftOf(rule));
+/**
+ * The rule form: the editor (`mode="edit"`) and "New rule" (`mode="create"`,
+ * which adds scope and criticality). Cancel and Esc discard the draft and
+ * close it; nothing is sent until Save / Create.
+ */
+function RuleEditor({
+  mode,
+  initial,
+  submit,
+  onDone,
+  onCancel,
+}: {
+  mode: 'edit' | 'create';
+  initial: RuleDraft;
+  submit: (draft: RuleDraft) => Promise<void>;
+  onDone: () => void;
+  onCancel: () => void;
+}): JSX.Element {
+  const [draft, setDraft] = useState<RuleDraft>(initial);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | undefined>(undefined);
   const set = (patch: Partial<RuleDraft>): void => setDraft((prev) => ({ ...prev, ...patch }));
+  const creating = mode === 'create';
 
   async function save(): Promise<void> {
-    const built = patchOf(draft);
-    if ('error' in built) {
-      setError(built.error);
-      return;
-    }
     setBusy(true);
     setError(undefined);
     try {
-      await updateRule(rule.id, built.patch);
-      onSaved();
+      await submit(draft);
+      onDone();
     } catch (err) {
       setError(message(err));
     } finally {
@@ -441,12 +503,41 @@ function RuleEditor({ rule, onSaved }: { rule: Rule; onSaved: () => void }): JSX
   return (
     <form
       className="cr-rule-editor"
-      data-testid="rules-editor"
+      data-testid={creating ? 'rules-new-form' : 'rules-editor'}
       onSubmit={(e) => {
         e.preventDefault();
         void save();
       }}
+      onKeyDown={(e) => {
+        if (e.key === 'Escape') {
+          e.preventDefault();
+          e.stopPropagation();
+          onCancel();
+        }
+      }}
     >
+      {creating && (
+        <div className="cr-rule-editor-row">
+          <label>
+            Scope{' '}
+            <input
+              data-testid="rules-edit-scope"
+              value={draft.scope}
+              placeholder="global · repo:<name> · stream:<id>"
+              onChange={(e) => set({ scope: e.target.value })}
+            />
+          </label>
+          <label>
+            <input
+              type="checkbox"
+              data-testid="rules-edit-critical"
+              checked={draft.critical}
+              onChange={(e) => set({ critical: e.target.checked })}
+            />{' '}
+            critical
+          </label>
+        </div>
+      )}
       <label>
         Text
         <textarea
@@ -510,6 +601,33 @@ function RuleEditor({ rule, onSaved }: { rule: Rule; onSaved: () => void }): JSX
           </select>
         </label>
       </div>
+      <div className="cr-rule-editor-row">
+        <label>
+          Pattern{' '}
+          <select
+            data-testid="rules-edit-pattern-kind"
+            value={draft.patternKind}
+            onChange={(e) => set({ patternKind: e.target.value as RulePatternKind | '' })}
+          >
+            <option value="">(none)</option>
+            {RULE_PATTERN_KINDS.map((value) => (
+              <option key={value} value={value}>
+                {value}
+              </option>
+            ))}
+          </select>
+        </label>
+        {(draft.patternKind === 'path_deny' || draft.patternKind === 'command_deny') && (
+          <label>
+            {draft.patternKind === 'path_deny' ? 'Globs' : 'Command patterns'}, one per line
+            <textarea
+              data-testid="rules-edit-pattern-args"
+              value={draft.patternArgs}
+              onChange={(e) => set({ patternArgs: e.target.value })}
+            />
+          </label>
+        )}
+      </div>
       <fieldset>
         <legend>Examples</legend>
         {draft.examples.map((example, index) => (
@@ -553,6 +671,8 @@ function RuleEditor({ rule, onSaved }: { rule: Rule; onSaved: () => void }): JSX
           type="button"
           className="cr-link"
           data-testid="rules-edit-add-example"
+          disabled={draft.examples.length >= RULE_EXAMPLES_MAX}
+          title={`At most ${RULE_EXAMPLES_MAX} examples per rule`}
           onClick={() => set({ examples: [...draft.examples, { action: '', violates: true }] })}
         >
           Add example
@@ -565,7 +685,16 @@ function RuleEditor({ rule, onSaved }: { rule: Rule; onSaved: () => void }): JSX
           data-testid="rules-edit-save"
           disabled={busy}
         >
-          Save
+          {creating ? 'Propose rule' : 'Save'}
+        </button>
+        <button
+          type="button"
+          className="cr-btn"
+          data-testid="rules-edit-cancel"
+          disabled={busy}
+          onClick={onCancel}
+        >
+          Cancel
         </button>
       </div>
       {error && (
