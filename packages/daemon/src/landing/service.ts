@@ -143,7 +143,7 @@ export class LandingService {
     const repoRoot = repoEntry.path;
     const target = this.resolveTarget(stream, repoEntry, repoRoot);
 
-    if (git(['rev-parse', '--verify', `refs/heads/${target}`], repoRoot, repoRoot).exitCode !== 0) {
+    if (!branchExists(repoRoot, target)) {
       throw new LandRefusedError(
         stream.id,
         `target branch ${target} does not exist in ${repoRoot}`,
@@ -225,9 +225,7 @@ export class LandingService {
       const { repoEntry, branch } = this.requireLandable(stream);
       const repoRoot = repoEntry.path;
       const target = this.resolveTarget(stream, repoEntry, repoRoot);
-      if (
-        git(['rev-parse', '--verify', `refs/heads/${target}`], repoRoot, repoRoot).exitCode !== 0
-      ) {
+      if (!branchExists(repoRoot, target)) {
         return {
           ready: false,
           branch,
@@ -311,13 +309,7 @@ export class LandingService {
     if (stream.repo === undefined || stream.branch === undefined) {
       throw new LandRefusedError(stream.id, 'this stream has no repo branch yet — nothing to diff');
     }
-    const repoEntry = this.options.store.getRepos()[stream.repo];
-    if (repoEntry === undefined) {
-      throw new LandRefusedError(
-        stream.id,
-        `stream repo ${stream.repo} is not registered in repos.yaml`,
-      );
-    }
+    const repoEntry = this.registeredRepo(stream, stream.repo);
     const repoRoot = repoEntry.path;
     const target = this.resolveTarget(stream, repoEntry, repoRoot);
     const inWorktree = stream.worktree !== undefined && existsSync(stream.worktree);
@@ -353,13 +345,7 @@ export class LandingService {
         `stream ${stream.id} has no ${stream.repo === undefined ? 'repo' : 'branch'} — there is nothing to land`,
       );
     }
-    const repoEntry = this.options.store.getRepos()[stream.repo];
-    if (repoEntry === undefined) {
-      throw new LandRefusedError(
-        stream.id,
-        `stream repo ${stream.repo} is not registered in repos.yaml`,
-      );
-    }
+    const repoEntry = this.registeredRepo(stream, stream.repo);
     if (!(LANDABLE_HUMAN_STATUSES as readonly string[]).includes(stream.human.status)) {
       throw new LandRefusedError(
         stream.id,
@@ -374,6 +360,15 @@ export class LandingService {
       );
     }
     return { repoEntry, branch: stream.branch };
+  }
+
+  /** The stream's repo entry; an unregistered repo refuses. */
+  private registeredRepo(stream: Stream, repo: string): RepoEntry {
+    const entry = this.options.store.getRepos()[repo];
+    if (entry === undefined) {
+      throw new LandRefusedError(stream.id, `stream repo ${repo} is not registered in repos.yaml`);
+    }
+    return entry;
   }
 
   /** §8.2's target order (module header). */
@@ -533,11 +528,7 @@ export function defaultBranch(repoRoot: string): string {
     return head.stdout.slice('origin/'.length);
   }
   for (const candidate of ['main', 'master']) {
-    if (
-      git(['rev-parse', '--verify', `refs/heads/${candidate}`], repoRoot, repoRoot).exitCode === 0
-    ) {
-      return candidate;
-    }
+    if (branchExists(repoRoot, candidate)) return candidate;
   }
   return 'main';
 }
@@ -613,4 +604,8 @@ export function mergedOutside(repoRoot: string, branch: string, target: string):
   if (firstParent.exitCode === 0 && !firstParent.stdout.split('\n').includes(tip)) return true;
   const reflog = git(['reflog', 'show', '--format=%H', `refs/heads/${branch}`], repoRoot, repoRoot);
   return reflog.exitCode === 0 && reflog.stdout.split('\n').filter(Boolean).length > 1;
+}
+
+function branchExists(repoRoot: string, branch: string): boolean {
+  return git(['rev-parse', '--verify', `refs/heads/${branch}`], repoRoot, repoRoot).exitCode === 0;
 }
