@@ -41,8 +41,8 @@ export type HilDecision = z.infer<typeof HilDecisionSchema>;
 /**
  * "send the human a low-priority `fyi`" (§16) — the notice a delegated
  * decision carries. `body` reuses `MessageBodySchema` (the same 800-char cap
- * every bus message body gets) since this is exactly that payload, written
- * as a real `fyi`-kind `Message` by `packages/daemon/src/gates/service.ts`.
+ * every bus message body gets); it lives on the record, which is what the
+ * inbox reads.
  */
 export const HilFyiSchema = z
   .object({
@@ -58,7 +58,7 @@ export type HilFyi = z.infer<typeof HilFyiSchema>;
  * well as its buttons. The free text a human wrote with (or instead of) a
  * button press — body-capped exactly like a bus message body, since that is
  * what it becomes when `gates/service.ts` delivers it to the asking agent
- * (`hil_response`) and to the EM. Non-empty: an empty note is the same as no
+ * (`hil_response`). Non-empty: an empty note is the same as no
  * note and is rejected at the boundary rather than persisted as `""`.
  */
 export const HilNoteSchema = MessageBodySchema.min(1, 'note must not be empty');
@@ -159,11 +159,11 @@ export const HilRequestSchema = z
     /** T138: set when an approved gate's one allowed retry has been spent — the allowance is once, not standing. */
     consumed_at: z.string().datetime().optional(),
     decision: HilDecisionSchema.optional(),
-    /** Free text a human typed with the decision, or on its own (T039). A note on its own resolves nothing — the EM delegate reads it and decides. */
+    /** Free text a human typed with the decision, or on its own (T039). A note on its own resolves nothing — a configured delegate, or a later button press, decides. */
     note: HilNoteSchema.optional(),
     decided_by: z.string().min(1).optional(),
     resolved_at: z.string().datetime().optional(),
-    /** True when an `em`/`architect` owner (policy or single-instance delegate) auto-decided this. */
+    /** True when the gate service's delegate decided this (a `human_timeout` fallthrough, or a note handed to it). */
     delegated: z.boolean().optional(),
     fyi: HilFyiSchema.optional(),
   })
