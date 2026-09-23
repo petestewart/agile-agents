@@ -1,26 +1,11 @@
 /**
- * `buildBrief` — the text a freshly attached session is prompted with
- * (design/cockpit-design.md §4.1 step 2: "assembles the brief:
- * `briefs/worker.md`, the stream goal and its ancestors' goals, the last N
- * thread entries, repo docs from `<repo>/.agile-docs/*.md`, and accepted
- * rules in scope").
- *
- * The body is assembled in a fixed order — role brief, goal, ancestor goals
- * root→leaf, docs, rules in scope, thread tail — and then trimmed to a hard
- * character ceiling (`BRIEF_CHAR_CEILING`) so a long-running stream can
- * never grow a brief the session cannot read. Trimming drops thread entries
- * oldest-first, then truncates doc bodies; the goal and the rules are never
- * trimmed, because they are the two things the session is being held to.
- *
- * Rules are filtered through `rulesInScope` here rather than by the caller:
- * design §5.3 has exactly one scope filter, shared by the brief assembler
- * and the hook, so an out-of-scope rule cannot reach a brief by a caller
- * forgetting to filter. T140 makes that filter `rules/service.ts`'s — the
- * brief holds no scope logic of its own any more.
- *
- * Pure apart from reading the role file off disk: everything else is
- * handed in, so a brief is a function of the stream, not of the daemon's
- * state at the moment it ran.
+ * `buildBrief`: the text a freshly attached session is prompted with
+ * (§4.1): role brief, stream goal, ancestor goals root→leaf, rules in
+ * scope, docs, thread tail, trimmed to `BRIEF_CHAR_CEILING`. Trimming
+ * drops thread entries oldest-first, then shrinks doc bodies; the goal and
+ * rules are never trimmed (they are what the session is held to). Rules go
+ * through §5.3's one filter here, not the caller's. Pure apart from
+ * reading the role file.
  */
 
 import { existsSync, readFileSync } from 'node:fs';
@@ -28,16 +13,13 @@ import { join } from 'node:path';
 import type { Rule, SessionRole, Stream, ThreadEntry } from '@agile-agents/shared';
 import { rulesInScope } from '../rules/service';
 
-/** `packages/daemon/briefs/` — one Markdown file per role. */
+/** One Markdown file per role. */
 export const BRIEFS_DIR = join(import.meta.dir, '..', '..', 'briefs');
 
 /** How many thread entries the brief carries by default. */
 export const BRIEF_THREAD_ENTRIES = 20;
 
-/**
- * Hard ceiling on the assembled brief, in characters: 24k chars is roughly
- * 6k tokens, small enough to leave a vendor's context for the actual work.
- */
+/** Hard ceiling in characters (~6k tokens), leaving the vendor's context for the work. */
 export const BRIEF_CHAR_CEILING = 24_000;
 
 /** Shortest a doc body is squeezed to before it is dropped entirely. */
@@ -79,12 +61,7 @@ function section(heading: string, body: string): string {
   return `## ${heading}\n\n${body}`;
 }
 
-/**
- * §5.2: a `guidance` rule *is* its text and nothing more — the brief is the
- * whole mechanism. A `pattern` or `classifier` rule is enforced by the hook,
- * so the brief says so: the session should know which lines it will be
- * stopped at rather than merely advised about.
- */
+/** §5.2: a guidance rule is its text; a pattern or classifier rule is marked as enforced. */
 function renderRule(rule: Rule): string {
   if (rule.enforcement === 'guidance') return `- ${rule.text}`;
   const marks = [`enforced: ${rule.enforcement}`, ...(rule.critical ? ['critical'] : [])];
@@ -157,16 +134,14 @@ export function buildBrief(input: BuildBriefInput): string {
   let brief = assemble(input, rules, maxTail, docCap);
   if (brief.length <= ceiling) return brief;
 
-  // 1. Thread entries, oldest first — the cheapest thing to lose.
+  // 1. Thread entries, oldest first: the cheapest thing to lose.
   for (let tail = maxTail - 1; tail >= 0; tail--) {
     brief = assemble(input, rules, tail, docCap);
     if (brief.length <= ceiling) return brief;
   }
 
-  // 2. Doc bodies, halved until they fit or are gone. The goal and the
-  //    rules are never trimmed: past this point the brief may exceed the
-  //    ceiling, and that is the honest outcome rather than a brief that
-  //    silently drops what the session is held to.
+  // 2. Doc bodies, halved until they fit or are gone. Goal and rules are
+  //    never trimmed, so past this the brief may honestly exceed the ceiling.
   let cap = ceiling;
   while (cap >= MIN_DOC_BODY_CHARS) {
     brief = assemble(input, rules, 0, cap);
