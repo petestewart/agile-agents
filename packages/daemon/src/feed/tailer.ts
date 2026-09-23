@@ -1,51 +1,32 @@
 /**
- * Event tailer (T020 — design agile-agents-design.md §17 "Human UI": "Feed:
- * event log tailed live"). Watches `log/events.jsonl` for appended bytes and
- * hands whole new lines to a callback, parsed as JSON — the daemon-side half
- * of the feed page's live WebSocket updates.
- *
- * Poll-based (default every 250 ms) rather than `fs.watch`: `fs.watch`'s
- * behaviour (debouncing, missed events, one `rename` per platform's rules)
- * is exactly the kind of vendor-runtime unreliability
- * design/spike-findings.md warns against trusting without measuring, and a
- * 250 ms poll already clears the ticket's "within 1 s" acceptance criterion
- * with a wide margin, so polling is the simpler, more portable choice
- * (DESIGN-GAP: the ticket allows either).
- *
- * Byte-offset resume: starts at the file's current size (or `startOffset`,
- * for a caller that already knows where a previous tailer left off) so a
- * fresh tailer never re-emits history the snapshot already covered.
- * Partial-line tolerance: a poll's raw bytes are appended to an in-memory
- * `carry` buffer and split on `\n`; only complete lines are parsed and
- * emitted, and any trailing incomplete line is kept in `carry` for the next
- * poll rather than dropped or mis-parsed.
+ * Tails `log/events.jsonl` for the live `/ws` feed, handing each batch of
+ * new complete lines to a callback. Polls (default 250 ms) rather than
+ * `fs.watch`, whose behaviour varies by platform. Starts at the file's
+ * current size (the snapshot covers history); a trailing partial line is
+ * carried to the next poll, never dropped or mis-parsed.
  */
 
 import { closeSync, existsSync, openSync, readSync, statSync } from 'node:fs';
 
 export interface EventTailerOptions {
-  /** Absolute path to the `events.jsonl` file being tailed. */
+  /** The `events.jsonl` being tailed. */
   path: string;
-  /** Called with every batch of new, fully-formed JSON lines parsed since the last poll. */
+  /** Every batch of new complete lines, parsed. */
   onEvents: (events: unknown[]) => void;
-  /** A line that fails `JSON.parse` is skipped and reported here instead of throwing. */
+  /** A malformed line is skipped and reported here. */
   onError?: (err: Error) => void;
-  /** Default 250ms — see file header for why polling, not `fs.watch`. */
+  /** Default 250ms. */
   pollIntervalMs?: number;
-  /**
-   * Byte offset to resume from. Defaults to the file's current size (i.e.
-   * tail only *future* appends) — pass `0` to replay the whole file, or a
-   * previous handle's `getOffset()` to resume exactly where it left off.
-   */
+  /** Byte offset to resume from; default the current size (only future appends), `0` replays. */
   startOffset?: number;
 }
 
 export interface EventTailerHandle {
-  /** Current byte offset already consumed (excludes any trailing partial line held in `carry`). */
+  /** Bytes consumed so far (excluding a carried partial line). */
   getOffset(): number;
   /** Stops the poll interval. Idempotent. */
   stop(): void;
-  /** Runs one poll cycle synchronously right now — mainly for tests. */
+  /** One poll cycle, synchronously (tests). */
   pollNow(): void;
 }
 
@@ -70,9 +51,7 @@ export function startEventTailer(options: EventTailerOptions): EventTailerHandle
     if (!existsSync(options.path)) return;
     const size = statSync(options.path).size;
     if (size < offset) {
-      // Truncated or rotated out from under us (DESIGN-GAP: not specified —
-      // `events.jsonl` is append-only per T005, so this is a defensive
-      // fallback, not an expected path): restart from the top.
+      // Truncated or rotated (append-only, so defensive): restart at the top.
       offset = 0;
       carry = '';
     }
@@ -101,8 +80,7 @@ export function startEventTailer(options: EventTailerOptions): EventTailerHandle
   }
 
   const interval = setInterval(pollNow, pollIntervalMs);
-  // Never keep the process alive on its own — a daemon shutting down
-  // shouldn't wait on this timer.
+    // Never keep the process alive on its own.
   if (typeof interval === 'object' && interval !== null && 'unref' in interval) {
     (interval as { unref(): void }).unref();
   }

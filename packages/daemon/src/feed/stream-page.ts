@@ -1,12 +1,8 @@
 /**
- * The stream page's one read (T161, design/cockpit-design.md §9.3):
- * `GET /api/streams/:id`. Everything the page shows that is not live on
- * the `/ws` cockpit frame — the record, its ancestor path, the thread, the
- * rules in scope, the docs and the Land button's "before" read — in one
- * response, so a `thread_appended` event is one re-fetch, not five.
- *
- * Read-only. The diff is its own route (`GET /api/streams/:id/diff`): it
- * runs git and is only wanted when its tab is open.
+ * The stream page's one read (§9.3), `GET /api/streams/:id`: the record,
+ * its path, the thread, rules in scope, docs and the Land preflight in one
+ * response, so a `thread_appended` event is one re-fetch. The diff has its
+ * own route: it runs git and is only wanted when its tab is open.
  */
 
 import type { Rule, Stream, ThreadEntry } from '@agile-agents/shared';
@@ -15,7 +11,7 @@ import type { LandPreflight, LandingService } from '../landing/service';
 import type { RulesService } from '../rules/service';
 import type { StreamService } from '../streams/service';
 
-/** How much of the thread one read carries — the newest entries. */
+/** How much of the thread one read carries (the newest entries). */
 export const STREAM_PAGE_THREAD_LIMIT = 500;
 
 export interface StreamPagePayload {
@@ -24,15 +20,15 @@ export interface StreamPagePayload {
   path: string[];
   /** The newest `STREAM_PAGE_THREAD_LIMIT` entries, oldest first. */
   thread: ThreadEntry[];
-  /** Total entries in the thread; more than `thread.length` means older ones were left out. */
+  /** Total entries; more than `thread.length` means older ones were left out. */
   thread_total: number;
-  /** Exactly `rulesInScope(stream)` (§9.3: "why was I denied" is one click). */
+  /** Exactly the rules in scope (§9.3: "why was I denied" is one click). */
   rules: Rule[];
-  /** Ids of the in-scope rules Land checks against the whole diff (stage `diff` or `both`, §8.2). */
+  /** In-scope rules Land checks against the whole diff (§8.2). */
   diff_rules: string[];
-  /** Repo `.agile-docs/` and the stream docs of the stream and its ancestors (T134). */
+  /** Repo docs plus the stream docs of the stream and its ancestors. */
   docs: Doc[];
-  /** The Land button's "before": would `land` refuse right now, and why. Absent with no landing service. */
+  /** Land's preflight; absent with no landing service. */
   land?: LandPreflight;
 }
 
