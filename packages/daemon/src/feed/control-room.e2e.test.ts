@@ -1434,6 +1434,57 @@ describe('stream page rough edges (Playwright e2e, T166)', () => {
   );
 });
 
+describe('rule hits on the stream (Playwright e2e, T169)', () => {
+  browserTest(
+    'a rule_hit thread entry renders as a "blocked by rule" card that opens the rule on the Rules screen',
+    async () => {
+      const cockpit = await startCockpit();
+      let page: Page | undefined;
+      try {
+        const stream = await cockpit.streams.create('human', { title: 'build', goal: 'g' });
+        const rule = await cockpit.rules.create('human', {
+          text: 'never wipe build output',
+          enforcement: 'pattern',
+          pattern: { kind: 'command_deny', args: { patterns: ['rm -rf'] } },
+        });
+        await cockpit.rules.accept(rule.id, 'human');
+        const other = await cockpit.rules.create('human', { text: 'an unrelated rule' });
+        // Exactly the entry `HookService.noteHit` writes for a pattern deny.
+        await cockpit.store.appendThreadEntry(stream.id, {
+          ts: new Date().toISOString(),
+          by: 'daemon',
+          kind: 'event',
+          body: `rule_hit: ${rule.id} denied \`rm -rf dist\` — rule: never wipe build output`,
+          ref: rule.id,
+        });
+
+        page = await openPage();
+        await page.goto(`${cockpit.base}/`);
+        await page.locator(`[data-testid="stream-tree"] [data-stream="${stream.id}"]`).click();
+        await page.locator(`[data-testid="stream-page"][data-stream="${stream.id}"]`).waitFor();
+        const card = `[data-testid="thread-rule-hit"][data-rule="${rule.id}"]`;
+        await page.locator(card).waitFor({ state: 'visible' });
+        const text = (await page.locator(card).textContent()) ?? '';
+        expect(text).toContain('blocked by rule');
+        expect(text).toContain('rm -rf dist');
+
+        await page.locator(`${card} [data-testid="thread-rule-link"]`).click();
+        await page.locator('[data-testid="rules-screen"]').waitFor();
+        await page.locator('[data-testid="rules-filter-rule"]').waitFor();
+        await waitForCount(page, '[data-testid="rules-row"]', 1);
+        await page.locator(`[data-testid="rules-row"][data-rule="${rule.id}"]`).waitFor();
+        expect(
+          await page.locator(`[data-testid="rules-row"][data-rule="${other.id}"]`).count(),
+        ).toBe(0);
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+});
+
 // ---- T162: new stream, quick capture, `n` and `/` -------------------------
 
 describe('new stream and quick capture (Playwright e2e, T162)', () => {

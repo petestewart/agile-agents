@@ -236,3 +236,33 @@ test('accepting the retired no_push rule gates every push, including to the tick
   expect(decision).toBe('deny');
   expect(reason).toContain('no_push');
 });
+
+test('T169: a command_deny hit on `rm -rf dist` writes one thread entry naming the rule', async () => {
+  const created = await rules.create('human', {
+    text: 'never wipe build output',
+    enforcement: 'pattern',
+    pattern: { kind: 'command_deny', args: { patterns: ['rm -rf'] } },
+    scope: { kind: 'global' },
+    stage: 'action',
+  });
+  await rules.accept(created.id, 'human');
+  const before = store.readThread(stream).length;
+
+  const { decision } = await decide('rm -rf dist');
+  expect(decision).toBe('deny');
+
+  const added = store.readThread(stream).slice(before);
+  expect(added).toHaveLength(1);
+  const [entry] = added;
+  expect(entry?.kind).toBe('event');
+  expect(entry?.by).toBe('daemon');
+  expect(entry?.ref).toBe(created.id);
+  expect(entry?.body).toContain(created.id);
+  expect(entry?.body).toContain('never wipe build output');
+  expect(entry?.body).toContain('rm -rf dist');
+  expect(entry?.body).toContain('denied');
+
+  // An allowed call writes nothing.
+  await decide('ls dist');
+  expect(store.readThread(stream).length).toBe(before + 1);
+});

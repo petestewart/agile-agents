@@ -11,6 +11,7 @@ import {
   draftOf,
   evalDeadlineMs,
   filterRules,
+  formatFiredAt,
   patchOf,
   ruleScopes,
   sortRules,
@@ -124,4 +125,17 @@ describe('patchOf', () => {
 test('evalDeadlineMs scales with the examples', () => {
   expect(evalDeadlineMs(3, 1000)).toBe(13_000);
   expect(evalDeadlineMs(0, 1000)).toBe(11_000);
+});
+
+describe('T169', () => {
+  test('a rule filter shows that one rule', () => {
+    const rules = [rule('R-1'), rule('R-2')];
+    expect(filterRules(rules, { ...DEFAULT_RULES_FILTER, rule: 'R-2' }).map((r) => r.id)).toEqual([
+      'R-2',
+    ]);
+  });
+
+  test('last fired shows date and minute', () => {
+    expect(formatFiredAt('2026-09-23T14:02:33.123Z')).toBe('2026-09-23 14:02');
+  });
 });

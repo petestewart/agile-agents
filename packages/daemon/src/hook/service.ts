@@ -518,7 +518,9 @@ export class HookService {
 
     let decision = decidePreToolUse(ctx, payload);
     let allowedBy: string | undefined;
+    let wasRouted = false;
     if (decision.decision === 'ask') {
+      wasRouted = true;
       // T138: the route band (design §8.1). `ask` is this hook's own
       // vocabulary for "needs a human" — it never reaches the wire, because
       // Claude under ACP cannot answer an interactive `ask`. It becomes a
@@ -542,6 +544,7 @@ export class HookService {
       const tier = await this.classifierTier(ctx, payload);
       if (tier !== undefined) {
         const applied = await this.applyClassifierTier(ctx, payload, tier, decision);
+        if (tier.outcome.band === 'route') wasRouted = true;
         decision = { ...decision, ...applied.decision };
         allowedBy = applied.allowedBy ?? allowedBy;
       }
@@ -557,6 +560,7 @@ export class HookService {
       ...(allowedBy !== undefined ? { allowedBy } : {}),
       ...(decision.ruleViolated !== undefined ? { rule: decision.ruleViolated } : {}),
     });
+    await this.noteHit(ctx, payload, decision, wasRouted);
 
     return {
       hookSpecificOutput: {
@@ -721,6 +725,46 @@ export class HookService {
     }
   }
 
+  /**
+   * T169: a refused or routed call is visible on the stream's thread, not
+   * only in `events.jsonl` and the rule's counters. One `event` entry per
+   * decision that did not let the call through: a rule-named hit carries
+   * the rule's id as `ref` (the stream page renders it as a "blocked by
+   * rule" card linking to the rule) and its text; a role-policy deny that
+   * names no rule gets a plainer line with no `ref`. Best effort, like
+   * `noteUnchecked`: the decision is already made.
+   */
+  private async noteHit(
+    ctx: HookDecisionContext,
+    payload: ClaudePreToolUsePayload,
+    decision: HookDecision,
+    routed: boolean,
+  ): Promise<void> {
+    if (decision.decision !== 'deny') return;
+    const ruleId = decision.ruleViolated ?? decision.ruleRouted;
+    const outcome = routed ? 'routed to the human' : 'denied';
+    const target = hitTarget(payload);
+    let body: string;
+    if (ruleId !== undefined) {
+      const rule = this.rulesInScope(ctx.stream).find((each) => each.id === ruleId);
+      const label = rule?.name !== undefined ? `${rule.name} (${ruleId})` : ruleId;
+      body = `rule_hit: ${label} ${outcome} \`${target}\`${rule !== undefined ? ` — rule: ${rule.text}` : ''}`;
+    } else {
+      body = `hook_deny: ${outcome} \`${target}\` — ${decision.reason ?? 'role policy'}`;
+    }
+    try {
+      await this.store.appendThreadEntry(ctx.stream, {
+        ts: this.now().toISOString(),
+        by: 'daemon',
+        kind: 'event',
+        body: body.slice(0, THREAD_BODY_MAX_CHARS),
+        ...(ruleId !== undefined ? { ref: ruleId } : {}),
+      });
+    } catch {
+      // A stream that has gone: the decision is already made.
+    }
+  }
+
   /** Every rule in scope for this stream, or none when no rules service is wired. */
   private rulesInScope(stream: string): Rule[] {
     const rules = this.options.rules;
@@ -869,4 +913,22 @@ export class HookService {
 
 function summarizeLowPriority(messages: AgentMessage[]): string {
   return messages.map((m) => `[${m.kind} from ${m.from}] ${m.body}`).join('\n');
+}
+
+/** T169: what a hit refused — the command, else the path, else the tool — one line, capped. */
+function hitTarget(payload: ClaudePreToolUsePayload): string {
+  const input = payload.tool_input ?? {};
+  const pick = (key: string): string | undefined =>
+    typeof input[key] === 'string' && (input[key] as string).length > 0
+      ? (input[key] as string)
+      : undefined;
+  const raw =
+    pick('command') ??
+    pick('file_path') ??
+    pick('path') ??
+    pick('notebook_path') ??
+    payload.tool_name ??
+    'unknown call';
+  const line = raw.replace(/\s+/g, ' ').trim();
+  return line.length > 200 ? `${line.slice(0, 199)}…` : line;
 }

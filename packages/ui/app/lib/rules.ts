@@ -31,6 +31,8 @@ export interface RulesFilter {
   /** A `formatRuleScope` value, or `all`. */
   scope: string;
   source?: string;
+  /** T169: one rule by id — a "blocked by rule" card on the stream page opens the screen on it. */
+  rule?: string;
 }
 
 export const DEFAULT_RULES_FILTER: RulesFilter = { status: 'all', scope: 'all' };
@@ -45,7 +47,8 @@ export function filterRules(rules: readonly Rule[], filter: RulesFilter): Rule[]
     (rule) =>
       (filter.status === 'all' || rule.status === filter.status) &&
       (filter.scope === 'all' || formatRuleScope(rule.scope) === filter.scope) &&
-      (filter.source === undefined || rule.provenance.by === filter.source),
+      (filter.source === undefined || rule.provenance.by === filter.source) &&
+      (filter.rule === undefined || rule.id === filter.rule),
   );
 }
 
@@ -202,4 +205,9 @@ export function createOf(draft: RuleDraft): { input: RuleCreateInput } | { error
  */
 export function evalDeadlineMs(examples: number, timeoutMs?: number): number {
   return Math.max(1, examples) * (timeoutMs ?? DEFAULT_CLASSIFIER_TIMEOUT_MS) + 10_000;
+}
+
+/** T169: "2026-09-23 14:02" (UTC) — the date alone hid whether a rule fired a minute or a day ago. */
+export function formatFiredAt(iso: string): string {
+  return iso.length >= 16 ? `${iso.slice(0, 10)} ${iso.slice(11, 16)}` : iso;
 }

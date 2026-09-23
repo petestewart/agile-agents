@@ -273,3 +273,47 @@ describe('a gate decision supersedes the questions the same session left open (T
     expect(after.answer).toBe('semicolon');
   });
 });
+
+describe('a human reply on the thread answers the asking session (T169)', () => {
+  test('closes that session’s open questions as reply by human, citing the line', async () => {
+    const mine = await questions.raise({
+      stream: stream.id,
+      raised_by: '01ARZ3NDEKTSV4RRFFQ69GE001',
+      session: SESSION,
+      text: 'comma or semicolon?',
+    });
+    const other = await questions.raise({
+      stream: stream.id,
+      raised_by: '01ARZ3NDEKTSV4RRFFQ69GE001',
+      session: ulid(),
+      text: 'another session, untouched',
+    });
+
+    const line = { body: 'semicolon, please', ts: '2026-09-23T10:00:00.000Z' };
+    const answered = await questions.answerFromThread(SESSION, line);
+    expect(answered.map((q) => q.id)).toEqual([mine.id]);
+
+    const after = questions.get(mine.id as QuestionId);
+    expect(after.status).toBe('answered');
+    expect(after.resolved_as).toBe('reply');
+    expect(after.answered_by).toBe('human');
+    expect(after.answer).toContain('semicolon, please');
+    expect(after.answer).toContain(line.ts);
+    expect(questions.get(other.id as QuestionId).status).toBe('open');
+
+    const entries = streams.readThread(stream.id, { limit: 100 }).entries;
+    expect(
+      entries.some((e) => e.kind === 'event' && e.body.includes(`question ${mine.id} answered`)),
+    ).toBe(true);
+    expect(streams.get(stream.id).human.status).toBe('open');
+    const event = store
+      .listEvents()
+      .filter((e) => e.kind === 'question_answered')
+      .at(-1);
+    expect(event?.agent).toBe('human');
+  });
+
+  test('a session with nothing open closes nothing', async () => {
+    expect(await questions.answerFromThread(ulid(), { body: 'hi', ts: 'now' })).toEqual([]);
+  });
+});

@@ -668,7 +668,17 @@ async function handleStreamRoute(
     if (action === 'say') {
       const input = StreamSayInputSchema.safeParse(body);
       if (!input.success) return errorResponse(400, formatZodError('say', input.error));
-      if (feed.attach) return jsonResponse(await feed.attach.say(id, input.data.body), 201);
+      if (feed.attach) {
+        const said = await feed.attach.say(id, input.data.body);
+        // T169: a line prompted into the session that asked is the answer
+        // to that session's open questions (`QuestionService.answerFromThread`).
+        if (said.prompted !== undefined && feed.questions) {
+          await feed.questions.answerFromThread(said.prompted, said.entry).catch(() => {
+            // The line and the prompt already happened; a stuck card is recoverable from the inbox.
+          });
+        }
+        return jsonResponse(said, 201);
+      }
       // No attach service: the line is still the record.
       const entry = await feed.streams.appendThread('human', id, {
         kind: 'line',
