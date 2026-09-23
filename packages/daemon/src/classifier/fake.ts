@@ -1,17 +1,8 @@
 /**
- * `FakeClassifier` — §6.2's "scripted per test, and the only classifier the
- * suite ever uses". There is no network in `bun test`; the one place the
- * real wire shape is checked is the recorded-fixture test.
- *
- * It scripts three ways, because T151's bands, error path and timeout path
- * each need a different one:
- *
- *  - a fixed `Answer[]`, returned for every call;
- *  - a function `(state, questions) => Answer[]`, for a band per question;
- *  - `throws` / `delayMs`, for the fail policy (§6.4) and the timeout.
- *
- * Every call is recorded on `calls`, so a test can assert what the hook
- * actually sent — including that it sent the *scrubbed* state.
+ * `FakeClassifier`: the only classifier the test suite uses (§6.2; no
+ * network in `bun test`). Scripted by a fixed `Answer[]`, a function per
+ * call, or `throws`/`delayMs` for the fail policy and timeout. Every call
+ * is recorded on `calls` (so a test can check the state was scrubbed).
  */
 
 import type { Answer, Classifier, ClassifierCallInfo, Noul } from './types';
@@ -24,11 +15,11 @@ export interface FakeClassifierCall {
 export type FakeScript = Answer[] | ((state: string, questions: Noul[]) => Answer[]);
 
 export interface FakeClassifierOptions {
-  /** Thrown instead of answering — the §6.4 error path. */
+  /** Thrown instead of answering (§6.4). */
   throws?: Error;
   /** Resolves this long after `ask` is entered, before answering or throwing. */
   delayMs?: number;
-  /** Same latency hook the real adapter takes, so T151 can test its event. */
+  /** The same latency hook the real adapter takes. */
   onCall?: (info: ClassifierCallInfo) => void;
 }
 
@@ -43,7 +34,7 @@ export class FakeClassifier implements Classifier {
     this.options = options;
   }
 
-  /** Re-scripts between calls — a second round with different answers. */
+  /** Re-scripts between calls. */
   setScript(script: FakeScript, options: FakeClassifierOptions = {}): void {
     this.script = script;
     this.options = options;

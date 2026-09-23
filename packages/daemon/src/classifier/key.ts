@@ -1,15 +1,8 @@
 /**
- * T167: the classifier key, set from the cockpit (Settings → "TypeSafe API
- * key") without a restart.
- *
- * The daemon's `config.classifier` object is shared by reference with
- * everything that reads the key — `JevClassifier` (which resolves its key
- * per call), `classifierEnabled` on the hook path and the landing diff
- * check — so a save writes `config.yaml` through the store and then sets
- * `api_key` on that same object: the next call sees it.
- *
- * Write-only by construction: `status()` says where the key comes from and
- * whether a call could be made, never the key or any part of it.
+ * The classifier key set from Settings without a restart: the daemon's
+ * `config.classifier` object is shared by reference with every key reader,
+ * so a save writes `config.yaml` and then sets `api_key` on that object.
+ * `status()` says where the key comes from, never the key.
  */
 
 import type { ClassifierConfig, ClassifierKeyStatus } from '@agile-agents/shared';
@@ -20,7 +13,7 @@ export interface ClassifierKeyStore {
 }
 
 export interface ClassifierKeyServiceOptions {
-  /** The daemon's live `config.classifier` — mutated in place on save/remove. */
+  /** The daemon's live `config.classifier`, mutated in place. */
   config: ClassifierConfig;
   store: ClassifierKeyStore;
   /** Defaults to `process.env`. */

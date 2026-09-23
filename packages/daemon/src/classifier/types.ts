@@ -1,23 +1,8 @@
 /**
- * The classifier tier's interface (design/cockpit-design.md §6.2), verbatim:
- *
- * ```ts
- * interface Classifier { ask(state: string, questions: Noul[]): Promise<Answer[]> }
- * Noul   = { id: string, question: string }
- * Answer = { id: string, probability: number }
- * ```
- *
- * T156 (**D14**) amends the design's `Answer`: a Noul has no separate
- * confidence ("There is no separate `confidence` value for a Noul" — the
- * TypeSafe docs), so `Answer` carries the Noul value only, and a `Noul`
- * may carry the rule's optional `criteria`.
- *
- * These types are **not persisted state** — a classifier call is a question
- * asked and answered inside one gated action, and nothing about it reaches
- * disk except the event T151 logs. So they live here as plain TypeScript
- * rather than as zod schemas in `packages/shared`; the config that *is*
- * persisted (`classifier:` in `config.yaml`, the per-repo default, the
- * per-stream opt-out) has its schemas there, as the convention requires.
+ * The classifier tier's interface (§6.2): `ask(state, questions: Noul[]):
+ * Promise<Answer[]>`. Per D14 an `Answer` carries only the Noul value (a
+ * Noul has no separate confidence) and a `Noul` may carry `criteria`.
+ * Plain types, not shared schemas: nothing here is persisted state.
  */
 
 import { type Rule, type RuleCriteria, classifierQuestion } from '@agile-agents/shared';
@@ -26,7 +11,7 @@ import { type Rule, type RuleCriteria, classifierQuestion } from '@agile-agents/
 export interface Noul {
   id: string;
   question: string;
-  /** T156: what "yes" (the rule is broken) and "no" look like, when the line is subtle. */
+  /** What "yes" (the rule is broken) and "no" look like, when the line is subtle. */
   criteria?: RuleCriteria;
 }
 
@@ -39,47 +24,35 @@ export function noulFor(rule: Pick<Rule, 'id' | 'text' | 'question' | 'criteria'
   };
 }
 
-/**
- * One answer, keyed back to the question's `id`. `probability` is the raw
- * Noul value — answer and certainty in one (D14); the bands read it alone.
- */
+/** One answer by question `id`; `probability` is the raw Noul value (D14). */
 export interface Answer {
   id: string;
   probability: number;
 }
 
-/** What `onCall` is handed after every attempt, successful or not (§6.2, latency). */
+/** What `onCall` gets after every attempt (§6.2). */
 export interface ClassifierCallInfo {
-  /** Wall-clock time from entering `ask` to resolving or failing. */
+  /** From entering `ask` to resolving or failing. */
   latency_ms: number;
-  /** How many questions the call carried — one call per state, N questions. */
+  /** Questions carried by the one call. */
   questions: number;
   ok: boolean;
-  /** Present when `ok` is false: the failure, already stringified. */
+  /** The failure, when `ok` is false. */
   error?: string;
 }
 
 /**
- * §6.2. One call per state, N questions: ten classifier rules in scope must
- * not mean ten round trips on every tool call.
- *
- * An implementation returns one `Answer` per `Noul`, in the order asked.
- * It throws `ClassifierUnavailableError` when it could not ask at all (no
- * key, the scrub failed, a timeout, a transport or protocol error) — the
- * caller then applies §6.4's fail policy rather than guessing.
+ * §6.2: one call per state, N questions, one `Answer` per `Noul` in order.
+ * Throws `ClassifierUnavailableError` when it can't ask at all; the caller
+ * applies §6.4's fail policy.
  */
 export interface Classifier {
   ask(state: string, questions: Noul[]): Promise<Answer[]>;
 }
 
 /**
- * The classifier could not answer. One error type for every reason, because
- * §6.4's fail policy does not distinguish between them: critical rules deny,
- * everything else proceeds with a `hook_unchecked` entry on the thread,
- * whether the key was missing, the scrub threw or the API timed out.
- *
- * `reason` is the machine-readable discriminator for the event T151 logs;
- * the message is what a human reads.
+ * The classifier couldn't answer. One type for every reason, since §6.4
+ * treats them alike; `reason` is the machine-readable discriminator.
  */
 export type ClassifierUnavailableReason =
   | 'not_configured'
