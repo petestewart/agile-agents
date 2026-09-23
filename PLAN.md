@@ -546,6 +546,15 @@ Build order: Phase 0 → 1 → 2 → 3 → 4 → 5 → 6. Within a phase, ticket
 - **Validation Steps:** `bun test packages/daemon/src/landing packages/ui packages/cli`; `bun run test:e2e`.
 - **Notes:** May run alongside T162. Source: Pete, 2026-09-22.
 
+### Ticket: T167 Pattern rules end to end; rules screen fixes
+- **Priority:** P1
+- **Status:** In Progress
+- **Owner:** —
+- **Scope:** From Pete's T163 look (2026-09-23). (1) `agile rules add|edit --pattern <kind> [--pattern-arg …]` (kinds `no_push`, `no_push_protected`, `path_deny` globs, `command_deny` token patterns), validated by `RulePatternSchema`; `rules show` prints the pattern. (2) Rules screen shows the pattern under the text (`command_deny: "rm -rf", "git reset --hard"`), the editor edits kind and args, and a "New rule" form creates any rule (text, scope, enforcement, stage, question, criteria, pattern, examples) as a proposal. (3) The editor has Cancel (and Esc) that discards changes. (4) Test examples is available only when the daemon actually holds a key; `agile daemon status` says whether a classifier key is loaded (never prints it). (5) Cap examples per rule in the shared schema. (6) `--enforcement pattern` without a pattern is refused.
+- **Acceptance Criteria:** CLI test creating and accepting a `command_deny` rule, then a hook decision denying `rm -rf dist` with the rule named; Playwright: pattern shown on the rules screen, create via the form, edit then Cancel leaves the rule unchanged; status test for the key line.
+- **Validation Steps:** `bun test packages/shared packages/daemon/src/rules packages/daemon/src/permissions packages/cli`; `bun run test:e2e`.
+- **Notes:** Runs before T164 so the checklist can describe it.
+
 ### Ticket: T165 Cockpit as an installable app
 - **Priority:** P2
 - **Status:** Todo (step 1 done 2026-09-22, merge 8121113; step 2 awaits Pete)
