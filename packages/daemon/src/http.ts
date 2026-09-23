@@ -160,6 +160,10 @@ function errorResponse(status: number, message: string): Response {
   return jsonResponse({ error: message }, status);
 }
 
+function messageOf(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
 async function readJsonBody(req: Request): Promise<Record<string, unknown>> {
   const text = await req.text();
   if (text.trim().length === 0) return {};
@@ -233,7 +237,7 @@ async function handleHilAction(
   try {
     body = await readJsonBody(req);
   } catch (err) {
-    return errorResponse(400, err instanceof Error ? err.message : String(err));
+    return errorResponse(400, messageOf(err));
   }
 
   const note = readNote(body);
@@ -256,7 +260,7 @@ async function handleHilAction(
   } catch (err) {
     if (err instanceof GateNotFoundError) return errorResponse(404, err.message);
     if (err instanceof GateAlreadyResolvedError) return errorResponse(409, err.message);
-    return errorResponse(400, err instanceof Error ? err.message : String(err));
+    return errorResponse(400, messageOf(err));
   }
 }
 
@@ -283,7 +287,7 @@ async function handleQuestionRaise(req: Request, questions: QuestionService): Pr
   try {
     body = await readJsonBody(req);
   } catch (err) {
-    return errorResponse(400, err instanceof Error ? err.message : String(err));
+    return errorResponse(400, messageOf(err));
   }
   const text = readQuestionText(body.text, 'text');
   if (typeof text !== 'string') return errorResponse(400, text.error);
@@ -310,7 +314,7 @@ async function handleQuestionRaise(req: Request, questions: QuestionService): Pr
     });
     return jsonResponse(raised, 201);
   } catch (err) {
-    return errorResponse(400, err instanceof Error ? err.message : String(err));
+    return errorResponse(400, messageOf(err));
   }
 }
 
@@ -330,7 +334,7 @@ async function handleQuestionAnswer(
   try {
     body = await readJsonBody(req);
   } catch (err) {
-    return errorResponse(400, err instanceof Error ? err.message : String(err));
+    return errorResponse(400, messageOf(err));
   }
   try {
     const input = parseAnswerParams({ ...body, by: 'human' });
@@ -339,7 +343,7 @@ async function handleQuestionAnswer(
   } catch (err) {
     if (err instanceof QuestionNotFoundError) return errorResponse(404, err.message);
     if (err instanceof QuestionAlreadyAnsweredError) return errorResponse(409, err.message);
-    return errorResponse(400, err instanceof Error ? err.message : String(err));
+    return errorResponse(400, messageOf(err));
   }
 }
 
@@ -454,7 +458,7 @@ async function handleSessionSettingsRoute(
     try {
       return jsonResponse(new SessionDefaultsService(feed.store).status());
     } catch (err) {
-      return errorResponse(500, err instanceof Error ? err.message : String(err));
+      return errorResponse(500, messageOf(err));
     }
   }
   if (req.method !== 'POST') return undefined;
@@ -476,7 +480,7 @@ async function handleSessionSettingsRoute(
         : await service.setRepo('human', repo, input.data),
     );
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
+    const message = messageOf(err);
     if (err instanceof NotFoundError) return errorResponse(404, message);
     return errorResponse(400, message);
   }
@@ -529,7 +533,7 @@ async function handleRuleRoute(
         await feed.rules.create('human', { ...input.data, provenance: { by: 'human' } }),
       );
     } catch (err) {
-      return errorResponse(400, err instanceof Error ? err.message : String(err));
+      return errorResponse(400, messageOf(err));
     }
   }
   const isTest = url.pathname === '/api/rules/test';
@@ -571,7 +575,7 @@ async function handleRuleRoute(
   } catch (err) {
     if (err instanceof RuleAlreadyDecidedError) return errorResponse(409, err.message);
     if (err instanceof NotFoundError) return errorResponse(404, err.message);
-    return errorResponse(400, err instanceof Error ? err.message : String(err));
+    return errorResponse(400, messageOf(err));
   }
 }
 
@@ -669,7 +673,7 @@ async function handleStreamRoute(
     const sessions = await feed.attach.stop(id, undefined, { detach: true });
     return jsonResponse({ stopped: sessions.length > 0, sessions });
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
+    const message = messageOf(err);
     if (err instanceof NotFoundError) return errorResponse(404, message);
     if (err instanceof StreamBusyError || err instanceof LandRefusedError) {
       return errorResponse(409, message);
@@ -705,6 +709,7 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
       hostname,
       async fetch(req, srv) {
         const url = new URL(req.url);
+        const sameOrigin = () => isSameOriginRequest(req, srv.port ?? options.port);
 
         if (url.pathname === '/health') {
           const payload: HealthPayload = {
@@ -782,77 +787,61 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
           try {
             return jsonResponse(feed.store.getPolicy());
           } catch (err) {
-            return errorResponse(404, err instanceof Error ? err.message : String(err));
+            return errorResponse(404, messageOf(err));
           }
         }
 
         if (url.pathname === '/api/policy' && req.method === 'PUT') {
           if (!feed) return errorResponse(503, 'state store not initialised (run `agile init`)');
-          if (!isSameOriginRequest(req, srv.port ?? options.port)) {
-            return errorResponse(403, 'cross-origin request rejected');
-          }
+          if (!sameOrigin()) return errorResponse(403, 'cross-origin request rejected');
           try {
             const policy = validatePolicy(await readJsonBody(req));
             return jsonResponse(await feed.store.putPolicy(policy, { by: 'human' }));
           } catch (err) {
-            return errorResponse(400, err instanceof Error ? err.message : String(err));
+            return errorResponse(400, messageOf(err));
           }
         }
 
-        const settingsRoute = await handleSettingsRoute(req, url, feed, () =>
-          isSameOriginRequest(req, srv.port ?? options.port),
-        );
+        const settingsRoute = await handleSettingsRoute(req, url, feed, sameOrigin);
         if (settingsRoute) return settingsRoute;
 
-        const sessionSettingsRoute = await handleSessionSettingsRoute(req, url, feed, () =>
-          isSameOriginRequest(req, srv.port ?? options.port),
-        );
+        const sessionSettingsRoute = await handleSessionSettingsRoute(req, url, feed, sameOrigin);
         if (sessionSettingsRoute) return sessionSettingsRoute;
 
-        const ruleRoute = await handleRuleRoute(
-          req,
-          url,
-          feed,
-          () => isSameOriginRequest(req, srv.port ?? options.port),
-          () => srv.timeout(req, 0),
+        const ruleRoute = await handleRuleRoute(req, url, feed, sameOrigin, () =>
+          srv.timeout(req, 0),
         );
         if (ruleRoute) return ruleRoute;
 
         const landMatch = url.pathname.match(/^\/api\/streams\/([^/]+)\/land$/);
         if (landMatch && req.method === 'POST') {
           if (!feed?.landing) return errorResponse(503, 'landing not available');
-          if (!isSameOriginRequest(req, srv.port ?? options.port)) {
-            return errorResponse(403, 'cross-origin request rejected');
-          }
+          if (!sameOrigin()) return errorResponse(403, 'cross-origin request rejected');
           const id = UlidSchema.safeParse(decodeURIComponent(landMatch[1] ?? ''));
           if (!id.success) return errorResponse(400, `invalid stream id: ${landMatch[1]}`);
           try {
             return jsonResponse(await feed.landing.land(id.data));
           } catch (err) {
             if (err instanceof LandRefusedError) return errorResponse(409, err.message);
-            return errorResponse(400, err instanceof Error ? err.message : String(err));
+            return errorResponse(400, messageOf(err));
           }
         }
 
         // "New stream" and quick capture (§9.1): the same `StreamService.create` as the RPC.
         if (url.pathname === '/api/streams' && req.method === 'POST') {
           if (!feed?.streams) return errorResponse(503, 'streams not available');
-          if (!isSameOriginRequest(req, srv.port ?? options.port)) {
-            return errorResponse(403, 'cross-origin request rejected');
-          }
+          if (!sameOrigin()) return errorResponse(403, 'cross-origin request rejected');
           try {
             const input = StreamCreateInputSchema.safeParse(await readJsonBody(req));
             if (!input.success) return errorResponse(400, formatZodError('stream', input.error));
             return jsonResponse(await feed.streams.create('human', input.data), 201);
           } catch (err) {
             // An unknown parent or repo, or a bad body: the human's to fix.
-            return errorResponse(400, err instanceof Error ? err.message : String(err));
+            return errorResponse(400, messageOf(err));
           }
         }
 
-        const streamRoute = await handleStreamRoute(req, url, feed, () =>
-          isSameOriginRequest(req, srv.port ?? options.port),
-        );
+        const streamRoute = await handleStreamRoute(req, url, feed, sameOrigin);
         if (streamRoute) return streamRoute;
 
         // Questions: read, raise, answer.
@@ -867,27 +856,21 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
 
         if (url.pathname === '/api/questions' && req.method === 'POST') {
           if (!feed?.questions) return errorResponse(503, 'questions store not available');
-          if (!isSameOriginRequest(req, srv.port ?? options.port)) {
-            return errorResponse(403, 'cross-origin request rejected');
-          }
+          if (!sameOrigin()) return errorResponse(403, 'cross-origin request rejected');
           return handleQuestionRaise(req, feed.questions);
         }
 
         const questionAnswerMatch = matchQuestionAnswer(url.pathname);
         if (questionAnswerMatch && req.method === 'POST') {
           if (!feed?.questions) return errorResponse(503, 'questions store not available');
-          if (!isSameOriginRequest(req, srv.port ?? options.port)) {
-            return errorResponse(403, 'cross-origin request rejected');
-          }
+          if (!sameOrigin()) return errorResponse(403, 'cross-origin request rejected');
           return handleQuestionAnswer(req, feed.questions, questionAnswerMatch);
         }
 
         const hilMatch = matchHilAction(url.pathname);
         if (hilMatch && req.method === 'POST') {
           if (!feed) return errorResponse(503, 'state store not initialised (run `agile init`)');
-          if (!isSameOriginRequest(req, srv.port ?? options.port)) {
-            return errorResponse(403, 'cross-origin request rejected');
-          }
+          if (!sameOrigin()) return errorResponse(403, 'cross-origin request rejected');
           return handleHilAction(req, feed.gates, hilMatch.id, hilMatch.action);
         }
 
@@ -945,7 +928,7 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
               JSON.stringify(buildCockpitFrame(feed.streams, feed.inbox)),
             );
           } catch (err) {
-            console.error(err instanceof Error ? err.message : String(err));
+            console.error(messageOf(err));
           }
         }
       },
