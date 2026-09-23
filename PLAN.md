@@ -558,7 +558,7 @@ Build order: Phase 0 → 1 → 2 → 3 → 4 → 5 → 6. Within a phase, ticket
 
 ### Ticket: T168 ∥ Finish the §8 deletions
 - **Priority:** P1
-- **Status:** In Progress
+- **Status:** Done (merge 13cf4e6; review APPROVE incl. forward-compat on a pre-T168 state home)
 - **Owner:** —
 - **Scope:** From the 2026-09-23 deletions audit. (1) Remove the `Ticket` and `Message` schemas (`packages/shared/src/ticket.ts`, `message.ts`) and `Quota` (`vendors.ts`), moving `bus/bus.ts` and `gates/service.ts` off them. (2) Strip the old role union and role routing from `bus/routing.ts` (em/architect/qa fan-out, halt/resume broadcast) and the `em`/`architect` owner branches in `gates/service.ts`, which cite the deleted `em/delegate.ts`. (3) Narrow the agent-id regex and comments in `shared/src/ids.ts`. (4) Delete the orphan fixtures: halt, oracle-entry, sprint, sprint-with-team-and-gates, stanza, kb-fact, quota, ledger-line, and ticket/message once their schemas go.
 - **Acceptance Criteria:** No export, import or fixture for any §8 schema; no `em`/`architect`/`qa` role strings in daemon or shared source outside tests asserting their absence; all suites green.
