@@ -5,7 +5,15 @@
  * (cockpit design §2.2).
  */
 
-import type { Policy, Rule, RulePatch, Stream, StreamCreateInput } from '@agile-agents/shared';
+import type {
+  ClassifierKeyStatus,
+  Policy,
+  Rule,
+  RuleCreateInput,
+  RulePatch,
+  Stream,
+  StreamCreateInput,
+} from '@agile-agents/shared';
 import type {
   LandOutcome,
   RuleEvalReport,
@@ -48,6 +56,29 @@ export function decideGate(
 /** A gate card's free text with no decision — recorded on the pending gate. */
 export function noteGate(id: string, note: string): Promise<unknown> {
   return post(`/api/hil/${encodeURIComponent(id)}/note`, { note });
+}
+
+/** T167: the rules screen's "New rule" — always a proposal (§5.1). */
+export function createRule(input: RuleCreateInput): Promise<Rule> {
+  return post('/api/rules', input) as Promise<Rule>;
+}
+
+/** T167: Settings — where the classifier key comes from. Never the key. */
+export async function getClassifierKey(): Promise<ClassifierKeyStatus> {
+  const res = await fetch('/api/settings/classifier');
+  const payload = (await res.json()) as ClassifierKeyStatus & { error?: string };
+  if (!res.ok) throw new Error(payload.error ?? `classifier settings read failed (${res.status})`);
+  return payload;
+}
+
+/** T167: Settings' Save — write-only; the reply is the status, not the key. */
+export function saveClassifierKey(apiKey: string): Promise<ClassifierKeyStatus> {
+  return post('/api/settings/classifier/key', { api_key: apiKey }) as Promise<ClassifierKeyStatus>;
+}
+
+/** T167: Settings' Remove — deletes the config key; an env key still applies. */
+export function removeClassifierKey(): Promise<ClassifierKeyStatus> {
+  return post('/api/settings/classifier/key/remove') as Promise<ClassifierKeyStatus>;
 }
 
 /** T163: the rules screen's edit (`RulePatchSchema` on the daemon side). */

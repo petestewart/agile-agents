@@ -6,15 +6,22 @@
 
 import {
   DEFAULT_CLASSIFIER_TIMEOUT_MS,
+  RULE_EXAMPLES_MAX,
   RULE_STATUSES,
   type Rule,
+  type RuleCreateInput,
   type RuleCriteria,
   type RuleEnforcement,
   type RuleExample,
   type RulePatch,
+  type RulePattern,
+  type RulePatternKind,
   type RuleStage,
   type RuleStatus,
   formatRuleScope,
+  parseRuleScope,
+  rulePatternArgs,
+  rulePatternFromArgs,
 } from '@agile-agents/shared';
 import type { RuleReportRow } from './feed-types';
 
@@ -73,7 +80,15 @@ export interface RuleDraft {
   criteriaFalse: string;
   enforcement: RuleEnforcement;
   stage: RuleStage;
+  /** T167: the pattern's kind, or `''` for none. */
+  patternKind: RulePatternKind | '';
+  /** T167: its arguments, one per line (globs for `path_deny`, tokens for `command_deny`). */
+  patternArgs: string;
   examples: RuleExample[];
+  /** T167, "New rule" only: `global` · `repo:<name>` · `stream:<id>`. */
+  scope: string;
+  /** T167, "New rule" only. */
+  critical: boolean;
 }
 
 export function draftOf(rule: Rule): RuleDraft {
@@ -84,8 +99,43 @@ export function draftOf(rule: Rule): RuleDraft {
     criteriaFalse: rule.criteria?.false ?? '',
     enforcement: rule.enforcement,
     stage: rule.stage,
+    patternKind: rule.pattern?.kind ?? '',
+    patternArgs: rule.pattern ? rulePatternArgs(rule.pattern).join('\n') : '',
     examples: rule.examples.map((example) => ({ ...example })),
+    scope: formatRuleScope(rule.scope),
+    critical: rule.critical,
   };
+}
+
+/** T167: the "New rule" form's starting point. */
+export function emptyDraft(): RuleDraft {
+  return {
+    text: '',
+    question: '',
+    criteriaTrue: '',
+    criteriaFalse: '',
+    enforcement: 'guidance',
+    stage: 'action',
+    patternKind: '',
+    patternArgs: '',
+    examples: [],
+    scope: 'global',
+    critical: false,
+  };
+}
+
+function patternOf(draft: RuleDraft): { pattern?: RulePattern } | { error: string } {
+  if (draft.patternKind === '') {
+    if (draft.enforcement === 'pattern') {
+      return { error: 'a pattern rule needs a pattern: pick its kind' };
+    }
+    return {};
+  }
+  try {
+    return { pattern: rulePatternFromArgs(draft.patternKind, draft.patternArgs.split('\n')) };
+  } catch (err) {
+    return { error: err instanceof Error ? err.message : String(err) };
+  }
 }
 
 /**
@@ -105,6 +155,11 @@ export function patchOf(draft: RuleDraft): { patch: RulePatch } | { error: strin
   const examples = draft.examples
     .map((example) => ({ action: example.action.trim(), violates: example.violates }))
     .filter((example) => example.action.length > 0);
+  if (examples.length > RULE_EXAMPLES_MAX) {
+    return { error: `a rule carries at most ${RULE_EXAMPLES_MAX} examples` };
+  }
+  const pattern = patternOf(draft);
+  if ('error' in pattern) return pattern;
   const criteria: RuleCriteria | undefined =
     whenTrue.length > 0 ? { true: whenTrue, false: whenFalse } : undefined;
   return {
@@ -114,7 +169,29 @@ export function patchOf(draft: RuleDraft): { patch: RulePatch } | { error: strin
       ...(criteria ? { criteria } : {}),
       enforcement: draft.enforcement,
       stage: draft.stage,
+      ...(pattern.pattern ? { pattern: pattern.pattern } : {}),
       examples,
+    },
+  };
+}
+
+/** T167: the "New rule" form's `POST /api/rules` body — the patch plus scope and criticality. */
+export function createOf(draft: RuleDraft): { input: RuleCreateInput } | { error: string } {
+  const built = patchOf(draft);
+  if ('error' in built) return built;
+  let scope: RuleCreateInput['scope'];
+  try {
+    scope = parseRuleScope(draft.scope);
+  } catch (err) {
+    return { error: err instanceof Error ? err.message : String(err) };
+  }
+  const { text, ...rest } = built.patch;
+  return {
+    input: {
+      text: text ?? draft.text.trim(),
+      ...rest,
+      scope,
+      ...(draft.critical ? { critical: true } : {}),
     },
   };
 }
