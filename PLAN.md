@@ -533,7 +533,7 @@ Build order: Phase 0 → 1 → 2 → 3 → 4 → 5 → 6. Within a phase, ticket
 - **Priority:** P0
 - **Status:** Todo
 - **Owner:** —
-- **Scope:** The §6 walkthrough as numbered steps against `~/Projects/ledger-lite`, including the reset recipe, the real-key classifier step, and what to look at when something fails. `CLAUDE.md` rewritten for the new layout, commands, and conventions; the frozen-plan and old-design references removed.
+- **Scope:** The §6 walkthrough as numbered steps against `~/Projects/ledger-lite`, including the reset recipe, the real-key classifier step, and what to look at when something fails. `CLAUDE.md` rewritten for the new layout, commands, and conventions; the frozen-plan and old-design references removed. Also (Pete, 2026-09-23): Settings → Session defaults is labelled as a **Global default** row followed by a **Per-repo defaults** list, one row per registered repo, each saying it overrides the global default and showing what it currently resolves to. Every command in the checklist is run in zsh before it is written down: no `<placeholders>`, no inline `#` comments. The root `test:live` script no longer points at the deleted `em/live.test.ts`.
 - **Acceptance Criteria:** Pete completes the walkthrough without asking a question.
 - **Validation Steps:** Manual.
 - **Notes:** Final milestone.
