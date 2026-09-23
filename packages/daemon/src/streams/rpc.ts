@@ -1,14 +1,7 @@
 /**
- * `stream.*` RPC methods over a `StreamService` (T120). Same contract as
- * `questions/rpc.ts`: every handler validates its params at the boundary
- * and throws `RpcParamError` (-32602) rather than letting a destructuring
- * `TypeError` reach `dispatch()`.
- *
- * **The principal is stamped here, never read from params** (cockpit design
- * §2.2: "the HTTP edge stamps `human` and never accepts a principal from a
- * request body"). This edge serves the CLI and the UI, so every call is
- * `human`. An agent-principal write goes through `StreamService` directly
- * (T130's MCP verbs), not through this table.
+ * `stream.*` RPC over a `StreamService`. Params are validated at the
+ * boundary (`RpcParamError`, -32602). The principal is always `human`
+ * (§2.2); agent writes go through `StreamService` via the verbs.
  */
 
 import {
@@ -30,7 +23,7 @@ import {
   UnknownRepoError,
 } from './service';
 
-/** Every `stream.*` write from this edge is the human's (design §2.2). */
+/** Every `stream.*` write from this edge is the human's. */
 const EDGE_PRINCIPAL = 'human' as const;
 
 function requireStreamId(value: unknown): string {
@@ -70,11 +63,7 @@ function requireThreadKind(value: unknown): ThreadEntryKind {
   return value as ThreadEntryKind;
 }
 
-/**
- * The patch a human may send. `agent` is deliberately not accepted: the
- * store would reject it anyway (D11), and refusing it at the edge makes the
- * error say why instead of surfacing as a store-level write violation.
- */
+/** The patch a human may send. `agent` is refused here so the error says why (the store would reject it, D11). */
 function requireHumanPatch(params: Record<string, unknown>): StreamPatch {
   if ('agent' in params) {
     throw new RpcParamError(
@@ -96,9 +85,7 @@ function requireHumanPatch(params: Record<string, unknown>): StreamPatch {
   const targetBranch = optionalString(params.target_branch, 'target_branch');
   if (targetBranch !== undefined) patch.target_branch = targetBranch;
   if (params.parent !== undefined) patch.parent = requireStreamId(params.parent);
-  // T150 (§6.4): the per-stream classifier opt-out. `'on'` is not a
-  // stream-level override that re-enables the tier — it clears the
-  // opt-out and lets the repo/home default decide again.
+  // §6.4's per-stream opt-out. `'on'` just clears it, so the repo/home default decides.
   if (params.classifier !== undefined) {
     if (params.classifier !== 'on' && params.classifier !== 'off') {
       throw new RpcParamError('invalid "classifier": must be "on" or "off"', {
@@ -125,10 +112,9 @@ const asParamErrors = paramErrors(
 );
 
 /**
- * T169: optional wiring for `stream.thread_append`. With `reply`, a plain
- * human `line` (no `ref`) goes through `sayAndAnswer` — the cockpit
- * composer's path — so `agile stream say` prompts the live worker and
- * closes the questions that worker had open, exactly as the web does.
+ * With `reply`, a plain human `line` goes through `sayAndAnswer` (the
+ * composer's path), so `agile stream say` prompts the live worker and
+ * closes its open questions, as the web does.
  */
 export interface StreamRpcOptions {
   reply?: ThreadReplyDeps;

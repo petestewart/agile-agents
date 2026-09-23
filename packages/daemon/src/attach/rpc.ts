@@ -1,15 +1,8 @@
 /**
- * `attach.*` and `agent.*` RPC (T130), following the `streams/rpc.ts`
- * precedent: every handler validates its params at the boundary and throws
- * `RpcParamError` (-32602) rather than letting a `TypeError` reach
- * `dispatch()`.
- *
- * **Principals are stamped here, never read from params** (design §2.2).
- * `attach.*` is the operator's edge, so the attach itself is a `human`
- * action. `agent.*` is the verb family, and it is the *only* RPC family
- * that takes a `session`: the session id is what stamps the `agent`
- * principal inside `VerbService`, and the edge still rejects an explicit
- * `principal` in the body exactly as `stream.*` does.
+ * `attach.*` and `agent.*` RPC. Params are validated at the boundary
+ * (`RpcParamError`, -32602), and an explicit `principal` is refused (§2.2):
+ * `attach.*` is the operator's edge, and `agent.*` (the verbs) is the one
+ * family that takes a `session`, which `VerbService` resolves itself.
  */
 
 import {
@@ -73,15 +66,11 @@ export function buildAttachRpcMethods(
           ...(role !== undefined ? { role } : {}),
         }),
       );
-      // The handle is in-process only — the wire carries the record.
+      // The handle is in-process only; the wire carries the record.
       return { session: result.session, stream: result.stream };
     },
 
-    /**
-     * `agile detach <stream>` — stops whatever is live on the stream. T137:
-     * `stopped` is the truth ("was anything actually stopped"), not a
-     * constant, and the session ids come back so the CLI can print them.
-     */
+    /** `agile detach <stream>`: stops what is live; `stopped` is the truth, and the ids come back to print. */
     'attach.stop': async (params) => {
       const p = requireObject(params);
       const stream = requireStreamId(p.stream);
@@ -90,9 +79,7 @@ export function buildAttachRpcMethods(
     },
   };
 
-  // The eight verbs, one RPC method each. `agent.*` is the only family that
-  // takes a session, and `VerbService` resolves it to a stream through the
-  // registry rather than trusting anything else in the body.
+  // The eight verbs, one method each; `VerbService` resolves the session.
   for (const [verb, handler] of Object.entries(verbHandlers(verbs))) {
     methods[`agent.${verb}`] = async (params) =>
       asParamErrors(async () => handler(requireObject(params)));
