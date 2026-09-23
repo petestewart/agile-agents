@@ -1,32 +1,14 @@
 /**
- * The built-in pattern rules of design/cockpit-design.md §5.4, created as
- * global rules on daemon start (T143).
+ * §5.4's built-in pattern rules, created as global rules on daemon start.
+ * Rules rather than code, so the posture is data: accepting `no_push` or
+ * retiring `no_push_protected` takes effect on the next tool call (D7).
  *
- * They are rules rather than code so that the posture is data: a repo that
- * wants agents not to push at all accepts `no_push` (D7's "flips one field
- * instead of writing code"), and a human who decides `no_push_protected`
- * is wrong for their setup retires it — both take effect on the next tool
- * call, because the hook reads `rulesInScope` per call (§5.3).
- *
- * Three properties this module owes the rest of the system:
- *
- *  - **idempotent.** Identity is `pattern.kind` + `provenance.by:
- *    'builtin'`, not the ulid id, so a second daemon start finds them and
- *    creates nothing. (An id could not be fixed anyway: `R-<ulid>` is
- *    minted, and §5.1's record has no other stable key.)
- *  - **a retired built-in stays retired.** The existence check ignores
- *    `status`, so a `no_push` the human retired — or an accepted one they
- *    later retired — is never re-created and never re-accepted. This is
- *    the one property that would make the built-ins worse than a hardcoded
- *    table if it were missing.
- *  - **written as `daemon`.** §5.1's D4 split reserves `status` for the
- *    human, and the daemon; an agent principal could not create these at
- *    all (`assertRuleWrite`), which is the point.
- *
- * `RulesService.create` is deliberately not used: it mints every rule
- * `proposed` ("a proposal is not a rule"), and §5.4's built-ins ship
- * already decided — two of them accepted, one retired. So they go straight
- * through the store, which is still the one validating writer of `rules/`.
+ *  - Idempotent: identity is `pattern.kind` + `provenance.by: 'builtin'`
+ *    (a minted ulid can't be fixed).
+ *  - A retired built-in stays retired: the existence check ignores
+ *    `status`, so it is never re-created or re-accepted.
+ *  - Written as `daemon`, straight through the store:
+ *    `RulesService.create` mints `proposed`, and these ship decided.
  */
 
 import { type Rule, type RuleInput, type RulePattern, ulid } from '@agile-agents/shared';
@@ -36,14 +18,14 @@ import type { StateStore } from '../store/store';
 interface BuiltinRuleSpec {
   pattern: RulePattern;
   text: string;
-  /** `accepted` for the two that are on by default; `retired` for `no_push` (D7). */
+  /** `accepted` for the two on by default; `retired` for `no_push` (D7). */
   status: 'accepted' | 'retired';
   critical: boolean;
-  /** The design paragraph and decision this rule is, for "why does this rule exist" six months later (§5.1). */
+  /** The design paragraph behind the rule, for "why does it exist" later (§5.1). */
   finding: string;
 }
 
-/** `provenance.by` for every rule this module creates — half of the idempotence key. */
+/** `provenance.by` of every built-in: half of the idempotence key. */
 export const BUILTIN_PROVENANCE = 'builtin';
 
 export const BUILTIN_RULES: readonly BuiltinRuleSpec[] = [
@@ -72,16 +54,12 @@ export const BUILTIN_RULES: readonly BuiltinRuleSpec[] = [
   },
 ];
 
-/** The `provenance.by`/`pattern.kind` identity check — see this file's header. */
+/** The `provenance.by` + `pattern.kind` identity check. */
 function isBuiltin(rule: Rule, kind: RulePattern['kind']): boolean {
   return rule.provenance.by === BUILTIN_PROVENANCE && rule.pattern?.kind === kind;
 }
 
-/**
- * Creates any §5.4 built-in this home does not already have, and returns
- * every built-in now on file (created or pre-existing), in §5.4's order.
- * Safe to call on every daemon start.
- */
+/** Creates any missing built-in and returns all of them in §5.4's order. Safe on every start. */
 export async function ensureBuiltinRules(
   store: StateStore,
   clock: () => Date = () => new Date(),
@@ -91,10 +69,7 @@ export async function ensureBuiltinRules(
   for (const spec of BUILTIN_RULES) {
     const found = existing.find((rule) => isBuiltin(rule, spec.pattern.kind));
     if (found !== undefined) {
-      // T145: a built-in created before `name` existed is backfilled in
-      // place, so `agile rules list` names it on the next daemon start
-      // rather than only in a fresh home. Nothing else on the record is
-      // touched — a retired built-in stays retired.
+      // Backfill `name` on a built-in that predates it; nothing else is touched.
       result.push(
         found.name === spec.pattern.kind
           ? found
@@ -108,7 +83,7 @@ export async function ensureBuiltinRules(
     const now = clock().toISOString();
     const record: RuleInput = {
       id: `R-${ulid()}`,
-      // T145: the §5.4 name the operator knows the rule by, beside its ulid.
+      // The §5.4 name the operator knows the rule by.
       name: spec.pattern.kind,
       text: spec.text,
       scope: { kind: 'global' },
