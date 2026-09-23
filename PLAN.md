@@ -519,9 +519,10 @@ Build order: Phase 0 → 1 → 2 → 3 → 4 → 5 → 6. Within a phase, ticket
 
 ### Ticket: T163 Rules screen
 - **Priority:** P1
-- **Status:** Todo
+- **Status:** In Progress
 - **Owner:** —
 - **Scope:** List with scope, tier, status, stats; accept/retire; edit text, question, examples; the pruning columns from T142 (never fired, most routed); "test examples" button calling T153.
+- **Added 2026-09-23 (Pete, T160 look):** rule proposals from `agile rules seed` collapse in the inbox into one card ("N proposed rules from <source>") that opens the rules screen filtered to them; the rules screen supports bulk Accept/Retire of a selection. Agent-proposed rules (lessons) stay individual inbox cards.
 - **Acceptance Criteria:** Playwright: accept a proposed rule, see it in a stream's rules-in-scope tab.
 - **Validation Steps:** `bun run test:e2e`.
 - **Notes:** —
