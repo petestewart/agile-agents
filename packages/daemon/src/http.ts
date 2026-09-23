@@ -818,7 +818,8 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
          */
         if (url.pathname === '/') {
           return new Response(Bun.file(join(CONTROL_ROOM_DIST_DIR, 'index.html')), {
-            headers: { 'content-type': 'text/html; charset=utf-8' },
+            // T173: revalidate on every load so a rebuild is never masked by a cached page.
+            headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-cache' },
           });
         }
 

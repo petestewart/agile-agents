@@ -11,20 +11,34 @@ walkthrough needs the `export` from step 2.**
 
 ## 1. Build and install `agile`
 
-- [ ] Build from the agile-agents checkout and put `agile` on your PATH:
+- [ ] Build the branch under test from the agile-agents checkout and put `agile`
+  on your PATH. The block assumes the checkout is at `~/agile-agents`; adjust the
+  `cd` lines if yours is elsewhere. Until the reshape lands on main, the branch
+  under test is `claude/reshape`; after it lands, use `main` instead.
 
 ```zsh
-cd ~/Projects/agile-agents
+cd ~/agile-agents
 git fetch origin
-git checkout main
-git pull
+git checkout claude/reshape
+git pull origin claude/reshape
 bun --version
 bun install
 bun run build
 cd packages/cli
 bun link
-cd ~/Projects/agile-agents
+cd ~/agile-agents
 which agile
+```
+
+After pulling new code at any later point, rebuild and restart the daemon, then
+reload the cockpit tab. Run it in a terminal with the step 2 `export` applied:
+
+```zsh
+cd ~/agile-agents
+bun install
+bun run build
+agile daemon stop
+agile daemon start
 ```
 
 `bun --version` must be 1.3.11 or newer. `which agile` should print

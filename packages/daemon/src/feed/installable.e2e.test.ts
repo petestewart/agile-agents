@@ -98,7 +98,10 @@ test('the daemon serves the manifest, icons and service worker with their types'
     expect(sw.status).toBe(200);
     expect(sw.headers.get('content-type')).toStartWith('text/javascript');
     // Vite rewrites index.html's links onto the /control-room/ prefix; that copy is typed too.
-    const html = await (await fetch(`${cockpit.base}/`)).text();
+    const index = await fetch(`${cockpit.base}/`);
+    // T173: the page must revalidate so a rebuild is picked up on reload.
+    expect(index.headers.get('cache-control')).toBe('no-cache');
+    const html = await index.text();
     const href = html.match(/<link rel="manifest" href="([^"]+)"/)?.[1];
     expect(href).toBeDefined();
     const linked = await fetch(`${cockpit.base}${href}`);
