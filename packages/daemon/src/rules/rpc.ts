@@ -22,7 +22,7 @@ import {
   validateRuleProposal,
 } from '@agile-agents/shared';
 import type { Classifier } from '../classifier';
-import { RpcParamError } from '../gates/rpc';
+import { RpcParamError, optionalString, requireObject } from '../gates/rpc';
 import type { RpcMethodHandler } from '../rpc';
 import { buildEvent } from '../store/events';
 import { AlreadyExistsError } from '../store/store';
@@ -35,21 +35,6 @@ const EDGE_PRINCIPAL = 'human' as const;
 
 /** The `decided_by` this edge stamps when the caller names nobody. */
 const DEFAULT_DECIDED_BY = 'human';
-
-function requireObject(params: unknown): Record<string, unknown> {
-  if (typeof params !== 'object' || params === null || Array.isArray(params)) {
-    throw new RpcParamError('params must be an object', { params });
-  }
-  return params as Record<string, unknown>;
-}
-
-function optionalString(value: unknown, field: string): string | undefined {
-  if (value === undefined) return undefined;
-  if (typeof value !== 'string' || value.length === 0) {
-    throw new RpcParamError(`invalid "${field}": must be a non-empty string`, { [field]: value });
-  }
-  return value;
-}
 
 function requireRuleId(value: unknown): string {
   const id = optionalString(value, 'id');

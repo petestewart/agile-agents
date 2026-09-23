@@ -10,27 +10,9 @@
  * no principal is ever accepted from the params, and none is.
  */
 
-import { UlidSchema } from '@agile-agents/shared';
-import { RpcParamError } from '../gates/rpc';
+import { RpcParamError, requireObject, requireStreamId } from '../gates/rpc';
 import type { RpcMethodHandler } from '../rpc';
 import type { Doc, DocsService, SearchHit } from './service';
-
-function requireObject(params: unknown): Record<string, unknown> {
-  if (typeof params !== 'object' || params === null || Array.isArray(params)) {
-    throw new RpcParamError('params must be an object', { params });
-  }
-  return params as Record<string, unknown>;
-}
-
-function requireStreamId(value: unknown): string {
-  const result = UlidSchema.safeParse(value);
-  if (!result.success) {
-    throw new RpcParamError('invalid "stream": must be a 26-character Crockford-base32 ULID', {
-      stream: value,
-    });
-  }
-  return result.data;
-}
 
 export function buildDocsRpcMethods(service: DocsService): Record<string, RpcMethodHandler> {
   return {

@@ -18,7 +18,7 @@ import {
   UlidSchema,
   validateStreamCreateInput,
 } from '@agile-agents/shared';
-import { RpcParamError } from '../gates/rpc';
+import { RpcParamError, optionalString, requireObject } from '../gates/rpc';
 import { type ThreadReplyDeps, sayAndAnswer } from '../questions/thread-reply';
 import type { RpcMethodHandler } from '../rpc';
 import { AlreadyExistsError } from '../store/store';
@@ -32,13 +32,6 @@ import {
 
 /** Every `stream.*` write from this edge is the human's (design §2.2). */
 const EDGE_PRINCIPAL = 'human' as const;
-
-function requireObject(params: unknown): Record<string, unknown> {
-  if (typeof params !== 'object' || params === null || Array.isArray(params)) {
-    throw new RpcParamError('params must be an object', { params });
-  }
-  return params as Record<string, unknown>;
-}
 
 function requireStreamId(value: unknown): string {
   const result = UlidSchema.safeParse(value);
@@ -64,14 +57,6 @@ function optionalNonNegativeInt(value: unknown, field: string): number | undefin
     throw new RpcParamError(`invalid "${field}": must be a non-negative integer`, {
       [field]: value,
     });
-  }
-  return value;
-}
-
-function optionalString(value: unknown, field: string): string | undefined {
-  if (value === undefined) return undefined;
-  if (typeof value !== 'string' || value.length === 0) {
-    throw new RpcParamError(`invalid "${field}": must be a non-empty string`, { [field]: value });
   }
   return value;
 }

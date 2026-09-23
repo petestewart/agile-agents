@@ -12,8 +12,12 @@
  * `principal` in the body exactly as `stream.*` does.
  */
 
-import { AGENT_VERBS, UlidSchema } from '@agile-agents/shared';
-import { RpcParamError } from '../gates/rpc';
+import {
+  RpcParamError,
+  optionalString,
+  requireObject as requireParams,
+  requireStreamId,
+} from '../gates/rpc';
 import type { RpcMethodHandler } from '../rpc';
 import { WorktreeRefusedError } from '../runner/worktrees';
 import { NotFoundError } from '../store/store';
@@ -22,10 +26,7 @@ import { type AttachService, StreamBusyError, UnregisteredRepoError } from './se
 import { NoWorktreeError, UnknownSessionError, type VerbService, verbHandlers } from './verbs';
 
 function requireObject(params: unknown): Record<string, unknown> {
-  if (typeof params !== 'object' || params === null || Array.isArray(params)) {
-    throw new RpcParamError('params must be an object', { params });
-  }
-  const p = params as Record<string, unknown>;
+  const p = requireParams(params);
   if ('principal' in p) {
     throw new RpcParamError(
       'invalid "principal": the principal is stamped by the daemon, not supplied by the caller',
@@ -33,24 +34,6 @@ function requireObject(params: unknown): Record<string, unknown> {
     );
   }
   return p;
-}
-
-function requireStreamId(value: unknown): string {
-  const result = UlidSchema.safeParse(value);
-  if (!result.success) {
-    throw new RpcParamError('invalid "stream": must be a 26-character Crockford-base32 ULID', {
-      stream: value,
-    });
-  }
-  return result.data;
-}
-
-function optionalString(value: unknown, field: string): string | undefined {
-  if (value === undefined) return undefined;
-  if (typeof value !== 'string' || value.length === 0) {
-    throw new RpcParamError(`invalid "${field}": must be a non-empty string`, { [field]: value });
-  }
-  return value;
 }
 
 /**
@@ -129,6 +112,3 @@ export function buildAttachRpcMethods(
 
   return methods;
 }
-
-/** The RPC method names the MCP bridge publishes, in design order. */
-export const AGENT_VERB_METHODS = AGENT_VERBS.map((verb) => `agent.${verb}` as const);

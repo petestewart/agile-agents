@@ -27,7 +27,6 @@ import {
   type RuleCriteria,
   SEED_PROVENANCE_PREFIX,
 } from '@agile-agents/shared';
-import type { RulesService } from './service';
 
 /** The §9 heading, matched on its text rather than its number. */
 const DECISIONS_SECTION = /^##\s+\d+\.\s+Discovered Issues Log\s*$/;

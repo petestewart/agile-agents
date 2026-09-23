@@ -13,14 +13,7 @@
  * reasoning about interleaving.
  */
 
-import {
-  appendFileSync,
-  existsSync,
-  lstatSync,
-  readFileSync,
-  readlinkSync,
-  realpathSync,
-} from 'node:fs';
+import { existsSync, lstatSync, readFileSync, readlinkSync, realpathSync } from 'node:fs';
 import { dirname, isAbsolute, join, normalize, parse, relative, resolve, sep } from 'node:path';
 import {
   type AgentId,
@@ -53,11 +46,9 @@ import {
   validateStream,
   validateThreadEntry,
 } from '@agile-agents/shared';
-import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 import { buildEvent, needsFsync } from './events';
 import {
   appendJsonlLine,
-  ensureDir,
   fileExists,
   listDataFiles,
   readJsonFile,
@@ -156,7 +147,6 @@ export const HEARTBEAT_COALESCE_MS = 30 * 1000;
 
 export class StateStore {
   private readonly mutex = new Mutex();
-  private closed = false;
 
   // An absolute symlink target may resolve through a symlinked ancestor of
   // the state root (macOS `tmpdir()` under `/var -> /private/var`), so
@@ -168,10 +158,8 @@ export class StateStore {
     this.realStateRoot = realpathSync(stateRoot);
   }
 
-  /** Marks this store closed (daemon shutdown, test teardown); nothing is buffered. */
-  close(): void {
-    this.closed = true;
-  }
+  /** Lifecycle hook for callers (daemon shutdown, test teardown); nothing is buffered, so a no-op. */
+  close(): void {}
 
   static open(stateRoot: string): StateStore {
     if (!existsSync(stateRoot)) {
@@ -362,7 +350,7 @@ export class StateStore {
   /** Runs one mutation under the mutex: `fn` does the validated write(s) and builds its one Event. */
   private mutate<T>(fn: () => MutationResult<T>): Promise<T> {
     return this.mutex.run(() => {
-      const { result, relPaths, event } = fn();
+      const { result, event } = fn();
       this.writeEventLine(validateEvent(event));
       return result;
     });

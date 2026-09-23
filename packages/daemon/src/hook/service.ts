@@ -22,7 +22,6 @@ import {
   type AgentMessage,
   type AgentRecord,
   type ClassifierConfig,
-  DEFAULT_PROTECTED_BRANCHES,
   MESSAGE_BODY_MAX_CHARS,
   type Policy,
   type RepoEntry,

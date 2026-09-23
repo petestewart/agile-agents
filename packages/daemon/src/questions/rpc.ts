@@ -17,31 +17,14 @@ import {
   UlidSchema,
 } from '@agile-agents/shared';
 import type { AgentId, QuestionId } from '@agile-agents/shared';
-import { RpcParamError } from '../gates/rpc';
+import { RpcParamError, requireObject, requireStreamId } from '../gates/rpc';
 import type { RpcMethodHandler } from '../rpc';
 import type { AnswerQuestionInput, QuestionService } from './service';
-
-function requireObject(params: unknown): Record<string, unknown> {
-  if (typeof params !== 'object' || params === null || Array.isArray(params)) {
-    throw new RpcParamError('params must be an object', { params });
-  }
-  return params as Record<string, unknown>;
-}
 
 function requireQuestionId(value: unknown): QuestionId {
   const result = QuestionIdSchema.safeParse(value);
   if (!result.success) {
     throw new RpcParamError('invalid "id": must look like Q-<ulid>', { id: value });
-  }
-  return result.data;
-}
-
-function requireStreamId(value: unknown): string {
-  const result = UlidSchema.safeParse(value);
-  if (!result.success) {
-    throw new RpcParamError('invalid "stream": must be a 26-character Crockford-base32 ULID', {
-      stream: value,
-    });
   }
   return result.data;
 }

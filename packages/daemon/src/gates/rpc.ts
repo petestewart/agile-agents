@@ -37,6 +37,7 @@ import {
   HilIdSchema,
   HilNoteSchema,
   MESSAGE_BODY_MAX_CHARS,
+  UlidSchema,
 } from '@agile-agents/shared';
 import type { BreakerSignal, HilDecision, HilId } from '@agile-agents/shared';
 import type { RpcMethodHandler } from '../rpc';
@@ -62,11 +63,30 @@ export class RpcParamError extends RpcError {
   }
 }
 
-function requireObject(params: unknown): Record<string, unknown> {
+/** Shared param checks for every RPC family: failures are `RpcParamError` (-32602). */
+export function requireObject(params: unknown): Record<string, unknown> {
   if (typeof params !== 'object' || params === null || Array.isArray(params)) {
     throw new RpcParamError('params must be an object', { params });
   }
   return params as Record<string, unknown>;
+}
+
+export function requireStreamId(value: unknown, field = 'stream'): string {
+  const result = UlidSchema.safeParse(value);
+  if (!result.success) {
+    throw new RpcParamError(`invalid "${field}": must be a 26-character Crockford-base32 ULID`, {
+      [field]: value,
+    });
+  }
+  return result.data;
+}
+
+export function optionalString(value: unknown, field: string): string | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== 'string' || value.length === 0) {
+    throw new RpcParamError(`invalid "${field}": must be a non-empty string`, { [field]: value });
+  }
+  return value;
 }
 
 function requireHilId(value: unknown): HilId {
