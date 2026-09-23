@@ -12,6 +12,7 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { existsSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { InboxItem, Rule } from '@agile-agents/shared';
+import { callRpc } from './client';
 import { runCli } from './index';
 import { type TestDaemon, startTestDaemon } from './test-support';
 
@@ -394,6 +395,115 @@ describe('agile rules against a daemon on a temp AGILE_HOME', () => {
         violated: 0,
         routed: 0,
       });
+    });
+  });
+
+  test('T167: a command_deny rule added and accepted from the CLI denies `rm -rf dist`, naming the rule', async () => {
+    const rule = await add('never delete build output wholesale', [
+      '--enforcement',
+      'pattern',
+      '--pattern',
+      'command_deny',
+      '--pattern-arg',
+      'rm -rf',
+      '--pattern-arg',
+      'git reset --hard',
+    ]);
+    expect(rule.pattern).toEqual({
+      kind: 'command_deny',
+      args: { patterns: ['rm -rf', 'git reset --hard'] },
+    });
+    const shown = await cli(['rules', 'show', rule.id]);
+    expect(shown.out).toContain('pattern      command_deny: "rm -rf", "git reset --hard"');
+    expect((await cli(['rules', 'accept', rule.id])).code).toBe(0);
+
+    const stream = await daemon.streamService.create('human', { title: 'x', goal: 'y' });
+    await daemon.store.putAgent('worker-t167', {
+      vendor: 'claude',
+      model: 'claude-sonnet-4-5',
+      stream: stream.id,
+      pid: 4242,
+      role: 'worker',
+      worktree: daemon.repo,
+      last_seen: new Date().toISOString(),
+    });
+    const payload = (command: string) => ({
+      cwd: daemon.repo,
+      session_id: 'worker-t167',
+      agile_agent: 'worker-t167',
+      tool_name: 'Bash',
+      tool_input: { command },
+    });
+    type HookOut = {
+      hookSpecificOutput: { permissionDecision: string; permissionDecisionReason?: string };
+    };
+    const denied = await callRpc<HookOut>(
+      daemon.socketPath,
+      'hook.pre_tool_use',
+      payload('rm -rf dist'),
+    );
+    expect(denied.hookSpecificOutput.permissionDecision).toBe('deny');
+    expect(denied.hookSpecificOutput.permissionDecisionReason).toContain(rule.id);
+    const allowed = await callRpc<HookOut>(
+      daemon.socketPath,
+      'hook.pre_tool_use',
+      payload('ls dist'),
+    );
+    expect(allowed.hookSpecificOutput.permissionDecision).toBe('allow');
+  });
+
+  test('T167: --enforcement pattern without --pattern is refused; bad pattern args are refused', async () => {
+    const errors: string[] = [];
+    const original = console.error;
+    console.error = (msg: string) => errors.push(String(msg));
+    try {
+      expect(
+        await runCli(['rules', 'add', '--text', 'x', '--enforcement', 'pattern'], daemon.repo),
+      ).toBe(1);
+      expect(errors.join('\n')).toContain('a pattern rule needs a pattern');
+      expect(
+        await runCli(
+          ['rules', 'add', '--text', 'x', '--pattern', 'no_push', '--pattern-arg', 'a'],
+          daemon.repo,
+        ),
+      ).toBe(1);
+      expect(errors.join('\n')).toContain('takes no arguments');
+      expect(await runCli(['rules', 'add', '--text', 'x', '--pattern', 'nope'], daemon.repo)).toBe(
+        1,
+      );
+      expect(errors.join('\n')).toContain('invalid pattern kind');
+    } finally {
+      console.error = original;
+    }
+    // The schema refuses it too, for a caller that skips the CLI.
+    const refused = await callRpc(daemon.socketPath, 'rule.create', {
+      text: 'x',
+      enforcement: 'pattern',
+    }).then(
+      () => 'created',
+      (err: unknown) => String(err instanceof Error ? err.message : err),
+    );
+    expect(refused).toContain('a pattern rule needs a pattern');
+  });
+
+  test('T167: rules edit sets a pattern', async () => {
+    const rule = await add('no secrets dir');
+    const edited = await cli([
+      'rules',
+      'edit',
+      rule.id,
+      '--enforcement',
+      'pattern',
+      '--pattern',
+      'path_deny',
+      '--pattern-arg',
+      'secrets/**',
+      '--json',
+    ]);
+    expect(edited.code).toBe(0);
+    expect((JSON.parse(edited.out) as Rule).pattern).toEqual({
+      kind: 'path_deny',
+      args: { globs: ['secrets/**'] },
     });
   });
 });

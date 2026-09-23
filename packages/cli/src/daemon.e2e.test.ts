@@ -18,7 +18,7 @@
  */
 
 import { afterEach, beforeEach, expect, test } from 'bun:test';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { writeFreePortConfig } from './test-support';
@@ -34,11 +34,13 @@ let nonRepo: string;
 
 function runCli(
   args: string[],
-  opts: { cwd: string } = { cwd: process.cwd() },
+  opts: { cwd: string; env?: Record<string, string> } = { cwd: process.cwd() },
 ): { code: number; stdout: string; stderr: string } {
   const proc = Bun.spawnSync([process.execPath, CLI_ENTRY, ...args], {
     cwd: opts.cwd,
-    env: { ...process.env, AGILE_HOME: home, AGILE_LIVE: '' },
+    // T167: an empty `TYPESAFE_API_KEY` is no key, so a key exported in the
+    // operator's shell never reaches these daemons (and no call is made).
+    env: { ...process.env, AGILE_HOME: home, AGILE_LIVE: '', TYPESAFE_API_KEY: '', ...opts.env },
     stdout: 'pipe',
     stderr: 'pipe',
   });
@@ -122,6 +124,8 @@ test('daemon start|status|stop lifecycle on a temp AGILE_HOME', async () => {
   const status = runCli(['daemon', 'status'], { cwd: nonRepo });
   expect(status.code).toBe(0);
   expect(status.stdout).toContain(`pid=${pid}`);
+  // T167: whether a classifier key is loaded — none here.
+  expect(status.stdout).toContain('classifier key: none loaded');
 
   // A second `start` is a no-op that prints the running pid.
   const again = runCli(['daemon', 'start'], { cwd: nonRepo });
@@ -166,6 +170,39 @@ test('the state home holds the daemon, not the cwd: no .agile/ is created there'
     // and the git probe that looked for it both wrote/read here.
     expect(existsSync(join(nonRepo, '.agile-daemon-cache'))).toBe(false);
     expect(existsSync(join(dirname(home), '.agile'))).toBe(false);
+  } finally {
+    runCli(['daemon', 'stop'], { cwd: nonRepo });
+  }
+}, 60_000);
+
+test('T167: daemon status says a classifier key is loaded and where from, never the key', async () => {
+  const fakeKey = 'fake-t167-key-never-printed-4242';
+  const port = await writeFreePortConfig(home);
+  writeFileSync(join(home, 'config.yaml'), `port: ${port}\nclassifier:\n  api_key: ${fakeKey}\n`);
+  expect(runCli(['init'], { cwd: nonRepo }).code).toBe(0);
+  expect(runCli(['daemon', 'start'], { cwd: nonRepo }).code).toBe(0);
+  try {
+    const status = runCli(['daemon', 'status'], { cwd: nonRepo });
+    expect(status.stdout).toContain('classifier key: loaded (from config.yaml)');
+    expect(status.stdout + status.stderr).not.toContain(fakeKey);
+    const json = runCli(['daemon', 'status', '--json'], { cwd: nonRepo });
+    expect(json.stdout).not.toContain(fakeKey);
+    expect(JSON.parse(json.stdout).classifier).toMatchObject({ source: 'config', loaded: true });
+  } finally {
+    runCli(['daemon', 'stop'], { cwd: nonRepo });
+  }
+  const log = readFileSync(join(home, 'log', 'agiled.log'), 'utf8');
+  expect(log).not.toContain(fakeKey);
+}, 60_000);
+
+test('T167: a key from the environment is reported as such', () => {
+  expect(runCli(['init'], { cwd: nonRepo }).code).toBe(0);
+  const env = { TYPESAFE_API_KEY: 'fake-t167-env-key' };
+  expect(runCli(['daemon', 'start'], { cwd: nonRepo, env }).code).toBe(0);
+  try {
+    const status = runCli(['daemon', 'status'], { cwd: nonRepo });
+    expect(status.stdout).toContain('classifier key: loaded (from TYPESAFE_API_KEY)');
+    expect(status.stdout).not.toContain('fake-t167-env-key');
   } finally {
     runCli(['daemon', 'stop'], { cwd: nonRepo });
   }

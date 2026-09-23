@@ -22,6 +22,7 @@
 
 import {
   appendFileSync,
+  chmodSync,
   existsSync,
   lstatSync,
   readFileSync,
@@ -54,6 +55,7 @@ import {
   isLegalTransition,
   validateAgentRecord,
   validateEvent,
+  validateHomeConfig,
   validatePolicy,
   validateRepoEntry,
   validateReposConfig,
@@ -776,6 +778,48 @@ export class StateStore {
       writeYamlFileAtomic(this.abs(relPath), validated);
       const event = buildEvent('policy_put', { agent: options.by, data: {} });
       return { result: validated, relPaths: [relPath], event };
+    });
+  }
+
+  /**
+   * T167: sets (`key`) or removes (`undefined`) `classifier.api_key` in
+   * `<home>/config.yaml` — the cockpit's Settings field. The raw mapping is
+   * edited, not the parsed config, so nothing the operator wrote (or left
+   * to a default) is rewritten; the result goes through the strict home
+   * config schema before it is written. The file is left owner-only
+   * (0600) because it now holds a credential. The event carries no data:
+   * the key never reaches `events.jsonl`.
+   *
+   * Note: YAML comments in `config.yaml` do not survive the rewrite.
+   */
+  async setClassifierApiKey(key: string | undefined): Promise<void> {
+    await this.mutate(() => {
+      const relPath = 'config.yaml';
+      const path = this.abs(relPath);
+      const parsed: unknown = fileExists(path) ? readYamlFile(path) : {};
+      const raw: Record<string, unknown> =
+        parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)
+          ? { ...(parsed as Record<string, unknown>) }
+          : {};
+      const current = raw.classifier;
+      const classifier: Record<string, unknown> =
+        current !== null && typeof current === 'object' && !Array.isArray(current)
+          ? { ...(current as Record<string, unknown>) }
+          : {};
+      if (key === undefined) Reflect.deleteProperty(classifier, 'api_key');
+      else classifier.api_key = key;
+      if (Object.keys(classifier).length === 0) Reflect.deleteProperty(raw, 'classifier');
+      else raw.classifier = classifier;
+      try {
+        validateHomeConfig(raw);
+      } catch {
+        // The schema's message could quote the value; never echo a key.
+        throw new Error('config.yaml would not validate with this classifier key; nothing written');
+      }
+      writeYamlFileAtomic(path, raw);
+      chmodSync(path, 0o600);
+      const event = buildEvent('home_config_put', { data: {} });
+      return { result: undefined, relPaths: [relPath], event };
     });
   }
 

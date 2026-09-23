@@ -21,11 +21,13 @@
 
 import { join } from 'node:path';
 import {
+  ClassifierKeyInputSchema,
   type HilDecision,
   HilIdSchema,
   MESSAGE_BODY_MAX_CHARS,
   type QuestionId,
   QuestionIdSchema,
+  RuleCreateInputSchema,
   RuleIdSchema,
   RulePatchSchema,
   RuleTestInputSchema,
@@ -44,6 +46,7 @@ import {
   UnregisteredRepoError,
 } from './attach';
 import type { Bus } from './bus';
+import type { ClassifierKeyService } from './classifier';
 import type { DocsService } from './docs';
 import {
   type EventTailerHandle,
@@ -145,6 +148,12 @@ export interface HttpServerOptions {
    * without it the button says there is no classifier.
    */
   ruleEvals?: RuleRpcEvalDeps;
+  /**
+   * T167: the classifier key behind Settings' "TypeSafe API key" and the
+   * rules screen's "Test examples" availability. Optional — without it,
+   * evals are available whenever `ruleEvals` is given (the test seam).
+   */
+  classifierKey?: ClassifierKeyService;
   /** T160: the inbox's `done` cards land through it (`POST /api/streams/:id/land`). Optional. */
   landing?: LandingService;
   /** T161: the stream page's sessions strip (attach, review, stop) and composer prompt through it. Optional. */
@@ -420,6 +429,7 @@ interface FeedContext {
   inbox?: InboxService;
   rules?: RulesService;
   ruleEvals?: RuleRpcEvalDeps;
+  classifierKey?: ClassifierKeyService;
   landing?: LandingService;
   attach?: AttachService;
   docs?: DocsService;
@@ -436,10 +446,70 @@ function resolveFeedContext(options: HttpServerOptions): FeedContext | undefined
     inbox: options.inbox,
     rules: options.rules,
     ruleEvals: options.ruleEvals,
+    classifierKey: options.classifierKey,
     landing: options.landing,
     attach: options.attach,
     docs: options.docs,
   };
+}
+
+/**
+ * T167: "Test examples" can run only when the daemon actually holds a key
+ * (and the provider is not `off`) — not merely because a classifier
+ * object exists, which it always does.
+ */
+function evalsAvailable(feed: FeedContext): boolean {
+  if (!feed.ruleEvals) return false;
+  return feed.classifierKey ? feed.classifierKey.status().loaded : true;
+}
+
+/**
+ * T167: Settings' classifier key —
+ *
+ *   GET  /api/settings/classifier             where the key comes from (never the key)
+ *   POST /api/settings/classifier/key         save `{api_key}` to config.yaml, live
+ *   POST /api/settings/classifier/key/remove  delete it from config.yaml (an env key still applies)
+ *
+ * Writes are same-origin only and the human's. No response, error or event
+ * ever carries the key: a bad body gets a fixed message, never zod's.
+ */
+async function handleSettingsRoute(
+  req: Request,
+  url: URL,
+  feed: FeedContext | undefined,
+  sameOrigin: () => boolean,
+): Promise<Response | undefined> {
+  if (!url.pathname.startsWith('/api/settings/classifier')) return undefined;
+  const path = url.pathname;
+  if (path === '/api/settings/classifier' && req.method === 'GET') {
+    if (!feed?.classifierKey) return errorResponse(503, 'classifier settings not available');
+    return jsonResponse(feed.classifierKey.status());
+  }
+  const isSave = path === '/api/settings/classifier/key';
+  const isRemove = path === '/api/settings/classifier/key/remove';
+  if ((!isSave && !isRemove) || req.method !== 'POST') return undefined;
+  if (!feed?.classifierKey) return errorResponse(503, 'classifier settings not available');
+  if (!sameOrigin()) return errorResponse(403, 'cross-origin request rejected');
+  try {
+    if (isRemove) return jsonResponse(await feed.classifierKey.remove());
+    let body: unknown;
+    try {
+      body = await readJsonBody(req);
+    } catch {
+      return errorResponse(400, 'invalid classifier key request: body must be JSON {api_key}');
+    }
+    const input = ClassifierKeyInputSchema.safeParse(body);
+    if (!input.success) {
+      return errorResponse(
+        400,
+        'invalid classifier key request: send exactly {api_key: "<non-empty string, at most 512 chars>"}',
+      );
+    }
+    return jsonResponse(await feed.classifierKey.set(input.data.api_key));
+  } catch {
+    // Store errors are generic already; this keeps any future one from quoting the key.
+    return errorResponse(500, 'could not save the classifier key');
+  }
 }
 
 /**
@@ -449,6 +519,7 @@ function resolveFeedContext(options: HttpServerOptions): FeedContext | undefined
  *   POST /api/rules/:id/accept    the inbox card's and the rules screen's Accept
  *   POST /api/rules/:id/retire    …and Retire
  *   POST /api/rules/:id/update    the rules screen's edit (`RulePatchSchema`, strict)
+ *   POST /api/rules               the rules screen's "New rule" (`RuleCreateInputSchema`, strict; proposed)
  *   POST /api/rules/test          "Test examples": `rule.test {id}`'s evals (`RuleTestInputSchema`)
  *
  * The same `RulesService` calls the `rule.*` RPC makes; every write is
@@ -467,15 +538,29 @@ async function handleRuleRoute(
     return jsonResponse({
       rules: feed.rules.list(),
       report: buildRuleReport(feed.rules),
-      evals: feed.ruleEvals
+      evals: evalsAvailable(feed)
         ? {
             available: true,
-            ...(feed.ruleEvals.timeout_ms !== undefined
+            ...(feed.ruleEvals?.timeout_ms !== undefined
               ? { timeout_ms: feed.ruleEvals.timeout_ms }
               : {}),
           }
         : { available: false },
     });
+  }
+  // T167: the rules screen's "New rule" — a proposal, like every create (§5.1).
+  if (url.pathname === '/api/rules' && req.method === 'POST') {
+    if (!feed?.rules) return errorResponse(503, 'rules not available');
+    if (!sameOrigin()) return errorResponse(403, 'cross-origin request rejected');
+    try {
+      const input = RuleCreateInputSchema.safeParse(await readJsonBody(req));
+      if (!input.success) return errorResponse(400, formatZodError('new rule', input.error));
+      return jsonResponse(
+        await feed.rules.create('human', { ...input.data, provenance: { by: 'human' } }),
+      );
+    } catch (err) {
+      return errorResponse(400, err instanceof Error ? err.message : String(err));
+    }
   }
   const isTest = url.pathname === '/api/rules/test';
   const match = isTest
@@ -489,10 +574,10 @@ async function handleRuleRoute(
     if (isTest) {
       const input = RuleTestInputSchema.safeParse(await readJsonBody(req));
       if (!input.success) return errorResponse(400, formatZodError('rule test', input.error));
-      if (!feed.ruleEvals) {
+      if (!feed.ruleEvals || !evalsAvailable(feed)) {
         return errorResponse(
           503,
-          'no classifier configured: set classifier.provider and a key in config.yaml (§6.2)',
+          'no classifier key loaded: set one in Settings, classifier.api_key in config.yaml, or TYPESAFE_API_KEY (§6.2)',
         );
       }
       // One classifier call per example (T155): a real suite outlives
@@ -764,6 +849,11 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
             return errorResponse(400, err instanceof Error ? err.message : String(err));
           }
         }
+
+        const settingsRoute = await handleSettingsRoute(req, url, feed, () =>
+          isSameOriginRequest(req, srv.port ?? options.port),
+        );
+        if (settingsRoute) return settingsRoute;
 
         const ruleRoute = await handleRuleRoute(
           req,

@@ -7,12 +7,17 @@ import { describe, expect, test } from 'bun:test';
 import { ulid } from './ids';
 import {
   CLASSIFIER_MIN_EXAMPLES,
+  RULE_EXAMPLES_MAX,
   type Rule,
+  RuleCreateInputSchema,
   type RuleInput,
   RuleWriteError,
   assertRuleAcceptable,
   assertRuleWrite,
   classifierQuestion,
+  formatRulePattern,
+  rulePatternArgs,
+  rulePatternFromArgs,
   validateRule,
   validateRuleProposal,
 } from './rule';
@@ -213,5 +218,55 @@ describe('assertRuleAcceptable — the tier invariants (§5.2, §5.6)', () => {
   test('a guidance rule never needs examples or a pattern', () => {
     const ok = rule({ status: 'accepted' });
     expect(assertRuleAcceptable(ok)).toBe(ok);
+  });
+});
+
+describe('T167: pattern helpers, the example cap, and pattern-without-pattern', () => {
+  test('rulePatternFromArgs builds each kind and formatRulePattern prints it', () => {
+    const deny = rulePatternFromArgs('command_deny', ['rm -rf', 'git reset --hard']);
+    expect(deny).toEqual({
+      kind: 'command_deny',
+      args: { patterns: ['rm -rf', 'git reset --hard'] },
+    });
+    expect(formatRulePattern(deny)).toBe('command_deny: "rm -rf", "git reset --hard"');
+    expect(rulePatternArgs(deny)).toEqual(['rm -rf', 'git reset --hard']);
+    expect(rulePatternFromArgs('path_deny', ['secrets/**', ' '])).toEqual({
+      kind: 'path_deny',
+      args: { globs: ['secrets/**'] },
+    });
+    expect(formatRulePattern(rulePatternFromArgs('no_push'))).toBe('no_push');
+    expect(() => rulePatternFromArgs('no_push_protected', ['main'])).toThrow('takes no arguments');
+    expect(() => rulePatternFromArgs('nope')).toThrow('invalid pattern kind');
+  });
+
+  test(`a rule carries at most ${RULE_EXAMPLES_MAX} examples`, () => {
+    const examples = (n: number) =>
+      Array.from({ length: n }, (_, i) => ({ action: `a${i}`, violates: i % 2 === 0 }));
+    expect(() =>
+      validateRuleProposal({ text: 'x', examples: examples(RULE_EXAMPLES_MAX) }),
+    ).not.toThrow();
+    expect(() =>
+      validateRuleProposal({ text: 'x', examples: examples(RULE_EXAMPLES_MAX + 1) }),
+    ).toThrow(`at most ${RULE_EXAMPLES_MAX} examples`);
+    expect(() => validateRule(input({ examples: examples(RULE_EXAMPLES_MAX + 1) }))).toThrow();
+  });
+
+  test('a pattern-tier proposal with no pattern is refused, with the kinds named', () => {
+    expect(() => validateRuleProposal({ text: 'x', enforcement: 'pattern' })).toThrow(
+      'a pattern rule needs a pattern',
+    );
+    expect(RuleCreateInputSchema.safeParse({ text: 'x', enforcement: 'pattern' }).success).toBe(
+      false,
+    );
+    expect(
+      RuleCreateInputSchema.safeParse({ text: 'x', provenance: { by: 'human' } }).success,
+    ).toBe(false);
+    expect(
+      RuleCreateInputSchema.safeParse({
+        text: 'x',
+        enforcement: 'pattern',
+        pattern: { kind: 'no_push' },
+      }).success,
+    ).toBe(true);
   });
 });

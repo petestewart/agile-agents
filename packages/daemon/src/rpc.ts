@@ -14,6 +14,7 @@
 
 import { existsSync, unlinkSync } from 'node:fs';
 import { type Server, type Socket, createServer } from 'node:net';
+import type { ClassifierKeyStatus } from '@agile-agents/shared';
 
 export interface JsonRpcRequest {
   jsonrpc: '2.0';
@@ -58,6 +59,8 @@ export interface DaemonStatus {
   stateRoot: string;
   pid: number;
   uptime: number;
+  /** T167: where the classifier key comes from, and whether it is loaded. Never the key. */
+  classifier?: ClassifierKeyStatus;
 }
 
 export interface RpcServerOptions {
@@ -67,6 +70,8 @@ export interface RpcServerOptions {
   startedAt: number;
   /** Extra method handlers beyond daemon.ping/daemon.status, for tests. */
   extraMethods?: Record<string, RpcMethodHandler>;
+  /** T167: reported under `classifier` by `daemon.status`. */
+  classifierStatus?: () => ClassifierKeyStatus;
 }
 
 function namespaceOf(method: string): string | undefined {
@@ -82,6 +87,7 @@ export function buildMethods(options: RpcServerOptions): Record<string, RpcMetho
       stateRoot: options.stateRoot,
       pid: process.pid,
       uptime: (Date.now() - options.startedAt) / 1000,
+      ...(options.classifierStatus ? { classifier: options.classifierStatus() } : {}),
     }),
     ...options.extraMethods,
   };

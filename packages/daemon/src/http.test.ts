@@ -8,9 +8,10 @@ import {
   type Policy,
   type Rule,
   ulid,
+  validateClassifierConfig,
 } from '@agile-agents/shared';
 import { Bus } from './bus';
-import { FakeClassifier } from './classifier';
+import { ClassifierKeyService, FakeClassifier } from './classifier';
 import type { CockpitFrame, StreamPagePayload } from './feed';
 import { GateService } from './gates';
 import { type HttpServerHandle, startHttpServer } from './http';
@@ -280,6 +281,102 @@ describe('T160 cockpit routes', () => {
       expect(store.getRule(rule.id).stats.fired).toBe(0);
     } finally {
       await withEvals.stop();
+    }
+  });
+
+  test('T167: POST /api/rules creates a proposal as human through the strict create schema', async () => {
+    const post = (body: unknown, headers: Record<string, string> = {}) =>
+      fetch(url('/api/rules'), { method: 'POST', headers, body: JSON.stringify(body) });
+    expect((await post({ text: 'x' }, { origin: 'http://evil.example' })).status).toBe(403);
+    expect((await post({ text: 'x', status: 'accepted' })).status).toBe(400);
+    expect((await post({ text: 'x', provenance: { by: 'agent' } })).status).toBe(400);
+    const noPattern = await post({ text: 'x', enforcement: 'pattern' });
+    expect(noPattern.status).toBe(400);
+    expect(((await noPattern.json()) as { error: string }).error).toContain(
+      'a pattern rule needs a pattern',
+    );
+    const tooMany = Array.from({ length: 21 }, (_, i) => ({ action: `a${i}`, violates: false }));
+    expect((await post({ text: 'x', examples: tooMany })).status).toBe(400);
+    const ok = await post({
+      text: 'never wipe build output',
+      enforcement: 'pattern',
+      pattern: { kind: 'command_deny', args: { patterns: ['rm -rf'] } },
+      scope: { kind: 'global' },
+      stage: 'action',
+    });
+    expect(ok.status).toBe(200);
+    const rule = (await ok.json()) as Rule;
+    expect(rule.status).toBe('proposed');
+    expect(store.getRule(rule.id).provenance.by).toBe('human');
+    expect(store.getRule(rule.id).pattern).toEqual({
+      kind: 'command_deny',
+      args: { patterns: ['rm -rf'] },
+    });
+  });
+
+  test('T167: the classifier key is write-only — saved live, never in a response or an event', async () => {
+    const fakeKey = 'fake-t167-http-key-zz99';
+    const config = validateClassifierConfig({});
+    const classifierKey = new ClassifierKeyService({ config, store, env: {} });
+    const server = startHttpServer({
+      port: 0,
+      version: '0.0.0-test',
+      stateRoot,
+      startedAt: Date.now(),
+      store,
+      gates: new GateService(store),
+      streams,
+      rules,
+      classifierKey,
+      ruleEvals: {
+        classifier: new FakeClassifier(),
+        bands: { deny_at: DEFAULT_CLASSIFIER_DENY_AT, allow_below: DEFAULT_CLASSIFIER_ALLOW_BELOW },
+      },
+    });
+    try {
+      const at = (path: string) => `http://127.0.0.1:${server.port}${path}`;
+      const bodies: string[] = [];
+      const read = async (res: Response) => {
+        const text = await res.text();
+        bodies.push(text);
+        return text;
+      };
+      const evals = async () =>
+        (JSON.parse(await read(await fetch(at('/api/rules')))) as { evals: { available: boolean } })
+          .evals.available;
+      expect(JSON.parse(await read(await fetch(at('/api/settings/classifier'))))).toMatchObject({
+        source: 'none',
+        loaded: false,
+      });
+      expect(await evals()).toBe(false);
+      const save = (body: unknown, headers: Record<string, string> = {}) =>
+        fetch(at('/api/settings/classifier/key'), {
+          method: 'POST',
+          headers,
+          body: JSON.stringify(body),
+        });
+      expect((await save({ api_key: fakeKey }, { origin: 'http://evil.example' })).status).toBe(
+        403,
+      );
+      const bad = await save({ api_key: fakeKey, extra: 1 });
+      expect(bad.status).toBe(400);
+      await read(bad);
+      const saved = await save({ api_key: fakeKey });
+      expect(saved.status).toBe(200);
+      expect(JSON.parse(await read(saved))).toMatchObject({ source: 'config', loaded: true });
+      expect(config.api_key).toBe(fakeKey);
+      expect(await evals()).toBe(true);
+      expect(readFileSync(join(stateRoot, 'config.yaml'), 'utf8')).toContain(fakeKey);
+      const removed = await fetch(at('/api/settings/classifier/key/remove'), { method: 'POST' });
+      expect(JSON.parse(await read(removed))).toMatchObject({ source: 'none', loaded: false });
+      expect(config.api_key).toBeUndefined();
+      expect(await evals()).toBe(false);
+      expect(readFileSync(join(stateRoot, 'config.yaml'), 'utf8')).not.toContain(fakeKey);
+      for (const body of bodies) expect(body).not.toContain(fakeKey);
+      expect(readFileSync(join(stateRoot, 'log', 'events.jsonl'), 'utf8')).not.toContain(fakeKey);
+      expect(store.listEvents().some((e) => e.kind === 'home_config_put')).toBe(true);
+    } finally {
+      await server.stop();
     }
   });
 

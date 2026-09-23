@@ -125,6 +125,45 @@ export const RulePatternSchema = z.discriminatedUnion('kind', [
 export type RulePattern = z.infer<typeof RulePatternSchema>;
 
 /**
+ * T167: a pattern from its kind and a flat list of arguments — the CLI's
+ * `--pattern <kind> [--pattern-arg …]` and the rules screen's editor both
+ * speak this shape. `path_deny`'s arguments are globs, `command_deny`'s are
+ * token patterns, and the two push kinds take none (an argument there is
+ * refused rather than dropped). Validated by `RulePatternSchema`.
+ */
+export function rulePatternFromArgs(kind: string, args: readonly string[] = []): RulePattern {
+  const values = args.map((arg) => arg.trim()).filter((arg) => arg.length > 0);
+  let candidate: unknown;
+  if (kind === 'path_deny') candidate = { kind, args: { globs: values } };
+  else if (kind === 'command_deny') candidate = { kind, args: { patterns: values } };
+  else if (kind === 'no_push' || kind === 'no_push_protected') {
+    if (values.length > 0) throw new Error(`pattern ${kind} takes no arguments`);
+    candidate = { kind, args: {} };
+  } else {
+    throw new Error(
+      `invalid pattern kind "${kind}": must be one of ${RULE_PATTERN_KINDS.join(', ')}`,
+    );
+  }
+  const result = RulePatternSchema.safeParse(candidate);
+  if (!result.success) throw new Error(formatZodError('RulePattern', result.error));
+  return result.data;
+}
+
+/** T167: the flat argument list of a pattern — the inverse of `rulePatternFromArgs`. */
+export function rulePatternArgs(pattern: RulePattern): string[] {
+  if (pattern.kind === 'path_deny') return [...pattern.args.globs];
+  if (pattern.kind === 'command_deny') return [...pattern.args.patterns];
+  return [];
+}
+
+/** T167: `command_deny: "rm -rf", "git reset --hard"` · `no_push` — one line for a human. */
+export function formatRulePattern(pattern: RulePattern): string {
+  const args = rulePatternArgs(pattern);
+  if (args.length === 0) return pattern.kind;
+  return `${pattern.kind}: ${args.map((arg) => JSON.stringify(arg)).join(', ')}`;
+}
+
+/**
  * §5.6: an example is documentation for the human *and* an eval for the
  * classifier. Two of them are mandatory before a classifier rule can be
  * accepted (`assertRuleAcceptable`).
@@ -136,6 +175,18 @@ export const RuleExampleSchema = z
   })
   .strict();
 export type RuleExample = z.infer<typeof RuleExampleSchema>;
+
+/**
+ * T167: most examples one rule may carry. Every example is one classifier
+ * call when "Test examples" / `agile rules test` runs, and all of them are
+ * shown on the rules screen, so an unbounded list is both a cost and a
+ * wall of text. Twenty is several times the two §5.6 requires and leaves
+ * room for the edge cases a subtle rule needs; past that, split the rule.
+ */
+export const RULE_EXAMPLES_MAX = 20;
+export const RuleExamplesSchema = z
+  .array(RuleExampleSchema)
+  .max(RULE_EXAMPLES_MAX, `a rule carries at most ${RULE_EXAMPLES_MAX} examples`);
 
 /**
  * T156 (**D14**): what "yes" and "no" mean for a rule's classifier question,
@@ -197,7 +248,7 @@ export const RuleSchema = z
     stage: RuleStageSchema.default('action'),
     pattern: RulePatternSchema.optional(),
     critical: z.boolean(),
-    examples: z.array(RuleExampleSchema).default([]),
+    examples: RuleExamplesSchema.default([]),
     provenance: RuleProvenanceSchema,
     stats: RuleStatsSchema,
     created_at: z.string().min(1),
@@ -215,7 +266,7 @@ export type RuleInput = z.input<typeof RuleSchema>;
  * purpose: the service mints them, so no caller (human or agent) can forge
  * a rule that arrives already accepted.
  */
-export const RuleProposalSchema = z
+const RuleProposalFields = z
   .object({
     text: z.string().min(1).max(RULE_TEXT_MAX_CHARS),
     question: z.string().min(1).max(RULE_TEXT_MAX_CHARS).optional(),
@@ -225,11 +276,33 @@ export const RuleProposalSchema = z
     stage: RuleStageSchema.optional(),
     pattern: RulePatternSchema.optional(),
     critical: z.boolean().optional(),
-    examples: z.array(RuleExampleSchema).optional(),
+    examples: RuleExamplesSchema.optional(),
     provenance: RuleProvenanceSchema.optional(),
   })
   .strict();
+
+/** T167: the message a pattern-tier proposal with no pattern is refused with. */
+export const PATTERN_RULE_NEEDS_PATTERN =
+  'a pattern rule needs a pattern: give one of no_push, no_push_protected, path_deny <globs…>, command_deny <tokens…> (CLI: --pattern <kind> [--pattern-arg …])';
+
+export const RuleProposalSchema = RuleProposalFields.refine(
+  (proposal) => proposal.enforcement !== 'pattern' || proposal.pattern !== undefined,
+  { message: PATTERN_RULE_NEEDS_PATTERN, path: ['pattern'] },
+);
 export type RuleProposal = z.infer<typeof RuleProposalSchema>;
+
+/**
+ * T167: the cockpit's "New rule" form (`POST /api/rules`) — a proposal
+ * without `provenance`, which the daemon stamps `human` itself: the
+ * browser never names who proposed it (§2.2). Same pattern-tier check.
+ */
+export const RuleCreateInputSchema = RuleProposalFields.omit({ provenance: true })
+  .strict()
+  .refine((proposal) => proposal.enforcement !== 'pattern' || proposal.pattern !== undefined, {
+    message: PATTERN_RULE_NEEDS_PATTERN,
+    path: ['pattern'],
+  });
+export type RuleCreateInput = z.infer<typeof RuleCreateInputSchema>;
 
 /**
  * What a human may *edit* on an existing rule (§3.1's "edit-then-accept"):
@@ -238,7 +311,7 @@ export type RuleProposal = z.infer<typeof RuleProposalSchema>;
  * `decided_by` are absent here by construction, so an edit can never carry
  * a decision: that goes through accept/retire.
  */
-export const RulePatchSchema = RuleProposalSchema.omit({ provenance: true }).partial().strict();
+export const RulePatchSchema = RuleProposalFields.omit({ provenance: true }).partial().strict();
 export type RulePatch = z.infer<typeof RulePatchSchema>;
 
 /**

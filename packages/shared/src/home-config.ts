@@ -102,6 +102,36 @@ export type ClassifierConfig = z.infer<typeof ClassifierConfigSchema>;
 /** Pre-validation shape: every field is defaulted, so the whole block is optional. */
 export type ClassifierConfigInput = z.input<typeof ClassifierConfigSchema>;
 
+/**
+ * T167: the cockpit's "TypeSafe API key" field (`POST
+ * /api/settings/classifier/key`). Write-only: nothing the daemon returns
+ * ever carries the key back, only where it came from
+ * (`ClassifierKeyStatus`).
+ */
+export const CLASSIFIER_KEY_MAX_CHARS = 512;
+export const ClassifierKeyInputSchema = z
+  .object({ api_key: z.string().trim().min(1).max(CLASSIFIER_KEY_MAX_CHARS) })
+  .strict();
+export type ClassifierKeyInput = z.infer<typeof ClassifierKeyInputSchema>;
+
+/** Where the daemon's classifier key comes from: `config.yaml`, `TYPESAFE_API_KEY`, or nowhere. */
+export const CLASSIFIER_KEY_SOURCES = ['config', 'environment', 'none'] as const;
+export type ClassifierKeySource = (typeof CLASSIFIER_KEY_SOURCES)[number];
+
+/**
+ * T167: what `GET /api/settings/classifier` and `daemon.status` say about
+ * the key — its source and whether a call could be made, never the key.
+ * `loaded` is false when the provider is `off`, whatever the key.
+ * `environment_also` is true when a config key shadows an env key, so the
+ * UI can say that Remove falls back to it.
+ */
+export interface ClassifierKeyStatus {
+  source: ClassifierKeySource;
+  loaded: boolean;
+  provider: ClassifierProvider;
+  environment_also: boolean;
+}
+
 export function validateClassifierConfig(input: unknown): ClassifierConfig {
   const result = ClassifierConfigSchema.safeParse(input ?? {});
   if (!result.success) {
