@@ -1,8 +1,4 @@
-/**
- * `inbox.list` — the one RPC behind §3's list. It takes no params (the
- * inbox is deliberately unfiltered and unsorted by the caller: "oldest
- * first, globally", §3.3) and returns `{ items }`.
- */
+/** `inbox.list`: the one RPC behind §3's list. No params (oldest first, globally, §3.3); returns `{ items }`. */
 
 import type { InboxItem } from '@agile-agents/shared';
 import type { RpcMethodHandler } from '../rpc';

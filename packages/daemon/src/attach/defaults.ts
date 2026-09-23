@@ -1,12 +1,8 @@
 /**
- * T170 (**D17**): the session defaults Settings reads and writes.
- *
- * Reads assemble every step of the resolution order (`resolveSessionDefaults`
- * in shared, the same function attach runs); writes go through the store
- * (`setHomeSessionDefaults`, `setRepoSessionDefaults`) and are stamped with
- * the caller's actor. Nothing is cached: attach reads `config.yaml` and
- * `repos.yaml` per session, so a save applies to the next session without
- * a restart.
+ * D17: the session defaults Settings reads and writes. Reads show every
+ * step of `resolveSessionDefaults` (what attach runs); writes go through
+ * the store with the caller's actor. Nothing is cached, so a save applies
+ * to the next session.
  */
 
 import {

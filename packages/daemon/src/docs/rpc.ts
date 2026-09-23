@@ -1,13 +1,7 @@
 /**
- * `docs.list` / `docs.search` over a `DocsService` (T134). Same contract as
- * `streams/rpc.ts`: params are validated at the boundary and rejected with
- * `RpcParamError` (-32602) rather than reaching the service as `undefined`.
- *
- * This edge serves the CLI and the UI, so every call is the human's
- * (cockpit design §2.2) — an agent reaches docs through T130's `search_docs`
- * verb, not through this table. Both methods are reads, so there is no
- * principal to stamp on a record; what §2.2 demands of a read edge is that
- * no principal is ever accepted from the params, and none is.
+ * `docs.list` / `docs.search` over a `DocsService`, validated at the
+ * boundary (`RpcParamError`, -32602). Reads, and no principal is accepted
+ * from params (§2.2); agents use the `search_docs` verb.
  */
 
 import { RpcParamError, requireObject, requireStreamId } from '../gates/rpc';
