@@ -1,20 +1,13 @@
 /**
- * `LandingService`: `agile land <stream>` and the Land button (§8.2):
- * an optional `land` gate, then diff-level rules, then `merge --no-ff`
- * into the target; `human.status: landed`, worktree removed, branch kept.
- *
- *  1. No partial merge. The merge runs in a temporary worktree of the
- *     target, and a conflict aborts it, leaves the target where it was and
- *     parks the stream (`agent.status: blocked`) with the conflicting files
- *     on the thread. The stream's worktree is kept to resolve it in.
- *  2. D8 is satisfied, not bypassed: landing on a protected branch happens
- *     only here, the human pressing Land (or answering the gate). The RPC
- *     edge is the human's and the MCP verbs have no `land`.
- *  3. Every write is the `daemon` principal (§2.2).
- *
- * Target (§8.2): the parent's branch when the parent has a repo and a
- * branch, else the stream's `target_branch`, else the repo entry's, else
- * the repo's default branch.
+ * `LandingService`: `agile land <stream>` and the Land button (§8.2): an
+ * optional `land` gate, diff-level rules, then `merge --no-ff` into the
+ * target; `human.status: landed`, worktree removed, branch kept. The merge
+ * runs in a temporary worktree, so a conflict leaves the target untouched
+ * and parks the stream `blocked` with the files named. Landing on a
+ * protected branch happens only here, by the human (D8); every write is
+ * `daemon` (§2.2). Target: the parent's branch (when the parent has a repo
+ * and a branch), else the stream's `target_branch`, else the repo entry's,
+ * else the repo's default branch.
  */
 
 import { existsSync, mkdtempSync, rmSync } from 'node:fs';
