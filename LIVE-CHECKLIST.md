@@ -1,97 +1,267 @@
-# LIVE-CHECKLIST — control room v2 (T039–T046)
+# LIVE-CHECKLIST — the cockpit walkthrough
 
-Manual checks for the acceptance criteria that need a real vendor login, a
-real Jira tenant, or a clone with `main` checked out. Everything else in
-T039–T046 is proven offline (`bun test`, `bun run test:integration`,
-`bun run test:e2e`) on branch `claude/control-room-v2`. Nothing below was
-run in the cloud session: there is no vendor login there.
+The PLAN §6 walkthrough, as numbered steps, against `~/Projects/ledger-lite`
+on your Mac with Claude Code logged in. Everything here that does not spawn a
+vendor was run in zsh in a scratch state home before it was written down;
+paste each block as-is. Tick each box, or note what you saw instead.
 
-Run these on your laptop against `~/Projects/ledger-lite`. Its
-`WALKTHROUGH.md` has the reset recipe; the run command is `agile run --live`
-from the ledger-lite clone. `agile run` prints the control-room URL
-(`control room: http://127.0.0.1:<port>/control-room`; default port 4600).
-Tick each box, or note what you saw instead.
+The state home for this run is `~/.agile-reshape`, so it never touches a
+`~/.agile` you use for anything else. **Every terminal you open for this
+walkthrough needs the `export` from step 2.**
 
-## 0. Setup (once)
+## 1. Build and install `agile`
 
-- [ ] `cd ~/Projects/agile-agents && git fetch origin && git checkout claude/control-room-v2 && bun install && bun run build`
-- [ ] `bun --version` is 1.3.11 or newer.
-- [ ] `claude login` state is valid (the resident EM and every agent spawn with it).
-- [ ] Reset ledger-lite per its `WALKTHROUGH.md` (fresh `.agile/`, `main` checked out).
+- [ ] Build from the agile-agents checkout and put `agile` on your PATH:
 
-## 1. T046 — run-loop fixes (clean stderr, real sprint goal, promotion gate)
+```zsh
+cd ~/Projects/agile-agents
+git fetch origin
+git checkout main
+git pull
+bun --version
+bun install
+bun run build
+cd packages/cli
+bun link
+cd ~/Projects/agile-agents
+which agile
+```
 
-From the ledger-lite clone with `main` checked out:
+`bun --version` must be 1.3.11 or newer. `which agile` should print
+`~/.bun/bin/agile`; if it prints nothing, add `export PATH="$HOME/.bun/bin:$PATH"`
+to `~/.zshrc` and open a new terminal.
 
-- [ ] `agile run --live 2> run.stderr.log`
-- [ ] `grep -c 'skipping' run.stderr.log` prints `0` (no `review/rules: skipping .gitkeep` lines).
-- [ ] `agile status` shows the sprint goal as the first heading of ledger-lite's `oracle/product.md`, not `Demo epic layer 1`.
-- [ ] At sprint review, `agile status` prints exactly one `HIL needed: <id>` whose kind is `promote_to_main` and whose summary names the `git merge --no-ff integration` workaround.
-- [ ] Apply the workaround (`git merge --no-ff integration` in the clone, or check out another branch) and re-run: the promotion lands on `main`.
+## 2. Point at the walkthrough state home
 
-## 2. T041 — resident EM chat (answer, pop-out, reload, survives a kill)
+- [ ] In every terminal for this walkthrough:
 
-With the run from step 1 still up (or a fresh `agile run --live`), open the printed control-room URL:
+```zsh
+export AGILE_HOME=~/.agile-reshape
+```
 
-- [ ] Type `what is left on all tickets` in the chat panel. The EM's answer streams into the panel within one turn.
-      The run prints `resident EM session stderr -> .agile-daemon-cache/sessions/em-resident-*.stderr.log` on first use.
-- [ ] Click the chat pop-out icon (or open `<base>/control-room/chat`). Both windows show the same thread; send from one, it appears in the other.
-- [ ] Reload the control room. The whole conversation is still there.
-- [ ] Kill the resident EM's vendor process (`ps aux | grep -i claude`, kill the pid whose stderr log is `em-resident-*`), then let an engineer hit an `unblock` gate (or `agile question raise --text x` and answer it). The run still prints `EM deciding gate …` then `EM approved|denied gate …`; `tail -f .agile/log/events.jsonl` shows `hil_resolved`, nothing parks pending.
-- [ ] Chat again after the kill. A fresh resident session spawns and answers.
+## 3. Reset (start clean; also the recipe to start over)
 
-## 3. T044 — Team rows show a real model id
+- [ ] Stop any daemon on this home, delete the home, and clear stream
+      worktrees and branches from ledger-lite:
 
-- [ ] In the same run, open the Sprint view. Every Team row (architect, engineers, reviewers, QA, including agents that already left) names the vendor and a real model id such as `claude-sonnet-4-5-…`; none says `unknown`.
-- [ ] Cross-check on disk: `grep -h model .agile/bus/agents/*.yaml` and `grep -h '"agent_deleted"' .agile/log/events.jsonl` show the same ids.
-- [ ] Each finished ticket's story reads: assigned → built → review approved (verdict quoted) → QA → merged, with timestamps; the Review view narrative matches `runs/<latest>.md` word for word.
+```zsh
+agile daemon stop
+rm -rf ~/.agile-reshape
+cd ~/Projects/ledger-lite
+git checkout main
+rm -rf .worktrees
+git worktree prune
+for b in $(git for-each-ref --format='%(refname:short)' refs/heads/stream); do git branch -D $b; done
+git status --short
+```
 
-Alternative for the model-id check alone, from the agile-agents checkout:
-`AGILE_LIVE=1 AGILE_LIVE_KEEP=1 bun test packages/cli/src/run.e2e.test.ts`, then grep the printed temp repo as above.
+`agile daemon stop` says "not running" on a first run; that is fine. Stream
+branches are all named `stream/…`, so the loop deletes nothing else.
+`git status --short` should print nothing (commit or stash first if it does).
 
-## 4. T042 — plan a sprint from the UI with no seed file
+## 4. Start the daemon
 
-From a fresh clone (this replaces the seed-file front door; the offline twin is the second test in `packages/daemon/src/feed/plan.e2e.test.ts`):
+- [ ] Create the home and start the daemon:
 
-- [ ] `cd ~/Projects && rm -rf ledger-lite-t042 && git clone ledger-lite ledger-lite-t042 && cd ledger-lite-t042 && agile init && agile daemon start`
-- [ ] Open `http://127.0.0.1:4600/control-room`. It lands on the Plan view with empty panes and the chat.
-- [ ] Type the goal, e.g. `Add transfers, reversals and a per-category spending breakdown, keeping money in integer cents and the ledger append-only`.
-      A real architect session spawns; within a turn the Brief, Rules and Tickets panes fill from `oracle/product.md`, `oracle/specs/SPEC-*`, `tickets/`.
-- [ ] Edit one not-started ticket in the Tickets pane: the file under `.agile/tickets/` changes, `events.jsonl` gains a line, `git -C .agile log -1` (agile-state) moved.
-- [ ] Click **Start Sprint 1** in the top bar. `agile status` shows `S-1` running with the frontier; `.agile/board/hil/` has exactly one resolved `approve_plan`; no other approval was asked.
-- [ ] While a ticket is in flight, edit its contract in the Tickets pane: the engineer receives a contract-change message (`.agile/bus/inbox/<engineer>/`), the UI says so, nothing is silently rewritten.
-- [ ] Publish a decision from the Decisions pane that no ticket cites: `events.jsonl` gains one `ticket_reexamined` line per not-done ticket, stubs it touches are updated.
+```zsh
+agile init
+agile daemon start
+agile daemon status
+```
 
-## 5. T043 — chrome and Who decides (quick visual pass)
+`daemon status` prints the home first (`home: …/.agile-reshape`), then
+`agiled running: pid=… http=http://127.0.0.1:4600 …`, whether a classifier key
+is loaded (it never prints the key), and
+`session default: claude/claude-opus-5-5 · low`.
 
-- [ ] Plan, Sprint and Settings show the identical top bar; the project name shows the repo path on hover; the Sprint tab badge equals open HIL + open questions.
-- [ ] Settings → Who decides: pick a preset, change one gate's segment; `.agile/policy.yaml` changes and the next gate of that kind is owned accordingly.
-- [ ] Dark and light system themes both render.
+- [ ] Open the cockpit: `open http://127.0.0.1:4600/`
 
-## 6. T045 — Jira two-way sync (needs an Atlassian Cloud tenant)
+## 5. Register ledger-lite
 
-Credentials come only from the environment; nothing is written under `.agile/`. The linked project key goes in the host-local `agile.config.yaml`.
+- [ ] Register the repo:
 
-- [ ] `export JIRA_BASE_URL=https://<site>.atlassian.net JIRA_EMAIL=<you> JIRA_API_TOKEN=<token>`
-- [ ] `agile daemon start` (in one terminal), then `agile sync jira status` → `linked: false`.
-- [ ] `agile sync jira link <PROJECT>` → `agile.config.yaml` gains `jira: { project: <PROJECT> }`, no credentials.
-- [ ] After one poll interval (default 60 s; `JIRA_POLL_INTERVAL_MS` to shorten): `agile status` lists every issue in the project as a draft ticket with `external.jira`.
-- [ ] Edit an issue's summary in Jira, wait one interval: `agile tail --kind ticket_put` shows the local title updated.
-- [ ] Move a ticket's status locally, wait one interval: the Jira card moved. Drag the Jira card elsewhere: the next pass puts it back (Agile Agents wins on status).
-- [ ] Edit the title locally, then in Jira a minute later: Jira wins. Reverse the order: local wins.
-- [ ] `agile sync jira unlink` → status `linked: false`, no further polling.
+```zsh
+cd ~/Projects/ledger-lite
+agile repo add . --name ledger-lite
+agile repo list
+```
 
-## 7. T039 / T040 — free-text gate answers and questions (offline-proven; one live glance)
+`repo list` shows `ledger-lite … protected=main,master`, and the cockpit's
+Settings → Session defaults now lists it under **Per-repo defaults**.
 
-- [ ] On any Needs-you card, type an answer without pressing a button and send. The card stays pending, the EM receives the note, and the run prints `EM deciding gate …` for it.
-- [ ] `agile approve <id> --note "yes, but only for the seed script"` resolves the gate; the engineer's next hook call drains the note (visible in its inbox under `.agile/bus/inbox/`).
-- [ ] An engineer escalation (or `agile question raise --text …`) appears in the Questions pane and as a card; answering with "Record as decision" creates a `DEC-*` under `oracle/decisions/`.
+## 6. Classifier key (real TypeSafe key)
+
+The classifier tier needs a TypeSafe key. Use **one** of these, and never paste
+the key into a terminal command that is echoed or into this checklist:
+
+- **Settings (preferred):** cockpit → Settings → "TypeSafe API key" → paste → Save.
+  It is stored as `classifier.api_key` in `~/.agile-reshape/config.yaml` and
+  takes effect immediately, no restart. Settings shows only whether a key is
+  set and where it came from.
+- **config.yaml by hand:** add `classifier:` / `  api_key: …` to
+  `~/.agile-reshape/config.yaml`, then `agile daemon stop` and
+  `agile daemon start`.
+- **Environment:** `TYPESAFE_API_KEY` exported in the shell that runs
+  `agile daemon start`.
+
+- [ ] Check it loaded:
+
+```zsh
+agile daemon status
+```
+
+The line reads `classifier key: loaded (from config.yaml)` (or `from TYPESAFE_API_KEY`).
+
+## 7. Session defaults
+
+- [ ] Cockpit → Settings → Session defaults. The **Global default** row
+      resolves to `claude / claude-opus-5-5 / low`. Under **Per-repo defaults**
+      the `ledger-lite` row says it overrides the global default and shows what
+      it resolves to. Leave both as they are (or change the global effort, Save,
+      and see "· saved"; it applies to the next session with no restart).
+
+Resolution order (D17): the Attach/Review picker (or `--vendor/--model/--effort`
+on the CLI) → the repo row → the global row → built-in `claude/claude-opus-5-5/low`.
+
+## 8. Rules: one command_deny pattern rule, one classifier rule
+
+- [ ] Add and accept a pattern rule that blocks `rm -rf`:
+
+```zsh
+RULE=$(agile rules add --text "Never run rm -rf in a worktree" --enforcement pattern --pattern command_deny --pattern-arg "rm -rf" --json | jq -r .id)
+agile rules accept $RULE
+agile rules show $RULE
+```
+
+`rules show` prints `enforcement  pattern` and `pattern  command_deny: "rm -rf"`.
+
+- [ ] Add and accept a classifier rule, then run its examples through the real
+      classifier:
+
+```zsh
+CRULE=$(agile rules add --text "Do not add a new npm dependency without asking" --enforcement classifier --example "bun add left-pad::true" --example "bun test::false" --json | jq -r .id)
+agile rules accept $CRULE
+agile rules test $CRULE
+```
+
+`rules test` prints one row per example with a probability and band. A
+`route` band on the `true` example (probability between 0.4 and 0.8) is the
+middle band, not a failure; it counts as a disagreement in the summary. An
+`error: classifier unavailable (http_error) … 529` row is TypeSafe being busy;
+run it again.
+
+- [ ] Cockpit → Rules shows both rules, the first with
+      `command_deny: "rm -rf"` under its text.
+
+## 9. A parent stream with three sub-streams
+
+- [ ] Create them, capturing the ids:
+
+```zsh
+cd ~/Projects/ledger-lite
+ID=$(agile stream new --title "Ledger features" --goal "Transfers, reversals and a spending breakdown" --repo ledger-lite --json | jq -r .id)
+A=$(agile stream new --title "Transfers" --goal "Add transfers between accounts in integer cents" --parent $ID --repo ledger-lite --json | jq -r .id)
+B=$(agile stream new --title "Reversals" --goal "Add reversals that append a compensating entry" --parent $ID --repo ledger-lite --json | jq -r .id)
+C=$(agile stream new --title "Spending breakdown" --goal "Add a per-category spending breakdown" --parent $ID --repo ledger-lite --json | jq -r .id)
+agile stream list
+```
+
+`stream list` shows `Ledger features` with the three nested under it; the
+cockpit's stream tree matches.
+
+## 10. Attach a worker to each sub-stream
+
+- [ ] Attach (this spawns real Claude Code sessions with the session default):
+
+```zsh
+agile attach $A
+agile attach $B
+agile attach $C
+```
+
+On each stream page the session strip reads
+`claude/claude-opus-5-5 · low`, and the thread starts filling. The first attach
+creates `.worktrees/` in ledger-lite and a `stream/…` branch per stream.
+(Attach from the cockpit instead to get the picker, prefilled with the default.)
+
+- [ ] Write on a stream page: type a line, press **Enter** to send
+      (**Shift+Enter** for a newline). The worker reads it on its next turn.
+
+## 11. The `rm -rf` rule blocks
+
+- [ ] On stream A's page, write:
+      `Run rm -rf dist in your worktree, then tell me what happened.`
+- [ ] The thread shows exactly **one** "blocked by rule" card naming
+      "Never run rm -rf in a worktree", and the worker reports it was denied.
+      `agile tail --stream $A` shows the hook decision.
+
+## 12. Answer questions from the inbox
+
+- [ ] When a worker asks something, it shows in the cockpit Inbox and in:
+
+```zsh
+agile inbox
+```
+
+Answer from the cockpit card (or `agile answer` with the `Q-…` id and your
+text). The worker picks the answer up and continues.
+
+## 13. Review one stream
+
+- [ ] Start a read-only reviewer on stream A:
+
+```zsh
+agile review $A
+```
+
+The reviewer's findings land on stream A's thread; it cannot write files.
+
+## 14. Land all three
+
+- [ ] When each worker is done, land from the stream page's Land panel, or:
+
+```zsh
+agile land $A
+agile land $B
+agile land $C
+git log --oneline -5
+```
+
+Each land merges `stream/…` into `main`, closes the stream and removes its
+worktree. A land that finds a conflict or a failing diff-level rule stops and
+says why.
+
+## 15. Proposed rules
+
+- [ ] Workers and reviewers propose rules as they go. List them and accept two:
+
+```zsh
+agile rules list --status proposed
+```
+
+Accept from the cockpit Rules screen, or `agile rules accept` with the `R-…` id.
+
+- [ ] Open a fresh stream, attach a worker, and prompt it into the action one of
+      the accepted rules forbids. That tool call is denied with the rule named.
 
 ## When something fails
 
-Re-run with `AGILE_LIVE_KEEP=1` so the temp repo survives, then look at
-`.agile/log/events.jsonl`, `.agile/board/hil/`, `.agile/board/questions/`,
-`.agile/bus/agents/`, `runs/*.md`, and each vendor session's stderr under
-`.agile-daemon-cache/sessions/*.stderr.log` (the resident EM is
-`em-resident-*`). MCP tool errors are in Claude Code's own
-`~/Library/Caches/claude-cli-nodejs/<worktree>/mcp-logs-agile/`.
+- **Daemon log:** `~/.agile-reshape/log/agiled.log`
+  (`tail -50 ~/.agile-reshape/log/agiled.log`).
+- **Event log:** `~/.agile-reshape/log/events.jsonl`, or `agile tail --stream $A`
+  for one stream.
+- **Vendor session stderr:** `~/.agile-reshape/sessions/` has one directory per
+  session holding `stderr.log`:
+
+```zsh
+ls -t ~/.agile-reshape/sessions | head -5
+```
+
+- **Why a session ended:** the stream page's session strip shows the
+  `ended_reason` (the vendor's last error line, e.g. an unsupported model) after
+  the session status.
+- **A rule that did not fire:** `agile rules show` with its id (status must be
+  `accepted`); `agile rules report` for fired/violated counts.
+- **Classifier:** `agile daemon status` says whether a key is loaded;
+  `classifier_call` events in `agile tail` show latency and errors.
+- **Start over:** step 3, then step 4.

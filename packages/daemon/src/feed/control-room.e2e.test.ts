@@ -1393,6 +1393,19 @@ describe('session defaults (Playwright e2e, T170)', () => {
         await page.goto(`${cockpit.base}/`);
         await page.locator('[data-view="settings"]').click();
         const home = (suffix: string) => `[data-testid="settings-session-home${suffix}"]`;
+        const contains = async (selector: string, text: string) =>
+          waitUntilAsync(`${selector} to contain ${text}`, async () =>
+            ((await page?.locator(selector).first().textContent()) ?? '').includes(text),
+          );
+        // T164: a Global default row, then Per-repo defaults, one row per repo.
+        await contains(home(''), 'Global default');
+        await contains('[data-testid="settings-session-repos-heading"]', 'Per-repo defaults');
+        await contains('[data-testid="settings-session-repo-demo"]', 'demo');
+        await contains(
+          '[data-testid="settings-session-repo-demo"]',
+          'overrides the global default',
+        );
+        await contains('[data-testid="settings-session-repo-demo-resolved"]', 'Resolves to');
         await waitForText(page, home('-resolved'), 'Resolves to claude / claude-opus-5-5 / low');
         await page.locator(home('-field-model')).fill('claude-sonnet-4-6');
         await page.locator(home('-field-effort')).selectOption('high');
@@ -1408,6 +1421,23 @@ describe('session defaults (Playwright e2e, T170)', () => {
 
         await page.locator(`[data-testid="stream-tree"] [data-stream="${stream.id}"]`).click();
         await page.locator(`[data-testid="stream-page"][data-stream="${stream.id}"]`).waitFor();
+        // T164: Enter sends, Shift+Enter is a newline, an empty composer sends nothing.
+        const composer = page.locator('[data-testid="composer-input"]');
+        await composer.press('Enter');
+        await composer.fill('first line');
+        await composer.press('Shift+Enter');
+        await composer.type('second line');
+        expect(await composer.inputValue()).toBe('first line\nsecond line');
+        await composer.press('Enter');
+        await waitUntilAsync(
+          'the Enter-sent line on the thread',
+          async () => (await composer.inputValue()) === '',
+        );
+        const said = cockpit.streams
+          .readThread(stream.id)
+          .entries.filter((e) => e.by === 'human' && e.kind === 'line');
+        expect(said.map((e) => e.body)).toEqual(['first line\nsecond line']);
+
         await page.locator('[data-testid="attach"]').click();
         await page.locator('[data-testid="session-picker"]').waitFor();
         await waitUntilAsync(
