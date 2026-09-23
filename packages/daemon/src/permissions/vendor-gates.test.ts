@@ -55,7 +55,7 @@ function cursorExecRequest(command: string): AcpPermissionRequestParams {
 }
 
 function decide(role: PermissionRole, req: AcpPermissionRequestParams) {
-  return decidePermission({ role, ticket: 'TKT-0001', worktreePath: WORKTREE, request: req });
+  return decidePermission({ role, worktreePath: WORKTREE, request: req });
 }
 
 describe('Cursor (§C2/§C3: ACP permission fires for every exec, never for edits/reads)', () => {

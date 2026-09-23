@@ -45,7 +45,7 @@ function request(
 const ROLES: PermissionRole[] = ['engineer', 'reviewer'];
 
 function decide(role: PermissionRole, req: AcpPermissionRequestParams) {
-  return decidePermission({ role, ticket: 'TKT-0001', worktreePath: WORKTREE, request: req });
+  return decidePermission({ role, worktreePath: WORKTREE, request: req });
 }
 
 describe('decidePermission — never picks allow_always', () => {
@@ -1148,7 +1148,6 @@ describe('decidePermission — T030 QA round 2 / opus round 3: dlx forms gated o
   const decideInRealWorktree = (command: string) =>
     decidePermission({
       role: 'engineer',
-      ticket: 'TKT-0001',
       worktreePath: realWorktree,
       request: request('execute', { command }),
     });
