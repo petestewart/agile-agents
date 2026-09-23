@@ -27,6 +27,7 @@ Target shape, in one paragraph: a **stream** is the unit (goal, status, parent, 
 - **D14** (2026-09-22, Pete; §6.3): a Noul has no separate confidence by design (TypeSafe docs: "There is no separate `confidence` value for a Noul"; the single value is answer and certainty in one). The three bands are the confidence handling: deny ≥ `deny_at`, allow < `allow_below`, route between. The confidence floor and the derived `|2p−1|` are removed (T156), not switched off; until T156 lands, set `classifier.bands.confidence_floor: 0`. `allow_below`/`deny_at` move only on more data (lower allow when a missed violation is costly, raise deny when a wrong block is costly). Weak rules are fixed by wording: one yes/no question per rule, yes means broken, plus `criteria` (true/false descriptions) when the line is subtle. Amends D6's "low confidence routes": the route band is the low-confidence case.
 - **D15** (2026-09-22, Pete): the cockpit stays a page served by `agiled` (§9), and becomes an installable, self-contained-feeling app eventually, at whatever point costs least without holding up implementation (T165: web app manifest first, a desktop shell only if needed and approved).
 - **D16** (2026-09-23, Pete): the TypeSafe key stays in the cloud environment config. Workers, reviewers and QA may make real classifier (Jev) calls and should prefer them over `FakeClassifier` when checking classifier behaviour; unit tests stay offline. The key is never printed, logged or committed. Replaces the standing "no TypeSafe key in the cloud" rule. Vendor logins are still absent in the cloud and `test:live` / `AGILE_LIVE=1` stay off.
+- **D17** (2026-09-23, Pete): the default session is Claude Code with model `claude-opus-5-5` at effort `low`, applied when no flag, repo entry or home config says otherwise (step 4 of the D12 order, before the provider's own default). Vendor, model and effort — home-wide and per repo — are all editable in the cockpit Settings screen, and Attach/Review can override per session.
 - D11. KiroCrew is not adopted. Borrowed as designs only: hardened worktree creation, the push detector that cannot be dodged by spelling, agent-owned vs human-owned ledger fields, a fail-closed credential scrub before the external classifier, mechanical scope filtering of injected rules, an append-only log.
 
 ## 3. Non-goals for the reshape
@@ -568,10 +569,19 @@ Build order: Phase 0 → 1 → 2 → 3 → 4 → 5 → 6. Within a phase, ticket
 - **Priority:** P1
 - **Status:** Todo
 - **Owner:** —
-- **Scope:** From Pete's T167 look (2026-09-23): a hook deny or route today lands only in `events.jsonl` and the rule's stats, so the stream page shows nothing. (1) Every hook decision that names a rule (deny or route, pattern or classifier) appends a thread `event` entry: rule text, the blocked command or path, and the outcome. (2) The thread renders it as a distinct "blocked by rule" card linking to the rule on the Rules screen. (3) The Rules screen shows last fired time next to the stats. Role-policy denies that name no rule get a plainer entry.
+- **Scope:** From Pete's T167 look (2026-09-23): a hook deny or route today lands only in `events.jsonl` and the rule's stats, so the stream page shows nothing. (1) Every hook decision that names a rule (deny or route, pattern or classifier) appends a thread `event` entry: rule text, the blocked command or path, and the outcome. (2) The thread renders it as a distinct "blocked by rule" card linking to the rule on the Rules screen. (3) The Rules screen shows last fired time next to the stats. Role-policy denies that name no rule get a plainer entry. (4) An agent question closes itself (answered, citing the message) when the human replies on the thread instead of the Answer box and the worker carries on.
 - **Acceptance Criteria:** Service test: a `command_deny` hit on `rm -rf dist` writes one thread entry naming the rule. Playwright: the card renders on the stream page and links to the rule.
 - **Validation Steps:** `bun test packages/daemon/src/hook packages/ui`; `bun run test:e2e`.
 - **Notes:** Runs before T164 so the checklist can point at it.
+
+### Ticket: T170 ∥ Session defaults in Settings; opus-5-5 at low
+- **Priority:** P1
+- **Status:** Todo
+- **Owner:** —
+- **Scope:** Per D17. (1) Built-in default `claude` / `claude-opus-5-5` / `low` when nothing else resolves; `agile daemon status` and the stream page show the resolved values, never "default". (2) Settings edits home `default_vendor|model|effort` and each repo's model/effort in `repos.yaml`, through the store with strict schemas, same-origin 403, actor `human`; changes apply to the next session without a restart. (3) Attach and Review in the cockpit open a small picker prefilled with the resolved default. (4) Model is free text with the known ids suggested; effort is the `EffortSchema` enum.
+- **Acceptance Criteria:** Resolution-order unit test incl. the new built-in step; HTTP tests for the settings writes; Playwright: change the default in Settings, Attach, the session strip shows the new model/effort.
+- **Validation Steps:** `bun test packages/shared packages/daemon packages/ui`; `bun run test:e2e`.
+- **Notes:** May run alongside T169. Before T164.
 
 ### Ticket: T165 Cockpit as an installable app
 - **Priority:** P2
