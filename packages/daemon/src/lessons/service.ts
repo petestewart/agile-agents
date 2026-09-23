@@ -1,29 +1,13 @@
 /**
- * `LessonsService` — the retro, per stream, with the human as the only
- * decider (design/cockpit-design.md §5.5, T141).
- *
- * On land or close the daemon calls `onStreamEnd(streamId)`. If the stream
- * had **any** findings, hook denials or answered questions, one short
- * one-shot session runs over exactly that material (`briefs/lessons.md`,
- * the worker vendor, the reviewer's read-only policy) and is asked for at
- * most three proposed rules, each with two example actions. The proposals
- * go through the ordinary `propose_rule` verb, so they land as §5.1 records
- * with `status: 'proposed'` and provenance pointing at this stream — and
- * appear in the inbox as `rule_accept` items (T140). Only the human accepts.
- *
- * If there were no findings, no denials and no questions, no session runs:
- * "a stream that went smoothly teaches nothing, and a system that proposes
- * a rule after every stream trains the human to click accept without
- * reading". That path writes one `daemon` thread line and costs nothing.
- *
- * The three-proposal cap is enforced here rather than in the brief, because
- * a sentence in a brief is not a gate (CLAUDE.md): `assertCanPropose` is
- * consulted by the `propose_rule` verb for a `lessons` caller, and the
- * fourth call is refused with the reason the model reads.
- *
- * Fire-and-forget by design: `onStreamEnd` never throws at its callers
- * (`landing/service.ts`, `streams/service.ts` `close`). A retro that cannot
- * start is a thread line, never a failed land.
+ * `LessonsService`: the retro, per stream, with the human as the only
+ * decider (§5.5). On land or close, a stream with any findings, hook
+ * denials or answered questions gets one short read-only session over
+ * exactly that material, asked for at most three proposed rules (two
+ * examples each) through the ordinary `propose_rule` verb; they reach the
+ * inbox as `rule_accept` items. A stream with none runs nothing ("a system
+ * that proposes a rule after every stream trains the human to click
+ * accept"). The cap is a gate (`assertCanPropose`), not a brief sentence.
+ * `onStreamEnd` never throws: a retro that can't start is a thread line.
  */
 
 import type { Question, Rule, Stream } from '@agile-agents/shared';
@@ -38,10 +22,10 @@ import type { StreamService } from '../streams/service';
 /** §5.5: "at most three" proposed rules out of one retro. */
 export const MAX_LESSON_PROPOSALS = 3;
 
-/** How much material one retro carries — a pointer-sized brief, not a dump. */
+/** How much material one retro carries. */
 export const MAX_MATERIAL_ITEMS = 20;
 
-/** The fourth `propose_rule` call from one lessons session (§5.5's cap). */
+/** The fourth `propose_rule` call from one lessons session. */
 export class LessonQuotaError extends Error {
   constructor(session: string) {
     super(
@@ -51,7 +35,7 @@ export class LessonQuotaError extends Error {
   }
 }
 
-/** The slice of `AttachService` a retro needs: start one session. */
+/** The slice of `AttachService` a retro needs. */
 export interface LessonsAttachSource {
   attach(streamId: string, options?: AttachOptions): Promise<AttachResult>;
 }
@@ -131,12 +115,7 @@ export function renderMaterial(stream: Stream, material: LessonsMaterial): strin
 export class LessonsService {
   constructor(private readonly options: LessonsServiceOptions) {}
 
-  /**
-   * Everything the retro reads (§5.5's "exactly that material"): the
-   * stream's findings (the structured list and the thread's `finding`
-   * entries), the hook denials recorded for its sessions, and the questions
-   * the work had to stop for.
-   */
+  /** Everything the retro reads: findings (record and thread), hook denials for its sessions, answered questions. */
   material(streamId: string): LessonsMaterial {
     const stream = this.options.streams.get(streamId);
     const sessionIds = new Set(stream.sessions.map((session) => session.id));
@@ -157,8 +136,7 @@ export class LessonsService {
       const data = (event.data ?? {}) as Record<string, unknown>;
       const decision = typeof data.decision === 'string' ? data.decision : undefined;
       if (decision !== 'deny') continue;
-      // The event names either the stream outright (the hook endpoint) or
-      // the session it came from (the ACP responder); both are this stream's.
+      // Named by stream (the hook) or by session (the ACP responder).
       const onStream = data.stream === streamId;
       const onSession = event.agent !== undefined && sessionIds.has(event.agent);
       if (!onStream && !onSession) continue;
@@ -181,15 +159,11 @@ export class LessonsService {
     };
   }
 
-  /**
-   * The land/close hook (§5.5). Starts the retro, or says on the thread why
-   * it did not. Never throws: the caller is a land that already happened.
-   */
+  /** The land/close hook: starts the retro, or says on the thread why not. Never throws. */
   async onStreamEnd(streamId: string): Promise<void> {
     try {
       const stream = this.options.streams.get(streamId);
-      // A session still running on this stream would be reviewing or
-      // working on material the retro has not seen the end of.
+      // One retro at a time.
       if (liveSession(stream, 'lessons') !== undefined) return;
       const material = this.material(streamId);
       if (isEmptyMaterial(material)) {
@@ -217,22 +191,17 @@ export class LessonsService {
           ),
         })
         .catch(() => {
-          // The stream is gone — nothing left to record it on.
+          // The stream is gone.
         });
     }
   }
 
-  /** Rules this session has already proposed (provenance is the record, §5.1). */
+  /** Rules this session has proposed (by provenance). */
   proposedBy(session: string): Rule[] {
     return this.options.rules.list().filter((rule) => rule.provenance.session === session);
   }
 
-  /**
-   * §5.5's cap, as a gate rather than a sentence in a brief: the fourth
-   * `propose_rule` call from one lessons session is refused, with the
-   * reason the model reads. Other roles are not capped here — a worker's
-   * proposal is one line in the middle of real work, not a retro budget.
-   */
+  /** §5.5's cap for a lessons session; other roles propose uncapped. */
   assertCanPropose(caller: Pick<VerbCaller, 'session' | 'role'>): void {
     if (caller.role !== 'lessons') return;
     if (this.proposedBy(caller.session).length >= MAX_LESSON_PROPOSALS) {
