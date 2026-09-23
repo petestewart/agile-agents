@@ -135,10 +135,9 @@ function ruleEventStream(rule: Rule): { stream?: string } {
     : {};
 }
 
-/** The pieces one mutation needs: its return value, the paths it touched, and its one Event. */
+/** One mutation's return value and its one Event. */
 interface MutationResult<T> {
   result: T;
-  relPaths: string[];
   event: Event;
 }
 
@@ -396,7 +395,7 @@ export class StateStore {
       const relPath = this.agentRelPath(id);
       writeYamlFileAtomic(this.abs(relPath), validated);
       const event = buildEvent('agent_put', { agent: id, data: {} });
-      return { result: validated, relPaths: [relPath], event };
+      return { result: validated, event };
     });
   }
 
@@ -478,7 +477,7 @@ export class StateStore {
           ...(record.stream !== undefined ? { stream: record.stream } : {}),
         },
       });
-      return { result: undefined, relPaths: [relPath], event };
+      return { result: undefined, event };
     });
   }
 
@@ -497,7 +496,7 @@ export class StateStore {
       const relPath = 'policy.yaml';
       writeYamlFileAtomic(this.abs(relPath), validated);
       const event = buildEvent('policy_put', { agent: options.by, data: {} });
-      return { result: validated, relPaths: [relPath], event };
+      return { result: validated, event };
     });
   }
 
@@ -513,16 +512,8 @@ export class StateStore {
     await this.mutate(() => {
       const relPath = 'config.yaml';
       const path = this.abs(relPath);
-      const parsed: unknown = fileExists(path) ? readYamlFile(path) : {};
-      const raw: Record<string, unknown> =
-        parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)
-          ? { ...(parsed as Record<string, unknown>) }
-          : {};
-      const current = raw.classifier;
-      const classifier: Record<string, unknown> =
-        current !== null && typeof current === 'object' && !Array.isArray(current)
-          ? { ...(current as Record<string, unknown>) }
-          : {};
+      const raw = mappingCopy(fileExists(path) ? readYamlFile(path) : {});
+      const classifier = mappingCopy(raw.classifier);
       if (key === undefined) Reflect.deleteProperty(classifier, 'api_key');
       else classifier.api_key = key;
       if (Object.keys(classifier).length === 0) Reflect.deleteProperty(raw, 'classifier');
@@ -535,7 +526,7 @@ export class StateStore {
       }
       writeYamlFileAtomic(path, raw, 0o600);
       const event = buildEvent('home_config_put', { data: {} });
-      return { result: undefined, relPaths: [relPath], event };
+      return { result: undefined, event };
     });
   }
 
@@ -560,11 +551,7 @@ export class StateStore {
     return this.mutate(() => {
       const relPath = 'config.yaml';
       const path = this.abs(relPath);
-      const parsed: unknown = fileExists(path) ? readYamlFile(path) : {};
-      const raw: Record<string, unknown> =
-        parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)
-          ? { ...(parsed as Record<string, unknown>) }
-          : {};
+      const raw = mappingCopy(fileExists(path) ? readYamlFile(path) : {});
       applyDefaultsPatch(raw, validPatch, {
         vendor: 'default_vendor',
         model: 'default_model',
@@ -577,7 +564,7 @@ export class StateStore {
         agent: options.by,
         data: { session_defaults: sessionDefaultsEventData(validPatch) },
       });
-      return { result: validated, relPaths: [relPath], event };
+      return { result: validated, event };
     });
   }
 
@@ -602,7 +589,7 @@ export class StateStore {
         agent: options.by,
         data: { repo: name, session_defaults: sessionDefaultsEventData(validPatch) },
       });
-      return { result: entry, relPaths: [relPath], event };
+      return { result: entry, event };
     });
   }
 
@@ -621,7 +608,7 @@ export class StateStore {
       const relPath = 'repos.yaml';
       writeYamlFileAtomic(this.abs(relPath), validated);
       const event = buildEvent('repos_put');
-      return { result: validated, relPaths: [relPath], event };
+      return { result: validated, event };
     });
   }
 
@@ -662,23 +649,8 @@ export class StateStore {
     return result.data;
   }
 
-  /** §7.3: a corrupt record is refused with its path (a YAML record has no one line to blame). */
   private readStreamFile(absPath: string): Stream {
-    let raw: unknown;
-    try {
-      raw = readYamlFile(absPath);
-    } catch (err) {
-      throw new Error(
-        `corrupt stream file ${absPath}: ${err instanceof Error ? err.message : String(err)}`,
-      );
-    }
-    try {
-      return validateStream(raw);
-    } catch (err) {
-      throw new Error(
-        `corrupt stream file ${absPath}: ${err instanceof Error ? err.message : String(err)}`,
-      );
-    }
+    return readRecord(absPath, 'stream', validateStream);
   }
 
   getStream(id: string): Stream {
@@ -721,7 +693,7 @@ export class StateStore {
           ...(validated.repo !== undefined ? { repo: validated.repo } : {}),
         },
       });
-      return { result: validated, relPaths: [relPath], event };
+      return { result: validated, event };
     });
   }
 
@@ -760,7 +732,7 @@ export class StateStore {
         stream: after.id,
         data: { ...streamStateData(after), principal },
       });
-      return { result: after, relPaths: [relPath], event };
+      return { result: after, event };
     });
   }
 
@@ -776,7 +748,7 @@ export class StateStore {
         stream: streamId,
         data: { by: validated.by, entry_kind: validated.kind },
       });
-      return { result: validated, relPaths: [relPath], event };
+      return { result: validated, event };
     });
   }
 
@@ -801,23 +773,8 @@ export class StateStore {
     return result.data;
   }
 
-  /** §7.3: a corrupt record is refused with its path, never silently defaulted. */
   private readRuleFile(absPath: string): Rule {
-    let raw: unknown;
-    try {
-      raw = readYamlFile(absPath);
-    } catch (err) {
-      throw new Error(
-        `corrupt rule file ${absPath}: ${err instanceof Error ? err.message : String(err)}`,
-      );
-    }
-    try {
-      return validateRule(raw);
-    } catch (err) {
-      throw new Error(
-        `corrupt rule file ${absPath}: ${err instanceof Error ? err.message : String(err)}`,
-      );
-    }
+    return readRecord(absPath, 'rule', validateRule);
   }
 
   getRule(id: string): Rule {
@@ -856,7 +813,6 @@ export class StateStore {
       writeYamlFileAtomic(this.abs(relPath), validated);
       return {
         result: validated,
-        relPaths: [relPath],
         event: buildEvent('rule_put', {
           ...ruleEventStream(validated),
           data: ruleEventData(validated, principal),
@@ -887,7 +843,6 @@ export class StateStore {
       writeYamlFileAtomic(this.abs(relPath), after);
       return {
         result: after,
-        relPaths: [relPath],
         event: buildEvent(options.kind ?? 'rule_put', {
           ...ruleEventStream(after),
           data: ruleEventData(after, principal),
@@ -938,7 +893,7 @@ export class StateStore {
       const validated = validator(data);
       writeEntityFile(this.abs(relPath), validated);
       const event = buildEvent('entity_put', { data: { relPath } });
-      return { result: validated, relPaths: [relPath], event };
+      return { result: validated, event };
     });
   }
 
@@ -955,7 +910,7 @@ export class StateStore {
       if (!fileExists(this.abs(relPath))) throw new NotFoundError('Entity', relPath);
       removeFile(this.abs(relPath));
       const event = buildEvent('entity_deleted', { data: { relPath } });
-      return { result: undefined, relPaths: [relPath], event };
+      return { result: undefined, event };
     });
   }
 
@@ -990,4 +945,22 @@ function sessionDefaultsEventData(patch: SessionDefaultsPatch): Record<string, s
     if (value !== undefined) data[field] = value;
   }
   return data;
+}
+
+/** A shallow copy of a YAML mapping, or `{}` for anything else. */
+function mappingCopy(value: unknown): Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? { ...(value as Record<string, unknown>) }
+    : {};
+}
+
+/** Reads and validates one YAML record; a corrupt one is refused with its path (§7.3). */
+function readRecord<T>(absPath: string, what: string, validate: (raw: unknown) => T): T {
+  try {
+    return validate(readYamlFile(absPath));
+  } catch (err) {
+    throw new Error(
+      `corrupt ${what} file ${absPath}: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
 }
