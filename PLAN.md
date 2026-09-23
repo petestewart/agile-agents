@@ -567,7 +567,7 @@ Build order: Phase 0 → 1 → 2 → 3 → 4 → 5 → 6. Within a phase, ticket
 
 ### Ticket: T169 ∥ Show rule hits on the stream
 - **Priority:** P1
-- **Status:** In Review (merged 79d956c; review fixes f13ea49; QA pending)
+- **Status:** Done (merge 79d956c; review fixes f13ea49; QA PASS — item 4 thread-reply close verified by unit/RPC tests only, no vendor in cloud)
 - **Owner:** —
 - **Scope:** From Pete's T167 look (2026-09-23): a hook deny or route today lands only in `events.jsonl` and the rule's stats, so the stream page shows nothing. (1) Every hook decision that names a rule (deny or route, pattern or classifier) appends a thread `event` entry: rule text, the blocked command or path, and the outcome. (2) The thread renders it as a distinct "blocked by rule" card linking to the rule on the Rules screen. (3) The Rules screen shows last fired time next to the stats. Role-policy denies that name no rule get a plainer entry. (4) An agent question closes itself (answered, citing the message) when the human replies on the thread instead of the Answer box and the worker carries on.
 - **Acceptance Criteria:** Service test: a `command_deny` hit on `rm -rf dist` writes one thread entry naming the rule. Playwright: the card renders on the stream page and links to the rule.
@@ -576,7 +576,7 @@ Build order: Phase 0 → 1 → 2 → 3 → 4 → 5 → 6. Within a phase, ticket
 
 ### Ticket: T170 ∥ Session defaults in Settings; opus-5-5 at low
 - **Priority:** P1
-- **Status:** In Review (merged 7650565; QA pending)
+- **Status:** Done (merge 7650565; QA PASS)
 - **Owner:** —
 - **Scope:** Per D17. (1) Built-in default `claude` / `claude-opus-5-5` / `low` when nothing else resolves; `agile daemon status` and the stream page show the resolved values, never "default". (2) Settings edits home `default_vendor|model|effort` and each repo's model/effort in `repos.yaml`, through the store with strict schemas, same-origin 403, actor `human`; changes apply to the next session without a restart. (3) Attach and Review in the cockpit open a small picker prefilled with the resolved default. (4) Model is free text with the known ids suggested; effort is the `EffortSchema` enum.
 - **Acceptance Criteria:** Resolution-order unit test incl. the new built-in step; HTTP tests for the settings writes; Playwright: change the default in Settings, Attach, the session strip shows the new model/effort.
@@ -651,3 +651,4 @@ Daemon: `em/`, `architect/`, `oracle/`, `qa/`, `halts/`, `quota/`, `handoff/`, `
 - (T166) Merged-outside detection: fast-forward merges rely on the branch reflog; an untouched branch forked off a non-first-parent commit could read as merged (cosmetic, needs a click). Close/mark-landed check the id before the cross-origin check (400 vs 403 on a bad id; nothing mutates).
 - (T163 QA, 2026-09-23) INCIDENT: the cloud environment now carries a real `TYPESAFE_API_KEY` in every shell (set in the environment config for the T154 agreement check). A QA daemon inherited it and made one real classifier call from "Test examples" before QA caught it and re-ran key-less. Violates the standing no-key-in-cloud rule. Resolved by D16: Pete keeps the key and allows real classifier calls.
 - (T163 QA) `evals.available` is true whenever a `Classifier` object is built, not when a key is present, so the Rules screen's disabled-with-tooltip state for Test examples is unreachable; the click fails with a clear per-example error instead. (T163 review) No cap on examples per rule.
+- 2026-09-23 (T170 QA): when a vendor session dies right after Attach, the stream page shows only `stopped` and a "session ended" thread line — no reason. Surface the vendor stderr tail on the session strip. Not scheduled.
