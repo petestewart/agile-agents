@@ -564,6 +564,15 @@ Build order: Phase 0 → 1 → 2 → 3 → 4 → 5 → 6. Within a phase, ticket
 - **Validation Steps:** `bun run typecheck`; `bun test`; `bun run test:integration`; `bun run test:e2e`.
 - **Notes:** Runs after T167 merges, before T164 so CLAUDE.md describes the final layout. Stale CLAUDE.md lines found by the same audit (tagline, `em/delegate.ts`, halts, send/approve/halt, architect planning turn, Ledger, sprint TTL) are T164's.
 
+### Ticket: T169 ∥ Show rule hits on the stream
+- **Priority:** P1
+- **Status:** Todo
+- **Owner:** —
+- **Scope:** From Pete's T167 look (2026-09-23): a hook deny or route today lands only in `events.jsonl` and the rule's stats, so the stream page shows nothing. (1) Every hook decision that names a rule (deny or route, pattern or classifier) appends a thread `event` entry: rule text, the blocked command or path, and the outcome. (2) The thread renders it as a distinct "blocked by rule" card linking to the rule on the Rules screen. (3) The Rules screen shows last fired time next to the stats. Role-policy denies that name no rule get a plainer entry.
+- **Acceptance Criteria:** Service test: a `command_deny` hit on `rm -rf dist` writes one thread entry naming the rule. Playwright: the card renders on the stream page and links to the rule.
+- **Validation Steps:** `bun test packages/daemon/src/hook packages/ui`; `bun run test:e2e`.
+- **Notes:** Runs before T164 so the checklist can point at it.
+
 ### Ticket: T165 Cockpit as an installable app
 - **Priority:** P2
 - **Status:** Todo (step 1 done 2026-09-22, merge 8121113; step 2 awaits Pete)
