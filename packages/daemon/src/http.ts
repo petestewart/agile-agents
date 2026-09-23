@@ -65,6 +65,7 @@ import {
   QuestionNotFoundError,
   type QuestionService,
   parseAnswerParams,
+  sayAndAnswer,
 } from './questions';
 import {
   RuleAlreadyDecidedError,
@@ -722,7 +723,19 @@ async function handleStreamRoute(
     if (action === 'say') {
       const input = StreamSayInputSchema.safeParse(body);
       if (!input.success) return errorResponse(400, formatZodError('say', input.error));
-      if (feed.attach) return jsonResponse(await feed.attach.say(id, input.data.body), 201);
+      if (feed.attach) {
+        // T169: the same path as `agile stream say` — see `sayAndAnswer`.
+        const attach = feed.attach;
+        const said = await sayAndAnswer(
+          {
+            say: (streamId, text) => attach.say(streamId, text),
+            ...(feed.questions ? { questions: feed.questions } : {}),
+          },
+          id,
+          input.data.body,
+        );
+        return jsonResponse(said, 201);
+      }
       // No attach service: the line is still the record.
       const entry = await feed.streams.appendThread('human', id, {
         kind: 'line',

@@ -44,6 +44,7 @@ import {
   emptyDraft,
   evalDeadlineMs,
   filterRules,
+  formatFiredAt,
   patchOf,
   ruleScopes,
   sortRules,
@@ -206,6 +207,22 @@ export function Rules(): JSX.Element {
               aria-label="Show every source"
               onClick={() => {
                 const { source: _dropped, ...rest } = filter;
+                setFilter(rest);
+              }}
+            >
+              ×
+            </button>
+          </span>
+        )}
+        {filter.rule !== undefined && (
+          <span className="cr-chip" data-testid="rules-filter-rule">
+            rule {filter.rule}
+            <button
+              type="button"
+              className="cr-link"
+              aria-label="Show every rule"
+              onClick={() => {
+                const { rule: _dropped, ...rest } = filter;
                 setFilter(rest);
               }}
             >
@@ -377,7 +394,14 @@ function RuleCard({
       )}
       <div className="cr-dim cr-rule-stats" data-testid="rules-stats">
         fired {rule.stats.fired} · routed {rule.stats.routed} · violated {rule.stats.violated}
-        {rule.stats.last_fired_at ? ` · last ${rule.stats.last_fired_at.slice(0, 10)}` : ''}
+        {rule.stats.last_fired_at !== undefined && (
+          <>
+            {' · '}
+            <span data-testid="rules-last-fired" title={rule.stats.last_fired_at}>
+              last fired {formatFiredAt(rule.stats.last_fired_at)}
+            </span>
+          </>
+        )}
         {row && row.flag !== '-' && (
           <span className="cr-rule-flag" data-testid="rules-flag" data-flag={row.flag}>
             {row.flag_detail}

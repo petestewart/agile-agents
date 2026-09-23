@@ -156,3 +156,22 @@ export function diffLineKind(line: string): DiffLineKind {
   if (line.startsWith('-')) return 'del';
   return 'ctx';
 }
+
+/**
+ * T169: the rule a thread entry reports a hit on — the hook writes a
+ * daemon `event` whose body starts `rule_hit:` and whose `ref` is the rule
+ * id — or `undefined` for any other entry. The stream page renders a hit
+ * as a "blocked by rule" card linking to the rule on the Rules screen.
+ */
+export function ruleHitOf(entry: {
+  by: string;
+  kind: string;
+  body: string;
+  ref?: string;
+}): string | undefined {
+  if (entry.by !== 'daemon' || entry.kind !== 'event') return undefined;
+  if (!entry.body.startsWith('rule_hit:')) return undefined;
+  return entry.ref !== undefined && /^R-[0-9A-HJKMNP-TV-Z]{26}$/.test(entry.ref)
+    ? entry.ref
+    : undefined;
+}

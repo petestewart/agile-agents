@@ -290,6 +290,63 @@ export class QuestionService {
     return superseded;
   }
 
+  /**
+   * T169: the human replied **on the thread** instead of the Answer box,
+   * and that line was prompted into the very session that asked. The reply
+   * is the answer: every question that session still has open is closed as
+   * `answered` / `reply`, `answered_by: human`, its answer citing the
+   * thread line — so the card leaves the inbox and the turn-end rule sees
+   * nothing open, and the worker carries on instead of idling on a
+   * question that was already answered in the conversation.
+   *
+   * Deliberately conservative: only called once the line has been handed
+   * to that session's prompt queue (`AttachService.say` returned it as
+   * `prompted`), so a line typed on a stream with no live worker — or
+   * prompted into a different session — closes nothing. Nothing is
+   * delivered here: the thread line *was* the delivery.
+   */
+  async answerFromThread(
+    sessionId: string,
+    line: { body: string; ts: string },
+  ): Promise<Question[]> {
+    const open = this.listOpen().filter((question) => question.session === sessionId);
+    const answered: Question[] = [];
+    for (const question of open) {
+      const answer = normalizeText(`replied on the thread (${line.ts}): ${line.body}`);
+      const saved = await this.persist({
+        ...question,
+        status: 'answered',
+        answer,
+        resolved_as: 'reply',
+        answered_by: 'human',
+        answered_at: this.clock().toISOString(),
+      });
+      await this.streams.appendThread('daemon', saved.stream, {
+        kind: 'event',
+        body: `question ${saved.id} answered by the human's thread line of ${line.ts}`,
+        ref: questionPath(saved.id),
+      });
+      await this.streams
+        .update('daemon', saved.stream, {
+          agent: { status: 'working' },
+          human: { status: 'open' },
+        })
+        .catch(() => {
+          // The stream write is the status half; the record is already closed.
+        });
+      await this.store.appendEvent(
+        buildEvent('question_answered', {
+          stream: saved.stream,
+          agent: 'human',
+          session: sessionId,
+          data: { id: saved.id, answer: saved.answer, via: 'thread' },
+        }),
+      );
+      answered.push(saved);
+    }
+    return answered;
+  }
+
   get(id: QuestionId): Question {
     try {
       return this.store.getEntity(questionPath(id), validateQuestion);

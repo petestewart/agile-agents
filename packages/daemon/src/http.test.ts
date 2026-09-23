@@ -11,7 +11,7 @@ import {
   ulid,
   validateClassifierConfig,
 } from '@agile-agents/shared';
-import { resolveSessionSettings } from './attach';
+import { type AttachService, resolveSessionSettings } from './attach';
 import { Bus } from './bus';
 import { ClassifierKeyService, FakeClassifier } from './classifier';
 import { readHomeConfigFile } from './config';
@@ -520,6 +520,50 @@ describe('T160 cockpit routes', () => {
       body: JSON.stringify({ body: 'x'.repeat(801) }),
     });
     expect(long.status).toBe(400);
+  });
+
+  test('T169: a say prompted into the asking session answers its open question as human', async () => {
+    const stream = await streams.create('human', { title: 's', goal: 'g' });
+    const session = ulid();
+    const q = await questions.raise({
+      stream: stream.id,
+      raised_by: '01ARZ3NDEKTSV4RRFFQ69GE001',
+      session,
+      text: 'comma or semicolon?',
+    });
+    // A stand-in for `AttachService.say`: the line, prompted into `session`.
+    const attach = {
+      say: async (id: string, body: string) => ({
+        entry: await streams.appendThread('human', id, { kind: 'line', body }),
+        prompted: session,
+      }),
+    } as unknown as AttachService;
+    const server = startHttpServer({
+      port: 0,
+      version: '0.0.0-test',
+      stateRoot,
+      startedAt: Date.now(),
+      store,
+      gates: new GateService(store),
+      streams,
+      questions,
+      attach,
+      feedPollIntervalMs: 20,
+    });
+    try {
+      const res = await fetch(`http://127.0.0.1:${server.port}/api/streams/${stream.id}/say`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ body: 'semicolons' }),
+      });
+      expect(res.status).toBe(201);
+      const after = questions.get(q.id);
+      expect(after.status).toBe('answered');
+      expect(after.answered_by).toBe('human');
+      expect(after.answer).toContain('semicolons');
+    } finally {
+      await server.stop();
+    }
   });
 
   test('T162: POST /api/streams creates a stream stamped human; strict body; unknown parent 400; cross-origin 403', async () => {

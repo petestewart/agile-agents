@@ -11,6 +11,7 @@ import { join } from 'node:path';
 import type { Stream, ThreadEntry } from '@agile-agents/shared';
 import { ulid } from '@agile-agents/shared';
 import { runInit } from '../init';
+import { QuestionService } from '../questions/service';
 import type { RpcMethodHandler } from '../rpc';
 import { AlreadyExistsError, StateStore } from '../store';
 import { buildStreamRpcMethods } from './rpc';
@@ -219,5 +220,44 @@ describe('classifier opt-out over stream.update (T150, §6.4)', () => {
       (e: unknown) => e,
     )) as { code?: number } | undefined;
     expect(err?.code).toBe(-32602);
+  });
+});
+
+describe('stream.thread_append as `agile stream say` (T169)', () => {
+  test('a human line prompted into the asking session answers its open question', async () => {
+    const streams = new StreamService(store);
+    const questions = new QuestionService(store, streams);
+    const stream = await streams.create('human', { title: 's', goal: 'g' });
+    const session = ulid();
+    const asked = await questions.raise({
+      stream: stream.id,
+      raised_by: '01ARZ3NDEKTSV4RRFFQ69GE001',
+      session,
+      text: 'comma or semicolon?',
+    });
+    const other = await streams.create('human', { title: 'no worker', goal: 'g' });
+    const withReply = buildStreamRpcMethods(streams, {
+      reply: {
+        // A stand-in for `AttachService.say`: only `stream` has a live worker.
+        say: async (id, body) => ({
+          entry: await streams.appendThread('human', id, { kind: 'line', body }),
+          ...(id === stream.id ? { prompted: session } : {}),
+        }),
+        questions,
+      },
+    });
+    const say = (id: string, body: string) =>
+      (withReply['stream.thread_append'] as RpcMethodHandler)({ id, kind: 'line', body });
+
+    // No live session to deliver to: nothing closes.
+    await say(other.id, 'semicolons');
+    expect(questions.get(asked.id).status).toBe('open');
+
+    const entry = (await say(stream.id, 'semicolons')) as ThreadEntry;
+    expect(entry.by).toBe('human');
+    const after = questions.get(asked.id);
+    expect(after.status).toBe('answered');
+    expect(after.answered_by).toBe('human');
+    expect(after.answer).toContain('semicolons');
   });
 });

@@ -32,11 +32,14 @@ import {
 } from '../lib/api';
 import { useFeed } from '../lib/feed-context';
 import type { LandOutcome, StreamDiff, StreamPagePayload } from '../lib/feed-types';
+import { DEFAULT_RULES_FILTER } from '../lib/rules';
+import { useShell } from '../lib/shell';
 import {
   DOT_LABEL,
   diffLineKind,
   isLiveSession,
   isThinking,
+  ruleHitOf,
   streamDot,
   threadAuthorLabel,
 } from '../lib/streams';
@@ -223,6 +226,7 @@ function LandPanel({
 
 export function StreamPage({ id }: { id: string }): JSX.Element {
   const { cockpit, refresh } = useFeed();
+  const { openRules } = useShell();
   const [page, setPage] = useState<StreamPagePayload | undefined>(undefined);
   const [loadError, setLoadError] = useState<string | undefined>(undefined);
   const [tab, setTab] = useState<Tab>('thread');
@@ -471,21 +475,48 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
             </p>
           )}
           <ol className="cr-thread" data-testid="thread" ref={threadRef}>
-            {page.thread.map((entry, i) => (
-              <li
-                // biome-ignore lint/suspicious/noArrayIndexKey: the thread is append-only, so an index is stable.
-                key={i}
-                data-testid="thread-entry"
-                data-kind={entry.kind}
-                data-by={entry.by === 'human' || entry.by === 'daemon' ? entry.by : 'agent'}
-              >
-                <div className="who">
-                  {threadAuthorLabel(entry.by, stream.sessions)}
-                  {entry.kind !== 'line' ? ` · ${entry.kind}` : ''}
-                </div>
-                <Markdown text={entry.body} />
-              </li>
-            ))}
+            {page.thread.map((entry, i) => {
+              const hit = ruleHitOf(entry);
+              if (hit !== undefined) {
+                return (
+                  <li
+                    // biome-ignore lint/suspicious/noArrayIndexKey: the thread is append-only, so an index is stable.
+                    key={i}
+                    className="cr-rule-hit"
+                    data-testid="thread-rule-hit"
+                    data-kind={entry.kind}
+                    data-by="daemon"
+                    data-rule={hit}
+                  >
+                    <div className="who">blocked by rule</div>
+                    <Markdown text={entry.body.slice('rule_hit:'.length).trim()} />
+                    <button
+                      type="button"
+                      className="cr-link"
+                      data-testid="thread-rule-link"
+                      onClick={() => openRules({ ...DEFAULT_RULES_FILTER, rule: hit })}
+                    >
+                      Open rule {hit}
+                    </button>
+                  </li>
+                );
+              }
+              return (
+                <li
+                  // biome-ignore lint/suspicious/noArrayIndexKey: the thread is append-only, so an index is stable.
+                  key={i}
+                  data-testid="thread-entry"
+                  data-kind={entry.kind}
+                  data-by={entry.by === 'human' || entry.by === 'daemon' ? entry.by : 'agent'}
+                >
+                  <div className="who">
+                    {threadAuthorLabel(entry.by, stream.sessions)}
+                    {entry.kind !== 'line' ? ` · ${entry.kind}` : ''}
+                  </div>
+                  <Markdown text={entry.body} />
+                </li>
+              );
+            })}
             {isThinking(stream) && (
               <li className="cr-thinking" data-testid="thinking" aria-label="agent is thinking">
                 <span />

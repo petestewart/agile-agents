@@ -316,7 +316,19 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
           ...buildBusRpcMethods(bus),
           ...buildGateRpcMethods(gateService),
           ...(questionService ? buildQuestionRpcMethods(questionService) : {}),
-          ...(streamService ? buildStreamRpcMethods(streamService) : {}),
+          ...(streamService
+            ? buildStreamRpcMethods(streamService, {
+                // T169: `agile stream say` is the composer's path too.
+                ...(attachService
+                  ? {
+                      reply: {
+                        say: (id: string, body: string) => attachService.say(id, body),
+                        ...(questionService ? { questions: questionService } : {}),
+                      },
+                    }
+                  : {}),
+              })
+            : {}),
           ...(inboxService ? buildInboxRpcMethods(inboxService) : {}),
           ...(rulesService ? buildRuleRpcMethods(rulesService, ruleEvals) : {}),
           ...(docsService ? buildDocsRpcMethods(docsService) : {}),

@@ -246,6 +246,8 @@ export class HookService {
   private readonly limits: HookLimits;
   private readonly fileSize: (path: string) => number | undefined;
   private readonly now: () => Date;
+  /** T169: per stream, the session + body of the last hit this service appended — the coalescing key. */
+  private readonly lastHit = new Map<string, string>();
 
   constructor(
     private readonly store: StateStore,
@@ -450,7 +452,14 @@ export class HookService {
     ctx: { stream?: string; session?: string } | undefined,
     event: string,
     decision: HookDecision,
-    detail: { tool?: string; command?: string; allowedBy?: string; rule?: string } = {},
+    detail: {
+      tool?: string;
+      command?: string;
+      allowedBy?: string;
+      rule?: string;
+      /** T169: the thread already shows this exact hit; the repeat is counted here instead. */
+      repeat?: boolean;
+    } = {},
   ): Promise<void> {
     await this.store.appendEvent(
       buildEvent('hook_decision', {
@@ -474,6 +483,7 @@ export class HookService {
           // global and critical, so "why was I denied" must be answerable
           // from the log alone.
           ...(detail.rule !== undefined ? { rule: detail.rule } : {}),
+          ...(detail.repeat === true ? { thread_repeat: true } : {}),
         },
       }),
       { commit: 'deferred' },
@@ -518,7 +528,9 @@ export class HookService {
 
     let decision = decidePreToolUse(ctx, payload);
     let allowedBy: string | undefined;
+    let wasRouted = false;
     if (decision.decision === 'ask') {
+      wasRouted = true;
       // T138: the route band (design §8.1). `ask` is this hook's own
       // vocabulary for "needs a human" — it never reaches the wire, because
       // Claude under ACP cannot answer an interactive `ask`. It becomes a
@@ -542,6 +554,7 @@ export class HookService {
       const tier = await this.classifierTier(ctx, payload);
       if (tier !== undefined) {
         const applied = await this.applyClassifierTier(ctx, payload, tier, decision);
+        if (tier.outcome.band === 'route') wasRouted = true;
         decision = { ...decision, ...applied.decision };
         allowedBy = applied.allowedBy ?? allowedBy;
       }
@@ -549,7 +562,9 @@ export class HookService {
 
     await this.ackAll(ctx.session as AgentId, decision.ack);
     await this.recordRuleStats(decision);
+    const repeat = await this.noteHit(ctx, payload, decision, wasRouted);
     await this.logDecision(ctx, 'pre_tool_use', decision, {
+      ...(repeat ? { repeat: true } : {}),
       ...(payload.tool_name !== undefined ? { tool: payload.tool_name } : {}),
       ...(typeof payload.tool_input?.command === 'string'
         ? { command: payload.tool_input.command }
@@ -721,6 +736,70 @@ export class HookService {
     }
   }
 
+  /**
+   * T169: a refused or routed call is visible on the stream's thread, not
+   * only in `events.jsonl` and the rule's counters. One `event` entry per
+   * decision that did not let the call through: a rule-named hit carries
+   * the rule's id as `ref` (the stream page renders it as a "blocked by
+   * rule" card linking to the rule) and its text; a role-policy deny that
+   * names no rule gets a plainer line with no `ref`. Best effort, like
+   * `noteUnchecked`: the decision is already made.
+   */
+  private async noteHit(
+    ctx: HookDecisionContext,
+    payload: ClaudePreToolUsePayload,
+    decision: HookDecision,
+    routed: boolean,
+  ): Promise<boolean> {
+    if (decision.decision !== 'deny') return false;
+    const ruleId = decision.ruleViolated ?? decision.ruleRouted;
+    const outcome = routed ? 'routed to the human' : 'denied';
+    const target = hitTarget(payload);
+    let body: string;
+    if (ruleId !== undefined) {
+      const rule = this.rulesInScope(ctx.stream).find((each) => each.id === ruleId);
+      const label = rule?.name !== undefined ? `${rule.name} (${ruleId})` : ruleId;
+      body = `rule_hit: ${label} ${outcome} \`${target}\`${rule !== undefined ? ` — rule: ${rule.text}` : ''}`;
+    } else {
+      body = `hook_deny: ${outcome} \`${target}\` — ${decision.reason ?? 'role policy'}`;
+    }
+    const capped = body.slice(0, THREAD_BODY_MAX_CHARS);
+    // Coalesce a retry storm: when the stream's newest thread entry is
+    // this very hit (same body, so same rule/ref, outcome and target) from
+    // the same session, the thread already says it — append nothing, and
+    // let the `hook_decision` event carry `thread_repeat` instead. The
+    // thread is append-only, so the first entry is never rewritten.
+    const key = `${ctx.session}\u0000${capped}`;
+    try {
+      const last = this.store.readThread(ctx.stream).at(-1);
+      if (
+        last !== undefined &&
+        last.by === 'daemon' &&
+        last.kind === 'event' &&
+        last.body === capped &&
+        last.ref === ruleId &&
+        this.lastHit.get(ctx.stream) === key
+      ) {
+        return true;
+      }
+    } catch {
+      // Unreadable thread: fall through and try the append.
+    }
+    try {
+      await this.store.appendThreadEntry(ctx.stream, {
+        ts: this.now().toISOString(),
+        by: 'daemon',
+        kind: 'event',
+        body: capped,
+        ...(ruleId !== undefined ? { ref: ruleId } : {}),
+      });
+      this.lastHit.set(ctx.stream, key);
+    } catch {
+      // A stream that has gone: the decision is already made.
+    }
+    return false;
+  }
+
   /** Every rule in scope for this stream, or none when no rules service is wired. */
   private rulesInScope(stream: string): Rule[] {
     const rules = this.options.rules;
@@ -869,4 +948,22 @@ export class HookService {
 
 function summarizeLowPriority(messages: AgentMessage[]): string {
   return messages.map((m) => `[${m.kind} from ${m.from}] ${m.body}`).join('\n');
+}
+
+/** T169: what a hit refused — the command, else the path, else the tool — one line, capped. */
+function hitTarget(payload: ClaudePreToolUsePayload): string {
+  const input = payload.tool_input ?? {};
+  const pick = (key: string): string | undefined =>
+    typeof input[key] === 'string' && (input[key] as string).length > 0
+      ? (input[key] as string)
+      : undefined;
+  const raw =
+    pick('command') ??
+    pick('file_path') ??
+    pick('path') ??
+    pick('notebook_path') ??
+    payload.tool_name ??
+    'unknown call';
+  const line = raw.replace(/\s+/g, ' ').trim();
+  return line.length > 200 ? `${line.slice(0, 199)}…` : line;
 }

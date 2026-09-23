@@ -13,6 +13,7 @@ import {
   groupInbox,
   isLiveSession,
   isThinking,
+  ruleHitOf,
   streamDot,
   threadAuthorLabel,
 } from './streams';
@@ -133,5 +134,25 @@ describe('stream page helpers (T161)', () => {
     expect(diffLineKind('+added')).toBe('add');
     expect(diffLineKind('-gone')).toBe('del');
     expect(diffLineKind(' same')).toBe('ctx');
+  });
+});
+
+describe('ruleHitOf (T169)', () => {
+  const id = 'R-01ARZ3NDEKTSV4RRFFQ69G5FAV';
+  test('a daemon rule_hit event with a rule ref is a hit', () => {
+    expect(
+      ruleHitOf({ by: 'daemon', kind: 'event', body: `rule_hit: ${id} denied`, ref: id }),
+    ).toBe(id);
+  });
+  test('anything else is not', () => {
+    expect(
+      ruleHitOf({ by: 'daemon', kind: 'event', body: 'hook_deny: denied `x`' }),
+    ).toBeUndefined();
+    expect(
+      ruleHitOf({ by: 'human', kind: 'event', body: `rule_hit: ${id}`, ref: id }),
+    ).toBeUndefined();
+    expect(
+      ruleHitOf({ by: 'daemon', kind: 'event', body: 'rule_hit: x', ref: 'questions/Q-1.yaml' }),
+    ).toBeUndefined();
   });
 });
