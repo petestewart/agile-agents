@@ -125,9 +125,7 @@ function resolveCwd(worktree: string, cwd: string | undefined): string {
   return abs;
 }
 
-// ---------------------------------------------------------------------------
 // Failure parsers: one per named runner, plus a generic fallback.
-// ---------------------------------------------------------------------------
 
 const FAIL_CONTEXT_WINDOW = 12;
 
@@ -396,128 +394,81 @@ export async function runTestRun(opts: RunTestRunOptions): Promise<TestRunOutput
     inFlightRawOutputPaths.add(path);
   }
   try {
-    return await runTestRunSpawned({
-      opts,
-      tokens,
+    const proc = Bun.spawn(tokens, {
       cwd,
-      timeoutMs,
-      maxOutputBytes,
-      maxRetainedRawBytes,
-      rawTreeRoot,
-      stdoutPath,
-      stderrPath,
-      rawRelPath,
-      rawLogPath,
-      runStartedAt,
+      stdout: Bun.file(stdoutPath),
+      stderr: Bun.file(stderrPath),
+      timeout: timeoutMs,
+      killSignal: 'SIGKILL',
+      env: sandboxedSubprocessEnv(opts.repoRoot, 'test-run'),
+    });
+    const exitCode = await proc.exited;
+    // `proc.signalCode` is the reliable timeout/kill signal across platforms.
+    const timedOut = proc.signalCode !== null && proc.signalCode !== undefined;
+
+    const stdoutFile = Bun.file(stdoutPath);
+    const stderrFile = Bun.file(stderrPath);
+
+    // The text used for parsing is capped per stream by reading the tail (a
+    // failure marker is likelier near the end). The raw files stay whole.
+    const [stdout, stderr] = await Promise.all([
+      readCappedTail(stdoutFile, maxOutputBytes),
+      readCappedTail(stderrFile, maxOutputBytes),
+    ]);
+    const combined = stderr.length > 0 ? `${stdout}\n${stderr}` : stdout;
+
+    // Stream both captures into the one combined log chunk by chunk: a huge
+    // log must never be held in memory whole.
+    await writeRawOutputStream(rawLogPath, [stdoutFile, stderrFile]);
+
+    // Folded into the combined log: remove the captures. Best effort.
+    for (const path of [stdoutPath, stderrPath]) {
+      try {
+        unlinkSync(path);
+      } catch {
+        // already gone
+      }
+    }
+
+    // Prune the oldest raw logs back under budget; never fails the run.
+    // Protected: this run's files, every in-flight run's files, and anything
+    // written since this run started (a concurrent sibling that has already
+    // finished and deregistered). So a run's `raw_output` survives every
+    // sweep by a run that started before or during it.
+    let rawOutputOverBudget = false;
+    try {
+      rawOutputOverBudget = pruneRawTestRunOutputs(
+        rawTreeRoot,
+        maxRetainedRawBytes,
+        new Set([stdoutPath, stderrPath, rawLogPath, ...inFlightRawOutputPaths]),
+        runStartedAt,
+      );
+    } catch {
+      // Best-effort housekeeping.
+    }
+
+    const allFailures = timedOut ? [] : exitCode === 0 ? [] : parseFailures(combined);
+    const ok = !timedOut && exitCode === 0 && allFailures.length === 0;
+
+    const summary = timedOut
+      ? `test_run: killed after exceeding the ${timeoutMs}ms timeout — see raw_output`
+      : summarize(ok, allFailures.slice(0, MAX_FAILURES_RETURNED), passSummary(combined));
+
+    // The whole serialized result stays under the token ceiling.
+    return budgetTestRunOutput({
+      ok,
+      allFailures,
+      summary,
+      exitCode,
+      rawOutputRelPath: join('test_run', rawRelPath),
+      timedOut,
+      rawOutputOverBudget,
     });
   } finally {
     for (const path of [stdoutPath, stderrPath, rawLogPath]) {
       inFlightRawOutputPaths.delete(path);
     }
   }
-}
-
-interface RunTestRunSpawnedArgs {
-  opts: RunTestRunOptions;
-  tokens: string[];
-  cwd: string;
-  timeoutMs: number;
-  maxOutputBytes: number;
-  maxRetainedRawBytes: number;
-  rawTreeRoot: string;
-  stdoutPath: string;
-  stderrPath: string;
-  rawRelPath: string;
-  rawLogPath: string;
-  runStartedAt: number;
-}
-
-async function runTestRunSpawned(args: RunTestRunSpawnedArgs): Promise<TestRunOutput> {
-  const {
-    opts,
-    tokens,
-    cwd,
-    timeoutMs,
-    maxOutputBytes,
-    maxRetainedRawBytes,
-    rawTreeRoot,
-    stdoutPath,
-    stderrPath,
-    rawRelPath,
-    rawLogPath,
-    runStartedAt,
-  } = args;
-
-  const proc = Bun.spawn(tokens, {
-    cwd,
-    stdout: Bun.file(stdoutPath),
-    stderr: Bun.file(stderrPath),
-    timeout: timeoutMs,
-    killSignal: 'SIGKILL',
-    env: sandboxedSubprocessEnv(opts.repoRoot, 'test-run'),
-  });
-  const exitCode = await proc.exited;
-  // `proc.signalCode` is the reliable timeout/kill signal across platforms.
-  const timedOut = proc.signalCode !== null && proc.signalCode !== undefined;
-
-  const stdoutFile = Bun.file(stdoutPath);
-  const stderrFile = Bun.file(stderrPath);
-
-  // The text used for parsing is capped per stream by reading the tail (a
-  // failure marker is likelier near the end). The raw files stay whole.
-  const [stdout, stderr] = await Promise.all([
-    readCappedTail(stdoutFile, maxOutputBytes),
-    readCappedTail(stderrFile, maxOutputBytes),
-  ]);
-  const combined = stderr.length > 0 ? `${stdout}\n${stderr}` : stdout;
-
-  // Stream both captures into the one combined log chunk by chunk: a huge
-  // log must never be held in memory whole.
-  await writeRawOutputStream(rawLogPath, [stdoutFile, stderrFile]);
-
-  // Folded into the combined log: remove the captures. Best effort.
-  for (const path of [stdoutPath, stderrPath]) {
-    try {
-      unlinkSync(path);
-    } catch {
-      // already gone
-    }
-  }
-
-  // Prune the oldest raw logs back under budget; never fails the run.
-  // Protected: this run's files, every in-flight run's files, and anything
-  // written since this run started (a concurrent sibling that has already
-  // finished and deregistered). So a run's `raw_output` survives every
-  // sweep by a run that started before or during it.
-  let rawOutputOverBudget = false;
-  try {
-    rawOutputOverBudget = pruneRawTestRunOutputs(
-      rawTreeRoot,
-      maxRetainedRawBytes,
-      new Set([stdoutPath, stderrPath, rawLogPath, ...inFlightRawOutputPaths]),
-      runStartedAt,
-    );
-  } catch {
-    // Best-effort housekeeping.
-  }
-
-  const allFailures = timedOut ? [] : exitCode === 0 ? [] : parseFailures(combined);
-  const ok = !timedOut && exitCode === 0 && allFailures.length === 0;
-
-  const summary = timedOut
-    ? `test_run: killed after exceeding the ${timeoutMs}ms timeout — see raw_output`
-    : summarize(ok, allFailures.slice(0, MAX_FAILURES_RETURNED), passSummary(combined));
-
-  // The whole serialized result stays under the token ceiling.
-  return budgetTestRunOutput({
-    ok,
-    allFailures,
-    summary,
-    exitCode,
-    rawOutputRelPath: join('test_run', rawRelPath),
-    timedOut,
-    rawOutputOverBudget,
-  });
 }
 
 /** Reads `file`, or only its last `capBytes` when larger (`slice` is a lazy view). */
