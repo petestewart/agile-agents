@@ -1,21 +1,10 @@
 /**
- * `InboxService` — one list of everything waiting on the human, across
- * every stream, oldest first (design/cockpit-design.md §3).
- *
- * The list is **derived on every call** from records that already exist:
- *  - `questions/Q-*.yaml` with `status: open`          → `question`
- *  - `gates/HIL-*.yaml` with `status: pending`     → `gate`
- *  - `rules/R-*.yaml` with `status: proposed`            → `rule_accept`,
- *    or, for the proposals one `agile rules seed` imported, one
- *    `rule_batch` per source (T163)
- *  - streams whose `agent.status` is `blocked`/`done`
- *    while `human.status` is still `open`              → `blocked` / `done`
- *
- * Nothing is persisted and nothing is read from the bus, which is what
- * makes §3.3's "items are records, not messages" true: a daemon restart
- * re-reads them, and a leftover bus message from a previous run cannot
- * appear here at all. This is the fix for the 2026-09-11 live run's stale
- * questions (§1.4).
+ * `InboxService`: everything waiting on the human, across every stream,
+ * oldest first (§3), derived on every call from existing records: open
+ * questions, pending gates, proposed rules (seed imports grouped into one
+ * `rule_batch` per source), and streams whose agent is `blocked`/`done`
+ * while the human half is still `open`. Nothing is persisted and nothing
+ * comes from the bus, so a stale message can never surface (§3.3).
  */
 
 import {
@@ -35,7 +24,7 @@ import type { QuestionService } from '../questions/service';
 import type { RulesService } from '../rules/service';
 import type { StreamService } from '../streams/service';
 
-/** T161: the full text behind a clipped context, as a spreadable field. */
+/** The full text behind a clipped context, as a spreadable field. */
 function withDetail(text: string): { detail?: string } {
   const detail = inboxDetail(text);
   return detail === undefined ? {} : { detail };
@@ -51,19 +40,14 @@ export interface InboxServiceDeps {
   streams: StreamService;
   questions: QuestionService;
   gates: GateService;
-  /** T140's rules — a proposed rule is a `rule_accept` item (§3.1). */
+  /** A proposed rule is a `rule_accept` item (§3.1). */
   rules?: RulesService;
 }
 
 export class InboxService {
   constructor(private readonly deps: InboxServiceDeps) {}
 
-  /**
-   * Every open item, oldest first (§3.3: "the operator's attention is one
-   * queue whatever the tree looks like"). A record whose stream has been
-   * deleted is skipped rather than shown with no path — an item you cannot
-   * place is worse than no item.
-   */
+  /** Every open item, oldest first (§3.3). A record whose stream is gone is skipped: an item you can't place is worse than none. */
   list(): InboxItem[] {
     const byId = new Map<string, Stream>(
       this.deps.streams.list({ include_archived: true }).map((s) => [s.id, s]),
@@ -79,15 +63,9 @@ export class InboxService {
       const item = this.gateItem(gate, byId);
       if (item) items.push(item);
     }
-    // T140: every rule still awaiting the human's decision (§3.1,
-    // §5.1). Unlike every other item, a `rule_accept` item may name no
-    // stream: a global rule proposed by the human, or one imported by
-    // `agile rules seed`, belongs to no stream and still needs deciding.
-    //
-    // T163: a seed import proposes dozens at once, which buried every
-    // other card; those collapse to one card per source, which opens the
-    // rules screen filtered to them. Lessons and agent proposals stay
-    // one card each — each is its own decision about its own stream.
+    // Proposed rules (§3.1, §5.1); a `rule_accept` item may name no stream
+    // (a global rule). A seed import's dozens collapse into one card per
+    // source; lessons and agent proposals stay one card each.
     const seeded = new Map<string, Rule[]>();
     for (const rule of this.deps.rules?.listProposed() ?? []) {
       if (isSeededRule(rule)) {
@@ -107,7 +85,7 @@ export class InboxService {
     return items.sort((a, b) => (a.ts === b.ts ? a.id.localeCompare(b.id) : a.ts < b.ts ? -1 : 1));
   }
 
-  /** Ancestor chain as titles, root→leaf (§3.2). Cycles are impossible (the store rejects them) but the seen-set keeps this total anyway. */
+  /** Ancestor titles, root→leaf (§3.2); the seen-set keeps it total. */
   private path(stream: Stream, byId: Map<string, Stream>): string[] {
     const titles: string[] = [];
     const seen = new Set<string>();
@@ -150,7 +128,7 @@ export class InboxService {
     };
   }
 
-  /** T163: one card for every open proposal from one seed source — oldest first, so it sorts where its first rule would. */
+  /** One card for a seed source's open proposals, sorted where its first rule would be. */
   private ruleBatchItem(source: string, rules: Rule[]): InboxItem {
     const sorted = [...rules].sort((a, b) =>
       a.created_at === b.created_at
@@ -180,10 +158,7 @@ export class InboxService {
       stream: stream.id,
       stream_path: this.path(stream, byId),
       ts: gate.requested_at,
-      // T138: a routed tool call is decided on the call itself, so the card
-      // leads with it ("edit /…/package.json — editing a dependency
-      // manifest…") rather than making the operator open the record (§3.2:
-      // "enough to decide in ten seconds without leaving the list").
+      // A routed call is decided on the call itself, so the card leads with it (§3.2).
       context: inboxContext(gateText(gate)),
       ...withDetail(gateText(gate)),
       ref: `gates/${gate.id}.yaml`,
@@ -191,11 +166,8 @@ export class InboxService {
   }
 
   /**
-   * §2.2's "allowed to disagree" pair: the agent has stopped (`blocked` at
-   * a routed tool call, or `done` with its turn finished) and the human
-   * half is still `open`, i.e. nobody has decided anything yet. That pair
-   * — and only that pair — is the "waiting for me to look" state the tree
-   * dot is coloured from, so it is an inbox item.
+   * §2.2's disagreeing pair: the agent stopped (`blocked` or `done`) and the
+   * human half is still `open`. That pair is the "waiting for me" state.
    */
   private streamItem(stream: Stream, byId: Map<string, Stream>): InboxItem | undefined {
     if (stream.archived === true) return undefined;
@@ -210,9 +182,7 @@ export class InboxService {
       context: inboxContext(
         stream.agent.progress ??
           (stream.agent.status === 'done'
-            ? // T136 (QA rough edge 7): say what clears the item. "review and
-              // land" named only one of the two exits, so a stream you decide
-              // not to land looked like it had no way out of the inbox.
+            ? // Name both exits, so a stream you won't land has a way out.
               'worker finished — land or close the stream'
             : 'blocked'),
       ),
