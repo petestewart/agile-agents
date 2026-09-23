@@ -1,9 +1,4 @@
-/**
- * Tier-0 sandbox module (T026 — design §6, §14). Public surface: build a
- * profile from role + worktree, detect what this host can enforce, render
- * and wrap a command for that backend. See `wrap.ts` for the one function
- * `runner/session.ts` actually calls.
- */
+/** Tier-0 sandbox (§6, §14): profile, backend detection, rendering and `wrapAgentCommand`. */
 
 export {
   DEFAULT_REGISTRY_ALLOWLIST,

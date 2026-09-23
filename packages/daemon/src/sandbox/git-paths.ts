@@ -1,15 +1,8 @@
 /**
- * Resolves the shared git paths a ticket worktree's `.git` gitfile points
- * at (round 2 B4 — reviewer's own evidence: `.worktrees/T026.../.git` =
- * `gitdir: /home/user/agile-agents/.git/worktrees/T026-tier0-sandbox`).
- * `git worktree add` gives every linked worktree a `.git` *file* (not a
- * directory) containing `gitdir: <repo>/.git/worktrees/<name>`; that
- * per-worktree dir holds `HEAD`/`index`/`logs` for this worktree, and its
- * own `commondir` file names the real shared `.git` (objects/refs/config)
- * relative to itself — normally `../..`.
- *
- * Dependency-injected (`readFileSync`) so this is unit-testable without a
- * real git repo, matching the rest of this module's pure/injected style.
+ * Resolves the git dirs a linked worktree's `.git` gitfile points at:
+ * `gitdir: <repo>/.git/worktrees/<name>` (this worktree's HEAD, index and
+ * logs), whose `commondir` names the shared `.git` (normally `../..`).
+ * `readFileSync` is injected so this tests without a real repo.
  */
 
 import { readFileSync } from 'node:fs';
@@ -20,9 +13,9 @@ export interface GitPathsDeps {
 }
 
 export interface WorktreeGitPaths {
-  /** `<repo>/.git/worktrees/<name>` — this worktree's own HEAD/index/logs. Write access here is what makes `git commit` (and the pre-commit hook) possible. */
+  /** `<repo>/.git/worktrees/<name>`: this worktree's HEAD/index/logs, written by every commit. */
   worktreeGitDir: string;
-  /** `<repo>/.git` — shared across every worktree. Only `objects`/`refs` subpaths need write access; the rest (config, HEAD of the main checkout, hooks) stays read-only. */
+  /** `<repo>/.git`, shared: only objects/refs/logs need write; the rest stays read-only. */
   commonGitDir: string;
 }
 
@@ -32,13 +25,7 @@ function defaultReadFileSync(path: string): string {
 
 const GITDIR_LINE = /^gitdir:\s*(.+?)\s*$/m;
 
-/**
- * `null` when `worktreePath/.git` isn't a linked-worktree gitfile at all —
- * QA's fresh clone (§15 "env: clone") has a real `.git` *directory*
- * (`readFileSync` on a directory throws `EISDIR`), and a plain non-worktree
- * checkout would too. Callers treat `null` as "nothing extra to grant" —
- * exactly right for reviewer/QA, who must stay read-only there regardless.
- */
+/** `null` when `.git` isn't a linked-worktree gitfile (a real `.git` directory): nothing extra to grant. */
 export function resolveWorktreeGitPaths(
   worktreePath: string,
   deps: GitPathsDeps = { readFileSync: defaultReadFileSync },
@@ -60,8 +47,7 @@ export function resolveWorktreeGitPaths(
     const commonDirRaw = deps.readFileSync(join(worktreeGitDir, 'commondir')).trim();
     commonGitDir = isAbsolute(commonDirRaw) ? commonDirRaw : resolve(worktreeGitDir, commonDirRaw);
   } catch {
-    // No `commondir` file — not a linked worktree after all (or an older
-    // git); treat its own dir as the common dir rather than guessing.
+    // No `commondir`: treat its own dir as the common dir rather than guess.
   }
 
   return { worktreeGitDir, commonGitDir };
