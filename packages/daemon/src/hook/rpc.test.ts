@@ -45,7 +45,7 @@ afterEach(() => {
  * whose worktree contains the call's cwd.
  */
 async function seedTicket(): Promise<void> {
-  await store.putAgent('eng-1', {
+  await store.putAgent('01ARZ3NDEKTSV4RRFFQ69GE001', {
     vendor: 'claude',
     model: 'claude-sonnet-4-5',
     role: 'worker',

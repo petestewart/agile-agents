@@ -24,7 +24,7 @@ beforeEach(() => {
   Bun.spawnSync(['git', 'commit', '-q', '-m', 'initial commit'], { cwd: repo });
   const init = runInit(repo);
   store = StateStore.open(init.stateRoot);
-  service = new GateService(store, { delegate: () => ({ decision: 'approve', by: 'em' }) });
+  service = new GateService(store, { delegate: () => ({ decision: 'approve', by: 'human' }) });
   methods = buildGateRpcMethods(service);
 });
 
@@ -150,17 +150,8 @@ describe('gate.* RPC round trip (via dispatch) — happy paths', () => {
     expect(after.find((r) => r.id === req.id)?.status).toBe('resolved');
   });
 
-  test('gate.delegate resolves a pending request via the single-instance path', async () => {
-    const req = await service.request('classifier_review', ctx({ classifier_review: 'human' }));
-    const response = await dispatch(methods, {
-      jsonrpc: '2.0',
-      id: 1,
-      method: 'gate.delegate',
-      params: { id: req.id, to: 'em' },
-    });
-    const result = resultOf(response) as HilRequest | undefined;
-    expect(result?.status).toBe('resolved');
-    expect(result?.delegated).toBe(true);
+  test('gate.delegate is gone with the EM (T168)', async () => {
+    expect(Object.keys(methods)).not.toContain('gate.delegate');
   });
 
   test('gate.breaker_clear via RPC restores normal gate resolution', async () => {
@@ -244,29 +235,5 @@ describe('gate.* RPC round trip — negative paths (finding 5)', () => {
     });
     const error = errorOf(response);
     expect(error?.message).toContain('signal');
-  });
-
-  test('gate.delegate with an unknown id surfaces a not-found error', async () => {
-    const response = await dispatch(methods, {
-      jsonrpc: '2.0',
-      id: 1,
-      method: 'gate.delegate',
-      params: { id: 'HIL-01ARZ3NDEKTSV4RRFFQ69G5FAV', to: 'em' },
-    });
-    const error = errorOf(response);
-    expect(error?.message).toContain('not found');
-  });
-
-  test('gate.delegate with an invalid "to" is rejected', async () => {
-    const req = await service.request('land', ctx({ land: 'human' }));
-    const response = await dispatch(methods, {
-      jsonrpc: '2.0',
-      id: 1,
-      method: 'gate.delegate',
-      params: { id: req.id, to: 'reviewer' },
-    });
-    const error = errorOf(response);
-    expect(error?.message).toContain('to');
-    expect(service.get(req.id).status).toBe('pending');
   });
 });

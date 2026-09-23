@@ -42,11 +42,11 @@ import { realpathSync, statSync } from 'node:fs';
 import { isAbsolute, resolve } from 'node:path';
 import {
   type AgentId,
+  type AgentMessage,
   type AgentRecord,
   type ClassifierConfig,
   DEFAULT_PROTECTED_BRANCHES,
   MESSAGE_BODY_MAX_CHARS,
-  type Message,
   type Policy,
   type RepoEntry,
   type Rule,
@@ -867,6 +867,6 @@ export class HookService {
   }
 }
 
-function summarizeLowPriority(messages: Message[]): string {
+function summarizeLowPriority(messages: AgentMessage[]): string {
   return messages.map((m) => `[${m.kind} from ${m.from}] ${m.body}`).join('\n');
 }

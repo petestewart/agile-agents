@@ -150,7 +150,7 @@ describe('runHook', () => {
     const lines: string[] = [];
     const original = console.log;
     const originalEnv = process.env.AGILE_AGENT;
-    process.env.AGILE_AGENT = 'reviewer-1';
+    process.env.AGILE_AGENT = '01ARZ3NDEKTSV4RRFFQ69GR001';
     console.log = (msg: string) => lines.push(msg);
     let code: number;
     try {
@@ -166,7 +166,7 @@ describe('runHook', () => {
       else process.env.AGILE_AGENT = originalEnv;
     }
     expect(code).toBe(0);
-    expect(JSON.parse(lines.join('\n'))).toEqual({ receivedAgent: 'reviewer-1' });
+    expect(JSON.parse(lines.join('\n'))).toEqual({ receivedAgent: '01ARZ3NDEKTSV4RRFFQ69GR001' });
   });
 
   test('does not add agile_agent when AGILE_AGENT is unset', async () => {

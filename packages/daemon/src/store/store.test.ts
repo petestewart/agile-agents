@@ -10,16 +10,9 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import {
-  type RuleInput,
-  TICKET_TRANSITIONS,
-  type Ticket,
-  type TicketStatus,
-  ulid,
-  validateTicket,
-} from '@agile-agents/shared';
+import { type RuleInput, ulid } from '@agile-agents/shared';
 import { runInit } from '../init';
-import { IllegalTransitionError, NotFoundError, StateStore } from './store';
+import { NotFoundError, StateStore } from './store';
 
 let repo: string;
 let stateRoot: string;
@@ -44,17 +37,6 @@ beforeEach(() => {
 afterEach(() => {
   rmSync(repo, { recursive: true, force: true });
 });
-
-function makeTicket(id: string, overrides: Partial<Ticket> = {}): Ticket {
-  return validateTicket({
-    id,
-    title: `Ticket ${id}`,
-    status: 'draft',
-    contract: {},
-    history: [],
-    ...overrides,
-  });
-}
 
 describe('Repo registry (T111): repos.yaml in the state home', () => {
   test('an untouched home lists no repos', () => {
@@ -157,30 +139,30 @@ describe('AgentRecord: putAgent / getAgent / listAgents / deleteAgent', () => {
 
   test('putAgent/getAgent round-trip, mints agent_put', async () => {
     const store = StateStore.open(stateRoot);
-    await store.putAgent('eng-1' as never, makeRecord() as never);
-    expect(store.getAgent('eng-1' as never).model).toBe('sonnet');
+    await store.putAgent('01ARZ3NDEKTSV4RRFFQ69GE001' as never, makeRecord() as never);
+    expect(store.getAgent('01ARZ3NDEKTSV4RRFFQ69GE001' as never).model).toBe('sonnet');
     const events = store.listEvents();
     expect(events[0]?.kind).toBe('agent_put');
-    expect(events[0]?.agent).toBe('eng-1');
+    expect(events[0]?.agent).toBe('01ARZ3NDEKTSV4RRFFQ69GE001');
   });
 
   test('listAgents returns every agent record', async () => {
     const store = StateStore.open(stateRoot);
-    await store.putAgent('eng-1' as never, makeRecord() as never);
-    await store.putAgent('eng-2' as never, makeRecord() as never);
+    await store.putAgent('01ARZ3NDEKTSV4RRFFQ69GE001' as never, makeRecord() as never);
+    await store.putAgent('01ARZ3NDEKTSV4RRFFQ69GE002' as never, makeRecord() as never);
     expect(
       store
         .listAgents()
         .map((a) => a.id)
         .sort(),
-    ).toEqual(['eng-1', 'eng-2']);
+    ).toEqual(['01ARZ3NDEKTSV4RRFFQ69GE001', '01ARZ3NDEKTSV4RRFFQ69GE002']);
   });
 
   test('deleteAgent removes the record and mints agent_deleted', async () => {
     const store = StateStore.open(stateRoot);
-    await store.putAgent('eng-1' as never, makeRecord() as never);
-    await store.deleteAgent('eng-1' as never);
-    expect(() => store.getAgent('eng-1' as never)).toThrow(NotFoundError);
+    await store.putAgent('01ARZ3NDEKTSV4RRFFQ69GE001' as never, makeRecord() as never);
+    await store.deleteAgent('01ARZ3NDEKTSV4RRFFQ69GE001' as never);
+    expect(() => store.getAgent('01ARZ3NDEKTSV4RRFFQ69GE001' as never)).toThrow(NotFoundError);
     expect(store.listEvents().map((e) => e.kind)).toEqual(['agent_put', 'agent_deleted']);
   });
 });
@@ -194,10 +176,10 @@ describe('Policy / Vendors singletons', () => {
   test('putPolicy overwrites it and mints policy_put', async () => {
     const store = StateStore.open(stateRoot);
     await store.putPolicy({
-      gates: { land: 'em' },
+      gates: { land: 'human_timeout:1h' },
       breaker_signals: [],
-    } as never);
-    expect(store.getPolicy().gates.land).toBe('em');
+    });
+    expect(store.getPolicy().gates.land).toBe('human_timeout:1h');
     expect(store.listEvents()[0]?.kind).toBe('policy_put');
   });
 

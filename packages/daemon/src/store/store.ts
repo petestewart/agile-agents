@@ -41,9 +41,6 @@ import {
   type Stream,
   type StreamPrincipal,
   type ThreadEntry,
-  type Ticket,
-  type TicketId,
-  type TicketStatus,
   UlidSchema,
   type VendorsConfig,
   type VendorsConfigInput,
@@ -51,7 +48,6 @@ import {
   assertRuleAcceptable,
   assertRuleWrite,
   assertStreamWrite,
-  isLegalTransition,
   validateAgentRecord,
   validateEvent,
   validateHomeConfig,
@@ -61,7 +57,6 @@ import {
   validateRule,
   validateStream,
   validateThreadEntry,
-  validateTicket,
   validateVendorsConfig,
 } from '@agile-agents/shared';
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
@@ -80,17 +75,6 @@ import {
   writeJsonFileAtomic,
   writeYamlFileAtomic,
 } from './fs';
-
-export class IllegalTransitionError extends Error {
-  constructor(
-    public readonly ticket: TicketId,
-    public readonly from: TicketStatus,
-    public readonly to: TicketStatus,
-  ) {
-    super(`illegal transition for ${ticket}: ${from} -> ${to}`);
-    this.name = 'IllegalTransitionError';
-  }
-}
 
 export class NotFoundError extends Error {
   constructor(entity: string, id: string) {
@@ -125,32 +109,6 @@ class Mutex {
     );
     return result;
   }
-}
-
-export interface TransitionOptions {
-  by: string;
-  reason?: string;
-}
-
-function todayIso(): string {
-  return new Date().toISOString().slice(0, 10);
-}
-
-/**
- * `history` line format (§4 "Ticket" shows two examples — "created by
- * architect", "assigned to eng-3 (claude/sonnet)" — with no grammar beyond
- * that). DESIGN-GAP: a single grammar covering every transition is used
- * here, since `transitionTicket` is generic across the whole edge table:
- * `<date> <from> -> <to> by <agent>[ — <reason>]`.
- */
-function formatHistoryLine(
-  from: TicketStatus,
-  to: TicketStatus,
-  by: string,
-  reason?: string,
-): string {
-  const base = `${todayIso()} ${from} -> ${to} by ${by}`;
-  return reason ? `${base} — ${reason}` : base;
 }
 
 /** Generic entity (de)serialization by extension — `.json` or yaml (everything else). */
@@ -604,19 +562,6 @@ export class StateStore {
     return readJsonlFile<unknown>(this.abs('log', 'events.jsonl')).map((line) =>
       validateEvent(line),
     );
-  }
-
-  // ---------------------------------------------------------------- Ticket
-
-  getTicket(id: TicketId): Ticket {
-    const path = this.abs('tickets', `${id}.yaml`);
-    if (!fileExists(path)) throw new NotFoundError('Ticket', id);
-    return validateTicket(readYamlFile(path));
-  }
-
-  listTickets(): Ticket[] {
-    const dir = this.abs('tickets');
-    return listDataFiles(dir, '.yaml').map((name) => validateTicket(readYamlFile(join(dir, name))));
   }
 
   // ---------------------------------------------------------- AgentRecord
@@ -1180,8 +1125,8 @@ export class StateStore {
 
   /**
    * Generic validating put/get/delete trio (review B2) for any entity with
-   * no dedicated helper above — T006's `bus/inbox/**`/`bus/threads/**`
-   * message files today, whatever needs one tomorrow. Serializes as yaml
+   * no dedicated helper above — the `bus/inbox/**` message files and
+   * `gates/**` records today, whatever needs one tomorrow. Serializes as yaml
    * unless `relPath` ends in `.json`. Mints a generic `entity_put`/
    * `entity_deleted` event carrying the `relPath`.
    */
@@ -1293,8 +1238,4 @@ export class StateStore {
 
 function readEntityFileRaw(path: string): string {
   return readFileSync(path, 'utf8');
-}
-
-function isTicketIdLike(value: string): boolean {
-  return /^TKT-\d{4,}$/.test(value);
 }

@@ -1,28 +1,20 @@
 /**
- * Policy (design/agile-agents-design.md §16 "HIL gates policy").
- *
- * `.agile/policy.yaml` (repo default); the same `gates` shape is reused on a
- * sprint file ("The sprint file carries its own gates: block", §16), most
- * specific wins: sprint → epic → team → repo default.
+ * Policy (design/agile-agents-design.md §16 "HIL gates policy"):
+ * `.agile/policy.yaml`, one owner per gate kind.
  */
 
 import { z } from 'zod';
+import { HIL_KINDS, type HilKind, HilKindSchema } from './agent-message';
 import { formatZodError } from './ids';
-import { HIL_KINDS, type HilKind, HilKindSchema } from './message';
 
 /**
- * "Owner: human | em | architect | human_timeout: <duration> (ask the human;
- * if no answer by the deadline, proceed as the fallback owner would)" (§16).
- * DESIGN-GAP: `human_timeout` is written in the design as a mapping-style
- * entry (`human_timeout: <duration>`); modeled as a single string value
- * `human_timeout:<duration>` so `gates` stays a flat `string -> owner` map
- * like every other role in the enum.
+ * A gate's owner: `human`, or `human_timeout:<duration>` (ask the human; at
+ * the deadline, fall through to the gate service's delegate when one is
+ * configured). T168 deleted the `em`/`architect` owners with the roles.
  */
 export const HUMAN_TIMEOUT_PATTERN = /^human_timeout:\S+$/;
 export const GateOwnerSchema = z.union([
   z.literal('human'),
-  z.literal('em'),
-  z.literal('architect'),
   z.string().regex(HUMAN_TIMEOUT_PATTERN, 'must look like human_timeout:2h'),
 ]);
 export type GateOwner = z.infer<typeof GateOwnerSchema>;
@@ -31,7 +23,7 @@ export type GateOwner = z.infer<typeof GateOwnerSchema>;
  * T121: `gates` is a **closed** set, not a free-form record. The three
  * surviving gate kinds are design/cockpit-design.md §3.1's — `land`,
  * `rule_accept`, `classifier_review` — and they are exactly `HIL_KINDS`
- * (`message.ts`), so a policy row and a `hil_kind` can never drift apart.
+ * (`agent-message.ts`), so a policy row and a `hil_kind` can never drift apart.
  * A policy naming any other gate (`approve_plan`, `sprint_review`,
  * `unblock`, `demo`, `promote_to_main`, …) is rejected at the boundary
  * rather than silently resolving to `human`.

@@ -7,7 +7,7 @@ function open(overrides: Partial<Question> = {}): unknown {
   return {
     id: `Q-${ulid()}`,
     stream: ulid(),
-    raised_by: 'eng-1',
+    raised_by: '01ARZ3NDEKTSV4RRFFQ69GE001',
     text: 'this ticket contradicts SPEC-auth-003 — which wins?',
     status: 'open',
     raised_at: new Date().toISOString(),

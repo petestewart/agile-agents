@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { ulid, validateTicket } from '@agile-agents/shared';
+import { ulid } from '@agile-agents/shared';
 import { Bus, buildBusRpcMethods } from '../bus';
 import { GateService } from '../gates';
 import { HookService, buildHookRpcMethods } from '../hook';
@@ -113,10 +113,12 @@ describe('summarizeTestOutput', () => {
 describe('formatInboxMessage', () => {
   it('formats and caps concatenated bodies', () => {
     const text = formatInboxMessage([
-      { kind: 'question', from: 'eng-1', body: 'hello' },
-      { kind: 'decision', from: 'architect', body: 'world' },
+      { kind: 'hil_response', from: 'human', body: 'hello' },
+      { kind: 'hil_response', from: '01ARZ3NDEKTSV4RRFFQ69GE001', body: 'world' },
     ]);
-    expect(text).toBe('[question from eng-1] hello\n[decision from architect] world');
+    expect(text).toBe(
+      '[hil_response from human] hello\n[hil_response from 01ARZ3NDEKTSV4RRFFQ69GE001] world',
+    );
   });
 
   it('stops once the char cap is hit', () => {
@@ -217,7 +219,7 @@ describe('createAgileExtension: tool_call gating', () => {
       env: {
         [GATE_ENV_VAR]: '1',
         AGILE_SOCKET_PATH: socketPath,
-        AGILE_AGENT: 'eng-1',
+        AGILE_AGENT: '01ARZ3NDEKTSV4RRFFQ69GE001',
         AGILE_TICKET: 'TKT-0001',
       },
       heartbeatIntervalMs: 60_000,
@@ -238,7 +240,7 @@ describe('createAgileExtension: tool_call gating', () => {
 
     expect(preToolUse).toHaveBeenCalledTimes(2);
     const firstCallParams = preToolUse.mock.calls[0]?.[0] as { agile_agent?: string; cwd?: string };
-    expect(firstCallParams.agile_agent).toBe('eng-1');
+    expect(firstCallParams.agile_agent).toBe('01ARZ3NDEKTSV4RRFFQ69GE001');
     expect(firstCallParams.cwd).toBe('/repo');
   });
 
@@ -248,7 +250,7 @@ describe('createAgileExtension: tool_call gating', () => {
       env: {
         [GATE_ENV_VAR]: '1',
         AGILE_SOCKET_PATH: join(dir, 'nothing-listening.sock'),
-        AGILE_AGENT: 'eng-1',
+        AGILE_AGENT: '01ARZ3NDEKTSV4RRFFQ69GE001',
       },
       heartbeatIntervalMs: 60_000,
     })(pi);
@@ -277,7 +279,11 @@ describe('createAgileExtension: tool_result rewriting', () => {
 
     const pi = new FakePi();
     createAgileExtension({
-      env: { [GATE_ENV_VAR]: '1', AGILE_SOCKET_PATH: socketPath, AGILE_AGENT: 'eng-1' },
+      env: {
+        [GATE_ENV_VAR]: '1',
+        AGILE_SOCKET_PATH: socketPath,
+        AGILE_AGENT: '01ARZ3NDEKTSV4RRFFQ69GE001',
+      },
       heartbeatIntervalMs: 60_000,
     })(pi);
 
@@ -339,7 +345,11 @@ describe('createAgileExtension: tool_result rewriting', () => {
 
     const pi = new FakePi();
     createAgileExtension({
-      env: { [GATE_ENV_VAR]: '1', AGILE_SOCKET_PATH: socketPath, AGILE_AGENT: 'eng-1' },
+      env: {
+        [GATE_ENV_VAR]: '1',
+        AGILE_SOCKET_PATH: socketPath,
+        AGILE_AGENT: '01ARZ3NDEKTSV4RRFFQ69GE001',
+      },
       heartbeatIntervalMs: 60_000,
     })(pi);
 
@@ -373,7 +383,11 @@ describe('createAgileExtension: tool_result rewriting', () => {
 
     const pi = new FakePi();
     createAgileExtension({
-      env: { [GATE_ENV_VAR]: '1', AGILE_SOCKET_PATH: socketPath, AGILE_AGENT: 'eng-1' },
+      env: {
+        [GATE_ENV_VAR]: '1',
+        AGILE_SOCKET_PATH: socketPath,
+        AGILE_AGENT: '01ARZ3NDEKTSV4RRFFQ69GE001',
+      },
       heartbeatIntervalMs: 60_000,
     })(pi);
 
@@ -437,7 +451,7 @@ describe('createAgileExtension: heartbeat', () => {
       env: {
         [GATE_ENV_VAR]: '1',
         AGILE_SOCKET_PATH: socketPath,
-        AGILE_AGENT: 'eng-1',
+        AGILE_AGENT: '01ARZ3NDEKTSV4RRFFQ69GE001',
         AGILE_TICKET: 'TKT-1',
       },
       heartbeatIntervalMs: 20,
@@ -457,7 +471,7 @@ describe('createAgileExtension: heartbeat', () => {
     await waitFor(() => heartbeats.length >= 3);
     expect(heartbeats.length).toBeGreaterThanOrEqual(3);
     const first = heartbeats[0] as { agent?: string; patch?: { ticket?: string } };
-    expect(first.agent).toBe('eng-1');
+    expect(first.agent).toBe('01ARZ3NDEKTSV4RRFFQ69GE001');
     expect(first.patch?.ticket).toBe('TKT-1');
 
     pi.sessionShutdown?.();

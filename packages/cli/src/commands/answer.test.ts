@@ -52,7 +52,7 @@ describe('agile answer', () => {
   test('a Q- id answers the question', async () => {
     const question = await daemon.questionService.raise({
       stream,
-      raised_by: 'eng-1',
+      raised_by: '01ARZ3NDEKTSV4RRFFQ69GE001',
       text: 'comma or semicolon?',
     });
     const { code, out } = await capture(() =>

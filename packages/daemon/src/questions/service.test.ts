@@ -6,8 +6,8 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { Message, Question, QuestionId, Stream } from '@agile-agents/shared';
-import { ulid, validateMessage, validateQuestion } from '@agile-agents/shared';
+import type { AgentMessage, Question, QuestionId, Stream } from '@agile-agents/shared';
+import { ulid, validateAgentMessage, validateQuestion } from '@agile-agents/shared';
 import { runInit } from '../init';
 import { StateStore } from '../store';
 import { StreamService } from '../streams/service';
@@ -47,8 +47,8 @@ afterEach(() => {
   rmSync(repo, { recursive: true, force: true });
 });
 
-function inbox(agent: string): Message[] {
-  return store.listEntities(`bus/inbox/${agent}`, validateMessage);
+function inbox(agent: string): AgentMessage[] {
+  return store.listEntities(`bus/inbox/${agent}`, validateAgentMessage);
 }
 
 function eventKinds(): string[] {
@@ -59,7 +59,7 @@ describe('QuestionService.raise', () => {
   test('writes questions/<id>.yaml in the home, not board/questions/', async () => {
     const q = await questions.raise({
       stream: stream.id,
-      raised_by: 'eng-1',
+      raised_by: '01ARZ3NDEKTSV4RRFFQ69GE001',
       session: SESSION,
       text: 'comma or semicolon?',
     });
@@ -77,7 +77,7 @@ describe('QuestionService.raise', () => {
   test('flips the stream to question / waiting_on_you and appends a question thread entry', async () => {
     await questions.raise({
       stream: stream.id,
-      raised_by: 'eng-1',
+      raised_by: '01ARZ3NDEKTSV4RRFFQ69GE001',
       session: SESSION,
       text: 'comma or semicolon?',
     });
@@ -99,10 +99,14 @@ describe('QuestionService.raise', () => {
 
   test('refuses an unknown stream and empty text', async () => {
     await expect(
-      questions.raise({ stream: '0'.repeat(26), raised_by: 'eng-1', text: 'x' }),
+      questions.raise({
+        stream: '0'.repeat(26),
+        raised_by: '01ARZ3NDEKTSV4RRFFQ69GE001',
+        text: 'x',
+      }),
     ).rejects.toThrow();
     await expect(
-      questions.raise({ stream: stream.id, raised_by: 'eng-1', text: '   ' }),
+      questions.raise({ stream: stream.id, raised_by: '01ARZ3NDEKTSV4RRFFQ69GE001', text: '   ' }),
     ).rejects.toThrow(EmptyQuestionTextError);
   });
 });
@@ -111,7 +115,7 @@ describe('QuestionService.answer', () => {
   async function raised(): Promise<Question> {
     return questions.raise({
       stream: stream.id,
-      raised_by: 'eng-1',
+      raised_by: '01ARZ3NDEKTSV4RRFFQ69GE001',
       session: SESSION,
       text: 'comma or semicolon?',
     });
@@ -166,7 +170,7 @@ describe('QuestionService.answer', () => {
     });
     const q = await service.raise({
       stream: stream.id,
-      raised_by: 'eng-1',
+      raised_by: '01ARZ3NDEKTSV4RRFFQ69GE001',
       session: SESSION,
       text: 'comma or semicolon?',
     });
@@ -174,7 +178,7 @@ describe('QuestionService.answer', () => {
     // The prompt goes to the session that asked — the record names it —
     // and nothing is written to a mailbox nobody reads.
     expect(delivered).toEqual([{ session: SESSION, answer: 'semicolon' }]);
-    expect(inbox('eng-1')).toHaveLength(0);
+    expect(inbox('01ARZ3NDEKTSV4RRFFQ69GE001')).toHaveLength(0);
     expect(inbox(SESSION)).toHaveLength(0);
   });
 
@@ -209,8 +213,16 @@ describe('QuestionService.answer', () => {
 
 describe('listOpen', () => {
   test('reads fresh from disk and only returns open questions', async () => {
-    const a = await questions.raise({ stream: stream.id, raised_by: 'eng-1', text: 'first' });
-    await questions.raise({ stream: stream.id, raised_by: 'eng-1', text: 'second' });
+    const a = await questions.raise({
+      stream: stream.id,
+      raised_by: '01ARZ3NDEKTSV4RRFFQ69GE001',
+      text: 'first',
+    });
+    await questions.raise({
+      stream: stream.id,
+      raised_by: '01ARZ3NDEKTSV4RRFFQ69GE001',
+      text: 'second',
+    });
     expect(questions.listOpen()).toHaveLength(2);
     await questions.answer(a.id, { answer: 'done', by: 'human' });
     expect(new QuestionService(store, streams).listOpen().map((q) => q.text)).toEqual(['second']);
@@ -221,13 +233,13 @@ describe('a gate decision supersedes the questions the same session left open (T
   test('resolves them as superseded, with a thread line naming the gate', async () => {
     const mine = await questions.raise({
       stream: stream.id,
-      raised_by: 'eng-1',
+      raised_by: '01ARZ3NDEKTSV4RRFFQ69GE001',
       session: SESSION,
       text: 'comma or semicolon?',
     });
     const other = await questions.raise({
       stream: stream.id,
-      raised_by: 'eng-1',
+      raised_by: '01ARZ3NDEKTSV4RRFFQ69GE001',
       session: ulid(),
       text: 'another session, untouched',
     });
@@ -250,7 +262,7 @@ describe('a gate decision supersedes the questions the same session left open (T
   test('an already answered question is left exactly as it was', async () => {
     const q = await questions.raise({
       stream: stream.id,
-      raised_by: 'eng-1',
+      raised_by: '01ARZ3NDEKTSV4RRFFQ69GE001',
       session: SESSION,
       text: 'comma or semicolon?',
     });

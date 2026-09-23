@@ -66,7 +66,7 @@ describe('agile inbox / agile answer against a daemon on a temp AGILE_HOME', () 
     const session = ulid();
     const question: Question = await daemon.questionService.raise({
       stream: child.id,
-      raised_by: 'eng-1',
+      raised_by: '01ARZ3NDEKTSV4RRFFQ69GE001',
       session,
       text: 'comma or semicolon for the CSV dialect?',
     });
@@ -124,7 +124,7 @@ describe('agile inbox / agile answer against a daemon on a temp AGILE_HOME', () 
     // T137: delivery is a prompt into the live session, and there is none
     // here — so nothing is written to a mailbox, and the thread carries the
     // answer for the next attach's brief.
-    expect(existsSync(join(daemon.home, 'bus', 'inbox', 'eng-1'))).toBe(false);
+    expect(existsSync(join(daemon.home, 'bus', 'inbox', '01ARZ3NDEKTSV4RRFFQ69GE001'))).toBe(false);
     expect(existsSync(join(daemon.home, 'bus', 'inbox', session))).toBe(false);
 
     // Answered: out of the inbox for good.
@@ -143,7 +143,7 @@ describe('agile inbox / agile answer against a daemon on a temp AGILE_HOME', () 
     const words = 'dialect '.repeat(40);
     const question: Question = await daemon.questionService.raise({
       stream: stream.id,
-      raised_by: 'eng-1',
+      raised_by: '01ARZ3NDEKTSV4RRFFQ69GE001',
       text: `${words}end`,
     });
     const listed = await cli(['inbox', '--json']);

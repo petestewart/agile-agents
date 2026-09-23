@@ -17,8 +17,8 @@ import { UlidSchema, formatZodError } from './ids';
 
 /**
  * Thread-entry body cap. Mirrors the 800-char message body cap
- * (CLAUDE.md tunable, "message body cap 800 chars") rather than importing
- * it from the deprecated bus `message` module, which T122/T125 removes.
+ * (CLAUDE.md tunable, "message body cap 800 chars"), kept separate from
+ * `agent-message.ts`'s `MESSAGE_BODY_MAX_CHARS` so the thread owns its own cap.
  */
 export const THREAD_BODY_MAX_CHARS = 800;
 

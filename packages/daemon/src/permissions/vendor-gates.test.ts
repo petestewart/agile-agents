@@ -14,7 +14,7 @@
  *   — no per-vendor branching needed there because the wire shape is the
  *   same ACP request/option shape Claude uses, §A). These tests feed it
  *   the request shape Cursor actually raises — `execute` for *every* exec,
- *   `git status` included, never `edit`/`read` — for engineer/reviewer/QA
+ *   `git status` included, never `edit`/`read` — for engineer/reviewer
  *   and assert the existing role table produces the right verdict without
  *   modification.
  * - **Grok**: has no ACP permission surface at all (§C2: "zero permission
@@ -103,9 +103,8 @@ describe('Cursor (§C2/§C3: ACP permission fires for every exec, never for edit
     expect(decision.kind).toBe('hil');
   });
 
-  test('engineer/QA get no mode override — Cursor keeps its own default mode for them', () => {
+  test('an engineer gets no mode override — Cursor keeps its own default mode', () => {
     expect(cursorModeIdFor('engineer')).toBeUndefined();
-    expect(cursorModeIdFor('qa')).toBeUndefined();
   });
 });
 
@@ -132,8 +131,7 @@ describe('Grok (§C2/§C3: client fs is the only gate; ACP permission never fire
     }
   });
 
-  test('QA can still write via client fs — only reviewer is denied categorically by this policy', () => {
-    expect(canWriteViaClientFs('qa')).toBe(true);
+  test('an engineer can still write via client fs — only reviewer is denied categorically by this policy', () => {
     expect(canWriteViaClientFs('engineer')).toBe(true);
     expect(canWriteViaClientFs('reviewer')).toBe(false);
   });

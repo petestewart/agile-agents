@@ -44,7 +44,7 @@ describe('question.* RPC', () => {
   test('raise -> list -> get -> answer round trip', async () => {
     const raised = await call<Question>('question.raise', {
       stream: stream.id,
-      raised_by: 'eng-1',
+      raised_by: '01ARZ3NDEKTSV4RRFFQ69GE001',
       text: 'is the contract right?',
     });
     expect(raised.stream).toBe(stream.id);
@@ -72,14 +72,22 @@ describe('question.* RPC', () => {
       call('question.raise', { stream: stream.id, raised_by: 'nobody', text: 'x' }),
     ).rejects.toThrow(/invalid "raised_by"/);
     expect(
-      call('question.raise', { stream: stream.id, raised_by: 'eng-1', text: '' }),
+      call('question.raise', {
+        stream: stream.id,
+        raised_by: '01ARZ3NDEKTSV4RRFFQ69GE001',
+        text: '',
+      }),
     ).rejects.toThrow(/invalid "text"/);
     // T121: `stream` replaced `ticket`, and it is required.
-    expect(call('question.raise', { raised_by: 'eng-1', text: 'x' })).rejects.toThrow(
-      /invalid "stream"/,
-    );
     expect(
-      call('question.raise', { stream: 'TKT-0231', raised_by: 'eng-1', text: 'x' }),
+      call('question.raise', { raised_by: '01ARZ3NDEKTSV4RRFFQ69GE001', text: 'x' }),
+    ).rejects.toThrow(/invalid "stream"/);
+    expect(
+      call('question.raise', {
+        stream: 'TKT-0231',
+        raised_by: '01ARZ3NDEKTSV4RRFFQ69GE001',
+        text: 'x',
+      }),
     ).rejects.toThrow(/invalid "stream"/);
     expect(call('question.answer', { id: 'Q-1', answer: 'a', by: 'human' })).rejects.toThrow(
       /invalid "id"/,
@@ -92,7 +100,7 @@ describe('question.* RPC', () => {
   test('any resolved_as other than "reply" is a param error', async () => {
     const raised = await call<Question>('question.raise', {
       stream: stream.id,
-      raised_by: 'em',
+      raised_by: 'human',
       text: 'q',
     });
     for (const resolved_as of ['telepathy', 'decision', 'ticket']) {

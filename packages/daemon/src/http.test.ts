@@ -145,7 +145,11 @@ describe('T160 cockpit routes', () => {
   test('GET /api/cockpit carries the tree rows with their status pair and the inbox', async () => {
     const root = await streams.create('human', { title: 'root', goal: 'g' });
     const leaf = await streams.create('human', { title: 'leaf', goal: 'g', parent: root.id });
-    await questions.raise({ stream: leaf.id, raised_by: 'eng-1', text: 'which one?' });
+    await questions.raise({
+      stream: leaf.id,
+      raised_by: '01ARZ3NDEKTSV4RRFFQ69GE001',
+      text: 'which one?',
+    });
     const frame = (await (await fetch(url('/api/cockpit'))).json()) as CockpitFrame;
     expect(frame.type).toBe('cockpit');
     const row = frame.streams.find((s) => s.id === leaf.id);
@@ -497,7 +501,11 @@ describe('T160 cockpit routes', () => {
       const deadline = Date.now() + 5000;
       while (frames.length === 0 && Date.now() < deadline) await Bun.sleep(10);
       expect(frames[0]?.inbox).toEqual([]);
-      const question = await questions.raise({ stream: stream.id, raised_by: 'eng-1', text: 'q?' });
+      const question = await questions.raise({
+        stream: stream.id,
+        raised_by: '01ARZ3NDEKTSV4RRFFQ69GE001',
+        text: 'q?',
+      });
       while (
         !frames.some((f) => f.inbox.some((i) => i.id === question.id)) &&
         Date.now() < deadline

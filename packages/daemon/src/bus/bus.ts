@@ -1,51 +1,31 @@
 /**
- * Bus — `bus.send/poll/ack/heartbeat` over a `StateStore`
- * (design/agile-agents-design.md §5 "Comms bus"; T006 scope).
+ * Bus — per-session inboxes plus the agent registry heartbeat, over a
+ * `StateStore` (design/agile-agents-design.md §5 "Comms bus", narrowed by
+ * T168 to what the reshape reads).
  *
- * Storage (§5 "Storage"): ULID message files under
- * `bus/inbox/<agent>/<ulid>.yaml` (unread), moved to
- * `bus/inbox/<agent>/done/<ulid>.yaml` on ack (§5 "Ordering / failure":
- * "Ack moves file to `done/`" — the file-move layout, not a sidecar
- * marker); every message that names a `ticket` is also filed at
- * `bus/threads/<ticket>/<ulid>.yaml` (every message touching a ticket).
- * Message and thread copies are written through `StateStore.putEntity` —
- * its own doc comment names exactly this as its intended use — so each
- * write gets the store's usual validate-then-atomic-write-then-commit
- * treatment and its own `entity_put` event; on top of that, `send` emits
- * one more `message` event per delivery (ticket's explicit requirement)
- * carrying the envelope's identifying fields, so `log/events.jsonl` has a
- * single "a message kind X was delivered" line per send, not just the
- * generic entity writes.
+ * Storage: `AgentMessage` files under `bus/inbox/<agent>/<ulid>.yaml`
+ * (unread), moved to `bus/inbox/<agent>/done/<ulid>.yaml` on ack. They are
+ * written directly by their producers (`gates/service.ts` delivers a gate
+ * note to the session parked on it); the hook reads them with `poll` and
+ * acks them once delivered. T168 deleted `send`, its role routing table,
+ * ticket fan-out and the redelivery ladder: every one of them addressed the
+ * old team roles.
  *
- * The registry (`bus/agents/<agent>.yaml`) and the dead-agent path
- * (`transitionTicket` back to `ready`) are already implemented by T005's
- * `StateStore` (`putAgent`/`getAgent`/`listAgents`/`deleteAgent`,
- * `transitionTicket`) — this module is a thin orchestration layer over
- * those plus the two entity-file trees above, not a re-implementation.
- *
- * Directory listing: `StateStore` exposes no "list this entity directory"
- * primitive beyond the specific entities it names, so this module reads
- * `bus/inbox/**` directly off disk (this package's own `stateRoot`,
- * plumbed in by the constructor) using the same `node:fs` primitives
- * `store/fs.ts` uses — no new dependency, no edit to `store/**`.
+ * The registry (`bus/agents/<agent>.yaml`) is `StateStore`'s
+ * (`putAgent`/`getAgent`/`heartbeat`); `heartbeat` here only adds
+ * "register on first heartbeat".
  */
 
 import { existsSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import {
   type AgentId,
+  type AgentMessage,
   type AgentRecord,
-  type Message,
   type MessagePriority,
-  type MessageRecipient,
-  MessageSchema,
-  type TicketId,
-  type TicketStatus,
-  ulid,
-  validateMessage,
+  validateAgentMessage,
 } from '@agile-agents/shared';
 import { NotFoundError, type StateStore } from '../store';
-import { checkRoute } from './routing';
 
 export type Clock = () => Date;
 
@@ -54,41 +34,14 @@ export const DEFAULT_LIVENESS_TIMEOUT_MS = 5 * 60 * 1000;
 
 const PRIORITY_LADDER: readonly MessagePriority[] = ['low', 'normal', 'urgent'];
 
-function bumpPriority(priority: MessagePriority): MessagePriority {
-  const index = PRIORITY_LADDER.indexOf(priority);
-  const next = PRIORITY_LADDER[Math.min(index + 1, PRIORITY_LADDER.length - 1)];
-  return next ?? priority;
-}
-
 export interface BusOptions {
   /** Injectable clock so tests can drive heartbeat/redelivery/liveness without sleeping. */
   now?: Clock;
   livenessTimeoutMs?: number;
 }
 
-export interface SendRejected {
-  ok: false;
-  reason: string;
-}
-
-export interface SendAccepted {
-  ok: true;
-  message: Message;
-  /** The concrete agent ids the message was filed to, after ticket:/broadcast fan-out. */
-  recipients: AgentId[];
-}
-
-export type SendResult = SendAccepted | SendRejected;
-
 export interface PollOptions {
   priority?: MessagePriority;
-}
-
-export interface RedeliveryResult {
-  /** Messages bumped one priority rung and left in the inbox. */
-  redelivered: Array<{ agent: AgentId; id: string; from: MessagePriority; to: MessagePriority }>;
-  /** Messages already at `urgent` past deadline: escalated to em, `requires_ack` cleared. */
-  escalated: Array<{ agent: AgentId; id: string }>;
 }
 
 /** Order inbox reads deterministically: urgent first, then normal, then low; ties broken by ulid (chronological). */
@@ -133,10 +86,6 @@ export class Bus {
       : join('bus', 'inbox', agent, `${id}.yaml`);
   }
 
-  private threadRelPath(ticket: TicketId, id: string): string {
-    return join('bus', 'threads', ticket, `${id}.yaml`);
-  }
-
   /** Every message file currently in an agent's unread inbox (not `done/`), unsorted. */
   private listInboxFiles(agent: string): string[] {
     const dir = this.inboxDir(agent);
@@ -146,112 +95,15 @@ export class Bus {
       .map((entry) => entry.name.slice(0, -'.yaml'.length));
   }
 
-  /** Every agent id that currently has an inbox directory (registered or not — em/architect/human/daemon may never call `heartbeat`). */
-  private listInboxAgents(): string[] {
-    const dir = join(this.stateRoot, 'bus', 'inbox');
-    if (!existsSync(dir)) return [];
-    return readdirSync(dir, { withFileTypes: true })
-      .filter((entry) => entry.isDirectory())
-      .map((entry) => entry.name);
-  }
-
-  /**
-   * Resolves a single `to` token into concrete agent ids to file the
-   * message under. `ticket:<id>` fans out to the ticket's `assignee` plus
-   * every agent currently registered against that ticket (`AgentRecord.ticket
-   * === id`) — DESIGN-GAP: §4's `Ticket` schema carries only one `assignee`
-   * field (no reviewer/qa list), so "fan-out to everyone on it" (§5
-   * "Message") is read via the bus registry rather than the ticket record.
-   * `broadcast` fans out to every registered agent except the sender.
-   */
-  private resolveRecipients(to: MessageRecipient, from: AgentId): AgentId[] {
-    if (to === 'broadcast') {
-      return this.store
-        .listAgents()
-        .map((a) => a.id)
-        .filter((id) => id !== from) as AgentId[];
-    }
-    if (to.startsWith('ticket:')) {
-      const ticketId = to.slice('ticket:'.length) as TicketId;
-      const recipients = new Set<string>();
-      try {
-        const ticket = this.store.getTicket(ticketId);
-        if (ticket.assignee) recipients.add(ticket.assignee);
-      } catch {
-        // Ticket doesn't exist (yet, or ever) — fan-out degrades to whoever
-        // the registry already has on it, rather than failing the send.
-      }
-      return [...recipients] as AgentId[];
-    }
-    return [to as AgentId];
-  }
-
-  /**
-   * Validates, routes, and files `input` as a `Message`. Rejects (no files
-   * written, no event emitted) if the body cap is exceeded or any `to`
-   * entry fails a §5 routing rule — "disallowed routes are rejected with a
-   * reason" (acceptance criterion).
-   */
-  async send(input: unknown): Promise<SendResult> {
-    let message: Message;
-    try {
-      message = validateMessage(input);
-    } catch (err) {
-      return { ok: false, reason: err instanceof Error ? err.message : String(err) };
-    }
-
-    for (const to of message.to) {
-      const check = checkRoute({ from: message.from, to, kind: message.kind });
-      if (!check.allowed) {
-        return { ok: false, reason: `${message.from} -> ${to} (${message.kind}): ${check.reason}` };
-      }
-    }
-
-    const recipients = new Set<AgentId>();
-    for (const to of message.to) {
-      for (const id of this.resolveRecipients(to, message.from)) recipients.add(id);
-    }
-
-    // One send = one atomic batch of inbox files (+ thread copy) = one
-    // `message` event = one line in `log/events.jsonl`.
-    const writes = [...recipients].map((agent) => ({
-      relPath: this.inboxRelPath(agent, message.id),
-      validator: validateMessage,
-      data: message,
-    }));
-    if (message.ticket) {
-      writes.push({
-        relPath: this.threadRelPath(message.ticket, message.id),
-        validator: validateMessage,
-        data: message,
-      });
-    }
-    await this.store.putEntities(writes, {
-      ts: this.now().toISOString(),
-      kind: 'message',
-      agent: message.from,
-      data: {
-        ...(message.ticket !== undefined ? { ticket: message.ticket } : {}),
-        id: message.id,
-        to: message.to,
-        kind: message.kind,
-        priority: message.priority,
-        recipients: [...recipients],
-      },
-    });
-
-    return { ok: true, message, recipients: [...recipients] };
-  }
-
   /**
    * Returns `agent`'s unread inbox, ordered urgent → normal → low (ties
    * broken by ulid, i.e. send order). Moves nothing — "poll ... moves
    * nothing" (standing rules).
    */
-  poll(agent: AgentId, options: PollOptions = {}): Message[] {
+  poll(agent: AgentId, options: PollOptions = {}): AgentMessage[] {
     const ids = this.listInboxFiles(agent).sort();
     const messages = ids.map((id) =>
-      this.store.getEntity(this.inboxRelPath(agent, id), validateMessage),
+      this.store.getEntity(this.inboxRelPath(agent, id), validateAgentMessage),
     );
     const filtered = options.priority
       ? messages.filter((m) => m.priority === options.priority)
@@ -269,22 +121,19 @@ export class Bus {
    * store) if `id` isn't in the unread inbox — including if it was already
    * acked, so a caller can distinguish "already done" from "no such message".
    */
-  async ack(agent: AgentId, id: string): Promise<Message> {
-    let message: Message;
+  async ack(agent: AgentId, id: string): Promise<AgentMessage> {
+    let message: AgentMessage;
     try {
-      message = this.store.getEntity(this.inboxRelPath(agent, id), validateMessage);
+      message = this.store.getEntity(this.inboxRelPath(agent, id), validateAgentMessage);
     } catch (err) {
-      // Idempotent (fourth live run, 2026-09-10): two pipeline drivers —
-      // `agile run`'s own loop and the daemon's ceremony timer — polled the
-      // same architect message, both prompted, and the second `ack` threw
-      // NotFoundError out of the run. An already-acked message is in
-      // `done/`; acking it again is a no-op that returns it.
+      // Idempotent: an already-acked message is in `done/`; acking it
+      // again (two hook events racing on one delivery) returns it.
       if (err instanceof NotFoundError) {
-        return this.store.getEntity(this.inboxRelPath(agent, id, true), validateMessage);
+        return this.store.getEntity(this.inboxRelPath(agent, id, true), validateAgentMessage);
       }
       throw err;
     }
-    await this.store.putEntity(this.inboxRelPath(agent, id, true), validateMessage, message);
+    await this.store.putEntity(this.inboxRelPath(agent, id, true), validateAgentMessage, message);
     await this.store.deleteEntity(this.inboxRelPath(agent, id));
     return message;
   }
@@ -345,97 +194,5 @@ export class Bus {
       return this.store.putAgent(agent, record);
     }
     return this.store.heartbeat(agent, { stream: patch.stream }, this.now);
-  }
-
-  /**
-   * Redelivery ladder (§5 "Ordering / failure": "Unacked `requires_ack`
-   * past deadline re-delivers one priority up, then escalates to em"): for
-   * every unacked `requires_ack` message whose `deadline` has passed,
-   * bumps its priority one rung (low→normal→urgent) and extends `deadline`
-   * by the same window it started with; a message already at `urgent`
-   * instead escalates to `em` and has `requires_ack` cleared so the next
-   * sweep doesn't escalate it again. `now` is injectable for the
-   * fake-clock test.
-   *
-   * DESIGN-GAP: a `requires_ack` message with no `deadline` at all can
-   * never be judged overdue by this sweep (nothing in §5 gives it a
-   * default window) — such messages are skipped, not redelivered.
-   */
-  async sweepRedelivery(now: Date = this.now()): Promise<RedeliveryResult> {
-    const result: RedeliveryResult = { redelivered: [], escalated: [] };
-    for (const agent of this.listInboxAgents()) {
-      for (const id of this.listInboxFiles(agent)) {
-        const relPath = this.inboxRelPath(agent, id);
-        const message = this.store.getEntity(relPath, validateMessage);
-        if (!message.requires_ack || !message.deadline) continue;
-        const deadlineMs = Date.parse(message.deadline);
-        if (Number.isNaN(deadlineMs) || now.getTime() < deadlineMs) continue;
-
-        if (message.priority === 'urgent') {
-          await this.sendSystemMessage({
-            from: 'daemon',
-            to: ['em'],
-            kind: 'escalate',
-            priority: 'urgent',
-            ticket: message.ticket,
-            body: `message ${message.id} to ${agent} (${message.kind}) unacked past deadline`,
-            now,
-          });
-          await this.store.putEntity(relPath, validateMessage, {
-            ...message,
-            requires_ack: false,
-          });
-          result.escalated.push({ agent: agent as AgentId, id });
-          continue;
-        }
-
-        const windowMs = Number.isNaN(Date.parse(message.ts))
-          ? this.livenessTimeoutMs
-          : Math.max(deadlineMs - Date.parse(message.ts), 1000);
-        const nextPriority = bumpPriority(message.priority);
-        await this.store.putEntity(relPath, validateMessage, {
-          ...message,
-          priority: nextPriority,
-          deadline: new Date(now.getTime() + windowMs).toISOString(),
-        });
-        result.redelivered.push({
-          agent: agent as AgentId,
-          id,
-          from: message.priority,
-          to: nextPriority,
-        });
-      }
-    }
-    return result;
-  }
-
-  /** Internal daemon-originated sends (liveness/redelivery escalation) — bypasses public routing errors surfacing as `SendResult`, since these are always-legal `daemon -> em` messages by construction. */
-  private async sendSystemMessage(input: {
-    from: 'daemon';
-    to: MessageRecipient[];
-    kind: 'escalate';
-    priority: MessagePriority;
-    ticket?: TicketId;
-    body: string;
-    now: Date;
-  }): Promise<void> {
-    const message = MessageSchema.parse({
-      id: ulid(input.now.getTime()),
-      ts: input.now.toISOString(),
-      from: input.from,
-      to: input.to,
-      kind: input.kind,
-      priority: input.priority,
-      ticket: input.ticket,
-      body: input.body,
-      requires_ack: false,
-    });
-    const outcome = await this.send(message);
-    if (!outcome.ok) {
-      // Every call site above constructs a daemon -> em escalate, which
-      // `checkRoute` always allows — a rejection here means the routing
-      // table and this module's own assumptions have drifted apart.
-      throw new Error(`internal bus invariant violated: ${outcome.reason}`);
-    }
   }
 }

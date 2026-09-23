@@ -11,9 +11,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { parse as parseYaml } from 'yaml';
 import { validateAgentRecord } from './agents';
-import { validateMessage } from './message';
 import { validatePolicy } from './policy';
-import { validateTicket } from './ticket';
 import { validateVendorsConfig } from './vendors';
 
 const FIXTURES_DIR = join(import.meta.dir, '__fixtures__');
@@ -23,10 +21,6 @@ function loadYaml(name: string): unknown {
 }
 
 describe('design doc fixtures parse (§4–§5)', () => {
-  test('Ticket — §4 Ticket', () => {
-    expect(() => validateTicket(loadYaml('ticket.yaml'))).not.toThrow();
-  });
-
   test('Policy — §16 HIL gates policy', () => {
     expect(() => validatePolicy(loadYaml('policy.yaml'))).not.toThrow();
   });
@@ -35,15 +29,7 @@ describe('design doc fixtures parse (§4–§5)', () => {
     expect(() => validateVendorsConfig(loadYaml('vendors.yaml'))).not.toThrow();
   });
 
-  test('Message — §5 Comms bus / Message', () => {
-    expect(() => validateMessage(loadYaml('message.yaml'))).not.toThrow();
-  });
-
   test('AgentRecord — §5 Storage (constructed from prose, no literal block)', () => {
     expect(() => validateAgentRecord(loadYaml('agent-record.yaml'))).not.toThrow();
-  });
-
-  test('Ticket — §13 contract.env compose form, on-disk (quoted, since unquoted "compose: <path>" is not valid yaml)', () => {
-    expect(() => validateTicket(loadYaml('ticket-compose-env.yaml'))).not.toThrow();
   });
 });

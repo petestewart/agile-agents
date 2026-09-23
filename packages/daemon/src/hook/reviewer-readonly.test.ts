@@ -68,7 +68,7 @@ const WRITE_TOOLS: { tool: string; input: Record<string, unknown> }[] = [
 
 describe('a reviewer cannot write in the worktree (§4.2)', () => {
   test('every edit tool is denied for a session registered as reviewer', async () => {
-    await register('reviewer-1', 'reviewer');
+    await register('01ARZ3NDEKTSV4RRFFQ69GR001', 'reviewer');
     const svc = service();
 
     for (const { tool, input } of WRITE_TOOLS) {
@@ -81,7 +81,7 @@ describe('a reviewer cannot write in the worktree (§4.2)', () => {
             typeof v === 'string' ? v.replace('WORKTREE', worktree) : v,
           ]),
         ),
-        agile_agent: 'reviewer-1',
+        agile_agent: '01ARZ3NDEKTSV4RRFFQ69GR001',
       });
       expect(result.hookSpecificOutput.permissionDecision).toBe('deny');
       expect(result.hookSpecificOutput.permissionDecisionReason).toMatch(
@@ -91,7 +91,7 @@ describe('a reviewer cannot write in the worktree (§4.2)', () => {
   });
 
   test('write-shaped Bash is denied, read-only Bash is allowed', async () => {
-    await register('reviewer-1', 'reviewer');
+    await register('01ARZ3NDEKTSV4RRFFQ69GR001', 'reviewer');
     const svc = service();
 
     const denied = [
@@ -107,7 +107,7 @@ describe('a reviewer cannot write in the worktree (§4.2)', () => {
         cwd: worktree,
         tool_name: 'Bash',
         tool_input: { command },
-        agile_agent: 'reviewer-1',
+        agile_agent: '01ARZ3NDEKTSV4RRFFQ69GR001',
       });
       expect({ command, decision: result.hookSpecificOutput.permissionDecision }).toEqual({
         command,
@@ -121,7 +121,7 @@ describe('a reviewer cannot write in the worktree (§4.2)', () => {
       cwd: worktree,
       tool_name: 'Bash',
       tool_input: { command: 'rm -rf src' },
-      agile_agent: 'reviewer-1',
+      agile_agent: '01ARZ3NDEKTSV4RRFFQ69GR001',
     });
     expect(roleDenied.hookSpecificOutput.permissionDecisionReason).toMatch(/reviewer role denies/);
 
@@ -131,7 +131,7 @@ describe('a reviewer cannot write in the worktree (§4.2)', () => {
         cwd: worktree,
         tool_name: 'Bash',
         tool_input: { command },
-        agile_agent: 'reviewer-1',
+        agile_agent: '01ARZ3NDEKTSV4RRFFQ69GR001',
       });
       expect({ command, decision: result.hookSpecificOutput.permissionDecision }).toEqual({
         command,

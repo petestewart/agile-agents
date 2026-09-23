@@ -2,13 +2,17 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { AgentId, AgentRecord, Ticket, TicketId } from '@agile-agents/shared';
-import { ulid, validateTicket } from '@agile-agents/shared';
+import type { AgentId, AgentRecord } from '@agile-agents/shared';
+import { ulid } from '@agile-agents/shared';
 import { Bus } from '../bus';
 import { GateService } from '../gates';
 import { runInit } from '../init';
 import { StateStore } from '../store';
 import { HookService } from './service';
+
+const WORKER = '01ARZ3NDEKTSV4RRFFQ69G5FA1';
+const REVIEWER = '01ARZ3NDEKTSV4RRFFQ69G5FA2';
+const QA_WORKER = '01ARZ3NDEKTSV4RRFFQ69G5FA3';
 
 let repo: string;
 let stateRoot: string;
@@ -38,26 +42,6 @@ beforeEach(() => {
 afterEach(() => {
   rmSync(repo, { recursive: true, force: true });
 });
-
-function makeTicket(overrides: Partial<Ticket> = {}): Ticket {
-  return validateTicket({
-    id: 'TKT-0001',
-    title: 'Ticket',
-    status: 'in_progress',
-    contract: {},
-    history: [],
-    assignee: 'eng-1',
-    worktree: join('.worktrees', 'TKT-0001'),
-    ...overrides,
-  });
-}
-
-/**
- * T122: the hook resolves a call from the agent registry alone — ticket
- * files are gone with the ceremony layer, so seeding one is a no-op kept
- * here only so these fixtures keep reading as they did.
- */
-async function seedTicket(_overrides: Partial<Ticket> = {}): Promise<void> {}
 
 function service(
   overrides: Partial<ConstructorParameters<typeof HookService>[2]> = {},
@@ -96,14 +80,13 @@ function agentRecord(overrides: Partial<AgentRecord> = {}): AgentRecord {
 // (`StateStore.heartbeat` now only ever touches `last_seen`/`stream`).
 describe('HookService — heartbeat preserves agent identity across the coalescing window (T012 review round 4)', () => {
   test('role/worktree/session_id survive a hook heartbeat past the coalescing window, byte-for-byte', async () => {
-    await seedTicket({ status: 'in_review', assignee: 'eng-1' });
     let now = new Date('2026-09-09T00:00:00.000Z');
     await store.putAgent(
-      'reviewer-1',
+      REVIEWER,
       agentRecord({
         role: 'reviewer',
         worktree,
-        session_id: 'sess-reviewer-1',
+        session_id: 'sess-reviewer',
         // Registered well before the simulated clock's start — otherwise
         // the coalescing check (`now - last_seen < 30s`) sees a *negative*
         // gap against the fixture's real-wall-clock default `last_seen`
@@ -118,12 +101,12 @@ describe('HookService — heartbeat preserves agent identity across the coalesci
       cwd: worktree,
       tool_name: 'Read',
       tool_input: { file_path: 'x.txt' },
-      agile_agent: 'reviewer-1',
+      agile_agent: REVIEWER,
     });
-    const before = store.getAgent('reviewer-1' as never);
+    const before = store.getAgent(REVIEWER as never);
     expect(before.role).toBe('reviewer');
     expect(before.worktree).toBe(worktree);
-    expect(before.session_id).toBe('sess-reviewer-1');
+    expect(before.session_id).toBe('sess-reviewer');
 
     // Past the 30s heartbeat-coalescing window — this is exactly the write
     // QA round 3 caught dropping role/worktree/session_id.
@@ -132,9 +115,9 @@ describe('HookService — heartbeat preserves agent identity across the coalesci
       cwd: worktree,
       tool_name: 'Read',
       tool_input: { file_path: 'x.txt' },
-      agile_agent: 'reviewer-1',
+      agile_agent: REVIEWER,
     });
-    const after = store.getAgent('reviewer-1' as never);
+    const after = store.getAgent(REVIEWER as never);
     expect(after.role).toBe(before.role);
     expect(after.worktree).toBe(before.worktree);
     expect(after.session_id).toBe(before.session_id);
@@ -145,8 +128,7 @@ describe('HookService — heartbeat preserves agent identity across the coalesci
   });
 
   test('reviewer Edit is still denied after 3 simulated heartbeat windows (injectable clock)', async () => {
-    await seedTicket({ status: 'in_review', assignee: 'eng-1' });
-    await store.putAgent('reviewer-1', agentRecord({ role: 'reviewer', worktree }));
+    await store.putAgent(REVIEWER, agentRecord({ role: 'reviewer', worktree }));
     let now = new Date('2026-09-09T00:00:00.000Z');
     const svc = service({ now: () => now });
 
@@ -160,23 +142,22 @@ describe('HookService — heartbeat preserves agent identity across the coalesci
         cwd: worktree,
         tool_name: 'Edit',
         tool_input: { file_path: join(worktree, 'a.ts') },
-        agile_agent: 'reviewer-1',
+        agile_agent: REVIEWER,
       });
       expect(result.hookSpecificOutput.permissionDecision).toBe('deny');
       expect(result.hookSpecificOutput.permissionDecisionReason).toMatch(
         /reviewer role denies all writes/,
       );
     }
-    const record = store.getAgent('reviewer-1' as never);
+    const record = store.getAgent(REVIEWER as never);
     expect(record.role).toBe('reviewer');
     expect(record.worktree).toBe(worktree);
   });
 
   test('a worker keeps resolvable identity (worktree) after 3 simulated heartbeat windows', async () => {
-    await seedTicket({ status: 'in_qa', assignee: 'eng-1' });
     const qaWorktree = join(repo, '.worktrees', 'TKT-0001-qa');
     mkdirSync(qaWorktree, { recursive: true });
-    await store.putAgent('qa-1', agentRecord({ role: 'worker', worktree: qaWorktree }));
+    await store.putAgent(QA_WORKER, agentRecord({ role: 'worker', worktree: qaWorktree }));
     let now = new Date('2026-09-09T00:00:00.000Z');
     const svc = service({ now: () => now });
 
@@ -186,14 +167,14 @@ describe('HookService — heartbeat preserves agent identity across the coalesci
         cwd: qaWorktree,
         tool_name: 'Bash',
         tool_input: { command: 'bun test' },
-        agile_agent: 'qa-1',
+        agile_agent: QA_WORKER,
       });
       // A worker may run the repo's own test command — the regression QA
       // round 3 found made this DENY with "cwd is not a
       // registered stream worktree" once `worktree` was dropped.
       expect(result.hookSpecificOutput.permissionDecision).toBe('allow');
     }
-    expect(store.getAgent('qa-1' as never).worktree).toBe(qaWorktree);
+    expect(store.getAgent(QA_WORKER as never).worktree).toBe(qaWorktree);
   });
 });
 
@@ -212,7 +193,7 @@ describe('HookService — heartbeat preserves agent identity across the coalesci
 // from a directory nobody registered.
 describe('HookService without a repoRoot (T125)', () => {
   test('a relative worktree is unresolvable and denies, rather than resolving against the daemon cwd', async () => {
-    await store.putAgent('eng-1', agentRecord({ role: 'worker', worktree: '.worktrees/TKT-0001' }));
+    await store.putAgent(WORKER, agentRecord({ role: 'worker', worktree: '.worktrees/TKT-0001' }));
     const svc = new HookService(store, bus, {});
 
     const result = await svc.preToolUse({
@@ -228,7 +209,7 @@ describe('HookService without a repoRoot (T125)', () => {
   });
 
   test('an absolute worktree still resolves without a repoRoot', async () => {
-    await store.putAgent('eng-1', agentRecord({ role: 'worker', worktree }));
+    await store.putAgent(WORKER, agentRecord({ role: 'worker', worktree }));
     const svc = new HookService(store, bus, {});
 
     const result = await svc.preToolUse({

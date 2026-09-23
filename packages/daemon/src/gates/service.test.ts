@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Policy } from '@agile-agents/shared';
-import { ulid, validateTicket } from '@agile-agents/shared';
+import { ulid, validateAgentMessage } from '@agile-agents/shared';
 import { runInit } from '../init';
 import { StateStore } from '../store';
 import {
@@ -13,7 +13,6 @@ import {
   type GateDecision,
   GateNotFoundError,
   GateService,
-  NoDelegateConfiguredError,
 } from './service';
 
 let repo: string;
@@ -30,7 +29,7 @@ function advance(ms: number): void {
 
 /** A delegate that always denies, so tests can tell "auto-decided" apart from the default. */
 function denyDelegate(): GateDecision {
-  return { decision: 'deny', by: 'architect', rationale: 'test delegate' };
+  return { decision: 'deny', by: 'human', rationale: 'test delegate' };
 }
 
 beforeEach(() => {
@@ -62,118 +61,27 @@ function ctx(gates: Policy['gates'], extra: Record<string, unknown> = {}) {
 }
 
 describe('GateService.request', () => {
-  test('a human-owned gate opens pending with no deadline, and writes an urgent hil_request bus message', async () => {
+  test('a human-owned gate opens pending with no deadline, and writes no bus message', async () => {
     const service = new GateService(store, { clock });
     const req = await service.request('land', ctx({ land: 'human' }));
     expect(req.owner).toBe('human');
     expect(req.status).toBe('pending');
     expect(req.deadline).toBeUndefined();
-
-    const inbox = store.listEntities(
-      'bus/inbox/human',
-      (v) => v as { kind: string; priority: string },
-    );
-    expect(inbox).toHaveLength(1);
-    expect(inbox[0]?.kind).toBe('hil_request');
-    expect(inbox[0]?.priority).toBe('urgent');
+    // The inbox reads `gates/`; T168 deleted the dead `bus/inbox/human` copy.
+    expect(store.listEntities('bus/inbox/human', (v) => v)).toHaveLength(0);
   });
 
-  test('an em-owned gate with a delegate is auto-decided immediately and produces a decision artifact + fyi message', async () => {
+  test('a delegate never decides a plain human gate at request time', async () => {
     const service = new GateService(store, { clock, delegate: denyDelegate });
-    const req = await service.request('classifier_review', ctx({ classifier_review: 'em' }));
-    expect(req.status).toBe('resolved');
-    expect(req.delegated).toBe(true);
-    expect(req.decision).toBe('deny');
-    expect(req.decided_by).toBe('architect');
-    expect(req.fyi?.to).toBe('human');
-    expect(req.fyi?.body).toContain('classifier_review');
-    expect(req.deadline).toBeUndefined();
-
-    // The decision artifact is durable, not just in-memory.
-    const reloaded = store.getEntity(`gates/${req.id}.yaml`, (v) => v as typeof req);
-    expect(reloaded.status).toBe('resolved');
-
-    const inbox = store.listEntities(
-      'bus/inbox/human',
-      (v) => v as { kind: string; priority: string },
-    );
-    expect(inbox.some((m) => m.kind === 'fyi' && m.priority === 'low')).toBe(true);
-  });
-
-  test('an ASYNC delegate leaves the request pending ("delegate deciding") and resolves it when the promise settles', async () => {
-    // The EM-session delegate (`em/delegate.ts`) takes a model turn; the
-    // hook that raised the request cannot wait on it.
-    let resolveDecision!: (d: GateDecision) => void;
-    const deciding = new Promise<GateDecision>((resolve) => {
-      resolveDecision = resolve;
-    });
-    const service = new GateService(store, { clock, delegate: () => deciding });
-    const req = await service.request(
-      'classifier_review',
-      ctx(
-        { classifier_review: 'em' },
-        {
-          requestedBy: 'eng-1',
-          summary: 'eng-0001 asked to run `git push origin main`',
-        },
-      ) as never,
-    );
+    const req = await service.request('land', ctx({ land: 'human' }));
     expect(req.status).toBe('pending');
-    expect(req.reason).toBe('delegate deciding');
-    expect(req.summary).toBe('eng-0001 asked to run `git push origin main`');
-
-    resolveDecision({ decision: 'approve', by: 'em', rationale: 'ticket branch only' });
-    await service.settled();
-    const after = service.get(req.id);
-    expect(after.status).toBe('resolved');
-    expect(after.decision).toBe('approve');
-    expect(after.decided_by).toBe('em');
-    expect(after.delegated).toBe(true);
-    expect(after.reason).toBeUndefined();
-    expect(after.fyi?.body).toContain('ticket branch only');
   });
 
-  test('an async delegate that rejects fails closed: denied, with the failure as rationale', async () => {
-    const service = new GateService(store, {
-      clock,
-      delegate: async () => {
-        throw new Error('EM session timed out');
-      },
-    });
-    const req = await service.request('classifier_review', ctx({ classifier_review: 'em' }));
-    expect(req.status).toBe('pending');
-    await service.settled();
-    const after = service.get(req.id);
-    expect(after.status).toBe('resolved');
-    expect(after.decision).toBe('deny');
-    expect(after.fyi?.body).toContain('EM session timed out');
-  });
-
-  test('a human answer that lands before the async delegate wins; the late decision is dropped', async () => {
-    let resolveDecision!: (d: GateDecision) => void;
-    const deciding = new Promise<GateDecision>((resolve) => {
-      resolveDecision = resolve;
-    });
-    const service = new GateService(store, { clock, delegate: () => deciding });
-    const req = await service.request('classifier_review', ctx({ classifier_review: 'em' }));
-    await service.respond(req.id, 'deny', 'human');
-    resolveDecision({ decision: 'approve', by: 'em' });
-    await service.settled();
-    const after = service.get(req.id);
-    expect(after.decision).toBe('deny');
-    expect(after.decided_by).toBe('human');
-  });
-
-  test('an em-owned gate with NO delegate configured stays pending (fail closed, never auto-approves)', async () => {
-    const service = new GateService(store, { clock });
-    const req = await service.request('classifier_review', ctx({ classifier_review: 'em' }));
-    expect(req.status).toBe('pending');
-    expect(req.decision).toBeUndefined();
-    expect(req.reason).toBe('no delegate configured');
-
-    // It is still listed for the human, via a hil_request message.
-    const inbox = store.listEntities('bus/inbox/human', (v) => v as { kind: string });
-    expect(inbox.some((m) => m.kind === 'hil_request')).toBe(true);
+  test('the old em/architect owners are rejected by the policy schema', async () => {
+    const { validatePolicy } = await import('@agile-agents/shared');
+    for (const owner of ['em', 'architect']) {
+      expect(() => validatePolicy({ gates: { land: owner } })).toThrow();
+    }
   });
 
   test('a human_timeout gate opens pending with a deadline derived from the duration', async () => {
@@ -234,30 +142,69 @@ describe('GateService.respond', () => {
 // T039 (§17 "Control room v2"): every Needs-you card takes a typed answer as
 // well as its buttons.
 
-describe('GateService.delegateRequest (single-instance delegation)', () => {
-  test('delegates a pending human-owned request, producing the same artifact shape + fyi', async () => {
-    const service = new GateService(store, { clock, delegate: denyDelegate });
-    const req = await service.request('land', ctx({ land: 'human' }));
-    const delegated = await service.delegateRequest(req.id, 'architect');
-    expect(delegated.status).toBe('resolved');
-    expect(delegated.delegated).toBe(true);
-    expect(delegated.decision).toBe('deny');
-    expect(delegated.fyi?.body).toContain('land');
-  });
+describe('GateService note delivery', () => {
+  const WAITING = '01ARZ3NDEKTSV4RRFFQ69G5FAV';
 
-  test('a second delegate call on the same request is refused (single-instance)', async () => {
-    const service = new GateService(store, { clock, delegate: denyDelegate });
-    const req = await service.request('land', ctx({ land: 'human' }));
-    await service.delegateRequest(req.id, 'em');
-    await expect(service.delegateRequest(req.id, 'architect')).rejects.toThrow(
-      GateAlreadyResolvedError,
-    );
-  });
-
-  test('refuses to delegate without a configured delegate function', async () => {
+  test('a noted answer is delivered to the session waiting on the gate, and to nobody else', async () => {
     const service = new GateService(store, { clock });
+    const req = await service.request('land', ctx({ land: 'human' }, { requestedBy: WAITING }));
+    await service.respond(req.id, 'deny', 'human', 'not on a shared branch');
+    const inbox = store.listEntities(`bus/inbox/${WAITING}`, validateAgentMessage);
+    expect(inbox).toHaveLength(1);
+    expect(inbox[0]).toMatchObject({ kind: 'hil_response', priority: 'normal', from: 'human' });
+    expect(inbox[0]?.body).toContain('was denied by human');
+    expect(inbox[0]?.body).toContain('not on a shared branch');
+    expect(store.listEntities('bus/inbox', (v) => v)).toHaveLength(0);
+  });
+
+  test('a note with no decision stays on the record and hands the gate to the delegate', async () => {
+    let resolveDecision!: (d: GateDecision) => void;
+    const deciding = new Promise<GateDecision>((resolve) => {
+      resolveDecision = resolve;
+    });
+    const service = new GateService(store, { clock, delegate: () => deciding });
+    const req = await service.request('land', ctx({ land: 'human' }, { requestedBy: WAITING }));
+    const noted = await service.addNote(req.id, 'only the seed script', 'human');
+    expect(noted.status).toBe('pending');
+    expect(store.listEntities(`bus/inbox/${WAITING}`, validateAgentMessage)).toHaveLength(0);
+
+    resolveDecision({ decision: 'approve', by: 'human', rationale: 'seed only' });
+    await service.settled();
+    const after = service.get(req.id);
+    expect(after).toMatchObject({ status: 'resolved', decision: 'approve', delegated: true });
+    expect(after.fyi?.body).toContain('seed only');
+    expect(store.listEntities(`bus/inbox/${WAITING}`, validateAgentMessage)).toHaveLength(1);
+  });
+
+  test('an async delegate that rejects fails closed: denied, with the failure as rationale', async () => {
+    const service = new GateService(store, {
+      clock,
+      delegate: async () => {
+        throw new Error('delegate timed out');
+      },
+    });
     const req = await service.request('land', ctx({ land: 'human' }));
-    await expect(service.delegateRequest(req.id, 'em')).rejects.toThrow(NoDelegateConfiguredError);
+    await service.addNote(req.id, 'go ahead', 'human');
+    await service.settled();
+    const after = service.get(req.id);
+    expect(after.decision).toBe('deny');
+    expect(after.fyi?.body).toContain('delegate timed out');
+  });
+
+  test('a human answer that lands before the async delegate wins; the late decision is dropped', async () => {
+    let resolveDecision!: (d: GateDecision) => void;
+    const deciding = new Promise<GateDecision>((resolve) => {
+      resolveDecision = resolve;
+    });
+    const service = new GateService(store, { clock, delegate: () => deciding });
+    const req = await service.request('land', ctx({ land: 'human' }));
+    await service.addNote(req.id, 'maybe', 'human');
+    await service.respond(req.id, 'deny', 'human');
+    resolveDecision({ decision: 'approve', by: 'human' });
+    await service.settled();
+    const after = service.get(req.id);
+    expect(after.decision).toBe('deny');
+    expect(after.delegated).toBeUndefined();
   });
 });
 
@@ -317,10 +264,13 @@ describe('GateService.tick (human_timeout fallthrough)', () => {
 });
 
 describe('circuit breaker', () => {
-  test('tripping a signal forces even a delegated gate to human, and the request names the signal', async () => {
+  test('tripping a signal forces even a human_timeout gate to plain human, and the request names the signal', async () => {
     const service = new GateService(store, { clock, delegate: denyDelegate });
     await service.trip('integration_red', 'nightly integration suite is failing');
-    const req = await service.request('classifier_review', ctx({ classifier_review: 'em' }));
+    const req = await service.request(
+      'classifier_review',
+      ctx({ classifier_review: 'human_timeout:1h' }),
+    );
     expect(req.owner).toBe('human');
     expect(req.status).toBe('pending');
     expect(req.reason).toContain('integration_red');
@@ -328,11 +278,14 @@ describe('circuit breaker', () => {
 
   test('clearing the signal restores normal resolution', async () => {
     const service = new GateService(store, { clock, delegate: denyDelegate });
-    await service.trip('deadlock', 'eng-3 vs reviewer-1');
+    await service.trip('deadlock', 'worker vs reviewer');
     await service.clear('deadlock');
-    const req = await service.request('classifier_review', ctx({ classifier_review: 'em' }));
-    expect(req.owner).toBe('em');
-    expect(req.status).toBe('resolved');
+    const req = await service.request(
+      'classifier_review',
+      ctx({ classifier_review: 'human_timeout:1h' }),
+    );
+    expect(req.owner).toBe('human_timeout:1h');
+    expect(req.deadline).toBeDefined();
     expect(req.reason).toBeUndefined();
   });
 

@@ -19,8 +19,8 @@
  */
 
 import { z } from 'zod';
+import { MessageBodySchema } from './agent-message';
 import { AgentIdSchema, ULID_PATTERN, UlidSchema, formatZodError } from './ids';
-import { MessageBodySchema } from './message';
 
 /**
  * `Q-<ulid>` — same shape and rationale as `HIL-<ulid>` (`hil.ts`): raised

@@ -98,10 +98,10 @@ describe('Event — cockpit design §7.4 log/events.jsonl', () => {
       ts: '2026-09-08T00:00:00Z',
       kind: 'tool_call',
       session: '01J9ZZZZZZZZZZZZZZZZZZZZZZ',
-      agent: 'eng-0231',
+      agent: '01ARZ3NDEKTSV4RRFFQ69GE231',
       data: { toolCallId: 't1', kind: 'edit', title: 'Edit foo.ts', status: 'completed' },
     });
-    expect(event.agent).toBe('eng-0231');
+    expect(event.agent).toBe('01ARZ3NDEKTSV4RRFFQ69GE231');
     expect(event.session).toBe('01J9ZZZZZZZZZZZZZZZZZZZZZZ');
     expect(event.data).toEqual({
       toolCallId: 't1',

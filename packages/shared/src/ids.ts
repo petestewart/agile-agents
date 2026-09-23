@@ -1,9 +1,5 @@
 /**
- * ID formats for every entity in the state model.
- *
- * Design doc refs: design/agile-agents-design.md §4 "State model" (layout tree
- * + per-entity examples: DEC-0042, KB-0117, TKT-0231, H-12, S-07, RULE-012)
- * and §5 "Comms bus" (message `id` is a ULID).
+ * ID formats: ULIDs (message, session and record ids) and bus agent ids.
  */
 
 import { z } from 'zod';
@@ -93,65 +89,14 @@ export function ulid(now: number = Date.now()): string {
 }
 
 /**
- * DEC-0042 / SPEC-auth-003 — oracle entry ids (§4 "Oracle").
- * DESIGN-GAP: the design only shows a numeric decision id (`DEC-0042`) and a
- * slugged spec id (`SPEC-auth-003`); no format grammar is given, so the slug
- * segment is read permissively as `[a-z0-9-]+` ending in a numeric suffix.
+ * A bus identity (T130, narrowed by T168): one of the two named principals,
+ * `human` and `daemon`, or **a session's own ULID**. An attached session is
+ * the routable identity (cockpit design §4: "an agent is not a member of a
+ * team; it is a session attached to a stream"); it is what a gate note is
+ * delivered to and what the hook's agent registry is keyed by. Worker and
+ * reviewer are session *roles*, not ids.
  */
-export const DecisionIdSchema = z.string().regex(/^DEC-\d{4,}$/, 'must look like DEC-0042');
-export type DecisionId = z.infer<typeof DecisionIdSchema>;
-
-export const SpecIdSchema = z
-  .string()
-  .regex(/^SPEC-[a-z0-9]+(?:-[a-z0-9]+)*-\d{3,}$/, 'must look like SPEC-auth-003');
-export type SpecId = z.infer<typeof SpecIdSchema>;
-
-/** Either half of the oracle (decisions/specs share a header, §4 "Oracle"). */
-export const OracleIdSchema = z.union([DecisionIdSchema, SpecIdSchema]);
-export type OracleId = z.infer<typeof OracleIdSchema>;
-
-/** KB-0117 — knowledge store fact id (§4 "Knowledge store"). */
-export const KbIdSchema = z.string().regex(/^KB-\d{4,}$/, 'must look like KB-0117');
-export type KbId = z.infer<typeof KbIdSchema>;
-
-/** TKT-0231 — ticket id (§4 "Ticket"). */
-export const TicketIdSchema = z.string().regex(/^TKT-\d{4,}$/, 'must look like TKT-0231');
-export type TicketId = z.infer<typeof TicketIdSchema>;
-
-/**
- * EPIC-0009 — parent epic id, referenced by `Ticket.parent` (§4 "Ticket"
- * example: `parent: EPIC-0009`). Not otherwise specified.
- * DESIGN-GAP: treated as a sibling id format to TKT-.
- */
-export const EpicIdSchema = z.string().regex(/^EPIC-\d{4,}$/, 'must look like EPIC-0009');
-export type EpicId = z.infer<typeof EpicIdSchema>;
-
-/** H-12 — halt id (§4 "Halts": `board/halts/<id>.yaml`). */
-export const HaltIdSchema = z.string().regex(/^H-\d+$/, 'must look like H-12');
-export type HaltId = z.infer<typeof HaltIdSchema>;
-
-/** S-07 — sprint id (§4 "Sprint"). */
-export const SprintIdSchema = z.string().regex(/^S-\d+$/, 'must look like S-07');
-export type SprintId = z.infer<typeof SprintIdSchema>;
-
-/**
- * Bus agent identity: `em | architect | eng-N | reviewer-N | reviewer-sec-N |
- * qa-N | human | daemon` (§5 "Message" — the `from` field enumeration).
- * `reviewer-sec-N` is the §12 security-pass reviewer the daemon mints
- * itself (`securityReviewerIdFor`); the pattern used to reject it, so the
- * EM's standup_call to a global halt's affected set threw
- * "to.1: must be a valid agent id" and aborted the twenty-fifth live run.
- */
-/**
- * T130: a bus identity is either one of the named principals, one of the
- * legacy role ids, or **a session's own ULID**. An attached session is the
- * routable identity now (cockpit design §4: "an agent is not a member of a
- * team; it is a session attached to a stream"), and it is what a question's
- * answer is delivered to (`questions/service.ts`) and what the hook's agent
- * registry is keyed by.
- */
-export const AGENT_ID_PATTERN =
-  /^(em|architect|human|daemon|eng-\d+|reviewer-(?:sec-)?\d+|qa-\d+|[0-9A-HJKMNP-TV-Z]{26})$/;
+export const AGENT_ID_PATTERN = /^(human|daemon|[0-9A-HJKMNP-TV-Z]{26})$/;
 export const AgentIdSchema = z.string().regex(AGENT_ID_PATTERN, 'must be a valid agent id');
 export type AgentId = z.infer<typeof AgentIdSchema>;
 

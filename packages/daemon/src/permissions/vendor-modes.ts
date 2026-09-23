@@ -24,9 +24,8 @@ import type { PermissionRole } from './types';
  * ACP `session/set_mode` id for `role` on Cursor, or `undefined` to leave
  * Cursor's own default mode (`agent`) alone. Cursor-specific: no other
  * registered vendor has an equivalent role-based "nudge" mode measured
- * (Claude's `plan` mode is a different gate entirely — §16's
- * `approve_plan`, driven by the architect/EM planning turn, not a
- * per-role reviewer default).
+ * (Claude's `plan` mode is a different gate entirely, not a per-role
+ * reviewer default).
  */
 export function cursorModeIdFor(role: PermissionRole): string | undefined {
   return role === 'reviewer' ? 'ask' : undefined;

@@ -6,13 +6,16 @@ import {
   type Rule,
   type RulePattern,
   ulid,
-  validateMessage,
+  validateAgentMessage,
   validateRule,
 } from '@agile-agents/shared';
 import { runInit } from '../init';
 import { StateStore } from '../store';
 import { type PermissionResponderSession, buildPermissionResponder } from './responder';
 import type { AcpPermissionRequestParams } from './types';
+
+const WORKER = '01ARZ3NDEKTSV4RRFFQ69G5FA1';
+const REVIEWER = '01ARZ3NDEKTSV4RRFFQ69G5FA2';
 
 let repo: string;
 let stateRoot: string;
@@ -71,8 +74,7 @@ describe('buildPermissionResponder', () => {
     const session = fakeSession();
     const responder = buildPermissionResponder(store, {
       role: 'engineer',
-      ticket: 'TKT-0001',
-      agent: 'eng-1',
+      agent: WORKER,
       worktreePath: '/work/.worktrees/TKT-0001-x',
       session,
     });
@@ -99,8 +101,7 @@ describe('buildPermissionResponder', () => {
     const session = fakeSession();
     const responder = buildPermissionResponder(store, {
       role: 'reviewer',
-      ticket: 'TKT-0001',
-      agent: 'reviewer-1',
+      agent: REVIEWER,
       worktreePath: '/qa/env',
       session,
     });
@@ -115,12 +116,11 @@ describe('buildPermissionResponder', () => {
     expect(typeof events[0]?.data.reason).toBe('string');
   });
 
-  test('hil: writes a hil_request message with a deadline instead of answering, then resolveHil answers it', async () => {
+  test('hil: writes a hil_request message instead of answering, then resolveHil answers it', async () => {
     const session = fakeSession();
     const responder = buildPermissionResponder(store, {
       role: 'engineer',
-      ticket: 'TKT-0001',
-      agent: 'eng-1',
+      agent: WORKER,
       worktreePath: '/work/.worktrees/TKT-0001-x',
       session,
     });
@@ -147,12 +147,13 @@ describe('buildPermissionResponder', () => {
     const id = files[0]?.replace(/\.yaml$/, '') ?? '';
     expect(id).not.toBe('');
 
-    const message = store.getEntity(join('bus', 'inbox', 'human', `${id}.yaml`), validateMessage);
+    const message = store.getEntity(
+      join('bus', 'inbox', 'human', `${id}.yaml`),
+      validateAgentMessage,
+    );
     expect(message.kind).toBe('hil_request');
     expect(message.hil_kind).toBe('classifier_review');
     expect(message.to).toEqual(['human']);
-    expect(message.deadline).toBeDefined();
-    expect(message.ticket).toBe('TKT-0001');
 
     const resolved = await responder.resolveHil(id, { optionId: 'allow-once' });
     expect(resolved).toBe(true);
@@ -166,17 +167,16 @@ describe('buildPermissionResponder', () => {
     // Review-round fix: resolveHil must not ack/delete the message itself —
     // that lifecycle belongs to T018's GateService (or T006's bus ack), not
     // this module.
-    expect(store.getEntity(join('bus', 'inbox', 'human', `${id}.yaml`), validateMessage).id).toBe(
-      id,
-    );
+    expect(
+      store.getEntity(join('bus', 'inbox', 'human', `${id}.yaml`), validateAgentMessage).id,
+    ).toBe(id);
   });
 
   test('resolveHil returns false for an unknown/already-resolved id', async () => {
     const session = fakeSession();
     const responder = buildPermissionResponder(store, {
       role: 'engineer',
-      ticket: 'TKT-0001',
-      agent: 'eng-1',
+      agent: WORKER,
       worktreePath: '/work/.worktrees/TKT-0001-x',
       session,
     });
@@ -186,9 +186,6 @@ describe('buildPermissionResponder', () => {
   test('requestHil is injectable, so T018 can own persistence instead of the default store writer', async () => {
     const session = fakeSession();
     const calls: Array<{
-      // T041: optional on the interface (the resident EM session has no
-      // ticket); this engineer session always sets it, asserted below.
-      ticket?: string;
       agent: string;
       hilKind: string;
       summary: string;
@@ -196,8 +193,7 @@ describe('buildPermissionResponder', () => {
     }> = [];
     const responder = buildPermissionResponder(store, {
       role: 'engineer',
-      ticket: 'TKT-0001',
-      agent: 'eng-1',
+      agent: WORKER,
       worktreePath: '/work/.worktrees/TKT-0001-x',
       session,
       requestHil: async (input) => {
@@ -212,8 +208,7 @@ describe('buildPermissionResponder', () => {
     );
     expect(decision.kind).toBe('hil');
     expect(calls).toHaveLength(1);
-    expect(calls[0]?.ticket).toBe('TKT-0001');
-    expect(calls[0]?.agent).toBe('eng-1');
+    expect(calls[0]?.agent).toBe(WORKER);
     expect(calls[0]?.hilKind).toBe('classifier_review');
 
     // No message was written to the default bus path — the injected
@@ -256,7 +251,7 @@ describe('buildPermissionResponder — pattern rules at the ACP tier', () => {
     const session = fakeSession();
     const responder = buildPermissionResponder(store, {
       role: 'engineer',
-      agent: 'eng-1',
+      agent: WORKER,
       worktreePath: repo,
       session,
       patternRules: {
@@ -343,7 +338,7 @@ describe('buildPermissionResponder — pattern rules at the ACP tier', () => {
     const session = fakeSession();
     const responder = buildPermissionResponder(store, {
       role: 'engineer',
-      agent: 'eng-1',
+      agent: WORKER,
       worktreePath: repo,
       session,
       patternRules: {

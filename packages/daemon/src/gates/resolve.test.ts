@@ -12,7 +12,9 @@ function policy(gates: Policy['gates']): Policy {
  */
 describe('resolveGate', () => {
   test('reads the owner off the repo-default policy', () => {
-    expect(resolveGate('land', { policy: policy({ land: 'em' }) })).toBe('em');
+    expect(resolveGate('land', { policy: policy({ land: 'human_timeout:1h' }) })).toBe(
+      'human_timeout:1h',
+    );
     expect(
       resolveGate('rule_accept', { policy: policy({ rule_accept: 'human_timeout:2h' }) }),
     ).toBe('human_timeout:2h');
