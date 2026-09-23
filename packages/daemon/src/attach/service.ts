@@ -1,28 +1,18 @@
 /**
- * `AttachService` — `agile attach <stream>`: the one path that turns a
- * stream into a running agent session (design/cockpit-design.md §4.1).
+ * `AttachService`: `agile attach <stream>`, the one path that turns a
+ * stream into a running agent session (design §4.1). In order:
  *
- * In order, exactly as the design lists it:
- *
- *   1. refuse if the stream already has a live session — "one live worker
- *      at a time per stream" (§2.3);
- *   2. create the branch and the worktree **if the stream has a repo**, on
- *      first attach and never on stream create, so a planning stream never
- *      touches git (§4.4, the hardened T113 path);
+ *   1. refuse if the stream already has a live session in that role (§2.3);
+ *   2. create the branch and worktree if the stream has a repo, on first
+ *      attach, never on stream create (§4.4);
  *   3. assemble the brief (`runner/brief.ts`);
- *   4. spawn the vendor ACP session with the worktree as cwd and the hook
- *      config installed (`runner/session.ts`);
- *   5. push the `SessionRef` onto `stream.sessions` and set
- *      `agent.status: working`.
+ *   4. spawn the vendor ACP session in the worktree with the hook config
+ *      installed (`runner/session.ts`);
+ *   5. record the `SessionRef` and set `agent.status: working`.
  *
- * Session exit is handled here too, not in the runner: the runner resolves
- * `exited`, this service writes what the exit means onto the stream —
- * `SessionRef.status: stopped|error`, `agent.status: done` (or `blocked`),
- * and a `daemon` thread entry saying so.
- *
- * Every stream write from this module is principal `daemon`: these are
- * lifecycle writes, which is exactly what §2.2 reserves the daemon
- * principal for.
+ * Session exit is handled here too: the runner resolves `exited`, this
+ * service writes what it means onto the stream. Every write is principal
+ * `daemon` (lifecycle writes, §2.2).
  */
 
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
@@ -51,12 +41,7 @@ import { buildEvent } from '../store';
 import type { StreamService } from '../streams/service';
 import { type AttachFlags, effortIgnoredLine, resolveSessionSettings } from './resolve';
 
-/**
- * A stream that already has a live session **in the role being attached**.
- * §2.3's rule is "one live worker per stream"; T131 adds a reviewer that may
- * coexist with a worker, but at most one of each. Typed so the RPC edge
- * reports -32602.
- */
+/** A live session already exists in this role (one worker and one reviewer at most). RPC: -32602. */
 export class StreamBusyError extends Error {
   constructor(
     public readonly stream: string,
@@ -78,66 +63,49 @@ export class UnregisteredRepoError extends Error {
   }
 }
 
-/** Session statuses that mean "still live" — §2.3's one-worker rule. */
+/** Session statuses that mean "still live". */
 const LIVE_SESSION_STATUSES: readonly SessionStatus[] = ['starting', 'running', 'idle'];
 
-/**
- * The live session on a stream in one role. Role-scoped since T131: a
- * reviewer runs beside the worker on the same worktree, so a running
- * reviewer must not read as "this stream already has a worker".
- */
+/** The live session on a stream in one role (a reviewer beside a worker is not a second worker). */
 export function liveSession(stream: Stream, role: SessionRole = 'worker'): SessionRef | undefined {
   return stream.sessions.find(
     (session) => session.role === role && LIVE_SESSION_STATUSES.includes(session.status),
   );
 }
 
-/**
- * The slice of `QuestionService` the turn-end rule needs (T137): what is
- * still open. A turn that ends while this session has an open question is
- * a session waiting for an answer, not a finished worker.
- */
+/** What is still open: a turn that ends on an open question is waiting, not finished. */
 export interface OpenQuestionsSource {
   listOpen(): Question[];
 }
 
 /**
- * T138: the gates the turn-end rule has to treat like an open question. A
- * real Claude Code session, denied and told to wait for `HIL-…`, says
- * "blocked pending approval" and **ends its turn** — so without this the
- * turn-end rule would stop it and the approval could only ever land as a
- * thread line for the next attach to read.
+ * Gates the turn-end rule treats like an open question: a Claude session
+ * denied and told to wait for `HIL-…` ends its turn, and must not be
+ * stopped before the approval can be prompted in.
  */
 export interface OpenGatesSource {
   list(): HilRequest[];
 }
 
-/** The slice of T134's `DocsService` the brief needs: the docs a stream sees. */
+/** The docs a stream's brief sees. */
 export interface BriefDocsSource {
   docsForStream(streamId: string): BriefDoc[];
 }
 
-/** The slice of T140's `RulesService` the brief needs: the accepted rules in scope (§5.3). */
+/** The accepted rules in scope for the brief (§5.3). */
 export interface BriefRulesSource {
   inScope(streamId: string): Rule[];
-  /**
-   * T143: §5.7's counters, bumped by the ACP permission tier for every
-   * pattern rule it evaluates. Optional so a brief-only fake stays valid.
-   */
+  /** §5.7's counters, bumped by the ACP permission tier. Optional for brief-only fakes. */
   recordFired?(id: string, outcome: RuleStatsOutcome): Promise<unknown>;
 }
 
 export interface AttachOptions extends AttachFlags {
   role?: SessionRole;
-  /**
-   * T141: extra brief text appended after the assembled brief — the
-   * material the lessons session (§5.5) is asked to draw its rules from,
-   * plus its instruction. The caller owns the size of what it sends.
-   */
+  /** Appended after the brief: the lessons session's material and instruction (§5.5). The caller caps it. */
   briefAppendix?: string;
 }
 
-/** T137: `detach: true` marks this stop as the human pulling the plug, not a shutdown. */
+/** `detach: true`: the human pulled the plug, not a shutdown. */
 export interface StopOptions {
   detach?: boolean;
 }
@@ -151,19 +119,17 @@ export interface AttachResult {
 export interface AttachServiceOptions {
   store: StateStore;
   streams: StreamService;
-  /** The state home — `<home>/sessions/<id>/` holds each session's logs. */
+  /** The state home: `<home>/sessions/<id>/` holds each session's logs. */
   home: string;
   /** The daemon's unix socket, handed to the session's hook command and MCP bridge. */
   socketPath?: string;
   /** How a spawned session invokes the `agile` CLI (`runner/cli-bin.ts`). */
   cliBin?: string | CliInvocation;
-  /** T134's `DocsService` (or any read side shaped like it) — supplies the brief's docs. */
   docs?: BriefDocsSource;
-  /** T137: the open questions, for the turn-end rule. Read lazily — `daemon.ts` wires both directions. */
+  /** The open questions, for the turn-end rule. */
   questions?: OpenQuestionsSource;
-  /** T140's `RulesService` (or any read side shaped like it) — supplies the brief's rules in scope. */
   rules?: BriefRulesSource;
-  /** T138: the gates, for the same rule — a session waiting on a routed call is waiting, not finished. */
+  /** The gates, for the same rule. */
   gates?: OpenGatesSource;
   /** Test seam: inject a fake `spawnSession`. */
   spawn?: typeof spawnSession;
@@ -177,18 +143,14 @@ export class AttachService {
   private readonly live = new Map<SessionRole, Map<string, AgentSessionHandle>>([
     ['worker', new Map()],
     ['reviewer', new Map()],
-    // T141's one-shot retro session (§5.5) — a third role, never a second worker.
+    // The one-shot retro session (§5.5): a third role, never a second worker.
     ['lessons', new Map()],
   ]);
 
-  /**
-   * The exit handling for each live session, so `stop()` resolves only
-   * once the exit path has finished writing (T137: `detach` prints and
-   * leaves `idle`, which is written on that path).
-   */
+  /** Each live session's exit handling, so `stop()` resolves only after the exit path has written. */
   private readonly exitHandled = new Map<string, Promise<void>>();
 
-  /** Sessions being stopped by `agile detach` — the exit path writes `idle`, not `done`. */
+  /** Sessions being stopped by `agile detach`: the exit path writes `idle`, not `done`. */
   private readonly detaching = new Set<string>();
 
   constructor(private readonly options: AttachServiceOptions) {}
@@ -238,10 +200,8 @@ export class AttachService {
     let worktreePath = stream.worktree;
     let branch = stream.branch;
     if (repoEntry !== undefined) {
-      // §4.2: the reviewer is "a second session on the same worktree" — it
-      // never cuts a branch of its own. A reviewer on a stream that was
-      // never attached (no worktree yet) reviews the thread from the
-      // session dir, exactly as a no-repo stream does.
+      // §4.2: a reviewer never cuts a branch. On a never-attached stream it
+      // reviews from the session dir, like a no-repo stream.
       if (worktreePath === undefined && role === 'worker') {
         const created = await createWorktree(repoEntry.path, {
           id: stream.id,
@@ -254,14 +214,12 @@ export class AttachService {
         await streams.update('daemon', stream.id, { worktree: worktreePath, branch });
       }
     }
-    // T141 (§5.5): the retro starts after `land` has already removed the
-    // worktree, so a lessons session whose stream names a directory that is
-    // gone runs in its own session dir rather than failing to spawn.
+    // The retro starts after `land` removed the worktree: run it in the
+    // session dir rather than fail to spawn.
     if (role === 'lessons' && worktreePath !== undefined && !existsSync(worktreePath)) {
       worktreePath = undefined;
     }
-    // A planning stream runs in the state home's own session directory: it
-    // has no repo, so there is nothing to check out and nothing to cd into.
+    // A stream with no worktree runs in its session dir under the home.
     const sessionDir = join(this.options.home, 'sessions', sessionId);
     mkdirSync(sessionDir, { recursive: true });
     const cwd = worktreePath ?? sessionDir;
@@ -276,8 +234,7 @@ export class AttachService {
       ...(worktreePath !== undefined ? { worktree: worktreePath } : {}),
     };
 
-    // D12: a vendor with no effort mapping still starts — the thread says
-    // the level was ignored rather than the record claiming it applied.
+    // D12: a vendor with no effort mapping still starts; the thread says the level was ignored.
     if (provider.effort === undefined) {
       await streams.appendThread('daemon', stream.id, {
         kind: 'event',
@@ -296,26 +253,20 @@ export class AttachService {
       // §5.3: the accepted rules in scope for this stream and its ancestors.
       rules: this.options.rules?.inScope(stream.id) ?? [],
     });
-    // T141: the lessons session's material rides after the brief it is
-    // assembled from, never inside it — the ceiling above protects the
-    // brief's own parts, and the caller caps what it appends.
+    // The lessons material rides after the brief, never inside it (the
+    // brief's own ceiling protects its parts; the caller caps the appendix).
     const prompt =
       options.briefAppendix === undefined ? brief : `${brief}\n\n${options.briefAppendix}`;
-    // T145: what the agent was actually handed, beside its `output.log` in
-    // the same session dir (§7.2) — "what did the agent see" is then a file
-    // read, not an archaeology dig through the vendor's own transcript.
-    // Best-effort, exactly like the session logs: a full disk must never
-    // stop a session from starting.
+    // What the agent was handed, beside its logs: "what did it see" is a
+    // file read. Best effort: a full disk must not stop a session starting.
     try {
       writeFileSync(join(sessionDir, 'brief.md'), prompt);
     } catch {
       // Diagnostics only.
     }
 
-    // 5. Record the session before it can produce anything, so a stream
-    // never has a running process it doesn't know about. A reviewer never
-    // moves `agent.status`: that field describes the stream's work, and a
-    // read-only second opinion is not work in progress (§4.2).
+    // 5. Record the session before it can produce anything. A reviewer never
+    // moves `agent.status`: a read-only second opinion is not work (§4.2).
     if (role === 'worker') {
       await streams.update('daemon', stream.id, { agent: { status: 'working' } });
     }
@@ -362,8 +313,7 @@ export class AttachService {
     this.handles(role).set(stream.id, handle);
     await this.setSessionStatus(stream.id, sessionId, 'running');
 
-    // How many findings the stream already carried, so the reviewer's exit
-    // line can report the ones *this* review produced (§4.2).
+    // Findings already on the stream, so the reviewer's exit reports only its own.
     const findingsBefore = streams.get(stream.id).agent.findings?.length ?? 0;
     this.exitHandled.set(
       sessionId,
@@ -423,24 +373,21 @@ export class AttachService {
     }));
   }
 
-  /** The open question this session is waiting on, if any (T137). */
+  /** The open question this session is waiting on, if any. */
   private openQuestionFor(streamId: string, sessionId: string): Question | undefined {
     try {
       return this.options.questions
         ?.listOpen()
         .find((question) => question.stream === streamId && question.session === sessionId);
     } catch {
-      // The questions dir is gone (the home was torn down) — treat it as
-      // "nothing open", which ends the session rather than stranding it.
+      // The home was torn down: "nothing open" ends the session rather than stranding it.
       return undefined;
     }
   }
 
   /**
-   * The routed call this session is still waiting on, if any (T138). A gate
-   * counts as open while it is `pending` **and** while it is approved but
-   * not yet spent: the human said yes and the retry has not happened, so
-   * the session that has to make that retry must not be stopped.
+   * The routed call this session is waiting on: a gate that is `pending`,
+   * or approved but not yet spent (the retry hasn't happened yet).
    */
   private openGateFor(streamId: string, sessionId: string): HilRequest | undefined {
     try {
@@ -455,26 +402,19 @@ export class AttachService {
               (gate.decision === 'approve' && gate.consumed_at === undefined)),
         );
     } catch {
-      // The gates dir is gone (the home was torn down) — "nothing open",
-      // which ends the session rather than stranding it.
+      // The home was torn down: "nothing open".
       return undefined;
     }
   }
 
   /**
-   * What the end of a prompt turn means (T137, §2.3; T138 for gates). A
-   * turn that ends while this session has an open question — or an open
-   * routed call (a `classifier_review` gate, §8.1) — is a session
-   * *waiting*: it stays alive, `SessionRef.status` goes `idle` and the
-   * stream says `agent.status: question` / `human.status: waiting_on_you`
-   * until the answer or the decision is prompted in. A turn that ends with
-   * nothing open is a worker (or a reviewer) that is finished, so the
-   * session is stopped and the exit path — the single writer of
-   * `done`/`blocked` — records it.
-   *
-   * The gate half is not a nicety: a Claude session that is denied with
-   * "wait for HIL-…, then retry this exact call" reports itself blocked and
-   * ends the turn, so this is the normal path, not an edge case.
+   * What the end of a prompt turn means (§2.3). A session with an open
+   * question or an open `classifier_review` gate is waiting: it stays
+   * alive, goes `idle`, and the stream says `question`/`waiting_on_you`
+   * until the answer or decision is prompted in. Otherwise the work is
+   * finished: the session is stopped and the exit path (the one writer of
+   * `done`/`blocked`) records it. A Claude session told to wait for a gate
+   * ends its turn, so the gate half is the normal path.
    */
   private async onTurnEnd(streamId: string, sessionId: string, role: SessionRole): Promise<void> {
     const handle = this.handles(role).get(streamId);
@@ -483,20 +423,12 @@ export class AttachService {
     const waitingOnGate = this.openGateFor(streamId, sessionId) !== undefined;
     if (waitingOnQuestion || waitingOnGate) {
       try {
-        // A question's own raise path already wrote these (`questions/
-        // service.ts`); a gate is raised by the hook, which knows nothing
-        // about stream statuses, so the turn-end rule writes them here.
-        // Only a worker moves `agent.status` (§4.2).
-        //
-        // Written BEFORE the session's own `idle`, so `idle` is the last
-        // write of this rule: a caller (or a human answering the card the
-        // moment it appears) that sees `idle` sees the finished state, and
-        // a decision delivered right then cannot have its `working`/`open`
-        // overwritten by this turn's trailing write.
-        // T145: an open question or an open gate, either way this stream
-        // is waiting on the human — the live `--help` run ended its turn
-        // on a still-open question and left `agent.status: working` for
-        // eleven minutes, because only the gate half wrote a status here.
+        // The hook that raised a gate knows nothing of stream statuses, so
+        // this rule writes them (for questions too, or a stream waiting on
+        // an open question once read `working` for eleven minutes). Only a
+        // worker moves `agent.status` (§4.2). Written before the session's
+        // `idle`, so a decision delivered the moment `idle` appears cannot
+        // be overwritten by this turn's trailing write.
         if (role === 'worker') {
           await this.options.streams.update('daemon', streamId, {
             agent: { status: 'question' },
@@ -513,17 +445,13 @@ export class AttachService {
   }
 
   /**
-   * T137: delivery is a prompt. The answer goes into the live session as a
-   * fresh turn, which is the only thing that actually makes the waiting
-   * vendor process continue — the live run (2026-09-21) sat idle for 19
-   * minutes because the answer was written to a mailbox nothing reads.
-   * With no live session the answer stays on the thread, where the next
-   * attach's brief carries it, and the thread says so.
+   * Delivery is a prompt: the answer goes into the live session as a new
+   * turn, the only thing that makes a waiting vendor continue (an answer
+   * once sat unread in a mailbox for 19 minutes). With no live session the
+   * answer stays on the thread for the next attach's brief.
    */
   async deliverAnswer(sessionId: string, question: Question): Promise<void> {
-    const handle = [...this.live.values()]
-      .flatMap((byStream) => [...byStream.values()])
-      .find((each) => each.sessionId === sessionId);
+    const handle = this.liveHandleBySession(sessionId);
     if (handle === undefined) {
       await this.options.streams.appendThread('daemon', question.stream, {
         kind: 'event',
@@ -551,12 +479,9 @@ export class AttachService {
   }
 
   /**
-   * T161: the stream page's composer (cockpit design §9.3) — "writes a
-   * human line; if a worker is attached, it also prompts it. One box, two
-   * effects, no mode switch." The line is the record either way; the
-   * prompt is queued behind whatever turn the worker is in (turns are
-   * serialized in `runner/session.ts`), so a line typed mid-turn is read
-   * when that turn ends rather than refused.
+   * The stream page's composer (§9.3): a human line, and if a worker is
+   * attached, a prompt too. Turns are serialized (`runner/session.ts`), so
+   * a line typed mid-turn is read when that turn ends.
    */
   async say(streamId: string, body: string): Promise<{ entry: ThreadEntry; prompted?: string }> {
     const entry = await this.options.streams.appendThread('human', streamId, {
@@ -577,12 +502,9 @@ export class AttachService {
   }
 
   /**
-   * T138: a `classifier_review` gate was decided, and the session whose
-   * tool call it blocked is (usually) still live, mid-turn, holding after a
-   * deny. Delivery is the same prompt path T137 built for an answer — the
-   * only thing that actually makes a waiting vendor process continue. With
-   * no live session the decision stays on the thread, where the next
-   * attach's brief carries it, and the thread says so.
+   * A `classifier_review` gate was decided; the blocked session is usually
+   * still live, holding after a deny. Delivered by prompt, like an answer;
+   * with no live session it stays on the thread.
    */
   async deliverGateDecision(sessionId: string, gate: HilRequest): Promise<void> {
     const approved = gate.decision === 'approve';
@@ -590,9 +512,7 @@ export class AttachService {
     const line = approved
       ? `${gate.id} approved${note} — retry the call now.`
       : `${gate.id} denied${note} — do not retry it; do the work another way or ask on the stream.`;
-    const handle = [...this.live.values()]
-      .flatMap((byStream) => [...byStream.values()])
-      .find((each) => each.sessionId === sessionId);
+    const handle = this.liveHandleBySession(sessionId);
     if (handle === undefined) {
       await this.options.streams.appendThread('daemon', gate.stream, {
         kind: 'event',
@@ -604,12 +524,11 @@ export class AttachService {
     await this.setSessionStatus(gate.stream, sessionId, 'running').catch(() => {
       // Best effort: the prompt below is what matters.
     });
-    // Symmetric with an answered question: the human half is done with
-    // this one, and there is a live session to go back to work.
+    // As with an answered question: back to work.
     await this.options.streams
       .update('daemon', gate.stream, { agent: { status: 'working' }, human: { status: 'open' } })
       .catch(() => {
-        // Same best effort — the prompt is the delivery.
+        // Best effort: the prompt is the delivery.
       });
     void handle.prompt(`${line}\n\nContinue the work.`).catch(() => {
       // `runPromptTurn` already stopped the session and recorded why.
@@ -629,8 +548,7 @@ export class AttachService {
     const handles = this.handles(role);
     if (handles.get(streamId)?.sessionId === sessionId) handles.delete(streamId);
     const detached = this.detaching.delete(sessionId);
-    // The map only tracks live sessions; `stop()` already holds the
-    // promise it awaits, so dropping it here cannot lose a write.
+    // `stop()` already holds the promise it awaits; dropping it cannot lose a write.
     this.exitHandled.delete(sessionId);
     try {
       await this.setSessionStatus(
@@ -639,9 +557,7 @@ export class AttachService {
         ok ? 'stopped' : 'error',
         detached ? undefined : endedReason(reason, ok, vendorError),
       );
-      // T137: a human pulled the plug. The stream produced nothing, so it
-      // goes back to `idle` — writing `done` would claim work was finished
-      // by the very act of killing it.
+      // A human pulled the plug: back to `idle`. `done` would claim the kill finished the work.
       if (detached) {
         if (role === 'worker') {
           await this.options.streams.update('daemon', streamId, { agent: { status: 'idle' } });
@@ -657,9 +573,7 @@ export class AttachService {
         await this.onReviewerExit(streamId, sessionId, reason, findingsBefore);
         return;
       }
-      // T141 (§5.5): the retro is not the stream's work. It reports on the
-      // thread and never touches `agent.status` — a stream that landed
-      // must not read as `done` again because its retro finished.
+      // The retro is not the stream's work: report on the thread, leave `agent.status`.
       if (role === 'lessons') {
         await this.options.streams.appendThread('daemon', streamId, {
           kind: 'event',
@@ -677,18 +591,13 @@ export class AttachService {
         ref: sessionId,
       });
     } catch {
-      // The stream was deleted (or the home went away) while the session
-      // was running — nothing left to record it on.
+      // The stream or home went away mid-session: nothing to record on.
       return;
     }
     if (ok) await this.maybeAutoReview(streamId);
   }
 
-  /**
-   * A reviewer's exit (§4.2). It reports what the review produced and
-   * leaves `agent.status` alone — the worker owns that field. Only a stream
-   * with no worker left running has no one else to move it to `done`.
-   */
+  /** A reviewer's exit (§4.2): reports its findings; moves `agent.status` only when no worker is left. */
   private async onReviewerExit(
     streamId: string,
     sessionId: string,
@@ -707,11 +616,7 @@ export class AttachService {
     }
   }
 
-  /**
-   * §4.2's "optional per repo: auto-review when `agent.status` becomes
-   * `done`" — `RepoEntry.auto_review`. Best-effort: a review that cannot be
-   * started must never turn a clean worker exit into a failure.
-   */
+  /** §4.2's per-repo `auto_review` on a clean worker exit. Best effort: never fails the exit. */
   private async maybeAutoReview(streamId: string): Promise<void> {
     try {
       const stream = this.options.streams.get(streamId);
@@ -730,17 +635,15 @@ export class AttachService {
           ),
         });
       } catch {
-        // The stream is gone — nothing left to record it on.
+        // The stream is gone.
       }
     }
   }
 
   /**
-   * Stops the live sessions on a stream — one role, or every role when no
-   * role is named (`agile detach <stream>` means "stop what is running on
-   * this stream", reviewer included). Resolves once they have exited *and*
-   * the exit path has written, and returns the session ids it stopped, so
-   * `agile detach` can print them (T137).
+   * Stops the live sessions on a stream, one role or all. Resolves once
+   * they have exited and the exit path has written, and returns the
+   * stopped session ids (`agile detach` prints from them).
    */
   async stop(streamId: string, role?: SessionRole, options: StopOptions = {}): Promise<string[]> {
     const roles = role !== undefined ? [role] : [...this.live.keys()];
@@ -752,20 +655,18 @@ export class AttachService {
         stopped.push(handle.sessionId);
         // Captured before the stop: the exit path deletes its own entry.
         const handled = this.exitHandled.get(handle.sessionId);
-        // T137: the exit path must read this as a detach, not as a worker
-        // that finished, before anything can resolve `exited`.
+        // Marked before anything can resolve `exited`: a detach, not a finish.
         if (options.detach === true) this.detaching.add(handle.sessionId);
         handle.stop();
         await handle.exited;
-        // Resolve only once the exit path has written: `agile detach`
-        // prints from the RPC result, which must already be true on disk.
+        // `agile detach` prints from the RPC result, which must already be on disk.
         await handled;
       }),
     );
     return stopped;
   }
 
-  /** Stops every live session — the daemon's own shutdown path. */
+  /** Stops every live session: the daemon's shutdown path. */
   async stopAll(): Promise<void> {
     await Promise.all(
       [...this.live.entries()].flatMap(([role, handles]) =>
@@ -773,14 +674,15 @@ export class AttachService {
       ),
     );
   }
+
+  private liveHandleBySession(sessionId: string): AgentSessionHandle | undefined {
+    return [...this.live.values()]
+      .flatMap((byStream) => [...byStream.values()])
+      .find((each) => each.sessionId === sessionId);
+  }
 }
 
-/**
- * T171: what the sessions strip says about a session that died on a vendor
- * failure — the exit reason with the vendor's last stderr line (e.g. "does
- * not support this model"). A clean end (no failure, no vendor line) says
- * nothing.
- */
+/** A vendor failure's exit reason plus its last stderr line, for the sessions strip. A clean end says nothing. */
 export function endedReason(
   reason: string,
   ok: boolean,
