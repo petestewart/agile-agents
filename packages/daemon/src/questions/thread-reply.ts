@@ -1,11 +1,7 @@
 /**
- * T169: one human line on a stream, the same way from every edge — the
- * cockpit's composer (`POST /api/streams/:id/say`) and the CLI's `agile
- * stream say` (`stream.thread_append`). The line is written and, when a
- * worker is live, prompted into it (`AttachService.say`); when that
- * prompted session has open questions, the line is their answer
- * (`QuestionService.answerFromThread`). A line with nobody live to
- * deliver it to closes nothing.
+ * One human line on a stream, the same from every edge (the composer and
+ * `agile stream say`): written, prompted into a live worker, and the answer
+ * to that session's open questions. With nobody live it closes nothing.
  */
 
 import type { ThreadEntry } from '@agile-agents/shared';

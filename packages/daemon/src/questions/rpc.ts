@@ -1,13 +1,6 @@
 /**
- * `question.*` RPC methods over a `QuestionService` (T121; cockpit design
- * §1.4, §3). Mirrors `gates/rpc.ts` and `streams/rpc.ts`: every handler
- * validates its params at the boundary with shared's own zod schemas and
- * throws `RpcParamError` (-32602) rather than letting a destructuring
- * `TypeError` reach `dispatch()`.
- *
- * T121 re-keyed the params: `stream` (a ULID) replaced `ticket`, and
- * `resolved_as` is `reply` or absent — `decision` and `ticket` resolutions
- * went with the oracle and the ticket model.
+ * `question.*` RPC over a `QuestionService` (§1.4, §3). Params are validated
+ * at the boundary with shared's schemas (`RpcParamError`, -32602).
  */
 
 import {

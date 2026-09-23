@@ -1,11 +1,7 @@
 /**
- * T145: a gate decision closes the questions the same session left open.
- *
- * Wired exactly as `wireGateDecisionDelivery` (`hook/route-band.ts`) and
- * `wireLandGateResolution` are, and for the same reason: `GateService` has
- * no business knowing what a question is. The rule, in one sentence:
- * **resolving a gate resolves every question from the same session that is
- * still open at that moment, as `superseded`.**
+ * A gate decision resolves every question the same session still has
+ * open, as `superseded`. Wired around `GateService.respond`, which needn't
+ * know what a question is.
  */
 
 import type { GateService } from '../gates/service';
