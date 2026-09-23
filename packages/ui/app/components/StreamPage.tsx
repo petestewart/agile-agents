@@ -556,8 +556,10 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
               }
               onChange={(e) => setDraft(e.target.value)}
               onKeyDown={(e) => {
-                if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+                // Enter sends; Shift+Enter is a newline; never mid-IME composition.
+                if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
                   e.preventDefault();
+                  if (busy) return;
                   if (text)
                     void act(
                       () => sayOnStream(stream.id, text),

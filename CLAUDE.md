@@ -1,104 +1,89 @@
 # CLAUDE.md
 
-Agile Agents — a multi-agent coding orchestrator modeled on an Agile engineering team (EM, architect + oracle, engineers, adversarial review, QA), built as a TypeScript daemon that runs vendor coding agents over ACP. This file is the repo guide for Claude Code sessions, local or cloud.
+Agile Agents is a single-operator cockpit for coding agents. One long-lived daemon (`agiled`) holds all state in one home directory. Work is organised as **streams** (a tree of goals, each with a thread, a branch and a worktree). Vendor coding agents (Claude Code, Gemini, Cursor, …) are attached to a stream over ACP as workers or read-only reviewers. **Rules** (pattern, classifier, guidance) are enforced by hooks. The human answers an **inbox** and lands streams. This file is the repo guide for Claude Code sessions, local or cloud.
 
 ## Source of truth
 
-- `PLAN.md` — the reshape plan **and the live board** (tickets T100–T164). Every ticket is a `### Ticket: T###` block; its `Status:` line is the ticket's state. Read it first. `PLAN-v1.md` is the frozen old plan (T001–T051), history only.
-- `design/cockpit-design.md` — the design (streams §2, inbox §3, agents §4, rules §5, classifier §6, state home §7, hook and landing paths §8, UI §9, deletions §10). When code and design disagree, the design wins unless the PLAN's Decisions log says otherwise.
-- `design/agile-agents-design.md` — the superseded design, kept for **§8 adapter contract** and **§6 hook catalog**, which remain valid. Nothing else in it is current.
-- `design/spike-findings.md` — measured per-vendor behaviour (what ACP actually gates, hooks, cancel/resume, Pi). Don't re-derive these; cite them.
-- `vendor/terma/` — read-only snapshot of Terma's ACP layer, the input to T003. Never import from it at runtime; extract into `packages/acp-client` and adapt.
-- `spike/` — the vendor spike harness (`permission-matrix.ts`) and raw reports. Reusable for T009/T014 checks.
+- `PLAN.md`: the plan **and the live board**. Every ticket is a `### Ticket: T###` block, and its `Status:` line is the ticket's state. The Decisions log (D1–D17) overrides the design. Read it first.
+- `design/cockpit-design.md`: the design (streams §2, inbox §3, agents §4, rules §5, classifier §6, state home §7, hook and landing paths §8, UI §9, deletions §10). When code and design disagree, the design wins unless the Decisions log says otherwise.
+- `design/agile-agents-design.md`: superseded. Only its **§8 adapter contract** and **§6 hook catalog** are still valid.
+- `design/spike-findings.md`: measured per-vendor behaviour (what ACP gates, hooks, cancel/resume, Pi). Cite it; don't re-derive it.
+- `LIVE-CHECKLIST.md`: the manual end-to-end walkthrough against a real vendor login.
+- `vendor/terma/`: a read-only snapshot of Terma's ACP layer. Never import it at runtime.
+- `spike/`: the vendor spike harness (`permission-matrix.ts`) and raw reports.
 
 ## Orchestration
 
-Drive the plan with `/project` (manager) which launches `/pipeline` workers (one ticket each). `/project --yolo` runs without human gates: AI review + QA gate + merge. Nothing in the loop depends on the host machine — no dashboards, heartbeats, or home-dir scripts. The board is `PLAN.md`; the manager commits it to `main` after every state change so progress survives the session.
+Drive the plan with `/project` (manager), which launches `/pipeline` workers (one ticket each). `/project --yolo` runs with no human gates: AI review, then a QA gate, then merge. The board is `PLAN.md`. The manager commits it after every state change.
+
+## Layout
+
+```
+packages/shared      zod schemas + types (stream, rule, session defaults, ids, …), defined once
+packages/acp-client  ACP session client and vendor providers (lifted from vendor/terma)
+packages/daemon      agiled: store, streams, attach/runner, worktrees, hook + permissions, rules,
+                     classifier, landing, inbox/questions/gates, docs, MCP tools, HTTP + cockpit (feed/)
+packages/cli         agile: init · daemon · repo · stream · rules · attach · review · detach · land ·
+                     status · tail · inbox · answer · question · gate · hook · mcp  (`agile` with no args prints usage)
+packages/ui          the cockpit (React + Vite, app/), served by the daemon
+fixtures/demo-project  seeded repo for the e2e runs
+```
+
+State lives in the home (`$AGILE_HOME`, default `~/.agile/`): `config.yaml`, `repos.yaml`, `streams/`, `threads/`, `rules/`, `log/agiled.log`, `log/events.jsonl`, `sessions/<id>/stderr.log`. Worktrees are `<repo>/.worktrees/<stream-id>-<slug>` on `stream/…` branches.
 
 ## Commands
 
-Bun **1.3.11 or newer** is required (CI pins 1.3.11; verified on 1.4.2). Older Bun ignores `pathIgnorePatterns` in `bunfig.toml`, so `vendor/` and `dist/` run as tests and hundreds of tests fail — `bun upgrade` first if `bun --version` is older.
-
-Until T001 lands there is no code. After it:
+You need Bun **1.3.11 or newer**. CI pins 1.3.11. Older Bun ignores `pathIgnorePatterns`, so `vendor/` and `dist/` run as tests and fail. If `bun` is missing: `curl -fsSL https://bun.sh/install | bash` or `npm i -g bun`. If neither works, log it in the PLAN Discovered Issues and stop. Don't swap the toolchain.
 
 ```bash
 bun install
-bun run build        # all workspaces
+bun run build              # all workspaces (the UI build is what the daemon serves)
 bun run typecheck
-bun test             # plain bun test, no native modules — must stay green
-bun run test:integration   # offline end-to-end (real daemon + real browser, no vendor) — must stay green
-                           # includes the daemon lifecycle e2e (packages/cli/src/daemon.e2e.test.ts)
-bun run test:live          # AGILE_LIVE=1; spawns real vendor sessions — manual/nightly only
+bun run lint               # biome check .
+bun test                   # offline unit tests: no vendor, no network. Must stay green
+bun test packages/daemon/src/rules    # one area
+bun run test:integration   # offline end-to-end: real daemon, real browser, no vendor. CI runs it
+bun run test:e2e           # the Playwright cockpit tests alone (rebuild first)
+bun run test:live          # AGILE_LIVE=1, manual only, never in CI
 ```
 
-`test:integration` and `test:live` are strictly separated, and the split is
-what keeps `test:integration` honest:
-
-- **`test:integration`** never spawns a vendor. It forces `AGILE_LIVE=` empty,
-  so an exported `AGILE_LIVE=1` in the shell cannot turn vendor spawning back
-  on. It must pass with no vendor login, and CI runs it.
-- **`test:live`** is the only script that spawns real vendor sessions. It takes
-  minutes, needs a real login, and is never part of CI or a normal `bun test`.
-  When the epic run fails, re-run it with `AGILE_LIVE_KEEP=1` so the temp repo
-  survives (its path is printed); look at `.agile/log/events.jsonl`,
-  `.agile/board/hil/`, `.agile/bus/agents/`, `runs/*.md` and each vendor
-  session's stderr under `.agile-daemon-cache/sessions/*.stderr.log`. A
-  pending `hil_request` (nothing auto-approves in `--live`) is printed as
-  `HIL needed: <id>` with the `agile approve <id>` that unblocks the session.
-  MCP tool *errors* (a verb rejecting the model's input) are not in
-  `events.jsonl` — `tool_call` events carry no result — they are in Claude
-  Code's own `~/Library/Caches/claude-cli-nodejs/<worktree>/mcp-logs-agile/`
-  (`grep -h '"error"' *.jsonl`). A verb called many times in a burst is a
-  model retrying a schema rejection; read those errors first.
-  `em`-owned gates (`unblock` from the hook, `approve_plan`, ...) are decided
-  by a one-shot EM vendor session (`packages/daemon/src/em/delegate.ts`) —
-  the run prints `EM deciding gate …` / `EM approved|denied gate …`; without
-  a delegate (tests) they stay pending.
-
-Both name their test files explicitly. The old `--grep live` selector matched
-39+ ordinary offline tests as well, because `live` is a substring of
-`delivers`, `liveness` and `lives` — it selected 43 tests across all 143 files
-and took ~11 minutes.
-
-The Playwright e2e tests (feed page, control room) need a Chromium and **fail
-loudly** when there is none, rather than skipping: `bunx playwright-core
-install chromium`, or point `PLAYWRIGHT_CHROMIUM_EXECUTABLE` at a binary.
-
-If `bun` is missing in a fresh container: `curl -fsSL https://bun.sh/install | bash` (then `export PATH="$HOME/.bun/bin:$PATH"`), or `npm i -g bun`. If neither works, note it in the PLAN Discovered Issues log and stop — do not swap the toolchain.
-
-## Layout (target)
-
-```
-packages/shared      zod schemas + types, defined once, imported everywhere
-packages/acp-client  ACP session client lifted from vendor/terma (T003)
-packages/daemon      agiled: state store, bus, halts/ripple, gates, agent runner, worktrees, hook endpoint, MCP tools, feed
-packages/cli         agile: init · daemon start|stop|status · status · tail · send · approve · halt · hook <event>
-packages/ui          v0: static feed.html
-fixtures/demo-project  seeded repo for the e2e run
-```
+- `test:integration` forces `AGILE_LIVE=` empty and never spawns a vendor.
+- `test:live` currently runs only `packages/daemon/src/sandbox/live.test.ts`, which is a placeholder. The real live check is `LIVE-CHECKLIST.md`.
+- Don't run `test:e2e` at the same time as a full `bun test`. Both need port and CPU headroom.
+- The Playwright tests need a Chromium and **fail loudly** without one. Get it with `bunx playwright-core install chromium` or set `PLAYWRIGHT_CHROMIUM_EXECUTABLE`.
 
 ## Conventions
 
-- TypeScript, Bun workspaces, ESM. Schemas live in `packages/shared` and nowhere else.
-- `.agile/` state is plain YAML/JSONL/Markdown, written only through the daemon's validating store.
-- Hooks are the enforcement layer, prompts are the intent layer. A gate that is only a sentence in a role brief is a bug.
-- Signal over volume at every boundary: message bodies capped, tool output distilled, raw output to files with pointers.
-- No vendor credentials in the daemon. Adapters spawn the vendor harness with the user's own login.
-- Use the repo's own scripts for lint/typecheck/test. Never introduce a second toolchain.
-- **No new codebase conventions without explicit approval** — no new top-level dirs, artifact types, or patterns without a sibling precedent. A ticket proposing one is not approval; stop and escalate.
-- One ticket = one branch (`T###-<slug>`) off latest `main` = one merge. Worktrees live under `.worktrees/` (gitignored).
-- Don't trust subagent summaries; verify the diff.
+- TypeScript, Bun workspaces, ESM. Schemas live in `packages/shared` and nowhere else, all `.strict()`.
+- State in the home is plain YAML/JSONL/Markdown and is written **only through the daemon's validating store**. A corrupt file is refused with path and line, never defaulted.
+- Hooks are the enforcement layer, prompts are the intent layer. A gate that is only a sentence in a brief is a bug.
+- HTTP write routes check `isSameOriginRequest` (403 otherwise) and record the actor as `human`. The stream record's `agent.*`/`human.*` two-writer split is enforced by the store.
+- Signal over volume at every boundary: bodies capped, tool output distilled, raw output to files with pointers.
+- No vendor credentials in the daemon. Adapters spawn the vendor harness with the user's own login. The TypeSafe classifier key is the one written exception (design §6.1).
+- Use the repo's own scripts for lint, typecheck and test. Never introduce a second toolchain.
+- **No new codebase conventions without explicit approval.** That means no new top-level dirs, artifact types or patterns without a sibling precedent. A ticket that proposes one is not approval: stop and escalate.
+- One ticket = one branch (`T###-<slug>`) off the latest integration branch = one merge. Worktrees go under `.worktrees/` (gitignored).
+- Don't trust subagent summaries. Verify the diff.
 
-## v0 defaults for the PLAN's open questions
+## Classifier key (D16)
 
-Use these unless the PLAN's Decisions log says otherwise; log the choice when a ticket relies on it.
+A TypeSafe key may be present in the cloud environment (`TYPESAFE_API_KEY`), or in the home `config.yaml` as `classifier.api_key`, or set from the cockpit Settings screen.
 
-- Name: keep `agile` / `agiled` / `.agile/`. Rename is a later mechanical ticket.
-- Reviewers read the engineer's worktree through tools under a read-only permission policy; QA gets a fresh clone. Revisit in T016 only if the policy can't make that safe.
-- Architect planning turn: try Claude `plan` mode first (T014). If plan mode blocks the architect's MCP writes, run `default` mode with a daemon-side `approve_plan` gate.
-- Ledger: ACP `usage_update` when present, ledger countdown otherwise.
-- Tunables (initial): heartbeat 30 s, liveness timeout 5 min, quorum timeout 10 min, message body cap 800 chars, tool cache TTL = sprint, quota floor 0.15, max review rounds 3, max_attempts 2.
+- Agent work (workers, reviewers, QA) may make real classifier (Jev) calls, and should prefer them over `FakeClassifier` when checking classifier behaviour. `agile rules test` is the easy way.
+- Unit tests stay offline and use `FakeClassifier`.
+- The key is never printed, logged, committed or sent to the browser. Never list or dump environment variables. `agile daemon status` says only whether a key is loaded and where it came from.
+
+## Session defaults (D17)
+
+The vendor, model and effort for a new session resolve in this order:
+
+1. the attach/review flag, or the cockpit picker
+2. the repo's entry in `repos.yaml`
+3. the global default in the home `config.yaml`
+4. the built-in `claude` / `claude-opus-5-5` / `low`
+
+The global and per-repo defaults are editable in Settings. `agile daemon status` prints the resolved default.
 
 ## Cloud sessions
 
-The repo is self-contained for a Claude Code cloud session. `gh` may or may not be authenticated there: the skills check `gh auth status` once and fall back to branch-and-merge without PRs. Vendor logins (Claude Max etc.) are not available in the cloud, so integration tests that spawn a real vendor session are skipped there; unit tests must not need them.
+The repo is self-contained for a cloud session. `gh` may not be authenticated there: the skills check `gh auth status` once and fall back to branch-and-merge without PRs. There are no vendor logins in the cloud, so `test:live` and `AGILE_LIVE=1` stay off, and nothing in `bun test`, `test:integration` or `test:e2e` may need a vendor.

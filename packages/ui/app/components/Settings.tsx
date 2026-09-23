@@ -285,8 +285,8 @@ function SessionDefaults(): JSX.Element {
       {status && (
         <>
           <SessionDefaultsRow
-            label="Every stream"
-            what="config.yaml — used when a stream's repo names nothing."
+            label="Global default"
+            what="config.yaml — used for every stream unless its repo sets its own."
             testid="settings-session-home"
             status={status}
             fields={status.home}
@@ -294,11 +294,17 @@ function SessionDefaults(): JSX.Element {
             resolved={status.resolved}
             save={async (patch) => setStatus(await saveHomeSessionDefaults(patch))}
           />
+          <h3 data-testid="settings-session-repos-heading">Per-repo defaults</h3>
+          {Object.keys(status.repos).length === 0 && (
+            <p className="cr-dim" data-testid="settings-session-repos-empty">
+              No repos registered yet.
+            </p>
+          )}
           {Object.entries(status.repos).map(([name, repo]) => (
             <SessionDefaultsRow
               key={name}
-              label={`Repo ${name}`}
-              what="repos.yaml — beats the home default for streams in this repo."
+              label={name}
+              what="repos.yaml — overrides the global default for streams in this repo."
               testid={`settings-session-repo-${name}`}
               status={status}
               fields={repo}
