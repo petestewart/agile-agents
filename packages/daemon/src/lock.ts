@@ -1,13 +1,7 @@
 /**
- * PID/lock file — one long-lived `agiled` per **state home** (D9,
- * design/cockpit-design.md §7.1: "the tool is not a per-repo process").
- *
- * T112: the pidfile is `<home>/agiled.pid`. It used to sit at
- * `<repo>/.agile-daemon.lock`, back when a daemon belonged to a repo; one
- * daemon serving every registered repo means the mutual exclusion it
- * enforces is per-home, and `agile daemon status|stop` (which may run from
- * anywhere, including outside any repo) reads it from the home too.
- * Host/process-instance information, never committed or shared.
+ * PID/lock file: one long-lived `agiled` per state home (D9, §7.1), at
+ * `<home>/agiled.pid`, so `agile daemon status|stop` can find it from
+ * anywhere.
  */
 
 import { existsSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
@@ -20,7 +14,7 @@ export interface LockHandle {
 
 function isProcessAlive(pid: number): boolean {
   try {
-    // Signal 0: no-op, just checks existence/permission.
+    // Signal 0 only checks existence and permission.
     process.kill(pid, 0);
     return true;
   } catch (err) {
@@ -43,10 +37,7 @@ export class LockError extends Error {
   }
 }
 
-/**
- * Acquires the per-home daemon lock. Throws `LockError` if a live process
- * already holds it; silently reclaims a stale lock (holder no longer alive).
- */
+/** Acquires the per-home lock: `LockError` if a live process holds it; a stale lock is reclaimed. */
 export function acquireLock(lockPath: string): LockHandle {
   if (existsSync(lockPath)) {
     const raw = readFileSync(lockPath, 'utf8').trim();
@@ -54,16 +45,14 @@ export function acquireLock(lockPath: string): LockHandle {
     if (Number.isFinite(holderPid) && isProcessAlive(holderPid)) {
       throw new LockError(lockPath, holderPid);
     }
-    // Stale lock: previous holder is gone. Reclaim it.
+    // Stale: the holder is gone.
     unlinkSync(lockPath);
   }
 
   try {
     writeFileSync(lockPath, String(process.pid), { flag: 'wx' });
   } catch (err) {
-    // Lost a race with another process reclaiming the same stale lock —
-    // report it the same way a live holder would be reported, not a raw
-    // filesystem error.
+    // Lost a race reclaiming the same stale lock: report it like a live holder.
     if ((err as NodeJS.ErrnoException).code === 'EEXIST') {
       const holderPid = Number.parseInt(readFileSync(lockPath, 'utf8').trim(), 10);
       throw new LockError(lockPath, holderPid);
@@ -79,14 +68,13 @@ export function acquireLock(lockPath: string): LockHandle {
       if (released) return;
       released = true;
       try {
-        // Only remove it if it's still ours — don't clobber a lock another
-        // process legitimately holds after this one already released.
+        // Only if still ours: don't clobber a lock another process now holds.
         const raw = readFileSync(lockPath, 'utf8').trim();
         if (raw === String(process.pid)) {
           unlinkSync(lockPath);
         }
       } catch {
-        // Already gone — fine.
+        // Already gone.
       }
     },
   };
