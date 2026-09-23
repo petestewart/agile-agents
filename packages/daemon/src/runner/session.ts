@@ -59,7 +59,7 @@ function openLog(dir: string, name: string): { path: string; append: (chunk: str
   try {
     mkdirSync(dir, { recursive: true });
   } catch {
-      // Every append below is best-effort anyway.
+    // Every append below is best-effort anyway.
   }
   return {
     path,
