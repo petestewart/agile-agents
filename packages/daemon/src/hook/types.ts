@@ -1,67 +1,48 @@
 /**
- * Shared types for the Claude hook gate (T009 — design/agile-agents-design.md
- * §6 "Enforcement tiers and hook catalog" tier 1, §5 "Comms bus" → "Delivery
- * by priority", §4 "Ticket" → `budget`, §7 "Tool framework" → `read_summary`).
- *
- * T130 re-keyed the context from `{agent, ticket}` to `{session, stream}`:
- * a tool call is made by a session attached to a stream, and the ticket
- * model (with its per-ticket token budget tier) is gone.
- *
- * `decide.ts` is pure: everything it needs about the world is packed into
- * `HookDecisionContext` by `service.ts`, which is the only place that reads
- * `StateStore`/`Bus`/the filesystem. `HookDecision` is the pure function's
- * output; `service.ts` turns it into the actual Claude hook JSON contract
- * (`hookSpecificOutput.permissionDecision`/`permissionDecisionReason`/
- * `additionalContext`) and performs the side effects (ack, heartbeat,
- * `hook_decision` event) the decision implies.
+ * Types for the Claude hook gate (agile-agents-design §6 tier 1). A tool
+ * call is made by a session attached to a stream. `decide.ts` is pure:
+ * `service.ts` packs the world into `HookDecisionContext`, turns the
+ * `HookDecision` into Claude's hook JSON, and performs the side effects.
  */
 
 import type { AgentMessage, Rule, SessionRole } from '@agile-agents/shared';
 
-/** The three decision outcomes a Claude PreToolUse hook can render (spike-findings.md §B; `spike/permission-matrix.ts:119`). */
+/** The outcomes of the pure decision (spike-findings.md §B); `ask` never reaches the wire. */
 export type HookVerdict = 'allow' | 'deny' | 'ask';
 
 export interface HookLimits {
-  /** Raw `Read`/`Grep`-over-a-single-file size ceiling in bytes, above which the tool call is denied in favour of `read_summary` (§7). Default 64 KiB (ticket text: "default e.g. 64 KiB"). */
+  /** Raw `Read`/`Grep` single-file size ceiling in bytes, above which the call is denied. Default 64 KiB. */
   maxReadBytes: number;
-  /** Optional separate ceiling for `Grep` over a single (non-directory) target — falls back to `maxReadBytes` when unset. Grep over a directory is never size-gated here (§6/ticket: "Grep over a directory → allow, over a huge file → deny"). */
+  /** A separate ceiling for `Grep` over a single file (default `maxReadBytes`); a directory is never size-gated. */
   maxGrepBytes?: number;
 }
 
 export const DEFAULT_MAX_READ_BYTES = 64 * 1024;
 
-/**
- * Everything `decidePreToolUse` needs about the calling agent/ticket/world,
- * resolved by `HookService` before the pure decision runs.
- */
+/** Everything `decidePreToolUse` needs about the caller and the world, resolved by `HookService`. */
 export interface HookDecisionContext {
-  /** The attached session this call came from — the hook's identity since T130 (design §8.1 step 1: "resolve the session → stream → repo"). */
+  /** The attached session this call came from (§8.1 step 1: session → stream → repo). */
   session: string;
   /** The stream that session is attached to. */
   stream: string;
   role: SessionRole;
   worktreePath: string;
-  /** This session's unread inbox, urgent/normal first (§5's poll ordering) — `bus.poll(session)`. */
+  /** This session's unread inbox, by priority (`bus.poll(session)`). */
   inbox: AgentMessage[];
   limits: HookLimits;
-  /** Returns a file's size in bytes, or `undefined` if it doesn't exist / isn't a plain file (e.g. a directory — Grep-over-directory must not size-gate). Injectable for tests; `service.ts` wires `node:fs.statSync`. */
+  /** A file's size, or `undefined` if missing or not a plain file (a directory must not size-gate). */
   fileSize: (path: string) => number | undefined;
-  /**
-   * T143: the **pattern** rules in scope for this session's stream (§5.3's
-   * `rulesInScope`, filtered to `enforcement: 'pattern'`), in the order
-   * they are checked. Absent/empty means no pattern rule is in scope — the
-   * hook path consults rules, so a home with none gates nothing here.
-   */
+  /** The accepted pattern rules in scope (§5.3), in check order. None in scope gates nothing here. */
   patternRules?: readonly Rule[];
-  /** The stream's repo `protected_branches` (D8, `repos.yaml`), resolved at check time rather than frozen into the rule. */
+  /** The repo's `protected_branches` (D8), resolved at check time. */
   protectedBranches?: readonly string[];
-  /** `git rev-parse --abbrev-ref @{upstream}` in the worktree (argv, no shell) — only called for a push with no explicit refspec. */
+  /** `@{upstream}` of the worktree; called only for a push with no refspec. */
   upstreamBranch?: () => string | undefined;
-  /** `git rev-parse --abbrev-ref HEAD` in the worktree — only called for a `git merge` with no preceding checkout. */
+  /** The worktree's checked-out branch; called only for a `git merge` with no preceding checkout. */
   headBranch?: () => string | undefined;
 }
 
-/** Raw Claude `PreToolUse` hook stdin payload (spike-findings.md §B; Claude Code hooks reference: `hook_event_name`, `tool_name`, `tool_input`, plus `cwd`/`session_id`/`transcript_path` common to every hook event). */
+/** Raw Claude `PreToolUse` stdin payload (spike-findings.md §B). */
 export interface ClaudePreToolUsePayload {
   hook_event_name?: string;
   session_id?: string;
@@ -70,42 +51,16 @@ export interface ClaudePreToolUsePayload {
   tool_name?: string;
   tool_input?: Record<string, unknown>;
   /**
-   * T012 review round — a disambiguation HINT only, never a credential.
-   * Only the `agile hook` CLI writes this field (forwarded from its own
-   * `process.env.AGILE_AGENT`, itself only set when `writeClaudeSettings`'s
-   * `agentId` option embedded `AGILE_AGENT=<id>` into the hook command —
-   * see `hook/settings.ts`); Claude's own hook payload never carries it.
-   *
-   * `HookService.resolveAgentByCwd` (`hook/service.ts`) uses this ONLY to
-   * pick among agent registry entries that have *already* matched `cwd` —
-   * it never resolves an agent by this field alone, and a hint naming an
-   * agent whose worktree doesn't contain `cwd` is simply not among the
-   * candidates it can pick from. This matters because the value is
-   * self-asserted by the calling process's own environment: a compromised
-   * or misconfigured agent process could set `AGILE_AGENT` to claim to be
-   * someone else, so it can only ever narrow an already-cwd-verified set
-   * of candidates, never substitute for that verification (review round 3,
-   * opus item 2).
+   * A disambiguation hint, never a credential: written only by `agile
+   * hook` (from `AGILE_AGENT`). Self-asserted by the caller's env, so it
+   * may only pick among registry entries that already matched `cwd`.
    */
   agile_agent?: string;
   /**
-   * T022 round 2 fix (review B1): set by the `agile` Pi extension on every
-   * `hook.pre_tool_use` call — Pi's `tool_call` result has no field to carry
-   * `additionalContext` on (unlike Claude's hook JSON contract), so a
-   * caller setting this asks `HookService` not to fold pending
-   * normal-priority inbox messages into this decision at all (tier 3 of
-   * `decide.ts`'s `decidePreToolUse` never sees them — they stay unacked,
-   * still in the inbox). Without this, `service.ts`'s `buildContext` would
-   * hand `decidePreToolUse` a normal message, tier 3 would ack it as part
-   * of this decision (`decide.ts`'s own contract: "the reason is the
-   * delivery ... acked in the same decision that surfaces it"), and the
-   * content would be silently discarded the moment the caller has nowhere
-   * to put `additionalContext` — exactly the bug this field exists to
-   * avoid. Urgent messages are unaffected (tier 2 already denies with the
-   * body as the reason, which Pi's `tool_call` result CAN carry via
-   * `reason`); only tier 3's normal-priority folding is skipped, leaving
-   * `before_agent_start`'s own poll+ack (`agile-extension.ts`) as the sole
-   * delivery path for those. Never set by Claude's own hook payload.
+   * Set by the Pi extension: its `tool_call` result can't carry
+   * `additionalContext`, so normal-priority messages must not be folded
+   * into (and acked by) this decision; `before_agent_start` delivers them.
+   * Urgent messages still deny with the body as the reason.
    */
   no_additional_context_channel?: boolean;
   [key: string]: unknown;
@@ -114,23 +69,14 @@ export interface ClaudePreToolUsePayload {
 export interface HookDecision {
   decision: HookVerdict;
   reason?: string;
-  /** Pointer-not-payload text to inject as additional context (normal-priority inbox bodies, capped). */
+  /** Context to inject: normal-priority inbox bodies, capped. */
   additionalContext?: string;
-  /** Message ids the caller (`service.ts`) should ack once this decision is rendered — see decide.ts's DESIGN-GAP on urgent-inbox ack semantics. */
+  /** Message ids `service.ts` acks once this decision is rendered (an urgent deny's reason is its delivery). */
   ack?: string[];
-  /**
-   * T143: the pattern rules this decision actually evaluated, in order —
-   * `stats.fired` for each of them (§5.7's pruning input: "fired often,
-   * never violated"). The caller (`service.ts`) does the writing, the same
-   * way it performs `ack`.
-   */
+  /** The pattern rules evaluated, in order: `stats.fired` each (§5.7), written by `service.ts`. */
   rulesEvaluated?: string[];
-  /** The one rule this decision denied on — `stats.violated`, and the id its reason names. */
+  /** The rule this decision denied on: `stats.violated`, named in the reason. */
   ruleViolated?: string;
-  /**
-   * T151: the one classifier rule whose answer routed this call to the
-   * human — `stats.routed` (§6.3). The human's later deny is what bumps
-   * that rule's `violated` (`wireClassifierRouteStats`).
-   */
+  /** The classifier rule that routed this call (`stats.routed`); a human deny later counts as `violated`. */
   ruleRouted?: string;
 }

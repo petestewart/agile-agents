@@ -41,7 +41,6 @@ describe('renderClaudeSettings', () => {
     const settings = renderClaudeSettings({
       agileBin: 'agile',
       socketPath: '/tmp/agile.sock',
-      agentId: '01ARZ3NDEKTSV4RRFFQ69GR001',
     });
     expect(settings.hooks.PreToolUse[0]?.hooks[0]?.command).toBe(
       'AGILE_SOCKET_PATH=/tmp/agile.sock agile hook pre-tool-use || exit 2',

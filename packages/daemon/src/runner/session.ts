@@ -261,12 +261,11 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
   const spawn = opts.spawn ?? defaultSpawnSession;
   const policyRole = permissionRoleFor(role);
 
-  // Tier 1 (§8.1): hooks active before the first tool call. `agentId` is
-  // the `agile_agent` hint that tells sessions sharing a worktree apart.
+  // Tier 1 (§8.1): hooks active before the first tool call. The session id
+  // reaches the hook via `AGILE_AGENT` in the session env, not the file.
   writeClaudeSettings(worktreePath, {
     agileBin: cliInvocationToShell(cliBin),
     socketPath: opts.socketPath,
-    agentId: sessionId,
     timeoutSeconds: opts.hookTimeoutSeconds,
   });
 
