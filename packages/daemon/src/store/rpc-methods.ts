@@ -8,7 +8,8 @@
  * with proper param validation, etc.).
  */
 
-import { type RpcMethodHandler, RpcParamError } from '../rpc';
+import { RpcParamError } from '../gates/rpc';
+import type { RpcMethodHandler } from '../rpc';
 import type { StateStore } from './store';
 
 /**

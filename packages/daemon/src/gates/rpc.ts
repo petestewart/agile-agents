@@ -1,33 +1,8 @@
 /**
- * `gate.*` RPC methods over a `GateService` (design §18 "JSON-RPC over unix
- * socket for hooks/adapters"; T018 scope: "CLI `approve`/`breaker
- * clear`; implement these as daemon RPC methods `gate.approve`,
- * `gate.breaker_clear` (+ `gate.list`, `gate.resolve`, `gate.note`); the
- * CLI verbs land with T008, not here."
- *
- * Not wired into `rpc.ts`'s method table by this ticket (rpc.ts is out of
- * scope for T018 — see the pipeline report's wiring instructions for the
- * manager): `daemon.ts` should pass this object as part of
- * `RpcServerOptions.extraMethods` alongside `buildStateRpcMethods`.
- *
- * T018 review fix (finding 5): every handler validates its params at the
- * boundary — reusing shared's own zod schemas (`HilIdSchema`,
- * `HilDecisionSchema`, `BreakerSignalSchema`) via `.safeParse` rather than
- * bare-casting — and throws a typed `RpcError` subclass (`RpcParamError`
- * -32602 for invalid params, `-32001`-range codes for domain errors) instead
- * of letting a destructuring `TypeError` reach `dispatch()`.
- *
- * KNOWN LIMITATION (documented, not fixed — `rpc.ts`'s `dispatch()` is out
- * of this ticket's file ownership): `dispatch()` currently wraps every
- * thrown error the same way, `{ code: INTERNAL_ERROR_CODE (-32603), message:
- * err.message }`, regardless of any `.code` the error carries (see
- * `rpc.ts`'s catch block). So today a JSON-RPC client sees -32603 for every
- * failure from this module, not the specific code named on the error class
- * below. The `.code`/`.data` are still attached for the moment `dispatch()`
- * is extended with one line (`code: err instanceof RpcError ? err.code :
- * INTERNAL_ERROR_CODE`) — flagged for the manager in `.pipeline-report.md`.
- * Every negative-path test therefore asserts on `error.message` (which
- * already carries the specific, correct detail), not `error.code`.
+ * `gate.*` RPC over a `GateService`, plus the typed RPC errors and param
+ * checks every RPC family shares. Params are validated at the boundary
+ * with shared's schemas and fail as `RpcParamError` (-32602), which
+ * `dispatch()` reports with its own code.
  */
 
 import {
@@ -104,7 +79,7 @@ function requireBy(value: unknown): string {
   return value;
 }
 
-/** Optional free text typed with a decision (T039) — validated against the shared cap here so a malformed note is `-32602`, not a schema throw from the store. */
+/** Free text typed with a decision, capped here so a bad note is -32602, not a store throw. */
 function optionalNote(value: unknown): string | undefined {
   if (value === undefined || value === null) return undefined;
   if (typeof value !== 'string') {
@@ -169,8 +144,7 @@ export function buildGateRpcMethods(service: GateService): Record<string, RpcMet
       const by = requireBy(p.by);
       return service.respond(id, decision, by, optionalNote(p.note));
     },
-    // T039: a typed answer with no button press. Stores the note on the
-    // still-pending request — never resolves the gate itself.
+    // A typed answer with no button press: stored on the pending request, never resolves it.
     'gate.note': (params) => {
       const p = requireObject(params);
       const id = requireHilId(p.id);
