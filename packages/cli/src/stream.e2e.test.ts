@@ -223,7 +223,7 @@ describe('agile attach (T130) on a no-repo stream, against the fake driver', () 
     expect(attached.code).toBe(0);
     expect(attached.out).toMatch(
       new RegExp(
-        `^agile attach: [0-9A-HJKMNP-TV-Z]{26} claude/default effort=\\w+ on ${stream.id}$`,
+        `^agile attach: [0-9A-HJKMNP-TV-Z]{26} claude/claude-opus-5-5 effort=low on ${stream.id}$`,
         'm',
       ),
     );
@@ -239,7 +239,7 @@ describe('agile attach (T130) on a no-repo stream, against the fake driver', () 
 
     // The sessions strip prints `id vendor/model effort status`.
     const human = await cli(['stream', 'show', stream.id]);
-    expect(human.out).toContain(`${record.sessions[0]?.id}  claude/default`);
+    expect(human.out).toContain(`${record.sessions[0]?.id}  claude/claude-opus-5-5`);
 
     // §2.3: one live worker at a time.
     const second = await cli(['attach', stream.id]);
@@ -247,7 +247,7 @@ describe('agile attach (T130) on a no-repo stream, against the fake driver', () 
 
     // The thread carries the daemon's own attach line.
     const thread = readFileSync(join(daemon.home, 'threads', `${stream.id}.jsonl`), 'utf8');
-    expect(thread).toContain('worker attached: claude/default');
+    expect(thread).toContain('worker attached: claude/claude-opus-5-5');
 
     // T137: detach says what it stopped, the stream goes back to `idle`
     // (nothing was produced by killing it), and the thread records who did.

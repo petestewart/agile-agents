@@ -11,6 +11,8 @@ import type {
   Rule,
   RuleCreateInput,
   RulePatch,
+  SessionDefaultsPatch,
+  SessionDefaultsStatus,
   Stream,
   StreamCreateInput,
 } from '@agile-agents/shared';
@@ -146,8 +148,38 @@ export function sayOnStream(id: string, body: string): Promise<{ prompted?: stri
 }
 
 /** T161: the sessions strip's Attach (a worker) and Review (a reviewer). */
-export function attachSession(id: string, role: 'worker' | 'reviewer'): Promise<unknown> {
-  return post(`/api/streams/${encodeURIComponent(id)}/attach`, { role });
+export function attachSession(
+  id: string,
+  role: 'worker' | 'reviewer',
+  choice: { vendor?: string; model?: string; effort?: string } = {},
+): Promise<unknown> {
+  return post(`/api/streams/${encodeURIComponent(id)}/attach`, { role, ...choice });
+}
+
+/** T170 (D17): every step of the session-default order, and what it resolves to. */
+export async function getSessionDefaults(): Promise<SessionDefaultsStatus> {
+  const res = await fetch('/api/settings/session');
+  const payload = (await res.json()) as SessionDefaultsStatus & { error?: string };
+  if (!res.ok) throw new Error(payload.error ?? `session defaults read failed (${res.status})`);
+  return payload;
+}
+
+/** T170: Settings' home-wide defaults (`null` clears a field). */
+export function saveHomeSessionDefaults(
+  patch: SessionDefaultsPatch,
+): Promise<SessionDefaultsStatus> {
+  return post('/api/settings/session', patch) as Promise<SessionDefaultsStatus>;
+}
+
+/** T170: one repo's defaults in `repos.yaml` (`null` clears a field). */
+export function saveRepoSessionDefaults(
+  repo: string,
+  patch: SessionDefaultsPatch,
+): Promise<SessionDefaultsStatus> {
+  return post(
+    `/api/settings/session/repos/${encodeURIComponent(repo)}`,
+    patch,
+  ) as Promise<SessionDefaultsStatus>;
 }
 
 /** T161: the sessions strip's Stop — detaches whatever is live on the stream. */

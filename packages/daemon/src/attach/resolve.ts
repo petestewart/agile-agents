@@ -9,7 +9,10 @@
  *      `effort`);
  *   3. the state home's `config.yaml` (`default_vendor` / `default_model` /
  *      `default_effort`);
- *   4. the provider's own default (`claude`, its `defaultModel`, `medium`).
+ *   4. the built-in default (**D17**): `claude` / `claude-opus-5-5` / `low`
+ *      (`BUILTIN_SESSION_DEFAULTS` in shared — the model only for Claude);
+ *   5. the provider's own `defaultModel`, for a non-Claude vendor with no
+ *      model named anywhere.
  *
  * Pure: no store, no filesystem, no clock — the caller hands it the two
  * config records it already has. That is what makes "why did this session
@@ -23,15 +26,16 @@ import {
   resolveAcpProvider,
 } from '@agile-agents/acp-client';
 import {
-  DEFAULT_EFFORT,
+  BUILTIN_SESSION_DEFAULTS,
   type Effort,
   type HomeConfig,
   type RepoEntry,
-  validateEffort,
+  SESSION_VENDORS,
+  resolveSessionDefaults,
 } from '@agile-agents/shared';
 
-/** The vendor default when nothing names one (CLAUDE.md v0 default: "Claude for every role"). */
-export const DEFAULT_VENDOR = 'claude';
+/** The vendor default when nothing names one (D17). */
+export const DEFAULT_VENDOR = BUILTIN_SESSION_DEFAULTS.vendor;
 
 /** A vendor name that is not a registry entry — typed so the RPC edge reports -32602, not an internal error. */
 export class UnknownVendorError extends Error {
@@ -66,32 +70,13 @@ export interface ResolvedSessionSettings {
   provider: AcpProviderConfig;
 }
 
-function firstDefined<T>(...values: Array<T | undefined>): T | undefined {
-  for (const value of values) if (value !== undefined) return value;
-  return undefined;
-}
-
 export function resolveSessionSettings(
   input: ResolveSessionSettingsInput = {},
 ): ResolvedSessionSettings {
-  const { flags = {}, repo, home } = input;
-
-  const vendor = firstDefined(flags.vendor, repo?.vendor, home?.default_vendor) ?? DEFAULT_VENDOR;
-  if (!isAcpProviderId(vendor)) {
-    throw new UnknownVendorError(vendor, ['claude', 'gemini', 'cursor', 'grok', 'pi', 'codex']);
-  }
+  const { vendor, model, effort } = resolveSessionDefaults(input);
+  if (!isAcpProviderId(vendor)) throw new UnknownVendorError(vendor, SESSION_VENDORS);
   const provider = resolveAcpProvider(vendor);
-
-  const model =
-    firstDefined(flags.model, repo?.model, home?.default_model) ?? provider.defaultModel;
-
-  // The flag is a raw string off the command line; the two config records
-  // are schema-checked already. Validating here keeps the error the
-  // operator sees about *effort*, not about a config file they didn't edit.
-  const effortRaw = firstDefined(flags.effort, repo?.effort, home?.default_effort);
-  const effort = effortRaw === undefined ? DEFAULT_EFFORT : validateEffort(effortRaw);
-
-  return { vendor, model, effort, provider };
+  return { vendor, model: model ?? provider.defaultModel, effort, provider };
 }
 
 /** What an effort level contributes to the spawn for this provider, or `undefined` when the vendor has no mapping at all. */

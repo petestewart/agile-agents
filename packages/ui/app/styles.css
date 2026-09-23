@@ -699,6 +699,20 @@ body {
 .cr-gate-row code {
   font-family: ui-monospace, Menlo, monospace;
 }
+/* T170: the attach/review session picker and Settings' session defaults */
+.cr-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 10px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.cr-actions input[aria-label="Model"] {
+  min-width: 0;
+  flex: 1 1 12em;
+}
 
 /* ---- phone width: the rail is a drawer ---- */
 /* T163: the rules screen */

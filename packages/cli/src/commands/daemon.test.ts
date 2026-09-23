@@ -110,3 +110,20 @@ test('T166: daemon status prints the state home first', () => {
   expect(running.split('\n')[0]).toBe('home: /h/agile');
   expect(running).toContain('agiled running: pid=42');
 });
+
+test('T170: daemon status shows the resolved session default, never "default"', () => {
+  const report = {
+    home: '/h/agile',
+    port: 4777,
+    socketPath: '/h/agile/agiled.sock',
+    pidPath: '/h/agile/agiled.pid',
+    logPath: '/h/agile/log/agiled.log',
+    running: true,
+    pid: 42,
+    sessionDefaults: { vendor: 'claude', model: 'claude-opus-5-5', effort: 'low' as const },
+  };
+  expect(formatDaemonStatus(report)).toContain('session default: claude/claude-opus-5-5 · low');
+  expect(formatDaemonStatus({ ...report, running: false })).toContain(
+    'session default: claude/claude-opus-5-5 · low',
+  );
+});

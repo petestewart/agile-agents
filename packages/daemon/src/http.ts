@@ -31,6 +31,7 @@ import {
   RuleIdSchema,
   RulePatchSchema,
   RuleTestInputSchema,
+  SessionDefaultsPatchSchema,
   StreamAttachRequestSchema,
   StreamCreateInputSchema,
   StreamSayInputSchema,
@@ -41,6 +42,7 @@ import {
 import { CONTROL_ROOM_DIST_DIR, FEED_HTML_PATH } from '@agile-agents/ui';
 import {
   type AttachService,
+  SessionDefaultsService,
   StreamBusyError,
   UnknownVendorError,
   UnregisteredRepoError,
@@ -513,6 +515,58 @@ async function handleSettingsRoute(
 }
 
 /**
+ * T170 (D17): Settings' session defaults —
+ *
+ *   GET  /api/settings/session              every step of the order and what it resolves to
+ *   POST /api/settings/session              home `default_vendor|model|effort` (`SessionDefaultsPatchSchema`)
+ *   POST /api/settings/session/repos/:name  one repo's `vendor|model|effort` in `repos.yaml`
+ *
+ * Writes are same-origin only and stamped `human`; each applies to the
+ * next session without a restart (attach reads both files per session).
+ */
+async function handleSessionSettingsRoute(
+  req: Request,
+  url: URL,
+  feed: FeedContext | undefined,
+  sameOrigin: () => boolean,
+): Promise<Response | undefined> {
+  const match = url.pathname.match(/^\/api\/settings\/session(?:\/repos\/([^/]+))?$/);
+  if (!match) return undefined;
+  const repo = match[1] === undefined ? undefined : decodeURIComponent(match[1]);
+  if (req.method === 'GET' && repo === undefined) {
+    if (!feed) return errorResponse(503, 'state store not initialised (run `agile init`)');
+    try {
+      return jsonResponse(new SessionDefaultsService(feed.store).status());
+    } catch (err) {
+      return errorResponse(500, err instanceof Error ? err.message : String(err));
+    }
+  }
+  if (req.method !== 'POST') return undefined;
+  if (!feed) return errorResponse(503, 'state store not initialised (run `agile init`)');
+  if (!sameOrigin()) return errorResponse(403, 'cross-origin request rejected');
+  let body: unknown;
+  try {
+    body = await readJsonBody(req);
+  } catch {
+    return errorResponse(400, 'invalid session defaults: body must be JSON');
+  }
+  const input = SessionDefaultsPatchSchema.safeParse(body);
+  if (!input.success) return errorResponse(400, formatZodError('session defaults', input.error));
+  const service = new SessionDefaultsService(feed.store);
+  try {
+    return jsonResponse(
+      repo === undefined
+        ? await service.setHome('human', input.data)
+        : await service.setRepo('human', repo, input.data),
+    );
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (err instanceof NotFoundError) return errorResponse(404, message);
+    return errorResponse(400, message);
+  }
+}
+
+/**
  * T160/T163: the rules routes (cockpit design §5, §9) —
  *
  *   GET  /api/rules               every rule, §5.7's pruning report, and whether evals can run
@@ -854,6 +908,11 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
           isSameOriginRequest(req, srv.port ?? options.port),
         );
         if (settingsRoute) return settingsRoute;
+
+        const sessionSettingsRoute = await handleSessionSettingsRoute(req, url, feed, () =>
+          isSameOriginRequest(req, srv.port ?? options.port),
+        );
+        if (sessionSettingsRoute) return sessionSettingsRoute;
 
         const ruleRoute = await handleRuleRoute(
           req,

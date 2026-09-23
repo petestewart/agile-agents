@@ -11,12 +11,32 @@
  * sends the key back; this shows only where it comes from (config.yaml, the
  * environment, or nowhere). Save writes it to config.yaml and it is live at
  * once; Remove deletes it from config.yaml (an env key still applies).
+ *
+ * T170 (D17): the session defaults — home-wide (`config.yaml`) and per repo
+ * (`repos.yaml`). An empty field inherits the next step of the order, which
+ * each control names; the next attach uses the saved values, no restart.
  */
 
-import type { ClassifierKeyStatus, Policy } from '@agile-agents/shared';
+import type {
+  ClassifierKeyStatus,
+  Policy,
+  ResolvedSessionDefaults,
+  SessionDefaultsFields,
+  SessionDefaultsPatch,
+  SessionDefaultsStatus,
+} from '@agile-agents/shared';
 import { GATE_KINDS } from '@agile-agents/shared';
 import { useEffect, useState } from 'react';
-import { getClassifierKey, getPolicy, removeClassifierKey, saveClassifierKey } from '../lib/api';
+import {
+  getClassifierKey,
+  getPolicy,
+  getSessionDefaults,
+  removeClassifierKey,
+  saveClassifierKey,
+  saveHomeSessionDefaults,
+  saveRepoSessionDefaults,
+} from '../lib/api';
+import { type SessionChoice, SessionFields } from './SessionPicker';
 
 const GATE_TEXT: Record<(typeof GATE_KINDS)[number], { title: string; what: string }> = {
   land: { title: 'Landing a stream', what: 'Merging a finished stream into its target branch.' },
@@ -45,6 +65,7 @@ export function Settings(): JSX.Element {
       <h1>Settings</h1>
       {error && <p className="cr-error">{error}</p>}
       <ClassifierKey />
+      <SessionDefaults />
       <h2>Who decides</h2>
       {GATE_KINDS.map((gate) => (
         <div className="cr-gate-row" key={gate} data-gate={gate}>
@@ -149,5 +170,145 @@ function ClassifierKey(): JSX.Element {
         </button>
       </div>
     </form>
+  );
+}
+
+function toChoice(fields: SessionDefaultsFields): SessionChoice {
+  return { vendor: fields.vendor ?? '', model: fields.model ?? '', effort: fields.effort ?? '' };
+}
+
+/** Empty = inherit: the field is removed from the file (`null`). */
+function toPatch(choice: SessionChoice): SessionDefaultsPatch {
+  const model = choice.model.trim();
+  return {
+    vendor: (choice.vendor || null) as SessionDefaultsPatch['vendor'],
+    model: model.length > 0 ? model : null,
+    effort: (choice.effort || null) as SessionDefaultsPatch['effort'],
+  };
+}
+
+function resolvedText(resolved: ResolvedSessionDefaults): string {
+  return `${resolved.vendor} / ${resolved.model ?? `${resolved.vendor} default model`} / ${resolved.effort}`;
+}
+
+function SessionDefaultsRow({
+  label,
+  what,
+  testid,
+  status,
+  fields,
+  inherit,
+  resolved,
+  save,
+}: {
+  label: string;
+  what: string;
+  testid: string;
+  status: SessionDefaultsStatus;
+  fields: SessionDefaultsFields;
+  inherit: ResolvedSessionDefaults;
+  resolved: ResolvedSessionDefaults;
+  save: (patch: SessionDefaultsPatch) => Promise<void>;
+}): JSX.Element {
+  const [value, setValue] = useState<SessionChoice>(() => toChoice(fields));
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | undefined>(undefined);
+  const [saved, setSaved] = useState(false);
+
+  return (
+    <form
+      className="cr-gate-row"
+      data-testid={testid}
+      onSubmit={(e) => {
+        e.preventDefault();
+        setBusy(true);
+        setError(undefined);
+        setSaved(false);
+        save(toPatch(value))
+          .then(() => setSaved(true))
+          .catch((err: unknown) => setError(err instanceof Error ? err.message : String(err)))
+          .finally(() => setBusy(false));
+      }}
+    >
+      <div>
+        <div>{label}</div>
+        <div className="what">{what}</div>
+        <div className="what" data-testid={`${testid}-resolved`}>
+          Resolves to {resolvedText(resolved)}
+          {saved ? ' · saved' : ''}
+        </div>
+        {error && (
+          <p className="cr-error" role="alert">
+            {error}
+          </p>
+        )}
+      </div>
+      <div className="cr-actions">
+        <SessionFields
+          status={status}
+          value={value}
+          onChange={(next) => {
+            setValue(next);
+            setSaved(false);
+          }}
+          inherit={inherit}
+          testid={`${testid}-field`}
+        />
+        <button
+          type="submit"
+          className="cr-btn signal"
+          data-testid={`${testid}-save`}
+          disabled={busy}
+        >
+          Save
+        </button>
+      </div>
+    </form>
+  );
+}
+
+function SessionDefaults(): JSX.Element {
+  const [status, setStatus] = useState<SessionDefaultsStatus | undefined>(undefined);
+  const [error, setError] = useState<string | undefined>(undefined);
+
+  useEffect(() => {
+    getSessionDefaults()
+      .then(setStatus)
+      .catch((err: unknown) => setError(err instanceof Error ? err.message : String(err)));
+  }, []);
+
+  return (
+    <>
+      <h2>Session defaults</h2>
+      {error && <p className="cr-error">{error}</p>}
+      {!status && !error && <p className="cr-dim">…</p>}
+      {status && (
+        <>
+          <SessionDefaultsRow
+            label="Every stream"
+            what="config.yaml — used when a stream's repo names nothing."
+            testid="settings-session-home"
+            status={status}
+            fields={status.home}
+            inherit={status.builtin}
+            resolved={status.resolved}
+            save={async (patch) => setStatus(await saveHomeSessionDefaults(patch))}
+          />
+          {Object.entries(status.repos).map(([name, repo]) => (
+            <SessionDefaultsRow
+              key={name}
+              label={`Repo ${name}`}
+              what="repos.yaml — beats the home default for streams in this repo."
+              testid={`settings-session-repo-${name}`}
+              status={status}
+              fields={repo}
+              inherit={status.resolved}
+              resolved={repo.resolved}
+              save={async (patch) => setStatus(await saveRepoSessionDefaults(name, patch))}
+            />
+          ))}
+        </>
+      )}
+    </>
   );
 }

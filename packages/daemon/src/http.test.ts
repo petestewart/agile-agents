@@ -7,11 +7,14 @@ import {
   DEFAULT_CLASSIFIER_DENY_AT,
   type Policy,
   type Rule,
+  type SessionDefaultsStatus,
   ulid,
   validateClassifierConfig,
 } from '@agile-agents/shared';
+import { resolveSessionSettings } from './attach';
 import { Bus } from './bus';
 import { ClassifierKeyService, FakeClassifier } from './classifier';
+import { readHomeConfigFile } from './config';
 import type { CockpitFrame, StreamPagePayload } from './feed';
 import { GateService } from './gates';
 import { type HttpServerHandle, startHttpServer } from './http';
@@ -382,6 +385,79 @@ describe('T160 cockpit routes', () => {
     } finally {
       await server.stop();
     }
+  });
+
+  test('T170: session defaults — read every step, write home and repo through the store, stamped human', async () => {
+    const post = (path: string, body: unknown, headers: Record<string, string> = {}) =>
+      fetch(url(path), { method: 'POST', headers, body: JSON.stringify(body) });
+    const read = async () =>
+      (await (await fetch(url('/api/settings/session'))).json()) as SessionDefaultsStatus;
+
+    const before = await read();
+    expect(before.builtin).toEqual({ vendor: 'claude', model: 'claude-opus-5-5', effort: 'low' });
+    expect(before.resolved).toEqual(before.builtin);
+    expect(before.known_models.claude).toContain('claude-opus-5-5');
+
+    // Same-origin only, strict body, known vendors, the effort enum.
+    expect(
+      (await post('/api/settings/session', { effort: 'high' }, { origin: 'http://evil.example' }))
+        .status,
+    ).toBe(403);
+    expect((await post('/api/settings/session', { effort: 'extreme' })).status).toBe(400);
+    expect((await post('/api/settings/session', { vendor: 'hal9000' })).status).toBe(400);
+    expect((await post('/api/settings/session', { effort: 'high', extra: 1 })).status).toBe(400);
+
+    const saved = await post('/api/settings/session', { model: 'sonnet', effort: 'high' });
+    expect(saved.status).toBe(200);
+    expect(((await saved.json()) as SessionDefaultsStatus).resolved).toEqual({
+      vendor: 'claude',
+      model: 'sonnet',
+      effort: 'high',
+    });
+    // The next attach reads the file: no restart.
+    expect(resolveSessionSettings({ home: readHomeConfigFile(stateRoot) })).toMatchObject({
+      model: 'sonnet',
+      effort: 'high',
+    });
+    const homeEvent = store
+      .listEvents()
+      .filter((e) => e.kind === 'home_config_put')
+      .at(-1);
+    expect(homeEvent?.agent).toBe('human');
+
+    // A repo's own model/effort; null clears a field back to the next step.
+    await store.addRepo('demo', { path: '/tmp/demo-t170' });
+    expect((await post('/api/settings/session/repos/nope', { model: 'opus' })).status).toBe(404);
+    expect(
+      (
+        await post(
+          '/api/settings/session/repos/demo',
+          { model: 'opus' },
+          { origin: 'http://evil.example' },
+        )
+      ).status,
+    ).toBe(403);
+    const repoSaved = await post('/api/settings/session/repos/demo', {
+      model: 'opus',
+      effort: 'max',
+    });
+    expect(repoSaved.status).toBe(200);
+    const status = (await repoSaved.json()) as SessionDefaultsStatus;
+    expect(status.repos.demo).toMatchObject({
+      model: 'opus',
+      effort: 'max',
+      resolved: { vendor: 'claude', model: 'opus', effort: 'max' },
+    });
+    expect(store.getRepos().demo?.path).toBe('/tmp/demo-t170');
+    const repoEvent = store
+      .listEvents()
+      .filter((e) => e.kind === 'repos_put')
+      .at(-1);
+    expect(repoEvent?.agent).toBe('human');
+
+    const cleared = await post('/api/settings/session', { model: null, effort: null });
+    expect(((await cleared.json()) as SessionDefaultsStatus).resolved).toEqual(before.builtin);
+    expect(store.getHomeConfig().default_model).toBeUndefined();
   });
 
   test('POST /api/streams/:id/land without a landing service is 503', async () => {
