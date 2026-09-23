@@ -12,6 +12,7 @@
  *  - `gate`        → allow/deny (a `land` gate reads land/hold), with the
  *                    typed reason as the note; the text alone is a note
  *  - `rule_accept` → accept / retire
+ *  - `rule_batch`  → opens the rules screen filtered to that seed import (T163)
  *  - `done`        → land
  *  - `blocked`     → shown, decided on the stream page
  */
@@ -27,6 +28,7 @@ const KIND_LABEL: Record<InboxItem['kind'], string> = {
   question: 'question',
   gate: 'decision',
   rule_accept: 'proposed rule',
+  rule_batch: 'proposed rules',
   blocked: 'blocked',
   done: 'ready to land',
 };
@@ -56,7 +58,7 @@ export function Card({
   onDone: () => void;
   full?: boolean;
 }): JSX.Element {
-  const { select } = useShell();
+  const { select, openRules } = useShell();
   const [expanded, setExpanded] = useState(false);
   const [draft, setDraft] = useState('');
   const [busy, setBusy] = useState(false);
@@ -205,6 +207,19 @@ export function Card({
             onClick={() => act(() => decideRule(item.id, 'retire'))}
           >
             Retire
+          </button>
+        </div>
+      )}
+
+      {item.kind === 'rule_batch' && (
+        <div className="cr-actions">
+          <button
+            type="button"
+            className="cr-btn signal"
+            data-testid="rule-batch-open"
+            onClick={() => openRules({ status: 'proposed', scope: 'all', source: item.id })}
+          >
+            Review {item.rules?.length ?? 0} rules
           </button>
         </div>
       )}

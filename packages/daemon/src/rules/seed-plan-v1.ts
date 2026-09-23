@@ -22,7 +22,11 @@
  */
 
 import { readFileSync } from 'node:fs';
-import { RULE_TEXT_MAX_CHARS, type RuleCriteria } from '@agile-agents/shared';
+import {
+  RULE_TEXT_MAX_CHARS,
+  type RuleCriteria,
+  SEED_PROVENANCE_PREFIX,
+} from '@agile-agents/shared';
 import type { RulesService } from './service';
 
 /** The §9 heading, matched on its text rather than its number. */
@@ -88,8 +92,12 @@ export function parsePlanV1Decisions(markdown: string): string[] {
   return texts;
 }
 
-/** `provenance.by` every seeded rule carries — the answer to "why does this rule exist". */
-export const SEED_PROVENANCE = 'seed:PLAN-v1';
+/**
+ * `provenance.by` every seeded rule carries — the answer to "why does this
+ * rule exist". T163: the `seed:` prefix is what collapses them into one
+ * inbox card (`isSeededRule`).
+ */
+export const SEED_PROVENANCE = `${SEED_PROVENANCE_PREFIX}PLAN-v1`;
 
 /**
  * T156 (**D14**): classifier wording for seeded decisions whose sentence,

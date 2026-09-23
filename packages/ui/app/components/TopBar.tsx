@@ -3,7 +3,7 @@
  * the view switch (Inbox carries the waiting count), the live dot, and —
  * at phone width only — the button that opens the stream-tree drawer.
  * T162: the quick-capture box (one line → a stream with no repo, its page
- * opened) and the "New stream" button.
+ * opened) and the "New stream" button. T163: the Rules view.
  */
 
 import { type FormEvent, useState } from 'react';
@@ -13,6 +13,7 @@ import { type ShellView, useShell } from '../lib/shell';
 
 const NAV: ReadonlyArray<{ view: ShellView; label: string }> = [
   { view: 'inbox', label: 'Inbox' },
+  { view: 'rules', label: 'Rules' },
   { view: 'settings', label: 'Settings' },
 ];
 

@@ -10,6 +10,7 @@
 
 import { z } from 'zod';
 import { UlidSchema, formatZodError } from './ids';
+import { RuleIdSchema } from './rule';
 
 /**
  * §3.1's kinds. `question` and `gate` are the two that carry a decision;
@@ -19,8 +20,25 @@ import { UlidSchema, formatZodError } from './ids';
  * whose decision is the human's authority itself (§5.1, **D4**). Every
  * other gate kind (`approve_plan`, `sprint_review`, `unblock`,
  * `promote_to_main`, …) is deleted with its policy rows (T121).
+ *
+ * T163 adds `rule_batch`: every proposal one seed import made (provenance
+ * `seed:<source>`), collapsed into one card that opens the rules screen
+ * filtered to them. Its `id` is the provenance, `rules` the rule ids.
+ * Lessons and agent proposals stay one `rule_accept` item each.
  */
-export const INBOX_ITEM_KINDS = ['question', 'gate', 'rule_accept', 'blocked', 'done'] as const;
+export const INBOX_ITEM_KINDS = [
+  'question',
+  'gate',
+  'rule_accept',
+  'rule_batch',
+  'blocked',
+  'done',
+] as const;
+
+/** The kinds that may belong to no stream: a rule decision (§5.1). */
+function isRuleKind(kind: InboxItemKind): boolean {
+  return kind === 'rule_accept' || kind === 'rule_batch';
+}
 export const InboxItemKindSchema = z.enum(INBOX_ITEM_KINDS);
 export type InboxItemKind = z.infer<typeof InboxItemKindSchema>;
 
@@ -57,15 +75,21 @@ export const InboxItemSchema = z
     detail: z.string().min(1).max(INBOX_DETAIL_MAX_CHARS).optional(),
     /** Pointer to the full artifact, when there is one (a home-relative path). */
     ref: z.string().min(1).optional(),
+    /** T163: a `rule_batch` item's rule ids — present on that kind only. */
+    rules: z.array(RuleIdSchema).min(1).optional(),
   })
   .strict()
-  .refine((item) => item.kind === 'rule_accept' || item.stream !== undefined, {
+  .refine((item) => isRuleKind(item.kind) || item.stream !== undefined, {
     message: 'must name its stream',
     path: ['stream'],
   })
-  .refine((item) => item.kind === 'rule_accept' || item.stream_path.length > 0, {
+  .refine((item) => isRuleKind(item.kind) || item.stream_path.length > 0, {
     message: 'must carry the stream path',
     path: ['stream_path'],
+  })
+  .refine((item) => (item.kind === 'rule_batch') === (item.rules !== undefined), {
+    message: 'a rule_batch item carries its rule ids, and only it does',
+    path: ['rules'],
   });
 export type InboxItem = z.infer<typeof InboxItemSchema>;
 

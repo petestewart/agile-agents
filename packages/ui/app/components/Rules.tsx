@@ -1,0 +1,609 @@
+/**
+ * The rules screen (T163; cockpit design §5, §9): every rule with its
+ * scope, tier, stage, status and §5.7's counters and pruning flag, filtered
+ * by status, scope and — from the inbox's seed card — source.
+ *
+ *  - Accept / Retire per rule, or on a selection (one call per rule; a
+ *    refusal, e.g. a classifier rule with fewer than two examples, is
+ *    reported against that rule and the rest still go through).
+ *  - Edit: text, question, criteria (T156), enforcement, stage, examples —
+ *    `rule.update`'s patch, stamped `human` by the daemon.
+ *  - Test examples: `rule.test {id}` (T153/T155), per example the expected
+ *    band, the Noul value and the band it fell in. No confidence (D14).
+ *
+ * Every write reaches the same `RulesService` the CLI's `agile rules` does.
+ */
+
+import {
+  RULE_ENFORCEMENTS,
+  RULE_STAGES,
+  type Rule,
+  type RuleEnforcement,
+  type RuleStage,
+  type RuleStatus,
+  formatRuleScope,
+} from '@agile-agents/shared';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { decideRule, getRules, testRule, updateRule } from '../lib/api';
+import { useFeed } from '../lib/feed-context';
+import type { RuleEvalReport, RuleReportRow, RulesPayload } from '../lib/feed-types';
+import {
+  RULE_STATUS_FILTERS,
+  type RuleDraft,
+  type RulesSort,
+  draftOf,
+  evalDeadlineMs,
+  filterRules,
+  patchOf,
+  ruleScopes,
+  sortRules,
+} from '../lib/rules';
+import { useShell } from '../lib/shell';
+import { Markdown } from './Markdown';
+
+function message(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+export function Rules(): JSX.Element {
+  const { rulesFilter: filter, setRulesFilter: setFilter } = useShell();
+  const { onEvent } = useFeed();
+  const [data, setData] = useState<RulesPayload | undefined>(undefined);
+  const [error, setError] = useState<string | undefined>(undefined);
+  const [sort, setSort] = useState<RulesSort>('report');
+  const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
+  const [busy, setBusy] = useState(false);
+  const [bulkErrors, setBulkErrors] = useState<string[]>([]);
+
+  const load = useCallback(() => {
+    getRules()
+      .then((payload) => {
+        setData(payload);
+        setError(undefined);
+      })
+      .catch((err: unknown) => setError(message(err)));
+  }, []);
+
+  useEffect(load, []);
+  // Any rule write — here, in the inbox, from the CLI or an agent's
+  // `propose_rule` — re-reads the list (one read per batch of events).
+  useEffect(
+    () =>
+      onEvent((event) => {
+        if (event.kind.startsWith('rule')) load();
+      }),
+    [onEvent, load],
+  );
+
+  const rows = useMemo(
+    () => new Map<string, RuleReportRow>((data?.report.rows ?? []).map((row) => [row.id, row])),
+    [data],
+  );
+  const shown = useMemo(
+    () => sortRules(filterRules(data?.rules ?? [], filter), data?.report.rows ?? [], sort),
+    [data, filter, sort],
+  );
+  const scopes = useMemo(() => ruleScopes(data?.rules ?? []), [data]);
+  const picked = shown.filter((rule) => selected.has(rule.id));
+
+  const toggle = (id: string): void =>
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+
+  async function bulk(decision: 'accept' | 'retire'): Promise<void> {
+    setBusy(true);
+    const failed: string[] = [];
+    for (const rule of picked) {
+      try {
+        await decideRule(rule.id, decision);
+      } catch (err) {
+        failed.push(`${rule.name ?? rule.id}: ${message(err)}`);
+      }
+    }
+    setBulkErrors(failed);
+    setSelected(new Set());
+    setBusy(false);
+    load();
+  }
+
+  return (
+    <section className="cr-rules-screen" data-testid="rules-screen">
+      <div className="cr-inbox-hd">
+        <h1>Rules</h1>
+        <span className="cr-count" data-testid="rules-count">
+          {shown.length}
+        </span>
+      </div>
+
+      <div className="cr-rules-filters">
+        <label>
+          Status{' '}
+          <select
+            data-testid="rules-filter-status"
+            value={filter.status}
+            onChange={(e) => setFilter({ ...filter, status: e.target.value as RuleStatus | 'all' })}
+          >
+            {RULE_STATUS_FILTERS.map((status) => (
+              <option key={status} value={status}>
+                {status}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          Scope{' '}
+          <select
+            data-testid="rules-filter-scope"
+            value={filter.scope}
+            onChange={(e) => setFilter({ ...filter, scope: e.target.value })}
+          >
+            <option value="all">all</option>
+            {scopes.map((scope) => (
+              <option key={scope} value={scope}>
+                {scope}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          Sort{' '}
+          <select
+            data-testid="rules-sort"
+            value={sort}
+            onChange={(e) => setSort(e.target.value as RulesSort)}
+          >
+            <option value="report">flagged, then most fired</option>
+            <option value="routed">most routed</option>
+          </select>
+        </label>
+        {filter.source !== undefined && (
+          <span className="cr-chip" data-testid="rules-filter-source">
+            from {filter.source}
+            <button
+              type="button"
+              className="cr-link"
+              aria-label="Show every source"
+              onClick={() => {
+                const { source: _dropped, ...rest } = filter;
+                setFilter(rest);
+              }}
+            >
+              ×
+            </button>
+          </span>
+        )}
+      </div>
+
+      <div className="cr-actions cr-rules-bulk">
+        <label>
+          <input
+            type="checkbox"
+            data-testid="rules-select-all"
+            checked={shown.length > 0 && picked.length === shown.length}
+            onChange={(e) =>
+              setSelected(e.target.checked ? new Set(shown.map((rule) => rule.id)) : new Set())
+            }
+          />{' '}
+          {picked.length} selected
+        </label>
+        <button
+          type="button"
+          className="cr-btn signal"
+          data-testid="rules-bulk-accept"
+          disabled={busy || picked.length === 0}
+          onClick={() => bulk('accept')}
+        >
+          Accept selected
+        </button>
+        <button
+          type="button"
+          className="cr-btn"
+          data-testid="rules-bulk-retire"
+          disabled={busy || picked.length === 0}
+          onClick={() => bulk('retire')}
+        >
+          Retire selected
+        </button>
+      </div>
+      {bulkErrors.length > 0 && (
+        <ul className="cr-error" role="alert" data-testid="rules-bulk-errors">
+          {bulkErrors.map((line) => (
+            <li key={line}>{line}</li>
+          ))}
+        </ul>
+      )}
+
+      {error && (
+        <p className="cr-error" role="alert">
+          {error}
+        </p>
+      )}
+      {data && shown.length === 0 && (
+        <p className="cr-calm" data-testid="rules-empty">
+          No rules match.
+        </p>
+      )}
+      {data && (
+        <p className="cr-dim">
+          Pruning flags use a {data.report.days}-day window (§5.7): never fired, never violated,
+          routes often.
+        </p>
+      )}
+      {shown.map((rule) => (
+        <RuleCard
+          key={rule.id}
+          rule={rule}
+          row={rows.get(rule.id)}
+          evals={data?.evals ?? { available: false }}
+          checked={selected.has(rule.id)}
+          onToggle={() => toggle(rule.id)}
+          onChanged={load}
+        />
+      ))}
+    </section>
+  );
+}
+
+function RuleCard({
+  rule,
+  row,
+  evals,
+  checked,
+  onToggle,
+  onChanged,
+}: {
+  rule: Rule;
+  row: RuleReportRow | undefined;
+  evals: RulesPayload['evals'];
+  checked: boolean;
+  onToggle: () => void;
+  onChanged: () => void;
+}): JSX.Element {
+  const [editing, setEditing] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | undefined>(undefined);
+  const [report, setReport] = useState<RuleEvalReport | undefined>(undefined);
+  const [testing, setTesting] = useState(false);
+
+  async function act(fn: () => Promise<unknown>): Promise<void> {
+    setBusy(true);
+    setError(undefined);
+    try {
+      await fn();
+      onChanged();
+    } catch (err) {
+      setError(message(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function runTest(): Promise<void> {
+    setTesting(true);
+    setError(undefined);
+    setReport(undefined);
+    try {
+      setReport(await testRule(rule.id, evalDeadlineMs(rule.examples.length, evals.timeout_ms)));
+    } catch (err) {
+      setError(message(err));
+    } finally {
+      setTesting(false);
+    }
+  }
+
+  const testable = rule.enforcement === 'classifier' && rule.status === 'accepted';
+
+  return (
+    <article
+      className="cr-card cr-rule"
+      data-testid="rules-row"
+      data-rule={rule.id}
+      data-status={rule.status}
+    >
+      <div className="kind cr-rule-meta">
+        <input
+          type="checkbox"
+          data-testid="rules-select"
+          aria-label={`Select ${rule.name ?? rule.id}`}
+          checked={checked}
+          onChange={onToggle}
+        />
+        <span>{rule.name ?? rule.id}</span>
+        <span data-testid="rules-scope">{formatRuleScope(rule.scope)}</span>
+        <span data-testid="rules-tier">
+          {rule.enforcement}
+          {rule.critical ? ' · critical' : ''}
+        </span>
+        <span>{rule.stage}</span>
+        <span data-testid="rules-status">{rule.status}</span>
+        <span>from {rule.provenance.by}</span>
+      </div>
+      <Markdown className="context" text={rule.text} />
+      {rule.question !== undefined && (
+        <p className="cr-dim" data-testid="rules-question">
+          Q: {rule.question}
+        </p>
+      )}
+      {rule.criteria !== undefined && (
+        <p className="cr-dim" data-testid="rules-criteria">
+          yes = {rule.criteria.true} · no = {rule.criteria.false}
+        </p>
+      )}
+      <div className="cr-dim cr-rule-stats" data-testid="rules-stats">
+        fired {rule.stats.fired} · routed {rule.stats.routed} · violated {rule.stats.violated}
+        {rule.stats.last_fired_at ? ` · last ${rule.stats.last_fired_at.slice(0, 10)}` : ''}
+        {row && row.flag !== '-' && (
+          <span className="cr-rule-flag" data-testid="rules-flag" data-flag={row.flag}>
+            {row.flag_detail}
+          </span>
+        )}
+      </div>
+
+      <div className="cr-actions">
+        {rule.status === 'proposed' && (
+          <button
+            type="button"
+            className="cr-btn signal"
+            data-testid="rules-accept"
+            disabled={busy}
+            onClick={() => act(() => decideRule(rule.id, 'accept'))}
+          >
+            Accept
+          </button>
+        )}
+        {rule.status !== 'retired' && (
+          <button
+            type="button"
+            className="cr-btn"
+            data-testid="rules-retire"
+            disabled={busy}
+            onClick={() => act(() => decideRule(rule.id, 'retire'))}
+          >
+            Retire
+          </button>
+        )}
+        <button
+          type="button"
+          className="cr-btn"
+          data-testid="rules-edit"
+          aria-expanded={editing}
+          onClick={() => setEditing((open) => !open)}
+        >
+          {editing ? 'Close editor' : 'Edit'}
+        </button>
+        {rule.enforcement === 'classifier' && (
+          <button
+            type="button"
+            className="cr-btn"
+            data-testid="rules-test"
+            disabled={testing || !testable || !evals.available}
+            title={
+              !evals.available
+                ? 'No classifier configured (config.yaml classifier:)'
+                : !testable
+                  ? 'Only accepted classifier rules are evaluated'
+                  : `One classifier call per example (${rule.examples.length})`
+            }
+            onClick={runTest}
+          >
+            {testing ? 'Testing…' : 'Test examples'}
+          </button>
+        )}
+      </div>
+
+      {editing && (
+        <RuleEditor
+          rule={rule}
+          onSaved={() => {
+            setEditing(false);
+            onChanged();
+          }}
+        />
+      )}
+      {report && <EvalResults report={report} />}
+      {error && (
+        <p className="cr-error" role="alert">
+          {error}
+        </p>
+      )}
+    </article>
+  );
+}
+
+function RuleEditor({ rule, onSaved }: { rule: Rule; onSaved: () => void }): JSX.Element {
+  const [draft, setDraft] = useState<RuleDraft>(() => draftOf(rule));
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | undefined>(undefined);
+  const set = (patch: Partial<RuleDraft>): void => setDraft((prev) => ({ ...prev, ...patch }));
+
+  async function save(): Promise<void> {
+    const built = patchOf(draft);
+    if ('error' in built) {
+      setError(built.error);
+      return;
+    }
+    setBusy(true);
+    setError(undefined);
+    try {
+      await updateRule(rule.id, built.patch);
+      onSaved();
+    } catch (err) {
+      setError(message(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <form
+      className="cr-rule-editor"
+      data-testid="rules-editor"
+      onSubmit={(e) => {
+        e.preventDefault();
+        void save();
+      }}
+    >
+      <label>
+        Text
+        <textarea
+          data-testid="rules-edit-text"
+          value={draft.text}
+          onChange={(e) => set({ text: e.target.value })}
+        />
+      </label>
+      <label>
+        Question (one yes/no question; yes means the rule is broken)
+        <input
+          data-testid="rules-edit-question"
+          value={draft.question}
+          placeholder={`Does this action violate: ${draft.text}?`}
+          onChange={(e) => set({ question: e.target.value })}
+        />
+      </label>
+      <label>
+        Criteria — yes means
+        <input
+          data-testid="rules-edit-criteria-true"
+          value={draft.criteriaTrue}
+          onChange={(e) => set({ criteriaTrue: e.target.value })}
+        />
+      </label>
+      <label>
+        Criteria — no means
+        <input
+          data-testid="rules-edit-criteria-false"
+          value={draft.criteriaFalse}
+          onChange={(e) => set({ criteriaFalse: e.target.value })}
+        />
+      </label>
+      <div className="cr-rule-editor-row">
+        <label>
+          Enforcement{' '}
+          <select
+            data-testid="rules-edit-enforcement"
+            value={draft.enforcement}
+            onChange={(e) => set({ enforcement: e.target.value as RuleEnforcement })}
+          >
+            {RULE_ENFORCEMENTS.map((value) => (
+              <option key={value} value={value}>
+                {value}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          Stage{' '}
+          <select
+            data-testid="rules-edit-stage"
+            value={draft.stage}
+            onChange={(e) => set({ stage: e.target.value as RuleStage })}
+          >
+            {RULE_STAGES.map((value) => (
+              <option key={value} value={value}>
+                {value}
+              </option>
+            ))}
+          </select>
+        </label>
+      </div>
+      <fieldset>
+        <legend>Examples</legend>
+        {draft.examples.map((example, index) => (
+          // biome-ignore lint/suspicious/noArrayIndexKey: examples have no identity but their place
+          <div className="cr-rule-example" key={index} data-testid="rules-edit-example">
+            <input
+              aria-label="Example action"
+              value={example.action}
+              onChange={(e) =>
+                set({
+                  examples: draft.examples.map((x, i) =>
+                    i === index ? { ...x, action: e.target.value } : x,
+                  ),
+                })
+              }
+            />
+            <label>
+              <input
+                type="checkbox"
+                checked={example.violates}
+                onChange={(e) =>
+                  set({
+                    examples: draft.examples.map((x, i) =>
+                      i === index ? { ...x, violates: e.target.checked } : x,
+                    ),
+                  })
+                }
+              />{' '}
+              violates
+            </label>
+            <button
+              type="button"
+              className="cr-link"
+              onClick={() => set({ examples: draft.examples.filter((_, i) => i !== index) })}
+            >
+              Remove
+            </button>
+          </div>
+        ))}
+        <button
+          type="button"
+          className="cr-link"
+          data-testid="rules-edit-add-example"
+          onClick={() => set({ examples: [...draft.examples, { action: '', violates: true }] })}
+        >
+          Add example
+        </button>
+      </fieldset>
+      <div className="cr-actions">
+        <button
+          type="submit"
+          className="cr-btn signal"
+          data-testid="rules-edit-save"
+          disabled={busy}
+        >
+          Save
+        </button>
+      </div>
+      {error && (
+        <p className="cr-error" role="alert">
+          {error}
+        </p>
+      )}
+    </form>
+  );
+}
+
+function EvalResults({ report }: { report: RuleEvalReport }): JSX.Element {
+  const rule = report.rules[0];
+  return (
+    <div className="cr-rule-evals" data-testid="rules-evals">
+      <div className="cr-dim">
+        {report.agreed}/{report.total} agree
+        {report.errors > 0 ? ` · ${report.errors} error${report.errors === 1 ? '' : 's'}` : ''}
+        {rule ? ` · asked: ${rule.question}` : ''}
+      </div>
+      <ul>
+        {(rule?.examples ?? []).map((example, index) => (
+          <li
+            // biome-ignore lint/suspicious/noArrayIndexKey: one row per example, in order
+            key={index}
+            data-testid="rules-eval"
+            data-agree={example.agree ? 'yes' : 'no'}
+            data-band={example.band ?? 'error'}
+          >
+            <span className="cr-rule-verdict">{example.agree ? 'agree' : 'disagree'}</span>{' '}
+            <code>{example.action.replace(/\s+/g, ' ').slice(0, 120)}</code> — expected{' '}
+            {example.expected_band}, got{' '}
+            {example.error !== undefined
+              ? `error: ${example.error}`
+              : `${example.band} (p ${example.probability?.toFixed(2)})`}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}

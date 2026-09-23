@@ -27,6 +27,8 @@ import {
   type QuestionId,
   QuestionIdSchema,
   RuleIdSchema,
+  RulePatchSchema,
+  RuleTestInputSchema,
   StreamAttachRequestSchema,
   StreamCreateInputSchema,
   StreamSayInputSchema,
@@ -59,7 +61,13 @@ import {
   type QuestionService,
   parseAnswerParams,
 } from './questions';
-import { RuleAlreadyDecidedError, type RulesService } from './rules';
+import {
+  RuleAlreadyDecidedError,
+  type RuleRpcEvalDeps,
+  type RulesService,
+  buildRuleReport,
+  testRules,
+} from './rules';
 import { NotFoundError, type StateStore } from './store';
 import type { StreamService } from './streams';
 
@@ -131,6 +139,12 @@ export interface HttpServerOptions {
   streams?: StreamService;
   /** T160: the inbox's `rule_accept` cards decide through it (`POST /api/rules/:id/accept|retire`). Optional. */
   rules?: RulesService;
+  /**
+   * T163: the rules screen's "Test examples" runs `rule.test`'s evals
+   * through it (the configured classifier and its bands). Optional —
+   * without it the button says there is no classifier.
+   */
+  ruleEvals?: RuleRpcEvalDeps;
   /** T160: the inbox's `done` cards land through it (`POST /api/streams/:id/land`). Optional. */
   landing?: LandingService;
   /** T161: the stream page's sessions strip (attach, review, stop) and composer prompt through it. Optional. */
@@ -405,6 +419,7 @@ interface FeedContext {
   questions?: QuestionService;
   inbox?: InboxService;
   rules?: RulesService;
+  ruleEvals?: RuleRpcEvalDeps;
   landing?: LandingService;
   attach?: AttachService;
   docs?: DocsService;
@@ -420,10 +435,89 @@ function resolveFeedContext(options: HttpServerOptions): FeedContext | undefined
     questions: options.questions,
     inbox: options.inbox,
     rules: options.rules,
+    ruleEvals: options.ruleEvals,
     landing: options.landing,
     attach: options.attach,
     docs: options.docs,
   };
+}
+
+/**
+ * T160/T163: the rules routes (cockpit design §5, §9) —
+ *
+ *   GET  /api/rules               every rule, §5.7's pruning report, and whether evals can run
+ *   POST /api/rules/:id/accept    the inbox card's and the rules screen's Accept
+ *   POST /api/rules/:id/retire    …and Retire
+ *   POST /api/rules/:id/update    the rules screen's edit (`RulePatchSchema`, strict)
+ *   POST /api/rules/test          "Test examples": `rule.test {id}`'s evals (`RuleTestInputSchema`)
+ *
+ * The same `RulesService` calls the `rule.*` RPC makes; every write is
+ * same-origin only and stamped `human` (§2.2), never read from the body.
+ * Returns `undefined` for a path that is not one of these.
+ */
+async function handleRuleRoute(
+  req: Request,
+  url: URL,
+  feed: FeedContext | undefined,
+  sameOrigin: () => boolean,
+  noIdleTimeout: () => void,
+): Promise<Response | undefined> {
+  if (url.pathname === '/api/rules' && req.method === 'GET') {
+    if (!feed?.rules) return errorResponse(503, 'rules not available');
+    return jsonResponse({
+      rules: feed.rules.list(),
+      report: buildRuleReport(feed.rules),
+      evals: feed.ruleEvals
+        ? {
+            available: true,
+            ...(feed.ruleEvals.timeout_ms !== undefined
+              ? { timeout_ms: feed.ruleEvals.timeout_ms }
+              : {}),
+          }
+        : { available: false },
+    });
+  }
+  const isTest = url.pathname === '/api/rules/test';
+  const match = isTest
+    ? undefined
+    : url.pathname.match(/^\/api\/rules\/([^/]+)\/(accept|retire|update)$/);
+  if ((!isTest && !match) || req.method !== 'POST') return undefined;
+  if (!feed?.rules) return errorResponse(503, 'rules not available');
+  if (!sameOrigin()) return errorResponse(403, 'cross-origin request rejected');
+
+  try {
+    if (isTest) {
+      const input = RuleTestInputSchema.safeParse(await readJsonBody(req));
+      if (!input.success) return errorResponse(400, formatZodError('rule test', input.error));
+      if (!feed.ruleEvals) {
+        return errorResponse(
+          503,
+          'no classifier configured: set classifier.provider and a key in config.yaml (§6.2)',
+        );
+      }
+      // One classifier call per example (T155): a real suite outlives
+      // Bun's 10 s idle timeout, so this one request waits as long as it takes.
+      noIdleTimeout();
+      return jsonResponse(await testRules(feed.rules, feed.ruleEvals, input.data.id));
+    }
+    const id = RuleIdSchema.safeParse(decodeURIComponent(match?.[1] ?? ''));
+    if (!id.success) return errorResponse(400, `invalid rule id: ${match?.[1]}`);
+    const action = match?.[2];
+    if (action === 'update') {
+      const patch = RulePatchSchema.safeParse(await readJsonBody(req));
+      if (!patch.success) return errorResponse(400, formatZodError('rule edit', patch.error));
+      return jsonResponse(await feed.rules.update('human', id.data, patch.data));
+    }
+    return jsonResponse(
+      action === 'accept'
+        ? await feed.rules.accept(id.data, 'human')
+        : await feed.rules.retire(id.data, 'human'),
+    );
+  } catch (err) {
+    if (err instanceof RuleAlreadyDecidedError) return errorResponse(409, err.message);
+    if (err instanceof NotFoundError) return errorResponse(404, err.message);
+    return errorResponse(400, err instanceof Error ? err.message : String(err));
+  }
 }
 
 /**
@@ -671,25 +765,14 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
           }
         }
 
-        const ruleMatch = url.pathname.match(/^\/api\/rules\/([^/]+)\/(accept|retire)$/);
-        if (ruleMatch && req.method === 'POST') {
-          if (!feed?.rules) return errorResponse(503, 'rules not available');
-          if (!isSameOriginRequest(req, srv.port ?? options.port)) {
-            return errorResponse(403, 'cross-origin request rejected');
-          }
-          const id = RuleIdSchema.safeParse(decodeURIComponent(ruleMatch[1] ?? ''));
-          if (!id.success) return errorResponse(400, `invalid rule id: ${ruleMatch[1]}`);
-          try {
-            const rule =
-              ruleMatch[2] === 'accept'
-                ? await feed.rules.accept(id.data, 'human')
-                : await feed.rules.retire(id.data, 'human');
-            return jsonResponse(rule);
-          } catch (err) {
-            if (err instanceof RuleAlreadyDecidedError) return errorResponse(409, err.message);
-            return errorResponse(400, err instanceof Error ? err.message : String(err));
-          }
-        }
+        const ruleRoute = await handleRuleRoute(
+          req,
+          url,
+          feed,
+          () => isSameOriginRequest(req, srv.port ?? options.port),
+          () => srv.timeout(req, 0),
+        );
+        if (ruleRoute) return ruleRoute;
 
         const landMatch = url.pathname.match(/^\/api\/streams\/([^/]+)\/land$/);
         if (landMatch && req.method === 'POST') {

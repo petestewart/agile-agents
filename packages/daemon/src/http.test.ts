@@ -2,8 +2,15 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { appendFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { type Policy, ulid } from '@agile-agents/shared';
+import {
+  DEFAULT_CLASSIFIER_ALLOW_BELOW,
+  DEFAULT_CLASSIFIER_DENY_AT,
+  type Policy,
+  type Rule,
+  ulid,
+} from '@agile-agents/shared';
 import { Bus } from './bus';
+import { FakeClassifier } from './classifier';
 import type { CockpitFrame, StreamPagePayload } from './feed';
 import { GateService } from './gates';
 import { type HttpServerHandle, startHttpServer } from './http';
@@ -101,10 +108,12 @@ describe('T160 cockpit routes', () => {
   let streams: StreamService;
   let questions: QuestionService;
   let rules: RulesService;
+  let stateRoot: string;
 
   beforeEach(() => {
     home = mkdtempSync(join(tmpdir(), 'agile-http-cockpit-'));
     const init = runInit(home);
+    stateRoot = init.stateRoot;
     store = StateStore.open(init.stateRoot);
     streams = new StreamService(store);
     questions = new QuestionService(store, streams);
@@ -163,6 +172,115 @@ describe('T160 cockpit routes', () => {
     const again = await fetch(url(`/api/rules/${rule.id}/accept`), { method: 'POST' });
     expect(again.status).toBe(409);
     expect((await fetch(url('/api/rules/nope/retire'), { method: 'POST' })).status).toBe(400);
+  });
+
+  test('T163: GET /api/rules lists every rule with the pruning report; evals unavailable without a classifier', async () => {
+    const rule = await rules.create('human', { text: 'use the repo scripts' });
+    const res = await fetch(url('/api/rules'));
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      rules: Rule[];
+      report: { rows: Array<{ id: string; flag: string }> };
+      evals: { available: boolean };
+    };
+    expect(body.rules.map((r) => r.id)).toEqual([rule.id]);
+    expect(body.report.rows.map((r) => r.id)).toEqual([rule.id]);
+    expect(body.evals).toEqual({ available: false });
+    const test = await fetch(url('/api/rules/test'), {
+      method: 'POST',
+      body: JSON.stringify({ id: rule.id }),
+    });
+    expect(test.status).toBe(503);
+  });
+
+  test('T163: POST /api/rules/:id/update edits as human through the strict patch schema; cross-origin is 403', async () => {
+    const rule = await rules.create('agent', { text: 'no new deps', enforcement: 'classifier' });
+    const post = (body: unknown, headers: Record<string, string> = {}) =>
+      fetch(url(`/api/rules/${rule.id}/update`), {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(body),
+      });
+    expect((await post({ text: 'x' }, { origin: 'http://evil.example' })).status).toBe(403);
+    // Not in the patch schema: a decision, the provenance, an unknown key.
+    expect((await post({ status: 'accepted' })).status).toBe(400);
+    expect((await post({ provenance: { by: 'human' } })).status).toBe(400);
+    expect((await post({ confidence: 0.5 })).status).toBe(400);
+    expect((await post({ criteria: { true: 'adds one' } })).status).toBe(400);
+    const ok = await post({
+      question: 'Does this action add a dependency?',
+      criteria: { true: 'a package is added', false: 'no package is added' },
+      stage: 'diff',
+      examples: [
+        { action: 'bun add lodash', violates: true },
+        { action: 'edit src/a.ts', violates: false },
+      ],
+    });
+    expect(ok.status).toBe(200);
+    const saved = store.getRule(rule.id);
+    expect(saved.question).toBe('Does this action add a dependency?');
+    expect(saved.criteria).toEqual({ true: 'a package is added', false: 'no package is added' });
+    expect(saved.stage).toBe('diff');
+    expect(saved.examples).toHaveLength(2);
+    expect(saved.status).toBe('proposed');
+    expect(
+      (await fetch(url(`/api/rules/R-${ulid()}/update`), { method: 'POST', body: '{}' })).status,
+    ).toBe(404);
+  });
+
+  test("T163: POST /api/rules/test runs one rule's examples through the classifier", async () => {
+    const withEvals = startHttpServer({
+      port: 0,
+      version: '0.0.0-test',
+      stateRoot,
+      startedAt: Date.now(),
+      store,
+      gates: new GateService(store),
+      streams,
+      rules,
+      ruleEvals: {
+        classifier: new FakeClassifier((state, questions) =>
+          questions.map((q) => ({
+            id: q.id,
+            probability: state.startsWith('bun add') ? 0.95 : 0.05,
+          })),
+        ),
+        bands: { deny_at: DEFAULT_CLASSIFIER_DENY_AT, allow_below: DEFAULT_CLASSIFIER_ALLOW_BELOW },
+        timeout_ms: 1234,
+      },
+    });
+    try {
+      const at = (path: string) => `http://127.0.0.1:${withEvals.port}${path}`;
+      const rule = await rules.create('human', {
+        text: 'no new deps',
+        enforcement: 'classifier',
+        examples: [
+          { action: 'bun add lodash', violates: true },
+          { action: 'edit src/a.ts', violates: false },
+        ],
+      });
+      const listed = (await (await fetch(at('/api/rules'))).json()) as { evals: unknown };
+      expect(listed.evals).toEqual({ available: true, timeout_ms: 1234 });
+      const post = (body: unknown, headers: Record<string, string> = {}) =>
+        fetch(at('/api/rules/test'), { method: 'POST', headers, body: JSON.stringify(body) });
+      // A proposal is not a gate: only accepted rules are evaluated.
+      expect((await post({ id: rule.id })).status).toBe(400);
+      await rules.accept(rule.id, 'human');
+      expect((await post({ id: rule.id }, { origin: 'http://evil.example' })).status).toBe(403);
+      expect((await post({ id: rule.id, extra: true })).status).toBe(400);
+      const res = await post({ id: rule.id });
+      expect(res.status).toBe(200);
+      const report = (await res.json()) as {
+        agreed: number;
+        rules: Array<{ examples: Array<{ band: string; agree: boolean }> }>;
+      };
+      expect(report.agreed).toBe(2);
+      expect(report.rules[0]?.examples.map((e) => e.band)).toEqual(['deny', 'allow']);
+      // An eval is not a firing.
+      expect(store.getRule(rule.id).stats.fired).toBe(0);
+    } finally {
+      await withEvals.stop();
+    }
   });
 
   test('POST /api/streams/:id/land without a landing service is 503', async () => {

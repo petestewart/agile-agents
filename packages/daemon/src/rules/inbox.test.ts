@@ -15,6 +15,7 @@ import { runInit } from '../init';
 import { QuestionService } from '../questions/service';
 import { StateStore } from '../store';
 import { StreamService } from '../streams/service';
+import { SEED_PROVENANCE } from './seed-plan-v1';
 import { RulesService } from './service';
 
 let home: string;
@@ -93,4 +94,63 @@ test('an inbox with no rules service wired shows no rule items', async () => {
     gates: new GateService(store),
   });
   expect(without.list()).toEqual([]);
+});
+
+test('T163: seeded proposals collapse into one card per source; agent proposals stay individual', async () => {
+  const stream = await streams.create('human', { title: 'parser', goal: 'pick the dialect' });
+  const a = await rules.create('human', {
+    text: 'all shared schemas are strict',
+    provenance: { by: SEED_PROVENANCE },
+  });
+  const b = await rules.create('human', {
+    text: 'hooks enforce, prompts express intent',
+    provenance: { by: SEED_PROVENANCE },
+  });
+  const other = await rules.create('human', {
+    text: 'one mutation, one event',
+    provenance: { by: 'seed:PLAN-v2' },
+  });
+  const lesson = await rules.create('agent', {
+    text: 'run the repo scripts',
+    scope: { kind: 'stream', ref: stream.id },
+    provenance: { stream: stream.id, by: 'agent' },
+  });
+
+  // Sorted by id: two items created in the same millisecond tie on `ts`.
+  const items = inbox
+    .list()
+    .sort((x, y) => (x.kind === y.kind ? x.id.localeCompare(y.id) : x.kind < y.kind ? 1 : -1));
+  expect(items.map((i) => [i.kind, i.id])).toEqual([
+    ['rule_batch', SEED_PROVENANCE],
+    ['rule_batch', 'seed:PLAN-v2'],
+    ['rule_accept', lesson.id],
+  ]);
+  const batch = items[0];
+  expect(batch?.context).toBe(`2 proposed rules from ${SEED_PROVENANCE}`);
+  expect(batch?.rules).toEqual([a.id, b.id]);
+  expect(batch?.stream).toBeUndefined();
+  expect(validateInboxItem(batch).kind).toBe('rule_batch');
+  expect(items[1]?.context).toBe('1 proposed rule from seed:PLAN-v2');
+  expect(items[1]?.rules).toEqual([other.id]);
+
+  // Deciding one shrinks the card; deciding the rest removes it.
+  await rules.retire(a.id, 'human');
+  expect(inbox.list().find((i) => i.id === SEED_PROVENANCE)?.rules).toEqual([b.id]);
+  await rules.retire(b.id, 'human');
+  expect(
+    inbox
+      .list()
+      .map((i) => i.id)
+      .sort(),
+  ).toEqual([lesson.id, 'seed:PLAN-v2'].sort());
+});
+
+test('T163: an item schema keeps rule ids on rule_batch only', () => {
+  const base = { stream_path: [], ts: new Date().toISOString(), context: 'x' };
+  expect(() => validateInboxItem({ ...base, kind: 'rule_batch', id: 'seed:x' })).toThrow(
+    /rule ids/,
+  );
+  expect(() =>
+    validateInboxItem({ ...base, kind: 'rule_accept', id: 'R-1', rules: ['R-1'] }),
+  ).toThrow();
 });

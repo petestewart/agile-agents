@@ -19,9 +19,16 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ACP_PROVIDERS, type AcpProviderConfig } from '@agile-agents/acp-client';
-import { type Question, ulid } from '@agile-agents/shared';
+import {
+  DEFAULT_CLASSIFIER_ALLOW_BELOW,
+  DEFAULT_CLASSIFIER_DENY_AT,
+  type Question,
+  type Rule,
+  ulid,
+} from '@agile-agents/shared';
 import { type Browser, type Page, chromium } from 'playwright-core';
 import { AttachService, VerbService } from '../attach';
+import { FakeClassifier } from '../classifier';
 import { DocsService } from '../docs';
 import { GateService } from '../gates';
 import { type HttpServerHandle, startHttpServer } from '../http';
@@ -29,7 +36,7 @@ import { InboxService } from '../inbox';
 import { runInit } from '../init';
 import { LandingService } from '../landing';
 import { QuestionService } from '../questions';
-import { RulesService } from '../rules';
+import { type RuleRpcEvalDeps, RulesService, SEED_PROVENANCE } from '../rules';
 import type { FakeAgentScript } from '../runner/fake-agent';
 import { StateStore } from '../store';
 import { StreamService } from '../streams';
@@ -366,7 +373,7 @@ interface Cockpit {
  * server over it, the way `startDaemon` wires them (`daemon.ts`), minus
  * the RPC socket and the vendor runner this suite never uses.
  */
-async function startCockpit(): Promise<Cockpit> {
+async function startCockpit(extra: { ruleEvals?: RuleRpcEvalDeps } = {}): Promise<Cockpit> {
   const home = mkdtempSync(join(tmpdir(), 'agile-cockpit-e2e-'));
   const init = runInit(home);
   const store = StateStore.open(init.stateRoot);
@@ -391,6 +398,7 @@ async function startCockpit(): Promise<Cockpit> {
     questions,
     inbox,
     rules,
+    ...(extra.ruleEvals ? { ruleEvals: extra.ruleEvals } : {}),
     feedPollIntervalMs: 50,
   });
   return {
@@ -610,6 +618,187 @@ describe('cockpit shell (Playwright e2e)', () => {
         await page.locator(card).waitFor({ state: 'detached' });
         await page.locator('[data-view="inbox"]').click();
         await waitForCount(page, '[data-testid="inbox-empty"]', 1);
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+});
+
+// ---- T163: the rules screen (design/cockpit-design.md §5, §9) ----------
+
+describe('rules screen (Playwright e2e, T163)', () => {
+  browserTest(
+    'seeded proposals are one inbox card that opens the filtered list; bulk retire; an accepted rule reaches the stream page',
+    async () => {
+      const cockpit = await startCockpit();
+      let page: Page | undefined;
+      try {
+        const stream = await cockpit.streams.create('human', { title: 'parser', goal: 'g' });
+        const seeded: Rule[] = [];
+        for (const text of ['schemas are strict', 'hooks enforce', 'one event per write']) {
+          seeded.push(
+            await cockpit.rules.create('human', { text, provenance: { by: SEED_PROVENANCE } }),
+          );
+        }
+        const lesson = await cockpit.rules.create('agent', {
+          text: 'run the repo scripts, never a second toolchain',
+          scope: { kind: 'stream', ref: stream.id },
+          provenance: { by: 'agent', stream: stream.id },
+        });
+
+        page = await openPage();
+        await page.goto(`${cockpit.base}/`);
+        // One card for the seed import, one for the lesson.
+        const batch = `[data-kind="rule_batch"][data-id="${SEED_PROVENANCE}"]`;
+        await page.locator(batch).waitFor({ state: 'visible' });
+        await page.locator(`[data-kind="rule_accept"][data-id="${lesson.id}"]`).waitFor();
+        expect(await page.locator('[data-kind="rule_accept"]').count()).toBe(1);
+        expect(
+          await page.locator(`${batch} [data-testid="inbox-context"]`).textContent(),
+        ).toContain(`3 proposed rules from ${SEED_PROVENANCE}`);
+
+        // The card opens the rules screen, filtered to exactly those three.
+        await page.locator(`${batch} [data-testid="rule-batch-open"]`).click();
+        await page.locator('[data-testid="rules-screen"]').waitFor();
+        await page.locator('[data-testid="rules-filter-source"]').waitFor();
+        await waitForCount(page, '[data-testid="rules-row"]', 3);
+        expect(await page.locator('[data-testid="rules-row"]').count()).toBe(3);
+        expect(
+          await page.locator(`[data-testid="rules-row"][data-rule="${lesson.id}"]`).count(),
+        ).toBe(0);
+
+        // Select all three and retire them in one go.
+        await page.locator('[data-testid="rules-select-all"]').check();
+        await page.locator('[data-testid="rules-bulk-retire"]').click();
+        await waitUntil('the seeded rules to be retired', () =>
+          seeded.every((r) => {
+            const saved = cockpit.store.getRule(r.id);
+            return saved.status === 'retired' && saved.decided_by === 'human';
+          }),
+        );
+        // Filtered to proposed, the list is now empty.
+        await page.locator('[data-testid="rules-empty"]').waitFor();
+
+        // Clear the source filter and show every status: the lesson is
+        // there, and the retired three are too. Accept the lesson here.
+        await page.locator('[data-testid="rules-filter-source"] button').click();
+        await page.locator('[data-testid="rules-filter-status"]').selectOption('all');
+        await waitForCount(page, '[data-testid="rules-row"][data-status="retired"]', 3);
+        const row = `[data-testid="rules-row"][data-rule="${lesson.id}"]`;
+        await page.locator(`${row} [data-testid="rules-accept"]`).click();
+        await waitForAttr(page, row, 'data-status', 'accepted', POLL_DEADLINE_MS);
+        expect(cockpit.store.getRule(lesson.id).decided_by).toBe('human');
+
+        // The inbox is empty again, and the rule is in the stream's rules tab.
+        await page.locator('[data-view="inbox"]').click();
+        await page.locator('[data-testid="inbox-empty"]').waitFor();
+        await page.locator(`[data-testid="stream-tree"] [data-stream="${stream.id}"]`).click();
+        await page.locator(`[data-testid="stream-page"][data-stream="${stream.id}"]`).waitFor();
+        await page.locator('.cr-tabs [data-tab="rules"]').click();
+        await page.locator(`[data-testid="rule"][data-rule="${lesson.id}"]`).waitFor();
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+
+  browserTest(
+    "edit a rule's question and criteria, then test its examples through the classifier",
+    async () => {
+      const classifier = new FakeClassifier((state, questions) =>
+        questions.map((q) => ({
+          id: q.id,
+          probability: state.startsWith('bun add') ? 0.95 : state.startsWith('npm') ? 0.6 : 0.05,
+        })),
+      );
+      const cockpit = await startCockpit({
+        ruleEvals: {
+          classifier,
+          bands: {
+            deny_at: DEFAULT_CLASSIFIER_DENY_AT,
+            allow_below: DEFAULT_CLASSIFIER_ALLOW_BELOW,
+          },
+          timeout_ms: 2_000,
+        },
+      });
+      let page: Page | undefined;
+      try {
+        const rule = await cockpit.rules.create('human', {
+          text: 'do not add a dependency without asking',
+          enforcement: 'classifier',
+          examples: [
+            { action: 'bun add lodash', violates: true },
+            { action: 'edit src/index.ts', violates: false },
+          ],
+        });
+
+        page = await openPage();
+        await page.goto(`${cockpit.base}/?view=rules`);
+        const row = `[data-testid="rules-row"][data-rule="${rule.id}"]`;
+        await page.locator(row).waitFor();
+        // A proposal is not evaluated: the button is there but disabled.
+        expect(await page.locator(`${row} [data-testid="rules-test"]`).isDisabled()).toBe(true);
+
+        await page.locator(`${row} [data-testid="rules-edit"]`).click();
+        await page
+          .locator(`${row} [data-testid="rules-edit-question"]`)
+          .fill('Does this action add a package to the project?');
+        await page
+          .locator(`${row} [data-testid="rules-edit-criteria-true"]`)
+          .fill('a package manager adds a dependency');
+        await page
+          .locator(`${row} [data-testid="rules-edit-criteria-false"]`)
+          .fill('no dependency changes');
+        await page.locator(`${row} [data-testid="rules-edit-add-example"]`).click();
+        await page
+          .locator(`${row} [data-testid="rules-edit-example"] input[aria-label="Example action"]`)
+          .nth(2)
+          .fill('npm install left-pad');
+        await page.locator(`${row} [data-testid="rules-edit-save"]`).click();
+        await page.locator(`${row} [data-testid="rules-editor"]`).waitFor({ state: 'detached' });
+        const saved = cockpit.store.getRule(rule.id);
+        expect(saved.question).toBe('Does this action add a package to the project?');
+        expect(saved.criteria).toEqual({
+          true: 'a package manager adds a dependency',
+          false: 'no dependency changes',
+        });
+        expect(saved.examples).toHaveLength(3);
+        await waitForText(
+          page,
+          `${row} [data-testid="rules-question"]`,
+          'Q: Does this action add a package to the project?',
+        );
+
+        await page.locator(`${row} [data-testid="rules-accept"]`).click();
+        await waitForAttr(page, row, 'data-status', 'accepted', POLL_DEADLINE_MS);
+        await page.locator(`${row} [data-testid="rules-test"]`).click();
+        await waitForCount(page, `${row} [data-testid="rules-eval"]`, 3);
+        const bands = await page
+          .locator(`${row} [data-testid="rules-eval"]`)
+          .evaluateAll((els) =>
+            els.map((el) => [el.getAttribute('data-band'), el.getAttribute('data-agree')]),
+          );
+        expect(bands).toEqual([
+          ['deny', 'yes'],
+          ['allow', 'yes'],
+          ['route', 'no'],
+        ]);
+        expect(await page.locator(`${row} [data-testid="rules-evals"]`).textContent()).toContain(
+          '2/3 agree',
+        );
+        // The classifier was asked the edited question, with the criteria.
+        const asked = classifier.calls.at(-1)?.questions[0];
+        expect(JSON.stringify(asked)).toContain('add a package to the project');
+        expect(JSON.stringify(asked)).toContain('no dependency changes');
+        // No confidence anywhere on the page (D14).
+        expect(
+          (await page.locator('[data-testid="rules-screen"]').textContent())?.toLowerCase(),
+        ).not.toContain('confidence');
       } finally {
         await teardown([page]);
         await cockpit.stop();

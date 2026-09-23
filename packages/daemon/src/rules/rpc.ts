@@ -26,7 +26,7 @@ import { RpcParamError } from '../gates/rpc';
 import type { RpcMethodHandler } from '../rpc';
 import { buildEvent } from '../store/events';
 import { AlreadyExistsError } from '../store/store';
-import { evaluableRules, runRuleEvals } from './evals';
+import { type RuleEvalReport, evaluableRules, runRuleEvals } from './evals';
 import { RULE_REPORT_DEFAULT_DAYS, buildRuleReport } from './report';
 import { RuleAlreadyDecidedError, type RulesService, UnknownRuleScopeError } from './service';
 
@@ -146,6 +146,44 @@ export interface RuleEvalPlan {
   timeout_ms: number;
 }
 
+/**
+ * §5.6's evals, with a `classifier_call` event per call (T155). Shared by
+ * `rule.test` and the cockpit's "Test examples" (T163), so both report the
+ * same thing and log the same events.
+ */
+export function testRules(
+  service: RulesService,
+  evals: RuleRpcEvalDeps,
+  id?: string,
+): Promise<RuleEvalReport> {
+  const events = evals.events;
+  return runRuleEvals({
+    rules: service,
+    classifier: evals.classifier,
+    bands: evals.bands,
+    ...(id !== undefined ? { ruleId: id } : {}),
+    ...(events !== undefined
+      ? {
+          onCall: (call) =>
+            events.appendEvent(
+              buildEvent('classifier_call', {
+                data: {
+                  source: 'eval',
+                  rule: call.rule,
+                  rules: 1,
+                  questions: 1,
+                  latency_ms: call.latency_ms,
+                  ...(call.band !== undefined ? { outcome: call.band } : {}),
+                  ...(call.error !== undefined ? { error: call.error } : {}),
+                },
+              }),
+              { commit: 'deferred' },
+            ),
+        }
+      : {}),
+  });
+}
+
 export function buildRuleRpcMethods(
   service: RulesService,
   evals?: RuleRpcEvalDeps,
@@ -227,34 +265,7 @@ export function buildRuleRpcMethods(
           };
         });
       }
-      const events = evals.events;
-      return asParamErrors(() =>
-        runRuleEvals({
-          rules: service,
-          classifier: evals.classifier,
-          bands: evals.bands,
-          ...(id !== undefined ? { ruleId: id } : {}),
-          ...(events !== undefined
-            ? {
-                onCall: (call) =>
-                  events.appendEvent(
-                    buildEvent('classifier_call', {
-                      data: {
-                        source: 'eval',
-                        rule: call.rule,
-                        rules: 1,
-                        questions: 1,
-                        latency_ms: call.latency_ms,
-                        ...(call.band !== undefined ? { outcome: call.band } : {}),
-                        ...(call.error !== undefined ? { error: call.error } : {}),
-                      },
-                    }),
-                    { commit: 'deferred' },
-                  ),
-              }
-            : {}),
-        }),
-      );
+      return asParamErrors(() => testRules(service, evals, id));
     },
 
     'rule.accept': async (params) => {

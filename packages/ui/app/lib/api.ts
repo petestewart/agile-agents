@@ -5,14 +5,21 @@
  * (cockpit design §2.2).
  */
 
-import type { Policy, Stream, StreamCreateInput } from '@agile-agents/shared';
-import type { LandOutcome, StreamDiff, StreamPagePayload } from './feed-types';
+import type { Policy, Rule, RulePatch, Stream, StreamCreateInput } from '@agile-agents/shared';
+import type {
+  LandOutcome,
+  RuleEvalReport,
+  RulesPayload,
+  StreamDiff,
+  StreamPagePayload,
+} from './feed-types';
 
-async function post(path: string, body: unknown = {}): Promise<unknown> {
+async function post(path: string, body: unknown = {}, signal?: AbortSignal): Promise<unknown> {
   const res = await fetch(path, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body),
+    ...(signal ? { signal } : {}),
   });
   const payload = (await res.json().catch(() => ({}))) as { error?: string };
   if (!res.ok) throw new Error(payload.error ?? `${path} failed (${res.status})`);
@@ -43,7 +50,32 @@ export function noteGate(id: string, note: string): Promise<unknown> {
   return post(`/api/hil/${encodeURIComponent(id)}/note`, { note });
 }
 
-/** A `rule_accept` card. */
+/** T163: the rules screen's edit (`RulePatchSchema` on the daemon side). */
+export function updateRule(id: string, patch: RulePatch): Promise<Rule> {
+  return post(`/api/rules/${encodeURIComponent(id)}/update`, patch) as Promise<Rule>;
+}
+
+/**
+ * T163: "Test examples" — `rule.test {id}`. One classifier call per
+ * example, so the caller sizes the deadline (`evalDeadlineMs`); past it the
+ * request is abandoned with a message saying so.
+ */
+export async function testRule(id: string, deadlineMs: number): Promise<RuleEvalReport> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), deadlineMs);
+  try {
+    return (await post('/api/rules/test', { id }, controller.signal)) as RuleEvalReport;
+  } catch (err) {
+    if (controller.signal.aborted) {
+      throw new Error(`no answer within ${Math.round(deadlineMs / 1000)} s`);
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** A `rule_accept` card, and the rules screen's Accept/Retire (one rule at a time, bulk included). */
 export function decideRule(id: string, decision: 'accept' | 'retire'): Promise<unknown> {
   return post(`/api/rules/${encodeURIComponent(id)}/${decision}`);
 }
@@ -58,6 +90,11 @@ async function get<T>(path: string): Promise<T> {
   const payload = (await res.json().catch(() => ({}))) as T & { error?: string };
   if (!res.ok) throw new Error(payload.error ?? `${path} failed (${res.status})`);
   return payload;
+}
+
+/** T163: the rules screen's one read. */
+export function getRules(): Promise<RulesPayload> {
+  return get('/api/rules');
 }
 
 /** T161: the stream page's one read. */

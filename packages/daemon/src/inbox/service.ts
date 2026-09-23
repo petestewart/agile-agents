@@ -5,7 +5,9 @@
  * The list is **derived on every call** from records that already exist:
  *  - `questions/Q-*.yaml` with `status: open`          → `question`
  *  - `gates/HIL-*.yaml` with `status: pending`     → `gate`
- *  - `rules/R-*.yaml` with `status: proposed`            → `rule_accept`
+ *  - `rules/R-*.yaml` with `status: proposed`            → `rule_accept`,
+ *    or, for the proposals one `agile rules seed` imported, one
+ *    `rule_batch` per source (T163)
  *  - streams whose `agent.status` is `blocked`/`done`
  *    while `human.status` is still `open`              → `blocked` / `done`
  *
@@ -26,6 +28,7 @@ import {
   formatRuleScope,
   inboxContext,
   inboxDetail,
+  isSeededRule,
 } from '@agile-agents/shared';
 import type { GateService } from '../gates/service';
 import type { QuestionService } from '../questions/service';
@@ -80,9 +83,22 @@ export class InboxService {
     // §5.1). Unlike every other item, a `rule_accept` item may name no
     // stream: a global rule proposed by the human, or one imported by
     // `agile rules seed`, belongs to no stream and still needs deciding.
+    //
+    // T163: a seed import proposes dozens at once, which buried every
+    // other card; those collapse to one card per source, which opens the
+    // rules screen filtered to them. Lessons and agent proposals stay
+    // one card each — each is its own decision about its own stream.
+    const seeded = new Map<string, Rule[]>();
     for (const rule of this.deps.rules?.listProposed() ?? []) {
-      items.push(this.ruleItem(rule, byId));
+      if (isSeededRule(rule)) {
+        const batch = seeded.get(rule.provenance.by) ?? [];
+        batch.push(rule);
+        seeded.set(rule.provenance.by, batch);
+      } else {
+        items.push(this.ruleItem(rule, byId));
+      }
     }
+    for (const [source, rules] of seeded) items.push(this.ruleBatchItem(source, rules));
     for (const stream of byId.values()) {
       const item = this.streamItem(stream, byId);
       if (item) items.push(item);
@@ -131,6 +147,27 @@ export class InboxService {
       context: inboxContext(`${formatRuleScope(rule.scope)}: ${rule.text}`),
       ...withDetail(`${formatRuleScope(rule.scope)}: ${rule.text}`),
       ref: `rules/${rule.id}.yaml`,
+    };
+  }
+
+  /** T163: one card for every open proposal from one seed source — oldest first, so it sorts where its first rule would. */
+  private ruleBatchItem(source: string, rules: Rule[]): InboxItem {
+    const sorted = [...rules].sort((a, b) =>
+      a.created_at === b.created_at
+        ? a.id.localeCompare(b.id)
+        : a.created_at < b.created_at
+          ? -1
+          : 1,
+    );
+    const first = sorted[0] as Rule;
+    const noun = sorted.length === 1 ? 'proposed rule' : 'proposed rules';
+    return {
+      kind: 'rule_batch',
+      id: source,
+      stream_path: [],
+      ts: first.created_at,
+      context: inboxContext(`${sorted.length} ${noun} from ${source}`),
+      rules: sorted.map((rule) => rule.id),
     };
   }
 

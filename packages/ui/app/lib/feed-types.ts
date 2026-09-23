@@ -115,3 +115,50 @@ export type LandOutcome =
   | { status: 'refused'; reason: string; line: string }
   | { status: 'blocked'; target: string; conflicts: string[]; line: string }
   | { status: 'landed'; target: string; sha: string; line: string };
+
+/** T163: mirror of `rules/report.ts`'s `RuleReportRow` (§5.7). */
+export interface RuleReportRow {
+  id: string;
+  name?: string;
+  tier: string;
+  status: Rule['status'];
+  fired: number;
+  violated: number;
+  routed: number;
+  last_fired?: string;
+  flag: 'never fired' | 'never violated' | 'routes often' | '-';
+  flag_detail: string;
+}
+
+/** T163: `GET /api/rules` — every rule, the pruning report, and whether evals can run. */
+export interface RulesPayload {
+  rules: Rule[];
+  report: { days: number; generated_at: string; rows: RuleReportRow[] };
+  evals: { available: boolean; timeout_ms?: number };
+}
+
+/** T163: mirror of `rules/evals.ts`'s `RuleEvalReport` (§5.6). No confidence (D14). */
+export interface RuleEvalReport {
+  generated_at: string;
+  rules: Array<{
+    id: string;
+    question: string;
+    examples: Array<{
+      action: string;
+      expected_violates: boolean;
+      expected_band: 'allow' | 'deny';
+      probability?: number;
+      band?: 'allow' | 'route' | 'deny';
+      agree: boolean;
+      error?: string;
+    }>;
+    agreed: number;
+    disagreed: number;
+    errors: number;
+  }>;
+  total: number;
+  agreed: number;
+  disagreed: number;
+  errors: number;
+  agreement_rate?: number;
+}

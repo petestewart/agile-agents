@@ -701,6 +701,114 @@ body {
 }
 
 /* ---- phone width: the rail is a drawer ---- */
+/* T163: the rules screen */
+.cr-rules-screen {
+  max-width: 820px;
+}
+.cr-rules-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
+  font-size: 13px;
+}
+.cr-rules-filters select,
+.cr-rule-editor select {
+  font: inherit;
+  background: var(--bg-raised);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 6px;
+}
+.cr-chip {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  background: var(--accent-weak);
+  border-radius: 10px;
+  padding: 2px 10px;
+  overflow-wrap: anywhere;
+}
+.cr-rules-bulk {
+  align-items: center;
+  font-size: 13px;
+  margin-bottom: 10px;
+}
+.cr-rule-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  align-items: center;
+  overflow-wrap: anywhere;
+}
+.cr-rule-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 6px;
+}
+.cr-rule-flag {
+  color: var(--warn);
+  font-weight: 600;
+}
+.cr-rule-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 10px;
+  font-size: 13px;
+}
+.cr-rule-editor label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.cr-rule-editor-row,
+.cr-rule-example {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+}
+.cr-rule-editor-row label,
+.cr-rule-example label {
+  flex-direction: row;
+  align-items: center;
+}
+.cr-rule-editor input:not([type="checkbox"]),
+.cr-rule-editor textarea {
+  font: inherit;
+  min-width: 0;
+  background: var(--bg-raised);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 8px;
+}
+.cr-rule-example input:not([type="checkbox"]) {
+  flex: 1 1 200px;
+}
+.cr-rule-editor fieldset {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.cr-rule-evals ul {
+  margin: 6px 0 0;
+  padding-left: 18px;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+.cr-rule-evals li[data-agree="no"] .cr-rule-verdict {
+  color: var(--danger);
+}
+.cr-rule-evals li[data-agree="yes"] .cr-rule-verdict {
+  color: var(--ok);
+}
+
 @media (max-width: 700px) {
   .cr-rail-toggle {
     display: inline-flex;
