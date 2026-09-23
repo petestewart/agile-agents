@@ -1,15 +1,7 @@
 /**
- * `agiled` orchestration: wires config discovery, the per-repo lock, the
- * unix-socket JSON-RPC server, and the localhost HTTP+WebSocket server into
- * one start/stop lifecycle (design/agile-agents-design.md §18 "Technical
- * shape", §15 "one daemon per repo").
- *
- * T122 deleted the role and ceremony layer that used to be assembled here
- * (the resident EM and its loop, the architect planning turn, the oracle, QA,
- * halts/ripple, quota and handoff, the merge owner's promote-to-main path and
- * the review round machine). What is left is the substrate the reshape keeps:
- * streams, questions, gates, the inbox, the hook endpoint, tools and the two
- * servers.
+ * `agiled` orchestration: wires config discovery, the lock, the service
+ * graph, the unix-socket JSON-RPC server and the localhost HTTP+WebSocket
+ * server into one start/stop lifecycle.
  */
 
 import { existsSync } from 'node:fs';
@@ -46,7 +38,7 @@ import { StreamService, buildStreamRpcMethods } from './streams';
 
 export const DAEMON_VERSION: string = daemonPackageJson.version;
 
-/** Gate tick cadence — same 30 s as the heartbeat tunable (CLAUDE.md). */
+/** Gate tick cadence (30 s). */
 export const GATE_TICK_MS = 30 * 1000;
 
 export interface DaemonHandle {
@@ -56,11 +48,8 @@ export interface DaemonHandle {
   http: HttpServerHandle;
   startedAt: number;
   /**
-   * The daemon's own internal object graph, exposed for a caller (a test,
-   * or a Phase 3 per-stream driver) that wants to drive the daemon directly
-   * in-process rather than over the unix socket. `undefined` for every field
-   * when the state home doesn't exist yet (pre-`agile init`), same condition
-   * `extraMethods` below already gates on.
+   * The internal object graph, for a caller that drives the daemon
+   * in-process. Every field is `undefined` before `agile init`.
    */
   store?: StateStore;
   bus?: Bus;
@@ -73,11 +62,9 @@ export interface DaemonHandle {
   attachService?: AttachService;
   verbService?: VerbService;
   /**
-   * T150 (§6.2): the classifier tier, built from `classifier:` in
-   * `config.yaml`. Always present — an unconfigured or opted-out tier is a
-   * `JevClassifier` whose `ask` throws `ClassifierUnavailableError`, which
-   * is exactly what §6.4's fail policy consumes. Nothing calls it yet:
-   * T151 wires it into the hook path and T152 into landing.
+   * The classifier tier (§6.2), from `classifier:` in `config.yaml`. Always
+   * present: an unconfigured tier's `ask` throws
+   * `ClassifierUnavailableError`, which §6.4's fail policy consumes.
    */
   classifier: Classifier;
   /** Graceful shutdown: closes both servers, then releases the lock. */
@@ -85,56 +72,36 @@ export interface DaemonHandle {
 }
 
 export interface StartDaemonOptions extends DiscoverConfigOptions {
-  /**
-   * Test seam: the classifier the daemon exposes. Real usage leaves it
-   * unset and gets a `JevClassifier` over `config.classifier`; the suite
-   * passes a `FakeClassifier`, because there is no network in `bun test`.
-   */
+  /** Test seam: the classifier (`bun test` has no network). Real usage gets a `JevClassifier`. */
   classifier?: Classifier;
-  /**
-   * Test/offline-run seam: `GateService`'s own decision delegate
-   * (`gates/service.ts`) — a gate whose policy owner does not resolve to the
-   * human is decided synchronously by this function instead of waiting for a
-   * `gate.respond` call. Real usage leaves it unset.
-   */
+  /** Test/offline seam: `GateService`'s delegate. Real usage leaves it unset. */
   gateDelegate?: DelegateFn;
   /**
-   * Gate tick cadence. Default `GATE_TICK_MS` (30 s); `0` disables the
-   * daemon's own timer for a caller (a test) that drives `gateService.tick()`
-   * itself — two concurrent drivers over the same gates double-decide.
+   * Gate tick cadence (default 30 s). `0` disables the timer for a test
+   * that drives `gateService.tick()` itself (two drivers double-decide).
    */
   gateTickMs?: number;
-  /**
-   * Test-only seam: the daemon's own clock, threaded to `Bus` (heartbeat
-   * timestamps + coalescing, `bus/bus.ts`) so a test can run a real
-   * heartbeat-coalescing window in well-under-a-second of wall-clock time.
-   * Real usage never sets this (the daemon runs on the system clock).
-   */
+  /** Test seam: the clock threaded to `Bus` (heartbeat timestamps and coalescing). */
   now?: () => Date;
 }
 
 export async function startDaemon(options: StartDaemonOptions = {}): Promise<DaemonHandle> {
   const config = discoverConfig(options);
   const startedAt = Date.now();
-  // T150: the classifier tier (§6.2, **D5**). Constructed here and handed
-  // out on the daemon handle; the hook path that consumes it is T151's.
+  // The classifier tier (§6.2, D5), consumed by the hook and landing.
   const classifier: Classifier =
     options.classifier ?? new JevClassifier({ config: config.classifier });
 
-  // `.agile/` may not exist yet (before `agile init`); state.* stays fully
-  // stubbed in that case, same as T004 — only wire the real handlers when
-  // there's a state root to open them against.
+  // The home may not exist yet (before `agile init`): then only the stub
+  // handlers run.
   const store = existsSync(config.stateRoot) ? StateStore.open(config.stateRoot) : undefined;
-  // Hoisted (T020) so the same GateService instance backs both `gate.*` RPC
-  // and the HIL snapshot/approve HTTP routes.
+  // One GateService behind `gate.*` RPC and the HTTP gate routes.
   const gateService = store
     ? new GateService(store, options.gateDelegate ? { delegate: options.gateDelegate } : {})
     : undefined;
-  // T120/T121: one `StreamService` behind `stream.*` RPC, the questions
-  // service (which writes thread entries and status flips) and the inbox.
-  // T141 (§5.5): `close` and `land` both end a stream, and both hand it to
-  // the retro. Read lazily — `lessonsService` is built below, once the
-  // services it drives exist.
+  // `close` and `land` both hand the ended stream to the retro (§5.5).
+  // Every back-reference in this graph is read lazily through a closure,
+  // so construction order is never a trap.
   const streamService = store
     ? new StreamService(store, {
         onStreamEnd: async (id) => {
@@ -142,19 +109,14 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
         },
       })
     : undefined;
-  // How spawned sessions reach this daemon's own CLI for their hook command
-  // and MCP server — resolved to something that actually runs on this host
-  // (`runner/cli-bin.ts`), never assumed on $PATH.
+  // How spawned sessions reach this daemon's CLI for hooks and MCP,
+  // resolved to something that runs on this host, never assumed on $PATH.
   const cliBin = resolveCliBin();
-  // T140: rules — the system's memory of decisions (cockpit design §5). The
-  // attach service reads `inScope` for every brief, and T143's hook will
-  // read the same function.
+  // Rules (§5): read by every brief, the hook and landing.
   const rulesService =
     store && streamService ? new RulesService({ store, streams: streamService }) : undefined;
-  // T137: the attach service and the question service know about each
-  // other — the turn-end rule asks what is still open, and an answer is
-  // delivered by prompting the live session. Both directions are read
-  // lazily through closures, so neither construction order is a trap.
+  // Attach and questions know about each other: the turn-end rule asks
+  // what is open, and an answer is delivered by prompting the session.
   const attachService =
     store && streamService
       ? new AttachService({
@@ -163,14 +125,10 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
           home: config.home,
           socketPath: config.socketPath,
           cliBin: { command: cliBin.command, args: cliBin.args },
-          // Both read lazily: `docsService` and `questionService` are built
-          // below, and are only ever called once the daemon is serving.
           docs: { docsForStream: (id) => docsService?.docsForStream(id) ?? [] },
           questions: { listOpen: () => questionService?.listOpen() ?? [] },
           ...(rulesService ? { rules: rulesService } : {}),
-          // T138: the turn-end rule treats an open routed call like an
-          // open question — a denied session that reports itself blocked
-          // and ends its turn is waiting, not finished.
+          // The turn-end rule treats an open routed call like an open question.
           ...(gateService ? { gates: gateService } : {}),
         })
       : undefined;
@@ -193,16 +151,11 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
           ...(rulesService ? { rules: rulesService } : {}),
         })
       : undefined;
-  // T134: docs are plain Markdown under `<repo>/.agile-docs/` and
-  // `<home>/streams/<id>.docs/` — read-only, no index, no state of their own.
+  // Docs: plain Markdown under `<repo>/.agile-docs/` and `<home>/streams/<id>.docs/`.
   const docsService =
     store && streamService ? new DocsService(store, streamService, config.stateRoot) : undefined;
-  // T132: the landing path (§8.2). A repo with `land_gate: true` raises its
-  // gate through the same `GateService`, and approving that gate is what
-  // performs the merge — hence the wiring call below.
-  // T152 (§8.2): the diff-level rule tier. Only with a rules service to
-  // ask — without one there are no accepted rules to check, and the
-  // landing path keeps its allow-all default.
+  // The landing path (§8.2) and its diff-level rule tier, which needs a
+  // rules service (without one, landing keeps its allow-all default).
   const diffRules =
     store && streamService && rulesService
       ? new ClassifierDiffRules({
@@ -228,21 +181,16 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
         })
       : undefined;
   if (gateService && landingService) wireLandGateResolution(gateService, landingService);
-  // T145: deciding a gate also closes whatever question the same session
-  // left open — wired before the delivery below so the question is already
-  // superseded when the session is prompted to carry on.
+  // Deciding a gate closes the question the same session left open; wired
+  // before the delivery below so it is superseded before the prompt.
   if (gateService && questionService) wireQuestionSupersession(gateService, questionService);
-  // T138: deciding a `classifier_review` gate (the hook's route band, §8.1)
-  // prompts the session whose tool call it blocked — the same delivery path
-  // T137 built for an answer.
+  // Deciding a `classifier_review` gate prompts the blocked session.
   if (gateService && attachService) wireGateDecisionDelivery(gateService, attachService);
-  // T151 (§6.3): the human's answer on a routed classifier call is the
-  // rule's own statistic — a deny makes it a violation.
+  // A human's answer on a routed classifier call counts in the rule's stats (a deny is a violation).
   if (gateService && rulesService) wireClassifierRouteStats(gateService, rulesService);
 
-  // T141: the retro (§5.5). It reads the stream's findings, denials and
-  // questions and starts one read-only `lessons` session over them; the
-  // proposals it makes are ordinary `propose_rule` writes, capped at three.
+  // The retro (§5.5): one read-only `lessons` session over the stream's
+  // findings, denials and questions; at most three proposals.
   const lessonsService: LessonsService | undefined =
     store && streamService && attachService && rulesService
       ? new LessonsService({
@@ -253,12 +201,9 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
           questions: { list: () => questionService?.list() ?? [] },
         })
       : undefined;
-  // Hoisted (T011) so `bus.*` RPC and the hook service share one `Bus`
-  // instance over the same store.
+  // One `Bus` shared by `bus.*` RPC and the hook service.
   const bus = store ? new Bus(store, config.stateRoot, { now: options.now }) : undefined;
-  // T130: attaching a worker to a stream, and the eight verbs an attached
-  // session gets (cockpit design §4.1). The verb surface is fixed — there
-  // is no tool registry any more.
+  // The eight verbs an attached session gets (§4.1).
   const verbService =
     store && streamService && questionService
       ? new VerbService({
@@ -267,8 +212,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
           questions: questionService,
           ...(docsService ? { docs: docsService } : {}),
           ...(rulesService ? { rules: rulesService } : {}),
-          // T141's three-proposal cap, read lazily like every other
-          // back-reference in this graph.
+          // The three-proposal cap.
           proposalLimit: {
             assertCanPropose: (caller) => lessonsService?.assertCanPropose(caller),
           },
@@ -280,10 +224,8 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
     );
   }
 
-  // One daemon-level interval ticks the gate service (HIL deadline
-  // fallthrough, §16 — nothing else calls `GateService.tick()`). Errors are
-  // logged, never fatal: the daemon is long-lived (D9) and never exits
-  // because work finished.
+  // The gate tick (`human_timeout` fallthrough); nothing else calls
+  // `tick()`. Errors are logged, never fatal: the daemon is long-lived (D9).
   const gateTickMs = options.gateTickMs ?? GATE_TICK_MS;
   const gateTimer =
     gateService && gateTickMs > 0
@@ -293,13 +235,13 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
       : undefined;
   gateTimer?.unref();
 
-  // T167: the key behind Settings and "Test examples" — mutates
-  // `config.classifier` in place, which every key reader shares.
+  // The classifier key behind Settings; mutates `config.classifier` in
+  // place, which every key reader shares.
   const classifierKey = store
     ? new ClassifierKeyService({ config: config.classifier, store })
     : undefined;
 
-  // §5.6's evals, shared by `rule.test` and the cockpit's "Test examples" (T163).
+  // §5.6's evals, shared by `rule.test` and the cockpit's "Test examples".
   const ruleEvals = store
     ? {
         classifier,
@@ -318,7 +260,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
           ...(questionService ? buildQuestionRpcMethods(questionService) : {}),
           ...(streamService
             ? buildStreamRpcMethods(streamService, {
-                // T169: `agile stream say` is the composer's path too.
+                // `agile stream say` is the composer's path too.
                 ...(attachService
                   ? {
                       reply: {
@@ -334,19 +276,10 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
           ...(docsService ? buildDocsRpcMethods(docsService) : {}),
           ...(landingService ? buildLandingRpcMethods(landingService) : {}),
           ...buildHookRpcMethods(
-            // T125: no repo root either — an agent record's worktree is
-            // absolute in practice, and a relative one now fails closed
-            // rather than resolving against whatever cwd `agiled` was
-            // started in.
-            // T138: the route band needs the gate service — a `hil`
-            // verdict becomes a `classifier_review` item in the human's
-            // inbox, and their yes lets that one call through once.
-            // T143: the pattern rules the hook enforces (§5.2, §5.4) —
-            // the same `rulesInScope` the brief assembler reads, so a
-            // retired rule stops gating on the next tool call.
-            // T151: the classifier tier (§6). The bands and the opt-out
-            // both come from `classifier:` in `config.yaml`; a home that
-            // configured none reaches §6.4's fail policy, not a call.
+            // The route band needs the gates, the pattern tier the rules in
+            // scope (a retired rule stops gating on the next call), and the
+            // classifier tier its config (none configured ⇒ §6.4's fail
+            // policy). No repo root: a relative worktree fails closed.
             new HookService(store, bus, {
               gates: gateService,
               ...(rulesService ? { rules: rulesService } : {}),
@@ -360,14 +293,11 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
       : undefined;
 
   /**
-   * Bind the port **before** taking the lock (T127). The lock file is the
-   * pidfile, and `agile daemon start` waits for that file to appear: taking
-   * it first meant a daemon that then failed to bind had already published
-   * a pidfile, and the parent reported `agiled started` for a process that
-   * was dying. Binding first means the pidfile only ever appears for a
-   * daemon that is actually serving. The unix socket still comes *after*
-   * the lock — `startRpcServer` unlinks a stale socket path, which a second
-   * daemon on the same home must never do to the live one.
+   * Bind the port before taking the lock: the lock file is the pidfile
+   * `agile daemon start` waits for, so it must only appear for a daemon
+   * that is actually serving. The unix socket comes after the lock, since
+   * `startRpcServer` unlinks a stale socket a second daemon must never
+   * unlink under the live one.
    */
   const http: HttpServerHandle = startHttpServer({
     port: config.port,
@@ -389,17 +319,13 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
     ...(docsService ? { docs: docsService } : {}),
   });
 
-  // T143: §5.4's built-in pattern rules, created on first start and
-  // idempotent on every one after — before the RPC/HTTP servers accept a
-  // call, so the first tool call of a fresh home is already gated. A
-  // retired built-in stays retired (`ensureBuiltinRules`).
+  // §5.4's built-in pattern rules, idempotent, before any call is accepted
+  // (a retired built-in stays retired).
   if (store) {
     try {
       await ensureBuiltinRules(store);
     } catch (err) {
-      // A home whose `rules/` cannot be written is a real problem, but not
-      // one that should stop the daemon serving everything else — the
-      // built-ins are re-attempted on the next start.
+      // Not fatal: re-attempted on the next start.
       console.error('agiled: could not create the built-in rules:', err);
     }
   }
@@ -420,8 +346,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
       stateRoot: config.stateRoot,
       startedAt,
       extraMethods,
-      // T167: `agile daemon status` says whether a key is loaded — its
-      // source, never the key.
+      // `agile daemon status`: whether a key is loaded and its source, never the key.
       ...(classifierKey ? { classifierStatus: () => classifierKey.status() } : {}),
     });
     await rpc.listening;
@@ -454,25 +379,17 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
       stopped = true;
       try {
         if (gateTimer) clearInterval(gateTimer);
-        // Every attached session is a child process of this daemon: stop
-        // them before the servers go, so their exit writes still land.
+        // Sessions are child processes: stop them first so their exit writes land.
         await attachService?.stopAll();
         await http.stop();
         await rpc.close();
-        // T143: the coalesced rule `stats` counters — a graceful shutdown
-        // must not lose the window since the last 5 s flush.
+        // Don't lose the rule stats since the last coalesced flush.
         if (rulesService) {
           await rulesService.flushStats();
           rulesService.dispose();
         }
-        // Flush any pending deferred hook_decision/heartbeat commits (T009
-        // review round, hot-path decision) — a graceful shutdown must not
-        // lose a batch that hasn't hit its 5s debounce yet.
+        // Drain pending writes, then close the store.
         await store?.flush();
-        // Cancels the deferred-flush timer outright (T012 QA round) — belt
-        // and suspenders alongside the flush above, since `flush()` only
-        // drains what's queued *now*, not anything a still-armed timer
-        // might schedule after this returns.
         store?.close();
       } finally {
         lock.release();
