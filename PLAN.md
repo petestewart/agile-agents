@@ -519,7 +519,7 @@ Build order: Phase 0 → 1 → 2 → 3 → 4 → 5 → 6. Within a phase, ticket
 
 ### Ticket: T163 Rules screen
 - **Priority:** P1
-- **Status:** In Progress
+- **Status:** Done
 - **Owner:** —
 - **Scope:** List with scope, tier, status, stats; accept/retire; edit text, question, examples; the pruning columns from T142 (never fired, most routed); "test examples" button calling T153.
 - **Added 2026-09-23 (Pete, T160 look):** rule proposals from `agile rules seed` collapse in the inbox into one card ("N proposed rules from <source>") that opens the rules screen filtered to them; the rules screen supports bulk Accept/Retire of a selection. Agent-proposed rules (lessons) stay individual inbox cards.
@@ -611,3 +611,5 @@ Daemon: `em/`, `architect/`, `oracle/`, `qa/`, `halts/`, `quota/`, `handoff/`, `
 - (T165) `packages/cli/src/stream.e2e.test.ts` ("agile attach (T130) on a no-repo stream") failed 1 of 2 isolated runs while three workers ran suites concurrently; 4/4 on base and 4/4 on the branch unloaded. Load-sensitive like the Playwright suites; watch it.
 - (T162 review) New stream dialog lacks role="dialog"/aria-modal and a focus trap. Quick-capture errors show only as a red border; repo is free text (no picker).
 - (T166) Merged-outside detection: fast-forward merges rely on the branch reflog; an untouched branch forked off a non-first-parent commit could read as merged (cosmetic, needs a click). Close/mark-landed check the id before the cross-origin check (400 vs 403 on a bad id; nothing mutates).
+- (T163 QA, 2026-09-23) INCIDENT: the cloud environment now carries a real `TYPESAFE_API_KEY` in every shell (set in the environment config for the T154 agreement check). A QA daemon inherited it and made one real classifier call from "Test examples" before QA caught it and re-ran key-less. Violates the standing no-key-in-cloud rule. Remedy is Pete's: remove the key from the environment config and consider rotating it. Until then every worker/QA prompt must start daemons with `env -u TYPESAFE_API_KEY`.
+- (T163 QA) `evals.available` is true whenever a `Classifier` object is built, not when a key is present, so the Rules screen's disabled-with-tooltip state for Test examples is unreachable; the click fails with a clear per-example error instead. (T163 review) No cap on examples per rule.
