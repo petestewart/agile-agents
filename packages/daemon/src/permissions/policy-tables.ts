@@ -33,10 +33,8 @@ export interface PolicyContext {
   worktreePath: string;
 }
 
-// ---------------------------------------------------------------------------
 // Never-without-human (§14 "Never without a human"). Checked before any
 // role table, for every role: nobody's allow-list can override these.
-// ---------------------------------------------------------------------------
 
 /** Package registry hosts: the engineer's "package registries only" network allowance (§14). A starter set. */
 export const PACKAGE_REGISTRY_HOSTS = [
@@ -154,16 +152,12 @@ export function checkNeverWithoutHuman(
   return undefined;
 }
 
-// ---------------------------------------------------------------------------
 // Role tables (§14's table, one function per role). Each assumes
 // `checkNeverWithoutHuman` already ran and returned nothing.
-// ---------------------------------------------------------------------------
 
-// ---------------------------------------------------------------------------
 // Engineer benign commands: everyday commands that are neither a repo
 // script nor git. Checked after those have had first claim, and only for
 // atoms that passed the never-without-human list and the redirection gate.
-// ---------------------------------------------------------------------------
 
 /** No path worth containment-checking: no path argument, only an exit status, literal argv, or stdin. */
 const ENGINEER_BENIGN_NO_PATH_TOOLS = new Set([

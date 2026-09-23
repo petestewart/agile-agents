@@ -24,7 +24,6 @@ export function slugify(title: string, maxLen = 40): string {
   return slug.slice(0, maxLen).replace(/-+$/g, '') || 'stream';
 }
 
-// ---------------------------------------------------------------------------
 // Hardened creation (D11, after KiroCrew's worktree handler). No shell:
 // every git call is an argv array. It guarantees:
 //
@@ -36,7 +35,6 @@ export function slugify(title: string, maxLen = 40): string {
 //      expected old value), so of two concurrent creates exactly one wins.
 //   4. The branch must not exist anywhere, local or remote-tracking, so a
 //      stream never adopts someone else's history.
-// ---------------------------------------------------------------------------
 
 /** All-zero object id: `git update-ref`'s "the ref must not exist" expected-old value. */
 const ZERO_OID = '0'.repeat(40);

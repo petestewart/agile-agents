@@ -213,10 +213,8 @@ function unreadableGitReason(command: string, git: GitAtom): string | undefined 
   return undefined;
 }
 
-// ---------------------------------------------------------------------------
 // The context's branch lookups for a real worktree, shared by both
 // enforcement tiers; neither spawns git for a call that never asks.
-// ---------------------------------------------------------------------------
 
 /**
  * `git rev-parse --abbrev-ref <rev>` as argv, never a shell string (D11).

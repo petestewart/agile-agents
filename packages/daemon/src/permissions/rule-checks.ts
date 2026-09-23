@@ -95,11 +95,9 @@ export function checkPatternRule(rule: Rule, ctx: RuleCheckContext): string | un
   }
 }
 
-// ---------------------------------------------------------------------------
 // The rule pass: one implementation for both tiers (the hook, §8.1, and the
 // ACP responder, the only gate for a hook-less vendor, §4.3), so wording,
 // order and stats can't drift.
-// ---------------------------------------------------------------------------
 
 /** Rules carrying a deterministic check: the only kind this pass evaluates. */
 export function patternRulesOf(rules: readonly Rule[] | undefined): Rule[] {
@@ -137,9 +135,7 @@ export function runPatternRules(
   return { rulesEvaluated };
 }
 
-// ---------------------------------------------------------------------------
 // Daemon state the checkers need, resolved once for both tiers.
-// ---------------------------------------------------------------------------
 
 /** The slice of `StateStore` the protected-branch lookup needs. */
 export interface RepoScopeStore {

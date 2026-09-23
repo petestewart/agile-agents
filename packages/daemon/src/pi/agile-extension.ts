@@ -26,9 +26,7 @@
 
 import { connect } from 'node:net';
 
-// ---------------------------------------------------------------------------
 // Config, read at load from the env vars the daemon sets on a Pi session.
-// ---------------------------------------------------------------------------
 
 /** `'1'` on every Pi session the daemon spawns; otherwise the extension registers nothing. */
 export const GATE_ENV_VAR = 'AGILE_PI_GATE';
@@ -49,9 +47,7 @@ export const TEST_OUTPUT_REWRITE_THRESHOLD = 2000;
 /** Trailing lines of a distilled run kept verbatim (the failure tail is usually what's needed). */
 const TEST_OUTPUT_TAIL_LINES = 40;
 
-// ---------------------------------------------------------------------------
 // Local typings for the slice of the Pi extension API used here.
-// ---------------------------------------------------------------------------
 
 export interface PiToolCallEvent {
   type: 'tool_call';
@@ -123,11 +119,9 @@ export interface PiExtensionApi {
   on(event: 'session_shutdown', handler: PiHandler<{ type: 'session_shutdown' }, void>): void;
 }
 
-// ---------------------------------------------------------------------------
 // A minimal unix-socket JSON-RPC 2.0 client, the same wire format as the
 // CLI's `callRpc` (this file can't import it). A divergence between the
 // two is a bug.
-// ---------------------------------------------------------------------------
 
 export interface RpcClient {
   call<T = unknown>(method: string, params?: unknown): Promise<T>;
@@ -202,9 +196,7 @@ export function createSocketRpcClient(socketPath: string, timeoutMs = 5000): Rpc
   };
 }
 
-// ---------------------------------------------------------------------------
 // Pure logic, unit-testable with no socket or process.
-// ---------------------------------------------------------------------------
 
 /** The fields of `hook.pre_tool_use`'s Claude-shaped reply this file reads. */
 export interface HookPreToolUseReply {
@@ -300,9 +292,7 @@ export function formatInboxMessage(
   return lines.join('\n');
 }
 
-// ---------------------------------------------------------------------------
 // The extension factory.
-// ---------------------------------------------------------------------------
 
 export interface CreateAgileExtensionOptions {
   env?: AgileExtensionEnv;

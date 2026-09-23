@@ -108,10 +108,8 @@ function buildAdditionalContext(messages: HookDecisionContext['inbox']): string 
   return lines.join('\n');
 }
 
-// ---------------------------------------------------------------------------
 // Role × tool policy: `decidePermission`'s pipeline (classify →
 // never-without-human → role table), for edit-kind tools and `Bash`.
-// ---------------------------------------------------------------------------
 
 /** Claude's own file-edit tool names. */
 const EDIT_TOOL_NAMES = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit']);
@@ -177,11 +175,9 @@ function roleToolVerdict(
   return undefined;
 }
 
-// ---------------------------------------------------------------------------
 // Pattern rules (§5.2, §5.4, §8.1 step 2): each `pattern.kind` has one
 // checker in `permissions/rule-checks.ts`; a deny names the rule, and every
 // rule evaluated is reported for its stats (§5.7).
-// ---------------------------------------------------------------------------
 
 function commandOf(payload: ClaudePreToolUsePayload): string | undefined {
   const command = payload.tool_input?.command;
@@ -300,12 +296,10 @@ export function decidePreToolUse(
   };
 }
 
-// ---------------------------------------------------------------------------
 // The classifier tier (§6, §8.1 step 3). Async (one network round trip),
 // but kept beside the other tiers because the order is the design. The
 // caller runs it only when the tiers above allowed the call, and owns
 // every side effect.
-// ---------------------------------------------------------------------------
 
 /** A rule judged by the classifier, not by a pattern (§5.2). */
 export function classifierRulesOf(rules: readonly Rule[] | undefined): Rule[] {

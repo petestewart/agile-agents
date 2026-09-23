@@ -9,9 +9,7 @@ import { realpathSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, dirname, isAbsolute, join as joinPath, relative, resolve } from 'node:path';
 
-// ---------------------------------------------------------------------------
 // Quote-aware splitting/tokenizing
-// ---------------------------------------------------------------------------
 
 export type SegmentDelimiter = 'start' | ';' | '&&' | '||' | '|' | '\n';
 
@@ -115,9 +113,7 @@ export function tokenizeSegment(segment: string): string[] {
   return tokens;
 }
 
-// ---------------------------------------------------------------------------
 // Unclassifiable shell constructs: hil, never allow
-// ---------------------------------------------------------------------------
 
 /**
  * Command substitution, `eval` or unbalanced quotes defeat this tokenizer:
@@ -139,9 +135,7 @@ export function hasUnsafeShellConstruct(command: string): boolean {
   return false;
 }
 
-// ---------------------------------------------------------------------------
 // Wrapper/env-prefix stripping
-// ---------------------------------------------------------------------------
 
 const ENV_ASSIGNMENT_RE = /^[A-Za-z_][A-Za-z0-9_]*=.*$/;
 /** Leading wrappers that don't change what is run, for classification. */
@@ -163,10 +157,8 @@ export function stripPrefixes(tokens: string[]): string[] {
   return tokens.slice(i).map(normalizeToken);
 }
 
-// ---------------------------------------------------------------------------
 // Segmentation into atoms: split on control operators, recurse into
 // `sh -c "..."`, and remember pipe adjacency so `curl ... | sh` survives.
-// ---------------------------------------------------------------------------
 
 export interface CommandAtom {
   /** Prefix-stripped tokens for this atomic command. */
@@ -228,9 +220,7 @@ export function isPipedIntoBareShell(atom: CommandAtom): boolean {
   );
 }
 
-// ---------------------------------------------------------------------------
 // Path containment
-// ---------------------------------------------------------------------------
 
 /**
  * `realpath`s `p`, walking up to its nearest existing ancestor when `p`
@@ -264,9 +254,7 @@ export function isPathInside(path: string, root: string): boolean {
   return rel !== '' && !rel.startsWith('..') && !isAbsolute(rel);
 }
 
-// ---------------------------------------------------------------------------
 // `~`/`$VAR`/backtick resolution for path arguments and redirect targets
-// ---------------------------------------------------------------------------
 
 export type ResolvedPathArgument = { safe: true; path: string } | { safe: false };
 
@@ -284,9 +272,7 @@ export function resolveTargetPath(token: string): ResolvedPathArgument {
   return { safe: true, path: token };
 }
 
-// ---------------------------------------------------------------------------
 // Repo scripts / dependency installs
-// ---------------------------------------------------------------------------
 
 export const REPO_SCRIPT_RUNNERS = ['bun', 'npm', 'pnpm'] as const;
 export type RepoScriptRunner = (typeof REPO_SCRIPT_RUNNERS)[number];
@@ -327,9 +313,7 @@ export function isRepoScriptCommand(tokens: string[]): boolean {
   return true;
 }
 
-// ---------------------------------------------------------------------------
 // git: global-option-aware subcommand lookup
-// ---------------------------------------------------------------------------
 
 /** Global `git` options that take a value (`-C x` or `--git-dir=x`). */
 const GIT_GLOBAL_FLAGS_WITH_VALUE = new Set([
@@ -449,9 +433,7 @@ export function refspecDestBranch(refspec: string): string {
   return dest.replace(/^\+/, '');
 }
 
-// ---------------------------------------------------------------------------
 // Other never-without-human commands
-// ---------------------------------------------------------------------------
 
 export function isRmMinusRf(tokens: string[]): boolean {
   return tokens[0] === 'rm' && tokens.includes('-rf');
@@ -490,9 +472,7 @@ export function isManifestPath(path: string | undefined): boolean {
   return MANIFEST_FILENAMES.has(basename(path));
 }
 
-// ---------------------------------------------------------------------------
 // Redirection / tee
-// ---------------------------------------------------------------------------
 
 /**
  * Any redirection operator, with or without a leading fd digit or `&`:
@@ -567,12 +547,10 @@ export function hasWritingRedirectionOrTee(tokens: string[]): boolean {
   return redirectionTargets(tokens).length > 0;
 }
 
-// ---------------------------------------------------------------------------
 // Benign-command helpers: which tokens are path arguments, per command
 // shape (`cat`, `ls`, `cp`, `grep`, `find`, ...). A worker's read scope is
 // its own worktree, so even `cat` needs every path containment-checked;
 // `policy-tables.ts` does the check and picks the verdict.
-// ---------------------------------------------------------------------------
 
 function isFlagToken(t: string): boolean {
   return t.startsWith('-');
@@ -614,10 +592,8 @@ export function isFindWriteInvocation(tokens: string[]): boolean {
   return tokens.some((t) => FIND_WRITE_FLAGS.has(t));
 }
 
-// ---------------------------------------------------------------------------
 // Path-bearing flag values: `cp --target-directory=/etc x`,
 // `sort --output /etc/x` and `grep -f /etc/passwd` name paths too.
-// ---------------------------------------------------------------------------
 
 /** Flags whose value (`=value`, fused `-oVALUE`, or the next token) is a path. */
 const KNOWN_PATH_VALUE_FLAGS: Record<string, ReadonlySet<string>> = {
