@@ -187,7 +187,7 @@ Build order: Phase 0 → 1 → 2 → 3 → 4 → 5 → 6. Within a phase, ticket
 
 ### Ticket: T124 Phase 2 QA and Pete's look
 - **Priority:** P0
-- **Status:** In Progress
+- **Status:** Done (Phase 2 accepted 2026-09-21; status line was stale)
 - **Owner:** sonnet:qa-T124
 - **Scope:** Black-box QA of streams, inbox, and thread via the CLI and RPC against a real daemon with the fake ACP transport; then Pete drives `agile stream` and `agile answer` by hand on a scratch repo. Findings become tickets T125+.
 - **Acceptance Criteria:** QA ACCEPT; Pete's list recorded.
@@ -591,6 +591,24 @@ Build order: Phase 0 → 1 → 2 → 3 → 4 → 5 → 6. Within a phase, ticket
 - **Acceptance Criteria:** Provider test pins 0.81.1; offline suites green; Pete attaches a worker on ledger-lite with the default and it runs a turn; the `rm -rf dist` hook test from T167 still blocks.
 - **Validation Steps:** `bun test packages/acp-client packages/daemon`; `bun run test:e2e`; Pete's live check (no vendor login in the cloud).
 - **Notes:** Runs before T164. Vendor behaviour cannot be re-measured in the cloud; the worker reports every changelog item that touches the spike findings.
+
+### Ticket: T173 Rebuilds show without a hard reload; checklist step 1 is right
+- **Priority:** P0
+- **Status:** In Progress
+- **Owner:** —
+- **Scope:** From Pete's T164 look (2026-09-23). (1) `GET /` serves `index.html` with no cache header, so a browser can keep an old page (and old hashed bundle) after a rebuild; serve it with `cache-control: no-cache` (hashed assets may stay cacheable). (2) LIVE-CHECKLIST.md step 1 checks out `main`, which does not carry the reshape, and assumes `~/Projects/agile-agents`; Pete's checkout is `~/agile-agents`. Step 1 builds the current branch (`claude/reshape` until it lands) and says to `cd` to wherever the checkout lives.
+- **Acceptance Criteria:** A test asserts the `/` response carries `no-cache`; checklist step 1 is correct for Pete.
+- **Validation Steps:** `bun test packages/daemon`; `bun run test:e2e`.
+- **Notes:** Small; runs before T172.
+
+### Ticket: T172 Trim the daemon under 18,000 lines
+- **Priority:** P1
+- **Status:** Todo
+- **Owner:** —
+- **Scope:** §6 Definition of done says daemon source under 18,000 lines; it is 22,486 (measured by `find packages/daemon/src -name '*.ts' ! -name '*.test.ts' | xargs cat | wc -l`). Phase 2 reached ~16,000; Phases 4–6 added rules, classifier, route band, lessons, hook thread cards and cockpit routes. Remove dead code (unexported/unused functions, compatibility shims kept "for now", e.g. the `message` event kind and `AccountQuotaConfigSchema` if nothing reads them), leftover scaffolding, and duplication (e.g. `SESSION_VENDORS` vs acp-client providers). No behaviour change, no feature removal, no moving code into other packages just to shrink the count. If under 18,000 is not reachable without removing behaviour, stop at the honest floor and report what is left and why.
+- **Acceptance Criteria:** Daemon source under 18,000 lines, or a documented floor Pete accepts; all offline suites green.
+- **Validation Steps:** the line count above; `bun test`; `bun run test:integration`; `bun run test:e2e`.
+- **Notes:** Pete asked for it 2026-09-23 over raising the target.
 
 ### Ticket: T165 Cockpit as an installable app
 - **Priority:** P2
