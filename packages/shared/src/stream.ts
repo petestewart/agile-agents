@@ -76,6 +76,12 @@ export const SessionRefSchema = z
      */
     effort: EffortSchema.optional(),
     worktree: z.string().min(1).optional(),
+    /**
+     * T171: why a session that died on a vendor failure ended — the exit
+     * reason plus the vendor's last stderr line — so the sessions strip can
+     * say it without the thread. Absent on a clean end.
+     */
+    ended_reason: z.string().min(1).max(300).optional(),
   })
   .strict();
 export type SessionRef = z.infer<typeof SessionRefSchema>;

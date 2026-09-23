@@ -1502,6 +1502,42 @@ describe('stream page rough edges (Playwright e2e, T166)', () => {
   );
 });
 
+describe('a session that dies on a vendor error (Playwright e2e, T171)', () => {
+  browserTest(
+    "the sessions strip shows the vendor's error line",
+    async () => {
+      const cockpit = await startStreamCockpit([
+        {
+          stderrBanner: 'this model is not supported by this vendor build',
+          validModes: ['nope'],
+          steps: [{ type: 'end_turn' }],
+        },
+      ]);
+      let page: Page | undefined;
+      try {
+        const stream = await cockpit.streams.create('human', { title: 'dies', goal: 'g' });
+        page = await openPage();
+        await page.goto(`${cockpit.base}/`);
+        await page.locator(`[data-testid="stream-tree"] [data-stream="${stream.id}"]`).click();
+        await page.locator(`[data-testid="stream-page"][data-stream="${stream.id}"]`).waitFor();
+        await cockpit.attach.attach(stream.id);
+        await page
+          .locator(
+            '[data-testid="session"][data-status="error"] [data-testid="session-ended-reason"]',
+            {
+              hasText: 'this model is not supported by this vendor build',
+            },
+          )
+          .waitFor();
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+});
+
 describe('rule hits on the stream (Playwright e2e, T169)', () => {
   browserTest(
     'a rule_hit thread entry renders as a "blocked by rule" card that opens the rule on the Rules screen',

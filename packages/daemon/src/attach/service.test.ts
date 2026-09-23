@@ -19,7 +19,7 @@ import { wireQuestionSupersession } from '../questions/supersede';
 import type { FakeAgentScript } from '../runner/fake-agent';
 import { StateStore } from '../store';
 import { StreamService } from '../streams/service';
-import { AttachService, StreamBusyError } from './service';
+import { AttachService, StreamBusyError, endedReason } from './service';
 import { VerbService } from './verbs';
 
 const FAKE_AGENT_PATH = join(import.meta.dir, '..', 'runner', 'fake-agent.ts');
@@ -211,6 +211,39 @@ describe('the exit path', () => {
     // to a session that has exited.
     expect(store.listAgents().some((a) => a.id === session.id)).toBe(false);
   }, 20_000);
+});
+
+describe('a session that dies on a vendor error (T171)', () => {
+  test("the session record carries the vendor's error line for the sessions strip", async () => {
+    // A vendor that prints its complaint and then refuses the session's
+    // mode — the offline stand-in for "does not support this model".
+    const vendorLine =
+      'Claude Code 2.1.257 does not support this model; version 2.1.280 or newer is required';
+    attachService = buildAttachService(
+      fakeProviderFor(ACP_PROVIDERS.claude, {
+        stderrBanner: `starting\n${vendorLine}`,
+        validModes: ['nope'],
+        steps: [{ type: 'end_turn' }],
+      }),
+    );
+    const stream = await makeStream();
+    const { session } = await attachService.attach(stream.id);
+    await waitFor(() => {
+      const ref = streams.get(stream.id).sessions.find((s) => s.id === session.id);
+      return ref?.status === 'error' && ref.ended_reason !== undefined;
+    });
+    const ref = streams.get(stream.id).sessions.find((s) => s.id === session.id);
+    expect(ref?.ended_reason).toContain(vendorLine);
+  }, 20_000);
+
+  test('endedReason: nothing on a clean end, the vendor line appended once, capped', () => {
+    expect(endedReason('process exited (code 0)', true, undefined)).toBeUndefined();
+    expect(endedReason('prompt failed: boom', false, 'boom')).toBe('prompt failed: boom');
+    expect(endedReason('process exited (code 1)', true, 'bad model')).toBe(
+      'process exited (code 1): bad model',
+    );
+    expect(endedReason('x', false, 'y'.repeat(400))?.length).toBe(300);
+  });
 });
 
 describe('one live worker per stream (§2.3)', () => {

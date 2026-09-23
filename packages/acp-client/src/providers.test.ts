@@ -34,7 +34,7 @@ describe('ACP provider registry', () => {
   it('describes claude on the spike-pinned bridge, no auth round trip needed', () => {
     const claude = ACP_PROVIDERS.claude;
     expect(claude.command).toBe('npx');
-    expect(claude.args).toEqual(['-y', '@agentclientprotocol/claude-agent-acp@0.75.1']);
+    expect(claude.args).toEqual(['-y', '@agentclientprotocol/claude-agent-acp@0.81.1']);
     expect(claude.clientCapabilities._meta?.terminal_output).toBe(true);
     expect(claude.authMethods).toEqual([]);
     expect(claude.defaultModeId).toBe('default');
