@@ -1,17 +1,9 @@
 /**
- * `JevClassifier` — the classifier tier's one real implementation
- * (design/cockpit-design.md §6.2, **D5**).
- *
- * The daemon holds the `TYPESAFE_API_KEY`. That is the narrow, written-down
- * exception to "no vendor credentials in the daemon": every other
- * credential here belongs to a *coding agent*, and the adapters spawn
- * vendor harnesses under the user's own login precisely so the daemon never
- * holds one. The classifier is the daemon's own dependency, not an agent's.
- *
- * Three seams, all for tests: `fetch`, `now`, and `scrub`. The suite never
- * reaches the network — `FakeClassifier` is the only classifier the rest of
- * the tests use, and the fixture test in `jev.test.ts` pins the request and
- * response shapes against recorded JSON.
+ * `JevClassifier`: the classifier tier's one real implementation (§6.2,
+ * D5). The daemon holds the TypeSafe key, the one written exception to
+ * "no vendor credentials in the daemon": the classifier is the daemon's
+ * own dependency, not an agent's. `fetch`, `now` and `scrub` are test
+ * seams; tests never reach the network.
  */
 
 import type { ClassifierConfig } from '@agile-agents/shared';
@@ -25,27 +17,20 @@ import {
   type Noul,
 } from './types';
 
-/** The env var the key comes from when `config.yaml` names none (§6.2). */
+/** The env var the key comes from when `config.yaml` names none. */
 export const TYPESAFE_API_KEY_ENV = 'TYPESAFE_API_KEY';
 
 export interface JevClassifierOptions {
-  /** `classifier:` from `<home>/config.yaml`, already through the schema. */
+  /** `classifier:` from `config.yaml`, through the schema. */
   config: ClassifierConfig;
-  /** Falls back to `process.env.TYPESAFE_API_KEY` when the config names no key. */
+  /** Key fallback env. Defaults to `process.env`. */
   env?: Record<string, string | undefined>;
-  /** Injectable transport. Defaults to `globalThis.fetch`. */
+  /** Test seams. */
   fetch?: typeof globalThis.fetch;
-  /** Injectable clock for the latency measurement. Defaults to `Date.now`. */
   now?: () => number;
-  /** Injectable scrub, so a test can inject one that throws (§6.5). */
+  /** A test can inject a scrub that throws (§6.5). */
   scrub?: (state: string) => string;
-  /**
-   * Called once per `ask`, success or failure, with the measured latency.
-   * §6.2: "latency is recorded per call as an event, because a gate that
-   * adds a second to every tool call is a gate that will be turned off."
-   * T151 passes the daemon's event writer here; nothing is logged from
-   * inside the adapter itself.
-   */
+  /** Called once per `ask`, success or failure, with the latency (§6.2). */
   onCall?: (info: ClassifierCallInfo) => void;
 }
 
@@ -66,22 +51,13 @@ export class JevClassifier implements Classifier {
     this.onCall = options.onCall;
   }
 
-  /**
-   * Read on every call, not captured at construction (T167): the cockpit's
-   * Settings screen sets or removes `classifier.api_key` on the daemon's
-   * own config object, and the next call must see it without a restart.
-   */
+  /** Read per call, so a key set or removed in Settings applies without a restart. */
   private get apiKey(): string | undefined {
     // An empty env var is no key (a shell that exported `TYPESAFE_API_KEY=`).
     return this.config.api_key ?? (this.env[TYPESAFE_API_KEY_ENV] || undefined);
   }
 
-  /**
-   * True when this classifier could actually make a call — a provider that
-   * is not `off` and a key from somewhere. `ask` throws rather than relying
-   * on the caller checking first, but T151's resolution reads this to
-   * decide whether the tier exists at all.
-   */
+  /** A provider that isn't `off` and a key from somewhere. `ask` throws regardless. */
   get configured(): boolean {
     return this.config.provider !== 'off' && this.apiKey !== undefined;
   }
@@ -113,12 +89,10 @@ export class JevClassifier implements Classifier {
         `no classifier API key: set classifier.api_key in config.yaml or ${TYPESAFE_API_KEY_ENV}`,
       );
     }
-    // An empty question list is not a call. Ten rules in scope are one round
-    // trip (§6.2); zero rules in scope are none.
+    // Zero questions is no call (ten rules are one round trip, §6.2).
     if (questions.length === 0) return [];
 
-    // §6.5, fail-closed: the scrub runs before every call, and if it throws
-    // nothing is sent — not a partial state, not the unscrubbed state.
+    // §6.5, fail-closed: if the scrub throws, nothing is sent.
     let scrubbed: string;
     try {
       scrubbed = this.scrub(state);
