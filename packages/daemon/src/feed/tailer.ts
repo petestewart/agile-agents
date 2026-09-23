@@ -80,7 +80,7 @@ export function startEventTailer(options: EventTailerOptions): EventTailerHandle
   }
 
   const interval = setInterval(pollNow, pollIntervalMs);
-    // Never keep the process alive on its own.
+  // Never keep the process alive on its own.
   if (typeof interval === 'object' && interval !== null && 'unref' in interval) {
     (interval as { unref(): void }).unref();
   }

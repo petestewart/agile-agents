@@ -16,7 +16,7 @@ import {
   validateRuleProposal,
 } from '@agile-agents/shared';
 import type { Classifier } from '../classifier';
-import { RpcParamError, optionalString, requireObject } from '../gates/rpc';
+import { RpcParamError, optionalString, paramErrors, requireObject } from '../gates/rpc';
 import type { RpcMethodHandler } from '../rpc';
 import { buildEvent } from '../store/events';
 import { AlreadyExistsError } from '../store/store';
@@ -69,22 +69,13 @@ function validated<T>(parse: () => T): T {
   }
 }
 
-/** Service and store errors that are caller input (scope, duplicate id, a repeat decision, the principal and tier checks): -32602. */
-async function asParamErrors<T>(run: () => Promise<T> | T): Promise<T> {
-  try {
-    return await run();
-  } catch (err) {
-    if (
-      err instanceof RuleWriteError ||
-      err instanceof UnknownRuleScopeError ||
-      err instanceof RuleAlreadyDecidedError ||
-      err instanceof AlreadyExistsError
-    ) {
-      throw new RpcParamError(err.message);
-    }
-    throw err;
-  }
-}
+/** Errors here that are caller input: -32602, not an internal fault. */
+const asParamErrors = paramErrors(
+  RuleWriteError,
+  UnknownRuleScopeError,
+  RuleAlreadyDecidedError,
+  AlreadyExistsError,
+);
 
 /**
  * What `rule.test` (§5.6) needs: the classifier and its bands. Optional:

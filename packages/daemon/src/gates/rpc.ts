@@ -46,6 +46,19 @@ export function requireObject(params: unknown): Record<string, unknown> {
   return params as Record<string, unknown>;
 }
 
+/** Wraps a call so the given error types surface as `RpcParamError`; anything else propagates. */
+export function paramErrors(...types: Array<abstract new (...args: never[]) => Error>) {
+  return async <T>(run: () => Promise<T> | T): Promise<T> => {
+    try {
+      return await run();
+    } catch (err) {
+      if (types.some((type) => err instanceof type))
+        throw new RpcParamError((err as Error).message);
+      throw err;
+    }
+  };
+}
+
 export function requireStreamId(value: unknown, field = 'stream'): string {
   const result = UlidSchema.safeParse(value);
   if (!result.success) {

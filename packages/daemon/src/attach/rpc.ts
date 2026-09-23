@@ -15,6 +15,7 @@
 import {
   RpcParamError,
   optionalString,
+  paramErrors,
   requireObject as requireParams,
   requireStreamId,
 } from '../gates/rpc';
@@ -36,29 +37,16 @@ function requireObject(params: unknown): Record<string, unknown> {
   return p;
 }
 
-/**
- * Caller-input failures on this surface. Without this they would surface as
- * -32603 "internal error" while every other validation failure here is
- * -32602; a genuine internal fault still propagates untouched.
- */
-async function asParamErrors<T>(run: () => Promise<T>): Promise<T> {
-  try {
-    return await run();
-  } catch (err) {
-    if (
-      err instanceof StreamBusyError ||
-      err instanceof UnregisteredRepoError ||
-      err instanceof UnknownVendorError ||
-      err instanceof UnknownSessionError ||
-      err instanceof NoWorktreeError ||
-      err instanceof WorktreeRefusedError ||
-      err instanceof NotFoundError
-    ) {
-      throw new RpcParamError(err.message);
-    }
-    throw err;
-  }
-}
+/** Errors here that are caller input: -32602, not an internal fault. */
+const asParamErrors = paramErrors(
+  StreamBusyError,
+  UnregisteredRepoError,
+  UnknownVendorError,
+  UnknownSessionError,
+  NoWorktreeError,
+  WorktreeRefusedError,
+  NotFoundError,
+);
 
 export function buildAttachRpcMethods(
   attach: AttachService,

@@ -68,13 +68,13 @@ function ageInDays(rule: Rule, now: Date): number {
 /** The first signal a rule trips (they are nearly exclusive anyway). */
 function flagOf(rule: Rule, days: number, now: Date): RuleReportFlag {
   const { fired, violated, routed } = rule.stats;
-    // Only an accepted rule can fire; a proposal's silence says nothing.
+  // Only an accepted rule can fire; a proposal's silence says nothing.
   if (rule.status === 'accepted' && fired === 0 && ageInDays(rule, now) >= days) {
     return 'never fired';
   }
-    // `never violated` is a prune signal only where a violation can be
-    // recorded without being stopped (classifier, guidance). A pattern rule
-    // that fires denies the call, so `violated: 0` means it works.
+  // `never violated` is a prune signal only where a violation can be
+  // recorded without being stopped (classifier, guidance). A pattern rule
+  // that fires denies the call, so `violated: 0` means it works.
   if (
     rule.enforcement !== 'pattern' &&
     fired >= RULE_REPORT_NEVER_VIOLATED_MIN_FIRED &&

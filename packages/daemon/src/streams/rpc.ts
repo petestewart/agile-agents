@@ -18,7 +18,7 @@ import {
   UlidSchema,
   validateStreamCreateInput,
 } from '@agile-agents/shared';
-import { RpcParamError, optionalString, requireObject } from '../gates/rpc';
+import { RpcParamError, optionalString, paramErrors, requireObject } from '../gates/rpc';
 import { type ThreadReplyDeps, sayAndAnswer } from '../questions/thread-reply';
 import type { RpcMethodHandler } from '../rpc';
 import { AlreadyExistsError } from '../store/store';
@@ -116,30 +116,13 @@ function requireHumanPatch(params: Record<string, unknown>): StreamPatch {
   return patch;
 }
 
-/**
- * Errors the service/store raise for **caller input** — a parent cycle, a
- * duplicate id, an unknown parent or an unregistered repo. `dispatch()`
- * only reads a `code` off the thrown error, so without this they surfaced
- * as -32603 "internal error" while every other validation failure on this
- * surface is -32602 (T126, QA rough edge 1). Everything else still
- * propagates untouched: a real internal fault must not be relabelled as
- * the caller's fault.
- */
-async function asParamErrors<T>(run: () => Promise<T>): Promise<T> {
-  try {
-    return await run();
-  } catch (err) {
-    if (
-      err instanceof StreamCycleError ||
-      err instanceof AlreadyExistsError ||
-      err instanceof UnknownParentStreamError ||
-      err instanceof UnknownRepoError
-    ) {
-      throw new RpcParamError(err.message);
-    }
-    throw err;
-  }
-}
+/** Errors here that are caller input: -32602, not an internal fault. */
+const asParamErrors = paramErrors(
+  StreamCycleError,
+  AlreadyExistsError,
+  UnknownParentStreamError,
+  UnknownRepoError,
+);
 
 /**
  * T169: optional wiring for `stream.thread_append`. With `reply`, a plain
