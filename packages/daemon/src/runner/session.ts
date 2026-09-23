@@ -150,6 +150,20 @@ export interface AgentExitInfo {
   reason: string;
   /** False when the session ended on a transport error or a failed prompt — `agent.status: blocked` rather than `done`. */
   ok: boolean;
+  /**
+   * T171: the vendor's last non-empty stderr line, when the session ended
+   * on a failure (`ok: false`) or a non-zero exit code. Absent otherwise.
+   */
+  vendorError?: string;
+}
+
+/** T171: the last non-empty line of a stderr chunk stream, trimmed. */
+export function lastStderrLine(tail: string): string | undefined {
+  const lines = tail.split(/\r?\n/).map((line) => line.trim());
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (lines[i]) return lines[i];
+  }
+  return undefined;
 }
 
 export interface AgentSessionHandle {
@@ -341,6 +355,13 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
 
   const stderrLog = openLog(opts.sessionDir, 'stderr.log');
   const outputLog = openLog(opts.sessionDir, 'output.log');
+  // T171: the tail of the vendor's stderr, kept in memory so a session that
+  // dies on a vendor error can name it on the sessions strip.
+  let stderrTail = '';
+  const onStderr = (chunk: string) => {
+    stderrLog.append(chunk);
+    stderrTail = (stderrTail + chunk).slice(-4000);
+  };
 
   // D12: the vendor's own model/effort levers, from the provider registry —
   // config per vendor, never a code path. An unmapped vendor contributes
@@ -368,7 +389,7 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
     },
     clientCapabilities: provider.clientCapabilities,
     mcpServers: [mcpServerConfig(cliBin, sessionId, opts.socketPath)],
-    onStderr: stderrLog.append,
+    onStderr,
     // Omitted entirely (not even `modeId: undefined`) when the provider has
     // no mode, so the built object stays honest about what is requested.
     ...(modeId !== undefined ? { modeId } : {}),
@@ -454,7 +475,7 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
     });
   }
 
-  async function finish(reason: string, ok: boolean): Promise<void> {
+  async function finish(reason: string, ok: boolean, failed = !ok): Promise<void> {
     if (settled) return;
     settled = true;
     unsubscribe();
@@ -472,7 +493,14 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
     // life: `exited` must not resolve while a background flush timer is
     // still due, or a caller tearing the worktree down races it.
     await store.flush();
-    resolveExited({ session: sessionId, stream: stream.id, reason, ok });
+    const vendorError = failed ? lastStderrLine(stderrTail) : undefined;
+    resolveExited({
+      session: sessionId,
+      stream: stream.id,
+      reason,
+      ok,
+      ...(vendorError !== undefined ? { vendorError } : {}),
+    });
   }
 
   const unsubscribe = spawned.on((event: AgentEvent) => {
@@ -482,7 +510,7 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
       // turn both look like — so the code goes in the reason, not into a
       // `blocked` verdict. Only a transport error or a failed prompt, where
       // the session never got to do its work, blocks the stream.
-      void finish(`process exited (code ${event.exitCode})`, true);
+      void finish(`process exited (code ${event.exitCode})`, true, event.exitCode !== 0);
       return;
     }
     if (event.type === 'error') {

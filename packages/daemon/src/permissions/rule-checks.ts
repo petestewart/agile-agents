@@ -80,7 +80,10 @@ function checkCommandDeny(
     for (const tokens of atoms) {
       for (let i = 0; i + needle.length <= tokens.length; i++) {
         if (needle.every((t, j) => tokens[i + j] === t)) {
-          return `the command runs "${pattern}"`;
+          // Backticks, not double quotes: the reason travels inside the
+          // hook's JSON reply and Claude Code shows it to the model
+          // JSON-escaped, so `"` read as `\"` (T171).
+          return `the command runs \`${pattern}\``;
         }
       }
     }

@@ -149,6 +149,12 @@ describe('command_deny', () => {
     expect(checkPatternRule(noCurl, ctx({ command: 'grep -rn curlybrace src' }))).toBeUndefined();
   });
 
+  test('the reason carries no double quotes that would read as \\" once JSON-escaped', () => {
+    const reason = checkPatternRule(noCurl, ctx({ command: 'curl https://x' }));
+    expect(reason).toBe('the command runs `curl`');
+    expect(JSON.stringify(reason)).not.toContain('\\"');
+  });
+
   test('no patterns means nothing is denied', () => {
     const empty = rule({ kind: 'command_deny', args: { patterns: [] } });
     expect(checkPatternRule(empty, ctx({ command: 'curl https://x' }))).toBeUndefined();

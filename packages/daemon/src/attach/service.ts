@@ -368,7 +368,15 @@ export class AttachService {
     this.exitHandled.set(
       sessionId,
       handle.exited.then((info) =>
-        this.onExit(info.stream, sessionId, info.reason, info.ok, role, findingsBefore),
+        this.onExit(
+          info.stream,
+          sessionId,
+          info.reason,
+          info.ok,
+          role,
+          findingsBefore,
+          info.vendorError,
+        ),
       ),
     );
 
@@ -405,10 +413,13 @@ export class AttachService {
     streamId: string,
     sessionId: string,
     status: SessionStatus,
+    ended_reason?: string,
   ): Promise<void> {
     await this.options.store.updateStream('daemon', streamId, (before) => ({
       ...before,
-      sessions: before.sessions.map((s) => (s.id === sessionId ? { ...s, status } : s)),
+      sessions: before.sessions.map((s) =>
+        s.id === sessionId ? { ...s, status, ...(ended_reason ? { ended_reason } : {}) } : s,
+      ),
     }));
   }
 
@@ -613,6 +624,7 @@ export class AttachService {
     ok: boolean,
     role: SessionRole,
     findingsBefore: number,
+    vendorError?: string,
   ): Promise<void> {
     const handles = this.handles(role);
     if (handles.get(streamId)?.sessionId === sessionId) handles.delete(streamId);
@@ -621,7 +633,12 @@ export class AttachService {
     // promise it awaits, so dropping it here cannot lose a write.
     this.exitHandled.delete(sessionId);
     try {
-      await this.setSessionStatus(streamId, sessionId, ok ? 'stopped' : 'error');
+      await this.setSessionStatus(
+        streamId,
+        sessionId,
+        ok ? 'stopped' : 'error',
+        detached ? undefined : endedReason(reason, ok, vendorError),
+      );
       // T137: a human pulled the plug. The stream produced nothing, so it
       // goes back to `idle` — writing `done` would claim work was finished
       // by the very act of killing it.
@@ -756,4 +773,23 @@ export class AttachService {
       ),
     );
   }
+}
+
+/**
+ * T171: what the sessions strip says about a session that died on a vendor
+ * failure — the exit reason with the vendor's last stderr line (e.g. "does
+ * not support this model"). A clean end (no failure, no vendor line) says
+ * nothing.
+ */
+export function endedReason(
+  reason: string,
+  ok: boolean,
+  vendorError: string | undefined,
+): string | undefined {
+  if (ok && vendorError === undefined) return undefined;
+  const text =
+    vendorError === undefined || reason.includes(vendorError)
+      ? reason
+      : `${reason}: ${vendorError}`;
+  return text.length > 300 ? `${text.slice(0, 299)}…` : text;
 }

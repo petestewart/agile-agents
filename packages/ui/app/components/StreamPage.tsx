@@ -360,6 +360,12 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
             >
               <strong>{session.role}</strong> {session.vendor}/{sessionModelText(session)}
               {session.effort ? ` · ${session.effort}` : ''} · {session.status}
+              {session.ended_reason && (
+                <span className="cr-dim" data-testid="session-ended-reason">
+                  {' '}
+                  — {session.ended_reason}
+                </span>
+              )}
             </li>
           ))}
         </ul>

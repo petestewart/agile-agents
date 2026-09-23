@@ -111,7 +111,7 @@ export interface AcpProviderConfig {
 /**
  * Claude's effort levels, as thinking-token budgets.
  *
- * Measured, not invented: `@agentclientprotocol/claude-agent-acp@0.75.1`
+ * Measured, not invented: `@agentclientprotocol/claude-agent-acp@0.81.1`
  * reads `MAX_THINKING_TOKENS` from its own environment at `session/new`
  * (`dist/acp-agent.js`: `resolveThinkingConfig(process.env.MAX_THINKING_TOKENS,
  * …)` — "unset → SDK default (adaptive); `0` → disabled; a positive integer
@@ -147,9 +147,11 @@ export const ACP_PROVIDERS: Record<AcpProviderId, AcpProviderConfig> = Object.fr
     id: 'claude',
     label: 'Claude Code',
     // Zed-maintained ACP bridge over Claude Code, measured in
-    // design/spike-findings.md §A-§C against 0.75.1 / Claude Code 2.1.263.
+    // design/spike-findings.md §A-§C against 0.75.1 / Claude Code 2.1.263;
+    // bumped to 0.81.1 (SDK 0.3.280) in T171 — mode catalog, ANTHROPIC_MODEL
+    // and MAX_THINKING_TOKENS re-checked in the 0.81.1 dist.
     command: 'npx',
-    args: ['-y', '@agentclientprotocol/claude-agent-acp@0.75.1'],
+    args: ['-y', '@agentclientprotocol/claude-agent-acp@0.81.1'],
     envOverrides: {},
     // `_meta.terminal_output` is a vendor extension — advertising it makes
     // command output arrive as structured terminal frames. Only ever read
@@ -162,7 +164,7 @@ export const ACP_PROVIDERS: Record<AcpProviderId, AcpProviderConfig> = Object.fr
     // Ambient login (`claude login`, or ANTHROPIC_API_KEY) — no ACP
     // `authenticate` round trip needed (spike-findings.md §C, §C2).
     authMethods: [],
-    // Modes at 0.75.1 (§C): `default, acceptEdits, plan, auto,
+    // Modes at 0.75.1 (§C, unchanged at 0.81.1): `default, acceptEdits, plan, auto,
     // bypassPermissions` — `default` is what tier 2 needs to see edits/exec
     // (§6: "Engineers run in `default` mode so tier 2 sees edits/exec").
     defaultModeId: 'default',
