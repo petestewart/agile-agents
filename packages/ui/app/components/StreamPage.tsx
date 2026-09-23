@@ -42,6 +42,7 @@ import {
 } from '../lib/streams';
 import { Card } from './Inbox';
 import { Markdown } from './Markdown';
+import { SessionPicker, sessionModelText } from './SessionPicker';
 
 type Tab = 'thread' | 'diff' | 'rules' | 'docs';
 const TABS: ReadonlyArray<{ tab: Tab; label: string }> = [
@@ -228,6 +229,8 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
   const [draft, setDraft] = useState('');
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<string | undefined>(undefined);
+  // T170: Attach/Review open the session picker first.
+  const [picker, setPicker] = useState<'worker' | 'reviewer' | undefined>(undefined);
   const threadRef = useRef<HTMLOListElement | null>(null);
 
   const load = useCallback(() => {
@@ -252,6 +255,7 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
     setTab('thread');
     setDraft('');
     setActionError(undefined);
+    setPicker(undefined);
   }, [id]);
 
   const threadLength = page?.thread.length ?? 0;
@@ -350,7 +354,7 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
               data-status={session.status}
               title={session.id}
             >
-              <strong>{session.role}</strong> {session.vendor}/{session.model}
+              <strong>{session.role}</strong> {session.vendor}/{sessionModelText(session)}
               {session.effort ? ` · ${session.effort}` : ''} · {session.status}
             </li>
           ))}
@@ -361,7 +365,7 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
             className="cr-btn"
             data-testid="attach"
             disabled={busy || liveWorker !== undefined || stream.human.status === 'landed'}
-            onClick={() => void act(() => attachSession(stream.id, 'worker'))}
+            onClick={() => setPicker('worker')}
           >
             Attach
           </button>
@@ -370,7 +374,7 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
             className="cr-btn"
             data-testid="review"
             disabled={busy || liveReviewer !== undefined}
-            onClick={() => void act(() => attachSession(stream.id, 'reviewer'))}
+            onClick={() => setPicker('reviewer')}
           >
             Review
           </button>
@@ -395,6 +399,21 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
             </button>
           )}
         </div>
+        {picker && (
+          <SessionPicker
+            key={picker}
+            role={picker}
+            repo={stream.repo}
+            busy={busy}
+            onCancel={() => setPicker(undefined)}
+            onStart={(choice) =>
+              void act(
+                () => attachSession(stream.id, picker, choice),
+                () => setPicker(undefined),
+              )
+            }
+          />
+        )}
         {actionError && (
           <p className="cr-error" role="alert" data-testid="stream-error">
             {actionError}

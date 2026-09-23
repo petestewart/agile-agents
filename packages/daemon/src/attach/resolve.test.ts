@@ -22,11 +22,31 @@ const home = {
 };
 
 describe('resolveSessionSettings', () => {
-  test('falls back to claude / the provider default model / medium', () => {
+  test('D17: nothing named falls back to the built-in claude / claude-opus-5-5 / low', () => {
     const resolved = resolveSessionSettings();
     expect(resolved.vendor).toBe(DEFAULT_VENDOR);
-    expect(resolved.model).toBe(ACP_PROVIDERS.claude.defaultModel);
-    expect(resolved.effort).toBe('medium');
+    expect(resolved).toMatchObject({ vendor: 'claude', model: 'claude-opus-5-5', effort: 'low' });
+  });
+
+  test('the built-in step fills only the fields nothing else named', () => {
+    expect(resolveSessionSettings({ home: { default_effort: 'high' } })).toMatchObject({
+      vendor: 'claude',
+      model: 'claude-opus-5-5',
+      effort: 'high',
+    });
+    expect(
+      resolveSessionSettings({ repo: { ...repo, vendor: undefined, model: 'sonnet' } }),
+    ).toMatchObject({
+      vendor: 'claude',
+      model: 'sonnet',
+      effort: 'high',
+    });
+  });
+
+  test('a non-Claude vendor with no model named gets the provider default, not a Claude id', () => {
+    const resolved = resolveSessionSettings({ flags: { vendor: 'gemini' } });
+    expect(resolved.model).toBe(ACP_PROVIDERS.gemini.defaultModel);
+    expect(resolved.effort).toBe('low');
   });
 
   test('home config beats the provider default', () => {

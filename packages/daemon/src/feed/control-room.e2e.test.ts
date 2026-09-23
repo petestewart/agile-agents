@@ -1182,7 +1182,14 @@ describe('stream page (Playwright e2e, T161)', () => {
         await page.locator('.cr-tabs [data-tab="thread"]').click();
 
         // ---- attach: the worker speaks onto the thread, live.
+        // T170: Attach opens the picker, prefilled with the D17 built-in.
         await page.locator('[data-testid="attach"]').click();
+        await page.locator('[data-testid="session-picker"][data-role="worker"]').waitFor();
+        expect(await page.locator('[data-testid="picker-model"]').inputValue()).toBe(
+          'claude-opus-5-5',
+        );
+        expect(await page.locator('[data-testid="picker-effort"]').inputValue()).toBe('low');
+        await page.locator('[data-testid="picker-start"]').click();
         await page
           .locator('[data-testid="session"][data-role="worker"][data-status="running"]')
           .waitFor();
@@ -1266,6 +1273,8 @@ describe('stream page (Playwright e2e, T161)', () => {
 
         // ---- findings: Review attaches a reviewer, which reports one.
         await page.locator('[data-testid="review"]').click();
+        await page.locator('[data-testid="session-picker"][data-role="reviewer"]').waitFor();
+        await page.locator('[data-testid="picker-start"]').click();
         await page.locator('[data-testid="session"][data-role="reviewer"]').waitFor();
         await waitUntil('the reviewer to register', () => {
           const reviewerSession = cockpit.streams
@@ -1359,6 +1368,65 @@ describe('stream page (Playwright e2e, T161)', () => {
         await page.locator(`${card} [data-testid="open-stream"]`).click();
         const full = `[data-testid="stream-needs"] [data-id="${question.id}"] [data-testid="inbox-context"]`;
         await waitForText(page, full, LONG_QUESTION);
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+});
+
+describe('session defaults (Playwright e2e, T170)', () => {
+  browserTest(
+    'change the default in Settings, Attach, and the session strip shows the new model and effort',
+    async () => {
+      const cockpit = await startStreamCockpit([{ steps: [{ type: 'end_turn' }] }]);
+      let page: Page | undefined;
+      try {
+        const stream = await cockpit.streams.create('human', {
+          title: 'defaults',
+          goal: 'g',
+          repo: 'demo',
+        });
+        page = await openPage();
+        await page.goto(`${cockpit.base}/`);
+        await page.locator('[data-view="settings"]').click();
+        const home = (suffix: string) => `[data-testid="settings-session-home${suffix}"]`;
+        await waitForText(page, home('-resolved'), 'Resolves to claude / claude-opus-5-5 / low');
+        await page.locator(home('-field-model')).fill('claude-sonnet-4-6');
+        await page.locator(home('-field-effort')).selectOption('high');
+        await page.locator(home('-save')).click();
+        await waitForText(
+          page,
+          home('-resolved'),
+          'Resolves to claude / claude-sonnet-4-6 / high · saved',
+        );
+        expect(readFileSync(join(cockpit.home, 'config.yaml'), 'utf8')).toContain(
+          'default_model: claude-sonnet-4-6',
+        );
+
+        await page.locator(`[data-testid="stream-tree"] [data-stream="${stream.id}"]`).click();
+        await page.locator(`[data-testid="stream-page"][data-stream="${stream.id}"]`).waitFor();
+        await page.locator('[data-testid="attach"]').click();
+        await page.locator('[data-testid="session-picker"]').waitFor();
+        await waitUntilAsync(
+          'the picker to prefill',
+          async () =>
+            (await page?.locator('[data-testid="picker-model"]').inputValue()) ===
+            'claude-sonnet-4-6',
+        );
+        expect(await page.locator('[data-testid="picker-effort"]').inputValue()).toBe('high');
+        await page.locator('[data-testid="picker-start"]').click();
+        await page
+          .locator('[data-testid="session"][data-role="worker"]', {
+            hasText: 'claude/claude-sonnet-4-6 · high',
+          })
+          .waitFor();
+        expect(cockpit.streams.get(stream.id).sessions[0]).toMatchObject({
+          model: 'claude-sonnet-4-6',
+          effort: 'high',
+        });
       } finally {
         await teardown([page]);
         await cockpit.stop();

@@ -33,11 +33,15 @@ import {
   type AgentId,
   type AgentRecord,
   type Event,
+  type HomeConfig,
   type Policy,
+  type RepoEntry,
   type ReposConfig,
   type Rule,
   RuleIdSchema,
   type RulePrincipal,
+  type SessionDefaultsPatch,
+  SessionDefaultsPatchSchema,
   type Stream,
   type StreamPrincipal,
   type ThreadEntry,
@@ -766,6 +770,75 @@ export class StateStore {
     });
   }
 
+  /** `<home>/config.yaml` through the strict schema; a missing file is `{}`. */
+  getHomeConfig(): HomeConfig {
+    const path = this.abs('config.yaml');
+    if (!fileExists(path)) return {};
+    return validateHomeConfig(readYamlFile(path) ?? {});
+  }
+
+  /**
+   * T170 (D17): Settings' home-wide session defaults —
+   * `default_vendor|default_model|default_effort` in `<home>/config.yaml`.
+   * Same shape as `setClassifierApiKey`: the raw mapping is edited (absent
+   * = unchanged, `null` = removed), the result goes through the strict
+   * schema, then one atomic write. Attach reads the file per session, so
+   * the next session sees it without a restart.
+   */
+  async setHomeSessionDefaults(
+    patch: SessionDefaultsPatch,
+    options: { by?: string } = {},
+  ): Promise<HomeConfig> {
+    const validPatch = SessionDefaultsPatchSchema.parse(patch);
+    return this.mutate(() => {
+      const relPath = 'config.yaml';
+      const path = this.abs(relPath);
+      const parsed: unknown = fileExists(path) ? readYamlFile(path) : {};
+      const raw: Record<string, unknown> =
+        parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)
+          ? { ...(parsed as Record<string, unknown>) }
+          : {};
+      applyDefaultsPatch(raw, validPatch, {
+        vendor: 'default_vendor',
+        model: 'default_model',
+        effort: 'default_effort',
+      });
+      const validated = validateHomeConfig(raw);
+      // 0600: the same file may hold the classifier key (T167).
+      writeYamlFileAtomic(path, raw, 0o600);
+      const event = buildEvent('home_config_put', {
+        agent: options.by,
+        data: { session_defaults: sessionDefaultsEventData(validPatch) },
+      });
+      return { result: validated, relPaths: [relPath], event };
+    });
+  }
+
+  /** T170 (D17): one repo's `vendor|model|effort` in `repos.yaml`, same patch rules. */
+  async setRepoSessionDefaults(
+    name: string,
+    patch: SessionDefaultsPatch,
+    options: { by?: string } = {},
+  ): Promise<RepoEntry> {
+    const validPatch = SessionDefaultsPatchSchema.parse(patch);
+    return this.mutate(() => {
+      const repos = this.getRepos();
+      const current = repos[name];
+      if (current === undefined) throw new NotFoundError('RepoEntry', name);
+      const raw: Record<string, unknown> = { ...current };
+      applyDefaultsPatch(raw, validPatch, { vendor: 'vendor', model: 'model', effort: 'effort' });
+      const entry = validateRepoEntry(raw);
+      const validated = validateReposConfig({ ...repos, [name]: entry });
+      const relPath = 'repos.yaml';
+      writeYamlFileAtomic(this.abs(relPath), validated);
+      const event = buildEvent('repos_put', {
+        agent: options.by,
+        data: { repo: name, session_defaults: sessionDefaultsEventData(validPatch) },
+      });
+      return { result: entry, relPaths: [relPath], event };
+    });
+  }
+
   getVendors(): VendorsConfig {
     const path = this.abs('vendors.yaml');
     if (!fileExists(path)) throw new NotFoundError('VendorsConfig', 'vendors.yaml');
@@ -1238,4 +1311,28 @@ export class StateStore {
 
 function readEntityFileRaw(path: string): string {
   return readFileSync(path, 'utf8');
+}
+
+/** T170: absent = unchanged, `null` = delete the key, a value = set it. */
+function applyDefaultsPatch(
+  raw: Record<string, unknown>,
+  patch: SessionDefaultsPatch,
+  keys: { vendor: string; model: string; effort: string },
+): void {
+  for (const field of ['vendor', 'model', 'effort'] as const) {
+    const value = patch[field];
+    if (value === undefined) continue;
+    if (value === null) Reflect.deleteProperty(raw, keys[field]);
+    else raw[keys[field]] = value;
+  }
+}
+
+/** The event's record of what changed — `null` for a cleared field. */
+function sessionDefaultsEventData(patch: SessionDefaultsPatch): Record<string, string | null> {
+  const data: Record<string, string | null> = {};
+  for (const field of ['vendor', 'model', 'effort'] as const) {
+    const value = patch[field];
+    if (value !== undefined) data[field] = value;
+  }
+  return data;
 }

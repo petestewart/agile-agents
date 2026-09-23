@@ -21,10 +21,16 @@ import { existsSync, mkdirSync, openSync, readFileSync, rmSync } from 'node:fs';
 import {
   type HomePaths,
   installShutdownSignals,
+  readHomeConfigFile,
   resolveHomePaths,
   startDaemon,
 } from '@agile-agents/daemon';
-import type { ClassifierKeyStatus } from '@agile-agents/shared';
+import {
+  type ClassifierKeyStatus,
+  type ResolvedSessionDefaults,
+  formatSessionDefaults,
+  resolveSessionDefaults,
+} from '@agile-agents/shared';
 import { callRpc } from '../client';
 
 /** How long `start` waits for the child to write its pidfile before giving up. */
@@ -220,6 +226,8 @@ export interface DaemonStatusReport {
   logPath: string;
   /** T167: from the running daemon's `daemon.status` — the key's source, never the key. */
   classifier?: ClassifierKeyStatus;
+  /** T170 (D17): what a session attached with nothing named gets (home config + built-in). */
+  sessionDefaults?: ResolvedSessionDefaults;
 }
 
 /**
@@ -264,15 +272,29 @@ export function daemonStatusReport(home?: string): DaemonStatusReport {
     socketPath: paths.socketPath,
     pidPath: paths.pidPath,
     logPath: paths.logPath,
+    ...sessionDefaultsFor(paths.home),
   };
+}
+
+/** A malformed `config.yaml` leaves the line out rather than failing `status`. */
+function sessionDefaultsFor(home: string): { sessionDefaults?: ResolvedSessionDefaults } {
+  try {
+    return { sessionDefaults: resolveSessionDefaults({ home: readHomeConfigFile(home) }) };
+  } catch {
+    return {};
+  }
 }
 
 /** T166: the state home comes first — it is what an operator checks. */
 export function formatDaemonStatus(report: DaemonStatusReport): string {
   const home = `home: ${report.home}`;
-  if (!report.running) return `${home}\nagiled is not running`;
+  const defaults = report.sessionDefaults
+    ? `\nsession default: ${formatSessionDefaults(report.sessionDefaults)}`
+    : '';
+  if (!report.running) return `${home}\nagiled is not running${defaults}`;
   const running =
     `${home}\nagiled running: pid=${report.pid} http=http://127.0.0.1:${report.port} ` +
     `socket=${report.socketPath}`;
-  return report.classifier ? `${running}\n${formatClassifierKeyLine(report.classifier)}` : running;
+  const classifier = report.classifier ? `\n${formatClassifierKeyLine(report.classifier)}` : '';
+  return `${running}${classifier}${defaults}`;
 }
