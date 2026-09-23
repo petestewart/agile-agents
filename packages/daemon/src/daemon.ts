@@ -293,6 +293,16 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
       : undefined;
   gateTimer?.unref();
 
+  // §5.6's evals, shared by `rule.test` and the cockpit's "Test examples" (T163).
+  const ruleEvals = store
+    ? {
+        classifier,
+        bands: config.classifier.bands,
+        timeout_ms: config.classifier.timeout_ms,
+        events: store,
+      }
+    : undefined;
+
   const extraMethods =
     store && gateService && bus
       ? {
@@ -302,14 +312,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
           ...(questionService ? buildQuestionRpcMethods(questionService) : {}),
           ...(streamService ? buildStreamRpcMethods(streamService) : {}),
           ...(inboxService ? buildInboxRpcMethods(inboxService) : {}),
-          ...(rulesService
-            ? buildRuleRpcMethods(rulesService, {
-                classifier,
-                bands: config.classifier.bands,
-                timeout_ms: config.classifier.timeout_ms,
-                events: store,
-              })
-            : {}),
+          ...(rulesService ? buildRuleRpcMethods(rulesService, ruleEvals) : {}),
           ...(docsService ? buildDocsRpcMethods(docsService) : {}),
           ...(landingService ? buildLandingRpcMethods(landingService) : {}),
           ...buildHookRpcMethods(
@@ -361,6 +364,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
     questions: questionService,
     inbox: inboxService,
     ...(rulesService ? { rules: rulesService } : {}),
+    ...(rulesService && ruleEvals ? { ruleEvals } : {}),
     ...(landingService ? { landing: landingService } : {}),
     ...(attachService ? { attach: attachService } : {}),
     ...(docsService ? { docs: docsService } : {}),

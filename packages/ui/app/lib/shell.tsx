@@ -9,11 +9,12 @@
  */
 
 import { type PropsWithChildren, createContext, useContext, useMemo, useState } from 'react';
+import { DEFAULT_RULES_FILTER, type RulesFilter } from './rules';
 
-/** `stream` is the stream page (T161) — the stream is `selected`. */
-export type ShellView = 'inbox' | 'settings' | 'stream';
+/** `stream` is the stream page (T161) — the stream is `selected`. `rules` is T163's rules screen. */
+export type ShellView = 'inbox' | 'rules' | 'settings' | 'stream';
 /** The views a `?view=` deep link may name; `stream` needs an id, so it is not one. */
-export const SHELL_VIEWS: readonly ShellView[] = ['inbox', 'settings'];
+export const SHELL_VIEWS: readonly ShellView[] = ['inbox', 'rules', 'settings'];
 
 export function isShellView(value: string | null): value is ShellView {
   return value !== null && (SHELL_VIEWS as readonly string[]).includes(value);
@@ -29,6 +30,11 @@ export interface ShellValue {
   /** Phone width only: the stream tree is a drawer. Ignored on a wide screen, where the rail is always shown. */
   railOpen: boolean;
   toggleRail(): void;
+  /** T163: what the rules screen shows. Kept here so the inbox's seed card can open it filtered. */
+  rulesFilter: RulesFilter;
+  setRulesFilter(filter: RulesFilter): void;
+  /** T163: the rules screen, with `filter` (the default when absent). */
+  openRules(filter?: RulesFilter): void;
   /** T162: the "New stream" dialog — opened by the top bar's button or `n`. */
   newStreamOpen: boolean;
   setNewStreamOpen(open: boolean): void;
@@ -44,6 +50,7 @@ export function ShellProvider({
   const [selected, setSelected] = useState<string | undefined>(undefined);
   const [railOpen, setRailOpen] = useState(false);
   const [newStreamOpen, setNewStreamOpen] = useState(false);
+  const [rulesFilter, setRulesFilter] = useState<RulesFilter>(DEFAULT_RULES_FILTER);
 
   const value = useMemo<ShellValue>(
     () => ({
@@ -59,10 +66,16 @@ export function ShellProvider({
       },
       railOpen,
       toggleRail: () => setRailOpen((open) => !open),
+      rulesFilter,
+      setRulesFilter,
+      openRules: (filter = DEFAULT_RULES_FILTER) => {
+        setRulesFilter(filter);
+        setView('rules');
+      },
       newStreamOpen,
       setNewStreamOpen,
     }),
-    [view, selected, railOpen, newStreamOpen],
+    [view, selected, railOpen, newStreamOpen, rulesFilter],
   );
 
   return <ShellContext.Provider value={value}>{children}</ShellContext.Provider>;

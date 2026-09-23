@@ -6,11 +6,12 @@
  * raised on any stream appears here with no reload.
  *
  * T161: a stream picked in the tree (or opened from an inbox card) shows
- * its stream page (§9.3) in the main column.
+ * its stream page (§9.3) in the main column. T163: the rules screen.
  */
 
 import { Inbox } from './components/Inbox';
 import { NewStream } from './components/NewStream';
+import { Rules } from './components/Rules';
 import { Settings } from './components/Settings';
 import { StreamPage } from './components/StreamPage';
 import { StreamTree } from './components/StreamTree';
@@ -32,6 +33,8 @@ export function App(): JSX.Element {
         <main className="cr-main">
           {view === 'settings' ? (
             <Settings />
+          ) : view === 'rules' ? (
+            <Rules />
           ) : view === 'stream' && selected !== undefined ? (
             <StreamPage id={selected} />
           ) : (

@@ -241,6 +241,20 @@ export type RuleProposal = z.infer<typeof RuleProposalSchema>;
 export const RulePatchSchema = RuleProposalSchema.omit({ provenance: true }).partial().strict();
 export type RulePatch = z.infer<typeof RulePatchSchema>;
 
+/**
+ * T163: the cockpit's "Test examples" (`POST /api/rules/test`) — the one
+ * rule whose examples to run through the classifier, as `rule.test {id}`.
+ */
+export const RuleTestInputSchema = z.object({ id: RuleIdSchema }).strict();
+export type RuleTestInput = z.infer<typeof RuleTestInputSchema>;
+
+/** T163: `provenance.by` of every rule `agile rules seed` imports — `seed:<source>`. */
+export const SEED_PROVENANCE_PREFIX = 'seed:';
+
+export function isSeededRule(rule: Pick<Rule, 'provenance'>): boolean {
+  return rule.provenance.by.startsWith(SEED_PROVENANCE_PREFIX);
+}
+
 export function validateRule(input: unknown): Rule {
   const result = RuleSchema.safeParse(input);
   if (!result.success) {

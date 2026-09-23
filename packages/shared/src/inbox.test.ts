@@ -25,7 +25,14 @@ function item(overrides: Partial<InboxItem> = {}): unknown {
 
 describe('InboxItemSchema', () => {
   test('the §3.1 kinds and nothing else', () => {
-    expect([...INBOX_ITEM_KINDS]).toEqual(['question', 'gate', 'rule_accept', 'blocked', 'done']);
+    expect([...INBOX_ITEM_KINDS]).toEqual([
+      'question',
+      'gate',
+      'rule_accept',
+      'rule_batch',
+      'blocked',
+      'done',
+    ]);
     expect(InboxItemSchema.safeParse(item({ kind: 'approve_plan' as never })).success).toBe(false);
   });
 
