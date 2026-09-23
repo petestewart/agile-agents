@@ -1,5 +1,13 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -57,6 +65,16 @@ describe('atomicWriteFile', () => {
     const path = join(dir, 'TKT-0001.yaml');
     atomicWriteFile(path, 'status: draft\n');
     expect(readdirSync(dir)).toEqual(['TKT-0001.yaml']);
+  });
+
+  // T167 review: a secret (the classifier key in config.yaml) must never sit
+  // at its final path with looser permissions, so the mode is set on the
+  // temp file before the rename — including when replacing a 0644 file.
+  test('mode is applied before the rename, even over an existing looser file', () => {
+    const path = join(dir, 'config.yaml');
+    atomicWriteFile(path, 'a: 1\n');
+    atomicWriteFile(path, 'secret: x\n', 0o600);
+    expect(statSync(path).mode & 0o777).toBe(0o600);
   });
 });
 

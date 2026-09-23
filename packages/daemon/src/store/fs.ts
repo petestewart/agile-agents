@@ -31,6 +31,7 @@
  */
 
 import {
+  chmodSync,
   closeSync,
   existsSync,
   fsyncSync,
@@ -62,11 +63,16 @@ export function isHiddenOrTempFile(name: string): boolean {
   return name.startsWith('.') || name.includes(TEMP_FILE_MARKER);
 }
 
-/** Writes `content` to `path` atomically (temp file + rename), creating parent dirs. */
-export function atomicWriteFile(path: string, content: string): void {
+/**
+ * Writes `content` to `path` atomically (temp file + rename), creating parent dirs.
+ * `mode` is applied to the temp file at creation, so the final path never exists
+ * with looser permissions (e.g. a secret written at 0600).
+ */
+export function atomicWriteFile(path: string, content: string, mode?: number): void {
   ensureDir(dirname(path));
   const tmpPath = join(dirname(path), tempFileName(path));
-  writeFileSync(tmpPath, content);
+  writeFileSync(tmpPath, content, mode === undefined ? undefined : { mode });
+  if (mode !== undefined) chmodSync(tmpPath, mode);
   renameSync(tmpPath, path);
 }
 
@@ -74,8 +80,8 @@ export function readYamlFile<T = unknown>(path: string): T {
   return parseYaml(readFileSync(path, 'utf8')) as T;
 }
 
-export function writeYamlFileAtomic(path: string, data: unknown): void {
-  atomicWriteFile(path, stringifyYaml(data));
+export function writeYamlFileAtomic(path: string, data: unknown, mode?: number): void {
+  atomicWriteFile(path, stringifyYaml(data), mode);
 }
 
 export function readJsonFile<T = unknown>(path: string): T {

@@ -22,7 +22,6 @@
 
 import {
   appendFileSync,
-  chmodSync,
   existsSync,
   lstatSync,
   readFileSync,
@@ -816,8 +815,7 @@ export class StateStore {
         // The schema's message could quote the value; never echo a key.
         throw new Error('config.yaml would not validate with this classifier key; nothing written');
       }
-      writeYamlFileAtomic(path, raw);
-      chmodSync(path, 0o600);
+      writeYamlFileAtomic(path, raw, 0o600);
       const event = buildEvent('home_config_put', { data: {} });
       return { result: undefined, relPaths: [relPath], event };
     });
