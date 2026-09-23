@@ -567,7 +567,7 @@ Build order: Phase 0 → 1 → 2 → 3 → 4 → 5 → 6. Within a phase, ticket
 
 ### Ticket: T169 ∥ Show rule hits on the stream
 - **Priority:** P1
-- **Status:** Todo
+- **Status:** In Progress
 - **Owner:** —
 - **Scope:** From Pete's T167 look (2026-09-23): a hook deny or route today lands only in `events.jsonl` and the rule's stats, so the stream page shows nothing. (1) Every hook decision that names a rule (deny or route, pattern or classifier) appends a thread `event` entry: rule text, the blocked command or path, and the outcome. (2) The thread renders it as a distinct "blocked by rule" card linking to the rule on the Rules screen. (3) The Rules screen shows last fired time next to the stats. Role-policy denies that name no rule get a plainer entry. (4) An agent question closes itself (answered, citing the message) when the human replies on the thread instead of the Answer box and the worker carries on.
 - **Acceptance Criteria:** Service test: a `command_deny` hit on `rm -rf dist` writes one thread entry naming the rule. Playwright: the card renders on the stream page and links to the rule.
@@ -576,7 +576,7 @@ Build order: Phase 0 → 1 → 2 → 3 → 4 → 5 → 6. Within a phase, ticket
 
 ### Ticket: T170 ∥ Session defaults in Settings; opus-5-5 at low
 - **Priority:** P1
-- **Status:** Todo
+- **Status:** In Progress
 - **Owner:** —
 - **Scope:** Per D17. (1) Built-in default `claude` / `claude-opus-5-5` / `low` when nothing else resolves; `agile daemon status` and the stream page show the resolved values, never "default". (2) Settings edits home `default_vendor|model|effort` and each repo's model/effort in `repos.yaml`, through the store with strict schemas, same-origin 403, actor `human`; changes apply to the next session without a restart. (3) Attach and Review in the cockpit open a small picker prefilled with the resolved default. (4) Model is free text with the known ids suggested; effort is the `EffortSchema` enum.
 - **Acceptance Criteria:** Resolution-order unit test incl. the new built-in step; HTTP tests for the settings writes; Playwright: change the default in Settings, Attach, the session strip shows the new model/effort.
