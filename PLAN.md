@@ -555,6 +555,15 @@ Build order: Phase 0 → 1 → 2 → 3 → 4 → 5 → 6. Within a phase, ticket
 - **Validation Steps:** `bun test packages/shared packages/daemon/src/rules packages/daemon/src/permissions packages/cli`; `bun run test:e2e`.
 - **Notes:** Runs before T164 so the checklist can describe it.
 
+### Ticket: T168 ∥ Finish the §8 deletions
+- **Priority:** P1
+- **Status:** Todo
+- **Owner:** —
+- **Scope:** From the 2026-09-23 deletions audit. (1) Remove the `Ticket` and `Message` schemas (`packages/shared/src/ticket.ts`, `message.ts`) and `Quota` (`vendors.ts`), moving `bus/bus.ts` and `gates/service.ts` off them. (2) Strip the old role union and role routing from `bus/routing.ts` (em/architect/qa fan-out, halt/resume broadcast) and the `em`/`architect` owner branches in `gates/service.ts`, which cite the deleted `em/delegate.ts`. (3) Narrow the agent-id regex and comments in `shared/src/ids.ts`. (4) Delete the orphan fixtures: halt, oracle-entry, sprint, sprint-with-team-and-gates, stanza, kb-fact, quota, ledger-line, and ticket/message once their schemas go.
+- **Acceptance Criteria:** No export, import or fixture for any §8 schema; no `em`/`architect`/`qa` role strings in daemon or shared source outside tests asserting their absence; all suites green.
+- **Validation Steps:** `bun run typecheck`; `bun test`; `bun run test:integration`; `bun run test:e2e`.
+- **Notes:** Runs after T167 merges, before T164 so CLAUDE.md describes the final layout. Stale CLAUDE.md lines found by the same audit (tagline, `em/delegate.ts`, halts, send/approve/halt, architect planning turn, Ledger, sprint TTL) are T164's.
+
 ### Ticket: T165 Cockpit as an installable app
 - **Priority:** P2
 - **Status:** Todo (step 1 done 2026-09-22, merge 8121113; step 2 awaits Pete)
