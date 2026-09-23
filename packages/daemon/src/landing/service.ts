@@ -255,16 +255,8 @@ export class LandingService {
           reason: `${branch} has no commits beyond ${target} — nothing to land`,
         };
       }
-      const dirty = worktreesOn(repoRoot, target).find((checkout) => checkout.dirty);
-      if (dirty !== undefined) {
-        return {
-          ready: false,
-          branch,
-          target,
-          ahead,
-          reason: `${target} is checked out with uncommitted changes at ${dirty.path}; commit or stash them before landing`,
-        };
-      }
+      const dirty = dirtyCheckoutReason(target, worktreesOn(repoRoot, target));
+      if (dirty !== undefined) return { ready: false, branch, target, ahead, reason: dirty };
       return {
         ready: true,
         branch,
@@ -445,13 +437,8 @@ export class LandingService {
     stream: Stream,
   ): { ok: true; sha: string } | { ok: false; conflicts: string[]; reason: string } {
     const checkouts = worktreesOn(repoRoot, target);
-    const dirty = checkouts.find((checkout) => checkout.dirty);
-    if (dirty !== undefined) {
-      throw new LandRefusedError(
-        stream.id,
-        `${target} is checked out with uncommitted changes at ${dirty.path}; commit or stash them before landing`,
-      );
-    }
+    const dirty = dirtyCheckoutReason(target, checkouts);
+    if (dirty !== undefined) throw new LandRefusedError(stream.id, dirty);
     const before = runGit(['rev-parse', `refs/heads/${target}`], repoRoot, repoRoot);
     // Inside the try so the `finally` owns the temp dir from creation on.
     let temp: string | undefined;
@@ -608,4 +595,15 @@ export function mergedOutside(repoRoot: string, branch: string, target: string):
 
 function branchExists(repoRoot: string, branch: string): boolean {
   return git(['rev-parse', '--verify', `refs/heads/${branch}`], repoRoot, repoRoot).exitCode === 0;
+}
+
+/** Why a dirty checkout of the target refuses the land, or `undefined`. */
+function dirtyCheckoutReason(
+  target: string,
+  checkouts: { path: string; dirty: boolean }[],
+): string | undefined {
+  const dirty = checkouts.find((checkout) => checkout.dirty);
+  return dirty === undefined
+    ? undefined
+    : `${target} is checked out with uncommitted changes at ${dirty.path}; commit or stash them before landing`;
 }

@@ -1,18 +1,11 @@
 /**
- * The ACP permission layer (agile-agents-design §14). A best-effort gate,
- * not the enforcement backstop: Claude's permission requests have never
- * been seen carrying `rawInput`, while the PreToolUse hook always gets the
- * command and path and can explain a deny. So:
- *
- * - Kind-level policy is the guaranteed floor: a reviewer is denied every
- *   `edit`/`execute`, an engineer's edits stay in the worktree whenever a
- *   path is known, and `allow_always` is never picked.
- * - Command-level never-without-human enforcement is primary in the hook;
- *   this layer still classifies command text whenever it has some
- *   (`rawInput`, then `locations`, then a narrow `title` parse), since a
- *   permissive answer here would defeat the hook.
- * - An `execute` with no command text is denied for the engineer, not
- *   routed (see `policy-tables.ts`'s `engineerVerdict`).
+ * The ACP permission layer (agile-agents-design §14): a best-effort gate,
+ * since Claude's permission requests carry no `rawInput` while the
+ * PreToolUse hook always sees the command. Kind-level policy is the floor
+ * (a reviewer gets no `edit`/`execute`, engineer edits stay in the
+ * worktree, never `allow_always`); command text is still classified
+ * whenever this layer has some, since a permissive answer here would
+ * defeat the hook.
  */
 
 export { classifyPermissionRequest } from './classify';
