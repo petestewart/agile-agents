@@ -14,8 +14,8 @@
  */
 
 import { z } from 'zod';
+import { HilKindSchema, MessageBodySchema } from './agent-message';
 import { AgentIdSchema, ULID_PATTERN, UlidSchema, formatZodError } from './ids';
-import { HilKindSchema, MessageBodySchema } from './message';
 import { GateOwnerSchema } from './policy';
 import { RuleIdSchema } from './rule';
 

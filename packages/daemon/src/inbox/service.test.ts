@@ -58,7 +58,7 @@ describe('InboxService.list', () => {
   test('a question on a stream with no repo shows with its stream path and a one-line context', async () => {
     const q = await questions.raise({
       stream: child.id,
-      raised_by: 'eng-1',
+      raised_by: '01ARZ3NDEKTSV4RRFFQ69GE001',
       text: 'comma or semicolon?',
     });
     const items = inbox.list();
@@ -72,8 +72,16 @@ describe('InboxService.list', () => {
 
   test('T161: a clipped context carries the full text as detail; a short one carries none', async () => {
     const text = `${'which delimiter wins in the EU exports, '.repeat(8)}TAIL?`;
-    const long = await questions.raise({ stream: child.id, raised_by: 'eng-1', text });
-    const short = await questions.raise({ stream: child.id, raised_by: 'eng-1', text: 'ok?' });
+    const long = await questions.raise({
+      stream: child.id,
+      raised_by: '01ARZ3NDEKTSV4RRFFQ69GE001',
+      text,
+    });
+    const short = await questions.raise({
+      stream: child.id,
+      raised_by: '01ARZ3NDEKTSV4RRFFQ69GE001',
+      text: 'ok?',
+    });
     const items = inbox.list();
     const longItem = items.find((i) => i.id === long.id);
     expect(longItem?.context.length).toBeLessThanOrEqual(200);
@@ -105,15 +113,27 @@ describe('InboxService.list', () => {
   });
 
   test('an answered question leaves the inbox', async () => {
-    const q = await questions.raise({ stream: root.id, raised_by: 'eng-1', text: 'which one?' });
+    const q = await questions.raise({
+      stream: root.id,
+      raised_by: '01ARZ3NDEKTSV4RRFFQ69GE001',
+      text: 'which one?',
+    });
     expect(inbox.list().some((i) => i.id === q.id)).toBe(true);
     await questions.answer(q.id, { answer: 'the first', by: 'human' });
     expect(inbox.list().some((i) => i.id === q.id)).toBe(false);
   });
 
   test('oldest first, across every stream', async () => {
-    const first = await questions.raise({ stream: root.id, raised_by: 'eng-1', text: 'first' });
-    const second = await questions.raise({ stream: child.id, raised_by: 'eng-1', text: 'second' });
+    const first = await questions.raise({
+      stream: root.id,
+      raised_by: '01ARZ3NDEKTSV4RRFFQ69GE001',
+      text: 'first',
+    });
+    const second = await questions.raise({
+      stream: child.id,
+      raised_by: '01ARZ3NDEKTSV4RRFFQ69GE001',
+      text: 'second',
+    });
     const ids = inbox.list().map((i) => i.id);
     expect(ids.indexOf(first.id)).toBeLessThan(ids.indexOf(second.id));
   });

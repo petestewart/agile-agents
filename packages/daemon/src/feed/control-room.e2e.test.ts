@@ -482,7 +482,7 @@ describe('cockpit shell (Playwright e2e)', () => {
         const session = ulid();
         const question = await cockpit.questions.raise({
           stream: leaf.id,
-          raised_by: 'eng-1',
+          raised_by: '01ARZ3NDEKTSV4RRFFQ69GE001',
           session,
           text: 'comma or semicolon for the CSV dialect?',
         });
@@ -604,7 +604,7 @@ describe('cockpit shell (Playwright e2e)', () => {
         });
         const question = await cockpit.questions.raise({
           stream: root.id,
-          raised_by: 'eng-1',
+          raised_by: '01ARZ3NDEKTSV4RRFFQ69GE001',
           text: 'which branch should this land on?',
         });
 
@@ -1336,7 +1336,7 @@ describe('stream page (Playwright e2e, T161)', () => {
         const stream = await cockpit.streams.create('human', { title: 'import', goal: 'g' });
         const question = await cockpit.questions.raise({
           stream: stream.id,
-          raised_by: 'eng-1',
+          raised_by: '01ARZ3NDEKTSV4RRFFQ69GE001',
           text: LONG_QUESTION,
         });
         expect(LONG_QUESTION.length).toBeGreaterThan(200);

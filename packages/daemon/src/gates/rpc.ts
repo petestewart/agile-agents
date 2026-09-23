@@ -1,8 +1,8 @@
 /**
  * `gate.*` RPC methods over a `GateService` (design §18 "JSON-RPC over unix
- * socket for hooks/adapters"; T018 scope: "CLI `approve`/`delegate`/`breaker
+ * socket for hooks/adapters"; T018 scope: "CLI `approve`/`breaker
  * clear`; implement these as daemon RPC methods `gate.approve`,
- * `gate.delegate`, `gate.breaker_clear` (+ `gate.list`, `gate.resolve`); the
+ * `gate.breaker_clear` (+ `gate.list`, `gate.resolve`, `gate.note`); the
  * CLI verbs land with T008, not here."
  *
  * Not wired into `rpc.ts`'s method table by this ticket (rpc.ts is out of
@@ -117,13 +117,6 @@ function requireDecision(value: unknown): HilDecision {
   return result.data;
 }
 
-function requireDelegateTo(value: unknown): 'em' | 'architect' {
-  if (value !== 'em' && value !== 'architect') {
-    throw new RpcParamError('invalid "to": must be "em" or "architect"', { to: value });
-  }
-  return value;
-}
-
 function requireBreakerSignal(value: unknown): BreakerSignal {
   const result = BreakerSignalSchema.safeParse(value);
   if (!result.success) {
@@ -157,20 +150,13 @@ export function buildGateRpcMethods(service: GateService): Record<string, RpcMet
       return service.respond(id, decision, by, optionalNote(p.note));
     },
     // T039: a typed answer with no button press. Stores the note on the
-    // still-pending request and hands it to the EM delegate — never resolves
-    // the gate itself.
+    // still-pending request — never resolves the gate itself.
     'gate.note': (params) => {
       const p = requireObject(params);
       const id = requireHilId(p.id);
       const note = requireNote(p.note);
       const by = requireBy(p.by);
       return service.addNote(id, note, by);
-    },
-    'gate.delegate': (params) => {
-      const p = requireObject(params);
-      const id = requireHilId(p.id);
-      const to = requireDelegateTo(p.to);
-      return service.delegateRequest(id, to);
     },
     'gate.breaker_clear': (params) => {
       const p = requireObject(params);

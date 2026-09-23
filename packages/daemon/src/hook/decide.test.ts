@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import type { Message } from '@agile-agents/shared';
+import type { AgentMessage } from '@agile-agents/shared';
 import { decidePreToolUse } from './decide';
 import { DEFAULT_MAX_READ_BYTES, type HookDecisionContext } from './types';
 
@@ -16,20 +16,18 @@ function baseCtx(overrides: Partial<HookDecisionContext> = {}): HookDecisionCont
   };
 }
 
-function makeMessage(overrides: Partial<Message> = {}): Message {
+function makeMessage(overrides: Partial<AgentMessage> = {}): AgentMessage {
   return {
     id: '01J9000000000000000000000',
     ts: '2026-09-09T00:00:00Z',
-    from: 'em',
-    to: ['eng-1'],
-    kind: 'answer',
+    from: 'human',
+    to: ['01ARZ3NDEKTSV4RRFFQ69G5FAV'],
+    kind: 'hil_response',
     priority: 'normal',
     body: 'use the JWT approach',
     refs: [],
-    requires_ack: false,
-    promote_to: 'none',
     ...overrides,
-  } as Message;
+  } as AgentMessage;
 }
 
 describe('decidePreToolUse — normal inbox is additive, never overrides the gate verdict (review round fix, blocker 1)', () => {

@@ -2,7 +2,7 @@
  * `buildPermissionResponder` — turns a `decidePermission` verdict into the
  * ACP `respondPermission` call (T010). Allow/deny answer the pending ACP
  * request immediately by selecting the chosen option's id; a `hil` verdict
- * instead calls `requestHil` (default: writes a `hil_request` `Message` to
+ * instead calls `requestHil` (default: writes a `hil_request` `AgentMessage` to
  * the bus) and leaves the ACP request unanswered until `resolveHil` is
  * called with the human's answer.
  *
@@ -30,7 +30,7 @@
 
 import { join } from 'node:path';
 import type { AcpRequestId } from '@agile-agents/acp-client';
-import { type AgentId, type TicketId, ulid, validateMessage } from '@agile-agents/shared';
+import { type AgentId, ulid, validateAgentMessage } from '@agile-agents/shared';
 import type { StateStore } from '../store';
 import { buildEvent } from '../store';
 import { classifyPermissionRequest } from './classify';
@@ -49,8 +49,6 @@ export interface PermissionResponderSession {
 
 /** What a `hil` verdict needs persisted somewhere a human (or T018's `GateService`) can see and eventually answer. */
 export interface HilRequestInput {
-  /** Absent for a session that is not a ticket session (T041's resident EM chat session). */
-  ticket?: TicketId;
   agent: AgentId;
   hilKind: 'classifier_review';
   summary: string;
@@ -63,14 +61,12 @@ export type RequestHil = (input: HilRequestInput) => Promise<{ id: string }>;
 
 export interface PermissionResponderContext {
   role: PermissionRole;
-  /** The session's ticket. Optional since T041: the EM's chat/gate sessions are not ticket sessions, and every policy path this module drives already treats an absent ticket as "no branch is this ticket's branch". */
-  ticket?: TicketId;
-  /** Concrete bus identity of the agent this session belongs to (e.g. `eng-3`) — `role` alone isn't a valid `AgentId`. */
+  /** The session's own id (its ULID) — `role` alone isn't a valid `AgentId`. */
   agent: AgentId;
   worktreePath: string;
   session: PermissionResponderSession;
   hilDeadlineMs?: number;
-  /** Defaults to writing a `Message` at `bus/inbox/human/<ulid>.yaml` via `store.putEntity`. Override to hand persistence to T018's `GateService`. */
+  /** Defaults to writing an `AgentMessage` at `bus/inbox/human/<ulid>.yaml` via `store.putEntity`. Override to hand persistence to T018's `GateService`. */
   requestHil?: RequestHil;
   /**
    * T143: the pattern rules this session is judged by (§5.2, §5.4), bound
@@ -115,7 +111,7 @@ async function defaultRequestHil(
   input: HilRequestInput,
 ): Promise<{ id: string }> {
   const id = ulid();
-  const message = validateMessage({
+  const message = validateAgentMessage({
     id,
     ts: new Date().toISOString(),
     from: input.agent,
@@ -126,14 +122,11 @@ async function defaultRequestHil(
     // `standup_call` explicitly but not `hil_request`; DESIGN-GAP,
     // resolved by analogy since this, too, blocks progress).
     priority: 'urgent',
-    ...(input.ticket !== undefined ? { ticket: input.ticket } : {}),
     body: input.summary,
     refs: [],
-    requires_ack: true,
-    deadline: input.deadline,
     hil_kind: input.hilKind,
   });
-  await store.putEntity(hilInboxPath(id), validateMessage, message);
+  await store.putEntity(hilInboxPath(id), validateAgentMessage, message);
   return { id };
 }
 
@@ -167,7 +160,6 @@ export function buildPermissionResponder(
       buildEvent('hook_decision', {
         agent: ctx.agent,
         data: {
-          ...(ctx.ticket !== undefined ? { ticket: ctx.ticket } : {}),
           role: ctx.role,
           toolClass: classified.toolClass,
           ...(classified.targetPath !== undefined ? { targetPath: classified.targetPath } : {}),
@@ -191,7 +183,6 @@ export function buildPermissionResponder(
       const gate = ctx.patternRules;
       const decision = decidePermission({
         role: ctx.role,
-        ...(ctx.ticket !== undefined ? { ticket: ctx.ticket } : {}),
         worktreePath: ctx.worktreePath,
         request,
         ...(gate !== undefined
@@ -219,7 +210,6 @@ export function buildPermissionResponder(
         Date.now() + (ctx.hilDeadlineMs ?? DEFAULT_HIL_DEADLINE_MS),
       ).toISOString();
       const { id } = await requestHil({
-        ...(ctx.ticket !== undefined ? { ticket: ctx.ticket } : {}),
         agent: ctx.agent,
         hilKind: decision.hilRequest.hilKind,
         summary: decision.hilRequest.summary,

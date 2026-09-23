@@ -102,15 +102,6 @@ function writeFile(path: string, content: string): void {
   writeFileSync(path, content);
 }
 
-/**
- * `oracle/product.md` as `agile init` first writes it. Exported so callers
- * that *derive* something from the product brief (T046
- * defect 2) can tell "the architect hasn't written a brief yet" from a real
- * one, rather than lifting the placeholder `# Product` heading.
- */
-export const PRODUCT_MD_STUB =
-  '# Product\n\nVision, non-goals, and glossary go here.\n\n(Stub written by `agile init`; the architect fills this in.)\n';
-
 /** Every file the §4 layout needs at init time. Directories with no listed
  * default file get a `.gitkeep` so git tracks the (otherwise empty) dir. */
 function layoutFiles(stateRoot: string): Array<[string, string]> {
@@ -131,7 +122,6 @@ function layoutFiles(stateRoot: string): Array<[string, string]> {
     [p('sessions', '.gitkeep'), ''],
     [p('log', 'events.jsonl'), ''],
     [p('bus', 'inbox', '.gitkeep'), ''],
-    [p('bus', 'threads', '.gitkeep'), ''],
     [p('bus', 'agents', '.gitkeep'), ''],
   ];
 }

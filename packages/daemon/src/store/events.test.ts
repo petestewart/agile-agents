@@ -34,10 +34,14 @@ describe('buildEvent', () => {
   test('carries the stream/session/agent scopes when given', () => {
     const stream = ulid();
     const session = ulid();
-    const event = buildEvent('thread_appended', { stream, session, agent: 'eng-1' });
+    const event = buildEvent('thread_appended', {
+      stream,
+      session,
+      agent: '01ARZ3NDEKTSV4RRFFQ69GE001',
+    });
     expect(event.stream).toBe(stream);
     expect(event.session).toBe(session);
-    expect(event.agent).toBe('eng-1');
+    expect(event.agent).toBe('01ARZ3NDEKTSV4RRFFQ69GE001');
     expect(event.data).toEqual({});
   });
 

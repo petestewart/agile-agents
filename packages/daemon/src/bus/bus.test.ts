@@ -2,8 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { Ticket } from '@agile-agents/shared';
-import { ulid, validateTicket } from '@agile-agents/shared';
+import { type AgentMessage, ulid, validateAgentMessage } from '@agile-agents/shared';
 import { runInit } from '../init';
 import { StateStore } from '../store';
 import { Bus } from './bus';
@@ -29,73 +28,78 @@ afterEach(() => {
   rmSync(repo, { recursive: true, force: true });
 });
 
-function makeTicket(id: string, overrides: Partial<Ticket> = {}): Ticket {
-  return validateTicket({
-    id,
-    title: `Ticket ${id}`,
-    status: 'draft',
-    contract: {},
-    history: [],
-    ...overrides,
-  });
-}
+const SESSION = '01ARZ3NDEKTSV4RRFFQ69G5FAV';
 
-function baseMessage(overrides: Record<string, unknown> = {}) {
-  return {
+/** Files one message straight into `agent`'s inbox, the way its producers (`gates/service.ts`) do. */
+async function file(overrides: Partial<AgentMessage> = {}): Promise<AgentMessage> {
+  const message = validateAgentMessage({
     id: ulid(),
     ts: new Date().toISOString(),
-    from: 'eng-1',
-    to: ['em'],
-    kind: 'question',
+    from: 'human',
+    to: [SESSION],
+    kind: 'hil_response',
     priority: 'normal',
     body: 'hello',
     ...overrides,
-  };
+  });
+  await store.putEntity(
+    join('bus', 'inbox', SESSION, `${message.id}.yaml`),
+    validateAgentMessage,
+    message,
+  );
+  return message;
 }
 
 describe('Bus.poll', () => {
   test('orders unread messages urgent > normal > low, moves nothing', async () => {
     const bus = new Bus(store, stateRoot);
-    await bus.send(baseMessage({ id: ulid(), priority: 'low', body: 'low-1' }));
-    await bus.send(baseMessage({ id: ulid(), priority: 'urgent', body: 'urgent-1' }));
-    await bus.send(baseMessage({ id: ulid(), priority: 'normal', body: 'normal-1' }));
+    await file({ priority: 'low', body: 'low-1' });
+    await file({ priority: 'urgent', body: 'urgent-1' });
+    await file({ priority: 'normal', body: 'normal-1' });
 
-    const first = bus.poll('em');
+    const first = bus.poll(SESSION);
     expect(first.map((m) => m.priority)).toEqual(['urgent', 'normal', 'low']);
 
     // Polling again returns the same three messages — poll moves nothing.
-    const second = bus.poll('em');
-    expect(second).toHaveLength(3);
+    expect(bus.poll(SESSION)).toHaveLength(3);
   });
 
   test('filters by priority when asked', async () => {
     const bus = new Bus(store, stateRoot);
-    await bus.send(baseMessage({ id: ulid(), priority: 'low' }));
-    await bus.send(baseMessage({ id: ulid(), priority: 'urgent' }));
-    expect(bus.poll('em', { priority: 'urgent' })).toHaveLength(1);
+    await file({ priority: 'low' });
+    await file({ priority: 'urgent' });
+    expect(bus.poll(SESSION, { priority: 'urgent' })).toHaveLength(1);
+  });
+
+  test('an agent with no inbox has nothing to poll', () => {
+    expect(new Bus(store, stateRoot).poll('human')).toEqual([]);
   });
 });
 
 describe('Bus.ack', () => {
   test('moves the message out of the unread inbox', async () => {
     const bus = new Bus(store, stateRoot);
-    const message = baseMessage();
-    await bus.send(message);
-    expect(bus.poll('em')).toHaveLength(1);
+    const message = await file();
+    expect(bus.poll(SESSION)).toHaveLength(1);
 
-    await bus.ack('em', (message as { id: string }).id);
-    expect(bus.poll('em')).toHaveLength(0);
+    await bus.ack(SESSION, message.id);
+    expect(bus.poll(SESSION)).toHaveLength(0);
 
     const done = store.getEntity(
-      join('bus', 'inbox', 'em', 'done', `${(message as { id: string }).id}.yaml`),
+      join('bus', 'inbox', SESSION, 'done', `${message.id}.yaml`),
       (x) => x,
     );
     expect(done).toBeTruthy();
   });
 
-  test('acking an unknown id throws', async () => {
+  test('acking an already-acked message is a no-op that returns it; an unknown id throws', async () => {
     const bus = new Bus(store, stateRoot);
-    await expect(bus.ack('em', ulid())).rejects.toThrow();
+    const message = await file();
+    const first = await bus.ack(SESSION, message.id);
+    const second = await bus.ack(SESSION, message.id);
+    expect(second.id).toBe(first.id);
+    expect(bus.poll(SESSION)).toHaveLength(0);
+    await expect(bus.ack(SESSION, ulid())).rejects.toThrow();
   });
 });
 
@@ -104,113 +108,21 @@ describe('Bus.heartbeat', () => {
     let now = new Date('2026-01-01T00:00:00.000Z');
     const bus = new Bus(store, stateRoot, { now: () => now });
 
-    await bus.heartbeat('eng-1', {
+    await bus.heartbeat(SESSION, {
       vendor: 'claude',
       model: 'sonnet',
       pid: 42,
       stream: '01J9ZZZZZZZZZZZZZZZZZZZZZZ',
     });
-    expect(store.getAgent('eng-1').last_seen).toBe(now.toISOString());
-    expect(store.getAgent('eng-1').stream).toBe('01J9ZZZZZZZZZZZZZZZZZZZZZZ');
+    expect(store.getAgent(SESSION).last_seen).toBe(now.toISOString());
+    expect(store.getAgent(SESSION).stream).toBe('01J9ZZZZZZZZZZZZZZZZZZZZZZ');
 
     now = new Date('2026-01-01T00:05:00.000Z');
-    await bus.heartbeat('eng-1');
-    const record = store.getAgent('eng-1');
+    await bus.heartbeat(SESSION);
+    const record = store.getAgent(SESSION);
     expect(record.last_seen).toBe(now.toISOString());
     // Fields not in the patch survive the update.
     expect(record.vendor).toBe('claude');
     expect(record.stream).toBe('01J9ZZZZZZZZZZZZZZZZZZZZZZ');
-  });
-});
-
-describe('Bus.ack idempotence', () => {
-  test('acking an already-acked message is a no-op that returns it (two concurrent pipeline drivers)', async () => {
-    const bus = new Bus(store, stateRoot, {});
-    const sent = await bus.send({
-      id: ulid(),
-      ts: new Date().toISOString(),
-      from: 'em',
-      to: ['architect'],
-      kind: 'discovery',
-      priority: 'normal',
-      ticket: 'TKT-0001',
-      body: 'a discovery',
-      refs: [],
-      requires_ack: false,
-    });
-    if (!sent.ok) throw new Error(sent.reason);
-    const first = await bus.ack('architect', sent.message.id);
-    const second = await bus.ack('architect', sent.message.id);
-    expect(second.id).toBe(first.id);
-    expect(bus.poll('architect')).toHaveLength(0);
-    // A message that never existed anywhere is still an error.
-    await expect(bus.ack('architect', '01NEVEREXISTED0000000000000')).rejects.toThrow();
-  });
-});
-
-describe('Bus.sweepRedelivery — the ladder', () => {
-  test('bumps low -> normal -> urgent as each deadline passes, then escalates to em', async () => {
-    const start = new Date('2026-01-01T00:00:00.000Z');
-    let now = start;
-    const bus = new Bus(store, stateRoot, { now: () => now });
-
-    const id = ulid(now.getTime());
-    await bus.send(
-      baseMessage({
-        id,
-        from: 'em',
-        to: ['eng-1'],
-        kind: 'assign',
-        priority: 'low',
-        requires_ack: true,
-        deadline: new Date(start.getTime() + 60_000).toISOString(),
-      }),
-    );
-
-    // Before the deadline: no change.
-    now = new Date(start.getTime() + 30_000);
-    let sweep = await bus.sweepRedelivery(now);
-    expect(sweep.redelivered).toHaveLength(0);
-    expect(bus.poll('eng-1')[0]?.priority).toBe('low');
-
-    // Past the deadline: low -> normal.
-    now = new Date(start.getTime() + 61_000);
-    sweep = await bus.sweepRedelivery(now);
-    expect(sweep.redelivered).toEqual([{ agent: 'eng-1', id, from: 'low', to: 'normal' }]);
-    expect(bus.poll('eng-1')[0]?.priority).toBe('normal');
-
-    // Past the new deadline: normal -> urgent.
-    now = new Date(now.getTime() + 61_000);
-    sweep = await bus.sweepRedelivery(now);
-    expect(sweep.redelivered).toEqual([{ agent: 'eng-1', id, from: 'normal', to: 'urgent' }]);
-    expect(bus.poll('eng-1')[0]?.priority).toBe('urgent');
-
-    // Past the new deadline again, already urgent: escalate to em instead of redelivering again.
-    now = new Date(now.getTime() + 61_000);
-    sweep = await bus.sweepRedelivery(now);
-    expect(sweep.redelivered).toHaveLength(0);
-    expect(sweep.escalated).toEqual([{ agent: 'eng-1', id }]);
-    expect(bus.poll('em').some((m) => m.kind === 'escalate')).toBe(true);
-    // requires_ack cleared so it isn't escalated again on the next sweep.
-    expect(bus.poll('eng-1')[0]?.requires_ack).toBe(false);
-
-    now = new Date(now.getTime() + 1);
-    sweep = await bus.sweepRedelivery(now);
-    expect(sweep.escalated).toHaveLength(0);
-  });
-
-  test('a message with no deadline is never redelivered', async () => {
-    const bus = new Bus(store, stateRoot);
-    await bus.send(baseMessage({ from: 'em', to: ['eng-1'], kind: 'assign', requires_ack: true }));
-    const sweep = await bus.sweepRedelivery(new Date(Date.now() + 10 * 60 * 1000));
-    expect(sweep.redelivered).toHaveLength(0);
-    expect(sweep.escalated).toHaveLength(0);
-  });
-
-  test('a message not requiring ack is never redelivered', async () => {
-    const bus = new Bus(store, stateRoot);
-    await bus.send(baseMessage({ from: 'em', to: ['eng-1'], kind: 'assign' }));
-    const sweep = await bus.sweepRedelivery(new Date(Date.now() + 10 * 60 * 1000));
-    expect(sweep.redelivered).toHaveLength(0);
   });
 });

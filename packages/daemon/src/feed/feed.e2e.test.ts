@@ -240,7 +240,7 @@ describe('feed page (Playwright e2e)', () => {
         // T122: `agent_put` is the cheapest real store write left — the
         // ticket writers went with the ceremony layer. Any event kind does:
         // what is under test is the tail's latency, not the entity.
-        const agentId = 'eng-9001';
+        const agentId = '01ARZ3NDEKTSV4RRFFQ69GE901';
         const start = Date.now();
         await store.putAgent(agentId, {
           vendor: 'claude',
@@ -306,7 +306,7 @@ describe('feed page (Playwright e2e)', () => {
 
         await page.goto(`http://127.0.0.1:${handle.http.port}/feed`);
 
-        const agentId = 'eng-9002';
+        const agentId = '01ARZ3NDEKTSV4RRFFQ69GE902';
         await store.putAgent(agentId, {
           vendor: 'claude',
           model: 'claude-sonnet-4-5',

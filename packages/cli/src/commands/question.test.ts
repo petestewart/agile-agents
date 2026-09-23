@@ -35,18 +35,18 @@ describe('agile question', () => {
 
     await daemon.questionService.raise({
       stream,
-      raised_by: 'eng-1',
+      raised_by: '01ARZ3NDEKTSV4RRFFQ69GE001',
       text: 'is the ticket right?',
     });
     const listed = await capture(() => runQuestionList(daemon.socketPath, false));
     expect(listed.out).toContain('is the ticket right?');
-    expect(listed.out).toContain('eng-1');
+    expect(listed.out).toContain('01ARZ3NDEKTSV4RRFFQ69GE001');
   });
 
   test('answer --answer replies and marks the question answered', async () => {
     const q = await daemon.questionService.raise({
       stream,
-      raised_by: 'eng-1',
+      raised_by: '01ARZ3NDEKTSV4RRFFQ69GE001',
       text: 'which wins?',
     });
     const { code, out } = await capture(() =>
@@ -65,7 +65,11 @@ describe('agile question', () => {
   // T121: `decision` and `ticket` resolutions are deleted with the oracle
   // and the ticket model; `reply` is all there is.
   test('answer refuses any resolution other than reply', async () => {
-    const q = await daemon.questionService.raise({ stream, raised_by: 'eng-1', text: 'sqlite?' });
+    const q = await daemon.questionService.raise({
+      stream,
+      raised_by: '01ARZ3NDEKTSV4RRFFQ69GE001',
+      text: 'sqlite?',
+    });
     expect(
       runQuestionAnswer(
         daemon.socketPath,
@@ -89,7 +93,7 @@ describe('agile question', () => {
   });
 
   test('--answer is required', async () => {
-    const q = await daemon.questionService.raise({ stream, raised_by: 'em', text: 'q' });
+    const q = await daemon.questionService.raise({ stream, raised_by: 'human', text: 'q' });
     expect(runQuestionAnswer(daemon.socketPath, parseArgs([q.id]), false)).rejects.toThrow(
       /--answer is required/,
     );

@@ -16,7 +16,7 @@
  * `hook_decision` event) the decision implies.
  */
 
-import type { Message, Rule, SessionRole } from '@agile-agents/shared';
+import type { AgentMessage, Rule, SessionRole } from '@agile-agents/shared';
 
 /** The three decision outcomes a Claude PreToolUse hook can render (spike-findings.md §B; `spike/permission-matrix.ts:119`). */
 export type HookVerdict = 'allow' | 'deny' | 'ask';
@@ -42,7 +42,7 @@ export interface HookDecisionContext {
   role: SessionRole;
   worktreePath: string;
   /** This session's unread inbox, urgent/normal first (§5's poll ordering) — `bus.poll(session)`. */
-  inbox: Message[];
+  inbox: AgentMessage[];
   limits: HookLimits;
   /** Returns a file's size in bytes, or `undefined` if it doesn't exist / isn't a plain file (e.g. a directory — Grep-over-directory must not size-gate). Injectable for tests; `service.ts` wires `node:fs.statSync`. */
   fileSize: (path: string) => number | undefined;

@@ -110,7 +110,7 @@ function agentRecord(over: Partial<AgentRecord> = {}): AgentRecord {
 }
 
 async function svc(classifier: FakeClassifier | undefined): Promise<HookService> {
-  await store.putAgent('eng-1', agentRecord());
+  await store.putAgent('01ARZ3NDEKTSV4RRFFQ69GE001', agentRecord());
   return new HookService(store, bus, {
     repoRoot: home,
     gates,

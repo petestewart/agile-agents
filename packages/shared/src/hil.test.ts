@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
+import { MESSAGE_BODY_MAX_CHARS } from './agent-message';
 import { HilIdSchema, validateBreakerState, validateHilRequest } from './hil';
-import { MESSAGE_BODY_MAX_CHARS } from './message';
 
 function baseRequest(overrides: Record<string, unknown> = {}) {
   return {
@@ -53,15 +53,15 @@ describe('validateHilRequest', () => {
     expect(() =>
       validateHilRequest(
         baseRequest({
-          owner: 'em',
+          owner: 'human_timeout:1h',
           status: 'resolved',
           decision: 'approve',
-          decided_by: 'em',
+          decided_by: 'human',
           resolved_at: '2026-01-01T00:00:01.000Z',
           delegated: true,
           fyi: {
             to: 'human',
-            body: 'gate "land" approved by em',
+            body: 'gate "land" approved by human',
             sent_at: '2026-01-01T00:00:01.000Z',
           },
         }),
@@ -113,14 +113,17 @@ describe('HilRequest.note', () => {
   // to it instead of to the ticket's assignee. Optional (older records and
   // daemon-raised gates carry none) and still `.strict()`.
   test('accepts an optional requested_by agent id, rejects a malformed one, stays strict', () => {
-    expect(validateHilRequest({ ...baseRequest(), requested_by: 'qa-2003' }).requested_by).toBe(
-      'qa-2003',
-    );
+    expect(
+      validateHilRequest({ ...baseRequest(), requested_by: '01ARZ3NDEKTSV4RRFFQ69GQ203' })
+        .requested_by,
+    ).toBe('01ARZ3NDEKTSV4RRFFQ69GQ203');
     expect(validateHilRequest(baseRequest()).requested_by).toBeUndefined();
     expect(() => validateHilRequest({ ...baseRequest(), requested_by: 'Not An Agent' })).toThrow(
       /requested_by/,
     );
-    expect(() => validateHilRequest({ ...baseRequest(), requested_bye: 'qa-2003' })).toThrow();
+    expect(() =>
+      validateHilRequest({ ...baseRequest(), requested_bye: '01ARZ3NDEKTSV4RRFFQ69GQ203' }),
+    ).toThrow();
   });
 });
 

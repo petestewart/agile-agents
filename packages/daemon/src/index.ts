@@ -50,7 +50,6 @@ export {
 } from './daemon';
 export {
   runInit,
-  PRODUCT_MD_STUB,
   type InitResult,
 } from './init';
 

@@ -8,7 +8,6 @@
  * with proper param validation, etc.).
  */
 
-import type { TicketId } from '@agile-agents/shared';
 import { type RpcMethodHandler, RpcParamError } from '../rpc';
 import type { StateStore } from './store';
 
@@ -48,10 +47,5 @@ export function buildStateRpcMethods(store: StateStore): Record<string, RpcMetho
       assertGitRepository(path);
       return store.addRepo(name, entry);
     },
-    'state.ticket_get': (params) => {
-      const { id } = params as { id: string };
-      return store.getTicket(id as TicketId);
-    },
-    'state.ticket_list': () => store.listTickets(),
   };
 }

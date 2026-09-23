@@ -2,12 +2,14 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { ulid } from '@agile-agents/shared';
+import { ulid, validateAgentMessage } from '@agile-agents/shared';
 import { runInit } from '../init';
 import { dispatch } from '../rpc';
 import { StateStore } from '../store';
 import { Bus } from './bus';
 import { buildBusRpcMethods } from './rpc-methods';
+
+const SESSION = '01ARZ3NDEKTSV4RRFFQ69G5FAV';
 
 let repo: string;
 let stateRoot: string;
@@ -35,30 +37,27 @@ afterEach(() => {
 });
 
 describe('buildBusRpcMethods via dispatch', () => {
-  test('bus.send / bus.poll / bus.ack round-trip', async () => {
-    const message = {
+  test('bus.poll / bus.ack round-trip, and bus.send is gone', async () => {
+    const message = validateAgentMessage({
       id: ulid(),
       ts: new Date().toISOString(),
-      from: 'eng-1',
-      to: ['em'],
-      kind: 'question',
+      from: 'human',
+      to: [SESSION],
+      kind: 'hil_response',
       priority: 'normal',
       body: 'hi',
-    };
-
-    const sendResponse = await dispatch(methods, {
-      jsonrpc: '2.0',
-      id: 1,
-      method: 'bus.send',
-      params: { message },
     });
-    expect(sendResponse && 'result' in sendResponse && sendResponse.result).toBeTruthy();
+    await store.putEntity(
+      join('bus', 'inbox', SESSION, `${message.id}.yaml`),
+      validateAgentMessage,
+      message,
+    );
 
     const pollResponse = await dispatch(methods, {
       jsonrpc: '2.0',
       id: 2,
       method: 'bus.poll',
-      params: { agent: 'em' },
+      params: { agent: SESSION },
     });
     expect(pollResponse && 'result' in pollResponse ? pollResponse.result : undefined).toEqual([
       expect.objectContaining({ id: message.id }),
@@ -68,7 +67,7 @@ describe('buildBusRpcMethods via dispatch', () => {
       jsonrpc: '2.0',
       id: 3,
       method: 'bus.ack',
-      params: { agent: 'em', id: message.id },
+      params: { agent: SESSION, id: message.id },
     });
     expect(ackResponse && 'result' in ackResponse && ackResponse.result).toBeTruthy();
 
@@ -76,31 +75,11 @@ describe('buildBusRpcMethods via dispatch', () => {
       jsonrpc: '2.0',
       id: 4,
       method: 'bus.poll',
-      params: { agent: 'em' },
+      params: { agent: SESSION },
     });
     expect(pollAfterAck && 'result' in pollAfterAck ? pollAfterAck.result : undefined).toEqual([]);
-  });
 
-  test('bus.send surfaces a routing rejection as a result, not an RPC error', async () => {
-    const message = {
-      id: ulid(),
-      ts: new Date().toISOString(),
-      from: 'eng-1',
-      to: ['eng-2'],
-      kind: 'question',
-      priority: 'normal',
-      body: 'hi',
-    };
-    const response = await dispatch(methods, {
-      jsonrpc: '2.0',
-      id: 1,
-      method: 'bus.send',
-      params: { message },
-    });
-    expect(response && 'result' in response).toBe(true);
-    if (response && 'result' in response) {
-      expect(response.result).toMatchObject({ ok: false });
-    }
+    expect(Object.keys(methods)).not.toContain('bus.send');
   });
 
   test('bus.heartbeat updates last_seen', async () => {
@@ -108,12 +87,12 @@ describe('buildBusRpcMethods via dispatch', () => {
       jsonrpc: '2.0',
       id: 1,
       method: 'bus.heartbeat',
-      params: { agent: 'eng-1', patch: { vendor: 'claude', model: 'sonnet', pid: 1 } },
+      params: { agent: SESSION, patch: { vendor: 'claude', model: 'sonnet', pid: 1 } },
     });
     expect(response && 'result' in response && response.result).toMatchObject({
       vendor: 'claude',
       model: 'sonnet',
     });
-    expect(store.getAgent('eng-1').last_seen).toBeTruthy();
+    expect(store.getAgent(SESSION).last_seen).toBeTruthy();
   });
 });
