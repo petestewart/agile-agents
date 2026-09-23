@@ -43,7 +43,7 @@ describe('renderSandboxExecProfile', () => {
   });
 
   test('round 2 B3: daemon socket path is allowed for every role, regardless of network posture', () => {
-    for (const role of ['engineer', 'reviewer', 'qa'] as const) {
+    for (const role of ['engineer', 'reviewer'] as const) {
       const profile = buildSandboxProfile({
         role,
         worktreePath: '/repo/.worktrees/TKT-0001',

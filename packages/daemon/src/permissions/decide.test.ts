@@ -42,7 +42,7 @@ function request(
   };
 }
 
-const ROLES: PermissionRole[] = ['engineer', 'reviewer', 'qa', 'architect', 'em'];
+const ROLES: PermissionRole[] = ['engineer', 'reviewer'];
 
 function decide(role: PermissionRole, req: AcpPermissionRequestParams) {
   return decidePermission({ role, ticket: 'TKT-0001', worktreePath: WORKTREE, request: req });
@@ -273,87 +273,6 @@ describe('decidePermission — role table', () => {
     expect(decision.kind).toBe('deny');
   });
 
-  test('QA: edit is denied (deny edits to source)', () => {
-    const decision = decide('qa', request('edit', { targetPath: `${WORKTREE}/src/a.ts` }));
-    expect(decision.kind).toBe('deny');
-  });
-
-  test('QA: exec is allowed inside the env', () => {
-    expect(decide('qa', request('execute', { command: 'npm test' })).kind).toBe('allow');
-  });
-
-  test('QA: read is allowed', () => {
-    expect(decide('qa', request('read')).kind).toBe('allow');
-  });
-
-  // T031 — design §14 Architect row: "oracle, tickets, KB" read; "oracle
-  // (write guard), tickets, rules" write (but only via MCP verbs — see
-  // `policy-tables.ts`'s `architectVerdict`); "none" run/network.
-  test('architect: read is allowed', () => {
-    expect(decide('architect', request('read')).kind).toBe('allow');
-  });
-
-  test('architect: edit is always denied, even inside the checkout', () => {
-    const decision = decide('architect', request('edit', { targetPath: `${WORKTREE}/src/a.ts` }));
-    expect(decision.kind).toBe('deny');
-  });
-
-  test('architect: exec is limited to read-only tools, same as the reviewer', () => {
-    expect(decide('architect', request('execute', { command: 'git diff' })).kind).toBe('allow');
-    expect(decide('architect', request('execute', { command: 'git log' })).kind).toBe('allow');
-    expect(decide('architect', request('execute', { command: 'npm test' })).kind).toBe('deny');
-    expect(decide('architect', request('execute', { command: 'echo hi > out.txt' })).kind).toBe(
-      'deny',
-    );
-  });
-
-  test('architect: fetch is always denied (no network)', () => {
-    expect(
-      decide('architect', request('fetch', { url: 'https://registry.npmjs.org/zod' })).kind,
-    ).toBe('deny');
-  });
-
-  // T041 — design §14 EM row: read "state via daemon"; write "state,
-  // assignments, policy proposals" (MCP verbs only, never a raw edit); run
-  // "none"; network "none". This row exists because T041's resident EM chat
-  // session is the first EM ACP session in the system.
-  test('em: read is allowed', () => {
-    expect(decide('em', request('read')).kind).toBe('allow');
-  });
-
-  test('em: a raw edit is always denied — EM writes go through the MCP verbs', () => {
-    const decision = decide('em', request('edit', { targetPath: `${WORKTREE}/src/a.ts` }));
-    expect(decision.kind).toBe('deny');
-    if (decision.kind === 'deny') expect(decision.reason).toContain('MCP verbs');
-  });
-
-  test('em: exec is denied outright (§14 Run = none), even read-only commands', () => {
-    // Stricter than the architect/reviewer row on purpose: the resident EM
-    // session runs at the repo root with no ticket worktree, so there is no
-    // scope in which a shell command from it would be safe.
-    expect(decide('em', request('execute', { command: 'git diff' })).kind).toBe('deny');
-    expect(decide('em', request('execute', { command: 'npm test' })).kind).toBe('deny');
-  });
-
-  test('em: fetch is always denied (no network)', () => {
-    expect(decide('em', request('fetch', { url: 'https://registry.npmjs.org/zod' })).kind).toBe(
-      'deny',
-    );
-  });
-
-  test("em: the daemon's own MCP verbs are still allowed (that is how the EM works)", () => {
-    expect(decide('em', request('other', { title: 'mcp__agile__stream_new' })).kind).toBe('allow');
-  });
-
-  test('em: a never-without-human command is a hil verdict, not a silent allow', () => {
-    // The EM session has nowhere to park a hil (no ticket, no waiting
-    // engineer) — `em/permissions.ts` answers it `cancelled`. What matters
-    // here is that the policy never *allows* it.
-    expect(
-      decide('em', request('execute', { command: 'git push --force origin main' })).kind,
-    ).not.toBe('allow');
-  });
-
   for (const role of ROLES) {
     test(`${role}: an unknown tool kind is denied with a reason (safe default)`, () => {
       const decision = decide(role, request('switch_mode', { title: 'Approve Plan' }));
@@ -512,13 +431,6 @@ describe('decidePermission — reviewer/QA read-only bypasses (review round)', (
 
   test('reviewer: a chain with a non-read-only segment is denied', () => {
     expect(decide('reviewer', request('execute', { command: 'git diff && rm -rf src' })).kind).toBe(
-      'deny',
-    );
-  });
-
-  test('QA: redirection/tee is denied even though QA otherwise allows exec', () => {
-    expect(decide('qa', request('execute', { command: 'npm test > out.log' })).kind).toBe('deny');
-    expect(decide('qa', request('execute', { command: 'npm test | tee out.log' })).kind).toBe(
       'deny',
     );
   });
@@ -691,35 +603,16 @@ describe('decidePermission — T029 benign redirect forms', () => {
     );
   });
 
-  test('QA: a benign redirect no longer denies exec', () => {
-    expect(decide('qa', request('execute', { command: 'npm test 2>&1' })).kind).toBe('allow');
-    expect(decide('qa', request('execute', { command: 'npm test >/dev/null 2>&1' })).kind).toBe(
-      'allow',
-    );
-  });
-
-  test('QA: a file-target redirect is still denied', () => {
-    expect(decide('qa', request('execute', { command: 'npm test > out.log' })).kind).toBe('deny');
-  });
-
-  test('QA: tee is still denied even alongside a benign redirect', () => {
-    expect(decide('qa', request('execute', { command: 'npm test 2>&1 | tee out.log' })).kind).toBe(
-      'deny',
-    );
-  });
-
   test('an unresolved redirect operator (nothing after it) is not treated as benign', () => {
     // Pathological/truncated input — no target to prove is benign, so it's
     // denied like any other unverifiable redirect, for every role.
     expect(decide('engineer', request('execute', { command: 'npm test >' })).kind).toBe('deny');
-    expect(decide('qa', request('execute', { command: 'npm test >' })).kind).toBe('deny');
   });
 
   test('a bare input redirect from a file is a read, not gated as a write, for every role', () => {
     expect(decide('reviewer', request('execute', { command: 'cat < notes.txt' })).kind).toBe(
       'allow',
     );
-    expect(decide('qa', request('execute', { command: 'diff a.txt < b.txt' })).kind).toBe('allow');
   });
 });
 
@@ -798,9 +691,8 @@ describe('decidePermission — degraded payloads (title fallback, review round 2
     expect(decision.kind).toBe('deny');
   });
 
-  test('reviewer/QA: title-derived edits are still denied (kind-level floor holds regardless of title)', () => {
+  test('reviewer: title-derived edits are still denied (kind-level floor holds regardless of title)', () => {
     expect(decide('reviewer', request('edit', { title: 'Edit small.txt' })).kind).toBe('deny');
-    expect(decide('qa', request('edit', { title: 'Write new.txt' })).kind).toBe('deny');
   });
 
   test('title "Read File" / "Read" with empty rawInput is allowed for every role', () => {

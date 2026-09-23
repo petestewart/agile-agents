@@ -25,7 +25,7 @@ export interface SandboxProfile {
   worktreePath: string;
   /** §14: engineer writes its own worktree; reviewer/QA/architect get none beyond QA's own test files, which this v0 profile does not yet special-case (documented in the report). T031: `buildSandboxProfile`'s `role === 'engineer'` branch already treats every other role identically (read-only, no network) — `architect` needed no new branch, just this row's confirmation. */
   worktreeWritable: boolean;
-  /** §14 "Network" column: engineer gets package registries only; reviewer/architect/EM get none; QA gets its env base URL (out of this ticket's scope to plumb through — v0 leaves QA's `allowedHosts` at the registry allow-list too, see report). */
+  /** §14 "Network" column: engineer gets package registries only; reviewer gets none. */
   network: 'none' | 'allowlist';
   /** Hostnames reachable when `network === 'allowlist'`. Ignored when `network === 'none'`. */
   allowedHosts: readonly string[];

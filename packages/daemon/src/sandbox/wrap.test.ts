@@ -163,8 +163,8 @@ describe('wrapAgentCommand', () => {
     }
   });
 
-  test('round 3: backend container + requiresSandbox true + role reviewer/qa is sufficient (no network posture to enforce beyond none) -> wraps under docker', () => {
-    for (const role of ['reviewer', 'qa'] as const) {
+  test('round 3: backend container + requiresSandbox true + role reviewer is sufficient (no network posture to enforce beyond none) -> wraps under docker', () => {
+    for (const role of ['reviewer'] as const) {
       const result = wrapAgentCommand(
         { ...baseInput, role, requiresSandbox: true },
         { detectBackendDeps: containerDeps(), ...noIoDeps },

@@ -69,10 +69,8 @@ export const VENDOR_LOGIN_ENV: Readonly<Record<string, readonly string[]>> = Obj
 /**
  * §14 matrix, collapsed to what tier 0 can actually see (fs + network, no
  * per-file granularity): engineer writes its own worktree and reaches
- * package registries; reviewer and QA get a read-only checkout and no
- * network. QA's "own test files in the env" and "env base URL" cells need a
- * finer-grained mount than this pass renders (documented in the pipeline
- * report as a v0 gap, not silently dropped).
+ * package registries; a reviewer gets a read-only checkout and no
+ * network.
  */
 export function buildSandboxProfile(opts: SandboxProfileOptions): SandboxProfile {
   const home = opts.homeDir ?? homedir();
@@ -98,7 +96,7 @@ export function buildSandboxProfile(opts: SandboxProfileOptions): SandboxProfile
     };
   }
 
-  // reviewer / qa: read-only checkout, no network (§14).
+  // reviewer: read-only checkout, no network (§14).
   return {
     role: opts.role,
     worktreePath: opts.worktreePath,

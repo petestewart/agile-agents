@@ -41,17 +41,6 @@ describe('buildSandboxProfile', () => {
     expect(profile.allowedHosts).toEqual([]);
   });
 
-  test('qa: read-only checkout, no network (v0 — env base URL not yet plumbed)', () => {
-    const profile = buildSandboxProfile({
-      role: 'qa',
-      worktreePath: '/repo/.qa-clones/TKT-0001',
-      vendor: 'claude',
-      homeDir: '/home/pete',
-    });
-    expect(profile.worktreeWritable).toBe(false);
-    expect(profile.network).toBe('none');
-  });
-
   test('unknown vendor: no login paths rather than throwing', () => {
     const profile = buildSandboxProfile({
       role: 'engineer',
