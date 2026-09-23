@@ -1,14 +1,8 @@
 /**
- * Feed snapshot (T020 — "Feed: event log tailed live"; "Attention queue:
- * every open `hil_request`"). Assembled fresh from the `StateStore`/
- * `GateService` on every `GET /api/snapshot` and on every new `/ws`
- * connection, so a client that just opened the page (or just reconnected
- * after a drop) gets caught up without replaying the whole event log itself.
- *
- * T122 cut the top strip, the ticket stories, the Team table and the
- * vendor barometer out of it with the subsystems that fed them; what is left
- * is the event tail, the open gates, the open questions and the top bar's
- * project block. The cockpit's own shell is rebuilt in Phase 6.
+ * The feed snapshot, built fresh on every `GET /api/snapshot` and new
+ * `/ws` connection so a client catches up without replaying the log: the
+ * event tail, pending gates, open questions and the project block. Plus
+ * the cockpit frame (inbox and stream tree).
  */
 
 import { basename } from 'node:path';
@@ -19,23 +13,18 @@ import type { QuestionService } from '../questions';
 import type { StateStore } from '../store';
 import type { StreamService } from '../streams';
 
-/** Default cap on how many recent events a snapshot carries (ticket: "last N (e.g. 200)"). */
+/** How many recent events a snapshot carries. */
 export const DEFAULT_SNAPSHOT_EVENT_LIMIT = 200;
 
-/**
- * T043 (§17 "Control room v2" — "Top bar is identical on every view"): the
- * project the daemon is driving. `name` is what the bar shows, `path` is
- * what it shows on hover. Derived from the daemon's own repo root, never
- * from anything a browser sends.
- */
+/** The top bar's project: `name` shown, `path` on hover. From the daemon's repo root, never the browser. */
 export interface FeedProjectInfo {
   name: string;
   path: string;
 }
 
-/** T043: what the always-on top bar renders, in one read the control room already makes. */
+/** What the always-on top bar renders. */
 export interface FeedStatusInfo {
-  /** Open HIL requests + open questions — the Needs-you count. */
+  /** Pending gates + open questions: the Needs-you count. */
   needs_you: number;
 }
 
@@ -43,13 +32,9 @@ export interface FeedSnapshot {
   type: 'snapshot';
   events: Event[];
   hil: HilRequest[];
-  /**
-   * T040: the *open* questions, which are attention-queue items exactly like
-   * a pending `hil_request`. Answered ones are history and stay out, same
-   * rule as `hil` above. Empty when no `QuestionService` is wired.
-   */
+  /** Open questions (answered ones are history); empty with no `QuestionService`. */
   questions: Question[];
-  /** T043: the top bar's project name/path. Absent only when no project root was supplied. */
+  /** Absent when no project root was supplied. */
   project?: FeedProjectInfo;
   status: FeedStatusInfo;
 }
@@ -58,14 +43,13 @@ export function buildSnapshot(
   store: StateStore,
   gates: GateService,
   eventLimit: number = DEFAULT_SNAPSHOT_EVENT_LIMIT,
-  /** T040: optional — without it the snapshot carries an empty `questions` array. */
+  /** Without it, `questions` is empty. */
   questions?: QuestionService,
-  /** T043: the repo root the daemon is driving. Optional — without it the snapshot carries no `project`. */
+  /** The repo root; without it, no `project`. */
   projectRoot?: string,
 ): FeedSnapshot {
   const events = store.listEvents().slice(-eventLimit);
-  // "the open hil_request list" (T020 scope) — resolved requests are history,
-  // not attention-queue items, so the snapshot only ships pending ones.
+  // Resolved gates are history: only pending ones ship.
   const hil = gates.list().filter((request) => request.status === 'pending');
   const openQuestions = questions?.listOpen() ?? [];
 
@@ -81,12 +65,7 @@ export function buildSnapshot(
   };
 }
 
-/**
- * T160: one row of the cockpit's stream tree (design/cockpit-design.md
- * §9.2). Only what the rail renders: the title, where it nests, and the
- * two-writer status pair (§2.2) the dot is coloured from — the dot is
- * derived client-side from these two fields, never stored.
- */
+/** One row of the stream tree (§9.2): title, nesting, and the status pair the dot is derived from client-side. */
 export interface CockpitStreamRow {
   id: string;
   title: string;
@@ -95,12 +74,7 @@ export interface CockpitStreamRow {
   human_status: Stream['human']['status'];
 }
 
-/**
- * T160: the cockpit's live frame — the inbox (§3) and the stream tree
- * (§9.2) in one push. Sent on every `/ws` connect and again after every
- * batch of new `events.jsonl` lines, so a question raised anywhere appears
- * without a reload (§3.3 "Push, do not poll").
- */
+/** The cockpit's live frame: inbox and stream tree, pushed on connect and after every event batch (§3.3). */
 export interface CockpitFrame {
   type: 'cockpit';
   inbox: InboxItem[];
