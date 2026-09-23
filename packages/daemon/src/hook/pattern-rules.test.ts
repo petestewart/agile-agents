@@ -266,3 +266,38 @@ test('T169: a command_deny hit on `rm -rf dist` writes one thread entry naming t
   await decide('ls dist');
   expect(store.readThread(stream).length).toBe(before + 1);
 });
+
+test('T169: three identical denied retries leave one thread entry; a new target or rule adds one', async () => {
+  const wipe = await rules.create('human', {
+    text: 'never wipe build output',
+    enforcement: 'pattern',
+    pattern: { kind: 'command_deny', args: { patterns: ['rm -rf'] } },
+    scope: { kind: 'global' },
+    stage: 'action',
+  });
+  await rules.accept(wipe.id, 'human');
+  const curl = await rules.create('human', {
+    text: 'no network fetches',
+    enforcement: 'pattern',
+    pattern: { kind: 'command_deny', args: { patterns: ['curl'] } },
+    scope: { kind: 'global' },
+    stage: 'action',
+  });
+  await rules.accept(curl.id, 'human');
+  const before = store.readThread(stream).length;
+  const hits = () => store.readThread(stream).slice(before);
+
+  for (let i = 0; i < 3; i++) expect((await decide('rm -rf dist')).decision).toBe('deny');
+  expect(hits()).toHaveLength(1);
+  // The repeats are counted in the log instead.
+  const repeats = store
+    .listEvents()
+    .filter((e) => e.kind === 'hook_decision' && e.data?.thread_repeat === true);
+  expect(repeats).toHaveLength(2);
+
+  expect((await decide('rm -rf build')).decision).toBe('deny');
+  expect(hits()).toHaveLength(2);
+  expect((await decide('curl https://example.com')).decision).toBe('deny');
+  expect(hits()).toHaveLength(3);
+  expect(hits().map((e) => e.ref)).toEqual([wipe.id, wipe.id, curl.id]);
+});

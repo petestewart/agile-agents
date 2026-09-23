@@ -19,6 +19,7 @@ import {
   validateStreamCreateInput,
 } from '@agile-agents/shared';
 import { RpcParamError } from '../gates/rpc';
+import { type ThreadReplyDeps, sayAndAnswer } from '../questions/thread-reply';
 import type { RpcMethodHandler } from '../rpc';
 import { AlreadyExistsError } from '../store/store';
 import {
@@ -155,7 +156,20 @@ async function asParamErrors<T>(run: () => Promise<T>): Promise<T> {
   }
 }
 
-export function buildStreamRpcMethods(service: StreamService): Record<string, RpcMethodHandler> {
+/**
+ * T169: optional wiring for `stream.thread_append`. With `reply`, a plain
+ * human `line` (no `ref`) goes through `sayAndAnswer` — the cockpit
+ * composer's path — so `agile stream say` prompts the live worker and
+ * closes the questions that worker had open, exactly as the web does.
+ */
+export interface StreamRpcOptions {
+  reply?: ThreadReplyDeps;
+}
+
+export function buildStreamRpcMethods(
+  service: StreamService,
+  options: StreamRpcOptions = {},
+): Record<string, RpcMethodHandler> {
   return {
     'stream.create': async (params) =>
       asParamErrors(() =>
@@ -202,8 +216,12 @@ export function buildStreamRpcMethods(service: StreamService): Record<string, Rp
         throw new RpcParamError('invalid "body": must be a non-empty string', { body: p.body });
       }
       const ref = optionalString(p.ref, 'ref');
+      const kind = p.kind === undefined ? 'line' : requireThreadKind(p.kind);
+      if (options.reply !== undefined && kind === 'line' && ref === undefined) {
+        return (await sayAndAnswer(options.reply, requireStreamId(p.id), body)).entry;
+      }
       return service.appendThread(EDGE_PRINCIPAL, requireStreamId(p.id), {
-        kind: p.kind === undefined ? 'line' : requireThreadKind(p.kind),
+        kind,
         body,
         ...(ref !== undefined ? { ref } : {}),
       });

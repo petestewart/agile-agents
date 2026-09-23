@@ -246,6 +246,8 @@ export class HookService {
   private readonly limits: HookLimits;
   private readonly fileSize: (path: string) => number | undefined;
   private readonly now: () => Date;
+  /** T169: per stream, the session + body of the last hit this service appended — the coalescing key. */
+  private readonly lastHit = new Map<string, string>();
 
   constructor(
     private readonly store: StateStore,
@@ -450,7 +452,14 @@ export class HookService {
     ctx: { stream?: string; session?: string } | undefined,
     event: string,
     decision: HookDecision,
-    detail: { tool?: string; command?: string; allowedBy?: string; rule?: string } = {},
+    detail: {
+      tool?: string;
+      command?: string;
+      allowedBy?: string;
+      rule?: string;
+      /** T169: the thread already shows this exact hit; the repeat is counted here instead. */
+      repeat?: boolean;
+    } = {},
   ): Promise<void> {
     await this.store.appendEvent(
       buildEvent('hook_decision', {
@@ -474,6 +483,7 @@ export class HookService {
           // global and critical, so "why was I denied" must be answerable
           // from the log alone.
           ...(detail.rule !== undefined ? { rule: detail.rule } : {}),
+          ...(detail.repeat === true ? { thread_repeat: true } : {}),
         },
       }),
       { commit: 'deferred' },
@@ -552,7 +562,9 @@ export class HookService {
 
     await this.ackAll(ctx.session as AgentId, decision.ack);
     await this.recordRuleStats(decision);
+    const repeat = await this.noteHit(ctx, payload, decision, wasRouted);
     await this.logDecision(ctx, 'pre_tool_use', decision, {
+      ...(repeat ? { repeat: true } : {}),
       ...(payload.tool_name !== undefined ? { tool: payload.tool_name } : {}),
       ...(typeof payload.tool_input?.command === 'string'
         ? { command: payload.tool_input.command }
@@ -560,7 +572,6 @@ export class HookService {
       ...(allowedBy !== undefined ? { allowedBy } : {}),
       ...(decision.ruleViolated !== undefined ? { rule: decision.ruleViolated } : {}),
     });
-    await this.noteHit(ctx, payload, decision, wasRouted);
 
     return {
       hookSpecificOutput: {
@@ -739,8 +750,8 @@ export class HookService {
     payload: ClaudePreToolUsePayload,
     decision: HookDecision,
     routed: boolean,
-  ): Promise<void> {
-    if (decision.decision !== 'deny') return;
+  ): Promise<boolean> {
+    if (decision.decision !== 'deny') return false;
     const ruleId = decision.ruleViolated ?? decision.ruleRouted;
     const outcome = routed ? 'routed to the human' : 'denied';
     const target = hitTarget(payload);
@@ -752,17 +763,41 @@ export class HookService {
     } else {
       body = `hook_deny: ${outcome} \`${target}\` — ${decision.reason ?? 'role policy'}`;
     }
+    const capped = body.slice(0, THREAD_BODY_MAX_CHARS);
+    // Coalesce a retry storm: when the stream's newest thread entry is
+    // this very hit (same body, so same rule/ref, outcome and target) from
+    // the same session, the thread already says it — append nothing, and
+    // let the `hook_decision` event carry `thread_repeat` instead. The
+    // thread is append-only, so the first entry is never rewritten.
+    const key = `${ctx.session}\u0000${capped}`;
+    try {
+      const last = this.store.readThread(ctx.stream).at(-1);
+      if (
+        last !== undefined &&
+        last.by === 'daemon' &&
+        last.kind === 'event' &&
+        last.body === capped &&
+        last.ref === ruleId &&
+        this.lastHit.get(ctx.stream) === key
+      ) {
+        return true;
+      }
+    } catch {
+      // Unreadable thread: fall through and try the append.
+    }
     try {
       await this.store.appendThreadEntry(ctx.stream, {
         ts: this.now().toISOString(),
         by: 'daemon',
         kind: 'event',
-        body: body.slice(0, THREAD_BODY_MAX_CHARS),
+        body: capped,
         ...(ruleId !== undefined ? { ref: ruleId } : {}),
       });
+      this.lastHit.set(ctx.stream, key);
     } catch {
       // A stream that has gone: the decision is already made.
     }
+    return false;
   }
 
   /** Every rule in scope for this stream, or none when no rules service is wired. */
