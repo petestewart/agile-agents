@@ -583,6 +583,15 @@ Build order: Phase 0 → 1 → 2 → 3 → 4 → 5 → 6. Within a phase, ticket
 - **Validation Steps:** `bun test packages/shared packages/daemon packages/ui`; `bun run test:e2e`.
 - **Notes:** May run alongside T169. Before T164.
 
+### Ticket: T171 Bump the Claude ACP adapter so opus-5-5 works
+- **Priority:** P0
+- **Status:** Todo
+- **Owner:** —
+- **Scope:** From Pete's T170 look (2026-09-23): a worker attached with the D17 default fails with "Claude Code 2.1.257 does not support this model; version 2.1.280 or newer is required". The daemon spawns `npx -y @agentclientprotocol/claude-agent-acp@0.75.1`, which bundles `@anthropic-ai/claude-agent-sdk@0.3.257`, so Pete's installed `claude` (2.1.280) is never used. Bump the pin to `0.81.1` (bundles SDK `0.3.280`). Read the adapter's changelog between 0.75.1 and 0.81.1 for changes to permission requests, hooks, cancel/resume and session modes that `design/spike-findings.md` relies on, and adapt `packages/acp-client` if needed. (2) When a session dies on a vendor error, the session strip shows the vendor's error line (from the Discovered Issues entry), so this failure is readable without the thread.
+- **Acceptance Criteria:** Provider test pins 0.81.1; offline suites green; Pete attaches a worker on ledger-lite with the default and it runs a turn; the `rm -rf dist` hook test from T167 still blocks.
+- **Validation Steps:** `bun test packages/acp-client packages/daemon`; `bun run test:e2e`; Pete's live check (no vendor login in the cloud).
+- **Notes:** Runs before T164. Vendor behaviour cannot be re-measured in the cloud; the worker reports every changelog item that touches the spike findings.
+
 ### Ticket: T165 Cockpit as an installable app
 - **Priority:** P2
 - **Status:** Todo (step 1 done 2026-09-22, merge 8121113; step 2 awaits Pete)
