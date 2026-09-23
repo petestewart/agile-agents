@@ -954,7 +954,6 @@ export class StateStore {
     });
   }
 
-
   getEntity<T>(rawRelPath: string, validator: (input: unknown) => T): T {
     const relPath = this.containedRelPath(rawRelPath);
     const path = this.abs(relPath);

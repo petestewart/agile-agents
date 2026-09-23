@@ -387,7 +387,6 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
     ...(landingService ? { landing: landingService } : {}),
     ...(attachService ? { attach: attachService } : {}),
     ...(docsService ? { docs: docsService } : {}),
-    bus,
   });
 
   // T143: §5.4's built-in pattern rules, created on first start and

@@ -182,7 +182,6 @@ describe('Policy singleton', () => {
     expect(store.getPolicy().gates.land).toBe('human_timeout:1h');
     expect(store.listEvents()[0]?.kind).toBe('policy_put');
   });
-
 });
 
 /**
