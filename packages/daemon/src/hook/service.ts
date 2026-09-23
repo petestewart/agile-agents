@@ -366,7 +366,6 @@ export class HookService {
           ...(detail.repeat === true ? { thread_repeat: true } : {}),
         },
       }),
-      { commit: 'deferred' },
     );
   }
 
@@ -568,7 +567,6 @@ export class HookService {
           ...(outcome.error !== undefined ? { error: outcome.error } : {}),
         },
       }),
-      { commit: 'deferred' },
     );
   }
 

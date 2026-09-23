@@ -87,7 +87,7 @@ export interface RuleRpcEvalDeps {
   /** The per-call timeout, reported by `rule.test {plan: true}` so the CLI can size its deadline. */
   timeout_ms?: number;
   /** Where each eval call's `classifier_call` event goes (§6.2). */
-  events?: { appendEvent(event: Event, options?: { commit?: 'deferred' }): Promise<unknown> };
+  events?: { appendEvent(event: Event): Promise<unknown> };
 }
 
 /** `rule.test {plan: true}`: what a run would cost, without making a call. */
@@ -124,7 +124,6 @@ export function testRules(
                   ...(call.error !== undefined ? { error: call.error } : {}),
                 },
               }),
-              { commit: 'deferred' },
             ),
         }
       : {}),

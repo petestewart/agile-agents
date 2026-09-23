@@ -360,15 +360,8 @@ export class StateStore {
     return this.mutex.run(() => {});
   }
 
-  /**
-   * For event sources with no dedicated store method (hook decisions,
-   * session events), so they don't append outside the store. `commit` is
-   * accepted for existing callers; every write is immediate.
-   */
-  async appendEvent(
-    event: Event,
-    _options: { commit?: 'immediate' | 'deferred' } = {},
-  ): Promise<Event> {
+  /** For event sources with no dedicated store method (hook decisions, session events). */
+  async appendEvent(event: Event): Promise<Event> {
     return this.mutex.run(() => {
       const validated = validateEvent(event);
       this.writeEventLine(validated);

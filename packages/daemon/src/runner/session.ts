@@ -514,7 +514,6 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
                 status: update?.status,
               },
             }),
-            { commit: 'deferred' },
           ),
         );
       }
@@ -558,7 +557,6 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
                 warning: `prompt failed, stopping session: ${message}`,
               },
             }),
-            { commit: 'deferred' },
           )
           .catch(() => {
             // Best effort: `finish()` recovers the state either way.
@@ -601,7 +599,6 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
               'spawned session pid unknown at registration; AgentRecord.pid omitted (never falls back to the daemon pid)',
           },
         }),
-        { commit: 'deferred' },
       );
     })
     .then(() => runPromptTurn(brief))
