@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { DEFAULT_EFFORT, EFFORT_LEVELS, EffortSchema, validateEffort } from './effort';
+import { EFFORT_LEVELS, EffortSchema, validateEffort } from './effort';
 import { ulid } from './ids';
 import { SessionRefSchema } from './stream';
 import {
@@ -17,7 +17,6 @@ describe('effort', () => {
     expect([...EFFORT_LEVELS]).toEqual(['low', 'medium', 'high', 'max']);
     expect(EffortSchema.safeParse('extreme').success).toBe(false);
     expect(validateEffort('max')).toBe('max');
-    expect(EFFORT_LEVELS).toContain(DEFAULT_EFFORT);
   });
 
   test('SessionRef carries it, optionally, and stays strict', () => {

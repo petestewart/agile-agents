@@ -16,9 +16,6 @@ export const EFFORT_LEVELS = ['low', 'medium', 'high', 'max'] as const;
 export const EffortSchema = z.enum(EFFORT_LEVELS);
 export type Effort = z.infer<typeof EffortSchema>;
 
-/** The level used when neither the flag, the repo entry nor the home config names one (D17: `low`). */
-export const DEFAULT_EFFORT: Effort = 'low';
-
 export function validateEffort(input: unknown): Effort {
   const result = EffortSchema.safeParse(input);
   if (!result.success) {
