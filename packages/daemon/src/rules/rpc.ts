@@ -1,14 +1,8 @@
 /**
- * `rule.*` RPC methods over a `RulesService` (T140). Same contract as
- * `streams/rpc.ts`: every handler validates its params at the boundary and
- * throws `RpcParamError` (-32602) rather than letting a destructuring
- * `TypeError` reach `dispatch()`.
- *
- * **The principal is stamped here, never read from params** (design §2.2).
- * This edge serves the CLI and the UI, so every call is `human`. An agent
- * proposes through the `propose_rule` verb (`attach/verbs.ts`), which calls
- * `RulesService` directly with the `agent` principal — there is no way to
- * reach this table as an agent, and no `--as` flag anywhere on this path.
+ * `rule.*` RPC over a `RulesService`. Params are validated at the boundary
+ * (`RpcParamError`, -32602). The principal is always `human` here (§2.2):
+ * an agent proposes through the `propose_rule` verb, and this edge has no
+ * way to act as one.
  */
 
 import {
@@ -30,7 +24,7 @@ import { type RuleEvalReport, evaluableRules, runRuleEvals } from './evals';
 import { RULE_REPORT_DEFAULT_DAYS, buildRuleReport } from './report';
 import { RuleAlreadyDecidedError, type RulesService, UnknownRuleScopeError } from './service';
 
-/** Every `rule.*` write from this edge is the human's (design §2.2). */
+/** Every `rule.*` write from this edge is the human's. */
 const EDGE_PRINCIPAL = 'human' as const;
 
 /** The `decided_by` this edge stamps when the caller names nobody. */
@@ -66,20 +60,7 @@ function optionalPositiveInt(value: unknown, field: string): number | undefined 
   return n;
 }
 
-/**
- * Errors the service/store raise for **caller input** — an unknown scope
- * ref, a duplicate id, a second decision on a decided rule, or any
- * `RuleWriteError` (the principal split and the tier invariants, §5.1/§5.6).
- * `dispatch()` only reads a `code` off the thrown error, so without this
- * they would surface as -32603 "internal error" while every other
- * validation failure on this surface is -32602.
- */
-/**
- * A shared-schema validation failure is caller input too: `validateRule*`
- * throws a plain `Error` (it is a pure shared function and knows nothing
- * about JSON-RPC), so the edge relabels it -32602 rather than letting a
- * rejected unknown key read as an internal daemon fault.
- */
+/** A shared-schema validation failure is caller input: -32602, not an internal fault. */
 function validated<T>(parse: () => T): T {
   try {
     return parse();
@@ -88,6 +69,7 @@ function validated<T>(parse: () => T): T {
   }
 }
 
+/** Service and store errors that are caller input (scope, duplicate id, a repeat decision, the principal and tier checks): -32602. */
 async function asParamErrors<T>(run: () => Promise<T> | T): Promise<T> {
   try {
     return await run();
@@ -105,22 +87,15 @@ async function asParamErrors<T>(run: () => Promise<T> | T): Promise<T> {
 }
 
 /**
- * What `rule.test` (§5.6) needs beyond the service: the configured
- * classifier and the bands to read its answers with. Optional, because a
- * home with no classifier still gets every other `rule.*` method — the
- * eval verb is the only one that needs to make a call, and it says so
- * rather than the whole table disappearing.
+ * What `rule.test` (§5.6) needs: the classifier and its bands. Optional:
+ * without one, every other `rule.*` method still works.
  */
 export interface RuleRpcEvalDeps {
   classifier: Classifier;
   bands: ClassifierBands;
-  /**
-   * T155: the classifier's per-call timeout, reported by `rule.test
-   * {plan: true}` so the CLI can size its RPC deadline to the run (one call
-   * per example). Defaults to the config default.
-   */
+  /** The per-call timeout, reported by `rule.test {plan: true}` so the CLI can size its deadline. */
   timeout_ms?: number;
-  /** T155: where each eval call's `classifier_call` event goes (§6.2). */
+  /** Where each eval call's `classifier_call` event goes (§6.2). */
   events?: { appendEvent(event: Event, options?: { commit?: 'deferred' }): Promise<unknown> };
 }
 
@@ -131,11 +106,7 @@ export interface RuleEvalPlan {
   timeout_ms: number;
 }
 
-/**
- * §5.6's evals, with a `classifier_call` event per call (T155). Shared by
- * `rule.test` and the cockpit's "Test examples" (T163), so both report the
- * same thing and log the same events.
- */
+/** §5.6's evals with a `classifier_call` event per call, shared by `rule.test` and the cockpit. */
 export function testRules(
   service: RulesService,
   evals: RuleRpcEvalDeps,
@@ -174,10 +145,7 @@ export function buildRuleRpcMethods(
   evals?: RuleRpcEvalDeps,
 ): Record<string, RpcMethodHandler> {
   return {
-    /**
-     * A create is always a *proposal*, whoever calls it (§5.1): the human's
-     * authority lives in the accept, which is a second, explicit act.
-     */
+    /** Always a proposal, whoever calls (§5.1); acceptance is a second act. */
     'rule.create': async (params) =>
       asParamErrors(() =>
         service.create(
@@ -203,7 +171,7 @@ export function buildRuleRpcMethods(
       };
     },
 
-    /** §5.3's filter, for one stream — the same call the brief and the hook make. */
+    /** §5.3's filter for one stream, as the brief and the hook see it. */
     'rule.in_scope': (params) => {
       const p = requireObject(params);
       const stream = optionalString(p.stream, 'stream');
@@ -213,22 +181,14 @@ export function buildRuleRpcMethods(
       return { rules: service.inScope(stream) };
     },
 
-    /**
-     * §5.7's pruning view. Read-only and derived: it reports the `stats`
-     * the hook path and the diff check wrote, and never retires anything —
-     * the prune itself is `rule.retire`, a human decision.
-     */
+    /** §5.7's pruning view: derived and read-only; pruning is `rule.retire`. */
     'rule.report': (params) => {
       const p = params === undefined ? {} : requireObject(params);
       const days = optionalPositiveInt(p.days, 'days') ?? RULE_REPORT_DEFAULT_DAYS;
       return buildRuleReport(service, { days });
     },
 
-    /**
-     * §5.6's evals: every accepted classifier rule's examples through the
-     * configured classifier, or the one rule named. Read-only — an eval is
-     * not a firing, so nothing here touches `stats`.
-     */
+    /** §5.6's evals for every accepted classifier rule, or one. An eval is not a firing: no `stats`. */
     'rule.test': async (params) => {
       const p = params === undefined ? {} : requireObject(params);
       const id = optionalString(p.id, 'id');
@@ -267,12 +227,7 @@ export function buildRuleRpcMethods(
       return asParamErrors(() => service.retire(id, by));
     },
 
-    /**
-     * §3.1's "edit-then-accept". `RulePatchSchema` is exactly the fields a
-     * human may edit, so `status`, `decided_*` and `provenance` cannot be
-     * smuggled in through an update; the explicit checks above name *why*
-     * rather than letting them fail as unknown keys.
-     */
+    /** §3.1's edit-then-accept. Decisions and provenance are refused by name, not as unknown keys. */
     'rule.update': async (params) => {
       const { id, ...rest } = requireObject(params);
       const ruleId = requireRuleId(id);
