@@ -1,25 +1,10 @@
 /**
- * `QuestionService` — the question half of the inbox
- * (design/cockpit-design.md §1.4 "The question flow", §2.3, §3).
- *
- * T121 re-keyed the whole module to streams:
- *  - a question is raised **on a stream**, never on a ticket;
- *  - the records live in the state home at `questions/Q-<ulid>.yaml`,
- *    beside `streams/` and `threads/` (§7.2), written through the store;
- *  - raising one appends a `question` thread entry and flips the stream to
- *    `agent.status: question` / `human.status: waiting_on_you`;
- *  - answering appends an `answer` entry, flips it back to
- *    `agent.status: working` / `human.status: open`, and delivers the
- *    answer to the waiting session — T137: delivery is a **prompt** into
- *    that live session (`deliver`, wired to `AttachService.deliverAnswer`
- *    in `daemon.ts`), not a bus mailbox file nothing ever read;
- *  - `resolved_as` is `reply` and nothing else. Recording a decision
- *    (`recordAsDecision`) and editing a ticket (`applyTicketEdit`) went
- *    with the oracle and the ticket model.
- *
- * "Questions are records with a status, not mail" (§1.4): this module
- * does not touch the bus at all, so a leftover message from a previous
- * daemon run can never surface as a question or an inbox item.
+ * `QuestionService`: the question half of the inbox (§1.4, §2.3, §3).
+ * A question is raised on a stream and stored at `questions/Q-<ulid>.yaml`.
+ * Raising appends a `question` thread entry and flips the stream to
+ * `question`/`waiting_on_you`; answering appends an `answer` entry, flips
+ * it back and delivers the answer to the waiting session as a prompt.
+ * "Questions are records with a status, not mail" (§1.4): no bus here.
  */
 
 import {
@@ -36,7 +21,7 @@ import type { StreamService } from '../streams/service';
 /** Session statuses that mean "there is still a process to answer to" (§2.3). */
 const LIVE_SESSION_STATUSES: readonly string[] = ['starting', 'running', 'idle'];
 
-/** `questions/` in the state home — a sibling of `streams/` and `threads/` (§7.2). */
+/** `questions/` in the state home (§7.2). */
 export const QUESTIONS_DIR = 'questions';
 
 function questionPath(id: QuestionId): string {
@@ -47,7 +32,7 @@ function newQuestionId(): QuestionId {
   return `Q-${ulid()}` as QuestionId;
 }
 
-/** Trims and caps at the shared body cap — the one place free text is normalized before it touches the schema. */
+/** Trims and caps at the shared body cap. */
 function normalizeText(value: string): string {
   return value.trim().slice(0, MESSAGE_BODY_MAX_CHARS);
 }
@@ -76,7 +61,7 @@ export class EmptyQuestionTextError extends Error {
 export interface RaiseQuestionInput {
   /** The stream the fork is on (§1.4). Required. */
   stream: string;
-  /** Who is asking: an agent role id, or `human` when the operator raises one from the UI. */
+  /** Who is asking: an agent id, or `human` from the UI. */
   raised_by: AgentId;
   /** The vendor session blocked on the answer, when there is one. */
   session?: string;
@@ -86,9 +71,9 @@ export interface RaiseQuestionInput {
 
 export interface AnswerQuestionInput {
   answer: string;
-  /** Free string on the wire (`--by pete`, `human` from the browser), same as a gate decision's `by`. */
+  /** Free string on the wire (`--by pete`, `human` from the browser). */
   by: string;
-  /** Only one resolution survives (§3.1): the answer is a reply. */
+  /** The only resolution a human answer has (§3.1). */
   resolved_as?: 'reply';
 }
 
@@ -97,10 +82,8 @@ export interface AnswerQuestionResult {
 }
 
 /**
- * How an answer reaches the session that asked (T137). `daemon.ts` wires
- * this to `AttachService.deliverAnswer`, which prompts the live handle.
- * Left unset (tests of the record alone) the answer stays on the thread,
- * which is exactly what happens when the session is already gone.
+ * How an answer reaches the session that asked (`AttachService.deliverAnswer`,
+ * a prompt). Unset, the answer stays on the thread, as when the session is gone.
  */
 export type AnswerDelivery = (sessionId: string, question: Question) => Promise<void> | void;
 
@@ -123,14 +106,9 @@ export class QuestionService {
   }
 
   /**
-   * §1.4/§2.3: the record, the `question` thread entry, the two status
-   * flips, and the `question_raised` event. The stream write goes in as
-   * principal `daemon` — it touches both halves of the record at once
-   * (agent says "I am stuck", human says "this is on you"), which is
-   * exactly what §2.2 reserves for the daemon's own lifecycle writes.
-   *
-   * The stream must exist: `getStream` throws `NotFoundError` before
-   * anything is persisted, so a question never outlives its stream.
+   * §1.4/§2.3: the record, the `question` thread entry, both status flips
+   * (as `daemon`, since it touches both halves, §2.2) and the event. The
+   * stream must exist, so a question never outlives its stream.
    */
   async raise(input: RaiseQuestionInput): Promise<Question> {
     const text = normalizeText(input.text);
@@ -151,9 +129,7 @@ export class QuestionService {
     };
     const saved = await this.persist(record);
 
-    // `by: agent:<session>` when an agent asked from a live session, else
-    // `human` — the operator raising one from the UI (§3.1's `question`
-    // row names both producers).
+    // `agent:<session>` when an agent asked from a live session, else `human` or `daemon`.
     if (input.raised_by === 'human' || input.session === undefined) {
       await this.streams.appendThread(
         input.raised_by === 'human' ? 'human' : 'daemon',
@@ -190,11 +166,8 @@ export class QuestionService {
   }
 
   /**
-   * Answers an open question: the answer is stored, the question flips to
-   * `answered`, an `answer` thread entry goes on the stream `by: human`,
-   * the stream goes back to `agent.status: working` / `human.status: open`
-   * (§2.3), a `question_answered` event is logged, and the answer is
-   * delivered to the session that is waiting on it.
+   * Answers an open question: record, `answer` thread entry by `human`,
+   * status flips back (§2.3), event, and delivery to the waiting session.
    */
   async answer(id: QuestionId, input: AnswerQuestionInput): Promise<AnswerQuestionResult> {
     const current = this.get(id);
@@ -217,11 +190,9 @@ export class QuestionService {
       body: answer,
       ref: questionPath(saved.id),
     });
-    // T130 (Phase 2 Discovered Issues): back to `working` only if there is
-    // still a live session to go back to work. A question answered after
-    // the session exited (or on a stream that was never attached) leaves
-    // the stream `idle` — claiming an agent is working when no process
-    // exists is exactly the kind of lie the two-writer split exists to stop.
+    // Back to `working` only if a live session exists; otherwise `idle`
+    // (claiming an agent works when no process exists is the lie the
+    // two-writer split exists to stop).
     const liveSession = this.streams
       .get(saved.stream)
       .sessions.some((session) => LIVE_SESSION_STATUSES.includes(session.status));
@@ -243,21 +214,11 @@ export class QuestionService {
   }
 
   /**
-   * T145: **resolving a gate resolves every question the same session
-   * still has open at that moment**, as `superseded`.
-   *
-   * The live `--help` run is the whole argument: the worker raised a plain
-   * `ask` and hit the route-band gate in the same turn, the operator
-   * approved the gate (the thing the inbox put in front of them), the
-   * worker carried on — and the question stayed open forever, holding the
-   * stream `working/open` with nobody working. One decision from the
-   * operator, one session, one moment: whatever that session was still
-   * asking is answered by the decision it just got.
-   *
-   * Writes the record, a `question Q-… superseded by HIL-…` thread line,
-   * and a `question_answered` event; it deliberately does NOT deliver
-   * anything to the session (the gate decision is the delivery) and does
-   * not touch the stream statuses (the turn-end rule owns those now).
+   * Resolving a gate resolves every question the same session still has
+   * open, as `superseded` (a worker once asked and hit a gate in one turn;
+   * the gate was approved and the question held the stream open forever).
+   * No delivery (the gate decision is it) and no status writes (the
+   * turn-end rule owns those).
    */
   async supersede(sessionId: string, byGateId: string): Promise<Question[]> {
     const open = this.listOpen().filter((question) => question.session === sessionId);
@@ -291,19 +252,11 @@ export class QuestionService {
   }
 
   /**
-   * T169: the human replied **on the thread** instead of the Answer box,
-   * and that line was prompted into the very session that asked. The reply
-   * is the answer: every question that session still has open is closed as
-   * `answered` / `reply`, `answered_by: human`, its answer citing the
-   * thread line — so the card leaves the inbox and the turn-end rule sees
-   * nothing open, and the worker carries on instead of idling on a
-   * question that was already answered in the conversation.
-   *
-   * Deliberately conservative: only called once the line has been handed
-   * to that session's prompt queue (`AttachService.say` returned it as
-   * `prompted`), so a line typed on a stream with no live worker — or
-   * prompted into a different session — closes nothing. Nothing is
-   * delivered here: the thread line *was* the delivery.
+   * The human replied on the thread and that line was prompted into the
+   * session that asked: the reply answers every question that session has
+   * open (`reply`, by `human`, citing the line), so the card leaves the
+   * inbox. Called only once the line reached that session's prompt queue;
+   * the line was the delivery.
    */
   async answerFromThread(
     sessionId: string,
@@ -332,7 +285,7 @@ export class QuestionService {
           human: { status: 'open' },
         })
         .catch(() => {
-          // The stream write is the status half; the record is already closed.
+          // The record is already closed; the status half is best effort.
         });
       await this.store.appendEvent(
         buildEvent('question_answered', {
@@ -356,7 +309,7 @@ export class QuestionService {
     }
   }
 
-  /** Durable: reads `questions/**` fresh from disk every call (same as `GateService.list`). */
+  /** Durable: reads `questions/**` fresh from disk every call. */
   list(): Question[] {
     return this.store.listEntities(QUESTIONS_DIR, validateQuestion);
   }
@@ -370,13 +323,7 @@ export class QuestionService {
     return this.store.putEntity(questionPath(record.id), validateQuestion, record);
   }
 
-  /**
-   * Hands the answer to the session that asked (T137). The record is the
-   * yaml file and the thread entry; this is only the nudge that wakes the
-   * waiting process, and it is a prompt — the live run proved a mailbox
-   * file nothing reads leaves the session idle forever. A question raised
-   * by the operator (no `session`) has nobody to wake.
-   */
+  /** Hands the answer to the session that asked. An operator's question (no `session`) has nobody to wake. */
   private async deliverAnswer(question: Question): Promise<void> {
     if (question.answer === undefined || question.session === undefined) return;
     if (this.deliver === undefined) return;
