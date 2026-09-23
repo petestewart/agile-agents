@@ -1,34 +1,18 @@
 /**
- * The TypeSafe Jev wire mapping, and nothing else.
+ * The TypeSafe Jev wire mapping, alone in this module because it is the one
+ * part of the tier that can't be verified offline (the fixtures in
+ * `__fixtures__/` move with it). From https://docs.typesafe.ai/api:
  *
- * Everything this adapter knows about the shape of the HTTP call lives in
- * this one module on purpose: it is the only part of the classifier tier
- * that cannot be verified offline, so when the first live check corrects it
- * (`agile rules test <rule-id>` against the real API), it is corrected in
- * one file and the fixtures under `__fixtures__/` move with it.
+ *  - `POST <base>/v1/systemone`, `Authorization: Bearer <key>`, JSON;
+ *  - request `{ state, model, questions }`, `questions` a map of id to
+ *    `{ type: 'noul', instructions }`;
+ *  - response `{ model, answers, usage }`, answers under the same ids as
+ *    `{ type: 'noul', noul: <number> }`;
+ *  - errors are plain HTTP statuses (401, 422, 429, 529).
  *
- * Source: the public HTTP API reference at https://docs.typesafe.ai/api.
- * Taken from the docs verbatim:
- *
- *  - `POST <base>/v1/systemone`, `Authorization: Bearer <key>`,
- *    `Content-Type: application/json`.
- *  - Request `{ state, model, questions }` where `questions` is a **map**
- *    of caller-chosen id to a typed question, and a Noul question is
- *    `{ type: 'noul', instructions: <the question> }`.
- *  - Response `{ model, answers, usage }` where `answers` is a map under
- *    the same ids, and a Noul answer is `{ type: 'noul', noul: <number> }`.
- *  - Errors are plain HTTP status codes (401, 422, 429, 529).
- *
- * A Noul answer has no `confidence` (the docs: "There is no separate
- * `confidence` value for a Noul"); per **D14** the single value is the
- * answer and its certainty in one, and the bands read it raw. A
- * `confidence` field in a response is ignored.
- *
- * **Unverified (T156):** the wire spelling of a rule's `criteria`. The docs
- * describe Noul criteria as true/false descriptions; this adapter sends them
- * as `criteria: { true, false }` on the Noul question. That field name has
- * not been checked against the live API — if the first live check shows a
- * different spelling, `JEV_CRITERIA_FIELD` below is the one place to fix.
+ * A Noul has no `confidence`; per D14 the value is read raw.
+ * Unverified: the spelling of a rule's `criteria` field
+ * (`JEV_CRITERIA_FIELD`, the one place to fix it).
  */
 
 import { ClassifierUnavailableError } from './types';
@@ -37,13 +21,10 @@ import type { Answer, Noul } from './types';
 /** The evaluation endpoint's path, appended to the configured base URL. */
 export const JEV_ENDPOINT_PATH = '/v1/systemone';
 
-/** The model alias the docs tell callers to use — TypeSafe's flagship. */
+/** The model alias the docs recommend. */
 export const JEV_MODEL = 'jev-latest';
 
-/**
- * The Noul question field that carries a rule's criteria. Unverified against
- * the live API — see this module's header. The one place its name lives.
- */
+/** The Noul field carrying a rule's criteria (unverified; see header). */
 export const JEV_CRITERIA_FIELD = 'criteria';
 
 /** One entry of the request's `questions` map. */
@@ -59,20 +40,15 @@ export interface JevRequest {
   questions: Record<string, JevNoulQuestion>;
 }
 
-/** The full URL for a configured base. A trailing slash on the base is fine. */
+/** The full URL for a configured base (a trailing slash is fine). */
 export function jevEndpoint(baseUrl: string): string {
   return `${baseUrl.replace(/\/+$/, '')}${JEV_ENDPOINT_PATH}`;
 }
 
 /**
- * One call, N questions (§6.2). The map keys are the caller's `Noul.id` —
- * in practice a rule id — and the docs guarantee the answers come back
- * under the same keys. The keys are not sent to the model and play no part
- * in inference, so a rule id is a safe key.
- *
- * Duplicate ids are rejected rather than silently collapsed: a map cannot
- * hold two questions under one key, and returning one answer for two rules
- * would gate the wrong rule.
+ * One call, N questions (§6.2), keyed by `Noul.id` (a rule id; keys never
+ * reach the model). A duplicate id is rejected: one answer for two rules
+ * would gate the wrong one.
  */
 export function buildJevRequest(state: string, questions: Noul[], model = JEV_MODEL): JevRequest {
   const map: Record<string, JevNoulQuestion> = {};
@@ -99,10 +75,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /**
- * Maps the response back to one `Answer` per question asked, in the order
- * asked. A missing or malformed answer is a `bad_response`, never a
- * defaulted probability: §6.4's fail policy is a deliberate decision per
- * rule, and inventing a 0 here would quietly allow everything instead.
+ * One `Answer` per question, in order. A missing or malformed answer is a
+ * `bad_response`, never a defaulted probability (a 0 would quietly allow).
  */
 export function parseJevResponse(body: unknown, questions: Noul[]): Answer[] {
   if (!isRecord(body) || !isRecord(body.answers)) {
