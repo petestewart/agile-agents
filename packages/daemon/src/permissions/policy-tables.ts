@@ -11,6 +11,7 @@
  * the like.
  */
 
+import { resolve } from 'node:path';
 import * as cmd from './command';
 import { isPathInside } from './command';
 import type { PermissionRequest, PermissionRole } from './types';
@@ -31,6 +32,8 @@ function hil(reason: string): PolicyVerdict {
 export interface PolicyContext {
   role: PermissionRole;
   worktreePath: string;
+  /** T213: where a read may reach beyond the worktree (visible registered repos). */
+  readRoots?: readonly string[];
 }
 
 // Never-without-human (§14 "Never without a human"). Checked before any
@@ -190,12 +193,16 @@ const ENGINEER_BENIGN_PATH_TOOLS = new Set([
   'diff',
 ]);
 
+/** T213: of those, the ones that only read, so any `readRoots` path is fine (`sort -o` writes). */
+const ENGINEER_READ_ONLY_PATH_TOOLS = new Set(['cat', 'ls', 'head', 'tail', 'wc', 'cut', 'diff']);
+
 /**
  * Every path must resolve inside the worktree after `~` expansion
  * (`cmd.resolveTargetPath`); a `$`, backtick or `~user` is unclassifiable
  * and routes to `hil`, never a guessed allow.
  */
-function verifyBenignPaths(paths: string[], ctx: PolicyContext): PolicyVerdict {
+function verifyBenignPaths(paths: string[], ctx: PolicyContext, reads = false): PolicyVerdict {
+  const roots = reads ? [ctx.worktreePath, ...(ctx.readRoots ?? [])] : [ctx.worktreePath];
   for (const raw of paths) {
     const resolved = cmd.resolveTargetPath(raw);
     if (!resolved.safe) {
@@ -203,8 +210,14 @@ function verifyBenignPaths(paths: string[], ctx: PolicyContext): PolicyVerdict {
         `"${raw}" contains an unresolved shell variable/backtick/home-directory reference`,
       );
     }
-    if (!isPathInside(resolved.path, ctx.worktreePath)) {
-      return deny(`${raw} is outside the worktree`);
+    // Relative to the session's cwd (the worktree), whichever root it lands in.
+    const path = resolve(ctx.worktreePath, resolved.path);
+    if (!roots.some((root) => isPathInside(path, root))) {
+      return deny(
+        reads
+          ? `${raw} is outside the worktree and every repo this node can read`
+          : `${raw} is outside the worktree`,
+      );
     }
   }
   return ALLOW;
@@ -248,11 +261,15 @@ function engineerBenignCommandVerdict(
 
   if (head === 'find') {
     if (cmd.isFindWriteInvocation(tokens)) return undefined; // write primitives: not benign
-    return verifyBenignPaths(cmd.findSearchRoots(tokens), ctx);
+    return verifyBenignPaths(cmd.findSearchRoots(tokens), ctx, true);
   }
 
   if (head === 'grep' || head === 'rg') {
-    return verifyBenignPaths([...cmd.grepPathArgs(tokens), ...cmd.flagPathValues(tokens)], ctx);
+    return verifyBenignPaths(
+      [...cmd.grepPathArgs(tokens), ...cmd.flagPathValues(tokens)],
+      ctx,
+      true,
+    );
   }
 
   const scriptPath = cmd.scriptExecutionPath(tokens);
@@ -261,7 +278,11 @@ function engineerBenignCommandVerdict(
   }
 
   if (ENGINEER_BENIGN_PATH_TOOLS.has(head)) {
-    return verifyBenignPaths([...cmd.benignPathArgs(tokens), ...cmd.flagPathValues(tokens)], ctx);
+    return verifyBenignPaths(
+      [...cmd.benignPathArgs(tokens), ...cmd.flagPathValues(tokens)],
+      ctx,
+      ENGINEER_READ_ONLY_PATH_TOOLS.has(head),
+    );
   }
 
   return undefined;

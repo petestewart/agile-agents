@@ -270,7 +270,8 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
     store && streamService && attachService
       ? new RepoInPlaceService(store, streamService, {
           attach: (id) => attachService.attach(id),
-          stop: (id) => attachService.stop(id),
+          stop: (id, reason) =>
+            attachService.stop(id, undefined, reason !== undefined ? { reason } : {}),
         })
       : undefined;
   const extraMethods =

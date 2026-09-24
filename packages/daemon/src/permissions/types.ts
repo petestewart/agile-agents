@@ -79,6 +79,11 @@ export interface PermissionRequest {
 export interface DecisionContext {
   role: PermissionRole;
   worktreePath: string;
+  /**
+   * T213 (projects-design §4.4): roots a read may reach beyond the
+   * worktree (the registered repos this node can see). Writes stay in the worktree.
+   */
+  readRoots?: readonly string[];
   request: AcpPermissionRequestParams;
   /**
    * The pattern rules in scope (§5.3) and what their detectors need: this

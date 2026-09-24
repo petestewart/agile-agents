@@ -139,3 +139,54 @@ describe('decidePreToolUse — role × tool policy (review round 3, reuses decid
     expect(glob).toEqual({ decision: 'allow' });
   });
 });
+
+// T213 (projects-design §4.4, P20): reads reach every repo the node can see;
+// writes stay in the node's own worktree (a coordinator's: its session dir).
+describe('decidePreToolUse — T213 read scope', () => {
+  const ledger = '/repos/ledger-lite';
+  const shop = '/repos/shop-private';
+  const scope = { readRoots: ['/repos/app', ledger], hiddenRoots: [shop] };
+  const part = `${ledger}/.worktrees/01part-ledger-lite-part`;
+  const bash = (command: string) => ({ tool_name: 'Bash', tool_input: { command } });
+
+  for (const [role, worktreePath] of [
+    ['coordinator', '/home/.agile/sessions/01coord'],
+    ['worker', '/repos/app/.worktrees/01sib-app-part'],
+  ] as const) {
+    test(`a ${role} reads a sibling part's worktree and another public repo`, () => {
+      const ctx = baseCtx({ role: 'worker', worktreePath, ...scope });
+      for (const command of [`ls -la ${part}`, `cat ${part}/src/a.ts`, `grep -rn sale ${ledger}`]) {
+        expect(decidePreToolUse(ctx, bash(command)).decision).toBe('allow');
+      }
+      expect(
+        decidePreToolUse(ctx, { tool_name: 'Read', tool_input: { file_path: `${part}/a.ts` } })
+          .decision,
+      ).toBe('allow');
+    });
+
+    test(`a ${role} still cannot write outside its own worktree`, () => {
+      const ctx = baseCtx({ role: 'worker', worktreePath, ...scope });
+      expect(decidePreToolUse(ctx, bash(`touch ${part}/x`)).decision).toBe('deny');
+      expect(decidePreToolUse(ctx, bash(`cp ${part}/a ${part}/b`)).decision).toBe('deny');
+      expect(decidePreToolUse(ctx, bash(`echo hi > ${part}/x`)).decision).toBe('deny');
+      expect(
+        decidePreToolUse(ctx, { tool_name: 'Write', tool_input: { file_path: `${part}/x.ts` } })
+          .decision,
+      ).toBe('deny');
+    });
+  }
+
+  test('a Blog node cannot read a private repo listed for Shop', () => {
+    const ctx = baseCtx({ worktreePath: '/repos/app/.worktrees/01blog', ...scope });
+    expect(decidePreToolUse(ctx, bash(`cat ${shop}/secret.ts`)).decision).toBe('deny');
+    for (const tool_name of ['Read', 'Grep', 'Glob']) {
+      const result = decidePreToolUse(ctx, { tool_name, tool_input: { path: `${shop}/src` } });
+      expect(result.decision).toBe('deny');
+      expect(result.reason).toMatch(/private repo/);
+    }
+  });
+
+  test('without a read scope, Bash reads stay in the worktree', () => {
+    expect(decidePreToolUse(baseCtx(), bash(`ls ${part}`)).decision).toBe('deny');
+  });
+});

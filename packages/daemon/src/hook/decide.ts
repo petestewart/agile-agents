@@ -18,6 +18,7 @@
  * `main` through as `allow`).
  */
 
+import { resolve } from 'node:path';
 import {
   type ClassifierBands,
   DEFAULT_PROTECTED_BRANCHES,
@@ -40,6 +41,7 @@ import type {
   AcpToolKind,
 } from '../permissions';
 import type { PermissionRole } from '../permissions';
+import { isPathInside } from '../permissions/command';
 import type { RuleCheckContext } from '../permissions/rule-checks';
 import { patternRulesOf, runPatternRules } from '../permissions/rule-checks';
 import type { ClaudePreToolUsePayload, HookDecision, HookDecisionContext } from './types';
@@ -146,6 +148,19 @@ function claudeToolRawInput(
   return typeof path === 'string' ? { file_path: path } : {};
 }
 
+/** T213: a built-in tool's path inside a repo this node may not read (Bash reads are held to `readRoots`). */
+function hiddenRepoPath(
+  ctx: HookDecisionContext,
+  payload: ClaudePreToolUsePayload,
+): string | undefined {
+  const hidden = ctx.hiddenRoots ?? [];
+  if (hidden.length === 0) return undefined;
+  return pathsForToolCall(payload).find((raw) => {
+    const path = resolve(ctx.worktreePath, raw);
+    return !isPathInside(path, ctx.worktreePath) && hidden.some((root) => isPathInside(path, root));
+  });
+}
+
 /**
  * The role × tool verdict: `deny` → `deny`, `hil` → `ask` (translated into
  * the route band by `service.ts`), `allow` → `undefined` (fall through).
@@ -154,6 +169,13 @@ function roleToolVerdict(
   ctx: HookDecisionContext,
   payload: ClaudePreToolUsePayload,
 ): HookDecision | undefined {
+  const hidden = hiddenRepoPath(ctx, payload);
+  if (hidden !== undefined) {
+    return {
+      decision: 'deny',
+      reason: `${hidden} is in a private repo this node's project cannot read`,
+    };
+  }
   const kind = claudeToolKind(payload);
   if (kind === undefined) return undefined;
 
@@ -166,6 +188,7 @@ function roleToolVerdict(
   const decision = decidePermission({
     role: permissionRoleFor(ctx.role),
     worktreePath: ctx.worktreePath,
+    ...(ctx.readRoots !== undefined ? { readRoots: ctx.readRoots } : {}),
     request,
   });
 

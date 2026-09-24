@@ -60,7 +60,11 @@ export function decidePermission(ctx: DecisionContext): Decision {
   const classified = classifyPermissionRequest(ctx.request);
   const options = ctx.request.options ?? [];
 
-  const policyCtx = { role: ctx.role, worktreePath: ctx.worktreePath };
+  const policyCtx = {
+    role: ctx.role,
+    worktreePath: ctx.worktreePath,
+    ...(ctx.readRoots !== undefined ? { readRoots: ctx.readRoots } : {}),
+  };
   // The daemon's own MCP verbs are never gated here: each enforces its own
   // role rules, and the vendor reports them as kind `other`, which every
   // role table denies (a live run's hook-less session was locked out of
