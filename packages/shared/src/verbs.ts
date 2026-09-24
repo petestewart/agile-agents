@@ -158,6 +158,10 @@ export const SetOwnerInputSchema = z
     owns: z.array(z.string().trim().min(1).max(512)).max(50),
   })
   .strict();
+/** T287 (§9.4): a coordinator's targeted note to one of its children. */
+export const NoteChildInputSchema = z
+  .object({ session: Session, child: UlidSchema, body: Body })
+  .strict();
 
 /**
  * T285 (§9.1, §9.5): a child (optionally co-signed by siblings in `with`)
@@ -207,6 +211,7 @@ export const AGENT_VERBS = [
   'add_child',
   'add_waits_on',
   'set_owner',
+  'note_child',
   'propose_contract',
   'decide_contract',
 ] as const;
@@ -230,6 +235,7 @@ export const AGENT_VERB_SCHEMAS = {
   add_child: AddChildInputSchema,
   add_waits_on: AddWaitsOnInputSchema,
   set_owner: SetOwnerInputSchema,
+  note_child: NoteChildInputSchema,
   propose_contract: ProposeContractInputSchema,
   decide_contract: DecideContractInputSchema,
 } as const satisfies Record<AgentVerb, z.ZodType>;
@@ -262,6 +268,8 @@ export const AGENT_VERB_DESCRIPTIONS: Record<AgentVerb, string> = {
     'Coordinator only: make one child wait on another node ({child, on}). Gated by your autonomy level.',
   set_owner:
     'Coordinator only: give a child ownership of paths ({child, owns: [globs]}). Gated by your autonomy level.',
+  note_child:
+    'Coordinator only: send one child a targeted note ({child, body}), e.g. after a sibling merged or collided.',
   propose_contract:
     'Propose a change to a contract you rely on ({contract, body ≤800, reason, routine?, with?: [sibling ids who agreed]}). Your coordinator approves, rejects or asks the operator.',
   decide_contract:

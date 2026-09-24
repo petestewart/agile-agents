@@ -25,10 +25,11 @@ import {
   withExamplesNote,
 } from '@agile-agents/shared';
 import type { AutonomyService } from '../coordination/autonomy';
-import type { ContractService } from '../coordination/contracts';
+import { type ContractService, assertChildren } from '../coordination/contracts';
 import type { PlanService } from '../coordination/plans';
 import type { DocsSearch, SearchHit } from '../docs/service';
 import { summaryOf } from '../events/delivery';
+import type { EmitRouted } from '../events/producers';
 import { type KnowledgeService, worktreeRelativePaths } from '../knowledge/service';
 import type { QuestionService } from '../questions/service';
 import { NotFoundError, type StateStore } from '../store';
@@ -111,6 +112,8 @@ export interface VerbServiceOptions {
   contracts?: ContractService;
   /** T282: the autonomy gate for the coordinator's structural verbs. */
   autonomy?: AutonomyService;
+  /** T287: `note_child`'s write side (a `coordinator_note` routed event). */
+  emitRouted?: EmitRouted;
   proposalLimit?: { assertCanPropose(caller: Pick<VerbCaller, 'session' | 'role'>): void };
 }
 
@@ -470,6 +473,25 @@ export class VerbService {
     return this.gated(session, 'set_owner', { action: 'set_owner', ...change });
   }
 
+  /** T287 (§9.4): a targeted note from a coordinator to one of its children. Not gated: it changes nothing. */
+  async noteChild(input: unknown): Promise<{ event: string }> {
+    const { session, child, body } = validateVerbInput('note_child', input);
+    const caller = this.coordinatorCaller(session, 'note_child');
+    if (this.options.emitRouted === undefined)
+      throw new Error('note_child: events are not available');
+    assertChildren(this.options.streams, caller.stream, [child], 'note_child');
+    const project = this.options.streams.get(child).project;
+    const event = await this.options.emitRouted({
+      type: 'coordinator_note',
+      subject: child,
+      by: `agent:${session}`,
+      ...(project !== undefined ? { project } : {}),
+      payload: { body },
+    });
+    if (event === undefined) throw new Error('note_child: the note was not sent');
+    return { event: event.id };
+  }
+
   private async gated(
     session: string,
     verb: string,
@@ -523,6 +545,7 @@ export function verbHandlers(
     add_child: (input) => service.addChild(input),
     add_waits_on: (input) => service.addWaitsOn(input),
     set_owner: (input) => service.setOwner(input),
+    note_child: (input) => service.noteChild(input),
     propose_contract: (input) => service.proposeContract(input),
     decide_contract: (input) => service.decideContract(input),
   };

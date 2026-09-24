@@ -342,6 +342,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
           ...(planService ? { plans: planService } : {}),
           ...(contractService ? { contracts: contractService } : {}),
           ...(autonomyService ? { autonomy: autonomyService } : {}),
+          ...(emitRouted ? { emitRouted } : {}),
           // T246: an agent's push; its PR is then polled at the babysit cadence.
           ...(landingService
             ? {
