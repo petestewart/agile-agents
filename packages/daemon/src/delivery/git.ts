@@ -5,6 +5,13 @@
  * credential helpers), and callers pass `repoRoot` explicitly rather than
  * have it guessed from a `/.worktrees/` path segment.
  *
+ * `gitNetwork` (T231) is the one exception to the sandbox: push, fetch and
+ * ls-remote talk to a remote, so they need the operator's own credential
+ * setup (`~/.gitconfig` helpers, `gh auth setup-git`, `insteadOf`, the
+ * macOS keychain under the real `$HOME`). They create no commit, so the
+ * sandbox's reasons (no writes into the real `$HOME` from test runners, the
+ * daemon's own commit identity) don't apply. No token passes through here.
+ *
  * `gitWrite` is for anything that can create a commit: unsigned (`-c
  * commit.gpgsign=false` before the verb; the signing hook has failed with
  * "too many open files") and authored by a fixed daemon identity.
@@ -37,7 +44,7 @@ function daemonEnv(repoRoot: string): Record<string, string> {
 }
 
 function spawnGit(argv: string[], cwd: string, env: Record<string, string>): GitResult {
-  const result = Bun.spawnSync(argv, { cwd, env, stdout: 'pipe', stderr: 'pipe' });
+  const result = Bun.spawnSync(argv, { cwd, env, stdin: 'ignore', stdout: 'pipe', stderr: 'pipe' });
   return {
     exitCode: result.exitCode,
     stdout: textDecoder.decode(result.stdout).trim(),
@@ -48,6 +55,86 @@ function spawnGit(argv: string[], cwd: string, env: Record<string, string>): Git
 /** Read-only and plumbing commands (log, diff, rev-parse, worktree, ...). */
 export function git(args: string[], cwd: string, repoRoot: string): GitResult {
   return spawnGit(['git', ...args], cwd, sandboxedSubprocessEnv(repoRoot, 'git'));
+}
+
+/**
+ * T231: a command that talks to a remote (push, fetch, ls-remote), run with
+ * the operator's real `HOME`/`XDG_CONFIG_HOME` so their credential helper
+ * answers. `GIT_TERMINAL_PROMPT=0`: a missing credential fails at once
+ * instead of waiting on a terminal the daemon doesn't have.
+ */
+export function gitNetwork(args: string[], cwd: string): GitResult {
+  return spawnGit(['git', ...args], cwd, networkGitEnv(process.env));
+}
+
+const NETWORK_ENV_NAMES = new Set([
+  'HOME',
+  'USER',
+  'LOGNAME',
+  'PATH',
+  'SHELL',
+  'TMPDIR',
+  'LANG',
+  'TERM',
+  'SSH_AUTH_SOCK',
+  'GNUPGHOME',
+  'SSL_CERT_FILE',
+  'SSL_CERT_DIR',
+  'HTTP_PROXY',
+  'HTTPS_PROXY',
+  'NO_PROXY',
+  'ALL_PROXY',
+  'http_proxy',
+  'https_proxy',
+  'no_proxy',
+  'all_proxy',
+  // Read by `gh auth git-credential` when the operator set them.
+  'GH_TOKEN',
+  'GITHUB_TOKEN',
+  'GH_HOST',
+  'GH_CONFIG_DIR',
+]);
+const NETWORK_ENV_PREFIXES = ['LC_', 'XDG_', 'SSH_', 'GIT_'];
+
+/**
+ * An allow-list, never the daemon's whole env: the classifier key and any
+ * other daemon secret must not reach git, credential helpers or hooks.
+ */
+export function networkGitEnv(env: NodeJS.ProcessEnv): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [name, value] of Object.entries(env)) {
+    if (value === undefined) continue;
+    if (NETWORK_ENV_NAMES.has(name) || NETWORK_ENV_PREFIXES.some((p) => name.startsWith(p))) {
+      out[name] = value;
+    }
+  }
+  // The daemon's commit identity belongs to gitWrite only.
+  for (const name of [
+    'GIT_AUTHOR_NAME',
+    'GIT_AUTHOR_EMAIL',
+    'GIT_COMMITTER_NAME',
+    'GIT_COMMITTER_EMAIL',
+  ]) {
+    delete out[name];
+  }
+  out.GIT_TERMINAL_PROMPT = '0';
+  return out;
+}
+
+const CREDENTIAL_FAILURE =
+  /could not read (Username|Password)|terminal prompts disabled|Authentication failed|Invalid username or password|Permission denied \(publickey|Device not configured/i;
+
+/**
+ * One line for a failed network git call. A missing or rejected credential
+ * names the fix; anything else is git's first line, with any userinfo in a
+ * URL scrubbed.
+ */
+export function describeGitNetworkFailure(stderr: string, remote: string): string {
+  if (CREDENTIAL_FAILURE.test(stderr)) {
+    return `git has no working credentials for ${remote}: run \`gh auth setup-git\` or configure a git credential helper, then retry`;
+  }
+  const first = stderr.split('\n').find((l) => l.trim().length > 0) ?? 'unknown error';
+  return first.replace(/(\w+:\/\/)[^/@\s]*@/g, '$1').slice(0, 300);
 }
 
 export class GitCommandError extends Error {

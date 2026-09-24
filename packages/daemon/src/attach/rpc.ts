@@ -16,6 +16,7 @@ import {
 } from '../gates/rpc';
 import type { RpcMethodHandler } from '../rpc';
 import { WorktreeRefusedError } from '../runner/worktrees';
+import { EmptyRepoError } from '../store/rpc-methods';
 import { NotFoundError } from '../store/store';
 import { UnknownVendorError } from './resolve';
 import { type AttachService, StreamBusyError, UnregisteredRepoError } from './service';
@@ -42,6 +43,7 @@ const asParamErrors = paramErrors(
   WorktreeRefusedError,
   NotFoundError,
   LandRefusedError,
+  EmptyRepoError,
 );
 
 /** The picker's flags, shared by `attach.start` and `attach.resolve`. */
