@@ -1438,8 +1438,8 @@ agile tail --node $N --events
 
 ### Ticket: T289 Phase 11 QA and Pete's look
 - **Priority:** P0
-- **Status:** In Progress
-- **Owner:** sonnet:qa-T289
+- **Status:** In Review (QA ACCEPT 2026-09-24; Pete's look pending)
+- **Owner:** Pete
 - **Scope:** Black-box QA of the coordinator, plans, contracts, levels, cards, alerts, ask-sibling and helpers with fake agents. Daemon line count. Pete runs the worked example on his two repos with a live coordinator.
 - **Acceptance Criteria:** QA ACCEPT. Live: the coordinator writes a plan and a contract that Pete approves. The two parts work from them. A contract proposal reaches the parent and is decided. Pete sees it as one line in the activity feed.
 - **Validation Steps:** Pete, on his Mac:
@@ -1463,7 +1463,7 @@ agile node list --parent $C --json | jq -r '.[] | .id + "  " + .title + "  " + .
 agile tail --node $C --events
 ```
 
-- **Notes:** —
+- **Notes:** — QA (sonnet, black-box) ACCEPT on 556a2b5: bun test 2235/0, integration and e2e (36) green. Driven by hand: autonomy settings, the split into a coordinating node, a real coordinator session and its brief, helpers (cross-repo refused). Agent-side verbs (plans, contracts, proposals, cards, helper merge) covered by the suites only. Minor: `agile tail --node <id> --events` printed nothing for a node with events → T248 (Phase 9). Daemon 27,255 lines (24,729 at Phase 10).
 
 ### Phase 12 — The Director
 
@@ -1614,6 +1614,7 @@ Daemon: `em/`, `architect/`, `oracle/`, `qa/`, `halts/`, `quota/`, `handoff/`, `
 
 ## 10. Discovered Issues Log
 
+- Phase 11 complete on `claude/phase-11` (2026-09-24): T280–T288 merged, T289 QA ACCEPT; awaiting Pete's look. Open for Pete: `proposals/` home dir (T282); `Contract.paths` for the contract-touched alert (T284); should `coordinator_note` wake a finished work node (T287). Phase 12 proceeds on `claude/phase-12`.
 - Phase 10 complete on `claude/phase-10` (2026-09-24): T260–T266 merged, T267 QA ACCEPT; T268 (real-classifier ship hold) before Pete's look. Phase 11 proceeds on `claude/phase-11`.
 - Phase 9 complete on `claude/phase-9` (2026-09-24): T240–T246 merged, T247 QA ACCEPT; awaiting Pete's look (draft PR https://github.com/petestewart/agile-agents/pull/6, base claude/phase-8). Phase 10 proceeds on `claude/phase-10`.
 - (Pete, 2026-09-24) P13 bullet 1 (leave a private repo out of a session's readable directories) is deferred until it becomes a need; the hook check (T229) stands alone.
