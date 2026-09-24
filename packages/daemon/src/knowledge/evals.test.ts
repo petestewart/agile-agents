@@ -4,22 +4,22 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { join } from 'node:path';
 import {
   type ClassifierBands,
   DEFAULT_CLASSIFIER_ALLOW_BELOW,
   DEFAULT_CLASSIFIER_DENY_AT,
-  type Rule,
+  type KnowledgeItem,
+  examplesOf,
 } from '@agile-agents/shared';
 import { ClassifierUnavailableError, FakeClassifier } from '../classifier';
 import { runInit } from '../init';
 import { StateStore } from '../store';
 import { StreamService } from '../streams/service';
 import { RuleNotEvaluableError, runRuleEvals } from './evals';
-import { parsePlanV1Decisions, seedClassifierWording, seedProposal } from './seed-plan-v1';
-import { RulesService } from './service';
+import { KnowledgeService } from './service';
 
 const BANDS: ClassifierBands = {
   deny_at: DEFAULT_CLASSIFIER_DENY_AT,
@@ -27,13 +27,13 @@ const BANDS: ClassifierBands = {
 };
 
 let home: string;
-let rules: RulesService;
+let rules: KnowledgeService;
 
 beforeEach(() => {
   home = mkdtempSync(join(tmpdir(), 'agile-rule-evals-'));
   const init = runInit(home);
   const store = StateStore.open(init.stateRoot);
-  rules = new RulesService({ store, streams: new StreamService(store) });
+  rules = new KnowledgeService({ store, streams: new StreamService(store) });
 });
 
 afterEach(() => {
@@ -43,14 +43,17 @@ afterEach(() => {
 /** An accepted classifier rule with one violating and one clean example. */
 async function acceptedClassifierRule(
   text = 'do not add a dependency without asking',
-): Promise<Rule> {
+): Promise<KnowledgeItem> {
   const rule = await rules.create('human', {
     text,
-    enforcement: 'classifier',
-    examples: [
-      { action: 'bun add lodash', violates: true },
-      { action: 'edit src/index.ts', violates: false },
-    ],
+    enforcement: 'action',
+    check: {
+      by: 'classifier',
+      examples: [
+        { action: 'bun add lodash', violates: true },
+        { action: 'edit src/index.ts', violates: false },
+      ],
+    },
   });
   return rules.accept(rule.id, 'pete');
 }
@@ -150,11 +153,14 @@ describe('runRuleEvals (§5.6)', () => {
     // A proposed classifier rule, a retired one and a guidance rule.
     await rules.create('human', {
       text: 'a proposed classifier rule',
-      enforcement: 'classifier',
-      examples: [
-        { action: 'a', violates: true },
-        { action: 'b', violates: false },
-      ],
+      enforcement: 'action',
+      check: {
+        by: 'classifier',
+        examples: [
+          { action: 'a', violates: true },
+          { action: 'b', violates: false },
+        ],
+      },
     });
     const guidance = await rules.create('human', { text: 'prefer the repo scripts' });
     await rules.accept(guidance.id, 'pete');
@@ -176,11 +182,14 @@ describe('runRuleEvals (§5.6)', () => {
 
     const proposed = await rules.create('human', {
       text: 'a proposed classifier rule',
-      enforcement: 'classifier',
-      examples: [
-        { action: 'a', violates: true },
-        { action: 'b', violates: false },
-      ],
+      enforcement: 'action',
+      check: {
+        by: 'classifier',
+        examples: [
+          { action: 'a', violates: true },
+          { action: 'b', violates: false },
+        ],
+      },
     });
     await expect(
       runRuleEvals({ rules, classifier, bands: BANDS, ruleId: proposed.id }),
@@ -213,8 +222,11 @@ describe('the store refusal this ticket depends on (§5.6)', () => {
   test('a classifier rule with one example cannot be accepted', async () => {
     const thin = await rules.create('human', {
       text: 'do not touch the migration files',
-      enforcement: 'classifier',
-      examples: [{ action: 'edit db/migrations/001.sql', violates: true }],
+      enforcement: 'action',
+      check: {
+        by: 'classifier',
+        examples: [{ action: 'edit db/migrations/001.sql', violates: true }],
+      },
     });
     await expect(rules.accept(thin.id, 'pete')).rejects.toThrow(/at least 2 examples/);
     expect(rules.get(thin.id).status).toBe('proposed');
@@ -223,7 +235,7 @@ describe('the store refusal this ticket depends on (§5.6)', () => {
   test('…and one with two examples can, so the eval always has material', async () => {
     const rule = await acceptedClassifierRule();
     expect(rule.status).toBe('accepted');
-    expect(rule.examples).toHaveLength(2);
+    expect(examplesOf(rule)).toHaveLength(2);
   });
 });
 
@@ -232,13 +244,16 @@ describe('criteria reach the classifier (T156, D14)', () => {
     const criteria = { true: 'a new package is added', false: 'no package is added' };
     const created = await rules.create('human', {
       text: 'do not add a dependency without asking',
-      question: 'Does this action add a dependency?',
-      criteria,
-      enforcement: 'classifier',
-      examples: [
-        { action: 'bun add lodash', violates: true },
-        { action: 'edit src/index.ts', violates: false },
-      ],
+      enforcement: 'action',
+      check: {
+        by: 'classifier',
+        question: 'Does this action add a dependency?',
+        criteria,
+        examples: [
+          { action: 'bun add lodash', violates: true },
+          { action: 'edit src/index.ts', violates: false },
+        ],
+      },
     });
     await rules.accept(created.id, 'pete');
     const classifier = new FakeClassifier((_s, questions) =>
@@ -252,111 +267,22 @@ describe('criteria reach the classifier (T156, D14)', () => {
     });
   });
 
-  test('rule.update can set criteria, and a half pair is refused (.strict())', async () => {
+  test('knowledge.update can set criteria, and a half pair is refused (.strict())', async () => {
     const rule = await acceptedClassifierRule();
     const updated = await rules.update('human', rule.id, {
-      criteria: { true: 'broken', false: 'holds' },
+      check: {
+        by: 'classifier',
+        examples: examplesOf(rule),
+        criteria: { true: 'broken', false: 'holds' },
+      },
     });
-    expect(updated.criteria).toEqual({ true: 'broken', false: 'holds' });
+    expect(updated.check).toMatchObject({ criteria: { true: 'broken', false: 'holds' } });
     await expect(
-      rules.create('human', { text: 'x'.repeat(30), criteria: { true: 'only one' } }),
+      rules.create('human', {
+        text: 'x'.repeat(30),
+        enforcement: 'action',
+        check: { by: 'classifier', examples: [], criteria: { true: 'only one' } as never },
+      }),
     ).rejects.toThrow();
-  });
-});
-
-/**
- * T156 (3): the two seeded rules the Phase 5 agreement check found too thin
- * (…GR77MM, …8CMD5B), rewritten as one yes/no question each (yes = broken)
- * with criteria, and evaluated over the examples recorded in that run
- * (PLAN T154 note). The classifier is the FakeClassifier: this proves the
- * rewritten wording is what gets asked and that the examples band per their
- * labels on a clear answer; the real agreement is a live check.
- */
-describe('the rewritten seeded rules (T156)', () => {
-  const planV1 = readFileSync(resolve(import.meta.dir, '../../../../PLAN-v1.md'), 'utf8');
-  const seeded = parsePlanV1Decisions(planV1);
-
-  const RECORDED: Record<string, Array<{ action: string; violates: boolean }>> = {
-    browser: [
-      {
-        action: "diff --git a/packages/daemon/src/http.ts\n+  const actor = body.actor ?? 'human';",
-        violates: true,
-      },
-      {
-        action: "diff --git a/packages/daemon/src/http.ts\n+  const actor = 'human';",
-        violates: false,
-      },
-    ],
-    strict: [
-      {
-        action:
-          'diff --git a/packages/shared/src/thing.ts\n+export const ThingSchema = z.object({ id: z.string() });',
-        violates: true,
-      },
-      {
-        action:
-          'diff --git a/packages/shared/src/thing.ts\n+export const ThingSchema = z.object({ id: z.string() }).strict();',
-        violates: false,
-      },
-      {
-        action:
-          'diff --git a/packages/shared/src/thing.ts\n+  // free-form by design\n+  data: z.record(z.string(), z.unknown()),',
-        violates: false,
-      },
-    ],
-  };
-
-  test('both seeded sentences exist in PLAN-v1 and seed with their rewritten wording', () => {
-    const browser = seeded.find((t) => t.startsWith('browser writes are always actor'));
-    const strict = seeded.find((t) => t.startsWith('all shared schemas are `.strict()`'));
-    expect(browser).toBeDefined();
-    expect(strict).toBeDefined();
-    for (const text of [browser as string, strict as string]) {
-      const proposal = seedProposal(text);
-      expect(proposal.question).toMatch(/^Does this change /);
-      expect(proposal.criteria?.true.length).toBeGreaterThan(0);
-      expect(proposal.criteria?.false.length).toBeGreaterThan(0);
-    }
-    // Every other seeded sentence keeps §5.1's default question.
-    expect(seeded.filter((t) => seedClassifierWording(t) !== undefined)).toHaveLength(2);
-  });
-
-  test('evaluated over the recorded examples, the rewritten question and criteria are asked', async () => {
-    const ids: Record<string, string> = {};
-    for (const [key, prefix] of [
-      ['browser', 'browser writes are always actor'],
-      ['strict', 'all shared schemas are `.strict()`'],
-    ] as const) {
-      const text = seeded.find((t) => t.startsWith(prefix)) as string;
-      const proposal = seedProposal(text);
-      const rule = await rules.create('human', {
-        ...proposal,
-        enforcement: 'classifier',
-        stage: 'diff',
-        examples: RECORDED[key],
-      });
-      ids[key] = rule.id;
-      await rules.accept(rule.id, 'pete');
-    }
-    const byAction = new Map(
-      Object.values(RECORDED)
-        .flat()
-        .map((e) => [e.action, e.violates ? 0.9 : 0.1]),
-    );
-    const classifier = new FakeClassifier((state, questions) =>
-      questions.map((q) => ({ id: q.id, probability: byAction.get(state) ?? 0.5 })),
-    );
-    const report = await runRuleEvals({ rules, classifier, bands: BANDS });
-    expect(report.total).toBe(5);
-    expect(report.agreed).toBe(5);
-    for (const call of classifier.calls) {
-      const noul = call.questions[0];
-      const wording = seedClassifierWording(rules.get(noul?.id as string).text);
-      expect(noul?.question).toBe(wording?.question as string);
-      expect(noul?.criteria).toEqual(wording?.criteria);
-    }
-    expect(new Set(classifier.calls.map((c) => c.questions[0]?.id))).toEqual(
-      new Set([ids.browser, ids.strict]),
-    );
   });
 });

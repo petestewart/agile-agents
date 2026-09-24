@@ -10,8 +10,8 @@
 
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import type { Rule, SessionRole, Stream, ThreadEntry } from '@agile-agents/shared';
-import { rulesInScope } from '../rules/service';
+import type { KnowledgeItem, SessionRole, Stream, ThreadEntry } from '@agile-agents/shared';
+import { knowledgeInScope } from '../knowledge/service';
 
 /** One Markdown file per role. */
 export const BRIEFS_DIR = join(import.meta.dir, '..', '..', 'briefs');
@@ -40,8 +40,8 @@ export interface BuildBriefInput {
   /** The stream's thread, oldest first; only the tail is rendered. */
   thread: ThreadEntry[];
   docs: BriefDoc[];
-  /** Every rule in the home; `rulesInScope` filters them here, not the caller. */
-  rules: readonly Rule[];
+  /** Every knowledge item in the home; `knowledgeInScope` filters them here, not the caller. */
+  rules: readonly KnowledgeItem[];
   /** Overrides `BRIEF_THREAD_ENTRIES`. */
   threadEntries?: number;
   /** Overrides `BRIEF_CHAR_CEILING`. Test seam. */
@@ -61,14 +61,14 @@ function section(heading: string, body: string): string {
   return `## ${heading}\n\n${body}`;
 }
 
-/** §5.2: a guidance rule is its text; a pattern or classifier rule is marked as enforced. */
-function renderRule(rule: Rule): string {
-  if (rule.enforcement === 'guidance') return `- ${rule.text}`;
+/** §6: a `tell` item is its text; a checked item is marked with its checkpoint. */
+function renderRule(rule: KnowledgeItem): string {
+  if (rule.enforcement === 'tell') return `- ${rule.text}`;
   const marks = [`enforced: ${rule.enforcement}`, ...(rule.critical ? ['critical'] : [])];
   return `- ${rule.text} (${marks.join(', ')})`;
 }
 
-function renderRules(rules: readonly Rule[]): string {
+function renderRules(rules: readonly KnowledgeItem[]): string {
   if (rules.length === 0) return 'none yet';
   return rules.map(renderRule).join('\n');
 }
@@ -108,7 +108,7 @@ export function babysitSection(stream: Stream): string | undefined {
 /** One pass of the assembler at a given thread-tail length and doc body cap. */
 function assemble(
   input: BuildBriefInput,
-  rules: readonly Rule[],
+  rules: readonly KnowledgeItem[],
   tailLength: number,
   docBodyCap: number,
 ): string {
@@ -150,7 +150,7 @@ function assemble(
 }
 
 export function buildBrief(input: BuildBriefInput): string {
-  const rules = rulesInScope(input.rules, input.stream, input.ancestors);
+  const rules = knowledgeInScope(input.rules, input.stream, input.ancestors);
   const ceiling = input.ceiling ?? BRIEF_CHAR_CEILING;
   const maxTail = Math.min(input.threadEntries ?? BRIEF_THREAD_ENTRIES, input.thread.length);
   const docCap = Number.MAX_SAFE_INTEGER;

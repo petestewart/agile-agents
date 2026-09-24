@@ -171,7 +171,7 @@ export function ruleHitOf(entry: {
 }): string | undefined {
   if (entry.by !== 'daemon' || entry.kind !== 'event') return undefined;
   if (!entry.body.startsWith('rule_hit:')) return undefined;
-  return entry.ref !== undefined && /^R-[0-9A-HJKMNP-TV-Z]{26}$/.test(entry.ref)
+  return entry.ref !== undefined && /^K-[0-9A-HJKMNP-TV-Z]{26}$/.test(entry.ref)
     ? entry.ref
     : undefined;
 }

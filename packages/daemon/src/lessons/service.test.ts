@@ -22,8 +22,8 @@ import { DeliveryService } from '../delivery/service';
 import { GateService } from '../gates/service';
 import { InboxService } from '../inbox/service';
 import { runInit } from '../init';
+import { KnowledgeService } from '../knowledge/service';
 import { QuestionService } from '../questions/service';
-import { RulesService } from '../rules/service';
 import { buildBrief } from '../runner/brief';
 import type { FakeAgentScript } from '../runner/fake-agent';
 import { StateStore, buildEvent } from '../store';
@@ -38,7 +38,7 @@ let scratch: string;
 let store: StateStore;
 let streams: StreamService;
 let questions: QuestionService;
-let rules: RulesService;
+let rules: KnowledgeService;
 let verbs: VerbService;
 let attach: AttachService;
 let lessons: LessonsService;
@@ -145,7 +145,7 @@ beforeEach(() => {
   questions = new QuestionService(store, streams, {
     deliver: (sessionId, question) => attach.deliverAnswer(sessionId, question),
   });
-  rules = new RulesService({ store, streams });
+  rules = new KnowledgeService({ store, streams });
   attach = new AttachService({
     store,
     streams,
@@ -275,13 +275,10 @@ describe('the proposals (the T141 acceptance criteria)', () => {
     expect(proposed).toHaveLength(2);
     for (const rule of proposed) {
       expect(rule.status).toBe('proposed');
-      expect(rule.provenance).toEqual({
-        stream: stream.id,
-        session,
-        by: `agent:${session}`,
-      });
-      expect(rule.examples).toHaveLength(2);
-      expect(rule.scope).toEqual({ kind: 'stream', ref: stream.id });
+      expect(rule.source).toEqual({ by: 'agent', node: stream.id, session });
+      // A `tell` item carries no check, so the old verb's examples have no home (T264).
+      expect(rule.enforcement).toBe('tell');
+      expect(rule.scope).toEqual({ kind: 'subtree', node: stream.id });
     }
 
     // §3.1: each proposal is a `rule_accept` item the human decides.
@@ -289,7 +286,7 @@ describe('the proposals (the T141 acceptance criteria)', () => {
     expect(items).toHaveLength(2);
     expect(items.map((item) => item.id).sort()).toEqual(proposed.map((r) => r.id).sort());
     expect(items.map((item) => item.ref).sort()).toEqual(
-      proposed.map((r) => `rules/${r.id}.yaml`).sort(),
+      proposed.map((r) => `knowledge/${r.id}.yaml`).sort(),
     );
     expect(items.every((item) => item.stream === stream.id)).toBe(true);
 
@@ -306,7 +303,7 @@ describe('the proposals (the T141 acceptance criteria)', () => {
       ancestors: [],
       thread: [],
       docs: [],
-      rules: store.listRules(),
+      rules: store.listKnowledge(),
     });
     expect(brief).toContain(first.text);
     expect(brief).not.toContain(second.text);

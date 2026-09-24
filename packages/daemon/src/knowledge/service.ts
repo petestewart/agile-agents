@@ -1,57 +1,58 @@
 /**
- * `RulesService`: propose, read, list, accept, retire and edit rules, plus
- * the one scope filter (§5). Every method takes an explicit principal
- * (`human` from the RPC edge, `agent` from `propose_rule`, `daemon` for
- * built-ins and stats); the store enforces the split.
+ * `KnowledgeService`: propose, read, list, accept, retire and edit
+ * knowledge items (projects-design §5, §14.3), plus the one scope filter.
+ * Every method takes an explicit principal (`human` from the RPC edge,
+ * `agent` from `propose_rule`, `daemon` for built-ins and stats); the store
+ * enforces the split.
  *
- * `rulesInScope` (§5.3) is the only scope filter, used by the brief and
- * the hook, so an out-of-scope rule can't reach either by a caller
- * forgetting to filter.
+ * `knowledgeInScope` is the only scope filter, used by the brief, the hook
+ * and the ship check, so an out-of-scope item can't reach any of them by a
+ * caller forgetting to filter. (T261 stacks it with `paths`.)
  */
 
 import {
-  type Rule,
-  type RuleInput,
-  type RulePatch,
-  type RulePrincipal,
-  type RuleProposal,
-  type RuleScope,
-  type RuleStage,
-  type RuleStatus,
+  type KnowledgeEnforcement,
+  type KnowledgeItem,
+  type KnowledgeItemInput,
+  type KnowledgePatch,
+  type KnowledgePrincipal,
+  type KnowledgeProposal,
+  type KnowledgeScope,
+  type KnowledgeStatus,
   type Stream,
-  formatRuleScope,
+  formatKnowledgeScope,
   ulid,
-  validateRuleProposal,
+  validateKnowledgeProposal,
 } from '@agile-agents/shared';
 import type { StateStore } from '../store/store';
 import type { StreamService } from '../streams/service';
 
-/** A rule whose `scope.ref` names nothing in this home (-32602 at the edge). */
-export class UnknownRuleScopeError extends Error {
+/** An item whose scope names nothing in this home (-32602 at the edge). */
+export class UnknownKnowledgeScopeError extends Error {
   constructor(
-    public readonly scope: RuleScope,
+    public readonly scope: KnowledgeScope,
     detail: string,
   ) {
-    super(`unknown rule scope: ${scope.kind}:${String(scope.ref)} — ${detail}`);
-    this.name = 'UnknownRuleScopeError';
+    super(`unknown knowledge scope: ${formatKnowledgeScope(scope)} — ${detail}`);
+    this.name = 'UnknownKnowledgeScopeError';
   }
 }
 
-/** A decision on a rule that is already in that state (accepting an accepted rule). */
-export class RuleAlreadyDecidedError extends Error {
-  constructor(id: string, status: RuleStatus) {
-    super(`rule ${id} is already ${status}`);
-    this.name = 'RuleAlreadyDecidedError';
+/** A decision on an item that is already in that state (accepting an accepted item). */
+export class KnowledgeAlreadyDecidedError extends Error {
+  constructor(id: string, status: KnowledgeStatus) {
+    super(`knowledge item ${id} is already ${status}`);
+    this.name = 'KnowledgeAlreadyDecidedError';
   }
 }
 
-export interface ListRulesOptions {
-  status?: RuleStatus;
-  /** `global` · `repo:<name>` · `stream:<id>` — the rendered scope, as the CLI takes it. */
+export interface ListKnowledgeOptions {
+  status?: KnowledgeStatus;
+  /** `global` · `repo:<name>` · `project:<id>` · `subtree:<id>` — the rendered scope. */
   scope?: string;
 }
 
-export interface RulesServiceOptions {
+export interface KnowledgeServiceOptions {
   store: StateStore;
   streams: StreamService;
   /** Test seam; real usage runs on the system clock. */
@@ -65,7 +66,7 @@ export interface RulesServiceOptions {
 
 /**
  * The stats-flush interval. A gated call evaluates every pattern rule in
- * scope; a YAML rewrite and `rule_put` event per rule per call would make
+ * scope; a YAML rewrite and `knowledge_put` event per item per call would make
  * the log mostly bookkeeping. `hook_decision` stays per call.
  */
 export const DEFAULT_STATS_FLUSH_MS = 5_000;
@@ -87,30 +88,36 @@ interface PendingRuleStats {
 }
 
 /**
- * §5.3's one scope filter: accepted rules that are global, scoped to the
- * stream's repo, or scoped to the stream or any ancestor. `proposed` and
- * `retired` rules are never in scope. `stage` selects `'action'` (hook,
- * §8.1) or `'diff'` (landing, §8.2) rules, `'both'` matching either;
- * omitted, every stage is in scope (the brief injects all guidance).
+ * The one scope filter: accepted items that are global, scoped to the
+ * stream's repo or project, or to the stream's subtree (the stream or any
+ * ancestor). `proposed` and `retired` items are never in scope.
+ * `enforcement` selects the checkpoint (`action` for the hook, `ship` for
+ * delivery); omitted, every item is in scope (the brief tells them all).
  */
-export function rulesInScope(
-  rules: readonly Rule[],
+export function knowledgeInScope(
+  items: readonly KnowledgeItem[],
   stream: Stream,
   ancestors: readonly Stream[] = [],
-  stage?: RuleStage,
-): Rule[] {
+  enforcement?: KnowledgeEnforcement,
+): KnowledgeItem[] {
   const streamIds = new Set<string>([stream.id, ...ancestors.map((a) => a.id)]);
-  return rules.filter((rule) => {
-    if (rule.status !== 'accepted') return false;
-    if (stage !== undefined && rule.stage !== stage && rule.stage !== 'both') return false;
-    if (rule.scope.kind === 'global') return true;
-    if (rule.scope.ref === undefined) return false;
-    if (rule.scope.kind === 'repo') return stream.repo === rule.scope.ref;
-    return streamIds.has(rule.scope.ref);
+  return items.filter((item) => {
+    if (item.status !== 'accepted') return false;
+    if (enforcement !== undefined && item.enforcement !== enforcement) return false;
+    switch (item.scope.kind) {
+      case 'global':
+        return true;
+      case 'repo':
+        return stream.repo === item.scope.repo;
+      case 'project':
+        return stream.project === item.scope.project;
+      case 'subtree':
+        return streamIds.has(item.scope.node);
+    }
   });
 }
 
-export class RulesService {
+export class KnowledgeService {
   private readonly clock: () => Date;
   private readonly statsFlushMs: number;
   /** Coalesced `stats` deltas, keyed by rule id — see `recordFired`. */
@@ -119,50 +126,56 @@ export class RulesService {
   /** Serializes flushes so two of them never read the same `before` record. */
   private flushing: Promise<void> = Promise.resolve();
 
-  constructor(private readonly options: RulesServiceOptions) {
+  constructor(private readonly options: KnowledgeServiceOptions) {
     this.clock = options.clock ?? (() => new Date());
     this.statsFlushMs = options.statsFlushMs ?? DEFAULT_STATS_FLUSH_MS;
   }
 
   /**
-   * Proposes a rule. Every principal's create goes in `proposed`: the gap
-   * between a proposal and a rule is where the human's authority lives
-   * (§5.1), so acceptance is always a second, explicit act.
+   * Proposes an item. Every principal's create goes in `proposed`: nothing
+   * applies until a human accepts it (§5), so acceptance is always a
+   * second, explicit act. An `action`/`ship` item proposed without a check
+   * gets an empty classifier check (it needs two examples to be accepted).
    */
-  async create(principal: RulePrincipal, rawInput: unknown): Promise<Rule> {
-    const input: RuleProposal = validateRuleProposal(rawInput);
-    const scope: RuleScope = input.scope ?? { kind: 'global' };
+  async create(principal: KnowledgePrincipal, rawInput: unknown): Promise<KnowledgeItem> {
+    const input: KnowledgeProposal = validateKnowledgeProposal(rawInput);
+    const scope: KnowledgeScope = input.scope ?? { kind: 'global' };
     this.assertScopeExists(scope);
-    const record: RuleInput = {
-      id: `R-${ulid()}`,
+    const enforcement = input.enforcement ?? 'tell';
+    const check =
+      input.check ??
+      (enforcement === 'action' || enforcement === 'ship'
+        ? { by: 'classifier' as const, examples: [] }
+        : undefined);
+    const record: KnowledgeItemInput = {
+      id: `K-${ulid()}`,
+      ...(input.name !== undefined ? { name: input.name } : {}),
+      kind: input.kind ?? 'standard',
       text: input.text,
-      ...(input.question !== undefined ? { question: input.question } : {}),
-      ...(input.criteria !== undefined ? { criteria: input.criteria } : {}),
       scope,
-      status: 'proposed',
-      enforcement: input.enforcement ?? 'guidance',
-      ...(input.stage !== undefined ? { stage: input.stage } : {}),
-      ...(input.pattern !== undefined ? { pattern: input.pattern } : {}),
+      ...(input.paths !== undefined ? { paths: input.paths } : {}),
+      enforcement,
+      ...(check !== undefined ? { check } : {}),
       critical: input.critical ?? false,
-      examples: input.examples ?? [],
-      provenance: input.provenance ?? { by: principal === 'agent' ? 'agent' : principal },
+      source: input.source ?? { by: principal === 'agent' ? 'agent' : 'human' },
+      status: 'proposed',
       stats: {},
       created_at: this.clock().toISOString(),
     };
-    return this.options.store.createRule(principal, record);
+    return this.options.store.createKnowledge(principal, record);
   }
 
-  get(id: string): Rule {
+  get(id: string): KnowledgeItem {
     this.flushStatsSoon();
-    return this.withPendingStats(this.options.store.getRule(id));
+    return this.withPendingStats(this.options.store.getKnowledge(id));
   }
 
   /** Every rule, oldest first, optionally filtered by status and/or scope. */
-  list(options: ListRulesOptions = {}): Rule[] {
+  list(options: ListKnowledgeOptions = {}): KnowledgeItem[] {
     this.flushStatsSoon();
     return this.readRules().filter((rule) => {
       if (options.status !== undefined && rule.status !== options.status) return false;
-      if (options.scope !== undefined && formatRuleScope(rule.scope) !== options.scope) {
+      if (options.scope !== undefined && formatKnowledgeScope(rule.scope) !== options.scope) {
         return false;
       }
       return true;
@@ -170,14 +183,19 @@ export class RulesService {
   }
 
   /** The inbox's `rule_accept` items (§3.1): every rule still awaiting a decision. */
-  listProposed(): Rule[] {
+  listProposed(): KnowledgeItem[] {
     return this.list({ status: 'proposed' });
   }
 
   /** §5.3's filter for one stream and its ancestors: what the brief and the hook call. */
-  inScope(streamId: string, stage?: RuleStage): Rule[] {
+  inScope(streamId: string, enforcement?: KnowledgeEnforcement): KnowledgeItem[] {
     const stream = this.options.streams.get(streamId);
-    return rulesInScope(this.options.store.listRules(), stream, this.ancestorsOf(stream), stage);
+    return knowledgeInScope(
+      this.options.store.listKnowledge(),
+      stream,
+      this.ancestorsOf(stream),
+      enforcement,
+    );
   }
 
   /** Root→leaf ancestor chain, excluding the stream itself. Cycles are impossible (the store rejects them). */
@@ -199,31 +217,37 @@ export class RulesService {
    * fields no agent may write. The store re-checks the tier invariants
    * (a classifier rule with one example can't be accepted, §5.6).
    */
-  async accept(id: string, by: string): Promise<Rule> {
+  async accept(id: string, by: string): Promise<KnowledgeItem> {
     return this.decide(id, 'accepted', by);
   }
 
   /** Retiring is a status change; nothing is deleted (§5.7). */
-  async retire(id: string, by: string): Promise<Rule> {
+  async retire(id: string, by: string): Promise<KnowledgeItem> {
     return this.decide(id, 'retired', by);
   }
 
-  private async decide(id: string, status: RuleStatus, by: string): Promise<Rule> {
-    const current = this.options.store.getRule(id);
-    if (current.status === status) throw new RuleAlreadyDecidedError(id, status);
+  private async decide(id: string, status: KnowledgeStatus, by: string): Promise<KnowledgeItem> {
+    const current = this.options.store.getKnowledge(id);
+    if (current.status === status) throw new KnowledgeAlreadyDecidedError(id, status);
     const decided_at = this.clock().toISOString();
-    return this.options.store.updateRule(
+    return this.options.store.updateKnowledge(
       'human',
       id,
       (before) => ({ ...before, status, decided_at, decided_by: by }),
-      { kind: 'rule_decided' },
+      { kind: 'knowledge_decided' },
     );
   }
 
   /** Edits wording, tier or examples in place. Decisions go through `accept`/`retire`, never an edit. */
-  async update(principal: RulePrincipal, id: string, patch: RulePatch): Promise<Rule> {
+  async update(
+    principal: KnowledgePrincipal,
+    id: string,
+    patch: KnowledgePatch,
+  ): Promise<KnowledgeItem> {
     if (patch.scope !== undefined) this.assertScopeExists(patch.scope);
-    return this.options.store.updateRule(principal, id, (before) => ({ ...before, ...patch }));
+    return this.options.store.updateKnowledge(principal, id, (before) =>
+      withCheckFor({ ...before, ...patch }, patch.check !== undefined),
+    );
   }
 
   /**
@@ -258,15 +282,15 @@ export class RulesService {
   }
 
   /** The record as a reader should see it: on disk plus whatever is unflushed. */
-  private withPendingStats(rule: Rule): Rule {
+  private withPendingStats(rule: KnowledgeItem): KnowledgeItem {
     const pending = this.pendingStats.get(rule.id);
     if (pending === undefined) return rule;
     return { ...rule, stats: addStats(rule.stats, pending) };
   }
 
   /** Every rule, with pending counters merged in. */
-  private readRules(): Rule[] {
-    return this.options.store.listRules().map((rule) => this.withPendingStats(rule));
+  private readRules(): KnowledgeItem[] {
+    return this.options.store.listKnowledge().map((rule) => this.withPendingStats(rule));
   }
 
   private armStatsTimer(): void {
@@ -296,7 +320,7 @@ export class RulesService {
     this.pendingStats.clear();
     for (const [id, delta] of batch) {
       try {
-        await this.options.store.updateRule('daemon', id, (before) => ({
+        await this.options.store.updateKnowledge('daemon', id, (before) => ({
           ...before,
           stats: addStats(before.stats, delta),
         }));
@@ -314,14 +338,14 @@ export class RulesService {
     }
   }
 
-  /** A `repo` ref must be in `repos.yaml`; a `stream` ref must be a stream in this home (§5.1). */
-  private assertScopeExists(scope: RuleScope): void {
-    if (scope.kind === 'global' || scope.ref === undefined) return;
+  /** A repo must be in `repos.yaml`, a project and a subtree node must exist in this home. */
+  private assertScopeExists(scope: KnowledgeScope): void {
+    if (scope.kind === 'global') return;
     if (scope.kind === 'repo') {
       const repos = this.options.store.getRepos();
-      if (repos[scope.ref] === undefined) {
+      if (repos[scope.repo] === undefined) {
         const known = Object.keys(repos).sort();
-        throw new UnknownRuleScopeError(
+        throw new UnknownKnowledgeScopeError(
           scope,
           known.length > 0
             ? `not registered in repos.yaml (registered: ${known.join(', ')})`
@@ -330,13 +354,36 @@ export class RulesService {
       }
       return;
     }
-    if (!this.options.store.hasStream(scope.ref)) {
-      throw new UnknownRuleScopeError(scope, 'not a stream in this home');
+    if (scope.kind === 'project') {
+      if (!this.options.store.listProjects().some((p) => p.id === scope.project)) {
+        throw new UnknownKnowledgeScopeError(scope, 'not a project in this home');
+      }
+      return;
+    }
+    if (!this.options.store.hasStream(scope.node)) {
+      throw new UnknownKnowledgeScopeError(scope, 'not a stream in this home');
     }
   }
 }
 
-function addStats(stats: Rule['stats'], delta: PendingRuleStats): Rule['stats'] {
+/**
+ * An edit that moves an item to `tell`/`review` drops its check (a patch
+ * cannot clear a field), and one that moves it to `action`/`ship` with no
+ * check gets the empty classifier check `create` would have given it.
+ */
+function withCheckFor(item: KnowledgeItem, patched: boolean): KnowledgeItem {
+  const checked = item.enforcement === 'action' || item.enforcement === 'ship';
+  if (!checked && item.check !== undefined && !patched) {
+    const { check: _dropped, ...rest } = item;
+    return rest;
+  }
+  if (checked && item.check === undefined) {
+    return { ...item, check: { by: 'classifier', examples: [] } };
+  }
+  return item;
+}
+
+function addStats(stats: KnowledgeItem['stats'], delta: PendingRuleStats): KnowledgeItem['stats'] {
   return {
     fired: stats.fired + delta.fired,
     violated: stats.violated + delta.violated,

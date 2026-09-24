@@ -1,80 +1,101 @@
 /**
- * T140: the printed shapes of `agile rules list` / `agile rules show`, the
- * `--example` grammar, and the PLAN-v1 decision parse the seed verb uses.
- * `ruleRows`/`showFields` are the data the printers take, so these assert
- * the shape without a daemon.
+ * T140/T260: the printed shapes of `agile knowledge list` / `show`, the
+ * `--example` and `--enforcement` grammar, and how the flags become §14.3's
+ * `check`. `knowledgeRows`/`showFields` are the data the printers take, so
+ * these assert the shape without a daemon.
  */
 import { describe, expect, test } from 'bun:test';
-import { parsePlanV1Decisions, seedProposal } from '@agile-agents/daemon';
 import { ruleReportRows as reportRowsFromDaemon } from '@agile-agents/daemon';
 import type { RuleEvalReport } from '@agile-agents/daemon';
-import { type Rule, type RuleInput, ulid, validateRule } from '@agile-agents/shared';
+import {
+  type KnowledgeItem,
+  type KnowledgeItemInput,
+  ulid,
+  validateKnowledgeItem,
+} from '@agile-agents/shared';
 import { parseArgs } from '../args';
 import {
-  RULE_HEADERS,
+  KNOWLEDGE_HEADERS,
   RULE_REPORT_HEADERS,
   RULE_TEST_ACTION_MAX_CHARS,
   RULE_TEST_HEADERS,
+  buildCheck,
+  knowledgeRows,
   oneLine,
   parseCriteria,
+  parseEnforcement,
   parseExample,
   parseExamples,
   ruleReportRows,
-  ruleRows,
   ruleTestDeadlineMs,
   ruleTestRows,
   showFields,
-} from './rules';
+} from './knowledge';
 
-function rule(over: Partial<RuleInput> = {}): Rule {
-  return validateRule({
-    id: 'R-01ABCDEFGHJKMNPQRSTVWXYZ00',
+function rule(over: Partial<KnowledgeItemInput> = {}): KnowledgeItem {
+  return validateKnowledgeItem({
+    id: 'K-01ABCDEFGHJKMNPQRSTVWXYZ00',
+    kind: 'standard',
     text: 'never push to a protected branch',
     scope: { kind: 'global' },
     status: 'proposed',
-    enforcement: 'guidance',
+    enforcement: 'tell',
     critical: false,
-    provenance: { by: 'human' },
+    source: { by: 'human' },
     stats: {},
     created_at: '2026-09-22T00:00:00.000Z',
     ...over,
   });
 }
 
-describe('rules list rows', () => {
-  test('carry the id/name/status/tier/scope/text header (T140, T145)', () => {
-    expect(RULE_HEADERS).toEqual(['id', 'name', 'status', 'tier', 'scope', 'text']);
+const TWO = [
+  { action: 'a', violates: true },
+  { action: 'b', violates: false },
+];
+
+describe('knowledge list rows', () => {
+  test('carry the id/name/kind/status/enforcement/scope/text header', () => {
+    expect(KNOWLEDGE_HEADERS).toEqual([
+      'id',
+      'name',
+      'kind',
+      'status',
+      'enforcement',
+      'scope',
+      'text',
+    ]);
   });
 
-  test('one row per rule, with the tier and the rendered scope', () => {
-    const rows = ruleRows([
+  test('one row per item, with its name, the enforcement cell and the rendered scope', () => {
+    const rows = knowledgeRows([
       rule(),
       rule({
-        id: 'R-01ABCDEFGHJKMNPQRSTVWXYZ01',
+        id: 'K-01ABCDEFGHJKMNPQRSTVWXYZ01',
         status: 'accepted',
-        enforcement: 'pattern',
+        enforcement: 'action',
         name: 'no_push_protected',
-        pattern: { kind: 'no_push_protected' },
+        check: { by: 'pattern', pattern: { kind: 'no_push_protected' } },
         critical: true,
-        scope: { kind: 'repo', ref: 'alpha' },
+        scope: { kind: 'repo', repo: 'alpha' },
         text: 'no pushes to main',
       }),
     ]);
     expect(rows).toEqual([
       [
-        'R-01ABCDEFGHJKMNPQRSTVWXYZ00',
-        // T145: only a built-in carries a name; a hand-written rule prints `-`.
+        'K-01ABCDEFGHJKMNPQRSTVWXYZ00',
         '-',
+        'standard',
         'proposed',
-        'guidance',
+        'tell',
         'global',
         'never push to a protected branch',
       ],
       [
-        'R-01ABCDEFGHJKMNPQRSTVWXYZ01',
+        'K-01ABCDEFGHJKMNPQRSTVWXYZ01',
         'no_push_protected',
+        'standard',
         'accepted',
-        'pattern!',
+        'action:pattern!',
         'repo:alpha',
         'no pushes to main',
       ],
@@ -82,37 +103,36 @@ describe('rules list rows', () => {
   });
 });
 
-describe('rules show fields', () => {
-  test('an undecided guidance rule prints no question and no decision', () => {
+describe('knowledge show fields', () => {
+  test('an undecided tell item prints no check and no decision', () => {
     const fields = showFields(rule());
     expect(fields).toContainEqual(['status', 'proposed']);
-    expect(fields).toContainEqual(['stage', 'action']);
+    expect(fields).toContainEqual(['enforcement', 'tell']);
+    expect(fields).toContainEqual(['paths', 'all']);
     expect(fields).toContainEqual(['decided', '-']);
     expect(fields.map(([k]) => k)).not.toContain('question');
-    expect(fields.map(([k]) => k)).not.toContain('pattern');
+    expect(fields.map(([k]) => k)).not.toContain('check');
   });
 
-  test('a built-in prints its name; everything else prints `-` (T145)', () => {
-    expect(showFields(rule({ name: 'no_push_protected' }))).toContainEqual([
+  test('the name prints; an item without one prints `-`', () => {
+    expect(showFields(rule({ name: 'tests-with-changes' }))).toContainEqual([
       'name',
-      'no_push_protected',
+      'tests-with-changes',
     ]);
     expect(showFields(rule())).toContainEqual(['name', '-']);
   });
 
-  test('a classifier rule prints the default question; a decided rule prints who', () => {
+  test('a classifier check prints the default question; a decided item prints who', () => {
     const fields = showFields(
       rule({
-        enforcement: 'classifier',
+        enforcement: 'ship',
+        check: { by: 'classifier', examples: TWO },
         status: 'accepted',
         decided_at: '2026-09-22T01:00:00.000Z',
         decided_by: 'pete',
-        examples: [
-          { action: 'a', violates: true },
-          { action: 'b', violates: false },
-        ],
       }),
     );
+    expect(fields).toContainEqual(['check', 'classifier']);
     expect(fields).toContainEqual([
       'question',
       'Does this action violate: never push to a protected branch?',
@@ -120,17 +140,17 @@ describe('rules show fields', () => {
     expect(fields).toContainEqual(['decided', '2026-09-22T01:00:00.000Z by pete']);
   });
 
-  test('provenance and stats read as one line each', () => {
-    const stream = ulid();
+  test('source and stats read as one line each', () => {
+    const node = ulid();
     const fields = showFields(
       rule({
-        provenance: { by: 'agent:01ABCDEFGHJKMNPQRSTVWXYZ02', stream },
+        source: { by: 'agent', session: '01ABCDEFGHJKMNPQRSTVWXYZ02', node },
         stats: { fired: 3, violated: 1, routed: 2, last_fired_at: '2026-09-22T02:00:00.000Z' },
       }),
     );
     expect(fields).toContainEqual([
-      'provenance',
-      `agent:01ABCDEFGHJKMNPQRSTVWXYZ02 · stream ${stream}`,
+      'source',
+      `agent · node ${node} · session 01ABCDEFGHJKMNPQRSTVWXYZ02`,
     ]);
     expect(fields).toContainEqual([
       'stats',
@@ -157,54 +177,81 @@ describe('--example "<action>::<true|false>"', () => {
     }
   });
 
-  test('every --example on the command line is kept, in order', () => {
-    expect(parseExamples(['--text', 'x', '--example', 'a::true', '--example', 'b::false'])).toEqual(
-      [
-        { action: 'a', violates: true },
-        { action: 'b', violates: false },
-      ],
-    );
+  test('every --example on the command line is kept, in order, commas and all', () => {
+    expect(
+      parseExamples(['--text', 'x', '--example', 'a, then b::true', '--example', 'b::false']),
+    ).toEqual([
+      { action: 'a, then b', violates: true },
+      { action: 'b', violates: false },
+    ]);
     expect(() => parseExamples(['--example', '--critical'])).toThrow(/--example needs a value/);
   });
 });
 
-describe('rules seed (PLAN-v1 §9)', () => {
-  const section = [
-    '## 9. Discovered Issues Log',
-    '',
-    '- 2026-09-08 — T002 review round 1 FAIL. Decision: all shared schemas are `.strict()` by default so the store rejects unknown keys.',
-    '- 2026-09-09 — T005 merged. Decisions (manager, yolo): (1) every store mutation emits exactly one events.jsonl line; (2) the store gets a generic validating putEntity trio so nothing writes around it.',
-    '- 2026-09-10 — a plain note with no decision in it at all, which must not become a rule.',
-    'Prose, not a bullet. Decision: ignored because the line is not a list item.',
-    '',
-    '## 10. Something else',
-    '',
-    '- 2026-09-11 — Decision: out of the section, never imported.',
-  ].join('\n');
+describe('--enforcement (§6) and the old tiers under `rules`', () => {
+  const enforcement = (...argv: string[]) => parseEnforcement(parseArgs(argv));
 
-  test('one rule per decision sentence, and nothing else from the file', () => {
-    expect(parsePlanV1Decisions(section)).toEqual([
-      'all shared schemas are `.strict()` by default so the store rejects unknown keys.',
-      'every store mutation emits exactly one events.jsonl line',
-      'the store gets a generic validating putEntity trio so nothing writes around it.',
-    ]);
+  test('the four settings parse as themselves', () => {
+    for (const value of ['tell', 'action', 'ship', 'review'] as const) {
+      expect(enforcement('--enforcement', value)).toBe(value);
+    }
+    expect(enforcement()).toBeUndefined();
   });
 
-  test('a file with no §9 section yields nothing', () => {
-    expect(parsePlanV1Decisions('# Plan\n\n- Decision: nowhere near the log\n')).toEqual([]);
+  test('the old tiers map as the migration maps them', () => {
+    expect(enforcement('--enforcement', 'guidance')).toBe('tell');
+    expect(enforcement('--enforcement', 'pattern')).toBe('action');
+    expect(enforcement('--enforcement', 'classifier')).toBe('action');
+    expect(enforcement('--enforcement', 'classifier', '--stage', 'diff')).toBe('ship');
   });
 
-  test('the seeded proposal is a global guidance rule with seed provenance', () => {
-    expect(seedProposal('x')).toEqual({
-      text: 'x',
-      scope: { kind: 'global' },
-      enforcement: 'guidance',
-      provenance: { by: 'seed:PLAN-v1' },
+  test('anything else is refused, and --stage belongs to the old tiers', () => {
+    expect(() => enforcement('--enforcement', 'vibes')).toThrow(/must be one of/);
+    expect(() => enforcement('--enforcement', 'ship', '--stage', 'diff')).toThrow(/old tiers/);
+    expect(() => enforcement('--stage', 'diff')).toThrow(/needs --enforcement/);
+  });
+});
+
+describe('buildCheck (the flags as §14.3’s check)', () => {
+  const examples = TWO;
+
+  test('ship and action get a classifier check with the examples; tell and review get none', () => {
+    expect(buildCheck('ship', { examples })).toEqual({ by: 'classifier', examples });
+    expect(buildCheck('action', { examples: [], question: 'Adds a dep?' })).toEqual({
+      by: 'classifier',
+      question: 'Adds a dep?',
+      examples: [],
+    });
+    expect(buildCheck('tell', { examples: [] })).toBeUndefined();
+    expect(buildCheck('review', { examples: [] })).toBeUndefined();
+  });
+
+  test('a check flag on a tell or review item is refused, not dropped', () => {
+    expect(() => buildCheck('tell', { examples })).toThrow(/carries no check/);
+    expect(() => buildCheck('review', { examples: [], question: 'q?' })).toThrow(
+      /carries no check/,
+    );
+  });
+
+  test('a pattern is an action check only, and never mixed with classifier flags', () => {
+    const pattern = { kind: 'no_push' as const, args: {} };
+    expect(buildCheck('action', { examples: [], pattern })).toEqual({ by: 'pattern', pattern });
+    expect(() => buildCheck('ship', { examples: [], pattern })).toThrow(/action check only/);
+    expect(() => buildCheck('action', { examples, pattern })).toThrow(/two different checks/);
+  });
+
+  test('an edit keeps what it does not touch', () => {
+    const current = { by: 'classifier' as const, question: 'q?', examples };
+    expect(buildCheck('ship', { examples: [] }, current)).toEqual(current);
+    expect(buildCheck('ship', { examples: [{ action: 'c', violates: true }] }, current)).toEqual({
+      by: 'classifier',
+      question: 'q?',
+      examples: [{ action: 'c', violates: true }],
     });
   });
 });
 
-describe('rules report table (T142, §5.7)', () => {
+describe('knowledge report table (T142, §5.7)', () => {
   test('carries §5.7’s columns', () => {
     expect(RULE_REPORT_HEADERS).toEqual([
       'id',
@@ -224,14 +271,17 @@ describe('rules report table (T142, §5.7)', () => {
       [
         rule({ status: 'accepted', created_at: '2026-01-01T00:00:00.000Z' }),
         rule({
-          id: 'R-01ABCDEFGHJKMNPQRSTVWXYZ01',
+          id: 'K-01ABCDEFGHJKMNPQRSTVWXYZ01',
           status: 'accepted',
-          enforcement: 'classifier',
+          enforcement: 'ship',
           critical: true,
-          examples: [
-            { action: 'git push origin main', violates: true },
-            { action: 'git push origin feature', violates: false },
-          ],
+          check: {
+            by: 'classifier',
+            examples: [
+              { action: 'git push origin main', violates: true },
+              { action: 'git push origin feature', violates: false },
+            ],
+          },
           stats: { fired: 4, violated: 2, routed: 1, last_fired_at: '2026-09-21T10:00:00.000Z' },
         }),
       ],
@@ -239,9 +289,9 @@ describe('rules report table (T142, §5.7)', () => {
     );
     expect(ruleReportRows(rows)).toEqual([
       [
-        'R-01ABCDEFGHJKMNPQRSTVWXYZ00',
+        'K-01ABCDEFGHJKMNPQRSTVWXYZ00',
         '-',
-        'guidance',
+        'tell',
         'accepted',
         '0',
         '0',
@@ -250,9 +300,9 @@ describe('rules report table (T142, §5.7)', () => {
         'never fired (14 days)',
       ],
       [
-        'R-01ABCDEFGHJKMNPQRSTVWXYZ01',
+        'K-01ABCDEFGHJKMNPQRSTVWXYZ01',
         '-',
-        'classifier!',
+        'ship:classifier!',
         'accepted',
         '4',
         '2',
@@ -279,7 +329,7 @@ describe('rules test table (T153, §5.6)', () => {
       generated_at: '2026-09-22T00:00:00.000Z',
       rules: [
         {
-          id: 'R-01ABCDEFGHJKMNPQRSTVWXYZ00',
+          id: 'K-01ABCDEFGHJKMNPQRSTVWXYZ00',
           question: 'Does this diff change a public export?',
           critical: false,
           examples: [
@@ -333,7 +383,7 @@ describe('rules test table (T153, §5.6)', () => {
       generated_at: '2026-09-22T00:00:00.000Z',
       rules: [
         {
-          id: 'R-01ABCDEFGHJKMNPQRSTVWXYZ00',
+          id: 'K-01ABCDEFGHJKMNPQRSTVWXYZ00',
           name: 'no_push_protected',
           question: 'Does this action violate: never push to a protected branch?',
           critical: true,

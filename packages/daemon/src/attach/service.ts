@@ -20,9 +20,9 @@ import { join } from 'node:path';
 import type { AcpProviderConfig, spawnSession } from '@agile-agents/acp-client';
 import {
   type HilRequest,
+  type KnowledgeItem,
   type Question,
   type RoutedEvent,
-  type Rule,
   type SessionRef,
   type SessionRole,
   type SessionStatus,
@@ -40,7 +40,7 @@ import { routeAndEmit } from '../events/router';
 import { RoutedEventService } from '../events/service';
 import { DEFAULT_WAKE_BUDGET_PER_HOUR, WakeBudget, wakeVerdict } from '../events/wake';
 import { settingsFileName } from '../hook/settings';
-import type { RuleStatsOutcome } from '../rules/service';
+import type { RuleStatsOutcome } from '../knowledge/service';
 import type { BriefDoc } from '../runner/brief';
 import { buildBrief } from '../runner/brief';
 import type { CliInvocation } from '../runner/cli-bin';
@@ -104,7 +104,7 @@ export interface BriefDocsSource {
 
 /** The accepted rules in scope for the brief (§5.3). */
 export interface BriefRulesSource {
-  inScope(streamId: string): Rule[];
+  inScope(streamId: string): KnowledgeItem[];
   /** §5.7's counters, bumped by the ACP permission tier. Optional for brief-only fakes. */
   recordFired?(id: string, outcome: RuleStatsOutcome): Promise<unknown>;
 }

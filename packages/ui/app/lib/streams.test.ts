@@ -144,7 +144,7 @@ describe('stream page helpers (T161)', () => {
 });
 
 describe('ruleHitOf (T169)', () => {
-  const id = 'R-01ARZ3NDEKTSV4RRFFQ69G5FAV';
+  const id = 'K-01ARZ3NDEKTSV4RRFFQ69G5FAV';
   test('a daemon rule_hit event with a rule ref is a hit', () => {
     expect(
       ruleHitOf({ by: 'daemon', kind: 'event', body: `rule_hit: ${id} denied`, ref: id }),

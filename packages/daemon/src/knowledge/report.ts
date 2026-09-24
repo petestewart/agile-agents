@@ -5,8 +5,8 @@
  * the human decides whether to retire (§5.1, D4).
  */
 
-import type { Rule, RuleStatus } from '@agile-agents/shared';
-import type { RulesService } from './service';
+import { type KnowledgeItem, type KnowledgeStatus, formatEnforcement } from '@agile-agents/shared';
+import type { KnowledgeService } from './service';
 
 /** Default `--days` for the "never fired" window (§5.7). */
 export const RULE_REPORT_DEFAULT_DAYS = 14;
@@ -31,7 +31,7 @@ export interface RuleReportRow {
   name?: string;
   /** The tier, `!`-marked when critical (as `agile rules list` prints it). */
   tier: string;
-  status: RuleStatus;
+  status: KnowledgeStatus;
   fired: number;
   violated: number;
   routed: number;
@@ -55,28 +55,28 @@ export interface RuleReportOptions {
   now?: Date;
 }
 
-function tierOf(rule: Rule): string {
-  return `${rule.enforcement}${rule.critical ? '!' : ''}`;
+function tierOf(rule: KnowledgeItem): string {
+  return formatEnforcement(rule);
 }
 
-function ageInDays(rule: Rule, now: Date): number {
+function ageInDays(rule: KnowledgeItem, now: Date): number {
   const created = Date.parse(rule.created_at);
   if (Number.isNaN(created)) return 0;
   return (now.getTime() - created) / MS_PER_DAY;
 }
 
 /** The first signal a rule trips (they are nearly exclusive anyway). */
-function flagOf(rule: Rule, days: number, now: Date): RuleReportFlag {
+function flagOf(rule: KnowledgeItem, days: number, now: Date): RuleReportFlag {
   const { fired, violated, routed } = rule.stats;
   // Only an accepted rule can fire; a proposal's silence says nothing.
   if (rule.status === 'accepted' && fired === 0 && ageInDays(rule, now) >= days) {
     return 'never fired';
   }
   // `never violated` is a prune signal only where a violation can be
-  // recorded without being stopped (classifier, guidance). A pattern rule
-  // that fires denies the call, so `violated: 0` means it works.
+  // recorded without being stopped (a classifier check, a tell item). A
+  // pattern check that fires denies the call, so `violated: 0` means it works.
   if (
-    rule.enforcement !== 'pattern' &&
+    rule.check?.by !== 'pattern' &&
     fired >= RULE_REPORT_NEVER_VIOLATED_MIN_FIRED &&
     violated === 0
   ) {
@@ -90,7 +90,7 @@ function flagOf(rule: Rule, days: number, now: Date): RuleReportFlag {
 
 /** One row per rule: flagged first, then by `fired` descending, then by id (a total order). */
 export function ruleReportRows(
-  rules: readonly Rule[],
+  rules: readonly KnowledgeItem[],
   options: RuleReportOptions = {},
 ): RuleReportRow[] {
   const days = options.days ?? RULE_REPORT_DEFAULT_DAYS;
@@ -120,7 +120,7 @@ export function ruleReportRows(
 
 /** `rule.report`'s payload: every rule in this home, flagged (§5.7). */
 export function buildRuleReport(
-  service: RulesService,
+  service: KnowledgeService,
   options: RuleReportOptions = {},
 ): RuleReport {
   const now = options.now ?? new Date();

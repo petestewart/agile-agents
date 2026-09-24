@@ -16,8 +16,9 @@
 import { z } from 'zod';
 import { HilKindSchema, MessageBodySchema } from './agent-message';
 import { AgentIdSchema, ULID_PATTERN, UlidSchema, formatZodError } from './ids';
+import { KnowledgeIdSchema } from './knowledge';
 import { GateOwnerSchema } from './policy';
-import { RuleIdSchema } from './rule';
+import { LegacyRuleIdSchema } from './rule';
 
 /**
  * `HIL-<ulid>` — reuses `ids.ts`'s ULID charset (Crockford base32, 26 chars)
@@ -155,7 +156,8 @@ export const HilRequestSchema = z
      * in `hook/route-band.ts`), and nothing else in the gate record says
      * which rule was asked.
      */
-    rule: RuleIdSchema.optional(),
+    /** The knowledge item named; a gate raised before T260 names its `R-` rule. */
+    rule: z.union([KnowledgeIdSchema, LegacyRuleIdSchema]).optional(),
     /** T138: set when an approved gate's one allowed retry has been spent — the allowance is once, not standing. */
     consumed_at: z.string().datetime().optional(),
     decision: HilDecisionSchema.optional(),

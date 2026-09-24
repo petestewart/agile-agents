@@ -6,8 +6,13 @@
  * or `undefined`, and fails closed on a command it can't read (§8.1).
  */
 
-import { DEFAULT_PROTECTED_BRANCHES, type Rule, type RulePattern } from '@agile-agents/shared';
-import type { RuleStatsOutcome } from '../rules/service';
+import {
+  DEFAULT_PROTECTED_BRANCHES,
+  type KnowledgeItem,
+  type RulePattern,
+  patternOf,
+} from '@agile-agents/shared';
+import type { RuleStatsOutcome } from '../knowledge/service';
 import { isPathInside, parseCommandIntoAtoms, parseGitInvocation } from './command';
 import { type PushDetectorContext, detectProtectedBranchWrite, detectPush } from './push-detector';
 
@@ -80,9 +85,9 @@ function checkCommandDeny(
 }
 
 /** One pattern rule's verdict on one call: a deny reason, or `undefined`. Non-pattern rules return `undefined`. */
-export function checkPatternRule(rule: Rule, ctx: RuleCheckContext): string | undefined {
-  if (rule.enforcement !== 'pattern' || rule.pattern === undefined) return undefined;
-  const pattern = rule.pattern;
+export function checkPatternRule(rule: KnowledgeItem, ctx: RuleCheckContext): string | undefined {
+  const pattern = rule.enforcement === 'action' ? patternOf(rule) : undefined;
+  if (pattern === undefined) return undefined;
   switch (pattern.kind) {
     case 'no_push_protected':
       return ctx.command === undefined ? undefined : detectProtectedBranchWrite(ctx.command, ctx);
@@ -100,9 +105,9 @@ export function checkPatternRule(rule: Rule, ctx: RuleCheckContext): string | un
 // order and stats can't drift.
 
 /** Rules carrying a deterministic check: the only kind this pass evaluates. */
-export function patternRulesOf(rules: readonly Rule[] | undefined): Rule[] {
+export function patternRulesOf(rules: readonly KnowledgeItem[] | undefined): KnowledgeItem[] {
   return (rules ?? []).filter(
-    (rule) => rule.enforcement === 'pattern' && rule.pattern !== undefined,
+    (rule) => rule.enforcement === 'action' && patternOf(rule) !== undefined,
   );
 }
 
@@ -117,7 +122,7 @@ export interface PatternRuleOutcome {
 
 /** Runs the rules in order and stops at the first deny (§8.1: match or uncertain ⇒ deny, rule named). */
 export function runPatternRules(
-  rules: readonly Rule[] | undefined,
+  rules: readonly KnowledgeItem[] | undefined,
   ctx: RuleCheckContext,
 ): PatternRuleOutcome {
   const rulesEvaluated: string[] = [];
@@ -126,7 +131,7 @@ export function runPatternRules(
     const reason = checkPatternRule(rule, ctx);
     if (reason !== undefined) {
       return {
-        reason: `rule ${rule.id} (${rule.pattern?.kind}): ${reason}`,
+        reason: `rule ${rule.id} (${patternOf(rule)?.kind}): ${reason}`,
         ruleViolated: rule.id,
         rulesEvaluated,
       };
@@ -162,15 +167,15 @@ export function protectedBranchesFor(
   }
 }
 
-/** The read/write sides of `RulesService` this pass uses (§5.3 and §5.7). */
+/** The read/write sides of `KnowledgeService` this pass uses (§5.3 and §5.7). */
 export interface PatternRuleRules {
-  inScope(streamId: string): Rule[];
+  inScope(streamId: string): KnowledgeItem[];
   recordFired?(id: string, outcome: RuleStatsOutcome): Promise<unknown>;
 }
 
 /** One session's rule pass bound to its stream, for the ACP tier (`buildPermissionResponder`). */
 export interface PatternRuleGate {
-  rules(): Rule[];
+  rules(): KnowledgeItem[];
   protectedBranches(): readonly string[];
   record(id: string, outcome: 'fired' | 'violated' | 'routed'): Promise<unknown>;
 }

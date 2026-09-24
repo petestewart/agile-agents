@@ -5,7 +5,12 @@
  * Plain types, not shared schemas: nothing here is persisted state.
  */
 
-import { type Rule, type RuleCriteria, classifierQuestion } from '@agile-agents/shared';
+import {
+  type KnowledgeItem,
+  type RuleCriteria,
+  classifierCheckOf,
+  classifierQuestion,
+} from '@agile-agents/shared';
 
 /** One yes/no question about the state. `id` is the rule's id in practice. */
 export interface Noul {
@@ -16,11 +21,12 @@ export interface Noul {
 }
 
 /** The Noul for one rule: its classifier question plus its criteria, if any. */
-export function noulFor(rule: Pick<Rule, 'id' | 'text' | 'question' | 'criteria'>): Noul {
+export function noulFor(rule: Pick<KnowledgeItem, 'id' | 'text' | 'check'>): Noul {
+  const criteria = classifierCheckOf(rule)?.criteria;
   return {
     id: rule.id,
     question: classifierQuestion(rule),
-    ...(rule.criteria !== undefined ? { criteria: rule.criteria } : {}),
+    ...(criteria !== undefined ? { criteria } : {}),
   };
 }
 

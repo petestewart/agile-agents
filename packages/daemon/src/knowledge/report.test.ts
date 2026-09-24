@@ -13,7 +13,12 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { type Rule, type RuleInput, ulid, validateRule } from '@agile-agents/shared';
+import {
+  type KnowledgeItem,
+  type KnowledgeItemInput,
+  ulid,
+  validateKnowledgeItem,
+} from '@agile-agents/shared';
 import { runInit } from '../init';
 import type { RpcMethodHandler } from '../rpc';
 import { StateStore } from '../store';
@@ -24,8 +29,8 @@ import {
   buildRuleReport,
   ruleReportRows,
 } from './report';
-import { buildRuleRpcMethods } from './rpc';
-import { RulesService } from './service';
+import { buildKnowledgeRpcMethods } from './rpc';
+import { KnowledgeService } from './service';
 
 const NOW = new Date('2026-09-22T00:00:00.000Z');
 const DAY = 24 * 60 * 60 * 1000;
@@ -35,22 +40,24 @@ function daysAgo(days: number): string {
   return new Date(NOW.getTime() - days * DAY).toISOString();
 }
 
-function fixture(over: Partial<RuleInput> = {}): Rule {
-  return validateRule({
-    id: `R-${ulid()}`,
+function fixture(over: Partial<KnowledgeItemInput> = {}): KnowledgeItem {
+  return validateKnowledgeItem({
+    id: `K-${ulid()}`,
+    kind: 'standard',
     text: 'never push to a protected branch',
     scope: { kind: 'global' },
     status: 'accepted',
-    enforcement: 'classifier',
+    enforcement: 'action',
+    check: { by: 'classifier', examples: [] },
     critical: false,
-    provenance: { by: 'human' },
+    source: { by: 'human' },
     stats: {},
     created_at: daysAgo(30),
     ...over,
   });
 }
 
-const flagOf = (rule: Rule, days?: number): string => {
+const flagOf = (rule: KnowledgeItem, days?: number): string => {
   const [row] = ruleReportRows([rule], { now: NOW, ...(days !== undefined ? { days } : {}) });
   return row?.flag ?? 'no row';
 };
@@ -83,9 +90,9 @@ describe('the three pruning signals (§5.7)', () => {
     // A pattern rule's firing *is* the enforcement: it matched and the call
     // was denied, so `violated: 0` means the rule works. Flagging it told
     // the operator to retire `no_push_protected` for being effective.
-    const pattern: Partial<RuleInput> = {
-      enforcement: 'pattern',
-      pattern: { kind: 'no_push_protected', args: {} },
+    const pattern: Partial<KnowledgeItemInput> = {
+      enforcement: 'action',
+      check: { by: 'pattern', pattern: { kind: 'no_push_protected', args: {} } },
       name: 'no_push_protected',
     };
     expect(flagOf(fixture({ ...pattern, stats: { fired: 500, violated: 0 } }))).toBe('-');
@@ -121,9 +128,9 @@ describe('the row', () => {
     const rows = ruleReportRows(
       [
         fixture({
-          id: 'R-01ABCDEFGHJKMNPQRSTVWXYZ00',
-          enforcement: 'pattern',
-          pattern: { kind: 'no_push_protected' },
+          id: 'K-01ABCDEFGHJKMNPQRSTVWXYZ00',
+          enforcement: 'action',
+          check: { by: 'pattern', pattern: { kind: 'no_push_protected' } },
           critical: true,
           stats: { fired: 3, violated: 1, routed: 0, last_fired_at: daysAgo(1) },
         }),
@@ -131,8 +138,8 @@ describe('the row', () => {
       { now: NOW },
     );
     expect(rows[0]).toEqual({
-      id: 'R-01ABCDEFGHJKMNPQRSTVWXYZ00',
-      tier: 'pattern!',
+      id: 'K-01ABCDEFGHJKMNPQRSTVWXYZ00',
+      tier: 'action:pattern!',
       status: 'accepted',
       fired: 3,
       violated: 1,
@@ -144,11 +151,11 @@ describe('the row', () => {
   });
 
   test('flagged rules sort first, then by fired descending', () => {
-    const quiet = fixture({ id: 'R-01ABCDEFGHJKMNPQRSTVWXYZ01', stats: { fired: 0 } });
-    const busy = fixture({ id: 'R-01ABCDEFGHJKMNPQRSTVWXYZ02', stats: { fired: 7, violated: 4 } });
-    const ok = fixture({ id: 'R-01ABCDEFGHJKMNPQRSTVWXYZ03', stats: { fired: 2, violated: 1 } });
+    const quiet = fixture({ id: 'K-01ABCDEFGHJKMNPQRSTVWXYZ01', stats: { fired: 0 } });
+    const busy = fixture({ id: 'K-01ABCDEFGHJKMNPQRSTVWXYZ02', stats: { fired: 7, violated: 4 } });
+    const ok = fixture({ id: 'K-01ABCDEFGHJKMNPQRSTVWXYZ03', stats: { fired: 2, violated: 1 } });
     const chatty = fixture({
-      id: 'R-01ABCDEFGHJKMNPQRSTVWXYZ04',
+      id: 'K-01ABCDEFGHJKMNPQRSTVWXYZ04',
       stats: { fired: 20, violated: 0 },
     });
     const rows = ruleReportRows([ok, quiet, busy, chatty], { now: NOW });
@@ -166,7 +173,7 @@ describe('the row', () => {
 let home: string;
 let store: StateStore;
 let streams: StreamService;
-let rules: RulesService;
+let rules: KnowledgeService;
 let methods: Record<string, RpcMethodHandler>;
 
 beforeEach(() => {
@@ -174,8 +181,8 @@ beforeEach(() => {
   const init = runInit(home);
   store = StateStore.open(init.stateRoot);
   streams = new StreamService(store);
-  rules = new RulesService({ store, streams });
-  methods = buildRuleRpcMethods(rules);
+  rules = new KnowledgeService({ store, streams });
+  methods = buildKnowledgeRpcMethods(rules);
 });
 
 afterEach(() => {
@@ -193,7 +200,7 @@ describe('rule.report over the store', () => {
     const rule = await rules.create('human', { text: 'no new dependencies without asking' });
     await rules.accept(rule.id, 'pete');
     // What T151/T152 do on a firing: bump the counters as the daemon.
-    await store.updateRule('daemon', rule.id, (before) => ({
+    await store.updateKnowledge('daemon', rule.id, (before) => ({
       ...before,
       stats: { fired: 12, violated: 0, routed: 1, last_fired_at: NOW.toISOString() },
     }));
@@ -214,7 +221,7 @@ describe('rule.report over the store', () => {
   test('--days narrows the never-fired window', async () => {
     // Created two days ago, so the default 14-day window is silent and a
     // one-day window flags it.
-    const dated = new RulesService({
+    const dated = new KnowledgeService({
       store,
       streams,
       clock: () => new Date(Date.now() - 2 * DAY),

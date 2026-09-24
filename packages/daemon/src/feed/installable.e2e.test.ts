@@ -16,8 +16,8 @@ import { GateService } from '../gates';
 import { type HttpServerHandle, startHttpServer } from '../http';
 import { InboxService } from '../inbox';
 import { runInit } from '../init';
+import { KnowledgeService } from '../knowledge';
 import { QuestionService } from '../questions';
-import { RulesService } from '../rules';
 import { StateStore } from '../store';
 import { StreamService } from '../streams';
 import { resolveChromiumExecutable } from './chromium';
@@ -40,7 +40,7 @@ function startCockpit(): { http: HttpServerHandle; base: string; stop(): Promise
   const streams = new StreamService(store);
   const questions = new QuestionService(store, streams, { deliver: async () => {} });
   const gates = new GateService(store);
-  const rules = new RulesService({ store, streams });
+  const rules = new KnowledgeService({ store, streams });
   const inbox = new InboxService({ streams, questions, gates, rules });
   const http = startHttpServer({
     port: 0,

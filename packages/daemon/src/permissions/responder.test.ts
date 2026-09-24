@@ -3,11 +3,11 @@ import { mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
-  type Rule,
+  type KnowledgeItem,
   type RulePattern,
   ulid,
   validateAgentMessage,
-  validateRule,
+  validateKnowledgeItem,
 } from '@agile-agents/shared';
 import { runInit } from '../init';
 import { StateStore } from '../store';
@@ -231,22 +231,26 @@ describe('buildPermissionResponder', () => {
  * `hook/decide.ts`.
  */
 describe('buildPermissionResponder — pattern rules at the ACP tier', () => {
-  function patternRule(kind: RulePattern['kind'], args: Record<string, unknown> = {}): Rule {
-    return validateRule({
-      id: `R-${ulid()}`,
+  function patternRule(
+    kind: RulePattern['kind'],
+    args: Record<string, unknown> = {},
+  ): KnowledgeItem {
+    return validateKnowledgeItem({
+      id: `K-${ulid()}`,
+      kind: 'standard',
       text: 'never push to a protected branch',
       scope: { kind: 'global' },
       status: 'accepted',
-      enforcement: 'pattern',
-      pattern: { kind, args },
+      enforcement: 'action',
+      check: { by: 'pattern', pattern: { kind, args } },
       critical: true,
-      provenance: { by: 'builtin' },
+      source: { by: 'builtin' },
       stats: {},
       created_at: new Date().toISOString(),
     });
   }
 
-  function gatedResponder(rules: Rule[]) {
+  function gatedResponder(rules: KnowledgeItem[]) {
     const recorded: Array<{ id: string; outcome: string }> = [];
     const session = fakeSession();
     const responder = buildPermissionResponder(store, {

@@ -7,26 +7,27 @@
 
 import { describe, expect, test } from 'bun:test';
 import {
-  type Rule,
-  type RuleInput,
+  type KnowledgeItem,
+  type KnowledgeItemInput,
   type RulePattern,
   ulid,
-  validateRule,
+  validateKnowledgeItem,
 } from '@agile-agents/shared';
 import { type RuleCheckContext, checkPatternRule } from './rule-checks';
 
 const WORKTREE = '/tmp/agile-worktree-fixture';
 
-function rule(pattern: RulePattern, over: Partial<RuleInput> = {}): Rule {
-  return validateRule({
-    id: `R-${ulid()}`,
+function rule(pattern: RulePattern, over: Partial<KnowledgeItemInput> = {}): KnowledgeItem {
+  return validateKnowledgeItem({
+    id: `K-${ulid()}`,
+    kind: 'standard',
     text: 'fixture',
     scope: { kind: 'global' },
     status: 'accepted',
-    enforcement: 'pattern',
-    pattern,
+    enforcement: 'action',
+    check: { by: 'pattern', pattern },
     critical: true,
-    provenance: { by: 'builtin' },
+    source: { by: 'builtin' },
     stats: {},
     created_at: new Date().toISOString(),
     ...over,
@@ -44,8 +45,8 @@ function ctx(over: Partial<RuleCheckContext> = {}): RuleCheckContext {
 }
 
 describe('dispatch', () => {
-  test('a guidance rule is never a pattern check, even carrying a pattern', () => {
-    const guidance = rule({ kind: 'no_push', args: {} }, { enforcement: 'guidance' });
+  test('a tell item is never a pattern check, even carrying a pattern', () => {
+    const guidance = rule({ kind: 'no_push', args: {} }, { enforcement: 'tell' });
     expect(checkPatternRule(guidance, ctx({ command: 'git push origin main' }))).toBeUndefined();
   });
 

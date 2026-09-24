@@ -1,5 +1,7 @@
 /**
- * `rule.*` RPC over a `RulesService`. Params are validated at the boundary
+ * `knowledge.*` RPC over a `KnowledgeService` (T260), with every method
+ * also answering under its old `rule.*` name so `agile rules` and older
+ * clients keep working. Params are validated at the boundary
  * (`RpcParamError`, -32602). The principal is always `human` here (§2.2):
  * an agent proposes through the `propose_rule` verb, and this edge has no
  * way to act as one.
@@ -9,11 +11,12 @@ import {
   type ClassifierBands,
   DEFAULT_CLASSIFIER_TIMEOUT_MS,
   type Event,
-  RULE_STATUSES,
-  type RuleStatus,
-  RuleWriteError,
-  validateRulePatch,
-  validateRuleProposal,
+  KnowledgeWriteError,
+  KNOWLEDGE_STATUSES as RULE_STATUSES,
+  type KnowledgeStatus as RuleStatus,
+  examplesOf,
+  validateKnowledgePatch,
+  validateKnowledgeProposal,
 } from '@agile-agents/shared';
 import type { Classifier } from '../classifier';
 import { RpcParamError, optionalString, paramErrors, requireObject } from '../gates/rpc';
@@ -22,7 +25,11 @@ import { buildEvent } from '../store/events';
 import { AlreadyExistsError } from '../store/store';
 import { type RuleEvalReport, evaluableRules, runRuleEvals } from './evals';
 import { RULE_REPORT_DEFAULT_DAYS, buildRuleReport } from './report';
-import { RuleAlreadyDecidedError, type RulesService, UnknownRuleScopeError } from './service';
+import {
+  KnowledgeAlreadyDecidedError,
+  type KnowledgeService,
+  UnknownKnowledgeScopeError,
+} from './service';
 
 /** Every `rule.*` write from this edge is the human's. */
 const EDGE_PRINCIPAL = 'human' as const;
@@ -33,7 +40,7 @@ const DEFAULT_DECIDED_BY = 'human';
 function requireRuleId(value: unknown): string {
   const id = optionalString(value, 'id');
   if (id === undefined) {
-    throw new RpcParamError('invalid "id": must be a rule id (R-<ulid>)', { id: value });
+    throw new RpcParamError('invalid "id": must be a knowledge item id (K-<ulid>)', { id: value });
   }
   return id;
 }
@@ -71,9 +78,9 @@ function validated<T>(parse: () => T): T {
 
 /** Errors here that are caller input: -32602, not an internal fault. */
 const asParamErrors = paramErrors(
-  RuleWriteError,
-  UnknownRuleScopeError,
-  RuleAlreadyDecidedError,
+  KnowledgeWriteError,
+  UnknownKnowledgeScopeError,
+  KnowledgeAlreadyDecidedError,
   AlreadyExistsError,
 );
 
@@ -99,7 +106,7 @@ export interface RuleEvalPlan {
 
 /** §5.6's evals with a `classifier_call` event per call, shared by `rule.test` and the cockpit. */
 export function testRules(
-  service: RulesService,
+  service: KnowledgeService,
   evals: RuleRpcEvalDeps,
   id?: string,
 ): Promise<RuleEvalReport> {
@@ -130,31 +137,45 @@ export function testRules(
   });
 }
 
-export function buildRuleRpcMethods(
-  service: RulesService,
+/** `knowledge.<verb>` and its `rule.<verb>` alias, one handler each. */
+export function buildKnowledgeRpcMethods(
+  service: KnowledgeService,
+  evals?: RuleRpcEvalDeps,
+): Record<string, RpcMethodHandler> {
+  const methods = knowledgeMethods(service, evals);
+  const all: Record<string, RpcMethodHandler> = {};
+  for (const [verb, handler] of Object.entries(methods)) {
+    all[`knowledge.${verb}`] = handler;
+    all[`rule.${verb}`] = handler;
+  }
+  return all;
+}
+
+function knowledgeMethods(
+  service: KnowledgeService,
   evals?: RuleRpcEvalDeps,
 ): Record<string, RpcMethodHandler> {
   return {
     /** Always a proposal, whoever calls (§5.1); acceptance is a second act. */
-    'rule.create': async (params) =>
+    create: async (params) =>
       asParamErrors(() =>
         service.create(
           EDGE_PRINCIPAL,
-          validated(() => validateRuleProposal(requireObject(params))),
+          validated(() => validateKnowledgeProposal(requireObject(params))),
         ),
       ),
 
-    'rule.get': (params) => {
+    get: (params) => {
       const p = requireObject(params);
       return service.get(requireRuleId(p.id));
     },
 
-    'rule.list': (params) => {
+    list: (params) => {
       const p = params === undefined ? {} : requireObject(params);
       const status = optionalStatus(p.status);
       const scope = optionalString(p.scope, 'scope');
       return {
-        rules: service.list({
+        items: service.list({
           ...(status !== undefined ? { status } : {}),
           ...(scope !== undefined ? { scope } : {}),
         }),
@@ -162,24 +183,24 @@ export function buildRuleRpcMethods(
     },
 
     /** §5.3's filter for one stream, as the brief and the hook see it. */
-    'rule.in_scope': (params) => {
+    in_scope: (params) => {
       const p = requireObject(params);
       const stream = optionalString(p.stream, 'stream');
       if (stream === undefined) {
         throw new RpcParamError('invalid "stream": must be a stream id', { stream: p.stream });
       }
-      return { rules: service.inScope(stream) };
+      return { items: service.inScope(stream) };
     },
 
     /** §5.7's pruning view: derived and read-only; pruning is `rule.retire`. */
-    'rule.report': (params) => {
+    report: (params) => {
       const p = params === undefined ? {} : requireObject(params);
       const days = optionalPositiveInt(p.days, 'days') ?? RULE_REPORT_DEFAULT_DAYS;
       return buildRuleReport(service, { days });
     },
 
     /** §5.6's evals for every accepted classifier rule, or one. An eval is not a firing: no `stats`. */
-    'rule.test': async (params) => {
+    test: async (params) => {
       const p = params === undefined ? {} : requireObject(params);
       const id = optionalString(p.id, 'id');
       if (p.plan !== undefined && typeof p.plan !== 'boolean') {
@@ -195,7 +216,7 @@ export function buildRuleRpcMethods(
           const selected = evaluableRules(service, id);
           return {
             rules: selected.length,
-            examples: selected.reduce((n, rule) => n + rule.examples.length, 0),
+            examples: selected.reduce((n, item) => n + examplesOf(item).length, 0),
             timeout_ms: evals.timeout_ms ?? DEFAULT_CLASSIFIER_TIMEOUT_MS,
           };
         });
@@ -203,14 +224,14 @@ export function buildRuleRpcMethods(
       return asParamErrors(() => testRules(service, evals, id));
     },
 
-    'rule.accept': async (params) => {
+    accept: async (params) => {
       const p = requireObject(params);
       const id = requireRuleId(p.id);
       const by = optionalString(p.by, 'by') ?? DEFAULT_DECIDED_BY;
       return asParamErrors(() => service.accept(id, by));
     },
 
-    'rule.retire': async (params) => {
+    retire: async (params) => {
       const p = requireObject(params);
       const id = requireRuleId(p.id);
       const by = optionalString(p.by, 'by') ?? DEFAULT_DECIDED_BY;
@@ -218,18 +239,24 @@ export function buildRuleRpcMethods(
     },
 
     /** §3.1's edit-then-accept. Decisions and provenance are refused by name, not as unknown keys. */
-    'rule.update': async (params) => {
+    update: async (params) => {
       const { id, ...rest } = requireObject(params);
       const ruleId = requireRuleId(id);
       if ('status' in rest || 'decided_at' in rest || 'decided_by' in rest) {
         throw new RpcParamError(
-          'invalid patch: status/decided_at/decided_by are set by rule.accept and rule.retire, not by an update',
+          'invalid patch: status/decided_at/decided_by are set by knowledge.accept and knowledge.retire, not by an update',
         );
       }
-      if ('provenance' in rest) {
-        throw new RpcParamError('invalid "provenance": a rule’s provenance is immutable');
+      if ('source' in rest || 'provenance' in rest) {
+        throw new RpcParamError('invalid "source": a knowledge item’s source is immutable');
       }
-      return asParamErrors(() => service.update(EDGE_PRINCIPAL, ruleId, validateRulePatch(rest)));
+      return asParamErrors(() =>
+        service.update(
+          EDGE_PRINCIPAL,
+          ruleId,
+          validated(() => validateKnowledgePatch(rest)),
+        ),
+      );
     },
   };
 }
