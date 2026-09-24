@@ -12,7 +12,9 @@ import {
   validateKnowledgeItem,
 } from '@agile-agents/shared';
 import { changedFilesOf } from '../delivery/diff-rules';
-import { runPatternRules } from '../permissions/rule-checks';
+import { decidePreToolUse } from '../hook/decide';
+import { DEFAULT_MAX_READ_BYTES, type HookDecisionContext } from '../hook/types';
+import { runPatternRules, touchedPaths } from '../permissions/rule-checks';
 import { buildBrief } from '../runner/brief';
 import { knowledgeInScope, knowledgeMatchesPaths, worktreeRelativePaths } from './service';
 
@@ -179,7 +181,14 @@ describe('paths', () => {
       check: { by: 'pattern', pattern: { kind: 'path_deny', args: { globs: ['**'] } } },
     });
     const run = (paths: string[]) =>
-      runPatternRules([rule], { worktreePath: '/wt', paths, writes: true }).rulesEvaluated;
+      runPatternRules([rule], {
+        worktreePath: '/wt',
+        paths,
+        writes: true,
+        protectedBranches: ['main'],
+        upstream: () => undefined,
+        head: () => undefined,
+      }).rulesEvaluated;
     expect(run(['/wt/gen/a.ts'])).toEqual([rule.id]);
     expect(run(['/wt/src/a.ts'])).toEqual([]);
   });
@@ -195,5 +204,52 @@ describe('paths', () => {
     expect(brief).toContain('- Only when touching `src/prices.ts`:');
     expect(brief).toContain('  - every change to prices.ts has a test');
     expect(brief).not.toContain('blog decision');
+  });
+});
+
+describe('paths through the hook (pathsForToolCall → verdict)', () => {
+  const rule = item('no echo or ls under gen', {
+    enforcement: 'action',
+    paths: ['gen/**'],
+    check: { by: 'pattern', pattern: { kind: 'command_deny', args: { patterns: ['echo', 'ls'] } } },
+  });
+  const ctx: HookDecisionContext = {
+    session: '01J9AAAAAAAAAAAAAAAAAAAAAA',
+    stream: '01J9BBBBBBBBBBBBBBBBBBBBBB',
+    role: 'worker',
+    worktreePath: '/wt',
+    inbox: [],
+    limits: { maxReadBytes: DEFAULT_MAX_READ_BYTES },
+    fileSize: () => undefined,
+    patternRules: [rule],
+  };
+  const bash = (command: string) =>
+    decidePreToolUse(ctx, { tool_name: 'Bash', tool_input: { command } });
+
+  test('a Bash write into gen/ is denied by the gen/** rule', () => {
+    const result = bash('echo x > gen/a');
+    expect(result.decision).toBe('deny');
+    expect(result.ruleViolated).toBe(rule.id);
+  });
+
+  test('a Bash call off the rule paths is not denied by it', () => {
+    const result = bash('ls src');
+    expect(result.rulesEvaluated ?? []).not.toContain(rule.id);
+    expect(result.decision).not.toBe('deny');
+  });
+
+  test('a command whose paths are unknown ($VAR) never allows, and the rule pass evaluates it', () => {
+    // The hook's policy tier asks first; the rule pass still fails closed on its own.
+    expect(bash('echo x > $OUT').decision).not.toBe('allow');
+    expect(touchedPaths({ worktreePath: '/wt', command: 'echo x > $OUT' })).toBeUndefined();
+    const outcome = runPatternRules([rule], {
+      worktreePath: '/wt',
+      command: 'echo x > $OUT',
+      paths: [],
+      protectedBranches: ['main'],
+      upstream: () => undefined,
+      head: () => undefined,
+    });
+    expect(outcome.ruleViolated).toBe(rule.id);
   });
 });
