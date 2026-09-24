@@ -46,13 +46,26 @@ export function wakesRole(role: NodeRole, type: RoutedEventType): boolean {
 }
 
 /**
+ * The `ended_reason` prefix of a session the daemon stopped on purpose
+ * (T213: a reshape), as opposed to a human's detach, which records none.
+ */
+export const DAEMON_STOP_PREFIX = 'stopped: ';
+
+/**
  * Stopped by the human: archived, closed or landed, or its agent left
  * `idle` with no live worker (`agile detach`, or created with "Start later").
+ * An `idle` the daemon set when it stopped the last worker for its own
+ * reason (a reshape) is not the human's stop, so it does not count.
  */
 export function stoppedByHuman(node: Stream): boolean {
   if (node.archived === true) return true;
   if (node.human.status === 'closed' || node.human.status === 'landed') return true;
-  return node.agent.status === 'idle';
+  if (node.agent.status !== 'idle') return false;
+  const lastWorker = node.sessions.filter((s) => s.role === 'worker').at(-1);
+  return !(
+    lastWorker?.status === 'stopped' &&
+    lastWorker.ended_reason?.startsWith(DAEMON_STOP_PREFIX) === true
+  );
 }
 
 /** Why a node is or is not woken. `budget` means it should go to the inbox. */
