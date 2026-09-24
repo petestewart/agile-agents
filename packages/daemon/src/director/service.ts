@@ -26,6 +26,8 @@ import type { AcpProviderConfig, spawnSession } from '@agile-agents/acp-client';
 import {
   DIRECTOR_NODE,
   type DirectorRecord,
+  type InboxItem,
+  type KnowledgeItem,
   type RoutedEvent,
   type SessionRef,
   type SessionStatus,
@@ -35,13 +37,21 @@ import {
 } from '@agile-agents/shared';
 import { resolveSessionSettings } from '../attach/resolve';
 import { readHomeConfigFile } from '../config';
+import type { AutonomyService } from '../coordination/autonomy';
 import type { DeliveryTarget, SessionDelivery } from '../events/delivery';
 import { routeAndEmit } from '../events/router';
 import type { RoutedEventService } from '../events/service';
+import { WakeBudget } from '../events/wake';
 import type { CliInvocation } from '../runner/cli-bin';
 import { type AgentSessionHandle, startAgentSession } from '../runner/session';
 import type { StateStore } from '../store';
 import type { StreamService } from '../streams/service';
+import {
+  DEFAULT_DIRECTOR_WAKE_BUDGET_PER_HOUR,
+  directorDigest,
+  findStuck,
+  stuckAfterMs,
+} from './sight';
 
 /** Thread lines the brief carries, newest last. */
 const BRIEF_THREAD_LINES = 40;
@@ -58,6 +68,10 @@ export interface DirectorServiceOptions {
   /** Test seam: the provider the resolved vendor maps to. */
   provider?: (vendor: string, fallback: AcpProviderConfig) => AcpProviderConfig;
   now?: () => Date;
+  /** T302: the digest's inbox and norms, and the stuck-node suggestion cards. */
+  inbox?: { list(): InboxItem[] };
+  knowledge?: { list(options: { status: 'accepted' }): KnowledgeItem[] };
+  autonomy?: AutonomyService;
 }
 
 export interface DirectorView {
@@ -66,7 +80,7 @@ export interface DirectorView {
   live: boolean;
 }
 
-export function directorBrief(thread: readonly ThreadEntry[]): string {
+export function directorBrief(thread: readonly ThreadEntry[], digest?: string): string {
   const recent = thread.slice(-BRIEF_THREAD_LINES);
   return [
     '# You are the Director',
@@ -81,6 +95,12 @@ export function directorBrief(thread: readonly ThreadEntry[]): string {
     'level: at Advise it becomes a draft the operator creates with one click; at Organise it is',
     'applied (restart only at Run). Say on your thread what you drafted or did.',
     '',
+    'Across projects: propose `add_waits_on` where two nodes overlap, and say so when work in',
+    'one project is about to break a norm set in another. For a stuck node, suggest what to do',
+    '(`restart_node` is a card until Run). Answer "what needs me today?" from the snapshot',
+    'below, not from memory: the inbox first, then stuck nodes, overlaps and open waits.',
+    '',
+    ...(digest !== undefined ? [digest, ''] : []),
     '## Your thread (most recent last)',
     '',
     ...(recent.length === 0
@@ -96,8 +116,94 @@ export class DirectorService {
   private starting: Promise<void> | undefined;
   private delivery: SessionDelivery | undefined;
   private stopped = false;
+  private sightTimer: ReturnType<typeof setInterval> | undefined;
+  /** Nodes already flagged stuck (one card and one wake per episode). */
+  private readonly flagged = new Set<string>();
+  private readonly wakeBudget: WakeBudget;
 
-  constructor(private readonly options: DirectorServiceOptions) {}
+  constructor(private readonly options: DirectorServiceOptions) {
+    this.wakeBudget = new WakeBudget(() => this.now().getTime());
+  }
+
+  /** T302: the snapshot every project is read from, taken now. */
+  digest(): string {
+    const { store, streams, home } = this.options;
+    return directorDigest({
+      streams: streams.list(),
+      projects: store.listProjects(),
+      inbox: this.options.inbox?.list() ?? [],
+      knowledge: this.options.knowledge?.list({ status: 'accepted' }) ?? [],
+      lastThreadTs: (node) => store.readThread(node).at(-1)?.ts,
+      now: this.now(),
+      stuckAfterMs: stuckAfterMs(readHomeConfigFile(home)),
+    });
+  }
+
+  /**
+   * T302: each newly stuck node gets one Director suggestion (a `restart_node`
+   * through the autonomy gate: a card below Run) and, within a bounded
+   * budget, one `director_request` so the Director can say what to do.
+   */
+  async checkStuck(): Promise<string[]> {
+    const { store, streams, home, autonomy } = this.options;
+    if (autonomy === undefined || this.stopped) return [];
+    const config = readHomeConfigFile(home);
+    const stuck = findStuck({
+      streams: streams.list(),
+      lastThreadTs: (node) => store.readThread(node).at(-1)?.ts,
+      now: this.now(),
+      stuckAfterMs: stuckAfterMs(config),
+    });
+    const ids = new Set(stuck.map((s) => s.node));
+    for (const id of this.flagged) if (!ids.has(id)) this.flagged.delete(id);
+    const open = autonomy.listOpen();
+    const flaggedNow: string[] = [];
+    for (const s of stuck) {
+      if (this.flagged.has(s.node)) continue;
+      this.flagged.add(s.node);
+      const held = open.some((p) => p.change.action === 'restart_node' && p.change.node === s.node);
+      try {
+        if (!held) {
+          await autonomy.act(DIRECTOR_NODE, 'director', 'director', {
+            action: 'restart_node',
+            node: s.node,
+          });
+        }
+      } catch (err) {
+        await this.append(
+          'daemon',
+          'event',
+          `stuck ${s.title}: ${err instanceof Error ? err.message : String(err)}`.slice(0, 800),
+        ).catch(() => undefined);
+        continue;
+      }
+      flaggedNow.push(s.node);
+      const limit = config.director?.wake_budget_per_hour ?? DEFAULT_DIRECTOR_WAKE_BUDGET_PER_HOUR;
+      if (!this.wakeBudget.take(DIRECTOR_NODE, limit)) continue;
+      await this.ensureRecord();
+      await routeAndEmit(
+        this.options.events,
+        {
+          type: 'director_request',
+          payload: {
+            body: `${s.title} [${s.node}] has been working with no activity for ${s.idleMinutes} min. Suggest what to do.`,
+          },
+          by: 'daemon',
+        },
+        streams.list(),
+      );
+    }
+    return flaggedNow;
+  }
+
+  /** T302: the periodic stuck check. */
+  startSight(intervalMs = 60_000): void {
+    if (this.sightTimer !== undefined) return;
+    this.sightTimer = setInterval(() => {
+      void this.checkStuck().catch((err) => console.error('director stuck check failed:', err));
+    }, intervalMs);
+    this.sightTimer.unref?.();
+  }
 
   private now(): Date {
     return this.options.now?.() ?? new Date();
@@ -211,7 +317,7 @@ export class DirectorService {
     const sessionId = ulid();
     const sessionDir = join(home, 'sessions', sessionId);
     mkdirSync(sessionDir, { recursive: true });
-    const brief = directorBrief(store.readDirectorThread());
+    const brief = directorBrief(store.readDirectorThread(), this.digest());
     try {
       writeFileSync(join(sessionDir, 'brief.md'), brief);
     } catch {
@@ -297,6 +403,7 @@ export class DirectorService {
 
   async stop(): Promise<void> {
     this.stopped = true;
+    if (this.sightTimer !== undefined) clearInterval(this.sightTimer);
     await this.starting;
     const handle = this.handle;
     if (handle === undefined) return;

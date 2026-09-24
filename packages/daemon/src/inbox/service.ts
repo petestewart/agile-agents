@@ -8,6 +8,7 @@
  */
 
 import {
+  DIRECTOR_NODE,
   type HilRequest,
   type InboxItem,
   type KnowledgeItem,
@@ -119,7 +120,17 @@ export class InboxService {
       });
     }
     for (const proposal of this.deps.proposals?.listOpen() ?? []) {
-      const stream = byId.get(proposal.node);
+      // T302: a Director proposal sits on the node its change is about.
+      const c = proposal.change;
+      const anchor =
+        proposal.node !== DIRECTOR_NODE
+          ? proposal.node
+          : c.action === 'start_node' || c.action === 'restart_node'
+            ? c.node
+            : c.action === 'add_waits_on' || c.action === 'set_owner'
+              ? c.child
+              : undefined;
+      const stream = anchor === undefined ? undefined : byId.get(anchor);
       if (stream === undefined || stream.archived === true) continue;
       const text = `${proposal.principal} proposes: ${proposal.summary}`;
       items.push({

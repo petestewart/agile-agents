@@ -219,6 +219,8 @@ export function summarize(
       return `The plan changed: ${String(p.summary)}. You own ${paths || 'no paths yet'}.`;
     }
     case 'director_request':
+      // T302: a daemon notice (a stuck node) is not the operator speaking.
+      if (event.by === 'daemon') return String(p.body);
       return `The operator writes to you: ${String(p.body)}. Reply on your thread.`;
     case 'coordinator_note':
       // T286: a daemon notice (a contract decision) is not the coordinator speaking.

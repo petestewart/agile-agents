@@ -226,8 +226,13 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
           home: config.home,
           socketPath: config.socketPath,
           cliBin: { command: cliBin.command, args: cliBin.args },
+          // T302: the digest's inbox (declared below) and norms, and stuck-node cards.
+          inbox: { list: () => inboxService?.list() ?? [] },
+          ...(rulesService ? { knowledge: rulesService } : {}),
+          ...(autonomyService ? { autonomy: autonomyService } : {}),
         })
       : undefined;
+  directorService?.startSight();
   if (directorService && attachService) directorService.setDelivery(attachService.delivery);
   // T301: the Director's start_node / restart_node (restart: stop the node's agent, start it again).
   if (autonomyService && attachService) {

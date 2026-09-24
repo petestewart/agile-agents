@@ -10,14 +10,19 @@ import { join } from 'node:path';
 import { ACP_PROVIDERS, type AcpProviderConfig } from '@agile-agents/acp-client';
 import { DIRECTOR_NODE } from '@agile-agents/shared';
 import { AttachService } from '../attach/service';
+import { AutonomyService } from '../coordination/autonomy';
 import { routeEvent } from '../events/router';
 import { RoutedEventService } from '../events/service';
+import { GateService } from '../gates/service';
+import { InboxService } from '../inbox/service';
 import { runInit } from '../init';
+import { ProjectService } from '../projects/service';
+import { QuestionService } from '../questions/service';
 import type { FakeAgentScript } from '../runner/fake-agent';
 import { StateStore } from '../store';
 import { StreamService } from '../streams/service';
 import { buildDirectorRpcMethods } from './rpc';
-import { DirectorService } from './service';
+import { DirectorService, type DirectorServiceOptions } from './service';
 
 const FAKE_AGENT_PATH = join(import.meta.dir, '..', 'runner', 'fake-agent.ts');
 
@@ -48,9 +53,16 @@ async function waitFor(predicate: () => boolean, timeoutMs = 20_000): Promise<vo
   }
 }
 
-function build(script: FakeAgentScript): void {
+function build(script: FakeAgentScript, extra: Partial<DirectorServiceOptions> = {}): void {
   const provider = fakeProvider(script);
-  director = new DirectorService({ store, streams, events, home, provider: () => provider });
+  director = new DirectorService({
+    store,
+    streams,
+    events,
+    home,
+    provider: () => provider,
+    ...extra,
+  });
   attach = new AttachService({
     store,
     streams,
@@ -128,5 +140,62 @@ describe('T300: the Director', () => {
     await expect(Promise.resolve(rpc['director.say']?.({ body: '  ' }))).rejects.toThrow(
       'non-empty',
     );
+  });
+
+  test('T302: a stuck node yields a suggestion card and wakes the Director', async () => {
+    let clock = new Date();
+    const log = join(scratch, 'prompts.jsonl');
+    const projects = new ProjectService(store, streams);
+    const autonomy = new AutonomyService({ store, streams, projects, now: () => clock });
+    const questions = new QuestionService(store, streams, { deliver: async () => {} });
+    const inbox = new InboxService({
+      streams,
+      questions,
+      gates: new GateService(store),
+      proposals: autonomy,
+    });
+    build(
+      {
+        logFile: log,
+        steps: [{ type: 'end_turn' }],
+        turns: [
+          [{ type: 'end_turn' }],
+          [{ type: 'agent_text', text: 'Checkout looks stuck; restart it.' }, { type: 'end_turn' }],
+        ],
+      },
+      { autonomy, inbox, now: () => clock },
+    );
+    const shop = await projects.create({ name: 'Shop' });
+    const node = await streams.create('human', { title: 'Checkout', goal: 'g', project: shop.id });
+    await streams.update('daemon', node.id, { agent: { status: 'working' } });
+
+    // Not idle long enough yet.
+    expect(await director.checkStuck()).toEqual([]);
+    clock = new Date(clock.getTime() + 2 * 3_600_000);
+    expect(await director.checkStuck()).toEqual([node.id]);
+    // Once per episode.
+    expect(await director.checkStuck()).toEqual([]);
+
+    // The card: a Director restart_node proposal, in the inbox on the node.
+    const [card] = autonomy.listOpen();
+    expect(card).toMatchObject({
+      principal: 'director',
+      change: { action: 'restart_node', node: node.id },
+    });
+    expect(inbox.list().find((i) => i.kind === 'proposal')).toMatchObject({
+      id: card?.id,
+      stream: node.id,
+    });
+
+    // The Director is woken with the stuck node, and its brief carries the digest.
+    await waitFor(() =>
+      store.readDirectorThread().some((e) => e.by === 'director' && e.kind === 'line'),
+    );
+    await waitFor(() => readFileSync(log, 'utf8').includes('has been working with no activity'));
+    const session = store.getDirector()?.session;
+    const brief = readFileSync(join(home, 'sessions', session?.id ?? '', 'brief.md'), 'utf8');
+    expect(brief).toContain('### Stuck (working, idle over 60 min)');
+    expect(brief).toContain(`- Checkout (Shop) [${node.id}]: working, no activity for 1`);
+    expect(brief).toContain('### Inbox (1 waiting on the operator)');
   });
 });
