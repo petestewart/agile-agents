@@ -301,6 +301,109 @@ const TEST_BUDGET_MS = BODY_BUDGET_MS * 2 + 5_000;
  * client reconnecting on a 2s timer against a dead port for the rest of the
  * file. The browser itself outlives the test (`openPage`).
  */
+/**
+ * Waits for a worker session the page shows as `running`. On a timeout it
+ * throws with what explains the miss: the stream's sessions as the API
+ * serves them, the session strip as rendered, the thread's daemon events,
+ * each session's stderr.log, and the page's recent API and socket traffic.
+ */
+async function waitForRunningWorker(
+  page: Page,
+  cockpit: { base: string; home: string; attachErrors?: string[] },
+  streamId: string,
+  traffic: string[],
+): Promise<void> {
+  try {
+    await page
+      .locator('[data-testid="session"][data-role="worker"][data-status="running"]')
+      .waitFor();
+  } catch (err) {
+    type PagePayload = {
+      stream: {
+        sessions: Array<{ id: string }>;
+        worktree?: string;
+        branch?: string;
+        agent: unknown;
+      };
+      thread: Array<{ by: string; body: string }>;
+    };
+    const api = await fetch(`${cockpit.base}/api/streams/${streamId}`)
+      .then((res) => res.json() as Promise<PagePayload>)
+      .catch(() => undefined);
+    const strip = await page
+      .locator('[data-testid="sessions"]')
+      .evaluateAll((els) => els.map((el) => el.outerHTML))
+      .catch((e: unknown) => [`(unreadable: ${String(e)})`]);
+    const alerts = await page
+      .locator('[role="alert"]')
+      .allTextContents()
+      .catch(() => []);
+    const stderr = (api?.stream.sessions ?? []).map((s) => {
+      try {
+        const log = readFileSync(join(cockpit.home, 'sessions', s.id, 'stderr.log'), 'utf8');
+        return `${s.id}:\n${log.slice(-2000)}`;
+      } catch {
+        return `${s.id}: (no stderr.log)`;
+      }
+    });
+    throw new Error(
+      [
+        String(err),
+        `api sessions: ${JSON.stringify(api?.stream.sessions)}`,
+        `stream: ${JSON.stringify({ worktree: api?.stream.worktree, branch: api?.stream.branch, agent: api?.stream.agent })}`,
+        `attach errors: ${(cockpit.attachErrors ?? []).join('\n---\n') || 'none'}`,
+        `thread (daemon): ${JSON.stringify(api?.thread.filter((e) => e.by === 'daemon').map((e) => e.body))}`,
+        `session strip: ${strip.join('\n')}`,
+        `alerts: ${JSON.stringify(alerts)}`,
+        `stderr:\n${stderr.join('\n')}`,
+        `traffic (last 40):\n${traffic.slice(-40).join('\n')}`,
+      ].join('\n'),
+    );
+  }
+}
+
+/** Records the page's API and socket traffic and console errors, for {@link waitForRunningWorker}. */
+function recordTraffic(page: Page): string[] {
+  const log: string[] = [];
+  const t0 = Date.now();
+  const at = (): string => `+${Date.now() - t0}ms`;
+  const path = (url: string): string => new URL(url).pathname;
+  page.on('request', (r) => {
+    if (r.url().includes('/api/')) log.push(`${at()} > ${r.method()} ${path(r.url())}`);
+  });
+  page.on('response', (r) => {
+    if (!r.url().includes('/api/')) return;
+    const line = `${at()} < ${r.status()} ${path(r.url())}`;
+    if (r.status() < 400) {
+      log.push(line);
+      return;
+    }
+    // The refusal's reason is the whole point of a failing call.
+    const index = log.push(line) - 1;
+    void r
+      .text()
+      .then((body) => {
+        log[index] = `${line} ${body.slice(0, 500)}`;
+      })
+      .catch(() => {});
+  });
+  page.on('requestfailed', (r) => log.push(`${at()} x ${r.url()} ${r.failure()?.errorText}`));
+  page.on('console', (m) => {
+    if (m.type() === 'error' || m.type() === 'warning') {
+      log.push(`${at()} console.${m.type()}: ${m.text()}`);
+    }
+  });
+  page.on('websocket', (ws) => {
+    log.push(`${at()} ws open ${path(ws.url())}`);
+    ws.on('close', () => log.push(`${at()} ws close`));
+    ws.on('framereceived', (f) => {
+      const text = typeof f.payload === 'string' ? f.payload : '';
+      log.push(`${at()} ws < ${text.slice(0, 60)}`);
+    });
+  });
+  return log;
+}
+
 async function teardown(pages: Array<Page | undefined>): Promise<void> {
   await Promise.allSettled(
     pages.filter((p): p is Page => p !== undefined).map((p) => p.context().close()),
@@ -1061,6 +1164,8 @@ interface StreamCockpit {
   rules: KnowledgeService;
   verbs: VerbService;
   attach: AttachService;
+  /** Every attach that threw, with its stack: what a 400 from the attach route was. */
+  attachErrors: string[];
   base: string;
   stop(): Promise<void>;
 }
@@ -1122,6 +1227,16 @@ async function startStreamCockpit(scripts: FakeAgentScript[]): Promise<StreamCoc
     questions: { listOpen: () => questions.listOpen() },
     gates: { list: () => gates.list() },
   });
+  const attachErrors: string[] = [];
+  const attachOnce = attach.attach.bind(attach);
+  attach.attach = async (...args) => {
+    try {
+      return await attachOnce(...args);
+    } catch (err) {
+      attachErrors.push(err instanceof Error ? (err.stack ?? err.message) : String(err));
+      throw err;
+    }
+  };
   const verbs = new VerbService({ store, streams, questions, docs, rules });
   const landing = new DeliveryService({ store, streams, gates });
   const inbox = new InboxService({ streams, questions, gates, rules });
@@ -1155,6 +1270,7 @@ async function startStreamCockpit(scripts: FakeAgentScript[]): Promise<StreamCoc
     rules,
     verbs,
     attach,
+    attachErrors,
     base: `http://127.0.0.1:${http.port}`,
     async stop() {
       await attach.stopAll();
@@ -1222,6 +1338,7 @@ describe('stream page (Playwright e2e, T161)', () => {
         );
 
         page = await openPage();
+        const traffic = recordTraffic(page);
         await page.goto(`${cockpit.base}/`);
         await page.locator(`[data-testid="stream-tree"] [data-stream="${stream.id}"]`).click();
         const root = `[data-testid="stream-page"][data-stream="${stream.id}"]`;
@@ -1244,9 +1361,7 @@ describe('stream page (Playwright e2e, T161)', () => {
         );
         expect(await page.locator('[data-testid="picker-effort"]').inputValue()).toBe('low');
         await page.locator('[data-testid="picker-start"]').click();
-        await page
-          .locator('[data-testid="session"][data-role="worker"][data-status="running"]')
-          .waitFor();
+        await waitForRunningWorker(page, cockpit, stream.id, traffic);
         await page
           .locator('[data-testid="thread-entry"][data-by="agent"]', {
             hasText: 'reading the parser',
@@ -2209,6 +2324,7 @@ describe('New stream starts the agent (Playwright e2e, T204)', () => {
           project: shop.id,
         });
         page = await openPage();
+        const traffic = recordTraffic(page);
         await page.goto(`${cockpit.base}/`);
         await page.locator(`[data-testid="stream-tree"] [data-stream="${parent.id}"]`).click();
         await page.keyboard.press('n');
@@ -2218,9 +2334,8 @@ describe('New stream starts the agent (Playwright e2e, T204)', () => {
         await page.locator('[data-testid="new-stream-create"]').click();
         await page.locator('[data-testid="new-stream"]').waitFor({ state: 'detached' });
 
-        await page
-          .locator('[data-testid="session"][data-role="worker"][data-status="running"]')
-          .waitFor();
+        const created = cockpit.streams.list().find((x) => x.title === 'import CSV');
+        await waitForRunningWorker(page, cockpit, created?.id ?? '', traffic);
         // The control reads Restart once a worker has run.
         expect(await page.locator('[data-testid="attach"]').textContent()).toBe('Restart');
       } finally {
