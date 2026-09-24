@@ -54,6 +54,8 @@ export interface DaemonStatus {
   uptime: number;
   /** Where the classifier key comes from and whether it is loaded; never the key. */
   classifier?: ClassifierKeyStatus;
+  /** T221: whether `gh auth token` yields a token; never the token. */
+  github?: { auth: 'available' | 'unavailable' };
 }
 
 export interface RpcServerOptions {
@@ -65,6 +67,8 @@ export interface RpcServerOptions {
   extraMethods?: Record<string, RpcMethodHandler>;
   /** Reported under `classifier` by `daemon.status`. */
   classifierStatus?: () => ClassifierKeyStatus;
+  /** Reported under `github` by `daemon.status`. */
+  githubAuth?: () => Promise<boolean>;
 }
 
 function namespaceOf(method: string): string | undefined {
@@ -75,12 +79,15 @@ function namespaceOf(method: string): string | undefined {
 export function buildMethods(options: RpcServerOptions): Record<string, RpcMethodHandler> {
   return {
     'daemon.ping': () => 'pong',
-    'daemon.status': (): DaemonStatus => ({
+    'daemon.status': async (): Promise<DaemonStatus> => ({
       version: options.version,
       stateRoot: options.stateRoot,
       pid: process.pid,
       uptime: (Date.now() - options.startedAt) / 1000,
       ...(options.classifierStatus ? { classifier: options.classifierStatus() } : {}),
+      ...(options.githubAuth
+        ? { github: { auth: (await options.githubAuth()) ? 'available' : 'unavailable' } }
+        : {}),
     }),
     ...options.extraMethods,
   };

@@ -140,6 +140,21 @@ export function validateClassifierConfig(input: unknown): ClassifierConfig {
   return result.data;
 }
 
+/** T221 (projects-design §18): the GitHub REST endpoint. No token here (P18): `gh auth token` per call. */
+export const DEFAULT_GITHUB_API_URL = 'https://api.github.com';
+export const GitHubConfigSchema = z
+  .object({ api_url: z.string().url().default(DEFAULT_GITHUB_API_URL) })
+  .strict();
+export type GitHubConfig = z.infer<typeof GitHubConfigSchema>;
+
+export function validateGitHubConfig(input: unknown): GitHubConfig {
+  const result = GitHubConfigSchema.safeParse(input ?? {});
+  if (!result.success) {
+    throw new Error(formatZodError('github config', result.error));
+  }
+  return result.data;
+}
+
 export const HomeConfigSchema = z
   .object({
     /** HTTP port for the localhost cockpit/API. `0` lets the OS pick. */
@@ -162,6 +177,8 @@ export const HomeConfigSchema = z
      * `validateClassifierConfig`.
      */
     classifier: ClassifierConfigSchema.optional(),
+    /** T221: `github.api_url`, defaulted in `discoverConfig`. */
+    github: GitHubConfigSchema.optional(),
   })
   .strict();
 
