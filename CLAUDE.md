@@ -22,9 +22,9 @@ Drive the plan with `/project` (manager), which launches `/pipeline` workers (on
 ```
 packages/shared      zod schemas + types (stream, rule, session defaults, ids, …), defined once
 packages/acp-client  ACP session client and vendor providers (lifted from vendor/terma)
-packages/daemon      agiled: store, streams, attach/runner, worktrees, hook + permissions, rules,
+packages/daemon      agiled: store, streams, attach/runner, worktrees, hook + permissions, knowledge,
                      classifier, landing, inbox/questions/gates, docs, MCP tools, HTTP + cockpit (feed/)
-packages/cli         agile: init · daemon · repo · stream · rules · attach · review · detach · land ·
+packages/cli         agile: init · daemon · repo · stream · knowledge · attach · review · detach · land ·
                      status · tail · inbox · answer · question · gate · hook · mcp  (`agile` with no args prints usage)
 packages/ui          the cockpit (React + Vite, app/), served by the daemon
 fixtures/demo-project  seeded repo for the e2e runs
@@ -42,7 +42,7 @@ bun run build              # all workspaces (the UI build is what the daemon ser
 bun run typecheck
 bun run lint               # biome check .
 bun test                   # offline unit tests: no vendor, no network. Must stay green
-bun test packages/daemon/src/rules    # one area
+bun test packages/daemon/src/knowledge    # one area
 bun run test:integration   # offline end-to-end: real daemon, real browser, no vendor. CI runs it
 bun run test:e2e           # the Playwright cockpit tests alone (rebuild first)
 bun run test:live          # AGILE_LIVE=1, manual only, never in CI
