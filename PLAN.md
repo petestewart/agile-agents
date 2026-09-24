@@ -788,12 +788,12 @@ Design: `design/projects-design.md`, which wins over `design/cockpit-design.md` 
 
 ### Ticket: T206 ∥ Add a repo from the cockpit
 - **Priority:** P2
-- **Status:** In Review
-- **Owner:** opus:worker-T206
+- **Status:** Done (merge 77af69d)
+- **Owner:** —
 - **Scope:** Settings → Repos: register a repo by path (validated as a git toplevel), with a name and protected branches, and show the resolved `main_branch`. It uses the same RPC as `agile repo add`. This is the unfiled doc-comment item "add repo in UI".
 - **Acceptance Criteria:** e2e: add `fixtures/demo-project` from Settings; it shows in the New stream repo picker. A bad path shows the daemon's one-line error.
 - **Validation Steps:** `bun run test:e2e`.
-- **Notes:** Independent after T200.
+- **Notes:** Independent after T200. Review (sonnet) PASS. `state.repo_add` (CLI too) now refuses non-toplevel paths and stores the realpath. `main_branch` is display-only until T202 stores it. Daemon +70.
 
 ### Ticket: T207 ∥ Nothing in the user's repo
 - **Priority:** P1
