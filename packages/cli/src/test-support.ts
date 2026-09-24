@@ -214,6 +214,8 @@ export async function startTestDaemon(prefix = 'agile-cli-test-'): Promise<TestD
           attach: (id) => attachService.attach(id),
           stop: (id) => attachService.stop(id),
         }),
+        // T248: as `daemon.ts`, `agile stream say` is the composer's path (a `human_line` event).
+        reply: { say: (id, body) => attachService.say(id, body), questions: questionService },
       }),
       ...buildProjectRpcMethods(new ProjectService(store, streamService)),
       ...buildInboxRpcMethods(
