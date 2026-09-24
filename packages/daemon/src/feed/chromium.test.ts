@@ -224,18 +224,65 @@ describe('acquireBrowserPage', () => {
     expect(cached.closes).toBe(1);
   });
 
-  test('a launch that rejects still rejects — this only covers never-returns', async () => {
+  test('a launch that rejects on every attempt rejects with its own error', async () => {
+    let launches = 0;
+    const warnings: string[] = [];
     await expect(
       acquireBrowserPage({
         label: 'test',
         launch: async () => {
+          launches += 1;
           throw new Error('no chromium here');
         },
         openPage: async () => 'page',
         budgetMs: 10,
-        warn: silent,
+        attempts: 3,
+        warn: (m) => warnings.push(m),
       }),
     ).rejects.toThrow('no chromium here');
+    expect(launches).toBe(3);
+    expect(warnings).toHaveLength(2);
+  });
+
+  test('a launch that rejects once (a transient spawn failure) is retried with a fresh launch', async () => {
+    const good = new FakeBrowser('good');
+    let launches = 0;
+    const warnings: string[] = [];
+    const acquired = await acquireBrowserPage({
+      label: 'test',
+      launch: async () => {
+        launches += 1;
+        if (launches === 1) throw new Error('Failed to connect');
+        return good;
+      },
+      openPage: async () => 'page',
+      budgetMs: 1_000,
+      warn: (m) => warnings.push(m),
+    });
+    expect(acquired.browser).toBe(good);
+    expect(launches).toBe(2);
+    expect(warnings).toEqual([
+      'test: launch() rejected (attempt 1/3: Failed to connect) — launching another',
+    ]);
+  });
+
+  test('a page that rejects on a launched browser still rejects, without a retry', async () => {
+    let launches = 0;
+    await expect(
+      acquireBrowserPage({
+        label: 'test',
+        launch: async () => {
+          launches += 1;
+          return new FakeBrowser('b');
+        },
+        openPage: async () => {
+          throw new Error('newPage broke');
+        },
+        budgetMs: 10,
+        warn: silent,
+      }),
+    ).rejects.toThrow('newPage broke');
+    expect(launches).toBe(1);
   });
 });
 
