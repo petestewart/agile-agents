@@ -32,7 +32,7 @@ import { MESSAGE_BODY_MAX_CHARS } from '@agile-agents/shared';
 import type { Answer, Classifier, Noul } from '../classifier';
 import { bandFor, classifierEnabled, noulFor, scrub } from '../classifier';
 import type { GateRequestContext } from '../gates/service';
-import type { RuleStatsOutcome } from '../knowledge/service';
+import { type RuleStatsOutcome, knowledgeMatchesPaths } from '../knowledge/service';
 import type { DiffRuleContext, DiffRuleVerdict, DiffRules } from './service';
 
 /** The slice of `KnowledgeService` this tier needs. */
@@ -110,6 +110,18 @@ export function splitDiffByFile(diff: string): string[] {
   return parts.filter((part) => part.trim().length > 0);
 }
 
+/** Every repo-relative path a unified diff touches (both sides of a rename). */
+export function changedFilesOf(diff: string): string[] {
+  const files = new Set<string>();
+  for (const line of diff.split('\n')) {
+    const match = /^diff --git a\/(.+) b\/(.+)$/.exec(line);
+    if (match === null) continue;
+    files.add(match[1] as string);
+    files.add(match[2] as string);
+  }
+  return [...files];
+}
+
 /**
  * The gate call for a routed diff: its digest is what an approval is good
  * for. `origin: 'diff_rules'` is what `wireLandGateResolution` keys on
@@ -132,12 +144,16 @@ export class ClassifierDiffRules implements DiffRules {
   constructor(private readonly options: ClassifierDiffRulesOptions) {}
 
   async check(ctx: DiffRuleContext): Promise<DiffRuleVerdict> {
-    const rules = this.options.rules
+    const candidates = this.options.rules
       .inScope(ctx.stream.id, 'ship')
       .filter((rule) => rule.check?.by === 'classifier');
-    if (rules.length === 0) return { decision: 'allow' };
+    if (candidates.length === 0) return { decision: 'allow' };
 
     const diff = ctx.diff();
+    // `paths` against the files the diff changes (T261).
+    const changed = changedFilesOf(diff);
+    const rules = candidates.filter((rule) => knowledgeMatchesPaths(rule, changed));
+    if (rules.length === 0) return { decision: 'allow' };
     const call = diffCall(ctx, diff);
 
     // The human may already have answered this exact diff.

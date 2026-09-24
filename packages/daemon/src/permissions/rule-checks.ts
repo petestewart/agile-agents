@@ -12,9 +12,19 @@ import {
   type RulePattern,
   patternOf,
 } from '@agile-agents/shared';
-import type { RuleStatsOutcome } from '../knowledge/service';
-import { isPathInside, parseCommandIntoAtoms, parseGitInvocation } from './command';
+import {
+  type RuleStatsOutcome,
+  knowledgeMatchesPaths,
+  worktreeRelativePaths,
+} from '../knowledge/service';
+import {
+  hasUnsafeShellConstruct,
+  isPathInside,
+  parseCommandIntoAtoms,
+  parseGitInvocation,
+} from './command';
 import { type PushDetectorContext, detectProtectedBranchWrite, detectPush } from './push-detector';
+import { commandPaths } from './visibility';
 
 export interface RuleCheckContext extends PushDetectorContext {
   /** The session's worktree: the `no_worktree_escape` boundary (§5.4). */
@@ -120,13 +130,46 @@ export interface PatternRuleOutcome {
   rulesEvaluated: string[];
 }
 
+/**
+ * T261: the repo-relative paths a call touches, for a knowledge item's
+ * `paths`. `undefined` means unknown (a command the tokenizer can't read,
+ * or an unresolved `$VAR`): path-limited items are then evaluated, fail
+ * closed (§8.1). A command's paths are `commandPaths` plus every bare
+ * non-flag argument, so `rm prices.ts` (no slash) still counts.
+ */
+export function touchedPaths(ctx: {
+  worktreePath: string;
+  paths?: readonly string[];
+  command?: string;
+}): string[] | undefined {
+  const paths = [...(ctx.paths ?? [])];
+  if (ctx.command !== undefined) {
+    if (hasUnsafeShellConstruct(ctx.command)) return undefined;
+    const atoms = parseCommandIntoAtoms(ctx.command);
+    if (atoms.length === 0) return undefined;
+    const { reads, writes } = commandPaths(ctx.command);
+    paths.push(...reads, ...writes);
+    for (const { tokens } of atoms) {
+      for (const token of tokens.slice(1)) {
+        if (token.includes('$')) return undefined;
+        const bare = token.replace(/^\d*>+/, '');
+        if (bare.length > 0 && !bare.startsWith('-')) paths.push(bare);
+      }
+    }
+  }
+  return worktreeRelativePaths(paths, ctx.worktreePath);
+}
+
 /** Runs the rules in order and stops at the first deny (§8.1: match or uncertain ⇒ deny, rule named). */
 export function runPatternRules(
   rules: readonly KnowledgeItem[] | undefined,
   ctx: RuleCheckContext,
 ): PatternRuleOutcome {
   const rulesEvaluated: string[] = [];
+  const touched = touchedPaths(ctx);
   for (const rule of patternRulesOf(rules)) {
+    // A path-limited rule only gates calls on its paths (T261); unknown paths gate.
+    if (touched !== undefined && !knowledgeMatchesPaths(rule, touched)) continue;
     rulesEvaluated.push(rule.id);
     const reason = checkPatternRule(rule, ctx);
     if (reason !== undefined) {

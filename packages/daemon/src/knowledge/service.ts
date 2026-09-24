@@ -7,9 +7,12 @@
  *
  * `knowledgeInScope` is the only scope filter, used by the brief, the hook
  * and the ship check, so an out-of-scope item can't reach any of them by a
- * caller forgetting to filter. (T261 stacks it with `paths`.)
+ * caller forgetting to filter. Scopes stack (§5): global, the node's repo,
+ * its project and its subtree, then `paths` narrows an item to the files
+ * being edited (action) or changed (ship).
  */
 
+import { isAbsolute, relative } from 'node:path';
 import {
   type KnowledgeEnforcement,
   type KnowledgeItem,
@@ -99,11 +102,13 @@ export function knowledgeInScope(
   stream: Stream,
   ancestors: readonly Stream[] = [],
   enforcement?: KnowledgeEnforcement,
+  paths?: readonly string[],
 ): KnowledgeItem[] {
   const streamIds = new Set<string>([stream.id, ...ancestors.map((a) => a.id)]);
   return items.filter((item) => {
     if (item.status !== 'accepted') return false;
     if (enforcement !== undefined && item.enforcement !== enforcement) return false;
+    if (paths !== undefined && !knowledgeMatchesPaths(item, paths)) return false;
     switch (item.scope.kind) {
       case 'global':
         return true;
@@ -115,6 +120,28 @@ export function knowledgeInScope(
         return streamIds.has(item.scope.node);
     }
   });
+}
+
+/**
+ * `paths` (T261): an item with no globs applies to every path; one with
+ * globs applies only when a touched path (repo-relative) matches one. A
+ * call or diff that names no path gets no path-limited item.
+ */
+export function knowledgeMatchesPaths(item: KnowledgeItem, paths: readonly string[]): boolean {
+  const globs = item.paths ?? [];
+  if (globs.length === 0) return true;
+  return paths.some((path) => globs.some((glob) => new Bun.Glob(glob).match(path)));
+}
+
+/** Tool-call paths as repo-relative paths; a path outside the worktree is dropped. */
+export function worktreeRelativePaths(paths: readonly string[], worktreePath: string): string[] {
+  const out: string[] = [];
+  for (const path of paths) {
+    const rel = isAbsolute(path) ? relative(worktreePath, path) : path.replace(/^\.\//, '');
+    if (rel === '' || rel.startsWith('..') || isAbsolute(rel)) continue;
+    out.push(rel);
+  }
+  return out;
 }
 
 export class KnowledgeService {
@@ -188,13 +215,18 @@ export class KnowledgeService {
   }
 
   /** §5.3's filter for one stream and its ancestors: what the brief and the hook call. */
-  inScope(streamId: string, enforcement?: KnowledgeEnforcement): KnowledgeItem[] {
+  inScope(
+    streamId: string,
+    enforcement?: KnowledgeEnforcement,
+    paths?: readonly string[],
+  ): KnowledgeItem[] {
     const stream = this.options.streams.get(streamId);
     return knowledgeInScope(
       this.options.store.listKnowledge(),
       stream,
       this.ancestorsOf(stream),
       enforcement,
+      paths,
     );
   }
 

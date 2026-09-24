@@ -68,9 +68,25 @@ function renderRule(rule: KnowledgeItem): string {
   return `- ${rule.text} (${marks.join(', ')})`;
 }
 
+/** Items for every path first, then path-limited items grouped under their globs (T261). */
 function renderRules(rules: readonly KnowledgeItem[]): string {
   if (rules.length === 0) return 'none yet';
-  return rules.map(renderRule).join('\n');
+  const everywhere: string[] = [];
+  const byGlobs = new Map<string, string[]>();
+  for (const rule of rules) {
+    const globs = rule.paths ?? [];
+    if (globs.length === 0) {
+      everywhere.push(renderRule(rule));
+      continue;
+    }
+    const key = globs.map((g) => `\`${g}\``).join(', ');
+    byGlobs.set(key, [...(byGlobs.get(key) ?? []), renderRule(rule)]);
+  }
+  const lines = [...everywhere];
+  for (const [globs, items] of byGlobs) {
+    lines.push(`- Only when touching ${globs}:`, ...items.map((item) => `  ${item}`));
+  }
+  return lines.join('\n');
 }
 
 function renderDoc(doc: BriefDoc, bodyCap: number): string {

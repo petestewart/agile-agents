@@ -35,10 +35,10 @@ import {
 } from '@agile-agents/shared';
 import type { Bus } from '../bus';
 import { type Classifier, ClassifierUnavailableError, classifierEnabled } from '../classifier';
-import type { RuleStatsOutcome } from '../knowledge/service';
+import { type RuleStatsOutcome, knowledgeMatchesPaths } from '../knowledge/service';
 import { isPathInside } from '../permissions/command';
 import { worktreeBranchLookups } from '../permissions/push-detector';
-import { patternRulesOf, protectedBranchesFor } from '../permissions/rule-checks';
+import { patternRulesOf, protectedBranchesFor, touchedPaths } from '../permissions/rule-checks';
 import { NotFoundError, type StateStore, buildEvent } from '../store';
 import {
   type ClassifierTierOutcome,
@@ -46,6 +46,7 @@ import {
   classifierRulesOf,
   decideClassifierTier,
   decidePreToolUse,
+  pathsForToolCall,
 } from './decide';
 import { fingerprintCall } from './fingerprint';
 import { type RouteBandGates, routeCall } from './route-band';
@@ -528,7 +529,15 @@ export class HookService {
     ctx: HookDecisionContext,
     payload: ClaudePreToolUsePayload,
   ): Promise<{ outcome: ClassifierTierOutcome; called: boolean } | undefined> {
-    const rules = classifierRulesOf(this.rulesInScope(ctx.stream));
+    const command = payload.tool_input?.command;
+    const touched = touchedPaths({
+      worktreePath: ctx.worktreePath,
+      paths: pathsForToolCall(payload),
+      ...(typeof command === 'string' && command.length > 0 ? { command } : {}),
+    });
+    const rules = classifierRulesOf(this.rulesInScope(ctx.stream)).filter(
+      (rule) => touched === undefined || knowledgeMatchesPaths(rule, touched),
+    );
     if (rules.length === 0) return undefined;
 
     const tier = this.options.classifier;
