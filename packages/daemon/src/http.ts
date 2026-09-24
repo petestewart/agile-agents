@@ -25,6 +25,7 @@ import {
   StreamAttachRequestSchema,
   StreamCreateInputSchema,
   StreamSayInputSchema,
+  StreamWaitRequestSchema,
   UlidSchema,
   formatZodError,
   validatePolicy,
@@ -674,6 +675,7 @@ async function handleRuleRoute(
  *   POST /api/streams/:id/close   the page's Close
  *   POST /api/streams/:id/mark-landed  merged outside `land`
  *   POST /api/streams/:id/add-repo     + Repo in place (T205): `{repo, switch?}`
+ *   POST /api/streams/:id/wait         Link (T228, P8): `{on, remove?}` a `waits_on` edge
  *
  * `land` is matched before this. Every write is same-origin only
  * and stamps `human`; no principal is ever read from the body (§2.2).
@@ -686,7 +688,7 @@ async function handleStreamRoute(
   sameOrigin: () => boolean,
 ): Promise<Response | undefined> {
   const match = url.pathname.match(
-    /^\/api\/streams\/([^/]+)(?:\/(diff|say|attach|resolve|stop|close|mark-landed|add-repo))?$/,
+    /^\/api\/streams\/([^/]+)(?:\/(diff|say|attach|resolve|stop|close|mark-landed|add-repo|wait))?$/,
   );
   if (!match) return undefined;
   const action = match[2];
@@ -733,6 +735,12 @@ async function handleStreamRoute(
         ? await feed.repoInPlace.switchRepo(id, repo)
         : await feed.repoInPlace.addRepo(id, repo);
       return jsonResponse(result, 201);
+    }
+    if (action === 'wait') {
+      const input = StreamWaitRequestSchema.safeParse(body);
+      if (!input.success) return errorResponse(400, formatZodError('wait', input.error));
+      const { on, remove } = input.data;
+      return jsonResponse(await feed.streams.wait('human', id, on, remove ? { remove } : {}));
     }
     if (action === 'say') {
       const input = StreamSayInputSchema.safeParse(body);

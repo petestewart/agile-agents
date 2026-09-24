@@ -326,6 +326,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
           ...(mainSync
             ? { onMainMoved: (repo: string, except?: string) => mainSync.mainMoved(repo, except) }
             : {}),
+          ...(landingService ? { afterTick: () => landingService.settle() } : {}),
         })
       : undefined;
   prPoller?.start();

@@ -53,6 +53,7 @@ import {
   runStreamNew,
   runStreamSay,
   runStreamShow,
+  runStreamWait,
 } from './commands/stream';
 import { runTail } from './commands/tail';
 
@@ -88,6 +89,7 @@ function usage(): string {
     '  node say <id> <text>       append one human line to the node thread',
     '  node add-repo <id> <repo>  + Repo in place: conversation → work, work → coordinating with parts',
     '  node switch-repo <id> <repo>  move a work node with nothing committed to another repo',
+    '  node wait <id> --on <id>… [--remove]  hold delivery until each --on node is merged',
     '  stream …                   alias of `node`',
     '  rules list [--status proposed|accepted|retired] [--scope global|repo:<n>|stream:<id>]',
     '  rules show <id>            one rule: tier, scope, pattern, provenance, stats, examples',
@@ -268,6 +270,7 @@ export async function runCli(argv: string[], cwd: string = process.cwd()): Promi
         if (sub === 'close') return await runStreamClose(socketPath, parseArgs(restArgv), json);
         if (sub === 'archive') return await runStreamArchive(socketPath, parseArgs(restArgv), json);
         if (sub === 'say') return await runStreamSay(socketPath, parseArgs(restArgv), json);
+        if (sub === 'wait') return await runStreamWait(socketPath, parseArgs(restArgv), json);
         if (sub === 'add-repo' || sub === 'switch-repo') {
           return await runStreamAddRepo(
             socketPath,
