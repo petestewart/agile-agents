@@ -48,6 +48,7 @@ describe('agent verbs', () => {
       'read_event',
       'deliver',
       'lookup_knowledge',
+      'read_card',
       'plan_write',
       'contract_write',
       'add_child',

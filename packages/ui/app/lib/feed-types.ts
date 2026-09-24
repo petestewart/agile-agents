@@ -87,6 +87,25 @@ export interface CockpitFrame {
   repos: CockpitRepoRow[];
   /** T227: live work nodes on one repo sharing changed files. Absent from an older daemon. */
   overlaps?: CockpitOverlap[];
+  /** T283: the child nodes' status cards. Absent from an older daemon. */
+  cards?: Array<CockpitStatusCard | CockpitCardError>;
+}
+
+/** T283: a corrupt card file, refused with its path:line. */
+export interface CockpitCardError {
+  node: string;
+  error: string;
+}
+
+/** T283: mirror of shared `StatusCard` (projects-design §14.5). */
+export interface CockpitStatusCard {
+  node: string;
+  doing: string;
+  state: 'working' | 'blocked' | 'done' | 'idle';
+  files: string[];
+  exports_changed: string[];
+  relies_on: string[];
+  updated_at: string;
 }
 
 /** T227: mirror of `sync/overlap.ts`'s `Overlap`. */

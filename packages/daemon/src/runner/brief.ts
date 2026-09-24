@@ -16,6 +16,7 @@ import type {
   KnowledgeItem,
   Plan,
   SessionRole,
+  StatusCard,
   Stream,
   ThreadEntry,
 } from '@agile-agents/shared';
@@ -55,6 +56,8 @@ export interface BuildBriefInput {
   coordinator?: {
     children: readonly Stream[];
     autonomy: Autonomy;
+    /** T283: each child's status card, or the refusal of a corrupt one. */
+    cards?: ReadonlyMap<string, StatusCard | { error: string }>;
     /** T281: the node's plan and its contracts, when written. */
     plan?: Plan;
     contracts?: readonly Contract[];
@@ -159,16 +162,21 @@ export function coordinatorSection(
   autonomy: Autonomy,
   plan?: Plan,
   contracts: readonly Contract[] = [],
+  cards?: ReadonlyMap<string, StatusCard | { error: string }>,
 ): string {
   const lines =
     children.length === 0
       ? ['none yet']
-      : children.map(
-          (c) =>
-            `- ${c.title} (\`${c.id}\`): agent ${c.agent.status}, human ${c.human.status}${
-              c.agent.progress ? ` — ${c.agent.progress}` : ''
-            }`,
-        );
+      : children.map((c) => {
+          const card = cards?.get(c.id);
+          const head = `- ${c.title} (\`${c.id}\`): agent ${c.agent.status}, human ${c.human.status}`;
+          if (card === undefined)
+            return `${head}${c.agent.progress ? ` — ${c.agent.progress}` : ''}`;
+          if ('error' in card) return `${head}; card unreadable: ${card.error}`;
+          return `${head}; card: ${card.state}, ${card.files.length} files${
+            card.relies_on.length > 0 ? `, relies on ${card.relies_on.join(', ')}` : ''
+          }${card.doing !== '' ? ` — ${card.doing}` : ''}`;
+        });
   const planLine =
     plan === undefined
       ? 'Plan: none yet. Split the work with `contract_write` (the seams) and `plan_write` (who owns which paths); the operator approves it.'
@@ -229,7 +237,7 @@ function assemble(
 
   if (input.coordinator !== undefined) {
     const c = input.coordinator;
-    parts.push(coordinatorSection(c.children, c.autonomy, c.plan, c.contracts));
+    parts.push(coordinatorSection(c.children, c.autonomy, c.plan, c.contracts, c.cards));
   }
 
   if (input.plan !== undefined) parts.push(planSection(input.plan));

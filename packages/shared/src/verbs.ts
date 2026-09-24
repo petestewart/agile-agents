@@ -112,6 +112,10 @@ export const LookupKnowledgeInputSchema = z
   .strict();
 export type LookupKnowledgeInput = z.infer<typeof LookupKnowledgeInputSchema>;
 
+/** T283 (§14.5): a sibling's, an ancestor's (or, for the Director, any) node's status card. */
+export const ReadCardInputSchema = z.object({ session: Session, node: UlidSchema }).strict();
+export type ReadCardInput = z.infer<typeof ReadCardInputSchema>;
+
 export const DeliverInputSchema = z.object({ session: Session }).strict();
 export type DeliverInput = z.infer<typeof DeliverInputSchema>;
 
@@ -162,6 +166,7 @@ export const AGENT_VERBS = [
   'read_event',
   'deliver',
   'lookup_knowledge',
+  'read_card',
   'plan_write',
   'contract_write',
   'add_child',
@@ -182,6 +187,7 @@ export const AGENT_VERB_SCHEMAS = {
   read_event: ReadEventInputSchema,
   deliver: DeliverInputSchema,
   lookup_knowledge: LookupKnowledgeInputSchema,
+  read_card: ReadCardInputSchema,
   plan_write: PlanWriteInputSchema,
   contract_write: ContractWriteInputSchema,
   add_child: AddChildInputSchema,
@@ -205,6 +211,8 @@ export const AGENT_VERB_DESCRIPTIONS: Record<AgentVerb, string> = {
     'Push your committed fix and update your open PR (babysitting). Only once a PR is open; commit first.',
   lookup_knowledge:
     'List the accepted standards, architecture and decisions that apply to a repo-relative path ({path}). Use it before touching an unfamiliar area.',
+  read_card:
+    'Read the status card ({node}) of a sibling or an ancestor: what it is doing, its state, the files it changed and the contracts it relies on.',
   plan_write:
     'Coordinator only: write the plan ({owners: [{child, owns: [path globs]}], contracts?: [C-ids]}). It stays draft until the operator approves it.',
   contract_write:

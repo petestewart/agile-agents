@@ -48,7 +48,9 @@ import {
 import { useFeed } from '../lib/feed-context';
 import type {
   ActivityEntry,
+  CockpitCardError,
   CockpitProjectRow,
+  CockpitStatusCard,
   LandOutcome,
   StreamDiff,
   StreamPagePayload,
@@ -490,6 +492,57 @@ function AutonomyPicker({
   );
 }
 
+/** T283 (§14.5): the children's status cards, on the parent's page. */
+function ChildCards({
+  cards,
+  titleOf,
+}: {
+  cards: Array<CockpitStatusCard | CockpitCardError>;
+  titleOf: (id: string) => string;
+}): JSX.Element | null {
+  if (cards.length === 0) return null;
+  return (
+    <section className="cr-findings" data-testid="child-cards">
+      <h2>Children</h2>
+      <ul>
+        {cards.map((card) =>
+          'error' in card ? (
+            <li key={card.node} data-testid="status-card-error" data-node={card.node}>
+              <strong>{titleOf(card.node)}</strong>{' '}
+              <span className="sev" data-testid="status-card-error-text">
+                {card.error}
+              </span>
+            </li>
+          ) : (
+            <li
+              key={card.node}
+              data-testid="status-card"
+              data-node={card.node}
+              data-state={card.state}
+            >
+              <strong>{titleOf(card.node)}</strong> <span className="cr-dim">{card.state}</span>
+              {card.doing !== '' && (
+                <>
+                  {' — '}
+                  <span data-testid="status-card-doing">{card.doing}</span>
+                </>
+              )}
+              {card.files.length > 0 && (
+                <p className="cr-dim" data-testid="status-card-files">
+                  {card.files.join(', ')}
+                </p>
+              )}
+              {card.relies_on.length > 0 && (
+                <p className="cr-dim">relies on {card.relies_on.join(', ')}</p>
+              )}
+            </li>
+          ),
+        )}
+      </ul>
+    </section>
+  );
+}
+
 export function StreamPage({ id }: { id: string }): JSX.Element {
   const { cockpit, refresh } = useFeed();
   const { openRules } = useShell();
@@ -655,6 +708,13 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
           />
         ))}
       </section>
+
+      <ChildCards
+        cards={(cockpit?.cards ?? []).filter(
+          (c) => cockpit?.streams.find((r) => r.id === c.node)?.parent === stream.id,
+        )}
+        titleOf={titleOf}
+      />
 
       <section className="cr-sessions" data-testid="sessions">
         <ul>

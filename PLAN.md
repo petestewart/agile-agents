@@ -1376,12 +1376,12 @@ agile tail --node $N --events
 
 ### Ticket: T283 ∥ Status cards
 - **Priority:** P1
-- **Status:** In Progress
-- **Owner:** opus:worker-T283
+- **Status:** Done (merge d3116fb)
+- **Owner:** —
 - **Scope:** Add `cards/<node>.yaml` (§14.5). The daemon updates `files`, `state` and `relies_on`; the `progress` verb updates `doing`. The `read_card(node)` verb is limited to siblings, ancestors and the Director. Cards show on the parent's page.
 - **Acceptance Criteria:** A card follows edits within one recompute; a sibling can read it; a node in another project can't.
 - **Validation Steps:** `bun test packages/daemon/src/coordination`.
-- **Notes:** After T280 and T227.
+- **Notes:** After T280 and T227. Review (sonnet) PASS. Daemon ≈+210. read_card: siblings, ancestors, descendants (the parent coordinator), Director hook; the coordinator brief lists child cards. A corrupt card is refused with path:line and isolated in the frame. relies_on = contracts the node is party to, refreshed on the node's next update (not on contract write).
 
 ### Ticket: T284 Import index and sibling alerts
 - **Priority:** P1

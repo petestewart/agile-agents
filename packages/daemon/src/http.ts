@@ -1038,7 +1038,13 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
         if (url.pathname === '/api/cockpit' && req.method === 'GET') {
           if (!feed?.streams) return errorResponse(503, 'streams not available');
           return jsonResponse(
-            buildCockpitFrame(feed.streams, feed.inbox, feed.projects, feed.store.getRepos()),
+            buildCockpitFrame(
+              feed.streams,
+              feed.inbox,
+              feed.projects,
+              feed.store.getRepos(),
+              (id) => feed.store.getCard(id),
+            ),
           );
         }
 
@@ -1193,7 +1199,13 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
             if (feed.streams) {
               ws.send(
                 JSON.stringify(
-                  buildCockpitFrame(feed.streams, feed.inbox, feed.projects, feed.store.getRepos()),
+                  buildCockpitFrame(
+                    feed.streams,
+                    feed.inbox,
+                    feed.projects,
+                    feed.store.getRepos(),
+                    (id) => feed.store.getCard(id),
+                  ),
                 ),
               );
             }
@@ -1221,7 +1233,13 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
             server.publish(
               FEED_WS_TOPIC,
               JSON.stringify(
-                buildCockpitFrame(feed.streams, feed.inbox, feed.projects, feed.store.getRepos()),
+                buildCockpitFrame(
+                  feed.streams,
+                  feed.inbox,
+                  feed.projects,
+                  feed.store.getRepos(),
+                  (id) => feed.store.getCard(id),
+                ),
               ),
             );
           } catch (err) {
