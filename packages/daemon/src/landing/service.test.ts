@@ -469,8 +469,13 @@ describe('the operator checkout', () => {
     const stream = await makeStream(work);
     writeFileSync(join(repo, 'README.md'), '# edited by the operator\n');
 
-    expect(landing.land(stream.id)).rejects.toThrow(/uncommitted changes/);
+    expect(landing.land(stream.id)).rejects.toThrow(/uncommitted changes at .*\(README\.md\)/);
     expect(git(['rev-list', '--count', '--merges', 'main'])).toBe('0');
+
+    // T177: the refusal names the dirty paths, capped with "and N more".
+    for (let i = 1; i <= 6; i++) writeFileSync(join(repo, `staged-${i}.txt`), `${i}\n`);
+    git(['add', 'staged-*.txt']);
+    await expect(landing.land(stream.id)).rejects.toThrow(/and 2 more\)/);
   });
 });
 

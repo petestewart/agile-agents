@@ -168,8 +168,7 @@ export class LandingService {
       const what = verdict.decision === 'route' ? 'routed' : 'refused';
       const line = `landing ${what} by diff rule${verdict.rule ? ` ${verdict.rule}` : ''}: ${verdict.reason}`;
       await streams.appendThread('daemon', stream.id, { kind: 'event', body: line });
-      // A route has a gate to wait on; a deny (and a route with nowhere to
-      // put the card) ends the call.
+      // A route waits on its gate; a deny (or a gateless route) ends the call.
       if (verdict.gate !== undefined) return { status: 'gated', gate: verdict.gate, line };
       return { status: 'refused', reason: verdict.reason, line };
     }
@@ -200,9 +199,7 @@ export class LandingService {
       }
     }
     // §5.5's retro, after the worktree is gone.
-    void Promise.resolve(this.options.onStreamEnd?.(stream.id)).catch(() => {
-      // Contractually non-throwing; belt and braces.
-    });
+    void Promise.resolve(this.options.onStreamEnd?.(stream.id)).catch(() => {});
     return { status: 'landed', target, sha: merged.sha, line };
   }
 
@@ -373,8 +370,7 @@ export class LandingService {
     } catch {
       return undefined; // a parent that is gone re-roots the child
     }
-    if (parent.repo === undefined || parent.branch === undefined) return undefined;
-    return parent.branch;
+    return parent.repo === undefined ? undefined : parent.branch;
   }
 
   /** Raises the `land` gate: the outcome when this call can't proceed, `undefined` when a delegate approved inline. */
@@ -464,7 +460,7 @@ export class LandingService {
           .filter((line) => line.length > 0),
       );
       for (const checkout of checkouts) {
-        if (checkout.dirty) continue;
+        if (checkout.dirty.length > 0) continue;
         const collisions = untrackedFiles(repoRoot, checkout.path).filter((file) =>
           touched.has(file),
         );
@@ -487,7 +483,7 @@ export class LandingService {
       // Fast-forward the clean checkouts on the target. `dirty` is the
       // reading from before the ref moved (after, every one looks dirty).
       for (const checkout of checkouts) {
-        if (checkout.dirty) continue;
+        if (checkout.dirty.length > 0) continue;
         gitWrite(['reset', '--hard', sha], checkout.path, repoRoot);
       }
       return { ok: true, sha };
@@ -513,16 +509,22 @@ export function defaultBranch(repoRoot: string): string {
   return 'main';
 }
 
-/** Every worktree with `branch` checked out, and whether it has uncommitted tracked changes. */
-function worktreesOn(repoRoot: string, branch: string): { path: string; dirty: boolean }[] {
+/** A worktree with the target checked out, and its uncommitted tracked paths. */
+interface Checkout {
+  path: string;
+  dirty: string[];
+}
+
+/** Every worktree with `branch` checked out. */
+function worktreesOn(repoRoot: string, branch: string): Checkout[] {
   const listed = git(['worktree', 'list', '--porcelain'], repoRoot, repoRoot);
   if (listed.exitCode !== 0) return [];
-  const found: { path: string; dirty: boolean }[] = [];
+  const found: Checkout[] = [];
   let path: string | undefined;
   for (const line of listed.stdout.split('\n')) {
     if (line.startsWith('worktree ')) path = line.slice('worktree '.length);
     if (line === `branch refs/heads/${branch}` && path !== undefined) {
-      found.push({ path, dirty: worktreeIsDirty(repoRoot, path) });
+      found.push({ path, dirty: uncommittedPaths(repoRoot, path) });
     }
   }
   return found;
@@ -535,11 +537,14 @@ function untrackedFiles(repoRoot: string, worktreePath: string): string[] {
   return listed.stdout.split('\n').filter((line) => line.length > 0);
 }
 
-/** Uncommitted tracked changes only: untracked scratch files never block a land. */
-function worktreeIsDirty(repoRoot: string, worktreePath: string): boolean {
+/** Uncommitted tracked paths only (untracked scratch never blocks a land); fails closed. */
+function uncommittedPaths(repoRoot: string, worktreePath: string): string[] {
   const status = git(['status', '--porcelain=v1'], worktreePath, repoRoot);
-  if (status.exitCode !== 0) return true; // cannot tell ⇒ treat as dirty (fail closed)
-  return status.stdout.split('\n').some((entry) => entry.length > 0 && !entry.startsWith('??'));
+  if (status.exitCode !== 0) return ['(git status failed)'];
+  return status.stdout
+    .split('\n')
+    .filter((entry) => entry.length > 0 && !entry.startsWith('??'))
+    .map((entry) => entry.replace(/^.{1,2} /, '')); // XY code; the first may be trimmed
 }
 
 /**
@@ -591,12 +596,10 @@ function branchExists(repoRoot: string, branch: string): boolean {
 }
 
 /** Why a dirty checkout of the target refuses the land, or `undefined`. */
-function dirtyCheckoutReason(
-  target: string,
-  checkouts: { path: string; dirty: boolean }[],
-): string | undefined {
-  const dirty = checkouts.find((checkout) => checkout.dirty);
-  return dirty === undefined
-    ? undefined
-    : `${target} is checked out with uncommitted changes at ${dirty.path}; commit or stash them before landing`;
+function dirtyCheckoutReason(target: string, checkouts: Checkout[]): string | undefined {
+  const dirty = checkouts.find((checkout) => checkout.dirty.length > 0);
+  if (dirty === undefined) return undefined;
+  const more = dirty.dirty.length > 5 ? ` and ${dirty.dirty.length - 5} more` : '';
+  const paths = `${dirty.dirty.slice(0, 5).join(', ')}${more}`;
+  return `${target} is checked out with uncommitted changes at ${dirty.path} (${paths}); commit or stash them before landing`;
 }

@@ -1,12 +1,13 @@
 /**
  * Worktree creation for a stream's first attach (§4.4):
- * `<repo>/.worktrees/<stream-id>-<slug>/`, ignored in `.gitignore`. A
- * worktree is created only here.
+ * `<repo>/.worktrees/<stream-id>-<slug>/`, ignored via the repo's
+ * `<git-common-dir>/info/exclude` (never `.gitignore`, so the user's
+ * checkout stays clean). A worktree is created only here.
  */
 
 import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { isAbsolute, join } from 'node:path';
 import { DAEMON_CACHE_DIR, sandboxedSubprocessEnv } from '../subprocess-env';
 
 interface GitResult {
@@ -140,17 +141,21 @@ async function existingBranchRefs(repoRoot: string, branch: string): Promise<str
   });
 }
 
-/** Adds `.worktrees/` to `<repo>/.gitignore` unless already ignored. */
+/**
+ * Ignores `.worktrees/` via `<git-common-dir>/info/exclude` unless it is
+ * already ignored (by `.gitignore`, exclude, or global excludes). Never
+ * edits `.gitignore`: that would leave the user's checkout dirty.
+ */
 export async function ensureWorktreesIgnored(repoRoot: string): Promise<void> {
-  const gitignore = join(repoRoot, '.gitignore');
-  const existing = existsSync(gitignore) ? await Bun.file(gitignore).text() : '';
-  const ignored = existing
-    .split('\n')
-    .map((line) => line.trim())
-    .some((line) => line === '.worktrees' || line === '.worktrees/' || line === '/.worktrees/');
-  if (ignored) return;
+  const check = await gitAsync(['check-ignore', '-q', '.worktrees/'], repoRoot);
+  if (check.exitCode === 0) return;
+  const commonDir = await runGitAsync(['rev-parse', '--git-common-dir'], repoRoot);
+  const infoDir = join(isAbsolute(commonDir) ? commonDir : join(repoRoot, commonDir), 'info');
+  mkdirSync(infoDir, { recursive: true });
+  const exclude = join(infoDir, 'exclude');
+  const existing = existsSync(exclude) ? await Bun.file(exclude).text() : '';
   const prefix = existing === '' || existing.endsWith('\n') ? existing : `${existing}\n`;
-  await Bun.write(gitignore, `${prefix}.worktrees/\n`);
+  await Bun.write(exclude, `${prefix}.worktrees/\n`);
 }
 
 /** Naming input for a worktree: a stream id and a slug. */
