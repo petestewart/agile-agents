@@ -13,6 +13,7 @@ import { type AgileConfig, type DiscoverConfigOptions, discoverConfig } from './
 import { DocsService, buildDocsRpcMethods } from './docs';
 import { GateService, buildGateRpcMethods } from './gates';
 import type { DelegateFn } from './gates';
+import { ghTokenSource, githubAuthAvailable } from './github/rest';
 import {
   HookService,
   buildHookRpcMethods,
@@ -77,6 +78,8 @@ export interface DaemonHandle {
 export interface StartDaemonOptions extends DiscoverConfigOptions {
   /** Test seam: the classifier (`bun test` has no network). Real usage gets a `JevClassifier`. */
   classifier?: Classifier;
+  /** Test seam: whether GitHub auth is available (default: `gh auth token` succeeds). */
+  githubAuth?: () => Promise<boolean>;
   /** Test/offline seam: `GateService`'s delegate. Real usage leaves it unset. */
   gateDelegate?: DelegateFn;
   /**
@@ -401,6 +404,9 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
       extraMethods,
       // `agile daemon status`: whether a key is loaded and its source, never the key.
       ...(classifierKey ? { classifierStatus: () => classifierKey.status() } : {}),
+      // T221 (§18): whether `gh` can supply a token, never the token.
+      githubAuth:
+        options.githubAuth ?? (() => githubAuthAvailable(ghTokenSource(config.github.gh_command))),
     });
     await rpc.listening;
   } catch (err) {

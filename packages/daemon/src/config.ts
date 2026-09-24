@@ -13,8 +13,10 @@ import { join } from 'node:path';
 import {
   type ClassifierConfig,
   DEFAULT_DAEMON_PORT,
+  type GitHubConfig,
   type HomeConfig,
   validateClassifierConfig,
+  validateGitHubConfig,
   validateHomeConfig,
 } from '@agile-agents/shared';
 import { parse as parseYaml } from 'yaml';
@@ -32,6 +34,8 @@ export interface AgileConfig {
   lockPath: string;
   /** The classifier tier's config (§6.2, D5), defaults applied; "not configured" is `off` or no key. */
   classifier: ClassifierConfig;
+  /** T221: `github.api_url` (§18), defaults applied. */
+  github: GitHubConfig;
 }
 
 /** The state home (D9): `$AGILE_HOME`, else `~/.agile/`. Nothing daemon-owned is written inside a repo. */
@@ -121,12 +125,14 @@ export function discoverConfig(options: DiscoverConfigOptions = {}): AgileConfig
     ...(options.socketPath !== undefined ? { socketPath: options.socketPath } : {}),
   });
 
+  const fileConfig = readHomeConfigFile(home);
   return {
     home,
     stateRoot: home,
     port: homePaths.port,
     socketPath: homePaths.socketPath,
     lockPath: homePaths.pidPath,
-    classifier: validateClassifierConfig(readHomeConfigFile(home).classifier),
+    classifier: validateClassifierConfig(fileConfig.classifier),
+    github: validateGitHubConfig(fileConfig.github),
   };
 }

@@ -293,6 +293,8 @@ export interface DaemonStatusReport {
   logPath: string;
   /** T167: from the running daemon's `daemon.status` — the key's source, never the key. */
   classifier?: ClassifierKeyStatus;
+  /** T221: from `daemon.status` — whether `gh` can supply a token, never the token. */
+  githubAuth?: 'available' | 'unavailable';
   /** T170 (D17): what a session attached with nothing named gets (home config + built-in). */
   sessionDefaults?: ResolvedSessionDefaults;
 }
@@ -307,13 +309,15 @@ export async function withClassifierStatus(
 ): Promise<DaemonStatusReport> {
   if (!report.running) return report;
   try {
-    const status = await callRpc<{ classifier?: ClassifierKeyStatus }>(
-      report.socketPath,
-      'daemon.status',
-      {},
-      { timeoutMs: 2000 },
-    );
-    return status.classifier ? { ...report, classifier: status.classifier } : report;
+    const status = await callRpc<{
+      classifier?: ClassifierKeyStatus;
+      github?: { auth: 'available' | 'unavailable' };
+    }>(report.socketPath, 'daemon.status', {}, { timeoutMs: 2000 });
+    return {
+      ...report,
+      ...(status.classifier ? { classifier: status.classifier } : {}),
+      ...(status.github ? { githubAuth: status.github.auth } : {}),
+    };
   } catch {
     return report;
   }
@@ -363,5 +367,8 @@ export function formatDaemonStatus(report: DaemonStatusReport): string {
     `${home}\nagiled running: pid=${report.pid} http=http://127.0.0.1:${report.port} ` +
     `socket=${report.socketPath}`;
   const classifier = report.classifier ? `\n${formatClassifierKeyLine(report.classifier)}` : '';
-  return `${running}${classifier}${defaults}`;
+  const github = report.githubAuth
+    ? `\nGitHub auth: ${report.githubAuth === 'available' ? 'available' : 'unavailable (run `gh auth login`)'}`
+    : '';
+  return `${running}${classifier}${github}${defaults}`;
 }
