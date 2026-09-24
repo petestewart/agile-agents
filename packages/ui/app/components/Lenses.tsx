@@ -4,12 +4,13 @@
  * projects, ancestors in grey, the repo's delivery mode in the heading.
  * Running: nodes with a live session. Dependencies: the `waits_on` graph
  * as a list. (Needs me is the inbox, already grouped by node.)
- * Overlaps (T227) show per repo; norms are still a placeholder.
+ * Overlaps (T227) show per repo, and so do its norms (T265): the accepted
+ * standards and architecture scoped to it, with enforcement and stats.
  */
 
-import type { RoutedEvent } from '@agile-agents/shared';
+import type { KnowledgeItem, RoutedEvent } from '@agile-agents/shared';
 import { useEffect, useState } from 'react';
-import { getRepoEvents } from '../lib/api';
+import { getRepoEvents, getRepoKnowledge } from '../lib/api';
 import type { CockpitOverlap, CockpitRepoRow, CockpitStreamRow } from '../lib/feed-types';
 import { useShell } from '../lib/shell';
 import {
@@ -43,6 +44,40 @@ function RepoEvents({
         <li key={e.id} className="cr-dim" data-testid="repo-event" data-event={e.id} title={e.at}>
           {e.type.replace(/_/g, ' ')}
           {e.subject ? ` · ${titleOf(e.subject)}` : ''}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+/** T265: the repo's accepted standards and architecture, with enforcement and stats. */
+function RepoNorms({ repo }: { repo: string }): JSX.Element {
+  const [items, setItems] = useState<KnowledgeItem[]>([]);
+  useEffect(() => {
+    let live = true;
+    getRepoKnowledge(repo)
+      .then((k) => live && setItems(k))
+      .catch(() => live && setItems([]));
+    return () => {
+      live = false;
+    };
+  }, [repo]);
+  if (items.length === 0) {
+    return (
+      <p className="cr-lens-empty" data-testid="repo-norms">
+        No norms.
+      </p>
+    );
+  }
+  return (
+    <ul className="cr-lens-list" data-testid="repo-norms">
+      {items.map((k) => (
+        <li key={k.id} className="cr-dim" data-testid="repo-norm" data-knowledge={k.id}>
+          <span data-testid="norm-kind">{k.kind}</span> · {k.name ?? k.text}{' '}
+          <span data-testid="norm-enforcement">({k.enforcement})</span>{' '}
+          <span data-testid="norm-stats">
+            fired {k.stats.fired}, violated {k.stats.violated}
+          </span>
         </li>
       ))}
     </ul>
@@ -124,9 +159,7 @@ export function RepoView({
               </p>
             ))}
           <RepoEvents repo={group.repo} titleOf={titleOf} />
-          <p className="cr-lens-empty" data-testid="repo-norms">
-            Norms: not yet.
-          </p>
+          <RepoNorms repo={group.repo} />
         </div>
       ))}
     </section>

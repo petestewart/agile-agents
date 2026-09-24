@@ -518,6 +518,7 @@ async function handleSessionSettingsRoute(
  *
  *   GET /api/streams/:id/activity  every event routed to the node: reason, delivery status, session or digest
  *   GET /api/repos/:name/events    every event on the repo
+ *   GET /api/repos/:name/knowledge T265: the repo's accepted standards and architecture
  */
 function handleActivityRoute(
   req: Request,
@@ -527,6 +528,16 @@ function handleActivityRoute(
   if (req.method !== 'GET') return undefined;
   const node = url.pathname.match(/^\/api\/streams\/([^/]+)\/activity$/);
   const repo = url.pathname.match(/^\/api\/repos\/([^/]+)\/events$/);
+  const norms = url.pathname.match(/^\/api\/repos\/([^/]+)\/knowledge$/);
+  if (norms) {
+    if (!feed?.rules) return errorResponse(503, 'knowledge not available');
+    const name = decodeURIComponent(norms[1] ?? '');
+    return jsonResponse({
+      knowledge: feed.rules
+        .list({ status: 'accepted', scope: `repo:${name}` })
+        .filter((k) => k.kind !== 'decision'),
+    });
+  }
   if (!node && !repo) return undefined;
   if (!feed?.events) return errorResponse(503, 'events not available');
   try {
