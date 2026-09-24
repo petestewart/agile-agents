@@ -1,8 +1,9 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { git, gitWrite, runGit } from './git';
+import { describeGitNetworkFailure, git, gitNetwork, gitWrite, runGit } from './git';
 
 let repoRoot: string;
 
@@ -88,5 +89,109 @@ describe('T034: git()/gitWrite()/runGit() spawn with a sandboxed HOME, never the
         process.env.GIT_CONFIG_GLOBAL = original;
       }
     }
+  });
+});
+
+describe("T231: gitNetwork() uses the operator's real credential setup", () => {
+  let realHome: string;
+  let saved: Record<string, string | undefined>;
+
+  beforeEach(() => {
+    // A fake "real HOME": its ~/.gitconfig holds the only credential helper
+    // and the only insteadOf rewrite for the remote.
+    realHome = mkdtempSync(join(tmpdir(), 'agile-real-home-'));
+    const helper = join(realHome, 'helper.sh');
+    writeFileSync(
+      helper,
+      '#!/bin/sh\n[ "$1" = get ] && printf "username=op\\npassword=from-real-home\\n"\nexit 0\n',
+    );
+    chmodSync(helper, 0o755);
+    const bare = join(realHome, 'remote.git');
+    rawGit(['init', '-q', '--bare', '-b', 'main', bare], realHome);
+    writeFileSync(
+      join(realHome, '.gitconfig'),
+      [
+        '[user]',
+        '\tname = operator',
+        '\temail = operator@example.com',
+        '[credential]',
+        `\thelper = ${helper}`,
+        `[url "file://${bare}"]`,
+        '\tinsteadOf = https://git.example.invalid/op/repo.git',
+        '',
+      ].join('\n'),
+    );
+    rawGit(['remote', 'add', 'origin', 'https://git.example.invalid/op/repo.git'], repoRoot);
+    saved = { HOME: process.env.HOME, GIT_CONFIG_GLOBAL: process.env.GIT_CONFIG_GLOBAL };
+    process.env.HOME = realHome;
+    Reflect.deleteProperty(process.env, 'GIT_CONFIG_GLOBAL');
+  });
+
+  afterEach(() => {
+    for (const [key, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    rmSync(realHome, { recursive: true, force: true });
+  });
+
+  test('push, ls-remote and fetch reach the remote through the real ~/.gitconfig; the sandbox does not', () => {
+    const sandboxed = git(['push', 'origin', 'main:refs/heads/main'], repoRoot, repoRoot);
+    expect(sandboxed.exitCode).not.toBe(0);
+
+    const pushed = gitNetwork(['push', '-q', 'origin', 'main:refs/heads/main'], repoRoot);
+    expect(pushed.stderr).toBe('');
+    expect(pushed.exitCode).toBe(0);
+    const head = git(['rev-parse', 'main'], repoRoot, repoRoot).stdout;
+    const ls = gitNetwork(['ls-remote', 'origin', 'refs/heads/main'], repoRoot);
+    expect(ls.stdout.split(/\s+/)[0]).toBe(head);
+    expect(gitNetwork(['fetch', '-q', 'origin', 'main'], repoRoot).exitCode).toBe(0);
+  });
+
+  test('the credential helper configured only in the real HOME answers', () => {
+    const input = new TextEncoder().encode('protocol=https\nhost=github.com\n\n');
+    const fill = (env: Record<string, string | undefined>) =>
+      new TextDecoder().decode(
+        Bun.spawnSync(['git', 'credential', 'fill'], {
+          cwd: repoRoot,
+          env,
+          stdin: input,
+          stdout: 'pipe',
+          stderr: 'pipe',
+        }).stdout,
+      );
+    // gitNetwork's env is process.env + GIT_TERMINAL_PROMPT=0; assert the helper sees it.
+    const viaNetwork = gitNetwork(['config', '--get', 'credential.helper'], repoRoot);
+    expect(viaNetwork.stdout).toBe(join(realHome, 'helper.sh'));
+    expect(fill({ ...process.env, GIT_TERMINAL_PROMPT: '0' })).toContain('password=from-real-home');
+    const viaSandbox = git(['config', '--get', 'credential.helper'], repoRoot, repoRoot);
+    expect(viaSandbox.stdout).toBe('');
+  });
+
+  test('no credential fails fast with prompts off, and reads as one clear line', () => {
+    writeFileSync(join(realHome, '.gitconfig'), '');
+    const started = Date.now();
+    const result = Bun.spawnSync(['git', 'credential', 'fill'], {
+      cwd: repoRoot,
+      env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
+      stdin: new TextEncoder().encode('protocol=https\nhost=github.com\n\n'),
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+    expect(result.exitCode).not.toBe(0);
+    expect(Date.now() - started).toBeLessThan(10_000);
+    const stderr = new TextDecoder().decode(result.stderr);
+    expect(describeGitNetworkFailure(stderr, 'origin')).toContain('gh auth setup-git');
+    expect(
+      describeGitNetworkFailure(
+        "fatal: could not read Username for 'https://github.com': Device not configured",
+        'origin',
+      ),
+    ).toBe(
+      'git has no working credentials for origin: run `gh auth setup-git` or configure a git credential helper, then retry',
+    );
+    expect(describeGitNetworkFailure('fatal: https://u:tok@host/x not found', 'o')).toBe(
+      'fatal: https://host/x not found',
+    );
   });
 });

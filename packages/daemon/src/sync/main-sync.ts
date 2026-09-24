@@ -19,7 +19,7 @@
 import { isAbsolute, join } from 'node:path';
 import type { ReposConfig, Stream } from '@agile-agents/shared';
 import { liveSession } from '../attach/service';
-import { git, gitWrite } from '../delivery/git';
+import { describeGitNetworkFailure, git, gitNetwork, gitWrite } from '../delivery/git';
 import { mainBranch } from '../delivery/service';
 import type { StreamService } from '../streams/service';
 import { isLiveWorkNode } from './overlap';
@@ -201,9 +201,12 @@ export class MainSync {
     this.deferred.delete(s.id);
     let pushed = false;
     if (s.delivery_state?.pr !== undefined) {
-      const push = git(['push', 'origin', `HEAD:refs/heads/${s.branch}`], wt, repoRoot);
+      const push = gitNetwork(['push', 'origin', `HEAD:refs/heads/${s.branch}`], wt);
       pushed = push.exitCode === 0;
-      if (!pushed) await this.note(s.id, `push of ${s.branch} after sync failed: ${push.stderr}`);
+      if (!pushed) {
+        const why = describeGitNetworkFailure(push.stderr, 'origin');
+        await this.note(s.id, `push of ${s.branch} after sync failed: ${why}`);
+      }
     }
     await this.note(s.id, `synced ${main} into ${s.branch}${pushed ? ' and pushed' : ''}`);
     return { status: 'synced', pushed };

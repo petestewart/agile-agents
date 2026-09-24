@@ -135,6 +135,18 @@ describe('refusals (typed, before anything is touched)', () => {
     expect(landing.land(stream.id)).rejects.toThrow(/nothing to land/);
   });
 
+  test('T231: nothing to deliver is recorded as a visible delivery state, not none', async () => {
+    const worktree = join(repo, '.worktrees', 's-empty2');
+    git(['worktree', 'add', '-q', '-b', 's-empty2', worktree, 'main']);
+    const stream = await makeStream({ branch: 's-empty2', worktree });
+    await expect(landing.land(stream.id)).rejects.toThrow(/nothing to land/);
+    const state = streams.get(stream.id).delivery_state;
+    expect(state?.status).toBe('not_started');
+    expect(state?.held_by).toEqual([
+      { reason: 'nothing_to_deliver', detail: 'nothing to deliver: no commits beyond main' },
+    ]);
+  });
+
   test('a target branch that does not exist is named in the refusal', async () => {
     await store.putRepos({
       demo: { path: repo, protected_branches: ['main'], target_branch: 'nope' },
