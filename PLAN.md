@@ -637,6 +637,15 @@ Build order: Phase 0 → 1 → 2 → 3 → 4 → 5 → 6. Within a phase, ticket
 - **Validation Steps:** `bun test packages/daemon packages/cli packages/ui`; `bun run test:e2e`.
 - **Notes:** After T174.
 
+### Ticket: T177 Worktrees never dirty the user's checkout
+- **Priority:** P0
+- **Status:** Todo
+- **Owner:** —
+- **Scope:** Pete's walkthrough (2026-09-24): `runner/worktrees.ts` appends `.worktrees/` to `<repo>/.gitignore` on first worktree creation and leaves it uncommitted, so the next land into the checked-out target refuses ("main is checked out with uncommitted changes"). The tool blocks its own landing. Write the ignore line to `<git-common-dir>/info/exclude` instead (resolve with `git rev-parse --git-common-dir`; create `info/` if missing; idempotent), and never touch `.gitignore`. The land's dirty-checkout message names the files that are dirty so the user knows what to commit or stash.
+- **Acceptance Criteria:** Unit test: creating a worktree in a fresh repo leaves `git status --porcelain` empty and `.worktrees/` ignored; the land refusal lists the dirty paths.
+- **Validation Steps:** `bun test packages/daemon`; `bun run test:integration`.
+- **Notes:** Runs right after T174, before T175/T176.
+
 ### Ticket: T165 Cockpit as an installable app
 - **Priority:** P2
 - **Status:** Todo (step 1 done 2026-09-22, merge 8121113; step 2 awaits Pete)
