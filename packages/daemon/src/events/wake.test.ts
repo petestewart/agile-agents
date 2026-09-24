@@ -16,6 +16,7 @@ const WORK: RoutedEventType[] = [
   'pr_behind',
   'sync_conflict',
   'contract_changed',
+  'coordinator_note',
 ];
 const CONVERSATION: RoutedEventType[] = ['human_line', 'answer'];
 
@@ -52,6 +53,11 @@ describe('wakeVerdict', () => {
     expect(wakeVerdict(node(), 'work', [{ type: 'main_changed' }, { type: 'answer' }])).toBe(
       'wake',
     );
+  });
+  test("T290: a parent's coordinator_note wakes an ended work node, never a stopped one", () => {
+    expect(wakeVerdict(node(), 'work', [{ type: 'coordinator_note' }])).toBe('wake');
+    const landed = node({ human: { status: 'landed' } } as Partial<Stream>);
+    expect(wakeVerdict(landed, 'work', [{ type: 'coordinator_note' }])).toBe('stopped');
   });
   test('stopped nodes are never woken', () => {
     for (const stopped of [
