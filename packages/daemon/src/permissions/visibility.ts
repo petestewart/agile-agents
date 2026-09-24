@@ -7,6 +7,7 @@
 
 import { isAbsolute, relative, resolve } from 'node:path';
 import type { ReposConfig } from '@agile-agents/shared';
+import { parseCommandIntoAtoms } from './command';
 
 export interface VisibilityContext {
   /** The node's own repo (`stream.repo`); absent for a node with none. */
@@ -14,6 +15,8 @@ export interface VisibilityContext {
   /** The node's project; absent reads no private repo. */
   project?: string;
   repos: ReposConfig;
+  /** Set when repos.yaml could not be read: fail closed, only the worktree is touchable. */
+  reposError?: string;
   /** Relative tool paths resolve against it. */
   worktreePath: string;
 }
@@ -54,6 +57,10 @@ export function visibilityDenyReason(
 ): string | undefined {
   for (const raw of paths) {
     const path = resolve(ctx.worktreePath, raw);
+    if (ctx.reposError !== undefined) {
+      if (contains(resolve(ctx.worktreePath), path)) continue;
+      return `${raw} is outside this node's worktree and repos.yaml could not be read (${ctx.reposError}); repo visibility cannot be checked, so the call is denied.`;
+    }
     const repo = repoOfPath(ctx.repos, path);
     if (repo === undefined || repo === ctx.ownRepo) continue;
     if (!canReadRepo(ctx.repos, repo, ctx.project)) {
@@ -66,4 +73,37 @@ export function visibilityDenyReason(
     }
   }
   return undefined;
+}
+
+/** Commands whose path arguments are all written; `cp`/`mv` write only their last. */
+const WRITERS = new Set(['rm', 'touch', 'mkdir', 'rmdir', 'tee', 'truncate', 'chmod', 'ln']);
+const MOVERS = new Set(['cp', 'mv', 'rsync', 'install']);
+
+/**
+ * Best effort: the path-like arguments of a shell command, split into
+ * reads and writes, via the same atom parse the pattern rules use.
+ */
+export function commandPaths(command: string): { reads: string[]; writes: string[] } {
+  const reads: string[] = [];
+  const writes: string[] = [];
+  for (const { tokens } of parseCommandIntoAtoms(command)) {
+    const args: string[] = [];
+    for (let i = 1; i < tokens.length; i++) {
+      const t = tokens[i] ?? '';
+      if (t === '>' || t === '>>') {
+        const target = tokens[++i];
+        if (target !== undefined) writes.push(target);
+      } else if (!t.startsWith('-') && (t.includes('/') || t.startsWith('.'))) {
+        args.push(t);
+      }
+    }
+    const cmd = tokens[0] ?? '';
+    const inPlace = cmd === 'sed' && tokens.some((t) => t.startsWith('-i'));
+    if (WRITERS.has(cmd) || inPlace) writes.push(...args);
+    else if (MOVERS.has(cmd) && args.length > 1) {
+      writes.push(args.at(-1) as string);
+      reads.push(...args.slice(0, -1));
+    } else reads.push(...args);
+  }
+  return { reads, writes };
 }

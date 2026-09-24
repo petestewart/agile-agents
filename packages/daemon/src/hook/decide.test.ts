@@ -209,4 +209,52 @@ describe('decidePreToolUse — repo visibility (T229)', () => {
     expect(d.decision).toBe('deny');
     expect(d.reason).toContain('own repo (shop)');
   });
+
+  test('Bash `cat` of a private api file: Blog denied, Shop allowed', () => {
+    const cat = { tool_name: 'Bash', tool_input: { command: 'cat /src/api/prices.ts | head' } };
+    const blog = decidePreToolUse(
+      baseCtx({
+        worktreePath: '/src/blog/.worktrees/n1',
+        visibility: {
+          repos,
+          ownRepo: 'blog',
+          project: BLOG,
+          worktreePath: '/src/blog/.worktrees/n1',
+        },
+      }),
+      cat,
+    );
+    expect(blog.decision).toBe('deny');
+    expect(blog.reason).toContain('private');
+    const shop = decidePreToolUse(
+      baseCtx({
+        worktreePath: '/src/shop/.worktrees/n2',
+        visibility: {
+          repos,
+          ownRepo: 'shop',
+          project: SHOP,
+          worktreePath: '/src/shop/.worktrees/n2',
+        },
+      }),
+      cat,
+    );
+    // The role policy already confines Bash reads to the worktree; visibility itself passes.
+    expect(shop.reason ?? '').not.toMatch(/private|own repo/);
+  });
+
+  test('an unreadable repos.yaml fails closed outside the worktree', () => {
+    const ctx = baseCtx({
+      worktreePath: '/src/blog/.worktrees/n1',
+      visibility: {
+        repos: {},
+        reposError: '/home/repos.yaml:3: bad',
+        worktreePath: '/src/blog/.worktrees/n1',
+      },
+    });
+    const out = decidePreToolUse(ctx, read);
+    expect(out.decision).toBe('deny');
+    expect(out.reason).toContain('repos.yaml');
+    const inside = decidePreToolUse(ctx, { tool_name: 'Read', tool_input: { file_path: 'a.ts' } });
+    expect(inside.decision).toBe('allow');
+  });
 });

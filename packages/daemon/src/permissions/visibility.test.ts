@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import type { ReposConfig } from '@agile-agents/shared';
-import { canReadRepo, repoOfPath, visibilityDenyReason } from './visibility';
+import { canReadRepo, commandPaths, repoOfPath, visibilityDenyReason } from './visibility';
 
 const SHOP = 'P-01J9SHOPSHOPSHOPSHOPSHOPSH';
 const repos: ReposConfig = {
@@ -37,5 +37,13 @@ describe('repo visibility (T229, P13)', () => {
   test('paths outside every registered repo are not this check’s business', () => {
     const ctx = { repos, ownRepo: 'blog', worktreePath: '/src/blog' };
     expect(visibilityDenyReason(ctx, ['/tmp/x'], true)).toBeUndefined();
+  });
+
+  test('commandPaths splits shell path arguments into reads and writes', () => {
+    expect(commandPaths('cat /a/x && cp ./b /c/d > out/log')).toEqual({
+      reads: ['/a/x', './b'],
+      writes: ['out/log', '/c/d'],
+    });
+    expect(commandPaths("bash -c 'rm -rf /src/api/tmp'").writes).toEqual(['/src/api/tmp']);
   });
 });

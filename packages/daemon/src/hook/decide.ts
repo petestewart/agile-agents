@@ -44,7 +44,7 @@ import type {
 import type { PermissionRole } from '../permissions';
 import type { RuleCheckContext } from '../permissions/rule-checks';
 import { patternRulesOf, runPatternRules } from '../permissions/rule-checks';
-import { visibilityDenyReason } from '../permissions/visibility';
+import { commandPaths, visibilityDenyReason } from '../permissions/visibility';
 import type { ClaudePreToolUsePayload, HookDecision, HookDecisionContext } from './types';
 
 /**
@@ -254,11 +254,12 @@ function computeGateVerdict(
 
   // 2b. Repo visibility (P13), a built-in path check.
   if (ctx.visibility !== undefined) {
-    const reason = visibilityDenyReason(
-      ctx.visibility,
-      pathsForToolCall(payload),
-      isWritingToolCall(payload),
-    );
+    const command = payload.tool_name === 'Bash' ? commandOf(payload) : undefined;
+    const shell = command !== undefined ? commandPaths(command) : { reads: [], writes: [] };
+    const reason =
+      visibilityDenyReason(ctx.visibility, pathsForToolCall(payload), isWritingToolCall(payload)) ??
+      visibilityDenyReason(ctx.visibility, shell.writes, true) ??
+      visibilityDenyReason(ctx.visibility, shell.reads, false);
     if (reason !== undefined) return { decision: 'deny', reason };
   }
 
