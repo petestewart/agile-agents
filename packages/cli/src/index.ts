@@ -108,7 +108,8 @@ function usage(): string {
     '  resolve <stream> [--vendor v] [--model m] [--effort ...]   a worker that fixes the last land conflict',
     '  review <stream> [--vendor v] [--model m] [--effort ...]   read-only reviewer session',
     '  detach <stream>            stop the live session on a stream',
-    '  land <stream>              merge the stream branch into its target, close the stream, remove the worktree',
+    '  deliver <stream>           ship-check, then merge the branch into main; close the stream, remove the worktree',
+    '  land <stream>              alias of deliver',
     '  daemon start               start agiled detached (pidfile + log in the state home)',
     '  daemon stop                stop the running agiled',
     '  daemon status              is agiled running? pid, port, socket, home, classifier key loaded?',
@@ -305,6 +306,7 @@ export async function runCli(argv: string[], cwd: string = process.cwd()): Promi
         return await runDetach(socketPath, parseArgs(rest.slice(1)), json);
 
       // T132: landing — the human's merge (cockpit design §8.2).
+      case 'deliver':
       case 'land':
         return await runLand(socketPath, parseArgs(rest.slice(1)), json);
       // T131: a reviewer is a second, read-only session (cockpit design §4.2).

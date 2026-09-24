@@ -38,6 +38,7 @@ import {
   UnregisteredRepoError,
 } from './attach';
 import type { ClassifierKeyService } from './classifier';
+import { type DeliveryService, LandRefusedError } from './delivery';
 import type { DocsService } from './docs';
 import {
   type EventTailerHandle,
@@ -48,7 +49,6 @@ import {
 } from './feed';
 import { GateAlreadyResolvedError, GateNotFoundError, type GateService } from './gates';
 import type { InboxService } from './inbox';
-import { LandRefusedError, type LandingService } from './landing';
 import type { ProjectService } from './projects';
 import {
   QuestionAlreadyAnsweredError,
@@ -139,7 +139,7 @@ export interface HttpServerOptions {
   /** The classifier key behind Settings, and whether evals can run (without it, whenever `ruleEvals` is given). */
   classifierKey?: ClassifierKeyService;
   /** `POST /api/streams/:id/land`. */
-  landing?: LandingService;
+  landing?: DeliveryService;
   /** The stream page's sessions strip and composer. */
   attach?: AttachService;
   /** T205: the stream page's + Repo (projects-design §7). */
@@ -372,7 +372,7 @@ interface FeedContext {
   rules?: RulesService;
   ruleEvals?: RuleRpcEvalDeps;
   classifierKey?: ClassifierKeyService;
-  landing?: LandingService;
+  landing?: DeliveryService;
   attach?: AttachService;
   repoInPlace?: RepoInPlaceService;
   docs?: DocsService;

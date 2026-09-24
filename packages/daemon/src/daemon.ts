@@ -10,6 +10,12 @@ import { AttachService, VerbService, buildAttachRpcMethods } from './attach';
 import { Bus, buildBusRpcMethods } from './bus';
 import { type Classifier, ClassifierKeyService, JevClassifier } from './classifier';
 import { type AgileConfig, type DiscoverConfigOptions, discoverConfig } from './config';
+import {
+  ClassifierDiffRules,
+  DeliveryService,
+  buildDeliveryRpcMethods,
+  wireLandGateResolution,
+} from './delivery';
 import { DocsService, buildDocsRpcMethods } from './docs';
 import { GateService, buildGateRpcMethods } from './gates';
 import type { DelegateFn } from './gates';
@@ -22,12 +28,6 @@ import {
 } from './hook';
 import { type HttpServerHandle, startHttpServer } from './http';
 import { InboxService, buildInboxRpcMethods } from './inbox';
-import {
-  ClassifierDiffRules,
-  LandingService,
-  buildLandingRpcMethods,
-  wireLandGateResolution,
-} from './landing';
 import { LessonsService } from './lessons';
 import { type LockHandle, acquireLock } from './lock';
 import { ProjectService, buildProjectRpcMethods } from './projects';
@@ -183,7 +183,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
       : undefined;
   const landingService =
     store && streamService
-      ? new LandingService({
+      ? new DeliveryService({
           store,
           streams: streamService,
           ...(diffRules ? { diffRules } : {}),
@@ -322,7 +322,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
           ...(inboxService ? buildInboxRpcMethods(inboxService) : {}),
           ...(rulesService ? buildRuleRpcMethods(rulesService, ruleEvals) : {}),
           ...(docsService ? buildDocsRpcMethods(docsService) : {}),
-          ...(landingService ? buildLandingRpcMethods(landingService) : {}),
+          ...(landingService ? buildDeliveryRpcMethods(landingService) : {}),
           ...buildHookRpcMethods(
             // The route band needs the gates, the pattern tier the rules in
             // scope (a retired rule stops gating on the next call), and the

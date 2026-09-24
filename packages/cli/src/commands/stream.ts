@@ -224,6 +224,11 @@ export function showFields(stream: Stream, role?: NodeRole): Array<[string, stri
       ['worktree', stream.worktree ?? '- (created on first attach)'],
     );
   }
+  if (stream.delivery_state !== undefined) {
+    const d = stream.delivery_state;
+    const held = d.held_by?.map((h) => `${h.reason}: ${h.detail}`).join('; ');
+    fields.push(['delivery', `${d.mode} ${d.status}${held ? ` (${held})` : ''}`]);
+  }
   fields.push(['created_at', stream.created_at]);
   return fields;
 }

@@ -18,10 +18,10 @@ import { ACP_PROVIDERS, type AcpProviderConfig } from '@agile-agents/acp-client'
 import type { InboxItem, Stream } from '@agile-agents/shared';
 import { AttachService } from '../attach/service';
 import { VerbService } from '../attach/verbs';
+import { DeliveryService } from '../delivery/service';
 import { GateService } from '../gates/service';
 import { InboxService } from '../inbox/service';
 import { runInit } from '../init';
-import { LandingService } from '../landing/service';
 import { QuestionService } from '../questions/service';
 import { RulesService } from '../rules/service';
 import { buildBrief } from '../runner/brief';
@@ -376,7 +376,7 @@ describe('both end paths call the retro (§5.5: "on land or close")', () => {
     git(['add', '-A'], attached.worktree);
     git(['commit', '-q', '-m', 'the work'], attached.worktree);
 
-    const landing = new LandingService({
+    const landing = new DeliveryService({
       store,
       streams,
       onStreamEnd: (id) => lessons.onStreamEnd(id),
