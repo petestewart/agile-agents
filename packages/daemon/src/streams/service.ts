@@ -17,6 +17,7 @@ import {
   ulid,
   validateStreamCreateInput,
 } from '@agile-agents/shared';
+import { assertRepoHasCommits } from '../store/rpc-methods';
 import type { StateStore } from '../store/store';
 
 /** One node of the `list` tree: the record plus its child streams. */
@@ -151,9 +152,9 @@ export class StreamService {
     }
     if (input.repo !== undefined) {
       const repos = this.store.getRepos();
-      if (repos[input.repo] === undefined) {
-        throw new UnknownRepoError(input.repo, Object.keys(repos).sort());
-      }
+      const entry = repos[input.repo];
+      if (entry === undefined) throw new UnknownRepoError(input.repo, Object.keys(repos).sort());
+      assertRepoHasCommits(input.repo, entry);
     }
     const now = new Date().toISOString();
     const stream: Stream = {

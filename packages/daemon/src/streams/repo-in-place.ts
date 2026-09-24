@@ -23,6 +23,7 @@ import { type SessionRef, type Stream, liveChildrenOf, nodeRole } from '@agile-a
 import { git, removeWorktreeSafely } from '../landing/git';
 import { mainBranch } from '../landing/service';
 import { createWorktree, slugify } from '../runner/worktrees';
+import { assertRepoHasCommits } from '../store/rpc-methods';
 import type { StateStore } from '../store/store';
 import { type StreamService, UnknownRepoError } from './service';
 
@@ -72,6 +73,7 @@ export class RepoInPlaceService {
     const repos = this.store.getRepos();
     const entry = repos[repo];
     if (entry === undefined) throw new UnknownRepoError(repo, Object.keys(repos).sort());
+    assertRepoHasCommits(repo, entry);
     let node = this.streams.get(nodeId);
     if (node.human.status === 'closed' || node.archived === true) {
       throw new RepoInPlaceError(`node ${nodeId} is closed or archived`);
