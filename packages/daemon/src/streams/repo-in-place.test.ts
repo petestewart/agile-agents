@@ -89,7 +89,7 @@ beforeEach(async () => {
   });
   reshape = new RepoInPlaceService(store, streams, {
     attach: (id) => attach.attach(id),
-    stop: (id) => attach.stop(id),
+    stop: (id, reason) => attach.stop(id, undefined, reason !== undefined ? { reason } : {}),
   });
   await store.putRepos({
     api: { path: api, protected_branches: ['main'] },
@@ -140,6 +140,36 @@ describe('T205 + Repo in place', () => {
     expect(attach.handleFor(node.id)).toBeDefined();
   }, 30_000);
 
+  test('T213: conversation → + api → + web leaves both parts and the coordinator running', async () => {
+    const node = await conversation();
+    await attach.attach(node.id);
+    await reshape.addRepo(node.id, 'api');
+    const { parts } = await reshape.addRepo(node.id, 'web');
+
+    expect(parts).toHaveLength(2);
+    expect(roleOf(node.id)).toBe('coordinating');
+    expect(attach.handleFor(node.id)).toBeDefined();
+    for (const part of parts) {
+      expect(attach.handleFor(part.id)).toBeDefined();
+      const live = streams.get(part.id).sessions.find((s) => s.status === 'running');
+      expect(live?.worktree).toBe(part.worktree);
+    }
+    // The deliberate stops say why, not an exit code.
+    const stops = bodies(node.id).filter((b) => b.startsWith('worker stopped: '));
+    expect(stops).toEqual([
+      'worker stopped: node reshaped into a work node',
+      'worker stopped: node reshaped into parts',
+    ]);
+    expect(bodies(node.id).some((b) => b.includes('process exited'))).toBe(false);
+  }, 60_000);
+
+  test('T213: a node never started keeps its parts unstarted', async () => {
+    const node = await conversation();
+    await reshape.addRepo(node.id, 'api');
+    const { parts } = await reshape.addRepo(node.id, 'web');
+    for (const part of parts) expect(attach.handleFor(part.id)).toBeUndefined();
+  }, 60_000);
+
   test('work + web: coordinating; the api part keeps the branch, commits and sessions', async () => {
     const node = await conversation();
     await attach.attach(node.id);
@@ -163,7 +193,9 @@ describe('T205 + Repo in place', () => {
     expect(apiPart?.branch).toBe(work.branch);
     expect(apiPart?.worktree).toBe(wt);
     expect(git(['rev-parse', work.branch ?? ''], api)).toBe(head);
-    expect(apiPart?.sessions.map((s) => s.id)).toEqual(sessionIds);
+    // The moved history, then T213's restart in the part's worktree.
+    expect(apiPart?.sessions.map((s) => s.id).slice(0, sessionIds.length)).toEqual(sessionIds);
+    expect(apiPart?.sessions.at(-1)?.worktree).toBe(wt);
     expect(roleOf(apiPart?.id ?? '')).toBe('work');
     expect(webPart?.title).toBe('web part');
     expect(webPart?.repo).toBe('web');
