@@ -261,6 +261,18 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
           ...(docsService ? { docs: docsService } : {}),
           ...(rulesService ? { rules: rulesService } : {}),
           ...(routedEvents ? { events: routedEvents } : {}),
+          // T246: an agent's push; its PR is then polled at the babysit cadence.
+          ...(landingService
+            ? {
+                delivery: {
+                  push: async (id: string) => {
+                    const out = await landingService.push(id);
+                    prPoller?.flag(id);
+                    return out;
+                  },
+                },
+              }
+            : {}),
           // The three-proposal cap.
           proposalLimit: {
             assertCanPropose: (caller) => lessonsService?.assertCanPropose(caller),
@@ -353,6 +365,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
             : {}),
           ...(landingService ? { afterTick: () => landingService.settle() } : {}),
           ...(emitRouted ? { emit: emitRouted } : {}),
+          home: config.home,
         })
       : undefined;
   prPoller?.start();

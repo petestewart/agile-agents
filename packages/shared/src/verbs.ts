@@ -91,6 +91,14 @@ export const ReadEventInputSchema = z
   .strict();
 export type ReadEventInput = z.infer<typeof ReadEventInputSchema>;
 
+/**
+ * T246 (projects-design §4.1): push the caller's branch and update its open
+ * PR. Only an already-open PR: the first delivery (and any direct merge)
+ * stays the human's (D8).
+ */
+export const DeliverInputSchema = z.object({ session: Session }).strict();
+export type DeliverInput = z.infer<typeof DeliverInputSchema>;
+
 /** The verb table, in the order §4.1 lists it. */
 export const AGENT_VERBS = [
   'ask',
@@ -102,6 +110,7 @@ export const AGENT_VERBS = [
   'search_docs',
   'test_run',
   'read_event',
+  'deliver',
 ] as const;
 export type AgentVerb = (typeof AGENT_VERBS)[number];
 
@@ -115,6 +124,7 @@ export const AGENT_VERB_SCHEMAS = {
   search_docs: SearchDocsInputSchema,
   test_run: TestRunInputSchema,
   read_event: ReadEventInputSchema,
+  deliver: DeliverInputSchema,
 } as const satisfies Record<AgentVerb, z.ZodType>;
 
 /** One line of help per verb, published to the model by the MCP bridge. */
@@ -129,6 +139,8 @@ export const AGENT_VERB_DESCRIPTIONS: Record<AgentVerb, string> = {
   search_docs: 'Search the repo and stream docs visible to this stream.',
   test_run: 'Run a test command in this session’s worktree; failures only, never a green log.',
   read_event: 'Read the full payload of a routed event ({id}) that was delivered to this stream.',
+  deliver:
+    'Push your committed fix and update your open PR (babysitting). Only once a PR is open; commit first.',
 };
 
 export function isAgentVerb(name: string): name is AgentVerb {

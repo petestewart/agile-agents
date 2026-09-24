@@ -84,6 +84,27 @@ function renderEntry(entry: ThreadEntry): string {
   return `- **${entry.by}** (${entry.kind}): ${entry.body}`;
 }
 
+/**
+ * T246 (projects-design §4.1): a work node with an open PR looks after it
+ * until it merges or closes. Only rendered while the PR is open.
+ */
+export function babysitSection(stream: Stream): string | undefined {
+  const pr = stream.delivery_state?.pr;
+  if (stream.delivery_state?.mode !== 'pr' || pr === undefined || pr.state !== 'open') {
+    return undefined;
+  }
+  return section(
+    'Your PR',
+    [
+      `PR #${pr.number} (${pr.url}) is open: review ${pr.review.replace('_', ' ')}, CI ${pr.checks}, ${pr.mergeable}. Look after it until it merges or closes. Events wake you: \`pr_review\`, \`ci_failed\`, \`pr_behind\`.`,
+      '- **CI failed:** read the log excerpt the event points at, fix the cause, commit, `deliver`. A flaky test is reported with `ask`, never skipped, retried away or disabled.',
+      '- **Review comments:** fix small asks, commit, `deliver`. A design disagreement goes to the operator with `ask`; do not argue it on the PR.',
+      '- **Behind or conflicting:** merge main in, resolve keeping both intents, run the tests, commit, `deliver`.',
+      '- Never merge the PR yourself. With auto-merge on, it merges once checks and reviews pass.',
+    ].join('\n'),
+  );
+}
+
 /** One pass of the assembler at a given thread-tail length and doc body cap. */
 function assemble(
   input: BuildBriefInput,
@@ -109,6 +130,9 @@ function assemble(
       ),
     );
   }
+
+  const babysit = babysitSection(stream);
+  if (babysit !== undefined) parts.push(babysit);
 
   parts.push(section('Rules in scope', renderRules(rules)));
 

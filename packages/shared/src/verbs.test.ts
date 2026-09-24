@@ -35,7 +35,7 @@ describe('effort', () => {
 });
 
 describe('agent verbs', () => {
-  test('are the eight of cockpit design §4.1 plus read_event (projects-design §15)', () => {
+  test('are the eight of cockpit design §4.1 plus read_event (projects-design §15) and deliver (§4.1)', () => {
     expect([...AGENT_VERBS]).toEqual([
       'ask',
       'progress',
@@ -46,6 +46,7 @@ describe('agent verbs', () => {
       'search_docs',
       'test_run',
       'read_event',
+      'deliver',
     ]);
     for (const verb of AGENT_VERBS) {
       expect(AGENT_VERB_SCHEMAS[verb]).toBeDefined();

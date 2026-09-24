@@ -241,6 +241,31 @@ export class DeliveryService {
     return result as LandOutcome;
   }
 
+  /**
+   * T246 (§4.1, babysitting): the agent's `deliver` verb. Pushes the branch
+   * and updates the node's already-open PR (T224's update path), with the
+   * ship check first and `settle` (auto-merge) after. Allowed while the
+   * agent's session is live; never opens a PR or merges (D8).
+   */
+  async push(streamId: string): Promise<LandOutcome> {
+    const stream = this.options.streams.get(streamId);
+    const state = stream.delivery_state;
+    if (state?.mode !== 'pr' || state.pr?.state !== 'open') {
+      throw new LandRefusedError(
+        stream.id,
+        `stream ${stream.id} has no open PR; the first delivery is the human's (agile deliver)`,
+      );
+    }
+    const { repoEntry, branch } = this.requireLandable(stream, { allowLive: true });
+    const target = this.requireAhead(stream, repoEntry, branch);
+    const github = this.requireGitHub(stream, repoEntry, branch);
+    const held = await this.shipCheck({ stream, repoEntry, branch, target }, 'pr', undefined);
+    if (held !== undefined) return held;
+    const outcome = await this.deliverPr(stream, repoEntry, github, branch, target);
+    await this.settleQuietly();
+    return outcome;
+  }
+
   /** The target branch exists and `branch` has commits beyond it; else refused. */
   private requireAhead(stream: Stream, repoEntry: RepoEntry, branch: string): string {
     const repoRoot = repoEntry.path;
@@ -306,7 +331,9 @@ export class DeliveryService {
     const { streams } = this.options;
     const { stream, repoEntry, branch, target } = plan;
     const repoRoot = repoEntry.path;
-    await this.setDeliveryState(stream.id, { mode, status: 'ship_checking' });
+    // An open PR stays on the record through the check (T246: a babysat push).
+    const pr = stream.delivery_state?.pr ? { pr: stream.delivery_state.pr } : {};
+    await this.setDeliveryState(stream.id, { mode, status: 'ship_checking', ...pr });
     const verdict = await this.diffRules.check({
       stream,
       repoRoot,
@@ -321,6 +348,7 @@ export class DeliveryService {
       mode,
       status: 'held',
       held_by: [{ reason: 'ship_check', detail: line }],
+      ...pr,
     });
     await streams.appendThread('daemon', stream.id, { kind: 'event', body: line });
     if (lead !== undefined) {
@@ -746,7 +774,10 @@ export class DeliveryService {
   }
 
   /** Everything that must hold before landing touches git: a repo, a live human status, no live worker. */
-  private requireLandable(stream: Stream): { repoEntry: RepoEntry; branch: string } {
+  private requireLandable(
+    stream: Stream,
+    opts: { allowLive?: boolean } = {},
+  ): { repoEntry: RepoEntry; branch: string } {
     if (stream.repo === undefined || stream.branch === undefined) {
       throw new LandRefusedError(
         stream.id,
@@ -760,7 +791,7 @@ export class DeliveryService {
         `stream ${stream.id} is ${stream.human.status}; only ${LANDABLE_HUMAN_STATUSES.join(' or ')} streams land`,
       );
     }
-    const live = liveSession(stream);
+    const live = opts.allowLive ? undefined : liveSession(stream);
     if (live !== undefined) {
       throw new LandRefusedError(
         stream.id,

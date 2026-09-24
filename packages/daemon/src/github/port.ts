@@ -63,6 +63,8 @@ export interface GitHubCheckRun {
   name: string;
   status: string;
   conclusion: string | null;
+  /** The run's `output` summary and text, joined (T246: the CI log excerpt); absent when empty. */
+  output?: string;
 }
 
 export interface GitHubCombinedStatus {

@@ -64,6 +64,8 @@ export interface VerbServiceOptions {
   /** §5.5's "at most three" proposals from a lessons session, enforced as a gate. */
   /** T244: `read_event`'s read side (`RoutedEventService`). */
   events?: { get(id: string): RoutedEvent | undefined };
+  /** T246: `deliver`'s write side (`DeliveryService.push`). */
+  delivery?: { push(stream: string): Promise<unknown> };
   proposalLimit?: { assertCanPropose(caller: Pick<VerbCaller, 'session' | 'role'>): void };
 }
 
@@ -248,6 +250,18 @@ export class VerbService {
     return { ...event, summary: summaryOf(event, caller.stream, titleOf) };
   }
 
+  /**
+   * T246 (§4.1): a worker pushes its fix and updates its open PR. A
+   * reviewer is read-only; refusals (no open PR) come back as the error.
+   */
+  async deliver(input: unknown): Promise<unknown> {
+    const { session } = validateVerbInput('deliver', input);
+    const caller = this.caller(session);
+    if (caller.role !== 'worker') throw new Error(`deliver: a ${caller.role} session cannot push`);
+    if (this.options.delivery === undefined) throw new Error('deliver: delivery is not available');
+    return this.options.delivery.push(caller.stream);
+  }
+
   /** The repo's own test command, in this session's worktree. Failures only, never a green log. */
   async testRun(input: unknown): Promise<TestRunOutput> {
     const { session, command } = validateVerbInput('test_run', input);
@@ -275,5 +289,6 @@ export function verbHandlers(
     search_docs: (input) => service.searchDocs(input),
     test_run: (input) => service.testRun(input),
     read_event: (input) => service.readEvent(input),
+    deliver: (input) => service.deliver(input),
   };
 }
