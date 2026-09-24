@@ -732,7 +732,7 @@ Design: `design/projects-design.md`, which wins over `design/cockpit-design.md` 
 
 ### Ticket: T202 Migrate an existing home into projects
 - **Priority:** P0
-- **Status:** In Progress
+- **Status:** In Review
 - **Owner:** opus:worker-T202
 - **Scope:** Add a one-shot, idempotent migration on daemon start (§17.1 steps 1, 3 and 4):
   - create project "Unfiled" and re-parent every parentless stream under its root;
@@ -747,8 +747,8 @@ Design: `design/projects-design.md`, which wins over `design/cockpit-design.md` 
 
 ### Ticket: T203 Work nodes deliver to main; parent branches removed
 - **Priority:** P0
-- **Status:** In Progress
-- **Owner:** opus:worker-T203
+- **Status:** Done (merge 44d92d2)
+- **Owner:** —
 - **Scope:**
   - Landing's target becomes the repo's `main_branch`. Remove `parentBranch()` in `landing/service.ts` and the stream's `target_branch`.
   - A coordinating node never gets a branch or worktree.
@@ -756,12 +756,12 @@ Design: `design/projects-design.md`, which wins over `design/cockpit-design.md` 
   - Update LIVE-CHECKLIST §9–14 wording that assumes children land into the parent.
 - **Acceptance Criteria:** Unit: a child of a node that has a repo lands on `main`. A coordinating node refuses a worktree. The existing landing tests pass, rewritten for the new target.
 - **Validation Steps:** `bun test packages/daemon/src/landing packages/daemon/src/attach`; `bun run test:integration`.
-- **Notes:** After T201. D20.
+- **Notes:** After T201. D20. Review (sonnet) PASS. Daemon −46. Stream `target_branch` kept in the schema as deprecated/ignored for old records (design §14.2 prose is stale vs §17). Helpers land on main, not `helper_of`'s branch → T205. T176 `--force`/confirm removed.
 
 ### Ticket: T204 Starting a node starts its agent
 - **Priority:** P1
-- **Status:** Todo
-- **Owner:** —
+- **Status:** In Progress
+- **Owner:** opus:worker-T204
 - **Scope:**
   - `node new` for a work or conversation node starts its agent: a worker for work nodes, and a conversation session with no worktree for conversation nodes. `--no-start` and the cockpit's "Start later" checkbox skip this.
   - The cockpit's Attach control becomes Start/Restart. `agile attach` stays as restart.
@@ -809,17 +809,17 @@ Design: `design/projects-design.md`, which wins over `design/cockpit-design.md` 
 
 ### Ticket: T208 Project tree and switcher in the cockpit
 - **Priority:** P0
-- **Status:** In Progress
-- **Owner:** opus:worker-T208
+- **Status:** Done (merge 56e9c20)
+- **Owner:** —
 - **Scope:** The left rail groups the tree by project, with a project switcher ("All" and each project), role icons (project, coordinating, work, conversation) and labels. New stream and quick capture file into the current project. There is a "New project" dialog. The snapshot carries projects and roles.
 - **Acceptance Criteria:** e2e: create two projects; each one's nodes show only under it; quick capture lands in the selected project.
 - **Validation Steps:** `bun run test:e2e`.
-- **Notes:** After T201. Pete looks at it before T209. From T201: make HTTP `POST /api/streams` require a project (default to the current project in the cockpit).
+- **Notes:** After T201. Pete looks at it before T209. From T201: make HTTP `POST /api/streams` require a project (default to the current project in the cockpit). Review (sonnet) PASS; merge conflicts with T206 (imports, adjacent e2e describes) resolved by the manager. Daemon +54. Follow-ups: New stream parent dropdown not filtered by project; `/api/projects` has no update/archive routes.
 
 ### Ticket: T209 Repo view and lenses
 - **Priority:** P1
-- **Status:** Todo
-- **Owner:** —
+- **Status:** In Progress
+- **Owner:** opus:worker-T209
 - **Scope:** Add a repo view: live work nodes grouped by repo across projects, with the ancestors greyed and the repo's delivery mode shown. The norms and overlap slots are placeholders until T227 and T266. Add lenses: Needs me (the inbox, grouped by node), Running, and Dependencies (the `waits_on` graph as a list).
 - **Acceptance Criteria:** e2e: a node on api in two projects shows under api with both paths; Running lists only nodes with a live session.
 - **Validation Steps:** `bun run test:e2e`.
