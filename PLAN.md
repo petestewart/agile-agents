@@ -41,6 +41,7 @@ Target shape, in one paragraph: a **stream** is the unit (goal, status, parent, 
 - **D28** (2026-09-24, Pete): Jira and Linear are optional links on a node (at most one issue each), never a kind of node. A node with no link rolls up to its nearest linked ancestor. Pulling the issue into the node's goal is on by default. Importing an epic's children is a click. Pushing status to the tracker is off until you turn it on per project. Creating an issue is always a click. The app never closes an issue or edits its text. This lifts the §3 non-goal for tracker links only. It does not bring back the shelved sync.
 - **D29** (2026-09-24, Pete): any agent may read any registered repo by default. A repo set private is readable only by the projects it lists. Changing code is always limited to the node's own repo.
 - **D30** (2026-09-24, Pete): Phases 7–13 are built on stacked branches. `claude/phase-7` comes off the current integration tip, and each `claude/phase-N` comes off `claude/phase-(N-1)`. Ticket branches `T###-<slug>` fork from their phase branch and merge back `--no-ff`. Pete reviews each phase at its QA ticket and lands the phases in order. A fix found in phase N while phase N+1 exists is made on phase N and merged forward into every later phase branch, never cherry-picked backwards.
+- **D31** (2026-09-24, Pete): P17 approved. Jira and Linear tokens may be stored in the home `config.yaml`, the second written credential exception after the TypeSafe key (D16), with the same rules: written only through the store at mode 0600, never printed, logged, committed or sent to the browser; Settings shows only whether a token is set. T320 is unblocked.
 - D11. KiroCrew is not adopted. Borrowed as designs only: hardened worktree creation, the push detector that cannot be dodged by spelling, agent-owned vs human-owned ledger fields, a fail-closed credential scrub before the external classifier, mechanical scope filtering of injected rules, an append-only log.
 
 ## 3. Non-goals for the reshape
@@ -1499,7 +1500,7 @@ agile tail --director
 - **Scope:** `daemon/trackers` with one port (get issue, list epic children, add comment, add link, transition status, create issue) and two adapters (Jira REST, Linear GraphQL). There are fake servers for both, as in T220. Credentials follow P17 **only once Pete has approved it as a D-entry**. `agile daemon status` reports each tracker as configured or not.
 - **Acceptance Criteria:** Adapter tests against the fakes. The token never appears in logs or events (asserted).
 - **Validation Steps:** `bun test packages/daemon/src/trackers`.
-- **Notes:** Blocked on P17 approval. First ticket of Phase 13.
+- **Notes:** P17 approved (D31). First ticket of Phase 13.
 
 ### Ticket: T321 Link a node; pull its goal; edits as events
 - **Priority:** P1
