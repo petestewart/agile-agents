@@ -1991,3 +1991,44 @@ describe('project tree and switcher (Playwright e2e, T208)', () => {
     TEST_BUDGET_MS,
   );
 });
+
+describe('New stream starts the agent (Playwright e2e, T204)', () => {
+  browserTest(
+    'a node made from New stream shows a running session without a second click',
+    async () => {
+      const cockpit = await startStreamCockpit([
+        { steps: [{ type: 'tool_call', toolCallId: 'w-1', title: 'read' }, { type: 'hang' }] },
+      ]);
+      let page: Page | undefined;
+      try {
+        const shop = await new ProjectService(cockpit.store, cockpit.streams).create({
+          name: 'shop',
+        });
+        const parent = await cockpit.streams.create('human', {
+          title: 'ledger-lite',
+          goal: 'g',
+          project: shop.id,
+        });
+        page = await openPage();
+        await page.goto(`${cockpit.base}/`);
+        await page.locator(`[data-testid="stream-tree"] [data-stream="${parent.id}"]`).click();
+        await page.keyboard.press('n');
+        await page.locator('[data-testid="new-stream"]').waitFor({ state: 'visible' });
+        await page.locator('[data-testid="new-stream-title"]').fill('import CSV');
+        await page.locator('[data-testid="new-stream-repo"]').fill('demo');
+        await page.locator('[data-testid="new-stream-create"]').click();
+        await page.locator('[data-testid="new-stream"]').waitFor({ state: 'detached' });
+
+        await page
+          .locator('[data-testid="session"][data-role="worker"][data-status="running"]')
+          .waitFor();
+        // The control reads Restart once a worker has run.
+        expect(await page.locator('[data-testid="attach"]').textContent()).toBe('Restart');
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+});

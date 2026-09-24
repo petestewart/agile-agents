@@ -377,3 +377,27 @@ describe('agile attach (T130) on a no-repo stream, against the fake driver', () 
     expect((JSON.parse(shown.out) as { stream: Stream }).stream.sessions.length).toBe(0);
   });
 });
+
+describe('agile node new starts the agent (T204)', () => {
+  test('a conversation node starts a session; --no-start starts none', async () => {
+    const started = await cli([
+      'node',
+      'new',
+      '--title',
+      'Plan',
+      '--goal',
+      'g',
+      '--project',
+      projectId,
+    ]);
+    expect(started.code).toBe(0);
+    expect(started.out).toMatch(
+      /^started [0-9A-HJKMNP-TV-Z]{26} {2}claude\/claude-opus-5-5 {2}effort=low/m,
+    );
+
+    const later = await newStream('Later');
+    expect(later.sessions).toEqual([]);
+    // `agile attach` is the restart: it starts what --no-start skipped.
+    expect((await cli(['attach', later.id])).code).toBe(0);
+  });
+});
