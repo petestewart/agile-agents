@@ -11,6 +11,7 @@
 import { join } from 'node:path';
 import {
   ClassifierKeyInputSchema,
+  DIRECTOR_NODE,
   type HilDecision,
   HilIdSchema,
   KnowledgeCreateInputSchema,
@@ -48,6 +49,7 @@ import {
 import type { ContractService } from './coordination/contracts';
 import { PlanNotDraftError, type PlanService } from './coordination/plans';
 import { type DeliveryService, LandRefusedError } from './delivery';
+import type { DirectorService } from './director/service';
 import type { DocsService } from './docs';
 import type { RoutedEventService } from './events';
 import {
@@ -142,6 +144,8 @@ export interface HttpServerOptions {
   streams?: StreamService;
   /** T208: `GET/POST /api/projects` and the cockpit frame's projects. */
   projects?: ProjectService;
+  /** T300: `GET /api/director`, `POST /api/director/say`. */
+  director?: DirectorService;
   /** The rules routes (`/api/rules...`). */
   rules?: KnowledgeService;
   /** "Test examples": `rule.test`'s evals through the configured classifier. */
@@ -384,6 +388,7 @@ interface FeedContext {
   gates: GateService;
   streams?: StreamService;
   projects?: ProjectService;
+  director?: DirectorService;
   questions?: QuestionService;
   inbox?: InboxService;
   rules?: KnowledgeService;
@@ -408,6 +413,7 @@ function resolveFeedContext(options: HttpServerOptions): FeedContext | undefined
     gates: options.gates,
     streams: options.streams,
     projects: options.projects,
+    director: options.director,
     questions: options.questions,
     inbox: options.inbox,
     rules: options.rules,
@@ -530,6 +536,39 @@ async function handleSessionSettingsRoute(
     if (err instanceof NotFoundError) return errorResponse(404, message);
     return errorResponse(400, message);
   }
+}
+
+/**
+ * T300 (projects-design §12, P16): the Director page.
+ *
+ *   GET  /api/director      `{record, thread, live, activity}`
+ *   POST /api/director/say  `{body}`: a human line and `director_request`
+ */
+async function handleDirectorRoute(
+  req: Request,
+  url: URL,
+  feed: FeedContext | undefined,
+  sameOrigin: () => boolean,
+): Promise<Response | undefined> {
+  if (url.pathname !== '/api/director' && url.pathname !== '/api/director/say') return undefined;
+  if (!feed?.director) return errorResponse(503, 'director not available');
+  if (url.pathname === '/api/director' && req.method === 'GET') {
+    return jsonResponse({
+      ...feed.director.view(),
+      activity: feed.events?.activityFor(DIRECTOR_NODE) ?? [],
+    });
+  }
+  if (url.pathname === '/api/director/say' && req.method === 'POST') {
+    if (!sameOrigin()) return errorResponse(403, 'cross-origin request rejected');
+    try {
+      const body = (await readJsonBody(req)) as { body?: unknown };
+      if (typeof body?.body !== 'string') return errorResponse(400, 'body must be a string');
+      return jsonResponse(await feed.director.say(body.body));
+    } catch (err) {
+      return errorResponse(400, messageOf(err));
+    }
+  }
+  return undefined;
 }
 
 /**
@@ -1088,6 +1127,9 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
 
         const activityRoute = handleActivityRoute(req, url, feed);
         if (activityRoute) return activityRoute;
+
+        const directorRoute = await handleDirectorRoute(req, url, feed, sameOrigin);
+        if (directorRoute) return directorRoute;
 
         const repoRoute = await handleRepoRoute(req, url, feed, sameOrigin);
         if (repoRoute) return repoRoute;

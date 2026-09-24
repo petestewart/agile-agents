@@ -40,7 +40,11 @@ export const EVENT_KINDS = [
   'project_updated',
 
   // -- thread (store.appendThreadEntry) --  data: {stream, by, entry_kind}
+  // (store.appendDirectorThread: no stream, data.thread = 'director', T300)
   'thread_appended',
+
+  // -- director (store.putDirector, T300) --  data: {session?, status?}
+  'director_put',
 
   // -- session --
   // The runner's ACP observation (§8 adapter contract) and the agent

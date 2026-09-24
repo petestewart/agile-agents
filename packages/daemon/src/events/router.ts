@@ -16,12 +16,26 @@
  *   scope, plan children; the other sibling).
  */
 
-import type { RoutedEvent, RoutedEventType, RoutingEntry, Stream } from '@agile-agents/shared';
+import {
+  DIRECTOR_NODE,
+  type RoutedEvent,
+  type RoutedEventType,
+  type RoutingEntry,
+  type Stream,
+} from '@agile-agents/shared';
 import { isLiveWorkNode } from '../sync/overlap';
 import type { RoutedEventService } from './service';
 
 type Reason = RoutingEntry['because'];
-type Rule = 'self' | 'ancestors' | 'parent' | 'waits_on' | 'same_repo' | 'party' | 'sibling';
+type Rule =
+  | 'director'
+  | 'self'
+  | 'ancestors'
+  | 'parent'
+  | 'waits_on'
+  | 'same_repo'
+  | 'party'
+  | 'sibling';
 
 /** §15 recipients per type. `party`/`sibling` take the producer's named nodes. */
 export const ROUTES: Record<RoutedEventType, readonly Rule[]> = {
@@ -49,7 +63,8 @@ export const ROUTES: Record<RoutedEventType, readonly Rule[]> = {
   coordinator_note: ['self'],
   plan_changed: ['party'],
   external_changed: ['self'],
-  director_request: ['self'],
+  // T300 (P16): the Director is not a node; its queue is `director`.
+  director_request: ['director'],
 };
 
 /** Types whose parties also bring their own ancestors (overlap: "both nodes, their ancestors"). */
@@ -103,6 +118,12 @@ export function routeEvent(input: RouteInput, all: readonly Stream[]): Route {
   const { subject } = input;
   for (const rule of ROUTES[input.type]) {
     switch (rule) {
+      case 'director':
+        if (!seen.has(DIRECTOR_NODE)) {
+          seen.add(DIRECTOR_NODE);
+          routing.push({ node: DIRECTOR_NODE, because: 'self' });
+        }
+        break;
       case 'self':
         add(subject, 'self');
         break;
@@ -139,7 +160,7 @@ export function routeEvent(input: RouteInput, all: readonly Stream[]): Route {
     for (const p of input.parties ?? []) for (const a of ancestorsOf(p, byId)) add(a, 'ancestor');
   }
   const expired = routing
-    .map((r) => byId.get(r.node) as Stream)
+    .flatMap((r) => byId.get(r.node) ?? [])
     .filter((s) => s.archived === true || s.human.status === 'closed')
     .map((s) => s.id);
   const coalesce_key = coalesceKeyFor(input);

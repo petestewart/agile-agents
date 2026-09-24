@@ -82,7 +82,13 @@ export interface AgentSessionOptions {
   store: StateStore;
   streams: StreamService;
   /** Its id is what the thread and the registry entry carry. */
-  stream: Stream;
+  /** The stream the session works on; absent for a stream-less owner (below). */
+  stream?: Stream;
+  /**
+   * T300 (P16): a session with no stream (the Director). `id` names it in
+   * handles and exit info; its output lines go to `appendOutput`.
+   */
+  owner?: { id: string; appendOutput(body: string, ref: string): Promise<unknown> };
   /** The session record `attach/service.ts` minted. */
   session: SessionRef;
   role: SessionRole;
@@ -262,6 +268,11 @@ function chunkText(content: unknown): string | null {
 
 export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle {
   const { store, streams, stream, session: sessionRef, role, worktreePath, brief } = opts;
+  const streamId = stream?.id;
+  if (streamId === undefined && opts.owner === undefined) {
+    throw new Error('startAgentSession: a session needs a stream or an owner');
+  }
+  const ownerId = streamId ?? (opts.owner?.id as string);
   const sessionId = sessionRef.id;
   const now = opts.now ?? (() => new Date());
   const cliBin = normalizeCliBin(opts.cliBin);
@@ -342,7 +353,7 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
       ...modelContribution.env,
       ...effortContribution.env,
       AGILE_AGENT: sessionId,
-      AGILE_STREAM: stream.id,
+      ...(streamId !== undefined ? { AGILE_STREAM: streamId } : {}),
       // Headless git: a `commit` without -m would open core.editor and hang.
       GIT_EDITOR: 'true',
       ...(opts.socketPath ? { AGILE_SOCKET_PATH: opts.socketPath } : {}),
@@ -365,8 +376,8 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
     session: spawned,
     // The same rules the hook tier enforces, bound to this stream: the
     // only tier a vendor without a pre-tool-use hook has.
-    ...(opts.rules !== undefined
-      ? { patternRules: patternRuleGate({ store, rules: opts.rules, stream: stream.id }) }
+    ...(opts.rules !== undefined && streamId !== undefined
+      ? { patternRules: patternRuleGate({ store, rules: opts.rules, stream: streamId }) }
       : {}),
   });
 
@@ -398,12 +409,14 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
     const body =
       text.length > THREAD_BODY_MAX_CHARS ? `${text.slice(0, THREAD_BODY_MAX_CHARS - 1)}…` : text;
     const append = () =>
-      streams.appendThread(
-        'agent',
-        stream.id,
-        { kind: 'line', body, ref: outputLog.path },
-        sessionId,
-      );
+      opts.owner !== undefined
+        ? opts.owner.appendOutput(body, outputLog.path)
+        : streams.appendThread(
+            'agent',
+            ownerId,
+            { kind: 'line', body, ref: outputLog.path },
+            sessionId,
+          );
     const logFailure = (attempt: string, err: unknown) =>
       // Into stderr.log, not the stderr tail: it is the daemon's failure, not the vendor's.
       stderrLog.append(
@@ -428,7 +441,7 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
     await store.putAgent(sessionId as AgentId, {
       vendor: provider.id,
       model,
-      stream: stream.id,
+      ...(streamId !== undefined ? { stream: streamId } : {}),
       ...(spawned.pid !== null ? { pid: spawned.pid } : {}),
       last_seen: now().toISOString(),
       role,
@@ -456,7 +469,7 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
     const vendorError = failed ? lastStderrLine(stderrTail) : undefined;
     resolveExited({
       session: sessionId,
-      stream: stream.id,
+      stream: ownerId,
       reason,
       ok,
       ...(vendorError !== undefined ? { vendorError } : {}),
@@ -531,7 +544,7 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
             buildEvent('tool_call', {
               agent: sessionId as AgentId,
               data: {
-                stream: stream.id,
+                stream: ownerId,
                 toolCallId: update?.toolCallId,
                 kind: update?.kind,
                 title: update?.title,
@@ -581,7 +594,7 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
             // not let the session go while a queued line is still to run.
             opts.onTurnEnd?.({
               session: sessionId,
-              stream: stream.id,
+              stream: ownerId,
               turn: turnCount,
               queued: inFlight - 1,
             });
@@ -597,7 +610,7 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
             buildEvent('agent_put', {
               agent: sessionId as AgentId,
               data: {
-                stream: stream.id,
+                stream: ownerId,
                 warning: `prompt failed, stopping session: ${message}`,
               },
             }),
@@ -645,7 +658,7 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
         buildEvent('agent_put', {
           agent: sessionId as AgentId,
           data: {
-            stream: stream.id,
+            stream: ownerId,
             warning:
               'spawned session pid unknown at registration; AgentRecord.pid omitted (never falls back to the daemon pid)',
           },
@@ -659,7 +672,7 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
 
   return {
     sessionId,
-    stream: stream.id,
+    stream: ownerId,
     role,
     worktree: worktreePath,
     session: spawned,

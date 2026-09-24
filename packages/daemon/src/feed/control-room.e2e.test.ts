@@ -46,6 +46,7 @@ import { CardService } from '../coordination/cards';
 import { ContractService } from '../coordination/contracts';
 import { PlanService } from '../coordination/plans';
 import { DeliveryService } from '../delivery';
+import { DirectorService } from '../director';
 import { DocsService } from '../docs';
 import { RoutedEventService, routeAndEmit } from '../events';
 import { GateService } from '../gates';
@@ -502,6 +503,7 @@ interface Cockpit {
   plans: PlanService;
   contracts: ContractService;
   autonomy: AutonomyService;
+  director: DirectorService;
   /** Every `deliver(sessionId, question)` the question service made — the hand-off to the asking session. */
   delivered: Array<{ session: string; question: Question }>;
   http: HttpServerHandle;
@@ -547,6 +549,8 @@ async function startCockpit(
   });
   const projects = new ProjectService(store, streams);
   const events = new RoutedEventService(store);
+  // T300: no delivery wired, so a line to the Director stays pending (no session).
+  const director = new DirectorService({ store, streams, events, home });
   const http = startHttpServer({
     port: 0,
     version: 'test',
@@ -557,6 +561,7 @@ async function startCockpit(
     streams,
     projects,
     events,
+    director,
     questions,
     inbox,
     rules,
@@ -591,6 +596,7 @@ async function startCockpit(
     plans,
     contracts,
     autonomy,
+    director,
     delivered,
     http,
     base: `http://127.0.0.1:${http.port}`,
@@ -2962,6 +2968,48 @@ describe('coordinator autonomy (Playwright e2e, T282)', () => {
           await new Promise((r) => setTimeout(r, 50));
         }
         expect(cockpit.autonomy.levelFor(node.id)).toBe('organise');
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+});
+
+describe('the Director page (Playwright e2e, T300)', () => {
+  browserTest(
+    'the page shows the Director thread; a line sent there is routed to the Director',
+    async () => {
+      const cockpit = await startCockpit();
+      let page: Page | undefined;
+      try {
+        await cockpit.store.appendDirectorThread({
+          ts: new Date().toISOString(),
+          by: 'director',
+          kind: 'line',
+          body: 'Two projects are idle.',
+        });
+        page = await openPage();
+        await page.goto(`${cockpit.base}/`);
+        await page.locator('[data-view="director"]').click();
+        await page.locator('[data-testid="director-page"]').waitFor();
+        const entry = (text: string) =>
+          (page as Page)
+            .locator('[data-testid="director-thread"] [data-testid="thread-entry"]', {
+              hasText: text,
+            })
+            .waitFor();
+        await entry('Two projects are idle.');
+        await page.locator('[data-testid="director-composer"]').fill('Shop needs sale prices.');
+        await page.locator('[data-testid="director-send"]').click();
+        await entry('Shop needs sale prices.');
+        await page
+          .locator('[data-testid="director-activity-row"]', { hasText: 'director request' })
+          .waitFor();
+        expect(cockpit.events.pendingFor('director').map((p) => p.event.type)).toEqual([
+          'director_request',
+        ]);
       } finally {
         await teardown([page]);
         await cockpit.stop();
