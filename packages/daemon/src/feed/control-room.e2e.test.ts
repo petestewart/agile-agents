@@ -2417,10 +2417,31 @@ describe('repo view and lenses (Playwright e2e, T209)', () => {
           ],
         }));
 
+        // T265: an accepted api standard shows under api; a proposal and a web one do not.
+        const apiNorm = await cockpit.rules.create('human', {
+          text: 'every handler validates its input',
+          scope: { kind: 'repo', repo: 'api' },
+        });
+        await cockpit.rules.accept(apiNorm.id, 'human');
+        await cockpit.rules.create('human', {
+          text: 'a proposal is not a norm',
+          scope: { kind: 'repo', repo: 'api' },
+        });
+
         page = await openPage();
         await page.goto(`${cockpit.base}/`);
         await page.locator('[data-view="repos"]').click();
         const api = '[data-testid="repo-view"] [data-repo="api"]';
+        await page.locator(`${api} [data-knowledge="${apiNorm.id}"]`).waitFor({ state: 'visible' });
+        expect(await page.locator(`${api} [data-testid="repo-norm"]`).count()).toBe(1);
+        expect(
+          await page.locator(`${api} [data-knowledge="${apiNorm.id}"]`).textContent(),
+        ).toContain('every handler validates its input');
+        expect(
+          await page
+            .locator('[data-testid="repo-view"] [data-repo="web"] [data-testid="repo-norm"]')
+            .count(),
+        ).toBe(0);
         await page.locator(`${api} [data-stream="${blogApi.id}"]`).waitFor({ state: 'visible' });
         expect(await page.locator(`${api} [data-testid="repo-delivery"]`).textContent()).toBe(
           '(pr)',

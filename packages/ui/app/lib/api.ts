@@ -162,6 +162,12 @@ export async function getRepoEvents(repo: string): Promise<RoutedEvent[]> {
   return out.events;
 }
 
+/** T265: the repo's accepted standards and architecture. */
+export async function getRepoKnowledge(repo: string): Promise<Rule[]> {
+  const res = await get<{ knowledge: Rule[] }>(`/api/repos/${encodeURIComponent(repo)}/knowledge`);
+  return res.knowledge;
+}
+
 /** T161: the composer — a human line on the thread, and a prompt to the attached worker if there is one. */
 export function sayOnStream(id: string, body: string): Promise<{ prompted?: string }> {
   return post(`/api/streams/${encodeURIComponent(id)}/say`, { body }) as Promise<{
