@@ -1192,8 +1192,8 @@ agile node show $P --json | jq -r '.delivery_state.status, .delivery_state.pr.au
 
 ### Ticket: T260 Knowledge items replace rules
 - **Priority:** P0
-- **Status:** In Progress
-- **Owner:** opus:worker-T260
+- **Status:** Done (merge e67f850)
+- **Owner:** —
 - **Scope:**
   - Add `KnowledgeItem` (§14.3) in `shared/knowledge.ts`, and `knowledge/` in the store.
   - Migrate `rules/` (§17.1 step 2, P6), keeping the ulids. Rename `daemon/rules` to `daemon/knowledge`.
@@ -1202,12 +1202,12 @@ agile node show $P --json | jq -r '.delivery_state.status, .delivery_state.pr.au
   - Delete `seed-plan-v1.ts`.
 - **Acceptance Criteria:** Migration test on a copied home with every enforcement and stage combination. The CLI shows the name on cards. The existing rules tests pass under the new names.
 - **Validation Steps:** `bun test packages/shared packages/daemon/src/knowledge packages/cli`.
-- **Notes:** First ticket of Phase 10.
+- **Notes:** First ticket of Phase 10. Review (sonnet): 2 blocking fixed (crash-safe P6 twin migration; propose_rule examples kept in `source.finding` for `tell` items). Daemon −165. `agile knowledge` (alias `rules`), RPC `knowledge.*` with `rule.*` aliases, `K-<ulid>` keeping rule ulids; the hook asks only `action` items. Still `/api/rules` and the Rules screen (T266 renames). CLAUDE.md still names `packages/daemon/src/rules` (needs Pete's OK to edit).
 
 ### Ticket: T261 Stacked scopes and paths
 - **Priority:** P0
-- **Status:** Todo
-- **Owner:** —
+- **Status:** In Progress
+- **Owner:** opus:worker-T261
 - **Scope:** One scope filter (global, repo, project, subtree, plus `paths`) used by the brief, the hook and ship. In the worked example, the web part gets global, web and Shop items and its parent's contracts, and nothing from Blog. Paths filter against the files being edited (action) or changed (ship); the brief lists path-limited items under their globs.
 - **Acceptance Criteria:** Table tests from the worked example (§11 step 3).
 - **Validation Steps:** `bun test packages/daemon/src/knowledge packages/daemon/src/hook`.
@@ -1250,8 +1250,8 @@ agile node show $P --json | jq -r '.delivery_state.status, .delivery_state.pr.au
 
 ### Ticket: T265 ∥ Per-repo norms in the repo view
 - **Priority:** P2
-- **Status:** Todo
-- **Owner:** —
+- **Status:** In Progress
+- **Owner:** opus:worker-T265
 - **Scope:** The repo view (T209) lists the accepted standards and architecture for that repo, with enforcement and stats.
 - **Acceptance Criteria:** e2e: an accepted api standard shows under api.
 - **Validation Steps:** `bun run test:e2e`.
@@ -1259,8 +1259,8 @@ agile node show $P --json | jq -r '.delivery_state.status, .delivery_state.pr.au
 
 ### Ticket: T266 Knowledge screen
 - **Priority:** P1
-- **Status:** Todo
-- **Owner:** —
+- **Status:** In Progress
+- **Owner:** opus:worker-T266
 - **Scope:** The Rules screen becomes Knowledge:
   - filter by kind, scope and enforcement; edit text, paths, enforcement and check;
   - bulk accept and retire; Test examples (unchanged);
