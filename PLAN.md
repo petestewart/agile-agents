@@ -774,8 +774,8 @@ Design: `design/projects-design.md`, which wins over `design/cockpit-design.md` 
 
 ### Ticket: T205 + Repo in place
 - **Priority:** P1
-- **Status:** In Progress
-- **Owner:** opus:worker-T205
+- **Status:** Done (merge ca8e9ff)
+- **Owner:** —
 - **Scope:** Add `node.add_repo` and `node.switch_repo` (RPC, `agile node add-repo`/`switch-repo`, and a + Repo button on the stream page), with the three reshapes in projects-design §7:
   - conversation → work: create the branch and worktree;
   - work → coordinating: move the branch, worktree and sessions into a new child "<repo> part", keeping the commits, and create a second part;
@@ -784,7 +784,7 @@ Design: `design/projects-design.md`, which wins over `design/cockpit-design.md` 
   New parts start with the thread-so-far pointer, the docs and the decisions. The chat stays on the node.
 - **Acceptance Criteria:** Unit tests for all three reshapes, including that the moved branch keeps its commits and that `nodeRole` changes. e2e: + Repo on a conversation shows the same thread with a new part row.
 - **Validation Steps:** `bun test packages/daemon/src/streams`; `bun run test:e2e`.
-- **Notes:** After T204. An agent's "add web too?" suggestion is a `propose_next` card with an Add button (UI only). From T203: make helpers deliver to `helper_of`'s branch when this ticket starts populating `helper_of`, or record why not. From T204: a live conversation node that gains a part becomes coordinating while its session is live — handle per §7.
+- **Notes:** After T204. An agent's "add web too?" suggestion is a `propose_next` card with an Add button (UI only). From T203: make helpers deliver to `helper_of`'s branch when this ticket starts populating `helper_of`, or record why not. From T204: a live conversation node that gains a part becomes coordinating while its session is live — handle per §7. Review (sonnet): 1 blocking (unfiltered `node list --json` kept the old shape) fixed; split now rolls back on a mid-sequence failure. Daemon +302. `node list --json` is a bare array with `role`; `node show --json` flattens the record (keeps `stream`). A live worker is stopped and restarted across the reshape; parts are not auto-started. `helper_of` delivery deferred: T205 never sets `helper_of` (§7 parts are ordinary work nodes delivering to main) — belongs with T288 (same-repo helpers).
 
 ### Ticket: T206 ∥ Add a repo from the cockpit
 - **Priority:** P2
@@ -838,8 +838,8 @@ Design: `design/projects-design.md`, which wins over `design/cockpit-design.md` 
 
 ### Ticket: T211 LIVE-CHECKLIST for projects
 - **Priority:** P1
-- **Status:** Todo
-- **Owner:** —
+- **Status:** In Progress
+- **Owner:** opus:worker-T211
 - **Scope:** Rewrite LIVE-CHECKLIST.md for Phase 7: a scratch home, projects, `node new`, + Repo, and the views. Add T175 item (4), that a fresh home starts with the built-in rules. All commands are zsh-paste-safe: no placeholders, no inline comments, ids captured with `jq`.
 - **Acceptance Criteria:** Every command in the file runs as pasted against a fresh home on the phase branch (checked by the QA ticket).
 - **Validation Steps:** Read-through by QA.
