@@ -16,6 +16,7 @@ import { type ParsedArgs, parseArgs } from './args';
 import { runAnswer } from './commands/answer';
 import { runAttach, runDetach } from './commands/attach';
 import {
+  agileHomeProblem,
   daemonStatusReport,
   formatDaemonStatus,
   runDaemonForeground,
@@ -139,6 +140,13 @@ export async function runCli(argv: string[], cwd: string = process.cwd()): Promi
   const json = argv.includes('--json');
   const rest = argv.filter((a) => a !== '--json');
   const [command, sub, ...restArgv] = rest;
+
+  // T210: a non-directory AGILE_HOME is refused up front, one line.
+  const homeProblem = agileHomeProblem();
+  if (homeProblem) {
+    console.error(homeProblem);
+    return 1;
+  }
 
   if (command === 'init') {
     console.log(runCliInit().message);
