@@ -1397,21 +1397,21 @@ agile tail --node $N --events
 
 ### Ticket: T285 Contract proposals
 - **Priority:** P1
-- **Status:** In Progress
-- **Owner:** opus:worker-T285
+- **Status:** Done (merge 8677401)
+- **Owner:** —
 - **Scope:** The `propose_contract` verb (from one child, or co-signed by siblings) adds a `contract_proposal` to the parent. The coordinator approves it (at Run, when it is routine), rejects it with a reason, or asks you (an inbox card). Approval bumps the version and notifies the parties.
 - **Acceptance Criteria:** The worked-example test: api proposes `saleEndsAt`, the coordinator approves at Run, and web gets `contract_changed`. At Organise the same proposal goes to the inbox.
 - **Validation Steps:** `bun test packages/daemon/src/coordination`.
-- **Notes:** After T282.
+- **Notes:** After T282. Review (sonnet) PASS. Daemon +201. `propose_contract` (child's `routine` is only a claim) and `decide_contract` (coordinator of the contract's node; its own `routine` drives the gate). Gap → T286: a rejected proposal only writes thread lines, no routed event to the proposer; co-signers unverified.
 
 ### Ticket: T286 ∥ Ask sibling
 - **Priority:** P2
-- **Status:** Todo
-- **Owner:** —
+- **Status:** In Progress
+- **Owner:** opus:worker-T286
 - **Scope:** The `ask_sibling(node, question)` and `reply_sibling` verbs. The exchange is written to both threads, and the parent gets a copy. A joint proposal is `propose_contract` with both signatures. The brief states the line between details and plan changes.
 - **Acceptance Criteria:** The fake-agent currency example from §9.5 end to end.
 - **Validation Steps:** `bun test packages/daemon/src/coordination packages/daemon/src/events`.
-- **Notes:** After T285.
+- **Notes:** After T285. From T285 review: tell the proposer (routed event) when its contract proposal is rejected or approved; co-signers must actually agree (via ask/reply) before a joint proposal is filed.
 
 ### Ticket: T287 Sibling finished and collisions go to the parent
 - **Priority:** P1
