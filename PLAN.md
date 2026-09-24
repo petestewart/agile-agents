@@ -1291,12 +1291,12 @@ agile node show $P --json | jq -r '.delivery_state.status, .delivery_state.pr.au
 
 ### Ticket: T268 Ship-check classifier false hold; Phase 10 wording
 - **Priority:** P1
-- **Status:** In Progress
-- **Owner:** opus:worker-T268
+- **Status:** Done (merge b250331)
+- **Owner:** —
 - **Scope:** From T267 QA with the real TypeSafe key: the `tests-with-changes` ship item (Pete's T267 script) kept holding delivery after the worker added a real test (3 retries, deny 0.80–0.86), though `agile knowledge test` passed on the item's examples. Find out what the classifier is actually sent at ship time (the whole diff? truncated? file list?) and why it disagrees with the examples; fix the request (e.g. give it the changed-file list plus a bounded diff, and phrase the call the way the examples are phrased) so the T267 flow holds, then passes after a test is added. Check with the real key (D16; never print it). Also: the hold message still says "landing refused by diff rule"; `brief.md`'s heading still says "Rules in scope". Use knowledge wording.
 - **Acceptance Criteria:** Unit tests (FakeClassifier) pin the request shape. A recorded manual run with the real key: the T267 hold, then a pass after a test is added. Wording updated.
 - **Validation Steps:** `bun test packages/daemon/src/delivery packages/daemon/src/classifier packages/daemon/src/runner`.
-- **Notes:** Before Pete's Phase 10 look.
+- **Notes:** Before Pete's Phase 10 look. Review (sonnet): code PASS; its one blocker was this record. Cause: an over-budget diff is split per file (§8.2/D14) and the src part never saw the added test (real key: 0.77/0.73). Every ship call now carries the full changed-file list (cap 200) before the diff; default question "Does this change violate: …?". Manual run with the real key (key never printed), T267 flow on a scratch ledger-lite: no test → held (0.81); test added → merged. Split parts now 0.44–0.53 (routed, not denied). Open for Pete: the no-test hold sits just above the 0.8 band; per-file splitting is weaker than one whole-diff call (changing it changes §8.2/D14). Wording: "delivery held by ship check <name>", brief heading "Knowledge in scope". Daemon +38.
 
 ### Ticket: T267 Phase 10 QA and Pete's look
 - **Priority:** P0
