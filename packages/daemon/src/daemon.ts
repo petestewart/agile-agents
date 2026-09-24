@@ -46,7 +46,7 @@ import { resolveCliBin } from './runner';
 import { StateStore, buildStateRpcMethods } from './store';
 import { migrateHome } from './store/migrate';
 import { RepoInPlaceService, StreamService, buildStreamRpcMethods } from './streams';
-import { MainSync, OverlapTracker } from './sync';
+import { MainSync, OverlapTracker, SymbolWatcher } from './sync';
 
 export const DAEMON_VERSION: string = daemonPackageJson.version;
 
@@ -414,6 +414,16 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
     });
   }
 
+  // T284: the import index, changed exports on cards, and `symbol_changed`.
+  const symbolWatcher =
+    store && streamService
+      ? new SymbolWatcher({
+          store,
+          streams: streamService,
+          repos: () => store.getRepos(),
+          ...(emitRouted ? { emit: emitRouted } : {}),
+        })
+      : undefined;
   // T227: overlap tracking — `touched` after edit hooks, commits and every 60 s.
   const overlapTracker =
     store && streamService
@@ -424,6 +434,14 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
             ? { intervalMs: options.overlapRecomputeMs }
             : {}),
           ...(emitRouted ? { emit: emitRouted } : {}),
+          ...(symbolWatcher
+            ? {
+                afterTouched: (id: string) =>
+                  symbolWatcher
+                    .onTouched(id)
+                    .catch((err) => console.error('symbol watch failed:', err)),
+              }
+            : {}),
         })
       : undefined;
   overlapTracker?.start();

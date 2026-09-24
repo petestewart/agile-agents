@@ -95,6 +95,8 @@ export interface OverlapTrackerOptions {
   now?: () => Date;
   /** T244: `overlap` when this node starts sharing a file with another live node. */
   emit?: EmitRouted;
+  /** T284: after a node's `touched` changed (changed exports, `symbol_changed`). */
+  afterTouched?: (id: string) => Promise<void>;
 }
 
 /** Keeps `touched` current for live work nodes; writes only on a change. */
@@ -149,6 +151,7 @@ export class OverlapTracker {
     }
     await this.options.streams.update('daemon', id, { touched });
     await this.emitNew(id, all);
+    await this.options.afterTouched?.(id);
   }
 
   /** One `overlap` per pair with this node that was not an overlap before this update. */

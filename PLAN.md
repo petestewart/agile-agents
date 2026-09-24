@@ -1385,7 +1385,7 @@ agile tail --node $N --events
 
 ### Ticket: T284 Import index and sibling alerts
 - **Priority:** P1
-- **Status:** Todo
+- **Status:** Done (merge 3e6e72c)
 - **Owner:** —
 - **Scope:** Build `index/<repo>.json` for TS/JS only (P14) and keep `exports_changed` on cards. Alerts:
   - the same file edited by siblings → `overlap` to both plus the parent;
@@ -1393,7 +1393,7 @@ agile tail --node $N --events
   - a contract's paths touched → the parent and its parties.
 - **Acceptance Criteria:** A fixture repo: changing the export `salePrice` in `prices.ts` alerts the sibling that imports it, and nobody else.
 - **Validation Steps:** `bun test packages/daemon/src/sync packages/daemon/src/coordination`.
-- **Notes:** After T283.
+- **Notes:** After T283. Review (sonnet) PASS. Daemon +401. Regex scanner (P14), no dependency; index cached by main sha. A sibling "uses" a symbol only via files it changed (imports already on main are shared by all siblings and would alert everyone) — false negatives accepted. Not built: the contract-paths alert — §14.4 `Contract` has no paths; needs Pete: add `Contract.paths`, or derive from the plan owner's globs. Same-file overlap was already delivered by T227/T244.
 
 ### Ticket: T285 Contract proposals
 - **Priority:** P1
