@@ -1,5 +1,6 @@
 /**
- * `LandingService`: `agile land <stream>` and the Land button (§8.2): an
+ * `DeliveryService` (§14.7, direct path): `agile deliver <node>` (alias
+ * `agile land`) and the Delivery panel's Merge button (§8.2): an
  * optional `land` gate, diff-level rules, then `merge --no-ff` into the
  * target; `human.status: landed`, worktree removed, branch kept. The merge
  * runs in a temporary worktree, so a conflict leaves the target untouched
@@ -12,7 +13,13 @@
 import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { HilRequest, RepoEntry, Stream } from '@agile-agents/shared';
+import {
+  type DeliveryState,
+  type HilRequest,
+  type RepoEntry,
+  type Stream,
+  resolveDelivery,
+} from '@agile-agents/shared';
 import { liveSession } from '../attach/service';
 import type { GateService } from '../gates/service';
 import type { StateStore } from '../store';
@@ -74,7 +81,7 @@ export type LandOutcome =
   | { status: 'blocked'; target: string; conflicts: string[]; line: string }
   | { status: 'landed'; target: string; sha: string; line: string };
 
-/** The Land button's "before" read (`LandingService.preflight`). */
+/** The Land button's "before" read (`DeliveryService.preflight`). */
 export interface LandPreflight {
   ready: boolean;
   /** Why `land` would refuse right now; absent when `ready`. */
@@ -94,7 +101,7 @@ export interface LandPreflight {
 /** How much of a stream diff travels in one response. */
 export const STREAM_DIFF_MAX_CHARS = 20_000;
 
-/** The stream page's diff tab (`LandingService.diff`). */
+/** The stream page's diff tab (`DeliveryService.diff`). */
 export interface StreamDiff {
   stream: string;
   branch: string;
@@ -112,7 +119,7 @@ export interface LandOptions {
   gateApproved?: boolean;
 }
 
-export interface LandingServiceOptions {
+export interface DeliveryServiceOptions {
   store: StateStore;
   streams: StreamService;
   /** Only needed for repos with `land_gate: true`; without it such a repo refuses to land. */
@@ -123,10 +130,10 @@ export interface LandingServiceOptions {
   onStreamEnd?: (streamId: string) => void | Promise<void>;
 }
 
-export class LandingService {
+export class DeliveryService {
   private readonly diffRules: DiffRules;
 
-  constructor(private readonly options: LandingServiceOptions) {
+  constructor(private readonly options: DeliveryServiceOptions) {
     this.diffRules = options.diffRules ?? ALLOW_ALL_DIFF_RULES;
   }
 
@@ -151,13 +158,24 @@ export class LandingService {
       );
     }
 
+    // §14.7: the mode is resolved at the first delivery attempt. PR delivery is T224's.
+    const mode = stream.delivery_state?.mode ?? this.resolveMode(stream, repoEntry);
+    if (mode !== 'direct') {
+      throw new LandRefusedError(
+        stream.id,
+        `stream ${stream.id} delivers by pull request; PR delivery is not available yet`,
+      );
+    }
+
     // 1. The gate, when the repo asks for one (§8.2: default is no gate).
     if (repoEntry.land_gate === true && options.gateApproved !== true) {
+      await this.setDeliveryState(stream.id, { mode, status: 'ready' });
       const gated = await this.raiseGate(stream, branch, target);
       if (gated !== undefined) return gated;
     }
 
-    // 2. Diff-level rules (§8.2; `ClassifierDiffRules` when one is wired).
+    // 2. The ship check: diff-level rules (§8.2; `ClassifierDiffRules` when one is wired).
+    await this.setDeliveryState(stream.id, { mode, status: 'ship_checking' });
     const verdict = await this.diffRules.check({
       stream,
       repoRoot,
@@ -168,13 +186,20 @@ export class LandingService {
     if (verdict.decision !== 'allow') {
       const what = verdict.decision === 'route' ? 'routed' : 'refused';
       const line = `landing ${what} by diff rule${verdict.rule ? ` ${verdict.rule}` : ''}: ${verdict.reason}`;
+      await this.setDeliveryState(stream.id, {
+        mode,
+        status: 'held',
+        held_by: [{ reason: 'ship_check', detail: line }],
+      });
       await streams.appendThread('daemon', stream.id, { kind: 'event', body: line });
       // A route waits on its gate; a deny (or a gateless route) ends the call.
       if (verdict.gate !== undefined) return { status: 'gated', gate: verdict.gate, line };
       return { status: 'refused', reason: verdict.reason, line };
     }
 
-    // 3. The merge, in a temporary worktree of the target.
+    // 3. Ready (direct: this call is the Merge click), then the merge in a
+    // temporary worktree of the target.
+    await this.setDeliveryState(stream.id, { mode, status: 'ready' });
     const merged = this.merge(repoRoot, branch, target, stream);
     if (!merged.ok) {
       const line =
@@ -183,6 +208,12 @@ export class LandingService {
           : `land ${branch} into ${target} failed: ${merged.reason}`;
       await streams.update('daemon', stream.id, {
         agent: { status: 'blocked' },
+        delivery_state: {
+          mode,
+          status: merged.conflicts.length > 0 ? 'conflict' : 'held',
+          held_by: [{ reason: 'conflict', detail: line }],
+          at: new Date().toISOString(),
+        },
         ...(merged.conflicts.length > 0
           ? {
               land_conflict: {
@@ -201,6 +232,12 @@ export class LandingService {
     const line = `landed ${branch} into ${target} (${merged.sha.slice(0, 12)})`;
     await streams.update('daemon', stream.id, {
       human: { status: 'landed' },
+      delivery_state: {
+        mode,
+        status: 'merged',
+        merged_sha: merged.sha,
+        at: new Date().toISOString(),
+      },
       ...(stream.land_conflict ? { land_conflict: null } : {}),
     });
     await streams.appendThread('daemon', stream.id, { kind: 'event', body: line });
@@ -297,6 +334,11 @@ export class LandingService {
     if (!mergedOutside(repoRoot, branch, target)) {
       throw new LandRefusedError(stream.id, `${branch} is not merged into ${target}`);
     }
+    await this.setDeliveryState(stream.id, {
+      mode: stream.delivery_state?.mode ?? this.resolveMode(stream, repoEntry),
+      status: 'merged',
+      merged_sha: runGit(['rev-parse', `refs/heads/${branch}`], repoRoot, repoRoot),
+    });
     const updated = await streams.update('human', stream.id, { human: { status: 'landed' } });
     await streams.appendThread('human', stream.id, {
       kind: 'event',
@@ -387,6 +429,29 @@ export class LandingService {
       );
     }
     return { repoEntry, branch: stream.branch };
+  }
+
+  /** §14.7: node override, else project, else repo entry, else direct. */
+  private resolveMode(stream: Stream, repoEntry: RepoEntry): DeliveryState['mode'] {
+    let project: Parameters<typeof resolveDelivery>[1];
+    if (stream.project !== undefined) {
+      try {
+        project = this.options.store.getProject(stream.project);
+      } catch {
+        project = undefined;
+      }
+    }
+    return resolveDelivery(repoEntry, project, stream).mode;
+  }
+
+  /** Writes `delivery_state` (daemon-only, §14.2). */
+  private async setDeliveryState(
+    streamId: string,
+    state: Omit<DeliveryState, 'at'>,
+  ): Promise<void> {
+    await this.options.streams.update('daemon', streamId, {
+      delivery_state: { ...state, at: new Date().toISOString() },
+    });
   }
 
   /** The stream's repo entry; an unregistered repo refuses. */
@@ -591,7 +656,7 @@ function uncommittedPaths(repoRoot: string, worktreePath: string): string[] {
  * it). Wraps `GateService.respond` so the gate service needn't know what
  * any gate kind does; wired by `daemon.ts`.
  */
-export function wireLandGateResolution(gates: GateService, landing: LandingService): void {
+export function wireLandGateResolution(gates: GateService, landing: DeliveryService): void {
   const respond = gates.respond.bind(gates);
   gates.respond = async (id, decision, by, note) => {
     const resolved = await respond(id, decision, by, note);

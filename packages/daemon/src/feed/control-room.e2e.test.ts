@@ -38,12 +38,12 @@ import {
 import { type Browser, type Page, chromium } from 'playwright-core';
 import { AttachService, VerbService } from '../attach';
 import { ClassifierKeyService, FakeClassifier } from '../classifier';
+import { DeliveryService } from '../delivery';
 import { DocsService } from '../docs';
 import { GateService } from '../gates';
 import { type HttpServerHandle, startHttpServer } from '../http';
 import { InboxService } from '../inbox';
 import { runInit } from '../init';
-import { LandingService } from '../landing';
 import { ProjectService } from '../projects';
 import { QuestionService } from '../questions';
 import { type RuleRpcEvalDeps, RulesService, SEED_PROVENANCE } from '../rules';
@@ -1096,7 +1096,7 @@ async function startStreamCockpit(scripts: FakeAgentScript[]): Promise<StreamCoc
     gates: { list: () => gates.list() },
   });
   const verbs = new VerbService({ store, streams, questions, docs, rules });
-  const landing = new LandingService({ store, streams, gates });
+  const landing = new DeliveryService({ store, streams, gates });
   const inbox = new InboxService({ streams, questions, gates, rules });
   const http = startHttpServer({
     port: 0,

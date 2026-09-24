@@ -13,7 +13,7 @@
  *    worker is attached, prompts it too.
  *  - **Diff / Rules / Docs** tabs — the worktree diff against the landing
  *    target, exactly `rulesInScope(stream)`, and the repo + stream docs.
- *  - **Land** — the "before" (would `land` refuse right now, and which
+ *  - **Delivery** (§14.7, direct path; was Land) — the `delivery_state`, the "before" (would `land` refuse right now, and which
  *    diff-stage rules it checks) and the "after" (the outcome line, or the
  *    refusal's reason, shown on the page).
  */
@@ -174,7 +174,7 @@ function LandPanel({
   return (
     <section className="cr-land" data-testid="land-panel">
       <div className="cr-land-hd">
-        <h2>Land</h2>
+        <h2>Delivery</h2>
         {!finished && land?.merged && (
           <button
             type="button"
@@ -194,7 +194,7 @@ function LandPanel({
             disabled={busy}
             onClick={() => void doLand()}
           >
-            {busy ? 'Landing…' : 'Land'}
+            {busy ? 'Merging…' : 'Merge'}
           </button>
         )}
       </div>
@@ -241,10 +241,20 @@ function LandPanel({
             : `Not landable yet: ${land.reason}`}
         </p>
       ) : null}
+      {stream.delivery_state && (
+        <p
+          className="cr-dim"
+          data-testid="delivery-state"
+          data-status={stream.delivery_state.status}
+        >
+          Delivery: {stream.delivery_state.mode} · {stream.delivery_state.status.replace('_', ' ')}
+          {stream.delivery_state.held_by?.map((h) => ` — ${h.detail}`).join('')}
+        </p>
+      )}
       <p className="cr-dim" data-testid="land-diff-rules">
         {page.diff_rules.length === 0
           ? 'No diff-stage rules in scope.'
-          : `Diff rules checked at land: ${page.diff_rules.join(', ')}`}
+          : `Ship check rules: ${page.diff_rules.join(', ')}`}
       </p>
       {outcome && !(conflicts && conflicts.length > 0) && (
         <p

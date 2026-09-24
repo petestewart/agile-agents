@@ -924,8 +924,8 @@ git status --short
 
 ### Ticket: T223 Delivery service (direct path) replaces landing
 - **Priority:** P0
-- **Status:** In Progress
-- **Owner:** opus:worker-T223
+- **Status:** Done (merge 91f0c2a)
+- **Owner:** —
 - **Scope:** Rename `landing/` to `delivery/` and give it `DeliveryState` on the node (§14.7):
   - the direct path is today's land with the ship check (today's diff rules) as a `held` reason;
   - `agile deliver`, with `land` kept as an alias;
@@ -935,12 +935,12 @@ git status --short
   Lessons run after `merged`.
 - **Acceptance Criteria:** The existing landing tests pass under the new names; `delivery_state` moves through ship_checking → ready → merged; a ship-check deny shows as held with the rule named.
 - **Validation Steps:** `bun test packages/daemon/src/delivery`; `bun run test:integration`; `bun run test:e2e`.
-- **Notes:** After T203 and T222.
+- **Notes:** After T203 and T222. Review (sonnet) PASS. Daemon +67. `landing/` → `delivery/`, `agile deliver` (alias `land`), RPC `delivery.deliver` (alias `land.stream`). PR mode refused until T224. Internal names (`LandOutcome`, `/api/streams/:id/land`, `land` gate kind) unchanged.
 
 ### Ticket: T224 PR delivery: push and open a PR
 - **Priority:** P0
-- **Status:** Todo
-- **Owner:** —
+- **Status:** In Progress
+- **Owner:** opus:worker-T224
 - **Scope:** For `pr` repos, delivery means:
   1. run the ship checks;
   2. `git push <remote> <branch>` from the worktree;
@@ -966,15 +966,15 @@ git status --short
 
 ### Ticket: T226 Sync after merge
 - **Priority:** P0
-- **Status:** Todo
-- **Owner:** —
+- **Status:** In Progress
+- **Owner:** opus:worker-T226
 - **Scope:** Add `daemon/sync`. After any merge into a repo's main (a direct merge, a PR merged, or main moving outside the app), merge main into every other live work node's branch on that repo (P15):
   - deferred while the session is mid-turn or the worktree is dirty;
   - on a conflict: abort, set the node to `conflict` with the files, and the existing Resolve applies;
   - pushed branches are pushed again after a clean sync.
 - **Acceptance Criteria:** Unit: two nodes on one repo; merging one syncs the other; a conflicting pair is flagged with its files; a mid-turn node syncs at the end of the turn.
 - **Validation Steps:** `bun test packages/daemon/src/sync`; `bun run test:integration`.
-- **Notes:** After T223; the PR half needs T225.
+- **Notes:** After T223; the PR half needs T225. Direct half first; the PR half (main moving on `pr` repos) wires in after T225.
 
 ### Ticket: T227 ∥ Overlap tracking
 - **Priority:** P1

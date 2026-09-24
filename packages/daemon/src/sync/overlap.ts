@@ -11,8 +11,8 @@
 import { isAbsolute, join } from 'node:path';
 import type { ReposConfig, Stream, TouchedSummary } from '@agile-agents/shared';
 import { liveChildrenOf, nodeRole } from '@agile-agents/shared';
-import { git } from '../landing/git';
-import { mainBranch } from '../landing/service';
+import { git } from '../delivery/git';
+import { mainBranch } from '../delivery/service';
 import type { StreamService } from '../streams/service';
 
 export const OVERLAP_RECOMPUTE_MS = 60_000;
