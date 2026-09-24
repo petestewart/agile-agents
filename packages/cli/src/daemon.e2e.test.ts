@@ -284,4 +284,5 @@ test('T221: a test daemon never runs gh, not even one first on PATH', async () =
   expect(status.stdout).toContain('GitHub auth: unavailable');
   expect(existsSync(marker)).toBe(false);
   expect(runCli(['daemon', 'stop'], { cwd: nonRepo, env }).code).toBe(0);
-});
+  // Four CLI processes, the daemon's start and stop among them: past bun's 5 s default on a loaded box.
+}, 20_000);
