@@ -1169,8 +1169,8 @@ git status --short
 
 ### Ticket: T248 `agile tail --node --events` prints nothing
 - **Priority:** P1
-- **Status: Done
-- **Owner: Unassigned
+- **Status:** Done
+- **Owner:** Unassigned
 - **Scope:** From T289 QA (Phase 11 branch): `agile tail --node <id> --events` (no `--follow`) printed nothing for a node that had events. It is the command Pete's T247 and T289 looks use. Find why (wrong file, a filter, routed events vs audit events, output buffering on exit) and fix; the command prints every routed event for the node with its reason and delivery status, and says so in one line when there are none.
 - **Acceptance Criteria:** A CLI e2e against a real daemon: emit routed events for a node, `tail --node --events` lists them; a node with none prints a one-line "no events" message.
 - **Validation Steps:** `bun test packages/cli`; `bun run test:integration`.
