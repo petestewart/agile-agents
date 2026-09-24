@@ -270,7 +270,8 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
     store && streamService && attachService
       ? new RepoInPlaceService(store, streamService, {
           attach: (id) => attachService.attach(id),
-          stop: (id) => attachService.stop(id),
+          stop: (id, reason) =>
+            attachService.stop(id, undefined, reason !== undefined ? { reason } : {}),
         })
       : undefined;
   const extraMethods =
@@ -308,6 +309,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
             // policy). No repo root: a relative worktree fails closed.
             new HookService(store, bus, {
               gates: gateService,
+              agileHome: config.home,
               ...(rulesService ? { rules: rulesService } : {}),
               classifier: { ask: classifier, config: config.classifier },
             }),

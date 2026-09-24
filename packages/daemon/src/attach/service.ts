@@ -113,6 +113,8 @@ export interface AttachOptions extends AttachFlags {
 /** `detach: true`: the human pulled the plug, not a shutdown. */
 export interface StopOptions {
   detach?: boolean;
+  /** T213: why the daemon stopped it (a reshape, a shutdown); the thread says so instead of an exit code. */
+  reason?: string;
 }
 
 export interface AttachResult {
@@ -166,6 +168,8 @@ export class AttachService {
 
   /** Sessions being stopped by `agile detach`: the exit path writes `idle`, not `done`. */
   private readonly detaching = new Set<string>();
+  /** Sessions the daemon stopped on purpose, with the reason the thread gives. */
+  private readonly stopReasons = new Map<string, string>();
 
   constructor(private readonly options: AttachServiceOptions) {}
 
@@ -690,14 +694,20 @@ export class AttachService {
     const handles = this.handles(role);
     if (handles.get(streamId)?.sessionId === sessionId) handles.delete(streamId);
     const detached = this.detaching.delete(sessionId);
+    const stopReason = this.stopReasons.get(sessionId);
+    this.stopReasons.delete(sessionId);
     // `stop()` already holds the promise it awaits; dropping it cannot lose a write.
     this.exitHandled.delete(sessionId);
     try {
       await this.setSessionStatus(
         streamId,
         sessionId,
-        ok ? 'stopped' : 'error',
-        detached ? undefined : endedReason(reason, ok, vendorError),
+        ok || stopReason !== undefined ? 'stopped' : 'error',
+        detached
+          ? undefined
+          : stopReason !== undefined
+            ? `stopped: ${stopReason}`
+            : endedReason(reason, ok, vendorError),
       );
       // A human pulled the plug: back to `idle`. `done` would claim the kill finished the work.
       if (detached) {
@@ -707,6 +717,18 @@ export class AttachService {
         await this.options.streams.appendThread('daemon', streamId, {
           kind: 'event',
           body: `${role} detached by human`,
+          ref: sessionId,
+        });
+        return;
+      }
+      // Stopped on purpose: not a crash and not finished work, so `idle`.
+      if (stopReason !== undefined) {
+        if (role === 'worker') {
+          await this.options.streams.update('daemon', streamId, { agent: { status: 'idle' } });
+        }
+        await this.options.streams.appendThread('daemon', streamId, {
+          kind: 'event',
+          body: `${role} stopped: ${stopReason}`.slice(0, 800),
           ref: sessionId,
         });
         return;
@@ -799,6 +821,8 @@ export class AttachService {
         const handled = this.exitHandled.get(handle.sessionId);
         // Marked before anything can resolve `exited`: a detach, not a finish.
         if (options.detach === true) this.detaching.add(handle.sessionId);
+        else if (options.reason !== undefined)
+          this.stopReasons.set(handle.sessionId, options.reason);
         handle.stop();
         await handle.exited;
         // `agile detach` prints from the RPC result, which must already be on disk.

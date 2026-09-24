@@ -25,6 +25,7 @@ import {
   MESSAGE_BODY_MAX_CHARS,
   type Policy,
   type RepoEntry,
+  type ReposConfig,
   type Rule,
   type RuleId,
   type SessionRole,
@@ -132,6 +133,8 @@ export interface HookServiceOptions {
    */
   classifier?: HookClassifier;
   limits?: HookLimits;
+  /** T213: the agile home, denied to every read outside the session's own dir. */
+  agileHome?: string;
   /** Injectable for tests; defaults to `node:fs.statSync`. */
   fileSize?: (path: string) => number | undefined;
   now?: () => Date;
@@ -300,6 +303,7 @@ export class HookService {
         : this.bus.poll(session as AgentId),
       limits: this.limits,
       fileSize: this.fileSize,
+      ...this.readScope(stream),
       // Both git lookups are lazy and memoized: an ordinary call spawns none.
       patternRules: this.patternRulesFor(stream),
       protectedBranches: protectedBranchesFor(this.store, stream),
@@ -309,6 +313,36 @@ export class HookService {
   }
 
   /** The accepted pattern rules in scope for this stream (§5.3). */
+  /**
+   * T213 (projects-design §4.4, P20): any agent may read any registered
+   * repo and its worktrees, except a private repo its project isn't listed on.
+   */
+  private readScope(stream: string): Pick<HookDecisionContext, 'readRoots' | 'hiddenRoots'> {
+    const record = this.streamRecord(stream);
+    let repos: ReposConfig;
+    try {
+      repos = this.store.getRepos();
+    } catch {
+      // Unreadable registry: reads stay in the worktree.
+      return this.options.agileHome !== undefined ? { hiddenRoots: [this.options.agileHome] } : {};
+    }
+    const readRoots: string[] = [];
+    const hiddenRoots: string[] = [];
+    for (const [name, entry] of Object.entries(repos)) {
+      const visibility = entry.visibility;
+      const visible =
+        name === record?.repo ||
+        visibility === undefined ||
+        visibility.mode === 'public' ||
+        (record?.project !== undefined &&
+          (visibility.projects as readonly string[]).includes(record.project));
+      (visible ? readRoots : hiddenRoots).push(entry.path);
+    }
+    // The home holds the classifier key and every node's state: never a read target.
+    if (this.options.agileHome !== undefined) hiddenRoots.push(this.options.agileHome);
+    return { readRoots, hiddenRoots };
+  }
+
   private patternRulesFor(stream: string): Rule[] {
     return patternRulesOf(this.rulesInScope(stream));
   }
