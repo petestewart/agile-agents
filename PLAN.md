@@ -714,17 +714,17 @@ Design: `design/projects-design.md`, which wins over `design/cockpit-design.md` 
 
 ### Ticket: T200 Project record, store, RPC and CLI
 - **Priority:** P0
-- **Status:** In Progress
-- **Owner:** opus:worker-T200
+- **Status:** Done (merge c9a79b7)
+- **Owner:** —
 - **Scope:** Add the `Project` schema (projects-design §14.1) in `packages/shared` (`P-<ulid>` ids, `.strict()`). Add `projects/<id>.yaml` through the validating store with audit events `project_created` and `project_updated`. Add `daemon/projects` with a service and RPC: create (which also creates the root node), list, show, update settings, archive. Add the CLI verbs `agile project new --name --repo… [--json]`, `list`, `show`, `set`. Names are unique, case-insensitive.
 - **Acceptance Criteria:** Store round-trip; a corrupt project file is refused with path and line; creating a project writes its root stream; the CLI prints JSON with `id` and `root`.
 - **Validation Steps:** `bun test packages/shared packages/daemon/src/projects packages/cli`.
-- **Notes:** P2. Blocks every other Phase 7 ticket.
+- **Notes:** P2. Blocks every other Phase 7 ticket. Branch T200-project-record. Review (sonnet): 1 blocking (repeated `--repo` dropped) fixed. Daemon +243 lines. `--repo` accepts repeats and commas.
 
 ### Ticket: T201 Node fields and the derived role
 - **Priority:** P0
-- **Status:** Todo
-- **Owner:** —
+- **Status:** In Progress
+- **Owner:** opus:worker-T201
 - **Scope:** Extend the stream schema with `project`, `labels`, `waits_on`, `external_link` (schema only), `autonomy`, `delivery`, `merge_together`, `helper_of`, `delivery_state` and `touched` (§14.2). Only the daemon writes `delivery_state` and `touched`. Add `nodeRole()` in shared (P1). `stream.create` requires a project and defaults the parent to the project root. `waits_on` writes refuse cycles (P8). Add `agile node` as the verb, with `agile stream` kept as an alias; `node show --json` includes `role`; `node list` takes `--project` and `--parent` and prints JSON with `--json`. Principals gain `coordinator` and `director` (§14.12), which the store refuses on `human.*`.
 - **Acceptance Criteria:** Table tests for `nodeRole` (project, coordinating, work, conversation, a same-repo helper not making the parent coordinating); the cycle refusal; the two-writer split for the new principals.
 - **Validation Steps:** `bun test packages/shared packages/daemon/src/streams packages/daemon/src/store`.
@@ -788,8 +788,8 @@ Design: `design/projects-design.md`, which wins over `design/cockpit-design.md` 
 
 ### Ticket: T206 ∥ Add a repo from the cockpit
 - **Priority:** P2
-- **Status:** Todo
-- **Owner:** —
+- **Status:** In Progress
+- **Owner:** opus:worker-T206
 - **Scope:** Settings → Repos: register a repo by path (validated as a git toplevel), with a name and protected branches, and show the resolved `main_branch`. It uses the same RPC as `agile repo add`. This is the unfiled doc-comment item "add repo in UI".
 - **Acceptance Criteria:** e2e: add `fixtures/demo-project` from Settings; it shows in the New stream repo picker. A bad path shows the daemon's one-line error.
 - **Validation Steps:** `bun run test:e2e`.
@@ -797,8 +797,8 @@ Design: `design/projects-design.md`, which wins over `design/cockpit-design.md` 
 
 ### Ticket: T207 ∥ Nothing in the user's repo
 - **Priority:** P1
-- **Status:** Todo
-- **Owner:** —
+- **Status:** In Progress
+- **Owner:** opus:worker-T207
 - **Scope:**
   - Docs move from `<repo>/.agile-docs/` to `~/.agile/repos/<name>/docs/`, with a one-time import that never deletes the old directory (P3).
   - The worktree's `.claude/settings.json` goes into `info/exclude`. If the repo tracks its own `.claude/settings.json`, use the vendor's settings-file flag or local settings instead, and find out which the pinned Claude ACP adapter supports (P4).
@@ -827,8 +827,8 @@ Design: `design/projects-design.md`, which wins over `design/cockpit-design.md` 
 
 ### Ticket: T210 ∥ Setup rough edges (from T175)
 - **Priority:** P2
-- **Status:** Todo
-- **Owner:** —
+- **Status:** In Progress
+- **Owner:** opus:worker-T210
 - **Scope:** T175 items (1) and (2):
   - An `AGILE_HOME` that exists and is not a directory is refused by every command with one line naming the variable and the path.
   - `daemon start` on a held port names the holder (pid and command via `lsof` when available) and says whether it looks like another `agiled`. `daemon stop` with no pidfile hints at a daemon from another home on the port.
