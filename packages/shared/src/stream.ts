@@ -14,6 +14,7 @@
 import { z } from 'zod';
 import { EffortSchema } from './effort';
 import { UlidSchema, formatZodError } from './ids';
+import { AutonomySchema, DeliveryOverrideSchema, ProjectIdSchema } from './project';
 
 /**
  * Thread-entry body cap. Mirrors the 800-char message body cap
@@ -30,8 +31,11 @@ export const THREAD_BODY_MAX_CHARS = 800;
  * which half of the record may change, not which session changed it. Every
  * agent session therefore reduces to the bare `'agent'` principal here, on
  * purpose — the session id belongs in the thread, not in the check.
+ *
+ * `coordinator` and `director` (projects-design §14.12, T201) write with
+ * the same limits as `agent`: never `human.*`.
  */
-export const STREAM_PRINCIPALS = ['agent', 'human', 'daemon'] as const;
+export const STREAM_PRINCIPALS = ['agent', 'human', 'daemon', 'coordinator', 'director'] as const;
 export const StreamPrincipalSchema = z.enum(STREAM_PRINCIPALS);
 export type StreamPrincipal = z.infer<typeof StreamPrincipalSchema>;
 
@@ -91,15 +95,17 @@ export const SessionRefSchema = z
   .strict();
 export type SessionRef = z.infer<typeof SessionRefSchema>;
 
-/** `human` | `daemon` | `agent:<session ulid>` — the writer of a thread entry. */
+/** `human` | `daemon` | `coordinator` | `director` | `agent:<session ulid>` — the writer of a thread entry. */
 export const ThreadAuthorSchema = z
   .string()
   .refine(
     (value) =>
       value === 'human' ||
       value === 'daemon' ||
+      value === 'coordinator' ||
+      value === 'director' ||
       (value.startsWith('agent:') && UlidSchema.safeParse(value.slice('agent:'.length)).success),
-    'must be "human", "daemon" or "agent:<ulid>"',
+    'must be "human", "daemon", "coordinator", "director" or "agent:<ulid>"',
   );
 export type ThreadAuthor = z.infer<typeof ThreadAuthorSchema>;
 
@@ -196,6 +202,107 @@ export const LandConflictSchema = z
   .strict();
 export type LandConflict = z.infer<typeof LandConflictSchema>;
 
+/** One "waits on" edge (§14.2, P8): holds delivery, not the start of work. */
+export const WaitsOnSchema = z
+  .object({
+    node: UlidSchema,
+    added_by: z.enum(['human', 'coordinator', 'director']),
+    added_at: z.string().min(1),
+    /** Set by the daemon when `node` is delivered or, for a non-work node, closed. */
+    satisfied_at: z.string().min(1).optional(),
+  })
+  .strict();
+export type WaitsOn = z.infer<typeof WaitsOnSchema>;
+
+/** §14.10: a link to a Jira or Linear item. Schema only in T201. */
+export const ExternalLinkSchema = z
+  .object({
+    system: z.enum(['jira', 'linear']),
+    key: z.string().min(1),
+    url: z.string().min(1),
+    kind: z.enum(['epic', 'issue']).optional(),
+    synced: z
+      .object({
+        title: z.string().min(1),
+        description_hash: z.string().min(1),
+        at: z.string().min(1),
+      })
+      .strict(),
+  })
+  .strict();
+export type ExternalLink = z.infer<typeof ExternalLinkSchema>;
+
+/** §14.7: a pull request as last polled. */
+export const PullRequestStateSchema = z
+  .object({
+    number: z.number().int().positive(),
+    url: z.string().min(1),
+    head: z.string().min(1),
+    base: z.string().min(1),
+    state: z.enum(['open', 'closed', 'merged']),
+    draft: z.boolean(),
+    review: z.enum(['none', 'review_requested', 'changes_requested', 'approved']),
+    checks: z.enum(['none', 'pending', 'failing', 'passing']),
+    mergeable: z.enum(['unknown', 'clean', 'behind', 'conflicting']),
+    auto_merge: z.enum(['off', 'enabled', 'unavailable']),
+    last_seen: z
+      .object({
+        review_id: z.number().int().optional(),
+        comment_id: z.number().int().optional(),
+        check_suite_id: z.number().int().optional(),
+      })
+      .strict(),
+    polled_at: z.string().min(1),
+    etag: z.string().min(1).optional(),
+  })
+  .strict();
+export type PullRequestState = z.infer<typeof PullRequestStateSchema>;
+
+export const DELIVERY_STATUSES = [
+  'not_started',
+  'ship_checking',
+  'held',
+  'ready',
+  'pr_open',
+  'merged',
+  'closed_unmerged',
+  'conflict',
+] as const;
+
+/** §14.7: where a work node's delivery is. Written by the daemon only. */
+export const DeliveryStateSchema = z
+  .object({
+    mode: z.enum(['direct', 'pr']),
+    status: z.enum(DELIVERY_STATUSES),
+    held_by: z
+      .array(
+        z
+          .object({
+            reason: z.enum(['ship_check', 'waits_on', 'merge_together', 'conflict']),
+            detail: z.string().min(1).max(THREAD_BODY_MAX_CHARS),
+          })
+          .strict(),
+      )
+      .optional(),
+    pr: PullRequestStateSchema.optional(),
+    merged_sha: z.string().min(1).optional(),
+    at: z.string().min(1),
+  })
+  .strict();
+export type DeliveryState = z.infer<typeof DeliveryStateSchema>;
+
+/** §14.6: the files a work node touched since its merge base. Written by the daemon only. */
+export const TouchedSummarySchema = z
+  .object({
+    files: z.array(z.string().min(1).max(1_000)).max(2_000),
+    base: z.string().min(1),
+    at: z.string().min(1),
+  })
+  .strict();
+export type TouchedSummary = z.infer<typeof TouchedSummarySchema>;
+
+export const NODE_LABEL_MAX_CHARS = 40;
+
 /** `~/.agile/streams/<id>.yaml`. */
 export const StreamSchema = z
   .object({
@@ -233,6 +340,27 @@ export const StreamSchema = z
      */
     classifier: z.literal('off').optional(),
     land_conflict: LandConflictSchema.optional(),
+    /*
+     * Node fields (projects-design §14.2, T201). `project` is optional in
+     * the record until the migration (T202) gives every stream one; new
+     * streams get one on create.
+     */
+    project: ProjectIdSchema.optional(),
+    /** 'epic' | 'ticket' | 'task' | free text; no behaviour attached. */
+    labels: z.array(z.string().trim().min(1).max(NODE_LABEL_MAX_CHARS)).max(20).optional(),
+    waits_on: z.array(WaitsOnSchema).max(50).optional(),
+    external_link: ExternalLinkSchema.optional(),
+    /** Override of the project's coordinator autonomy for this node. */
+    autonomy: AutonomySchema.optional(),
+    delivery: DeliveryOverrideSchema.optional(),
+    /** Group key, e.g. "MT-<ulid>" (P7). */
+    merge_together: z.string().min(1).optional(),
+    /** A same-repo helper: branches off `helper_of`'s branch and merges back into it. */
+    helper_of: UlidSchema.optional(),
+    /** Daemon-only (§14.7). */
+    delivery_state: DeliveryStateSchema.optional(),
+    /** Daemon-only (§14.6). */
+    touched: TouchedSummarySchema.optional(),
     agent: StreamAgentStateSchema,
     human: StreamHumanStateSchema,
     sessions: z.array(SessionRefSchema).default([]),
@@ -255,6 +383,10 @@ export const StreamCreateInputSchema = z
     parent: UlidSchema.optional(),
     repo: z.string().min(1).optional(),
     target_branch: z.string().min(1).optional(),
+    /** T201: the project; the parent defaults to its root. */
+    project: ProjectIdSchema.optional(),
+    labels: z.array(z.string().trim().min(1).max(NODE_LABEL_MAX_CHARS)).max(20).optional(),
+    helper_of: UlidSchema.optional(),
   })
   .strict();
 export type StreamCreateInput = z.infer<typeof StreamCreateInputSchema>;
@@ -306,9 +438,10 @@ function changed(before: unknown, after: unknown): boolean {
 /**
  * The two-writer split (D11), enforced for every stream write.
  *
- * - an `agent` principal may not change `human.*`
+ * - an `agent`, `coordinator` or `director` principal may not change `human.*`
  * - a `human` principal may not change `agent.*`
  * - the `daemon` principal may write both
+ * - only the `daemon` may change `delivery_state` or `touched` (§14.2)
  *
  * Throws on violation; returns the `after` record when the write is allowed.
  * A no-op write of the other half (identical value) is allowed — the store
@@ -319,14 +452,24 @@ export function assertStreamWrite(
   before: Stream,
   after: Stream,
 ): Stream {
-  if (principal === 'agent' && changed(before.human, after.human)) {
-    throw new Error('invalid Stream write: an agent principal may not change human.* fields');
+  if (principal === 'daemon') return after;
+  if (principal !== 'human' && changed(before.human, after.human)) {
+    throw new Error(
+      `invalid Stream write: ${principal === 'agent' ? 'an agent' : `a ${principal}`} principal may not change human.* fields`,
+    );
+  }
+  for (const field of DAEMON_ONLY_FIELDS) {
+    if (changed(before[field], after[field])) {
+      throw new Error(`invalid Stream write: only the daemon may change ${field}`);
+    }
   }
   if (principal === 'human' && changed(before.agent, after.agent)) {
     throw new Error('invalid Stream write: a human principal may not change agent.* fields');
   }
   return after;
 }
+
+const DAEMON_ONLY_FIELDS = ['delivery_state', 'touched'] as const;
 
 /**
  * Thrown when a proposed `parent` would make a stream its own ancestor.
@@ -371,6 +514,50 @@ export function assertNoStreamCycle(
     seen.add(current);
     current = lookupParent(current);
   }
+}
+
+/**
+ * Rejects a `waits_on` cycle (P8). `lookupWaitsOn` returns the stored
+ * `waits_on` targets of a stream id (empty for an unknown one). Throws
+ * `StreamCycleError` naming the path that closes the loop.
+ */
+export function assertNoWaitsOnCycle(
+  id: string,
+  targets: readonly string[],
+  lookupWaitsOn: (streamId: string) => readonly string[],
+): void {
+  const visited = new Set<string>();
+  const walk = (node: string, path: string[]): void => {
+    if (node === id) {
+      throw new StreamCycleError(
+        `invalid Stream waits_on: would create a cycle: ${[id, ...path].join(' -> ')}`,
+      );
+    }
+    if (visited.has(node)) return;
+    visited.add(node);
+    for (const next of lookupWaitsOn(node)) walk(next, [...path, next]);
+  };
+  for (const target of targets) walk(target, [target]);
+}
+
+/** Derived, never stored (P1). `liveChildren` are the node's children that are not closed or archived. */
+export type NodeRole = 'project' | 'coordinating' | 'work' | 'conversation';
+
+export function nodeRole(
+  node: Pick<Stream, 'id' | 'parent' | 'repo'>,
+  liveChildren: ReadonlyArray<Pick<Stream, 'helper_of'>>,
+): NodeRole {
+  if (node.parent === undefined) return 'project';
+  if (liveChildren.some((c) => c.helper_of !== node.id)) return 'coordinating';
+  if (node.repo !== undefined) return 'work';
+  return 'conversation';
+}
+
+/** The children `nodeRole` counts: parent is `node`, not archived, not closed. */
+export function liveChildrenOf(nodeId: string, all: readonly Stream[]): Stream[] {
+  return all.filter(
+    (s) => s.parent === nodeId && s.archived !== true && s.human.status !== 'closed',
+  );
 }
 
 /**

@@ -5,7 +5,10 @@ import {
   StreamSayInputSchema,
   THREAD_BODY_MAX_CHARS,
   assertNoStreamCycle,
+  assertNoWaitsOnCycle,
   assertStreamWrite,
+  liveChildrenOf,
+  nodeRole,
   ulid,
   validateSessionRef,
   validateStream,
@@ -288,5 +291,117 @@ describe('T161 cockpit write bodies', () => {
     expect(
       StreamAttachRequestSchema.safeParse({ role: 'worker', principal: 'agent' }).success,
     ).toBe(false);
+  });
+});
+
+describe('node fields (T201, §14.2)', () => {
+  test('a record with every new field validates', () => {
+    const s = stream({
+      parent: CHILD,
+      project: `P-${ulid(9)}`,
+      labels: ['epic'],
+      waits_on: [{ node: GRANDCHILD, added_by: 'coordinator', added_at: 't' }],
+      autonomy: 'organise',
+      delivery: { mode: 'pr', auto_merge: true },
+      merge_together: `MT-${ulid(8)}`,
+      helper_of: CHILD,
+      delivery_state: {
+        mode: 'pr',
+        status: 'held',
+        held_by: [{ reason: 'waits_on', detail: 'x' }],
+        at: 't',
+      },
+      touched: { files: ['a.ts'], base: 'abc', at: 't' },
+      external_link: {
+        system: 'jira',
+        key: 'SHOP-11',
+        url: 'https://x',
+        synced: { title: 't', description_hash: 'h', at: 't' },
+      },
+    });
+    expect(s.labels).toEqual(['epic']);
+  });
+
+  test('a bad project id is refused', () => {
+    expect(() => stream({ project: 'shop' })).toThrow(/project/);
+  });
+});
+
+describe('nodeRole (P1)', () => {
+  const node = { id: CHILD, parent: ROOT };
+  const cases: Array<
+    [string, Parameters<typeof nodeRole>[0], Parameters<typeof nodeRole>[1], string]
+  > = [
+    ['no parent is a project', { id: ROOT }, [], 'project'],
+    ['a project root with children is still a project', { id: ROOT }, [{}], 'project'],
+    ['a live child makes it coordinating', { ...node, repo: 'shop' }, [{}], 'coordinating'],
+    ['a helper of another node still counts', node, [{ helper_of: GRANDCHILD }], 'coordinating'],
+    ['a repo and no children is work', { ...node, repo: 'shop' }, [], 'work'],
+    [
+      'a same-repo helper does not make it coordinating',
+      { ...node, repo: 'shop' },
+      [{ helper_of: CHILD }],
+      'work',
+    ],
+    ['no repo and no children is a conversation', node, [], 'conversation'],
+  ];
+  for (const [name, n, children, role] of cases) {
+    test(name, () => expect(nodeRole(n, children)).toBe(role as ReturnType<typeof nodeRole>));
+  }
+
+  test('liveChildrenOf drops closed and archived children', () => {
+    const open = stream({ id: GRANDCHILD, parent: CHILD });
+    const closed = stream({ id: ulid(5), parent: CHILD, human: { status: 'closed' } });
+    const archived = stream({ id: ulid(6), parent: CHILD, archived: true });
+    const other = stream({ id: ulid(7), parent: ROOT });
+    expect(liveChildrenOf(CHILD, [open, closed, archived, other]).map((s) => s.id)).toEqual([
+      GRANDCHILD,
+    ]);
+  });
+});
+
+describe('assertNoWaitsOnCycle (P8)', () => {
+  const edges: Record<string, string[]> = { [CHILD]: [GRANDCHILD], [GRANDCHILD]: [] };
+  const lookup = (id: string) => edges[id] ?? [];
+  test('an acyclic edge passes', () => {
+    expect(() => assertNoWaitsOnCycle(ROOT, [CHILD], lookup)).not.toThrow();
+  });
+  test('waiting on itself is refused', () => {
+    expect(() => assertNoWaitsOnCycle(ROOT, [ROOT], lookup)).toThrow(/cycle/);
+  });
+  test('a transitive cycle is refused and names the path', () => {
+    edges[GRANDCHILD] = [ROOT];
+    expect(() => assertNoWaitsOnCycle(ROOT, [CHILD], lookup)).toThrow(
+      `${ROOT} -> ${CHILD} -> ${GRANDCHILD} -> ${ROOT}`,
+    );
+    edges[GRANDCHILD] = [];
+  });
+});
+
+describe('principals (§14.12)', () => {
+  for (const principal of ['coordinator', 'director'] as const) {
+    test(`${principal} may not change human.*`, () => {
+      const before = stream();
+      const after = stream({ human: { status: 'closed' } });
+      expect(() => assertStreamWrite(principal, before, after)).toThrow(
+        new RegExp(`${principal} principal may not change human`),
+      );
+    });
+    test(`${principal} may change agent.* and structure`, () => {
+      const before = stream();
+      const after = stream({ labels: ['epic'], agent: { status: 'done', updated_at: 't' } });
+      expect(assertStreamWrite(principal, before, after)).toBe(after);
+    });
+  }
+
+  test('only the daemon writes delivery_state and touched', () => {
+    const before = stream();
+    const after = stream({ touched: { files: [], base: 'b', at: 't' } });
+    for (const p of ['agent', 'human', 'coordinator', 'director'] as const) {
+      expect(() => assertStreamWrite(p, before, after)).toThrow(
+        /only the daemon may change touched/,
+      );
+    }
+    expect(assertStreamWrite('daemon', before, after)).toBe(after);
   });
 });

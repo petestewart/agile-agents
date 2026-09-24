@@ -35,6 +35,7 @@ import {
   type ThreadEntry,
   UlidSchema,
   assertNoStreamCycle,
+  assertNoWaitsOnCycle,
   assertRuleAcceptable,
   assertRuleWrite,
   assertStreamWrite,
@@ -681,6 +682,7 @@ export class StateStore {
         throw new AlreadyExistsError('Stream', validated.id);
       }
       assertNoStreamCycle(validated.id, validated.parent, (sid) => this.lookupStreamParent(sid));
+      this.assertWaitsOn(validated, undefined);
       writeYamlFileAtomic(this.abs(relPath), validated);
       const event = buildEvent('stream_created', {
         stream: validated.id,
@@ -691,6 +693,22 @@ export class StateStore {
         },
       });
       return { result: validated, event };
+    });
+  }
+
+  /** P8: every new `waits_on` target exists, and the edges stay acyclic. */
+  private assertWaitsOn(after: Stream, before: Stream | undefined): void {
+    const targets = (after.waits_on ?? []).map((w) => w.node);
+    const old = new Set((before?.waits_on ?? []).map((w) => w.node));
+    for (const target of targets) {
+      if (!old.has(target) && target !== after.id && !this.hasStream(target)) {
+        throw new NotFoundError('Stream', target);
+      }
+    }
+    assertNoWaitsOnCycle(after.id, targets, (sid) => {
+      const path = this.abs(this.streamRelPath(sid));
+      if (!fileExists(path)) return [];
+      return (this.readStreamFile(path).waits_on ?? []).map((w) => w.node);
     });
   }
 
@@ -724,6 +742,9 @@ export class StateStore {
       assertNoStreamCycle(after.id, after.parent, (sid) =>
         sid === after.id ? after.parent : this.lookupStreamParent(sid),
       );
+      if (JSON.stringify(before.waits_on) !== JSON.stringify(after.waits_on)) {
+        this.assertWaitsOn(after, before);
+      }
       writeYamlFileAtomic(this.abs(relPath), after);
       const event = buildEvent(options.kind ?? 'stream_updated', {
         stream: after.id,

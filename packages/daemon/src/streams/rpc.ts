@@ -18,6 +18,7 @@ import { AlreadyExistsError } from '../store/store';
 import {
   type StreamNode,
   type StreamPatch,
+  StreamProjectError,
   type StreamService,
   UnknownParentStreamError,
   UnknownRepoError,
@@ -109,6 +110,7 @@ const asParamErrors = paramErrors(
   AlreadyExistsError,
   UnknownParentStreamError,
   UnknownRepoError,
+  StreamProjectError,
 );
 
 /**
@@ -127,7 +129,9 @@ export function buildStreamRpcMethods(
   return {
     'stream.create': async (params) =>
       asParamErrors(() =>
-        service.create(EDGE_PRINCIPAL, validateStreamCreateInput(requireObject(params))),
+        service.create(EDGE_PRINCIPAL, validateStreamCreateInput(requireObject(params)), {
+          requireProject: true,
+        }),
       ),
 
     'stream.get': (params) => {

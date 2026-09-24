@@ -9,13 +9,16 @@
  */
 
 import {
+  type NodeRole,
   STREAM_AGENT_STATUSES,
   STREAM_HUMAN_STATUSES,
   type Stream,
   type ThreadEntry,
+  liveChildrenOf,
+  nodeRole,
 } from '@agile-agents/shared';
 import type { ParsedArgs } from '../args';
-import { hasFlag, optionalString, requireOption, requirePositional } from '../args';
+import { hasFlag, optionalList, optionalString, requireOption, requirePositional } from '../args';
 import { callRpc } from '../client';
 import { printFields, printJson, printTable } from '../format';
 import { formatSession } from './attach';
@@ -47,10 +50,14 @@ export async function runStreamNew(
   const parent = optionalString(args.options, 'parent');
   const repo = optionalString(args.options, 'repo');
   const targetBranch = optionalString(args.options, 'target-branch');
+  const project = optionalString(args.options, 'project');
+  const labels = optionalList(args, 'label');
 
   const stream = await callRpc<Stream>(socketPath, 'stream.create', {
     title,
     goal,
+    ...(project !== undefined ? { project } : {}),
+    ...(labels !== undefined ? { labels } : {}),
     ...(parent !== undefined ? { parent } : {}),
     ...(repo !== undefined ? { repo } : {}),
     ...(targetBranch !== undefined ? { target_branch: targetBranch } : {}),
@@ -111,7 +118,27 @@ export function filterStreamTree(nodes: StreamNode[], status: string): StreamNod
   return kept;
 }
 
-/** `--all` includes archived streams (hidden by default, §7.2). */
+export function flattenTree(nodes: StreamNode[]): Stream[] {
+  return nodes.flatMap((n) => [n.stream, ...flattenTree(n.children)]);
+}
+
+/** T201: the derived role (P1), from every stream the daemon knows (archived included). */
+export function roleIn(stream: Stream, all: readonly Stream[]): NodeRole {
+  return nodeRole(stream, liveChildrenOf(stream.id, all));
+}
+
+async function allStreams(socketPath: string): Promise<Stream[]> {
+  const result = await callRpc<{ tree: StreamNode[] }>(socketPath, 'stream.list', {
+    include_archived: true,
+  });
+  return flattenTree(result.tree);
+}
+
+/**
+ * `--all` includes archived streams (hidden by default, §7.2). T201: with
+ * `--project` or `--parent` the result is a flat `nodes` list, each with
+ * its derived `role`.
+ */
 export async function runStreamList(
   socketPath: string,
   args: ParsedArgs,
@@ -130,6 +157,23 @@ export async function runStreamList(
     ...(includeArchived ? { include_archived: true } : {}),
   });
   const tree = status === undefined ? result.tree : filterStreamTree(result.tree, status);
+  const project = optionalString(args.options, 'project');
+  const parent = optionalString(args.options, 'parent');
+  if (project !== undefined || parent !== undefined) {
+    const every = await allStreams(socketPath);
+    const nodes = flattenTree(tree)
+      .filter((s) => project === undefined || s.project === project)
+      .filter((s) => parent === undefined || s.parent === parent)
+      .map((s) => ({ ...s, role: roleIn(s, every) }));
+    if (json) printJson({ nodes });
+    else if (nodes.length === 0) console.log('nodes: (none)');
+    else
+      printTable(
+        ['id', 'title', 'role', 'agent/human'],
+        nodes.map((n) => [n.id, n.title, n.role, statusPair(n)]),
+      );
+    return 0;
+  }
   if (json) {
     printJson({ ...result, tree });
     return 0;
@@ -149,12 +193,16 @@ const SHOW_THREAD_LINES = 20;
  * or a worktree, so it prints `repo -` and nothing else git-shaped (T128);
  * with a repo, all three lines stay, placeholders and all.
  */
-export function showFields(stream: Stream): Array<[string, string]> {
+export function showFields(stream: Stream, role?: NodeRole): Array<[string, string]> {
   const fields: Array<[string, string]> = [
     ['id', stream.id],
     ['title', stream.title],
     ['goal', stream.goal],
     ['status', statusPair(stream)],
+    ...(role !== undefined ? ([['role', role]] as Array<[string, string]>) : []),
+    ...(stream.project !== undefined
+      ? ([['project', stream.project]] as Array<[string, string]>)
+      : []),
     ['parent', stream.parent ?? '-'],
   ];
   if (stream.repo === undefined) {
@@ -210,12 +258,13 @@ export async function runStreamShow(
           limit: SHOW_THREAD_LINES,
         });
 
+  const role = roleIn(stream, await allStreams(socketPath));
   if (json) {
-    printJson({ stream, thread: page });
+    printJson({ stream, role, thread: page });
     return 0;
   }
 
-  printFields(showFields(stream));
+  printFields(showFields(stream, role));
   console.log('');
   // T130: the sessions strip — `id vendor/model effort status`, one line each.
   console.log(`sessions (${stream.sessions.length}):`);
