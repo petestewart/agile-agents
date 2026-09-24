@@ -12,7 +12,11 @@ import {
   type RulePattern,
   patternOf,
 } from '@agile-agents/shared';
-import type { RuleStatsOutcome } from '../knowledge/service';
+import {
+  type RuleStatsOutcome,
+  knowledgeMatchesPaths,
+  worktreeRelativePaths,
+} from '../knowledge/service';
 import { isPathInside, parseCommandIntoAtoms, parseGitInvocation } from './command';
 import { type PushDetectorContext, detectProtectedBranchWrite, detectPush } from './push-detector';
 
@@ -126,7 +130,10 @@ export function runPatternRules(
   ctx: RuleCheckContext,
 ): PatternRuleOutcome {
   const rulesEvaluated: string[] = [];
+  const touched = worktreeRelativePaths(ctx.paths ?? [], ctx.worktreePath);
   for (const rule of patternRulesOf(rules)) {
+    // A path-limited rule only gates calls on its paths (T261).
+    if (!knowledgeMatchesPaths(rule, touched)) continue;
     rulesEvaluated.push(rule.id);
     const reason = checkPatternRule(rule, ctx);
     if (reason !== undefined) {
