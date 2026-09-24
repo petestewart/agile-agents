@@ -72,7 +72,7 @@ function fakeProvider(script: FakeAgentScript): AcpProviderConfig {
 const PROPOSES: FakeAgentScript = {
   steps: [
     { type: 'agent_text', text: 'reading the findings' },
-    { type: 'tool_call', toolCallId: 'propose-1', title: 'propose_rule' },
+    { type: 'tool_call', toolCallId: 'propose-1', title: 'propose_knowledge' },
     { type: 'hang' },
   ],
 };
@@ -185,14 +185,16 @@ afterEach(async () => {
   }
 });
 
-describe('T176: rules about what an agent says are guidance', () => {
-  test('brief and instruction say pattern/classifier only see tool calls and diffs', async () => {
+describe('T176: rules about what an agent says are tell items', () => {
+  test('brief and instruction say action/ship only see tool calls and diffs', async () => {
     const brief = readFileSync(join(import.meta.dir, '../../briefs/lessons.md'), 'utf8');
     expect(brief).toMatch(/only ever see \*\*tool calls and diffs\*\*/);
-    expect(brief).toMatch(/must be `guidance`/);
+    expect(brief).toMatch(/must be `tell`/);
     const stream = await streams.create('human', { title: 't', goal: 'g' });
     const text = renderMaterial(stream, { findings: ['f'], denials: [], questions: [] });
-    expect(text).toContain('what an agent says (messages, replies) is `guidance`');
+    expect(text).toContain('what an agent says (messages, replies) is `tell`');
+    // T264: the instruction asks for a kind.
+    expect(text).toContain('`kind` — `standard`');
   });
 });
 
@@ -251,20 +253,21 @@ describe('the proposals (the T141 acceptance criteria)', () => {
     expect(threadBodies(stream.id)).toContain('lessons: session started');
 
     // The retro's own verb calls, exactly as the MCP bridge forwards them.
-    await verbs.proposeRule({
+    await verbs.proposeKnowledge({
       session,
       text: 'sniff the dialect on quoted separators before choosing one',
-      scope: 'stream',
+      scope: 'subtree',
       examples: [
         { action: 'splitting a quoted line on the raw separator', violates: true },
         { action: 'parsing quotes before splitting', violates: false },
       ],
-      enforcement: 'guidance',
+      enforcement: 'tell',
     });
-    await verbs.proposeRule({
+    await verbs.proposeKnowledge({
       session,
       text: 'a parser change carries a fixture for the dialect it changes',
-      scope: 'stream',
+      kind: 'decision',
+      scope: 'subtree',
       examples: [
         { action: 'changing the sniffer with no new fixture', violates: true },
         { action: 'adding a semicolon fixture with the change', violates: false },
@@ -273,9 +276,11 @@ describe('the proposals (the T141 acceptance criteria)', () => {
 
     const proposed = rules.listProposed();
     expect(proposed).toHaveLength(2);
+    // T264: lessons propose with a kind (default `standard`).
+    expect(proposed.map((r) => r.kind).sort()).toEqual(['decision', 'standard']);
     for (const rule of proposed) {
       expect(rule.status).toBe('proposed');
-      expect(rule.source).toMatchObject({ by: 'agent', node: stream.id, session });
+      expect(rule.source).toMatchObject({ by: 'lessons', node: stream.id, session });
       // A `tell` item carries no check: the examples stay visible in the source.
       expect(rule.enforcement).toBe('tell');
       expect(rule.source.finding).toMatch(/^proposed examples: violates: .+ \| allowed: .+$/);
@@ -316,12 +321,12 @@ describe('the proposals (the T141 acceptance criteria)', () => {
     const session = await runRetro(stream);
 
     for (let i = 0; i < MAX_LESSON_PROPOSALS; i += 1) {
-      await verbs.proposeRule({ session, text: `rule number ${i + 1}`, scope: 'stream' });
+      await verbs.proposeKnowledge({ session, text: `rule number ${i + 1}`, scope: 'subtree' });
     }
     expect(rules.listProposed()).toHaveLength(MAX_LESSON_PROPOSALS);
 
     await expect(
-      verbs.proposeRule({ session, text: 'one rule too many', scope: 'stream' }),
+      verbs.proposeKnowledge({ session, text: 'one rule too many', scope: 'subtree' }),
     ).rejects.toThrow(LessonQuotaError);
     expect(rules.listProposed()).toHaveLength(MAX_LESSON_PROPOSALS);
     // The cap is the retro's, not every session's: a worker is not capped.
@@ -403,10 +408,10 @@ describe('the inbox card', () => {
     const stream = await makeStream();
     await seedFinding(stream);
     const session = await runRetro(stream);
-    await verbs.proposeRule({
+    await verbs.proposeKnowledge({
       session,
       text: 'always name the dialect in the fixture file',
-      scope: 'stream',
+      scope: 'subtree',
       examples: [
         { action: 'a fixture called data.csv', violates: true },
         { action: 'a fixture called semicolon.csv', violates: false },

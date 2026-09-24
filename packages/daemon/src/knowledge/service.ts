@@ -2,7 +2,7 @@
  * `KnowledgeService`: propose, read, list, accept, retire and edit
  * knowledge items (projects-design §5, §14.3), plus the one scope filter.
  * Every method takes an explicit principal (`human` from the RPC edge,
- * `agent` from `propose_rule`, `daemon` for built-ins and stats); the store
+ * `agent` from `propose_knowledge`, `daemon` for built-ins and stats); the store
  * enforces the split.
  *
  * `knowledgeInScope` is the only scope filter, used by the brief, the hook
@@ -27,6 +27,7 @@ import {
   ulid,
   validateKnowledgeProposal,
 } from '@agile-agents/shared';
+import type { EmitRouted } from '../events/producers';
 import type { StateStore } from '../store/store';
 import type { StreamService } from '../streams/service';
 
@@ -65,6 +66,8 @@ export interface KnowledgeServiceOptions {
    * leaving flush-on-read and flush-on-shutdown (a deterministic test point).
    */
   statsFlushMs?: number;
+  /** T264: `knowledge_accepted` goes to every live node in the item's scope. */
+  emitRouted?: EmitRouted;
 }
 
 /**
@@ -250,7 +253,39 @@ export class KnowledgeService {
    * (a classifier rule with one example can't be accepted, §5.6).
    */
   async accept(id: string, by: string): Promise<KnowledgeItem> {
-    return this.decide(id, 'accepted', by);
+    const item = await this.decide(id, 'accepted', by);
+    if (this.options.emitRouted !== undefined) {
+      const parties = this.liveNodesInScope(item);
+      if (parties.length > 0) {
+        await this.options.emitRouted({
+          type: 'knowledge_accepted',
+          payload: {
+            item: item.id,
+            kind: item.kind,
+            text: item.text.slice(0, 200),
+            enforcement: item.enforcement,
+          },
+          ref: `knowledge/${item.id}.yaml`,
+          by: 'human',
+          parties,
+        });
+      }
+    }
+    return item;
+  }
+
+  /** Live (not archived, closed or landed) nodes the item applies to. */
+  liveNodesInScope(item: KnowledgeItem): string[] {
+    return this.options.streams
+      .list()
+      .filter(
+        (s) =>
+          s.archived !== true &&
+          s.human.status !== 'closed' &&
+          s.human.status !== 'landed' &&
+          knowledgeInScope([item], s, this.ancestorsOf(s)).length > 0,
+      )
+      .map((s) => s.id);
   }
 
   /** Retiring is a status change; nothing is deleted (§5.7). */

@@ -403,7 +403,7 @@ export function formatEnforcement(
 
 /**
  * A `tell`/`review` item carries no check, so examples proposed with one
- * (the old `propose_rule` verb, a migrated guidance rule) are kept where the
+ * (the old `propose_knowledge` verb, a migrated guidance rule) are kept where the
  * human deciding it sees them: in `source.finding`, one line each. Turning
  * the item into a check later means re-entering them with `--example`.
  */

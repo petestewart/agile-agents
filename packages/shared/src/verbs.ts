@@ -1,7 +1,7 @@
 /**
  * The eight MCP verbs an attached agent session gets, as zod schemas
  * (design/cockpit-design.md §4.1: "The MCP verb surface an agent gets
- * shrinks to eight: `ask` · `progress` · `finding` · `propose_rule` ·
+ * shrinks to eight: `ask` · `progress` · `finding` · `propose_knowledge` ·
  * `propose_next` · `read_stream` · `search_docs` · `test_run`. Everything
  * else in the old `tools/builtins.ts` is deleted").
  *
@@ -21,9 +21,13 @@
 
 import { z } from 'zod';
 import { UlidSchema, formatZodError } from './ids';
-import { RuleExampleSchema } from './knowledge';
+import {
+  KnowledgeEnforcementSchema,
+  KnowledgeKindSchema,
+  KnowledgePathsSchema,
+  RuleExampleSchema,
+} from './knowledge';
 import { RoutedEventIdSchema } from './routed-event';
-import { LegacyRuleEnforcementSchema } from './rule';
 import { StreamFindingSeveritySchema, THREAD_BODY_MAX_CHARS } from './stream';
 
 /** Free text an agent writes into the thread — capped like every thread body. */
@@ -50,25 +54,25 @@ export const FindingInputSchema = z
 export type FindingInput = z.infer<typeof FindingInputSchema>;
 
 /**
- * §5.1's proposal, as an agent may state it. `examples` · `enforcement` ·
- * `critical` are here because T141's lessons session is asked for exactly
- * those: two example actions per rule (the human's documentation and the
- * classifier's evals, §5.6), the tier it guesses, and whether it is
- * critical. Everything the daemon owns — `status`, `provenance`, `stats` —
- * is still absent, so no verb call can propose a rule that arrives
- * accepted.
+ * T264 (projects-design §14.3): an agent proposes a knowledge item. The
+ * agent picks the `kind` (default `standard`) and may guess the tier
+ * (`tell` · `action` · `ship` · `review`), `paths`, and two `examples`.
+ * The scope defaults to the caller's subtree. Everything the daemon owns —
+ * `status`, `source`, `stats` — is absent, so no call arrives accepted.
  */
-export const ProposeRuleInputSchema = z
+export const ProposeKnowledgeInputSchema = z
   .object({
     session: Session,
     text: Body,
+    kind: KnowledgeKindSchema.optional(),
     scope: z.string().min(1).optional(),
+    paths: KnowledgePathsSchema.optional(),
     examples: z.array(RuleExampleSchema).max(8).optional(),
-    enforcement: LegacyRuleEnforcementSchema.optional(),
+    enforcement: KnowledgeEnforcementSchema.optional(),
     critical: z.boolean().optional(),
   })
   .strict();
-export type ProposeRuleInput = z.infer<typeof ProposeRuleInputSchema>;
+export type ProposeKnowledgeInput = z.infer<typeof ProposeKnowledgeInputSchema>;
 
 export const ProposeNextInputSchema = z
   .object({ session: Session, title: z.string().min(1), goal: Body })
@@ -105,7 +109,7 @@ export const AGENT_VERBS = [
   'ask',
   'progress',
   'finding',
-  'propose_rule',
+  'propose_knowledge',
   'propose_next',
   'read_stream',
   'search_docs',
@@ -119,7 +123,7 @@ export const AGENT_VERB_SCHEMAS = {
   ask: AskInputSchema,
   progress: ProgressInputSchema,
   finding: FindingInputSchema,
-  propose_rule: ProposeRuleInputSchema,
+  propose_knowledge: ProposeKnowledgeInputSchema,
   propose_next: ProposeNextInputSchema,
   read_stream: ReadStreamInputSchema,
   search_docs: SearchDocsInputSchema,
@@ -133,8 +137,8 @@ export const AGENT_VERB_DESCRIPTIONS: Record<AgentVerb, string> = {
   ask: 'Ask the operator a question and block until it is answered.',
   progress: 'Report one line of progress onto the stream thread.',
   finding: 'Record a finding ({severity, file, line?, text}) on the stream.',
-  propose_rule:
-    'Propose a rule for the operator to accept or reject ({text, scope?, examples?: [{action, violates}], enforcement?, critical?}).',
+  propose_knowledge:
+    'Propose a knowledge item for the operator to accept or reject ({text, kind?: standard|architecture|decision, scope?, paths?, examples?: [{action, violates}], enforcement?: tell|action|ship|review, critical?}). Scope defaults to this node’s subtree.',
   propose_next: 'Propose a follow-up stream ({title, goal}); a human creates it.',
   read_stream: 'Read the most recent entries of this session’s stream thread.',
   search_docs: 'Search the repo and stream docs visible to this stream.',

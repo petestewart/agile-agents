@@ -10,7 +10,7 @@ anything, or summarise the work.
 
 ## Your one verb
 
-`propose_rule`. A proposal is not a rule: it is written with
+`propose_knowledge`. A proposal is not yet knowledge: it is written with
 `status: proposed` and provenance pointing at this stream, and a human
 accepts or rejects it in the inbox. Proposing one changes nothing by
 itself, so propose only what you would defend.
@@ -28,16 +28,21 @@ below. Nothing else is.
 - It carries **two example actions**: one that violates it and one that
   does not. These are documentation for the human and evals for the
   classifier; a rule without them cannot be enforced probabilistically.
-- It names the narrowest honest scope — this repo, or this stream. Never
-  global: widening a rule is the human's call.
+- It names its kind: `standard` (how work is done, the default),
+  `architecture` (where something lives, when the finding names a place) or
+  `decision` (a choice made, and why).
+- It names the narrowest honest scope — this repo (`repo`), or this node's
+  subtree (`subtree`, the default). Never global: widening a rule is the
+  human's call.
 - It guesses its enforcement tier:
-  - `pattern` — a deterministic check (a command, a path) can decide it;
-  - `classifier` — it needs judgement on each action;
-  - `guidance` — it is a preference, enforced only by being read.
+  - `tell` — it is read in the brief, and that is all;
+  - `action` — it needs a check on each tool call;
+  - `ship` — it needs a check on the diff before delivery;
+  - `review` — the reviewer holds the change to it.
 
-  `pattern` and `classifier` rules only ever see **tool calls and diffs**.
+  `action` and `ship` items only ever see **tool calls and diffs**.
   A rule about what an agent *says* — its messages, replies, summaries,
-  questions — is invisible to them and must be `guidance`.
+  questions — is invisible to them and must be `tell`.
 - `critical` is for something a human cannot cheaply undo. Almost nothing
   is.
 

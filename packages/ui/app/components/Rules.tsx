@@ -81,7 +81,7 @@ export function Rules(): JSX.Element {
 
   useEffect(load, []);
   // Any rule write — here, in the inbox, from the CLI or an agent's
-  // `propose_rule` — re-reads the list (one read per batch of events).
+  // `propose_knowledge` — re-reads the list (one read per batch of events).
   useEffect(
     () =>
       onEvent((event) => {

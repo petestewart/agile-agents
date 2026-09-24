@@ -131,14 +131,20 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
   // How spawned sessions reach this daemon's CLI for hooks and MCP,
   // resolved to something that runs on this host, never assumed on $PATH.
   const cliBin = resolveCliBin();
-  // Rules (§5): read by every brief, the hook and landing.
-  const rulesService =
-    store && streamService ? new KnowledgeService({ store, streams: streamService }) : undefined;
   // T240–T242: routed events, one service for every producer and the delivery.
   const routedEvents = store ? new RoutedEventService(store) : undefined;
   // T244: the producers' emit hook over that one service.
   const emitRouted: EmitRouted | undefined =
     routedEvents && streamService ? makeEmitter(routedEvents, streamService) : undefined;
+  // Rules (§5): read by every brief, the hook and landing. T264: accepting emits.
+  const rulesService =
+    store && streamService
+      ? new KnowledgeService({
+          store,
+          streams: streamService,
+          ...(emitRouted ? { emitRouted } : {}),
+        })
+      : undefined;
   // Attach and questions know about each other: the turn-end rule asks
   // what is open, and an answer is delivered by prompting the session.
   const attachService =

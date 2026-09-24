@@ -1,5 +1,5 @@
 /**
- * T140: the `propose_rule` verb (cockpit design §4.1, §5.1, **D4**). An
+ * T140: the `propose_knowledge` verb (T264) (cockpit design §4.1, §5.1, **D4**). An
  * agent proposes; the record lands with `status: 'proposed'`, provenance
  * pointing back at the stream and session, and a thread entry `ref`'d to
  * the rule's file. Nothing here can accept a rule — the store's principal
@@ -61,10 +61,10 @@ async function attach(repo?: string): Promise<{ session: string; stream: Stream 
   return { session, stream };
 }
 
-describe('propose_rule', () => {
+describe('propose_knowledge', () => {
   test('writes a proposed rule with provenance and a thread entry that points at it', async () => {
     const { session, stream } = await attach();
-    const entry: ThreadEntry = await verbs.proposeRule({
+    const entry: ThreadEntry = await verbs.proposeKnowledge({
       session,
       text: 'always run the integration suite before pushing',
     });
@@ -81,26 +81,30 @@ describe('propose_rule', () => {
     expect(entry.ref).toBe(`knowledge/${rule?.id}.yaml`);
   });
 
-  test('a repo-less stream’s proposal is scoped to that stream, never global', async () => {
-    const { session, stream } = await attach();
-    await verbs.proposeRule({ session, text: 'x' });
+  test('the scope defaults to the node’s subtree, even with a repo (T264)', async () => {
+    await store.addRepo('alpha', { path: join(home, 'alpha') });
+    const { session, stream } = await attach('alpha');
+    await verbs.proposeKnowledge({ session, text: 'x' });
     expect(rules.listProposed()[0]?.scope).toEqual({ kind: 'subtree', node: stream.id });
   });
 
-  test('a stream with a repo scopes the proposal to the repo (§5.1)', async () => {
-    await store.addRepo('alpha', { path: join(home, 'alpha') });
-    const { session } = await attach('alpha');
-    await verbs.proposeRule({ session, text: 'x' });
-    expect(rules.listProposed()[0]?.scope).toEqual({ kind: 'repo', repo: 'alpha' });
+  test('the agent picks the kind; omitted, it is standard', async () => {
+    const { session } = await attach();
+    await verbs.proposeKnowledge({ session, text: 'a', kind: 'decision' });
+    await verbs.proposeKnowledge({ session, text: 'b' });
+    expect(rules.listProposed().map((r) => [r.text, r.kind])).toEqual([
+      ['a', 'decision'],
+      ['b', 'standard'],
+    ]);
   });
 
   test('the scope grammar: global, the bare words, and explicit refs', async () => {
     await store.addRepo('alpha', { path: join(home, 'alpha') });
     const { session, stream } = await attach('alpha');
-    await verbs.proposeRule({ session, text: 'a', scope: 'global' });
-    await verbs.proposeRule({ session, text: 'b', scope: 'repo' });
-    await verbs.proposeRule({ session, text: 'c', scope: 'stream' });
-    await verbs.proposeRule({ session, text: 'd', scope: `stream:${stream.id}` });
+    await verbs.proposeKnowledge({ session, text: 'a', scope: 'global' });
+    await verbs.proposeKnowledge({ session, text: 'b', scope: 'repo' });
+    await verbs.proposeKnowledge({ session, text: 'c', scope: 'stream' });
+    await verbs.proposeKnowledge({ session, text: 'd', scope: `stream:${stream.id}` });
     expect(rules.listProposed().map((r) => [r.text, r.scope])).toEqual([
       ['a', { kind: 'global' }],
       ['b', { kind: 'repo', repo: 'alpha' }],
@@ -111,25 +115,25 @@ describe('propose_rule', () => {
 
   test('an unparseable scope is refused, and nothing is written', async () => {
     const { session } = await attach();
-    await expect(verbs.proposeRule({ session, text: 'x', scope: 'everything' })).rejects.toThrow(
-      /invalid knowledge scope/,
-    );
+    await expect(
+      verbs.proposeKnowledge({ session, text: 'x', scope: 'everything' }),
+    ).rejects.toThrow(/invalid knowledge scope/);
     expect(rules.list()).toEqual([]);
   });
 
   test('a scope of "repo" on a repo-less stream is refused', async () => {
     const { session } = await attach();
-    await expect(verbs.proposeRule({ session, text: 'x', scope: 'repo' })).rejects.toThrow(
-      /needs a stream with a repo/,
+    await expect(verbs.proposeKnowledge({ session, text: 'x', scope: 'repo' })).rejects.toThrow(
+      /needs a node with a repo/,
     );
   });
 
   test('examples proposed with a tell item are kept visible in source.finding', async () => {
     const { session } = await attach();
-    await verbs.proposeRule({
+    await verbs.proposeKnowledge({
       session,
       text: 'say which dialect you picked',
-      enforcement: 'guidance',
+      enforcement: 'tell',
       examples: [
         { action: 'reply without naming the dialect', violates: true },
         { action: 'reply: using RFC 4180', violates: false },
@@ -143,12 +147,12 @@ describe('propose_rule', () => {
     );
   });
 
-  test('the old tiers map to enforcement: classifier is an action check with its examples', async () => {
+  test('an action item gets a classifier check with its examples', async () => {
     const { session } = await attach();
-    await verbs.proposeRule({
+    await verbs.proposeKnowledge({
       session,
       text: 'no new dependencies',
-      enforcement: 'classifier',
+      enforcement: 'action',
       examples: [
         { action: 'bun add lodash', violates: true },
         { action: 'bun test', violates: false },
@@ -166,7 +170,7 @@ describe('propose_rule', () => {
   });
 
   test('a session that is no longer attached cannot propose anything', async () => {
-    await expect(verbs.proposeRule({ session: ulid(), text: 'x' })).rejects.toThrow(
+    await expect(verbs.proposeKnowledge({ session: ulid(), text: 'x' })).rejects.toThrow(
       UnknownSessionError,
     );
   });

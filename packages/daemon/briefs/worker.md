@@ -13,8 +13,9 @@ These, and only these:
   arrives. Ask when the goal is ambiguous or a decision is not yours.
 - `finding` — `{severity, file, line?, text}` for something wrong that you
   are not fixing here.
-- `propose_rule` — a rule you think should hold from now on. A human accepts
-  or rejects it; proposing one changes nothing by itself.
+- `propose_knowledge` — a standard, architecture note or decision you think
+  should hold from now on (`kind`; scope defaults to this node's subtree). A
+  human accepts or rejects it; proposing one changes nothing by itself.
 - `propose_next` — a follow-up worth its own stream. A human creates it.
 - `read_stream` — the recent thread, when you need what was said before.
 - `search_docs` — the repo's `.agile-docs/` and this stream's own notes.

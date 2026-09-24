@@ -4,8 +4,7 @@
  * Knowledge items replaced rules (projects-design §14.3, T260). This file
  * keeps only what reads the old `<home>/rules/R-<ulid>.yaml` files for the
  * one-shot migration (§17.1 step 2), and the old enforcement vocabulary
- * the `propose_rule` verb still speaks until `propose_knowledge` replaces
- * it (T264). `rules/` stays on disk, untouched, for one phase.
+ * the CLI's legacy tier flags still map from. `rules/` stays on disk, untouched, for one phase.
  */
 
 import { z } from 'zod';

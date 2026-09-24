@@ -13,7 +13,7 @@ Yours are the read-and-report subset:
   finding carries a severity, a location, and one concrete claim.
 - `progress` — one line on what you have covered so far.
 - `ask` — when the goal or a rule is ambiguous, ask the operator and stop.
-- `propose_rule` — when a finding is really a rule that should hold from
+- `propose_knowledge` — when a finding is really a standard that should hold from
   now on. A human accepts it; proposing one changes nothing by itself.
 - `propose_next` — follow-up work worth its own stream.
 - `read_stream` — what was said on this stream before you attached.

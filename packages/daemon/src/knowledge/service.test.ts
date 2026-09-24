@@ -14,11 +14,15 @@ import { join } from 'node:path';
 import {
   type KnowledgeItem,
   type KnowledgeItemInput,
+  type RoutedEvent,
   type Stream,
   ulid,
   validateKnowledgeItem,
 } from '@agile-agents/shared';
+import { makeEmitter } from '../events/producers';
+import { RoutedEventService } from '../events/service';
 import { runInit } from '../init';
+import { ProjectService } from '../projects';
 import { StateStore } from '../store';
 import { StreamService } from '../streams/service';
 import {
@@ -383,5 +387,42 @@ describe('inScope (the service over the home)', () => {
     const mid = await streams.create('human', { title: 'mid', goal: 'g', parent: root.id });
     const leaf = await streams.create('human', { title: 'leaf', goal: 'g', parent: mid.id });
     expect(rules.ancestorsOf(streams.get(leaf.id)).map((s) => s.title)).toEqual(['root', 'mid']);
+  });
+});
+
+// ------------------------------------------------------ knowledge_accepted
+
+describe('accept emits knowledge_accepted (T264)', () => {
+  test('accepting a Shop decision reaches Shop’s live nodes and not Blog’s', async () => {
+    const events = new RoutedEventService(store);
+    const emitted: RoutedEvent[] = [];
+    events.onEmitted((e) => emitted.push(e));
+    const emitting = new KnowledgeService({
+      store,
+      streams,
+      emitRouted: makeEmitter(events, streams),
+    });
+    const projects = new ProjectService(store, streams);
+    const shop = await projects.create({ name: 'Shop' });
+    const blog = await projects.create({ name: 'Blog' });
+    const child = await streams.create('human', { title: 'api', goal: 'g', parent: shop.root });
+    const done = await streams.create('human', { title: 'old', goal: 'g', parent: shop.root });
+    await streams.close('human', done.id);
+    const blogChild = await streams.create('human', { title: 'b', goal: 'g', parent: blog.root });
+
+    const item = await emitting.create('human', {
+      kind: 'decision',
+      text: 'sale prices show in red',
+      scope: { kind: 'project', project: shop.id },
+    });
+    await emitting.accept(item.id, 'pete');
+
+    const [event] = emitted.filter((e) => e.type === 'knowledge_accepted');
+    expect(event?.payload).toMatchObject({ item: item.id, kind: 'decision', enforcement: 'tell' });
+    const routed = event?.routing.map((r) => r.node).sort();
+    expect(routed).toEqual([shop.root, child.id].sort());
+    expect(routed).not.toContain(blogChild.id);
+    expect(routed).not.toContain(blog.root);
+    expect(routed).not.toContain(done.id);
   });
 });

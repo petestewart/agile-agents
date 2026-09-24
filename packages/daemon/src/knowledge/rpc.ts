@@ -3,7 +3,7 @@
  * also answering under its old `rule.*` name so `agile rules` and older
  * clients keep working. Params are validated at the boundary
  * (`RpcParamError`, -32602). The principal is always `human` here (§2.2):
- * an agent proposes through the `propose_rule` verb, and this edge has no
+ * an agent proposes through the `propose_knowledge` verb, and this edge has no
  * way to act as one.
  */
 
