@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { chmodSync } from 'node:fs';
+import { chmodSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describeGitNetworkFailure, git, gitNetwork, gitWrite, runGit } from './git';
+import { describeGitNetworkFailure, git, gitNetwork, gitWrite, networkGitEnv, runGit } from './git';
 
 let repoRoot: string;
 
@@ -166,6 +166,28 @@ describe("T231: gitNetwork() uses the operator's real credential setup", () => {
     expect(fill({ ...process.env, GIT_TERMINAL_PROMPT: '0' })).toContain('password=from-real-home');
     const viaSandbox = git(['config', '--get', 'credential.helper'], repoRoot, repoRoot);
     expect(viaSandbox.stdout).toBe('');
+  });
+
+  test('a daemon secret never reaches a network git call', () => {
+    const dump = join(realHome, 'env-names');
+    const savedKey = process.env.TYPESAFE_API_KEY;
+    process.env.TYPESAFE_API_KEY = 'dummy-not-a-key';
+    try {
+      // A shell alias sees exactly the env git (and so its helpers and hooks) got. Names only.
+      const ran = gitNetwork(
+        ['-c', `alias.envnames=!env | cut -d= -f1 > '${dump}'`, 'envnames'],
+        repoRoot,
+      );
+      expect(ran.exitCode).toBe(0);
+      const names = readFileSync(dump, 'utf8').split('\n');
+      expect(names).not.toContain('TYPESAFE_API_KEY');
+      expect(names).toContain('HOME');
+      expect(names).toContain('GIT_TERMINAL_PROMPT');
+      expect(networkGitEnv(process.env).HOME).toBe(realHome);
+    } finally {
+      if (savedKey === undefined) Reflect.deleteProperty(process.env, 'TYPESAFE_API_KEY');
+      else process.env.TYPESAFE_API_KEY = savedKey;
+    }
   });
 
   test('no credential fails fast with prompts off, and reads as one clear line', () => {

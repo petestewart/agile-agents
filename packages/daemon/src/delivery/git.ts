@@ -64,10 +64,61 @@ export function git(args: string[], cwd: string, repoRoot: string): GitResult {
  * instead of waiting on a terminal the daemon doesn't have.
  */
 export function gitNetwork(args: string[], cwd: string): GitResult {
-  return spawnGit(['git', ...args], cwd, { ...process.env, GIT_TERMINAL_PROMPT: '0' } as Record<
-    string,
-    string
-  >);
+  return spawnGit(['git', ...args], cwd, networkGitEnv(process.env));
+}
+
+const NETWORK_ENV_NAMES = new Set([
+  'HOME',
+  'USER',
+  'LOGNAME',
+  'PATH',
+  'SHELL',
+  'TMPDIR',
+  'LANG',
+  'TERM',
+  'SSH_AUTH_SOCK',
+  'GNUPGHOME',
+  'SSL_CERT_FILE',
+  'SSL_CERT_DIR',
+  'HTTP_PROXY',
+  'HTTPS_PROXY',
+  'NO_PROXY',
+  'ALL_PROXY',
+  'http_proxy',
+  'https_proxy',
+  'no_proxy',
+  'all_proxy',
+  // Read by `gh auth git-credential` when the operator set them.
+  'GH_TOKEN',
+  'GITHUB_TOKEN',
+  'GH_HOST',
+  'GH_CONFIG_DIR',
+]);
+const NETWORK_ENV_PREFIXES = ['LC_', 'XDG_', 'SSH_', 'GIT_'];
+
+/**
+ * An allow-list, never the daemon's whole env: the classifier key and any
+ * other daemon secret must not reach git, credential helpers or hooks.
+ */
+export function networkGitEnv(env: NodeJS.ProcessEnv): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [name, value] of Object.entries(env)) {
+    if (value === undefined) continue;
+    if (NETWORK_ENV_NAMES.has(name) || NETWORK_ENV_PREFIXES.some((p) => name.startsWith(p))) {
+      out[name] = value;
+    }
+  }
+  // The daemon's commit identity belongs to gitWrite only.
+  for (const name of [
+    'GIT_AUTHOR_NAME',
+    'GIT_AUTHOR_EMAIL',
+    'GIT_COMMITTER_NAME',
+    'GIT_COMMITTER_EMAIL',
+  ]) {
+    delete out[name];
+  }
+  out.GIT_TERMINAL_PROMPT = '0';
+  return out;
 }
 
 const CREDENTIAL_FAILURE =
