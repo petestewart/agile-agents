@@ -49,7 +49,7 @@ import { QuestionService } from '../questions';
 import { type RuleRpcEvalDeps, RulesService, SEED_PROVENANCE } from '../rules';
 import type { FakeAgentScript } from '../runner/fake-agent';
 import { StateStore } from '../store';
-import { StreamService } from '../streams';
+import { RepoInPlaceService, StreamService } from '../streams';
 import {
   BROWSER_ATTEMPTS,
   BROWSER_READY_BUDGET_MS,
@@ -1053,7 +1053,11 @@ async function startStreamCockpit(scripts: FakeAgentScript[]): Promise<StreamCoc
 
   const init = runInit(home);
   const store = StateStore.open(init.stateRoot);
-  await store.putRepos({ demo: { path: repo, protected_branches: [] } });
+  // T205: a second repo, for + Repo's second part (never checked out: parts cut on first attach).
+  await store.putRepos({
+    demo: { path: repo, protected_branches: [] },
+    web: { path: repo, protected_branches: [] },
+  });
   const streams = new StreamService(store);
   const gates = new GateService(store);
   const rules = new RulesService({ store, streams });
@@ -1101,6 +1105,10 @@ async function startStreamCockpit(scripts: FakeAgentScript[]): Promise<StreamCoc
     rules,
     landing,
     attach,
+    repoInPlace: new RepoInPlaceService(store, streams, {
+      attach: (id) => attach.attach(id),
+      stop: (id) => attach.stop(id),
+    }),
     docs,
     feedPollIntervalMs: 50,
   });
@@ -2058,6 +2066,73 @@ describe('New stream starts the agent (Playwright e2e, T204)', () => {
         await page.locator('[data-testid="stream-page"]').waitFor({ state: 'visible' });
         expect(captured?.sessions).toEqual([]);
         expect(await page.locator('[data-testid="attach"]').textContent()).toBe('Start');
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+});
+
+describe('+ Repo in place (Playwright e2e, T205)', () => {
+  browserTest(
+    '+ Repo on a conversation keeps the thread; a second repo (from a proposal) adds part rows',
+    async () => {
+      const cockpit = await startStreamCockpit([]);
+      let page: Page | undefined;
+      try {
+        const shop = await new ProjectService(cockpit.store, cockpit.streams).create({
+          name: 'shop',
+        });
+        const node = await cockpit.streams.create('human', {
+          title: 'Sale prices',
+          goal: 'can we show sale prices?',
+          project: shop.id,
+        });
+        await cockpit.streams.appendThread('human', node.id, {
+          kind: 'line',
+          body: 'THREAD-MARKER-205',
+        });
+        page = await openPage();
+        await page.goto(`${cockpit.base}/`);
+        await page.locator(`[data-testid="stream-tree"] [data-stream="${node.id}"]`).click();
+        const root = `[data-testid="stream-page"][data-stream="${node.id}"]`;
+        await page.locator(root).waitFor();
+
+        // Conversation + demo: a work node with a branch, the same thread.
+        await page.locator('[data-testid="add-repo"]').click();
+        await page.locator('[data-testid="add-repo-select"]').selectOption('demo');
+        await page.locator('[data-testid="add-repo-submit"]').click();
+        await page.locator('[data-testid="stream-status"]', { hasText: 'stream/' }).waitFor();
+        expect(cockpit.streams.get(node.id).repo).toBe('demo');
+        await page
+          .locator(`${root} [data-testid="thread"]`, { hasText: 'THREAD-MARKER-205' })
+          .waitFor();
+
+        // The agent's "web too?" proposal carries an Add button.
+        await cockpit.streams.appendThread('daemon', node.id, {
+          kind: 'proposal',
+          body: 'next: this needs a change in web too; add it?',
+        });
+        await page.locator('[data-testid="proposal-add-repo"]', { hasText: 'Add web' }).click();
+        await waitUntil(
+          'two parts',
+          () => cockpit.streams.list().filter((s) => s.parent === node.id).length === 2,
+        );
+        const parts = cockpit.streams.list().filter((s) => s.parent === node.id);
+        for (const part of parts) {
+          await page.locator(`[data-testid="stream-tree"] [data-stream="${part.id}"]`).waitFor();
+        }
+        expect(parts.map((p) => p.title).sort()).toEqual(['demo part', 'web part']);
+        await page
+          .locator(
+            `[data-testid="stream-tree"] [data-stream="${node.id}"][data-role="coordinating"]`,
+          )
+          .waitFor();
+        await page
+          .locator(`${root} [data-testid="thread"]`, { hasText: 'THREAD-MARKER-205' })
+          .waitFor();
       } finally {
         await teardown([page]);
         await cockpit.stop();

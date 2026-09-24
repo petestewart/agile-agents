@@ -172,7 +172,8 @@ export async function runStreamList(
       .filter((s) => project === undefined || s.project === project)
       .filter((s) => parent === undefined || s.parent === parent)
       .map((s) => ({ ...s, role: roleIn(s, every) }));
-    if (json) printJson({ nodes });
+    // T205: a bare array, so `jq '.[] | …'` reads it (Pete's Phase 7 look).
+    if (json) printJson(nodes);
     else if (nodes.length === 0) console.log('nodes: (none)');
     else
       printTable(
@@ -267,7 +268,9 @@ export async function runStreamShow(
 
   const role = roleIn(stream, await allStreams(socketPath));
   if (json) {
-    printJson({ stream, role, thread: page });
+    // T205: the record's fields at the top level (`jq .branch`), plus the
+    // role and the thread tail. `stream` stays for older readers.
+    printJson({ ...stream, role, stream, thread: page });
     return 0;
   }
 
@@ -330,5 +333,37 @@ export async function runStreamSay(
   });
   if (json) printJson(entry);
   else console.log(`agile stream say: appended to ${id}`);
+  return 0;
+}
+
+/**
+ * T205 `agile node add-repo|switch-repo <id> <repo>` (projects-design §7):
+ * the daemon reshapes the tree; the node keeps its thread.
+ */
+export async function runStreamAddRepo(
+  socketPath: string,
+  args: ParsedArgs,
+  json: boolean,
+  switching: boolean,
+): Promise<number> {
+  const id = requirePositional(args, 0, 'node-id');
+  const repo = requirePositional(args, 1, 'repo');
+  const result = await callRpc<{ node: Stream; parts: Stream[] }>(
+    socketPath,
+    switching ? 'node.switch_repo' : 'node.add_repo',
+    { id, repo },
+  );
+  if (json) {
+    printJson(result);
+    return 0;
+  }
+  const { node, parts } = result;
+  const verb = switching ? 'switch-repo' : 'add-repo';
+  console.log(
+    `agile node ${verb}: ${node.id}${node.branch !== undefined ? ` on ${node.branch}` : ''}`,
+  );
+  for (const part of parts) {
+    console.log(`  part ${part.id}  ${part.title}  ${part.human.status}`);
+  }
   return 0;
 }

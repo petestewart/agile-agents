@@ -591,3 +591,13 @@ export const StreamAttachRequestSchema = z
   })
   .strict();
 export type StreamAttachRequest = z.infer<typeof StreamAttachRequestSchema>;
+
+/** T205: the stream page's + Repo (`POST /api/streams/:id/add-repo`, projects-design §7). */
+export const StreamAddRepoRequestSchema = z
+  .object({
+    repo: z.string().min(1),
+    /** Switch a work node with nothing committed instead of adding a part. */
+    switch: z.boolean().optional(),
+  })
+  .strict();
+export type StreamAddRepoRequest = z.infer<typeof StreamAddRepoRequestSchema>;

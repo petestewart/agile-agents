@@ -21,6 +21,7 @@ import {
   RulePatchSchema,
   RuleTestInputSchema,
   SessionDefaultsPatchSchema,
+  StreamAddRepoRequestSchema,
   StreamAttachRequestSchema,
   StreamCreateInputSchema,
   StreamSayInputSchema,
@@ -64,7 +65,7 @@ import {
   testRules,
 } from './rules';
 import { NotFoundError, type StateStore, buildStateRpcMethods, resolveMainBranch } from './store';
-import type { StreamService } from './streams';
+import type { RepoInPlaceService, StreamService } from './streams';
 
 /** The installable-app files served at site root, with their content types. */
 const INSTALLABLE_FILES: Record<string, string> = {
@@ -135,6 +136,8 @@ export interface HttpServerOptions {
   landing?: LandingService;
   /** The stream page's sessions strip and composer. */
   attach?: AttachService;
+  /** T205: the stream page's + Repo (projects-design §7). */
+  repoInPlace?: RepoInPlaceService;
   /** The stream page's docs tab. */
   docs?: DocsService;
   /** Test hook: the tailer's poll interval (default 250ms). */
@@ -363,6 +366,7 @@ interface FeedContext {
   classifierKey?: ClassifierKeyService;
   landing?: LandingService;
   attach?: AttachService;
+  repoInPlace?: RepoInPlaceService;
   docs?: DocsService;
 }
 
@@ -380,6 +384,7 @@ function resolveFeedContext(options: HttpServerOptions): FeedContext | undefined
     classifierKey: options.classifierKey,
     landing: options.landing,
     attach: options.attach,
+    repoInPlace: options.repoInPlace,
     docs: options.docs,
   };
 }
@@ -632,6 +637,7 @@ async function handleRuleRoute(
  *   POST /api/streams/:id/stop    the sessions strip's stop (a human detach)
  *   POST /api/streams/:id/close   the page's Close
  *   POST /api/streams/:id/mark-landed  merged outside `land`
+ *   POST /api/streams/:id/add-repo     + Repo in place (T205): `{repo, switch?}`
  *
  * `land` is matched before this. Every write is same-origin only
  * and stamps `human`; no principal is ever read from the body (§2.2).
@@ -644,7 +650,7 @@ async function handleStreamRoute(
   sameOrigin: () => boolean,
 ): Promise<Response | undefined> {
   const match = url.pathname.match(
-    /^\/api\/streams\/([^/]+)(?:\/(diff|say|attach|resolve|stop|close|mark-landed))?$/,
+    /^\/api\/streams\/([^/]+)(?:\/(diff|say|attach|resolve|stop|close|mark-landed|add-repo))?$/,
   );
   if (!match) return undefined;
   const action = match[2];
@@ -682,6 +688,16 @@ async function handleStreamRoute(
       return jsonResponse(await feed.landing.markLanded(id));
     }
     const body = await readJsonBody(req);
+    if (action === 'add-repo') {
+      if (!feed.repoInPlace) return errorResponse(503, 'sessions not available');
+      const input = StreamAddRepoRequestSchema.safeParse(body);
+      if (!input.success) return errorResponse(400, formatZodError('add-repo', input.error));
+      const { repo } = input.data;
+      const result = input.data.switch
+        ? await feed.repoInPlace.switchRepo(id, repo)
+        : await feed.repoInPlace.addRepo(id, repo);
+      return jsonResponse(result, 201);
+    }
     if (action === 'say') {
       const input = StreamSayInputSchema.safeParse(body);
       if (!input.success) return errorResponse(400, formatZodError('say', input.error));

@@ -24,6 +24,7 @@ import {
   InboxService,
   ProjectService,
   QuestionService,
+  RepoInPlaceService,
   type RpcServerHandle,
   RulesService,
   StateStore,
@@ -197,6 +198,11 @@ export async function startTestDaemon(prefix = 'agile-cli-test-'): Promise<TestD
       // T204: as `daemon.ts`, `node new` starts the node's agent (the fake one here).
       ...buildStreamRpcMethods(streamService, {
         create: (principal, input, opts) => attachService.createNode(principal, input, opts),
+        // T205: + Repo in place, over the same sessions.
+        repoInPlace: new RepoInPlaceService(store, streamService, {
+          attach: (id) => attachService.attach(id),
+          stop: (id) => attachService.stop(id),
+        }),
       }),
       ...buildProjectRpcMethods(new ProjectService(store, streamService)),
       ...buildInboxRpcMethods(

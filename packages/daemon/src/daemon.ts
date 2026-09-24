@@ -36,7 +36,7 @@ import { RulesService, buildRuleRpcMethods, ensureBuiltinRules } from './rules';
 import { resolveCliBin } from './runner';
 import { StateStore, buildStateRpcMethods } from './store';
 import { migrateHome } from './store/migrate';
-import { StreamService, buildStreamRpcMethods } from './streams';
+import { RepoInPlaceService, StreamService, buildStreamRpcMethods } from './streams';
 
 export const DAEMON_VERSION: string = daemonPackageJson.version;
 
@@ -265,6 +265,14 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
     });
   }
 
+  // T205: "+ Repo" in place (projects-design §7), over the attach service's sessions.
+  const repoInPlace =
+    store && streamService && attachService
+      ? new RepoInPlaceService(store, streamService, {
+          attach: (id) => attachService.attach(id),
+          stop: (id) => attachService.stop(id),
+        })
+      : undefined;
   const extraMethods =
     store && gateService && bus
       ? {
@@ -279,6 +287,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
                   ? {
                       create: (principal, input, opts) =>
                         attachService.createNode(principal, input, opts),
+                      ...(repoInPlace ? { repoInPlace } : {}),
                       reply: {
                         say: (id: string, body: string) => attachService.say(id, body),
                         ...(questionService ? { questions: questionService } : {}),
@@ -334,6 +343,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
     ...(classifierKey ? { classifierKey } : {}),
     ...(landingService ? { landing: landingService } : {}),
     ...(attachService ? { attach: attachService } : {}),
+    ...(repoInPlace ? { repoInPlace } : {}),
     ...(docsService ? { docs: docsService } : {}),
   });
 

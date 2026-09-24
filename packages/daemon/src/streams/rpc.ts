@@ -14,7 +14,9 @@ import {
 import { RpcParamError, optionalString, paramErrors, requireObject } from '../gates/rpc';
 import { type ThreadReplyDeps, sayAndAnswer } from '../questions/thread-reply';
 import type { RpcMethodHandler } from '../rpc';
+import { WorktreeRefusedError } from '../runner/worktrees';
 import { AlreadyExistsError } from '../store/store';
+import { RepoInPlaceError, type RepoInPlaceService } from './repo-in-place';
 import {
   type StreamNode,
   type StreamPatch,
@@ -35,6 +37,14 @@ function requireStreamId(value: unknown): string {
     });
   }
   return result.data;
+}
+
+function requireRepoName(value: unknown): string {
+  const repo = optionalString(value, 'repo');
+  if (repo === undefined) {
+    throw new RpcParamError('invalid "repo": must be a registered repo name', { repo: value });
+  }
+  return repo;
 }
 
 function optionalBoolean(value: unknown, field: string): boolean | undefined {
@@ -109,6 +119,8 @@ const asParamErrors = paramErrors(
   UnknownParentStreamError,
   UnknownRepoError,
   StreamProjectError,
+  RepoInPlaceError,
+  WorktreeRefusedError,
 );
 
 /**
@@ -120,13 +132,34 @@ export interface StreamRpcOptions {
   reply?: ThreadReplyDeps;
   /** T204: create and start the node's agent (`AttachService.createNode`). */
   create?: StreamService['create'];
+  /** T205: `node.add_repo` / `node.switch_repo` (projects-design §7). */
+  repoInPlace?: RepoInPlaceService;
 }
 
 export function buildStreamRpcMethods(
   service: StreamService,
   options: StreamRpcOptions = {},
 ): Record<string, RpcMethodHandler> {
+  const repoInPlace = options.repoInPlace;
+  const reshapes: Record<string, RpcMethodHandler> =
+    repoInPlace === undefined
+      ? {}
+      : {
+          'node.add_repo': async (params) => {
+            const p = requireObject(params);
+            const id = requireStreamId(p.id);
+            const repo = requireRepoName(p.repo);
+            return asParamErrors(() => repoInPlace.addRepo(id, repo));
+          },
+          'node.switch_repo': async (params) => {
+            const p = requireObject(params);
+            const id = requireStreamId(p.id);
+            const repo = requireRepoName(p.repo);
+            return asParamErrors(() => repoInPlace.switchRepo(id, repo));
+          },
+        };
   return {
+    ...reshapes,
     'stream.create': async (params) =>
       asParamErrors(() =>
         (options.create ?? service.create.bind(service))(
