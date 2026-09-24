@@ -1333,20 +1333,20 @@ agile tail --node $N --events
 
 ### Ticket: T280 Coordinator role
 - **Priority:** P0
-- **Status:** In Progress
-- **Owner:** opus:worker-T280
+- **Status:** Done (merge 9780ade)
+- **Owner:** —
 - **Scope:**
   - Add a `coordinator` session role for coordinating nodes and project roots (P20): no worktree, the scratch cwd, read access under visibility, writes denied by the hook.
   - The coordinator brief: children, their cards (once T283 exists), knowledge in scope, the autonomy level.
   - The coordinator is woken by any event routed to it (T243).
 - **Acceptance Criteria:** A fake-agent test: `child_status` wakes the coordinator with a digest. A hook test: a coordinator write is denied.
 - **Validation Steps:** `bun test packages/daemon/src/runner packages/daemon/src/events packages/daemon/src/hook`.
-- **Notes:** First ticket of Phase 11.
+- **Notes:** First ticket of Phase 11. Review (sonnet): 2 blocking fixed (writes allowed only inside the scratch session dir per P20, own coordinator policy on hook + ACP + Grok fs; project roots that had a coordinator wake). Adversarial re-review of the policy PASS (symlinks, `..`, cd, sh -c, cp/mv/ln, find -fprint). Daemon +80. Open: a root whose children all closed attaches as a worker again; Cursor has no hook so edits aren't gated for it.
 
 ### Ticket: T281 Plans and contracts
 - **Priority:** P0
-- **Status:** Todo
-- **Owner:** —
+- **Status:** In Progress
+- **Owner:** opus:worker-T281
 - **Scope:**
   - Add `Plan` and `Contract` records (§14.4), with the verbs `plan_write` and `contract_write` for coordinators.
   - A plan starts as `draft`. Approval is an inbox card at every level, because the plan decides what gets built.
@@ -1376,8 +1376,8 @@ agile tail --node $N --events
 
 ### Ticket: T283 ∥ Status cards
 - **Priority:** P1
-- **Status:** Todo
-- **Owner:** —
+- **Status:** In Progress
+- **Owner:** opus:worker-T283
 - **Scope:** Add `cards/<node>.yaml` (§14.5). The daemon updates `files`, `state` and `relies_on`; the `progress` verb updates `doing`. The `read_card(node)` verb is limited to siblings, ancestors and the Director. Cards show on the parent's page.
 - **Acceptance Criteria:** A card follows edits within one recompute; a sibling can read it; a node in another project can't.
 - **Validation Steps:** `bun test packages/daemon/src/coordination`.
