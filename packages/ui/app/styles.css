@@ -191,8 +191,11 @@ body {
 .cr-nav {
   display: flex;
   gap: 2px;
+  min-width: 0;
+  overflow-x: auto;
 }
 .cr-nav button {
+  white-space: nowrap;
   border: 0;
   background: transparent;
   color: var(--text-dim);
@@ -948,4 +951,43 @@ body {
   text-align: center;
   font-size: 11px;
   color: var(--text-dim);
+}
+
+/* ---- T209: repo view and lenses ---- */
+.cr-lens-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.cr-lens-row,
+.cr-lens-link {
+  background: none;
+  border: 0;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  text-align: left;
+  padding: 4px 0;
+}
+.cr-lens-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  overflow-wrap: anywhere;
+}
+.cr-lens-row:hover .title,
+.cr-lens-link:hover {
+  text-decoration: underline;
+}
+.cr-lens-path .anc,
+.cr-lens-list .anc,
+.cr-lens-mode,
+.cr-lens-empty {
+  color: var(--text-dim);
+  font-weight: 400;
+}
+.cr-lens-empty {
+  font-size: 12px;
+  margin: 4px 0 0;
 }
