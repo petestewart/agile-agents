@@ -1406,12 +1406,12 @@ agile tail --node $N --events
 
 ### Ticket: T286 ∥ Ask sibling
 - **Priority:** P2
-- **Status:** In Progress
-- **Owner:** opus:worker-T286
+- **Status:** Done (merge 34befbd)
+- **Owner:** —
 - **Scope:** The `ask_sibling(node, question)` and `reply_sibling` verbs. The exchange is written to both threads, and the parent gets a copy. A joint proposal is `propose_contract` with both signatures. The brief states the line between details and plan changes.
 - **Acceptance Criteria:** The fake-agent currency example from §9.5 end to end.
 - **Validation Steps:** `bun test packages/daemon/src/coordination packages/daemon/src/events`.
-- **Notes:** After T285. From T285 review: tell the proposer (routed event) when its contract proposal is rejected or approved; co-signers must actually agree (via ask/reply) before a joint proposal is filed.
+- **Notes:** After T285. From T285 review: tell the proposer (routed event) when its contract proposal is rejected or approved; co-signers must actually agree (via ask/reply) before a joint proposal is filed. Review (sonnet): 1 blocking fixed — co-sign needs `reply_sibling` `agree: {contract, body}` to the proposer's latest ask, matching this contract and body (sha256). Decision notices say "by the operator" or "by your coordinator". Daemon +229. Full bun test after merge: 2235/0.
 
 ### Ticket: T287 Sibling finished and collisions go to the parent
 - **Priority:** P1
@@ -1438,8 +1438,8 @@ agile tail --node $N --events
 
 ### Ticket: T289 Phase 11 QA and Pete's look
 - **Priority:** P0
-- **Status:** Todo
-- **Owner:** —
+- **Status:** In Progress
+- **Owner:** sonnet:qa-T289
 - **Scope:** Black-box QA of the coordinator, plans, contracts, levels, cards, alerts, ask-sibling and helpers with fake agents. Daemon line count. Pete runs the worked example on his two repos with a live coordinator.
 - **Acceptance Criteria:** QA ACCEPT. Live: the coordinator writes a plan and a contract that Pete approves. The two parts work from them. A contract proposal reaches the parent and is decided. Pete sees it as one line in the activity feed.
 - **Validation Steps:** Pete, on his Mac:
