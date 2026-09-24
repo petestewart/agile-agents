@@ -185,6 +185,8 @@ export class AttachService {
     this.events = options.events ?? new RoutedEventService(options.store);
     this.delivery = new SessionDelivery({
       events: this.events,
+      titleOf: (id) =>
+        options.streams.list({ include_archived: true }).find((s) => s.id === id)?.title,
       ...(options.deliveryDelayMs !== undefined ? { delayMs: options.deliveryDelayMs } : {}),
       target: (node) => {
         const handle = this.handleFor(node, 'worker');

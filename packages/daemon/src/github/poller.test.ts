@@ -7,8 +7,15 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { Stream } from '@agile-agents/shared';
+import type { RoutedEvent, Stream } from '@agile-agents/shared';
 import { DeliveryService } from '../delivery/service';
+import {
+  type EmitRouted,
+  RoutedEventService,
+  emitTransitions,
+  makeEmitter,
+  summarize,
+} from '../events';
 import { runInit } from '../init';
 import { ProjectService } from '../projects';
 import { StateStore } from '../store';
@@ -291,5 +298,125 @@ describe('PR poller (T225)', () => {
     clock += PR_POLL_MS;
     await p.tick();
     expect(moved).toEqual([{ repo: 'demo' }]);
+  });
+});
+
+describe('PR poller routed events (T244)', () => {
+  let events: RoutedEventService;
+  let emitted: RoutedEvent[];
+  let parentId: string;
+
+  async function wired(): Promise<{ s: Stream; p: PrPoller }> {
+    events = new RoutedEventService(store);
+    emitted = [];
+    const base = makeEmitter(events, {
+      list: (o?: { include_archived?: boolean }) => streams.list(o),
+    } as StreamService);
+    const emit: EmitRouted = async (input) => {
+      const e = await base(input);
+      if (e) emitted.push(e);
+      return e;
+    };
+    streams = new StreamService(store, { onUpdated: emitTransitions(emit) });
+    parentId = (await streams.create('human', { title: 'Shop', goal: 'shop' })).id;
+    const s = await openPr();
+    await streams.update('human', s.id, { parent: parentId });
+    const p = new PrPoller({
+      streams,
+      repos: () => store.getRepos(),
+      github: () => port(),
+      emit,
+      now,
+    });
+    await p.tick();
+    emitted = [];
+    return { s, p };
+  }
+  const routed = (e: RoutedEvent) => e.routing.map((r) => [r.node, r.because]);
+  const one = (type: string) => {
+    const e = emitted.filter((x) => x.type === type);
+    expect(e).toHaveLength(1);
+    return e[0] as RoutedEvent;
+  };
+
+  test('pr_review: self gets the comments, the parent a summary', async () => {
+    const { s, p } = await wired();
+    gh.addReview(1, { state: 'CHANGES_REQUESTED', user: 'ann', body: 'rename it' });
+    gh.addIssueComment(1, { body: 'also the docs', user: 'bob' });
+    clock += PR_POLL_MS;
+    await p.tick();
+    const e = one('pr_review');
+    expect(routed(e)).toEqual([
+      [s.id, 'self'],
+      [parentId, 'ancestor'],
+    ]);
+    expect(summarize(e, s.id)).toBe(
+      'PR #1 review from ann: changes_requested. Comments: bob: also the docs. Fix small asks and push; send design disagreements to the inbox with `ask`.',
+    );
+    expect(summarize(e, parentId, () => 'CSV')).toBe('PR #1 on CSV: changes_requested.');
+  });
+
+  test('ci_failed goes to self with the check name', async () => {
+    const { s, p } = await wired();
+    gh.setCheck(mustGit(['rev-parse', 'stream/s-pr']), 'unit', 'failure');
+    clock += PR_POLL_MS;
+    await p.tick();
+    const e = one('ci_failed');
+    expect(routed(e)).toEqual([[s.id, 'self']]);
+    expect(summarize(e, s.id)).toStartWith('CI failed on PR #1: unit. Log excerpt at http');
+  });
+
+  test('pr_behind when main moves under an approved green PR', async () => {
+    const { s, p } = await wired();
+    gh.addReview(1, { state: 'APPROVED', user: 'ann' });
+    gh.setCheck(mustGit(['rev-parse', 'stream/s-pr']), 'ci', 'success');
+    commitIn(repo, 'other.txt', 'x\n');
+    mustGit(['push', '-q', 'origin', 'main']);
+    clock += PR_POLL_MS;
+    await p.tick();
+    const e = one('pr_behind');
+    expect(routed(e)).toEqual([[s.id, 'self']]);
+    expect(summarize(e, s.id)).toBe(
+      'PR #1 is behind main. Merge main in, resolve, run the tests, push.',
+    );
+  });
+
+  test('pr_closed goes to self and ancestors, login falls back', async () => {
+    const { s, p } = await wired();
+    gh.close(1);
+    clock += PR_POLL_MS;
+    await p.tick();
+    const e = one('pr_closed');
+    expect(routed(e)).toEqual([
+      [s.id, 'self'],
+      [parentId, 'ancestor'],
+    ]);
+    expect(summarize(e, s.id)).toBe('PR #1 was closed without merging by someone.');
+  });
+
+  test('a merge emits pr_merged, child_delivered and dependency_satisfied', async () => {
+    const { s, p } = await wired();
+    const waiter = await streams.create('human', { title: 'Web', goal: 'web', parent: parentId });
+    await streams.wait('human', waiter.id, s.id);
+    emitted = [];
+    const sha = gh.merge(1);
+    clock += PR_POLL_MS;
+    await p.tick();
+    const merged = one('pr_merged');
+    expect(routed(merged)).toEqual([
+      [s.id, 'self'],
+      [parentId, 'ancestor'],
+      [waiter.id, 'waits_on'],
+    ]);
+    expect(merged.payload).toEqual({ pr: 1, repo: 'demo', sha });
+    expect(summarize(merged, s.id)).toBe('Your PR merged; the stream is done.');
+    const delivered = one('child_delivered');
+    expect(routed(delivered)).toEqual([[parentId, 'ancestor']]);
+    expect(summarize(delivered, parentId)).toBe(
+      `Child CSV merged into demo main (${sha.slice(0, 12)}).`,
+    );
+    const dep = one('dependency_satisfied');
+    expect(routed(dep)).toEqual([[waiter.id, 'waits_on']]);
+    expect(summarize(dep, waiter.id)).toBe('CSV merged; your wait on it has cleared.');
   });
 });

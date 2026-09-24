@@ -21,6 +21,7 @@
 
 import { z } from 'zod';
 import { UlidSchema, formatZodError } from './ids';
+import { RoutedEventIdSchema } from './routed-event';
 import { RuleEnforcementSchema, RuleExampleSchema } from './rule';
 import { StreamFindingSeveritySchema, THREAD_BODY_MAX_CHARS } from './stream';
 
@@ -84,6 +85,12 @@ export type SearchDocsInput = z.infer<typeof SearchDocsInputSchema>;
 export const TestRunInputSchema = z.object({ session: Session, command: Body }).strict();
 export type TestRunVerbInput = z.infer<typeof TestRunInputSchema>;
 
+/** T244 (projects-design §15): one routed event's full payload, by id. */
+export const ReadEventInputSchema = z
+  .object({ session: Session, id: RoutedEventIdSchema })
+  .strict();
+export type ReadEventInput = z.infer<typeof ReadEventInputSchema>;
+
 /** The verb table, in the order §4.1 lists it. */
 export const AGENT_VERBS = [
   'ask',
@@ -94,6 +101,7 @@ export const AGENT_VERBS = [
   'read_stream',
   'search_docs',
   'test_run',
+  'read_event',
 ] as const;
 export type AgentVerb = (typeof AGENT_VERBS)[number];
 
@@ -106,6 +114,7 @@ export const AGENT_VERB_SCHEMAS = {
   read_stream: ReadStreamInputSchema,
   search_docs: SearchDocsInputSchema,
   test_run: TestRunInputSchema,
+  read_event: ReadEventInputSchema,
 } as const satisfies Record<AgentVerb, z.ZodType>;
 
 /** One line of help per verb, published to the model by the MCP bridge. */
@@ -119,6 +128,7 @@ export const AGENT_VERB_DESCRIPTIONS: Record<AgentVerb, string> = {
   read_stream: 'Read the most recent entries of this session’s stream thread.',
   search_docs: 'Search the repo and stream docs visible to this stream.',
   test_run: 'Run a test command in this session’s worktree; failures only, never a green log.',
+  read_event: 'Read the full payload of a routed event ({id}) that was delivered to this stream.',
 };
 
 export function isAgentVerb(name: string): name is AgentVerb {

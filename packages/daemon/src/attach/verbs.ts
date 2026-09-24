@@ -12,6 +12,7 @@
 import {
   type AgentId,
   type AgentVerb,
+  type RoutedEvent,
   type RuleScope,
   type SessionRole,
   type StreamFinding,
@@ -21,6 +22,7 @@ import {
   validateVerbInput,
 } from '@agile-agents/shared';
 import type { DocsSearch, SearchHit } from '../docs/service';
+import { summaryOf } from '../events/delivery';
 import type { QuestionService } from '../questions/service';
 import type { RulesService } from '../rules/service';
 import { NotFoundError, type StateStore } from '../store';
@@ -60,6 +62,8 @@ export interface VerbServiceOptions {
   /** What `propose_rule` writes through. */
   rules?: RulesService;
   /** §5.5's "at most three" proposals from a lessons session, enforced as a gate. */
+  /** T244: `read_event`'s read side (`RoutedEventService`). */
+  events?: { get(id: string): RoutedEvent | undefined };
   proposalLimit?: { assertCanPropose(caller: Pick<VerbCaller, 'session' | 'role'>): void };
 }
 
@@ -232,6 +236,18 @@ export class VerbService {
     return this.options.docs.search(query, { stream: caller.stream });
   }
 
+  /** T244: a routed event's full payload, only for an event routed to the caller's stream. */
+  readEvent(input: unknown): RoutedEvent & { summary: string } {
+    const { session, id } = validateVerbInput('read_event', input);
+    const caller = this.caller(session);
+    const event = this.options.events?.get(id);
+    if (event === undefined || !event.routing.some((r) => r.node === caller.stream)) {
+      throw new Error(`read_event: no event ${id} was routed to this stream`);
+    }
+    const titleOf = (sid: string) => this.options.streams.list().find((s) => s.id === sid)?.title;
+    return { ...event, summary: summaryOf(event, caller.stream, titleOf) };
+  }
+
   /** The repo's own test command, in this session's worktree. Failures only, never a green log. */
   async testRun(input: unknown): Promise<TestRunOutput> {
     const { session, command } = validateVerbInput('test_run', input);
@@ -258,5 +274,6 @@ export function verbHandlers(
     read_stream: (input) => service.readStream(input),
     search_docs: (input) => service.searchDocs(input),
     test_run: (input) => service.testRun(input),
+    read_event: (input) => service.readEvent(input),
   };
 }

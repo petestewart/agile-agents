@@ -13,6 +13,7 @@ import type { ReposConfig, Stream, TouchedSummary } from '@agile-agents/shared';
 import { liveChildrenOf, nodeRole } from '@agile-agents/shared';
 import { git } from '../delivery/git';
 import { mainBranch } from '../delivery/service';
+import { type EmitRouted, trimFiles } from '../events/producers';
 import type { StreamService } from '../streams/service';
 
 export const OVERLAP_RECOMPUTE_MS = 60_000;
@@ -92,6 +93,8 @@ export interface OverlapTrackerOptions {
   /** 0 disables the periodic sweep. */
   intervalMs?: number;
   now?: () => Date;
+  /** T244: `overlap` when this node starts sharing a file with another live node. */
+  emit?: EmitRouted;
 }
 
 /** Keeps `touched` current for live work nodes; writes only on a change. */
@@ -145,5 +148,39 @@ export class OverlapTracker {
       return;
     }
     await this.options.streams.update('daemon', id, { touched });
+    await this.emitNew(id, all);
+  }
+
+  /** One `overlap` per pair with this node that was not an overlap before this update. */
+  private async emitNew(id: string, before: readonly Stream[]): Promise<void> {
+    const emit = this.options.emit;
+    if (emit === undefined) return;
+    const other = (o: Overlap) => (o.nodes[0] === id ? o.nodes[1] : o.nodes[0]);
+    const had = new Set(
+      findOverlaps(before)
+        .filter((o) => o.nodes.includes(id))
+        .map(other),
+    );
+    const after = this.options.streams.list();
+    const byId = new Map(after.map((s) => [s.id, s]));
+    for (const o of findOverlaps(after)) {
+      if (!o.nodes.includes(id) || had.has(other(o))) continue;
+      const peer = other(o);
+      const project = byId.get(peer)?.project;
+      const own = byId.get(id)?.project;
+      await emit({
+        type: 'overlap',
+        subject: id,
+        repo: o.repo,
+        ...(own !== undefined ? { project: own } : {}),
+        by: 'daemon',
+        parties: [peer],
+        payload: {
+          other: peer,
+          ...(project !== undefined ? { other_project: project } : {}),
+          files: trimFiles(o.files),
+        },
+      });
+    }
   }
 }
