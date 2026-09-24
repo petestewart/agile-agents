@@ -1074,17 +1074,17 @@ git status --short
 
 ### Ticket: T241 Router
 - **Priority:** P0
-- **Status:** In Progress
-- **Owner:** opus:worker-T241
+- **Status:** Done (merge e6e772f)
+- **Owner:** —
 - **Scope:** `events/router.ts`: routes to self, ancestors, waits-on, same-repo (live work nodes, any project), parties and sibling (§15), with the reason recorded in `routing`. Coalesce keys. A closed node gets `expired`.
 - **Acceptance Criteria:** Table tests over the worked example tree: Blog's merge reaches its parent (`ancestor`) and Shop's api part (`same_repo`), and nothing on web.
 - **Validation Steps:** `bun test packages/daemon/src/events`.
-- **Notes:** After T240.
+- **Notes:** After T240. Review (sonnet) PASS. Daemon +195. `routeEvent` (pure) + `routeAndEmit`. §15 rows with no dedicated reason use `party`/`ancestor`. Coalesce supersede is not atomic across concurrent emits → T242 digests tolerate >1 pending per key.
 
 ### Ticket: T242 Delivery to sessions, digests, no drops
 - **Priority:** P0
-- **Status:** Todo
-- **Owner:** —
+- **Status:** In Progress
+- **Owner:** opus:worker-T242
 - **Scope:**
   - Pending deliveries for a node with an idle session fold into one digest prompt within 2 s, and are marked delivered in the same write (P10). A mid-turn session holds them until the turn ends.
   - Replace `AttachService.say` and the answer-delivery prompts with `human_line` and `answer` events. T174's queue and its "queued" marker become the event queue.
@@ -1094,7 +1094,7 @@ git status --short
   - a restart between send and mark causes no duplicate within the digest;
   - T174's tests pass rewritten on events.
 - **Validation Steps:** `bun test packages/daemon/src/events packages/daemon/src/attach`; `bun run test:integration`.
-- **Notes:** After T241. Removes the old prompt paths (line delta should be small).
+- **Notes:** After T241. Removes the old prompt paths (line delta should be small). From T240/T241: call `recover()` at daemon start; digest folding must tolerate more than one pending event per coalesce key.
 
 ### Ticket: T243 Wake policy
 - **Priority:** P1
@@ -1110,12 +1110,12 @@ git status --short
 
 ### Ticket: T244 Event producers
 - **Priority:** P0
-- **Status:** Todo
-- **Owner:** —
+- **Status:** In Progress
+- **Owner:** opus:worker-T244
 - **Scope:** Emit the §15 types that exist so far: `human_line`, `answer`, `child_status`, `child_delivered`, `pr_review`, `ci_failed`, `pr_behind`, `pr_merged`, `pr_closed` (from T225), `main_changed` and `sync_conflict` (from T226), `overlap` (T227), `dependency_satisfied` (T228). Each has its one-line summary text as in §15. The `read_event` verb returns a payload.
 - **Acceptance Criteria:** One test per producer asserting the type, routing and summary; `read_event` over MCP.
 - **Validation Steps:** `bun test packages/daemon`; `bun run test:integration`.
-- **Notes:** After T241. It may split into two workers (PR-related and the rest) if large.
+- **Notes:** After T241. It may split into two workers (PR-related and the rest) if large. From T240 review: `pr_closed.login` and `child_status.progress` are optional in the schema but used by the summary templates — always supply or fall back. Keep payloads under the 4096-byte cap (trim file lists).
 
 ### Ticket: T245 ∥ Activity feed per node
 - **Priority:** P1
