@@ -4,7 +4,8 @@ Agile Agents is a single-operator cockpit for coding agents. One long-lived daem
 
 ## Source of truth
 
-- `PLAN.md`: the plan **and the live board**. Every ticket is a `### Ticket: T###` block, and its `Status:` line is the ticket's state. The Decisions log (D1–D17) overrides the design. Read it first.
+- `PLAN.md`: the plan **and the live board**. Every ticket is a `### Ticket: T###` block, and its `Status:` line is the ticket's state. The Decisions log (D1–D30) overrides the design. Read it first.
+- `design/projects-design.md`: **the current design for Phases 7–13** (projects, one node kind with derived roles, per-repo delivery, routed events, knowledge items, coordination, the Director, tracker links). Where it differs from `cockpit-design.md`, it wins. Its §19 lists proposed decisions (P1–P20) that are open until confirmed as D-entries.
 - `design/cockpit-design.md`: the design (streams §2, inbox §3, agents §4, rules §5, classifier §6, state home §7, hook and landing paths §8, UI §9, deletions §10). When code and design disagree, the design wins unless the Decisions log says otherwise.
 - `design/agile-agents-design.md`: superseded. Only its **§8 adapter contract** and **§6 hook catalog** are still valid.
 - `design/spike-findings.md`: measured per-vendor behaviour (what ACP gates, hooks, cancel/resume, Pi). Cite it; don't re-derive it.
@@ -62,7 +63,7 @@ bun run test:live          # AGILE_LIVE=1, manual only, never in CI
 - No vendor credentials in the daemon. Adapters spawn the vendor harness with the user's own login. The TypeSafe classifier key is the one written exception (design §6.1).
 - Use the repo's own scripts for lint, typecheck and test. Never introduce a second toolchain.
 - **No new codebase conventions without explicit approval.** That means no new top-level dirs, artifact types or patterns without a sibling precedent. A ticket that proposes one is not approval: stop and escalate.
-- One ticket = one branch (`T###-<slug>`) off the latest integration branch = one merge. Worktrees go under `.worktrees/` (gitignored).
+- One ticket = one branch (`T###-<slug>`) off the latest integration branch = one merge. From Phase 7 the integration branches are stacked (D30): `claude/phase-7`, then `claude/phase-8` off it, and so on. A ticket branches from its phase's branch. Pete reviews and lands the phases in order. A fix to an earlier phase is made there and merged forward into every later phase branch. Worktrees go under `.worktrees/` (gitignored).
 - Don't trust subagent summaries. Verify the diff.
 
 ## Classifier key (D16)
