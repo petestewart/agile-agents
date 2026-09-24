@@ -159,6 +159,62 @@ export class PlanService {
     return saved;
   }
 
+  /**
+   * T282 `set_owner`, once the autonomy gate let it through: `child` owns
+   * `owns`, and no sibling keeps those exact globs. An approved plan stays
+   * approved at the next version (the change was authorised by the gate)
+   * and the child hears `plan_changed`; a draft just changes.
+   */
+  async setOwner(
+    node: string,
+    child: string,
+    owns: string[],
+    by: 'human' | 'coordinator' | 'director',
+  ): Promise<Plan> {
+    assertChildren(this.options.streams, node, [child], 'set_owner');
+    const before = this.get(node);
+    const taken = new Set(owns);
+    const owners = [
+      ...(before?.owners ?? [])
+        .filter((o) => o.child !== child)
+        .map((o) => ({ ...o, owns: o.owns.filter((g) => !taken.has(g)) })),
+      { child, owns },
+    ];
+    const approved = before?.status === 'approved';
+    const version = approved ? (before?.version ?? 0) + 1 : (before?.version ?? 0);
+    const plan = validatePlan({
+      node,
+      version,
+      owners,
+      contracts: before?.contracts ?? [],
+      status: approved ? 'approved' : 'draft',
+      ...(approved
+        ? {
+            approved_by: by,
+            approved: { version, owners, contracts: before?.contracts ?? [] },
+          }
+        : before?.approved !== undefined
+          ? { approved: before.approved }
+          : {}),
+      updated_at: this.now(),
+    });
+    const saved = await this.options.store.putEntity(planPath(node), validatePlan, plan);
+    if (approved) {
+      await this.options.emit?.({
+        type: 'plan_changed',
+        subject: node,
+        payload: {
+          summary: `v${saved.version}: you now own ${owns.join(', ')}`.slice(0, 200),
+          paths: owns.slice(0, 20),
+        },
+        ref: planPath(node),
+        by: by === 'coordinator' ? 'daemon' : by,
+        parties: [child],
+      });
+    }
+    return saved;
+  }
+
   /** A child's part of its parent's approved plan, or nothing (no parent, no plan, still draft). */
   childView(child: Stream): ChildPlanView | undefined {
     if (child.parent === undefined) return undefined;

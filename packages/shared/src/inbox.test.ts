@@ -31,6 +31,7 @@ describe('InboxItemSchema', () => {
       'rule_accept',
       'rule_batch',
       'plan_approve',
+      'proposal',
       'blocked',
       'done',
     ]);

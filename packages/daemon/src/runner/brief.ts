@@ -144,6 +144,15 @@ export function babysitSection(stream: Stream): string | undefined {
   );
 }
 
+/** T282: what the level means for `add_child`, `add_waits_on`, `set_owner` and a contract bump. */
+const AUTONOMY_HINT: Record<Autonomy, string> = {
+  advise:
+    '`add_child`, `add_waits_on` and `set_owner` become proposals the operator applies; contract changes go to the operator.',
+  organise:
+    '`add_child`, `add_waits_on` and `set_owner` apply at once (the thread says so); contract changes go to the operator.',
+  run: '`add_child`, `add_waits_on` and `set_owner` apply at once; a routine (additive) contract change with `routine: true` applies too.',
+};
+
 /** P20 (T280): what a coordinator coordinates, and how far it may act on its own. */
 export function coordinatorSection(
   children: readonly Stream[],
@@ -170,7 +179,7 @@ export function coordinatorSection(
         }.`;
   return section(
     'Your children',
-    [...lines, '', `Autonomy: **${autonomy}**.`, planLine].join('\n'),
+    [...lines, '', `Autonomy: **${autonomy}**. ${AUTONOMY_HINT[autonomy]}`, planLine].join('\n'),
   );
 }
 

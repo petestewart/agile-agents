@@ -41,6 +41,7 @@ import {
 import { type Browser, type Page, chromium } from 'playwright-core';
 import { AttachService, VerbService } from '../attach';
 import { ClassifierKeyService, FakeClassifier } from '../classifier';
+import { AutonomyService } from '../coordination/autonomy';
 import { ContractService } from '../coordination/contracts';
 import { PlanService } from '../coordination/plans';
 import { DeliveryService } from '../delivery';
@@ -396,6 +397,7 @@ interface Cockpit {
   events: RoutedEventService;
   plans: PlanService;
   contracts: ContractService;
+  autonomy: AutonomyService;
   /** Every `deliver(sessionId, question)` the question service made — the hand-off to the asking session. */
   delivered: Array<{ session: string; question: Question }>;
   http: HttpServerHandle;
@@ -429,7 +431,16 @@ async function startCockpit(
   const rules = new KnowledgeService({ store, streams });
   const contracts = new ContractService({ store, streams });
   const plans = new PlanService({ store, streams, contracts });
-  const inbox = new InboxService({ streams, questions, gates, rules, plans, contracts });
+  const autonomy = new AutonomyService({ store, streams, plans, contracts });
+  const inbox = new InboxService({
+    streams,
+    questions,
+    gates,
+    rules,
+    plans,
+    contracts,
+    proposals: autonomy,
+  });
   const projects = new ProjectService(store, streams);
   const events = new RoutedEventService(store);
   const http = startHttpServer({
@@ -447,6 +458,7 @@ async function startCockpit(
     rules,
     plans,
     contracts,
+    autonomy,
     ...(extra.ruleEvals ? { ruleEvals: extra.ruleEvals } : {}),
     // T167: a key service over a fresh config and no env, so the operator's
     // own TYPESAFE_API_KEY never counts and no real call is possible.
@@ -474,6 +486,7 @@ async function startCockpit(
     events,
     plans,
     contracts,
+    autonomy,
     delivered,
     http,
     base: `http://127.0.0.1:${http.port}`,
@@ -2720,6 +2733,60 @@ describe('plan approval (Playwright e2e, T281)', () => {
         expect(await page.locator(`[data-contract="${contract.id}"]`).textContent()).toContain(
           'saleCents',
         );
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+});
+
+describe('coordinator autonomy (Playwright e2e, T282)', () => {
+  browserTest(
+    'at Advise a coordinator change is an inbox card; Apply performs it; the node picker overrides the level',
+    async () => {
+      const cockpit = await startCockpit();
+      let page: Page | undefined;
+      try {
+        const shop = await cockpit.projects.create({ name: 'Shop' });
+        const node = await cockpit.streams.create('human', {
+          title: 'Show sale prices',
+          goal: 'g',
+          project: shop.id,
+        });
+        const child = (title: string) =>
+          cockpit.streams.create('human', { title, goal: 'g', project: shop.id, parent: node.id });
+        const api = await child('api: add salePrice');
+        const web = await child('web: show salePrice');
+        const out = await cockpit.autonomy.act(node.id, 'coordinator', 'agent:test', {
+          action: 'add_waits_on',
+          child: web.id,
+          on: api.id,
+        });
+        expect(out.applied).toBe(false);
+        const id = out.applied ? '' : out.proposal.id;
+
+        page = await openPage();
+        await page.goto(`${cockpit.base}/`);
+        const card = `[data-kind="proposal"][data-id="${id}"]`;
+        await page.locator(`${card} [data-testid="proposal-apply"]`).waitFor({ state: 'visible' });
+        expect(await page.locator(`${card} [data-testid="inbox-context"]`).textContent()).toContain(
+          'web: show salePrice waits on api: add salePrice',
+        );
+        await page.locator(`${card} [data-testid="proposal-apply"]`).click();
+        await page.locator(card).waitFor({ state: 'detached' });
+        expect(cockpit.streams.get(web.id).waits_on?.map((w) => w.node)).toEqual([api.id]);
+        expect(cockpit.autonomy.get(id).status).toBe('applied');
+
+        // The node's picker: override the project's Advise with Organise.
+        await page.locator(`[data-testid="stream-tree"] [data-stream="${node.id}"]`).click();
+        await page.locator('[data-testid="autonomy-select"]').selectOption('organise');
+        const deadline = Date.now() + 10_000;
+        while (cockpit.streams.get(node.id).autonomy !== 'organise' && Date.now() < deadline) {
+          await new Promise((r) => setTimeout(r, 50));
+        }
+        expect(cockpit.autonomy.levelFor(node.id)).toBe('organise');
       } finally {
         await teardown([page]);
         await cockpit.stop();

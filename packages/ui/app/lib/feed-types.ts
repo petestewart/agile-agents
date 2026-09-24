@@ -107,6 +107,11 @@ export interface CockpitProjectRow {
   id: string;
   name: string;
   root: string;
+  /** T282: the project's autonomy levels (the root node's Autonomy picker). */
+  autonomy?: {
+    coordinator: 'advise' | 'organise' | 'run';
+    director: 'advise' | 'organise' | 'run';
+  };
 }
 
 /** T161: mirror of `delivery/service.ts`'s `LandPreflight` — the Land button's "before". */

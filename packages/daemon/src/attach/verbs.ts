@@ -23,6 +23,7 @@ import {
   validateVerbInput,
   withExamplesNote,
 } from '@agile-agents/shared';
+import type { AutonomyService } from '../coordination/autonomy';
 import type { ContractService } from '../coordination/contracts';
 import type { PlanService } from '../coordination/plans';
 import type { DocsSearch, SearchHit } from '../docs/service';
@@ -105,6 +106,8 @@ export interface VerbServiceOptions {
   /** T281: `plan_write` / `contract_write`, coordinator sessions only. */
   plans?: PlanService;
   contracts?: ContractService;
+  /** T282: the autonomy gate for the coordinator's structural verbs. */
+  autonomy?: AutonomyService;
   proposalLimit?: { assertCanPropose(caller: Pick<VerbCaller, 'session' | 'role'>): void };
 }
 
@@ -354,13 +357,54 @@ export class VerbService {
     if (this.options.contracts === undefined) {
       throw new Error('contract_write: contracts are not available');
     }
-    return this.options.contracts.write(caller.stream, fields, `agent:${session}`);
+    const by = `agent:${session}`;
+    // T282: changing an agreed contract is `approve_contract`, gated by the
+    // autonomy level; creating one is covered by the plan's approval.
+    if (this.options.autonomy !== undefined && fields.id !== undefined) {
+      const before = this.options.contracts.get(fields.id);
+      if (before.body !== fields.body.trim() || before.title !== fields.title.trim()) {
+        const { id, ...rest } = fields;
+        return this.options.autonomy.act(caller.stream, 'coordinator', by, {
+          action: 'approve_contract',
+          contract: id,
+          ...rest,
+        });
+      }
+    }
+    const { routine: _routine, ...write } = fields;
+    return this.options.contracts.write(caller.stream, write, by);
+  }
+
+  /** T282: the coordinator's structural verbs, all through the autonomy gate. */
+  async addChild(input: unknown): Promise<unknown> {
+    const { session, ...change } = validateVerbInput('add_child', input);
+    return this.gated(session, 'add_child', { action: 'add_child', ...change });
+  }
+
+  async addWaitsOn(input: unknown): Promise<unknown> {
+    const { session, ...change } = validateVerbInput('add_waits_on', input);
+    return this.gated(session, 'add_waits_on', { action: 'add_waits_on', ...change });
+  }
+
+  async setOwner(input: unknown): Promise<unknown> {
+    const { session, ...change } = validateVerbInput('set_owner', input);
+    return this.gated(session, 'set_owner', { action: 'set_owner', ...change });
+  }
+
+  private async gated(
+    session: string,
+    verb: string,
+    change: Parameters<AutonomyService['act']>[3],
+  ): Promise<unknown> {
+    const caller = this.coordinatorCaller(session, verb);
+    if (this.options.autonomy === undefined) throw new Error(`${verb}: autonomy is not available`);
+    return this.options.autonomy.act(caller.stream, 'coordinator', `agent:${session}`, change);
   }
 
   private coordinatorCaller(session: string, verb: string): VerbCaller {
     const caller = this.caller(session);
     if (caller.role !== 'coordinator') {
-      throw new Error(`${verb}: only a coordinator writes the plan; a ${caller.role} proposes`);
+      throw new Error(`${verb}: only a coordinator can; a ${caller.role} proposes`);
     }
     return caller;
   }
@@ -396,5 +440,8 @@ export function verbHandlers(
     lookup_knowledge: (input) => service.lookupKnowledge(input),
     plan_write: (input) => service.planWrite(input),
     contract_write: (input) => service.contractWrite(input),
+    add_child: (input) => service.addChild(input),
+    add_waits_on: (input) => service.addWaitsOn(input),
+    set_owner: (input) => service.setOwner(input),
   };
 }

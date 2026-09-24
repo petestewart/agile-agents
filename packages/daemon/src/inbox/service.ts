@@ -18,6 +18,7 @@ import {
   inboxContext,
   inboxDetail,
 } from '@agile-agents/shared';
+import type { AutonomyService } from '../coordination/autonomy';
 import type { ContractService } from '../coordination/contracts';
 import type { PlanService } from '../coordination/plans';
 import type { GateService } from '../gates/service';
@@ -46,6 +47,8 @@ export interface InboxServiceDeps {
   /** T281: a draft plan is a `plan_approve` item (§9.1: approval at every level). */
   plans?: Pick<PlanService, 'listDraft'>;
   contracts?: Pick<ContractService, 'find'>;
+  /** T282: a coordinator's change held at Advise is a `proposal` item with Apply. */
+  proposals?: Pick<AutonomyService, 'listOpen'>;
 }
 
 export class InboxService {
@@ -113,6 +116,21 @@ export class InboxService {
         context: inboxContext(text),
         ...withDetail(text),
         ref: `plans/${stream.id}.yaml`,
+      });
+    }
+    for (const proposal of this.deps.proposals?.listOpen() ?? []) {
+      const stream = byId.get(proposal.node);
+      if (stream === undefined || stream.archived === true) continue;
+      const text = `${proposal.principal} proposes: ${proposal.summary}`;
+      items.push({
+        kind: 'proposal',
+        id: proposal.id,
+        stream: stream.id,
+        stream_path: this.path(stream, byId),
+        ts: proposal.created_at,
+        context: inboxContext(text),
+        ...withDetail(text),
+        ref: `proposals/${proposal.id}.yaml`,
       });
     }
     for (const stream of byId.values()) {

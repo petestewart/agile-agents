@@ -6,6 +6,7 @@
  */
 
 import type {
+  Autonomy,
   ClassifierKeyStatus,
   Contract,
   Plan,
@@ -159,6 +160,24 @@ export function getStreamPlan(id: string): Promise<{ plan: Plan | null; contract
 /** T281: a `plan_approve` card's Approve, and the Plan tab's. */
 export function approvePlan(id: string): Promise<unknown> {
   return post(`/api/streams/${encodeURIComponent(id)}/plan/approve`);
+}
+
+/** T282: a coordinator's `proposal` card: Apply performs it as you, Dismiss drops it. */
+export function decideProposal(id: string, decision: 'apply' | 'dismiss'): Promise<unknown> {
+  return post(`/api/proposals/${encodeURIComponent(id)}/${decision}`);
+}
+
+/** T282: the node's coordinator autonomy override; `null` inherits the project's. */
+export function setNodeAutonomy(id: string, autonomy: Autonomy | null): Promise<unknown> {
+  return post(`/api/streams/${encodeURIComponent(id)}/autonomy`, { autonomy });
+}
+
+/** T282: the project's coordinator (or Director) autonomy. */
+export function setProjectAutonomy(
+  id: string,
+  autonomy: { coordinator?: Autonomy; director?: Autonomy },
+): Promise<unknown> {
+  return post(`/api/projects/${encodeURIComponent(id)}`, { autonomy });
 }
 
 export async function getStreamActivity(id: string): Promise<ActivityEntry[]> {

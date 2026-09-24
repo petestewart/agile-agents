@@ -125,6 +125,30 @@ export const ContractWriteInputSchema = ContractWriteFieldsSchema.extend({
 }).strict();
 export type ContractWriteInput = z.infer<typeof ContractWriteInputSchema>;
 
+/**
+ * T282 (§9 Autonomy): a coordinator's structural verbs. Each is gated by
+ * the node's autonomy level: at Advise it becomes an inbox proposal, at
+ * Organise and Run it is applied with a thread line.
+ */
+export const AddChildInputSchema = z
+  .object({
+    session: Session,
+    title: z.string().trim().min(1).max(200),
+    goal: Body,
+    repo: z.string().min(1).optional(),
+  })
+  .strict();
+export const AddWaitsOnInputSchema = z
+  .object({ session: Session, child: UlidSchema, on: UlidSchema })
+  .strict();
+export const SetOwnerInputSchema = z
+  .object({
+    session: Session,
+    child: UlidSchema,
+    owns: z.array(z.string().trim().min(1).max(512)).max(50),
+  })
+  .strict();
+
 /** The verb table, in the order §4.1 lists it. */
 export const AGENT_VERBS = [
   'ask',
@@ -140,6 +164,9 @@ export const AGENT_VERBS = [
   'lookup_knowledge',
   'plan_write',
   'contract_write',
+  'add_child',
+  'add_waits_on',
+  'set_owner',
 ] as const;
 export type AgentVerb = (typeof AGENT_VERBS)[number];
 
@@ -157,6 +184,9 @@ export const AGENT_VERB_SCHEMAS = {
   lookup_knowledge: LookupKnowledgeInputSchema,
   plan_write: PlanWriteInputSchema,
   contract_write: ContractWriteInputSchema,
+  add_child: AddChildInputSchema,
+  add_waits_on: AddWaitsOnInputSchema,
+  set_owner: SetOwnerInputSchema,
 } as const satisfies Record<AgentVerb, z.ZodType>;
 
 /** One line of help per verb, published to the model by the MCP bridge. */
@@ -178,7 +208,13 @@ export const AGENT_VERB_DESCRIPTIONS: Record<AgentVerb, string> = {
   plan_write:
     'Coordinator only: write the plan ({owners: [{child, owns: [path globs]}], contracts?: [C-ids]}). It stays draft until the operator approves it.',
   contract_write:
-    'Coordinator only: create a contract ({title, body ≤800, parties: [child ids]}) or bump one ({id, …, reason}); a bump tells its parties.',
+    'Coordinator only: create a contract ({title, body ≤800, parties: [child ids]}) or bump one ({id, …, reason, routine?}); a bump of an agreed contract is gated by your autonomy level (routine = additive only).',
+  add_child:
+    'Coordinator only: add a child node ({title, goal, repo?}). At Advise it is proposed to the operator; at Organise/Run it is created.',
+  add_waits_on:
+    'Coordinator only: make one child wait on another node ({child, on}). Gated by your autonomy level.',
+  set_owner:
+    'Coordinator only: give a child ownership of paths ({child, owns: [globs]}). Gated by your autonomy level.',
 };
 
 export function isAgentVerb(name: string): name is AgentVerb {
