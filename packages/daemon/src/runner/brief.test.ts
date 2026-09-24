@@ -90,7 +90,7 @@ describe('buildBrief', () => {
         '',
         '- Cockpit: one place to work from',
         '',
-        '## Rules in scope',
+        '## Knowledge in scope',
         '',
         '- never push to main',
         '',
@@ -129,7 +129,7 @@ describe('buildBrief', () => {
         '',
         'decide the dialect and implement it',
         '',
-        '## Rules in scope',
+        '## Knowledge in scope',
         '',
         'none yet',
         '',
@@ -162,7 +162,7 @@ describe('buildBrief', () => {
     });
     expect(bare).not.toContain('## Docs');
     expect(bare).not.toContain('## Thread so far');
-    expect(bare).toContain('## Rules in scope\n\nnone yet');
+    expect(bare).toContain('## Knowledge in scope\n\nnone yet');
 
     const full = buildBrief({
       role: 'worker',

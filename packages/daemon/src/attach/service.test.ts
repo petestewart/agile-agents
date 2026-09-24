@@ -662,7 +662,7 @@ describe('the brief is written beside the session logs (T145)', () => {
     const brief = readFileSync(path, 'utf8');
     // "What did the agent see" without the vendor's transcript: the rules
     // in scope, the goal, and anything else the assembler put in.
-    expect(brief).toContain('## Rules in scope');
+    expect(brief).toContain('## Knowledge in scope');
     expect(brief).toContain('decide the dialect and implement it');
   }, 20_000);
 });
