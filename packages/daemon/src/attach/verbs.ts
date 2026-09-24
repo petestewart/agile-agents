@@ -373,7 +373,14 @@ export class VerbService {
     // autonomy level; creating one is covered by the plan's approval.
     if (this.options.autonomy !== undefined && fields.id !== undefined) {
       const before = this.options.contracts.get(fields.id);
-      if (before.body !== fields.body.trim() || before.title !== fields.title.trim()) {
+      const sameParties =
+        [...before.parties].sort().join(',') === [...new Set(fields.parties)].sort().join(',');
+      // Any change to an agreed contract (title, body or parties) is gated.
+      if (
+        before.body !== fields.body.trim() ||
+        before.title !== fields.title.trim() ||
+        !sameParties
+      ) {
         const { id, ...rest } = fields;
         return this.options.autonomy.act(caller.stream, 'coordinator', by, {
           action: 'approve_contract',

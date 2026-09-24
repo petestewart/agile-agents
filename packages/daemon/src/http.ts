@@ -40,7 +40,11 @@ import {
   UnregisteredRepoError,
 } from './attach';
 import type { ClassifierKeyService } from './classifier';
-import { type AutonomyService, ProposalClosedError } from './coordination/autonomy';
+import {
+  type AutonomyService,
+  ProposalClosedError,
+  StaleProposalError,
+} from './coordination/autonomy';
 import type { ContractService } from './coordination/contracts';
 import { PlanNotDraftError, type PlanService } from './coordination/plans';
 import { type DeliveryService, LandRefusedError } from './delivery';
@@ -643,7 +647,9 @@ async function handleAutonomyRoute(
       }),
     );
   } catch (err) {
-    if (err instanceof ProposalClosedError) return errorResponse(409, err.message);
+    if (err instanceof ProposalClosedError || err instanceof StaleProposalError) {
+      return errorResponse(409, err.message);
+    }
     if (err instanceof NotFoundError) return errorResponse(404, messageOf(err));
     return errorResponse(400, messageOf(err));
   }

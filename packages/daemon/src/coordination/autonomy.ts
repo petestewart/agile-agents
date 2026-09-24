@@ -65,6 +65,14 @@ export class ProposalClosedError extends Error {
   }
 }
 
+/** A proposal that no longer fits the tree (a child reparented or removed). */
+export class StaleProposalError extends Error {
+  constructor(id: string, reason: string) {
+    super(`proposal ${id} no longer applies: ${reason}; dismiss it`);
+    this.name = 'StaleProposalError';
+  }
+}
+
 export interface AutonomyServiceOptions {
   store: StateStore;
   streams: StreamService;
@@ -175,6 +183,12 @@ export class AutonomyService {
   /** The inbox card's Apply: the held change, performed as the human. */
   async apply(id: string): Promise<AutonomyProposal> {
     const before = this.openProposal(id);
+    // The tree may have moved since it was proposed: refuse a stale change.
+    try {
+      this.check(before.node, before.change);
+    } catch (err) {
+      throw new StaleProposalError(id, err instanceof Error ? err.message : String(err));
+    }
     await this.perform(before.node, 'human', 'human', before.change);
     return this.close(before, 'applied');
   }

@@ -25,7 +25,13 @@ import { ProjectService } from '../projects/service';
 import { QuestionService } from '../questions/service';
 import { StateStore } from '../store';
 import { StreamService } from '../streams/service';
-import { type ActOutcome, AutonomyService, ProposalClosedError, allowed } from './autonomy';
+import {
+  type ActOutcome,
+  AutonomyService,
+  ProposalClosedError,
+  StaleProposalError,
+  allowed,
+} from './autonomy';
 import { ContractService } from './contracts';
 import { PlanService } from './plans';
 
@@ -213,5 +219,42 @@ describe('coordinator verbs through the gate', () => {
     await expect(verbs.addWaitsOn({ session: worker, child: web.id, on: api.id })).rejects.toThrow(
       /only a coordinator/,
     );
+  });
+
+  test('Advise: a parties-only contract edit is a proposal, not applied', async () => {
+    const { api, web, coordinator } = await shop();
+    const created = (await verbs.contractWrite({
+      session: coordinator,
+      title: 'GET /price/:id',
+      body: '{ cents }',
+      parties: [api.id],
+    })) as { id: string };
+    const out = (await verbs.contractWrite({
+      session: coordinator,
+      id: created.id,
+      title: 'GET /price/:id',
+      body: '{ cents }',
+      parties: [api.id, web.id],
+    })) as ActOutcome;
+    expect(out.applied).toBe(false);
+    expect(contracts.get(created.id).parties).toEqual([api.id]);
+    expect(inbox.list().some((i) => i.kind === 'proposal')).toBe(true);
+  });
+
+  test('Apply refuses a stale proposal: the child was reparented', async () => {
+    const { node, api, web, coordinator } = await shop();
+    const out = (await verbs.addWaitsOn({
+      session: coordinator,
+      child: web.id,
+      on: api.id,
+    })) as ActOutcome;
+    const id = out.applied ? '' : out.proposal.id;
+    const elsewhere = await streams.create('human', { title: 'other', goal: 'g', parent: api.id });
+    await streams.update('human', web.id, { parent: elsewhere.id });
+    await expect(autonomy.apply(id)).rejects.toThrow(StaleProposalError);
+    await expect(autonomy.apply(id)).rejects.toThrow(/not a child/);
+    expect(streams.get(web.id).waits_on).toBeUndefined();
+    expect(autonomy.get(id).status).toBe('open');
+    expect(node.id).toBeDefined();
   });
 });
