@@ -1233,7 +1233,7 @@ agile node show $P --json | jq -r '.delivery_state.status, .delivery_state.pr.au
 
 ### Ticket: T262 Ship checks: classifier and reviewer checklist
 - **Priority:** P0
-- **Status:** In Progress
+- **Status:** In Review
 - **Owner:** opus:worker-T262
 - **Scope:** At delivery:
   - `ship` items run through the classifier over the diff (the old diff-rules code);
@@ -1246,12 +1246,12 @@ agile node show $P --json | jq -r '.delivery_state.status, .delivery_state.pr.au
 
 ### Ticket: T263 ∥ Lookup tool and briefs
 - **Priority:** P1
-- **Status:** In Progress
-- **Owner:** opus:worker-T263
+- **Status:** Done (merge bc458de)
+- **Owner:** —
 - **Scope:** Add a `lookup_knowledge(path)` verb (MCP) that returns the accepted items in scope for that path. Briefs include everything in scope and tell the agent to use the lookup before touching unfamiliar areas.
 - **Acceptance Criteria:** A verb test over MCP; a brief snapshot test.
 - **Validation Steps:** `bun test packages/daemon/src/runner packages/cli`.
-- **Notes:** After T261.
+- **Notes:** After T261. Review (sonnet) PASS; path normalization added after review (absolute/`./`/`..`; outside the worktree refused). Daemon +61.
 
 ### Ticket: T264 Proposals, lessons kinds and `knowledge_accepted`
 - **Priority:** P1
