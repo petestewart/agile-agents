@@ -732,8 +732,8 @@ Design: `design/projects-design.md`, which wins over `design/cockpit-design.md` 
 
 ### Ticket: T202 Migrate an existing home into projects
 - **Priority:** P0
-- **Status:** In Review
-- **Owner:** opus:worker-T202
+- **Status:** Done (merge fc668ea)
+- **Owner:** —
 - **Scope:** Add a one-shot, idempotent migration on daemon start (§17.1 steps 1, 3 and 4):
   - create project "Unfiled" and re-parent every parentless stream under its root;
   - set `project` on every stream;
@@ -743,7 +743,7 @@ Design: `design/projects-design.md`, which wins over `design/cockpit-design.md` 
   Step 2 (rules → knowledge) is T260.
 - **Acceptance Criteria:** A fixture home from before the migration comes up with every stream in "Unfiled". A second start changes nothing. The audit log carries one `home_migrated` event.
 - **Validation Steps:** `bun test packages/daemon/src/store`; `bun run test:integration`.
-- **Notes:** After T201. Uses the T168 pattern of forward-compat tests on an old home.
+- **Notes:** After T201. Uses the T168 pattern of forward-compat tests on an old home. Review (sonnet) PASS; manager fixed a semantic merge clash with T208 (duplicate `projectService`) and dropped T203's `main_branch` cast. Daemon +196. Repo `target_branch` stays beside `main_branch` (read as fallback). A migration error stops the daemon start (retried next start). Parent-branch inbox card is by stream state, not a git merge check.
 
 ### Ticket: T203 Work nodes deliver to main; parent branches removed
 - **Priority:** P0
