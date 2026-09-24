@@ -603,7 +603,7 @@ Build order: Phase 0 → 1 → 2 → 3 → 4 → 5 → 6. Within a phase, ticket
 
 ### Ticket: T172 Trim the daemon under 18,000 lines
 - **Priority:** P1
-- **Status:** In Progress
+- **Status:** Done (merge 5ed9845; 17,991 lines)
 - **Owner:** —
 - **Scope:** §6 Definition of done says daemon source under 18,000 lines; it is 22,486 (measured by `find packages/daemon/src -name '*.ts' ! -name '*.test.ts' | xargs cat | wc -l`). Phase 2 reached ~16,000; Phases 4–6 added rules, classifier, route band, lessons, hook thread cards and cockpit routes. Remove dead code (unexported/unused functions, compatibility shims kept "for now", e.g. the `message` event kind and `AccountQuotaConfigSchema` if nothing reads them), leftover scaffolding, and duplication (e.g. `SESSION_VENDORS` vs acp-client providers). No behaviour change, no feature removal, no moving code into other packages just to shrink the count. If under 18,000 is not reachable without removing behaviour, stop at the honest floor and report what is left and why.
 - **Acceptance Criteria:** Daemon source under 18,000 lines, or a documented floor Pete accepts; all offline suites green.
