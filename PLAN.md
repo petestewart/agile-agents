@@ -1333,8 +1333,8 @@ agile tail --node $N --events
 
 ### Ticket: T280 Coordinator role
 - **Priority:** P0
-- **Status:** Todo
-- **Owner:** —
+- **Status:** In Progress
+- **Owner:** opus:worker-T280
 - **Scope:**
   - Add a `coordinator` session role for coordinating nodes and project roots (P20): no worktree, the scratch cwd, read access under visibility, writes denied by the hook.
   - The coordinator brief: children, their cards (once T283 exists), knowledge in scope, the autonomy level.
@@ -1426,8 +1426,8 @@ agile tail --node $N --events
 
 ### Ticket: T288 ∥ Helper children on the same repo
 - **Priority:** P2
-- **Status:** Todo
-- **Owner:** —
+- **Status:** In Progress
+- **Owner:** opus:worker-T288
 - **Scope:**
   - `node new --helper-of <work node>` creates a same-repo child that branches off the work node's branch and delivers back into it (a direct merge into that branch). The parent stays a work node (P1).
   - A helper on another repo triggers the §7 reshape instead.
