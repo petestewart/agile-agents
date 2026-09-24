@@ -142,6 +142,11 @@ export interface CockpitProjectRow {
   id: string;
   name: string;
   root: string;
+  /** T282: the project's autonomy levels (the root node's Autonomy picker). */
+  autonomy?: {
+    coordinator: 'advise' | 'organise' | 'run';
+    director: 'advise' | 'organise' | 'run';
+  };
 }
 
 export function buildCockpitFrame(
@@ -171,7 +176,12 @@ export function buildCockpitFrame(
       ...(marked.has(s.id) ? { overlap: true as const } : {}),
       ...(visibilityAdvisory(s, repos) ? { visibility_advisory: true as const } : {}),
     })),
-    projects: (projects?.list() ?? []).map((p) => ({ id: p.id, name: p.name, root: p.root })),
+    projects: (projects?.list() ?? []).map((p) => ({
+      id: p.id,
+      name: p.name,
+      root: p.root,
+      autonomy: p.autonomy,
+    })),
     repos: Object.entries(repos).map(([name, entry]) => ({
       name,
       delivery: entry.delivery ?? 'direct',

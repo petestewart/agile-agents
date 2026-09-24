@@ -14,6 +14,7 @@
  *  - `rule_accept` → accept / retire
  *  - `rule_batch`  → opens the rules screen filtered to that seed import (T163)
  *  - `plan_approve` → approve a coordinator's draft plan (T281)
+ *  - `proposal`    → apply / dismiss a coordinator's change held at Advise (T282)
  *  - `done`        → land
  *  - `blocked`     → shown, decided on the stream page
  */
@@ -24,6 +25,7 @@ import {
   answerQuestion,
   approvePlan,
   decideGate,
+  decideProposal,
   decideRule,
   landStream,
   noteGate,
@@ -38,6 +40,7 @@ const KIND_LABEL: Record<InboxItem['kind'], string> = {
   rule_accept: 'knowledge proposed',
   rule_batch: 'knowledge proposed',
   plan_approve: 'plan to approve',
+  proposal: 'coordinator proposal',
   blocked: 'blocked',
   done: 'ready to land',
 };
@@ -246,6 +249,29 @@ export function Card({
             onClick={() => act(() => approvePlan(item.id))}
           >
             Approve plan
+          </button>
+        </div>
+      )}
+
+      {item.kind === 'proposal' && (
+        <div className="cr-actions">
+          <button
+            type="button"
+            className="cr-btn signal"
+            data-testid="proposal-apply"
+            disabled={busy}
+            onClick={() => act(() => decideProposal(item.id, 'apply'))}
+          >
+            Apply
+          </button>
+          <button
+            type="button"
+            className="cr-btn"
+            data-testid="proposal-dismiss"
+            disabled={busy}
+            onClick={() => act(() => decideProposal(item.id, 'dismiss'))}
+          >
+            Dismiss
           </button>
         </div>
       )}

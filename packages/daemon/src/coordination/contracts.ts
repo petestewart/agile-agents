@@ -147,7 +147,9 @@ export class ContractService {
         : {}),
     });
     const saved = await store.putEntity(contractPath(after.id), validateContract, after);
-    if (changed) await this.announce(saved, before, by);
+    const partiesChanged = [...before.parties].sort().join(',') !== [...parties].sort().join(',');
+    // T282: a parties change is announced too, to the old and the new parties.
+    if (changed || partiesChanged) await this.announce(saved, before, by);
     return saved;
   }
 
@@ -157,9 +159,13 @@ export class ContractService {
       before.title === contract.title
         ? contract.body.slice(0, 200)
         : `${before.title} → ${contract.title}: ${contract.body}`.slice(0, 200);
+    const partyNote =
+      before.parties.join(',') === contract.parties.join(',')
+        ? ''
+        : ` (parties: ${contract.parties.length})`;
     await this.options.streams.appendThread('daemon', contract.node, {
       kind: 'event',
-      body: `contract ${contract.title} is now v${contract.version}`,
+      body: `contract ${contract.title} is now v${contract.version}${partyNote}`,
       ref: contractPath(contract.id),
     });
     await this.options.emit?.({
@@ -173,7 +179,7 @@ export class ContractService {
       },
       ref: contractPath(contract.id),
       by: by.startsWith('agent:') || by === 'human' || by === 'director' ? by : 'daemon',
-      parties: contract.parties,
+      parties: [...new Set([...before.parties, ...contract.parties])],
     });
   }
 }

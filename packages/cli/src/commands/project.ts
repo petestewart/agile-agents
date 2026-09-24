@@ -99,7 +99,7 @@ function onOff(value: string, flag: string): boolean {
 
 /**
  * `set <id> [--name n] [--repo a,b] [--vendor v] [--model m] [--effort e]
- * [--delivery direct|pr] [--auto-merge on|off] [--coordinator a] [--director a]`.
+ * [--delivery direct|pr] [--auto-merge on|off] [--coordinator-autonomy a] [--director-autonomy a]`.
  * Session and delivery fields merge into what the project already has.
  */
 export async function runProjectSet(
@@ -127,7 +127,8 @@ export async function runProjectSet(
   if (autoMerge !== undefined) delivery.auto_merge = onOff(autoMerge, 'auto-merge');
   const autonomy: Record<string, string> = {};
   for (const key of ['coordinator', 'director']) {
-    const value = optionalString(o, key);
+    // T282: `--coordinator-autonomy`; the bare `--coordinator` stays as an alias.
+    const value = optionalString(o, `${key}-autonomy`) ?? optionalString(o, key);
     if (value !== undefined) autonomy[key] = value;
   }
 

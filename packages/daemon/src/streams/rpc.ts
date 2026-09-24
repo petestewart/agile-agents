@@ -5,6 +5,7 @@
  */
 
 import {
+  StreamAutonomyRequestSchema,
   StreamCycleError,
   THREAD_ENTRY_KINDS,
   type ThreadEntryKind,
@@ -205,6 +206,19 @@ export function buildStreamRpcMethods(
       return asParamErrors(() =>
         service.wait(EDGE_PRINCIPAL, id, on, remove === undefined ? {} : { remove }),
       );
+    },
+
+    /** T282: `{id, autonomy}` sets the node's coordinator autonomy; `null` inherits. */
+    'node.autonomy': async (params) => {
+      const p = requireObject(params);
+      const id = requireStreamId(p.id);
+      const input = StreamAutonomyRequestSchema.safeParse({ autonomy: p.autonomy });
+      if (!input.success) {
+        throw new RpcParamError('invalid "autonomy": advise, organise, run or null', {
+          autonomy: p.autonomy,
+        });
+      }
+      return service.setAutonomy(id, input.data.autonomy);
     },
 
     'stream.close': async (params) => {

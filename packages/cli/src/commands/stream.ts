@@ -408,3 +408,23 @@ export async function runStreamWait(
   );
   return 0;
 }
+
+/** T282: `node set <id> --autonomy advise|organise|run|inherit`. */
+export async function runStreamSetAutonomy(
+  socketPath: string,
+  args: ParsedArgs,
+  json: boolean,
+): Promise<number> {
+  const id = requirePositional(args, 0, 'node-id');
+  const level = optionalString(args.options, 'autonomy');
+  if (level === undefined) {
+    throw new Error('agile node set: --autonomy advise|organise|run|inherit is required');
+  }
+  const node = await callRpc<Stream>(socketPath, 'node.autonomy', {
+    id,
+    autonomy: level === 'inherit' ? null : level,
+  });
+  if (json) printJson(node);
+  else console.log(`agile node set: ${id} autonomy ${node.autonomy ?? 'inherit'}`);
+  return 0;
+}

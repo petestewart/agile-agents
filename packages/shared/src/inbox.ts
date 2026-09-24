@@ -35,6 +35,7 @@ export const INBOX_ITEM_KINDS = [
   'rule_accept',
   'rule_batch',
   'plan_approve',
+  'proposal',
   'blocked',
   'done',
 ] as const;

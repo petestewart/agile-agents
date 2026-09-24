@@ -18,7 +18,12 @@
  *    refusal's reason, shown on the page).
  */
 
-import { type InboxItem, formatKnowledgeScope, isAgentRole } from '@agile-agents/shared';
+import {
+  type Autonomy,
+  type InboxItem,
+  formatKnowledgeScope,
+  isAgentRole,
+} from '@agile-agents/shared';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   type RepoRow,
@@ -35,6 +40,8 @@ import {
   markStreamLanded,
   resolveConflict,
   sayOnStream,
+  setNodeAutonomy,
+  setProjectAutonomy,
   stopSessions,
   waitOnStream,
 } from '../lib/api';
@@ -42,6 +49,7 @@ import { useFeed } from '../lib/feed-context';
 import type {
   ActivityEntry,
   CockpitCardError,
+  CockpitProjectRow,
   CockpitStatusCard,
   LandOutcome,
   StreamDiff,
@@ -436,6 +444,54 @@ function LandPanel({
   );
 }
 
+const AUTONOMY_LEVELS = ['advise', 'organise', 'run'] as const;
+
+/**
+ * T282 (§9 Autonomy): how far this node's coordinator acts on its own. On
+ * a project root it sets the project's level; elsewhere it overrides it.
+ */
+function AutonomyPicker({
+  stream,
+  project,
+  busy,
+  act,
+}: {
+  stream: StreamPagePayload['stream'];
+  project: CockpitProjectRow | undefined;
+  busy: boolean;
+  act: (fn: () => Promise<unknown>) => Promise<void> | void;
+}): JSX.Element | null {
+  if (project === undefined) return null;
+  const isRoot = project.root === stream.id;
+  const inherited = project.autonomy?.coordinator ?? 'advise';
+  const value = isRoot ? inherited : (stream.autonomy ?? 'inherit');
+  return (
+    <label className="cr-dim" data-testid="autonomy">
+      Coordinator autonomy{' '}
+      <select
+        data-testid="autonomy-select"
+        value={value}
+        disabled={busy}
+        onChange={(e) => {
+          const next = e.target.value;
+          void act(() =>
+            isRoot
+              ? setProjectAutonomy(project.id, { coordinator: next as Autonomy })
+              : setNodeAutonomy(stream.id, next === 'inherit' ? null : (next as Autonomy)),
+          );
+        }}
+      >
+        {!isRoot && <option value="inherit">inherit ({inherited})</option>}
+        {AUTONOMY_LEVELS.map((l) => (
+          <option key={l} value={l}>
+            {l}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
 /** T283 (§14.5): the children's status cards, on the parent's page. */
 function ChildCards({
   cards,
@@ -767,6 +823,12 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
             ))}
           </ul>
         )}
+        <AutonomyPicker
+          stream={stream}
+          project={cockpit?.projects.find((p) => p.id === stream.project)}
+          busy={busy}
+          act={act}
+        />
         {linking && (
           <div className="cr-actions" data-testid="link-wait-form">
             <select

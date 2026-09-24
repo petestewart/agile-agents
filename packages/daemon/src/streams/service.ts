@@ -311,6 +311,16 @@ export class StreamService {
     return updated;
   }
 
+  /** T282: the node's coordinator autonomy override; `null` inherits the project's. */
+  async setAutonomy(id: string, autonomy: Stream['autonomy'] | null): Promise<Stream> {
+    const updated = await this.update('human', id, { autonomy });
+    await this.appendThread('human', id, {
+      kind: 'event',
+      body: `coordinator autonomy: ${autonomy ?? 'inherit the project'}`,
+    });
+    return updated;
+  }
+
   /** Sets the `archived` flag (nothing moves on disk); `list` hides it. Human status is kept. */
   async archive(principal: StreamPrincipal, id: string): Promise<Stream> {
     return this.update(principal, id, { archived: true }, { kind: 'stream_archived' });
@@ -377,7 +387,8 @@ export interface StreamPatch {
   labels?: Stream['labels'];
   waits_on?: Stream['waits_on'];
   external_link?: Stream['external_link'];
-  autonomy?: Stream['autonomy'];
+  /** T282: `null` clears the override, so the project's level applies. */
+  autonomy?: Stream['autonomy'] | null;
   delivery?: Stream['delivery'];
   merge_together?: Stream['merge_together'];
   helper_of?: Stream['helper_of'];
@@ -388,7 +399,7 @@ export interface StreamPatch {
 }
 
 function applyPatch(before: Stream, patch: StreamPatch): Stream {
-  const { agent, human, classifier, land_conflict, ...rest } = patch;
+  const { agent, human, classifier, land_conflict, autonomy, ...rest } = patch;
   // `classifier` is tri-state (absent, `'off'`, `null` = remove), rebuilt
   // so a cleared opt-out leaves no key in the YAML.
   const { classifier: existing, ...withoutOptOut } = before;
@@ -400,6 +411,8 @@ function applyPatch(before: Stream, patch: StreamPatch): Stream {
   };
   if (land_conflict === null) Reflect.deleteProperty(next, 'land_conflict');
   else if (land_conflict !== undefined) next.land_conflict = land_conflict;
+  if (autonomy === null) Reflect.deleteProperty(next, 'autonomy');
+  else if (autonomy !== undefined) next.autonomy = autonomy;
   if (agent !== undefined) {
     // Any agent-half change is a fresh observation: stamp `updated_at` unless given.
     next.agent = { ...before.agent, updated_at: new Date().toISOString(), ...agent };

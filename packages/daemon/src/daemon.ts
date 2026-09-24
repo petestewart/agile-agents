@@ -10,6 +10,7 @@ import { AttachService, VerbService, buildAttachRpcMethods } from './attach';
 import { Bus, buildBusRpcMethods } from './bus';
 import { type Classifier, ClassifierKeyService, JevClassifier } from './classifier';
 import { type AgileConfig, type DiscoverConfigOptions, discoverConfig } from './config';
+import { AutonomyService } from './coordination/autonomy';
 import { CardService } from './coordination/cards';
 import { ContractService } from './coordination/contracts';
 import { PlanService } from './coordination/plans';
@@ -177,6 +178,16 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
           ...(emitRouted ? { emit: emitRouted } : {}),
         })
       : undefined;
+  // T282: the autonomy gate for a coordinator's structural changes, and its proposals.
+  const autonomyService =
+    store && streamService
+      ? new AutonomyService({
+          store,
+          streams: streamService,
+          ...(planService ? { plans: planService } : {}),
+          ...(contractService ? { contracts: contractService } : {}),
+        })
+      : undefined;
   // Attach and questions know about each other: the turn-end rule asks
   // what is open, and an answer is delivered by prompting the session.
   const attachService =
@@ -219,6 +230,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
           ...(rulesService ? { rules: rulesService } : {}),
           ...(planService ? { plans: planService } : {}),
           ...(contractService ? { contracts: contractService } : {}),
+          ...(autonomyService ? { proposals: autonomyService } : {}),
         })
       : undefined;
   // Docs: plain Markdown under `<home>/repos/<name>/docs/` and `<home>/streams/<id>.docs/`.
@@ -329,6 +341,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
           ...(cardService ? { cards: cardService } : {}),
           ...(planService ? { plans: planService } : {}),
           ...(contractService ? { contracts: contractService } : {}),
+          ...(autonomyService ? { autonomy: autonomyService } : {}),
           // T246: an agent's push; its PR is then polled at the babysit cadence.
           ...(landingService
             ? {
@@ -551,6 +564,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
     ...(docsService ? { docs: docsService } : {}),
     ...(planService ? { plans: planService } : {}),
     ...(contractService ? { contracts: contractService } : {}),
+    ...(autonomyService ? { autonomy: autonomyService } : {}),
     githubAuth,
   });
 

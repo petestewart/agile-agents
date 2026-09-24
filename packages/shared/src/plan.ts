@@ -131,5 +131,98 @@ export const ContractWriteFieldsSchema = z
     body: ContractBody,
     parties: z.array(UlidSchema).max(PLAN_LIST_MAX),
     reason: z.string().max(400).optional(),
+    /** P12: the coordinator's claim the change is additive; at Run a routine change is applied. */
+    routine: z.boolean().optional(),
   })
   .strict();
+
+/**
+ * T282 (projects-design §9 "Autonomy", P12): the structural actions a
+ * coordinator (or the Director, T301) may take, gated by its autonomy
+ * level. `reorder` and `merge_siblings` have no verb yet; the gate covers
+ * them so a later verb only has to call it.
+ */
+export const COORDINATOR_ACTIONS = [
+  'add_child',
+  'add_waits_on',
+  'reorder',
+  'set_owner',
+  'merge_siblings',
+  'approve_contract',
+] as const;
+export const CoordinatorActionSchema = z.enum(COORDINATOR_ACTIONS);
+export type CoordinatorAction = z.infer<typeof CoordinatorActionSchema>;
+
+/** Never allowed to a coordinator or the Director, at any level (§9, §14.12). */
+export const HUMAN_ONLY_ACTIONS = [
+  'merge',
+  'accept_knowledge',
+  'answer_question',
+  'change_goal',
+] as const;
+export type HumanOnlyAction = (typeof HUMAN_ONLY_ACTIONS)[number];
+
+export const AUTONOMY_PROPOSAL_ID_PATTERN = new RegExp(`^AP-${ULID_PATTERN.source.slice(1, -1)}$`);
+export const AutonomyProposalIdSchema = z
+  .string()
+  .regex(AUTONOMY_PROPOSAL_ID_PATTERN, 'must look like AP-<ulid>');
+
+/** One gated change, with what applying it needs. */
+export const CoordinatorChangeSchema = z.discriminatedUnion('action', [
+  z
+    .object({
+      action: z.literal('add_child'),
+      title: z.string().trim().min(1).max(200),
+      goal: z.string().trim().min(1).max(CONTRACT_BODY_MAX_CHARS),
+      repo: z.string().min(1).optional(),
+    })
+    .strict(),
+  z.object({ action: z.literal('add_waits_on'), child: UlidSchema, on: UlidSchema }).strict(),
+  z
+    .object({
+      action: z.literal('set_owner'),
+      child: UlidSchema,
+      owns: z.array(Glob).max(PLAN_LIST_MAX),
+    })
+    .strict(),
+  z
+    .object({
+      action: z.literal('approve_contract'),
+      contract: ContractIdSchema,
+      title: z.string().trim().min(1).max(CONTRACT_TITLE_MAX_CHARS),
+      body: ContractBody,
+      parties: z.array(UlidSchema).max(PLAN_LIST_MAX),
+      reason: z.string().max(400).optional(),
+      routine: z.boolean().optional(),
+    })
+    .strict(),
+]);
+export type CoordinatorChange = z.infer<typeof CoordinatorChangeSchema>;
+
+/**
+ * `proposals/<AP-id>.yaml`: a gated change held at Advise (or a
+ * non-routine contract change at any level) until the human clicks Apply
+ * on its inbox card, or dismisses it.
+ */
+export const AutonomyProposalSchema = z
+  .object({
+    id: AutonomyProposalIdSchema,
+    /** The coordinating node the change is on. */
+    node: UlidSchema,
+    principal: z.enum(['coordinator', 'director']),
+    /** `agent:<session>` when a session asked. */
+    by: z.string().min(1),
+    change: CoordinatorChangeSchema,
+    summary: z.string().min(1).max(800),
+    status: z.enum(['open', 'applied', 'dismissed']),
+    created_at: z.string().datetime(),
+    decided_at: z.string().datetime().optional(),
+  })
+  .strict();
+export type AutonomyProposal = z.infer<typeof AutonomyProposalSchema>;
+
+export function validateAutonomyProposal(input: unknown): AutonomyProposal {
+  const result = AutonomyProposalSchema.safeParse(input);
+  if (!result.success) throw new Error(formatZodError('AutonomyProposal', result.error));
+  return result.data;
+}

@@ -618,6 +618,11 @@ export const StreamAddRepoRequestSchema = z
 export type StreamAddRepoRequest = z.infer<typeof StreamAddRepoRequestSchema>;
 
 /** T228: the stream page's Link (`POST /api/streams/:id/wait`, P8). */
+/** T282: `POST /api/streams/:id/autonomy`; `null` inherits the project's level. */
+export const StreamAutonomyRequestSchema = z
+  .object({ autonomy: AutonomySchema.nullable() })
+  .strict();
+
 export const StreamWaitRequestSchema = z
   .object({
     on: UlidSchema,

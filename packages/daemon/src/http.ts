@@ -23,6 +23,7 @@ import {
   SessionDefaultsPatchSchema,
   StreamAddRepoRequestSchema,
   StreamAttachRequestSchema,
+  StreamAutonomyRequestSchema,
   StreamCreateInputSchema,
   StreamSayInputSchema,
   StreamWaitRequestSchema,
@@ -39,6 +40,11 @@ import {
   UnregisteredRepoError,
 } from './attach';
 import type { ClassifierKeyService } from './classifier';
+import {
+  type AutonomyService,
+  ProposalClosedError,
+  StaleProposalError,
+} from './coordination/autonomy';
 import type { ContractService } from './coordination/contracts';
 import { PlanNotDraftError, type PlanService } from './coordination/plans';
 import { type DeliveryService, LandRefusedError } from './delivery';
@@ -157,6 +163,8 @@ export interface HttpServerOptions {
   /** T281: the stream page's Plan tab and the plan approval card. */
   plans?: PlanService;
   contracts?: ContractService;
+  /** T282: the Apply/Dismiss on a coordinator's proposal card. */
+  autonomy?: AutonomyService;
   /** Test hook: the tailer's poll interval (default 250ms). */
   feedPollIntervalMs?: number;
 }
@@ -390,6 +398,7 @@ interface FeedContext {
   events?: RoutedEventService;
   plans?: PlanService;
   contracts?: ContractService;
+  autonomy?: AutonomyService;
 }
 
 function resolveFeedContext(options: HttpServerOptions): FeedContext | undefined {
@@ -412,6 +421,7 @@ function resolveFeedContext(options: HttpServerOptions): FeedContext | undefined
     events: options.events,
     plans: options.plans,
     contracts: options.contracts,
+    autonomy: options.autonomy,
   };
 }
 
@@ -589,6 +599,57 @@ async function handlePlanRoute(
     });
   } catch (err) {
     if (err instanceof PlanNotDraftError) return errorResponse(409, err.message);
+    if (err instanceof NotFoundError) return errorResponse(404, messageOf(err));
+    return errorResponse(400, messageOf(err));
+  }
+}
+
+/**
+ * T282 (projects-design §9 Autonomy):
+ *
+ *   POST /api/proposals/:id/apply|dismiss  the human decides a coordinator's proposal card
+ *   POST /api/streams/:id/autonomy         `{autonomy: level|null}`: the node's override
+ *   POST /api/projects/:id                 `{autonomy: {coordinator?, director?}}`: the project's levels
+ */
+async function handleAutonomyRoute(
+  req: Request,
+  url: URL,
+  feed: FeedContext | undefined,
+  sameOrigin: () => boolean,
+): Promise<Response | undefined> {
+  if (req.method !== 'POST') return undefined;
+  const proposal = url.pathname.match(/^\/api\/proposals\/([^/]+)\/(apply|dismiss)$/);
+  const node = url.pathname.match(/^\/api\/streams\/([^/]+)\/autonomy$/);
+  const project = url.pathname.match(/^\/api\/projects\/([^/]+)$/);
+  if (!proposal && !node && !project) return undefined;
+  if (!sameOrigin()) return errorResponse(403, 'cross-origin request rejected');
+  try {
+    if (proposal) {
+      if (!feed?.autonomy) return errorResponse(503, 'proposals not available');
+      const id = decodeURIComponent(proposal[1] ?? '');
+      return jsonResponse(
+        proposal[2] === 'apply' ? await feed.autonomy.apply(id) : await feed.autonomy.dismiss(id),
+      );
+    }
+    if (node) {
+      if (!feed?.streams) return errorResponse(503, 'streams not available');
+      const id = UlidSchema.safeParse(decodeURIComponent(node[1] ?? ''));
+      if (!id.success) return errorResponse(400, `invalid stream id: ${node[1]}`);
+      const input = StreamAutonomyRequestSchema.safeParse(await readJsonBody(req));
+      if (!input.success) return errorResponse(400, formatZodError('autonomy', input.error));
+      return jsonResponse(await feed.streams.setAutonomy(id.data, input.data.autonomy));
+    }
+    if (!feed?.projects) return errorResponse(503, 'projects not available');
+    const body = await readJsonBody(req);
+    return jsonResponse(
+      await feed.projects.update(decodeURIComponent(project?.[1] ?? ''), {
+        autonomy: body.autonomy,
+      }),
+    );
+  } catch (err) {
+    if (err instanceof ProposalClosedError || err instanceof StaleProposalError) {
+      return errorResponse(409, err.message);
+    }
     if (err instanceof NotFoundError) return errorResponse(404, messageOf(err));
     return errorResponse(400, messageOf(err));
   }
@@ -1018,6 +1079,9 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
 
         const sessionSettingsRoute = await handleSessionSettingsRoute(req, url, feed, sameOrigin);
         if (sessionSettingsRoute) return sessionSettingsRoute;
+
+        const autonomyRoute = await handleAutonomyRoute(req, url, feed, sameOrigin);
+        if (autonomyRoute) return autonomyRoute;
 
         const planRoute = await handlePlanRoute(req, url, feed, sameOrigin);
         if (planRoute) return planRoute;
