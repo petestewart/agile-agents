@@ -98,6 +98,8 @@ export function threadAuthorFor(principal: StreamPrincipal, sessionId?: string):
 export interface StreamServiceOptions {
   /** Tells the retro (§5.5) a stream closed. Fire-and-forget: never a failed close. */
   onStreamEnd?: (streamId: string) => void | Promise<void>;
+  /** T244: after each written update (the event producers). Awaited; a throw is logged, never a failed update. */
+  onUpdated?: (before: Stream, after: Stream) => void | Promise<void>;
 }
 
 export class StreamService {
@@ -237,7 +239,22 @@ export class StreamService {
     patch: StreamPatch,
     options: { kind?: 'stream_updated' | 'stream_closed' | 'stream_archived' } = {},
   ): Promise<Stream> {
-    return this.store.updateStream(principal, id, (before) => applyPatch(before, patch), options);
+    let prior: Stream | undefined;
+    const after = await this.store.updateStream(
+      principal,
+      id,
+      (before) => {
+        prior = before;
+        return applyPatch(before, patch);
+      },
+      options,
+    );
+    if (prior !== undefined && this.options.onUpdated !== undefined) {
+      await Promise.resolve(this.options.onUpdated(prior, after)).catch((err) =>
+        console.error(`stream ${id} update hook failed:`, err),
+      );
+    }
+    return after;
   }
 
   /**

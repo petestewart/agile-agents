@@ -4,7 +4,9 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import type { RoutedEvent } from '@agile-agents/shared';
 import { DeliveryService } from '../delivery/service';
+import { RoutedEventService, makeEmitter, summarize } from '../events';
 import { runInit } from '../init';
 import { ProjectService } from '../projects';
 import { StateStore } from '../store';
@@ -193,5 +195,65 @@ describe('sync after merge (T226)', () => {
     } finally {
       rmSync(remote, { recursive: true, force: true });
     }
+  });
+});
+
+describe('sync routed events (T244)', () => {
+  let emitted: RoutedEvent[];
+  beforeEach(() => {
+    emitted = [];
+    const base = makeEmitter(new RoutedEventService(store), streams);
+    sync = new MainSync({
+      streams,
+      repos: () => store.getRepos(),
+      intervalMs: 0,
+      emit: async (input) => {
+        const e = await base(input);
+        if (e) emitted.push(e);
+        return e;
+      },
+    });
+  });
+  const routed = (e: RoutedEvent | undefined) => e?.routing.map((r) => [r.node, r.because]);
+
+  test('main_changed reaches the other same-repo node after the sync, with the outcome', async () => {
+    const one = await workNode('one');
+    const two = await workNode('two');
+    commit(two.wt, 'b.ts', 'b2\n');
+    commit(repo, 'a.ts', 'a2\n');
+    await sync.mainMoved('api', one.id);
+    expect(emitted.map((e) => e.type)).toEqual(['main_changed']);
+    const e = emitted[0] as RoutedEvent;
+    expect(routed(e)).toEqual([[two.id, 'same_repo']]);
+    expect(e.coalesce_key).toBe('main_changed:api');
+    const sha = sh(['rev-parse', 'main'], repo);
+    expect(summarize(e, two.id)).toBe(
+      `api main moved to ${sha.slice(0, 12)} (one). Your branch was synced.`,
+    );
+  });
+
+  test('sync_conflict goes to the conflicted node; main_changed reports the conflict', async () => {
+    const two = await workNode('two');
+    commit(two.wt, 'a.ts', 'two\n');
+    commit(repo, 'a.ts', 'main\n');
+    await sync.mainMoved('api');
+    expect(emitted.map((e) => e.type)).toEqual(['sync_conflict', 'main_changed']);
+    const conflict = emitted[0] as RoutedEvent;
+    expect(routed(conflict)).toEqual([
+      [two.id, 'self'],
+      [streams.get(two.id).parent as string, 'ancestor'],
+    ]);
+    expect(summarize(conflict, two.id)).toBe(
+      'Syncing onto main conflicted on a.ts. Merge main in, resolve keeping both intents, run the tests, commit.',
+    );
+    expect(emitted[1]?.payload).toMatchObject({ outcome: 'conflict', files: ['a.ts'] });
+    expect(summarize(emitted[1] as RoutedEvent, two.id)).toContain('(outside the app)');
+  });
+
+  test("the first sweep's reconcile is not announced", async () => {
+    await workNode('two');
+    commit(repo, 'a.ts', 'while down\n');
+    await sync.sweep();
+    expect(emitted).toEqual([]);
   });
 });

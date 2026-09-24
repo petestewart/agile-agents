@@ -4,6 +4,8 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import type { RoutedEvent } from '@agile-agents/shared';
+import { RoutedEventService, makeEmitter, summarize } from '../events';
 import { runInit } from '../init';
 import { ProjectService } from '../projects';
 import { StateStore } from '../store';
@@ -101,5 +103,46 @@ describe('overlap tracking (T227)', () => {
     writeFileSync(join(blog.wt, 'posts.ts'), 'export const p = 2;\n');
     await tracker.recompute(blog.id);
     expect(findOverlaps(streams.list())).toEqual([]);
+  });
+});
+
+describe('overlap routed events (T244)', () => {
+  test('a new overlap reaches both nodes and their ancestors, once', async () => {
+    const emitted: RoutedEvent[] = [];
+    const base = makeEmitter(new RoutedEventService(store), streams);
+    tracker = new OverlapTracker({
+      streams,
+      repos: () => store.getRepos(),
+      intervalMs: 0,
+      emit: async (input) => {
+        const e = await base(input);
+        if (e) emitted.push(e);
+        return e;
+      },
+    });
+    const shop = await workNode('Shop', 'stream/shop');
+    const blog = await workNode('Blog', 'stream/blog');
+    writeFileSync(join(shop.wt, 'prices.ts'), 'export const a = 2;\n');
+    writeFileSync(join(blog.wt, 'prices.ts'), 'export const a = 3;\n');
+    await tracker.recomputeAll();
+    await tracker.recomputeAll();
+    expect(emitted.map((e) => e.type)).toEqual(['overlap']);
+    const e = emitted[0] as RoutedEvent;
+    const shopRoot = streams.get(shop.id).parent as string;
+    const blogRoot = streams.get(blog.id).parent as string;
+    expect(e.routing.map((r) => [r.node, r.because])).toEqual([
+      [blog.id, 'self'],
+      [blogRoot, 'ancestor'],
+      [shop.id, 'party'],
+      [shopRoot, 'ancestor'],
+    ]);
+    const title = (id: string) => streams.get(id).title;
+    expect(summarize(e, blog.id, title)).toStartWith('You and Shop api (P-');
+    expect(summarize(e, blog.id, title)).toEndWith(
+      "both changed prices.ts. Your coordinator decides who waits; don't rewrite their part.",
+    );
+    expect(summarize(e, shop.id, title)).toBe(
+      `You and Blog api (${String(e.project)}) both changed prices.ts. Your coordinator decides who waits; don't rewrite their part.`,
+    );
   });
 });

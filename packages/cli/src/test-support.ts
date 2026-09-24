@@ -25,6 +25,7 @@ import {
   ProjectService,
   QuestionService,
   RepoInPlaceService,
+  RoutedEventService,
   type RpcServerHandle,
   RulesService,
   StateStore,
@@ -112,6 +113,8 @@ export interface TestDaemon {
   streamService: StreamService;
   /** Same instance wired into `rule.*` RPC (T140) — tests seed a rule through it. */
   rulesService: RulesService;
+  /** T244: the routed event log behind `read_event` — tests emit through it. */
+  routedEvents: RoutedEventService;
   /**
    * T153: the classifier behind `rule.test` (§5.6). Always the fake — the
    * suite never calls the real API — and re-scriptable per test through
@@ -186,11 +189,13 @@ export async function startTestDaemon(prefix = 'agile-cli-test-'): Promise<TestD
   // T140: rules (cockpit design §5) — the same service behind `rule.*` RPC,
   // the inbox's `rule_accept` items and the `propose_rule` verb.
   const rulesService = new RulesService({ store, streams: streamService });
+  const routedEvents = new RoutedEventService(store);
   const verbService = new VerbService({
     store,
     streams: streamService,
     questions: questionService,
     rules: rulesService,
+    events: routedEvents,
   });
 
   const bus = new Bus(store, init.stateRoot);
@@ -266,6 +271,7 @@ export async function startTestDaemon(prefix = 'agile-cli-test-'): Promise<TestD
     questionService,
     streamService,
     rulesService,
+    routedEvents,
     classifier,
     home,
     async cleanup() {

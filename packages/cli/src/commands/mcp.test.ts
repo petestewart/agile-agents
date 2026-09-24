@@ -2,7 +2,8 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { AGENT_VERBS } from '@agile-agents/shared';
+import { routeAndEmit } from '@agile-agents/daemon';
+import { AGENT_VERBS, type AgentId, ulid } from '@agile-agents/shared';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { type TestDaemon, startTestDaemon } from '../test-support';
@@ -26,7 +27,7 @@ afterEach(async () => {
 });
 
 describe('agile mcp (stdio bridge, real CLI subprocess)', () => {
-  test('speaks MCP over stdio and publishes exactly the eight verbs', async () => {
+  test('speaks MCP over stdio and publishes exactly the verb table', async () => {
     transport = new StdioClientTransport({
       command: 'bun',
       args: [CLI_ENTRY, 'mcp', '--session', SESSION],
@@ -89,5 +90,53 @@ describe('agile mcp (stdio bridge, real CLI subprocess)', () => {
     // crashed bridge process.
     expect(result.isError).toBe(true);
     expect(JSON.stringify(result.content)).toContain('unknown session');
+  });
+});
+
+describe('read_event over MCP (T244)', () => {
+  test("returns a routed event's payload and summary to a recipient, refuses anyone else", async () => {
+    const parent = await daemon.streamService.create('human', { title: 'Shop', goal: 'shop' });
+    const child = await daemon.streamService.create('human', {
+      title: 'CSV',
+      goal: 'csv',
+      parent: parent.id,
+    });
+    const session = ulid();
+    await daemon.store.putAgent(session as AgentId, {
+      vendor: 'claude',
+      model: 'sonnet',
+      stream: parent.id,
+      last_seen: new Date().toISOString(),
+      role: 'worker',
+    });
+    const event = await routeAndEmit(
+      daemon.routedEvents,
+      {
+        type: 'child_status',
+        subject: child.id,
+        by: 'daemon',
+        payload: { child: child.id, title: 'CSV', status: 'blocked', progress: 'needs a key' },
+      },
+      daemon.streamService.list(),
+    );
+    transport = new StdioClientTransport({
+      command: 'bun',
+      args: [CLI_ENTRY, 'mcp', '--session', session],
+      env: { ...process.env, AGILE_SOCKET_PATH: daemon.socketPath },
+    });
+    client = new Client({ name: 'test-client', version: '0.0.0' });
+    await client.connect(transport);
+
+    const ok = await client.callTool({ name: 'read_event', arguments: { id: event.id } });
+    expect(ok.isError).toBeFalsy();
+    const body = JSON.parse((ok.content as Array<{ text: string }>)[0]?.text ?? 'null');
+    expect(body.type).toBe('child_status');
+    expect(body.payload.progress).toBe('needs a key');
+    expect(body.summary).toBe('Child CSV is blocked: needs a key.');
+
+    const other = ulid();
+    const missing = await client.callTool({ name: 'read_event', arguments: { id: `E-${other}` } });
+    expect(missing.isError).toBe(true);
+    expect(JSON.stringify(missing.content)).toContain('no event');
   });
 });
