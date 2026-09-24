@@ -28,6 +28,7 @@ import {
   type Stream,
   migrateRuleRecord,
   projectNameKey,
+  splitFinding,
   ulid,
 } from '@agile-agents/shared';
 import type { ProjectService } from '../projects/service';
@@ -59,10 +60,23 @@ export interface HomeMigrationResult {
 /** Step 2: every legacy rule without its `K-X` becomes knowledge. Returns the items written. */
 export async function migrateRules(store: StateStore): Promise<number> {
   let written = 0;
+  // A P6 twin has a fresh id, so it is found by its link to the rule
+  // (`splitFinding`), not by id: a crash between the pair's two writes is
+  // completed on the next start.
+  const twins = new Set(
+    store
+      .listKnowledge()
+      .map((item) => item.source.finding)
+      .filter((f): f is string => f !== undefined),
+  );
   for (const rule of store.listLegacyRules()) {
-    if (store.hasKnowledge(`K-${rule.id.slice(2)}`)) continue;
-    for (const item of migrateRuleRecord(rule, `K-${ulid()}`)) {
-      await store.createKnowledge('daemon', item);
+    const [base, twin] = migrateRuleRecord(rule, `K-${ulid()}`);
+    if (base !== undefined && !store.hasKnowledge(base.id)) {
+      await store.createKnowledge('daemon', base);
+      written++;
+    }
+    if (twin !== undefined && !twins.has(splitFinding(rule.id))) {
+      await store.createKnowledge('daemon', twin);
       written++;
     }
   }

@@ -24,7 +24,7 @@ import { ensureBuiltinKnowledge } from '../knowledge/builtins';
 import { ProjectService } from '../projects/service';
 import { QuestionService } from '../questions/service';
 import { StreamService } from '../streams/service';
-import { migrateHome } from './migrate';
+import { migrateHome, migrateRules } from './migrate';
 import { StateStore } from './store';
 
 let home: string;
@@ -242,6 +242,33 @@ describe('rules → knowledge (§17.1 step 2)', () => {
     } finally {
       rmSync(copy, { recursive: true, force: true });
     }
+  });
+
+  test('a crash between a P6 pair is completed on the next start', async () => {
+    const id = writeLegacyRule(home, 'classifier', 'both');
+    await migrateRules(store);
+    const twin = store.listKnowledge().find((i) => i.enforcement === 'ship');
+    if (twin === undefined) throw new Error('no ship twin');
+    // Model a crash after the base write: the twin's file never landed.
+    rmSync(join(home, 'knowledge', `${twin.id}.yaml`));
+    expect(await migrateRules(store)).toBe(1);
+    const items = store.listKnowledge();
+    expect(items.map((i) => i.enforcement).sort()).toEqual(['action', 'ship']);
+    expect(items.find((i) => i.enforcement === 'ship')?.source.finding).toContain(id);
+    expect(await migrateRules(store)).toBe(0);
+  });
+
+  test('a guidance rule keeps its examples visible in source.finding', async () => {
+    const id = writeLegacyRule(home, 'guidance', 'action', {
+      examples: [
+        { action: 'a', violates: true },
+        { action: 'b', violates: false },
+      ],
+    });
+    await migrateRules(store);
+    expect(store.getKnowledge(`K-${id.slice(2)}`).source.finding).toBe(
+      'proposed examples: violates: a | allowed: b',
+    );
   });
 
   test('a home already on projects migrates only its rules, with no second parent-branch card', async () => {

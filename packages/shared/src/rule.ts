@@ -19,6 +19,7 @@ import {
   RuleExamplesSchema,
   RulePatternSchema,
   RuleStatsSchema,
+  withExamplesNote,
 } from './knowledge';
 
 export const LEGACY_RULE_ID_PATTERN = new RegExp(`^R-${ULID_PATTERN.source.slice(1, -1)}$`);
@@ -156,6 +157,19 @@ function legacySource(provenance: LegacyRuleProvenance): KnowledgeSource {
   };
 }
 
+/** A guidance rule's examples have no check to live in: keep them visible in `finding`. */
+function sourceWithExamples(rule: LegacyRule): KnowledgeSource {
+  const source = legacySource(rule.provenance);
+  if (rule.enforcement === 'classifier') return source;
+  const finding = withExamplesNote(source.finding, rule.examples);
+  return finding === undefined ? source : { ...source, finding };
+}
+
+/** The finding that links a P6 ship twin to its rule — also how a rerun finds it. */
+export function splitFinding(ruleId: string): string {
+  return `split from ${ruleId} (stage both, P6)`;
+}
+
 /**
  * §17.1 step 2: one legacy rule as knowledge items, `kind: standard`. The
  * first keeps the rule's ulid (`R-X` → `K-X`); a classifier rule at stage
@@ -189,7 +203,7 @@ export function migrateRuleRecord(rule: LegacyRule, shipId: string): KnowledgeIt
         }
       : {}),
     critical: rule.critical,
-    source: legacySource(rule.provenance),
+    source: sourceWithExamples(rule),
     status: rule.status,
     stats: rule.stats,
     created_at: rule.created_at,
@@ -206,7 +220,7 @@ export function migrateRuleRecord(rule: LegacyRule, shipId: string): KnowledgeIt
       enforcement: 'ship',
       // The split twin starts its own counters; the rule's stay on the action item.
       stats: {},
-      source: { ...source, finding: `split from ${rule.id} (stage both, P6)` },
+      source: { ...source, finding: splitFinding(rule.id) },
     },
   ];
 }

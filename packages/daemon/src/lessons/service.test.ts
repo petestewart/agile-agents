@@ -275,9 +275,10 @@ describe('the proposals (the T141 acceptance criteria)', () => {
     expect(proposed).toHaveLength(2);
     for (const rule of proposed) {
       expect(rule.status).toBe('proposed');
-      expect(rule.source).toEqual({ by: 'agent', node: stream.id, session });
-      // A `tell` item carries no check, so the old verb's examples have no home (T264).
+      expect(rule.source).toMatchObject({ by: 'agent', node: stream.id, session });
+      // A `tell` item carries no check: the examples stay visible in the source.
       expect(rule.enforcement).toBe('tell');
+      expect(rule.source.finding).toMatch(/^proposed examples: violates: .+ \| allowed: .+$/);
       expect(rule.scope).toEqual({ kind: 'subtree', node: stream.id });
     }
 

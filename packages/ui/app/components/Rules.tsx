@@ -383,6 +383,11 @@ function RuleCard({
         <span>from {rule.source.by}</span>
       </div>
       <Markdown className="context" text={rule.text} />
+      {rule.source.finding !== undefined && (
+        <p className="cr-dim" data-testid="rules-finding">
+          {rule.source.finding}
+        </p>
+      )}
       {pattern !== undefined && (
         <p className="cr-dim" data-testid="rules-pattern">
           <code>{formatRulePattern(pattern)}</code>

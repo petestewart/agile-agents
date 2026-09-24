@@ -21,6 +21,7 @@ import {
   legacyEnforcement,
   parseKnowledgeScope,
   validateVerbInput,
+  withExamplesNote,
 } from '@agile-agents/shared';
 import type { DocsSearch, SearchHit } from '../docs/service';
 import { summaryOf } from '../events/delivery';
@@ -171,7 +172,15 @@ export class VerbService {
       ...(mapped !== undefined ? { enforcement: mapped } : {}),
       ...(checked ? { check: { by: 'classifier', examples: examples ?? [] } } : {}),
       ...(critical !== undefined ? { critical } : {}),
-      source: { by: 'agent', node: caller.stream, session },
+      source: {
+        by: 'agent',
+        node: caller.stream,
+        session,
+        // A tell item has no check to hold them: keep them visible (T260).
+        ...(!checked && examples !== undefined && examples.length > 0
+          ? { finding: withExamplesNote(undefined, examples) }
+          : {}),
+      },
     });
     return this.options.streams.appendThread(
       'agent',

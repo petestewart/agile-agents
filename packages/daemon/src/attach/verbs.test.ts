@@ -124,6 +124,25 @@ describe('propose_rule', () => {
     );
   });
 
+  test('examples proposed with a tell item are kept visible in source.finding', async () => {
+    const { session } = await attach();
+    await verbs.proposeRule({
+      session,
+      text: 'say which dialect you picked',
+      enforcement: 'guidance',
+      examples: [
+        { action: 'reply without naming the dialect', violates: true },
+        { action: 'reply: using RFC 4180', violates: false },
+      ],
+    });
+    const [rule] = rules.listProposed();
+    expect(rule?.enforcement).toBe('tell');
+    expect(rule?.check).toBeUndefined();
+    expect(rule?.source.finding).toBe(
+      'proposed examples: violates: reply without naming the dialect | allowed: reply: using RFC 4180',
+    );
+  });
+
   test('the old tiers map to enforcement: classifier is an action check with its examples', async () => {
     const { session } = await attach();
     await verbs.proposeRule({

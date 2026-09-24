@@ -401,6 +401,29 @@ export function formatEnforcement(
   return `${item.enforcement}${check}${item.critical ? '!' : ''}`;
 }
 
+/**
+ * A `tell`/`review` item carries no check, so examples proposed with one
+ * (the old `propose_rule` verb, a migrated guidance rule) are kept where the
+ * human deciding it sees them: in `source.finding`, one line each. Turning
+ * the item into a check later means re-entering them with `--example`.
+ */
+export function examplesNote(examples: readonly RuleExample[]): string | undefined {
+  if (examples.length === 0) return undefined;
+  return `proposed examples: ${examples
+    .map((e) => `${e.violates ? 'violates' : 'allowed'}: ${e.action}`)
+    .join(' | ')}`;
+}
+
+/** `finding` plus the examples note, whichever exist. */
+export function withExamplesNote(
+  finding: string | undefined,
+  examples: readonly RuleExample[],
+): string | undefined {
+  const note = examplesNote(examples);
+  if (note === undefined) return finding;
+  return finding === undefined ? note : `${finding} · ${note}`;
+}
+
 /** Minimum examples a classifier check needs before its item may be accepted (cockpit §5.6). */
 export const CLASSIFIER_MIN_EXAMPLES = 2;
 
