@@ -77,6 +77,29 @@ function mainIsIn(wt: string): boolean {
 }
 
 describe('sync after merge (T226)', () => {
+  test('T288: a helper is not synced from main', async () => {
+    const one = await workNode('one');
+    const host = await workNode('host');
+    const helper = await streams.create('human', {
+      title: 'helper',
+      goal: 'g',
+      parent: host.id,
+      helper_of: host.id,
+    });
+    const hwt = join(repo, '.worktrees', 'helper');
+    sh(['worktree', 'add', '-q', hwt, '-b', 'stream/helper', 'stream/host'], repo);
+    await store.updateStream('daemon', helper.id, (s) => ({
+      ...s,
+      worktree: hwt,
+      branch: 'stream/helper',
+    }));
+    commit(one.wt, 'a.ts', 'a2\n');
+    sh(['merge', '-q', '--no-ff', '-m', 'land one', 'stream/one'], repo);
+    const out = await sync.mainMoved('api', one.id);
+    expect(out.has(helper.id)).toBe(false);
+    expect(mainIsIn(hwt)).toBe(false);
+  });
+
   test('two nodes on one repo: landing one merges main into the other', async () => {
     const one = await workNode('one');
     const two = await workNode('two');

@@ -150,11 +150,24 @@ export class StreamService {
     if (input.helper_of !== undefined && input.helper_of !== parent) {
       throw new StreamProjectError('helper_of must name the parent node');
     }
-    if (input.repo !== undefined) {
+    let repo = input.repo;
+    if (input.helper_of !== undefined) {
+      // T288: a helper works on its parent's repo and delivers into its branch.
+      const host = this.store.getStream(input.helper_of).repo;
+      if (host === undefined)
+        throw new StreamProjectError('helper_of must name a node with a repo');
+      if (repo !== undefined && repo !== host) {
+        throw new StreamProjectError(
+          `a helper works on ${host}; for ${repo} use \`node add-repo\` (the §7 reshape)`,
+        );
+      }
+      repo = host;
+    }
+    if (repo !== undefined) {
       const repos = this.store.getRepos();
-      const entry = repos[input.repo];
-      if (entry === undefined) throw new UnknownRepoError(input.repo, Object.keys(repos).sort());
-      assertRepoHasCommits(input.repo, entry);
+      const entry = repos[repo];
+      if (entry === undefined) throw new UnknownRepoError(repo, Object.keys(repos).sort());
+      assertRepoHasCommits(repo, entry);
     }
     const now = new Date().toISOString();
     const stream: Stream = {
@@ -162,7 +175,7 @@ export class StreamService {
       title: input.title,
       goal: input.goal,
       ...(parent !== undefined ? { parent } : {}),
-      ...(input.repo !== undefined ? { repo: input.repo } : {}),
+      ...(repo !== undefined ? { repo } : {}),
       ...(project !== undefined ? { project } : {}),
       ...(input.labels !== undefined ? { labels: input.labels } : {}),
       ...(input.helper_of !== undefined ? { helper_of: input.helper_of } : {}),

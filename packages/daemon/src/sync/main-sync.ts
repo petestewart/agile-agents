@@ -81,6 +81,8 @@ export class MainSync {
       const out = new Map<string, SyncOutcome>();
       for (const s of all) {
         if (s.id === except || s.repo !== repo || !isLiveWorkNode(s, all)) continue;
+        // T288: a helper follows its parent's branch; main reaches it through the parent.
+        if (s.helper_of !== undefined) continue;
         out.set(s.id, await this.syncNode(s));
       }
       if (opts.announce !== false) await this.announce(repo, out, except);

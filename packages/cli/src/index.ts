@@ -78,6 +78,7 @@ function usage(): string {
     '  project show <id>',
     '  project set <id> [--name n] [--repo a,b] [--vendor v] [--model m] [--effort e] [--delivery direct|pr] [--auto-merge on|off] [--coordinator|--director advise|organise|run]',
     '  node new --title <t> --goal <g> --project <P-id> [--parent <id>] [--repo <name>] [--label l]… [--no-start]',
+    "                             [--helper-of <id>]: a same-repo helper off that node's branch, merged back into it",
     "                             starts the node's agent unless --no-start",
     '                             (--project may be left out when --parent names a node in a project)',
     '  node list [--all] [--status <s>] [--landed] [--project <P-id>] [--parent <id>]',

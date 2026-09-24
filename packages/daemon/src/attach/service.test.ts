@@ -210,6 +210,28 @@ describe('attach on a stream with a repo', () => {
   });
 });
 
+describe('T288: a helper attaches off its parent', () => {
+  test("the helper's worktree branches from the parent's branch", async () => {
+    await store.putRepos({ demo: { path: repo, protected_branches: ['main'] } });
+    const parent = await makeStream('demo');
+    git(['branch', 'host-branch']);
+    const hostWt = join(repo, '.worktrees', 'host');
+    git(['worktree', 'add', '-q', hostWt, 'host-branch']);
+    writeFileSync(join(hostWt, 'host.txt'), 'host\n');
+    git(['add', '-A'], hostWt);
+    git(['commit', '-q', '-m', 'host work'], hostWt);
+    await streams.update('daemon', parent.id, { branch: 'host-branch', worktree: hostWt });
+    const helper = await streams.create('human', {
+      title: 'helper',
+      goal: 'help',
+      parent: parent.id,
+      helper_of: parent.id,
+    });
+    const { stream: updated } = await attachService.attach(helper.id);
+    expect(existsSync(join(updated.worktree ?? '', 'host.txt'))).toBe(true);
+  });
+});
+
 describe('T207: both .claude settings files tracked', () => {
   test('attach is refused before the stream is marked working or a session recorded', async () => {
     mkdirSync(join(repo, '.claude'), { recursive: true });

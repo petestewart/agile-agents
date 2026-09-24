@@ -219,6 +219,10 @@ export class DeliveryService {
       return opened;
     }
 
+    // T288: a helper merges into its parent's live checkout; wait out a turn or local edits.
+    const deferred = await this.deferHelper(stream, mode, target);
+    if (deferred !== undefined) return deferred;
+
     // 3. Ready (direct: this call is the Merge click), then the merge in a
     // temporary worktree of the target, one per repo, refs moved last.
     for (const plan of plans) {
@@ -479,9 +483,12 @@ export class DeliveryService {
     }
     // §5.5's retro, after the worktree is gone.
     void Promise.resolve(this.options.onStreamEnd?.(stream.id)).catch(() => {});
-    void Promise.resolve(this.options.onMainMoved?.(stream.repo as string, stream.id)).catch(
-      () => {},
-    );
+    // T288: a helper moved its parent's branch, not main.
+    if (stream.helper_of === undefined) {
+      void Promise.resolve(this.options.onMainMoved?.(stream.repo as string, stream.id)).catch(
+        () => {},
+      );
+    }
     return { status: 'landed', target, sha, line };
   }
 
@@ -843,6 +850,8 @@ export class DeliveryService {
 
   /** §14.7: node override, else project, else repo entry, else direct. */
   private resolveMode(stream: Stream, repoEntry: RepoEntry): DeliveryState['mode'] {
+    // T288: a helper is a direct merge into its parent's branch.
+    if (this.helperHostBranch(stream) !== undefined) return 'direct';
     return this.resolveDeliveryFor(stream, repoEntry).mode;
   }
 
@@ -878,8 +887,60 @@ export class DeliveryService {
   }
 
   /** D20: every work node delivers to the repo's main branch. */
-  private resolveTarget(_stream: Stream, repoEntry: RepoEntry, repoRoot: string): string {
-    return mainBranch(repoEntry, repoRoot);
+  private resolveTarget(stream: Stream, repoEntry: RepoEntry, repoRoot: string): string {
+    return this.helperHostBranch(stream) ?? mainBranch(repoEntry, repoRoot);
+  }
+
+  /** T288: held (not merged) while the parent is mid-turn or its worktree is dirty; a note on both. */
+  private async deferHelper(
+    stream: Stream,
+    mode: DeliveryState['mode'],
+    target: string,
+  ): Promise<LandOutcome | undefined> {
+    if (stream.helper_of === undefined) return undefined;
+    const { streams } = this.options;
+    const host = streams.get(stream.helper_of);
+    const session = liveSession(host);
+    let why: string | undefined;
+    if (session !== undefined && (session.status === 'running' || session.status === 'starting')) {
+      why = 'the parent is mid-turn';
+    } else if (host.worktree !== undefined && existsSync(host.worktree)) {
+      const status = git(
+        ['status', '--porcelain=v1', '--untracked-files=no'],
+        host.worktree,
+        host.worktree,
+      );
+      if (status.exitCode !== 0 || status.stdout !== '')
+        why = "the parent's worktree has uncommitted changes";
+    }
+    if (why === undefined) return undefined;
+    const line = `helper delivery deferred: ${why}; land ${stream.branch} into ${target} again when it is done`;
+    await this.setDeliveryState(stream.id, {
+      mode,
+      status: 'held',
+      held_by: [{ reason: 'waits_on', detail: line }],
+    });
+    await streams.appendThread('daemon', stream.id, { kind: 'event', body: line });
+    await streams.appendThread('daemon', host.id, {
+      kind: 'event',
+      body: `helper ${stream.id} is ready to merge into ${target}; deferred: ${why}`,
+    });
+    return { status: 'refused', reason: line, line };
+  }
+
+  /** T288: a helper's target is its parent's branch; anything else is refused, never main. */
+  private helperHostBranch(stream: Stream): string | undefined {
+    if (stream.helper_of === undefined) return undefined;
+    const host = this.options.streams.get(stream.helper_of);
+    const refuse = (why: string): never => {
+      throw new LandRefusedError(stream.id, `helper of ${host.id}: ${why}`);
+    };
+    if (host.repo !== stream.repo)
+      refuse(`the parent is on ${String(host.repo)}, not ${String(stream.repo)}`);
+    if (host.archived === true || host.human.status === 'closed' || host.human.status === 'landed')
+      refuse('the parent is closed or archived');
+    if (host.branch === undefined) refuse('the parent has no branch yet');
+    return host.branch;
   }
 
   /** Raises the `land` gate: the outcome when this call can't proceed, `undefined` when a delegate approved inline. */
