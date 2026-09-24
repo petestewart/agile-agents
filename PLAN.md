@@ -1289,10 +1289,19 @@ agile node show $P --json | jq -r '.delivery_state.status, .delivery_state.pr.au
 - **Validation Steps:** `bun run test:e2e`.
 - **Notes:** After T260. Pete looks at it. Review (sonnet) PASS. Daemon +1. Screen and tab say Knowledge; kind/enforcement filters; paths editable; inbox cards "<kind> proposed" (new optional `knowledge_kind` on rule_accept items). Internal ids (`rules` view, `rules-*` testids, `/api/rules`) unchanged. "Never fires" flag predates this ticket.
 
+### Ticket: T268 Ship-check classifier false hold; Phase 10 wording
+- **Priority:** P1
+- **Status:** In Progress
+- **Owner:** opus:worker-T268
+- **Scope:** From T267 QA with the real TypeSafe key: the `tests-with-changes` ship item (Pete's T267 script) kept holding delivery after the worker added a real test (3 retries, deny 0.80–0.86), though `agile knowledge test` passed on the item's examples. Find out what the classifier is actually sent at ship time (the whole diff? truncated? file list?) and why it disagrees with the examples; fix the request (e.g. give it the changed-file list plus a bounded diff, and phrase the call the way the examples are phrased) so the T267 flow holds, then passes after a test is added. Check with the real key (D16; never print it). Also: the hold message still says "landing refused by diff rule"; `brief.md`'s heading still says "Rules in scope". Use knowledge wording.
+- **Acceptance Criteria:** Unit tests (FakeClassifier) pin the request shape. A recorded manual run with the real key: the T267 hold, then a pass after a test is added. Wording updated.
+- **Validation Steps:** `bun test packages/daemon/src/delivery packages/daemon/src/classifier packages/daemon/src/runner`.
+- **Notes:** Before Pete's Phase 10 look.
+
 ### Ticket: T267 Phase 10 QA and Pete's look
 - **Priority:** P0
-- **Status:** In Progress
-- **Owner:** sonnet:qa-T267
+- **Status:** In Review (QA ACCEPT 2026-09-24; Pete's look pending)
+- **Owner:** Pete
 - **Scope:** Black-box QA of the migration, scopes, action and ship enforcement (real key allowed per D16), lookup and events. Daemon line count. Pete adds a ship-check standard on ledger-lite and watches a delivery get held and fixed.
 - **Acceptance Criteria:** QA ACCEPT. Live: the delivery is held with the item named, the worker adds the test, and the next deliver merges. A decision accepted mid-run shows in the live node's Activity.
 - **Validation Steps:** Pete, on his Mac:
@@ -1318,7 +1327,7 @@ agile knowledge accept $D
 agile tail --node $N --events
 ```
 
-- **Notes:** The goal's "do not write a test" wording is deliberate, so the hold fires.
+- **Notes:** The goal's "do not write a test" wording is deliberate, so the hold fires. QA (sonnet, black-box) ACCEPT on 0ae4dde: bun test 2183/0, integration and e2e green; migration of every enforcement × stage, scopes, `knowledge_accepted`, Knowledge screen verified by hand. With the real classifier key the ship item still held after a real test was added (3 retries, deny 0.80–0.86) while `knowledge test` agreed with its examples → T268. Daemon 24,729 lines (23,772 at Phase 9).
 
 ### Phase 11 — Coordination
 
@@ -1605,6 +1614,7 @@ Daemon: `em/`, `architect/`, `oracle/`, `qa/`, `halts/`, `quota/`, `handoff/`, `
 
 ## 10. Discovered Issues Log
 
+- Phase 10 complete on `claude/phase-10` (2026-09-24): T260–T266 merged, T267 QA ACCEPT; T268 (real-classifier ship hold) before Pete's look. Phase 11 proceeds on `claude/phase-11`.
 - Phase 9 complete on `claude/phase-9` (2026-09-24): T240–T246 merged, T247 QA ACCEPT; awaiting Pete's look (draft PR https://github.com/petestewart/agile-agents/pull/6, base claude/phase-8). Phase 10 proceeds on `claude/phase-10`.
 - (Pete, 2026-09-24) P13 bullet 1 (leave a private repo out of a session's readable directories) is deferred until it becomes a need; the hook check (T229) stands alone.
 - Phase 8 complete on `claude/phase-8` (2026-09-24): T220–T229 merged, T230 QA ACCEPT; awaiting Pete's look (draft PR https://github.com/petestewart/agile-agents/pull/5, base claude/phase-7). Phase 9 proceeds on `claude/phase-9` cut from it.
