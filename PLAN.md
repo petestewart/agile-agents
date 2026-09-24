@@ -1233,8 +1233,8 @@ agile node show $P --json | jq -r '.delivery_state.status, .delivery_state.pr.au
 
 ### Ticket: T262 Ship checks: classifier and reviewer checklist
 - **Priority:** P0
-- **Status:** In Review
-- **Owner:** opus:worker-T262
+- **Status:** Done (merge 6f51557)
+- **Owner:** —
 - **Scope:** At delivery:
   - `ship` items run through the classifier over the diff (the old diff-rules code);
   - then a reviewer session with a checklist of every `review` item in scope, returning findings.
@@ -1242,7 +1242,7 @@ agile node show $P --json | jq -r '.delivery_state.status, .delivery_state.pr.au
   Findings hold delivery and go back to the worker as a `ship_findings` event (added to §15). They go to you only when the check is unsure (route band) or the worker disputes them with `ask`.
 - **Acceptance Criteria:** FakeClassifier + fake reviewer: a held delivery, a fix, a pass; a routed result reaches the inbox; the checklist appears in the reviewer's `brief.md`.
 - **Validation Steps:** `bun test packages/daemon/src/delivery packages/daemon/src/knowledge`.
-- **Notes:** After T261 and T244. The real key may be used for a manual check (D16).
+- **Notes:** After T261 and T244. The real key may be used for a manual check (D16). Review (sonnet) PASS. Daemon +291. `ship_findings` event (self, wakes work nodes). Reviewer session only when review items match changed paths; unsure → inbox gate. Follow-ups: a failed re-deliver after the reviewer finishes is only logged (node stays held until re-landed); review-result cache is unbounded; reviewer brief still says "no gate waits on you". Real-key manual check not done.
 
 ### Ticket: T263 ∥ Lookup tool and briefs
 - **Priority:** P1
@@ -1291,8 +1291,8 @@ agile node show $P --json | jq -r '.delivery_state.status, .delivery_state.pr.au
 
 ### Ticket: T267 Phase 10 QA and Pete's look
 - **Priority:** P0
-- **Status:** Todo
-- **Owner:** —
+- **Status:** In Progress
+- **Owner:** sonnet:qa-T267
 - **Scope:** Black-box QA of the migration, scopes, action and ship enforcement (real key allowed per D16), lookup and events. Daemon line count. Pete adds a ship-check standard on ledger-lite and watches a delivery get held and fixed.
 - **Acceptance Criteria:** QA ACCEPT. Live: the delivery is held with the item named, the worker adds the test, and the next deliver merges. A decision accepted mid-run shows in the live node's Activity.
 - **Validation Steps:** Pete, on his Mac:
