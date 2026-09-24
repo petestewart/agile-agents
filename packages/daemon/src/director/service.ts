@@ -76,6 +76,11 @@ export function directorBrief(thread: readonly ThreadEntry[]): string {
     'session is posted to it. You never merge, accept a norm, or answer a question as if you',
     'were the operator. Your working directory is a scratch dir; you may write only there.',
     '',
+    'Your tools (the `agile` MCP server): `draft_tree`, `create_project`, `create_node`,',
+    '`start_node`, `add_waits_on` and `restart_node`. Each is gated by the project’s Director',
+    'level: at Advise it becomes a draft the operator creates with one click; at Organise it is',
+    'applied (restart only at Run). Say on your thread what you drafted or did.',
+    '',
     '## Your thread (most recent last)',
     '',
     ...(recent.length === 0

@@ -8,6 +8,7 @@
 import {
   type Project,
   type ProjectUpdateInput,
+  type StreamPrincipal,
   ulid,
   validateProjectCreateInput,
   validateProjectUpdateInput,
@@ -33,13 +34,13 @@ export class ProjectService {
   }
 
   /** Creates the root stream, then the record that points at it. */
-  async create(rawInput: unknown): Promise<Project> {
+  async create(rawInput: unknown, principal: StreamPrincipal = 'human'): Promise<Project> {
     const input = validateProjectCreateInput(rawInput);
     this.assertReposKnown(input.repos);
     // Fail fast before minting a root; the store re-checks under its mutex.
     this.store.assertProjectNameFree(input.name);
     const id = `P-${ulid()}`;
-    const root = await this.streams.createRoot('human', id, input.name, `Project ${input.name}`);
+    const root = await this.streams.createRoot(principal, id, input.name, `Project ${input.name}`);
     try {
       return await this.store.createProject({
         id,

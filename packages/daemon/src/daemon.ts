@@ -188,6 +188,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
           streams: streamService,
           ...(planService ? { plans: planService } : {}),
           ...(contractService ? { contracts: contractService } : {}),
+          ...(projectService ? { projects: projectService } : {}),
         })
       : undefined;
   // Attach and questions know about each other: the turn-end rule asks
@@ -228,6 +229,18 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
         })
       : undefined;
   if (directorService && attachService) directorService.setDelivery(attachService.delivery);
+  // T301: the Director's start_node / restart_node (restart: stop the node's agent, start it again).
+  if (autonomyService && attachService) {
+    autonomyService.setAgents({
+      start: (node) => attachService.attach(node),
+      restart: async (node) => {
+        const reason = 'restarted by the Director';
+        await attachService.stop(node, 'worker', { reason });
+        await attachService.stop(node, 'coordinator', { reason });
+        return attachService.attach(node);
+      },
+    });
+  }
   const questionService: QuestionService | undefined =
     store && streamService
       ? new QuestionService(store, streamService, {

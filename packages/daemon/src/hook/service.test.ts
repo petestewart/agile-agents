@@ -298,6 +298,32 @@ describe('HookService — the streamless Director (T300)', () => {
     expect(net.hookSpecificOutput.permissionDecision).toBe('deny');
   });
 
+  test('T301: its own MCP verbs pass the hook; the operator CLI and a merge do not', async () => {
+    const scratch = join(stateRoot, 'sessions', DIRECTOR);
+    mkdirSync(scratch, { recursive: true });
+    const { stream: _none, ...streamless } = agentRecord({
+      role: 'coordinator',
+      worktree: scratch,
+    });
+    await store.putAgent(DIRECTOR, streamless);
+    const svc = service();
+    const call = (tool_name: string, tool_input: Record<string, unknown>) =>
+      svc.preToolUse({ cwd: scratch, agile_agent: DIRECTOR, tool_name, tool_input });
+    for (const verb of ['draft_tree', 'create_node', 'start_node', 'add_waits_on']) {
+      const out = await call(`mcp__agile__${verb}`, { title: 't' });
+      expect(out.hookSpecificOutput.permissionDecision).toBe('allow');
+    }
+    for (const command of [
+      'agile answer Q-1 yes',
+      'agile land 01ARZ',
+      'gh pr merge 3',
+      'git merge x',
+    ]) {
+      const out = await call('Bash', { command });
+      expect(out.hookSpecificOutput.permissionDecision).toBe('deny');
+    }
+  });
+
   test('a streamless worker record is still unresolvable (fail-closed)', async () => {
     const { stream: _none, ...streamless } = agentRecord({ role: 'worker', worktree });
     await store.putAgent(WORKER, streamless);

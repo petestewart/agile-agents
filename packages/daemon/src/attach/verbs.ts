@@ -13,6 +13,8 @@ import { isAbsolute, normalize } from 'node:path';
 import {
   type AgentId,
   type AgentVerb,
+  CoordinatorChangeSchema,
+  DIRECTOR_NODE,
   type KnowledgeScope,
   type RoutedEvent,
   type SessionRole,
@@ -20,6 +22,7 @@ import {
   type StreamFinding,
   type ThreadEntry,
   formatKnowledgeScope,
+  formatZodError,
   parseKnowledgeScope,
   validateVerbInput,
   withExamplesNote,
@@ -503,7 +506,58 @@ export class VerbService {
 
   async addWaitsOn(input: unknown): Promise<unknown> {
     const { session, ...change } = validateVerbInput('add_waits_on', input);
+    if (this.isDirector(session)) {
+      return this.directorGated(session, 'add_waits_on', { action: 'add_waits_on', ...change });
+    }
     return this.gated(session, 'add_waits_on', { action: 'add_waits_on', ...change });
+  }
+
+  /**
+   * T301 (§12, P16): the Director's verbs, each through the autonomy gate at
+   * the project's `director` level. Held changes land on the Director page.
+   */
+  async draftTree(input: unknown): Promise<unknown> {
+    const { session, ...tree } = validateVerbInput('draft_tree', input);
+    return this.directorGated(session, 'draft_tree', { action: 'create_tree', tree });
+  }
+
+  async createProject(input: unknown): Promise<unknown> {
+    const { session, ...fields } = validateVerbInput('create_project', input);
+    return this.directorGated(session, 'create_project', { action: 'create_project', ...fields });
+  }
+
+  async createNode(input: unknown): Promise<unknown> {
+    const { session, ...node } = validateVerbInput('create_node', input);
+    return this.directorGated(session, 'create_node', { action: 'create_node', node });
+  }
+
+  async startNode(input: unknown): Promise<unknown> {
+    const { session, node } = validateVerbInput('start_node', input);
+    return this.directorGated(session, 'start_node', { action: 'start_node', node });
+  }
+
+  async restartNode(input: unknown): Promise<unknown> {
+    const { session, node } = validateVerbInput('restart_node', input);
+    return this.directorGated(session, 'restart_node', { action: 'restart_node', node });
+  }
+
+  /** The Director's session: the one its record names, streamless, on the coordinator table. */
+  private isDirector(session: string): boolean {
+    if (this.options.store.getDirector()?.session?.id !== session) return false;
+    try {
+      const record = this.options.store.getAgent(session as AgentId);
+      return record.stream === undefined && record.role === 'coordinator';
+    } catch {
+      return false;
+    }
+  }
+
+  private async directorGated(session: string, verb: string, raw: unknown): Promise<unknown> {
+    if (!this.isDirector(session)) throw new Error(`${verb}: only the Director can`);
+    if (this.options.autonomy === undefined) throw new Error(`${verb}: autonomy is not available`);
+    const parsed = CoordinatorChangeSchema.safeParse(raw);
+    if (!parsed.success) throw new Error(formatZodError(verb, parsed.error));
+    return this.options.autonomy.act(DIRECTOR_NODE, 'director', `agent:${session}`, parsed.data);
   }
 
   async setOwner(input: unknown): Promise<unknown> {
@@ -588,5 +642,10 @@ export function verbHandlers(
     decide_contract: (input) => service.decideContract(input),
     ask_sibling: (input) => service.askSibling(input),
     reply_sibling: (input) => service.replySibling(input),
+    draft_tree: (input) => service.draftTree(input),
+    create_project: (input) => service.createProject(input),
+    create_node: (input) => service.createNode(input),
+    start_node: (input) => service.startNode(input),
+    restart_node: (input) => service.restartNode(input),
   };
 }

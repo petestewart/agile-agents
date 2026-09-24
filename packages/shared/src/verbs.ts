@@ -32,8 +32,12 @@ import {
   ContractIdSchema,
   ContractProposalIdSchema,
   ContractWriteFieldsSchema,
+  DRAFT_TREE_PARTS_MAX,
+  DraftTreePartSchema,
+  PLAN_LIST_MAX,
   PlanWriteFieldsSchema,
 } from './plan';
+import { ProjectIdSchema, ProjectNameSchema } from './project';
 import { RoutedEventIdSchema } from './routed-event';
 import { StreamFindingSeveritySchema, THREAD_BODY_MAX_CHARS } from './stream';
 
@@ -216,6 +220,44 @@ export const ReplySiblingInputSchema = z
   })
   .strict();
 
+/**
+ * T301 (§12): the Director's verbs, gated by each project's `director`
+ * autonomy level. The MCP bridge publishes a plain object shape, so the
+ * cross-field checks (exactly one of project/new_project, parent/project)
+ * run on the change itself (`CoordinatorChangeSchema`).
+ */
+const NodeTitle = z.string().trim().min(1).max(200);
+export const DraftTreeInputSchema = z
+  .object({
+    session: Session,
+    project: ProjectIdSchema.optional(),
+    new_project: ProjectNameSchema.optional(),
+    title: NodeTitle,
+    goal: Body,
+    repo: z.string().min(1).optional(),
+    parts: z.array(DraftTreePartSchema).min(1).max(DRAFT_TREE_PARTS_MAX),
+  })
+  .strict();
+export const CreateProjectInputSchema = z
+  .object({
+    session: Session,
+    name: ProjectNameSchema,
+    repos: z.array(z.string().min(1)).max(PLAN_LIST_MAX).optional(),
+  })
+  .strict();
+export const CreateNodeInputSchema = z
+  .object({
+    session: Session,
+    title: NodeTitle,
+    goal: Body,
+    parent: UlidSchema.optional(),
+    project: ProjectIdSchema.optional(),
+    repo: z.string().min(1).optional(),
+  })
+  .strict();
+export const StartNodeInputSchema = z.object({ session: Session, node: UlidSchema }).strict();
+export const RestartNodeInputSchema = StartNodeInputSchema;
+
 /** The verb table, in the order §4.1 lists it. */
 export const AGENT_VERBS = [
   'ask',
@@ -240,6 +282,11 @@ export const AGENT_VERBS = [
   'decide_contract',
   'ask_sibling',
   'reply_sibling',
+  'draft_tree',
+  'create_project',
+  'create_node',
+  'start_node',
+  'restart_node',
 ] as const;
 export type AgentVerb = (typeof AGENT_VERBS)[number];
 
@@ -266,6 +313,11 @@ export const AGENT_VERB_SCHEMAS = {
   decide_contract: DecideContractInputSchema,
   ask_sibling: AskSiblingInputSchema,
   reply_sibling: ReplySiblingInputSchema,
+  draft_tree: DraftTreeInputSchema,
+  create_project: CreateProjectInputSchema,
+  create_node: CreateNodeInputSchema,
+  start_node: StartNodeInputSchema,
+  restart_node: RestartNodeInputSchema,
 } as const satisfies Record<AgentVerb, z.ZodType>;
 
 /** One line of help per verb, published to the model by the MCP bridge. */
@@ -293,7 +345,7 @@ export const AGENT_VERB_DESCRIPTIONS: Record<AgentVerb, string> = {
   add_child:
     'Coordinator only: add a child node ({title, goal, repo?}). At Advise it is proposed to the operator; at Organise/Run it is created.',
   add_waits_on:
-    'Coordinator only: make one child wait on another node ({child, on}). Gated by your autonomy level.',
+    'Coordinator or Director: make one node wait on another ({child, on}); a coordinator only for its own children. Gated by your autonomy level.',
   set_owner:
     'Coordinator only: give a child ownership of paths ({child, owns: [globs]}). Gated by your autonomy level.',
   note_child:
@@ -306,6 +358,15 @@ export const AGENT_VERB_DESCRIPTIONS: Record<AgentVerb, string> = {
     'Ask a sibling (same parent) a question about a detail ({node, question ≤800}). Both threads show it and your parent gets a copy. Plan, contract or ownership changes go to your parent (`propose_contract`), not here.',
   reply_sibling:
     'Answer a sibling’s `ask_sibling` ({ask: the event id, body ≤800, agree?: {contract, body}}). Pass `agree` only to co-sign their contract proposal with that exact body. Both threads show it and your parent gets a copy.',
+  draft_tree:
+    'Director only: draft a node and its parts ({project | new_project, title, goal, repo?, parts: [{title, goal, repo?, after?: [part indexes it waits on]}]}). At Advise (and for a new project) it is a draft with a Create button for the operator; at Organise/Run it is created.',
+  create_project:
+    'Director only: create a project ({name, repos?}). A new project has no level yet, so it is always a draft for the operator.',
+  create_node:
+    'Director only: create a node ({title, goal, parent | project, repo?}). Gated by the project’s Director level.',
+  start_node: 'Director only: start a node’s agent ({node}). Applied at Organise/Run.',
+  restart_node:
+    'Director only: restart a stuck node’s agent ({node}). Applied at Run only; otherwise a proposal.',
 };
 
 export function isAgentVerb(name: string): name is AgentVerb {
