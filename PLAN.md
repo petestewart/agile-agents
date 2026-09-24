@@ -1151,8 +1151,8 @@ git status --short
 
 ### Ticket: T247 Phase 9 QA and Pete's look
 - **Priority:** P0
-- **Status:** In Progress
-- **Owner:** sonnet:qa-T247
+- **Status:** In Review (QA ACCEPT 2026-09-24; Pete's look pending)
+- **Owner:** Pete
 - **Scope:** Black-box QA: routing across projects, digests, restart without loss, the wake budget, babysitting on the fake. Daemon line count. Pete runs a PR on agile-test-repo with auto-merge on, comments on it on GitHub, and watches the agent respond.
 - **Acceptance Criteria:** QA ACCEPT. Live: Pete's review comment reaches the agent as an event, the agent pushes a fix, and the PR auto-merges after Pete approves. The node's Activity tab shows each event.
 - **Validation Steps:** Pete, on his Mac:
@@ -1186,7 +1186,7 @@ agile node show $P --json | jq -r '.delivery_state.pr.review, .delivery_state.pr
 agile node show $P --json | jq -r '.delivery_state.status, .delivery_state.pr.auto_merge'
 ```
 
-- **Notes:** If GitHub says auto-merge is not allowed on agile-test-repo, turn on "Allow auto-merge" in the repo settings first. P19 says the node shows `unavailable` otherwise.
+- **Notes:** If GitHub says auto-merge is not allowed on agile-test-repo, turn on "Allow auto-merge" in the repo settings first. P19 says the node shows `unavailable` otherwise. QA (sonnet, black-box) ACCEPT on 8dc9c19: bun test 2101 pass / 1 load-sensitive e2e fail (the T161 test; root-cause fix in progress on claude/phase-7), integration green. Routing, restart-without-loss and the full babysit loop verified by hand against the fake GitHub; digests, wake budget and `read_event` covered by the suites only (no user-reachable way to select the fake agent). Daemon 23,772 lines (22,233 at Phase 8). Pete's look waits on T213 (Phase 7 fixes) merging forward.
 
 ### Phase 10 — Knowledge
 
@@ -1587,6 +1587,7 @@ Daemon: `em/`, `architect/`, `oracle/`, `qa/`, `halts/`, `quota/`, `handoff/`, `
 
 ## 10. Discovered Issues Log
 
+- Phase 9 complete on `claude/phase-9` (2026-09-24): T240–T246 merged, T247 QA ACCEPT; awaiting Pete's look. Phase 10 proceeds on `claude/phase-10`.
 - (Pete, 2026-09-24) P13 bullet 1 (leave a private repo out of a session's readable directories) is deferred until it becomes a need; the hook check (T229) stands alone.
 - Phase 8 complete on `claude/phase-8` (2026-09-24): T220–T229 merged, T230 QA ACCEPT; awaiting Pete's look (draft PR https://github.com/petestewart/agile-agents/pull/5, base claude/phase-7). Phase 9 proceeds on `claude/phase-9` cut from it.
 - Phase 7 complete on `claude/phase-7` (2026-09-24, tip 3ab7109): T200–T211 merged, T212 QA ACCEPT; awaiting Pete's look (draft PR https://github.com/petestewart/agile-agents/pull/4). Phase 8 proceeds on `claude/phase-8` cut from it (Pete: don't wait).
