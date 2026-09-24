@@ -442,6 +442,16 @@ export class DeliveryService {
     const remote = repoEntry.remote ?? 'origin';
     const cwd =
       stream.worktree !== undefined && existsSync(stream.worktree) ? stream.worktree : repoRoot;
+    // T225: a merged PR is the end of the node; a new commit needs a new node.
+    if (
+      stream.delivery_state?.status === 'merged' ||
+      stream.delivery_state?.pr?.state === 'merged'
+    ) {
+      throw new LandRefusedError(
+        stream.id,
+        `PR #${stream.delivery_state.pr?.number ?? '?'} for ${stream.id} is already merged; nothing to deliver`,
+      );
+    }
     const pushed = git(
       ['push', remote, `refs/heads/${branch}:refs/heads/${branch}`],
       cwd,
@@ -452,7 +462,7 @@ export class DeliveryService {
       await this.setDeliveryState(stream.id, {
         mode: 'pr',
         status: 'held',
-        held_by: [{ reason: 'ship_check', detail: line }],
+        held_by: [{ reason: 'push_failed', detail: line }],
         ...(stream.delivery_state?.pr ? { pr: stream.delivery_state.pr } : {}),
       });
       await streams.appendThread('daemon', stream.id, { kind: 'event', body: line });
@@ -477,6 +487,8 @@ export class DeliveryService {
         verb = 'opened';
       }
     }
+    // A closed PR is replaced by a new one: its poll state does not carry over.
+    const carry = known?.number === pull.number ? known : undefined;
     const now = new Date().toISOString();
     await this.setDeliveryState(stream.id, {
       mode: 'pr',
@@ -488,11 +500,11 @@ export class DeliveryService {
         base: pull.base.ref || target,
         state: 'open',
         draft: pull.draft,
-        review: known?.review ?? 'none',
-        checks: known?.checks ?? 'none',
-        mergeable: known?.mergeable ?? 'unknown',
+        review: carry?.review ?? 'none',
+        checks: carry?.checks ?? 'none',
+        mergeable: carry?.mergeable ?? 'unknown',
         auto_merge: pull.auto_merge ? 'enabled' : 'off',
-        last_seen: known?.last_seen ?? {},
+        last_seen: carry?.last_seen ?? {},
         polled_at: now,
       },
     });
