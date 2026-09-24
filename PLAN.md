@@ -978,12 +978,12 @@ git status --short
 
 ### Ticket: T227 ∥ Overlap tracking
 - **Priority:** P1
-- **Status:** In Review
+- **Status:** Done (merge ad277c6)
 - **Owner:** —
 - **Scope:** Keep `touched` updated for every live work node: the merge-base diff plus uncommitted changes, recomputed after edit hooks, after commits and every 60 s. Two live nodes on the same repo, in any project, sharing a file raise an overlap. It shows on both nodes, on their ancestors and in the repo view (T209 slot), and clears when either node merges or stops touching the file.
 - **Acceptance Criteria:** Unit: an overlap appears within one recompute and clears after a merge. e2e: the repo view shows the warning.
 - **Validation Steps:** `bun test packages/daemon/src/sync`; `bun run test:e2e`.
-- **Notes:** After T201. Can run alongside T224–T226.
+- **Notes:** After T201. Can run alongside T224–T226. Review (sonnet) PASS. Daemon +198. Overlaps derived per frame from `touched` (never stored). Recompute on every non-read-only PostToolUse (not debounced) + 60 s sweep. Routed `overlap` event and coordinator suggestion are later (T244/T287).
 
 ### Ticket: T228 Waits-on, merge-together and auto-merge
 - **Priority:** P1
