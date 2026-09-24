@@ -1480,17 +1480,19 @@ agile tail --node $C --events
 
 ### Ticket: T300 Director record, thread and page
 - **Priority:** P0
-- **Status:** In Progress
-- **Owner:** opus:worker-T300
+- **Status: Done
+- **Owner: Unassigned
 - **Scope:** Add `director.yaml` and `threads/director.jsonl` (P16). A Director session (the coordinator mechanics, no worktree) is woken by `director_request`. There is a Director page in the cockpit (thread plus activity) plus `agile director say` and `agile tail --director`. Every Director action is recorded with principal `director`.
 - **Acceptance Criteria:** A fake-agent test: a human line reaches the Director and its reply lands on its thread. e2e: the page exists.
 - **Validation Steps:** `bun test packages/daemon/src/director`; `bun run test:e2e`.
 - **Notes:** First ticket of Phase 12.
+- T300: sonnet review BLOCKING (hook denied every Director tool call: streamless record unresolvable) → fixed (hook places a streamless coordinator record by its scratch cwd; coordinator role table; WebFetch/WebSearch and operator-bound calls denied) → APPROVE. Director reuses role coordinator. merge ba5bb1a into phase-12. Open: no Director wake budget yet (T302/T303).
+
 
 ### Ticket: T301 Director tools and guards
 - **Priority:** P0
-- **Status:** Todo
-- **Owner:** —
+- **Status: In Progress
+- **Owner: opus:worker-T301
 - **Scope:**
   - Verbs: `draft_tree`, which returns a draft that renders as a tree with a Create button at Advise; `create_project`, `create_node`, `start_node`, `add_waits_on` and `restart_node`, gated by T282's function with the project's `director` level.
   - The Director never merges, accepts knowledge, or answers a question (hard refusals, tested).
