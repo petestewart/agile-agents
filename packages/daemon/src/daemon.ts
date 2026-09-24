@@ -352,6 +352,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
                 }),
               }
             : {}),
+          ...(emitRouted ? { emitRouted } : {}),
           // T246: an agent's push; its PR is then polled at the babysit cadence.
           ...(landingService
             ? {
