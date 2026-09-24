@@ -16,8 +16,8 @@
  * A second `start` is a no-op that prints the running pid.
  */
 
-import { spawn } from 'node:child_process';
-import { existsSync, mkdirSync, openSync, readFileSync, rmSync } from 'node:fs';
+import { spawn, spawnSync } from 'node:child_process';
+import { existsSync, mkdirSync, openSync, readFileSync, rmSync, statSync } from 'node:fs';
 import {
   type HomePaths,
   installShutdownSignals,
@@ -52,6 +52,66 @@ function isAlive(pid: number): boolean {
     if (code === 'EPERM') return true;
     return false;
   }
+}
+
+/**
+ * T210: `$AGILE_HOME` that exists and is not a directory, as one line naming
+ * the variable and the path; `undefined` when it is fine (or unset/missing,
+ * which `init` creates).
+ */
+export function agileHomeProblem(env: NodeJS.ProcessEnv = process.env): string | undefined {
+  const home = env.AGILE_HOME;
+  if (!home) return undefined;
+  try {
+    if (statSync(home).isDirectory()) return undefined;
+  } catch {
+    return undefined;
+  }
+  return `AGILE_HOME=${home} exists and is not a directory; point AGILE_HOME at a directory (or unset it for ~/.agile/)`;
+}
+
+export interface PortHolder {
+  pid: number;
+  /** The holder's full command line (`ps -o args=`), else lsof's short name. */
+  command: string;
+  /** Whether the command looks like an `agiled` (a detached `agile daemon start --foreground`). */
+  looksLikeAgiled: boolean;
+}
+
+/**
+ * T210: who listens on `port`, via `lsof` when it is installed. `null` when
+ * lsof is unavailable; `undefined` when nothing listens.
+ */
+export function portHolder(port: number): PortHolder | undefined | null {
+  const lsof = spawnSync('lsof', ['-nP', `-iTCP:${port}`, '-sTCP:LISTEN', '-Fpc'], {
+    encoding: 'utf8',
+  });
+  if (lsof.error) return null;
+  const lines = (lsof.stdout ?? '').split('\n');
+  const pidLine = lines.find((l) => l.startsWith('p'));
+  if (!pidLine) return undefined;
+  const pid = Number.parseInt(pidLine.slice(1), 10);
+  if (!Number.isFinite(pid)) return undefined;
+  const short = lines.find((l) => l.startsWith('c'))?.slice(1) ?? '?';
+  const ps = spawnSync('ps', ['-o', 'args=', '-p', String(pid)], { encoding: 'utf8' });
+  const command = (ps.stdout ?? '').trim() || short;
+  const looksLikeAgiled = /agiled|daemon start --foreground/.test(command);
+  return { pid, command, looksLikeAgiled };
+}
+
+/** One clause describing the holder of `port`, for an error or hint line. */
+export function describePortHolder(
+  port: number,
+  holder: PortHolder | undefined | null = portHolder(port),
+): string {
+  if (holder === null)
+    return `holder unknown (lsof not available; try: ss -ltnp 'sport = :${port}')`;
+  if (holder === undefined) return 'no listener found now';
+  return `held by pid ${holder.pid} (${holder.command}), which ${
+    holder.looksLikeAgiled
+      ? 'looks like another agiled (a daemon from a different AGILE_HOME?)'
+      : 'does not look like an agiled'
+  }`;
 }
 
 /** The pid in `<home>/agiled.pid`, or `undefined` when there is no live daemon. */
@@ -175,7 +235,10 @@ export async function runDaemonStart(options: DaemonStartOptions = {}): Promise<
         const reason =
           lastLogLine(paths.logPath) ??
           `it exited before writing a pidfile and wrote nothing to ${paths.logPath}`;
-        throw new Error(`agiled did not start: ${reason}`);
+        const holder = reason.includes('address in use')
+          ? ` Port ${paths.port} is ${describePortHolder(paths.port)}.`
+          : '';
+        throw new Error(`agiled did not start: ${reason}${holder}`);
       }
       const pid = runningPid(paths);
       if (pid !== undefined) {
@@ -200,7 +263,11 @@ export async function runDaemonStop(home?: string): Promise<string> {
   if (pid === undefined) {
     // Clear a stale pidfile so the next `start` doesn't have to.
     if (existsSync(paths.pidPath)) rmSync(paths.pidPath, { force: true });
-    return `agiled is not running (home=${paths.home})`;
+    const holder = portHolder(paths.port);
+    const hint = holder
+      ? `; but port ${paths.port} is ${describePortHolder(paths.port, holder)}${holder.looksLikeAgiled ? ' — stop it with the AGILE_HOME it was started with' : ''}`
+      : '';
+    return `agiled is not running (home=${paths.home})${hint}`;
   }
   process.kill(pid, 'SIGTERM');
   const deadline = Date.now() + STOP_TIMEOUT_MS;

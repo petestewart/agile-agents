@@ -207,3 +207,54 @@ test('T167: a key from the environment is reported as such', () => {
     runCli(['daemon', 'stop'], { cwd: nonRepo });
   }
 }, 60_000);
+
+test('T210: an AGILE_HOME that is a file is refused by every command, one line', () => {
+  const file = join(nonRepo, 'not-a-dir');
+  writeFileSync(file, 'x');
+  for (const args of [
+    ['init'],
+    ['daemon', 'start'],
+    ['daemon', 'stop'],
+    ['status'],
+    ['stream', 'list'],
+  ]) {
+    const r = runCli(args, { cwd: nonRepo, env: { AGILE_HOME: file } });
+    expect(r.code).toBe(1);
+    const lines = r.stderr.trim().split('\n');
+    expect(lines.length).toBe(1);
+    expect(lines[0]).toContain(`AGILE_HOME=${file}`);
+    expect(lines[0]).toContain('not a directory');
+  }
+});
+
+test('T210: start on a held port names the holder; stop with no pidfile hints at it', async () => {
+  expect(runCli(['init'], { cwd: nonRepo }).code).toBe(0);
+  // A different home's daemon on this home's port.
+  const other = mkdtempSync(join(tmpdir(), 'agile-daemon-e2e-other-'));
+  try {
+    writeFileSync(join(other, 'config.yaml'), readFileSync(join(home, 'config.yaml'), 'utf8'));
+    const first = runCli(['daemon', 'start'], { cwd: nonRepo, env: { AGILE_HOME: other } });
+    expect(first.code).toBe(0);
+    const otherPid = Number(/pid=(\d+)/.exec(first.stdout)?.[1]);
+
+    const held = runCli(['daemon', 'start'], { cwd: nonRepo });
+    expect(held.code).toBe(1);
+    expect(held.stderr).toContain('address in use');
+    const hasLsof = !Bun.spawnSync(['sh', '-c', 'command -v lsof']).exitCode;
+    if (hasLsof) {
+      expect(held.stderr).toContain(`held by pid ${otherPid}`);
+      expect(held.stderr).toContain('looks like another agiled');
+    } else {
+      expect(held.stderr).toContain('lsof not available');
+    }
+
+    const stop = runCli(['daemon', 'stop'], { cwd: nonRepo });
+    expect(stop.code).toBe(0);
+    expect(stop.stdout).toContain('not running');
+    if (hasLsof) expect(stop.stdout).toContain(`held by pid ${otherPid}`);
+
+    runCli(['daemon', 'stop'], { cwd: nonRepo, env: { AGILE_HOME: other } });
+  } finally {
+    rmSync(other, { recursive: true, force: true });
+  }
+}, 60_000);
