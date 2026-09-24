@@ -10,6 +10,7 @@
 import { z } from 'zod';
 import { EffortSchema } from './effort';
 import { formatZodError } from './ids';
+import { ProjectIdSchema } from './project';
 
 /** D8: pushing to (or merging into) these is prohibited by default. */
 export const DEFAULT_PROTECTED_BRANCHES = ['main', 'master'] as const;
@@ -48,6 +49,20 @@ export const RepoEntrySchema = z
      * entry reads the same way the stream field and the CLI flag do.
      */
     classifier: z.enum(['on', 'off']).optional(),
+    /*
+     * projects-design §14.8 (T202). Optional in the schema: the home
+     * migration (§17.1 step 3) and `addRepo` write them; absent reads as
+     * `direct` / public.
+     */
+    delivery: z.enum(['direct', 'pr']).optional(),
+    /** The branch this repo's work delivers to; the migration carries `target_branch` over. */
+    main_branch: z.string().min(1).optional(),
+    visibility: z
+      .discriminatedUnion('mode', [
+        z.object({ mode: z.literal('public') }).strict(),
+        z.object({ mode: z.literal('private'), projects: z.array(ProjectIdSchema) }).strict(),
+      ])
+      .optional(),
   })
   .strict();
 

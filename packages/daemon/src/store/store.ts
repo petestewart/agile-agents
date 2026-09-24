@@ -616,7 +616,15 @@ export class StateStore {
    * name replaces that entry.
    */
   async addRepo(name: string, entry: unknown): Promise<ReposConfig> {
-    const next = { ...this.getRepos(), [name]: validateRepoEntry(entry) };
+    // §14.8 defaults written out, so a repo added after the migration looks migrated.
+    const next = {
+      ...this.getRepos(),
+      [name]: validateRepoEntry({
+        delivery: 'direct',
+        visibility: { mode: 'public' },
+        ...(entry as object),
+      }),
+    };
     return this.putRepos(next);
   }
 

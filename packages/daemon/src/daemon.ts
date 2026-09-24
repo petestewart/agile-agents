@@ -35,6 +35,7 @@ import { type RpcServerHandle, startRpcServer } from './rpc';
 import { RulesService, buildRuleRpcMethods, ensureBuiltinRules } from './rules';
 import { resolveCliBin } from './runner';
 import { StateStore, buildStateRpcMethods } from './store';
+import { migrateHome } from './store/migrate';
 import { StreamService, buildStreamRpcMethods } from './streams';
 
 export const DAEMON_VERSION: string = daemonPackageJson.version;
@@ -252,6 +253,18 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
       }
     : undefined;
 
+  // §17.1 (T202): the one-shot, idempotent migration into projects.
+  const projectService =
+    store && streamService ? new ProjectService(store, streamService) : undefined;
+  if (store && streamService && projectService && questionService) {
+    await migrateHome({
+      store,
+      streams: streamService,
+      projects: projectService,
+      questions: questionService,
+    });
+  }
+
   const extraMethods =
     store && gateService && bus
       ? {
@@ -272,9 +285,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
                   : {}),
               })
             : {}),
-          ...(streamService
-            ? buildProjectRpcMethods(new ProjectService(store, streamService))
-            : {}),
+          ...(projectService ? buildProjectRpcMethods(projectService) : {}),
           ...(inboxService ? buildInboxRpcMethods(inboxService) : {}),
           ...(rulesService ? buildRuleRpcMethods(rulesService, ruleEvals) : {}),
           ...(docsService ? buildDocsRpcMethods(docsService) : {}),
