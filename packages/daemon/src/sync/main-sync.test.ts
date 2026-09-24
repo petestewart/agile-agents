@@ -108,6 +108,15 @@ describe('sync after merge (T226)', () => {
     expect(s.land_conflict?.target).toBe('main');
     expect(sh(['status', '--porcelain'], two.wt)).toBe('');
     expect(mainIsIn(two.wt)).toBe(false);
+    const prompt = new DeliveryService({ store, streams }).resolvePrompt(two.id);
+    expect(prompt).toContain('Merging main into stream/two conflicted in: a.ts.');
+  });
+
+  test('a node behind main at daemon start is synced by the first sweep', async () => {
+    const two = await workNode('two');
+    commit(repo, 'a.ts', 'while down\n');
+    await sync.sweep();
+    expect(mainIsIn(two.wt)).toBe(true);
   });
 
   test('a mid-turn node syncs at the end of the turn; a dirty one waits', async () => {
@@ -174,7 +183,7 @@ describe('sync after merge (T226)', () => {
           },
         },
       });
-      await sync.sweep(); // baseline
+      await sync.sweep(); // first sweep reconciles; nothing behind yet
       commit(repo, 'a.ts', 'outside\n');
       await sync.sweep();
       expect(mainIsIn(two.wt)).toBe(true);

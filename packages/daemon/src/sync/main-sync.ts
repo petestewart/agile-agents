@@ -99,8 +99,9 @@ export class MainSync {
       const before = this.lastMain.get(repo);
       const now = this.readMain(repo);
       if (now === undefined) continue;
-      if (before === undefined) this.lastMain.set(repo, now);
-      else if (before !== now) await this.mainMoved(repo);
+      // The first sweep reconciles (nodes left behind across a restart); a
+      // node already containing main is a no-op.
+      if (before === undefined || before !== now) await this.mainMoved(repo);
     }
     for (const id of [...this.deferred]) {
       await this.serial(async () => {
