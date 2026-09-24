@@ -522,6 +522,9 @@ function collectFilesRecursive(dir: string, acc: string[] = []): string[] {
  * at or under `maxTotalBytes`. Never a candidate: a path in
  * `protectedPaths`, or a file with `mtimeMs >= minProtectedMtimeMs` (the
  * caller's start time, so a finished concurrent sibling's log survives).
+ * `protectedPaths` alone isn't enough: a sibling that finished (and
+ * deregistered) before this sweep is in neither set, so the mtime floor
+ * covers it.
  * A plain oldest-first sweep once deleted the very log it had just
  * returned. Returns `true` when the protected files alone still exceed the
  * budget (surfaced as `raw_output_over_budget`).

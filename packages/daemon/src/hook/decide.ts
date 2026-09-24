@@ -286,6 +286,8 @@ export function decidePreToolUse(
 
   // Normal inbox: additive, on top of whatever `gate` decided (§5: inject
   // the inbox as additional context).
+  // DESIGN-GAP: Claude isn't confirmed to honour `additionalContext` on a
+  // deny/ask; if it drops it, leave the messages unacked here instead.
   const normal = ctx.inbox.filter((m) => m.priority === 'normal');
   if (normal.length === 0) return gate;
 

@@ -214,10 +214,3 @@ export function buildPermissionResponder(
     },
   };
 }
-
-// The record is the lifecycle owner's; not acked here.
-// Respond before the fallible log write: a store hiccup must not hang the turn.
-// Which rule refused the call.
-/** §5.7's counters: `fired` for every rule evaluated, `violated` for the one it denied on. */
-// Lazy and memoized: most decisions never spawn `git rev-parse`.
-// Blocks the agent's turn until answered, so urgent (by analogy with `halt`).
