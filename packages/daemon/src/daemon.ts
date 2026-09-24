@@ -19,6 +19,7 @@ import {
 import { DocsService, buildDocsRpcMethods } from './docs';
 import { GateService, buildGateRpcMethods } from './gates';
 import type { DelegateFn } from './gates';
+import { PrPoller } from './github/poller';
 import { createGitHubRest, ghTokenSource, githubAuthAvailable } from './github/rest';
 import {
   HookService,
@@ -309,6 +310,26 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
       : undefined;
   overlapTracker?.start();
 
+  // T225: the PR poller — the node's open PR is its status.
+  const prPoller =
+    store && streamService
+      ? new PrPoller({
+          streams: streamService,
+          repos: () => store.getRepos(),
+          github: (entry) =>
+            createGitHubRest({
+              apiUrl: config.github.api_url,
+              ...(entry.github ? { repo: entry.github } : {}),
+              tokenSource: ghTokenSource(config.github.gh_command),
+            }),
+          ...(questionService ? { ask: (q) => questionService.raise(q) } : {}),
+          ...(mainSync
+            ? { onMainMoved: (repo: string, except?: string) => mainSync.mainMoved(repo, except) }
+            : {}),
+        })
+      : undefined;
+  prPoller?.start();
+
   // T205: "+ Repo" in place (projects-design §7), over the attach service's sessions.
   const repoInPlace =
     store && streamService && attachService
@@ -464,6 +485,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
       try {
         if (gateTimer) clearInterval(gateTimer);
         overlapTracker?.stop();
+        prPoller?.stop();
         mainSync?.stop();
         // Sessions are child processes: stop them first so their exit writes land.
         await attachService?.stopAll();
