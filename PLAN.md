@@ -1469,8 +1469,8 @@ agile tail --node $C --events
 
 ### Ticket: T300 Director record, thread and page
 - **Priority:** P0
-- **Status:** Todo
-- **Owner:** —
+- **Status:** In Progress
+- **Owner:** opus:worker-T300
 - **Scope:** Add `director.yaml` and `threads/director.jsonl` (P16). A Director session (the coordinator mechanics, no worktree) is woken by `director_request`. There is a Director page in the cockpit (thread plus activity) plus `agile director say` and `agile tail --director`. Every Director action is recorded with principal `director`.
 - **Acceptance Criteria:** A fake-agent test: a human line reaches the Director and its reply lands on its thread. e2e: the page exists.
 - **Validation Steps:** `bun test packages/daemon/src/director`; `bun run test:e2e`.
@@ -1614,7 +1614,7 @@ Daemon: `em/`, `architect/`, `oracle/`, `qa/`, `halts/`, `quota/`, `handoff/`, `
 
 ## 10. Discovered Issues Log
 
-- Phase 11 complete on `claude/phase-11` (2026-09-24): T280–T288 merged, T289 QA ACCEPT; awaiting Pete's look. Open for Pete: `proposals/` home dir (T282); `Contract.paths` for the contract-touched alert (T284); should `coordinator_note` wake a finished work node (T287). Phase 12 proceeds on `claude/phase-12`.
+- Phase 11 complete on `claude/phase-11` (2026-09-24): T280–T288 merged, T289 QA ACCEPT; awaiting Pete's look. Open for Pete: `proposals/` home dir (T282); `Contract.paths` for the contract-touched alert (T284); should `coordinator_note` wake a finished work node (T287). Phase 12 proceeds on `claude/phase-12` (draft PR https://github.com/petestewart/agile-agents/pull/8 for Phase 11).
 - Phase 10 complete on `claude/phase-10` (2026-09-24): T260–T266 merged, T267 QA ACCEPT; T268 (real-classifier ship hold) before Pete's look. Phase 11 proceeds on `claude/phase-11`.
 - Phase 9 complete on `claude/phase-9` (2026-09-24): T240–T246 merged, T247 QA ACCEPT; awaiting Pete's look (draft PR https://github.com/petestewart/agile-agents/pull/6, base claude/phase-8). Phase 10 proceeds on `claude/phase-10`.
 - (Pete, 2026-09-24) P13 bullet 1 (leave a private repo out of a session's readable directories) is deferred until it becomes a need; the hook check (T229) stands alone.
