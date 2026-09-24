@@ -827,14 +827,14 @@ Design: `design/projects-design.md`, which wins over `design/cockpit-design.md` 
 
 ### Ticket: T210 ∥ Setup rough edges (from T175)
 - **Priority:** P2
-- **Status:** In Progress
-- **Owner:** opus:worker-T210
+- **Status:** Done (merge 605e13f)
+- **Owner:** —
 - **Scope:** T175 items (1) and (2):
   - An `AGILE_HOME` that exists and is not a directory is refused by every command with one line naming the variable and the path.
   - `daemon start` on a held port names the holder (pid and command via `lsof` when available) and says whether it looks like another `agiled`. `daemon stop` with no pidfile hints at a daemon from another home on the port.
 - **Acceptance Criteria:** CLI tests for both.
 - **Validation Steps:** `bun test packages/cli packages/daemon`; `bun run test:integration`.
-- **Notes:** Independent.
+- **Notes:** Independent. Review (sonnet) PASS. CLI only, daemon +0. Holder lookup is best effort (lsof).
 
 ### Ticket: T211 LIVE-CHECKLIST for projects
 - **Priority:** P1
