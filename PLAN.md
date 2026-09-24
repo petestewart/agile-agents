@@ -847,12 +847,12 @@ Design: `design/projects-design.md`, which wins over `design/cockpit-design.md` 
 
 ### Ticket: T213 Pete's Phase 7 look: reads, parts start, stop wording
 - **Priority:** P0
-- **Status:** In Progress
-- **Owner:** opus:worker-T213
+- **Status:** Done (merge 4ba62e0)
+- **Owner:** —
 - **Scope:** From Pete's live run of the T212 script (2026-09-24, step 3). (1) The hook's role policy denies reads outside the session's own worktree, so the coordinator of "Balance summary" could not `ls` its ledger-lite part's worktree. projects-design §4.4 and P20 say any agent may read any registered repo (and its worktrees) subject to private visibility; writes stay limited to the node's own worktree (a coordinator or conversation session: its scratch dir). Fix the read side for Bash and the built-in read tools, for every role, keeping T229's visibility check and the write limits. (2) Parts created by + Repo (§7 reshapes, T205) are never started, so after a work → coordinating split nobody works on the code. A new part starts its worker like any new work node (T204), unless the operator created the node with `--no-start`; a moved part whose worker was live restarts in its worktree. (3) A session the daemon stops on purpose (reshape, detach, restart) shows "process exited (code -1)" on the thread, which reads as a crash. Say what stopped it ("stopped: node reshaped into parts").
 - **Acceptance Criteria:** Hook tests: a coordinator and a worker may read a sibling part's worktree and another public repo; a Blog node still cannot read a private repo listed for Shop; writes outside the own worktree/scratch dir are still denied. Fake-agent test: conversation → + repo → + repo leaves both parts with a running worker and the coordinator running. The thread line for a deliberate stop names the reason.
 - **Validation Steps:** `bun test packages/daemon/src/hook packages/daemon/src/permissions packages/daemon/src/streams packages/daemon/src/attach`; `bun run test:integration`.
-- **Notes:** Fixed on `claude/phase-7` and merged forward into phase-8 and phase-9 (D30).
+- **Notes:** Fixed on `claude/phase-7` and merged forward into phase-8 and phase-9 (D30). Review (sonnet): 1 blocking fixed — built-in Read/Grep/Glob/LS are now an allow-list (own dir, readable repos; the agile home, private repos and everything else denied), shared with Bash reads; `rg --pre` no longer read-only. The -1 exits were the daemon's own reshape stops. Also fixed a T205 bug (moved part kept a stale running session). Parts start after a reshape unless the node never had a worker. Daemon shutdown status unchanged. Daemon +175.
 
 ### Ticket: T212 Phase 7 QA and Pete's look
 - **Priority:** P0

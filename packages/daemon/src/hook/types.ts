@@ -43,6 +43,13 @@ export interface HookDecisionContext {
   headBranch?: () => string | undefined;
   /** P13: the node's repo, project and the registry; absent checks no visibility. */
   visibility?: VisibilityContext;
+  /**
+   * T213 (projects-design §4.4): the registered repos this node may read
+   * (public, private to its project, its own), and those it may not.
+   * Absent: reads stay in the worktree for Bash, unchecked for built-ins.
+   */
+  readRoots?: readonly string[];
+  hiddenRoots?: readonly string[];
 }
 
 /** Raw Claude `PreToolUse` stdin payload (spike-findings.md §B). */
