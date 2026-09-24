@@ -1098,15 +1098,15 @@ git status --short
 
 ### Ticket: T243 Wake policy
 - **Priority:** P1
-- **Status:** In Progress
-- **Owner:** opus:worker-T243
+- **Status:** Done (merge 86e1d3d)
+- **Owner:** —
 - **Scope:** Per P11:
   - which event types start a session for each role when none is live;
   - a wake budget per node per hour (config, default 20) that goes to the inbox when exceeded;
   - stopped nodes are never woken.
 - **Acceptance Criteria:** Table tests per role and type; the budget test; a stopped node keeps its events pending.
 - **Validation Steps:** `bun test packages/daemon/src/events`.
-- **Notes:** After T242. From T242 review: at daemon start, nodes with pending deliveries (after `recover()`) should be considered for wake/delivery rather than waiting for the next turn end.
+- **Notes:** After T242. From T242 review: at daemon start, nodes with pending deliveries (after `recover()`) should be considered for wake/delivery rather than waiting for the next turn end. Review (sonnet) PASS. Daemon +182. "Stopped" is derived: archived, closed/landed, or `agent.status: idle` (never started or detached); `done`/`blocked` nodes are wakeable. Budget (`events.wake_budget_per_hour`, default 20) is in memory and resets on restart; over budget → blocked inbox item, events stay pending. `wakePending()` at start goes through the same gate.
 
 ### Ticket: T244 Event producers
 - **Priority:** P0
@@ -1128,8 +1128,8 @@ git status --short
 
 ### Ticket: T246 PR babysitting
 - **Priority:** P0
-- **Status:** Todo
-- **Owner:** —
+- **Status:** In Progress
+- **Owner:** opus:worker-T246
 - **Scope:** The work node's agent looks after its PR (projects-design §4.1):
   - A babysit brief section, and wake on `pr_review`, `ci_failed` and `pr_behind`.
   - A CI log excerpt is written to `sessions/<id>/` with a pointer.
