@@ -612,7 +612,7 @@ Build order: Phase 0 → 1 → 2 → 3 → 4 → 5 → 6. Within a phase, ticket
 
 ### Ticket: T174 A question on the stream gets an answer
 - **Priority:** P0
-- **Status:** In Progress
+- **Status:** Done (merge 8944aeb; Pete live check pending)
 - **Owner:** —
 - **Scope:** Pete's walkthrough (2026-09-24): he wrote "how many tests are you writing?" on the Transfers stream while the worker was mid-turn; the worker never answered, finished, posted its summary and exited. Causes: `AttachService.say` prompts `The operator says on the stream: <body>\n\nContinue the work.`, which tells the model to carry on; and `runPromptTurn` serializes turns, so a line sent mid-turn waits for the turn to end, and nothing shows that it is waiting. Fix: (1) the delivered prompt tells the worker to reply to the operator on the stream first (answer a question, acknowledge an instruction), then continue; (2) a line queued behind a running turn is shown as waiting on the stream page (e.g. "queued — the worker reads it after its current step") until delivered; (3) a queued human line is never dropped: if the session is ending (turn ended, worker reported done) with a line still queued, the line is still delivered as its own turn before the session is let go. Check the done/exit path in attach/service.ts and runner/session.ts for where a queued prompt could be lost.
 - **Acceptance Criteria:** Unit tests with the fake agent: a line sent mid-turn is delivered after the turn with the new wording, and a session that would end after that turn still runs the queued line; e2e shows the queued marker then clears it. Pete's live check: a mid-turn question gets an answer on the thread.
@@ -639,7 +639,7 @@ Build order: Phase 0 → 1 → 2 → 3 → 4 → 5 → 6. Within a phase, ticket
 
 ### Ticket: T177 Worktrees never dirty the user's checkout
 - **Priority:** P0
-- **Status:** Todo
+- **Status:** In Progress
 - **Owner:** —
 - **Scope:** Pete's walkthrough (2026-09-24): `runner/worktrees.ts` appends `.worktrees/` to `<repo>/.gitignore` on first worktree creation and leaves it uncommitted, so the next land into the checked-out target refuses ("main is checked out with uncommitted changes"). The tool blocks its own landing. Write the ignore line to `<git-common-dir>/info/exclude` instead (resolve with `git rev-parse --git-common-dir`; create `info/` if missing; idempotent), and never touch `.gitignore`. The land's dirty-checkout message names the files that are dirty so the user knows what to commit or stash.
 - **Acceptance Criteria:** Unit test: creating a worktree in a fresh repo leaves `git status --porcelain` empty and `.worktrees/` ignored; the land refusal lists the dirty paths.
