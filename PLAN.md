@@ -1415,14 +1415,14 @@ agile tail --node $N --events
 
 ### Ticket: T287 Sibling finished and collisions go to the parent
 - **Priority:** P1
-- **Status:** In Progress
-- **Owner:** opus:worker-T287
+- **Status:** Done (merge 98672b7)
+- **Owner:** —
 - **Scope:**
   - When a child merges, the parent is woken first, and its `note_child` verb sends targeted notes. Same-repo siblings still get the sync.
   - An overlap or collision wakes the parent with options: add `waits_on`, give ownership, or merge the siblings. The action is gated by T282.
 - **Acceptance Criteria:** Fake-agent test: an overlap reaches the parent; at Organise the scripted `add_waits_on` is applied and you are told.
 - **Validation Steps:** `bun test packages/daemon/src/coordination`.
-- **Notes:** After T284.
+- **Notes:** After T284. Review (sonnet) PASS. Daemon +26. `note_child` → `coordinator_note` to that child only. Overlap summary lists the parent's options. Question for Pete: `coordinator_note` doesn't wake a finished work node under P11, so a note to a done child may never be read.
 
 ### Ticket: T288 ∥ Helper children on the same repo
 - **Priority:** P2
