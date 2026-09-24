@@ -703,7 +703,7 @@ export class AttachService {
       await this.setSessionStatus(
         streamId,
         sessionId,
-        ok || stopReason !== undefined ? 'stopped' : 'error',
+        ok || detached || stopReason !== undefined ? 'stopped' : 'error',
         detached
           ? undefined
           : stopReason !== undefined
