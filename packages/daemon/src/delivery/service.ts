@@ -390,8 +390,8 @@ export class DeliveryService {
       diff: () => runGit(['diff', `${target}...${branch}`], repoRoot, repoRoot),
     });
     if (verdict.decision === 'allow') return undefined;
-    const what = verdict.decision === 'route' ? 'routed' : 'refused';
-    const line = `landing ${what} by diff rule${verdict.rule ? ` ${verdict.rule}` : ''}: ${verdict.reason}`;
+    const what = verdict.decision === 'route' ? 'routed' : 'held';
+    const line = `delivery ${what} by ship check${verdict.rule ? ` ${verdict.rule}` : ''}: ${verdict.reason}`;
     await this.setDeliveryState(stream.id, {
       mode,
       status: 'held',

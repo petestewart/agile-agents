@@ -252,7 +252,7 @@ function assemble(
   const babysit = babysitSection(stream);
   if (babysit !== undefined) parts.push(babysit);
 
-  parts.push(section('Rules in scope', `${renderRules(rules)}\n\n${LOOKUP_HINT}`));
+  parts.push(section('Knowledge in scope', `${renderRules(rules)}\n\n${LOOKUP_HINT}`));
 
   const shownDocs = docBodyCap > 0 ? docs : [];
   if (shownDocs.length > 0) {

@@ -254,6 +254,13 @@ export async function runNodeEvents(options: RunNodeEventsOptions): Promise<numb
     }
   };
   flush();
+  // T248: routed events are not the audit log (`log/events.jsonl`); a node
+  // nothing has routed to yet says so rather than printing nothing.
+  if (printed.size === 0 && !options.json) {
+    console.log(
+      `no routed events for ${options.node} (its audit log is \`agile tail --stream ${options.node}\`)`,
+    );
+  }
   if (!options.follow) return 0;
   const pollMs = options.pollMs ?? 200;
   while (!options.signal?.aborted) {

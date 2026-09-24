@@ -530,3 +530,26 @@ describe('a repo with no commits (T214)', () => {
     }
   }, 30_000);
 });
+
+describe('agile tail --node <id> --events (T248)', () => {
+  test('lists the routed events for a node; a node with none says so in one line', async () => {
+    const busy = await newStream('Busy');
+    const quiet = await newStream('Quiet');
+    expect((await cli(['stream', 'say', busy.id, 'first line'])).code).toBe(0);
+    expect((await cli(['stream', 'say', busy.id, 'second line'])).code).toBe(0);
+
+    const listed = await cli(['tail', '--node', busy.id, '--events']);
+    expect(listed.code).toBe(0);
+    const rows = listed.out.split('\n');
+    expect(rows).toHaveLength(2);
+    for (const row of rows) expect(row).toMatch(/ human_line because self · pending \(E-/);
+
+    const none = await cli(['tail', '--node', quiet.id, '--events']);
+    expect(none.code).toBe(0);
+    expect(none.out).toBe(
+      `no routed events for ${quiet.id} (its audit log is \`agile tail --stream ${quiet.id}\`)`,
+    );
+    // The quiet node does have audit rows: the two logs are different things.
+    expect((await cli(['tail', '--stream', quiet.id])).out).toContain('stream_created');
+  });
+});

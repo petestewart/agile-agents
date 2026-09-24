@@ -29,6 +29,7 @@ import type {
   Stream,
 } from '@agile-agents/shared';
 import { MESSAGE_BODY_MAX_CHARS } from '@agile-agents/shared';
+import { classifierCheckOf } from '@agile-agents/shared';
 import type { Answer, Classifier, Noul } from '../classifier';
 import { bandFor, classifierEnabled, noulFor, scrub } from '../classifier';
 import type { GateRequestContext } from '../gates/service';
@@ -120,6 +121,36 @@ export function changedFilesOf(diff: string): string[] {
     files.add(match[2] as string);
   }
   return [...files];
+}
+
+/**
+ * The ship-time question (T268). A ship item's examples read like "diff
+ * changes src/a.ts and test/a.test.ts", so the default asks about the
+ * change, not "this action" (the hook's phrasing); an explicit
+ * `check.question` is sent as written.
+ */
+export function shipNoulFor(rule: KnowledgeItem): Noul {
+  const noul = noulFor(rule);
+  if (classifierCheckOf(rule)?.question !== undefined) return noul;
+  return { ...noul, question: `Does this change violate: ${rule.text}?` };
+}
+
+/**
+ * The state for one ship-check call (T268): the landing line, then the
+ * complete changed-file list, then the diff (or one file's part of it).
+ * Every per-file part carries the whole list, so an item about the change
+ * as a whole ("comes with a test") is not judged on a file that cannot
+ * show the test beside it.
+ */
+export const SHIP_FILE_LIST_MAX = 200;
+
+export function shipState(header: string, files: string[], diff: string, part?: string): string {
+  const shown = files.slice(0, SHIP_FILE_LIST_MAX).map((file) => `- ${file}`);
+  if (files.length > SHIP_FILE_LIST_MAX)
+    shown.push(`- … and ${files.length - SHIP_FILE_LIST_MAX} more`);
+  const list = shown.length === 0 ? '(none)' : shown.join('\n');
+  const lead = `${header}\nChanged files (${files.length}):\n${list}`;
+  return part === undefined ? `${lead}\n\nDiff:\n${diff}` : `${lead}\n\nDiff (${part}):\n${diff}`;
 }
 
 /**
@@ -248,7 +279,7 @@ export class ClassifierDiffRules implements DiffRules {
         verdict = {
           decision: 'deny',
           rule: nameOf(rule),
-          reason: cap(`${nameOf(rule)}: ${rule.text} (probability ${answer.probability})`),
+          reason: cap(`${rule.text} (probability ${answer.probability})`),
         };
       }
       if (band === 'route' && routed === undefined) routed = { rule, answer };
@@ -270,14 +301,21 @@ export class ClassifierDiffRules implements DiffRules {
     if (!this.enabled(ctx.stream)) {
       throw new Error('classifier tier is off for this stream');
     }
-    const questions: Noul[] = rules.map(noulFor);
-    const header = `Stream ${ctx.stream.id} (${ctx.stream.title}) landing ${ctx.branch} into ${ctx.target}.`;
+    const questions: Noul[] = rules.map(shipNoulFor);
+    const header = `Stream ${ctx.stream.id} (${ctx.stream.title}) delivering ${ctx.branch} into ${ctx.target}.`;
+    const files = changedFilesOf(diff);
     const budget = this.options.config.state_max_chars;
-    const whole = scrub(`${header}\n\n${diff}`);
+    const whole = scrub(shipState(header, files, diff));
+    const parts = whole.length <= budget ? [] : splitDiffByFile(diff);
     const states =
-      whole.length <= budget
+      parts.length === 0
         ? [whole]
-        : splitDiffByFile(diff).map((part) => truncateTo(scrub(`${header}\n\n${part}`), budget));
+        : parts.map((part, i) =>
+            truncateTo(
+              scrub(shipState(header, files, part, `part ${i + 1} of ${parts.length}`)),
+              budget,
+            ),
+          );
 
     const best = new Map<string, Answer>();
     for (const state of states) {
@@ -324,7 +362,7 @@ export class ClassifierDiffRules implements DiffRules {
     return {
       decision: 'deny',
       rule: nameOf(critical[0] as KnowledgeItem),
-      reason: cap(`classifier unavailable (${why}); critical diff rules deny: ${named}`),
+      reason: cap(`classifier unavailable (${why}); critical ship checks deny: ${named}`),
     };
   }
 
@@ -332,7 +370,7 @@ export class ClassifierDiffRules implements DiffRules {
   private async noteUnchecked(stream: Stream, rules: KnowledgeItem[], why: string): Promise<void> {
     await this.options.streams.appendThread('daemon', stream.id, {
       kind: 'event',
-      body: cap(`hook_unchecked: diff rules ${rules.map(nameOf).join(', ')} not checked — ${why}`),
+      body: cap(`hook_unchecked: ship checks ${rules.map(nameOf).join(', ')} not checked — ${why}`),
     });
   }
 
