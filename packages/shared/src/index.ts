@@ -30,3 +30,4 @@ export * from './routed-event';
 export * from './card';
 export * from './plan';
 export * from './import-index';
+export * from './director';

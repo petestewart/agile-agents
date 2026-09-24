@@ -23,6 +23,7 @@ import {
   buildDeliveryRpcMethods,
   wireLandGateResolution,
 } from './delivery';
+import { DirectorService, buildDirectorRpcMethods } from './director';
 import { DocsService, buildDocsRpcMethods } from './docs';
 import { type EmitRouted, RoutedEventService, emitTransitions, makeEmitter } from './events';
 import { GateService, buildGateRpcMethods } from './gates';
@@ -207,11 +208,26 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
           // The turn-end rule treats an open routed call like an open question.
           ...(gateService ? { gates: gateService } : {}),
           ...(routedEvents ? { events: routedEvents } : {}),
+          // T300: the `director` queue's delivery and wakes (declared below).
+          director: () => directorService,
           onWorkerTurnEnd: (id) => {
             void mainSync?.turnEnded(id).catch((err) => console.error('main sync failed:', err));
           },
         })
       : undefined;
+  // T300 (P16): the Director, above every project; its delivery is the attach service's.
+  const directorService =
+    store && streamService && routedEvents
+      ? new DirectorService({
+          store,
+          streams: streamService,
+          events: routedEvents,
+          home: config.home,
+          socketPath: config.socketPath,
+          cliBin: { command: cliBin.command, args: cliBin.args },
+        })
+      : undefined;
+  if (directorService && attachService) directorService.setDelivery(attachService.delivery);
   const questionService: QuestionService | undefined =
     store && streamService
       ? new QuestionService(store, streamService, {
@@ -514,6 +530,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
               })
             : {}),
           ...(projectService ? buildProjectRpcMethods(projectService) : {}),
+          ...(directorService ? buildDirectorRpcMethods(directorService) : {}),
           ...(inboxService ? buildInboxRpcMethods(inboxService) : {}),
           ...(rulesService ? buildKnowledgeRpcMethods(rulesService, ruleEvals) : {}),
           ...(docsService ? buildDocsRpcMethods(docsService) : {}),
@@ -563,6 +580,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
     gates: gateService,
     streams: streamService,
     ...(projectService ? { projects: projectService } : {}),
+    ...(directorService ? { director: directorService } : {}),
     questions: questionService,
     inbox: inboxService,
     ...(rulesService ? { rules: rulesService } : {}),
@@ -646,7 +664,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
         mainSync?.stop();
         // Sessions are child processes: stop them first so their exit writes land.
         attachService?.delivery.stop();
-        await attachService?.stopAll();
+        await Promise.all([attachService?.stopAll(), directorService?.stop()]);
         await http.stop();
         await rpc.close();
         // Don't lose the rule stats since the last coalesced flush.

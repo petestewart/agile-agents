@@ -7,6 +7,7 @@ import {
   type NodeActivityRow,
   formatActivityRow,
   readNodeActivity,
+  runDirectorTail,
   runTail,
   splitComplete,
 } from './tail';
@@ -215,5 +216,28 @@ describe('agile tail --node <id> --events (T245)', () => {
     } finally {
       rmSync(home, { recursive: true, force: true });
     }
+  });
+});
+
+describe('runDirectorTail (T300)', () => {
+  test('prints the Director thread, one line per entry', async () => {
+    mkdirSync(join(dir, 'threads'), { recursive: true });
+    const ts = new Date().toISOString();
+    writeFileSync(
+      join(dir, 'threads', 'director.jsonl'),
+      `${JSON.stringify({ ts, by: 'human', kind: 'line', body: 'Shop needs sale prices.' })}\n${JSON.stringify({ ts, by: 'director', kind: 'line', body: 'On it.' })}\n`,
+    );
+    const lines: string[] = [];
+    const original = console.log;
+    console.log = (msg: string) => lines.push(msg);
+    try {
+      expect(await runDirectorTail({ home: dir, follow: false, json: false })).toBe(0);
+    } finally {
+      console.log = original;
+    }
+    expect(lines).toEqual([
+      `${ts} human line: Shop needs sale prices.`,
+      `${ts} director line: On it.`,
+    ]);
   });
 });

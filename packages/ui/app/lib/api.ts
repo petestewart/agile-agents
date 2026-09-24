@@ -20,6 +20,7 @@ import type {
   SessionDefaultsStatus,
   Stream,
   StreamCreateInput,
+  ThreadEntry,
 } from '@agile-agents/shared';
 import type {
   ActivityEntry,
@@ -178,6 +179,26 @@ export function setProjectAutonomy(
   autonomy: { coordinator?: Autonomy; director?: Autonomy },
 ): Promise<unknown> {
   return post(`/api/projects/${encodeURIComponent(id)}`, { autonomy });
+}
+
+/** T300: the Director page (projects-design §12): its thread, session and activity. */
+export interface DirectorPayload {
+  record?: {
+    created_at: string;
+    session?: { id: string; status: string; vendor: string; model: string };
+  };
+  thread: ThreadEntry[];
+  live: boolean;
+  activity: ActivityEntry[];
+}
+
+export function getDirector(): Promise<DirectorPayload> {
+  return get<DirectorPayload>('/api/director');
+}
+
+/** T300: a line to the Director (`agile director say`). */
+export function sayToDirector(body: string): Promise<unknown> {
+  return post('/api/director/say', { body });
 }
 
 export async function getStreamActivity(id: string): Promise<ActivityEntry[]> {

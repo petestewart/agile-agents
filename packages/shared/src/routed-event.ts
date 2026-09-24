@@ -10,6 +10,7 @@
  */
 
 import { z } from 'zod';
+import { DIRECTOR_NODE } from './director';
 import { ULID_PATTERN, UlidSchema } from './ids';
 import { ProjectIdSchema } from './project';
 
@@ -38,8 +39,10 @@ export const ROUTING_REASONS = [
   'party',
   'sibling',
 ] as const;
+/** A recipient: a node's ULID, or the Director (T300, P16), which is not a node. */
+export const RecipientSchema = z.union([UlidSchema, z.literal(DIRECTOR_NODE)]);
 export const RoutingEntrySchema = z
-  .object({ node: UlidSchema, because: z.enum(ROUTING_REASONS) })
+  .object({ node: RecipientSchema, because: z.enum(ROUTING_REASONS) })
   .strict();
 export type RoutingEntry = z.infer<typeof RoutingEntrySchema>;
 
@@ -203,7 +206,7 @@ export type EventDeliveryStatus = z.infer<typeof EventDeliveryStatusSchema>;
 export const DeliverySchema = z
   .object({
     event: RoutedEventIdSchema,
-    node: UlidSchema,
+    node: RecipientSchema,
     status: EventDeliveryStatusSchema,
     delivered_at: z.string().datetime().optional(),
     session: z.string().min(1).optional(),
