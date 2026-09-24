@@ -2,8 +2,14 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { Event } from '@agile-agents/shared';
-import { runTail, splitComplete } from './tail';
+import { type Event, ulid } from '@agile-agents/shared';
+import {
+  type NodeActivityRow,
+  formatActivityRow,
+  readNodeActivity,
+  runTail,
+  splitComplete,
+} from './tail';
 
 let dir: string;
 let eventsPath: string;
@@ -172,5 +178,42 @@ describe('splitComplete', () => {
 
   test('an empty chunk with no carry yields nothing, empty carry', () => {
     expect(splitComplete('', '')).toEqual({ complete: [], carry: '' });
+  });
+});
+
+describe('agile tail --node <id> --events (T245)', () => {
+  test('joins the routed log and the node queue: reason, latest status, carrier', () => {
+    const home = mkdtempSync(join(tmpdir(), 'agile-tail-node-'));
+    try {
+      const node = ulid();
+      mkdirSync(join(home, 'events', 'queue'), { recursive: true });
+      const event = {
+        id: `E-${ulid()}`,
+        at: '2026-09-24T10:00:00.000Z',
+        type: 'main_changed',
+        repo: 'api',
+        payload: { repo: 'api', sha: 'b2', outcome: 'synced' },
+        by: 'daemon',
+        routing: [{ node, because: 'same_repo' }],
+      };
+      writeFileSync(join(home, 'events', 'log.jsonl'), `${JSON.stringify(event)}\n`);
+      writeFileSync(
+        join(home, 'events', 'queue', `${node}.jsonl`),
+        `${JSON.stringify({ event: event.id, node, status: 'pending' })}\n${JSON.stringify({
+          event: event.id,
+          node,
+          status: 'delivered',
+          session: 'S-9',
+        })}\n`,
+      );
+      const rows = readNodeActivity(home, node);
+      expect(rows).toHaveLength(1);
+      expect(formatActivityRow(rows[0] as NodeActivityRow)).toBe(
+        `2026-09-24T10:00:00.000Z main_changed [api] because same repo · delivered in session S-9 (${event.id})`,
+      );
+      expect(readNodeActivity(home, ulid())).toEqual([]);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 });

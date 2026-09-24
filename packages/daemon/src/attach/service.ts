@@ -199,6 +199,8 @@ export class AttachService {
         void this.wake(node, pending).catch((err) => console.error('wake failed:', err));
       },
       events: this.events,
+      titleOf: (id) =>
+        options.streams.list({ include_archived: true }).find((s) => s.id === id)?.title,
       ...(options.deliveryDelayMs !== undefined ? { delayMs: options.deliveryDelayMs } : {}),
       target: (node) => {
         const handle = this.handleFor(node, 'worker');

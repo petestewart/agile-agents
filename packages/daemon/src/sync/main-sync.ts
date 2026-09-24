@@ -21,6 +21,7 @@ import type { ReposConfig, Stream } from '@agile-agents/shared';
 import { liveSession } from '../attach/service';
 import { git, gitWrite } from '../delivery/git';
 import { mainBranch } from '../delivery/service';
+import { type EmitRouted, trimFiles } from '../events/producers';
 import type { StreamService } from '../streams/service';
 import { isLiveWorkNode } from './overlap';
 
@@ -39,6 +40,8 @@ export interface MainSyncOptions {
   /** 0 disables the periodic sweep (main moved outside the app, deferred retries). */
   intervalMs?: number;
   now?: () => Date;
+  /** T244: `main_changed` after each sync pass, `sync_conflict` per conflicted node. */
+  emit?: EmitRouted;
 }
 
 export class MainSync {
@@ -67,7 +70,11 @@ export class MainSync {
   }
 
   /** Main moved on `repo`: sync every live work node on it except `except` (the one just merged). */
-  mainMoved(repo: string, except?: string): Promise<Map<string, SyncOutcome>> {
+  mainMoved(
+    repo: string,
+    except?: string,
+    opts: { announce?: boolean } = {},
+  ): Promise<Map<string, SyncOutcome>> {
     return this.serial(async () => {
       this.recordMain(repo);
       const all = this.options.streams.list();
@@ -76,7 +83,47 @@ export class MainSync {
         if (s.id === except || s.repo !== repo || !isLiveWorkNode(s, all)) continue;
         out.set(s.id, await this.syncNode(s));
       }
+      if (opts.announce !== false) await this.announce(repo, out, except);
       return out;
+    });
+  }
+
+  /**
+   * §15 `main_changed`, sent after the sync so it reports the outcome. One
+   * event reaches every same-repo node, so the outcome is the pass's worst:
+   * a conflict (its files; the node itself also gets `sync_conflict`), else
+   * a deferred sync, else synced.
+   */
+  private async announce(
+    repo: string,
+    outcomes: Map<string, SyncOutcome>,
+    except?: string,
+  ): Promise<void> {
+    const emit = this.options.emit;
+    const sha = this.readMain(repo);
+    if (emit === undefined || sha === undefined) return;
+    const results = [...outcomes.values()];
+    const files = results.flatMap((o) => (o.status === 'conflict' ? o.files : []));
+    const outcome = results.some((o) => o.status === 'conflict')
+      ? 'conflict'
+      : results.some((o) => o.status === 'deferred')
+        ? 'not_synced'
+        : 'synced';
+    const subject =
+      except === undefined ? undefined : this.options.streams.list().find((s) => s.id === except);
+    await emit({
+      type: 'main_changed',
+      repo,
+      by: 'daemon',
+      ...(except !== undefined ? { subject: except } : {}),
+      ...(subject?.project !== undefined ? { project: subject.project } : {}),
+      payload: {
+        repo,
+        sha,
+        ...(subject !== undefined ? { subject_title: subject.title.slice(0, 800) } : {}),
+        outcome,
+        ...(outcome === 'conflict' ? { files: trimFiles([...new Set(files)]) } : {}),
+      },
     });
   }
 
@@ -101,7 +148,9 @@ export class MainSync {
       if (now === undefined) continue;
       // The first sweep reconciles (nodes left behind across a restart); a
       // node already containing main is a no-op.
-      if (before === undefined || before !== now) await this.mainMoved(repo);
+      if (before === undefined || before !== now) {
+        await this.mainMoved(repo, undefined, { announce: before !== undefined });
+      }
     }
     for (const id of [...this.deferred]) {
       await this.serial(async () => {
@@ -195,6 +244,14 @@ export class MainSync {
         land_conflict: { target: main, files: files.slice(0, 200), at },
       });
       await this.note(s.id, line);
+      await this.options.emit?.({
+        type: 'sync_conflict',
+        subject: s.id,
+        repo: s.repo as string,
+        ...(s.project !== undefined ? { project: s.project } : {}),
+        by: 'daemon',
+        payload: { repo: s.repo as string, files: trimFiles(files) },
+      });
       return { status: 'conflict', files };
     }
 

@@ -95,3 +95,29 @@ describe('RoutedEventService (T240)', () => {
     expect(after).toBe(before);
   });
 });
+
+describe('activity (T245)', () => {
+  test("a node's activity: newest first, with its reason and the session that carried it", async () => {
+    const first = await events.emit(line('one'));
+    const second = await events.emit(line('two'));
+    await events.mark(b, [first.id], 'delivered', { session: 'S-1' });
+    await events.mark(b, [second.id], 'delivered', { digest: 'D-1' });
+    const rows = restart().activityFor(b);
+    expect(rows.map((r) => r.event.id)).toEqual([second.id, first.id]);
+    expect(rows[0]).toMatchObject({ because: 'ancestor', status: 'delivered', digest: 'D-1' });
+    expect(rows[1]).toMatchObject({ status: 'delivered', session: 'S-1' });
+    expect(events.activityFor(a).map((r) => r.status)).toEqual(['pending', 'pending']);
+  });
+
+  test('forRepo lists only the events on that repo', async () => {
+    await events.emit(line());
+    const moved = await events.emit({
+      type: 'main_changed',
+      repo: 'api',
+      payload: { repo: 'api', sha: 'b2', outcome: 'synced' },
+      by: 'daemon',
+      routing: [{ node: a, because: 'same_repo' }],
+    });
+    expect(events.forRepo('api').map((e) => e.id)).toEqual([moved.id]);
+  });
+});

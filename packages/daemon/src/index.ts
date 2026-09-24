@@ -58,6 +58,9 @@ export * from './store';
 
 export * from './bus';
 
+/** T240–T244: routed events (the log, the router, the producers). */
+export * from './events';
+
 export * from './gates';
 
 export * from './projects';

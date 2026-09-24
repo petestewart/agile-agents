@@ -17,7 +17,7 @@ import {
   wireLandGateResolution,
 } from './delivery';
 import { DocsService, buildDocsRpcMethods } from './docs';
-import { RoutedEventService } from './events';
+import { type EmitRouted, RoutedEventService, emitTransitions, makeEmitter } from './events';
 import { GateService, buildGateRpcMethods } from './gates';
 import type { DelegateFn } from './gates';
 import { PrPoller } from './github/poller';
@@ -115,10 +115,14 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
   // `close` and `land` both hand the ended stream to the retro (§5.5).
   // Every back-reference in this graph is read lazily through a closure,
   // so construction order is never a trap.
-  const streamService = store
+  const streamService: StreamService | undefined = store
     ? new StreamService(store, {
         onStreamEnd: async (id) => {
           await lessonsService?.onStreamEnd(id);
+        },
+        // T244: record changes that are routed events (child_status, pr_merged, …).
+        onUpdated: async (before, after): Promise<void> => {
+          if (emitRouted) await emitTransitions(emitRouted)(before, after);
         },
       })
     : undefined;
@@ -132,6 +136,9 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
     store && streamService ? new RulesService({ store, streams: streamService }) : undefined;
   // T240–T242: routed events, one service for every producer and the delivery.
   const routedEvents = store ? new RoutedEventService(store) : undefined;
+  // T244: the producers' emit hook over that one service.
+  const emitRouted: EmitRouted | undefined =
+    routedEvents && streamService ? makeEmitter(routedEvents, streamService) : undefined;
   // Attach and questions know about each other: the turn-end rule asks
   // what is open, and an answer is delivered by prompting the session.
   const attachService =
@@ -198,6 +205,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
           ...(options.overlapRecomputeMs !== undefined
             ? { intervalMs: options.overlapRecomputeMs }
             : {}),
+          ...(emitRouted ? { emit: emitRouted } : {}),
         })
       : undefined;
   mainSync?.start();
@@ -252,6 +260,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
           questions: questionService,
           ...(docsService ? { docs: docsService } : {}),
           ...(rulesService ? { rules: rulesService } : {}),
+          ...(routedEvents ? { events: routedEvents } : {}),
           // The three-proposal cap.
           proposalLimit: {
             assertCanPropose: (caller) => lessonsService?.assertCanPropose(caller),
@@ -321,6 +330,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
           ...(options.overlapRecomputeMs !== undefined
             ? { intervalMs: options.overlapRecomputeMs }
             : {}),
+          ...(emitRouted ? { emit: emitRouted } : {}),
         })
       : undefined;
   overlapTracker?.start();
@@ -342,6 +352,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
             ? { onMainMoved: (repo: string, except?: string) => mainSync.mainMoved(repo, except) }
             : {}),
           ...(landingService ? { afterTick: () => landingService.settle() } : {}),
+          ...(emitRouted ? { emit: emitRouted } : {}),
         })
       : undefined;
   prPoller?.start();
@@ -433,6 +444,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
     ...(classifierKey ? { classifierKey } : {}),
     ...(landingService ? { landing: landingService } : {}),
     ...(attachService ? { attach: attachService } : {}),
+    ...(routedEvents ? { events: routedEvents } : {}),
     ...(repoInPlace ? { repoInPlace } : {}),
     ...(docsService ? { docs: docsService } : {}),
     githubAuth,

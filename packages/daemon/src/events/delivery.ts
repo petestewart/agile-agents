@@ -14,6 +14,7 @@
  */
 
 import { type RoutedEvent, ulid } from '@agile-agents/shared';
+import { summarize } from './producers';
 import type { RoutedEventService } from './service';
 
 /** What delivery needs of a node's live session. */
@@ -35,6 +36,8 @@ export interface SessionDeliveryOptions {
   onDelivered?(node: string, sessionId: string, events: readonly RoutedEvent[]): void;
   /** T243: the node has pending events and no live session; the wake policy decides (P11). */
   wake?(node: string, pending: readonly RoutedEvent[]): void;
+  /** Names nodes in the summaries (T244); ids otherwise. */
+  titleOf?(id: string): string | undefined;
 }
 
 /** A digest lists at most this many summaries, newest last, plus "N earlier". */
@@ -45,7 +48,11 @@ export const REPLY_FIRST =
   'Reply to the operator on the stream first, with `progress`: if it is a question, answer it directly; if it is an instruction, acknowledge it and follow it. Then continue the work.';
 
 /** The one-line summary a recipient is told (§15). */
-export function summaryOf(event: RoutedEvent): string {
+export function summaryOf(
+  event: RoutedEvent,
+  node: string = event.subject ?? '',
+  titleOf?: (id: string) => string | undefined,
+): string {
   const p = event.payload as Record<string, unknown>;
   switch (event.type) {
     case 'human_line':
@@ -53,20 +60,26 @@ export function summaryOf(event: RoutedEvent): string {
     case 'answer':
       return `Your question "${String(p.question)}" was answered: ${String(p.answer)}`;
     default:
-      return `${event.type} (read_event ${event.id})`;
+      // T244: every other §15 type's one line, as `node` is told it.
+      return summarize(event, node, titleOf);
   }
 }
 
 /** One prompt for a node's pending events, oldest first in, newest last out. */
-export function digestPrompt(events: readonly RoutedEvent[]): string {
+export function digestPrompt(
+  events: readonly RoutedEvent[],
+  node?: string,
+  titleOf?: (id: string) => string | undefined,
+): string {
   const tail = events.some((e) => e.type === 'human_line') ? REPLY_FIRST : 'Continue the work.';
-  if (events.length === 1) return `${summaryOf(events[0] as RoutedEvent)}\n\n${tail}`;
+  const line = (e: RoutedEvent) => summaryOf(e, node ?? e.subject ?? '', titleOf);
+  if (events.length === 1) return `${line(events[0] as RoutedEvent)}\n\n${tail}`;
   const shown = events.slice(-DIGEST_MAX);
   const earlier = events.length - shown.length;
   return [
     `${events.length} things arrived for you:`,
     ...(earlier > 0 ? [`- (${earlier} earlier; read_event has them)`] : []),
-    ...shown.map((e) => `- ${summaryOf(e)}`),
+    ...shown.map((e) => `- ${line(e)}`),
     '',
     tail,
   ].join('\n');
@@ -193,7 +206,7 @@ export class SessionDelivery {
     const digest = `D-${ulid()}`;
     // The prompt is reserved in the runner synchronously, before any await.
     void target
-      .prompt(digestPrompt(events), {
+      .prompt(digestPrompt(events, node, this.options.titleOf), {
         onDelivered: () => {
           const events_ = this.options.events;
           // Only still-pending ones move (one may have been superseded meanwhile).
