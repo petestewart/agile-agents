@@ -152,6 +152,10 @@ export const SetOwnerInputSchema = z
     owns: z.array(z.string().trim().min(1).max(512)).max(50),
   })
   .strict();
+/** T287 (§9.4): a coordinator's targeted note to one of its children. */
+export const NoteChildInputSchema = z
+  .object({ session: Session, child: UlidSchema, body: Body })
+  .strict();
 
 /** The verb table, in the order §4.1 lists it. */
 export const AGENT_VERBS = [
@@ -172,6 +176,7 @@ export const AGENT_VERBS = [
   'add_child',
   'add_waits_on',
   'set_owner',
+  'note_child',
 ] as const;
 export type AgentVerb = (typeof AGENT_VERBS)[number];
 
@@ -193,6 +198,7 @@ export const AGENT_VERB_SCHEMAS = {
   add_child: AddChildInputSchema,
   add_waits_on: AddWaitsOnInputSchema,
   set_owner: SetOwnerInputSchema,
+  note_child: NoteChildInputSchema,
 } as const satisfies Record<AgentVerb, z.ZodType>;
 
 /** One line of help per verb, published to the model by the MCP bridge. */
@@ -223,6 +229,8 @@ export const AGENT_VERB_DESCRIPTIONS: Record<AgentVerb, string> = {
     'Coordinator only: make one child wait on another node ({child, on}). Gated by your autonomy level.',
   set_owner:
     'Coordinator only: give a child ownership of paths ({child, owns: [globs]}). Gated by your autonomy level.',
+  note_child:
+    'Coordinator only: send one child a targeted note ({child, body}), e.g. after a sibling merged or collided.',
 };
 
 export function isAgentVerb(name: string): name is AgentVerb {

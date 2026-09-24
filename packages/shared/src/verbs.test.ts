@@ -54,6 +54,7 @@ describe('agent verbs', () => {
       'add_child',
       'add_waits_on',
       'set_owner',
+      'note_child',
     ]);
     for (const verb of AGENT_VERBS) {
       expect(AGENT_VERB_SCHEMAS[verb]).toBeDefined();

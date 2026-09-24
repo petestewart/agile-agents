@@ -154,7 +154,7 @@ export function summarize(
       return `Child ${String(p.title)} is ${word}: ${String(p.progress ?? 'no progress line')}.`;
     }
     case 'child_delivered':
-      return `Child ${String(p.title)} merged into ${String(p.repo)} main (${String(p.sha).slice(0, 12)}).`;
+      return `Child ${String(p.title)} merged into ${String(p.repo)} main (${String(p.sha).slice(0, 12)}). Tell the siblings it affects with \`note_child\`; same-repo siblings get the main sync.`;
     case 'pr_review': {
       if (!self) return `${pr} on ${name(event.subject)}: ${String(p.state)}.`;
       const comments = list(p.comments) || 'none';
@@ -198,7 +198,7 @@ export function summarize(
     case 'overlap': {
       const files = list(p.files);
       if (node !== event.subject && node !== p.other) {
-        return `${name(event.subject)} and ${name(p.other)} both changed ${files}.`;
+        return `${name(event.subject)} and ${name(p.other)} both changed ${files}. If they are your children, decide: \`add_waits_on\` (one waits), \`set_owner\` (one owns the files), or ask the operator to merge them; then \`note_child\` each.`;
       }
       const other = node === p.other ? event.subject : p.other;
       const proj = node === p.other ? event.project : p.other_project;
@@ -218,6 +218,8 @@ export function summarize(
       const paths = list(p.paths);
       return `The plan changed: ${String(p.summary)}. You own ${paths || 'no paths yet'}.`;
     }
+    case 'coordinator_note':
+      return `Your coordinator says: ${String(p.body)}`;
     case 'contract_changed':
       return `Contract ${String(p.title)} is now v${String(p.version)}: ${String(p.diff)}. Adjust your side.`;
     default:
