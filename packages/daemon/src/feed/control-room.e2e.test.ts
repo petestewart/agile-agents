@@ -250,7 +250,10 @@ function browserTest(name: string, body: () => Promise<void>, timeoutMs: number)
  * launch and first page go under one budget, and only a browser that has
  * actually produced a page is ever cached.
  */
-async function openPage(options?: { colorScheme?: 'dark' | 'light' }): Promise<Page> {
+async function openPage(options?: {
+  colorScheme?: 'dark' | 'light';
+  serviceWorkers?: 'block';
+}): Promise<Page> {
   const acquired = await acquireBrowserPage({
     label: 'control-room e2e',
     cached: sharedBrowser,
@@ -2099,6 +2102,77 @@ describe('New stream starts the agent (Playwright e2e, T204)', () => {
           .waitFor();
         // The control reads Restart once a worker has run.
         expect(await page.locator('[data-testid="attach"]').textContent()).toBe('Restart');
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+
+  browserTest(
+    'a stale stream-page read that lands last never hides a running session',
+    async () => {
+      // Every pushed frame and every action re-reads the page, so reads
+      // overlap and their responses can land in any order.
+      const cockpit = await startStreamCockpit([
+        { steps: [{ type: 'tool_call', toolCallId: 'w-1', title: 'read' }, { type: 'hang' }] },
+      ]);
+      let page: Page | undefined;
+      try {
+        const stream = await cockpit.streams.create('human', {
+          title: 'CSV parser',
+          goal: 'g',
+          repo: 'demo',
+        });
+        // The cockpit's service worker would take the reads out of `page.route`'s sight.
+        page = await openPage({ serviceWorkers: 'block' });
+        // The first page read is served before the attach commits (no
+        // session yet). Answer the first read after the attach with that
+        // stale body, late: a read served before a write, arriving after
+        // the reads served after it, the order a loaded CI box can produce.
+        let staleBody: string | undefined;
+        let attached = false;
+        let held = 0;
+        await page.route(
+          (url) => url.pathname.startsWith('/api/streams/'),
+          async (route) => {
+            const request = route.request();
+            const response = await route.fetch();
+            if (request.method() === 'POST') {
+              await route.fulfill({ response });
+              attached = true;
+              return;
+            }
+            if (!request.url().endsWith(`/api/streams/${stream.id}`)) {
+              await route.fulfill({ response });
+              return;
+            }
+            if (staleBody === undefined) staleBody = await response.text();
+            if (attached && held === 0) {
+              held += 1;
+              await new Promise((resolve) => setTimeout(resolve, 1_500));
+              await route.fulfill({ response, body: staleBody });
+              return;
+            }
+            await route.fulfill({ response });
+          },
+        );
+        await page.goto(`${cockpit.base}/`);
+        await page.locator(`[data-testid="stream-tree"] [data-stream="${stream.id}"]`).click();
+        await page.locator('[data-testid="attach"]').click();
+        await page.locator('[data-testid="picker-start"]').click();
+        await page
+          .locator('[data-testid="session"][data-role="worker"][data-status="running"]')
+          .waitFor();
+        // Past every held read: the page still shows the fresh state.
+        await new Promise((resolve) => setTimeout(resolve, 2_000));
+        expect(held).toBeGreaterThan(0);
+        expect(
+          await page
+            .locator('[data-testid="session"][data-role="worker"]')
+            .getAttribute('data-status'),
+        ).toBe('running');
       } finally {
         await teardown([page]);
         await cockpit.stop();
