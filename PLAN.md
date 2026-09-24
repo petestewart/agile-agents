@@ -1491,19 +1491,21 @@ agile tail --node $C --events
 
 ### Ticket: T301 Director tools and guards
 - **Priority:** P0
-- **Status:** In Progress
-- **Owner:** opus:worker-T301
+- **Status:** Done
+- **Owner:** Unassigned
 - **Scope:**
   - Verbs: `draft_tree`, which returns a draft that renders as a tree with a Create button at Advise; `create_project`, `create_node`, `start_node`, `add_waits_on` and `restart_node`, gated by T282's function with the project's `director` level.
   - The Director never merges, accepts knowledge, or answers a question (hard refusals, tested).
 - **Acceptance Criteria:** Table tests per level; e2e: Create on an Advise draft builds the tree.
 - **Validation Steps:** `bun test packages/daemon/src/director packages/daemon/src/coordination`; `bun run test:e2e`.
 - **Notes:** After T300 and T282.
+- T301: sonnet review APPROVE. Verbs through AutonomyService/allowed() with the touched project's director level; hard refusals at gate, verb and hook layers; isDirector() tied to the minted session id. Director drafts are proposals with node director (shown on the Director page). merge 4a386d6. Pete: new project always a draft (no level yet); Director cannot read repos yet (P20 visibility) — follow-up.
+
 
 ### Ticket: T302 Cross-project sight and "what needs me today?"
 - **Priority:** P1
-- **Status:** Todo
-- **Owner:** —
+- **Status:** In Progress
+- **Owner:** opus:worker-T302
 - **Scope:**
   - The Director's brief gets a digest of all projects: overlaps, waits-on, stuck or idle nodes (no activity for longer than a configured time while `working`), and the inbox.
   - It proposes links and spots when a norm from one project is about to be broken in another.
@@ -1514,8 +1516,8 @@ agile tail --node $C --events
 
 ### Ticket: T303 ∥ Norm suggestions
 - **Priority:** P2
-- **Status:** Todo
-- **Owner:** —
+- **Status:** In Progress
+- **Owner:** opus:worker-T303
 - **Scope:** Findings that repeat across projects (the same file area or wording across reviewer findings and PR comments) wake the Director, which may `propose_knowledge`. The proposal comes to you as usual.
 - **Acceptance Criteria:** A test: three similar findings across two projects produce one proposal with its sources.
 - **Validation Steps:** `bun test packages/daemon/src/director packages/daemon/src/knowledge`.
