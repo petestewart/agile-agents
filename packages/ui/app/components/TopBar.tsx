@@ -18,7 +18,7 @@ const NAV: ReadonlyArray<{ view: ShellView; label: string }> = [
   { view: 'repos', label: 'Repos' },
   { view: 'running', label: 'Running' },
   { view: 'deps', label: 'Dependencies' },
-  { view: 'rules', label: 'Rules' },
+  { view: 'rules', label: 'Knowledge' },
   { view: 'settings', label: 'Settings' },
 ];
 

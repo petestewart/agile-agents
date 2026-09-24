@@ -1767,6 +1767,65 @@ describe('rule hits on the stream (Playwright e2e, T169)', () => {
   );
 });
 
+// ---- T266: the Knowledge screen -------------------------------------------
+
+describe('the Knowledge screen (Playwright e2e, T266)', () => {
+  browserTest(
+    'a proposed decision reads "decision proposed", is accepted, and shows on the node\'s Knowledge-in-scope tab',
+    async () => {
+      const cockpit = await startCockpit();
+      let page: Page | undefined;
+      try {
+        const stream = await cockpit.streams.create('human', { title: 'ledger', goal: 'g' });
+        const decision = await cockpit.rules.create('human', {
+          kind: 'decision',
+          text: 'money is stored as integer cents',
+          scope: { kind: 'subtree', node: stream.id },
+          paths: ['src/money/**'],
+        });
+        await cockpit.rules.create('human', { text: 'a global standard' });
+
+        page = await openPage();
+        await page.goto(`${cockpit.base}/`);
+        const card = `[data-testid="inbox"] [data-id="${decision.id}"]`;
+        await page.locator(card).waitFor({ state: 'visible' });
+        expect(await page.locator(`${card} .kind`).textContent()).toContain('decision proposed');
+
+        // The Knowledge screen filters by kind and enforcement.
+        await page.locator('[data-view="rules"]').click();
+        await page.locator('[data-testid="rules-screen"] h1', { hasText: 'Knowledge' }).waitFor();
+        await waitForCount(page, '[data-testid="rules-row"]', 2);
+        await page.locator('[data-testid="rules-filter-kind"]').selectOption('decision');
+        await waitForCount(page, '[data-testid="rules-row"]', 1);
+        const row = `[data-testid="rules-row"][data-rule="${decision.id}"]`;
+        expect(await page.locator(`${row} [data-testid="rules-paths"]`).textContent()).toBe(
+          'src/money/**',
+        );
+        await page.locator('[data-testid="rules-filter-enforcement"]').selectOption('action');
+        await waitForCount(page, '[data-testid="rules-row"]', 0);
+        await page.locator('[data-testid="rules-filter-enforcement"]').selectOption('all');
+
+        await page.locator(`${row} [data-testid="rules-accept"]`).click();
+        await waitUntil(
+          'the decision to be accepted',
+          () => cockpit.store.getKnowledge(decision.id).status === 'accepted',
+        );
+
+        await page.locator(`[data-testid="stream-tree"] [data-stream="${stream.id}"]`).click();
+        await page.locator(`[data-testid="stream-page"][data-stream="${stream.id}"]`).waitFor();
+        const tab = page.locator('.cr-tabs [data-tab="rules"]');
+        expect(await tab.textContent()).toContain('Knowledge in scope');
+        await tab.click();
+        await page.locator(`[data-testid="rule"][data-rule="${decision.id}"]`).waitFor();
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+});
+
 // ---- T162: new stream, quick capture, `n` and `/` -------------------------
 
 describe('new stream and quick capture (Playwright e2e, T162)', () => {

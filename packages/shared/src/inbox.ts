@@ -10,7 +10,7 @@
 
 import { z } from 'zod';
 import { UlidSchema, formatZodError } from './ids';
-import { KnowledgeIdSchema } from './knowledge';
+import { KnowledgeIdSchema, KnowledgeKindSchema } from './knowledge';
 
 /**
  * §3.1's kinds. `question` and `gate` are the two that carry a decision;
@@ -77,6 +77,8 @@ export const InboxItemSchema = z
     ref: z.string().min(1).optional(),
     /** T163: a `rule_batch` item's rule ids — present on that kind only. */
     rules: z.array(KnowledgeIdSchema).min(1).optional(),
+    /** T266: a `rule_accept` item's knowledge kind, so the card reads "decision proposed". */
+    knowledge_kind: KnowledgeKindSchema.optional(),
   })
   .strict()
   .refine((item) => isRuleKind(item.kind) || item.stream !== undefined, {
@@ -86,6 +88,10 @@ export const InboxItemSchema = z
   .refine((item) => isRuleKind(item.kind) || item.stream_path.length > 0, {
     message: 'must carry the stream path',
     path: ['stream_path'],
+  })
+  .refine((item) => item.knowledge_kind === undefined || item.kind === 'rule_accept', {
+    message: 'only a rule_accept item carries a knowledge kind',
+    path: ['knowledge_kind'],
   })
   .refine((item) => (item.kind === 'rule_batch') === (item.rules !== undefined), {
     message: 'a rule_batch item carries its rule ids, and only it does',
