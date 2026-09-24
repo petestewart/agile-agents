@@ -1,0 +1,845 @@
+/**
+ * `AttachService` against the real `fake-agent.ts` over a real ACP
+ * transport — no vendor, no login, no network. Everything the acceptance
+ * criteria name: a no-repo attach, a repo attach, the exit path, the
+ * one-worker rule, the effort-ignored line, and `ask` reaching the inbox
+ * and the answer reaching the session.
+ */
+
+import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { ACP_PROVIDERS, type AcpProviderConfig } from '@agile-agents/acp-client';
+import type { HilId, Policy, Question, Stream } from '@agile-agents/shared';
+import { GateService } from '../gates/service';
+import { runInit } from '../init';
+import { LandingService } from '../landing/service';
+import { QuestionService } from '../questions/service';
+import { wireQuestionSupersession } from '../questions/supersede';
+import type { FakeAgentScript } from '../runner/fake-agent';
+import { StateStore } from '../store';
+import { StreamService } from '../streams/service';
+import { buildAttachRpcMethods } from './rpc';
+import { sayPrompt } from './service';
+import { AttachService, ParentAttachError, StreamBusyError, endedReason } from './service';
+import { VerbService } from './verbs';
+
+const FAKE_AGENT_PATH = join(import.meta.dir, '..', 'runner', 'fake-agent.ts');
+
+let home: string;
+let repo: string;
+let scratch: string;
+let store: StateStore;
+let streams: StreamService;
+let questions: QuestionService;
+let verbs: VerbService;
+let attachService: AttachService;
+let gates: GateService;
+
+function git(args: string[], cwd = repo): string {
+  const result = Bun.spawnSync(['git', ...args], { cwd, stdout: 'pipe', stderr: 'pipe' });
+  if (result.exitCode !== 0) throw new Error(new TextDecoder().decode(result.stderr));
+  return new TextDecoder().decode(result.stdout).trim();
+}
+
+/** A provider entry whose *transport* is `fake-agent.ts` but whose registry fields are the real vendor's. */
+function fakeProviderFor(vendor: AcpProviderConfig, script: FakeAgentScript): AcpProviderConfig {
+  const scriptPath = join(scratch, `${Bun.hash(JSON.stringify(script)).toString(36)}.json`);
+  writeFileSync(scriptPath, JSON.stringify(script));
+  return {
+    ...vendor,
+    command: 'bun',
+    args: [FAKE_AGENT_PATH],
+    envOverrides: { AGILE_FAKE_AGENT_SCRIPT: scriptPath },
+  };
+}
+
+const SPEAKS: FakeAgentScript = {
+  steps: [{ type: 'agent_text', text: 'looking at the parser now' }, { type: 'end_turn' }],
+};
+
+/**
+ * Hangs *inside* the turn after speaking, so a test can assert on a live
+ * session. The `tool_call` is what closes the streaming message, so the
+ * spoken line reaches the thread without the turn ending — a turn that
+ * ended with no open question would now stop the session (T137).
+ */
+const SPEAKS_THEN_HANGS: FakeAgentScript = {
+  steps: [
+    { type: 'agent_text', text: 'looking at the parser now' },
+    { type: 'tool_call', toolCallId: 'read-1', title: 'read parser.ts' },
+    { type: 'hang' },
+  ],
+};
+
+/**
+ * Wired the way `daemon.ts` wires it: the attach service asks the question
+ * service what is still open (the turn-end rule), and the question service
+ * delivers an answer by prompting the live session. Both sides are read
+ * lazily so a test may rebuild either one.
+ */
+function buildAttachService(provider: AcpProviderConfig): AttachService {
+  return new AttachService({
+    store,
+    streams,
+    home,
+    provider: () => provider,
+    questions: { listOpen: () => questions.listOpen() },
+    gates: { list: () => gates.list() },
+  });
+}
+
+async function waitFor(
+  predicate: () => boolean,
+  { timeoutMs = 20_000, intervalMs = 20 }: { timeoutMs?: number; intervalMs?: number } = {},
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate()) {
+    if (Date.now() >= deadline) throw new Error(`waitFor: condition not met in ${timeoutMs}ms`);
+    await Bun.sleep(intervalMs);
+  }
+}
+
+function threadBodies(streamId: string): string[] {
+  return streams.readThread(streamId, { limit: 500 }).entries.map((entry) => entry.body);
+}
+
+async function makeStream(repoName?: string): Promise<Stream> {
+  return streams.create('human', {
+    title: 'CSV parser',
+    goal: 'decide the dialect and implement it',
+    ...(repoName !== undefined ? { repo: repoName } : {}),
+  });
+}
+
+beforeEach(() => {
+  home = mkdtempSync(join(tmpdir(), 'agile-attach-home-'));
+  scratch = mkdtempSync(join(tmpdir(), 'agile-attach-scratch-'));
+  repo = mkdtempSync(join(tmpdir(), 'agile-attach-repo-'));
+  git(['init', '-q']);
+  git(['config', 'user.email', 'test@example.com']);
+  git(['config', 'user.name', 'Test']);
+  writeFileSync(join(repo, 'README.md'), '# fixture\n');
+  git(['add', '-A']);
+  git(['commit', '-q', '-m', 'init']);
+
+  const init = runInit(home);
+  store = StateStore.open(init.stateRoot);
+  streams = new StreamService(store);
+  questions = new QuestionService(store, streams, {
+    deliver: (sessionId, question) => attachService.deliverAnswer(sessionId, question),
+  });
+  verbs = new VerbService({ store, streams, questions });
+  gates = new GateService(store);
+  // T145: wired exactly as `daemon.ts` wires it — deciding a gate closes
+  // whatever question the same session still has open.
+  wireQuestionSupersession(gates, questions);
+  attachService = buildAttachService(fakeProviderFor(ACP_PROVIDERS.claude, SPEAKS));
+});
+
+afterEach(async () => {
+  await attachService.stopAll();
+  await store.flush();
+  store.close();
+  for (const dir of [home, repo, scratch]) rmSync(dir, { recursive: true, force: true });
+});
+
+describe('attach on a stream with no repo (a planning conversation)', () => {
+  test('streams the session output onto the thread and touches no git', async () => {
+    // A non-git temp dir is the whole point: if anything in the attach path
+    // reached for git, it would have to reach for *this* directory.
+    const stream = await makeStream();
+    const { session } = await attachService.attach(stream.id);
+
+    expect(session.role).toBe('worker');
+    expect(session.vendor).toBe('claude');
+    expect(session.worktree).toBeUndefined();
+
+    await waitFor(() => threadBodies(stream.id).some((b) => b.includes('looking at the parser')));
+    const entry = streams
+      .readThread(stream.id, { limit: 500 })
+      .entries.find((e) => e.body.includes('looking at the parser'));
+    expect(entry?.by).toBe(`agent:${session.id}`);
+    expect(entry?.kind).toBe('line');
+    // The untruncated text is on disk, and the thread line points at it.
+    expect(readFileSync(entry?.ref ?? '', 'utf8')).toContain('looking at the parser');
+
+    expect(streams.get(stream.id).branch).toBeUndefined();
+    expect(streams.get(stream.id).worktree).toBeUndefined();
+    expect(existsSync(join(home, '.git'))).toBe(false);
+  });
+});
+
+describe('attach on a stream with a repo', () => {
+  test('creates the worktree, runs the session in it, and ignores .worktrees/', async () => {
+    await store.putRepos({ demo: { path: repo, protected_branches: ['main'] } });
+    const stream = await makeStream('demo');
+    const { session, stream: updated } = await attachService.attach(stream.id);
+
+    expect(session.worktree).toBe(updated.worktree ?? '');
+    expect(updated.worktree?.startsWith(join(repo, '.worktrees'))).toBe(true);
+    expect(existsSync(join(updated.worktree ?? '', 'README.md'))).toBe(true);
+    expect(updated.branch).toBeDefined();
+    expect(readFileSync(join(repo, '.git', 'info', 'exclude'), 'utf8')).toContain('.worktrees/');
+    expect(existsSync(join(repo, '.gitignore'))).toBe(false);
+
+    // The session's own cwd *is* that worktree: its hook settings are
+    // written there, which is what the hook path resolves a call through.
+    await waitFor(() => existsSync(join(updated.worktree ?? '', '.claude', 'settings.json')));
+
+    // While it is live, the registry entry places that cwd on this stream.
+    const registered = store.listAgents().find((a) => a.id === session.id);
+    expect(registered?.record.stream).toBe(stream.id);
+    expect(registered?.record.worktree).toBe(updated.worktree);
+    expect(registered?.record.role).toBe('worker');
+  });
+});
+
+describe('the exit path', () => {
+  test('writes agent.status done, the session status, and a thread entry', async () => {
+    const stream = await makeStream();
+    const { session, handle } = await attachService.attach(stream.id);
+    expect(streams.get(stream.id).agent.status).toBe('working');
+
+    // Stopping is the operator's `agile detach`: SIGTERM, escalating to
+    // SIGKILL after the client's own grace period.
+    handle.stop();
+    await handle.exited;
+    await waitFor(() => streams.get(stream.id).agent.status === 'done');
+
+    const after = streams.get(stream.id);
+    expect(after.sessions.find((s) => s.id === session.id)?.status).not.toBe('running');
+    expect(threadBodies(stream.id).some((b) => b.startsWith('session ended:'))).toBe(true);
+    // The registry entry is gone, so the hook can no longer resolve a cwd
+    // to a session that has exited.
+    expect(store.listAgents().some((a) => a.id === session.id)).toBe(false);
+  }, 20_000);
+});
+
+describe('a session that dies on a vendor error (T171)', () => {
+  test("the session record carries the vendor's error line for the sessions strip", async () => {
+    // A vendor that prints its complaint and then refuses the session's
+    // mode — the offline stand-in for "does not support this model".
+    const vendorLine =
+      'Claude Code 2.1.257 does not support this model; version 2.1.280 or newer is required';
+    attachService = buildAttachService(
+      fakeProviderFor(ACP_PROVIDERS.claude, {
+        stderrBanner: `starting\n${vendorLine}`,
+        validModes: ['nope'],
+        steps: [{ type: 'end_turn' }],
+      }),
+    );
+    const stream = await makeStream();
+    const { session } = await attachService.attach(stream.id);
+    await waitFor(() => {
+      const ref = streams.get(stream.id).sessions.find((s) => s.id === session.id);
+      return ref?.status === 'error' && ref.ended_reason !== undefined;
+    });
+    const ref = streams.get(stream.id).sessions.find((s) => s.id === session.id);
+    expect(ref?.ended_reason).toContain(vendorLine);
+  }, 20_000);
+
+  test('endedReason: nothing on a clean end, the vendor line appended once, capped', () => {
+    expect(endedReason('process exited (code 0)', true, undefined)).toBeUndefined();
+    expect(endedReason('prompt failed: boom', false, 'boom')).toBe('prompt failed: boom');
+    expect(endedReason('process exited (code 1)', true, 'bad model')).toBe(
+      'process exited (code 1): bad model',
+    );
+    expect(endedReason('x', false, 'y'.repeat(400))?.length).toBe(300);
+  });
+});
+
+describe('one live worker per stream (§2.3)', () => {
+  test('a second attach is refused while the first is live', async () => {
+    attachService = buildAttachService(fakeProviderFor(ACP_PROVIDERS.claude, SPEAKS_THEN_HANGS));
+    const stream = await makeStream();
+    await attachService.attach(stream.id);
+    await waitFor(() => streams.get(stream.id).sessions.some((s) => s.status === 'running'));
+
+    await expect(attachService.attach(stream.id)).rejects.toThrow(StreamBusyError);
+    expect(streams.get(stream.id).sessions.length).toBe(1);
+  });
+
+  test('a reviewer may run beside a live worker, but only one reviewer at a time', async () => {
+    attachService = buildAttachService(fakeProviderFor(ACP_PROVIDERS.claude, SPEAKS_THEN_HANGS));
+    const stream = await makeStream();
+    await attachService.attach(stream.id);
+    await waitFor(() => streams.get(stream.id).sessions.some((s) => s.status === 'running'));
+
+    const review = await attachService.attach(stream.id, { role: 'reviewer' });
+    expect(review.session.role).toBe('reviewer');
+    await waitFor(
+      () => streams.get(stream.id).sessions.filter((s) => s.status === 'running').length === 2,
+    );
+
+    await expect(attachService.attach(stream.id, { role: 'reviewer' })).rejects.toThrow(
+      StreamBusyError,
+    );
+    // The worker slot is still taken too — one live session per role.
+    await expect(attachService.attach(stream.id)).rejects.toThrow(StreamBusyError);
+    expect(streams.get(stream.id).sessions.length).toBe(2);
+  }, 30_000);
+});
+
+describe('T176: a worker on a parent with open children needs force', () => {
+  test('refused without force, allowed with it; reviewers and finished children are not guarded', async () => {
+    const parent = await makeStream();
+    const child = await streams.create('human', { title: 'c', goal: 'g', parent: parent.id });
+    await expect(attachService.attach(parent.id)).rejects.toThrow(ParentAttachError);
+    await expect(attachService.attach(parent.id)).rejects.toThrow(
+      /a parent's branch is where its children land/,
+    );
+    expect(streams.get(parent.id).sessions).toHaveLength(0);
+
+    const review = await attachService.attach(parent.id, { role: 'reviewer' });
+    expect(review.session.role).toBe('reviewer');
+    const forced = await attachService.attach(parent.id, { force: true });
+    expect(forced.session.role).toBe('worker');
+    await attachService.stopAll();
+
+    await streams.close('human', child.id);
+    const other = await makeStream();
+    await streams.create('human', { title: 'c2', goal: 'g', parent: other.id });
+    await streams.close('human', (streams.list().find((s) => s.title === 'c2') as Stream).id);
+    expect((await attachService.attach(other.id)).session.role).toBe('worker');
+  }, 30_000);
+});
+
+describe('T176: Resolve — a worker handed the conflict, then the re-land', () => {
+  test('attach.resolve appends the merge instruction to the brief; the resolved branch lands', async () => {
+    await store.putRepos({ demo: { path: repo, protected_branches: [] } });
+    const base = git(['rev-parse', '--abbrev-ref', 'HEAD']);
+    const landing = new LandingService({ store, streams });
+    const methods = buildAttachRpcMethods(attachService, verbs, landing);
+    const stream = await makeStream('demo');
+    const first = await attachService.attach(stream.id);
+    await waitFor(() => streams.get(stream.id).agent.status === 'done');
+    const wt = first.stream.worktree as string;
+    writeFileSync(join(wt, 'shared.txt'), 'from the stream\n');
+    git(['add', 'shared.txt'], wt);
+    git(['commit', '-q', '-m', 'stream'], wt);
+    writeFileSync(join(repo, 'shared.txt'), 'from the target\n');
+    git(['add', 'shared.txt']);
+    git(['commit', '-q', '-m', 'target']);
+    expect((await landing.land(stream.id)).status).toBe('blocked');
+
+    const resolved = (await methods['attach.resolve']?.({ stream: stream.id })) as {
+      session: { id: string };
+    };
+    const briefPath = join(home, 'sessions', resolved.session.id, 'brief.md');
+    await waitFor(() => existsSync(briefPath));
+    const brief = readFileSync(briefPath, 'utf8');
+    expect(brief).toContain('## Resolve the land conflict');
+    expect(brief).toContain(`git merge ${base}`);
+    expect(brief).toContain('shared.txt');
+    await waitFor(() => streams.get(stream.id).agent.status === 'done');
+
+    // What the worker would do: merge, keep both sides, commit.
+    Bun.spawnSync(['git', 'merge', base], { cwd: wt });
+    writeFileSync(join(wt, 'shared.txt'), 'from the target\nfrom the stream\n');
+    git(['commit', '-q', '-am', 'merge target'], wt);
+    expect((await landing.land(stream.id)).status).toBe('landed');
+  }, 30_000);
+});
+
+describe('the reviewer (§4.2)', () => {
+  test("runs on the worker's worktree under the reviewer role, and never cuts a branch of its own", async () => {
+    await store.putRepos({ demo: { path: repo, protected_branches: ['main'] } });
+    const stream = await makeStream('demo');
+    const { handle } = await attachService.attach(stream.id);
+    handle.stop();
+    await handle.exited;
+    const worktree = streams.get(stream.id).worktree;
+    expect(worktree).toBeDefined();
+    const branch = streams.get(stream.id).branch;
+
+    const { session } = await attachService.attach(stream.id, { role: 'reviewer' });
+    expect(session.worktree).toBe(worktree ?? '');
+    expect(streams.get(stream.id).branch).toBe(branch ?? '');
+
+    // The registry entry is what the hook resolves a tool call's cwd
+    // through — it must say `reviewer`, or the read-only table never runs.
+    await waitFor(() => store.listAgents().some((a) => a.id === session.id));
+    expect(store.listAgents().find((a) => a.id === session.id)?.record.role).toBe('reviewer');
+  }, 30_000);
+
+  test("the reviewer exit reports its findings and leaves a live worker's agent.status alone", async () => {
+    attachService = buildAttachService(fakeProviderFor(ACP_PROVIDERS.claude, SPEAKS_THEN_HANGS));
+    const stream = await makeStream();
+    await attachService.attach(stream.id);
+    await waitFor(() => streams.get(stream.id).agent.status === 'working');
+
+    const { session, handle } = await attachService.attach(stream.id, { role: 'reviewer' });
+    await waitFor(() => store.listAgents().some((a) => a.id === session.id));
+    await verbs.finding({
+      session: session.id,
+      severity: 'major',
+      file: 'src/parse.ts',
+      line: 12,
+      text: 'the dialect sniffer ignores quoted separators',
+    });
+
+    handle.stop();
+    await handle.exited;
+    await waitFor(() => threadBodies(stream.id).some((b) => b.startsWith('review finished:')));
+
+    const after = streams.get(stream.id);
+    expect(threadBodies(stream.id).some((b) => b.startsWith('review finished: 1 finding '))).toBe(
+      true,
+    );
+    // Both halves of §4.2: the thread narrative and the structured list.
+    expect(
+      streams
+        .readThread(stream.id, { limit: 500 })
+        .entries.some((e) => e.kind === 'finding' && e.by === `agent:${session.id}`),
+    ).toBe(true);
+    expect(after.agent.findings?.at(-1)).toMatchObject({
+      severity: 'major',
+      file: 'src/parse.ts',
+      line: 12,
+    });
+    // The worker is still live: its field, its call.
+    expect(after.agent.status).toBe('working');
+    expect(after.sessions.find((s) => s.id === session.id)?.status).not.toBe('running');
+  }, 30_000);
+
+  test('a reviewer on a stream with no worker left moves agent.status to done', async () => {
+    const stream = await makeStream();
+    const { handle } = await attachService.attach(stream.id, { role: 'reviewer' });
+    // No worker ever attached, so `agent.status` is still `idle` here.
+    expect(streams.get(stream.id).agent.status).toBe('idle');
+    handle.stop();
+    await handle.exited;
+    await waitFor(() => streams.get(stream.id).agent.status === 'done');
+    expect(threadBodies(stream.id).some((b) => b.startsWith('review finished: 0 findings'))).toBe(
+      true,
+    );
+  }, 20_000);
+
+  test('auto_review starts a reviewer when the worker exits done', async () => {
+    await store.putRepos({
+      demo: { path: repo, protected_branches: ['main'], auto_review: true },
+    });
+    const stream = await makeStream('demo');
+    const { session, handle } = await attachService.attach(stream.id);
+    handle.stop();
+    await handle.exited;
+
+    await waitFor(() => streams.get(stream.id).sessions.length === 2);
+    const reviewer = streams.get(stream.id).sessions.find((s) => s.id !== session.id);
+    expect(reviewer?.role).toBe('reviewer');
+    expect(reviewer?.worktree).toBe(streams.get(stream.id).worktree ?? '');
+  }, 30_000);
+
+  test('no auto_review means no second session', async () => {
+    await store.putRepos({ demo: { path: repo, protected_branches: ['main'] } });
+    const stream = await makeStream('demo');
+    const { handle } = await attachService.attach(stream.id);
+    handle.stop();
+    await handle.exited;
+    await waitFor(() => streams.get(stream.id).agent.status === 'done');
+    await Bun.sleep(200);
+    expect(streams.get(stream.id).sessions.length).toBe(1);
+  }, 30_000);
+});
+
+describe('effort (D12)', () => {
+  test('claude records the level and passes its own lever to the vendor', async () => {
+    const stream = await makeStream();
+    const { session } = await attachService.attach(stream.id, { effort: 'max' });
+    expect(session.effort).toBe('max');
+    expect(threadBodies(stream.id).some((b) => b.includes('ignored by'))).toBe(false);
+  });
+
+  test('a vendor with no effort mapping still starts, with a thread line saying so', async () => {
+    attachService = buildAttachService(fakeProviderFor(ACP_PROVIDERS.gemini, SPEAKS));
+    const stream = await makeStream();
+    const { session } = await attachService.attach(stream.id, { vendor: 'gemini', effort: 'high' });
+
+    expect(session.effort).toBeUndefined();
+    expect(threadBodies(stream.id)).toContain('effort high ignored by gemini');
+    await waitFor(() => threadBodies(stream.id).some((b) => b.includes('looking at the parser')));
+  });
+});
+
+describe('one ACP message is one thread entry (T137)', () => {
+  test('a usage_update between two chunks does not split the message', async () => {
+    attachService = buildAttachService(
+      fakeProviderFor(ACP_PROVIDERS.claude, {
+        steps: [
+          { type: 'agent_text', text: 'Plan:\n' },
+          // Bookkeeping arriving mid-message is exactly what split the
+          // live run's message into two thread entries.
+          { type: 'usage_update', used: 10, size: 1000 },
+          { type: 'agent_text', text: '- read the parser' },
+          { type: 'end_turn' },
+        ],
+      }),
+    );
+    const stream = await makeStream();
+    await attachService.attach(stream.id);
+    await waitFor(() => threadBodies(stream.id).some((b) => b.includes('read the parser')));
+    const lines = threadBodies(stream.id).filter((b) => b.includes('read the parser'));
+    expect(lines).toEqual(['Plan:\n- read the parser']);
+  }, 20_000);
+});
+
+describe('ask → answer → continue (T137)', () => {
+  test('the answer is prompted into the waiting session, which continues and finishes', async () => {
+    const sentinel = join(scratch, 'asked.flag');
+    const log = join(scratch, 'prompts.jsonl');
+    attachService = buildAttachService(
+      fakeProviderFor(ACP_PROVIDERS.claude, {
+        logFile: log,
+        turns: [
+          [
+            { type: 'agent_text', text: 'I need to know the delimiter' },
+            { type: 'tool_call', toolCallId: 'ask-1', title: 'ask' },
+            { type: 'wait_for_file', path: sentinel },
+            { type: 'end_turn' },
+          ],
+          [{ type: 'agent_text', text: 'continuing with semicolon' }, { type: 'end_turn' }],
+        ],
+        steps: [{ type: 'end_turn' }],
+      }),
+    );
+    const stream = await makeStream();
+    const { session } = await attachService.attach(stream.id);
+    await waitFor(() => store.listAgents().some((a) => a.id === session.id));
+
+    // The verb the MCP bridge forwards, with the session id the bridge fixes.
+    const { id } = await verbs.ask({ session: session.id, text: 'comma or semicolon?' });
+    const open = questions.listOpen();
+    expect(open.map((q: Question) => q.id)).toContain(id);
+    expect(streams.get(stream.id).agent.status).toBe('question');
+    expect(streams.get(stream.id).human.status).toBe('waiting_on_you');
+
+    // Now the agent ends its turn, exactly as the live run did: the session
+    // process is alive and idle, waiting for an answer.
+    writeFileSync(sentinel, '');
+    await waitFor(
+      () => streams.get(stream.id).sessions.find((s) => s.id === session.id)?.status === 'idle',
+    );
+    // A turn that ended on an open question ends nothing: the session is
+    // still live and the stream still says `question`.
+    expect(streams.get(stream.id).agent.status).toBe('question');
+    expect(store.listAgents().some((a) => a.id === session.id)).toBe(true);
+
+    await questions.answer(id as Question['id'], { answer: 'semicolon', by: 'human' });
+
+    // Delivery is a prompt, not a mailbox file: the live session gets a
+    // second `session/prompt` carrying the answer.
+    await waitFor(() => existsSync(log) && readFileSync(log, 'utf8').includes('semicolon'));
+    const prompts = readFileSync(log, 'utf8')
+      .split('\n')
+      .filter((line) => line.includes('"session/prompt"'));
+    expect(prompts.length).toBe(2);
+    expect(prompts[1]).toContain('semicolon');
+    expect(prompts[1]).toContain('comma or semicolon?');
+    // Nothing is written to a mailbox any more — the prompt *is* the delivery.
+    expect(existsSync(join(home, 'bus', 'inbox', session.id))).toBe(false);
+
+    // The second turn ends with no open question left: the worker is
+    // finished, so the service stops the session and the exit path writes
+    // `done`.
+    await waitFor(() => streams.get(stream.id).agent.status === 'done');
+    expect(threadBodies(stream.id).some((b) => b.includes('continuing with semicolon'))).toBe(true);
+    const after = streams.get(stream.id);
+    expect(after.sessions.find((s) => s.id === session.id)?.status).toBe('stopped');
+    expect(store.listAgents().some((a) => a.id === session.id)).toBe(false);
+  }, 30_000);
+
+  test('an answer with no live session stays on the thread and says so', async () => {
+    const stream = await makeStream();
+    const { session, handle } = await attachService.attach(stream.id);
+    await waitFor(() => store.listAgents().some((a) => a.id === session.id));
+    const { id } = await verbs.ask({ session: session.id, text: 'comma or semicolon?' });
+    handle.stop();
+    await handle.exited;
+
+    await questions.answer(id as Question['id'], { answer: 'semicolon', by: 'human' });
+    await waitFor(() =>
+      threadBodies(stream.id).some((b) => b.startsWith('answer recorded with no live session')),
+    );
+    expect(streams.get(stream.id).agent.status).toBe('idle');
+  }, 30_000);
+});
+
+describe('the brief is written beside the session logs (T145)', () => {
+  test('`<home>/sessions/<id>/brief.md` is what the agent was handed', async () => {
+    const stream = await makeStream();
+    const { session } = await attachService.attach(stream.id);
+    const path = join(home, 'sessions', session.id, 'brief.md');
+    await waitFor(() => existsSync(path));
+    const brief = readFileSync(path, 'utf8');
+    // "What did the agent see" without the vendor's transcript: the rules
+    // in scope, the goal, and anything else the assembler put in.
+    expect(brief).toContain('## Rules in scope');
+    expect(brief).toContain('decide the dialect and implement it');
+  }, 20_000);
+});
+
+describe('a gate and a question in the same turn (T145)', () => {
+  const POLICY: Policy = {
+    gates: { land: 'human', rule_accept: 'human', classifier_review: 'human' },
+    breaker_signals: [],
+  };
+
+  test('approving the gate closes the question too, and the turn ends the session', async () => {
+    // Pete's `--help` run, exactly: the worker raised a plain `ask` and hit
+    // the route-band gate in the same turn, the operator answered the gate,
+    // the worker retried and ended its turn — and the question nobody ever
+    // closed held the stream `working/open` for eleven minutes.
+    const sentinel = join(scratch, 'decided.flag');
+    attachService = buildAttachService(
+      fakeProviderFor(ACP_PROVIDERS.claude, {
+        steps: [
+          { type: 'agent_text', text: 'asking and trying an edit' },
+          { type: 'tool_call', toolCallId: 'ask-1', title: 'ask' },
+          { type: 'wait_for_file', path: sentinel },
+          { type: 'end_turn' },
+        ],
+      }),
+    );
+    const stream = await makeStream();
+    const { session } = await attachService.attach(stream.id);
+    await waitFor(() => store.listAgents().some((a) => a.id === session.id));
+
+    const { id: questionId } = await verbs.ask({
+      session: session.id,
+      text: 'comma or semicolon?',
+    });
+    const gate = await gates.request('classifier_review', {
+      policy: POLICY,
+      stream: stream.id,
+      session: session.id,
+      summary: 'editing a dependency manifest is never automatic',
+      call: { tool: 'Edit', path: join(scratch, 'package.json'), fingerprint: '0123456789abcdef' },
+    });
+    expect(questions.listOpen().map((q: Question) => q.id)).toContain(questionId);
+
+    // `agile answer HIL-… yes`, and then the retry the approval allows —
+    // which is what spends the gate (`hook/route-band.ts` calls `consume`).
+    await gates.respond(gate.id as HilId, 'approve', 'pete');
+    await gates.consume(gate.id as HilId);
+
+    // The question is closed by the decision, not left for nobody.
+    const answered = questions.get(questionId as Question['id']);
+    expect(answered.status).toBe('answered');
+    expect(answered.resolved_as).toBe('superseded');
+    expect(questions.listOpen()).toEqual([]);
+    expect(
+      threadBodies(stream.id).some((b) => b === `question ${questionId} superseded by ${gate.id}`),
+    ).toBe(true);
+
+    // The turn now ends with nothing open: the worker is finished, so the
+    // session is stopped and the exit path writes `done`.
+    writeFileSync(sentinel, '');
+    await waitFor(() => streams.get(stream.id).agent.status === 'done');
+    const after = streams.get(stream.id);
+    expect(after.sessions.find((s) => s.id === session.id)?.status).toBe('stopped');
+    expect(store.listAgents().some((a) => a.id === session.id)).toBe(false);
+  }, 30_000);
+
+  test('a turn that ends on a still-open question says `question`, never `working`', async () => {
+    const sentinel = join(scratch, 'asked-only.flag');
+    attachService = buildAttachService(
+      fakeProviderFor(ACP_PROVIDERS.claude, {
+        steps: [
+          { type: 'agent_text', text: 'asking' },
+          { type: 'tool_call', toolCallId: 'ask-2', title: 'ask' },
+          { type: 'wait_for_file', path: sentinel },
+          { type: 'end_turn' },
+        ],
+      }),
+    );
+    const stream = await makeStream();
+    const { session } = await attachService.attach(stream.id);
+    await waitFor(() => store.listAgents().some((a) => a.id === session.id));
+    const { id: questionId } = await verbs.ask({ session: session.id, text: 'which delimiter?' });
+
+    // The stream is dragged back to `working` mid-turn (an answer delivery,
+    // a status write from elsewhere): the turn-end rule must put it back.
+    await streams.update('daemon', stream.id, {
+      agent: { status: 'working' },
+      human: { status: 'open' },
+    });
+    writeFileSync(sentinel, '');
+    await waitFor(
+      () => streams.get(stream.id).sessions.find((s) => s.id === session.id)?.status === 'idle',
+    );
+    expect(streams.get(stream.id).agent.status).toBe('question');
+    expect(streams.get(stream.id).human.status).toBe('waiting_on_you');
+    expect(questions.get(questionId as Question['id']).status).toBe('open');
+  }, 30_000);
+});
+
+describe('say — the stream page composer (T161)', () => {
+  test('with no worker the line is only a human thread line', async () => {
+    const stream = await makeStream();
+    const result = await attachService.say(stream.id, 'thinking about dialects');
+    expect(result.prompted).toBeUndefined();
+    expect(result.entry).toMatchObject({ by: 'human', kind: 'line' });
+  });
+
+  test('with a live worker the line is also prompted into it', async () => {
+    const log = join(scratch, 'say-prompts.jsonl');
+    attachService = buildAttachService(
+      fakeProviderFor(ACP_PROVIDERS.claude, { ...SPEAKS_THEN_HANGS, logFile: log }),
+    );
+    const stream = await makeStream();
+    const { session } = await attachService.attach(stream.id);
+    await waitFor(() => threadBodies(stream.id).some((b) => b.includes('looking at the parser')));
+    const result = await attachService.say(stream.id, 'use RFC 4180 quoting');
+    expect(result.prompted).toBe(session.id);
+    expect(
+      streams
+        .readThread(stream.id, { limit: 500 })
+        .entries.some((e) => e.by === 'human' && e.body === 'use RFC 4180 quoting'),
+    ).toBe(true);
+    // Queued behind the hanging first turn: stopping ends both; the log
+    // shows the brief was sent, and the say was accepted for delivery.
+    expect(existsSync(log) && readFileSync(log, 'utf8').includes('"session/prompt"')).toBe(true);
+  }, 30_000);
+
+  test('the prompt tells the worker to reply on the stream first (T174)', () => {
+    const text = sayPrompt('how many tests are you writing?');
+    expect(text).toContain('The operator wrote on the stream: how many tests are you writing?');
+    expect(text).toContain('Reply to the operator on the stream first, with `progress`');
+    expect(text).toContain('answer it directly');
+    expect(text).toContain('Then continue the work.');
+    expect(text).not.toContain('Continue the work.\n');
+  });
+
+  test('a mid-turn line is queued, shown as queued, and still runs before the session is let go (T174)', async () => {
+    const log = join(scratch, 'say-queued.jsonl');
+    const sentinel = join(scratch, 'turn-one.flag');
+    attachService = buildAttachService(
+      fakeProviderFor(ACP_PROVIDERS.claude, {
+        logFile: log,
+        steps: [{ type: 'agent_text', text: 'answered' }, { type: 'end_turn' }],
+        turns: [
+          [
+            { type: 'agent_text', text: 'working on it' },
+            { type: 'tool_call', toolCallId: 'read-9', title: 'read tests' },
+            { type: 'wait_for_file', path: sentinel },
+            { type: 'end_turn' },
+          ],
+        ],
+      }),
+    );
+    const stream = await makeStream();
+    const { session } = await attachService.attach(stream.id);
+    await waitFor(() => threadBodies(stream.id).some((b) => b.includes('working on it')));
+    const result = await attachService.say(stream.id, 'how many tests are you writing?');
+    expect(result.prompted).toBe(session.id);
+    const sessionRef = () => streams.get(stream.id).sessions.find((s) => s.id === session.id);
+    expect(sessionRef()?.queued).toEqual([result.entry.ts]);
+
+    // The first turn ends with nothing open: before T174 the turn-end rule
+    // stopped the session here and the queued line was never delivered.
+    writeFileSync(sentinel, '');
+    await waitFor(() => streams.get(stream.id).agent.status === 'done');
+    const prompts = readFileSync(log, 'utf8')
+      .split('\n')
+      .filter((l) => l.includes('"session/prompt"'));
+    expect(prompts.length).toBe(2);
+    expect(prompts[1]).toContain(
+      'The operator wrote on the stream: how many tests are you writing?',
+    );
+    expect(threadBodies(stream.id)).toContain('answered');
+    expect(sessionRef()?.status).toBe('stopped');
+    expect(sessionRef()?.queued).toBeUndefined();
+  }, 30_000);
+
+  test('a line to an idle-but-alive worker is prompted at once, never queued (T174)', async () => {
+    const log = join(scratch, 'say-idle.jsonl');
+    const sentinel = join(scratch, 'idle-ask.flag');
+    attachService = buildAttachService(
+      fakeProviderFor(ACP_PROVIDERS.claude, {
+        logFile: log,
+        steps: [{ type: 'agent_text', text: 'noted' }, { type: 'end_turn' }],
+        turns: [
+          [
+            { type: 'agent_text', text: 'asking' },
+            { type: 'wait_for_file', path: sentinel },
+            { type: 'end_turn' },
+          ],
+        ],
+      }),
+    );
+    const stream = await makeStream();
+    const { session } = await attachService.attach(stream.id);
+    await waitFor(() => store.listAgents().some((a) => a.id === session.id));
+    await verbs.ask({ session: session.id, text: 'which delimiter?' });
+    writeFileSync(sentinel, '');
+    const sessionRef = () => streams.get(stream.id).sessions.find((s) => s.id === session.id);
+    await waitFor(() => sessionRef()?.status === 'idle');
+    await attachService.say(stream.id, 'still there?');
+    expect(sessionRef()?.queued).toBeUndefined();
+    await waitFor(() => threadBodies(stream.id).includes('noted'));
+    // Still waiting on the open question: idle again, not let go.
+    await waitFor(() => sessionRef()?.status === 'idle');
+  }, 30_000);
+
+  test('a turn that ends while the queued marker is being written still runs the line (T174 review)', async () => {
+    const log = join(scratch, 'say-race.jsonl');
+    const sentinel = join(scratch, 'race-turn-one.flag');
+    attachService = buildAttachService(
+      fakeProviderFor(ACP_PROVIDERS.claude, {
+        logFile: log,
+        steps: [{ type: 'agent_text', text: 'answered in race' }, { type: 'end_turn' }],
+        turns: [
+          [
+            { type: 'agent_text', text: 'racing along' },
+            { type: 'tool_call', toolCallId: 'read-r', title: 'read' },
+            { type: 'wait_for_file', path: sentinel },
+            { type: 'end_turn' },
+          ],
+        ],
+      }),
+    );
+    const stream = await makeStream();
+    await attachService.attach(stream.id);
+    await waitFor(() => threadBodies(stream.id).some((b) => b.includes('racing along')));
+    // Hold say()'s marker write (the first stream update after the line) open.
+    const original = store.updateStream.bind(store);
+    let release: () => void = () => undefined;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let armed = false;
+    store.updateStream = (async (...args: Parameters<typeof original>) => {
+      if (armed) {
+        armed = false;
+        await held;
+      }
+      return original(...args);
+    }) as typeof store.updateStream;
+    try {
+      const appended = streams.readThread(stream.id, { limit: 500 }).entries.length;
+      armed = true;
+      const saying = attachService.say(stream.id, 'raced question?');
+      await waitFor(() => streams.readThread(stream.id, { limit: 500 }).entries.length > appended);
+      // The running turn ends inside the window.
+      writeFileSync(sentinel, '');
+      await waitFor(
+        () =>
+          existsSync(log) &&
+          readFileSync(log, 'utf8')
+            .split('\n')
+            .filter((l) => l.includes('"session/prompt"')).length === 2,
+      );
+      release();
+      await saying;
+      await waitFor(() => streams.get(stream.id).agent.status === 'done');
+      expect(readFileSync(log, 'utf8')).toContain('raced question?');
+      expect(threadBodies(stream.id)).toContain('answered in race');
+      expect(streams.get(stream.id).sessions.every((s) => s.queued === undefined)).toBe(true);
+    } finally {
+      release();
+      store.updateStream = original;
+    }
+  }, 30_000);
+});

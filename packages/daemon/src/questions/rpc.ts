@@ -1,39 +1,18 @@
 /**
- * `question.*` RPC methods over a `QuestionService` (T040, §17 "Control room
- * v2" → "Questions vs Decisions"). Mirrors `gates/rpc.ts` exactly: every
- * handler validates its params at the boundary with shared's own zod schemas
- * and throws `RpcParamError` (-32602) rather than letting a destructuring
- * `TypeError` reach `dispatch()`.
- *
- * `RpcError`/`RpcParamError` are re-used from `gates/rpc.ts` rather than
- * redefined — same JSON-RPC error contract, and `rpc.ts`'s `dispatch()`
- * still flattens every code to -32603 (documented there), so negative-path
- * tests assert on the message.
- *
- * Namespace note: `question` is not one of `rpc.ts`'s `STUB_NAMESPACES`
- * (`bus | state | hook | gate`), so an *unwired* `question.*` call is
- * "unknown method" rather than "not implemented yet". Every method below is
- * really implemented and wired in `daemon.ts`, so that only affects a daemon
- * started without a store.
+ * `question.*` RPC over a `QuestionService` (§1.4, §3). Params are validated
+ * at the boundary with shared's schemas (`RpcParamError`, -32602).
  */
 
 import {
   AgentIdSchema,
   QuestionIdSchema,
   QuestionTextSchema,
-  TicketIdSchema,
+  UlidSchema,
 } from '@agile-agents/shared';
-import type { AgentId, QuestionId, TicketId } from '@agile-agents/shared';
-import { RpcParamError } from '../gates/rpc';
+import type { AgentId, QuestionId } from '@agile-agents/shared';
+import { RpcParamError, requireObject, requireStreamId } from '../gates/rpc';
 import type { RpcMethodHandler } from '../rpc';
 import type { AnswerQuestionInput, QuestionService } from './service';
-
-function requireObject(params: unknown): Record<string, unknown> {
-  if (typeof params !== 'object' || params === null || Array.isArray(params)) {
-    throw new RpcParamError('params must be an object', { params });
-  }
-  return params as Record<string, unknown>;
-}
 
 function requireQuestionId(value: unknown): QuestionId {
   const result = QuestionIdSchema.safeParse(value);
@@ -59,13 +38,15 @@ function requireAgentId(value: unknown, field: string): AgentId {
   return result.data as AgentId;
 }
 
-function optionalTicket(value: unknown): TicketId | undefined {
+function optionalSession(value: unknown): string | undefined {
   if (value === undefined || value === null) return undefined;
-  const result = TicketIdSchema.safeParse(value);
+  const result = UlidSchema.safeParse(value);
   if (!result.success) {
-    throw new RpcParamError('invalid "ticket": must look like TKT-0231', { ticket: value });
+    throw new RpcParamError('invalid "session": must be a 26-character Crockford-base32 ULID', {
+      session: value,
+    });
   }
-  return result.data as TicketId;
+  return result.data;
 }
 
 function optionalOptions(value: unknown): string[] | undefined {
@@ -83,40 +64,18 @@ function requireBy(value: unknown): string {
   return value;
 }
 
-/** `{answer, resolved_as, ...}` -> the service's tagged input (the one place the wire shape is mapped). */
+/** `{answer, by, resolved_as?}` -> the service's input (the one place the wire shape is mapped). */
 export function parseAnswerParams(params: unknown): AnswerQuestionInput {
   const p = requireObject(params);
   const answer = requireText(p.answer, 'answer');
   const by = requireBy(p.by);
   const resolvedAs = p.resolved_as ?? 'reply';
-  if (resolvedAs === 'reply') return { resolved_as: 'reply', answer, by };
-  if (resolvedAs === 'decision') {
-    if (p.title !== undefined && (typeof p.title !== 'string' || p.title.length === 0)) {
-      throw new RpcParamError('"title" must be a non-empty string', { title: p.title });
-    }
-    return {
-      resolved_as: 'decision',
-      answer,
-      by,
-      ...(typeof p.title === 'string' ? { title: p.title } : {}),
-    };
+  if (resolvedAs !== 'reply') {
+    throw new RpcParamError('invalid "resolved_as": the only resolution is "reply"', {
+      resolved_as: resolvedAs,
+    });
   }
-  if (resolvedAs === 'ticket') {
-    const edit = p.edit;
-    if (typeof edit !== 'object' || edit === null || Array.isArray(edit)) {
-      throw new RpcParamError('"edit" must be an object when resolved_as is "ticket"', { edit });
-    }
-    return {
-      resolved_as: 'ticket',
-      answer,
-      by,
-      ...(p.ticket !== undefined ? { ticket: optionalTicket(p.ticket) as TicketId } : {}),
-      edit: edit as Record<string, unknown>,
-    };
-  }
-  throw new RpcParamError('invalid "resolved_as": must be "reply", "decision" or "ticket"', {
-    resolved_as: resolvedAs,
-  });
+  return { resolved_as: 'reply', answer, by };
 }
 
 export function buildQuestionRpcMethods(
@@ -130,13 +89,14 @@ export function buildQuestionRpcMethods(
     'question.get': (params) => service.get(requireQuestionId(requireObject(params).id)),
     'question.raise': (params) => {
       const p = requireObject(params);
+      const options = optionalOptions(p.options);
+      const session = optionalSession(p.session);
       return service.raise({
+        stream: requireStreamId(p.stream),
         raised_by: requireAgentId(p.raised_by, 'raised_by'),
         text: requireText(p.text, 'text'),
-        ...(p.ticket !== undefined ? { ticket: optionalTicket(p.ticket) as TicketId } : {}),
-        ...(optionalOptions(p.options) !== undefined
-          ? { options: optionalOptions(p.options) as string[] }
-          : {}),
+        ...(session !== undefined ? { session } : {}),
+        ...(options !== undefined ? { options } : {}),
       });
     },
     'question.answer': (params) => {

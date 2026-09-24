@@ -1,68 +1,47 @@
 /**
- * `GateService` — HIL requests, delegation, and the circuit breaker over a
- * `StateStore` (design/agile-agents-design.md §16 "HIL gates policy", §5
- * "HIL"). `HilRequest`/`BreakerState` are shared zod schemas
- * (`packages/shared/src/hil.ts`); this module owns only the resolution/
- * persistence/bus-notification logic over them.
+ * `GateService`: HIL requests, delegation and the circuit breaker over a
+ * `StateStore`. The schemas are shared (`packages/shared/src/hil.ts`);
+ * this module owns resolution, persistence and notification. Pending
+ * requests live under `gates/` (read fresh from disk, so they survive a
+ * restart) and the inbox shows them; the only bus write left is a note
+ * delivered to the session parked on a gate.
  *
- * T018 review fix summary (see `.pipeline-review.md` "Independent review
- * (opus)" for the full findings):
- *  1. Entity schemas moved to `packages/shared/src/hil.ts` (this file just imports them).
- *  2/3. `request()` now requires a `hilKind` and writes real bus messages —
- *       an urgent `hil_request` for every pending outcome, a low-priority
- *       `fyi` for every delegated decision — to `bus/inbox/human/<ulid>.yaml`
- *       via the store's generic entity trio (T006's own layout).
- *  4. No default delegate: without one injected, an `em`/`architect`-owned
- *     gate (or a timed-out `human_timeout` gate) stays `pending` with
- *     `reason: "no delegate configured"` instead of auto-approving.
- *  6. `list()`/`tick()`/`get()` read `board/hil/**` from disk via the new
- *     `StateStore.listEntities`, so they survive a daemon restart — no more
- *     in-process-only index.
- *
- * Finding 5 (RPC param validation) is addressed in `rpc.ts`.
+ * There is no default delegate: without one, a timed-out `human_timeout`
+ * gate stays `pending` with `reason: "no delegate configured"` rather than
+ * auto-approving.
  */
 
 import {
   type AgentId,
   AgentIdSchema,
+  type AgentMessage,
   BREAKER_SIGNALS,
   type BreakerSignal,
   type BreakerState,
+  type GateCall,
+  type GateKind,
   type GateOwner,
-  type GatesBlock,
   type HilDecision,
   type HilId,
   type HilKind,
   type HilRequest,
   MESSAGE_BODY_MAX_CHARS,
-  type Message,
   type Policy,
-  type TicketId,
+  type RuleId,
   ulid,
+  validateAgentMessage,
   validateBreakerState,
   validateHilRequest,
-  validateMessage,
 } from '@agile-agents/shared';
 import { NotFoundError, type StateStore, buildEvent } from '../store';
 import { parseDurationMs } from './duration';
 import { resolveGate } from './resolve';
 import { humanTimeoutDuration, isHumanTimeoutOwner } from './types';
 
-const HIL_DIR = 'board/hil';
-// Sibling of board/hil/, board/halts/, board/status/ — deliberately NOT
-// nested under board/hil/ so `StateStore.listEntities(HIL_DIR, ...)` never
-// has to special-case it (review nit).
-const BREAKER_PATH = 'board/breaker.yaml';
+const HIL_DIR = 'gates';
+// A sibling of `gates/`, not inside it, so `listEntities(HIL_DIR)` needn't skip it.
+const BREAKER_PATH = 'breaker.yaml';
 const NO_DELEGATE_REASON = 'no delegate configured';
-/** `reason` on a pending request an async delegate is still deciding. */
-export const DELEGATE_DECIDING_REASON = 'delegate deciding';
-// §5 "HIL": every hil_request message needs a deadline. A plain `human`
-// owner has no HIL deadline semantics of its own (§16 only defines one for
-// `human_timeout`), so a generous, non-enforced default is used purely to
-// satisfy MessageSchema's contract for bus delivery/redelivery bookkeeping.
-// DESIGN-GAP: not specified anywhere in the design.
-const DEFAULT_MESSAGE_DEADLINE_MS = parseDurationMs('7d');
-
 function hilPath(id: HilId): string {
   return `${HIL_DIR}/${id}.yaml`;
 }
@@ -71,7 +50,7 @@ function newHilId(): HilId {
   return `HIL-${ulid()}` as HilId;
 }
 
-/** Trims, caps at the shared message-body cap, and maps blank to `undefined` — the one place a note is normalized before it touches the schema. */
+/** Trims, caps at the message-body cap, maps blank to `undefined`. */
 function normalizeNote(note: string | undefined): string | undefined {
   if (note === undefined) return undefined;
   const trimmed = note.trim().slice(0, MESSAGE_BODY_MAX_CHARS);
@@ -89,66 +68,65 @@ export interface GateDecision {
 }
 
 /**
- * Auto-decides an `em`/`architect`-owned gate, or a `human_timeout` gate
- * that fell through at its deadline (§16: "tick(now) falls through to the
- * delegate at the deadline" reuses the same delegation logic as a
- * policy-delegated owner). No default is provided by this module — see
- * `GateServiceOptions.delegate`'s header (finding 4: fail closed, not open).
+ * What the delegate sees: a `human_timeout` gate at its deadline, or a
+ * pending gate a human added a note to.
  */
 export interface DelegateContext {
-  gate: string;
+  gate: GateKind;
   owner: GateOwner;
-  ticket?: TicketId;
+  /** The stream the gate was raised on. */
+  stream: string;
   hilKind?: HilKind;
-  /** What was asked — see `HilRequest.summary`. */
+  /** What was asked (`HilRequest.summary`). */
   summary?: string;
-  /** Free text the human typed on the card (T039). Present when a note was written without a button press, or when a noted decision is re-delegated. */
+  /** The human's note: written without a button press, or carried by a re-delegated decision. */
   note?: string;
 }
 
 /**
- * A synchronous delegate decides inline (the request is persisted already
- * resolved — every existing test/`--fake` delegate). An async one (the EM
- * session delegate, `em/delegate.ts`) is persisted `pending` with
- * `reason: "delegate deciding"` and resolved when its promise settles —
- * the hook that raised it must answer Claude within its own 5 s timeout
- * and cannot wait on a model turn.
+ * A delegate may decide inline or asynchronously; an async decision is
+ * persisted when its promise settles, unless a human answered first.
  */
 export type DelegateFn = (ctx: DelegateContext) => GateDecision | Promise<GateDecision>;
 
 export interface GateServiceOptions {
   clock?: () => Date;
-  /**
-   * Injectable so tests (and, eventually, the EM/architect adapters) control
-   * auto-decisions. Deliberately optional with NO default implementation
-   * (review finding 4): a human-in-the-loop gate must never auto-approve
-   * itself just because nobody wired a delegate yet. Without one, an
-   * `em`/`architect`-owned request (or a timed-out `human_timeout` one)
-   * stays `pending` with `reason: "no delegate configured"`.
-   */
+  /** Injectable, with no default: a human gate must never approve itself because nobody wired a delegate. */
   delegate?: DelegateFn;
 }
 
 export interface GateRequestContext {
   policy: Policy;
-  sprint?: GatesBlock;
-  epic?: GatesBlock;
-  team?: GatesBlock;
-  ticket?: TicketId;
-  /** `hil_request` kind (§5 "HIL"): approve_decision | steer | demo | unblock. Required. */
-  hilKind: HilKind;
-  /** Who to attribute the resulting bus message to. Defaults to `'daemon'`. */
-  from?: AgentId;
+  /** The stream this gate is raised on: required, or it has nowhere to show in the inbox (§3.2). */
+  stream: string;
   /**
-   * T048: the agent whose blocked call raised this gate (the hook caller, the
-   * ACP session), persisted as `HilRequest.requested_by` and used by
-   * `waitingAgent` to deliver the decision back to it. Leave unset for a
-   * gate the daemon raises on nobody's behalf (`sprint_review`,
-   * `promote_to_main`) — delivery then falls back to the ticket's assignee.
+   * The agent whose blocked call raised this gate (`HilRequest.requested_by`),
+   * to deliver the decision back to. Unset for a gate raised on nobody's behalf.
    */
   requestedBy?: AgentId;
-  /** What was asked — stored on the record, shown in the notice, handed to the delegate. */
+  /** What was asked: stored, shown, handed to the delegate. */
   summary?: string;
+  /**
+   * The route band (§8.1): the blocked tool call and its session, persisted
+   * verbatim because an approval means "this one call, from this session,
+   * once" (the hook matches the fingerprint on the retry).
+   */
+  call?: GateCall;
+  session?: AgentId;
+  /** The classifier rule whose band routed this call, so the answer is attributed back (§6.3). */
+  rule?: RuleId;
+}
+
+/**
+ * An approved gate's single retry was already spent. Thrown, so that of
+ * two identical in-flight calls only one is allowed by one approval; the
+ * loser falls back to routing.
+ */
+export class GateAlreadyConsumedError extends Error {
+  constructor(id: string) {
+    super(`hil request already consumed: ${id}`);
+    this.name = 'GateAlreadyConsumedError';
+  }
 }
 
 export class GateNotFoundError extends Error {
@@ -189,6 +167,8 @@ export class UnknownBreakerSignalError extends Error {
 export class GateService {
   private readonly clock: () => Date;
   private readonly delegate: DelegateFn | undefined;
+  /** Serializes `consume` so its read-decide-write is one critical section. */
+  private consumeChain: Promise<unknown> = Promise.resolve();
 
   constructor(
     private readonly store: StateStore,
@@ -245,13 +225,9 @@ export class GateService {
    * Resolves `gate`'s owner (most-specific-wins, overridden to `human` with
    * a naming `reason` while any breaker is tripped) and opens a `HilRequest`:
    * `human` → pending, no deadline; `human_timeout:<d>` → pending with a
-   * deadline; `em`/`architect` → immediately auto-decided via `delegate`
-   * when one is configured (decision artifact + `fyi` bus message), else
-   * left `pending` with `reason: "no delegate configured"`. Every pending
-   * outcome also writes an urgent `hil_request` bus message to the human's
-   * inbox (§5 "HIL").
+   * deadline. The pending record under `gates/` is what the inbox shows.
    */
-  async request(gate: string, ctx: GateRequestContext): Promise<HilRequest> {
+  async request(gate: GateKind, ctx: GateRequestContext): Promise<HilRequest> {
     const resolved = resolveGate(gate, ctx);
     const tripped = this.trippedSignals();
     const breakerActive = tripped.length > 0;
@@ -264,55 +240,37 @@ export class GateService {
     const base: HilRequest = {
       id: newHilId(),
       gate,
-      hil_kind: ctx.hilKind,
-      ...(ctx.ticket !== undefined ? { ticket: ctx.ticket } : {}),
+      // The gate and kind are the same closed set, so they can never drift apart.
+      hil_kind: gate,
+      stream: ctx.stream,
       owner,
       status: 'pending',
       requested_at: now.toISOString(),
       ...(breakerReason !== undefined ? { reason: breakerReason } : {}),
       ...(ctx.summary !== undefined ? { summary: ctx.summary } : {}),
       ...(ctx.requestedBy !== undefined ? { requested_by: ctx.requestedBy } : {}),
+      ...(ctx.call !== undefined ? { call: ctx.call } : {}),
+      ...(ctx.session !== undefined ? { session: ctx.session } : {}),
+      ...(ctx.rule !== undefined ? { rule: ctx.rule } : {}),
     };
 
-    let record: HilRequest;
-    let deciding: Promise<GateDecision> | undefined;
-    if (owner === 'em' || owner === 'architect') {
-      if (!this.delegate) {
-        record = { ...base, reason: base.reason ?? NO_DELEGATE_REASON };
-      } else {
-        const outcome = this.callDelegate(base);
-        if (outcome instanceof Promise) {
-          record = { ...base, reason: DELEGATE_DECIDING_REASON };
-          deciding = outcome;
-        } else {
-          record = this.finalizeDecision(base, outcome, now, 'gate policy');
-        }
-      }
-    } else if (isHumanTimeoutOwner(owner)) {
+    let record: HilRequest = base; // plain human
+    if (isHumanTimeoutOwner(owner)) {
       const deadline = new Date(now.getTime() + parseDurationMs(humanTimeoutDuration(owner)));
       record = { ...base, deadline: deadline.toISOString() };
-    } else {
-      record = base; // plain human
     }
 
     const saved = await this.persist(record);
     await this.store.appendEvent(
-      buildEvent('hil_requested', {
-        ...(saved.ticket !== undefined ? { ticket: saved.ticket } : {}),
+      buildEvent('gate_raised', {
+        stream: saved.stream,
         data: { id: saved.id, gate: saved.gate, owner: saved.owner },
       }),
     );
-
-    if (saved.status === 'resolved') {
-      await this.notifyResolved(saved);
-    } else {
-      await this.notifyPending(saved, ctx.from ?? 'daemon');
-    }
-    if (deciding) this.settleLater(saved, deciding, 'gate policy');
     return saved;
   }
 
-  /** Async delegate decisions still in flight — `await settled()` in a test or a shutdown path. */
+  /** Async delegate decisions in flight. */
   private readonly inFlight = new Set<Promise<void>>();
 
   /** Resolves once every async delegate decision started so far has been persisted (or failed closed). */
@@ -326,9 +284,8 @@ export class GateService {
       try {
         decision = await deciding;
       } catch (err) {
-        // Fail closed: a delegate that crashes or times out denies, with the
-        // failure as the rationale, rather than leaving the request pending
-        // forever with nobody to answer it.
+        // Fail closed: a delegate that crashes or times out denies, rather
+        // than leaving the request pending with nobody to answer it.
         decision = {
           decision: 'deny',
           by: pending.owner,
@@ -339,15 +296,15 @@ export class GateService {
       try {
         current = this.get(pending.id);
       } catch {
-        return; // request vanished (state reset) — nothing to resolve.
+        return; // vanished (state reset)
       }
-      if (current.status !== 'pending') return; // a human answered first — theirs stands.
+      if (current.status !== 'pending') return; // a human answered first: theirs stands
       const { reason: _reason, ...withoutReason } = current;
       const resolved = this.finalizeDecision(withoutReason, decision, this.clock(), via);
       const saved = await this.persist(resolved);
       await this.notifyResolved(saved);
     })().catch(() => {
-      // Persist/notify failures are logged by the store; never unhandled here.
+      // Never unhandled.
     });
     this.inFlight.add(task);
     void task.finally(() => this.inFlight.delete(task));
@@ -359,7 +316,7 @@ export class GateService {
     return delegate({
       gate: base.gate,
       owner: base.owner,
-      ticket: base.ticket,
+      stream: base.stream,
       hilKind: base.hil_kind,
       summary: base.summary,
       note: base.note,
@@ -376,9 +333,7 @@ export class GateService {
     now: Date,
     via: string,
   ): HilRequest {
-    // A resolved record carries no live deadline (review nit) — drop the key
-    // entirely rather than setting it `undefined`, so yaml/json round-trip
-    // never has to reason about an explicit-undefined field.
+    // A resolved record has no live deadline: drop the key, not `undefined`.
     const { deadline: _deadline, ...withoutDeadline } = base;
     return {
       ...withoutDeadline,
@@ -399,51 +354,17 @@ export class GateService {
     return this.store.putEntity(hilPath(record.id), validateHilRequest, record);
   }
 
-  private async notifyPending(req: HilRequest, from: AgentId): Promise<void> {
-    const deadline =
-      req.deadline ??
-      new Date(new Date(req.requested_at).getTime() + DEFAULT_MESSAGE_DEADLINE_MS).toISOString();
-    const message: Message = {
-      id: ulid(),
-      ts: req.requested_at,
-      from,
-      to: ['human'],
-      kind: 'hil_request',
-      priority: 'urgent',
-      ...(req.ticket !== undefined ? { ticket: req.ticket } : {}),
-      body: `gate "${req.gate}" needs a human decision (${req.hil_kind})${req.summary ? `: ${req.summary}` : ''}${req.reason ? ` — ${req.reason}` : ''}`.slice(
-        0,
-        MESSAGE_BODY_MAX_CHARS,
-      ),
-      refs: [hilPath(req.id)],
-      requires_ack: true,
-      deadline,
-      hil_kind: req.hil_kind,
-    };
-    const validated = validateMessage(message);
-    await this.store.putEntity(inboxPath('human', validated.id), validateMessage, validated);
+  private async notifyResolved(req: HilRequest): Promise<void> {
+    if (!req.delegated) return;
+    await this.announce(req, req.decided_by ?? req.owner);
   }
 
-  private async notifyResolved(req: HilRequest): Promise<void> {
-    if (!req.delegated || !req.fyi) return;
-    const message: Message = {
-      id: ulid(),
-      ts: req.fyi.sent_at,
-      from: 'daemon',
-      to: ['human'],
-      kind: 'fyi',
-      priority: 'low',
-      ...(req.ticket !== undefined ? { ticket: req.ticket } : {}),
-      body: req.fyi.body,
-      refs: [hilPath(req.id)],
-      requires_ack: false,
-    };
-    const validated = validateMessage(message);
-    await this.store.putEntity(inboxPath('human', validated.id), validateMessage, validated);
+  /** The `gate_resolved` event and, when the human wrote one, the note to the waiting agent. */
+  private async announce(req: HilRequest, by: string): Promise<void> {
     await this.store.appendEvent(
-      buildEvent('hil_resolved', {
-        ...(req.ticket !== undefined ? { ticket: req.ticket } : {}),
-        agent: req.decided_by,
+      buildEvent('gate_resolved', {
+        stream: req.stream,
+        agent: by,
         data: {
           id: req.id,
           decision: req.decision,
@@ -451,28 +372,19 @@ export class GateService {
         },
       }),
     );
-    // T039 review round 1 (blocker): a request resolved through the delegate
-    // path (`addNote` -> EM decides, single-instance delegation, or a
-    // `human_timeout` fallthrough) used to send only the human `fyi` above,
-    // so the agent actually waiting on the gate never saw the note it was
-    // answered with. Deliver it exactly as `respond()` does — this is the
-    // ticket's PRIMARY flow ("a note with no button press ... the EM delegate
-    // reads it and decides").
     if (req.note !== undefined) {
       await this.deliverNote(
         req,
-        req.decided_by ?? req.owner,
-        `gate "${req.gate}" ${req.decision === 'approve' ? 'approved' : 'denied'} by ${req.decided_by ?? req.owner}`,
+        by,
+        `gate "${req.gate}" ${req.decision === 'approve' ? 'approved' : 'denied'} by ${by}`,
       );
     }
   }
 
   /**
-   * A human (or anyone acting as the resolved owner) answers a pending
-   * request directly. `note` is the free text typed on the Needs-you card
-   * (T039, §17 "Control room v2"): it is persisted on the record, carried on
-   * the `hil_resolved` event, and delivered as an `hil_response` bus message
-   * to the agent that is waiting on the gate and to the EM.
+   * A human (or the resolved owner) answers a pending request. `note`, the
+   * card's free text, is persisted, carried on the event and delivered to
+   * the waiting agent.
    */
   async respond(id: HilId, decision: HilDecision, by: string, note?: string): Promise<HilRequest> {
     const current = this.get(id);
@@ -488,33 +400,14 @@ export class GateService {
       resolved_at: now.toISOString(),
       ...(trimmed !== undefined ? { note: trimmed } : {}),
     });
-    await this.store.appendEvent(
-      buildEvent('hil_resolved', {
-        ...(saved.ticket !== undefined ? { ticket: saved.ticket } : {}),
-        agent: by,
-        data: {
-          id: saved.id,
-          decision: saved.decision,
-          ...(saved.note !== undefined ? { note: saved.note } : {}),
-        },
-      }),
-    );
-    if (saved.note !== undefined) {
-      await this.deliverNote(
-        saved,
-        by,
-        `gate "${saved.gate}" ${saved.decision === 'approve' ? 'approved' : 'denied'} by ${by}`,
-      );
-    }
+    await this.announce(saved, by);
     return saved;
   }
 
   /**
-   * A typed answer with no button press (T039, §17 "Control room v2"): the
-   * note is stored on the still-`pending` request and handed to the EM — as
-   * an inbox message and, when a delegate is configured, as a fresh delegate
-   * call carrying the note. **It never resolves the gate by itself**; the
-   * delegate's approve/deny (or a later button press) does.
+   * A typed answer with no button press: stored on the still-pending
+   * request and handed to the delegate, if any. It never resolves the gate
+   * itself; the waiting agent hears it once the gate is decided.
    */
   async addNote(id: HilId, note: string, by: string): Promise<HilRequest> {
     const current = this.get(id);
@@ -522,9 +415,6 @@ export class GateService {
     const trimmed = normalizeNote(note);
     if (trimmed === undefined) throw new EmptyNoteError(id);
     const saved = await this.persist({ ...current, note: trimmed });
-    await this.deliverNote(saved, by, `note on gate "${saved.gate}" (no decision yet)`, {
-      emOnly: true,
-    });
     if (this.delegate) {
       const outcome = this.callDelegate(saved);
       const deciding = outcome instanceof Promise ? outcome : Promise.resolve(outcome);
@@ -534,119 +424,42 @@ export class GateService {
   }
 
   /**
-   * Writes the note into the waiting agent's inbox (the ticket's assignee —
-   * the agent whose hook raised the gate) and the EM's, as a normal-priority
-   * `hil_response` (§5 "HIL": "daemon holds ... until `hil_response`"). Same
-   * direct-to-inbox write `notifyPending`/`notifyResolved` use, so no bus
-   * routing rule is involved.
+   * Writes the note into the waiting agent's inbox as a normal-priority
+   * `hil_response`, which its next hook injects as context.
    */
-  private async deliverNote(
-    req: HilRequest,
-    by: string,
-    headline: string,
-    options: { emOnly?: boolean } = {},
-  ): Promise<void> {
+  private async deliverNote(req: HilRequest, by: string, headline: string): Promise<void> {
     if (req.note === undefined) return;
-    const recipients: AgentId[] = ['em'];
-    const waiting = options.emOnly ? undefined : this.waitingAgent(req);
-    if (waiting !== undefined && waiting !== 'em') recipients.unshift(waiting);
+    const waiting = req.requested_by;
+    if (waiting === undefined) return;
 
-    const body = `${headline} — ${by} wrote: ${req.note}`.slice(0, MESSAGE_BODY_MAX_CHARS);
-    /**
-     * T048: the raising agent gets a message written *to* it — "your gate was
-     * decided, retry your call" — not the EM's third-person report. It
-     * deliberately does not repeat `req.summary` (the whole blocked command,
-     * already body-capped once on the record): the agent knows what it just
-     * tried, and quoting it back inside another 800-char body was the other
-     * half of the first live run's confusion.
-     */
+    // Addressed to the agent ("retry your call"), without repeating the
+    // blocked command it already knows.
     const decided =
       req.decision === 'approve' ? 'approved' : req.decision === 'deny' ? 'denied' : undefined;
-    const waitingBody =
+    const body = (
       decided === undefined
-        ? body
-        : `your gate "${req.gate}" was ${decided} by ${by} — ${by} wrote: ${req.note}. Retry the call it blocked.`.slice(
-            0,
-            MESSAGE_BODY_MAX_CHARS,
-          );
-    // `by` is a free string on the wire (`--by pete`); only use it as the
-    // message's `from` when it is actually a valid agent id, else attribute
-    // the note to `human` (the card it was typed on).
+        ? `${headline} — ${by} wrote: ${req.note}`
+        : `your gate "${req.gate}" was ${decided} by ${by} — ${by} wrote: ${req.note}. Retry the call it blocked.`
+    ).slice(0, MESSAGE_BODY_MAX_CHARS);
+    // `by` is free text (`--by pete`): use it as `from` only when it is a valid agent id.
     const from: AgentId = AgentIdSchema.safeParse(by).success ? (by as AgentId) : 'human';
-    const ts = this.clock().toISOString();
-    for (const to of recipients) {
-      const message: Message = {
-        id: ulid(),
-        ts,
-        from,
-        to: [to],
-        kind: 'hil_response',
-        priority: 'normal',
-        ...(req.ticket !== undefined ? { ticket: req.ticket } : {}),
-        body: to === 'em' ? body : waitingBody,
-        refs: [hilPath(req.id)],
-        requires_ack: false,
-      };
-      const validated = validateMessage(message);
-      await this.store.putEntity(inboxPath(to, validated.id), validateMessage, validated);
-    }
+    const message: AgentMessage = validateAgentMessage({
+      id: ulid(),
+      ts: this.clock().toISOString(),
+      from,
+      to: [waiting],
+      kind: 'hil_response',
+      priority: 'normal',
+      body,
+      refs: [hilPath(req.id)],
+    });
+    await this.store.putEntity(inboxPath(waiting, message.id), validateAgentMessage, message);
   }
 
   /**
-   * The agent waiting on this gate. `requested_by` (T048) when the raiser
-   * recorded itself — the hook caller or the ACP session whose call is parked
-   * on this decision. Only when it is absent does this fall back to the
-   * ticket's assignee, which is what this used to do unconditionally: a QA or
-   * reviewer hook raises gates on a ticket assigned to the *engineer*, so
-   * qa-2003's approved `unblock` was delivered into eng-2003's inbox and the
-   * engineer refused a command outside its own worktree (first live run of
-   * the control-room branch, 2026-09-18). `undefined` for a ticketless
-   * request with no `requested_by`.
-   */
-  private waitingAgent(req: HilRequest): AgentId | undefined {
-    if (req.requested_by !== undefined) return req.requested_by;
-    if (req.ticket === undefined) return undefined;
-    let assignee: string | undefined;
-    try {
-      assignee = this.store.getTicket(req.ticket).assignee;
-    } catch {
-      return undefined;
-    }
-    // Review nit: never cast — an assignee that isn't a valid agent id would
-    // otherwise throw out of `validateMessage` *after* the decision and its
-    // event were already persisted. Skip the delivery instead.
-    const parsed = AgentIdSchema.safeParse(assignee);
-    return parsed.success ? (parsed.data as AgentId) : undefined;
-  }
-
-  /**
-   * "Single-instance override: any pending `hil_request` can be delegated
-   * from the attention queue without changing policy" (§16). Only usable
-   * while `pending` — once used the request is `resolved`, so a second
-   * `delegateRequest` call on the same id is refused (T018 acceptance).
-   * Requires a `delegate` function (fail closed, same as `request()`).
-   */
-  async delegateRequest(id: HilId, to: 'em' | 'architect'): Promise<HilRequest> {
-    const current = this.get(id);
-    if (current.status !== 'pending') throw new GateAlreadyResolvedError(id);
-    if (!this.delegate) throw new NoDelegateConfiguredError(id);
-    const resolved = await this.autoDecide(
-      { ...current, owner: to },
-      this.clock(),
-      'single-instance delegation',
-    );
-    const saved = await this.persist(resolved);
-    await this.notifyResolved(saved);
-    return saved;
-  }
-
-  /**
-   * Falls every pending `human_timeout:<d>` request whose deadline has
-   * passed through to the delegate ("proceed as the fallback owner would",
-   * §16) — exactly at the deadline, not before (T018 acceptance). Without a
-   * configured delegate, a due request stays `pending` with
-   * `reason: "no delegate configured"` instead of silently resolving
-   * (finding 4) and is not counted as "fallen through".
+   * Falls every pending `human_timeout:<d>` request at or past its deadline
+   * through to the delegate. Without one, it stays `pending` with
+   * `reason: "no delegate configured"` and does not count as fallen through.
    */
   async tick(now: Date = this.clock()): Promise<HilRequest[]> {
     const fallenThrough: HilRequest[] = [];
@@ -669,6 +482,25 @@ export class GateService {
     return fallenThrough;
   }
 
+  /**
+   * Spends an approved `classifier_review` gate's single retry. Once, not
+   * standing: a second attempt at the same call is routed again.
+   */
+  async consume(id: HilId): Promise<HilRequest> {
+    const run = this.consumeChain.then(async () => {
+      // Re-read inside the critical section: this read decides, not the caller's.
+      const current = this.get(id);
+      if (current.consumed_at !== undefined) throw new GateAlreadyConsumedError(id);
+      return this.persist({ ...current, consumed_at: this.clock().toISOString() });
+    });
+    // Keep the chain alive when one consume rejects.
+    this.consumeChain = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
+  }
+
   get(id: HilId): HilRequest {
     try {
       return this.store.getEntity(hilPath(id), validateHilRequest);
@@ -678,7 +510,7 @@ export class GateService {
     }
   }
 
-  /** Durable: reads `board/hil/**` fresh from disk every call (review finding 6). */
+  /** Durable: reads `gates/**` fresh from disk every call. */
   list(): HilRequest[] {
     return this.store.listEntities(HIL_DIR, validateHilRequest);
   }

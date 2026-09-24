@@ -1,30 +1,25 @@
 /**
- * `agile init` — bootstrap `.agile/` state in the current git repo (T004).
- * Unchanged behaviour from T004; moved here so `index.ts` is pure dispatch.
+ * `agile init` — create the state home if missing (T111). The home is
+ * `$AGILE_HOME` (default `~/.agile/`); nothing is written inside the repo.
  */
 
-import { AlreadyInitialisedError, discoverConfig, runInit } from '@agile-agents/daemon';
+import { discoverConfig, runInit } from '@agile-agents/daemon';
 
 export interface CliInitResult {
   message: string;
-  /** True when init refused because the repo was already bootstrapped — the
-   * caller (`runCli`) turns this into a non-zero exit on stderr, not a
-   * thrown exception, since it's a clean, expected outcome, not a crash. */
+  /** Kept for callers/tests: true when the home already had every file (a no-op re-run). */
   alreadyInitialised: boolean;
 }
 
-export function runCliInit(cwd: string = process.cwd()): CliInitResult {
-  const { repoRoot } = discoverConfig({ cwd });
-  try {
-    const result = runInit(repoRoot);
-    return {
-      message: `agile init: bootstrapped ${result.stateRoot} on branch ${result.branch} (${result.filesWritten.length} files)`,
-      alreadyInitialised: false,
-    };
-  } catch (err) {
-    if (err instanceof AlreadyInitialisedError) {
-      return { message: err.message, alreadyInitialised: true };
-    }
-    throw err;
-  }
+/**
+ * T125: takes no cwd. The home is the only input, and it comes from
+ * `$AGILE_HOME`/the default — `agile init` works from any directory.
+ */
+export function runCliInit(): CliInitResult {
+  const { home } = discoverConfig();
+  const result = runInit(home);
+  return {
+    message: `agile init: state home ${result.home} ready (${result.filesWritten.length} files written)`,
+    alreadyInitialised: result.filesWritten.length === 0,
+  };
 }

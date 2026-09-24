@@ -1,8 +1,8 @@
-# Verbatim from design/agile-agents-design.md §16 "HIL gates policy"
-# (.agile/policy.yaml repo default).
+# T121: the repo-default policy after the reshape — the three surviving gate
+# kinds of design/cockpit-design.md §3.1 (`~/.agile/policy.yaml`). Every
+# other row (approve_plan, approve_decision, sprint_review, unblock, demo)
+# is deleted with the ceremony that needed it.
 gates:
-  approve_plan:     human
-  approve_decision: human            # product-level DECs
-  sprint_review:    human            # integration → main
-  unblock:          em
-  demo:             human
+  land:              human
+  rule_accept:       human
+  classifier_review: human

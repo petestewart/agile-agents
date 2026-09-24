@@ -1,5 +1,13 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -58,6 +66,16 @@ describe('atomicWriteFile', () => {
     atomicWriteFile(path, 'status: draft\n');
     expect(readdirSync(dir)).toEqual(['TKT-0001.yaml']);
   });
+
+  // T167 review: a secret (the classifier key in config.yaml) must never sit
+  // at its final path with looser permissions, so the mode is set on the
+  // temp file before the rename — including when replacing a 0644 file.
+  test('mode is applied before the rename, even over an existing looser file', () => {
+    const path = join(dir, 'config.yaml');
+    atomicWriteFile(path, 'a: 1\n');
+    atomicWriteFile(path, 'secret: x\n', 0o600);
+    expect(statSync(path).mode & 0o777).toBe(0o600);
+  });
 });
 
 describe('isHiddenOrTempFile', () => {
@@ -90,8 +108,8 @@ describe('listDataFiles', () => {
   });
 
   test('is sorted with numeric collation, whatever order the filesystem returns', () => {
-    // CI (ext4) returned `S-2.yaml` before `S-1.yaml`, so `listSprints()[0]`
-    // was the wrong sprint; APFS/tmpfs happened to return them sorted.
+    // CI (ext4) returned `b.yaml` before `a.yaml`, so a caller taking the
+    // first entry got the wrong file; APFS/tmpfs happened to return them sorted.
     for (const name of ['S-10.yaml', 'S-2.yaml', 'S-1.yaml', 'S-3.yaml']) {
       writeFileSync(join(dir, name), '');
     }

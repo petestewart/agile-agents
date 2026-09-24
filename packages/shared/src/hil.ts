@@ -14,9 +14,10 @@
  */
 
 import { z } from 'zod';
-import { AgentIdSchema, TicketIdSchema, ULID_PATTERN, formatZodError } from './ids';
-import { HilKindSchema, MessageBodySchema } from './message';
+import { HilKindSchema, MessageBodySchema } from './agent-message';
+import { AgentIdSchema, ULID_PATTERN, UlidSchema, formatZodError } from './ids';
 import { GateOwnerSchema } from './policy';
+import { RuleIdSchema } from './rule';
 
 /**
  * `HIL-<ulid>` — reuses `ids.ts`'s ULID charset (Crockford base32, 26 chars)
@@ -40,8 +41,8 @@ export type HilDecision = z.infer<typeof HilDecisionSchema>;
 /**
  * "send the human a low-priority `fyi`" (§16) — the notice a delegated
  * decision carries. `body` reuses `MessageBodySchema` (the same 800-char cap
- * every bus message body gets) since this is exactly that payload, written
- * as a real `fyi`-kind `Message` by `packages/daemon/src/gates/service.ts`.
+ * every bus message body gets); it lives on the record, which is what the
+ * inbox reads.
  */
 export const HilFyiSchema = z
   .object({
@@ -57,18 +58,64 @@ export type HilFyi = z.infer<typeof HilFyiSchema>;
  * well as its buttons. The free text a human wrote with (or instead of) a
  * button press — body-capped exactly like a bus message body, since that is
  * what it becomes when `gates/service.ts` delivers it to the asking agent
- * (`hil_response`) and to the EM. Non-empty: an empty note is the same as no
+ * (`hil_response`). Non-empty: an empty note is the same as no
  * note and is rejected at the boundary rather than persisted as `""`.
  */
 export const HilNoteSchema = MessageBodySchema.min(1, 'note must not be empty');
 
+/**
+ * T138 (design/cockpit-design.md §8.1 route band): the tool call a
+ * `classifier_review` gate was raised on. `fingerprint` is what makes the
+ * gate answerable at all — an approval is not "this session may edit
+ * manifests from now on", it is "this one call may go through once" — so it
+ * is stored on the record and matched again when the session retries.
+ * `tool` plus `path`/`command` are the human-readable half: the inbox card
+ * shows the call ("edit package.json", "bash: git push …") so the operator
+ * can decide without leaving the list (§3.2).
+ */
+export const GateCallSchema = z
+  .object({
+    /** Vendor tool name as the hook saw it (`Edit`, `Write`, `Bash`, …). */
+    tool: z.string().min(1),
+    /** Normalised absolute path, for an edit-kind call. */
+    path: z.string().min(1).optional(),
+    /** The exact command, for an execute-kind call — body-capped like every other persisted payload. */
+    command: MessageBodySchema.min(1).optional(),
+    /** Stable digest of `tool` + path/command — see `packages/daemon/src/hook/fingerprint.ts`. */
+    fingerprint: z.string().regex(/^[0-9a-f]{16}$/, 'must be a 16-char hex digest'),
+    /**
+     * T152: which tier raised this gate, when it matters who may act on the
+     * answer. Only `landing/diff-rules.ts` sets `diff_rules`, and answering
+     * such a gate performs a **merge** (§8.2) — so the marker must be one
+     * the per-action hook path cannot produce. `tool` cannot be that marker:
+     * it is `payload.tool_name` verbatim, an arbitrary vendor-reported
+     * string, so a vendor or MCP tool literally named `land` would have
+     * matched a sentinel on it and turned an approval for one edit into a
+     * merge into a protected branch. This field is never sourced from
+     * vendor data — `fingerprintCall` does not set it and cannot — which
+     * makes the distinction structural rather than a coincidence of naming.
+     */
+    origin: z.literal('diff_rules').optional(),
+  })
+  .strict();
+export type GateCall = z.infer<typeof GateCallSchema>;
+
+/** The call as one line for an inbox card or a thread entry ("edit package.json", "bash: git push origin main"). */
+export function describeGateCall(call: GateCall): string {
+  if (call.command !== undefined) return `bash: ${call.command}`;
+  if (call.path !== undefined) return `${call.tool.toLowerCase()} ${call.path}`;
+  return call.tool;
+}
+
 export const HilRequestSchema = z
   .object({
     id: HilIdSchema,
-    gate: z.string().min(1),
-    // "`hil_request` has `kind: approve_decision | steer | demo | unblock`" (§5 "HIL").
+    /** T121: the gate name is one of the three surviving kinds, exactly like `hil_kind` — `GatesBlockSchema` is keyed by the same closed set, so a policy row and a request can never drift apart. */
+    gate: HilKindSchema,
+    /** One of the three surviving gate kinds (`message.ts`'s `HIL_KINDS`, cockpit design §3.1). */
     hil_kind: HilKindSchema,
-    ticket: TicketIdSchema.optional(),
+    /** T121: a gate is raised **on a stream** — the reshape's unit of work. `ticket`/`sprint` are gone with the ticket model. */
+    stream: UlidSchema,
     /** Owner this request actually resolved to (post-breaker-override). */
     owner: GateOwnerSchema,
     status: HilRequestStatusSchema,
@@ -77,7 +124,7 @@ export const HilRequestSchema = z
     deadline: z.string().datetime().optional(),
     /** Names the tripped breaker signal(s), or "no delegate configured" (§16 fail-closed rule). */
     reason: z.string().min(1).optional(),
-    /** What was actually asked (the command a hook refused, the permission a session requested, ...) — the part a human or delegate needs to decide on. Absent for gates that carry their own context (sprint_review). */
+    /** What was actually asked (the command a hook refused, the permission a session requested, ...) — the part a human or delegate needs to decide on. Absent for a gate that carries its own context. */
     summary: z.string().min(1).optional(),
     /**
      * T048: the agent whose blocked call raised this gate — the hook caller
@@ -86,17 +133,37 @@ export const HilRequestSchema = z
      * a ticket assigned to the engineer, and the first live run of the
      * control room delivered qa-2003's approved `unblock` into eng-2003's
      * inbox, where the engineer refused a command outside its worktree.
-     * `gates/service.ts`'s `waitingAgent` targets this when present and
-     * falls back to the assignee only when it is absent (older records,
-     * daemon-raised gates like `sprint_review`/`promote_to_main`).
+     * `gates/service.ts`'s `waitingAgent` is now exactly this field: the
+     * ticket-assignee fallback went with the ticket model (T121), so a gate
+     * the daemon raises on nobody's behalf simply has nobody waiting.
      */
     requested_by: AgentIdSchema.optional(),
+    /**
+     * T138: the tool call this gate blocks, and the session that made it.
+     * `session` is the fingerprint's other half — an approval unlocks the
+     * same call *from the session that asked*, never every session on the
+     * stream — and is kept as its own field rather than read off
+     * `requested_by` so a gate raised on someone's behalf by the daemon can
+     * never be mistaken for one the session itself is waiting on.
+     */
+    call: GateCallSchema.optional(),
+    session: AgentIdSchema.optional(),
+    /**
+     * T151 (§6.3): the classifier rule whose answer routed this call. Kept
+     * on the record because the human's answer is the rule's own statistic
+     * — a deny bumps that rule's `stats.violated` (`wireClassifierRouteStats`
+     * in `hook/route-band.ts`), and nothing else in the gate record says
+     * which rule was asked.
+     */
+    rule: RuleIdSchema.optional(),
+    /** T138: set when an approved gate's one allowed retry has been spent — the allowance is once, not standing. */
+    consumed_at: z.string().datetime().optional(),
     decision: HilDecisionSchema.optional(),
-    /** Free text a human typed with the decision, or on its own (T039). A note on its own resolves nothing — the EM delegate reads it and decides. */
+    /** Free text a human typed with the decision, or on its own (T039). A note on its own resolves nothing — a configured delegate, or a later button press, decides. */
     note: HilNoteSchema.optional(),
     decided_by: z.string().min(1).optional(),
     resolved_at: z.string().datetime().optional(),
-    /** True when an `em`/`architect` owner (policy or single-instance delegate) auto-decided this. */
+    /** True when the gate service's delegate decided this (a `human_timeout` fallthrough, or a note handed to it). */
     delegated: z.boolean().optional(),
     fyi: HilFyiSchema.optional(),
   })

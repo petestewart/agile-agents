@@ -1,276 +1,218 @@
 /**
- * HTTP client for the control room (T025). Every call hits an endpoint the
- * daemon's `packages/daemon/src/http.ts` serves; every write goes through
- * an existing daemon verb (`GateService`, `createHalt`/`releaseHalt`,
- * `Bus.send`) so it lands on the bus/event log the same as an agent-driven
- * call would (ticket AC: "every write goes through daemon verbs and
- * appears in the event log").
+ * The cockpit's writes (T160). Every one goes through the same daemon
+ * endpoints the CLI's verbs reach, so it lands in the event log, and none
+ * of them sends an actor — the daemon stamps `human` at the HTTP edge
+ * (cockpit design §2.2).
  */
+
 import type {
-  AgentId,
-  AgentRecord,
-  KbFact,
-  KbId,
-  KbIndex,
-  Message,
-  OracleEntry,
-  OracleId,
-  OracleIndex,
+  ClassifierKeyStatus,
   Policy,
-  Question,
-  Sprint,
-  Stanza,
-  Ticket,
-  TicketId,
+  Rule,
+  RuleCreateInput,
+  RulePatch,
+  SessionDefaultsPatch,
+  SessionDefaultsStatus,
+  Stream,
+  StreamCreateInput,
 } from '@agile-agents/shared';
-import type { FeedSnapshot, SprintReport, TicketDiff, TicketStory } from './feed-types';
+import type {
+  LandOutcome,
+  RuleEvalReport,
+  RulesPayload,
+  StreamDiff,
+  StreamPagePayload,
+} from './feed-types';
 
-async function asJson<T>(res: Response): Promise<T> {
-  if (!res.ok) {
-    let detail: string | undefined;
-    try {
-      const body = (await res.json()) as { error?: string };
-      detail = body.error;
-    } catch {
-      // non-JSON error body — fall through to the generic message below.
-    }
-    throw new Error(detail ?? `${res.status} ${res.statusText}`);
-  }
-  return res.json() as Promise<T>;
+async function post(path: string, body: unknown = {}, signal?: AbortSignal): Promise<unknown> {
+  const res = await fetch(path, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+    ...(signal ? { signal } : {}),
+  });
+  const payload = (await res.json().catch(() => ({}))) as { error?: string };
+  if (!res.ok) throw new Error(payload.error ?? `${path} failed (${res.status})`);
+  return payload;
 }
 
-export function getSnapshot(): Promise<FeedSnapshot> {
-  return fetch('/api/snapshot').then((r) => asJson(r));
+/** T162: "New stream" and the top bar's quick capture. */
+export function createStream(input: StreamCreateInput): Promise<Stream> {
+  return post('/api/streams', input) as Promise<Stream>;
 }
 
-export function getPolicy(): Promise<Policy> {
-  return fetch('/api/policy').then((r) => asJson(r));
+/** A question card: the typed text reaches the asking session verbatim (§3.3). */
+export function answerQuestion(id: string, answer: string): Promise<unknown> {
+  return post(`/api/questions/${encodeURIComponent(id)}/answer`, { answer });
 }
 
-export function getAgents(): Promise<Array<{ id: AgentId; record: AgentRecord }>> {
-  return fetch('/api/agents').then((r) => asJson(r));
-}
-
-export function getTickets(): Promise<Ticket[]> {
-  return fetch('/api/tickets').then((r) => asJson(r));
-}
-
-export function getTicketDetail(id: TicketId): Promise<{ ticket: Ticket; stanzas: Stanza[] }> {
-  return fetch(`/api/tickets/${encodeURIComponent(id)}`).then((r) => asJson(r));
-}
-
-export function getOracleIndex(): Promise<OracleIndex> {
-  return fetch('/api/oracle').then((r) => asJson(r));
-}
-
-export function getOracleEntry(id: OracleId): Promise<{ entry: OracleEntry; body: string }> {
-  return fetch(`/api/oracle/${encodeURIComponent(id)}`).then((r) => asJson(r));
-}
-
-export function getKbIndex(): Promise<KbIndex> {
-  return fetch('/api/kb').then((r) => asJson(r));
-}
-
-export function getKbFact(id: KbId): Promise<{ fact: KbFact; body: string }> {
-  return fetch(`/api/kb/${encodeURIComponent(id)}`).then((r) => asJson(r));
-}
-
-/**
- * T039 (§17 "Control room v2"): every Needs-you card takes a typed answer as
- * well as its buttons. `note` rides along with approve/deny; `noteHil` sends
- * one with no button press (it resolves nothing — the EM decides).
- */
-export function approveHil(id: string, by = 'human', note?: string): Promise<unknown> {
-  return decideHil(id, 'approve', by, note);
-}
-
-export function denyHil(id: string, by = 'human', note?: string): Promise<unknown> {
-  return decideHil(id, 'deny', by, note);
-}
-
-function decideHil(
+/** A gate card (`classifier_review`, `land`): allow/deny, optionally with the typed reason. */
+export function decideGate(
   id: string,
-  action: 'approve' | 'deny',
-  by: string,
+  decision: 'approve' | 'deny',
   note?: string,
 ): Promise<unknown> {
-  return fetch(`/api/hil/${encodeURIComponent(id)}/${action}`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ by, ...(note ? { note } : {}) }),
-  }).then((r) => asJson(r));
+  return post(`/api/hil/${encodeURIComponent(id)}/${decision}`, note ? { note } : {});
 }
 
-export function noteHil(id: string, note: string): Promise<unknown> {
-  return fetch(`/api/hil/${encodeURIComponent(id)}/note`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ note }),
-  }).then((r) => asJson(r));
+/** A gate card's free text with no decision — recorded on the pending gate. */
+export function noteGate(id: string, note: string): Promise<unknown> {
+  return post(`/api/hil/${encodeURIComponent(id)}/note`, { note });
+}
+
+/** T167: the rules screen's "New rule" — always a proposal (§5.1). */
+export function createRule(input: RuleCreateInput): Promise<Rule> {
+  return post('/api/rules', input) as Promise<Rule>;
+}
+
+/** T167: Settings — where the classifier key comes from. Never the key. */
+export async function getClassifierKey(): Promise<ClassifierKeyStatus> {
+  const res = await fetch('/api/settings/classifier');
+  const payload = (await res.json()) as ClassifierKeyStatus & { error?: string };
+  if (!res.ok) throw new Error(payload.error ?? `classifier settings read failed (${res.status})`);
+  return payload;
+}
+
+/** T167: Settings' Save — write-only; the reply is the status, not the key. */
+export function saveClassifierKey(apiKey: string): Promise<ClassifierKeyStatus> {
+  return post('/api/settings/classifier/key', { api_key: apiKey }) as Promise<ClassifierKeyStatus>;
+}
+
+/** T167: Settings' Remove — deletes the config key; an env key still applies. */
+export function removeClassifierKey(): Promise<ClassifierKeyStatus> {
+  return post('/api/settings/classifier/key/remove') as Promise<ClassifierKeyStatus>;
+}
+
+/** T163: the rules screen's edit (`RulePatchSchema` on the daemon side). */
+export function updateRule(id: string, patch: RulePatch): Promise<Rule> {
+  return post(`/api/rules/${encodeURIComponent(id)}/update`, patch) as Promise<Rule>;
 }
 
 /**
- * Questions (T040, §17 "Control room v2" → "Questions vs Decisions").
- * `answerQuestion` posts the typed reply and how it should be applied — a
- * plain reply, or a recorded `DEC-*` through the oracle write guard.
+ * T163: "Test examples" — `rule.test {id}`. One classifier call per
+ * example, so the caller sizes the deadline (`evalDeadlineMs`); past it the
+ * request is abandoned with a message saying so.
  */
-export function getQuestions(openOnly = false): Promise<Question[]> {
-  return fetch(`/api/questions${openOnly ? '?status=open' : ''}`).then((r) => asJson(r));
+export async function testRule(id: string, deadlineMs: number): Promise<RuleEvalReport> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), deadlineMs);
+  try {
+    return (await post('/api/rules/test', { id }, controller.signal)) as RuleEvalReport;
+  } catch (err) {
+    if (controller.signal.aborted) {
+      throw new Error(`no answer within ${Math.round(deadlineMs / 1000)} s`);
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
-export function raiseQuestion(text: string, ticket?: TicketId): Promise<Question> {
-  return fetch('/api/questions', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ text, ...(ticket ? { ticket } : {}) }),
-  }).then((r) => asJson(r));
+/** A `rule_accept` card, and the rules screen's Accept/Retire (one rule at a time, bulk included). */
+export function decideRule(id: string, decision: 'accept' | 'retire'): Promise<unknown> {
+  return post(`/api/rules/${encodeURIComponent(id)}/${decision}`);
 }
 
-export function answerQuestion(
+/** A `done` card's Land button, and the stream page's (§8.2). A refusal rejects with the daemon's reason. */
+export function landStream(id: string): Promise<LandOutcome> {
+  return post(`/api/streams/${encodeURIComponent(id)}/land`) as Promise<LandOutcome>;
+}
+
+async function get<T>(path: string): Promise<T> {
+  const res = await fetch(path);
+  const payload = (await res.json().catch(() => ({}))) as T & { error?: string };
+  if (!res.ok) throw new Error(payload.error ?? `${path} failed (${res.status})`);
+  return payload;
+}
+
+/** T163: the rules screen's one read. */
+export function getRules(): Promise<RulesPayload> {
+  return get('/api/rules');
+}
+
+/** T161: the stream page's one read. */
+export function getStreamPage(id: string): Promise<StreamPagePayload> {
+  return get(`/api/streams/${encodeURIComponent(id)}`);
+}
+
+/** T161: the diff tab. */
+export function getStreamDiff(id: string): Promise<StreamDiff> {
+  return get(`/api/streams/${encodeURIComponent(id)}/diff`);
+}
+
+/** T161: the composer — a human line on the thread, and a prompt to the attached worker if there is one. */
+export function sayOnStream(id: string, body: string): Promise<{ prompted?: string }> {
+  return post(`/api/streams/${encodeURIComponent(id)}/say`, { body }) as Promise<{
+    prompted?: string;
+  }>;
+}
+
+/** T161: the sessions strip's Attach (a worker) and Review (a reviewer). */
+export function attachSession(
   id: string,
-  answer: string,
-  resolvedAs: 'reply' | 'decision' = 'reply',
-): Promise<{ question: Question }> {
-  return fetch(`/api/questions/${encodeURIComponent(id)}/answer`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ answer, resolved_as: resolvedAs }),
-  }).then((r) => asJson(r));
+  role: 'worker' | 'reviewer',
+  choice: { vendor?: string; model?: string; effort?: string } = {},
+  force = false,
+): Promise<unknown> {
+  return post(`/api/streams/${encodeURIComponent(id)}/attach`, {
+    role,
+    ...choice,
+    ...(force ? { force: true } : {}),
+  });
 }
 
-export function delegateHil(id: string, to: 'em' | 'architect'): Promise<unknown> {
-  return fetch(`/api/hil/${encodeURIComponent(id)}/delegate`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ to }),
-  }).then((r) => asJson(r));
+/** T176: Resolve — a worker told to merge the target in and fix the last land's conflicts. */
+export function resolveConflict(
+  id: string,
+  choice: { vendor?: string; model?: string; effort?: string } = {},
+): Promise<unknown> {
+  return post(`/api/streams/${encodeURIComponent(id)}/resolve`, choice);
 }
 
-export function raiseHalt(reason: string): Promise<unknown> {
-  return fetch('/api/halt', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ reason, raised_by: 'human' }),
-  }).then((r) => asJson(r));
+/** T170 (D17): every step of the session-default order, and what it resolves to. */
+export async function getSessionDefaults(): Promise<SessionDefaultsStatus> {
+  const res = await fetch('/api/settings/session');
+  const payload = (await res.json()) as SessionDefaultsStatus & { error?: string };
+  if (!res.ok) throw new Error(payload.error ?? `session defaults read failed (${res.status})`);
+  return payload;
 }
 
-export function releaseHalt(id: string): Promise<unknown> {
-  return fetch(`/api/halt/${encodeURIComponent(id)}`, { method: 'DELETE' }).then((r) => asJson(r));
+/** T170: Settings' home-wide defaults (`null` clears a field). */
+export function saveHomeSessionDefaults(
+  patch: SessionDefaultsPatch,
+): Promise<SessionDefaultsStatus> {
+  return post('/api/settings/session', patch) as Promise<SessionDefaultsStatus>;
 }
 
-/**
- * One line of the EM chat thread (T041). Local mirror of
- * `packages/daemon/src/em/chat.ts`'s `ChatEntry`, for the same
- * no-workspace-cycle reason `feed-types.ts` mirrors `FeedSnapshot`.
- */
-export interface ChatEntry {
-  id: string;
-  ts: string;
-  from: 'human' | 'em';
-  body: string;
-  ref?: string;
+/** T170: one repo's defaults in `repos.yaml` (`null` clears a field). */
+export function saveRepoSessionDefaults(
+  repo: string,
+  patch: SessionDefaultsPatch,
+): Promise<SessionDefaultsStatus> {
+  return post(
+    `/api/settings/session/repos/${encodeURIComponent(repo)}`,
+    patch,
+  ) as Promise<SessionDefaultsStatus>;
 }
 
-/** The chat thread as the daemon has it (the bus is the source of truth) — this is what makes a reload, and the popped-out window, show the same conversation. */
-export function getEmChat(): Promise<ChatEntry[]> {
-  return fetch('/api/chat/em').then((r) => asJson(r));
+/** T161: the sessions strip's Stop — detaches whatever is live on the stream. */
+export function stopSessions(id: string): Promise<unknown> {
+  return post(`/api/streams/${encodeURIComponent(id)}/stop`);
 }
 
-/** EM chat panel send (steer / question) — §17: "steer -> action-set cards". The EM's reply streams back over `/ws` (`chat_delta`/`chat_turn_end`), keyed by `reply_id`. */
-export function sendEmChat(
-  body: string,
-  ticket?: TicketId,
-): Promise<{
-  ok: boolean;
-  streaming?: boolean;
-  /** The human's line as filed on the bus — T051 adopts its id onto the optimistically-appended line. */
-  message?: { id: string };
-  reply_id?: string;
-  reason?: string;
-}> {
-  return fetch('/api/chat/em', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ body, ...(ticket ? { ticket } : {}) }),
-  }).then((r) => asJson(r));
+/** T166: the stream page's Close (`human.status: closed`, actor human). */
+export function closeStream(id: string): Promise<unknown> {
+  return post(`/api/streams/${encodeURIComponent(id)}/close`);
 }
 
-/** Oracle/KB "propose edit" — a bus message to the architect, never a direct write (ticket scope). */
-export function proposeOracleEdit(target: OracleId | KbId, body: string): Promise<{ ok: boolean }> {
-  return fetch('/api/oracle/propose', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ target, body }),
-  }).then((r) => asJson(r));
+/** T166: a branch merged outside `land` — record it as landed. */
+export function markStreamLanded(id: string): Promise<unknown> {
+  return post(`/api/streams/${encodeURIComponent(id)}/mark-landed`);
 }
 
-export type { Message };
-
-/**
- * T043 (§17 "Control room v2" -> Settings "Who decides"): the write half of
- * `getPolicy`. Goes to `PUT /api/policy`, which validates through the shared
- * `PolicySchema` and persists via `StateStore.putPolicy` — so the change
- * lands in `events.jsonl` and is what the *next* gate resolves its owner
- * against.
- */
-export function putPolicy(policy: Policy): Promise<Policy> {
-  return fetch('/api/policy', {
-    method: 'PUT',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(policy),
-  }).then((r) => asJson(r));
-}
-
-/**
- * The top bar's "Start Sprint N" action (§17 v2: "the `approve_plan` gate is
- * raised at sprint start and means 'start this frontier ... as it stands'").
- *
- * T042 owns the route: it *proposes* the frontier (pure, nothing written),
- * raises `approve_plan`, and persists the sprint only once that gate is
- * approved — so a response can legitimately say `started: false` with the
- * gate still pending (an EM/architect owner), and the top bar reads
- * `status.approve_plan_pending` until the daemon's next tick starts it.
- */
-export function startSprint(goal?: string): Promise<{
-  started: boolean;
-  sprint?: Sprint;
-  proposal: { id: string; tickets: string[]; goal: string };
-  gate: { id: string; owner: string; status: string; decision?: string };
-  reason?: string;
-}> {
-  return fetch('/api/sprint/start', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(goal ? { goal } : {}),
-  }).then((r) => asJson(r));
-}
-
-/**
- * T044 ticket-detail reads (§17 v2 Sprint tab: "click a ticket for its
- * diff, review and QA notes"). Each is a plain GET the daemon backs with an
- * existing store read — `story` is the same narrative the snapshot carries,
- * re-fetched for one ticket; `diff` is `git diff integration...HEAD` inside
- * the ticket's own worktree, path-guarded and capped daemon-side; `thread`
- * is the ticket's bus thread, which is where the reviewer's and QA's own
- * words live.
- */
-export function getTicketStory(id: TicketId): Promise<TicketStory> {
-  return fetch(`/api/tickets/${encodeURIComponent(id)}/story`).then((r) => asJson(r));
-}
-
-export function getTicketDiff(id: TicketId): Promise<TicketDiff> {
-  return fetch(`/api/tickets/${encodeURIComponent(id)}/diff`).then((r) => asJson(r));
-}
-
-export function getTicketThread(id: TicketId): Promise<Message[]> {
-  return fetch(`/api/tickets/${encodeURIComponent(id)}/thread`).then((r) => asJson(r));
-}
-
-/**
- * T044: the sprint-review narrative. The daemon builds it with the same
- * function that writes `runs/<ts>.md`, so what this renders and what that
- * file says are the same text.
- */
-export function getSprintReport(): Promise<SprintReport> {
-  return fetch('/api/sprint/review').then((r) => asJson(r));
+export async function getPolicy(): Promise<Policy> {
+  const res = await fetch('/api/policy');
+  const payload = (await res.json()) as Policy & { error?: string };
+  if (!res.ok) throw new Error(payload.error ?? `policy read failed (${res.status})`);
+  return payload;
 }

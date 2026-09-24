@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { ulid, validateTicket } from '@agile-agents/shared';
+import { ulid } from '@agile-agents/shared';
 import { Bus, buildBusRpcMethods } from '../bus';
 import { GateService } from '../gates';
 import { HookService, buildHookRpcMethods } from '../hook';
@@ -113,10 +113,12 @@ describe('summarizeTestOutput', () => {
 describe('formatInboxMessage', () => {
   it('formats and caps concatenated bodies', () => {
     const text = formatInboxMessage([
-      { kind: 'question', from: 'eng-1', body: 'hello' },
-      { kind: 'decision', from: 'architect', body: 'world' },
+      { kind: 'hil_response', from: 'human', body: 'hello' },
+      { kind: 'hil_response', from: '01ARZ3NDEKTSV4RRFFQ69GE001', body: 'world' },
     ]);
-    expect(text).toBe('[question from eng-1] hello\n[decision from architect] world');
+    expect(text).toBe(
+      '[hil_response from human] hello\n[hil_response from 01ARZ3NDEKTSV4RRFFQ69GE001] world',
+    );
   });
 
   it('stops once the char cap is hit', () => {
@@ -217,7 +219,7 @@ describe('createAgileExtension: tool_call gating', () => {
       env: {
         [GATE_ENV_VAR]: '1',
         AGILE_SOCKET_PATH: socketPath,
-        AGILE_AGENT: 'eng-1',
+        AGILE_AGENT: '01ARZ3NDEKTSV4RRFFQ69GE001',
         AGILE_TICKET: 'TKT-0001',
       },
       heartbeatIntervalMs: 60_000,
@@ -238,7 +240,7 @@ describe('createAgileExtension: tool_call gating', () => {
 
     expect(preToolUse).toHaveBeenCalledTimes(2);
     const firstCallParams = preToolUse.mock.calls[0]?.[0] as { agile_agent?: string; cwd?: string };
-    expect(firstCallParams.agile_agent).toBe('eng-1');
+    expect(firstCallParams.agile_agent).toBe('01ARZ3NDEKTSV4RRFFQ69GE001');
     expect(firstCallParams.cwd).toBe('/repo');
   });
 
@@ -248,7 +250,7 @@ describe('createAgileExtension: tool_call gating', () => {
       env: {
         [GATE_ENV_VAR]: '1',
         AGILE_SOCKET_PATH: join(dir, 'nothing-listening.sock'),
-        AGILE_AGENT: 'eng-1',
+        AGILE_AGENT: '01ARZ3NDEKTSV4RRFFQ69GE001',
       },
       heartbeatIntervalMs: 60_000,
     })(pi);
@@ -277,7 +279,11 @@ describe('createAgileExtension: tool_result rewriting', () => {
 
     const pi = new FakePi();
     createAgileExtension({
-      env: { [GATE_ENV_VAR]: '1', AGILE_SOCKET_PATH: socketPath, AGILE_AGENT: 'eng-1' },
+      env: {
+        [GATE_ENV_VAR]: '1',
+        AGILE_SOCKET_PATH: socketPath,
+        AGILE_AGENT: '01ARZ3NDEKTSV4RRFFQ69GE001',
+      },
       heartbeatIntervalMs: 60_000,
     })(pi);
 
@@ -339,7 +345,11 @@ describe('createAgileExtension: tool_result rewriting', () => {
 
     const pi = new FakePi();
     createAgileExtension({
-      env: { [GATE_ENV_VAR]: '1', AGILE_SOCKET_PATH: socketPath, AGILE_AGENT: 'eng-1' },
+      env: {
+        [GATE_ENV_VAR]: '1',
+        AGILE_SOCKET_PATH: socketPath,
+        AGILE_AGENT: '01ARZ3NDEKTSV4RRFFQ69GE001',
+      },
       heartbeatIntervalMs: 60_000,
     })(pi);
 
@@ -373,7 +383,11 @@ describe('createAgileExtension: tool_result rewriting', () => {
 
     const pi = new FakePi();
     createAgileExtension({
-      env: { [GATE_ENV_VAR]: '1', AGILE_SOCKET_PATH: socketPath, AGILE_AGENT: 'eng-1' },
+      env: {
+        [GATE_ENV_VAR]: '1',
+        AGILE_SOCKET_PATH: socketPath,
+        AGILE_AGENT: '01ARZ3NDEKTSV4RRFFQ69GE001',
+      },
       heartbeatIntervalMs: 60_000,
     })(pi);
 
@@ -391,152 +405,6 @@ describe('createAgileExtension: tool_result rewriting', () => {
     );
     expect(rewritten?.content?.[0]?.text).toContain('AGILE-SUMMARY');
     expect(rewritten?.isError).toBe(false);
-  });
-});
-
-describe('createAgileExtension: inbox delivery', () => {
-  it('delivers pending normal-priority messages via before_agent_start and acks them', async () => {
-    const acked: string[] = [];
-    rpcServer = startRpcServer({
-      socketPath,
-      version: '0.0.0-test',
-      stateRoot: dir,
-      startedAt: Date.now(),
-      extraMethods: {
-        'bus.poll': () => [{ id: 'm1', kind: 'decision', from: 'architect', body: 'use zod' }],
-        'bus.ack': (params) => {
-          acked.push((params as { id: string }).id);
-          return {};
-        },
-        'bus.heartbeat': () => ({}),
-      },
-    });
-
-    const pi = new FakePi();
-    createAgileExtension({
-      env: { [GATE_ENV_VAR]: '1', AGILE_SOCKET_PATH: socketPath, AGILE_AGENT: 'eng-1' },
-      heartbeatIntervalMs: 60_000,
-    })(pi);
-
-    const result = await pi.beforeAgentStart?.(
-      { type: 'before_agent_start', prompt: 'go' },
-      { cwd: '/repo' },
-    );
-    expect(result?.message?.customType).toBe('agile-inbox');
-    expect(result?.message?.content[0]?.text).toContain('use zod');
-
-    // Ack is fire-and-forget — give the microtask queue a tick.
-    await new Promise((r) => setTimeout(r, 10));
-    expect(acked).toEqual(['m1']);
-  });
-
-  it('returns nothing when the inbox is empty', async () => {
-    rpcServer = startRpcServer({
-      socketPath,
-      version: '0.0.0-test',
-      stateRoot: dir,
-      startedAt: Date.now(),
-      extraMethods: { 'bus.poll': () => [], 'bus.heartbeat': () => ({}) },
-    });
-
-    const pi = new FakePi();
-    createAgileExtension({
-      env: { [GATE_ENV_VAR]: '1', AGILE_SOCKET_PATH: socketPath, AGILE_AGENT: 'eng-1' },
-      heartbeatIntervalMs: 60_000,
-    })(pi);
-
-    const result = await pi.beforeAgentStart?.(
-      { type: 'before_agent_start', prompt: 'go' },
-      { cwd: '/repo' },
-    );
-    expect(result).toBeUndefined();
-  });
-
-  // T022 round 2 fix (review B1) — end-to-end against the REAL
-  // HookService/Bus/StateStore (not fakes), the same objects the
-  // reviewer's own repro used: a normal-priority message sent before the
-  // engineer's first tool call must survive that tool_call (no
-  // additionalContext channel to lose it into) and still be there for
-  // before_agent_start to deliver + ack on the *next* turn.
-  it('a normal message survives a tool_call and is still delivered on the next before_agent_start (real HookService/Bus)', async () => {
-    const repo = mkdtempSync(join(tmpdir(), 'agile-pi-extension-e2e-'));
-    Bun.spawnSync(['git', 'init', '-q'], { cwd: repo });
-    Bun.spawnSync(['git', 'config', 'user.email', 'test@example.com'], { cwd: repo });
-    Bun.spawnSync(['git', 'config', 'user.name', 'Test'], { cwd: repo });
-    writeFileSync(join(repo, 'README.md'), '# fixture\n');
-    Bun.spawnSync(['git', 'add', '-A'], { cwd: repo });
-    Bun.spawnSync(['git', 'commit', '-q', '-m', 'init'], { cwd: repo });
-    const worktree = join(repo, '.worktrees', 'TKT-0001');
-    mkdirSync(worktree, { recursive: true });
-
-    try {
-      const init = runInit(repo);
-      const store = StateStore.open(init.stateRoot);
-      const bus = new Bus(store, init.stateRoot);
-      await store.putTicket(
-        validateTicket({
-          id: 'TKT-0001',
-          title: 'Ticket',
-          status: 'in_progress',
-          contract: {},
-          history: [],
-          assignee: 'eng-1',
-          worktree: join('.worktrees', 'TKT-0001'),
-        }),
-      );
-      const hookService = new HookService(store, bus, {
-        repoRoot: repo,
-        gates: new GateService(store),
-      });
-
-      await bus.send({
-        id: ulid(),
-        ts: new Date().toISOString(),
-        from: 'em',
-        to: ['eng-1'],
-        kind: 'answer',
-        priority: 'normal',
-        body: 'stop editing src/foo.ts, TKT-0002 owns it now',
-        promote_to: 'none',
-      });
-
-      rpcServer = startRpcServer({
-        socketPath,
-        version: '0.0.0-test',
-        stateRoot: init.stateRoot,
-        startedAt: Date.now(),
-        extraMethods: {
-          ...buildHookRpcMethods(hookService),
-          ...buildBusRpcMethods(bus),
-        },
-      });
-
-      const pi = new FakePi();
-      createAgileExtension({
-        env: { [GATE_ENV_VAR]: '1', AGILE_SOCKET_PATH: socketPath, AGILE_AGENT: 'eng-1' },
-        heartbeatIntervalMs: 60_000,
-      })(pi);
-
-      const toolCallResult = await pi.toolCall?.(
-        { type: 'tool_call', toolCallId: '1', toolName: 'read', input: { file_path: 'x.txt' } },
-        { cwd: worktree },
-      );
-      expect(toolCallResult).toEqual({});
-      // Not acked by the tool_call round trip — still pending.
-      expect(bus.poll('eng-1')).toHaveLength(1);
-
-      const delivered = await pi.beforeAgentStart?.(
-        { type: 'before_agent_start', prompt: 'go' },
-        { cwd: worktree },
-      );
-      expect(delivered?.message?.content[0]?.text).toContain('TKT-0002 owns it now');
-
-      await new Promise((r) => setTimeout(r, 20));
-      expect(bus.poll('eng-1')).toHaveLength(0); // delivered, now acked
-      store.close();
-    } finally {
-      rmSync(repo, { recursive: true, force: true });
-    }
   });
 });
 
@@ -583,7 +451,7 @@ describe('createAgileExtension: heartbeat', () => {
       env: {
         [GATE_ENV_VAR]: '1',
         AGILE_SOCKET_PATH: socketPath,
-        AGILE_AGENT: 'eng-1',
+        AGILE_AGENT: '01ARZ3NDEKTSV4RRFFQ69GE001',
         AGILE_TICKET: 'TKT-1',
       },
       heartbeatIntervalMs: 20,
@@ -603,7 +471,7 @@ describe('createAgileExtension: heartbeat', () => {
     await waitFor(() => heartbeats.length >= 3);
     expect(heartbeats.length).toBeGreaterThanOrEqual(3);
     const first = heartbeats[0] as { agent?: string; patch?: { ticket?: string } };
-    expect(first.agent).toBe('eng-1');
+    expect(first.agent).toBe('01ARZ3NDEKTSV4RRFFQ69GE001');
     expect(first.patch?.ticket).toBe('TKT-1');
 
     pi.sessionShutdown?.();

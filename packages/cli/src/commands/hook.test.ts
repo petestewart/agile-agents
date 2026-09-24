@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { Readable } from 'node:stream';
 import { type RpcServerHandle, startRpcServer } from '@agile-agents/daemon';
 import { parseArgs } from '../args';
+import { runCli } from '../index';
 import { hookEventToMethod, parseHookArgs, runHook } from './hook';
 
 function stdinWith(payload: unknown): NodeJS.ReadableStream {
@@ -31,6 +32,27 @@ describe('parseHookArgs', () => {
       failClosed: false,
       timeoutMs: undefined,
     });
+  });
+
+  // T136 (QA rough edge 2): the usage line stopped presenting
+  // `--fail-closed` (the default since T009) as the flag you need, and
+  // names the real opt-out instead.
+  test('the usage line names --fail-open, not --fail-closed', async () => {
+    const errors: string[] = [];
+    const original = console.error;
+    console.error = (msg: string) => errors.push(String(msg));
+    try {
+      expect(await runCli([])).toBe(0);
+    } finally {
+      console.error = original;
+    }
+    const hookLine = errors
+      .join('\n')
+      .split('\n')
+      .find((line) => line.trim().startsWith('hook <event>'));
+    expect(hookLine).toBeDefined();
+    expect(hookLine).toContain('[--fail-open]');
+    expect(hookLine).not.toContain('--fail-closed');
   });
 
   test('--fail-closed is still accepted (explicit, no-op vs the default)', () => {
@@ -128,7 +150,7 @@ describe('runHook', () => {
     const lines: string[] = [];
     const original = console.log;
     const originalEnv = process.env.AGILE_AGENT;
-    process.env.AGILE_AGENT = 'reviewer-1';
+    process.env.AGILE_AGENT = '01ARZ3NDEKTSV4RRFFQ69GR001';
     console.log = (msg: string) => lines.push(msg);
     let code: number;
     try {
@@ -144,7 +166,7 @@ describe('runHook', () => {
       else process.env.AGILE_AGENT = originalEnv;
     }
     expect(code).toBe(0);
-    expect(JSON.parse(lines.join('\n'))).toEqual({ receivedAgent: 'reviewer-1' });
+    expect(JSON.parse(lines.join('\n'))).toEqual({ receivedAgent: '01ARZ3NDEKTSV4RRFFQ69GR001' });
   });
 
   test('does not add agile_agent when AGILE_AGENT is unset', async () => {

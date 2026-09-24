@@ -1,60 +1,51 @@
 /**
- * `agile mcp --agent <id> --ticket <id>` — the stdio MCP bridge every agent
- * session is configured with (T011/T012 — design/agile-agents-design.md §7
- * "Tool framework"; manager architecture decision: "runs
- * `@modelcontextprotocol/sdk` `McpServer` over `StdioServerTransport` and
- * forwards each tool call to the daemon over the existing unix-socket
- * JSON-RPC (`tool.call` / `tool.list` methods)").
+ * `agile mcp --session <id>` — the stdio MCP bridge every attached session
+ * is configured with (design/cockpit-design.md §4.1).
  *
- * All tool logic (registry, cache, runner, ledger, built-in verbs) lives
- * daemon-side (`packages/daemon/src/tools/`) — this file is a thin,
- * stateless proxy: `tool.list` once at startup to learn the tool names, then
- * one `tool.call` RPC per MCP `tools/call`, with `agent`/`ticket` fixed from
- * this invocation's flags on every call (an agent's MCP session can't spoof
- * a different identity than the one it was launched with).
+ * A thin, stateless proxy: the eight verbs are a fixed table in
+ * `@agile-agents/shared`, so there is nothing to discover at startup — the
+ * bridge registers them from the shared schemas and forwards each call to
+ * the daemon's `agent.<verb>` RPC. The session id is fixed from this
+ * invocation's flag and merged into every call, so an agent's MCP session
+ * cannot claim to be a different session than the one it was launched with
+ * (it is also what stamps the `agent` principal daemon-side).
+ *
+ * T130 replaced the old `--agent`/`--ticket` bridge over `tool.list`/
+ * `tool.call`: there is no tool registry to list any more.
  */
 
-import type { ToolInputSpec } from '@agile-agents/daemon';
-import { zodObjectSchemaFromInputSpec } from '@agile-agents/daemon';
+import {
+  AGENT_VERBS,
+  AGENT_VERB_DESCRIPTIONS,
+  AGENT_VERB_SCHEMAS,
+  type AgentVerb,
+} from '@agile-agents/shared';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { type ParsedArgs, optionalString, requireOption } from '../args';
 import { callRpc } from '../client';
 
 /**
- * QA round 1 (T011): a live `read_summary`/`test_run` call can take real
- * seconds (a short-lived ACP session, or an actual test suite) — `client.ts`'s
- * general 5s default is tuned for cheap RPC round trips, not "run something",
- * and would routinely time out a perfectly healthy call. Matches the
- * runner's own `DEFAULT_RUNNER_TIMEOUT_MS` so the bridge doesn't give up
- * meaningfully before the daemon-side runner would anyway.
+ * A live `test_run` call takes real seconds (an actual test suite), and
+ * `client.ts`'s general 5s default is tuned for cheap round trips.
  */
 export const DEFAULT_MCP_TOOL_TIMEOUT_MS = 60_000;
 
 export interface McpBridgeOptions {
   socketPath: string;
-  agent: string;
-  ticket?: string;
-  /** RPC deadline for `tool.call` (and `tool.list`), in ms. Default `DEFAULT_MCP_TOOL_TIMEOUT_MS`. */
+  /** The attached session this bridge belongs to — fixed for its lifetime. */
+  session: string;
+  /** RPC deadline for a verb call, in ms. Default `DEFAULT_MCP_TOOL_TIMEOUT_MS`. */
   timeoutMs?: number;
-}
-
-interface ToolListEntry {
-  name: string;
-  description: string;
-  source: 'builtin' | 'registry' | 'provider';
-  inputSpec: ToolInputSpec;
 }
 
 export function parseMcpArgs(args: ParsedArgs): {
-  agent: string;
-  ticket?: string;
+  session: string;
   timeoutMs?: number;
-  /** `--socket <path>`: the daemon socket, explicit — the daemon passes it because a `.worktrees/**` cwd resolves to the wrong repo root (see `runner/session.ts`'s `mcpServerConfig`). Absent: `discoverConfig`'s cwd/env/config resolution applies. */
+  /** `--socket <path>`: the daemon socket, explicit — a `.worktrees/**` cwd resolves to the wrong repo root without it. */
   socketPath?: string;
 } {
-  const agent = requireOption(args.options, 'agent');
-  const ticket = typeof args.options.ticket === 'string' ? args.options.ticket : undefined;
+  const session = requireOption(args.options, 'session');
   const socketPath = optionalString(args.options, 'socket');
   const timeoutRaw = optionalString(args.options, 'timeout');
   const timeoutMs = timeoutRaw !== undefined ? Number(timeoutRaw) : undefined;
@@ -63,37 +54,34 @@ export function parseMcpArgs(args: ParsedArgs): {
       `--timeout must be a number of milliseconds, got ${JSON.stringify(timeoutRaw)}`,
     );
   }
-  return { agent, ticket, timeoutMs, ...(socketPath !== undefined ? { socketPath } : {}) };
+  return { session, timeoutMs, ...(socketPath !== undefined ? { socketPath } : {}) };
 }
 
-/** Builds (but does not connect) the MCP server for one bridge invocation — split out so a test can drive it over an in-memory transport instead of real stdio. */
-export async function buildMcpBridgeServer(options: McpBridgeOptions): Promise<McpServer> {
-  const timeoutMs = options.timeoutMs ?? DEFAULT_MCP_TOOL_TIMEOUT_MS;
-  const tools = await callRpc<ToolListEntry[]>(
-    options.socketPath,
-    'tool.list',
-    { agent: options.agent },
-    {
-      timeoutMs,
-    },
-  );
-  const server = new McpServer({ name: 'agile-agents-tools', version: '0.0.0' });
+/** The verb's published input shape: its zod fields minus `session`, which this bridge supplies. */
+function verbInputShape(verb: AgentVerb): Record<string, unknown> {
+  const { session: _session, ...rest } = AGENT_VERB_SCHEMAS[verb].shape;
+  return rest;
+}
 
-  for (const tool of tools) {
+/** Builds (but does not connect) the MCP server for one bridge invocation — split out so a test can drive it over an in-memory transport. */
+export function buildMcpBridgeServer(options: McpBridgeOptions): McpServer {
+  const timeoutMs = options.timeoutMs ?? DEFAULT_MCP_TOOL_TIMEOUT_MS;
+  const server = new McpServer({ name: 'agile-agents-verbs', version: '0.0.0' });
+
+  for (const verb of AGENT_VERBS) {
     server.registerTool(
-      tool.name,
-      { description: tool.description, inputSchema: zodObjectSchemaFromInputSpec(tool.inputSpec) },
-      async (args) => {
+      verb,
+      {
+        description: AGENT_VERB_DESCRIPTIONS[verb],
+        // biome-ignore lint/suspicious/noExplicitAny: the SDK types the shape as its own ZodRawShape.
+        inputSchema: verbInputShape(verb) as any,
+      },
+      async (args: Record<string, unknown> | undefined) => {
         try {
           const result = await callRpc(
             options.socketPath,
-            'tool.call',
-            {
-              agent: options.agent,
-              ticket: options.ticket,
-              name: tool.name,
-              input: args ?? {},
-            },
+            `agent.${verb}`,
+            { ...(args ?? {}), session: options.session },
             { timeoutMs },
           );
           return { content: [{ type: 'text' as const, text: JSON.stringify(result ?? null) }] };
@@ -112,9 +100,9 @@ export async function buildMcpBridgeServer(options: McpBridgeOptions): Promise<M
   return server;
 }
 
-/** Runs the bridge over real stdio and never resolves (a long-lived process, like `agile daemon start`) — the caller keeps the process alive until the parent agent session ends. */
+/** Runs the bridge over real stdio and never resolves — the parent agent session's lifetime owns this process. */
 export async function runCliMcp(options: McpBridgeOptions): Promise<number> {
-  const server = await buildMcpBridgeServer(options);
+  const server = buildMcpBridgeServer(options);
   const transport = new StdioServerTransport();
   await server.connect(transport);
   return new Promise(() => {});

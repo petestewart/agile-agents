@@ -1,19 +1,13 @@
+/**
+ * `agile status` after T122: the daemon block, the open gates and the open
+ * questions. The sprint strip, ticket table, halt list and spend table went
+ * with the subsystems behind them.
+ */
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { type RpcServerHandle, StateStore, runInit, startRpcServer } from '@agile-agents/daemon';
-// DESIGN-GAP: `QuotaService`/`buildQuotaRpcMethods` (T023, `packages/daemon/
-// src/quota/**`) are not yet re-exported from `@agile-agents/daemon`'s
-// index.ts — that wiring is the manager's at merge (this ticket's file
-// ownership excludes `daemon/src/index.ts`). Imported by subpath here so
-// this test can exercise the real quota-wired status path today; switch to
-// the package-root import once index.ts re-exports them.
-import { QuotaService, buildQuotaRpcMethods } from '@agile-agents/daemon';
-import type { Halt } from '@agile-agents/shared';
-import { callRpc } from '../client';
 import { type TestDaemon, startTestDaemon } from '../test-support';
-import { type StatusQuotaEntry, fetchStatus, printStatusHuman, runStatus } from './status';
+import { fetchStatus, printStatusHuman, runStatus } from './status';
+import { runStreamList } from './stream';
 
 let daemon: TestDaemon;
 
@@ -25,198 +19,160 @@ afterEach(async () => {
   await daemon.cleanup();
 });
 
+async function seedQuestion(): Promise<void> {
+  const stream = await daemon.streamService.create('human', {
+    title: 'A stream',
+    goal: 'do the thing',
+  });
+  await daemon.questionService.raise({
+    stream: stream.id,
+    raised_by: 'human',
+    text: 'which branch?',
+  });
+}
+
+async function capture(fn: () => Promise<void>): Promise<string[]> {
+  const lines: string[] = [];
+  const original = console.log;
+  console.log = (...args: unknown[]) => lines.push(args.join(' '));
+  try {
+    await fn();
+  } finally {
+    console.log = original;
+  }
+  return lines;
+}
+
 describe('fetchStatus', () => {
-  test('reports daemon status and the ticket list, with agents/spend marked n/a (test daemon has no quota RPC wired)', async () => {
-    await daemon.store.putTicket({
-      id: 'TKT-0001',
-      title: 'Test ticket',
-      status: 'ready',
-      contract: { inputs: [], outputs: [], acceptance: [], done: [], env: 'clone' },
-      depends: [],
-      oracle_refs: [],
-      kb_refs: [],
-      history: [],
-      security: false,
-    });
-
+  test('reports the running daemon and empty queues on a fresh home', async () => {
     const status = await fetchStatus(daemon.socketPath);
-    expect(status.daemon.pid).toBe(process.pid);
-    expect(status.tickets).toHaveLength(1);
-    expect(status.tickets[0]?.id).toBe('TKT-0001');
-    expect(status.agents).toBe('n/a (no RPC yet)');
-    expect(status.spend).toBe('n/a (no RPC yet)');
+    expect(status.daemon.version).toBe('test');
+    expect(status.questions).toEqual([]);
+    expect(status.gates).toEqual([]);
   });
 
-  test('an empty ticket board reports an empty list, not an error', async () => {
+  test('an open question shows up', async () => {
+    await seedQuestion();
     const status = await fetchStatus(daemon.socketPath);
-    expect(status.tickets).toEqual([]);
-    expect(status.halts).toEqual([]);
+    expect(status.questions).toHaveLength(1);
+    expect(status.questions[0]?.text).toBe('which branch?');
+  });
+});
+
+describe('printStatusHuman', () => {
+  /** T128: the in-flight streams sit between the daemon block and `needs you`. */
+  test('lists the open streams between the daemon block and needs you', async () => {
+    const root = await daemon.streamService.create('human', {
+      title: 'Ship the cockpit',
+      goal: 'do the thing',
+    });
+    const child = await daemon.streamService.create('human', {
+      title: 'Design the tree',
+      goal: 'a tree',
+      parent: root.id,
+    });
+    const gone = await daemon.streamService.create('human', {
+      title: 'Archive me',
+      goal: 'gone',
+    });
+    await daemon.streamService.archive('human', gone.id);
+
+    const lines = await capture(async () => printStatusHuman(await fetchStatus(daemon.socketPath)));
+    const streamsAt = lines.findIndex((l) => l.startsWith('streams ('));
+    const needsAt = lines.findIndex((l) => l.startsWith('needs you'));
+    const stateAt = lines.findIndex((l) => l.startsWith('state'));
+    expect(stateAt).toBeLessThan(streamsAt);
+    expect(streamsAt).toBeLessThan(needsAt);
+    expect(lines[streamsAt]).toBe('streams (2):');
+    expect(lines[streamsAt + 1]).toContain('id');
+    expect(lines[streamsAt + 1]).toContain('agent/human');
+    expect(lines[streamsAt + 2]).toContain(root.id);
+    expect(lines[streamsAt + 2]).toContain('idle/open');
+    // The child is indented one level deeper than its parent.
+    expect(lines[streamsAt + 3]).toContain(child.id);
+    const indent = (l: string) => l.length - l.trimStart().length;
+    expect(indent(lines[streamsAt + 3] ?? '')).toBeGreaterThan(indent(lines[streamsAt + 2] ?? ''));
+    // Archived stays hidden.
+    expect(lines.join('\n')).not.toContain(gone.id);
   });
 
-  test('includes active halts (id, scope, quorum) so resume has a discovery path', async () => {
-    const halt = await callRpc<Halt>(daemon.socketPath, 'state.halt_create', {
-      scope: 'global',
-      reason: 'seeded for status test',
-      raised_by: 'human',
-    });
+  /** T128: closed and landed are not in flight, but `stream list` still shows them. */
+  test('omits a closed stream that `stream list` still shows', async () => {
+    const open = await daemon.streamService.create('human', { title: 'Still going', goal: 'g' });
+    const done = await daemon.streamService.create('human', { title: 'All done', goal: 'g' });
+    await daemon.streamService.close('human', done.id);
+    expect(daemon.streamService.get(done.id).human.status).toBe('closed');
 
-    const status = await fetchStatus(daemon.socketPath);
-    expect(status.halts).toHaveLength(1);
-    expect(status.halts[0]?.id).toBe(halt.id);
-    expect(status.halts[0]?.scope).toBe('global');
-    expect(status.halts[0]?.quorum).toBeDefined();
+    const lines = await capture(async () => printStatusHuman(await fetchStatus(daemon.socketPath)));
+    const text = lines.join('\n');
+    expect(text).toContain('streams (1):');
+    expect(text).toContain(open.id);
+    expect(text).not.toContain(done.id);
+
+    // `agile stream list` is unchanged: the closed stream is still listed.
+    const listed = await capture(async () => {
+      await runStreamList(daemon.socketPath, { positionals: [], options: {} }, false);
+    });
+    expect(listed.join('\n')).toContain(done.id);
+  });
+
+  test('says so when no stream is open', async () => {
+    const lines = await capture(async () => printStatusHuman(await fetchStatus(daemon.socketPath)));
+    expect(lines.join('\n')).toContain('streams: (none open)');
+  });
+
+  test('names the empty queues rather than printing nothing', async () => {
+    const lines: string[] = [];
+    const original = console.log;
+    console.log = (...args: unknown[]) => lines.push(args.join(' '));
+    try {
+      printStatusHuman(await fetchStatus(daemon.socketPath));
+    } finally {
+      console.log = original;
+    }
+    const text = lines.join('\n');
+    expect(text).toContain('gates: (none open)');
+    expect(text).toContain('open questions: (none)');
+    expect(text).toContain('needs you');
   });
 });
 
 describe('runStatus', () => {
-  test('json mode prints valid JSON with the expected shape', async () => {
-    const lines: string[] = [];
+  test('exits 0 against a live daemon, in both output modes', async () => {
     const original = console.log;
-    console.log = (msg: string) => lines.push(msg);
+    console.log = () => {};
     try {
-      const code = await runStatus(daemon.socketPath, true);
-      expect(code).toBe(0);
+      expect(await runStatus(daemon.socketPath, false)).toBe(0);
+      expect(await runStatus(daemon.socketPath, true)).toBe(0);
     } finally {
       console.log = original;
     }
-    const parsed = JSON.parse(lines.join('\n'));
-    expect(parsed.daemon.pid).toBe(process.pid);
-    expect(Array.isArray(parsed.tickets)).toBe(true);
-    expect(Array.isArray(parsed.halts)).toBe(true);
   });
 
-  test('human mode does not throw on an empty board', () => {
-    expect(() =>
-      printStatusHuman({
-        daemon: { version: 'v', stateRoot: '/x', pid: 1, uptime: 0 },
-        tickets: [],
-        halts: [],
-        agents: 'n/a (no RPC yet)',
-        spend: 'n/a (no RPC yet)',
-        questions: [],
-      }),
-    ).not.toThrow();
-  });
-
-  test('human mode does not throw with a populated quota section', () => {
-    const spend: StatusQuotaEntry[] = [
-      {
-        vendor: 'claude',
-        account: 'max',
-        remaining: 400_000,
-        limit: 1_000_000,
-        unit: 'tokens',
-        confidence: 'estimated',
-        cooldown_until: null,
-      },
-      {
-        vendor: 'claude',
-        account: 'pi',
-        remaining: 1,
-        unit: 'fraction',
-        confidence: 'reported',
-        cooldown_until: '2026-09-09T00:05:00.000Z',
-        spend_usd: 2.5,
-      },
-    ];
-    expect(() =>
-      printStatusHuman({
-        daemon: { version: 'v', stateRoot: '/x', pid: 1, uptime: 0 },
-        tickets: [],
-        halts: [],
-        agents: 'n/a (no RPC yet)',
-        spend,
-        questions: [],
-      }),
-    ).not.toThrow();
-  });
-});
-
-describe('fetchStatus — with quota.* RPC wired (T023)', () => {
-  let repo: string;
-  let rpc: RpcServerHandle;
-  let socketPath: string;
-
-  beforeEach(() => {
-    repo = mkdtempSync(join(tmpdir(), 'agile-status-quota-'));
-    Bun.spawnSync(['git', 'init', '-q'], { cwd: repo });
-    Bun.spawnSync(['git', 'config', 'user.email', 'test@example.com'], { cwd: repo });
-    Bun.spawnSync(['git', 'config', 'user.name', 'Test'], { cwd: repo });
-    writeFileSync(join(repo, 'README.md'), '# fixture repo\n');
-    Bun.spawnSync(['git', 'add', '-A'], { cwd: repo });
-    Bun.spawnSync(['git', 'commit', '-q', '-m', 'initial commit'], { cwd: repo });
-    const init = runInit(repo);
-    const store = StateStore.open(init.stateRoot);
-    const quota = new QuotaService({ store });
-    socketPath = join(repo, '.agile-daemon.sock');
-    rpc = startRpcServer({
-      socketPath,
-      version: 'test',
-      stateRoot: init.stateRoot,
-      startedAt: Date.now(),
-      extraMethods: {
-        'state.ticket_list': () => store.listTickets(),
-        'state.halt_list': () => store.listHalts(),
-        ...buildQuotaRpcMethods(quota, store),
-      },
-    });
-  });
-
-  afterEach(async () => {
-    await rpc.close();
-    rmSync(repo, { recursive: true, force: true });
-  });
-
-  test('open questions are empty when the daemon has no question.* RPC (T040 degrade path)', async () => {
-    const status = await fetchStatus(socketPath);
-    expect(status.questions).toEqual([]);
-  });
-
-  test('spend carries the real quota.list result once the RPC is wired', async () => {
-    const status = await fetchStatus(socketPath);
-    expect(Array.isArray(status.spend)).toBe(true);
-    if (!Array.isArray(status.spend)) throw new Error('unreachable');
-    expect(status.spend).toHaveLength(1);
-    expect(status.spend[0]).toMatchObject({ vendor: 'claude', account: 'default' });
-  });
-
-  test('a 429 recorded through quota.record_429 shows up in the next fetchStatus', async () => {
-    await callRpc(socketPath, 'quota.record_429', {
-      vendor: 'claude',
-      account: 'default',
-      retryAfterSeconds: 60,
-    });
-    const status = await fetchStatus(socketPath);
-    if (!Array.isArray(status.spend)) throw new Error('unreachable');
-    expect(status.spend[0]?.cooldown_until).not.toBeNull();
-  });
-});
-
-describe('fetchStatus — open questions (T040)', () => {
-  let daemon: TestDaemon;
-
-  beforeEach(async () => {
-    daemon = await startTestDaemon('agile-status-questions-');
-  });
-
-  afterEach(async () => {
-    await daemon.cleanup();
-  });
-
-  test('lists open questions and drops answered ones', async () => {
-    const open = await daemon.questionService.raise({
-      raised_by: 'eng-1',
-      text: 'is the ticket right?',
-    });
-    const answered = await daemon.questionService.raise({ raised_by: 'em', text: 'handled' });
-    await daemon.questionService.answer(answered.id, {
-      answer: 'yes',
-      by: 'human',
-      resolved_as: 'reply',
-    });
-
-    const status = await fetchStatus(daemon.socketPath);
-    expect(status.questions.map((q) => q.id)).toEqual([open.id]);
-    expect(() => printStatusHuman(status)).not.toThrow();
+  /**
+   * T126 (QA rough edge 3): a dead daemon used to surface as the raw
+   * `could not reach daemon at ...: connect ENOENT`. It now says what
+   * `agile daemon status` says, and exits 1.
+   */
+  test('says agiled is not running and exits 1 when the socket is dead', async () => {
+    const errors: string[] = [];
+    const logs: string[] = [];
+    const originalError = console.error;
+    const originalLog = console.log;
+    console.error = (msg: string) => errors.push(String(msg));
+    console.log = (msg: string) => logs.push(String(msg));
+    try {
+      const dead = join(daemon.home, 'no-such-daemon.sock');
+      expect(await runStatus(dead, false)).toBe(1);
+      expect(errors.join('\n')).toMatch(/^home: .+\nagiled is not running/);
+      expect(errors.join('\n')).not.toContain('ENOENT');
+      expect(await runStatus(dead, true)).toBe(1);
+      expect(JSON.parse(logs.join('\n')) as { running: boolean }).toMatchObject({
+        running: false,
+      });
+    } finally {
+      console.error = originalError;
+      console.log = originalLog;
+    }
   });
 });

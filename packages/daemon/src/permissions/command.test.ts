@@ -20,12 +20,10 @@ import {
   isPathInside,
   isPipedIntoBareShell,
   isRepoLocalBin,
-  isTicketBranch,
   parseCommandIntoAtoms,
   parseDlxInvocation,
   parseGitInvocation,
   pushRefspecs,
-  redirectionTarget,
   redirectionTargets,
   refspecDestBranch,
   resolveTargetPath,
@@ -140,7 +138,7 @@ describe('isForcePush / isBranchDelete', () => {
   });
 });
 
-describe('pushRefspecs / refspecDestBranch / isTicketBranch', () => {
+describe('pushRefspecs / refspecDestBranch', () => {
   test('collects every positional refspec after the remote, not just the last', () => {
     expect(pushRefspecs(['push', 'origin', 'main', 'tkt/TKT-0001-x'])).toEqual([
       'main',
@@ -157,14 +155,6 @@ describe('pushRefspecs / refspecDestBranch / isTicketBranch', () => {
     expect(refspecDestBranch('HEAD:main')).toBe('main');
     expect(refspecDestBranch('+main')).toBe('main');
     expect(refspecDestBranch('tkt/TKT-0001-x')).toBe('tkt/TKT-0001-x');
-  });
-
-  test('isTicketBranch matches only this ticket, both tkt/<full-id>-… and tkt/<numeric>-… spellings', () => {
-    expect(isTicketBranch('tkt/TKT-0001-x', 'TKT-0001')).toBe(true);
-    expect(isTicketBranch('tkt/0001-x', 'TKT-0001')).toBe(true);
-    expect(isTicketBranch('tkt/TKT-0002-x', 'TKT-0001')).toBe(false);
-    expect(isTicketBranch('main', 'TKT-0001')).toBe(false);
-    expect(isTicketBranch(undefined, 'TKT-0001')).toBe(false);
   });
 });
 
@@ -208,11 +198,11 @@ describe('hasRedirectionOrTee / redirectionTarget / redirectionTargets', () => {
   });
 
   test('extracts the redirection target, including fd-prefixed/fused forms', () => {
-    expect(redirectionTarget(['cat', 'evil', '>', 'out.txt'])).toBe('out.txt');
-    expect(redirectionTarget(['cat', 'evil', '>out.txt'])).toBe('out.txt');
-    expect(redirectionTarget(['cat', 'evil', '1>', 'out.txt'])).toBe('out.txt');
-    expect(redirectionTarget(['npm', 'run', 'build', '1>/etc/x'])).toBe('/etc/x');
-    expect(redirectionTarget(['cat', 'evil', '&>', 'out.txt'])).toBe('out.txt');
+    expect(redirectionTargets(['cat', 'evil', '>', 'out.txt'])[0]).toBe('out.txt');
+    expect(redirectionTargets(['cat', 'evil', '>out.txt'])[0]).toBe('out.txt');
+    expect(redirectionTargets(['cat', 'evil', '1>', 'out.txt'])[0]).toBe('out.txt');
+    expect(redirectionTargets(['npm', 'run', 'build', '1>/etc/x'])[0]).toBe('/etc/x');
+    expect(redirectionTargets(['cat', 'evil', '&>', 'out.txt'])[0]).toBe('out.txt');
   });
 
   test('redirectionTargets collects every target, not just the first (opus "newly visible" finding)', () => {

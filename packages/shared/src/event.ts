@@ -1,147 +1,98 @@
 /**
- * Event (design/agile-agents-design.md §3 "Concepts beyond the original
- * brief" — "Observability: append-only event log of every message, hook
- * decision, and state transition" — and §4 layout, `log/events.jsonl`).
+ * Event — one line of `<home>/log/events.jsonl` (cockpit design §7.4).
  *
- * DESIGN-GAP: no yaml/json example is given for an event line anywhere in
- * §4–§5 (unlike every other entity). The shape below is the minimal
- * superset implied by the three named event sources: a kind discriminator,
- * a timestamp, optional ticket/agent scoping (every source names one or
- * both), and a free-form payload for the source-specific detail (the
- * message itself, the hook's allow/deny + reason, or the from/to status).
+ * "`log/events.jsonl` in the home, append-only, one writer, fsync on gate
+ * and land events. Event kinds reduce to: stream · thread · session ·
+ * question · gate · rule · hook · land."
+ *
+ * T123 prunes `EVENT_KINDS` to exactly the kinds a surviving emitter mints,
+ * grouped by those eight families (plus the small home-config family the
+ * store still writes). Two invariants are tested in `event.test.ts` and
+ * `store/events.test.ts`: every kind in the enum has at least one emitter,
+ * and every emitter uses a kind in the enum.
+ *
+ * The record is `{ts, kind, data}` plus three optional scopes: `stream`
+ * (the ULID `agile tail --stream` filters on), `session` (the agent session
+ * a runner/hook event came from) and `agent` (the pre-reshape agent id the
+ * hook path and the agent registry still identify their caller by; it goes
+ * when T130 replaces that registry with sessions). `ticket` is gone with
+ * the ticket layer T122 deleted — a survivor that still knows a ticket id
+ * puts it in `data`.
  */
 
 import { z } from 'zod';
-import { TicketIdSchema, formatZodError } from './ids';
+import { UlidSchema, formatZodError } from './ids';
 
-/**
- * `quota_low` / `quota_exhausted` are added alongside the three prose-named
- * sources: §4 "Quota" / §10 "Quota-driven pause and handoff" name them as
- * "Bus events" that drive daemon-side routing/reassignment decisions, which
- * is exactly the kind of state transition this log exists to record.
- *
- * DESIGN-GAP (T005 review fix, manager decision B1): the acceptance
- * criterion "every mutation produces exactly one event", read literally,
- * means every `StateStore` write mints a `log/events.jsonl` line, not only
- * ticket transitions. The design never enumerates a kind per mutation kind
- * (only the three prose sources above), so the remaining kinds below are
- * named directly after the store method that produces them — one per
- * distinct mutation shape T005/T005-fix wires up, snake_case, short:
- * `ticket_put` (`StateStore.putTicket`), `stanza_appended` (`appendStanza`),
- * `oracle_put` (`putOracleEntry`), `kb_put` (`putKbFact`),
- * `ledger_appended` (`appendLedgerLine`), `halt_created`/`halt_released`
- * (`putHalt`/`deleteHalt` — §4 "Halts": presence of the file is the active
- * state, so create/delete are the two meaningful mutations), `sprint_put`,
- * `quota_put`, `agent_put`/`agent_deleted` (bus `agents/<agent>.yaml`
- * registry, §5 "Storage"), `policy_put`, `vendors_put`, and the two generic
- * kinds `entity_put`/`entity_deleted` minted by the generic
- * `putEntity`/`deleteEntity` trio (T006's message/thread files, or any
- * future entity with no dedicated helper yet).
- *
- * DESIGN-GAP (T018 review fix): `hil_requested`/`hil_resolved`/
- * `breaker_tripped`/`breaker_cleared` are added for §16 "HIL gates policy".
- * Every generic `putEntity` write to `board/hil/**`/`board/breaker.yaml`
- * already mints an `entity_put`/`entity_deleted` event on its own, but these
- * four semantic kinds are minted alongside it (one HIL mutation now yields
- * two log lines, same as `state_transition` already coexists with
- * `ticket_put` for a ticket transition), so a `log/events.jsonl` consumer
- * can filter on "a HIL request opened/resolved" or "a breaker
- * tripped/cleared" without grepping generic-entity payloads for a
- * `board/hil/` path prefix.
- */
 export const EVENT_KINDS = [
-  'message',
-  'hook_decision',
-  'state_transition',
-  'quota_low',
-  'quota_exhausted',
-  'ticket_put',
-  'stanza_appended',
-  'oracle_put',
-  'kb_put',
-  'ledger_appended',
-  'halt_created',
-  // DESIGN-GAP (T007 manager decision): `putHalt` previously minted
-  // `halt_created` for every put, including a quorum-tracking update to an
-  // existing halt file — indistinguishable from an actual creation in the
-  // event/commit log. `halt_updated` covers every non-creating `putHalt`
-  // (e.g. `recordStandupReport`/timeout evaluation flipping `quorum` to
-  // `reached`), named after the store method exactly like the other
-  // store-mutation kinds above (`ticket_put`, `oracle_put`, ...).
-  'halt_updated',
-  'halt_released',
-  'sprint_put',
-  'quota_put',
+  // -- stream (store.createStream / store.updateStream, via StreamService) --
+  // data: {stream, agent_status, human_status, archived, parent?, repo?,
+  // principal?} — the status pair is what makes `reconstructStreams` able to
+  // rebuild every stream's state from the log alone (§7.4's reconstruction
+  // test).
+  'stream_created',
+  'stream_updated',
+  'stream_closed',
+  'stream_archived',
+
+  // -- thread (store.appendThreadEntry) --  data: {stream, by, entry_kind}
+  'thread_appended',
+
+  // -- session --
+  // The runner's ACP observation (§8 adapter contract) and the agent
+  // registry the runner registers itself in. T130 replaces the registry
+  // with real session records and `session_started`/`session_ended`/
+  // `session_error`; until then these three are what the runner actually
+  // emits, so they stay.
+  'tool_call',
   'agent_put',
   'agent_deleted',
-  'policy_put',
-  'vendors_put',
-  'entity_put',
-  'entity_deleted',
-  'hil_requested',
-  'hil_resolved',
-  // T040 (§17 "Control room v2" — "Questions vs Decisions"): a `Question`
-  // (`board/questions/Q-*.yaml`) is opened and answered through the generic
-  // entity trio, which mints only `entity_put`. These two semantic kinds are
-  // minted alongside it for exactly the reason `hil_requested`/`hil_resolved`
-  // are — so a `log/events.jsonl` consumer (and the feed) can filter on "a
-  // question was raised/answered" without grepping generic-entity payloads
-  // for a `board/questions/` path prefix.
+
+  // -- question (QuestionService) --  data: {id, stream, text|answer}
   'question_raised',
   'question_answered',
+
+  // -- gate (GateService) --  data: {id, gate, owner, decision?, note?}
+  // `breaker_*` is part of the gate family: the breaker is the switch that
+  // forces every gate to `human`, and `GateService.trip`/`clear` mint them.
+  'gate_raised',
+  'gate_resolved',
   'breaker_tripped',
   'breaker_cleared',
-  // DESIGN-GAP (T012 QA round): §8 "Adapter contract" has the daemon
-  // observing every ACP `tool_call`/`tool_call_update` off the `tool_call`
-  // stream (§6 tier 3 "observation"), but no event kind exists to log one —
-  // T012 had been filing these under the generic `entity_put` bucket for
-  // lack of a granted `event.ts` change. Named directly after the ACP
-  // `session/update` discriminant it observes, matching this file's own
-  // convention of naming a kind after what produced it.
-  'tool_call',
-  // "usage_update arrived before any sprint existed to file its ledger line
-  // under" (T012 QA round finding) — the ledger line still gets written
-  // (under the `nosprint` fallback file `runner/session.ts` already used
-  // elsewhere for exactly this), but the daemon also logs this event so the
-  // gap is visible in `log/events.jsonl`, not just silently absorbed.
-  'ledger_no_sprint',
-  // DESIGN-GAP (T019 merge/integration owner, manager-granted follow-up):
-  // §15 "Git model and teams" names the merge cadence ("ticket -> integration
-  // on done ... conflicts bounce to the ticket owner as a scoped halt ...
-  // integration -> main at sprint review") but, like every other mutation
-  // kind above, never names an event kind for it — these were previously
-  // filed under the generic `entity_put`/`halt_created` kinds alone for lack
-  // of a granted `event.ts` change (same situation `tool_call` documents
-  // just above). Four kinds, not five: a `merge_started` kind was
-  // considered and dropped — `packages/daemon/src/merge/owner.ts` has no
-  // durable intermediate state between "asked to merge a done ticket" and
-  // one of these four outcomes to log a start event against (unlike, say,
-  // a `HilRequest`'s `pending` status), so it would only ever appear
-  // immediately followed by its own outcome in the same log, carrying no
-  // information the outcome event doesn't already carry with its own `ts`.
-  //  - `merge_completed`: a ticket's branch landed on `integration`.
-  //  - `merge_conflict` / `merge_tests_failed`: the two ways `onTicketDone`
-  //    instead raises a scoped halt (§15's "conflicts bounce ... as a
-  //    scoped halt") — mirrors `halt_created`'s own event, one level up.
-  //  - `integration_merged_to_main`: `integration -> main` at sprint review
-  //    (§16 "HIL gates policy").
-  // DESIGN-GAP (T042, §17 "Control room v2" → "Later-layer tickets are
-  // stubs"): "a published decision therefore also triggers an architect
-  // re-examination pass over every not-done ticket, recorded per ticket as
-  // unchanged / updated / split. The graph walk is the guarantee, the pass
-  // is the judgment." That per-ticket record has no home in any existing
-  // kind: `ticket_put`/`state_transition` are minted by the store only when
-  // something was actually written, and the whole point of the pass is that
-  // a ticket the architect leaves `unchanged` must still be on the record.
-  // Same reasoning (and same shape) as `question_raised`/`hil_requested`
-  // above: one semantic kind alongside whatever mutation the verdict caused.
-  // `data`: `{decision, verdict: 'unchanged'|'updated'|'split', note?,
-  // children?}`.
-  'ticket_reexamined',
-  'merge_completed',
-  'merge_conflict',
-  'merge_tests_failed',
-  'integration_merged_to_main',
+
+  // -- rule (StateStore.createRule / updateRule, via RulesService) --
+  // data: {id, status, enforcement, scope, principal?} — `rule_decided` is
+  // the human's accept/retire (the one write that moves `status`), and it is
+  // split from `rule_put` so the audit trail shows a decision as a decision
+  // rather than as another edit.
+  'rule_put',
+  'rule_decided',
+
+  // -- hook (HookService + the ACP permission responder) --
+  // data: {event, decision, reason, tool?, command?}
+  'hook_decision',
+  // T151 (§6.2, "latency is recorded per call as an event"): one per
+  // classifier call made from the hook path. T155: `agile rules test` writes
+  // one per eval call too, marked `source: 'eval'` with the rule it asked.
+  // data: {stream, rules, questions, latency_ms, outcome, error?}
+  //    or {source: 'eval', rule, rules, questions, latency_ms, outcome?, error?}
+  'classifier_call',
+
+  // -- land --  none yet; T141 adds `land_*` with its emitter.
+
+  // -- home config + generic store writes --
+  // `repos.yaml` / `vendors.yaml` / the permission policy, and the generic
+  // entity trio every not-yet-dedicated record (question, gate, breaker,
+  // bus message file) is written through.
+  'repos_put',
+  'vendors_put',
+  'policy_put',
+  /** T167: `<home>/config.yaml` rewritten (the cockpit's classifier key). Carries no data — never the key. */
+  'home_config_put',
+  'entity_put',
+  'entity_deleted',
+
+  // -- bus --  the one message event; T130 prunes it with the bus itself.
+  'message',
 ] as const;
 export const EventKindSchema = z.enum(EVENT_KINDS);
 export type EventKind = z.infer<typeof EventKindSchema>;
@@ -150,7 +101,11 @@ export const EventSchema = z
   .object({
     ts: z.string().min(1),
     kind: EventKindSchema,
-    ticket: TicketIdSchema.optional(),
+    /** The stream this event is about — what `agile tail --stream` filters on. */
+    stream: UlidSchema.optional(),
+    /** The agent session this event came from — `agile tail --session`. */
+    session: z.string().min(1).optional(),
+    /** Pre-reshape agent id (hook path + agent registry); goes with T130. */
     agent: z.string().min(1).optional(),
     data: z.record(z.string(), z.unknown()).default({}),
   })

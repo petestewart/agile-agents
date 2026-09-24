@@ -1,14 +1,15 @@
 /**
- * `decidePermission` — the one pure function this ticket exports (T010).
- * Classifies the raw ACP request, runs it through the never-without-human
- * list and then the role table (policy-tables.ts), and picks the ACP
- * option id for the result: **always `allow_once` for an allow, `reject_once`
- * for a deny, never `allow_always`** (§14 "Every permission decision is
- * logged with allow_once only").
+ * `decidePermission`: classifies the raw ACP request, runs the
+ * never-without-human list, the role table and then the pattern rules in
+ * scope (the same pass as `hook/decide.ts`), and picks the ACP option:
+ * `allow_once` for an allow, `reject_once` for a deny, never
+ * `allow_always` (§14).
  */
 
+import { DEFAULT_PROTECTED_BRANCHES } from '@agile-agents/shared';
 import { classifyPermissionRequest } from './classify';
 import { checkNeverWithoutHuman, roleVerdict } from './policy-tables';
+import { type RuleCheckContext, runPatternRules } from './rule-checks';
 import type { AcpPermissionOption, Decision, DecisionContext, PermissionRequest } from './types';
 
 function findOption(
@@ -18,7 +19,7 @@ function findOption(
   return options.find((o) => o.kind === kind);
 }
 
-/** One line under the message body cap, for the `hil_request`'s summary and the logged reason. */
+/** One line under the message body cap, for the gate's summary and the logged reason. */
 function summarize(classified: PermissionRequest, reason: string): string {
   const target =
     classified.command ?? classified.targetPath ?? classified.url ?? classified.title ?? '';
@@ -26,22 +27,44 @@ function summarize(classified: PermissionRequest, reason: string): string {
   return `${head}: ${reason}`.slice(0, 800);
 }
 
+/** A `hil` decision: the route band's `classifier_review` draft. */
+function hil(classified: PermissionRequest, reason: string, why = reason): Decision {
+  return {
+    kind: 'hil',
+    reason,
+    hilRequest: { hilKind: 'classifier_review', summary: summarize(classified, why), classified },
+  };
+}
+
 /** `mcp__agile__<verb>` — the daemon's own MCP bridge, role-gated inside the verb. */
 export function isDaemonVerb(title: string | undefined): boolean {
   return title !== undefined && /^mcp__agile__[a-z_]+$/.test(title);
+}
+
+/** The `RuleCheckContext` for one request: every path it names, and `edit` as the write case. */
+function ruleCheckContext(ctx: DecisionContext, classified: PermissionRequest): RuleCheckContext {
+  const paths =
+    classified.targetPaths ?? (classified.targetPath !== undefined ? [classified.targetPath] : []);
+  return {
+    worktreePath: ctx.worktreePath,
+    ...(classified.command !== undefined ? { command: classified.command } : {}),
+    paths,
+    writes: classified.toolClass === 'edit',
+    protectedBranches: ctx.protectedBranches ?? DEFAULT_PROTECTED_BRANCHES,
+    upstream: ctx.upstreamBranch ?? (() => undefined),
+    head: ctx.headBranch ?? (() => undefined),
+  };
 }
 
 export function decidePermission(ctx: DecisionContext): Decision {
   const classified = classifyPermissionRequest(ctx.request);
   const options = ctx.request.options ?? [];
 
-  const policyCtx = { role: ctx.role, worktreePath: ctx.worktreePath, ticket: ctx.ticket };
-  // The daemon's own MCP verbs (`mcp__agile__*`) are never gated here: each
-  // verb enforces its own role rules server-side, and the vendor reports
-  // them as kind `other`, which every role table denies as an unknown tool.
-  // Fifteenth/sixteenth live runs (2026-09-11): a session whose hook config
-  // had been stashed fell through to this tier and its engineer was locked
-  // out of bus_send/board_post/test_run for the rest of the run.
+  const policyCtx = { role: ctx.role, worktreePath: ctx.worktreePath };
+  // The daemon's own MCP verbs are never gated here: each enforces its own
+  // role rules, and the vendor reports them as kind `other`, which every
+  // role table denies (a live run's hook-less session was locked out of
+  // its own verbs).
   const neverVerdict = checkNeverWithoutHuman(classified, policyCtx);
   const verdict =
     neverVerdict ??
@@ -49,52 +72,58 @@ export function decidePermission(ctx: DecisionContext): Decision {
       ? { action: 'allow' as const }
       : roleVerdict(ctx.role, classified, policyCtx));
 
+  // The pattern rules (§5.2, §5.4), only for a call the role table cleared
+  // (a settled call must not bump stats). The only gate a hook-less vendor
+  // (Cursor, Codex, Grok, §4.3) has.
+  const rulePass =
+    verdict.action === 'allow'
+      ? runPatternRules(ctx.patternRules, ruleCheckContext(ctx, classified))
+      : undefined;
+  const rulesEvaluated =
+    rulePass !== undefined && rulePass.rulesEvaluated.length > 0
+      ? rulePass.rulesEvaluated
+      : undefined;
+
+  if (rulePass?.reason !== undefined) {
+    const option = findOption(options, 'reject_once');
+    if (option === undefined)
+      return hil(classified, `${rulePass.reason} (no reject_once option offered)`, rulePass.reason);
+    return {
+      kind: 'deny',
+      optionId: option.optionId,
+      reason: rulePass.reason,
+      ...(rulesEvaluated !== undefined ? { rulesEvaluated } : {}),
+      ...(rulePass.ruleViolated !== undefined ? { ruleViolated: rulePass.ruleViolated } : {}),
+    };
+  }
+
   if (verdict.action === 'allow') {
     const option = findOption(options, 'allow_once');
     if (option === undefined) {
-      // The agent offered no allow_once option at all — can't honor an
-      // allow verdict safely, so fall back to reject_once (or hil if even
-      // that is missing) rather than pick an allow_always/other option.
+      // No allow_once offered: never pick allow_always; reject, or hil if even that is missing.
       const reject = findOption(options, 'reject_once');
       if (reject === undefined) {
-        return {
-          kind: 'hil',
-          reason: 'no allow_once/reject_once option offered for an allow verdict',
-          hilRequest: {
-            hilKind: 'unblock',
-            summary: summarize(classified, 'no safe option offered by the agent'),
-            classified,
-          },
-        };
+        return hil(
+          classified,
+          'no allow_once/reject_once option offered for an allow verdict',
+          'no safe option offered by the agent',
+        );
       }
       return { kind: 'deny', optionId: reject.optionId, reason: 'no allow_once option offered' };
     }
-    return { kind: 'allow', optionId: option.optionId };
+    return {
+      kind: 'allow',
+      optionId: option.optionId,
+      ...(rulesEvaluated !== undefined ? { rulesEvaluated } : {}),
+    };
   }
 
   if (verdict.action === 'deny') {
     const option = findOption(options, 'reject_once');
-    if (option === undefined) {
-      return {
-        kind: 'hil',
-        reason: `${verdict.reason} (no reject_once option offered)`,
-        hilRequest: {
-          hilKind: 'unblock',
-          summary: summarize(classified, verdict.reason),
-          classified,
-        },
-      };
-    }
+    if (option === undefined)
+      return hil(classified, `${verdict.reason} (no reject_once option offered)`, verdict.reason);
     return { kind: 'deny', optionId: option.optionId, reason: verdict.reason };
   }
 
-  return {
-    kind: 'hil',
-    reason: verdict.reason,
-    hilRequest: {
-      hilKind: 'unblock',
-      summary: summarize(classified, verdict.reason),
-      classified,
-    },
-  };
+  return hil(classified, verdict.reason);
 }

@@ -17,5 +17,4 @@ test('re-exports the public daemon API', async () => {
   expect(typeof mod.startDaemon).toBe('function');
   expect(typeof mod.installShutdownSignals).toBe('function');
   expect(typeof mod.runInit).toBe('function');
-  expect(mod.STATE_BRANCH).toBe('agile-state');
 });

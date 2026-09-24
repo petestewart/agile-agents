@@ -1,0 +1,14 @@
+{
+  "state": "tool: Bash\ncommand: npm install left-pad\nstream: 01J0000000000000000000000A (agile-agents)",
+  "model": "jev-latest",
+  "questions": {
+    "RULE-NO-NEW-DEPS": {
+      "type": "noul",
+      "instructions": "Does this action add a new dependency?"
+    },
+    "RULE-NO-MIGRATIONS": {
+      "type": "noul",
+      "instructions": "Does this action violate: don't touch the migration files?"
+    }
+  }
+}

@@ -1,10 +1,4 @@
-/**
- * Duration parsing for `human_timeout:<d>` owners (§16). DESIGN-GAP: the
- * design never specifies a duration grammar; `<d>` is read as `<n><unit>`
- * with `ms | s | m | h | d | w`, the smallest thing that covers CLAUDE.md's
- * own tunables ("liveness timeout 5 min", "quorum timeout 10 min") and the
- * example in the ticket text (`human_timeout: <d>`, e.g. `2h`).
- */
+/** `human_timeout:<d>` durations: `<n><unit>` with `ms | s | m | h | d | w` (e.g. `2h`). */
 
 const DURATION_PATTERN = /^(\d+)(ms|s|m|h|d|w)$/;
 

@@ -6,33 +6,51 @@
  * agiled's unix-socket JSON-RPC API (design/agile-agents-design.md §18
  * "Technical shape": "`agile` CLI: same client lib").
  *
- * T004 scope was `init` and `daemon start`; T008 (this file) adds
- * status/tail/send/approve/deny/note/delegate/resolve/halt/resume/hook/breaker and
- * makes every verb support `--json` alongside its human-readable output.
  * `index.ts` is pure dispatch — one file per verb lives under `commands/`.
+ * T122 deleted the `send`/`halt`/`resume`/`sync` verbs and the gate-decision
+ * verbs with the subsystems behind them.
  */
 
-import { join } from 'node:path';
-import { createEmSessionDelegate, discoverConfig } from '@agile-agents/daemon';
+import { resolveHomePaths } from '@agile-agents/daemon';
 import { type ParsedArgs, parseArgs } from './args';
-import { runCliDaemonStart } from './commands/daemon';
+import { runAnswer } from './commands/answer';
+import { runAttach, runDetach } from './commands/attach';
 import {
-  runApprove,
-  runBreakerClear,
-  runDelegate,
-  runDeny,
-  runGateList,
-  runGateNote,
-  runResolve,
-} from './commands/gate';
-import { runHalt, runResume } from './commands/halt';
+  daemonStatusReport,
+  formatDaemonStatus,
+  runDaemonForeground,
+  runDaemonStart,
+  runDaemonStop,
+  withClassifierStatus,
+} from './commands/daemon';
+import { runBreakerClear, runGateList } from './commands/gate';
 import { parseHookArgs, runHook } from './commands/hook';
+import { runInbox } from './commands/inbox';
 import { runCliInit } from './commands/init';
+import { runLand } from './commands/land';
 import { runQuestionAnswer, runQuestionList, runQuestionRaise } from './commands/question';
-import { runDemoSprint } from './commands/run';
-import { runSend } from './commands/send';
+import { runRepoAdd, runRepoList } from './commands/repo';
+import { runReview } from './commands/review';
+import {
+  runRulesAccept,
+  runRulesAdd,
+  runRulesEdit,
+  runRulesList,
+  runRulesReport,
+  runRulesRetire,
+  runRulesSeed,
+  runRulesShow,
+  runRulesTest,
+} from './commands/rules';
 import { runStatus } from './commands/status';
-import { runSync } from './commands/sync';
+import {
+  runStreamArchive,
+  runStreamClose,
+  runStreamList,
+  runStreamNew,
+  runStreamSay,
+  runStreamShow,
+} from './commands/stream';
 import { runTail } from './commands/tail';
 
 export const PACKAGE_NAME = '@agile-agents/cli';
@@ -40,9 +58,7 @@ export const PACKAGE_NAME = '@agile-agents/cli';
 // Re-exported for the existing T004 test suite and any embedder that wants
 // the pieces directly rather than going through `runCli`.
 export { runCliInit };
-export { runCliDaemonStart };
-export { runDemoSprint };
-export type { RunOptions, RunResult } from './commands/run';
+export { runDaemonStart, runDaemonStop, runDaemonForeground, daemonStatusReport };
 export type { CliInitResult } from './commands/init';
 
 function usage(): string {
@@ -50,35 +66,63 @@ function usage(): string {
     'usage: agile <command> [options]',
     '',
     'commands:',
-    '  init                       bootstrap .agile/ state in the current git repo',
-    '  daemon start               start agiled in the foreground for this repo',
-    '  run [--seed <path>] [--live] [--port <n>] [--max-ticks <n>]   drive one sprint layer unattended (T021)',
-    '  status                     sprint/tickets/agents/spend',
-    '  tail                       tail the event log (--follow, --ticket, --agent, --kind)',
-    '  send                       send a bus message (--from --to --kind --priority --body [--ticket])',
-    '  approve <hil-id>           approve a HIL request [--by <agent>] [--note <text>]',
-    '  deny <hil-id>              deny a HIL request [--by <agent>] [--note <text>]',
-    '  note <hil-id> --note <text>   answer a HIL request in free text (no decision; the EM decides)',
-    '  delegate <hil-id> --to em|architect',
-    '  resolve <hil-id> --decision approve|deny [--by <agent>] [--note <text>]',
+    '  init                       create the state home ($AGILE_HOME, default ~/.agile/) if missing',
+    '  repo add <path> [--name <n>] [--protected a,b] [--target-branch <b>] [--vendor <v>]',
+    '  repo list                  list registered repos',
+    '  stream new --title <t> --goal <g> [--parent <id>] [--repo <name>] [--target-branch <b>]',
+    '  stream list [--all] [--status <s>] [--landed]   the stream tree (--all includes archived)',
+    '  stream show <id>           the record plus the last 20 thread lines',
+    '  stream close <id> [--note <text>]',
+    '  stream archive <id>        hide from `stream list` (nothing moves on disk)',
+    '  stream say <id> <text>     append one human line to the stream thread',
+    '  rules list [--status proposed|accepted|retired] [--scope global|repo:<n>|stream:<id>]',
+    '  rules show <id>            one rule: tier, scope, pattern, provenance, stats, examples',
+    '  rules add --text "…" [--scope …] [--enforcement pattern|classifier|guidance] [--critical]',
+    '                             [--question "…"] [--criteria-true "…" --criteria-false "…"]',
+    '                             [--pattern no_push|no_push_protected|path_deny|command_deny [--pattern-arg …]…]',
+    '                             [--example "<action>::<true|false>"]…   (proposes it; at most 20 examples)',
+    '                             --enforcement pattern needs --pattern (path_deny args: globs; command_deny: tokens)',
+    '  rules edit <id> [--text …] [--question …] [--criteria-true … --criteria-false …]',
+    '                             [--enforcement …] [--stage …] [--pattern <kind> [--pattern-arg …]…]',
+    '                             [--example "a::true" …]   (--example replaces the list)',
+    '  rules accept <id> [--by <who>]   accept a proposed rule (human-only, D4)',
+    '  rules retire <id> [--by <who>]   retire a rule (a status change; nothing is deleted)',
+    '  rules report [--days N]         per-rule fired/violated/routed counts and prune flags',
+    '  rules test [rule-id]            run accepted classifier rules\u2019 examples through the classifier',
+    '  rules seed --from PLAN-v1.md     import that plan\u2019s decisions as proposed rules',
+    '  attach <stream> [--vendor v] [--model m] [--effort low|medium|high|max] [--role worker|reviewer] [--force]',
+    '  resolve <stream> [--vendor v] [--model m] [--effort ...]   a worker that fixes the last land conflict',
+    '  review <stream> [--vendor v] [--model m] [--effort ...]   read-only reviewer session',
+    '  detach <stream>            stop the live session on a stream',
+    '  land <stream>              merge the stream branch into its target, close the stream, remove the worktree',
+    '  daemon start               start agiled detached (pidfile + log in the state home)',
+    '  daemon stop                stop the running agiled',
+    '  daemon status              is agiled running? pid, port, socket, home, classifier key loaded?',
+    '  status                     daemon, streams and what is waiting on you',
+    '  tail                       tail the event log (--follow, --stream, --kind, --session)',
     '  gate list                  list open HIL requests',
-    '  question list              list open questions (board/questions/)',
-    '  question raise --text <text> [--ticket <id>] [--by <agent>]',
-    '  question answer <id> --answer <text> [--as reply|decision|ticket] [--edit <json>] [--ticket <id>]',
-    '  halt [--scope <scope>] [--reason <text>] [--by <agent>]',
-    '  resume <halt-id>',
+    '  inbox                      everything waiting on you, across all streams, oldest first',
+    '  answer <id> <text|yes|no>  answer an inbox item: Q-… takes the answer text, HIL-… takes yes|no [note]',
+    '  question list              list open questions (questions/ in the state home)',
+    '  question raise --stream <id> --text <text> [--by <agent>]',
+    '  question answer <id> --answer <text> [--by <agent>]',
     '  breaker clear <signal>',
-    '  sync jira link <PROJECT> | unlink | status    two-way Jira sync (credentials from $JIRA_*)',
-    '  hook <event>               stdin JSON in, JSON out (e.g. hook pre-tool-use) [--fail-closed] [--timeout <ms>, default 2000]',
-    "  mcp --agent <id> [--ticket <id>] [--timeout <ms>, default 60000]   stdio MCP bridge to the daemon's tool.* RPC",
+    '  hook <event>               stdin JSON in, JSON out (e.g. hook pre-tool-use) [--fail-open] [--timeout <ms>, default 2000]',
+    "  mcp --session <id> [--timeout <ms>, default 60000]   stdio MCP bridge to the daemon's agent.* verbs",
     '',
     'flags:',
     '  --json                     machine-readable output for any verb above',
   ].join('\n');
 }
 
-function socketPathFor(cwd: string): string {
-  return discoverConfig({ cwd }).socketPath;
+/**
+ * T112 (D9): every client verb resolves the daemon from the **state home**,
+ * never from a repo cwd — one long-lived daemon serves every registered
+ * repo, so `agile status`/`agile tail` work from anywhere, including outside
+ * any git repository.
+ */
+function socketPathFor(): string {
+  return resolveHomePaths().socketPath;
 }
 
 function reportError(err: unknown): number {
@@ -92,55 +136,37 @@ export async function runCli(argv: string[], cwd: string = process.cwd()): Promi
   const [command, sub, ...restArgv] = rest;
 
   if (command === 'init') {
-    const { message, alreadyInitialised } = runCliInit(cwd);
-    if (alreadyInitialised) {
-      console.error(message);
-      return 1;
-    }
-    console.log(message);
+    console.log(runCliInit().message);
     return 0;
   }
 
-  if (command === 'daemon' && sub === 'start') {
-    console.log(await runCliDaemonStart(cwd));
-    // Foreground process: keep the event loop alive until shutdown signals fire.
-    return new Promise(() => {});
-  }
-
-  if (command === 'run') {
-    const args = parseArgs(rest.slice(1));
-    const live = args.options.live !== undefined;
-    const result = await runDemoSprint({
-      cwd,
-      seed: typeof args.options.seed === 'string' ? args.options.seed : undefined,
-      fake: !live,
-      // Live: em-owned gates are decided by a one-shot EM vendor session
-      // (`em/delegate.ts`); without it they park forever as pending.
-      gateDelegate: live
-        ? createEmSessionDelegate({
-            stateRoot: discoverConfig({ cwd }).stateRoot,
-            cwd,
-            onNotice: (line) => console.error(line),
-            stderrLogDir: join(cwd, '.agile-daemon-cache', 'sessions'),
-          })
-        : undefined,
-      maxTicks:
-        typeof args.options['max-ticks'] === 'string'
-          ? Number(args.options['max-ticks'])
-          : undefined,
-      port: typeof args.options.port === 'string' ? Number(args.options.port) : undefined,
-    });
-    if (json) {
-      console.log(JSON.stringify(result, null, 2));
-    } else {
-      console.log(`report: ${result.reportPath}`);
-      for (const o of result.ticketOutcomes) {
-        console.log(`  ${o.ticket}: status=${o.status} merged=${o.merged}`);
+  if (command === 'daemon') {
+    try {
+      if (sub === 'start') {
+        // Internal: the detached child re-invokes itself with this flag and
+        // *is* the daemon. Never typed by an operator.
+        if (rest.includes('--foreground')) {
+          await runDaemonForeground();
+          return 0;
+        }
+        console.log(await runDaemonStart({ cwd }));
+        return 0;
       }
-      console.log(`oversized-file hook check: ${result.oversizedReadDecision}`);
+      if (sub === 'stop') {
+        console.log(await runDaemonStop());
+        return 0;
+      }
+      if (sub === 'status') {
+        const report = await withClassifierStatus(daemonStatusReport());
+        if (json) console.log(JSON.stringify(report, null, 2));
+        else console.log(formatDaemonStatus(report));
+        return report.running ? 0 : 1;
+      }
+    } catch (err) {
+      return reportError(err);
     }
-    const allDone = result.ticketOutcomes.every((o) => o.merged);
-    return allDone || result.ticketOutcomes.length === 0 ? 0 : 1;
+    console.error(usage());
+    return 1;
   }
 
   if (!command) {
@@ -149,7 +175,7 @@ export async function runCli(argv: string[], cwd: string = process.cwd()): Promi
   }
 
   // Every remaining command is a client of the running daemon's socket.
-  const socketPath = socketPathFor(cwd);
+  const socketPath = socketPathFor();
 
   try {
     switch (command) {
@@ -158,45 +184,32 @@ export async function runCli(argv: string[], cwd: string = process.cwd()): Promi
 
       case 'tail': {
         const args = parseArgs(rest.slice(1));
-        const eventsPath = join(discoverConfig({ cwd }).stateRoot, 'log', 'events.jsonl');
+        const eventsPath = resolveHomePaths().eventsPath;
         return await runTail({
           eventsPath,
           follow: args.options.follow !== undefined,
           json,
           filters: {
-            ticket: typeof args.options.ticket === 'string' ? args.options.ticket : undefined,
-            agent: typeof args.options.agent === 'string' ? args.options.agent : undefined,
+            stream: typeof args.options.stream === 'string' ? args.options.stream : undefined,
             kind: typeof args.options.kind === 'string' ? args.options.kind : undefined,
+            session: typeof args.options.session === 'string' ? args.options.session : undefined,
           },
         });
       }
 
-      case 'send':
-        return await runSend(socketPath, parseArgs(rest.slice(1)), json);
+      case 'inbox':
+        return await runInbox(socketPath, json);
 
-      case 'approve':
-        return await runApprove(socketPath, parseArgs(rest.slice(1)), json);
-
-      case 'deny':
-        return await runDeny(socketPath, parseArgs(rest.slice(1)), json);
-
-      case 'note':
-        return await runGateNote(socketPath, parseArgs(rest.slice(1)), json);
-
-      case 'delegate':
-        return await runDelegate(socketPath, parseArgs(rest.slice(1)), json);
-
-      case 'resolve':
-        return await runResolve(socketPath, parseArgs(rest.slice(1)), json);
+      case 'answer':
+        return await runAnswer(socketPath, parseArgs(rest.slice(1)), json);
 
       case 'gate':
         if (sub === 'list') return await runGateList(socketPath, json);
         console.error(usage());
         return 1;
 
-      // T040 (§17 "Control room v2" → "Questions vs Decisions"): answering
-      // one either replies to the raiser, records a `DEC-*` through the
-      // oracle write guard, or applies a ticket edit.
+      // T121: a question is raised on a stream and answering one is a reply
+      // that reaches the waiting session (cockpit design §1.4).
       case 'question':
         if (sub === 'list') return await runQuestionList(socketPath, json);
         if (sub === 'answer') return await runQuestionAnswer(socketPath, parseArgs(restArgv), json);
@@ -204,19 +217,61 @@ export async function runCli(argv: string[], cwd: string = process.cwd()): Promi
         console.error(usage());
         return 1;
 
-      case 'halt':
-        return await runHalt(socketPath, parseArgs(rest.slice(1)), json);
+      // T111: the repo registry in the state home (`repos.yaml`).
+      case 'repo':
+        if (sub === 'list') return await runRepoList(socketPath, json);
+        if (sub === 'add') return await runRepoAdd(socketPath, parseArgs(restArgv), json, cwd);
+        console.error(usage());
+        return 1;
 
-      case 'resume':
-        return await runResume(socketPath, parseArgs(rest.slice(1)), json);
+      // T120: streams — the reshape's unit of work (cockpit design §2).
+      case 'stream':
+        if (sub === 'new') return await runStreamNew(socketPath, parseArgs(restArgv), json);
+        if (sub === 'list') return await runStreamList(socketPath, parseArgs(restArgv), json);
+        if (sub === 'show') return await runStreamShow(socketPath, parseArgs(restArgv), json);
+        if (sub === 'close') return await runStreamClose(socketPath, parseArgs(restArgv), json);
+        if (sub === 'archive') return await runStreamArchive(socketPath, parseArgs(restArgv), json);
+        if (sub === 'say') return await runStreamSay(socketPath, parseArgs(restArgv), json);
+        console.error(usage());
+        return 1;
+
+      // T140: rules — the system's memory of decisions (cockpit design §5).
+      case 'rules': {
+        const ruleArgs = parseArgs(restArgv);
+        if (sub === 'list') return await runRulesList(socketPath, ruleArgs, json);
+        if (sub === 'show') return await runRulesShow(socketPath, ruleArgs, json);
+        if (sub === 'add') return await runRulesAdd(socketPath, ruleArgs, json, restArgv);
+        if (sub === 'edit') return await runRulesEdit(socketPath, ruleArgs, json, restArgv);
+        if (sub === 'accept') return await runRulesAccept(socketPath, ruleArgs, json);
+        if (sub === 'retire') return await runRulesRetire(socketPath, ruleArgs, json);
+        if (sub === 'report') return await runRulesReport(socketPath, ruleArgs, json);
+        if (sub === 'test') return await runRulesTest(socketPath, ruleArgs, json);
+        if (sub === 'seed') return await runRulesSeed(socketPath, ruleArgs, json);
+        console.error(usage());
+        return 1;
+      }
+
+      // T130: an agent is a session attached to a stream (cockpit design §4).
+      case 'attach':
+        return await runAttach(socketPath, parseArgs(rest.slice(1)), json);
+
+      case 'resolve':
+        return await runAttach(socketPath, parseArgs(rest.slice(1)), json, true);
+
+      case 'detach':
+        return await runDetach(socketPath, parseArgs(rest.slice(1)), json);
+
+      // T132: landing — the human's merge (cockpit design §8.2).
+      case 'land':
+        return await runLand(socketPath, parseArgs(rest.slice(1)), json);
+      // T131: a reviewer is a second, read-only session (cockpit design §4.2).
+      case 'review':
+        return await runReview(socketPath, parseArgs(rest.slice(1)), json);
 
       case 'breaker':
         if (sub === 'clear') return await runBreakerClear(socketPath, parseArgs(restArgv), json);
         console.error(usage());
         return 1;
-
-      case 'sync':
-        return await runSync(socketPath, parseArgs(rest.slice(1)), json);
 
       case 'hook': {
         const args: ParsedArgs = parseArgs(rest.slice(1));
@@ -238,13 +293,12 @@ export async function runCli(argv: string[], cwd: string = process.cwd()): Promi
         // needs it.
         const { parseMcpArgs, runCliMcp } = await import('./commands/mcp');
         const args: ParsedArgs = parseArgs(rest.slice(1));
-        const { agent, ticket, timeoutMs, socketPath: explicitSocket } = parseMcpArgs(args);
+        const { session, timeoutMs, socketPath: explicitSocket } = parseMcpArgs(args);
         // Foreground process, same as `daemon start`: keep the event loop
         // alive for the life of the stdio MCP session.
         return await runCliMcp({
           socketPath: explicitSocket ?? socketPath,
-          agent,
-          ticket,
+          session,
           timeoutMs,
         });
       }

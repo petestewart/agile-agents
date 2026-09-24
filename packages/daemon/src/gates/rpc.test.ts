@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { HilRequest, Policy } from '@agile-agents/shared';
+import { type HilRequest, type Policy, ulid } from '@agile-agents/shared';
 import { runInit } from '../init';
 import { dispatch } from '../rpc';
 import { StateStore } from '../store';
@@ -24,7 +24,7 @@ beforeEach(() => {
   Bun.spawnSync(['git', 'commit', '-q', '-m', 'initial commit'], { cwd: repo });
   const init = runInit(repo);
   store = StateStore.open(init.stateRoot);
-  service = new GateService(store, { delegate: () => ({ decision: 'approve', by: 'em' }) });
+  service = new GateService(store, { delegate: () => ({ decision: 'approve', by: 'human' }) });
   methods = buildGateRpcMethods(service);
 });
 
@@ -36,8 +36,11 @@ function policy(gates: Policy['gates']): Policy {
   return { gates, breaker_signals: [] };
 }
 
+/** T121: every gate is raised on a stream; this suite only needs a stable id. */
+const STREAM = ulid();
+
 function ctx(gates: Policy['gates']) {
-  return { policy: policy(gates), hilKind: 'unblock' as const };
+  return { policy: policy(gates), stream: STREAM };
 }
 
 function resultOf(response: Awaited<ReturnType<typeof dispatch>>): unknown {
@@ -51,7 +54,7 @@ function errorOf(response: Awaited<ReturnType<typeof dispatch>>) {
 // T039: free text on the decision, plus the note-only verb.
 describe('gate.* RPC notes (T039)', () => {
   test('gate.approve carries a note onto the record', async () => {
-    const req = await service.request('demo', ctx({ demo: 'human' }));
+    const req = await service.request('land', ctx({ land: 'human' }));
     const response = await dispatch(methods, {
       jsonrpc: '2.0',
       id: 1,
@@ -68,7 +71,7 @@ describe('gate.* RPC notes (T039)', () => {
   });
 
   test('gate.deny resolves with deny + note', async () => {
-    const req = await service.request('demo', ctx({ demo: 'human' }));
+    const req = await service.request('land', ctx({ land: 'human' }));
     const response = await dispatch(methods, {
       jsonrpc: '2.0',
       id: 1,
@@ -81,7 +84,7 @@ describe('gate.* RPC notes (T039)', () => {
   });
 
   test('gate.note stores the note without resolving', async () => {
-    const req = await service.request('demo', ctx({ demo: 'human' }));
+    const req = await service.request('land', ctx({ land: 'human' }));
     const response = await dispatch(methods, {
       jsonrpc: '2.0',
       id: 1,
@@ -95,7 +98,7 @@ describe('gate.* RPC notes (T039)', () => {
   });
 
   test('a non-string or over-long note is invalid params', async () => {
-    const req = await service.request('demo', ctx({ demo: 'human' }));
+    const req = await service.request('land', ctx({ land: 'human' }));
     const bad = await dispatch(methods, {
       jsonrpc: '2.0',
       id: 1,
@@ -124,7 +127,7 @@ describe('gate.* RPC notes (T039)', () => {
 
 describe('gate.* RPC round trip (via dispatch) — happy paths', () => {
   test('gate.list surfaces a pending request created directly on the service', async () => {
-    const req = await service.request('demo', ctx({ demo: 'human' }));
+    const req = await service.request('land', ctx({ land: 'human' }));
 
     const listResponse = await dispatch(methods, { jsonrpc: '2.0', id: 1, method: 'gate.list' });
     expect(resultOf(listResponse)).toEqual(
@@ -147,22 +150,13 @@ describe('gate.* RPC round trip (via dispatch) — happy paths', () => {
     expect(after.find((r) => r.id === req.id)?.status).toBe('resolved');
   });
 
-  test('gate.delegate resolves a pending request via the single-instance path', async () => {
-    const req = await service.request('unblock', ctx({ unblock: 'human' }));
-    const response = await dispatch(methods, {
-      jsonrpc: '2.0',
-      id: 1,
-      method: 'gate.delegate',
-      params: { id: req.id, to: 'em' },
-    });
-    const result = resultOf(response) as HilRequest | undefined;
-    expect(result?.status).toBe('resolved');
-    expect(result?.delegated).toBe(true);
+  test('gate.delegate is gone with the EM (T168)', async () => {
+    expect(Object.keys(methods)).not.toContain('gate.delegate');
   });
 
   test('gate.breaker_clear via RPC restores normal gate resolution', async () => {
     await service.trip('global_halt', 'H-1 raised, everyone stop');
-    const tripped = await service.request('demo', ctx({ demo: 'human' }));
+    const tripped = await service.request('land', ctx({ land: 'human' }));
     expect(tripped.reason).toContain('global_halt');
 
     const clearResponse = await dispatch(methods, {
@@ -173,12 +167,12 @@ describe('gate.* RPC round trip (via dispatch) — happy paths', () => {
     });
     expect(errorOf(clearResponse)).toBeUndefined();
 
-    const afterClear = await service.request('demo', ctx({ demo: 'human' }));
+    const afterClear = await service.request('land', ctx({ land: 'human' }));
     expect(afterClear.reason).toBeUndefined();
   });
 
   test('gate.resolve is the generic decision endpoint (approve or deny)', async () => {
-    const req = await service.request('demo', ctx({ demo: 'human' }));
+    const req = await service.request('land', ctx({ land: 'human' }));
     const response = await dispatch(methods, {
       jsonrpc: '2.0',
       id: 1,
@@ -219,7 +213,7 @@ describe('gate.* RPC round trip — negative paths (finding 5)', () => {
   });
 
   test('gate.resolve with an illegal decision value is rejected', async () => {
-    const req = await service.request('demo', ctx({ demo: 'human' }));
+    const req = await service.request('land', ctx({ land: 'human' }));
     const response = await dispatch(methods, {
       jsonrpc: '2.0',
       id: 1,
@@ -241,29 +235,5 @@ describe('gate.* RPC round trip — negative paths (finding 5)', () => {
     });
     const error = errorOf(response);
     expect(error?.message).toContain('signal');
-  });
-
-  test('gate.delegate with an unknown id surfaces a not-found error', async () => {
-    const response = await dispatch(methods, {
-      jsonrpc: '2.0',
-      id: 1,
-      method: 'gate.delegate',
-      params: { id: 'HIL-01ARZ3NDEKTSV4RRFFQ69G5FAV', to: 'em' },
-    });
-    const error = errorOf(response);
-    expect(error?.message).toContain('not found');
-  });
-
-  test('gate.delegate with an invalid "to" is rejected', async () => {
-    const req = await service.request('demo', ctx({ demo: 'human' }));
-    const response = await dispatch(methods, {
-      jsonrpc: '2.0',
-      id: 1,
-      method: 'gate.delegate',
-      params: { id: req.id, to: 'reviewer' },
-    });
-    const error = errorOf(response);
-    expect(error?.message).toContain('to');
-    expect(service.get(req.id).status).toBe('pending');
   });
 });

@@ -1,65 +1,53 @@
 /**
- * `HookService` — resolves a raw Claude hook payload into a
+ * `HookService`: resolves a raw Claude hook payload into a
  * `HookDecisionContext`, runs the pure decision functions (`decide.ts`),
- * performs the side effects the decision implies (ack, heartbeat, ledger,
- * `hook_decision` event, HIL requests), and renders Claude's actual hook
- * JSON output contract (T009 — design/agile-agents-design.md §6, §5, §4,
- * §7; wire shape verified against `design/spike-findings.md` §B and
- * `spike/spike-out/claude-default-perm-hooks.json`).
+ * performs the side effects (ack, heartbeat, `hook_decision` event, route
+ * band, thread entries) and renders Claude's hook JSON output (wire shape:
+ * `design/spike-findings.md` §B).
  *
- * Agent/ticket resolution (T012 QA/review round rewrite — see
- * `resolveAgentByCwd`): resolved primarily through the **agent registry**
- * (`AgentRecord.worktree`/`.role`, `bus/agents/<id>.yaml`) rather than
- * `Ticket.worktree` — the registry is what T012 actually sets correctly for
- * every role, QA included (a fresh clone at `.worktrees/<TKT>-qa` that never
- * matches `Ticket.worktree` at all, which is why QA hook calls were
- * hard-denied before this round). `Ticket.worktree` is kept only as a
- * fallback for a caller/test with no `AgentRecord` on file. Both sides of
- * every path comparison are `realpath`d first (review round fix: a
- * symlinked worktree must match either way it's addressed) via
- * `isPathInside` (reused from `permissions/command.ts`). Role comes from
- * the resolved `AgentRecord.role`, never inferred as `'engineer'` — critical
- * when a reviewer and an engineer share one physical worktree (§12,
- * CLAUDE.md v0 default): resolving by path alone would answer every hook
- * call in that shared directory as if it were the engineer, silently
- * defeating the reviewer's read-only tier-1 gate. When more than one
- * registered agent's worktree contains `cwd` (exactly the shared-worktree
- * case), the payload's `agile_agent` hint (set by `writeClaudeSettings`'s
- * `agentId` option — see `settings.ts` — and forwarded by the CLI from
- * `AGILE_AGENT`) disambiguates; with no hint, or a hint matching none of
- * the candidates, resolution fails closed (`undefined`) rather than
- * guessing.
- *
- * Review round fix (blocker 2): an unresolved `cwd` previously **failed
- * open** (`permissionDecision: 'allow'`) and logged nothing — a vendor hook
- * calling from anywhere the daemon can't place is exactly the case fail-
- * *closed* is supposed to cover, not the one exception to it. `preToolUse`
- * now denies with a fixed reason and always logs the decision (ticket/agent
- * `undefined` on the event, since none was resolved).
+ * Attribution goes through the agent registry (`AgentRecord.worktree` and
+ * `.role`), with both sides of every path comparison `realpath`d. Role comes
+ * from the record, never inferred: a reviewer and a worker can share one
+ * worktree, and resolving by path alone would answer the reviewer's calls
+ * as the worker's. When several live records cover `cwd`, the payload's
+ * `agile_agent` hint (the CLI forwards `AGILE_AGENT` from settings.json)
+ * picks one; with no matching hint resolution fails closed. An unresolved
+ * `cwd` is denied and logged, never allowed.
  */
 
 import { realpathSync, statSync } from 'node:fs';
 import { isAbsolute, resolve } from 'node:path';
 import {
   type AgentId,
+  type AgentMessage,
   type AgentRecord,
+  type ClassifierConfig,
   MESSAGE_BODY_MAX_CHARS,
-  type Message,
   type Policy,
-  type Ticket,
-  type TicketId,
-  type TicketStatus,
-  validateMergeRecord,
+  type RepoEntry,
+  type Rule,
+  type RuleId,
+  type SessionRole,
+  type Stream,
+  THREAD_BODY_MAX_CHARS,
+  validateClassifierConfig,
 } from '@agile-agents/shared';
 import type { Bus } from '../bus';
-import type { GateService } from '../gates';
-import { activeHaltsFor } from '../halts';
-import { mergeRecordPath } from '../merge/owner';
-import type { PermissionRole } from '../permissions';
+import { type Classifier, ClassifierUnavailableError, classifierEnabled } from '../classifier';
 import { isPathInside } from '../permissions/command';
-import { qaReadDenyList } from '../qa/deny';
+import { worktreeBranchLookups } from '../permissions/push-detector';
+import { patternRulesOf, protectedBranchesFor } from '../permissions/rule-checks';
+import type { RuleStatsOutcome } from '../rules/service';
 import { NotFoundError, type StateStore, buildEvent } from '../store';
-import { decidePreToolUse } from './decide';
+import {
+  type ClassifierTierOutcome,
+  buildClassifierState,
+  classifierRulesOf,
+  decideClassifierTier,
+  decidePreToolUse,
+} from './decide';
+import { fingerprintCall } from './fingerprint';
+import { type RouteBandGates, routeCall } from './route-band';
 import {
   type ClaudePreToolUsePayload,
   DEFAULT_MAX_READ_BYTES,
@@ -68,7 +56,7 @@ import {
   type HookLimits,
 } from './types';
 
-/** Raw Claude `PostToolUse` hook stdin payload. `agile_agent` — see `ClaudePreToolUsePayload`'s doc comment (`hook/types.ts`): a disambiguation hint only, applied after cwd resolution, never trusted alone. */
+/** Raw Claude `PostToolUse` payload. `agile_agent`: see `ClaudePreToolUsePayload` (a hint only). */
 export interface ClaudePostToolUsePayload {
   hook_event_name?: string;
   cwd?: string;
@@ -80,7 +68,7 @@ export interface ClaudePostToolUsePayload {
   [key: string]: unknown;
 }
 
-/** Raw Claude `Stop` hook stdin payload. `agile_agent` — see `ClaudePreToolUsePayload`'s doc comment (`hook/types.ts`): a disambiguation hint only, applied after cwd resolution, never trusted alone. */
+/** Raw Claude `Stop` payload. `agile_agent`: see `ClaudePreToolUsePayload` (a hint only). */
 export interface ClaudeStopPayload {
   hook_event_name?: string;
   cwd?: string;
@@ -90,7 +78,11 @@ export interface ClaudeStopPayload {
   [key: string]: unknown;
 }
 
-/** Claude's `PreToolUse` hook output contract (spike-findings.md §B). `permissionDecision` is always `'allow' | 'deny'` on the wire out of this service — `decide.ts`'s `'ask'` is translated into a `deny` naming a durable HIL request before it ever reaches this shape (review/QA round: Claude under ACP cannot answer an interactive `ask`). */
+/**
+ * Claude's `PreToolUse` output (spike-findings.md §B). Always `allow` or
+ * `deny` on the wire: `decide.ts`'s `ask` becomes a routed deny, because
+ * Claude under ACP cannot answer an interactive `ask`.
+ */
 export interface PreToolUseHookOutput {
   hookSpecificOutput: {
     hookEventName: 'PreToolUse';
@@ -100,7 +92,7 @@ export interface PreToolUseHookOutput {
   };
 }
 
-/** DESIGN-GAP: Claude's `PostToolUse` hook cannot rewrite `tool_response` (spike-findings.md §6 tier table only verifies this for Pi, not Claude) — so oversized output is never actually shrunk on the wire here, only flagged via `additionalContext` telling the model to prefer `test_run`/`read_summary` next time, alongside logging real usage every call. */
+/** Claude's `PostToolUse` hook cannot rewrite `tool_response`, so oversized output is only flagged via `additionalContext`. */
 export interface PostToolUseHookOutput {
   hookSpecificOutput?: {
     hookEventName: 'PostToolUse';
@@ -109,17 +101,10 @@ export interface PostToolUseHookOutput {
 }
 
 /**
- * DESIGN-GAP (review round fix, blocker 4): the Claude `Stop` hook's own
- * documented output contract has no `additionalContext`/`systemMessage`
- * channel that reaches the *model* — `systemMessage` is shown to the
- * *user*, not fed back into the conversation, so acking low-priority
- * messages into it would silently drop them from the model's context while
- * still marking them delivered. The documented way to get text back in
- * front of the model from a `Stop` hook is `decision: 'block'` + `reason`
- * (Claude re-prompts the model with `reason` instead of ending the turn).
- * So: only when there is something to deliver does this return `block` +
- * the drained bodies as `reason`, and messages are acked **only in that
- * branch** (an empty inbox never blocks the turn just to say nothing).
+ * A `Stop` hook's `systemMessage` reaches the user, not the model; the way
+ * to put text in front of the model is `decision: 'block'` + `reason`
+ * (Claude re-prompts with it). So this blocks only when there are messages
+ * to deliver, and acks them only then.
  */
 export interface StopHookOutput {
   decision?: 'block';
@@ -127,14 +112,51 @@ export interface StopHookOutput {
 }
 
 export interface HookServiceOptions {
-  repoRoot: string;
-  /** Never-without-human Bash commands need a durable HIL request (QA round: Claude can't answer an interactive `ask`) — see `resolveOrCreateHil`. */
-  gates: GateService;
+  /**
+   * Resolves a *relative* `worktree` on an agent record. Without it such a
+   * record cannot be placed and the call fails closed.
+   */
+  repoRoot?: string;
+  /**
+   * The route band (§8.1). With gates wired, a `hil` verdict raises a
+   * `classifier_review` gate; without (unit tests) the call is denied and
+   * the model told to ask on the stream, never allowed.
+   */
+  gates?: RouteBandGates;
+  /** Pattern rules (§5.2, §5.4). Unset only in unit tests; `daemon.ts` always wires it. */
+  rules?: HookRules;
+  /**
+   * The classifier tier (§6). The daemon wires it only when
+   * `config.classifier` is configured; without it, classifier rules in
+   * scope go through §6.4's fail policy like an outage.
+   */
+  classifier?: HookClassifier;
   limits?: HookLimits;
   /** Injectable for tests; defaults to `node:fs.statSync`. */
   fileSize?: (path: string) => number | undefined;
   now?: () => Date;
 }
+
+/** The slice of `RulesService` the hook needs. */
+export interface HookRules {
+  /** §5.3's one scope filter, for this session's stream. */
+  inScope(streamId: string): Rule[];
+  /** §5.7's counters, bumped for every rule the decision evaluated. */
+  recordFired(id: string, outcome: RuleStatsOutcome): Promise<unknown>;
+}
+
+/** The classifier tier as the hook needs it: something to ask, and the config the bands and the opt-out come from. */
+export interface HookClassifier {
+  ask: Classifier;
+  config: ClassifierConfig;
+  /** Env for the key lookup in `classifierEnabled`. Defaults to `process.env`. */
+  env?: Record<string, string | undefined>;
+  /** Injectable clock for the latency measurement. */
+  now?: () => number;
+}
+
+/** The band defaults (§6.3), for a hook with no classifier wired at all — the fail policy still needs a band table to read. */
+const DEFAULT_CLASSIFIER_CONFIG = validateClassifierConfig({});
 
 function defaultFileSize(path: string): number | undefined {
   try {
@@ -145,7 +167,7 @@ function defaultFileSize(path: string): number | undefined {
   }
 }
 
-/** `realpath`, falling back to the plain resolved path if the target doesn't exist yet (a freshly-created worktree dir mid-setup, or a test double) — never throws. */
+/** `realpath`, falling back to the resolved path when the target doesn't exist yet. Never throws. */
 function safeRealpath(path: string): string {
   try {
     return realpathSync(path);
@@ -154,33 +176,27 @@ function safeRealpath(path: string): string {
   }
 }
 
-/** A ticket only resolves an active hook call while it's actually in flight — §4's live-status set (assigned/in_progress/in_review/in_qa), matching `bus.ts`'s own `LIVE_TICKET_STATUSES` reasoning for "an agent is really working this ticket right now". */
-const LIVE_TICKET_STATUSES: readonly TicketStatus[] = [
-  'assigned',
-  'in_progress',
-  'in_review',
-  'in_qa',
-];
+const UNRESOLVED_CWD_REASON = 'agile: cwd is not a registered stream worktree';
 
-const UNRESOLVED_CWD_REASON = 'agile: cwd is not a registered ticket worktree';
-const UNBLOCK_GATE = 'unblock';
-
-/**
- * Reads the disambiguation hint (T012 QA/review round — see this file's
- * header) off the raw hook payload: `agile_agent`, a field only the CLI
- * writes (from its own `process.env.AGILE_AGENT`, itself only set when
- * `writeClaudeSettings`'s `agentId` option embedded `AGILE_AGENT=<id>` into
- * the hook command) — Claude's own hook payload never carries this key, so
- * it's `undefined` for every hook config this daemon didn't write itself.
- */
+/** The `agile_agent` hint, written only by the CLI (from `AGILE_AGENT`); Claude's own payload never has it. */
 function agentHintFrom(payload: Record<string, unknown>): string | undefined {
   return typeof payload.agile_agent === 'string' ? payload.agile_agent : undefined;
+}
+
+/** What a hook call's `cwd` resolves to. */
+export interface ResolvedHookIdentity {
+  session: string;
+  stream: string;
+  role: SessionRole;
+  worktreePath: string;
 }
 
 export class HookService {
   private readonly limits: HookLimits;
   private readonly fileSize: (path: string) => number | undefined;
   private readonly now: () => Date;
+  /** Per stream, the session + body of the last hit appended: the coalescing key. */
+  private readonly lastHit = new Map<string, string>();
 
   constructor(
     private readonly store: StateStore,
@@ -192,49 +208,19 @@ export class HookService {
     this.now = options.now ?? (() => new Date());
   }
 
-  /** Resolves an absolute worktree path, `undefined`-safe, relative to `repoRoot`. */
+  /** Resolves a worktree path; a relative one needs `repoRoot`, else it stays unresolved. */
   private absWorktree(worktree: string | undefined): string | undefined {
     if (worktree === undefined) return undefined;
-    return isAbsolute(worktree) ? worktree : resolve(this.options.repoRoot, worktree);
+    if (isAbsolute(worktree)) return worktree;
+    const repoRoot = this.options.repoRoot;
+    return repoRoot === undefined ? undefined : resolve(repoRoot, worktree);
   }
 
   /**
-   * Finds the live-status ticket whose `worktree` (resolved against
-   * `repoRoot`, both sides `realpath`d) contains `cwd` — the fallback path
-   * for a caller/test with no `AgentRecord` on file (see this file's header).
-   */
-  private resolveTicketByCwd(cwd: string | undefined): Ticket | undefined {
-    if (cwd === undefined) return undefined;
-    const realCwd = safeRealpath(cwd);
-    for (const ticket of this.store.listTickets()) {
-      if (ticket.worktree === undefined || ticket.assignee === undefined) continue;
-      if (!this.isLiveTicket(ticket)) continue;
-      const worktreeAbs = this.absWorktree(ticket.worktree);
-      if (worktreeAbs !== undefined && isPathInside(realCwd, safeRealpath(worktreeAbs))) {
-        return ticket;
-      }
-    }
-    return undefined;
-  }
-
-  /**
-   * Resolves `{agent, ticket, role, worktreePath}` from the payload's `cwd`
-   * (registry-first — see this file's header) — or `undefined` if this call
-   * can't be attributed to a known, live agent. `agentHint` (the payload's
-   * `agile_agent` field, when the CLI forwarded `AGILE_AGENT`) disambiguates
-   * when more than one registered agent's worktree contains `cwd`.
-   */
-  /**
-   * Review round 3 (opus item 4): a stale registry entry (`last_seen`
-   * older than the bus's own liveness timeout — CLAUDE.md tunable "liveness
-   * timeout 5 min") must not win disambiguation, or even resolve alone.
-   * The liveness sweep (`runner.ts`/`bus.ts`) removes a dead agent's record
-   * eventually, but there's a real window between "the agent actually died"
-   * and "the sweep noticed" where a stale-but-still-on-disk record could
-   * otherwise authorize (or, worse, mis-disambiguate) a hook call that
-   * isn't really coming from that agent any more. A record with an
-   * unparseable `last_seen` is treated as stale too — fail safe, not "trust
-   * a value we can't even read".
+   * A record whose `last_seen` is older than the bus liveness timeout (or
+   * unparseable) must not resolve a call: between an agent dying and the
+   * sweep removing its record, it could otherwise authorize or
+   * mis-disambiguate someone else's call.
    */
   private isStale(record: AgentRecord, now: Date): boolean {
     const lastSeenMs = Date.parse(record.last_seen);
@@ -242,35 +228,10 @@ export class HookService {
     return now.getTime() - lastSeenMs >= this.bus.getLivenessTimeoutMs();
   }
 
-  /**
-   * §4's live-status set, plus one case it predates: a `done` ticket whose
-   * merge hit a conflict is back in its engineer's hands for the rebase
-   * (`MergeOwner.haltAndRecord` -> `advanceMergeConflicts`). Seventeenth
-   * live run (2026-09-11): the engineer was prompted with the conflict and
-   * every tool call it made was denied "cwd is not a registered ticket
-   * worktree" — this resolver refused the `done` ticket — so the fix cycle
-   * never started.
-   */
-  private isLiveTicket(ticket: Ticket): boolean {
-    if (LIVE_TICKET_STATUSES.includes(ticket.status)) return true;
-    return ticket.status === 'done' && this.hasMergeConflict(ticket.id);
-  }
-
-  private hasMergeConflict(ticket: TicketId): boolean {
-    try {
-      return (
-        this.store.getEntity(mergeRecordPath(ticket), validateMergeRecord).status === 'conflict'
-      );
-    } catch (err) {
-      if (err instanceof NotFoundError) return false;
-      throw err;
-    }
-  }
-
   private resolveAgentByCwd(
     cwd: string | undefined,
     agentHint: string | undefined,
-  ): { agent: AgentId; ticket: TicketId; role: PermissionRole; worktreePath: string } | undefined {
+  ): ResolvedHookIdentity | undefined {
     if (cwd === undefined) return undefined;
     const realCwd = safeRealpath(cwd);
     const now = this.now();
@@ -279,12 +240,9 @@ export class HookService {
       const worktreeAbs = this.absWorktree(record.worktree);
       return worktreeAbs !== undefined && isPathInside(realCwd, safeRealpath(worktreeAbs));
     });
-    // The hint is the session's own identity (AGILE_AGENT from its
-    // settings.json) and wins outright, stale record or not. Nineteenth
-    // live run (2026-09-11): the engineer's record had gone stale while its
-    // ticket sat in review; the stale filter below dropped it, the reviewer
-    // sharing the worktree became the single candidate, and the engineer's
-    // rebase was resolved — and halted — as the reviewer.
+    // The hint is the session's own identity and wins outright, stale or
+    // not: a live run once dropped a worker's stale record here and resolved
+    // its rebase as the reviewer sharing the worktree.
     const hinted = agentHint !== undefined ? covering.find((c) => c.id === agentHint) : undefined;
     const candidates = hinted
       ? [hinted]
@@ -293,147 +251,121 @@ export class HookService {
     if (candidates.length > 0) {
       const chosen =
         candidates.length === 1 ? candidates[0] : candidates.find((c) => c.id === agentHint);
-      // More than one candidate and no (matching) hint — fail closed rather
-      // than guess which agent is really calling (this file's header).
+      // Several candidates and no matching hint: fail closed.
       if (chosen === undefined) return undefined;
-      const ticketId = chosen.record.ticket;
-      if (ticketId === undefined) return undefined;
-      // T031: the architect isn't scoped to one ticket's own lifecycle the
-      // way engineer/reviewer/qa are — `AgentRecord.ticket` on an architect
-      // session is only ever "whichever ticket its brief/ledger context was
-      // rendered for" (`runner/brief.ts`), not a status this hook should
-      // gate a tool call on. An architect calling from its own worktree
-      // (`.worktrees/architect`, the containment check above) must resolve
-      // regardless of that ticket's current status — a `done`/`ready`
-      // ticket here is normal, not a stale/crashed registration the way it
-      // would be for the other three roles.
-      if (chosen.record.role !== 'architect') {
-        try {
-          const ticket = this.store.getTicket(ticketId);
-          if (!this.isLiveTicket(ticket)) return undefined;
-        } catch {
-          return undefined;
-        }
-      }
-      const worktreePath = this.absWorktree(chosen.record.worktree) ?? this.options.repoRoot;
+      const streamId = chosen.record.stream;
+      // A record with no stream cannot be placed (§8.1 step 1: unresolvable ⇒ deny).
+      if (streamId === undefined) return undefined;
+      const worktreePath = this.absWorktree(chosen.record.worktree);
+      if (worktreePath === undefined) return undefined;
       return {
-        agent: chosen.id as AgentId,
-        ticket: ticketId,
-        role: chosen.record.role ?? 'engineer',
+        session: chosen.id,
+        stream: streamId,
+        role: chosen.record.role ?? 'worker',
         worktreePath,
       };
     }
 
-    // Fallback: no registered agent's worktree matches — the older
-    // ticket-worktree-based resolution, engineer-only (no role signal
-    // exists on `Ticket` itself).
-    const ticket = this.resolveTicketByCwd(cwd);
-    if (ticket === undefined || ticket.assignee === undefined) return undefined;
-    return {
-      agent: ticket.assignee as AgentId,
-      ticket: ticket.id,
-      role: 'engineer',
-      worktreePath: this.absWorktree(ticket.worktree) ?? this.options.repoRoot,
-    };
+    return undefined;
   }
 
   private async buildContext(
     cwd: string | undefined,
     agentHint?: string,
-    // T022 round 2 fix (B1) — see `ClaudePreToolUsePayload.no_additional_context_channel`'s
-    // doc comment: strips normal-priority messages out of the inbox handed
-    // to `decidePreToolUse` so tier 3 never folds/acks them for a caller
-    // with nowhere to put `additionalContext`.
+    // Strips normal-priority messages for a caller with no
+    // `additionalContext` channel, so they are never folded in and acked.
     noAdditionalContextChannel = false,
   ): Promise<HookDecisionContext | undefined> {
     const resolved = this.resolveAgentByCwd(cwd, agentHint);
     if (resolved === undefined) return undefined;
-    const { agent, ticket: ticketId, role, worktreePath } = resolved;
+    const { session, stream, role, worktreePath } = resolved;
 
-    let ticket: Ticket;
+    // Liveness heartbeat rides on every hook call (store-side coalesced to
+    // 30 s). A covering record may have been removed since resolution;
+    // nothing to update then.
     try {
-      ticket = this.store.getTicket(ticketId);
-    } catch (err) {
-      if (err instanceof NotFoundError) return undefined;
-      throw err;
-    }
-
-    // Liveness heartbeat rides on the pre-tool-use hook (§5 "Liveness":
-    // "bus.heartbeat rides on the pre-tool-use hook") — done here so every
-    // hook event (not only pre-tool-use) keeps the registry warm. Goes
-    // straight through the store's deferred, 30s-coalesced `heartbeat` (T009
-    // review round, hot-path decision) rather than `Bus.heartbeat` (which
-    // always writes+commits) — this is the per-tool-call hot path.
-    //
-    // Round 4 (QA round 3 REJECT — a real regression): `StateStore.heartbeat`
-    // now ONLY ever touches `last_seen`/`ticket` and carries every other
-    // field (`role`/`worktree`/`session_id` included) over from the existing
-    // record verbatim — it used to reconstruct the whole record from just
-    // this call's `{ ticket }` patch, silently dropping `role`/`worktree`
-    // once `HEARTBEAT_COALESCE_MS` elapsed. That decayed a live reviewer or
-    // QA session (one tool call roughly every 30+ seconds is normal) to
-    // `resolveAgentByCwd`'s `role ?? 'engineer'` fallback mid-session — this
-    // call site needs no change for the fix (it already only ever passed
-    // `ticket`), the fix is entirely in `StateStore.heartbeat` so it can
-    // never recur from any caller, this one included.
-    //
-    // `StateStore.heartbeat` now throws `NotFoundError` for an agent with no
-    // registered `AgentRecord` at all (round 4: heartbeating an unregistered
-    // agent is a caller bug, never a reason to fabricate one) — but
-    // `resolveAgentByCwd`'s own backward-compat fallback (no `AgentRecord`,
-    // resolved via `Ticket.worktree`/`.assignee` alone) is a legitimate,
-    // tested path with no registry entry to heartbeat at all. That's not a
-    // bug here, just nothing to update — swallow only that specific error.
-    try {
-      await this.store.heartbeat(agent, { ticket: ticketId }, this.now);
+      await this.store.heartbeat(session as AgentId, { stream }, this.now);
     } catch (err) {
       if (!(err instanceof NotFoundError)) throw err;
     }
 
+    const branches = worktreeBranchLookups(worktreePath);
     return {
-      agent,
-      ticket: ticketId,
+      session,
+      stream,
       role,
       worktreePath,
-      halts: activeHaltsFor(this.store, ticketId),
       inbox: noAdditionalContextChannel
-        ? this.bus.poll(agent).filter((m) => m.priority !== 'normal')
-        : this.bus.poll(agent),
-      ticketBudget: ticket.budget,
+        ? this.bus.poll(session as AgentId).filter((m) => m.priority !== 'normal')
+        : this.bus.poll(session as AgentId),
       limits: this.limits,
       fileSize: this.fileSize,
-      // Role-extension seam (T017 review round) — only QA has a deny list
-      // today; `qaReadDenyList` itself no-ops on the contract shape alone
-      // (it doesn't check `role`), so gate it here rather than let an empty
-      // list leak through for every other role.
-      denyReadPaths: role === 'qa' ? qaReadDenyList(ticket) : undefined,
+      // Both git lookups are lazy and memoized: an ordinary call spawns none.
+      patternRules: this.patternRulesFor(stream),
+      protectedBranches: protectedBranchesFor(this.store, stream),
+      upstreamBranch: branches.upstream,
+      headBranch: branches.head,
     };
   }
 
-  /** Every hook decision is logged, deferred-commit (T009 review round, hot-path decision) — batched by the store rather than one `git commit` per tool call. */
+  /** The accepted pattern rules in scope for this stream (§5.3). */
+  private patternRulesFor(stream: string): Rule[] {
+    return patternRulesOf(this.rulesInScope(stream));
+  }
+
+  /** §5.7's counters for every rule this decision evaluated — `stats.fired`, plus `violated` for the one it denied on. */
+  private async recordRuleStats(decision: HookDecision): Promise<void> {
+    const rules = this.options.rules;
+    if (rules === undefined || decision.rulesEvaluated === undefined) return;
+    for (const id of decision.rulesEvaluated) {
+      try {
+        const outcome =
+          id === decision.ruleViolated
+            ? 'violated'
+            : id === decision.ruleRouted
+              ? 'routed'
+              : 'fired';
+        await rules.recordFired(id, outcome);
+      } catch {
+        // A counter is telemetry: losing one must not fail a decision.
+      }
+    }
+  }
+
+  /** Every hook decision is logged. */
   private async logDecision(
-    ctx: { ticket?: TicketId; agent?: AgentId } | undefined,
+    ctx: { stream?: string; session?: string } | undefined,
     event: string,
     decision: HookDecision,
-    detail: { tool?: string; command?: string } = {},
+    detail: {
+      tool?: string;
+      command?: string;
+      allowedBy?: string;
+      rule?: string;
+      /** T169: the thread already shows this exact hit; the repeat is counted here instead. */
+      repeat?: boolean;
+    } = {},
   ): Promise<void> {
     await this.store.appendEvent(
       buildEvent('hook_decision', {
-        ticket: ctx?.ticket,
-        agent: ctx?.agent,
+        ...(ctx?.session !== undefined ? { agent: ctx.session as AgentId } : {}),
         data: {
+          ...(ctx?.stream !== undefined ? { stream: ctx.stream } : {}),
           event,
           decision: decision.decision,
           reason: decision.reason,
-          // What was refused, for post-mortems (a deny reason alone left a
-          // live run's blocked commit unrecoverable from the log).
+          // What was refused, for post-mortems.
           ...(decision.decision !== 'allow' && detail.tool ? { tool: detail.tool } : {}),
           ...(decision.decision !== 'allow' && detail.command
             ? { command: detail.command.slice(0, MESSAGE_BODY_MAX_CHARS) }
             : {}),
+          // Allowed because a human approved the gate that blocked it.
+          ...(detail.allowedBy !== undefined ? { allowed_by: detail.allowedBy } : {}),
+          // Which rule refused the call: "why was I denied" from the log alone.
+          ...(detail.rule !== undefined ? { rule: detail.rule } : {}),
+          ...(detail.repeat === true ? { thread_repeat: true } : {}),
         },
       }),
-      { commit: 'deferred' },
     );
   }
 
@@ -442,64 +374,12 @@ export class HookService {
       try {
         await this.bus.ack(agent, id);
       } catch {
-        // Already acked / raced with a concurrent ack — the delivery goal
-        // ("the model has seen it") is met either way; nothing else to do.
+        // Already acked or raced a concurrent ack: delivered either way.
       }
     }
   }
 
-  /** `.agile/policy.yaml` may not exist (pre-T0xx-init repos, or a fixture that never seeded one) — an absent policy resolves every unnamed gate to `human` via `resolveGate`'s own default, so an empty policy is a safe stand-in, not a special case. */
-  private loadPolicyOrDefault(): Policy {
-    try {
-      return this.store.getPolicy();
-    } catch (err) {
-      if (err instanceof NotFoundError) return { gates: {}, breaker_signals: [] };
-      throw err;
-    }
-  }
-
-  /**
-   * Never-without-human Bash commands cannot be answered interactively —
-   * Claude under ACP only ever sees this hook's stdout, so an `ask` verdict
-   * from `decide.ts` is translated here into a **durable** `HIL-...`
-   * request (QA round finding (g)/(h)) plus a `deny` naming it, rather than
-   * a bare "ask a human" that leaves no record anywhere. Reuses a still-
-   * `pending` `unblock` request already open for this ticket instead of
-   * opening a second one for a retried/identical call — "no duplicate" per
-   * the QA test.
-   */
-  private async resolveOrCreateHil(
-    ticket: TicketId,
-    agent: AgentId,
-    summary: string,
-  ): Promise<string> {
-    const existing = this.options.gates
-      .list()
-      .find((r) => r.status === 'pending' && r.ticket === ticket && r.gate === UNBLOCK_GATE);
-    if (existing) return existing.id;
-
-    const policy = this.loadPolicyOrDefault();
-    const created = await this.options.gates.request(UNBLOCK_GATE, {
-      policy,
-      ticket,
-      hilKind: 'unblock',
-      from: agent,
-      // T048: the hook caller, not the ticket's assignee, is the agent parked
-      // on this decision — a QA or reviewer hook raises `unblock` gates on a
-      // ticket assigned to the engineer.
-      requestedBy: agent,
-      // What was asked, so the notice/delegate/human can decide on it —
-      // the first live run's requests only said "no delegate configured".
-      summary,
-    });
-    return created.id;
-  }
-
-  /**
-   * `hook.pre_tool_use`. Review round fix (blocker 2): an unresolved `cwd`
-   * is no longer a silent allow — it denies with a fixed reason and always
-   * logs the decision (see this file's header).
-   */
+  /** `hook.pre_tool_use`. An unresolved `cwd` is denied and logged. */
   async preToolUse(payload: ClaudePreToolUsePayload): Promise<PreToolUseHookOutput> {
     const ctx = await this.buildContext(
       payload.cwd,
@@ -521,55 +401,43 @@ export class HookService {
     }
 
     let decision = decidePreToolUse(ctx, payload);
+    let allowedBy: string | undefined;
+    let wasRouted = false;
     if (decision.decision === 'ask') {
-      const command =
-        typeof payload.tool_input?.command === 'string'
-          ? payload.tool_input.command
-          : `${payload.tool_name ?? 'tool'} call`;
-      const why = decision.reason ?? 'never-without-human command';
-      // The whole command up to the message-body cap: a 400-char cut left
-      // the human/EM deciding on a commit command they could only half see.
-      const summary = `${ctx.agent} asked to run \`${command}\` — ${why}`.slice(
-        0,
-        MESSAGE_BODY_MAX_CHARS,
-      );
-      // An `unblock` already decided for this ticket and this exact command
-      // is the answer — the gate is only a gate if approval opens it.
-      // Twenty-eighth live run (2026-09-11): the EM delegate approved the
-      // engineer's `bunx tsc` three times and `bun install` once; every
-      // re-run of the identical command filed a brand-new pending request,
-      // the engineer wrote "approving can never let it through" and gave up.
-      const decided = this.options.gates
-        .list()
-        .filter(
-          (r) =>
-            r.status === 'resolved' &&
-            r.ticket === ctx.ticket &&
-            r.gate === UNBLOCK_GATE &&
-            r.summary === summary,
-        )
-        .sort((a, b) => (a.resolved_at ?? '').localeCompare(b.resolved_at ?? ''))
-        .at(-1);
-      if (decided?.decision === 'approve') {
-        decision = { ...decision, decision: 'allow', reason: undefined };
-      } else if (decided?.decision === 'deny') {
-        decision = {
-          ...decision,
-          decision: 'deny',
-          reason: `${why} — ${decided.id} already denied this exact command; do not retry it`,
-        };
-      } else {
-        const hilId = await this.resolveOrCreateHil(ctx.ticket, ctx.agent, summary);
-        decision = {
-          ...decision,
-          decision: 'deny',
-          reason: `${why} — filed ${hilId} for the gate owner; do other work or wait, the daemon prompts you with the decision`,
-        };
+      wasRouted = true;
+      // The route band (§8.1): `ask` never reaches the wire. It becomes a
+      // `classifier_review` gate plus a deny the model can act on, and the
+      // human's yes lets exactly that call through once (`route-band.ts`).
+      const why = decision.reason ?? 'never-without-human call';
+      const routed = await this.route(ctx, payload, why);
+      decision = { ...decision, ...routed.decision };
+      allowedBy = routed.allowedBy;
+    }
+
+    // 3. The classifier tier (§8.1 step 3), only for a call the tiers above
+    // allowed: a settled call is not worth a round trip.
+    if (decision.decision === 'allow') {
+      const tier = await this.classifierTier(ctx, payload);
+      if (tier !== undefined) {
+        const applied = await this.applyClassifierTier(ctx, payload, tier, decision);
+        if (tier.outcome.band === 'route') wasRouted = true;
+        decision = { ...decision, ...applied.decision };
+        allowedBy = applied.allowedBy ?? allowedBy;
       }
     }
 
-    await this.ackAll(ctx.agent, decision.ack);
-    await this.logDecision(ctx, 'pre_tool_use', decision);
+    await this.ackAll(ctx.session as AgentId, decision.ack);
+    await this.recordRuleStats(decision);
+    const repeat = await this.noteHit(ctx, payload, decision, wasRouted);
+    await this.logDecision(ctx, 'pre_tool_use', decision, {
+      ...(repeat ? { repeat: true } : {}),
+      ...(payload.tool_name !== undefined ? { tool: payload.tool_name } : {}),
+      ...(typeof payload.tool_input?.command === 'string'
+        ? { command: payload.tool_input.command }
+        : {}),
+      ...(allowedBy !== undefined ? { allowedBy } : {}),
+      ...(decision.ruleViolated !== undefined ? { rule: decision.ruleViolated } : {}),
+    });
 
     return {
       hookSpecificOutput: {
@@ -584,10 +452,287 @@ export class HookService {
   }
 
   /**
-   * `hook.post_tool_use`. Truncation itself is not enforceable on the wire
-   * for Claude (see `PostToolUseHookOutput`'s DESIGN-GAP) — this always
-   * records real usage as a ledger line and, only when the response was
-   * oversized, tells the model so via `additionalContext`.
+   * §8.1 step 3: one classifier call for the rules in scope, §6.3's bands.
+   * `undefined` when no classifier rule is in scope (the common, free
+   * case). The opt-out and a missing key go through the same fail policy as
+   * an outage (§6.4), by failing with `not_configured`.
+   */
+  private async classifierTier(
+    ctx: HookDecisionContext,
+    payload: ClaudePreToolUsePayload,
+  ): Promise<{ outcome: ClassifierTierOutcome; called: boolean } | undefined> {
+    const rules = classifierRulesOf(this.rulesInScope(ctx.stream));
+    if (rules.length === 0) return undefined;
+
+    const tier = this.options.classifier;
+    const enabled =
+      tier !== undefined &&
+      classifierEnabled({
+        stream: this.streamRecord(ctx.stream),
+        repo: this.repoEntry(ctx.stream),
+        config: tier.config,
+        ...(tier.env !== undefined ? { env: tier.env } : {}),
+      });
+
+    const state = buildClassifierState(
+      { stream: ctx.stream, worktreePath: ctx.worktreePath, ...(this.repoOf(ctx.stream) ?? {}) },
+      payload,
+    );
+    const classifier: Classifier =
+      enabled && tier !== undefined
+        ? tier.ask
+        : {
+            ask: () =>
+              Promise.reject(
+                new ClassifierUnavailableError(
+                  'not_configured',
+                  'the classifier tier is off for this stream',
+                ),
+              ),
+          };
+    const outcome = await decideClassifierTier({
+      rules,
+      bands: (tier?.config ?? DEFAULT_CLASSIFIER_CONFIG).bands,
+      classifier,
+      state,
+      ...(tier?.now !== undefined ? { now: tier.now } : {}),
+    });
+    return { outcome, called: enabled };
+  }
+
+  /**
+   * Turns a tier outcome into the model's decision, plus the
+   * `classifier_call` event (§6.2), the `hook_unchecked` thread entry
+   * (§6.4) and, for a route, the route band.
+   */
+  private async applyClassifierTier(
+    ctx: HookDecisionContext,
+    payload: ClaudePreToolUsePayload,
+    tier: { outcome: ClassifierTierOutcome; called: boolean },
+    /** The decision so far — its `rulesEvaluated` (the pattern tier's) is kept, not replaced. */
+    soFar: HookDecision,
+  ): Promise<{ decision: Partial<HookDecision>; allowedBy?: string }> {
+    const { outcome } = tier;
+    if (tier.called) await this.logClassifierCall(ctx, outcome);
+    if (outcome.unchecked !== undefined) await this.noteUnchecked(ctx, outcome);
+
+    const evaluated = [...(soFar.rulesEvaluated ?? []), ...outcome.evaluated];
+    if (outcome.band === 'deny') {
+      return {
+        decision: {
+          decision: 'deny',
+          reason: outcome.reason,
+          rulesEvaluated: evaluated,
+          ...(outcome.rule !== undefined ? { ruleViolated: outcome.rule } : {}),
+        },
+      };
+    }
+    if (outcome.band === 'route') {
+      const routed = await this.route(
+        ctx,
+        payload,
+        outcome.reason ?? 'a classifier rule needs a human',
+        outcome.rule as RuleId | undefined,
+      );
+      return {
+        decision: {
+          ...routed.decision,
+          rulesEvaluated: evaluated,
+          // A spent approval means the human already said yes to this exact
+          // call: it fired, it was not routed again.
+          ...(routed.decision.decision !== 'allow' && outcome.rule !== undefined
+            ? { ruleRouted: outcome.rule }
+            : {}),
+        },
+        ...(routed.allowedBy !== undefined ? { allowedBy: routed.allowedBy } : {}),
+      };
+    }
+    return { decision: { rulesEvaluated: evaluated } };
+  }
+
+  /** §6.2: "latency is recorded per call as an event". */
+  private async logClassifierCall(
+    ctx: HookDecisionContext,
+    outcome: ClassifierTierOutcome,
+  ): Promise<void> {
+    await this.store.appendEvent(
+      buildEvent('classifier_call', {
+        agent: ctx.session as AgentId,
+        data: {
+          stream: ctx.stream,
+          rules: outcome.evaluated.length,
+          questions: outcome.questions,
+          latency_ms: outcome.latency_ms,
+          outcome: outcome.band,
+          ...(outcome.error !== undefined ? { error: outcome.error } : {}),
+        },
+      }),
+    );
+  }
+
+  /**
+   * §6.4: the rules that went unchecked are marked on the stream's thread,
+   * so "observed but unchecked" is visible rather than silent.
+   */
+  private async noteUnchecked(
+    ctx: HookDecisionContext,
+    outcome: ClassifierTierOutcome,
+  ): Promise<void> {
+    const rules = outcome.unchecked ?? [];
+    if (rules.length === 0) return;
+    const body =
+      `hook_unchecked: the classifier could not answer (${outcome.error ?? 'no answer returned'}); ` +
+      `${rules.length} non-critical rule(s) went unchecked and the call was allowed: ${rules.join(', ')}`;
+    try {
+      await this.store.appendThreadEntry(ctx.stream, {
+        ts: this.now().toISOString(),
+        by: 'daemon',
+        kind: 'event',
+        body: body.slice(0, THREAD_BODY_MAX_CHARS),
+      });
+    } catch {
+      // The stream has gone or the write raced a close; the decision stands.
+    }
+  }
+
+  /**
+   * A refused or routed call is shown on the stream's thread: a rule hit
+   * carries the rule id as `ref` (a "blocked by rule" card), a role-policy
+   * deny gets a plain line. Best effort; the decision is already made.
+   */
+  private async noteHit(
+    ctx: HookDecisionContext,
+    payload: ClaudePreToolUsePayload,
+    decision: HookDecision,
+    routed: boolean,
+  ): Promise<boolean> {
+    if (decision.decision !== 'deny') return false;
+    const ruleId = decision.ruleViolated ?? decision.ruleRouted;
+    const outcome = routed ? 'routed to the human' : 'denied';
+    const target = hitTarget(payload);
+    let body: string;
+    if (ruleId !== undefined) {
+      const rule = this.rulesInScope(ctx.stream).find((each) => each.id === ruleId);
+      const label = rule?.name !== undefined ? `${rule.name} (${ruleId})` : ruleId;
+      body = `rule_hit: ${label} ${outcome} \`${target}\`${rule !== undefined ? ` — rule: ${rule.text}` : ''}`;
+    } else {
+      body = `hook_deny: ${outcome} \`${target}\` — ${decision.reason ?? 'role policy'}`;
+    }
+    const capped = body.slice(0, THREAD_BODY_MAX_CHARS);
+    // Coalesce a retry storm: if the newest thread entry is this same hit
+    // from the same session, append nothing and flag `thread_repeat` on the
+    // event instead.
+    const key = `${ctx.session}\u0000${capped}`;
+    try {
+      const last = this.store.readThread(ctx.stream).at(-1);
+      if (
+        last !== undefined &&
+        last.by === 'daemon' &&
+        last.kind === 'event' &&
+        last.body === capped &&
+        last.ref === ruleId &&
+        this.lastHit.get(ctx.stream) === key
+      ) {
+        return true;
+      }
+    } catch {
+      // Unreadable thread: fall through and try the append.
+    }
+    try {
+      await this.store.appendThreadEntry(ctx.stream, {
+        ts: this.now().toISOString(),
+        by: 'daemon',
+        kind: 'event',
+        body: capped,
+        ...(ruleId !== undefined ? { ref: ruleId } : {}),
+      });
+      this.lastHit.set(ctx.stream, key);
+    } catch {
+      // A stream that has gone: the decision is already made.
+    }
+    return false;
+  }
+
+  /** Every rule in scope for this stream, or none when no rules service is wired. */
+  private rulesInScope(stream: string): Rule[] {
+    const rules = this.options.rules;
+    if (rules === undefined) return [];
+    try {
+      return rules.inScope(stream);
+    } catch {
+      return [];
+    }
+  }
+
+  private streamRecord(stream: string): Stream | undefined {
+    try {
+      return this.store.getStream(stream);
+    } catch {
+      return undefined;
+    }
+  }
+
+  /** `{ repo }` for the state's stream/repo line, or nothing when the stream has none. */
+  private repoOf(stream: string): { repo: string } | undefined {
+    const repo = this.streamRecord(stream)?.repo;
+    return repo === undefined ? undefined : { repo };
+  }
+
+  private repoEntry(stream: string): RepoEntry | undefined {
+    const repo = this.streamRecord(stream)?.repo;
+    if (repo === undefined) return undefined;
+    try {
+      return this.store.getRepos()[repo];
+    } catch {
+      return undefined;
+    }
+  }
+
+  /** The route band for one `ask` verdict. No gates or no fingerprintable call: plain deny, never allow. */
+  private async route(
+    ctx: HookDecisionContext,
+    payload: ClaudePreToolUsePayload,
+    why: string,
+    rule?: RuleId,
+  ): Promise<{ decision: HookDecision; allowedBy?: string }> {
+    const gates = this.options.gates;
+    const call = fingerprintCall(payload, ctx.worktreePath);
+    if (gates === undefined || call === undefined) {
+      return {
+        decision: {
+          decision: 'deny',
+          reason: `${why} — ask the operator on the stream before retrying`,
+        },
+      };
+    }
+    let policy: Policy;
+    try {
+      policy = this.store.getPolicy();
+    } catch (err) {
+      if (!(err instanceof NotFoundError)) throw err;
+      // No `policy.yaml`: every gate is the human's (the shipped default).
+      policy = {
+        gates: { land: 'human', rule_accept: 'human', classifier_review: 'human' },
+        breaker_signals: [],
+      };
+    }
+    const routed = await routeCall(gates, {
+      session: ctx.session,
+      stream: ctx.stream,
+      policy,
+      call,
+      reason: why,
+      ...(rule !== undefined ? { rule } : {}),
+    });
+    return {
+      decision: routed.decision,
+      ...(routed.allowedBy !== undefined ? { allowedBy: routed.allowedBy } : {}),
+    };
+  }
+
+  /**
+   * `hook.post_tool_use`: logs usage and, for an oversized response, tells
+   * the model via `additionalContext` (it cannot be truncated for Claude).
    */
   async postToolUse(payload: ClaudePostToolUsePayload): Promise<PostToolUseHookOutput> {
     const ctx = await this.buildContext(payload.cwd, agentHintFrom(payload));
@@ -599,35 +744,6 @@ export class HookService {
         : JSON.stringify(payload.tool_response ?? '');
     const bytes = Buffer.byteLength(responseText, 'utf8');
     const oversized = bytes > this.limits.maxReadBytes;
-
-    let agentRecord: { model: string; vendor: string } | undefined;
-    try {
-      agentRecord = this.store.getAgent(ctx.agent);
-    } catch {
-      // No registry entry yet — ledger line still gets written with
-      // "unknown", never skipped (usage must still be recorded).
-    }
-
-    let sprint = '';
-    try {
-      sprint = this.store.getTicket(ctx.ticket).sprint ?? '';
-    } catch {
-      // Ticket vanished between context resolution and here — sprint stays ''.
-    }
-
-    await this.store.appendLedgerLine(sprint, {
-      ts: this.now().toISOString(),
-      sprint,
-      ticket: ctx.ticket,
-      agent: ctx.agent,
-      model: agentRecord?.model ?? 'unknown',
-      in_tokens: 0,
-      // Signal-over-volume rule (CLAUDE.md): tokens approximated by chars/4
-      // (session brief), never the raw output itself.
-      out_tokens: Math.ceil(responseText.length / 4),
-      cost_usd: 0,
-      kind: 'engineer',
-    });
 
     const decision: HookDecision = oversized
       ? {
@@ -648,24 +764,21 @@ export class HookService {
   }
 
   /**
-   * `hook.stop`. Drains (acks) every low-priority message in this agent's
-   * inbox and re-prompts the model with them via `decision: 'block'` +
-   * `reason` — only when there is something to deliver; an empty inbox
-   * returns `{}` (never blocks the turn to say nothing) — see
-   * `StopHookOutput`'s DESIGN-GAP.
+   * `hook.stop`: acks every low-priority message and re-prompts the model
+   * with them (`block` + `reason`); an empty inbox returns `{}`.
    */
   async stop(payload: ClaudeStopPayload): Promise<StopHookOutput> {
     const ctx = await this.buildContext(payload.cwd, agentHintFrom(payload));
     if (ctx === undefined) return {};
 
-    const low = this.bus.poll(ctx.agent, { priority: 'low' });
+    const low = this.bus.poll(ctx.session as AgentId, { priority: 'low' });
     if (low.length === 0) {
       await this.logDecision(ctx, 'stop', { decision: 'allow' });
       return {};
     }
 
     await this.ackAll(
-      ctx.agent,
+      ctx.session as AgentId,
       low.map((m) => m.id),
     );
     const summary = summarizeLowPriority(low);
@@ -674,6 +787,24 @@ export class HookService {
   }
 }
 
-function summarizeLowPriority(messages: Message[]): string {
+function summarizeLowPriority(messages: AgentMessage[]): string {
   return messages.map((m) => `[${m.kind} from ${m.from}] ${m.body}`).join('\n');
+}
+
+/** What a hit refused (command, else path, else tool), one line, capped. */
+function hitTarget(payload: ClaudePreToolUsePayload): string {
+  const input = payload.tool_input ?? {};
+  const pick = (key: string): string | undefined =>
+    typeof input[key] === 'string' && (input[key] as string).length > 0
+      ? (input[key] as string)
+      : undefined;
+  const raw =
+    pick('command') ??
+    pick('file_path') ??
+    pick('path') ??
+    pick('notebook_path') ??
+    payload.tool_name ??
+    'unknown call';
+  const line = raw.replace(/\s+/g, ' ').trim();
+  return line.length > 200 ? `${line.slice(0, 199)}…` : line;
 }

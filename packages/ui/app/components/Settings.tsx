@@ -1,194 +1,110 @@
 /**
- * T043 — the Settings view (§17 journey step 4: "A settings card, one row
- * per gate kind (`approve_plan`, `approve_decision`, `unblock`,
- * `sprint_review`, `demo`), each `ask me` / `EM decides, tell me`. Presets
- * on top: ask everything, plans and reviews only, unattended. This is
- * `policy.yaml`'s gates block with a face."), and the new home of spend:
- * §17 v2 "Spend is not in the top bar; it is a Settings row and a pop-out
- * modal."
+ * Settings (T043's view, cut to what the cockpit has left in T160): who
+ * decides each of the three surviving gate kinds (§3.1), read from
+ * `policy.yaml` through `GET /api/policy`.
  *
- * Every edit here is a `PUT /api/policy` — validated through the shared
- * `PolicySchema` and written by `StateStore.putPolicy`, so it lands in
- * `events.jsonl` and is what the *next* gate resolves its owner against
- * (`gates/resolve.ts`). Nothing is kept client-side: the saved policy comes
- * back from the daemon and replaces what the page was showing.
+ * Read-only for now: T043's per-row "ask me / EM decides" switch chose
+ * between the human and the EM delegate, and the EM was deleted in T122,
+ * so the only owner left that a gate can actually reach is the human.
+ *
+ * T167: the classifier's "TypeSafe API key" — write-only. The daemon never
+ * sends the key back; this shows only where it comes from (config.yaml, the
+ * environment, or nowhere). Save writes it to config.yaml and it is live at
+ * once; Remove deletes it from config.yaml (an env key still applies).
+ *
+ * T170 (D17): the session defaults — home-wide (`config.yaml`) and per repo
+ * (`repos.yaml`). An empty field inherits the next step of the order, which
+ * each control names; the next attach uses the saved values, no restart.
  */
 
-import { type GateOwner, KNOWN_GATES, type Policy } from '@agile-agents/shared';
-import { useState } from 'react';
-import { putPolicy } from '../lib/api';
-import { type FeedEmInfo, type FeedQuotaInfo, emLabel } from '../lib/feed-types';
-import { PopOutIcon } from './icons';
+import type {
+  ClassifierKeyStatus,
+  Policy,
+  ResolvedSessionDefaults,
+  SessionDefaultsFields,
+  SessionDefaultsPatch,
+  SessionDefaultsStatus,
+} from '@agile-agents/shared';
+import { GATE_KINDS } from '@agile-agents/shared';
+import { useEffect, useState } from 'react';
+import {
+  getClassifierKey,
+  getPolicy,
+  getSessionDefaults,
+  removeClassifierKey,
+  saveClassifierKey,
+  saveHomeSessionDefaults,
+  saveRepoSessionDefaults,
+} from '../lib/api';
+import { type SessionChoice, SessionFields } from './SessionPicker';
 
-/** One row per gate kind, worded as the mockup words them (`#s5`). */
-const GATE_ROWS: ReadonlyArray<{ gate: string; title: string; what: string }> = [
-  {
-    gate: 'approve_plan',
-    title: 'Plan for a sprint',
-    what: "The architect's proposed tickets and rules before any work starts.",
+const GATE_TEXT: Record<(typeof GATE_KINDS)[number], { title: string; what: string }> = {
+  land: { title: 'Landing a stream', what: 'Merging a finished stream into its target branch.' },
+  rule_accept: {
+    title: 'A proposed rule',
+    what: 'A lesson from a finished stream, or a rule an agent proposed.',
   },
-  {
-    gate: 'approve_decision',
-    title: 'Rule change mid-sprint',
-    what: 'The architect wants to add or change a rule because the code contradicted the spec.',
+  classifier_review: {
+    title: 'A routed tool call',
+    what: 'The classifier was unsure about an action and routed it to you.',
   },
-  {
-    gate: 'unblock',
-    title: 'Guardrail blocked an agent',
-    what: 'An agent tried something the rules stop, like QA creating a file. Allow once or deny.',
-  },
-  {
-    gate: 'sprint_review',
-    title: 'Sprint review',
-    what: 'The merged work and the report. Accept, or send tickets back.',
-  },
-  {
-    gate: 'demo',
-    title: 'Demo before main',
-    what: "A walkthrough of the finished feature before it's promoted.",
-  },
-];
+};
 
-/**
- * The three presets, from §17 journey step 4 ("ask everything, plans and
- * reviews only, unattended") under the mockup's own labels (`#s5`'s choices
- * row: "Everything" / "Plans and reviews" / "Nothing, just tell me").
- *
- * DECISION (see `.pipeline-report.md`): the ticket's parenthetical reads
- * "gates to EM → every gate `em`; hands off → the design's unattended
- * mapping", which would make the middle and last presets identical. The
- * design and the mockup define three distinct mappings and CLAUDE.md says the
- * design wins, so the middle preset is the mockup's *rendered* state for the
- * "Plans and reviews" chip, gate row by gate row (`#s5`): plan, rule change
- * (`approve_decision`) and sprint review are "Ask me"; the guardrail block
- * (`unblock`) and the demo are "EM decides". Review round 1 blocker 2: this
- * preset previously put `approve_decision` on `em`, which is not what that
- * screen shows.
- *
- * The mockup's other three rows — engineer escalation, halt, and the spend
- * threshold — have no gate name in `KNOWN_GATES`/§16 yet, so nothing here
- * writes them; when they get one, "Ask me" / "Ask me" / "EM decides, then
- * tells me" is what that screen shows for them.
- */
-export const POLICY_PRESETS: ReadonlyArray<{
-  id: string;
-  label: string;
-  help: string;
-  gates: Record<string, GateOwner>;
-}> = [
-  {
-    id: 'everything-to-me',
-    label: 'Everything',
-    help: 'Every gate stops and waits for you.',
-    gates: Object.fromEntries(KNOWN_GATES.map((g) => [g, 'human' as GateOwner])),
-  },
-  {
-    id: 'gates-to-em',
-    label: 'Plans and reviews',
-    help: 'You decide the plan, rule changes and the sprint review; the EM handles blocked agents and demos.',
-    gates: {
-      approve_plan: 'human',
-      approve_decision: 'human',
-      sprint_review: 'human',
-      unblock: 'em',
-      demo: 'em',
-    },
-  },
-  {
-    id: 'hands-off',
-    label: 'Nothing, just tell me',
-    help: 'The EM decides every gate. Nothing waits on you; it all shows up in the review.',
-    gates: Object.fromEntries(KNOWN_GATES.map((g) => [g, 'em' as GateOwner])),
-  },
-];
+export function Settings(): JSX.Element {
+  const [policy, setPolicy] = useState<Policy | undefined>(undefined);
+  const [error, setError] = useState<string | undefined>(undefined);
 
-/** Which preset (if any) the current gates block equals — so the chooser reflects hand edits honestly. */
-export function matchPreset(policy: Policy | undefined): string | undefined {
-  if (!policy) return undefined;
-  return POLICY_PRESETS.find((preset) =>
-    KNOWN_GATES.every((gate) => (policy.gates[gate] ?? 'human') === preset.gates[gate]),
-  )?.id;
-}
+  useEffect(() => {
+    getPolicy()
+      .then(setPolicy)
+      .catch((err: unknown) => setError(err instanceof Error ? err.message : String(err)));
+  }, []);
 
-function ownerOf(policy: Policy | undefined, gate: string): GateOwner {
-  return policy?.gates[gate] ?? 'human';
-}
-
-function spendTotal(quota: FeedQuotaInfo[]): number {
-  return quota.reduce((sum, q) => sum + (q.spend_usd ?? 0), 0);
-}
-
-/** The spend / vendor-barometer body, shared by the modal and its popped-out window. */
-export function SpendBody({ quota }: { quota: FeedQuotaInfo[] }): JSX.Element {
-  if (quota.length === 0) {
-    return <p style={{ color: 'var(--text-dim)', margin: 0 }}>No quota data yet.</p>;
-  }
   return (
-    <div data-testid="spend-body">
-      {quota.map((q) => (
-        <div key={`${q.vendor}/${q.account}`} className="cr-quota-row">
-          <span className="cr-conf-dot" data-conf={q.confidence} />
-          <span style={{ minWidth: 110 }}>
-            {q.vendor}/{q.account}
-          </span>
-          <span className="cr-quota-bar" data-low={q.remaining_fraction < 0.15}>
-            <span style={{ width: `${Math.round(q.remaining_fraction * 100)}%` }} />
-          </span>
-          <span style={{ fontSize: 11, minWidth: 34, textAlign: 'right' }}>
-            {Math.round(q.remaining_fraction * 100)}%
-          </span>
-          {q.spend_usd !== undefined && (
-            <span style={{ fontSize: 11, minWidth: 52, textAlign: 'right' }}>
-              ${q.spend_usd.toFixed(2)}
-            </span>
-          )}
+    <section className="cr-settings" data-testid="settings">
+      <h1>Settings</h1>
+      {error && <p className="cr-error">{error}</p>}
+      <ClassifierKey />
+      <SessionDefaults />
+      <h2>Who decides</h2>
+      {GATE_KINDS.map((gate) => (
+        <div className="cr-gate-row" key={gate} data-gate={gate}>
+          <div>
+            <div>{GATE_TEXT[gate].title}</div>
+            <div className="what">{GATE_TEXT[gate].what}</div>
+          </div>
+          <code>{policy ? (policy.gates[gate] ?? 'human') : '…'}</code>
         </div>
       ))}
-    </div>
+    </section>
   );
 }
 
-/**
- * `/control-room?view=spend` — the popped-out spend modal as its own page,
- * the same way T041's `/control-room/chat` pops the chat out. Same bundle,
- * same `/api/snapshot` read; `main.tsx` routes to it.
- */
-export function SpendWindow({ quota }: { quota: FeedQuotaInfo[] }): JSX.Element {
-  return (
-    <div className="cr-root" data-view="spend">
-      <div className="cr-main">
-        <h1 style={{ fontSize: 15 }}>Spending</h1>
-        <SpendBody quota={quota} />
-      </div>
-    </div>
-  );
+function keyText(status: ClassifierKeyStatus): string {
+  if (status.source === 'none') return 'no key';
+  const from = status.source === 'config' ? 'from config' : 'from environment';
+  const off = status.loaded ? '' : ' — provider is off';
+  return `key set (${from})${off}`;
 }
 
-export function Settings({
-  policy,
-  quota,
-  em,
-  onChanged,
-}: {
-  policy: Policy | undefined;
-  quota: FeedQuotaInfo[];
-  /** T049: the resident EM session's vendor/model, shown read-only — see the row below. */
-  em?: FeedEmInfo;
-  onChanged: () => void;
-}): JSX.Element {
-  const [spendOpen, setSpendOpen] = useState(false);
+function ClassifierKey(): JSX.Element {
+  const [status, setStatus] = useState<ClassifierKeyStatus | undefined>(undefined);
+  const [value, setValue] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | undefined>(undefined);
 
-  async function save(gates: Record<string, GateOwner>): Promise<void> {
+  useEffect(() => {
+    getClassifierKey()
+      .then(setStatus)
+      .catch((err: unknown) => setError(err instanceof Error ? err.message : String(err)));
+  }, []);
+
+  async function act(fn: () => Promise<ClassifierKeyStatus>): Promise<void> {
     setBusy(true);
     setError(undefined);
     try {
-      await putPolicy({
-        gates: { ...(policy?.gates ?? {}), ...gates },
-        breaker_signals: policy?.breaker_signals ?? [],
-      });
-      onChanged();
+      setStatus(await fn());
+      setValue('');
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -196,175 +112,209 @@ export function Settings({
     }
   }
 
-  const active = matchPreset(policy);
-  // Until `GET /api/policy` has landed there is nothing to merge into, and a
-  // save would write the one edited gate over a gates block it never saw.
-  const locked = busy || policy === undefined;
-
   return (
-    <div className="cr-form" data-testid="settings">
-      <div className="cr-dochd">
-        <h2>Settings</h2>
-        <span className="file">.agile/policy.yaml</span>
-      </div>
-
-      <div className="cr-rule cr-spend-row">
-        <div style={{ flex: 1 }}>
-          <b>Spending</b>
-          <div className="what">
-            ${spendTotal(quota).toFixed(2)} recorded · {quota.length} vendor
-            {quota.length === 1 ? '' : 's'} on the barometer
-          </div>
+    <form
+      className="cr-gate-row"
+      data-testid="settings-classifier-key"
+      onSubmit={(e) => {
+        e.preventDefault();
+        if (value.trim().length > 0) void act(() => saveClassifierKey(value.trim()));
+      }}
+    >
+      <div>
+        <div>TypeSafe API key</div>
+        <div className="what">
+          The classifier&apos;s key (§6.2). Stored in config.yaml; never shown again.
         </div>
+        <div className="what" data-testid="settings-key-status">
+          {status ? keyText(status) : '…'}
+          {status?.environment_also ? ' · an environment key is also set' : ''}
+        </div>
+        {error && (
+          <p className="cr-error" role="alert">
+            {error}
+          </p>
+        )}
+      </div>
+      <div className="cr-actions">
+        <input
+          type="password"
+          autoComplete="off"
+          aria-label="TypeSafe API key"
+          data-testid="settings-key-input"
+          value={value}
+          placeholder={status?.source === 'none' ? 'paste a key' : 'replace the key'}
+          onChange={(e) => setValue(e.target.value)}
+        />
+        <button
+          type="submit"
+          className="cr-btn signal"
+          data-testid="settings-key-save"
+          disabled={busy || value.trim().length === 0}
+        >
+          Save
+        </button>
         <button
           type="button"
           className="cr-btn"
-          data-testid="open-spend"
-          onClick={() => setSpendOpen(true)}
+          data-testid="settings-key-remove"
+          disabled={busy || status?.source !== 'config'}
+          title={
+            status?.source === 'environment'
+              ? 'This key comes from TYPESAFE_API_KEY; unset it in the daemon environment'
+              : 'Delete the key from config.yaml'
+          }
+          onClick={() => void act(removeClassifierKey)}
         >
-          Open spending
+          Remove
         </button>
+      </div>
+    </form>
+  );
+}
+
+function toChoice(fields: SessionDefaultsFields): SessionChoice {
+  return { vendor: fields.vendor ?? '', model: fields.model ?? '', effort: fields.effort ?? '' };
+}
+
+/** Empty = inherit: the field is removed from the file (`null`). */
+function toPatch(choice: SessionChoice): SessionDefaultsPatch {
+  const model = choice.model.trim();
+  return {
+    vendor: (choice.vendor || null) as SessionDefaultsPatch['vendor'],
+    model: model.length > 0 ? model : null,
+    effort: (choice.effort || null) as SessionDefaultsPatch['effort'],
+  };
+}
+
+function resolvedText(resolved: ResolvedSessionDefaults): string {
+  return `${resolved.vendor} / ${resolved.model ?? `${resolved.vendor} default model`} / ${resolved.effort}`;
+}
+
+function SessionDefaultsRow({
+  label,
+  what,
+  testid,
+  status,
+  fields,
+  inherit,
+  resolved,
+  save,
+}: {
+  label: string;
+  what: string;
+  testid: string;
+  status: SessionDefaultsStatus;
+  fields: SessionDefaultsFields;
+  inherit: ResolvedSessionDefaults;
+  resolved: ResolvedSessionDefaults;
+  save: (patch: SessionDefaultsPatch) => Promise<void>;
+}): JSX.Element {
+  const [value, setValue] = useState<SessionChoice>(() => toChoice(fields));
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | undefined>(undefined);
+  const [saved, setSaved] = useState(false);
+
+  return (
+    <form
+      className="cr-gate-row"
+      data-testid={testid}
+      onSubmit={(e) => {
+        e.preventDefault();
+        setBusy(true);
+        setError(undefined);
+        setSaved(false);
+        save(toPatch(value))
+          .then(() => setSaved(true))
+          .catch((err: unknown) => setError(err instanceof Error ? err.message : String(err)))
+          .finally(() => setBusy(false));
+      }}
+    >
+      <div>
+        <div>{label}</div>
+        <div className="what">{what}</div>
+        <div className="what" data-testid={`${testid}-resolved`}>
+          Resolves to {resolvedText(resolved)}
+          {saved ? ' · saved' : ''}
+        </div>
+        {error && (
+          <p className="cr-error" role="alert">
+            {error}
+          </p>
+        )}
+      </div>
+      <div className="cr-actions">
+        <SessionFields
+          status={status}
+          value={value}
+          onChange={(next) => {
+            setValue(next);
+            setSaved(false);
+          }}
+          inherit={inherit}
+          testid={`${testid}-field`}
+        />
         <button
-          type="button"
-          className="cr-ib"
-          data-testid="spend-popout"
-          title="Pop spending out into its own window"
-          aria-label="Pop spending out into its own window"
-          onClick={() => window.open('/control-room?view=spend', 'agile-spend')}
+          type="submit"
+          className="cr-btn signal"
+          data-testid={`${testid}-save`}
+          disabled={busy}
         >
-          <PopOutIcon />
+          Save
         </button>
       </div>
+    </form>
+  );
+}
 
-      {/*
-        T049 defect 5: the EM session's vendor/model, read-only.
-        `.agile/vendors.yaml` (`packages/shared/src/vendors.ts`) has no
-        per-role model field at all — a vendor entry is `accounts`,
-        `requires_sandbox` and `sandbox_enabled`, nothing else — and neither
-        `policy.yaml` nor the provider registry carries one. So there is
-        nothing for a picker here to write to, and inventing a config field
-        would be a new convention this ticket has no approval for. The row
-        reports what the live session is on; choosing it needs a schema
-        change first (see the ticket report).
-      */}
-      <div className="cr-rule cr-spend-row" data-testid="settings-em-model">
-        <div style={{ flex: 1 }}>
-          <b>EM session</b>
-          <div className="what">
-            {em
-              ? `${emLabel(em)} — reported by the resident session on its handshake.`
-              : 'No resident EM session has reported yet — it spawns on the first chat message.'}
-          </div>
-        </div>
-        <span
-          className="cr-badge"
-          title="Read-only: .agile/vendors.yaml has no per-role model field to write a choice to"
-        >
-          read-only
-        </span>
-      </div>
+function SessionDefaults(): JSX.Element {
+  const [status, setStatus] = useState<SessionDefaultsStatus | undefined>(undefined);
+  const [error, setError] = useState<string | undefined>(undefined);
 
-      <h2 style={{ marginTop: 18 }}>How much should the team ask you?</h2>
-      <div className="cr-field" style={{ marginTop: 10 }}>
-        {/* `<fieldset>`, not a `role="group"` div — biome's useSemanticElements. */}
-        <fieldset className="cr-choices" aria-label="Who decides preset">
-          {POLICY_PRESETS.map((preset) => (
-            <button
-              key={preset.id}
-              type="button"
-              className={`cr-choice${active === preset.id ? ' on' : ''}`}
-              data-testid={`preset-${preset.id}`}
-              aria-pressed={active === preset.id}
-              title={preset.help}
-              disabled={locked}
-              onClick={() => save(preset.gates)}
-            >
-              {preset.label}
-            </button>
+  useEffect(() => {
+    getSessionDefaults()
+      .then(setStatus)
+      .catch((err: unknown) => setError(err instanceof Error ? err.message : String(err)));
+  }, []);
+
+  return (
+    <>
+      <h2>Session defaults</h2>
+      {error && <p className="cr-error">{error}</p>}
+      {!status && !error && <p className="cr-dim">…</p>}
+      {status && (
+        <>
+          <SessionDefaultsRow
+            label="Global default"
+            what="config.yaml — used for every stream unless its repo sets its own."
+            testid="settings-session-home"
+            status={status}
+            fields={status.home}
+            inherit={status.builtin}
+            resolved={status.resolved}
+            save={async (patch) => setStatus(await saveHomeSessionDefaults(patch))}
+          />
+          <h3 data-testid="settings-session-repos-heading">Per-repo defaults</h3>
+          {Object.keys(status.repos).length === 0 && (
+            <p className="cr-dim" data-testid="settings-session-repos-empty">
+              No repos registered yet.
+            </p>
+          )}
+          {Object.entries(status.repos).map(([name, repo]) => (
+            <SessionDefaultsRow
+              key={name}
+              label={name}
+              what="repos.yaml — overrides the global default for streams in this repo."
+              testid={`settings-session-repo-${name}`}
+              status={status}
+              fields={repo}
+              inherit={status.resolved}
+              resolved={repo.resolved}
+              save={async (patch) => setStatus(await saveRepoSessionDefaults(name, patch))}
+            />
           ))}
-        </fieldset>
-        <div className="help">Presets set the rows below. Change any row on its own.</div>
-      </div>
-
-      {error && (
-        <p style={{ color: 'var(--danger)' }} data-testid="settings-error">
-          {error}
-        </p>
+        </>
       )}
-
-      {GATE_ROWS.map((row) => {
-        const owner = ownerOf(policy, row.gate);
-        return (
-          <div className="cr-gate-row" key={row.gate} data-gate={row.gate}>
-            <div>
-              <b>{row.title}</b>
-              <div className="what">{row.what}</div>
-            </div>
-            <fieldset className="cr-seg" aria-label={`Who decides ${row.title}`}>
-              <button
-                type="button"
-                className={owner === 'human' ? 'on' : undefined}
-                aria-pressed={owner === 'human'}
-                data-testid={`gate-${row.gate}-human`}
-                disabled={locked}
-                onClick={() => save({ [row.gate]: 'human' })}
-              >
-                Ask me
-              </button>
-              <button
-                type="button"
-                className={owner === 'em' ? 'on' : undefined}
-                aria-pressed={owner === 'em'}
-                data-testid={`gate-${row.gate}-em`}
-                disabled={locked}
-                onClick={() => save({ [row.gate]: 'em' })}
-              >
-                EM decides
-              </button>
-            </fieldset>
-          </div>
-        );
-      })}
-
-      {spendOpen && (
-        <div
-          className="cr-modal-backdrop"
-          onClick={() => setSpendOpen(false)}
-          onKeyDown={(e) => e.key === 'Escape' && setSpendOpen(false)}
-          role="presentation"
-        >
-          {/* Same shape every other modal in this app uses (BoardPanel,
-              NeedsYou): a `role="presentation"` box inside the backdrop,
-              closed by its own Close button or Escape on the backdrop. */}
-          <div
-            className="cr-modal"
-            data-testid="spend-modal"
-            onClick={(e) => e.stopPropagation()}
-            onKeyDown={(e) => e.stopPropagation()}
-            role="presentation"
-          >
-            <div className="cr-dochd">
-              <h2>Spending</h2>
-              <button
-                type="button"
-                className="cr-ib"
-                data-testid="spend-modal-popout"
-                title="Pop spending out into its own window"
-                aria-label="Pop spending out into its own window"
-                onClick={() => window.open('/control-room?view=spend', 'agile-spend')}
-              >
-                <PopOutIcon />
-              </button>
-            </div>
-            <SpendBody quota={quota} />
-            <div className="cr-modal-actions">
-              <button type="button" className="cr-btn" onClick={() => setSpendOpen(false)}>
-                Close
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-    </div>
+    </>
   );
 }

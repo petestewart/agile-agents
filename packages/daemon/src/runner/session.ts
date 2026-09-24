@@ -1,71 +1,18 @@
 /**
- * `startAgentSession` — spawns one ACP session for an already-placed
- * worktree and wires it into the daemon (T012 — design/
- * agile-agents-design.md §8 "Adapter contract": "(ticket, oracle_refs,
- * kb_refs, worktree) -> (diff, report, status, ledger events)"; §4 "Ledger";
- * §5 "Liveness"; §6 tier 1/2 enforcement).
+ * `startAgentSession`: spawns one ACP session in an already-placed
+ * worktree and wires it into the daemon (§4.1): hook settings, MCP config,
+ * permission responder, the registry entry the hook resolves a `cwd`
+ * through, the vendor's logs, the output→thread stream, and exit handling.
+ * `attach/service.ts` decides which stream, worktree and brief.
  *
- * Scope: this module owns exactly one running session's wiring — hook
- * settings, MCP config, permission responder, ledger, event log, heartbeat,
- * registration, and exit/crash handling. `runner.ts` owns *which* worktree
- * and ticket state transition a call to `spawn()` implies; this module just
- * runs the session once handed a worktree path and a rendered brief.
- *
- * `AgentRecord.pid` (T012 QA round fix, corrected in review round 3):
- * registration uses `session.pid` — `@agile-agents/acp-client`'s
- * `SpawnedSession` exposes the spawned child's real OS pid (granted for
- * this round: `packages/acp-client/src/{session,types}.ts`). Round 2 fell
- * back to the daemon's own pid (`session.pid ?? process.pid`) in the
- * narrow window a spawn failed to assign one — opus round 2 correctly
- * called this out as recreating the exact "kill the record, kill the
- * daemon" footgun the fix was supposed to remove. `AgentRecord.pid` is now
- * optional (`packages/shared/src/agents.ts`, granted): when
- * `session.pid` is `null`, `pid` is omitted entirely (never substituted)
- * and an `agent_put` event logs a warning naming the gap, so it's visible
- * in `log/events.jsonl` rather than silently wrong. This is what lets an
- * external operator's "kill -9 the pid on record" acceptance step work as
- * written, not just the daemon's own automatic liveness sweep (which never
- * reads `pid` for anything — the crash test in `runner.test.ts` asserts
- * `store.getAgent(...).pid` equals the fake agent's own pid *before*
- * killing it).
- *
- * `role`/`worktree`/`session_id` survival — RESOLVED at the root in review
- * round 4 (QA round 3 REJECT: a live reviewer/QA session silently decayed to
- * the engineer's permissive policy once `hook/service.ts`'s own
- * `store.heartbeat` call crossed the 30s coalescing window, because that
- * method used to rebuild `AgentRecord` from only its patch fields, dropping
- * anything else already on disk). `StateStore.heartbeat` (`store/store.ts`)
- * now only ever touches `last_seen`/`ticket`, carrying every other field
- * over from the existing record verbatim, and `Bus.heartbeat` delegates to
- * it for every heartbeat past an agent's first. `recordHeartbeat` below
- * still (a) registers the full record once via `store.putAgent` at start,
- * then (b) re-applies `role`/`worktree`/`session_id` via `store.putAgent`
- * after every `bus.heartbeat()` call if they ever come back different from
- * what this session expects — now a pure backstop against some *other*
- * future `putAgent`/`heartbeat` caller re-introducing this bug, not the
- * load-bearing fix it was before round 4 (the fix now lives where round 4's
- * QA finding said it belonged: the store itself, so it can't recur from any
- * caller).
- *
- * `tool_call` observation (T012 QA round fix): `@agile-agents/shared`'s
- * `EVENT_KINDS` (granted for this round: `packages/shared/src/event.ts`)
- * gained a dedicated `tool_call` kind, so every `tool_call`/`tool_call_update`
- * ACP notification is now logged as `kind: 'tool_call'` with
- * `{toolCallId, kind, title, status}` in `data` (`agent`/`ticket` are the
- * `Event` schema's own top-level fields, not duplicated into `data`) —
- * replacing the earlier round's `entity_put`-as-stand-in workaround.
- *
- * `usage_update` before any sprint exists (T012 QA round finding): a
- * `usage_update` that arrives with no sprint on record used to be silently
- * dropped (`currentSprintId()` resolves to `undefined`, and the ledger write
- * was skipped outright). It's now filed under the `nosprint` ledger file
- * (`store.appendLedgerLine`'s own sprint-id convention — `SprintIdSchema`
- * requires the literal shape, so a real placeholder id would fail
- * validation; `nosprint` is a plain string, not a `SprintId`, matching how
- * `ledger/nosprint.jsonl` is already named elsewhere as the pre-sprint
- * fallback), and a `ledger_no_sprint` event is logged so the gap is visible
- * in `log/events.jsonl` rather than only in a missing ledger line nobody
- * went looking for.
+ * - The registry entry is keyed by session id and carries
+ *   `stream`/`role`/`worktree` (§8.1 step 1). It exists only while the
+ *   session is live.
+ * - Output goes on the thread as `line` entries by `agent:<session>`,
+ *   coalesced per ACP message and capped; the untruncated text goes to
+ *   `<home>/sessions/<id>/output.log`.
+ * - `pid` is never substituted with the daemon's, so "kill the pid on
+ *   record" can't point at `agiled`.
  */
 
 import { appendFileSync, mkdirSync } from 'node:fs';
@@ -80,21 +27,19 @@ import {
   type SpawnedSession,
   spawnSession as defaultSpawnSession,
 } from '@agile-agents/acp-client';
-import type { AgentId, LedgerKind, LedgerLine, Policy, TicketId } from '@agile-agents/shared';
-import { ulid, validateLedgerLine } from '@agile-agents/shared';
-import type { Bus } from '../bus';
-import { pickCurrentSprint } from '../feed';
-import type { GateService } from '../gates';
+import type { AgentId, SessionRef, SessionRole, Stream } from '@agile-agents/shared';
+import { THREAD_BODY_MAX_CHARS } from '@agile-agents/shared';
 import { writeClaudeSettings } from '../hook';
+import { permissionRoleFor } from '../hook/decide';
 import {
   type AcpPermissionRequestParams,
   type PermissionResponderHandle,
-  type PermissionRole,
-  type TicketPermissionRole,
   buildGrokFsPolicy,
   buildPermissionResponder,
   cursorModeIdFor,
 } from '../permissions';
+import type { PatternRuleRules } from '../permissions/rule-checks';
+import { patternRuleGate } from '../permissions/rule-checks';
 import {
   ForeignPiExtensionError,
   GATE_ENV_VAR as PI_GATE_ENV_VAR,
@@ -105,33 +50,16 @@ import {
 import { type WrapAgentCommandFn, wrapAgentCommand as defaultWrapAgentCommand } from '../sandbox';
 import { buildEvent } from '../store';
 import type { StateStore } from '../store';
+import type { StreamService } from '../streams/service';
 import { type CliInvocation, cliInvocationToShell, normalizeCliBin } from './cli-bin';
 
-/**
- * T031: `architect` maps to `'ceremony'` — the ledger kind this codebase
- * already uses for a role that isn't tied to one ticket's own spend budget
- * (`LEDGER_KINDS` in `packages/shared/src/ledger.ts`; `'reader'` is the
- * other ledger-only kind, for tool-runner turns, not a spawned session).
- */
-const ROLE_LEDGER_KIND: Record<TicketPermissionRole, LedgerKind> = {
-  engineer: 'engineer',
-  reviewer: 'review',
-  qa: 'qa',
-  architect: 'ceremony',
-};
-
-/** A per-session stderr log under `stderrLogDir` — see `AgentSessionOptions.stderrLogDir`. Returns `undefined` when no dir is configured or it can't be created. */
-export function openStderrLog(
-  dir: string | undefined,
-  agentId: string,
-  at: Date,
-): { path: string; append: (chunk: string) => void } | undefined {
-  if (dir === undefined) return undefined;
-  const path = join(dir, `${agentId}-${at.toISOString().replace(/[:.]/g, '-')}.stderr.log`);
+/** `<sessionDir>/<name>` appender that never throws: diagnostics must not take a session down. */
+function openLog(dir: string, name: string): { path: string; append: (chunk: string) => void } {
+  const path = join(dir, name);
   try {
     mkdirSync(dir, { recursive: true });
   } catch {
-    return undefined;
+    // Every append below is best-effort anyway.
   }
   return {
     path,
@@ -139,7 +67,7 @@ export function openStderrLog(
       try {
         appendFileSync(path, chunk);
       } catch {
-        // Diagnostics only — never let a full disk or a vanished dir take the session down.
+        // A full disk or a vanished dir must never take the session down.
       }
     },
   };
@@ -152,167 +80,95 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 
 export interface AgentSessionOptions {
   store: StateStore;
-  bus: Bus;
-  role: TicketPermissionRole;
-  agentId: AgentId;
-  ticket: TicketId;
-  /** Absolute path — the session's `cwd` and where `.claude/settings.json` is written. */
+  streams: StreamService;
+  /** Its id is what the thread and the registry entry carry. */
+  stream: Stream;
+  /** The session record `attach/service.ts` minted. */
+  session: SessionRef;
+  role: SessionRole;
+  /** Absolute: the session's `cwd`, where `.claude/settings.json` is written. */
   worktreePath: string;
-  /** Rendered role brief (`brief.ts`) — sent as the first `prompt()`. */
+  /** The rendered brief, sent as the first `prompt()`. */
   brief: string;
-  /** How to invoke the `agile` CLI, for both the hook command and the MCP server's stdio command: a bare name/path, or a structured `{command, args}` (`runner/cli-bin.ts`'s `resolveCliBin` — e.g. `bun <path to packages/cli/src/index.ts>`). Defaults to `'agile'` (on `$PATH`). */
+  /** `<home>/sessions/<session id>/`: stderr and output logs. */
+  sessionDir: string;
+  /** How to invoke the `agile` CLI for the hook and MCP commands. Defaults to `'agile'`. */
   cliBin?: string | CliInvocation;
-  /** `AGILE_SOCKET_PATH` for the worktree's hook + MCP bridge, when the worktree's own `git rev-parse --show-toplevel` wouldn't already resolve to the main repo (every `.worktrees/**` ticket worktree). */
+  /** `AGILE_SOCKET_PATH` for the hook and MCP bridge (a worktree cwd would resolve the wrong root). */
   socketPath?: string;
   provider?: AcpProviderConfig;
-  /** Resolves the current sprint id for ledger filing — same convention as `ToolService.currentSprintId`. */
-  currentSprintId?: () => string | undefined;
-  /** Optional — hands `hil` permission verdicts to T018's `GateService` instead of the responder's default store-backed writer. */
-  gateService?: GateService;
-  /** Test seam: inject a fake `spawnSession` (the fake-agent helper) instead of the real ACP client. */
+  /** Test seam: a fake `spawnSession`. */
   spawn?: typeof defaultSpawnSession;
   now?: () => Date;
   hookTimeoutSeconds?: number;
-  /**
-   * T023 quota tracking: every `usage_update` ledger line is also fed to
-   * the quota service for this session's vendor/account (countdown,
-   * `quota_low`/`quota_exhausted`). Optional — tests and pre-`.agile/`
-   * daemons run without it.
-   */
-  quota?: { recordUsage(vendor: string, account: string, line: LedgerLine): Promise<unknown> };
-  /** Vendor account this session is billed to. Defaults to `'default'` until routing threads the chosen account through. */
-  account?: string;
-  /**
-   * T026 tier-0 sandbox: `true` when this session's vendor has ungated exec
-   * (`VendorConfig.requires_sandbox` in `@agile-agents/shared` — Codex,
-   * Grok per design §6) and must be refused rather than run unsandboxed
-   * when no tier-0 backend is available. Defaults `false` — callers that
-   * haven't wired `vendors.yaml` through yet (see the pipeline report's
-   * "wiring the manager needs to do") get today's unsandboxed behaviour,
-   * same as before this ticket.
-   */
+  /** Tier 0: this vendor's exec is ungated everywhere; refuse rather than run unsandboxed. */
   requiresSandbox?: boolean;
-  /**
-   * T026 round 2 (review round 1 B2): explicit opt-in to run *this*
-   * session's vendor under tier 0 even when it doesn't `requiresSandbox` —
-   * a future config/policy surface's seam. Defaults `false`, which is what
-   * keeps today's behaviour unchanged for Claude/Pi sessions on a host
-   * that happens to have a tier-0 backend available (a backend existing is
-   * never itself a reason to wrap — see `sandbox/wrap.ts`'s header).
-   */
+  /** Tier 0 opt-in even when not `requiresSandbox`. */
   sandboxEnabled?: boolean;
-  /** Test seam: override how the agent process command is wrapped for tier-0 sandboxing before spawn. Defaults to the real `sandbox.wrapAgentCommand`. */
+  /** Test seam: how the agent command is wrapped for tier 0. */
   wrapCommand?: WrapAgentCommandFn;
-  /**
-   * T022: only consulted when `provider.id === 'pi'` — the Pi agent config
-   * directory `installPiExtension` writes `extensions/agile.ts` and
-   * `settings.json` into (`resolvePiAgentDir()`'s default when unset). Test
-   * seam so a session test never touches the real `~/.pi/agent`.
-   */
+  /** Pi only: the agent dir the extension is installed into. */
   piAgentDir?: string;
-  /** Test seam: inject a fake `installPiExtension` instead of the real filesystem writer, so a non-Pi-provider test never pays for the (harmless but pointless) real check. Defaults to the real `installPiExtension`. */
+  /** Test seam: a fake `installPiExtension`. */
   installPiExtension?: typeof installPiExtension;
   /**
-   * Architect-only (T031 — CLAUDE.md v0 default: "Architect planning turn:
-   * try Claude `plan` mode first ... If plan mode blocks the architect's
-   * MCP writes, run `default` mode with a daemon-side `approve_plan`
-   * gate."). `'plan'` (the default) sends `modeId: 'plan'` on a Claude
-   * spawn, so `ExitPlanMode` arrives as the "Approve Plan"
-   * `session/request_permission` (`kind: 'switch_mode'`,
-   * design/spike-findings.md §C3) this module routes to the `approve_plan`
-   * gate below. `'default'` is the documented fallback — DESIGN-GAP
-   * (`architect/session.ts`'s own header, carried over unresolved: whether
-   * plan mode's read-only restriction also blocks the architect's own MCP
-   * verb calls is unmeasured in this container, no live vendor login
-   * available — see CLAUDE.md "Cloud sessions"), so this stays a
-   * caller-chosen seam rather than something this module auto-detects.
-   * Ignored for every non-architect role and for a non-Claude provider (no
-   * `switch_mode`/plan-mode concept measured on any other vendor —
-   * `provider.defaultModeId` applies unchanged there).
+   * Called when a prompt turn resolves normally. What that means (finished,
+   * or waiting on an answer) is a stream question for `attach/service.ts`.
+   * A failed turn never calls it: the session is already stopped.
    */
-  architectMode?: 'plan' | 'default';
+  onTurnEnd?: (info: { session: string; stream: string; turn: number; queued: number }) => void;
   /**
-   * Directory for this session's vendor-process stderr log
-   * (`<dir>/<agentId>-<spawn timestamp>.stderr.log`, appended as chunks
-   * arrive). The runner passes `<repoRoot>/.agile-daemon-cache/sessions`
-   * (gitignored, a sibling of the other daemon-cache subdirs). Without it
-   * the vendor's stderr is dropped, and a session that dies or blocks at
-   * startup (bad login, rejected flag, missing binary) leaves no trace
-   * beyond a `last_seen` that never advances. Never fatal: a failed
-   * mkdir/append is swallowed so logging can't take a spawn down.
+   * The rules read side: the ACP permission responder runs the pattern
+   * rules in scope, the only enforcement a vendor with no pre-tool-use hook
+   * (Cursor, Codex, Grok, §4.3) gets.
    */
-  stderrLogDir?: string;
-  /** Test seam: how often to re-poll a pending `approve_plan` gate (see `architectMode`). Defaults to 200ms. */
-  architectGatePollMs?: number;
-  /** Test seam: how long to wait on a pending `approve_plan` gate before denying the plan. Defaults to 5 minutes. */
-  architectGateTimeoutMs?: number;
+  rules?: PatternRuleRules;
 }
 
 export interface AgentExitInfo {
-  agentId: AgentId;
-  ticket: TicketId;
-  /** Human-readable reason recorded on the ticket's history and the escalate message. */
+  session: string;
+  stream: string;
+  /** Human-readable reason, written onto the thread by the attach service. */
   reason: string;
-  /** Whether the ticket was actually transitioned back to `ready` (false if it wasn't in a live status any more — already reviewed/QA'd/done out from under the exit). */
-  ticketReadied: boolean;
+  /** False on a transport error or failed prompt: `blocked` rather than `done`. */
+  ok: boolean;
+  /** The vendor's last non-empty stderr line, when the session ended on a failure or non-zero exit. */
+  vendorError?: string;
+}
+
+/** The last non-empty line of a stderr tail, trimmed. */
+export function lastStderrLine(tail: string): string | undefined {
+  const lines = tail.split(/\r?\n/).map((line) => line.trim());
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (lines[i]) return lines[i];
+  }
+  return undefined;
 }
 
 export interface AgentSessionHandle {
-  agentId: AgentId;
-  ticket: TicketId;
-  role: TicketPermissionRole;
+  sessionId: string;
+  stream: string;
+  role: SessionRole;
   worktree: string;
   session: SpawnedSession;
   responder: PermissionResponderHandle;
-  /** Resolves once the process has exited/crashed *and* the exit/crash handling (ticket -> ready, escalate, deleteAgent) has finished. Never rejects. */
+  /** Resolves after exit/crash and this module's cleanup. Never rejects. */
   exited: Promise<AgentExitInfo>;
   /**
-   * Sends a fresh `session/prompt` turn to this still-live session (T021
-   * round 3) — the seam a re-review (or any other need to talk to an
-   * already-spawned agent a second time) uses instead of respawning under
-   * the same agent id, which `Runner.spawn` refuses while a session is
-   * still live. Rejects if the turn itself fails (same fail-loud handling
-   * as the initial spawn prompt: the process is stopped and the exit/crash
-   * path runs before this rejects) — a caller should treat a rejection the
-   * same way a failed spawn would be treated.
+   * A new `session/prompt` turn (an answer, a composer line). Queued behind
+   * any running turn; `onDelivered` fires when this turn actually starts.
+   * After `stop()` a queued turn is skipped (it rejects) rather than sent.
    */
-  prompt(text: string): Promise<unknown>;
-  /** `session.cancel()` + `session.close()`, for a graceful stop (`runner.stop`) — does not itself run the exit/crash handling (that's `exited`, driven by the session's own `exit` event either way). */
+  prompt(text: string, opts?: { onDelivered?: () => void }): Promise<unknown>;
+  /** Turns started or queued and not yet finished (0 = idle). */
+  turnsInFlight(): number;
+  /** Whether `stop()` has been called. */
+  stopped(): boolean;
+  /** `cancel()` + `close()`; the exit path still runs off the session's own `exit` event. */
   stop(): void;
 }
 
-/**
- * T027: the first `prompt()` on a Cursor/Grok session fails with
- * `AuthRequiredError` until the ACP `authenticate` round trip runs
- * (design/spike-findings.md §C2/§D: "Cursor … ACP `authenticate
- * (cursor_login)` required"; "Grok … needs ACP `authenticate` (OAuth)").
- * Tries each `provider.authMethods` id **in order, one at a time**, retrying
- * the prompt after each: the first retry that succeeds (or fails with
- * anything other than `AuthRequiredError`) short-circuits the loop, so a
- * two-method vendor doesn't waste — or worse, get blocked by — an
- * `authenticate` call for a method it turns out not to need (round 2 fix,
- * review round 1 nit: the original ran *every* method id unconditionally,
- * so a rejection on the first id would throw out of the loop before the
- * second was ever tried). Empty for every vendor that authenticates
- * ambiently (Claude/Codex/Gemini, §C/§D) — a one-branch no-op re-throw for
- * them. A provider that lists no auth methods but still throws
- * `AuthRequiredError` re-throws unchanged — there is nothing this function
- * can do about a vendor `resolveAcpProvider` didn't say needed a handshake.
- */
-/**
- * `session.prompt()` never rejects for a turn that dies mid-flight — a
- * `close()`/`exit`/transport `error` settles the in-flight turn with a
- * *resolved* `SessionReply` (`status: 'failed'`, `acp-client/src/
- * session.ts`'s `turnEndFromError`/`replyFromFinalMessage` — correct on
- * that package's own terms: a turn ending in error is still a turn that
- * ended). This module's callers (`runPromptTurn`'s fail-loud handling,
- * `Runner.promptAgent`'s callers) need the opposite: "the turn reached a
- * live agent" vs. "the request went to a corpse" are different outcomes,
- * and a re-review that quietly "succeeds" against a dead session (T021
- * round 4, opus review round 3 nit) is worse than one that visibly fails.
- * So a resolved `status: 'failed'` reply is turned into a rejection here,
- * before `runPromptTurn`'s own catch ever sees it.
- */
+/** `session.prompt()` resolves `failed` for a turn that died mid-flight; turn that into a rejection. */
 function rejectOnFailedReply(reply: unknown): unknown {
   const r = reply as Partial<SessionReply> | undefined;
   if (r && r.status === 'failed') {
@@ -321,6 +177,11 @@ function rejectOnFailedReply(reply: unknown): unknown {
   return reply;
 }
 
+/**
+ * Cursor/Grok fail the first prompt with `AuthRequiredError` until ACP
+ * `authenticate` runs (spike-findings.md §C2/§D): try each
+ * `provider.authMethods` id, retrying the prompt after each.
+ */
 async function promptWithAuthRetry(
   session: SpawnedSession,
   provider: AcpProviderConfig,
@@ -338,7 +199,7 @@ async function promptWithAuthRetry(
       } catch (retryErr) {
         lastErr = retryErr;
         if (!(retryErr instanceof AuthRequiredError)) throw retryErr;
-        // Still needs auth — try the next method id, if any.
+        // Still needs auth: try the next method id.
       }
     }
     throw lastErr;
@@ -346,34 +207,13 @@ async function promptWithAuthRetry(
 }
 
 /**
- * Builds the MCP stdio server entry T011's report specifies: `agile mcp
- * --agent <id> --ticket <id>`, plus `--socket <path>` whenever the session
- * has an explicit `socketPath`. The MCP server runs with the *worktree* as
- * its cwd, and `discoverConfig` resolves the daemon socket relative to the
- * cwd's repo root — which for a `.worktrees/**` checkout is the worktree
- * itself, not the main repo, so without this the bridge dies on startup
- * (`connect ENOENT .worktrees/<ticket>/.agile-daemon.sock`) and the session
- * has no daemon verbs at all: it does the work, ends its turn, and nothing
- * ever re-prompts it (the first real `test:live` run — every engineer
- * committed, then sat idle until the liveness watchdog). The hook command
- * already carries the socket as an `AGILE_SOCKET_PATH=` prefix
- * (`hook/settings.ts`); this is the MCP descriptor's equivalent, as an
- * argument rather than an env entry because the ACP `env` field's shape
- * differs between vendors and an argument works everywhere.
- *
- * `env: []` is load-bearing even though empty: measured on a live daemon
- * (two real Claude sessions, descriptors identical except for this field),
- * `@agentclientprotocol/claude-agent-acp` 0.75.1 silently drops a stdio
- * MCP server whose descriptor has no `env` at all — the session lists no
- * `mcp__agile__*` tools and the bridge's `session/create` trace shows no
- * MCP phase. With `env: []` (the ACP schema's `EnvVariable[]` shape) the
- * tools appear. Without it, `--socket` alone still left every live session
- * with zero daemon verbs.
+ * `agile mcp --session <id> [--socket <path>]`, the MCP stdio server every
+ * session gets. `env: []` is load-bearing: claude-agent-acp silently drops
+ * a stdio MCP server with no `env`, leaving no `mcp__agile__*` tools.
  */
 function mcpServerConfig(
   cli: CliInvocation,
-  agentId: AgentId,
-  ticket: TicketId,
+  sessionId: string,
   socketPath: string | undefined,
 ): unknown {
   return {
@@ -382,95 +222,15 @@ function mcpServerConfig(
     args: [
       ...cli.args,
       'mcp',
-      '--agent',
-      agentId,
-      '--ticket',
-      ticket,
+      '--session',
+      sessionId,
       ...(socketPath !== undefined ? ['--socket', socketPath] : []),
     ],
     env: [],
   };
 }
 
-/**
- * T031: `ExitPlanMode` arrives titled "Approve Plan" with `kind:
- * 'switch_mode'` (design/spike-findings.md §C3). Title match is a fallback
- * for a vendor/version that doesn't set `kind` — mirrors `architect/
- * session.ts`'s own `isExitPlanModeRequest` (not imported from there: this
- * ticket's file ownership is `runner/session.ts`, not `architect/**`, and
- * the check is three lines).
- */
-function isArchitectPlanRequest(toolCall: { kind?: string; title?: string } | undefined): boolean {
-  if (!toolCall) return false;
-  if (toolCall.kind === 'switch_mode') return true;
-  return typeof toolCall.title === 'string' && /approve plan/i.test(toolCall.title);
-}
-
-function findPermissionOption(
-  options: Array<{ optionId: string; kind: string }>,
-  wantKinds: readonly string[],
-): { optionId: string; kind: string } | undefined {
-  for (const kind of wantKinds) {
-    const found = options.find((o) => o.kind === kind);
-    if (found) return found;
-  }
-  return undefined;
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-/**
- * Waits on the `approve_plan` gate `GateService.request` opened, polling
- * `GateService.get` until it resolves (a human's `respond`, an EM/architect
- * delegate firing synchronously inside `request` itself, or this
- * function's own timeout) — same polling shape as `architect/session.ts`'s
- * `awaitPlanApproval` (that module has no push/subscribe surface to wait on
- * either; `GateService` doesn't gain one from this ticket).
- */
-/** The plan text a Claude `ExitPlanMode` permission request carries (`toolCall.rawInput.plan`), else the tool title, else nothing — capped to the message-body budget. */
-function planSummaryFrom(params: unknown): string | undefined {
-  const toolCall = asRecord(asRecord(params)?.toolCall);
-  const rawInput = asRecord(toolCall?.rawInput);
-  const plan = rawInput?.plan;
-  if (typeof plan === 'string' && plan.trim().length > 0) {
-    return `architect plan: ${plan.trim()}`.slice(0, 800);
-  }
-  const title = toolCall?.title;
-  return typeof title === 'string' && title.length > 0 ? `architect: ${title}` : undefined;
-}
-
-async function awaitArchitectPlanApproval(
-  gateService: GateService,
-  policy: Policy,
-  pollMs: number,
-  timeoutMs: number,
-  now: () => Date,
-  summary?: string,
-): Promise<boolean> {
-  const request = await gateService.request('approve_plan', {
-    policy,
-    hilKind: 'approve_decision',
-    from: 'architect',
-    // What the architect is asking to have approved — the plan text when
-    // the vendor put it in the request, else the tool title. The EM
-    // delegate decided the first live approve_plan with "no summary text
-    // was recorded" (fifth run).
-    ...(summary !== undefined ? { summary } : {}),
-  });
-  if (request.status === 'resolved') return request.decision === 'approve';
-
-  const start = now().getTime();
-  while (true) {
-    const current = gateService.get(request.id);
-    if (current.status === 'resolved') return current.decision === 'approve';
-    if (now().getTime() - start >= timeoutMs) return false;
-    await sleep(pollMs);
-  }
-}
-
-/** Best-effort model id from the `_agile/session_state` notification's `configOptions` — shape is vendor-specific and not modeled anywhere; falls back to `'unknown'` rather than guessing at a field name that isn't there. */
+/** Best-effort model id from `_agile/session_state`'s vendor-specific `configOptions`. */
 function modelFromSessionState(params: unknown): string | undefined {
   const p = asRecord(params);
   const configOptions = p?.configOptions;
@@ -486,52 +246,43 @@ function modelFromSessionState(params: unknown): string | undefined {
   return undefined;
 }
 
+/** `session/update` kinds that report on the session, not the turn: they must not split a streaming message. */
+const NON_BOUNDARY_UPDATES: readonly string[] = [
+  'usage_update',
+  'current_mode_update',
+  'available_commands_update',
+];
+
+/** The text of one `agent_message_chunk`'s content, or null for anything else. */
+function chunkText(content: unknown): string | null {
+  const c = asRecord(content);
+  if (c === null) return null;
+  return typeof c.text === 'string' ? c.text : null;
+}
+
 export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle {
-  const {
-    store,
-    bus,
-    role,
-    agentId,
-    ticket,
-    worktreePath,
-    brief,
-    gateService,
-    now = () => new Date(),
-  } = opts;
+  const { store, streams, stream, session: sessionRef, role, worktreePath, brief } = opts;
+  const sessionId = sessionRef.id;
+  const now = opts.now ?? (() => new Date());
   const cliBin = normalizeCliBin(opts.cliBin);
   const provider = opts.provider ?? ACP_PROVIDERS.claude;
   const spawn = opts.spawn ?? defaultSpawnSession;
-  const currentSprintId =
-    opts.currentSprintId ?? (() => pickCurrentSprint(store.listSprints())?.id);
+  const policyRole = permissionRoleFor(role);
 
-  // Tier 1 (§6): hook wiring active before the agent's first tool call.
+  // Tier 1 (§8.1): hooks active before the first tool call. The session id
+  // reaches the hook via `AGILE_AGENT` in the session env, not the file.
   writeClaudeSettings(worktreePath, {
     agileBin: cliInvocationToShell(cliBin),
     socketPath: opts.socketPath,
-    // T012 QA/review round: disambiguates hook calls when a reviewer and an
-    // engineer share one physical worktree (§12) — see `hook/service.ts`'s
-    // `resolveAgentByCwd`. Each session's own `.claude/settings.json` write
-    // is read by Claude once at its own startup, so a later session sharing
-    // the same worktree overwriting this file with its own `agentId` does
-    // not retroactively change an already-running session's hook command.
-    agentId,
     timeoutSeconds: opts.hookTimeoutSeconds,
   });
 
-  // T026 tier-0 (§6): wraps the vendor command under whatever sandbox
-  // backend this host supports before it ever spawns. Throws
-  // `SandboxRequiredError` (fail-closed) when `requiresSandbox` is set and
-  // `detectBackend()` resolves `none` — the caller (`runner.spawn`) must not
-  // catch that into an unsandboxed spawn. Round 2 (review round 1 B2): a
-  // backend merely being *available* is never itself a reason to wrap —
-  // `wrapAgentCommand` only wraps when `requiresSandbox` or `sandboxEnabled`
-  // is explicitly set, so this call is a no-op passthrough for today's
-  // Claude/Pi sessions exactly as before this ticket. Round 2 B3: threads
-  // `socketPath` through so the rendered profile can grant the daemon
-  // socket — without it, turning tier 0 on silently breaks tier 1.
+  // Tier 0 (§4.3): wrap the vendor command in the host's sandbox backend.
+  // `SandboxRequiredError` when `requiresSandbox` and no backend resolves;
+  // an available backend alone is never a reason to wrap.
   const wrapCommand = opts.wrapCommand ?? defaultWrapAgentCommand;
   const wrapped = wrapCommand({
-    role,
+    role: policyRole,
     worktreePath,
     vendor: provider.id,
     command: provider.command,
@@ -540,22 +291,10 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
     enabled: opts.sandboxEnabled,
     socketPath: opts.socketPath,
   });
-  // T022: Pi has no ACP-level hook equivalent — its own enforcement lives in
-  // the `agile` extension (`pi/agile-extension.ts`), which this install call
-  // makes sure is on disk (idempotent) and self-guards on `AGILE_PI_GATE`,
-  // set below only for a Pi-provider session so every other vendor's
-  // envOverrides are unaffected.
-  //
-  // Round 2 review fix (B3): `installPiExtension` itself already never
-  // throws for a `settings.json` (`quietStartup`) failure — this try/catch
-  // is the outer safety net the review asked for regardless, so a bug
-  // anywhere in that call can never silently take the whole spawn down
-  // *except* for the one failure mode that's genuinely load-bearing: a
-  // foreign, non-agile-owned `extensions/agile.ts` at the target path
-  // (`ForeignPiExtensionError`, B2) — without the extension file actually
-  // on disk there is no tier-1 gate for this session at all, so that one
-  // is re-thrown rather than swallowed (CLAUDE.md: "hooks are the
-  // enforcement layer" — spawning ungated is worse than not spawning).
+
+  // Pi has no ACP-level hook: enforcement is the `agile` extension. A
+  // foreign `extensions/agile.ts` is re-thrown: spawning ungated is worse
+  // than not spawning.
   if (provider.id === 'pi') {
     const install = opts.installPiExtension ?? installPiExtension;
     try {
@@ -566,338 +305,164 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
     } catch (err) {
       if (err instanceof ForeignPiExtensionError) throw err;
       throw new Error(
-        `startAgentSession: installing the agile Pi extension for ${agentId} failed: ${
+        `startAgentSession: installing the agile Pi extension for ${sessionId} failed: ${
           err instanceof Error ? err.message : String(err)
         }`,
       );
     }
   }
 
-  // T027 review round 1 B1: `modeId` must come from the *provider's own*
-  // mode vocabulary (`defaultModeId` — undefined for a vendor with no mode
-  // concept, e.g. Grok, spike-findings.md §C2 "no modes"), never a flat
-  // `'default'` — that's a Claude-only mode id, and `session/set_mode`
-  // rejects it for every other vendor, failing the whole `ensureSession()`
-  // and therefore the first prompt. Cursor's reviewer gets `ask` as a
-  // courtesy nudge on top of that (§C3 — prompt-level only, never a
-  // substitute for the reviewer table's own execute/edit deny verdicts,
-  // which run unchanged regardless of mode); every other vendor/role keeps
-  // its provider's own default. T031: the architect on Claude gets `'plan'`
-  // (CLAUDE.md v0 default, `opts.architectMode` seam — see its doc comment)
-  // — the request_permission handler below is what turns `ExitPlanMode`
-  // into the `approve_plan` gate once this mode actually raises one.
-  const architectPlanMode =
-    role === 'architect' && provider.id === 'claude' && (opts.architectMode ?? 'plan') === 'plan';
+  // The mode id comes from the provider's vocabulary: `'default'` is
+  // Claude-only and `session/set_mode` rejects it elsewhere.
   const modeId =
-    (provider.id === 'cursor' ? cursorModeIdFor(role) : undefined) ??
-    (architectPlanMode ? 'plan' : undefined) ??
-    provider.defaultModeId;
+    (provider.id === 'cursor' ? cursorModeIdFor(policyRole) : undefined) ?? provider.defaultModeId;
 
-  const stderrLog = openStderrLog(opts.stderrLogDir, agentId, now());
+  const stderrLog = openLog(opts.sessionDir, 'stderr.log');
+  const outputLog = openLog(opts.sessionDir, 'output.log');
+  // The tail of the vendor's stderr, so a vendor failure can be named.
+  let stderrTail = '';
+  const onStderr = (chunk: string) => {
+    stderrLog.append(chunk);
+    stderrTail = (stderrTail + chunk).slice(-4000);
+  };
+
+  // D12: the vendor's model/effort levers come from the provider registry.
+  // An unmapped vendor contributes nothing (attach writes "effort ignored").
+  const modelContribution = provider.model?.(sessionRef.model) ?? {};
+  const effortContribution =
+    sessionRef.effort !== undefined ? (provider.effort?.(sessionRef.effort) ?? {}) : {};
+
   const spawnOptions: SpawnSessionOptions = {
     cmd: wrapped.command,
-    args: wrapped.args,
+    args: [...wrapped.args, ...(modelContribution.args ?? []), ...(effortContribution.args ?? [])],
     cwd: worktreePath,
     envOverrides: {
       ...provider.envOverrides,
       ...wrapped.envOverrides,
-      AGILE_AGENT: agentId,
-      AGILE_TICKET: ticket,
-      // Every git the session runs is headless: a `rebase --continue` or a
-      // `commit` without -m would otherwise open core.editor and hang the
-      // tool call (merge-conflict fix cycle, fifteenth live run).
+      ...modelContribution.env,
+      ...effortContribution.env,
+      AGILE_AGENT: sessionId,
+      AGILE_STREAM: stream.id,
+      // Headless git: a `commit` without -m would open core.editor and hang.
       GIT_EDITOR: 'true',
       ...(opts.socketPath ? { AGILE_SOCKET_PATH: opts.socketPath } : {}),
       ...(provider.id === 'pi' ? { [PI_GATE_ENV_VAR]: '1' } : {}),
     },
     clientCapabilities: provider.clientCapabilities,
-    mcpServers: [mcpServerConfig(cliBin, agentId, ticket, opts.socketPath)],
-    ...(stderrLog ? { onStderr: stderrLog.append } : {}),
-    // Omitted entirely (not even `modeId: undefined`) when the provider has
-    // no mode — `SpawnSessionOptions.modeId` being present-but-undefined
-    // vs. absent doesn't matter to `ensureSession()`'s `!== undefined`
-    // check, but this keeps the built object honest about what's actually
-    // being requested.
+    mcpServers: [mcpServerConfig(cliBin, sessionId, opts.socketPath)],
+    onStderr,
+    // Omitted entirely when the provider has no mode.
     ...(modeId !== undefined ? { modeId } : {}),
-    // T027: Grok routes all file I/O through client fs and has no other
-    // gateable surface (design/spike-findings.md §C2/§C3) — this is the
-    // one seam where a reviewer's write can be refused with a reason the
-    // model actually sees (`permissions/vendor-fs.ts`). No other provider
-    // is measured using client fs for real I/O, so this stays Grok-only.
-    ...(provider.id === 'grok' ? { fsImpl: buildGrokFsPolicy(role) } : {}),
+    // Grok routes all file I/O through client fs, its only gateable surface (spike-findings.md §C2/§C3).
+    ...(provider.id === 'grok' ? { fsImpl: buildGrokFsPolicy(policyRole) } : {}),
   };
-  const session = spawn(spawnOptions);
+  const spawned = spawn(spawnOptions);
 
   const responder = buildPermissionResponder(store, {
-    role,
-    ticket,
-    agent: agentId,
+    role: policyRole,
+    agent: sessionId as AgentId,
     worktreePath,
-    session,
-    ...(gateService
-      ? {
-          requestHil: (input) =>
-            gateService
-              .request(`permission:${role}`, {
-                policy: store.getPolicy(),
-                ticket: input.ticket,
-                hilKind: input.hilKind,
-                from: input.agent,
-                // T048: this session's own agent id — the ACP permission
-                // request is parked on the gate, so the decision must come
-                // back here and not to the ticket's assignee (a reviewer or
-                // QA session works a ticket it does not own).
-                requestedBy: input.agent,
-                summary: input.summary,
-              })
-              .then((req) => ({ id: req.id })),
-        }
+    session: spawned,
+    // The same rules the hook tier enforces, bound to this stream: the
+    // only tier a vendor without a pre-tool-use hook has.
+    ...(opts.rules !== undefined
+      ? { patternRules: patternRuleGate({ store, rules: opts.rules, stream: stream.id }) }
       : {}),
   });
 
-  let model = 'unknown';
-  let lastUsedTokens = 0;
+  let model = sessionRef.model;
   let settled = false;
   let resolveExited!: (info: AgentExitInfo) => void;
   const exited = new Promise<AgentExitInfo>((resolve) => {
     resolveExited = resolve;
   });
 
-  /**
-   * Every fire-and-forget store write this module makes (heartbeat, ledger,
-   * tool_call observation) is added here and removed on settle. `finish()`
-   * awaits every entry still pending — review round fix: an earlier version
-   * of this tracker kept only the *latest* write (on the theory that
-   * `StateStore`'s mutex is strictly FIFO, so awaiting the last one enqueued
-   * would imply every earlier one had landed too); that reasoning has a gap
-   * whenever two writes are enqueued through paths that don't themselves
-   * serialize before reaching the mutex (e.g. two `track()` calls from two
-   * different listener invocations racing each other's own pre-mutex async
-   * work), so a real accumulating set is what's actually needed to be sure
-   * `finish()` never resolves `exited` while a write from this session is
-   * still in flight. Without this, a caller that deletes the worktree/repo
-   * right after `exited` resolves can race a still-in-flight deferred commit
-   * into a "not a git repository" error — the failure this tracker exists to
-   * close off.
-   */
+  /** Every fire-and-forget write; `finish()` awaits them so `exited` never races a pending write. */
   const pendingWrites = new Set<Promise<unknown>>();
   function track(promise: Promise<unknown>): void {
-    let settled: Promise<void>;
-    settled = promise.then(
-      () => void pendingWrites.delete(settled),
-      () => void pendingWrites.delete(settled),
-    );
-    pendingWrites.add(settled);
+    const forget = () => void pendingWrites.delete(tracked);
+    const tracked: Promise<void> = promise.then(forget, forget);
+    pendingWrites.add(tracked);
   }
 
-  /** Re-applies role/worktree/session_id if the heartbeat write just dropped them (see file header). */
-  async function recordHeartbeat(patch: { vendor?: string; model?: string } = {}): Promise<void> {
-    await bus.heartbeat(agentId, { vendor: provider.id, model, ticket, ...patch });
-    let current: ReturnType<StateStore['getAgent']> | undefined;
-    try {
-      current = store.getAgent(agentId);
-    } catch {
-      return;
-    }
-    if (
-      current.role === role &&
-      current.worktree === worktreePath &&
-      (session.sessionId === null || current.session_id === session.sessionId)
-    ) {
-      return;
-    }
-    await store.putAgent(agentId, {
-      ...current,
+  // ---------------------------------------------------------------- output
+  // One thread `line` per ACP message, not per chunk (chunks are deltas of
+  // one message). `output.log` gets everything; the line is capped and
+  // points at the log.
+  let buffer = '';
+  function flushOutput(): void {
+    const text = buffer.trim();
+    buffer = '';
+    if (text.length === 0) return;
+    outputLog.append(`${text}\n`);
+    const body =
+      text.length > THREAD_BODY_MAX_CHARS ? `${text.slice(0, THREAD_BODY_MAX_CHARS - 1)}…` : text;
+    track(
+      streams
+        .appendThread('agent', stream.id, { kind: 'line', body, ref: outputLog.path }, sessionId)
+        .catch(() => {
+          // An unwritable thread must not take the session down; the log has the text.
+        }),
+    );
+  }
+
+  /** Registry write: the hook's cwd → session index (§8.1 step 1). */
+  async function putRegistryEntry(patch: { model?: string; sessionId?: string } = {}) {
+    if (patch.model !== undefined) model = patch.model;
+    await store.putAgent(sessionId as AgentId, {
+      vendor: provider.id,
+      model,
+      stream: stream.id,
+      ...(spawned.pid !== null ? { pid: spawned.pid } : {}),
+      last_seen: now().toISOString(),
       role,
       worktree: worktreePath,
-      ...(session.sessionId !== null ? { session_id: session.sessionId } : {}),
+      ...(spawned.sessionId !== null ? { session_id: spawned.sessionId } : {}),
     });
   }
 
-  async function finish(reason: string): Promise<void> {
+  async function finish(reason: string, ok: boolean, failed = !ok): Promise<void> {
     if (settled) return;
     settled = true;
     unsubscribe();
-    // See `pendingWrites`'s doc comment — waits for every fire-and-forget
-    // write still in flight, not just the most recently started one.
+    flushOutput();
     await Promise.all([...pendingWrites]);
 
-    let ticketReadied = false;
     try {
-      const current = store.getTicket(ticket);
-      const LIVE_STATUSES = new Set(['assigned', 'in_progress', 'in_review', 'in_qa', 'blocked']);
-      if (LIVE_STATUSES.has(current.status)) {
-        await store.transitionTicket(ticket, 'ready', { by: agentId, reason });
-        ticketReadied = true;
-      }
+      store.getAgent(sessionId as AgentId);
+      await store.deleteAgent(sessionId as AgentId);
     } catch {
-      // Ticket vanished or transition illegal from under us — nothing to ripple back.
+      // Already gone.
     }
 
-    // T044 (QA round 1, finding 4): this notice is the DAEMON's, not the
-    // agent's — the agent is gone, and the daemon is reporting that. It used
-    // to go out `from: agentId`, which made `pipeline-glue.ts`'s
-    // `advanceEngineerEscalations` (T040) read every engineer's normal exit
-    // as the engineer escalating, open a `Question` for it, and leave every
-    // merged ticket "Done · blocked / Waiting on you" on the Sprint tab.
-    // `from: 'daemon'` is what `bus.ts`'s own liveness/redelivery notices
-    // already use, and `routing.ts` always allows daemon -> em.
-    await bus.send({
-      id: ulid(),
-      ts: now().toISOString(),
-      from: 'daemon',
-      to: ['em'],
-      kind: 'escalate',
-      priority: 'urgent',
-      ticket,
-      body: `${agentId} (${role}) session ended: ${reason}`.slice(0, 800),
-      requires_ack: true,
-    });
-
-    try {
-      store.getAgent(agentId);
-      await store.deleteAgent(agentId);
-    } catch {
-      // Already gone (e.g. `checkLiveness` beat us to it) — fine.
-    }
-
-    // Flushes any deferred-commit ledger/tool_call writes queued earlier in
-    // this session's life (store.ts's "Deferred-commit batching") — without
-    // this, `exited` can resolve while a background flush timer is still
-    // due, and a caller that tears down the worktree/repo right after
-    // `exited` races that timer into a "not a git repository" failure.
+    // `exited` must not resolve before queued event writes have landed.
     await store.flush();
-    resolveExited({ agentId, ticket, reason, ticketReadied });
+    const vendorError = failed ? lastStderrLine(stderrTail) : undefined;
+    resolveExited({
+      session: sessionId,
+      stream: stream.id,
+      reason,
+      ok,
+      ...(vendorError !== undefined ? { vendorError } : {}),
+    });
   }
 
-  const unsubscribe = session.on((event: AgentEvent) => {
-    track(recordHeartbeat());
-
+  const unsubscribe = spawned.on((event: AgentEvent) => {
     if (event.type === 'exit') {
-      void finish(`process exited (code ${event.exitCode})`);
+      // §2.3: exit ⇒ `done`. A non-zero code is normal (a detach's SIGTERM
+      // looks like that), so it goes in the reason. Only a transport error
+      // or failed prompt blocks the stream.
+      void finish(`process exited (code ${event.exitCode})`, true, event.exitCode !== 0);
       return;
     }
     if (event.type === 'error') {
-      void finish(`transport error: ${event.message}`);
+      void finish(`transport error: ${event.message}`, false);
       return;
     }
 
     const frame = event.event;
     if (frame.acp === 'request' && frame.method === 'session/request_permission') {
       const params = frame.params as AcpPermissionRequestParams;
-      // T031: an architect's `ExitPlanMode` ("Approve Plan") request is the
-      // `approve_plan` gate itself (design/spike-findings.md §C3), routed
-      // to `GateService` rather than through `architectVerdict` (which has
-      // no notion of `switch_mode` at all — it isn't a read/edit/execute/
-      // fetch tool class, so it would otherwise hit the safe-default deny).
-      // Every other permission request from an architect session (an edit,
-      // an exec) still goes through the normal responder below, same as
-      // any other role.
-      if (role === 'architect' && isArchitectPlanRequest(params.toolCall)) {
-        void (async () => {
-          const options = params.options ?? [];
-          let approved = false;
-          // Review round 2 (opus blocker 1): `store.getPolicy()` and every
-          // `GateService` call below are fallible (a missing
-          // `.agile/policy.yaml`, a store write failure, a corrupt/removed
-          // HIL record) — and, unlike `permissions/responder.ts`'s own
-          // "respond before the fallible event-log write" rule (quoted in
-          // its file header: "a store hiccup must not leave the agent's
-          // turn hung on an already-decided answer"), this branch used to
-          // run every fallible call *before* ever responding to `frame.id`.
-          // A thrown error here used to propagate straight out of this
-          // `session.on` listener and into `acp-client`'s frame dispatch —
-          // reproduced in review: the fake agent's permission request was
-          // never answered at all, hanging the turn forever. Fail closed
-          // instead: any error opening/polling the gate denies the plan
-          // (never silently allows one nobody actually approved), and the
-          // request is always answered before anything else in this branch
-          // can fail again.
-          let gateFailure: string | undefined;
-          try {
-            if (gateService) {
-              approved = await awaitArchitectPlanApproval(
-                gateService,
-                store.getPolicy(),
-                opts.architectGatePollMs ?? 200,
-                opts.architectGateTimeoutMs ?? 5 * 60 * 1000,
-                now,
-                planSummaryFrom(params),
-              );
-            }
-          } catch (err) {
-            approved = false;
-            gateFailure = err instanceof Error ? err.message : String(err);
-          }
-
-          const chosen = approved
-            ? findPermissionOption(options, ['allow_once', 'allow_always'])
-            : findPermissionOption(options, ['reject_once', 'reject_always']);
-          if (chosen) {
-            session.respondPermission(frame.id, {
-              outcome: { outcome: 'selected', optionId: chosen.optionId },
-            });
-          } else {
-            session.respondPermission(frame.id, { outcome: { outcome: 'cancelled' } });
-          }
-
-          const reason =
-            gateFailure !== undefined
-              ? `approve_plan gate unavailable (${gateFailure}) — denied`
-              : gateService
-                ? 'approve_plan gate'
-                : 'approve_plan gate unavailable (no GateService wired) — denied';
-          // Best-effort logging only, after the request is already
-          // answered above — a failure here must never re-throw into this
-          // listener (that's exactly the bug this fix closes).
-          track(
-            store
-              .appendEvent(
-                buildEvent('hook_decision', {
-                  ticket,
-                  agent: agentId,
-                  data: { role, toolClass: 'other', decision: approved ? 'allow' : 'deny', reason },
-                }),
-                { commit: 'deferred' },
-              )
-              .catch(() => {}),
-          );
-
-          if (gateFailure !== undefined) {
-            // Surface the failure through the same escalate shape `finish()`
-            // uses for a session ending — em needs to see a broken gate,
-            // but the architect session itself stays live (it can still
-            // answer non-plan tool calls normally; only this one plan
-            // request was denied).
-            //
-            // T048: `from: 'daemon'`, for the same reason `finish()`'s notice
-            // is (T044 QA round 1, finding 4) — a daemon-side gate failure is
-            // the daemon reporting, not the agent escalating, and every
-            // agent-authored `escalate` in em's inbox is read by
-            // `pipeline-glue.ts`'s `advanceEngineerEscalations` as a question
-            // to open. These are the only two notices this module sends.
-            track(
-              bus
-                .send({
-                  id: ulid(),
-                  ts: now().toISOString(),
-                  from: 'daemon',
-                  to: ['em'],
-                  kind: 'escalate',
-                  priority: 'urgent',
-                  ticket,
-                  body: `${agentId} (${role}) approve_plan gate failed, plan denied: ${gateFailure}`.slice(
-                    0,
-                    800,
-                  ),
-                  requires_ack: true,
-                })
-                .catch(() => {}),
-            );
-          }
-        })();
-        return;
-      }
       void responder.handleRequest(frame.id, params);
       return;
     }
@@ -905,34 +470,21 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
     if (frame.acp === 'notification' && frame.message.method === '_agile/session_state') {
       const p = asRecord(frame.message.params);
       const resolvedModel = modelFromSessionState(p);
-      if (resolvedModel !== undefined) model = resolvedModel;
-      const sessionId = p?.sessionId;
-      /**
-       * T044: the model id is written with `putAgent`, NOT through
-       * `recordHeartbeat`. `StateStore.heartbeat` coalesces — a `last_seen`
-       * less than `HEARTBEAT_COALESCE_MS` old with no ticket reassignment
-       * pending is a pure no-op (see its own doc comment) — and this
-       * notification arrives within milliseconds of the registration
-       * `putAgent` below, so every model update was being swallowed and
-       * every agent record kept the `'unknown'` fallback. That is what made
-       * the control room's Team table read `claude/unknown` for every row.
-       * One write carries both fields, since they arrive in one frame.
-       */
-      if (resolvedModel !== undefined || typeof sessionId === 'string') {
-        try {
-          const current = store.getAgent(agentId);
-          track(
-            store.putAgent(agentId, {
-              ...current,
-              ...(resolvedModel !== undefined ? { model: resolvedModel } : {}),
-              ...(typeof sessionId === 'string' ? { session_id: sessionId } : {}),
-            }),
-          );
-        } catch {
-          // Not registered yet — the initial `putAgent` below carries
-          // whatever `model`/`session_id` are known by the time it runs.
-        }
+      const vendorSessionId = p?.sessionId;
+      if (resolvedModel !== undefined || typeof vendorSessionId === 'string') {
+        track(
+          putRegistryEntry({
+            ...(resolvedModel !== undefined ? { model: resolvedModel } : {}),
+          }).catch(() => {
+            // Not registered yet: the registration carries whatever is known then.
+          }),
+        );
       }
+      return;
+    }
+
+    if (frame.acp === 'notification' && frame.message.method === '_agile/turn_ended') {
+      flushOutput();
       return;
     }
 
@@ -941,150 +493,117 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
       const update = asRecord(params?.update);
       const kind = update?.sessionUpdate;
 
-      if (kind === 'usage_update') {
-        const used = typeof update?.used === 'number' ? update.used : undefined;
-        if (used !== undefined) {
-          // DESIGN-GAP (file header): `usage_update` carries only
-          // `{used, size}` — a running context-window total, not an
-          // in/out split or a cost. `in_tokens` is the delta since the
-          // last update (0 on the very first one, or if the counter went
-          // backwards, e.g. a fresh turn); `out_tokens`/`cost_usd` stay 0.
-          const delta = Math.max(0, used - lastUsedTokens);
-          lastUsedTokens = used;
-          // T012 QA round fix: a usage_update before any sprint exists used
-          // to be silently dropped. `nosprint` is this codebase's existing
-          // pre-sprint fallback file convention (`tools/service.ts`,
-          // `tools/cache.ts`) — the ledger line still lands, plus a
-          // `ledger_no_sprint` event so the gap is visible in the log, not
-          // just in a ledger file nobody thought to check.
-          const resolvedSprintId = currentSprintId();
-          const noSprint = resolvedSprintId === undefined;
-          const sprint = resolvedSprintId ?? 'nosprint';
-          const ledgerLine = validateLedgerLine({
-            ts: now().toISOString(),
-            sprint,
-            ticket,
-            agent: agentId,
-            model,
-            in_tokens: delta,
-            out_tokens: 0,
-            cost_usd: 0,
-            kind: ROLE_LEDGER_KIND[role],
-          });
-          track(store.appendLedgerLine(sprint, ledgerLine, { commit: 'deferred' }));
-          // T023: the same line drives the per-account quota countdown.
-          if (opts.quota) {
-            track(opts.quota.recordUsage(provider.id, opts.account ?? 'default', ledgerLine));
-          }
-          if (noSprint) {
-            track(
-              store.appendEvent(
-                buildEvent('ledger_no_sprint', {
-                  ticket,
-                  agent: agentId,
-                  data: { in_tokens: delta },
-                }),
-                { commit: 'deferred' },
-              ),
-            );
-          }
+      if (kind === 'agent_message_chunk') {
+        const text = chunkText(update?.content);
+        if (text !== null) {
+          buffer += text;
+          // A message longer than the cap is flushed as it goes.
+          if (buffer.length >= THREAD_BODY_MAX_CHARS) flushOutput();
         }
         return;
       }
+
+      // Bookkeeping updates are not message boundaries (a `usage_update`
+      // between two chunks once split one message in two). Only a real turn
+      // item closes the streaming message.
+      if (typeof kind === 'string' && NON_BOUNDARY_UPDATES.includes(kind)) return;
+      flushOutput();
 
       if (kind === 'tool_call' || kind === 'tool_call_update') {
         track(
           store.appendEvent(
             buildEvent('tool_call', {
-              ticket,
-              agent: agentId,
+              agent: sessionId as AgentId,
               data: {
+                stream: stream.id,
                 toolCallId: update?.toolCallId,
                 kind: update?.kind,
                 title: update?.title,
                 status: update?.status,
               },
             }),
-            { commit: 'deferred' },
           ),
         );
       }
     }
   });
 
-  // Registration (§5 "Storage": agents/<agent>.yaml) — before the first
-  // prompt, so a crash during the very first turn still has a record to
-  // clean up.
-  //
-  // `pid` (review round 3, opus item 3): `AgentRecord.pid` is optional
-  // precisely so this never falls back to `process.pid` (the daemon's own
-  // pid) — see this file's header. `session.pid` is `null` only in the
-  // narrow window the spawned child's pid wasn't assigned (mirrors Node's
-  // `ChildProcess.pid` being `undefined` in that case); when that happens
-  // the record is still written (an idle-but-registered agent beats no
-  // record at all), just without `pid`, and a warning event is logged so
-  // the gap shows up in `log/events.jsonl` instead of silently resolving
-  // to the wrong process.
-  const spawnedPid = session.pid;
-
   /**
-   * One prompt turn on this session, with the "a rejected prompt does not
-   * imply the subprocess exits" fail-loud handling (T027 review round 1
-   * B1's own reasoning, generalised in T021 round 3 to any turn, not just
-   * the first): a session/update stream failing silently would strand
-   * whatever ticket status this turn was supposed to advance. Shared by
-   * the initial post-registration prompt below and the exported `prompt()`
-   * handle method (T021 round 3 — a re-review/second turn on an already-
-   * live session, since nothing else in this codebase re-prompts one; see
-   * `runner/runner.ts`'s `promptAgent` and `pipeline-glue.ts`'s re-review
-   * reuse branch, the callers this exists for). Rejects to the caller
-   * (unlike the registration call site below, which swallows it — that one
-   * has no caller to report back to) so `Runner.promptAgent` can surface a
-   * failed re-prompt instead of silently doing nothing.
+   * One prompt turn, failing loud: a rejected prompt doesn't imply the
+   * process exits, and a silent failure would strand the stream. Turns are
+   * serialized (the ACP client refuses a second in-flight prompt); each
+   * `prompt()` still resolves on its own turn's outcome.
    */
-  // Serializes turns on this session (T021 round 3): the ACP client
-  // refuses a second `session/prompt` while one is still in flight
-  // (`PROMPT_IN_FLIGHT` — a real single-turn-at-a-time protocol
-  // constraint, not a bug to work around by racing it). The initial
-  // post-registration prompt below is fire-and-forget from `spawn`'s own
-  // point of view — a caller of the new `prompt()` handle method (a
-  // re-review) has no way to know whether that first turn has actually
-  // settled yet, so `runPromptTurn` queues onto whatever turn is already
-  // running instead of calling `session.prompt` directly: each call waits
-  // for the previous one to settle (success or failure) before sending its
-  // own, but still resolves/rejects on its *own* turn's real outcome, not
-  // the previous one's.
   let turnQueue: Promise<void> = Promise.resolve();
-  async function runPromptTurn(text: string): Promise<unknown> {
+  let turnCount = 0;
+  /** Turns enqueued and not yet finished, the running one included. */
+  let inFlight = 0;
+  let stopRequested = false;
+  async function runPromptTurn(text: string, onDelivered?: () => void): Promise<unknown> {
+    inFlight += 1;
     const runOnce = async (): Promise<unknown> => {
+      // A turn queued behind a session that has since been stopped is not
+      // sent to a closed session (which would record a spurious failure).
+      if (stopRequested || settled)
+        throw new Error('session stopped before this turn was delivered');
       try {
-        return await promptWithAuthRetry(session, provider, text);
+        onDelivered?.();
+      } catch {
+        // A throwing delivery callback must not fail the turn.
+      }
+      try {
+        // Refresh `last_seen`: a session idle for hours on a question makes
+        // no tool calls, and the hook's stale check would drop its entry.
+        await putRegistryEntry().catch(() => {
+          // Not registered yet: the initial registration covers it.
+        });
+        const reply = await promptWithAuthRetry(spawned, provider, text);
+        turnCount += 1;
+        if (!settled) {
+          try {
+            // `queued`: turns waiting behind this one. The turn-end rule must
+            // not let the session go while a queued line is still to run.
+            opts.onTurnEnd?.({
+              session: sessionId,
+              stream: stream.id,
+              turn: turnCount,
+              queued: inFlight - 1,
+            });
+          } catch {
+            // A throwing turn-end rule must not fail the turn.
+          }
+        }
+        return reply;
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         await store
           .appendEvent(
             buildEvent('agent_put', {
-              agent: agentId,
-              ticket,
-              data: { warning: `prompt failed, stopping session: ${message}` },
+              agent: sessionId as AgentId,
+              data: {
+                stream: stream.id,
+                warning: `prompt failed, stopping session: ${message}`,
+              },
             }),
-            { commit: 'deferred' },
           )
           .catch(() => {
-            // Best-effort visibility only — `finish()` below is what
-            // actually recovers the ticket/agent state regardless of
-            // whether this event write lands.
+            // Best effort: `finish()` recovers the state either way.
           });
-        session.cancel();
-        session.close();
-        await finish(`prompt failed: ${message}`);
+        spawned.cancel();
+        spawned.close();
+        await finish(`prompt failed: ${message}`, false);
         throw err;
       }
     };
-    const result = turnQueue.then(runOnce, runOnce);
-    // Never let one turn's rejection poison the queue for the *next* one —
-    // only this call's own returned promise carries its outcome to its
-    // caller.
+    const counted = async (): Promise<unknown> => {
+      try {
+        return await runOnce();
+      } finally {
+        inFlight -= 1;
+      }
+    };
+    const result = turnQueue.then(counted, counted);
+    // One turn's rejection never poisons the next.
     turnQueue = result.then(
       () => undefined,
       () => undefined,
@@ -1092,83 +611,59 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
     return result;
   }
 
-  // T044 (QA round 1, finding 1): establish the ACP session at spawn, not at
-  // the first prompt. The model id arrives on the `session/new` result (the
-  // `_agile/session_state` notification handled above), and a session that
-  // is spawned but never prompted — the architect under the demo driver —
-  // used to sit at `model: 'unknown'` forever. `open()` shares its
-  // `session/new` with the first `prompt()` below, so nothing is sent twice.
-  // Skipped for vendors that gate `session/new` behind `authenticate`
-  // (Cursor/Grok): there the prompt path's auth retry owns the handshake.
+  // Open the ACP session at spawn: the model id arrives on `session/new`,
+  // and an unprompted session would otherwise never learn it. Vendors that
+  // gate `session/new` behind `authenticate` leave it to the prompt path.
   if (provider.authMethods.length === 0) {
-    void session.open().catch(() => {
-      // Reported through the prompt path (`runPromptTurn`) if it matters.
+    void spawned.open().catch(() => {
+      // Reported through the prompt path if it matters.
     });
   }
 
-  void store
-    .putAgent(agentId, {
-      vendor: provider.id,
-      model,
-      ticket,
-      ...(spawnedPid !== null ? { pid: spawnedPid } : {}),
-      last_seen: now().toISOString(),
-      role,
-      worktree: worktreePath,
-    })
+  // Register before the first prompt: a crash in the first turn has a
+  // record to clean up, and the hook can resolve the first tool call.
+  void putRegistryEntry()
     .then(() => {
-      if (spawnedPid !== null) return undefined;
+      if (spawned.pid !== null) return undefined;
       return store.appendEvent(
         buildEvent('agent_put', {
-          agent: agentId,
-          ticket,
+          agent: sessionId as AgentId,
           data: {
+            stream: stream.id,
             warning:
-              'spawned agent pid unknown at registration; AgentRecord.pid omitted (never falls back to the daemon pid)',
+              'spawned session pid unknown at registration; AgentRecord.pid omitted (never falls back to the daemon pid)',
           },
         }),
-        { commit: 'deferred' },
       );
     })
     .then(() => runPromptTurn(brief))
     .catch(() => {
-      // `runPromptTurn` already ran the full stop/escalate/`finish()`
-      // recovery and rethrew only so a caller of `prompt()` can see the
-      // failure — this initial call has no such caller, so it's swallowed
-      // here (matches the pre-round-3 behavior exactly).
+      // `runPromptTurn` already stopped and recorded the failure.
     });
 
   return {
-    agentId,
-    ticket,
+    sessionId,
+    stream: stream.id,
     role,
     worktree: worktreePath,
-    session,
+    session: spawned,
     responder,
     exited,
-    /**
-     * Sends a fresh turn to this already-live session (T021 round 3):
-     * `session/prompt` is otherwise only ever called once, at spawn — a
-     * second review round (or any other multi-turn need) has no way to
-     * reach a session that's still connected but idle without this. Real
-     * ACP sessions support multiple prompt turns on one `session/new`
-     * (that's the wire-level shape a multi-turn conversation already is);
-     * `fake-agent.ts`'s `session/prompt` handler already re-runs its
-     * (default one-`usage_update`-plus-`end_turn`) script on every call,
-     * with no special-casing needed for a second call.
-     */
-    prompt(text: string) {
-      return runPromptTurn(text);
+    prompt(text: string, promptOpts?: { onDelivered?: () => void }) {
+      return runPromptTurn(text, promptOpts?.onDelivered);
+    },
+    turnsInFlight() {
+      return inFlight;
+    },
+    stopped() {
+      return stopRequested || settled;
     },
     stop() {
-      // Deliberately does NOT call `unsubscribe()` here — `close()` only
-      // *starts* tearing the process down (SIGTERM, escalating to SIGKILL
-      // after a grace period); the exit/crash handling in `finish()` runs
-      // off the session's own later `exit` event, through the same listener
-      // a real crash drives. Unsubscribing here would silence that event
-      // and `exited` would never resolve.
-      session.cancel();
-      session.close();
+      stopRequested = true;
+      // No unsubscribe: `finish()` runs off the session's later `exit`
+      // event, and silencing it would leave `exited` unresolved.
+      spawned.cancel();
+      spawned.close();
     },
   };
 }

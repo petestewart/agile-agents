@@ -1,26 +1,16 @@
 #!/usr/bin/env bun
 /**
- * `fake-agent.ts` — a tiny ACP agent for T012's own tests. Speaks the same
- * newline-delimited JSON-RPC `@agile-agents/acp-client` drives a real
- * vendor over (`initialize` -> `session/new` -> `session/set_mode` ->
- * `session/prompt`), and can be scripted to emit `usage_update`/`tool_call`
- * notifications, raise a `session/request_permission` request mid-turn, end
- * the turn normally, or hang forever (for the `kill -9` crash test — this
- * process is what gets killed).
+ * A tiny scriptable ACP agent for tests, always spawned as a subprocess
+ * like a real vendor CLI. Speaks the newline-delimited JSON-RPC
+ * `@agile-agents/acp-client` drives (`initialize` → `session/new` →
+ * `session/set_mode` → `session/prompt`), and can emit updates, request
+ * permission mid-turn, end the turn, or hang until killed.
  *
- * Never imported — always spawned as a subprocess (`bun
- * packages/daemon/src/runner/fake-agent.ts`), the same way a real vendor CLI
- * is spawned by `@agile-agents/acp-client`'s `spawnSession`.
- *
- * Configuration is entirely via env vars (no CLI args — `spawnSession`'s
- * `args` are the vendor's own, so this can't assume it owns argv):
- *
- * - `AGILE_FAKE_AGENT_SCRIPT` — path to a JSON `FakeAgentScript` (see
- *   below). Defaults to one `usage_update` + `end_turn`.
- * - `AGILE_FAKE_AGENT_PIDFILE` — if set, this process's own pid is written
- *   there (as a bare decimal string, no newline needed but one is added)
- *   *before* anything else runs, so a test can `kill -9` the right pid even
- *   if the handshake never completes.
+ * Configured by env vars only (argv belongs to the vendor):
+ * - `AGILE_FAKE_AGENT_SCRIPT`: a JSON `FakeAgentScript`; default one
+ *   `usage_update` + `end_turn`.
+ * - `AGILE_FAKE_AGENT_PIDFILE`: this pid is written there before anything
+ *   else, so a test can `kill -9` it even if the handshake never completes.
  */
 
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
@@ -33,64 +23,39 @@ export type FakeAgentStep =
       type: 'request_permission';
       toolCall: { toolCallId: string; kind?: string; title?: string; rawInput?: unknown };
       options: Array<{ optionId: string; kind: string; name?: string }>;
-      /** If set, the client's answer (`{outcome}`) is written here as JSON — a test's way to observe what the daemon decided. */
+      /** The client's answer (`{outcome}`) is written here as JSON. */
       resultFile?: string;
     }
-  /** Streams `text` as the agent's message (one `agent_message_chunk`) — what `session.prompt()` returns as `reply.text` (acp-client `contract.ts`'s final-message fold). */
+  /** One `agent_message_chunk`: what `session.prompt()` returns as `reply.text`. */
   | { type: 'agent_text'; text: string }
   | { type: 'end_turn'; stopReason?: string }
   | { type: 'hang' }
-  /** Pauses `ms` before the next step (T021 round 4) — simulates a real long-running turn that keeps sending events over real wall-clock time, spaced out, instead of a script's steps normally firing back-to-back with no delay. */
+  /** Blocks until `path` exists: end a turn after something outside happened, without a racy sleep. */
+  | { type: 'wait_for_file'; path: string; timeoutMs?: number }
+  /** Pauses `ms` before the next step: a long turn with events spaced out in real time. */
   | { type: 'delay'; ms: number };
 
 export interface FakeAgentScript {
   steps: FakeAgentStep[];
+  /** One step list per prompt turn (turn n runs `turns[n-1]`); past the end, `steps`. */
+  turns?: FakeAgentStep[][];
   /**
-   * T027: when set, `session/new` responds with the JSON-RPC error code/
-   * shape `@agile-agents/acp-client`'s `ensureSession` maps to
-   * `AuthRequiredError` (design/spike-findings.md §C2/§D — Cursor/Grok gate
-   * `session/new` behind ACP `authenticate`) until this exact `methodId`
-   * has been sent via `authenticate`; every `session/new` after that
-   * succeeds normally. Omitted (default): `session/new` always succeeds,
-   * matching every existing test's assumption.
+   * `session/new` fails with the code acp-client maps to
+   * `AuthRequiredError` until `authenticate` sends this method id
+   * (Cursor/Grok, spike-findings.md §C2/§D).
    */
   requireAuthMethod?: string;
-  /**
-   * T027: path to append one JSON line per `session/set_mode`,
-   * `authenticate` and (T041) `session/prompt` request this process receives — a test's way to observe
-   * what `runner/session.ts` actually sent without a fragile process-exit
-   * race, the same pattern `request_permission`'s `resultFile` already
-   * uses for the client's answer. Omitted: no logging (default, matches
-   * every existing test).
-   */
+  /** One JSON line per `session/set_mode`, `authenticate` and `session/prompt` received is appended here. */
   logFile?: string;
   /**
-   * T027 review round 1 B1: mode ids this simulated vendor actually
-   * supports, mirroring a real vendor's advertised mode set
-   * (design/spike-findings.md §C2 — Cursor `agent | plan | ask`, Codex
-   * `read-only | agent | agent-full-access`, Claude `default |
-   * acceptEdits | plan | auto | bypassPermissions`, Grok: none at all).
-   * When set, `session/set_mode` with any other id responds with a
-   * JSON-RPC error (`Unknown mode: <id>`) the way a real vendor rejects an
-   * unsupported mode — this is what catches `runner/session.ts` sending a
-   * mode id the target vendor doesn't have (round 1 found `'default'`
-   * sent to every vendor regardless). Omitted: any modeId is accepted
-   * (back-compat default for scripts that don't care about mode
-   * validation).
+   * Mode ids this vendor supports (a real vendor's advertised set); any
+   * other `session/set_mode` is rejected with `Unknown mode: <id>`, which
+   * catches a Claude-only mode id sent to another vendor.
    */
   validModes?: string[];
-  /**
-   * T044: the model id this simulated vendor reports in its `session/new` /
-   * `session/load` result, as one `configOptions` entry — the same shape the
-   * Claude bridge reports the live model in (`acp-client/src/types.ts` on
-   * `_agile/session_state`: "configOptions, where the Claude bridge reports
-   * the live model"), which is what `runner/session.ts`'s
-   * `modelFromSessionState` reads. Defaults to `DEFAULT_FAKE_MODEL` so every
-   * offline run has a real model id on its agent records instead of the
-   * `'unknown'` fallback; a script may override it to test another shape.
-   */
+  /** The model reported in `session/new`/`session/load`'s `configOptions` (as the Claude bridge does). Default `DEFAULT_FAKE_MODEL`. */
   model?: string;
-  /** Written to this process's stderr once at startup — simulates a vendor's own startup diagnostics, for testing the daemon's per-session stderr log (`runner/session.ts`'s `stderrLogDir`). */
+  /** Written to stderr once at startup, for testing the per-session stderr log. */
   stderrBanner?: string;
 }
 
@@ -110,10 +75,10 @@ function loadScript(): FakeAgentScript {
   return JSON.parse(readFileSync(path, 'utf8')) as FakeAgentScript;
 }
 
-/** Loaded once — `session/new`/`session/set_mode`/`authenticate` (T027) need it in `handleLine`, not just `runScript`'s per-prompt read. */
+/** Loaded once; `handleLine` needs it too. */
 const script = loadScript();
 if (script.stderrBanner !== undefined) process.stderr.write(`${script.stderrBanner}\n`);
-/** `authenticate` methodIds this process has seen, for `requireAuthMethod` gating (T027). */
+/** `authenticate` method ids seen, for `requireAuthMethod`. */
 const authenticatedMethods = new Set<string>();
 
 interface JsonRpcLine {
@@ -146,16 +111,21 @@ function notify(method: string, params: unknown): void {
 
 let sessionId = 'fake-session-1';
 
-/** T044: the model id the fake vendor reports when a script does not name one. */
+/** The model id reported when a script names none. */
 export const DEFAULT_FAKE_MODEL = 'fake/model-1';
 
-/** The `configOptions` block of a `session/new`/`session/load` result — see `FakeAgentScript.model`. */
+/** The `configOptions` of a `session/new`/`session/load` result. */
 function sessionConfigOptions(): Array<{ id: string; name: string; currentValue: string }> {
   return [{ id: 'model', name: 'Model', currentValue: script.model ?? DEFAULT_FAKE_MODEL }];
 }
 
+/** Prompt turns seen so far — indexes `FakeAgentScript.turns`. */
+let turnIndex = 0;
+
 async function runScript(promptRequestId: number | string): Promise<void> {
-  for (const step of script.steps) {
+  const steps = script.turns?.[turnIndex] ?? script.steps;
+  turnIndex += 1;
+  for (const step of steps) {
     switch (step.type) {
       case 'usage_update':
         notify('session/update', {
@@ -207,20 +177,23 @@ async function runScript(promptRequestId: number | string): Promise<void> {
         write({ id: promptRequestId, result: { stopReason: step.stopReason ?? 'end_turn' } });
         return;
       case 'hang':
-        // Never respond — the process just sits here until killed. Matches
-        // the crash test's premise: an in-flight turn with no closing
-        // update, same as a real vendor's `session/cancel` leaves a
-        // `pending` tool_call (design/spike-findings.md).
+        // Never respond: an in-flight turn with no closing update, until killed.
         return;
       case 'delay':
         await new Promise((resolve) => setTimeout(resolve, step.ms));
         break;
+      case 'wait_for_file': {
+        const deadline = Date.now() + (step.timeoutMs ?? 20_000);
+        while (!existsSync(step.path) && Date.now() < deadline) {
+          await new Promise((resolve) => setTimeout(resolve, 20));
+        }
+        break;
+      }
       default:
         break;
     }
   }
-  // Script exhausted with no explicit `end_turn`/`hang` — end the turn so a
-  // caller's `prompt()` doesn't hang on a script bug.
+  // Script exhausted with no `end_turn`/`hang`: end the turn anyway.
   write({ id: promptRequestId, result: { stopReason: 'end_turn' } });
 }
 
@@ -233,7 +206,7 @@ function handleLine(line: string): void {
     return;
   }
 
-  // A response to one of *our* outgoing requests (session/request_permission).
+  // A response to one of our outgoing requests.
   if (message.id !== undefined && message.method === undefined) {
     const resolve = pendingClientRequests.get(message.id as number);
     if (resolve) {
@@ -248,11 +221,7 @@ function handleLine(line: string): void {
       write({ id: message.id, result: { protocolVersion: 1, agentCapabilities: {} } });
       return;
     case 'session/new':
-      // T027: `requireAuthMethod` simulates Cursor/Grok's "session/new
-      // fails until authenticate runs" behaviour (spike-findings.md
-      // §C2/§D) — matches the JSON-RPC code
-      // `@agile-agents/acp-client`'s `ensureSession` maps to
-      // `AuthRequiredError`.
+      // `requireAuthMethod`: fail until `authenticate` has run.
       if (script.requireAuthMethod && !authenticatedMethods.has(script.requireAuthMethod)) {
         write({
           id: message.id,
@@ -283,14 +252,12 @@ function handleLine(line: string): void {
       return;
     }
     case 'session/prompt':
-      // T041: logged like `session/set_mode`/`authenticate` above, so a test
-      // can assert what a session was actually prompted with (the resident
-      // EM's brief-on-first-turn-only rule) without a process-exit race.
+      // Logged so a test can assert what a session was prompted with.
       appendLog(script, { method: 'session/prompt', params: message.params });
       if (message.id !== undefined) void runScript(message.id);
       return;
     case 'session/cancel':
-      // Fire-and-forget notification, per ACP — nothing to answer.
+      // A notification: nothing to answer.
       return;
     case 'authenticate': {
       const methodId = (message.params as { methodId?: string } | undefined)?.methodId;
@@ -305,15 +272,9 @@ function handleLine(line: string): void {
   }
 }
 
-/**
- * Everything below runs only when this file is executed directly (`bun
- * packages/daemon/src/runner/fake-agent.ts`) — never when a test imports its
- * types (`FakeAgentScript`/`FakeAgentStep`), which must stay side-effect-free.
- */
+// Only when executed directly; importing the types must stay side-effect-free.
 if (import.meta.main) {
-  // Written first, synchronously, before any async work — a test that spawns
-  // this process and immediately wants its pid (to `kill -9` it) must never
-  // race the handshake.
+  // The pid first, synchronously, so a test never races the handshake.
   const pidFile = process.env.AGILE_FAKE_AGENT_PIDFILE;
   if (pidFile) {
     writeFileSync(pidFile, `${process.pid}\n`);

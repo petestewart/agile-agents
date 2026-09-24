@@ -1,124 +1,322 @@
-import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { FIXTURE_KB_FACT, FIXTURE_ORACLE_ENTRY, FIXTURE_TICKET } from '../briefs/fixtures';
-import { runInit } from '../init';
-import { StateStore } from '../store';
-import { assembleBrief } from './brief';
+import { describe, expect, test } from 'bun:test';
+import type { Rule, RuleInput, Stream, ThreadEntry } from '@agile-agents/shared';
+import { ulid, validateRule } from '@agile-agents/shared';
+import { BRIEF_CHAR_CEILING, BRIEF_THREAD_ENTRIES, buildBrief, readRoleBrief } from './brief';
 
-let repo: string;
-let stateRoot: string;
-let store: StateStore;
-
-function git(args: string[], cwd: string): void {
-  const result = Bun.spawnSync(['git', ...args], { cwd });
-  if (result.exitCode !== 0) throw new Error(`git ${args.join(' ')} failed`);
+/**
+ * T140: the brief takes real `Rule` records and filters them through
+ * `rules/service.ts`'s `rulesInScope` (design §5.3). Scope filtering itself
+ * is tested there; these tests only assert what the brief *renders*.
+ */
+function makeRule(text: string, over: Partial<RuleInput> = {}): Rule {
+  return validateRule({
+    id: `R-${ulid()}`,
+    text,
+    scope: { kind: 'global' },
+    status: 'accepted',
+    enforcement: 'guidance',
+    critical: false,
+    provenance: { by: 'human' },
+    stats: {},
+    created_at: '2026-09-21T00:00:00Z',
+    ...over,
+  });
 }
 
-beforeEach(async () => {
-  repo = mkdtempSync(join(tmpdir(), 'agile-runner-brief-'));
-  git(['init', '-q'], repo);
-  git(['config', 'user.email', 'test@example.com'], repo);
-  git(['config', 'user.name', 'Test'], repo);
-  writeFileSync(join(repo, 'README.md'), '# fixture\n');
-  git(['add', '-A'], repo);
-  git(['commit', '-q', '-m', 'init'], repo);
-  const init = runInit(repo);
-  stateRoot = init.stateRoot;
-  store = StateStore.open(stateRoot);
-  await store.putTicket(FIXTURE_TICKET, { by: 'architect' });
-  await store.putKbFact(FIXTURE_KB_FACT, 'observed in prod, packages/api env');
-});
+function makeStream(overrides: Partial<Stream> = {}): Stream {
+  return {
+    id: ulid(),
+    title: 'CSV parser',
+    goal: 'decide the dialect and implement it',
+    created_at: '2026-09-21T00:00:00Z',
+    agent: { status: 'idle', updated_at: '2026-09-21T00:00:00Z' },
+    human: { status: 'open' },
+    sessions: [],
+    ...overrides,
+  };
+}
 
-afterEach(() => {
-  rmSync(repo, { recursive: true, force: true });
-});
+function entry(body: string): ThreadEntry {
+  return { ts: '2026-09-21T00:00:00Z', by: 'human', kind: 'line', body };
+}
 
-describe('assembleBrief', () => {
-  test('engineer brief renders with the repo policy and no rules appendix when none exist', () => {
-    const text = assembleBrief({
-      store,
-      stateRoot,
-      role: 'engineer',
-      agent: 'eng-231',
-      ticket: FIXTURE_TICKET,
+describe('buildBrief', () => {
+  test('carries the role file, the goal, the ancestors and the thread tail', () => {
+    const root = makeStream({ title: 'Cockpit', goal: 'one place to work from' });
+    const stream = makeStream({ parent: root.id });
+    const thread = Array.from({ length: BRIEF_THREAD_ENTRIES + 5 }, (_, i) => entry(`line ${i}`));
+
+    const brief = buildBrief({
+      role: 'worker',
+      stream,
+      ancestors: [root],
+      thread,
+      docs: [],
+      rules: [],
     });
-    expect(text).toContain('TKT-0231');
-    expect(text).toContain('eng-231');
-    expect(text).not.toContain('## Rules');
+
+    expect(brief).toContain('# Worker brief');
+    expect(brief).toContain('decide the dialect and implement it');
+    expect(brief).toContain('Cockpit: one place to work from');
+    // Only the tail: the oldest entries are dropped, the newest are kept.
+    expect(brief).not.toContain('line 0');
+    expect(brief).toContain(`line ${BRIEF_THREAD_ENTRIES + 4}`);
   });
 
-  test('reviewer brief resolves kb_refs to KbFacts', () => {
-    const text = assembleBrief({
-      store,
-      stateRoot,
-      role: 'reviewer',
-      agent: 'reviewer-231',
-      ticket: FIXTURE_TICKET,
-    });
-    expect(text).toContain('TKT-0231');
-    // ReviewerBriefContext's kbFacts don't render inline in reviewer.md
-    // today (the template only lists ticket.oracle_refs by id), so this
-    // asserts the call succeeds and doesn't throw on the stale/live kb_ref
-    // resolution path — see the next test for a ref that doesn't resolve.
-  });
+  test('the worker brief is a snapshot of the assembled sections, in order', () => {
+    const root = makeStream({ title: 'Cockpit', goal: 'one place to work from' });
+    const stream = makeStream({ title: 'CSV parser', parent: root.id, repo: '/srv/repo' });
 
-  test('qa brief renders without needing policy or kb_refs', () => {
-    const text = assembleBrief({
-      store,
-      stateRoot,
-      role: 'qa',
-      agent: 'qa-231',
-      ticket: FIXTURE_TICKET,
+    const brief = buildBrief({
+      role: 'worker',
+      stream,
+      ancestors: [root],
+      thread: [entry('start with the dialect')],
+      docs: [{ name: 'brief.md', body: 'the product is a cockpit\n' }],
+      rules: [makeRule('never push to main', { scope: { kind: 'repo', ref: '/srv/repo' } })],
+      briefsDir: '/no/such/dir',
     });
-    expect(text).toContain('TKT-0231');
-    expect(text).toContain('qa-231');
-  });
 
-  test('architect brief renders and resolves oracle_refs to OracleEntry bodies (T031)', async () => {
-    await store.putOracleEntry(
-      FIXTURE_ORACLE_ENTRY,
-      'JWT chosen for statelessness across the edge fleet.',
+    expect(brief).toBe(
+      [
+        '## Stream',
+        '',
+        '**CSV parser**',
+        '',
+        'decide the dialect and implement it',
+        '',
+        '## Where this sits',
+        '',
+        '- Cockpit: one place to work from',
+        '',
+        '## Rules in scope',
+        '',
+        '- never push to main',
+        '',
+        '## Docs',
+        '',
+        '### brief.md',
+        '',
+        'the product is a cockpit',
+        '',
+        '## Thread so far',
+        '',
+        '- **human** (line): start with the dialect',
+        '',
+      ].join('\n'),
     );
-    const text = assembleBrief({
-      store,
-      stateRoot,
-      role: 'architect',
-      agent: 'architect',
-      ticket: FIXTURE_TICKET,
-    });
-    expect(text).toContain('TKT-0231');
-    expect(text).toContain('DEC-0042');
-    // The stale ref (SPEC-auth-003, never seeded here) is skipped, not fatal.
   });
 
-  test('a stale kb_ref is skipped rather than failing the whole brief', () => {
-    const ticketWithBadRef = { ...FIXTURE_TICKET, kb_refs: ['KB-9999'] };
-    expect(() =>
-      assembleBrief({
-        store,
-        stateRoot,
-        role: 'reviewer',
-        agent: 'reviewer-231',
-        ticket: ticketWithBadRef,
-      }),
-    ).not.toThrow();
+  test('the reviewer brief is the same shape with the reviewer role file', () => {
+    const brief = buildBrief({
+      role: 'reviewer',
+      stream: makeStream({ title: 'CSV parser' }),
+      ancestors: [],
+      thread: [],
+      docs: [],
+      rules: [],
+      briefsDir: '/no/such/dir',
+    });
+
+    expect(brief).toBe(
+      [
+        '## Stream',
+        '',
+        '**CSV parser**',
+        '',
+        'decide the dialect and implement it',
+        '',
+        '## Rules in scope',
+        '',
+        'none yet',
+        '',
+      ].join('\n'),
+    );
+
+    const real = buildBrief({
+      role: 'reviewer',
+      stream: makeStream(),
+      ancestors: [],
+      thread: [],
+      docs: [],
+      rules: [],
+    });
+    expect(real).toContain('# Reviewer brief');
+    expect(real).toContain('read-only');
   });
 
-  test('.agile/rules/*.md are appended, sorted by filename', () => {
-    mkdirSync(join(stateRoot, 'rules'), { recursive: true });
-    writeFileSync(join(stateRoot, 'rules', 'RULE-002.md'), 'Second rule.');
-    writeFileSync(join(stateRoot, 'rules', 'RULE-001.md'), 'First rule.');
-
-    const text = assembleBrief({
-      store,
-      stateRoot,
-      role: 'engineer',
-      agent: 'eng-231',
-      ticket: FIXTURE_TICKET,
+  test('omits docs and the thread when empty, but always states the rules', () => {
+    const stream = makeStream();
+    const bare = buildBrief({
+      role: 'worker',
+      stream,
+      ancestors: [],
+      thread: [],
+      docs: [],
+      rules: [],
     });
-    expect(text).toContain('## Rules');
-    expect(text.indexOf('First rule.')).toBeLessThan(text.indexOf('Second rule.'));
+    expect(bare).not.toContain('## Docs');
+    expect(bare).not.toContain('## Thread so far');
+    expect(bare).toContain('## Rules in scope\n\nnone yet');
+
+    const full = buildBrief({
+      role: 'worker',
+      stream,
+      ancestors: [],
+      thread: [],
+      docs: [{ name: 'brief.md', body: 'the product is a cockpit' }],
+      rules: [makeRule('prefer zod schemas')],
+    });
+    expect(full).toContain('### brief.md');
+    expect(full).toContain('the product is a cockpit');
+    expect(full).toContain('- prefer zod schemas');
+  });
+
+  test('a missing role file is an empty section, not a throw', () => {
+    expect(readRoleBrief('worker', '/no/such/dir')).toBe('');
+    const brief = buildBrief({
+      role: 'worker',
+      stream: makeStream(),
+      ancestors: [],
+      thread: [],
+      docs: [],
+      rules: [],
+      briefsDir: '/no/such/dir',
+    });
+    expect(brief).toContain('## Stream');
+  });
+
+  test('a rule out of scope never appears in the brief', () => {
+    const stream = makeStream({ repo: '/srv/repo', worktree: '/srv/repo/.worktrees/csv' });
+    const brief = buildBrief({
+      role: 'worker',
+      stream,
+      ancestors: [],
+      thread: [],
+      docs: [],
+      rules: [
+        makeRule('in scope by repo', { scope: { kind: 'repo', ref: '/srv/repo' } }),
+        makeRule('global rule'),
+        makeRule('still proposed', { status: 'proposed' }),
+        makeRule('already retired', { status: 'retired' }),
+        makeRule('other repo', { scope: { kind: 'repo', ref: '/srv/other' } }),
+      ],
+      briefsDir: '/no/such/dir',
+    });
+
+    expect(brief).toContain('in scope by repo');
+    expect(brief).toContain('global rule');
+    expect(brief).not.toContain('still proposed');
+    expect(brief).not.toContain('already retired');
+    expect(brief).not.toContain('other repo');
+  });
+
+  test('a stream-scoped rule reaches a nested stream through its ancestors (§5.3)', () => {
+    const root = makeStream({ title: 'Cockpit' });
+    const child = makeStream({ parent: root.id });
+    const brief = buildBrief({
+      role: 'worker',
+      stream: child,
+      ancestors: [root],
+      thread: [],
+      docs: [],
+      rules: [
+        makeRule('inherited from the parent', { scope: { kind: 'stream', ref: root.id } }),
+        makeRule('someone else\u2019s stream', { scope: { kind: 'stream', ref: ulid() } }),
+      ],
+      briefsDir: '/no/such/dir',
+    });
+    expect(brief).toContain('inherited from the parent');
+    expect(brief).not.toContain('someone else');
+  });
+
+  test('a guidance rule is its text and nothing else; an enforced rule says so (§5.2)', () => {
+    const brief = buildBrief({
+      role: 'worker',
+      stream: makeStream(),
+      ancestors: [],
+      thread: [],
+      docs: [],
+      rules: [
+        makeRule('prefer the repo scripts'),
+        makeRule('never push to a protected branch', {
+          enforcement: 'pattern',
+          pattern: { kind: 'no_push_protected' },
+          critical: true,
+        }),
+        makeRule('do not add a dependency without asking', {
+          enforcement: 'classifier',
+          examples: [
+            { action: 'bun add lodash', violates: true },
+            { action: 'read a file', violates: false },
+          ],
+        }),
+      ],
+      briefsDir: '/no/such/dir',
+    });
+    expect(brief).toContain('- prefer the repo scripts\n');
+    expect(brief).toContain('- never push to a protected branch (enforced: pattern, critical)');
+    expect(brief).toContain('- do not add a dependency without asking (enforced: classifier)');
+  });
+});
+
+describe('the token ceiling', () => {
+  test('trims thread entries oldest-first to fit, keeping goal and rules', () => {
+    const stream = makeStream();
+    const thread = Array.from({ length: BRIEF_THREAD_ENTRIES }, (_, i) =>
+      entry(`${i}:${'x'.repeat(4000)}`),
+    );
+
+    const brief = buildBrief({
+      role: 'worker',
+      stream,
+      ancestors: [],
+      thread,
+      docs: [],
+      rules: [makeRule('never push to main')],
+    });
+
+    expect(brief.length).toBeLessThanOrEqual(BRIEF_CHAR_CEILING);
+    expect(brief).toContain('decide the dialect and implement it');
+    expect(brief).toContain('never push to main');
+    // The newest entry survives; the oldest is the first to go.
+    expect(brief).toContain(`${BRIEF_THREAD_ENTRIES - 1}:xxx`);
+    expect(brief).not.toContain('0:xxx');
+  });
+
+  test('trims doc bodies once the thread is gone, and still fits', () => {
+    const brief = buildBrief({
+      role: 'worker',
+      stream: makeStream(),
+      ancestors: [],
+      thread: [entry('a line')],
+      docs: [
+        { name: 'one.md', body: 'ONE-HEAD'.padEnd(60_000, 'a') },
+        { name: 'two.md', body: 'TWO-HEAD'.padEnd(60_000, 'b') },
+      ],
+      rules: [makeRule('never push to main')],
+    });
+
+    expect(brief.length).toBeLessThanOrEqual(BRIEF_CHAR_CEILING);
+    expect(brief).toContain('decide the dialect and implement it');
+    expect(brief).toContain('never push to main');
+    expect(brief).toContain('ONE-HEAD');
+    expect(brief).toContain('truncated to fit the brief');
+    expect(brief).not.toContain('a line');
+  });
+
+  test('an ordinary brief is left alone', () => {
+    const brief = buildBrief({
+      role: 'worker',
+      stream: makeStream(),
+      ancestors: [],
+      thread: [entry('a line')],
+      docs: [{ name: 'one.md', body: 'short doc' }],
+      rules: [],
+    });
+    expect(brief.length).toBeLessThan(BRIEF_CHAR_CEILING);
+    expect(brief).toContain('a line');
+    expect(brief).toContain('short doc');
+    expect(brief).not.toContain('truncated to fit the brief');
   });
 });

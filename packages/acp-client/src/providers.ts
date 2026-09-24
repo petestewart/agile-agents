@@ -16,6 +16,21 @@ import type { AcpClientCapabilities } from './types';
 
 export type AcpProviderId = 'claude' | 'gemini' | 'cursor' | 'grok' | 'pi' | 'codex';
 
+/**
+ * The closed effort enum of PLAN.md **D12**, spelled out here rather than
+ * imported: this package deliberately has no dependency on
+ * `@agile-agents/shared` (it is the ACP layer, not the state model). The
+ * daemon's `Effort` type is structurally the same four words, and
+ * `packages/shared/src/effort.ts` is the definition of record.
+ */
+export type AcpEffortLevel = 'low' | 'medium' | 'high' | 'max';
+
+/** What a per-vendor `model`/`effort` mapping contributes to the spawn. */
+export interface AcpSpawnContribution {
+  env?: Record<string, string>;
+  args?: string[];
+}
+
 export interface AcpProviderConfig {
   id: AcpProviderId;
   label: string;
@@ -76,7 +91,42 @@ export interface AcpProviderConfig {
    * for every exec").
    */
   requiresSandbox?: boolean;
+  /**
+   * D12: how this vendor is asked to run at a given effort level — env vars
+   * and/or extra argv, never a code path. `undefined` for every vendor with
+   * no measured equivalent: the daemon still starts the session and writes
+   * an "effort <level> ignored by <vendor>" line on the stream thread.
+   */
+  effort?: (level: AcpEffortLevel) => AcpSpawnContribution;
+  /**
+   * D12: how this vendor is asked to run a specific model. Same rule as
+   * `effort` — config, not a code path, and `undefined` where no mechanism
+   * is measured.
+   */
+  model?: (modelId: string) => AcpSpawnContribution;
+  /** The model id that means "whatever this vendor would pick itself" — the last step of the attach-time resolution order. */
+  defaultModel: string;
 }
+
+/**
+ * Claude's effort levels, as thinking-token budgets.
+ *
+ * Measured, not invented: `@agentclientprotocol/claude-agent-acp@0.81.1`
+ * reads `MAX_THINKING_TOKENS` from its own environment at `session/new`
+ * (`dist/acp-agent.js`: `resolveThinkingConfig(process.env.MAX_THINKING_TOKENS,
+ * …)` — "unset → SDK default (adaptive); `0` → disabled; a positive integer
+ * → a fixed token budget"). The bridge's richer `effort` surface is an ACP
+ * *session config option* (`session/set_config_option`, id `effort`), which
+ * this client does not speak, so the env budget is the channel that is
+ * actually reachable at spawn time. The four budgets are Claude Code's own
+ * long-standing thinking tiers (off / think / megathink / ultrathink).
+ */
+const CLAUDE_THINKING_TOKENS: Record<AcpEffortLevel, string> = {
+  low: '0',
+  medium: '4000',
+  high: '10000',
+  max: '31999',
+};
 
 /** Deep-freeze one registry entry so no caller can rewrite shared config. */
 function freezeProvider(config: AcpProviderConfig): AcpProviderConfig {
@@ -97,9 +147,11 @@ export const ACP_PROVIDERS: Record<AcpProviderId, AcpProviderConfig> = Object.fr
     id: 'claude',
     label: 'Claude Code',
     // Zed-maintained ACP bridge over Claude Code, measured in
-    // design/spike-findings.md §A-§C against 0.75.1 / Claude Code 2.1.263.
+    // design/spike-findings.md §A-§C against 0.75.1 / Claude Code 2.1.263;
+    // bumped to 0.81.1 (SDK 0.3.280) in T171 — mode catalog, ANTHROPIC_MODEL
+    // and MAX_THINKING_TOKENS re-checked in the 0.81.1 dist.
     command: 'npx',
-    args: ['-y', '@agentclientprotocol/claude-agent-acp@0.75.1'],
+    args: ['-y', '@agentclientprotocol/claude-agent-acp@0.81.1'],
     envOverrides: {},
     // `_meta.terminal_output` is a vendor extension — advertising it makes
     // command output arrive as structured terminal frames. Only ever read
@@ -112,13 +164,21 @@ export const ACP_PROVIDERS: Record<AcpProviderId, AcpProviderConfig> = Object.fr
     // Ambient login (`claude login`, or ANTHROPIC_API_KEY) — no ACP
     // `authenticate` round trip needed (spike-findings.md §C, §C2).
     authMethods: [],
-    // Modes at 0.75.1 (§C): `default, acceptEdits, plan, auto,
+    // Modes at 0.75.1 (§C, unchanged at 0.81.1): `default, acceptEdits, plan, auto,
     // bypassPermissions` — `default` is what tier 2 needs to see edits/exec
     // (§6: "Engineers run in `default` mode so tier 2 sees edits/exec").
     defaultModeId: 'default',
+    // `ANTHROPIC_MODEL` is the bridge's own first model source
+    // (`dist/acp-agent.js`: "1. ANTHROPIC_MODEL environment variable"), and
+    // `DEFAULT_MODEL_ID` there is the literal string `default`.
+    defaultModel: 'default',
+    model: (modelId) => (modelId === 'default' ? {} : { env: { ANTHROPIC_MODEL: modelId } }),
+    effort: (level) => ({ env: { MAX_THINKING_TOKENS: CLAUDE_THINKING_TOKENS[level] } }),
   }),
   gemini: freezeProvider({
     id: 'gemini',
+    // No measured effort or model mapping — see `AcpProviderConfig.effort`.
+    defaultModel: 'default',
     label: 'Gemini CLI',
     command: 'gemini',
     args: ['--experimental-acp'],
@@ -136,6 +196,8 @@ export const ACP_PROVIDERS: Record<AcpProviderId, AcpProviderConfig> = Object.fr
   }),
   cursor: freezeProvider({
     id: 'cursor',
+    // No measured effort or model mapping — see `AcpProviderConfig.effort`.
+    defaultModel: 'default',
     label: 'Cursor',
     command: 'cursor-agent',
     args: ['acp'],
@@ -158,6 +220,8 @@ export const ACP_PROVIDERS: Record<AcpProviderId, AcpProviderConfig> = Object.fr
   }),
   grok: freezeProvider({
     id: 'grok',
+    // No measured effort or model mapping — see `AcpProviderConfig.effort`.
+    defaultModel: 'default',
     label: 'Grok CLI',
     command: 'grok',
     args: ['agent', 'stdio'],
@@ -184,6 +248,8 @@ export const ACP_PROVIDERS: Record<AcpProviderId, AcpProviderConfig> = Object.fr
   }),
   codex: freezeProvider({
     id: 'codex',
+    // No measured effort or model mapping — see `AcpProviderConfig.effort`.
+    defaultModel: 'default',
     label: 'Codex',
     // `@agentclientprotocol/codex-acp` 1.10.0 (design/spike-findings.md §D,
     // §C2, §C3): raises **zero** permission requests in `agent`,
@@ -226,6 +292,8 @@ export const ACP_PROVIDERS: Record<AcpProviderId, AcpProviderConfig> = Object.fr
   }),
   pi: freezeProvider({
     id: 'pi',
+    // No measured effort or model mapping — see `AcpProviderConfig.effort`.
+    defaultModel: 'default',
     label: 'Pi',
     // Community ACP shim over `pi --mode rpc` (T022; design/spike-findings.md
     // §C4: "adapter = `pi-acp` (or fork) as the ACP shim, all enforcement in

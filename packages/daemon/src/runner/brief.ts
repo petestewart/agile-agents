@@ -1,127 +1,152 @@
 /**
- * Role brief assembly (T012) — renders the T013 template for the role being
- * spawned, from the ticket YAML plus KB refs and `.agile/rules/*.md`
- * (design/agile-agents-design.md §8 "Adapter contract": "(ticket,
- * oracle_refs, kb_refs, worktree) -> ..."). The result becomes the session's
- * first `prompt()` call.
- *
- * Oracle refs (DESIGN-GAP): none of the three original T013 contexts this
- * module renders (`EngineerBriefContext`, `ReviewerBriefContext`,
- * `QaBriefContext`) carry a resolved `oracleEntries` field — their templates
- * print `ticket.oracle_refs` as bare IDs (`{{#each ticket.oracle_refs}}...
- * {{/each}}`), never a resolved body — so `getOracleEntry` is not called
- * here for these three roles; the ticket's `oracle_refs` array is all the
- * brief shows, matching T013's own contract. `ArchitectBriefContext` is the
- * one context that DOES carry a resolved `oracleEntries` field (T031 wires
- * it via `oracleEntriesFor` below, resolving the spawn ticket's
- * `oracle_refs` the same stale-tolerant way `kbFactsFor` already does for
- * the reviewer's `kb_refs`).
- *
- * Rules (DESIGN-GAP): `.agile/rules/*.md` (§12 "Rules live in
- * `.agile/rules/RULE-012.md`, one per file") has no field in any T013
- * context either — the templates were never given a `{{#each rules}}` slot.
- * Rather than editing T013's templates/types (outside this ticket's file
- * ownership), whatever rule files exist are appended as a plain Markdown
- * appendix after the rendered template.
+ * `buildBrief`: the text a freshly attached session is prompted with
+ * (§4.1): role brief, stream goal, ancestor goals root→leaf, rules in
+ * scope, docs, thread tail, trimmed to `BRIEF_CHAR_CEILING`. Trimming
+ * drops thread entries oldest-first, then shrinks doc bodies; the goal and
+ * rules are never trimmed (they are what the session is held to). Rules go
+ * through §5.3's one filter here, not the caller's. Pure apart from
+ * reading the role file.
  */
 
-import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import type { AgentId, KbFact, OracleEntry, Ticket } from '@agile-agents/shared';
-import {
-  renderArchitectBrief,
-  renderEngineerBrief,
-  renderQaBrief,
-  renderReviewerBrief,
-} from '../briefs';
-import type { TicketPermissionRole } from '../permissions';
-import type { StateStore } from '../store';
+import type { Rule, SessionRole, Stream, ThreadEntry } from '@agile-agents/shared';
+import { rulesInScope } from '../rules/service';
 
-/** Every `.agile/rules/*.md` file's raw content, sorted by filename for determinism. */
-function loadRules(stateRoot: string): string[] {
-  const dir = join(stateRoot, 'rules');
-  if (!existsSync(dir)) return [];
-  return readdirSync(dir)
-    .filter((name) => name.endsWith('.md'))
-    .sort()
-    .map((name) => readFileSync(join(dir, name), 'utf8').trim())
-    .filter((text) => text.length > 0);
+/** One Markdown file per role. */
+export const BRIEFS_DIR = join(import.meta.dir, '..', '..', 'briefs');
+
+/** How many thread entries the brief carries by default. */
+export const BRIEF_THREAD_ENTRIES = 20;
+
+/** Hard ceiling in characters (~6k tokens), leaving the vendor's context for the work. */
+export const BRIEF_CHAR_CEILING = 24_000;
+
+/** Shortest a doc body is squeezed to before it is dropped entirely. */
+const MIN_DOC_BODY_CHARS = 200;
+
+const DOC_TRUNCATION_MARKER = '\n\n… [truncated to fit the brief]';
+
+export interface BriefDoc {
+  name: string;
+  body: string;
 }
 
-function rulesAppendix(rules: string[]): string {
-  if (rules.length === 0) return '';
-  return `\n\n## Rules\n\n${rules.join('\n\n---\n\n')}\n`;
+export interface BuildBriefInput {
+  role: SessionRole;
+  stream: Stream;
+  /** The stream's ancestors, root→leaf, excluding the stream itself. */
+  ancestors: Stream[];
+  /** The stream's thread, oldest first; only the tail is rendered. */
+  thread: ThreadEntry[];
+  docs: BriefDoc[];
+  /** Every rule in the home; `rulesInScope` filters them here, not the caller. */
+  rules: readonly Rule[];
+  /** Overrides `BRIEF_THREAD_ENTRIES`. */
+  threadEntries?: number;
+  /** Overrides `BRIEF_CHAR_CEILING`. Test seam. */
+  ceiling?: number;
+  /** Test seam: where the role files live. */
+  briefsDir?: string;
 }
 
-/** Resolves `ticket.kb_refs` to `KbFact`s, skipping any ref that no longer resolves (a pointer, not a hard dependency at render time). */
-function kbFactsFor(store: StateStore, ticket: Ticket): KbFact[] {
-  const facts: KbFact[] = [];
-  for (const id of ticket.kb_refs) {
-    try {
-      facts.push(store.getKbFact(id).fact);
-    } catch {
-      // Stale/removed kb_ref — brief renders without it rather than failing outright.
-    }
+/** The role's Markdown file, or an empty string when there is none on disk. */
+export function readRoleBrief(role: SessionRole, briefsDir = BRIEFS_DIR): string {
+  const path = join(briefsDir, `${role}.md`);
+  if (!existsSync(path)) return '';
+  return readFileSync(path, 'utf8').trimEnd();
+}
+
+function section(heading: string, body: string): string {
+  return `## ${heading}\n\n${body}`;
+}
+
+/** §5.2: a guidance rule is its text; a pattern or classifier rule is marked as enforced. */
+function renderRule(rule: Rule): string {
+  if (rule.enforcement === 'guidance') return `- ${rule.text}`;
+  const marks = [`enforced: ${rule.enforcement}`, ...(rule.critical ? ['critical'] : [])];
+  return `- ${rule.text} (${marks.join(', ')})`;
+}
+
+function renderRules(rules: readonly Rule[]): string {
+  if (rules.length === 0) return 'none yet';
+  return rules.map(renderRule).join('\n');
+}
+
+function renderDoc(doc: BriefDoc, bodyCap: number): string {
+  const body = doc.body.trimEnd();
+  const capped =
+    body.length <= bodyCap ? body : `${body.slice(0, bodyCap).trimEnd()}${DOC_TRUNCATION_MARKER}`;
+  return `### ${doc.name}\n\n${capped}`;
+}
+
+function renderEntry(entry: ThreadEntry): string {
+  return `- **${entry.by}** (${entry.kind}): ${entry.body}`;
+}
+
+/** One pass of the assembler at a given thread-tail length and doc body cap. */
+function assemble(
+  input: BuildBriefInput,
+  rules: readonly Rule[],
+  tailLength: number,
+  docBodyCap: number,
+): string {
+  const { role, stream, ancestors, thread, docs } = input;
+  const parts: string[] = [];
+
+  const roleBrief = readRoleBrief(role, input.briefsDir);
+  if (roleBrief.length > 0) parts.push(roleBrief);
+
+  parts.push(section('Stream', `**${stream.title}**\n\n${stream.goal}`));
+
+  if (ancestors.length > 0) {
+    parts.push(
+      section(
+        'Where this sits',
+        ancestors
+          .map((ancestor, depth) => `${'  '.repeat(depth)}- ${ancestor.title}: ${ancestor.goal}`)
+          .join('\n'),
+      ),
+    );
   }
-  return facts;
-}
 
-/**
- * Resolves `ticket.oracle_refs` to `OracleEntry`s for `ArchitectBriefContext`
- * (T031 — this ticket's own file header DESIGN-GAP note: "only
- * `ArchitectBriefContext` [carries] a resolved `oracleEntries` field").
- * Same stale-ref tolerance as `kbFactsFor` above.
- */
-function oracleEntriesFor(store: StateStore, ticket: Ticket): OracleEntry[] {
-  const entries: OracleEntry[] = [];
-  for (const id of ticket.oracle_refs) {
-    try {
-      entries.push(store.getOracleEntry(id).entry);
-    } catch {
-      // Stale/removed oracle_ref — brief renders without it rather than failing outright.
-    }
+  parts.push(section('Rules in scope', renderRules(rules)));
+
+  const shownDocs = docBodyCap > 0 ? docs : [];
+  if (shownDocs.length > 0) {
+    parts.push(section('Docs', shownDocs.map((doc) => renderDoc(doc, docBodyCap)).join('\n\n')));
   }
-  return entries;
-}
 
-export interface AssembleBriefOptions {
-  store: StateStore;
-  /** `.agile/` root — where `rules/*.md` lives. */
-  stateRoot: string;
-  role: TicketPermissionRole;
-  agent: AgentId;
-  ticket: Ticket;
-  /** The ticket's reviewer agent id, named in the engineer brief as the `review_request` recipient. */
-  reviewer?: AgentId;
-}
-
-/** Renders the T013 role brief for `role` plus the `.agile/rules/*.md` appendix — this is the session's first prompt. */
-export function assembleBrief(opts: AssembleBriefOptions): string {
-  const { store, stateRoot, role, agent, ticket, reviewer } = opts;
-  const appendix = rulesAppendix(loadRules(stateRoot));
-
-  switch (role) {
-    case 'engineer':
-      return (
-        renderEngineerBrief({
-          agent,
-          ticket,
-          policy: store.getPolicy(),
-          ...(reviewer !== undefined ? { reviewer } : {}),
-        }) + appendix
-      );
-    case 'reviewer':
-      return renderReviewerBrief({ agent, ticket, kbFacts: kbFactsFor(store, ticket) }) + appendix;
-    case 'qa':
-      return renderQaBrief({ agent, ticket }) + appendix;
-    case 'architect':
-      return (
-        renderArchitectBrief({ agent, ticket, oracleEntries: oracleEntriesFor(store, ticket) }) +
-        appendix
-      );
-    default: {
-      const exhaustive: never = role;
-      throw new Error(`assembleBrief: unknown role ${String(exhaustive)}`);
-    }
+  const tail = tailLength > 0 ? thread.slice(-tailLength) : [];
+  if (tail.length > 0) {
+    parts.push(section('Thread so far', tail.map(renderEntry).join('\n')));
   }
+
+  return `${parts.join('\n\n')}\n`;
+}
+
+export function buildBrief(input: BuildBriefInput): string {
+  const rules = rulesInScope(input.rules, input.stream, input.ancestors);
+  const ceiling = input.ceiling ?? BRIEF_CHAR_CEILING;
+  const maxTail = Math.min(input.threadEntries ?? BRIEF_THREAD_ENTRIES, input.thread.length);
+  const docCap = Number.MAX_SAFE_INTEGER;
+
+  let brief = assemble(input, rules, maxTail, docCap);
+  if (brief.length <= ceiling) return brief;
+
+  // 1. Thread entries, oldest first: the cheapest thing to lose.
+  for (let tail = maxTail - 1; tail >= 0; tail--) {
+    brief = assemble(input, rules, tail, docCap);
+    if (brief.length <= ceiling) return brief;
+  }
+
+  // 2. Doc bodies, halved until they fit or are gone. Goal and rules are
+  //    never trimmed, so past this the brief may honestly exceed the ceiling.
+  let cap = ceiling;
+  while (cap >= MIN_DOC_BODY_CHARS) {
+    brief = assemble(input, rules, 0, cap);
+    if (brief.length <= ceiling) return brief;
+    cap = Math.floor(cap / 2);
+  }
+  return assemble(input, rules, 0, 0);
 }

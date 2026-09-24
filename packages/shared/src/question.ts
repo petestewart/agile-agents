@@ -1,36 +1,31 @@
 /**
- * Question — the open half of "Questions vs Decisions"
- * (design/agile-agents-design.md §17 "Control room v2"): "A Question is
- * unresolved: an architect at a fork, an engineer who thinks the ticket is
- * wrong (the missing `escalate` handler lands here), the EM flagging a gap,
- * or the operator. Answering one records a Decision, edits a ticket or rule,
- * or is just a reply. Decisions is the permanent record of answered
- * questions that changed something. Both need a file home;
- * `board/questions/` is proposed."
+ * Question — an agent (or the operator) at a fork that needs the human
+ * (design/cockpit-design.md §1.4 "The question flow", §3 "The inbox").
  *
- * One file per question, `board/questions/Q-<ulid>.yaml` — a sibling of
- * `board/hil/`, `board/halts/`, `board/status/`, written/read only through
- * the daemon's store (`packages/daemon/src/questions/service.ts` is the one
- * writer). The new `board/` subdirectory is a new artifact type, named by
- * the design section above and pre-approved by the operator for this run;
- * see the PLAN Decisions log.
+ * T121 re-keys the record to the reshape's unit of work: a question is
+ * raised **on a stream**, never on a ticket, and the only resolution left
+ * is a reply. Answering one appends an `answer` entry to the stream thread
+ * and unblocks the waiting session; recording a decision or editing a
+ * ticket went with the oracle and the ticket model.
+ *
+ * One file per question, `questions/Q-<ulid>.yaml` under the state home
+ * (`AGILE_HOME`, §7.2 — a sibling of `streams/` and `threads/`), written
+ * and read only through the daemon's store
+ * (`packages/daemon/src/questions/service.ts` is the one writer).
+ *
+ * "Questions are records with a status, not mail" (§1.4): the inbox reads
+ * these files, never the bus, so a leftover message from a previous daemon
+ * run cannot surface as a question.
  */
 
 import { z } from 'zod';
-import {
-  AgentIdSchema,
-  DecisionIdSchema,
-  TicketIdSchema,
-  ULID_PATTERN,
-  formatZodError,
-} from './ids';
-import { MessageBodySchema } from './message';
+import { MessageBodySchema } from './agent-message';
+import { AgentIdSchema, ULID_PATTERN, UlidSchema, formatZodError } from './ids';
 
 /**
- * `Q-<ulid>` — same shape and rationale as `HIL-<ulid>` (`hil.ts`): raised by
- * daemon-internal code (the `escalate` handler) at whatever rate agents
- * escalate, so a sortable, collision-free ulid fits better than a
- * hand-assigned numeric id like `H-12`.
+ * `Q-<ulid>` — same shape and rationale as `HIL-<ulid>` (`hil.ts`): raised
+ * by daemon-internal code at whatever rate agents ask, so a sortable,
+ * collision-free ulid fits better than a hand-assigned numeric id.
  */
 export const QuestionIdSchema = z
   .string()
@@ -42,22 +37,26 @@ export const QuestionStatusSchema = z.enum(QUESTION_STATUSES);
 export type QuestionStatus = z.infer<typeof QuestionStatusSchema>;
 
 /**
- * "`resolved_as` = decision id | ticket edit | reply" (ticket scope). The
- * three shapes are distinguishable without a tag: a published decision is
- * its `DEC-####` id, a ticket edit is the `TKT-####` id that was edited, and
- * a plain reply is the literal `reply`.
+ * T121: the union shrank to one member. `decision` (a `DEC-####` id) and
+ * `ticket` (a `TKT-####` edit) went with the oracle and the ticket model;
+ * an answer is a reply that reaches the waiting session, and the permanent
+ * record is the stream thread.
+ *
+ * T145 adds the one resolution a human never types: `superseded`, written
+ * by the daemon when a gate on the same session is decided while this
+ * question is still open. The live run left such a question open forever —
+ * the operator had already answered the thing in front of them (the gate),
+ * and nothing closed the `ask` beside it. The RPC edge still accepts
+ * `reply` and nothing else (`questions/rpc.ts`): only the daemon supersedes.
  */
-export const QuestionResolvedAsSchema = z.union([
-  z.literal('reply'),
-  DecisionIdSchema,
-  TicketIdSchema,
-]);
+export const QUESTION_RESOLUTIONS = ['reply', 'superseded'] as const;
+export const QuestionResolvedAsSchema = z.enum(QUESTION_RESOLUTIONS);
 export type QuestionResolvedAs = z.infer<typeof QuestionResolvedAsSchema>;
 
 /**
- * Question/answer text is capped at the same 800 chars as a bus message body
- * (CLAUDE.md "Signal over volume at every boundary") — it becomes exactly
- * that when the answer is delivered to the raiser's inbox. Non-empty, same
+ * Question/answer text is capped at the same 800 chars as a thread entry
+ * body (CLAUDE.md "Signal over volume at every boundary") — it becomes
+ * exactly that when the answer is appended to the thread. Non-empty, same
  * as `HilNoteSchema`.
  */
 export const QuestionTextSchema = MessageBodySchema.min(1, 'must not be empty');
@@ -65,12 +64,19 @@ export const QuestionTextSchema = MessageBodySchema.min(1, 'must not be empty');
 export const QuestionSchema = z
   .object({
     id: QuestionIdSchema,
-    /** Who is asking: an engineer, the architect, the EM, or `human` (§17 v2 names all four). */
+    /** The stream this question is about (§1.4) — required, never a ticket. */
+    stream: UlidSchema,
+    /** Who is asking: an agent role id, or `human` when the operator raises one from the UI. */
     raised_by: AgentIdSchema,
-    /** The ticket the question is about, when it is about one. */
-    ticket: TicketIdSchema.optional(),
+    /**
+     * The vendor session that is blocked on the answer, when one is. It is
+     * half of the delivery key (stream + session) that replaced the ticket
+     * assignee lookup, and it is what the thread entry is attributed to
+     * (`by: agent:<session>`).
+     */
+    session: UlidSchema.optional(),
     text: QuestionTextSchema,
-    /** Answer options the raiser offered (an architect at a fork), if any. */
+    /** Answer options the raiser offered (an agent at a fork), if any. */
     options: z.array(z.string().min(1)).min(1).optional(),
     status: QuestionStatusSchema,
     /** ISO-8601, mirrors `HilRequest.requested_at`. */

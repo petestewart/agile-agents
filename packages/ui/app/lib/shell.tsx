@@ -1,135 +1,81 @@
 /**
- * T043: the chrome's own state — which view is showing, whether the Plan
- * screen's left rail is collapsed, whether the middle pane is open, and what
- * mode the EM chat is in (§17 "Control room v2": "A thin tool row under the
- * top bar holds the rail collapse on the left and, after a divider, chat
- * show/hide, pop-out, and maximize on the right", "Any pane can be closed
- * (X) and the chat widens; the rail collapses to icons").
+ * The cockpit chrome's own state (T043's shell, cut down to the cockpit in
+ * T160): which view the main column shows, which stream's page is open
+ * (T161), and — at phone width — whether the stream-tree drawer is open.
  *
- * It lives in a context rather than in `App`'s props because the Plan screen
- * (T042) consumes `rail` and owns the pane-close (X) that widens the chat,
- * and neither is a child of the tool row that toggles them.
+ * It lives in a context rather than in `App`'s props because the top bar
+ * (the view switch and the drawer toggle) and the stream tree (the
+ * selection) are siblings, and the inbox cards open a stream too.
  */
 
-import {
-  type PropsWithChildren,
-  createContext,
-  useCallback,
-  useContext,
-  useEffect,
-  useMemo,
-  useState,
-} from 'react';
+import { type PropsWithChildren, createContext, useContext, useMemo, useState } from 'react';
+import { DEFAULT_RULES_FILTER, type RulesFilter } from './rules';
 
-export type ShellView = 'plan' | 'sprint' | 'settings';
-export const SHELL_VIEWS: readonly ShellView[] = ['plan', 'sprint', 'settings'];
+/** `stream` is the stream page (T161) — the stream is `selected`. `rules` is T163's rules screen. */
+export type ShellView = 'inbox' | 'rules' | 'settings' | 'stream';
+/** The views a `?view=` deep link may name; `stream` needs an id, so it is not one. */
+export const SHELL_VIEWS: readonly ShellView[] = ['inbox', 'rules', 'settings'];
 
 export function isShellView(value: string | null): value is ShellView {
   return value !== null && (SHELL_VIEWS as readonly string[]).includes(value);
 }
 
-/**
- * Chat modes, as one value rather than two booleans, because the mockup's
- * own script treats them as exclusive: maximizing clears "hidden" and
- * showing the chat clears "maximized".
- *  - `panel`  — the 26% side column (default)
- *  - `hidden` — chat off; the middle pane takes the whole frame
- *  - `max`    — chat only; the middle pane is hidden
- */
-export type ChatMode = 'panel' | 'hidden' | 'max';
-
 export interface ShellValue {
   view: ShellView;
   setView(view: ShellView): void;
-  /** Plan-screen left rail. `true` = collapsed to icons. Persisted per browser. */
-  railCollapsed: boolean;
-  setRailCollapsed(collapsed: boolean): void;
+  /** The stream whose page is open (T161), or `undefined`. */
+  selected: string | undefined;
+  /** Opens a stream's page; `undefined` goes back to the whole inbox. */
+  select(id: string | undefined): void;
+  /** Phone width only: the stream tree is a drawer. Ignored on a wide screen, where the rail is always shown. */
+  railOpen: boolean;
   toggleRail(): void;
-  chatMode: ChatMode;
-  setChatMode(mode: ChatMode): void;
-  /**
-   * The middle pane (the Plan screen's document pane). Closing it widens the
-   * chat; re-opening it — which is what selecting a rail entry does — pulls
-   * the chat back out of `max`. T042's rail calls `setMiddleOpen(true)`.
-   */
-  middleOpen: boolean;
-  setMiddleOpen(open: boolean): void;
+  /** T163: what the rules screen shows. Kept here so the inbox's seed card can open it filtered. */
+  rulesFilter: RulesFilter;
+  setRulesFilter(filter: RulesFilter): void;
+  /** T163: the rules screen, with `filter` (the default when absent). */
+  openRules(filter?: RulesFilter): void;
+  /** T162: the "New stream" dialog — opened by the top bar's button or `n`. */
+  newStreamOpen: boolean;
+  setNewStreamOpen(open: boolean): void;
 }
 
 const ShellContext = createContext<ShellValue | undefined>(undefined);
 
-const RAIL_STORAGE_KEY = 'agile.cr.rail-collapsed';
-
-function readStoredRail(): boolean {
-  try {
-    return localStorage.getItem(RAIL_STORAGE_KEY) === '1';
-  } catch {
-    // Private window / blocked site data — the rail just starts expanded.
-    return false;
-  }
-}
-
 export function ShellProvider({
-  initialView = 'sprint',
+  initialView = 'inbox',
   children,
 }: PropsWithChildren<{ initialView?: ShellView }>): JSX.Element {
-  const [view, setViewState] = useState<ShellView>(initialView);
-  const [railCollapsed, setRailCollapsed] = useState<boolean>(readStoredRail);
-  const [chatMode, setChatModeState] = useState<ChatMode>('panel');
-  const [middleOpen, setMiddleOpenState] = useState(true);
-
-  useEffect(() => {
-    try {
-      localStorage.setItem(RAIL_STORAGE_KEY, railCollapsed ? '1' : '0');
-    } catch {
-      // Nothing to do — the collapse still works for this page's lifetime.
-    }
-  }, [railCollapsed]);
-
-  const setChatMode = useCallback((mode: ChatMode) => {
-    setChatModeState(mode);
-    // "Chat maximize hides the middle pane" — the pane's own open flag is
-    // left alone so restoring brings back exactly what was there.
-  }, []);
-
-  /**
-   * T049 defect 3: switching view always leaves a usable frame.
-   *
-   * Before this, `middleOpen` was global but only the Plan screen could
-   * clear it, so closing the last pane and then clicking Plan / Sprint /
-   * Settings left the shell with nothing but the chat — the tabs "did
-   * nothing" until a reload. A view switch is an explicit "show me this",
-   * so it re-opens the middle pane and pulls the chat out of `max`, which
-   * is exactly what selecting a rail entry already did.
-   */
-  const setView = useCallback((next: ShellView) => {
-    setViewState(next);
-    setMiddleOpenState(true);
-    setChatModeState((mode) => (mode === 'max' ? 'panel' : mode));
-  }, []);
-
-  const setMiddleOpen = useCallback((open: boolean) => {
-    setMiddleOpenState(open);
-    // "closing the middle pane widens the chat and vice versa": a closed
-    // pane with a hidden chat would leave an empty frame, so closing it
-    // always brings the chat back.
-    if (!open) setChatModeState((mode) => (mode === 'hidden' ? 'panel' : mode));
-    else setChatModeState((mode) => (mode === 'max' ? 'panel' : mode));
-  }, []);
+  const [view, setView] = useState<ShellView>(initialView);
+  const [selected, setSelected] = useState<string | undefined>(undefined);
+  const [railOpen, setRailOpen] = useState(false);
+  const [newStreamOpen, setNewStreamOpen] = useState(false);
+  const [rulesFilter, setRulesFilter] = useState<RulesFilter>(DEFAULT_RULES_FILTER);
 
   const value = useMemo<ShellValue>(
     () => ({
       view,
       setView,
-      railCollapsed,
-      setRailCollapsed,
-      toggleRail: () => setRailCollapsed((v) => !v),
-      chatMode,
-      setChatMode,
-      middleOpen,
-      setMiddleOpen,
+      selected,
+      // T161: picking a stream opens its page (§9.3); "All streams" is the
+      // inbox. On a phone the drawer gets out of the way either way.
+      select: (id) => {
+        setSelected(id);
+        setView(id === undefined ? 'inbox' : 'stream');
+        setRailOpen(false);
+      },
+      railOpen,
+      toggleRail: () => setRailOpen((open) => !open),
+      rulesFilter,
+      setRulesFilter,
+      openRules: (filter = DEFAULT_RULES_FILTER) => {
+        setRulesFilter(filter);
+        setView('rules');
+      },
+      newStreamOpen,
+      setNewStreamOpen,
     }),
-    [view, setView, railCollapsed, chatMode, setChatMode, middleOpen, setMiddleOpen],
+    [view, selected, railOpen, newStreamOpen, rulesFilter],
   );
 
   return <ShellContext.Provider value={value}>{children}</ShellContext.Provider>;
@@ -139,4 +85,17 @@ export function useShell(): ShellValue {
   const value = useContext(ShellContext);
   if (!value) throw new Error('useShell must be used inside a <ShellProvider>');
   return value;
+}
+
+/**
+ * T162: the cockpit's single-key shortcuts (`n`, `/`) never fire while the
+ * operator is typing — in an input, a textarea, a select or anything
+ * contenteditable — nor with a modifier held.
+ */
+export function isShortcut(event: KeyboardEvent, key: string): boolean {
+  if (event.key !== key || event.metaKey || event.ctrlKey || event.altKey) return false;
+  const target = event.target as HTMLElement | null;
+  if (!target || typeof target.tagName !== 'string') return true;
+  const tag = target.tagName.toLowerCase();
+  return !(tag === 'input' || tag === 'textarea' || tag === 'select' || target.isContentEditable);
 }
