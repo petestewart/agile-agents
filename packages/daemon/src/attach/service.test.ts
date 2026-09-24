@@ -1219,4 +1219,36 @@ describe('T280: the coordinator role (P20)', () => {
     );
     expect(threadBodies(node.id)).toContain('woken by child_status');
   }, 30_000);
+
+  test('a parentless project root that has had a coordinator is woken by child_status', async () => {
+    const log = join(scratch, 'root.jsonl');
+    attachService = buildAttachService(
+      fakeProviderFor(ACP_PROVIDERS.claude, { ...SPEAKS, logFile: log }),
+      { deliveryDelayMs: 5 },
+    );
+    const root = await streams.create('human', { title: 'Shop', goal: 'g' });
+    expect(root.parent).toBeUndefined();
+    const child = await streams.create('human', { title: 'Cart', goal: 'g', parent: root.id });
+    const first = await attachService.attach(root.id);
+    expect(first.session.role).toBe('coordinator');
+    await waitFor(() => streams.get(root.id).agent.status === 'done');
+    await waitFor(() => attachService.handleFor(root.id, 'coordinator') === undefined);
+
+    await new RoutedEventService(store).emit({
+      type: 'child_status',
+      subject: child.id,
+      payload: { child: child.id, title: 'Cart', status: 'done', progress: 'cart shipped' },
+      by: 'daemon',
+      routing: [{ node: root.id, because: 'ancestor' }],
+    });
+    attachService.wakePending();
+    await waitFor(() => streams.get(root.id).sessions.length === 2);
+    expect(streams.get(root.id).sessions.at(-1)?.role).toBe('coordinator');
+    await waitFor(() =>
+      (existsSync(log) ? readFileSync(log, 'utf8') : '')
+        .split('\n')
+        .some((l) => l.includes('"session/prompt"') && l.includes('cart shipped')),
+    );
+    expect(threadBodies(root.id)).toContain('woken by child_status');
+  }, 30_000);
 });

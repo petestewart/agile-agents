@@ -6,7 +6,8 @@
  * - A work node whose session has ended is woken by `WORK_WAKE_TYPES`;
  *   other events wait for its next turn.
  * - A conversation node is woken only by `human_line` and `answer`.
- * - A project node (no agent) is never woken.
+ * - A project root is woken like a coordinating node once it has had a
+ *   coordinator (P20, T280); before that it has no agent and never wakes.
  * - A node the human stopped is never woken; its events stay pending.
  * - A wake budget (default 20 per node per hour) stops event loops: past
  *   it the node goes to the inbox and its events stay pending.
@@ -47,7 +48,8 @@ export function wakesRole(role: NodeRole, type: RoutedEventType): boolean {
     case 'conversation':
       return CONVERSATION_WAKE_TYPES.has(type);
     case 'project':
-      return false;
+      // P20 (T280): a project root's coordinator, like a coordinating node's.
+      return true;
   }
 }
 
@@ -105,7 +107,10 @@ export function wakeVerdict(
   role: NodeRole,
   pending: readonly { type: RoutedEventType }[],
 ): Exclude<WakeVerdict, 'budget'> {
-  if (role === 'project') return 'no_agent';
+  // A project root has "an agent" once it has had a coordinator (P20).
+  if (role === 'project' && !node.sessions.some((s) => s.role === 'coordinator')) {
+    return 'no_agent';
+  }
   if (role === 'coordinating' && !node.sessions.some((s) => isAgentRole(s.role))) {
     return 'no_agent';
   }

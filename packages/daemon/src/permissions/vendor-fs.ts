@@ -7,6 +7,7 @@
  */
 
 import { readFile, realpath, writeFile } from 'node:fs/promises';
+import { isPathInside } from './command';
 import type { PermissionRole } from './types';
 
 /** acp-client's `SpawnSessionOptions['fsImpl']` shape, restated. */
@@ -16,17 +17,20 @@ export interface VendorFsImpl {
   realpath: (path: string) => Promise<string>;
 }
 
-/** §14 Write column: a reviewer writes nothing. */
-export function canWriteViaClientFs(role: PermissionRole): boolean {
+/** §14 Write column: a reviewer writes nothing; a coordinator only inside its session dir (P20). */
+export function canWriteViaClientFs(role: PermissionRole, path?: string, cwd?: string): boolean {
+  if (role === 'coordinator') {
+    return path !== undefined && cwd !== undefined && isPathInside(path, cwd);
+  }
   return role !== 'reviewer';
 }
 
 /** The `fsImpl` for a Grok session: only a reviewer's `writeFile` is refused; reads are never gated. */
-export function buildGrokFsPolicy(role: PermissionRole): VendorFsImpl {
+export function buildGrokFsPolicy(role: PermissionRole, cwd?: string): VendorFsImpl {
   return {
     readFile: (path, encoding) => readFile(path, encoding),
     async writeFile(path, data, encoding) {
-      if (!canWriteViaClientFs(role)) {
+      if (!canWriteViaClientFs(role, path, cwd)) {
         throw new Error(
           `AGILE-GATE: ${role} may not write files (client-fs policy — vendor=grok, design §14 "Permissions per role": Reviewer Write = nothing). This ticket is read-only for you; findings go in the review report.`,
         );

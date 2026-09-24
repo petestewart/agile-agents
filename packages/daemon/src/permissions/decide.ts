@@ -70,7 +70,12 @@ export function decidePermission(ctx: DecisionContext): Decision {
   // role rules, and the vendor reports them as kind `other`, which every
   // role table denies (a live run's hook-less session was locked out of
   // its own verbs).
-  const neverVerdict = checkNeverWithoutHuman(classified, policyCtx);
+  // P20 (T280): a coordinator's table is stricter than the never list
+  // (only its scratch session dir, which sits under `.agile/`), so it
+  // decides alone: a write it allows is in the scratch dir, one it denies
+  // is never a human prompt.
+  const neverVerdict =
+    ctx.role === 'coordinator' ? undefined : checkNeverWithoutHuman(classified, policyCtx);
   const verdict =
     neverVerdict ??
     (isDaemonVerb(classified.title)

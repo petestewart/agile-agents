@@ -354,7 +354,7 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
     // Omitted entirely when the provider has no mode.
     ...(modeId !== undefined ? { modeId } : {}),
     // Grok routes all file I/O through client fs, its only gateable surface (spike-findings.md §C2/§C3).
-    ...(provider.id === 'grok' ? { fsImpl: buildGrokFsPolicy(policyRole) } : {}),
+    ...(provider.id === 'grok' ? { fsImpl: buildGrokFsPolicy(policyRole, worktreePath) } : {}),
   };
   const spawned = spawn(spawnOptions);
 
