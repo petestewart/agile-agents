@@ -1480,8 +1480,8 @@ agile tail --node $C --events
 
 ### Ticket: T300 Director record, thread and page
 - **Priority:** P0
-- **Status: Done
-- **Owner: Unassigned
+- **Status:** Done
+- **Owner:** Unassigned
 - **Scope:** Add `director.yaml` and `threads/director.jsonl` (P16). A Director session (the coordinator mechanics, no worktree) is woken by `director_request`. There is a Director page in the cockpit (thread plus activity) plus `agile director say` and `agile tail --director`. Every Director action is recorded with principal `director`.
 - **Acceptance Criteria:** A fake-agent test: a human line reaches the Director and its reply lands on its thread. e2e: the page exists.
 - **Validation Steps:** `bun test packages/daemon/src/director`; `bun run test:e2e`.
@@ -1491,8 +1491,8 @@ agile tail --node $C --events
 
 ### Ticket: T301 Director tools and guards
 - **Priority:** P0
-- **Status: In Progress
-- **Owner: opus:worker-T301
+- **Status:** In Progress
+- **Owner:** opus:worker-T301
 - **Scope:**
   - Verbs: `draft_tree`, which returns a draft that renders as a tree with a Create button at Advise; `create_project`, `create_node`, `start_node`, `add_waits_on` and `restart_node`, gated by T282's function with the project's `director` level.
   - The Director never merges, accepts knowledge, or answers a question (hard refusals, tested).
