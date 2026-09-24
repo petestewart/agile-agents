@@ -847,8 +847,8 @@ Design: `design/projects-design.md`, which wins over `design/cockpit-design.md` 
 
 ### Ticket: T212 Phase 7 QA and Pete's look
 - **Priority:** P0
-- **Status:** In Progress
-- **Owner:** sonnet:qa-T212
+- **Status:** In Review (QA ACCEPT 2026-09-24; Pete's look pending)
+- **Owner:** Pete
 - **Scope:** Black-box QA of T200–T211 on a real daemon with the fake agent: projects, migration of a copied old home, roles, start-on-create, the three + Repo reshapes, and the views. Daemon line count. Then Pete runs the live look below.
 - **Acceptance Criteria:** QA ACCEPT; Pete's look passes: projects show, + Repo reshapes a live conversation without losing the thread, and ledger-lite's `git status --short` is empty after the run.
 - **Validation Steps:** Pete, on his Mac:
@@ -879,7 +879,7 @@ git status --short
 ```
 
   In the cockpit: switch between Shop and Blog; open `Balance summary` and check the thread is intact with two parts under it; open the repo view for ledger-lite and see the part under Shop.
-- **Notes:** D10: Phase 8 starts only after Pete says go.
+- **Notes:** D10: Phase 8 starts only after Pete says go. QA (sonnet, black-box) ACCEPT on 3ab7109: bun test 1861/0, integration 8 suites green, T212 script ran verbatim with scratch paths and `--no-start`. Minor: `project list` shows `-` repos for the migrated "Unfiled" project. Daemon 19,360 lines (18,273 before Phase 7). Note: `node new` without `--no-start` now starts the agent, so the Balance summary step starts a real session.
 
 ### Phase 8 — Delivery
 
@@ -1578,6 +1578,7 @@ Daemon: `em/`, `architect/`, `oracle/`, `qa/`, `halts/`, `quota/`, `handoff/`, `
 
 ## 10. Discovered Issues Log
 
+- Phase 7 complete on `claude/phase-7` (2026-09-24, tip 3ab7109): T200–T211 merged, T212 QA ACCEPT; awaiting Pete's look. Phase 8 proceeds on `claude/phase-8` cut from it (Pete: don't wait).
 - mode: yolo (2026-09-24), projects stage. Phase branches stacked (D30), `claude/phase-7` first; tickets `T###-<slug>` off the phase branch, merged back `--no-ff`. DIRECT_MODE (no `gh`). Phase N+1 starts without waiting for Pete's review of phase N (Pete, 2026-09-24).
 - mode: yolo (2026-09-19). Integration branch for the reshape is `claude/reshape`; ticket branches `T###-<slug>` fork from it and merge back `--no-ff`. Pete lands each phase on `main` by PR. Mode: DIRECT_MODE (no `gh`).
 - Q1 assumption in force: a coding stream's target is the repo's default branch when the repo has no integration branch (T132).
