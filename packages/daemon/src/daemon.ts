@@ -14,6 +14,7 @@ import { AutonomyService } from './coordination/autonomy';
 import { CardService } from './coordination/cards';
 import { ContractService } from './coordination/contracts';
 import { PlanService } from './coordination/plans';
+import { SiblingService } from './coordination/siblings';
 import {
   ClassifierDiffRules,
   DeliveryService,
@@ -342,6 +343,15 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
           ...(planService ? { plans: planService } : {}),
           ...(contractService ? { contracts: contractService } : {}),
           ...(autonomyService ? { autonomy: autonomyService } : {}),
+          ...(routedEvents && emitRouted
+            ? {
+                siblings: new SiblingService({
+                  streams: streamService,
+                  emit: emitRouted,
+                  events: routedEvents,
+                }),
+              }
+            : {}),
           // T246: an agent's push; its PR is then polled at the babysit cadence.
           ...(landingService
             ? {

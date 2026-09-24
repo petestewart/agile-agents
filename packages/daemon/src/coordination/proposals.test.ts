@@ -127,16 +127,17 @@ describe('propose_contract', () => {
     expect(streams.readThread(s.node.id).entries.some((e) => e.kind === 'proposal')).toBe(true);
   });
 
-  test('co-signed by a sibling; a stranger or a non-party is refused', async () => {
+  test('a co-signer who never agreed is refused; a stranger or a non-party is refused', async () => {
     const s = await shop('run');
-    const joint = (await verbs.proposeContract({
-      session: s.apiAgent,
-      contract: s.contract.id,
-      body: SALE_ENDS,
-      reason: 'agreed with web',
-      with: [s.web.id],
-    })) as { from: string[] };
-    expect(joint.from).toEqual([s.api.id, s.web.id]);
+    await expect(
+      verbs.proposeContract({
+        session: s.apiAgent,
+        contract: s.contract.id,
+        body: SALE_ENDS,
+        reason: 'agreed with web',
+        with: [s.web.id],
+      }),
+    ).rejects.toThrow('has not agreed');
     const other = await streams.create('human', { title: 'other', goal: 'g' });
     await expect(
       verbs.proposeContract({
@@ -185,6 +186,8 @@ describe('decide_contract', () => {
     expect(changed?.parties).toContain(s.web.id);
     expect(changed?.payload).toMatchObject({ contract: s.contract.id, version: 2 });
     expect(inbox.list().some((i) => i.kind === 'proposal')).toBe(false);
+    const note = emitted.find((e) => e.type === 'coordinator_note' && e.subject === s.api.id);
+    expect(String(note?.payload.body)).toContain('approved');
   });
 
   test('at Run a change the coordinator does not call routine goes to the inbox', async () => {
@@ -249,5 +252,7 @@ describe('decide_contract', () => {
     expect(
       streams.readThread(s.api.id).entries.some((e) => e.body.includes('send a formatted string')),
     ).toBe(true);
+    const note = emitted.find((e) => e.type === 'coordinator_note' && e.subject === s.api.id);
+    expect(String(note?.payload.body)).toContain('rejected');
   });
 });

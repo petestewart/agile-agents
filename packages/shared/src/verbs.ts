@@ -188,6 +188,18 @@ export const DecideContractInputSchema = z
   .strict();
 export type DecideContractInput = z.infer<typeof DecideContractInputSchema>;
 
+/**
+ * T286 (§9.5): a child asks a sibling (same parent) a question about a
+ * detail; the sibling answers with `reply_sibling`. Both threads and the
+ * parent see the exchange.
+ */
+export const AskSiblingInputSchema = z
+  .object({ session: Session, node: UlidSchema, question: z.string().trim().min(1).max(800) })
+  .strict();
+export const ReplySiblingInputSchema = z
+  .object({ session: Session, ask: RoutedEventIdSchema, body: z.string().trim().min(1).max(800) })
+  .strict();
+
 /** The verb table, in the order §4.1 lists it. */
 export const AGENT_VERBS = [
   'ask',
@@ -209,6 +221,8 @@ export const AGENT_VERBS = [
   'set_owner',
   'propose_contract',
   'decide_contract',
+  'ask_sibling',
+  'reply_sibling',
 ] as const;
 export type AgentVerb = (typeof AGENT_VERBS)[number];
 
@@ -232,6 +246,8 @@ export const AGENT_VERB_SCHEMAS = {
   set_owner: SetOwnerInputSchema,
   propose_contract: ProposeContractInputSchema,
   decide_contract: DecideContractInputSchema,
+  ask_sibling: AskSiblingInputSchema,
+  reply_sibling: ReplySiblingInputSchema,
 } as const satisfies Record<AgentVerb, z.ZodType>;
 
 /** One line of help per verb, published to the model by the MCP bridge. */
@@ -263,9 +279,13 @@ export const AGENT_VERB_DESCRIPTIONS: Record<AgentVerb, string> = {
   set_owner:
     'Coordinator only: give a child ownership of paths ({child, owns: [globs]}). Gated by your autonomy level.',
   propose_contract:
-    'Propose a change to a contract you rely on ({contract, body ≤800, reason, routine?, with?: [sibling ids who agreed]}). Your coordinator approves, rejects or asks the operator.',
+    'Propose a change to a contract you rely on ({contract, body ≤800, reason, routine?, with?: [sibling ids who agreed]}). A co-signer in `with` must have answered your `ask_sibling` first. Your coordinator approves, rejects or asks the operator; you are told which.',
   decide_contract:
     'Coordinator only: decide a child’s contract proposal ({proposal, decision: approve|reject, reason?, routine?}). Approval is gated by your autonomy level (routine = additive only).',
+  ask_sibling:
+    'Ask a sibling (same parent) a question about a detail ({node, question ≤800}). Both threads show it and your parent gets a copy. Plan, contract or ownership changes go to your parent (`propose_contract`), not here.',
+  reply_sibling:
+    'Answer a sibling’s `ask_sibling` ({ask: the event id, body ≤800}). Both threads show it and your parent gets a copy.',
 };
 
 export function isAgentVerb(name: string): name is AgentVerb {

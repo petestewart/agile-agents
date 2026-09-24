@@ -160,6 +160,8 @@ export class ContractService {
         : {}),
     });
     const saved = await store.putEntity(contractPath(after.id), validateContract, after);
+    const approved = before.proposals?.find((p) => p.id === input.proposal);
+    if (approved !== undefined) await this.tellSigners(saved, approved, `approved by ${by}`);
     const partiesChanged = [...before.parties].sort().join(',') !== [...parties].sort().join(',');
     // T282: a parties change is announced too, to the old and the new parties.
     if (changed || partiesChanged) await this.announce(saved, before, by);
@@ -256,6 +258,11 @@ export class ContractService {
         ref: contractPath(contract.id),
       });
     }
+    await this.tellSigners(
+      contract,
+      proposal,
+      `rejected by ${by}${reason !== '' ? `: ${reason}` : ''}`,
+    );
     return { ...proposal, status: 'rejected' };
   }
 
@@ -274,6 +281,28 @@ export class ContractService {
       }),
     );
     return next;
+  }
+
+  /** T286: every signer of a proposal is told (a routed note) how it was decided. */
+  private async tellSigners(
+    contract: Contract,
+    proposal: ContractProposal,
+    outcome: string,
+  ): Promise<void> {
+    for (const node of proposal.from) {
+      await this.options.emit?.({
+        type: 'coordinator_note',
+        subject: node,
+        payload: {
+          body: `Your proposal ${proposal.id} on contract ${contract.title} was ${outcome}.`.slice(
+            0,
+            200,
+          ),
+        },
+        ref: contractPath(contract.id),
+        by: 'daemon',
+      });
+    }
   }
 
   /** `contract_changed` to the owner and the parties (§15), and a line on the owner's thread. */

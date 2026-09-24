@@ -27,6 +27,7 @@ import {
 import type { AutonomyService } from '../coordination/autonomy';
 import type { ContractService } from '../coordination/contracts';
 import type { PlanService } from '../coordination/plans';
+import type { SiblingService } from '../coordination/siblings';
 import type { DocsSearch, SearchHit } from '../docs/service';
 import { summaryOf } from '../events/delivery';
 import { type KnowledgeService, worktreeRelativePaths } from '../knowledge/service';
@@ -111,6 +112,8 @@ export interface VerbServiceOptions {
   contracts?: ContractService;
   /** T282: the autonomy gate for the coordinator's structural verbs. */
   autonomy?: AutonomyService;
+  /** T286: `ask_sibling` / `reply_sibling`, and the joint-proposal check. */
+  siblings?: SiblingService;
   proposalLimit?: { assertCanPropose(caller: Pick<VerbCaller, 'session' | 'role'>): void };
 }
 
@@ -408,11 +411,44 @@ export class VerbService {
     if (this.options.contracts === undefined) {
       throw new Error('propose_contract: contracts are not available');
     }
+    // T286: a co-signer must actually have agreed (answered an ask_sibling from the caller).
+    const unagreed = (cosigners ?? []).filter(
+      (id) => id !== caller.stream && this.options.siblings?.agreed(caller.stream, id) !== true,
+    );
+    if (unagreed.length > 0) {
+      throw new Error(
+        `propose_contract: ${unagreed.join(', ')} has not agreed; ask_sibling first and wait for their reply`,
+      );
+    }
     return this.options.contracts.propose(
       contract,
       [caller.stream, ...(cosigners ?? [])],
       proposal,
     );
+  }
+
+  /** T286 (§9.5): ask a sibling about a detail. */
+  async askSibling(input: unknown): Promise<unknown> {
+    const { session, node, question } = validateVerbInput('ask_sibling', input);
+    return this.siblingsFor(session, 'ask_sibling', (s, from) => s.ask(from, node, question));
+  }
+
+  async replySibling(input: unknown): Promise<unknown> {
+    const { session, ask, body } = validateVerbInput('reply_sibling', input);
+    return this.siblingsFor(session, 'reply_sibling', (s, from) => s.reply(from, ask, body));
+  }
+
+  private siblingsFor<T>(
+    session: string,
+    verb: string,
+    run: (siblings: SiblingService, from: string) => Promise<T>,
+  ): Promise<T> {
+    const caller = this.caller(session);
+    if (caller.role !== 'worker' && caller.role !== 'coordinator') {
+      throw new Error(`${verb}: a ${caller.role} session cannot`);
+    }
+    if (this.options.siblings === undefined) throw new Error(`${verb}: siblings are not available`);
+    return run(this.options.siblings, caller.stream);
   }
 
   /**
@@ -525,5 +561,7 @@ export function verbHandlers(
     set_owner: (input) => service.setOwner(input),
     propose_contract: (input) => service.proposeContract(input),
     decide_contract: (input) => service.decideContract(input),
+    ask_sibling: (input) => service.askSibling(input),
+    reply_sibling: (input) => service.replySibling(input),
   };
 }
