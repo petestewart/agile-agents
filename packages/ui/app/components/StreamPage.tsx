@@ -713,7 +713,7 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
       {tab === 'docs' && (
         <ul className="cr-docs" data-testid="docs">
           {page.docs.length === 0 && (
-            <li className="cr-dim">No docs — repo `.agile-docs/` and stream docs appear here.</li>
+            <li className="cr-dim">No docs — repo docs and stream docs appear here.</li>
           )}
           {page.docs.map((doc) => (
             <li key={doc.path} data-testid="doc">

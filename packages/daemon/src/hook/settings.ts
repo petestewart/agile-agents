@@ -13,6 +13,14 @@
  * the wrong root. The calling session is resolved daemon-side from `cwd`
  * plus the `AGILE_AGENT` hint in the session env; the file carries no id,
  * since a worker and its reviewer share one worktree.
+ *
+ * Nothing lands in the user's repo (D24, P4): the file is git-excluded
+ * via `info/exclude`. When the repo tracks its own `.claude/settings.json`
+ * the hooks go into `.claude/settings.local.json` instead, which the
+ * pinned adapter (`claude-agent-acp@0.81.1`) loads: its default
+ * `settingSources` is `["user", "project", "local"]`, and Claude merges
+ * hook arrays across sources. The adapter's other lever
+ * (`_meta.claudeCode.options.settings`) would need a session-meta change.
  */
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
@@ -95,7 +103,7 @@ export function writeClaudeSettings(
   options: RenderClaudeSettingsOptions,
 ): ClaudeSettings {
   const dir = join(worktreePath, '.claude');
-  const path = join(dir, 'settings.json');
+  const path = join(dir, settingsFileName(worktreePath));
   mkdirSync(dir, { recursive: true });
 
   let existing: Record<string, unknown> = {};
@@ -114,6 +122,30 @@ export function writeClaudeSettings(
   writeFileSync(path, `${JSON.stringify(merged, null, 2)}\n`);
   excludeFromGit(worktreePath, '.claude/');
   return merged;
+}
+
+/** True when git tracks `rel` in `worktreePath`. Not a git repo: false. */
+function isTracked(worktreePath: string, rel: string): boolean {
+  const result = Bun.spawnSync(['git', 'ls-files', '--error-unmatch', '--', rel], {
+    cwd: worktreePath,
+    env: sandboxedSubprocessEnv(worktreePath, 'git'),
+    stdout: 'pipe',
+    stderr: 'pipe',
+  });
+  return result.exitCode === 0;
+}
+
+/**
+ * `settings.json`, or `settings.local.json` when the repo tracks its own
+ * `settings.json` (never overwritten). Both tracked: refused, since any
+ * write would change a file the user owns.
+ */
+export function settingsFileName(worktreePath: string): 'settings.json' | 'settings.local.json' {
+  if (!isTracked(worktreePath, '.claude/settings.json')) return 'settings.json';
+  if (!isTracked(worktreePath, '.claude/settings.local.json')) return 'settings.local.json';
+  throw new Error(
+    `${worktreePath} tracks both .claude/settings.json and .claude/settings.local.json; the hook settings would change a tracked file`,
+  );
 }
 
 /**
