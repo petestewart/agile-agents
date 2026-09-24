@@ -797,15 +797,15 @@ Design: `design/projects-design.md`, which wins over `design/cockpit-design.md` 
 
 ### Ticket: T207 ∥ Nothing in the user's repo
 - **Priority:** P1
-- **Status:** In Progress
-- **Owner:** opus:worker-T207
+- **Status:** Done (merge d186411)
+- **Owner:** —
 - **Scope:**
   - Docs move from `<repo>/.agile-docs/` to `~/.agile/repos/<name>/docs/`, with a one-time import that never deletes the old directory (P3).
   - The worktree's `.claude/settings.json` goes into `info/exclude`. If the repo tracks its own `.claude/settings.json`, use the vendor's settings-file flag or local settings instead, and find out which the pinned Claude ACP adapter supports (P4).
   - Update design text only in `projects-design.md`, if needed.
 - **Acceptance Criteria:** Unit: after worktree creation, attach and a commit made with `git add -A` in the worktree, `git status --porcelain` on the user's checkout is empty and the commit contains no `.claude/settings.json`. Docs tests read the home path.
 - **Validation Steps:** `bun test packages/daemon/src/docs packages/daemon/src/hook packages/daemon/src/runner`.
-- **Notes:** D24. Can run alongside T203–T205.
+- **Notes:** D24. Can run alongside T203–T205. Review (sonnet) PASS; two follow-ups fixed (allDocs skips bad repo names; both-settings-tracked refusal before any state write). Hooks go to `.claude/settings.local.json` when the repo tracks `.claude/settings.json` (adapter 0.81.1 loads local settings; not yet live-checked). Daemon +73.
 
 ### Ticket: T208 Project tree and switcher in the cockpit
 - **Priority:** P0
