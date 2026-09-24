@@ -13,7 +13,11 @@ import { type ShellView, useShell } from '../lib/shell';
 import { projectForNew } from '../lib/streams';
 
 const NAV: ReadonlyArray<{ view: ShellView; label: string }> = [
-  { view: 'inbox', label: 'Inbox' },
+  // T209: the inbox is the Needs me lens (grouped by node).
+  { view: 'inbox', label: 'Needs me' },
+  { view: 'repos', label: 'Repos' },
+  { view: 'running', label: 'Running' },
+  { view: 'deps', label: 'Dependencies' },
   { view: 'rules', label: 'Rules' },
   { view: 'settings', label: 'Settings' },
 ];
