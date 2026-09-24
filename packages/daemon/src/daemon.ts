@@ -19,7 +19,7 @@ import {
 import { DocsService, buildDocsRpcMethods } from './docs';
 import { GateService, buildGateRpcMethods } from './gates';
 import type { DelegateFn } from './gates';
-import { ghTokenSource, githubAuthAvailable } from './github/rest';
+import { createGitHubRest, ghTokenSource, githubAuthAvailable } from './github/rest';
 import {
   HookService,
   buildHookRpcMethods,
@@ -203,6 +203,12 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
           streams: streamService,
           ...(diffRules ? { diffRules } : {}),
           ...(gateService ? { gates: gateService } : {}),
+          github: (entry) =>
+            createGitHubRest({
+              apiUrl: config.github.api_url,
+              ...(entry.github ? { repo: entry.github } : {}),
+              tokenSource: ghTokenSource(config.github.gh_command),
+            }),
           onStreamEnd: async (id) => {
             await lessonsService?.onStreamEnd(id);
           },

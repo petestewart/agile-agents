@@ -22,6 +22,7 @@ import {
 } from '@agile-agents/shared';
 import { liveSession } from '../attach/service';
 import type { GateService } from '../gates/service';
+import type { GitHubPort, GitHubPull } from '../github/port';
 import type { StateStore } from '../store';
 import type { StreamService } from '../streams/service';
 import { git, gitWrite, removeWorktreeSafely, runGit } from './git';
@@ -79,7 +80,9 @@ export type LandOutcome =
   | { status: 'refused'; reason: string; line: string }
   /** Merge conflict: nothing merged, worktree kept, stream blocked. */
   | { status: 'blocked'; target: string; conflicts: string[]; line: string }
-  | { status: 'landed'; target: string; sha: string; line: string };
+  | { status: 'landed'; target: string; sha: string; line: string }
+  /** PR mode: the branch was pushed and its PR opened (or updated). */
+  | { status: 'pr_open'; target: string; pr: { number: number; url: string }; line: string };
 
 /** The Land button's "before" read (`DeliveryService.preflight`). */
 export interface LandPreflight {
@@ -126,6 +129,8 @@ export interface DeliveryServiceOptions {
   gates?: GateService;
   /** The diff-level rule tier. Defaults to `ALLOW_ALL_DIFF_RULES`. */
   diffRules?: DiffRules;
+  /** PR mode (T224): the GitHub port for a repo; without it a `pr` repo refuses to deliver. */
+  github?: (repo: RepoEntry) => GitHubPort;
   /** Tells the retro (§5.5) a stream landed. Fire-and-forget: never a failed land. */
   onStreamEnd?: (streamId: string) => void | Promise<void>;
   /** T226: main moved on `repo` (sync the other live nodes). Fire-and-forget. */
@@ -160,14 +165,9 @@ export class DeliveryService {
       );
     }
 
-    // §14.7: the mode is resolved at the first delivery attempt. PR delivery is T224's.
+    // §14.7: the mode is resolved at the first delivery attempt.
     const mode = stream.delivery_state?.mode ?? this.resolveMode(stream, repoEntry);
-    if (mode !== 'direct') {
-      throw new LandRefusedError(
-        stream.id,
-        `stream ${stream.id} delivers by pull request; PR delivery is not available yet`,
-      );
-    }
+    const github = mode === 'pr' ? this.requireGitHub(stream, repoEntry, branch) : undefined;
 
     // 1. The gate, when the repo asks for one (§8.2: default is no gate).
     if (repoEntry.land_gate === true && options.gateApproved !== true) {
@@ -198,6 +198,9 @@ export class DeliveryService {
       if (verdict.gate !== undefined) return { status: 'gated', gate: verdict.gate, line };
       return { status: 'refused', reason: verdict.reason, line };
     }
+
+    // 3. PR mode (T224): push, then open or update the one PR.
+    if (github !== undefined) return this.deliverPr(stream, repoEntry, github, branch, target);
 
     // 3. Ready (direct: this call is the Merge click), then the merge in a
     // temporary worktree of the target.
@@ -409,6 +412,98 @@ export class DeliveryService {
       'Run the tests, then commit the merge.',
       'When done, say the stream is ready to land again; the operator lands it.',
     ].join('\n');
+  }
+
+  /** PR mode needs a port and a pushable branch; refused before anything is written. */
+  private requireGitHub(stream: Stream, repoEntry: RepoEntry, branch: string): GitHubPort {
+    const factory = this.options.github;
+    if (factory === undefined || repoEntry.github === undefined) {
+      throw new LandRefusedError(
+        stream.id,
+        `stream ${stream.id} delivers by pull request but repo ${String(stream.repo)} has no GitHub repository configured`,
+      );
+    }
+    // Protected-branch push rules are unchanged: never push onto one.
+    if ((repoEntry.protected_branches ?? []).includes(branch)) {
+      throw new LandRefusedError(stream.id, `${branch} is a protected branch; it is never pushed`);
+    }
+    return factory(repoEntry);
+  }
+
+  /**
+   * T224: `git push <remote> <branch>`, then the node's one PR: opened on
+   * the first deliver, updated (never duplicated) after. A push failure
+   * holds the node with nothing opened.
+   */
+  private async deliverPr(
+    stream: Stream,
+    repoEntry: RepoEntry,
+    github: GitHubPort,
+    branch: string,
+    target: string,
+  ): Promise<LandOutcome> {
+    const { streams } = this.options;
+    const repoRoot = repoEntry.path;
+    const remote = repoEntry.remote ?? 'origin';
+    const cwd =
+      stream.worktree !== undefined && existsSync(stream.worktree) ? stream.worktree : repoRoot;
+    const pushed = git(
+      ['push', remote, `refs/heads/${branch}:refs/heads/${branch}`],
+      cwd,
+      repoRoot,
+    );
+    if (pushed.exitCode !== 0) {
+      const line = `push ${branch} to ${remote} failed: ${scrubGitError(pushed.stderr)}`;
+      await this.setDeliveryState(stream.id, {
+        mode: 'pr',
+        status: 'held',
+        held_by: [{ reason: 'ship_check', detail: line }],
+        ...(stream.delivery_state?.pr ? { pr: stream.delivery_state.pr } : {}),
+      });
+      await streams.appendThread('daemon', stream.id, { kind: 'event', body: line });
+      return { status: 'refused', reason: line, line };
+    }
+
+    const title = stream.title;
+    const body = prBody(stream);
+    const known = stream.delivery_state?.pr;
+    let pull: GitHubPull;
+    let verb: string;
+    if (known !== undefined && known.state === 'open') {
+      pull = await github.updatePull(known.number, { title, body });
+      verb = 'updated';
+    } else {
+      const [existing] = await github.listPulls({ state: 'open', head: branch });
+      if (existing !== undefined) {
+        pull = await github.updatePull(existing.number, { title, body });
+        verb = 'updated';
+      } else {
+        pull = await github.createPull({ title, head: branch, base: target, body });
+        verb = 'opened';
+      }
+    }
+    const now = new Date().toISOString();
+    await this.setDeliveryState(stream.id, {
+      mode: 'pr',
+      status: 'pr_open',
+      pr: {
+        number: pull.number,
+        url: pull.html_url,
+        head: branch,
+        base: pull.base.ref || target,
+        state: 'open',
+        draft: pull.draft,
+        review: known?.review ?? 'none',
+        checks: known?.checks ?? 'none',
+        mergeable: known?.mergeable ?? 'unknown',
+        auto_merge: pull.auto_merge ? 'enabled' : 'off',
+        last_seen: known?.last_seen ?? {},
+        polled_at: now,
+      },
+    });
+    const line = `pushed ${branch} to ${remote}; ${verb} PR #${pull.number} into ${target}: ${pull.html_url}`;
+    await streams.appendThread('daemon', stream.id, { kind: 'event', body: line });
+    return { status: 'pr_open', target, pr: { number: pull.number, url: pull.html_url }, line };
   }
 
   /** Everything that must hold before landing touches git: a repo, a live human status, no live worker. */
@@ -698,6 +793,20 @@ export function mergedOutside(repoRoot: string, branch: string, target: string):
   if (firstParent.exitCode === 0 && !firstParent.stdout.split('\n').includes(tip)) return true;
   const reflog = git(['reflog', 'show', '--format=%H', `refs/heads/${branch}`], repoRoot, repoRoot);
   return reflog.exitCode === 0 && reflog.stdout.split('\n').filter(Boolean).length > 1;
+}
+
+/** The PR body: the node's goal and progress. The roll-up issue line is T322's; left empty. */
+function prBody(stream: Stream): string {
+  const parts = [`## Goal\n\n${stream.goal}`];
+  if (stream.agent.progress) parts.push(`## Progress\n\n${stream.agent.progress}`);
+  parts.push('Issues:');
+  return parts.join('\n\n');
+}
+
+/** A git error for a thread line: first line, capped, any `user:pass@` in a URL removed. */
+function scrubGitError(stderr: string): string {
+  const first = stderr.split('\n').find((l) => l.trim().length > 0) ?? 'unknown error';
+  return first.replace(/(\w+:\/\/)[^/@\s]*@/g, '$1').slice(0, 300);
 }
 
 function branchExists(repoRoot: string, branch: string): boolean {

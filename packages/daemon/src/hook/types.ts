@@ -6,6 +6,7 @@
  */
 
 import type { AgentMessage, Rule, SessionRole } from '@agile-agents/shared';
+import type { VisibilityContext } from '../permissions/visibility';
 
 /** The outcomes of the pure decision (spike-findings.md §B); `ask` never reaches the wire. */
 export type HookVerdict = 'allow' | 'deny' | 'ask';
@@ -40,6 +41,8 @@ export interface HookDecisionContext {
   upstreamBranch?: () => string | undefined;
   /** The worktree's checked-out branch; called only for a `git merge` with no preceding checkout. */
   headBranch?: () => string | undefined;
+  /** P13: the node's repo, project and the registry; absent checks no visibility. */
+  visibility?: VisibilityContext;
 }
 
 /** Raw Claude `PreToolUse` stdin payload (spike-findings.md §B). */

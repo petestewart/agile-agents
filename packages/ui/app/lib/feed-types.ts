@@ -69,6 +69,8 @@ export interface CockpitStreamRow {
   waits_on?: string[];
   /** T227: this node, or a descendant, overlaps another live node. */
   overlap?: true;
+  /** T229: a hookless vendor is live and a private repo is hidden from this node. */
+  visibility_advisory?: true;
 }
 
 /** T160: mirror of `feed/snapshot.ts`'s `CockpitFrame` — the inbox and the tree, pushed on connect and after every event batch. */

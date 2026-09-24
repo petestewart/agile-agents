@@ -46,6 +46,11 @@ function Node({ node }: { node: StreamTreeNode }): JSX.Element {
             ⚠
           </span>
         )}
+        {node.row.visibility_advisory && (
+          <span className="cr-visibility" data-testid="visibility-advisory">
+            visibility advisory
+          </span>
+        )}
       </button>
       {node.children.length > 0 && (
         <ul>

@@ -997,3 +997,9 @@ body {
   font-size: 12px;
   margin: 4px 0 0;
 }
+
+.cr-visibility {
+  color: var(--warn);
+  font-size: 11px;
+  margin-left: 6px;
+}
