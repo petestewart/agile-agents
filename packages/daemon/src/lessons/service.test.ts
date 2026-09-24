@@ -7,7 +7,8 @@
  * reach the inbox as `rule_accept` items with provenance pointing at the
  * stream; accepting one puts it in the next brief in scope; a stream that
  * went smoothly starts no session at all; the fourth proposal is refused;
- * and both end paths — `stream.close` and a real `land` — call the retro.
+ * and the retro runs after `merged` only (T264, projects-design §17): a
+ * plain close starts none; a merge starts exactly one.
  */
 
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
@@ -139,9 +140,7 @@ beforeEach(() => {
 
   const init = runInit(home);
   store = StateStore.open(init.stateRoot);
-  // Wired the way `daemon.ts` wires it: `close` hands the stream to the
-  // retro, which is built after the services it drives.
-  streams = new StreamService(store, { onStreamEnd: (id) => lessons.onStreamEnd(id) });
+  streams = new StreamService(store);
   questions = new QuestionService(store, streams, {
     deliver: (sessionId, question) => attach.deliverAnswer(sessionId, question),
   });
@@ -360,15 +359,25 @@ describe('the proposals (the T141 acceptance criteria)', () => {
   }, 40_000);
 });
 
-describe('both end paths call the retro (§5.5: "on land or close")', () => {
-  test('stream.close starts it', async () => {
+describe('the retro runs after merged, never on a plain close (T264, §17)', () => {
+  test('a close without a merge starts no retro', async () => {
     const stream = await makeStream();
     await seedFinding(stream);
     await streams.close('human', stream.id, 'not worth finishing');
-    await waitFor(() => threadBodies(stream.id).includes('lessons: session started'));
+    await Bun.sleep(300);
+    expect(streams.get(stream.id).sessions.some((s) => s.role === 'lessons')).toBe(false);
+    expect(threadBodies(stream.id)).not.toContain('lessons: session started');
   }, 40_000);
 
-  test('a real land starts it, in the session dir the removed worktree left behind', async () => {
+  test('a merge reported twice (land, then a PR poll) starts one retro', async () => {
+    const stream = await makeStream();
+    await seedFinding(stream);
+    await runRetro(stream);
+    await lessons.onStreamEnd(stream.id);
+    expect(streams.get(stream.id).sessions.filter((s) => s.role === 'lessons')).toHaveLength(1);
+  }, 40_000);
+
+  test('a direct merge (land) starts it, in the session dir the removed worktree left behind', async () => {
     await store.putRepos({ demo: { path: repo, protected_branches: ['main'] } });
     const stream = await makeStream('demo');
     await seedFinding(stream);

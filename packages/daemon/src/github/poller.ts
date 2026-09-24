@@ -53,6 +53,8 @@ export interface PrPollerOptions {
   ask?: (input: { stream: string; raised_by: 'daemon'; text: string }) => Promise<unknown>;
   /** Main moved on a `pr` repo (T226's `MainSync.mainMoved`); `except` is the node whose PR just merged. */
   onMainMoved?: (repo: string, except?: string) => unknown;
+  /** T264: the PR merged (the lessons retro runs after `merged`, §17). */
+  onMerged?: (stream: string) => unknown;
   /** T228: after each tick (`DeliveryService.settle`: waits_on, merge-together, auto-merge). */
   afterTick?: () => unknown;
   /** T244: routed events for what the poll saw. */
@@ -286,6 +288,9 @@ export class PrPoller {
       const m = this.mains.get(stream.repo as string);
       if (m) m.due = 0;
       await this.checkMain(stream.repo as string, entry, stream.id);
+      if (stream.delivery_state?.status !== 'merged') {
+        void Promise.resolve(this.options.onMerged?.(stream.id)).catch(() => {});
+      }
     } else if (state === 'closed' && known.state !== 'closed' && this.options.ask) {
       await this.options.ask({
         stream: stream.id,

@@ -1,6 +1,7 @@
 /**
  * `LessonsService`: the retro, per stream, with the human as the only
- * decider (§5.5). On land or close, a stream with any findings, hook
+ * decider (§5.5). After `merged` (projects-design §17: a direct land or a
+ * PR merged, never a plain close), a stream with any findings, hook
  * denials or answered questions gets one short read-only session over
  * exactly that material, asked for at most three proposed rules (two
  * examples each, each with a kind) through the ordinary `propose_knowledge` verb; they reach the
@@ -13,7 +14,6 @@
 import type { KnowledgeItem, Question, Stream } from '@agile-agents/shared';
 import { MESSAGE_BODY_MAX_CHARS } from '@agile-agents/shared';
 import type { AttachOptions, AttachResult } from '../attach/service';
-import { liveSession } from '../attach/service';
 import type { VerbCaller } from '../attach/verbs';
 import type { KnowledgeService } from '../knowledge/service';
 import type { StateStore } from '../store';
@@ -164,12 +164,12 @@ export class LessonsService {
     };
   }
 
-  /** The land/close hook: starts the retro, or says on the thread why not. Never throws. */
+  /** The after-`merged` hook: starts the retro, or says on the thread why not. Never throws. */
   async onStreamEnd(streamId: string): Promise<void> {
     try {
       const stream = this.options.streams.get(streamId);
-      // One retro at a time.
-      if (liveSession(stream, 'lessons') !== undefined) return;
+      // One retro per node, ever (a merge is reported once, but belt and braces).
+      if (stream.sessions.some((s) => s.role === 'lessons')) return;
       const material = this.material(streamId);
       if (isEmptyMaterial(material)) {
         await this.options.streams.appendThread('daemon', streamId, {

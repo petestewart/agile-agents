@@ -132,7 +132,7 @@ export interface DeliveryServiceOptions {
   diffRules?: DiffRules;
   /** PR mode (T224): the GitHub port for a repo; without it a `pr` repo refuses to deliver. */
   github?: (repo: RepoEntry) => GitHubPort;
-  /** Tells the retro (§5.5) a stream landed. Fire-and-forget: never a failed land. */
+  /** Tells the retro (§17: after `merged`) the node merged. Fire-and-forget: never a failed land. */
   onStreamEnd?: (streamId: string) => void | Promise<void>;
   /** T226: main moved on `repo` (sync the other live nodes). Fire-and-forget. */
   onMainMoved?: (repo: string, mergedStream: string) => unknown;

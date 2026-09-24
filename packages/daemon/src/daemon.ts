@@ -112,14 +112,11 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
   const gateService = store
     ? new GateService(store, options.gateDelegate ? { delegate: options.gateDelegate } : {})
     : undefined;
-  // `close` and `land` both hand the ended stream to the retro (§5.5).
+  // A merge (land or a PR merged) hands the node to the retro (§17: after `merged`).
   // Every back-reference in this graph is read lazily through a closure,
   // so construction order is never a trap.
   const streamService: StreamService | undefined = store
     ? new StreamService(store, {
-        onStreamEnd: async (id) => {
-          await lessonsService?.onStreamEnd(id);
-        },
         // T244: record changes that are routed events (child_status, pr_merged, …).
         onUpdated: async (before, after): Promise<void> => {
           if (emitRouted) await emitTransitions(emitRouted)(before, after);
@@ -369,6 +366,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
           ...(mainSync
             ? { onMainMoved: (repo: string, except?: string) => mainSync.mainMoved(repo, except) }
             : {}),
+          onMerged: (id: string) => lessonsService?.onStreamEnd(id),
           ...(landingService ? { afterTick: () => landingService.settle() } : {}),
           ...(emitRouted ? { emit: emitRouted } : {}),
           home: config.home,
