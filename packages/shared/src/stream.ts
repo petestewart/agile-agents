@@ -82,6 +82,11 @@ export const SessionRefSchema = z
      * say it without the thread. Absent on a clean end.
      */
     ended_reason: z.string().min(1).max(300).optional(),
+    /**
+     * T174: thread `ts` of human lines sent while a turn was running, not
+     * yet delivered to this session. Cleared on delivery and on session end.
+     */
+    queued: z.array(z.string().min(1)).max(50).optional(),
   })
   .strict();
 export type SessionRef = z.infer<typeof SessionRefSchema>;

@@ -19,6 +19,7 @@ import { wireQuestionSupersession } from '../questions/supersede';
 import type { FakeAgentScript } from '../runner/fake-agent';
 import { StateStore } from '../store';
 import { StreamService } from '../streams/service';
+import { sayPrompt } from './service';
 import { AttachService, StreamBusyError, endedReason } from './service';
 import { VerbService } from './verbs';
 
@@ -636,5 +637,85 @@ describe('say — the stream page composer (T161)', () => {
     // Queued behind the hanging first turn: stopping ends both; the log
     // shows the brief was sent, and the say was accepted for delivery.
     expect(existsSync(log) && readFileSync(log, 'utf8').includes('"session/prompt"')).toBe(true);
+  }, 30_000);
+
+  test('the prompt tells the worker to reply on the stream first (T174)', () => {
+    const text = sayPrompt('how many tests are you writing?');
+    expect(text).toContain('The operator wrote on the stream: how many tests are you writing?');
+    expect(text).toContain('Reply to the operator on the stream first, with `progress`');
+    expect(text).toContain('answer it directly');
+    expect(text).toContain('Then continue the work.');
+    expect(text).not.toContain('Continue the work.\n');
+  });
+
+  test('a mid-turn line is queued, shown as queued, and still runs before the session is let go (T174)', async () => {
+    const log = join(scratch, 'say-queued.jsonl');
+    const sentinel = join(scratch, 'turn-one.flag');
+    attachService = buildAttachService(
+      fakeProviderFor(ACP_PROVIDERS.claude, {
+        logFile: log,
+        steps: [{ type: 'agent_text', text: 'answered' }, { type: 'end_turn' }],
+        turns: [
+          [
+            { type: 'agent_text', text: 'working on it' },
+            { type: 'tool_call', toolCallId: 'read-9', title: 'read tests' },
+            { type: 'wait_for_file', path: sentinel },
+            { type: 'end_turn' },
+          ],
+        ],
+      }),
+    );
+    const stream = await makeStream();
+    const { session } = await attachService.attach(stream.id);
+    await waitFor(() => threadBodies(stream.id).some((b) => b.includes('working on it')));
+    const result = await attachService.say(stream.id, 'how many tests are you writing?');
+    expect(result.prompted).toBe(session.id);
+    const sessionRef = () => streams.get(stream.id).sessions.find((s) => s.id === session.id);
+    expect(sessionRef()?.queued).toEqual([result.entry.ts]);
+
+    // The first turn ends with nothing open: before T174 the turn-end rule
+    // stopped the session here and the queued line was never delivered.
+    writeFileSync(sentinel, '');
+    await waitFor(() => streams.get(stream.id).agent.status === 'done');
+    const prompts = readFileSync(log, 'utf8')
+      .split('\n')
+      .filter((l) => l.includes('"session/prompt"'));
+    expect(prompts.length).toBe(2);
+    expect(prompts[1]).toContain(
+      'The operator wrote on the stream: how many tests are you writing?',
+    );
+    expect(threadBodies(stream.id)).toContain('answered');
+    expect(sessionRef()?.status).toBe('stopped');
+    expect(sessionRef()?.queued).toBeUndefined();
+  }, 30_000);
+
+  test('a line to an idle-but-alive worker is prompted at once, never queued (T174)', async () => {
+    const log = join(scratch, 'say-idle.jsonl');
+    const sentinel = join(scratch, 'idle-ask.flag');
+    attachService = buildAttachService(
+      fakeProviderFor(ACP_PROVIDERS.claude, {
+        logFile: log,
+        steps: [{ type: 'agent_text', text: 'noted' }, { type: 'end_turn' }],
+        turns: [
+          [
+            { type: 'agent_text', text: 'asking' },
+            { type: 'wait_for_file', path: sentinel },
+            { type: 'end_turn' },
+          ],
+        ],
+      }),
+    );
+    const stream = await makeStream();
+    const { session } = await attachService.attach(stream.id);
+    await waitFor(() => store.listAgents().some((a) => a.id === session.id));
+    await verbs.ask({ session: session.id, text: 'which delimiter?' });
+    writeFileSync(sentinel, '');
+    const sessionRef = () => streams.get(stream.id).sessions.find((s) => s.id === session.id);
+    await waitFor(() => sessionRef()?.status === 'idle');
+    await attachService.say(stream.id, 'still there?');
+    expect(sessionRef()?.queued).toBeUndefined();
+    await waitFor(() => threadBodies(stream.id).includes('noted'));
+    // Still waiting on the open question: idle again, not let go.
+    await waitFor(() => sessionRef()?.status === 'idle');
   }, 30_000);
 });

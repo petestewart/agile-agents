@@ -306,6 +306,8 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
   const live = stream.sessions.filter(isLiveSession);
   const liveWorker = live.find((s) => s.role === 'worker');
   const liveReviewer = live.find((s) => s.role === 'reviewer');
+  // T174: human lines sent mid-turn, not yet delivered to the live worker.
+  const queuedLines = new Set(live.flatMap((s) => s.queued ?? []));
   const cards = needsYou(cockpit?.inbox ?? [], stream.id);
   const findings = stream.agent.findings ?? [];
   const text = draft.trim();
@@ -520,6 +522,11 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
                     {entry.kind !== 'line' ? ` · ${entry.kind}` : ''}
                   </div>
                   <Markdown text={entry.body} />
+                  {entry.by === 'human' && entry.kind === 'line' && queuedLines.has(entry.ts) && (
+                    <div className="cr-dim cr-queued" data-testid="thread-queued">
+                      queued — the worker reads it after its current step
+                    </div>
+                  )}
                 </li>
               );
             })}
