@@ -2031,4 +2031,38 @@ describe('New stream starts the agent (Playwright e2e, T204)', () => {
     },
     TEST_BUDGET_MS,
   );
+
+  browserTest(
+    'quick capture files a node and starts no session',
+    async () => {
+      const cockpit = await startStreamCockpit([]);
+      let page: Page | undefined;
+      try {
+        const shop = await new ProjectService(cockpit.store, cockpit.streams).create({
+          name: 'shop',
+        });
+        const parent = await cockpit.streams.create('human', {
+          title: 'ledger-lite',
+          goal: 'g',
+          project: shop.id,
+        });
+        page = await openPage();
+        await page.goto(`${cockpit.base}/`);
+        await page.locator(`[data-testid="stream-tree"] [data-stream="${parent.id}"]`).click();
+        await page.locator('[data-testid="quick-capture"]').fill('why is export slow?');
+        await page.locator('[data-testid="quick-capture"]').press('Enter');
+        await waitUntil('the captured node', () =>
+          cockpit.streams.list().some((s) => s.title === 'why is export slow?'),
+        );
+        const captured = cockpit.streams.list().find((s) => s.title === 'why is export slow?');
+        await page.locator('[data-testid="stream-page"]').waitFor({ state: 'visible' });
+        expect(captured?.sessions).toEqual([]);
+        expect(await page.locator('[data-testid="attach"]').textContent()).toBe('Start');
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
 });

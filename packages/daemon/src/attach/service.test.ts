@@ -929,4 +929,20 @@ describe('T204: creating a node starts its agent (P5)', () => {
     expect(node.worktree).toBeUndefined();
     expect(attachService.handleFor(node.id)).toBeUndefined();
   });
+
+  test('a failed start still returns the node, with the reason on its thread', async () => {
+    const project = await new ProjectService(store, streams).create({ name: 'Shop' });
+    await store.updateProject(project.id, (p) => ({ ...p, session: { vendor: 'nope' } }));
+    const node = await attachService.createNode('human', {
+      title: 'Broken',
+      goal: 'g',
+      project: project.id,
+    });
+    expect(node.sessions).toEqual([]);
+    expect(
+      threadBodies(node.id).some((b) =>
+        b.startsWith('could not start the agent: unknown vendor: nope'),
+      ),
+    ).toBe(true);
+  });
 });
