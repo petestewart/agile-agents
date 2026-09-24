@@ -1542,6 +1542,94 @@ describe('stream page rough edges (Playwright e2e, T166)', () => {
   );
 });
 
+describe('parents and land conflicts (Playwright e2e, T176)', () => {
+  browserTest(
+    'attach on a parent asks first; a conflicted land shows the files, not "Ready"; Resolve then re-land',
+    async () => {
+      const quick: FakeAgentScript = { steps: [{ type: 'end_turn' }] };
+      const cockpit = await startStreamCockpit([quick, quick]);
+      let page: Page | undefined;
+      try {
+        const parent = await cockpit.streams.create('human', {
+          title: 'Ledger features',
+          goal: 'g',
+          repo: 'demo',
+        });
+        await cockpit.streams.create('human', { title: 'child', goal: 'g', parent: parent.id });
+
+        page = await openPage();
+        await page.goto(`${cockpit.base}/`);
+        await page.locator(`[data-testid="stream-tree"] [data-stream="${parent.id}"]`).click();
+        await page.locator(`[data-testid="stream-page"][data-stream="${parent.id}"]`).waitFor();
+        await page.locator('[data-testid="attach"]').click();
+        await page.locator('[data-testid="picker-start"]').click();
+        const confirm = page.locator('[data-testid="attach-confirm"]');
+        await confirm.waitFor({ state: 'visible' });
+        expect(await confirm.textContent()).toContain(
+          "A parent's branch is where its children land",
+        );
+        expect(cockpit.streams.get(parent.id).sessions).toHaveLength(0);
+        await page.locator('[data-testid="attach-confirm-force"]').click();
+        await page.locator('[data-testid="session"][data-role="worker"]').waitFor();
+        await confirm.waitFor({ state: 'detached' });
+
+        // A stream whose branch and main both change shared.txt.
+        const worktree = join(cockpit.repo, '.worktrees', 's-conflict');
+        git(['worktree', 'add', '-q', '-b', 's-conflict', worktree, 'main'], cockpit.repo);
+        writeFileSync(join(worktree, 'shared.txt'), 'from the stream\n');
+        git(['add', 'shared.txt'], worktree);
+        git(['commit', '-q', '-m', 'stream'], worktree);
+        writeFileSync(join(cockpit.repo, 'shared.txt'), 'from main\n');
+        git(['add', 'shared.txt'], cockpit.repo);
+        git(['commit', '-q', '-m', 'main'], cockpit.repo);
+        const stream = await cockpit.streams.create('human', {
+          title: 'csv',
+          goal: 'g',
+          repo: 'demo',
+        });
+        await cockpit.streams.update('daemon', stream.id, { branch: 's-conflict', worktree });
+
+        await page.locator(`[data-testid="stream-tree"] [data-stream="${stream.id}"]`).click();
+        await page.locator(`[data-testid="stream-page"][data-stream="${stream.id}"]`).waitFor();
+        await waitForAttr(page, '[data-testid="land-before"]', 'data-ready', 'yes');
+        await page.locator('[data-testid="stream-land"]').click();
+        await waitForAttr(page, '[data-testid="land-before"]', 'data-ready', 'conflict');
+        expect(await page.locator('[data-testid="land-conflict-file"]').allTextContents()).toEqual([
+          'shared.txt',
+        ]);
+        expect(await page.locator('[data-testid="land-panel"]').textContent()).not.toContain(
+          'Ready',
+        );
+
+        // Resolve: the picker, then a worker whose brief carries the instruction.
+        await page.locator('[data-testid="stream-resolve"]').click();
+        await page.locator('[data-testid="picker-start"]').click();
+        await waitUntil('the resolve worker to finish', () => {
+          const s = cockpit.streams.get(stream.id);
+          return s.sessions.length === 1 && s.agent.status === 'done';
+        });
+        const session = cockpit.streams.get(stream.id).sessions[0]?.id as string;
+        const brief = readFileSync(join(cockpit.home, 'sessions', session, 'brief.md'), 'utf8');
+        expect(brief).toContain('git merge main');
+        expect(brief).toContain('shared.txt');
+
+        // What the worker would have done; then the operator lands again.
+        Bun.spawnSync(['git', 'merge', 'main'], { cwd: worktree });
+        writeFileSync(join(worktree, 'shared.txt'), 'from main\nfrom the stream\n');
+        git(['commit', '-q', '-am', 'merge main'], worktree);
+        await waitForAttr(page, '[data-testid="land-before"]', 'data-ready', 'yes');
+        await page.locator('[data-testid="stream-land"]').click();
+        await waitForAttr(page, '[data-testid="land-result"]', 'data-status', 'landed');
+        expect(cockpit.streams.get(stream.id).human.status).toBe('landed');
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+});
+
 describe('a session that dies on a vendor error (Playwright e2e, T171)', () => {
   browserTest(
     "the sessions strip shows the vendor's error line",

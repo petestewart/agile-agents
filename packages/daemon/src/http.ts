@@ -31,6 +31,7 @@ import {
 import { CONTROL_ROOM_DIST_DIR, FEED_HTML_PATH } from '@agile-agents/ui';
 import {
   type AttachService,
+  ParentAttachError,
   SessionDefaultsService,
   StreamBusyError,
   UnknownVendorError,
@@ -601,7 +602,7 @@ async function handleStreamRoute(
   sameOrigin: () => boolean,
 ): Promise<Response | undefined> {
   const match = url.pathname.match(
-    /^\/api\/streams\/([^/]+)(?:\/(diff|say|attach|stop|close|mark-landed))?$/,
+    /^\/api\/streams\/([^/]+)(?:\/(diff|say|attach|resolve|stop|close|mark-landed))?$/,
   );
   if (!match) return undefined;
   const action = match[2];
@@ -670,12 +671,31 @@ async function handleStreamRoute(
       // The handle is in-process only; the wire carries the record.
       return jsonResponse({ session: result.session, stream: result.stream }, 201);
     }
+    if (action === 'resolve') {
+      // T176: the attach path, with the conflict instruction after the brief.
+      if (!feed.landing) return errorResponse(503, 'landing not available');
+      const input = StreamAttachRequestSchema.safeParse(body);
+      if (!input.success) return errorResponse(400, formatZodError('resolve', input.error));
+      const { vendor, model, effort } = input.data;
+      const result = await feed.attach.attach(id, {
+        ...(vendor ? { vendor } : {}),
+        ...(model ? { model } : {}),
+        ...(effort ? { effort } : {}),
+        force: true,
+        briefAppendix: feed.landing.resolvePrompt(id),
+      });
+      return jsonResponse({ session: result.session, stream: result.stream }, 201);
+    }
     const sessions = await feed.attach.stop(id, undefined, { detach: true });
     return jsonResponse({ stopped: sessions.length > 0, sessions });
   } catch (err) {
     const message = messageOf(err);
     if (err instanceof NotFoundError) return errorResponse(404, message);
-    if (err instanceof StreamBusyError || err instanceof LandRefusedError) {
+    if (
+      err instanceof StreamBusyError ||
+      err instanceof LandRefusedError ||
+      err instanceof ParentAttachError
+    ) {
       return errorResponse(409, message);
     }
     if (err instanceof UnregisteredRepoError || err instanceof UnknownVendorError) {

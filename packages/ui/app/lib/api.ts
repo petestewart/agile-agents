@@ -152,8 +152,21 @@ export function attachSession(
   id: string,
   role: 'worker' | 'reviewer',
   choice: { vendor?: string; model?: string; effort?: string } = {},
+  force = false,
 ): Promise<unknown> {
-  return post(`/api/streams/${encodeURIComponent(id)}/attach`, { role, ...choice });
+  return post(`/api/streams/${encodeURIComponent(id)}/attach`, {
+    role,
+    ...choice,
+    ...(force ? { force: true } : {}),
+  });
+}
+
+/** T176: Resolve — a worker told to merge the target in and fix the last land's conflicts. */
+export function resolveConflict(
+  id: string,
+  choice: { vendor?: string; model?: string; effort?: string } = {},
+): Promise<unknown> {
+  return post(`/api/streams/${encodeURIComponent(id)}/resolve`, choice);
 }
 
 /** T170 (D17): every step of the session-default order, and what it resolves to. */

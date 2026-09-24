@@ -90,7 +90,8 @@ function usage(): string {
     '  rules report [--days N]         per-rule fired/violated/routed counts and prune flags',
     '  rules test [rule-id]            run accepted classifier rules\u2019 examples through the classifier',
     '  rules seed --from PLAN-v1.md     import that plan\u2019s decisions as proposed rules',
-    '  attach <stream> [--vendor v] [--model m] [--effort low|medium|high|max] [--role worker|reviewer]',
+    '  attach <stream> [--vendor v] [--model m] [--effort low|medium|high|max] [--role worker|reviewer] [--force]',
+    '  resolve <stream> [--vendor v] [--model m] [--effort ...]   a worker that fixes the last land conflict',
     '  review <stream> [--vendor v] [--model m] [--effort ...]   read-only reviewer session',
     '  detach <stream>            stop the live session on a stream',
     '  land <stream>              merge the stream branch into its target, close the stream, remove the worktree',
@@ -253,6 +254,9 @@ export async function runCli(argv: string[], cwd: string = process.cwd()): Promi
       // T130: an agent is a session attached to a stream (cockpit design §4).
       case 'attach':
         return await runAttach(socketPath, parseArgs(rest.slice(1)), json);
+
+      case 'resolve':
+        return await runAttach(socketPath, parseArgs(rest.slice(1)), json, true);
 
       case 'detach':
         return await runDetach(socketPath, parseArgs(rest.slice(1)), json);

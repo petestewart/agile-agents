@@ -34,6 +34,10 @@ below. Nothing else is.
   - `pattern` — a deterministic check (a command, a path) can decide it;
   - `classifier` — it needs judgement on each action;
   - `guidance` — it is a preference, enforced only by being read.
+
+  `pattern` and `classifier` rules only ever see **tool calls and diffs**.
+  A rule about what an agent *says* — its messages, replies, summaries,
+  questions — is invisible to them and must be `guidance`.
 - `critical` is for something a human cannot cheaply undo. Almost nothing
   is.
 

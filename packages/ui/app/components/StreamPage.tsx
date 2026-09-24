@@ -27,6 +27,7 @@ import {
   getStreamPage,
   landStream,
   markStreamLanded,
+  resolveConflict,
   sayOnStream,
   stopSessions,
 } from '../lib/api';
@@ -113,9 +114,12 @@ function DiffView({ id }: { id: string }): JSX.Element {
 function LandPanel({
   page,
   onChanged,
+  onResolve,
 }: {
   page: StreamPagePayload;
   onChanged: () => void;
+  /** T176: opens the session picker for a Resolve worker. */
+  onResolve: () => void;
 }): JSX.Element | null {
   const [busy, setBusy] = useState(false);
   const [outcome, setOutcome] = useState<LandOutcome | undefined>(undefined);
@@ -123,6 +127,9 @@ function LandPanel({
   const { stream, land } = page;
   if (stream.repo === undefined) return null;
   const finished = stream.human.status === 'landed' || stream.human.status === 'closed';
+  // T176: a failed land's own line replaces the preflight, never "Ready" beside it.
+  const failed = refused !== undefined || (outcome !== undefined && outcome.status !== 'landed');
+  const conflicts = land?.conflicts;
 
   async function doMarkLanded(): Promise<void> {
     setBusy(true);
@@ -182,7 +189,33 @@ function LandPanel({
         <p data-testid="land-before" data-ready="landed">
           Landed.
         </p>
-      ) : land?.merged ? (
+      ) : conflicts && conflicts.length > 0 ? (
+        <div data-testid="land-conflict">
+          <p data-testid="land-before" data-ready="conflict">
+            Conflict: landing into {land?.target ?? 'the target'} conflicted in {conflicts.length}{' '}
+            file{conflicts.length === 1 ? '' : 's'}. Resolve attaches a worker to merge the target
+            in and fix them; then land again.
+          </p>
+          <ul>
+            {conflicts.map((file) => (
+              <li key={file} data-testid="land-conflict-file">
+                <code>{file}</code>
+              </li>
+            ))}
+          </ul>
+          <button
+            type="button"
+            className="cr-btn"
+            data-testid="stream-resolve"
+            disabled={
+              busy || page.stream.sessions.some((s) => s.role === 'worker' && isLiveSession(s))
+            }
+            onClick={onResolve}
+          >
+            Resolve
+          </button>
+        </div>
+      ) : failed ? null : land?.merged ? (
         <p data-testid="land-before" data-ready="merged">
           Already merged into {land.target}.
         </p>
@@ -200,7 +233,7 @@ function LandPanel({
           ? 'No diff-stage rules in scope.'
           : `Diff rules checked at land: ${page.diff_rules.join(', ')}`}
       </p>
-      {outcome && (
+      {outcome && !(conflicts && conflicts.length > 0) && (
         <p
           className={`cr-land-result ${outcome.status === 'landed' ? 'ok' : 'bad'}`}
           data-testid="land-result"
@@ -234,8 +267,11 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<string | undefined>(undefined);
   // T170: Attach/Review open the session picker first.
-  const [picker, setPicker] = useState<'worker' | 'reviewer' | undefined>(undefined);
+  const [picker, setPicker] = useState<'worker' | 'reviewer' | 'resolve' | undefined>(undefined);
+  // T176: the server refused a worker on a parent with open children; this is its reason.
+  const [confirmParent, setConfirmParent] = useState<string | undefined>(undefined);
   const threadRef = useRef<HTMLOListElement | null>(null);
+  const pendingChoice = useRef<{ vendor?: string; model?: string; effort?: string }>({});
 
   const load = useCallback(() => {
     getStreamPage(id)
@@ -260,6 +296,7 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
     setDraft('');
     setActionError(undefined);
     setPicker(undefined);
+    setConfirmParent(undefined);
   }, [id]);
 
   const threadLength = page?.thread.length ?? 0;
@@ -414,17 +451,70 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
         {picker && (
           <SessionPicker
             key={picker}
-            role={picker}
+            role={picker === 'reviewer' ? 'reviewer' : 'worker'}
             repo={stream.repo}
             busy={busy}
             onCancel={() => setPicker(undefined)}
-            onStart={(choice) =>
+            onStart={(choice) => {
+              pendingChoice.current = choice;
+              if (picker === 'resolve') {
+                void act(
+                  () => resolveConflict(stream.id, choice),
+                  () => setPicker(undefined),
+                );
+                return;
+              }
               void act(
-                () => attachSession(stream.id, picker, choice),
+                async () => {
+                  try {
+                    await attachSession(stream.id, picker, choice);
+                  } catch (err) {
+                    // T176: a parent's branch is where its children land — confirm first.
+                    if (picker === 'worker' && /open child/.test(errorText(err))) {
+                      setConfirmParent(errorText(err));
+                      setPicker(undefined);
+                      return;
+                    }
+                    throw err;
+                  }
+                },
                 () => setPicker(undefined),
-              )
-            }
+              );
+            }}
           />
+        )}
+        {confirmParent && (
+          <div className="cr-confirm" data-testid="attach-confirm" role="alertdialog">
+            <p>
+              This stream has open children. A parent's branch is where its children land, so a
+              worker here builds on the branch they merge into and their lands will conflict.
+            </p>
+            <p className="cr-dim">{confirmParent}</p>
+            <div className="cr-actions">
+              <button
+                type="button"
+                className="cr-btn danger"
+                data-testid="attach-confirm-force"
+                disabled={busy}
+                onClick={() =>
+                  void act(
+                    () => attachSession(stream.id, 'worker', pendingChoice.current, true),
+                    () => setConfirmParent(undefined),
+                  )
+                }
+              >
+                Attach anyway
+              </button>
+              <button
+                type="button"
+                className="cr-btn"
+                data-testid="attach-confirm-cancel"
+                onClick={() => setConfirmParent(undefined)}
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
         )}
         {actionError && (
           <p className="cr-error" role="alert" data-testid="stream-error">
@@ -456,7 +546,13 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
         </section>
       )}
 
-      <LandPanel key={stream.id} page={page} onChanged={load} />
+      <LandPanel
+        // A new session (Resolve, Attach) starts the panel over: the last land's result is stale.
+        key={`${stream.id}:${stream.sessions.length}`}
+        page={page}
+        onChanged={load}
+        onResolve={() => setPicker('resolve')}
+      />
 
       <nav className="cr-tabs" aria-label="Stream views">
         {TABS.map((each) => (

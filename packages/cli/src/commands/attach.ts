@@ -12,7 +12,7 @@
 
 import { EFFORT_LEVELS, type SessionRef, type Stream } from '@agile-agents/shared';
 import type { ParsedArgs } from '../args';
-import { optionalString, requirePositional } from '../args';
+import { hasFlag, optionalString, requirePositional } from '../args';
 import { callRpc } from '../client';
 import { printJson } from '../format';
 
@@ -32,6 +32,8 @@ export async function runAttach(
   socketPath: string,
   args: ParsedArgs,
   json: boolean,
+  /** T176 `agile resolve`: a worker told to merge the target in and fix the conflicted files. */
+  resolve = false,
 ): Promise<number> {
   const stream = requirePositional(args, 0, 'stream-id');
   const vendor = optionalString(args.options, 'vendor');
@@ -46,12 +48,15 @@ export async function runAttach(
     throw new Error(`--role must be worker or reviewer, got ${role}`);
   }
 
-  const result = await callRpc<AttachResult>(socketPath, 'attach.start', {
+  const method = resolve ? 'attach.resolve' : 'attach.start';
+  const result = await callRpc<AttachResult>(socketPath, method, {
     stream,
     ...(vendor !== undefined ? { vendor } : {}),
     ...(model !== undefined ? { model } : {}),
     ...(effort !== undefined ? { effort } : {}),
-    ...(role !== undefined ? { role } : {}),
+    ...(role !== undefined && !resolve ? { role } : {}),
+    // T176: a worker on a parent with open children needs --force.
+    ...(hasFlag(args.options, 'force') && !resolve ? { force: true } : {}),
   });
 
   if (json) {
@@ -60,11 +65,12 @@ export async function runAttach(
   }
   const session = result.session;
   console.log(
-    `agile attach: ${session.id} ${session.vendor}/${session.model} effort=${
+    `agile ${resolve ? 'resolve' : 'attach'}: ${session.id} ${session.vendor}/${session.model} effort=${
       session.effort ?? 'ignored'
     } on ${result.stream.id}`,
   );
   if (session.worktree !== undefined) console.log(`worktree=${session.worktree}`);
+  if (resolve) console.log('when the worker reports done, land the stream again');
   return 0;
 }
 

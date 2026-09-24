@@ -258,6 +258,44 @@ describe('conflict (acceptance: blocked, conflict files on the thread, worktree 
   });
 });
 
+describe('T176: after a conflict — preflight, the Resolve prompt, and the re-land', () => {
+  test('preflight names the files; the prompt says merge, resolve, test, commit; a resolved branch lands', async () => {
+    const work = branchWithWork('s-resolve', 'shared.txt', 'from the stream\n');
+    writeFileSync(join(repo, 'shared.txt'), 'from main\n');
+    git(['add', 'shared.txt']);
+    git(['commit', '-q', '-m', 'main writes shared.txt']);
+    const stream = await makeStream(work);
+    expect(() => landing.resolvePrompt(stream.id)).toThrow(/no land conflict/);
+
+    expect((await landing.land(stream.id)).status).toBe('blocked');
+    const pre = landing.preflight(stream.id);
+    expect(pre.ready).toBe(false);
+    expect(pre.conflicts).toEqual(['shared.txt']);
+    expect(pre.reason).toMatch(/conflicted in shared.txt/);
+
+    const prompt = landing.resolvePrompt(stream.id);
+    expect(prompt).toContain('git merge main');
+    expect(prompt).toContain('shared.txt');
+    expect(prompt).toMatch(/both sides' intent/);
+    expect(prompt).toMatch(/Run the tests, then commit/);
+    expect(prompt).toMatch(/ready to land again/);
+
+    // What the Resolve worker does: attach (the thread line), merge, fix, commit, finish.
+    await streams.appendThread('daemon', stream.id, {
+      kind: 'event',
+      body: 'worker attached: fake',
+    });
+    await streams.update('daemon', stream.id, { agent: { status: 'done' } });
+    Bun.spawnSync(['git', 'merge', 'main'], { cwd: work.worktree });
+    writeFileSync(join(work.worktree, 'shared.txt'), 'from main\nfrom the stream\n');
+    git(['commit', '-q', '-am', 'merge main, keep both'], work.worktree);
+
+    expect(landing.preflight(stream.id).ready).toBe(true);
+    expect((await landing.land(stream.id)).status).toBe('landed');
+    expect(readFileSync(join(repo, 'shared.txt'), 'utf8')).toBe('from main\nfrom the stream\n');
+  });
+});
+
 describe('the land gate (repos.yaml `land_gate: true`)', () => {
   test('raises the gate instead of merging, and approving it performs the merge', async () => {
     await store.putRepos({ demo: { path: repo, protected_branches: ['main'], land_gate: true } });

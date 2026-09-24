@@ -385,6 +385,8 @@ export const StreamAttachRequestSchema = z
     vendor: z.string().min(1).optional(),
     model: z.string().min(1).optional(),
     effort: z.string().min(1).optional(),
+    /** T176: attach a worker to a stream with open children anyway. */
+    force: z.boolean().optional(),
   })
   .strict();
 export type StreamAttachRequest = z.infer<typeof StreamAttachRequestSchema>;

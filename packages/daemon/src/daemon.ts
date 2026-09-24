@@ -287,7 +287,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
             }),
           ),
           ...(attachService && verbService
-            ? buildAttachRpcMethods(attachService, verbService)
+            ? buildAttachRpcMethods(attachService, verbService, landingService)
             : {}),
         }
       : undefined;
