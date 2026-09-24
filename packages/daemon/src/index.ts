@@ -60,6 +60,7 @@ export * from './bus';
 
 export * from './gates';
 
+export * from './projects';
 export * from './streams';
 
 export * from './rules';

@@ -48,6 +48,8 @@ describe('Event — cockpit design §7.4 log/events.jsonl', () => {
   // daemon today (`store/events.test.ts` asserts the other direction: every
   // event the services actually write is one of these).
   test.each([
+    'project_created',
+    'project_updated',
     'stream_created',
     'stream_updated',
     'stream_closed',
@@ -79,7 +81,7 @@ describe('Event — cockpit design §7.4 log/events.jsonl', () => {
   });
 
   test('the enum holds exactly the kinds listed above — nothing orphaned', () => {
-    expect(EVENT_KINDS).toHaveLength(25);
+    expect(EVENT_KINDS).toHaveLength(27);
   });
 
   test('a stream event carries {stream} plus the status pair in data', () => {

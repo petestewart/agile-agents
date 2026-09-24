@@ -34,6 +34,11 @@ export const EVENT_KINDS = [
   'stream_closed',
   'stream_archived',
 
+  // -- project (store.createProject / updateProject, via ProjectService) --
+  // data: {id, name, root, archived}
+  'project_created',
+  'project_updated',
+
   // -- thread (store.appendThreadEntry) --  data: {stream, by, entry_kind}
   'thread_appended',
 

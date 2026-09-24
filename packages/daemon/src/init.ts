@@ -44,6 +44,7 @@ function layoutFiles(stateRoot: string): Array<[string, string]> {
   const p = (...parts: string[]) => join(stateRoot, ...parts);
   return [
     [p('gates', '.gitkeep'), ''],
+    [p('projects', '.gitkeep'), ''],
     [p('streams', '.gitkeep'), ''],
     [p('threads', '.gitkeep'), ''],
     [p('questions', '.gitkeep'), ''],

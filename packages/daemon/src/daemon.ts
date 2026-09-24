@@ -29,6 +29,7 @@ import {
 } from './landing';
 import { LessonsService } from './lessons';
 import { type LockHandle, acquireLock } from './lock';
+import { ProjectService, buildProjectRpcMethods } from './projects';
 import { QuestionService, buildQuestionRpcMethods, wireQuestionSupersession } from './questions';
 import { type RpcServerHandle, startRpcServer } from './rpc';
 import { RulesService, buildRuleRpcMethods, ensureBuiltinRules } from './rules';
@@ -270,6 +271,9 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
                     }
                   : {}),
               })
+            : {}),
+          ...(streamService
+            ? buildProjectRpcMethods(new ProjectService(store, streamService))
             : {}),
           ...(inboxService ? buildInboxRpcMethods(inboxService) : {}),
           ...(rulesService ? buildRuleRpcMethods(rulesService, ruleEvals) : {}),
