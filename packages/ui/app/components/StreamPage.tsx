@@ -301,13 +301,24 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
   // T176: the server refused a worker on a parent with open children; this is its reason.
   const threadRef = useRef<HTMLOListElement | null>(null);
 
+  // Every pushed frame and every action re-reads the page, so reads
+  // overlap, and their responses can arrive in any order. Only the latest
+  // read may land: an older one resolving last would put back a stale page
+  // (a worker still `starting` after it went `running`), and with the
+  // session quiet no later frame would ever correct it.
+  const loadSeq = useRef(0);
   const load = useCallback(() => {
+    const seq = ++loadSeq.current;
     getStreamPage(id)
       .then((next) => {
+        if (seq !== loadSeq.current) return;
         setPage(next);
         setLoadError(undefined);
       })
-      .catch((err: unknown) => setLoadError(errorText(err)));
+      .catch((err: unknown) => {
+        if (seq !== loadSeq.current) return;
+        setLoadError(errorText(err));
+      });
   }, [id]);
 
   // A pushed cockpit frame follows every batch of events — a new thread
