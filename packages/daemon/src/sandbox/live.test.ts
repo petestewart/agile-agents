@@ -29,8 +29,21 @@ test('detectBackend() with real deps always resolves to a declared backend', () 
 });
 
 test('detectBackend() with real deps is internally consistent with its own real probes, on whatever host runs this', () => {
-  const backend = detectBackend();
-  const deps = defaultDetectBackendDeps;
+  // Probe each real dep once and feed the same answers to detectBackend, so
+  // the test costs one probe per dep (bounded by DOCKER_PROBE_TIMEOUT_MS)
+  // and cannot flake on a host whose docker answer changes between calls.
+  const real = defaultDetectBackendDeps;
+  const answers = {
+    platform: real.platform(),
+    sandboxExec: real.hasSandboxExec(),
+    container: real.hasContainerRuntime(),
+  };
+  const deps = {
+    platform: () => answers.platform,
+    hasSandboxExec: () => answers.sandboxExec,
+    hasContainerRuntime: () => answers.container,
+  };
+  const backend = detectBackend(deps);
 
   // No reachable container runtime => never 'container', on any host.
   if (!deps.hasContainerRuntime()) {
