@@ -714,8 +714,8 @@ Design: `design/projects-design.md`, which wins over `design/cockpit-design.md` 
 
 ### Ticket: T200 Project record, store, RPC and CLI
 - **Priority:** P0
-- **Status:** Todo
-- **Owner:** —
+- **Status:** In Progress
+- **Owner:** opus:worker-T200
 - **Scope:** Add the `Project` schema (projects-design §14.1) in `packages/shared` (`P-<ulid>` ids, `.strict()`). Add `projects/<id>.yaml` through the validating store with audit events `project_created` and `project_updated`. Add `daemon/projects` with a service and RPC: create (which also creates the root node), list, show, update settings, archive. Add the CLI verbs `agile project new --name --repo… [--json]`, `list`, `show`, `set`. Names are unique, case-insensitive.
 - **Acceptance Criteria:** Store round-trip; a corrupt project file is refused with path and line; creating a project writes its root stream; the CLI prints JSON with `id` and `root`.
 - **Validation Steps:** `bun test packages/shared packages/daemon/src/projects packages/cli`.
@@ -1578,6 +1578,7 @@ Daemon: `em/`, `architect/`, `oracle/`, `qa/`, `halts/`, `quota/`, `handoff/`, `
 
 ## 10. Discovered Issues Log
 
+- mode: yolo (2026-09-24), projects stage. Phase branches stacked (D30), `claude/phase-7` first; tickets `T###-<slug>` off the phase branch, merged back `--no-ff`. DIRECT_MODE (no `gh`). Phase N+1 starts without waiting for Pete's review of phase N (Pete, 2026-09-24).
 - mode: yolo (2026-09-19). Integration branch for the reshape is `claude/reshape`; ticket branches `T###-<slug>` fork from it and merge back `--no-ff`. Pete lands each phase on `main` by PR. Mode: DIRECT_MODE (no `gh`).
 - Q1 assumption in force: a coding stream's target is the repo's default branch when the repo has no integration branch (T132).
 - Q4 assumption in force: repo docs are tracked in `<repo>/.agile-docs/` (T134).
