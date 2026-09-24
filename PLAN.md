@@ -953,8 +953,8 @@ git status --short
 
 ### Ticket: T225 PR poller: PR state is the node's status
 - **Priority:** P0
-- **Status:** In Progress
-- **Owner:** opus:worker-T225
+- **Status:** Done (merge 690423b)
+- **Owner:** —
 - **Scope:**
   - Poll the open PRs of live nodes (60 s; 15 s when flagged; backoff; ETag; rate-limit pause with a thread note) and map them to `PullRequestState`.
   - The node shows review requested, changes requested, CI failing, approved, merged or closed. Merged → `human.status: landed`. Closed unmerged → a question for you.
@@ -962,7 +962,7 @@ git status --short
   - In this phase, changes appear as thread lines and audit events only. Routed events come in T244.
 - **Acceptance Criteria:** Against the fake with a fake clock: each transition shows on the node. 304s don't rewrite the record. A 403 pauses polling.
 - **Validation Steps:** `bun test packages/daemon/src/github packages/daemon/src/delivery`.
-- **Notes:** After T224. From T224 review: add a `push_failed` held reason (DeliveryStateSchema) and use it for push failures; refuse or handle re-delivery once the PR is merged/closed (today `createPull` would 422). From T226: call `mainSync.mainMoved(repo)` when a PR merges and when `ls-remote` sees main move on `pr` repos.
+- **Notes:** After T224. From T224 review: add a `push_failed` held reason (DeliveryStateSchema) and use it for push failures; refuse or handle re-delivery once the PR is merged/closed (today `createPull` would 422). From T226: call `mainSync.mainMoved(repo)` when a PR merges and when `ls-remote` sees main move on `pr` repos. Review (sonnet) PASS. Daemon +491. Six conditional GETs per PR per poll (304s are free). "Review requested" inferred (port has no requested_reviewers). Local main is fast-forwarded with `merge --ff-only` only when clean; a dirty checked-out main is skipped with a note. `push_failed` held reason added. Re-deliver after merge refused; after close opens a new PR.
 
 ### Ticket: T226 Sync after merge
 - **Priority:** P0
@@ -987,8 +987,8 @@ git status --short
 
 ### Ticket: T228 Waits-on, merge-together and auto-merge
 - **Priority:** P1
-- **Status:** Todo
-- **Owner:** —
+- **Status:** In Progress
+- **Owner:** opus:worker-T228
 - **Scope:**
   - `waits_on` holds delivery until the target is merged, or closed for a non-work target (P8). `satisfied_at` is set by the daemon. Add `agile node wait <id> --on <id>` and a Link button.
   - `merge_together` groups deliver together (P7).
