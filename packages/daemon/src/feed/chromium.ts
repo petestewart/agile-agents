@@ -202,12 +202,37 @@ export async function acquireBrowserPage<B extends AcquirableBrowser, P>(
       return { browser, page };
     })();
 
+    // A fresh launch can also reject outright: CI run 36071316586 saw bun's
+    // `child_process.spawn` fail to connect Chromium's stdio pipe (`connect
+    // ENOENT`) in 10 ms, while the very next launch worked. That is a failed
+    // attempt like a hang, so it is retried; the last attempt's rejection is
+    // rethrown as-is, so a missing or broken Chromium still fails loudly.
+    // A rejection from `openPage()` (or a cached browser) is not retried here.
+    let launchFailure: { err: unknown } | undefined;
+    if (!reusable) {
+      acquiring.catch((err: unknown) => {
+        launchFailure = { err };
+      });
+    }
     const won = await Promise.race([
-      opening,
+      opening.catch((err: unknown) => {
+        if (launchFailure && attempt < attempts) return undefined;
+        throw err;
+      }),
       new Promise<undefined>((resolve) => setTimeout(() => resolve(undefined), budgetMs)),
     ]);
     // Only the winner is returned, so only the winner can be cached.
     if (won) return won;
+    if (launchFailure) {
+      const reason =
+        launchFailure.err instanceof Error
+          ? launchFailure.err.message.split('\n')[0]
+          : String(launchFailure.err);
+      warn(
+        `${options.label}: launch() rejected (attempt ${attempt}/${attempts}: ${reason}) — launching another`,
+      );
+      continue;
+    }
 
     abandoned = true;
     // The browser is in hand (wedged in `openPage()`) or arrives later
