@@ -397,11 +397,27 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
     outputLog.append(`${text}\n`);
     const body =
       text.length > THREAD_BODY_MAX_CHARS ? `${text.slice(0, THREAD_BODY_MAX_CHARS - 1)}…` : text;
+    const append = () =>
+      streams.appendThread(
+        'agent',
+        stream.id,
+        { kind: 'line', body, ref: outputLog.path },
+        sessionId,
+      );
+    const logFailure = (attempt: string, err: unknown) =>
+      // Into stderr.log, not the stderr tail: it is the daemon's failure, not the vendor's.
+      stderrLog.append(
+        `[agiled] thread append failed (${attempt}): ${err instanceof Error ? err.message : String(err)}\n`,
+      );
     track(
-      streams
-        .appendThread('agent', stream.id, { kind: 'line', body, ref: outputLog.path }, sessionId)
-        .catch(() => {
-          // An unwritable thread must not take the session down; the log has the text.
+      append()
+        .catch((err: unknown) => {
+          logFailure('retrying once', err);
+          return append();
+        })
+        .catch((err: unknown) => {
+          // An unwritable thread must not take the session down; output.log has the text.
+          logFailure('gave up', err);
         }),
     );
   }
