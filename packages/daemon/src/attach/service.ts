@@ -42,7 +42,7 @@ import type { CliInvocation } from '../runner/cli-bin';
 import { type AgentSessionHandle, startAgentSession } from '../runner/session';
 import { createWorktree, slugify } from '../runner/worktrees';
 import type { StateStore } from '../store';
-import { buildEvent } from '../store';
+import { assertRepoHasCommits, buildEvent } from '../store';
 import type { StreamService } from '../streams/service';
 import { type AttachFlags, effortIgnoredLine, resolveSessionSettings } from './resolve';
 
@@ -257,6 +257,7 @@ export class AttachService {
       // §4.2: a reviewer never cuts a branch. On a never-attached stream it
       // reviews from the session dir, like a no-repo stream.
       if (worktreePath === undefined && role === 'worker') {
+        assertRepoHasCommits(stream.repo as string, repoEntry);
         const created = await createWorktree(repoEntry.path, {
           id: stream.id,
           slug: slugify(stream.title),

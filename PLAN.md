@@ -856,12 +856,12 @@ Design: `design/projects-design.md`, which wins over `design/cockpit-design.md` 
 
 ### Ticket: T214 A repo with no commits is refused up front
 - **Priority:** P1
-- **Status:** In Progress
-- **Owner:** opus:worker-T214
+- **Status:** Done (merge bb13e6d)
+- **Owner:** —
 - **Scope:** From Pete's Phase 8 live run (2026-09-24): `node new --repo agile-test-repo` on a repo with no commits created the node, but the agent never started; the thread got only a raw `git rev-parse --verify HEAD^{commit} failed … Needed a single revision` and the node sat idle with no hint. Refuse up front, before anything is written: `node new`/`add-repo`/attach on a repo whose main branch has no commit fail with one line ("<repo> has no commits on <branch>; make an initial commit first"). `agile repo add` on such a repo succeeds but prints the same warning.
 - **Acceptance Criteria:** CLI e2e: `repo add` on an empty repo warns; `node new --repo` on it is refused with the message and creates no node; after one commit it starts.
 - **Validation Steps:** `bun test packages/daemon/src/attach packages/daemon/src/streams packages/cli`.
-- **Notes:** Fixed on `claude/phase-7`, merged forward.
+- **Notes:** Fixed on `claude/phase-7`, merged forward. Review (sonnet) PASS. Daemon +38. Test fixtures that `git init` a repo for nodes now make an empty commit.
 
 ### Ticket: T212 Phase 7 QA and Pete's look
 - **Priority:** P0

@@ -215,6 +215,8 @@ describe('agile stream against a daemon on a temp AGILE_HOME', () => {
     expect(errors.join('\n')).toContain('unknown repo: ghost');
 
     // Registered, it works — and still creates no branch or worktree here.
+    // T214: a node can't be made in a repo with no commits.
+    Bun.spawnSync(['git', 'commit', '-q', '--allow-empty', '-m', 'init'], { cwd: daemon.repo });
     expect((await cli(['repo', 'add', daemon.repo, '--name', 'alpha'])).code).toBe(0);
     const stream = await newStream('With a repo', ['--repo', 'alpha']);
     expect(stream.repo).toBe('alpha');
@@ -478,4 +480,53 @@ describe('agile node wait (T228)', () => {
     const removed = await cli(['node', 'wait', b.id, '--on', a.id, '--remove']);
     expect(removed.out).toContain('waits on nothing');
   });
+});
+
+describe('a repo with no commits (T214)', () => {
+  async function cliErr(argv: string[]): Promise<{ code: number; out: string; err: string }> {
+    const errors: string[] = [];
+    const original = console.error;
+    console.error = (msg: string) => errors.push(String(msg));
+    try {
+      const r = await cli(argv);
+      return { ...r, err: errors.join('\n') };
+    } finally {
+      console.error = original;
+    }
+  }
+
+  test('repo add warns; node new and add-repo are refused and write nothing; after a commit it starts', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'agile-t214-repo-'));
+    const git = (...args: string[]) => Bun.spawnSync(['git', ...args], { cwd: dir });
+    git('init', '-q', '-b', 'main');
+    git('config', 'user.email', 'test@example.com');
+    git('config', 'user.name', 'Test');
+    const message = 'empty-repo has no commits on main; make an initial commit first';
+    try {
+      const added = await cliErr(['repo', 'add', dir, '--name', 'empty-repo']);
+      expect(added.code).toBe(0);
+      expect(added.err).toBe(`agile repo add: warning: ${message}`);
+
+      const nodeNew = ['node', 'new', '--title', 'T', '--goal', 'g', '--project', projectId];
+      const before = (await cli(['node', 'list', '--all', '--json'])).out;
+      const refused = await cliErr([...nodeNew, '--repo', 'empty-repo']);
+      expect(refused.code).toBe(1);
+      expect(refused.err).toContain(message);
+      expect((await cli(['node', 'list', '--all', '--json'])).out).toBe(before);
+
+      const q = await newStream('Question');
+      const reshaped = await cliErr(['node', 'add-repo', q.id, 'empty-repo']);
+      expect(reshaped.code).toBe(1);
+      expect(reshaped.err).toContain(message);
+
+      writeFileSync(join(dir, 'README.md'), '# r\n');
+      git('add', '-A');
+      git('commit', '-q', '-m', 'init');
+      const started = await cli([...nodeNew, '--repo', 'empty-repo']);
+      expect(started.code).toBe(0);
+      expect(started.out).toMatch(/^started /m);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 30_000);
 });
