@@ -18,6 +18,9 @@ export const ContractIdSchema = z.string().regex(CONTRACT_ID_PATTERN, 'must look
 export type ContractId = z.infer<typeof ContractIdSchema>;
 
 export const CONTRACT_PROPOSAL_ID_PATTERN = new RegExp(`^CP-${ULID_PATTERN.source.slice(1, -1)}$`);
+export const ContractProposalIdSchema = z
+  .string()
+  .regex(CONTRACT_PROPOSAL_ID_PATTERN, 'must look like CP-<ulid>');
 
 /** §14.4: the seam as text; longer bodies go to a docs file with a pointer. */
 export const CONTRACT_BODY_MAX_CHARS = 800;
@@ -77,7 +80,7 @@ export const ContractHistoryEntrySchema = z
 
 export const ContractProposalSchema = z
   .object({
-    id: z.string().regex(CONTRACT_PROPOSAL_ID_PATTERN, 'must look like CP-<ulid>'),
+    id: ContractProposalIdSchema,
     from: z.array(UlidSchema).min(1).max(PLAN_LIST_MAX),
     body: ContractBody,
     reason: z.string().max(400),
@@ -194,6 +197,8 @@ export const CoordinatorChangeSchema = z.discriminatedUnion('action', [
       parties: z.array(UlidSchema).max(PLAN_LIST_MAX),
       reason: z.string().max(400).optional(),
       routine: z.boolean().optional(),
+      /** T285: the child's proposal this approves; dropped from the contract when applied. */
+      proposal: ContractProposalIdSchema.optional(),
     })
     .strict(),
 ]);

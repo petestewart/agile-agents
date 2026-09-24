@@ -12,6 +12,8 @@ import {
   CONTRACT_HISTORY_MAX,
   type Contract,
   ContractIdSchema,
+  type ContractProposal,
+  ContractProposalSchema,
   type Stream,
   ulid,
   validateContract,
@@ -26,6 +28,15 @@ export interface ContractWrite {
   body: string;
   parties: string[];
   reason?: string;
+  /** T285: the proposal this write approves; it leaves the open list. */
+  proposal?: string;
+}
+
+/** T285: a child's (or co-signing siblings') proposal, before it has an id. */
+export interface ContractProposalInput {
+  body: string;
+  reason: string;
+  routine?: boolean;
 }
 
 export interface ContractServiceOptions {
@@ -125,8 +136,10 @@ export class ContractService {
       throw new Error(`contract_write: ${before.id} belongs to another node`);
     }
     const changed = before.body !== input.body.trim() || before.title !== input.title.trim();
+    const proposals = before.proposals?.filter((p) => p.id !== input.proposal);
     const after = validateContract({
       ...before,
+      ...(proposals !== undefined ? { proposals } : {}),
       title: input.title,
       body: input.body,
       parties,
@@ -151,6 +164,116 @@ export class ContractService {
     // T282: a parties change is announced too, to the old and the new parties.
     if (changed || partiesChanged) await this.announce(saved, before, by);
     return saved;
+  }
+
+  /** The contract holding open proposal `id`, and the proposal. */
+  findProposal(id: string): { contract: Contract; proposal: ContractProposal } {
+    for (const contract of this.list()) {
+      const proposal = contract.proposals?.find((p) => p.id === id);
+      if (proposal !== undefined) return { contract, proposal };
+    }
+    throw new NotFoundError('contract proposal', id);
+  }
+
+  /**
+   * T285 (§9.1): `from[0]` proposes a new body, co-signed by the rest of
+   * `from`. Every signer must be a child of the owning node; the first one
+   * a party. Lands open on the contract, with a thread line and a
+   * `contract_proposal` event to the owning node (its coordinator wakes).
+   */
+  async propose(
+    id: string,
+    from: readonly string[],
+    input: ContractProposalInput,
+  ): Promise<ContractProposal> {
+    const { streams, store } = this.options;
+    const before = this.get(id);
+    const signers = [...new Set(from)];
+    assertChildren(streams, before.node, signers, 'propose_contract');
+    if (!before.parties.includes(signers[0] as string)) {
+      throw new Error(`propose_contract: you are not a party to ${before.id}`);
+    }
+    const proposal = ContractProposalSchema.parse({
+      id: `CP-${ulid()}`,
+      from: signers,
+      body: input.body,
+      reason: input.reason,
+      routine: input.routine ?? false,
+      status: 'open',
+      at: this.now(),
+    });
+    await store.putEntity(
+      contractPath(before.id),
+      validateContract,
+      validateContract({ ...before, proposals: [...(before.proposals ?? []), proposal] }),
+    );
+    await streams.appendThread('daemon', before.node, {
+      kind: 'proposal',
+      body: `contract ${before.title}: ${signers.length} child(ren) propose (${proposal.id}): ${proposal.body}. Reason: ${proposal.reason}`.slice(
+        0,
+        800,
+      ),
+      ref: contractPath(before.id),
+    });
+    await this.options.emit?.({
+      type: 'contract_proposal',
+      subject: before.node,
+      payload: {
+        contract: before.id,
+        children: signers,
+        body: proposal.body.slice(0, 200),
+        reason: proposal.reason.slice(0, 200),
+      },
+      ref: contractPath(before.id),
+      by: 'daemon',
+    });
+    return proposal;
+  }
+
+  /** T285: the proposal went to the operator (an autonomy proposal holds it). */
+  async markAsked(id: string): Promise<ContractProposal> {
+    return this.setProposal(id, (p) => ({ ...p, status: 'asked_human' }));
+  }
+
+  /** T285: drops the proposal, with a line on the owner's and every signer's thread. */
+  async reject(id: string, reason: string, by: string): Promise<ContractProposal> {
+    const { contract, proposal } = this.findProposal(id);
+    await this.options.store.putEntity(
+      contractPath(contract.id),
+      validateContract,
+      validateContract({
+        ...contract,
+        proposals: (contract.proposals ?? []).filter((p) => p.id !== id),
+      }),
+    );
+    const body = `contract ${contract.title}: proposal ${id} rejected by ${by}${
+      reason !== '' ? `: ${reason}` : ''
+    }`.slice(0, 800);
+    for (const node of [contract.node, ...proposal.from]) {
+      await this.options.streams.appendThread('daemon', node, {
+        kind: 'event',
+        body,
+        ref: contractPath(contract.id),
+      });
+    }
+    return { ...proposal, status: 'rejected' };
+  }
+
+  private async setProposal(
+    id: string,
+    change: (p: ContractProposal) => ContractProposal,
+  ): Promise<ContractProposal> {
+    const { contract, proposal } = this.findProposal(id);
+    const next = change(proposal);
+    await this.options.store.putEntity(
+      contractPath(contract.id),
+      validateContract,
+      validateContract({
+        ...contract,
+        proposals: (contract.proposals ?? []).map((p) => (p.id === id ? next : p)),
+      }),
+    );
+    return next;
   }
 
   /** `contract_changed` to the owner and the parties (§15), and a line on the owner's thread. */

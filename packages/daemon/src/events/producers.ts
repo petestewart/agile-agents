@@ -220,6 +220,8 @@ export function summarize(
     }
     case 'contract_changed':
       return `Contract ${String(p.title)} is now v${String(p.version)}: ${String(p.diff)}. Adjust your side.`;
+    case 'contract_proposal':
+      return `${list(p.children)} propose a change to contract ${String(p.contract)}: ${String(p.body)}. Reason: ${String(p.reason)}. Decide it with \`decide_contract\`.`;
     default:
       return `${event.type}: read_event ${event.id}.`;
   }

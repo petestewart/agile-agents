@@ -393,6 +393,67 @@ export class VerbService {
     return this.options.contracts.write(caller.stream, write, by);
   }
 
+  /** T285 (§9.1): a child, co-signed by siblings in `with`, proposes a contract change. */
+  async proposeContract(input: unknown): Promise<unknown> {
+    const {
+      session,
+      contract,
+      with: cosigners,
+      ...proposal
+    } = validateVerbInput('propose_contract', input);
+    const caller = this.caller(session);
+    if (caller.role !== 'worker' && caller.role !== 'coordinator') {
+      throw new Error(`propose_contract: a ${caller.role} session cannot propose`);
+    }
+    if (this.options.contracts === undefined) {
+      throw new Error('propose_contract: contracts are not available');
+    }
+    return this.options.contracts.propose(
+      contract,
+      [caller.stream, ...(cosigners ?? [])],
+      proposal,
+    );
+  }
+
+  /**
+   * T285: the coordinator decides a proposal on its own node's contract.
+   * Approval goes through the gate as `approve_contract` (applied at Run
+   * when the coordinator judges it routine, else an inbox card).
+   */
+  async decideContract(input: unknown): Promise<unknown> {
+    const {
+      session,
+      proposal: id,
+      decision,
+      reason,
+      routine,
+    } = validateVerbInput('decide_contract', input);
+    const caller = this.coordinatorCaller(session, 'decide_contract');
+    const { contracts, autonomy } = this.options;
+    if (contracts === undefined || autonomy === undefined) {
+      throw new Error('decide_contract: contracts are not available');
+    }
+    const { contract, proposal } = contracts.findProposal(id);
+    if (contract.node !== caller.stream) {
+      throw new Error(`decide_contract: ${contract.id} belongs to another node`);
+    }
+    if (proposal.status !== 'open') throw new Error(`decide_contract: ${id} is ${proposal.status}`);
+    const by = `agent:${session}`;
+    if (decision === 'reject') return contracts.reject(id, reason ?? '', by);
+    const outcome = await autonomy.act(caller.stream, 'coordinator', by, {
+      action: 'approve_contract',
+      contract: contract.id,
+      title: contract.title,
+      body: proposal.body,
+      parties: contract.parties,
+      reason: reason ?? proposal.reason,
+      routine: routine ?? false,
+      proposal: id,
+    });
+    if (!outcome.applied) await contracts.markAsked(id);
+    return outcome;
+  }
+
   /** T282: the coordinator's structural verbs, all through the autonomy gate. */
   async addChild(input: unknown): Promise<unknown> {
     const { session, ...change } = validateVerbInput('add_child', input);
@@ -462,5 +523,7 @@ export function verbHandlers(
     add_child: (input) => service.addChild(input),
     add_waits_on: (input) => service.addWaitsOn(input),
     set_owner: (input) => service.setOwner(input),
+    propose_contract: (input) => service.proposeContract(input),
+    decide_contract: (input) => service.decideContract(input),
   };
 }

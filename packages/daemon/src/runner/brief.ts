@@ -150,7 +150,7 @@ export function babysitSection(stream: Stream): string | undefined {
 /** T282: what the level means for `add_child`, `add_waits_on`, `set_owner` and a contract bump. */
 const AUTONOMY_HINT: Record<Autonomy, string> = {
   advise:
-    '`add_child`, `add_waits_on` and `set_owner` become proposals the operator applies; contract changes go to the operator.',
+    '`add_child`, `add_waits_on` and `set_owner` become proposals the operator applies; contract changes (`decide_contract`) go to the operator.',
   organise:
     '`add_child`, `add_waits_on` and `set_owner` apply at once (the thread says so); contract changes go to the operator.',
   run: '`add_child`, `add_waits_on` and `set_owner` apply at once; a routine (additive) contract change with `routine: true` applies too.',
@@ -203,7 +203,10 @@ export function planSection(view: ChildPlanView): string {
     ),
   ];
   if (view.contracts.length > 0) {
-    lines.push('', 'Contracts you rely on (you can’t change one; `ask` your coordinator):');
+    lines.push(
+      '',
+      'Contracts you rely on (you can’t change one; `propose_contract` to your coordinator):',
+    );
     for (const c of view.contracts) lines.push(`- **${c.title}** (v${c.version}): ${c.body}`);
   }
   return section('Your part of the plan', lines.join('\n'));
