@@ -18,8 +18,8 @@
  */
 
 import { type SessionRef, type Stream, liveChildrenOf, nodeRole } from '@agile-agents/shared';
-import { git, removeWorktreeSafely } from '../landing/git';
-import { mainBranch } from '../landing/service';
+import { git, removeWorktreeSafely } from '../delivery/git';
+import { mainBranch } from '../delivery/service';
 import { createWorktree, slugify } from '../runner/worktrees';
 import type { StateStore } from '../store/store';
 import { type StreamService, UnknownRepoError } from './service';

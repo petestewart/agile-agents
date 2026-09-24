@@ -1,7 +1,7 @@
 /**
  * `agile land <stream>` against a real in-process daemon socket and a real
  * git repo — no fakes (T132). The daemon side is covered by
- * `packages/daemon/src/landing/service.test.ts`; what this asserts is the
+ * `packages/daemon/src/delivery/service.test.ts`; what this asserts is the
  * CLI contract: the thread line on stdout, `--json`, and the exit codes.
  *
  * It wires its own RPC server rather than `test-support.ts`'s shared one:
@@ -14,11 +14,11 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
-  LandingService,
+  DeliveryService,
   type RpcServerHandle,
   StateStore,
   StreamService,
-  buildLandingRpcMethods,
+  buildDeliveryRpcMethods,
   runInit,
   startRpcServer,
 } from '@agile-agents/daemon';
@@ -83,7 +83,7 @@ beforeEach(async () => {
     version: 'test',
     stateRoot: init.stateRoot,
     startedAt: Date.now(),
-    extraMethods: buildLandingRpcMethods(new LandingService({ store, streams })),
+    extraMethods: buildDeliveryRpcMethods(new DeliveryService({ store, streams })),
   });
   await rpc.listening;
 });
@@ -117,13 +117,20 @@ describe('agile land <stream>', () => {
   test('a conflict prints the conflicting files and exits 1', async () => {
     const id = await streamWithWork('s-cli-conflict', 'shared.txt', 'from the stream\n');
     writeFileSync(join(repo, 'shared.txt'), 'from main\n');
-    git(['add', '-A']);
+    git(['add', 'shared.txt']);
     git(['commit', '-q', '-m', 'main writes shared.txt']);
 
     const { code, out } = await capture(() => runLand(socketPath, parseArgs([id]), false));
     expect(code).toBe(1);
     expect(out).toContain('conflicted in: shared.txt');
     expect(streams.get(id).agent.status).toBe('blocked');
+  });
+
+  test('agile deliver: delivery.deliver sets delivery_state merged (T223)', async () => {
+    const id = await streamWithWork('s-deliver', 'd.txt', 'd\n');
+    const { code } = await capture(() => runLand(socketPath, parseArgs([id]), false));
+    expect(code).toBe(0);
+    expect(streams.get(id).delivery_state?.status).toBe('merged');
   });
 
   test('a refusal surfaces as a CLI error, not a stack trace', async () => {

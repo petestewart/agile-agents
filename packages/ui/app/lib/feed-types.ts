@@ -104,7 +104,7 @@ export interface CockpitProjectRow {
   root: string;
 }
 
-/** T161: mirror of `landing/service.ts`'s `LandPreflight` — the Land button's "before". */
+/** T161: mirror of `delivery/service.ts`'s `LandPreflight` — the Land button's "before". */
 export interface LandPreflight {
   ready: boolean;
   reason?: string;
@@ -138,7 +138,7 @@ export interface StreamPagePayload {
   land?: LandPreflight;
 }
 
-/** T161: mirror of `landing/service.ts`'s `StreamDiff` (`GET /api/streams/:id/diff`). */
+/** T161: mirror of `delivery/service.ts`'s `StreamDiff` (`GET /api/streams/:id/diff`). */
 export interface StreamDiff {
   stream: string;
   branch: string;
@@ -149,7 +149,7 @@ export interface StreamDiff {
   truncated: boolean;
 }
 
-/** T161: mirror of `landing/service.ts`'s `LandOutcome` — the Land button's "after". */
+/** T161: mirror of `delivery/service.ts`'s `LandOutcome` — the Land button's "after". */
 export type LandOutcome =
   | { status: 'gated'; gate: HilRequest; line: string }
   | { status: 'refused'; reason: string; line: string }
