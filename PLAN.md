@@ -1250,12 +1250,12 @@ agile node show $P --json | jq -r '.delivery_state.status, .delivery_state.pr.au
 
 ### Ticket: T265 ∥ Per-repo norms in the repo view
 - **Priority:** P2
-- **Status:** In Progress
-- **Owner:** opus:worker-T265
+- **Status:** Done (merge 6e37da9)
+- **Owner:** —
 - **Scope:** The repo view (T209) lists the accepted standards and architecture for that repo, with enforcement and stats.
 - **Acceptance Criteria:** e2e: an accepted api standard shows under api.
 - **Validation Steps:** `bun run test:e2e`.
-- **Notes:** After T260.
+- **Notes:** After T260. Review (sonnet) PASS. Daemon +11. `GET /api/repos/:name/knowledge` (accepted, repo-scoped, no decisions).
 
 ### Ticket: T266 Knowledge screen
 - **Priority:** P1
