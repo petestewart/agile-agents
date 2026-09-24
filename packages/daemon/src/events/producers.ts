@@ -205,6 +205,11 @@ export function summarize(
       const project = typeof proj === 'string' ? ` (${proj})` : '';
       return `You and ${name(other)}${project} both changed ${files}. Your coordinator decides who waits; don't rewrite their part.`;
     }
+    case 'symbol_changed':
+      if (node !== event.subject && !isImporter(event, node)) {
+        return `${name(event.subject)} changed ${String(p.symbol)}, which a sibling imports in ${String(p.file)}.`;
+      }
+      return `${name(event.subject)} changed ${String(p.symbol)}, which you import in ${String(p.file)}. Check your use still fits; ask your sibling or coordinator if it doesn't.`;
     case 'dependency_satisfied': {
       const project = typeof p.project === 'string' ? ` (${p.project})` : '';
       return `${String(p.title ?? p.node)}${project} ${String(p.outcome)}; your wait on it has cleared.`;
@@ -218,4 +223,9 @@ export function summarize(
     default:
       return `${event.type}: read_event ${event.id}.`;
   }
+}
+
+/** The sibling a `symbol_changed` was routed to because it imports the symbol. */
+function isImporter(event: RoutedEvent, node: string | undefined): boolean {
+  return event.routing.some((r) => r.node === node && r.because === 'sibling');
 }
