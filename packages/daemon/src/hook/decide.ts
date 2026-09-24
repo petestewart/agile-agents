@@ -6,6 +6,8 @@
  *      acked in the same decision (the deny reason is the delivery; an
  *      urgent message nobody acks would otherwise deny every call forever);
  *   2. big raw Read/Grep (over `limits.maxReadBytes`/`maxGrepBytes`) → deny;
+ *   2b. repo visibility (P13): a private repo's path outside the listed
+ *      projects, or a write into any repo but the node's own → deny;
  *   3. role × tool policy through `decidePermission` for edit-kind tools and
  *      `Bash` (`hil` → `ask`, `deny` → `deny`), so every role's policy is
  *      enforced at the hook, not only at the ACP tier;
@@ -42,6 +44,7 @@ import type {
 import type { PermissionRole } from '../permissions';
 import type { RuleCheckContext } from '../permissions/rule-checks';
 import { patternRulesOf, runPatternRules } from '../permissions/rule-checks';
+import { commandPaths, visibilityDenyReason } from '../permissions/visibility';
 import type { ClaudePreToolUsePayload, HookDecision, HookDecisionContext } from './types';
 
 /**
@@ -247,6 +250,17 @@ function computeGateVerdict(
       }
     }
     // No resolvable path (a directory, or unstattable): not size-gated.
+  }
+
+  // 2b. Repo visibility (P13), a built-in path check.
+  if (ctx.visibility !== undefined) {
+    const command = payload.tool_name === 'Bash' ? commandOf(payload) : undefined;
+    const shell = command !== undefined ? commandPaths(command) : { reads: [], writes: [] };
+    const reason =
+      visibilityDenyReason(ctx.visibility, pathsForToolCall(payload), isWritingToolCall(payload)) ??
+      visibilityDenyReason(ctx.visibility, shell.writes, true) ??
+      visibilityDenyReason(ctx.visibility, shell.reads, false);
+    if (reason !== undefined) return { decision: 'deny', reason };
   }
 
   // 3. Role × tool policy.

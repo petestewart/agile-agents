@@ -25,6 +25,7 @@ import {
   MESSAGE_BODY_MAX_CHARS,
   type Policy,
   type RepoEntry,
+  type ReposConfig,
   type Rule,
   type RuleId,
   type SessionRole,
@@ -313,6 +314,31 @@ export class HookService {
       protectedBranches: protectedBranchesFor(this.store, stream),
       upstreamBranch: branches.upstream,
       headBranch: branches.head,
+      ...this.visibilityFor(stream, worktreePath),
+    };
+  }
+
+  /** P13's inputs: the node's repo and project, and the registry. An unreadable repos.yaml fails closed (`reposError`). */
+  private visibilityFor(
+    stream: string,
+    worktreePath: string,
+  ): Pick<HookDecisionContext, 'visibility'> {
+    const record = this.streamRecord(stream);
+    let repos: ReposConfig = {};
+    let reposError: string | undefined;
+    try {
+      repos = this.store.getRepos();
+    } catch (err) {
+      reposError = err instanceof Error ? err.message : String(err);
+    }
+    return {
+      visibility: {
+        repos,
+        ...(reposError !== undefined ? { reposError } : {}),
+        worktreePath,
+        ...(record?.repo !== undefined ? { ownRepo: record.repo } : {}),
+        ...(record?.project !== undefined ? { project: record.project } : {}),
+      },
     };
   }
 
