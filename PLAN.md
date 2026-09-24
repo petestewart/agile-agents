@@ -610,6 +610,24 @@ Build order: Phase 0 → 1 → 2 → 3 → 4 → 5 → 6. Within a phase, ticket
 - **Validation Steps:** the line count above; `bun test`; `bun run test:integration`; `bun run test:e2e`.
 - **Notes:** Pete asked for it 2026-09-23 over raising the target.
 
+### Ticket: T174 A question on the stream gets an answer
+- **Priority:** P0
+- **Status:** In Progress
+- **Owner:** —
+- **Scope:** Pete's walkthrough (2026-09-24): he wrote "how many tests are you writing?" on the Transfers stream while the worker was mid-turn; the worker never answered, finished, posted its summary and exited. Causes: `AttachService.say` prompts `The operator says on the stream: <body>\n\nContinue the work.`, which tells the model to carry on; and `runPromptTurn` serializes turns, so a line sent mid-turn waits for the turn to end, and nothing shows that it is waiting. Fix: (1) the delivered prompt tells the worker to reply to the operator on the stream first (answer a question, acknowledge an instruction), then continue; (2) a line queued behind a running turn is shown as waiting on the stream page (e.g. "queued — the worker reads it after its current step") until delivered; (3) a queued human line is never dropped: if the session is ending (turn ended, worker reported done) with a line still queued, the line is still delivered as its own turn before the session is let go. Check the done/exit path in attach/service.ts and runner/session.ts for where a queued prompt could be lost.
+- **Acceptance Criteria:** Unit tests with the fake agent: a line sent mid-turn is delivered after the turn with the new wording, and a session that would end after that turn still runs the queued line; e2e shows the queued marker then clears it. Pete's live check: a mid-turn question gets an answer on the thread.
+- **Validation Steps:** `bun test packages/daemon`; `bun run test:e2e`; Pete live.
+- **Notes:** Fake-agent tests cannot prove the model answers; the wording is the intent layer, the delivery guarantee is the enforcement.
+
+### Ticket: T175 Setup rough edges from Pete's walkthrough
+- **Priority:** P2
+- **Status:** Todo
+- **Owner:** —
+- **Scope:** From Pete's 2026-09-24 walkthrough. (1) An `AGILE_HOME` that exists and is not a directory (his pointed at the `agile` binary) is refused by every command with one clear line naming the variable and the path, not EEXIST/ENOTDIR. (2) When `daemon start` finds the port held, it names the holder when it can (pid and command via `lsof`), and says whether it looks like another `agiled` and how to stop it; `daemon stop` on a home with no pidfile hints at a daemon from another home on the port. (3) `agile rules add --name` so CLI-made rules show a name on cards instead of the id. (4) Quickstart/LIVE-CHECKLIST mention that a fresh home starts with three built-in rules.
+- **Acceptance Criteria:** Tests for (1)–(3); checklist line for (4).
+- **Validation Steps:** `bun test packages/cli packages/daemon`; `bun run test:integration`.
+- **Notes:** After T174.
+
 ### Ticket: T165 Cockpit as an installable app
 - **Priority:** P2
 - **Status:** Todo (step 1 done 2026-09-22, merge 8121113; step 2 awaits Pete)
