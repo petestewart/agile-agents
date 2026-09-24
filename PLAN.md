@@ -838,17 +838,17 @@ Design: `design/projects-design.md`, which wins over `design/cockpit-design.md` 
 
 ### Ticket: T211 LIVE-CHECKLIST for projects
 - **Priority:** P1
-- **Status:** In Progress
-- **Owner:** opus:worker-T211
+- **Status:** Done (merge 993c824)
+- **Owner:** —
 - **Scope:** Rewrite LIVE-CHECKLIST.md for Phase 7: a scratch home, projects, `node new`, + Repo, and the views. Add T175 item (4), that a fresh home starts with the built-in rules. All commands are zsh-paste-safe: no placeholders, no inline comments, ids captured with `jq`.
 - **Acceptance Criteria:** Every command in the file runs as pasted against a fresh home on the phase branch (checked by the QA ticket).
 - **Validation Steps:** Read-through by QA.
-- **Notes:** After T205 and T208.
+- **Notes:** After T205 and T208. Every non-vendor block ran as pasted under `sh` (no zsh in the container) against a scratch home; [vendor] steps marked. Read-through by T212 QA.
 
 ### Ticket: T212 Phase 7 QA and Pete's look
 - **Priority:** P0
-- **Status:** Todo
-- **Owner:** —
+- **Status:** In Progress
+- **Owner:** sonnet:qa-T212
 - **Scope:** Black-box QA of T200–T211 on a real daemon with the fake agent: projects, migration of a copied old home, roles, start-on-create, the three + Repo reshapes, and the views. Daemon line count. Then Pete runs the live look below.
 - **Acceptance Criteria:** QA ACCEPT; Pete's look passes: projects show, + Repo reshapes a live conversation without losing the thread, and ledger-lite's `git status --short` is empty after the run.
 - **Validation Steps:** Pete, on his Mac:
