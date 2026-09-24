@@ -132,6 +132,11 @@ export interface HookServiceOptions {
    */
   classifier?: HookClassifier;
   limits?: HookLimits;
+  /**
+   * T227: told after every post-tool-use call of a tool that may change
+   * files or commit (overlap tracking recomputes `touched`). Fire-and-forget.
+   */
+  onFilesMayHaveChanged?: (stream: string) => void;
   /** Injectable for tests; defaults to `node:fs.statSync`. */
   fileSize?: (path: string) => number | undefined;
   now?: () => Date;
@@ -175,6 +180,9 @@ function safeRealpath(path: string): string {
     return resolve(path);
   }
 }
+
+/** Tools that never change files or commit: no `touched` recompute after them (T227). */
+const READ_ONLY_TOOLS = new Set(['Read', 'Grep', 'Glob', 'LS', 'WebFetch', 'WebSearch']);
 
 const UNRESOLVED_CWD_REASON = 'agile: cwd is not a registered stream worktree';
 
@@ -752,6 +760,9 @@ export class HookService {
         }
       : { decision: 'allow' };
     await this.logDecision(ctx, 'post_tool_use', decision);
+    if (!READ_ONLY_TOOLS.has(payload.tool_name ?? '')) {
+      this.options.onFilesMayHaveChanged?.(ctx.stream);
+    }
 
     return oversized
       ? {

@@ -41,6 +41,11 @@ function Node({ node }: { node: StreamTreeNode }): JSX.Element {
           {ROLE_ICON[node.row.role]}
         </span>
         <span className="title">{node.row.title}</span>
+        {node.row.overlap && (
+          <span className="cr-overlap" data-testid="overlap-mark" title="overlapping changes">
+            ⚠
+          </span>
+        )}
       </button>
       {node.children.length > 0 && (
         <ul>

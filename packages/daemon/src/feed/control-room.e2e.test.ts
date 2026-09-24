@@ -2142,6 +2142,65 @@ describe('+ Repo in place (Playwright e2e, T205)', () => {
   );
 });
 
+// ---- T227: overlap tracking ------------------------------------------------
+
+describe('overlap warnings (Playwright e2e, T227)', () => {
+  browserTest(
+    'two api nodes in different projects touching prices.ts warn in the repo view and the rail',
+    async () => {
+      const cockpit = await startCockpit();
+      let page: Page | undefined;
+      try {
+        await cockpit.store.putRepos({ api: { path: cockpit.home } });
+        const shop = await cockpit.projects.create({ name: 'Shop' });
+        const blog = await cockpit.projects.create({ name: 'Blog' });
+        const a = await cockpit.streams.create('human', {
+          title: 'api: add salePrice',
+          goal: 'g',
+          project: shop.id,
+          repo: 'api',
+        });
+        const b = await cockpit.streams.create('human', {
+          title: 'api: add /posts',
+          goal: 'g',
+          project: blog.id,
+          repo: 'api',
+        });
+        const at = new Date().toISOString();
+        await cockpit.streams.update('daemon', a.id, {
+          touched: { files: ['prices.ts', 'sale.ts'], base: 'abc', at },
+        });
+        await cockpit.streams.update('daemon', b.id, {
+          touched: { files: ['posts.ts', 'prices.ts'], base: 'abc', at },
+        });
+
+        page = await openPage();
+        await page.goto(`${cockpit.base}/`);
+        await page
+          .locator(
+            `[data-testid="stream-tree"] [data-stream="${a.id}"] [data-testid="overlap-mark"]`,
+          )
+          .waitFor();
+        await page
+          .locator(
+            `[data-testid="stream-tree"] [data-stream="${a.parent}"] [data-testid="overlap-mark"]`,
+          )
+          .waitFor();
+        await page.locator('[data-view="repos"]').click();
+        await waitForText(
+          page,
+          '[data-testid="repo-view"] [data-repo="api"] [data-testid="repo-overlap"]',
+          '⚠ api: add salePrice and api: add /posts both changed prices.ts',
+        );
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+});
+
 // ---- T209: the repo view and lenses ----------------------------------------
 
 describe('repo view and lenses (Playwright e2e, T209)', () => {
