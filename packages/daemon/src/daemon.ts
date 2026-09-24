@@ -17,6 +17,7 @@ import {
   wireLandGateResolution,
 } from './delivery';
 import { DocsService, buildDocsRpcMethods } from './docs';
+import { RoutedEventService } from './events';
 import { GateService, buildGateRpcMethods } from './gates';
 import type { DelegateFn } from './gates';
 import { PrPoller } from './github/poller';
@@ -129,6 +130,8 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
   // Rules (§5): read by every brief, the hook and landing.
   const rulesService =
     store && streamService ? new RulesService({ store, streams: streamService }) : undefined;
+  // T240–T242: routed events, one service for every producer and the delivery.
+  const routedEvents = store ? new RoutedEventService(store) : undefined;
   // Attach and questions know about each other: the turn-end rule asks
   // what is open, and an answer is delivered by prompting the session.
   const attachService =
@@ -144,6 +147,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
           ...(rulesService ? { rules: rulesService } : {}),
           // The turn-end rule treats an open routed call like an open question.
           ...(gateService ? { gates: gateService } : {}),
+          ...(routedEvents ? { events: routedEvents } : {}),
           onWorkerTurnEnd: (id) => {
             void mainSync?.turnEnded(id).catch((err) => console.error('main sync failed:', err));
           },
@@ -286,6 +290,15 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
         events: store,
       }
     : undefined;
+
+  // P10: an event stored with no delivery (a crash mid-emit) is routed again.
+  if (routedEvents) {
+    try {
+      await routedEvents.recover();
+    } catch (err) {
+      console.error('agiled: could not recover routed events:', err);
+    }
+  }
 
   // §17.1 (T202): the one-shot, idempotent migration into projects.
   if (store && streamService && projectService && questionService) {
@@ -489,6 +502,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
         prPoller?.stop();
         mainSync?.stop();
         // Sessions are child processes: stop them first so their exit writes land.
+        attachService?.delivery.stop();
         await attachService?.stopAll();
         await http.stop();
         await rpc.close();

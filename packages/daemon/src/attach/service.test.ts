@@ -871,6 +871,69 @@ describe('say — the stream page composer (T161)', () => {
   }, 30_000);
 });
 
+describe('T242: routed events reach the session as digests', () => {
+  test('three lines during a turn produce one digest after it', async () => {
+    const log = join(scratch, 'digest.jsonl');
+    const sentinel = join(scratch, 'digest-turn-one.flag');
+    attachService = buildAttachService(
+      fakeProviderFor(ACP_PROVIDERS.claude, {
+        logFile: log,
+        steps: [{ type: 'agent_text', text: 'read all three' }, { type: 'end_turn' }],
+        turns: [
+          [
+            { type: 'agent_text', text: 'busy busy' },
+            { type: 'tool_call', toolCallId: 'read-d', title: 'read' },
+            { type: 'wait_for_file', path: sentinel },
+            { type: 'end_turn' },
+          ],
+        ],
+      }),
+    );
+    const stream = await makeStream();
+    const { session } = await attachService.attach(stream.id);
+    await waitFor(() => threadBodies(stream.id).some((b) => b.includes('busy busy')));
+    for (const body of ['first note', 'second note', 'third note']) {
+      await attachService.say(stream.id, body);
+    }
+    const sessionRef = () => streams.get(stream.id).sessions.find((s) => s.id === session.id);
+    expect(sessionRef()?.queued?.length).toBe(3);
+    writeFileSync(sentinel, '');
+    await waitFor(() => streams.get(stream.id).agent.status === 'done');
+    const prompts = readFileSync(log, 'utf8')
+      .split('\n')
+      .filter((l) => l.includes('"session/prompt"'));
+    expect(prompts.length).toBe(2);
+    expect(prompts[1]).toContain('3 things arrived for you');
+    for (const body of ['first note', 'second note', 'third note']) {
+      expect(prompts[1]).toContain(body);
+    }
+    expect(sessionRef()?.queued).toBeUndefined();
+    const delivered = store.readDeliveries(stream.id).filter((d) => d.status === 'delivered');
+    expect(delivered.length).toBe(3);
+    expect(delivered.every((d) => d.session === session.id)).toBe(true);
+  }, 30_000);
+
+  test('an answer with no live session waits for the next session', async () => {
+    const log = join(scratch, 'answer-later.jsonl');
+    const stream = await makeStream();
+    const question = {
+      id: 'Q-1',
+      stream: stream.id,
+      text: 'which delimiter?',
+      answer: 'semicolons',
+    } as unknown as Question;
+    await attachService.deliverAnswer('S-gone', question);
+    expect(store.readDeliveries(stream.id).map((d) => d.status)).toEqual(['pending']);
+    attachService = buildAttachService(
+      fakeProviderFor(ACP_PROVIDERS.claude, { ...SPEAKS, logFile: log }),
+    );
+    await attachService.attach(stream.id);
+    await waitFor(() => streams.get(stream.id).agent.status === 'done');
+    expect(readFileSync(log, 'utf8')).toContain('was answered: semicolons');
+    expect(store.readDeliveries(stream.id).at(-1)?.status).toBe('delivered');
+  }, 30_000);
+});
+
 describe('T204: creating a node starts its agent (P5)', () => {
   async function makeProject(session?: { model?: string; effort?: 'high' }) {
     const projects = new ProjectService(store, streams);
