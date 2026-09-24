@@ -191,6 +191,18 @@ export const HomeConfigSchema = z
       .object({ wake_budget_per_hour: z.number().int().positive().optional() })
       .strict()
       .optional(),
+    /**
+     * T302: the Director's sight. `stuck_after_minutes` (default 60): a
+     * `working` node idle this long is stuck. `wake_budget_per_hour`
+     * (default 6): daemon-emitted Director wakes for stuck nodes.
+     */
+    director: z
+      .object({
+        stuck_after_minutes: z.number().int().positive().optional(),
+        wake_budget_per_hour: z.number().int().positive().optional(),
+      })
+      .strict()
+      .optional(),
   })
   .strict();
 
