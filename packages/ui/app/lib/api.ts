@@ -216,3 +216,24 @@ export async function getPolicy(): Promise<Policy> {
   if (!res.ok) throw new Error(payload.error ?? `policy read failed (${res.status})`);
   return payload;
 }
+
+/** T206: a registered repo as Settings → Repos shows it. */
+export interface RepoRow {
+  name: string;
+  path: string;
+  protected_branches: string[];
+  main_branch: string;
+}
+
+export async function listRepos(): Promise<RepoRow[]> {
+  return (await get<{ repos: RepoRow[] }>('/api/repos')).repos;
+}
+
+/** T206: the same `state.repo_add` RPC as `agile repo add`; resolves to every repo. */
+export async function addRepo(input: {
+  name: string;
+  path: string;
+  protected_branches?: string[];
+}): Promise<RepoRow[]> {
+  return ((await post('/api/repos', input)) as { repos: RepoRow[] }).repos;
+}
