@@ -513,26 +513,32 @@ export class AttachService {
     if (handle === undefined || handle.stopped()) return { entry };
     const sessionId = handle.sessionId;
     const busy = handle.turnsInFlight() > 0;
-    let delivered = false;
-    if (busy) {
-      await this.setSessionQueued(streamId, sessionId, (queued) => [...queued, entry.ts]).catch(
-        () => {
-          // Best effort: the marker is display only.
-        },
-      );
-    } else {
+    if (!busy) {
+      // Nothing is running, so nothing can end and let the session go
+      // before the prompt below is queued.
       await this.setSessionStatus(streamId, sessionId, 'running').catch(() => {
         // Best effort: the prompt below is what matters.
       });
     }
+    // Reserve the turn in the runner before any further await: a running
+    // turn that ends meanwhile then sees this one queued and keeps the
+    // session (T174 review). Marker writes are chained, so a fast delivery
+    // never leaves a stale `queued` entry behind.
+    let delivered = false;
+    let markers: Promise<unknown> = Promise.resolve();
     const unqueue = (): void => {
-      if (delivered || !busy) return;
+      if (delivered) return;
       delivered = true;
-      void this.setSessionQueued(streamId, sessionId, (queued) =>
-        queued.filter((ts) => ts !== entry.ts),
-      ).catch(() => {
-        // The stream or session is gone; the exit path clears the list.
-      });
+      if (!busy) return;
+      markers = markers
+        .then(() =>
+          this.setSessionQueued(streamId, sessionId, (queued) =>
+            queued.filter((ts) => ts !== entry.ts),
+          ),
+        )
+        .catch(() => {
+          // The stream or session is gone; the exit path clears the list.
+        });
     };
     void handle
       .prompt(sayPrompt(body), {
@@ -550,6 +556,18 @@ export class AttachService {
         // the session was stopped before the line was delivered.
         unqueue();
       });
+    if (busy && !delivered) {
+      markers = markers
+        .then(() =>
+          delivered
+            ? undefined
+            : this.setSessionQueued(streamId, sessionId, (queued) => [...queued, entry.ts]),
+        )
+        .catch(() => {
+          // Best effort: the marker is display only.
+        });
+      await markers;
+    }
     return { entry, prompted: sessionId };
   }
 

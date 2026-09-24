@@ -718,4 +718,64 @@ describe('say — the stream page composer (T161)', () => {
     // Still waiting on the open question: idle again, not let go.
     await waitFor(() => sessionRef()?.status === 'idle');
   }, 30_000);
+
+  test('a turn that ends while the queued marker is being written still runs the line (T174 review)', async () => {
+    const log = join(scratch, 'say-race.jsonl');
+    const sentinel = join(scratch, 'race-turn-one.flag');
+    attachService = buildAttachService(
+      fakeProviderFor(ACP_PROVIDERS.claude, {
+        logFile: log,
+        steps: [{ type: 'agent_text', text: 'answered in race' }, { type: 'end_turn' }],
+        turns: [
+          [
+            { type: 'agent_text', text: 'racing along' },
+            { type: 'tool_call', toolCallId: 'read-r', title: 'read' },
+            { type: 'wait_for_file', path: sentinel },
+            { type: 'end_turn' },
+          ],
+        ],
+      }),
+    );
+    const stream = await makeStream();
+    await attachService.attach(stream.id);
+    await waitFor(() => threadBodies(stream.id).some((b) => b.includes('racing along')));
+    // Hold say()'s marker write (the first stream update after the line) open.
+    const original = store.updateStream.bind(store);
+    let release: () => void = () => undefined;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let armed = false;
+    store.updateStream = (async (...args: Parameters<typeof original>) => {
+      if (armed) {
+        armed = false;
+        await held;
+      }
+      return original(...args);
+    }) as typeof store.updateStream;
+    try {
+      const appended = streams.readThread(stream.id, { limit: 500 }).entries.length;
+      armed = true;
+      const saying = attachService.say(stream.id, 'raced question?');
+      await waitFor(() => streams.readThread(stream.id, { limit: 500 }).entries.length > appended);
+      // The running turn ends inside the window.
+      writeFileSync(sentinel, '');
+      await waitFor(
+        () =>
+          existsSync(log) &&
+          readFileSync(log, 'utf8')
+            .split('\n')
+            .filter((l) => l.includes('"session/prompt"')).length === 2,
+      );
+      release();
+      await saying;
+      await waitFor(() => streams.get(stream.id).agent.status === 'done');
+      expect(readFileSync(log, 'utf8')).toContain('raced question?');
+      expect(threadBodies(stream.id)).toContain('answered in race');
+      expect(streams.get(stream.id).sessions.every((s) => s.queued === undefined)).toBe(true);
+    } finally {
+      release();
+      store.updateStream = original;
+    }
+  }, 30_000);
 });
