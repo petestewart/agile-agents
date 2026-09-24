@@ -416,11 +416,13 @@ export class VerbService {
     }
     // T286: a co-signer must actually have agreed (answered an ask_sibling from the caller).
     const unagreed = (cosigners ?? []).filter(
-      (id) => id !== caller.stream && this.options.siblings?.agreed(caller.stream, id) !== true,
+      (id) =>
+        id !== caller.stream &&
+        this.options.siblings?.agreed(caller.stream, id, contract, proposal.body) !== true,
     );
     if (unagreed.length > 0) {
       throw new Error(
-        `propose_contract: ${unagreed.join(', ')} has not agreed; ask_sibling first and wait for their reply`,
+        `propose_contract: ${unagreed.join(', ')} has not agreed to this contract and body; ask_sibling and wait for a reply with agree`,
       );
     }
     return this.options.contracts.propose(
@@ -437,8 +439,8 @@ export class VerbService {
   }
 
   async replySibling(input: unknown): Promise<unknown> {
-    const { session, ask, body } = validateVerbInput('reply_sibling', input);
-    return this.siblingsFor(session, 'reply_sibling', (s, from) => s.reply(from, ask, body));
+    const { session, ask, body, agree } = validateVerbInput('reply_sibling', input);
+    return this.siblingsFor(session, 'reply_sibling', (s, from) => s.reply(from, ask, body, agree));
   }
 
   private siblingsFor<T>(

@@ -234,6 +234,8 @@ describe('decide_contract', () => {
     })) as ActOutcome;
     if (outcome.applied) throw new Error('expected a card');
     await autonomy.dismiss(outcome.proposal.id);
+    const note = emitted.find((e) => e.type === 'coordinator_note' && e.subject === s.api.id);
+    expect(String(note?.payload.body)).toContain('rejected by the operator');
     expect(contracts.get(s.contract.id).proposals ?? []).toEqual([]);
     expect(contracts.get(s.contract.id).version).toBe(1);
   });

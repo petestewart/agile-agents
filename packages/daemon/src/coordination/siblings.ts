@@ -6,9 +6,15 @@
  * that the sibling agreed: a joint `propose_contract` needs one.
  */
 
+import { createHash } from 'node:crypto';
 import type { RoutedEvent } from '@agile-agents/shared';
 import type { EmitRouted } from '../events/producers';
 import type { StreamService } from '../streams/service';
+
+/** The agreement fingerprint of a contract body (trimmed, as stored). */
+export function bodyHash(body: string): string {
+  return createHash('sha256').update(body.trim()).digest('hex');
+}
 
 export interface SiblingServiceOptions {
   streams: StreamService;
@@ -57,7 +63,12 @@ export class SiblingService {
     return { ask: event.id };
   }
 
-  async reply(from: string, askId: string, body: string): Promise<{ reply: string }> {
+  async reply(
+    from: string,
+    askId: string,
+    body: string,
+    agree?: { contract: string; body: string },
+  ): Promise<{ reply: string }> {
     const ask = this.options.events.get(askId);
     if (ask?.type !== 'sibling_ask' || ask.payload.sibling !== from || ask.subject === undefined) {
       throw new Error(`reply_sibling: ${askId} is not a question to you`);
@@ -67,28 +78,51 @@ export class SiblingService {
     const event = await this.options.emit({
       type: 'sibling_reply',
       subject: from,
-      payload: { sibling: to, body },
+      payload: {
+        sibling: to,
+        body,
+        ...(agree !== undefined
+          ? { agree: { contract: agree.contract, body_sha256: bodyHash(agree.body) } }
+          : {}),
+      },
       siblings: [to],
       ref: askId,
       by: 'daemon',
     });
     if (event === undefined) throw new Error('reply_sibling: the reply could not be sent');
+    const agreed = agree === undefined ? '' : ` [agrees to ${agree.contract}: ${agree.body}]`;
     await this.line(
       [from, to],
-      `${this.title(from)} replies to ${this.title(to)} (${askId}): ${body}`.slice(0, 800),
+      `${this.title(from)} replies to ${this.title(to)} (${askId}): ${body}${agreed}`.slice(0, 800),
     );
     return { reply: event.id };
   }
 
-  /** Whether `cosigner` has answered a question from `proposer` (the joint-proposal check). */
-  agreed(proposer: string, cosigner: string): boolean {
-    return this.options.events
+  /**
+   * Whether `cosigner` explicitly agreed to `proposer`'s joint proposal:
+   * a reply to the proposer's latest ask to it, whose `agree` names this
+   * contract and this exact body. A plain reply does not count.
+   */
+  agreed(proposer: string, cosigner: string, contract: string, body: string): boolean {
+    const { events } = this.options;
+    const lastAsk = events
+      .activityFor(cosigner)
+      .map((a) => a.event)
+      .find((e) => e.type === 'sibling_ask' && e.subject === proposer);
+    if (lastAsk === undefined) return false;
+    const hash = bodyHash(body);
+    return events
       .activityFor(proposer)
-      .some(
-        ({ event }) =>
-          event.type === 'sibling_reply' &&
-          event.subject === cosigner &&
-          event.payload.sibling === proposer,
-      );
+      .map((a) => a.event)
+      .some((e) => {
+        const agree = e.payload.agree as { contract?: string; body_sha256?: string } | undefined;
+        return (
+          e.type === 'sibling_reply' &&
+          e.subject === cosigner &&
+          e.ref === lastAsk.id &&
+          agree?.contract === contract &&
+          agree.body_sha256 === hash
+        );
+      });
   }
 }

@@ -11,7 +11,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { type AgentId, type Stream, ulid } from '@agile-agents/shared';
 import { VerbService } from '../attach/verbs';
-import { makeEmitter } from '../events/producers';
+import { makeEmitter, summarize } from '../events/producers';
 import { RoutedEventService } from '../events/service';
 import { runInit } from '../init';
 import { ProjectService } from '../projects/service';
@@ -123,20 +123,50 @@ describe('ask sibling (§9.5 currency example)', () => {
     await expect(
       verbs.replySibling({ session: s.apiAgent, ask, body: 'send currency' }),
     ).rejects.toThrow('not a question to you');
-    await verbs.replySibling({ session: s.webAgent, ask, body: "send currency, I'll format it" });
+    const CURRENCY = 'returns { cents, saleCents?, currency }';
+    const propose = () =>
+      verbs.proposeContract({
+        session: s.apiAgent,
+        contract: s.contract.id,
+        body: CURRENCY,
+        reason: 'add currency; web formats it',
+        routine: true,
+        with: [s.web.id],
+      });
+    // An unrelated (plain) reply is not agreement.
+    await verbs.replySibling({ session: s.webAgent, ask, body: 'let me check' });
+    await expect(propose()).rejects.toThrow('has not agreed');
+    // Agreeing to another contract, or another body, is not agreement either.
+    const other = await contracts.write(
+      s.node.id,
+      { title: 'GET /stock/:id', body: 'returns { n }', parties: [s.api.id, s.web.id] },
+      'human',
+    );
+    await verbs.replySibling({
+      session: s.webAgent,
+      ask,
+      body: 'ok',
+      agree: { contract: other.id, body: CURRENCY },
+    });
+    await verbs.replySibling({
+      session: s.webAgent,
+      ask,
+      body: 'ok',
+      agree: { contract: s.contract.id, body: 'returns { cents, formatted }' },
+    });
+    await expect(propose()).rejects.toThrow('has not agreed');
+    await verbs.replySibling({
+      session: s.webAgent,
+      ask,
+      body: "send currency, I'll format it",
+      agree: { contract: s.contract.id, body: CURRENCY },
+    });
     expect(said(s.api.id, "I'll format it")).toBe(true);
     expect(said(s.web.id, "I'll format it")).toBe(true);
     expect(types(s.api.id)).toContain('sibling_reply');
     expect(types(s.node.id)).toContain('sibling_reply');
 
-    const proposal = (await verbs.proposeContract({
-      session: s.apiAgent,
-      contract: s.contract.id,
-      body: 'returns { cents, saleCents?, currency }',
-      reason: 'add currency; web formats it',
-      routine: true,
-      with: [s.web.id],
-    })) as { id: string; from: string[] };
+    const proposal = (await propose()) as { id: string; from: string[] };
     expect(proposal.from).toEqual([s.api.id, s.web.id]);
     expect(types(s.node.id)).toContain('contract_proposal');
 
@@ -153,7 +183,9 @@ describe('ask sibling (§9.5 currency example)', () => {
       const note = events
         .activityFor(child)
         .find((a) => a.event.type === 'coordinator_note')?.event;
-      expect(String(note?.payload.body)).toContain('approved');
+      expect(String(note?.payload.body)).toContain('approved by your coordinator');
+      if (note === undefined) throw new Error('no note');
+      expect(summarize(note, child)).not.toContain('Your coordinator says');
     }
   });
 
