@@ -74,12 +74,15 @@ function usage(): string {
     '  project list [--all]       projects (--all includes archived)',
     '  project show <id>',
     '  project set <id> [--name n] [--repo a,b] [--vendor v] [--model m] [--effort e] [--delivery direct|pr] [--auto-merge on|off] [--coordinator|--director advise|organise|run]',
-    '  stream new --title <t> --goal <g> [--parent <id>] [--repo <name>] [--target-branch <b>]',
-    '  stream list [--all] [--status <s>] [--landed]   the stream tree (--all includes archived)',
-    '  stream show <id>           the record plus the last 20 thread lines',
-    '  stream close <id> [--note <text>]',
-    '  stream archive <id>        hide from `stream list` (nothing moves on disk)',
-    '  stream say <id> <text>     append one human line to the stream thread',
+    '  node new --title <t> --goal <g> --project <P-id> [--parent <id>] [--repo <name>] [--label l]… [--target-branch <b>]',
+    '                             (--project may be left out when --parent names a node in a project)',
+    '  node list [--all] [--status <s>] [--landed] [--project <P-id>] [--parent <id>]',
+    '                             the tree; with --project/--parent a flat list with each role',
+    '  node show <id>             the record, its role and the last 20 thread lines',
+    '  node close <id> [--note <text>]',
+    '  node archive <id>          hide from `node list` (nothing moves on disk)',
+    '  node say <id> <text>       append one human line to the node thread',
+    '  stream …                   alias of `node`',
     '  rules list [--status proposed|accepted|retired] [--scope global|repo:<n>|stream:<id>]',
     '  rules show <id>            one rule: tier, scope, pattern, provenance, stats, examples',
     '  rules add --text "…" [--scope …] [--enforcement pattern|classifier|guidance] [--critical]',
@@ -241,6 +244,8 @@ export async function runCli(argv: string[], cwd: string = process.cwd()): Promi
       }
 
       // T120: streams — the reshape's unit of work (cockpit design §2).
+      // T201: `node` is the verb; `stream` stays as an alias.
+      case 'node':
       case 'stream':
         if (sub === 'new') return await runStreamNew(socketPath, parseArgs(restArgv), json);
         if (sub === 'list') return await runStreamList(socketPath, parseArgs(restArgv), json);

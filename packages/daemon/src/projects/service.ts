@@ -39,10 +39,7 @@ export class ProjectService {
     // Fail fast before minting a root; the store re-checks under its mutex.
     this.store.assertProjectNameFree(input.name);
     const id = `P-${ulid()}`;
-    const root = await this.streams.create('human', {
-      title: input.name,
-      goal: `Project ${input.name}`,
-    });
+    const root = await this.streams.createRoot('human', id, input.name, `Project ${input.name}`);
     try {
       return await this.store.createProject({
         id,

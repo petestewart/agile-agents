@@ -11,6 +11,7 @@ import { join } from 'node:path';
 import type { Stream, ThreadEntry } from '@agile-agents/shared';
 import { ulid } from '@agile-agents/shared';
 import { runInit } from '../init';
+import { ProjectService } from '../projects/service';
 import { QuestionService } from '../questions/service';
 import type { RpcMethodHandler } from '../rpc';
 import { AlreadyExistsError, StateStore } from '../store';
@@ -20,6 +21,8 @@ import { StreamService } from './service';
 let home: string;
 let store: StateStore;
 let methods: Record<string, RpcMethodHandler>;
+let projectId: string;
+let projectRoot: string;
 
 const call = async <T>(method: string, params: unknown): Promise<T> => {
   const handler = methods[method];
@@ -27,11 +30,15 @@ const call = async <T>(method: string, params: unknown): Promise<T> => {
   return (await handler(params)) as T;
 };
 
-beforeEach(() => {
+beforeEach(async () => {
   home = mkdtempSync(join(tmpdir(), 'agile-stream-rpc-'));
   const init = runInit(home);
   store = StateStore.open(init.stateRoot);
-  methods = buildStreamRpcMethods(new StreamService(store));
+  const streams = new StreamService(store);
+  methods = buildStreamRpcMethods(streams);
+  const project = await new ProjectService(store, streams).create({ name: 'Shop' });
+  projectId = project.id;
+  projectRoot = project.root;
 });
 
 afterEach(() => {
@@ -39,8 +46,33 @@ afterEach(() => {
 });
 
 async function create(title = 'a stream'): Promise<Stream> {
-  return call<Stream>('stream.create', { title, goal: 'g' });
+  return call<Stream>('stream.create', { title, goal: 'g', project: projectId });
 }
+
+describe('project (T201)', () => {
+  test('create requires a project and defaults the parent to its root', async () => {
+    await expect(call('stream.create', { title: 't', goal: 'g' })).rejects.toThrow(
+      /a project is required/,
+    );
+    const a = await create('a');
+    expect(a.project).toBe(projectId);
+    expect(a.parent).toBe(projectRoot);
+    const b = await call<Stream>('stream.create', { title: 'b', goal: 'g', parent: a.id });
+    expect(b.project).toBe(projectId);
+  });
+
+  test('an unknown project is -32602', async () => {
+    const err = (await call('stream.create', {
+      title: 't',
+      goal: 'g',
+      project: `P-${ulid()}`,
+    }).then(
+      () => undefined,
+      (e: unknown) => e,
+    )) as { code?: number };
+    expect(err.code).toBe(-32602);
+  });
+});
 
 test('the method table is exactly the eight stream verbs', () => {
   expect(Object.keys(methods).sort()).toEqual([
@@ -183,11 +215,15 @@ describe('list / close / archive', () => {
       {},
     );
     expect(before.tree).toHaveLength(1);
-    expect(before.tree[0]?.children).toHaveLength(1);
+    const rootNode = before.tree[0]?.children[0] as { children: unknown[] } | undefined;
+    expect(rootNode?.children).toHaveLength(1);
 
     await call('stream.archive', { id: child.id });
-    const after = await call<{ tree: Array<{ children: unknown[] }> }>('stream.list', {});
-    expect(after.tree[0]?.children).toHaveLength(0);
+    const after = await call<{ tree: Array<{ children: Array<{ children: unknown[] }> }> }>(
+      'stream.list',
+      {},
+    );
+    expect(after.tree[0]?.children[0]?.children).toHaveLength(0);
     const all = await call<{ tree: Array<{ children: unknown[] }> }>('stream.list', {
       include_archived: true,
     });

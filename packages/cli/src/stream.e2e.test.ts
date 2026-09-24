@@ -27,6 +27,9 @@ async function cli(argv: string[]): Promise<{ code: number; out: string }> {
   }
 }
 
+let projectId: string;
+let projectRoot: string;
+
 async function newStream(title: string, extra: string[] = []): Promise<Stream> {
   const result = await cli([
     'stream',
@@ -35,6 +38,7 @@ async function newStream(title: string, extra: string[] = []): Promise<Stream> {
     title,
     '--goal',
     `goal: ${title}`,
+    ...(extra.includes('--parent') ? [] : ['--project', projectId]),
     ...extra,
     '--json',
   ]);
@@ -44,10 +48,69 @@ async function newStream(title: string, extra: string[] = []): Promise<Stream> {
 
 beforeEach(async () => {
   daemon = await startTestDaemon('agile-stream-e2e-');
+  const project = JSON.parse((await cli(['project', 'new', '--name', 'Shop', '--json'])).out) as {
+    id: string;
+    root: string;
+  };
+  projectId = project.id;
+  projectRoot = project.root;
 });
 
 afterEach(async () => {
   await daemon.cleanup();
+});
+
+describe('agile node (T201)', () => {
+  test('node is the verb: new needs a project, show --json has the role, list filters', async () => {
+    const errors: string[] = [];
+    const original = console.error;
+    console.error = (msg: string) => errors.push(String(msg));
+    try {
+      expect(await runCli(['node', 'new', '--title', 't', '--goal', 'g'], daemon.repo)).toBe(1);
+    } finally {
+      console.error = original;
+    }
+    expect(errors.join('\n')).toContain('a project is required');
+
+    const epic = JSON.parse(
+      (
+        await cli([
+          'node',
+          'new',
+          '--title',
+          'Epic',
+          '--goal',
+          'g',
+          '--project',
+          projectId,
+          '--label',
+          'epic',
+          '--label',
+          'x',
+          '--json',
+        ])
+      ).out,
+    ) as Stream;
+    expect(epic.parent).toBe(projectRoot);
+    expect(epic.labels).toEqual(['epic', 'x']);
+    const task = await newStream('Task', ['--parent', epic.id]);
+    expect(task.project).toBe(projectId);
+
+    const role = async (id: string) =>
+      (JSON.parse((await cli(['node', 'show', id, '--json'])).out) as { role: string }).role;
+    expect(await role(projectRoot)).toBe('project');
+    expect(await role(epic.id)).toBe('coordinating');
+    expect(await role(task.id)).toBe('conversation');
+
+    const byParent = JSON.parse(
+      (await cli(['node', 'list', '--parent', epic.id, '--json'])).out,
+    ) as { nodes: Array<{ id: string; role: string }> };
+    expect(byParent.nodes.map((n) => [n.id, n.role])).toEqual([[task.id, 'conversation']]);
+    const byProject = JSON.parse(
+      (await cli(['node', 'list', '--project', projectId, '--json'])).out,
+    ) as { nodes: Array<{ id: string }> };
+    expect(byProject.nodes.map((n) => n.id).sort()).toEqual([projectRoot, epic.id, task.id].sort());
+  });
 });
 
 describe('agile stream against a daemon on a temp AGILE_HOME', () => {
@@ -66,10 +129,11 @@ describe('agile stream against a daemon on a temp AGILE_HOME', () => {
     // T128: a header row, then the indented tree under it.
     const lines = listed.out.split('\n');
     expect(lines[0]?.trimEnd().split(/\s{2,}/)).toEqual(['id', 'title', 'agent/human']);
-    expect(lines[1]).toContain(root.id);
-    expect(lines[1]).toContain('idle/open');
-    expect(lines[2]?.startsWith('  ')).toBe(true);
-    expect(lines[2]).toContain(child.id);
+    expect(lines[1]).toContain(projectRoot);
+    expect(lines[2]).toContain(root.id);
+    expect(lines[2]).toContain('idle/open');
+    expect(lines[3]?.startsWith('    ')).toBe(true);
+    expect(lines[3]).toContain(child.id);
 
     expect((await cli(['stream', 'say', root.id, 'let us start with the tree'])).code).toBe(0);
 
@@ -119,7 +183,18 @@ describe('agile stream against a daemon on a temp AGILE_HOME', () => {
     try {
       expect(
         await runCli(
-          ['stream', 'new', '--title', 't', '--goal', 'g', '--repo', 'ghost'],
+          [
+            'stream',
+            'new',
+            '--title',
+            't',
+            '--goal',
+            'g',
+            '--project',
+            projectId,
+            '--repo',
+            'ghost',
+          ],
           daemon.repo,
         ),
       ).toBe(1);

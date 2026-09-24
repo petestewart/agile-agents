@@ -28,6 +28,8 @@ async function cli(argv: string[]): Promise<{ code: number; out: string }> {
   }
 }
 
+let projectId: string;
+
 async function newStream(title: string, extra: string[] = []): Promise<Stream> {
   const result = await cli([
     'stream',
@@ -36,6 +38,8 @@ async function newStream(title: string, extra: string[] = []): Promise<Stream> {
     title,
     '--goal',
     `goal: ${title}`,
+    '--project',
+    projectId,
     ...extra,
     '--json',
   ]);
@@ -45,6 +49,9 @@ async function newStream(title: string, extra: string[] = []): Promise<Stream> {
 
 beforeEach(async () => {
   daemon = await startTestDaemon('agile-inbox-e2e-');
+  projectId = (
+    JSON.parse((await cli(['project', 'new', '--name', 'Shop', '--json'])).out) as { id: string }
+  ).id;
 });
 
 afterEach(async () => {
@@ -90,7 +97,7 @@ describe('agile inbox / agile answer against a daemon on a temp AGILE_HOME', () 
     const asJson = await cli(['inbox', '--json']);
     const items = (JSON.parse(asJson.out) as { items: InboxItem[] }).items;
     expect(items).toHaveLength(1);
-    expect(items[0]?.stream_path).toEqual(['ledger-lite', 'parser']);
+    expect(items[0]?.stream_path).toEqual(['Shop', 'ledger-lite', 'parser']);
     expect(items[0]?.ref).toBe(`questions/${question.id}.yaml`);
 
     // The asking stream is the one waiting on the human.
