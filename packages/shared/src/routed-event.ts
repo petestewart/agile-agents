@@ -119,6 +119,12 @@ export const ROUTED_EVENT_PAYLOADS = {
   plan_changed: z.object({ summary: NonEmpty, paths: Files }),
   external_changed: z.object({ key: NonEmpty, summary: NonEmpty }),
   director_request: z.object({ body: NonEmpty }),
+  /** T262: the ship check held delivery; the findings go back to the worker. */
+  ship_findings: z.object({
+    source: z.enum(['classifier', 'reviewer']),
+    findings: z.array(NonEmpty).min(1).max(LIST_MAX),
+    more_findings: z.number().int().nonnegative().optional(),
+  }),
 } as const;
 
 export type RoutedEventType = keyof typeof ROUTED_EVENT_PAYLOADS;

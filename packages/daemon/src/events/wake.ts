@@ -21,6 +21,7 @@ const WORK_WAKE_TYPES: ReadonlySet<RoutedEventType> = new Set<RoutedEventType>([
   'answer',
   'pr_review',
   'ci_failed',
+  'ship_findings',
   'pr_behind',
   'sync_conflict',
   'contract_changed',

@@ -12,6 +12,7 @@ const WORK: RoutedEventType[] = [
   'answer',
   'pr_review',
   'ci_failed',
+  'ship_findings',
   'pr_behind',
   'sync_conflict',
   'contract_changed',

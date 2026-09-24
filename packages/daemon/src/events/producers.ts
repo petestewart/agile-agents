@@ -166,6 +166,13 @@ export function summarize(
     }
     case 'ci_failed':
       return `CI failed on ${pr}: ${String(p.check)}. Log excerpt at ${event.ref ?? `read_event ${event.id}`}. Find the cause, fix it and push. A flaky test is reported with \`ask\`, never skipped.`;
+    case 'ship_findings': {
+      const all = Array.isArray(p.findings) ? p.findings : [];
+      const findings = all.slice(0, 5);
+      const more = all.length - findings.length + Number(p.more_findings ?? 0);
+      const tail = more > 0 ? ` (+${more} more via read_event ${event.id})` : '';
+      return `The ship check (${String(p.source)}) held your delivery: ${findings.join(' | ')}${tail}. Fix them, commit and \`deliver\` again. If you disagree with a finding, say why with \`ask\`; don't re-deliver unchanged.`;
+    }
     case 'pr_behind': {
       const what =
         p.state === 'behind' ? 'is behind main' : `conflicts on ${list(p.files) || 'main'}`;
