@@ -4,7 +4,9 @@
  *
  * - A coordinating node with an agent is woken by any event routed to it.
  * - A work node whose session has ended is woken by `WORK_WAKE_TYPES`;
- *   other events wait for its next turn.
+ *   other events wait for its next turn. A parent's `coordinator_note`
+ *   (`note_child`, T287) is one of them (T290), so a child always gets its
+ *   coordinator's distilled note, within the same stop rule and budget.
  * - A conversation node is woken only by `human_line` and `answer`.
  * - A project root is woken like a coordinating node once it has had a
  *   coordinator (P20, T280); before that it has no agent and never wakes.
@@ -31,6 +33,7 @@ const WORK_WAKE_TYPES: ReadonlySet<RoutedEventType> = new Set<RoutedEventType>([
   'pr_behind',
   'sync_conflict',
   'contract_changed',
+  'coordinator_note',
 ]);
 
 const CONVERSATION_WAKE_TYPES: ReadonlySet<RoutedEventType> = new Set<RoutedEventType>([

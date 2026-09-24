@@ -2,11 +2,12 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { ulid } from '@agile-agents/shared';
+import { type RoutedEvent, type Stream, ulid } from '@agile-agents/shared';
 import { runInit } from '../init';
 import { StateStore } from '../store';
 import { type DeliveryTarget, SessionDelivery, digestPrompt } from './delivery';
 import { RoutedEventService } from './service';
+import { WakeBudget, wakeVerdict } from './wake';
 
 let home: string;
 let root: string;
@@ -160,5 +161,49 @@ describe('SessionDelivery (T242, P10)', () => {
     expect(text).toContain('2 earlier');
     expect(text).not.toContain('line 1\n');
     expect(text).toContain('line 11');
+  });
+});
+
+describe("T290: a parent's note wakes an ended work node", () => {
+  const note = (subject: string) => ({
+    type: 'coordinator_note' as const,
+    subject,
+    payload: { body: 'use the shared schema' },
+    by: `agent:${ulid()}` as const,
+    routing: [{ node: subject, because: 'self' as const }],
+  });
+  const ended = {
+    agent: { status: 'done' },
+    human: { status: 'open' },
+    sessions: [{ role: 'worker' }],
+  };
+
+  test('an ended node starts a session and gets the note; a landed one stays pending', async () => {
+    const landedNode = ulid();
+    const nodes: Record<string, Stream> = {
+      [node]: ended as unknown as Stream,
+      [landedNode]: { ...ended, human: { status: 'landed' } } as unknown as Stream,
+    };
+    const live: Record<string, DeliveryTarget> = {};
+    const budget = new WakeBudget();
+    const fake = fakeTarget();
+    const woken: string[] = [];
+    const wake = (id: string, pending: readonly RoutedEvent[]) => {
+      const n = nodes[id];
+      if (n === undefined || wakeVerdict(n, 'work', pending) !== 'wake') return;
+      if (!budget.take(id, 20)) return;
+      woken.push(id);
+      live[id] = fake.target;
+      void delivery.flushWhenReady(id);
+    };
+    const delivery = new SessionDelivery({ events, target: (id) => live[id], wake, delayMs: 5 });
+    await events.emit(note(node));
+    await events.emit(note(landedNode));
+    await until(() => events.pendingFor(node).length === 0);
+    await Bun.sleep(30);
+    expect(woken).toEqual([node]);
+    expect(fake.prompts[0]).toContain('use the shared schema');
+    expect(events.pendingFor(landedNode).length).toBe(1);
+    delivery.stop();
   });
 });
