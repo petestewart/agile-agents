@@ -24,3 +24,4 @@ export * from './repos';
 export * from './home-config';
 export * from './verbs';
 export * from './session-defaults';
+export * from './project';

@@ -22,6 +22,7 @@ import {
   GateService,
   HookService,
   InboxService,
+  ProjectService,
   QuestionService,
   type RpcServerHandle,
   RulesService,
@@ -33,6 +34,7 @@ import {
   buildGateRpcMethods,
   buildHookRpcMethods,
   buildInboxRpcMethods,
+  buildProjectRpcMethods,
   buildQuestionRpcMethods,
   buildRuleRpcMethods,
   buildStateRpcMethods,
@@ -193,6 +195,7 @@ export async function startTestDaemon(prefix = 'agile-cli-test-'): Promise<TestD
     extraMethods: {
       ...buildStateRpcMethods(store),
       ...buildStreamRpcMethods(streamService),
+      ...buildProjectRpcMethods(new ProjectService(store, streamService)),
       ...buildInboxRpcMethods(
         new InboxService({
           streams: streamService,

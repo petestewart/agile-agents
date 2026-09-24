@@ -28,6 +28,7 @@ import { parseHookArgs, runHook } from './commands/hook';
 import { runInbox } from './commands/inbox';
 import { runCliInit } from './commands/init';
 import { runLand } from './commands/land';
+import { runProjectList, runProjectNew, runProjectSet, runProjectShow } from './commands/project';
 import { runQuestionAnswer, runQuestionList, runQuestionRaise } from './commands/question';
 import { runRepoAdd, runRepoList } from './commands/repo';
 import { runReview } from './commands/review';
@@ -69,6 +70,10 @@ function usage(): string {
     '  init                       create the state home ($AGILE_HOME, default ~/.agile/) if missing',
     '  repo add <path> [--name <n>] [--protected a,b] [--target-branch <b>] [--vendor <v>]',
     '  repo list                  list registered repos',
+    '  project new --name <n> [--repo a] [--repo b|a,b]   a project and its root stream',
+    '  project list [--all]       projects (--all includes archived)',
+    '  project show <id>',
+    '  project set <id> [--name n] [--repo a,b] [--vendor v] [--model m] [--effort e] [--delivery direct|pr] [--auto-merge on|off] [--coordinator|--director advise|organise|run]',
     '  stream new --title <t> --goal <g> [--parent <id>] [--repo <name>] [--target-branch <b>]',
     '  stream list [--all] [--status <s>] [--landed]   the stream tree (--all includes archived)',
     '  stream show <id>           the record plus the last 20 thread lines',
@@ -223,6 +228,17 @@ export async function runCli(argv: string[], cwd: string = process.cwd()): Promi
         if (sub === 'add') return await runRepoAdd(socketPath, parseArgs(restArgv), json, cwd);
         console.error(usage());
         return 1;
+
+      // T200: projects — a record plus a root stream (projects-design §14.1).
+      case 'project': {
+        const projectArgs = parseArgs(restArgv);
+        if (sub === 'new') return await runProjectNew(socketPath, projectArgs, json);
+        if (sub === 'list') return await runProjectList(socketPath, projectArgs, json);
+        if (sub === 'show') return await runProjectShow(socketPath, projectArgs, json);
+        if (sub === 'set') return await runProjectSet(socketPath, projectArgs, json);
+        console.error(usage());
+        return 1;
+      }
 
       // T120: streams — the reshape's unit of work (cockpit design §2).
       case 'stream':

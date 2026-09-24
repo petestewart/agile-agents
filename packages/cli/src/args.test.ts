@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { optionalString, parseArgs, requireOption, requirePositional } from './args';
+import { optionalList, optionalString, parseArgs, requireOption, requirePositional } from './args';
 
 describe('parseArgs', () => {
   test('splits positionals from --flag value pairs', () => {
@@ -56,5 +56,15 @@ describe('requirePositional', () => {
   test('throws a usage-shaped error when absent', () => {
     const args = parseArgs([]);
     expect(() => requirePositional(args, 0, 'hil-id')).toThrow(/<hil-id> is required/);
+  });
+});
+
+describe('repeated options (T200)', () => {
+  test('options keeps last-wins; optionalList accumulates and splits commas', () => {
+    const args = parseArgs(['--repo', 'a', '--repo', 'b,c', '--name', 'x']);
+    expect(args.options.repo).toBe('b,c');
+    expect(optionalList(args, 'repo')).toEqual(['a', 'b', 'c']);
+    expect(optionalList(args, 'none')).toBeUndefined();
+    expect(optionalList({ positionals: [], options: { repo: 'x,y' } }, 'repo')).toEqual(['x', 'y']);
   });
 });
