@@ -901,8 +901,8 @@ git status --short
 
 ### Ticket: T221 GitHub port and REST adapter
 - **Priority:** P0
-- **Status:** In Progress
-- **Owner:** opus:worker-T221
+- **Status:** Done (merge 629956a)
+- **Owner:** —
 - **Scope:** `github/port.ts` (the subset above) and `github/rest.ts`:
   - `fetch` against `github.api_url` (config, default `https://api.github.com`);
   - a token from `gh auth token` per call, never stored or logged (P18); a static token only when `api_url` points at localhost (tests);
@@ -911,12 +911,12 @@ git status --short
   `agile daemon status` reports "GitHub auth: available/unavailable" without the token.
 - **Acceptance Criteria:** Adapter tests against the fake. A missing `gh` gives one clear error. A test asserts the token never appears in logs or audit events.
 - **Validation Steps:** `bun test packages/daemon/src/github`.
-- **Notes:** After T220.
+- **Notes:** After T220. Review (sonnet): 1 blocking (test daemons could spawn the real `gh`) fixed: `github.gh_command` config (test homes point it at a nonexistent path), a failing stub `gh` first on PATH in test-preload.ts, a marker test, and a 2 s timeout. Daemon ≈+536. Open: extend the token-leak test to events.jsonl/agiled.log once GitHub events exist (T225/T244); GHE GraphQL path not handled.
 
 ### Ticket: T222 ∥ Repo delivery settings
 - **Priority:** P1
-- **Status:** Todo
-- **Owner:** —
+- **Status:** In Progress
+- **Owner:** opus:worker-T222
 - **Scope:** Add `delivery`, `auto_merge`, `remote`, `github`, `main_branch` and `visibility` on `RepoEntry` (§14.8); project and node overrides are resolved in one function. Add `agile repo set <name> --delivery pr|direct --auto-merge on|off --visibility public|private --project …`, and the same fields in Settings → Repos. `pr` is refused when the remote isn't GitHub or GitHub auth is unavailable.
 - **Acceptance Criteria:** Resolution table tests (repo, then project, then node). e2e: change the delivery mode in Settings.
 - **Validation Steps:** `bun test packages/shared packages/daemon packages/cli`; `bun run test:e2e`.
