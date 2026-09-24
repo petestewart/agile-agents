@@ -40,6 +40,8 @@ async function newStream(title: string, extra: string[] = []): Promise<Stream> {
     `goal: ${title}`,
     ...(extra.includes('--parent') ? [] : ['--project', projectId]),
     ...extra,
+    // T204: these tests attach by hand; `node new` would otherwise start one.
+    '--no-start',
     '--json',
   ]);
   expect(result.code).toBe(0);

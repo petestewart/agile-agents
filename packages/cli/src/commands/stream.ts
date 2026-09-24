@@ -51,6 +51,8 @@ export async function runStreamNew(
   const repo = optionalString(args.options, 'repo');
   const project = optionalString(args.options, 'project');
   const labels = optionalList(args, 'label');
+  // T204: a work or conversation node starts its agent unless --no-start.
+  const noStart = hasFlag(args.options, 'no-start');
 
   const stream = await callRpc<Stream>(socketPath, 'stream.create', {
     title,
@@ -59,10 +61,17 @@ export async function runStreamNew(
     ...(labels !== undefined ? { labels } : {}),
     ...(parent !== undefined ? { parent } : {}),
     ...(repo !== undefined ? { repo } : {}),
+    ...(noStart ? { start: false } : {}),
   });
 
   if (json) printJson(stream);
-  else console.log(`agile stream new: ${stream.id}  ${stream.title}`);
+  else {
+    console.log(`agile stream new: ${stream.id}  ${stream.title}`);
+    const live = stream.sessions.find(
+      (s) => s.role === 'worker' && s.status !== 'stopped' && s.status !== 'error',
+    );
+    if (live !== undefined) console.log(`started ${formatSession(live)}`);
+  }
   return 0;
 }
 

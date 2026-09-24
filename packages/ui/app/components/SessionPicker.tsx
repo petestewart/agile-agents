@@ -140,7 +140,7 @@ export function SessionPicker({
       className="cr-picker"
       data-testid="session-picker"
       data-role={role}
-      aria-label={role === 'worker' ? 'Attach a worker' : 'Start a review'}
+      aria-label={role === 'worker' ? 'Start a worker' : 'Start a review'}
       onSubmit={(e) => {
         e.preventDefault();
         if (!value) return;
@@ -169,7 +169,7 @@ export function SessionPicker({
           data-testid="picker-start"
           disabled={busy || !value}
         >
-          {role === 'worker' ? 'Attach' : 'Review'}
+          {role === 'worker' ? 'Start' : 'Review'}
         </button>
         <button type="button" className="cr-btn" data-testid="picker-cancel" onClick={onCancel}>
           Cancel

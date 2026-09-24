@@ -194,7 +194,10 @@ export async function startTestDaemon(prefix = 'agile-cli-test-'): Promise<TestD
     startedAt: Date.now(),
     extraMethods: {
       ...buildStateRpcMethods(store),
-      ...buildStreamRpcMethods(streamService),
+      // T204: as `daemon.ts`, `node new` starts the node's agent (the fake one here).
+      ...buildStreamRpcMethods(streamService, {
+        create: (principal, input, opts) => attachService.createNode(principal, input, opts),
+      }),
       ...buildProjectRpcMethods(new ProjectService(store, streamService)),
       ...buildInboxRpcMethods(
         new InboxService({

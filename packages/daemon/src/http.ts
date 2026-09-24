@@ -909,10 +909,11 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
             const input = StreamCreateInputSchema.safeParse(await readJsonBody(req));
             if (!input.success) return errorResponse(400, formatZodError('stream', input.error));
             // T208: every node the cockpit makes belongs to a project.
-            return jsonResponse(
-              await feed.streams.create('human', input.data, { requireProject: true }),
-              201,
-            );
+            // T204: and starts its agent unless "Start later" was ticked.
+            const create = feed.attach
+              ? feed.attach.createNode.bind(feed.attach)
+              : feed.streams.create.bind(feed.streams);
+            return jsonResponse(await create('human', input.data, { requireProject: true }), 201);
           } catch (err) {
             // An unknown parent or repo, or a bad body: the human's to fix.
             return errorResponse(400, messageOf(err));

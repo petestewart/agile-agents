@@ -26,10 +26,12 @@ import {
   type SessionRole,
   type SessionStatus,
   type Stream,
+  type StreamPrincipal,
   type ThreadEntry,
   liveChildrenOf,
   nodeRole,
   ulid,
+  validateStreamCreateInput,
 } from '@agile-agents/shared';
 import { readHomeConfigFile } from '../config';
 import { settingsFileName } from '../hook/settings';
@@ -141,6 +143,15 @@ export interface AttachServiceOptions {
   now?: () => Date;
 }
 
+/** P5: the project step of the session defaults; absent when the project names nothing. */
+function projectSession(store: StateStore, id: string) {
+  try {
+    return store.getProject(id).session;
+  } catch {
+    return undefined;
+  }
+}
+
 export class AttachService {
   /** Live handles, one map per role: a reviewer coexists with a worker (§4.2). */
   private readonly live = new Map<SessionRole, Map<string, AgentSessionHandle>>([
@@ -172,6 +183,34 @@ export class AttachService {
     return this.handles(role).get(streamId);
   }
 
+  /**
+   * T204 (P5): `node new` starts the node's agent: a worker for a work
+   * node, a worktree-less session for a conversation node. `start: false`
+   * (`--no-start`, "Start later") skips it. The node is made either way; a
+   * failed start is a thread line, not a failed create.
+   */
+  async createNode(
+    principal: StreamPrincipal,
+    rawInput: unknown,
+    options: { requireProject?: boolean } = {},
+  ): Promise<Stream> {
+    const { start, ...input } = validateStreamCreateInput(rawInput);
+    const { streams } = this.options;
+    const created = await streams.create(principal, input, options);
+    if (start === false) return created;
+    const role = nodeRole(created, liveChildrenOf(created.id, streams.list()));
+    if (role !== 'work' && role !== 'conversation') return created;
+    try {
+      return (await this.attach(created.id)).stream;
+    } catch (err) {
+      await streams.appendThread('daemon', created.id, {
+        kind: 'line',
+        body: `could not start the agent: ${err instanceof Error ? err.message : String(err)}`,
+      });
+      return streams.get(created.id);
+    }
+  }
+
   async attach(streamId: string, options: AttachOptions = {}): Promise<AttachResult> {
     const { store, streams } = this.options;
     const role: SessionRole = options.role ?? 'worker';
@@ -188,8 +227,11 @@ export class AttachService {
       throw new UnregisteredRepoError(stream.repo);
     }
 
+    const project =
+      stream.project === undefined ? undefined : projectSession(store, stream.project);
     const settings = resolveSessionSettings({
       flags: { vendor: options.vendor, model: options.model, effort: options.effort },
+      ...(project !== undefined ? { project } : {}),
       ...(repoEntry !== undefined ? { repo: repoEntry } : {}),
       home: readHomeConfigFile(this.options.home),
     });

@@ -53,7 +53,8 @@ export function TopBar({
       // T208: it files into the current project (the daemon refuses none).
       const project = projectForNew(current, selected, rows, projects);
       if (project === undefined) throw new Error('Pick a project in the rail first');
-      const created = await createStream({ title: line, goal: line, project });
+      // T204: a jotted line is filed, not started; Start on its page runs the agent.
+      const created = await createStream({ title: line, goal: line, project, start: false });
       setCapture('');
       setCaptureError(undefined);
       select(created.id);
