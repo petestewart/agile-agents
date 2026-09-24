@@ -247,6 +247,31 @@ describe('the exit path', () => {
   }, 20_000);
 });
 
+describe('a detach that loses the race to a failed turn', () => {
+  test('ends the session as stopped even when the exit path reports ok: false', async () => {
+    attachService = buildAttachService(fakeProviderFor(ACP_PROVIDERS.claude, SPEAKS_THEN_HANGS));
+    const stream = await makeStream();
+    const { session } = await attachService.attach(stream.id);
+    await waitFor(() => streams.get(stream.id).agent.status === 'working');
+
+    // Force the ordering CI hit: the kill rejects the in-flight prompt, so
+    // `finish('prompt failed: …', false)` resolves `exited` before the
+    // process exit's clean `ok: true` can.
+    const service = attachService as unknown as {
+      onExit: (...args: [string, string, string, boolean, ...unknown[]]) => Promise<void>;
+    };
+    const original = service.onExit.bind(attachService);
+    service.onExit = (streamId, sessionId, _reason, _ok, ...rest) =>
+      original(streamId, sessionId, 'prompt failed: session stopped', false, ...rest);
+
+    expect(await attachService.stop(stream.id, 'worker', { detach: true })).toEqual([session.id]);
+    const after = streams.get(stream.id);
+    expect(after.sessions.find((s) => s.id === session.id)?.status).toBe('stopped');
+    expect(after.agent.status).toBe('idle');
+    expect(threadBodies(stream.id)).toContain('worker detached by human');
+  }, 20_000);
+});
+
 describe('a session that dies on a vendor error (T171)', () => {
   test("the session record carries the vendor's error line for the sessions strip", async () => {
     // A vendor that prints its complaint and then refuses the session's
