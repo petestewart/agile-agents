@@ -81,6 +81,8 @@ export const ProposeKnowledgeInputSchema = z
     examples: z.array(RuleExampleSchema).max(8).optional(),
     enforcement: KnowledgeEnforcementSchema.optional(),
     critical: z.boolean().optional(),
+    /** T303: what the item came out of (e.g. the finding ids of a norm suggestion); kept on its source. */
+    sources: z.array(z.string().min(1).max(200)).max(20).optional(),
   })
   .strict();
 export type ProposeKnowledgeInput = z.infer<typeof ProposeKnowledgeInputSchema>;
@@ -326,7 +328,7 @@ export const AGENT_VERB_DESCRIPTIONS: Record<AgentVerb, string> = {
   progress: 'Report one line of progress onto the stream thread.',
   finding: 'Record a finding ({severity, file, line?, text}) on the stream.',
   propose_knowledge:
-    'Propose a knowledge item for the operator to accept or reject ({text, kind?: standard|architecture|decision, scope?, paths?, examples?: [{action, violates}], enforcement?: tell|action|ship|review, critical?}). Scope defaults to this node’s subtree.',
+    'Propose a knowledge item for the operator to accept or reject ({text, kind?: standard|architecture|decision, scope?, paths?, examples?: [{action, violates}], enforcement?: tell|action|ship|review, critical?, sources?: [id]}). Scope defaults to this node’s subtree; the Director names it (global, repo:<name>, project:<id>).',
   propose_next: 'Propose a follow-up stream ({title, goal}); a human creates it.',
   read_stream: 'Read the most recent entries of this session’s stream thread.',
   search_docs: 'Search the repo and stream docs visible to this stream.',

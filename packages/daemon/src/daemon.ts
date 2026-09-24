@@ -23,7 +23,7 @@ import {
   buildDeliveryRpcMethods,
   wireLandGateResolution,
 } from './delivery';
-import { DirectorService, buildDirectorRpcMethods } from './director';
+import { DirectorService, NormWatch, buildDirectorRpcMethods } from './director';
 import { DocsService, buildDocsRpcMethods } from './docs';
 import { type EmitRouted, RoutedEventService, emitTransitions, makeEmitter } from './events';
 import { GateService, buildGateRpcMethods } from './gates';
@@ -234,6 +234,17 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
       : undefined;
   directorService?.startSight();
   if (directorService && attachService) directorService.setDelivery(attachService.delivery);
+  // T303: findings and PR review comments that repeat across projects wake the Director.
+  const normWatch =
+    directorService && store && streamService && routedEvents
+      ? new NormWatch({ store, streams: streamService, events: routedEvents })
+      : undefined;
+  const checkNorms = () => {
+    void normWatch?.check().catch((err) => console.error('norm watch failed:', err));
+  };
+  routedEvents?.onEmitted((event) => {
+    if (event.type === 'pr_review') checkNorms();
+  });
   // T301: the Director's start_node / restart_node (restart: stop the node's agent, start it again).
   if (autonomyService && attachService) {
     autonomyService.setAgents({
@@ -387,6 +398,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
               }
             : {}),
           ...(emitRouted ? { emitRouted } : {}),
+          onFinding: checkNorms,
           // T246: an agent's push; its PR is then polled at the babysit cadence.
           ...(landingService
             ? {
