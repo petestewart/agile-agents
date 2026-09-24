@@ -1,5 +1,10 @@
 import { describe, expect, test } from 'bun:test';
-import { DEFAULT_PROTECTED_BRANCHES, validateRepoEntry, validateReposConfig } from './repos';
+import {
+  DEFAULT_PROTECTED_BRANCHES,
+  resolveDelivery,
+  validateRepoEntry,
+  validateReposConfig,
+} from './repos';
 
 describe('RepoEntry (T111)', () => {
   test('protected_branches defaults to main + master (D8)', () => {
@@ -55,5 +60,78 @@ describe('classifier default (T150, cockpit design §6.4)', () => {
   test('it is optional and only takes on/off', () => {
     expect(validateRepoEntry({ path: '/repo' }).classifier).toBeUndefined();
     expect(() => validateRepoEntry({ path: '/repo', classifier: true })).toThrow();
+  });
+});
+
+describe('resolveDelivery (T222, §14.8): repo, then project, then node', () => {
+  const cases: Array<{
+    name: string;
+    repo?: { delivery?: 'direct' | 'pr'; auto_merge?: boolean };
+    project?: { mode?: 'direct' | 'pr'; auto_merge?: boolean };
+    node?: { mode?: 'direct' | 'pr'; auto_merge?: boolean };
+    want: { mode: 'direct' | 'pr'; auto_merge: boolean };
+  }> = [
+    { name: 'nothing set: direct, off', want: { mode: 'direct', auto_merge: false } },
+    { name: 'repo pr', repo: { delivery: 'pr' }, want: { mode: 'pr', auto_merge: false } },
+    {
+      name: 'repo pr + auto-merge',
+      repo: { delivery: 'pr', auto_merge: true },
+      want: { mode: 'pr', auto_merge: true },
+    },
+    {
+      name: 'project overrides repo mode',
+      repo: { delivery: 'pr' },
+      project: { mode: 'direct' },
+      want: { mode: 'direct', auto_merge: false },
+    },
+    {
+      name: 'node overrides project',
+      repo: { delivery: 'direct' },
+      project: { mode: 'direct' },
+      node: { mode: 'pr' },
+      want: { mode: 'pr', auto_merge: false },
+    },
+    {
+      name: 'fields resolve independently: node mode, project auto-merge',
+      repo: { delivery: 'direct', auto_merge: false },
+      project: { auto_merge: true },
+      node: { mode: 'pr' },
+      want: { mode: 'pr', auto_merge: true },
+    },
+    {
+      name: 'node turns auto-merge off over the repo',
+      repo: { delivery: 'pr', auto_merge: true },
+      node: { auto_merge: false },
+      want: { mode: 'pr', auto_merge: false },
+    },
+    {
+      name: 'auto-merge is pr only',
+      repo: { delivery: 'pr', auto_merge: true },
+      project: { mode: 'direct' },
+      want: { mode: 'direct', auto_merge: false },
+    },
+  ];
+  for (const c of cases) {
+    test(c.name, () => {
+      expect(
+        resolveDelivery(
+          c.repo,
+          c.project ? { delivery: c.project } : undefined,
+          c.node ? { delivery: c.node } : undefined,
+        ),
+      ).toEqual(c.want);
+    });
+  }
+
+  test('the new §14.8 fields validate; github must have owner and repo', () => {
+    const entry = validateRepoEntry({
+      path: '/r',
+      delivery: 'pr',
+      auto_merge: true,
+      remote: 'upstream',
+      github: { owner: 'o', repo: 'r' },
+    });
+    expect(entry.github).toEqual({ owner: 'o', repo: 'r' });
+    expect(() => validateRepoEntry({ path: '/r', github: { owner: 'o' } })).toThrow();
   });
 });

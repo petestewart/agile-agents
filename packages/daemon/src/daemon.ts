@@ -96,6 +96,9 @@ export interface StartDaemonOptions extends DiscoverConfigOptions {
 export async function startDaemon(options: StartDaemonOptions = {}): Promise<DaemonHandle> {
   const config = discoverConfig(options);
   const startedAt = Date.now();
+  // T221 (§18): whether `gh` can supply a token, never the token. T222's pr refusal asks it too.
+  const githubAuth =
+    options.githubAuth ?? (() => githubAuthAvailable(ghTokenSource(config.github.gh_command)));
   // The classifier tier (§6.2, D5), consumed by the hook and landing.
   const classifier: Classifier =
     options.classifier ?? new JevClassifier({ config: config.classifier });
@@ -295,7 +298,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
   const extraMethods =
     store && gateService && bus
       ? {
-          ...buildStateRpcMethods(store),
+          ...buildStateRpcMethods(store, { githubAuth }),
           ...buildBusRpcMethods(bus),
           ...buildGateRpcMethods(gateService),
           ...(questionService ? buildQuestionRpcMethods(questionService) : {}),
@@ -373,6 +376,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
     ...(attachService ? { attach: attachService } : {}),
     ...(repoInPlace ? { repoInPlace } : {}),
     ...(docsService ? { docs: docsService } : {}),
+    githubAuth,
   });
 
   // §5.4's built-in pattern rules, idempotent, before any call is accepted
@@ -405,8 +409,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
       // `agile daemon status`: whether a key is loaded and its source, never the key.
       ...(classifierKey ? { classifierStatus: () => classifierKey.status() } : {}),
       // T221 (§18): whether `gh` can supply a token, never the token.
-      githubAuth:
-        options.githubAuth ?? (() => githubAuthAvailable(ghTokenSource(config.github.gh_command))),
+      githubAuth,
     });
     await rpc.listening;
   } catch (err) {

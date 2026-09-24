@@ -394,7 +394,11 @@ interface Cockpit {
  * the RPC socket and the vendor runner this suite never uses.
  */
 async function startCockpit(
-  extra: { ruleEvals?: RuleRpcEvalDeps; classifierKey?: boolean } = {},
+  extra: {
+    ruleEvals?: RuleRpcEvalDeps;
+    classifierKey?: boolean;
+    githubAuth?: () => Promise<boolean>;
+  } = {},
 ): Promise<Cockpit> {
   const home = mkdtempSync(join(tmpdir(), 'agile-cockpit-e2e-'));
   const init = runInit(home);
@@ -434,6 +438,8 @@ async function startCockpit(
           }),
         }
       : {}),
+    // T222: the pr refusal's auth seam; never a real `gh`.
+    ...(extra.githubAuth ? { githubAuth: extra.githubAuth } : {}),
     feedPollIntervalMs: 50,
   });
   return {
@@ -1917,6 +1923,61 @@ describe('add a repo from Settings (Playwright e2e, T206)', () => {
         await teardown([page]);
         await cockpit.stop();
         rmSync(scratch, { recursive: true, force: true });
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+});
+
+// ---- T222: repo delivery settings --------------------------------------------
+
+describe('repo delivery settings (Playwright e2e, T222)', () => {
+  browserTest(
+    'change the delivery mode in Settings: pr is refused without GitHub auth, then set with it',
+    async () => {
+      let authed = false;
+      const cockpit = await startCockpit({ githubAuth: async () => authed });
+      const repo = mkdtempSync(join(tmpdir(), 'agile-delivery-e2e-'));
+      let page: Page | undefined;
+      try {
+        git(['init', '-q', '-b', 'main'], repo);
+        git(['remote', 'add', 'origin', 'git@github.com:acme/api.git'], repo);
+        await cockpit.store.addRepo('api', { path: repo });
+
+        page = await openPage();
+        await page.goto(`${cockpit.base}/`);
+        await page.locator('[data-view="settings"]').click();
+        const row = '[data-testid="settings-repo-api"]';
+        await page.locator(`${row}[data-delivery="direct"]`).waitFor({ state: 'visible' });
+
+        await page.locator('[data-testid="settings-repo-api-delivery"]').selectOption('pr');
+        await waitForText(
+          page,
+          '[data-testid="settings-repo-api-error"]',
+          'state.repo_set: pr delivery needs GitHub auth — run `gh auth login` (see `agile daemon status`)',
+        );
+        expect(cockpit.store.getRepos().api?.delivery).toBe('direct');
+
+        authed = true;
+        await page.locator('[data-testid="settings-repo-api-delivery"]').selectOption('pr');
+        await page.locator(`${row}[data-delivery="pr"]`).waitFor({ state: 'visible' });
+        await page.locator('[data-testid="settings-repo-api-auto-merge"]').check();
+        await waitUntil(
+          'auto-merge to be saved',
+          () => cockpit.store.getRepos().api?.auto_merge === true,
+        );
+        expect(cockpit.store.getRepos().api).toMatchObject({
+          delivery: 'pr',
+          github: { owner: 'acme', repo: 'api' },
+        });
+
+        await page.locator('[data-testid="settings-repo-api-delivery"]').selectOption('direct');
+        await page.locator(`${row}[data-delivery="direct"]`).waitFor({ state: 'visible' });
+        expect(cockpit.store.getRepos().api?.delivery).toBe('direct');
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+        rmSync(repo, { recursive: true, force: true });
       }
     },
     TEST_BUDGET_MS,

@@ -64,7 +64,13 @@ import {
   buildRuleReport,
   testRules,
 } from './rules';
-import { NotFoundError, type StateStore, buildStateRpcMethods, resolveMainBranch } from './store';
+import {
+  NotFoundError,
+  type StateStore,
+  buildStateRpcMethods,
+  resolveMainBranch,
+  setRepoSettings,
+} from './store';
 import type { RepoInPlaceService, StreamService } from './streams';
 
 /** The installable-app files served at site root, with their content types. */
@@ -140,6 +146,8 @@ export interface HttpServerOptions {
   repoInPlace?: RepoInPlaceService;
   /** The stream page's docs tab. */
   docs?: DocsService;
+  /** T222: the pr refusal's GitHub auth check; absent reads as unavailable. */
+  githubAuth?: () => Promise<boolean>;
   /** Test hook: the tailer's poll interval (default 250ms). */
   feedPollIntervalMs?: number;
 }
@@ -368,6 +376,8 @@ interface FeedContext {
   attach?: AttachService;
   repoInPlace?: RepoInPlaceService;
   docs?: DocsService;
+  /** T222: the pr refusal's GitHub auth check; absent reads as unavailable. */
+  githubAuth?: () => Promise<boolean>;
 }
 
 function resolveFeedContext(options: HttpServerOptions): FeedContext | undefined {
@@ -386,6 +396,7 @@ function resolveFeedContext(options: HttpServerOptions): FeedContext | undefined
     attach: options.attach,
     repoInPlace: options.repoInPlace,
     docs: options.docs,
+    githubAuth: options.githubAuth,
   };
 }
 
@@ -501,6 +512,7 @@ async function handleSessionSettingsRoute(
  *
  *   GET  /api/repos   every registered repo with its resolved `main_branch`
  *   POST /api/repos   `{name, path, protected_branches?}`; a bad path is the RPC's one-line 400
+ *   POST /api/repos/:name  T222: delivery settings (`RepoSettingsPatchSchema`), same checks as `agile repo set`
  */
 async function handleRepoRoute(
   req: Request,
@@ -508,8 +520,10 @@ async function handleRepoRoute(
   feed: FeedContext | undefined,
   sameOrigin: () => boolean,
 ): Promise<Response | undefined> {
-  if (url.pathname !== '/api/repos') return undefined;
+  const one = url.pathname.match(/^\/api\/repos\/([^/]+)$/);
+  if (url.pathname !== '/api/repos' && !one) return undefined;
   if (req.method !== 'GET' && req.method !== 'POST') return undefined;
+  if (one && req.method !== 'POST') return undefined;
   if (!feed) return errorResponse(503, 'state store not initialised (run `agile init`)');
   const list = () =>
     Object.entries(feed.store.getRepos()).map(([name, entry]) => ({
@@ -517,7 +531,29 @@ async function handleRepoRoute(
       path: entry.path,
       protected_branches: entry.protected_branches,
       main_branch: resolveMainBranch(entry),
+      delivery: entry.delivery ?? 'direct',
+      auto_merge: entry.auto_merge ?? false,
+      visibility: entry.visibility ?? { mode: 'public' },
+      ...(entry.github ? { github: entry.github } : {}),
     }));
+  if (one?.[1] !== undefined) {
+    if (!sameOrigin()) return errorResponse(403, 'cross-origin request rejected');
+    let patch: unknown;
+    try {
+      patch = await readJsonBody(req);
+    } catch {
+      return errorResponse(400, 'invalid repo settings: body must be JSON');
+    }
+    try {
+      await setRepoSettings(feed.store, decodeURIComponent(one[1]), patch, {
+        by: 'human',
+        ...(feed.githubAuth ? { githubAuth: feed.githubAuth } : {}),
+      });
+      return jsonResponse({ repos: list() });
+    } catch (err) {
+      return errorResponse(400, messageOf(err));
+    }
+  }
   if (req.method === 'GET') return jsonResponse({ repos: list() });
   if (!sameOrigin()) return errorResponse(403, 'cross-origin request rejected');
   let body: unknown;

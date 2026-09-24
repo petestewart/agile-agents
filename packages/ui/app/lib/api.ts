@@ -235,6 +235,24 @@ export interface RepoRow {
   path: string;
   protected_branches: string[];
   main_branch: string;
+  /** T222 (§14.8). */
+  delivery: 'direct' | 'pr';
+  auto_merge: boolean;
+  visibility: { mode: 'public' } | { mode: 'private'; projects: string[] };
+  github?: { owner: string; repo: string };
+}
+
+/** T222: one repo's delivery settings; `pr` is refused without a GitHub remote and auth. */
+export async function saveRepoSettings(
+  name: string,
+  patch: {
+    delivery?: 'direct' | 'pr';
+    auto_merge?: boolean;
+    visibility?: RepoRow['visibility'];
+  },
+): Promise<RepoRow[]> {
+  return ((await post(`/api/repos/${encodeURIComponent(name)}`, patch)) as { repos: RepoRow[] })
+    .repos;
 }
 
 export async function listRepos(): Promise<RepoRow[]> {
