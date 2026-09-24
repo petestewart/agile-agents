@@ -987,8 +987,8 @@ git status --short
 
 ### Ticket: T228 Waits-on, merge-together and auto-merge
 - **Priority:** P1
-- **Status:** In Progress
-- **Owner:** opus:worker-T228
+- **Status:** Done (merge 2abed49)
+- **Owner:** —
 - **Scope:**
   - `waits_on` holds delivery until the target is merged, or closed for a non-work target (P8). `satisfied_at` is set by the daemon. Add `agile node wait <id> --on <id>` and a Link button.
   - `merge_together` groups deliver together (P7).
@@ -999,7 +999,7 @@ git status --short
   - a merge-together pair of direct nodes merges together or not at all;
   - "unavailable" is shown when the fake refuses.
 - **Validation Steps:** `bun test packages/daemon/src/delivery`.
-- **Notes:** After T225 and T226.
+- **Notes:** After T225 and T226. Review (sonnet) PASS; plain direct delivery traced unregressed after `land()` restructure. Daemon +372. A direct node held on waits-on needs a second Merge click once satisfied; cross-repo merge-together is per-repo atomic only; `settle()` runs after each poller tick. Link button has no Playwright test.
 
 ### Ticket: T229 ∥ Repo visibility
 - **Priority:** P2
@@ -1017,8 +1017,8 @@ git status --short
 
 ### Ticket: T230 Phase 8 QA and Pete's look
 - **Priority:** P0
-- **Status:** Todo
-- **Owner:** —
+- **Status:** In Progress
+- **Owner:** sonnet:qa-T230
 - **Scope:** Black-box QA against the fake GitHub and the fake agent: direct delivery, PR delivery, the poller transitions, sync, overlaps, holds, auto-merge, visibility, and the migration of the Phase 7 home. Daemon line count. Pete then runs one direct delivery on ledger-lite and one PR on agile-test-repo.
 - **Acceptance Criteria:** QA ACCEPT. Live: the ledger-lite node merges with one click. The agile-test-repo node opens a real PR whose state shows on the node. After Pete merges on GitHub, the node shows merged and the other live node on the repo is synced.
 - **Validation Steps:** Pete, on his Mac:
