@@ -224,7 +224,7 @@ export class VerbService {
     };
   }
 
-  /** Repo `.agile-docs/` plus this stream's own notes; empty with no docs service. */
+  /** Repo docs (`<home>/repos/<name>/docs/`) plus this stream's own notes; empty with no docs service. */
   async searchDocs(input: unknown): Promise<SearchHit[]> {
     const { session, query } = validateVerbInput('search_docs', input);
     const caller = this.caller(session);

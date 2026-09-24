@@ -26,8 +26,9 @@ beforeEach(async () => {
   await store.addRepo('ledger', { path: repo });
   methods = buildDocsRpcMethods(new DocsService(store, streams, init.stateRoot));
   stream = await streams.create('human', { title: 's', goal: 'g', repo: 'ledger' });
-  mkdirSync(join(repo, '.agile-docs'), { recursive: true });
-  writeFileSync(join(repo, '.agile-docs', 'brief.md'), 'the invariant\n');
+  const docsDir = join(init.stateRoot, 'repos', 'ledger', 'docs');
+  mkdirSync(docsDir, { recursive: true });
+  writeFileSync(join(docsDir, 'brief.md'), 'the invariant\n');
 });
 
 afterEach(() => {

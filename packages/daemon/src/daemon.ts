@@ -152,7 +152,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
           ...(rulesService ? { rules: rulesService } : {}),
         })
       : undefined;
-  // Docs: plain Markdown under `<repo>/.agile-docs/` and `<home>/streams/<id>.docs/`.
+  // Docs: plain Markdown under `<home>/repos/<name>/docs/` and `<home>/streams/<id>.docs/`.
   const docsService =
     store && streamService ? new DocsService(store, streamService, config.stateRoot) : undefined;
   // The landing path (§8.2) and its diff-level rule tier, which needs a
