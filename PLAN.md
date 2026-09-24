@@ -723,17 +723,17 @@ Design: `design/projects-design.md`, which wins over `design/cockpit-design.md` 
 
 ### Ticket: T201 Node fields and the derived role
 - **Priority:** P0
-- **Status:** In Progress
-- **Owner:** opus:worker-T201
+- **Status:** Done (merge 362ac3f)
+- **Owner:** —
 - **Scope:** Extend the stream schema with `project`, `labels`, `waits_on`, `external_link` (schema only), `autonomy`, `delivery`, `merge_together`, `helper_of`, `delivery_state` and `touched` (§14.2). Only the daemon writes `delivery_state` and `touched`. Add `nodeRole()` in shared (P1). `stream.create` requires a project and defaults the parent to the project root. `waits_on` writes refuse cycles (P8). Add `agile node` as the verb, with `agile stream` kept as an alias; `node show --json` includes `role`; `node list` takes `--project` and `--parent` and prints JSON with `--json`. Principals gain `coordinator` and `director` (§14.12), which the store refuses on `human.*`.
 - **Acceptance Criteria:** Table tests for `nodeRole` (project, coordinating, work, conversation, a same-repo helper not making the parent coordinating); the cycle refusal; the two-writer split for the new principals.
 - **Validation Steps:** `bun test packages/shared packages/daemon/src/streams packages/daemon/src/store`.
-- **Notes:** After T200.
+- **Notes:** After T200. Review (sonnet) PASS. Daemon +106. Gaps carried: HTTP `POST /api/streams` does not yet require a project (→ T208); `waits_on`/`labels` have no RPC/CLI edit path yet (store enforces P8); landed children count as live per §14.2.
 
 ### Ticket: T202 Migrate an existing home into projects
 - **Priority:** P0
-- **Status:** Todo
-- **Owner:** —
+- **Status:** In Progress
+- **Owner:** opus:worker-T202
 - **Scope:** Add a one-shot, idempotent migration on daemon start (§17.1 steps 1, 3 and 4):
   - create project "Unfiled" and re-parent every parentless stream under its root;
   - set `project` on every stream;
@@ -747,8 +747,8 @@ Design: `design/projects-design.md`, which wins over `design/cockpit-design.md` 
 
 ### Ticket: T203 Work nodes deliver to main; parent branches removed
 - **Priority:** P0
-- **Status:** Todo
-- **Owner:** —
+- **Status:** In Progress
+- **Owner:** opus:worker-T203
 - **Scope:**
   - Landing's target becomes the repo's `main_branch`. Remove `parentBranch()` in `landing/service.ts` and the stream's `target_branch`.
   - A coordinating node never gets a branch or worktree.
@@ -788,7 +788,7 @@ Design: `design/projects-design.md`, which wins over `design/cockpit-design.md` 
 
 ### Ticket: T206 ∥ Add a repo from the cockpit
 - **Priority:** P2
-- **Status:** In Progress
+- **Status:** In Review
 - **Owner:** opus:worker-T206
 - **Scope:** Settings → Repos: register a repo by path (validated as a git toplevel), with a name and protected branches, and show the resolved `main_branch`. It uses the same RPC as `agile repo add`. This is the unfiled doc-comment item "add repo in UI".
 - **Acceptance Criteria:** e2e: add `fixtures/demo-project` from Settings; it shows in the New stream repo picker. A bad path shows the daemon's one-line error.
@@ -809,12 +809,12 @@ Design: `design/projects-design.md`, which wins over `design/cockpit-design.md` 
 
 ### Ticket: T208 Project tree and switcher in the cockpit
 - **Priority:** P0
-- **Status:** Todo
-- **Owner:** —
+- **Status:** In Progress
+- **Owner:** opus:worker-T208
 - **Scope:** The left rail groups the tree by project, with a project switcher ("All" and each project), role icons (project, coordinating, work, conversation) and labels. New stream and quick capture file into the current project. There is a "New project" dialog. The snapshot carries projects and roles.
 - **Acceptance Criteria:** e2e: create two projects; each one's nodes show only under it; quick capture lands in the selected project.
 - **Validation Steps:** `bun run test:e2e`.
-- **Notes:** After T201. Pete looks at it before T209.
+- **Notes:** After T201. Pete looks at it before T209. From T201: make HTTP `POST /api/streams` require a project (default to the current project in the cockpit).
 
 ### Ticket: T209 Repo view and lenses
 - **Priority:** P1
