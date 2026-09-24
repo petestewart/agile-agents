@@ -1119,12 +1119,12 @@ git status --short
 
 ### Ticket: T245 ∥ Activity feed per node
 - **Priority:** P1
-- **Status:** In Progress
-- **Owner:** opus:worker-T245
+- **Status:** Done (merge e112bfd)
+- **Owner:** —
 - **Scope:** Add a node Activity tab: every event routed to the node with its reason, delivery status and which session or digest carried it ("what woke it and why"). Add `agile tail --node <id> --events`. The repo view shows repo events.
 - **Acceptance Criteria:** e2e: a `main_changed` shows on the other node's Activity with "same repo".
 - **Validation Steps:** `bun run test:e2e`.
-- **Notes:** After T242.
+- **Notes:** After T242. Review (sonnet) PASS. Daemon +84. Activity tab (live), repo events in the repo view (fetched on open, not live), `agile tail --node <id> --events [--follow] [--json]` (reads files directly like the existing tail).
 
 ### Ticket: T246 PR babysitting
 - **Priority:** P0
