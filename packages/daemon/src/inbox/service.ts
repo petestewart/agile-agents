@@ -125,6 +125,7 @@ export class InboxService {
       context: inboxContext(label),
       ...withDetail(label),
       ref: `knowledge/${rule.id}.yaml`,
+      knowledge_kind: rule.kind,
     };
   }
 

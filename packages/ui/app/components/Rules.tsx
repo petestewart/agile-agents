@@ -129,7 +129,7 @@ export function Rules(): JSX.Element {
   return (
     <section className="cr-rules-screen" data-testid="rules-screen">
       <div className="cr-inbox-hd">
-        <h1>Rules</h1>
+        <h1>Knowledge</h1>
         <span className="cr-count" data-testid="rules-count">
           {shown.length}
         </span>
@@ -171,6 +171,38 @@ export function Rules(): JSX.Element {
             {RULE_STATUS_FILTERS.map((status) => (
               <option key={status} value={status}>
                 {status}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          Kind{' '}
+          <select
+            data-testid="rules-filter-kind"
+            value={filter.kind ?? 'all'}
+            onChange={(e) =>
+              setFilter({ ...filter, kind: e.target.value as KnowledgeKind | 'all' })
+            }
+          >
+            {['all', ...KNOWLEDGE_KINDS].map((kind) => (
+              <option key={kind} value={kind}>
+                {kind}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          Enforcement{' '}
+          <select
+            data-testid="rules-filter-enforcement"
+            value={filter.enforcement ?? 'all'}
+            onChange={(e) =>
+              setFilter({ ...filter, enforcement: e.target.value as KnowledgeEnforcement | 'all' })
+            }
+          >
+            {['all', ...KNOWLEDGE_ENFORCEMENTS].map((enforcement) => (
+              <option key={enforcement} value={enforcement}>
+                {enforcement}
               </option>
             ))}
           </select>
@@ -281,7 +313,7 @@ export function Rules(): JSX.Element {
       )}
       {data && shown.length === 0 && (
         <p className="cr-calm" data-testid="rules-empty">
-          No rules match.
+          Nothing matches.
         </p>
       )}
       {data && (
@@ -373,6 +405,9 @@ function RuleCard({
         />
         <span>{rule.name ?? rule.id}</span>
         <span data-testid="rules-scope">{formatRuleScope(rule.scope)}</span>
+        {rule.paths !== undefined && rule.paths.length > 0 && (
+          <span data-testid="rules-paths">{rule.paths.join(', ')}</span>
+        )}
         <span data-testid="rules-tier">
           {rule.enforcement}
           {rule.check !== undefined ? ` · ${rule.check.by}` : ''}
@@ -579,6 +614,14 @@ function RuleEditor({
           data-testid="rules-edit-text"
           value={draft.text}
           onChange={(e) => set({ text: e.target.value })}
+        />
+      </label>
+      <label>
+        Paths (globs, one per line; empty means all paths)
+        <textarea
+          data-testid="rules-edit-paths"
+          value={draft.paths}
+          onChange={(e) => set({ paths: e.target.value })}
         />
       </label>
       <label>

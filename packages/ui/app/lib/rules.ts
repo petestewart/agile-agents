@@ -32,6 +32,10 @@ import type { RuleReportRow } from './feed-types';
 /** What the rules screen shows. `source` is a `source.by` — the inbox's migration card sets it. */
 export interface RulesFilter {
   status: RuleStatus | 'all';
+  /** T266: standard · architecture · decision, or `all`. */
+  kind?: KnowledgeKind | 'all';
+  /** T266: tell · review · action · ship, or `all`. */
+  enforcement?: RuleEnforcement | 'all';
   /** A `formatRuleScope` value, or `all`. */
   scope: string;
   source?: string;
@@ -50,6 +54,10 @@ export function filterRules(rules: readonly Rule[], filter: RulesFilter): Rule[]
   return rules.filter(
     (rule) =>
       (filter.status === 'all' || rule.status === filter.status) &&
+      (filter.kind === undefined || filter.kind === 'all' || rule.kind === filter.kind) &&
+      (filter.enforcement === undefined ||
+        filter.enforcement === 'all' ||
+        rule.enforcement === filter.enforcement) &&
       (filter.scope === 'all' || formatRuleScope(rule.scope) === filter.scope) &&
       (filter.source === undefined || rule.source.by === filter.source) &&
       (filter.rule === undefined || rule.id === filter.rule),
@@ -93,6 +101,8 @@ export interface RuleDraft {
   /** T167: its arguments, one per line (globs for `path_deny`, tokens for `command_deny`). */
   patternArgs: string;
   examples: RuleExample[];
+  /** T266: the item's path globs, one per line; empty means all paths. */
+  paths: string;
   /** T167, "New rule" only: `global` · `repo:<name>` · `project:<id>` · `subtree:<id>`. */
   scope: string;
   /** T167, "New rule" only. */
@@ -112,6 +122,7 @@ export function draftOf(rule: Rule): RuleDraft {
     patternKind: pattern?.kind ?? '',
     patternArgs: pattern ? rulePatternArgs(pattern).join('\n') : '',
     examples: examplesOf(rule).map((example) => ({ ...example })),
+    paths: (rule.paths ?? []).join('\n'),
     scope: formatRuleScope(rule.scope),
     critical: rule.critical,
   };
@@ -129,6 +140,7 @@ export function emptyDraft(): RuleDraft {
     patternKind: '',
     patternArgs: '',
     examples: [],
+    paths: '',
     scope: 'global',
     critical: false,
   };
@@ -183,10 +195,15 @@ export function patchOf(draft: RuleDraft): { patch: RulePatch } | { error: strin
           ...(criteria ? { criteria } : {}),
           examples,
         };
+  const paths = draft.paths
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
   return {
     patch: {
       text,
       kind: draft.kind,
+      paths,
       enforcement: draft.enforcement,
       ...(check ? { check } : {}),
     },
