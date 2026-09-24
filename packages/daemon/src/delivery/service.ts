@@ -128,6 +128,8 @@ export interface DeliveryServiceOptions {
   diffRules?: DiffRules;
   /** Tells the retro (§5.5) a stream landed. Fire-and-forget: never a failed land. */
   onStreamEnd?: (streamId: string) => void | Promise<void>;
+  /** T226: main moved on `repo` (sync the other live nodes). Fire-and-forget. */
+  onMainMoved?: (repo: string, mergedStream: string) => unknown;
 }
 
 export class DeliveryService {
@@ -252,6 +254,9 @@ export class DeliveryService {
     }
     // §5.5's retro, after the worktree is gone.
     void Promise.resolve(this.options.onStreamEnd?.(stream.id)).catch(() => {});
+    void Promise.resolve(this.options.onMainMoved?.(stream.repo as string, stream.id)).catch(
+      () => {},
+    );
     return { status: 'landed', target, sha: merged.sha, line };
   }
 

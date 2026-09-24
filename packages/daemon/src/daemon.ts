@@ -38,7 +38,7 @@ import { resolveCliBin } from './runner';
 import { StateStore, buildStateRpcMethods } from './store';
 import { migrateHome } from './store/migrate';
 import { RepoInPlaceService, StreamService, buildStreamRpcMethods } from './streams';
-import { OverlapTracker } from './sync';
+import { MainSync, OverlapTracker } from './sync';
 
 export const DAEMON_VERSION: string = daemonPackageJson.version;
 
@@ -143,6 +143,9 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
           ...(rulesService ? { rules: rulesService } : {}),
           // The turn-end rule treats an open routed call like an open question.
           ...(gateService ? { gates: gateService } : {}),
+          onWorkerTurnEnd: (id) => {
+            void mainSync?.turnEnded(id).catch((err) => console.error('main sync failed:', err));
+          },
         })
       : undefined;
   const questionService: QuestionService | undefined =
@@ -181,6 +184,18 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
           ...(gateService ? { gates: gateService } : {}),
         })
       : undefined;
+  // T226: sync after merge — main merged into the other live nodes on the repo.
+  const mainSync =
+    store && streamService
+      ? new MainSync({
+          streams: streamService,
+          repos: () => store.getRepos(),
+          ...(options.overlapRecomputeMs !== undefined
+            ? { intervalMs: options.overlapRecomputeMs }
+            : {}),
+        })
+      : undefined;
+  mainSync?.start();
   const landingService =
     store && streamService
       ? new DeliveryService({
@@ -191,6 +206,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
           onStreamEnd: async (id) => {
             await lessonsService?.onStreamEnd(id);
           },
+          ...(mainSync ? { onMainMoved: (repo, id) => mainSync.mainMoved(repo, id) } : {}),
         })
       : undefined;
   if (gateService && landingService) wireLandGateResolution(gateService, landingService);
@@ -442,6 +458,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
       try {
         if (gateTimer) clearInterval(gateTimer);
         overlapTracker?.stop();
+        mainSync?.stop();
         // Sessions are child processes: stop them first so their exit writes land.
         await attachService?.stopAll();
         await http.stop();
