@@ -183,7 +183,9 @@ export async function runStreamList(
     return 0;
   }
   if (json) {
-    printJson({ ...result, tree });
+    // T205: every `--json` list is the same bare array of nodes, each with its role.
+    const every = await allStreams(socketPath);
+    printJson(flattenTree(tree).map((s) => ({ ...s, role: roleIn(s, every) })));
     return 0;
   }
   if (tree.length === 0) {

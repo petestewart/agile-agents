@@ -216,4 +216,29 @@ describe('T205 + Repo in place', () => {
     expect(parts.map((p) => p.title)).toEqual(['docs part']);
     expect(liveChildrenOf(node.id, streams.list())).toHaveLength(3);
   }, 30_000);
+
+  test('a split that fails midway puts the node back and archives the part it made', async () => {
+    const node = await conversation();
+    const work = (await reshape.addRepo(node.id, 'api')).node;
+    const create = streams.create.bind(streams);
+    let calls = 0;
+    streams.create = async (...args) => {
+      calls += 1;
+      if (calls === 2) throw new Error('injected failure');
+      return create(...args);
+    };
+
+    await expect(reshape.addRepo(node.id, 'web')).rejects.toThrow('injected failure');
+    streams.create = create;
+
+    const after = streams.get(node.id);
+    expect(after.repo).toBe('api');
+    expect(after.branch).toBe(work.branch);
+    expect(after.worktree).toBe(work.worktree);
+    expect(roleOf(node.id)).toBe('work');
+    const parts = streams.list({ include_archived: true }).filter((s) => s.parent === node.id);
+    expect(parts).toHaveLength(1);
+    expect(parts[0]?.archived).toBe(true);
+    expect(parts[0]?.branch).toBeUndefined();
+  }, 30_000);
 });

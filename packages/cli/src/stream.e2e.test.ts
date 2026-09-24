@@ -113,6 +113,14 @@ describe('agile node (T201)', () => {
       (await cli(['node', 'list', '--project', projectId, '--json'])).out,
     ) as Array<{ id: string }>;
     expect(byProject.map((n) => n.id).sort()).toEqual([projectRoot, epic.id, task.id].sort());
+    // T205: unfiltered `--json` is the same bare array, each node with its role.
+    const unfiltered = JSON.parse((await cli(['node', 'list', '--json'])).out) as Array<{
+      id: string;
+      role: string;
+    }>;
+    expect(Array.isArray(unfiltered)).toBe(true);
+    expect(unfiltered.find((n) => n.id === epic.id)?.role).toBe('coordinating');
+    expect(unfiltered.map((n) => n.id).sort()).toEqual([projectRoot, epic.id, task.id].sort());
   });
 });
 

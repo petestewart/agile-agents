@@ -133,20 +133,58 @@ export class RepoInPlaceService {
   /** Work → coordinating: the branch, worktree and sessions go to "<repo> part". */
   private async splitWorkNode(node: Stream, repo: string): Promise<Stream[]> {
     const from = node.repo as string;
-    const moved = await this.newPart(node, from);
-    const sessions: SessionRef[] = node.sessions;
-    await this.store.updateStream('daemon', moved.id, (before) => ({
-      ...before,
-      ...(node.branch !== undefined ? { branch: node.branch } : {}),
-      ...(node.worktree !== undefined ? { worktree: node.worktree } : {}),
-      sessions: [...sessions, ...before.sessions],
-    }));
-    await this.store.updateStream('daemon', node.id, (before) => {
-      const { repo: _r, branch: _b, worktree: _w, land_conflict: _l, ...rest } = before;
-      return { ...rest, sessions: [] };
-    });
-    const added = await this.newPart(this.streams.get(node.id), repo);
-    return [this.streams.get(moved.id), added];
+    const created: string[] = [];
+    try {
+      const moved = await this.newPart(node, from);
+      created.push(moved.id);
+      const sessions: SessionRef[] = node.sessions;
+      await this.store.updateStream('daemon', moved.id, (before) => ({
+        ...before,
+        ...(node.branch !== undefined ? { branch: node.branch } : {}),
+        ...(node.worktree !== undefined ? { worktree: node.worktree } : {}),
+        sessions: [...sessions, ...before.sessions],
+      }));
+      await this.store.updateStream('daemon', node.id, (before) => {
+        const { repo: _r, branch: _b, worktree: _w, land_conflict: _l, ...rest } = before;
+        return { ...rest, sessions: [] };
+      });
+      const added = await this.newPart(this.streams.get(node.id), repo);
+      created.push(added.id);
+      return [this.streams.get(moved.id), added];
+    } catch (err) {
+      await this.rollback(node, created);
+      throw err;
+    }
+  }
+
+  /**
+   * Best effort: a split that failed midway puts the node's repo fields and
+   * sessions back and archives the parts it made (the branch never moved in git).
+   */
+  private async rollback(node: Stream, created: readonly string[]): Promise<void> {
+    for (const id of created) {
+      try {
+        await this.store.updateStream('daemon', id, (before) => {
+          const { branch: _b, worktree: _w, ...rest } = before;
+          return { ...rest, sessions: [], archived: true };
+        });
+      } catch {
+        // Keep undoing the rest.
+      }
+    }
+    try {
+      await this.store.updateStream('daemon', node.id, (before) => ({
+        ...before,
+        ...(node.repo !== undefined ? { repo: node.repo } : {}),
+        ...(node.branch !== undefined ? { branch: node.branch } : {}),
+        ...(node.worktree !== undefined ? { worktree: node.worktree } : {}),
+        ...(node.land_conflict !== undefined ? { land_conflict: node.land_conflict } : {}),
+        sessions: node.sessions,
+      }));
+      await this.event(node.id, 'repo add failed; the node was put back as it was');
+    } catch {
+      // Nothing more to do: the caller sees the original error.
+    }
   }
 
   private async newPart(node: Stream, repo: string): Promise<Stream> {
