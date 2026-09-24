@@ -512,6 +512,36 @@ describe('one ACP message is one thread entry (T137)', () => {
   }, 20_000);
 });
 
+describe('a failed thread append is logged and retried', () => {
+  test('the first agent append throws: stderr.log says so and the line still lands', async () => {
+    const original = streams.appendThread.bind(streams);
+    let failed = 0;
+    streams.appendThread = (async (...args: Parameters<typeof original>) => {
+      if (args[0] === 'agent' && failed === 0) {
+        failed += 1;
+        throw new Error('disk hiccup');
+      }
+      return original(...args);
+    }) as typeof streams.appendThread;
+    try {
+      attachService = buildAttachService(
+        fakeProviderFor(ACP_PROVIDERS.claude, {
+          steps: [{ type: 'agent_text', text: 'still here' }, { type: 'end_turn' }],
+        }),
+      );
+      const stream = await makeStream();
+      const { session } = await attachService.attach(stream.id);
+      await waitFor(() => threadBodies(stream.id).includes('still here'));
+      expect(failed).toBe(1);
+      const stderr = readFileSync(join(home, 'sessions', session.id, 'stderr.log'), 'utf8');
+      expect(stderr).toContain('thread append failed (retrying once): disk hiccup');
+      expect(stderr).not.toContain('gave up');
+    } finally {
+      streams.appendThread = original;
+    }
+  }, 20_000);
+});
+
 describe('ask → answer → continue (T137)', () => {
   test('the answer is prompted into the waiting session, which continues and finishes', async () => {
     const sentinel = join(scratch, 'asked.flag');
