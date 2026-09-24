@@ -31,10 +31,11 @@ function assertGitToplevel(path: string): void {
 
 /**
  * The branch a repo's work delivers to (projects-design §14.8 `main_branch`,
- * shown read-only until that field lands): `target_branch`, else the remote's
+ * set by the T202 migration or later): `main_branch`, else `target_branch`, else the remote's
  * default branch, else `main`/`master` if present, else `main`.
  */
 export function resolveMainBranch(entry: RepoEntry): string {
+  if (entry.main_branch) return entry.main_branch;
   if (entry.target_branch) return entry.target_branch;
   const remote = gitOut(['symbolic-ref', '--short', 'refs/remotes/origin/HEAD'], entry.path);
   if (remote) return remote.replace(/^origin\//, '');
