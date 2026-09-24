@@ -248,12 +248,14 @@ export interface StreamPatch {
   archived?: true;
   /** `'off'` opts the stream out of the classifier tier (§6.4); `null` clears the opt-out. */
   classifier?: 'off' | null;
+  /** T176: `null` clears it. */
+  land_conflict?: Stream['land_conflict'] | null;
   agent?: Partial<Stream['agent']>;
   human?: Partial<Stream['human']>;
 }
 
 function applyPatch(before: Stream, patch: StreamPatch): Stream {
-  const { agent, human, classifier, ...rest } = patch;
+  const { agent, human, classifier, land_conflict, ...rest } = patch;
   // `classifier` is tri-state (absent, `'off'`, `null` = remove), rebuilt
   // so a cleared opt-out leaves no key in the YAML.
   const { classifier: existing, ...withoutOptOut } = before;
@@ -263,6 +265,8 @@ function applyPatch(before: Stream, patch: StreamPatch): Stream {
     ...(optOut !== undefined ? { classifier: optOut } : {}),
     ...rest,
   };
+  if (land_conflict === null) Reflect.deleteProperty(next, 'land_conflict');
+  else if (land_conflict !== undefined) next.land_conflict = land_conflict;
   if (agent !== undefined) {
     // Any agent-half change is a fresh observation: stamp `updated_at` unless given.
     next.agent = { ...before.agent, updated_at: new Date().toISOString(), ...agent };

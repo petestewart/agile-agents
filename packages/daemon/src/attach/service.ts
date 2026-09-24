@@ -292,7 +292,11 @@ export class AttachService {
     // 5. Record the session before it can produce anything. A reviewer never
     // moves `agent.status`: a read-only second opinion is not work (§4.2).
     if (role === 'worker') {
-      await streams.update('daemon', stream.id, { agent: { status: 'working' } });
+      // T176: a worker on the branch makes the last land's conflict stale.
+      await streams.update('daemon', stream.id, {
+        agent: { status: 'working' },
+        ...(stream.land_conflict ? { land_conflict: null } : {}),
+      });
     }
     const recorded = await this.pushSession(stream.id, session);
     await streams.appendThread('daemon', stream.id, {

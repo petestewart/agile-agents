@@ -186,6 +186,16 @@ export const StreamHumanStateSchema = z
   .strict();
 export type StreamHumanState = z.infer<typeof StreamHumanStateSchema>;
 
+/** T176: the last land's conflict, written by the daemon; cleared when a worker attaches or a land succeeds. */
+export const LandConflictSchema = z
+  .object({
+    target: z.string().min(1),
+    files: z.array(z.string().min(1).max(1_000)).max(200),
+    at: z.string().min(1),
+  })
+  .strict();
+export type LandConflict = z.infer<typeof LandConflictSchema>;
+
 /** `~/.agile/streams/<id>.yaml`. */
 export const StreamSchema = z
   .object({
@@ -222,6 +232,7 @@ export const StreamSchema = z
      * or the home turned off.
      */
     classifier: z.literal('off').optional(),
+    land_conflict: LandConflictSchema.optional(),
     agent: StreamAgentStateSchema,
     human: StreamHumanStateSchema,
     sessions: z.array(SessionRefSchema).default([]),

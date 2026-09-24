@@ -182,14 +182,28 @@ export class LandingService {
         merged.conflicts.length > 0
           ? `land ${branch} into ${target} conflicted in: ${merged.conflicts.join(', ')}`
           : `land ${branch} into ${target} failed: ${merged.reason}`;
-      await streams.update('daemon', stream.id, { agent: { status: 'blocked' } });
+      await streams.update('daemon', stream.id, {
+        agent: { status: 'blocked' },
+        ...(merged.conflicts.length > 0
+          ? {
+              land_conflict: {
+                target,
+                files: merged.conflicts.slice(0, 200),
+                at: new Date().toISOString(),
+              },
+            }
+          : {}),
+      });
       await streams.appendThread('daemon', stream.id, { kind: 'event', body: line });
       return { status: 'blocked', target, conflicts: merged.conflicts, line };
     }
 
     // 4. Close the stream, remove its worktree, keep its branch.
     const line = `landed ${branch} into ${target} (${merged.sha.slice(0, 12)})`;
-    await streams.update('daemon', stream.id, { human: { status: 'landed' } });
+    await streams.update('daemon', stream.id, {
+      human: { status: 'landed' },
+      ...(stream.land_conflict ? { land_conflict: null } : {}),
+    });
     await streams.appendThread('daemon', stream.id, { kind: 'event', body: line });
     if (stream.worktree !== undefined) {
       const removal = removeWorktreeSafely(repoRoot, stream.worktree);
@@ -217,7 +231,7 @@ export class LandingService {
       const { repoEntry, branch } = this.requireLandable(stream);
       const repoRoot = repoEntry.path;
       const target = this.resolveTarget(stream, repoEntry, repoRoot);
-      const conflict = this.lastConflict(stream);
+      const conflict = stream.land_conflict;
       if (conflict !== undefined) {
         return {
           ready: false,
@@ -333,11 +347,11 @@ export class LandingService {
 
   /**
    * T176: the Resolve worker's instruction, appended to its brief. Refused
-   * unless the stream's last land conflicted (`lastConflict`).
+   * unless the stream's last land conflicted (`land_conflict`).
    */
   resolvePrompt(streamId: string): string {
     const stream = this.options.streams.get(streamId);
-    const conflict = this.lastConflict(stream);
+    const conflict = stream.land_conflict;
     if (conflict === undefined || stream.branch === undefined) {
       throw new LandRefusedError(stream.id, `stream ${stream.id} has no land conflict to resolve`);
     }
@@ -349,21 +363,6 @@ export class LandingService {
       'Run the tests, then commit the merge.',
       'When done, say the stream is ready to land again; the operator lands it.',
     ].join('\n');
-  }
-
-  /** The conflict a stream is parked on: `blocked`, and its last land line (§8.2) conflicted. */
-  private lastConflict(stream: Stream): { target: string; files: string[] } | undefined {
-    if (stream.agent.status !== 'blocked') return undefined;
-    const { total } = this.options.streams.readThread(stream.id, { limit: 1 });
-    const after = Math.max(0, total - 200) - 1;
-    const entries = this.options.streams.readThread(stream.id, { after, limit: 200 }).entries;
-    for (let i = entries.length - 1; i >= 0; i--) {
-      const body = entries[i]?.by === 'daemon' ? entries[i]?.body : undefined;
-      const m = body?.match(/^land \S+ into (\S+) conflicted in: (.+)$/);
-      if (m) return { target: m[1] as string, files: (m[2] as string).split(', ') };
-      if (body?.startsWith('land') || body?.startsWith('worker attached')) return undefined;
-    }
-    return undefined;
   }
 
   /** Everything that must hold before landing touches git: a repo, a live human status, no live worker. */

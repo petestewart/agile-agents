@@ -281,11 +281,7 @@ describe('T176: after a conflict — preflight, the Resolve prompt, and the re-l
     expect(prompt).toMatch(/ready to land again/);
 
     // What the Resolve worker does: attach (the thread line), merge, fix, commit, finish.
-    await streams.appendThread('daemon', stream.id, {
-      kind: 'event',
-      body: 'worker attached: fake',
-    });
-    await streams.update('daemon', stream.id, { agent: { status: 'done' } });
+    await streams.update('daemon', stream.id, { agent: { status: 'done' }, land_conflict: null });
     Bun.spawnSync(['git', 'merge', 'main'], { cwd: work.worktree });
     writeFileSync(join(work.worktree, 'shared.txt'), 'from main\nfrom the stream\n');
     git(['commit', '-q', '-am', 'merge main, keep both'], work.worktree);
@@ -293,6 +289,21 @@ describe('T176: after a conflict — preflight, the Resolve prompt, and the re-l
     expect(landing.preflight(stream.id).ready).toBe(true);
     expect((await landing.land(stream.id)).status).toBe('landed');
     expect(readFileSync(join(repo, 'shared.txt'), 'utf8')).toBe('from main\nfrom the stream\n');
+  });
+});
+
+describe('T176: the conflict is a structured record, not parsed from the thread', () => {
+  test('a filename containing ", " survives intact', async () => {
+    const name = 'a, b.txt';
+    const work = branchWithWork('s-comma', name, 'stream\n');
+    writeFileSync(join(repo, name), 'main\n');
+    git(['add', name]);
+    git(['commit', '-q', '-m', 'main']);
+    const stream = await makeStream(work);
+    expect((await landing.land(stream.id)).status).toBe('blocked');
+    expect(streams.get(stream.id).land_conflict?.files).toEqual([name]);
+    expect(landing.preflight(stream.id).conflicts).toEqual([name]);
+    expect(landing.resolvePrompt(stream.id)).toContain(name);
   });
 });
 
