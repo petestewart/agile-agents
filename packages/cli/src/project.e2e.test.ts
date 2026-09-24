@@ -4,7 +4,8 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { existsSync } from 'node:fs';
+import { existsSync, mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Project, Stream } from '@agile-agents/shared';
 import { runCli } from './index';
@@ -74,7 +75,10 @@ describe('agile project against a daemon on a temp AGILE_HOME', () => {
     expect(updated.autonomy.director).toBe('run');
 
     // Repeated --repo accumulates (with commas too) on new and set.
-    expect((await cli(['repo', 'add', daemon.home, '--name', 'ledger'])).code).toBe(0);
+    // T206: a repo is registered by its toplevel, so the second one is its own repo.
+    const ledger = mkdtempSync(join(tmpdir(), 'agile-project-ledger-'));
+    Bun.spawnSync(['git', 'init', '-q'], { cwd: ledger });
+    expect((await cli(['repo', 'add', ledger, '--name', 'ledger'])).code).toBe(0);
     const two = await cli([
       'project',
       'new',

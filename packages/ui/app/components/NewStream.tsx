@@ -7,7 +7,7 @@
  */
 
 import { type FormEvent, useEffect, useRef, useState } from 'react';
-import { createStream } from '../lib/api';
+import { createStream, listRepos } from '../lib/api';
 import type { CockpitStreamRow } from '../lib/feed-types';
 import { isShortcut, useShell } from '../lib/shell';
 
@@ -17,6 +17,7 @@ export function NewStream({ rows }: { rows: readonly CockpitStreamRow[] }): JSX.
   const [goal, setGoal] = useState('');
   const [parent, setParent] = useState('');
   const [repo, setRepo] = useState('');
+  const [repoNames, setRepoNames] = useState<string[]>([]);
   const [error, setError] = useState<string | undefined>(undefined);
   const [busy, setBusy] = useState(false);
   const titleRef = useRef<HTMLInputElement>(null);
@@ -41,6 +42,10 @@ export function NewStream({ rows }: { rows: readonly CockpitStreamRow[] }): JSX.
     setGoal('');
     setRepo('');
     setError(undefined);
+    // T206: the picker lists what is registered now, including repos added in Settings.
+    listRepos()
+      .then((repos) => setRepoNames(repos.map((r) => r.name)))
+      .catch(() => setRepoNames([]));
     setParent(selected ?? '');
     titleRef.current?.focus();
   }, [newStreamOpen, selected]);
@@ -110,9 +115,15 @@ export function NewStream({ rows }: { rows: readonly CockpitStreamRow[] }): JSX.
           Repo <span>(optional, a registered name)</span>
           <input
             data-testid="new-stream-repo"
+            list="new-stream-repo-names"
             value={repo}
             onChange={(e) => setRepo(e.target.value)}
           />
+          <datalist id="new-stream-repo-names" data-testid="new-stream-repo-names">
+            {repoNames.map((n) => (
+              <option key={n} value={n} />
+            ))}
+          </datalist>
         </label>
         {error && (
           <p className="cr-error" role="alert" data-testid="new-stream-error">
