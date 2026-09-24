@@ -63,7 +63,7 @@ import {
   buildRuleReport,
   testRules,
 } from './rules';
-import { NotFoundError, type StateStore } from './store';
+import { NotFoundError, type StateStore, buildStateRpcMethods, resolveMainBranch } from './store';
 import type { StreamService } from './streams';
 
 /** The installable-app files served at site root, with their content types. */
@@ -488,6 +488,44 @@ async function handleSessionSettingsRoute(
 }
 
 /**
+ * T206: Settings → Repos, over the same `state.repo_add` RPC as `agile repo add`:
+ *
+ *   GET  /api/repos   every registered repo with its resolved `main_branch`
+ *   POST /api/repos   `{name, path, protected_branches?}`; a bad path is the RPC's one-line 400
+ */
+async function handleRepoRoute(
+  req: Request,
+  url: URL,
+  feed: FeedContext | undefined,
+  sameOrigin: () => boolean,
+): Promise<Response | undefined> {
+  if (url.pathname !== '/api/repos') return undefined;
+  if (req.method !== 'GET' && req.method !== 'POST') return undefined;
+  if (!feed) return errorResponse(503, 'state store not initialised (run `agile init`)');
+  const list = () =>
+    Object.entries(feed.store.getRepos()).map(([name, entry]) => ({
+      name,
+      path: entry.path,
+      protected_branches: entry.protected_branches,
+      main_branch: resolveMainBranch(entry),
+    }));
+  if (req.method === 'GET') return jsonResponse({ repos: list() });
+  if (!sameOrigin()) return errorResponse(403, 'cross-origin request rejected');
+  let body: unknown;
+  try {
+    body = await readJsonBody(req);
+  } catch {
+    return errorResponse(400, 'invalid repo: body must be JSON {name, path, protected_branches?}');
+  }
+  try {
+    await buildStateRpcMethods(feed.store)['state.repo_add']?.(body);
+    return jsonResponse({ repos: list() });
+  } catch (err) {
+    return errorResponse(400, messageOf(err));
+  }
+}
+
+/**
  * The rules routes (§5, §9):
  *
  *   GET  /api/rules               every rule, §5.7's pruning report, and whether evals can run
@@ -827,6 +865,9 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
 
         const sessionSettingsRoute = await handleSessionSettingsRoute(req, url, feed, sameOrigin);
         if (sessionSettingsRoute) return sessionSettingsRoute;
+
+        const repoRoute = await handleRepoRoute(req, url, feed, sameOrigin);
+        if (repoRoute) return repoRoute;
 
         const ruleRoute = await handleRuleRoute(req, url, feed, sameOrigin, () =>
           srv.timeout(req, 0),

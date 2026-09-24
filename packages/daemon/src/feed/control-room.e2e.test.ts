@@ -15,7 +15,15 @@
  */
 
 import { afterAll, describe, expect, test } from 'bun:test';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  cpSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ACP_PROVIDERS, type AcpProviderConfig } from '@agile-agents/acp-client';
@@ -1830,6 +1838,71 @@ describe('new stream and quick capture (Playwright e2e, T162)', () => {
       } finally {
         await teardown([page]);
         await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+});
+
+describe('add a repo from Settings (Playwright e2e, T206)', () => {
+  browserTest(
+    'fixtures/demo-project registers from Settings and shows in the New stream repo picker; a bad path shows the one-line error',
+    async () => {
+      const cockpit = await startCockpit();
+      const fixture = join(import.meta.dir, '..', '..', '..', '..', 'fixtures', 'demo-project');
+      const scratch = mkdtempSync(join(tmpdir(), 'agile-repo-add-e2e-'));
+      const repo = join(scratch, 'demo-project');
+      let page: Page | undefined;
+      try {
+        cpSync(fixture, repo, { recursive: true });
+        git(['init', '-q', '-b', 'master'], repo);
+        git(['config', 'user.email', 'test@example.com'], repo);
+        git(['config', 'user.name', 'Test'], repo);
+        git(['add', '-A'], repo);
+        git(['commit', '-q', '-m', 'init'], repo);
+
+        page = await openPage();
+        await page.goto(`${cockpit.base}/`);
+        await page.locator('[data-view="settings"]').click();
+        await page.locator('[data-testid="settings-repos-empty"]').waitFor({ state: 'visible' });
+
+        // A path inside a repo but not its toplevel is refused with the daemon's line.
+        await page.locator('[data-testid="settings-repo-add-path"]').fill(join(repo, 'src'));
+        await page.locator('[data-testid="settings-repo-add-save"]').click();
+        await waitForText(
+          page,
+          '[data-testid="settings-repo-add-error"]',
+          `state.repo_add: ${join(repo, 'src')} is not the repo's toplevel (that is ${repo})`,
+        );
+        const missing = join(scratch, 'nope');
+        await page.locator('[data-testid="settings-repo-add-path"]').fill(missing);
+        await page.locator('[data-testid="settings-repo-add-save"]').click();
+        await waitForText(
+          page,
+          '[data-testid="settings-repo-add-error"]',
+          `state.repo_add: ${missing} does not exist`,
+        );
+        expect(cockpit.store.getRepos()).toEqual({});
+
+        await page.locator('[data-testid="settings-repo-add-path"]').fill(repo);
+        await page.locator('[data-testid="settings-repo-add-protected"]').fill('master, release');
+        await page.locator('[data-testid="settings-repo-add-save"]').click();
+        await waitForText(page, '[data-testid="settings-repo-demo-project-main"]', 'master');
+        expect(await page.locator('[data-testid="settings-repo-add-error"]').count()).toBe(0);
+        expect(cockpit.store.getRepos()['demo-project']?.protected_branches).toEqual([
+          'master',
+          'release',
+        ]);
+
+        await page.keyboard.press('n');
+        await page.locator('[data-testid="new-stream"]').waitFor({ state: 'visible' });
+        await page
+          .locator('[data-testid="new-stream-repo-names"] option[value="demo-project"]')
+          .waitFor({ state: 'attached' });
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+        rmSync(scratch, { recursive: true, force: true });
       }
     },
     TEST_BUDGET_MS,
