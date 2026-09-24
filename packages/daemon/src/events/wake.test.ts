@@ -64,6 +64,20 @@ describe('wakeVerdict', () => {
     }
     expect(stoppedByHuman(node({ agent: { status: 'blocked' } } as Partial<Stream>))).toBe(false);
   });
+  test('an idle the daemon set by stopping the worker (a reshape) is not a human stop', () => {
+    const reshaped = node({
+      agent: { status: 'idle' },
+      sessions: [{ role: 'worker', status: 'stopped', ended_reason: 'stopped: reshape' }],
+    } as Partial<Stream>);
+    expect(stoppedByHuman(reshaped)).toBe(false);
+    expect(wakeVerdict(reshaped, 'work', [{ type: 'human_line' }])).toBe('wake');
+    // A detach records no ended_reason: still the human's stop.
+    const detached = node({
+      agent: { status: 'idle' },
+      sessions: [{ role: 'worker', status: 'stopped' }],
+    } as Partial<Stream>);
+    expect(stoppedByHuman(detached)).toBe(true);
+  });
   test('a project node, or a coordinating node that never had an agent, is not woken', () => {
     expect(wakeVerdict(node(), 'project', [{ type: 'human_line' }])).toBe('no_agent');
     expect(wakeVerdict(node({ sessions: [] }), 'coordinating', [{ type: 'overlap' }])).toBe(

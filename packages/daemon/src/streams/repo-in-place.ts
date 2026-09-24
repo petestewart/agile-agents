@@ -13,8 +13,10 @@
  * goal chain reach them as ancestors'. A session live on the node is
  * stopped before the reshape and restarted after it, so it runs in the
  * right place: in the new worktree (work) or the session dir as the
- * coordinator (coordinating, D20). Parts are not started: they are work
- * nodes whose agent the coordinator or the human starts.
+ * coordinator (coordinating, D20). New parts start their worker like any
+ * new work node (T204, T213) unless the node was never started (made with
+ * `--no-start` and not attached since); the moved part restarts in its
+ * worktree.
  */
 
 import { type SessionRef, type Stream, liveChildrenOf, nodeRole } from '@agile-agents/shared';
@@ -27,7 +29,8 @@ import { type StreamService, UnknownRepoError } from './service';
 /** The slice of `AttachService` a reshape needs (kept structural: no import cycle). */
 export interface ReshapeSessions {
   attach(streamId: string): Promise<unknown>;
-  stop(streamId: string): Promise<string[]>;
+  /** `reason` names the deliberate stop on the thread (T213). */
+  stop(streamId: string, reason?: string): Promise<string[]>;
 }
 
 /** A reshape the node's state doesn't allow (-32602 at the edge). */
@@ -69,7 +72,7 @@ export class RepoInPlaceService {
     const repos = this.store.getRepos();
     const entry = repos[repo];
     if (entry === undefined) throw new UnknownRepoError(repo, Object.keys(repos).sort());
-    const node = this.streams.get(nodeId);
+    let node = this.streams.get(nodeId);
     if (node.human.status === 'closed' || node.archived === true) {
       throw new RepoInPlaceError(`node ${nodeId} is closed or archived`);
     }
@@ -88,8 +91,16 @@ export class RepoInPlaceService {
     const wasLive = node.sessions.some(
       (s) => s.role === 'worker' && s.status !== 'stopped' && s.status !== 'error',
     );
+    // T204's start rule for new parts: `start` isn't stored, so a node that
+    // never had a worker is the `--no-start` one.
+    const started = wasLive || node.sessions.some((s) => s.role === 'worker');
     // Stop first, so the exit path writes onto the records before they move.
-    await this.sessions.stop(node.id);
+    await this.sessions.stop(
+      node.id,
+      role === 'conversation' ? 'node reshaped into a work node' : 'node reshaped into parts',
+    );
+    // Re-read: the exit path just marked the stopped sessions, and those records move.
+    node = this.streams.get(node.id);
 
     let parts: Stream[] = [];
     if (role === 'conversation') {
@@ -117,14 +128,10 @@ export class RepoInPlaceService {
       );
     }
 
-    if (wasLive) {
-      try {
-        await this.sessions.attach(node.id);
-      } catch (err) {
-        await this.event(
-          node.id,
-          `could not restart the agent: ${err instanceof Error ? err.message : String(err)}`,
-        );
+    if (wasLive) await this.start(node.id, 'restart');
+    if (started) {
+      for (const part of parts) {
+        if (this.streams.get(part.id).human.status !== 'closed') await this.start(part.id, 'start');
       }
     }
     return { node: this.streams.get(node.id), parts: parts.map((p) => this.streams.get(p.id)) };
@@ -234,6 +241,18 @@ export class RepoInPlaceService {
       }
     }
     await this.streams.close('daemon', part.id, 'switched away with nothing committed');
+  }
+
+  /** A failed start is a thread line, not a failed reshape. */
+  private async start(id: string, verb: 'start' | 'restart'): Promise<void> {
+    try {
+      await this.sessions.attach(id);
+    } catch (err) {
+      await this.event(
+        id,
+        `could not ${verb} the agent: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
   }
 
   private async event(id: string, body: string): Promise<void> {

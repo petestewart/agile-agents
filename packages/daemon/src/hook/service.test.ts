@@ -245,3 +245,30 @@ describe('HookService — unreadable repos.yaml (T229)', () => {
     expect(inside.hookSpecificOutput.permissionDecision).toBe('allow');
   });
 });
+
+describe('HookService read scope (T213)', () => {
+  test('Bash reads reach a registered public repo but not a private one', async () => {
+    const other = mkdtempSync(join(tmpdir(), 'agile-hook-other-'));
+    const secret = mkdtempSync(join(tmpdir(), 'agile-hook-secret-'));
+    try {
+      await store.putRepos({
+        other: { path: other, protected_branches: ['main'] },
+        secret: {
+          path: secret,
+          protected_branches: ['main'],
+          visibility: { mode: 'private', projects: [`P-${ulid()}`] },
+        },
+      });
+      await store.putAgent(WORKER, agentRecord({ role: 'worker', worktree }));
+      const bash = (command: string) =>
+        service().preToolUse({ cwd: worktree, tool_name: 'Bash', tool_input: { command } });
+
+      expect((await bash(`ls -la ${other}`)).hookSpecificOutput.permissionDecision).toBe('allow');
+      expect((await bash(`cat ${secret}/a.ts`)).hookSpecificOutput.permissionDecision).toBe('deny');
+      expect((await bash(`touch ${other}/x`)).hookSpecificOutput.permissionDecision).toBe('deny');
+    } finally {
+      rmSync(other, { recursive: true, force: true });
+      rmSync(secret, { recursive: true, force: true });
+    }
+  });
+});

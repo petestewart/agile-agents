@@ -79,6 +79,13 @@ export interface PermissionRequest {
 export interface DecisionContext {
   role: PermissionRole;
   worktreePath: string;
+  /**
+   * T213 (projects-design §4.4): roots a read may reach beyond the
+   * worktree (the registered repos this node can see). Writes stay in the worktree.
+   */
+  readRoots?: readonly string[];
+  /** T213: private repos not shared with the node, and the agile home: never readable outside the worktree. */
+  hiddenRoots?: readonly string[];
   request: AcpPermissionRequestParams;
   /**
    * The pattern rules in scope (§5.3) and what their detectors need: this
