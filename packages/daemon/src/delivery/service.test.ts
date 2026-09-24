@@ -531,7 +531,7 @@ describe('diff-level rules (T152, §8.2)', () => {
     expect(outcome.status === 'gated' && outcome.gate.id).toBe(gate.id);
     expect(git(['rev-list', '--count', '--merges', 'main'])).toBe('0');
     expect(existsSync(work.worktree)).toBe(true);
-    expect(threadBodies(stream.id).some((b) => b.includes('routed by diff rule RULE-2'))).toBe(
+    expect(threadBodies(stream.id).some((b) => b.includes('routed by ship check RULE-2'))).toBe(
       true,
     );
   });

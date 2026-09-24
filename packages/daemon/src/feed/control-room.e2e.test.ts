@@ -1252,7 +1252,7 @@ describe('stream page (Playwright e2e, T161)', () => {
         await page.locator(root).waitFor({ state: 'visible' });
         expect(await page.locator('[data-testid="stream-title"]').textContent()).toBe('CSV parser');
 
-        // Rules in scope and docs, one click each.
+        // Knowledge in scope and docs, one click each.
         await page.locator('.cr-tabs [data-tab="rules"]').click();
         await page.locator(`[data-testid="rule"][data-rule="${rule.id}"]`).waitFor();
         await page.locator('.cr-tabs [data-tab="docs"]').click();
