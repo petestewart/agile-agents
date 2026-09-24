@@ -533,8 +533,7 @@ export class LandingService {
  * before and after that migration.
  */
 export function mainBranch(entry: RepoEntry, repoRoot: string): string {
-  const { main_branch } = entry as RepoEntry & { main_branch?: string };
-  return main_branch ?? entry.target_branch ?? defaultBranch(repoRoot);
+  return entry.main_branch ?? entry.target_branch ?? defaultBranch(repoRoot);
 }
 
 /** The repo's default branch: `origin/HEAD`, else whichever of `main`/`master` exists, else `main`. */

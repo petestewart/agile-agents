@@ -47,7 +47,12 @@ describe('Repo registry (T111): repos.yaml in the state home', () => {
     const store = StateStore.open(stateRoot);
     await store.addRepo('ledger-lite', { path: '/tmp/ledger-lite' });
     expect(store.getRepos()).toEqual({
-      'ledger-lite': { path: '/tmp/ledger-lite', protected_branches: ['main', 'master'] },
+      'ledger-lite': {
+        path: '/tmp/ledger-lite',
+        protected_branches: ['main', 'master'],
+        delivery: 'direct',
+        visibility: { mode: 'public' },
+      },
     });
     expect(lastEventKind()).toBe('repos_put');
   });

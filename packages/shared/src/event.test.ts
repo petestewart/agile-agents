@@ -74,6 +74,7 @@ describe('Event — cockpit design §7.4 log/events.jsonl', () => {
     'home_config_put',
     'entity_put',
     'entity_deleted',
+    'home_migrated',
     'message',
   ])('%s is a valid EVENT_KINDS entry', (kind) => {
     expect(EVENT_KINDS).toContain(kind as (typeof EVENT_KINDS)[number]);
@@ -81,7 +82,7 @@ describe('Event — cockpit design §7.4 log/events.jsonl', () => {
   });
 
   test('the enum holds exactly the kinds listed above — nothing orphaned', () => {
-    expect(EVENT_KINDS).toHaveLength(27);
+    expect(EVENT_KINDS).toHaveLength(28);
   });
 
   test('a stream event carries {stream} plus the status pair in data', () => {
