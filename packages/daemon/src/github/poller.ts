@@ -21,7 +21,7 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { PullRequestState, RepoEntry, Stream } from '@agile-agents/shared';
-import { git, gitWrite } from '../delivery/git';
+import { git, gitNetwork, gitWrite } from '../delivery/git';
 import { mainBranch } from '../delivery/service';
 import { type EmitRouted, clipLine } from '../events/producers';
 import type { StreamService } from '../streams/service';
@@ -412,7 +412,7 @@ export class PrPoller {
     const root = entry.path;
     const remote = entry.remote ?? 'origin';
     const main = mainBranch(entry, root);
-    const ls = git(['ls-remote', remote, `refs/heads/${main}`], root, root);
+    const ls = gitNetwork(['ls-remote', remote, `refs/heads/${main}`], root);
     if (ls.exitCode !== 0) return;
     const sha = ls.stdout.split(/\s+/)[0];
     const m = this.mains.get(name) ?? { due: 0 };
@@ -578,12 +578,15 @@ function fastForwardMain(root: string, remote: string, main: string): string | u
     if (dirty.exitCode !== 0 || dirty.stdout !== '') {
       return `${main} is checked out in ${root} with uncommitted changes`;
     }
-    const fetched = git(['fetch', '-q', remote, main], root, root);
+    const fetched = gitNetwork(['fetch', '-q', remote, main], root);
     if (fetched.exitCode !== 0) return `fetch ${remote} ${main} failed`;
     const ff = gitWrite(['merge', '-q', '--ff-only', 'FETCH_HEAD'], root, root);
     return ff.exitCode === 0 ? undefined : `${main} in ${root} cannot fast-forward`;
   }
   // Refused by git when main is checked out in another worktree or would not fast-forward.
-  const fetched = git(['fetch', '-q', remote, `refs/heads/${main}:refs/heads/${main}`], root, root);
+  const fetched = gitNetwork(
+    ['fetch', '-q', remote, `refs/heads/${main}:refs/heads/${main}`],
+    root,
+  );
   return fetched.exitCode === 0 ? undefined : `local ${main} cannot fast-forward from ${remote}`;
 }

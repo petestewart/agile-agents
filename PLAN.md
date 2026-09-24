@@ -854,6 +854,15 @@ Design: `design/projects-design.md`, which wins over `design/cockpit-design.md` 
 - **Validation Steps:** `bun test packages/daemon/src/hook packages/daemon/src/permissions packages/daemon/src/streams packages/daemon/src/attach`; `bun run test:integration`.
 - **Notes:** Fixed on `claude/phase-7` and merged forward into phase-8 and phase-9 (D30). Review (sonnet): 1 blocking fixed — built-in Read/Grep/Glob/LS are now an allow-list (own dir, readable repos; the agile home, private repos and everything else denied), shared with Bash reads; `rg --pre` no longer read-only. The -1 exits were the daemon's own reshape stops. Also fixed a T205 bug (moved part kept a stale running session). Parts start after a reshape unless the node never had a worker. Daemon shutdown status unchanged. Daemon +175.
 
+### Ticket: T214 A repo with no commits is refused up front
+- **Priority:** P1
+- **Status:** Done (merge bb13e6d)
+- **Owner:** —
+- **Scope:** From Pete's Phase 8 live run (2026-09-24): `node new --repo agile-test-repo` on a repo with no commits created the node, but the agent never started; the thread got only a raw `git rev-parse --verify HEAD^{commit} failed … Needed a single revision` and the node sat idle with no hint. Refuse up front, before anything is written: `node new`/`add-repo`/attach on a repo whose main branch has no commit fail with one line ("<repo> has no commits on <branch>; make an initial commit first"). `agile repo add` on such a repo succeeds but prints the same warning.
+- **Acceptance Criteria:** CLI e2e: `repo add` on an empty repo warns; `node new --repo` on it is refused with the message and creates no node; after one commit it starts.
+- **Validation Steps:** `bun test packages/daemon/src/attach packages/daemon/src/streams packages/cli`.
+- **Notes:** Fixed on `claude/phase-7`, merged forward. Review (sonnet) PASS. Daemon +38. Test fixtures that `git init` a repo for nodes now make an empty commit.
+
 ### Ticket: T212 Phase 7 QA and Pete's look
 - **Priority:** P0
 - **Status:** In Review (QA ACCEPT 2026-09-24; Pete's look pending)
@@ -1024,13 +1033,22 @@ git status --short
 - **Validation Steps:** `bun test packages/daemon/src/hook packages/daemon/src/permissions`.
 - **Notes:** After T222. Review (sonnet): 2 blocking fixed (fail closed when repos.yaml is unreadable; Bash command paths checked). Daemon +166. Not done: no per-session readable-dirs list exists to exclude a private repo from (P13 bullet 1 needs an ACP session-config decision); hookless vendors get the advisory label only.
 
+### Ticket: T231 PR delivery pushes with the operator's git credentials
+- **Priority:** P0
+- **Status:** Done (merge 68e4cc4)
+- **Owner:** —
+- **Scope:** From Pete's Phase 8 live run (2026-09-24, macOS): `agile deliver` on a `pr` repo failed at the push with `fatal: could not read Username for 'https://github.com': Device not configured` and the node went `held`. Cause (confirmed by Pete's agent): `delivery/git.ts` runs every git command with `sandboxedSubprocessEnv`, which sets `HOME=<repo>/.agile-daemon-cache/git/home`, so the osxkeychain helper (and any `gh auth setup-git` helper or `~/.gitconfig` credential/`insteadOf` setting) is lost. (1) Network git operations — the delivery push, `sync/main-sync.ts` push/fetch, the poller's `ls-remote`/fetch/fast-forward — run with the operator's real credential setup (real HOME or an equivalent pass-through); plumbing and merge commands stay sandboxed. No token in the daemon. (2) Every daemon git call sets `GIT_TERMINAL_PROMPT=0`, and a credential failure reads as one clear line naming what to set up (`gh auth setup-git` or a credential helper). (3) A deliver with nothing to land records a visible state (the Delivery panel and `node show` say "nothing to deliver: no commits beyond <main>"), not a null `delivery_state`.
+- **Acceptance Criteria:** A regression test that fails on the old code: a credential helper configured only in the real HOME's gitconfig serves a push/fetch against a local HTTP or file remote that requires it (or an env-assertion test on push/fetch/ls-remote). A missing credential fails fast with the clear line. Nothing-to-land state tested in delivery and shown in the cockpit.
+- **Validation Steps:** `bun test packages/daemon/src/delivery packages/daemon/src/sync packages/daemon/src/github`; `bun run test:integration`; `bun run test:e2e`.
+- **Notes:** Pete's nodes A and B on agile-test-repo are ready to deliver once this lands. Review (sonnet): 1 blocking fixed — network git gets an allow-listed env (real HOME, PATH, SSH/GIT/locale/proxy/gh vars; daemon secrets such as TYPESAFE_API_KEY and AGILE_* dropped; GIT_AUTHOR/COMMITTER dropped), tested by env-name dump. `GIT_TERMINAL_PROMPT=0` on every daemon git call; credential failures say to run `gh auth setup-git`. `nothing_to_deliver` held reason shown in node show and the Delivery panel. Daemon ≈+110. Open: main-sync pushes to a hard-coded `origin`; the operator's pre-push hooks now run on delivery pushes.
+
 ### Ticket: T230 Phase 8 QA and Pete's look
 - **Priority:** P0
 - **Status:** In Review (QA ACCEPT 2026-09-24; Pete's look pending)
 - **Owner:** Pete
 - **Scope:** Black-box QA against the fake GitHub and the fake agent: direct delivery, PR delivery, the poller transitions, sync, overlaps, holds, auto-merge, visibility, and the migration of the Phase 7 home. Daemon line count. Pete then runs one direct delivery on ledger-lite and one PR on agile-test-repo.
 - **Acceptance Criteria:** QA ACCEPT. Live: the ledger-lite node merges with one click. The agile-test-repo node opens a real PR whose state shows on the node. After Pete merges on GitHub, the node shows merged and the other live node on the repo is synced.
-- **Validation Steps:** Pete, on his Mac:
+- **Validation Steps:** Pete, on his Mac. agile-test-repo needs at least one commit on `main`, pushed to GitHub. Pick a ledger-lite goal that is not already done (the Phase 7 run may have landed earlier ones).
 
 ```zsh
 export AGILE_HOME=~/.agile-phase7
@@ -1041,7 +1059,7 @@ agile repo set ledger-lite --delivery direct
 SHOP=$(agile project list --json | jq -r '.[] | select(.name=="Shop") | .id')
 A=$(agile node new --project $SHOP --title "Test repo note" --goal "Add one line to README.md saying the repo is used for agile-agents live checks; commit it" --repo agile-test-repo --json | jq -r .id)
 B=$(agile node new --project $SHOP --title "Test repo second note" --goal "Add a file NOTES.md with one line; commit it" --repo agile-test-repo --json | jq -r .id)
-L=$(agile node new --project $SHOP --title "Ledger help text" --goal "Make the CLI print a one-line usage when run with no arguments; add a test" --repo ledger-lite --json | jq -r .id)
+L=$(agile node new --project $SHOP --title "Ledger unknown flag" --goal "When the CLI gets an unknown flag, print unknown option: <flag> on stderr and exit 2; add a test" --repo ledger-lite --json | jq -r .id)
 agile node show $A --json | jq -r '.agent.status'
 ```
 

@@ -1596,6 +1596,46 @@ describe('stream page rough edges (Playwright e2e, T166)', () => {
   );
 });
 
+describe('nothing to deliver (Playwright e2e, T231)', () => {
+  browserTest(
+    'a deliver with no commits beyond main shows "nothing to deliver" on the Delivery line',
+    async () => {
+      const cockpit = await startStreamCockpit([]);
+      let page: Page | undefined;
+      try {
+        const worktree = join(cockpit.repo, '.worktrees', 's-empty');
+        git(['worktree', 'add', '-q', '-b', 's-empty', worktree, 'main'], cockpit.repo);
+        const stream = await cockpit.streams.create('human', {
+          title: 'empty',
+          goal: 'g',
+          repo: 'demo',
+        });
+        await cockpit.streams.update('daemon', stream.id, { branch: 's-empty', worktree });
+        const res = await fetch(`${cockpit.base}/api/streams/${stream.id}/land`, {
+          method: 'POST',
+          headers: { origin: cockpit.base },
+        });
+        expect(res.ok).toBe(false);
+        expect(cockpit.streams.get(stream.id).delivery_state?.status).toBe('not_started');
+
+        page = await openPage();
+        await page.goto(`${cockpit.base}/`);
+        await page.locator(`[data-testid="stream-tree"] [data-stream="${stream.id}"]`).click();
+        await page.locator(`[data-testid="stream-page"][data-stream="${stream.id}"]`).waitFor();
+        await page
+          .locator('[data-testid="delivery-state"]', {
+            hasText: 'nothing to deliver: no commits beyond main',
+          })
+          .waitFor();
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+});
+
 describe('parents and land conflicts (Playwright e2e, T176)', () => {
   browserTest(
     'attach on a parent starts straight away; a conflicted land shows the files, not "Ready"; Resolve then re-land',

@@ -6,6 +6,7 @@
 
 import { realpathSync } from 'node:fs';
 import { basename, resolve } from 'node:path';
+import { emptyRepoMessage } from '@agile-agents/daemon';
 import type { RepoEntry, ReposConfig } from '@agile-agents/shared';
 import type { ParsedArgs } from '../args';
 import { optionalList, optionalString, requirePositional } from '../args';
@@ -78,6 +79,10 @@ export async function runRepoAdd(
 
   if (json) printJson(repos[name]);
   else console.log(`agile repo add: registered ${name} -> ${path}`);
+  // T214: registering an empty repo is fine; starting a node in it is not.
+  const entry = repos[name];
+  const empty = entry === undefined ? undefined : emptyRepoMessage(name, entry);
+  if (empty !== undefined) console.error(`agile repo add: warning: ${empty}`);
   return 0;
 }
 

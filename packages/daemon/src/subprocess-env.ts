@@ -9,6 +9,9 @@
  * caller, all created eagerly. `PATH` and the rest of `process.env`
  * (including a preset `GIT_CONFIG_GLOBAL`) pass through unchanged.
  *
+ * `GIT_TERMINAL_PROMPT=0`: the daemon has no terminal, so a git that
+ * wants a credential fails at once rather than hanging (T231).
+ *
  * Vendor sessions never use this: their CLI needs the real `HOME` for its
  * login.
  */
@@ -40,6 +43,7 @@ export function sandboxedSubprocessEnv(repoRoot: string, name: string): Record<s
     XDG_CONFIG_HOME: xdgConfig,
     XDG_DATA_HOME: xdgData,
     XDG_STATE_HOME: xdgState,
+    GIT_TERMINAL_PROMPT: '0',
   };
 }
 
