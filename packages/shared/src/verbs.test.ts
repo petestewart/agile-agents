@@ -48,6 +48,8 @@ describe('agent verbs', () => {
       'read_event',
       'deliver',
       'lookup_knowledge',
+      'plan_write',
+      'contract_write',
     ]);
     for (const verb of AGENT_VERBS) {
       expect(AGENT_VERB_SCHEMAS[verb]).toBeDefined();

@@ -27,6 +27,7 @@ import {
   KnowledgePathsSchema,
   RuleExampleSchema,
 } from './knowledge';
+import { ContractWriteFieldsSchema, PlanWriteFieldsSchema } from './plan';
 import { RoutedEventIdSchema } from './routed-event';
 import { StreamFindingSeveritySchema, THREAD_BODY_MAX_CHARS } from './stream';
 
@@ -114,6 +115,16 @@ export type LookupKnowledgeInput = z.infer<typeof LookupKnowledgeInputSchema>;
 export const DeliverInputSchema = z.object({ session: Session }).strict();
 export type DeliverInput = z.infer<typeof DeliverInputSchema>;
 
+/** T281 (§14.4): a coordinator writes its plan; it lands `draft` until approved. */
+export const PlanWriteInputSchema = PlanWriteFieldsSchema.extend({ session: Session }).strict();
+export type PlanWriteInput = z.infer<typeof PlanWriteInputSchema>;
+
+/** T281 (§14.4): a coordinator creates a contract (no `id`) or bumps one. */
+export const ContractWriteInputSchema = ContractWriteFieldsSchema.extend({
+  session: Session,
+}).strict();
+export type ContractWriteInput = z.infer<typeof ContractWriteInputSchema>;
+
 /** The verb table, in the order §4.1 lists it. */
 export const AGENT_VERBS = [
   'ask',
@@ -127,6 +138,8 @@ export const AGENT_VERBS = [
   'read_event',
   'deliver',
   'lookup_knowledge',
+  'plan_write',
+  'contract_write',
 ] as const;
 export type AgentVerb = (typeof AGENT_VERBS)[number];
 
@@ -142,6 +155,8 @@ export const AGENT_VERB_SCHEMAS = {
   read_event: ReadEventInputSchema,
   deliver: DeliverInputSchema,
   lookup_knowledge: LookupKnowledgeInputSchema,
+  plan_write: PlanWriteInputSchema,
+  contract_write: ContractWriteInputSchema,
 } as const satisfies Record<AgentVerb, z.ZodType>;
 
 /** One line of help per verb, published to the model by the MCP bridge. */
@@ -160,6 +175,10 @@ export const AGENT_VERB_DESCRIPTIONS: Record<AgentVerb, string> = {
     'Push your committed fix and update your open PR (babysitting). Only once a PR is open; commit first.',
   lookup_knowledge:
     'List the accepted standards, architecture and decisions that apply to a repo-relative path ({path}). Use it before touching an unfamiliar area.',
+  plan_write:
+    'Coordinator only: write the plan ({owners: [{child, owns: [path globs]}], contracts?: [C-ids]}). It stays draft until the operator approves it.',
+  contract_write:
+    'Coordinator only: create a contract ({title, body ≤800, parties: [child ids]}) or bump one ({id, …, reason}); a bump tells its parties.',
 };
 
 export function isAgentVerb(name: string): name is AgentVerb {

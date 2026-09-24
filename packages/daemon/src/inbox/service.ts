@@ -18,6 +18,8 @@ import {
   inboxContext,
   inboxDetail,
 } from '@agile-agents/shared';
+import type { ContractService } from '../coordination/contracts';
+import type { PlanService } from '../coordination/plans';
 import type { GateService } from '../gates/service';
 import type { KnowledgeService } from '../knowledge/service';
 import type { QuestionService } from '../questions/service';
@@ -41,6 +43,9 @@ export interface InboxServiceDeps {
   gates: GateService;
   /** A proposed rule is a `rule_accept` item (§3.1). */
   rules?: KnowledgeService;
+  /** T281: a draft plan is a `plan_approve` item (§9.1: approval at every level). */
+  plans?: Pick<PlanService, 'listDraft'>;
+  contracts?: Pick<ContractService, 'find'>;
 }
 
 export class InboxService {
@@ -77,6 +82,31 @@ export class InboxService {
       }
     }
     for (const [source, rules] of seeded) items.push(this.ruleBatchItem(source, rules));
+    for (const plan of this.deps.plans?.listDraft() ?? []) {
+      const stream = byId.get(plan.node);
+      if (stream === undefined || stream.archived === true) continue;
+      const titleOf = (id: string) => byId.get(id)?.title ?? id;
+      const owners = plan.owners.map(
+        (o) => `${titleOf(o.child)} owns ${o.owns.length === 0 ? 'nothing' : o.owns.join(', ')}`,
+      );
+      const contracts = plan.contracts.map((id) => {
+        const c = this.deps.contracts?.find(id);
+        return c === undefined ? id : `${c.title}: ${c.body}`;
+      });
+      const text = `Approve the plan for ${stream.title}: ${owners.join('; ') || 'no owners'}${
+        contracts.length > 0 ? `. Contracts: ${contracts.join(' | ')}` : ''
+      }`;
+      items.push({
+        kind: 'plan_approve',
+        id: stream.id,
+        stream: stream.id,
+        stream_path: this.path(stream, byId),
+        ts: plan.updated_at,
+        context: inboxContext(text),
+        ...withDetail(text),
+        ref: `plans/${stream.id}.yaml`,
+      });
+    }
     for (const stream of byId.values()) {
       const item = this.streamItem(stream, byId);
       if (item) items.push(item);

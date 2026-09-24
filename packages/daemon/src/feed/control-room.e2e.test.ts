@@ -41,6 +41,8 @@ import {
 import { type Browser, type Page, chromium } from 'playwright-core';
 import { AttachService, VerbService } from '../attach';
 import { ClassifierKeyService, FakeClassifier } from '../classifier';
+import { ContractService } from '../coordination/contracts';
+import { PlanService } from '../coordination/plans';
 import { DeliveryService } from '../delivery';
 import { DocsService } from '../docs';
 import { RoutedEventService, routeAndEmit } from '../events';
@@ -392,6 +394,8 @@ interface Cockpit {
   gates: GateService;
   rules: KnowledgeService;
   events: RoutedEventService;
+  plans: PlanService;
+  contracts: ContractService;
   /** Every `deliver(sessionId, question)` the question service made — the hand-off to the asking session. */
   delivered: Array<{ session: string; question: Question }>;
   http: HttpServerHandle;
@@ -423,7 +427,9 @@ async function startCockpit(
   });
   const gates = new GateService(store);
   const rules = new KnowledgeService({ store, streams });
-  const inbox = new InboxService({ streams, questions, gates, rules });
+  const contracts = new ContractService({ store, streams });
+  const plans = new PlanService({ store, streams, contracts });
+  const inbox = new InboxService({ streams, questions, gates, rules, plans, contracts });
   const projects = new ProjectService(store, streams);
   const events = new RoutedEventService(store);
   const http = startHttpServer({
@@ -439,6 +445,8 @@ async function startCockpit(
     questions,
     inbox,
     rules,
+    plans,
+    contracts,
     ...(extra.ruleEvals ? { ruleEvals: extra.ruleEvals } : {}),
     // T167: a key service over a fresh config and no env, so the operator's
     // own TYPESAFE_API_KEY never counts and no real call is possible.
@@ -464,6 +472,8 @@ async function startCockpit(
     gates,
     rules,
     events,
+    plans,
+    contracts,
     delivered,
     http,
     base: `http://127.0.0.1:${http.port}`,
@@ -2647,6 +2657,68 @@ describe('node activity (Playwright e2e, T245)', () => {
           page,
           `[data-testid="repo-view"] [data-repo="api"] [data-event="${event.id}"]`,
           'main changed · api: add salePrice',
+        );
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+});
+
+describe('plan approval (Playwright e2e, T281)', () => {
+  browserTest(
+    'a draft plan is an inbox card; Approve moves it to approved on the Plan tab',
+    async () => {
+      const cockpit = await startCockpit();
+      let page: Page | undefined;
+      try {
+        const shop = await cockpit.projects.create({ name: 'Shop' });
+        const node = await cockpit.streams.create('human', {
+          title: 'Show sale prices',
+          goal: 'g',
+          project: shop.id,
+        });
+        const child = (title: string) =>
+          cockpit.streams.create('human', { title, goal: 'g', project: shop.id, parent: node.id });
+        const api = await child('api: add salePrice');
+        const web = await child('web: show salePrice');
+        const contract = await cockpit.contracts.write(
+          node.id,
+          {
+            title: 'GET /price/:id',
+            body: 'returns { cents, saleCents? }',
+            parties: [api.id, web.id],
+          },
+          'human',
+        );
+        await cockpit.plans.write(
+          node.id,
+          [
+            { child: api.id, owns: ['prices.ts'] },
+            { child: web.id, owns: ['shop.html'] },
+          ],
+          [contract.id],
+        );
+
+        page = await openPage();
+        await page.goto(`${cockpit.base}/`);
+        const card = `[data-kind="plan_approve"][data-id="${node.id}"]`;
+        await page.locator(`${card} [data-testid="plan-approve"]`).waitFor({ state: 'visible' });
+        expect(await page.locator(`${card} [data-testid="inbox-context"]`).textContent()).toContain(
+          'api: add salePrice owns prices.ts',
+        );
+        await page.locator(`${card} [data-testid="plan-approve"]`).click();
+        await page.locator(card).waitFor({ state: 'detached' });
+        expect(cockpit.plans.get(node.id)?.status).toBe('approved');
+
+        await page.locator(`[data-testid="stream-tree"] [data-stream="${node.id}"]`).click();
+        await page.locator('.cr-tabs [data-tab="plan"]').click();
+        await waitForAttr(page, '[data-testid="plan-status"]', 'data-status', 'approved');
+        await page.locator(`[data-contract="${contract.id}"]`).waitFor({ state: 'visible' });
+        expect(await page.locator(`[data-contract="${contract.id}"]`).textContent()).toContain(
+          'saleCents',
         );
       } finally {
         await teardown([page]);
