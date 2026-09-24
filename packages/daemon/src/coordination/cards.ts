@@ -4,7 +4,8 @@
  * on every stream update (so a `touched` recompute moves the card with
  * it). `doing` is the `progress` verb's line (`agent.progress`), which
  * reaches the card through the same update. `read_card` is limited to the
- * caller's siblings and ancestors, plus the Director.
+ * caller's siblings, ancestors and descendants (a coordinator reads its
+ * children), plus the Director.
  */
 
 import {
@@ -48,7 +49,24 @@ export function cardFiles(s: Stream): string[] {
   return [...files.slice(0, CARD_FILES_MAX), `+${files.length - CARD_FILES_MAX} more`];
 }
 
-/** True when `target` is a sibling (same parent) or an ancestor of `caller`. */
+/** True when `a` is a strict ancestor of `b`. */
+function isAncestor(a: string, b: string, byId: ReadonlyMap<string, Stream>): boolean {
+  const seen = new Set<string>();
+  for (
+    let cur = byId.get(b)?.parent;
+    cur !== undefined && !seen.has(cur);
+    cur = byId.get(cur)?.parent
+  ) {
+    if (cur === a) return true;
+    seen.add(cur);
+  }
+  return false;
+}
+
+/**
+ * True when `target` is a sibling (same parent) or an ancestor of `caller`,
+ * or `caller` is an ancestor of `target` (a coordinator reading its subtree).
+ */
 export function canReadCard(caller: string, target: string, all: readonly Stream[]): boolean {
   if (caller === target) return true;
   const byId = new Map(all.map((s) => [s.id, s]));
@@ -56,12 +74,7 @@ export function canReadCard(caller: string, target: string, all: readonly Stream
   const other = byId.get(target);
   if (self === undefined || other === undefined) return false;
   if (self.parent !== undefined && self.parent === other.parent) return true;
-  const seen = new Set<string>();
-  for (let cur = self.parent; cur !== undefined && !seen.has(cur); cur = byId.get(cur)?.parent) {
-    if (cur === target) return true;
-    seen.add(cur);
-  }
-  return false;
+  return isAncestor(target, caller, byId) || isAncestor(caller, target, byId);
 }
 
 export interface CardServiceOptions {
@@ -104,12 +117,14 @@ export class CardService {
     });
   }
 
-  /** `read_card`: a sibling's or ancestor's card (any card for the Director). */
+  /** `read_card`: a sibling's, ancestor's or descendant's card (any card for the Director). */
   read(caller: string, target: string): StatusCard {
     const all = this.options.streams.list();
     const allowed = this.options.isDirector?.(caller) === true || canReadCard(caller, target, all);
     if (!allowed) {
-      throw new Error(`read_card: ${target} is not a sibling or an ancestor of this node`);
+      throw new Error(
+        `read_card: ${target} is not a sibling, an ancestor or a descendant of this node`,
+      );
     }
     const stream = all.find((s) => s.id === target);
     if (stream === undefined) throw new Error(`read_card: no node ${target}`);

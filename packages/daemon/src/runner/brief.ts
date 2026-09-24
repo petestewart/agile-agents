@@ -14,6 +14,7 @@ import type {
   Autonomy,
   KnowledgeItem,
   SessionRole,
+  StatusCard,
   Stream,
   ThreadEntry,
 } from '@agile-agents/shared';
@@ -49,7 +50,12 @@ export interface BuildBriefInput {
   /** Every knowledge item in the home; `knowledgeInScope` filters them here, not the caller. */
   rules: readonly KnowledgeItem[];
   /** P20 (T280): a coordinator's children and autonomy level. */
-  coordinator?: { children: readonly Stream[]; autonomy: Autonomy };
+  coordinator?: {
+    children: readonly Stream[];
+    autonomy: Autonomy;
+    /** T283: each child's status card, or the refusal of a corrupt one. */
+    cards?: ReadonlyMap<string, StatusCard | { error: string }>;
+  };
   /** Overrides `BRIEF_THREAD_ENTRIES`. */
   threadEntries?: number;
   /** Overrides `BRIEF_CHAR_CEILING`. Test seam. */
@@ -134,16 +140,24 @@ export function babysitSection(stream: Stream): string | undefined {
 }
 
 /** P20 (T280): what a coordinator coordinates, and how far it may act on its own. */
-export function coordinatorSection(children: readonly Stream[], autonomy: Autonomy): string {
+export function coordinatorSection(
+  children: readonly Stream[],
+  autonomy: Autonomy,
+  cards?: ReadonlyMap<string, StatusCard | { error: string }>,
+): string {
   const lines =
     children.length === 0
       ? ['none yet']
-      : children.map(
-          (c) =>
-            `- ${c.title} (\`${c.id}\`): agent ${c.agent.status}, human ${c.human.status}${
-              c.agent.progress ? ` — ${c.agent.progress}` : ''
-            }`,
-        );
+      : children.map((c) => {
+          const card = cards?.get(c.id);
+          const head = `- ${c.title} (\`${c.id}\`): agent ${c.agent.status}, human ${c.human.status}`;
+          if (card === undefined)
+            return `${head}${c.agent.progress ? ` — ${c.agent.progress}` : ''}`;
+          if ('error' in card) return `${head}; card unreadable: ${card.error}`;
+          return `${head}; card: ${card.state}, ${card.files.length} files${
+            card.relies_on.length > 0 ? `, relies on ${card.relies_on.join(', ')}` : ''
+          }${card.doing !== '' ? ` — ${card.doing}` : ''}`;
+        });
   return section('Your children', [...lines, '', `Autonomy: **${autonomy}**.`].join('\n'));
 }
 
@@ -174,7 +188,13 @@ function assemble(
   }
 
   if (input.coordinator !== undefined) {
-    parts.push(coordinatorSection(input.coordinator.children, input.coordinator.autonomy));
+    parts.push(
+      coordinatorSection(
+        input.coordinator.children,
+        input.coordinator.autonomy,
+        input.coordinator.cards,
+      ),
+    );
   }
 
   const babysit = babysitSection(stream);

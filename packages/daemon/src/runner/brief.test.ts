@@ -1,7 +1,13 @@
 import { describe, expect, test } from 'bun:test';
 import type { KnowledgeItem, KnowledgeItemInput, Stream, ThreadEntry } from '@agile-agents/shared';
 import { ulid, validateKnowledgeItem } from '@agile-agents/shared';
-import { BRIEF_CHAR_CEILING, BRIEF_THREAD_ENTRIES, buildBrief, readRoleBrief } from './brief';
+import {
+  BRIEF_CHAR_CEILING,
+  BRIEF_THREAD_ENTRIES,
+  buildBrief,
+  coordinatorSection,
+  readRoleBrief,
+} from './brief';
 
 /**
  * T140/T260: the brief takes real `KnowledgeItem` records and filters them
@@ -326,5 +332,33 @@ describe('the token ceiling', () => {
     expect(brief).toContain('a line');
     expect(brief).toContain('short doc');
     expect(brief).not.toContain('truncated to fit the brief');
+  });
+});
+
+describe('coordinator brief: children cards (T283)', () => {
+  test("each child's card: state, doing, files count, relies_on; a corrupt one is named", () => {
+    const api = makeStream({ title: 'api' });
+    const web = makeStream({ title: 'web' });
+    const out = coordinatorSection(
+      [api, web],
+      'run',
+      new Map([
+        [
+          api.id,
+          {
+            node: api.id,
+            doing: 'adding salePrice',
+            state: 'working' as const,
+            files: ['prices.ts', 'sale.ts'],
+            exports_changed: [],
+            relies_on: ['C-sale'],
+            updated_at: new Date().toISOString(),
+          },
+        ],
+        [web.id, { error: `corrupt card file /h/cards/${web.id}.yaml:3: bad` }],
+      ]),
+    );
+    expect(out).toContain('card: working, 2 files, relies on C-sale — adding salePrice');
+    expect(out).toContain(`card unreadable: corrupt card file /h/cards/${web.id}.yaml:3`);
   });
 });

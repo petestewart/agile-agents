@@ -39,6 +39,7 @@ import {
 import { useFeed } from '../lib/feed-context';
 import type {
   ActivityEntry,
+  CockpitCardError,
   CockpitStatusCard,
   LandOutcome,
   StreamDiff,
@@ -339,7 +340,7 @@ function ChildCards({
   cards,
   titleOf,
 }: {
-  cards: CockpitStatusCard[];
+  cards: Array<CockpitStatusCard | CockpitCardError>;
   titleOf: (id: string) => string;
 }): JSX.Element | null {
   if (cards.length === 0) return null;
@@ -347,30 +348,39 @@ function ChildCards({
     <section className="cr-findings" data-testid="child-cards">
       <h2>Children</h2>
       <ul>
-        {cards.map((card) => (
-          <li
-            key={card.node}
-            data-testid="status-card"
-            data-node={card.node}
-            data-state={card.state}
-          >
-            <strong>{titleOf(card.node)}</strong> <span className="cr-dim">{card.state}</span>
-            {card.doing !== '' && (
-              <>
-                {' — '}
-                <span data-testid="status-card-doing">{card.doing}</span>
-              </>
-            )}
-            {card.files.length > 0 && (
-              <p className="cr-dim" data-testid="status-card-files">
-                {card.files.join(', ')}
-              </p>
-            )}
-            {card.relies_on.length > 0 && (
-              <p className="cr-dim">relies on {card.relies_on.join(', ')}</p>
-            )}
-          </li>
-        ))}
+        {cards.map((card) =>
+          'error' in card ? (
+            <li key={card.node} data-testid="status-card-error" data-node={card.node}>
+              <strong>{titleOf(card.node)}</strong>{' '}
+              <span className="sev" data-testid="status-card-error-text">
+                {card.error}
+              </span>
+            </li>
+          ) : (
+            <li
+              key={card.node}
+              data-testid="status-card"
+              data-node={card.node}
+              data-state={card.state}
+            >
+              <strong>{titleOf(card.node)}</strong> <span className="cr-dim">{card.state}</span>
+              {card.doing !== '' && (
+                <>
+                  {' — '}
+                  <span data-testid="status-card-doing">{card.doing}</span>
+                </>
+              )}
+              {card.files.length > 0 && (
+                <p className="cr-dim" data-testid="status-card-files">
+                  {card.files.join(', ')}
+                </p>
+              )}
+              {card.relies_on.length > 0 && (
+                <p className="cr-dim">relies on {card.relies_on.join(', ')}</p>
+              )}
+            </li>
+          ),
+        )}
       </ul>
     </section>
   );

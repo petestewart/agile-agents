@@ -35,6 +35,7 @@ import {
   type SessionDefaultsPatch,
   SessionDefaultsPatchSchema,
   type StatusCard,
+  StatusCardSchema,
   type Stream,
   type StreamPrincipal,
   type ThreadEntry,
@@ -45,6 +46,7 @@ import {
   assertNoWaitsOnCycle,
   assertStreamWrite,
   formatKnowledgeScope,
+  formatZodError,
   projectNameKey,
   validateAgentRecord,
   validateDelivery,
@@ -61,6 +63,7 @@ import {
   validateStream,
   validateThreadEntry,
 } from '@agile-agents/shared';
+import { parse as parseYaml } from 'yaml';
 import { buildEvent, needsFsync } from './events';
 import {
   appendJsonlLine,
@@ -1038,7 +1041,7 @@ export class StateStore {
   getCard(node: string): StatusCard | undefined {
     const path = this.abs(this.cardRelPath(node));
     if (!fileExists(path)) return undefined;
-    return readRecord(path, 'card', validateStatusCard);
+    return readCardFile(path);
   }
 
   /** Read-modify-write under the mutex; the mutator returns `undefined` to leave the file alone. */
@@ -1204,6 +1207,30 @@ function projectEvent(kind: 'project_created' | 'project_updated', project: Proj
 }
 
 /** Reads and validates one YAML record; a corrupt one is refused with its path (§7.3). */
+/**
+ * A card, refused with `path:line` when corrupt (T283): the YAML error's
+ * line, or the line of the first invalid top-level key (1 if none).
+ */
+function readCardFile(absPath: string): StatusCard {
+  const text = readFileSync(absPath, 'utf8');
+  const fail = (line: number, msg: string): never => {
+    throw new Error(`corrupt card file ${absPath}:${line}: ${msg}`);
+  };
+  let raw: unknown;
+  try {
+    raw = parseYaml(text);
+  } catch (err) {
+    const line = (err as { linePos?: Array<{ line: number }> }).linePos?.[0]?.line ?? 1;
+    return fail(line, err instanceof Error ? (err.message.split('\n')[0] ?? '') : String(err));
+  }
+  const result = StatusCardSchema.safeParse(raw);
+  if (result.success) return result.data;
+  const key = result.error.issues[0]?.path[0];
+  const idx =
+    typeof key === 'string' ? text.split('\n').findIndex((l) => l.startsWith(`${key}:`)) : -1;
+  return fail(idx >= 0 ? idx + 1 : 1, formatZodError('StatusCard', result.error));
+}
+
 function readRecord<T>(absPath: string, what: string, validate: (raw: unknown) => T): T {
   try {
     return validate(readYamlFile(absPath));

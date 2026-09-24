@@ -88,7 +88,13 @@ export interface CockpitFrame {
   /** T227: live work nodes on one repo sharing changed files. Absent from an older daemon. */
   overlaps?: CockpitOverlap[];
   /** T283: the child nodes' status cards. Absent from an older daemon. */
-  cards?: CockpitStatusCard[];
+  cards?: Array<CockpitStatusCard | CockpitCardError>;
+}
+
+/** T283: a corrupt card file, refused with its path:line. */
+export interface CockpitCardError {
+  node: string;
+  error: string;
 }
 
 /** T283: mirror of shared `StatusCard` (projects-design §14.5). */

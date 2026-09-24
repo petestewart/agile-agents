@@ -2497,6 +2497,24 @@ describe('status cards on the parent page (Playwright e2e, T283)', () => {
         await waitForAttr(page, card, 'data-state', 'working');
         await waitForText(page, `${card} [data-testid="status-card-doing"]`, 'adding salePrice');
         await waitForText(page, `${card} [data-testid="status-card-files"]`, 'prices.ts');
+
+        // A corrupt card is an error line naming path:line; the others still render.
+        const web = await cockpit.streams.create('human', {
+          title: 'web: show sale',
+          goal: 'g',
+          project: shop.id,
+          parent: shop.root,
+          repo: 'api',
+        });
+        writeFileSync(
+          join(cockpit.home, 'cards', `${web.id}.yaml`),
+          `node: ${web.id}\ndoing: x\nstate: exploding\n`,
+        );
+        await cockpit.streams.update('human', web.id, { title: 'web: show sale!' });
+        const bad = `[data-testid="child-cards"] [data-node="${web.id}"] [data-testid="status-card-error-text"]`;
+        await page.locator(bad).waitFor();
+        expect(await page.locator(bad).textContent()).toContain(`cards/${web.id}.yaml:3:`);
+        await waitForAttr(page, card, 'data-state', 'working');
       } finally {
         await teardown([page]);
         await cockpit.stop();

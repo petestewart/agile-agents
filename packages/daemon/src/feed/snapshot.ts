@@ -123,8 +123,11 @@ export interface CockpitFrame {
   /** T227: live work nodes on one repo that changed the same files (§4.3). */
   overlaps: Overlap[];
   /** T283 (§14.5): the status cards of child nodes, shown on the parent's page. */
-  cards: StatusCard[];
+  cards: CockpitCard[];
 }
+
+/** A card, or the refusal of a corrupt one (path:line) so the rest still render. */
+export type CockpitCard = StatusCard | { node: string; error: string };
 
 /** One registered repo (T209). `delivery` is `direct` unless repos.yaml says otherwise. */
 export interface CockpitRepoRow {
@@ -174,9 +177,14 @@ export function buildCockpitFrame(
       delivery: entry.delivery ?? 'direct',
     })),
     overlaps,
-    cards: all.flatMap((s) => {
-      const card = s.parent !== undefined ? cardOf?.(s.id) : undefined;
-      return card !== undefined ? [card] : [];
+    cards: all.flatMap((s): CockpitCard[] => {
+      if (s.parent === undefined || cardOf === undefined) return [];
+      try {
+        const card = cardOf(s.id);
+        return card !== undefined ? [card] : [];
+      } catch (err) {
+        return [{ node: s.id, error: err instanceof Error ? err.message : String(err) }];
+      }
     }),
   };
 }

@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { type AgentId, type Stream, ulid } from '@agile-agents/shared';
 import { VerbService } from '../attach/verbs';
+import { buildCockpitFrame } from '../feed/snapshot';
 import { runInit } from '../init';
 import { ProjectService } from '../projects';
 import { QuestionService } from '../questions/service';
@@ -21,6 +22,7 @@ let streams: StreamService;
 let cards: CardService;
 let tracker: OverlapTracker;
 let verbs: VerbService;
+let stateRoot: string;
 
 function sh(args: string[], cwd: string): void {
   const r = Bun.spawnSync(['git', ...args], { cwd, stdout: 'pipe', stderr: 'pipe' });
@@ -36,7 +38,8 @@ beforeEach(async () => {
   writeFileSync(join(repo, 'prices.ts'), 'export const a = 1;\n');
   sh(['add', '-A'], repo);
   sh(['commit', '-q', '-m', 'init'], repo);
-  store = StateStore.open(runInit(home).stateRoot);
+  stateRoot = runInit(home).stateRoot;
+  store = StateStore.open(stateRoot);
   // Wired the way daemon.ts wires it: the card follows every record update.
   streams = new StreamService(store, {
     onUpdated: async (_b, after) => void (await cards.refresh(after)),
@@ -83,6 +86,25 @@ async function session(stream: string): Promise<string> {
 }
 
 describe('status cards (T283)', () => {
+  test('a corrupt card is refused with path:line, never defaulted; the frame still renders the others', async () => {
+    const shop = await new ProjectService(store, streams).create({ name: 'Shop' });
+    const api = await child(shop.root, shop.id, 'api');
+    const web = await child(shop.root, shop.id, 'web');
+    await streams.update('agent', web.id, { agent: { progress: 'fine' } });
+    const path = join(stateRoot, 'cards', `${api.id}.yaml`);
+    const rel = `cards/${api.id}.yaml`;
+    writeFileSync(path, `node: ${api.id}\ndoing: x\nstate: exploding\nfiles: []\n`);
+    expect(() => store.getCard(api.id)).toThrow(`${rel}:3`);
+    writeFileSync(path, 'node: [unclosed\n');
+    expect(() => store.getCard(api.id)).toThrow(new RegExp(`${rel}:\\d+: `));
+
+    const frame = buildCockpitFrame(streams, undefined, undefined, {}, (id) => store.getCard(id));
+    const bad = frame.cards.find((c) => c.node === api.id);
+    expect(bad && 'error' in bad ? bad.error : '').toMatch(new RegExp(`${rel}:\\d+: `));
+    const good = frame.cards.find((c) => c.node === web.id);
+    expect(good && 'doing' in good ? good.doing : '').toBe('fine');
+  });
+
   test('a card follows edits within one recompute, and progress sets doing', async () => {
     const shop = await new ProjectService(store, streams).create({ name: 'Shop' });
     const api = await child(shop.root, shop.id, 'api', 'T-api');
@@ -122,12 +144,17 @@ describe('status cards (T283)', () => {
     // Not the sibling's child (not a sibling or an ancestor of api)…
     const fromApi = await session(api.id);
     expect(() => verbs.readCard({ session: fromApi, node: helper.id })).toThrow(
-      /not a sibling or an ancestor/,
+      /not a sibling, an ancestor or a descendant/,
     );
+    // The parent's coordinator reads its children, and any ancestor its subtree.
+    expect(verbs.readCard({ session: await session(web.id), node: helper.id }).node).toBe(
+      helper.id,
+    );
+    expect(cards.read(shop.root, helper.id).node).toBe(helper.id);
     // …and nothing across projects.
     const other = await session(posts.id);
     expect(() => verbs.readCard({ session: other, node: api.id })).toThrow(
-      /not a sibling or an ancestor/,
+      /not a sibling, an ancestor or a descendant/,
     );
   });
 

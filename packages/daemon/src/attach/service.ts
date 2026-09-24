@@ -26,6 +26,7 @@ import {
   type SessionRef,
   type SessionRole,
   type SessionStatus,
+  type StatusCard,
   type Stream,
   type StreamPrincipal,
   type ThreadEntry,
@@ -170,6 +171,23 @@ export interface AttachServiceOptions {
 }
 
 /** P5: the project step of the session defaults; absent when the project names nothing. */
+/** T283: each child's card for the coordinator brief; a corrupt one is named, not defaulted. */
+function childCards(
+  store: StateStore,
+  children: readonly { id: string }[],
+): Map<string, StatusCard | { error: string }> {
+  const out = new Map<string, StatusCard | { error: string }>();
+  for (const c of children) {
+    try {
+      const card = store.getCard(c.id);
+      if (card !== undefined) out.set(c.id, card);
+    } catch (err) {
+      out.set(c.id, { error: err instanceof Error ? err.message : String(err) });
+    }
+  }
+  return out;
+}
+
 function projectSession(store: StateStore, id: string) {
   try {
     return store.getProject(id).session;
@@ -491,6 +509,7 @@ export class AttachService {
         ? {
             coordinator: {
               children,
+              cards: childCards(store, children),
               autonomy:
                 stream.autonomy ??
                 (stream.project === undefined
