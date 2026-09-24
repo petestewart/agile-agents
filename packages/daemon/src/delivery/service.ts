@@ -479,9 +479,12 @@ export class DeliveryService {
     }
     // §5.5's retro, after the worktree is gone.
     void Promise.resolve(this.options.onStreamEnd?.(stream.id)).catch(() => {});
-    void Promise.resolve(this.options.onMainMoved?.(stream.repo as string, stream.id)).catch(
-      () => {},
-    );
+    // T288: a helper moved its parent's branch, not main.
+    if (stream.helper_of === undefined) {
+      void Promise.resolve(this.options.onMainMoved?.(stream.repo as string, stream.id)).catch(
+        () => {},
+      );
+    }
     return { status: 'landed', target, sha, line };
   }
 
@@ -884,12 +887,19 @@ export class DeliveryService {
     return this.helperHostBranch(stream) ?? mainBranch(repoEntry, repoRoot);
   }
 
-  /** T288: a same-repo helper's target is its parent's branch. */
+  /** T288: a helper's target is its parent's branch; anything else is refused, never main. */
   private helperHostBranch(stream: Stream): string | undefined {
     if (stream.helper_of === undefined) return undefined;
-    const { streams } = this.options;
-    const host = streams.get(stream.helper_of);
-    return host.repo === stream.repo ? host.branch : undefined;
+    const host = this.options.streams.get(stream.helper_of);
+    const refuse = (why: string): never => {
+      throw new LandRefusedError(stream.id, `helper of ${host.id}: ${why}`);
+    };
+    if (host.repo !== stream.repo)
+      refuse(`the parent is on ${String(host.repo)}, not ${String(stream.repo)}`);
+    if (host.archived === true || host.human.status === 'closed' || host.human.status === 'landed')
+      refuse('the parent is closed or archived');
+    if (host.branch === undefined) refuse('the parent has no branch yet');
+    return host.branch;
   }
 
   /** Raises the `land` gate: the outcome when this call can't proceed, `undefined` when a delegate approved inline. */

@@ -98,6 +98,35 @@ afterEach(async () => {
   for (const dir of [home, repo]) rmSync(dir, { recursive: true, force: true });
 });
 
+describe('T288: helper then parent, one PR', () => {
+  test("the helper merges into the parent's branch; the parent's PR head holds both files", async () => {
+    const { stream: parent, worktree } = await prStream();
+    const helper = await streams.create('human', {
+      title: 'helper',
+      goal: 'help',
+      parent: parent.id,
+      helper_of: parent.id,
+    });
+    const hwt = join(repo, '.worktrees', 's-helper');
+    mustGit(['worktree', 'add', '-q', '-b', 'stream/s-helper', hwt, 'stream/s-pr']);
+    commitIn(hwt, 'h.txt', 'h\n');
+    await streams.update('daemon', helper.id, { branch: 'stream/s-helper', worktree: hwt });
+    const landing = service();
+
+    const landed = await landing.land(helper.id);
+    expect(landed.status === 'landed' && landed.target).toBe('stream/s-pr');
+    expect(streams.get(helper.id).delivery_state?.mode).toBe('direct');
+    // The parent's worktree has the branch checked out; bring it up to the merged ref.
+    mustGit(['reset', '-q', '--hard', 'stream/s-pr'], worktree);
+
+    const delivered = await landing.land(parent.id);
+    expect(delivered.status).toBe('pr_open');
+    const files = mustGit(['ls-tree', '--name-only', 'stream/s-pr'], gh.bareDir).split('\n');
+    expect(files).toContain('a.txt');
+    expect(files).toContain('h.txt');
+  });
+});
+
 describe('PR delivery (T224)', () => {
   test('deliver pushes and opens PR #1; a second deliver after a commit pushes and keeps #1', async () => {
     const { stream, worktree } = await prStream();

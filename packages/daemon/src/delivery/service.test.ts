@@ -258,6 +258,28 @@ describe('T288: a same-repo helper merges into its parent', () => {
     expect(streams.get(parent.id).human.status).toBe('open');
   });
 
+  test('delivery refuses a helper whose parent has no branch, is closed, or is on another repo', async () => {
+    await store.putRepos({
+      demo: { path: repo, protected_branches: ['main'] },
+      other: { path: repo, protected_branches: ['main'] },
+    });
+    const parent = await makeStream({ title: 'host' });
+    const helper = await streams.create('human', {
+      title: 'helper',
+      goal: 'help',
+      parent: parent.id,
+      helper_of: parent.id,
+    });
+    await streams.update('daemon', helper.id, branchWithWork('s-orphan', 'h.txt', 'h\n'));
+    expect(landing.land(helper.id)).rejects.toThrow(/parent has no branch/);
+    await streams.update('daemon', parent.id, { branch: 's-host2' });
+    await streams.close('human', parent.id);
+    expect(landing.land(helper.id)).rejects.toThrow(/closed or archived/);
+    await store.updateStream('daemon', helper.id, (h) => ({ ...h, repo: 'other' }));
+    expect(landing.land(helper.id)).rejects.toThrow(/the parent is on demo/);
+    expect(() => git(['show', 'main:h.txt'])).toThrow();
+  });
+
   test('a helper on another repo is refused toward the reshape', async () => {
     const parent = await makeStream({ title: 'host' });
     expect(
