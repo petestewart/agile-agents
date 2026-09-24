@@ -1192,8 +1192,8 @@ agile node show $P --json | jq -r '.delivery_state.status, .delivery_state.pr.au
 
 ### Ticket: T260 Knowledge items replace rules
 - **Priority:** P0
-- **Status:** Todo
-- **Owner:** —
+- **Status:** In Progress
+- **Owner:** opus:worker-T260
 - **Scope:**
   - Add `KnowledgeItem` (§14.3) in `shared/knowledge.ts`, and `knowledge/` in the store.
   - Migrate `rules/` (§17.1 step 2, P6), keeping the ulids. Rename `daemon/rules` to `daemon/knowledge`.
@@ -1587,7 +1587,7 @@ Daemon: `em/`, `architect/`, `oracle/`, `qa/`, `halts/`, `quota/`, `handoff/`, `
 
 ## 10. Discovered Issues Log
 
-- Phase 9 complete on `claude/phase-9` (2026-09-24): T240–T246 merged, T247 QA ACCEPT; awaiting Pete's look. Phase 10 proceeds on `claude/phase-10`.
+- Phase 9 complete on `claude/phase-9` (2026-09-24): T240–T246 merged, T247 QA ACCEPT; awaiting Pete's look (draft PR https://github.com/petestewart/agile-agents/pull/6, base claude/phase-8). Phase 10 proceeds on `claude/phase-10`.
 - (Pete, 2026-09-24) P13 bullet 1 (leave a private repo out of a session's readable directories) is deferred until it becomes a need; the hook check (T229) stands alone.
 - Phase 8 complete on `claude/phase-8` (2026-09-24): T220–T229 merged, T230 QA ACCEPT; awaiting Pete's look (draft PR https://github.com/petestewart/agile-agents/pull/5, base claude/phase-7). Phase 9 proceeds on `claude/phase-9` cut from it.
 - Phase 7 complete on `claude/phase-7` (2026-09-24, tip 3ab7109): T200–T211 merged, T212 QA ACCEPT; awaiting Pete's look (draft PR https://github.com/petestewart/agile-agents/pull/4). Phase 8 proceeds on `claude/phase-8` cut from it (Pete: don't wait).
