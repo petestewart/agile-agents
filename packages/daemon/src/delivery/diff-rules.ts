@@ -127,9 +127,9 @@ export function changedFilesOf(diff: string): string[] {
  * for. `origin: 'diff_rules'` is what `wireLandGateResolution` keys on
  * (answering one performs a merge), and the hook path never sets it.
  */
-function diffCall(ctx: DiffRuleContext, diff: string): GateCall {
+export function diffCall(ctx: DiffRuleContext, diff: string, step?: string): GateCall {
   const fingerprint = createHash('sha256')
-    .update([ctx.stream.id, ctx.branch, ctx.target, diff].join('\0'))
+    .update([ctx.stream.id, ctx.branch, ctx.target, diff, ...(step ? [step] : [])].join('\0'))
     .digest('hex')
     .slice(0, 16);
   return {
@@ -138,6 +138,59 @@ function diffCall(ctx: DiffRuleContext, diff: string): GateCall {
     fingerprint,
     origin: 'diff_rules',
   };
+}
+
+/** This stream's `classifier_review` gates on this exact diff, newest first. */
+function matchingGates(gates: DiffRuleGates, stream: Stream, call: GateCall): HilRequest[] {
+  return gates
+    .list()
+    .filter(
+      (gate) =>
+        gate.gate === 'classifier_review' &&
+        gate.stream === stream.id &&
+        gate.call?.origin === 'diff_rules' &&
+        gate.call?.fingerprint === call.fingerprint,
+    )
+    .sort((a, b) =>
+      a.requested_at === b.requested_at ? 0 : a.requested_at < b.requested_at ? 1 : -1,
+    );
+}
+
+/**
+ * An answer the human already gave for this diff (an approval is spent
+ * here), or `undefined` to ask the check. Shared by the classifier step and
+ * the reviewer step (T262), each with its own fingerprint.
+ */
+export async function answeredDiffGate(
+  gates: DiffRuleGates | undefined,
+  stream: Stream,
+  call: GateCall,
+): Promise<DiffRuleVerdict | undefined> {
+  if (gates === undefined) return undefined;
+  const candidates = matchingGates(gates, stream, call);
+  const approved = candidates.find(
+    (gate) => gate.decision === 'approve' && gate.consumed_at === undefined,
+  );
+  if (approved !== undefined) {
+    await gates.consume(approved.id);
+    return { decision: 'allow' };
+  }
+  const pending = candidates.find((gate) => gate.status === 'pending');
+  if (pending !== undefined) {
+    return {
+      decision: 'route',
+      gate: pending,
+      reason: `waiting on ${pending.id} — ${pending.summary ?? 'a ship check routed this land'}`,
+    };
+  }
+  const denied = candidates.find((gate) => gate.decision === 'deny');
+  if (denied !== undefined) {
+    return {
+      decision: 'deny',
+      reason: cap(`${denied.id} was denied: ${denied.note ?? 'no reason given'}`),
+    };
+  }
+  return undefined;
 }
 
 export class ClassifierDiffRules implements DiffRules {
@@ -157,7 +210,7 @@ export class ClassifierDiffRules implements DiffRules {
     const call = diffCall(ctx, diff);
 
     // The human may already have answered this exact diff.
-    const answered = await this.answeredGate(ctx.stream, call);
+    const answered = await answeredDiffGate(this.options.gates, ctx.stream, call);
     if (answered !== undefined) return answered;
 
     let answers: Map<string, Answer>;
@@ -281,54 +334,6 @@ export class ClassifierDiffRules implements DiffRules {
       kind: 'event',
       body: cap(`hook_unchecked: diff rules ${rules.map(nameOf).join(', ')} not checked — ${why}`),
     });
-  }
-
-  /** This stream's `classifier_review` gates on this exact diff, newest first. */
-  private matching(stream: Stream, call: GateCall): HilRequest[] {
-    const gates = this.options.gates;
-    if (gates === undefined) return [];
-    return gates
-      .list()
-      .filter(
-        (gate) =>
-          gate.gate === 'classifier_review' &&
-          gate.stream === stream.id &&
-          gate.call?.origin === 'diff_rules' &&
-          gate.call?.fingerprint === call.fingerprint,
-      )
-      .sort((a, b) =>
-        a.requested_at === b.requested_at ? 0 : a.requested_at < b.requested_at ? 1 : -1,
-      );
-  }
-
-  /** An answer the human already gave for this diff, or `undefined` to ask the classifier. */
-  private async answeredGate(stream: Stream, call: GateCall): Promise<DiffRuleVerdict | undefined> {
-    const gates = this.options.gates;
-    if (gates === undefined) return undefined;
-    const candidates = this.matching(stream, call);
-    const approved = candidates.find(
-      (gate) => gate.decision === 'approve' && gate.consumed_at === undefined,
-    );
-    if (approved !== undefined) {
-      await gates.consume(approved.id);
-      return { decision: 'allow' };
-    }
-    const pending = candidates.find((gate) => gate.status === 'pending');
-    if (pending !== undefined) {
-      return {
-        decision: 'route',
-        gate: pending,
-        reason: `waiting on ${pending.id} — ${pending.summary ?? 'a diff rule routed this land'}`,
-      };
-    }
-    const denied = candidates.find((gate) => gate.decision === 'deny');
-    if (denied !== undefined) {
-      return {
-        decision: 'deny',
-        reason: cap(`${denied.id} was denied: ${denied.note ?? 'no reason given'}`),
-      };
-    }
-    return undefined;
   }
 
   /** §8.2's "ROUTE ⇒ inbox item, landing waits". */

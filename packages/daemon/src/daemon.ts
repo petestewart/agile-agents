@@ -13,6 +13,8 @@ import { type AgileConfig, type DiscoverConfigOptions, discoverConfig } from './
 import {
   ClassifierDiffRules,
   DeliveryService,
+  SessionShipReviewer,
+  ShipChecks,
   buildDeliveryRpcMethods,
   wireLandGateResolution,
 } from './delivery';
@@ -196,6 +198,28 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
           ...(gateService ? { gates: gateService } : {}),
         })
       : undefined;
+  // T262: the ship check — the classifier step, then a reviewer session
+  // over the `review` items in scope; findings go back as `ship_findings`.
+  let redeliver: ((streamId: string) => Promise<unknown>) | undefined;
+  const shipChecks =
+    diffRules && rulesService && store
+      ? new ShipChecks({
+          classifier: diffRules,
+          rules: rulesService,
+          policy: () => store.getPolicy(),
+          ...(gateService ? { gates: gateService } : {}),
+          ...(emitRouted ? { emit: emitRouted } : {}),
+          ...(attachService && streamService
+            ? {
+                reviewer: new SessionShipReviewer({
+                  attach: attachService,
+                  streams: streamService,
+                  onFinished: (id) => redeliver?.(id),
+                }),
+              }
+            : {}),
+        })
+      : undefined;
   // T226: sync after merge — main merged into the other live nodes on the repo.
   const mainSync =
     store && streamService
@@ -214,7 +238,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
       ? new DeliveryService({
           store,
           streams: streamService,
-          ...(diffRules ? { diffRules } : {}),
+          ...(shipChecks ? { diffRules: shipChecks } : {}),
           ...(gateService ? { gates: gateService } : {}),
           github: (entry) =>
             createGitHubRest({
@@ -229,6 +253,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
         })
       : undefined;
   if (gateService && landingService) wireLandGateResolution(gateService, landingService);
+  if (landingService) redeliver = (id) => landingService.land(id);
   // Deciding a gate closes the question the same session left open; wired
   // before the delivery below so it is superseded before the prompt.
   if (gateService && questionService) wireQuestionSupersession(gateService, questionService);

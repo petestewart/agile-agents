@@ -4,3 +4,4 @@ export * from './git';
 export * from './service';
 export * from './diff-rules';
 export * from './rpc';
+export * from './ship-review';
