@@ -1128,8 +1128,8 @@ git status --short
 
 ### Ticket: T246 PR babysitting
 - **Priority:** P0
-- **Status:** In Progress
-- **Owner:** opus:worker-T246
+- **Status:** Done (merge 1a2ea55)
+- **Owner:** —
 - **Scope:** The work node's agent looks after its PR (projects-design §4.1):
   - A babysit brief section, and wake on `pr_review`, `ci_failed` and `pr_behind`.
   - A CI log excerpt is written to `sessions/<id>/` with a pointer.
@@ -1138,12 +1138,12 @@ git status --short
   - With auto-merge on, T228's enable runs after each green push.
 - **Acceptance Criteria:** Fake GitHub + fake agent: a failing check wakes the agent and the scripted fix pushes; the check goes green; an approval with auto-merge on gets merged by the fake; the node shows merged with no human click.
 - **Validation Steps:** `bun test packages/daemon/src/delivery packages/daemon/src/events`; `bun run test:integration`.
-- **Notes:** After T243 and T244. Moved here from Phase 8 because it needs events (see the build order note).
+- **Notes:** After T243 and T244. Moved here from Phase 8 because it needs events (see the build order note). Review (sonnet) PASS. Daemon +139. New agent verb `deliver`: worker-only, only with an open PR, updates that PR (never opens one, never merges, protected branches refused), enforced server-side. CI log excerpt from check-run output → `sessions/<id>/ci-*.log` (200 lines / 32 KB). Auto-merge is enabled at first delivery (T228), not per green push; GitHub still merges only when green and approved.
 
 ### Ticket: T247 Phase 9 QA and Pete's look
 - **Priority:** P0
-- **Status:** Todo
-- **Owner:** —
+- **Status:** In Progress
+- **Owner:** sonnet:qa-T247
 - **Scope:** Black-box QA: routing across projects, digests, restart without loss, the wake budget, babysitting on the fake. Daemon line count. Pete runs a PR on agile-test-repo with auto-merge on, comments on it on GitHub, and watches the agent respond.
 - **Acceptance Criteria:** QA ACCEPT. Live: Pete's review comment reaches the agent as an event, the agent pushes a fix, and the PR auto-merges after Pete approves. The node's Activity tab shows each event.
 - **Validation Steps:** Pete, on his Mac:
