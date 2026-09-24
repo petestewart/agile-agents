@@ -10,7 +10,7 @@
 
 import { z } from 'zod';
 import { UlidSchema, formatZodError } from './ids';
-import { RuleIdSchema } from './rule';
+import { KnowledgeIdSchema } from './knowledge';
 
 /**
  * §3.1's kinds. `question` and `gate` are the two that carry a decision;
@@ -76,7 +76,7 @@ export const InboxItemSchema = z
     /** Pointer to the full artifact, when there is one (a home-relative path). */
     ref: z.string().min(1).optional(),
     /** T163: a `rule_batch` item's rule ids — present on that kind only. */
-    rules: z.array(RuleIdSchema).min(1).optional(),
+    rules: z.array(KnowledgeIdSchema).min(1).optional(),
   })
   .strict()
   .refine((item) => isRuleKind(item.kind) || item.stream !== undefined, {

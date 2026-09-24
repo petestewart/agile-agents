@@ -12,19 +12,21 @@
 import {
   type AgentId,
   type AgentVerb,
+  type KnowledgeScope,
   type RoutedEvent,
-  type RuleScope,
   type SessionRole,
   type StreamFinding,
   type ThreadEntry,
-  formatRuleScope,
-  parseRuleScope,
+  formatKnowledgeScope,
+  legacyEnforcement,
+  parseKnowledgeScope,
   validateVerbInput,
+  withExamplesNote,
 } from '@agile-agents/shared';
 import type { DocsSearch, SearchHit } from '../docs/service';
 import { summaryOf } from '../events/delivery';
+import type { KnowledgeService } from '../knowledge/service';
 import type { QuestionService } from '../questions/service';
-import type { RulesService } from '../rules/service';
 import { NotFoundError, type StateStore } from '../store';
 import type { StreamService } from '../streams/service';
 import { type TestRunOutput, runTestRun } from '../tools/test-run';
@@ -60,7 +62,7 @@ export interface VerbServiceOptions {
   /** `search_docs`'s read side. */
   docs?: DocsSearch;
   /** What `propose_rule` writes through. */
-  rules?: RulesService;
+  rules?: KnowledgeService;
   /** §5.5's "at most three" proposals from a lessons session, enforced as a gate. */
   /** T244: `read_event`'s read side (`RoutedEventService`). */
   events?: { get(id: string): RoutedEvent | undefined };
@@ -160,13 +162,25 @@ export class VerbService {
     const caller = this.caller(session);
     // §5.5's proposal budget, checked before anything is written.
     this.options.proposalLimit?.assertCanPropose(caller);
+    // The verb still speaks the old tiers (T264 replaces it with
+    // `propose_knowledge`); they map as the home migration maps them.
+    const mapped = enforcement === undefined ? undefined : legacyEnforcement(enforcement);
+    const checked = mapped === 'action' || mapped === 'ship';
     const rule = await this.options.rules?.create('agent', {
       text,
       scope: this.resolveProposedScope(caller, scope),
-      ...(examples !== undefined ? { examples } : {}),
-      ...(enforcement !== undefined ? { enforcement } : {}),
+      ...(mapped !== undefined ? { enforcement: mapped } : {}),
+      ...(checked ? { check: { by: 'classifier', examples: examples ?? [] } } : {}),
       ...(critical !== undefined ? { critical } : {}),
-      provenance: { stream: caller.stream, session, by: `agent:${session}` },
+      source: {
+        by: 'agent',
+        node: caller.stream,
+        session,
+        // A tell item has no check to hold them: keep them visible (T260).
+        ...(!checked && examples !== undefined && examples.length > 0
+          ? { finding: withExamplesNote(undefined, examples) }
+          : {}),
+      },
     });
     return this.options.streams.appendThread(
       'agent',
@@ -176,29 +190,29 @@ export class VerbService {
         body:
           rule === undefined
             ? `rule proposed: ${text}`
-            : `rule proposed (${formatRuleScope(rule.scope)}): ${text}`,
-        ref: rule === undefined ? 'rule_proposed' : `rules/${rule.id}.yaml`,
+            : `rule proposed (${formatKnowledgeScope(rule.scope)}): ${text}`,
+        ref: rule === undefined ? 'rule_proposed' : `knowledge/${rule.id}.yaml`,
       },
       session,
     );
   }
 
   /** The scope grammar of `propose_rule`, resolved against the calling session's stream. */
-  private resolveProposedScope(caller: VerbCaller, scope: string | undefined): RuleScope {
+  private resolveProposedScope(caller: VerbCaller, scope: string | undefined): KnowledgeScope {
     const stream = this.options.streams.get(caller.stream);
-    const repoScope = (): RuleScope => {
+    const repoScope = (): KnowledgeScope => {
       if (stream.repo === undefined) {
         throw new Error(`propose_rule: scope "repo" needs a stream with a repo; this one has none`);
       }
-      return { kind: 'repo', ref: stream.repo };
+      return { kind: 'repo', repo: stream.repo };
     };
     if (scope === undefined) {
-      return stream.repo === undefined ? { kind: 'stream', ref: stream.id } : repoScope();
+      return stream.repo === undefined ? { kind: 'subtree', node: stream.id } : repoScope();
     }
     const trimmed = scope.trim();
     if (trimmed === 'repo') return repoScope();
-    if (trimmed === 'stream') return { kind: 'stream', ref: stream.id };
-    return parseRuleScope(trimmed);
+    if (trimmed === 'stream' || trimmed === 'subtree') return { kind: 'subtree', node: stream.id };
+    return parseKnowledgeScope(trimmed);
   }
 
   /** A follow-up worth its own stream. A human creates the child; this only records the proposal (§4.1). */

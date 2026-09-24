@@ -9,7 +9,7 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { Rule } from '@agile-agents/shared';
+import type { KnowledgeItem } from '@agile-agents/shared';
 import {
   DEFAULT_CLASSIFIER_ALLOW_BELOW,
   DEFAULT_CLASSIFIER_DENY_AT,
@@ -20,8 +20,8 @@ import { runInit } from '../init';
 import type { RpcMethodHandler } from '../rpc';
 import { StateStore } from '../store';
 import { StreamService } from '../streams/service';
-import { buildRuleRpcMethods } from './rpc';
-import { RulesService } from './service';
+import { buildKnowledgeRpcMethods } from './rpc';
+import { KnowledgeService } from './service';
 
 let home: string;
 let store: StateStore;
@@ -39,29 +39,32 @@ beforeEach(() => {
   const init = runInit(home);
   store = StateStore.open(init.stateRoot);
   streams = new StreamService(store);
-  methods = buildRuleRpcMethods(new RulesService({ store, streams }));
+  methods = buildKnowledgeRpcMethods(new KnowledgeService({ store, streams }));
 });
 
 afterEach(() => {
   rmSync(home, { recursive: true, force: true });
 });
 
-async function create(text = 'prefer the repo scripts'): Promise<Rule> {
-  return call<Rule>('rule.create', { text });
+async function create(text = 'prefer the repo scripts'): Promise<KnowledgeItem> {
+  return call<KnowledgeItem>('rule.create', { text });
 }
 
-test('the method table is exactly the nine rule verbs', () => {
-  expect(Object.keys(methods).sort()).toEqual([
-    'rule.accept',
-    'rule.create',
-    'rule.get',
-    'rule.in_scope',
-    'rule.list',
-    'rule.report',
-    'rule.retire',
-    'rule.test',
-    'rule.update',
-  ]);
+test('the method table is exactly the nine knowledge verbs, each with its rule.* alias', () => {
+  const verbs = [
+    'accept',
+    'create',
+    'get',
+    'in_scope',
+    'list',
+    'report',
+    'retire',
+    'test',
+    'update',
+  ];
+  expect(Object.keys(methods).sort()).toEqual(
+    [...verbs.map((v) => `knowledge.${v}`), ...verbs.map((v) => `rule.${v}`)].sort(),
+  );
 });
 
 /**
@@ -74,7 +77,7 @@ test('rule.test without a classifier is a param error, not a silent pass', async
 });
 
 test('rule.test evaluates the accepted classifier rules through the fake', async () => {
-  const methodsWithClassifier = buildRuleRpcMethods(new RulesService({ store, streams }), {
+  const methodsWithClassifier = buildKnowledgeRpcMethods(new KnowledgeService({ store, streams }), {
     classifier: new FakeClassifier((state, questions) =>
       questions.map((q) => ({
         id: q.id,
@@ -88,12 +91,15 @@ test('rule.test evaluates the accepted classifier rules through the fake', async
   });
   const proposed = (await methodsWithClassifier['rule.create']?.({
     text: 'do not add a dependency without asking',
-    enforcement: 'classifier',
-    examples: [
-      { action: 'bun add lodash', violates: true },
-      { action: 'edit src/index.ts', violates: false },
-    ],
-  })) as Rule;
+    enforcement: 'action',
+    check: {
+      by: 'classifier',
+      examples: [
+        { action: 'bun add lodash', violates: true },
+        { action: 'edit src/index.ts', violates: false },
+      ],
+    },
+  })) as KnowledgeItem;
   await methodsWithClassifier['rule.accept']?.({ id: proposed.id });
   const report = (await methodsWithClassifier['rule.test']?.({})) as {
     agreed: number;
@@ -107,9 +113,9 @@ test('rule.test evaluates the accepted classifier rules through the fake', async
   // Naming a rule that has no examples to evaluate is bad params (-32602).
   const guidance = (await methodsWithClassifier['rule.create']?.({
     text: 'a guidance rule',
-  })) as Rule;
+  })) as KnowledgeItem;
   await expect(methodsWithClassifier['rule.test']?.({ id: guidance.id })).rejects.toThrow(
-    /only classifier rules/,
+    /only classifier checks/,
   );
 });
 
@@ -125,7 +131,7 @@ describe('params validation (-32602, never a TypeError)', () => {
   });
 
   test('rule.list takes no params at all', async () => {
-    expect(await call<{ rules: Rule[] }>('rule.list')).toEqual({ rules: [] });
+    expect(await call<{ items: KnowledgeItem[] }>('rule.list')).toEqual({ items: [] });
   });
 
   test('an unknown status filter is refused', async () => {
@@ -134,7 +140,7 @@ describe('params validation (-32602, never a TypeError)', () => {
 
   test('an unknown scope ref is the caller’s fault, not an internal error', async () => {
     await expect(
-      call('rule.create', { text: 'x', scope: { kind: 'repo', ref: 'ghost' } }),
+      call('rule.create', { text: 'x', scope: { kind: 'repo', repo: 'ghost' } }),
     ).rejects.toMatchObject({ code: -32602 });
   });
 });
@@ -153,29 +159,30 @@ describe('the principal stamp (§2.2)', () => {
     });
   });
 
-  test('an update may not carry a decision or rewrite provenance', async () => {
+  test('an update may not carry a decision or rewrite its source', async () => {
     const rule = await create();
     for (const patch of [
       { status: 'accepted' },
       { decided_by: 'someone' },
       { decided_at: '2026-09-22T00:00:00.000Z' },
       { provenance: { by: 'someone else' } },
+      { source: { by: 'agent' } },
     ]) {
       await expect(call('rule.update', { id: rule.id, ...patch })).rejects.toMatchObject({
         code: -32602,
       });
     }
-    expect(store.getRule(rule.id).status).toBe('proposed');
+    expect(store.getKnowledge(rule.id).status).toBe('proposed');
   });
 });
 
 describe('the verbs', () => {
   test('accept/retire stamp decided_by, defaulting to human', async () => {
     const rule = await create();
-    const accepted = await call<Rule>('rule.accept', { id: rule.id });
+    const accepted = await call<KnowledgeItem>('rule.accept', { id: rule.id });
     expect(accepted.status).toBe('accepted');
     expect(accepted.decided_by).toBe('human');
-    const retired = await call<Rule>('rule.retire', { id: rule.id, by: 'pete' });
+    const retired = await call<KnowledgeItem>('rule.retire', { id: rule.id, by: 'pete' });
     expect(retired.status).toBe('retired');
     expect(retired.decided_by).toBe('pete');
   });
@@ -188,12 +195,28 @@ describe('the verbs', () => {
 
   test('get / list / update round-trip', async () => {
     const rule = await create();
-    expect((await call<Rule>('rule.get', { id: rule.id })).id).toBe(rule.id);
-    expect((await call<{ rules: Rule[] }>('rule.list', { status: 'proposed' })).rules).toHaveLength(
-      1,
-    );
-    const edited = await call<Rule>('rule.update', { id: rule.id, text: 'reworded' });
+    expect((await call<KnowledgeItem>('rule.get', { id: rule.id })).id).toBe(rule.id);
+    expect(
+      (await call<{ items: KnowledgeItem[] }>('rule.list', { status: 'proposed' })).items,
+    ).toHaveLength(1);
+    const edited = await call<KnowledgeItem>('rule.update', { id: rule.id, text: 'reworded' });
     expect(edited.text).toBe('reworded');
+  });
+
+  test('every knowledge.* method answers under its rule.* alias too', () => {
+    for (const verb of [
+      'create',
+      'get',
+      'list',
+      'in_scope',
+      'report',
+      'test',
+      'accept',
+      'retire',
+      'update',
+    ]) {
+      expect(methods[`knowledge.${verb}`]).toBe(methods[`rule.${verb}`]);
+    }
   });
 
   test('rule.in_scope is §5.3 over one stream', async () => {
@@ -201,8 +224,8 @@ describe('the verbs', () => {
     const rule = await create('global rule');
     await call('rule.accept', { id: rule.id });
     await create('still proposed');
-    const result = await call<{ rules: Rule[] }>('rule.in_scope', { stream: stream.id });
-    expect(result.rules.map((r) => r.text)).toEqual(['global rule']);
+    const result = await call<{ items: KnowledgeItem[] }>('rule.in_scope', { stream: stream.id });
+    expect(result.items.map((r) => r.text)).toEqual(['global rule']);
     await expect(call('rule.in_scope', { stream: ulid() })).rejects.toThrow(/not found/);
   });
 });

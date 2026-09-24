@@ -28,22 +28,21 @@ import { runBreakerClear, runGateList } from './commands/gate';
 import { parseHookArgs, runHook } from './commands/hook';
 import { runInbox } from './commands/inbox';
 import { runCliInit } from './commands/init';
+import {
+  runKnowledgeAccept,
+  runKnowledgeAdd,
+  runKnowledgeEdit,
+  runKnowledgeList,
+  runKnowledgeReport,
+  runKnowledgeRetire,
+  runKnowledgeShow,
+  runKnowledgeTest,
+} from './commands/knowledge';
 import { runLand } from './commands/land';
 import { runProjectList, runProjectNew, runProjectSet, runProjectShow } from './commands/project';
 import { runQuestionAnswer, runQuestionList, runQuestionRaise } from './commands/question';
 import { runRepoAdd, runRepoList, runRepoSet } from './commands/repo';
 import { runReview } from './commands/review';
-import {
-  runRulesAccept,
-  runRulesAdd,
-  runRulesEdit,
-  runRulesList,
-  runRulesReport,
-  runRulesRetire,
-  runRulesSeed,
-  runRulesShow,
-  runRulesTest,
-} from './commands/rules';
 import { runStatus } from './commands/status';
 import {
   runStreamAddRepo,
@@ -91,21 +90,23 @@ function usage(): string {
     '  node switch-repo <id> <repo>  move a work node with nothing committed to another repo',
     '  node wait <id> --on <id>… [--remove]  hold delivery until each --on node is merged',
     '  stream …                   alias of `node`',
-    '  rules list [--status proposed|accepted|retired] [--scope global|repo:<n>|stream:<id>]',
-    '  rules show <id>            one rule: tier, scope, pattern, provenance, stats, examples',
-    '  rules add --text "…" [--scope …] [--enforcement pattern|classifier|guidance] [--stage action|diff|both] [--critical]',
+    '  knowledge list [--status proposed|accepted|retired] [--scope global|repo:<n>|project:<id>|subtree:<id>]',
+    '  knowledge show <id>        one item: kind, scope, paths, enforcement, check, source, stats, examples',
+    '  knowledge add --text "…" [--name <label>] [--kind standard|architecture|decision]',
+    '                             [--scope global|repo:<name>|project:<id>|subtree:<node>] [--path <glob>]…',
+    '                             [--enforcement tell|action|ship|review] [--critical]',
     '                             [--question "…"] [--criteria-true "…" --criteria-false "…"]',
-    '                             [--pattern no_push|no_push_protected|path_deny|command_deny [--pattern-arg …]…]',
-    '                             [--example "<action>::<true|false>"]…   (proposes it; at most 20 examples)',
-    '                             --enforcement pattern needs --pattern (path_deny args: globs; command_deny: tokens)',
-    '  rules edit <id> [--text …] [--question …] [--criteria-true … --criteria-false …]',
-    '                             [--enforcement …] [--stage action|diff|both] [--pattern <kind> [--pattern-arg …]…]',
+    '                             [--example "<action>::<true|false>"]…   (action/ship classifier check; at most 20)',
+    '                             [--pattern no_push|no_push_protected|path_deny|command_deny [--pattern-arg …]…]  (action only)',
+    '                             proposes it; accepting an action/ship classifier check needs two examples',
+    '  knowledge edit <id> [--text …] [--name …] [--kind …] [--scope …] [--path …]… [--enforcement …]',
+    '                             [--pattern …] [--question …] [--criteria-true … --criteria-false …]',
     '                             [--example "a::true" …]   (--example replaces the list)',
-    '  rules accept <id> [--by <who>]   accept a proposed rule (human-only, D4)',
-    '  rules retire <id> [--by <who>]   retire a rule (a status change; nothing is deleted)',
-    '  rules report [--days N]         per-rule fired/violated/routed counts and prune flags',
-    '  rules test [rule-id]            run accepted classifier rules\u2019 examples through the classifier',
-    '  rules seed --from PLAN-v1.md     import that plan\u2019s decisions as proposed rules',
+    '  knowledge accept <id> [--by <who>]   accept a proposed item (human-only, D4)',
+    '  knowledge retire <id> [--by <who>]   retire an item (a status change; nothing is deleted)',
+    '  knowledge report [--days N]     per-item fired/violated/routed counts and prune flags',
+    '  knowledge test [id]             run accepted classifier checks\u2019 examples through the classifier',
+    '  rules …                    alias of `knowledge` (--enforcement pattern|classifier|guidance [--stage …] still parse)',
     '  attach <stream> [--vendor v] [--model m] [--effort low|medium|high|max] [--role worker|reviewer]',
     '  resolve <stream> [--vendor v] [--model m] [--effort ...]   a worker that fixes the last land conflict',
     '  review <stream> [--vendor v] [--model m] [--effort ...]   read-only reviewer session',
@@ -296,18 +297,18 @@ export async function runCli(argv: string[], cwd: string = process.cwd()): Promi
         console.error(usage());
         return 1;
 
-      // T140: rules — the system's memory of decisions (cockpit design §5).
+      // T260: knowledge items (projects-design §5, §6); `rules` is the old name.
+      case 'knowledge':
       case 'rules': {
         const ruleArgs = parseArgs(restArgv);
-        if (sub === 'list') return await runRulesList(socketPath, ruleArgs, json);
-        if (sub === 'show') return await runRulesShow(socketPath, ruleArgs, json);
-        if (sub === 'add') return await runRulesAdd(socketPath, ruleArgs, json, restArgv);
-        if (sub === 'edit') return await runRulesEdit(socketPath, ruleArgs, json, restArgv);
-        if (sub === 'accept') return await runRulesAccept(socketPath, ruleArgs, json);
-        if (sub === 'retire') return await runRulesRetire(socketPath, ruleArgs, json);
-        if (sub === 'report') return await runRulesReport(socketPath, ruleArgs, json);
-        if (sub === 'test') return await runRulesTest(socketPath, ruleArgs, json);
-        if (sub === 'seed') return await runRulesSeed(socketPath, ruleArgs, json);
+        if (sub === 'list') return await runKnowledgeList(socketPath, ruleArgs, json);
+        if (sub === 'show') return await runKnowledgeShow(socketPath, ruleArgs, json);
+        if (sub === 'add') return await runKnowledgeAdd(socketPath, ruleArgs, json, restArgv);
+        if (sub === 'edit') return await runKnowledgeEdit(socketPath, ruleArgs, json, restArgv);
+        if (sub === 'accept') return await runKnowledgeAccept(socketPath, ruleArgs, json);
+        if (sub === 'retire') return await runKnowledgeRetire(socketPath, ruleArgs, json);
+        if (sub === 'report') return await runKnowledgeReport(socketPath, ruleArgs, json);
+        if (sub === 'test') return await runKnowledgeTest(socketPath, ruleArgs, json);
         console.error(usage());
         return 1;
       }

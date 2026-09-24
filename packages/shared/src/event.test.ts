@@ -66,6 +66,8 @@ describe('Event — cockpit design §7.4 log/events.jsonl', () => {
     'breaker_cleared',
     'rule_put',
     'rule_decided',
+    'knowledge_put',
+    'knowledge_decided',
     'hook_decision',
     'classifier_call',
     'repos_put',
@@ -82,7 +84,7 @@ describe('Event — cockpit design §7.4 log/events.jsonl', () => {
   });
 
   test('the enum holds exactly the kinds listed above — nothing orphaned', () => {
-    expect(EVENT_KINDS).toHaveLength(28);
+    expect(EVENT_KINDS).toHaveLength(30);
   });
 
   test('a stream event carries {stream} plus the status pair in data', () => {

@@ -15,18 +15,18 @@ import {
   type AgentRecord,
   type ClassifierConfig,
   type HilId,
-  type Rule,
-  type RuleInput,
+  type KnowledgeItem,
+  type KnowledgeItemInput,
   type Stream,
   ulid,
   validateClassifierConfig,
-  validateRule,
+  validateKnowledgeItem,
 } from '@agile-agents/shared';
 import { Bus } from '../bus';
 import { type Answer, ClassifierUnavailableError, FakeClassifier } from '../classifier';
 import { GateService } from '../gates';
 import { runInit } from '../init';
-import type { RuleStatsOutcome } from '../rules/service';
+import type { RuleStatsOutcome } from '../knowledge/service';
 import { StateStore } from '../store';
 import { StreamService } from '../streams/service';
 import { wireClassifierRouteStats } from './route-band';
@@ -48,7 +48,7 @@ interface StatCall {
   id: string;
   outcome: RuleStatsOutcome;
 }
-let ruleSet: Rule[];
+let ruleSet: KnowledgeItem[];
 let stats: StatCall[];
 const rulesDouble = {
   inScope: () => ruleSet,
@@ -77,22 +77,32 @@ afterEach(() => {
   rmSync(home, { recursive: true, force: true });
 });
 
-function classifierRule(over: Partial<RuleInput> = {}): Rule {
-  return validateRule({
-    id: `R-${ulid()}`,
+const EXAMPLES = [
+  { action: 'npm i left-pad', violates: true },
+  { action: 'bun test', violates: false },
+];
+
+function classifierRule(
+  over: Partial<KnowledgeItemInput> & { question?: string } = {},
+): KnowledgeItem {
+  const { question, ...rest } = over;
+  return validateKnowledgeItem({
+    id: `K-${ulid()}`,
+    kind: 'standard',
     text: 'do not add a dependency without asking',
     scope: { kind: 'global' },
     status: 'accepted',
-    enforcement: 'classifier',
+    enforcement: 'action',
+    check: {
+      by: 'classifier',
+      ...(question !== undefined ? { question } : {}),
+      examples: EXAMPLES,
+    },
     critical: false,
-    examples: [
-      { action: 'npm i left-pad', violates: true },
-      { action: 'bun test', violates: false },
-    ],
-    provenance: { by: 'human' },
+    source: { by: 'human' },
     stats: {},
     created_at: new Date().toISOString(),
-    ...over,
+    ...rest,
   });
 }
 

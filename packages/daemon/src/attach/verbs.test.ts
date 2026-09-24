@@ -12,8 +12,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { type AgentId, type Stream, type ThreadEntry, ulid } from '@agile-agents/shared';
 import { runInit } from '../init';
+import { KnowledgeService } from '../knowledge/service';
 import { QuestionService } from '../questions/service';
-import { RulesService } from '../rules/service';
 import { StateStore } from '../store';
 import { StreamService } from '../streams/service';
 import { UnknownSessionError, VerbService } from './verbs';
@@ -21,7 +21,7 @@ import { UnknownSessionError, VerbService } from './verbs';
 let home: string;
 let store: StateStore;
 let streams: StreamService;
-let rules: RulesService;
+let rules: KnowledgeService;
 let verbs: VerbService;
 
 beforeEach(() => {
@@ -29,7 +29,7 @@ beforeEach(() => {
   const init = runInit(home);
   store = StateStore.open(init.stateRoot);
   streams = new StreamService(store);
-  rules = new RulesService({ store, streams });
+  rules = new KnowledgeService({ store, streams });
   verbs = new VerbService({
     store,
     streams,
@@ -72,30 +72,26 @@ describe('propose_rule', () => {
     const [rule] = rules.listProposed();
     expect(rule?.status).toBe('proposed');
     expect(rule?.text).toBe('always run the integration suite before pushing');
-    expect(rule?.enforcement).toBe('guidance');
-    expect(rule?.provenance).toEqual({
-      stream: stream.id,
-      session,
-      by: `agent:${session}`,
-    });
+    expect(rule?.enforcement).toBe('tell');
+    expect(rule?.source).toEqual({ by: 'agent', node: stream.id, session });
     expect(rule?.decided_at).toBeUndefined();
     expect(rule?.decided_by).toBeUndefined();
     expect(entry.kind).toBe('proposal');
     expect(entry.by).toBe(`agent:${session}`);
-    expect(entry.ref).toBe(`rules/${rule?.id}.yaml`);
+    expect(entry.ref).toBe(`knowledge/${rule?.id}.yaml`);
   });
 
   test('a repo-less stream’s proposal is scoped to that stream, never global', async () => {
     const { session, stream } = await attach();
     await verbs.proposeRule({ session, text: 'x' });
-    expect(rules.listProposed()[0]?.scope).toEqual({ kind: 'stream', ref: stream.id });
+    expect(rules.listProposed()[0]?.scope).toEqual({ kind: 'subtree', node: stream.id });
   });
 
   test('a stream with a repo scopes the proposal to the repo (§5.1)', async () => {
     await store.addRepo('alpha', { path: join(home, 'alpha') });
     const { session } = await attach('alpha');
     await verbs.proposeRule({ session, text: 'x' });
-    expect(rules.listProposed()[0]?.scope).toEqual({ kind: 'repo', ref: 'alpha' });
+    expect(rules.listProposed()[0]?.scope).toEqual({ kind: 'repo', repo: 'alpha' });
   });
 
   test('the scope grammar: global, the bare words, and explicit refs', async () => {
@@ -107,16 +103,16 @@ describe('propose_rule', () => {
     await verbs.proposeRule({ session, text: 'd', scope: `stream:${stream.id}` });
     expect(rules.listProposed().map((r) => [r.text, r.scope])).toEqual([
       ['a', { kind: 'global' }],
-      ['b', { kind: 'repo', ref: 'alpha' }],
-      ['c', { kind: 'stream', ref: stream.id }],
-      ['d', { kind: 'stream', ref: stream.id }],
+      ['b', { kind: 'repo', repo: 'alpha' }],
+      ['c', { kind: 'subtree', node: stream.id }],
+      ['d', { kind: 'subtree', node: stream.id }],
     ]);
   });
 
   test('an unparseable scope is refused, and nothing is written', async () => {
     const { session } = await attach();
     await expect(verbs.proposeRule({ session, text: 'x', scope: 'everything' })).rejects.toThrow(
-      /invalid rule scope/,
+      /invalid knowledge scope/,
     );
     expect(rules.list()).toEqual([]);
   });
@@ -126,6 +122,47 @@ describe('propose_rule', () => {
     await expect(verbs.proposeRule({ session, text: 'x', scope: 'repo' })).rejects.toThrow(
       /needs a stream with a repo/,
     );
+  });
+
+  test('examples proposed with a tell item are kept visible in source.finding', async () => {
+    const { session } = await attach();
+    await verbs.proposeRule({
+      session,
+      text: 'say which dialect you picked',
+      enforcement: 'guidance',
+      examples: [
+        { action: 'reply without naming the dialect', violates: true },
+        { action: 'reply: using RFC 4180', violates: false },
+      ],
+    });
+    const [rule] = rules.listProposed();
+    expect(rule?.enforcement).toBe('tell');
+    expect(rule?.check).toBeUndefined();
+    expect(rule?.source.finding).toBe(
+      'proposed examples: violates: reply without naming the dialect | allowed: reply: using RFC 4180',
+    );
+  });
+
+  test('the old tiers map to enforcement: classifier is an action check with its examples', async () => {
+    const { session } = await attach();
+    await verbs.proposeRule({
+      session,
+      text: 'no new dependencies',
+      enforcement: 'classifier',
+      examples: [
+        { action: 'bun add lodash', violates: true },
+        { action: 'bun test', violates: false },
+      ],
+    });
+    const [rule] = rules.listProposed();
+    expect(rule?.enforcement).toBe('action');
+    expect(rule?.check).toEqual({
+      by: 'classifier',
+      examples: [
+        { action: 'bun add lodash', violates: true },
+        { action: 'bun test', violates: false },
+      ],
+    });
   });
 
   test('a session that is no longer attached cannot propose anything', async () => {

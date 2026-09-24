@@ -23,7 +23,7 @@
 import {
   type ClassifierBands,
   DEFAULT_PROTECTED_BRANCHES,
-  type Rule,
+  type KnowledgeItem,
   type SessionRole,
 } from '@agile-agents/shared';
 import {
@@ -349,10 +349,13 @@ export function decidePreToolUse(
 // caller runs it only when the tiers above allowed the call, and owns
 // every side effect.
 
-/** A rule judged by the classifier, not by a pattern (§5.2). */
-export function classifierRulesOf(rules: readonly Rule[] | undefined): Rule[] {
+/** An `action` item judged by the classifier, not by a pattern (§6). */
+export function classifierRulesOf(rules: readonly KnowledgeItem[] | undefined): KnowledgeItem[] {
   return (rules ?? []).filter(
-    (rule) => rule.enforcement === 'classifier' && rule.status === 'accepted',
+    (rule) =>
+      rule.enforcement === 'action' &&
+      rule.check?.by === 'classifier' &&
+      rule.status === 'accepted',
   );
 }
 
@@ -430,7 +433,7 @@ export interface ClassifierTierOutcome {
 
 export interface ClassifierTierInput {
   /** The accepted classifier rules in scope, in order. */
-  rules: readonly Rule[];
+  rules: readonly KnowledgeItem[];
   bands: ClassifierBands;
   classifier: Classifier;
   /** §6.2's state (`buildClassifierState`). */
@@ -463,8 +466,8 @@ export async function decideClassifierTier(
 
   const byId = new Map((answers ?? []).map((answer) => [answer.id, answer]));
   const unchecked: string[] = [];
-  let denied: { rule: Rule; reason: string } | undefined;
-  let routed: { rule: Rule; reason: string } | undefined;
+  let denied: { rule: KnowledgeItem; reason: string } | undefined;
+  let routed: { rule: KnowledgeItem; reason: string } | undefined;
 
   for (const rule of rules) {
     const answer = byId.get(rule.id);
@@ -509,6 +512,6 @@ export async function decideClassifierTier(
 }
 
 /** A rule as named in a reason: `name (id)`, or the id. */
-function ruleLabel(rule: Rule): string {
+function ruleLabel(rule: KnowledgeItem): string {
   return rule.name !== undefined ? `${rule.name} (${rule.id})` : rule.id;
 }

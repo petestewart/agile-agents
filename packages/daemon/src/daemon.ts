@@ -30,12 +30,12 @@ import {
 } from './hook';
 import { type HttpServerHandle, startHttpServer } from './http';
 import { InboxService, buildInboxRpcMethods } from './inbox';
+import { KnowledgeService, buildKnowledgeRpcMethods, ensureBuiltinKnowledge } from './knowledge';
 import { LessonsService } from './lessons';
 import { type LockHandle, acquireLock } from './lock';
 import { ProjectService, buildProjectRpcMethods } from './projects';
 import { QuestionService, buildQuestionRpcMethods, wireQuestionSupersession } from './questions';
 import { type RpcServerHandle, startRpcServer } from './rpc';
-import { RulesService, buildRuleRpcMethods, ensureBuiltinRules } from './rules';
 import { resolveCliBin } from './runner';
 import { StateStore, buildStateRpcMethods } from './store';
 import { migrateHome } from './store/migrate';
@@ -62,7 +62,7 @@ export interface DaemonHandle {
   gateService?: GateService;
   streamService?: StreamService;
   questionService?: QuestionService;
-  rulesService?: RulesService;
+  rulesService?: KnowledgeService;
   lessonsService?: LessonsService;
   inboxService?: InboxService;
   attachService?: AttachService;
@@ -133,7 +133,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
   const cliBin = resolveCliBin();
   // Rules (§5): read by every brief, the hook and landing.
   const rulesService =
-    store && streamService ? new RulesService({ store, streams: streamService }) : undefined;
+    store && streamService ? new KnowledgeService({ store, streams: streamService }) : undefined;
   // T240–T242: routed events, one service for every producer and the delivery.
   const routedEvents = store ? new RoutedEventService(store) : undefined;
   // T244: the producers' emit hook over that one service.
@@ -404,7 +404,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
             : {}),
           ...(projectService ? buildProjectRpcMethods(projectService) : {}),
           ...(inboxService ? buildInboxRpcMethods(inboxService) : {}),
-          ...(rulesService ? buildRuleRpcMethods(rulesService, ruleEvals) : {}),
+          ...(rulesService ? buildKnowledgeRpcMethods(rulesService, ruleEvals) : {}),
           ...(docsService ? buildDocsRpcMethods(docsService) : {}),
           ...(landingService ? buildDeliveryRpcMethods(landingService) : {}),
           ...buildHookRpcMethods(
@@ -469,7 +469,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
   // (a retired built-in stays retired).
   if (store) {
     try {
-      await ensureBuiltinRules(store);
+      await ensureBuiltinKnowledge(store);
     } catch (err) {
       // Not fatal: re-attempted on the next start.
       console.error('agiled: could not create the built-in rules:', err);

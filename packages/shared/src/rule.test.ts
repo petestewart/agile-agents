@@ -1,272 +1,123 @@
 /**
- * T140 — the `Rule` record (cockpit design §5.1) and the two pure checks
- * beside it: the principal split (**D4**) and the tier invariants (§5.2,
- * §5.6).
+ * T260 — §17.1 step 2: a legacy rule record becomes knowledge items, for
+ * every enforcement × stage combination (P6 splits classifier `both`).
  */
 import { describe, expect, test } from 'bun:test';
 import { ulid } from './ids';
 import {
-  CLASSIFIER_MIN_EXAMPLES,
-  RULE_EXAMPLES_MAX,
-  type Rule,
-  RuleCreateInputSchema,
-  type RuleInput,
-  RuleWriteError,
-  assertRuleAcceptable,
-  assertRuleWrite,
-  classifierQuestion,
-  formatRulePattern,
-  rulePatternArgs,
-  rulePatternFromArgs,
-  validateRule,
-  validateRuleProposal,
+  type KnowledgeEnforcement,
+  assertKnowledgeAcceptable,
+  validateKnowledgeItem,
+} from './knowledge';
+import {
+  LEGACY_RULE_ENFORCEMENTS,
+  LEGACY_RULE_STAGES,
+  type LegacyRuleInput,
+  legacyEnforcement,
+  migrateRuleRecord,
+  validateLegacyRule,
 } from './rule';
 
-function input(over: Partial<RuleInput> = {}): RuleInput {
-  return {
+const examples = [
+  { action: 'git push origin main', violates: true },
+  { action: 'git push origin T1-x', violates: false },
+];
+
+function legacy(over: Partial<LegacyRuleInput> = {}) {
+  return validateLegacyRule({
     id: `R-${ulid()}`,
     text: 'never push to a protected branch',
     scope: { kind: 'global' },
-    status: 'proposed',
+    status: 'accepted',
     enforcement: 'guidance',
     critical: false,
     provenance: { by: 'human' },
-    stats: {},
+    stats: { fired: 3, violated: 1, routed: 0 },
     created_at: '2026-09-22T00:00:00.000Z',
+    decided_at: '2026-09-22T01:00:00.000Z',
+    decided_by: 'pete',
     ...over,
-  };
+  });
 }
 
-function rule(over: Partial<RuleInput> = {}): Rule {
-  return validateRule(input(over));
-}
+const EXPECTED: Record<string, KnowledgeEnforcement[]> = {
+  'pattern/action': ['action'],
+  'pattern/diff': ['action'],
+  'pattern/both': ['action'],
+  'classifier/action': ['action'],
+  'classifier/diff': ['ship'],
+  'classifier/both': ['action', 'ship'],
+  'guidance/action': ['tell'],
+  'guidance/diff': ['tell'],
+  'guidance/both': ['tell'],
+};
 
-describe('Rule schema (§5.1)', () => {
-  test('accepts the minimal record and defaults stage/examples/stats', () => {
-    const parsed = rule();
-    expect(parsed.stage).toBe('action');
-    expect(parsed.examples).toEqual([]);
-    expect(parsed.stats).toEqual({ fired: 0, violated: 0, routed: 0 });
-  });
-
-  test('is strict — an unknown key is rejected', () => {
-    expect(() => validateRule({ ...input(), tier: 'pattern' })).toThrow(/invalid Rule/);
-  });
-
-  test('the id is R-<ulid>', () => {
-    expect(() => validateRule(input({ id: 'RULE-012' }))).toThrow(/must look like R-<ulid>/);
-  });
-
-  test.each(['repo', 'stream'] as const)('a %s-scoped rule must name its ref', (kind) => {
-    expect(() => validateRule(input({ scope: { kind } }))).toThrow(/must name its ref/);
-  });
-
-  test('a global rule may not carry a ref', () => {
-    expect(() => validateRule(input({ scope: { kind: 'global', ref: 'alpha' } }))).toThrow(
-      /global rule has no ref/,
-    );
-  });
-
-  test('a stream-scoped ref must be a ULID', () => {
-    const streamId = ulid();
-    expect(rule({ scope: { kind: 'stream', ref: streamId } }).scope.ref).toBe(streamId);
-  });
-
-  test('rejects an unknown status, enforcement, stage or pattern kind', () => {
-    expect(() => validateRule(input({ status: 'accepted_ish' as never }))).toThrow(/invalid Rule/);
-    expect(() => validateRule(input({ enforcement: 'vibes' as never }))).toThrow(/invalid Rule/);
-    expect(() => validateRule(input({ stage: 'commit' as never }))).toThrow(/invalid Rule/);
-    expect(() =>
-      validateRule(input({ enforcement: 'pattern', pattern: { kind: 'no_ff' as never } })),
-    ).toThrow(/invalid Rule/);
-  });
-
-  test('a pattern defaults its args to an empty object', () => {
-    const parsed = rule({ enforcement: 'pattern', pattern: { kind: 'no_push_protected' } });
-    expect(parsed.pattern).toEqual({ kind: 'no_push_protected', args: {} });
-  });
-
-  test('examples carry {action, violates}', () => {
-    const parsed = rule({
-      examples: [
-        { action: 'git push origin main', violates: true },
-        { action: 'git push origin T140-x', violates: false },
-      ],
-    });
-    expect(parsed.examples).toHaveLength(2);
-  });
-
-  test('caps the rule text at the body cap', () => {
-    expect(() => validateRule(input({ text: 'x'.repeat(801) }))).toThrow(/invalid Rule/);
-  });
-});
-
-describe('RuleProposal (what a caller may supply)', () => {
-  test('accepts text alone', () => {
-    expect(validateRuleProposal({ text: 'prefer zod over hand-rolled parsing' }).text).toBe(
-      'prefer zod over hand-rolled parsing',
-    );
-  });
-
-  test('refuses the daemon-owned fields', () => {
-    for (const forged of [{ status: 'accepted' }, { id: `R-${ulid()}` }, { decided_by: 'pete' }]) {
-      expect(() => validateRuleProposal({ text: 'x', ...forged })).toThrow(/invalid RuleProposal/);
+describe('migrateRuleRecord (§17.1 step 2, P6)', () => {
+  for (const enforcement of LEGACY_RULE_ENFORCEMENTS) {
+    for (const stage of LEGACY_RULE_STAGES) {
+      test(`${enforcement} at ${stage}`, () => {
+        const rule = legacy({
+          enforcement,
+          stage,
+          ...(enforcement === 'pattern' ? { pattern: { kind: 'no_push_protected' } } : {}),
+          ...(enforcement === 'classifier' ? { examples, question: 'Pushes to main?' } : {}),
+        });
+        const shipId = `K-${ulid()}`;
+        const items = migrateRuleRecord(rule, shipId).map((raw) =>
+          assertKnowledgeAcceptable(validateKnowledgeItem(raw)),
+        );
+        expect(items.map((i) => i.enforcement)).toEqual(EXPECTED[`${enforcement}/${stage}`] ?? []);
+        const [first, second] = items;
+        expect(first?.id).toBe(`K-${rule.id.slice(2)}`);
+        expect(first?.kind).toBe('standard');
+        expect(first?.status).toBe('accepted');
+        expect(first?.decided_by).toBe('pete');
+        expect(first?.stats.fired).toBe(3);
+        if (enforcement === 'pattern') expect(first?.check?.by).toBe('pattern');
+        if (enforcement === 'classifier') {
+          expect(first?.check).toEqual({ by: 'classifier', question: 'Pushes to main?', examples });
+        }
+        if (enforcement === 'guidance') expect(first?.check).toBeUndefined();
+        if (second !== undefined) {
+          expect(second.id).toBe(shipId);
+          expect(second.check).toEqual(first?.check);
+          expect(second.stats.fired).toBe(0);
+          expect(second.source.finding).toContain(rule.id);
+        }
+      });
     }
-  });
-});
+  }
 
-describe('classifierQuestion (§5.1 default)', () => {
-  test('defaults to "Does this action violate: <text>?"', () => {
-    expect(classifierQuestion({ text: 'no new deps' })).toBe(
-      'Does this action violate: no new deps?',
-    );
-  });
-
-  test('keeps an explicit question', () => {
-    expect(classifierQuestion({ text: 'no new deps', question: 'Adds a dependency?' })).toBe(
-      'Adds a dependency?',
-    );
-  });
-});
-
-describe('assertRuleWrite — the principal split (§5.1, D4)', () => {
-  test('an agent may create a proposed rule', () => {
-    const proposed = rule({ provenance: { by: `agent:${ulid()}` } });
-    expect(assertRuleWrite('agent', undefined, proposed)).toBe(proposed);
-  });
-
-  test('an agent creating an accepted rule is rejected', () => {
-    expect(() => assertRuleWrite('agent', undefined, rule({ status: 'accepted' }))).toThrow(
-      RuleWriteError,
-    );
-  });
-
-  test('an agent setting status: accepted on an existing rule is rejected', () => {
-    const before = rule();
-    const after = { ...before, status: 'accepted' as const };
-    expect(() => assertRuleWrite('agent', before, after)).toThrow(/may not change status/);
-  });
-
-  test.each(['decided_at', 'decided_by'] as const)('an agent setting %s is rejected', (field) => {
-    const before = rule();
-    const after = { ...before, [field]: '2026-09-22T00:00:00.000Z' };
-    expect(() => assertRuleWrite('agent', before, after)).toThrow(RuleWriteError);
-  });
-
-  test('an agent may still edit its own proposal text', () => {
-    const before = rule();
-    const after = { ...before, text: 'reworded' };
-    expect(assertRuleWrite('agent', before, after).text).toBe('reworded');
-  });
-
-  test.each(['human', 'daemon'] as const)('%s may accept a rule', (principal) => {
-    const before = rule();
-    const after = {
-      ...before,
-      status: 'accepted' as const,
-      decided_at: '2026-09-22T00:00:00.000Z',
-      decided_by: 'pete',
-    };
-    expect(assertRuleWrite(principal, before, after).status).toBe('accepted');
-  });
-
-  test('no principal may change the id', () => {
-    const before = rule();
-    expect(() => assertRuleWrite('human', before, { ...before, id: `R-${ulid()}` })).toThrow(
-      /may not change to/,
-    );
-  });
-});
-
-describe('assertRuleAcceptable — the tier invariants (§5.2, §5.6)', () => {
-  test('a pattern rule without a pattern is refused', () => {
-    expect(() => assertRuleAcceptable(rule({ enforcement: 'pattern' }))).toThrow(
-      /must carry a pattern/,
-    );
-  });
-
-  test('an accepted classifier rule needs two examples', () => {
-    const one = rule({
-      enforcement: 'classifier',
-      status: 'accepted',
-      examples: [{ action: 'add a dependency', violates: true }],
-    });
-    expect(() => assertRuleAcceptable(one)).toThrow(/at least 2 examples/);
-    expect(CLASSIFIER_MIN_EXAMPLES).toBe(2);
-  });
-
-  test('a proposed classifier rule with one example is fine', () => {
-    const one = rule({
-      enforcement: 'classifier',
-      examples: [{ action: 'add a dependency', violates: true }],
-    });
-    expect(assertRuleAcceptable(one)).toBe(one);
-  });
-
-  test('an accepted classifier rule with two examples passes', () => {
-    const ok = rule({
-      enforcement: 'classifier',
-      status: 'accepted',
-      examples: [
-        { action: 'add a dependency', violates: true },
-        { action: 'read a file', violates: false },
-      ],
-    });
-    expect(assertRuleAcceptable(ok)).toBe(ok);
-  });
-
-  test('a guidance rule never needs examples or a pattern', () => {
-    const ok = rule({ status: 'accepted' });
-    expect(assertRuleAcceptable(ok)).toBe(ok);
-  });
-});
-
-describe('T167: pattern helpers, the example cap, and pattern-without-pattern', () => {
-  test('rulePatternFromArgs builds each kind and formatRulePattern prints it', () => {
-    const deny = rulePatternFromArgs('command_deny', ['rm -rf', 'git reset --hard']);
-    expect(deny).toEqual({
-      kind: 'command_deny',
-      args: { patterns: ['rm -rf', 'git reset --hard'] },
-    });
-    expect(formatRulePattern(deny)).toBe('command_deny: "rm -rf", "git reset --hard"');
-    expect(rulePatternArgs(deny)).toEqual(['rm -rf', 'git reset --hard']);
-    expect(rulePatternFromArgs('path_deny', ['secrets/**', ' '])).toEqual({
-      kind: 'path_deny',
-      args: { globs: ['secrets/**'] },
-    });
-    expect(formatRulePattern(rulePatternFromArgs('no_push'))).toBe('no_push');
-    expect(() => rulePatternFromArgs('no_push_protected', ['main'])).toThrow('takes no arguments');
-    expect(() => rulePatternFromArgs('nope')).toThrow('invalid pattern kind');
-  });
-
-  test(`a rule carries at most ${RULE_EXAMPLES_MAX} examples`, () => {
-    const examples = (n: number) =>
-      Array.from({ length: n }, (_, i) => ({ action: `a${i}`, violates: i % 2 === 0 }));
-    expect(() =>
-      validateRuleProposal({ text: 'x', examples: examples(RULE_EXAMPLES_MAX) }),
-    ).not.toThrow();
-    expect(() =>
-      validateRuleProposal({ text: 'x', examples: examples(RULE_EXAMPLES_MAX + 1) }),
-    ).toThrow(`at most ${RULE_EXAMPLES_MAX} examples`);
-    expect(() => validateRule(input({ examples: examples(RULE_EXAMPLES_MAX + 1) }))).toThrow();
-  });
-
-  test('a pattern-tier proposal with no pattern is refused, with the kinds named', () => {
-    expect(() => validateRuleProposal({ text: 'x', enforcement: 'pattern' })).toThrow(
-      'a pattern rule needs a pattern',
-    );
-    expect(RuleCreateInputSchema.safeParse({ text: 'x', enforcement: 'pattern' }).success).toBe(
-      false,
-    );
+  test('scopes: stream becomes subtree; repo keeps its name', () => {
+    const node = ulid();
     expect(
-      RuleCreateInputSchema.safeParse({ text: 'x', provenance: { by: 'human' } }).success,
-    ).toBe(false);
+      migrateRuleRecord(legacy({ scope: { kind: 'stream', ref: node } }), '')[0]?.scope,
+    ).toEqual({
+      kind: 'subtree',
+      node,
+    });
     expect(
-      RuleCreateInputSchema.safeParse({
-        text: 'x',
-        enforcement: 'pattern',
-        pattern: { kind: 'no_push' },
-      }).success,
-    ).toBe(true);
+      migrateRuleRecord(legacy({ scope: { kind: 'repo', ref: 'api' } }), '')[0]?.scope,
+    ).toEqual({
+      kind: 'repo',
+      repo: 'api',
+    });
+  });
+
+  test('provenance becomes source', () => {
+    const node = ulid();
+    const source = (by: string) =>
+      migrateRuleRecord(legacy({ provenance: { by, stream: node, session: 's1' } }), '')[0]?.source;
+    expect(source('agent:s1')).toEqual({ by: 'agent', node, session: 's1' });
+    expect(source('builtin')?.by).toBe('builtin');
+    expect(source('human')?.by).toBe('human');
+    expect(source('seed:PLAN-v1')?.by).toBe('migration');
+  });
+
+  test('legacyEnforcement maps the old tier and stage', () => {
+    expect(legacyEnforcement('guidance')).toBe('tell');
+    expect(legacyEnforcement('classifier')).toBe('action');
+    expect(legacyEnforcement('classifier', 'diff')).toBe('ship');
+    expect(legacyEnforcement('pattern', 'diff')).toBe('action');
   });
 });

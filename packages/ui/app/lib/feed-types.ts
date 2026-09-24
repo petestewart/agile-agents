@@ -18,7 +18,7 @@ import type {
   Question,
   RoutedEvent,
   RoutingEntry,
-  Rule,
+  KnowledgeItem as Rule,
   Stream,
   ThreadEntry,
 } from '@agile-agents/shared';

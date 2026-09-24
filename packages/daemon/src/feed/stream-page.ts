@@ -5,10 +5,10 @@
  * own route: it runs git and is only wanted when its tab is open.
  */
 
-import type { Rule, Stream, ThreadEntry } from '@agile-agents/shared';
+import type { KnowledgeItem, Stream, ThreadEntry } from '@agile-agents/shared';
 import type { DeliveryService, LandPreflight } from '../delivery/service';
 import type { Doc, DocsService } from '../docs/service';
-import type { RulesService } from '../rules/service';
+import type { KnowledgeService } from '../knowledge/service';
 import type { StreamService } from '../streams/service';
 
 /** How much of the thread one read carries (the newest entries). */
@@ -23,7 +23,7 @@ export interface StreamPagePayload {
   /** Total entries; more than `thread.length` means older ones were left out. */
   thread_total: number;
   /** Exactly the rules in scope (§9.3: "why was I denied" is one click). */
-  rules: Rule[];
+  rules: KnowledgeItem[];
   /** In-scope rules Land checks against the whole diff (§8.2). */
   diff_rules: string[];
   /** Repo docs plus the stream docs of the stream and its ancestors. */
@@ -34,7 +34,7 @@ export interface StreamPagePayload {
 
 export interface StreamPageSources {
   streams: StreamService;
-  rules?: RulesService;
+  rules?: KnowledgeService;
   docs?: DocsService;
   landing?: DeliveryService;
 }
@@ -65,7 +65,7 @@ export function buildStreamPage(sources: StreamPageSources, id: string): StreamP
   }).entries;
 
   const rules = sources.rules?.inScope(id) ?? [];
-  const diffRules = sources.rules?.inScope(id, 'diff') ?? [];
+  const diffRules = sources.rules?.inScope(id, 'ship') ?? [];
 
   return {
     stream,

@@ -66,7 +66,7 @@ export * from './gates';
 export * from './projects';
 export * from './streams';
 
-export * from './rules';
+export * from './knowledge';
 
 export * from './questions';
 export * from './inbox';

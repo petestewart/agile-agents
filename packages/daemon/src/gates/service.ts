@@ -25,9 +25,9 @@ import {
   type HilId,
   type HilKind,
   type HilRequest,
+  type KnowledgeId,
   MESSAGE_BODY_MAX_CHARS,
   type Policy,
-  type RuleId,
   ulid,
   validateAgentMessage,
   validateBreakerState,
@@ -114,7 +114,7 @@ export interface GateRequestContext {
   call?: GateCall;
   session?: AgentId;
   /** The classifier rule whose band routed this call, so the answer is attributed back (§6.3). */
-  rule?: RuleId;
+  rule?: KnowledgeId;
 }
 
 /**

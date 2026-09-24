@@ -10,12 +10,12 @@
  * `onStreamEnd` never throws: a retro that can't start is a thread line.
  */
 
-import type { Question, Rule, Stream } from '@agile-agents/shared';
+import type { KnowledgeItem, Question, Stream } from '@agile-agents/shared';
 import { MESSAGE_BODY_MAX_CHARS } from '@agile-agents/shared';
 import type { AttachOptions, AttachResult } from '../attach/service';
 import { liveSession } from '../attach/service';
 import type { VerbCaller } from '../attach/verbs';
-import type { RulesService } from '../rules/service';
+import type { KnowledgeService } from '../knowledge/service';
 import type { StateStore } from '../store';
 import type { StreamService } from '../streams/service';
 
@@ -49,7 +49,7 @@ export interface LessonsServiceOptions {
   store: StateStore;
   streams: StreamService;
   attach: LessonsAttachSource;
-  rules: RulesService;
+  rules: KnowledgeService;
   questions?: LessonsQuestionsSource;
 }
 
@@ -199,8 +199,8 @@ export class LessonsService {
   }
 
   /** Rules this session has proposed (by provenance). */
-  proposedBy(session: string): Rule[] {
-    return this.options.rules.list().filter((rule) => rule.provenance.session === session);
+  proposedBy(session: string): KnowledgeItem[] {
+    return this.options.rules.list().filter((rule) => rule.source.session === session);
   }
 
   /** §5.5's cap for a lessons session; other roles propose uncapped. */

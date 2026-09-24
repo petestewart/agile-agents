@@ -22,12 +22,12 @@ import {
   type AgentMessage,
   type AgentRecord,
   type ClassifierConfig,
+  type KnowledgeId,
+  type KnowledgeItem,
   MESSAGE_BODY_MAX_CHARS,
   type Policy,
   type RepoEntry,
   type ReposConfig,
-  type Rule,
-  type RuleId,
   type SessionRole,
   type Stream,
   THREAD_BODY_MAX_CHARS,
@@ -35,10 +35,10 @@ import {
 } from '@agile-agents/shared';
 import type { Bus } from '../bus';
 import { type Classifier, ClassifierUnavailableError, classifierEnabled } from '../classifier';
+import type { RuleStatsOutcome } from '../knowledge/service';
 import { isPathInside } from '../permissions/command';
 import { worktreeBranchLookups } from '../permissions/push-detector';
 import { patternRulesOf, protectedBranchesFor } from '../permissions/rule-checks';
-import type { RuleStatsOutcome } from '../rules/service';
 import { NotFoundError, type StateStore, buildEvent } from '../store';
 import {
   type ClassifierTierOutcome,
@@ -145,10 +145,10 @@ export interface HookServiceOptions {
   now?: () => Date;
 }
 
-/** The slice of `RulesService` the hook needs. */
+/** The slice of `KnowledgeService` the hook needs. */
 export interface HookRules {
   /** §5.3's one scope filter, for this session's stream. */
-  inScope(streamId: string): Rule[];
+  inScope(streamId: string): KnowledgeItem[];
   /** §5.7's counters, bumped for every rule the decision evaluated. */
   recordFired(id: string, outcome: RuleStatsOutcome): Promise<unknown>;
 }
@@ -376,7 +376,7 @@ export class HookService {
     return { readRoots, hiddenRoots };
   }
 
-  private patternRulesFor(stream: string): Rule[] {
+  private patternRulesFor(stream: string): KnowledgeItem[] {
     return patternRulesOf(this.rulesInScope(stream));
   }
 
@@ -599,7 +599,7 @@ export class HookService {
         ctx,
         payload,
         outcome.reason ?? 'a classifier rule needs a human',
-        outcome.rule as RuleId | undefined,
+        outcome.rule as KnowledgeId | undefined,
       );
       return {
         decision: {
@@ -721,7 +721,7 @@ export class HookService {
   }
 
   /** Every rule in scope for this stream, or none when no rules service is wired. */
-  private rulesInScope(stream: string): Rule[] {
+  private rulesInScope(stream: string): KnowledgeItem[] {
     const rules = this.options.rules;
     if (rules === undefined) return [];
     try {
@@ -760,7 +760,7 @@ export class HookService {
     ctx: HookDecisionContext,
     payload: ClaudePreToolUsePayload,
     why: string,
-    rule?: RuleId,
+    rule?: KnowledgeId,
   ): Promise<{ decision: HookDecision; allowedBy?: string }> {
     const gates = this.options.gates;
     const call = fingerprintCall(payload, ctx.worktreePath);

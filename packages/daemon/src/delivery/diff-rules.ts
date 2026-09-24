@@ -7,7 +7,7 @@
  * hookless vendor gets.
  *
  * Shared with the hook rather than re-derived: the bands (`bandFor`), the
- * scope filter (`RulesService.inScope`) and the fail-closed scrub (§6.5).
+ * scope filter (`KnowledgeService.inScope`) and the fail-closed scrub (§6.5).
  *
  * A route's gate is keyed on a digest of the stream, target and diff, so
  * pressing Land again reuses the answer, and a changed diff is a new
@@ -21,22 +21,23 @@ import type {
   GateKind,
   HilId,
   HilRequest,
+  KnowledgeEnforcement,
+  KnowledgeId,
+  KnowledgeItem,
   Policy,
   RepoEntry,
-  Rule,
-  RuleId,
   Stream,
 } from '@agile-agents/shared';
 import { MESSAGE_BODY_MAX_CHARS } from '@agile-agents/shared';
 import type { Answer, Classifier, Noul } from '../classifier';
 import { bandFor, classifierEnabled, noulFor, scrub } from '../classifier';
 import type { GateRequestContext } from '../gates/service';
-import type { RuleStatsOutcome } from '../rules/service';
+import type { RuleStatsOutcome } from '../knowledge/service';
 import type { DiffRuleContext, DiffRuleVerdict, DiffRules } from './service';
 
-/** The slice of `RulesService` this tier needs. */
+/** The slice of `KnowledgeService` this tier needs. */
 export interface DiffRuleRules {
-  inScope(streamId: string, stage?: 'action' | 'diff' | 'both'): Rule[];
+  inScope(streamId: string, enforcement?: KnowledgeEnforcement): KnowledgeItem[];
   recordFired(id: string, outcome: RuleStatsOutcome): Promise<void>;
 }
 
@@ -90,7 +91,7 @@ export function truncateTo(state: string, budget: number): string {
 }
 
 /** `R-…` is unreadable on an inbox card; a built-in's `name` is not. */
-function nameOf(rule: Rule): string {
+function nameOf(rule: KnowledgeItem): string {
   return rule.name ?? rule.id;
 }
 
@@ -132,8 +133,8 @@ export class ClassifierDiffRules implements DiffRules {
 
   async check(ctx: DiffRuleContext): Promise<DiffRuleVerdict> {
     const rules = this.options.rules
-      .inScope(ctx.stream.id, 'diff')
-      .filter((rule) => rule.enforcement === 'classifier');
+      .inScope(ctx.stream.id, 'ship')
+      .filter((rule) => rule.check?.by === 'classifier');
     if (rules.length === 0) return { decision: 'allow' };
 
     const diff = ctx.diff();
@@ -151,7 +152,7 @@ export class ClassifierDiffRules implements DiffRules {
     }
 
     // Deny wins over route wins over allow; the first denying rule is named.
-    let routed: { rule: Rule; answer: Answer } | undefined;
+    let routed: { rule: KnowledgeItem; answer: Answer } | undefined;
     let verdict: DiffRuleVerdict = { decision: 'allow' };
     for (const rule of rules) {
       const answer = answers.get(rule.id);
@@ -194,7 +195,7 @@ export class ClassifierDiffRules implements DiffRules {
    */
   private async ask(
     ctx: DiffRuleContext,
-    rules: Rule[],
+    rules: KnowledgeItem[],
     diff: string,
   ): Promise<Map<string, Answer>> {
     if (!this.enabled(ctx.stream)) {
@@ -238,7 +239,7 @@ export class ClassifierDiffRules implements DiffRules {
    */
   private async failPolicy(
     stream: Stream,
-    rules: Rule[],
+    rules: KnowledgeItem[],
     error: unknown,
   ): Promise<DiffRuleVerdict> {
     const why = error instanceof Error ? error.message : String(error);
@@ -253,13 +254,13 @@ export class ClassifierDiffRules implements DiffRules {
     const named = critical.map(nameOf).join(', ');
     return {
       decision: 'deny',
-      rule: nameOf(critical[0] as Rule),
+      rule: nameOf(critical[0] as KnowledgeItem),
       reason: cap(`classifier unavailable (${why}); critical diff rules deny: ${named}`),
     };
   }
 
   /** §6.4's visible mark. Stats are the caller's: a critical rule that goes on to deny is `violated`. */
-  private async noteUnchecked(stream: Stream, rules: Rule[], why: string): Promise<void> {
+  private async noteUnchecked(stream: Stream, rules: KnowledgeItem[], why: string): Promise<void> {
     await this.options.streams.appendThread('daemon', stream.id, {
       kind: 'event',
       body: cap(`hook_unchecked: diff rules ${rules.map(nameOf).join(', ')} not checked — ${why}`),
@@ -318,7 +319,7 @@ export class ClassifierDiffRules implements DiffRules {
   private async route(
     ctx: DiffRuleContext,
     call: GateCall,
-    rule: Rule,
+    rule: KnowledgeItem,
     answer: Answer,
   ): Promise<DiffRuleVerdict> {
     const summary = cap(`${nameOf(rule)}: ${rule.text} (probability ${answer.probability})`);
@@ -333,7 +334,7 @@ export class ClassifierDiffRules implements DiffRules {
       call,
       summary,
       // The routing rule, so the human's deny counts as its violation.
-      rule: rule.id as RuleId,
+      rule: rule.id as KnowledgeId,
     });
     return {
       decision: 'route',

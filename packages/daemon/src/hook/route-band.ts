@@ -16,12 +16,12 @@ import type {
   GateKind,
   HilId,
   HilRequest,
+  KnowledgeId,
   Policy,
-  RuleId,
 } from '@agile-agents/shared';
 import { MESSAGE_BODY_MAX_CHARS } from '@agile-agents/shared';
 import type { GateRequestContext, GateService } from '../gates/service';
-import type { RuleStatsOutcome } from '../rules/service';
+import type { RuleStatsOutcome } from '../knowledge/service';
 import type { HookDecision } from './types';
 
 /** The slice of `GateService` the route band needs. */
@@ -41,7 +41,7 @@ export interface RouteBandContext {
   /** Why the call was routed. */
   reason: string;
   /** The classifier rule whose band routed this call (§6.3), if any. */
-  rule?: RuleId;
+  rule?: KnowledgeId;
 }
 
 /** A routed verdict and the gate it is attributable to. */
@@ -162,7 +162,7 @@ export function wireGateDecisionDelivery(gates: GateService, attach: GateDecisio
   };
 }
 
-/** The write side of `RulesService` the routed-answer statistic needs. */
+/** The write side of `KnowledgeService` the routed-answer statistic needs. */
 export interface RouteStatsRules {
   recordFired(id: string, outcome: RuleStatsOutcome): Promise<unknown>;
 }

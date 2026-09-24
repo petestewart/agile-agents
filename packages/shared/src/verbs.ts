@@ -21,8 +21,9 @@
 
 import { z } from 'zod';
 import { UlidSchema, formatZodError } from './ids';
+import { RuleExampleSchema } from './knowledge';
 import { RoutedEventIdSchema } from './routed-event';
-import { RuleEnforcementSchema, RuleExampleSchema } from './rule';
+import { LegacyRuleEnforcementSchema } from './rule';
 import { StreamFindingSeveritySchema, THREAD_BODY_MAX_CHARS } from './stream';
 
 /** Free text an agent writes into the thread — capped like every thread body. */
@@ -63,7 +64,7 @@ export const ProposeRuleInputSchema = z
     text: Body,
     scope: z.string().min(1).optional(),
     examples: z.array(RuleExampleSchema).max(8).optional(),
-    enforcement: RuleEnforcementSchema.optional(),
+    enforcement: LegacyRuleEnforcementSchema.optional(),
     critical: z.boolean().optional(),
   })
   .strict();

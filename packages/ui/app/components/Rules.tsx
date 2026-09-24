@@ -15,21 +15,24 @@
  *    its kind and arguments and has Cancel (and Esc), which discards; "New
  *    rule" creates any rule as a proposal (`POST /api/rules`).
  *
- * Every write reaches the same `RulesService` the CLI's `agile rules` does.
+ * Every write reaches the same `KnowledgeService` the CLI's `agile rules` does.
  */
 
 import {
-  RULE_ENFORCEMENTS,
+  KNOWLEDGE_ENFORCEMENTS,
+  KNOWLEDGE_KINDS,
+  type KnowledgeEnforcement,
+  type KnowledgeKind,
   RULE_EXAMPLES_MAX,
   RULE_PATTERN_KINDS,
-  RULE_STAGES,
-  type Rule,
-  type RuleEnforcement,
+  type KnowledgeItem as Rule,
   type RulePatternKind,
-  type RuleStage,
-  type RuleStatus,
+  type KnowledgeStatus as RuleStatus,
+  classifierCheckOf,
+  examplesOf,
   formatRulePattern,
-  formatRuleScope,
+  formatKnowledgeScope as formatRuleScope,
+  patternOf,
 } from '@agile-agents/shared';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { createRule, decideRule, getRules, testRule, updateRule } from '../lib/api';
@@ -341,7 +344,7 @@ function RuleCard({
     setError(undefined);
     setReport(undefined);
     try {
-      setReport(await testRule(rule.id, evalDeadlineMs(rule.examples.length, evals.timeout_ms)));
+      setReport(await testRule(rule.id, evalDeadlineMs(examplesOf(rule).length, evals.timeout_ms)));
     } catch (err) {
       setError(message(err));
     } finally {
@@ -349,7 +352,9 @@ function RuleCard({
     }
   }
 
-  const testable = rule.enforcement === 'classifier' && rule.status === 'accepted';
+  const classifier = classifierCheckOf(rule);
+  const pattern = patternOf(rule);
+  const testable = classifier !== undefined && rule.status === 'accepted';
 
   return (
     <article
@@ -370,26 +375,32 @@ function RuleCard({
         <span data-testid="rules-scope">{formatRuleScope(rule.scope)}</span>
         <span data-testid="rules-tier">
           {rule.enforcement}
+          {rule.check !== undefined ? ` · ${rule.check.by}` : ''}
           {rule.critical ? ' · critical' : ''}
         </span>
-        <span>{rule.stage}</span>
+        <span data-testid="rules-kind">{rule.kind}</span>
         <span data-testid="rules-status">{rule.status}</span>
-        <span>from {rule.provenance.by}</span>
+        <span>from {rule.source.by}</span>
       </div>
       <Markdown className="context" text={rule.text} />
-      {rule.pattern !== undefined && (
+      {rule.source.finding !== undefined && (
+        <p className="cr-dim" data-testid="rules-finding">
+          {rule.source.finding}
+        </p>
+      )}
+      {pattern !== undefined && (
         <p className="cr-dim" data-testid="rules-pattern">
-          <code>{formatRulePattern(rule.pattern)}</code>
+          <code>{formatRulePattern(pattern)}</code>
         </p>
       )}
-      {rule.question !== undefined && (
+      {classifier?.question !== undefined && (
         <p className="cr-dim" data-testid="rules-question">
-          Q: {rule.question}
+          Q: {classifier.question}
         </p>
       )}
-      {rule.criteria !== undefined && (
+      {classifier?.criteria !== undefined && (
         <p className="cr-dim" data-testid="rules-criteria">
-          yes = {rule.criteria.true} · no = {rule.criteria.false}
+          yes = {classifier.criteria.true} · no = {classifier.criteria.false}
         </p>
       )}
       <div className="cr-dim cr-rule-stats" data-testid="rules-stats">
@@ -441,7 +452,7 @@ function RuleCard({
         >
           {editing ? 'Close editor' : 'Edit'}
         </button>
-        {rule.enforcement === 'classifier' && (
+        {classifier !== undefined && (
           <button
             type="button"
             className="cr-btn"
@@ -452,7 +463,7 @@ function RuleCard({
                 ? 'No classifier key loaded: set one in Settings (or TYPESAFE_API_KEY)'
                 : !testable
                   ? 'Only accepted classifier rules are evaluated'
-                  : `One classifier call per example (${rule.examples.length})`
+                  : `One classifier call per example (${classifier.examples.length})`
             }
             onClick={runTest}
           >
@@ -601,9 +612,9 @@ function RuleEditor({
           <select
             data-testid="rules-edit-enforcement"
             value={draft.enforcement}
-            onChange={(e) => set({ enforcement: e.target.value as RuleEnforcement })}
+            onChange={(e) => set({ enforcement: e.target.value as KnowledgeEnforcement })}
           >
-            {RULE_ENFORCEMENTS.map((value) => (
+            {KNOWLEDGE_ENFORCEMENTS.map((value) => (
               <option key={value} value={value}>
                 {value}
               </option>
@@ -611,13 +622,13 @@ function RuleEditor({
           </select>
         </label>
         <label>
-          Stage{' '}
+          Kind{' '}
           <select
-            data-testid="rules-edit-stage"
-            value={draft.stage}
-            onChange={(e) => set({ stage: e.target.value as RuleStage })}
+            data-testid="rules-edit-kind"
+            value={draft.kind}
+            onChange={(e) => set({ kind: e.target.value as KnowledgeKind })}
           >
-            {RULE_STAGES.map((value) => (
+            {KNOWLEDGE_KINDS.map((value) => (
               <option key={value} value={value}>
                 {value}
               </option>

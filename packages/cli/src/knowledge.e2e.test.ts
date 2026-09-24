@@ -1,7 +1,7 @@
 /**
- * T140 acceptance, end to end: `agile rules add|list|show|accept|retire|
- * seed` against a real in-process daemon over a real unix socket on a temp
- * `AGILE_HOME`. No vendor, no network.
+ * T140/T260 acceptance, end to end: `agile knowledge …` and its `agile
+ * rules …` alias against a real in-process daemon over a real unix socket
+ * on a temp `AGILE_HOME`. No vendor, no network.
  *
  * The principal split (**D4**) is the point of the accept path: the CLI is
  * the human's edge, so `rules accept` works here — and nothing on this
@@ -11,7 +11,13 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { existsSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import type { InboxItem, Rule } from '@agile-agents/shared';
+import { ProjectService } from '@agile-agents/daemon';
+import {
+  type InboxItem,
+  type KnowledgeItem as Rule,
+  examplesOf,
+  patternOf,
+} from '@agile-agents/shared';
 import { callRpc } from './client';
 import { runCli } from './index';
 import { type TestDaemon, startTestDaemon } from './test-support';
@@ -44,19 +50,93 @@ afterEach(async () => {
   await daemon.cleanup();
 });
 
-describe('agile rules against a daemon on a temp AGILE_HOME', () => {
+describe('agile knowledge: the Phase 10 walkthrough syntax (T267)', () => {
+  test('add --name --kind --scope repo:<name> --text --enforcement ship --example … --json, then accept', async () => {
+    await daemon.store.addRepo('ledger-lite', { path: daemon.repo });
+    const added = await cli([
+      'knowledge',
+      'add',
+      '--name',
+      'tests-with-changes',
+      '--kind',
+      'standard',
+      '--scope',
+      'repo:ledger-lite',
+      '--text',
+      'Every change to a file under src/ comes with a test that exercises it',
+      '--enforcement',
+      'ship',
+      '--example',
+      'diff changes src/ledger.ts and adds no test::true',
+      '--example',
+      'diff changes src/ledger.ts and test/ledger.test.ts::false',
+      '--json',
+    ]);
+    expect(added.code).toBe(0);
+    const item = JSON.parse(added.out) as Rule;
+    expect(item.id).toMatch(/^K-/);
+    expect(item).toMatchObject({
+      name: 'tests-with-changes',
+      kind: 'standard',
+      scope: { kind: 'repo', repo: 'ledger-lite' },
+      enforcement: 'ship',
+      status: 'proposed',
+      check: {
+        by: 'classifier',
+        examples: [
+          { action: 'diff changes src/ledger.ts and adds no test', violates: true },
+          { action: 'diff changes src/ledger.ts and test/ledger.test.ts', violates: false },
+        ],
+      },
+    });
+    const accepted = await cli(['knowledge', 'accept', item.id]);
+    expect(accepted.code).toBe(0);
+    expect(daemon.rulesService.get(item.id).status).toBe('accepted');
+    const listed = await cli(['knowledge', 'list']);
+    expect(listed.out).toContain('tests-with-changes');
+    expect(listed.out).toContain('ship:classifier');
+  });
+
+  test('a project-scoped tell decision needs no examples', async () => {
+    const project = await new ProjectService(daemon.store, daemon.streamService).create({
+      name: 'Shop',
+    });
+    const added = await cli([
+      'knowledge',
+      'add',
+      '--name',
+      'totals-in-cents',
+      '--kind',
+      'decision',
+      '--scope',
+      `project:${project.id}`,
+      '--text',
+      'Totals are printed in integer cents',
+      '--enforcement',
+      'tell',
+      '--json',
+    ]);
+    expect(added.code).toBe(0);
+    const item = JSON.parse(added.out) as Rule;
+    expect(item.check).toBeUndefined();
+    expect((await cli(['knowledge', 'accept', item.id])).code).toBe(0);
+  });
+});
+
+describe('agile rules (the alias) against a daemon on a temp AGILE_HOME', () => {
   test('add/list/show/accept/retire round-trips and writes the home file', async () => {
     const rule = await add('prefer the repo scripts over a second toolchain');
     expect(rule.status).toBe('proposed');
-    expect(existsSync(join(daemon.home, 'rules', `${rule.id}.yaml`))).toBe(true);
+    expect(existsSync(join(daemon.home, 'knowledge', `${rule.id}.yaml`))).toBe(true);
 
     const listed = await cli(['rules', 'list']);
     const lines = listed.out.split('\n');
     expect(lines[0]?.trimEnd().split(/\s{2,}/)).toEqual([
       'id',
       'name',
+      'kind',
       'status',
-      'tier',
+      'enforcement',
       'scope',
       'text',
     ]);
@@ -66,8 +146,8 @@ describe('agile rules against a daemon on a temp AGILE_HOME', () => {
 
     const shown = await cli(['rules', 'show', rule.id]);
     expect(shown.out).toContain('prefer the repo scripts over a second toolchain');
-    expect(shown.out).toContain('enforcement  guidance');
-    // T145: only a built-in has a name; a rule a human wrote prints `-`.
+    expect(shown.out).toContain('enforcement  tell');
+    // An item added without --name prints `-`.
     expect(shown.out).toContain('name         -');
 
     const accepted = await cli(['rules', 'accept', rule.id, '--by', 'pete']);
@@ -78,7 +158,7 @@ describe('agile rules against a daemon on a temp AGILE_HOME', () => {
     const retired = await cli(['rules', 'retire', rule.id]);
     expect(retired.out).toContain('is retired');
     // Retiring is a status change; nothing is deleted (§5.7).
-    expect(existsSync(join(daemon.home, 'rules', `${rule.id}.yaml`))).toBe(true);
+    expect(existsSync(join(daemon.home, 'knowledge', `${rule.id}.yaml`))).toBe(true);
   });
 
   test('--status and --scope filter the list', async () => {
@@ -89,11 +169,11 @@ describe('agile rules against a daemon on a temp AGILE_HOME', () => {
     await cli(['rules', 'accept', global.id]);
 
     const proposed = await cli(['rules', 'list', '--status', 'proposed', '--json']);
-    expect((JSON.parse(proposed.out) as { rules: Rule[] }).rules.map((r) => r.id)).toEqual([
+    expect((JSON.parse(proposed.out) as { items: Rule[] }).items.map((r) => r.id)).toEqual([
       scoped.id,
     ]);
     const byScope = await cli(['rules', 'list', '--scope', `stream:${s.id}`, '--json']);
-    expect((JSON.parse(byScope.out) as { rules: Rule[] }).rules.map((r) => r.id)).toEqual([
+    expect((JSON.parse(byScope.out) as { items: Rule[] }).items.map((r) => r.id)).toEqual([
       scoped.id,
     ]);
   });
@@ -107,7 +187,7 @@ describe('agile rules against a daemon on a temp AGILE_HOME', () => {
       'bun add lodash::true',
     ]);
     expect(thin.critical).toBe(true);
-    expect(thin.examples).toEqual([{ action: 'bun add lodash', violates: true }]);
+    expect(examplesOf(thin)).toEqual([{ action: 'bun add lodash', violates: true }]);
 
     const errors: string[] = [];
     const originalError = console.error;
@@ -130,41 +210,6 @@ describe('agile rules against a daemon on a temp AGILE_HOME', () => {
     expect(
       (JSON.parse((await cli(['inbox', '--json'])).out) as { items: InboxItem[] }).items,
     ).toEqual([]);
-  });
-
-  test('seed imports a PLAN-v1 §9 decision log once, and is idempotent', async () => {
-    const plan = join(daemon.repo, 'PLAN-v1.md');
-    writeFileSync(
-      plan,
-      [
-        '## 9. Discovered Issues Log',
-        '',
-        '- 2026-09-08 — T002 FAIL. Decision: all shared schemas are `.strict()` so the store rejects unknown keys.',
-        '- 2026-09-09 — T005 merged. Decisions (manager, yolo): (1) every store mutation emits exactly one events.jsonl line; (2) hooks enforce and prompts express intent.',
-        '',
-      ].join('\n'),
-    );
-
-    const first = await cli(['rules', 'seed', '--from', plan, '--json']);
-    expect(first.code).toBe(0);
-    const firstResult = JSON.parse(first.out) as { created: string[]; skipped: number };
-    expect(firstResult.created).toHaveLength(3);
-    expect(firstResult.skipped).toBe(0);
-
-    const seeded = daemon.rulesService.list();
-    expect(seeded).toHaveLength(3);
-    for (const rule of seeded) {
-      expect(rule.status).toBe('proposed');
-      expect(rule.enforcement).toBe('guidance');
-      expect(rule.scope).toEqual({ kind: 'global' });
-      expect(rule.provenance).toEqual({ by: 'seed:PLAN-v1' });
-    }
-
-    const second = await cli(['rules', 'seed', '--from', plan, '--json']);
-    const secondResult = JSON.parse(second.out) as { created: string[]; skipped: number };
-    expect(secondResult.created).toEqual([]);
-    expect(secondResult.skipped).toBe(3);
-    expect(daemon.rulesService.list()).toHaveLength(3);
   });
 
   test('an accepted rule in scope reaches a session brief; a proposed one does not', async () => {
@@ -207,12 +252,12 @@ describe('agile rules against a daemon on a temp AGILE_HOME', () => {
       const edited = daemon.rulesService.get(rule.id);
       expect(edited).toMatchObject({
         text: 'do not add a dependency without asking',
-        question: 'Does this action add a dependency?',
-        enforcement: 'classifier',
-        stage: 'both',
+        check: { by: 'classifier', question: 'Does this action add a dependency?' },
+        // The old `--stage both` maps to action (P6 splits only on migration).
+        enforcement: 'action',
         status: 'proposed',
       });
-      expect(edited.examples).toEqual([
+      expect(examplesOf(edited)).toEqual([
         { action: 'bun add lodash', violates: true },
         { action: 'edit src/index.ts', violates: false },
       ]);
@@ -328,7 +373,7 @@ describe('agile rules against a daemon on a temp AGILE_HOME', () => {
     test('no accepted classifier rules is an empty report, exit 0', async () => {
       const result = await cli(['rules', 'test']);
       expect(result.code).toBe(0);
-      expect(result.out).toContain('no accepted classifier rules');
+      expect(result.out).toContain('no accepted classifier checks');
     });
 
     test('a run slower than the default 5 s RPC deadline still finishes (T155)', async () => {
@@ -409,12 +454,12 @@ describe('agile rules against a daemon on a temp AGILE_HOME', () => {
       '--pattern-arg',
       'git reset --hard',
     ]);
-    expect(rule.pattern).toEqual({
+    expect(patternOf(rule)).toEqual({
       kind: 'command_deny',
       args: { patterns: ['rm -rf', 'git reset --hard'] },
     });
     const shown = await cli(['rules', 'show', rule.id]);
-    expect(shown.out).toContain('pattern      command_deny: "rm -rf", "git reset --hard"');
+    expect(shown.out).toContain('check        pattern command_deny: "rm -rf", "git reset --hard"');
     expect((await cli(['rules', 'accept', rule.id])).code).toBe(0);
 
     const stream = await daemon.streamService.create('human', { title: 'x', goal: 'y' });
@@ -475,15 +520,16 @@ describe('agile rules against a daemon on a temp AGILE_HOME', () => {
     } finally {
       console.error = original;
     }
-    // The schema refuses it too, for a caller that skips the CLI.
-    const refused = await callRpc(daemon.socketPath, 'rule.create', {
+    // The store refuses a pattern on a ship item, for a caller that skips the CLI.
+    const refused = await callRpc(daemon.socketPath, 'knowledge.create', {
       text: 'x',
-      enforcement: 'pattern',
+      enforcement: 'ship',
+      check: { by: 'pattern', pattern: { kind: 'no_push', args: {} } },
     }).then(
       () => 'created',
       (err: unknown) => String(err instanceof Error ? err.message : err),
     );
-    expect(refused).toContain('a pattern rule needs a pattern');
+    expect(refused).toContain('a pattern check is an action check only');
   });
 
   test('T167: rules edit sets a pattern', async () => {
@@ -501,7 +547,7 @@ describe('agile rules against a daemon on a temp AGILE_HOME', () => {
       '--json',
     ]);
     expect(edited.code).toBe(0);
-    expect((JSON.parse(edited.out) as Rule).pattern).toEqual({
+    expect(patternOf(JSON.parse(edited.out) as Rule)).toEqual({
       kind: 'path_deny',
       args: { globs: ['secrets/**'] },
     });

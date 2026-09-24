@@ -18,7 +18,7 @@
  *    refusal's reason, shown on the page).
  */
 
-import type { InboxItem } from '@agile-agents/shared';
+import { type InboxItem, formatKnowledgeScope } from '@agile-agents/shared';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   type RepoRow,
@@ -891,8 +891,8 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
           {page.rules.map((rule) => (
             <li key={rule.id} data-testid="rule" data-rule={rule.id}>
               <div className="cr-dim">
-                {rule.name ?? rule.id} · {rule.scope.kind}
-                {rule.scope.ref ? `:${rule.scope.ref}` : ''} · {rule.enforcement} · {rule.stage}
+                {rule.name ?? rule.id} · {formatKnowledgeScope(rule.scope)} · {rule.kind} ·{' '}
+                {rule.enforcement}
                 {rule.critical ? ' · critical' : ''}
               </div>
               <Markdown text={rule.text} />

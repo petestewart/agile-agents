@@ -5,7 +5,7 @@
  * `HookDecision` into Claude's hook JSON, and performs the side effects.
  */
 
-import type { AgentMessage, Rule, SessionRole } from '@agile-agents/shared';
+import type { AgentMessage, KnowledgeItem, SessionRole } from '@agile-agents/shared';
 import type { VisibilityContext } from '../permissions/visibility';
 
 /** The outcomes of the pure decision (spike-findings.md §B); `ask` never reaches the wire. */
@@ -34,7 +34,7 @@ export interface HookDecisionContext {
   /** A file's size, or `undefined` if missing or not a plain file (a directory must not size-gate). */
   fileSize: (path: string) => number | undefined;
   /** The accepted pattern rules in scope (§5.3), in check order. None in scope gates nothing here. */
-  patternRules?: readonly Rule[];
+  patternRules?: readonly KnowledgeItem[];
   /** The repo's `protected_branches` (D8), resolved at check time. */
   protectedBranches?: readonly string[];
   /** `@{upstream}` of the worktree; called only for a push with no refspec. */
