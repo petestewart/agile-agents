@@ -16,7 +16,7 @@ import { printJson } from '../format';
 
 /** Mirrors the daemon's `LandOutcome` (`delivery/service.ts`). */
 interface LandOutcome {
-  status: 'gated' | 'refused' | 'blocked' | 'landed';
+  status: 'gated' | 'refused' | 'blocked' | 'landed' | 'pr_open';
   line: string;
   conflicts?: string[];
 }
