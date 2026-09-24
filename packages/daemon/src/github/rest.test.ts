@@ -210,6 +210,13 @@ describe('token source', () => {
     expect(await githubAuthAvailable(ghTokenSource(join(work, 'no-such-gh')))).toBe(false);
   });
 
+  test('a hung gh times out with one clear error', async () => {
+    const hung = fakeGh('sleep 10');
+    const started = Date.now();
+    await expect(ghTokenSource(hung, 200)()).rejects.toThrow(/timed out — run `gh auth login`/);
+    expect(Date.now() - started).toBeLessThan(2000);
+  });
+
   test('the token never appears in output, errors, results or the request log', async () => {
     const seen: string[] = [];
     const orig = {

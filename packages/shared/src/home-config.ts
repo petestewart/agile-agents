@@ -143,7 +143,14 @@ export function validateClassifierConfig(input: unknown): ClassifierConfig {
 /** T221 (projects-design §18): the GitHub REST endpoint. No token here (P18): `gh auth token` per call. */
 export const DEFAULT_GITHUB_API_URL = 'https://api.github.com';
 export const GitHubConfigSchema = z
-  .object({ api_url: z.string().url().default(DEFAULT_GITHUB_API_URL) })
+  .object({
+    api_url: z.string().url().default(DEFAULT_GITHUB_API_URL),
+    /**
+     * The `gh` the daemon borrows a token from. Test homes point it at a
+     * path that does not exist, so no test daemon ever runs the real `gh`.
+     */
+    gh_command: z.string().min(1).default('gh'),
+  })
   .strict();
 export type GitHubConfig = z.infer<typeof GitHubConfigSchema>;
 

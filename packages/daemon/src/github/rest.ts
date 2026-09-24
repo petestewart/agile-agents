@@ -30,7 +30,9 @@ export type TokenSource = () => Promise<string>;
  * `gh auth token`, with stdout captured and never echoed. A missing or
  * logged-out `gh` is one `auth` error naming the fix.
  */
-export function ghTokenSource(ghCommand = 'gh'): TokenSource {
+export const GH_TOKEN_TIMEOUT_MS = 2000;
+
+export function ghTokenSource(ghCommand = 'gh', timeoutMs = GH_TOKEN_TIMEOUT_MS): TokenSource {
   return async () => {
     let proc: ReturnType<typeof Bun.spawn>;
     try {
@@ -45,10 +47,23 @@ export function ghTokenSource(ghCommand = 'gh'): TokenSource {
         'auth',
       );
     }
-    const [out, code] = await Promise.all([
-      new Response(proc.stdout as ReadableStream).text(),
-      proc.exited,
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timedOut = new Promise<'timeout'>((resolve) => {
+      timer = setTimeout(() => resolve('timeout'), timeoutMs);
+    });
+    const result = await Promise.race([
+      Promise.all([new Response(proc.stdout as ReadableStream).text(), proc.exited]),
+      timedOut,
     ]);
+    clearTimeout(timer);
+    if (result === 'timeout') {
+      proc.kill();
+      throw new GitHubError(
+        `GitHub auth unavailable: \`gh auth token\` timed out — ${GH_LOGIN_HINT}`,
+        'auth',
+      );
+    }
+    const [out, code] = result;
     const token = out.trim();
     if (code !== 0 || token === '')
       throw new GitHubError(

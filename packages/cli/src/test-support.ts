@@ -80,10 +80,16 @@ export function freePort(): Promise<number> {
  * (T125). Creates the home if it does not exist yet — this runs before
  * `agile init`.
  */
+/**
+ * T221: a `github.gh_command` that does not exist, so a test daemon's GitHub
+ * auth check never runs the operator's real `gh` (it reports unavailable).
+ */
+export const TEST_GITHUB_CONFIG = 'github:\n  gh_command: /nonexistent/agile-test-no-gh\n';
+
 export async function writeFreePortConfig(home: string): Promise<number> {
   const port = await freePort();
   mkdirSync(home, { recursive: true });
-  writeFileSync(join(home, 'config.yaml'), `port: ${port}\n`);
+  writeFileSync(join(home, 'config.yaml'), `port: ${port}\n${TEST_GITHUB_CONFIG}`);
   return port;
 }
 
