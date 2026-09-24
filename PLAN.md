@@ -1437,12 +1437,14 @@ agile tail --node $N --events
 
 ### Ticket: T290 A coordinator note wakes an ended work node
 - **Priority:** P1
-- **Status:** In Progress
-- **Owner:** opus:worker-T290
+- **Status:** Done
+- **Owner:** Unassigned
 - **Scope:** Pete (2026-09-24): a parent's `coordinator_note` must reach its children, so it wakes a work node whose session has ended (added to P11's work wake types). Nodes the human stopped, landed or closed still never wake; the per-node wake budget still applies.
 - **Acceptance Criteria:** Wake-policy and delivery tests: a note to an ended work node starts a session; a landed one stays pending.
 - **Validation Steps:** `bun test packages/daemon/src/events`.
 - **Notes:** Answers T287's question.
+- T290: coordinator_note added to the work wake types; wake + delivery tests; full bun test 2243/0. One-line change reviewed by the manager. merge 3832ebb.
+
 
 ### Ticket: T288 ∥ Helper children on the same repo
 - **Priority:** P2
