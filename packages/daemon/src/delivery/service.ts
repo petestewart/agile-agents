@@ -26,7 +26,14 @@ import type { GateService } from '../gates/service';
 import { GitHubError, type GitHubPort, type GitHubPull } from '../github/port';
 import type { StateStore } from '../store';
 import type { StreamService } from '../streams/service';
-import { git, gitWrite, removeWorktreeSafely, runGit } from './git';
+import {
+  describeGitNetworkFailure,
+  git,
+  gitNetwork,
+  gitWrite,
+  removeWorktreeSafely,
+  runGit,
+} from './git';
 
 /** Refused before anything was touched: caller input or an unlandable stream (-32602 at the edge). */
 export class LandRefusedError extends Error {
@@ -36,6 +43,17 @@ export class LandRefusedError extends Error {
   ) {
     super(message);
     this.name = 'LandRefusedError';
+  }
+}
+
+/** T231: `requireAhead`'s refusal when the branch has no commits beyond `target`. */
+class NothingToLandError extends LandRefusedError {
+  constructor(
+    stream: string,
+    message: string,
+    public readonly target: string,
+  ) {
+    super(stream, message);
   }
 }
 
@@ -149,10 +167,9 @@ export class DeliveryService {
     const { streams } = this.options;
     const stream = streams.get(streamId);
     const { repoEntry, branch } = this.requireLandable(stream);
-    const target = this.requireAhead(stream, repoEntry, branch);
-
     // §14.7: the mode is resolved at the first delivery attempt.
     const mode = stream.delivery_state?.mode ?? this.resolveMode(stream, repoEntry);
+    const target = await this.requireAheadRecorded(stream, repoEntry, branch, mode);
     const github = mode === 'pr' ? this.requireGitHub(stream, repoEntry, branch) : undefined;
 
     // 1. The gate, when the repo asks for one (§8.2: default is no gate).
@@ -267,6 +284,32 @@ export class DeliveryService {
   }
 
   /** The target branch exists and `branch` has commits beyond it; else refused. */
+  /** `requireAhead`, leaving a visible state when a first deliver has nothing to land (T231). */
+  private async requireAheadRecorded(
+    stream: Stream,
+    repoEntry: RepoEntry,
+    branch: string,
+    mode: DeliveryState['mode'],
+  ): Promise<string> {
+    try {
+      return this.requireAhead(stream, repoEntry, branch);
+    } catch (error) {
+      const status = stream.delivery_state?.status;
+      if (
+        error instanceof NothingToLandError &&
+        (status === undefined || status === 'not_started')
+      ) {
+        const detail = `nothing to deliver: no commits beyond ${error.target}`;
+        await this.setDeliveryState(stream.id, {
+          mode,
+          status: 'not_started',
+          held_by: [{ reason: 'nothing_to_deliver', detail }],
+        });
+      }
+      throw error;
+    }
+  }
+
   private requireAhead(stream: Stream, repoEntry: RepoEntry, branch: string): string {
     const repoRoot = repoEntry.path;
     const target = this.resolveTarget(stream, repoEntry, repoRoot);
@@ -278,9 +321,10 @@ export class DeliveryService {
     }
     const ahead = runGit(['rev-list', '--count', `${target}..${branch}`], repoRoot, repoRoot);
     if (ahead === '0') {
-      throw new LandRefusedError(
+      throw new NothingToLandError(
         stream.id,
         `${branch} has no commits beyond ${target} — nothing to land`,
+        target,
       );
     }
     return target;
@@ -712,13 +756,9 @@ export class DeliveryService {
         `PR #${stream.delivery_state.pr?.number ?? '?'} for ${stream.id} is already merged; nothing to deliver`,
       );
     }
-    const pushed = git(
-      ['push', remote, `refs/heads/${branch}:refs/heads/${branch}`],
-      cwd,
-      repoRoot,
-    );
+    const pushed = gitNetwork(['push', remote, `refs/heads/${branch}:refs/heads/${branch}`], cwd);
     if (pushed.exitCode !== 0) {
-      const line = `push ${branch} to ${remote} failed: ${scrubGitError(pushed.stderr)}`;
+      const line = `push ${branch} to ${remote} failed: ${describeGitNetworkFailure(pushed.stderr, remote)}`;
       await this.setDeliveryState(stream.id, {
         mode: 'pr',
         status: 'held',
@@ -1165,11 +1205,6 @@ function prBody(stream: Stream): string {
 }
 
 /** A git error for a thread line: first line, capped, any `user:pass@` in a URL removed. */
-function scrubGitError(stderr: string): string {
-  const first = stderr.split('\n').find((l) => l.trim().length > 0) ?? 'unknown error';
-  return first.replace(/(\w+:\/\/)[^/@\s]*@/g, '$1').slice(0, 300);
-}
-
 function branchExists(repoRoot: string, branch: string): boolean {
   return git(['rev-parse', '--verify', `refs/heads/${branch}`], repoRoot, repoRoot).exitCode === 0;
 }

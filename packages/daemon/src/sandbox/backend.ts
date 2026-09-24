@@ -59,19 +59,34 @@ export function dockerProbeEnv(repoRoot: string | undefined, tempDirBase?: strin
 }
 
 /**
- * `docker info` in a sandboxed env (the docker CLI writes
+ * Upper bound on one `docker` daemon probe. `docker info` against an
+ * installed-but-slow or unresponsive daemon (e.g. a CI runner's docker, a
+ * wedged Docker Desktop) can sit for seconds; detection must not block the
+ * caller that long, so an unanswered probe counts as "unreachable".
+ */
+export const DOCKER_PROBE_TIMEOUT_MS = 1500;
+
+/**
+ * `docker version --format {{.Server.Version}}` in a sandboxed env: it needs
+ * the daemon to answer (no daemon => non-zero exit) but, unlike `docker
+ * info`, skips the CLI-plugin scan and full system report that make `info`
+ * take seconds on a loaded host. (the docker CLI writes
  * `$HOME/.docker/config.json`). Building the env happens outside the
  * try/catch: a setup failure is a real error, not "docker unreachable".
- * One probe env serves both the presence check and `docker info`.
+ * One probe env serves both the presence check and the daemon query.
  */
-export function dockerDaemonReachable(repoRoot?: string, tempDirBase?: string): boolean {
+export function dockerDaemonReachable(
+  repoRoot?: string,
+  tempDirBase?: string,
+  timeoutMs: number = DOCKER_PROBE_TIMEOUT_MS,
+): boolean {
   const probe = dockerProbeEnv(repoRoot, tempDirBase);
   try {
     if (!commandOnPath('docker', probe.env)) return false;
-    // `docker info` fails fast, not hangs, when no daemon is running.
-    execFileSync('docker', ['info'], {
+    execFileSync('docker', ['version', '--format', '{{.Server.Version}}'], {
       stdio: ['ignore', 'ignore', 'ignore'],
-      timeout: 5000,
+      timeout: timeoutMs,
+      killSignal: 'SIGKILL',
       env: probe.env,
     });
     return true;

@@ -278,7 +278,14 @@ export const DeliveryStateSchema = z
       .array(
         z
           .object({
-            reason: z.enum(['ship_check', 'waits_on', 'merge_together', 'conflict', 'push_failed']),
+            reason: z.enum([
+              'ship_check',
+              'waits_on',
+              'merge_together',
+              'conflict',
+              'push_failed',
+              'nothing_to_deliver',
+            ]),
             detail: z.string().min(1).max(THREAD_BODY_MAX_CHARS),
           })
           .strict(),

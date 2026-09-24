@@ -236,7 +236,8 @@ test('T210: an AGILE_HOME that is a file is refused by every command, one line',
     expect(lines[0]).toContain(`AGILE_HOME=${file}`);
     expect(lines[0]).toContain('not a directory');
   }
-});
+  // Five CLI processes: the same budget as the other daemon e2e tests.
+}, 60_000);
 
 test('T210: start on a held port names the holder; stop with no pidfile hints at it', async () => {
   expect(runCli(['init'], { cwd: nonRepo }).code).toBe(0);
@@ -284,4 +285,5 @@ test('T221: a test daemon never runs gh, not even one first on PATH', async () =
   expect(status.stdout).toContain('GitHub auth: unavailable');
   expect(existsSync(marker)).toBe(false);
   expect(runCli(['daemon', 'stop'], { cwd: nonRepo, env }).code).toBe(0);
-});
+  // Four CLI processes, the daemon start and stop among them (~5 s idle): the same budget as the other daemon e2e tests.
+}, 60_000);
