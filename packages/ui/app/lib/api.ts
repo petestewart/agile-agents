@@ -214,6 +214,14 @@ export function markStreamLanded(id: string): Promise<unknown> {
   return post(`/api/streams/${encodeURIComponent(id)}/mark-landed`);
 }
 
+/** T205: + Repo in place (projects-design §7); `switch` moves a work node with nothing committed. */
+export function addRepoToStream(id: string, repo: string, switching = false): Promise<unknown> {
+  return post(`/api/streams/${encodeURIComponent(id)}/add-repo`, {
+    repo,
+    ...(switching ? { switch: true } : {}),
+  });
+}
+
 export async function getPolicy(): Promise<Policy> {
   const res = await fetch('/api/policy');
   const payload = (await res.json()) as Policy & { error?: string };

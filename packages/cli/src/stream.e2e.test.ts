@@ -7,7 +7,8 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Stream } from '@agile-agents/shared';
 import { runCli } from './index';
@@ -106,12 +107,20 @@ describe('agile node (T201)', () => {
 
     const byParent = JSON.parse(
       (await cli(['node', 'list', '--parent', epic.id, '--json'])).out,
-    ) as { nodes: Array<{ id: string; role: string }> };
-    expect(byParent.nodes.map((n) => [n.id, n.role])).toEqual([[task.id, 'conversation']]);
+    ) as Array<{ id: string; role: string }>;
+    expect(byParent.map((n) => [n.id, n.role])).toEqual([[task.id, 'conversation']]);
     const byProject = JSON.parse(
       (await cli(['node', 'list', '--project', projectId, '--json'])).out,
-    ) as { nodes: Array<{ id: string }> };
-    expect(byProject.nodes.map((n) => n.id).sort()).toEqual([projectRoot, epic.id, task.id].sort());
+    ) as Array<{ id: string }>;
+    expect(byProject.map((n) => n.id).sort()).toEqual([projectRoot, epic.id, task.id].sort());
+    // T205: unfiltered `--json` is the same bare array, each node with its role.
+    const unfiltered = JSON.parse((await cli(['node', 'list', '--json'])).out) as Array<{
+      id: string;
+      role: string;
+    }>;
+    expect(Array.isArray(unfiltered)).toBe(true);
+    expect(unfiltered.find((n) => n.id === epic.id)?.role).toBe('coordinating');
+    expect(unfiltered.map((n) => n.id).sort()).toEqual([projectRoot, epic.id, task.id].sort());
   });
 });
 
@@ -400,4 +409,60 @@ describe('agile node new starts the agent (T204)', () => {
     // `agile attach` is the restart: it starts what --no-start skipped.
     expect((await cli(['attach', later.id])).code).toBe(0);
   });
+});
+
+describe('agile node add-repo (T205)', () => {
+  function gitRepo(): string {
+    const dir = mkdtempSync(join(tmpdir(), 'agile-t205-repo-'));
+    for (const args of [
+      ['init', '-q', '-b', 'main'],
+      ['config', 'user.email', 'test@example.com'],
+      ['config', 'user.name', 'Test'],
+    ]) {
+      Bun.spawnSync(['git', ...args], { cwd: dir });
+    }
+    writeFileSync(join(dir, 'README.md'), '# r\n');
+    Bun.spawnSync(['git', 'add', '-A'], { cwd: dir });
+    Bun.spawnSync(['git', 'commit', '-q', '-m', 'init'], { cwd: dir });
+    return dir;
+  }
+
+  test("Pete's Phase 7 look: conversation → work → coordinating with two parts", async () => {
+    const ledger = gitRepo();
+    const other = gitRepo();
+    try {
+      expect((await cli(['repo', 'add', ledger, '--name', 'ledger-lite'])).code).toBe(0);
+      expect((await cli(['repo', 'add', other, '--name', 'agile-test-repo'])).code).toBe(0);
+      const q = await newStream('Balance summary');
+      const show = async () =>
+        JSON.parse((await cli(['node', 'show', q.id, '--json'])).out) as {
+          role: string;
+          branch?: string;
+        };
+      expect((await show()).role).toBe('conversation');
+
+      expect((await cli(['node', 'add-repo', q.id, 'ledger-lite'])).code).toBe(0);
+      const work = await show();
+      expect(work.role).toBe('work');
+      expect(work.branch?.startsWith('stream/')).toBe(true);
+
+      expect((await cli(['node', 'add-repo', q.id, 'agile-test-repo'])).code).toBe(0);
+      expect((await show()).role).toBe('coordinating');
+      const parts = JSON.parse(
+        (await cli(['node', 'list', '--parent', q.id, '--json'])).out,
+      ) as Array<{
+        title: string;
+        repo: string;
+        role: string;
+      }>;
+      expect(parts.map((p) => `${p.title}  ${p.repo}  ${p.role}`)).toEqual([
+        'ledger-lite part  ledger-lite  work',
+        'agile-test-repo part  agile-test-repo  work',
+      ]);
+      const status = Bun.spawnSync(['git', 'status', '--short'], { cwd: ledger });
+      expect(new TextDecoder().decode(status.stdout).trim()).toBe('');
+    } finally {
+      for (const dir of [ledger, other]) rmSync(dir, { recursive: true, force: true });
+    }
+  }, 30_000);
 });

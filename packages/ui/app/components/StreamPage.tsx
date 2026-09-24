@@ -21,11 +21,14 @@
 import type { InboxItem } from '@agile-agents/shared';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
+  type RepoRow,
+  addRepoToStream,
   attachSession,
   closeStream,
   getStreamDiff,
   getStreamPage,
   landStream,
+  listRepos,
   markStreamLanded,
   resolveConflict,
   sayOnStream,
@@ -61,6 +64,16 @@ function needsYou(items: readonly InboxItem[], stream: string): InboxItem[] {
   return items.filter(
     (item) => item.stream === stream && item.kind !== 'blocked' && item.kind !== 'done',
   );
+}
+
+/** T205: the registered repos a proposal names, so its card can offer "Add <repo>" (§7). */
+export function reposNamedIn(body: string, repos: readonly RepoRow[], current?: string): string[] {
+  return repos
+    .map((r) => r.name)
+    .filter((name) => name !== current)
+    .filter((name) =>
+      new RegExp(`(^|[^\\w-])${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}([^\\w-]|$)`).test(body),
+    );
 }
 
 function errorText(err: unknown): string {
@@ -268,6 +281,10 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
   const [actionError, setActionError] = useState<string | undefined>(undefined);
   // T170: Attach/Review open the session picker first.
   const [picker, setPicker] = useState<'worker' | 'reviewer' | 'resolve' | undefined>(undefined);
+  // T205: + Repo in place — the registered repos, and the open picker's choice.
+  const [repos, setRepos] = useState<RepoRow[]>([]);
+  const [addingRepo, setAddingRepo] = useState(false);
+  const [repoChoice, setRepoChoice] = useState('');
   // T176: the server refused a worker on a parent with open children; this is its reason.
   const threadRef = useRef<HTMLOListElement | null>(null);
 
@@ -287,6 +304,12 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
     load();
   }, [load, cockpit]);
 
+  useEffect(() => {
+    listRepos()
+      .then(setRepos)
+      .catch(() => setRepos([]));
+  }, []);
+
   // A different stream opened: back to its thread.
   // biome-ignore lint/correctness/useExhaustiveDependencies: `id` is the trigger.
   useEffect(() => {
@@ -294,6 +317,8 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
     setDraft('');
     setActionError(undefined);
     setPicker(undefined);
+    setAddingRepo(false);
+    setRepoChoice('');
   }, [id]);
 
   const threadLength = page?.thread.length ?? 0;
@@ -345,6 +370,15 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
   const cards = needsYou(cockpit?.inbox ?? [], stream.id);
   const findings = stream.agent.findings ?? [];
   const text = draft.trim();
+  const open = stream.human.status !== 'landed' && stream.human.status !== 'closed';
+  const repoOptions = repos.map((r) => r.name).filter((name) => name !== stream.repo);
+  const chosenRepo = repoChoice || repoOptions[0] || '';
+  function addRepo(repo: string, switching = false): void {
+    void act(
+      () => addRepoToStream(stream.id, repo, switching),
+      () => setAddingRepo(false),
+    );
+  }
 
   return (
     <section className="cr-stream" data-testid="stream-page" data-stream={stream.id}>
@@ -445,7 +479,54 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
               Close
             </button>
           )}
+          {open && stream.parent !== undefined && (
+            <button
+              type="button"
+              className="cr-btn"
+              data-testid="add-repo"
+              disabled={busy || repoOptions.length === 0}
+              onClick={() => setAddingRepo((v) => !v)}
+            >
+              + Repo
+            </button>
+          )}
         </div>
+        {addingRepo && (
+          <div className="cr-actions" data-testid="add-repo-form">
+            <select
+              data-testid="add-repo-select"
+              value={chosenRepo}
+              onChange={(e) => setRepoChoice(e.target.value)}
+            >
+              {repoOptions.map((name) => (
+                <option key={name} value={name}>
+                  {name}
+                </option>
+              ))}
+            </select>
+            <button
+              type="button"
+              className="cr-btn"
+              data-testid="add-repo-submit"
+              disabled={busy || chosenRepo === ''}
+              onClick={() => addRepo(chosenRepo)}
+            >
+              Add
+            </button>
+            {stream.branch !== undefined && (
+              <button
+                type="button"
+                className="cr-btn"
+                data-testid="switch-repo-submit"
+                title="Only when nothing is committed on this branch"
+                disabled={busy || chosenRepo === ''}
+                onClick={() => addRepo(chosenRepo, true)}
+              >
+                Switch
+              </button>
+            )}
+          </div>
+        )}
         {picker && (
           <SessionPicker
             key={picker}
@@ -570,6 +651,20 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
                     {entry.kind !== 'line' ? ` · ${entry.kind}` : ''}
                   </div>
                   <Markdown text={entry.body} />
+                  {entry.kind === 'proposal' &&
+                    open &&
+                    reposNamedIn(entry.body, repos, stream.repo).map((name) => (
+                      <button
+                        key={name}
+                        type="button"
+                        className="cr-btn"
+                        data-testid="proposal-add-repo"
+                        disabled={busy}
+                        onClick={() => addRepo(name)}
+                      >
+                        Add {name}
+                      </button>
+                    ))}
                   {entry.by === 'human' && entry.kind === 'line' && queuedLines.has(entry.ts) && (
                     <div className="cr-dim cr-queued" data-testid="thread-queued">
                       queued — the worker reads it after its current step
