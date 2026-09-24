@@ -939,8 +939,8 @@ git status --short
 
 ### Ticket: T224 PR delivery: push and open a PR
 - **Priority:** P0
-- **Status:** In Progress
-- **Owner:** opus:worker-T224
+- **Status:** Done (merge 5f8931d)
+- **Owner:** —
 - **Scope:** For `pr` repos, delivery means:
   1. run the ship checks;
   2. `git push <remote> <branch>` from the worktree;
@@ -949,12 +949,12 @@ git status --short
   Store `pr` on `delivery_state`. A second deliver updates the existing PR, never opens a new one. Protected-branch push rules are unchanged.
 - **Acceptance Criteria:** Against the fake: deliver opens PR #1 with the branch; a second deliver after a commit pushes and keeps #1; a ship-check hold never pushes.
 - **Validation Steps:** `bun test packages/daemon/src/delivery packages/daemon/src/github`.
-- **Notes:** After T221 and T223.
+- **Notes:** After T221 and T223. Review (sonnet) PASS. Daemon +115 net. No force push; `owner:branch` PR lookup; push stderr scrubbed; token-leak test scans the whole home. A push failure is recorded as held `ship_check` (no better reason code) → T225 adds `push_failed`.
 
 ### Ticket: T225 PR poller: PR state is the node's status
 - **Priority:** P0
-- **Status:** Todo
-- **Owner:** —
+- **Status:** In Progress
+- **Owner:** opus:worker-T225
 - **Scope:**
   - Poll the open PRs of live nodes (60 s; 15 s when flagged; backoff; ETag; rate-limit pause with a thread note) and map them to `PullRequestState`.
   - The node shows review requested, changes requested, CI failing, approved, merged or closed. Merged → `human.status: landed`. Closed unmerged → a question for you.
@@ -962,11 +962,11 @@ git status --short
   - In this phase, changes appear as thread lines and audit events only. Routed events come in T244.
 - **Acceptance Criteria:** Against the fake with a fake clock: each transition shows on the node. 304s don't rewrite the record. A 403 pauses polling.
 - **Validation Steps:** `bun test packages/daemon/src/github packages/daemon/src/delivery`.
-- **Notes:** After T224.
+- **Notes:** After T224. From T224 review: add a `push_failed` held reason (DeliveryStateSchema) and use it for push failures; refuse or handle re-delivery once the PR is merged/closed (today `createPull` would 422). From T226: call `mainSync.mainMoved(repo)` when a PR merges and when `ls-remote` sees main move on `pr` repos.
 
 ### Ticket: T226 Sync after merge
 - **Priority:** P0
-- **Status:** In Progress
+- **Status:** In Review
 - **Owner:** opus:worker-T226
 - **Scope:** Add `daemon/sync`. After any merge into a repo's main (a direct merge, a PR merged, or main moving outside the app), merge main into every other live work node's branch on that repo (P15):
   - deferred while the session is mid-turn or the worktree is dirty;
