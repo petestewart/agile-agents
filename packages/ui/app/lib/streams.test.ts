@@ -13,13 +13,15 @@ import {
   groupInbox,
   isLiveSession,
   isThinking,
+  projectForNew,
+  rowsInProject,
   ruleHitOf,
   streamDot,
   threadAuthorLabel,
 } from './streams';
 
 function row(id: string, extra: Partial<CockpitStreamRow> = {}): CockpitStreamRow {
-  return { id, title: id, agent_status: 'idle', human_status: 'open', ...extra };
+  return { id, title: id, role: 'work', agent_status: 'idle', human_status: 'open', ...extra };
 }
 
 describe('streamDot', () => {
@@ -154,5 +156,25 @@ describe('ruleHitOf (T169)', () => {
     expect(
       ruleHitOf({ by: 'daemon', kind: 'event', body: 'rule_hit: x', ref: 'questions/Q-1.yaml' }),
     ).toBeUndefined();
+  });
+});
+
+describe('T208: projects in the rail', () => {
+  const rows = [row('a', { project: 'P1' }), row('b', { project: 'P2' }), row('c')];
+  const projects = [
+    { id: 'P1', name: 'one', root: 'r1' },
+    { id: 'P2', name: 'two', root: 'r2' },
+  ];
+
+  test('rowsInProject keeps one project, or everything for "All"', () => {
+    expect(rowsInProject(rows, 'P1').map((r) => r.id)).toEqual(['a']);
+    expect(rowsInProject(rows, undefined)).toHaveLength(3);
+  });
+
+  test('projectForNew: the switcher, then the open stream, then the only project', () => {
+    expect(projectForNew('P2', 'a', rows, projects)).toBe('P2');
+    expect(projectForNew(undefined, 'a', rows, projects)).toBe('P1');
+    expect(projectForNew(undefined, 'c', rows, projects)).toBeUndefined();
+    expect(projectForNew(undefined, undefined, rows, projects.slice(0, 1))).toBe('P1');
   });
 });

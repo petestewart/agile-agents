@@ -13,6 +13,7 @@ import type {
   Event,
   HilRequest,
   InboxItem,
+  NodeRole,
   Question,
   Rule,
   Stream,
@@ -55,6 +56,9 @@ export interface CockpitStreamRow {
   id: string;
   title: string;
   parent?: string;
+  /** T208: the node's project and derived role (P1). */
+  project?: string;
+  role: NodeRole;
   agent_status: Stream['agent']['status'];
   human_status: Stream['human']['status'];
 }
@@ -64,6 +68,15 @@ export interface CockpitFrame {
   type: 'cockpit';
   inbox: InboxItem[];
   streams: CockpitStreamRow[];
+  /** T208: the live projects (the rail's switcher). */
+  projects: CockpitProjectRow[];
+}
+
+/** T208: mirror of `feed/snapshot.ts`'s `CockpitProjectRow`. */
+export interface CockpitProjectRow {
+  id: string;
+  name: string;
+  root: string;
 }
 
 /** T161: mirror of `landing/service.ts`'s `LandPreflight` — the Land button's "before". */

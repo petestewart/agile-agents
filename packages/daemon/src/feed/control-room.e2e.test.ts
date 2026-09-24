@@ -36,6 +36,7 @@ import { type HttpServerHandle, startHttpServer } from '../http';
 import { InboxService } from '../inbox';
 import { runInit } from '../init';
 import { LandingService } from '../landing';
+import { ProjectService } from '../projects';
 import { QuestionService } from '../questions';
 import { type RuleRpcEvalDeps, RulesService, SEED_PROVENANCE } from '../rules';
 import type { FakeAgentScript } from '../runner/fake-agent';
@@ -368,6 +369,7 @@ interface Cockpit {
   home: string;
   store: StateStore;
   streams: StreamService;
+  projects: ProjectService;
   questions: QuestionService;
   gates: GateService;
   rules: RulesService;
@@ -399,6 +401,7 @@ async function startCockpit(
   const gates = new GateService(store);
   const rules = new RulesService({ store, streams });
   const inbox = new InboxService({ streams, questions, gates, rules });
+  const projects = new ProjectService(store, streams);
   const http = startHttpServer({
     port: 0,
     version: 'test',
@@ -407,6 +410,7 @@ async function startCockpit(
     store,
     gates,
     streams,
+    projects,
     questions,
     inbox,
     rules,
@@ -428,6 +432,7 @@ async function startCockpit(
     home,
     store,
     streams,
+    projects,
     questions,
     gates,
     rules,
@@ -1726,6 +1731,8 @@ describe('new stream and quick capture (Playwright e2e, T162)', () => {
       const cockpit = await startCockpit();
       let page: Page | undefined;
       try {
+        // T208: the only project is where a capture on "All" files.
+        const shop = await cockpit.projects.create({ name: 'shop' });
         page = await openPage();
         await page.goto(`${cockpit.base}/`);
         await page.locator('[data-testid="inbox-empty"]').waitFor({ state: 'visible' });
@@ -1735,11 +1742,12 @@ describe('new stream and quick capture (Playwright e2e, T162)', () => {
         await page.locator('[data-testid="quick-capture"]').press('Enter');
 
         await page.locator('[data-testid="stream-page"]').waitFor({ state: 'visible' });
-        await waitUntil('the stream to exist', () => cockpit.streams.list().length === 1);
-        const created = cockpit.streams.list()[0];
+        await waitUntil('the stream to exist', () => cockpit.streams.list().length === 2);
+        const created = cockpit.streams.list().find((s) => s.id !== shop.root);
         expect(created?.title).toBe('why is the nightly export slow?');
         expect(created?.repo).toBeUndefined();
-        expect(created?.parent).toBeUndefined();
+        expect(created?.parent).toBe(shop.root);
+        expect(created?.project).toBe(shop.id);
         const row = `[data-testid="stream-tree"] [data-stream="${created?.id}"]`;
         await page.locator(row).waitFor({ state: 'visible' });
         expect(await page.locator(row).getAttribute('aria-current')).toBe('true');
@@ -1758,7 +1766,12 @@ describe('new stream and quick capture (Playwright e2e, T162)', () => {
       const cockpit = await startCockpit();
       let page: Page | undefined;
       try {
-        const parent = await cockpit.streams.create('human', { title: 'ledger-lite', goal: 'g' });
+        const shop = await cockpit.projects.create({ name: 'shop' });
+        const parent = await cockpit.streams.create('human', {
+          title: 'ledger-lite',
+          goal: 'g',
+          project: shop.id,
+        });
         page = await openPage();
         await page.goto(`${cockpit.base}/`);
         await page
@@ -1780,8 +1793,8 @@ describe('new stream and quick capture (Playwright e2e, T162)', () => {
 
         await page.locator('[data-testid="new-stream"]').waitFor({ state: 'detached' });
         await page.locator('[data-testid="stream-page"]').waitFor({ state: 'visible' });
-        await waitUntil('the child to exist', () => cockpit.streams.list().length === 2);
-        const child = cockpit.streams.list().find((s) => s.id !== parent.id);
+        await waitUntil('the child to exist', () => cockpit.streams.list().length === 3);
+        const child = cockpit.streams.list().find((s) => s.parent === parent.id);
         expect(child?.title).toBe('import CSV');
         expect(child?.parent).toBe(parent.id);
         await page
@@ -1827,6 +1840,83 @@ describe('new stream and quick capture (Playwright e2e, T162)', () => {
 
         await page.keyboard.press('Escape');
         await page.locator(`${tree} [data-stream="${other.id}"]`).waitFor({ state: 'visible' });
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+});
+
+// ---- T208: the project tree and switcher -----------------------------------
+
+describe('project tree and switcher (Playwright e2e, T208)', () => {
+  browserTest(
+    "two projects: each one's nodes show only under it; quick capture lands in the selected one",
+    async () => {
+      const cockpit = await startCockpit();
+      let page: Page | undefined;
+      try {
+        const shop = await cockpit.projects.create({ name: 'shop' });
+        const shopNode = await cockpit.streams.create('human', {
+          title: 'checkout',
+          goal: 'g',
+          project: shop.id,
+        });
+        page = await openPage();
+        await page.goto(`${cockpit.base}/`);
+        const tree = '[data-testid="stream-tree"]';
+        await page.locator(`${tree} [data-stream="${shopNode.id}"]`).waitFor({ state: 'visible' });
+        // The root carries the project icon, and the node nests under it.
+        expect(
+          await page.locator(`${tree} [data-stream="${shop.root}"]`).getAttribute('data-role'),
+        ).toBe('project');
+        await page
+          .locator(`[data-stream="${shop.root}"] + ul [data-stream="${shopNode.id}"]`)
+          .waitFor({ state: 'visible' });
+
+        // "New project" from the rail: the switcher moves to it.
+        await page.locator('[data-testid="new-project-open"]').click();
+        await page.locator('[data-testid="new-project-name"]').fill('docs');
+        await page.locator('[data-testid="new-project-create"]').click();
+        await page.locator('[data-testid="new-project"]').waitFor({ state: 'detached' });
+        await waitUntil('the project to exist', () => cockpit.projects.list().length === 2);
+        const docs = cockpit.projects.list().find((p) => p.name === 'docs');
+        if (!docs) throw new Error('docs project missing');
+        await waitUntilAsync(
+          'the switcher to select docs',
+          async () =>
+            (await page?.locator('[data-testid="project-switcher"]').inputValue()) === docs.id,
+        );
+        await page.locator(`${tree} [data-stream="${docs.root}"]`).waitFor({ state: 'visible' });
+        expect(await page.locator(`${tree} [data-stream="${shopNode.id}"]`).count()).toBe(0);
+        expect(await page.locator(`${tree} [data-stream="${shop.root}"]`).count()).toBe(0);
+
+        // Quick capture files into the selected project (not the only/first one).
+        await page.locator('[data-testid="quick-capture"]').fill('write the guide');
+        await page.locator('[data-testid="quick-capture"]').press('Enter');
+        await waitUntil('the capture to exist', () =>
+          cockpit.streams.list().some((s) => s.title === 'write the guide'),
+        );
+        const captured = cockpit.streams.list().find((s) => s.title === 'write the guide');
+        expect(captured?.project).toBe(docs.id);
+        expect(captured?.parent).toBe(docs.root);
+        await page.locator(`${tree} [data-stream="${captured?.id}"]`).waitFor({ state: 'visible' });
+        expect(
+          await page.locator(`${tree} [data-stream="${docs.root}"]`).getAttribute('data-role'),
+        ).toBe('project');
+
+        // Back to shop: only shop's nodes.
+        await page.locator('[data-testid="project-switcher"]').selectOption(shop.id);
+        await page.locator(`${tree} [data-stream="${shopNode.id}"]`).waitFor({ state: 'visible' });
+        expect(await page.locator(`${tree} [data-stream="${captured?.id}"]`).count()).toBe(0);
+        expect(await page.locator(`${tree} [data-stream="${docs.root}"]`).count()).toBe(0);
+
+        // "All" shows both projects' trees.
+        await page.locator('[data-testid="project-switcher"]').selectOption('');
+        await page.locator(`${tree} [data-stream="${captured?.id}"]`).waitFor({ state: 'visible' });
+        expect(await page.locator(`${tree} [data-stream="${shopNode.id}"]`).count()).toBe(1);
       } finally {
         await teardown([page]);
         await cockpit.stop();

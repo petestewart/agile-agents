@@ -38,6 +38,9 @@ export interface ShellValue {
   /** T162: the "New stream" dialog — opened by the top bar's button or `n`. */
   newStreamOpen: boolean;
   setNewStreamOpen(open: boolean): void;
+  /** T208: the rail's project switcher; `undefined` is "All". New nodes file into it. */
+  project: string | undefined;
+  setProject(id: string | undefined): void;
 }
 
 const ShellContext = createContext<ShellValue | undefined>(undefined);
@@ -50,6 +53,7 @@ export function ShellProvider({
   const [selected, setSelected] = useState<string | undefined>(undefined);
   const [railOpen, setRailOpen] = useState(false);
   const [newStreamOpen, setNewStreamOpen] = useState(false);
+  const [project, setProject] = useState<string | undefined>(undefined);
   const [rulesFilter, setRulesFilter] = useState<RulesFilter>(DEFAULT_RULES_FILTER);
 
   const value = useMemo<ShellValue>(
@@ -74,8 +78,10 @@ export function ShellProvider({
       },
       newStreamOpen,
       setNewStreamOpen,
+      project,
+      setProject,
     }),
-    [view, selected, railOpen, newStreamOpen, rulesFilter],
+    [view, selected, railOpen, newStreamOpen, rulesFilter, project],
   );
 
   return <ShellContext.Provider value={value}>{children}</ShellContext.Provider>;

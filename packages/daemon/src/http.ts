@@ -49,6 +49,7 @@ import {
 import { GateAlreadyResolvedError, GateNotFoundError, type GateService } from './gates';
 import type { InboxService } from './inbox';
 import { LandRefusedError, type LandingService } from './landing';
+import type { ProjectService } from './projects';
 import {
   QuestionAlreadyAnsweredError,
   QuestionNotFoundError,
@@ -123,6 +124,8 @@ export interface HttpServerOptions {
   /** `GET /api/inbox` (§3); without it the route 503s. */
   inbox?: InboxService;
   streams?: StreamService;
+  /** T208: `GET/POST /api/projects` and the cockpit frame's projects. */
+  projects?: ProjectService;
   /** The rules routes (`/api/rules...`). */
   rules?: RulesService;
   /** "Test examples": `rule.test`'s evals through the configured classifier. */
@@ -353,6 +356,7 @@ interface FeedContext {
   store: StateStore;
   gates: GateService;
   streams?: StreamService;
+  projects?: ProjectService;
   questions?: QuestionService;
   inbox?: InboxService;
   rules?: RulesService;
@@ -369,6 +373,7 @@ function resolveFeedContext(options: HttpServerOptions): FeedContext | undefined
     store: options.store,
     gates: options.gates,
     streams: options.streams,
+    projects: options.projects,
     questions: options.questions,
     inbox: options.inbox,
     rules: options.rules,
@@ -799,7 +804,7 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
         // The cockpit frame (§9): the stream tree and the inbox.
         if (url.pathname === '/api/cockpit' && req.method === 'GET') {
           if (!feed?.streams) return errorResponse(503, 'streams not available');
-          return jsonResponse(buildCockpitFrame(feed.streams, feed.inbox));
+          return jsonResponse(buildCockpitFrame(feed.streams, feed.inbox, feed.projects));
         }
 
         if (url.pathname === '/api/policy' && req.method === 'GET') {
@@ -847,6 +852,20 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
           }
         }
 
+        // T208: the rail's switcher and "New project" (the same service as `project.*`).
+        if (url.pathname === '/api/projects') {
+          if (!feed?.projects) return errorResponse(503, 'projects not available');
+          if (req.method === 'GET') return jsonResponse(feed.projects.list());
+          if (req.method === 'POST') {
+            if (!sameOrigin()) return errorResponse(403, 'cross-origin request rejected');
+            try {
+              return jsonResponse(await feed.projects.create(await readJsonBody(req)), 201);
+            } catch (err) {
+              return errorResponse(400, messageOf(err));
+            }
+          }
+        }
+
         // "New stream" and quick capture (§9.1): the same `StreamService.create` as the RPC.
         if (url.pathname === '/api/streams' && req.method === 'POST') {
           if (!feed?.streams) return errorResponse(503, 'streams not available');
@@ -854,7 +873,11 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
           try {
             const input = StreamCreateInputSchema.safeParse(await readJsonBody(req));
             if (!input.success) return errorResponse(400, formatZodError('stream', input.error));
-            return jsonResponse(await feed.streams.create('human', input.data), 201);
+            // T208: every node the cockpit makes belongs to a project.
+            return jsonResponse(
+              await feed.streams.create('human', input.data, { requireProject: true }),
+              201,
+            );
           } catch (err) {
             // An unknown parent or repo, or a bad body: the human's to fix.
             return errorResponse(400, messageOf(err));
@@ -920,7 +943,7 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
               ),
             );
             if (feed.streams) {
-              ws.send(JSON.stringify(buildCockpitFrame(feed.streams, feed.inbox)));
+              ws.send(JSON.stringify(buildCockpitFrame(feed.streams, feed.inbox, feed.projects)));
             }
           }
         },
@@ -945,7 +968,7 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
           try {
             server.publish(
               FEED_WS_TOPIC,
-              JSON.stringify(buildCockpitFrame(feed.streams, feed.inbox)),
+              JSON.stringify(buildCockpitFrame(feed.streams, feed.inbox, feed.projects)),
             );
           } catch (err) {
             console.error(messageOf(err));
