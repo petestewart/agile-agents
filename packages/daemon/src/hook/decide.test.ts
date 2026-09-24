@@ -341,3 +341,30 @@ describe('decidePreToolUse — T213 read scope', () => {
     expect(decidePreToolUse(baseCtx(), bash(`ls ${part}`)).decision).toBe('deny');
   });
 });
+
+describe('T280: a coordinator writes only in its scratch session dir (P20)', () => {
+  const home = '/home/u/.agile';
+  const dir = `${home}/sessions/01J9AAAAAAAAAAAAAAAAAAAAAA`;
+  const ctx = baseCtx({ role: 'coordinator', worktreePath: dir });
+  const decide = (tool_name: string, tool_input: Record<string, unknown>) =>
+    decidePreToolUse(ctx, { tool_name, tool_input }).decision;
+
+  test('Write/Edit inside the session dir are allowed', () => {
+    expect(decide('Write', { file_path: `${dir}/notes.md` })).toBe('allow');
+    expect(decide('Edit', { file_path: `${dir}/plan.md` })).toBe('allow');
+  });
+
+  test('a write outside it is denied: the repo, and .agile state elsewhere', () => {
+    expect(decide('Write', { file_path: '/repo/src/a.ts' })).toBe('deny');
+    expect(decide('Edit', { file_path: `${home}/config.yaml` })).toBe('deny');
+    expect(decide('Write', { file_path: `${home}/sessions/01J9OTHER/notes.md` })).toBe('deny');
+  });
+
+  test('Bash writes follow the same line; reads are allowed', () => {
+    expect(decide('Bash', { command: `echo x > ${dir}/notes.md` })).toBe('allow');
+    expect(decide('Bash', { command: `echo x > ${home}/config.yaml` })).toBe('deny');
+    expect(decide('Bash', { command: 'echo x > /repo/a.ts' })).toBe('deny');
+    expect(decide('Bash', { command: 'rm -rf /repo' })).toBe('deny');
+    expect(decide('Read', { file_path: `${dir}/brief.md` })).toBe('allow');
+  });
+});

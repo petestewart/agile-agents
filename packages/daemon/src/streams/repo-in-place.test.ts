@@ -148,7 +148,7 @@ describe('T205 + Repo in place', () => {
 
     expect(parts).toHaveLength(2);
     expect(roleOf(node.id)).toBe('coordinating');
-    expect(attach.handleFor(node.id)).toBeDefined();
+    expect(attach.handleFor(node.id, 'coordinator')).toBeDefined();
     for (const part of parts) {
       expect(attach.handleFor(part.id)).toBeDefined();
       const live = streams.get(part.id).sessions.find((s) => s.status === 'running');
@@ -204,7 +204,7 @@ describe('T205 + Repo in place', () => {
     expect(streams.readThread(webPart?.id ?? '').entries.some((e) => e.ref === node.id)).toBe(true);
     expect(after.sessions).toHaveLength(1);
     expect(after.sessions[0]?.worktree).toBeUndefined();
-    expect(attach.handleFor(node.id)).toBeDefined();
+    expect(attach.handleFor(node.id, 'coordinator')).toBeDefined();
   }, 30_000);
 
   test('switch with nothing committed: the empty part is closed, the node is on web', async () => {

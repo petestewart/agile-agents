@@ -51,9 +51,10 @@ import type { ClaudePreToolUsePayload, HookDecision, HookDecisionContext } from 
 /**
  * The permission-table role a session role is judged under: the table
  * speaks the older vocabulary (a worker is the engineer). The lessons
- * session writes nothing but proposals, so it gets the reviewer's policy.
+ * session writes nothing but proposals, so it gets the reviewer's policy. A coordinator has its own table (P20).
  */
 export function permissionRoleFor(role: SessionRole): PermissionRole {
+  if (role === 'coordinator') return 'coordinator';
   return role === 'reviewer' || role === 'lessons' ? 'reviewer' : 'engineer';
 }
 

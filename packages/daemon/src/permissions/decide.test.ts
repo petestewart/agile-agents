@@ -1243,3 +1243,19 @@ describe('decidePermission — T030 QA round 2 / opus round 3: dlx forms gated o
     expect(decideInRealWorktree('yarn dlx biome check .').kind).toBe('hil');
   });
 });
+
+describe('T280: the coordinator table on the ACP path (P20)', () => {
+  const home = '/home/u/.agile';
+  const dir = `${home}/sessions/01J9AAAAAAAAAAAAAAAAAAAAAA`;
+  const coord = (req: AcpPermissionRequestParams) =>
+    decidePermission({ role: 'coordinator', worktreePath: dir, request: req }).kind;
+
+  test('writes inside the session dir allow; the repo and other .agile state deny', () => {
+    expect(coord(request('edit', { targetPath: `${dir}/notes.md` }))).toBe('allow');
+    expect(coord(request('edit', { targetPath: `${home}/config.yaml` }))).toBe('deny');
+    expect(coord(request('edit', { targetPath: `${WORKTREE}/src/a.ts` }))).toBe('deny');
+    expect(coord(request('execute', { command: `echo x > ${dir}/n.md` }))).toBe('allow');
+    expect(coord(request('execute', { command: 'git push --force origin main' }))).toBe('deny');
+    expect(coord(request('fetch', { url: 'https://registry.npmjs.org/zod' }))).toBe('deny');
+  });
+});

@@ -54,10 +54,18 @@ export type StreamHumanStatus = z.infer<typeof StreamHumanStatusSchema>;
  * last: the per-stream retro of §5.5, a one-shot read-only session the
  * daemon starts itself on land or close. It is not a role a human attaches
  * — `agile attach` and `stream.attach` accept `worker` and `reviewer` only.
+ * `coordinator` (P20, T280) is the node's agent on a coordinating node or a
+ * project root: no worktree, the session dir as cwd, reads under visibility,
+ * every write denied by the hook. The daemon picks it where a worker was asked for.
  */
-export const SESSION_ROLES = ['worker', 'reviewer', 'lessons'] as const;
+export const SESSION_ROLES = ['worker', 'reviewer', 'lessons', 'coordinator'] as const;
 export const SessionRoleSchema = z.enum(SESSION_ROLES);
 export type SessionRole = z.infer<typeof SessionRoleSchema>;
+
+/** The node's own agent (a worker, or a coordinator on a coordinating node): the one that owns `agent.status`. */
+export function isAgentRole(role: SessionRole): boolean {
+  return role === 'worker' || role === 'coordinator';
+}
 
 export const SESSION_STATUSES = ['starting', 'running', 'idle', 'stopped', 'error'] as const;
 export const SessionStatusSchema = z.enum(SESSION_STATUSES);

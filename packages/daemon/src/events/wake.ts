@@ -6,13 +6,19 @@
  * - A work node whose session has ended is woken by `WORK_WAKE_TYPES`;
  *   other events wait for its next turn.
  * - A conversation node is woken only by `human_line` and `answer`.
- * - A project node (no agent) is never woken.
+ * - A project root is woken like a coordinating node once it has had a
+ *   coordinator (P20, T280); before that it has no agent and never wakes.
  * - A node the human stopped is never woken; its events stay pending.
  * - A wake budget (default 20 per node per hour) stops event loops: past
  *   it the node goes to the inbox and its events stay pending.
  */
 
-import type { NodeRole, RoutedEventType, Stream } from '@agile-agents/shared';
+import {
+  type NodeRole,
+  type RoutedEventType,
+  type Stream,
+  isAgentRole,
+} from '@agile-agents/shared';
 
 export const DEFAULT_WAKE_BUDGET_PER_HOUR = 20;
 
@@ -42,7 +48,8 @@ export function wakesRole(role: NodeRole, type: RoutedEventType): boolean {
     case 'conversation':
       return CONVERSATION_WAKE_TYPES.has(type);
     case 'project':
-      return false;
+      // P20 (T280): a project root's coordinator, like a coordinating node's.
+      return true;
   }
 }
 
@@ -62,7 +69,7 @@ export function stoppedByHuman(node: Stream): boolean {
   if (node.archived === true) return true;
   if (node.human.status === 'closed' || node.human.status === 'landed') return true;
   if (node.agent.status !== 'idle') return false;
-  const lastWorker = node.sessions.filter((s) => s.role === 'worker').at(-1);
+  const lastWorker = node.sessions.filter((s) => isAgentRole(s.role)).at(-1);
   return !(
     lastWorker?.status === 'stopped' &&
     lastWorker.ended_reason?.startsWith(DAEMON_STOP_PREFIX) === true
@@ -93,15 +100,18 @@ export class WakeBudget {
 
 /**
  * The decision for a node with pending events and no live session, before
- * the budget. A coordinating node has "an agent" once it has had a worker session.
+ * the budget. A coordinating node has "an agent" once it has had a worker or coordinator session.
  */
 export function wakeVerdict(
   node: Stream,
   role: NodeRole,
   pending: readonly { type: RoutedEventType }[],
 ): Exclude<WakeVerdict, 'budget'> {
-  if (role === 'project') return 'no_agent';
-  if (role === 'coordinating' && !node.sessions.some((s) => s.role === 'worker')) {
+  // A project root has "an agent" once it has had a coordinator (P20).
+  if (role === 'project' && !node.sessions.some((s) => s.role === 'coordinator')) {
+    return 'no_agent';
+  }
+  if (role === 'coordinating' && !node.sessions.some((s) => isAgentRole(s.role))) {
     return 'no_agent';
   }
   if (stoppedByHuman(node)) return 'stopped';

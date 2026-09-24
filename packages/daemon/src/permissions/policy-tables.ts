@@ -471,6 +471,75 @@ function reviewerVerdict(classified: PermissionRequest): PolicyVerdict {
   }
 }
 
+/**
+ * P20 (T280): a coordinator's redirect writes land in its scratch session
+ * dir (`ctx.worktreePath`) or nowhere; `tee`, process substitution and an
+ * unresolvable target deny.
+ */
+function coordinatorRedirectVerdict(tokens: string[], ctx: PolicyContext): PolicyVerdict {
+  if (!cmd.hasWritingRedirectionOrTee(tokens)) return ALLOW;
+  if (tokens.includes('tee') || tokens.some((t) => t.startsWith('<('))) {
+    return deny('coordinator role denies tee/process substitution — write files with Write');
+  }
+  if (cmd.hasUnresolvedRedirection(tokens)) {
+    return deny('coordinator role denies a redirect it cannot resolve');
+  }
+  for (const raw of cmd.redirectionTargets(tokens)) {
+    const resolved = cmd.resolveTargetPath(raw);
+    if (!resolved.safe || !isPathInside(resolved.path, ctx.worktreePath)) {
+      return deny('coordinator role writes only inside its session dir');
+    }
+  }
+  return ALLOW;
+}
+
+/** The reviewer's read-only tools, plus the two a scratch-dir redirect needs. */
+const COORDINATOR_WRITE_TOOLS = new Set(['echo', 'printf']);
+
+function coordinatorExecuteVerdict(command: string, ctx: PolicyContext): PolicyVerdict {
+  for (const atom of cmd.parseCommandIntoAtoms(command)) {
+    const redirect = coordinatorRedirectVerdict(atom.tokens, ctx);
+    if (redirect.action !== 'allow') return redirect;
+    const args = cmd.gitArgs(atom.tokens);
+    if (args !== undefined && REVIEWER_READ_ONLY_GIT_SUBCOMMANDS.has(args[0] ?? '')) continue;
+    if (isReviewerSafeTool(atom.tokens)) continue;
+    if (COORDINATOR_WRITE_TOOLS.has(atom.tokens[0] ?? '')) continue;
+    return deny(
+      'coordinator role denies exec except read-only tools and writes into its session dir',
+    );
+  }
+  return ALLOW;
+}
+
+/** P20 (T280): reads as visibility allows, writes only inside the session dir, no network. */
+function coordinatorVerdict(classified: PermissionRequest, ctx: PolicyContext): PolicyVerdict {
+  switch (classified.toolClass) {
+    case 'read':
+      return ALLOW;
+    case 'edit': {
+      const paths = allTargetPaths(classified);
+      if (paths.length === 0) {
+        return deny('cannot verify the edit target is inside the coordinator session dir');
+      }
+      const outside = paths.find((p) => !isPathInside(p, ctx.worktreePath));
+      return outside === undefined
+        ? ALLOW
+        : deny(`coordinator role writes only inside its session dir (${outside} is outside)`);
+    }
+    case 'execute':
+      if (classified.command === undefined) {
+        return deny('coordinator role denies exec with no command to classify');
+      }
+      return coordinatorExecuteVerdict(classified.command, ctx);
+    case 'fetch':
+      return deny('coordinator role has no network access');
+    default:
+      return deny(
+        `unknown tool kind${classified.title ? ` (${classified.title})` : ''} — safe default deny`,
+      );
+  }
+}
+
 export function roleVerdict(
   role: PermissionRole,
   classified: PermissionRequest,
@@ -481,5 +550,7 @@ export function roleVerdict(
       return engineerVerdict(classified, ctx);
     case 'reviewer':
       return reviewerVerdict(classified);
+    case 'coordinator':
+      return coordinatorVerdict(classified, ctx);
   }
 }
