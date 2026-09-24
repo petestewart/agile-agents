@@ -4,14 +4,16 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Stream } from '@agile-agents/shared';
 import { DeliveryService } from '../delivery/service';
 import { runInit } from '../init';
+import { ProjectService } from '../projects';
 import { StateStore } from '../store';
 import { StreamService } from '../streams/service';
+import { MainSync } from '../sync/main-sync';
 import { type FakeGitHub, startFakeGitHub } from './fake-server';
 import { PR_POLL_FLAGGED_MS, PR_POLL_MS, PrPoller } from './poller';
 import { createGitHubRest } from './rest';
@@ -239,5 +241,55 @@ describe('PR poller (T225)', () => {
     expect(moved).toEqual([{ repo: 'demo' }]);
     expect(mustGit(['rev-parse', 'main'])).toBe(mustGit(['rev-parse', 'HEAD'], other));
     rmSync(other, { recursive: true, force: true });
+  });
+
+  test('a PR merge syncs another live node on the repo (T226 MainSync)', async () => {
+    const s = await openPr();
+    const wt2 = join(repo, '.worktrees', 's-two');
+    mustGit(['worktree', 'add', '-q', '-b', 'stream/s-two', wt2, 'main']);
+    commitIn(wt2, 'b.txt', 'b\n');
+    const project = await new ProjectService(store, streams).create({ name: 'two' });
+    const two = await streams.create('human', {
+      title: 'Two',
+      goal: 'other',
+      project: project.id,
+      repo: 'demo',
+    });
+    await streams.update('daemon', two.id, { branch: 'stream/s-two', worktree: wt2 });
+    const sync = new MainSync({ streams, repos: () => store.getRepos(), intervalMs: 0 });
+    const p = new PrPoller({
+      streams,
+      repos: () => store.getRepos(),
+      github: () => port(),
+      onMainMoved: (r, except) => sync.mainMoved(r, except),
+      now,
+    });
+    await p.tick();
+    const sha = gh.merge(1);
+    clock += PR_POLL_MS;
+    await p.tick();
+    expect(streams.get(s.id).human.status).toBe('landed');
+    expect(mustGit(['merge-base', '--is-ancestor', sha, 'stream/s-two'], wt2)).toBe('');
+    expect(readFileSync(join(wt2, 'a.txt'), 'utf8')).toBe('a\n');
+  });
+
+  test('main checked out and dirty: the fast-forward skips with a note and touches nothing', async () => {
+    const s = await openPr();
+    const p = poller();
+    await p.tick();
+    const oldMain = mustGit(['rev-parse', 'main']);
+    writeFileSync(join(repo, 'README.md'), '# local edit\n');
+    gh.merge(1);
+    clock += PR_POLL_MS;
+    await p.tick();
+    expect(mustGit(['rev-parse', 'main'])).toBe(oldMain);
+    expect(readFileSync(join(repo, 'README.md'), 'utf8')).toBe('# local edit\n');
+    expect(moved).toEqual([]);
+    expect(lines(s.id).some((l) => l.includes('uncommitted changes'))).toBe(true);
+    // Once clean, the next check catches up.
+    mustGit(['checkout', '--', 'README.md']);
+    clock += PR_POLL_MS;
+    await p.tick();
+    expect(moved).toEqual([{ repo: 'demo' }]);
   });
 });

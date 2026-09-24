@@ -141,6 +141,8 @@ export interface AttachServiceOptions {
   /** Test seam: override the provider the resolved vendor maps to (the fake-agent transport). */
   provider?: (vendor: string, fallback: AcpProviderConfig) => AcpProviderConfig;
   now?: () => Date;
+  /** T226: a worker's turn ended (a deferred main sync runs now). */
+  onWorkerTurnEnd?: (streamId: string) => void;
 }
 
 /** P5: the project step of the session defaults; absent when the project names nothing. */
@@ -492,6 +494,7 @@ export class AttachService {
     // never dropped by letting the session go here; it runs as its own
     // turn, and that turn's end decides again.
     if (queued > 0) return;
+    if (role === 'worker') this.options.onWorkerTurnEnd?.(streamId);
     const waitingOnQuestion = this.openQuestionFor(streamId, sessionId) !== undefined;
     const waitingOnGate = this.openGateFor(streamId, sessionId) !== undefined;
     if (waitingOnQuestion || waitingOnGate) {

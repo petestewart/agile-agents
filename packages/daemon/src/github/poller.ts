@@ -294,7 +294,16 @@ export class PrPoller {
     m.sha = sha;
     if (sha === undefined || sha === '' || (seen === sha && except === undefined)) return;
     if (seen === undefined && except === undefined) return;
-    fastForwardMain(root, remote, main);
+    const skipped = fastForwardMain(root, remote, main);
+    if (skipped !== undefined) {
+      // Retry on the next check; say so once on the node that merged, if any.
+      m.sha = seen ?? '';
+      const line = `${main} moved on ${remote} but was not updated locally: ${skipped}; sync waits`;
+      if (except !== undefined) {
+        await this.options.streams.appendThread('daemon', except, { kind: 'event', body: line });
+      } else console.error(`pr poller: ${name}: ${line}`);
+      return;
+    }
     await this.options.onMainMoved?.(name, except);
   }
 }
@@ -426,13 +435,23 @@ function clip(body: string): string {
   return `: ${line.length > 200 ? `${line.slice(0, 199)}…` : line}`;
 }
 
-/** Fetch main and fast-forward the local branch; never a merge commit, never a forced move. */
-function fastForwardMain(root: string, remote: string, main: string): void {
+/**
+ * Fetch main and fast-forward the local branch; never a merge commit, never
+ * a forced move, never a change to a dirty checkout. Returns why it skipped.
+ */
+function fastForwardMain(root: string, remote: string, main: string): string | undefined {
   const current = git(['symbolic-ref', '--short', 'HEAD'], root, root);
   if (current.exitCode === 0 && current.stdout === main) {
+    const dirty = git(['status', '--porcelain', '--untracked-files=no'], root, root);
+    if (dirty.exitCode !== 0 || dirty.stdout !== '') {
+      return `${main} is checked out in ${root} with uncommitted changes`;
+    }
     const fetched = git(['fetch', '-q', remote, main], root, root);
-    if (fetched.exitCode === 0) gitWrite(['merge', '-q', '--ff-only', 'FETCH_HEAD'], root, root);
-    return;
+    if (fetched.exitCode !== 0) return `fetch ${remote} ${main} failed`;
+    const ff = gitWrite(['merge', '-q', '--ff-only', 'FETCH_HEAD'], root, root);
+    return ff.exitCode === 0 ? undefined : `${main} in ${root} cannot fast-forward`;
   }
-  git(['fetch', '-q', remote, `refs/heads/${main}:refs/heads/${main}`], root, root);
+  // Refused by git when main is checked out in another worktree or would not fast-forward.
+  const fetched = git(['fetch', '-q', remote, `refs/heads/${main}:refs/heads/${main}`], root, root);
+  return fetched.exitCode === 0 ? undefined : `local ${main} cannot fast-forward from ${remote}`;
 }

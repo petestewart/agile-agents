@@ -966,15 +966,15 @@ git status --short
 
 ### Ticket: T226 Sync after merge
 - **Priority:** P0
-- **Status:** In Review
-- **Owner:** opus:worker-T226
+- **Status:** Done (merge 36416f7)
+- **Owner:** —
 - **Scope:** Add `daemon/sync`. After any merge into a repo's main (a direct merge, a PR merged, or main moving outside the app), merge main into every other live work node's branch on that repo (P15):
   - deferred while the session is mid-turn or the worktree is dirty;
   - on a conflict: abort, set the node to `conflict` with the files, and the existing Resolve applies;
   - pushed branches are pushed again after a clean sync.
 - **Acceptance Criteria:** Unit: two nodes on one repo; merging one syncs the other; a conflicting pair is flagged with its files; a mid-turn node syncs at the end of the turn.
 - **Validation Steps:** `bun test packages/daemon/src/sync`; `bun run test:integration`.
-- **Notes:** After T223; the PR half needs T225. Direct half first; the PR half (main moving on `pr` repos) wires in after T225.
+- **Notes:** After T223; the PR half needs T225. Direct half first; the PR half (main moving on `pr` repos) wires in after T225. Review (sonnet) PASS; follow-ups done (first sweep after start reconciles every repo; sync conflicts say "Merging main into …"). Daemon ≈+260. Deferred set is in memory (restart is covered by the reconcile). Sweep interval shares `overlapRecomputeMs`. PR half: T225 calls `mainSync.mainMoved`.
 
 ### Ticket: T227 ∥ Overlap tracking
 - **Priority:** P1

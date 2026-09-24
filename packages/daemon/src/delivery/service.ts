@@ -133,6 +133,8 @@ export interface DeliveryServiceOptions {
   github?: (repo: RepoEntry) => GitHubPort;
   /** Tells the retro (§5.5) a stream landed. Fire-and-forget: never a failed land. */
   onStreamEnd?: (streamId: string) => void | Promise<void>;
+  /** T226: main moved on `repo` (sync the other live nodes). Fire-and-forget. */
+  onMainMoved?: (repo: string, mergedStream: string) => unknown;
 }
 
 export class DeliveryService {
@@ -255,6 +257,9 @@ export class DeliveryService {
     }
     // §5.5's retro, after the worktree is gone.
     void Promise.resolve(this.options.onStreamEnd?.(stream.id)).catch(() => {});
+    void Promise.resolve(this.options.onMainMoved?.(stream.repo as string, stream.id)).catch(
+      () => {},
+    );
     return { status: 'landed', target, sha: merged.sha, line };
   }
 
@@ -401,7 +406,10 @@ export class DeliveryService {
     }
     return [
       '## Resolve the land conflict',
-      `Landing ${stream.branch} into ${conflict.target} conflicted in: ${conflict.files.join(', ')}.`,
+      // T226: a sync after merge records the same conflict; its held_by line starts `sync `.
+      stream.delivery_state?.held_by?.[0]?.detail.startsWith('sync ') === true
+        ? `Merging ${conflict.target} into ${stream.branch} conflicted in: ${conflict.files.join(', ')}.`
+        : `Landing ${stream.branch} into ${conflict.target} conflicted in: ${conflict.files.join(', ')}.`,
       `Merge ${conflict.target} into this stream's branch (\`git merge ${conflict.target}\`) in this worktree.`,
       "Resolve each listed file keeping both sides' intent: the target's changes and this stream's goal.",
       'Run the tests, then commit the merge.',
