@@ -1035,12 +1035,12 @@ git status --short
 
 ### Ticket: T231 PR delivery pushes with the operator's git credentials
 - **Priority:** P0
-- **Status:** In Progress
-- **Owner:** opus:worker-T231
+- **Status:** Done (merge 68e4cc4)
+- **Owner:** —
 - **Scope:** From Pete's Phase 8 live run (2026-09-24, macOS): `agile deliver` on a `pr` repo failed at the push with `fatal: could not read Username for 'https://github.com': Device not configured` and the node went `held`. Cause (confirmed by Pete's agent): `delivery/git.ts` runs every git command with `sandboxedSubprocessEnv`, which sets `HOME=<repo>/.agile-daemon-cache/git/home`, so the osxkeychain helper (and any `gh auth setup-git` helper or `~/.gitconfig` credential/`insteadOf` setting) is lost. (1) Network git operations — the delivery push, `sync/main-sync.ts` push/fetch, the poller's `ls-remote`/fetch/fast-forward — run with the operator's real credential setup (real HOME or an equivalent pass-through); plumbing and merge commands stay sandboxed. No token in the daemon. (2) Every daemon git call sets `GIT_TERMINAL_PROMPT=0`, and a credential failure reads as one clear line naming what to set up (`gh auth setup-git` or a credential helper). (3) A deliver with nothing to land records a visible state (the Delivery panel and `node show` say "nothing to deliver: no commits beyond <main>"), not a null `delivery_state`.
 - **Acceptance Criteria:** A regression test that fails on the old code: a credential helper configured only in the real HOME's gitconfig serves a push/fetch against a local HTTP or file remote that requires it (or an env-assertion test on push/fetch/ls-remote). A missing credential fails fast with the clear line. Nothing-to-land state tested in delivery and shown in the cockpit.
 - **Validation Steps:** `bun test packages/daemon/src/delivery packages/daemon/src/sync packages/daemon/src/github`; `bun run test:integration`; `bun run test:e2e`.
-- **Notes:** Pete's nodes A and B on agile-test-repo are ready to deliver once this lands.
+- **Notes:** Pete's nodes A and B on agile-test-repo are ready to deliver once this lands. Review (sonnet): 1 blocking fixed — network git gets an allow-listed env (real HOME, PATH, SSH/GIT/locale/proxy/gh vars; daemon secrets such as TYPESAFE_API_KEY and AGILE_* dropped; GIT_AUTHOR/COMMITTER dropped), tested by env-name dump. `GIT_TERMINAL_PROMPT=0` on every daemon git call; credential failures say to run `gh auth setup-git`. `nothing_to_deliver` held reason shown in node show and the Delivery panel. Daemon ≈+110. Open: main-sync pushes to a hard-coded `origin`; the operator's pre-push hooks now run on delivery pushes.
 
 ### Ticket: T230 Phase 8 QA and Pete's look
 - **Priority:** P0
