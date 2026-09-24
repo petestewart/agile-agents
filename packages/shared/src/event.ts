@@ -96,6 +96,10 @@ export const EVENT_KINDS = [
   'entity_put',
   'entity_deleted',
 
+  // -- migration (store/migrate.ts, T202) --  once per migrated home.
+  // data: {project, reparented, streams, repos, parent_branches}
+  'home_migrated',
+
   // -- bus --  the one message event; T130 prunes it with the bus itself.
   'message',
 ] as const;
