@@ -628,6 +628,15 @@ Build order: Phase 0 → 1 → 2 → 3 → 4 → 5 → 6. Within a phase, ticket
 - **Validation Steps:** `bun test packages/cli packages/daemon`; `bun run test:integration`.
 - **Notes:** After T174.
 
+### Ticket: T176 Landing conflicts are resolvable; parents aren't worked on by accident
+- **Priority:** P1
+- **Status:** Todo
+- **Owner:** —
+- **Scope:** From Pete's walkthrough (2026-09-24): he attached a worker to the parent "Ledger features" as well as its three children; the parent's worker built all three features on the parent branch, so every child's land conflicted. (1) Attach on a stream with open children asks for confirmation in the cockpit (and needs `--force` on the CLI), saying a parent's branch is where its children land. (2) A land that conflicted no longer shows "Ready" beside the conflict; the Land panel shows the conflict and the files. (3) A **Resolve** action on a conflicted stream attaches a worker whose prompt says: merge the target branch into this stream branch, resolve the listed files keeping both sides' intent, run the tests, commit; then the operator lands again. Design §8 stops at "blocked, worktree kept"; log the Resolve path as a Decision.
+- **Acceptance Criteria:** Unit + e2e for (1) and (2); (3) tested with the fake agent up to the prompt and the re-land; Pete's live check lands three conflicting siblings via Resolve.
+- **Validation Steps:** `bun test packages/daemon packages/cli packages/ui`; `bun run test:e2e`.
+- **Notes:** After T174.
+
 ### Ticket: T165 Cockpit as an installable app
 - **Priority:** P2
 - **Status:** Todo (step 1 done 2026-09-22, merge 8121113; step 2 awaits Pete)
