@@ -1435,10 +1435,10 @@ agile tail --node $N --events
 - **Validation Steps:** `bun test packages/daemon/src/coordination`.
 - **Notes:** After T284. Review (sonnet) PASS. Daemon +26. `note_child` → `coordinator_note` to that child only. Overlap summary lists the parent's options. Question for Pete: `coordinator_note` doesn't wake a finished work node under P11, so a note to a done child may never be read.
 
-### Ticket: T288 A coordinator note wakes an ended work node
+### Ticket: T290 A coordinator note wakes an ended work node
 - **Priority:** P1
 - **Status:** In Progress
-- **Owner:** opus:worker-T288
+- **Owner:** opus:worker-T290
 - **Scope:** Pete (2026-09-24): a parent's `coordinator_note` must reach its children, so it wakes a work node whose session has ended (added to P11's work wake types). Nodes the human stopped, landed or closed still never wake; the per-node wake budget still applies.
 - **Acceptance Criteria:** Wake-policy and delivery tests: a note to an ended work node starts a session; a landed one stays pending.
 - **Validation Steps:** `bun test packages/daemon/src/events`.
@@ -1531,6 +1531,15 @@ agile tail --node $C --events
 - **Acceptance Criteria:** A test: three similar findings across two projects produce one proposal with its sources.
 - **Validation Steps:** `bun test packages/daemon/src/director packages/daemon/src/knowledge`.
 - **Notes:** After T264 and T301.
+
+### Ticket: T305 The Director reads repos
+- **Priority:** P1
+- **Status:** Todo
+- **Owner:** Unassigned
+- **Scope:** P20: the Director reads code under the visibility rules. Give its streamless session the coordinator read allow-list (every registered repo, agile home hidden), in the hook and the ACP permission path. Writes stay inside its scratch dir; no network.
+- **Acceptance Criteria:** Hook tests: a Director read inside a registered repo is allowed; the agile home and paths outside every repo are denied; writes outside scratch are still denied.
+- **Validation Steps:** `bun test packages/daemon/src/hook packages/daemon/src/director packages/daemon/src/permissions`.
+- **Notes:** After T301. Pete approved 2026-09-24.
 
 ### Ticket: T304 Phase 12 QA and Pete's look
 - **Priority:** P0
@@ -1638,13 +1647,10 @@ Daemon: `em/`, `architect/`, `oracle/`, `qa/`, `halts/`, `quota/`, `handoff/`, `
 
 ## 10. Discovered Issues Log
 
-<<<<<<< HEAD
-- Phase 11 complete on `claude/phase-11` (2026-09-24): T280–T288 merged, T289 QA ACCEPT; awaiting Pete's look. Open for Pete: `proposals/` home dir (T282); `Contract.paths` for the contract-touched alert (T284); should `coordinator_note` wake a finished work node (T287). Phase 12 proceeds on `claude/phase-12` (draft PR https://github.com/petestewart/agile-agents/pull/8 for Phase 11).
-=======
-- 2026-09-24 Pete: `proposals/<AP-id>.yaml` home dir APPROVED (T282). T287 question answered: coordinator notes wake ended work nodes (T288).
+- 2026-09-24 Pete: Director keeps role `coordinator` for now (may get its own role later). A new project is always a draft (T301), agreed. Director repo reads → T305. T268: file-by-file chunks plus the changed-file list stay; no whole-diff summary.
 
-- Phase 11 complete on `claude/phase-11` (2026-09-24): T280–T288 merged, T289 QA ACCEPT; awaiting Pete's look. Open for Pete: `proposals/` home dir (T282); `Contract.paths` for the contract-touched alert (T284); should `coordinator_note` wake a finished work node (T287). Phase 12 proceeds on `claude/phase-12`.
->>>>>>> origin/claude/phase-11
+- 2026-09-24 Pete: `proposals/<AP-id>.yaml` home dir APPROVED (T282). T287 question answered: coordinator notes wake ended work nodes (T290).
+- Phase 11 complete on `claude/phase-11` (2026-09-24): T280–T288 merged, T289 QA ACCEPT; awaiting Pete's look. Open for Pete: `proposals/` home dir (T282); `Contract.paths` for the contract-touched alert (T284); should `coordinator_note` wake a finished work node (T287). Phase 12 proceeds on `claude/phase-12` (draft PR https://github.com/petestewart/agile-agents/pull/8 for Phase 11).
 - Phase 10 complete on `claude/phase-10` (2026-09-24): T260–T266 merged, T267 QA ACCEPT; T268 (real-classifier ship hold) before Pete's look. Phase 11 proceeds on `claude/phase-11`.
 - Phase 9 complete on `claude/phase-9` (2026-09-24): T240–T246 merged, T247 QA ACCEPT; awaiting Pete's look (draft PR https://github.com/petestewart/agile-agents/pull/6, base claude/phase-8). Phase 10 proceeds on `claude/phase-10`.
 - (Pete, 2026-09-24) P13 bullet 1 (leave a private repo out of a session's readable directories) is deferred until it becomes a need; the hook check (T229) stands alone.
