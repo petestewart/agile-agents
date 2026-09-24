@@ -108,17 +108,10 @@ export interface CockpitFrame {
 /** One registered repo (T209). `delivery` is `direct` unless repos.yaml says otherwise. */
 export interface CockpitRepoRow {
   name: string;
-  delivery: string;
+  delivery: 'direct' | 'pr';
 }
 
 const LIVE_SESSION = new Set(['starting', 'running', 'idle']);
-
-/** The repo's delivery mode for the repo view; `direct` when the entry names none. */
-function deliveryLabel(entry: unknown): string {
-  const delivery = (entry as { delivery?: { mode?: unknown; auto_merge?: unknown } }).delivery;
-  if (delivery?.mode !== 'pr') return 'direct';
-  return delivery.auto_merge === true ? 'pr · auto-merge' : 'pr';
-}
 
 /** One entry of the rail's project switcher (T208). */
 export interface CockpitProjectRow {
@@ -150,7 +143,10 @@ export function buildCockpitFrame(
       ...waitsOn(s),
     })),
     projects: (projects?.list() ?? []).map((p) => ({ id: p.id, name: p.name, root: p.root })),
-    repos: Object.entries(repos).map(([name, entry]) => ({ name, delivery: deliveryLabel(entry) })),
+    repos: Object.entries(repos).map(([name, entry]) => ({
+      name,
+      delivery: entry.delivery ?? 'direct',
+    })),
   };
 }
 

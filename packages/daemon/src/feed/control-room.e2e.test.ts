@@ -2002,7 +2002,7 @@ describe('repo view and lenses (Playwright e2e, T209)', () => {
       let page: Page | undefined;
       try {
         await cockpit.store.putRepos({
-          api: { path: cockpit.home },
+          api: { path: cockpit.home, delivery: 'pr' },
           web: { path: cockpit.home },
         });
         const shop = await cockpit.projects.create({ name: 'Shop' });
@@ -2051,7 +2051,7 @@ describe('repo view and lenses (Playwright e2e, T209)', () => {
         const api = '[data-testid="repo-view"] [data-repo="api"]';
         await page.locator(`${api} [data-stream="${blogApi.id}"]`).waitFor({ state: 'visible' });
         expect(await page.locator(`${api} [data-testid="repo-delivery"]`).textContent()).toBe(
-          '(direct)',
+          '(pr)',
         );
         expect(
           await page

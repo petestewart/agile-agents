@@ -83,7 +83,7 @@ export interface CockpitFrame {
 /** T209: mirror of `feed/snapshot.ts`'s `CockpitRepoRow`. */
 export interface CockpitRepoRow {
   name: string;
-  delivery: string;
+  delivery: 'direct' | 'pr';
 }
 
 /** T208: mirror of `feed/snapshot.ts`'s `CockpitProjectRow`. */

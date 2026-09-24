@@ -233,7 +233,7 @@ export function isLiveNode(row: Pick<CockpitStreamRow, 'human_status'>): boolean
 export interface RepoGroup {
   repo: string;
   /** `direct` unless repos.yaml names another mode. */
-  delivery: string;
+  delivery: CockpitRepoRow['delivery'];
   rows: CockpitStreamRow[];
 }
 
