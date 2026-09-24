@@ -20,10 +20,12 @@
  */
 
 import {
+  type Delivery,
   type EventDeliveryStatus,
   type RoutedEvent,
   type RoutedEventId,
   type RoutedEventType,
+  type RoutingEntry,
   ulid,
 } from '@agile-agents/shared';
 import type { StateStore } from '../store/store';
@@ -39,6 +41,19 @@ export interface MarkMeta {
   session?: string;
   digest?: string;
 }
+
+/** T245: one row of a node's Activity: the event, why it came, and what became of it. */
+export interface ActivityEntry {
+  event: RoutedEvent;
+  because: RoutingEntry['because'];
+  status: EventDeliveryStatus;
+  delivered_at?: string;
+  session?: string;
+  digest?: string;
+}
+
+/** Cap on Activity rows returned, newest first. */
+export const ACTIVITY_MAX = 200;
 
 export class RoutedEventService {
   private byId: Map<string, RoutedEvent> | undefined;
@@ -88,6 +103,38 @@ export class RoutedEventService {
     const out = new Map<string, EventDeliveryStatus>();
     for (const line of this.store.readDeliveries(node)) out.set(line.event, line.status);
     return out;
+  }
+
+  /**
+   * T245: every event routed to `node`, newest first, with its reason and
+   * the latest delivery line (status, and the session or digest that carried it).
+   */
+  activityFor(node: string, limit = ACTIVITY_MAX): ActivityEntry[] {
+    const latest = new Map<string, Delivery>();
+    for (const line of this.store.readDeliveries(node)) latest.set(line.event, line);
+    const out: ActivityEntry[] = [];
+    for (const [id, line] of latest) {
+      const event = this.get(id);
+      if (event === undefined) continue;
+      const because = event.routing.find((r) => r.node === node)?.because ?? 'self';
+      out.push({
+        event,
+        because,
+        status: line.status,
+        ...(line.delivered_at !== undefined ? { delivered_at: line.delivered_at } : {}),
+        ...(line.session !== undefined ? { session: line.session } : {}),
+        ...(line.digest !== undefined ? { digest: line.digest } : {}),
+      });
+    }
+    return out.reverse().slice(0, limit);
+  }
+
+  /** T245: the repo view's events: every event on `repo`, newest first. */
+  forRepo(repo: string, limit = ACTIVITY_MAX): RoutedEvent[] {
+    return [...this.index().values()]
+      .filter((e) => e.repo === repo)
+      .reverse()
+      .slice(0, limit);
   }
 
   pendingFor(node: string): PendingDelivery[] {

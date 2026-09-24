@@ -40,6 +40,7 @@ import { AttachService, VerbService } from '../attach';
 import { ClassifierKeyService, FakeClassifier } from '../classifier';
 import { DeliveryService } from '../delivery';
 import { DocsService } from '../docs';
+import { RoutedEventService, routeAndEmit } from '../events';
 import { GateService } from '../gates';
 import { type HttpServerHandle, startHttpServer } from '../http';
 import { InboxService } from '../inbox';
@@ -381,6 +382,7 @@ interface Cockpit {
   questions: QuestionService;
   gates: GateService;
   rules: RulesService;
+  events: RoutedEventService;
   /** Every `deliver(sessionId, question)` the question service made — the hand-off to the asking session. */
   delivered: Array<{ session: string; question: Question }>;
   http: HttpServerHandle;
@@ -414,6 +416,7 @@ async function startCockpit(
   const rules = new RulesService({ store, streams });
   const inbox = new InboxService({ streams, questions, gates, rules });
   const projects = new ProjectService(store, streams);
+  const events = new RoutedEventService(store);
   const http = startHttpServer({
     port: 0,
     version: 'test',
@@ -423,6 +426,7 @@ async function startCockpit(
     gates,
     streams,
     projects,
+    events,
     questions,
     inbox,
     rules,
@@ -450,6 +454,7 @@ async function startCockpit(
     questions,
     gates,
     rules,
+    events,
     delivered,
     http,
     base: `http://127.0.0.1:${http.port}`,
@@ -2353,6 +2358,78 @@ describe('repo view and lenses (Playwright e2e, T209)', () => {
           page,
           '[data-testid="deps-lens"] [data-testid="dep-edge"]',
           'api: add /posts waits on api: add salePrice',
+        );
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+});
+
+// ---- T245: the node Activity tab --------------------------------------------
+
+describe('node activity (Playwright e2e, T245)', () => {
+  browserTest(
+    "a main_changed on api shows on the other api node's Activity as same repo",
+    async () => {
+      const cockpit = await startCockpit();
+      let page: Page | undefined;
+      try {
+        await cockpit.store.putRepos({ api: { path: cockpit.home } });
+        const shop = await cockpit.projects.create({ name: 'Shop' });
+        const blog = await cockpit.projects.create({ name: 'Blog' });
+        const a = await cockpit.streams.create('human', {
+          title: 'api: add salePrice',
+          goal: 'g',
+          project: shop.id,
+          repo: 'api',
+        });
+        const b = await cockpit.streams.create('human', {
+          title: 'api: add /posts',
+          goal: 'g',
+          project: blog.id,
+          repo: 'api',
+        });
+        // T244's producer emits this on a merge; here it is emitted directly.
+        const event = await routeAndEmit(
+          cockpit.events,
+          {
+            type: 'main_changed',
+            subject: a.id,
+            repo: 'api',
+            payload: { repo: 'api', sha: 'abc123', outcome: 'synced' },
+            by: 'daemon',
+          },
+          cockpit.streams.list(),
+        );
+        expect(event.routing).toEqual([{ node: b.id, because: 'same_repo' }]);
+
+        page = await openPage();
+        await page.goto(`${cockpit.base}/`);
+        await page.locator(`[data-testid="stream-tree"] [data-stream="${b.id}"]`).click();
+        await page.locator('.cr-tabs [data-tab="activity"]').click();
+        const row = `[data-testid="activity"] [data-event="${event.id}"]`;
+        await waitForText(page, `${row} [data-testid="activity-because"]`, 'same repo');
+        expect(await page.locator(`${row} [data-testid="activity-type"]`).textContent()).toBe(
+          'main changed',
+        );
+        expect(
+          await page.locator(`${row} [data-testid="activity-status"]`).textContent(),
+        ).toContain('pending');
+
+        // The subject itself was not routed the event.
+        await page.locator(`[data-testid="stream-tree"] [data-stream="${a.id}"]`).click();
+        await page.locator('.cr-tabs [data-tab="activity"]').click();
+        await page.locator('[data-testid="activity-empty"]').waitFor();
+
+        // The repo view lists the repo's events.
+        await page.locator('[data-view="repos"]').click();
+        await waitForText(
+          page,
+          `[data-testid="repo-view"] [data-repo="api"] [data-event="${event.id}"]`,
+          'main changed · api: add salePrice',
         );
       } finally {
         await teardown([page]);

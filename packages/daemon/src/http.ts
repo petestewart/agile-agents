@@ -41,6 +41,7 @@ import {
 import type { ClassifierKeyService } from './classifier';
 import { type DeliveryService, LandRefusedError } from './delivery';
 import type { DocsService } from './docs';
+import type { RoutedEventService } from './events';
 import {
   type EventTailerHandle,
   buildCockpitFrame,
@@ -149,6 +150,8 @@ export interface HttpServerOptions {
   docs?: DocsService;
   /** T222: the pr refusal's GitHub auth check; absent reads as unavailable. */
   githubAuth?: () => Promise<boolean>;
+  /** T245: the node Activity tab and the repo view's events. */
+  events?: RoutedEventService;
   /** Test hook: the tailer's poll interval (default 250ms). */
   feedPollIntervalMs?: number;
 }
@@ -379,6 +382,7 @@ interface FeedContext {
   docs?: DocsService;
   /** T222: the pr refusal's GitHub auth check; absent reads as unavailable. */
   githubAuth?: () => Promise<boolean>;
+  events?: RoutedEventService;
 }
 
 function resolveFeedContext(options: HttpServerOptions): FeedContext | undefined {
@@ -398,6 +402,7 @@ function resolveFeedContext(options: HttpServerOptions): FeedContext | undefined
     repoInPlace: options.repoInPlace,
     docs: options.docs,
     githubAuth: options.githubAuth,
+    events: options.events,
   };
 }
 
@@ -505,6 +510,34 @@ async function handleSessionSettingsRoute(
     const message = messageOf(err);
     if (err instanceof NotFoundError) return errorResponse(404, message);
     return errorResponse(400, message);
+  }
+}
+
+/**
+ * T245 (projects-design §8): read-only event views.
+ *
+ *   GET /api/streams/:id/activity  every event routed to the node: reason, delivery status, session or digest
+ *   GET /api/repos/:name/events    every event on the repo
+ */
+function handleActivityRoute(
+  req: Request,
+  url: URL,
+  feed: FeedContext | undefined,
+): Response | undefined {
+  if (req.method !== 'GET') return undefined;
+  const node = url.pathname.match(/^\/api\/streams\/([^/]+)\/activity$/);
+  const repo = url.pathname.match(/^\/api\/repos\/([^/]+)\/events$/);
+  if (!node && !repo) return undefined;
+  if (!feed?.events) return errorResponse(503, 'events not available');
+  try {
+    if (node) {
+      const id = UlidSchema.safeParse(decodeURIComponent(node[1] ?? ''));
+      if (!id.success) return errorResponse(400, `invalid stream id: ${node[1]}`);
+      return jsonResponse({ activity: feed.events.activityFor(id.data) });
+    }
+    return jsonResponse({ events: feed.events.forRepo(decodeURIComponent(repo?.[1] ?? '')) });
+  } catch (err) {
+    return errorResponse(500, messageOf(err));
   }
 }
 
@@ -926,6 +959,9 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
 
         const sessionSettingsRoute = await handleSessionSettingsRoute(req, url, feed, sameOrigin);
         if (sessionSettingsRoute) return sessionSettingsRoute;
+
+        const activityRoute = handleActivityRoute(req, url, feed);
+        if (activityRoute) return activityRoute;
 
         const repoRoute = await handleRepoRoute(req, url, feed, sameOrigin);
         if (repoRoute) return repoRoute;
