@@ -1033,7 +1033,7 @@ describe('T243: the wake policy (P11)', () => {
     return node;
   }
   const prompts = (log: string) =>
-    readFileSync(log, 'utf8')
+    (existsSync(log) ? readFileSync(log, 'utf8') : '')
       .split('\n')
       .filter((l) => l.includes('"session/prompt"'));
 
@@ -1043,7 +1043,9 @@ describe('T243: the wake policy (P11)', () => {
     await attachService.say(node.id, 'one more thing');
     await waitFor(() => streams.get(node.id).sessions.length === 2);
     await waitFor(() => store.readDeliveries(node.id).at(-1)?.status === 'delivered');
-    expect(prompts(log).some((p) => p.includes('one more thing'))).toBe(true);
+    // `delivered` is written when the runner hands the digest to the turn,
+    // just before it goes over ACP: the agent's log line follows it.
+    await waitFor(() => prompts(log).some((p) => p.includes('one more thing')));
     expect(threadBodies(node.id)).toContain('woken by human_line');
   }, 30_000);
 
@@ -1102,6 +1104,8 @@ describe('T243: the wake policy (P11)', () => {
     expect(streams.get(node.id).sessions).toHaveLength(1);
     attachService.wakePending();
     await waitFor(() => store.readDeliveries(node.id).at(-1)?.status === 'delivered');
-    expect(prompts(log).some((p) => p.includes('left over'))).toBe(true);
+    // `delivered` is written when the runner hands the digest to the turn,
+    // just before it goes over ACP: the agent's log line follows it.
+    await waitFor(() => prompts(log).some((p) => p.includes('left over')));
   }, 30_000);
 });

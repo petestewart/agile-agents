@@ -38,7 +38,12 @@ import { readHomeConfigFile } from '../config';
 import { REPLY_FIRST, SessionDelivery } from '../events/delivery';
 import { routeAndEmit } from '../events/router';
 import { RoutedEventService } from '../events/service';
-import { DEFAULT_WAKE_BUDGET_PER_HOUR, WakeBudget, wakeVerdict } from '../events/wake';
+import {
+  DAEMON_STOP_PREFIX,
+  DEFAULT_WAKE_BUDGET_PER_HOUR,
+  WakeBudget,
+  wakeVerdict,
+} from '../events/wake';
 import { settingsFileName } from '../hook/settings';
 import type { RuleStatsOutcome } from '../rules/service';
 import type { BriefDoc } from '../runner/brief';
@@ -820,7 +825,7 @@ export class AttachService {
         detached
           ? undefined
           : stopReason !== undefined
-            ? `stopped: ${stopReason}`
+            ? `${DAEMON_STOP_PREFIX}${stopReason}`
             : endedReason(reason, ok, vendorError),
       );
       // A human pulled the plug: back to `idle`. `done` would claim the kill finished the work.
