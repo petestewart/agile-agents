@@ -1217,6 +1217,14 @@ describe('stream page (Playwright e2e, T161)', () => {
             hasText: 'use RFC 4180 quoting',
           })
           .waitFor();
+        // T174: sent mid-turn, so it is marked as waiting until delivered.
+        const queuedMarker = page
+          .locator('[data-testid="thread-entry"][data-by="human"]', {
+            hasText: 'use RFC 4180 quoting',
+          })
+          .locator('[data-testid="thread-queued"]');
+        await queuedMarker.waitFor({ state: 'visible' });
+        expect(await queuedMarker.textContent()).toContain('queued');
 
         // ---- question: the worker asks through the `ask` verb, then ends its turn.
         const session = cockpit.streams.get(stream.id).sessions.find((s) => s.role === 'worker');
@@ -1240,6 +1248,8 @@ describe('stream page (Playwright e2e, T161)', () => {
           .locator('[data-testid="thread-entry"]', { hasText: 'noted: RFC 4180 quoting' })
           .waitFor();
         expect(readFileSync(promptLog, 'utf8')).toContain('use RFC 4180 quoting');
+        // T174: delivered, so no longer marked as waiting.
+        await queuedMarker.waitFor({ state: 'detached' });
 
         // The worker's work, committed in its worktree.
         const worktree = cockpit.streams.get(stream.id).worktree ?? '';

@@ -306,8 +306,8 @@ export class AttachService {
       ...(this.options.cliBin !== undefined ? { cliBin: this.options.cliBin } : {}),
       ...(this.options.socketPath !== undefined ? { socketPath: this.options.socketPath } : {}),
       ...(this.options.now !== undefined ? { now: this.options.now } : {}),
-      onTurnEnd: () => {
-        void this.onTurnEnd(stream.id, sessionId, role);
+      onTurnEnd: (info) => {
+        void this.onTurnEnd(stream.id, sessionId, role, info.queued);
       },
     });
     this.handles(role).set(stream.id, handle);
@@ -367,9 +367,18 @@ export class AttachService {
   ): Promise<void> {
     await this.options.store.updateStream('daemon', streamId, (before) => ({
       ...before,
-      sessions: before.sessions.map((s) =>
-        s.id === sessionId ? { ...s, status, ...(ended_reason ? { ended_reason } : {}) } : s,
-      ),
+      sessions: before.sessions.map((s) => {
+        if (s.id !== sessionId) return s;
+        // An ended session has nothing waiting: its queued lines just stay on the thread.
+        const ended = status === 'stopped' || status === 'error';
+        const { queued, ...rest } = s;
+        return {
+          ...rest,
+          status,
+          ...(ended_reason ? { ended_reason } : {}),
+          ...(!ended && queued !== undefined ? { queued } : {}),
+        };
+      }),
     }));
   }
 
@@ -416,9 +425,18 @@ export class AttachService {
    * `done`/`blocked`) records it. A Claude session told to wait for a gate
    * ends its turn, so the gate half is the normal path.
    */
-  private async onTurnEnd(streamId: string, sessionId: string, role: SessionRole): Promise<void> {
+  private async onTurnEnd(
+    streamId: string,
+    sessionId: string,
+    role: SessionRole,
+    queued = 0,
+  ): Promise<void> {
     const handle = this.handles(role).get(streamId);
     if (handle === undefined || handle.sessionId !== sessionId) return;
+    // T174: a prompt queued behind this turn (a human line, an answer) is
+    // never dropped by letting the session go here; it runs as its own
+    // turn, and that turn's end decides again.
+    if (queued > 0) return;
     const waitingOnQuestion = this.openQuestionFor(streamId, sessionId) !== undefined;
     const waitingOnGate = this.openGateFor(streamId, sessionId) !== undefined;
     if (waitingOnQuestion || waitingOnGate) {
@@ -481,7 +499,10 @@ export class AttachService {
   /**
    * The stream page's composer (§9.3): a human line, and if a worker is
    * attached, a prompt too. Turns are serialized (`runner/session.ts`), so
-   * a line typed mid-turn is read when that turn ends.
+   * a line typed mid-turn is read when that turn ends; until then its
+   * thread `ts` sits in the session's `queued` list, which the stream page
+   * shows as waiting. A session already being let go gets no prompt: the
+   * line stays on the thread for the next attach's brief.
    */
   async say(streamId: string, body: string): Promise<{ entry: ThreadEntry; prompted?: string }> {
     const entry = await this.options.streams.appendThread('human', streamId, {
@@ -489,16 +510,82 @@ export class AttachService {
       body,
     });
     const handle = this.handleFor(streamId, 'worker');
-    if (handle === undefined) return { entry };
-    await this.setSessionStatus(streamId, handle.sessionId, 'running').catch(() => {
-      // Best effort: the prompt below is what matters.
-    });
-    void handle
-      .prompt(`The operator says on the stream: ${body}\n\nContinue the work.`)
-      .catch(() => {
-        // `runPromptTurn` already stopped the session and recorded why.
+    if (handle === undefined || handle.stopped()) return { entry };
+    const sessionId = handle.sessionId;
+    const busy = handle.turnsInFlight() > 0;
+    if (!busy) {
+      // Nothing is running, so nothing can end and let the session go
+      // before the prompt below is queued.
+      await this.setSessionStatus(streamId, sessionId, 'running').catch(() => {
+        // Best effort: the prompt below is what matters.
       });
-    return { entry, prompted: handle.sessionId };
+    }
+    // Reserve the turn in the runner before any further await: a running
+    // turn that ends meanwhile then sees this one queued and keeps the
+    // session (T174 review). Marker writes are chained, so a fast delivery
+    // never leaves a stale `queued` entry behind.
+    let delivered = false;
+    let markers: Promise<unknown> = Promise.resolve();
+    const unqueue = (): void => {
+      if (delivered) return;
+      delivered = true;
+      if (!busy) return;
+      markers = markers
+        .then(() =>
+          this.setSessionQueued(streamId, sessionId, (queued) =>
+            queued.filter((ts) => ts !== entry.ts),
+          ),
+        )
+        .catch(() => {
+          // The stream or session is gone; the exit path clears the list.
+        });
+    };
+    void handle
+      .prompt(sayPrompt(body), {
+        onDelivered: () => {
+          unqueue();
+          if (busy) {
+            void this.setSessionStatus(streamId, sessionId, 'running').catch(() => {
+              // Best effort.
+            });
+          }
+        },
+      })
+      .catch(() => {
+        // `runPromptTurn` already stopped the session and recorded why, or
+        // the session was stopped before the line was delivered.
+        unqueue();
+      });
+    if (busy && !delivered) {
+      markers = markers
+        .then(() =>
+          delivered
+            ? undefined
+            : this.setSessionQueued(streamId, sessionId, (queued) => [...queued, entry.ts]),
+        )
+        .catch(() => {
+          // Best effort: the marker is display only.
+        });
+      await markers;
+    }
+    return { entry, prompted: sessionId };
+  }
+
+  /** Rewrites a session's `queued` list (thread `ts` of lines waiting on a turn). */
+  private async setSessionQueued(
+    streamId: string,
+    sessionId: string,
+    change: (queued: string[]) => string[],
+  ): Promise<void> {
+    await this.options.store.updateStream('daemon', streamId, (before) => ({
+      ...before,
+      sessions: before.sessions.map((s) => {
+        if (s.id !== sessionId) return s;
+        const { queued: _drop, ...rest } = s;
+        const next = change(s.queued ?? []).slice(-50);
+        return next.length > 0 ? { ...rest, queued: next } : rest;
+      }),
+    }));
   }
 
   /**
@@ -694,4 +781,16 @@ export function endedReason(
       ? reason
       : `${reason}: ${vendorError}`;
   return text.length > 300 ? `${text.slice(0, 299)}…` : text;
+}
+
+/**
+ * T174: the prompt a composer line becomes. The old wording ("Continue the
+ * work.") let a worker read a question and carry on without answering.
+ */
+export function sayPrompt(body: string): string {
+  return [
+    `The operator wrote on the stream: ${body}`,
+    '',
+    'Reply to the operator on the stream first, with `progress`: if it is a question, answer it directly; if it is an instruction, acknowledge it and follow it. Then continue the work.',
+  ].join('\n');
 }

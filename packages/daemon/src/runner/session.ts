@@ -116,7 +116,7 @@ export interface AgentSessionOptions {
    * or waiting on an answer) is a stream question for `attach/service.ts`.
    * A failed turn never calls it: the session is already stopped.
    */
-  onTurnEnd?: (info: { session: string; stream: string; turn: number }) => void;
+  onTurnEnd?: (info: { session: string; stream: string; turn: number; queued: number }) => void;
   /**
    * The rules read side: the ACP permission responder runs the pattern
    * rules in scope, the only enforcement a vendor with no pre-tool-use hook
@@ -154,8 +154,16 @@ export interface AgentSessionHandle {
   responder: PermissionResponderHandle;
   /** Resolves after exit/crash and this module's cleanup. Never rejects. */
   exited: Promise<AgentExitInfo>;
-  /** A new `session/prompt` turn (an answer, a composer line). */
-  prompt(text: string): Promise<unknown>;
+  /**
+   * A new `session/prompt` turn (an answer, a composer line). Queued behind
+   * any running turn; `onDelivered` fires when this turn actually starts.
+   * After `stop()` a queued turn is skipped (it rejects) rather than sent.
+   */
+  prompt(text: string, opts?: { onDelivered?: () => void }): Promise<unknown>;
+  /** Turns started or queued and not yet finished (0 = idle). */
+  turnsInFlight(): number;
+  /** Whether `stop()` has been called. */
+  stopped(): boolean;
   /** `cancel()` + `close()`; the exit path still runs off the session's own `exit` event. */
   stop(): void;
 }
@@ -528,8 +536,21 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
    */
   let turnQueue: Promise<void> = Promise.resolve();
   let turnCount = 0;
-  async function runPromptTurn(text: string): Promise<unknown> {
+  /** Turns enqueued and not yet finished, the running one included. */
+  let inFlight = 0;
+  let stopRequested = false;
+  async function runPromptTurn(text: string, onDelivered?: () => void): Promise<unknown> {
+    inFlight += 1;
     const runOnce = async (): Promise<unknown> => {
+      // A turn queued behind a session that has since been stopped is not
+      // sent to a closed session (which would record a spurious failure).
+      if (stopRequested || settled)
+        throw new Error('session stopped before this turn was delivered');
+      try {
+        onDelivered?.();
+      } catch {
+        // A throwing delivery callback must not fail the turn.
+      }
       try {
         // Refresh `last_seen`: a session idle for hours on a question makes
         // no tool calls, and the hook's stale check would drop its entry.
@@ -540,7 +561,14 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
         turnCount += 1;
         if (!settled) {
           try {
-            opts.onTurnEnd?.({ session: sessionId, stream: stream.id, turn: turnCount });
+            // `queued`: turns waiting behind this one. The turn-end rule must
+            // not let the session go while a queued line is still to run.
+            opts.onTurnEnd?.({
+              session: sessionId,
+              stream: stream.id,
+              turn: turnCount,
+              queued: inFlight - 1,
+            });
           } catch {
             // A throwing turn-end rule must not fail the turn.
           }
@@ -567,7 +595,14 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
         throw err;
       }
     };
-    const result = turnQueue.then(runOnce, runOnce);
+    const counted = async (): Promise<unknown> => {
+      try {
+        return await runOnce();
+      } finally {
+        inFlight -= 1;
+      }
+    };
+    const result = turnQueue.then(counted, counted);
     // One turn's rejection never poisons the next.
     turnQueue = result.then(
       () => undefined,
@@ -614,10 +649,17 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
     session: spawned,
     responder,
     exited,
-    prompt(text: string) {
-      return runPromptTurn(text);
+    prompt(text: string, promptOpts?: { onDelivered?: () => void }) {
+      return runPromptTurn(text, promptOpts?.onDelivered);
+    },
+    turnsInFlight() {
+      return inFlight;
+    },
+    stopped() {
+      return stopRequested || settled;
     },
     stop() {
+      stopRequested = true;
       // No unsubscribe: `finish()` runs off the session's later `exit`
       // event, and silencing it would leave `exited` unresolved.
       spawned.cancel();
