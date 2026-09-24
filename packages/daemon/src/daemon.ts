@@ -431,6 +431,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
     ...(classifierKey ? { classifierKey } : {}),
     ...(landingService ? { landing: landingService } : {}),
     ...(attachService ? { attach: attachService } : {}),
+    ...(routedEvents ? { events: routedEvents } : {}),
     ...(repoInPlace ? { repoInPlace } : {}),
     ...(docsService ? { docs: docsService } : {}),
     githubAuth,
