@@ -7,8 +7,12 @@ import type { RpcMethodHandler } from '../rpc';
 import type { StateStore } from './store';
 
 function gitOut(args: string[], cwd: string): string | undefined {
-  const r = Bun.spawnSync(['git', ...args], { cwd, stdout: 'pipe', stderr: 'ignore' });
-  return r.exitCode === 0 ? new TextDecoder().decode(r.stdout).trim() : undefined;
+  try {
+    const r = Bun.spawnSync(['git', ...args], { cwd, stdout: 'pipe', stderr: 'ignore' });
+    return r.exitCode === 0 ? new TextDecoder().decode(r.stdout).trim() : undefined;
+  } catch {
+    return undefined; // cwd gone: no answer, not a crash
+  }
 }
 
 /**
@@ -44,6 +48,32 @@ export function resolveMainBranch(entry: RepoEntry): string {
       return b;
   }
   return 'main';
+}
+
+/**
+ * T214: a repo whose main branch has no commit can't have a branch cut from it.
+ * The one-line refusal, or undefined when HEAD (what worktrees branch from) resolves.
+ */
+export function emptyRepoMessage(name: string, entry: RepoEntry): string | undefined {
+  // Only a real repo with an unborn HEAD; a missing path or non-repo fails elsewhere.
+  if (gitOut(['rev-parse', '--git-dir'], entry.path) === undefined) return undefined;
+  if (gitOut(['rev-parse', '--verify', '--quiet', 'HEAD^{commit}'], entry.path) !== undefined) {
+    return undefined;
+  }
+  return `${name} has no commits on ${resolveMainBranch(entry)}; make an initial commit first`;
+}
+
+/** A node can't start in a repo with no commits (T214): refused before anything is written. */
+export class EmptyRepoError extends Error {
+  constructor(name: string, entry: RepoEntry) {
+    super(emptyRepoMessage(name, entry) ?? `${name} has no commits`);
+    this.name = 'EmptyRepoError';
+  }
+}
+
+/** Throws {@link EmptyRepoError} when the repo has no commits. */
+export function assertRepoHasCommits(name: string, entry: RepoEntry): void {
+  if (emptyRepoMessage(name, entry) !== undefined) throw new EmptyRepoError(name, entry);
 }
 
 export function buildStateRpcMethods(store: StateStore): Record<string, RpcMethodHandler> {

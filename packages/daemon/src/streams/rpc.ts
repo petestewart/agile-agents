@@ -15,6 +15,7 @@ import { RpcParamError, optionalString, paramErrors, requireObject } from '../ga
 import { type ThreadReplyDeps, sayAndAnswer } from '../questions/thread-reply';
 import type { RpcMethodHandler } from '../rpc';
 import { WorktreeRefusedError } from '../runner/worktrees';
+import { EmptyRepoError } from '../store/rpc-methods';
 import { AlreadyExistsError } from '../store/store';
 import { RepoInPlaceError, type RepoInPlaceService } from './repo-in-place';
 import {
@@ -121,6 +122,7 @@ const asParamErrors = paramErrors(
   StreamProjectError,
   RepoInPlaceError,
   WorktreeRefusedError,
+  EmptyRepoError,
 );
 
 /**
