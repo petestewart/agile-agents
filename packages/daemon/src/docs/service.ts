@@ -145,7 +145,12 @@ export class DocsService implements DocsSearch {
   private allDocs(): Doc[] {
     const docs: Doc[] = [];
     for (const repoId of Object.keys(this.store.getRepos()).sort()) {
-      docs.push(...this.listRepoDocs(repoId));
+      try {
+        docs.push(...this.listRepoDocs(repoId));
+      } catch (err) {
+        // One bad repo name must not fail a home-wide search.
+        this.log(`docs: skipped repo ${JSON.stringify(repoId)}: ${(err as Error).message}`);
+      }
     }
     for (const stream of this.streams.list({ include_archived: true })) {
       docs.push(...this.listStreamDocs(stream.id));

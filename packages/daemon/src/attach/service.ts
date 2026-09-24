@@ -30,6 +30,7 @@ import {
   ulid,
 } from '@agile-agents/shared';
 import { readHomeConfigFile } from '../config';
+import { settingsFileName } from '../hook/settings';
 import type { RuleStatsOutcome } from '../rules/service';
 import type { BriefDoc } from '../runner/brief';
 import { buildBrief } from '../runner/brief';
@@ -247,6 +248,9 @@ export class AttachService {
     const sessionDir = join(this.options.home, 'sessions', sessionId);
     mkdirSync(sessionDir, { recursive: true });
     const cwd = worktreePath ?? sessionDir;
+    // P4: refuse before any session or status write when the hook settings
+    // would have to change a tracked file.
+    settingsFileName(cwd);
 
     const session: SessionRef = {
       id: sessionId,

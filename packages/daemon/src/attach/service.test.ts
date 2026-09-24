@@ -7,7 +7,15 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ACP_PROVIDERS, type AcpProviderConfig } from '@agile-agents/acp-client';
@@ -193,6 +201,22 @@ describe('attach on a stream with a repo', () => {
     expect(registered?.record.stream).toBe(stream.id);
     expect(registered?.record.worktree).toBe(updated.worktree);
     expect(registered?.record.role).toBe('worker');
+  });
+});
+
+describe('T207: both .claude settings files tracked', () => {
+  test('attach is refused before the stream is marked working or a session recorded', async () => {
+    mkdirSync(join(repo, '.claude'), { recursive: true });
+    writeFileSync(join(repo, '.claude', 'settings.json'), '{}\n');
+    writeFileSync(join(repo, '.claude', 'settings.local.json'), '{}\n');
+    git(['add', '-A']);
+    git(['commit', '-q', '-m', 'settings']);
+    await store.putRepos({ demo: { path: repo, protected_branches: ['main'] } });
+    const stream = await makeStream('demo');
+    await expect(attachService.attach(stream.id)).rejects.toThrow('tracks both');
+    const after = streams.get(stream.id);
+    expect(after.agent.status).not.toBe('working');
+    expect(after.sessions ?? []).toEqual([]);
   });
 });
 

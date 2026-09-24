@@ -92,6 +92,15 @@ describe('legacy `.agile-docs/` import (T207, P3)', () => {
   test('a repo name that is not one path segment is refused', () => {
     expect(() => docs.repoDocsDir('../x')).toThrow('invalid repo name');
   });
+
+  test('a bad repo name is skipped and logged, not fatal to a home-wide search', async () => {
+    const lines: string[] = [];
+    const logged = new DocsService(store, streams, home, (l) => lines.push(l));
+    await store.addRepo('../bad', { path: repo });
+    repoDoc('brief.md', 'shared truth\n');
+    expect(await logged.search('shared truth', {})).toHaveLength(1);
+    expect(lines.some((l) => l.includes('skipped repo'))).toBe(true);
+  });
 });
 
 describe('DocsService (T134)', () => {
