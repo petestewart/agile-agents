@@ -194,6 +194,19 @@ describe('lookup_knowledge over MCP (T263)', () => {
       'api/**',
     ]);
 
+    const dotted = await client.callTool({
+      name: 'lookup_knowledge',
+      arguments: { path: './api/orders.ts' },
+    });
+    expect(
+      JSON.parse((dotted.content as Array<{ text: string }>)[0]?.text ?? 'null').items,
+    ).toHaveLength(2);
+    const outside = await client.callTool({
+      name: 'lookup_knowledge',
+      arguments: { path: '../x.ts' },
+    });
+    expect(outside.isError).toBe(true);
+
     const bad = await client.callTool({ name: 'lookup_knowledge', arguments: {} });
     expect(bad.isError).toBe(true);
   });

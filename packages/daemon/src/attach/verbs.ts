@@ -9,6 +9,7 @@
  * taken from the caller.
  */
 
+import { isAbsolute, normalize } from 'node:path';
 import {
   type AgentId,
   type AgentVerb,
@@ -25,7 +26,7 @@ import {
 } from '@agile-agents/shared';
 import type { DocsSearch, SearchHit } from '../docs/service';
 import { summaryOf } from '../events/delivery';
-import type { KnowledgeService } from '../knowledge/service';
+import { type KnowledgeService, worktreeRelativePaths } from '../knowledge/service';
 import type { QuestionService } from '../questions/service';
 import { NotFoundError, type StateStore } from '../store';
 import type { StreamService } from '../streams/service';
@@ -56,6 +57,27 @@ export interface LookupKnowledgeItem {
   enforcement: string;
   paths?: string[];
   critical?: true;
+}
+
+/**
+ * `lookup_knowledge`'s path, made repo-relative so it can match item globs:
+ * an absolute path is taken relative to the worktree, `./` and `..` are
+ * resolved, and anything outside the worktree is refused.
+ */
+export function lookupPath(path: string, worktree: string | undefined): string {
+  const normal = isAbsolute(path) ? normalize(path) : normalize(path).replace(/\/+$/, '');
+  const [rel] =
+    worktree === undefined
+      ? isAbsolute(normal) || normal === '..' || normal.startsWith('../')
+        ? []
+        : [normal]
+      : worktreeRelativePaths([normal], worktree);
+  if (rel === undefined || rel === '.') {
+    throw new Error(
+      `lookup_knowledge: ${path} is not a path inside this stream's worktree; pass a repo-relative path`,
+    );
+  }
+  return rel;
 }
 
 /** Where a verb call came from, resolved from the registry rather than trusted. */
@@ -294,9 +316,10 @@ export class VerbService {
   lookupKnowledge(input: unknown): { path: string; items: LookupKnowledgeItem[] } {
     const { session, path } = validateVerbInput('lookup_knowledge', input);
     const caller = this.caller(session);
-    const items = this.options.rules?.inScope(caller.stream, undefined, [path]) ?? [];
+    const rel = lookupPath(path, caller.worktree);
+    const items = this.options.rules?.inScope(caller.stream, undefined, [rel]) ?? [];
     return {
-      path,
+      path: rel,
       items: items.map((item) => ({
         id: item.id,
         kind: item.kind,
