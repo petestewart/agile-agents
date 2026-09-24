@@ -271,6 +271,7 @@ export class DirectorService {
     endedReason?: string,
   ): Promise<void> {
     const current = this.options.store.getDirector()?.session;
+    // A late write from an older session must not overwrite a newer session's status.
     if (current !== undefined && current.id !== session.id) return;
     await this.setSession({
       ...(current ?? session),

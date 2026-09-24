@@ -272,3 +272,40 @@ describe('HookService read scope (T213)', () => {
     }
   });
 });
+
+// T300 (P16, P20): the Director's session has no stream; the hook places it
+// by its scratch cwd and applies the coordinator table.
+describe('HookService — the streamless Director (T300)', () => {
+  const DIRECTOR = '01ARZ3NDEKTSV4RRFFQ69G5FA9';
+
+  test('writes inside its scratch dir are allowed; outside, and network, are denied', async () => {
+    const scratch = join(stateRoot, 'sessions', DIRECTOR);
+    mkdirSync(scratch, { recursive: true });
+    const { stream: _none, ...streamless } = agentRecord({
+      role: 'coordinator',
+      worktree: scratch,
+    });
+    await store.putAgent(DIRECTOR, streamless);
+    const svc = service();
+    const call = (tool_name: string, tool_input: Record<string, unknown>) =>
+      svc.preToolUse({ cwd: scratch, agile_agent: DIRECTOR, tool_name, tool_input });
+
+    const inside = await call('Write', { file_path: join(scratch, 'notes.md'), content: 'x' });
+    expect(inside.hookSpecificOutput.permissionDecision).toBe('allow');
+    const outside = await call('Write', { file_path: join(repo, 'README.md'), content: 'x' });
+    expect(outside.hookSpecificOutput.permissionDecision).toBe('deny');
+    const net = await call('WebFetch', { url: 'https://example.com' });
+    expect(net.hookSpecificOutput.permissionDecision).toBe('deny');
+  });
+
+  test('a streamless worker record is still unresolvable (fail-closed)', async () => {
+    const { stream: _none, ...streamless } = agentRecord({ role: 'worker', worktree });
+    await store.putAgent(WORKER, streamless);
+    const out = await service().preToolUse({
+      cwd: worktree,
+      tool_name: 'Write',
+      tool_input: { file_path: join(worktree, 'a.ts'), content: 'x' },
+    });
+    expect(out.hookSpecificOutput.permissionDecision).toBe('deny');
+  });
+});
