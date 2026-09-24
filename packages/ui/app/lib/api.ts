@@ -8,6 +8,7 @@
 import type {
   ClassifierKeyStatus,
   Policy,
+  Project,
   Rule,
   RuleCreateInput,
   RulePatch,
@@ -39,6 +40,11 @@ async function post(path: string, body: unknown = {}, signal?: AbortSignal): Pro
 /** T162: "New stream" and the top bar's quick capture. */
 export function createStream(input: StreamCreateInput): Promise<Stream> {
   return post('/api/streams', input) as Promise<Stream>;
+}
+
+/** T208: the rail's "New project". */
+export function createProject(name: string): Promise<Project> {
+  return post('/api/projects', { name }) as Promise<Project>;
 }
 
 /** A question card: the typed text reaches the asking session verbatim (§3.3). */

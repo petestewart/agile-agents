@@ -5,8 +5,8 @@
  * covers them.
  */
 
-import type { InboxItem, SessionRef, Stream } from '@agile-agents/shared';
-import type { CockpitStreamRow } from './feed-types';
+import type { InboxItem, NodeRole, SessionRef, Stream } from '@agile-agents/shared';
+import type { CockpitProjectRow, CockpitStreamRow } from './feed-types';
 
 /** §9.2's five dots. */
 export type StreamDot = 'amber' | 'blue' | 'grey' | 'green' | 'red';
@@ -174,4 +174,37 @@ export function ruleHitOf(entry: {
   return entry.ref !== undefined && /^R-[0-9A-HJKMNP-TV-Z]{26}$/.test(entry.ref)
     ? entry.ref
     : undefined;
+}
+
+/** T208: the rail's role glyphs and their labels (projects-design, P1). */
+export const ROLE_ICON: Record<NodeRole, string> = {
+  project: '\u25A0',
+  coordinating: '\u25C6',
+  work: '\u25CF',
+  conversation: '\u25CB',
+};
+
+/** T208: the rows the rail shows for the switcher's choice (`undefined` is "All"). */
+export function rowsInProject(
+  rows: readonly CockpitStreamRow[],
+  project: string | undefined,
+): readonly CockpitStreamRow[] {
+  return project === undefined ? rows : rows.filter((row) => row.project === project);
+}
+
+/**
+ * T208: where a new node (New stream, quick capture) files. The switcher's
+ * project; on "All", the open stream's project; failing that, the only
+ * project if there is exactly one. `undefined` means the operator must pick.
+ */
+export function projectForNew(
+  current: string | undefined,
+  selected: string | undefined,
+  rows: readonly CockpitStreamRow[],
+  projects: readonly CockpitProjectRow[],
+): string | undefined {
+  if (current !== undefined) return current;
+  const open = selected !== undefined ? rows.find((row) => row.id === selected) : undefined;
+  if (open?.project !== undefined) return open.project;
+  return projects.length === 1 ? projects[0]?.id : undefined;
 }

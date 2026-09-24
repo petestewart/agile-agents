@@ -8,11 +8,18 @@
 
 import { type FormEvent, useEffect, useRef, useState } from 'react';
 import { createStream, listRepos } from '../lib/api';
-import type { CockpitStreamRow } from '../lib/feed-types';
+import type { CockpitProjectRow, CockpitStreamRow } from '../lib/feed-types';
 import { isShortcut, useShell } from '../lib/shell';
+import { projectForNew } from '../lib/streams';
 
-export function NewStream({ rows }: { rows: readonly CockpitStreamRow[] }): JSX.Element | null {
-  const { newStreamOpen, setNewStreamOpen, select, selected } = useShell();
+export function NewStream({
+  rows,
+  projects,
+}: {
+  rows: readonly CockpitStreamRow[];
+  projects: readonly CockpitProjectRow[];
+}): JSX.Element | null {
+  const { newStreamOpen, setNewStreamOpen, select, selected, project } = useShell();
   const [title, setTitle] = useState('');
   const [goal, setGoal] = useState('');
   const [parent, setParent] = useState('');
@@ -59,10 +66,14 @@ export function NewStream({ rows }: { rows: readonly CockpitStreamRow[] }): JSX.
     setBusy(true);
     setError(undefined);
     try {
+      // T208: a parent carries its project; otherwise the current one.
+      const into = parent ? undefined : projectForNew(project, selected, rows, projects);
+      if (!parent && into === undefined) throw new Error('Pick a project in the rail first');
       const created = await createStream({
         title: t,
         goal: goal.trim() || t,
         ...(parent ? { parent } : {}),
+        ...(into !== undefined ? { project: into } : {}),
         ...(repo.trim() ? { repo: repo.trim() } : {}),
       });
       setNewStreamOpen(false);

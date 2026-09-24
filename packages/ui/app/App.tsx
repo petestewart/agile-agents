@@ -24,12 +24,19 @@ export function App(): JSX.Element {
   const { view, selected, railOpen } = useShell();
   const rows = cockpit?.streams ?? [];
   const items = cockpit?.inbox ?? [];
+  const projects = cockpit?.projects ?? [];
 
   return (
     <div className="cr-root" data-rail={railOpen ? 'open' : 'closed'}>
-      <TopBar snapshot={snapshot} inboxCount={items.length} connected={connected} />
+      <TopBar
+        snapshot={snapshot}
+        inboxCount={items.length}
+        connected={connected}
+        rows={rows}
+        projects={projects}
+      />
       <div className="cr-frame">
-        <StreamTree rows={rows} />
+        <StreamTree rows={rows} projects={projects} />
         <main className="cr-main">
           {view === 'settings' ? (
             <Settings />
@@ -42,7 +49,7 @@ export function App(): JSX.Element {
           )}
         </main>
       </div>
-      <NewStream rows={rows} />
+      <NewStream rows={rows} projects={projects} />
     </div>
   );
 }

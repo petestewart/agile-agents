@@ -925,3 +925,27 @@ body {
   justify-content: flex-end;
   gap: 8px;
 }
+
+/* ---- T208: the project switcher and role icons ---- */
+.cr-project-bar {
+  display: flex;
+  gap: 6px;
+  margin: 0 8px 8px;
+}
+.cr-project-bar select {
+  flex: 1;
+  min-width: 0;
+  font: inherit;
+  color: var(--text);
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 6px;
+}
+.cr-role {
+  flex: none;
+  width: 1em;
+  text-align: center;
+  font-size: 11px;
+  color: var(--text-dim);
+}

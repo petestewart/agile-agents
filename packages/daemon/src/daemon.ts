@@ -110,6 +110,8 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
         },
       })
     : undefined;
+  const projectService =
+    store && streamService ? new ProjectService(store, streamService) : undefined;
   // How spawned sessions reach this daemon's CLI for hooks and MCP,
   // resolved to something that runs on this host, never assumed on $PATH.
   const cliBin = resolveCliBin();
@@ -272,9 +274,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
                   : {}),
               })
             : {}),
-          ...(streamService
-            ? buildProjectRpcMethods(new ProjectService(store, streamService))
-            : {}),
+          ...(projectService ? buildProjectRpcMethods(projectService) : {}),
           ...(inboxService ? buildInboxRpcMethods(inboxService) : {}),
           ...(rulesService ? buildRuleRpcMethods(rulesService, ruleEvals) : {}),
           ...(docsService ? buildDocsRpcMethods(docsService) : {}),
@@ -313,6 +313,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
     store,
     gates: gateService,
     streams: streamService,
+    ...(projectService ? { projects: projectService } : {}),
     questions: questionService,
     inbox: inboxService,
     ...(rulesService ? { rules: rulesService } : {}),

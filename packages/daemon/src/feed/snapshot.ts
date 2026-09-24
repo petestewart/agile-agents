@@ -6,9 +6,19 @@
  */
 
 import { basename } from 'node:path';
-import type { Event, HilRequest, InboxItem, Question, Stream } from '@agile-agents/shared';
+import {
+  type Event,
+  type HilRequest,
+  type InboxItem,
+  type NodeRole,
+  type Question,
+  type Stream,
+  liveChildrenOf,
+  nodeRole,
+} from '@agile-agents/shared';
 import type { GateService } from '../gates';
 import type { InboxService } from '../inbox';
+import type { ProjectService } from '../projects';
 import type { QuestionService } from '../questions';
 import type { StateStore } from '../store';
 import type { StreamService } from '../streams';
@@ -70,6 +80,9 @@ export interface CockpitStreamRow {
   id: string;
   title: string;
   parent?: string;
+  /** T208: the node's project, and its derived role (P1). */
+  project?: string;
+  role: NodeRole;
   agent_status: Stream['agent']['status'];
   human_status: Stream['human']['status'];
 }
@@ -79,18 +92,35 @@ export interface CockpitFrame {
   type: 'cockpit';
   inbox: InboxItem[];
   streams: CockpitStreamRow[];
+  /** T208: the live projects, for the rail's switcher and grouping. */
+  projects: CockpitProjectRow[];
 }
 
-export function buildCockpitFrame(streams: StreamService, inbox?: InboxService): CockpitFrame {
+/** One entry of the rail's project switcher (T208). */
+export interface CockpitProjectRow {
+  id: string;
+  name: string;
+  root: string;
+}
+
+export function buildCockpitFrame(
+  streams: StreamService,
+  inbox?: InboxService,
+  projects?: ProjectService,
+): CockpitFrame {
+  const all = streams.list();
   return {
     type: 'cockpit',
     inbox: inbox?.list() ?? [],
-    streams: streams.list().map((s) => ({
+    streams: all.map((s) => ({
       id: s.id,
       title: s.title,
       ...(s.parent !== undefined ? { parent: s.parent } : {}),
+      ...(s.project !== undefined ? { project: s.project } : {}),
+      role: nodeRole(s, liveChildrenOf(s.id, all)),
       agent_status: s.agent.status,
       human_status: s.human.status,
     })),
+    projects: (projects?.list() ?? []).map((p) => ({ id: p.id, name: p.name, root: p.root })),
   };
 }
