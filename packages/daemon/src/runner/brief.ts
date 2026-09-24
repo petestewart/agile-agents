@@ -209,6 +209,10 @@ export function planSection(view: ChildPlanView): string {
     );
     for (const c of view.contracts) lines.push(`- **${c.title}** (v${c.version}): ${c.body}`);
   }
+  lines.push(
+    '',
+    'Settle details with a sibling directly (`ask_sibling`, `reply_sibling`; your coordinator sees a copy). Anything that changes the plan, a contract or who owns what goes to your coordinator: agree it with the sibling first, then `propose_contract` with them in `with`.',
+  );
   return section('Your part of the plan', lines.join('\n'));
 }
 

@@ -114,7 +114,14 @@ export const ROUTED_EVENT_PAYLOADS = {
     outcome: z.enum(['merged', 'closed']),
   }),
   sibling_ask: z.object({ sibling: UlidSchema, question: NonEmpty }),
-  sibling_reply: z.object({ sibling: UlidSchema, body: NonEmpty }),
+  sibling_reply: z.object({
+    sibling: UlidSchema,
+    body: NonEmpty,
+    /** T286: explicit agreement to a joint proposal: the contract and a sha256 of the exact body. */
+    agree: z
+      .object({ contract: NonEmpty, body_sha256: z.string().regex(/^[0-9a-f]{64}$/) })
+      .optional(),
+  }),
   coordinator_note: z.object({ body: NonEmpty }),
   plan_changed: z.object({ summary: NonEmpty, paths: Files }),
   external_changed: z.object({ key: NonEmpty, summary: NonEmpty }),

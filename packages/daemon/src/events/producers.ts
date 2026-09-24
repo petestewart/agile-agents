@@ -219,11 +219,21 @@ export function summarize(
       return `The plan changed: ${String(p.summary)}. You own ${paths || 'no paths yet'}.`;
     }
     case 'coordinator_note':
+      // T286: a daemon notice (a contract decision) is not the coordinator speaking.
+      if (event.by === 'daemon') return String(p.body);
       return `Your coordinator says: ${String(p.body)}`;
     case 'contract_changed':
       return `Contract ${String(p.title)} is now v${String(p.version)}: ${String(p.diff)}. Adjust your side.`;
     case 'contract_proposal':
       return `${list(p.children)} propose a change to contract ${String(p.contract)}: ${String(p.body)}. Reason: ${String(p.reason)}. Decide it with \`decide_contract\`.`;
+    case 'sibling_ask':
+      if (node === p.sibling) {
+        return `${name(event.subject)} asks you (${event.id}): ${String(p.question)}. Answer with \`reply_sibling\`.`;
+      }
+      return `${name(event.subject)} asks ${name(p.sibling)}: ${String(p.question)}.`;
+    case 'sibling_reply':
+      if (node === p.sibling) return `${name(event.subject)} replies: ${String(p.body)}.`;
+      return `${name(event.subject)} replies to ${name(p.sibling)}: ${String(p.body)}.`;
     default:
       return `${event.type}: read_event ${event.id}.`;
   }

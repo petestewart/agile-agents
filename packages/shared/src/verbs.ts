@@ -192,6 +192,30 @@ export const DecideContractInputSchema = z
   .strict();
 export type DecideContractInput = z.infer<typeof DecideContractInputSchema>;
 
+/**
+ * T286 (§9.5): a child asks a sibling (same parent) a question about a
+ * detail; the sibling answers with `reply_sibling`. Both threads and the
+ * parent see the exchange.
+ */
+export const AskSiblingInputSchema = z
+  .object({ session: Session, node: UlidSchema, question: z.string().trim().min(1).max(800) })
+  .strict();
+export const ReplySiblingInputSchema = z
+  .object({
+    session: Session,
+    ask: RoutedEventIdSchema,
+    body: z.string().trim().min(1).max(800),
+    /** Agree to a joint `propose_contract`: the contract and the exact proposed body. */
+    agree: z
+      .object({
+        contract: ContractIdSchema,
+        body: z.string().trim().min(1).max(CONTRACT_BODY_MAX_CHARS),
+      })
+      .strict()
+      .optional(),
+  })
+  .strict();
+
 /** The verb table, in the order §4.1 lists it. */
 export const AGENT_VERBS = [
   'ask',
@@ -214,6 +238,8 @@ export const AGENT_VERBS = [
   'note_child',
   'propose_contract',
   'decide_contract',
+  'ask_sibling',
+  'reply_sibling',
 ] as const;
 export type AgentVerb = (typeof AGENT_VERBS)[number];
 
@@ -238,6 +264,8 @@ export const AGENT_VERB_SCHEMAS = {
   note_child: NoteChildInputSchema,
   propose_contract: ProposeContractInputSchema,
   decide_contract: DecideContractInputSchema,
+  ask_sibling: AskSiblingInputSchema,
+  reply_sibling: ReplySiblingInputSchema,
 } as const satisfies Record<AgentVerb, z.ZodType>;
 
 /** One line of help per verb, published to the model by the MCP bridge. */
@@ -271,9 +299,13 @@ export const AGENT_VERB_DESCRIPTIONS: Record<AgentVerb, string> = {
   note_child:
     'Coordinator only: send one child a targeted note ({child, body}), e.g. after a sibling merged or collided.',
   propose_contract:
-    'Propose a change to a contract you rely on ({contract, body ≤800, reason, routine?, with?: [sibling ids who agreed]}). Your coordinator approves, rejects or asks the operator.',
+    'Propose a change to a contract you rely on ({contract, body ≤800, reason, routine?, with?: [sibling ids who agreed]}). Each co-signer in `with` must have answered your latest `ask_sibling` with `agree` naming this contract and this exact body. Your coordinator approves, rejects or asks the operator; you are told which.',
   decide_contract:
     'Coordinator only: decide a child’s contract proposal ({proposal, decision: approve|reject, reason?, routine?}). Approval is gated by your autonomy level (routine = additive only).',
+  ask_sibling:
+    'Ask a sibling (same parent) a question about a detail ({node, question ≤800}). Both threads show it and your parent gets a copy. Plan, contract or ownership changes go to your parent (`propose_contract`), not here.',
+  reply_sibling:
+    'Answer a sibling’s `ask_sibling` ({ask: the event id, body ≤800, agree?: {contract, body}}). Pass `agree` only to co-sign their contract proposal with that exact body. Both threads show it and your parent gets a copy.',
 };
 
 export function isAgentVerb(name: string): name is AgentVerb {
