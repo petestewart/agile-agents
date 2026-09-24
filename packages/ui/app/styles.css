@@ -991,3 +991,9 @@ body {
   font-size: 12px;
   margin: 4px 0 0;
 }
+/* T227: an overlap warning (repo view) or mark (rail). */
+.cr-overlap {
+  color: var(--warn);
+  font-size: 12px;
+  margin: 4px 0 0;
+}

@@ -67,6 +67,8 @@ export interface CockpitStreamRow {
   live?: true;
   /** T209: the nodes this one still waits on. */
   waits_on?: string[];
+  /** T227: this node, or a descendant, overlaps another live node. */
+  overlap?: true;
 }
 
 /** T160: mirror of `feed/snapshot.ts`'s `CockpitFrame` — the inbox and the tree, pushed on connect and after every event batch. */
@@ -78,6 +80,15 @@ export interface CockpitFrame {
   projects: CockpitProjectRow[];
   /** T209: the registered repos and their delivery mode. */
   repos: CockpitRepoRow[];
+  /** T227: live work nodes on one repo sharing changed files. Absent from an older daemon. */
+  overlaps?: CockpitOverlap[];
+}
+
+/** T227: mirror of `sync/overlap.ts`'s `Overlap`. */
+export interface CockpitOverlap {
+  repo: string;
+  nodes: [string, string];
+  files: string[];
 }
 
 /** T209: mirror of `feed/snapshot.ts`'s `CockpitRepoRow`. */

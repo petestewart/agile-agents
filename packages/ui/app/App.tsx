@@ -43,7 +43,7 @@ export function App(): JSX.Element {
           {view === 'settings' ? (
             <Settings />
           ) : view === 'repos' ? (
-            <RepoView rows={rows} repos={repos} />
+            <RepoView rows={rows} repos={repos} overlaps={cockpit?.overlaps ?? []} />
           ) : view === 'running' ? (
             <RunningLens rows={rows} />
           ) : view === 'deps' ? (

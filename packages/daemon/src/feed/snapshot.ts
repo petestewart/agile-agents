@@ -23,6 +23,7 @@ import type { ProjectService } from '../projects';
 import type { QuestionService } from '../questions';
 import type { StateStore } from '../store';
 import type { StreamService } from '../streams';
+import { type Overlap, findOverlaps, overlapMarked } from '../sync';
 
 /** How many recent events a snapshot carries. */
 export const DEFAULT_SNAPSHOT_EVENT_LIMIT = 200;
@@ -92,6 +93,8 @@ export interface CockpitStreamRow {
   live?: true;
   /** T209: the nodes this one still waits on (the Dependencies lens). */
   waits_on?: string[];
+  /** T227: this node, or a descendant, shares a changed file with another live node. */
+  overlap?: true;
 }
 
 /** The cockpit's live frame: inbox and stream tree, pushed on connect and after every event batch (§3.3). */
@@ -103,6 +106,8 @@ export interface CockpitFrame {
   projects: CockpitProjectRow[];
   /** T209: the registered repos and their delivery mode (the repo view). */
   repos: CockpitRepoRow[];
+  /** T227: live work nodes on one repo that changed the same files (§4.3). */
+  overlaps: Overlap[];
 }
 
 /** One registered repo (T209). `delivery` is `direct` unless repos.yaml says otherwise. */
@@ -127,6 +132,8 @@ export function buildCockpitFrame(
   repos: ReposConfig = {},
 ): CockpitFrame {
   const all = streams.list();
+  const overlaps = findOverlaps(all);
+  const marked = overlapMarked(overlaps, all);
   return {
     type: 'cockpit',
     inbox: inbox?.list() ?? [],
@@ -141,12 +148,14 @@ export function buildCockpitFrame(
       ...(s.repo !== undefined ? { repo: s.repo } : {}),
       ...(s.sessions.some((x) => LIVE_SESSION.has(x.status)) ? { live: true as const } : {}),
       ...waitsOn(s),
+      ...(marked.has(s.id) ? { overlap: true as const } : {}),
     })),
     projects: (projects?.list() ?? []).map((p) => ({ id: p.id, name: p.name, root: p.root })),
     repos: Object.entries(repos).map(([name, entry]) => ({
       name,
       delivery: entry.delivery ?? 'direct',
     })),
+    overlaps,
   };
 }
 

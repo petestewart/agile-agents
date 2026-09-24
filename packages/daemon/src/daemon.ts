@@ -37,6 +37,7 @@ import { resolveCliBin } from './runner';
 import { StateStore, buildStateRpcMethods } from './store';
 import { migrateHome } from './store/migrate';
 import { RepoInPlaceService, StreamService, buildStreamRpcMethods } from './streams';
+import { OverlapTracker } from './sync';
 
 export const DAEMON_VERSION: string = daemonPackageJson.version;
 
@@ -83,6 +84,8 @@ export interface StartDaemonOptions extends DiscoverConfigOptions {
    * that drives `gateService.tick()` itself (two drivers double-decide).
    */
   gateTickMs?: number;
+  /** T227: the `touched` sweep interval; 0 disables it (tests). */
+  overlapRecomputeMs?: number;
   /** Test seam: the clock threaded to `Bus` (heartbeat timestamps and coalescing). */
   now?: () => Date;
 }
@@ -265,6 +268,19 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
     });
   }
 
+  // T227: overlap tracking — `touched` after edit hooks, commits and every 60 s.
+  const overlapTracker =
+    store && streamService
+      ? new OverlapTracker({
+          streams: streamService,
+          repos: () => store.getRepos(),
+          ...(options.overlapRecomputeMs !== undefined
+            ? { intervalMs: options.overlapRecomputeMs }
+            : {}),
+        })
+      : undefined;
+  overlapTracker?.start();
+
   // T205: "+ Repo" in place (projects-design §7), over the attach service's sessions.
   const repoInPlace =
     store && streamService && attachService
@@ -310,6 +326,15 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
               gates: gateService,
               ...(rulesService ? { rules: rulesService } : {}),
               classifier: { ask: classifier, config: config.classifier },
+              ...(overlapTracker
+                ? {
+                    onFilesMayHaveChanged: (stream: string) => {
+                      void overlapTracker
+                        .recompute(stream)
+                        .catch((err) => console.error('overlap recompute failed:', err));
+                    },
+                  }
+                : {}),
             }),
           ),
           ...(attachService && verbService
@@ -407,6 +432,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
       stopped = true;
       try {
         if (gateTimer) clearInterval(gateTimer);
+        overlapTracker?.stop();
         // Sessions are child processes: stop them first so their exit writes land.
         await attachService?.stopAll();
         await http.stop();
