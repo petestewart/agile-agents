@@ -854,6 +854,15 @@ Design: `design/projects-design.md`, which wins over `design/cockpit-design.md` 
 - **Validation Steps:** `bun test packages/daemon/src/hook packages/daemon/src/permissions packages/daemon/src/streams packages/daemon/src/attach`; `bun run test:integration`.
 - **Notes:** Fixed on `claude/phase-7` and merged forward into phase-8 and phase-9 (D30). Review (sonnet): 1 blocking fixed — built-in Read/Grep/Glob/LS are now an allow-list (own dir, readable repos; the agile home, private repos and everything else denied), shared with Bash reads; `rg --pre` no longer read-only. The -1 exits were the daemon's own reshape stops. Also fixed a T205 bug (moved part kept a stale running session). Parts start after a reshape unless the node never had a worker. Daemon shutdown status unchanged. Daemon +175.
 
+### Ticket: T214 A repo with no commits is refused up front
+- **Priority:** P1
+- **Status:** In Progress
+- **Owner:** opus:worker-T214
+- **Scope:** From Pete's Phase 8 live run (2026-09-24): `node new --repo agile-test-repo` on a repo with no commits created the node, but the agent never started; the thread got only a raw `git rev-parse --verify HEAD^{commit} failed … Needed a single revision` and the node sat idle with no hint. Refuse up front, before anything is written: `node new`/`add-repo`/attach on a repo whose main branch has no commit fail with one line ("<repo> has no commits on <branch>; make an initial commit first"). `agile repo add` on such a repo succeeds but prints the same warning.
+- **Acceptance Criteria:** CLI e2e: `repo add` on an empty repo warns; `node new --repo` on it is refused with the message and creates no node; after one commit it starts.
+- **Validation Steps:** `bun test packages/daemon/src/attach packages/daemon/src/streams packages/cli`.
+- **Notes:** Fixed on `claude/phase-7`, merged forward.
+
 ### Ticket: T212 Phase 7 QA and Pete's look
 - **Priority:** P0
 - **Status:** In Review (QA ACCEPT 2026-09-24; Pete's look pending)
