@@ -1061,8 +1061,8 @@ git status --short
 
 ### Ticket: T240 Routed event schema and store
 - **Priority:** P0
-- **Status:** Todo
-- **Owner:** —
+- **Status:** In Progress
+- **Owner:** opus:worker-T240
 - **Scope:**
   - Add `RoutedEvent` and `Delivery` (§14.9) in `shared/routed-event.ts`, with typed payloads per event type (§15).
   - Add `events/log.jsonl` and `events/queue/<node>.jsonl` through the store, fsynced before `emit` returns.
@@ -1578,7 +1578,7 @@ Daemon: `em/`, `architect/`, `oracle/`, `qa/`, `halts/`, `quota/`, `handoff/`, `
 
 ## 10. Discovered Issues Log
 
-- Phase 8 complete on `claude/phase-8` (2026-09-24): T220–T229 merged, T230 QA ACCEPT; awaiting Pete's look. Phase 9 proceeds on `claude/phase-9` cut from it.
+- Phase 8 complete on `claude/phase-8` (2026-09-24): T220–T229 merged, T230 QA ACCEPT; awaiting Pete's look (draft PR https://github.com/petestewart/agile-agents/pull/5, base claude/phase-7). Phase 9 proceeds on `claude/phase-9` cut from it.
 - Phase 7 complete on `claude/phase-7` (2026-09-24, tip 3ab7109): T200–T211 merged, T212 QA ACCEPT; awaiting Pete's look (draft PR https://github.com/petestewart/agile-agents/pull/4). Phase 8 proceeds on `claude/phase-8` cut from it (Pete: don't wait).
 - (T229 merge) `.review-sonnet.md` had been committed by the T204 worker (on `claude/phase-7` too); untracked and `.gitignore` now lists the pipeline/review/QA scratch files.
 - mode: yolo (2026-09-24), projects stage. Phase branches stacked (D30), `claude/phase-7` first; tickets `T###-<slug>` off the phase branch, merged back `--no-ff`. DIRECT_MODE (no `gh`). Phase N+1 starts without waiting for Pete's review of phase N (Pete, 2026-09-24).
