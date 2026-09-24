@@ -39,6 +39,8 @@ import {
   UnregisteredRepoError,
 } from './attach';
 import type { ClassifierKeyService } from './classifier';
+import type { ContractService } from './coordination/contracts';
+import { PlanNotDraftError, type PlanService } from './coordination/plans';
 import { type DeliveryService, LandRefusedError } from './delivery';
 import type { DocsService } from './docs';
 import type { RoutedEventService } from './events';
@@ -152,6 +154,9 @@ export interface HttpServerOptions {
   githubAuth?: () => Promise<boolean>;
   /** T245: the node Activity tab and the repo view's events. */
   events?: RoutedEventService;
+  /** T281: the stream page's Plan tab and the plan approval card. */
+  plans?: PlanService;
+  contracts?: ContractService;
   /** Test hook: the tailer's poll interval (default 250ms). */
   feedPollIntervalMs?: number;
 }
@@ -383,6 +388,8 @@ interface FeedContext {
   /** T222: the pr refusal's GitHub auth check; absent reads as unavailable. */
   githubAuth?: () => Promise<boolean>;
   events?: RoutedEventService;
+  plans?: PlanService;
+  contracts?: ContractService;
 }
 
 function resolveFeedContext(options: HttpServerOptions): FeedContext | undefined {
@@ -403,6 +410,8 @@ function resolveFeedContext(options: HttpServerOptions): FeedContext | undefined
     docs: options.docs,
     githubAuth: options.githubAuth,
     events: options.events,
+    plans: options.plans,
+    contracts: options.contracts,
   };
 }
 
@@ -549,6 +558,39 @@ function handleActivityRoute(
     return jsonResponse({ events: feed.events.forRepo(decodeURIComponent(repo?.[1] ?? '')) });
   } catch (err) {
     return errorResponse(500, messageOf(err));
+  }
+}
+
+/**
+ * T281 (projects-design §9.1, §14.4): the Plan tab and its approval.
+ *
+ *   GET  /api/streams/:id/plan          `{plan, contracts}`: the node's plan (or null) and its contracts
+ *   POST /api/streams/:id/plan/approve  the human approves the draft plan (the inbox card's button)
+ */
+async function handlePlanRoute(
+  req: Request,
+  url: URL,
+  feed: FeedContext | undefined,
+  sameOrigin: () => boolean,
+): Promise<Response | undefined> {
+  const match = url.pathname.match(/^\/api\/streams\/([^/]+)\/plan(\/approve)?$/);
+  if (!match) return undefined;
+  const approve = match[2] !== undefined;
+  if (req.method !== (approve ? 'POST' : 'GET')) return undefined;
+  if (!feed?.plans || !feed.contracts) return errorResponse(503, 'plans not available');
+  const id = UlidSchema.safeParse(decodeURIComponent(match[1] ?? ''));
+  if (!id.success) return errorResponse(400, `invalid stream id: ${match[1]}`);
+  if (approve && !sameOrigin()) return errorResponse(403, 'cross-origin request rejected');
+  try {
+    if (approve) return jsonResponse(await feed.plans.approve(id.data, 'human'));
+    return jsonResponse({
+      plan: feed.plans.get(id.data) ?? null,
+      contracts: feed.contracts.forNode(id.data),
+    });
+  } catch (err) {
+    if (err instanceof PlanNotDraftError) return errorResponse(409, err.message);
+    if (err instanceof NotFoundError) return errorResponse(404, messageOf(err));
+    return errorResponse(400, messageOf(err));
   }
 }
 
@@ -970,6 +1012,9 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
 
         const sessionSettingsRoute = await handleSessionSettingsRoute(req, url, feed, sameOrigin);
         if (sessionSettingsRoute) return sessionSettingsRoute;
+
+        const planRoute = await handlePlanRoute(req, url, feed, sameOrigin);
+        if (planRoute) return planRoute;
 
         const activityRoute = handleActivityRoute(req, url, feed);
         if (activityRoute) return activityRoute;

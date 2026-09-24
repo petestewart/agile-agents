@@ -12,11 +12,14 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type {
   Autonomy,
+  Contract,
   KnowledgeItem,
+  Plan,
   SessionRole,
   Stream,
   ThreadEntry,
 } from '@agile-agents/shared';
+import type { ChildPlanView } from '../coordination/plans';
 import { knowledgeInScope } from '../knowledge/service';
 
 /** One Markdown file per role. */
@@ -49,7 +52,15 @@ export interface BuildBriefInput {
   /** Every knowledge item in the home; `knowledgeInScope` filters them here, not the caller. */
   rules: readonly KnowledgeItem[];
   /** P20 (T280): a coordinator's children and autonomy level. */
-  coordinator?: { children: readonly Stream[]; autonomy: Autonomy };
+  coordinator?: {
+    children: readonly Stream[];
+    autonomy: Autonomy;
+    /** T281: the node's plan and its contracts, when written. */
+    plan?: Plan;
+    contracts?: readonly Contract[];
+  };
+  /** T281: this child's part of its parent's approved plan. */
+  plan?: ChildPlanView;
   /** Overrides `BRIEF_THREAD_ENTRIES`. */
   threadEntries?: number;
   /** Overrides `BRIEF_CHAR_CEILING`. Test seam. */
@@ -134,7 +145,12 @@ export function babysitSection(stream: Stream): string | undefined {
 }
 
 /** P20 (T280): what a coordinator coordinates, and how far it may act on its own. */
-export function coordinatorSection(children: readonly Stream[], autonomy: Autonomy): string {
+export function coordinatorSection(
+  children: readonly Stream[],
+  autonomy: Autonomy,
+  plan?: Plan,
+  contracts: readonly Contract[] = [],
+): string {
   const lines =
     children.length === 0
       ? ['none yet']
@@ -144,7 +160,36 @@ export function coordinatorSection(children: readonly Stream[], autonomy: Autono
               c.agent.progress ? ` — ${c.agent.progress}` : ''
             }`,
         );
-  return section('Your children', [...lines, '', `Autonomy: **${autonomy}**.`].join('\n'));
+  const planLine =
+    plan === undefined
+      ? 'Plan: none yet. Split the work with `contract_write` (the seams) and `plan_write` (who owns which paths); the operator approves it.'
+      : `Plan: v${plan.version}, **${plan.status}**${plan.status === 'draft' ? ' (waiting for the operator)' : ''}. Contracts: ${
+          contracts.length === 0
+            ? 'none'
+            : contracts.map((c) => `${c.title} v${c.version} (\`${c.id}\`)`).join('; ')
+        }.`;
+  return section(
+    'Your children',
+    [...lines, '', `Autonomy: **${autonomy}**.`, planLine].join('\n'),
+  );
+}
+
+/** T281 (§9.1): what this child owns, whose files are whose, and the contracts it relies on. */
+export function planSection(view: ChildPlanView): string {
+  const lines = [
+    `The approved plan (v${view.version}) gives you: ${
+      view.owns.length === 0 ? 'no paths of your own' : view.owns.map((g) => `\`${g}\``).join(', ')
+    }. Stay inside them; a sibling's paths are theirs.`,
+    ...view.siblings.map(
+      (s) =>
+        `- ${s.title} owns ${s.owns.length === 0 ? 'nothing' : s.owns.map((g) => `\`${g}\``).join(', ')}`,
+    ),
+  ];
+  if (view.contracts.length > 0) {
+    lines.push('', 'Contracts you rely on (you can’t change one; `ask` your coordinator):');
+    for (const c of view.contracts) lines.push(`- **${c.title}** (v${c.version}): ${c.body}`);
+  }
+  return section('Your part of the plan', lines.join('\n'));
 }
 
 /** One pass of the assembler at a given thread-tail length and doc body cap. */
@@ -174,8 +219,11 @@ function assemble(
   }
 
   if (input.coordinator !== undefined) {
-    parts.push(coordinatorSection(input.coordinator.children, input.coordinator.autonomy));
+    const c = input.coordinator;
+    parts.push(coordinatorSection(c.children, c.autonomy, c.plan, c.contracts));
   }
+
+  if (input.plan !== undefined) parts.push(planSection(input.plan));
 
   const babysit = babysitSection(stream);
   if (babysit !== undefined) parts.push(babysit);

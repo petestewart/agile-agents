@@ -23,6 +23,8 @@ import {
   validateVerbInput,
   withExamplesNote,
 } from '@agile-agents/shared';
+import type { ContractService } from '../coordination/contracts';
+import type { PlanService } from '../coordination/plans';
 import type { DocsSearch, SearchHit } from '../docs/service';
 import { summaryOf } from '../events/delivery';
 import { type KnowledgeService, worktreeRelativePaths } from '../knowledge/service';
@@ -100,6 +102,9 @@ export interface VerbServiceOptions {
   events?: { get(id: string): RoutedEvent | undefined };
   /** T246: `deliver`'s write side (`DeliveryService.push`). */
   delivery?: { push(stream: string): Promise<unknown> };
+  /** T281: `plan_write` / `contract_write`, coordinator sessions only. */
+  plans?: PlanService;
+  contracts?: ContractService;
   proposalLimit?: { assertCanPropose(caller: Pick<VerbCaller, 'session' | 'role'>): void };
 }
 
@@ -334,6 +339,32 @@ export class VerbService {
     };
   }
 
+  /** T281 (§14.4): the coordinator's plan; always lands `draft` for the operator to approve. */
+  async planWrite(input: unknown): Promise<unknown> {
+    const { session, owners, contracts } = validateVerbInput('plan_write', input);
+    const caller = this.coordinatorCaller(session, 'plan_write');
+    if (this.options.plans === undefined) throw new Error('plan_write: plans are not available');
+    return this.options.plans.write(caller.stream, owners, contracts);
+  }
+
+  /** T281 (§14.4): create or bump a contract on the coordinator's node; a bump tells its parties. */
+  async contractWrite(input: unknown): Promise<unknown> {
+    const { session, ...fields } = validateVerbInput('contract_write', input);
+    const caller = this.coordinatorCaller(session, 'contract_write');
+    if (this.options.contracts === undefined) {
+      throw new Error('contract_write: contracts are not available');
+    }
+    return this.options.contracts.write(caller.stream, fields, `agent:${session}`);
+  }
+
+  private coordinatorCaller(session: string, verb: string): VerbCaller {
+    const caller = this.caller(session);
+    if (caller.role !== 'coordinator') {
+      throw new Error(`${verb}: only a coordinator writes the plan; a ${caller.role} proposes`);
+    }
+    return caller;
+  }
+
   /** The repo's own test command, in this session's worktree. Failures only, never a green log. */
   async testRun(input: unknown): Promise<TestRunOutput> {
     const { session, command } = validateVerbInput('test_run', input);
@@ -363,5 +394,7 @@ export function verbHandlers(
     read_event: (input) => service.readEvent(input),
     deliver: (input) => service.deliver(input),
     lookup_knowledge: (input) => service.lookupKnowledge(input),
+    plan_write: (input) => service.planWrite(input),
+    contract_write: (input) => service.contractWrite(input),
   };
 }

@@ -23,11 +23,13 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   type RepoRow,
   addRepoToStream,
+  approvePlan,
   attachSession,
   closeStream,
   getStreamActivity,
   getStreamDiff,
   getStreamPage,
+  getStreamPlan,
   landStream,
   listRepos,
   markStreamLanded,
@@ -53,11 +55,12 @@ import { Card } from './Inbox';
 import { Markdown } from './Markdown';
 import { SessionPicker, sessionModelText } from './SessionPicker';
 
-type Tab = 'thread' | 'diff' | 'activity' | 'rules' | 'docs';
+type Tab = 'thread' | 'diff' | 'activity' | 'plan' | 'rules' | 'docs';
 const TABS: ReadonlyArray<{ tab: Tab; label: string }> = [
   { tab: 'thread', label: 'Thread' },
   { tab: 'diff', label: 'Diff' },
   { tab: 'activity', label: 'Activity' },
+  { tab: 'plan', label: 'Plan' },
   { tab: 'rules', label: 'Knowledge in scope' },
   { tab: 'docs', label: 'Docs' },
 ];
@@ -81,6 +84,104 @@ export function reposNamedIn(body: string, repos: readonly RepoRow[], current?: 
 
 function errorText(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+/** T281 (§9.1): who owns what, the contracts between the children, and the draft's Approve. */
+function PlanView({
+  id,
+  tick,
+  onChanged,
+}: {
+  id: string;
+  tick: unknown;
+  onChanged: () => void;
+}): JSX.Element {
+  const [data, setData] = useState<Awaited<ReturnType<typeof getStreamPlan>> | undefined>();
+  const [error, setError] = useState<string | undefined>(undefined);
+  const [busy, setBusy] = useState(false);
+  const [seq, setSeq] = useState(0);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `tick` and `seq` are re-read triggers.
+  useEffect(() => {
+    let live = true;
+    getStreamPlan(id)
+      .then((r) => live && setData(r))
+      .catch((err: unknown) => live && setError(errorText(err)));
+    return () => {
+      live = false;
+    };
+  }, [id, tick, seq]);
+  if (error) return <p className="cr-dim">{error}</p>;
+  if (!data) return <p className="cr-dim">Loading…</p>;
+  const { plan, contracts } = data;
+  if (!plan && contracts.length === 0) {
+    return (
+      <p className="cr-dim" data-testid="plan-empty">
+        No plan yet — the coordinator writes one when it splits the work.
+      </p>
+    );
+  }
+  return (
+    <section className="cr-docs" data-testid="plan">
+      {plan && (
+        <p data-testid="plan-status" data-status={plan.status}>
+          Plan v{plan.version} · {plan.status}
+          {plan.approved_by ? ` by ${plan.approved_by}` : ''}{' '}
+          {plan.status === 'draft' && (
+            <button
+              type="button"
+              className="cr-btn signal"
+              data-testid="plan-tab-approve"
+              disabled={busy}
+              onClick={() => {
+                setBusy(true);
+                approvePlan(id)
+                  .catch((err: unknown) => setError(errorText(err)))
+                  .finally(() => {
+                    setBusy(false);
+                    setSeq((n) => n + 1);
+                    onChanged();
+                  });
+              }}
+            >
+              Approve
+            </button>
+          )}
+        </p>
+      )}
+      {plan && (
+        <ul data-testid="plan-owners">
+          {plan.owners.map((o) => (
+            <li key={o.child} data-testid="plan-owner" data-child={o.child}>
+              {o.child}: {o.owns.length === 0 ? 'nothing' : o.owns.join(', ')}
+              {plan.status === 'draft' && plan.approved
+                ? (() => {
+                    const before = plan.approved.owners.find((a) => a.child === o.child);
+                    const same = before?.owns.join(', ') === o.owns.join(', ');
+                    return same ? null : (
+                      <span className="cr-dim" data-testid="plan-owner-was">
+                        {' '}
+                        (approved v{plan.approved.version}:{' '}
+                        {before ? before.owns.join(', ') || 'nothing' : 'not in the plan'})
+                      </span>
+                    );
+                  })()
+                : null}
+            </li>
+          ))}
+        </ul>
+      )}
+      <ul data-testid="contracts">
+        {contracts.map((c) => (
+          <li key={c.id} data-testid="contract" data-contract={c.id}>
+            <div className="cr-dim">
+              {c.title} · v{c.version} · parties {c.parties.length}
+            </div>
+            <Markdown text={c.body} />
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
 }
 
 /** T245: what woke this node and why — every routed event, its reason, and what carried it. */
@@ -884,6 +985,8 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
         ))}
 
       {tab === 'activity' && <ActivityView id={stream.id} tick={cockpit} />}
+
+      {tab === 'plan' && <PlanView id={stream.id} tick={cockpit} onChanged={refresh} />}
 
       {tab === 'rules' && (
         <ul className="cr-rules" data-testid="rules">
