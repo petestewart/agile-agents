@@ -885,8 +885,8 @@ git status --short
 
 ### Ticket: T220 Fake GitHub harness
 - **Priority:** P0
-- **Status:** In Progress
-- **Owner:** opus:worker-T220
+- **Status:** Done (merge 43f6026)
+- **Owner:** —
 - **Scope:** Add `daemon/src/github/fake-server.ts` (test support, like `runner/fake-agent.ts`), a `Bun.serve` server implementing the REST subset in projects-design §18:
   - repo, pulls (create, get, list, update);
   - reviews, review comments, issue comments;
@@ -897,12 +897,12 @@ git status --short
   It is backed by a bare git repo used as `origin` (a `file://` remote). There are test controls: add a review or comment, set a check result, merge (a real `git merge` into the bare repo, honouring auto-merge once approved and green), and close.
 - **Acceptance Criteria:** Self-tests: create a PR from a pushed branch, add a review, set a check failing then passing, merge; the bare repo's main moves; a conditional GET returns 304.
 - **Validation Steps:** `bun test packages/daemon/src/github`.
-- **Notes:** First ticket of Phase 8; everything else in the phase tests against it. No network.
+- **Notes:** First ticket of Phase 8; everything else in the phase tests against it. No network. Review (sonnet) PASS. +522 (test-support fake, compiled like fake-agent). Needs git ≥2.38 (`merge-tree --write-tree`); CI ubuntu-latest has 2.43.
 
 ### Ticket: T221 GitHub port and REST adapter
 - **Priority:** P0
-- **Status:** Todo
-- **Owner:** —
+- **Status:** In Progress
+- **Owner:** opus:worker-T221
 - **Scope:** `github/port.ts` (the subset above) and `github/rest.ts`:
   - `fetch` against `github.api_url` (config, default `https://api.github.com`);
   - a token from `gh auth token` per call, never stored or logged (P18); a static token only when `api_url` points at localhost (tests);
@@ -978,7 +978,7 @@ git status --short
 
 ### Ticket: T227 ∥ Overlap tracking
 - **Priority:** P1
-- **Status:** Todo
+- **Status:** In Review
 - **Owner:** —
 - **Scope:** Keep `touched` updated for every live work node: the merge-base diff plus uncommitted changes, recomputed after edit hooks, after commits and every 60 s. Two live nodes on the same repo, in any project, sharing a file raise an overlap. It shows on both nodes, on their ancestors and in the repo view (T209 slot), and clears when either node merges or stops touching the file.
 - **Acceptance Criteria:** Unit: an overlap appears within one recompute and clears after a merge. e2e: the repo view shows the warning.
