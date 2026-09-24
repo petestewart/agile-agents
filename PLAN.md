@@ -42,6 +42,7 @@ Target shape, in one paragraph: a **stream** is the unit (goal, status, parent, 
 - **D29** (2026-09-24, Pete): any agent may read any registered repo by default. A repo set private is readable only by the projects it lists. Changing code is always limited to the node's own repo.
 - **D30** (2026-09-24, Pete): Phases 7–13 are built on stacked branches. `claude/phase-7` comes off the current integration tip, and each `claude/phase-N` comes off `claude/phase-(N-1)`. Ticket branches `T###-<slug>` fork from their phase branch and merge back `--no-ff`. Pete reviews each phase at its QA ticket and lands the phases in order. A fix found in phase N while phase N+1 exists is made on phase N and merged forward into every later phase branch, never cherry-picked backwards.
 - **D31** (2026-09-24, Pete): P17 approved. Jira and Linear tokens may be stored in the home `config.yaml`, the second written credential exception after the TypeSafe key (D16), with the same rules: written only through the store at mode 0600, never printed, logged, committed or sent to the browser; Settings shows only whether a token is set. T320 is unblocked.
+- **D32** (2026-09-24, Pete): proposed decisions P1–P16 and P18–P20 (design/projects-design.md §19) accepted as written. Q5–Q24 are closed by D31 and D32.
 - D11. KiroCrew is not adopted. Borrowed as designs only: hardened worktree creation, the push detector that cannot be dodged by spelling, agent-owned vs human-owned ledger fields, a fail-closed credential scrub before the external classifier, mechanical scope filtering of injected rules, an append-only log.
 
 ## 3. Non-goals for the reshape
@@ -685,6 +686,9 @@ Build order: Phase 0 → 1 → 2 → 3 → 4 → 5 → 6. Within a phase, ticket
 - **Notes:** Runs after T164 so the UI is settled; step 1 may run earlier alongside any Phase 6 ticket if a worker is idle. Phone access over the network (auth, tunnel) is out of scope; see Discovered Issues.
 
 ## 7b. The projects stage (Phases 7–13)
+
+**Resume here (handoff, 2026-09-24).** The reshape (Phases 0–6) is merged to `main` (PR #3, e66dfd5). Phase 7 has not started; nothing below T200 is In Progress. Work on `claude/phase-7` (already carries `main`); each later phase gets `claude/phase-N` cut from the previous phase branch, and fixes from Pete's reviews merge forward. Drive with `/project --yolo`: per ticket a worktree `.worktrees/T###-slug` off the phase branch → worker (opus) → independent reviewer (sonnet) → verify the diff yourself → merge `--no-ff` → push. Black-box QA (sonnet) at each phase's QA ticket. Pete reviews per phase but asked that work continue into the next phase without waiting; stop only for decisions only he can make. Commits end with `Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>` and the session line. Every ticket reports its daemon line delta (D18). Never print, log or commit credentials; never list or dump environment variables (D16, D31). Live-check commands for Pete must be zsh-paste-safe (no placeholders, no inline `#`), verified against the real CLI, and include `export AGILE_HOME=…`. Pete's checkout is `~/agile-agents`; his test repos are `~/Projects/ledger-lite` and https://github.com/petestewart/agile-test-repo.
+
 
 Design: `design/projects-design.md`, which wins over `design/cockpit-design.md` where they differ (D19). Branches are stacked (D30): `claude/phase-7` → `claude/phase-8` → … → `claude/phase-13`. Each ticket branches from its phase branch. Every phase ends with a QA ticket and Pete's look, and Pete lands the phases in order.
 
