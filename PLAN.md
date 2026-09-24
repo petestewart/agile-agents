@@ -818,12 +818,12 @@ Design: `design/projects-design.md`, which wins over `design/cockpit-design.md` 
 
 ### Ticket: T209 Repo view and lenses
 - **Priority:** P1
-- **Status:** In Progress
-- **Owner:** opus:worker-T209
+- **Status:** Done (merge 7d48238)
+- **Owner:** —
 - **Scope:** Add a repo view: live work nodes grouped by repo across projects, with the ancestors greyed and the repo's delivery mode shown. The norms and overlap slots are placeholders until T227 and T266. Add lenses: Needs me (the inbox, grouped by node), Running, and Dependencies (the `waits_on` graph as a list).
 - **Acceptance Criteria:** e2e: a node on api in two projects shows under api with both paths; Running lists only nodes with a live session.
 - **Validation Steps:** `bun run test:e2e`.
-- **Notes:** After T208.
+- **Notes:** After T208. Review (sonnet) PASS. Daemon +38. Inbox nav label is now "Needs me" (projects-design §5); nav scrolls sideways at phone width. Running counts sessions that are starting/running/idle (alive) — Pete may want idle excluded.
 
 ### Ticket: T210 ∥ Setup rough edges (from T175)
 - **Priority:** P2

@@ -12,9 +12,16 @@ import { type PropsWithChildren, createContext, useContext, useMemo, useState } 
 import { DEFAULT_RULES_FILTER, type RulesFilter } from './rules';
 
 /** `stream` is the stream page (T161) — the stream is `selected`. `rules` is T163's rules screen. */
-export type ShellView = 'inbox' | 'rules' | 'settings' | 'stream';
+export type ShellView = 'inbox' | 'repos' | 'running' | 'deps' | 'rules' | 'settings' | 'stream';
 /** The views a `?view=` deep link may name; `stream` needs an id, so it is not one. */
-export const SHELL_VIEWS: readonly ShellView[] = ['inbox', 'rules', 'settings'];
+export const SHELL_VIEWS: readonly ShellView[] = [
+  'inbox',
+  'repos',
+  'running',
+  'deps',
+  'rules',
+  'settings',
+];
 
 export function isShellView(value: string | null): value is ShellView {
   return value !== null && (SHELL_VIEWS as readonly string[]).includes(value);

@@ -1,0 +1,148 @@
+/**
+ * T209 (projects-design §3): the repo view and the lenses over the same
+ * rows the rail shows. By repo: live work nodes grouped by repo across
+ * projects, ancestors in grey, the repo's delivery mode in the heading.
+ * Running: nodes with a live session. Dependencies: the `waits_on` graph
+ * as a list. (Needs me is the inbox, already grouped by node.)
+ * Norms (T227) and overlaps (T266) are placeholders here.
+ */
+
+import type { CockpitRepoRow, CockpitStreamRow } from '../lib/feed-types';
+import { useShell } from '../lib/shell';
+import {
+  DOT_LABEL,
+  ancestorTitles,
+  dependencyEdges,
+  groupByRepo,
+  runningRows,
+  streamDot,
+} from '../lib/streams';
+
+function NodeLine({
+  row,
+  rows,
+}: {
+  row: CockpitStreamRow;
+  rows: readonly CockpitStreamRow[];
+}): JSX.Element {
+  const { select } = useShell();
+  const dot = streamDot(row);
+  return (
+    <li>
+      <button
+        type="button"
+        className="cr-lens-row"
+        data-stream={row.id}
+        onClick={() => select(row.id)}
+        title={DOT_LABEL[dot]}
+      >
+        <span className="cr-dot" data-dot={dot} aria-label={DOT_LABEL[dot]} />
+        <span className="cr-lens-path" data-testid="node-path">
+          {ancestorTitles(row, rows).map((title, i) => (
+            // biome-ignore lint/suspicious/noArrayIndexKey: ancestors are positional
+            <span key={i} className="anc">
+              {title} ›{' '}
+            </span>
+          ))}
+          <span className="title">{row.title}</span>
+        </span>
+      </button>
+    </li>
+  );
+}
+
+export function RepoView({
+  rows,
+  repos,
+}: {
+  rows: readonly CockpitStreamRow[];
+  repos: readonly CockpitRepoRow[];
+}): JSX.Element {
+  const groups = groupByRepo(rows, repos);
+  return (
+    <section className="cr-inbox" data-testid="repo-view">
+      <div className="cr-inbox-hd">
+        <h1>By repo</h1>
+      </div>
+      {groups.length === 0 && <p className="cr-calm">No repos registered.</p>}
+      {groups.map((group) => (
+        <div key={group.repo} className="cr-group" data-repo={group.repo}>
+          <h2>
+            {group.repo}{' '}
+            <span className="cr-lens-mode" data-testid="repo-delivery">
+              ({group.delivery})
+            </span>
+          </h2>
+          {group.rows.length === 0 ? (
+            <p className="cr-lens-empty">No live work.</p>
+          ) : (
+            <ul className="cr-lens-list">
+              {group.rows.map((row) => (
+                <NodeLine key={row.id} row={row} rows={rows} />
+              ))}
+            </ul>
+          )}
+          <p className="cr-lens-empty" data-testid="repo-norms">
+            Norms and overlaps: not yet.
+          </p>
+        </div>
+      ))}
+    </section>
+  );
+}
+
+export function RunningLens({ rows }: { rows: readonly CockpitStreamRow[] }): JSX.Element {
+  const running = runningRows(rows);
+  return (
+    <section className="cr-inbox" data-testid="running-lens">
+      <div className="cr-inbox-hd">
+        <h1>Running</h1>
+      </div>
+      {running.length === 0 ? (
+        <p className="cr-calm">Nothing running.</p>
+      ) : (
+        <ul className="cr-lens-list">
+          {running.map((row) => (
+            <NodeLine key={row.id} row={row} rows={rows} />
+          ))}
+        </ul>
+      )}
+    </section>
+  );
+}
+
+export function DependenciesLens({ rows }: { rows: readonly CockpitStreamRow[] }): JSX.Element {
+  const { select } = useShell();
+  const edges = dependencyEdges(rows);
+  return (
+    <section className="cr-inbox" data-testid="deps-lens">
+      <div className="cr-inbox-hd">
+        <h1>Dependencies</h1>
+      </div>
+      {edges.length === 0 ? (
+        <p className="cr-calm">Nothing waits on anything.</p>
+      ) : (
+        <ul className="cr-lens-list">
+          {edges.map((edge) => {
+            const on = typeof edge.on === 'string' ? undefined : edge.on;
+            return (
+              <li key={`${edge.from.id}-${on?.id ?? edge.on}`} data-testid="dep-edge">
+                <button type="button" className="cr-lens-link" onClick={() => select(edge.from.id)}>
+                  {edge.from.title}
+                </button>{' '}
+                <span className="anc">waits on</span>{' '}
+                {on ? (
+                  <button type="button" className="cr-lens-link" onClick={() => select(on.id)}>
+                    {on.title}
+                  </button>
+                ) : (
+                  <span className="anc">{String(edge.on)}</span>
+                )}
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </section>
+  );
+}

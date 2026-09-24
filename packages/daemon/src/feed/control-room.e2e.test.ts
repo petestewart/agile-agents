@@ -2066,3 +2066,103 @@ describe('New stream starts the agent (Playwright e2e, T204)', () => {
     TEST_BUDGET_MS,
   );
 });
+
+// ---- T209: the repo view and lenses ----------------------------------------
+
+describe('repo view and lenses (Playwright e2e, T209)', () => {
+  browserTest(
+    'a node on api in two projects shows under api with both paths; Running lists only live sessions',
+    async () => {
+      const cockpit = await startCockpit();
+      let page: Page | undefined;
+      try {
+        await cockpit.store.putRepos({
+          api: { path: cockpit.home, delivery: 'pr' },
+          web: { path: cockpit.home },
+        });
+        const shop = await cockpit.projects.create({ name: 'Shop' });
+        const blog = await cockpit.projects.create({ name: 'Blog' });
+        const feature = await cockpit.streams.create('human', {
+          title: 'Show sale prices',
+          goal: 'g',
+          project: shop.id,
+        });
+        const shopApi = await cockpit.streams.create('human', {
+          title: 'api: add salePrice',
+          goal: 'g',
+          parent: feature.id,
+          repo: 'api',
+        });
+        await cockpit.streams.create('human', {
+          title: 'Show the sale on web',
+          goal: 'g',
+          parent: feature.id,
+        });
+        const blogApi = await cockpit.streams.create('human', {
+          title: 'api: add /posts',
+          goal: 'g',
+          project: blog.id,
+          repo: 'api',
+        });
+        await cockpit.streams.update('human', blogApi.id, {
+          waits_on: [{ node: shopApi.id, added_by: 'human', added_at: new Date().toISOString() }],
+        });
+        await cockpit.store.updateStream('daemon', shopApi.id, (s) => ({
+          ...s,
+          sessions: [
+            {
+              id: '01ARZ3NDEKTSV4RRFFQ69G5FAV',
+              vendor: 'claude',
+              model: 'm',
+              role: 'worker',
+              status: 'running',
+            },
+          ],
+        }));
+
+        page = await openPage();
+        await page.goto(`${cockpit.base}/`);
+        await page.locator('[data-view="repos"]').click();
+        const api = '[data-testid="repo-view"] [data-repo="api"]';
+        await page.locator(`${api} [data-stream="${blogApi.id}"]`).waitFor({ state: 'visible' });
+        expect(await page.locator(`${api} [data-testid="repo-delivery"]`).textContent()).toBe(
+          '(pr)',
+        );
+        expect(
+          await page
+            .locator(`${api} [data-stream="${shopApi.id}"] [data-testid="node-path"]`)
+            .textContent(),
+        ).toBe('Shop › Show sale prices › api: add salePrice');
+        expect(
+          await page
+            .locator(`${api} [data-stream="${blogApi.id}"] [data-testid="node-path"]`)
+            .textContent(),
+        ).toBe('Blog › api: add /posts');
+        expect(await page.locator(`${api} [data-stream]`).count()).toBe(2);
+        expect(
+          await page
+            .locator('[data-testid="repo-view"] [data-repo="web"] [data-testid="repo-delivery"]')
+            .textContent(),
+        ).toBe('(direct)');
+
+        await page.locator('[data-view="running"]').click();
+        const running = '[data-testid="running-lens"]';
+        await page
+          .locator(`${running} [data-stream="${shopApi.id}"]`)
+          .waitFor({ state: 'visible' });
+        expect(await page.locator(`${running} [data-stream]`).count()).toBe(1);
+
+        await page.locator('[data-view="deps"]').click();
+        await waitForText(
+          page,
+          '[data-testid="deps-lens"] [data-testid="dep-edge"]',
+          'api: add /posts waits on api: add salePrice',
+        );
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+});

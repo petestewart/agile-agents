@@ -7,15 +7,19 @@ import { describe, expect, test } from 'bun:test';
 import type { InboxItem, SessionRef } from '@agile-agents/shared';
 import type { CockpitStreamRow } from './feed-types';
 import {
+  ancestorTitles,
   buildStreamTree,
+  dependencyEdges,
   diffLineKind,
   filterStreamRows,
+  groupByRepo,
   groupInbox,
   isLiveSession,
   isThinking,
   projectForNew,
   rowsInProject,
   ruleHitOf,
+  runningRows,
   streamDot,
   threadAuthorLabel,
 } from './streams';
@@ -176,5 +180,46 @@ describe('T208: projects in the rail', () => {
     expect(projectForNew(undefined, 'a', rows, projects)).toBe('P1');
     expect(projectForNew(undefined, 'c', rows, projects)).toBeUndefined();
     expect(projectForNew(undefined, undefined, rows, projects.slice(0, 1))).toBe('P1');
+  });
+});
+
+describe('repo view and lenses (T209)', () => {
+  const rows = [
+    row('P1', { title: 'Shop', role: 'project' }),
+    row('F', { title: 'Show sale prices', role: 'coordinating', parent: 'P1' }),
+    row('A', { title: 'api: salePrice', parent: 'F', repo: 'api', live: true }),
+    row('P2', { title: 'Blog', role: 'project' }),
+    row('B', { title: 'api: posts', parent: 'P2', repo: 'api', waits_on: ['A', 'GONE'] }),
+    row('L', { title: 'landed', parent: 'P2', repo: 'api', human_status: 'landed' }),
+    row('W', { title: 'web: x', parent: 'P1', repo: 'web' }),
+  ];
+
+  test('ancestors run root first', () => {
+    expect(ancestorTitles(rows[2] as CockpitStreamRow, rows)).toEqual(['Shop', 'Show sale prices']);
+    expect(ancestorTitles(rows[0] as CockpitStreamRow, rows)).toEqual([]);
+  });
+
+  test('live work nodes group by repo across projects, with the delivery mode', () => {
+    const groups = groupByRepo(rows, [
+      { name: 'api', delivery: 'pr' },
+      { name: 'empty', delivery: 'direct' },
+    ]);
+    expect(groups.map((g) => [g.repo, g.delivery, g.rows.map((r) => r.id)])).toEqual([
+      ['api', 'pr', ['A', 'B']],
+      ['empty', 'direct', []],
+      ['web', 'direct', ['W']],
+    ]);
+  });
+
+  test('running is only nodes with a live session', () => {
+    expect(runningRows(rows).map((r) => r.id)).toEqual(['A']);
+  });
+
+  test('dependencies list every open edge', () => {
+    const edges = dependencyEdges(rows);
+    expect(edges.map((e) => [e.from.id, typeof e.on === 'string' ? e.on : e.on.id])).toEqual([
+      ['B', 'A'],
+      ['B', 'GONE'],
+    ]);
   });
 });

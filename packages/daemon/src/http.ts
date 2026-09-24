@@ -836,7 +836,9 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
         // The cockpit frame (§9): the stream tree and the inbox.
         if (url.pathname === '/api/cockpit' && req.method === 'GET') {
           if (!feed?.streams) return errorResponse(503, 'streams not available');
-          return jsonResponse(buildCockpitFrame(feed.streams, feed.inbox, feed.projects));
+          return jsonResponse(
+            buildCockpitFrame(feed.streams, feed.inbox, feed.projects, feed.store.getRepos()),
+          );
         }
 
         if (url.pathname === '/api/policy' && req.method === 'GET') {
@@ -979,7 +981,11 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
               ),
             );
             if (feed.streams) {
-              ws.send(JSON.stringify(buildCockpitFrame(feed.streams, feed.inbox, feed.projects)));
+              ws.send(
+                JSON.stringify(
+                  buildCockpitFrame(feed.streams, feed.inbox, feed.projects, feed.store.getRepos()),
+                ),
+              );
             }
           }
         },
@@ -1004,7 +1010,9 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
           try {
             server.publish(
               FEED_WS_TOPIC,
-              JSON.stringify(buildCockpitFrame(feed.streams, feed.inbox, feed.projects)),
+              JSON.stringify(
+                buildCockpitFrame(feed.streams, feed.inbox, feed.projects, feed.store.getRepos()),
+              ),
             );
           } catch (err) {
             console.error(messageOf(err));

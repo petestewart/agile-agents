@@ -12,6 +12,7 @@ import {
   type InboxItem,
   type NodeRole,
   type Question,
+  type ReposConfig,
   type Stream,
   liveChildrenOf,
   nodeRole,
@@ -85,6 +86,12 @@ export interface CockpitStreamRow {
   role: NodeRole;
   agent_status: Stream['agent']['status'];
   human_status: Stream['human']['status'];
+  /** T209: the repo a work node is on (the repo view groups by it). */
+  repo?: string;
+  /** T209: a session is starting, running or idle (the Running lens). */
+  live?: true;
+  /** T209: the nodes this one still waits on (the Dependencies lens). */
+  waits_on?: string[];
 }
 
 /** The cockpit's live frame: inbox and stream tree, pushed on connect and after every event batch (§3.3). */
@@ -94,7 +101,17 @@ export interface CockpitFrame {
   streams: CockpitStreamRow[];
   /** T208: the live projects, for the rail's switcher and grouping. */
   projects: CockpitProjectRow[];
+  /** T209: the registered repos and their delivery mode (the repo view). */
+  repos: CockpitRepoRow[];
 }
+
+/** One registered repo (T209). `delivery` is `direct` unless repos.yaml says otherwise. */
+export interface CockpitRepoRow {
+  name: string;
+  delivery: 'direct' | 'pr';
+}
+
+const LIVE_SESSION = new Set(['starting', 'running', 'idle']);
 
 /** One entry of the rail's project switcher (T208). */
 export interface CockpitProjectRow {
@@ -107,6 +124,7 @@ export function buildCockpitFrame(
   streams: StreamService,
   inbox?: InboxService,
   projects?: ProjectService,
+  repos: ReposConfig = {},
 ): CockpitFrame {
   const all = streams.list();
   return {
@@ -120,7 +138,19 @@ export function buildCockpitFrame(
       role: nodeRole(s, liveChildrenOf(s.id, all)),
       agent_status: s.agent.status,
       human_status: s.human.status,
+      ...(s.repo !== undefined ? { repo: s.repo } : {}),
+      ...(s.sessions.some((x) => LIVE_SESSION.has(x.status)) ? { live: true as const } : {}),
+      ...waitsOn(s),
     })),
     projects: (projects?.list() ?? []).map((p) => ({ id: p.id, name: p.name, root: p.root })),
+    repos: Object.entries(repos).map(([name, entry]) => ({
+      name,
+      delivery: entry.delivery ?? 'direct',
+    })),
   };
+}
+
+function waitsOn(s: Stream): { waits_on?: string[] } {
+  const open = (s.waits_on ?? []).filter((w) => w.satisfied_at === undefined).map((w) => w.node);
+  return open.length > 0 ? { waits_on: open } : {};
 }
