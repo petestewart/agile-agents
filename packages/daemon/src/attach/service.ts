@@ -63,6 +63,19 @@ export class UnregisteredRepoError extends Error {
   }
 }
 
+/** T176: a worker on a parent builds on the branch its children land into. RPC: -32602, HTTP 409. */
+export class ParentAttachError extends Error {
+  constructor(
+    public readonly stream: string,
+    public readonly children: string[],
+  ) {
+    super(
+      `stream ${stream} has ${children.length} open child stream(s) (${children.join(', ')}); a parent's branch is where its children land, so work there conflicts with them. Attach to a child, or pass --force to attach here anyway`,
+    );
+    this.name = 'ParentAttachError';
+  }
+}
+
 /** Session statuses that mean "still live". */
 const LIVE_SESSION_STATUSES: readonly SessionStatus[] = ['starting', 'running', 'idle'];
 
@@ -103,6 +116,8 @@ export interface AttachOptions extends AttachFlags {
   role?: SessionRole;
   /** Appended after the brief: the lessons session's material and instruction (§5.5). The caller caps it. */
   briefAppendix?: string;
+  /** T176: attach a worker even though the stream has open children. */
+  force?: boolean;
 }
 
 /** `detach: true`: the human pulled the plug, not a shutdown. */
@@ -178,6 +193,15 @@ export class AttachService {
     // same worktree, but never beside a second reviewer (§4.2).
     const busy = liveSession(stream, role);
     if (busy !== undefined) throw new StreamBusyError(stream.id, busy.id, role);
+    if (role === 'worker' && options.force !== true) {
+      const open = streams
+        .list()
+        .filter(
+          (s) => s.parent === stream.id && ['open', 'waiting_on_you'].includes(s.human.status),
+        )
+        .map((s) => s.id);
+      if (open.length > 0) throw new ParentAttachError(stream.id, open);
+    }
 
     const repos = store.getRepos();
     const repoEntry = stream.repo === undefined ? undefined : repos[stream.repo];
@@ -268,7 +292,11 @@ export class AttachService {
     // 5. Record the session before it can produce anything. A reviewer never
     // moves `agent.status`: a read-only second opinion is not work (§4.2).
     if (role === 'worker') {
-      await streams.update('daemon', stream.id, { agent: { status: 'working' } });
+      // T176: a worker on the branch makes the last land's conflict stale.
+      await streams.update('daemon', stream.id, {
+        agent: { status: 'working' },
+        ...(stream.land_conflict ? { land_conflict: null } : {}),
+      });
     }
     const recorded = await this.pushSession(stream.id, session);
     await streams.appendThread('daemon', stream.id, {

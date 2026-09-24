@@ -14,13 +14,15 @@ import { ACP_PROVIDERS, type AcpProviderConfig } from '@agile-agents/acp-client'
 import type { HilId, Policy, Question, Stream } from '@agile-agents/shared';
 import { GateService } from '../gates/service';
 import { runInit } from '../init';
+import { LandingService } from '../landing/service';
 import { QuestionService } from '../questions/service';
 import { wireQuestionSupersession } from '../questions/supersede';
 import type { FakeAgentScript } from '../runner/fake-agent';
 import { StateStore } from '../store';
 import { StreamService } from '../streams/service';
+import { buildAttachRpcMethods } from './rpc';
 import { sayPrompt } from './service';
-import { AttachService, StreamBusyError, endedReason } from './service';
+import { AttachService, ParentAttachError, StreamBusyError, endedReason } from './service';
 import { VerbService } from './verbs';
 
 const FAKE_AGENT_PATH = join(import.meta.dir, '..', 'runner', 'fake-agent.ts');
@@ -277,6 +279,67 @@ describe('one live worker per stream (§2.3)', () => {
     // The worker slot is still taken too — one live session per role.
     await expect(attachService.attach(stream.id)).rejects.toThrow(StreamBusyError);
     expect(streams.get(stream.id).sessions.length).toBe(2);
+  }, 30_000);
+});
+
+describe('T176: a worker on a parent with open children needs force', () => {
+  test('refused without force, allowed with it; reviewers and finished children are not guarded', async () => {
+    const parent = await makeStream();
+    const child = await streams.create('human', { title: 'c', goal: 'g', parent: parent.id });
+    await expect(attachService.attach(parent.id)).rejects.toThrow(ParentAttachError);
+    await expect(attachService.attach(parent.id)).rejects.toThrow(
+      /a parent's branch is where its children land/,
+    );
+    expect(streams.get(parent.id).sessions).toHaveLength(0);
+
+    const review = await attachService.attach(parent.id, { role: 'reviewer' });
+    expect(review.session.role).toBe('reviewer');
+    const forced = await attachService.attach(parent.id, { force: true });
+    expect(forced.session.role).toBe('worker');
+    await attachService.stopAll();
+
+    await streams.close('human', child.id);
+    const other = await makeStream();
+    await streams.create('human', { title: 'c2', goal: 'g', parent: other.id });
+    await streams.close('human', (streams.list().find((s) => s.title === 'c2') as Stream).id);
+    expect((await attachService.attach(other.id)).session.role).toBe('worker');
+  }, 30_000);
+});
+
+describe('T176: Resolve — a worker handed the conflict, then the re-land', () => {
+  test('attach.resolve appends the merge instruction to the brief; the resolved branch lands', async () => {
+    await store.putRepos({ demo: { path: repo, protected_branches: [] } });
+    const base = git(['rev-parse', '--abbrev-ref', 'HEAD']);
+    const landing = new LandingService({ store, streams });
+    const methods = buildAttachRpcMethods(attachService, verbs, landing);
+    const stream = await makeStream('demo');
+    const first = await attachService.attach(stream.id);
+    await waitFor(() => streams.get(stream.id).agent.status === 'done');
+    const wt = first.stream.worktree as string;
+    writeFileSync(join(wt, 'shared.txt'), 'from the stream\n');
+    git(['add', 'shared.txt'], wt);
+    git(['commit', '-q', '-m', 'stream'], wt);
+    writeFileSync(join(repo, 'shared.txt'), 'from the target\n');
+    git(['add', 'shared.txt']);
+    git(['commit', '-q', '-m', 'target']);
+    expect((await landing.land(stream.id)).status).toBe('blocked');
+
+    const resolved = (await methods['attach.resolve']?.({ stream: stream.id })) as {
+      session: { id: string };
+    };
+    const briefPath = join(home, 'sessions', resolved.session.id, 'brief.md');
+    await waitFor(() => existsSync(briefPath));
+    const brief = readFileSync(briefPath, 'utf8');
+    expect(brief).toContain('## Resolve the land conflict');
+    expect(brief).toContain(`git merge ${base}`);
+    expect(brief).toContain('shared.txt');
+    await waitFor(() => streams.get(stream.id).agent.status === 'done');
+
+    // What the worker would do: merge, keep both sides, commit.
+    Bun.spawnSync(['git', 'merge', base], { cwd: wt });
+    writeFileSync(join(wt, 'shared.txt'), 'from the target\nfrom the stream\n');
+    git(['commit', '-q', '-am', 'merge target'], wt);
+    expect((await landing.land(stream.id)).status).toBe('landed');
   }, 30_000);
 });
 

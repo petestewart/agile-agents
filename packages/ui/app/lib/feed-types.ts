@@ -76,6 +76,8 @@ export interface LandPreflight {
   gated?: true;
   /** T166: already merged into the target outside `land`. */
   merged?: true;
+  /** T176: the last land conflicted in these files; Resolve offers a worker. */
+  conflicts?: string[];
 }
 
 /** T161: mirror of `docs/service.ts`'s `Doc`. */

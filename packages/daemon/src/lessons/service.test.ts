@@ -11,7 +11,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ACP_PROVIDERS, type AcpProviderConfig } from '@agile-agents/acp-client';
@@ -28,7 +28,7 @@ import { buildBrief } from '../runner/brief';
 import type { FakeAgentScript } from '../runner/fake-agent';
 import { StateStore, buildEvent } from '../store';
 import { StreamService } from '../streams/service';
-import { LessonQuotaError, LessonsService, MAX_LESSON_PROPOSALS } from './service';
+import { LessonQuotaError, LessonsService, MAX_LESSON_PROPOSALS, renderMaterial } from './service';
 
 const FAKE_AGENT_PATH = join(import.meta.dir, '..', 'runner', 'fake-agent.ts');
 
@@ -183,6 +183,17 @@ afterEach(async () => {
   for (const dir of [home, scratch, repo]) {
     Bun.spawnSync(['rm', '-rf', dir]);
   }
+});
+
+describe('T176: rules about what an agent says are guidance', () => {
+  test('brief and instruction say pattern/classifier only see tool calls and diffs', async () => {
+    const brief = readFileSync(join(import.meta.dir, '../../briefs/lessons.md'), 'utf8');
+    expect(brief).toMatch(/only ever see \*\*tool calls and diffs\*\*/);
+    expect(brief).toMatch(/must be `guidance`/);
+    const stream = await streams.create('human', { title: 't', goal: 'g' });
+    const text = renderMaterial(stream, { findings: ['f'], denials: [], questions: [] });
+    expect(text).toContain('what an agent says (messages, replies) is `guidance`');
+  });
 });
 
 describe('what a retro is started over (§5.5)', () => {

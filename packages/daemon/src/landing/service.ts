@@ -88,6 +88,8 @@ export interface LandPreflight {
   gated?: true;
   /** The branch has its own work and all of it is already in the target: "Mark landed". */
   merged?: true;
+  /** T176: the last land conflicted and nothing has worked on the stream since; Resolve offers a worker. */
+  conflicts?: string[];
 }
 
 /** How much of a stream diff travels in one response. */
@@ -180,14 +182,28 @@ export class LandingService {
         merged.conflicts.length > 0
           ? `land ${branch} into ${target} conflicted in: ${merged.conflicts.join(', ')}`
           : `land ${branch} into ${target} failed: ${merged.reason}`;
-      await streams.update('daemon', stream.id, { agent: { status: 'blocked' } });
+      await streams.update('daemon', stream.id, {
+        agent: { status: 'blocked' },
+        ...(merged.conflicts.length > 0
+          ? {
+              land_conflict: {
+                target,
+                files: merged.conflicts.slice(0, 200),
+                at: new Date().toISOString(),
+              },
+            }
+          : {}),
+      });
       await streams.appendThread('daemon', stream.id, { kind: 'event', body: line });
       return { status: 'blocked', target, conflicts: merged.conflicts, line };
     }
 
     // 4. Close the stream, remove its worktree, keep its branch.
     const line = `landed ${branch} into ${target} (${merged.sha.slice(0, 12)})`;
-    await streams.update('daemon', stream.id, { human: { status: 'landed' } });
+    await streams.update('daemon', stream.id, {
+      human: { status: 'landed' },
+      ...(stream.land_conflict ? { land_conflict: null } : {}),
+    });
     await streams.appendThread('daemon', stream.id, { kind: 'event', body: line });
     if (stream.worktree !== undefined) {
       const removal = removeWorktreeSafely(repoRoot, stream.worktree);
@@ -215,6 +231,16 @@ export class LandingService {
       const { repoEntry, branch } = this.requireLandable(stream);
       const repoRoot = repoEntry.path;
       const target = this.resolveTarget(stream, repoEntry, repoRoot);
+      const conflict = stream.land_conflict;
+      if (conflict !== undefined) {
+        return {
+          ready: false,
+          branch,
+          target: conflict.target,
+          conflicts: conflict.files,
+          reason: `the last land into ${conflict.target} conflicted in ${conflict.files.join(', ')}; Resolve, or fix the branch by hand, then land again`,
+        };
+      }
       if (!branchExists(repoRoot, target)) {
         return {
           ready: false,
@@ -317,6 +343,26 @@ export class LandingService {
       patch: truncated ? patch.stdout.slice(0, STREAM_DIFF_MAX_CHARS) : patch.stdout,
       truncated,
     };
+  }
+
+  /**
+   * T176: the Resolve worker's instruction, appended to its brief. Refused
+   * unless the stream's last land conflicted (`land_conflict`).
+   */
+  resolvePrompt(streamId: string): string {
+    const stream = this.options.streams.get(streamId);
+    const conflict = stream.land_conflict;
+    if (conflict === undefined || stream.branch === undefined) {
+      throw new LandRefusedError(stream.id, `stream ${stream.id} has no land conflict to resolve`);
+    }
+    return [
+      '## Resolve the land conflict',
+      `Landing ${stream.branch} into ${conflict.target} conflicted in: ${conflict.files.join(', ')}.`,
+      `Merge ${conflict.target} into this stream's branch (\`git merge ${conflict.target}\`) in this worktree.`,
+      "Resolve each listed file keeping both sides' intent: the target's changes and this stream's goal.",
+      'Run the tests, then commit the merge.',
+      'When done, say the stream is ready to land again; the operator lands it.',
+    ].join('\n');
   }
 
   /** Everything that must hold before landing touches git: a repo, a live human status, no live worker. */
