@@ -1,22 +1,15 @@
 /**
  * `agile project new|list|show|set` (T200) — the CLI over the daemon's
  * `project.*` RPC (projects-design §14.1). Thin, like `stream.ts`: parse
- * argv, call one method, print human or `--json`. `--repo` takes a
- * comma-separated list of names from `repos.yaml`, like `repo add --protected`.
+ * argv, call one method, print human or `--json`. `--repo` repeats and/or
+ * takes a comma-separated list of names from `repos.yaml`.
  */
 
 import type { Project } from '@agile-agents/shared';
 import type { ParsedArgs } from '../args';
-import { hasFlag, optionalString, requireOption, requirePositional } from '../args';
+import { hasFlag, optionalList, optionalString, requireOption, requirePositional } from '../args';
 import { callRpc } from '../client';
 import { printFields, printJson, printTable } from '../format';
-
-function repoList(raw: string): string[] {
-  return raw
-    .split(',')
-    .map((r) => r.trim())
-    .filter((r) => r.length > 0);
-}
 
 export async function runProjectNew(
   socketPath: string,
@@ -24,10 +17,10 @@ export async function runProjectNew(
   json: boolean,
 ): Promise<number> {
   const name = requireOption(args.options, 'name');
-  const repos = optionalString(args.options, 'repo');
+  const repos = optionalList(args, 'repo');
   const project = await callRpc<Project>(socketPath, 'project.create', {
     name,
-    ...(repos !== undefined ? { repos: repoList(repos) } : {}),
+    ...(repos !== undefined ? { repos } : {}),
   });
   if (json) printJson(project);
   else console.log(`agile project new: ${project.id}  ${project.name}  root=${project.root}`);
@@ -119,8 +112,8 @@ export async function runProjectSet(
   const patch: Record<string, unknown> = {};
   const name = optionalString(o, 'name');
   if (name !== undefined) patch.name = name;
-  const repos = optionalString(o, 'repo');
-  if (repos !== undefined) patch.repos = repoList(repos);
+  const repos = optionalList(args, 'repo');
+  if (repos !== undefined) patch.repos = repos;
 
   const session: Record<string, string> = {};
   for (const key of ['vendor', 'model', 'effort']) {

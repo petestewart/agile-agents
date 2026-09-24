@@ -73,10 +73,38 @@ describe('agile project against a daemon on a temp AGILE_HOME', () => {
     expect(updated.session).toEqual({ vendor: 'claude', effort: 'high' });
     expect(updated.autonomy.director).toBe('run');
 
+    // Repeated --repo accumulates (with commas too) on new and set.
+    expect((await cli(['repo', 'add', daemon.home, '--name', 'ledger'])).code).toBe(0);
+    const two = await cli([
+      'project',
+      'new',
+      '--name',
+      'Two',
+      '--repo',
+      'shop-web',
+      '--repo',
+      'ledger',
+      '--json',
+    ]);
+    expect(two.err).toBe('');
+    const twoP = JSON.parse(two.out) as Project;
+    expect(twoP.repos).toEqual(['shop-web', 'ledger']);
+    const reset = await cli([
+      'project',
+      'set',
+      twoP.id,
+      '--repo',
+      'ledger',
+      '--repo',
+      'shop-web',
+      '--json',
+    ]);
+    expect((JSON.parse(reset.out) as Project).repos).toEqual(['ledger', 'shop-web']);
+
     const shown = JSON.parse((await cli(['project', 'show', project.id, '--json'])).out);
     expect(shown).toEqual(updated);
     const listed = JSON.parse((await cli(['project', 'list', '--json'])).out) as Project[];
-    expect(listed.map((p) => p.id)).toEqual([project.id]);
+    expect(listed.map((p) => p.id)).toEqual([project.id, twoP.id]);
     const table = await cli(['project', 'list']);
     expect(table.out).toContain('Shop');
   });

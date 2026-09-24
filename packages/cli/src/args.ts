@@ -11,11 +11,14 @@ export interface ParsedArgs {
   /** `--flag value` pairs; a flag with no following value (or followed by
    * another flag) is recorded with value `true`. */
   options: Record<string, string | true>;
+  /** Every string value of a repeated `--flag value`, in order; `options` keeps the last (T200). */
+  repeated?: Record<string, string[]>;
 }
 
 export function parseArgs(argv: string[]): ParsedArgs {
   const positionals: string[] = [];
   const options: Record<string, string | true> = {};
+  const repeated: Record<string, string[]> = {};
 
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i] as string;
@@ -24,6 +27,7 @@ export function parseArgs(argv: string[]): ParsedArgs {
       const next = argv[i + 1];
       if (next !== undefined && !next.startsWith('--')) {
         options[key] = next;
+        repeated[key] = [...(repeated[key] ?? []), next];
         i++;
       } else {
         options[key] = true;
@@ -33,7 +37,7 @@ export function parseArgs(argv: string[]): ParsedArgs {
     }
   }
 
-  return { positionals, options };
+  return { positionals, options, repeated };
 }
 
 /** Reads a required string option, throwing a CLI-friendly error if absent. */
@@ -48,6 +52,18 @@ export function requireOption(options: ParsedArgs['options'], name: string): str
 export function optionalString(options: ParsedArgs['options'], name: string): string | undefined {
   const value = options[name];
   return typeof value === 'string' ? value : undefined;
+}
+
+/** All values of a repeatable option, each also split on commas; undefined when absent. */
+export function optionalList(args: ParsedArgs, name: string): string[] | undefined {
+  const values =
+    args.repeated?.[name] ??
+    (typeof args.options[name] === 'string' ? [args.options[name] as string] : []);
+  if (values.length === 0) return undefined;
+  return values
+    .flatMap((v) => v.split(','))
+    .map((v) => v.trim())
+    .filter((v) => v.length > 0);
 }
 
 export function hasFlag(options: ParsedArgs['options'], name: string): boolean {

@@ -70,7 +70,7 @@ function usage(): string {
     '  init                       create the state home ($AGILE_HOME, default ~/.agile/) if missing',
     '  repo add <path> [--name <n>] [--protected a,b] [--target-branch <b>] [--vendor <v>]',
     '  repo list                  list registered repos',
-    '  project new --name <n> [--repo a,b]   a project and its root stream',
+    '  project new --name <n> [--repo a] [--repo b|a,b]   a project and its root stream',
     '  project list [--all]       projects (--all includes archived)',
     '  project show <id>',
     '  project set <id> [--name n] [--repo a,b] [--vendor v] [--model m] [--effort e] [--delivery direct|pr] [--auto-merge on|off] [--coordinator|--director advise|organise|run]',
