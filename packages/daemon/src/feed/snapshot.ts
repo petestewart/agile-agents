@@ -13,6 +13,7 @@ import {
   type NodeRole,
   type Question,
   type ReposConfig,
+  type StatusCard,
   type Stream,
   liveChildrenOf,
   nodeRole,
@@ -121,6 +122,8 @@ export interface CockpitFrame {
   repos: CockpitRepoRow[];
   /** T227: live work nodes on one repo that changed the same files (§4.3). */
   overlaps: Overlap[];
+  /** T283 (§14.5): the status cards of child nodes, shown on the parent's page. */
+  cards: StatusCard[];
 }
 
 /** One registered repo (T209). `delivery` is `direct` unless repos.yaml says otherwise. */
@@ -143,6 +146,7 @@ export function buildCockpitFrame(
   inbox?: InboxService,
   projects?: ProjectService,
   repos: ReposConfig = {},
+  cardOf?: (node: string) => StatusCard | undefined,
 ): CockpitFrame {
   const all = streams.list();
   const overlaps = findOverlaps(all);
@@ -170,6 +174,10 @@ export function buildCockpitFrame(
       delivery: entry.delivery ?? 'direct',
     })),
     overlaps,
+    cards: all.flatMap((s) => {
+      const card = s.parent !== undefined ? cardOf?.(s.id) : undefined;
+      return card !== undefined ? [card] : [];
+    }),
   };
 }
 

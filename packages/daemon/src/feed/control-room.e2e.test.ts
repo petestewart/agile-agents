@@ -41,6 +41,7 @@ import {
 import { type Browser, type Page, chromium } from 'playwright-core';
 import { AttachService, VerbService } from '../attach';
 import { ClassifierKeyService, FakeClassifier } from '../classifier';
+import { CardService } from '../coordination/cards';
 import { DeliveryService } from '../delivery';
 import { DocsService } from '../docs';
 import { RoutedEventService, routeAndEmit } from '../events';
@@ -2455,6 +2456,47 @@ describe('overlap warnings (Playwright e2e, T227)', () => {
           '[data-testid="repo-view"] [data-repo="api"] [data-testid="repo-overlap"]',
           '⚠ api: add salePrice and api: add /posts both changed prices.ts',
         );
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+});
+
+// ---- T283: status cards ---------------------------------------------------
+
+describe('status cards on the parent page (Playwright e2e, T283)', () => {
+  browserTest(
+    "a child's card shows its doing, state and files on its parent's page",
+    async () => {
+      const cockpit = await startCockpit();
+      let page: Page | undefined;
+      try {
+        await cockpit.store.putRepos({ api: { path: cockpit.home } });
+        const shop = await cockpit.projects.create({ name: 'Shop' });
+        const api = await cockpit.streams.create('human', {
+          title: 'api: add salePrice',
+          goal: 'g',
+          project: shop.id,
+          parent: shop.root,
+          repo: 'api',
+        });
+        const cards = new CardService({ store: cockpit.store, streams: cockpit.streams });
+        const after = await cockpit.streams.update('daemon', api.id, {
+          agent: { status: 'working', progress: 'adding salePrice' },
+          touched: { files: ['prices.ts'], base: 'abc', at: new Date().toISOString() },
+        });
+        await cards.refresh(after);
+
+        page = await openPage();
+        await page.goto(`${cockpit.base}/`);
+        await page.locator(`[data-testid="stream-tree"] [data-stream="${shop.root}"]`).click();
+        const card = `[data-testid="child-cards"] [data-node="${api.id}"]`;
+        await waitForAttr(page, card, 'data-state', 'working');
+        await waitForText(page, `${card} [data-testid="status-card-doing"]`, 'adding salePrice');
+        await waitForText(page, `${card} [data-testid="status-card-files"]`, 'prices.ts');
       } finally {
         await teardown([page]);
         await cockpit.stop();

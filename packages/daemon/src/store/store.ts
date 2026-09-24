@@ -34,6 +34,7 @@ import {
   type RoutedEvent,
   type SessionDefaultsPatch,
   SessionDefaultsPatchSchema,
+  type StatusCard,
   type Stream,
   type StreamPrincipal,
   type ThreadEntry,
@@ -56,6 +57,7 @@ import {
   validateRepoEntry,
   validateReposConfig,
   validateRoutedEvent,
+  validateStatusCard,
   validateStream,
   validateThreadEntry,
 } from '@agile-agents/shared';
@@ -1022,6 +1024,38 @@ export class StateStore {
       }
     }
     return out;
+  }
+
+  // ------------------------------------------------------- Status cards
+  // T283, projects-design §14.5: `cards/<node-id>.yaml`. Rewritten on every
+  // recompute, so, like routed events, no audit `Event` per write.
+
+  private cardRelPath(node: string): string {
+    return join('cards', `${this.streamIdSegment(node)}.yaml`);
+  }
+
+  /** The node's card, or `undefined` before the daemon first writes it. */
+  getCard(node: string): StatusCard | undefined {
+    const path = this.abs(this.cardRelPath(node));
+    if (!fileExists(path)) return undefined;
+    return readRecord(path, 'card', validateStatusCard);
+  }
+
+  /** Read-modify-write under the mutex; the mutator returns `undefined` to leave the file alone. */
+  async updateCard(
+    node: string,
+    mutator: (before: StatusCard | undefined) => StatusCard | undefined,
+  ): Promise<StatusCard | undefined> {
+    return this.mutex.run(() => {
+      const relPath = this.cardRelPath(node);
+      const before = this.getCard(node);
+      const next = mutator(before);
+      if (next === undefined) return before;
+      const after = validateStatusCard(next);
+      if (after.node !== node) throw new Error(`invalid card write: node ${after.node} ≠ ${node}`);
+      writeYamlFileAtomic(this.abs(relPath), after);
+      return after;
+    });
   }
 
   // ------------------------------------------------------- Routed events
