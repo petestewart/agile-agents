@@ -1237,8 +1237,8 @@ agile node show $P --json | jq -r '.delivery_state.status, .delivery_state.pr.au
 
 ### Ticket: T264 Proposals, lessons kinds and `knowledge_accepted`
 - **Priority:** P1
-- **Status:** In Progress
-- **Owner:** opus:worker-T264
+- **Status:** Done (merge da3be9f)
+- **Owner:** —
 - **Scope:**
   - `propose_knowledge` replaces `propose_rule`. The agent picks the kind; the scope defaults to the node's subtree.
   - Lessons propose items with a kind (projects-design §17, lessons row).
@@ -1246,7 +1246,7 @@ agile node show $P --json | jq -r '.delivery_state.status, .delivery_state.pr.au
   - Items that never fire are flagged in the report (unchanged logic, re-keyed).
 - **Acceptance Criteria:** Tests: accepting a Shop decision reaches Shop's live nodes and not Blog's; lessons after `merged` propose with a kind.
 - **Validation Steps:** `bun test packages/daemon/src/knowledge packages/daemon/src/lessons packages/daemon/src/events`.
-- **Notes:** After T244 and T260.
+- **Notes:** After T244 and T260. Review (sonnet): 1 blocking fixed — the lessons retro now runs only after `merged` (direct land, markLanded, PR poller `onMerged`), at most once per node; a plain close no longer starts it. `propose_rule` replaced by `propose_knowledge` (no alias). `knowledge_accepted` goes to every live node in scope as `parties`.
 
 ### Ticket: T265 ∥ Per-repo norms in the repo view
 - **Priority:** P2
