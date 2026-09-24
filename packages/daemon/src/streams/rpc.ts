@@ -83,8 +83,6 @@ function requireHumanPatch(params: Record<string, unknown>): StreamPatch {
   if (title !== undefined) patch.title = title;
   const goal = optionalString(params.goal, 'goal');
   if (goal !== undefined) patch.goal = goal;
-  const targetBranch = optionalString(params.target_branch, 'target_branch');
-  if (targetBranch !== undefined) patch.target_branch = targetBranch;
   if (params.parent !== undefined) patch.parent = requireStreamId(params.parent);
   // §6.4's per-stream opt-out. `'on'` just clears it, so the repo/home default decides.
   if (params.classifier !== undefined) {

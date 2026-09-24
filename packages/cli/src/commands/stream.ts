@@ -49,7 +49,6 @@ export async function runStreamNew(
   const goal = requireOption(args.options, 'goal');
   const parent = optionalString(args.options, 'parent');
   const repo = optionalString(args.options, 'repo');
-  const targetBranch = optionalString(args.options, 'target-branch');
   const project = optionalString(args.options, 'project');
   const labels = optionalList(args, 'label');
 
@@ -60,7 +59,6 @@ export async function runStreamNew(
     ...(labels !== undefined ? { labels } : {}),
     ...(parent !== undefined ? { parent } : {}),
     ...(repo !== undefined ? { repo } : {}),
-    ...(targetBranch !== undefined ? { target_branch: targetBranch } : {}),
   });
 
   if (json) printJson(stream);

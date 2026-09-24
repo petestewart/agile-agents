@@ -182,6 +182,9 @@ agile stream list
 
 `stream list` shows `Ledger features` with the three nested under it; the
 cockpit's stream tree matches.
+With open children, `Ledger features` is a coordinating node (D20): it never
+gets a branch or worktree, and each child delivers straight to the repo's
+main branch, not into its parent.
 
 ## 10. Attach a worker to each sub-stream
 
@@ -241,7 +244,7 @@ agile land $C
 git log --oneline -5
 ```
 
-Each land merges `stream/…` into `main`, closes the stream and removes its
+Each land merges `stream/…` into the repo's main branch (`main`; never the parent's branch, D20), closes the stream and removes its
 worktree. A land that finds a conflict or a failing diff-level rule stops and
 says why.
 

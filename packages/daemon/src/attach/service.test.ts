@@ -30,7 +30,7 @@ import { StateStore } from '../store';
 import { StreamService } from '../streams/service';
 import { buildAttachRpcMethods } from './rpc';
 import { sayPrompt } from './service';
-import { AttachService, ParentAttachError, StreamBusyError, endedReason } from './service';
+import { AttachService, StreamBusyError, endedReason } from './service';
 import { VerbService } from './verbs';
 
 const FAKE_AGENT_PATH = join(import.meta.dir, '..', 'runner', 'fake-agent.ts');
@@ -306,27 +306,29 @@ describe('one live worker per stream (§2.3)', () => {
   }, 30_000);
 });
 
-describe('T176: a worker on a parent with open children needs force', () => {
-  test('refused without force, allowed with it; reviewers and finished children are not guarded', async () => {
-    const parent = await makeStream();
-    const child = await streams.create('human', { title: 'c', goal: 'g', parent: parent.id });
-    await expect(attachService.attach(parent.id)).rejects.toThrow(ParentAttachError);
-    await expect(attachService.attach(parent.id)).rejects.toThrow(
-      /a parent's branch is where its children land/,
-    );
-    expect(streams.get(parent.id).sessions).toHaveLength(0);
+describe('D20: a coordinating node has no worktree', () => {
+  test('a worker on a node with live children gets no branch or worktree; a work node does', async () => {
+    await store.putRepos({ demo: { path: repo, protected_branches: ['main'] } });
+    const root = await makeStream();
+    const node = await streams.create('human', {
+      title: 'ledger',
+      goal: 'g',
+      parent: root.id,
+      repo: 'demo',
+    });
+    const child = await streams.create('human', { title: 'c', goal: 'g', parent: node.id });
 
-    const review = await attachService.attach(parent.id, { role: 'reviewer' });
-    expect(review.session.role).toBe('reviewer');
-    const forced = await attachService.attach(parent.id, { force: true });
-    expect(forced.session.role).toBe('worker');
+    const coordinating = await attachService.attach(node.id);
+    expect(coordinating.session.worktree).toBeUndefined();
+    expect(streams.get(node.id).worktree).toBeUndefined();
+    expect(streams.get(node.id).branch).toBeUndefined();
     await attachService.stopAll();
 
+    // Once its only child is closed it is a work node again, and cuts one.
     await streams.close('human', child.id);
-    const other = await makeStream();
-    await streams.create('human', { title: 'c2', goal: 'g', parent: other.id });
-    await streams.close('human', (streams.list().find((s) => s.title === 'c2') as Stream).id);
-    expect((await attachService.attach(other.id)).session.role).toBe('worker');
+    const work = await attachService.attach(node.id);
+    expect(work.session.worktree?.startsWith(join(repo, '.worktrees'))).toBe(true);
+    await attachService.stopAll();
   }, 30_000);
 });
 

@@ -1544,7 +1544,7 @@ describe('stream page rough edges (Playwright e2e, T166)', () => {
 
 describe('parents and land conflicts (Playwright e2e, T176)', () => {
   browserTest(
-    'attach on a parent asks first; a conflicted land shows the files, not "Ready"; Resolve then re-land',
+    'attach on a parent starts straight away; a conflicted land shows the files, not "Ready"; Resolve then re-land',
     async () => {
       const quick: FakeAgentScript = { steps: [{ type: 'end_turn' }] };
       const cockpit = await startStreamCockpit([quick, quick]);
@@ -1563,15 +1563,8 @@ describe('parents and land conflicts (Playwright e2e, T176)', () => {
         await page.locator(`[data-testid="stream-page"][data-stream="${parent.id}"]`).waitFor();
         await page.locator('[data-testid="attach"]').click();
         await page.locator('[data-testid="picker-start"]').click();
-        const confirm = page.locator('[data-testid="attach-confirm"]');
-        await confirm.waitFor({ state: 'visible' });
-        expect(await confirm.textContent()).toContain(
-          "A parent's branch is where its children land",
-        );
-        expect(cockpit.streams.get(parent.id).sessions).toHaveLength(0);
-        await page.locator('[data-testid="attach-confirm-force"]').click();
+        // D20: no parent-attach confirmation any more; the worker just starts.
         await page.locator('[data-testid="session"][data-role="worker"]').waitFor();
-        await confirm.waitFor({ state: 'detached' });
 
         // A stream whose branch and main both change shared.txt.
         const worktree = join(cockpit.repo, '.worktrees', 's-conflict');

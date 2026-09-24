@@ -31,7 +31,6 @@ import {
 import { CONTROL_ROOM_DIST_DIR, FEED_HTML_PATH } from '@agile-agents/ui';
 import {
   type AttachService,
-  ParentAttachError,
   SessionDefaultsService,
   StreamBusyError,
   UnknownVendorError,
@@ -681,7 +680,6 @@ async function handleStreamRoute(
         ...(vendor ? { vendor } : {}),
         ...(model ? { model } : {}),
         ...(effort ? { effort } : {}),
-        force: true,
         briefAppendix: feed.landing.resolvePrompt(id),
       });
       return jsonResponse({ session: result.session, stream: result.stream }, 201);
@@ -691,11 +689,7 @@ async function handleStreamRoute(
   } catch (err) {
     const message = messageOf(err);
     if (err instanceof NotFoundError) return errorResponse(404, message);
-    if (
-      err instanceof StreamBusyError ||
-      err instanceof LandRefusedError ||
-      err instanceof ParentAttachError
-    ) {
+    if (err instanceof StreamBusyError || err instanceof LandRefusedError) {
       return errorResponse(409, message);
     }
     if (err instanceof UnregisteredRepoError || err instanceof UnknownVendorError) {

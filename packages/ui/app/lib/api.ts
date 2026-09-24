@@ -152,12 +152,10 @@ export function attachSession(
   id: string,
   role: 'worker' | 'reviewer',
   choice: { vendor?: string; model?: string; effort?: string } = {},
-  force = false,
 ): Promise<unknown> {
   return post(`/api/streams/${encodeURIComponent(id)}/attach`, {
     role,
     ...choice,
-    ...(force ? { force: true } : {}),
   });
 }
 

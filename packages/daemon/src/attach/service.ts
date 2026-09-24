@@ -27,6 +27,8 @@ import {
   type SessionStatus,
   type Stream,
   type ThreadEntry,
+  liveChildrenOf,
+  nodeRole,
   ulid,
 } from '@agile-agents/shared';
 import { readHomeConfigFile } from '../config';
@@ -61,19 +63,6 @@ export class UnregisteredRepoError extends Error {
   constructor(public readonly repo: string) {
     super(`stream repo ${repo} is not registered in repos.yaml`);
     this.name = 'UnregisteredRepoError';
-  }
-}
-
-/** T176: a worker on a parent builds on the branch its children land into. RPC: -32602, HTTP 409. */
-export class ParentAttachError extends Error {
-  constructor(
-    public readonly stream: string,
-    public readonly children: string[],
-  ) {
-    super(
-      `stream ${stream} has ${children.length} open child stream(s) (${children.join(', ')}); a parent's branch is where its children land, so work there conflicts with them. Attach to a child, or pass --force to attach here anyway`,
-    );
-    this.name = 'ParentAttachError';
   }
 }
 
@@ -117,8 +106,6 @@ export interface AttachOptions extends AttachFlags {
   role?: SessionRole;
   /** Appended after the brief: the lessons session's material and instruction (§5.5). The caller caps it. */
   briefAppendix?: string;
-  /** T176: attach a worker even though the stream has open children. */
-  force?: boolean;
 }
 
 /** `detach: true`: the human pulled the plug, not a shutdown. */
@@ -194,15 +181,6 @@ export class AttachService {
     // same worktree, but never beside a second reviewer (§4.2).
     const busy = liveSession(stream, role);
     if (busy !== undefined) throw new StreamBusyError(stream.id, busy.id, role);
-    if (role === 'worker' && options.force !== true) {
-      const open = streams
-        .list()
-        .filter(
-          (s) => s.parent === stream.id && ['open', 'waiting_on_you'].includes(s.human.status),
-        )
-        .map((s) => s.id);
-      if (open.length > 0) throw new ParentAttachError(stream.id, open);
-    }
 
     const repos = store.getRepos();
     const repoEntry = stream.repo === undefined ? undefined : repos[stream.repo];
@@ -222,9 +200,12 @@ export class AttachService {
     const sessionId = ulid();
 
     // 2. Branch + worktree, only for a stream that has a repo (§4.4).
-    let worktreePath = stream.worktree;
+    // D20: a coordinating node has no worktree; its session runs in the session dir.
+    const coordinating =
+      nodeRole(stream, liveChildrenOf(stream.id, streams.list())) === 'coordinating';
+    let worktreePath = coordinating ? undefined : stream.worktree;
     let branch = stream.branch;
-    if (repoEntry !== undefined) {
+    if (repoEntry !== undefined && !coordinating) {
       // §4.2: a reviewer never cuts a branch. On a never-attached stream it
       // reviews from the session dir, like a no-repo stream.
       if (worktreePath === undefined && role === 'worker') {
