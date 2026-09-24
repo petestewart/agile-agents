@@ -179,7 +179,8 @@ describe('attach on a stream with a repo', () => {
     expect(updated.worktree?.startsWith(join(repo, '.worktrees'))).toBe(true);
     expect(existsSync(join(updated.worktree ?? '', 'README.md'))).toBe(true);
     expect(updated.branch).toBeDefined();
-    expect(readFileSync(join(repo, '.gitignore'), 'utf8')).toContain('.worktrees/');
+    expect(readFileSync(join(repo, '.git', 'info', 'exclude'), 'utf8')).toContain('.worktrees/');
+    expect(existsSync(join(repo, '.gitignore'))).toBe(false);
 
     // The session's own cwd *is* that worktree: its hook settings are
     // written there, which is what the hook path resolves a call through.

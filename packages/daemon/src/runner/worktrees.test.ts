@@ -59,12 +59,27 @@ describe('T113: hardened worktree creation', () => {
     expect(worktreePathFor(repo, name)).toBe(result.path);
   });
 
-  test('ensures .worktrees/ is in the repo .gitignore, appending once', async () => {
-    writeFileSync(join(repo, '.gitignore'), 'node_modules\n');
+  test('T177: ignores .worktrees/ via info/exclude, leaving the checkout clean', async () => {
     await createWorktree(repo, name);
-    expect(readFileSync(join(repo, '.gitignore'), 'utf8')).toBe('node_modules\n.worktrees/\n');
+    expect(git(['status', '--porcelain'])).toBe('');
+    expect(existsSync(join(repo, '.gitignore'))).toBe(false);
+    git(['check-ignore', '.worktrees/x']);
+    const exclude = join(repo, '.git', 'info', 'exclude');
     await createWorktree(repo, { id: 'str-8', slug: 'second' });
+    const lines = readFileSync(exclude, 'utf8').split('\n');
+    expect(lines.filter((line) => line === '.worktrees/')).toHaveLength(1);
+  });
+
+  test('T177: adds nothing when .gitignore already ignores .worktrees/', async () => {
+    writeFileSync(join(repo, '.gitignore'), 'node_modules\n.worktrees/\n');
+    git(['add', '.gitignore']);
+    git(['commit', '-qm', 'ignore']);
+    const exclude = join(repo, '.git', 'info', 'exclude');
+    const before = existsSync(exclude) ? readFileSync(exclude, 'utf8') : '';
+    await createWorktree(repo, name);
+    expect(existsSync(exclude) ? readFileSync(exclude, 'utf8') : '').toBe(before);
     expect(readFileSync(join(repo, '.gitignore'), 'utf8')).toBe('node_modules\n.worktrees/\n');
+    expect(git(['status', '--porcelain'])).toBe('');
   });
 
   test('two concurrent creates for the same id: exactly one succeeds', async () => {
