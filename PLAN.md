@@ -1435,6 +1435,15 @@ agile tail --node $N --events
 - **Validation Steps:** `bun test packages/daemon/src/coordination`.
 - **Notes:** After T284. Review (sonnet) PASS. Daemon +26. `note_child` → `coordinator_note` to that child only. Overlap summary lists the parent's options. Question for Pete: `coordinator_note` doesn't wake a finished work node under P11, so a note to a done child may never be read.
 
+### Ticket: T288 A coordinator note wakes an ended work node
+- **Priority:** P1
+- **Status:** In Progress
+- **Owner:** opus:worker-T288
+- **Scope:** Pete (2026-09-24): a parent's `coordinator_note` must reach its children, so it wakes a work node whose session has ended (added to P11's work wake types). Nodes the human stopped, landed or closed still never wake; the per-node wake budget still applies.
+- **Acceptance Criteria:** Wake-policy and delivery tests: a note to an ended work node starts a session; a landed one stays pending.
+- **Validation Steps:** `bun test packages/daemon/src/events`.
+- **Notes:** Answers T287's question.
+
 ### Ticket: T288 ∥ Helper children on the same repo
 - **Priority:** P2
 - **Status:** Done (merge 63cdedc)
@@ -1624,6 +1633,8 @@ Daemon: `em/`, `architect/`, `oracle/`, `qa/`, `halts/`, `quota/`, `handoff/`, `
 - Q5–Q24. The proposed decisions P1–P20 in `design/projects-design.md` §19 are open until Pete confirms each one as a D-entry. Tickets assume them. P17 (tracker tokens in `config.yaml`, a second credential exception) must be approved before T320.
 
 ## 10. Discovered Issues Log
+
+- 2026-09-24 Pete: `proposals/<AP-id>.yaml` home dir APPROVED (T282). T287 question answered: coordinator notes wake ended work nodes (T288).
 
 - Phase 11 complete on `claude/phase-11` (2026-09-24): T280–T288 merged, T289 QA ACCEPT; awaiting Pete's look. Open for Pete: `proposals/` home dir (T282); `Contract.paths` for the contract-touched alert (T284); should `coordinator_note` wake a finished work node (T287). Phase 12 proceeds on `claude/phase-12`.
 - Phase 10 complete on `claude/phase-10` (2026-09-24): T260–T266 merged, T267 QA ACCEPT; T268 (real-classifier ship hold) before Pete's look. Phase 11 proceeds on `claude/phase-11`.
