@@ -836,9 +836,7 @@ export class AttachService {
   async stopAll(): Promise<void> {
     await Promise.all(
       [...this.live.entries()].flatMap(([role, handles]) =>
-        [...handles.keys()].map((streamId) =>
-          this.stop(streamId, role, { reason: 'the daemon is shutting down' }),
-        ),
+        [...handles.keys()].map((streamId) => this.stop(streamId, role)),
       ),
     );
   }

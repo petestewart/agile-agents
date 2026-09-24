@@ -64,6 +64,7 @@ export function decidePermission(ctx: DecisionContext): Decision {
     role: ctx.role,
     worktreePath: ctx.worktreePath,
     ...(ctx.readRoots !== undefined ? { readRoots: ctx.readRoots } : {}),
+    ...(ctx.hiddenRoots !== undefined ? { hiddenRoots: ctx.hiddenRoots } : {}),
   };
   // The daemon's own MCP verbs are never gated here: each enforces its own
   // role rules, and the vendor reports them as kind `other`, which every

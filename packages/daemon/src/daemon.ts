@@ -309,6 +309,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
             // policy). No repo root: a relative worktree fails closed.
             new HookService(store, bus, {
               gates: gateService,
+              agileHome: config.home,
               ...(rulesService ? { rules: rulesService } : {}),
               classifier: { ask: classifier, config: config.classifier },
             }),

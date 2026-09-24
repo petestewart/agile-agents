@@ -133,6 +133,8 @@ export interface HookServiceOptions {
    */
   classifier?: HookClassifier;
   limits?: HookLimits;
+  /** T213: the agile home, denied to every read outside the session's own dir. */
+  agileHome?: string;
   /** Injectable for tests; defaults to `node:fs.statSync`. */
   fileSize?: (path: string) => number | undefined;
   now?: () => Date;
@@ -321,7 +323,8 @@ export class HookService {
     try {
       repos = this.store.getRepos();
     } catch {
-      return {}; // Unreadable registry: reads stay in the worktree.
+      // Unreadable registry: reads stay in the worktree.
+      return this.options.agileHome !== undefined ? { hiddenRoots: [this.options.agileHome] } : {};
     }
     const readRoots: string[] = [];
     const hiddenRoots: string[] = [];
@@ -335,6 +338,8 @@ export class HookService {
           (visibility.projects as readonly string[]).includes(record.project));
       (visible ? readRoots : hiddenRoots).push(entry.path);
     }
+    // The home holds the classifier key and every node's state: never a read target.
+    if (this.options.agileHome !== undefined) hiddenRoots.push(this.options.agileHome);
     return { readRoots, hiddenRoots };
   }
 

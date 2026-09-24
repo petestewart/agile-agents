@@ -34,6 +34,26 @@ export interface PolicyContext {
   worktreePath: string;
   /** T213: where a read may reach beyond the worktree (visible registered repos). */
   readRoots?: readonly string[];
+  /** T213: never readable unless inside the worktree: private repos not shared with the node, and the agile home. */
+  hiddenRoots?: readonly string[];
+}
+
+/**
+ * T213: the deny reason for a read of `path` (absolute, or relative to the
+ * worktree), or `undefined` when it may be read. An allow-list: the own
+ * worktree (or session dir), then any `readRoots` path not under a hidden root.
+ */
+export function readDenyReason(
+  raw: string,
+  ctx: Pick<PolicyContext, 'worktreePath' | 'readRoots' | 'hiddenRoots'>,
+): string | undefined {
+  const path = resolve(ctx.worktreePath, raw);
+  if (isPathInside(path, ctx.worktreePath)) return undefined;
+  if ((ctx.hiddenRoots ?? []).some((root) => isPathInside(path, root))) {
+    return `${raw} is in the agile home or a private repo this node's project cannot read`;
+  }
+  if ((ctx.readRoots ?? []).some((root) => isPathInside(path, root))) return undefined;
+  return `${raw} is outside the worktree and every repo this node can read`;
 }
 
 // Never-without-human (§14 "Never without a human"). Checked before any
@@ -202,7 +222,6 @@ const ENGINEER_READ_ONLY_PATH_TOOLS = new Set(['cat', 'ls', 'head', 'tail', 'wc'
  * and routes to `hil`, never a guessed allow.
  */
 function verifyBenignPaths(paths: string[], ctx: PolicyContext, reads = false): PolicyVerdict {
-  const roots = reads ? [ctx.worktreePath, ...(ctx.readRoots ?? [])] : [ctx.worktreePath];
   for (const raw of paths) {
     const resolved = cmd.resolveTargetPath(raw);
     if (!resolved.safe) {
@@ -210,14 +229,11 @@ function verifyBenignPaths(paths: string[], ctx: PolicyContext, reads = false): 
         `"${raw}" contains an unresolved shell variable/backtick/home-directory reference`,
       );
     }
-    // Relative to the session's cwd (the worktree), whichever root it lands in.
-    const path = resolve(ctx.worktreePath, resolved.path);
-    if (!roots.some((root) => isPathInside(path, root))) {
-      return deny(
-        reads
-          ? `${raw} is outside the worktree and every repo this node can read`
-          : `${raw} is outside the worktree`,
-      );
+    if (reads) {
+      const reason = readDenyReason(resolved.path, ctx);
+      if (reason !== undefined) return deny(reason);
+    } else if (!isPathInside(resolved.path, ctx.worktreePath)) {
+      return deny(`${raw} is outside the worktree`);
     }
   }
   return ALLOW;
@@ -265,6 +281,8 @@ function engineerBenignCommandVerdict(
   }
 
   if (head === 'grep' || head === 'rg') {
+    // `rg --pre <cmd>` runs a command on every file: not a read.
+    if (runsPreprocessor(tokens)) return undefined;
     return verifyBenignPaths(
       [...cmd.grepPathArgs(tokens), ...cmd.flagPathValues(tokens)],
       ctx,
@@ -390,9 +408,15 @@ function isSedInPlace(tokens: string[]): boolean {
   );
 }
 
+/** `rg --pre`/`--pre-glob`: a preprocessor command run per file. */
+function runsPreprocessor(tokens: string[]): boolean {
+  return tokens.some((t) => t === '--pre' || t.startsWith('--pre=') || t.startsWith('--pre-glob'));
+}
+
 function isReviewerSafeTool(tokens: string[]): boolean {
   const head = tokens[0];
   if (head === undefined) return false;
+  if ((head === 'rg' || head === 'grep') && runsPreprocessor(tokens)) return false;
   if (REVIEWER_PLAIN_READ_ONLY_TOOLS.has(head)) return true;
   if (head === 'sed') return !isSedInPlace(tokens);
   if (head === 'find')

@@ -186,6 +186,36 @@ describe('decidePreToolUse — T213 read scope', () => {
     }
   });
 
+  test('built-in reads are an allow-list: the agile home and ~/.ssh are denied', () => {
+    const home = '/home/pete/.agile';
+    for (const worktreePath of [`${home}/sessions/01coord`, '/repos/app/.worktrees/01w']) {
+      const ctx = baseCtx({ worktreePath, readRoots: scope.readRoots, hiddenRoots: [shop, home] });
+      const read = (file_path: string) =>
+        decidePreToolUse(ctx, { tool_name: 'Read', tool_input: { file_path } }).decision;
+      expect(read(`${home}/config.yaml`)).toBe('deny');
+      expect(read('/home/pete/.ssh/id_rsa')).toBe('deny');
+      expect(read(`${ledger}/src/a.ts`)).toBe('allow');
+      expect(read(`${worktreePath}/notes.md`)).toBe('allow');
+      expect(decidePreToolUse(ctx, bash(`cat ${home}/config.yaml`)).decision).toBe('deny');
+      expect(
+        decidePreToolUse(ctx, { tool_name: 'Grep', tool_input: { pattern: 'x', path: '/etc' } })
+          .decision,
+      ).toBe('deny');
+    }
+  });
+
+  test('rg --pre runs a command, so it is not a read', () => {
+    const ctx = baseCtx({ ...scope });
+    for (const command of [
+      `rg --pre ./x sale ${ledger}`,
+      'rg --pre=./x sale',
+      'rg --pre-glob "*" x',
+    ]) {
+      expect(decidePreToolUse(ctx, bash(command)).decision).toBe('deny');
+      expect(decidePreToolUse({ ...ctx, role: 'reviewer' }, bash(command)).decision).toBe('deny');
+    }
+  });
+
   test('without a read scope, Bash reads stay in the worktree', () => {
     expect(decidePreToolUse(baseCtx(), bash(`ls ${part}`)).decision).toBe('deny');
   });
