@@ -31,7 +31,7 @@ import { runCliInit } from './commands/init';
 import { runLand } from './commands/land';
 import { runProjectList, runProjectNew, runProjectSet, runProjectShow } from './commands/project';
 import { runQuestionAnswer, runQuestionList, runQuestionRaise } from './commands/question';
-import { runRepoAdd, runRepoList } from './commands/repo';
+import { runRepoAdd, runRepoList, runRepoSet } from './commands/repo';
 import { runReview } from './commands/review';
 import {
   runRulesAccept,
@@ -72,6 +72,7 @@ function usage(): string {
     '  init                       create the state home ($AGILE_HOME, default ~/.agile/) if missing',
     '  repo add <path> [--name <n>] [--protected a,b] [--target-branch <b>] [--vendor <v>]',
     '  repo list                  list registered repos',
+    '  repo set <name> [--delivery direct|pr] [--auto-merge on|off] [--remote r] [--main-branch b] [--visibility public|private] [--project P-id]…',
     '  project new --name <n> [--repo a] [--repo b|a,b]   a project and its root stream',
     '  project list [--all]       projects (--all includes archived)',
     '  project show <id>',
@@ -241,6 +242,7 @@ export async function runCli(argv: string[], cwd: string = process.cwd()): Promi
       case 'repo':
         if (sub === 'list') return await runRepoList(socketPath, json);
         if (sub === 'add') return await runRepoAdd(socketPath, parseArgs(restArgv), json, cwd);
+        if (sub === 'set') return await runRepoSet(socketPath, parseArgs(restArgv), json);
         console.error(usage());
         return 1;
 

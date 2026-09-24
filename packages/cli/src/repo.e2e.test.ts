@@ -140,3 +140,29 @@ describe('agile repo add/list against a daemon on a temp AGILE_HOME', () => {
     expect(errors.join('\n')).toContain('does not exist');
   });
 });
+
+describe('agile repo set (T222, §14.8)', () => {
+  test('sets auto-merge and visibility; pr is refused without a GitHub remote and auth', async () => {
+    expect((await cli(['repo', 'add', repoA, '--name', 'alpha'])).code).toBe(0);
+    const set = await cli(['repo', 'set', 'alpha', '--auto-merge', 'on', '--visibility', 'public']);
+    expect(set.code).toBe(0);
+    expect(set.out).toContain('delivery=direct auto_merge=on visibility=public');
+
+    Bun.spawnSync(['git', 'remote', 'add', 'origin', 'https://github.com/acme/alpha.git'], {
+      cwd: repoA,
+    });
+    const errors: string[] = [];
+    const original = console.error;
+    console.error = (msg: string) => errors.push(String(msg));
+    try {
+      // The test daemon has no `gh` (TEST_GITHUB_CONFIG), so auth is unavailable.
+      expect((await cli(['repo', 'set', 'alpha', '--delivery', 'pr'])).code).not.toBe(0);
+    } finally {
+      console.error = original;
+    }
+    expect(errors.join('\n')).toContain('pr delivery needs GitHub auth');
+    const repos = await callRpc<ReposConfig>(daemon.socketPath, 'state.repo_list', {});
+    expect(repos.alpha?.delivery).toBe('direct');
+    expect(repos.alpha?.auto_merge).toBe(true);
+  });
+});
