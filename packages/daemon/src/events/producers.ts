@@ -209,6 +209,12 @@ export function summarize(
       const project = typeof p.project === 'string' ? ` (${p.project})` : '';
       return `${String(p.title ?? p.node)}${project} ${String(p.outcome)}; your wait on it has cleared.`;
     }
+    case 'plan_changed': {
+      const paths = list(p.paths);
+      return `The plan changed: ${String(p.summary)}. You own ${paths || 'no paths yet'}.`;
+    }
+    case 'contract_changed':
+      return `Contract ${String(p.title)} is now v${String(p.version)}: ${String(p.diff)}. Adjust your side.`;
     default:
       return `${event.type}: read_event ${event.id}.`;
   }

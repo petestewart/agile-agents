@@ -11,6 +11,8 @@ import { Bus, buildBusRpcMethods } from './bus';
 import { type Classifier, ClassifierKeyService, JevClassifier } from './classifier';
 import { type AgileConfig, type DiscoverConfigOptions, discoverConfig } from './config';
 import { CardService } from './coordination/cards';
+import { ContractService } from './coordination/contracts';
+import { PlanService } from './coordination/plans';
 import {
   ClassifierDiffRules,
   DeliveryService,
@@ -130,7 +132,14 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
     : undefined;
   // T283: status cards; `read_card` and the cockpit read them.
   const cardService: CardService | undefined =
-    store && streamService ? new CardService({ store, streams: streamService }) : undefined;
+    store && streamService
+      ? new CardService({
+          store,
+          streams: streamService,
+          // T281: the contracts this node is a party to (read lazily; built below).
+          reliesOn: (s) => contractService?.forParty(s.id).map((c) => c.id),
+        })
+      : undefined;
   const projectService =
     store && streamService ? new ProjectService(store, streamService) : undefined;
   // How spawned sessions reach this daemon's CLI for hooks and MCP,
@@ -150,6 +159,24 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
           ...(emitRouted ? { emitRouted } : {}),
         })
       : undefined;
+  // T281: plans and contracts (§14.4) — the coordinator's verbs, briefs, the inbox card.
+  const contractService =
+    store && streamService
+      ? new ContractService({
+          store,
+          streams: streamService,
+          ...(emitRouted ? { emit: emitRouted } : {}),
+        })
+      : undefined;
+  const planService =
+    store && streamService && contractService
+      ? new PlanService({
+          store,
+          streams: streamService,
+          contracts: contractService,
+          ...(emitRouted ? { emit: emitRouted } : {}),
+        })
+      : undefined;
   // Attach and questions know about each other: the turn-end rule asks
   // what is open, and an answer is delivered by prompting the session.
   const attachService =
@@ -163,6 +190,8 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
           docs: { docsForStream: (id) => docsService?.docsForStream(id) ?? [] },
           questions: { listOpen: () => questionService?.listOpen() ?? [] },
           ...(rulesService ? { rules: rulesService } : {}),
+          ...(planService ? { plans: planService } : {}),
+          ...(contractService ? { contracts: contractService } : {}),
           // The turn-end rule treats an open routed call like an open question.
           ...(gateService ? { gates: gateService } : {}),
           ...(routedEvents ? { events: routedEvents } : {}),
@@ -188,6 +217,8 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
           questions: questionService,
           gates: gateService,
           ...(rulesService ? { rules: rulesService } : {}),
+          ...(planService ? { plans: planService } : {}),
+          ...(contractService ? { contracts: contractService } : {}),
         })
       : undefined;
   // Docs: plain Markdown under `<home>/repos/<name>/docs/` and `<home>/streams/<id>.docs/`.
@@ -296,6 +327,8 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
           ...(rulesService ? { rules: rulesService } : {}),
           ...(routedEvents ? { events: routedEvents } : {}),
           ...(cardService ? { cards: cardService } : {}),
+          ...(planService ? { plans: planService } : {}),
+          ...(contractService ? { contracts: contractService } : {}),
           // T246: an agent's push; its PR is then polled at the babysit cadence.
           ...(landingService
             ? {
@@ -498,6 +531,8 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
     ...(routedEvents ? { events: routedEvents } : {}),
     ...(repoInPlace ? { repoInPlace } : {}),
     ...(docsService ? { docs: docsService } : {}),
+    ...(planService ? { plans: planService } : {}),
+    ...(contractService ? { contracts: contractService } : {}),
     githubAuth,
   });
 

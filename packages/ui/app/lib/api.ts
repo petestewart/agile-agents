@@ -7,6 +7,8 @@
 
 import type {
   ClassifierKeyStatus,
+  Contract,
+  Plan,
   Policy,
   Project,
   RoutedEvent,
@@ -149,6 +151,16 @@ export function getStreamDiff(id: string): Promise<StreamDiff> {
 }
 
 /** T245: the Activity tab. */
+/** T281: the Plan tab's read — the node's plan (null before one is written) and its contracts. */
+export function getStreamPlan(id: string): Promise<{ plan: Plan | null; contracts: Contract[] }> {
+  return get(`/api/streams/${encodeURIComponent(id)}/plan`);
+}
+
+/** T281: a `plan_approve` card's Approve, and the Plan tab's. */
+export function approvePlan(id: string): Promise<unknown> {
+  return post(`/api/streams/${encodeURIComponent(id)}/plan/approve`);
+}
+
 export async function getStreamActivity(id: string): Promise<ActivityEntry[]> {
   const out = await get<{ activity: ActivityEntry[] }>(
     `/api/streams/${encodeURIComponent(id)}/activity`,

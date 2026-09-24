@@ -1345,8 +1345,8 @@ agile tail --node $N --events
 
 ### Ticket: T281 Plans and contracts
 - **Priority:** P0
-- **Status:** In Progress
-- **Owner:** opus:worker-T281
+- **Status:** Done (merge af549a2)
+- **Owner:** —
 - **Scope:**
   - Add `Plan` and `Contract` records (§14.4), with the verbs `plan_write` and `contract_write` for coordinators.
   - A plan starts as `draft`. Approval is an inbox card at every level, because the plan decides what gets built.
@@ -1355,7 +1355,7 @@ agile tail --node $N --events
   - `plan_changed` and `contract_changed` events.
 - **Acceptance Criteria:** Tests: approving the plan gives both children the contract in their brief; bumping a contract notifies its parties only.
 - **Validation Steps:** `bun test packages/daemon/src/coordination`; `bun run test:e2e`.
-- **Notes:** After T280.
+- **Notes:** After T280. Review (sonnet): 1 blocking fixed — children keep the last approved plan (an `approved` snapshot) while a revision is draft; the card and Plan tab show the change against it. Approval is human-only (cockpit/HTTP; no CLI/RPC yet). `contract_write` is not yet autonomy-gated (T282/T285). Daemon +588.
 
 ### Ticket: T282 Autonomy levels for coordinators
 - **Priority:** P0

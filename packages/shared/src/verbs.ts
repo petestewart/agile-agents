@@ -27,6 +27,7 @@ import {
   KnowledgePathsSchema,
   RuleExampleSchema,
 } from './knowledge';
+import { ContractWriteFieldsSchema, PlanWriteFieldsSchema } from './plan';
 import { RoutedEventIdSchema } from './routed-event';
 import { StreamFindingSeveritySchema, THREAD_BODY_MAX_CHARS } from './stream';
 
@@ -118,6 +119,16 @@ export type ReadCardInput = z.infer<typeof ReadCardInputSchema>;
 export const DeliverInputSchema = z.object({ session: Session }).strict();
 export type DeliverInput = z.infer<typeof DeliverInputSchema>;
 
+/** T281 (§14.4): a coordinator writes its plan; it lands `draft` until approved. */
+export const PlanWriteInputSchema = PlanWriteFieldsSchema.extend({ session: Session }).strict();
+export type PlanWriteInput = z.infer<typeof PlanWriteInputSchema>;
+
+/** T281 (§14.4): a coordinator creates a contract (no `id`) or bumps one. */
+export const ContractWriteInputSchema = ContractWriteFieldsSchema.extend({
+  session: Session,
+}).strict();
+export type ContractWriteInput = z.infer<typeof ContractWriteInputSchema>;
+
 /** The verb table, in the order §4.1 lists it. */
 export const AGENT_VERBS = [
   'ask',
@@ -132,6 +143,8 @@ export const AGENT_VERBS = [
   'deliver',
   'lookup_knowledge',
   'read_card',
+  'plan_write',
+  'contract_write',
 ] as const;
 export type AgentVerb = (typeof AGENT_VERBS)[number];
 
@@ -148,6 +161,8 @@ export const AGENT_VERB_SCHEMAS = {
   deliver: DeliverInputSchema,
   lookup_knowledge: LookupKnowledgeInputSchema,
   read_card: ReadCardInputSchema,
+  plan_write: PlanWriteInputSchema,
+  contract_write: ContractWriteInputSchema,
 } as const satisfies Record<AgentVerb, z.ZodType>;
 
 /** One line of help per verb, published to the model by the MCP bridge. */
@@ -168,6 +183,10 @@ export const AGENT_VERB_DESCRIPTIONS: Record<AgentVerb, string> = {
     'List the accepted standards, architecture and decisions that apply to a repo-relative path ({path}). Use it before touching an unfamiliar area.',
   read_card:
     'Read the status card ({node}) of a sibling or an ancestor: what it is doing, its state, the files it changed and the contracts it relies on.',
+  plan_write:
+    'Coordinator only: write the plan ({owners: [{child, owns: [path globs]}], contracts?: [C-ids]}). It stays draft until the operator approves it.',
+  contract_write:
+    'Coordinator only: create a contract ({title, body ≤800, parties: [child ids]}) or bump one ({id, …, reason}); a bump tells its parties.',
 };
 
 export function isAgentVerb(name: string): name is AgentVerb {

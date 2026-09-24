@@ -342,6 +342,8 @@ describe('coordinator brief: children cards (T283)', () => {
     const out = coordinatorSection(
       [api, web],
       'run',
+      undefined,
+      [],
       new Map([
         [
           api.id,

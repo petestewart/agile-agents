@@ -14,6 +14,7 @@ import { StateStore } from '../store';
 import { StreamService } from '../streams/service';
 import { OverlapTracker } from '../sync';
 import { CardService, cardFiles, cardState } from './cards';
+import { ContractService } from './contracts';
 
 let home: string;
 let repo: string;
@@ -156,6 +157,25 @@ describe('status cards (T283)', () => {
     expect(() => verbs.readCard({ session: other, node: api.id })).toThrow(
       /not a sibling, an ancestor or a descendant/,
     );
+  });
+
+  test('relies_on comes from the contracts the node is a party to (T281)', async () => {
+    const shop = await new ProjectService(store, streams).create({ name: 'Shop' });
+    const api = await child(shop.root, shop.id, 'api');
+    await child(shop.root, shop.id, 'web');
+    const contracts = new ContractService({ store, streams });
+    const c = await contracts.write(
+      shop.root,
+      { title: 'Sale API', body: 'GET /sale', parties: [api.id] },
+      'human',
+    );
+    const withContracts = new CardService({
+      store,
+      streams,
+      reliesOn: (s) => contracts.forParty(s.id).map((x) => x.id),
+    });
+    await withContracts.refresh(streams.get(api.id));
+    expect(store.getCard(api.id)?.relies_on).toEqual([c.id]);
   });
 
   test('the Director hook reads any card', async () => {

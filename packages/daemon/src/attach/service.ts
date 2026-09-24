@@ -21,6 +21,7 @@ import type { AcpProviderConfig, spawnSession } from '@agile-agents/acp-client';
 import {
   type HilRequest,
   type KnowledgeItem,
+  type Plan,
   type Question,
   type RoutedEvent,
   type SessionRef,
@@ -37,6 +38,8 @@ import {
   validateStreamCreateInput,
 } from '@agile-agents/shared';
 import { readHomeConfigFile } from '../config';
+import type { ContractService } from '../coordination/contracts';
+import type { PlanService } from '../coordination/plans';
 import { REPLY_FIRST, SessionDelivery } from '../events/delivery';
 import { routeAndEmit } from '../events/router';
 import { RoutedEventService } from '../events/service';
@@ -153,6 +156,9 @@ export interface AttachServiceOptions {
   /** The open questions, for the turn-end rule. */
   questions?: OpenQuestionsSource;
   rules?: BriefRulesSource;
+  /** T281: plans and contracts for the coordinator's and each child's brief. */
+  plans?: Pick<PlanService, 'get' | 'childView'>;
+  contracts?: Pick<ContractService, 'forNode'>;
   /** The gates, for the same rule. */
   gates?: OpenGatesSource;
   /** Test seam: inject a fake `spawnSession`. */
@@ -194,6 +200,23 @@ function projectSession(store: StateStore, id: string) {
   } catch {
     return undefined;
   }
+}
+
+/** T281: the coordinator's own plan, as a spreadable field. */
+function planOf(plans: AttachServiceOptions['plans'], node: string): { plan?: Plan } {
+  const plan = plans?.get(node);
+  return plan === undefined ? {} : { plan };
+}
+
+/** T281: a worker's (or reviewer's) part of its parent's approved plan. */
+function childPlanOf(
+  plans: AttachServiceOptions['plans'],
+  stream: Stream,
+  role: SessionRole,
+): { plan?: NonNullable<ReturnType<PlanService['childView']>> } {
+  if (role === 'coordinator' || role === 'lessons') return {};
+  const plan = plans?.childView(stream);
+  return plan === undefined ? {} : { plan };
 }
 
 /** P20: the project's coordinator autonomy; absent when the project is unreadable. */
@@ -516,9 +539,12 @@ export class AttachService {
                   ? undefined
                   : projectAutonomy(store, stream.project)) ??
                 'advise',
+              ...planOf(this.options.plans, stream.id),
+              contracts: this.options.contracts?.forNode(stream.id) ?? [],
             },
           }
         : {}),
+      ...childPlanOf(this.options.plans, stream, role),
     });
     // The lessons material rides after the brief, never inside it (the
     // brief's own ceiling protects its parts; the caller caps the appendix).
