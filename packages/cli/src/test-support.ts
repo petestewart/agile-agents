@@ -187,7 +187,7 @@ export async function startTestDaemon(prefix = 'agile-cli-test-'): Promise<TestD
   // T130: attach + the eight verbs. Nothing here spawns a vendor — a test
   // that wants a live session injects its own `spawn` seam.
   // T140: rules (cockpit design §5) — the same service behind `rule.*` RPC,
-  // the inbox's `rule_accept` items and the `propose_rule` verb.
+  // the inbox's `rule_accept` items and the `propose_knowledge` verb.
   const rulesService = new KnowledgeService({ store, streams: streamService });
   const routedEvents = new RoutedEventService(store);
   const verbService = new VerbService({

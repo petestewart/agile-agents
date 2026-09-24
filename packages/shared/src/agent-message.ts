@@ -27,7 +27,7 @@ export const MessageBodySchema = z
 /**
  * The closed set of gate kinds after the reshape (design/cockpit-design.md
  * §3.1): `land` (the Land button, when the repo policy asks for a gate),
- * `rule_accept` (lessons at stream close, or an agent's `propose_rule`) and
+ * `rule_accept` (lessons at stream close, or an agent's `propose_knowledge`) and
  * `classifier_review` (the hook's route band, §6.3).
  */
 export const HIL_KINDS = ['land', 'rule_accept', 'classifier_review'] as const;

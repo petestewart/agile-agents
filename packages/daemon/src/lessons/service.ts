@@ -1,9 +1,10 @@
 /**
  * `LessonsService`: the retro, per stream, with the human as the only
- * decider (§5.5). On land or close, a stream with any findings, hook
+ * decider (§5.5). After `merged` (projects-design §17: a direct land or a
+ * PR merged, never a plain close), a stream with any findings, hook
  * denials or answered questions gets one short read-only session over
  * exactly that material, asked for at most three proposed rules (two
- * examples each) through the ordinary `propose_rule` verb; they reach the
+ * examples each, each with a kind) through the ordinary `propose_knowledge` verb; they reach the
  * inbox as `rule_accept` items. A stream with none runs nothing ("a system
  * that proposes a rule after every stream trains the human to click
  * accept"). The cap is a gate (`assertCanPropose`), not a brief sentence.
@@ -13,7 +14,6 @@
 import type { KnowledgeItem, Question, Stream } from '@agile-agents/shared';
 import { MESSAGE_BODY_MAX_CHARS } from '@agile-agents/shared';
 import type { AttachOptions, AttachResult } from '../attach/service';
-import { liveSession } from '../attach/service';
 import type { VerbCaller } from '../attach/verbs';
 import type { KnowledgeService } from '../knowledge/service';
 import type { StateStore } from '../store';
@@ -25,11 +25,11 @@ export const MAX_LESSON_PROPOSALS = 3;
 /** How much material one retro carries. */
 export const MAX_MATERIAL_ITEMS = 20;
 
-/** The fourth `propose_rule` call from one lessons session. */
+/** The fourth `propose_knowledge` call from one lessons session. */
 export class LessonQuotaError extends Error {
   constructor(session: string) {
     super(
-      `propose_rule refused: this lessons session (${session}) has already proposed ${MAX_LESSON_PROPOSALS} rules, which is the most one retro may propose — end your turn`,
+      `propose_knowledge refused: this lessons session (${session}) has already proposed ${MAX_LESSON_PROPOSALS} items, which is the most one retro may propose — end your turn`,
     );
     this.name = 'LessonQuotaError';
   }
@@ -94,17 +94,20 @@ export function renderMaterial(stream: Stream, material: LessonsMaterial): strin
     [
       '## Your instruction',
       '',
-      `Propose **at most ${MAX_LESSON_PROPOSALS}** rules with \`propose_rule\`, and only rules this`,
+      `Propose **at most ${MAX_LESSON_PROPOSALS}** items with \`propose_knowledge\`, and only items this`,
       'material actually supports. Each call carries:',
       '',
-      '- `text` — the rule as the operator would say it;',
+      '- `text` — the item as the operator would say it;',
+      '- `kind` — `standard` (how work is done; the default), `architecture`',
+      '  (where something lives, when the finding names a place) or `decision`',
+      '  (a choice made, with its reason);',
       '- `examples` — exactly two `{action, violates}` actions, one that',
-      '  violates the rule and one that does not;',
-      '- `scope` — `repo` or `stream`, never global;',
-      '- `enforcement` — your guess of `pattern`, `classifier` or `guidance`,',
-      '  with the one-line reason in the rule text if it is not obvious.',
-      '  `pattern` and `classifier` see only tool calls and diffs: a rule about',
-      '  what an agent says (messages, replies) is `guidance`;',
+      '  violates the item and one that does not;',
+      '- `scope` — `repo` or `subtree`, never global;',
+      '- `enforcement` — your guess of `tell`, `action`, `ship` or `review`,',
+      '  with the one-line reason in the text if it is not obvious.',
+      '  `action` and `ship` see only tool calls and diffs: an item about',
+      '  what an agent says (messages, replies) is `tell`;',
       '- `critical` — only for something a human cannot cheaply undo.',
       '',
       'Then end your turn. Nothing else is expected of you: a human decides',
@@ -161,12 +164,12 @@ export class LessonsService {
     };
   }
 
-  /** The land/close hook: starts the retro, or says on the thread why not. Never throws. */
+  /** The after-`merged` hook: starts the retro, or says on the thread why not. Never throws. */
   async onStreamEnd(streamId: string): Promise<void> {
     try {
       const stream = this.options.streams.get(streamId);
-      // One retro at a time.
-      if (liveSession(stream, 'lessons') !== undefined) return;
+      // One retro per node, ever (a merge is reported once, but belt and braces).
+      if (stream.sessions.some((s) => s.role === 'lessons')) return;
       const material = this.material(streamId);
       if (isEmptyMaterial(material)) {
         await this.options.streams.appendThread('daemon', streamId, {

@@ -7,7 +7,7 @@
  * Every write here is the human's: the daemon stamps the `human` principal
  * at the RPC edge and never accepts one from params (§2.2), so there is no
  * `--as` flag and never will be one on this path. An agent proposes
- * through its `propose_rule` verb.
+ * through its `propose_knowledge` verb.
  */
 
 import type { RuleEvalPlan, RuleEvalReport, RuleReport, RuleReportRow } from '@agile-agents/daemon';

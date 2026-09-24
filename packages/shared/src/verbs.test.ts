@@ -40,7 +40,7 @@ describe('agent verbs', () => {
       'ask',
       'progress',
       'finding',
-      'propose_rule',
+      'propose_knowledge',
       'propose_next',
       'read_stream',
       'search_docs',

@@ -1,6 +1,6 @@
 /**
  * The eight MCP verbs an attached session gets (§4.1), the whole
- * agent-facing surface: `ask` · `progress` · `finding` · `propose_rule` ·
+ * agent-facing surface: `ask` · `progress` · `finding` · `propose_knowledge` ·
  * `propose_next` · `read_stream` · `search_docs` · `test_run`.
  *
  * Every verb names its `session`, resolved through the agent registry
@@ -18,7 +18,6 @@ import {
   type StreamFinding,
   type ThreadEntry,
   formatKnowledgeScope,
-  legacyEnforcement,
   parseKnowledgeScope,
   validateVerbInput,
   withExamplesNote,
@@ -61,7 +60,7 @@ export interface VerbServiceOptions {
   questions: QuestionService;
   /** `search_docs`'s read side. */
   docs?: DocsSearch;
-  /** What `propose_rule` writes through. */
+  /** What `propose_knowledge` writes through. */
   rules?: KnowledgeService;
   /** §5.5's "at most three" proposals from a lessons session, enforced as a gate. */
   /** T244: `read_event`'s read side (`RoutedEventService`). */
@@ -144,39 +143,34 @@ export class VerbService {
   }
 
   /**
-   * §5.1/D4: an agent may only propose. The rule is minted `proposed` with
-   * provenance back to this stream and session (whatever the input says),
+   * §5.1/D4, T264: an agent may only propose. The item is minted `proposed`
+   * with its source back to this node and session (`lessons` for a retro),
    * plus a thread entry `ref`'d to it; the human decides in the inbox.
-   * Optional `examples`, `enforcement` and `critical` ride along.
    *
-   * Scope: `global`, `repo:<name>`, `stream:<id>`, or bare `repo`/`stream`
-   * for this session's own. Omitted, the narrowest honest scope: this
-   * stream's repo, else the stream. Never global by default (§5.1: a rule
-   * from one repo must not silently govern another).
+   * Scope: `global`, `repo:<name>`, `project:<id>`, `subtree:<id>`, or bare
+   * `repo`/`project`/`subtree` for this node's own. Omitted, this node's
+   * subtree (§14.3): never wider by default.
    */
-  async proposeRule(input: unknown): Promise<ThreadEntry> {
-    const { session, text, scope, examples, enforcement, critical } = validateVerbInput(
-      'propose_rule',
-      input,
-    );
+  async proposeKnowledge(input: unknown): Promise<ThreadEntry> {
+    const { session, text, kind, scope, paths, examples, enforcement, critical } =
+      validateVerbInput('propose_knowledge', input);
     const caller = this.caller(session);
     // §5.5's proposal budget, checked before anything is written.
     this.options.proposalLimit?.assertCanPropose(caller);
-    // The verb still speaks the old tiers (T264 replaces it with
-    // `propose_knowledge`); they map as the home migration maps them.
-    const mapped = enforcement === undefined ? undefined : legacyEnforcement(enforcement);
-    const checked = mapped === 'action' || mapped === 'ship';
-    const rule = await this.options.rules?.create('agent', {
+    const checked = enforcement === 'action' || enforcement === 'ship';
+    const item = await this.options.rules?.create('agent', {
       text,
+      ...(kind !== undefined ? { kind } : {}),
       scope: this.resolveProposedScope(caller, scope),
-      ...(mapped !== undefined ? { enforcement: mapped } : {}),
+      ...(paths !== undefined ? { paths } : {}),
+      ...(enforcement !== undefined ? { enforcement } : {}),
       ...(checked ? { check: { by: 'classifier', examples: examples ?? [] } } : {}),
       ...(critical !== undefined ? { critical } : {}),
       source: {
-        by: 'agent',
+        by: caller.role === 'lessons' ? 'lessons' : 'agent',
         node: caller.stream,
         session,
-        // A tell item has no check to hold them: keep them visible (T260).
+        // A tell/review item has no check to hold them: keep them visible (T260).
         ...(!checked && examples !== undefined && examples.length > 0
           ? { finding: withExamplesNote(undefined, examples) }
           : {}),
@@ -188,30 +182,38 @@ export class VerbService {
       {
         kind: 'proposal',
         body:
-          rule === undefined
-            ? `rule proposed: ${text}`
-            : `rule proposed (${formatKnowledgeScope(rule.scope)}): ${text}`,
-        ref: rule === undefined ? 'rule_proposed' : `knowledge/${rule.id}.yaml`,
+          item === undefined
+            ? `knowledge proposed: ${text}`
+            : `${item.kind} proposed (${formatKnowledgeScope(item.scope)}): ${text}`,
+        ref: item === undefined ? 'knowledge_proposed' : `knowledge/${item.id}.yaml`,
       },
       session,
     );
   }
 
-  /** The scope grammar of `propose_rule`, resolved against the calling session's stream. */
+  /** The scope grammar of `propose_knowledge`, resolved against the calling session's node. */
   private resolveProposedScope(caller: VerbCaller, scope: string | undefined): KnowledgeScope {
     const stream = this.options.streams.get(caller.stream);
-    const repoScope = (): KnowledgeScope => {
+    const trimmed = scope?.trim();
+    if (trimmed === undefined || trimmed === 'subtree' || trimmed === 'stream') {
+      return { kind: 'subtree', node: stream.id };
+    }
+    if (trimmed === 'repo') {
       if (stream.repo === undefined) {
-        throw new Error(`propose_rule: scope "repo" needs a stream with a repo; this one has none`);
+        throw new Error(
+          'propose_knowledge: scope "repo" needs a node with a repo; this one has none',
+        );
       }
       return { kind: 'repo', repo: stream.repo };
-    };
-    if (scope === undefined) {
-      return stream.repo === undefined ? { kind: 'subtree', node: stream.id } : repoScope();
     }
-    const trimmed = scope.trim();
-    if (trimmed === 'repo') return repoScope();
-    if (trimmed === 'stream' || trimmed === 'subtree') return { kind: 'subtree', node: stream.id };
+    if (trimmed === 'project') {
+      if (stream.project === undefined) {
+        throw new Error(
+          'propose_knowledge: scope "project" needs a node in a project; this one has none',
+        );
+      }
+      return { kind: 'project', project: stream.project };
+    }
     return parseKnowledgeScope(trimmed);
   }
 
@@ -297,7 +299,7 @@ export function verbHandlers(
     ask: (input) => service.ask(input),
     progress: (input) => service.progress(input),
     finding: (input) => service.finding(input),
-    propose_rule: (input) => service.proposeRule(input),
+    propose_knowledge: (input) => service.proposeKnowledge(input),
     propose_next: (input) => service.proposeNext(input),
     read_stream: (input) => service.readStream(input),
     search_docs: (input) => service.searchDocs(input),

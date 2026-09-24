@@ -56,6 +56,9 @@ const port = () =>
     staticToken: TOKEN,
   });
 
+/** T264: nodes `onMerged` was told about (the lessons retro's trigger). */
+let mergedNodes: string[] = [];
+
 function poller(): PrPoller {
   return new PrPoller({
     streams,
@@ -66,6 +69,9 @@ function poller(): PrPoller {
     },
     onMainMoved: (r, except) => {
       moved.push({ repo: r, ...(except ? { except } : {}) });
+    },
+    onMerged: (id) => {
+      mergedNodes.push(id);
     },
     now,
   });
@@ -90,6 +96,7 @@ beforeEach(async () => {
   clock = Date.now();
   asked = [];
   moved = [];
+  mergedNodes = [];
   gh = await startFakeGitHub({ owner: 'acme', repo: 'shop', token: TOKEN });
   home = mkdtempSync(join(tmpdir(), 'agile-poll-home-'));
   repo = mkdtempSync(join(tmpdir(), 'agile-poll-repo-'));
@@ -164,6 +171,7 @@ describe('PR poller (T225)', () => {
     expect(after.human.status).toBe('landed');
     expect(lines(s.id)).toContain('PR #1 merged');
     expect(moved).toEqual([{ repo: 'demo', except: s.id }]);
+    expect(mergedNodes).toEqual([s.id]);
     expect(mustGit(['rev-parse', 'main'])).toBe(sha);
 
     // Landed: no longer polled; a second deliver is refused.

@@ -96,8 +96,6 @@ export function threadAuthorFor(principal: StreamPrincipal, sessionId?: string):
 }
 
 export interface StreamServiceOptions {
-  /** Tells the retro (§5.5) a stream closed. Fire-and-forget: never a failed close. */
-  onStreamEnd?: (streamId: string) => void | Promise<void>;
   /** T244: after each written update (the event producers). Awaited; a throw is logged, never a failed update. */
   onUpdated?: (before: Stream, after: Stream) => void | Promise<void>;
 }
@@ -271,9 +269,6 @@ export class StreamService {
     if (note !== undefined) {
       await this.appendThread(principal, id, { kind: 'line', body: `closed: ${note}` });
     }
-    // §5.5: the retro runs on land or close. Fire-and-forget; contractually
-    // non-throwing, caught as belt and braces.
-    void Promise.resolve(this.options.onStreamEnd?.(id)).catch(() => {});
     return closed;
   }
 

@@ -112,14 +112,11 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
   const gateService = store
     ? new GateService(store, options.gateDelegate ? { delegate: options.gateDelegate } : {})
     : undefined;
-  // `close` and `land` both hand the ended stream to the retro (§5.5).
+  // A merge (land or a PR merged) hands the node to the retro (§17: after `merged`).
   // Every back-reference in this graph is read lazily through a closure,
   // so construction order is never a trap.
   const streamService: StreamService | undefined = store
     ? new StreamService(store, {
-        onStreamEnd: async (id) => {
-          await lessonsService?.onStreamEnd(id);
-        },
         // T244: record changes that are routed events (child_status, pr_merged, …).
         onUpdated: async (before, after): Promise<void> => {
           if (emitRouted) await emitTransitions(emitRouted)(before, after);
@@ -131,14 +128,20 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
   // How spawned sessions reach this daemon's CLI for hooks and MCP,
   // resolved to something that runs on this host, never assumed on $PATH.
   const cliBin = resolveCliBin();
-  // Rules (§5): read by every brief, the hook and landing.
-  const rulesService =
-    store && streamService ? new KnowledgeService({ store, streams: streamService }) : undefined;
   // T240–T242: routed events, one service for every producer and the delivery.
   const routedEvents = store ? new RoutedEventService(store) : undefined;
   // T244: the producers' emit hook over that one service.
   const emitRouted: EmitRouted | undefined =
     routedEvents && streamService ? makeEmitter(routedEvents, streamService) : undefined;
+  // Rules (§5): read by every brief, the hook and landing. T264: accepting emits.
+  const rulesService =
+    store && streamService
+      ? new KnowledgeService({
+          store,
+          streams: streamService,
+          ...(emitRouted ? { emitRouted } : {}),
+        })
+      : undefined;
   // Attach and questions know about each other: the turn-end rule asks
   // what is open, and an answer is delivered by prompting the session.
   const attachService =
@@ -363,6 +366,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
           ...(mainSync
             ? { onMainMoved: (repo: string, except?: string) => mainSync.mainMoved(repo, except) }
             : {}),
+          onMerged: (id: string) => lessonsService?.onStreamEnd(id),
           ...(landingService ? { afterTick: () => landingService.settle() } : {}),
           ...(emitRouted ? { emit: emitRouted } : {}),
           home: config.home,
