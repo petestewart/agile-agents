@@ -22,7 +22,7 @@ import {
   validateVerbInput,
 } from '@agile-agents/shared';
 import type { DocsSearch, SearchHit } from '../docs/service';
-import { summarize } from '../events/producers';
+import { summaryOf } from '../events/delivery';
 import type { QuestionService } from '../questions/service';
 import type { RulesService } from '../rules/service';
 import { NotFoundError, type StateStore } from '../store';
@@ -245,7 +245,7 @@ export class VerbService {
       throw new Error(`read_event: no event ${id} was routed to this stream`);
     }
     const titleOf = (sid: string) => this.options.streams.list().find((s) => s.id === sid)?.title;
-    return { ...event, summary: summarize(event, caller.stream, titleOf) };
+    return { ...event, summary: summaryOf(event, caller.stream, titleOf) };
   }
 
   /** The repo's own test command, in this session's worktree. Failures only, never a green log. */

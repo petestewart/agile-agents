@@ -1083,8 +1083,8 @@ git status --short
 
 ### Ticket: T242 Delivery to sessions, digests, no drops
 - **Priority:** P0
-- **Status:** In Progress
-- **Owner:** opus:worker-T242
+- **Status:** Done (merge 104ceb6)
+- **Owner:** —
 - **Scope:**
   - Pending deliveries for a node with an idle session fold into one digest prompt within 2 s, and are marked delivered in the same write (P10). A mid-turn session holds them until the turn ends.
   - Replace `AttachService.say` and the answer-delivery prompts with `human_line` and `answer` events. T174's queue and its "queued" marker become the event queue.
@@ -1094,19 +1094,19 @@ git status --short
   - a restart between send and mark causes no duplicate within the digest;
   - T174's tests pass rewritten on events.
 - **Validation Steps:** `bun test packages/daemon/src/events packages/daemon/src/attach`; `bun run test:integration`.
-- **Notes:** After T241. Removes the old prompt paths (line delta should be small). From T240/T241: call `recover()` at daemon start; digest folding must tolerate more than one pending event per coalesce key.
+- **Notes:** After T241. Removes the old prompt paths (line delta should be small). From T240/T241: call `recover()` at daemon start; digest folding must tolerate more than one pending event per coalesce key. Review (sonnet) PASS (no lost/duplicated lines across the checked cases). Daemon +283 net. Digest to the worker only; marked delivered only after the vendor accepts. Gate decisions still prompt directly. `recover()` does not notify delivery → T243 wakes nodes with pending events at start.
 
 ### Ticket: T243 Wake policy
 - **Priority:** P1
-- **Status:** Todo
-- **Owner:** —
+- **Status:** In Progress
+- **Owner:** opus:worker-T243
 - **Scope:** Per P11:
   - which event types start a session for each role when none is live;
   - a wake budget per node per hour (config, default 20) that goes to the inbox when exceeded;
   - stopped nodes are never woken.
 - **Acceptance Criteria:** Table tests per role and type; the budget test; a stopped node keeps its events pending.
 - **Validation Steps:** `bun test packages/daemon/src/events`.
-- **Notes:** After T242.
+- **Notes:** After T242. From T242 review: at daemon start, nodes with pending deliveries (after `recover()`) should be considered for wake/delivery rather than waiting for the next turn end.
 
 ### Ticket: T244 Event producers
 - **Priority:** P0
@@ -1119,8 +1119,8 @@ git status --short
 
 ### Ticket: T245 ∥ Activity feed per node
 - **Priority:** P1
-- **Status:** Todo
-- **Owner:** —
+- **Status:** In Progress
+- **Owner:** opus:worker-T245
 - **Scope:** Add a node Activity tab: every event routed to the node with its reason, delivery status and which session or digest carried it ("what woke it and why"). Add `agile tail --node <id> --events`. The repo view shows repo events.
 - **Acceptance Criteria:** e2e: a `main_changed` shows on the other node's Activity with "same repo".
 - **Validation Steps:** `bun run test:e2e`.

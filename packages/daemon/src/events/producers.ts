@@ -136,7 +136,8 @@ const list = (xs: unknown): string => (Array.isArray(xs) && xs.length > 0 ? xs.j
 
 /**
  * The one line recipient `node` is told (§15 "What the recipient agent is
- * told"). `titleOf` names nodes; the full payload is behind `read_event`.
+ * told") for every type but `human_line`/`answer` (`summaryOf` in
+ * ./delivery has those). `titleOf` names nodes; the full payload is behind `read_event`.
  */
 export function summarize(
   event: RoutedEvent,
@@ -148,10 +149,6 @@ export function summarize(
   const name = (id: unknown) => (typeof id === 'string' ? (titleOf(id) ?? id) : 'another node');
   const pr = `PR #${String(p.pr)}`;
   switch (event.type) {
-    case 'human_line':
-      return `Pete wrote on this thread: ${String(p.body)}. Reply on the thread first, then continue.`;
-    case 'answer':
-      return `Your question ${String(p.question)} was answered: ${String(p.answer)}.`;
     case 'child_status': {
       const word = p.status === 'question' ? 'asking' : String(p.status);
       return `Child ${String(p.title)} is ${word}: ${String(p.progress ?? 'no progress line')}.`;

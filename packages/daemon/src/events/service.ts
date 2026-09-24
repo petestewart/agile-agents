@@ -12,6 +12,8 @@
  * - `mark(node, ids, status, meta)`: moves pending deliveries to `delivered`,
  *   `superseded` or `expired` in one write. Only a pending delivery moves.
  * - `get(id)`: one event by id (`read_event`).
+ * - `onEmitted(fn)`: called after each stored event (delivery, T242, wakes
+ *   its recipients).
  * - `recover()`: run once at startup. A crash between the log append and
  *   the queue append leaves an event with no delivery; this re-adds its
  *   `pending` lines, so nothing routed is dropped.
@@ -40,6 +42,7 @@ export interface MarkMeta {
 
 export class RoutedEventService {
   private byId: Map<string, RoutedEvent> | undefined;
+  private readonly listeners: ((event: RoutedEvent) => void)[] = [];
 
   constructor(
     private readonly store: StateStore,
@@ -62,7 +65,18 @@ export class RoutedEventService {
     }));
     const stored = await this.store.appendRoutedEvent(event, deliveries);
     this.index().set(stored.id, stored);
+    for (const listener of this.listeners) {
+      try {
+        listener(stored);
+      } catch {
+        // A listener never fails the emit: the event is already stored.
+      }
+    }
     return stored;
+  }
+
+  onEmitted(listener: (event: RoutedEvent) => void): void {
+    this.listeners.push(listener);
   }
 
   get(id: RoutedEventId | string): RoutedEvent | undefined {

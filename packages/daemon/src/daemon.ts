@@ -126,10 +126,6 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
         },
       })
     : undefined;
-  // T240/T244: the routed event log and the producers' emit hook.
-  const routedEvents = store ? new RoutedEventService(store) : undefined;
-  const emitRouted: EmitRouted | undefined =
-    routedEvents && streamService ? makeEmitter(routedEvents, streamService) : undefined;
   const projectService =
     store && streamService ? new ProjectService(store, streamService) : undefined;
   // How spawned sessions reach this daemon's CLI for hooks and MCP,
@@ -138,6 +134,11 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
   // Rules (§5): read by every brief, the hook and landing.
   const rulesService =
     store && streamService ? new RulesService({ store, streams: streamService }) : undefined;
+  // T240–T242: routed events, one service for every producer and the delivery.
+  const routedEvents = store ? new RoutedEventService(store) : undefined;
+  // T244: the producers' emit hook over that one service.
+  const emitRouted: EmitRouted | undefined =
+    routedEvents && streamService ? makeEmitter(routedEvents, streamService) : undefined;
   // Attach and questions know about each other: the turn-end rule asks
   // what is open, and an answer is delivered by prompting the session.
   const attachService =
@@ -153,6 +154,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
           ...(rulesService ? { rules: rulesService } : {}),
           // The turn-end rule treats an open routed call like an open question.
           ...(gateService ? { gates: gateService } : {}),
+          ...(routedEvents ? { events: routedEvents } : {}),
           onWorkerTurnEnd: (id) => {
             void mainSync?.turnEnded(id).catch((err) => console.error('main sync failed:', err));
           },
@@ -298,6 +300,15 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
       }
     : undefined;
 
+  // P10: an event stored with no delivery (a crash mid-emit) is routed again.
+  if (routedEvents) {
+    try {
+      await routedEvents.recover();
+    } catch (err) {
+      console.error('agiled: could not recover routed events:', err);
+    }
+  }
+
   // §17.1 (T202): the one-shot, idempotent migration into projects.
   if (store && streamService && projectService && questionService) {
     await migrateHome({
@@ -307,9 +318,6 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
       questions: questionService,
     });
   }
-
-  // P10: an event logged without its queue lines (a crash mid-emit) gets them back.
-  await routedEvents?.recover();
 
   // T227: overlap tracking — `touched` after edit hooks, commits and every 60 s.
   const overlapTracker =
@@ -505,6 +513,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
         prPoller?.stop();
         mainSync?.stop();
         // Sessions are child processes: stop them first so their exit writes land.
+        attachService?.delivery.stop();
         await attachService?.stopAll();
         await http.stop();
         await rpc.close();
