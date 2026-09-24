@@ -194,7 +194,17 @@ export class AutonomyService {
   }
 
   async dismiss(id: string): Promise<AutonomyProposal> {
-    return this.close(this.openProposal(id), 'dismissed');
+    const proposal = this.openProposal(id);
+    // T285: dismissing a held contract proposal rejects the child's proposal.
+    const cp = proposal.change.action === 'approve_contract' ? proposal.change.proposal : undefined;
+    if (cp !== undefined && this.options.contracts !== undefined) {
+      try {
+        await this.options.contracts.reject(cp, 'dismissed by the operator', 'human');
+      } catch {
+        // Already gone (the contract moved on); the card still closes.
+      }
+    }
+    return this.close(proposal, 'dismissed');
   }
 
   private openProposal(id: string): AutonomyProposal {

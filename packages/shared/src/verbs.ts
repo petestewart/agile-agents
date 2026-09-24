@@ -27,7 +27,13 @@ import {
   KnowledgePathsSchema,
   RuleExampleSchema,
 } from './knowledge';
-import { ContractWriteFieldsSchema, PlanWriteFieldsSchema } from './plan';
+import {
+  CONTRACT_BODY_MAX_CHARS,
+  ContractIdSchema,
+  ContractProposalIdSchema,
+  ContractWriteFieldsSchema,
+  PlanWriteFieldsSchema,
+} from './plan';
 import { RoutedEventIdSchema } from './routed-event';
 import { StreamFindingSeveritySchema, THREAD_BODY_MAX_CHARS } from './stream';
 
@@ -153,6 +159,35 @@ export const SetOwnerInputSchema = z
   })
   .strict();
 
+/**
+ * T285 (§9.1, §9.5): a child (optionally co-signed by siblings in `with`)
+ * proposes a new body for a contract it relies on. It lands on the
+ * contract as an open proposal and wakes the coordinator.
+ */
+export const ProposeContractInputSchema = z
+  .object({
+    session: Session,
+    contract: ContractIdSchema,
+    body: z.string().trim().min(1).max(CONTRACT_BODY_MAX_CHARS),
+    reason: z.string().max(400),
+    routine: z.boolean().optional(),
+    with: z.array(UlidSchema).max(10).optional(),
+  })
+  .strict();
+export type ProposeContractInput = z.infer<typeof ProposeContractInputSchema>;
+
+/** T285: the coordinator approves (gated by autonomy) or rejects a proposal. */
+export const DecideContractInputSchema = z
+  .object({
+    session: Session,
+    proposal: ContractProposalIdSchema,
+    decision: z.enum(['approve', 'reject']),
+    reason: z.string().max(400).optional(),
+    routine: z.boolean().optional(),
+  })
+  .strict();
+export type DecideContractInput = z.infer<typeof DecideContractInputSchema>;
+
 /** The verb table, in the order §4.1 lists it. */
 export const AGENT_VERBS = [
   'ask',
@@ -172,6 +207,8 @@ export const AGENT_VERBS = [
   'add_child',
   'add_waits_on',
   'set_owner',
+  'propose_contract',
+  'decide_contract',
 ] as const;
 export type AgentVerb = (typeof AGENT_VERBS)[number];
 
@@ -193,6 +230,8 @@ export const AGENT_VERB_SCHEMAS = {
   add_child: AddChildInputSchema,
   add_waits_on: AddWaitsOnInputSchema,
   set_owner: SetOwnerInputSchema,
+  propose_contract: ProposeContractInputSchema,
+  decide_contract: DecideContractInputSchema,
 } as const satisfies Record<AgentVerb, z.ZodType>;
 
 /** One line of help per verb, published to the model by the MCP bridge. */
@@ -223,6 +262,10 @@ export const AGENT_VERB_DESCRIPTIONS: Record<AgentVerb, string> = {
     'Coordinator only: make one child wait on another node ({child, on}). Gated by your autonomy level.',
   set_owner:
     'Coordinator only: give a child ownership of paths ({child, owns: [globs]}). Gated by your autonomy level.',
+  propose_contract:
+    'Propose a change to a contract you rely on ({contract, body ≤800, reason, routine?, with?: [sibling ids who agreed]}). Your coordinator approves, rejects or asks the operator.',
+  decide_contract:
+    'Coordinator only: decide a child’s contract proposal ({proposal, decision: approve|reject, reason?, routine?}). Approval is gated by your autonomy level (routine = additive only).',
 };
 
 export function isAgentVerb(name: string): name is AgentVerb {
