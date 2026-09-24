@@ -760,8 +760,8 @@ Design: `design/projects-design.md`, which wins over `design/cockpit-design.md` 
 
 ### Ticket: T204 Starting a node starts its agent
 - **Priority:** P1
-- **Status:** In Progress
-- **Owner:** opus:worker-T204
+- **Status:** Done (merge 233a781)
+- **Owner:** —
 - **Scope:**
   - `node new` for a work or conversation node starts its agent: a worker for work nodes, and a conversation session with no worktree for conversation nodes. `--no-start` and the cockpit's "Start later" checkbox skip this.
   - The cockpit's Attach control becomes Start/Restart. `agile attach` stays as restart.
@@ -770,12 +770,12 @@ Design: `design/projects-design.md`, which wins over `design/cockpit-design.md` 
   This folds in the doc-comment item "attach friction / start worker on create".
 - **Acceptance Criteria:** Fake-agent test: creating a work node yields a running worker session with the resolved defaults. `--no-start` yields none. e2e: New stream → the session strip shows running without a second click.
 - **Validation Steps:** `bun test packages/daemon/src/attach packages/cli`; `bun run test:e2e`.
-- **Notes:** After T203.
+- **Notes:** After T203. Review (sonnet): 1 blocking (start-failure path untested) fixed. Daemon +54 net. Quick capture sends `start: false` (a jot never spawns an agent; tested) — Pete may overrule. P5 node step not built (nodes have no session field yet).
 
 ### Ticket: T205 + Repo in place
 - **Priority:** P1
-- **Status:** Todo
-- **Owner:** —
+- **Status:** In Progress
+- **Owner:** opus:worker-T205
 - **Scope:** Add `node.add_repo` and `node.switch_repo` (RPC, `agile node add-repo`/`switch-repo`, and a + Repo button on the stream page), with the three reshapes in projects-design §7:
   - conversation → work: create the branch and worktree;
   - work → coordinating: move the branch, worktree and sessions into a new child "<repo> part", keeping the commits, and create a second part;
@@ -784,7 +784,7 @@ Design: `design/projects-design.md`, which wins over `design/cockpit-design.md` 
   New parts start with the thread-so-far pointer, the docs and the decisions. The chat stays on the node.
 - **Acceptance Criteria:** Unit tests for all three reshapes, including that the moved branch keeps its commits and that `nodeRole` changes. e2e: + Repo on a conversation shows the same thread with a new part row.
 - **Validation Steps:** `bun test packages/daemon/src/streams`; `bun run test:e2e`.
-- **Notes:** After T204. An agent's "add web too?" suggestion is a `propose_next` card with an Add button (UI only).
+- **Notes:** After T204. An agent's "add web too?" suggestion is a `propose_next` card with an Add button (UI only). From T203: make helpers deliver to `helper_of`'s branch when this ticket starts populating `helper_of`, or record why not. From T204: a live conversation node that gains a part becomes coordinating while its session is live — handle per §7.
 
 ### Ticket: T206 ∥ Add a repo from the cockpit
 - **Priority:** P2
