@@ -12,7 +12,12 @@
  *   it the node goes to the inbox and its events stay pending.
  */
 
-import type { NodeRole, RoutedEventType, Stream } from '@agile-agents/shared';
+import {
+  type NodeRole,
+  type RoutedEventType,
+  type Stream,
+  isAgentRole,
+} from '@agile-agents/shared';
 
 export const DEFAULT_WAKE_BUDGET_PER_HOUR = 20;
 
@@ -62,7 +67,7 @@ export function stoppedByHuman(node: Stream): boolean {
   if (node.archived === true) return true;
   if (node.human.status === 'closed' || node.human.status === 'landed') return true;
   if (node.agent.status !== 'idle') return false;
-  const lastWorker = node.sessions.filter((s) => s.role === 'worker').at(-1);
+  const lastWorker = node.sessions.filter((s) => isAgentRole(s.role)).at(-1);
   return !(
     lastWorker?.status === 'stopped' &&
     lastWorker.ended_reason?.startsWith(DAEMON_STOP_PREFIX) === true
@@ -93,7 +98,7 @@ export class WakeBudget {
 
 /**
  * The decision for a node with pending events and no live session, before
- * the budget. A coordinating node has "an agent" once it has had a worker session.
+ * the budget. A coordinating node has "an agent" once it has had a worker or coordinator session.
  */
 export function wakeVerdict(
   node: Stream,
@@ -101,7 +106,7 @@ export function wakeVerdict(
   pending: readonly { type: RoutedEventType }[],
 ): Exclude<WakeVerdict, 'budget'> {
   if (role === 'project') return 'no_agent';
-  if (role === 'coordinating' && !node.sessions.some((s) => s.role === 'worker')) {
+  if (role === 'coordinating' && !node.sessions.some((s) => isAgentRole(s.role))) {
     return 'no_agent';
   }
   if (stoppedByHuman(node)) return 'stopped';

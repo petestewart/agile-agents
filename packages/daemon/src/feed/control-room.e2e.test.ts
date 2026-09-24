@@ -1657,8 +1657,9 @@ describe('parents and land conflicts (Playwright e2e, T176)', () => {
         await page.locator(`[data-testid="stream-page"][data-stream="${parent.id}"]`).waitFor();
         await page.locator('[data-testid="attach"]').click();
         await page.locator('[data-testid="picker-start"]').click();
-        // D20: no parent-attach confirmation any more; the worker just starts.
-        await page.locator('[data-testid="session"][data-role="worker"]').waitFor();
+        // D20: no parent-attach confirmation any more; the agent just starts,
+        // as a coordinator (P20, T280).
+        await page.locator('[data-testid="session"][data-role="coordinator"]').waitFor();
 
         // A stream whose branch and main both change shared.txt.
         const worktree = join(cockpit.repo, '.worktrees', 's-conflict');

@@ -1164,3 +1164,59 @@ describe('T243: the wake policy (P11)', () => {
     await waitFor(() => prompts(log).some((p) => p.includes('left over')));
   }, 30_000);
 });
+
+describe('T280: the coordinator role (P20)', () => {
+  test('a coordinating node runs a coordinator; child_status wakes it with a digest', async () => {
+    const log = join(scratch, 'coordinator.jsonl');
+    attachService = buildAttachService(
+      fakeProviderFor(ACP_PROVIDERS.claude, { ...SPEAKS, logFile: log }),
+      { deliveryDelayMs: 5 },
+    );
+    const project = await new ProjectService(store, streams).create({ name: 'Shop' });
+    const node = await attachService.createNode('human', {
+      title: 'Checkout',
+      goal: 'g',
+      project: project.id,
+      start: false,
+    });
+    const child = await attachService.createNode('human', {
+      title: 'Cart API',
+      goal: 'g',
+      project: project.id,
+      parent: node.id,
+      start: false,
+    });
+
+    const first = await attachService.attach(node.id);
+    expect(first.session.role).toBe('coordinator');
+    expect(first.session.worktree).toBeUndefined();
+    const brief = readFileSync(join(home, 'sessions', first.session.id, 'brief.md'), 'utf8');
+    expect(brief).toContain('# Coordinator brief');
+    expect(brief).toContain('## Your children');
+    expect(brief).toContain('Cart API');
+    expect(brief).toContain('Autonomy: **advise**');
+    await waitFor(() => streams.get(node.id).agent.status === 'done');
+    await waitFor(() => attachService.handleFor(node.id, 'coordinator') === undefined);
+
+    await new RoutedEventService(store).emit({
+      type: 'child_status',
+      subject: child.id,
+      payload: { child: child.id, title: 'Cart API', status: 'blocked', progress: 'stuck on auth' },
+      by: 'daemon',
+      routing: [{ node: node.id, because: 'ancestor' }],
+    });
+    attachService.wakePending();
+    await waitFor(() => streams.get(node.id).sessions.length === 2);
+    expect(streams.get(node.id).sessions.map((s) => s.role)).toEqual([
+      'coordinator',
+      'coordinator',
+    ]);
+    await waitFor(() => store.readDeliveries(node.id).at(-1)?.status === 'delivered');
+    await waitFor(() =>
+      (existsSync(log) ? readFileSync(log, 'utf8') : '')
+        .split('\n')
+        .some((l) => l.includes('"session/prompt"') && l.includes('stuck on auth')),
+    );
+    expect(threadBodies(node.id)).toContain('woken by child_status');
+  }, 30_000);
+});

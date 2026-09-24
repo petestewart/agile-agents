@@ -51,10 +51,12 @@ import type { ClaudePreToolUsePayload, HookDecision, HookDecisionContext } from 
 /**
  * The permission-table role a session role is judged under: the table
  * speaks the older vocabulary (a worker is the engineer). The lessons
- * session writes nothing but proposals, so it gets the reviewer's policy.
+ * session writes nothing but proposals, so it gets the reviewer's policy, and so does a coordinator (P20: writes denied).
  */
 export function permissionRoleFor(role: SessionRole): PermissionRole {
-  return role === 'reviewer' || role === 'lessons' ? 'reviewer' : 'engineer';
+  return role === 'reviewer' || role === 'lessons' || role === 'coordinator'
+    ? 'reviewer'
+    : 'engineer';
 }
 
 /** Caps the concatenated normal-priority bodies injected as context (each is already capped). */
@@ -205,6 +207,10 @@ function roleToolVerdict(
   });
 
   if (decision.kind === 'deny') return { decision: 'deny', reason: decision.reason };
+  // P20: a coordinator writes nothing, so there is nothing for a human to approve.
+  if (decision.kind === 'hil' && ctx.role === 'coordinator') {
+    return { decision: 'deny', reason: `coordinator writes nothing: ${decision.reason}` };
+  }
   if (decision.kind === 'hil') return { decision: 'ask', reason: decision.reason };
 
   return undefined;

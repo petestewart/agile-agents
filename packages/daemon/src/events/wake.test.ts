@@ -85,6 +85,8 @@ describe('wakeVerdict', () => {
       'no_agent',
     );
     expect(wakeVerdict(node(), 'coordinating', [{ type: 'overlap' }])).toBe('wake');
+    const coordinated = node({ sessions: [{ role: 'coordinator' }] } as Partial<Stream>);
+    expect(wakeVerdict(coordinated, 'coordinating', [{ type: 'child_status' }])).toBe('wake');
   });
 });
 

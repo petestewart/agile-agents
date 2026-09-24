@@ -18,7 +18,7 @@
  *    refusal's reason, shown on the page).
  */
 
-import { type InboxItem, formatKnowledgeScope } from '@agile-agents/shared';
+import { type InboxItem, formatKnowledgeScope, isAgentRole } from '@agile-agents/shared';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   type RepoRow,
@@ -434,7 +434,7 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
   const { stream } = page;
   const dot = streamDot({ agent_status: stream.agent.status, human_status: stream.human.status });
   const live = stream.sessions.filter(isLiveSession);
-  const liveWorker = live.find((s) => s.role === 'worker');
+  const liveWorker = live.find((s) => isAgentRole(s.role));
   const liveReviewer = live.find((s) => s.role === 'reviewer');
   // T174: human lines sent mid-turn, not yet delivered to the live worker.
   const queuedLines = new Set(live.flatMap((s) => s.queued ?? []));
@@ -525,7 +525,7 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
             onClick={() => setPicker('worker')}
           >
             {/* T204: a new node starts its own agent; this is for "Start later" or after one ended. */}
-            {stream.sessions.some((s) => s.role === 'worker') ? 'Restart' : 'Start'}
+            {stream.sessions.some((s) => isAgentRole(s.role)) ? 'Restart' : 'Start'}
           </button>
           <button
             type="button"

@@ -341,3 +341,25 @@ describe('decidePreToolUse — T213 read scope', () => {
     expect(decidePreToolUse(baseCtx(), bash(`ls ${part}`)).decision).toBe('deny');
   });
 });
+
+describe('T280: a coordinator writes nothing (P20)', () => {
+  test('Write/Edit in its session dir and a writing Bash are denied; a Read is allowed', () => {
+    const dir = '/home/.agile/sessions/01J9AAAAAAAAAAAAAAAAAAAAAA';
+    const ctx = baseCtx({ role: 'coordinator', worktreePath: dir });
+    for (const tool of ['Edit', 'Write']) {
+      const result = decidePreToolUse(ctx, {
+        tool_name: tool,
+        tool_input: { file_path: `${dir}/notes.md` },
+      });
+      expect(result.decision).toBe('deny');
+    }
+    expect(
+      decidePreToolUse(ctx, { tool_name: 'Bash', tool_input: { command: 'echo x > notes.md' } })
+        .decision,
+    ).toBe('deny');
+    expect(
+      decidePreToolUse(ctx, { tool_name: 'Read', tool_input: { file_path: `${dir}/brief.md` } })
+        .decision,
+    ).toBe('allow');
+  });
+});

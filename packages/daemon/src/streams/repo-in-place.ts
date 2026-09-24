@@ -19,7 +19,13 @@
  * worktree.
  */
 
-import { type SessionRef, type Stream, liveChildrenOf, nodeRole } from '@agile-agents/shared';
+import {
+  type SessionRef,
+  type Stream,
+  isAgentRole,
+  liveChildrenOf,
+  nodeRole,
+} from '@agile-agents/shared';
 import { git, removeWorktreeSafely } from '../delivery/git';
 import { mainBranch } from '../delivery/service';
 import { createWorktree, slugify } from '../runner/worktrees';
@@ -91,11 +97,11 @@ export class RepoInPlaceService {
     if (switching) this.assertNothingCommitted(node);
 
     const wasLive = node.sessions.some(
-      (s) => s.role === 'worker' && s.status !== 'stopped' && s.status !== 'error',
+      (s) => isAgentRole(s.role) && s.status !== 'stopped' && s.status !== 'error',
     );
     // T204's start rule for new parts: `start` isn't stored, so a node that
     // never had a worker is the `--no-start` one.
-    const started = wasLive || node.sessions.some((s) => s.role === 'worker');
+    const started = wasLive || node.sessions.some((s) => isAgentRole(s.role));
     // Stop first, so the exit path writes onto the records before they move.
     await this.sessions.stop(
       node.id,

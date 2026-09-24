@@ -10,7 +10,13 @@
 
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import type { KnowledgeItem, SessionRole, Stream, ThreadEntry } from '@agile-agents/shared';
+import type {
+  Autonomy,
+  KnowledgeItem,
+  SessionRole,
+  Stream,
+  ThreadEntry,
+} from '@agile-agents/shared';
 import { knowledgeInScope } from '../knowledge/service';
 
 /** One Markdown file per role. */
@@ -42,6 +48,8 @@ export interface BuildBriefInput {
   docs: BriefDoc[];
   /** Every knowledge item in the home; `knowledgeInScope` filters them here, not the caller. */
   rules: readonly KnowledgeItem[];
+  /** P20 (T280): a coordinator's children and autonomy level. */
+  coordinator?: { children: readonly Stream[]; autonomy: Autonomy };
   /** Overrides `BRIEF_THREAD_ENTRIES`. */
   threadEntries?: number;
   /** Overrides `BRIEF_CHAR_CEILING`. Test seam. */
@@ -125,6 +133,20 @@ export function babysitSection(stream: Stream): string | undefined {
   );
 }
 
+/** P20 (T280): what a coordinator coordinates, and how far it may act on its own. */
+export function coordinatorSection(children: readonly Stream[], autonomy: Autonomy): string {
+  const lines =
+    children.length === 0
+      ? ['none yet']
+      : children.map(
+          (c) =>
+            `- ${c.title} (\`${c.id}\`): agent ${c.agent.status}, human ${c.human.status}${
+              c.agent.progress ? ` — ${c.agent.progress}` : ''
+            }`,
+        );
+  return section('Your children', [...lines, '', `Autonomy: **${autonomy}**.`].join('\n'));
+}
+
 /** One pass of the assembler at a given thread-tail length and doc body cap. */
 function assemble(
   input: BuildBriefInput,
@@ -149,6 +171,10 @@ function assemble(
           .join('\n'),
       ),
     );
+  }
+
+  if (input.coordinator !== undefined) {
+    parts.push(coordinatorSection(input.coordinator.children, input.coordinator.autonomy));
   }
 
   const babysit = babysitSection(stream);
