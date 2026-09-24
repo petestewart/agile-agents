@@ -1061,8 +1061,8 @@ git status --short
 
 ### Ticket: T240 Routed event schema and store
 - **Priority:** P0
-- **Status:** In Progress
-- **Owner:** opus:worker-T240
+- **Status:** Done (merge c6575ea)
+- **Owner:** —
 - **Scope:**
   - Add `RoutedEvent` and `Delivery` (§14.9) in `shared/routed-event.ts`, with typed payloads per event type (§15).
   - Add `events/log.jsonl` and `events/queue/<node>.jsonl` through the store, fsynced before `emit` returns.
@@ -1070,12 +1070,12 @@ git status --short
   - The audit log is unchanged (P9).
 - **Acceptance Criteria:** Store tests: emit then a crash (simulated) then a restart shows the delivery still `pending`; payloads over the cap are refused.
 - **Validation Steps:** `bun test packages/shared packages/daemon/src/events`.
-- **Notes:** First ticket of Phase 9.
+- **Notes:** First ticket of Phase 9. Review (sonnet) PASS. Daemon +212. `RoutedEventService` (emit, pendingFor, mark, get, recover). Payload fields read from §15 templates; 800-char strings, 4096-byte payload cap (worker's number). `recover()` not yet called at start → T242.
 
 ### Ticket: T241 Router
 - **Priority:** P0
-- **Status:** Todo
-- **Owner:** —
+- **Status:** In Progress
+- **Owner:** opus:worker-T241
 - **Scope:** `events/router.ts`: routes to self, ancestors, waits-on, same-repo (live work nodes, any project), parties and sibling (§15), with the reason recorded in `routing`. Coalesce keys. A closed node gets `expired`.
 - **Acceptance Criteria:** Table tests over the worked example tree: Blog's merge reaches its parent (`ancestor`) and Shop's api part (`same_repo`), and nothing on web.
 - **Validation Steps:** `bun test packages/daemon/src/events`.
