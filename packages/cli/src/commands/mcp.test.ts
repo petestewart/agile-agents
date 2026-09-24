@@ -140,3 +140,61 @@ describe('read_event over MCP (T244)', () => {
     expect(JSON.stringify(missing.content)).toContain('no event');
   });
 });
+
+describe('lookup_knowledge over MCP (T263)', () => {
+  test('returns the accepted items in scope for a path, not proposed or out-of-path ones', async () => {
+    const node = await daemon.streamService.create('human', { title: 'Shop', goal: 'shop' });
+    const session = ulid();
+    await daemon.store.putAgent(session as AgentId, {
+      vendor: 'claude',
+      model: 'sonnet',
+      stream: node.id,
+      last_seen: new Date().toISOString(),
+      role: 'worker',
+    });
+    const rules = daemon.rulesService;
+    const scope = { kind: 'subtree' as const, node: node.id };
+    const src = { by: 'human' as const };
+    const everywhere = await rules.create('human', { text: 'use zod', scope, source: src });
+    const api = await rules.create('human', {
+      text: 'api returns problem+json',
+      scope,
+      paths: ['api/**'],
+      source: src,
+    });
+    const ui = await rules.create('human', {
+      text: 'ui uses tokens',
+      scope,
+      paths: ['ui/**'],
+      source: src,
+    });
+    await rules.create('human', { text: 'still proposed', scope, source: src });
+    for (const item of [everywhere, api, ui]) await rules.accept(item.id, 'human');
+
+    transport = new StdioClientTransport({
+      command: 'bun',
+      args: [CLI_ENTRY, 'mcp', '--session', session],
+      env: { ...process.env, AGILE_SOCKET_PATH: daemon.socketPath },
+    });
+    client = new Client({ name: 'test-client', version: '0.0.0' });
+    await client.connect(transport);
+
+    const ok = await client.callTool({
+      name: 'lookup_knowledge',
+      arguments: { path: 'api/orders.ts' },
+    });
+    expect(ok.isError).toBeFalsy();
+    const body = JSON.parse((ok.content as Array<{ text: string }>)[0]?.text ?? 'null');
+    expect(body.path).toBe('api/orders.ts');
+    expect(body.items.map((i: { text: string }) => i.text).sort()).toEqual([
+      'api returns problem+json',
+      'use zod',
+    ]);
+    expect(body.items.find((i: { text: string }) => i.text !== 'use zod').paths).toEqual([
+      'api/**',
+    ]);
+
+    const bad = await client.callTool({ name: 'lookup_knowledge', arguments: {} });
+    expect(bad.isError).toBe(true);
+  });
+});

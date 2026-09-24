@@ -94,6 +94,8 @@ describe('buildBrief', () => {
         '',
         '- never push to main',
         '',
+        'Before touching an unfamiliar area, call `lookup_knowledge` with its path for the items that apply there.',
+        '',
         '## Docs',
         '',
         '### brief.md',
@@ -130,6 +132,8 @@ describe('buildBrief', () => {
         '## Rules in scope',
         '',
         'none yet',
+        '',
+        'Before touching an unfamiliar area, call `lookup_knowledge` with its path for the items that apply there.',
         '',
       ].join('\n'),
     );

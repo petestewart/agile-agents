@@ -47,6 +47,17 @@ export class NoWorktreeError extends Error {
   }
 }
 
+/** One `lookup_knowledge` hit: what the agent needs, not the whole record. */
+export interface LookupKnowledgeItem {
+  id: string;
+  kind: string;
+  text: string;
+  scope: string;
+  enforcement: string;
+  paths?: string[];
+  critical?: true;
+}
+
 /** Where a verb call came from, resolved from the registry rather than trusted. */
 export interface VerbCaller {
   session: string;
@@ -276,6 +287,28 @@ export class VerbService {
     return this.options.delivery.push(caller.stream);
   }
 
+  /**
+   * T263: the accepted items in scope for the caller's node that apply to
+   * `path` (items with no globs apply everywhere). Read-only, any role.
+   */
+  lookupKnowledge(input: unknown): { path: string; items: LookupKnowledgeItem[] } {
+    const { session, path } = validateVerbInput('lookup_knowledge', input);
+    const caller = this.caller(session);
+    const items = this.options.rules?.inScope(caller.stream, undefined, [path]) ?? [];
+    return {
+      path,
+      items: items.map((item) => ({
+        id: item.id,
+        kind: item.kind,
+        text: item.text,
+        scope: formatKnowledgeScope(item.scope),
+        enforcement: item.enforcement,
+        ...(item.paths !== undefined && item.paths.length > 0 ? { paths: item.paths } : {}),
+        ...(item.critical ? { critical: true } : {}),
+      })),
+    };
+  }
+
   /** The repo's own test command, in this session's worktree. Failures only, never a green log. */
   async testRun(input: unknown): Promise<TestRunOutput> {
     const { session, command } = validateVerbInput('test_run', input);
@@ -304,5 +337,6 @@ export function verbHandlers(
     test_run: (input) => service.testRun(input),
     read_event: (input) => service.readEvent(input),
     deliver: (input) => service.deliver(input),
+    lookup_knowledge: (input) => service.lookupKnowledge(input),
   };
 }

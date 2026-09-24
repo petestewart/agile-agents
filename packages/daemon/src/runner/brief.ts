@@ -89,6 +89,10 @@ function renderRules(rules: readonly KnowledgeItem[]): string {
   return lines.join('\n');
 }
 
+/** T263: the brief carries everything in scope; the lookup narrows it to one path. */
+export const LOOKUP_HINT =
+  'Before touching an unfamiliar area, call `lookup_knowledge` with its path for the items that apply there.';
+
 function renderDoc(doc: BriefDoc, bodyCap: number): string {
   const body = doc.body.trimEnd();
   const capped =
@@ -150,7 +154,7 @@ function assemble(
   const babysit = babysitSection(stream);
   if (babysit !== undefined) parts.push(babysit);
 
-  parts.push(section('Rules in scope', renderRules(rules)));
+  parts.push(section('Rules in scope', `${renderRules(rules)}\n\n${LOOKUP_HINT}`));
 
   const shownDocs = docBodyCap > 0 ? docs : [];
   if (shownDocs.length > 0) {
