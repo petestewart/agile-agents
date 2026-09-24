@@ -16,6 +16,7 @@ import {
   type KnowledgeScope,
   type RoutedEvent,
   type SessionRole,
+  type StatusCard,
   type StreamFinding,
   type ThreadEntry,
   formatKnowledgeScope,
@@ -102,6 +103,8 @@ export interface VerbServiceOptions {
   events?: { get(id: string): RoutedEvent | undefined };
   /** T246: `deliver`'s write side (`DeliveryService.push`). */
   delivery?: { push(stream: string): Promise<unknown> };
+  /** T283: `read_card`'s read side. */
+  cards?: { read(caller: string, target: string): StatusCard };
   /** T281: `plan_write` / `contract_write`, coordinator sessions only. */
   plans?: PlanService;
   contracts?: ContractService;
@@ -339,6 +342,14 @@ export class VerbService {
     };
   }
 
+  /** T283 (§14.5): a sibling's or ancestor's status card. */
+  readCard(input: unknown): StatusCard {
+    const { session, node } = validateVerbInput('read_card', input);
+    const caller = this.caller(session);
+    if (this.options.cards === undefined) throw new Error('read_card: cards are not available');
+    return this.options.cards.read(caller.stream, node);
+  }
+
   /** T281 (§14.4): the coordinator's plan; always lands `draft` for the operator to approve. */
   async planWrite(input: unknown): Promise<unknown> {
     const { session, owners, contracts } = validateVerbInput('plan_write', input);
@@ -394,6 +405,7 @@ export function verbHandlers(
     read_event: (input) => service.readEvent(input),
     deliver: (input) => service.deliver(input),
     lookup_knowledge: (input) => service.lookupKnowledge(input),
+    read_card: (input) => service.readCard(input),
     plan_write: (input) => service.planWrite(input),
     contract_write: (input) => service.contractWrite(input),
   };

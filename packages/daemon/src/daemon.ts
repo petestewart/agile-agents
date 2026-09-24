@@ -10,6 +10,7 @@ import { AttachService, VerbService, buildAttachRpcMethods } from './attach';
 import { Bus, buildBusRpcMethods } from './bus';
 import { type Classifier, ClassifierKeyService, JevClassifier } from './classifier';
 import { type AgileConfig, type DiscoverConfigOptions, discoverConfig } from './config';
+import { CardService } from './coordination/cards';
 import { ContractService } from './coordination/contracts';
 import { PlanService } from './coordination/plans';
 import {
@@ -124,9 +125,21 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
         // T244: record changes that are routed events (child_status, pr_merged, …).
         onUpdated: async (before, after): Promise<void> => {
           if (emitRouted) await emitTransitions(emitRouted)(before, after);
+          // T283: the node's status card follows its record.
+          await cardService?.refresh(after);
         },
       })
     : undefined;
+  // T283: status cards; `read_card` and the cockpit read them.
+  const cardService: CardService | undefined =
+    store && streamService
+      ? new CardService({
+          store,
+          streams: streamService,
+          // T281: the contracts this node is a party to (read lazily; built below).
+          reliesOn: (s) => contractService?.forParty(s.id).map((c) => c.id),
+        })
+      : undefined;
   const projectService =
     store && streamService ? new ProjectService(store, streamService) : undefined;
   // How spawned sessions reach this daemon's CLI for hooks and MCP,
@@ -313,6 +326,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
           ...(docsService ? { docs: docsService } : {}),
           ...(rulesService ? { rules: rulesService } : {}),
           ...(routedEvents ? { events: routedEvents } : {}),
+          ...(cardService ? { cards: cardService } : {}),
           ...(planService ? { plans: planService } : {}),
           ...(contractService ? { contracts: contractService } : {}),
           // T246: an agent's push; its PR is then polled at the babysit cadence.
