@@ -40,6 +40,8 @@ async function newStream(title: string, extra: string[] = []): Promise<Stream> {
     `goal: ${title}`,
     ...(extra.includes('--parent') ? [] : ['--project', projectId]),
     ...extra,
+    // T204: these tests attach by hand; `node new` would otherwise start one.
+    '--no-start',
     '--json',
   ]);
   expect(result.code).toBe(0);
@@ -373,5 +375,29 @@ describe('agile attach (T130) on a no-repo stream, against the fake driver', () 
     expect((await cli(['attach', stream.id, '--role', 'architect'])).code).toBe(1);
     const shown = await cli(['stream', 'show', stream.id, '--json']);
     expect((JSON.parse(shown.out) as { stream: Stream }).stream.sessions.length).toBe(0);
+  });
+});
+
+describe('agile node new starts the agent (T204)', () => {
+  test('a conversation node starts a session; --no-start starts none', async () => {
+    const started = await cli([
+      'node',
+      'new',
+      '--title',
+      'Plan',
+      '--goal',
+      'g',
+      '--project',
+      projectId,
+    ]);
+    expect(started.code).toBe(0);
+    expect(started.out).toMatch(
+      /^started [0-9A-HJKMNP-TV-Z]{26} {2}claude\/claude-opus-5-5 {2}effort=low/m,
+    );
+
+    const later = await newStream('Later');
+    expect(later.sessions).toEqual([]);
+    // `agile attach` is the restart: it starts what --no-start skipped.
+    expect((await cli(['attach', later.id])).code).toBe(0);
   });
 });

@@ -23,6 +23,7 @@ import type { HilId, Policy, Question, Stream } from '@agile-agents/shared';
 import { GateService } from '../gates/service';
 import { runInit } from '../init';
 import { LandingService } from '../landing/service';
+import { ProjectService } from '../projects/service';
 import { QuestionService } from '../questions/service';
 import { wireQuestionSupersession } from '../questions/supersede';
 import type { FakeAgentScript } from '../runner/fake-agent';
@@ -868,4 +869,80 @@ describe('say — the stream page composer (T161)', () => {
       store.updateStream = original;
     }
   }, 30_000);
+});
+
+describe('T204: creating a node starts its agent (P5)', () => {
+  async function makeProject(session?: { model?: string; effort?: 'high' }) {
+    const projects = new ProjectService(store, streams);
+    const project = await projects.create({ name: 'Shop' });
+    if (session !== undefined) await projects.update(project.id, { session });
+    return project;
+  }
+
+  test('a work node gets a running worker in its worktree, with the project defaults', async () => {
+    attachService = buildAttachService(fakeProviderFor(ACP_PROVIDERS.claude, SPEAKS_THEN_HANGS));
+    await store.putRepos({ demo: { path: repo, protected_branches: ['main'], effort: 'low' } });
+    const project = await makeProject({ model: 'claude-sonnet-4-6', effort: 'high' });
+
+    const node = await attachService.createNode('human', {
+      title: 'CSV parser',
+      goal: 'g',
+      project: project.id,
+      repo: 'demo',
+    });
+
+    expect(node.sessions).toHaveLength(1);
+    const [session] = node.sessions;
+    expect(session?.role).toBe('worker');
+    // P5: flag → project → repo → home → built-in; the project beats the repo.
+    expect(session?.vendor).toBe('claude');
+    expect(session?.model).toBe('claude-sonnet-4-6');
+    expect(session?.effort).toBe('high');
+    expect(node.worktree?.startsWith(join(repo, '.worktrees'))).toBe(true);
+    expect(attachService.handleFor(node.id)).toBeDefined();
+  });
+
+  test('a conversation node gets a session with no worktree', async () => {
+    attachService = buildAttachService(fakeProviderFor(ACP_PROVIDERS.claude, SPEAKS_THEN_HANGS));
+    const project = await makeProject();
+    const node = await attachService.createNode('human', {
+      title: 'Plan',
+      goal: 'g',
+      project: project.id,
+    });
+    expect(node.sessions).toHaveLength(1);
+    expect(node.sessions[0]?.model).toBe('claude-opus-5-5');
+    expect(node.worktree).toBeUndefined();
+  });
+
+  test('start: false makes the node and starts nothing', async () => {
+    await store.putRepos({ demo: { path: repo, protected_branches: ['main'] } });
+    const project = await makeProject();
+    const node = await attachService.createNode('human', {
+      title: 'Later',
+      goal: 'g',
+      project: project.id,
+      repo: 'demo',
+      start: false,
+    });
+    expect(node.sessions).toEqual([]);
+    expect(node.worktree).toBeUndefined();
+    expect(attachService.handleFor(node.id)).toBeUndefined();
+  });
+
+  test('a failed start still returns the node, with the reason on its thread', async () => {
+    const project = await new ProjectService(store, streams).create({ name: 'Shop' });
+    await store.updateProject(project.id, (p) => ({ ...p, session: { vendor: 'nope' } }));
+    const node = await attachService.createNode('human', {
+      title: 'Broken',
+      goal: 'g',
+      project: project.id,
+    });
+    expect(node.sessions).toEqual([]);
+    expect(
+      threadBodies(node.id).some((b) =>
+        b.startsWith('could not start the agent: unknown vendor: nope'),
+      ),
+    ).toBe(true);
+  });
 });

@@ -6,7 +6,7 @@
  *    rules as inbox cards with their *full* text (the inbox clips at 200
  *    chars, §3.2), answerable here exactly as in the inbox.
  *  - **Sessions strip** — vendor/model/role/status per session, with
- *    Attach (a worker), Review (a reviewer) and Stop.
+ *    Start/Restart (a worker), Review (a reviewer) and Stop.
  *  - **Thread** — the spine: every line, markdown, live (re-read on every
  *    pushed cockpit frame), with a thinking indicator while a session is
  *    mid-turn; the composer under it writes a human line and, when a
@@ -413,7 +413,8 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
             disabled={busy || liveWorker !== undefined || stream.human.status === 'landed'}
             onClick={() => setPicker('worker')}
           >
-            Attach
+            {/* T204: a new node starts its own agent; this is for "Start later" or after one ended. */}
+            {stream.sessions.some((s) => s.role === 'worker') ? 'Restart' : 'Start'}
           </button>
           <button
             type="button"

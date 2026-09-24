@@ -1,6 +1,6 @@
 /**
  * Attach-time `vendor`/`model`/`effort` (D12, D17), field by field: the
- * attach flag, the repo entry, the home `config.yaml`, the built-in default
+ * attach flag, the node's project (P5), the repo entry, the home `config.yaml`, the built-in default
  * (`claude` / `claude-opus-5-5` / `low`), then a non-Claude provider's own
  * `defaultModel`. Pure, so "why did this session get that model?" is one
  * unit test.
@@ -16,6 +16,7 @@ import {
   type Effort,
   type HomeConfig,
   type RepoEntry,
+  type ResolveSessionDefaultsInput,
   SESSION_VENDORS,
   resolveSessionDefaults,
 } from '@agile-agents/shared';
@@ -43,6 +44,8 @@ export interface AttachFlags {
 export interface ResolveSessionSettingsInput {
   /** What `agile attach` was given. */
   flags?: AttachFlags;
+  /** P5: the node's project `session`, when the node has a project. */
+  project?: ResolveSessionDefaultsInput['project'];
   /** The stream's repo entry, when the stream has a repo. */
   repo?: RepoEntry;
   /** `<home>/config.yaml`. */

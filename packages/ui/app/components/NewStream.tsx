@@ -24,6 +24,8 @@ export function NewStream({
   const [goal, setGoal] = useState('');
   const [parent, setParent] = useState('');
   const [repo, setRepo] = useState('');
+  // T204: the node starts its agent on create unless this is ticked.
+  const [startLater, setStartLater] = useState(false);
   const [repoNames, setRepoNames] = useState<string[]>([]);
   const [error, setError] = useState<string | undefined>(undefined);
   const [busy, setBusy] = useState(false);
@@ -48,6 +50,7 @@ export function NewStream({
     setTitle('');
     setGoal('');
     setRepo('');
+    setStartLater(false);
     setError(undefined);
     // T206: the picker lists what is registered now, including repos added in Settings.
     listRepos()
@@ -75,6 +78,7 @@ export function NewStream({
         ...(parent ? { parent } : {}),
         ...(into !== undefined ? { project: into } : {}),
         ...(repo.trim() ? { repo: repo.trim() } : {}),
+        ...(startLater ? { start: false } : {}),
       });
       setNewStreamOpen(false);
       select(created.id);
@@ -135,6 +139,15 @@ export function NewStream({
               <option key={n} value={n} />
             ))}
           </datalist>
+        </label>
+        <label>
+          <input
+            type="checkbox"
+            data-testid="new-stream-start-later"
+            checked={startLater}
+            onChange={(e) => setStartLater(e.target.checked)}
+          />{' '}
+          Start later <span>(don't start the agent now)</span>
         </label>
         {error && (
           <p className="cr-error" role="alert" data-testid="new-stream-error">

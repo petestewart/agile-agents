@@ -118,6 +118,8 @@ const asParamErrors = paramErrors(
  */
 export interface StreamRpcOptions {
   reply?: ThreadReplyDeps;
+  /** T204: create and start the node's agent (`AttachService.createNode`). */
+  create?: StreamService['create'];
 }
 
 export function buildStreamRpcMethods(
@@ -127,9 +129,13 @@ export function buildStreamRpcMethods(
   return {
     'stream.create': async (params) =>
       asParamErrors(() =>
-        service.create(EDGE_PRINCIPAL, validateStreamCreateInput(requireObject(params)), {
-          requireProject: true,
-        }),
+        (options.create ?? service.create.bind(service))(
+          EDGE_PRINCIPAL,
+          validateStreamCreateInput(requireObject(params)),
+          {
+            requireProject: true,
+          },
+        ),
       ),
 
     'stream.get': (params) => {

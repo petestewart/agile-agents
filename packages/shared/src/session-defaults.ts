@@ -5,10 +5,11 @@
  * D12's order, field by field, with D17's built-in step:
  *
  *   1. the flag (or the cockpit picker's value);
- *   2. the stream's repo entry in `repos.yaml`;
- *   3. the home's `config.yaml` (`default_vendor|model|effort`);
- *   4. the built-in default — `claude` / `claude-opus-5-5` / `low`;
- *   5. the provider's own default model (only reached for a non-Claude
+ *   2. the node's project (`projects/<id>.yaml` `session`, P5);
+ *   3. the stream's repo entry in `repos.yaml`;
+ *   4. the home's `config.yaml` (`default_vendor|model|effort`);
+ *   5. the built-in default — `claude` / `claude-opus-5-5` / `low`;
+ *   6. the provider's own default model (only reached for a non-Claude
  *      vendor with no model named anywhere: the built-in model is a Claude id).
  *
  * Pure and here rather than in the daemon so the CLI's `daemon status` and
@@ -82,6 +83,8 @@ export interface ResolvedSessionDefaults {
 
 export interface ResolveSessionDefaultsInput {
   flags?: { vendor?: string; model?: string; effort?: string };
+  /** P5: the project step, between the flag and the repo. */
+  project?: { vendor?: string; model?: string; effort?: Effort };
   repo?: Pick<RepoEntry, 'vendor' | 'model' | 'effort'>;
   home?: Pick<HomeConfig, 'default_vendor' | 'default_model' | 'default_effort'>;
 }
@@ -94,16 +97,16 @@ function firstDefined<T>(...values: Array<T | undefined>): T | undefined {
 export function resolveSessionDefaults(
   input: ResolveSessionDefaultsInput = {},
 ): ResolvedSessionDefaults {
-  const { flags = {}, repo, home } = input;
+  const { flags = {}, project, repo, home } = input;
   const vendor =
-    firstDefined(flags.vendor, repo?.vendor, home?.default_vendor) ??
+    firstDefined(flags.vendor, project?.vendor, repo?.vendor, home?.default_vendor) ??
     BUILTIN_SESSION_DEFAULTS.vendor;
-  const named = firstDefined(flags.model, repo?.model, home?.default_model);
+  const named = firstDefined(flags.model, project?.model, repo?.model, home?.default_model);
   const model =
     named ??
     (vendor === BUILTIN_SESSION_DEFAULTS.vendor ? BUILTIN_SESSION_DEFAULTS.model : undefined);
-  // The flag is a raw string; the two records are schema-checked already.
-  const effortRaw = firstDefined(flags.effort, repo?.effort, home?.default_effort);
+  // The flag is a raw string; the records are schema-checked already.
+  const effortRaw = firstDefined(flags.effort, project?.effort, repo?.effort, home?.default_effort);
   const effort =
     effortRaw === undefined ? BUILTIN_SESSION_DEFAULTS.effort : validateEffort(effortRaw);
   return { vendor, ...(model !== undefined ? { model } : {}), effort };

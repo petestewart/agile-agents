@@ -390,6 +390,8 @@ export const StreamCreateInputSchema = z
     project: ProjectIdSchema.optional(),
     labels: z.array(z.string().trim().min(1).max(NODE_LABEL_MAX_CHARS)).max(20).optional(),
     helper_of: UlidSchema.optional(),
+    /** T204: `false` (`--no-start`, "Start later") skips starting the node's agent. Not stored. */
+    start: z.boolean().optional(),
   })
   .strict();
 export type StreamCreateInput = z.infer<typeof StreamCreateInputSchema>;

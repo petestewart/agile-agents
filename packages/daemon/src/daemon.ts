@@ -277,6 +277,8 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
                 // `agile stream say` is the composer's path too.
                 ...(attachService
                   ? {
+                      create: (principal, input, opts) =>
+                        attachService.createNode(principal, input, opts),
                       reply: {
                         say: (id: string, body: string) => attachService.say(id, body),
                         ...(questionService ? { questions: questionService } : {}),
