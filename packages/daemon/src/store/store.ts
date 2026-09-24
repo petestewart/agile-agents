@@ -18,6 +18,7 @@ import { dirname, isAbsolute, join, normalize, parse, relative, resolve, sep } f
 import {
   type AgentId,
   type AgentRecord,
+  type Delivery,
   type Event,
   type HomeConfig,
   type Policy,
@@ -25,6 +26,7 @@ import {
   ProjectIdSchema,
   type RepoEntry,
   type ReposConfig,
+  type RoutedEvent,
   type Rule,
   RuleIdSchema,
   type RulePrincipal,
@@ -41,12 +43,14 @@ import {
   assertStreamWrite,
   projectNameKey,
   validateAgentRecord,
+  validateDelivery,
   validateEvent,
   validateHomeConfig,
   validatePolicy,
   validateProject,
   validateRepoEntry,
   validateReposConfig,
+  validateRoutedEvent,
   validateRule,
   validateStream,
   validateThreadEntry,
@@ -54,6 +58,7 @@ import {
 import { buildEvent, needsFsync } from './events';
 import {
   appendJsonlLine,
+  appendJsonlLines,
   fileExists,
   listDataFiles,
   readJsonFile,
@@ -976,24 +981,88 @@ export class StateStore {
    * which is the normal state of a freshly created stream.
    */
   readThread(streamId: string): ThreadEntry[] {
-    const absPath = this.abs(this.threadRelPath(streamId));
+    return this.readJsonlValidated(
+      this.abs(this.threadRelPath(streamId)),
+      'thread',
+      validateThreadEntry,
+    );
+  }
+
+  /** Every line validated; a bad one is refused with the file and its line number (§7.3). */
+  private readJsonlValidated<T>(absPath: string, what: string, validate: (raw: unknown) => T): T[] {
     if (!fileExists(absPath)) return [];
     const lines = readFileSync(absPath, 'utf8').split('\n');
-    const entries: ThreadEntry[] = [];
+    const out: T[] = [];
     for (let i = 0; i < lines.length; i++) {
       const line = (lines[i] ?? '').trim();
       if (line.length === 0) continue;
       try {
-        entries.push(validateThreadEntry(JSON.parse(line)));
+        out.push(validate(JSON.parse(line)));
       } catch (err) {
         throw new Error(
-          `corrupt thread file ${absPath}:${i + 1}: ${
+          `corrupt ${what} file ${absPath}:${i + 1}: ${
             err instanceof Error ? err.message : String(err)
           }`,
         );
       }
     }
-    return entries;
+    return out;
+  }
+
+  // ------------------------------------------------------- Routed events
+  // T240, projects-design §14.9, P9: `events/log.jsonl` plus one queue per
+  // recipient. Not the audit log: these writes emit no audit `Event`.
+  // Every append is fsynced before it returns. `events/service.ts` is the API.
+
+  private deliveryQueueRelPath(node: string): string {
+    return join('events', 'queue', `${this.streamIdSegment(node)}.jsonl`);
+  }
+
+  /** Appends the event, then its deliveries, each fsynced, under the mutex. */
+  async appendRoutedEvent(event: unknown, deliveries: readonly unknown[]): Promise<RoutedEvent> {
+    return this.mutex.run(() => {
+      const validated = validateRoutedEvent(event);
+      const lines = deliveries.map((d) => validateDelivery(d));
+      appendJsonlLine(this.abs('events', 'log.jsonl'), validated, { fsync: true });
+      this.writeDeliveryLines(lines);
+      return validated;
+    });
+  }
+
+  /** Appends delivery state changes (one write + fsync per recipient queue). */
+  async appendDeliveries(deliveries: readonly unknown[]): Promise<Delivery[]> {
+    return this.mutex.run(() => {
+      const lines = deliveries.map((d) => validateDelivery(d));
+      this.writeDeliveryLines(lines);
+      return lines;
+    });
+  }
+
+  private writeDeliveryLines(lines: readonly Delivery[]): void {
+    const byNode = new Map<string, Delivery[]>();
+    for (const line of lines) byNode.set(line.node, [...(byNode.get(line.node) ?? []), line]);
+    for (const [node, group] of byNode) {
+      appendJsonlLines(this.abs(this.deliveryQueueRelPath(node)), group, { fsync: true });
+    }
+  }
+
+  /** The whole routed event log, in append order. */
+  readRoutedEvents(): RoutedEvent[] {
+    return this.readJsonlValidated(
+      this.abs('events', 'log.jsonl'),
+      'routed event log',
+      validateRoutedEvent,
+    );
+  }
+
+  /** Every delivery line of one node's queue, in append order. */
+  readDeliveries(node: string): Delivery[] {
+    const absPath = this.abs(this.deliveryQueueRelPath(node));
+    return this.readJsonlValidated(absPath, 'delivery queue', (raw) => {
+      const line = validateDelivery(raw);
+      if (line.node !== node) throw new Error(`delivery for node ${line.node} in ${node}'s queue`);
+      return line;
+    });
   }
 
   // -------------------------------------------------------- Generic entity
