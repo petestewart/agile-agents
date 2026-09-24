@@ -21,6 +21,7 @@ import { join } from 'node:path';
 import { ACP_PROVIDERS, type AcpProviderConfig } from '@agile-agents/acp-client';
 import type { HilId, Policy, Question, Stream } from '@agile-agents/shared';
 import { DeliveryService } from '../delivery/service';
+import { RoutedEventService } from '../events/service';
 import { GateService } from '../gates/service';
 import { runInit } from '../init';
 import { ProjectService } from '../projects/service';
@@ -88,8 +89,12 @@ const SPEAKS_THEN_HANGS: FakeAgentScript = {
  * delivers an answer by prompting the live session. Both sides are read
  * lazily so a test may rebuild either one.
  */
-function buildAttachService(provider: AcpProviderConfig): AttachService {
+function buildAttachService(
+  provider: AcpProviderConfig,
+  extra: Partial<ConstructorParameters<typeof AttachService>[0]> = {},
+): AttachService {
   return new AttachService({
+    ...extra,
     store,
     streams,
     home,
@@ -1008,4 +1013,95 @@ describe('T204: creating a node starts its agent (P5)', () => {
       ),
     ).toBe(true);
   });
+});
+
+describe('T243: the wake policy (P11)', () => {
+  /** A conversation node whose first session ran and finished (`done`, no live worker). */
+  async function finishedNode(log: string, extra = {}): Promise<Stream> {
+    attachService = buildAttachService(
+      fakeProviderFor(ACP_PROVIDERS.claude, { ...SPEAKS, logFile: log }),
+      { deliveryDelayMs: 5, ...extra },
+    );
+    const project = await new ProjectService(store, streams).create({ name: 'Shop' });
+    const node = await attachService.createNode('human', {
+      title: 'Plan',
+      goal: 'g',
+      project: project.id,
+    });
+    await waitFor(() => streams.get(node.id).agent.status === 'done');
+    await waitFor(() => attachService.handleFor(node.id) === undefined);
+    return node;
+  }
+  const prompts = (log: string) =>
+    readFileSync(log, 'utf8')
+      .split('\n')
+      .filter((l) => l.includes('"session/prompt"'));
+
+  test('a human line wakes a finished node, and the woken session gets it', async () => {
+    const log = join(scratch, 'wake.jsonl');
+    const node = await finishedNode(log);
+    await attachService.say(node.id, 'one more thing');
+    await waitFor(() => streams.get(node.id).sessions.length === 2);
+    await waitFor(() => store.readDeliveries(node.id).at(-1)?.status === 'delivered');
+    expect(prompts(log).some((p) => p.includes('one more thing'))).toBe(true);
+    expect(threadBodies(node.id)).toContain('woken by human_line');
+  }, 30_000);
+
+  test('a stopped (detached) node is never woken; its events stay pending', async () => {
+    attachService = buildAttachService(fakeProviderFor(ACP_PROVIDERS.claude, SPEAKS_THEN_HANGS), {
+      deliveryDelayMs: 5,
+    });
+    const project = await new ProjectService(store, streams).create({ name: 'Shop' });
+    const node = await attachService.createNode('human', {
+      title: 'Plan',
+      goal: 'g',
+      project: project.id,
+    });
+    await attachService.stop(node.id, 'worker', { detach: true });
+    expect(streams.get(node.id).agent.status).toBe('idle');
+    await attachService.say(node.id, 'are you there?');
+    await Bun.sleep(200);
+    expect(streams.get(node.id).sessions).toHaveLength(1);
+    expect(store.readDeliveries(node.id).map((d) => d.status)).toEqual(['pending']);
+  }, 30_000);
+
+  test('past the wake budget the node goes to the inbox and its events stay pending', async () => {
+    writeFileSync(join(home, 'config.yaml'), 'events:\n  wake_budget_per_hour: 1\n');
+    const log = join(scratch, 'budget.jsonl');
+    const node = await finishedNode(log);
+    await attachService.say(node.id, 'first');
+    await waitFor(() => streams.get(node.id).sessions.length === 2);
+    await waitFor(
+      () =>
+        streams.get(node.id).agent.status === 'done' &&
+        attachService.handleFor(node.id) === undefined &&
+        store.readDeliveries(node.id).at(-1)?.status === 'delivered',
+    );
+    await attachService.say(node.id, 'second');
+    await waitFor(() => streams.get(node.id).agent.status === 'blocked');
+    expect(streams.get(node.id).human.status).toBe('waiting_on_you');
+    expect(threadBodies(node.id).some((b) => b.startsWith('wake budget spent (1 wakes'))).toBe(
+      true,
+    );
+    expect(streams.get(node.id).sessions).toHaveLength(2);
+    expect(store.readDeliveries(node.id).at(-1)?.status).toBe('pending');
+  }, 30_000);
+
+  test('at daemon start, a node left with pending events is woken', async () => {
+    const log = join(scratch, 'restart.jsonl');
+    const node = await finishedNode(log);
+    // Emitted by another service instance: this AttachService never hears it.
+    await new RoutedEventService(store).emit({
+      type: 'human_line',
+      subject: node.id,
+      payload: { body: 'left over' },
+      by: 'human',
+      routing: [{ node: node.id, because: 'self' }],
+    });
+    await Bun.sleep(50);
+    expect(streams.get(node.id).sessions).toHaveLength(1);
+    attachService.wakePending();
+    await waitFor(() => store.readDeliveries(node.id).at(-1)?.status === 'delivered');
+    expect(prompts(log).some((p) => p.includes('left over'))).toBe(true);
+  }, 30_000);
 });

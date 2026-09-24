@@ -186,6 +186,11 @@ export const HomeConfigSchema = z
     classifier: ClassifierConfigSchema.optional(),
     /** T221: `github.api_url`, defaulted in `discoverConfig`. */
     github: GitHubConfigSchema.optional(),
+    /** T243 (P11): routed-event settings. `wake_budget_per_hour` defaults to 20. */
+    events: z
+      .object({ wake_budget_per_hour: z.number().int().positive().optional() })
+      .strict()
+      .optional(),
   })
   .strict();
 

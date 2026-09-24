@@ -21,6 +21,7 @@ import type { AcpProviderConfig, spawnSession } from '@agile-agents/acp-client';
 import {
   type HilRequest,
   type Question,
+  type RoutedEvent,
   type Rule,
   type SessionRef,
   type SessionRole,
@@ -37,6 +38,7 @@ import { readHomeConfigFile } from '../config';
 import { REPLY_FIRST, SessionDelivery } from '../events/delivery';
 import { routeAndEmit } from '../events/router';
 import { RoutedEventService } from '../events/service';
+import { DEFAULT_WAKE_BUDGET_PER_HOUR, WakeBudget, wakeVerdict } from '../events/wake';
 import { settingsFileName } from '../hook/settings';
 import type { RuleStatsOutcome } from '../rules/service';
 import type { BriefDoc } from '../runner/brief';
@@ -150,6 +152,8 @@ export interface AttachServiceOptions {
   events?: RoutedEventService;
   /** T242: how long an idle session waits for a burst to settle (default 250 ms). */
   deliveryDelayMs?: number;
+  /** T243: the wake budget's clock (tests). */
+  wakeClock?: () => number;
 }
 
 /** P5: the project step of the session defaults; absent when the project names nothing. */
@@ -181,9 +185,19 @@ export class AttachService {
   /** Sessions being stopped by `agile detach`: the exit path writes `idle`, not `done`. */
   private readonly detaching = new Set<string>();
 
+  /** T243 (P11): wakes per node in the last hour, and wakes being started now. */
+  private readonly wakeBudget: WakeBudget;
+  private readonly waking = new Set<string>();
+  /** Nodes already sent to the inbox for a spent budget (one thread line per episode). */
+  private readonly overBudget = new Set<string>();
+
   constructor(private readonly options: AttachServiceOptions) {
     this.events = options.events ?? new RoutedEventService(options.store);
+    this.wakeBudget = new WakeBudget(options.wakeClock);
     this.delivery = new SessionDelivery({
+      wake: (node, pending) => {
+        void this.wake(node, pending).catch((err) => console.error('wake failed:', err));
+      },
       events: this.events,
       titleOf: (id) =>
         options.streams.list({ include_archived: true }).find((s) => s.id === id)?.title,
@@ -218,6 +232,69 @@ export class AttachService {
         }
       },
     });
+  }
+
+  /**
+   * T243 (P11): a node with pending events and no live worker. Starts a
+   * worker when the policy says so and the budget allows; past the budget
+   * the node is `blocked` (an inbox item) and its events stay pending.
+   */
+  private async wake(node: string, pending: readonly RoutedEvent[]): Promise<void> {
+    if (this.waking.has(node)) return;
+    const { streams } = this.options;
+    let stream: Stream;
+    try {
+      stream = streams.get(node);
+    } catch {
+      return;
+    }
+    if (liveSession(stream, 'worker') !== undefined) return;
+    const role = nodeRole(stream, liveChildrenOf(stream.id, streams.list()));
+    if (wakeVerdict(stream, role, pending) !== 'wake') return;
+    const limit =
+      readHomeConfigFile(this.options.home).events?.wake_budget_per_hour ??
+      DEFAULT_WAKE_BUDGET_PER_HOUR;
+    if (!this.wakeBudget.take(node, limit)) {
+      if (this.overBudget.has(node)) return;
+      this.overBudget.add(node);
+      await streams.update('daemon', node, {
+        agent: { status: 'blocked' },
+        human: { status: 'waiting_on_you' },
+      });
+      await streams.appendThread('daemon', node, {
+        kind: 'event',
+        body: `wake budget spent (${limit} wakes in the last hour); ${pending.length} event(s) stay pending until you restart the agent`,
+      });
+      return;
+    }
+    this.overBudget.delete(node);
+    this.waking.add(node);
+    try {
+      await streams.appendThread('daemon', node, {
+        kind: 'event',
+        body: `woken by ${[...new Set(pending.map((e) => e.type))].join(', ')}`.slice(0, 800),
+      });
+      await this.attach(node);
+    } catch (err) {
+      await streams
+        .appendThread('daemon', node, {
+          kind: 'event',
+          body: `could not wake the agent: ${err instanceof Error ? err.message : String(err)}`.slice(
+            0,
+            800,
+          ),
+        })
+        .catch(() => undefined);
+    } finally {
+      this.waking.delete(node);
+    }
+  }
+
+  /** T243: at daemon start (after `recover()`), every node with pending events is considered. */
+  wakePending(): void {
+    for (const stream of this.options.streams.list()) {
+      if (this.events.pendingFor(stream.id).length > 0) this.delivery.notify(stream.id);
+    }
   }
 
   /** Serializes `queued` marker writes per stream (display only, best effort). */

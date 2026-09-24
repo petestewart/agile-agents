@@ -34,6 +34,8 @@ export interface SessionDeliveryOptions {
   delayMs?: number;
   /** After the digest is accepted and marked (e.g. clear the thread's "queued" markers). */
   onDelivered?(node: string, sessionId: string, events: readonly RoutedEvent[]): void;
+  /** T243: the node has pending events and no live session; the wake policy decides (P11). */
+  wake?(node: string, pending: readonly RoutedEvent[]): void;
   /** Names nodes in the summaries (T244); ids otherwise. */
   titleOf?(id: string): string | undefined;
 }
@@ -167,7 +169,12 @@ export class SessionDelivery {
     const busy = (t: DeliveryTarget) => !opts.atTurnEnd && t.busy();
     if (this.stopped || this.holds.has(node)) return false;
     const target = this.options.target(node);
-    if (target === undefined || busy(target)) return false;
+    if (target === undefined) {
+      const pending = this.unsent(node);
+      if (pending.length > 0) this.options.wake?.(node, pending);
+      return false;
+    }
+    if (busy(target)) return false;
     let events = this.unsent(node);
     // Folding tolerates several pending events per coalesce key: the newest wins.
     const newest = new Map<string, string>();
