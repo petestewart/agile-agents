@@ -101,6 +101,7 @@ export class PlanService {
       owners,
       contracts: ids,
       status: 'draft',
+      ...(before?.approved !== undefined ? { approved: before.approved } : {}),
       updated_at: this.now(),
     });
     const saved = await store.putEntity(planPath(node), validatePlan, plan);
@@ -121,6 +122,11 @@ export class PlanService {
       version: before.version + 1,
       status: 'approved',
       approved_by: by,
+      approved: {
+        version: before.version + 1,
+        owners: before.owners,
+        contracts: before.contracts,
+      },
       updated_at: this.now(),
     });
     const saved = await this.options.store.putEntity(planPath(node), validatePlan, plan);
@@ -156,8 +162,9 @@ export class PlanService {
   /** A child's part of its parent's approved plan, or nothing (no parent, no plan, still draft). */
   childView(child: Stream): ChildPlanView | undefined {
     if (child.parent === undefined) return undefined;
-    const plan = this.get(child.parent);
-    if (plan === undefined || plan.status !== 'approved') return undefined;
+    // A revision in draft never reaches the children: they keep the last approved version.
+    const plan = this.get(child.parent)?.approved;
+    if (plan === undefined) return undefined;
     const mine = plan.owners.find((o) => o.child === child.id);
     const titles = new Map(
       this.options.streams.list({ include_archived: true }).map((s) => [s.id, s.title]),

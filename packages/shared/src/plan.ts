@@ -45,6 +45,15 @@ export const PlanSchema = z
     contracts: z.array(ContractIdSchema).max(PLAN_LIST_MAX),
     status: z.enum(PLAN_STATUSES),
     approved_by: PlanApproverSchema.optional(),
+    /** The last approved version, kept while a revision is in draft; children are briefed from it. */
+    approved: z
+      .object({
+        version: z.number().int().positive(),
+        owners: z.array(PlanOwnerSchema).max(PLAN_LIST_MAX),
+        contracts: z.array(ContractIdSchema).max(PLAN_LIST_MAX),
+      })
+      .strict()
+      .optional(),
     updated_at: z.string().datetime(),
   })
   .strict()

@@ -20,6 +20,7 @@ import { InboxService } from '../inbox/service';
 import { runInit } from '../init';
 import { ProjectService } from '../projects/service';
 import { QuestionService } from '../questions/service';
+import { buildBrief } from '../runner/brief';
 import { StateStore } from '../store';
 import { StreamService } from '../streams/service';
 import { ContractService } from './contracts';
@@ -229,5 +230,77 @@ describe('plans and contracts (T281)', () => {
     await plans.approve(node.id);
     await verbs.planWrite({ session: coordinator, owners: [{ child: api.id, owns: ['b.ts'] }] });
     expect(plans.get(node.id)).toMatchObject({ status: 'draft', version: 1 });
+  });
+
+  test('a revision in draft leaves the children on the last approved plan until it is approved', async () => {
+    const { node, api, web, coordinator } = await saleTree();
+    const c1 = (await verbs.contractWrite({
+      session: coordinator,
+      title: 'GET /price/:id',
+      body: CONTRACT_BODY,
+      parties: [api.id, web.id],
+    })) as { id: string };
+    await verbs.planWrite({
+      session: coordinator,
+      owners: [
+        { child: api.id, owns: ['prices.ts'] },
+        { child: web.id, owns: ['shop.html'] },
+      ],
+      contracts: [c1.id],
+    });
+    await plans.approve(node.id);
+
+    const c2 = (await verbs.contractWrite({
+      session: coordinator,
+      title: 'GET /sale/:id',
+      body: 'GET /sale/:id returns { endsAt }',
+      parties: [api.id],
+    })) as { id: string };
+    await verbs.planWrite({
+      session: coordinator,
+      owners: [
+        { child: api.id, owns: ['prices.ts', 'sale.ts'] },
+        { child: web.id, owns: ['shop.html'] },
+      ],
+      contracts: [c1.id, c2.id],
+    });
+    emitted.length = 0;
+    const draftView = plans.childView(streams.get(api.id));
+    expect(draftView?.version).toBe(1);
+    expect(draftView?.owns).toEqual(['prices.ts']);
+    expect(draftView?.contracts.map((c) => c.id)).toEqual([c1.id]);
+    const draftBrief = buildBrief({
+      role: 'worker',
+      stream: streams.get(api.id),
+      ancestors: [streams.get(node.id)],
+      thread: [],
+      docs: [],
+      rules: [],
+      ...(draftView ? { plan: draftView } : {}),
+    });
+    expect(draftBrief).toContain('`prices.ts`');
+    expect(draftBrief).not.toContain('sale.ts');
+    expect(draftBrief).not.toContain('endsAt');
+
+    // The card reads as the change against v1.
+    const questions = new QuestionService(store, streams, { deliver: async () => {} });
+    const inbox = new InboxService({
+      streams,
+      questions,
+      gates: new GateService(store),
+      plans,
+      contracts,
+    });
+    const card = inbox.list().find((i) => i.kind === 'plan_approve');
+    expect(card?.detail ?? card?.context).toContain('owns prices.ts, sale.ts (was prices.ts)');
+
+    await plans.approve(node.id);
+    const view = plans.childView(streams.get(api.id));
+    expect(view?.version).toBe(2);
+    expect(view?.owns).toEqual(['prices.ts', 'sale.ts']);
+    expect(view?.contracts.map((c) => c.id)).toEqual([c1.id, c2.id]);
+    const changed = emitted.filter((e) => e.type === 'plan_changed');
+    expect(changed.map((e) => e.routing.map((r) => r.node))).toEqual([[api.id], [web.id]]);
+    expect(changed[0]?.payload.paths).toEqual(['prices.ts', 'sale.ts']);
   });
 });

@@ -153,6 +153,19 @@ function PlanView({
           {plan.owners.map((o) => (
             <li key={o.child} data-testid="plan-owner" data-child={o.child}>
               {o.child}: {o.owns.length === 0 ? 'nothing' : o.owns.join(', ')}
+              {plan.status === 'draft' && plan.approved
+                ? (() => {
+                    const before = plan.approved.owners.find((a) => a.child === o.child);
+                    const same = before?.owns.join(', ') === o.owns.join(', ');
+                    return same ? null : (
+                      <span className="cr-dim" data-testid="plan-owner-was">
+                        {' '}
+                        (approved v{plan.approved.version}:{' '}
+                        {before ? before.owns.join(', ') || 'nothing' : 'not in the plan'})
+                      </span>
+                    );
+                  })()
+                : null}
             </li>
           ))}
         </ul>
