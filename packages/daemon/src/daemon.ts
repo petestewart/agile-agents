@@ -299,6 +299,8 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
       console.error('agiled: could not recover routed events:', err);
     }
   }
+  // T243: nodes left with pending events are considered for wake/delivery now.
+  attachService?.wakePending();
 
   // §17.1 (T202): the one-shot, idempotent migration into projects.
   if (store && streamService && projectService && questionService) {
