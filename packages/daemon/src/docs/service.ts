@@ -1,17 +1,9 @@
 /**
- * `DocsService` — docs are plain Markdown files, nothing more (T134).
- *
- * There are exactly two places a doc can live:
- *  - `<repo root>/.agile-docs/*.md` — tracked in the repo, shared by every
- *    stream attached to it (the old `oracle/` brief moves here, D9);
- *  - `<state home>/streams/<id>.docs/*.md` — notes that belong to one
- *    stream, kept beside its record in the state home.
- *
- * No index, no embeddings, no database: `listRepoDocs`/`listStreamDocs` are
- * a `readdir` and `search` is a case-insensitive substring scan. The set a
- * stream sees (`docsForStream`) is its repo's docs plus the stream docs of
- * every ancestor, root→leaf, which is what T133's `buildBrief` renders into
- * the next brief.
+ * `DocsService`: docs are plain Markdown, in `<repo>/.agile-docs/*.md`
+ * (tracked, shared by the repo's streams) or `<home>/streams/<id>.docs/*.md`
+ * (one stream's notes). No index: listing is a `readdir`, search a
+ * case-insensitive substring scan. A stream sees its repo's docs plus the
+ * stream docs of every ancestor, root→leaf.
  */
 
 import { readFileSync, readdirSync, statSync } from 'node:fs';
@@ -20,17 +12,17 @@ import { UlidSchema } from '@agile-agents/shared';
 import type { StateStore } from '../store';
 import type { StreamService } from '../streams/service';
 
-/** A doc body larger than this is truncated with a marker: a brief is a prompt, not an archive. */
+/** Larger bodies are truncated with a marker: a brief is a prompt, not an archive. */
 export const DOC_BODY_CAP_BYTES = 16 * 1024;
-/** `search` never returns more than this many hits (§ "signal over volume"). */
+/** `search` returns at most this many hits. */
 export const MAX_SEARCH_HITS = 50;
 
 const TRUNCATION_MARKER = '\n\n… [truncated: doc exceeds 16 KiB]\n';
 
 export interface Doc {
-  /** Which of the two homes this doc came from. */
+  /** Which of the two homes it came from. */
   source: 'repo' | 'stream';
-  /** Absolute path on disk — the only handle a caller needs to open it. */
+  /** Absolute path on disk. */
   path: string;
   /** File name, e.g. `brief.md`. */
   name: string;
@@ -47,15 +39,12 @@ export interface SearchHit {
   text: string;
 }
 
-/**
- * The read side T130's `search_docs` verb is typed against: a verb needs
- * nothing but this, and stays testable with a stub.
- */
+/** The read side the `search_docs` verb is typed against. */
 export interface DocsSearch {
   search(query: string, ctx: { stream?: string }): Promise<SearchHit[]>;
 }
 
-/** `*.md` files directly in `dir`, sorted by name. A missing directory is not an error — most repos have no docs. */
+/** `*.md` files directly in `dir`, sorted. A missing dir is no docs, not an error. */
 function listMarkdown(dir: string): string[] {
   let entries: string[];
   try {
@@ -96,11 +85,11 @@ export class DocsService implements DocsSearch {
   constructor(
     private readonly store: StateStore,
     private readonly streams: StreamService,
-    /** The state home (`.agile/`), where `streams/<id>.docs/` lives. */
+    /** The state home, where `streams/<id>.docs/` lives. */
     private readonly home: string,
   ) {}
 
-  /** `<repo root>/.agile-docs/*.md` for a registered repo. An unknown repo has no docs (and is not an error: a stream may name a repo that was since removed). */
+  /** `<repo root>/.agile-docs/*.md`. An unregistered repo has no docs (not an error). */
   listRepoDocs(repoId: string): Doc[] {
     const entry = this.store.getRepos()[repoId];
     if (entry === undefined) return [];
@@ -118,11 +107,7 @@ export class DocsService implements DocsSearch {
     });
   }
 
-  /**
-   * Everything a stream's agent should see: its repo's docs first, then the
-   * stream docs of its ancestors root→leaf and finally its own. A stream
-   * with no repo simply has no repo docs.
-   */
+  /** What a stream's agent sees: its repo's docs, then ancestor stream docs root→leaf, then its own. */
   docsForStream(streamId: string): Doc[] {
     const chain = this.ancestry(streamId);
     const leaf = chain[chain.length - 1];
@@ -132,11 +117,7 @@ export class DocsService implements DocsSearch {
     return docs;
   }
 
-  /**
-   * Plain case-insensitive substring search — no regex, so a query with
-   * `(` or `*` in it is a literal, not a syntax error. Without a stream,
-   * every registered repo's docs plus every stream's docs are searched.
-   */
+  /** Literal case-insensitive substring search (no regex). Without a stream, every doc in the home. */
   async search(query: string, ctx: { stream?: string } = {}): Promise<SearchHit[]> {
     const needle = query.toLowerCase();
     if (needle.length === 0) return [];
@@ -166,7 +147,7 @@ export class DocsService implements DocsSearch {
     return docs;
   }
 
-  /** Root→leaf chain for `streamId`. A cycle is impossible (the store rejects one) but the seen-set keeps this total anyway. */
+  /** Root→leaf chain for `streamId` (the seen-set keeps it total). */
   private ancestry(streamId: string): Array<{ id: string; repo?: string }> {
     const chain: Array<{ id: string; repo?: string }> = [];
     const seen = new Set<string>();
@@ -185,7 +166,7 @@ export class DocsService implements DocsSearch {
     return chain;
   }
 
-  /** `<home>/streams/<id>.docs` — the id is ULID-checked before it reaches a path. */
+  /** `<home>/streams/<id>.docs`; the id is ULID-checked before it reaches a path. */
   private streamDocsDir(streamId: string): string {
     const result = UlidSchema.safeParse(streamId);
     if (!result.success) {

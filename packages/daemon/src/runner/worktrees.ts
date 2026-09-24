@@ -1,15 +1,7 @@
 /**
- * Worktree manager — the hardened creation path a stream's first attach
- * uses (T113; design/cockpit-design.md §4.4: "`<repo>/.worktrees/<stream-id>
- * -<slug>/`, ensured in the repo's `.gitignore`"), and nothing else.
- *
- * T130 deleted the ticket-shaped helpers this module used to carry
- * (`ensureTicketWorktree`, `ensureQaClone`, `ticketBranch*`,
- * `checkedOutTicketBranch`, `ensureIntegrationBranch`, `ticketDigits` and
- * the `integration` branch itself) along with the ticket model and the
- * separate QA role that needed them (§4.2: "What is deleted: … the separate
- * QA role with its fresh clone"). A worktree now belongs to a stream, is
- * created once on first attach, and is never created anywhere else.
+ * Worktree creation for a stream's first attach (§4.4):
+ * `<repo>/.worktrees/<stream-id>-<slug>/`, ignored in `.gitignore`. A
+ * worktree is created only here.
  */
 
 import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
@@ -32,36 +24,22 @@ export function slugify(title: string, maxLen = 40): string {
   return slug.slice(0, maxLen).replace(/-+$/g, '') || 'stream';
 }
 
-// ---------------------------------------------------------------------------
-// T113 — hardened worktree creation (PLAN.md §5, D11: borrowed from
-// KiroCrew's worktree handler).
+// Hardened creation (D11, after KiroCrew's worktree handler). No shell:
+// every git call is an argv array. It guarantees:
 //
-// Everything below is the hardened path streams use (T120/T130). It never
-// goes through a shell: every git invocation is an argv array handed to
-// `Bun.spawn`. Four properties it guarantees, which the older ticket
-// helpers above do not:
-//
-//   1. No repo hook runs during the checkout — `core.hooksPath` points at
-//      an empty directory for the duration of the `worktree add`, so a
-//      `post-checkout` (or any other) hook committed to the repo under
-//      review cannot execute daemon-side.
-//   2. Repos with filter drivers configured are refused with a reason. A
-//      `.gitattributes` `filter=` entry makes checkout run `filter.<n>.smudge`
-//      — arbitrary configured commands — which `core.hooksPath` does not
-//      cover.
-//   3. The branch is claimed atomically with the expected-old-value form of
-//      `git update-ref` using the zero oid ("must not exist"), so two
-//      concurrent creates for the same stream id race in git, not in us:
-//      exactly one wins and the loser gets a refusal.
-//   4. The branch must not already exist anywhere — local or any
-//      remote-tracking ref — so a stream never silently adopts someone
-//      else's history.
-// ---------------------------------------------------------------------------
+//   1. No repo hook runs during checkout (`core.hooksPath` points at an
+//      empty dir), so a committed `post-checkout` can't execute daemon-side.
+//   2. Repos with filter drivers are refused: a `filter=` attribute runs
+//      `filter.<n>.smudge` on checkout, which `core.hooksPath` doesn't cover.
+//   3. The branch is claimed atomically (`update-ref` with the zero oid as
+//      expected old value), so of two concurrent creates exactly one wins.
+//   4. The branch must not exist anywhere, local or remote-tracking, so a
+//      stream never adopts someone else's history.
 
 /** All-zero object id: `git update-ref`'s "the ref must not exist" expected-old value. */
 const ZERO_OID = '0'.repeat(40);
 
-/** Directory the hardened checkout points `core.hooksPath` at: created empty, kept empty. */
+/** Where `core.hooksPath` points during checkout: created empty, kept empty. */
 const NO_HOOKS_DIR = join(DAEMON_CACHE_DIR, 'git', 'no-hooks');
 
 /** A create that git (or this module's own preconditions) refused, carrying the reason. */
@@ -82,22 +60,10 @@ export class WorktreeRefusedError extends Error {
 }
 
 /**
- * One `git` invocation, captured to files rather than pipes.
- *
- * The argv array is the D11 floor: never a shell string, so no word
- * splitting and no metacharacter interpretation — a stream slug or branch
- * name cannot inject a command. That part is unchanged.
- *
- * What changed (T143) is the capture. Reading `proc.stdout`/`proc.stderr`
- * as streams inside the same `Promise.all` as `proc.exited` races Bun's own
- * teardown of those descriptors: PLAN-v1 T033 recorded it as an
- * intermittent `EBADF epoll_ctl` (and, less often, truncated output) from
- * exactly this shape, and `hook/route-band.test.ts` still carries a comment
- * about steering around "`runner/worktrees.ts`'s known piped-stdio flake".
- * `Bun.file()` targets have no such race — the child writes to a real fd,
- * `await proc.exited` is the only thing to synchronise on, and the bytes are
- * read afterwards. This is the pattern `tools/test-run.ts` already uses for
- * the same reason.
+ * One `git` invocation as argv (D11: no shell, so a slug or branch can't
+ * inject a command), captured to files rather than pipes: reading piped
+ * stdio alongside `proc.exited` races Bun's fd teardown (intermittent
+ * `EBADF epoll_ctl`, truncated output). The same pattern as `test-run.ts`.
  */
 async function gitAsync(args: string[], cwd: string): Promise<GitResult> {
   const capture = mkdtempSync(join(tmpdir(), 'agile-git-'));
@@ -131,11 +97,9 @@ async function runGitAsync(args: string[], cwd: string): Promise<string> {
 }
 
 /**
- * The reason a repo's checkout cannot be trusted to be inert, or undefined
- * when it can. Filter drivers (`.gitattributes` `filter=<name>` plus
- * `filter.<name>.smudge/clean` in config) run configured commands on every
- * checked-out blob; `core.hooksPath` doesn't disarm them, so a repo that
- * configures any is refused outright rather than half-sandboxed.
+ * Why a repo's checkout can't be trusted to be inert, or `undefined`.
+ * Filter drivers run configured commands on every checked-out blob and
+ * `core.hooksPath` doesn't disarm them, so such a repo is refused.
  */
 export async function filterDriverRefusal(repoRoot: string): Promise<string | undefined> {
   const attributeFiles = [
@@ -162,7 +126,7 @@ export async function filterDriverRefusal(repoRoot: string): Promise<string | un
   return undefined;
 }
 
-/** Every ref name in the repo whose last path segments are `branch` — local heads and any remote-tracking ref. */
+/** Every local head or remote-tracking ref named `branch`. */
 async function existingBranchRefs(repoRoot: string, branch: string): Promise<string[]> {
   const out = await runGitAsync(
     ['for-each-ref', '--format=%(refname)', 'refs/heads/**', 'refs/remotes/**'],
@@ -176,7 +140,7 @@ async function existingBranchRefs(repoRoot: string, branch: string): Promise<str
   });
 }
 
-/** Ensures `.worktrees/` is ignored, appending the entry to `<repo>/.gitignore` when it isn't already there. */
+/** Adds `.worktrees/` to `<repo>/.gitignore` unless already ignored. */
 export async function ensureWorktreesIgnored(repoRoot: string): Promise<void> {
   const gitignore = join(repoRoot, '.gitignore');
   const existing = existsSync(gitignore) ? await Bun.file(gitignore).text() : '';
@@ -189,7 +153,7 @@ export async function ensureWorktreesIgnored(repoRoot: string): Promise<void> {
   await Bun.write(gitignore, `${prefix}.worktrees/\n`);
 }
 
-/** Naming input for a hardened worktree: a stream id (T120) today, any stable id tomorrow. */
+/** Naming input for a worktree: a stream id and a slug. */
 export interface WorktreeName {
   id: string;
   slug: string;
@@ -210,7 +174,7 @@ export interface CreatedWorktree {
   head: string;
 }
 
-/** `<repo>/.worktrees/<id>-<slug>` — the directory `createWorktree` uses for this name. */
+/** `<repo>/.worktrees/<id>-<slug>`: the directory `createWorktree` uses. */
 export function worktreePathFor(repoRoot: string, name: WorktreeName): string {
   return join(repoRoot, '.worktrees', worktreeDirName(name));
 }
@@ -221,15 +185,13 @@ function worktreeDirName(name: WorktreeName): string {
   return slug ? `${id}-${slug}` : id;
 }
 
-/** T137: the namespace every daemon-cut branch lives in. */
+/** Every daemon-cut branch lives under `stream/`. */
 export const STREAM_BRANCH_PREFIX = 'stream/';
 
 /**
- * Creates `<repo>/.worktrees/<id>-<slug>` on a freshly claimed branch off
- * `baseRef`, with no shell, no repo hook and no filter driver. Throws
- * `WorktreeRefusedError` (with `reason`) rather than creating anything
- * half-made; on a failed checkout the claimed branch is released again so a
- * retry is clean.
+ * Creates the worktree on a freshly claimed branch off `baseRef`, with no
+ * shell, repo hook or filter driver. Throws `WorktreeRefusedError` rather
+ * than leave anything half-made; a failed checkout releases the branch.
  */
 export async function createWorktree(
   repoRoot: string,
@@ -246,9 +208,7 @@ export async function createWorktree(
 
   const dirName = worktreeDirName(name);
   const path = join(repoRoot, '.worktrees', dirName);
-  // T137: every branch the daemon cuts lives under `stream/`, so a repo's
-  // own branch list says at a glance which branches an agent made. The
-  // worktree directory name is unchanged — `stream/` is not a path here.
+  // Under `stream/`, so a repo's branch list shows which branches an agent made.
   const branch = options.branch ?? `${STREAM_BRANCH_PREFIX}${dirName}`;
 
   if (existsSync(path)) {
@@ -268,9 +228,7 @@ export async function createWorktree(
     repoRoot,
   );
 
-  // Atomic claim: the zero-oid expected-old value means "create only if the
-  // ref does not exist". Two concurrent creates both reach here; git's ref
-  // transaction lets exactly one through and the other gets a non-zero exit.
+  // Atomic claim: the zero oid means "only if the ref doesn't exist".
   const claim = await gitAsync(['update-ref', `refs/heads/${branch}`, head, ZERO_OID], repoRoot);
   if (claim.exitCode !== 0) {
     throw new WorktreeRefusedError(

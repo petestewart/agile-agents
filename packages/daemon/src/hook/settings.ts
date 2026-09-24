@@ -1,48 +1,18 @@
 /**
- * Per-worktree `.claude/settings.json` generation (T009 — design/
- * agile-agents-design.md §6 "Enforcement tiers and hook catalog" tier 1:
- * "vendor pre-tool-use hook in the worktree (`.claude/settings.json`)
- * calling `agile hook`"; wire shape verified against
- * `spike/permission-matrix.ts:125` and `design/spike-findings.md` §B).
+ * Per-worktree `.claude/settings.json` (agile-agents-design §6 tier 1;
+ * spike-findings.md §B): `PreToolUse`, `PostToolUse` and `Stop` each run
+ * `<agileBin> hook <event>` with matcher `"*"` (every tool, Read/Grep
+ * included).
  *
- * Settings shape: `{"hooks": {"PreToolUse": [{"matcher": "*", "hooks":
- * [{"type": "command", "command": "<agileBin> hook pre-tool-use",
- * "timeout": 2}]}], "PostToolUse": [...], "Stop": [...]}}` — one entry per
- * event, matcher `"*"` (every tool; the spike fixture used `""`, but
- * Claude Code's own hooks reference documents `"*"` as the canonical
- * match-everything matcher, and PreToolUse must fire for Read/Grep too, so
- * an event-scoped matcher — not a per-tool one — is what this ticket needs).
- * `timeout` is Claude's own per-hook-invocation ceiling in seconds (not to
- * be confused with `agile hook`'s own `--timeout` in milliseconds, T009's
- * CLI change, which stays 2000ms). Review round fix: it must EXCEED the
- * CLI's own RPC deadline, not equal it — at 2s/2000ms, Claude could kill
- * the hook process at the exact moment `agile hook` was about to print its
- * fail-closed deny JSON, turning a "daemon slow" case into a raw process
- * kill with nothing on stdout (worse than the deny it was designed to
- * produce). Default is 5s here so a slow daemon always yields a printed
- * deny before Claude's own timeout would fire.
+ * `timeout` is Claude's per-invocation ceiling in seconds and must exceed
+ * the CLI's 2000 ms RPC deadline: at equal values Claude could kill the
+ * hook just as it printed its fail-closed deny. Default 5 s.
  *
- * Agent identification (DESIGN-GAP, documented per the session brief's
- * "the daemon must know which agent is calling"): the brief's suggested
- * `--agent <id> --ticket <id>` CLI flags are NOT baked into the command
- * here. `packages/cli/src/commands/hook.ts` is out of this ticket's file
- * ownership except for the fail-closed/timeout/passthrough change, so this
- * module cannot add flag parsing for them without touching a file outside
- * `src/hook/`. Instead, `HookService` (`service.ts`) resolves the calling
- * agent/ticket daemon-side from the raw hook payload's `cwd` field (present
- * on every Claude hook event) against `Ticket.worktree` — a path already in
- * the shared schema, requiring no new field and no CLI change. If a future
- * ticket needs multiple agents to share one physical worktree (this design
- * doesn't), the `--agent`/`--ticket` flags remain the documented escape
- * hatch to add then.
- *
- * `socketPath`, when the worktree's own `git rev-parse --show-toplevel`
- * would not already resolve back to the main repo (true for every ticket
- * worktree under `.worktrees/`), is passed via `AGILE_SOCKET_PATH` — an env
- * assignment prefixed onto the command string, not a CLI flag — because
- * `discoverConfig`'s own precedence already reads that env var ahead of
- * config-file/default (`packages/daemon/src/config.ts`), so no CLI change
- * is needed for this either.
+ * `socketPath` is prefixed as `AGILE_SOCKET_PATH=…` (which
+ * `discoverConfig` reads first): a worktree cwd would otherwise resolve
+ * the wrong root. The calling session is resolved daemon-side from `cwd`
+ * plus the `AGILE_AGENT` hint in the session env; the file carries no id,
+ * since a worker and its reviewer share one worktree.
  */
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
@@ -64,29 +34,16 @@ export interface ClaudeHookMatcher {
 
 export interface ClaudeSettings {
   hooks: Record<ClaudeHookEventName, ClaudeHookMatcher[]>;
-  /** Anything else already in the file — `writeClaudeSettings` merges without clobbering these. */
+  /** Anything else already in the file: merged, not clobbered. */
   [key: string]: unknown;
 }
 
 export interface RenderClaudeSettingsOptions {
-  /** Path (or bare name, if on `$PATH`) to the `agile` CLI binary the hook command invokes. */
+  /** The `agile` CLI (path, or name on `$PATH`). */
   agileBin: string;
-  /** When set, prefixed as `AGILE_SOCKET_PATH=<socketPath> ` onto every hook command — see file header. */
+  /** Prefixed as `AGILE_SOCKET_PATH=<socketPath> ` onto every hook command. */
   socketPath?: string;
-  /**
-   * The agent this settings file is written for. NOT embedded in the hook
-   * command: `.claude/settings.json` is per *worktree*, and an engineer and
-   * its reviewer share one (§12) — the reviewer, spawned later, overwrote
-   * the engineer's `AGILE_AGENT=<id>` prefix and every hook call from the
-   * engineer's session was then resolved as the reviewer (nineteenth and
-   * twentieth live runs, 2026-09-11: the engineer's own standup report and
-   * its merge-conflict rebase, both decided under the reviewer's identity).
-   * Each vendor session already carries `AGILE_AGENT` in its own process
-   * env (`runner/session.ts` env overrides), and Claude runs hook commands
-   * with that env, so the CLI's `agile_agent` hint is per session there.
-   */
-  agentId?: string;
-  /** Claude's own per-hook-invocation timeout, in seconds. Default 5 — must exceed the CLI's 2000ms RPC deadline (`DEFAULT_HOOK_TIMEOUT_MS`) so a slow daemon always yields a printed fail-closed deny instead of a killed hook process. */
+  /** Claude's per-invocation timeout in seconds. Default 5, above the CLI's 2000 ms deadline. */
   timeoutSeconds?: number;
 }
 
@@ -102,17 +59,14 @@ function hookCommand(options: RenderClaudeSettingsOptions, agileEvent: string): 
   ].filter((a): a is string => a !== undefined);
   const envPrefix = envAssignments.length > 0 ? `${envAssignments.join(' ')} ` : '';
   const command = `${envPrefix}${options.agileBin} hook ${agileEvent}`;
-  // A hook whose binary is missing or crashes exits non-zero with nothing on
-  // stdout, and Claude treats any exit code other than 2 as a *non-blocking*
-  // error — the tool call proceeds ungated (first live run: no `agile` on
-  // $PATH silently disabled tier 1). Exit 2 is Claude's "block" code, so a
-  // PreToolUse hook that cannot even run now denies instead of allowing.
-  // `agile hook pre-tool-use` itself still prints its own deny JSON and
-  // exits 0 on an RPC failure, so this only fires when the CLI never ran.
+  // A hook that can't run exits non-zero with no stdout, which Claude
+  // treats as non-blocking (a missing `agile` once disabled tier 1). Exit 2
+  // is Claude's block code, so a PreToolUse hook that can't run denies. The
+  // CLI itself prints a deny and exits 0 on an RPC failure.
   return agileEvent === 'pre-tool-use' ? `${command} || exit 2` : command;
 }
 
-/** Builds the `.claude/settings.json` object this worktree needs — `PreToolUse`/`PostToolUse`/`Stop`, each invoking `agile hook <event>` with matcher `"*"`. */
+/** The `.claude/settings.json` object this worktree needs. */
 export function renderClaudeSettings(options: RenderClaudeSettingsOptions): ClaudeSettings {
   const timeout = options.timeoutSeconds ?? 5;
   const hooks = {} as Record<ClaudeHookEventName, ClaudeHookMatcher[]>;
@@ -132,14 +86,9 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 }
 
 /**
- * Merges `rendered` into whatever `.claude/settings.json` already exists at
- * `worktreePath`, without clobbering unrelated top-level keys (e.g. a
- * vendor-set `permissions` block) or other hook events this module doesn't
- * own. Within `hooks`, this module's three event keys
- * (`PreToolUse`/`PostToolUse`/`Stop`) are replaced wholesale (idempotent:
- * calling this twice with the same inputs is a no-op write, byte-identical
- * — see `settings.test.ts`); any other event key already present (a human
- * or another tool's hook config) is preserved untouched.
+ * Merges into any existing `.claude/settings.json`: other top-level keys
+ * and other hook events are preserved, this module's three events are
+ * replaced (idempotent, byte-identical on repeat).
  */
 export function writeClaudeSettings(
   worktreePath: string,
@@ -168,13 +117,9 @@ export function writeClaudeSettings(
 }
 
 /**
- * Adds `pattern` to the repo's `info/exclude` (shared by every linked
- * worktree) so git treats the hook config as ignored. Untracked, it was
- * one `git stash push -u` away from vanishing: the engineer's stash took
- * `.claude/settings.json` with it, the vendor stopped running the hook
- * (tier 1) and every later call fell to the ACP permission tier — fifteenth
- * and sixteenth live runs, both times 3 s after the stash. `stash -u` and
- * `clean` leave ignored files alone. Best effort: not a git repo, no change.
+ * Adds `pattern` to the repo's `info/exclude` so git ignores the hook
+ * config: untracked, a `git stash push -u` once took it and the hook
+ * stopped running. Best effort: not a git repo, no change.
  */
 function excludeFromGit(worktreePath: string, pattern: string): void {
   const result = Bun.spawnSync(['git', 'rev-parse', '--git-path', 'info/exclude'], {

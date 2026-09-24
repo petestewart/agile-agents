@@ -1,13 +1,7 @@
 /**
- * `land.*` RPC over a `LandingService` (T132, design §8.2). Same contract
- * as `streams/rpc.ts`: params are validated at the boundary and a refusal
- * is `RpcParamError` (-32602), never a destructuring `TypeError` reaching
- * `dispatch()`.
- *
- * This is the human edge and the only way to land: §8.2's "human presses
- * Land (or `agile land <stream>`)". There is no agent-principal caller and
- * no `land` MCP verb — D8's protected branches are only ever merged into by
- * the human's own decision.
+ * `land.*` RPC over a `LandingService` (§8.2), validated at the boundary
+ * (`RpcParamError`, -32602). The human edge and the only way to land:
+ * there is no agent caller and no `land` verb (D8).
  */
 
 import { UlidSchema } from '@agile-agents/shared';

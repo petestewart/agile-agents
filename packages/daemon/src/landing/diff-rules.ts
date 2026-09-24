@@ -1,36 +1,17 @@
 /**
- * Diff-level rules at landing — design/cockpit-design.md §8.2:
+ * Diff-level rules at landing (§8.2): accepted classifier rules with stage
+ * `diff` or `both`, one call with the scrubbed stream diff as state (over
+ * budget: split per file, take the max). DENY blocks the land, naming the
+ * rule; ROUTE raises an inbox item and landing waits. Some rules are only
+ * checkable against the whole change, and this is the only enforcement a
+ * hookless vendor gets.
  *
- * ```
- * ├─ DIFF-LEVEL rules: accepted classifier rules with stage 'diff' or 'both'
- * │     one call with the full stream diff as state, scrubbed
- * │     over the classifier's budget ⇒ split per file, take the MAX
- * │     DENY ⇒ landing blocked, the rule named in the thread
- * │     ROUTE ⇒ inbox item, landing waits
- * ```
+ * Shared with the hook rather than re-derived: the bands (`bandFor`), the
+ * scope filter (`RulesService.inScope`) and the fail-closed scrub (§6.5).
  *
- * Why this tier exists next to the per-action hook: "some rules are only
- * checkable against the whole change ('don't broaden the public API',
- * 'don't leave a TODO in shipped code'), and they are the only enforcement
- * a hookless vendor gets."
- *
- * Three things it deliberately shares with the hook's per-action band
- * rather than re-deriving:
- *
- *  - the **bands** (`classifier/bands.ts` — `bandFor`), read from
- *    `classifier.bands` in `<home>/config.yaml`, so the two callers cannot
- *    disagree about what 0.8 means;
- *  - the **scope filter** (`rulesInScope`, via `RulesService.inScope`),
- *    with §5.3's one implementation now taking a stage;
- *  - the **scrub** (§6.5), fail-closed: if it throws, nothing is sent and
- *    §6.4's fail policy applies.
- *
- * A route raises a `classifier_review` gate keyed on the *diff*: the gate's
- * `call.fingerprint` digests the stream, the target and the diff itself, so
- * pressing Land again re-uses the human's answer, and a diff that changed
- * since is a new question rather than an approval the operator never gave.
- * That is the same "an approval is one call, not a standing permission"
- * rule the route band applies per tool call (§8.1).
+ * A route's gate is keyed on a digest of the stream, target and diff, so
+ * pressing Land again reuses the answer, and a changed diff is a new
+ * question (an approval is one call, not a standing permission).
  */
 
 import { createHash } from 'node:crypto';
@@ -53,20 +34,20 @@ import type { GateRequestContext } from '../gates/service';
 import type { RuleStatsOutcome } from '../rules/service';
 import type { DiffRuleContext, DiffRuleVerdict, DiffRules } from './service';
 
-/** The slice of `RulesService` this tier needs (the hook's `RuleSource` precedent). */
+/** The slice of `RulesService` this tier needs. */
 export interface DiffRuleRules {
   inScope(streamId: string, stage?: 'action' | 'diff' | 'both'): Rule[];
   recordFired(id: string, outcome: RuleStatsOutcome): Promise<void>;
 }
 
-/** The slice of `GateService` a routed diff needs — the same three methods the route band takes. */
+/** The slice of `GateService` a routed diff needs. */
 export interface DiffRuleGates {
   list(): HilRequest[];
   request(gate: GateKind, ctx: GateRequestContext): Promise<HilRequest>;
   consume(id: HilId): Promise<HilRequest>;
 }
 
-/** The thread writer (`StreamService.appendThread`), for §6.4's `hook_unchecked` entry. */
+/** The thread writer, for §6.4's `hook_unchecked` entry. */
 export interface DiffRuleThread {
   appendThread(
     principal: 'daemon',
@@ -78,12 +59,12 @@ export interface DiffRuleThread {
 export interface ClassifierDiffRulesOptions {
   rules: DiffRuleRules;
   classifier: Classifier;
-  /** `classifier:` from `<home>/config.yaml` — bands, budget and the opt-out. */
+  /** `classifier:` from `config.yaml`: bands, budget and the opt-out. */
   config: ClassifierConfig;
   streams: DiffRuleThread;
   policy: () => Policy;
   repos: () => Record<string, RepoEntry>;
-  /** Without one, a routed diff degrades to a plain refusal (there is nowhere to put the card). */
+  /** Without it, a routed diff degrades to a refusal (nowhere to put the card). */
   gates?: DiffRuleGates;
   /** Key lookup for `classifierEnabled`. Defaults to `process.env`. */
   env?: Record<string, string | undefined>;
@@ -94,18 +75,11 @@ function cap(text: string): string {
 }
 
 /**
- * The end of the split, for the case the file boundary cannot fix: one file
- * whose own diff is over the budget. §8.2 splits per file and no finer, so
- * the choice is send it oversized or send a prefix that fits. It sends the
- * prefix, with a marker that says so: a call the provider rejects for length
- * is a call that falls into §6.4 and quietly stops checking the rule at all,
- * whereas a truncated state still answers the question for the part of the
- * file that fits, and the marker keeps the classifier (and anyone reading
- * the recorded state) from mistaking a prefix for the whole change.
- *
- * Truncation happens **after** the scrub, never before: cutting the state
- * first could split a secret across the boundary and leave the tail of it
- * unredacted (§6.5 is fail-closed, and this keeps it that way).
+ * One file whose own diff is over the budget is sent as a prefix with this
+ * marker: an oversized call the provider rejects would fall into §6.4 and
+ * stop checking the rule, while a prefix still answers for what fits.
+ * Truncation happens after the scrub, so a secret is never split across
+ * the cut and left half-redacted.
  */
 export const TRUNCATION_MARKER = '\n[truncated: file diff exceeds the classifier budget]';
 
@@ -120,12 +94,7 @@ function nameOf(rule: Rule): string {
   return rule.name ?? rule.id;
 }
 
-/**
- * The per-file split of §8.2. A unified diff is a sequence of `diff --git`
- * sections; anything before the first one (there is nothing in git's own
- * output, but a caller could hand us a fragment) stays with the first
- * section so no hunk is silently dropped.
- */
+/** §8.2's per-file split on `diff --git` sections; any preamble stays with the first section. */
 export function splitDiffByFile(diff: string): string[] {
   const parts: string[] = [];
   let current: string[] = [];
@@ -141,13 +110,9 @@ export function splitDiffByFile(diff: string): string[] {
 }
 
 /**
- * The gate call for a routed diff: the diff *is* the "call", and its digest
- * is what an approval is good for. `origin: 'diff_rules'` is the structural
- * marker `wireLandGateResolution` keys on — answering one of these gates
- * performs a merge, so what tells it apart from the route band's per-tool
- * gates must be something the hook path cannot emit. `tool` is the vendor's
- * own `tool_name` and would have been a naming coincidence, not a
- * guarantee; `fingerprintCall` never sets `origin`.
+ * The gate call for a routed diff: its digest is what an approval is good
+ * for. `origin: 'diff_rules'` is what `wireLandGateResolution` keys on
+ * (answering one performs a merge), and the hook path never sets it.
  */
 function diffCall(ctx: DiffRuleContext, diff: string): GateCall {
   const fingerprint = createHash('sha256')
@@ -185,17 +150,14 @@ export class ClassifierDiffRules implements DiffRules {
       return await this.failPolicy(ctx.stream, rules, error);
     }
 
-    // Deny wins over route wins over allow: the first rule that denies is
-    // the one named, and a route only survives if nothing denied.
+    // Deny wins over route wins over allow; the first denying rule is named.
     let routed: { rule: Rule; answer: Answer } | undefined;
     let verdict: DiffRuleVerdict = { decision: 'allow' };
     for (const rule of rules) {
       const answer = answers.get(rule.id);
       if (answer === undefined) {
-        // A classifier that skipped a question answered nothing about it;
-        // §6.4's split applies to that rule alone. The rule that *causes*
-        // the deny is recorded `violated`, never merely `fired` — the same
-        // convention `failPolicy` and the hook's `recordRuleStats` keep.
+        // A skipped question: §6.4 applies to that rule alone. A rule that
+        // causes the deny is recorded `violated`, never merely `fired`.
         await this.noteUnchecked(ctx.stream, [rule], 'no answer for this rule');
         await this.options.rules.recordFired(rule.id, rule.critical ? 'violated' : 'fired');
         if (rule.critical) {
@@ -227,10 +189,8 @@ export class ClassifierDiffRules implements DiffRules {
   }
 
   /**
-   * One call for the whole diff, or — over the budget — one per file with
-   * the **max** taken per rule ("one bad file makes the whole diff bad").
-   * The answer with the highest raw Noul value is kept (D14: that value is
-   * the whole reading).
+   * One call for the whole diff, or one per file over budget with the max
+   * per rule ("one bad file makes the whole diff bad", D14).
    */
   private async ask(
     ctx: DiffRuleContext,
@@ -273,10 +233,8 @@ export class ClassifierDiffRules implements DiffRules {
   }
 
   /**
-   * §6.4, verbatim: "rules marked `critical` DENY; all other rules ALLOW,
-   * and the daemon writes a `hook_unchecked` entry to the stream's thread."
-   * The opt-out and a missing key land here too — there is nothing to call,
-   * which is the same situation as an outage.
+   * §6.4: critical rules deny, the rest allow with a `hook_unchecked` entry.
+   * The opt-out and a missing key land here too (nothing to call).
    */
   private async failPolicy(
     stream: Stream,
@@ -300,13 +258,7 @@ export class ClassifierDiffRules implements DiffRules {
     };
   }
 
-  /**
-   * §6.4's visible mark: the tier ran but these rules were not checked. It
-   * writes the thread entry only — the caller records the stats, because
-   * what a rule's counter should say depends on what the caller then did
-   * with it (a critical rule that goes on to deny is `violated`, not
-   * `fired`).
-   */
+  /** §6.4's visible mark. Stats are the caller's: a critical rule that goes on to deny is `violated`. */
   private async noteUnchecked(stream: Stream, rules: Rule[], why: string): Promise<void> {
     await this.options.streams.appendThread('daemon', stream.id, {
       kind: 'event',
@@ -380,9 +332,7 @@ export class ClassifierDiffRules implements DiffRules {
       stream: ctx.stream.id,
       call,
       summary,
-      // T155: the rule that routed, so `wireClassifierRouteStats` can turn
-      // the human's deny into that rule's `violated` — the same attribution
-      // the hook's route band makes.
+      // The routing rule, so the human's deny counts as its violation.
       rule: rule.id as RuleId,
     });
     return {

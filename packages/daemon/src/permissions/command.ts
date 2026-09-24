@@ -1,23 +1,15 @@
 /**
- * Shell-command parsing helpers shared by the policy tables (T010; review
- * fixes per opus's blocking findings 1–3 and the manager's consolidation).
- *
- * Not a full shell parser. It is a **best-effort** classifier for whatever
- * command text this tier of the ACP layer actually receives — see
- * `index.ts`'s file header for why command-level enforcement is primary in
- * T009's PreToolUse hook, not here. Anything this module can't confidently
- * classify (a subshell, a backtick, `eval`, unbalanced quotes) is treated as
- * unclassifiable and routed to `hil`, never `allow` — see
- * `hasUnsafeShellConstruct`.
+ * Shell-command parsing helpers for the policy tables. Not a full shell
+ * parser: a best-effort classifier. Anything it can't confidently classify
+ * (a subshell, a backtick, `eval`, unbalanced quotes) is unclassifiable and
+ * routed to `hil`, never `allow` (`hasUnsafeShellConstruct`).
  */
 
 import { realpathSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, dirname, isAbsolute, join as joinPath, relative, resolve } from 'node:path';
 
-// ---------------------------------------------------------------------------
 // Quote-aware splitting/tokenizing
-// ---------------------------------------------------------------------------
 
 export type SegmentDelimiter = 'start' | ';' | '&&' | '||' | '|' | '\n';
 
@@ -27,10 +19,9 @@ export interface RawSegment {
 }
 
 /**
- * Splits a command string into segments on `;`, `&&`, `||`, `|`, and
- * newlines — but never inside a quoted string, so `sh -c "git push origin
- * main"` stays one segment (its `-c` argument is recursed into separately,
- * see `parseCommandIntoAtoms`).
+ * Splits on `;`, `&&`, `||`, `|` and newlines, never inside quotes, so
+ * `sh -c "git push origin main"` stays one segment (its `-c` argument is
+ * recursed into by `parseCommandIntoAtoms`).
  */
 export function splitCommandSegments(command: string): RawSegment[] {
   const segments: RawSegment[] = [];
@@ -81,7 +72,7 @@ export function splitCommandSegments(command: string): RawSegment[] {
     }
     current += c;
   }
-  push('start'); // flush the tail; the synthetic 'start' value is discarded (nothing reads past the last push)
+  push('start'); // flush the tail; the synthetic delimiter is never read
   return segments;
 }
 
@@ -122,20 +113,11 @@ export function tokenizeSegment(segment: string): string[] {
   return tokens;
 }
 
-/** Back-compat alias for the simple whitespace-only case (tests, single-token checks that don't need quote awareness). */
-export function tokenize(command: string): string[] {
-  return tokenizeSegment(command);
-}
-
-// ---------------------------------------------------------------------------
-// Unclassifiable shell constructs — hil, never allow (opus blocker 3)
-// ---------------------------------------------------------------------------
+// Unclassifiable shell constructs: hil, never allow
 
 /**
- * Command substitution (`$(...)`, backticks), `eval`, or unbalanced quotes
- * defeat this tokenizer entirely — there is no sound way to know what will
- * actually run. Treated as unclassifiable: always `hil`, never `allow`,
- * regardless of role.
+ * Command substitution, `eval` or unbalanced quotes defeat this tokenizer:
+ * there is no sound way to know what will run. Always `hil`, any role.
  */
 export function hasUnsafeShellConstruct(command: string): boolean {
   if (command.includes('$(')) return true;
@@ -153,19 +135,17 @@ export function hasUnsafeShellConstruct(command: string): boolean {
   return false;
 }
 
-// ---------------------------------------------------------------------------
 // Wrapper/env-prefix stripping
-// ---------------------------------------------------------------------------
 
 const ENV_ASSIGNMENT_RE = /^[A-Za-z_][A-Za-z0-9_]*=.*$/;
-/** Leading wrapper commands that don't change what's actually being run, for classification purposes. */
+/** Leading wrappers that don't change what is run, for classification. */
 const WRAPPER_COMMANDS = new Set(['command', 'exec', 'nohup', 'time', 'env', 'xargs']);
 
 function normalizeToken(token: string): string {
   return token.startsWith('\\') ? token.slice(1) : token;
 }
 
-/** Strips leading `VAR=value` env assignments and wrapper commands (`command`, `exec`, `nohup`, `time`, `env`, `xargs`), and unescapes a leading `\git`-style backslash. */
+/** Strips leading `VAR=value` assignments and wrapper commands, and unescapes a leading `\git`-style backslash. */
 export function stripPrefixes(tokens: string[]): string[] {
   let i = 0;
   for (; i < tokens.length; i++) {
@@ -177,11 +157,8 @@ export function stripPrefixes(tokens: string[]): string[] {
   return tokens.slice(i).map(normalizeToken);
 }
 
-// ---------------------------------------------------------------------------
-// Command segmentation into atoms (opus blocker 3: split on control
-// operators, recurse into `sh -c "..."`, and remember pipe adjacency so a
-// `curl ... | sh` pattern survives being split into separate segments).
-// ---------------------------------------------------------------------------
+// Segmentation into atoms: split on control operators, recurse into
+// `sh -c "..."`, and remember pipe adjacency so `curl ... | sh` survives.
 
 export interface CommandAtom {
   /** Prefix-stripped tokens for this atomic command. */
@@ -198,12 +175,7 @@ function isShellDashC(tokens: string[]): boolean {
   return SHELL_RUNNERS.has(tokens[0] ?? '') && tokens[1] === '-c' && tokens.length >= 3;
 }
 
-/**
- * Splits `command` into atomic commands: control-operator segments
- * (`;`/`&&`/`||`/`|`/newline), each prefix-stripped, with `sh -c "..."` (and
- * `bash`/`zsh`) recursed into so `sh -c "git push origin main"` yields the
- * inner `git push origin main` as its own atom rather than being opaque.
- */
+/** Splits `command` into prefix-stripped atoms, recursing into `sh|bash|zsh -c "..."`. */
 export function parseCommandIntoAtoms(command: string): CommandAtom[] {
   const atoms: CommandAtom[] = [];
   const rawSegments = splitCommandSegments(command);
@@ -236,7 +208,7 @@ export function parseCommandIntoAtoms(command: string): CommandAtom[] {
   return atoms;
 }
 
-/** `curl`/`wget` piped straight into a bare shell (`sh`, `bash`, `zsh` — not `-c`, that's handled by recursion). */
+/** `curl`/`wget` piped straight into a bare shell (`-c` is handled by recursion). */
 const REMOTE_FETCHERS = new Set(['curl', 'wget']);
 
 export function isPipedIntoBareShell(atom: CommandAtom): boolean {
@@ -248,20 +220,13 @@ export function isPipedIntoBareShell(atom: CommandAtom): boolean {
   );
 }
 
-// ---------------------------------------------------------------------------
 // Path containment
-// ---------------------------------------------------------------------------
 
 /**
- * `realpath`s `p`, walking up to its nearest *existing* ancestor when `p`
- * itself (or part of it) doesn't exist yet (T030 review finding 6: a path
- * that doesn't exist yet must still resolve through its parent, and any
- * existing ancestor that's a symlink must be followed before the
- * containment check — otherwise a symlink under the worktree pointing
- * outside it, or one of the worktree root's own ancestors being a symlink,
- * would compare textually "inside" while actually reading/writing
- * somewhere else entirely). Never throws: an unreadable/nonexistent chain
- * all the way to the filesystem root falls back to the plain resolved path.
+ * `realpath`s `p`, walking up to its nearest existing ancestor when `p`
+ * doesn't exist yet, so a symlink anywhere on the way (under the worktree
+ * or among the root's own ancestors) is followed before the containment
+ * check. Never throws: falls back to the plain resolved path.
  */
 function realpathNearestExisting(p: string): string {
   const target = resolve(p);
@@ -273,16 +238,14 @@ function realpathNearestExisting(p: string): string {
       return missingSegments.length > 0 ? resolve(real, ...missingSegments.reverse()) : real;
     } catch {
       const parent = dirname(current);
-      if (parent === current) return target; // reached the fs root and even that failed — give up safely
+      if (parent === current) return target; // even the fs root failed: give up safely
       missingSegments.push(basename(current));
       current = parent;
     }
   }
 }
 
-/** True if `path` resolves to `root` or somewhere under it, once both are
- * `realpath`'d (see `realpathNearestExisting`) so a symlink can't launder an
- * escape past a purely textual comparison. */
+/** True if `path` resolves to `root` or under it, both `realpath`'d so a symlink can't launder an escape. */
 export function isPathInside(path: string, root: string): boolean {
   const resolvedRoot = realpathNearestExisting(resolve(root));
   const resolvedPath = realpathNearestExisting(resolve(root, path));
@@ -291,43 +254,32 @@ export function isPathInside(path: string, root: string): boolean {
   return rel !== '' && !rel.startsWith('..') && !isAbsolute(rel);
 }
 
-// ---------------------------------------------------------------------------
-// `~`/`$VAR`/backtick resolution for path-like arguments and redirect
-// targets (T030 review findings 1 & 4) — one function so both call sites
-// agree on what's "safe to resolve" vs. unclassifiable.
-// ---------------------------------------------------------------------------
+// `~`/`$VAR`/backtick resolution for path arguments and redirect targets
 
 export type ResolvedPathArgument = { safe: true; path: string } | { safe: false };
 
 /**
- * Resolves one path-like token the way a real shell would before this
- * tier's containment check ever sees it: `~` and `~/rest` expand against
- * the real home directory (never trusted as "inside" just because the
- * literal string doesn't start with `/`); a bare `$`, a backtick, or an
- * unsupported `~user` form is unclassifiable — this tokenizer cannot know
- * what it expands to, so it's `{ safe: false }`, routed to `hil` by the
- * caller, never silently treated as a relative path under the worktree
- * (review finding 1: `cat ~/.ssh/id_rsa` must not resolve as "inside" just
- * because `~` was never expanded at all).
+ * Resolves a path token the way the shell would before the containment
+ * check: `~` and `~/rest` expand against the real home (so
+ * `cat ~/.ssh/id_rsa` is never "inside"). `$`, a backtick or `~user` is
+ * unclassifiable (`{ safe: false }`, routed to `hil`).
  */
 export function resolveTargetPath(token: string): ResolvedPathArgument {
   if (token.includes('$') || token.includes('`')) return { safe: false };
   if (token === '~') return { safe: true, path: homedir() };
   if (token.startsWith('~/')) return { safe: true, path: joinPath(homedir(), token.slice(2)) };
-  if (token.startsWith('~')) return { safe: false }; // `~user` — unsupported, still unexpanded
+  if (token.startsWith('~')) return { safe: false }; // `~user`: unsupported
   return { safe: true, path: token };
 }
 
-// ---------------------------------------------------------------------------
 // Repo scripts / dependency installs
-// ---------------------------------------------------------------------------
 
 export const REPO_SCRIPT_RUNNERS = ['bun', 'npm', 'pnpm'] as const;
 export type RepoScriptRunner = (typeof REPO_SCRIPT_RUNNERS)[number];
 
 const REPO_SCRIPT_SUBCOMMANDS = new Set(['run', 'test', 'build', 'install', 'i']);
 const NEW_DEP_SUBCOMMANDS = new Set(['add', 'install', 'i']);
-/** Package managers beyond npm/pnpm/bun — new-dependency installs through these are caught too (opus should-fix 10), just not offered the "existing deps" carve-out (no lockfile convention checked here). */
+/** Other package managers: new-dependency installs are caught, without the lockfile carve-out. */
 const OTHER_PACKAGE_MANAGERS = new Set(['yarn', 'pip', 'pip3', 'cargo', 'gem']);
 const OTHER_PACKAGE_MANAGER_INSTALL_SUBCOMMANDS = new Set(['add', 'install']);
 
@@ -336,11 +288,9 @@ function isRunner(token: string | undefined): token is RepoScriptRunner {
 }
 
 /**
- * `bun add`/`npm install <pkg>`/`pnpm add <pkg>` (and `yarn add`/`pip
- * install <pkg>`/`cargo add`/`gem install <pkg>`) add a *new* dependency —
- * never-without-human (§14). A bare `install`/`i` with no package
- * arguments (only flags) restores the existing lockfile and is a normal
- * repo script.
+ * `bun add`, `npm install <pkg>`, `yarn add`, `pip install <pkg>`, ... add
+ * a new dependency: never-without-human. A bare `install`/`i` with only
+ * flags restores the lockfile and is a normal repo script.
  */
 export function isNewDependencyInstall(tokens: string[]): boolean {
   const [runner, sub, ...rest] = tokens;
@@ -354,10 +304,7 @@ export function isNewDependencyInstall(tokens: string[]): boolean {
   return rest.some((arg) => !arg.startsWith('-'));
 }
 
-/**
- * `bun`/`npm`/`pnpm` `run`/`test`/`build`/`install` (existing deps only) —
- * engineer's "repo scripts" allowance (§14).
- */
+/** `bun`/`npm`/`pnpm` `run`/`test`/`build`/`install` (existing deps only): the repo-scripts allowance. */
 export function isRepoScriptCommand(tokens: string[]): boolean {
   const [runner, sub] = tokens;
   if (!isRunner(runner) || sub === undefined) return false;
@@ -366,11 +313,9 @@ export function isRepoScriptCommand(tokens: string[]): boolean {
   return true;
 }
 
-// ---------------------------------------------------------------------------
-// git — global-option-aware subcommand lookup (opus blocking finding 1)
-// ---------------------------------------------------------------------------
+// git: global-option-aware subcommand lookup
 
-/** Global `git` options that take a value, either as a separate token (`-C x`) or joined with `=` (`--git-dir=x`). */
+/** Global `git` options that take a value (`-C x` or `--git-dir=x`). */
 const GIT_GLOBAL_FLAGS_WITH_VALUE = new Set([
   '-C',
   '-c',
@@ -391,25 +336,19 @@ const GIT_GLOBAL_FLAGS_NO_VALUE = new Set([
 ]);
 
 export interface ParsedGitInvocation {
-  /** Tokens from the subcommand onward (`['push', 'origin', 'main']`), or `undefined` if this isn't `git` or no subcommand was found (e.g. `git -C` with nothing after). */
+  /** Tokens from the subcommand onward, or `undefined` if not `git` or no subcommand found. */
   args: string[] | undefined;
-  /** Every `-C <path>` value seen before the subcommand (there can be more than one; git applies them left to right). */
+  /** Every `-C <path>` before the subcommand (git applies them left to right). */
   cPaths: string[];
   /**
-   * Every `-c <key>=<value>` config override seen before the subcommand
-   * (T143 review): these change what the subcommand *means* —
-   * `-c alias.p=push p` resolves to a push whose subcommand token is `p` —
-   * so the push detector has to see them rather than skip past them.
+   * Every `-c <key>=<value>` before the subcommand: these change what the
+   * subcommand means (`-c alias.p=push p` is a push), so the push detector
+   * must see them.
    */
   configs: string[];
 }
 
-/**
- * Scans past `git`'s global options (`-C <path>`, `-c k=v`,
- * `--git-dir[=path]`, `--work-tree[=path]`, `--no-pager`, `-p`/`-P`, …) to
- * find the actual subcommand, so `git -C /repo push origin main` is
- * recognized as a `push` rather than mis-read as `args[0] === '-C'`.
- */
+/** Scans past `git`'s global options so `git -C /repo push origin main` is recognized as a `push`. */
 export function parseGitInvocation(tokens: string[]): ParsedGitInvocation {
   if (tokens[0] !== 'git') return { args: undefined, cPaths: [], configs: [] };
   const cPaths: string[] = [];
@@ -442,10 +381,9 @@ export function parseGitInvocation(tokens: string[]): ParsedGitInvocation {
       i += 1;
       continue;
     }
-    // Unrecognized flag: conservatively assume no separate value and keep scanning —
-    // worst case we mis-locate the subcommand by one token, which the
-    // fallback "not on the never list, not a repo script" deny/hil paths
-    // still catch safely (never an allow we didn't mean).
+    // Unrecognized flag: assume no separate value. Worst case the
+    // subcommand is mis-located by one token, which the fallback deny/hil
+    // paths still catch (never an unintended allow).
     i += 1;
   }
   return { args: undefined, cPaths, configs };
@@ -478,11 +416,10 @@ export function isGitResetHard(args: string[]): boolean {
 }
 
 /**
- * Every positional refspec on a `push` (not just the last one — appending
- * the ticket branch after `main` used to launder a push of `main` through
- * `pushTargetBranch`'s old "take the last" logic). The first non-flag
- * positional is treated as the remote; everything after it is a refspec.
- * Empty means "current branch to the default remote" — never assumed safe.
+ * Every positional refspec on a `push`, not just the last (appending a
+ * safe branch after `main` must not launder a push of `main`). The first
+ * positional is the remote. Empty means "current branch to the default
+ * remote", never assumed safe.
  */
 export function pushRefspecs(args: string[]): string[] {
   if (args[0] !== 'push') return [];
@@ -496,9 +433,7 @@ export function refspecDestBranch(refspec: string): string {
   return dest.replace(/^\+/, '');
 }
 
-// ---------------------------------------------------------------------------
 // Other never-without-human commands
-// ---------------------------------------------------------------------------
 
 export function isRmMinusRf(tokens: string[]): boolean {
   return tokens[0] === 'rm' && tokens.includes('-rf');
@@ -516,13 +451,13 @@ export function isChmodRecursive777(tokens: string[]): boolean {
   return tokens[0] === 'chmod' && tokens.includes('-R') && tokens.includes('777');
 }
 
-/** The state home () is never a ticket worktree — a direct write to it is never automatic (§14). */
+/** The state home is never a stream worktree: a direct write to it is never automatic. */
 export function touchesAgileState(path: string | undefined): boolean {
   if (path === undefined) return false;
   return path.split(/[\\/]/).includes('.agile');
 }
 
-/** Dependency manifests/lockfiles — an in-worktree *edit* to one of these adds a dependency just as surely as `bun add` does (opus should-fix 5). */
+/** Manifests and lockfiles: editing one adds a dependency as surely as `bun add`. */
 const MANIFEST_FILENAMES = new Set([
   'package.json',
   'bun.lock',
@@ -537,62 +472,38 @@ export function isManifestPath(path: string | undefined): boolean {
   return MANIFEST_FILENAMES.has(basename(path));
 }
 
-// ---------------------------------------------------------------------------
-// Redirection / tee (opus blocking finding 2)
-// ---------------------------------------------------------------------------
+// Redirection / tee
 
 /**
- * Matches any redirection operator, with or without a leading file
- * descriptor digit or `&` (review round 2, opus R2-1): `>`, `>>`, `<>`,
- * `>|`, and fd-prefixed/combined forms `1>`, `2>`, `2>>`, `&>`, `&>>`. A
- * plain whitespace-only `/^>{1,2}/` (round-1's check) never matched `1>`/
- * `2>`/`&>`, so `cat f 1> g` and `npm run build 1>/etc/x` were invisible to
- * both the reviewer/QA outright-deny and the engineer's worktree-containment
- * check. `test()`/`exec()` intentionally have no trailing anchor — a fused
- * target (`1>/etc/x`) still starts with the operator, and that's the case
- * that matters.
+ * Any redirection operator, with or without a leading fd digit or `&`:
+ * `>`, `>>`, `<>`, `>|`, `1>`, `2>>`, `&>`, ... No trailing anchor, so a
+ * fused target (`1>/etc/x`) still matches.
+ *
+ * A bare input redirect (`< in.txt`) is deliberately not matched: it only
+ * reads, and needs neither containment nor a write deny.
  */
 const REDIRECTION_TOKEN_RE = /^(\d+|&)?(>>?|<>|>\|)/;
-
-/**
- * A bare input redirect (`[n]<word` — one `<`, not `<>`) is deliberately
- * **not** matched by `REDIRECTION_TOKEN_RE`: it opens `word` for reading,
- * not writing (T029 — `sed 's/x/y/' < in.txt` reads `in.txt`). It's left as
- * an ordinary token, which is correct for every role: the engineer's
- * repo-script/git allow-list and the reviewer/QA safe-tool checks below
- * don't special-case it and don't need to — it never resolves to a target
- * needing worktree containment or a write-primitive deny.
- */
-
-/** `tee`, a redirection operator token (any form `REDIRECTION_TOKEN_RE` matches, as its own token or fused onto the target), or a `<(...)` process substitution. */
+/** `tee`, any redirection operator (own token or fused), or a `<(...)` process substitution. */
 export function hasRedirectionOrTee(tokens: string[]): boolean {
   if (tokens.includes('tee')) return true;
   return tokens.some((t) => REDIRECTION_TOKEN_RE.test(t) || t.startsWith('<('));
 }
 
-/** `&1`, `&2`, … (fd duplication, `2>&1`) or `&-` (fd close, `2>&-`) — no real file, just a stream operation. */
+/** `&1`, `&2`, ... (fd duplication) or `&-` (fd close): a stream operation, no file. */
 const FD_DUP_RE = /^&(\d+|-)$/;
 
-/**
- * True when a redirection's target is not a real file on disk: `/dev/null`
- * (discarded, nothing written) or a bare fd form (`&1`/`&2`/… duplication,
- * `&-` close). These are non-writes — T029: `npm test 2>&1`, `cmd
- * 2>/dev/null`, `cmd >/dev/null`, and `cmd &>/dev/null` don't touch the
- * filesystem, so no role needs to gate them as writes. Every other target
- * (a real path, or a redirection with no target at all — see
- * `hasUnresolvedRedirection`) is still gated exactly as before.
- */
+/** `/dev/null` or a bare fd form: not a write (`2>&1`, `>/dev/null`), so no role gates it. */
 export function isBenignRedirectTarget(target: string | undefined): boolean {
   if (target === undefined) return false;
   return target === '/dev/null' || FD_DUP_RE.test(target);
 }
 
 interface RedirectionOccurrence {
-  /** The resolved target text (fused or following-token), or `undefined` if the operator has nothing after it (unresolvable). */
+  /** The target text (fused or next token), or `undefined` when there is none. */
   target: string | undefined;
 }
 
-/** Every redirection operator occurrence in `tokens`, fused (`>out.txt`, `1>/etc/x`) or as a following token, with its resolved target (if any). Does not include `tee` or `<(...)` process substitution — those have no operator/target shape and are checked separately. */
+/** Every redirection operator in `tokens` with its target. `tee` and `<(...)` are checked separately. */
 function redirectionOccurrences(tokens: string[]): RedirectionOccurrence[] {
   const occurrences: RedirectionOccurrence[] = [];
   for (let i = 0; i < tokens.length; i++) {
@@ -605,25 +516,15 @@ function redirectionOccurrences(tokens: string[]): RedirectionOccurrence[] {
   return occurrences;
 }
 
-/**
- * True if any redirection operator in `tokens` has nothing usable after it
- * (nothing fused, no following token) — unresolvable, so it's never treated
- * as benign even if it happens to look like a stream op.
- */
+/** A redirection with nothing after it is unresolvable, never benign. */
 export function hasUnresolvedRedirection(tokens: string[]): boolean {
   return redirectionOccurrences(tokens).some((o) => o.target === undefined);
 }
 
 /**
- * Every redirection's **non-benign** target in `tokens` — there can be more
- * than one (`cmd > a.txt 2> b.txt`, round-2 "newly visible" finding: the
- * round-1 version only checked the first) — whether fused onto the operator
- * (`>out.txt`, `1>/etc/x`) or given as the following token. Benign targets
- * (`/dev/null`, fd-dup/close — see `isBenignRedirectTarget`) are excluded:
- * there is nothing on disk to contain. An unresolved operator (no target at
- * all) contributes nothing here — see `hasUnresolvedRedirection`, which
- * callers must check separately so "no non-benign targets" isn't confused
- * with "no redirection to worry about".
+ * Every non-benign redirection target (`cmd > a.txt 2> b.txt` has two),
+ * fused or as the next token. An operator with no target contributes
+ * nothing here; callers check `hasUnresolvedRedirection` separately.
  */
 export function redirectionTargets(tokens: string[]): string[] {
   const targets: string[] = [];
@@ -633,23 +534,11 @@ export function redirectionTargets(tokens: string[]): string[] {
   return targets;
 }
 
-/** The first non-benign redirection target, if any — see `redirectionTargets` for the full (possibly multi-target) picture. */
-export function redirectionTarget(tokens: string[]): string | undefined {
-  return redirectionTargets(tokens)[0];
-}
-
 /**
- * True if `tokens` contain `tee`, a `<(...)` process substitution, an
- * unresolvable redirection, or a redirection whose target is a real file
- * (not `/dev/null`/fd-dup/fd-close) — i.e. something that actually writes,
- * or can't be proven not to. Benign redirects (`2>&1`, `>/dev/null`,
- * `&>/dev/null`, `2>&-`) are excluded (T029): they're not write primitives,
- * so reviewer/QA don't need to deny them and the engineer doesn't need a
- * worktree-containment check for them. Use this wherever the old
- * `hasRedirectionOrTee` gated a *write*; `hasRedirectionOrTee` itself is
- * kept for the narrower "does this touch redirection syntax at all" case
- * (currently just the engineer's entry check, which still falls through to
- * classify the underlying command either way).
+ * Something that writes, or can't be proven not to: `tee`, `<(...)`, an
+ * unresolvable redirection, or a redirection to a real file. Benign
+ * redirects are excluded. `hasRedirectionOrTee` is the broader "any
+ * redirection syntax at all" check.
  */
 export function hasWritingRedirectionOrTee(tokens: string[]): boolean {
   if (tokens.includes('tee')) return true;
@@ -658,15 +547,10 @@ export function hasWritingRedirectionOrTee(tokens: string[]): boolean {
   return redirectionTargets(tokens).length > 0;
 }
 
-// ---------------------------------------------------------------------------
-// Benign-command helpers (T030): the everyday, non-repo-script, non-git
-// commands an engineer's allow-list otherwise starves out (`cat`, `ls`,
-// `mkdir`, `cp`/`mv`, `grep`/`rg`, `find`, …). The engineer's read scope is
-// "own worktree" (§14), so even a purely-reading command like `cat` needs
-// every path it touches containment-checked, not just the writing ones.
-// These helpers extract "which tokens are path arguments" per command
-// shape; `policy-tables.ts` does the containment check and picks the verdict.
-// ---------------------------------------------------------------------------
+// Benign-command helpers: which tokens are path arguments, per command
+// shape (`cat`, `ls`, `cp`, `grep`, `find`, ...). A worker's read scope is
+// its own worktree, so even `cat` needs every path containment-checked;
+// `policy-tables.ts` does the check and picks the verdict.
 
 function isFlagToken(t: string): boolean {
   return t.startsWith('-');
@@ -677,31 +561,22 @@ function isTestBracketClose(token: string, head: string | undefined): boolean {
   return head === '[' && token === ']';
 }
 
-/** Every non-flag positional argument of a plain `cmd arg arg...` invocation — the "every path" set for the simple benign commands (`cat`, `ls`, `mkdir`, `cp`, `mv`, `head`, `tail`, `wc`, `sort`, `uniq`, `cut`, `touch`, `diff`). Not `find`- or `grep`-aware — see `findSearchRoots`/`grepPathArgs`. */
+/** Every non-flag positional argument of a plain `cmd arg...`. Not `find`/`grep`-aware. */
 export function benignPathArgs(tokens: string[]): string[] {
   const head = tokens[0];
   return tokens.slice(1).filter((t) => !isFlagToken(t) && !isTestBracketClose(t, head));
 }
 
-/**
- * `grep`/`rg`'s path arguments: the first non-flag token is the *pattern*,
- * not a path (`grep FAIL app.log` reads `app.log`, but `FAIL` is never a
- * filesystem path) — every non-flag token after it is a file/dir argument.
- * `grep FAIL` alone (reading stdin) yields no paths to check at all.
- */
+/** `grep`/`rg` path arguments: the first non-flag token is the pattern, the rest are paths. */
 export function grepPathArgs(tokens: string[]): string[] {
   const rest = tokens.slice(1).filter((t) => !isFlagToken(t));
   return rest.slice(1);
 }
 
 /**
- * `find`'s write/exec primitives (T029/T030 review): present anywhere, they
- * take this command off the benign list entirely (falls through to the
- * normal deny) rather than being containment-checked. Covers every GNU
- * `find` action that writes, execs, or reports to a file/pipe: `-delete`,
- * `-exec`/`-execdir`, `-ok`/`-okdir` (exec, with or without confirmation),
- * and `-fprint`/`-fprintf`/`-fls` (writes matches to a named file — a
- * write primitive same as `-delete`, not merely a read like `-print`).
+ * `find` actions that write, exec or report to a file (`-delete`, `-exec`,
+ * `-ok`, `-fprint`, ...). Present anywhere, they take the command off the
+ * benign list entirely.
  */
 const FIND_WRITE_FLAGS = new Set([
   '-delete',
@@ -717,18 +592,10 @@ export function isFindWriteInvocation(tokens: string[]): boolean {
   return tokens.some((t) => FIND_WRITE_FLAGS.has(t));
 }
 
-// ---------------------------------------------------------------------------
-// `--flag=value`/`-o value` path-bearing flags (T030 review finding 3):
-// `benignPathArgs`/`grepPathArgs` only ever look at non-flag positional
-// tokens, so `cp --target-directory=/etc x`, `sort --output /etc/x`, and
-// `grep -f /etc/passwd` sailed through unchecked — the flag's *value* is
-// every bit as much a path as a positional argument is.
-// ---------------------------------------------------------------------------
+// Path-bearing flag values: `cp --target-directory=/etc x`,
+// `sort --output /etc/x` and `grep -f /etc/passwd` name paths too.
 
-/** Flags on these commands whose value (fused `=value`, fused short
- * `-oVALUE`, or the next token) is a path this ticket's examples name
- * explicitly (`cp`/`mv --target-directory`/`-t`, `sort --output`/`-o`,
- * `grep`/`rg --file`/`-f` — a pattern *file*, still a read path). */
+/** Flags whose value (`=value`, fused `-oVALUE`, or the next token) is a path. */
 const KNOWN_PATH_VALUE_FLAGS: Record<string, ReadonlySet<string>> = {
   cp: new Set(['-t', '--target-directory']),
   mv: new Set(['-t', '--target-directory']),
@@ -739,14 +606,7 @@ const KNOWN_PATH_VALUE_FLAGS: Record<string, ReadonlySet<string>> = {
 
 const LONG_FLAG_WITH_VALUE_RE = /^--([A-Za-z][A-Za-z0-9-]*)=(.*)$/;
 
-/**
- * A conservative guess that an unrecognized long flag's fused `=value` is
- * itself a path worth containment-checking (ticket: "unknown long flags
- * with `=` whose value looks like a path → check it too") — an absolute
- * path, a `./`/`../`-relative path, a `~`-form, or any value containing a
- * `/`. Deliberately excludes a bare word/number (`--width=80`, far more
- * likely an ordinary option value than a path).
- */
+/** Heuristic for an unknown long flag's `=value`: path-like if it has a `/` or starts with `.`/`~`. Not `--width=80`. */
 function looksLikePathValue(value: string): boolean {
   if (value.length === 0) return false;
   return (
@@ -759,12 +619,9 @@ function looksLikePathValue(value: string): boolean {
 }
 
 /**
- * Every path-like value carried by a flag on this invocation: a fused
- * `--flag=value` long form (checked when the value looks like a path, or
- * when this command+flag pair is in `KNOWN_PATH_VALUE_FLAGS`), a known
- * flag's value as the *next* token (`sort --output /etc/x`, `grep -f
- * /etc/passwd`), or a known short flag's fused value (`sort -o/etc/x`).
- * Combine with `benignPathArgs`/`grepPathArgs` for the full path set.
+ * Every path-like flag value: a fused `--flag=value` (known flag, or a
+ * path-looking value), a known flag's next token, or a known short flag's
+ * fused value (`sort -o/etc/x`).
  */
 export function flagPathValues(tokens: string[]): string[] {
   const head = tokens[0] ?? '';
@@ -794,11 +651,8 @@ export function flagPathValues(tokens: string[]): string[] {
 }
 
 /**
- * `find`'s search roots: the leading run of non-flag tokens before the
- * first expression primitive (`-name`, `-type`, …) or operator (`(`, `!`).
- * Real `find` syntax allows paths only in that leading position, so this
- * matches ordinary usage (`find . -name '*.ts'`, `find src build -type f`).
- * `find` with no leading path at all searches `.` (find's own default).
+ * `find`'s search roots: the leading non-flag tokens before the first
+ * primitive or operator. None means `.` (find's default).
  */
 export function findSearchRoots(tokens: string[]): string[] {
   const roots: string[] = [];
@@ -810,26 +664,15 @@ export function findSearchRoots(tokens: string[]): string[] {
 }
 
 /**
- * `bunx <pkg>`/`npx <pkg>` (single-word form), `bun x <pkg>` (space form,
- * T030 review), and `npm exec <pkg>` — the three spellings that actually
- * prefer an already-installed local bin before fetching anything — are
- * restricted to "repo-local bins" (T030 QA round 2/opus round 3): allowed
- * only when the target bin exists as a real, executable, in-worktree file
- * under this worktree's `node_modules/.bin/` at decision time
- * (`isRepoLocalBin`, below), not a syntactic guess. `pnpm dlx`/`yarn dlx`
- * (T030 opus round 3) are excluded from that check entirely — `dlx` by
- * definition fetches the package into a temporary store and runs *that*,
- * so a local `node_modules/.bin` entry existing is not evidence of what
- * `dlx` will actually execute; both are unconditionally `hil` regardless
- * of `bin`/`isRepoLocalBin` (see `DlxInvocation.neverLocal`). Any flag
- * that forces a fetch/install (`-p`/`--package`, `-y`/`--yes`,
- * `-g`/`--global`) is `hil` regardless of `neverLocal`/`isRepoLocalBin`,
- * since those flags can install/overwrite a different version than what's
- * checked in.
+ * `bunx`/`npx`/`bun x`/`npm exec` prefer an installed local bin, so they
+ * are allowed only when the bin is a real executable in this worktree's
+ * `node_modules/.bin/` (`isRepoLocalBin`). `pnpm dlx`/`yarn dlx` always
+ * fetch into a temporary store, so they are always `hil` (`neverLocal`).
+ * A flag that forces a fetch (`-p`, `-y`, `-g`, ...) is always `hil`.
  */
 const DLX_FORCE_INSTALL_FLAGS = new Set(['-p', '--package', '-y', '--yes', '-g', '--global']);
 
-/** `-p`/`--package` also has fused forms (`-ppkgname`, `--package=pkgname`) — any spelling of the flag forces a fetch. */
+/** Any spelling of `-p`/`--package` (including fused forms) forces a fetch. */
 function isForceInstallFlag(t: string): boolean {
   if (DLX_FORCE_INSTALL_FLAGS.has(t)) return true;
   if (t.startsWith('--package=')) return true;
@@ -837,7 +680,7 @@ function isForceInstallFlag(t: string): boolean {
   return false;
 }
 
-/** The "run a package's bin" tail tokens for any of the recognized spellings, plus whether this spelling ever consults the local `node_modules/.bin` at all (`pnpm dlx`/`yarn dlx` never do), or `undefined` if `tokens` isn't one of them. */
+/** The tail tokens for a recognized spelling, plus whether it never consults the local bin. */
 function dlxRestTokens(tokens: string[]): { rest: string[]; neverLocal: boolean } | undefined {
   const head = tokens[0];
   if (head === 'bunx' || head === 'npx') return { rest: tokens.slice(1), neverLocal: false };
@@ -851,13 +694,13 @@ function dlxRestTokens(tokens: string[]): { rest: string[]; neverLocal: boolean 
 export interface DlxInvocation {
   /** The bin/package name this invocation would run. */
   bin: string;
-  /** A `-p`/`--package`/`-y`/`--yes`/`-g`/`--global` flag was present — always `hil`, regardless of `isRepoLocalBin`/`neverLocal`. */
+  /** A fetch-forcing flag was present: always `hil`. */
   forcesInstall: boolean;
-  /** `pnpm dlx`/`yarn dlx` — never resolves a local bin, so always `hil` regardless of `isRepoLocalBin` (opus round 3). */
+  /** `pnpm dlx`/`yarn dlx`: never resolves a local bin, always `hil`. */
   neverLocal: boolean;
 }
 
-/** Parses any of `bunx`/`npx`/`bun x`/`npm exec`/`pnpm dlx`/`yarn dlx` into `{ bin, forcesInstall, neverLocal }`, or `undefined` if `tokens` isn't one of these shapes at all (no bin token found either way). */
+/** Parses any recognized spelling into `{ bin, forcesInstall, neverLocal }`, or `undefined`. */
 export function parseDlxInvocation(tokens: string[]): DlxInvocation | undefined {
   const parsed = dlxRestTokens(tokens);
   if (parsed === undefined) return undefined;
@@ -868,36 +711,14 @@ export function parseDlxInvocation(tokens: string[]): DlxInvocation | undefined 
   return { bin, forcesInstall, neverLocal };
 }
 
-/**
- * A `node_modules/.bin` entry is a plain identifier — never `.`/`..`, never
- * containing a path separator, never starting with `.` (a hidden file, or
- * `..` itself would already be excluded by the separator ban but this also
- * catches a lone `.`) — so `npx .` (npm's "run the package in this
- * directory" form) and `npx ..` (which collapses `node_modules/.bin/..` to
- * `node_modules`, an existing directory) can never even reach the
- * filesystem check below (T030 opus round 3).
- */
+/** A `.bin` entry is a plain identifier: rules out `npx .`, `npx ..` and anything with a `/`. */
 const PLAIN_BIN_NAME_RE = /^[A-Za-z0-9_-][A-Za-z0-9_.-]*$/;
 
 /**
  * True only if `bin` is a real, executable, regular file inside this
- * worktree's `node_modules/.bin/` — the repo-local-bin check (T030 QA
- * round 2, hardened in opus round 3):
- *
- * 1. `bin` must be a plain identifier (`PLAIN_BIN_NAME_RE`) — rules out
- *    `.`/`..`/anything with a `/` before ever touching the filesystem.
- * 2. Both `worktreePath` and the candidate `node_modules/.bin/<bin>` path
- *    are `realpathSync`'d, and the candidate's real path must resolve
- *    *inside* the worktree's real path — closes the symlink escape where
- *    a `.bin` entry (or `node_modules/.bin` itself) is a symlink pointing
- *    outside the worktree (e.g. `node_modules/.bin -> /usr/bin`), which a
- *    bare `existsSync` would follow and treat as "repo-local".
- * 3. The resolved target must be a regular file (not a directory/socket/
- *    etc.) with at least one executable bit set — a `.bin` entry that
- *    exists but isn't runnable isn't a bin to run.
- *
- * Never throws: any of the above failing (nonexistent path, permission
- * error, non-file) means "not repo-local", not an error.
+ * worktree's `node_modules/.bin/`: a plain name, whose `realpath` (and the
+ * worktree's) keeps it inside the worktree, so a `.bin` symlink to
+ * `/usr/bin` doesn't count. Never throws; any failure means "not local".
  */
 export function isRepoLocalBin(bin: string, worktreePath: string): boolean {
   if (!PLAIN_BIN_NAME_RE.test(bin)) return false;
@@ -916,12 +737,12 @@ export function isRepoLocalBin(bin: string, worktreePath: string): boolean {
 }
 
 const SCRIPT_LAUNCHER_HEADS = new Set(['node', 'bun']);
-/** `bun`'s own subcommands (`run`/`test`/`build`/`install`/`i`/`add`/`x`) are handled by `isRepoScriptCommand`/`isNewDependencyInstall`/`parseDlxInvocation` before this ever runs — this only recognizes `node <file>`/`bun <file>` direct script execution, so it must not re-claim those subcommand names as if they were script paths (T030 review: `bun x cowsay@1.0.0` must fall through to the dlx path, not be laundered as "bun script named x"). */
+/** `node <file>`/`bun <file>` only: `bun`'s own subcommands (`run`, `add`, `x`, ...) are handled elsewhere and must not be read as script names. */
 function looksLikeBunSubcommand(token: string): boolean {
   return REPO_SCRIPT_SUBCOMMANDS.has(token) || NEW_DEP_SUBCOMMANDS.has(token) || token === 'x';
 }
 
-/** `node <script>`/`bun <script>` (direct file execution, not `bun run`/`npm`-style subcommands) — the script path, or `undefined` if this isn't that shape. */
+/** The script path of a direct `node <script>`/`bun <script>`, or `undefined`. */
 export function scriptExecutionPath(tokens: string[]): string | undefined {
   const head = tokens[0];
   if (head === undefined || !SCRIPT_LAUNCHER_HEADS.has(head)) return undefined;

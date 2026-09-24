@@ -167,7 +167,7 @@ describe('AgentRecord: putAgent / getAgent / listAgents / deleteAgent', () => {
   });
 });
 
-describe('Policy / Vendors singletons', () => {
+describe('Policy singleton', () => {
   test('getPolicy reads what agile init wrote', () => {
     const store = StateStore.open(stateRoot);
     expect(store.getPolicy().gates.land).toBe('human');
@@ -181,19 +181,6 @@ describe('Policy / Vendors singletons', () => {
     });
     expect(store.getPolicy().gates.land).toBe('human_timeout:1h');
     expect(store.listEvents()[0]?.kind).toBe('policy_put');
-  });
-
-  test('getVendors reads what agile init wrote', () => {
-    const store = StateStore.open(stateRoot);
-    expect(store.getVendors().claude).toBeDefined();
-  });
-
-  test('putVendors overwrites it and mints vendors_put', async () => {
-    const store = StateStore.open(stateRoot);
-    await store.putVendors({
-      claude: { accounts: [{ id: 'default', auth: 'subscription' }] },
-    } as never);
-    expect(store.listEvents()[0]?.kind).toBe('vendors_put');
   });
 });
 

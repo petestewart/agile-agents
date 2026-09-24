@@ -1,18 +1,9 @@
 /**
- * `StreamService` — create / read / list(tree) / update / close / archive a
- * stream, and append to or read its thread (T120; cockpit design §2 for the
- * record and the two-writer split, §7.2 for the home layout).
- *
- * Every method takes an explicit **principal** (design §2.2): the RPC edge
- * stamps `human` and never accepts one from params, the runner and T130's
- * MCP verbs will pass `agent`, and the daemon's own lifecycle writes pass
- * `daemon`. That is why this service API exists separately from `rpc.ts` —
- * so an agent-principal caller has something to call that is not the human
- * edge.
- *
- * No git: a stream's `branch`/`worktree` appear on first attach (T130), so
- * nothing here spawns git, reads a worktree or touches a repo. A `repo` on
- * a stream is only a key into `repos.yaml`, validated on create.
+ * `StreamService`: create, read, list (tree), update, close and archive a
+ * stream, and append to or read its thread (§2, §7.2). Every method takes
+ * an explicit principal (§2.2): `human` from the RPC edge, `agent` from
+ * the verbs, `daemon` for lifecycle writes. No git here: branch and
+ * worktree appear on first attach; `repo` is only a key into `repos.yaml`.
  */
 
 import {
@@ -63,11 +54,7 @@ export interface ThreadPage {
 
 const DEFAULT_THREAD_LIMIT = 100;
 
-/**
- * `create` was given a `parent` that is not a stream in this home. Typed so
- * the RPC edge reports it as `invalid params` (-32602) — bad caller input,
- * not an internal fault (T126).
- */
+/** `create` got a `parent` that is not a stream in this home (-32602 at the edge). */
 export class UnknownParentStreamError extends Error {
   constructor(public readonly parent: string) {
     super(`unknown parent stream: ${parent}`);
@@ -90,11 +77,7 @@ export class UnknownRepoError extends Error {
   }
 }
 
-/**
- * The thread author a principal writes as. `agent` needs its session id
- * (`agent:<ulid>`, §2.1) — a bare `agent` principal has no thread identity,
- * so callers pass the session explicitly.
- */
+/** The thread author a principal writes as; `agent` needs its session id (`agent:<ulid>`, §2.1). */
 export function threadAuthorFor(principal: StreamPrincipal, sessionId?: string): ThreadAuthor {
   if (principal !== 'agent') return principal;
   if (sessionId === undefined) {
@@ -104,11 +87,7 @@ export function threadAuthorFor(principal: StreamPrincipal, sessionId?: string):
 }
 
 export interface StreamServiceOptions {
-  /**
-   * T141 (§5.5): what `close` tells the retro. Fire-and-forget — a lessons
-   * session that cannot start is a thread line, never a failed close — and
-   * wired in `daemon.ts`, because `LessonsService` sits above this one.
-   */
+  /** Tells the retro (§5.5) a stream closed. Fire-and-forget: never a failed close. */
   onStreamEnd?: (streamId: string) => void | Promise<void>;
 }
 
@@ -118,11 +97,7 @@ export class StreamService {
     private readonly options: StreamServiceOptions = {},
   ) {}
 
-  /**
-   * §2.3: "create ──► human.status: open, agent.status: idle". The daemon
-   * mints `id`/`created_at`/both halves; `branch`/`worktree` stay absent
-   * until a worker attaches (T130).
-   */
+  /** §2.3: create ⇒ `human.status: open`, `agent.status: idle`. The daemon mints id and timestamps. */
   async create(principal: StreamPrincipal, rawInput: unknown): Promise<Stream> {
     const input: StreamCreateInput = validateStreamCreateInput(rawInput);
     if (input.parent !== undefined && !this.store.hasStream(input.parent)) {
@@ -164,11 +139,7 @@ export class StreamService {
     return options.include_archived === true ? all : all.filter((s) => s.archived !== true);
   }
 
-  /**
-   * Parent/child structure over the visible set. A stream whose parent is
-   * hidden (archived, or deleted by hand) surfaces at the root rather than
-   * disappearing with it — hiding a parent must never hide live work.
-   */
+  /** Parent/child structure over the visible set; a hidden parent's children surface at the root. */
   tree(options: ListStreamsOptions = {}): StreamNode[] {
     const visible = this.list(options);
     const nodes = new Map<string, StreamNode>(
@@ -185,10 +156,8 @@ export class StreamService {
   }
 
   /**
-   * Applies a patch under the store's mutex. Top-level fields are replaced;
-   * `agent`/`human` are shallow-merged so a caller can set one field
-   * without restating the half. The store applies `assertStreamWrite`, so a
-   * `human` principal patching `agent.*` is rejected there, not here.
+   * Applies a patch under the store's mutex: top-level fields replace,
+   * `agent`/`human` shallow-merge. The store enforces the two-writer split.
    */
   async update(
     principal: StreamPrincipal,
@@ -200,14 +169,8 @@ export class StreamService {
   }
 
   /**
-   * §2.3's human end state: `human.status: closed` (never an agent write).
-   *
-   * A `note` lands in two places: on `human.note` (the current record) and
-   * as one `line` on the thread (the durable record of *why* it closed) —
-   * T126, QA rough edge 2: the note used to vanish from the thread, leaving
-   * a later reader no trace of the close. The close itself still emits a
-   * single `stream_closed` event; the thread line is its own
-   * `thread_appended`, exactly like any other line.
+   * §2.3's human end state, `human.status: closed`. A `note` goes on
+   * `human.note` and, as the durable record of why, on the thread.
    */
   async close(principal: StreamPrincipal, id: string, note?: string): Promise<Stream> {
     const closed = await this.update(
@@ -219,30 +182,18 @@ export class StreamService {
     if (note !== undefined) {
       await this.appendThread(principal, id, { kind: 'line', body: `closed: ${note}` });
     }
-    // §5.5: the retro runs on land *or* close. Fire-and-forget: the close
-    // has already happened, and `LessonsService.onStreamEnd` records its
-    // own failures on the thread.
-    void Promise.resolve(this.options.onStreamEnd?.(id)).catch(() => {
-      // `onStreamEnd` is contractually non-throwing; this is belt and braces.
-    });
+    // §5.5: the retro runs on land or close. Fire-and-forget; contractually
+    // non-throwing, caught as belt and braces.
+    void Promise.resolve(this.options.onStreamEnd?.(id)).catch(() => {});
     return closed;
   }
 
-  /**
-   * Archiving moves nothing on disk (§7.2 has one file per stream and no
-   * archive directory) — it sets the `archived` flag, and `list` hides it
-   * unless asked. The stream's human status is left alone: a `landed`
-   * stream stays landed once archived.
-   */
+  /** Sets the `archived` flag (nothing moves on disk); `list` hides it. Human status is kept. */
   async archive(principal: StreamPrincipal, id: string): Promise<Stream> {
     return this.update(principal, id, { archived: true }, { kind: 'stream_archived' });
   }
 
-  /**
-   * One thread line. Bodies over the cap are **rejected** here: overflowing
-   * to a file with a `ref` is the agent path (T130), and a human typing a
-   * long line should be told, not silently truncated or spilled to disk.
-   */
+  /** One thread line. Over the cap is rejected: a human should be told, not truncated. */
   async appendThread(
     principal: StreamPrincipal,
     id: string,
@@ -263,10 +214,9 @@ export class StreamService {
     });
   }
 
-  /** Paged read by line index — the thread is append-only, so indices are stable. */
+  /** Paged read by line index (append-only, so indices are stable). */
   readThread(id: string, options: ThreadPageOptions = {}): ThreadPage {
-    // Existence check first: an unknown stream is a NotFoundError, not an
-    // empty thread.
+    // An unknown stream is a NotFoundError, not an empty thread.
     this.store.getStream(id);
     const all = this.store.readThread(id);
     const from = options.after === undefined ? 0 : options.after + 1;
@@ -296,7 +246,7 @@ export interface StreamPatch {
   worktree?: string;
   target_branch?: string;
   archived?: true;
-  /** T150 (§6.4): `'off'` opts the stream out of the classifier tier; `null` clears the opt-out. */
+  /** `'off'` opts the stream out of the classifier tier (§6.4); `null` clears the opt-out. */
   classifier?: 'off' | null;
   agent?: Partial<Stream['agent']>;
   human?: Partial<Stream['human']>;
@@ -304,10 +254,8 @@ export interface StreamPatch {
 
 function applyPatch(before: Stream, patch: StreamPatch): Stream {
   const { agent, human, classifier, ...rest } = patch;
-  // `classifier` is the one tri-state field: absent leaves it alone,
-  // `'off'` sets the opt-out, `null` removes it. Rebuilt rather than
-  // assigned `undefined`, so a cleared opt-out leaves no key behind in the
-  // YAML at all.
+  // `classifier` is tri-state (absent, `'off'`, `null` = remove), rebuilt
+  // so a cleared opt-out leaves no key in the YAML.
   const { classifier: existing, ...withoutOptOut } = before;
   const optOut = classifier === undefined ? existing : (classifier ?? undefined);
   const next: Stream = {
@@ -316,8 +264,7 @@ function applyPatch(before: Stream, patch: StreamPatch): Stream {
     ...rest,
   };
   if (agent !== undefined) {
-    // Any agent-half change is a fresh observation; stamp it (§2.1's
-    // `agent.updated_at`) unless the caller set it explicitly.
+    // Any agent-half change is a fresh observation: stamp `updated_at` unless given.
     next.agent = { ...before.agent, updated_at: new Date().toISOString(), ...agent };
   }
   if (human !== undefined) {

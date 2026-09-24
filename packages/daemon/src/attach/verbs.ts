@@ -1,22 +1,12 @@
 /**
- * The eight MCP verbs an attached session gets (design/cockpit-design.md
- * §4.1). This is the whole agent-facing surface:
+ * The eight MCP verbs an attached session gets (§4.1), the whole
+ * agent-facing surface: `ask` · `progress` · `finding` · `propose_rule` ·
+ * `propose_next` · `read_stream` · `search_docs` · `test_run`.
  *
- *   `ask` · `progress` · `finding` · `propose_rule` · `propose_next` ·
- *   `read_stream` · `search_docs` · `test_run`
- *
- * T130 replaced the tool *framework* (a tool is a folder with a
- * `tool.yaml`, a cache, a ledger kind and a promote-to-KB rule) with this
- * fixed table. What survives of the old framework is exactly one thing:
- * `test_run`'s output contract — "failing test names, assertions and the
- * relevant stack frames — never a green log".
- *
- * Identity: every verb names its `session`, and the session is resolved
- * through the agent registry (`bus/agents/<session>.yaml`, written by
- * `runner/session.ts` while the session is live) to its stream and
- * worktree. A session that has exited resolves to nothing and every verb
- * refuses — an agent cannot write to a stream it is no longer attached to.
- * Nothing here trusts a stream id from the caller.
+ * Every verb names its `session`, resolved through the agent registry
+ * (live only while the session is) to its stream and worktree. An exited
+ * session resolves to nothing and every verb refuses; no stream id is
+ * taken from the caller.
  */
 
 import {
@@ -65,16 +55,11 @@ export interface VerbServiceOptions {
   store: StateStore;
   streams: StreamService;
   questions: QuestionService;
-  /** T134's `DocsService` — `search_docs` is typed against the read side only. */
+  /** `search_docs`'s read side. */
   docs?: DocsSearch;
-  /** T140's `RulesService` — what `propose_rule` writes its proposal through. */
+  /** What `propose_rule` writes through. */
   rules?: RulesService;
-  /**
-   * T141's `LessonsService` (read as a gate, not a sentence in a brief):
-   * §5.5's "at most three" proposals out of one retro. It refuses the
-   * fourth `propose_rule` call from a `lessons` session and leaves every
-   * other role alone.
-   */
+  /** §5.5's "at most three" proposals from a lessons session, enforced as a gate. */
   proposalLimit?: { assertCanPropose(caller: Pick<VerbCaller, 'session' | 'role'>): void };
 }
 
@@ -99,7 +84,7 @@ export class VerbService {
     };
   }
 
-  /** §1.4: a question is raised on the stream, routed by the session that asked (this closes T121's open issue). */
+  /** §1.4: a question is raised on the caller's stream. */
   async ask(input: unknown): Promise<{ id: string }> {
     const { session, text } = validateVerbInput('ask', input);
     const caller = this.caller(session);
@@ -124,7 +109,7 @@ export class VerbService {
     );
   }
 
-  /** A finding goes to the thread *and* to `agent.findings` (§4.2) — one is the narrative, the other is the list the cockpit groups. */
+  /** A finding goes to the thread (the narrative) and to `agent.findings` (the list the cockpit groups), §4.2. */
   async finding(input: unknown): Promise<StreamFinding> {
     const { session, severity, file, line, text } = validateVerbInput('finding', input);
     const caller = this.caller(session);
@@ -151,28 +136,15 @@ export class VerbService {
   }
 
   /**
-   * §5.1/**D4**: an agent may *propose* a rule — the record is written with
-   * `status: 'proposed'` and provenance pointing back at this stream and
-   * session, and `status`/`decided_*` stay human-only (the store rejects an
-   * agent that tries). The proposal also keeps its thread entry, `ref`'d to
-   * the rule's file: the thread is where a later reader sees *when* in the
-   * work the rule was proposed, and the inbox `rule_accept` item (§3.1) is
-   * where the human decides it.
+   * §5.1/D4: an agent may only propose. The rule is minted `proposed` with
+   * provenance back to this stream and session (whatever the input says),
+   * plus a thread entry `ref`'d to it; the human decides in the inbox.
+   * Optional `examples`, `enforcement` and `critical` ride along.
    *
-   * `examples`, `enforcement` and `critical` ride along when the caller
-   * states them (T141): a rule proposed with two example actions is one the
-   * human can read and the classifier can be evaluated against (§5.6), and
-   * a tier guessed by the proposer is one fewer thing for the human to
-   * supply before accepting. None of them can smuggle in a decision —
-   * `status` is minted `proposed` whatever the input says.
-   *
-   * Scope (§5.1: "a rule learned on one repo must not silently govern
-   * another") is taken from the verb's `scope` string — `global`,
-   * `repo:<name>`, `stream:<id>`, or the bare words `repo`/`stream` meaning
-   * *this* session's repo or stream. Omitted, it defaults to the narrowest
-   * honest scope: this stream's repo when it has one, the stream itself
-   * otherwise. Never global by default — widening a rule is the human's
-   * call, and it is one edit away in the inbox.
+   * Scope: `global`, `repo:<name>`, `stream:<id>`, or bare `repo`/`stream`
+   * for this session's own. Omitted, the narrowest honest scope: this
+   * stream's repo, else the stream. Never global by default (§5.1: a rule
+   * from one repo must not silently govern another).
    */
   async proposeRule(input: unknown): Promise<ThreadEntry> {
     const { session, text, scope, examples, enforcement, critical } = validateVerbInput(
@@ -180,8 +152,7 @@ export class VerbService {
       input,
     );
     const caller = this.caller(session);
-    // T141/§5.5: the retro's three-proposal budget, checked before anything
-    // is written — the fourth call is refused with the reason the model reads.
+    // §5.5's proposal budget, checked before anything is written.
     this.options.proposalLimit?.assertCanPropose(caller);
     const rule = await this.options.rules?.create('agent', {
       text,
@@ -253,7 +224,7 @@ export class VerbService {
     };
   }
 
-  /** Repo `.agile-docs/` plus this stream's own notes (T134). Empty when no docs service is wired. */
+  /** Repo `.agile-docs/` plus this stream's own notes; empty with no docs service. */
   async searchDocs(input: unknown): Promise<SearchHit[]> {
     const { session, query } = validateVerbInput('search_docs', input);
     const caller = this.caller(session);

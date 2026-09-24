@@ -24,7 +24,6 @@ import {
   parseDlxInvocation,
   parseGitInvocation,
   pushRefspecs,
-  redirectionTarget,
   redirectionTargets,
   refspecDestBranch,
   resolveTargetPath,
@@ -199,11 +198,11 @@ describe('hasRedirectionOrTee / redirectionTarget / redirectionTargets', () => {
   });
 
   test('extracts the redirection target, including fd-prefixed/fused forms', () => {
-    expect(redirectionTarget(['cat', 'evil', '>', 'out.txt'])).toBe('out.txt');
-    expect(redirectionTarget(['cat', 'evil', '>out.txt'])).toBe('out.txt');
-    expect(redirectionTarget(['cat', 'evil', '1>', 'out.txt'])).toBe('out.txt');
-    expect(redirectionTarget(['npm', 'run', 'build', '1>/etc/x'])).toBe('/etc/x');
-    expect(redirectionTarget(['cat', 'evil', '&>', 'out.txt'])).toBe('out.txt');
+    expect(redirectionTargets(['cat', 'evil', '>', 'out.txt'])[0]).toBe('out.txt');
+    expect(redirectionTargets(['cat', 'evil', '>out.txt'])[0]).toBe('out.txt');
+    expect(redirectionTargets(['cat', 'evil', '1>', 'out.txt'])[0]).toBe('out.txt');
+    expect(redirectionTargets(['npm', 'run', 'build', '1>/etc/x'])[0]).toBe('/etc/x');
+    expect(redirectionTargets(['cat', 'evil', '&>', 'out.txt'])[0]).toBe('out.txt');
   });
 
   test('redirectionTargets collects every target, not just the first (opus "newly visible" finding)', () => {

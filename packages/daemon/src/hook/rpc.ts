@@ -1,11 +1,4 @@
-/**
- * `hook.*` RPC methods over a `HookService` (T009 — same shape as
- * `bus/rpc-methods.ts`/`halts/index.ts`'s `build*RpcMethods` — for wiring
- * into `daemon.ts`'s `extraMethods` table). Takes the raw Claude hook
- * payload (whatever `agile hook <event>` forwarded verbatim from stdin) and
- * returns the raw Claude hook output JSON, which the CLI then prints
- * verbatim.
- */
+/** `hook.*` RPC: the raw Claude hook payload in (forwarded by `agile hook <event>`), raw hook JSON out. */
 
 import type { RpcMethodHandler } from '../rpc';
 import type { ClaudePostToolUsePayload, ClaudeStopPayload, HookService } from './service';

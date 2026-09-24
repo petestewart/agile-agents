@@ -1,41 +1,18 @@
 /**
- * `HookService` — resolves a raw Claude hook payload into a
+ * `HookService`: resolves a raw Claude hook payload into a
  * `HookDecisionContext`, runs the pure decision functions (`decide.ts`),
- * performs the side effects the decision implies (ack, heartbeat, ledger,
- * `hook_decision` event, HIL requests), and renders Claude's actual hook
- * JSON output contract (T009 — design/agile-agents-design.md §6, §5, §4,
- * §7; wire shape verified against `design/spike-findings.md` §B and
- * `spike/spike-out/claude-default-perm-hooks.json`).
+ * performs the side effects (ack, heartbeat, `hook_decision` event, route
+ * band, thread entries) and renders Claude's hook JSON output (wire shape:
+ * `design/spike-findings.md` §B).
  *
- * Agent/ticket resolution (T012 QA/review round rewrite — see
- * `resolveAgentByCwd`): resolved primarily through the **agent registry**
- * (`AgentRecord.worktree`/`.role`, `bus/agents/<id>.yaml`) rather than
- * `Ticket.worktree` — the registry is what T012 actually sets correctly for
- * every role, QA included (a fresh clone at `.worktrees/<TKT>-qa` that never
- * matches `Ticket.worktree` at all, which is why QA hook calls were
- * hard-denied before this round). `Ticket.worktree` is kept only as a
- * fallback for a caller/test with no `AgentRecord` on file. Both sides of
- * every path comparison are `realpath`d first (review round fix: a
- * symlinked worktree must match either way it's addressed) via
- * `isPathInside` (reused from `permissions/command.ts`). Role comes from
- * the resolved `AgentRecord.role`, never inferred as `'engineer'` — critical
- * when a reviewer and an engineer share one physical worktree (§12,
- * CLAUDE.md v0 default): resolving by path alone would answer every hook
- * call in that shared directory as if it were the engineer, silently
- * defeating the reviewer's read-only tier-1 gate. When more than one
- * registered agent's worktree contains `cwd` (exactly the shared-worktree
- * case), the payload's `agile_agent` hint (set by `writeClaudeSettings`'s
- * `agentId` option — see `settings.ts` — and forwarded by the CLI from
- * `AGILE_AGENT`) disambiguates; with no hint, or a hint matching none of
- * the candidates, resolution fails closed (`undefined`) rather than
- * guessing.
- *
- * Review round fix (blocker 2): an unresolved `cwd` previously **failed
- * open** (`permissionDecision: 'allow'`) and logged nothing — a vendor hook
- * calling from anywhere the daemon can't place is exactly the case fail-
- * *closed* is supposed to cover, not the one exception to it. `preToolUse`
- * now denies with a fixed reason and always logs the decision (ticket/agent
- * `undefined` on the event, since none was resolved).
+ * Attribution goes through the agent registry (`AgentRecord.worktree` and
+ * `.role`), with both sides of every path comparison `realpath`d. Role comes
+ * from the record, never inferred: a reviewer and a worker can share one
+ * worktree, and resolving by path alone would answer the reviewer's calls
+ * as the worker's. When several live records cover `cwd`, the payload's
+ * `agile_agent` hint (the CLI forwards `AGILE_AGENT` from settings.json)
+ * picks one; with no matching hint resolution fails closed. An unresolved
+ * `cwd` is denied and logged, never allowed.
  */
 
 import { realpathSync, statSync } from 'node:fs';
@@ -45,7 +22,6 @@ import {
   type AgentMessage,
   type AgentRecord,
   type ClassifierConfig,
-  DEFAULT_PROTECTED_BRANCHES,
   MESSAGE_BODY_MAX_CHARS,
   type Policy,
   type RepoEntry,
@@ -80,7 +56,7 @@ import {
   type HookLimits,
 } from './types';
 
-/** Raw Claude `PostToolUse` hook stdin payload. `agile_agent` — see `ClaudePreToolUsePayload`'s doc comment (`hook/types.ts`): a disambiguation hint only, applied after cwd resolution, never trusted alone. */
+/** Raw Claude `PostToolUse` payload. `agile_agent`: see `ClaudePreToolUsePayload` (a hint only). */
 export interface ClaudePostToolUsePayload {
   hook_event_name?: string;
   cwd?: string;
@@ -92,7 +68,7 @@ export interface ClaudePostToolUsePayload {
   [key: string]: unknown;
 }
 
-/** Raw Claude `Stop` hook stdin payload. `agile_agent` — see `ClaudePreToolUsePayload`'s doc comment (`hook/types.ts`): a disambiguation hint only, applied after cwd resolution, never trusted alone. */
+/** Raw Claude `Stop` payload. `agile_agent`: see `ClaudePreToolUsePayload` (a hint only). */
 export interface ClaudeStopPayload {
   hook_event_name?: string;
   cwd?: string;
@@ -102,7 +78,11 @@ export interface ClaudeStopPayload {
   [key: string]: unknown;
 }
 
-/** Claude's `PreToolUse` hook output contract (spike-findings.md §B). `permissionDecision` is always `'allow' | 'deny'` on the wire out of this service — `decide.ts`'s `'ask'` is translated into a `deny` naming a durable HIL request before it ever reaches this shape (review/QA round: Claude under ACP cannot answer an interactive `ask`). */
+/**
+ * Claude's `PreToolUse` output (spike-findings.md §B). Always `allow` or
+ * `deny` on the wire: `decide.ts`'s `ask` becomes a routed deny, because
+ * Claude under ACP cannot answer an interactive `ask`.
+ */
 export interface PreToolUseHookOutput {
   hookSpecificOutput: {
     hookEventName: 'PreToolUse';
@@ -112,7 +92,7 @@ export interface PreToolUseHookOutput {
   };
 }
 
-/** DESIGN-GAP: Claude's `PostToolUse` hook cannot rewrite `tool_response` (spike-findings.md §6 tier table only verifies this for Pi, not Claude) — so oversized output is never actually shrunk on the wire here, only flagged via `additionalContext` telling the model to prefer `test_run`/`read_summary` next time, alongside logging real usage every call. */
+/** Claude's `PostToolUse` hook cannot rewrite `tool_response`, so oversized output is only flagged via `additionalContext`. */
 export interface PostToolUseHookOutput {
   hookSpecificOutput?: {
     hookEventName: 'PostToolUse';
@@ -121,17 +101,10 @@ export interface PostToolUseHookOutput {
 }
 
 /**
- * DESIGN-GAP (review round fix, blocker 4): the Claude `Stop` hook's own
- * documented output contract has no `additionalContext`/`systemMessage`
- * channel that reaches the *model* — `systemMessage` is shown to the
- * *user*, not fed back into the conversation, so acking low-priority
- * messages into it would silently drop them from the model's context while
- * still marking them delivered. The documented way to get text back in
- * front of the model from a `Stop` hook is `decision: 'block'` + `reason`
- * (Claude re-prompts the model with `reason` instead of ending the turn).
- * So: only when there is something to deliver does this return `block` +
- * the drained bodies as `reason`, and messages are acked **only in that
- * branch** (an empty inbox never blocks the turn just to say nothing).
+ * A `Stop` hook's `systemMessage` reaches the user, not the model; the way
+ * to put text in front of the model is `decision: 'block'` + `reason`
+ * (Claude re-prompts with it). So this blocks only when there are messages
+ * to deliver, and acks them only then.
  */
 export interface StopHookOutput {
   decision?: 'block';
@@ -140,39 +113,22 @@ export interface StopHookOutput {
 
 export interface HookServiceOptions {
   /**
-   * T125: optional. The daemon no longer derives a repo root from its own
-   * cwd (`config.ts`), so this is only set by a caller that genuinely has
-   * one in hand. Without it a *relative* `worktree` on an agent record
-   * cannot be resolved, and the hook fails closed — the call is
-   * unattributable and denied with `UNRESOLVED_CWD_REASON`, same as any
-   * other cwd this daemon can't place. T130/T131 re-key agent records to
-   * their stream's registered repo, at which point the resolution stops
-   * needing a root at all.
+   * Resolves a *relative* `worktree` on an agent record. Without it such a
+   * record cannot be placed and the call fails closed.
    */
   repoRoot?: string;
   /**
-   * T138: the route band (design §8.1). With a gates service wired, a
-   * `hil` verdict raises a `classifier_review` gate and the deny reason
-   * names it; without one (a unit test that only cares about the pure
-   * verdict) the call is denied outright and the model is told to ask on
-   * the stream — never allowed.
+   * The route band (§8.1). With gates wired, a `hil` verdict raises a
+   * `classifier_review` gate; without (unit tests) the call is denied and
+   * the model told to ask on the stream, never allowed.
    */
   gates?: RouteBandGates;
-  /**
-   * T143: the rules the hook enforces (design §5.2's pattern tier, §5.4's
-   * built-ins). Without one, no pattern rule is in scope and the hook
-   * gates exactly what it gated before — this is the seam a unit test that
-   * only cares about the role policy leaves unset, not a way to switch
-   * enforcement off in production (`daemon.ts` always wires it).
-   */
+  /** Pattern rules (§5.2, §5.4). Unset only in unit tests; `daemon.ts` always wires it. */
   rules?: HookRules;
   /**
-   * T151 (§6): the classifier tier. Without one there is no tier at all —
-   * a unit test that only cares about the pattern tier leaves it unset, and
-   * §6.4's fail policy covers a home with no key the same way (the daemon
-   * wires this only when `config.classifier` is configured, so an
-   * unconfigured home reaches `classifierUnavailable` below rather than a
-   * classifier that would throw `not_configured` on every tool call).
+   * The classifier tier (§6). The daemon wires it only when
+   * `config.classifier` is configured; without it, classifier rules in
+   * scope go through §6.4's fail policy like an outage.
    */
   classifier?: HookClassifier;
   limits?: HookLimits;
@@ -181,7 +137,7 @@ export interface HookServiceOptions {
   now?: () => Date;
 }
 
-/** The slice of `RulesService` the hook needs — injected so the hook never depends on the whole rules module. */
+/** The slice of `RulesService` the hook needs. */
 export interface HookRules {
   /** §5.3's one scope filter, for this session's stream. */
   inScope(streamId: string): Rule[];
@@ -195,7 +151,7 @@ export interface HookClassifier {
   config: ClassifierConfig;
   /** Env for the key lookup in `classifierEnabled`. Defaults to `process.env`. */
   env?: Record<string, string | undefined>;
-  /** Injectable clock for the latency measurement (T151 tests). */
+  /** Injectable clock for the latency measurement. */
   now?: () => number;
 }
 
@@ -211,7 +167,7 @@ function defaultFileSize(path: string): number | undefined {
   }
 }
 
-/** `realpath`, falling back to the plain resolved path if the target doesn't exist yet (a freshly-created worktree dir mid-setup, or a test double) — never throws. */
+/** `realpath`, falling back to the resolved path when the target doesn't exist yet. Never throws. */
 function safeRealpath(path: string): string {
   try {
     return realpathSync(path);
@@ -222,19 +178,12 @@ function safeRealpath(path: string): string {
 
 const UNRESOLVED_CWD_REASON = 'agile: cwd is not a registered stream worktree';
 
-/**
- * Reads the disambiguation hint (T012 QA/review round — see this file's
- * header) off the raw hook payload: `agile_agent`, a field only the CLI
- * writes (from its own `process.env.AGILE_AGENT`, itself only set when
- * `writeClaudeSettings`'s `agentId` option embedded `AGILE_AGENT=<id>` into
- * the hook command) — Claude's own hook payload never carries this key, so
- * it's `undefined` for every hook config this daemon didn't write itself.
- */
+/** The `agile_agent` hint, written only by the CLI (from `AGILE_AGENT`); Claude's own payload never has it. */
 function agentHintFrom(payload: Record<string, unknown>): string | undefined {
   return typeof payload.agile_agent === 'string' ? payload.agile_agent : undefined;
 }
 
-/** What a hook call's `cwd` resolves to: the session, its stream, its role and its worktree (T130). */
+/** What a hook call's `cwd` resolves to. */
 export interface ResolvedHookIdentity {
   session: string;
   stream: string;
@@ -246,7 +195,7 @@ export class HookService {
   private readonly limits: HookLimits;
   private readonly fileSize: (path: string) => number | undefined;
   private readonly now: () => Date;
-  /** T169: per stream, the session + body of the last hit this service appended — the coalescing key. */
+  /** Per stream, the session + body of the last hit appended: the coalescing key. */
   private readonly lastHit = new Map<string, string>();
 
   constructor(
@@ -259,12 +208,7 @@ export class HookService {
     this.now = options.now ?? (() => new Date());
   }
 
-  /**
-   * Resolves an absolute worktree path, `undefined`-safe. A relative path
-   * needs a `repoRoot` to resolve against; without one (T125) it stays
-   * unresolved rather than being resolved against the daemon's cwd, and the
-   * caller treats that as "not a registered ticket worktree".
-   */
+  /** Resolves a worktree path; a relative one needs `repoRoot`, else it stays unresolved. */
   private absWorktree(worktree: string | undefined): string | undefined {
     if (worktree === undefined) return undefined;
     if (isAbsolute(worktree)) return worktree;
@@ -273,23 +217,10 @@ export class HookService {
   }
 
   /**
-   * Resolves `{agent, ticket, role, worktreePath}` from the payload's `cwd`
-   * (registry-first — see this file's header) — or `undefined` if this call
-   * can't be attributed to a known, live agent. `agentHint` (the payload's
-   * `agile_agent` field, when the CLI forwarded `AGILE_AGENT`) disambiguates
-   * when more than one registered agent's worktree contains `cwd`.
-   */
-  /**
-   * Review round 3 (opus item 4): a stale registry entry (`last_seen`
-   * older than the bus's own liveness timeout — CLAUDE.md tunable "liveness
-   * timeout 5 min") must not win disambiguation, or even resolve alone.
-   * The liveness sweep (`runner.ts`/`bus.ts`) removes a dead agent's record
-   * eventually, but there's a real window between "the agent actually died"
-   * and "the sweep noticed" where a stale-but-still-on-disk record could
-   * otherwise authorize (or, worse, mis-disambiguate) a hook call that
-   * isn't really coming from that agent any more. A record with an
-   * unparseable `last_seen` is treated as stale too — fail safe, not "trust
-   * a value we can't even read".
+   * A record whose `last_seen` is older than the bus liveness timeout (or
+   * unparseable) must not resolve a call: between an agent dying and the
+   * sweep removing its record, it could otherwise authorize or
+   * mis-disambiguate someone else's call.
    */
   private isStale(record: AgentRecord, now: Date): boolean {
     const lastSeenMs = Date.parse(record.last_seen);
@@ -309,12 +240,9 @@ export class HookService {
       const worktreeAbs = this.absWorktree(record.worktree);
       return worktreeAbs !== undefined && isPathInside(realCwd, safeRealpath(worktreeAbs));
     });
-    // The hint is the session's own identity (AGILE_AGENT from its
-    // settings.json) and wins outright, stale record or not. Nineteenth
-    // live run (2026-09-11): the engineer's record had gone stale while its
-    // ticket sat in review; the stale filter below dropped it, the reviewer
-    // sharing the worktree became the single candidate, and the engineer's
-    // rebase was resolved — and halted — as the reviewer.
+    // The hint is the session's own identity and wins outright, stale or
+    // not: a live run once dropped a worker's stale record here and resolved
+    // its rebase as the reviewer sharing the worktree.
     const hinted = agentHint !== undefined ? covering.find((c) => c.id === agentHint) : undefined;
     const candidates = hinted
       ? [hinted]
@@ -323,15 +251,11 @@ export class HookService {
     if (candidates.length > 0) {
       const chosen =
         candidates.length === 1 ? candidates[0] : candidates.find((c) => c.id === agentHint);
-      // More than one candidate and no (matching) hint — fail closed rather
-      // than guess which agent is really calling (this file's header).
+      // Several candidates and no matching hint: fail closed.
       if (chosen === undefined) return undefined;
       const streamId = chosen.record.stream;
-      // A registry entry with no stream cannot be placed (§8.1 step 1:
-      // "resolve the session → stream → repo. Unresolvable ⇒ DENY").
+      // A record with no stream cannot be placed (§8.1 step 1: unresolvable ⇒ deny).
       if (streamId === undefined) return undefined;
-      // Always defined: `covering` only keeps records whose worktree this
-      // resolved above. Fail closed rather than substitute a root.
       const worktreePath = this.absWorktree(chosen.record.worktree);
       if (worktreePath === undefined) return undefined;
       return {
@@ -348,42 +272,17 @@ export class HookService {
   private async buildContext(
     cwd: string | undefined,
     agentHint?: string,
-    // T022 round 2 fix (B1) — see `ClaudePreToolUsePayload.no_additional_context_channel`'s
-    // doc comment: strips normal-priority messages out of the inbox handed
-    // to `decidePreToolUse` so tier 3 never folds/acks them for a caller
-    // with nowhere to put `additionalContext`.
+    // Strips normal-priority messages for a caller with no
+    // `additionalContext` channel, so they are never folded in and acked.
     noAdditionalContextChannel = false,
   ): Promise<HookDecisionContext | undefined> {
     const resolved = this.resolveAgentByCwd(cwd, agentHint);
     if (resolved === undefined) return undefined;
     const { session, stream, role, worktreePath } = resolved;
 
-    // Liveness heartbeat rides on the pre-tool-use hook (§5 "Liveness":
-    // "bus.heartbeat rides on the pre-tool-use hook") — done here so every
-    // hook event (not only pre-tool-use) keeps the registry warm. Goes
-    // straight through the store's deferred, 30s-coalesced `heartbeat` (T009
-    // review round, hot-path decision) rather than `Bus.heartbeat` (which
-    // always writes+commits) — this is the per-tool-call hot path.
-    //
-    // Round 4 (QA round 3 REJECT — a real regression): `StateStore.heartbeat`
-    // now ONLY ever touches `last_seen`/`ticket` and carries every other
-    // field (`role`/`worktree`/`session_id` included) over from the existing
-    // record verbatim — it used to reconstruct the whole record from just
-    // this call's `{ ticket }` patch, silently dropping `role`/`worktree`
-    // once `HEARTBEAT_COALESCE_MS` elapsed. That decayed a live reviewer or
-    // QA session (one tool call roughly every 30+ seconds is normal) to
-    // `resolveAgentByCwd`'s `role ?? 'engineer'` fallback mid-session — this
-    // call site needs no change for the fix (it already only ever passed
-    // `ticket`), the fix is entirely in `StateStore.heartbeat` so it can
-    // never recur from any caller, this one included.
-    //
-    // `StateStore.heartbeat` now throws `NotFoundError` for an agent with no
-    // registered `AgentRecord` at all (round 4: heartbeating an unregistered
-    // agent is a caller bug, never a reason to fabricate one) — but
-    // `resolveAgentByCwd`'s own backward-compat fallback (no `AgentRecord`,
-    // resolved via `Ticket.worktree`/`.assignee` alone) is a legitimate,
-    // tested path with no registry entry to heartbeat at all. That's not a
-    // bug here, just nothing to update — swallow only that specific error.
+    // Liveness heartbeat rides on every hook call (store-side coalesced to
+    // 30 s). A covering record may have been removed since resolution;
+    // nothing to update then.
     try {
       await this.store.heartbeat(session as AgentId, { stream }, this.now);
     } catch (err) {
@@ -401,10 +300,7 @@ export class HookService {
         : this.bus.poll(session as AgentId),
       limits: this.limits,
       fileSize: this.fileSize,
-      // T143: the pattern rules in scope for this stream, plus the two
-      // things their detectors need about the world. Both git lookups are
-      // lazy *and* memoized — an ordinary `git push origin <branch>` or a
-      // file edit never spawns one.
+      // Both git lookups are lazy and memoized: an ordinary call spawns none.
       patternRules: this.patternRulesFor(stream),
       protectedBranches: protectedBranchesFor(this.store, stream),
       upstreamBranch: branches.upstream,
@@ -412,19 +308,9 @@ export class HookService {
     };
   }
 
-  /** The accepted pattern rules in scope for this stream (§5.3), or none when no rules service is wired. */
+  /** The accepted pattern rules in scope for this stream (§5.3). */
   private patternRulesFor(stream: string): Rule[] {
-    const rules = this.options.rules;
-    if (rules === undefined) return [];
-    try {
-      return patternRulesOf(rules.inScope(stream));
-    } catch {
-      // A stream that has gone (resolved from a stale agent record) is not
-      // a reason to crash the hook — the call is gated by the role policy
-      // either way, and `buildContext` already failed closed on anything
-      // it could not resolve at all.
-      return [];
-    }
+    return patternRulesOf(this.rulesInScope(stream));
   }
 
   /** §5.7's counters for every rule this decision evaluated — `stats.fired`, plus `violated` for the one it denied on. */
@@ -441,13 +327,12 @@ export class HookService {
               : 'fired';
         await rules.recordFired(id, outcome);
       } catch {
-        // A counter is telemetry (§5.7's pruning input): losing one must
-        // never turn a decision the hook already made into an error.
+        // A counter is telemetry: losing one must not fail a decision.
       }
     }
   }
 
-  /** Every hook decision is logged, deferred-commit (T009 review round, hot-path decision) — batched by the store rather than one `git commit` per tool call. */
+  /** Every hook decision is logged. */
   private async logDecision(
     ctx: { stream?: string; session?: string } | undefined,
     event: string,
@@ -469,24 +354,18 @@ export class HookService {
           event,
           decision: decision.decision,
           reason: decision.reason,
-          // What was refused, for post-mortems (a deny reason alone left a
-          // live run's blocked commit unrecoverable from the log).
+          // What was refused, for post-mortems.
           ...(decision.decision !== 'allow' && detail.tool ? { tool: detail.tool } : {}),
           ...(decision.decision !== 'allow' && detail.command
             ? { command: detail.command.slice(0, MESSAGE_BODY_MAX_CHARS) }
             : {}),
-          // T138: this call was allowed because a human approved the gate
-          // that blocked it — the one line a post-mortem needs to tell an
-          // allow-once from a policy allow.
+          // Allowed because a human approved the gate that blocked it.
           ...(detail.allowedBy !== undefined ? { allowed_by: detail.allowedBy } : {}),
-          // T143: which rule refused this call — §5.4's built-ins are
-          // global and critical, so "why was I denied" must be answerable
-          // from the log alone.
+          // Which rule refused the call: "why was I denied" from the log alone.
           ...(detail.rule !== undefined ? { rule: detail.rule } : {}),
           ...(detail.repeat === true ? { thread_repeat: true } : {}),
         },
       }),
-      { commit: 'deferred' },
     );
   }
 
@@ -495,17 +374,12 @@ export class HookService {
       try {
         await this.bus.ack(agent, id);
       } catch {
-        // Already acked / raced with a concurrent ack — the delivery goal
-        // ("the model has seen it") is met either way; nothing else to do.
+        // Already acked or raced a concurrent ack: delivered either way.
       }
     }
   }
 
-  /**
-   * `hook.pre_tool_use`. Review round fix (blocker 2): an unresolved `cwd`
-   * is no longer a silent allow — it denies with a fixed reason and always
-   * logs the decision (see this file's header).
-   */
+  /** `hook.pre_tool_use`. An unresolved `cwd` is denied and logged. */
   async preToolUse(payload: ClaudePreToolUsePayload): Promise<PreToolUseHookOutput> {
     const ctx = await this.buildContext(
       payload.cwd,
@@ -531,25 +405,17 @@ export class HookService {
     let wasRouted = false;
     if (decision.decision === 'ask') {
       wasRouted = true;
-      // T138: the route band (design §8.1). `ask` is this hook's own
-      // vocabulary for "needs a human" — it never reaches the wire, because
-      // Claude under ACP cannot answer an interactive `ask`. It becomes a
-      // `classifier_review` gate in the human's inbox plus a deny the model
-      // can act on, and the human's yes lets exactly that call through once
-      // (`route-band.ts`). T121's interim was a deny that named the rule and
-      // told the model to "file a hil_request" — a verb that no longer
-      // exists, so nothing ever reached the human at all.
+      // The route band (§8.1): `ask` never reaches the wire. It becomes a
+      // `classifier_review` gate plus a deny the model can act on, and the
+      // human's yes lets exactly that call through once (`route-band.ts`).
       const why = decision.reason ?? 'never-without-human call';
       const routed = await this.route(ctx, payload, why);
       decision = { ...decision, ...routed.decision };
       allowedBy = routed.allowedBy;
     }
 
-    // 3. The classifier tier (§8.1 step 3, T151) — only when the tiers
-    // above allowed the call: a call the role policy or a pattern rule has
-    // already settled is settled, and asking about it would spend a round
-    // trip (and bump classifier rules' stats) for a call that never
-    // happened.
+    // 3. The classifier tier (§8.1 step 3), only for a call the tiers above
+    // allowed: a settled call is not worth a round trip.
     if (decision.decision === 'allow') {
       const tier = await this.classifierTier(ctx, payload);
       if (tier !== undefined) {
@@ -586,14 +452,10 @@ export class HookService {
   }
 
   /**
-   * §8.1 step 3: the classifier rules in scope for this stream, one call,
-   * §6.3's bands. `undefined` when no classifier rule is in scope at all —
-   * the common case, and the one that must cost nothing.
-   *
-   * The opt-out and a missing key are not a special case here: they go
-   * through the very same fail policy as an outage (§6.4, "the same policy
-   * covers the opt-out and a missing key"), by failing the call with
-   * `not_configured` instead of making it.
+   * §8.1 step 3: one classifier call for the rules in scope, §6.3's bands.
+   * `undefined` when no classifier rule is in scope (the common, free
+   * case). The opt-out and a missing key go through the same fail policy as
+   * an outage (§6.4), by failing with `not_configured`.
    */
   private async classifierTier(
     ctx: HookDecisionContext,
@@ -639,10 +501,9 @@ export class HookService {
   }
 
   /**
-   * Turns one tier outcome into the decision the model sees, plus the three
-   * things it implies: the `classifier_call` event (§6.2's latency), the
-   * `hook_unchecked` thread entry (§6.4) and, for a route, T138's route
-   * band — never a second routing mechanism.
+   * Turns a tier outcome into the model's decision, plus the
+   * `classifier_call` event (§6.2), the `hook_unchecked` thread entry
+   * (§6.4) and, for a route, the route band.
    */
   private async applyClassifierTier(
     ctx: HookDecisionContext,
@@ -706,7 +567,6 @@ export class HookService {
           ...(outcome.error !== undefined ? { error: outcome.error } : {}),
         },
       }),
-      { commit: 'deferred' },
     );
   }
 
@@ -731,19 +591,14 @@ export class HookService {
         body: body.slice(0, THREAD_BODY_MAX_CHARS),
       });
     } catch {
-      // A stream that has gone, or a thread write that raced a close: the
-      // decision is already made and must not become an error.
+      // The stream has gone or the write raced a close; the decision stands.
     }
   }
 
   /**
-   * T169: a refused or routed call is visible on the stream's thread, not
-   * only in `events.jsonl` and the rule's counters. One `event` entry per
-   * decision that did not let the call through: a rule-named hit carries
-   * the rule's id as `ref` (the stream page renders it as a "blocked by
-   * rule" card linking to the rule) and its text; a role-policy deny that
-   * names no rule gets a plainer line with no `ref`. Best effort, like
-   * `noteUnchecked`: the decision is already made.
+   * A refused or routed call is shown on the stream's thread: a rule hit
+   * carries the rule id as `ref` (a "blocked by rule" card), a role-policy
+   * deny gets a plain line. Best effort; the decision is already made.
    */
   private async noteHit(
     ctx: HookDecisionContext,
@@ -764,11 +619,9 @@ export class HookService {
       body = `hook_deny: ${outcome} \`${target}\` — ${decision.reason ?? 'role policy'}`;
     }
     const capped = body.slice(0, THREAD_BODY_MAX_CHARS);
-    // Coalesce a retry storm: when the stream's newest thread entry is
-    // this very hit (same body, so same rule/ref, outcome and target) from
-    // the same session, the thread already says it — append nothing, and
-    // let the `hook_decision` event carry `thread_repeat` instead. The
-    // thread is append-only, so the first entry is never rewritten.
+    // Coalesce a retry storm: if the newest thread entry is this same hit
+    // from the same session, append nothing and flag `thread_repeat` on the
+    // event instead.
     const key = `${ctx.session}\u0000${capped}`;
     try {
       const last = this.store.readThread(ctx.stream).at(-1);
@@ -835,12 +688,7 @@ export class HookService {
     }
   }
 
-  /**
-   * One routed (`ask`) verdict: the §8.1 route band. Without a gates
-   * service, or with a call this hook cannot fingerprint (no tool name at
-   * all), it fails closed with a plain deny — a routed call is never
-   * allowed just because the route is missing.
-   */
+  /** The route band for one `ask` verdict. No gates or no fingerprintable call: plain deny, never allow. */
   private async route(
     ctx: HookDecisionContext,
     payload: ClaudePreToolUsePayload,
@@ -862,9 +710,7 @@ export class HookService {
       policy = this.store.getPolicy();
     } catch (err) {
       if (!(err instanceof NotFoundError)) throw err;
-      // No `policy.yaml` (a home that predates `agile init`'s default):
-      // every gate is the human's, which is what the shipped default says
-      // and the fail-safe `resolveGate` would land on anyway.
+      // No `policy.yaml`: every gate is the human's (the shipped default).
       policy = {
         gates: { land: 'human', rule_accept: 'human', classifier_review: 'human' },
         breaker_signals: [],
@@ -885,10 +731,8 @@ export class HookService {
   }
 
   /**
-   * `hook.post_tool_use`. Truncation itself is not enforceable on the wire
-   * for Claude (see `PostToolUseHookOutput`'s DESIGN-GAP) — this always
-   * records real usage as a ledger line and, only when the response was
-   * oversized, tells the model so via `additionalContext`.
+   * `hook.post_tool_use`: logs usage and, for an oversized response, tells
+   * the model via `additionalContext` (it cannot be truncated for Claude).
    */
   async postToolUse(payload: ClaudePostToolUsePayload): Promise<PostToolUseHookOutput> {
     const ctx = await this.buildContext(payload.cwd, agentHintFrom(payload));
@@ -920,11 +764,8 @@ export class HookService {
   }
 
   /**
-   * `hook.stop`. Drains (acks) every low-priority message in this agent's
-   * inbox and re-prompts the model with them via `decision: 'block'` +
-   * `reason` — only when there is something to deliver; an empty inbox
-   * returns `{}` (never blocks the turn to say nothing) — see
-   * `StopHookOutput`'s DESIGN-GAP.
+   * `hook.stop`: acks every low-priority message and re-prompts the model
+   * with them (`block` + `reason`); an empty inbox returns `{}`.
    */
   async stop(payload: ClaudeStopPayload): Promise<StopHookOutput> {
     const ctx = await this.buildContext(payload.cwd, agentHintFrom(payload));
@@ -950,7 +791,7 @@ function summarizeLowPriority(messages: AgentMessage[]): string {
   return messages.map((m) => `[${m.kind} from ${m.from}] ${m.body}`).join('\n');
 }
 
-/** T169: what a hit refused — the command, else the path, else the tool — one line, capped. */
+/** What a hit refused (command, else path, else tool), one line, capped. */
 function hitTarget(payload: ClaudePreToolUsePayload): string {
   const input = payload.tool_input ?? {};
   const pick = (key: string): string | undefined =>

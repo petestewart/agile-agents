@@ -1,15 +1,4 @@
-/**
- * Local (non-persisted) helpers for the gates module (design
- * agile-agents-design.md §16 "HIL gates policy").
- *
- * T018 review fix: `HilRequest`/`BreakerState` and their validators used to
- * live here as hand-rolled types; they are now `packages/shared/src/hil.ts`
- * (`HilRequestSchema`/`BreakerStateSchema`, zod, strict — CLAUDE.md:
- * "Schemas live in `packages/shared` and nowhere else"), imported by
- * `service.ts`. This file keeps only small predicates over the shared
- * `GateOwner` type that have no reason to live in shared (they inspect a
- * runtime value, not describe a persisted shape).
- */
+/** Runtime predicates over the shared `GateOwner` type (the persisted shapes live in shared). */
 
 import { type GateOwner, HUMAN_TIMEOUT_PATTERN } from '@agile-agents/shared';
 

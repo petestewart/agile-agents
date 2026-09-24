@@ -1,24 +1,10 @@
 /**
- * `agile rules seed --from PLAN-v1.md` (T140) — imports the decisions the
- * project already made into the rules store as `proposed` global
- * `guidance` rules, so the first accept pass (§5.1) is over real material
- * rather than over a demo fixture.
- *
- * Where this lives: no package in this repo has a `scripts` directory and
- * there is no top-level `scripts/` either, and "no new codebase conventions without explicit
- * approval" (CLAUDE.md) rules out inventing one for a single file — so the
- * importer is an ordinary module beside its service and ships as a CLI
- * subcommand instead of a script.
- *
- * What it reads: the "Discovered Issues Log" (§9) of `PLAN-v1.md`, whose
- * entries record decisions in two spellings — `Decisions (manager, yolo):`
- * / `Decisions (T011):` and a bare `Decision:`. Each decision *sentence*
- * becomes one rule; nothing else in the file is touched.
- *
- * Idempotent: `agile rules seed` skips a decision whose text already exists
- * as a rule, so running it twice imports nothing the second time. Nothing
- * is committed — the state home is per machine (§7.1); the command is what
- * ships.
+ * `agile rules seed --from PLAN-v1.md`: imports the project's recorded
+ * decisions (the §9 Discovered Issues Log, `Decision:` / `Decisions (…):`
+ * entries) as `proposed` global `guidance` rules, one per decision
+ * sentence, so the first accept pass is over real material. A module
+ * beside its service rather than a script (the repo has no scripts dir).
+ * Idempotent: `agile rules seed` skips text that is already a rule.
  */
 
 import { readFileSync } from 'node:fs';
@@ -27,7 +13,6 @@ import {
   type RuleCriteria,
   SEED_PROVENANCE_PREFIX,
 } from '@agile-agents/shared';
-import type { RulesService } from './service';
 
 /** The §9 heading, matched on its text rather than its number. */
 const DECISIONS_SECTION = /^##\s+\d+\.\s+Discovered Issues Log\s*$/;
@@ -38,7 +23,7 @@ const DECISION_MARKER = /Decisions?\s*(?:\([^)]*\))?\s*:/;
 /** `(1) … (2) …` — the numbered form several entries use for multiple decisions. */
 const NUMBERED = /\((\d)\)\s*/g;
 
-/** Shortest fragment worth proposing: below this it is a fragment, not a decision. */
+/** Shorter than this is a fragment, not a decision. */
 const MIN_RULE_CHARS = 25;
 
 /** The §9 section body of a PLAN-v1-shaped document, or `''` when there is none. */
@@ -60,12 +45,7 @@ function tidy(fragment: string): string {
     .slice(0, RULE_TEXT_MAX_CHARS);
 }
 
-/**
- * One decision sentence per rule. An entry with a numbered list of
- * decisions yields one rule per number; otherwise the decision text is
- * split on `;`, which is how the log separates independent decisions
- * inside one sentence.
- */
+/** One rule per numbered decision, else per `;`-separated clause. */
 function fragmentsOf(decisionText: string): string[] {
   const numbered = decisionText.split(NUMBERED);
   if (numbered.length > 1) {
@@ -92,22 +72,14 @@ export function parsePlanV1Decisions(markdown: string): string[] {
   return texts;
 }
 
-/**
- * `provenance.by` every seeded rule carries — the answer to "why does this
- * rule exist". T163: the `seed:` prefix is what collapses them into one
- * inbox card (`isSeededRule`).
- */
+/** `provenance.by` of every seeded rule; the `seed:` prefix groups them into one inbox card. */
 export const SEED_PROVENANCE = `${SEED_PROVENANCE_PREFIX}PLAN-v1`;
 
 /**
- * T156 (**D14**): classifier wording for seeded decisions whose sentence,
- * lifted out of the log, is too thin to ask as-is. The Phase 5 agreement
- * check (PLAN T154 note) put both examples of each of these near 0.5 under
- * the default "Does this action violate: <text>?". Each is rewritten as one
- * yes/no question where **yes means the rule is broken**, with `criteria`
- * because both lines are subtle. Matched on the seeded text, so a fresh
- * `agile rules seed` proposes them already worded; the rules already in a
- * home (…GR77MM, …8CMD5B) take the same wording through `agile rules edit`.
+ * D14: classifier wording for seeded sentences too thin to ask as-is (both
+ * examples scored near 0.5 under the default question). Each is one yes/no
+ * question where yes means the rule is broken, with `criteria`. Matched on
+ * the seeded text.
  */
 export interface SeedClassifierWording {
   /** Matches the seeded decision sentence. */
@@ -147,12 +119,9 @@ export function seedClassifierWording(text: string): SeedClassifierWording | und
 }
 
 /**
- * The proposal `agile rules seed` sends for one decision sentence.
- * Guidance and global on purpose: these are the project's own decisions,
- * written as prose, with no pattern to check and no repo to pin them to —
- * the human narrows or promotes one when accepting it (§3.1's
- * edit-then-accept). A sentence with rewritten wording (T156) carries its
- * `question` and `criteria`, ready for a promotion to `classifier`.
+ * The proposal for one decision sentence: guidance and global (prose with
+ * no pattern or repo; the human narrows or promotes it when accepting),
+ * with the rewritten `question`/`criteria` when there is one.
  */
 export function seedProposal(text: string): {
   text: string;

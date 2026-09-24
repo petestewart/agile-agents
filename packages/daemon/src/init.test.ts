@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { validatePolicy, validateReposConfig, validateVendorsConfig } from '@agile-agents/shared';
 import { parse as parseYaml } from 'yaml';
-import { recommendedVendorEntries, runInit } from './init';
+import { runInit } from './init';
 
 let home: string;
 let scratch: string;

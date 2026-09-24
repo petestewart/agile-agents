@@ -1,13 +1,6 @@
 /**
- * `question.*` RPC methods over a `QuestionService` (T121; cockpit design
- * §1.4, §3). Mirrors `gates/rpc.ts` and `streams/rpc.ts`: every handler
- * validates its params at the boundary with shared's own zod schemas and
- * throws `RpcParamError` (-32602) rather than letting a destructuring
- * `TypeError` reach `dispatch()`.
- *
- * T121 re-keyed the params: `stream` (a ULID) replaced `ticket`, and
- * `resolved_as` is `reply` or absent — `decision` and `ticket` resolutions
- * went with the oracle and the ticket model.
+ * `question.*` RPC over a `QuestionService` (§1.4, §3). Params are validated
+ * at the boundary with shared's schemas (`RpcParamError`, -32602).
  */
 
 import {
@@ -17,31 +10,14 @@ import {
   UlidSchema,
 } from '@agile-agents/shared';
 import type { AgentId, QuestionId } from '@agile-agents/shared';
-import { RpcParamError } from '../gates/rpc';
+import { RpcParamError, requireObject, requireStreamId } from '../gates/rpc';
 import type { RpcMethodHandler } from '../rpc';
 import type { AnswerQuestionInput, QuestionService } from './service';
-
-function requireObject(params: unknown): Record<string, unknown> {
-  if (typeof params !== 'object' || params === null || Array.isArray(params)) {
-    throw new RpcParamError('params must be an object', { params });
-  }
-  return params as Record<string, unknown>;
-}
 
 function requireQuestionId(value: unknown): QuestionId {
   const result = QuestionIdSchema.safeParse(value);
   if (!result.success) {
     throw new RpcParamError('invalid "id": must look like Q-<ulid>', { id: value });
-  }
-  return result.data;
-}
-
-function requireStreamId(value: unknown): string {
-  const result = UlidSchema.safeParse(value);
-  if (!result.success) {
-    throw new RpcParamError('invalid "stream": must be a 26-character Crockford-base32 ULID', {
-      stream: value,
-    });
   }
   return result.data;
 }

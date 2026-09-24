@@ -1,44 +1,13 @@
 /**
- * Thin git wrapper for the landing path (T019, renamed from `merge/` by
- * T132 — design/cockpit-design.md §8.2 "Landing path, per stream").
- * `Bun.spawnSync` only,
- * never a shell string (session brief) — every argument is passed as its
- * own array element, so a branch/title/path with spaces or shell
- * metacharacters is never re-interpreted.
+ * Thin git wrapper for the landing path (§8.2). `Bun.spawnSync` with argv,
+ * never a shell string, so no argument is re-interpreted. Every spawn uses
+ * `sandboxedSubprocessEnv` (git reads `HOME` for global config and
+ * credential helpers), and callers pass `repoRoot` explicitly rather than
+ * have it guessed from a `/.worktrees/` path segment.
  *
- * `gitWrite` is used for every rebase/merge/commit this package makes: it
- * always prepends `-c commit.gpgsign=false` *before* the subcommand (a git
- * config override must precede the verb, not follow it) — same rationale as
- * `store/store.ts`'s `commitPaths` and the 2026-09-09 Discovered-Issues-Log
- * entry ("the git commit-signing hook ... fails with 'too many open
- * files' ... worker commits in worktrees may hit the same and should do
- * likewise") — and stamps a fixed daemon author/committer via env so a
- * merge/rebase commit's identity never depends on whatever `user.name`/
- * `user.email` happens to be configured in the calling environment.
- *
- * `removeWorktreeSafely` (review round 1, opus blocker 2): a plain `git
- * worktree remove` throws on a stray untracked file, and doing that *after*
- * the merge already landed would otherwise be the caller's last chance to
- * record the outcome — so this never throws, and draws the force/no-force
- * line at "tracked" vs "untracked", never forcing past uncommitted tracked
- * changes.
- *
- * T034: every spawn here also runs with `sandboxedSubprocessEnv` (never
- * this process's inherited `$HOME`) — git respects `HOME` for its own
- * global config (`~/.gitconfig`) and, on some platforms, credential
- * helpers, and this module's callers span the daemon's own worktrees
- * (the repo root, a ticket worktree, `.worktrees/_integration`,
- * `.worktrees/_main`), never the operator's real home. Production must not
- * rely on the test preload's `GIT_CONFIG_GLOBAL=/dev/null` for this.
- *
- * T034 round 2 (review): `git`/`gitWrite`/`runGit` take `repoRoot` as an
- * explicit parameter — not derived from `cwd` by string-matching a
- * `/.worktrees/` segment (an earlier version of this file did that; a
- * heuristic is exactly the kind of thing that quietly breaks the day a
- * repo root or worktree happens to contain that literal substring itself,
- * or the layout changes). Every caller already knows its own repo root
- * (`landing/service.ts`'s resolved repo root) — passing it explicitly is strictly simpler than
- * recovering it.
+ * `gitWrite` is for anything that can create a commit: unsigned (`-c
+ * commit.gpgsign=false` before the verb; the signing hook has failed with
+ * "too many open files") and authored by a fixed daemon identity.
  */
 
 import { sandboxedSubprocessEnv } from '../subprocess-env';
@@ -51,7 +20,7 @@ export interface GitResult {
   stderr: string;
 }
 
-/** Fixed identity for every commit this module makes (merges, rebase replays). */
+/** Fixed identity for every commit this module makes. */
 export const DAEMON_GIT_AUTHOR = {
   name: 'agiled',
   email: 'agiled@agile-agents.local',
@@ -67,19 +36,18 @@ function daemonEnv(repoRoot: string): Record<string, string> {
   };
 }
 
-/** Read-only / plumbing commands (checkout, log, diff, rev-parse, worktree, ...). */
-export function git(args: string[], cwd: string, repoRoot: string): GitResult {
-  const result = Bun.spawnSync(['git', ...args], {
-    cwd,
-    env: sandboxedSubprocessEnv(repoRoot, 'git'),
-    stdout: 'pipe',
-    stderr: 'pipe',
-  });
+function spawnGit(argv: string[], cwd: string, env: Record<string, string>): GitResult {
+  const result = Bun.spawnSync(argv, { cwd, env, stdout: 'pipe', stderr: 'pipe' });
   return {
     exitCode: result.exitCode,
     stdout: textDecoder.decode(result.stdout).trim(),
     stderr: textDecoder.decode(result.stderr).trim(),
   };
+}
+
+/** Read-only and plumbing commands (log, diff, rev-parse, worktree, ...). */
+export function git(args: string[], cwd: string, repoRoot: string): GitResult {
+  return spawnGit(['git', ...args], cwd, sandboxedSubprocessEnv(repoRoot, 'git'));
 }
 
 export class GitCommandError extends Error {
@@ -103,42 +71,24 @@ export function runGit(args: string[], cwd: string, repoRoot: string): string {
 }
 
 /**
- * Rebase / merge / commit — every command that can create a new commit.
- * Always unsigned (`-c commit.gpgsign=false`, prepended before the verb) and
- * daemon-authored (env). Never throws on a non-zero exit (rebase/merge
- * conflicts are an expected outcome the caller inspects), unlike `runGit`.
+ * Merge and commit: unsigned and daemon-authored. Never throws on a
+ * non-zero exit (a conflict is an outcome the caller inspects).
  */
 export function gitWrite(args: string[], cwd: string, repoRoot: string): GitResult {
-  const result = Bun.spawnSync(['git', '-c', 'commit.gpgsign=false', ...args], {
-    cwd,
-    env: daemonEnv(repoRoot),
-    stdout: 'pipe',
-    stderr: 'pipe',
-  });
-  return {
-    exitCode: result.exitCode,
-    stdout: textDecoder.decode(result.stdout).trim(),
-    stderr: textDecoder.decode(result.stderr).trim(),
-  };
+  return spawnGit(['git', '-c', 'commit.gpgsign=false', ...args], cwd, daemonEnv(repoRoot));
 }
 
 export interface RemoveWorktreeResult {
   removed: boolean;
-  /** Why it wasn't removed — present whenever `removed` is `false`. */
+  /** Why it wasn't removed; present whenever `removed` is `false`. */
   reason?: string;
 }
 
 /**
- * Removes `worktreePath` (a worktree of `repoRoot`) without ever throwing.
- * Reads `worktreePath`'s own status first: any *tracked* modification
- * (staged, unstaged, or a mid-operation state `git status` reports as
- * non-`??`) keeps the worktree untouched — never force past real work, even
- * though `git worktree remove --force` would happily discard it. Untracked
- * files only (build output, scratch files) get `--force`, since a plain
- * `git worktree remove` refuses to remove a non-empty directory. A status
- * check that itself fails (`worktreePath` already gone, say) is reported
- * the same way as a failed removal — this function's contract is "tell me
- * whether the worktree is gone after this call", not "diagnose why".
+ * Removes a worktree without ever throwing. Any tracked modification keeps
+ * it (never force past real work); untracked files only get `--force`,
+ * since a plain remove refuses a non-empty dir. A failed status read is
+ * reported like a failed removal: the contract is "is it gone now".
  */
 export function removeWorktreeSafely(repoRoot: string, worktreePath: string): RemoveWorktreeResult {
   const status = git(['status', '--porcelain=v1', '--untracked-files=all'], worktreePath, repoRoot);

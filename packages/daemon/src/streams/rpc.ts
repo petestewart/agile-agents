@@ -1,14 +1,7 @@
 /**
- * `stream.*` RPC methods over a `StreamService` (T120). Same contract as
- * `questions/rpc.ts`: every handler validates its params at the boundary
- * and throws `RpcParamError` (-32602) rather than letting a destructuring
- * `TypeError` reach `dispatch()`.
- *
- * **The principal is stamped here, never read from params** (cockpit design
- * §2.2: "the HTTP edge stamps `human` and never accepts a principal from a
- * request body"). This edge serves the CLI and the UI, so every call is
- * `human`. An agent-principal write goes through `StreamService` directly
- * (T130's MCP verbs), not through this table.
+ * `stream.*` RPC over a `StreamService`. Params are validated at the
+ * boundary (`RpcParamError`, -32602). The principal is always `human`
+ * (§2.2); agent writes go through `StreamService` via the verbs.
  */
 
 import {
@@ -18,7 +11,7 @@ import {
   UlidSchema,
   validateStreamCreateInput,
 } from '@agile-agents/shared';
-import { RpcParamError } from '../gates/rpc';
+import { RpcParamError, optionalString, paramErrors, requireObject } from '../gates/rpc';
 import { type ThreadReplyDeps, sayAndAnswer } from '../questions/thread-reply';
 import type { RpcMethodHandler } from '../rpc';
 import { AlreadyExistsError } from '../store/store';
@@ -30,15 +23,8 @@ import {
   UnknownRepoError,
 } from './service';
 
-/** Every `stream.*` write from this edge is the human's (design §2.2). */
+/** Every `stream.*` write from this edge is the human's. */
 const EDGE_PRINCIPAL = 'human' as const;
-
-function requireObject(params: unknown): Record<string, unknown> {
-  if (typeof params !== 'object' || params === null || Array.isArray(params)) {
-    throw new RpcParamError('params must be an object', { params });
-  }
-  return params as Record<string, unknown>;
-}
 
 function requireStreamId(value: unknown): string {
   const result = UlidSchema.safeParse(value);
@@ -68,14 +54,6 @@ function optionalNonNegativeInt(value: unknown, field: string): number | undefin
   return value;
 }
 
-function optionalString(value: unknown, field: string): string | undefined {
-  if (value === undefined) return undefined;
-  if (typeof value !== 'string' || value.length === 0) {
-    throw new RpcParamError(`invalid "${field}": must be a non-empty string`, { [field]: value });
-  }
-  return value;
-}
-
 function requireThreadKind(value: unknown): ThreadEntryKind {
   if (typeof value !== 'string' || !(THREAD_ENTRY_KINDS as readonly string[]).includes(value)) {
     throw new RpcParamError(`invalid "kind": must be one of ${THREAD_ENTRY_KINDS.join(', ')}`, {
@@ -85,11 +63,7 @@ function requireThreadKind(value: unknown): ThreadEntryKind {
   return value as ThreadEntryKind;
 }
 
-/**
- * The patch a human may send. `agent` is deliberately not accepted: the
- * store would reject it anyway (D11), and refusing it at the edge makes the
- * error say why instead of surfacing as a store-level write violation.
- */
+/** The patch a human may send. `agent` is refused here so the error says why (the store would reject it, D11). */
 function requireHumanPatch(params: Record<string, unknown>): StreamPatch {
   if ('agent' in params) {
     throw new RpcParamError(
@@ -111,9 +85,7 @@ function requireHumanPatch(params: Record<string, unknown>): StreamPatch {
   const targetBranch = optionalString(params.target_branch, 'target_branch');
   if (targetBranch !== undefined) patch.target_branch = targetBranch;
   if (params.parent !== undefined) patch.parent = requireStreamId(params.parent);
-  // T150 (§6.4): the per-stream classifier opt-out. `'on'` is not a
-  // stream-level override that re-enables the tier — it clears the
-  // opt-out and lets the repo/home default decide again.
+  // §6.4's per-stream opt-out. `'on'` just clears it, so the repo/home default decides.
   if (params.classifier !== undefined) {
     if (params.classifier !== 'on' && params.classifier !== 'off') {
       throw new RpcParamError('invalid "classifier": must be "on" or "off"', {
@@ -131,36 +103,18 @@ function requireHumanPatch(params: Record<string, unknown>): StreamPatch {
   return patch;
 }
 
-/**
- * Errors the service/store raise for **caller input** — a parent cycle, a
- * duplicate id, an unknown parent or an unregistered repo. `dispatch()`
- * only reads a `code` off the thrown error, so without this they surfaced
- * as -32603 "internal error" while every other validation failure on this
- * surface is -32602 (T126, QA rough edge 1). Everything else still
- * propagates untouched: a real internal fault must not be relabelled as
- * the caller's fault.
- */
-async function asParamErrors<T>(run: () => Promise<T>): Promise<T> {
-  try {
-    return await run();
-  } catch (err) {
-    if (
-      err instanceof StreamCycleError ||
-      err instanceof AlreadyExistsError ||
-      err instanceof UnknownParentStreamError ||
-      err instanceof UnknownRepoError
-    ) {
-      throw new RpcParamError(err.message);
-    }
-    throw err;
-  }
-}
+/** Errors here that are caller input: -32602, not an internal fault. */
+const asParamErrors = paramErrors(
+  StreamCycleError,
+  AlreadyExistsError,
+  UnknownParentStreamError,
+  UnknownRepoError,
+);
 
 /**
- * T169: optional wiring for `stream.thread_append`. With `reply`, a plain
- * human `line` (no `ref`) goes through `sayAndAnswer` — the cockpit
- * composer's path — so `agile stream say` prompts the live worker and
- * closes the questions that worker had open, exactly as the web does.
+ * With `reply`, a plain human `line` goes through `sayAndAnswer` (the
+ * composer's path), so `agile stream say` prompts the live worker and
+ * closes its open questions, as the web does.
  */
 export interface StreamRpcOptions {
   reply?: ThreadReplyDeps;

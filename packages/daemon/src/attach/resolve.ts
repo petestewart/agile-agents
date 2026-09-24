@@ -1,23 +1,9 @@
 /**
- * Attach-time resolution of `vendor` / `model` / `effort` (PLAN.md **D12**,
- * ticket T130).
- *
- * One order, applied field by field and nothing else:
- *
- *   1. the `agile attach` flag, when given;
- *   2. the stream's repo entry in `repos.yaml` (`vendor` / `model` /
- *      `effort`);
- *   3. the state home's `config.yaml` (`default_vendor` / `default_model` /
- *      `default_effort`);
- *   4. the built-in default (**D17**): `claude` / `claude-opus-5-5` / `low`
- *      (`BUILTIN_SESSION_DEFAULTS` in shared — the model only for Claude);
- *   5. the provider's own `defaultModel`, for a non-Claude vendor with no
- *      model named anywhere.
- *
- * Pure: no store, no filesystem, no clock — the caller hands it the two
- * config records it already has. That is what makes "why did this session
- * get sonnet at high effort?" answerable by one unit test rather than by
- * reading the daemon.
+ * Attach-time `vendor`/`model`/`effort` (D12, D17), field by field: the
+ * attach flag, the repo entry, the home `config.yaml`, the built-in default
+ * (`claude` / `claude-opus-5-5` / `low`), then a non-Claude provider's own
+ * `defaultModel`. Pure, so "why did this session get that model?" is one
+ * unit test.
  */
 
 import {
@@ -37,7 +23,7 @@ import {
 /** The vendor default when nothing names one (D17). */
 export const DEFAULT_VENDOR = BUILTIN_SESSION_DEFAULTS.vendor;
 
-/** A vendor name that is not a registry entry — typed so the RPC edge reports -32602, not an internal error. */
+/** A vendor that is not a registry entry (-32602 at the edge). */
 export class UnknownVendorError extends Error {
   constructor(
     public readonly vendor: string,
@@ -79,7 +65,7 @@ export function resolveSessionSettings(
   return { vendor, model: model ?? provider.defaultModel, effort, provider };
 }
 
-/** What an effort level contributes to the spawn for this provider, or `undefined` when the vendor has no mapping at all. */
+/** An effort level's spawn contribution for this provider; `undefined` when unmapped. */
 export function effortContribution(
   provider: AcpProviderConfig,
   effort: Effort,
@@ -87,7 +73,7 @@ export function effortContribution(
   return provider.effort?.(effort);
 }
 
-/** The thread line the daemon writes when a vendor cannot honour the requested effort (D12). */
+/** The thread line when a vendor can't honour the requested effort (D12). */
 export function effortIgnoredLine(vendor: string, effort: Effort): string {
   return `effort ${effort} ignored by ${vendor}`;
 }

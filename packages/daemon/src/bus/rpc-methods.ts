@@ -1,13 +1,4 @@
-/**
- * `bus.*` RPC methods — same shape as `store/rpc-methods.ts`
- * (`buildStateRpcMethods`), for wiring into `rpc.ts`'s `extraMethods` table
- * (design/agile-agents-design.md §5 "Comms bus": "Clients ... use a
- * unix-socket API"): `bus.poll`, `bus.ack`, `bus.heartbeat` — the Pi
- * extension's delivery and liveness path. T168 deleted `bus.send`.
- *
- * Params are trusted to be well-formed objects shaped like the interfaces
- * below (same as every other RPC method here and in `store/rpc-methods.ts`).
- */
+/** `bus.poll`, `bus.ack` and `bus.heartbeat` RPC: the Pi extension's delivery and liveness path. Params are trusted, as in `store/rpc-methods.ts`. */
 
 import type { AgentId, AgentRecord, MessagePriority } from '@agile-agents/shared';
 import type { RpcMethodHandler } from '../rpc';

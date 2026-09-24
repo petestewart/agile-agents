@@ -1,40 +1,23 @@
 /**
- * The push detector of design/cockpit-design.md §5.4 — the deterministic
- * check behind the `no_push_protected` and `no_push` built-in pattern rules
- * (D7, D8), borrowed from KiroCrew's argv floor (D11).
+ * The push detector (§5.4): the deterministic check behind the
+ * `no_push_protected` and `no_push` built-in rules (D7, D8), after
+ * KiroCrew's argv floor (D11). Deliberately paranoid, since a table keyed
+ * on `args[0]` was once dodged by `git -C <repo> push origin main`; each
+ * property is a row in `push-detector.test.ts`:
  *
- * It exists because the previous implementation was dodged by spelling:
- * T010's QA round found `git -C <repo> push origin main` walked straight
- * past a table that keyed off `args[0]`. So this one is deliberately
- * paranoid, and every property the design lists is a row in
- * `push-detector.test.ts`:
+ *  - anchored on the git subcommand, read past global options, never a
+ *    substring (`git stash push` is ordinary work);
+ *  - chains, `sh -c "…"` and pipes are tokenised, not scanned;
+ *  - anything unresolvable (`$(…)`, backticks, `eval`, `${VAR}`, unbalanced
+ *    quotes) fails closed with `CANNOT_DETERMINE_REASON`;
+ *  - a push to a named non-protected branch is allowed (D7);
+ *  - a bare `git push` is resolved against the upstream (unresolvable ⇒
+ *    deny), and a `HEAD`/`@` destination against the checked-out branch;
+ *  - `-c alias.…` and the plumbing under `push` (`send-pack`, `http-push`,
+ *    `remote-ext`) fail closed;
+ *  - merging into a protected branch is the same act as pushing to it.
  *
- *  - anchored on the **git subcommand**, read after `-c`/`-C`/global
- *    options, never on a substring of the command line — `git stash push`
- *    and `git log --grep push` are ordinary work;
- *  - shell chains, `sh -c "…"` and pipe glue are tokenised
- *    (`parseCommandIntoAtoms`), not scanned;
- *  - anything the tokenizer cannot resolve — `$(…)`, backticks, `eval`,
- *    `${VAR}` in the git invocation itself, unbalanced quotes — **fails
- *    closed** with `CANNOT_DETERMINE_REASON`;
- *  - a push to an explicitly named non-protected branch is allowed (D7);
- *  - a bare `git push` is resolved against the checked-out branch's
- *    upstream and denied when that is unresolvable, and a refspec whose
- *    destination is `HEAD`/`@` is resolved against the checked-out branch
- *    (T143 review: `git push origin HEAD` run on `main` pushes to `main`,
- *    but the string `"HEAD"` matches no protected name);
- *  - a `-c alias.…=…` config override, and the plumbing commands `push` is
- *    built on (`send-pack`, `http-push`, `remote-ext`), **fail closed**:
- *    they reach a push without the literal `push` subcommand this detector
- *    anchors on. Nothing else is allow-listed — an unknown subcommand is
- *    still ordinary work;
- *  - merging into a protected branch (`git checkout main && git merge …`,
- *    or a bare `git merge` while HEAD already is one) is the same act as
- *    pushing to it and is denied by the same detector.
- *
- * Both entry points return the deny **reason**, or `undefined` when the
- * command is allowed — the same shape `policy-tables.ts` uses, so the rule
- * checkers in `rule-checks.ts` stay one line each.
+ * Both entry points return the deny reason, or `undefined` when allowed.
  */
 
 import {
@@ -50,20 +33,11 @@ import {
 export const CANNOT_DETERMINE_REASON = 'cannot determine the git subcommand';
 
 export interface PushDetectorContext {
-  /** The repo's `protected_branches` (`repos.yaml`, D8 — defaults to `main`/`master`), resolved at check time. */
+  /** The repo's `protected_branches` (D8; default `main`/`master`). */
   protectedBranches: readonly string[];
-  /**
-   * `git rev-parse --abbrev-ref @{upstream}` in the session's worktree
-   * (argv, no shell), or `undefined` when there is no upstream / git
-   * failed. Only called for a push with no explicit refspec, so an
-   * ordinary `git push origin <branch>` costs no subprocess.
-   */
+  /** `@{upstream}` of the worktree, or `undefined`. Called only for a push with no refspec. */
   upstream: () => string | undefined;
-  /**
-   * The checked-out branch (`git rev-parse --abbrev-ref HEAD`), or
-   * `undefined` when unreadable. Only called for a `git merge` with no
-   * preceding `checkout`/`switch` in the same command.
-   */
+  /** The checked-out branch, or `undefined`. Called only when needed. */
   head: () => string | undefined;
 }
 
@@ -73,12 +47,9 @@ function isUnresolvedToken(token: string): boolean {
 }
 
 /**
- * Normalised destination names for one refspec: the dest side with a
- * leading `+` and a `refs/heads/` prefix removed, plus its final path
- * segment, so `refs/heads/main` and `refs/remotes/origin/master` are both
- * recognised. Comparing the final segment as well is deliberately
- * over-eager (`origin/main` and a hypothetical `feature/main` both match) —
- * this detector's failure direction is deny, not allow.
+ * Destination names for one refspec: the dest without `+`/`refs/heads/`,
+ * plus its final segment. Deliberately over-eager (`feature/main` matches
+ * `main`): this detector fails towards deny.
  */
 function destBranchNames(refspec: string): string[] {
   const dest = refspecDestBranch(refspec).replace(/^refs\/heads\//, '');
@@ -86,26 +57,13 @@ function destBranchNames(refspec: string): string[] {
   return last !== undefined && last !== dest ? [dest, last] : [dest];
 }
 
-/**
- * Spellings of "the branch I am on" that git resolves for itself. As a
- * push *destination* (`git push origin HEAD`, `git push origin @`) they
- * name the checked-out branch's same-named remote ref, so comparing the
- * literal token against the protected names would never match (T143
- * review finding 1).
- */
+/** "The branch I am on": as a destination they name the checked-out branch, not a literal ref. */
 const HEAD_ALIASES = new Set(['HEAD', '@']);
 
-/**
- * Commands that reach a push without the literal `push` subcommand this
- * detector anchors on: `send-pack` is the plumbing `push` is built on,
- * `http-push` its dumb-HTTP twin, and `remote-ext` a transport helper that
- * can be invoked directly. They fail closed rather than being parsed for
- * refspecs — this is a short, named list, not an allow-list of git
- * (an unknown subcommand still passes).
- */
+/** Commands that reach a push without the `push` subcommand: fail closed. A named list, not an allow-list of git. */
 const FAIL_CLOSED_SUBCOMMANDS = new Set(['send-pack', 'http-push', 'remote-ext']);
 
-/** `-c alias.p=push` redefines what a subcommand token means, so it cannot be checked. */
+/** `-c alias.p=push` redefines a subcommand token, so it cannot be checked. */
 function definesAlias(configs: readonly string[]): boolean {
   return configs.some((config) => /^alias\./i.test(config));
 }
@@ -127,16 +85,14 @@ const BLANKET_PUSH_FLAGS = new Set(['--all', '--mirror']);
 function branchAfterCheckout(args: string[]): string | undefined {
   for (const token of args.slice(1)) {
     if (token === '--') return undefined;
-    // `-b`/`-B`/`-c`/`-C` take the new branch name as their value, which is
-    // exactly the branch HEAD ends up on — so the next positional is the
-    // answer either way and the flags need no special value-skipping.
+    // `-b`/`-B`/`-c`/`-C` take the new branch, which is the next positional anyway.
     if (token.startsWith('-')) continue;
     return token;
   }
   return undefined;
 }
 
-/** Git atoms of one command, in order, with the fail-closed check applied. */
+/** One atom's git subcommand and config overrides; `'unknown'` fails closed. */
 type GitAtom = { args: string[]; configs: string[] };
 
 function gitAtomOf(atom: CommandAtom): GitAtom | undefined | 'unknown' {
@@ -146,16 +102,11 @@ function gitAtomOf(atom: CommandAtom): GitAtom | undefined | 'unknown' {
   if (head !== 'git') return undefined;
   if (atom.tokens.some(isUnresolvedToken)) return 'unknown';
   const { args, configs } = parseGitInvocation(atom.tokens);
-  // `git` with global options but no subcommand at all (`git -C /repo`) is
-  // not a subcommand this detector can clear.
+  // Global options but no subcommand (`git -C /repo`) can't be cleared.
   return args === undefined ? 'unknown' : { args, configs };
 }
 
-/**
- * The `no_push_protected` verdict for one command string: a reason when the
- * command pushes to, or merges into, a protected branch (or cannot be read
- * at all), `undefined` when it is allowed.
- */
+/** `no_push_protected`: a reason when the command pushes to or merges into a protected branch, or can't be read. */
 export function detectProtectedBranchWrite(
   command: string,
   ctx: PushDetectorContext,
@@ -171,15 +122,10 @@ export function detectProtectedBranchWrite(
     const git = gitAtomOf(atom);
     if (git === undefined) continue;
     if (git === 'unknown') return `${CANNOT_DETERMINE_REASON} in "${command}"`;
-    const { args, configs } = git;
+    const { args } = git;
     const subcommand = args[0];
-
-    if (definesAlias(configs)) {
-      return `${CANNOT_DETERMINE_REASON} in "${command}": git aliases cannot be checked`;
-    }
-    if (subcommand !== undefined && FAIL_CLOSED_SUBCOMMANDS.has(subcommand)) {
-      return `${CANNOT_DETERMINE_REASON} in "${command}": \`git ${subcommand}\` can push without the push subcommand`;
-    }
+    const refused = unreadableGitReason(command, git);
+    if (refused !== undefined) return refused;
 
     if (subcommand === 'push') {
       const blanket = args.find((a) => BLANKET_PUSH_FLAGS.has(a));
@@ -200,8 +146,7 @@ export function detectProtectedBranchWrite(
       for (const refspec of refspecs) {
         const dest = refspecDestBranch(refspec);
         if (HEAD_ALIASES.has(dest)) {
-          // `git push origin HEAD` pushes the checked-out branch to its
-          // same-named ref on the remote, so the branch is what to match.
+          // `git push origin HEAD` writes the checked-out branch's same-named ref.
           const onto = ctx.head();
           if (onto === undefined) {
             return `\`git push ${refspec}\` could not be resolved to a branch (HEAD is unreadable or detached) — push an explicit non-protected branch instead`;
@@ -241,42 +186,39 @@ export function detectProtectedBranchWrite(
   return undefined;
 }
 
-/**
- * The `no_push` verdict (D7: retired by default, so this normally never
- * runs): any `git push` at all, to any branch. Takes no context — there is
- * no branch to resolve when every push is the offence.
- */
+/** `no_push` (D7: retired by default): any `git push` at all. */
 export function detectPush(command: string): string | undefined {
   if (hasUnsafeShellConstruct(command)) return `${CANNOT_DETERMINE_REASON} in "${command}"`;
   for (const atom of parseCommandIntoAtoms(command)) {
     const git = gitAtomOf(atom);
     if (git === undefined) continue;
     if (git === 'unknown') return `${CANNOT_DETERMINE_REASON} in "${command}"`;
-    if (definesAlias(git.configs)) {
-      return `${CANNOT_DETERMINE_REASON} in "${command}": git aliases cannot be checked`;
-    }
+    const refused = unreadableGitReason(command, git);
+    if (refused !== undefined) return refused;
     const subcommand = git.args[0];
-    if (subcommand !== undefined && FAIL_CLOSED_SUBCOMMANDS.has(subcommand)) {
-      return `${CANNOT_DETERMINE_REASON} in "${command}": \`git ${subcommand}\` can push without the push subcommand`;
-    }
     if (subcommand === 'push') return 'git push is not allowed in this repo';
   }
   return undefined;
 }
 
-// ---------------------------------------------------------------------------
-// Building the detector's context out of a real worktree. Lives here so
-// both enforcement tiers (the hook and the ACP responder) resolve the two
-// branch lookups the same way, and neither spawns git for a call that
-// never asks.
-// ---------------------------------------------------------------------------
+/** Alias overrides and push plumbing can't be checked: the fail-closed reason, else `undefined`. */
+function unreadableGitReason(command: string, git: GitAtom): string | undefined {
+  if (definesAlias(git.configs)) {
+    return `${CANNOT_DETERMINE_REASON} in "${command}": git aliases cannot be checked`;
+  }
+  const subcommand = git.args[0];
+  if (subcommand !== undefined && FAIL_CLOSED_SUBCOMMANDS.has(subcommand)) {
+    return `${CANNOT_DETERMINE_REASON} in "${command}": \`git ${subcommand}\` can push without the push subcommand`;
+  }
+  return undefined;
+}
+
+// The context's branch lookups for a real worktree, shared by both
+// enforcement tiers; neither spawns git for a call that never asks.
 
 /**
- * One `git rev-parse --abbrev-ref <rev>` in the worktree — argv, never a
- * shell string (D11's argv floor), so a branch name can never be
- * interpreted. `undefined` for any non-zero exit (no upstream configured, a
- * detached HEAD, not a repo at all), which the detector treats as
- * "unresolvable" and denies.
+ * `git rev-parse --abbrev-ref <rev>` as argv, never a shell string (D11).
+ * `undefined` for any failure (no upstream, detached HEAD, not a repo).
  */
 export function revParseAbbrevRef(cwd: string, rev: string): string | undefined {
   try {
@@ -307,11 +249,7 @@ function memoized(resolve: () => string | undefined): () => string | undefined {
   };
 }
 
-/**
- * The `upstream`/`head` half of a `PushDetectorContext` for one worktree,
- * both lazy *and* memoized: an ordinary `git push origin <branch>`, a file
- * edit, or any non-git command spawns nothing at all.
- */
+/** `upstream`/`head` for one worktree, lazy and memoized: most calls spawn nothing. */
 export function worktreeBranchLookups(
   worktreePath: string,
 ): Pick<PushDetectorContext, 'upstream' | 'head'> {

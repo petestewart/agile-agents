@@ -1,15 +1,8 @@
 /**
- * JSON-RPC 2.0 over the unix socket (design/agile-agents-design.md §5 "Comms
- * bus": "Clients ... use a unix-socket API: bus.send, bus.poll, ..."; §18
- * "Technical shape": "JSON-RPC over unix socket for hooks/adapters").
- *
- * v0 stubs the `bus.*`, `state.*`, `hook.*`, `gate.*` namespaces with a
- * structured "not implemented" error (later tickets fill these in) and
- * implements two real methods: `daemon.ping` and `daemon.status`.
- *
- * Framing: newline-delimited JSON, one request/response object per line —
- * the simplest thing that works over a raw stream socket without a length
- * prefix or an HTTP-in-front dependency.
+ * JSON-RPC 2.0 over the unix socket, newline-delimited (one object per
+ * line). `daemon.ping` and `daemon.status` are built in; everything else
+ * arrives as `extraMethods`. An unknown method in the `bus`, `state`,
+ * `hook` or `gate` namespace gets a structured "not implemented" error.
  */
 
 import { existsSync, unlinkSync } from 'node:fs';
@@ -43,7 +36,7 @@ export interface JsonRpcFailure {
 
 export type JsonRpcResponse = JsonRpcSuccess | JsonRpcFailure;
 
-// Reserved range for implementation-defined server errors (JSON-RPC 2.0 spec).
+// -32001 is in the implementation-defined server-error range.
 const NOT_IMPLEMENTED_CODE = -32001;
 const METHOD_NOT_FOUND_CODE = -32601;
 const PARSE_ERROR_CODE = -32700;
@@ -59,7 +52,7 @@ export interface DaemonStatus {
   stateRoot: string;
   pid: number;
   uptime: number;
-  /** T167: where the classifier key comes from, and whether it is loaded. Never the key. */
+  /** Where the classifier key comes from and whether it is loaded; never the key. */
   classifier?: ClassifierKeyStatus;
 }
 
@@ -68,9 +61,9 @@ export interface RpcServerOptions {
   version: string;
   stateRoot: string;
   startedAt: number;
-  /** Extra method handlers beyond daemon.ping/daemon.status, for tests. */
+  /** Method handlers beyond daemon.ping/daemon.status. */
   extraMethods?: Record<string, RpcMethodHandler>;
-  /** T167: reported under `classifier` by `daemon.status`. */
+  /** Reported under `classifier` by `daemon.status`. */
   classifierStatus?: () => ClassifierKeyStatus;
 }
 
@@ -93,11 +86,7 @@ export function buildMethods(options: RpcServerOptions): Record<string, RpcMetho
   };
 }
 
-/**
- * `undefined` means "send no response" — the JSON-RPC 2.0 spec requires a
- * server to never reply to a notification (a request object with no `id`
- * member at all; a `null` id is a real request, just an anonymous one).
- */
+/** `undefined` means send no response: a notification (no `id` member; `null` is a real id) gets none. */
 export async function dispatch(
   methods: Record<string, RpcMethodHandler>,
   request: unknown,
@@ -130,8 +119,7 @@ export async function dispatch(
       const result = await handler(req.params);
       return reply({ jsonrpc: '2.0', id, result });
     } catch (err) {
-      // Handlers may throw a structured error carrying its own JSON-RPC
-      // code (e.g. -32602 invalid params); anything else is an internal error.
+      // A structured error carries its own code (e.g. -32602); anything else is internal.
       const structured =
         err instanceof Error && typeof (err as { code?: unknown }).code === 'number'
           ? (err as Error & { code: number; data?: unknown })
@@ -171,11 +159,8 @@ export async function dispatch(
 export interface RpcServerHandle {
   socketPath: string;
   /**
-   * Resolves once the socket is bound and accepting connections. `net`'s
-   * `listen()` is asynchronous: `startRpcServer` returns before the socket
-   * file exists, so a client spawned right after it (the MCP bridge in
-   * `cli/commands/mcp.test.ts`, on a loaded CI runner) got `connect ENOENT`.
-   * Callers that hand the path to anything else await this first.
+   * Resolves once the socket is bound: `listen()` is async, and a client
+   * spawned right after `startRpcServer` returns once got `ENOENT`.
    */
   listening: Promise<void>;
   close(): Promise<void>;
@@ -186,8 +171,7 @@ function handleConnection(socket: Socket, methods: Record<string, RpcMethodHandl
   let buffer = '';
   socket.setEncoding('utf8');
   socket.on('error', () => {
-    // Abrupt client disconnects surface here, not as an exception at the
-    // write site below — swallow it, the socket is on its way out either way.
+    // Abrupt disconnects surface here; the socket is going away anyway.
   });
   socket.on('data', (chunk: string) => {
     buffer += chunk;
@@ -216,40 +200,9 @@ function handleConnection(socket: Socket, methods: Record<string, RpcMethodHandl
   });
 }
 
-/**
- * Shared RPC error shape (T019 review round 1 nit): `gates/rpc.ts` (T018)
- * defined this pair locally before any `build*RpcMethods` module had a
- * common place to import it from. Additive-only change, granted to T019
- * for this one fix — nothing above this line was touched, and `gates/
- * rpc.ts` keeps its own copy rather than being edited to import this one
- * (out of T019's file ownership). `dispatch()`'s catch-all below still
- * doesn't special-case `.code`/`.data` (same KNOWN LIMITATION `gates/
- * rpc.ts` documents) — every `RpcError` still surfaces as a generic
- * `-32603` until that's fixed, so callers should keep asserting on
- * `.message`, not `.code`.
- */
-export class RpcError extends Error {
-  constructor(
-    public readonly code: number,
-    message: string,
-    public readonly data?: unknown,
-  ) {
-    super(message);
-    this.name = 'RpcError';
-  }
-}
-
-export class RpcParamError extends RpcError {
-  constructor(message: string, data?: unknown) {
-    super(-32602, message, data);
-    this.name = 'RpcParamError';
-  }
-}
-
 export function startRpcServer(options: RpcServerOptions): RpcServerHandle {
-  // A stale socket file from a previous unclean shutdown blocks bind; the
-  // lock file is the real single-instance guard (acquired before this is
-  // called), so it's safe to clear a leftover socket here.
+  // A stale socket from an unclean shutdown blocks bind. The lock (taken
+  // first) is the single-instance guard, so clearing it is safe.
   if (existsSync(options.socketPath)) {
     unlinkSync(options.socketPath);
   }
@@ -273,10 +226,8 @@ export function startRpcServer(options: RpcServerOptions): RpcServerHandle {
     listening,
     close(): Promise<void> {
       return new Promise((resolve) => {
-        // server.close() alone only stops accepting new connections and
-        // waits for existing ones to end on their own — every hook/adapter
-        // client sitting on this socket (§5) would hang shutdown forever.
-        // Destroy live sockets so close()'s callback actually fires.
+        // `server.close()` waits for open connections, and hook clients
+        // would hang shutdown forever: destroy them first.
         for (const socket of sockets) socket.destroy();
         server.close(() => {
           if (existsSync(options.socketPath)) {

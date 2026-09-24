@@ -1,21 +1,14 @@
 /**
- * The policy table (T010, design/agile-agents-design.md §14 "Permissions per
- * role"): one module holding the never-without-human list and each role's
- * allow rules, "so T014/T016 can extend them" (ticket "Tests" paragraph).
+ * The policy table (agile-agents-design §14 "Permissions per role"): the
+ * never-without-human list and each role's allow rules. Every deny/hil
+ * carries a reason.
  *
- * Every verdict function returns a reason string on deny/hil (never a bare
- * `false`) — "Deny always carries a reason and a pointer" (§14).
- *
- * Review-round rewrite (opus's blocking findings + manager consolidation):
- * a command is now split into `CommandAtom`s (command.ts) — one per
- * `;`/`&&`/`||`/`|`/newline-separated segment, with `sh -c "..."` recursed
- * into — and classified **most-restrictive-atom-wins**: any atom that hits
- * the never-without-human list makes the whole command `hil`; failing that,
- * any atom the role table would deny makes the whole command `deny`; only
- * if every atom is individually allowed does the whole command allow. This
- * is what closes the `git status && git push origin main` /
- * `FOO=1 git push origin main` / `cd sub && git push origin main` /
- * `sh -c "git push origin main"` bypasses.
+ * A command is split into `CommandAtom`s (one per `;`/`&&`/`||`/`|`/newline
+ * segment, `sh -c "..."` recursed into) and classified
+ * most-restrictive-atom-wins: any never-without-human atom makes it `hil`,
+ * else any denied atom makes it `deny`, else it is allowed. That closes
+ * `git status && git push origin main`, `sh -c "git push origin main"` and
+ * the like.
  */
 
 import * as cmd from './command';
@@ -40,18 +33,10 @@ export interface PolicyContext {
   worktreePath: string;
 }
 
-// ---------------------------------------------------------------------------
 // Never-without-human (§14 "Never without a human"). Checked before any
 // role table, for every role: nobody's allow-list can override these.
-// ---------------------------------------------------------------------------
 
-/**
- * A handful of well-known package registry hosts, for the engineer's
- * "package registries only" network allowance (§14). DESIGN-GAP: the design
- * names no exhaustive list; this is a starter set matching the ticket's
- * "package registries" language, extensible here rather than by relaxing
- * the check some other way.
- */
+/** Package registry hosts: the engineer's "package registries only" network allowance (§14). A starter set. */
 export const PACKAGE_REGISTRY_HOSTS = [
   'registry.npmjs.org',
   'npmjs.org',
@@ -80,31 +65,25 @@ export function isPackageRegistryUrl(url: string | undefined): boolean {
 }
 
 /**
- * Every path a request needs containment-checked (round-4 review fix:
- * `classified.targetPath` alone is only the first of `toolCall.locations`
- * — a `[inside, outside]` pair must not pass just because the first entry
- * does). Falls back to `[targetPath]` for `rawInput`/title-derived
- * requests, which only ever carry one.
+ * Every path a request needs containment-checked: all of
+ * `toolCall.locations`, not just the first (an `[inside, outside]` pair
+ * must not pass on its first entry).
  */
 function allTargetPaths(classified: PermissionRequest): string[] {
   if (classified.targetPaths !== undefined) return classified.targetPaths;
   return classified.targetPath !== undefined ? [classified.targetPath] : [];
 }
 
-/** The never-without-human verdict for one already-parsed atom, or `undefined` if this atom doesn't match any named category. */
+/** The never-without-human verdict for one atom, or `undefined` if it matches no category. */
 function neverWithoutHumanForAtom(
   atom: cmd.CommandAtom,
   ctx: PolicyContext,
 ): PolicyVerdict | undefined {
   const { tokens } = atom;
 
-  // T143: `git -C` outside the worktree and the push/protected-branch
-  // verdicts that used to live here are gone — they are the
-  // `no_worktree_escape` and `no_push_protected` built-in pattern rules
-  // now (design §5.4), checked by `rule-checks.ts` on the hook path
-  // against the rules actually in scope, so a repo can retire or rescope
-  // them without a code change. What stays here is the rest of §14's
-  // never-without-human list, which T151 may turn into rules too.
+  // `git -C` outside the worktree and pushes to protected branches are the
+  // `no_worktree_escape`/`no_push_protected` built-in pattern rules (§5.4),
+  // so a repo can retire or rescope them. The rest of the list stays here.
   const args = cmd.parseGitInvocation(tokens).args;
   if (args !== undefined) {
     if (cmd.isForcePush(args)) {
@@ -141,21 +120,16 @@ function neverWithoutHumanForAtom(
 }
 
 /**
- * Checks the request against the universal never-without-human list.
- * Returns a `hil` verdict when matched, `undefined` when the request isn't
- * one of these named categories (the caller falls through to the role
- * table). Splits `execute` commands into atoms first (see file header) so
- * a shell chain can't smuggle a never-without-human segment past a
- * whitespace-only tokenizer.
+ * The universal never-without-human list: `hil` when matched, `undefined`
+ * otherwise (the caller falls through to the role table). Commands are
+ * split into atoms first so a chain can't smuggle a segment past it.
  */
 export function checkNeverWithoutHuman(
   classified: PermissionRequest,
   ctx: PolicyContext,
 ): PolicyVerdict | undefined {
   if (classified.toolClass === 'edit') {
-    // Every location, not just the first (round-4 review fix — see
-    // `allTargetPaths`): a `[safe.txt, .agile/tickets/x.yaml]` pair must
-    // still hit these gates.
+    // Every location, not just the first.
     const paths = allTargetPaths(classified);
     if (paths.some((p) => cmd.touchesAgileState(p))) {
       return hil('direct writes to .agile/ are never automatic');
@@ -178,24 +152,14 @@ export function checkNeverWithoutHuman(
   return undefined;
 }
 
-// ---------------------------------------------------------------------------
 // Role tables (§14's table, one function per role). Each assumes
 // `checkNeverWithoutHuman` already ran and returned nothing.
-// ---------------------------------------------------------------------------
 
-// ---------------------------------------------------------------------------
-// Engineer benign-command table (T030): everyday commands the allow-list
-// otherwise starves out because they're neither a repo script nor git.
-// Checked only after `isRepoScriptCommand`/`gitArgs` have already had first
-// claim (so `bun run`/`bun add`/any git subcommand keep their existing,
-// more specific handling) and only for atoms that survived
-// `checkNeverWithoutHuman` and the redirection gate above.
-// ---------------------------------------------------------------------------
+// Engineer benign commands: everyday commands that are neither a repo
+// script nor git. Checked after those have had first claim, and only for
+// atoms that passed the never-without-human list and the redirection gate.
 
-/** Commands with nothing worth containment-checking: they take no
- * filesystem path (`pwd`, `date`, `which`, `true`, `false`), or only ever
- * report existence/exit status rather than content (`test`, `[`), or print
- * their literal argv (`echo`, `printf`) or transform stdin (`tr`). */
+/** No path worth containment-checking: no path argument, only an exit status, literal argv, or stdin. */
 const ENGINEER_BENIGN_NO_PATH_TOOLS = new Set([
   'echo',
   'printf',
@@ -209,7 +173,7 @@ const ENGINEER_BENIGN_NO_PATH_TOOLS = new Set([
   'tr',
 ]);
 
-/** Commands whose non-flag positional arguments are every path they read or write — see `cmd.benignPathArgs`. */
+/** Commands whose non-flag positional arguments are every path they touch (`cmd.benignPathArgs`). */
 const ENGINEER_BENIGN_PATH_TOOLS = new Set([
   'cat',
   'ls',
@@ -227,12 +191,9 @@ const ENGINEER_BENIGN_PATH_TOOLS = new Set([
 ]);
 
 /**
- * Every path this atom touches must resolve inside the worktree, via
- * `cmd.resolveTargetPath` (T030 review findings 1 & 4): `~`/`~/rest` are
- * expanded against the real home directory first (never trusted as
- * "inside" just because the literal string is relative-looking); a `$`,
- * backtick, or unsupported `~user` form is unclassifiable and routes to
- * `hil` — never a guessed allow.
+ * Every path must resolve inside the worktree after `~` expansion
+ * (`cmd.resolveTargetPath`); a `$`, backtick or `~user` is unclassifiable
+ * and routes to `hil`, never a guessed allow.
  */
 function verifyBenignPaths(paths: string[], ctx: PolicyContext): PolicyVerdict {
   for (const raw of paths) {
@@ -249,11 +210,7 @@ function verifyBenignPaths(paths: string[], ctx: PolicyContext): PolicyVerdict {
   return ALLOW;
 }
 
-/**
- * The benign-command verdict for one atom, or `undefined` if its head isn't
- * one of these named benign shapes at all (the caller falls through to the
- * existing "not an allowed command" deny).
- */
+/** The benign-command verdict for one atom, or `undefined` if it is none of these shapes (the caller denies). */
 function engineerBenignCommandVerdict(
   atom: cmd.CommandAtom,
   ctx: PolicyContext,
@@ -262,12 +219,7 @@ function engineerBenignCommandVerdict(
   const head = tokens[0];
 
   if (head === undefined) {
-    // A bare wrapper invocation (`env`, `command`, `exec`, `nohup`, `time`,
-    // `xargs`) with nothing left after `stripPrefixes` removed it — inert,
-    // nothing to run. This is also how `env` with no assignments (ticket:
-    // "env (no assignments)") reaches here: `env` is itself a wrapper
-    // command (command.ts's `WRAPPER_COMMANDS`), so a bare `env` always
-    // strips to an empty token list before any policy layer sees it.
+    // A bare wrapper (`env`, `nohup`, ...) stripped to nothing: inert.
     return ALLOW;
   }
 
@@ -275,18 +227,10 @@ function engineerBenignCommandVerdict(
 
   const dlx = cmd.parseDlxInvocation(tokens);
   if (dlx !== undefined) {
-    // T030 QA round 2 / opus round 3: `bunx`/`bun x`/`npm exec` are allowed
-    // only when the target bin actually exists (as a real, executable,
-    // in-worktree file — see cmd.isRepoLocalBin) in this worktree's
-    // node_modules/.bin at decision time — not a syntactic guess (a bare
-    // `npx cowsay`/`bunx cowsay` with no repo dependency on cowsay must hil
-    // as "new dependency execution", the same as `bun add cowsay` would).
-    // A forced-install flag (-p/--package/-y/--yes/-g/--global) is always
-    // hil, even if a same-named bin happens to exist, since it can
-    // install/overwrite a different version than what's actually checked
-    // in. `pnpm dlx`/`yarn dlx` never consult the local node_modules/.bin
-    // at all — `dlx` always fetches into a temporary store and runs that —
-    // so they're always hil regardless of `isRepoLocalBin`.
+    // Allowed only when the bin is a real repo-local executable
+    // (`cmd.isRepoLocalBin`); otherwise it is new-dependency execution, like
+    // `bun add`. Fetch-forcing flags and `dlx` (which always fetches) are
+    // always `hil`.
     if (dlx.forcesInstall) {
       return hil(
         `"${dlx.bin}" forces a package install/global run (-p/--package/-y/--yes/-g/--global)`,
@@ -303,7 +247,7 @@ function engineerBenignCommandVerdict(
   }
 
   if (head === 'find') {
-    if (cmd.isFindWriteInvocation(tokens)) return undefined; // -delete/-exec/-ok/-fprint*: not benign, fall through
+    if (cmd.isFindWriteInvocation(tokens)) return undefined; // write primitives: not benign
     return verifyBenignPaths(cmd.findSearchRoots(tokens), ctx);
   }
 
@@ -326,25 +270,18 @@ function engineerBenignCommandVerdict(
 function engineerExecuteVerdict(command: string, ctx: PolicyContext): PolicyVerdict {
   for (const atom of cmd.parseCommandIntoAtoms(command)) {
     if (cmd.hasRedirectionOrTee(atom.tokens)) {
-      // Every *non-benign* redirection target must resolve inside the
-      // worktree (review round 2: a single `>` used to be the only spelling
-      // checked — `1>`, `2>`, `&>`, and a second `>` later in the same atom
-      // all slipped through). `tee`, an unresolvable target, and a process
-      // substitution (`<(...)`) have no path to verify, so they deny
-      // outright rather than guess. Benign targets (`/dev/null`, fd-dup
-      // `&1`/`&2`, fd-close `&-`) are not writes and need no containment
-      // check at all (T029: `npm test 2>&1`, `cmd 2>/dev/null`,
-      // `cmd >/dev/null` no longer over-deny here).
+      // Every non-benign redirection target (`>`, `1>`, `2>`, `&>`, a second
+      // `>`, ...) must resolve inside the worktree. `tee`, an unresolvable
+      // target and `<(...)` have no path to verify and deny outright.
+      // Benign targets (`/dev/null`, `&1`, `&-`) are not writes.
       const hasTee = atom.tokens.includes('tee');
       const hasProcessSub = atom.tokens.some((t) => t.startsWith('<('));
       const unresolved = cmd.hasUnresolvedRedirection(atom.tokens);
       if (hasTee || hasProcessSub || unresolved) {
         return deny('redirected output escapes the worktree (or uses tee/process substitution)');
       }
-      // Every redirection target goes through the same `~`/`$VAR`/backtick
-      // resolution as any other path argument (T030 review finding 4 —
-      // `echo hi > $HOME/.ssh/authorized_keys`/`echo hi > ~/.bashrc` must
-      // not be laundered through a purely textual "starts with /" miss).
+      // Same `~`/`$VAR`/backtick resolution as any path argument
+      // (`echo hi > ~/.bashrc` must not slip through).
       for (const raw of cmd.redirectionTargets(atom.tokens)) {
         const resolved = cmd.resolveTargetPath(raw);
         if (!resolved.safe) {
@@ -356,19 +293,11 @@ function engineerExecuteVerdict(command: string, ctx: PolicyContext): PolicyVerd
           return deny('redirected output escapes the worktree (or uses tee/process substitution)');
         }
       }
-      // Every non-benign redirection target is inside the worktree (or
-      // every redirection here was benign) — fall through and still
-      // classify the underlying command below. A safe redirect target does
-      // not by itself make the command it's attached to allowed (e.g.
-      // `rm -rf secret > <worktree>/out.log` must still be denied for not
-      // being a repo script or git invocation).
+      // A safe redirect doesn't make the command allowed: still classify it.
     }
     if (cmd.isRepoScriptCommand(atom.tokens)) continue;
     if (cmd.gitArgs(atom.tokens) !== undefined) {
-      // Any git invocation inside the worktree that isn't on the
-      // never-without-human list above (push/force-push/branch-delete/
-      // reset --hard already handled) is the engineer's own ticket
-      // branch work — "git inside the worktree except the never list" (ticket).
+      // Any git not on the never-without-human list: the worker's own branch work.
       continue;
     }
     const benign = engineerBenignCommandVerdict(atom, ctx);
@@ -384,13 +313,10 @@ function engineerExecuteVerdict(command: string, ctx: PolicyContext): PolicyVerd
 function engineerVerdict(classified: PermissionRequest, ctx: PolicyContext): PolicyVerdict {
   switch (classified.toolClass) {
     case 'read':
-      // "own worktree; state via daemon" (§14) — reads are never gated by
-      // ACP anyway (spike-findings §A), but answer consistently if asked.
+      // Reads are never gated by ACP (spike-findings §A), but answer consistently.
       return ALLOW;
     case 'edit': {
-      // Every path must resolve inside the worktree (round-4 review fix,
-      // R4-1): a request with an inside path first and an outside one
-      // second must not read as "verified" once the first one passes.
+      // Every path must resolve inside the worktree, not just the first.
       const paths = allTargetPaths(classified);
       if (paths.length === 0) {
         return deny(
@@ -402,17 +328,9 @@ function engineerVerdict(classified: PermissionRequest, ctx: PolicyContext): Pol
     }
     case 'execute':
       if (classified.command === undefined) {
-        // DESIGN-GAP (manager decision, overriding the reviewer's
-        // suggested `hil`): a `hil` here would flood the human queue with
-        // every generic "Terminal"-titled request a vendor sends without
-        // rawInput — every exec this policy can't read a command for,
-        // benign or not. `deny` is recoverable (the model gets a reason
-        // and a pointer) and keeps the human queue for requests this
-        // layer actually understands. Command-level enforcement for
-        // exactly this "we can't see the command" case is T009's
-        // PreToolUse hook's job (see index.ts's file header) — it
-        // provably carries `tool_input.command` (spike-findings §B),
-        // this tier does not.
+        // `deny`, not `hil`: a vendor's generic "Terminal" request with no
+        // rawInput would otherwise flood the human queue. The PreToolUse
+        // hook, which does see `tool_input.command`, enforces these.
         return deny(
           'execute request carries no command to classify at this tier — retry via the hook-gated path (T009) with a clearer command',
         );
@@ -430,9 +348,7 @@ function engineerVerdict(classified: PermissionRequest, ctx: PolicyContext): Pol
 }
 
 const REVIEWER_READ_ONLY_GIT_SUBCOMMANDS = new Set(['diff', 'log', 'show', 'status']);
-/** T030: extended with the pure read-only subset of the engineer's new
- * benign-command table (`head`/`tail`/`diff`/`pwd`/`which`) — reading, never
- * writing, so safe for the reviewer's read-only-tools allowance (§14) too. */
+/** Plus the read-only part of the engineer's benign table. */
 const REVIEWER_PLAIN_READ_ONLY_TOOLS = new Set([
   'grep',
   'rg',
@@ -446,13 +362,7 @@ const REVIEWER_PLAIN_READ_ONLY_TOOLS = new Set([
   'which',
 ]);
 
-/**
- * `sed`/`find` are only read-only in a subset of their invocations — `sed
- * -i` and `find … -delete`/`-exec` are write primitives (opus blocking
- * finding 2), so they're gated on flags rather than allowed/dropped
- * wholesale.
- */
-/** `sed -i`/`-i.bak`/`-ibak` (short form, review round 1) and `--in-place`/`--in-place=.bak` (long form, review round 2 — `t.startsWith('-i')` alone never matched a `--`-prefixed flag) are all in-place-edit forms. */
+/** `sed -i`, `-i.bak`, `--in-place[=.bak]`: in-place edits, so `sed` is gated on flags. */
 function isSedInPlace(tokens: string[]): boolean {
   return tokens.some(
     (t) => t === '-i' || t.startsWith('-i') || t === '--in-place' || t.startsWith('--in-place='),
@@ -465,26 +375,17 @@ function isReviewerSafeTool(tokens: string[]): boolean {
   if (REVIEWER_PLAIN_READ_ONLY_TOOLS.has(head)) return true;
   if (head === 'sed') return !isSedInPlace(tokens);
   if (head === 'find')
-    // T030 review finding 2: reuse the engineer's write-flag set
-    // (`-delete`/`-exec`/`-execdir`/`-ok`/`-okdir`/`-fprint`/`-fprintf`/
-    // `-fls`) so the reviewer denies exactly the same `find` write
-    // primitives, not a narrower list.
+    // The engineer's `find` write-primitive set, so both roles deny the same.
     return !cmd.isFindWriteInvocation(tokens);
-  // `perl -i ...` and `gawk -i inplace ...` are also in-place rewrites
-  // (review round 2, "if cheap") — neither `perl` nor `gawk`/`awk` is in
-  // `REVIEWER_PLAIN_READ_ONLY_TOOLS` or has a case above, so they already
-  // fall through to `false` (denied) regardless of flags. No extra check
-  // is needed unless one of them is ever added to the allow-list — see
-  // `command.test.ts` for a locked-in regression covering both.
+  // `perl -i` and `gawk -i inplace` fall through to `false`: neither is on
+  // the allow-list (a regression test in `command.test.ts` locks that in).
   return false;
 }
 
 function reviewerExecuteVerdict(command: string): PolicyVerdict {
   for (const atom of cmd.parseCommandIntoAtoms(command)) {
-    // Benign redirects (`/dev/null`, fd-dup/close) write nothing, so
-    // `git diff 2>/dev/null` is a read like any other `git diff` (T029);
-    // tee, process substitution, an unresolved target, or a real-file
-    // target are still denied as write primitives.
+    // Benign redirects write nothing (`git diff 2>/dev/null` is a read);
+    // any other redirection or tee is a write primitive.
     if (cmd.hasWritingRedirectionOrTee(atom.tokens)) {
       return deny('reviewer role denies exec with redirection/tee — those are write primitives');
     }
@@ -503,7 +404,7 @@ function reviewerExecuteVerdict(command: string): PolicyVerdict {
 function reviewerVerdict(classified: PermissionRequest): PolicyVerdict {
   switch (classified.toolClass) {
     case 'read':
-      // "worktree via tools, rules, oracle" — read-only tools (§14).
+      // Read-only tools (§14).
       return ALLOW;
     case 'edit':
       return deny('reviewer role denies all writes — use read-only tools');

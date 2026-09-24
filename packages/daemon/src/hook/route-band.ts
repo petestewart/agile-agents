@@ -1,29 +1,13 @@
 /**
- * The route band of design/cockpit-design.md §8.1, without the classifier
- * (T138). T151 adds the classifier as a second source of routes onto this
- * same path.
- *
- * Before this, a `hil` verdict from `permissions/policy-tables.ts` (a
- * dependency-manifest edit, a force-push, a `git -C` outside the worktree)
- * became a plain deny telling the model to "file a hil_request" — a verb
- * that no longer exists — and nothing reached the human at all. The
- * twenty-ninth live run (2026-09-21) ended with the worker correctly
- * holding and Pete applying the edit by hand.
- *
- * What a routed verdict does now:
- *  1. fingerprint the call (`fingerprint.ts`): tool + path, or tool +
- *     command;
- *  2. look for this session's own resolved gate on that fingerprint —
- *     approved and unspent ⇒ **allow once** (and spend it); denied ⇒ deny
- *     with the human's note, because the answer was no and the model should
- *     hear it rather than be routed again;
- *  3. otherwise raise (or reuse) a `classifier_review` gate on the stream
- *     and deny with a reason the model can act on: the id it is waiting
- *     for, why, and "retry this exact call".
- *
- * Dedupe matters as much as the routing: a model that is denied retries,
- * and one card per attempt would make the inbox the thing that nags (§3.3
- * "empty is the goal state").
+ * The route band (§8.1) for a `hil` verdict, from the role policy or a
+ * classifier rule:
+ *  1. fingerprint the call (tool + path, or tool + command);
+ *  2. this session's approved, unspent gate on that fingerprint ⇒ allow
+ *     once (and spend it); a denied one ⇒ deny with the human's note;
+ *  3. otherwise raise (or reuse) a `classifier_review` gate and deny with
+ *     the id to wait for, why, and "retry this exact call".
+ * Dedupe matters: a denied model retries, and one card per attempt would
+ * make the inbox nag (§3.3).
  */
 
 import type {
@@ -40,7 +24,7 @@ import type { GateRequestContext, GateService } from '../gates/service';
 import type { RuleStatsOutcome } from '../rules/service';
 import type { HookDecision } from './types';
 
-/** The slice of `GateService` the route band needs — injected so `HookService` never depends on the whole gates module. */
+/** The slice of `GateService` the route band needs. */
 export interface RouteBandGates {
   list(): HilRequest[];
   request(gate: GateKind, ctx: GateRequestContext): Promise<HilRequest>;
@@ -54,17 +38,17 @@ export interface RouteBandContext {
   stream: string;
   policy: Policy;
   call: GateCall;
-  /** The policy reason the call was routed for ("editing a dependency manifest/lockfile is never automatic"). */
+  /** Why the call was routed. */
   reason: string;
-  /** T151 (§6.3): the classifier rule whose band routed this call, when one did. */
+  /** The classifier rule whose band routed this call (§6.3), if any. */
   rule?: RuleId;
 }
 
-/** A routed verdict, plus the gate it is attributable to (for the `hook_decision` event). */
+/** A routed verdict and the gate it is attributable to. */
 export interface RoutedDecision {
   decision: HookDecision;
   gate: HilId;
-  /** Set when this decision spent an approval — `hook_decision` records it as `allowed_by`. */
+  /** The approval this decision spent (`allowed_by` on the event). */
   allowedBy?: HilId;
 }
 
@@ -87,11 +71,7 @@ function matching(gates: RouteBandGates, ctx: RouteBandContext): HilRequest[] {
     );
 }
 
-/**
- * Runs the route band for one `hil` verdict. Pure but for the two writes it
- * has to make (spend an approval, raise a gate) — the caller renders the
- * `HookDecision` and logs the event.
- */
+/** Runs the route band for one `hil` verdict. Its only writes: spending an approval, raising a gate. */
 export async function routeCall(
   gates: RouteBandGates,
   ctx: RouteBandContext,
@@ -119,8 +99,7 @@ export async function routeCall(
     };
   }
 
-  // A decided-and-spent gate is not an answer to this attempt; a *denied*
-  // one is, and stays the answer until the human changes their mind.
+  // A spent approval doesn't answer this attempt; a denial stays the answer.
   const denied = candidates.find((gate) => gate.decision === 'deny');
   if (denied !== undefined) {
     return {
@@ -141,8 +120,7 @@ export async function routeCall(
     requestedBy: ctx.session as AgentId,
     call: ctx.call,
     ...(ctx.rule !== undefined ? { rule: ctx.rule } : {}),
-    // The call itself is on `call`, and the inbox card renders it from
-    // there (`inbox/service.ts`) — the summary is why it was routed.
+    // The card renders the call from `call`; the summary is why.
     summary: cap(ctx.reason),
   });
   return {
@@ -151,12 +129,7 @@ export async function routeCall(
   };
 }
 
-/**
- * Spends an approval, returning false when someone else spent it first.
- * `GateService.consume` is a compare-and-swap since T151: two identical
- * in-flight calls used to both read the same approved-and-unconsumed record
- * and both be allowed by the one approval. The loser routes again.
- */
+/** Spends an approval (`consume` is a compare-and-swap); `false` when another call spent it first. */
 async function spend(gates: RouteBandGates, id: HilId): Promise<boolean> {
   try {
     await gates.consume(id);
@@ -172,17 +145,12 @@ function routedReason(id: HilId, why: string): string {
   );
 }
 
-/** What `wireGateDecisionDelivery` needs of `AttachService` (T137's delivery path). */
+/** What `wireGateDecisionDelivery` needs of `AttachService`. */
 export interface GateDecisionDelivery {
   deliverGateDecision(sessionId: string, gate: HilRequest): Promise<void>;
 }
 
-/**
- * Resolving a `classifier_review` gate prompts the session that is waiting
- * on it (T137: delivery is a prompt, not a mailbox). Wired the same way
- * `wireLandGateResolution` is, and for the same reason: `GateService` has
- * no business knowing what any one gate kind means.
- */
+/** A decided `classifier_review` gate is delivered to the waiting session as a prompt. */
 export function wireGateDecisionDelivery(gates: GateService, attach: GateDecisionDelivery): void {
   const respond = gates.respond.bind(gates);
   gates.respond = async (id, decision, by, note) => {
@@ -194,24 +162,15 @@ export function wireGateDecisionDelivery(gates: GateService, attach: GateDecisio
   };
 }
 
-/** The write side of `RulesService` the routed-answer statistic needs (§5.7). */
+/** The write side of `RulesService` the routed-answer statistic needs. */
 export interface RouteStatsRules {
   recordFired(id: string, outcome: RuleStatsOutcome): Promise<unknown>;
 }
 
 /**
- * T151 (§6.3, last line): "the answer allows or denies and increments
- * `stats`". The route itself already bumped `routed` when the gate was
- * raised; the human's *deny* is what turns that routed call into a
- * violation of the rule that asked. Wired the same way
- * `wireGateDecisionDelivery` is, so `GateService` keeps knowing nothing
- * about what a gate kind means.
- *
- * T153: the outcome is `resolved_violation`, not `violated`, because this
- * is the *same* action the hook already counted as a firing when it routed
- * it. Recording it as an ordinary firing made one routed-then-denied call
- * read `fired: 2, routed: 1, violated: 1`, which is the number §5.7's
- * pruning report divides by.
+ * §6.3: the human's deny on a routed call is a violation of the rule that
+ * routed it, recorded as `resolved_violation` (the route already counted
+ * the firing).
  */
 export function wireClassifierRouteStats(
   gates: { respond: GateService['respond'] },
@@ -228,8 +187,7 @@ export function wireClassifierRouteStats(
       try {
         await rules.recordFired(resolved.rule, 'resolved_violation');
       } catch {
-        // Telemetry (§5.7's pruning input): losing a counter must never
-        // turn a decision the human already made into an error.
+        // Telemetry: never fail a decision the human already made.
       }
     }
     return resolved;

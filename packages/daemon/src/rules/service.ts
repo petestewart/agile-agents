@@ -1,18 +1,12 @@
 /**
- * `RulesService` — propose / read / list / accept / retire / edit a rule,
- * and the one scope filter (T140; cockpit design §5).
+ * `RulesService`: propose, read, list, accept, retire and edit rules, plus
+ * the one scope filter (§5). Every method takes an explicit principal
+ * (`human` from the RPC edge, `agent` from `propose_rule`, `daemon` for
+ * built-ins and stats); the store enforces the split.
  *
- * Every method takes an explicit **principal**, exactly as `StreamService`
- * does (§2.2): the RPC edge stamps `human`, the `propose_rule` verb passes
- * `agent`, and the daemon's own writes (the built-ins of §5.4, T143, and
- * the hook's `stats` counters) pass `daemon`. The split itself is enforced
- * in the store, which is the only writer of `rules/`.
- *
- * `rulesInScope` (§5.3) lives here as a pure function and is exported for
- * its two callers — the brief assembler (`runner/brief.ts`) and the hook
- * (T143/T151). There is no second implementation and no per-caller
- * filtering logic: an out-of-scope rule cannot reach a brief or a hook
- * decision by a caller forgetting to filter.
+ * `rulesInScope` (§5.3) is the only scope filter, used by the brief and
+ * the hook, so an out-of-scope rule can't reach either by a caller
+ * forgetting to filter.
  */
 
 import {
@@ -32,14 +26,7 @@ import {
 import type { StateStore } from '../store/store';
 import type { StreamService } from '../streams/service';
 
-/** `rules/` in the state home — a sibling of `streams/` and `questions/` (§7.2). */
-export const RULES_DIR = 'rules';
-
-/**
- * A rule whose `scope.ref` names nothing in this home. Typed so the RPC
- * edge reports it as `invalid params` (-32602) — bad caller input, not an
- * internal fault, same as `UnknownRepoError` on the stream edge.
- */
+/** A rule whose `scope.ref` names nothing in this home (-32602 at the edge). */
 export class UnknownRuleScopeError extends Error {
   constructor(
     public readonly scope: RuleScope,
@@ -70,31 +57,24 @@ export interface RulesServiceOptions {
   /** Test seam; real usage runs on the system clock. */
   clock?: () => Date;
   /**
-   * How often coalesced `stats` counters are written (T143). `0` disables
-   * the timer entirely, leaving flush-on-read and flush-on-shutdown — which
-   * is what a test that wants a deterministic flush point passes.
+   * How often coalesced `stats` are written. `0` disables the timer,
+   * leaving flush-on-read and flush-on-shutdown (a deterministic test point).
    */
   statsFlushMs?: number;
 }
 
 /**
- * The stats-flush interval. Counters are written at most this often per
- * rule, however many tool calls fired them: a gated tool call evaluates
- * every pattern rule in scope, and one YAML rewrite plus one `rule_put`
- * event per rule per call would make the state home's log mostly
- * bookkeeping. The `hook_decision` event stays per call — that is the
- * record of what was decided; `stats` are only §5.7's pruning input.
+ * The stats-flush interval. A gated call evaluates every pattern rule in
+ * scope; a YAML rewrite and `rule_put` event per rule per call would make
+ * the log mostly bookkeeping. `hook_decision` stays per call.
  */
 export const DEFAULT_STATS_FLUSH_MS = 5_000;
 
 /**
- * What one `recordFired` call says happened (§5.7's pruning input).
- *
- * The first three are *firings* — a rule evaluated against a real action:
- * it passed (`fired`), it denied (`violated`), or its band sent the call to
- * the human (`routed`). `resolved_violation` is not a firing at all: it is
- * the human's later deny on a call that was already counted as `routed`,
- * and it records the violation without counting the action twice.
+ * What one `recordFired` call says happened (§5.7). `fired`, `violated`
+ * and `routed` are firings; `resolved_violation` is the human's later deny
+ * on a call already counted as `routed`, recorded without counting the
+ * action twice.
  */
 export type RuleStatsOutcome = 'fired' | 'violated' | 'routed' | 'resolved_violation';
 
@@ -107,27 +87,11 @@ interface PendingRuleStats {
 }
 
 /**
- * Design §5.3's one scope filter:
- *
- *     rulesInScope(stream) =
- *         all accepted rules with scope.kind = 'global'
- *       + accepted rules with scope {kind: 'repo', ref: stream.repo}
- *       + accepted rules with scope {kind: 'stream', ref: s}
- *         for s in [stream, ...ancestors(stream)]
- *
- * Mechanical, never a judgement call. `proposed` and `retired` rules are
- * never in scope, so retiring one stops it being injected on the next
- * session with no restart; a nested stream inherits its ancestors'
- * stream-scoped rules. `ancestors` is the chain the caller already has
- * (root→leaf or leaf→root — only membership is read).
- *
- * T152 adds the **stage** filter on the same function rather than beside
- * it, because §5.3 asks for one scope filter and nothing else: `stage`
- * selects the rules checked at a given point — `'action'` for the
- * per-tool-call hook (§8.1), `'diff'` for the check at landing (§8.2) — and
- * a rule with `stage: 'both'` matches either. Omitting it keeps every rule
- * in scope, which is what the brief assembler wants (guidance is injected
- * whatever stage it is checked at).
+ * §5.3's one scope filter: accepted rules that are global, scoped to the
+ * stream's repo, or scoped to the stream or any ancestor. `proposed` and
+ * `retired` rules are never in scope. `stage` selects `'action'` (hook,
+ * §8.1) or `'diff'` (landing, §8.2) rules, `'both'` matching either;
+ * omitted, every stage is in scope (the brief injects all guidance).
  */
 export function rulesInScope(
   rules: readonly Rule[],
@@ -161,11 +125,9 @@ export class RulesService {
   }
 
   /**
-   * Proposes a rule. The daemon mints `id`, `created_at`, `stats` and — for
-   * every principal — `status: 'proposed'`: §5.1's gap between a proposal
-   * and a rule is "the only place the human's authority lives", so even a
-   * `human` create goes in proposed and is accepted by a second, explicit
-   * act (`accept`, which is what stamps `decided_*`).
+   * Proposes a rule. Every principal's create goes in `proposed`: the gap
+   * between a proposal and a rule is where the human's authority lives
+   * (§5.1), so acceptance is always a second, explicit act.
    */
   async create(principal: RulePrincipal, rawInput: unknown): Promise<Rule> {
     const input: RuleProposal = validateRuleProposal(rawInput);
@@ -212,11 +174,7 @@ export class RulesService {
     return this.list({ status: 'proposed' });
   }
 
-  /**
-   * §5.3's filter over this home's rules, for one stream: the service
-   * resolves the stream and its ancestor chain, `rulesInScope` does the
-   * filtering. This is what the brief and the hook call.
-   */
+  /** §5.3's filter for one stream and its ancestors: what the brief and the hook call. */
   inScope(streamId: string, stage?: RuleStage): Rule[] {
     const stream = this.options.streams.get(streamId);
     return rulesInScope(this.options.store.listRules(), stream, this.ancestorsOf(stream), stage);
@@ -237,11 +195,9 @@ export class RulesService {
   }
 
   /**
-   * The human's accept (§3.1, **D4**): `status: accepted` plus `decided_at`
-   * and `decided_by`, the three fields no agent may write. The store
-   * re-checks the tier invariants, so accepting a classifier rule with one
-   * example fails here rather than producing a gate that cannot be
-   * evaluated (§5.6).
+   * The human's accept (D4): `status`, `decided_at`, `decided_by`, the
+   * fields no agent may write. The store re-checks the tier invariants
+   * (a classifier rule with one example can't be accepted, §5.6).
    */
   async accept(id: string, by: string): Promise<Rule> {
     return this.decide(id, 'accepted', by);
@@ -264,46 +220,23 @@ export class RulesService {
     );
   }
 
-  /**
-   * Edits a rule in place — §3.1's "edit-then-accept" half, and the only
-   * way a rule's wording, tier or examples change. `status` and `decided_*`
-   * are not patchable here: a decision goes through `accept`/`retire`, so
-   * an edit can never smuggle one in.
-   */
+  /** Edits wording, tier or examples in place. Decisions go through `accept`/`retire`, never an edit. */
   async update(principal: RulePrincipal, id: string, patch: RulePatch): Promise<Rule> {
     if (patch.scope !== undefined) this.assertScopeExists(patch.scope);
     return this.options.store.updateRule(principal, id, (before) => ({ ...before, ...patch }));
   }
 
   /**
-   * §5.7's pruning input, recorded by both enforcement tiers on every rule
-   * they evaluate (T143). `fired` counts evaluations — that is what makes
-   * "fired often, never violated" a signal that the rule is dead weight —
-   * so every outcome bumps it, and `violated`/`routed` are the two
-   * refinements on top: a pattern rule that denied, and a classifier rule
-   * whose band routed the call to the human (T151).
+   * §5.7's pruning input, from both enforcement tiers. Every firing bumps
+   * `fired` ("fired often, never violated" marks dead weight), with
+   * `violated`/`routed` on top. `resolved_violation` bumps only `violated`:
+   * counting the human's later deny as a second firing would skew the
+   * report, which divides by `fired`.
    *
-   * `'resolved_violation'` is the one outcome that does **not** bump
-   * `fired`, because it is not a firing: it is the human's later decision
-   * on a call this rule already routed (T151's gate-deny wiring). Bumping
-   * `fired` again would count one logical action twice — a routed call the
-   * human denied read `fired: 2, routed: 1, violated: 1` — and §5.7's
-   * pruning report divides by `fired`, so the corruption is not cosmetic.
-   * It leaves `last_fired_at` alone for the same reason.
-   *
-   * **Coalesced, not written through.** A gated tool call evaluates every
-   * pattern rule in scope, so writing here would mean a YAML rewrite and a
-   * `rule_put` event per rule per call. Counters accumulate in memory and
-   * are flushed as one `updateRule` per rule at most every
-   * `statsFlushMs` (5 s), on any read of the rules, and on daemon
-   * shutdown. A read never sees a stale count: `get`/`list` merge whatever
-   * is still pending into what they return (`withPendingStats`).
-   *
-   * What a crash costs: the counters since the last flush, which is the
-   * right trade for telemetry — nothing a decision depends on is in here.
-   *
-   * Always written as `daemon`: stats are the daemon's own field, not a
-   * decision, so no human is involved and no agent can forge one.
+   * Coalesced: counters accumulate in memory and are flushed as one
+   * `updateRule` per rule at most every `statsFlushMs`, on reads, and at
+   * shutdown; reads merge pending counts in. A crash loses only the counts
+   * since the last flush (telemetry). Always written as `daemon`.
    */
   async recordFired(id: string, outcome: RuleStatsOutcome): Promise<void> {
     const pending = this.pendingStats.get(id) ?? {
@@ -324,23 +257,11 @@ export class RulesService {
     this.armStatsTimer();
   }
 
-  /** The record as a reader should see it: on disk plus whatever has not been flushed yet. */
+  /** The record as a reader should see it: on disk plus whatever is unflushed. */
   private withPendingStats(rule: Rule): Rule {
     const pending = this.pendingStats.get(rule.id);
     if (pending === undefined) return rule;
-    return {
-      ...rule,
-      stats: {
-        fired: rule.stats.fired + pending.fired,
-        violated: rule.stats.violated + pending.violated,
-        routed: rule.stats.routed + pending.routed,
-        ...(pending.last_fired_at !== ''
-          ? { last_fired_at: pending.last_fired_at }
-          : rule.stats.last_fired_at !== undefined
-            ? { last_fired_at: rule.stats.last_fired_at }
-            : {}),
-      },
-    };
+    return { ...rule, stats: addStats(rule.stats, pending) };
   }
 
   /** Every rule, with pending counters merged in. */
@@ -356,18 +277,13 @@ export class RulesService {
     this.statsTimer.unref?.();
   }
 
-  /** Fire-and-forget flush, for the sync read paths — a no-op when nothing is pending. */
+  /** Fire-and-forget flush for the sync read paths. */
   private flushStatsSoon(): void {
     if (this.pendingStats.size === 0) return;
     void this.flushStats();
   }
 
-  /**
-   * Writes every pending counter as one `updateRule` per rule. Awaited by
-   * the daemon's shutdown path and by tests that want a deterministic
-   * point; called on the timer and on reads otherwise. Serialized, so two
-   * overlapping flushes never double-count.
-   */
+  /** Writes every pending counter, one `updateRule` per rule. Serialized, so flushes never double-count. */
   flushStats(): Promise<void> {
     const next = this.flushing.then(() => this.doFlushStats());
     this.flushing = next.catch(() => undefined);
@@ -382,20 +298,10 @@ export class RulesService {
       try {
         await this.options.store.updateRule('daemon', id, (before) => ({
           ...before,
-          stats: {
-            fired: before.stats.fired + delta.fired,
-            violated: before.stats.violated + delta.violated,
-            routed: before.stats.routed + delta.routed,
-            ...(delta.last_fired_at !== ''
-              ? { last_fired_at: delta.last_fired_at }
-              : before.stats.last_fired_at !== undefined
-                ? { last_fired_at: before.stats.last_fired_at }
-                : {}),
-          },
+          stats: addStats(before.stats, delta),
         }));
       } catch {
-        // The rule is gone (or unwritable): drop its counters rather than
-        // retry forever. Telemetry, not a decision.
+        // The rule is gone or unwritable: drop its counters (telemetry).
       }
     }
   }
@@ -428,4 +334,17 @@ export class RulesService {
       throw new UnknownRuleScopeError(scope, 'not a stream in this home');
     }
   }
+}
+
+function addStats(stats: Rule['stats'], delta: PendingRuleStats): Rule['stats'] {
+  return {
+    fired: stats.fired + delta.fired,
+    violated: stats.violated + delta.violated,
+    routed: stats.routed + delta.routed,
+    ...(delta.last_fired_at !== ''
+      ? { last_fired_at: delta.last_fired_at }
+      : stats.last_fired_at !== undefined
+        ? { last_fired_at: stats.last_fired_at }
+        : {}),
+  };
 }

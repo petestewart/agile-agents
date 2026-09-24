@@ -1,33 +1,14 @@
 /**
- * Filesystem primitives for the state store (T005 — see design
- * agile-agents-design.md §4 "State model", §5 "Storage").
+ * Filesystem primitives for the state store. Every mutation is atomic
+ * (temp file + `rename` in the same directory), so a reader never sees a
+ * partial file and a crash leaves the previous one intact. Callers
+ * validate before writing. Atomic, not durable: no fsync on the temp file
+ * or directory, so a power loss can still lose a write.
  *
- * Every mutation goes through `atomicWriteFile`: write to a sibling temp
- * file, then `rename` over the target. A rename within the same directory
- * is atomic on POSIX filesystems, so a reader never observes a
- * partially-written file, and a crash mid-write leaves the previous file
- * (or no file) intact rather than a truncated one. Callers are expected to
- * validate the data with a shared zod schema *before* calling this — that
- * ordering is what "a failing validation leaves the previous file intact"
- * (T005 test plan) actually requires; this module has no opinion on schemas.
- *
- * Durability note (review nit, not fixed): the header above claims
- * *atomicity*, not durability — there is no `fsync` on the temp file or the
- * containing directory after `rename`, so a hard power loss (not a process
- * crash) could still lose the write or, on some filesystems, leave stale
- * metadata. Out of scope for T005's fix pass; flagged in the report.
- *
- * Temp-file naming (review B4 fix): the temp name is
- * `.<basename>.tmp-<ts>-<rand>` — a leading dot (hidden) plus a suffix that
- * never ends in the entity's own extension, so a crash-orphaned temp file
- * for `tickets/TKT-0001.yaml` is named `.TKT-0001.yaml.tmp-<ts>-<rand>`,
- * which does not end in `.yaml` and is not picked up by an
- * extension-filtered directory listing. `listDataFiles` below is the one
- * place every store `listX` should filter through (extension match, no
- * leading dot, no `.tmp-` — belt-and-braces on top of the naming fix), and
- * `sweepStaleTempFiles` gives `StateStore.open` a way to clean up anything
- * still orphaned from before this fix (or a still-more-unlucky crash
- * between the rename's temp-file write and the rename itself).
+ * Temp files are `.<basename>.tmp-<ts>-<rand>`: hidden, and never ending
+ * in the entity's extension, so a crash orphan isn't listed.
+ * `listDataFiles` is the one listing filter, and `sweepStaleTempFiles`
+ * cleans orphans at open.
  */
 
 import {
@@ -93,17 +74,10 @@ export function writeJsonFileAtomic(path: string, data: unknown): void {
 }
 
 /**
- * Appends one JSON value as a line to a JSONL file, creating it (and parent
- * dirs) if missing. Single-daemon-process assumption (see store.ts's
- * mutex): appends are serialized in-process, so a plain `appendFileSync`
- * needs no temp-file dance — there is never a concurrent writer to race.
- *
- * `{fsync: true}` (T123, cockpit design §7.4 "fsync on gate and land
- * events") forces the line to stable storage before returning: the write
- * goes through an explicit fd so `fsyncSync` can be called on it, which
- * `appendFileSync` gives no handle for. Everything else keeps the cheap
- * page-cache append — an fsync per hook decision or thread line would cost
- * a disk round trip on the daemon's hottest path.
+ * Appends one JSON line (one daemon process, appends serialized in
+ * process, so no temp file). `{fsync: true}` (§7.4, gate and land events)
+ * writes through an fd and fsyncs; everything else stays a cheap
+ * page-cache append on the hot path.
  */
 export function appendJsonlLine(
   path: string,
@@ -144,28 +118,16 @@ export function removeFile(path: string): void {
   if (existsSync(path)) unlinkSync(path);
 }
 
-/**
- * Every filename in `dirPath` ending in `extension`, excluding hidden files
- * and atomic-write temp files (see `isHiddenOrTempFile`) — the one place
- * every store `listX` reader filters a directory, so a crash-orphaned temp
- * file (or a stray `.gitkeep`) never gets parsed as an entity (review B4).
- */
+/** Filenames in `dirPath` ending in `extension`, minus hidden and temp files: the one listing filter. */
 export function listDataFiles(dirPath: string, extension: string): string[] {
   if (!existsSync(dirPath)) return [];
-  // Sorted, numeric-aware: `readdirSync` returns filesystem order, which
-  // differs between ext4 (CI) and APFS/tmpfs (dev), so a caller taking the first entry
-  // was `S-2` on CI and `S-1` locally. Numeric collation keeps `S-2` before
-  // `S-10`.
+  // Sorted numeric-aware: `readdirSync` order differs by filesystem.
   return readdirSync(dirPath)
     .filter((name) => name.endsWith(extension) && !isHiddenOrTempFile(name))
     .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
 }
 
-/**
- * Recursively removes any leftover atomic-write temp file under `root`
- * (review B4: "StateStore.open sweeps stale temp files"). Returns the
- * absolute paths removed, for logging/tests.
- */
+/** Removes every leftover temp file under `root`; returns the paths removed. */
 export function sweepStaleTempFiles(root: string): string[] {
   const removed: string[] = [];
   const walk = (dir: string): void => {

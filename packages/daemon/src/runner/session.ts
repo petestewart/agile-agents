@@ -1,32 +1,18 @@
 /**
- * `startAgentSession` — spawns one ACP session for an already-placed
- * worktree and wires it into the daemon (design/cockpit-design.md §4.1:
- * the daemon "spawns the vendor ACP session with the worktree as cwd,
- * installs the hook config (§8.1); streams the session's output into the
- * thread, routes `ask` to the inbox, and updates `agent.*`").
+ * `startAgentSession`: spawns one ACP session in an already-placed
+ * worktree and wires it into the daemon (§4.1): hook settings, MCP config,
+ * permission responder, the registry entry the hook resolves a `cwd`
+ * through, the vendor's logs, the output→thread stream, and exit handling.
+ * `attach/service.ts` decides which stream, worktree and brief.
  *
- * Scope: this module owns exactly one running session's wiring — hook
- * settings, MCP config, permission responder, the agent-registry entry the
- * hook resolves a `cwd` through, the vendor's stderr/stdout logs, the
- * output→thread stream, and exit/crash handling. `attach/service.ts` owns
- * *which* stream, which worktree and which brief; this module runs the
- * session once handed them.
- *
- * T130 replaced the ticket-shaped inputs (`role: TicketPermissionRole`,
- * `agentId`, `ticket`) with `{stream, session, role}`:
- *
- * - the registry entry is keyed by the **session id** and carries
- *   `stream`/`role`/`worktree`, which is exactly what `hook/service.ts`
- *   resolves a tool call's `cwd` into (§8.1 step 1). It is written before
- *   the first prompt and deleted on exit, so a `cwd` only ever resolves
- *   while a session is actually live;
- * - the session's own output is appended to the stream thread as `line`
- *   entries authored `agent:<session id>` (§2.1), coalesced per ACP
- *   message and capped at the thread body cap, with the untruncated stream
- *   written to `<home>/sessions/<id>/output.log` — "signal over volume at
- *   every boundary … raw output to files with pointers" (CLAUDE.md);
- * - `pid` stays optional and is never substituted with the daemon's own
- *   pid, so an operator's "kill the pid on record" can't point at `agiled`.
+ * - The registry entry is keyed by session id and carries
+ *   `stream`/`role`/`worktree` (§8.1 step 1). It exists only while the
+ *   session is live.
+ * - Output goes on the thread as `line` entries by `agent:<session>`,
+ *   coalesced per ACP message and capped; the untruncated text goes to
+ *   `<home>/sessions/<id>/output.log`.
+ * - `pid` is never substituted with the daemon's, so "kill the pid on
+ *   record" can't point at `agiled`.
  */
 
 import { appendFileSync, mkdirSync } from 'node:fs';
@@ -67,13 +53,13 @@ import type { StateStore } from '../store';
 import type { StreamService } from '../streams/service';
 import { type CliInvocation, cliInvocationToShell, normalizeCliBin } from './cli-bin';
 
-/** `<sessionDir>/<name>` appender that never throws — diagnostics must not take a session down. */
+/** `<sessionDir>/<name>` appender that never throws: diagnostics must not take a session down. */
 function openLog(dir: string, name: string): { path: string; append: (chunk: string) => void } {
   const path = join(dir, name);
   try {
     mkdirSync(dir, { recursive: true });
   } catch {
-    // Fall through: every append below is already best-effort.
+    // Every append below is best-effort anyway.
   }
   return {
     path,
@@ -95,50 +81,46 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 export interface AgentSessionOptions {
   store: StateStore;
   streams: StreamService;
-  /** The stream this session is attached to — its id is what the thread and the registry entry carry. */
+  /** Its id is what the thread and the registry entry carry. */
   stream: Stream;
-  /** The session record `attach/service.ts` minted (id, vendor, model, effort, role). */
+  /** The session record `attach/service.ts` minted. */
   session: SessionRef;
   role: SessionRole;
-  /** Absolute path — the session's `cwd` and where `.claude/settings.json` is written. */
+  /** Absolute: the session's `cwd`, where `.claude/settings.json` is written. */
   worktreePath: string;
-  /** Rendered role brief (`runner/brief.ts`) — sent as the first `prompt()`. */
+  /** The rendered brief, sent as the first `prompt()`. */
   brief: string;
-  /** `<home>/sessions/<session id>/` — the vendor's stderr log and the untruncated output log. */
+  /** `<home>/sessions/<session id>/`: stderr and output logs. */
   sessionDir: string;
-  /** How to invoke the `agile` CLI, for both the hook command and the MCP server's stdio command (`runner/cli-bin.ts`). Defaults to `'agile'` (on `$PATH`). */
+  /** How to invoke the `agile` CLI for the hook and MCP commands. Defaults to `'agile'`. */
   cliBin?: string | CliInvocation;
-  /** `AGILE_SOCKET_PATH` for the worktree's hook + MCP bridge — a `.worktrees/**` cwd resolves to the wrong repo root without it. */
+  /** `AGILE_SOCKET_PATH` for the hook and MCP bridge (a worktree cwd would resolve the wrong root). */
   socketPath?: string;
   provider?: AcpProviderConfig;
-  /** Test seam: inject a fake `spawnSession` (the fake-agent helper) instead of the real ACP client. */
+  /** Test seam: a fake `spawnSession`. */
   spawn?: typeof defaultSpawnSession;
   now?: () => Date;
   hookTimeoutSeconds?: number;
-  /** T026 tier-0: `true` when this vendor's exec is ungated everywhere and must be refused rather than run unsandboxed. */
+  /** Tier 0: this vendor's exec is ungated everywhere; refuse rather than run unsandboxed. */
   requiresSandbox?: boolean;
-  /** T026: explicit opt-in to run this session under tier 0 even when it doesn't `requiresSandbox`. */
+  /** Tier 0 opt-in even when not `requiresSandbox`. */
   sandboxEnabled?: boolean;
-  /** Test seam: override how the agent command is wrapped for tier-0 sandboxing before spawn. */
+  /** Test seam: how the agent command is wrapped for tier 0. */
   wrapCommand?: WrapAgentCommandFn;
-  /** T022: only consulted for `provider.id === 'pi'` — the Pi agent dir the extension is installed into. */
+  /** Pi only: the agent dir the extension is installed into. */
   piAgentDir?: string;
-  /** Test seam: inject a fake `installPiExtension`. */
+  /** Test seam: a fake `installPiExtension`. */
   installPiExtension?: typeof installPiExtension;
   /**
-   * T137: called every time a prompt turn resolves normally. What the end
-   * of a turn *means* — the worker is finished, or it is waiting on an
-   * answer — is a stream question, so the rule lives in
-   * `attach/service.ts` and this module stays vendor-only. A failed turn
-   * never calls it: `runPromptTurn` has already stopped the session and
-   * `exited` carries that outcome.
+   * Called when a prompt turn resolves normally. What that means (finished,
+   * or waiting on an answer) is a stream question for `attach/service.ts`.
+   * A failed turn never calls it: the session is already stopped.
    */
   onTurnEnd?: (info: { session: string; stream: string; turn: number }) => void;
   /**
-   * T143: T140's `RulesService` (or any read side shaped like it). The ACP
-   * permission responder below runs the pattern rules in scope through it,
-   * which is what gives a vendor with no pre-tool-use hook (Cursor, Codex,
-   * Grok — §4.3) the §5.4 built-ins at all.
+   * The rules read side: the ACP permission responder runs the pattern
+   * rules in scope, the only enforcement a vendor with no pre-tool-use hook
+   * (Cursor, Codex, Grok, §4.3) gets.
    */
   rules?: PatternRuleRules;
 }
@@ -148,16 +130,13 @@ export interface AgentExitInfo {
   stream: string;
   /** Human-readable reason, written onto the thread by the attach service. */
   reason: string;
-  /** False when the session ended on a transport error or a failed prompt — `agent.status: blocked` rather than `done`. */
+  /** False on a transport error or failed prompt: `blocked` rather than `done`. */
   ok: boolean;
-  /**
-   * T171: the vendor's last non-empty stderr line, when the session ended
-   * on a failure (`ok: false`) or a non-zero exit code. Absent otherwise.
-   */
+  /** The vendor's last non-empty stderr line, when the session ended on a failure or non-zero exit. */
   vendorError?: string;
 }
 
-/** T171: the last non-empty line of a stderr chunk stream, trimmed. */
+/** The last non-empty line of a stderr tail, trimmed. */
 export function lastStderrLine(tail: string): string | undefined {
   const lines = tail.split(/\r?\n/).map((line) => line.trim());
   for (let i = lines.length - 1; i >= 0; i--) {
@@ -173,20 +152,15 @@ export interface AgentSessionHandle {
   worktree: string;
   session: SpawnedSession;
   responder: PermissionResponderHandle;
-  /** Resolves once the process has exited/crashed *and* this module's own cleanup has finished. Never rejects. */
+  /** Resolves after exit/crash and this module's cleanup. Never rejects. */
   exited: Promise<AgentExitInfo>;
-  /** Sends a fresh `session/prompt` turn to this still-live session (an answered question, a human line from the composer). */
+  /** A new `session/prompt` turn (an answer, a composer line). */
   prompt(text: string): Promise<unknown>;
-  /** `session.cancel()` + `session.close()` — the exit path still runs off the session's own `exit` event. */
+  /** `cancel()` + `close()`; the exit path still runs off the session's own `exit` event. */
   stop(): void;
 }
 
-/**
- * `session.prompt()` resolves (never rejects) for a turn that dies
- * mid-flight — `status: 'failed'`. Callers here need the opposite: "the
- * turn reached a live agent" and "the request went to a corpse" are
- * different outcomes, so a failed reply becomes a rejection.
- */
+/** `session.prompt()` resolves `failed` for a turn that died mid-flight; turn that into a rejection. */
 function rejectOnFailedReply(reply: unknown): unknown {
   const r = reply as Partial<SessionReply> | undefined;
   if (r && r.status === 'failed') {
@@ -196,11 +170,9 @@ function rejectOnFailedReply(reply: unknown): unknown {
 }
 
 /**
- * The first `prompt()` on a Cursor/Grok session fails with
- * `AuthRequiredError` until the ACP `authenticate` round trip runs
- * (spike-findings.md §C2/§D). Tries each `provider.authMethods` id in
- * order, retrying the prompt after each; empty for every vendor that
- * authenticates ambiently.
+ * Cursor/Grok fail the first prompt with `AuthRequiredError` until ACP
+ * `authenticate` runs (spike-findings.md §C2/§D): try each
+ * `provider.authMethods` id, retrying the prompt after each.
  */
 async function promptWithAuthRetry(
   session: SpawnedSession,
@@ -219,7 +191,7 @@ async function promptWithAuthRetry(
       } catch (retryErr) {
         lastErr = retryErr;
         if (!(retryErr instanceof AuthRequiredError)) throw retryErr;
-        // Still needs auth — try the next method id, if any.
+        // Still needs auth: try the next method id.
       }
     }
     throw lastErr;
@@ -227,15 +199,9 @@ async function promptWithAuthRetry(
 }
 
 /**
- * The MCP stdio server entry every session is configured with: `agile mcp
- * --session <id>`, plus `--socket <path>` whenever the session has an
- * explicit one (the bridge runs with the *worktree* as cwd, which resolves
- * to the wrong repo root without it).
- *
- * `env: []` is load-bearing even though empty: measured on a live daemon,
- * `@agentclientprotocol/claude-agent-acp` silently drops a stdio MCP
- * server whose descriptor has no `env` at all — the session then lists no
- * `mcp__agile__*` tools at all.
+ * `agile mcp --session <id> [--socket <path>]`, the MCP stdio server every
+ * session gets. `env: []` is load-bearing: claude-agent-acp silently drops
+ * a stdio MCP server with no `env`, leaving no `mcp__agile__*` tools.
  */
 function mcpServerConfig(
   cli: CliInvocation,
@@ -256,7 +222,7 @@ function mcpServerConfig(
   };
 }
 
-/** Best-effort model id from the `_agile/session_state` notification's `configOptions` — vendor-specific and not modeled anywhere. */
+/** Best-effort model id from `_agile/session_state`'s vendor-specific `configOptions`. */
 function modelFromSessionState(params: unknown): string | undefined {
   const p = asRecord(params);
   const configOptions = p?.configOptions;
@@ -272,11 +238,7 @@ function modelFromSessionState(params: unknown): string | undefined {
   return undefined;
 }
 
-/**
- * `session/update` kinds that report on the session rather than the turn's
- * content: they arrive between two chunks of one streaming agent message
- * and must not close it (T137).
- */
+/** `session/update` kinds that report on the session, not the turn: they must not split a streaming message. */
 const NON_BOUNDARY_UPDATES: readonly string[] = [
   'usage_update',
   'current_mode_update',
@@ -299,20 +261,17 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
   const spawn = opts.spawn ?? defaultSpawnSession;
   const policyRole = permissionRoleFor(role);
 
-  // Tier 1 (§8.1): hook wiring active before the agent's first tool call.
-  // `agentId` is the session id — the `agile_agent` hint the CLI forwards,
-  // which disambiguates two sessions sharing one worktree.
+  // Tier 1 (§8.1): hooks active before the first tool call. The session id
+  // reaches the hook via `AGILE_AGENT` in the session env, not the file.
   writeClaudeSettings(worktreePath, {
     agileBin: cliInvocationToShell(cliBin),
     socketPath: opts.socketPath,
-    agentId: sessionId,
     timeoutSeconds: opts.hookTimeoutSeconds,
   });
 
-  // T026 tier-0 (§4.3): wraps the vendor command under whatever sandbox
-  // backend this host supports. Throws `SandboxRequiredError` (fail-closed)
-  // when `requiresSandbox` is set and no backend resolves. A backend merely
-  // being available is never itself a reason to wrap.
+  // Tier 0 (§4.3): wrap the vendor command in the host's sandbox backend.
+  // `SandboxRequiredError` when `requiresSandbox` and no backend resolves;
+  // an available backend alone is never a reason to wrap.
   const wrapCommand = opts.wrapCommand ?? defaultWrapAgentCommand;
   const wrapped = wrapCommand({
     role: policyRole,
@@ -325,11 +284,9 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
     socketPath: opts.socketPath,
   });
 
-  // T022: Pi has no ACP-level hook equivalent — its enforcement lives in
-  // the `agile` extension, which this install call makes sure is on disk.
-  // A foreign, non-agile-owned `extensions/agile.ts` is re-thrown rather
-  // than swallowed: without the extension there is no tier-1 gate at all,
-  // and spawning ungated is worse than not spawning.
+  // Pi has no ACP-level hook: enforcement is the `agile` extension. A
+  // foreign `extensions/agile.ts` is re-thrown: spawning ungated is worse
+  // than not spawning.
   if (provider.id === 'pi') {
     const install = opts.installPiExtension ?? installPiExtension;
     try {
@@ -347,25 +304,22 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
     }
   }
 
-  // The mode id must come from the provider's own vocabulary — a flat
-  // `'default'` is a Claude-only mode id and `session/set_mode` rejects it
-  // for every other vendor, failing `ensureSession()` and the first prompt.
+  // The mode id comes from the provider's vocabulary: `'default'` is
+  // Claude-only and `session/set_mode` rejects it elsewhere.
   const modeId =
     (provider.id === 'cursor' ? cursorModeIdFor(policyRole) : undefined) ?? provider.defaultModeId;
 
   const stderrLog = openLog(opts.sessionDir, 'stderr.log');
   const outputLog = openLog(opts.sessionDir, 'output.log');
-  // T171: the tail of the vendor's stderr, kept in memory so a session that
-  // dies on a vendor error can name it on the sessions strip.
+  // The tail of the vendor's stderr, so a vendor failure can be named.
   let stderrTail = '';
   const onStderr = (chunk: string) => {
     stderrLog.append(chunk);
     stderrTail = (stderrTail + chunk).slice(-4000);
   };
 
-  // D12: the vendor's own model/effort levers, from the provider registry —
-  // config per vendor, never a code path. An unmapped vendor contributes
-  // nothing here and the attach service writes the "effort ignored" line.
+  // D12: the vendor's model/effort levers come from the provider registry.
+  // An unmapped vendor contributes nothing (attach writes "effort ignored").
   const modelContribution = provider.model?.(sessionRef.model) ?? {};
   const effortContribution =
     sessionRef.effort !== undefined ? (provider.effort?.(sessionRef.effort) ?? {}) : {};
@@ -381,8 +335,7 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
       ...effortContribution.env,
       AGILE_AGENT: sessionId,
       AGILE_STREAM: stream.id,
-      // Every git the session runs is headless: a `commit` without -m would
-      // otherwise open core.editor and hang the tool call.
+      // Headless git: a `commit` without -m would open core.editor and hang.
       GIT_EDITOR: 'true',
       ...(opts.socketPath ? { AGILE_SOCKET_PATH: opts.socketPath } : {}),
       ...(provider.id === 'pi' ? { [PI_GATE_ENV_VAR]: '1' } : {}),
@@ -390,11 +343,9 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
     clientCapabilities: provider.clientCapabilities,
     mcpServers: [mcpServerConfig(cliBin, sessionId, opts.socketPath)],
     onStderr,
-    // Omitted entirely (not even `modeId: undefined`) when the provider has
-    // no mode, so the built object stays honest about what is requested.
+    // Omitted entirely when the provider has no mode.
     ...(modeId !== undefined ? { modeId } : {}),
-    // Grok routes all file I/O through client fs and has no other gateable
-    // surface (spike-findings.md §C2/§C3).
+    // Grok routes all file I/O through client fs, its only gateable surface (spike-findings.md §C2/§C3).
     ...(provider.id === 'grok' ? { fsImpl: buildGrokFsPolicy(policyRole) } : {}),
   };
   const spawned = spawn(spawnOptions);
@@ -404,15 +355,11 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
     agent: sessionId as AgentId,
     worktreePath,
     session: spawned,
-    // T143: the same rule set the hook tier enforces, bound to this
-    // session's stream. Both tiers evaluate one set of rules — this tier is
-    // the only one a vendor without a pre-tool-use hook has.
+    // The same rules the hook tier enforces, bound to this stream: the
+    // only tier a vendor without a pre-tool-use hook has.
     ...(opts.rules !== undefined
       ? { patternRules: patternRuleGate({ store, rules: opts.rules, stream: stream.id }) }
       : {}),
-    // T151 rebuilds an ACP permission request as the classifier route band
-    // on the stream; until then the responder falls back to its own
-    // `hil_request` write.
   });
 
   let model = sessionRef.model;
@@ -422,12 +369,7 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
     resolveExited = resolve;
   });
 
-  /**
-   * Every fire-and-forget write this module makes (registry, thread lines,
-   * events). `finish()` awaits every entry still pending, so `exited` never
-   * resolves while a write from this session is still in flight — a caller
-   * that tears the worktree down right after would otherwise race it.
-   */
+  /** Every fire-and-forget write; `finish()` awaits them so `exited` never races a pending write. */
   const pendingWrites = new Set<Promise<unknown>>();
   function track(promise: Promise<unknown>): void {
     const forget = () => void pendingWrites.delete(tracked);
@@ -436,12 +378,9 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
   }
 
   // ---------------------------------------------------------------- output
-  //
-  // One thread `line` per ACP message, not per chunk: consecutive
-  // `agent_message_chunk` frames are deltas of one streaming message, and a
-  // line per delta would be unreadable and would blow the thread up. The
-  // untruncated text always goes to `output.log`; the thread line is capped
-  // and carries the log as its `ref`.
+  // One thread `line` per ACP message, not per chunk (chunks are deltas of
+  // one message). `output.log` gets everything; the line is capped and
+  // points at the log.
   let buffer = '';
   function flushOutput(): void {
     const text = buffer.trim();
@@ -454,8 +393,7 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
       streams
         .appendThread('agent', stream.id, { kind: 'line', body, ref: outputLog.path }, sessionId)
         .catch(() => {
-          // A thread that can't be written (deleted stream, full disk) must
-          // not take the session down — the raw log still has the text.
+          // An unwritable thread must not take the session down; the log has the text.
         }),
     );
   }
@@ -486,12 +424,10 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
       store.getAgent(sessionId as AgentId);
       await store.deleteAgent(sessionId as AgentId);
     } catch {
-      // Already gone — fine.
+      // Already gone.
     }
 
-    // Flushes deferred-commit event writes queued earlier in this session's
-    // life: `exited` must not resolve while a background flush timer is
-    // still due, or a caller tearing the worktree down races it.
+    // `exited` must not resolve before queued event writes have landed.
     await store.flush();
     const vendorError = failed ? lastStderrLine(stderrTail) : undefined;
     resolveExited({
@@ -505,11 +441,9 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
 
   const unsubscribe = spawned.on((event: AgentEvent) => {
     if (event.type === 'exit') {
-      // §2.3: "session exit ──► agent.status: done". A non-zero code is
-      // normal here — it is what a `agile detach` (SIGTERM) and an ended
-      // turn both look like — so the code goes in the reason, not into a
-      // `blocked` verdict. Only a transport error or a failed prompt, where
-      // the session never got to do its work, blocks the stream.
+      // §2.3: exit ⇒ `done`. A non-zero code is normal (a detach's SIGTERM
+      // looks like that), so it goes in the reason. Only a transport error
+      // or failed prompt blocks the stream.
       void finish(`process exited (code ${event.exitCode})`, true, event.exitCode !== 0);
       return;
     }
@@ -534,8 +468,7 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
           putRegistryEntry({
             ...(resolvedModel !== undefined ? { model: resolvedModel } : {}),
           }).catch(() => {
-            // Not registered yet — the registration below carries whatever
-            // is known by the time it runs.
+            // Not registered yet: the registration carries whatever is known then.
           }),
         );
       }
@@ -556,18 +489,15 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
         const text = chunkText(update?.content);
         if (text !== null) {
           buffer += text;
-          // A single message longer than the cap is flushed as it goes —
-          // the log keeps every byte, the thread keeps readable lines.
+          // A message longer than the cap is flushed as it goes.
           if (buffer.length >= THREAD_BODY_MAX_CHARS) flushOutput();
         }
         return;
       }
 
-      // Bookkeeping updates are not message boundaries (T137): the live
-      // run saw one agent message split into two thread entries because a
-      // `usage_update` arrived between two chunks of it. Only a real turn
-      // item (a tool call, a plan, the user's own message) closes the
-      // streaming message.
+      // Bookkeeping updates are not message boundaries (a `usage_update`
+      // between two chunks once split one message in two). Only a real turn
+      // item closes the streaming message.
       if (typeof kind === 'string' && NON_BOUNDARY_UPDATES.includes(kind)) return;
       flushOutput();
 
@@ -584,7 +514,6 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
                 status: update?.status,
               },
             }),
-            { commit: 'deferred' },
           ),
         );
       }
@@ -592,24 +521,20 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
   });
 
   /**
-   * One prompt turn, with fail-loud handling: a rejected prompt does not
-   * imply the subprocess exits, and a silently failing turn would strand
-   * the stream. Turns are serialized — the ACP client refuses a second
-   * `session/prompt` while one is still in flight — so a later `prompt()`
-   * queues onto whatever turn is already running but still resolves on its
-   * own turn's outcome.
+   * One prompt turn, failing loud: a rejected prompt doesn't imply the
+   * process exits, and a silent failure would strand the stream. Turns are
+   * serialized (the ACP client refuses a second in-flight prompt); each
+   * `prompt()` still resolves on its own turn's outcome.
    */
   let turnQueue: Promise<void> = Promise.resolve();
   let turnCount = 0;
   async function runPromptTurn(text: string): Promise<unknown> {
     const runOnce = async (): Promise<unknown> => {
       try {
-        // A session that has been idle for hours waiting on an answer makes
-        // no tool calls, so nothing else refreshes `last_seen`; without this
-        // the hook's stale check could drop the registry entry the answered
-        // session's next tool call has to resolve through (§8.1 step 1).
+        // Refresh `last_seen`: a session idle for hours on a question makes
+        // no tool calls, and the hook's stale check would drop its entry.
         await putRegistryEntry().catch(() => {
-          // Not registered yet — the initial registration below covers it.
+          // Not registered yet: the initial registration covers it.
         });
         const reply = await promptWithAuthRetry(spawned, provider, text);
         turnCount += 1;
@@ -617,7 +542,7 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
           try {
             opts.onTurnEnd?.({ session: sessionId, stream: stream.id, turn: turnCount });
           } catch {
-            // A turn-end rule that throws must not fail the turn itself.
+            // A throwing turn-end rule must not fail the turn.
           }
         }
         return reply;
@@ -632,11 +557,9 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
                 warning: `prompt failed, stopping session: ${message}`,
               },
             }),
-            { commit: 'deferred' },
           )
           .catch(() => {
-            // Best-effort visibility only — `finish()` is what recovers the
-            // session/stream state either way.
+            // Best effort: `finish()` recovers the state either way.
           });
         spawned.cancel();
         spawned.close();
@@ -645,7 +568,7 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
       }
     };
     const result = turnQueue.then(runOnce, runOnce);
-    // One turn's rejection never poisons the queue for the next one.
+    // One turn's rejection never poisons the next.
     turnQueue = result.then(
       () => undefined,
       () => undefined,
@@ -653,20 +576,17 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
     return result;
   }
 
-  // Establish the ACP session at spawn, not at the first prompt: the model
-  // id arrives on the `session/new` result, and a session that is spawned
-  // but never prompted would otherwise sit at its requested model forever.
-  // Skipped for vendors that gate `session/new` behind `authenticate` —
-  // there the prompt path's auth retry owns the handshake.
+  // Open the ACP session at spawn: the model id arrives on `session/new`,
+  // and an unprompted session would otherwise never learn it. Vendors that
+  // gate `session/new` behind `authenticate` leave it to the prompt path.
   if (provider.authMethods.length === 0) {
     void spawned.open().catch(() => {
       // Reported through the prompt path if it matters.
     });
   }
 
-  // Registration before the first prompt, so a crash during the very first
-  // turn still has a record to clean up — and so the hook can resolve the
-  // session's very first tool call.
+  // Register before the first prompt: a crash in the first turn has a
+  // record to clean up, and the hook can resolve the first tool call.
   void putRegistryEntry()
     .then(() => {
       if (spawned.pid !== null) return undefined;
@@ -679,14 +599,11 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
               'spawned session pid unknown at registration; AgentRecord.pid omitted (never falls back to the daemon pid)',
           },
         }),
-        { commit: 'deferred' },
       );
     })
     .then(() => runPromptTurn(brief))
     .catch(() => {
-      // `runPromptTurn` already ran the full stop/`finish()` recovery and
-      // rethrew only so a caller of `prompt()` can see it; this initial
-      // call has no such caller.
+      // `runPromptTurn` already stopped and recorded the failure.
     });
 
   return {
@@ -701,9 +618,8 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
       return runPromptTurn(text);
     },
     stop() {
-      // Deliberately does NOT unsubscribe: `close()` only *starts* the
-      // teardown, and `finish()` runs off the session's own later `exit`
-      // event — silencing that event would leave `exited` unresolved.
+      // No unsubscribe: `finish()` runs off the session's later `exit`
+      // event, and silencing it would leave `exited` unresolved.
       spawned.cancel();
       spawned.close();
     },

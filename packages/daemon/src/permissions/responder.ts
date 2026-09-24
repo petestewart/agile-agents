@@ -1,31 +1,13 @@
 /**
- * `buildPermissionResponder` — turns a `decidePermission` verdict into the
- * ACP `respondPermission` call (T010). Allow/deny answer the pending ACP
- * request immediately by selecting the chosen option's id; a `hil` verdict
- * instead calls `requestHil` (default: writes a `hil_request` `AgentMessage` to
- * the bus) and leaves the ACP request unanswered until `resolveHil` is
- * called with the human's answer.
+ * `buildPermissionResponder`: turns a `decidePermission` verdict into the
+ * ACP `respondPermission` call. Allow/deny answer at once by option id; a
+ * `hil` verdict calls `requestHil` (default: an urgent `hil_request` at
+ * `bus/inbox/human/<ulid>.yaml`) and leaves the ACP request pending until
+ * `resolveHil`.
  *
- * Bus placement (design/agile-agents-design.md §5 "Storage":
- * `bus/inbox/<agent>/<ulid>.yaml`; ticket: "pick the §5 layout and
- * document"): the default `requestHil` writes to
- * `bus/inbox/human/<ulid>.yaml` — §5's routing rules name `human` as the
- * recipient of a `hil_request` ("anyone → human (hil_request)"), so this
- * follows the same `inbox/<agent>/` shape T006 uses for every other
- * recipient rather than inventing a `hil/` path.
- *
- * **Lifecycle ownership (review-round finding, opus should-fix 6/7)**:
- * this module does *not* own a `hil_request`'s lifecycle past writing it.
- * It does not run a timer against `deadline` — that belongs to T018's
- * `GateService` (§16's `human_timeout: <duration>` fallback is exactly
- * this case), and `resolveHil` no longer deletes/acks the written message
- * on resolve — acking a bus message is T006's job (`bus/inbox/<agent>/
- * done/`), and T018's `GateService` may track the same request under its
- * own `gates/<id>.yaml` record. `requestHil` is injectable
- * specifically so the manager can wire T018's `GateService` in as the
- * single owner of persistence/acking/timeout instead of this module's
- * default store-backed writer — this module then only needs the `{id}`
- * it returns to correlate a later `resolveHil` call.
+ * This module doesn't own a `hil_request` past writing it: no deadline
+ * timer (the `GateService`'s job), no acking on resolve. `requestHil` is
+ * injectable so the gate service can own persistence, acking and timeout.
  */
 
 import { join } from 'node:path';
@@ -39,24 +21,24 @@ import { worktreeBranchLookups } from './push-detector';
 import type { PatternRuleGate } from './rule-checks';
 import type { AcpPermissionRequestParams, Decision, PermissionRole } from './types';
 
-/** Default time a human has to answer a `hil_request` before it's overdue. Not a CLAUDE.md tunable (none listed for this); kept local and overridable per ctx. Enforcing this deadline (ticking, escalating) is T018's `GateService`, not this module — see the file header. */
+/** Default time a human has to answer before a `hil_request` is overdue (enforced by the lifecycle owner). */
 export const DEFAULT_HIL_DEADLINE_MS = 60 * 60 * 1000;
 
-/** The slice of `SpawnedSession` this module needs — kept minimal so a test can fake it without spawning a real agent. */
+/** The slice of `SpawnedSession` this module needs. */
 export interface PermissionResponderSession {
   respondPermission(id: AcpRequestId, result: unknown): boolean;
 }
 
-/** What a `hil` verdict needs persisted somewhere a human (or T018's `GateService`) can see and eventually answer. */
+/** What a `hil` verdict persists for a human to answer. */
 export interface HilRequestInput {
   agent: AgentId;
   hilKind: 'classifier_review';
   summary: string;
-  /** ISO timestamp — computed here (from `hilDeadlineMs`), enforced by whoever owns the lifecycle (see file header). */
+  /** ISO timestamp, computed here, enforced by the lifecycle owner. */
   deadline: string;
 }
 
-/** Persists one `hil_request` and returns an id `resolveHil` will later be called with. Injectable so T018's `GateService` can own persistence/acking/timeout instead of this module's default store-backed writer. */
+/** Persists one `hil_request`; returns the id `resolveHil` will be called with. */
 export type RequestHil = (input: HilRequestInput) => Promise<{ id: string }>;
 
 export interface PermissionResponderContext {
@@ -66,33 +48,28 @@ export interface PermissionResponderContext {
   worktreePath: string;
   session: PermissionResponderSession;
   hilDeadlineMs?: number;
-  /** Defaults to writing an `AgentMessage` at `bus/inbox/human/<ulid>.yaml` via `store.putEntity`. Override to hand persistence to T018's `GateService`. */
+  /** Defaults to an `AgentMessage` at `bus/inbox/human/<ulid>.yaml`. */
   requestHil?: RequestHil;
   /**
-   * T143: the pattern rules this session is judged by (§5.2, §5.4), bound
-   * to its stream by `runner/session.ts` (`patternRuleGate`). This tier is
-   * the only gate a vendor without a pre-tool-use hook has (Cursor, Codex,
-   * Grok — §4.3), so without this wired `no_push_protected` would not
-   * exist for them. Absent means role table only, as before T143.
+   * The pattern rules this session is judged by, bound to its stream: the
+   * only gate a vendor without a pre-tool-use hook (Cursor, Codex, Grok,
+   * §4.3) has. Absent means the role table only.
    */
   patternRules?: PatternRuleGate;
 }
 
-/** What `resolveHil` needs from the eventual `hil_response` (T018 decides how/when it arrives). */
+/** How a pending `hil_request` was answered. */
 export type HilResolution = { optionId: string } | { cancelled: true };
 
 export interface PermissionResponderHandle {
-  /** Decides and answers (or defers to hil) one `session/request_permission`. Returns the decision made, for logging/tests. */
+  /** Decides and answers (or parks on a human) one `session/request_permission`. */
   handleRequest(requestId: AcpRequestId, request: AcpPermissionRequestParams): Promise<Decision>;
   /**
-   * Resolves a pending `hil_request` by the id `requestHil` returned (the
-   * hook T018 calls once a `hil_response` message arrives). Returns
-   * `false` if no such request is pending (already resolved, wrong id, or
-   * never went through this responder). Does not touch the written
-   * message/record — see the file header on lifecycle ownership.
+   * Resolves a pending `hil_request` by the id `requestHil` returned;
+   * `false` if none is pending. Leaves the written record alone.
    */
   resolveHil(hilRequestId: string, resolution: HilResolution): Promise<boolean>;
-  /** Count of ACP requests currently parked on a human answer — for tests and liveness/attention-queue reporting. */
+  /** ACP requests parked on a human answer. */
   pendingHilCount(): number;
 }
 

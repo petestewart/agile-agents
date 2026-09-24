@@ -1,22 +1,11 @@
 /**
- * Localhost HTTP + WebSocket (design/agile-agents-design.md §18 "Technical
- * shape": "HTTP + WebSocket on localhost for UI/CLI"; T004 acceptance:
- * `GET /health` returns daemon version and state root).
- *
- * With a `StateStore` + `GateService` supplied this also serves the cockpit
- * bundle and the v0 feed page, their JSON snapshot (`GET /api/snapshot`),
- * the HIL approve/deny/note actions the Needs-you cards call
- * (`POST /api/hil/:id/approve` · `/deny` · `/note` — a present
- * `Origin`/`Sec-Fetch-Site` naming a different origin/site is rejected with
- * 403, see `isSameOriginRequest`), the inbox (`GET /api/inbox`), the
- * questions store (`GET`/`POST /api/questions`, `POST
- * /api/questions/:id/answer`), and tails `log/events.jsonl` to broadcast
- * `{type:'event', event}` frames to every `/ws` subscriber after its initial
- * `{type:'hello'}` + `{type:'snapshot', ...}`. Without a store the feed
- * routes 503 and `/ws` still sends only the hello frame.
- *
- * T122 deleted the ticket/oracle/kb/halt/policy/plan/review/chat and
- * Jira route families along with the subsystems behind them.
+ * Localhost HTTP + WebSocket: `GET /health`, the cockpit bundle at `/`,
+ * and, with a `StateStore` + `GateService`, the cockpit's JSON routes
+ * (snapshot, inbox, streams, rules, questions, gates, settings) plus a
+ * `/ws` that sends `hello` + snapshot and then tails `log/events.jsonl` as
+ * `{type:'event'}` frames. Every write route is same-origin only
+ * (`isSameOriginRequest`) and records the actor as `human`. Without a
+ * store the feed routes 503 and `/ws` sends only the hello frame.
  */
 
 import { join } from 'node:path';
@@ -47,7 +36,6 @@ import {
   UnknownVendorError,
   UnregisteredRepoError,
 } from './attach';
-import type { Bus } from './bus';
 import type { ClassifierKeyService } from './classifier';
 import type { DocsService } from './docs';
 import {
@@ -77,7 +65,7 @@ import {
 import { NotFoundError, type StateStore } from './store';
 import type { StreamService } from './streams';
 
-/** T165: the installable-app files served at site root, with their content types. */
+/** The installable-app files served at site root, with their content types. */
 const INSTALLABLE_FILES: Record<string, string> = {
   '/manifest.webmanifest': 'application/manifest+json',
   '/sw.js': 'text/javascript; charset=utf-8',
@@ -88,10 +76,9 @@ const INSTALLABLE_FILES: Record<string, string> = {
 };
 
 /**
- * The port the daemon was told to listen on is already taken (T127). Typed,
- * so `agile daemon start` can print one actionable line instead of Bun's
- * bare "Failed to start server. Is port 4600 in use?" — it names the
- * address, how to find the holder, and both ways to pick another port.
+ * The configured port is taken: one actionable line (the address, how to
+ * find the holder, how to pick another port) instead of Bun's bare
+ * "Failed to start server".
  */
 export class PortInUseError extends Error {
   constructor(
@@ -121,55 +108,33 @@ export interface HttpServerOptions {
   hostname?: string;
   version: string;
   stateRoot: string;
-  /**
-   * T111: a repo root for the routes that need one (the ticket diff, the
-   * top bar's project block). T125: the daemon no longer has one — it
-   * starts from any cwd and serves every registered repo — so this is
-   * absent in practice and those routes simply omit the repo-derived
-   * payload rather than guessing a directory. T130/T131 re-key them to the
-   * stream's registered repo.
-   */
+  /** Repo root for the snapshot's repo block; absent in practice (the daemon serves every registered repo). */
   repoRoot?: string;
   startedAt: number;
-  /** The state home, named in a `PortInUseError` so the operator is pointed at the right `config.yaml` (T127). */
+  /** The state home, named in a `PortInUseError` so the operator finds the right `config.yaml`. */
   home?: string;
   /** When present (i.e. the state home exists), enables the feed routes and `/ws` live tail. */
   store?: StateStore;
   /** Required alongside `store` to serve the HIL attention-queue snapshot + approve/delegate actions. */
   gates?: GateService;
-  /** T040: serves `/api/questions` (read + raise + answer) and the open-questions half of the attention queue. Optional — without it those routes 503 and the snapshot's `questions` array is empty. */
+  /** `/api/questions` and the snapshot's open questions; without it those routes 503. */
   questions?: QuestionService;
-  /** T121: serves `GET /api/inbox` (cockpit design §3). Optional — without it the route 503s. */
+  /** `GET /api/inbox` (§3); without it the route 503s. */
   inbox?: InboxService;
-  /** T120: the stream service, so a route family can be hung off it without re-opening the store. Optional. */
   streams?: StreamService;
-  /** T160: the inbox's `rule_accept` cards decide through it (`POST /api/rules/:id/accept|retire`). Optional. */
+  /** The rules routes (`/api/rules...`). */
   rules?: RulesService;
-  /**
-   * T163: the rules screen's "Test examples" runs `rule.test`'s evals
-   * through it (the configured classifier and its bands). Optional —
-   * without it the button says there is no classifier.
-   */
+  /** "Test examples": `rule.test`'s evals through the configured classifier. */
   ruleEvals?: RuleRpcEvalDeps;
-  /**
-   * T167: the classifier key behind Settings' "TypeSafe API key" and the
-   * rules screen's "Test examples" availability. Optional — without it,
-   * evals are available whenever `ruleEvals` is given (the test seam).
-   */
+  /** The classifier key behind Settings, and whether evals can run (without it, whenever `ruleEvals` is given). */
   classifierKey?: ClassifierKeyService;
-  /** T160: the inbox's `done` cards land through it (`POST /api/streams/:id/land`). Optional. */
+  /** `POST /api/streams/:id/land`. */
   landing?: LandingService;
-  /** T161: the stream page's sessions strip (attach, review, stop) and composer prompt through it. Optional. */
+  /** The stream page's sessions strip and composer. */
   attach?: AttachService;
-  /** T161: the stream page's docs tab (T134's docs). Optional — without it the tab is empty. */
+  /** The stream page's docs tab. */
   docs?: DocsService;
-  /**
-   * T025: lets a control-room POST land on the bus (`bus.send`) so every
-   * write goes through the same path an agent's RPC call would and appears
-   * in the event log. Optional.
-   */
-  bus?: Bus;
-  /** Test hook: overrides the tailer's poll interval (default 250ms — see `feed/tailer.ts`). */
+  /** Test hook: the tailer's poll interval (default 250ms). */
   feedPollIntervalMs?: number;
 }
 
@@ -195,6 +160,10 @@ function errorResponse(status: number, message: string): Response {
   return jsonResponse({ error: message }, status);
 }
 
+function messageOf(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
 async function readJsonBody(req: Request): Promise<Record<string, unknown>> {
   const text = await req.text();
   if (text.trim().length === 0) return {};
@@ -210,15 +179,10 @@ async function readJsonBody(req: Request): Promise<Record<string, unknown>> {
 }
 
 /**
- * Review nit (opus, non-blocking): the HIL POSTs are the human gate, so a
- * page in the user's browser drive-by POSTing an approve at the default
- * daemon port is worth guarding against even though today's exploitability
- * is low (ids are ULIDs, `/api/snapshot` sends no CORS headers). A present
- * `Origin` must match this server's own origin; a present `Sec-Fetch-Site`
- * (most modern browsers, always absent from same-process test/CLI clients)
- * must be `same-origin` or `none`. Both headers are optional on the wire, so
- * their *absence* is not itself rejected — only a value that actively names
- * a different origin/site is.
+ * Guards the human's write routes against a drive-by POST from another
+ * page in the same browser. A present `Origin` must be this server's; a
+ * present `Sec-Fetch-Site` must be `same-origin` or `none`. Both headers
+ * are optional, so only a value naming another origin is rejected.
  */
 function isSameOriginRequest(req: Request, port: number): boolean {
   const origin = req.headers.get('origin');
@@ -233,7 +197,7 @@ function isSameOriginRequest(req: Request, port: number): boolean {
   return true;
 }
 
-/** `/api/hil/<id>/<action>` — `<id>` is everything between the two fixed segments, `<action>` one of approve|deny|note (T039 adds deny + note; T122 deletes delegate with the EM). */
+/** `/api/hil/<id>/<action>`, action approve|deny|note. */
 type HilAction = 'approve' | 'deny' | 'note';
 
 function matchHilAction(pathname: string): { id: string; action: HilAction } | undefined {
@@ -245,11 +209,7 @@ function matchHilAction(pathname: string): { id: string; action: HilAction } | u
   };
 }
 
-/**
- * T039: the optional free text a Needs-you card carries with (or instead of)
- * a button press. Capped/trimmed here so an over-long note is a 400 rather
- * than a schema throw deeper in `GateService`.
- */
+/** The optional note on a gate card, capped here so an over-long one is a 400. */
 function readNote(body: Record<string, unknown>): string | undefined | { error: string } {
   const raw = body.note;
   if (raw === undefined || raw === null) return undefined;
@@ -277,7 +237,7 @@ async function handleHilAction(
   try {
     body = await readJsonBody(req);
   } catch (err) {
-    return errorResponse(400, err instanceof Error ? err.message : String(err));
+    return errorResponse(400, messageOf(err));
   }
 
   const note = readNote(body);
@@ -288,36 +248,29 @@ async function handleHilAction(
   try {
     if (action === 'approve' || action === 'deny') {
       const decision: HilDecision = action === 'approve' ? 'approve' : 'deny';
-      // T032: the actor is always `human` for a browser write, never taken
-      // from the request body (a page could otherwise forge another actor) —
-      // same hardcode `raised_by`/`from` already use on the halt/chat/propose
-      // routes below.
+      // The actor is always `human` for a browser write, never read from the body.
       const updated = await gates.respond(parsedId.data, decision, 'human', note);
       return jsonResponse(updated);
     }
 
-    // T039: a note with no button press resolves nothing — it is recorded
-    // on the pending request.
+    // A note with no button press resolves nothing: it is recorded on the request.
     if (note === undefined) return errorResponse(400, 'note is required');
     const updated = await gates.addNote(parsedId.data, note, 'human');
     return jsonResponse(updated);
   } catch (err) {
     if (err instanceof GateNotFoundError) return errorResponse(404, err.message);
     if (err instanceof GateAlreadyResolvedError) return errorResponse(409, err.message);
-    return errorResponse(400, err instanceof Error ? err.message : String(err));
+    return errorResponse(400, messageOf(err));
   }
 }
 
-/**
- * `/api/questions/<id>/answer` — T040 (§17 "Control room v2" → "Questions vs
- * Decisions"). The list/raise routes need no matcher (fixed path).
- */
+/** `/api/questions/<id>/answer`. */
 function matchQuestionAnswer(pathname: string): string | undefined {
   const match = pathname.match(/^\/api\/questions\/([^/]+)\/answer$/);
   return match?.[1] ? decodeURIComponent(match[1]) : undefined;
 }
 
-/** Free text on a question (the text asked, or the answer typed on the card) — capped here so an over-long body is a 400 rather than a schema throw deeper in `QuestionService`. */
+/** Free text on a question, capped here so an over-long body is a 400. */
 function readQuestionText(value: unknown, field: string): string | { error: string } {
   if (typeof value !== 'string') return { error: `${field} must be a string` };
   const trimmed = value.trim();
@@ -328,18 +281,13 @@ function readQuestionText(value: unknown, field: string): string | { error: stri
   return trimmed;
 }
 
-/**
- * `POST /api/questions` — the operator raising a question from the UI (§17
- * v2 names the operator as one of the four producers). `raised_by` is always
- * `human`, never taken from the request body: same T032 rule the halt/chat/
- * HIL routes already follow (a page could otherwise forge `architect`).
- */
+/** `POST /api/questions`: the operator raising a question. `raised_by` is always `human`. */
 async function handleQuestionRaise(req: Request, questions: QuestionService): Promise<Response> {
   let body: Record<string, unknown>;
   try {
     body = await readJsonBody(req);
   } catch (err) {
-    return errorResponse(400, err instanceof Error ? err.message : String(err));
+    return errorResponse(400, messageOf(err));
   }
   const text = readQuestionText(body.text, 'text');
   if (typeof text !== 'string') return errorResponse(400, text.error);
@@ -366,15 +314,14 @@ async function handleQuestionRaise(req: Request, questions: QuestionService): Pr
     });
     return jsonResponse(raised, 201);
   } catch (err) {
-    return errorResponse(400, err instanceof Error ? err.message : String(err));
+    return errorResponse(400, messageOf(err));
   }
 }
 
 /**
- * `POST /api/questions/<id>/answer` — `{ answer }` (T121: `reply` is the
- * only resolution left). Params are parsed by the same
- * `parseAnswerParams` the `question.answer` RPC uses, so the browser and the
- * CLI cannot disagree about the shape; `by` is forced to `human` (T032).
+ * `POST /api/questions/<id>/answer` `{ answer }`, parsed by the same
+ * `parseAnswerParams` as the RPC so browser and CLI cannot disagree; `by`
+ * is forced to `human`.
  */
 async function handleQuestionAnswer(
   req: Request,
@@ -387,7 +334,7 @@ async function handleQuestionAnswer(
   try {
     body = await readJsonBody(req);
   } catch (err) {
-    return errorResponse(400, err instanceof Error ? err.message : String(err));
+    return errorResponse(400, messageOf(err));
   }
   try {
     const input = parseAnswerParams({ ...body, by: 'human' });
@@ -396,37 +343,14 @@ async function handleQuestionAnswer(
   } catch (err) {
     if (err instanceof QuestionNotFoundError) return errorResponse(404, err.message);
     if (err instanceof QuestionAlreadyAnsweredError) return errorResponse(409, err.message);
-    return errorResponse(400, err instanceof Error ? err.message : String(err));
+    return errorResponse(400, messageOf(err));
   }
 }
 
-/**
- * An optional id from a request body, validated against its own schema
- * before any read uses it. `undefined` when absent, `{error}` when present
- * but malformed (a 400 with a readable message rather than a silent miss).
- */
-function readId(
-  value: unknown,
-  schema: { safeParse(input: unknown): { success: boolean } },
-  what: string,
-): string | undefined | { error: string } {
-  if (value === undefined || value === null) return undefined;
-  if (typeof value !== 'string' || !schema.safeParse(value).success) {
-    return { error: `invalid ${what}: ${String(value)}` };
-  }
-  return value;
-}
-
-/** Who the write is attributed to. The control room is the human's own window, so `human` is the default — same as the HIL routes. */
-function readActor(input: Record<string, unknown>): string {
-  return typeof input.by === 'string' && input.by.length > 0 ? input.by : 'human';
-}
-
-/** Bundles `store`+`gates` once both are present, so every call site gets one non-optional pair instead of re-checking two optionals. */
+/** `store` + `gates` bundled once both are present, plus the optional services. */
 interface FeedContext {
   store: StateStore;
   gates: GateService;
-  bus?: Bus;
   streams?: StreamService;
   questions?: QuestionService;
   inbox?: InboxService;
@@ -443,7 +367,6 @@ function resolveFeedContext(options: HttpServerOptions): FeedContext | undefined
   return {
     store: options.store,
     gates: options.gates,
-    bus: options.bus,
     streams: options.streams,
     questions: options.questions,
     inbox: options.inbox,
@@ -456,18 +379,14 @@ function resolveFeedContext(options: HttpServerOptions): FeedContext | undefined
   };
 }
 
-/**
- * T167: "Test examples" can run only when the daemon actually holds a key
- * (and the provider is not `off`) — not merely because a classifier
- * object exists, which it always does.
- */
+/** "Test examples" runs only when the daemon holds a key, not merely because a classifier object exists. */
 function evalsAvailable(feed: FeedContext): boolean {
   if (!feed.ruleEvals) return false;
   return feed.classifierKey ? feed.classifierKey.status().loaded : true;
 }
 
 /**
- * T167: Settings' classifier key —
+ * Settings' classifier key:
  *
  *   GET  /api/settings/classifier             where the key comes from (never the key)
  *   POST /api/settings/classifier/key         save `{api_key}` to config.yaml, live
@@ -516,7 +435,7 @@ async function handleSettingsRoute(
 }
 
 /**
- * T170 (D17): Settings' session defaults —
+ * D17: Settings' session defaults:
  *
  *   GET  /api/settings/session              every step of the order and what it resolves to
  *   POST /api/settings/session              home `default_vendor|model|effort` (`SessionDefaultsPatchSchema`)
@@ -539,7 +458,7 @@ async function handleSessionSettingsRoute(
     try {
       return jsonResponse(new SessionDefaultsService(feed.store).status());
     } catch (err) {
-      return errorResponse(500, err instanceof Error ? err.message : String(err));
+      return errorResponse(500, messageOf(err));
     }
   }
   if (req.method !== 'POST') return undefined;
@@ -561,14 +480,14 @@ async function handleSessionSettingsRoute(
         : await service.setRepo('human', repo, input.data),
     );
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
+    const message = messageOf(err);
     if (err instanceof NotFoundError) return errorResponse(404, message);
     return errorResponse(400, message);
   }
 }
 
 /**
- * T160/T163: the rules routes (cockpit design §5, §9) —
+ * The rules routes (§5, §9):
  *
  *   GET  /api/rules               every rule, §5.7's pruning report, and whether evals can run
  *   POST /api/rules/:id/accept    the inbox card's and the rules screen's Accept
@@ -603,7 +522,7 @@ async function handleRuleRoute(
         : { available: false },
     });
   }
-  // T167: the rules screen's "New rule" — a proposal, like every create (§5.1).
+  // "New rule": a proposal, like every create (§5.1).
   if (url.pathname === '/api/rules' && req.method === 'POST') {
     if (!feed?.rules) return errorResponse(503, 'rules not available');
     if (!sameOrigin()) return errorResponse(403, 'cross-origin request rejected');
@@ -614,7 +533,7 @@ async function handleRuleRoute(
         await feed.rules.create('human', { ...input.data, provenance: { by: 'human' } }),
       );
     } catch (err) {
-      return errorResponse(400, err instanceof Error ? err.message : String(err));
+      return errorResponse(400, messageOf(err));
     }
   }
   const isTest = url.pathname === '/api/rules/test';
@@ -635,8 +554,8 @@ async function handleRuleRoute(
           'no classifier key loaded: set one in Settings, classifier.api_key in config.yaml, or TYPESAFE_API_KEY (§6.2)',
         );
       }
-      // One classifier call per example (T155): a real suite outlives
-      // Bun's 10 s idle timeout, so this one request waits as long as it takes.
+      // One classifier call per example: a real suite outlives Bun's 10 s
+      // idle timeout, so this request waits as long as it takes.
       noIdleTimeout();
       return jsonResponse(await testRules(feed.rules, feed.ruleEvals, input.data.id));
     }
@@ -656,22 +575,22 @@ async function handleRuleRoute(
   } catch (err) {
     if (err instanceof RuleAlreadyDecidedError) return errorResponse(409, err.message);
     if (err instanceof NotFoundError) return errorResponse(404, err.message);
-    return errorResponse(400, err instanceof Error ? err.message : String(err));
+    return errorResponse(400, messageOf(err));
   }
 }
 
 /**
- * T161: the stream page's routes (cockpit design §9.3) —
+ * The stream page's routes (§9.3):
  *
  *   GET  /api/streams/:id         the page read (`feed/stream-page.ts`)
  *   GET  /api/streams/:id/diff    the diff tab
  *   POST /api/streams/:id/say     the composer: a human line, and a prompt to the attached worker
  *   POST /api/streams/:id/attach  the sessions strip's attach / review (`role: reviewer`)
  *   POST /api/streams/:id/stop    the sessions strip's stop (a human detach)
- *   POST /api/streams/:id/close   the page's Close (T166)
- *   POST /api/streams/:id/mark-landed  merged outside `land` (T166)
+ *   POST /api/streams/:id/close   the page's Close
+ *   POST /api/streams/:id/mark-landed  merged outside `land`
  *
- * `land` is matched before this (T160). Every write is same-origin only
+ * `land` is matched before this. Every write is same-origin only
  * and stamps `human`; no principal is ever read from the body (§2.2).
  * Returns `undefined` for a path that is not one of these.
  */
@@ -713,7 +632,7 @@ async function handleStreamRoute(
       return jsonResponse(feed.landing.diff(id));
     }
 
-    // T166: the stream page's Close and Mark landed take no body.
+    // Close and Mark landed take no body.
     if (action === 'close') return jsonResponse(await feed.streams.close('human', id));
     if (action === 'mark-landed') {
       if (!feed.landing) return errorResponse(503, 'landing not available');
@@ -724,7 +643,7 @@ async function handleStreamRoute(
       const input = StreamSayInputSchema.safeParse(body);
       if (!input.success) return errorResponse(400, formatZodError('say', input.error));
       if (feed.attach) {
-        // T169: the same path as `agile stream say` — see `sayAndAnswer`.
+        // The same path as `agile stream say` (`sayAndAnswer`).
         const attach = feed.attach;
         const said = await sayAndAnswer(
           {
@@ -748,13 +667,13 @@ async function handleStreamRoute(
       const input = StreamAttachRequestSchema.safeParse(body);
       if (!input.success) return errorResponse(400, formatZodError('attach', input.error));
       const result = await feed.attach.attach(id, input.data);
-      // The handle is in-process only — the wire carries the record.
+      // The handle is in-process only; the wire carries the record.
       return jsonResponse({ session: result.session, stream: result.stream }, 201);
     }
     const sessions = await feed.attach.stop(id, undefined, { detach: true });
     return jsonResponse({ stopped: sessions.length > 0, sessions });
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
+    const message = messageOf(err);
     if (err instanceof NotFoundError) return errorResponse(404, message);
     if (err instanceof StreamBusyError || err instanceof LandRefusedError) {
       return errorResponse(409, message);
@@ -766,11 +685,7 @@ async function handleStreamRoute(
   }
 }
 
-/**
- * Runs `bind`, retyping Bun's `EADDRINUSE` as `PortInUseError` (T127).
- * Generic so the caller keeps `Bun.serve`'s own inferred server type
- * (`srv.upgrade(req)` needs the websocket data generic).
- */
+/** Runs `bind`, retyping Bun's `EADDRINUSE` as `PortInUseError` (generic, to keep Bun's inferred server type). */
 function rethrowPortInUse<T>(options: HttpServerOptions, hostname: string, bind: () => T): T {
   try {
     return bind();
@@ -788,19 +703,13 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
 
   let tailer: EventTailerHandle | undefined;
 
-  /**
-   * T127: Bun throws `EADDRINUSE` here when the home's port is already
-   * taken (by a stale `agiled` from another home, or anything else). That
-   * error reaches the operator through `agile daemon start`, so it is
-   * retyped into one actionable line rather than Bun's bare "Failed to
-   * start server".
-   */
   const server = rethrowPortInUse(options, hostname, () =>
     Bun.serve({
       port: options.port,
       hostname,
       async fetch(req, srv) {
         const url = new URL(req.url);
+        const sameOrigin = () => isSameOriginRequest(req, srv.port ?? options.port);
 
         if (url.pathname === '/health') {
           const payload: HealthPayload = {
@@ -812,24 +721,16 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
           return Response.json(payload);
         }
 
-        /**
-         * T112: the cockpit is the product, so it is served at `/` — the one
-         * URL an operator types. The v0 static feed page keeps `/feed`.
-         */
+        // The cockpit is served at `/`; the v0 static feed page keeps `/feed`.
         if (url.pathname === '/') {
           return new Response(Bun.file(join(CONTROL_ROOM_DIST_DIR, 'index.html')), {
-            // T173: revalidate on every load so a rebuild is never masked by a cached page.
+            // Revalidate on every load so a rebuild is never masked by a cached page.
             headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-cache' },
           });
         }
 
-        /**
-         * T165: what makes the cockpit installable as its own app window —
-         * the manifest, its icons and the pass-through service worker — is
-         * served from site root, because a service worker only controls pages
-         * under its own path and the cockpit lives at `/`. The files are the
-         * Vite `public/` copies in the built bundle.
-         */
+        // The installable-app files are served from site root: a service
+        // worker only controls pages under its own path, and the cockpit is `/`.
         const installable = INSTALLABLE_FILES[url.pathname];
         if (installable) {
           const file = Bun.file(join(CONTROL_ROOM_DIST_DIR, url.pathname.slice(1)));
@@ -845,29 +746,17 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
           });
         }
 
-        /**
-         * Control room SPA (T025 — §17 "Control room", §18 "UI: React + Vite
-         * SPA ... serves the built UI as static files"). Its assets keep their
-         * own `/control-room/` prefix (`vite.config.ts`'s `base`), which is why
-         * the index.html served at `/` above resolves them correctly.
-         */
-        /**
-         * T112: `/control-room` moved to `/`; this stays a redirect so old
-         * links, bookmarks and the design docs keep working. The query string
-         * is preserved — `?view=` is how the cockpit is deep-linked.
-         */
+        // The cockpit's assets keep Vite's `/control-room/` base. The old
+        // `/control-room` URL redirects to `/`, keeping `?view=` deep links.
         if (url.pathname === '/control-room' || url.pathname === '/control-room/') {
-          // A relative `Location` is legal (RFC 7231 §7.1.2) and avoids
-          // baking the host into the redirect; `Response.redirect` itself
-          // requires an absolute URL, so the header is set by hand.
+          // A relative `Location` is legal (RFC 7231 §7.1.2); `Response.redirect` needs an absolute URL.
           return new Response(null, { status: 302, headers: { location: `/${url.search}` } });
         }
         if (url.pathname.startsWith('/control-room/')) {
           const rel = url.pathname.slice('/control-room/'.length);
           const file = Bun.file(join(CONTROL_ROOM_DIST_DIR, rel));
           if (!(await file.exists())) return new Response('not found', { status: 404 });
-          // T165: Vite rewrites index.html's manifest/icon links onto this
-          // prefix, so the installable files get their explicit types here too.
+          // Vite rewrites index.html's manifest/icon links onto this prefix.
           const type = INSTALLABLE_FILES[`/${rel}`];
           return type
             ? new Response(file, { headers: { 'content-type': type } })
@@ -881,16 +770,13 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
           );
         }
 
-        // ---- inbox (T121, cockpit design §3): one list, oldest first,
-        // across every stream. Same same-origin rules as the routes above.
+        // Inbox (§3): one list, oldest first, across every stream.
         if (url.pathname === '/api/inbox' && req.method === 'GET') {
           if (!feed?.inbox) return errorResponse(503, 'inbox not available');
           return jsonResponse({ items: feed.inbox.list() });
         }
 
-        // ---- cockpit (T160, cockpit design §9): the stream tree, the
-        // inbox's rule and land decisions, and the Settings read of the
-        // gates block. Every write stamps `human` and is same-origin only.
+        // The cockpit frame (§9): the stream tree and the inbox.
         if (url.pathname === '/api/cockpit' && req.method === 'GET') {
           if (!feed?.streams) return errorResponse(503, 'streams not available');
           return jsonResponse(buildCockpitFrame(feed.streams, feed.inbox));
@@ -901,82 +787,64 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
           try {
             return jsonResponse(feed.store.getPolicy());
           } catch (err) {
-            return errorResponse(404, err instanceof Error ? err.message : String(err));
+            return errorResponse(404, messageOf(err));
           }
         }
 
         if (url.pathname === '/api/policy' && req.method === 'PUT') {
           if (!feed) return errorResponse(503, 'state store not initialised (run `agile init`)');
-          if (!isSameOriginRequest(req, srv.port ?? options.port)) {
-            return errorResponse(403, 'cross-origin request rejected');
-          }
+          if (!sameOrigin()) return errorResponse(403, 'cross-origin request rejected');
           try {
             const policy = validatePolicy(await readJsonBody(req));
             return jsonResponse(await feed.store.putPolicy(policy, { by: 'human' }));
           } catch (err) {
-            return errorResponse(400, err instanceof Error ? err.message : String(err));
+            return errorResponse(400, messageOf(err));
           }
         }
 
-        const settingsRoute = await handleSettingsRoute(req, url, feed, () =>
-          isSameOriginRequest(req, srv.port ?? options.port),
-        );
+        const settingsRoute = await handleSettingsRoute(req, url, feed, sameOrigin);
         if (settingsRoute) return settingsRoute;
 
-        const sessionSettingsRoute = await handleSessionSettingsRoute(req, url, feed, () =>
-          isSameOriginRequest(req, srv.port ?? options.port),
-        );
+        const sessionSettingsRoute = await handleSessionSettingsRoute(req, url, feed, sameOrigin);
         if (sessionSettingsRoute) return sessionSettingsRoute;
 
-        const ruleRoute = await handleRuleRoute(
-          req,
-          url,
-          feed,
-          () => isSameOriginRequest(req, srv.port ?? options.port),
-          () => srv.timeout(req, 0),
+        const ruleRoute = await handleRuleRoute(req, url, feed, sameOrigin, () =>
+          srv.timeout(req, 0),
         );
         if (ruleRoute) return ruleRoute;
 
         const landMatch = url.pathname.match(/^\/api\/streams\/([^/]+)\/land$/);
         if (landMatch && req.method === 'POST') {
           if (!feed?.landing) return errorResponse(503, 'landing not available');
-          if (!isSameOriginRequest(req, srv.port ?? options.port)) {
-            return errorResponse(403, 'cross-origin request rejected');
-          }
+          if (!sameOrigin()) return errorResponse(403, 'cross-origin request rejected');
           const id = UlidSchema.safeParse(decodeURIComponent(landMatch[1] ?? ''));
           if (!id.success) return errorResponse(400, `invalid stream id: ${landMatch[1]}`);
           try {
             return jsonResponse(await feed.landing.land(id.data));
           } catch (err) {
             if (err instanceof LandRefusedError) return errorResponse(409, err.message);
-            return errorResponse(400, err instanceof Error ? err.message : String(err));
+            return errorResponse(400, messageOf(err));
           }
         }
 
-        // T162: "New stream" and the top bar's quick capture (§9.1) — the
-        // same `StreamService.create` the `stream.create` RPC reaches,
-        // stamped `human` at this edge.
+        // "New stream" and quick capture (§9.1): the same `StreamService.create` as the RPC.
         if (url.pathname === '/api/streams' && req.method === 'POST') {
           if (!feed?.streams) return errorResponse(503, 'streams not available');
-          if (!isSameOriginRequest(req, srv.port ?? options.port)) {
-            return errorResponse(403, 'cross-origin request rejected');
-          }
+          if (!sameOrigin()) return errorResponse(403, 'cross-origin request rejected');
           try {
             const input = StreamCreateInputSchema.safeParse(await readJsonBody(req));
             if (!input.success) return errorResponse(400, formatZodError('stream', input.error));
             return jsonResponse(await feed.streams.create('human', input.data), 201);
           } catch (err) {
             // An unknown parent or repo, or a bad body: the human's to fix.
-            return errorResponse(400, err instanceof Error ? err.message : String(err));
+            return errorResponse(400, messageOf(err));
           }
         }
 
-        const streamRoute = await handleStreamRoute(req, url, feed, () =>
-          isSameOriginRequest(req, srv.port ?? options.port),
-        );
+        const streamRoute = await handleStreamRoute(req, url, feed, sameOrigin);
         if (streamRoute) return streamRoute;
 
-        // ---- questions (T040, §17 "Control room v2") — read + raise + answer.
+        // Questions: read, raise, answer.
         if (url.pathname === '/api/questions' && req.method === 'GET') {
           if (!feed?.questions) return errorResponse(503, 'questions store not available');
           return jsonResponse(
@@ -988,27 +856,21 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
 
         if (url.pathname === '/api/questions' && req.method === 'POST') {
           if (!feed?.questions) return errorResponse(503, 'questions store not available');
-          if (!isSameOriginRequest(req, srv.port ?? options.port)) {
-            return errorResponse(403, 'cross-origin request rejected');
-          }
+          if (!sameOrigin()) return errorResponse(403, 'cross-origin request rejected');
           return handleQuestionRaise(req, feed.questions);
         }
 
         const questionAnswerMatch = matchQuestionAnswer(url.pathname);
         if (questionAnswerMatch && req.method === 'POST') {
           if (!feed?.questions) return errorResponse(503, 'questions store not available');
-          if (!isSameOriginRequest(req, srv.port ?? options.port)) {
-            return errorResponse(403, 'cross-origin request rejected');
-          }
+          if (!sameOrigin()) return errorResponse(403, 'cross-origin request rejected');
           return handleQuestionAnswer(req, feed.questions, questionAnswerMatch);
         }
 
         const hilMatch = matchHilAction(url.pathname);
         if (hilMatch && req.method === 'POST') {
           if (!feed) return errorResponse(503, 'state store not initialised (run `agile init`)');
-          if (!isSameOriginRequest(req, srv.port ?? options.port)) {
-            return errorResponse(403, 'cross-origin request rejected');
-          }
+          if (!sameOrigin()) return errorResponse(403, 'cross-origin request rejected');
           return handleHilAction(req, feed.gates, hilMatch.id, hilMatch.action);
         }
 
@@ -1043,7 +905,7 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
           }
         },
         message() {
-          // v0: no client -> server protocol yet (tail-only). Ignore inbound.
+          // No client -> server protocol: tail only.
         },
       },
     }),
@@ -1057,9 +919,8 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
         for (const event of newEvents) {
           server.publish(FEED_WS_TOPIC, JSON.stringify({ type: 'event', event }));
         }
-        // T160: every batch of new lines may have changed what waits on the
-        // human or a stream's status pair, so the cockpit's inbox and tree
-        // are re-derived and pushed once per batch (§3.3 "push, do not poll").
+        // Any new batch may change the inbox or a status pair: re-derive and
+        // push the cockpit frame once per batch (§3.3 "push, do not poll").
         if (feed.streams && newEvents.length > 0) {
           try {
             server.publish(
@@ -1067,7 +928,7 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
               JSON.stringify(buildCockpitFrame(feed.streams, feed.inbox)),
             );
           } catch (err) {
-            console.error(err instanceof Error ? err.message : String(err));
+            console.error(messageOf(err));
           }
         }
       },

@@ -1,23 +1,10 @@
-/**
- * `buildSandboxProfile` — pure `(role, worktree, vendor) -> SandboxProfile`
- * (T026 — design §14 "Permissions per role" for the read/write/network
- * matrix; §6 for the tier-0 mandate itself). No IO, no backend awareness:
- * `sandbox-exec.ts` and `container.ts` each render this same profile their
- * own way.
- */
+/** `buildSandboxProfile`: pure `(role, worktree, vendor) → SandboxProfile` (§14); each backend renders it its own way. */
 
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { SandboxProfile, SandboxProfileOptions } from './types';
 
-/**
- * Public package registries an engineer needs to install/build (ticket
- * scope: "no network for engineers except allow-listed registries").
- * Deliberately narrow — a project needing a private registry passes it via
- * `extraAllowedHosts`, logged wherever the caller renders that policy, per
- * CLAUDE.md's "no new dependency without a DEC" spirit (§14 "Never without
- * a human": "installing a *new* dependency").
- */
+/** Public registries an engineer needs; deliberately narrow (private ones go in `extraAllowedHosts`). */
 export const DEFAULT_REGISTRY_ALLOWLIST: readonly string[] = Object.freeze([
   // npm / bun (bun's default registry is npm's)
   'registry.npmjs.org',
@@ -39,15 +26,9 @@ export const DEFAULT_REGISTRY_ALLOWLIST: readonly string[] = Object.freeze([
 ]);
 
 /**
- * Best-effort per-vendor login state paths, relative to `$HOME` — "vendor
- * logins must keep working inside the sandbox" (ticket scope). Verified
- * against `design/spike-findings.md` only for Claude ("ambient login
- * (`claude login`, or `ANTHROPIC_API_KEY`)" — `acp-client/src/providers.ts`);
- * the others are the vendor CLIs' documented/conventional config
- * directories, **not** independently confirmed by a spike run on this
- * machine (no vendor logins are available in this container — see
- * CLAUDE.md "Cloud sessions"). Flagged in the pipeline report for live
- * verification alongside T027.
+ * Per-vendor login state paths relative to `$HOME`, so logins keep working
+ * inside the sandbox. Only Claude's is confirmed by the spike; the rest
+ * are the CLIs' conventional config dirs, pending a live check.
  */
 export const VENDOR_LOGIN_PATHS: Readonly<Record<string, readonly string[]>> = Object.freeze({
   claude: ['.claude', '.config/claude'],
@@ -57,7 +38,7 @@ export const VENDOR_LOGIN_PATHS: Readonly<Record<string, readonly string[]>> = O
   grok: ['.grok', '.xai'],
 });
 
-/** Env var names worth preserving verbatim so API-key auth still works when a vendor doesn't rely on a login directory. */
+/** Env var names preserved so API-key auth still works. */
 export const VENDOR_LOGIN_ENV: Readonly<Record<string, readonly string[]>> = Object.freeze({
   claude: ['ANTHROPIC_API_KEY'],
   openai: ['OPENAI_API_KEY'],
@@ -66,12 +47,7 @@ export const VENDOR_LOGIN_ENV: Readonly<Record<string, readonly string[]>> = Obj
   cursor: [],
 });
 
-/**
- * §14 matrix, collapsed to what tier 0 can actually see (fs + network, no
- * per-file granularity): engineer writes its own worktree and reaches
- * package registries; a reviewer gets a read-only checkout and no
- * network.
- */
+/** §14 collapsed to what tier 0 sees: the engineer writes its worktree and reaches registries; a reviewer reads, no network. */
 export function buildSandboxProfile(opts: SandboxProfileOptions): SandboxProfile {
   const home = opts.homeDir ?? homedir();
   const loginRelPaths = VENDOR_LOGIN_PATHS[opts.vendor] ?? [];
@@ -90,13 +66,12 @@ export function buildSandboxProfile(opts: SandboxProfileOptions): SandboxProfile
       homeDir: home,
       loginRelPaths,
       socketPath: opts.socketPath,
-      // Round 2 B4: only the engineer gets shared-git write access —
-      // reviewer/QA stay read-only there even if a caller passed `gitPaths`.
+      // Only the engineer gets shared-git write access.
       gitPaths: opts.gitPaths,
     };
   }
 
-  // reviewer: read-only checkout, no network (§14).
+  // Reviewer: read-only checkout, no network (§14).
   return {
     role: opts.role,
     worktreePath: opts.worktreePath,
