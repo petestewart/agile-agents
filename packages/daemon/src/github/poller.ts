@@ -18,6 +18,8 @@
  *   when it moves, main is fetched (fast-forward only) and `onMainMoved` runs.
  */
 
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import type { PullRequestState, RepoEntry, Stream } from '@agile-agents/shared';
 import { git, gitWrite } from '../delivery/git';
 import { mainBranch } from '../delivery/service';
@@ -55,6 +57,8 @@ export interface PrPollerOptions {
   afterTick?: () => unknown;
   /** T244: routed events for what the poll saw. */
   emit?: EmitRouted;
+  /** T246: the state home; a failing check's log excerpt goes to `sessions/<id>/`. */
+  home?: string;
   now?: () => Date;
 }
 
@@ -339,8 +343,10 @@ export class PrPoller {
         (c) => c.status === 'completed' && FAILING.has(c.conclusion ?? ''),
       );
       const status = memo.cache.status?.statuses.find((s) => FAILING.has(s.state));
+      const log = this.writeCiLog(stream, pr, run?.name, run?.output, after.head);
       await emit({
         ...base,
+        ...(log !== undefined ? { ref: log } : {}),
         type: 'ci_failed',
         payload: {
           pr,
@@ -361,6 +367,38 @@ export class PrPoller {
     }
     if (after.state === 'closed' && before.state !== 'closed') {
       await emit({ ...base, type: 'pr_closed', payload: { pr } });
+    }
+  }
+
+  /**
+   * T246: the failing check's output tail, written to the node's latest
+   * worker session dir (`sessions/<id>/ci-<pr>-<n>.log`); the path is the
+   * event's pointer. Nothing without a home, a session or any output.
+   */
+  private writeCiLog(
+    stream: Stream,
+    pr: number,
+    check: string | undefined,
+    output: string | undefined,
+    head: string,
+  ): string | undefined {
+    const home = this.options.home;
+    const session = [...stream.sessions].reverse().find((s) => s.role === 'worker');
+    if (home === undefined || session === undefined || output === undefined || output === '') {
+      return undefined;
+    }
+    const lines = output.split('\n');
+    const tail = lines.slice(-CI_LOG_LINES).join('\n').slice(-CI_LOG_BYTES);
+    const dir = join(home, 'sessions', session.id);
+    const path = join(dir, `ci-${pr}-${this.now().getTime()}.log`);
+    try {
+      mkdirSync(dir, { recursive: true });
+      const header = `# PR #${pr} ${check ?? 'check'} failed on ${head}${lines.length > CI_LOG_LINES ? ` (last ${CI_LOG_LINES} lines)` : ''}\n`;
+      writeFileSync(path, `${header}${tail}\n`);
+      return path;
+    } catch (err) {
+      console.error(`ci log for ${stream.id} not written:`, err);
+      return undefined;
     }
   }
 
@@ -449,6 +487,10 @@ export function reviewOf(reviews: GitHubReview[], awaiting: boolean): PullReques
   if (states.includes('APPROVED')) return 'approved';
   return awaiting ? 'review_requested' : 'none';
 }
+
+/** The CI log excerpt: the output's tail, capped (signal over volume). */
+const CI_LOG_LINES = 200;
+const CI_LOG_BYTES = 32_000;
 
 const FAILING = new Set(['failure', 'cancelled', 'timed_out', 'error', 'action_required']);
 

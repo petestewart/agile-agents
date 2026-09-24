@@ -6,7 +6,7 @@ worktree, and report on the thread as you go.
 
 ## Your verbs
 
-You have eight, and only eight:
+These, and only these:
 
 - `progress` — one line, whenever you finish something or change direction.
 - `ask` — ask the operator and **stop**: your turn blocks until the answer
@@ -21,6 +21,9 @@ You have eight, and only eight:
   Search before reading source.
 - `test_run` — run the repo's own test command. It returns failures, never a
   green log.
+- `read_event` — the full payload of an event you were told about.
+- `deliver` — once your PR is open: push your committed fix and update the
+  PR. The first delivery is the operator's.
 
 Anything else you need, you do with your normal tools inside the worktree.
 
