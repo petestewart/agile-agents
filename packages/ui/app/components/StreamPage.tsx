@@ -269,9 +269,7 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
   // T170: Attach/Review open the session picker first.
   const [picker, setPicker] = useState<'worker' | 'reviewer' | 'resolve' | undefined>(undefined);
   // T176: the server refused a worker on a parent with open children; this is its reason.
-  const [confirmParent, setConfirmParent] = useState<string | undefined>(undefined);
   const threadRef = useRef<HTMLOListElement | null>(null);
-  const pendingChoice = useRef<{ vendor?: string; model?: string; effort?: string }>({});
 
   const load = useCallback(() => {
     getStreamPage(id)
@@ -296,7 +294,6 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
     setDraft('');
     setActionError(undefined);
     setPicker(undefined);
-    setConfirmParent(undefined);
   }, [id]);
 
   const threadLength = page?.thread.length ?? 0;
@@ -456,7 +453,6 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
             busy={busy}
             onCancel={() => setPicker(undefined)}
             onStart={(choice) => {
-              pendingChoice.current = choice;
               if (picker === 'resolve') {
                 void act(
                   () => resolveConflict(stream.id, choice),
@@ -465,56 +461,11 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
                 return;
               }
               void act(
-                async () => {
-                  try {
-                    await attachSession(stream.id, picker, choice);
-                  } catch (err) {
-                    // T176: a parent's branch is where its children land — confirm first.
-                    if (picker === 'worker' && /open child/.test(errorText(err))) {
-                      setConfirmParent(errorText(err));
-                      setPicker(undefined);
-                      return;
-                    }
-                    throw err;
-                  }
-                },
+                () => attachSession(stream.id, picker, choice),
                 () => setPicker(undefined),
               );
             }}
           />
-        )}
-        {confirmParent && (
-          <div className="cr-confirm" data-testid="attach-confirm" role="alertdialog">
-            <p>
-              This stream has open children. A parent's branch is where its children land, so a
-              worker here builds on the branch they merge into and their lands will conflict.
-            </p>
-            <p className="cr-dim">{confirmParent}</p>
-            <div className="cr-actions">
-              <button
-                type="button"
-                className="cr-btn danger"
-                data-testid="attach-confirm-force"
-                disabled={busy}
-                onClick={() =>
-                  void act(
-                    () => attachSession(stream.id, 'worker', pendingChoice.current, true),
-                    () => setConfirmParent(undefined),
-                  )
-                }
-              >
-                Attach anyway
-              </button>
-              <button
-                type="button"
-                className="cr-btn"
-                data-testid="attach-confirm-cancel"
-                onClick={() => setConfirmParent(undefined)}
-              >
-                Cancel
-              </button>
-            </div>
-          </div>
         )}
         {actionError && (
           <p className="cr-error" role="alert" data-testid="stream-error">

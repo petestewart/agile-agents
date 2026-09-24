@@ -5,9 +5,8 @@
  * runs in a temporary worktree, so a conflict leaves the target untouched
  * and parks the stream `blocked` with the files named. Landing on a
  * protected branch happens only here, by the human (D8); every write is
- * `daemon` (§2.2). Target: the parent's branch (when the parent has a repo
- * and a branch), else the stream's `target_branch`, else the repo entry's,
- * else the repo's default branch.
+ * `daemon` (§2.2). Target (D20): the repo's main branch (`mainBranch`);
+ * a child never lands into its parent's branch.
  */
 
 import { existsSync, mkdtempSync, rmSync } from 'node:fs';
@@ -399,24 +398,9 @@ export class LandingService {
     return entry;
   }
 
-  /** §8.2's target order (module header). */
-  private resolveTarget(stream: Stream, repoEntry: RepoEntry, repoRoot: string): string {
-    const parentBranch = this.parentBranch(stream);
-    return (
-      parentBranch ?? stream.target_branch ?? repoEntry.target_branch ?? defaultBranch(repoRoot)
-    );
-  }
-
-  /** The parent's branch, only when the parent is in a repo and has one. */
-  private parentBranch(stream: Stream): string | undefined {
-    if (stream.parent === undefined) return undefined;
-    let parent: Stream;
-    try {
-      parent = this.options.streams.get(stream.parent);
-    } catch {
-      return undefined; // a parent that is gone re-roots the child
-    }
-    return parent.repo === undefined ? undefined : parent.branch;
+  /** D20: every work node delivers to the repo's main branch. */
+  private resolveTarget(_stream: Stream, repoEntry: RepoEntry, repoRoot: string): string {
+    return mainBranch(repoEntry, repoRoot);
   }
 
   /** Raises the `land` gate: the outcome when this call can't proceed, `undefined` when a delegate approved inline. */
@@ -541,6 +525,16 @@ export class LandingService {
       }
     }
   }
+}
+
+/**
+ * D20: the branch a repo's work nodes deliver to. T202 carries the old
+ * `target_branch` over as `main_branch`; either field is read, so this works
+ * before and after that migration.
+ */
+export function mainBranch(entry: RepoEntry, repoRoot: string): string {
+  const { main_branch } = entry as RepoEntry & { main_branch?: string };
+  return main_branch ?? entry.target_branch ?? defaultBranch(repoRoot);
 }
 
 /** The repo's default branch: `origin/HEAD`, else whichever of `main`/`master` exists, else `main`. */

@@ -55,8 +55,6 @@ export async function runAttach(
     ...(model !== undefined ? { model } : {}),
     ...(effort !== undefined ? { effort } : {}),
     ...(role !== undefined && !resolve ? { role } : {}),
-    // T176: a worker on a parent with open children needs --force.
-    ...(hasFlag(args.options, 'force') && !resolve ? { force: true } : {}),
   });
 
   if (json) {

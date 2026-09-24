@@ -314,6 +314,10 @@ export const StreamSchema = z
     repo: z.string().min(1).optional(),
     branch: z.string().min(1).optional(),
     worktree: z.string().min(1).optional(),
+    /**
+     * D20 (T203): no longer read or written — a work node delivers to its
+     * repo's main branch. Kept so a record written before it still parses.
+     */
     target_branch: z.string().min(1).optional(),
     created_at: z.string().min(1),
     /**
@@ -382,7 +386,6 @@ export const StreamCreateInputSchema = z
     goal: z.string().min(1),
     parent: UlidSchema.optional(),
     repo: z.string().min(1).optional(),
-    target_branch: z.string().min(1).optional(),
     /** T201: the project; the parent defaults to its root. */
     project: ProjectIdSchema.optional(),
     labels: z.array(z.string().trim().min(1).max(NODE_LABEL_MAX_CHARS)).max(20).optional(),
@@ -583,8 +586,6 @@ export const StreamAttachRequestSchema = z
     vendor: z.string().min(1).optional(),
     model: z.string().min(1).optional(),
     effort: z.string().min(1).optional(),
-    /** T176: attach a worker to a stream with open children anyway. */
-    force: z.boolean().optional(),
   })
   .strict();
 export type StreamAttachRequest = z.infer<typeof StreamAttachRequestSchema>;

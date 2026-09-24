@@ -162,7 +162,6 @@ export class StreamService {
       goal: input.goal,
       ...(parent !== undefined ? { parent } : {}),
       ...(input.repo !== undefined ? { repo: input.repo } : {}),
-      ...(input.target_branch !== undefined ? { target_branch: input.target_branch } : {}),
       ...(project !== undefined ? { project } : {}),
       ...(input.labels !== undefined ? { labels: input.labels } : {}),
       ...(input.helper_of !== undefined ? { helper_of: input.helper_of } : {}),
@@ -317,7 +316,6 @@ export interface StreamPatch {
   repo?: string;
   branch?: string;
   worktree?: string;
-  target_branch?: string;
   archived?: true;
   /** `'off'` opts the stream out of the classifier tier (§6.4); `null` clears the opt-out. */
   classifier?: 'off' | null;
