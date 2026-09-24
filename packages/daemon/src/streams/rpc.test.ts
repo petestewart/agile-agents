@@ -74,8 +74,9 @@ describe('project (T201)', () => {
   });
 });
 
-test('the method table is exactly the stream verbs and node.wait', () => {
+test('the method table is exactly the stream verbs and node.wait and node.autonomy', () => {
   expect(Object.keys(methods).sort()).toEqual([
+    'node.autonomy',
     'node.wait',
     'stream.archive',
     'stream.close',
