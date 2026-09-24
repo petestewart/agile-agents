@@ -1359,7 +1359,7 @@ agile tail --node $N --events
 
 ### Ticket: T282 Autonomy levels for coordinators
 - **Priority:** P0
-- **Status:** Todo
+- **Status:** Done (merge 6b4bbdc)
 - **Owner:** —
 - **Scope:** One gate function `allowed(principal, action, level)` for:
   - the coordinator actions `add_child`, `add_waits_on`, reorder, `set_owner`, `merge_siblings` and `approve_contract`;
@@ -1372,7 +1372,7 @@ agile tail --node $N --events
   Add the setting to the project and node UI, plus `agile project set <id> --coordinator-autonomy|--director-autonomy advise|organise|run` and `agile node set <id> --autonomy …`.
 - **Acceptance Criteria:** A table test over principal × action × level; e2e: Apply on an Advise card.
 - **Validation Steps:** `bun test packages/daemon/src/coordination`; `bun run test:e2e`.
-- **Notes:** After T281. The Director reuses this function (T301).
+- **Notes:** After T281. The Director reuses this function (T301). Review (sonnet): 2 blocking fixed (every contract change incl. parties goes through the gate; Apply re-checks and refuses stale proposals). Daemon +502. New home dir `proposals/<AP-id>.yaml` (follows plans/, contracts/, cards/; not in the design's home layout — Pete to confirm). Verbs add_child (idle), add_waits_on, set_owner; reorder/merge_siblings gated but no verb; proposals apply/dismiss only in the cockpit.
 
 ### Ticket: T283 ∥ Status cards
 - **Priority:** P1
@@ -1397,8 +1397,8 @@ agile tail --node $N --events
 
 ### Ticket: T285 Contract proposals
 - **Priority:** P1
-- **Status:** Todo
-- **Owner:** —
+- **Status:** In Progress
+- **Owner:** opus:worker-T285
 - **Scope:** The `propose_contract` verb (from one child, or co-signed by siblings) adds a `contract_proposal` to the parent. The coordinator approves it (at Run, when it is routine), rejects it with a reason, or asks you (an inbox card). Approval bumps the version and notifies the parties.
 - **Acceptance Criteria:** The worked-example test: api proposes `saleEndsAt`, the coordinator approves at Run, and web gets `contract_changed`. At Organise the same proposal goes to the inbox.
 - **Validation Steps:** `bun test packages/daemon/src/coordination`.
@@ -1415,8 +1415,8 @@ agile tail --node $N --events
 
 ### Ticket: T287 Sibling finished and collisions go to the parent
 - **Priority:** P1
-- **Status:** Todo
-- **Owner:** —
+- **Status:** In Progress
+- **Owner:** opus:worker-T287
 - **Scope:**
   - When a child merges, the parent is woken first, and its `note_child` verb sends targeted notes. Same-repo siblings still get the sync.
   - An overlap or collision wakes the parent with options: add `waits_on`, give ownership, or merge the siblings. The action is gated by T282.
