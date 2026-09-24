@@ -1017,8 +1017,8 @@ git status --short
 
 ### Ticket: T230 Phase 8 QA and Pete's look
 - **Priority:** P0
-- **Status:** In Progress
-- **Owner:** sonnet:qa-T230
+- **Status:** In Review (QA ACCEPT 2026-09-24; Pete's look pending)
+- **Owner:** Pete
 - **Scope:** Black-box QA against the fake GitHub and the fake agent: direct delivery, PR delivery, the poller transitions, sync, overlaps, holds, auto-merge, visibility, and the migration of the Phase 7 home. Daemon line count. Pete then runs one direct delivery on ledger-lite and one PR on agile-test-repo.
 - **Acceptance Criteria:** QA ACCEPT. Live: the ledger-lite node merges with one click. The agile-test-repo node opens a real PR whose state shows on the node. After Pete merges on GitHub, the node shows merged and the other live node on the repo is synced.
 - **Validation Steps:** Pete, on his Mac:
@@ -1055,7 +1055,7 @@ cd ~/Projects/ledger-lite
 git status --short
 ```
 
-- **Notes:** D10. Close the test PRs and branches on agile-test-repo afterwards if you don't want them kept.
+- **Notes:** D10. Close the test PRs and branches on agile-test-repo afterwards if you don't want them kept. QA (sonnet, black-box) ACCEPT on 666e893: bun test 1947/0, integration + e2e green; T230 script ran against the fake GitHub with scratch paths and `--no-start`. Minor findings: (1) no supported way to point a real daemon at a fake GitHub except `github.gh_command` = a stub echoing a token; (2) `--delivery pr` requires a github.com remote host (a `pushInsteadOf` rewrite works for testing); (3) usage omitted `rules --stage` values — fixed cbaba52; (4) the visibility deny is covered by unit tests only (a live session is needed to drive `agile hook`). Daemon 22,233 lines (19,360 at Phase 7).
 
 ### Phase 9 — Events
 
@@ -1578,6 +1578,7 @@ Daemon: `em/`, `architect/`, `oracle/`, `qa/`, `halts/`, `quota/`, `handoff/`, `
 
 ## 10. Discovered Issues Log
 
+- Phase 8 complete on `claude/phase-8` (2026-09-24): T220–T229 merged, T230 QA ACCEPT; awaiting Pete's look. Phase 9 proceeds on `claude/phase-9` cut from it.
 - Phase 7 complete on `claude/phase-7` (2026-09-24, tip 3ab7109): T200–T211 merged, T212 QA ACCEPT; awaiting Pete's look (draft PR https://github.com/petestewart/agile-agents/pull/4). Phase 8 proceeds on `claude/phase-8` cut from it (Pete: don't wait).
 - (T229 merge) `.review-sonnet.md` had been committed by the T204 worker (on `claude/phase-7` too); untracked and `.gitignore` now lists the pipeline/review/QA scratch files.
 - mode: yolo (2026-09-24), projects stage. Phase branches stacked (D30), `claude/phase-7` first; tickets `T###-<slug>` off the phase branch, merged back `--no-ff`. DIRECT_MODE (no `gh`). Phase N+1 starts without waiting for Pete's review of phase N (Pete, 2026-09-24).
