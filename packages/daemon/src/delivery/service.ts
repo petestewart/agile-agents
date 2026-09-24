@@ -843,6 +843,8 @@ export class DeliveryService {
 
   /** §14.7: node override, else project, else repo entry, else direct. */
   private resolveMode(stream: Stream, repoEntry: RepoEntry): DeliveryState['mode'] {
+    // T288: a helper is a direct merge into its parent's branch.
+    if (this.helperHostBranch(stream) !== undefined) return 'direct';
     return this.resolveDeliveryFor(stream, repoEntry).mode;
   }
 
@@ -878,8 +880,16 @@ export class DeliveryService {
   }
 
   /** D20: every work node delivers to the repo's main branch. */
-  private resolveTarget(_stream: Stream, repoEntry: RepoEntry, repoRoot: string): string {
-    return mainBranch(repoEntry, repoRoot);
+  private resolveTarget(stream: Stream, repoEntry: RepoEntry, repoRoot: string): string {
+    return this.helperHostBranch(stream) ?? mainBranch(repoEntry, repoRoot);
+  }
+
+  /** T288: a same-repo helper's target is its parent's branch. */
+  private helperHostBranch(stream: Stream): string | undefined {
+    if (stream.helper_of === undefined) return undefined;
+    const { streams } = this.options;
+    const host = streams.get(stream.helper_of);
+    return host.repo === stream.repo ? host.branch : undefined;
   }
 
   /** Raises the `land` gate: the outcome when this call can't proceed, `undefined` when a delegate approved inline. */

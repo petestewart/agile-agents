@@ -233,6 +233,45 @@ describe('D20: a child delivers to main, never into its parent', () => {
   });
 });
 
+describe('T288: a same-repo helper merges into its parent', () => {
+  test("the helper lands on the parent's branch (direct, even in a pr repo); the parent carries both", async () => {
+    await store.putRepos({ demo: { path: repo, protected_branches: ['main'], delivery: 'pr' } });
+    const parentWork = branchWithWork('s-host', 'parent.txt', 'parent\n');
+    const parent = await makeStream({ ...parentWork, title: 'host' });
+    const helper = await streams.create('human', {
+      title: 'helper',
+      goal: 'help',
+      parent: parent.id,
+      helper_of: parent.id,
+    });
+    expect(helper.repo).toBe('demo');
+    const helperWork = branchWithWork('s-helper', 'helper.txt', 'helper\n', 's-host');
+    await streams.update('daemon', helper.id, helperWork);
+
+    const outcome = await landing.land(helper.id);
+    expect(outcome.status === 'landed' && outcome.target).toBe('s-host');
+    expect(streams.get(helper.id).delivery_state?.mode).toBe('direct');
+    expect(() => git(['show', 'main:helper.txt'])).toThrow();
+    // The parent's one delivery (its PR) now holds both changes.
+    const files = git(['diff', '--name-only', 'main...s-host']).split('\n').sort();
+    expect(files).toEqual(['helper.txt', 'parent.txt']);
+    expect(streams.get(parent.id).human.status).toBe('open');
+  });
+
+  test('a helper on another repo is refused toward the reshape', async () => {
+    const parent = await makeStream({ title: 'host' });
+    expect(
+      streams.create('human', {
+        title: 'h',
+        goal: 'g',
+        parent: parent.id,
+        helper_of: parent.id,
+        repo: 'other',
+      }),
+    ).rejects.toThrow(/add-repo/);
+  });
+});
+
 describe('conflict (acceptance: blocked, conflict files on the thread, worktree kept, no partial merge)', () => {
   test('aborts the merge, leaves the target where it was, and blocks the stream', async () => {
     const work = branchWithWork('s-conflict', 'shared.txt', 'from the stream\n');

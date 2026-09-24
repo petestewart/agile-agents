@@ -47,7 +47,8 @@ export async function runStreamNew(
 ): Promise<number> {
   const title = requireOption(args.options, 'title');
   const goal = requireOption(args.options, 'goal');
-  const parent = optionalString(args.options, 'parent');
+  const helperOf = optionalString(args.options, 'helper-of');
+  const parent = optionalString(args.options, 'parent') ?? helperOf;
   const repo = optionalString(args.options, 'repo');
   const project = optionalString(args.options, 'project');
   const labels = optionalList(args, 'label');
@@ -61,6 +62,7 @@ export async function runStreamNew(
     ...(labels !== undefined ? { labels } : {}),
     ...(parent !== undefined ? { parent } : {}),
     ...(repo !== undefined ? { repo } : {}),
+    ...(helperOf !== undefined ? { helper_of: helperOf } : {}),
     ...(noStart ? { start: false } : {}),
   });
 

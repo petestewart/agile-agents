@@ -398,10 +398,18 @@ export class AttachService {
       // reviews from the session dir, like a no-repo stream.
       if (worktreePath === undefined && role === 'worker') {
         assertRepoHasCommits(stream.repo as string, repoEntry);
-        const created = await createWorktree(repoEntry.path, {
-          id: stream.id,
-          slug: slugify(stream.title),
-        });
+        // T288: a helper branches off its parent's branch.
+        const host = stream.helper_of !== undefined ? streams.get(stream.helper_of) : undefined;
+        if (host !== undefined && host.branch === undefined) {
+          throw new Error(
+            `helper ${stream.id}: its parent ${host.id} has no branch yet; start the parent first`,
+          );
+        }
+        const created = await createWorktree(
+          repoEntry.path,
+          { id: stream.id, slug: slugify(stream.title) },
+          host?.branch !== undefined ? { baseRef: `refs/heads/${host.branch}` } : {},
+        );
         worktreePath = created.path;
         branch = created.branch;
       }
