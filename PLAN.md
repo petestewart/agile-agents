@@ -1513,8 +1513,8 @@ agile tail --node $C --events
 
 ### Ticket: T302 Cross-project sight and "what needs me today?"
 - **Priority:** P1
-- **Status:** In Progress
-- **Owner:** opus:worker-T302
+- **Status:** Done
+- **Owner:** Unassigned
 - **Scope:**
   - The Director's brief gets a digest of all projects: overlaps, waits-on, stuck or idle nodes (no activity for longer than a configured time while `working`), and the inbox.
   - It proposes links and spots when a norm from one project is about to be broken in another.
@@ -1522,6 +1522,8 @@ agile tail --node $C --events
 - **Acceptance Criteria:** A snapshot test of the digest; a fake-agent test where a stuck node yields a suggestion card.
 - **Validation Steps:** `bun test packages/daemon/src/director`.
 - **Notes:** After T301.
+- T302: sonnet review APPROVE. Digest in director/sight.ts (20-line caps); stuck = working with no activity past director.stuck_after_minutes (60); checkStuck every 60s → restart_node via autonomy (card below Run), once per episode, Director wake budget 6/h. Director proposals now also show in the inbox on the node they name. merge 2c0502b.
+
 
 ### Ticket: T303 ∥ Norm suggestions
 - **Priority:** P2
