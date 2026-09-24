@@ -1426,15 +1426,15 @@ agile tail --node $N --events
 
 ### Ticket: T288 ∥ Helper children on the same repo
 - **Priority:** P2
-- **Status:** In Progress
-- **Owner:** opus:worker-T288
+- **Status:** Done (merge 63cdedc)
+- **Owner:** —
 - **Scope:**
   - `node new --helper-of <work node>` creates a same-repo child that branches off the work node's branch and delivers back into it (a direct merge into that branch). The parent stays a work node (P1).
   - A helper on another repo triggers the §7 reshape instead.
   - This supersedes the unfiled "side-quest" proposal.
 - **Acceptance Criteria:** A test: the helper merges into its parent's branch; the parent delivers one PR containing both.
 - **Validation Steps:** `bun test packages/daemon/src/delivery packages/daemon/src/streams`.
-- **Notes:** After T205 and T223.
+- **Notes:** After T205 and T223. Review (sonnet): 2 blocking fixed (parent PR carrying both changes tested against the fake GitHub; a bad helper target is refused, never main). MainSync skips helpers. A helper's land waits (held, `waits_on`) while the parent is mid-turn or dirty; no automatic retry at the parent's turn end. Daemon +84.
 
 ### Ticket: T289 Phase 11 QA and Pete's look
 - **Priority:** P0
