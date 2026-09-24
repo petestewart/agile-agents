@@ -1206,17 +1206,17 @@ agile node show $P --json | jq -r '.delivery_state.status, .delivery_state.pr.au
 
 ### Ticket: T261 Stacked scopes and paths
 - **Priority:** P0
-- **Status:** In Progress
-- **Owner:** opus:worker-T261
+- **Status:** Done (merge de5d9ff)
+- **Owner:** —
 - **Scope:** One scope filter (global, repo, project, subtree, plus `paths`) used by the brief, the hook and ship. In the worked example, the web part gets global, web and Shop items and its parent's contracts, and nothing from Blog. Paths filter against the files being edited (action) or changed (ship); the brief lists path-limited items under their globs.
 - **Acceptance Criteria:** Table tests from the worked example (§11 step 3).
 - **Validation Steps:** `bun test packages/daemon/src/knowledge packages/daemon/src/hook`.
-- **Notes:** After T260.
+- **Notes:** After T260. Review (sonnet): 2 blocking fixed (typecheck; Bash calls skipped path-limited rules). Bash paths now extracted; unknown paths fail closed (path-limited action items are evaluated). Daemon +104 net.
 
 ### Ticket: T262 Ship checks: classifier and reviewer checklist
 - **Priority:** P0
-- **Status:** Todo
-- **Owner:** —
+- **Status:** In Progress
+- **Owner:** opus:worker-T262
 - **Scope:** At delivery:
   - `ship` items run through the classifier over the diff (the old diff-rules code);
   - then a reviewer session with a checklist of every `review` item in scope, returning findings.
@@ -1228,8 +1228,8 @@ agile node show $P --json | jq -r '.delivery_state.status, .delivery_state.pr.au
 
 ### Ticket: T263 ∥ Lookup tool and briefs
 - **Priority:** P1
-- **Status:** Todo
-- **Owner:** —
+- **Status:** In Progress
+- **Owner:** opus:worker-T263
 - **Scope:** Add a `lookup_knowledge(path)` verb (MCP) that returns the accepted items in scope for that path. Briefs include everything in scope and tell the agent to use the lookup before touching unfamiliar areas.
 - **Acceptance Criteria:** A verb test over MCP; a brief snapshot test.
 - **Validation Steps:** `bun test packages/daemon/src/runner packages/cli`.
@@ -1237,8 +1237,8 @@ agile node show $P --json | jq -r '.delivery_state.status, .delivery_state.pr.au
 
 ### Ticket: T264 Proposals, lessons kinds and `knowledge_accepted`
 - **Priority:** P1
-- **Status:** Todo
-- **Owner:** —
+- **Status:** In Progress
+- **Owner:** opus:worker-T264
 - **Scope:**
   - `propose_knowledge` replaces `propose_rule`. The agent picks the kind; the scope defaults to the node's subtree.
   - Lessons propose items with a kind (projects-design §17, lessons row).
