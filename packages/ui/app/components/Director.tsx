@@ -4,13 +4,78 @@
  * to it and what carried them). Re-read on every pushed frame.
  */
 
+import type { AutonomyProposal } from '@agile-agents/shared';
 import { type FormEvent, useEffect, useState } from 'react';
-import { type DirectorPayload, getDirector, sayToDirector } from '../lib/api';
+import { type DirectorPayload, decideProposal, getDirector, sayToDirector } from '../lib/api';
 import { useFeed } from '../lib/feed-context';
 import { Markdown } from './Markdown';
 
 function errorText(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+/** T301: a held Director change. A draft tree renders as the tree it would build. */
+function DirectorProposal(props: {
+  proposal: AutonomyProposal;
+  onDecide: (decision: 'apply' | 'dismiss') => void;
+}): JSX.Element {
+  const { proposal, onDecide } = props;
+  const change = proposal.change;
+  const tree = change.action === 'create_tree' ? change.tree : undefined;
+  return (
+    <li data-testid="director-proposal" data-id={proposal.id} data-action={change.action}>
+      {tree ? (
+        <ul className="cr-tree" data-testid="director-draft-tree">
+          <li>
+            <strong>{tree.new_project ?? tree.project}</strong>
+            {tree.new_project ? <span className="cr-dim"> (new project)</span> : null}
+            <ul>
+              <li data-testid="director-draft-node">
+                {tree.title}
+                <span className="cr-dim"> · {tree.goal}</span>
+                <ul>
+                  {tree.parts.map((part, i) => (
+                    // biome-ignore lint/suspicious/noArrayIndexKey: parts are referenced by index.
+                    <li key={i} data-testid="director-draft-part">
+                      {part.title}
+                      {part.repo ? <span className="cr-dim"> on {part.repo}</span> : null}
+                      {(part.after ?? []).length > 0 ? (
+                        <span className="cr-dim">
+                          {' '}
+                          · waits on{' '}
+                          {(part.after ?? []).map((a) => tree.parts[a]?.title ?? a).join(', ')}
+                        </span>
+                      ) : null}
+                    </li>
+                  ))}
+                </ul>
+              </li>
+            </ul>
+          </li>
+        </ul>
+      ) : (
+        <p>{proposal.summary}</p>
+      )}
+      <div className="cr-actions">
+        <button
+          type="button"
+          className="cr-btn signal"
+          data-testid="director-create"
+          onClick={() => onDecide('apply')}
+        >
+          {tree || change.action.startsWith('create_') ? 'Create' : 'Apply'}
+        </button>
+        <button
+          type="button"
+          className="cr-btn"
+          data-testid="director-dismiss"
+          onClick={() => onDecide('dismiss')}
+        >
+          Dismiss
+        </button>
+      </div>
+    </li>
+  );
 }
 
 export function DirectorPage(): JSX.Element {
@@ -42,6 +107,15 @@ export function DirectorPage(): JSX.Element {
     try {
       await sayToDirector(line);
       setText('');
+      setSeq((n) => n + 1);
+    } catch (err) {
+      setError(errorText(err));
+    }
+  };
+
+  const decide = async (id: string, decision: 'apply' | 'dismiss'): Promise<void> => {
+    try {
+      await decideProposal(id, decision);
       setSeq((n) => n + 1);
     } catch (err) {
       setError(errorText(err));
@@ -98,6 +172,16 @@ export function DirectorPage(): JSX.Element {
           </button>
         </form>
       </section>
+      {(page?.proposals ?? []).length > 0 && (
+        <>
+          <h2>Drafts</h2>
+          <ul className="cr-docs" data-testid="director-proposals">
+            {(page?.proposals ?? []).map((p) => (
+              <DirectorProposal key={p.id} proposal={p} onDecide={(d) => void decide(p.id, d)} />
+            ))}
+          </ul>
+        </>
+      )}
       <h2>Activity</h2>
       {(page?.activity ?? []).length === 0 ? (
         <p className="cr-dim" data-testid="director-activity-empty">

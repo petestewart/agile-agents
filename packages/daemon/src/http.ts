@@ -541,7 +541,7 @@ async function handleSessionSettingsRoute(
 /**
  * T300 (projects-design §12, P16): the Director page.
  *
- *   GET  /api/director      `{record, thread, live, activity}`
+ *   GET  /api/director      `{record, thread, live, activity, proposals}`
  *   POST /api/director/say  `{body}`: a human line and `director_request`
  */
 async function handleDirectorRoute(
@@ -556,6 +556,8 @@ async function handleDirectorRoute(
     return jsonResponse({
       ...feed.director.view(),
       activity: feed.events?.activityFor(DIRECTOR_NODE) ?? [],
+      // T301: the Director's held changes (drafts), each with Create/Apply.
+      proposals: feed.autonomy?.listOpen().filter((p) => p.node === DIRECTOR_NODE) ?? [],
     });
   }
   if (url.pathname === '/api/director/say' && req.method === 'POST') {

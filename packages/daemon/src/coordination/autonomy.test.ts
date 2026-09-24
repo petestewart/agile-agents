@@ -95,7 +95,9 @@ async function shop(level?: Autonomy) {
 }
 
 const LEVELS: Autonomy[] = ['advise', 'organise', 'run'];
-const STRUCTURAL = COORDINATOR_ACTIONS.filter((a) => a !== 'approve_contract');
+const STRUCTURAL = COORDINATOR_ACTIONS.filter(
+  (a) => a !== 'approve_contract' && a !== 'restart_node',
+);
 
 describe('allowed(principal, action, level)', () => {
   test('the table', () => {
@@ -113,6 +115,10 @@ describe('allowed(principal, action, level)', () => {
           level === 'run' ? 'apply' : 'propose',
         );
         expect(allowed(principal, 'approve_contract', level)).toBe('propose');
+        // T301 (§12): restarting stuck work is Run's.
+        expect(allowed(principal, 'restart_node', level)).toBe(
+          level === 'run' ? 'apply' : 'propose',
+        );
         for (const action of HUMAN_ONLY_ACTIONS) {
           expect(allowed(principal, action, level)).toBe('refuse');
         }

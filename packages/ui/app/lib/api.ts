@@ -7,6 +7,7 @@
 
 import type {
   Autonomy,
+  AutonomyProposal,
   ClassifierKeyStatus,
   Contract,
   Plan,
@@ -190,6 +191,8 @@ export interface DirectorPayload {
   thread: ThreadEntry[];
   live: boolean;
   activity: ActivityEntry[];
+  /** T301: the Director's held changes; Create/Apply goes through `decideProposal`. */
+  proposals: AutonomyProposal[];
 }
 
 export function getDirector(): Promise<DirectorPayload> {
