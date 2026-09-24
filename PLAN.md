@@ -1003,8 +1003,8 @@ git status --short
 
 ### Ticket: T229 ∥ Repo visibility
 - **Priority:** P2
-- **Status:** In Progress
-- **Owner:** opus:worker-T229
+- **Status:** Done (merge f0fea9d)
+- **Owner:** —
 - **Scope:** A private repo is readable only by the projects it lists (P13):
   - it is left out of the session's readable directories;
   - there is a built-in path check that denies reads under its path for nodes in projects that aren't listed;
@@ -1013,7 +1013,7 @@ git status --short
   The node shows "visibility advisory" for hookless vendors.
 - **Acceptance Criteria:** Hook tests: a Blog node reading a private api listed only for Shop is denied with the reason; a Shop node is allowed.
 - **Validation Steps:** `bun test packages/daemon/src/hook packages/daemon/src/permissions`.
-- **Notes:** After T222.
+- **Notes:** After T222. Review (sonnet): 2 blocking fixed (fail closed when repos.yaml is unreadable; Bash command paths checked). Daemon +166. Not done: no per-session readable-dirs list exists to exclude a private repo from (P13 bullet 1 needs an ACP session-config decision); hookless vendors get the advisory label only.
 
 ### Ticket: T230 Phase 8 QA and Pete's look
 - **Priority:** P0
@@ -1579,6 +1579,7 @@ Daemon: `em/`, `architect/`, `oracle/`, `qa/`, `halts/`, `quota/`, `handoff/`, `
 ## 10. Discovered Issues Log
 
 - Phase 7 complete on `claude/phase-7` (2026-09-24, tip 3ab7109): T200–T211 merged, T212 QA ACCEPT; awaiting Pete's look (draft PR https://github.com/petestewart/agile-agents/pull/4). Phase 8 proceeds on `claude/phase-8` cut from it (Pete: don't wait).
+- (T229 merge) `.review-sonnet.md` had been committed by the T204 worker (on `claude/phase-7` too); untracked and `.gitignore` now lists the pipeline/review/QA scratch files.
 - mode: yolo (2026-09-24), projects stage. Phase branches stacked (D30), `claude/phase-7` first; tickets `T###-<slug>` off the phase branch, merged back `--no-ff`. DIRECT_MODE (no `gh`). Phase N+1 starts without waiting for Pete's review of phase N (Pete, 2026-09-24).
 - mode: yolo (2026-09-19). Integration branch for the reshape is `claude/reshape`; ticket branches `T###-<slug>` fork from it and merge back `--no-ff`. Pete lands each phase on `main` by PR. Mode: DIRECT_MODE (no `gh`).
 - Q1 assumption in force: a coding stream's target is the repo's default branch when the repo has no integration branch (T132).
