@@ -194,6 +194,17 @@ export function buildStreamRpcMethods(
       return asParamErrors(() => service.update(EDGE_PRINCIPAL, streamId, patch));
     },
 
+    /** T228 (P8): `{id, on, remove?}` adds or drops a `waits_on` edge. */
+    'node.wait': async (params) => {
+      const p = requireObject(params);
+      const id = requireStreamId(p.id);
+      const on = requireStreamId(p.on);
+      const remove = optionalBoolean(p.remove, 'remove');
+      return asParamErrors(() =>
+        service.wait(EDGE_PRINCIPAL, id, on, remove === undefined ? {} : { remove }),
+      );
+    },
+
     'stream.close': async (params) => {
       const p = requireObject(params);
       return service.close(EDGE_PRINCIPAL, requireStreamId(p.id), optionalString(p.note, 'note'));

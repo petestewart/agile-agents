@@ -49,6 +49,8 @@ export interface PrPollerOptions {
   ask?: (input: { stream: string; raised_by: 'daemon'; text: string }) => Promise<unknown>;
   /** Main moved on a `pr` repo (T226's `MainSync.mainMoved`); `except` is the node whose PR just merged. */
   onMainMoved?: (repo: string, except?: string) => unknown;
+  /** T228: after each tick (`DeliveryService.settle`: waits_on, merge-together, auto-merge). */
+  afterTick?: () => unknown;
   now?: () => Date;
 }
 
@@ -148,6 +150,7 @@ export class PrPoller {
       m.due = t + PR_POLL_MS;
       await this.checkMain(name, entry);
     }
+    await this.options.afterTick?.();
   }
 
   private memoFor(id: string, t: number): PrMemo {
@@ -231,7 +234,13 @@ export class PrPoller {
       review: reviewOf(reviews, state === 'open' && !draft),
       checks: checksOf(memo.cache.checks ?? [], memo.cache.status),
       mergeable: pull ? mergeableOf(pull) : known.mergeable,
-      auto_merge: pull ? (pull.auto_merge ? 'enabled' : 'off') : known.auto_merge,
+      // P19: `unavailable` is the daemon's finding, not GitHub's; it stays until GitHub says enabled.
+      auto_merge:
+        pull?.auto_merge === true
+          ? 'enabled'
+          : pull && known.auto_merge !== 'unavailable'
+            ? 'off'
+            : known.auto_merge,
       last_seen: {
         ...known.last_seen,
         ...maxId('review_id', reviews, known.last_seen.review_id),
@@ -253,6 +262,9 @@ export class PrPoller {
         mode: 'pr',
         status,
         pr: next,
+        ...(!merged && stream.delivery_state?.held_by
+          ? { held_by: stream.delivery_state.held_by }
+          : {}),
         ...(merged && pull?.merge_commit_sha ? { merged_sha: pull.merge_commit_sha } : {}),
         at: this.now().toISOString(),
       },

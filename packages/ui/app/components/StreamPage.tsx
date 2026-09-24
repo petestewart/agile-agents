@@ -33,6 +33,7 @@ import {
   resolveConflict,
   sayOnStream,
   stopSessions,
+  waitOnStream,
 } from '../lib/api';
 import { useFeed } from '../lib/feed-context';
 import type { LandOutcome, StreamDiff, StreamPagePayload } from '../lib/feed-types';
@@ -295,6 +296,8 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
   const [repos, setRepos] = useState<RepoRow[]>([]);
   const [addingRepo, setAddingRepo] = useState(false);
   const [repoChoice, setRepoChoice] = useState('');
+  const [linking, setLinking] = useState(false);
+  const [linkChoice, setLinkChoice] = useState('');
   // T176: the server refused a worker on a parent with open children; this is its reason.
   const threadRef = useRef<HTMLOListElement | null>(null);
 
@@ -383,6 +386,12 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
   const open = stream.human.status !== 'landed' && stream.human.status !== 'closed';
   const repoOptions = repos.map((r) => r.name).filter((name) => name !== stream.repo);
   const chosenRepo = repoChoice || repoOptions[0] || '';
+  const waits = stream.waits_on ?? [];
+  const titleOf = (id: string) => cockpit?.streams.find((r) => r.id === id)?.title ?? id;
+  const linkOptions = (cockpit?.streams ?? []).filter(
+    (r) => r.id !== stream.id && !waits.some((w) => w.node === r.id),
+  );
+  const chosenLink = linkChoice || linkOptions[0]?.id || '';
   function addRepo(repo: string, switching = false): void {
     void act(
       () => addRepoToStream(stream.id, repo, switching),
@@ -489,6 +498,18 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
               Close
             </button>
           )}
+          {open && (
+            <button
+              type="button"
+              className="cr-btn"
+              data-testid="link-wait"
+              title="Hold this node's delivery until another node is merged"
+              disabled={busy || linkOptions.length === 0}
+              onClick={() => setLinking((v) => !v)}
+            >
+              Link
+            </button>
+          )}
           {open && stream.parent !== undefined && (
             <button
               type="button"
@@ -501,6 +522,59 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
             </button>
           )}
         </div>
+        {waits.length > 0 && (
+          <ul className="cr-dim" data-testid="waits-on">
+            {waits.map((w) => (
+              <li key={w.node}>
+                waits on {titleOf(w.node)}
+                {w.satisfied_at ? ' · satisfied' : ''}
+                {open && (
+                  <button
+                    type="button"
+                    className="cr-btn"
+                    data-testid="waits-on-remove"
+                    disabled={busy}
+                    onClick={() => void act(() => waitOnStream(stream.id, w.node, true))}
+                  >
+                    Unlink
+                  </button>
+                )}
+              </li>
+            ))}
+          </ul>
+        )}
+        {linking && (
+          <div className="cr-actions" data-testid="link-wait-form">
+            <select
+              data-testid="link-wait-select"
+              value={chosenLink}
+              onChange={(e) => setLinkChoice(e.target.value)}
+            >
+              {linkOptions.map((r) => (
+                <option key={r.id} value={r.id}>
+                  {r.title}
+                </option>
+              ))}
+            </select>
+            <button
+              type="button"
+              className="cr-btn"
+              data-testid="link-wait-submit"
+              disabled={busy || chosenLink === ''}
+              onClick={() =>
+                void act(
+                  () => waitOnStream(stream.id, chosenLink),
+                  () => {
+                    setLinking(false);
+                    setLinkChoice('');
+                  },
+                )
+              }
+            >
+              Wait on
+            </button>
+          </div>
+        )}
         {addingRepo && (
           <div className="cr-actions" data-testid="add-repo-form">
             <select

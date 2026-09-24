@@ -16,13 +16,14 @@ import { join } from 'node:path';
 import {
   type DeliveryState,
   type HilRequest,
+  type PullRequestState,
   type RepoEntry,
   type Stream,
   resolveDelivery,
 } from '@agile-agents/shared';
 import { liveSession } from '../attach/service';
 import type { GateService } from '../gates/service';
-import type { GitHubPort, GitHubPull } from '../github/port';
+import { GitHubError, type GitHubPort, type GitHubPull } from '../github/port';
 import type { StateStore } from '../store';
 import type { StreamService } from '../streams/service';
 import { git, gitWrite, removeWorktreeSafely, runGit } from './git';
@@ -148,9 +149,102 @@ export class DeliveryService {
     const { streams } = this.options;
     const stream = streams.get(streamId);
     const { repoEntry, branch } = this.requireLandable(stream);
+    const target = this.requireAhead(stream, repoEntry, branch);
+
+    // §14.7: the mode is resolved at the first delivery attempt.
+    const mode = stream.delivery_state?.mode ?? this.resolveMode(stream, repoEntry);
+    const github = mode === 'pr' ? this.requireGitHub(stream, repoEntry, branch) : undefined;
+
+    // 1. The gate, when the repo asks for one (§8.2: default is no gate).
+    if (repoEntry.land_gate === true && options.gateApproved !== true) {
+      await this.setDeliveryState(stream.id, { mode, status: 'ready' });
+      const gated = await this.raiseGate(stream, branch, target);
+      if (gated !== undefined) return gated;
+    }
+
+    // P7: a direct merge-together group lands in one operation; every
+    // member is checked before the first merge. PR groups meet in `settle`.
+    const plans: Plan[] = [{ stream, repoEntry, branch, target }];
+    if (mode === 'direct') {
+      for (const member of this.groupOf(stream)) plans.push(this.planMember(member, stream));
+    }
+    // P8: a direct merge waits for every `waits_on` target (PR: auto-merge waits, in `settle`).
+    if (mode === 'direct') {
+      const open = plans.flatMap((p) =>
+        openWaits(p.stream, streams.list({ include_archived: true })),
+      );
+      if (open.length > 0) {
+        const line = `delivery held: waits on ${open.join(', ')}`;
+        await this.setDeliveryState(stream.id, {
+          mode,
+          status: 'held',
+          held_by: [{ reason: 'waits_on', detail: line }],
+        });
+        await streams.appendThread('daemon', stream.id, { kind: 'event', body: line });
+        return { status: 'refused', reason: line, line };
+      }
+    }
+
+    // 2. The ship check: diff-level rules (§8.2; `ClassifierDiffRules` when one is wired).
+    for (const plan of plans) {
+      const held = await this.shipCheck(
+        plan,
+        mode,
+        plan.stream.id === stream.id ? undefined : stream,
+      );
+      if (held !== undefined) return held;
+    }
+
+    // 3. PR mode (T224): push, then open or update the one PR.
+    if (github !== undefined) {
+      const opened = await this.deliverPr(stream, repoEntry, github, branch, target);
+      await this.settleQuietly();
+      return opened;
+    }
+
+    // 3. Ready (direct: this call is the Merge click), then the merge in a
+    // temporary worktree of the target, one per repo, refs moved last.
+    for (const plan of plans) {
+      await this.setDeliveryState(plan.stream.id, { mode, status: 'ready' });
+    }
+    const prepared: Prepared[] = [];
+    for (const group of byRepo(plans)) {
+      const first = group[0] as Plan;
+      const merged = this.prepareMerge(first.repoEntry.path, group, first.target, stream);
+      if (!merged.ok) {
+        const failed = group[merged.index] ?? first;
+        return this.recordConflict(failed, mode, merged, plans.length > 1 ? stream : undefined);
+      }
+      prepared.push(merged);
+    }
+    for (const merged of prepared) {
+      const applied = this.applyMerge(merged);
+      if (applied !== undefined) {
+        return this.recordConflict(
+          merged.plans[0] as Plan,
+          mode,
+          { conflicts: [], reason: applied },
+          plans.length > 1 ? stream : undefined,
+        );
+      }
+    }
+
+    // 4. Close each stream, remove its worktree, keep its branch.
+    let result: LandOutcome | undefined;
+    for (const merged of prepared) {
+      for (const plan of merged.plans) {
+        const outcome = await this.finishLanded(plan, mode, merged.sha);
+        if (plan.stream.id === stream.id) result = outcome;
+      }
+    }
+    await this.settleQuietly();
+    return result as LandOutcome;
+  }
+
+  /** The target branch exists and `branch` has commits beyond it; else refused. */
+  private requireAhead(stream: Stream, repoEntry: RepoEntry, branch: string): string {
     const repoRoot = repoEntry.path;
     const target = this.resolveTarget(stream, repoEntry, repoRoot);
-
     if (!branchExists(repoRoot, target)) {
       throw new LandRefusedError(
         stream.id,
@@ -164,19 +258,54 @@ export class DeliveryService {
         `${branch} has no commits beyond ${target} — nothing to land`,
       );
     }
+    return target;
+  }
 
-    // §14.7: the mode is resolved at the first delivery attempt.
-    const mode = stream.delivery_state?.mode ?? this.resolveMode(stream, repoEntry);
-    const github = mode === 'pr' ? this.requireGitHub(stream, repoEntry, branch) : undefined;
+  /** The other live members of `stream`'s merge-together group. */
+  private groupOf(stream: Stream): Stream[] {
+    const key = stream.merge_together;
+    if (key === undefined) return [];
+    return this.options.streams
+      .list()
+      .filter((s) => s.id !== stream.id && s.merge_together === key && isLive(s));
+  }
 
-    // 1. The gate, when the repo asks for one (§8.2: default is no gate).
-    if (repoEntry.land_gate === true && options.gateApproved !== true) {
-      await this.setDeliveryState(stream.id, { mode, status: 'ready' });
-      const gated = await this.raiseGate(stream, branch, target);
-      if (gated !== undefined) return gated;
+  /** P7: a group member must be landable by direct merge now, or nothing merges. */
+  private planMember(member: Stream, lead: Stream): Plan {
+    const refuse = (why: string): never => {
+      throw new LandRefusedError(
+        lead.id,
+        `merge-together ${String(lead.merge_together)}: ${member.id} ${why}; nothing was merged`,
+      );
+    };
+    let plan: Plan | undefined;
+    try {
+      const { repoEntry, branch } = this.requireLandable(member);
+      if ((member.delivery_state?.mode ?? this.resolveMode(member, repoEntry)) !== 'direct') {
+        refuse('delivers by pull request');
+      }
+      plan = {
+        stream: member,
+        repoEntry,
+        branch,
+        target: this.requireAhead(member, repoEntry, branch),
+      };
+    } catch (err) {
+      if (err instanceof LandRefusedError && err.stream === lead.id) throw err;
+      refuse(`is not ready: ${err instanceof Error ? err.message : String(err)}`);
     }
+    return plan as Plan;
+  }
 
-    // 2. The ship check: diff-level rules (§8.2; `ClassifierDiffRules` when one is wired).
+  /** One plan's diff-level rules; the outcome when it holds, else `undefined`. */
+  private async shipCheck(
+    plan: Plan,
+    mode: DeliveryState['mode'],
+    lead: Stream | undefined,
+  ): Promise<LandOutcome | undefined> {
+    const { streams } = this.options;
+    const { stream, repoEntry, branch, target } = plan;
+    const repoRoot = repoEntry.path;
     await this.setDeliveryState(stream.id, { mode, status: 'ship_checking' });
     const verdict = await this.diffRules.check({
       stream,
@@ -185,69 +314,90 @@ export class DeliveryService {
       target,
       diff: () => runGit(['diff', `${target}...${branch}`], repoRoot, repoRoot),
     });
-    if (verdict.decision !== 'allow') {
-      const what = verdict.decision === 'route' ? 'routed' : 'refused';
-      const line = `landing ${what} by diff rule${verdict.rule ? ` ${verdict.rule}` : ''}: ${verdict.reason}`;
-      await this.setDeliveryState(stream.id, {
+    if (verdict.decision === 'allow') return undefined;
+    const what = verdict.decision === 'route' ? 'routed' : 'refused';
+    const line = `landing ${what} by diff rule${verdict.rule ? ` ${verdict.rule}` : ''}: ${verdict.reason}`;
+    await this.setDeliveryState(stream.id, {
+      mode,
+      status: 'held',
+      held_by: [{ reason: 'ship_check', detail: line }],
+    });
+    await streams.appendThread('daemon', stream.id, { kind: 'event', body: line });
+    if (lead !== undefined) {
+      const groupLine = `merge-together held: ${stream.id} ${line}; nothing was merged`;
+      await this.setDeliveryState(lead.id, {
         mode,
         status: 'held',
-        held_by: [{ reason: 'ship_check', detail: line }],
+        held_by: [{ reason: 'merge_together', detail: groupLine }],
       });
-      await streams.appendThread('daemon', stream.id, { kind: 'event', body: line });
-      // A route waits on its gate; a deny (or a gateless route) ends the call.
-      if (verdict.gate !== undefined) return { status: 'gated', gate: verdict.gate, line };
-      return { status: 'refused', reason: verdict.reason, line };
+      await streams.appendThread('daemon', lead.id, { kind: 'event', body: groupLine });
     }
+    // A route waits on its gate; a deny (or a gateless route) ends the call.
+    if (verdict.gate !== undefined) return { status: 'gated', gate: verdict.gate, line };
+    return { status: 'refused', reason: verdict.reason, line };
+  }
 
-    // 3. PR mode (T224): push, then open or update the one PR.
-    if (github !== undefined) return this.deliverPr(stream, repoEntry, github, branch, target);
-
-    // 3. Ready (direct: this call is the Merge click), then the merge in a
-    // temporary worktree of the target.
-    await this.setDeliveryState(stream.id, { mode, status: 'ready' });
-    const merged = this.merge(repoRoot, branch, target, stream);
-    if (!merged.ok) {
-      const line =
-        merged.conflicts.length > 0
-          ? `land ${branch} into ${target} conflicted in: ${merged.conflicts.join(', ')}`
-          : `land ${branch} into ${target} failed: ${merged.reason}`;
-      await streams.update('daemon', stream.id, {
-        agent: { status: 'blocked' },
-        delivery_state: {
-          mode,
-          status: merged.conflicts.length > 0 ? 'conflict' : 'held',
-          held_by: [{ reason: 'conflict', detail: line }],
-          at: new Date().toISOString(),
-        },
-        ...(merged.conflicts.length > 0
-          ? {
-              land_conflict: {
-                target,
-                files: merged.conflicts.slice(0, 200),
-                at: new Date().toISOString(),
-              },
-            }
-          : {}),
-      });
-      await streams.appendThread('daemon', stream.id, { kind: 'event', body: line });
-      return { status: 'blocked', target, conflicts: merged.conflicts, line };
-    }
-
-    // 4. Close the stream, remove its worktree, keep its branch.
-    const line = `landed ${branch} into ${target} (${merged.sha.slice(0, 12)})`;
+  /** A failed merge: nothing moved; the stream is blocked with the files named. */
+  private async recordConflict(
+    plan: Plan,
+    mode: DeliveryState['mode'],
+    merged: { conflicts: string[]; reason: string },
+    lead: Stream | undefined,
+  ): Promise<LandOutcome> {
+    const { streams } = this.options;
+    const { stream, branch, target } = plan;
+    const line =
+      merged.conflicts.length > 0
+        ? `land ${branch} into ${target} conflicted in: ${merged.conflicts.join(', ')}`
+        : `land ${branch} into ${target} failed: ${merged.reason}`;
     await streams.update('daemon', stream.id, {
-      human: { status: 'landed' },
+      agent: { status: 'blocked' },
       delivery_state: {
         mode,
-        status: 'merged',
-        merged_sha: merged.sha,
+        status: merged.conflicts.length > 0 ? 'conflict' : 'held',
+        held_by: [{ reason: 'conflict', detail: line }],
         at: new Date().toISOString(),
       },
+      ...(merged.conflicts.length > 0
+        ? {
+            land_conflict: {
+              target,
+              files: merged.conflicts.slice(0, 200),
+              at: new Date().toISOString(),
+            },
+          }
+        : {}),
+    });
+    await streams.appendThread('daemon', stream.id, { kind: 'event', body: line });
+    if (lead !== undefined && lead.id !== stream.id) {
+      const groupLine = `merge-together held: ${stream.id}: ${line}; nothing was merged`;
+      await this.setDeliveryState(lead.id, {
+        mode,
+        status: 'held',
+        held_by: [{ reason: 'merge_together', detail: groupLine }],
+      });
+      await streams.appendThread('daemon', lead.id, { kind: 'event', body: groupLine });
+    }
+    return { status: 'blocked', target, conflicts: merged.conflicts, line };
+  }
+
+  /** Marks one merged stream landed, removes its worktree, keeps its branch. */
+  private async finishLanded(
+    plan: Plan,
+    mode: DeliveryState['mode'],
+    sha: string,
+  ): Promise<LandOutcome> {
+    const { streams } = this.options;
+    const { stream, branch, target, repoEntry } = plan;
+    const line = `landed ${branch} into ${target} (${sha.slice(0, 12)})`;
+    await streams.update('daemon', stream.id, {
+      human: { status: 'landed' },
+      delivery_state: { mode, status: 'merged', merged_sha: sha, at: new Date().toISOString() },
       ...(stream.land_conflict ? { land_conflict: null } : {}),
     });
     await streams.appendThread('daemon', stream.id, { kind: 'event', body: line });
     if (stream.worktree !== undefined) {
-      const removal = removeWorktreeSafely(repoRoot, stream.worktree);
+      const removal = removeWorktreeSafely(repoEntry.path, stream.worktree);
       if (!removal.removed) {
         await streams.appendThread('daemon', stream.id, {
           kind: 'event',
@@ -260,7 +410,80 @@ export class DeliveryService {
     void Promise.resolve(this.options.onMainMoved?.(stream.repo as string, stream.id)).catch(
       () => {},
     );
-    return { status: 'landed', target, sha: merged.sha, line };
+    return { status: 'landed', target, sha, line };
+  }
+
+  /**
+   * P8/P7/P19, idempotent: stamps `satisfied_at` on every `waits_on` edge
+   * whose target is merged (or, for a non-work node, closed), then enables
+   * GitHub auto-merge on each open PR that is due. Run after a delivery
+   * and after each PR poll.
+   */
+  async settle(): Promise<void> {
+    const { streams } = this.options;
+    const byId = new Map(streams.list({ include_archived: true }).map((s) => [s.id, s]));
+    for (const s of [...byId.values()]) {
+      const edges = s.waits_on ?? [];
+      const done = edges.filter((w) => w.satisfied_at === undefined && waitDone(byId.get(w.node)));
+      if (done.length === 0) continue;
+      const at = new Date().toISOString();
+      const updated = await streams.update('daemon', s.id, {
+        waits_on: edges.map((w) => (done.includes(w) ? { ...w, satisfied_at: at } : w)),
+      });
+      byId.set(s.id, updated);
+      await streams.appendThread('daemon', s.id, {
+        kind: 'event',
+        body: `waits on ${done.map((w) => w.node).join(', ')} satisfied`,
+      });
+    }
+    for (const s of byId.values()) await this.maybeAutoMerge(s, byId);
+  }
+
+  private async settleQuietly(): Promise<void> {
+    await this.settle().catch((err) => console.error('delivery settle failed:', err));
+  }
+
+  /** P19: enables auto-merge on `s`'s open PR once nothing holds it; `unavailable` if GitHub refuses. */
+  private async maybeAutoMerge(s: Stream, byId: Map<string, Stream>): Promise<void> {
+    const state = s.delivery_state;
+    const pr = state?.pr;
+    if (state === undefined || pr === undefined || !isLive(s)) return;
+    if (state.status !== 'pr_open' || pr.state !== 'open' || pr.auto_merge !== 'off') return;
+    const entry = s.repo === undefined ? undefined : this.options.store.getRepos()[s.repo];
+    if (entry?.github === undefined || this.options.github === undefined) return;
+    if (!this.resolveDeliveryFor(s, entry).auto_merge) return;
+    const hold = autoMergeHold(s, byId);
+    const { streams } = this.options;
+    if (hold !== undefined) {
+      if (JSON.stringify(state.held_by) === JSON.stringify([hold])) return;
+      await this.setDeliveryState(s.id, { ...withoutAt(state), held_by: [hold] });
+      await streams.appendThread('daemon', s.id, {
+        kind: 'event',
+        body: `auto-merge held: ${hold.detail}`,
+      });
+      return;
+    }
+    const gh = this.options.github(entry);
+    let result: PullRequestState['auto_merge'] = 'enabled';
+    let line = `auto-merge enabled on PR #${pr.number}`;
+    try {
+      const got = await gh.getPull(pr.number);
+      if (got.notModified) return;
+      await gh.enableAutoMerge(got.data.node_id);
+    } catch (err) {
+      if (!(err instanceof GitHubError) || err.kind === 'rate_limited' || err.kind === 'auth') {
+        throw err;
+      }
+      result = 'unavailable';
+      line = `GitHub refused auto-merge on PR #${pr.number}: ${err.message.slice(0, 300)}; waiting for a human merge`;
+    }
+    const fresh = streams.get(s.id).delivery_state ?? state;
+    const { held_by: _h, ...rest } = withoutAt(fresh);
+    await this.setDeliveryState(s.id, {
+      ...rest,
+      ...(fresh.pr ? { pr: { ...fresh.pr, auto_merge: result } } : {}),
+    });
+    await streams.appendThread('daemon', s.id, { kind: 'event', body: line });
   }
 
   /**
@@ -353,6 +576,7 @@ export class DeliveryService {
       body: `marked landed: ${branch} was already merged into ${target}`,
     });
     void Promise.resolve(this.options.onStreamEnd?.(stream.id)).catch(() => {});
+    await this.settleQuietly();
     return updated;
   }
 
@@ -548,6 +772,10 @@ export class DeliveryService {
 
   /** §14.7: node override, else project, else repo entry, else direct. */
   private resolveMode(stream: Stream, repoEntry: RepoEntry): DeliveryState['mode'] {
+    return this.resolveDeliveryFor(stream, repoEntry).mode;
+  }
+
+  private resolveDeliveryFor(stream: Stream, repoEntry: RepoEntry) {
     let project: Parameters<typeof resolveDelivery>[1];
     if (stream.project !== undefined) {
       try {
@@ -556,7 +784,7 @@ export class DeliveryService {
         project = undefined;
       }
     }
-    return resolveDelivery(repoEntry, project, stream).mode;
+    return resolveDelivery(repoEntry, project, stream);
   }
 
   /** Writes `delivery_state` (daemon-only, §14.2). */
@@ -616,11 +844,12 @@ export class DeliveryService {
   }
 
   /**
-   * `merge --no-ff` in a throwaway worktree **detached** at the target (git
-   * refuses to check out a branch already checked out elsewhere, usually
-   * the operator's). The ref is then advanced with `update-ref`'s
-   * expected-old-value form, so a target that moved loses the race instead
-   * of being overwritten (D11).
+   * `merge --no-ff` of each plan's branch, in order, in a throwaway worktree
+   * **detached** at the target (git refuses to check out a branch already
+   * checked out elsewhere, usually the operator's). Nothing moves here;
+   * `applyMerge` advances the ref with `update-ref`'s expected-old-value
+   * form, so a target that moved loses the race instead of being
+   * overwritten (D11).
    *
    * Checkouts already on the target are brought along (else they show the
    * merge as a pending deletion): a dirty one refuses the land up front, a
@@ -629,12 +858,12 @@ export class DeliveryService {
    * each checkout's untracked files before the ref moves, and a collision
    * refuses with the paths named.
    */
-  private merge(
+  private prepareMerge(
     repoRoot: string,
-    branch: string,
+    plans: Plan[],
     target: string,
     stream: Stream,
-  ): { ok: true; sha: string } | { ok: false; conflicts: string[]; reason: string } {
+  ): Prepared | { ok: false; index: number; conflicts: string[]; reason: string } {
     const checkouts = worktreesOn(repoRoot, target);
     const dirty = dirtyCheckoutReason(target, checkouts);
     if (dirty !== undefined) throw new LandRefusedError(stream.id, dirty);
@@ -646,19 +875,22 @@ export class DeliveryService {
       const worktree = join(temp, 'target');
       const added = git(['worktree', 'add', '--detach', worktree, target], repoRoot, repoRoot);
       if (added.exitCode !== 0) {
-        return { ok: false, conflicts: [], reason: added.stderr };
+        return { ok: false, index: 0, conflicts: [], reason: added.stderr };
       }
-      const merge = gitWrite(
-        ['merge', '--no-ff', '-m', `land ${branch} into ${target} (${stream.id})`, branch],
-        worktree,
-        repoRoot,
-      );
-      if (merge.exitCode !== 0) {
-        const conflicts = git(['diff', '--name-only', '--diff-filter=U'], worktree, repoRoot)
-          .stdout.split('\n')
-          .filter((line) => line.length > 0);
-        gitWrite(['merge', '--abort'], worktree, repoRoot);
-        return { ok: false, conflicts, reason: merge.stderr || merge.stdout };
+      for (const [index, plan] of plans.entries()) {
+        const message = `land ${plan.branch} into ${target} (${plan.stream.id})`;
+        const merge = gitWrite(
+          ['merge', '--no-ff', '-m', message, plan.branch],
+          worktree,
+          repoRoot,
+        );
+        if (merge.exitCode !== 0) {
+          const conflicts = git(['diff', '--name-only', '--diff-filter=U'], worktree, repoRoot)
+            .stdout.split('\n')
+            .filter((line) => line.length > 0);
+          gitWrite(['merge', '--abort'], worktree, repoRoot);
+          return { ok: false, index, conflicts, reason: merge.stderr || merge.stdout };
+        }
       }
       const sha = runGit(['rev-parse', 'HEAD'], worktree, repoRoot);
 
@@ -677,26 +909,11 @@ export class DeliveryService {
         if (collisions.length > 0) {
           throw new LandRefusedError(
             stream.id,
-            `landing ${branch} into ${target} would overwrite untracked ${collisions.join(', ')} in ${checkout.path}; move or commit them before landing`,
+            `landing ${plans.map((p) => p.branch).join(', ')} into ${target} would overwrite untracked ${collisions.join(', ')} in ${checkout.path}; move or commit them before landing`,
           );
         }
       }
-
-      const updated = git(['update-ref', `refs/heads/${target}`, sha, before], repoRoot, repoRoot);
-      if (updated.exitCode !== 0) {
-        return {
-          ok: false,
-          conflicts: [],
-          reason: `could not advance ${target}: ${updated.stderr}`,
-        };
-      }
-      // Fast-forward the clean checkouts on the target. `dirty` is the
-      // reading from before the ref moved (after, every one looks dirty).
-      for (const checkout of checkouts) {
-        if (checkout.dirty.length > 0) continue;
-        gitWrite(['reset', '--hard', sha], checkout.path, repoRoot);
-      }
-      return { ok: true, sha };
+      return { ok: true, repoRoot, target, before, sha, checkouts, plans };
     } finally {
       if (temp !== undefined) {
         removeWorktreeSafely(repoRoot, join(temp, 'target'));
@@ -705,6 +922,104 @@ export class DeliveryService {
       }
     }
   }
+
+  /** Advances the target to a prepared merge; the reason on failure. */
+  private applyMerge(merged: Prepared): string | undefined {
+    const { repoRoot, target, before, sha, checkouts } = merged;
+    const updated = git(['update-ref', `refs/heads/${target}`, sha, before], repoRoot, repoRoot);
+    if (updated.exitCode !== 0) return `could not advance ${target}: ${updated.stderr}`;
+    // Fast-forward the clean checkouts on the target. `dirty` is the
+    // reading from before the ref moved (after, every one looks dirty).
+    for (const checkout of checkouts) {
+      if (checkout.dirty.length > 0) continue;
+      gitWrite(['reset', '--hard', sha], checkout.path, repoRoot);
+    }
+    return undefined;
+  }
+}
+
+/** One stream about to be merged. */
+interface Plan {
+  stream: Stream;
+  repoEntry: RepoEntry;
+  branch: string;
+  target: string;
+}
+
+/** A merge computed in a temp worktree, not yet on the target. */
+interface Prepared {
+  ok: true;
+  repoRoot: string;
+  target: string;
+  before: string;
+  sha: string;
+  checkouts: Checkout[];
+  plans: Plan[];
+}
+
+function byRepo(plans: Plan[]): Plan[][] {
+  const groups = new Map<string, Plan[]>();
+  for (const plan of plans) {
+    const key = `${plan.repoEntry.path}\0${plan.target}`;
+    groups.set(key, [...(groups.get(key) ?? []), plan]);
+  }
+  return [...groups.values()];
+}
+
+function isLive(s: Stream): boolean {
+  return s.archived !== true && s.human.status !== 'closed' && s.human.status !== 'landed';
+}
+
+/** P8: a `waits_on` target is done when merged or, for a node with no repo, closed. */
+export function waitDone(target: Stream | undefined): boolean {
+  if (target === undefined) return false;
+  if (target.delivery_state?.status === 'merged' || target.human.status === 'landed') return true;
+  return target.repo === undefined && target.human.status === 'closed';
+}
+
+/** The ids `s` still waits on. */
+function openWaits(s: Stream, all: readonly Stream[]): string[] {
+  const byId = new Map(all.map((x) => [x.id, x]));
+  return (s.waits_on ?? [])
+    .filter((w) => w.satisfied_at === undefined && !waitDone(byId.get(w.node)))
+    .map((w) => w.node);
+}
+
+/** Why auto-merge must wait on `s` (P8 waits, P7 group readiness), or `undefined`. */
+function autoMergeHold(
+  s: Stream,
+  byId: Map<string, Stream>,
+): { reason: 'waits_on' | 'merge_together'; detail: string } | undefined {
+  const all = [...byId.values()];
+  const waits = openWaits(s, all);
+  if (waits.length > 0) return { reason: 'waits_on', detail: `waits on ${waits.join(', ')}` };
+  const key = s.merge_together;
+  if (key === undefined) return undefined;
+  const members = all.filter((m) => m.merge_together === key && isLive(m));
+  const repos = new Set(members.map((m) => m.repo));
+  const note = repos.size > 1 ? ' (across repos: GitHub cannot merge them atomically)' : '';
+  for (const m of members) {
+    const pr = m.delivery_state?.pr;
+    const why =
+      openWaits(m, all).length > 0
+        ? 'waits on another node'
+        : m.delivery_state?.status !== 'pr_open' || pr?.state !== 'open'
+          ? 'has no open PR'
+          : pr.review !== 'approved'
+            ? 'is not approved'
+            : pr.checks !== 'passing' && pr.checks !== 'none'
+              ? `CI ${pr.checks}`
+              : undefined;
+    if (why !== undefined) {
+      return { reason: 'merge_together', detail: `merge-together ${key}: ${m.id} ${why}${note}` };
+    }
+  }
+  return undefined;
+}
+
+function withoutAt(state: DeliveryState): Omit<DeliveryState, 'at'> {
+  const { at: _at, ...rest } = state;
+  return rest;
 }
 
 /**

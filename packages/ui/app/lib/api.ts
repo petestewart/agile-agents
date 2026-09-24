@@ -222,6 +222,11 @@ export function addRepoToStream(id: string, repo: string, switching = false): Pr
   });
 }
 
+/** T228: the stream page's Link — delivery waits until `on` is merged (P8); `remove` drops it. */
+export function waitOnStream(id: string, on: string, remove = false): Promise<unknown> {
+  return post(`/api/streams/${encodeURIComponent(id)}/wait`, { on, ...(remove ? { remove } : {}) });
+}
+
 export async function getPolicy(): Promise<Policy> {
   const res = await fetch('/api/policy');
   const payload = (await res.json()) as Policy & { error?: string };

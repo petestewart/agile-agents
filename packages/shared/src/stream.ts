@@ -601,3 +601,13 @@ export const StreamAddRepoRequestSchema = z
   })
   .strict();
 export type StreamAddRepoRequest = z.infer<typeof StreamAddRepoRequestSchema>;
+
+/** T228: the stream page's Link (`POST /api/streams/:id/wait`, P8). */
+export const StreamWaitRequestSchema = z
+  .object({
+    on: UlidSchema,
+    /** Drop the edge instead of adding it. */
+    remove: z.boolean().optional(),
+  })
+  .strict();
+export type StreamWaitRequest = z.infer<typeof StreamWaitRequestSchema>;
