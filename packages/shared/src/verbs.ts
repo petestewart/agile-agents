@@ -101,6 +101,16 @@ export type ReadEventInput = z.infer<typeof ReadEventInputSchema>;
  * PR. Only an already-open PR: the first delivery (and any direct merge)
  * stays the human's (D8).
  */
+/**
+ * T263 (projects-design §16): the accepted knowledge items in scope for one
+ * repo-relative path, so an agent can check an unfamiliar area before it
+ * touches it.
+ */
+export const LookupKnowledgeInputSchema = z
+  .object({ session: Session, path: z.string().min(1).max(1024) })
+  .strict();
+export type LookupKnowledgeInput = z.infer<typeof LookupKnowledgeInputSchema>;
+
 export const DeliverInputSchema = z.object({ session: Session }).strict();
 export type DeliverInput = z.infer<typeof DeliverInputSchema>;
 
@@ -116,6 +126,7 @@ export const AGENT_VERBS = [
   'test_run',
   'read_event',
   'deliver',
+  'lookup_knowledge',
 ] as const;
 export type AgentVerb = (typeof AGENT_VERBS)[number];
 
@@ -130,6 +141,7 @@ export const AGENT_VERB_SCHEMAS = {
   test_run: TestRunInputSchema,
   read_event: ReadEventInputSchema,
   deliver: DeliverInputSchema,
+  lookup_knowledge: LookupKnowledgeInputSchema,
 } as const satisfies Record<AgentVerb, z.ZodType>;
 
 /** One line of help per verb, published to the model by the MCP bridge. */
@@ -146,6 +158,8 @@ export const AGENT_VERB_DESCRIPTIONS: Record<AgentVerb, string> = {
   read_event: 'Read the full payload of a routed event ({id}) that was delivered to this stream.',
   deliver:
     'Push your committed fix and update your open PR (babysitting). Only once a PR is open; commit first.',
+  lookup_knowledge:
+    'List the accepted standards, architecture and decisions that apply to a repo-relative path ({path}). Use it before touching an unfamiliar area.',
 };
 
 export function isAgentVerb(name: string): name is AgentVerb {

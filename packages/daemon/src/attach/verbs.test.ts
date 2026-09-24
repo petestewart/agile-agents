@@ -16,7 +16,7 @@ import { KnowledgeService } from '../knowledge/service';
 import { QuestionService } from '../questions/service';
 import { StateStore } from '../store';
 import { StreamService } from '../streams/service';
-import { UnknownSessionError, VerbService } from './verbs';
+import { UnknownSessionError, VerbService, lookupPath } from './verbs';
 
 let home: string;
 let store: StateStore;
@@ -173,5 +173,20 @@ describe('propose_knowledge', () => {
     await expect(verbs.proposeKnowledge({ session: ulid(), text: 'x' })).rejects.toThrow(
       UnknownSessionError,
     );
+  });
+});
+
+describe('lookupPath (T263)', () => {
+  const wt = '/srv/repo/.worktrees/s1';
+  test('absolute, ./ and .. paths become repo-relative', () => {
+    expect(lookupPath(`${wt}/api/orders.ts`, wt)).toBe('api/orders.ts');
+    expect(lookupPath('./api/orders.ts', wt)).toBe('api/orders.ts');
+    expect(lookupPath('ui/../api/x.ts', wt)).toBe('api/x.ts');
+    expect(lookupPath('api/x.ts', undefined)).toBe('api/x.ts');
+  });
+  test('a path outside the worktree is refused', () => {
+    expect(() => lookupPath('/etc/passwd', wt)).toThrow('not a path inside');
+    expect(() => lookupPath('../other/x.ts', wt)).toThrow('not a path inside');
+    expect(() => lookupPath(wt, wt)).toThrow('not a path inside');
   });
 });
