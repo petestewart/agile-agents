@@ -915,17 +915,17 @@ git status --short
 
 ### Ticket: T222 ∥ Repo delivery settings
 - **Priority:** P1
-- **Status:** In Progress
-- **Owner:** opus:worker-T222
+- **Status:** Done (merge 7f2cd12)
+- **Owner:** —
 - **Scope:** Add `delivery`, `auto_merge`, `remote`, `github`, `main_branch` and `visibility` on `RepoEntry` (§14.8); project and node overrides are resolved in one function. Add `agile repo set <name> --delivery pr|direct --auto-merge on|off --visibility public|private --project …`, and the same fields in Settings → Repos. `pr` is refused when the remote isn't GitHub or GitHub auth is unavailable.
 - **Acceptance Criteria:** Resolution table tests (repo, then project, then node). e2e: change the delivery mode in Settings.
 - **Validation Steps:** `bun test packages/shared packages/daemon packages/cli`; `bun run test:e2e`.
-- **Notes:** After T200, and T221 for the refusal.
+- **Notes:** After T200, and T221 for the refusal. Review (sonnet) PASS. Daemon +159. `resolveDelivery(repo, project, node)` in shared (no callers until T223). `pr` refused unless the remote is on github.com and GitHub auth is available (GHE not supported).
 
 ### Ticket: T223 Delivery service (direct path) replaces landing
 - **Priority:** P0
-- **Status:** Todo
-- **Owner:** —
+- **Status:** In Progress
+- **Owner:** opus:worker-T223
 - **Scope:** Rename `landing/` to `delivery/` and give it `DeliveryState` on the node (§14.7):
   - the direct path is today's land with the ship check (today's diff rules) as a `held` reason;
   - `agile deliver`, with `land` kept as an alias;
@@ -1003,8 +1003,8 @@ git status --short
 
 ### Ticket: T229 ∥ Repo visibility
 - **Priority:** P2
-- **Status:** Todo
-- **Owner:** —
+- **Status:** In Progress
+- **Owner:** opus:worker-T229
 - **Scope:** A private repo is readable only by the projects it lists (P13):
   - it is left out of the session's readable directories;
   - there is a built-in path check that denies reads under its path for nodes in projects that aren't listed;
