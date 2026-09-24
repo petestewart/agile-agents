@@ -1110,12 +1110,12 @@ git status --short
 
 ### Ticket: T244 Event producers
 - **Priority:** P0
-- **Status:** In Progress
-- **Owner:** opus:worker-T244
+- **Status:** Done (merge a95ae22)
+- **Owner:** —
 - **Scope:** Emit the §15 types that exist so far: `human_line`, `answer`, `child_status`, `child_delivered`, `pr_review`, `ci_failed`, `pr_behind`, `pr_merged`, `pr_closed` (from T225), `main_changed` and `sync_conflict` (from T226), `overlap` (T227), `dependency_satisfied` (T228). Each has its one-line summary text as in §15. The `read_event` verb returns a payload.
 - **Acceptance Criteria:** One test per producer asserting the type, routing and summary; `read_event` over MCP.
 - **Validation Steps:** `bun test packages/daemon`; `bun run test:integration`.
-- **Notes:** After T241. It may split into two workers (PR-related and the rest) if large. From T240 review: `pr_closed.login` and `child_status.progress` are optional in the schema but used by the summary templates — always supply or fall back. Keep payloads under the 4096-byte cap (trim file lists).
+- **Notes:** After T241. It may split into two workers (PR-related and the rest) if large. From T240 review: `pr_closed.login` and `child_status.progress` are optional in the schema but used by the summary templates — always supply or fall back. Keep payloads under the 4096-byte cap (trim file lists). Review (sonnet) PASS (edge-triggered, no double emission). Daemon +444. Record transitions via a `StreamService.update` onUpdated hook. `main_changed` carries one aggregate outcome per repo. Waiters get both `pr_merged` (T241 routes waits_on) and `dependency_satisfied`. `pr_closed.login` unknown (no closed_by); `pr_behind.files` empty.
 
 ### Ticket: T245 ∥ Activity feed per node
 - **Priority:** P1
