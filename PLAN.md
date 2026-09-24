@@ -1259,8 +1259,8 @@ agile node show $P --json | jq -r '.delivery_state.status, .delivery_state.pr.au
 
 ### Ticket: T266 Knowledge screen
 - **Priority:** P1
-- **Status:** In Progress
-- **Owner:** opus:worker-T266
+- **Status:** Done (merge a708c01)
+- **Owner:** —
 - **Scope:** The Rules screen becomes Knowledge:
   - filter by kind, scope and enforcement; edit text, paths, enforcement and check;
   - bulk accept and retire; Test examples (unchanged);
@@ -1269,7 +1269,7 @@ agile node show $P --json | jq -r '.delivery_state.status, .delivery_state.pr.au
   Inbox cards say "standard/architecture/decision proposed".
 - **Acceptance Criteria:** e2e: accept a proposed decision and see it on a node's Knowledge-in-scope tab.
 - **Validation Steps:** `bun run test:e2e`.
-- **Notes:** After T260. Pete looks at it.
+- **Notes:** After T260. Pete looks at it. Review (sonnet) PASS. Daemon +1. Screen and tab say Knowledge; kind/enforcement filters; paths editable; inbox cards "<kind> proposed" (new optional `knowledge_kind` on rule_accept items). Internal ids (`rules` view, `rules-*` testids, `/api/rules`) unchanged. "Never fires" flag predates this ticket.
 
 ### Ticket: T267 Phase 10 QA and Pete's look
 - **Priority:** P0
