@@ -1961,7 +1961,8 @@ describe('repo delivery settings (Playwright e2e, T222)', () => {
         authed = true;
         await page.locator('[data-testid="settings-repo-api-delivery"]').selectOption('pr');
         await page.locator(`${row}[data-delivery="pr"]`).waitFor({ state: 'visible' });
-        await page.locator('[data-testid="settings-repo-api-auto-merge"]').check();
+        // Controlled by the saved row, so it flips only after the POST: click, then wait.
+        await page.locator('[data-testid="settings-repo-api-auto-merge"]').click();
         await waitUntil(
           'auto-merge to be saved',
           () => cockpit.store.getRepos().api?.auto_merge === true,
