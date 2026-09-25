@@ -33,7 +33,9 @@ export type FakeAgentStep =
   /** Blocks until `path` exists: end a turn after something outside happened, without a racy sleep. */
   | { type: 'wait_for_file'; path: string; timeoutMs?: number }
   /** Pauses `ms` before the next step: a long turn with events spaced out in real time. */
-  | { type: 'delay'; ms: number };
+  | { type: 'delay'; ms: number }
+  /** Dies mid-turn with `code` (default 1), the prompt unanswered: an agent that crashed. */
+  | { type: 'exit'; code?: number };
 
 export interface FakeAgentScript {
   steps: FakeAgentStep[];
@@ -179,6 +181,9 @@ async function runScript(promptRequestId: number | string): Promise<void> {
       case 'hang':
         // Never respond: an in-flight turn with no closing update, until killed.
         return;
+      case 'exit':
+        process.exit(step.code ?? 1);
+        break;
       case 'delay':
         await new Promise((resolve) => setTimeout(resolve, step.ms));
         break;
