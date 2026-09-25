@@ -1715,12 +1715,12 @@ agile tail --director
 
 ### Ticket: T336 Coordinator plans first after a split
 - **Priority:** P1
-- **Status:** In Progress
-- **Owner:** opus:worker-T336
+- **Status:** Done
+- **Owner:** Unassigned
 - **Scope:** Pete's run: after "+ Repo" split a node, the parts started at once with the node's whole goal and raised questions before the coordinator's plan existed. The coordinator starts first; parts wait for plan approval and get scoped goals; no Land card on a coordinating node; coordinator may run read-only Bash; a node woken by a coordinator note gets the note text and event id.
 - **Acceptance Criteria:** Tests for the split ordering, part hold until approval, scoped goals, the wake note.
 - **Validation Steps:** `bun test packages/daemon/src/streams packages/daemon/src/events packages/daemon/src/coordination`.
-- **Notes:** Branch T336-coordinator-wake.
+- **Notes:** Stacked: T336-split-coordinator → phase-7, T336-coordinator-wake → 9, T336-plan-gate → 11, T336-coordinator-reads → 12, T336-on-13/14 carry the T338 conflict resolution; merged and forwarded 7→14. Causes: an answer with no live session set idle (read as a human stop); parts started before any plan; a woken session got its events only after its first turn; `git -C`/`cd` denied for the coordinator. Parts made by a split wait for plan approval (marked by the split's own daemon thread line; Start later children don't auto-start). Review (sonnet), 3 rounds: blockers fixed — read-only git is an allowlist (isReadOnlyGitAtom), the `git -C` exemption is coordinator-only within read scope, option-attached paths (`-O/x`) are scope-checked; APPROVE. QA (sonnet): PASS on Pete's sequence. Follow-ups T343 (repo-config drivers, reviewer git), T344, T345.
 
 ### Ticket: T337 trackerPush used before init at startup
 - **Priority:** P1
