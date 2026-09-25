@@ -15,6 +15,7 @@ import { AttachService } from '../attach/service';
 import { VerbService } from '../attach/verbs';
 import { makeEmitter } from '../events/producers';
 import { RoutedEventService } from '../events/service';
+import { buildCockpitFrame } from '../feed/snapshot';
 import { GateService } from '../gates/service';
 import { InboxService } from '../inbox/service';
 import { runInit } from '../init';
@@ -24,7 +25,7 @@ import { buildBrief } from '../runner/brief';
 import { StateStore } from '../store';
 import { StreamService } from '../streams/service';
 import { ContractService } from './contracts';
-import { PlanNotDraftError, PlanService } from './plans';
+import { PlanNotDraftError, PlanService, WAITING_FOR_PLAN } from './plans';
 
 const FAKE_AGENT_PATH = join(import.meta.dir, '..', 'runner', 'fake-agent.ts');
 
@@ -302,5 +303,98 @@ describe('plans and contracts (T281)', () => {
     const changed = emitted.filter((e) => e.type === 'plan_changed');
     expect(changed.map((e) => e.routing.map((r) => r.node))).toEqual([[api.id], [web.id]]);
     expect(changed[0]?.payload.paths).toEqual(['prices.ts', 'sale.ts']);
+  });
+});
+
+describe('T336: parts wait for the plan', () => {
+  /** A node that has had its coordinator, and the plan service as the daemon wires it. */
+  async function planned() {
+    const started: string[] = [];
+    const superseded: string[] = [];
+    plans = new PlanService({
+      store,
+      streams,
+      contracts,
+      // T338 beside T336: approval supersedes held questions and starts waiting parts.
+      questions: {
+        supersedeByPlan: async (node, version) => {
+          superseded.push(`${node}@${version}`);
+        },
+      },
+      start: async (id) => {
+        started.push(id);
+      },
+    });
+    const tree = await saleTree();
+    // Parts have repos (D33: repo-less children are tangents, not parts).
+    for (const [id, repo] of [
+      [tree.api.id, 'api'],
+      [tree.web.id, 'web'],
+      [tree.docs.id, 'docs'],
+    ] as const) {
+      await store.updateStream('daemon', id, (before) => ({ ...before, repo }));
+    }
+    await store.updateStream('daemon', tree.node.id, (before) => ({
+      ...before,
+      sessions: [
+        { id: ulid(), vendor: 'claude', model: 'm', role: 'coordinator', status: 'stopped' },
+      ],
+    }));
+    return { ...tree, started, superseded };
+  }
+  /** What the split writes on a part it makes to wait (repo-in-place.ts). */
+  const splitWaits = (id: string) =>
+    streams.appendThread('daemon', id, {
+      kind: 'event',
+      body: `${WAITING_FOR_PLAN}this part starts when "Show sale prices"'s plan is approved`,
+    });
+
+  test('approval starts each part it first gives paths to, and only those', async () => {
+    const { node, api, web, docs, started, superseded } = await planned();
+    for (const part of [api, web, docs]) await splitWaits(part.id);
+    // web already ran and finished.
+    await streams.update('daemon', web.id, { agent: { status: 'done' } });
+    expect(plans.waitingForPlan(streams.get(api.id))).toBe(true);
+    expect(plans.waitingForPlan(streams.get(web.id))).toBe(false);
+    // The cockpit row says so.
+    const rows = buildCockpitFrame(streams, undefined, undefined, {}, undefined, undefined, (s) =>
+      plans.waitingForPlan(s),
+    ).streams;
+    expect(rows.find((r) => r.id === api.id)?.waiting_for_plan).toBe(true);
+    expect(rows.find((r) => r.id === web.id)?.waiting_for_plan).toBeUndefined();
+
+    await plans.write(node.id, [
+      { child: api.id, owns: ['prices.ts'] },
+      { child: web.id, owns: ['shop.html'] },
+    ]);
+    expect(started).toEqual([]);
+    await plans.approve(node.id);
+    expect(started).toEqual([api.id]);
+    expect(superseded).toEqual([`${node.id}@1`]);
+    expect(plans.waitingForPlan(streams.get(api.id))).toBe(false);
+
+    // docs is in no approved plan yet: it still waits, and the change that gives it paths starts it.
+    expect(plans.waitingForPlan(streams.get(docs.id))).toBe(true);
+    await plans.setOwner(node.id, docs.id, ['CHANGELOG.md'], 'coordinator');
+    expect(started).toEqual([api.id, docs.id]);
+  });
+
+  test('a "Start later" child the plan names is not started (only split parts wait)', async () => {
+    const { node, api, docs, started } = await planned();
+    await splitWaits(api.id);
+    // docs was made by the human with "Start later": no split line on its thread.
+    expect(plans.waitingForPlan(streams.get(docs.id))).toBe(false);
+    await plans.write(node.id, [
+      { child: api.id, owns: ['prices.ts'] },
+      { child: docs.id, owns: ['CHANGELOG.md'] },
+    ]);
+    await plans.approve(node.id);
+    expect(started).toEqual([api.id]);
+  });
+
+  test('a child of a node that never had a coordinator is not waiting', async () => {
+    const { api } = await saleTree();
+    await splitWaits(api.id);
+    expect(plans.waitingForPlan(streams.get(api.id))).toBe(false);
   });
 });

@@ -432,6 +432,7 @@ function cockpitFrame(feed: FeedContext, streams: StreamService): CockpitFrame {
     feed.store.getRepos(),
     (id) => feed.store.getCard(id),
     feed.contracts,
+    (s) => feed.plans?.waitingForPlan(s) === true,
   );
 }
 

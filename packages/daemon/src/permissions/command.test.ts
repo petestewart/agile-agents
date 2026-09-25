@@ -19,6 +19,7 @@ import {
   isNewDependencyInstall,
   isPathInside,
   isPipedIntoBareShell,
+  isReadOnlyGitAtom,
   isRepoLocalBin,
   parseCommandIntoAtoms,
   parseDlxInvocation,
@@ -648,5 +649,57 @@ describe('repoScriptChecks (T339)', () => {
     expect(repoScriptChecks(dir)).toEqual(['npm run test']);
     pkg('bun test');
     expect(repoScriptChecks(dir)).toEqual([]);
+  });
+});
+
+describe('T336: isReadOnlyGitAtom is an allowlist', () => {
+  const readOnly = (command: string) =>
+    parseCommandIntoAtoms(command).every((atom) => isReadOnlyGitAtom(atom));
+
+  test('plain reads, with -C, are read-only', () => {
+    for (const command of [
+      'git log --oneline -5',
+      'git -C /repos/ledger-lite log -p -3',
+      'git -C /a -C b diff main',
+      'git show HEAD:README.md',
+      'git status --short',
+    ]) {
+      expect([command, readOnly(command)]).toEqual([command, true]);
+    }
+  });
+
+  test('anything that sets config, moves dirs, writes, runs a program or a pager is not', () => {
+    for (const command of [
+      // Before the subcommand only -C is allowed.
+      'git --config-env=alias.log=VAR -C /x log',
+      'git -c alias.log=!touch_x log',
+      'git --exec-path=/tmp log',
+      'git --git-dir=/tmp/x log',
+      'git --work-tree=/tmp status',
+      'git --namespace=x log',
+      'git -p log',
+      'git --paginate log',
+      'git --no-pager log',
+      'git -C',
+      // Unsafe options on the subcommand.
+      'git log --output=/tmp/x',
+      'git diff -o /tmp/x',
+      'git diff --ext-diff',
+      'git show --textconv HEAD:a.bin',
+      'git log --config-env=alias.x=V',
+      'git show --open-files-in-pager',
+      'git log --paginate',
+      // An env assignment or wrapper in front, including through sh -c.
+      'GIT_PAGER=touch_x git log',
+      'GIT_EXTERNAL_DIFF=/tmp/x git diff',
+      'env git log',
+      'sh -c "GIT_PAGER=x git log"',
+      'GIT_PAGER=x sh -c "git log"',
+      // Not a read.
+      'git commit -m x',
+      'git -C /x checkout -b y',
+    ]) {
+      expect([command, readOnly(command)]).toEqual([command, false]);
+    }
   });
 });

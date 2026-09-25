@@ -46,7 +46,7 @@ import { ClassifierKeyService, FakeClassifier } from '../classifier';
 import { AutonomyService } from '../coordination/autonomy';
 import { CardService } from '../coordination/cards';
 import { ContractService } from '../coordination/contracts';
-import { PlanService, planMoveCoordination } from '../coordination/plans';
+import { PlanService, WAITING_FOR_PLAN, planMoveCoordination } from '../coordination/plans';
 import { DeliveryService } from '../delivery';
 import { DirectorService } from '../director';
 import { DocsService } from '../docs';
@@ -1355,6 +1355,7 @@ async function startStreamCockpit(scripts: FakeAgentScript[]): Promise<StreamCoc
       attach: (id) => attach.attach(id),
       stop: (id) => attach.stop(id),
     }),
+    plans: new PlanService({ store, streams, contracts: new ContractService({ store, streams }) }),
     docs,
     feedPollIntervalMs: 50,
   });
@@ -3086,6 +3087,32 @@ describe('+ Repo in place (Playwright e2e, T205)', () => {
           .waitFor();
         await page
           .locator(`${root} [data-testid="thread"]`, { hasText: 'THREAD-MARKER-205' })
+          .waitFor();
+
+        // T336: once the node has had a coordinator, the split's parts wait for its plan.
+        await cockpit.store.updateStream('daemon', node.id, (before) => ({
+          ...before,
+          sessions: [
+            { id: ulid(), vendor: 'claude', model: 'm', role: 'coordinator', status: 'stopped' },
+          ],
+        }));
+        // The split writes this on each part when the node has a coordinator (repo-in-place.ts).
+        for (const part of parts) {
+          await cockpit.streams.appendThread('daemon', part.id, {
+            kind: 'event',
+            body: `${WAITING_FOR_PLAN}this part starts when "Sale prices"'s plan is approved`,
+          });
+        }
+        for (const part of parts) {
+          await page
+            .locator(
+              `[data-testid="stream-tree"] [data-stream="${part.id}"] [data-testid="waiting-for-plan"]`,
+            )
+            .waitFor();
+        }
+        await page.locator(`[data-testid="stream-tree"] [data-stream="${parts[0]?.id}"]`).click();
+        await page
+          .locator('[data-testid="stream-status"]', { hasText: 'waiting for the plan' })
           .waitFor();
       } finally {
         await teardown([page]);

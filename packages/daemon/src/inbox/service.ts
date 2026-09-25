@@ -18,6 +18,7 @@ import {
   formatKnowledgeScope,
   inboxContext,
   inboxDetail,
+  liveChildrenOf,
 } from '@agile-agents/shared';
 import type { AutonomyService } from '../coordination/autonomy';
 import type { ContractService } from '../coordination/contracts';
@@ -243,6 +244,11 @@ export class InboxService {
     if (stream.archived === true) return undefined;
     if (stream.human.status !== 'open') return undefined;
     if (stream.agent.status !== 'blocked' && stream.agent.status !== 'done') return undefined;
+    // T336: a coordinating node or a project root has no branch of its own;
+    // its coordinator finishing a turn is nothing to land.
+    if (stream.agent.status === 'done' && (hasParts(stream.id, byId) || isProjectRoot(stream))) {
+      return undefined;
+    }
     return {
       kind: stream.agent.status,
       id: stream.id,
@@ -259,4 +265,14 @@ export class InboxService {
       ...(stream.agent.progress !== undefined ? withDetail(stream.agent.progress) : {}),
     };
   }
+}
+
+/** Live children other than helpers: what makes a node coordinating (`nodeRole`). */
+function hasParts(id: string, byId: Map<string, Stream>): boolean {
+  return liveChildrenOf(id, [...byId.values()]).some((c) => c.helper_of !== id);
+}
+
+/** A project's root node (P20: its agent is the project's coordinator). */
+function isProjectRoot(stream: Stream): boolean {
+  return stream.parent === undefined && stream.project !== undefined;
 }

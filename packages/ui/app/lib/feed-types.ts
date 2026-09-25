@@ -75,6 +75,8 @@ export interface CockpitStreamRow {
   overlap?: true;
   /** T229: a hookless vendor is live and a private repo is hidden from this node. */
   visibility_advisory?: true;
+  /** T336: a part not yet started because its coordinator's plan is not approved. */
+  waiting_for_plan?: true;
 }
 
 /** T160: mirror of `feed/snapshot.ts`'s `CockpitFrame` — the inbox and the tree, pushed on connect and after every event batch. */

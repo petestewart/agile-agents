@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import type { AgentMessage, ReposConfig } from '@agile-agents/shared';
+import type { AgentMessage, KnowledgeItem, ReposConfig } from '@agile-agents/shared';
 import { decidePreToolUse } from './decide';
 import { DEFAULT_MAX_READ_BYTES, type HookDecisionContext } from './types';
 
@@ -366,6 +366,115 @@ describe('T280: a coordinator writes only in its scratch session dir (P20)', () 
     expect(decide('Bash', { command: 'echo x > /repo/a.ts' })).toBe('deny');
     expect(decide('Bash', { command: 'rm -rf /repo' })).toBe('deny');
     expect(decide('Read', { file_path: `${dir}/brief.md` })).toBe('allow');
+  });
+});
+
+describe('T336: a coordinator reads other repos with realistic Bash', () => {
+  const home = '/home/u/.agile';
+  const dir = `${home}/sessions/01J9AAAAAAAAAAAAAAAAAAAAAA`;
+  const ledger = '/home/u/Projects/ledger-lite';
+  const shop = '/home/u/Projects/shop-private';
+  const ctx = baseCtx({
+    role: 'coordinator',
+    worktreePath: dir,
+    readRoots: [ledger, '/home/u/Projects/agile-test-repo'],
+    hiddenRoots: [shop, home],
+  });
+  const bash = (command: string) =>
+    decidePreToolUse(ctx, { tool_name: 'Bash', tool_input: { command, description: 'x' } });
+
+  test('read-only commands on a readable repo are allowed, cd included', () => {
+    for (const command of [
+      `ls ${ledger}`,
+      `cat ${ledger}/README.md`,
+      `git -C ${ledger} log --oneline -5`,
+      `cd ${ledger} && git log --oneline -5`,
+      `cd ${ledger} && ls -la && git status`,
+      `cd ${dir} && echo draft > notes.md`,
+      `cd ${ledger} && cat README.md src/a.ts`,
+      `git -C ${ledger} log -O${ledger}/order.txt --since=2.weeks`,
+    ]) {
+      expect([command, bash(command).decision]).toEqual([command, 'allow']);
+    }
+  });
+
+  test('cd does not open a way to write or read what was closed', () => {
+    for (const command of [
+      // A relative redirect after cd lands in the repo, not the session dir.
+      `cd ${ledger} && echo x > notes.md`,
+      `cd ${ledger} && git commit -m x`,
+      `cd ${ledger} && touch x`,
+      `cd ${shop} && ls`,
+      `cd ${home} && cat config.yaml`,
+      'cd && ls',
+      'cd - && ls',
+      'cd $HOME && ls',
+      // T305's read scope follows the cd: a relative path resolves from it.
+      `cd ${ledger} && cat ../../../../etc/passwd`,
+      // Review B4: a flag's attached value is the path, not a relative token.
+      `git -C ${ledger} log -O${home}/config.yaml`,
+      `git -C ${ledger} log --orderfile=${home}/config.yaml`,
+      `git -C ${ledger} log -O ${home}/config.yaml`,
+      `cd ${ledger} && git log -O../../.agile/config.yaml`,
+      'git log -O../../config.yaml',
+      `cd ${ledger}/.. && cat shop-private/secret.ts`,
+      `git -C ${shop} log --oneline -5`,
+    ]) {
+      expect([command, bash(command).decision]).toEqual([command, 'deny']);
+    }
+  });
+});
+
+describe("T336 review: only a coordinator's read-only git -C leaves the worktree", () => {
+  const home = '/home/u/.agile';
+  const ledger = '/home/u/Projects/ledger-lite';
+  const shop = '/home/u/Projects/shop-private';
+  // The built-in no_worktree_escape rule (§5.4), as the knowledge store holds it.
+  const noEscape = {
+    id: 'K-01J9ESCAPE',
+    name: 'path_deny',
+    enforcement: 'action',
+    status: 'accepted',
+    check: { by: 'pattern', pattern: { kind: 'path_deny', args: { globs: [] } } },
+  } as unknown as KnowledgeItem;
+  const scope = {
+    readRoots: [ledger, '/home/u/Projects/agile-test-repo'],
+    hiddenRoots: [shop, home],
+    patternRules: [noEscape],
+  };
+  const bash = (role: HookDecisionContext['role'], worktreePath: string, command: string) =>
+    decidePreToolUse(baseCtx({ role, worktreePath, ...scope }), {
+      tool_name: 'Bash',
+      tool_input: { command, description: 'x' },
+    }).decision;
+  const coordinator = (command: string) =>
+    bash('coordinator', `${home}/sessions/01J9AAAAAAAAAAAAAAAAAAAAAA`, command);
+
+  test('a worker is denied git -C into another registered repo, reads included', () => {
+    const worker = '/home/u/Projects/agile-test-repo/.worktrees/01part';
+    expect(bash('worker', worker, `git -C ${ledger} log --oneline -5`)).toBe('deny');
+    expect(bash('worker', worker, `git -C ${ledger} status`)).toBe('deny');
+  });
+
+  test('a coordinator may git -C log a readable repo; not an unregistered or hidden one', () => {
+    expect(coordinator(`git -C ${ledger} log --oneline -5`)).toBe('allow');
+    expect(coordinator(`git -C ${ledger} status && git -C ${ledger} diff main`)).toBe('allow');
+    expect(coordinator('git -C /srv/other-repo log --oneline -5')).toBe('deny');
+    expect(coordinator(`git -C ${shop} log`)).toBe('deny');
+    expect(coordinator(`git -C ${home} log`)).toBe('deny');
+  });
+
+  test('a coordinator git -C that sets config, runs a program or writes is denied', () => {
+    for (const command of [
+      `git --config-env=alias.log=VAR -C ${ledger} log`,
+      `git -C ${ledger} -c alias.log=!touch_x log`,
+      `GIT_PAGER=touch_x git -C ${ledger} log`,
+      `git -C ${ledger} diff --ext-diff`,
+      `git -C ${ledger} log --output=/tmp/x`,
+      `git -C ${ledger} commit -m x`,
+    ]) {
+      expect([command, coordinator(command)]).toEqual([command, 'deny']);
+    }
   });
 });
 
