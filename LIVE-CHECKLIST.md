@@ -44,7 +44,7 @@ it: does it have children, and does it have a repo. That gives four
 | work | none (helpers aside) | exactly one, with a branch and a worktree | writes code, then delivers it |
 | coordinating | yes | none of its own; its children's | plans, splits work, writes contracts, tracks children |
 
-You never restructure the tree by hand. **+ Repo** on a conversation turns
+You don't have to restructure the tree to change where work happens. **+ Repo** on a conversation turns
 it into work on that repo. + Repo on a work node turns it into a coordinating
 node with one **part** (a work child) per repo. The thread stays where it is.
 
