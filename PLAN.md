@@ -1758,6 +1758,33 @@ agile tail --director
 - **Validation Steps:** `bun test packages/daemon/src/delivery`; `bun run test:e2e`.
 - **Notes:** Branch T340-pr-merged-state off phase-8, merge d74da34 on phase-8, forward to 14. Causes: Merge on an open PR re-delivered and wrote pr_open without reading GitHub; a held re-deliver dropped the PR from the poller. deliverPr reads the PR first (merged → record + refuse; closed → human deliver opens a new one, agent push refuses, D8); Check now (pollNow, 5 s cooldown, POST /api/streams/:id/pr-check). Review (sonnet): blocker (agent push could open a PR) fixed; APPROVE, verified on phase-9. QA (sonnet): PASS twice.
 
+### Ticket: T343 Reviewer read-only git uses the allowlist
+- **Priority:** P0
+- **Status:** Todo
+- **Owner:** Unassigned
+- **Scope:** Found in T336 review: the reviewer role's own read-only git check refuses `-c` but not `--config-env`, so a reviewer session can run a crafted git alias (command execution inside its worktree). Use T336's `isReadOnlyGitAtom` allowlist for the reviewer too; keep `--no-pager` working if reviewers rely on it. Fix on the earliest phase with the reviewer check, merge forward.
+- **Acceptance Criteria:** Tests: reviewer denied `-c`, `--config-env`, `GIT_*=` prefixes, `--ext-diff`, `--output`; allowed plain `git log/diff/show/status`.
+- **Validation Steps:** `bun test packages/daemon/src/permissions packages/daemon/src/hook`.
+- **Notes:** Pre-existing; not introduced by T336.
+
+### Ticket: T344 Nudge when parts wait on a plan that never comes
+- **Priority:** P2
+- **Status:** Todo
+- **Owner:** Unassigned
+- **Scope:** After T336, parts made by a split wait for the coordinator's plan. If the coordinator stops or never writes a plan, they wait silently. Surface it: a "waiting for the plan" inbox card on the node once its coordinator is idle with no plan, or after a timeout.
+- **Acceptance Criteria:** Test: coordinator ends with no plan → a card; plan approved → card gone.
+- **Validation Steps:** `bun test packages/daemon/src/inbox packages/daemon/src/coordination`.
+- **Notes:** From the T336 worker.
+
+### Ticket: T345 Workers may cd within their worktree
+- **Priority:** P2
+- **Status:** Todo
+- **Owner:** Unassigned
+- **Scope:** Workers are denied `cd` (e.g. `cd sub && bun test`). Allow `cd` to a directory inside the worktree, with later relative paths resolved from there (as T336 does for coordinators); `tree` on the read-only list.
+- **Acceptance Criteria:** Tests: `cd sub && bun test` allowed; `cd .. && …`, `cd /` and the agile home denied.
+- **Validation Steps:** `bun test packages/daemon/src/permissions packages/daemon/src/hook`.
+- **Notes:** From the T336 worker.
+
 ### Ticket: T341 Walkthrough QA in a browser with the fake agent
 - **Priority:** P0
 - **Status:** Todo
