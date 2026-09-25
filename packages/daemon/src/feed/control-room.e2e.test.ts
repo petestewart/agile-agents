@@ -3049,6 +3049,24 @@ describe('plan approval (Playwright e2e, T281)', () => {
         expect(await page.locator(`[data-contract="${contract.id}"]`).textContent()).toContain(
           'saleCents',
         );
+        // T338: labelled parts: an Owners heading listing parts by title, each contract under "Contract".
+        const planText = (await page.locator('[data-testid="plan"]').textContent()) ?? '';
+        expect(planText).toContain('Owners');
+        expect(planText).not.toContain(api.id);
+        const owner = `[data-testid="plan-owner"][data-child="${api.id}"]`;
+        expect(await page.locator(`${owner} a[data-node="${api.id}"]`).textContent()).toBe(
+          'api: add salePrice',
+        );
+        expect(await page.locator(`${owner} [data-testid="plan-owner-paths"]`).textContent()).toBe(
+          'prices.ts',
+        );
+        const c = `[data-contract="${contract.id}"]`;
+        expect(await page.locator(`${c} h3`).textContent()).toContain('Contract: GET /price/:id');
+        expect(await page.locator(`${c} [data-testid="contract-parties"]`).textContent()).toBe(
+          'Parties: api: add salePrice, web: show salePrice',
+        );
+        await page.locator(`${c} a[data-node="${web.id}"]`).click();
+        await waitForText(page, '[data-testid="stream-title"]', 'web: show salePrice');
       } finally {
         await teardown([page]);
         await cockpit.stop();

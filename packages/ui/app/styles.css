@@ -732,6 +732,23 @@ body {
   border-bottom: 1px solid var(--border);
   overflow-wrap: anywhere;
 }
+/* T338: the Plan tab labels its parts: an Owners list and a heading per contract. */
+.cr-plan h3 {
+  font-size: 14px;
+  margin: 10px 0 4px;
+  font-weight: 600;
+}
+.cr-plan li h3 {
+  margin-top: 0;
+}
+/* T338: a node or contract named by its title, as a link. */
+.cr-ref {
+  color: var(--info);
+  text-decoration: none;
+}
+.cr-ref:hover {
+  text-decoration: underline;
+}
 
 /* ---- settings ---- */
 .cr-settings {
