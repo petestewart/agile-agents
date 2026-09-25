@@ -111,7 +111,36 @@ async function waitFor(
 ): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (!predicate()) {
-    if (Date.now() >= deadline) throw new Error(`waitFor: condition not met in ${timeoutMs}ms`);
+    if (Date.now() >= deadline) {
+      try {
+        for (const st of streams.list()) {
+          const full = streams.get(st.id);
+          console.error(
+            `DIAGW ${new Date().toISOString()} stream ${st.id} agent=${full.agent.status} sessions=${JSON.stringify(full.sessions)}`,
+          );
+          console.error(
+            `DIAGW thread ${JSON.stringify(streams.readThread(st.id, { limit: 100 }).entries.map((e) => `${e.ts} ${e.by}:${e.body.slice(0, 100)}`))}`,
+          );
+          for (const se of full.sessions) {
+            const dir = join(home, 'sessions', se.id);
+            for (const f of existsSync(dir) ? readdirSync(dir) : []) {
+              try {
+                console.error(
+                  `DIAGW ${se.id}/${f}: ${readFileSync(join(dir, f), 'utf8').slice(-2500)}`,
+                );
+              } catch {}
+            }
+          }
+        }
+        console.error(`DIAGW scratch ${JSON.stringify(readdirSync(scratch))}`);
+        for (const f of readdirSync(scratch).filter((n) => n.endsWith('.jsonl'))) {
+          console.error(`DIAGW ${f}: ${readFileSync(join(scratch, f), 'utf8').slice(-1500)}`);
+        }
+      } catch (e) {
+        console.error('DIAGW failed', String(e));
+      }
+      throw new Error(`waitFor: condition not met in ${timeoutMs}ms`);
+    }
     await Bun.sleep(intervalMs);
   }
 }
@@ -129,6 +158,7 @@ async function makeStream(repoName?: string): Promise<Stream> {
 }
 
 beforeEach(() => {
+  console.error(`DIAGT ${new Date().toISOString()} test start`);
   home = mkdtempSync(join(tmpdir(), 'agile-attach-home-'));
   scratch = mkdtempSync(join(tmpdir(), 'agile-attach-scratch-'));
   repo = mkdtempSync(join(tmpdir(), 'agile-attach-repo-'));

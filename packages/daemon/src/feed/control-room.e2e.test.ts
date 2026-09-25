@@ -1288,18 +1288,37 @@ describe('stream page (Playwright e2e, T161)', () => {
           { type: 'end_turn' },
         ],
       };
+      (globalThis as { __dbgStep?: number }).__dbgStep = 1291;
       const cockpit = await startStreamCockpit([worker, reviewer]);
+      const dbgStart = Date.now();
+      const dbg = setInterval(() => {
+        if (Date.now() - dbgStart > 90_000) clearInterval(dbg);
+        try {
+          const all = cockpit.streams.list?.() ?? [];
+          for (const st of all as Array<{ id: string }>) {
+            const full = cockpit.streams.get(st.id as never);
+            console.error(
+              `DBG ${new Date().toISOString()} step=${(globalThis as { __dbgStep?: number }).__dbgStep} +${Date.now() - dbgStart}ms sessions=${JSON.stringify(full.sessions.map((x) => [x.role, x.status]))} agent=${full.agent.status} thread=${JSON.stringify(cockpit.streams.readThread(st.id as never, { limit: 50 }).entries.map((e) => `${e.by}:${e.body.slice(0, 50)}`))}`,
+            );
+          }
+        } catch (e) {
+          console.error('DBG err', String(e));
+        }
+      }, 5000);
       let page: Page | undefined;
       try {
+        (globalThis as { __dbgStep?: number }).__dbgStep = 1305;
         const stream = await cockpit.streams.create('human', {
           title: 'CSV parser',
           goal: 'Pick the **dialect** and implement it.',
           repo: 'demo',
         });
+        (globalThis as { __dbgStep?: number }).__dbgStep = 1310;
         const rule = await cockpit.rules.create('human', {
           text: 'run the repo scripts, never a second toolchain',
           scope: { kind: 'stream', ref: stream.id },
         });
+        (globalThis as { __dbgStep?: number }).__dbgStep = 1314;
         await cockpit.rules.accept(rule.id, 'human');
         mkdirSync(join(cockpit.home, 'streams', `${stream.id}.docs`), { recursive: true });
         writeFileSync(
@@ -1309,29 +1328,45 @@ describe('stream page (Playwright e2e, T161)', () => {
 
         page = await openPage();
         const traffic = recordTraffic(page);
+        (globalThis as { __dbgStep?: number }).__dbgStep = 1323;
         await page.goto(`${cockpit.base}/`);
+        (globalThis as { __dbgStep?: number }).__dbgStep = 1324;
         await page.locator(`[data-testid="stream-tree"] [data-stream="${stream.id}"]`).click();
         const root = `[data-testid="stream-page"][data-stream="${stream.id}"]`;
+        (globalThis as { __dbgStep?: number }).__dbgStep = 1326;
         await page.locator(root).waitFor({ state: 'visible' });
+        (globalThis as { __dbgStep?: number }).__dbgStep = 1327;
         expect(await page.locator('[data-testid="stream-title"]').textContent()).toBe('CSV parser');
 
         // Rules in scope and docs, one click each.
+        (globalThis as { __dbgStep?: number }).__dbgStep = 1330;
         await page.locator('.cr-tabs [data-tab="rules"]').click();
+        (globalThis as { __dbgStep?: number }).__dbgStep = 1331;
         await page.locator(`[data-testid="rule"][data-rule="${rule.id}"]`).waitFor();
+        (globalThis as { __dbgStep?: number }).__dbgStep = 1332;
         await page.locator('.cr-tabs [data-tab="docs"]').click();
+        (globalThis as { __dbgStep?: number }).__dbgStep = 1333;
         await page.locator('[data-testid="doc"]', { hasText: 'dialects.md' }).waitFor();
+        (globalThis as { __dbgStep?: number }).__dbgStep = 1334;
         await page.locator('.cr-tabs [data-tab="thread"]').click();
 
         // ---- attach: the worker speaks onto the thread, live.
         // T170: Attach opens the picker, prefilled with the D17 built-in.
+        (globalThis as { __dbgStep?: number }).__dbgStep = 1338;
         await page.locator('[data-testid="attach"]').click();
+        (globalThis as { __dbgStep?: number }).__dbgStep = 1339;
         await page.locator('[data-testid="session-picker"][data-role="worker"]').waitFor();
+        (globalThis as { __dbgStep?: number }).__dbgStep = 1340;
         expect(await page.locator('[data-testid="picker-model"]').inputValue()).toBe(
           'claude-opus-5-5',
         );
+        (globalThis as { __dbgStep?: number }).__dbgStep = 1343;
         expect(await page.locator('[data-testid="picker-effort"]').inputValue()).toBe('low');
+        (globalThis as { __dbgStep?: number }).__dbgStep = 1344;
         await page.locator('[data-testid="picker-start"]').click();
+        (globalThis as { __dbgStep?: number }).__dbgStep = 1345;
         await waitForRunningWorker(page, cockpit, stream.id, traffic);
+        (globalThis as { __dbgStep?: number }).__dbgStep = 1346;
         await page
           .locator('[data-testid="thread-entry"][data-by="agent"]', {
             hasText: 'reading the parser',
@@ -1346,11 +1381,15 @@ describe('stream page (Playwright e2e, T161)', () => {
             .count(),
         ).toBe(1);
         // Mid-turn: the thinking indicator is on.
+        (globalThis as { __dbgStep?: number }).__dbgStep = 1360;
         await page.locator('[data-testid="thinking"]').waitFor({ state: 'visible' });
 
         // ---- the composer: a human line, and a prompt to the worker.
+        (globalThis as { __dbgStep?: number }).__dbgStep = 1363;
         await page.locator('[data-testid="composer-input"]').fill('use RFC 4180 quoting');
+        (globalThis as { __dbgStep?: number }).__dbgStep = 1364;
         await page.locator('[data-testid="composer-send"]').click();
+        (globalThis as { __dbgStep?: number }).__dbgStep = 1365;
         await page
           .locator('[data-testid="thread-entry"][data-by="human"]', {
             hasText: 'use RFC 4180 quoting',
@@ -1362,12 +1401,15 @@ describe('stream page (Playwright e2e, T161)', () => {
             hasText: 'use RFC 4180 quoting',
           })
           .locator('[data-testid="thread-queued"]');
+        (globalThis as { __dbgStep?: number }).__dbgStep = 1376;
         await queuedMarker.waitFor({ state: 'visible' });
+        (globalThis as { __dbgStep?: number }).__dbgStep = 1377;
         expect(await queuedMarker.textContent()).toContain('queued');
 
         // ---- question: the worker asks through the `ask` verb, then ends its turn.
         const session = cockpit.streams.get(stream.id).sessions.find((s) => s.role === 'worker');
         expect(session).toBeDefined();
+        (globalThis as { __dbgStep?: number }).__dbgStep = 1382;
         await waitUntil('the worker to register', () =>
           cockpit.store.listAgents().some((a) => a.id === session?.id),
         );
@@ -1378,16 +1420,20 @@ describe('stream page (Playwright e2e, T161)', () => {
         writeFileSync(asked, '');
         // The stream page shows the question whole — the tail the inbox clips.
         const card = `[data-testid="stream-needs"] [data-id="${questionId}"]`;
+        (globalThis as { __dbgStep?: number }).__dbgStep = 1392;
         await page.locator(card).waitFor({ state: 'visible' });
+        (globalThis as { __dbgStep?: number }).__dbgStep = 1393;
         expect(await page.locator(`${card} [data-testid="inbox-context"]`).textContent()).toContain(
           'TAIL-MARKER-7',
         );
         // The composer's line was prompted into the worker (its queued turn ran).
+        (globalThis as { __dbgStep?: number }).__dbgStep = 1397;
         await page
           .locator('[data-testid="thread-entry"]', { hasText: 'noted: RFC 4180 quoting' })
           .waitFor();
         expect(readFileSync(promptLog, 'utf8')).toContain('use RFC 4180 quoting');
         // T174: delivered, so no longer marked as waiting.
+        (globalThis as { __dbgStep?: number }).__dbgStep = 1402;
         await queuedMarker.waitFor({ state: 'detached' });
 
         // The worker's work, committed in its worktree.
@@ -1397,34 +1443,49 @@ describe('stream page (Playwright e2e, T161)', () => {
         git(['commit', '-q', '-m', 'semicolon parser'], worktree);
 
         // ---- answer, on the stream page.
+        (globalThis as { __dbgStep?: number }).__dbgStep = 1411;
         await page.locator(`${card} [data-testid="answer-input"]`).fill('semicolon');
+        (globalThis as { __dbgStep?: number }).__dbgStep = 1412;
         await page.locator(`${card} [data-testid="answer-send"]`).click();
+        (globalThis as { __dbgStep?: number }).__dbgStep = 1413;
         await page.locator(card).waitFor({ state: 'detached' });
+        (globalThis as { __dbgStep?: number }).__dbgStep = 1414;
         await page
           .locator('[data-testid="thread-entry"]', { hasText: 'continuing with semicolon' })
           .waitFor();
+        (globalThis as { __dbgStep?: number }).__dbgStep = 1417;
         await waitUntil(
           'the worker to finish',
           () => cockpit.streams.get(stream.id).agent.status === 'done',
         );
+        (globalThis as { __dbgStep?: number }).__dbgStep = 1421;
         await page.locator('[data-testid="stream-status"]', { hasText: 'agent done' }).waitFor();
+        (globalThis as { __dbgStep?: number }).__dbgStep = 1422;
         await page.locator('[data-testid="thinking"]').waitFor({ state: 'detached' });
 
         // The diff tab: the worktree against main.
+        (globalThis as { __dbgStep?: number }).__dbgStep = 1425;
         await page.locator('.cr-tabs [data-tab="diff"]').click();
+        (globalThis as { __dbgStep?: number }).__dbgStep = 1426;
         await page.locator('[data-testid="diff"]', { hasText: 'parser.ts' }).waitFor();
         expect(
           await page
             .locator('[data-testid="diff"] [data-line="add"]', { hasText: 'DELIMITER' })
             .count(),
         ).toBe(1);
+        (globalThis as { __dbgStep?: number }).__dbgStep = 1432;
         await page.locator('.cr-tabs [data-tab="thread"]').click();
 
         // ---- findings: Review attaches a reviewer, which reports one.
+        (globalThis as { __dbgStep?: number }).__dbgStep = 1435;
         await page.locator('[data-testid="review"]').click();
+        (globalThis as { __dbgStep?: number }).__dbgStep = 1436;
         await page.locator('[data-testid="session-picker"][data-role="reviewer"]').waitFor();
+        (globalThis as { __dbgStep?: number }).__dbgStep = 1437;
         await page.locator('[data-testid="picker-start"]').click();
+        (globalThis as { __dbgStep?: number }).__dbgStep = 1438;
         await page.locator('[data-testid="session"][data-role="reviewer"]').waitFor();
+        (globalThis as { __dbgStep?: number }).__dbgStep = 1439;
         await waitUntil('the reviewer to register', () => {
           const reviewerSession = cockpit.streams
             .get(stream.id)
@@ -1434,6 +1495,7 @@ describe('stream page (Playwright e2e, T161)', () => {
         const reviewerId = cockpit.streams
           .get(stream.id)
           .sessions.find((s) => s.role === 'reviewer')?.id;
+        (globalThis as { __dbgStep?: number }).__dbgStep = 1448;
         await cockpit.verbs.finding({
           session: reviewerId,
           severity: 'minor',
@@ -1442,11 +1504,15 @@ describe('stream page (Playwright e2e, T161)', () => {
           text: 'export the delimiter as a named constant type',
         });
         writeFileSync(reviewed, '');
+        (globalThis as { __dbgStep?: number }).__dbgStep = 1456;
         await page.locator('[data-testid="finding"][data-severity="minor"]').waitFor();
+        (globalThis as { __dbgStep?: number }).__dbgStep = 1457;
         expect(await page.locator('[data-testid="finding"]').textContent()).toContain(
           'parser.ts:1',
         );
+        (globalThis as { __dbgStep?: number }).__dbgStep = 1460;
         await page.locator('[data-testid="thread-entry"][data-kind="finding"]').waitFor();
+        (globalThis as { __dbgStep?: number }).__dbgStep = 1461;
         await waitUntil('the reviewer to stop', () =>
           cockpit.streams
             .get(stream.id)
@@ -1454,22 +1520,31 @@ describe('stream page (Playwright e2e, T161)', () => {
         );
 
         // ---- land: first refused (a dirty main), the reason on the page…
+        (globalThis as { __dbgStep?: number }).__dbgStep = 1468;
         await waitForAttr(page, '[data-testid="land-before"]', 'data-ready', 'yes');
         writeFileSync(join(cockpit.repo, 'README.md'), '# edited by the operator\n');
+        (globalThis as { __dbgStep?: number }).__dbgStep = 1470;
         await page.locator('[data-testid="stream-land"]').click();
         const result = page.locator('[data-testid="land-result"]');
+        (globalThis as { __dbgStep?: number }).__dbgStep = 1472;
         await result.waitFor({ state: 'visible' });
+        (globalThis as { __dbgStep?: number }).__dbgStep = 1473;
         expect(await result.getAttribute('data-status')).toBe('refused');
+        (globalThis as { __dbgStep?: number }).__dbgStep = 1474;
         expect(await result.textContent()).toContain('uncommitted changes');
         expect(cockpit.streams.get(stream.id).human.status).toBe('open');
 
         // …then landed once main is clean again.
         git(['checkout', '--', 'README.md'], cockpit.repo);
+        (globalThis as { __dbgStep?: number }).__dbgStep = 1479;
         await page.locator('[data-testid="stream-land"]').click();
+        (globalThis as { __dbgStep?: number }).__dbgStep = 1480;
         await waitForAttr(page, '[data-testid="land-result"]', 'data-status', 'landed');
         expect(cockpit.streams.get(stream.id).human.status).toBe('landed');
         expect(existsSync(join(cockpit.repo, 'parser.ts'))).toBe(true);
+        (globalThis as { __dbgStep?: number }).__dbgStep = 1483;
         await page.locator('[data-testid="stream-status"]', { hasText: 'you landed' }).waitFor();
+        (globalThis as { __dbgStep?: number }).__dbgStep = 1484;
         await waitForAttr(
           page,
           `[data-testid="stream-tree"] [data-stream="${stream.id}"] .cr-dot`,
@@ -1477,7 +1552,9 @@ describe('stream page (Playwright e2e, T161)', () => {
           'green',
         );
       } finally {
+        (globalThis as { __dbgStep?: number }).__dbgStep = 1491;
         await teardown([page]);
+        (globalThis as { __dbgStep?: number }).__dbgStep = 1492;
         await cockpit.stop();
         for (const path of [asked, reviewed, promptLog]) rmSync(path, { force: true });
       }
