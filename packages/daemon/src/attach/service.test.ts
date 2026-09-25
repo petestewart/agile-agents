@@ -571,6 +571,22 @@ describe('one ACP message is one thread entry (T137)', () => {
   }, 20_000);
 });
 
+describe('a finished turn ends the session (T137, T341)', () => {
+  test('the thread says its turn finished, not the exit code of the stop', async () => {
+    attachService = buildAttachService(
+      fakeProviderFor(ACP_PROVIDERS.claude, {
+        steps: [{ type: 'agent_text', text: 'all done' }, { type: 'end_turn' }],
+      }),
+    );
+    const stream = await makeStream();
+    await attachService.attach(stream.id);
+    await waitFor(() => threadBodies(stream.id).some((b) => b.startsWith('session ended:')));
+    const ended = threadBodies(stream.id).filter((b) => b.startsWith('session ended:'));
+    expect(ended).toEqual(['session ended: its turn finished']);
+    expect(streams.get(stream.id).agent.status).toBe('done');
+  }, 20_000);
+});
+
 describe('a failed thread append is logged and retried', () => {
   test('the first agent append throws: stderr.log says so and the line still lands', async () => {
     const original = streams.appendThread.bind(streams);

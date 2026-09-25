@@ -267,6 +267,8 @@ export class AttachService {
   private readonly detaching = new Set<string>();
   /** Sessions the daemon stopped on purpose, with the reason the thread gives. */
   private readonly stopReasons = new Map<string, string>();
+  /** T341: sessions stopped because their turn finished with nothing open (the normal end). */
+  private readonly turnFinished = new Set<string>();
 
   /** T243 (P11): wakes per node in the last hour, and wakes being started now. */
   private readonly wakeBudget: WakeBudget;
@@ -831,6 +833,7 @@ export class AttachService {
       }
       return;
     }
+    this.turnFinished.add(sessionId);
     handle.stop();
   }
 
@@ -979,6 +982,8 @@ export class AttachService {
     const detached = this.detaching.delete(sessionId);
     const stopReason = this.stopReasons.get(sessionId);
     this.stopReasons.delete(sessionId);
+    // T341: the daemon ended it after a finished turn; the kill's exit code says nothing.
+    const finishedTurn = this.turnFinished.delete(sessionId) && ok && vendorError === undefined;
     // `stop()` already holds the promise it awaits; dropping it cannot lose a write.
     this.exitHandled.delete(sessionId);
     try {
@@ -1034,7 +1039,7 @@ export class AttachService {
       });
       await this.options.streams.appendThread('daemon', streamId, {
         kind: 'event',
-        body: `session ended: ${reason}`.slice(0, 800),
+        body: `session ended: ${finishedTurn ? 'its turn finished' : reason}`.slice(0, 800),
         ref: sessionId,
       });
     } catch {
