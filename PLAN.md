@@ -1651,6 +1651,7 @@ Daemon: `em/`, `architect/`, `oracle/`, `qa/`, `halts/`, `quota/`, `handoff/`, `
 
 ## 10. Discovered Issues Log
 
+- 2026-09-25 Pete: skip `Contract.paths` (T284); the import-index alerts cover contract breakage. Revisit only if a miss shows up.
 - 2026-09-24 Pete: Director keeps role `coordinator` for now (may get its own role later). A new project is always a draft (T301), agreed. Director repo reads → T305. T268: file-by-file chunks plus the changed-file list stay; no whole-diff summary.
 
 - 2026-09-24 Pete: `proposals/<AP-id>.yaml` home dir APPROVED (T282). T287 question answered: coordinator notes wake ended work nodes (T290).
