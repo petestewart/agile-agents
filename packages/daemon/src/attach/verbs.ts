@@ -121,6 +121,24 @@ export interface VerbServiceOptions {
   /** T287: `note_child`'s write side (a `coordinator_note` routed event). */
   emitRouted?: EmitRouted;
   proposalLimit?: { assertCanPropose(caller: Pick<VerbCaller, 'session' | 'role'>): void };
+  /** T303: a finding was recorded (the Director's norm watch looks for repeats). */
+  onFinding?: () => void;
+}
+
+/** `source.finding`: the named sources (T303), and a tell/review item's examples (T260). */
+function proposalFinding(
+  checked: boolean,
+  examples: Parameters<typeof withExamplesNote>[1] | undefined,
+  sources: string[] | undefined,
+): { finding?: string } {
+  const withSources =
+    sources !== undefined && sources.length > 0 ? `sources: ${sources.join(', ')}` : undefined;
+  // A tell/review item has no check to hold them: keep them visible (T260).
+  const finding =
+    !checked && examples !== undefined && examples.length > 0
+      ? withExamplesNote(withSources, examples)
+      : withSources;
+  return finding !== undefined ? { finding } : {};
 }
 
 export class VerbService {
@@ -192,6 +210,7 @@ export class VerbService {
       },
       session,
     );
+    this.options.onFinding?.();
     return finding;
   }
 
@@ -205,8 +224,9 @@ export class VerbService {
    * subtree (§14.3): never wider by default.
    */
   async proposeKnowledge(input: unknown): Promise<ThreadEntry> {
-    const { session, text, kind, scope, paths, examples, enforcement, critical } =
+    const { session, text, kind, scope, paths, examples, enforcement, critical, sources } =
       validateVerbInput('propose_knowledge', input);
+    if (this.isDirector(session)) return this.directorProposeKnowledge(session, input);
     const caller = this.caller(session);
     // §5.5's proposal budget, checked before anything is written.
     this.options.proposalLimit?.assertCanPropose(caller);
@@ -223,10 +243,7 @@ export class VerbService {
         by: caller.role === 'lessons' ? 'lessons' : 'agent',
         node: caller.stream,
         session,
-        // A tell/review item has no check to hold them: keep them visible (T260).
-        ...(!checked && examples !== undefined && examples.length > 0
-          ? { finding: withExamplesNote(undefined, examples) }
-          : {}),
+        ...proposalFinding(checked, examples, sources),
       },
     });
     return this.options.streams.appendThread(
@@ -242,6 +259,40 @@ export class VerbService {
       },
       session,
     );
+  }
+
+  /**
+   * T303 (§12): the Director proposes too, never accepts. It has no node, so
+   * the scope is named (`global`, `repo:<name>`, `project:<id>`, `subtree:<id>`),
+   * the source is `director` with its `sources`, and the line goes on its thread.
+   */
+  private async directorProposeKnowledge(session: string, input: unknown): Promise<ThreadEntry> {
+    const { text, kind, scope, paths, examples, enforcement, critical, sources } =
+      validateVerbInput('propose_knowledge', input);
+    const named = scope?.trim();
+    if (named === undefined || ['subtree', 'stream', 'repo', 'project'].includes(named)) {
+      throw new Error(
+        'propose_knowledge: the Director has no node; name the scope (global, repo:<name>, project:<id> or subtree:<id>)',
+      );
+    }
+    const checked = enforcement === 'action' || enforcement === 'ship';
+    const item = await this.options.rules?.create('agent', {
+      text,
+      ...(kind !== undefined ? { kind } : {}),
+      scope: parseKnowledgeScope(named),
+      ...(paths !== undefined ? { paths } : {}),
+      ...(enforcement !== undefined ? { enforcement } : {}),
+      ...(checked ? { check: { by: 'classifier', examples: examples ?? [] } } : {}),
+      ...(critical !== undefined ? { critical } : {}),
+      source: { by: 'director', session, ...proposalFinding(checked, examples, sources) },
+    });
+    return this.options.store.appendDirectorThread({
+      ts: new Date().toISOString(),
+      by: 'director',
+      kind: 'proposal',
+      body: `${item?.kind ?? 'knowledge'} proposed (${named}): ${text}`.slice(0, 800),
+      ref: item === undefined ? 'knowledge_proposed' : `knowledge/${item.id}.yaml`,
+    });
   }
 
   /** The scope grammar of `propose_knowledge`, resolved against the calling session's node. */
