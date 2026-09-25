@@ -775,7 +775,12 @@ export class AttachService {
     if (ok) await this.maybeAutoReview(streamId);
   }
 
-  /** A reviewer's exit (§4.2): reports its findings; moves `agent.status` only when no worker is left. */
+  /**
+   * A reviewer's exit (§4.2): reports its findings on the thread. A review
+   * is not work, so it never moves `agent.status`: only a worker's (the
+   * work session's) exit does. A reviewer that died at spawn once marked a
+   * never-worked stream `done` (CI, phase 9).
+   */
   private async onReviewerExit(
     streamId: string,
     sessionId: string,
@@ -789,9 +794,6 @@ export class AttachService {
       body: `review finished: ${found} finding${found === 1 ? '' : 's'} (${reason})`.slice(0, 800),
       ref: sessionId,
     });
-    if (liveSession(stream, 'worker') === undefined && stream.agent.status !== 'done') {
-      await this.options.streams.update('daemon', streamId, { agent: { status: 'done' } });
-    }
   }
 
   /** §4.2's per-repo `auto_review` on a clean worker exit. Best effort: never fails the exit. */
