@@ -1733,12 +1733,12 @@ agile tail --director
 
 ### Ticket: T338 Names, not ids, and the cockpit gaps from the walkthrough
 - **Priority:** P1
-- **Status:** Todo
-- **Owner:** —
+- **Status:** Done
+- **Owner:** Unassigned
 - **Scope:** (1) Everywhere the user reads text (plan owners, hold/satisfied lines, cards, agent text via briefs), show node/contract/plan titles as links, never raw ids; briefs tell agents to use titles. (2) Parts' questions about shared things go to the coordinator first; approving a plan resolves questions it answers. (3) Cockpit gaps: project/node ids copyable where scopes need them (or a scope picker); Director autonomy picker per project; project tracker / push status / status map controls; Name field on Knowledge → New rule; New project with repos; PR review/check/auto-merge state in the Delivery panel; an event-log view.
 - **Acceptance Criteria:** Tests per item; e2e for the new controls.
 - **Validation Steps:** `bun run test:e2e`.
-- **Notes:** From Pete's walkthrough and T335's gap list. May split. Pete (2026-09-25): the Plan tab must label things: an "Owners" list by part name and each contract under a "Contract" heading.
+- **Notes:** From Pete's walkthrough and T335's gap list. May split. Pete (2026-09-25): the Plan tab must label things: an "Owners" list by part name and each contract under a "Contract" heading. Branch T338-names-and-gaps, merge 1ab8062. (c) adds Question.coordinator/passed_up_at, the child_question event and the coordinator-only answer_child verb; proposed D35, awaiting Pete. Review (sonnet): blocker (plan approval superseded passed-up questions) fixed; APPROVE. QA (sonnet): PASS incl. hostile-text rendering. Merge with T340: both PR lines kept (T340 status line + T338 detail line; duplicate info, tidy in T341); T338 PR link now http(s)-only; T338 e2e moved its Merge click to a node without an open PR.
 
 ### Ticket: T339 Agents know the repo's own check commands
 - **Priority:** P1
