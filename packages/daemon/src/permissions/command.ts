@@ -167,6 +167,8 @@ export interface CommandAtom {
   precededByPipe: boolean;
   /** The immediately preceding atom's tokens, when `precededByPipe`. */
   prevTokens?: string[];
+  /** T336: `VAR=value` assignments or a wrapper (`env`, `xargs`, ...) were stripped from its front. */
+  prefixed?: true;
 }
 
 const SHELL_RUNNERS = new Set(['sh', 'bash', 'zsh']);
@@ -181,7 +183,9 @@ export function parseCommandIntoAtoms(command: string): CommandAtom[] {
   const rawSegments = splitCommandSegments(command);
 
   for (const seg of rawSegments) {
-    const tokens = stripPrefixes(tokenizeSegment(seg.raw));
+    const raw = tokenizeSegment(seg.raw);
+    const tokens = stripPrefixes(raw);
+    const prefixed = tokens.length < raw.length ? { prefixed: true as const } : {};
     if (isShellDashC(tokens)) {
       const nested = parseCommandIntoAtoms(tokens[2] ?? '');
       for (const [idx, atom] of nested.entries()) {
@@ -191,9 +195,10 @@ export function parseCommandIntoAtoms(command: string): CommandAtom[] {
             tokens: atom.tokens,
             precededByPipe: seg.delimiterBefore === '|',
             prevTokens: seg.delimiterBefore === '|' ? prev?.tokens : undefined,
+            ...(atom.prefixed ? { prefixed: true as const } : prefixed),
           });
         } else {
-          atoms.push(atom);
+          atoms.push({ ...atom, ...prefixed });
         }
       }
       continue;
@@ -203,6 +208,7 @@ export function parseCommandIntoAtoms(command: string): CommandAtom[] {
       tokens,
       precededByPipe: seg.delimiterBefore === '|',
       prevTokens: seg.delimiterBefore === '|' ? prev?.tokens : undefined,
+      ...prefixed,
     });
   }
   return atoms;
@@ -416,6 +422,51 @@ export function parseGitInvocation(tokens: string[]): ParsedGitInvocation {
     i += 1;
   }
   return { args: undefined, cPaths, configs };
+}
+
+/** T336: the git subcommands a read-only call may run. */
+const READ_ONLY_GIT_SUBCOMMANDS = new Set(['diff', 'log', 'show', 'status']);
+
+/**
+ * T336: options a read-only git call may not carry anywhere: they set config
+ * (`-c`, `--config-env`: an alias or a pager is config), move git's dirs, write
+ * a file (`--output`, `-o`), or run a program (`--ext-diff`, `--textconv`, a pager).
+ */
+const UNSAFE_READ_GIT_OPTIONS = new Set([
+  '-c',
+  '--config-env',
+  '--exec-path',
+  '--git-dir',
+  '--work-tree',
+  '--namespace',
+  '--output',
+  '-o',
+  '--ext-diff',
+  '--textconv',
+  '--open-files-in-pager',
+  '--paginate',
+]);
+
+/**
+ * T336: a git call that only reads, by allowlist: nothing stripped from its
+ * front (no `GIT_*=` or other assignment, no wrapper), nothing before the
+ * subcommand but `-C <dir>` (so no `-p`/`--paginate`, `-c`, `--config-env`, ...),
+ * a subcommand in `diff`/`log`/`show`/`status`, and none of the unsafe options.
+ */
+export function isReadOnlyGitAtom(atom: CommandAtom): boolean {
+  if (atom.prefixed === true) return false;
+  const tokens = atom.tokens;
+  if (tokens[0] !== 'git') return false;
+  let i = 1;
+  while (tokens[i] === '-C') {
+    if (tokens[i + 1] === undefined) return false;
+    i += 2;
+  }
+  if (!READ_ONLY_GIT_SUBCOMMANDS.has(tokens[i] ?? '')) return false;
+  return !tokens.slice(i + 1).some((t) => {
+    const eq = t.indexOf('=');
+    return UNSAFE_READ_GIT_OPTIONS.has(eq === -1 ? t : t.slice(0, eq));
+  });
 }
 
 /** Args from `git`'s subcommand onward, or `undefined` if this isn't a `git` invocation with one. */

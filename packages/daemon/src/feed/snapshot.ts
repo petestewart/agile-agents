@@ -106,6 +106,8 @@ export interface CockpitStreamRow {
   overlap?: true;
   /** T229 (P13): a live session's vendor has no pre-tool-use hook, and a private repo is hidden from this node: the deny is advisory only. */
   visibility_advisory?: true;
+  /** T336: a part not yet started because its coordinator's plan is not approved. */
+  waiting_for_plan?: true;
 }
 
 /** Vendors whose tool calls pass the `agile hook` path check (Claude's hook, Pi's extension). */
@@ -174,6 +176,7 @@ export function buildCockpitFrame(
   repos: ReposConfig = {},
   cardOf?: (node: string) => StatusCard | undefined,
   contracts?: { list(): CockpitContractRow[] },
+  waitingForPlan?: (node: Stream) => boolean,
 ): CockpitFrame {
   const all = streams.list();
   const overlaps = findOverlaps(all);
@@ -194,6 +197,7 @@ export function buildCockpitFrame(
       ...waitsOn(s),
       ...(marked.has(s.id) ? { overlap: true as const } : {}),
       ...(visibilityAdvisory(s, repos) ? { visibility_advisory: true as const } : {}),
+      ...(waitingForPlan?.(s) === true ? { waiting_for_plan: true as const } : {}),
     })),
     projects: (projects?.list() ?? []).map((p) => ({
       id: p.id,
