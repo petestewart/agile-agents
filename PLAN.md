@@ -1720,7 +1720,16 @@ agile tail --director
 - **Scope:** (1) Everywhere the user reads text (plan owners, hold/satisfied lines, cards, agent text via briefs), show node/contract/plan titles as links, never raw ids; briefs tell agents to use titles. (2) Parts' questions about shared things go to the coordinator first; approving a plan resolves questions it answers. (3) Cockpit gaps: project/node ids copyable where scopes need them (or a scope picker); Director autonomy picker per project; project tracker / push status / status map controls; Name field on Knowledge → New rule; New project with repos; PR review/check/auto-merge state in the Delivery panel; an event-log view.
 - **Acceptance Criteria:** Tests per item; e2e for the new controls.
 - **Validation Steps:** `bun run test:e2e`.
-- **Notes:** From Pete's walkthrough and T335's gap list. May split.
+- **Notes:** From Pete's walkthrough and T335's gap list. May split. Pete (2026-09-25): the Plan tab must label things: an "Owners" list by part name and each contract under a "Contract" heading.
+
+### Ticket: T339 Agents know the repo's own check commands
+- **Priority:** P1
+- **Status:** Todo
+- **Owner:** —
+- **Scope:** Pete's run: the ledger-lite part tried `bunx tsc --noEmit` (not in the repo, so it would fetch TypeScript) and waited on a human decision, instead of using the repo's own scripts. Put the repo's check commands in the brief: the `scripts` of the worktree's package.json (test, typecheck, lint, build) or a per-repo `checks` list in repos.yaml when set, with "use these; don't install or fetch tools". When a command is held or denied for fetching a tool, the reason names the repo's own scripts.
+- **Acceptance Criteria:** Brief test lists the scripts; a repo with `checks` set uses them; the hold reason suggests them.
+- **Validation Steps:** `bun test packages/daemon/src/runner packages/daemon/src/attach`.
+- **Notes:** —
 
 ### Ticket: T325 Phase 13 QA and Pete's look
 - **Priority:** P0
