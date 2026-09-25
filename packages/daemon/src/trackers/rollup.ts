@@ -9,7 +9,10 @@ import type { Stream } from '@agile-agents/shared';
 
 type Link = NonNullable<Stream['external_link']>;
 
-/** The node's own link, else its nearest linked ancestor's; `undefined` when none. */
+/**
+ * The node's own link, else its nearest linked ancestor's; `undefined` when none.
+ * Archived ancestors still count (deliberate): archiving does not unlink the issue.
+ */
 export function rollupLink(
   stream: Stream,
   lookup: (id: string) => Stream | undefined,

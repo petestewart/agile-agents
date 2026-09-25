@@ -1269,8 +1269,25 @@ export function prBody(stream: Stream, lookup: (id: string) => Stream | undefine
   const parts = [`## Goal\n\n${stream.goal}`];
   if (stream.agent.progress) parts.push(`## Progress\n\n${stream.agent.progress}`);
   const link = rollupLink(stream, lookup);
-  parts.push(link ? `Issues: [${link.key}](${link.url})` : 'Issues:');
+  parts.push(link ? `Issues: ${issueRef(link.key, link.url)}` : 'Issues:');
   return parts.join('\n\n');
+}
+
+/** Tracker data is untrusted: a key stripped to a safe charset, a link only for http(s). */
+function issueRef(key: string, url: string): string {
+  const safeKey = key.replace(/[^A-Za-z0-9_-]/g, '').slice(0, 40);
+  if (safeKey === '') return '';
+  let href: URL | undefined;
+  try {
+    href = new URL(url);
+  } catch {
+    href = undefined;
+  }
+  if (href === undefined || (href.protocol !== 'http:' && href.protocol !== 'https:')) {
+    return safeKey;
+  }
+  const safeUrl = href.href.replace(/\(/g, '%28').replace(/\)/g, '%29').replace(/\s/g, '');
+  return `[${safeKey}](${safeUrl})`;
 }
 
 /** A git error for a thread line: first line, capped, any `user:pass@` in a URL removed. */

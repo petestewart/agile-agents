@@ -295,3 +295,46 @@ describe('T322: the PR body names the roll-up issue', () => {
     expect(prBody(child, () => undefined).endsWith('Issues:')).toBe(true);
   });
 });
+
+describe('T322: tracker key and url are untrusted in the PR body', () => {
+  const withLink = (key: string, url: string) => {
+    const parent = {
+      id: 'p',
+      external_link: {
+        system: 'jira',
+        key,
+        url,
+        synced: { title: 't', description_hash: 'h', at: 'x' },
+      },
+    } as unknown as Stream;
+    const child = { id: 'c', parent: 'p', goal: 'g', agent: {} } as unknown as Stream;
+    return prBody(child, (id) => (id === 'p' ? parent : undefined));
+  };
+
+  test('a javascript: url renders the key as plain text', () => {
+    const body = withLink('SHOP-11', 'javascript:alert(1)');
+    expect(body.endsWith('Issues: SHOP-11')).toBe(true);
+    expect(body).not.toContain('javascript');
+  });
+
+  test('a key carrying markdown cannot inject a link', () => {
+    const body = withLink('SHOP-11](http://evil)', 'https://jira.example/browse/SHOP-11');
+    expect(body.endsWith('Issues: [SHOP-11httpevil](https://jira.example/browse/SHOP-11)')).toBe(
+      true,
+    );
+    expect(body).not.toContain('](http://evil)');
+  });
+
+  test('a key with a newline stays on the one line', () => {
+    const body = withLink('SHOP-11\n## Injected', 'https://jira.example/browse/SHOP-11');
+    expect(body).not.toContain('\n## Injected');
+    expect(body.split('\n').at(-1)).toBe(
+      'Issues: [SHOP-11Injected](https://jira.example/browse/SHOP-11)',
+    );
+  });
+
+  test('parentheses in an https url are escaped so the link cannot break out', () => {
+    const body = withLink('SHOP-11', 'https://jira.example/a)b');
+    expect(body.endsWith('Issues: [SHOP-11](https://jira.example/a%29b)')).toBe(true);
+  });
+});
