@@ -18,6 +18,7 @@ import {
   type ThreadEntry,
   formatRuleScope,
   parseRuleScope,
+  quoteThreadBody,
   validateVerbInput,
 } from '@agile-agents/shared';
 import type { DocsSearch, SearchHit } from '../docs/service';
@@ -219,7 +220,10 @@ export class VerbService {
     const take = limit ?? 20;
     return {
       stream: caller.stream,
-      entries: page.entries.slice(-take),
+      // T330: an agent line may run to 16k chars; the tool result quotes the head.
+      entries: page.entries
+        .slice(-take)
+        .map((entry) => ({ ...entry, body: quoteThreadBody(entry.body) })),
       total: page.total,
     };
   }
