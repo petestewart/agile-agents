@@ -261,6 +261,13 @@ const ENGINEER_READ_ONLY_PATH_TOOLS = new Set(['cat', 'ls', 'head', 'tail', 'wc'
  * (`cmd.resolveTargetPath`); a `$`, backtick or `~user` is unclassifiable
  * and routes to `hil`, never a guessed allow.
  */
+/** T343: why a write to `path` is refused when it lands in git's own state, else `undefined`. */
+function gitDirWriteDenyReason(path: string, ctx: PolicyContext): string | undefined {
+  return cmd.isInsideGitDir(path, ctx.worktreePath)
+    ? `${path} is git's own state (.git): change it through git, not by writing into it`
+    : undefined;
+}
+
 function verifyBenignPaths(paths: string[], ctx: PolicyContext, reads = false): PolicyVerdict {
   for (const raw of paths) {
     const resolved = cmd.resolveTargetPath(raw);
@@ -274,6 +281,9 @@ function verifyBenignPaths(paths: string[], ctx: PolicyContext, reads = false): 
       if (reason !== undefined) return deny(reason);
     } else if (!isPathInside(resolved.path, ctx.worktreePath)) {
       return deny(`${raw} is outside the worktree`);
+    } else {
+      const reason = gitDirWriteDenyReason(resolved.path, ctx);
+      if (reason !== undefined) return deny(reason);
     }
   }
   return ALLOW;
@@ -346,6 +356,26 @@ function engineerBenignCommandVerdict(
   return undefined;
 }
 
+/**
+ * T343: any git argument that may be a path must resolve inside the worktree
+ * and outside `.git`, whatever the subcommand; otherwise it is held.
+ */
+function engineerGitPathVerdict(args: string[], ctx: PolicyContext): PolicyVerdict | undefined {
+  for (const raw of cmd.gitPathArguments(args, ctx.worktreePath)) {
+    const resolved = cmd.resolveTargetPath(raw);
+    if (
+      !resolved.safe ||
+      !isPathInside(resolved.path, ctx.worktreePath) ||
+      cmd.isInsideGitDir(resolved.path, ctx.worktreePath)
+    ) {
+      return hil(
+        `git argument "${raw}" may be a path outside the worktree or into .git: never automatic`,
+      );
+    }
+  }
+  return undefined;
+}
+
 function engineerExecuteVerdict(command: string, ctx: PolicyContext): PolicyVerdict {
   for (const atom of cmd.parseCommandIntoAtoms(command)) {
     if (cmd.hasRedirectionOrTee(atom.tokens)) {
@@ -371,11 +401,37 @@ function engineerExecuteVerdict(command: string, ctx: PolicyContext): PolicyVerd
         if (!isPathInside(resolved.path, ctx.worktreePath)) {
           return deny('redirected output escapes the worktree (or uses tee/process substitution)');
         }
+        const reason = gitDirWriteDenyReason(resolved.path, ctx);
+        if (reason !== undefined) return deny(reason);
       }
       // A safe redirect doesn't make the command allowed: still classify it.
     }
     if (cmd.isRepoScriptCommand(atom.tokens)) continue;
-    if (cmd.gitArgs(atom.tokens) !== undefined) {
+    const gitArgs = cmd.gitArgs(atom.tokens);
+    if (gitArgs !== undefined) {
+      // T343: repo config is shared with the reviewer, the daemon and the
+      // human's own git (a hook, fsmonitor or pager there runs a program).
+      if (cmd.isGitConfigWrite(gitArgs)) {
+        return hil('git config that sets or removes a value is never automatic');
+      }
+      if (cmd.gitProgramOverride(atom)) {
+        return hil('git config overrides that can run programs need the operator');
+      }
+      const redirect = cmd.gitDirRedirectReason(atom);
+      if (redirect !== undefined) return hil(`${redirect}: never automatic`);
+      const written = verifyBenignPaths(cmd.gitWriteTargets(gitArgs), ctx);
+      if (written.action !== 'allow') return written;
+      if (gitArgs.includes('--unsafe-paths')) {
+        return deny(
+          "git --unsafe-paths turns off git apply's own guard against writing outside the worktree",
+        );
+      }
+      const elsewhere = cmd.gitCheckoutElsewhereReason(gitArgs);
+      if (elsewhere !== undefined) {
+        return hil(`${elsewhere} writes a checkout wherever it is told: never automatic`);
+      }
+      const pathVerdict = engineerGitPathVerdict(gitArgs, ctx);
+      if (pathVerdict !== undefined) return pathVerdict;
       // Any git not on the never-without-human list: the worker's own branch work.
       continue;
     }
@@ -410,7 +466,12 @@ function engineerVerdict(classified: PermissionRequest, ctx: PolicyContext): Pol
         );
       }
       const outside = paths.find((p) => !isPathInside(p, ctx.worktreePath));
-      return outside === undefined ? ALLOW : deny(`edit target ${outside} is outside the worktree`);
+      if (outside !== undefined) return deny(`edit target ${outside} is outside the worktree`);
+      for (const p of paths) {
+        const reason = gitDirWriteDenyReason(p, ctx);
+        if (reason !== undefined) return deny(reason);
+      }
+      return ALLOW;
     }
     case 'execute':
       if (classified.command === undefined) {
@@ -474,6 +535,11 @@ function isReviewerSafeTool(tokens: string[]): boolean {
   return false;
 }
 
+/** T343: `git diff -O<orderfile>` reads a file named on the command line. */
+function readsGitOrderFile(tokens: string[]): boolean {
+  return tokens.some((t) => t.startsWith('-O'));
+}
+
 function reviewerExecuteVerdict(command: string): PolicyVerdict {
   for (const atom of cmd.parseCommandIntoAtoms(command)) {
     // Benign redirects write nothing (`git diff 2>/dev/null` is a read);
@@ -481,10 +547,9 @@ function reviewerExecuteVerdict(command: string): PolicyVerdict {
     if (cmd.hasWritingRedirectionOrTee(atom.tokens)) {
       return deny('reviewer role denies exec with redirection/tee — those are write primitives');
     }
-    const args = cmd.gitArgs(atom.tokens);
-    const isReadOnlyGit =
-      args !== undefined && REVIEWER_READ_ONLY_GIT_SUBCOMMANDS.has(args[0] ?? '');
-    if (isReadOnlyGit) continue;
+    // T343: git by T336's strict allowlist (no -c/--config-env, `GIT_*=` prefix,
+    // pager, ext-diff, textconv, output), and no `-O<orderfile>`.
+    if (cmd.isReadOnlyGitAtom(atom) && !readsGitOrderFile(atom.tokens)) continue;
     if (isReviewerSafeTool(atom.tokens)) continue;
     return deny(
       'reviewer role denies all exec except read-only tools (git diff/log/show, grep, …)',
