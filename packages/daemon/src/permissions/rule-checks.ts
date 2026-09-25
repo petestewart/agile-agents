@@ -22,6 +22,7 @@ import {
   isPathInside,
   parseCommandIntoAtoms,
   parseGitInvocation,
+  resolveTargetPath,
 } from './command';
 import { type PushDetectorContext, detectProtectedBranchWrite, detectPush } from './push-detector';
 import { commandPaths } from './visibility';
@@ -60,7 +61,10 @@ function checkPathDeny(
   if (ctx.command !== undefined) {
     for (const atom of parseCommandIntoAtoms(ctx.command)) {
       for (const cPath of parseGitInvocation(atom.tokens).cPaths) {
-        if (!isPathInside(cPath, ctx.worktreePath)) {
+        // `~/x` is the home's, not the worktree's `./~/x`; `$X` can't be placed.
+        const resolved = resolveTargetPath(cPath);
+        if (!resolved.safe) return `git -C ${cPath} names a path that cannot be resolved`;
+        if (!isPathInside(resolved.path, ctx.worktreePath)) {
           return `git -C ${cPath} targets a repo outside the session's worktree`;
         }
       }

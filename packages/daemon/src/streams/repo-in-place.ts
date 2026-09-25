@@ -16,12 +16,14 @@
  * coordinator (coordinating, D20). New parts start their worker like any
  * new work node (T204, T213) unless the node was never started (made with
  * `--no-start` and not attached since); the moved part restarts in its
- * worktree.
+ * worktree. A split node that was started gets its coordinator even when
+ * nothing was live, unless the human stopped it (T336).
  */
 
 import { type SessionRef, type Stream, liveChildrenOf, nodeRole } from '@agile-agents/shared';
 import { git, removeWorktreeSafely } from '../delivery/git';
 import { mainBranch } from '../delivery/service';
+import { stoppedByHuman } from '../events/wake';
 import { createWorktree, slugify } from '../runner/worktrees';
 import { assertRepoHasCommits } from '../store/rpc-methods';
 import type { StateStore } from '../store/store';
@@ -96,6 +98,10 @@ export class RepoInPlaceService {
     // T204's start rule for new parts: `start` isn't stored, so a node that
     // never had a worker is the `--no-start` one.
     const started = wasLive || node.sessions.some((s) => s.role === 'worker');
+    // T336: a split hands the node's sessions to the moved part, which left
+    // a node that was started but not live with no agent at all: no
+    // coordinator to plan the parts. It gets one, unless the human stopped it.
+    const coordinates = role === 'work' && !switching && started && !stoppedByHuman(node);
     // Stop first, so the exit path writes onto the records before they move.
     await this.sessions.stop(
       node.id,
@@ -130,7 +136,7 @@ export class RepoInPlaceService {
       );
     }
 
-    if (wasLive) await this.start(node.id, 'restart');
+    if (wasLive || coordinates) await this.start(node.id, wasLive ? 'restart' : 'start');
     if (started) {
       for (const part of parts) {
         if (this.streams.get(part.id).human.status !== 'closed') await this.start(part.id, 'start');
@@ -199,7 +205,8 @@ export class RepoInPlaceService {
   private async newPart(node: Stream, repo: string): Promise<Stream> {
     const part = await this.streams.create('daemon', {
       title: `${repo} part`,
-      goal: node.goal,
+      // T336: the part's share, not the parent's (often conversational) goal verbatim.
+      goal: `${repo} share of: ${node.goal}`,
       parent: node.id,
       repo,
     });

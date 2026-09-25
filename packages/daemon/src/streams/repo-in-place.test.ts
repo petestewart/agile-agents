@@ -163,6 +163,33 @@ describe('T205 + Repo in place', () => {
     expect(bodies(node.id).some((b) => b.includes('process exited'))).toBe(false);
   }, 60_000);
 
+  test('T336: a node whose session ended still gets its coordinator; parts get their share', async () => {
+    const node = await conversation();
+    await attach.attach(node.id);
+    await reshape.addRepo(node.id, 'api');
+    // Ended on its own (not a human's detach): `done`, nothing live.
+    await attach.stop(node.id);
+    expect(streams.get(node.id).agent.status).toBe('done');
+    const { parts } = await reshape.addRepo(node.id, 'web');
+
+    expect(attach.handleFor(node.id)).toBeDefined();
+    const coordinator = streams.get(node.id).sessions.at(-1);
+    expect(coordinator?.status).toBe('running');
+    expect(coordinator?.worktree).toBeUndefined();
+    for (const part of parts) expect(attach.handleFor(part.id)).toBeDefined();
+    expect(parts.map((p) => p.goal)).toEqual(['api share of: can we?', 'web share of: can we?']);
+  }, 60_000);
+
+  test('T336: a detached node split into parts gets no coordinator', async () => {
+    const node = await conversation();
+    await attach.attach(node.id);
+    await reshape.addRepo(node.id, 'api');
+    await attach.stop(node.id, undefined, { detach: true });
+    await reshape.addRepo(node.id, 'web');
+    expect(attach.handleFor(node.id)).toBeUndefined();
+    expect(streams.get(node.id).sessions).toEqual([]);
+  }, 60_000);
+
   test('T213: a node never started keeps its parts unstarted', async () => {
     const node = await conversation();
     await reshape.addRepo(node.id, 'api');
