@@ -109,6 +109,11 @@ export function useShell(): ShellValue {
   return value;
 }
 
+/** T338: the shell, or `undefined` outside a provider (text rendered on its own). */
+export function useOptionalShell(): ShellValue | undefined {
+  return useContext(ShellContext);
+}
+
 /**
  * T162: the cockpit's single-key shortcuts (`n`, `/`) never fire while the
  * operator is typing — in an input, a textarea, a select or anything

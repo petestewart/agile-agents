@@ -53,6 +53,7 @@ import type { DirectorService } from './director/service';
 import type { DocsService } from './docs';
 import type { RoutedEventService } from './events';
 import {
+  type CockpitFrame,
   type EventTailerHandle,
   buildCockpitFrame,
   buildSnapshot,
@@ -415,6 +416,18 @@ interface FeedContext {
   contracts?: ContractService;
   autonomy?: AutonomyService;
   trackerLinks?: TrackerLinks;
+}
+
+/** The cockpit frame (§9), as `/api/cockpit` and the `/ws` push send it. */
+function cockpitFrame(feed: FeedContext, streams: StreamService): CockpitFrame {
+  return buildCockpitFrame(
+    streams,
+    feed.inbox,
+    feed.projects,
+    feed.store.getRepos(),
+    (id) => feed.store.getCard(id),
+    feed.contracts,
+  );
 }
 
 function resolveFeedContext(options: HttpServerOptions): FeedContext | undefined {
@@ -1185,15 +1198,7 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
         // The cockpit frame (§9): the stream tree and the inbox.
         if (url.pathname === '/api/cockpit' && req.method === 'GET') {
           if (!feed?.streams) return errorResponse(503, 'streams not available');
-          return jsonResponse(
-            buildCockpitFrame(
-              feed.streams,
-              feed.inbox,
-              feed.projects,
-              feed.store.getRepos(),
-              (id) => feed.store.getCard(id),
-            ),
-          );
+          return jsonResponse(cockpitFrame(feed, feed.streams));
         }
 
         if (url.pathname === '/api/policy' && req.method === 'GET') {
@@ -1353,17 +1358,7 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
               ),
             );
             if (feed.streams) {
-              ws.send(
-                JSON.stringify(
-                  buildCockpitFrame(
-                    feed.streams,
-                    feed.inbox,
-                    feed.projects,
-                    feed.store.getRepos(),
-                    (id) => feed.store.getCard(id),
-                  ),
-                ),
-              );
+              ws.send(JSON.stringify(cockpitFrame(feed, feed.streams)));
             }
           }
         },
@@ -1386,18 +1381,7 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
         // push the cockpit frame once per batch (§3.3 "push, do not poll").
         if (feed.streams && newEvents.length > 0) {
           try {
-            server.publish(
-              FEED_WS_TOPIC,
-              JSON.stringify(
-                buildCockpitFrame(
-                  feed.streams,
-                  feed.inbox,
-                  feed.projects,
-                  feed.store.getRepos(),
-                  (id) => feed.store.getCard(id),
-                ),
-              ),
-            );
+            server.publish(FEED_WS_TOPIC, JSON.stringify(cockpitFrame(feed, feed.streams)));
           } catch (err) {
             console.error(messageOf(err));
           }

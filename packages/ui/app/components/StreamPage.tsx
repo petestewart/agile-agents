@@ -70,7 +70,7 @@ import {
   threadAuthorLabel,
 } from '../lib/streams';
 import { Card } from './Inbox';
-import { Markdown } from './Markdown';
+import { Linked, Markdown } from './Markdown';
 import { SessionPicker, sessionModelText } from './SessionPicker';
 
 type Tab = 'thread' | 'diff' | 'activity' | 'plan' | 'rules' | 'docs';
@@ -457,7 +457,12 @@ function LandPanel({
           data-status={stream.delivery_state.status}
         >
           Delivery: {stream.delivery_state.mode} · {stream.delivery_state.status.replace('_', ' ')}
-          {stream.delivery_state.held_by?.map((h) => ` — ${h.detail}`).join('')}
+          {stream.delivery_state.held_by?.map((h) => (
+            <span key={`${h.reason}:${h.detail}`}>
+              {' — '}
+              <Linked text={h.detail} />
+            </span>
+          ))}
         </p>
       )}
       <p className="cr-dim" data-testid="land-diff-rules">
@@ -670,7 +675,9 @@ function ChildCards({
                 </p>
               )}
               {card.relies_on.length > 0 && (
-                <p className="cr-dim">relies on {card.relies_on.join(', ')}</p>
+                <p className="cr-dim" data-testid="status-card-relies">
+                  relies on <Linked text={card.relies_on.join(', ')} />
+                </p>
               )}
             </li>
           ),
@@ -1261,8 +1268,8 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
           {page.rules.map((rule) => (
             <li key={rule.id} data-testid="rule" data-rule={rule.id}>
               <div className="cr-dim">
-                {rule.name ?? rule.id} · {formatKnowledgeScope(rule.scope)} · {rule.kind} ·{' '}
-                {rule.enforcement}
+                {rule.name ?? rule.id} · <Linked text={formatKnowledgeScope(rule.scope)} /> ·{' '}
+                {rule.kind} · {rule.enforcement}
                 {rule.critical ? ' · critical' : ''}
               </div>
               <Markdown text={rule.text} />

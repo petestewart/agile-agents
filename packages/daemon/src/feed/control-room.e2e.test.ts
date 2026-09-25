@@ -3067,6 +3067,24 @@ describe('plan approval (Playwright e2e, T281)', () => {
         );
         await page.locator(`${c} a[data-node="${web.id}"]`).click();
         await waitForText(page, '[data-testid="stream-title"]', 'web: show salePrice');
+
+        // T338 (render-time names): an id in thread text reads as the node's title and opens it;
+        // a contract id reads as its title; a URL is a new-tab link. The stored line keeps the ids.
+        await cockpit.streams.appendThread('daemon', web.id, {
+          kind: 'event',
+          body: `waits on ${api.id}; relies on ${contract.id}; see https://example.com/pr/2`,
+        });
+        const line = '[data-testid="thread"] [data-testid="thread-entry"]:last-child';
+        await waitForText(page, `${line} a[data-node="${api.id}"]`, 'api: add salePrice');
+        expect(await page.locator(`${line} a[data-node="${node.id}"]`).textContent()).toBe(
+          'GET /price/:id',
+        );
+        expect(
+          await page.locator(`${line} a[href="https://example.com/pr/2"]`).getAttribute('rel'),
+        ).toBe('noopener noreferrer');
+        expect(await page.locator(line).textContent()).not.toContain(api.id);
+        await page.locator(`${line} a[data-node="${api.id}"]`).click();
+        await waitForText(page, '[data-testid="stream-title"]', 'api: add salePrice');
       } finally {
         await teardown([page]);
         await cockpit.stop();

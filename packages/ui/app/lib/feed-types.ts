@@ -89,6 +89,15 @@ export interface CockpitFrame {
   overlaps?: CockpitOverlap[];
   /** T283: the child nodes' status cards. Absent from an older daemon. */
   cards?: Array<CockpitStatusCard | CockpitCardError>;
+  /** T338: every contract's title and owning node, so text names contracts, not ids. Absent from an older daemon. */
+  contracts?: CockpitContractRow[];
+}
+
+/** T338: mirror of `feed/snapshot.ts`'s `CockpitContractRow`. */
+export interface CockpitContractRow {
+  id: string;
+  title: string;
+  node: string;
 }
 
 /** T283: a corrupt card file, refused with its path:line. */

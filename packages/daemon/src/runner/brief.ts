@@ -156,6 +156,10 @@ const AUTONOMY_HINT: Record<Autonomy, string> = {
   run: '`add_child`, `add_waits_on` and `set_owner` apply at once; a routine (additive) contract change with `routine: true` applies too.',
 };
 
+/** T338: people read what agents write; ids are for tool calls only. */
+export const NAMES_HINT =
+  'When you write for people (thread lines, questions, notes), name nodes and contracts by their title, never by id; ids are for tool calls.';
+
 /** P20 (T280): what a coordinator coordinates, and how far it may act on its own. */
 export function coordinatorSection(
   children: readonly Stream[],
@@ -164,6 +168,7 @@ export function coordinatorSection(
   contracts: readonly Contract[] = [],
   cards?: ReadonlyMap<string, StatusCard | { error: string }>,
 ): string {
+  const contractTitle = (id: string) => contracts.find((c) => c.id === id)?.title ?? id;
   const lines =
     children.length === 0
       ? ['none yet']
@@ -174,7 +179,9 @@ export function coordinatorSection(
             return `${head}${c.agent.progress ? ` — ${c.agent.progress}` : ''}`;
           if ('error' in card) return `${head}; card unreadable: ${card.error}`;
           return `${head}; card: ${card.state}, ${card.files.length} files${
-            card.relies_on.length > 0 ? `, relies on ${card.relies_on.join(', ')}` : ''
+            card.relies_on.length > 0
+              ? `, relies on ${card.relies_on.map(contractTitle).join(', ')}`
+              : ''
           }${card.doing !== '' ? ` — ${card.doing}` : ''}`;
         });
   const planLine =
@@ -187,7 +194,13 @@ export function coordinatorSection(
         }.`;
   return section(
     'Your children',
-    [...lines, '', `Autonomy: **${autonomy}**. ${AUTONOMY_HINT[autonomy]}`, planLine].join('\n'),
+    [
+      ...lines,
+      '',
+      `Autonomy: **${autonomy}**. ${AUTONOMY_HINT[autonomy]}`,
+      planLine,
+      NAMES_HINT,
+    ].join('\n'),
   );
 }
 
@@ -212,6 +225,7 @@ export function planSection(view: ChildPlanView): string {
   lines.push(
     '',
     'Settle details with a sibling directly (`ask_sibling`, `reply_sibling`; your coordinator sees a copy). Anything that changes the plan, a contract or who owns what goes to your coordinator: agree it with the sibling first, then `propose_contract` with them in `with`.',
+    NAMES_HINT,
   );
   return section('Your part of the plan', lines.join('\n'));
 }

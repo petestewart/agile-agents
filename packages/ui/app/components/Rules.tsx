@@ -53,7 +53,7 @@ import {
   sortRules,
 } from '../lib/rules';
 import { useShell } from '../lib/shell';
-import { Markdown } from './Markdown';
+import { Linked, Markdown } from './Markdown';
 
 function message(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
@@ -404,7 +404,9 @@ function RuleCard({
           onChange={onToggle}
         />
         <span>{rule.name ?? rule.id}</span>
-        <span data-testid="rules-scope">{formatRuleScope(rule.scope)}</span>
+        <span data-testid="rules-scope">
+          <Linked text={formatRuleScope(rule.scope)} />
+        </span>
         {rule.paths !== undefined && rule.paths.length > 0 && (
           <span data-testid="rules-paths">{rule.paths.join(', ')}</span>
         )}
