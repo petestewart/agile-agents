@@ -217,6 +217,32 @@ test('no_worktree_escape catches a git -C outside the session worktree', async (
   }
 });
 
+test('T336: a worker keeps no_worktree_escape for git -C into another registered repo', async () => {
+  // A sibling repo the node may read (T213) is still outside its worktree:
+  // a worker's git -C there is denied, reads included. Claude's Bash payload shape.
+  const sibling = mkdtempSync(join(tmpdir(), 'agile-sibling-'));
+  try {
+    await store.putRepos({
+      demo: { path: repo, protected_branches: ['main'] },
+      sibling: { path: sibling, protected_branches: ['main'] },
+    });
+    for (const command of [
+      `git -C ${sibling} log --oneline -5`,
+      `git -C ${sibling} status`,
+      `git -C ${sibling} commit -m x`,
+      `git -C ${sibling} checkout -b y`,
+      `git -C ${sibling} log --output=${sibling}/x`,
+      // `~` is the home directory, never a `~` folder inside the worktree.
+      'git -C ~/elsewhere commit -m x',
+      'git -C $HOME/elsewhere commit -m x',
+    ]) {
+      expect((await decide(command)).decision).toBe('deny');
+    }
+  } finally {
+    rmSync(sibling, { recursive: true, force: true });
+  }
+});
+
 test('the protected branches come from repos.yaml, not from the rule (D8)', async () => {
   await store.putRepos({ demo: { path: repo, protected_branches: ['trunk'] } });
   expect((await decide('git push origin main')).decision).toBe('allow');

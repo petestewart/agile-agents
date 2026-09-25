@@ -519,7 +519,11 @@ function reviewerVerdict(classified: PermissionRequest): PolicyVerdict {
  * dir (`ctx.worktreePath`) or nowhere; `tee`, process substitution and an
  * unresolvable target deny.
  */
-function coordinatorRedirectVerdict(tokens: string[], ctx: PolicyContext): PolicyVerdict {
+function coordinatorRedirectVerdict(
+  tokens: string[],
+  ctx: PolicyContext,
+  cwd: string = ctx.worktreePath,
+): PolicyVerdict {
   if (!cmd.hasWritingRedirectionOrTee(tokens)) return ALLOW;
   if (tokens.includes('tee') || tokens.some((t) => t.startsWith('<('))) {
     return deny('coordinator role denies tee/process substitution — write files with Write');
@@ -529,22 +533,53 @@ function coordinatorRedirectVerdict(tokens: string[], ctx: PolicyContext): Polic
   }
   for (const raw of cmd.redirectionTargets(tokens)) {
     const resolved = cmd.resolveTargetPath(raw);
-    if (!resolved.safe || !isPathInside(resolved.path, ctx.worktreePath)) {
+    if (!resolved.safe || !isPathInside(resolve(cwd, resolved.path), ctx.worktreePath)) {
       return deny('coordinator role writes only inside its session dir');
     }
   }
   return ALLOW;
 }
 
+/**
+ * T336: `cd <dir>` (Claude's `cd <repo> && git log`) moves where the atoms
+ * after it run. The dir must be readable; a later relative redirect then
+ * resolves from it. Returns the new cwd, or the deny.
+ */
+function coordinatorCd(
+  tokens: string[],
+  ctx: PolicyContext,
+  cwd: string,
+): { cwd: string } | PolicyVerdict {
+  const [, target, ...rest] = tokens;
+  if (target === undefined || target === '-' || target.startsWith('-') || rest.length > 0) {
+    return deny('coordinator role allows cd only as `cd <dir>`');
+  }
+  const resolved = cmd.resolveTargetPath(target);
+  if (!resolved.safe) return deny(`coordinator role cannot resolve the path "${target}"`);
+  const dir = resolve(cwd, resolved.path);
+  if (ctx.readRoots !== undefined || ctx.hiddenRoots !== undefined) {
+    const reason = readDenyReason(dir, ctx);
+    if (reason !== undefined) return deny(reason);
+  }
+  return { cwd: dir };
+}
+
 /** The reviewer's read-only tools, plus the two a scratch-dir redirect needs. */
 const COORDINATOR_WRITE_TOOLS = new Set(['echo', 'printf']);
 
 function coordinatorExecuteVerdict(command: string, ctx: PolicyContext): PolicyVerdict {
+  let cwd = ctx.worktreePath;
   for (const atom of cmd.parseCommandIntoAtoms(command)) {
-    const redirect = coordinatorRedirectVerdict(atom.tokens, ctx);
+    if (atom.tokens[0] === 'cd') {
+      const moved = coordinatorCd(atom.tokens, ctx, cwd);
+      if ('action' in moved) return moved;
+      cwd = moved.cwd;
+      continue;
+    }
+    const redirect = coordinatorRedirectVerdict(atom.tokens, ctx, cwd);
     if (redirect.action !== 'allow') return redirect;
-    const args = cmd.gitArgs(atom.tokens);
-    if (args !== undefined && REVIEWER_READ_ONLY_GIT_SUBCOMMANDS.has(args[0] ?? '')) continue;
+    // T336: git by the strict allowlist (no -c/--config-env, pager, ext-diff, ...).
+    if (cmd.isReadOnlyGitAtom(atom)) continue;
     if (isReviewerSafeTool(atom.tokens)) continue;
     if (COORDINATOR_WRITE_TOOLS.has(atom.tokens[0] ?? '')) continue;
     return deny(

@@ -7,7 +7,8 @@
  * approves it from an inbox card at every level; approval bumps the
  * version and tells each child its paths with `plan_changed`. A child's
  * brief carries its owned paths and the contracts it is a party to, once
- * its parent's plan is approved.
+ * its parent's plan is approved. A part waiting for the plan (T336) starts
+ * when an approved plan first gives it paths.
  */
 
 import {
@@ -16,6 +17,8 @@ import {
   type PlanOwner,
   type Stream,
   UlidSchema,
+  liveChildrenOf,
+  nodeRole,
   validatePlan,
 } from '@agile-agents/shared';
 import type { EmitRouted } from '../events/producers';
@@ -28,6 +31,8 @@ export interface PlanServiceOptions {
   streams: StreamService;
   contracts: ContractService;
   emit?: EmitRouted;
+  /** T336: starts a part's agent once an approved plan gives it paths (the attach service). */
+  start?: (child: string) => Promise<unknown>;
   now?: () => Date;
 }
 
@@ -37,6 +42,25 @@ export class PlanNotDraftError extends Error {
     super(`no draft plan to approve on ${node}`);
     this.name = 'PlanNotDraftError';
   }
+}
+
+/**
+ * T336: how a part the split made waits for the plan: the reshape writes
+ * this line on its thread (the daemon's event, its first entries). A child
+ * the human made with "Start later" has none, so no approval starts it.
+ */
+export const WAITING_FOR_PLAN = 'waiting for the plan: ';
+
+/** How far into a part's thread the reshape's line can be (its pointer, then this). */
+const WAITING_LINE_WITHIN = 10;
+
+function isLive(s: Stream['sessions'][number]): boolean {
+  return s.status !== 'stopped' && s.status !== 'error';
+}
+
+/** The children an approved plan gives paths to. */
+function approvedOwners(plan: Plan | undefined): Set<string> {
+  return new Set((plan?.approved?.owners ?? []).map((o) => o.child));
 }
 
 function planPath(node: string): string {
@@ -156,7 +180,63 @@ export class PlanService {
         parties: [owner.child],
       });
     }
+    await this.startWaiting(before, saved);
     return saved;
+  }
+
+  /**
+   * T336: a part waiting for its coordinator's plan. The split made it to
+   * wait (its thread has the `WAITING_FOR_PLAN` line), it sits under a
+   * coordinating node that has had a coordinator, has not run since (idle,
+   * nothing live), and no approved plan gives it paths yet (`owned`: the
+   * children the approved plan owns; the parent's by default).
+   */
+  waitingForPlan(child: Stream, owned?: ReadonlySet<string>): boolean {
+    if (child.parent === undefined || child.archived === true) return false;
+    if (child.human.status === 'closed' || child.human.status === 'landed') return false;
+    if (child.agent.status !== 'idle' || child.sessions.some(isLive)) return false;
+    let parent: Stream;
+    try {
+      parent = this.options.streams.get(child.parent);
+    } catch {
+      return false;
+    }
+    if (
+      nodeRole(parent, liveChildrenOf(parent.id, this.options.streams.list())) !== 'coordinating'
+    ) {
+      return false;
+    }
+    if (!parent.sessions.some((s) => s.role === 'coordinator')) return false;
+    if ((owned ?? approvedOwners(this.get(parent.id))).has(child.id)) return false;
+    return this.options.streams
+      .readThread(child.id, { limit: WAITING_LINE_WITHIN })
+      .entries.some(
+        (e) => e.by === 'daemon' && e.kind === 'event' && e.body.startsWith(WAITING_FOR_PLAN),
+      );
+  }
+
+  /** T336: every part the approved `saved` first gives paths to, and still waiting, starts now. */
+  private async startWaiting(before: Plan | undefined, saved: Plan): Promise<void> {
+    const start = this.options.start;
+    if (start === undefined) return;
+    const had = approvedOwners(before);
+    for (const owner of saved.approved?.owners ?? []) {
+      let child: Stream;
+      try {
+        child = this.options.streams.get(owner.child);
+      } catch {
+        continue;
+      }
+      if (!this.waitingForPlan(child, had)) continue;
+      try {
+        await start(child.id);
+      } catch (err) {
+        await this.options.streams.appendThread('daemon', child.id, {
+          kind: 'event',
+          body: `could not start the agent: ${err instanceof Error ? err.message : String(err)}`,
+        });
+      }
+    }
   }
 
   /**
@@ -211,6 +291,7 @@ export class PlanService {
         by: by === 'coordinator' ? 'daemon' : by,
         parties: [child],
       });
+      await this.startWaiting(before, saved);
     }
     return saved;
   }

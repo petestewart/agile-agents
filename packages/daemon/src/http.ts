@@ -1060,6 +1060,7 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
               feed.projects,
               feed.store.getRepos(),
               (id) => feed.store.getCard(id),
+              (s) => feed.plans?.waitingForPlan(s) === true,
             ),
           );
         }
@@ -1231,6 +1232,7 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
                     feed.projects,
                     feed.store.getRepos(),
                     (id) => feed.store.getCard(id),
+                    (s) => feed.plans?.waitingForPlan(s) === true,
                   ),
                 ),
               );
@@ -1265,6 +1267,7 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
                   feed.projects,
                   feed.store.getRepos(),
                   (id) => feed.store.getCard(id),
+                  (s) => feed.plans?.waitingForPlan(s) === true,
                 ),
               ),
             );

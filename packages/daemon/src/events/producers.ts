@@ -221,7 +221,8 @@ export function summarize(
     case 'coordinator_note':
       // T286: a daemon notice (a contract decision) is not the coordinator speaking.
       if (event.by === 'daemon') return String(p.body);
-      return `Your coordinator says: ${String(p.body)}`;
+      // T336: quoted, so the agent reads it as the note, not as an operator instruction.
+      return `Your coordinator says: "${String(p.body)}"`;
     case 'contract_changed':
       return `Contract ${String(p.title)} is now v${String(p.version)}: ${String(p.diff)}. Adjust your side.`;
     case 'contract_proposal':
