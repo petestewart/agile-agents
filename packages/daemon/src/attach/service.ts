@@ -325,7 +325,8 @@ export class AttachService {
       return;
     }
     if (liveAgent(stream) !== undefined) return;
-    const role = nodeRole(stream, liveChildrenOf(stream.id, streams.list()));
+    const all = streams.list();
+    const role = nodeRole(stream, liveChildrenOf(stream.id, all), all);
     if (wakeVerdict(stream, role, pending) !== 'wake') return;
     const limit =
       readHomeConfigFile(this.options.home).events?.wake_budget_per_hour ??
@@ -417,7 +418,8 @@ export class AttachService {
     const { streams } = this.options;
     const created = await streams.create(principal, input, options);
     if (start === false) return created;
-    const role = nodeRole(created, liveChildrenOf(created.id, streams.list()));
+    const all = streams.list();
+    const role = nodeRole(created, liveChildrenOf(created.id, all), all);
     if (role !== 'work' && role !== 'conversation') return created;
     try {
       return (await this.attach(created.id)).stream;
@@ -437,8 +439,9 @@ export class AttachService {
     // coordinator: no worktree, the session dir, every write denied.
     // A project root counts once it has children: a bare root is still a
     // single stream a worker runs on (the pre-projects shape).
-    const children = liveChildrenOf(stream.id, streams.list());
-    const shape = nodeRole(stream, children);
+    const all = streams.list();
+    const children = liveChildrenOf(stream.id, all);
+    const shape = nodeRole(stream, children, all);
     const coordinates =
       shape === 'coordinating' ||
       (shape === 'project' && children.some((c) => c.helper_of !== stream.id));

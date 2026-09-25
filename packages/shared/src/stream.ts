@@ -407,6 +407,12 @@ export const StreamCreateInputSchema = z
     helper_of: UlidSchema.optional(),
     /** T204: `false` (`--no-start`, "Start later") skips starting the node's agent. Not stored. */
     start: z.boolean().optional(),
+    /**
+     * T332 (D33): "Branch off" — the 0-based index of a line on the parent's
+     * thread. The new node is a tangent: a conversation whose thread opens
+     * with that line quoted. The parent must be a conversation. Not stored.
+     */
+    seed_line: z.number().int().nonnegative().optional(),
   })
   .strict();
 export type StreamCreateInput = z.infer<typeof StreamCreateInputSchema>;
@@ -560,17 +566,46 @@ export function assertNoWaitsOnCycle(
   for (const target of targets) walk(target, [target]);
 }
 
-/** Derived, never stored (P1). `liveChildren` are the node's children that are not closed or archived. */
+/**
+ * Derived, never stored (P1, amended by D33). `liveChildren` are the node's
+ * children that are not closed or archived; same-repo helpers never count.
+ *
+ * D33: a node with no repo whose other children are all conversations
+ * (tangents) stays a conversation; it becomes coordinating once a child has
+ * a repo, or is itself coordinating. Pass `all` (every stream) so a
+ * repo-less child's own children are looked at; without it a repo-less
+ * child counts as a conversation.
+ */
 export type NodeRole = 'project' | 'coordinating' | 'work' | 'conversation';
+
+type RoleChild = Pick<Stream, 'id' | 'helper_of' | 'repo'>;
 
 export function nodeRole(
   node: Pick<Stream, 'id' | 'parent' | 'repo'>,
-  liveChildren: ReadonlyArray<Pick<Stream, 'helper_of'>>,
+  liveChildren: ReadonlyArray<RoleChild>,
+  all?: readonly Stream[],
 ): NodeRole {
   if (node.parent === undefined) return 'project';
-  if (liveChildren.some((c) => c.helper_of !== node.id)) return 'coordinating';
-  if (node.repo !== undefined) return 'work';
-  return 'conversation';
+  const others = liveChildren.filter((c) => c.helper_of !== node.id);
+  if (node.repo === undefined && others.every((c) => isTangent(c, all, new Set([node.id])))) {
+    return 'conversation';
+  }
+  if (others.length > 0) return 'coordinating';
+  return node.repo !== undefined ? 'work' : 'conversation';
+}
+
+/** D33: a child that is itself a conversation (no repo, only conversation children). */
+function isTangent(
+  child: RoleChild,
+  all: readonly Stream[] | undefined,
+  seen: Set<string>,
+): boolean {
+  if (child.repo !== undefined) return false;
+  if (all === undefined || seen.has(child.id)) return true;
+  seen.add(child.id);
+  return liveChildrenOf(child.id, all)
+    .filter((c) => c.helper_of !== child.id)
+    .every((c) => isTangent(c, all, seen));
 }
 
 /** The children `nodeRole` counts: parent is `node`, not archived, not closed. */

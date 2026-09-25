@@ -167,7 +167,7 @@ export function buildCockpitFrame(
       title: s.title,
       ...(s.parent !== undefined ? { parent: s.parent } : {}),
       ...(s.project !== undefined ? { project: s.project } : {}),
-      role: nodeRole(s, liveChildrenOf(s.id, all)),
+      role: nodeRole(s, liveChildrenOf(s.id, all), all),
       agent_status: s.agent.status,
       human_status: s.human.status,
       ...(s.repo !== undefined ? { repo: s.repo } : {}),

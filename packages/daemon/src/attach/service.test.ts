@@ -1195,6 +1195,8 @@ describe('T280: the coordinator role (P20)', () => {
       { deliveryDelayMs: 5 },
     );
     const project = await new ProjectService(store, streams).create({ name: 'Shop' });
+    // D33: a child with a repo is what makes it coordinating.
+    await store.putRepos({ demo: { path: repo, protected_branches: ['main'] } });
     const node = await attachService.createNode('human', {
       title: 'Checkout',
       goal: 'g',
@@ -1206,6 +1208,7 @@ describe('T280: the coordinator role (P20)', () => {
       goal: 'g',
       project: project.id,
       parent: node.id,
+      repo: 'demo',
       start: false,
     });
 
@@ -1240,6 +1243,29 @@ describe('T280: the coordinator role (P20)', () => {
         .some((l) => l.includes('"session/prompt"') && l.includes('stuck on auth')),
     );
     expect(threadBodies(node.id)).toContain('woken by child_status');
+  }, 30_000);
+
+  test('T332 (D33): a conversation with a tangent keeps its worker; no coordinator replaces it', async () => {
+    const project = await new ProjectService(store, streams).create({ name: 'Shop' });
+    const talk = await attachService.createNode('human', {
+      title: 'Why slow?',
+      goal: 'g',
+      project: project.id,
+      start: false,
+    });
+    await streams.appendThread('human', talk.id, { kind: 'line', body: 'is it the cache?' });
+    await attachService.createNode('human', {
+      title: 'Cache?',
+      goal: 'does the cache help?',
+      parent: talk.id,
+      seed_line: streams.readThread(talk.id).total - 1,
+      start: false,
+    });
+    const first = await attachService.attach(talk.id);
+    expect(first.session.role).toBe('worker');
+    const brief = readFileSync(join(home, 'sessions', first.session.id, 'brief.md'), 'utf8');
+    expect(brief).not.toContain('# Coordinator brief');
+    await attachService.stopAll();
   }, 30_000);
 
   test('a parentless project root that has had a coordinator is woken by child_status', async () => {

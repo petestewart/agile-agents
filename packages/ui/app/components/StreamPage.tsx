@@ -10,7 +10,8 @@
  *  - **Thread** — the spine: every line, markdown, live (re-read on every
  *    pushed cockpit frame), with a thinking indicator while a session is
  *    mid-turn; the composer under it writes a human line and, when a
- *    worker is attached, prompts it too.
+ *    worker is attached, prompts it too. On a conversation each line has
+ *    **Branch off** (T332, D33): a tangent seeded with that line.
  *  - **Diff / Rules / Docs** tabs — the worktree diff against the landing
  *    target, exactly `rulesInScope(stream)`, and the repo + stream docs.
  *  - **Delivery** (§14.7, direct path; was Land) — the `delivery_state`, the "before" (would `land` refuse right now, and which
@@ -32,6 +33,7 @@ import {
   attachSession,
   closeStream,
   createNodeIssue,
+  createStream,
   getStreamActivity,
   getStreamDiff,
   getStreamPage,
@@ -640,7 +642,7 @@ function ChildCards({
 
 export function StreamPage({ id }: { id: string }): JSX.Element {
   const { cockpit, refresh } = useFeed();
-  const { openRules } = useShell();
+  const { openRules, select } = useShell();
   const [page, setPage] = useState<StreamPagePayload | undefined>(undefined);
   const [loadError, setLoadError] = useState<string | undefined>(undefined);
   const [tab, setTab] = useState<Tab>('thread');
@@ -655,6 +657,9 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
   const [repoChoice, setRepoChoice] = useState('');
   const [linking, setLinking] = useState(false);
   const [linkChoice, setLinkChoice] = useState('');
+  // T332 (D33): "Branch off" — the thread line (0-based, whole thread) and the tangent's question.
+  const [branching, setBranching] = useState<number | undefined>(undefined);
+  const [tangentQuestion, setTangentQuestion] = useState('');
   // T176: the server refused a worker on a parent with open children; this is its reason.
   const threadRef = useRef<HTMLOListElement | null>(null);
 
@@ -700,6 +705,8 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
     setPicker(undefined);
     setAddingRepo(false);
     setRepoChoice('');
+    setBranching(undefined);
+    setTangentQuestion('');
   }, [id]);
 
   const threadLength = page?.thread.length ?? 0;
@@ -756,6 +763,23 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
   const chosenRepo = repoChoice || repoOptions[0] || '';
   const waits = stream.waits_on ?? [];
   const titleOf = (id: string) => cockpit?.streams.find((r) => r.id === id)?.title ?? id;
+  // T332 (D33): only a conversation branches off; its tangents are conversations too.
+  const canBranch =
+    open && cockpit?.streams.find((r) => r.id === stream.id)?.role === 'conversation';
+  const threadBase = page.thread_total - page.thread.length;
+  const question = tangentQuestion.trim();
+  const branchOff = (line: number) =>
+    act(async () => {
+      const created = await createStream({
+        title: question.split('\n')[0]?.slice(0, 80) || question,
+        goal: question,
+        parent: stream.id,
+        seed_line: line,
+      });
+      setBranching(undefined);
+      setTangentQuestion('');
+      select(created.id);
+    });
   const linkOptions = (cockpit?.streams ?? []).filter(
     (r) => r.id !== stream.id && !waits.some((w) => w.node === r.id),
   );
@@ -1131,6 +1155,54 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
                         Add {name}
                       </button>
                     ))}
+                  {canBranch && entry.kind === 'line' && branching !== threadBase + i && (
+                    <button
+                      type="button"
+                      className="cr-link"
+                      data-testid="branch-off"
+                      disabled={busy}
+                      onClick={() => {
+                        setBranching(threadBase + i);
+                        setTangentQuestion('');
+                      }}
+                    >
+                      Branch off
+                    </button>
+                  )}
+                  {canBranch && branching === threadBase + i && (
+                    <form
+                      className="cr-composer"
+                      data-testid="branch-form"
+                      onSubmit={(e) => {
+                        e.preventDefault();
+                        if (question) void branchOff(threadBase + i);
+                      }}
+                    >
+                      <textarea
+                        data-testid="branch-question"
+                        aria-label="The tangent's question"
+                        placeholder="The tangent's question"
+                        rows={1}
+                        value={tangentQuestion}
+                        onChange={(e) => setTangentQuestion(e.target.value)}
+                      />
+                      <button
+                        type="submit"
+                        className="cr-btn"
+                        data-testid="branch-start"
+                        disabled={busy || !question}
+                      >
+                        Start tangent
+                      </button>
+                      <button
+                        type="button"
+                        className="cr-link"
+                        onClick={() => setBranching(undefined)}
+                      >
+                        Cancel
+                      </button>
+                    </form>
+                  )}
                   {entry.by === 'human' && entry.kind === 'line' && queuedLines.has(entry.ts) && (
                     <div className="cr-dim cr-queued" data-testid="thread-queued">
                       queued — the worker reads it after its current step

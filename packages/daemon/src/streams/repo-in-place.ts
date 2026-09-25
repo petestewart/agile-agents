@@ -84,7 +84,8 @@ export class RepoInPlaceService {
     if (node.human.status === 'closed' || node.archived === true) {
       throw new RepoInPlaceError(`node ${nodeId} is closed or archived`);
     }
-    const role = nodeRole(node, liveChildrenOf(node.id, this.streams.list()));
+    const all = this.streams.list();
+    const role = nodeRole(node, liveChildrenOf(node.id, all), all);
     if (role === 'project') {
       throw new RepoInPlaceError('a project root lists repos in its settings; add the repo there');
     }
