@@ -1636,6 +1636,8 @@ Daemon: `em/`, `architect/`, `oracle/`, `qa/`, `halts/`, `quota/`, `handoff/`, `
 
 ## 10. Discovered Issues Log
 
+- 2026-09-25 Pete: skip `Contract.paths` (T284); the import-index alerts cover contract breakage. Revisit only if a miss shows up.
+
 - 2026-09-24 Pete: `proposals/<AP-id>.yaml` home dir APPROVED (T282). T287 question answered: coordinator notes wake ended work nodes (T290).
 
 - Phase 11 complete on `claude/phase-11` (2026-09-24): T280–T288 merged, T289 QA ACCEPT; awaiting Pete's look. Open for Pete: `proposals/` home dir (T282); `Contract.paths` for the contract-touched alert (T284); should `coordinator_note` wake a finished work node (T287). Phase 12 proceeds on `claude/phase-12`.
