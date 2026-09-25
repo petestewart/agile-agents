@@ -1560,8 +1560,8 @@ agile tail --node $C --events
 
 ### Ticket: T304 Phase 12 QA and Pete's look
 - **Priority:** P0
-- **Status:** In Progress
-- **Owner:** sonnet:qa-T304
+- **Status:** Done
+- **Owner:** Unassigned
 - **Scope:** Black-box QA of the Director levels and guards with a fake agent. Daemon line count. Pete talks to a live Director at Advise and then Organise.
 - **Acceptance Criteria:** QA ACCEPT. Live: at Advise, Pete gets a draft tree with Create. At Organise, the Director creates and starts a small project and posts what it did. It refuses a merge request.
 - **Validation Steps:** Pete, on his Mac:
@@ -1580,6 +1580,8 @@ agile tail --director
 ```
 
 - **Notes:** The last `say` must be refused ("merging is yours").
+- T304: sonnet QA ACCEPT (no findings). typecheck, lint, bun test 2281/0, test:integration, test:e2e green. Daemon 28,755 lines. Live Director check (Advise/Organise/merge refusal) is Pete's, on his Mac.
+
 
 ### Phase 13 — External links
 
@@ -1663,6 +1665,8 @@ Daemon: `em/`, `architect/`, `oracle/`, `qa/`, `halts/`, `quota/`, `handoff/`, `
 - Q5–Q24. The proposed decisions P1–P20 in `design/projects-design.md` §19 are open until Pete confirms each one as a D-entry. Tickets assume them. P17 (tracker tokens in `config.yaml`, a second credential exception) must be approved before T320.
 
 ## 10. Discovered Issues Log
+
+- Phase 12 complete on `claude/phase-12` (2026-09-25): T300–T303, T305 merged (plus T290/T291 on phase-11), T304 QA ACCEPT; awaiting Pete's look. Phase 13 proceeds on `claude/phase-13`.
 
 - 2026-09-25 Pete: skip `Contract.paths` (T284); the import-index alerts cover contract breakage. Revisit only if a miss shows up.
 - 2026-09-24 Pete: Director keeps role `coordinator` for now (may get its own role later). A new project is always a draft (T301), agreed. Director repo reads → T305. T268: file-by-file chunks plus the changed-file list stay; no whole-diff summary.
