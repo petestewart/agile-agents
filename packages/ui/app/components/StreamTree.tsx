@@ -9,9 +9,13 @@
  * T331: a caret folds a node's subtree without opening it (double-click or
  * Left/Right on the row too). The folded set is a per-viewer convenience in
  * localStorage; a folded row whose subtree waits on you shows that dot.
+ * T333 (D34): drag a row onto another row in its project to move it there
+ * (onto the project row: to the top level). The daemon refuses what D34
+ * refuses; the rail shows why.
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { moveStream } from '../lib/api';
 import type { CockpitProjectRow, CockpitStreamRow } from '../lib/feed-types';
 import { isShortcut, useShell } from '../lib/shell';
 import {
@@ -26,6 +30,16 @@ import {
   subtreeNeedsYou,
 } from '../lib/streams';
 import { NewProject } from './NewProject';
+
+/** T333: the rail's drag state; `canDrop` is a hint, the daemon decides. */
+interface DragProps {
+  dragging: string | undefined;
+  over: string | undefined;
+  setDragging: (id: string | undefined) => void;
+  setOver: (id: string | undefined) => void;
+  canDrop: (target: string) => boolean;
+  drop: (target: string) => void;
+}
 
 const COLLAPSED_KEY = 'agile.rail.collapsed';
 
@@ -52,7 +66,15 @@ interface Fold {
   setOpen(id: string, open: boolean): void;
 }
 
-function Node({ node, fold }: { node: StreamTreeNode; fold: Fold }): JSX.Element {
+function Node({
+  node,
+  fold,
+  drag,
+}: {
+  node: StreamTreeNode;
+  fold: Fold;
+  drag: DragProps;
+}): JSX.Element {
   const { selected, select } = useShell();
   const dot = streamDot(node.row);
   const id = node.row.id;
@@ -79,6 +101,30 @@ function Node({ node, fold }: { node: StreamTreeNode; fold: Fold }): JSX.Element
         type="button"
         className="cr-tree-row"
         data-stream={id}
+        draggable={node.row.role !== 'project'}
+        data-drop-target={drag.over === id ? 'true' : undefined}
+        onDragStart={(e) => {
+          e.dataTransfer.effectAllowed = 'move';
+          e.dataTransfer.setData('text/plain', id);
+          drag.setDragging(id);
+        }}
+        onDragEnd={() => {
+          drag.setDragging(undefined);
+          drag.setOver(undefined);
+        }}
+        onDragOver={(e) => {
+          if (!drag.canDrop(id)) return;
+          e.preventDefault();
+          e.dataTransfer.dropEffect = 'move';
+          if (drag.over !== id) drag.setOver(id);
+        }}
+        onDragLeave={() => {
+          if (drag.over === id) drag.setOver(undefined);
+        }}
+        onDrop={(e) => {
+          e.preventDefault();
+          drag.drop(id);
+        }}
         aria-current={selected === id ? 'true' : undefined}
         aria-expanded={hasChildren ? open : undefined}
         data-role={node.row.role}
@@ -122,7 +168,7 @@ function Node({ node, fold }: { node: StreamTreeNode; fold: Fold }): JSX.Element
       {hasChildren && open && (
         <ul id={`cr-tree-kids-${id}`}>
           {node.children.map((child) => (
-            <Node key={child.row.id} node={child} fold={fold} />
+            <Node key={child.row.id} node={child} fold={fold} drag={drag} />
           ))}
         </ul>
       )}
@@ -159,6 +205,37 @@ export function StreamTree({
   };
   const rows = rowsInProject(allRows, project);
   const tree = buildStreamTree(filterStreamRows(rows, filter));
+  const [dragging, setDragging] = useState<string | undefined>(undefined);
+  const [over, setOver] = useState<string | undefined>(undefined);
+  const [moveError, setMoveError] = useState<string | undefined>(undefined);
+  const byId = new Map(allRows.map((r) => [r.id, r]));
+  const drag: DragProps = {
+    dragging,
+    over,
+    setDragging,
+    setOver,
+    canDrop: (target) => {
+      const moving = dragging !== undefined ? byId.get(dragging) : undefined;
+      const to = byId.get(target);
+      if (!moving || !to || moving.parent === target || moving.project !== to.project) {
+        return false;
+      }
+      for (let cur: string | undefined = target; cur; cur = byId.get(cur)?.parent) {
+        if (cur === moving.id) return false;
+      }
+      return true;
+    },
+    drop: (target) => {
+      const moving = dragging;
+      setDragging(undefined);
+      setOver(undefined);
+      if (moving === undefined || moving === target) return;
+      setMoveError(undefined);
+      moveStream(moving, target).catch((err: unknown) =>
+        setMoveError(err instanceof Error ? err.message : String(err)),
+      );
+    },
+  };
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent): void => {
@@ -229,9 +306,14 @@ export function StreamTree({
             </button>
           </li>
           {tree.map((node) => (
-            <Node key={node.row.id} node={node} fold={fold} />
+            <Node key={node.row.id} node={node} fold={fold} drag={drag} />
           ))}
         </ul>
+      )}
+      {moveError && (
+        <p className="cr-error" role="alert" data-testid="move-error">
+          {moveError}
+        </p>
       )}
     </aside>
   );

@@ -631,3 +631,9 @@ export const StreamWaitRequestSchema = z
   })
   .strict();
 export type StreamWaitRequest = z.infer<typeof StreamWaitRequestSchema>;
+
+/** T333 (D34): `POST /api/streams/:id/move` and `node.move`: a node, or a project id for its root. */
+export const StreamMoveRequestSchema = z
+  .object({ parent: z.union([UlidSchema, ProjectIdSchema]) })
+  .strict();
+export type StreamMoveRequest = z.infer<typeof StreamMoveRequestSchema>;

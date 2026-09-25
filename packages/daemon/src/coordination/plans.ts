@@ -20,7 +20,7 @@ import {
 } from '@agile-agents/shared';
 import type { EmitRouted } from '../events/producers';
 import { NotFoundError, type StateStore } from '../store/store';
-import type { StreamService } from '../streams/service';
+import type { MoveCoordination, StreamService } from '../streams/service';
 import { type ContractService, assertChildren } from './contracts';
 
 export interface PlanServiceOptions {
@@ -238,4 +238,30 @@ export class PlanService {
       contracts,
     };
   }
+}
+
+/**
+ * T333 (D34): what a node move asks of plans and contracts. A draft plan
+ * refuses the move; a plan (draft or approved) or contract of the old
+ * parent that still names the moved node is reported on its thread, not
+ * rewritten: changing either is a decision about what gets built.
+ */
+export function planMoveCoordination(
+  plans: PlanService,
+  contracts: ContractService,
+): MoveCoordination {
+  return {
+    planAwaitingApproval: (node) => plans.get(node)?.status === 'draft',
+    namedIn: (parent, child) => {
+      const plan = plans.get(parent);
+      const owners = [...(plan?.owners ?? []), ...(plan?.approved?.owners ?? [])];
+      return [
+        ...(plan && owners.some((o) => o.child === child) ? [`plan v${plan.version}`] : []),
+        ...contracts
+          .forNode(parent)
+          .filter((c) => c.parties.includes(child))
+          .map((c) => `contract ${c.id}`),
+      ];
+    },
+  };
 }

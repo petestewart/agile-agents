@@ -7,6 +7,7 @@
 import {
   StreamAutonomyRequestSchema,
   StreamCycleError,
+  StreamMoveRequestSchema,
   THREAD_ENTRY_KINDS,
   type ThreadEntryKind,
   UlidSchema,
@@ -20,6 +21,7 @@ import { EmptyRepoError } from '../store/rpc-methods';
 import { AlreadyExistsError } from '../store/store';
 import { RepoInPlaceError, type RepoInPlaceService } from './repo-in-place';
 import {
+  NodeMoveError,
   type StreamNode,
   type StreamPatch,
   StreamProjectError,
@@ -76,7 +78,7 @@ function requireThreadKind(value: unknown): ThreadEntryKind {
   return value as ThreadEntryKind;
 }
 
-/** The patch a human may send. `agent` is refused here so the error says why (the store would reject it, D11). */
+/** The patch a human may send. `agent` is refused here so the error says why (the store would reject it, D11); `parent` too (T333: moves go through `node.move`). */
 function requireHumanPatch(params: Record<string, unknown>): StreamPatch {
   if ('agent' in params) {
     throw new RpcParamError(
@@ -95,7 +97,13 @@ function requireHumanPatch(params: Record<string, unknown>): StreamPatch {
   if (title !== undefined) patch.title = title;
   const goal = optionalString(params.goal, 'goal');
   if (goal !== undefined) patch.goal = goal;
-  if (params.parent !== undefined) patch.parent = requireStreamId(params.parent);
+  // T333 (D34): a move goes through `node.move`, so its refusals always apply.
+  if (params.parent !== undefined) {
+    throw new RpcParamError(
+      'invalid "parent": stream.update does not move nodes; use node.move (`agile node move <id> --parent <id|P-id>`)',
+      { parent: params.parent },
+    );
+  }
   // §6.4's per-stream opt-out. `'on'` just clears it, so the repo/home default decides.
   if (params.classifier !== undefined) {
     if (params.classifier !== 'on' && params.classifier !== 'off') {
@@ -122,6 +130,7 @@ const asParamErrors = paramErrors(
   UnknownRepoError,
   StreamProjectError,
   RepoInPlaceError,
+  NodeMoveError,
   WorktreeRefusedError,
   EmptyRepoError,
 );
@@ -206,6 +215,17 @@ export function buildStreamRpcMethods(
       return asParamErrors(() =>
         service.wait(EDGE_PRINCIPAL, id, on, remove === undefined ? {} : { remove }),
       );
+    },
+
+    /** T333 (D34): `{id, parent}` moves the node under a node, or a project's root (P-id). */
+    'node.move': async (params) => {
+      const { id, ...rest } = requireObject(params);
+      const streamId = requireStreamId(id);
+      const input = StreamMoveRequestSchema.safeParse(rest);
+      if (!input.success) {
+        throw new RpcParamError('invalid "parent": a node id or a project id (P-…)', rest);
+      }
+      return asParamErrors(() => service.move(streamId, input.data.parent));
     },
 
     /** T282: `{id, autonomy}` sets the node's coordinator autonomy; `null` inherits. */

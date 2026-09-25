@@ -44,7 +44,7 @@ import { ClassifierKeyService, FakeClassifier } from '../classifier';
 import { AutonomyService } from '../coordination/autonomy';
 import { CardService } from '../coordination/cards';
 import { ContractService } from '../coordination/contracts';
-import { PlanService } from '../coordination/plans';
+import { PlanService, planMoveCoordination } from '../coordination/plans';
 import { DeliveryService } from '../delivery';
 import { DirectorService } from '../director';
 import { DocsService } from '../docs';
@@ -64,7 +64,7 @@ import { ProjectService } from '../projects';
 import { QuestionService } from '../questions';
 import type { FakeAgentScript } from '../runner/fake-agent';
 import { StateStore } from '../store';
-import { RepoInPlaceService, StreamService } from '../streams';
+import { type MoveCoordination, RepoInPlaceService, StreamService } from '../streams';
 import {
   BROWSER_ATTEMPTS,
   BROWSER_READY_BUDGET_MS,
@@ -531,7 +531,14 @@ async function startCockpit(
   const home = mkdtempSync(join(tmpdir(), 'agile-cockpit-e2e-'));
   const init = runInit(home);
   const store = StateStore.open(init.stateRoot);
-  const streams = new StreamService(store);
+  // T333: a move asks plans and contracts, read lazily as the daemon does.
+  const late: { move?: MoveCoordination } = {};
+  const streams = new StreamService(store, {
+    coordination: {
+      planAwaitingApproval: (n) => late.move?.planAwaitingApproval(n) === true,
+      namedIn: (p, c) => late.move?.namedIn(p, c) ?? [],
+    },
+  });
   const delivered: Cockpit['delivered'] = [];
   const questions = new QuestionService(store, streams, {
     deliver: async (session, question) => {
@@ -542,6 +549,7 @@ async function startCockpit(
   const rules = new KnowledgeService({ store, streams });
   const contracts = new ContractService({ store, streams });
   const plans = new PlanService({ store, streams, contracts });
+  late.move = planMoveCoordination(plans, contracts);
   const autonomy = new AutonomyService({ store, streams, plans, contracts });
   const inbox = new InboxService({
     streams,
@@ -2463,6 +2471,61 @@ describe('collapsing the rail (Playwright e2e, T331)', () => {
         // Expanded state persists as well.
         await page.reload();
         await page.locator(rowOf(leaf.id)).waitFor({ state: 'visible' });
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+});
+
+describe('move a node by dragging it in the rail (Playwright e2e, T333)', () => {
+  browserTest(
+    'a drop moves the node and the rail re-nests it; a refused drop says why',
+    async () => {
+      const cockpit = await startCockpit();
+      let page: Page | undefined;
+      try {
+        const shop = await cockpit.projects.create({ name: 'shop' });
+        const node = (title: string, parent?: string) =>
+          cockpit.streams.create('human', {
+            title,
+            goal: 'g',
+            ...(parent ? { parent } : { project: shop.id }),
+          });
+        const a = await node('prices');
+        const b = await node('refunds');
+        const x = await node('api part', a.id);
+        page = await openPage();
+        await page.goto(`${cockpit.base}/`);
+        const tree = '[data-testid="stream-tree"]';
+        const row = (id: string) => page?.locator(`${tree} [data-stream="${id}"]`);
+        await page
+          .locator(`[data-stream="${a.id}"] + ul [data-stream="${x.id}"]`)
+          .waitFor({ state: 'visible' });
+        expect(await row(b.id)?.getAttribute('data-role')).toBe('conversation');
+
+        await row(x.id)?.dragTo(page.locator(`${tree} [data-stream="${b.id}"]`));
+        await page
+          .locator(`[data-stream="${b.id}"] + ul [data-stream="${x.id}"]`)
+          .waitFor({ state: 'visible' });
+        await waitUntil('the move to land', () => cockpit.streams.get(x.id).parent === b.id);
+        await waitUntilAsync(
+          'the roles to follow',
+          async () =>
+            (await row(b.id)?.getAttribute('data-role')) === 'coordinating' &&
+            (await row(a.id)?.getAttribute('data-role')) === 'conversation',
+        );
+
+        // refunds' plan awaits approval: dropping on the project is refused, and nothing moves.
+        await cockpit.plans.write(b.id, [{ child: x.id, owns: ['api/**'] }]);
+        await row(x.id)?.dragTo(page.locator(`${tree} [data-stream="${shop.root}"]`));
+        await page.locator('[data-testid="move-error"]').waitFor({ state: 'visible' });
+        expect(await page.locator('[data-testid="move-error"]').textContent()).toContain(
+          'awaiting approval',
+        );
+        expect(cockpit.streams.get(x.id).parent).toBe(b.id);
       } finally {
         await teardown([page]);
         await cockpit.stop();

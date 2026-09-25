@@ -354,3 +354,106 @@ describe('node fields (T201)', () => {
     }
   });
 });
+
+describe('move (T333, D34)', () => {
+  async function setup() {
+    const { ProjectService } = await import('../projects/service');
+    const { ContractService } = await import('../coordination/contracts');
+    const { PlanService, planMoveCoordination } = await import('../coordination/plans');
+    // Built before the services it reads, as the daemon does (read lazily).
+    const late: { c?: ReturnType<typeof planMoveCoordination> } = {};
+    streams = new StreamService(store, {
+      coordination: {
+        planAwaitingApproval: (n) => late.c?.planAwaitingApproval(n) === true,
+        namedIn: (p, c) => late.c?.namedIn(p, c) ?? [],
+      },
+    });
+    const contracts = new ContractService({ store, streams });
+    const plans = new PlanService({ store, streams, contracts });
+    late.c = planMoveCoordination(plans, contracts);
+    const projects = new ProjectService(store, streams);
+    const shop = await projects.create({ name: 'Shop' });
+    const blog = await projects.create({ name: 'Blog' });
+    return { shop, blog, plans, contracts };
+  }
+  const thread = (id: string) => streams.readThread(id).entries.map((e) => e.body);
+  const roleOf = async (id: string) => {
+    const { liveChildrenOf, nodeRole } = await import('@agile-agents/shared');
+    return nodeRole(streams.get(id), liveChildrenOf(id, streams.list()));
+  };
+
+  test('re-derives roles, writes a line on both parents and the node, keeps branch and worktree', async () => {
+    const { shop } = await setup();
+    await store.addRepo('api', { path: home });
+    const a = await newStream('Show sale prices', { project: shop.id });
+    const b = await newStream('Refunds', { project: shop.id });
+    const work = await newStream('api: add salePrice', { parent: a.id, repo: 'api' });
+    await streams.update('daemon', work.id, { branch: 'stream/x', worktree: '/tmp/wt-x' });
+    expect(await roleOf(a.id)).toBe('coordinating');
+    expect(await roleOf(b.id)).toBe('conversation');
+
+    const moved = await streams.move(work.id, b.id);
+    expect(moved.parent).toBe(b.id);
+    expect(moved.branch).toBe('stream/x');
+    expect(moved.worktree).toBe('/tmp/wt-x');
+    expect(moved.repo).toBe('api');
+    expect(await roleOf(a.id)).toBe('conversation');
+    expect(await roleOf(b.id)).toBe('coordinating');
+    expect(await roleOf(work.id)).toBe('work');
+    expect(thread(a.id).at(-1)).toBe(
+      `moved away: api: add salePrice (${work.id}) is now under Refunds`,
+    );
+    expect(thread(b.id).at(-1)).toBe(
+      `moved here: api: add salePrice (${work.id}) from Show sale prices`,
+    );
+    expect(thread(work.id).at(-1)).toBe('moved from Show sale prices to Refunds');
+
+    // A project id detaches it to the project's root; the same parent is a no-op.
+    expect((await streams.move(work.id, shop.id)).parent).toBe(shop.root);
+    const lines = thread(work.id).length;
+    await streams.move(work.id, shop.root);
+    expect(thread(work.id).length).toBe(lines);
+  });
+
+  test('refuses its own subtree, another project, a project root and an unknown target', async () => {
+    const { shop, blog } = await setup();
+    const a = await newStream('a', { project: shop.id });
+    const child = await newStream('child', { parent: a.id });
+    const grandchild = await newStream('grandchild', { parent: child.id });
+    const other = await newStream('post', { project: blog.id });
+    await expect(streams.move(a.id, grandchild.id)).rejects.toThrow(/inside a's subtree/);
+    await expect(streams.move(a.id, a.id)).rejects.toThrow(/subtree/);
+    await expect(streams.move(a.id, other.id)).rejects.toThrow(/only within its project/);
+    await expect(streams.move(a.id, blog.id)).rejects.toThrow(/only within its project/);
+    await expect(streams.move(shop.root, a.id)).rejects.toThrow(/project root/);
+    await expect(streams.move(a.id, ulid())).rejects.toThrow(/unknown parent/);
+    await expect(streams.move(a.id, `P-${ulid()}`)).rejects.toThrow(/unknown project/);
+    expect(streams.get(a.id).parent).toBe(shop.root);
+  });
+
+  test("refuses while the old or the new parent's plan awaits approval; names a stale plan and contract", async () => {
+    const { shop, plans, contracts } = await setup();
+    const a = await newStream('A', { project: shop.id });
+    const b = await newStream('B', { project: shop.id });
+    const x = await newStream('X', { parent: a.id });
+    const y = await newStream('Y', { parent: a.id });
+    const z = await newStream('Z', { parent: b.id });
+    const seam = await contracts.write(
+      a.id,
+      { title: 'seam', body: 'b', parties: [x.id, y.id] },
+      'human',
+    );
+    await plans.write(a.id, [{ child: x.id, owns: ['api/**'] }], [seam.id]);
+    await expect(streams.move(x.id, b.id)).rejects.toThrow(/A's plan is awaiting approval/);
+    await plans.approve(a.id);
+    await plans.write(b.id, [{ child: z.id, owns: ['web/**'] }]);
+    await expect(streams.move(x.id, b.id)).rejects.toThrow(/B's plan is awaiting approval/);
+    expect(streams.get(x.id).parent).toBe(a.id);
+    await plans.approve(b.id);
+
+    await streams.move(x.id, b.id);
+    expect(thread(a.id).at(-1)).toBe(
+      `moved away: X (${x.id}) is now under B; still named in this node's plan v1, contract ${seam.id}`,
+    );
+  });
+});

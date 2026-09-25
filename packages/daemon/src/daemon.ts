@@ -19,7 +19,7 @@ import {
 import { AutonomyService } from './coordination/autonomy';
 import { CardService } from './coordination/cards';
 import { ContractService } from './coordination/contracts';
-import { PlanService } from './coordination/plans';
+import { PlanService, planMoveCoordination } from './coordination/plans';
 import { SiblingService } from './coordination/siblings';
 import {
   ClassifierDiffRules,
@@ -53,7 +53,12 @@ import { type RpcServerHandle, startRpcServer } from './rpc';
 import { resolveCliBin } from './runner';
 import { StateStore, buildStateRpcMethods } from './store';
 import { migrateHome } from './store/migrate';
-import { RepoInPlaceService, StreamService, buildStreamRpcMethods } from './streams';
+import {
+  type MoveCoordination,
+  RepoInPlaceService,
+  StreamService,
+  buildStreamRpcMethods,
+} from './streams';
 import { MainSync, OverlapTracker, SymbolWatcher } from './sync';
 import { trackerFromConfig } from './trackers/create';
 import { TrackerLinks } from './trackers/link';
@@ -144,6 +149,12 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
           // T324: Node → tracker (off unless the project turns it on); never blocks the update.
           void trackerPush?.onUpdated(before, after);
         },
+        // T333: a move is refused while a plan awaits approval (read lazily; built below).
+        coordination: {
+          planAwaitingApproval: (node): boolean =>
+            moveCoordination?.planAwaitingApproval(node) === true,
+          namedIn: (parent, child): string[] => moveCoordination?.namedIn(parent, child) ?? [],
+        },
       })
     : undefined;
   // T283: status cards; `read_card` and the cockpit read them.
@@ -193,6 +204,8 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
           ...(emitRouted ? { emit: emitRouted } : {}),
         })
       : undefined;
+  const moveCoordination: MoveCoordination | undefined =
+    planService && contractService ? planMoveCoordination(planService, contractService) : undefined;
   // T282: the autonomy gate for a coordinator's structural changes, and its proposals.
   const autonomyService =
     store && streamService

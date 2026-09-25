@@ -626,6 +626,30 @@ describe('T160 cockpit routes', () => {
     expect(long.status).toBe(400);
   });
 
+  test('T333: POST /api/streams/:id/move moves as human; strict body; a refusal is 400; cross-origin 403', async () => {
+    const move = (id: string, body: unknown, headers: Record<string, string> = {}) =>
+      fetch(url(`/api/streams/${id}/move`), {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', ...headers },
+        body: JSON.stringify(body),
+      });
+    const a = await streams.create('human', { title: 'a', goal: 'g' });
+    const b = await streams.create('human', { title: 'b', goal: 'g', parent: a.id });
+    const c = await streams.create('human', { title: 'c', goal: 'g', parent: a.id });
+    expect((await move(c.id, { parent: b.id }, { origin: 'http://evil.example' })).status).toBe(
+      403,
+    );
+    expect((await move(c.id, { parent: b.id, by: 'daemon' })).status).toBe(400);
+    expect((await move(a.id, { parent: c.id })).status).toBe(400);
+    const ok = await move(c.id, { parent: b.id });
+    expect(ok.status).toBe(200);
+    expect(((await ok.json()) as { parent: string }).parent).toBe(b.id);
+    expect(streams.readThread(b.id).entries.at(-1)).toMatchObject({
+      by: 'human',
+      body: `moved here: c (${c.id}) from a`,
+    });
+  });
+
   test('T169: a say prompted into the asking session answers its open question as human', async () => {
     const stream = await streams.create('human', { title: 's', goal: 'g' });
     const session = ulid();
