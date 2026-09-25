@@ -364,3 +364,33 @@ describe('coordinator brief: children cards (T283)', () => {
     expect(out).toContain(`card unreadable: corrupt card file /h/cards/${web.id}.yaml:3`);
   });
 });
+
+describe('the Checks section (T339)', () => {
+  test('lists the repo check commands and says not to fetch tools', () => {
+    const brief = buildBrief({
+      role: 'worker',
+      stream: makeStream(),
+      ancestors: [],
+      thread: [],
+      docs: [],
+      rules: [],
+      checks: ['bun run test', 'bun run typecheck'],
+    });
+    expect(brief).toContain('## Checks');
+    expect(brief).toContain('- `bun run test`\n- `bun run typecheck`');
+    expect(brief).toContain("Don't install or fetch tools");
+  });
+
+  test('is left out when there are no checks', () => {
+    const input = {
+      role: 'worker' as const,
+      stream: makeStream(),
+      ancestors: [],
+      thread: [],
+      docs: [],
+      rules: [],
+    };
+    expect(buildBrief(input)).not.toContain('## Checks');
+    expect(buildBrief({ ...input, checks: [] })).not.toContain('## Checks');
+  });
+});
