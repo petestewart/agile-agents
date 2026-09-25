@@ -10,6 +10,7 @@ import type { DeliveryService, LandPreflight } from '../delivery/service';
 import type { Doc, DocsService } from '../docs/service';
 import type { KnowledgeService } from '../knowledge/service';
 import type { StreamService } from '../streams/service';
+import { rollupProgress } from '../trackers/rollup';
 
 /** How much of the thread one read carries (the newest entries). */
 export const STREAM_PAGE_THREAD_LIMIT = 500;
@@ -30,6 +31,8 @@ export interface StreamPagePayload {
   docs: Doc[];
   /** Land's preflight; absent with no landing service. */
   land?: LandPreflight;
+  /** T322: a linked node's roll-up, nodes merged of those counting toward its issue. */
+  rollup?: { merged: number; total: number };
 }
 
 export interface StreamPageSources {
@@ -67,6 +70,11 @@ export function buildStreamPage(sources: StreamPageSources, id: string): StreamP
   const rules = sources.rules?.inScope(id) ?? [];
   const diffRules = sources.rules?.inScope(id, 'ship') ?? [];
 
+  const rollup =
+    stream.external_link !== undefined
+      ? rollupProgress(stream, streams.list({ include_archived: true }))
+      : undefined;
+
   return {
     stream,
     path,
@@ -76,5 +84,6 @@ export function buildStreamPage(sources: StreamPageSources, id: string): StreamP
     diff_rules: diffRules.map((rule) => rule.id),
     docs: sources.docs?.docsForStream(id) ?? [],
     ...(sources.landing ? { land: sources.landing.preflight(id) } : {}),
+    ...(rollup ? { rollup } : {}),
   };
 }

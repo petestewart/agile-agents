@@ -26,6 +26,7 @@ import type { GateService } from '../gates/service';
 import { GitHubError, type GitHubPort, type GitHubPull } from '../github/port';
 import type { StateStore } from '../store';
 import type { StreamService } from '../streams/service';
+import { rollupLink } from '../trackers/rollup';
 import {
   describeGitNetworkFailure,
   git,
@@ -777,7 +778,13 @@ export class DeliveryService {
     }
 
     const title = stream.title;
-    const body = prBody(stream);
+    const body = prBody(stream, (id) => {
+      try {
+        return streams.get(id);
+      } catch {
+        return undefined;
+      }
+    });
     const known = stream.delivery_state?.pr;
     let pull: GitHubPull;
     let verb: string;
@@ -1257,12 +1264,30 @@ export function mergedOutside(repoRoot: string, branch: string, target: string):
   return reflog.exitCode === 0 && reflog.stdout.split('\n').filter(Boolean).length > 1;
 }
 
-/** The PR body: the node's goal and progress. The roll-up issue line is T322's; left empty. */
-function prBody(stream: Stream): string {
+/** The PR body: the node's goal, progress and (T322) the issue it rolls up to. */
+export function prBody(stream: Stream, lookup: (id: string) => Stream | undefined): string {
   const parts = [`## Goal\n\n${stream.goal}`];
   if (stream.agent.progress) parts.push(`## Progress\n\n${stream.agent.progress}`);
-  parts.push('Issues:');
+  const link = rollupLink(stream, lookup);
+  parts.push(link ? `Issues: ${issueRef(link.key, link.url)}` : 'Issues:');
   return parts.join('\n\n');
+}
+
+/** Tracker data is untrusted: a key stripped to a safe charset, a link only for http(s). */
+function issueRef(key: string, url: string): string {
+  const safeKey = key.replace(/[^A-Za-z0-9_-]/g, '').slice(0, 40);
+  if (safeKey === '') return '';
+  let href: URL | undefined;
+  try {
+    href = new URL(url);
+  } catch {
+    href = undefined;
+  }
+  if (href === undefined || (href.protocol !== 'http:' && href.protocol !== 'https:')) {
+    return safeKey;
+  }
+  const safeUrl = href.href.replace(/\(/g, '%28').replace(/\)/g, '%29').replace(/\s/g, '');
+  return `[${safeKey}](${safeUrl})`;
 }
 
 /** A git error for a thread line: first line, capped, any `user:pass@` in a URL removed. */
