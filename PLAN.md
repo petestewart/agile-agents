@@ -1682,6 +1682,24 @@ agile tail --director
 - T329: sonnet review APPROVE. A start fails if start() throws or the session exits before its first turn ends; retries back off 5/10/20/40 s (5 min cap), give up after 5 with one Director-thread line naming the vendor error; `director say` resets. No per-retry thread lines or director_put. Thread line instead of an inbox card (inbox items need a stream) — Pete to confirm. Daemon +99. merge 8a7bc1e on phase-12, forwarded.
 
 
+### Ticket: T330 Conversation nodes read repos; one message, one thread entry
+- **Priority:** P0
+- **Status:** In Progress
+- **Owner:** opus:worker-T330
+- **Scope:** From Pete's walkthrough §3.2: a conversation agent could not read the registered repos (design §4: a conversation "may read repos") and did not know where they were. Give it the visibility read scope on the hook and ACP paths, list readable repos (name, path) in its brief. Also: one agent message was split across several thread entries mid-sentence; keep one message in one entry.
+- **Acceptance Criteria:** Read allowed for a registered repo, denied for the agile home and an unlisted private repo; the brief lists repos; a long message stays one entry.
+- **Validation Steps:** `bun test packages/daemon/src/hook packages/daemon/src/permissions packages/daemon/src/runner`.
+- **Notes:** Fixed on the earliest phase that has the code, merged forward.
+
+### Ticket: T331 Collapse nodes in the rail
+- **Priority:** P1
+- **Status:** In Progress
+- **Owner:** opus:worker-T331
+- **Scope:** Pete: a caret before any node with children collapses or expands its subtree (double-click toggles too); state kept per viewer; a collapsed row still shows an attention dot from its subtree.
+- **Acceptance Criteria:** Playwright: collapse hides children, expand shows them, state survives reload.
+- **Validation Steps:** `bun run test:e2e`.
+- **Notes:** Fixed on the earliest phase that has the rail, merged forward.
+
 ### Ticket: T325 Phase 13 QA and Pete's look
 - **Priority:** P0
 - **Status:** Done
@@ -1717,6 +1735,8 @@ Daemon: `em/`, `architect/`, `oracle/`, `qa/`, `halts/`, `quota/`, `handoff/`, `
 - Q5–Q24. The proposed decisions P1–P20 in `design/projects-design.md` §19 are open until Pete confirms each one as a D-entry. Tickets assume them. P17 (tracker tokens in `config.yaml`, a second credential exception) must be approved before T320.
 
 ## 10. Discovered Issues Log
+
+- 2026-09-25 Pete (walkthrough): wants conversation nodes to have children (tangents / research branches that don't clog the main thread), and disagrees with "you never restructure the tree by hand" — wants manual restructuring. Both change the design (§6 roles, P1); proposals put to Pete before tickets.
 
 - Phase 13 complete on `claude/phase-13` (2026-09-25): T320–T324, T326 merged, T325 QA ACCEPT; awaiting Pete's look. All planned tickets for Phases 7–13 are Done. Open for Pete: daemon is 30,494 lines against D18's < 20,000.
 
