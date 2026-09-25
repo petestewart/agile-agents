@@ -66,7 +66,9 @@ import { DEFAULT_RULES_FILTER } from '../lib/rules';
 import { useShell } from '../lib/shell';
 import {
   DOT_LABEL,
+  activityDelivery,
   diffLineKind,
+  eventTime,
   isLiveSession,
   isThinking,
   ruleHitOf,
@@ -283,7 +285,15 @@ function PlanView({
 }
 
 /** T245: what woke this node and why — every routed event, its reason, and what carried it. */
-function ActivityView({ id, tick }: { id: string; tick: unknown }): JSX.Element {
+function ActivityView({
+  id,
+  tick,
+  sessions,
+}: {
+  id: string;
+  tick: unknown;
+  sessions: StreamPagePayload['stream']['sessions'];
+}): JSX.Element {
   const [rows, setRows] = useState<ActivityEntry[] | undefined>(undefined);
   const [error, setError] = useState<string | undefined>(undefined);
   // biome-ignore lint/correctness/useExhaustiveDependencies: `tick` (the pushed frame) is the re-read trigger.
@@ -314,13 +324,18 @@ function ActivityView({ id, tick }: { id: string; tick: unknown }): JSX.Element 
           <span className="cr-dim" data-testid="activity-because">
             {row.because.replace(/_/g, ' ')}
           </span>
-          <span className="cr-dim" data-testid="activity-status">
+          <span
+            className="cr-dim"
+            data-testid="activity-status"
+            title={[row.session, row.digest].filter(Boolean).join(' · ') || undefined}
+          >
             {' '}
-            · {row.status}
-            {row.session ? ` in session ${row.session}` : ''}
-            {row.digest ? ` in digest ${row.digest}` : ''}
+            · {activityDelivery(row, sessions)}
           </span>
-          <span className="cr-dim"> · {row.event.at}</span>
+          <span className="cr-dim" title={row.event.at}>
+            {' '}
+            · {eventTime(row.event.at)}
+          </span>
         </li>
       ))}
     </ul>
@@ -1612,7 +1627,9 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
           </p>
         ))}
 
-      {tab === 'activity' && <ActivityView id={stream.id} tick={cockpit} />}
+      {tab === 'activity' && (
+        <ActivityView id={stream.id} tick={cockpit} sessions={stream.sessions} />
+      )}
 
       {tab === 'plan' && (
         <PlanView id={stream.id} tick={cockpit} onChanged={refresh} titleOf={titleOf} />

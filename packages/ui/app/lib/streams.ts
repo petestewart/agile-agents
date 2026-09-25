@@ -184,6 +184,30 @@ export function threadAuthorLabel(by: string, sessions: readonly SessionRef[]): 
   return session ? `${session.role} · ${session.vendor}` : 'agent';
 }
 
+/**
+ * T341: how an Activity row's delivery reads — the session by its role, not
+ * its id (the id is the row's hover title), and "in a digest" rather than
+ * the digest's id.
+ */
+export function activityDelivery(
+  entry: { status: string; session?: string; digest?: string },
+  sessions: readonly Pick<SessionRef, 'id' | 'role'>[],
+  owner?: string,
+): string {
+  const role =
+    entry.session === undefined
+      ? undefined
+      : (owner ?? sessions.find((s) => s.id === entry.session)?.role ?? 'agent');
+  return `${entry.status}${role !== undefined ? ` to the ${role} session` : ''}${
+    entry.digest !== undefined ? ' in a digest' : ''
+  }`;
+}
+
+/** T341: an event time as "YYYY-MM-DD HH:MM" (UTC), as the event log shows it. */
+export function eventTime(iso: string): string {
+  return iso.length >= 16 ? iso.slice(0, 16).replace('T', ' ') : iso;
+}
+
 export type DiffLineKind = 'add' | 'del' | 'hunk' | 'meta' | 'ctx';
 
 /** One line of a unified diff, classified for colouring. */
