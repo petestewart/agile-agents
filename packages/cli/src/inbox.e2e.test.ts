@@ -166,8 +166,12 @@ describe('agile inbox / agile answer against a daemon on a temp AGILE_HOME', () 
     // The `done` item names both exits (§3.2's one line of context). A
     // fresh stream: raising a question above flipped this one's human half
     // to `waiting_on_you`, and only an `open` human half is a stream item.
+    // T341: a work node (it has a repo); a project conversation that answered has nothing to land.
     const finished = await newStream('parser');
-    await daemon.streamService.update('daemon', finished.id, { agent: { status: 'done' } });
+    await daemon.streamService.update('daemon', finished.id, {
+      repo: 'ledger-lite',
+      agent: { status: 'done' },
+    });
     const done = await cli(['inbox']);
     expect(done.out).toContain('worker finished — land or close the stream');
   });

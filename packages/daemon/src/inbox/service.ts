@@ -251,6 +251,18 @@ export class InboxService {
     if (stream.agent.status === 'done' && (hasParts(stream.id, byId) || isProjectRoot(stream))) {
       return undefined;
     }
+    // T341: nor is a node whose PR is open: it merges on GitHub, and the page has no Merge.
+    if (stream.agent.status === 'done' && stream.delivery_state?.status === 'pr_open') {
+      return undefined;
+    }
+    // T341: nor is a conversation's (a project node with no repo): it answered; it has no branch.
+    if (
+      stream.agent.status === 'done' &&
+      stream.project !== undefined &&
+      stream.repo === undefined
+    ) {
+      return undefined;
+    }
     return {
       kind: stream.agent.status,
       id: stream.id,
