@@ -1953,9 +1953,17 @@ describe('delivery result tone and PR state (Playwright e2e, T338)', () => {
             },
           },
         });
+        // T340: with the PR open there is no Merge; the push result is pinned on a node
+        // before its first deliver.
+        const fresh = await cockpit.streams.create('human', {
+          title: 'pushing node',
+          goal: 'g',
+          repo: 'demo',
+        });
+        await cockpit.streams.update('daemon', fresh.id, { branch: 's-fresh' });
         page = await openPage();
         // The land call itself is the daemon's (T224); this pins how its PR outcome reads.
-        await page.route(`**/api/streams/${stream.id}/land`, (route) =>
+        await page.route(`**/api/streams/${fresh.id}/land`, (route) =>
           route.fulfill({
             status: 200,
             contentType: 'application/json',
@@ -1979,6 +1987,9 @@ describe('delivery result tone and PR state (Playwright e2e, T338)', () => {
           url,
         );
 
+        expect(await page.locator('[data-testid="stream-land"]').count()).toBe(0);
+
+        await page.locator(`[data-testid="stream-tree"] [data-stream="${fresh.id}"]`).click();
         await page.locator('[data-testid="stream-land"]').click();
         await waitForAttr(page, '[data-testid="land-result"]', 'data-status', 'pr_open');
         const result = page.locator('[data-testid="land-result"]');
