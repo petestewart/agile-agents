@@ -1751,12 +1751,12 @@ agile tail --director
 
 ### Ticket: T340 An auto-merged PR shows as merged
 - **Priority:** P1
-- **Status:** In Progress
-- **Owner:** opus:worker-T340
+- **Status:** Done
+- **Owner:** Unassigned
 - **Scope:** Pete's run: the PR auto-merged but the cockpit kept showing the Merge banner, and clicking Merge re-showed it. Show the PR's real state (merged, checks, review); replace the Merge button with PR status and "Check now" when GitHub merges it.
 - **Acceptance Criteria:** A PR merged outside the cockpit shows merged after a poll or "Check now"; e2e.
 - **Validation Steps:** `bun test packages/daemon/src/delivery`; `bun run test:e2e`.
-- **Notes:** —
+- **Notes:** Branch T340-pr-merged-state off phase-8, merge d74da34 on phase-8, forward to 14. Causes: Merge on an open PR re-delivered and wrote pr_open without reading GitHub; a held re-deliver dropped the PR from the poller. deliverPr reads the PR first (merged → record + refuse; closed → human deliver opens a new one, agent push refuses, D8); Check now (pollNow, 5 s cooldown, POST /api/streams/:id/pr-check). Review (sonnet): blocker (agent push could open a PR) fixed; APPROVE, verified on phase-9. QA (sonnet): PASS twice.
 
 ### Ticket: T341 Walkthrough QA in a browser with the fake agent
 - **Priority:** P0
