@@ -22,6 +22,8 @@ import type {
   Stream,
   StreamCreateInput,
   ThreadEntry,
+  TrackerSettingsInput,
+  TrackerSettingsStatus,
 } from '@agile-agents/shared';
 import type {
   ActivityEntry,
@@ -94,6 +96,19 @@ export function saveClassifierKey(apiKey: string): Promise<ClassifierKeyStatus> 
 /** T167: Settings' Remove — deletes the config key; an env key still applies. */
 export function removeClassifierKey(): Promise<ClassifierKeyStatus> {
   return post('/api/settings/classifier/key/remove') as Promise<ClassifierKeyStatus>;
+}
+
+/** T326: Settings → Trackers — Jira's base URL/email and whether each token is set. Never a token. */
+export async function getTrackerSettings(): Promise<TrackerSettingsStatus> {
+  const res = await fetch('/api/settings/trackers');
+  const payload = (await res.json()) as TrackerSettingsStatus & { error?: string };
+  if (!res.ok) throw new Error(payload.error ?? `tracker settings read failed (${res.status})`);
+  return payload;
+}
+
+/** T326: one tracker write (`null` removes a field); the reply is the status, not the token. */
+export function saveTrackerSettings(input: TrackerSettingsInput): Promise<TrackerSettingsStatus> {
+  return post('/api/settings/trackers', input) as Promise<TrackerSettingsStatus>;
 }
 
 /** T163: the rules screen's edit (`RulePatchSchema` on the daemon side). */

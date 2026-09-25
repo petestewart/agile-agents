@@ -16,6 +16,9 @@
  * (`repos.yaml`). An empty field inherits the next step of the order, which
  * each control names; the next attach uses the saved values, no restart.
  *
+ * T326 (D31): Trackers — Jira's base URL and email (not secret) and a
+ * write-only token per tracker. Only whether a token is set comes back.
+ *
  * T206: Repos — register a repo by path (its git toplevel), name and
  * protected branches, through the same RPC as `agile repo add`.
  */
@@ -27,6 +30,8 @@ import type {
   SessionDefaultsFields,
   SessionDefaultsPatch,
   SessionDefaultsStatus,
+  TrackerSettingsInput,
+  TrackerSettingsStatus,
 } from '@agile-agents/shared';
 import { GATE_KINDS } from '@agile-agents/shared';
 import { useEffect, useState } from 'react';
@@ -36,12 +41,14 @@ import {
   getClassifierKey,
   getPolicy,
   getSessionDefaults,
+  getTrackerSettings,
   listRepos,
   removeClassifierKey,
   saveClassifierKey,
   saveHomeSessionDefaults,
   saveRepoSessionDefaults,
   saveRepoSettings,
+  saveTrackerSettings,
 } from '../lib/api';
 import { type SessionChoice, SessionFields } from './SessionPicker';
 
@@ -72,6 +79,7 @@ export function Settings(): JSX.Element {
       <h1>Settings</h1>
       {error && <p className="cr-error">{error}</p>}
       <ClassifierKey />
+      <Trackers />
       <Repos />
       <SessionDefaults />
       <h2>Who decides</h2>
@@ -175,6 +183,155 @@ function ClassifierKey(): JSX.Element {
           onClick={() => void act(removeClassifierKey)}
         >
           Remove
+        </button>
+      </div>
+    </form>
+  );
+}
+
+function Trackers(): JSX.Element {
+  const [status, setStatus] = useState<TrackerSettingsStatus | undefined>(undefined);
+  const [error, setError] = useState<string | undefined>(undefined);
+
+  useEffect(() => {
+    getTrackerSettings()
+      .then(setStatus)
+      .catch((err: unknown) => setError(err instanceof Error ? err.message : String(err)));
+  }, []);
+
+  async function save(input: TrackerSettingsInput): Promise<boolean> {
+    setError(undefined);
+    try {
+      setStatus(await saveTrackerSettings(input));
+      return true;
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+      return false;
+    }
+  }
+
+  return (
+    <div data-testid="settings-trackers">
+      <h2>Trackers</h2>
+      {error && (
+        <p className="cr-error" role="alert">
+          {error}
+        </p>
+      )}
+      <TrackerRow system="jira" status={status} save={save} />
+      <TrackerRow system="linear" status={status} save={save} />
+    </div>
+  );
+}
+
+function TrackerRow({
+  system,
+  status,
+  save,
+}: {
+  system: 'jira' | 'linear';
+  status: TrackerSettingsStatus | undefined;
+  save: (input: TrackerSettingsInput) => Promise<boolean>;
+}): JSX.Element {
+  const jira = status?.jira;
+  const tokenSet = status ? status[system].token_set : undefined;
+  const [token, setToken] = useState('');
+  const [baseUrl, setBaseUrl] = useState<string | undefined>(undefined);
+  const [email, setEmail] = useState<string | undefined>(undefined);
+  const [busy, setBusy] = useState(false);
+  const shownBaseUrl = baseUrl ?? jira?.base_url ?? '';
+  const shownEmail = email ?? jira?.email ?? '';
+
+  async function act(input: TrackerSettingsInput): Promise<void> {
+    setBusy(true);
+    if (await save(input)) {
+      setToken('');
+      setBaseUrl(undefined);
+      setEmail(undefined);
+    }
+    setBusy(false);
+  }
+
+  function submit(): void {
+    const input: TrackerSettingsInput = { system };
+    if (system === 'jira') {
+      if (baseUrl !== undefined) input.base_url = baseUrl.trim() === '' ? null : baseUrl.trim();
+      if (email !== undefined) input.email = email.trim() === '' ? null : email.trim();
+    }
+    if (token.trim() !== '') input.token = token.trim();
+    void act(input);
+  }
+
+  const dirty = token.trim() !== '' || baseUrl !== undefined || email !== undefined;
+  const label = system === 'jira' ? 'Jira' : 'Linear';
+  return (
+    <form
+      className="cr-gate-row"
+      data-testid={`settings-tracker-${system}`}
+      onSubmit={(e) => {
+        e.preventDefault();
+        if (dirty) submit();
+      }}
+    >
+      <div>
+        <div>{label}</div>
+        <div className="what">
+          {system === 'jira'
+            ? 'Base URL, and an email for Jira Cloud (Basic auth); without one the token is a Bearer PAT.'
+            : 'A Linear API key.'}{' '}
+          Stored in config.yaml; never shown again.
+        </div>
+        <div className="what" data-testid={`settings-tracker-${system}-status`}>
+          {tokenSet === undefined ? '…' : tokenSet ? 'token set' : 'no token'}
+        </div>
+      </div>
+      <div className="cr-actions">
+        {system === 'jira' && (
+          <>
+            <input
+              type="url"
+              aria-label="Jira base URL"
+              data-testid="settings-tracker-jira-base-url"
+              value={shownBaseUrl}
+              placeholder="https://your-site.atlassian.net"
+              onChange={(e) => setBaseUrl(e.target.value)}
+            />
+            <input
+              type="email"
+              aria-label="Jira email"
+              data-testid="settings-tracker-jira-email"
+              value={shownEmail}
+              placeholder="email (optional)"
+              onChange={(e) => setEmail(e.target.value)}
+            />
+          </>
+        )}
+        <input
+          type="password"
+          autoComplete="off"
+          aria-label={`${label} token`}
+          data-testid={`settings-tracker-${system}-token`}
+          value={token}
+          placeholder={tokenSet ? 'replace the token' : 'paste a token'}
+          onChange={(e) => setToken(e.target.value)}
+        />
+        <button
+          type="submit"
+          className="cr-btn signal"
+          data-testid={`settings-tracker-${system}-save`}
+          disabled={busy || !dirty}
+        >
+          Set
+        </button>
+        <button
+          type="button"
+          className="cr-btn"
+          data-testid={`settings-tracker-${system}-clear`}
+          disabled={busy || !tokenSet}
+          title="Delete the token from config.yaml"
+          onClick={() => void act({ system, token: null })}
+        >
+          Clear
         </button>
       </div>
     </form>

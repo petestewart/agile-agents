@@ -56,6 +56,9 @@ export {
 
 export * from './store';
 
+/** T326: `tracker.*` RPC (`agile tracker`). */
+export { buildTrackerRpcMethods } from './trackers/settings';
+
 export * from './bus';
 
 /** T240–T244: routed events (the log, the router, the producers). */

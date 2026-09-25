@@ -269,3 +269,37 @@ export function validateHomeConfig(input: unknown): HomeConfig {
   }
   return result.data;
 }
+
+/**
+ * T326 (D31): one write to a tracker's settings, from Settings
+ * (`POST /api/settings/trackers`) or `agile tracker set|clear`
+ * (`tracker.set`). Absent = unchanged, `null` = removed. `base_url` and
+ * `email` are Jira's and are not secret; `token` is write-only.
+ */
+export const TrackerSettingsInputSchema = z
+  .object({
+    system: TrackerSystemSchema,
+    base_url: z.string().url().nullable().optional(),
+    email: z.string().trim().min(1).nullable().optional(),
+    token: TrackerTokenSchema.nullable().optional(),
+  })
+  .strict();
+export type TrackerSettingsInput = z.infer<typeof TrackerSettingsInputSchema>;
+
+/** T326: what Settings and `agile tracker status` show — the non-secret fields and whether a token is set. */
+export interface TrackerSettingsStatus {
+  jira: { token_set: boolean; base_url?: string; email?: string };
+  linear: { token_set: boolean };
+}
+
+export function trackerSettingsStatus(config: TrackersConfig | undefined): TrackerSettingsStatus {
+  const jira = config?.jira;
+  return {
+    jira: {
+      token_set: jira?.token !== undefined,
+      ...(jira?.base_url ? { base_url: jira.base_url } : {}),
+      ...(jira?.email ? { email: jira.email } : {}),
+    },
+    linear: { token_set: config?.linear?.token !== undefined },
+  };
+}

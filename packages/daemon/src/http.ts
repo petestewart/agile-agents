@@ -84,6 +84,12 @@ import {
   setRepoSettings,
 } from './store';
 import type { RepoInPlaceService, StreamService } from './streams';
+import {
+  TRACKER_INPUT_ERROR,
+  applyTrackerSettings,
+  parseTrackerSettings,
+  readTrackerSettings,
+} from './trackers/settings';
 
 /** The installable-app files served at site root, with their content types. */
 const INSTALLABLE_FILES: Record<string, string> = {
@@ -483,6 +489,54 @@ async function handleSettingsRoute(
   } catch {
     // Store errors are generic already; this keeps any future one from quoting the key.
     return errorResponse(500, 'could not save the classifier key');
+  }
+}
+
+/**
+ * T326 (D31): Settings' trackers:
+ *
+ *   GET  /api/settings/trackers  Jira's base URL and email, and whether each token is set (never a token)
+ *   POST /api/settings/trackers  `{system, base_url?, email?, token?}` (`null` removes), live at once
+ *
+ * Writes are same-origin only and stamped `human`. No response, error or
+ * event ever carries a token: a bad body gets a fixed message, never zod's.
+ */
+async function handleTrackerSettingsRoute(
+  req: Request,
+  url: URL,
+  feed: FeedContext | undefined,
+  sameOrigin: () => boolean,
+): Promise<Response | undefined> {
+  if (url.pathname !== '/api/settings/trackers') return undefined;
+  if (req.method !== 'GET' && req.method !== 'POST') return undefined;
+  if (!feed) return errorResponse(503, 'state store not initialised (run `agile init`)');
+  if (req.method === 'GET') {
+    try {
+      return jsonResponse(readTrackerSettings(feed.store));
+    } catch {
+      return errorResponse(500, 'could not read the tracker settings');
+    }
+  }
+  if (!sameOrigin()) return errorResponse(403, 'cross-origin request rejected');
+  let body: unknown;
+  try {
+    body = await readJsonBody(req);
+  } catch {
+    return errorResponse(400, TRACKER_INPUT_ERROR);
+  }
+  const input = parseTrackerSettings(body);
+  if (!input) return errorResponse(400, TRACKER_INPUT_ERROR);
+  try {
+    return jsonResponse(await applyTrackerSettings(feed.store, input, 'human'));
+  } catch (err) {
+    // The store's messages never quote a value; anything else gets a fixed one.
+    const message = messageOf(err);
+    return errorResponse(
+      400,
+      message.startsWith('config.yaml would not validate')
+        ? message
+        : 'could not save the tracker settings',
+    );
   }
 }
 
@@ -1115,6 +1169,8 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
           }
         }
 
+        const trackerRoute = await handleTrackerSettingsRoute(req, url, feed, sameOrigin);
+        if (trackerRoute) return trackerRoute;
         const settingsRoute = await handleSettingsRoute(req, url, feed, sameOrigin);
         if (settingsRoute) return settingsRoute;
 

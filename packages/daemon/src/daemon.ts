@@ -55,6 +55,7 @@ import { StateStore, buildStateRpcMethods } from './store';
 import { migrateHome } from './store/migrate';
 import { RepoInPlaceService, StreamService, buildStreamRpcMethods } from './streams';
 import { MainSync, OverlapTracker, SymbolWatcher } from './sync';
+import { buildTrackerRpcMethods } from './trackers/settings';
 
 export const DAEMON_VERSION: string = daemonPackageJson.version;
 
@@ -546,6 +547,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
     store && gateService && bus
       ? {
           ...buildStateRpcMethods(store, { githubAuth }),
+          ...buildTrackerRpcMethods(store),
           ...buildBusRpcMethods(bus),
           ...buildGateRpcMethods(gateService),
           ...(questionService ? buildQuestionRpcMethods(questionService) : {}),
