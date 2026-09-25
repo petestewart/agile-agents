@@ -358,6 +358,14 @@ export class AttachService {
     }
   }
 
+  /**
+   * T336: starts a node's agent with its pending events in the brief (a
+   * part its approved plan starts), rather than as a digest after it.
+   */
+  startWithPending(id: string): Promise<AttachResult> {
+    return this.attach(id, { wake: this.events.pendingFor(id).map((p) => p.event) });
+  }
+
   /** T243: at daemon start (after `recover()`), every node with pending events is considered. */
   wakePending(): void {
     for (const stream of this.options.streams.list()) {

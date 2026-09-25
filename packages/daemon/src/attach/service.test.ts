@@ -1239,11 +1239,10 @@ describe('T243: the wake policy (P11)', () => {
     await reshape.addRepo(node.id, 'ledger-lite');
     const { parts } = await reshape.addRepo(node.id, 'agile-test-repo');
     expect(parts.map((p) => p.title)).toEqual(['ledger-lite part', 'agile-test-repo part']);
-    // T213: the parts start; T336: so does the coordinator, though nothing was live.
-    for (const part of parts) {
-      expect(streams.get(part.id).sessions.some((s) => s.role === 'worker')).toBe(true);
-    }
-    expect(streams.get(node.id).sessions).toHaveLength(1);
+    // T336: the coordinator starts, though nothing was live; the parts wait for its plan.
+    for (const part of parts) expect(attachService.handleFor(part.id)).toBeUndefined();
+    expect(streams.get(parts[1]?.id as string).sessions).toHaveLength(0);
+    expect(streams.get(node.id).sessions.map((s) => s.role)).toEqual(['coordinator']);
     await waitFor(() => streams.get(node.id).agent.status === 'done' && settled(node.id));
 
     await attachService.say(node.id, 'Go ahead. Write the plan and a contract');
@@ -1396,5 +1395,51 @@ describe('T280: the coordinator role (P20)', () => {
         .some((l) => l.includes('"session/prompt"') && l.includes('cart shipped')),
     );
     expect(threadBodies(root.id)).toContain('woken by child_status');
+  }, 30_000);
+
+  test("T336: a work node woken by its coordinator's note is handed the note, quoted, with its id", async () => {
+    await store.putRepos({ demo: { path: repo, protected_branches: ['main'] } });
+    const log = join(scratch, 't336-note.jsonl');
+    const prompts = () =>
+      (existsSync(log) ? readFileSync(log, 'utf8') : '')
+        .split('\n')
+        .filter((l) => l.includes('"session/prompt"'));
+    attachService = buildAttachService(
+      fakeProviderFor(ACP_PROVIDERS.claude, { ...SPEAKS, logFile: log }),
+      { deliveryDelayMs: 5 },
+    );
+    const project = await new ProjectService(store, streams).create({ name: 'Shop' });
+    const parent = await streams.create('human', {
+      title: 'Ledger export',
+      goal: 'g',
+      project: project.id,
+    });
+    const node = await attachService.createNode('human', {
+      title: 'ledger-lite part',
+      goal: 'ledger-lite share of: g',
+      project: project.id,
+      parent: parent.id,
+      repo: 'demo',
+    });
+    await waitFor(
+      () =>
+        streams.get(node.id).agent.status === 'done' &&
+        attachService.handleFor(node.id) === undefined,
+    );
+    // The parent's `note_child`, emitted by another service instance.
+    const note = await new RoutedEventService(store).emit({
+      type: 'coordinator_note',
+      subject: node.id,
+      payload: { body: 'export CSV with a header row' },
+      by: `agent:${parent.id}`,
+      routing: [{ node: node.id, because: 'self' }],
+    });
+    attachService.wakePending();
+    await waitFor(() => store.readDeliveries(node.id).at(-1)?.status === 'delivered');
+    await waitFor(() => prompts().length === 2);
+    const brief = prompts()[1] ?? '';
+    expect(brief).toContain(`${note.id} (coordinator_note)`);
+    expect(brief).toContain('Your coordinator says: \\"export CSV with a header row\\"');
+    expect(threadBodies(node.id)).toContain('woken by coordinator_note');
   }, 30_000);
 });
