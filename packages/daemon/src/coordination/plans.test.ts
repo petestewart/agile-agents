@@ -293,7 +293,9 @@ describe('plans and contracts (T281)', () => {
       contracts,
     });
     const card = inbox.list().find((i) => i.kind === 'plan_approve');
-    expect(card?.detail ?? card?.context).toContain('owns prices.ts, sale.ts (was prices.ts)');
+    expect(card?.detail ?? card?.context).toContain(
+      'owns `prices.ts`, `sale.ts` (was `prices.ts`)',
+    );
 
     await plans.approve(node.id);
     const view = plans.childView(streams.get(api.id));
@@ -303,6 +305,25 @@ describe('plans and contracts (T281)', () => {
     const changed = emitted.filter((e) => e.type === 'plan_changed');
     expect(changed.map((e) => e.routing.map((r) => r.node))).toEqual([[api.id], [web.id]]);
     expect(changed[0]?.payload.paths).toEqual(['prices.ts', 'sale.ts']);
+  });
+});
+
+describe('T341: the plan card', () => {
+  test('owned paths read as code, so a glob is never markdown', async () => {
+    const { api, web, coordinator } = await saleTree();
+    await verbs.planWrite({
+      session: coordinator,
+      owners: [
+        { child: api.id, owns: ['src/**', 'test/**'] },
+        { child: web.id, owns: ['schema/**'] },
+      ],
+    });
+    const questions = new QuestionService(store, streams, { deliver: async () => {} });
+    const inbox = new InboxService({ streams, questions, gates: new GateService(store), plans });
+    const card = inbox.list().find((i) => i.kind === 'plan_approve');
+    expect(card?.detail ?? card?.context).toContain(
+      'api: add salePrice owns `src/**`, `test/**`; web: show salePrice owns `schema/**`',
+    );
   });
 });
 
