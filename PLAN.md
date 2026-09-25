@@ -1742,12 +1742,12 @@ agile tail --director
 
 ### Ticket: T339 Agents know the repo's own check commands
 - **Priority:** P1
-- **Status:** Todo
-- **Owner:** —
+- **Status:** Done
+- **Owner:** Unassigned
 - **Scope:** Pete's run: the ledger-lite part tried `bunx tsc --noEmit` (not in the repo, so it would fetch TypeScript) and waited on a human decision, instead of using the repo's own scripts. Put the repo's check commands in the brief: the `scripts` of the worktree's package.json (test, typecheck, lint, build) or a per-repo `checks` list in repos.yaml when set, with "use these; don't install or fetch tools". When a command is held or denied for fetching a tool, the reason names the repo's own scripts.
 - **Acceptance Criteria:** Brief test lists the scripts; a repo with `checks` set uses them; the hold reason suggests them.
 - **Validation Steps:** `bun test packages/daemon/src/runner packages/daemon/src/attach`.
-- **Notes:** —
+- **Notes:** Branch T339-repo-checks, merge 797903e. Review (sonnet): APPROVE; nits applied (yarn runner, unit tests). QA (sonnet): PASS (brief Checks, repos.yaml override, bunx/npx/bun add holds name the scripts, no package.json → no section). Adds optional `checks` to repo entries (sibling of protected_branches).
 
 ### Ticket: T340 An auto-merged PR shows as merged
 - **Priority:** P1
