@@ -217,6 +217,34 @@ test('no_worktree_escape catches a git -C outside the session worktree', async (
   }
 });
 
+test('T336: a read-only git -C into another readable repo is not an escape (a write still is)', async () => {
+  // A sibling repo the node may read (T213). Claude's Bash payload shape.
+  const sibling = mkdtempSync(join(tmpdir(), 'agile-sibling-'));
+  try {
+    await store.putRepos({
+      demo: { path: repo, protected_branches: ['main'] },
+      sibling: { path: sibling, protected_branches: ['main'] },
+    });
+    for (const command of [
+      `git -C ${sibling} log --oneline -5`,
+      `git -C ${sibling} status`,
+      `git -C ${sibling} diff main`,
+      `git -C ${sibling} show HEAD:README.md`,
+    ]) {
+      expect(await decide(command)).toEqual({ decision: 'allow', reason: '' });
+    }
+    for (const command of [
+      `git -C ${sibling} commit -m x`,
+      `git -C ${sibling} checkout -b y`,
+      `git -C ${sibling} log --output=${sibling}/x`,
+    ]) {
+      expect((await decide(command)).decision).toBe('deny');
+    }
+  } finally {
+    rmSync(sibling, { recursive: true, force: true });
+  }
+});
+
 test('the protected branches come from repos.yaml, not from the rule (D8)', async () => {
   await store.putRepos({ demo: { path: repo, protected_branches: ['trunk'] } });
   expect((await decide('git push origin main')).decision).toBe('allow');
