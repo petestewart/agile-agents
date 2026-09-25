@@ -360,7 +360,11 @@ export class AttachService {
     try {
       await streams.appendThread('daemon', node, {
         kind: 'event',
-        body: `woken by ${[...new Set(pending.map((e) => e.type))].join(', ')}`.slice(0, 800),
+        // T341: event types read as words on the thread, as on the Activity tab.
+        body: `woken by ${[...new Set(pending.map((e) => e.type.replace(/_/g, ' ')))].join(', ')}`.slice(
+          0,
+          800,
+        ),
       });
       // T336: the first prompt carries the events, so the agent never has to ask for them.
       await this.attach(node, { wake: pending });

@@ -1185,7 +1185,7 @@ describe('T243: the wake policy (P11)', () => {
     // `delivered` is written when the runner hands the digest to the turn,
     // just before it goes over ACP: the agent's log line follows it.
     await waitFor(() => prompts(log).some((p) => p.includes('one more thing')));
-    expect(threadBodies(node.id)).toContain('woken by human_line');
+    expect(threadBodies(node.id)).toContain('woken by human line');
   }, 30_000);
 
   test('a stopped (detached) node is never woken; its events stay pending', async () => {
@@ -1308,7 +1308,7 @@ describe('T243: the wake policy (P11)', () => {
     await attachService.say(node.id, 'Go ahead. Write the plan and a contract');
     await waitFor(() => streams.get(node.id).sessions.length === 2);
     await waitFor(() => prompts(log).some((p) => p.includes('Go ahead. Write the plan')));
-    expect(threadBodies(node.id)).toContain('woken by human_line');
+    expect(threadBodies(node.id)).toContain('woken by human line');
     // The coordinator runs in the session dir, not a worktree (D20).
     expect(streams.get(node.id).sessions.every((s) => s.worktree === undefined)).toBe(true);
   }, 60_000);
@@ -1425,7 +1425,7 @@ describe('T280: the coordinator role (P20)', () => {
         .split('\n')
         .some((l) => l.includes('"session/prompt"') && l.includes('stuck on auth')),
     );
-    expect(threadBodies(node.id)).toContain('woken by child_status');
+    expect(threadBodies(node.id)).toContain('woken by child status');
   }, 30_000);
 
   test('T332 (D33): a conversation with a tangent keeps its worker; no coordinator replaces it', async () => {
@@ -1480,7 +1480,7 @@ describe('T280: the coordinator role (P20)', () => {
         .split('\n')
         .some((l) => l.includes('"session/prompt"') && l.includes('cart shipped')),
     );
-    expect(threadBodies(root.id)).toContain('woken by child_status');
+    expect(threadBodies(root.id)).toContain('woken by child status');
   }, 30_000);
 
   test("T336: a work node woken by its coordinator's note is handed the note, quoted, with its id", async () => {
@@ -1526,7 +1526,7 @@ describe('T280: the coordinator role (P20)', () => {
     const brief = prompts()[1] ?? '';
     expect(brief).toContain(`${note.id} (coordinator_note)`);
     expect(brief).toContain('Your coordinator says: \\"export CSV with a header row\\"');
-    expect(threadBodies(node.id)).toContain('woken by coordinator_note');
+    expect(threadBodies(node.id)).toContain('woken by coordinator note');
   }, 30_000);
 });
 
