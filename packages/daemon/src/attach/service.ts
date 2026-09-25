@@ -40,7 +40,7 @@ import {
 import { readHomeConfigFile } from '../config';
 import type { ContractService } from '../coordination/contracts';
 import type { PlanService } from '../coordination/plans';
-import { REPLY_FIRST, SessionDelivery } from '../events/delivery';
+import { REPLY_FIRST, SessionDelivery, type WakeDelivery } from '../events/delivery';
 import { routeAndEmit } from '../events/router';
 import { RoutedEventService } from '../events/service';
 import {
@@ -128,6 +128,8 @@ export interface AttachOptions extends AttachFlags {
   role?: SessionRole;
   /** Appended after the brief: the lessons session's material and instruction (§5.5). The caller caps it. */
   briefAppendix?: string;
+  /** T336: the events that woke the node, handed over in the brief. */
+  wake?: WakeDelivery;
 }
 
 /** `detach: true`: the human pulled the plug, not a shutdown. */
@@ -334,13 +336,17 @@ export class AttachService {
     }
     this.overBudget.delete(node);
     this.waking.add(node);
+    // T336: the first prompt carries the events, so the agent never has to ask for them.
+    const wake = this.delivery.inBrief(node, pending);
     try {
       await streams.appendThread('daemon', node, {
         kind: 'event',
         body: `woken by ${[...new Set(pending.map((e) => e.type))].join(', ')}`.slice(0, 800),
       });
-      await this.attach(node);
+      const { handle } = await this.attach(node, { wake });
+      void handle.exited.finally(wake.release);
     } catch (err) {
+      wake.release();
       await streams
         .appendThread('daemon', node, {
           kind: 'event',
@@ -548,8 +554,10 @@ export class AttachService {
     });
     // The lessons material rides after the brief, never inside it (the
     // brief's own ceiling protects its parts; the caller caps the appendix).
-    const prompt =
-      options.briefAppendix === undefined ? brief : `${brief}\n\n${options.briefAppendix}`;
+    // T336: a woken session is told what woke it, after everything else.
+    const prompt = [brief, options.briefAppendix, options.wake?.text]
+      .filter((part): part is string => part !== undefined)
+      .join('\n\n');
     // What the agent was handed, beside its logs: "what did it see" is a
     // file read. Best effort: a full disk must not stop a session starting.
     try {
@@ -596,6 +604,9 @@ export class AttachService {
       role,
       worktreePath: cwd,
       brief: prompt,
+      ...(options.wake !== undefined
+        ? { onBriefDelivered: () => options.wake?.delivered(sessionId) }
+        : {}),
       sessionDir,
       provider,
       ...(this.options.rules !== undefined ? { rules: this.options.rules } : {}),
