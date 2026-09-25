@@ -1741,12 +1741,12 @@ Pete's requests from the walkthrough (D33, D34). Branch `claude/phase-14`, stack
 
 ### Ticket: T333 ∥ Move nodes by hand
 - **Priority:** P1
-- **Status:** In Progress
-- **Owner:** opus:worker-T333
+- **Status:** Done
+- **Owner:** Unassigned
 - **Scope:** Per D34: `agile node move <id> --parent <id|project>`, an HTTP route (same-origin, actor human) and drag-and-drop in the rail. Refuse moves into its own subtree, across projects, or while the parent's plan awaits approval. Re-derive roles; a thread line on the old and new parent; a work node keeps its branch and worktree. Update design/projects-design.md §6.
 - **Acceptance Criteria:** Service tests for every refusal and for roles after a move; CLI test; e2e drag moves a node and the rail updates.
 - **Validation Steps:** `bun test packages/daemon/src/streams packages/cli`; `bun run test:e2e`.
-- **Notes:** —
+- **Notes:** Branch T333-move-nodes, merge ca402d0. Review (sonnet): APPROVE. QA (sonnet): PASS; low: a drop the rail refuses client-side (own subtree, other project) shows no message, only a server refusal does.
 
 ### Ticket: T334 Phase 14 QA and Pete's look
 - **Priority:** P0
