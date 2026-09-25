@@ -18,12 +18,15 @@ import {
   worktreeRelativePaths,
 } from '../knowledge/service';
 import {
+  type CommandAtom,
   hasUnsafeShellConstruct,
   isPathInside,
+  isReadOnlyGitAtom,
   parseCommandIntoAtoms,
   parseGitInvocation,
   resolveTargetPath,
 } from './command';
+import { type PolicyContext, readDenyReason } from './policy-tables';
 import { type PushDetectorContext, detectProtectedBranchWrite, detectPush } from './push-detector';
 import { commandPaths } from './visibility';
 
@@ -36,20 +39,34 @@ export interface RuleCheckContext extends PushDetectorContext {
   paths?: readonly string[];
   /** The tool call writes: a read outside the worktree isn't what §5.4 prohibits. */
   writes?: boolean;
+  /**
+   * T336: set for a coordinator session only (P20: it reads its parts, it
+   * has no worktree). A read-only `git -C` into a dir this scope may read is
+   * not an escape; for every other session, and any other dir, it still is.
+   */
+  coordinatorReads?: Pick<PolicyContext, 'readRoots' | 'hiddenRoots'>;
 }
 
 function pathMatchesGlob(path: string, glob: string): boolean {
   return new Bun.Glob(glob).match(path);
 }
 
-/** Subcommands that only read a repo (the reviewer's read-only git set). */
-const READ_ONLY_GIT_SUBCOMMANDS = new Set(['diff', 'log', 'show', 'status']);
-
-/** A read-only git call: no `-c` override (`-c alias.log=…`) and no `--output` file. */
-function isReadOnlyGit(args: string[] | undefined, configs: readonly string[]): boolean {
-  if (args === undefined || configs.length > 0) return false;
-  if (!READ_ONLY_GIT_SUBCOMMANDS.has(args[0] ?? '')) return false;
-  return !args.some((a) => a === '--output' || a.startsWith('--output=') || a === '-o');
+/** T336: a coordinator's read-only `git -C` whose every dir its read scope allows. */
+function coordinatorMayRead(
+  atom: CommandAtom,
+  cPaths: readonly string[],
+  ctx: RuleCheckContext,
+): boolean {
+  const scope = ctx.coordinatorReads;
+  if (scope === undefined || cPaths.length === 0 || !isReadOnlyGitAtom(atom)) return false;
+  if (scope.readRoots === undefined && scope.hiddenRoots === undefined) return false;
+  return cPaths.every((raw) => {
+    const resolved = resolveTargetPath(raw);
+    return (
+      resolved.safe &&
+      readDenyReason(resolved.path, { worktreePath: ctx.worktreePath, ...scope }) === undefined
+    );
+  });
 }
 
 /** `path_deny`: a write outside the worktree, or a path matching one of the rule's globs. */
@@ -67,13 +84,12 @@ function checkPathDeny(
     if (glob !== undefined) return `${path} matches the denied path pattern ${glob}`;
   }
   // `git -C <elsewhere>` escapes the worktree without naming a path in
-  // `tool_input`. A read-only one (T336: a coordinator's `git -C <part> log`)
-  // writes nothing; what it may read is the role policy's and P13's call.
+  // `tool_input`.
   if (ctx.command !== undefined) {
     for (const atom of parseCommandIntoAtoms(ctx.command)) {
-      const git = parseGitInvocation(atom.tokens);
-      if (isReadOnlyGit(git.args, git.configs)) continue;
-      for (const cPath of git.cPaths) {
+      const cPaths = parseGitInvocation(atom.tokens).cPaths;
+      if (coordinatorMayRead(atom, cPaths, ctx)) continue;
+      for (const cPath of cPaths) {
         // `~/x` is the home's, not the worktree's `./~/x`; `$X` can't be placed.
         const resolved = resolveTargetPath(cPath);
         if (!resolved.safe) return `git -C ${cPath} names a path that cannot be resolved`;

@@ -31,6 +31,7 @@ import {
   liveChildrenOf,
   nodeRole,
 } from '@agile-agents/shared';
+import { WAITING_FOR_PLAN } from '../coordination/plans';
 import { git, removeWorktreeSafely } from '../delivery/git';
 import { mainBranch } from '../delivery/service';
 import { stoppedByHuman } from '../events/wake';
@@ -167,7 +168,7 @@ export class RepoInPlaceService {
       for (const part of open) {
         await this.event(
           part.id,
-          `waiting for the plan: this part starts when "${node.title}"'s plan is approved`,
+          `${WAITING_FOR_PLAN}this part starts when "${node.title}"'s plan is approved`,
         );
       }
     }

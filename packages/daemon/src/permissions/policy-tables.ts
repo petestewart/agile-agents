@@ -621,8 +621,8 @@ function coordinatorExecuteVerdict(command: string, ctx: PolicyContext): PolicyV
     if (redirect.action !== 'allow') return redirect;
     const reads = coordinatorScopedReads(atom.tokens, ctx, cwd);
     if (reads.action !== 'allow') return reads;
-    const args = cmd.gitArgs(atom.tokens);
-    if (args !== undefined && REVIEWER_READ_ONLY_GIT_SUBCOMMANDS.has(args[0] ?? '')) continue;
+    // T336: git by the strict allowlist (no -c/--config-env, pager, ext-diff, ...).
+    if (cmd.isReadOnlyGitAtom(atom)) continue;
     if (isReviewerSafeTool(atom.tokens)) continue;
     if (COORDINATOR_WRITE_TOOLS.has(atom.tokens[0] ?? '')) continue;
     return deny(
