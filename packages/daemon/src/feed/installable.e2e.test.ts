@@ -20,7 +20,7 @@ import { QuestionService } from '../questions';
 import { RulesService } from '../rules';
 import { StateStore } from '../store';
 import { StreamService } from '../streams';
-import { resolveChromiumExecutable } from './chromium';
+import { acquireBrowserPage, resolveChromiumExecutable } from './chromium';
 
 const executablePath = resolveChromiumExecutable();
 let persistent: { context: BrowserContext; dir: string } | undefined;
@@ -114,12 +114,29 @@ test('the daemon serves the manifest, icons and service worker with their types'
 test('Chromium reports the cockpit installable, the service worker controls it, and it opens on the inbox', async () => {
   const cockpit = startCockpit();
   // A persistent profile, not the default incognito-like context:
-  // Chromium never offers install from incognito ("in-incognito").
-  const dir = mkdtempSync(join(tmpdir(), 'agile-installable-profile-'));
-  const context = await chromium.launchPersistentContext(dir, { executablePath });
-  persistent = { context, dir };
+  // Chromium never offers install from incognito ("in-incognito"). Launched
+  // through the shared helper, like the sibling suites, so a launch that
+  // hangs or loses its stdio pipe is retried (a fresh profile per attempt).
+  const { browser: launched, page } = await acquireBrowserPage({
+    label: 'installable e2e',
+    launch: async () => {
+      const dir = mkdtempSync(join(tmpdir(), 'agile-installable-profile-'));
+      const context = await chromium.launchPersistentContext(dir, { executablePath });
+      return {
+        context,
+        dir,
+        isConnected: () => context.browser()?.isConnected() ?? true,
+        close: async () => {
+          await context.close();
+          rmSync(dir, { recursive: true, force: true });
+        },
+      };
+    },
+    openPage: (candidate) => candidate.context.newPage(),
+  });
+  persistent = { context: launched.context, dir: launched.dir };
+  const context = launched.context;
   try {
-    const page = await context.newPage();
     page.setDefaultTimeout(20_000);
     await page.goto(`${cockpit.base}/`);
     await page.locator('[data-testid="inbox-empty"]').waitFor({ state: 'visible' });
