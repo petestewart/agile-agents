@@ -145,7 +145,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
     ? new StreamService(store, {
         // T244: record changes that are routed events (child_status, pr_merged, …).
         onUpdated: async (before, after): Promise<void> => {
-          if (emitRouted) await emitTransitions(emitRouted)(before, after);
+          if (emitRouted) await emitTransitions(emitRouted, streamService)(before, after);
           // T283: the node's status card follows its record.
           await cardService?.refresh(after);
           // T324: Node → tracker (off unless the project turns it on); never blocks the update.

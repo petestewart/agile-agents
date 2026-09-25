@@ -133,7 +133,7 @@ export function flattenTree(nodes: StreamNode[]): Stream[] {
 
 /** T201: the derived role (P1), from every stream the daemon knows (archived included). */
 export function roleIn(stream: Stream, all: readonly Stream[]): NodeRole {
-  return nodeRole(stream, liveChildrenOf(stream.id, all));
+  return nodeRole(stream, liveChildrenOf(stream.id, all), all);
 }
 
 async function allStreams(socketPath: string): Promise<Stream[]> {

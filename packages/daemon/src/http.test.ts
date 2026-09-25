@@ -757,7 +757,8 @@ describe('T160 cockpit routes', () => {
     ]);
     const roles = Object.fromEntries(frame.streams.map((r) => [r.id, [r.role, r.project]]));
     expect(roles[shop.root]).toEqual(['project', shop.id]);
-    expect(roles[parent.id]).toEqual(['coordinating', shop.id]);
+    // D33: a repo-less child (a tangent) leaves its parent a conversation.
+    expect(roles[parent.id]).toEqual(['conversation', shop.id]);
     expect(roles[created.id]).toEqual(['conversation', shop.id]);
   });
 

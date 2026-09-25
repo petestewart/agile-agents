@@ -160,7 +160,8 @@ describe('PR babysitting (T246)', () => {
     let wakeRun: Promise<void> = Promise.resolve();
     const wake = (id: string, pending: readonly RoutedEvent[]) => {
       const s = streams.get(id);
-      const role = nodeRole(s, liveChildrenOf(s.id, streams.list()));
+      const all = streams.list();
+      const role = nodeRole(s, liveChildrenOf(s.id, all), all);
       if (wakeVerdict(s, role, pending) !== 'wake') return;
       wakeRun = (async () => {
         woken.push(...pending.map((e) => e.type));

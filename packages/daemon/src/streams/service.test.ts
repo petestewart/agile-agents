@@ -89,6 +89,67 @@ describe('create', () => {
   });
 });
 
+describe('Branch off (T332, D33)', () => {
+  async function conversation() {
+    const root = await newStream('Shop');
+    const talk = await newStream('Why are prices slow?', { parent: root.id });
+    await streams.appendThread('human', talk.id, {
+      kind: 'line',
+      body: 'is it the cache?\nor the db?',
+    });
+    return { root, talk, line: streams.readThread(talk.id).total - 1 };
+  }
+
+  test("seeds the tangent's thread with the parent's line, quoted, and notes it on the parent", async () => {
+    const { talk, line } = await conversation();
+    const tangent = await newStream('Cache?', {
+      parent: talk.id,
+      goal: 'does the cache help?',
+      seed_line: line,
+    });
+    expect(tangent.goal).toBe('does the cache help?');
+    expect(tangent.repo).toBeUndefined();
+    expect('seed_line' in tangent).toBe(false);
+    const [created, seed] = streams.readThread(tangent.id).entries;
+    expect(created?.body).toBe('stream created: Cache?');
+    expect(seed?.kind).toBe('event');
+    expect(seed?.ref).toBe(talk.id);
+    expect(seed?.body).toBe(
+      'Branched off Why are prices slow?, from this line (you):\n\n> is it the cache?\n> or the db?',
+    );
+    const note = streams.readThread(talk.id).entries.at(-1);
+    expect(note?.body).toBe(`tangent branched off line ${line}: Cache?`);
+    expect(note?.ref).toBe(tangent.id);
+  });
+
+  test('a long line is capped to the thread body limit', async () => {
+    const { talk } = await conversation();
+    await streams.appendThread('human', talk.id, {
+      kind: 'line',
+      body: 'y'.repeat(THREAD_BODY_MAX_CHARS),
+    });
+    const line = streams.readThread(talk.id).total - 1;
+    const tangent = await newStream('Long', { parent: talk.id, seed_line: line });
+    const seed = streams.readThread(tangent.id).entries[1];
+    expect(seed?.body.length).toBeLessThanOrEqual(THREAD_BODY_MAX_CHARS);
+    expect(seed?.body).toContain('…');
+  });
+
+  test('refuses a missing line, a repo, a helper, and a parent that is not a conversation', async () => {
+    const { root, talk, line } = await conversation();
+    await expect(newStream('x', { parent: talk.id, seed_line: 999 })).rejects.toThrow(
+      /no such line/,
+    );
+    await expect(
+      newStream('x', { parent: talk.id, seed_line: line, repo: 'shop' }),
+    ).rejects.toThrow(/tangent has no repo/);
+    await expect(newStream('x', { seed_line: 0 })).rejects.toThrow(/needs a parent/);
+    await expect(newStream('x', { parent: root.id, seed_line: 0 })).rejects.toThrow(
+      /only a conversation branches off; .* is project/,
+    );
+  });
+});
+
 describe('list and tree', () => {
   test('returns parent/child structure', async () => {
     const root = await newStream('root');
@@ -379,7 +440,8 @@ describe('move (T333, D34)', () => {
   const thread = (id: string) => streams.readThread(id).entries.map((e) => e.body);
   const roleOf = async (id: string) => {
     const { liveChildrenOf, nodeRole } = await import('@agile-agents/shared');
-    return nodeRole(streams.get(id), liveChildrenOf(id, streams.list()));
+    const all = streams.list();
+    return nodeRole(streams.get(id), liveChildrenOf(id, all), all);
   };
 
   test('re-derives roles, writes a line on both parents and the node, keeps branch and worktree', async () => {

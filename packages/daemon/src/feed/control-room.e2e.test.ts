@@ -34,6 +34,8 @@ import {
   type KnowledgeItem as Rule,
   classifierQuestion,
   examplesOf,
+  liveChildrenOf,
+  nodeRole,
   patternOf,
   ulid,
   validateClassifierConfig,
@@ -48,7 +50,7 @@ import { PlanService, planMoveCoordination } from '../coordination/plans';
 import { DeliveryService } from '../delivery';
 import { DirectorService } from '../director';
 import { DocsService } from '../docs';
-import { RoutedEventService, routeAndEmit } from '../events';
+import { RoutedEventService, emitTransitions, makeEmitter, routeAndEmit } from '../events';
 import { GateService } from '../gates';
 import { type HttpServerHandle, startHttpServer } from '../http';
 import { InboxService } from '../inbox';
@@ -2549,15 +2551,17 @@ describe('move a node by dragging it in the rail (Playwright e2e, T333)', () => 
       const cockpit = await startCockpit();
       let page: Page | undefined;
       try {
+        await cockpit.store.putRepos({ api: { path: cockpit.home } });
         const shop = await cockpit.projects.create({ name: 'shop' });
         const node = (title: string, parent?: string) =>
           cockpit.streams.create('human', {
             title,
             goal: 'g',
-            ...(parent ? { parent } : { project: shop.id }),
+            ...(parent ? { parent, repo: 'api' } : { project: shop.id }),
           });
         const a = await node('prices');
         const b = await node('refunds');
+        // A work node: a repo-less child would be a tangent (D33) and leave both conversations.
         const x = await node('api part', a.id);
         page = await openPage();
         await page.goto(`${cockpit.base}/`);
@@ -2566,6 +2570,7 @@ describe('move a node by dragging it in the rail (Playwright e2e, T333)', () => 
         await page
           .locator(`[data-stream="${a.id}"] + ul [data-stream="${x.id}"]`)
           .waitFor({ state: 'visible' });
+        expect(await row(a.id)?.getAttribute('data-role')).toBe('coordinating');
         expect(await row(b.id)?.getAttribute('data-role')).toBe('conversation');
 
         await row(x.id)?.dragTo(page.locator(`${tree} [data-stream="${b.id}"]`));
@@ -3112,6 +3117,90 @@ describe('node activity (Playwright e2e, T245)', () => {
           `[data-testid="repo-view"] [data-repo="api"] [data-event="${event.id}"]`,
           'main changed · api: add salePrice',
         );
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+});
+
+describe('conversation tangents (Playwright e2e, T332)', () => {
+  browserTest(
+    "Branch off a line makes a seeded tangent; its finished summary reaches the parent's thread",
+    async () => {
+      const cockpit = await startCockpit();
+      let page: Page | undefined;
+      try {
+        const shop = await cockpit.projects.create({ name: 'Shop' });
+        const talk = await cockpit.streams.create('human', {
+          title: 'Why are prices slow?',
+          goal: 'g',
+          project: shop.id,
+        });
+        await cockpit.streams.appendThread('human', talk.id, {
+          kind: 'line',
+          body: 'TANGENT-SEED is it the cache?',
+        });
+
+        page = await openPage();
+        await page.goto(`${cockpit.base}/`);
+        await page.locator(`[data-testid="stream-tree"] [data-stream="${talk.id}"]`).click();
+        const line = page.locator('[data-testid="thread-entry"]', { hasText: 'TANGENT-SEED' });
+        await line.locator('[data-testid="branch-off"]').click();
+        await page.locator('[data-testid="branch-question"]').fill('Does the cache help?');
+        await page.locator('[data-testid="branch-start"]').click();
+
+        // The tangent opens: a conversation child, its thread starting with the quoted line.
+        await page
+          .locator('[data-testid="thread-entry"]', { hasText: 'Branched off Why are prices slow?' })
+          .first()
+          .waitFor();
+        await page
+          .locator('[data-testid="thread-entry"]', { hasText: 'TANGENT-SEED is it the cache?' })
+          .first()
+          .waitFor();
+        const tangent = cockpit.streams.list().find((s) => s.parent === talk.id);
+        expect(tangent?.goal).toBe('Does the cache help?');
+        expect(tangent?.title).toBe('Does the cache help?');
+        expect(tangent?.repo).toBeUndefined();
+        const rows = () => cockpit.streams.list();
+        const roleOf = (id: string) =>
+          nodeRole(cockpit.streams.get(id), liveChildrenOf(id, rows()), rows());
+        expect(roleOf(talk.id)).toBe('conversation');
+
+        // The tangent finishes: its last agent line goes to the parent, quoted.
+        const producing: StreamService = new StreamService(cockpit.store, {
+          onUpdated: (before, after): Promise<void> =>
+            emitTransitions(makeEmitter(cockpit.events, producing), producing)(before, after),
+        });
+        const id = tangent?.id as string;
+        await producing.appendThread(
+          'agent',
+          id,
+          { kind: 'line', body: 'TANGENT-SUMMARY yes, it halves p95' },
+          ulid(),
+        );
+        await producing.update('daemon', id, { agent: { status: 'done' } });
+
+        await page.locator(`[data-testid="stream-tree"] [data-stream="${talk.id}"]`).click();
+        await page
+          .locator('[data-testid="thread-entry"]', {
+            hasText: 'tangent finished: Does the cache help?',
+          })
+          .first()
+          .waitFor();
+        await page
+          .locator('[data-testid="thread-entry"]', {
+            hasText: 'TANGENT-SUMMARY yes, it halves p95',
+          })
+          .first()
+          .waitFor();
+        await page.locator('.cr-tabs [data-tab="activity"]').click();
+        await page
+          .locator('[data-testid="activity-type"]', { hasText: 'tangent summary' })
+          .waitFor();
       } finally {
         await teardown([page]);
         await cockpit.stop();

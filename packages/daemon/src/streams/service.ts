@@ -10,9 +10,12 @@ import {
   type Stream,
   type StreamCreateInput,
   type StreamPrincipal,
+  THREAD_BODY_MAX_CHARS,
   type ThreadAuthor,
   type ThreadEntry,
   type ThreadEntryKind,
+  liveChildrenOf,
+  nodeRole,
   threadBodyMaxFor,
   ulid,
   validateStreamCreateInput,
@@ -165,6 +168,7 @@ export class StreamService {
         'a project is required: pass "project" (or a parent that belongs to one)',
       );
     }
+    const seed = input.seed_line === undefined ? undefined : this.seedFor(input, parent);
     if (input.helper_of !== undefined && input.helper_of !== parent) {
       throw new StreamProjectError('helper_of must name the parent node');
     }
@@ -202,7 +206,46 @@ export class StreamService {
       human: { status: 'open' },
       sessions: [],
     };
-    return this.insert(principal, stream);
+    const created = await this.insert(principal, stream);
+    if (seed !== undefined && parent !== undefined) {
+      await this.appendThread(principal, created.id, { kind: 'event', body: seed, ref: parent });
+      await this.appendThread(principal, parent, {
+        kind: 'event',
+        body: `tangent branched off line ${String(input.seed_line)}: ${created.title}`.slice(
+          0,
+          800,
+        ),
+        ref: created.id,
+      });
+    }
+    return created;
+  }
+
+  /**
+   * T332 (D33): a tangent's opening line — the parent's line `seed_line`,
+   * quoted. Only a conversation branches off, and the tangent is one too.
+   */
+  private seedFor(input: StreamCreateInput, parent: string | undefined): string {
+    if (parent === undefined || input.repo !== undefined || input.helper_of !== undefined) {
+      throw new StreamProjectError('seed_line needs a parent, and a tangent has no repo');
+    }
+    const all = this.store.listStreams();
+    const host = this.store.getStream(parent);
+    const role = nodeRole(host, liveChildrenOf(parent, all), all);
+    if (role !== 'conversation') {
+      throw new StreamProjectError(`only a conversation branches off; ${parent} is ${role}`);
+    }
+    const line = this.store.readThread(parent)[input.seed_line ?? -1];
+    if (line === undefined) {
+      throw new StreamProjectError(
+        `seed_line ${String(input.seed_line)}: no such line on ${parent}`,
+      );
+    }
+    const who = line.by === 'human' ? 'you' : line.by.startsWith('agent:') ? 'its agent' : line.by;
+    const head = `Branched off ${host.title.slice(0, 120)}, from this line (${who}):\n\n`;
+    const room = THREAD_BODY_MAX_CHARS - head.length - 3;
+    const text = line.body.length > room ? `${line.body.slice(0, room - 1)}…` : line.body;
+    return `${head}${text.replace(/^/gm, '> ')}`.slice(0, THREAD_BODY_MAX_CHARS);
   }
 
   /** A project's root node (T200/T201): no parent, carries the project id. */

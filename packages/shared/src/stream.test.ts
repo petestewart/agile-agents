@@ -364,21 +364,59 @@ describe('nodeRole (P1)', () => {
     [string, Parameters<typeof nodeRole>[0], Parameters<typeof nodeRole>[1], string]
   > = [
     ['no parent is a project', { id: ROOT }, [], 'project'],
-    ['a project root with children is still a project', { id: ROOT }, [{}], 'project'],
-    ['a live child makes it coordinating', { ...node, repo: 'shop' }, [{}], 'coordinating'],
-    ['a helper of another node still counts', node, [{ helper_of: GRANDCHILD }], 'coordinating'],
+    ['a project root with children is still a project', { id: ROOT }, [{ id: CHILD }], 'project'],
+    [
+      'a live child makes it coordinating',
+      { ...node, repo: 'shop' },
+      [{ id: GRANDCHILD }],
+      'coordinating',
+    ],
+    [
+      'a helper of another node still counts',
+      node,
+      [{ id: GRANDCHILD, helper_of: GRANDCHILD, repo: 'shop' }],
+      'coordinating',
+    ],
     ['a repo and no children is work', { ...node, repo: 'shop' }, [], 'work'],
     [
       'a same-repo helper does not make it coordinating',
       { ...node, repo: 'shop' },
-      [{ helper_of: CHILD }],
+      [{ id: GRANDCHILD, helper_of: CHILD, repo: 'shop' }],
       'work',
     ],
     ['no repo and no children is a conversation', node, [], 'conversation'],
+    // D33: tangents.
+    [
+      'a conversation whose children are conversations stays a conversation',
+      node,
+      [{ id: GRANDCHILD }, { id: ulid(8) }],
+      'conversation',
+    ],
+    [
+      'a conversation becomes coordinating once a child has a repo',
+      node,
+      [{ id: GRANDCHILD }, { id: ulid(8), repo: 'shop' }],
+      'coordinating',
+    ],
   ];
   for (const [name, n, children, role] of cases) {
     test(name, () => expect(nodeRole(n, children)).toBe(role as ReturnType<typeof nodeRole>));
   }
+
+  test('D33: a repo-less child that is itself coordinating makes its parent coordinating', () => {
+    const parent = stream({ id: CHILD, parent: ROOT });
+    const tangent = stream({ id: GRANDCHILD, parent: CHILD });
+    const work = stream({ id: ulid(9), parent: GRANDCHILD, repo: 'shop' });
+    const all = [parent, tangent, work];
+    expect(nodeRole(parent, liveChildrenOf(CHILD, all), all)).toBe('coordinating');
+    expect(nodeRole(tangent, liveChildrenOf(GRANDCHILD, all), all)).toBe('coordinating');
+    // A tangent of a tangent keeps both conversations.
+    const deep = [parent, tangent, stream({ id: ulid(9), parent: GRANDCHILD })];
+    expect(nodeRole(parent, liveChildrenOf(CHILD, deep), deep)).toBe('conversation');
+    // A closed work grandchild no longer counts.
+    const closed = [parent, tangent, { ...work, human: { status: 'closed' as const } }];
+    expect(nodeRole(parent, liveChildrenOf(CHILD, closed), closed)).toBe('conversation');
+  });
 
   test('liveChildrenOf drops closed and archived children', () => {
     const open = stream({ id: GRANDCHILD, parent: CHILD });

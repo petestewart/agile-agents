@@ -102,7 +102,8 @@ describe('agile node (T201)', () => {
     const role = async (id: string) =>
       (JSON.parse((await cli(['node', 'show', id, '--json'])).out) as { role: string }).role;
     expect(await role(projectRoot)).toBe('project');
-    expect(await role(epic.id)).toBe('coordinating');
+    // D33: its only child is a repo-less conversation (a tangent).
+    expect(await role(epic.id)).toBe('conversation');
     expect(await role(task.id)).toBe('conversation');
 
     const byParent = JSON.parse(
@@ -119,7 +120,7 @@ describe('agile node (T201)', () => {
       role: string;
     }>;
     expect(Array.isArray(unfiltered)).toBe(true);
-    expect(unfiltered.find((n) => n.id === epic.id)?.role).toBe('coordinating');
+    expect(unfiltered.find((n) => n.id === epic.id)?.role).toBe('conversation');
     expect(unfiltered.map((n) => n.id).sort()).toEqual([projectRoot, epic.id, task.id].sort());
   });
 });
@@ -484,13 +485,20 @@ describe('agile node wait (T228)', () => {
 
 describe('agile node move (T333, D34)', () => {
   test('moves under a node, back to the root with the project id, and refuses its own subtree', async () => {
+    Bun.spawnSync(['git', 'commit', '-q', '--allow-empty', '-m', 'init'], { cwd: daemon.repo });
+    expect((await cli(['repo', 'add', daemon.repo, '--name', 'alpha'])).code).toBe(0);
     const epic = await newStream('Epic');
-    const task = await newStream('Task');
+    const task = await newStream('Task', ['--repo', 'alpha']);
+    const note = await newStream('Note');
+    const role = async (id: string) =>
+      (JSON.parse((await cli(['node', 'show', id, '--json'])).out) as { role: string }).role;
+    // D33: a repo-less conversation moved under a conversation is a tangent.
+    expect((await cli(['node', 'move', note.id, '--parent', epic.id])).code).toBe(0);
+    expect(await role(epic.id)).toBe('conversation');
+    // A work node under it makes it coordinating.
     const moved = await cli(['node', 'move', task.id, '--parent', epic.id]);
     expect(moved.code).toBe(0);
     expect(moved.out).toContain(`${task.id} is now under ${epic.id}`);
-    const role = async (id: string) =>
-      (JSON.parse((await cli(['node', 'show', id, '--json'])).out) as { role: string }).role;
     expect(await role(epic.id)).toBe('coordinating');
     expect((await cli(['node', 'move', epic.id, '--parent', task.id])).code).not.toBe(0);
     const back = JSON.parse(
@@ -498,6 +506,7 @@ describe('agile node move (T333, D34)', () => {
     ) as Stream;
     expect(back.parent).toBe(projectRoot);
     expect(await role(epic.id)).toBe('conversation');
+    expect(await role(note.id)).toBe('conversation');
   });
 });
 

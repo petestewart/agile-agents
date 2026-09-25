@@ -3,6 +3,8 @@
  * the tree is reshaped behind it:
  *
  *   - conversation + repo → work node: its branch and worktree are cut now;
+ *   - conversation with tangents (D33) + repo → coordinating: a coordinating
+ *     node has no worktree (§14.2), so the repo goes to a new "B part" child;
  *   - work (repo A) + repo B → coordinating: the branch, worktree and
  *     session history move to a new child "A part", and a "B part" child
  *     is created;
@@ -84,7 +86,12 @@ export class RepoInPlaceService {
     if (node.human.status === 'closed' || node.archived === true) {
       throw new RepoInPlaceError(`node ${nodeId} is closed or archived`);
     }
-    const role = nodeRole(node, liveChildrenOf(node.id, this.streams.list()));
+    const all = this.streams.list();
+    const live = liveChildrenOf(node.id, all);
+    const role = nodeRole(node, live, all);
+    // D33: a conversation with tangents turns coordinating once it has a repo,
+    // and a coordinating node has no worktree (§14.2): the repo becomes a part.
+    const inPlace = role === 'conversation' && !live.some((c) => c.helper_of !== node.id);
     if (role === 'project') {
       throw new RepoInPlaceError('a project root lists repos in its settings; add the repo there');
     }
@@ -105,13 +112,13 @@ export class RepoInPlaceService {
     // Stop first, so the exit path writes onto the records before they move.
     await this.sessions.stop(
       node.id,
-      role === 'conversation' ? 'node reshaped into a work node' : 'node reshaped into parts',
+      inPlace ? 'node reshaped into a work node' : 'node reshaped into parts',
     );
     // Re-read: the exit path just marked the stopped sessions, and those records move.
     node = this.streams.get(node.id);
 
     let parts: Stream[] = [];
-    if (role === 'conversation') {
+    if (inPlace) {
       const created = await createWorktree(entry.path, { id: node.id, slug: slugify(node.title) });
       await this.streams.update('daemon', node.id, {
         repo,
@@ -119,9 +126,14 @@ export class RepoInPlaceService {
         worktree: created.path,
       });
       await this.event(node.id, `repo added: ${repo}; now a work node on ${created.branch}`);
-    } else if (role === 'coordinating') {
+    } else if (role !== 'work') {
       parts = [await this.newPart(node, repo)];
-      await this.event(node.id, `repo added: ${repo} (new part ${parts[0]?.id})`);
+      await this.event(
+        node.id,
+        role === 'conversation'
+          ? `repo added: ${repo}; now coordinating ${parts[0]?.title} beside its tangents`
+          : `repo added: ${repo} (new part ${parts[0]?.id})`,
+      );
     } else {
       parts = await this.splitWorkNode(node, repo);
       if (switching) {
