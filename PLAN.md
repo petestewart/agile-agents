@@ -1620,12 +1620,14 @@ agile tail --director
 
 ### Ticket: T323 ∥ Import an epic's children
 - **Priority:** P2
-- **Status:** In Progress
-- **Owner:** opus:worker-T323
+- **Status:** Done
+- **Owner:** Unassigned
 - **Scope:** An "Import children" button and `agile node import-children <id>` create one linked child per issue in the epic. It is idempotent: already-linked issues are skipped.
 - **Acceptance Criteria:** A test against the fake: running it twice creates each child once.
 - **Validation Steps:** `bun test packages/daemon/src/trackers`.
 - **Notes:** After T321.
+- T323: sonnet review BLOCKING (concurrent imports could duplicate children) → fixed: imports serialised per parent node, linked set recomputed inside the lock, concurrent test. Manager checked the lock. node.import_children RPC, POST /api/streams/:id/import-children, `agile node import-children`, cockpit button for epics. Children are not started and do not inherit the repo (manager call, matches create). Daemon +79. merge f447f9e.
+
 
 ### Ticket: T324 Status push and create issue
 - **Priority:** P2
@@ -1653,8 +1655,8 @@ agile tail --director
 
 ### Ticket: T325 Phase 13 QA and Pete's look
 - **Priority:** P0
-- **Status:** Todo
-- **Owner:** —
+- **Status:** In Progress
+- **Owner:** sonnet:qa-T325
 - **Scope:** Black-box QA against the fakes. Daemon line count, plus the full §6.1 walkthrough on the final branch. Pete links a node to a real issue in whichever tracker he uses.
 - **Acceptance Criteria:** QA ACCEPT. Live: the goal is pulled from the issue, an edit shows as an event, and with `push_status` on the issue moves to in review when the PR opens. §6.1 is met.
 - **Validation Steps:** Pete, on his Mac, after adding the tracker token in Settings (P17), with a real issue key typed in place of the example key below:
