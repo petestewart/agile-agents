@@ -7,7 +7,7 @@
 
 import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { basename, dirname, isAbsolute, join as joinPath, relative, resolve } from 'node:path';
+import { basename, dirname, isAbsolute, join as joinPath, relative, resolve, sep } from 'node:path';
 
 // Quote-aware splitting/tokenizing
 
@@ -169,6 +169,8 @@ export interface CommandAtom {
   prevTokens?: string[];
   /** T336: `VAR=value` assignments or a wrapper (`env`, `xargs`, ...) were stripped from its front. */
   prefixed?: true;
+  /** T343: the stripped tokens themselves (`VAR=value`, wrappers), when `prefixed`. */
+  prefix?: string[];
 }
 
 const SHELL_RUNNERS = new Set(['sh', 'bash', 'zsh']);
@@ -185,7 +187,10 @@ export function parseCommandIntoAtoms(command: string): CommandAtom[] {
   for (const seg of rawSegments) {
     const raw = tokenizeSegment(seg.raw);
     const tokens = stripPrefixes(raw);
-    const prefixed = tokens.length < raw.length ? { prefixed: true as const } : {};
+    const prefixed =
+      tokens.length < raw.length
+        ? { prefixed: true as const, prefix: raw.slice(0, raw.length - tokens.length) }
+        : {};
     if (isShellDashC(tokens)) {
       const nested = parseCommandIntoAtoms(tokens[2] ?? '');
       for (const [idx, atom] of nested.entries()) {
@@ -195,10 +200,10 @@ export function parseCommandIntoAtoms(command: string): CommandAtom[] {
             tokens: atom.tokens,
             precededByPipe: seg.delimiterBefore === '|',
             prevTokens: seg.delimiterBefore === '|' ? prev?.tokens : undefined,
-            ...(atom.prefixed ? { prefixed: true as const } : prefixed),
+            ...(atom.prefixed ? { prefixed: true as const, prefix: atom.prefix ?? [] } : prefixed),
           });
         } else {
-          atoms.push({ ...atom, ...prefixed });
+          atoms.push(atom.prefixed ? atom : { ...atom, ...prefixed });
         }
       }
       continue;
@@ -450,7 +455,7 @@ const UNSAFE_READ_GIT_OPTIONS = new Set([
 /**
  * T336: a git call that only reads, by allowlist: nothing stripped from its
  * front (no `GIT_*=` or other assignment, no wrapper), nothing before the
- * subcommand but `-C <dir>` (so no `-p`/`--paginate`, `-c`, `--config-env`, ...),
+ * subcommand but `-C <dir>` and one `--no-pager` (so no `-p`/`--paginate`, `-c`, `--config-env`, ...),
  * a subcommand in `diff`/`log`/`show`/`status`, and none of the unsafe options.
  */
 export function isReadOnlyGitAtom(atom: CommandAtom): boolean {
@@ -458,15 +463,240 @@ export function isReadOnlyGitAtom(atom: CommandAtom): boolean {
   const tokens = atom.tokens;
   if (tokens[0] !== 'git') return false;
   let i = 1;
-  while (tokens[i] === '-C') {
-    if (tokens[i + 1] === undefined) return false;
-    i += 2;
+  let noPager = false;
+  for (;;) {
+    if (tokens[i] === '-C') {
+      if (tokens[i + 1] === undefined) return false;
+      i += 2;
+    } else if (tokens[i] === '--no-pager' && !noPager) {
+      // T343: one `--no-pager` only turns the pager off.
+      noPager = true;
+      i += 1;
+    } else break;
   }
   if (!READ_ONLY_GIT_SUBCOMMANDS.has(tokens[i] ?? '')) return false;
   return !tokens.slice(i + 1).some((t) => {
     const eq = t.indexOf('=');
     return UNSAFE_READ_GIT_OPTIONS.has(eq === -1 ? t : t.slice(0, eq));
   });
+}
+
+/** T343: `git config` options that write (or open an editor on) a config file. */
+const GIT_CONFIG_WRITE_OPTIONS = new Set([
+  '--add',
+  '--unset',
+  '--unset-all',
+  '--replace-all',
+  '--rename-section',
+  '--remove-section',
+  '-e',
+  '--edit',
+]);
+/** T343: `git config` options that only read. */
+const GIT_CONFIG_READ_OPTIONS = new Set([
+  '--get',
+  '--get-all',
+  '--get-regexp',
+  '--get-urlmatch',
+  '--get-color',
+  '--get-colorbool',
+  '-l',
+  '--list',
+]);
+/** T343: `git config` options whose value is the next token. */
+const GIT_CONFIG_VALUE_OPTIONS = new Set([
+  '-f',
+  '--file',
+  '--blob',
+  '--type',
+  '--default',
+  '--comment',
+  '--value',
+]);
+
+/**
+ * T343: `args` (from `gitArgs`) is a `git config` that sets, unsets, renames
+ * or edits: anything but `--get*`/`--list`, the `get`/`list` subcommands or
+ * a lone key. Unknown shapes count as writes.
+ */
+export function isGitConfigWrite(args: string[]): boolean {
+  if (args[0] !== 'config') return false;
+  const rest = args.slice(1);
+  if (rest.some((t) => GIT_CONFIG_WRITE_OPTIONS.has(t))) return true;
+  if (rest.some((t) => GIT_CONFIG_READ_OPTIONS.has(t))) return false;
+  const positionals: string[] = [];
+  for (let i = 0; i < rest.length; i++) {
+    const t = rest[i] ?? '';
+    if (GIT_CONFIG_VALUE_OPTIONS.has(t)) i++;
+    else if (!t.startsWith('-')) positionals.push(t);
+  }
+  const [first] = positionals;
+  if (first === 'get' || first === 'list') return false;
+  return positionals.length !== 1;
+}
+
+/** T343: env that points git at another repo, worktree, index or template dir. */
+const GIT_REDIRECTING_ENV = new Set([
+  'GIT_DIR',
+  'GIT_WORK_TREE',
+  'GIT_COMMON_DIR',
+  'GIT_INDEX_FILE',
+  'GIT_OBJECT_DIRECTORY',
+  'GIT_TEMPLATE_DIR',
+]);
+
+/**
+ * T343: why an engineer's git call must be held, else `undefined`: it points
+ * git at other dirs (`--git-dir`, `--work-tree`, `GIT_DIR=`, ...), so its
+ * writes can land in the repo's shared `.git`, or it is a `git init` that
+ * can copy a template into it (a re-init of a linked worktree copies the
+ * template into the common dir, `info/attributes` included).
+ */
+export function gitDirRedirectReason(atom: CommandAtom): string | undefined {
+  const invocation = parseGitInvocation(atom.tokens);
+  if (invocation.args === undefined) return undefined;
+  const envName = (atom.prefix ?? [])
+    .map((t) => t.slice(0, Math.max(0, t.indexOf('='))))
+    .find((name) => GIT_REDIRECTING_ENV.has(name));
+  if (envName !== undefined) return `git with ${envName}= points git at other dirs`;
+  const globals = atom.tokens.slice(1, atom.tokens.length - invocation.args.length);
+  if (globals.some((t) => /^--(git-dir|work-tree)(=|$)/.test(t))) {
+    return 'git with --git-dir/--work-tree points git at other dirs';
+  }
+  const args = invocation.args;
+  if (
+    args[0] === 'init' &&
+    (invocation.configs.length > 0 ||
+      globals.some((t) => t.startsWith('--config-env')) ||
+      args.some((t) => /^--(template|separate-git-dir)(=|$)/.test(t)))
+  ) {
+    return 'git init with a template, separate git dir or config can write into the shared .git';
+  }
+  return undefined;
+}
+
+/** T343: subcommands whose `-o <path>` is an output file or directory. */
+const GIT_DASH_O_OUTPUT = new Set(['archive', 'format-patch', 'diff', 'log', 'show', 'range-diff']);
+
+/**
+ * T343: every path a git call (`args` from `gitArgs`) writes a file at:
+ * `--output`, `--output-directory`, `-o` on the diff family, `archive` and
+ * `format-patch`, `checkout-index --prefix`, `bundle create <file>`, and
+ * `init`'s directory. The caller confines them to the worktree, outside `.git`.
+ */
+export function gitWriteTargets(args: string[]): string[] {
+  const sub = args[0] ?? '';
+  const targets: string[] = [];
+  const valued = (flag: string) =>
+    flag === '--output' ||
+    flag === '--output-directory' ||
+    (flag === '-o' && GIT_DASH_O_OUTPUT.has(sub)) ||
+    (flag === '--prefix' && sub === 'checkout-index');
+  for (let i = 1; i < args.length; i++) {
+    const t = args[i] ?? '';
+    const eq = t.indexOf('=');
+    const flag = eq === -1 ? t : t.slice(0, eq);
+    if (!valued(flag)) continue;
+    const value = eq === -1 ? args[i + 1] : t.slice(eq + 1);
+    if (value !== undefined) targets.push(value);
+    if (eq === -1) i++;
+  }
+  if (sub === 'bundle' && args[1] === 'create' && args[2] !== undefined) targets.push(args[2]);
+  if (sub === 'init') {
+    const dir = args.slice(1).find((t) => !t.startsWith('-'));
+    targets.push(dir ?? '.');
+  }
+  return targets;
+}
+
+/** T343: subcommands whose positionals are refs or pathspecs to read, not paths to write. */
+const GIT_READ_POSITIONAL_SUBCOMMANDS = new Set(['log', 'diff', 'show', 'status', 'blame', 'grep']);
+
+/** T343: a token git may take as a filesystem path: absolute, `~`, `$`, `./`, a `..` segment, or on disk. */
+function looksLikeGitPath(value: string, root: string): boolean {
+  if (value === '' || value === '.') return false;
+  if (/^[/~$]/.test(value) || value.startsWith('./')) return true;
+  if (value.split('/').includes('..')) return true;
+  return existsSync(resolve(root, value));
+}
+
+/**
+ * T343: every argument of a git call (`args` from `gitArgs`) that may be a
+ * path, whatever the subcommand: option values (`--x=path`, `-xpath`) and
+ * positionals, except a read subcommand's positionals. A ref (`origin/main`)
+ * is not a path unless it exists on disk. The caller holds any that resolve
+ * outside the worktree or into `.git`.
+ */
+export function gitPathArguments(args: string[], root: string): string[] {
+  const readPositionals = GIT_READ_POSITIONAL_SUBCOMMANDS.has(args[0] ?? '');
+  const paths: string[] = [];
+  let messageNext = false;
+  for (const t of args.slice(1)) {
+    // A commit/tag message (`-m`, `-am`, `--message`) is text, never a path.
+    if (messageNext) {
+      messageNext = false;
+      continue;
+    }
+    if (t === '--message' || /^-[A-Za-z]*m$/.test(t)) {
+      messageNext = true;
+      continue;
+    }
+    if (t.startsWith('--message=') || t.startsWith('-m')) continue;
+    let value: string;
+    if (t.startsWith('--')) {
+      const eq = t.indexOf('=');
+      if (eq === -1) continue;
+      value = t.slice(eq + 1);
+    } else if (t.startsWith('-')) {
+      value = t.slice(2);
+    } else {
+      if (readPositionals) continue;
+      value = t;
+    }
+    if (looksLikeGitPath(value, root)) paths.push(value);
+  }
+  return paths;
+}
+
+/** T343: env that makes git run a program of the caller's choosing. */
+const GIT_PROGRAM_ENV =
+  /^(GIT_CONFIG_[A-Z0-9_]*|GIT_CONFIG|GIT_EXEC_PATH|GIT_PAGER|PAGER|GIT_EXTERNAL_DIFF|GIT_SSH|GIT_SSH_COMMAND|GIT_ASKPASS|GIT_EDITOR|GIT_SEQUENCE_EDITOR|EDITOR|VISUAL)=(.*)$/;
+/** Editor values that run nothing: shell builtins (git runs the editor through `sh`). */
+const INERT_EDITOR = /^(GIT_EDITOR|GIT_SEQUENCE_EDITOR|EDITOR|VISUAL)=(true|:)$/;
+
+/**
+ * T343: an engineer's git call that overrides config, or env git reads as
+ * config, with something that can run a program (`-c core.pager=...`,
+ * `--config-env`, `--exec-path`, `GIT_PAGER=`, `GIT_SSH_COMMAND=`, ...), so
+ * a held command can't ride in on a git key. `GIT_EDITOR=true` (a builtin)
+ * is inert and stays allowed.
+ */
+export function gitProgramOverride(atom: CommandAtom): boolean {
+  const invocation = parseGitInvocation(atom.tokens);
+  if (invocation.args === undefined) return false;
+  if (invocation.configs.length > 0) return true;
+  const globals = atom.tokens.slice(1, atom.tokens.length - invocation.args.length);
+  if (globals.some((t) => /^--(config-env|exec-path)(=|$)/.test(t))) return true;
+  return (atom.prefix ?? []).some((t) => GIT_PROGRAM_ENV.test(t) && !INERT_EDITOR.test(t));
+}
+
+/** T343: a git call a worker shouldn't need and that writes where it is told. */
+export function gitCheckoutElsewhereReason(args: string[]): string | undefined {
+  if (args[0] === 'clone') return 'git clone';
+  if (args[0] === 'worktree' && args[1] === 'add') return 'git worktree add';
+  if (args[0] === 'submodule' && args.includes('add')) return 'git submodule add';
+  return undefined;
+}
+
+/**
+ * T343: `path` is inside `root` with a `.git` segment: the worktree's gitfile
+ * or a `.git` directory. Git's own state, written only through git.
+ */
+export function isInsideGitDir(path: string, root: string): boolean {
+  const resolvedRoot = realpathNearestExisting(resolve(root));
+  const rel = relative(resolvedRoot, realpathNearestExisting(resolve(root, path)));
+  if (rel === '' || rel.startsWith('..') || isAbsolute(rel)) return false;
+  return rel.split(sep).includes('.git');
 }
 
 /** Args from `git`'s subcommand onward, or `undefined` if this isn't a `git` invocation with one. */
