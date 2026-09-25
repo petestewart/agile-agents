@@ -33,7 +33,13 @@ export type FakeAgentStep =
   /** Blocks until `path` exists: end a turn after something outside happened, without a racy sleep. */
   | { type: 'wait_for_file'; path: string; timeoutMs?: number }
   /** Pauses `ms` before the next step: a long turn with events spaced out in real time. */
-  | { type: 'delay'; ms: number };
+  | { type: 'delay'; ms: number }
+  /**
+   * T341: blocks until `path` exists, then says its contents as one
+   * `agent_message_chunk` (nothing when empty or timed out): a test plays
+   * the agent turn by turn, deciding each reply while the turn is open.
+   */
+  | { type: 'text_from_file'; path: string; timeoutMs?: number };
 
 export interface FakeAgentScript {
   steps: FakeAgentStep[];
@@ -186,6 +192,20 @@ async function runScript(promptRequestId: number | string): Promise<void> {
         const deadline = Date.now() + (step.timeoutMs ?? 20_000);
         while (!existsSync(step.path) && Date.now() < deadline) {
           await new Promise((resolve) => setTimeout(resolve, 20));
+        }
+        break;
+      }
+      case 'text_from_file': {
+        const deadline = Date.now() + (step.timeoutMs ?? 20_000);
+        while (!existsSync(step.path) && Date.now() < deadline) {
+          await new Promise((resolve) => setTimeout(resolve, 20));
+        }
+        const text = existsSync(step.path) ? readFileSync(step.path, 'utf8') : '';
+        if (text.trim() !== '') {
+          notify('session/update', {
+            sessionId,
+            update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } },
+          });
         }
         break;
       }
