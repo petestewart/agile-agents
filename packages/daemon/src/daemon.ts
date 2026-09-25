@@ -253,6 +253,8 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
             await lessonsService?.onStreamEnd(id);
           },
           ...(mainSync ? { onMainMoved: (repo, id) => mainSync.mainMoved(repo, id) } : {}),
+          // T340: a deliver that finds the PR merged on GitHub records it at once.
+          refreshPr: (id: string): Promise<unknown> | undefined => prPoller?.pollNow(id),
         })
       : undefined;
   if (gateService && landingService) wireLandGateResolution(gateService, landingService);
@@ -487,6 +489,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
     ...(rulesService && ruleEvals ? { ruleEvals } : {}),
     ...(classifierKey ? { classifierKey } : {}),
     ...(landingService ? { landing: landingService } : {}),
+    ...(prPoller ? { prCheck: (id: string) => prPoller.pollNow(id) } : {}),
     ...(attachService ? { attach: attachService } : {}),
     ...(routedEvents ? { events: routedEvents } : {}),
     ...(repoInPlace ? { repoInPlace } : {}),
