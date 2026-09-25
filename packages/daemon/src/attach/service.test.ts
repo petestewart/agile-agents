@@ -490,17 +490,29 @@ describe('the reviewer (§4.2)', () => {
     expect(after.sessions.find((s) => s.id === session.id)?.status).not.toBe('running');
   }, 30_000);
 
-  test('a reviewer on a stream with no worker left moves agent.status to done', async () => {
+  test('a reviewer never moves agent.status, even with no worker left', async () => {
     const stream = await makeStream();
     const { handle } = await attachService.attach(stream.id, { role: 'reviewer' });
     // No worker ever attached, so `agent.status` is still `idle` here.
     expect(streams.get(stream.id).agent.status).toBe('idle');
+    // The review ends before anything is checked (CI saw it end at spawn).
     handle.stop();
     await handle.exited;
-    await waitFor(() => streams.get(stream.id).agent.status === 'done');
+    await waitFor(() => threadBodies(stream.id).some((b) => b.startsWith('review finished:')));
     expect(threadBodies(stream.id).some((b) => b.startsWith('review finished: 0 findings'))).toBe(
       true,
     );
+    // A review is not work: the worker's field is untouched.
+    expect(streams.get(stream.id).agent.status).toBe('idle');
+  }, 20_000);
+
+  test('a reviewer whose turn ends on its own leaves agent.status alone', async () => {
+    attachService = buildAttachService(fakeProviderFor(ACP_PROVIDERS.claude, SPEAKS));
+    const stream = await makeStream();
+    const { handle } = await attachService.attach(stream.id, { role: 'reviewer' });
+    await handle.exited;
+    await waitFor(() => threadBodies(stream.id).some((b) => b.startsWith('review finished:')));
+    expect(streams.get(stream.id).agent.status).toBe('idle');
   }, 20_000);
 
   test('auto_review starts a reviewer when the worker exits done', async () => {
