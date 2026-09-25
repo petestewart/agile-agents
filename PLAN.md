@@ -1731,6 +1731,24 @@ agile tail --director
 - **Validation Steps:** `bun test packages/daemon/src/runner packages/daemon/src/attach`.
 - **Notes:** —
 
+### Ticket: T341 Walkthrough QA in a browser with the fake agent
+- **Priority:** P0
+- **Status:** Todo
+- **Owner:** —
+- **Scope:** Pete (2026-09-25): before he runs the walkthrough again, a QA agent drives LIVE-CHECKLIST end to end in the cockpit (Playwright, Chromium) with the fake agent, fake GitHub and fake Jira, screenshots every step, and checks what appears where. Every bug found is fixed (on the earliest phase) and re-run until clean. Only real-agent behaviour is left for Pete.
+- **Acceptance Criteria:** A run report with a screenshot per step and zero open findings; the scripted scenario lives in the repo as a reusable e2e (`test:walkthrough`, not in CI by default if slow).
+- **Validation Steps:** the scenario passes twice in a row.
+- **Notes:** After T336, T338, T339, T340 merge.
+
+### Ticket: T342 QA with a real agent
+- **Priority:** P1
+- **Status:** Blocked
+- **Owner:** —
+- **Scope:** Pete: "eventually I need you to be able to QA with a real agent." Run the T341 scenario against real Claude Code sessions in the cloud container, a real GitHub test repo and optionally a real tracker sandbox, and report agent-behaviour findings (like the `bunx tsc` choice) as well as app bugs. The daemon still holds no vendor credential (§7): the key lives only in the environment the vendor harness is spawned with.
+- **Acceptance Criteria:** One full real-agent run in the cloud with a report; secrets never printed or logged.
+- **Validation Steps:** —
+- **Notes:** Blocked on Pete adding, in the cloud environment's settings: `ANTHROPIC_API_KEY` (for Claude Code in the container), `GH_TOKEN` (fine-grained, write to a throwaway test repo only), and optionally a Linear or Jira sandbox token. Network must allow api.anthropic.com and api.github.com.
+
 ### Ticket: T325 Phase 13 QA and Pete's look
 - **Priority:** P0
 - **Status:** Done
