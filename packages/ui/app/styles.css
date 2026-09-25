@@ -652,6 +652,11 @@ body {
 .cr-thread li.cr-rule-hit .who {
   color: var(--danger);
 }
+/* T330: a long entry, collapsed to ~12 lines until "Show more". */
+.cr-thread .cr-collapsed {
+  max-height: 12lh;
+  overflow: hidden;
+}
 .cr-thread .who {
   font-size: 11px;
   font-weight: 700;

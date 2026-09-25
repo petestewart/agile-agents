@@ -12,6 +12,7 @@
  */
 
 import { resolve } from 'node:path';
+import type { ReposConfig, Stream } from '@agile-agents/shared';
 import * as cmd from './command';
 import { isPathInside } from './command';
 import type { PermissionRequest, PermissionRole } from './types';
@@ -58,6 +59,41 @@ export function readDenyReason(
   }
   if (readable.length > 0) return undefined;
   return `${raw} is outside the worktree and every repo this node can read`;
+}
+
+/**
+ * T213, T330 (projects-design §4.4, P20): a node's read scope, for the hook
+ * and the ACP responder alike. Any registered repo is readable except a
+ * private one its project isn't listed on; the agile home never is (the
+ * session's own dir, its cwd, is allowed before any root is checked). An
+ * unreadable registry reads nothing beyond the cwd.
+ */
+export function nodeReadScope(
+  node: Pick<Stream, 'repo' | 'project'> | undefined,
+  readRepos: () => ReposConfig,
+  agileHome: string | undefined,
+): { readRoots: string[]; hiddenRoots: string[] } {
+  const readRoots: string[] = [];
+  const hiddenRoots: string[] = [];
+  let repos: ReposConfig = {};
+  try {
+    repos = readRepos();
+  } catch {
+    // Fail closed: only the cwd.
+  }
+  for (const [name, entry] of Object.entries(repos)) {
+    const visibility = entry.visibility;
+    const visible =
+      name === node?.repo ||
+      visibility === undefined ||
+      visibility.mode === 'public' ||
+      (node?.project !== undefined &&
+        (visibility.projects as readonly string[]).includes(node.project));
+    (visible ? readRoots : hiddenRoots).push(entry.path);
+  }
+  // The home holds the classifier key and every node's state: never a read target.
+  if (agileHome !== undefined) hiddenRoots.push(agileHome);
+  return { readRoots, hiddenRoots };
 }
 
 // Never-without-human (§14 "Never without a human"). Checked before any
@@ -355,9 +391,16 @@ function engineerExecuteVerdict(command: string, ctx: PolicyContext): PolicyVerd
 
 function engineerVerdict(classified: PermissionRequest, ctx: PolicyContext): PolicyVerdict {
   switch (classified.toolClass) {
-    case 'read':
-      // Reads are never gated by ACP (spike-findings §A), but answer consistently.
+    case 'read': {
+      // Reads are never gated by ACP (spike-findings §A), but answer
+      // consistently: under a read scope (T330), as the hook's Read would.
+      if (!hasReadScope(ctx)) return ALLOW;
+      for (const path of allTargetPaths(classified)) {
+        const reason = readDenyReason(path, ctx);
+        if (reason !== undefined) return deny(reason);
+      }
       return ALLOW;
+    }
     case 'edit': {
       // Every path must resolve inside the worktree, not just the first.
       const paths = allTargetPaths(classified);

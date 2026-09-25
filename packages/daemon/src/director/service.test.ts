@@ -22,7 +22,12 @@ import type { FakeAgentScript } from '../runner/fake-agent';
 import { StateStore } from '../store';
 import { StreamService } from '../streams/service';
 import { buildDirectorRpcMethods } from './rpc';
-import { DirectorService, type DirectorServiceOptions, MAX_FAILED_STARTS } from './service';
+import {
+  DirectorService,
+  type DirectorServiceOptions,
+  MAX_FAILED_STARTS,
+  directorBrief,
+} from './service';
 
 const FAKE_AGENT_PATH = join(import.meta.dir, '..', 'runner', 'fake-agent.ts');
 
@@ -134,6 +139,23 @@ describe('T300: the Director', () => {
     await waitFor(() => !director.view().live);
     await waitFor(() => store.getDirector()?.session?.status === 'stopped');
     expect(events.activityFor(DIRECTOR_NODE)[0]?.status).toBe('delivered');
+  });
+
+  test('T330: a long Director reply is one thread entry; the brief quotes its head', async () => {
+    const reply = `${'The plan, sentence by sentence. '.repeat(100)}END-MARKER`;
+    expect(reply.length).toBeGreaterThan(3000);
+    build({
+      steps: [{ type: 'end_turn' }],
+      turns: [[{ type: 'end_turn' }], [{ type: 'agent_text', text: reply }, { type: 'end_turn' }]],
+    });
+    await director.say('Plan the shop.');
+    await waitFor(() => store.readDirectorThread().some((e) => e.by === 'director'));
+    const lines = store.readDirectorThread().filter((e) => e.by === 'director');
+    expect(lines.map((e) => e.body)).toEqual([reply]);
+
+    const brief = directorBrief(store.readDirectorThread());
+    expect(brief).toContain('The plan, sentence by sentence.');
+    expect(brief).not.toContain('END-MARKER');
   });
 
   test('director.say over RPC refuses an empty line', async () => {
