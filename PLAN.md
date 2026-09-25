@@ -1760,12 +1760,12 @@ agile tail --director
 
 ### Ticket: T343 Reviewer read-only git uses the allowlist
 - **Priority:** P0
-- **Status:** Todo
+- **Status:** Done
 - **Owner:** Unassigned
 - **Scope:** Found in T336 review: the reviewer role's own read-only git check refuses `-c` but not `--config-env`, so a reviewer session can run a crafted git alias (command execution inside its worktree). Use T336's `isReadOnlyGitAtom` allowlist for the reviewer too; keep `--no-pager` working if reviewers rely on it. Fix on the earliest phase with the reviewer check, merge forward.
 - **Acceptance Criteria:** Tests: reviewer denied `-c`, `--config-env`, `GIT_*=` prefixes, `--ext-diff`, `--output`; allowed plain `git log/diff/show/status`.
 - **Validation Steps:** `bun test packages/daemon/src/permissions packages/daemon/src/hook`.
-- **Notes:** Pre-existing; not introduced by T336.
+- **Notes:** Branch T343-reviewer-git-allowlist off phase-7, merged 7→14. Reviewer (and coordinator) git: strict allowlist `isReadOnlyGitAtom` (one leading `--no-pager` allowed, `-O<path>` refused); spawn env `readOnlyGitEnv` for every non-engineer role: GIT_ATTR_SOURCE=empty tree, GIT_CONFIG_* core.fsmonitor=false, core.hooksPath=/dev/null, core.pager=cat, gpg.*program=/usr/bin/false, GIT_PAGER=cat (diff.external NOT set: an empty value kills every diff). Engineer: git config writes held; .git writes denied; any git path argument outside the worktree or into .git held; --unsafe-paths denied; clone/worktree add/submodule add held; -c/--config-env/--exec-path and program-running env prefixes held. info/attributes and repo config are protected by the write layer (and the tier-0 sandbox), not the env. A pattern rule's deny now beats a role hold (both tiers). Review (sonnet): 5 rounds, APPROVE. QA (sonnet): PASS (twice; the first missed that the env broke every reviewer diff, caught by the manager).
 
 ### Ticket: T344 Nudge when parts wait on a plan that never comes
 - **Priority:** P2
@@ -1787,12 +1787,12 @@ agile tail --director
 
 ### Ticket: T341 Walkthrough QA in a browser with the fake agent
 - **Priority:** P0
-- **Status:** Todo
-- **Owner:** —
+- **Status:** Done
+- **Owner:** Unassigned
 - **Scope:** Pete (2026-09-25): before he runs the walkthrough again, a QA agent drives LIVE-CHECKLIST end to end in the cockpit (Playwright, Chromium) with the fake agent, fake GitHub and fake Jira, screenshots every step, and checks what appears where. Every bug found is fixed (on the earliest phase) and re-run until clean. Only real-agent behaviour is left for Pete.
 - **Acceptance Criteria:** A run report with a screenshot per step and zero open findings; the scripted scenario lives in the repo as a reusable e2e (`test:walkthrough`, not in CI by default if slow).
 - **Validation Steps:** the scenario passes twice in a row.
-- **Notes:** After T336, T338, T339, T340 merge.
+- **Notes:** Branch T341-walkthrough-qa off phase-14, merged. `bun run build && bun run test:walkthrough` (AGILE_WALKTHROUGH=1) drives LIVE-CHECKLIST 3.4–9.2 in a real cockpit with fake agent/GitHub/Jira/classifier, screenshot per step. 16 fixes (one PR line, plan v1, code-styled globs, no Land card for project conversations / PR-open nodes, grey dots, held reason once, named ship-check items, role-named composer, readable activity rows, project names in Director drafts, "you" in the Director thread, Needs me heading, Repos labels, "its turn finished", "human line"). Runs clean twice (39 steps, 0 findings). Review (sonnet): APPROVE. 12 decisions (D1–D12) and 15 checklist wording changes put to Pete.
 
 ### Ticket: T342 QA with a real agent
 - **Priority:** P1
