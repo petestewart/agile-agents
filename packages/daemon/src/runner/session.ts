@@ -575,11 +575,11 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
    */
   let turnQueue: Promise<void> = Promise.resolve();
   /**
-   * `session/cancel` ahead of a close is a courtesy to an agent that may
-   * already be gone (a failed prompt is often the agent dying). acp-client
-   * reports a send that fails as the session's transport error, so the
-   * result is not needed here; and nothing it does may skip the close and
-   * `finish()` after it, or the session is left half-stopped.
+   * `session/cancel` ahead of a close. acp-client's `cancel()` does not
+   * throw on a failed send (it reports it as the session's transport error),
+   * so the catch is defence in depth: a provider or a future `cancel()` that
+   * throws for any reason must still never skip the close and `finish()`
+   * after it, or the session is left half-stopped.
    */
   function cancelBeforeClose(): void {
     try {

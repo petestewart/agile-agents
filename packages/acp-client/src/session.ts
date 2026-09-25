@@ -282,6 +282,8 @@ export function spawnSession(opts: SpawnSessionOptions): SpawnedSession {
   let handshake: string[] = [];
   /** Set by `close()`: an exit from here on is the one asked for, never a lost pipe. */
   let closeRequested = false;
+  /** Set while `cancel()` writes: a stdin failure then fails the session, never replaces the agent. */
+  let cancelling = false;
   /** The last of the agent's stderr, for the error when an agent is given up on. */
   let stderrTail = '';
   /** Pending `STDOUT_LOSS_GRACE_MS` checks, cleared by `close()`. */
@@ -328,14 +330,21 @@ export function spawnSession(opts: SpawnSessionOptions): SpawnedSession {
     if (exited || !child.stdin || child.stdin.destroyed) return false;
     const line = `${JSON.stringify(obj)}\n`;
     if (!stdoutSpoke) handshake.push(line);
-    const writing = child;
+    return writeTo(child, line);
+  }
+
+  /**
+   * Every write to an agent's stdin goes through here. Bun's stdin writer
+   * throws EPIPE synchronously when the agent is already gone but its exit
+   * is not reported yet: a transport failure of the session, never a throw
+   * into whoever sent the line (often an event-emitter callback, where a
+   * throw is an uncaught exception). False when the write failed.
+   */
+  function writeTo(target: ChildProcess, line: string): boolean {
     try {
-      writing.stdin?.write(line);
+      target.stdin?.write(line);
     } catch (err) {
-      // Bun's stdin writer throws EPIPE synchronously when the agent is
-      // already gone but its exit is not reported yet: a transport failure
-      // of the session, never a throw into whoever sent the line.
-      onStdinFailed(writing, err);
+      onStdinFailed(target, err);
       return false;
     }
     return true;
@@ -565,7 +574,12 @@ export function spawnSession(opts: SpawnSessionOptions): SpawnedSession {
     child = next;
     wire(next);
     onStderr(`[acp-client] agent ${why} before it spoke (lost pipe); restarted the agent\n`);
-    for (const line of handshake) next.stdin?.write(line);
+    // Guarded like every other write: this runs inside an `exit`/`error`/
+    // `close` listener. A failed replay is `next`'s own lost pipe, handled
+    // (replaced again, within the spawn budget, or failed) by `writeTo`.
+    for (const line of handshake) {
+      if (!writeTo(next, line)) break;
+    }
     return true;
   }
 
@@ -597,7 +611,10 @@ export function spawnSession(opts: SpawnSessionOptions): SpawnedSession {
   function onStdinFailed(failed: ChildProcess, err: unknown): void {
     if (failed !== child || exited || closeRequested) return;
     const why = err instanceof Error ? err.message : String(err);
-    if (replaceChild(failed, 'stdin failed')) return;
+    // Never a replacement for a failed `session/cancel`: whoever cancels is
+    // stopping the turn (the runner closes right after), so a fresh agent
+    // would only be spawned to be killed.
+    if (!cancelling && replaceChild(failed, 'stdin failed')) return;
     emit({ type: 'error', message: `ACP agent stdin failed (lost pipe): ${why}` });
     close();
   }
@@ -919,7 +936,12 @@ export function spawnSession(opts: SpawnSessionOptions): SpawnedSession {
     },
     cancel(): boolean {
       if (acpSessionId === null) return false;
-      return notify('session/cancel', { sessionId: acpSessionId });
+      cancelling = true;
+      try {
+        return notify('session/cancel', { sessionId: acpSessionId });
+      } finally {
+        cancelling = false;
+      }
     },
     async load(sessionId: string): Promise<unknown> {
       const run = async (): Promise<unknown> => {
