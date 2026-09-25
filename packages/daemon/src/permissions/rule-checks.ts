@@ -42,16 +42,6 @@ function pathMatchesGlob(path: string, glob: string): boolean {
   return new Bun.Glob(glob).match(path);
 }
 
-/** Subcommands that only read a repo (the reviewer's read-only git set). */
-const READ_ONLY_GIT_SUBCOMMANDS = new Set(['diff', 'log', 'show', 'status']);
-
-/** A read-only git call: no `-c` override (`-c alias.log=…`) and no `--output` file. */
-function isReadOnlyGit(args: string[] | undefined, configs: readonly string[]): boolean {
-  if (args === undefined || configs.length > 0) return false;
-  if (!READ_ONLY_GIT_SUBCOMMANDS.has(args[0] ?? '')) return false;
-  return !args.some((a) => a === '--output' || a.startsWith('--output=') || a === '-o');
-}
-
 /** `path_deny`: a write outside the worktree, or a path matching one of the rule's globs. */
 function checkPathDeny(
   args: Extract<RulePattern, { kind: 'path_deny' }>['args'],
@@ -67,13 +57,10 @@ function checkPathDeny(
     if (glob !== undefined) return `${path} matches the denied path pattern ${glob}`;
   }
   // `git -C <elsewhere>` escapes the worktree without naming a path in
-  // `tool_input`. A read-only one (T336: a coordinator's `git -C <part> log`)
-  // writes nothing; what it may read is the role policy's and P13's call.
+  // `tool_input`.
   if (ctx.command !== undefined) {
     for (const atom of parseCommandIntoAtoms(ctx.command)) {
-      const git = parseGitInvocation(atom.tokens);
-      if (isReadOnlyGit(git.args, git.configs)) continue;
-      for (const cPath of git.cPaths) {
+      for (const cPath of parseGitInvocation(atom.tokens).cPaths) {
         // `~/x` is the home's, not the worktree's `./~/x`; `$X` can't be placed.
         const resolved = resolveTargetPath(cPath);
         if (!resolved.safe) return `git -C ${cPath} names a path that cannot be resolved`;
