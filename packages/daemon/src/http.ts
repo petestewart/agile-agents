@@ -26,6 +26,7 @@ import {
   StreamAttachRequestSchema,
   StreamAutonomyRequestSchema,
   StreamCreateInputSchema,
+  StreamMoveRequestSchema,
   StreamSayInputSchema,
   StreamWaitRequestSchema,
   UlidSchema,
@@ -965,6 +966,7 @@ async function handleRuleRoute(
  *   POST /api/streams/:id/mark-landed  merged outside `land`
  *   POST /api/streams/:id/add-repo     + Repo in place (T205): `{repo, switch?}`
  *   POST /api/streams/:id/wait         Link (T228, P8): `{on, remove?}` a `waits_on` edge
+ *   POST /api/streams/:id/move         Move (T333, D34): `{parent}` a node or a project id
  *
  * `land` is matched before this. Every write is same-origin only
  * and stamps `human`; no principal is ever read from the body (§2.2).
@@ -977,7 +979,7 @@ async function handleStreamRoute(
   sameOrigin: () => boolean,
 ): Promise<Response | undefined> {
   const match = url.pathname.match(
-    /^\/api\/streams\/([^/]+)(?:\/(diff|say|attach|resolve|stop|close|mark-landed|add-repo|wait))?$/,
+    /^\/api\/streams\/([^/]+)(?:\/(diff|say|attach|resolve|stop|close|mark-landed|add-repo|wait|move))?$/,
   );
   if (!match) return undefined;
   const action = match[2];
@@ -1030,6 +1032,11 @@ async function handleStreamRoute(
       if (!input.success) return errorResponse(400, formatZodError('wait', input.error));
       const { on, remove } = input.data;
       return jsonResponse(await feed.streams.wait('human', id, on, remove ? { remove } : {}));
+    }
+    if (action === 'move') {
+      const input = StreamMoveRequestSchema.safeParse(body);
+      if (!input.success) return errorResponse(400, formatZodError('move', input.error));
+      return jsonResponse(await feed.streams.move(id, input.data.parent));
     }
     if (action === 'say') {
       const input = StreamSayInputSchema.safeParse(body);
@@ -1347,9 +1354,19 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
 
           if (feed) {
             ws.subscribe(FEED_WS_TOPIC);
+            // The snapshot's events stop where the tailer has read to: a line
+            // past that seam reaches this socket as a live `event` frame on the
+            // next poll, so reading it here too would deliver it twice.
             ws.send(
               JSON.stringify(
-                buildSnapshot(feed.store, feed.gates, undefined, feed.questions, options.repoRoot),
+                buildSnapshot(
+                  feed.store,
+                  feed.gates,
+                  undefined,
+                  feed.questions,
+                  options.repoRoot,
+                  tailer?.getOffset(),
+                ),
               ),
             );
             if (feed.streams) {

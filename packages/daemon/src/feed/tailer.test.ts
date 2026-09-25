@@ -105,4 +105,31 @@ describe('startEventTailer', () => {
     handle.pollNow();
     expect(handle.getOffset()).toBe(Buffer.byteLength(line));
   });
+
+  test('getOffset excludes a carried partial line (it ends on a line boundary)', () => {
+    writeFileSync(path, '');
+    handle = startEventTailer({ path, onEvents: () => {} });
+    const line = '{"kind":"a"}\n';
+    appendFileSync(path, `${line}{"kind":`);
+    handle.pollNow();
+    expect(handle.getOffset()).toBe(Buffer.byteLength(line));
+    appendFileSync(path, '"b"}\n');
+    handle.pollNow();
+    expect(handle.getOffset()).toBe(Buffer.byteLength(`${line}{"kind":"b"}\n`));
+  });
+
+  test('a poll that ends mid-character keeps the line intact and the offset in bytes', () => {
+    writeFileSync(path, '');
+    const got: unknown[] = [];
+    handle = startEventTailer({ path, onEvents: (events) => got.push(...events) });
+    const line = Buffer.from('{"kind":"é"}\n');
+    const split = line.indexOf(0xc3) + 1; // inside the two-byte é
+    appendFileSync(path, line.subarray(0, split));
+    handle.pollNow();
+    expect(handle.getOffset()).toBe(0);
+    appendFileSync(path, line.subarray(split));
+    handle.pollNow();
+    expect(got).toEqual([{ kind: 'é' }]);
+    expect(handle.getOffset()).toBe(line.length);
+  });
 });

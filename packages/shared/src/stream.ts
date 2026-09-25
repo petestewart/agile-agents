@@ -24,6 +24,25 @@ import { AutonomySchema, DeliveryOverrideSchema, ProjectIdSchema } from './proje
 export const THREAD_BODY_MAX_CHARS = 800;
 
 /**
+ * T330: an agent's own message (`line` by `agent:<id>`, or the Director's) is one entry with
+ * its whole text up to this cap; only past it is it cut, with the full text
+ * behind the entry's `ref`. Every other entry keeps `THREAD_BODY_MAX_CHARS`.
+ */
+export const AGENT_LINE_MAX_CHARS = 16_000;
+
+/** The body cap for one thread entry, by its writer and kind. */
+export function threadBodyMaxFor(by: string, kind: string): number {
+  return kind === 'line' && (by.startsWith('agent:') || by === 'director')
+    ? AGENT_LINE_MAX_CHARS
+    : THREAD_BODY_MAX_CHARS;
+}
+
+/** A thread body as quoted into a brief or a tool result: at most `max` chars, cut with "…". */
+export function quoteThreadBody(body: string, max = THREAD_BODY_MAX_CHARS): string {
+  return body.length <= max ? body : `${body.slice(0, max - 1).trimEnd()}…`;
+}
+
+/**
  * Who may write a stream record. `daemon` may write both halves.
  *
  * A thread entry names its writer precisely (`agent:<session id>`), but a
@@ -134,17 +153,21 @@ export const ThreadEntrySchema = z
     ts: z.string().min(1),
     by: ThreadAuthorSchema,
     kind: ThreadEntryKindSchema,
-    body: z
-      .string()
-      .min(1)
-      .max(
-        THREAD_BODY_MAX_CHARS,
-        `body must be at most ${THREAD_BODY_MAX_CHARS} characters; write the detail to a file and reference it`,
-      ),
+    body: z.string().min(1),
     /** Pointer to the detail: a file path, url, session id, rule id. */
     ref: z.string().min(1).optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((entry, ctx) => {
+    const max = threadBodyMaxFor(entry.by, entry.kind);
+    if (entry.body.length > max) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['body'],
+        message: `body must be at most ${max} characters; write the detail to a file and reference it`,
+      });
+    }
+  });
 export type ThreadEntry = z.infer<typeof ThreadEntrySchema>;
 
 /**
@@ -666,3 +689,9 @@ export const StreamWaitRequestSchema = z
   })
   .strict();
 export type StreamWaitRequest = z.infer<typeof StreamWaitRequestSchema>;
+
+/** T333 (D34): `POST /api/streams/:id/move` and `node.move`: a node, or a project id for its root. */
+export const StreamMoveRequestSchema = z
+  .object({ parent: z.union([UlidSchema, ProjectIdSchema]) })
+  .strict();
+export type StreamMoveRequest = z.infer<typeof StreamMoveRequestSchema>;

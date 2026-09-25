@@ -19,7 +19,7 @@ import {
 import { AutonomyService } from './coordination/autonomy';
 import { CardService } from './coordination/cards';
 import { ContractService } from './coordination/contracts';
-import { PlanService } from './coordination/plans';
+import { PlanService, planMoveCoordination } from './coordination/plans';
 import { SiblingService } from './coordination/siblings';
 import {
   ClassifierDiffRules,
@@ -53,7 +53,12 @@ import { type RpcServerHandle, startRpcServer } from './rpc';
 import { resolveCliBin } from './runner';
 import { StateStore, buildStateRpcMethods } from './store';
 import { migrateHome } from './store/migrate';
-import { RepoInPlaceService, StreamService, buildStreamRpcMethods } from './streams';
+import {
+  type MoveCoordination,
+  RepoInPlaceService,
+  StreamService,
+  buildStreamRpcMethods,
+} from './streams';
 import { MainSync, OverlapTracker, SymbolWatcher } from './sync';
 import { trackerFromConfig } from './trackers/create';
 import { TrackerLinks } from './trackers/link';
@@ -133,7 +138,9 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
     : undefined;
   // A merge (land or a PR merged) hands the node to the retro (§17: after `merged`).
   // Every back-reference in this graph is read lazily through a closure,
-  // so construction order is never a trap.
+  // so construction order is never a trap. One the startup migration can
+  // reach before it is built is a `let`, so it reads as `undefined` (T337).
+  let trackerPush: TrackerStatusPush | undefined;
   const streamService: StreamService | undefined = store
     ? new StreamService(store, {
         // T244: record changes that are routed events (child_status, pr_merged, …).
@@ -143,6 +150,12 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
           await cardService?.refresh(after);
           // T324: Node → tracker (off unless the project turns it on); never blocks the update.
           void trackerPush?.onUpdated(before, after);
+        },
+        // T333: a move is refused while a plan awaits approval (read lazily; built below).
+        coordination: {
+          planAwaitingApproval: (node): boolean =>
+            moveCoordination?.planAwaitingApproval(node) === true,
+          namedIn: (parent, child): string[] => moveCoordination?.namedIn(parent, child) ?? [],
         },
       })
     : undefined;
@@ -193,6 +206,8 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
           ...(emitRouted ? { emit: emitRouted } : {}),
         })
       : undefined;
+  const moveCoordination: MoveCoordination | undefined =
+    planService && contractService ? planMoveCoordination(planService, contractService) : undefined;
   // T282: the autonomy gate for a coordinator's structural changes, and its proposals.
   const autonomyService =
     store && streamService
@@ -568,18 +583,18 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
         })
       : undefined;
   trackerLinks?.start();
-  const trackerPush = store
-    ? new TrackerStatusPush({
-        project: (id) => {
-          try {
-            return store.getProject(id);
-          } catch {
-            return undefined;
-          }
-        },
-        tracker: (system) => trackerFromConfig(system, trackersConfig()),
-      })
-    : undefined;
+  if (store) {
+    trackerPush = new TrackerStatusPush({
+      project: (id) => {
+        try {
+          return store.getProject(id);
+        } catch {
+          return undefined;
+        }
+      },
+      tracker: (system) => trackerFromConfig(system, trackersConfig()),
+    });
+  }
 
   // T205: "+ Repo" in place (projects-design §7), over the attach service's sessions.
   const repoInPlace =

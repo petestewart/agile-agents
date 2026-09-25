@@ -365,6 +365,9 @@ body {
 .cr-tree-row[aria-current="true"] {
   background: var(--accent-weak);
 }
+.cr-tree-row[data-drop-target="true"] {
+  outline: 1px dashed var(--accent);
+}
 .cr-tree-row .title {
   overflow: hidden;
   text-overflow: ellipsis;
@@ -651,6 +654,11 @@ body {
 }
 .cr-thread li.cr-rule-hit .who {
   color: var(--danger);
+}
+/* T330: a long entry, collapsed to ~12 lines until "Show more". */
+.cr-thread .cr-collapsed {
+  max-height: 12lh;
+  overflow: hidden;
 }
 .cr-thread .who {
   font-size: 11px;

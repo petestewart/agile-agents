@@ -4,7 +4,7 @@
  * repos entry are written the way a pre-T200 daemon wrote them.
  */
 
-import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, spyOn, test } from 'bun:test';
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -24,6 +24,9 @@ import { ensureBuiltinKnowledge } from '../knowledge/builtins';
 import { ProjectService } from '../projects/service';
 import { QuestionService } from '../questions/service';
 import { StreamService } from '../streams/service';
+import { startFakeJira } from '../trackers/fake-jira';
+import { createJira } from '../trackers/jira';
+import { TrackerLinks } from '../trackers/link';
 import { migrateHome, migrateRules } from './migrate';
 import { StateStore } from './store';
 
@@ -316,5 +319,58 @@ describe('daemon start migrates an old home', () => {
     const reopened = StateStore.open(home);
     expect(reopened.listStreams().every((s) => s.project !== undefined)).toBe(true);
     expect(events().filter((e) => e.kind === 'home_migrated')).toHaveLength(1);
+  });
+
+  // T337: the migration updates streams during startup, so every service the
+  // stream update hook names must exist by then (T324's push was in its TDZ).
+  test('startup migration runs the update hook cleanly; the status push still runs after', async () => {
+    const { loose } = await seedOldHome();
+    const jira = await startFakeJira();
+    try {
+      await store.setTrackerSettings('jira', {
+        base_url: jira.baseUrl,
+        email: jira.email,
+        token: jira.token,
+      });
+      jira.addIssue({ key: 'SHOP-11', title: 'Sale prices' });
+      previousHome = process.env.AGILE_HOME;
+      process.env.AGILE_HOME = home;
+      const errors = spyOn(console, 'error');
+      try {
+        handle = await startDaemon({
+          port: 0,
+          socketPath: join(home, 'd.sock'),
+          githubAuth: async () => false,
+        });
+        const logged = errors.mock.calls.map((c) => c.map(String).join(' ')).join('\n');
+        expect(logged).not.toContain('update hook failed');
+        expect(logged).not.toContain('before initialization');
+      } finally {
+        errors.mockRestore();
+      }
+      expect(events().filter((e) => e.kind === 'home_migrated')).toHaveLength(1);
+
+      const daemonStore = handle.store as StateStore;
+      const daemonStreams = handle.streamService as StreamService;
+      const migrated = daemonStore.getStream(loose.id);
+      expect(migrated.project).toBeDefined();
+      await new ProjectService(daemonStore, daemonStreams).update(migrated.project as string, {
+        tracker: { system: 'jira', push_status: true, status_map: { in_progress: 'In Progress' } },
+      });
+      const port = createJira({ base_url: jira.baseUrl, email: jira.email, token: jira.token });
+      await new TrackerLinks({
+        streams: daemonStreams,
+        project: (id) => daemonStore.getProject(id),
+        configured: () => ['jira'],
+        tracker: () => port,
+      }).link(loose.id, 'SHOP-11', { system: 'jira' });
+      await daemonStreams.update('agent', loose.id, { agent: { status: 'working' } });
+      const deadline = Date.now() + 5000;
+      const status = () => jira.issues.find((i) => i.key === 'SHOP-11')?.status;
+      while (status() !== 'In Progress' && Date.now() < deadline) await Bun.sleep(20);
+      expect(status()).toBe('In Progress');
+    } finally {
+      await jira.stop();
+    }
   });
 });

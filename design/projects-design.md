@@ -210,7 +210,7 @@ Every knowledge item has an enforcement setting: **tell** (instructions only), *
 
 ## 7. Adding a repo in place
 
-You never restructure the tree by hand to change where work happens. The stream page has a **+ Repo** button, and you keep talking in the same thread. The app reshapes the tree behind the scenes:
+You don't have to restructure the tree by hand to change where work happens (you can, §7.1). The stream page has a **+ Repo** button, and you keep talking in the same thread. The app reshapes the tree behind the scenes:
 
 | The node is | You click | Behind the scenes | What you see |
 |---|---|---|---|
@@ -222,6 +222,17 @@ You never restructure the tree by hand to change where work happens. The stream 
 New children start with the thread so far, the docs and the decisions, so nothing has to be copied by hand. An agent can also suggest it ("this needs a change in web too; add it?"), and you add it with one click.
 
 Example: you ask a conversation node "can we show sale prices?" and it explains how. You click + api and + web. The node is now "Show sale prices" with two parts, and you are still in the same conversation.
+
+### 7.1 Moving a node by hand (D34)
+
+You can also restructure the tree yourself: drag a node onto another node in the rail, or run `agile node move <id> --parent <id|project>`. Dropping it on the project (or passing the project id) moves it to the top level. The same move is `POST /api/streams/:id/move` (same-origin, recorded as you) and `node.move` over RPC.
+
+- **Refused:** moving a project, moving a node into its own subtree, moving it to another project, and moving it while the old or the new parent's plan is waiting for approval. Approve the plan first.
+- **Roles follow:** they are derived from the tree (§2), so the new parent may become a coordinating node and the old one may stop being one. A repo-less conversation moved under a conversation is a tangent (§2.4), however it got there, so the new parent stays a conversation.
+- **Nothing else moves:** a work node keeps its repo, branch, worktree and delivery; a helper still merges into the node it helps; running sessions keep running; "waits on" links stay as they are.
+- **Thread lines:** the old parent, the new parent and the node each get one line. If the old parent's plan or contracts still name the node, its line says so; revising them is the coordinator's (or your) next step, since a changed plan or contract is a decision about what gets built.
+
+Merging two conversations is out of scope.
 
 ## 8. Events
 

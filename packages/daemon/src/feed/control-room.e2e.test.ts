@@ -46,7 +46,7 @@ import { ClassifierKeyService, FakeClassifier } from '../classifier';
 import { AutonomyService } from '../coordination/autonomy';
 import { CardService } from '../coordination/cards';
 import { ContractService } from '../coordination/contracts';
-import { PlanService } from '../coordination/plans';
+import { PlanService, planMoveCoordination } from '../coordination/plans';
 import { DeliveryService } from '../delivery';
 import { DirectorService } from '../director';
 import { DocsService } from '../docs';
@@ -66,7 +66,7 @@ import { ProjectService } from '../projects';
 import { QuestionService } from '../questions';
 import type { FakeAgentScript } from '../runner/fake-agent';
 import { StateStore } from '../store';
-import { RepoInPlaceService, StreamService } from '../streams';
+import { type MoveCoordination, RepoInPlaceService, StreamService } from '../streams';
 import {
   BROWSER_ATTEMPTS,
   BROWSER_READY_BUDGET_MS,
@@ -533,7 +533,14 @@ async function startCockpit(
   const home = mkdtempSync(join(tmpdir(), 'agile-cockpit-e2e-'));
   const init = runInit(home);
   const store = StateStore.open(init.stateRoot);
-  const streams = new StreamService(store);
+  // T333: a move asks plans and contracts, read lazily as the daemon does.
+  const late: { move?: MoveCoordination } = {};
+  const streams = new StreamService(store, {
+    coordination: {
+      planAwaitingApproval: (n) => late.move?.planAwaitingApproval(n) === true,
+      namedIn: (p, c) => late.move?.namedIn(p, c) ?? [],
+    },
+  });
   const delivered: Cockpit['delivered'] = [];
   const questions = new QuestionService(store, streams, {
     deliver: async (session, question) => {
@@ -544,6 +551,7 @@ async function startCockpit(
   const rules = new KnowledgeService({ store, streams });
   const contracts = new ContractService({ store, streams });
   const plans = new PlanService({ store, streams, contracts });
+  late.move = planMoveCoordination(plans, contracts);
   const autonomy = new AutonomyService({ store, streams, plans, contracts });
   const inbox = new InboxService({
     streams,
@@ -2006,6 +2014,68 @@ describe('rule hits on the stream (Playwright e2e, T169)', () => {
   );
 });
 
+describe('a long agent message collapses (Playwright e2e, T330)', () => {
+  browserTest(
+    'an agent line past ~12 lines renders collapsed with Show more / Show less',
+    async () => {
+      const cockpit = await startCockpit();
+      let page: Page | undefined;
+      try {
+        const stream = await cockpit.streams.create('human', { title: 'plan', goal: 'g' });
+        const paragraphs = Array.from(
+          { length: 30 },
+          (_, i) => `Paragraph ${i}: the plan keeps going across both repos.`,
+        );
+        const body = `${paragraphs.join('\n\n')}\n\nLONG-TAIL-MARKER`;
+        expect(body.length).toBeGreaterThan(1600);
+        await cockpit.store.appendThreadEntry(stream.id, {
+          ts: new Date().toISOString(),
+          by: 'agent:01ARZ3NDEKTSV4RRFFQ69G5FAV',
+          kind: 'line',
+          body,
+        });
+        await cockpit.store.appendThreadEntry(stream.id, {
+          ts: new Date().toISOString(),
+          by: 'agent:01ARZ3NDEKTSV4RRFFQ69G5FAV',
+          kind: 'line',
+          body: 'a short one',
+        });
+
+        page = await openPage();
+        await page.goto(`${cockpit.base}/`);
+        await page.locator(`[data-testid="stream-tree"] [data-stream="${stream.id}"]`).click();
+        await page.locator(`[data-testid="stream-page"][data-stream="${stream.id}"]`).waitFor();
+        const long = page.locator('[data-testid="thread-entry"]', { hasText: 'Paragraph 0' });
+        await long.waitFor({ state: 'visible' });
+        // One entry, the whole text in it.
+        expect(await long.count()).toBe(1);
+        expect(await long.textContent()).toContain('LONG-TAIL-MARKER');
+        const toggle = long.locator('[data-testid="thread-expand"]');
+        expect(await toggle.textContent()).toBe('Show more');
+        const bodyBox = long.locator('[data-testid="thread-body"]');
+        const clipped = () => bodyBox.evaluate((el) => el.scrollHeight > el.clientHeight + 1);
+        expect(await clipped()).toBe(true);
+
+        await toggle.click();
+        expect(await toggle.textContent()).toBe('Show less');
+        expect(await toggle.getAttribute('aria-expanded')).toBe('true');
+        expect(await clipped()).toBe(false);
+        await toggle.click();
+        expect(await toggle.textContent()).toBe('Show more');
+        expect(await clipped()).toBe(true);
+
+        // A short entry has no toggle.
+        const short = page.locator('[data-testid="thread-entry"]', { hasText: 'a short one' });
+        expect(await short.locator('[data-testid="thread-expand"]').count()).toBe(0);
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+});
+
 // ---- T266: the Knowledge screen -------------------------------------------
 
 describe('the Knowledge screen (Playwright e2e, T266)', () => {
@@ -2465,6 +2535,64 @@ describe('collapsing the rail (Playwright e2e, T331)', () => {
         // Expanded state persists as well.
         await page.reload();
         await page.locator(rowOf(leaf.id)).waitFor({ state: 'visible' });
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+});
+
+describe('move a node by dragging it in the rail (Playwright e2e, T333)', () => {
+  browserTest(
+    'a drop moves the node and the rail re-nests it; a refused drop says why',
+    async () => {
+      const cockpit = await startCockpit();
+      let page: Page | undefined;
+      try {
+        await cockpit.store.putRepos({ api: { path: cockpit.home } });
+        const shop = await cockpit.projects.create({ name: 'shop' });
+        const node = (title: string, parent?: string) =>
+          cockpit.streams.create('human', {
+            title,
+            goal: 'g',
+            ...(parent ? { parent, repo: 'api' } : { project: shop.id }),
+          });
+        const a = await node('prices');
+        const b = await node('refunds');
+        // A work node: a repo-less child would be a tangent (D33) and leave both conversations.
+        const x = await node('api part', a.id);
+        page = await openPage();
+        await page.goto(`${cockpit.base}/`);
+        const tree = '[data-testid="stream-tree"]';
+        const row = (id: string) => page?.locator(`${tree} [data-stream="${id}"]`);
+        await page
+          .locator(`[data-stream="${a.id}"] + ul [data-stream="${x.id}"]`)
+          .waitFor({ state: 'visible' });
+        expect(await row(a.id)?.getAttribute('data-role')).toBe('coordinating');
+        expect(await row(b.id)?.getAttribute('data-role')).toBe('conversation');
+
+        await row(x.id)?.dragTo(page.locator(`${tree} [data-stream="${b.id}"]`));
+        await page
+          .locator(`[data-stream="${b.id}"] + ul [data-stream="${x.id}"]`)
+          .waitFor({ state: 'visible' });
+        await waitUntil('the move to land', () => cockpit.streams.get(x.id).parent === b.id);
+        await waitUntilAsync(
+          'the roles to follow',
+          async () =>
+            (await row(b.id)?.getAttribute('data-role')) === 'coordinating' &&
+            (await row(a.id)?.getAttribute('data-role')) === 'conversation',
+        );
+
+        // refunds' plan awaits approval: dropping on the project is refused, and nothing moves.
+        await cockpit.plans.write(b.id, [{ child: x.id, owns: ['api/**'] }]);
+        await row(x.id)?.dragTo(page.locator(`${tree} [data-stream="${shop.root}"]`));
+        await page.locator('[data-testid="move-error"]').waitFor({ state: 'visible' });
+        expect(await page.locator('[data-testid="move-error"]').textContent()).toContain(
+          'awaiting approval',
+        );
+        expect(cockpit.streams.get(x.id).parent).toBe(b.id);
       } finally {
         await teardown([page]);
         await cockpit.stop();

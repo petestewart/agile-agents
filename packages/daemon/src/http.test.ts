@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import {
   DEFAULT_CLASSIFIER_ALLOW_BELOW,
   DEFAULT_CLASSIFIER_DENY_AT,
+  type Event,
   type KnowledgeItem,
   type Policy,
   type SessionDefaultsStatus,
@@ -626,6 +627,30 @@ describe('T160 cockpit routes', () => {
     expect(long.status).toBe(400);
   });
 
+  test('T333: POST /api/streams/:id/move moves as human; strict body; a refusal is 400; cross-origin 403', async () => {
+    const move = (id: string, body: unknown, headers: Record<string, string> = {}) =>
+      fetch(url(`/api/streams/${id}/move`), {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', ...headers },
+        body: JSON.stringify(body),
+      });
+    const a = await streams.create('human', { title: 'a', goal: 'g' });
+    const b = await streams.create('human', { title: 'b', goal: 'g', parent: a.id });
+    const c = await streams.create('human', { title: 'c', goal: 'g', parent: a.id });
+    expect((await move(c.id, { parent: b.id }, { origin: 'http://evil.example' })).status).toBe(
+      403,
+    );
+    expect((await move(c.id, { parent: b.id, by: 'daemon' })).status).toBe(400);
+    expect((await move(a.id, { parent: c.id })).status).toBe(400);
+    const ok = await move(c.id, { parent: b.id });
+    expect(ok.status).toBe(200);
+    expect(((await ok.json()) as { parent: string }).parent).toBe(b.id);
+    expect(streams.readThread(b.id).entries.at(-1)).toMatchObject({
+      by: 'human',
+      body: `moved here: c (${c.id}) from a`,
+    });
+  });
+
   test('T169: a say prompted into the asking session answers its open question as human', async () => {
     const stream = await streams.create('human', { title: 's', goal: 'g' });
     const session = ulid();
@@ -784,6 +809,63 @@ describe('T160 cockpit routes', () => {
       expect(pushed?.streams.find((s) => s.id === stream.id)?.human_status).toBe('waiting_on_you');
     } finally {
       ws.close();
+    }
+  });
+
+  test('/ws delivers an event exactly once when it lands between tailer polls and the connect snapshot', async () => {
+    // A slow poll so the event is on disk (and in a naive snapshot) before the
+    // tailer's next poll publishes it to the now-subscribed socket.
+    const slow = startHttpServer({
+      port: 0,
+      version: '0.0.0-test',
+      stateRoot,
+      startedAt: Date.now(),
+      store,
+      gates: new GateService(store),
+      feedPollIntervalMs: 400,
+    });
+    const agentId = '01ARZ3NDEKTSV4RRFFQ69GE902';
+    const seen: string[] = [];
+    let snapshots = 0;
+    await store.putAgent(agentId, {
+      vendor: 'claude',
+      model: 'claude-sonnet-4-5',
+      last_seen: new Date().toISOString(),
+    });
+    const ws = new WebSocket(`ws://127.0.0.1:${slow.port}/ws`);
+    ws.onmessage = (event) => {
+      const frame = JSON.parse(event.data as string) as {
+        type: string;
+        events?: Event[];
+        event?: Event;
+      };
+      if (frame.type === 'snapshot') {
+        snapshots++;
+        for (const e of frame.events ?? []) if (e.agent === agentId) seen.push(e.kind);
+      } else if (frame.type === 'event' && frame.event?.agent === agentId) {
+        seen.push(frame.event.kind);
+      }
+    };
+    try {
+      const deadline = Date.now() + 5000;
+      while (snapshots === 0 && Date.now() < deadline) await Bun.sleep(10);
+      expect(snapshots).toBe(1);
+      // Past two poll intervals: any duplicate publish has arrived by now.
+      await Bun.sleep(1000);
+      expect(seen).toEqual(['agent_put']);
+
+      // And an event written after the connect still arrives, once.
+      await store.putAgent(agentId, {
+        vendor: 'claude',
+        model: 'claude-sonnet-4-5',
+        last_seen: new Date().toISOString(),
+      });
+      while (seen.length < 2 && Date.now() < deadline) await Bun.sleep(10);
+      await Bun.sleep(500);
+      expect(seen).toEqual(['agent_put', 'agent_put']);
+    } finally {
+      ws.close();
+      await slow.stop();
     }
   });
 });

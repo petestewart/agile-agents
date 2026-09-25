@@ -1704,6 +1704,78 @@ agile tail --director
 - T331: sonnet review APPROVE. Caret, double-click and Left/Right toggle; folds in localStorage (try/catch); folded rows show the amber dot; filter opens folds. Merged on phase-7 and forward to 13 (phase-8 conflict in StreamTree.tsx resolved keeping the overlap mark, visibility badge and dot). Double-click also opens the stream — Pete to confirm.
 
 
+### Ticket: T335 Walkthrough cockpit-first from 3.4
+- **Priority:** P1
+- **Status:** Done
+- **Owner:** Unassigned
+- **Scope:** Pete: LIVE-CHECKLIST from 3.4 on uses the cockpit, CLI only where no UI exists.
+- **Acceptance Criteria:** Labels from packages/ui source; non-agent steps clicked through in a real cockpit.
+- **Validation Steps:** Pete's walkthrough.
+- **Notes:** Docs only. Found: the ship check let an untested diff through in 1 of 5 real-classifier runs (4 held at 0.80–0.83).
+
+### Ticket: T336 Coordinator plans first after a split
+- **Priority:** P1
+- **Status:** In Progress
+- **Owner:** opus:worker-T336
+- **Scope:** Pete's run: after "+ Repo" split a node, the parts started at once with the node's whole goal and raised questions before the coordinator's plan existed. The coordinator starts first; parts wait for plan approval and get scoped goals; no Land card on a coordinating node; coordinator may run read-only Bash; a node woken by a coordinator note gets the note text and event id.
+- **Acceptance Criteria:** Tests for the split ordering, part hold until approval, scoped goals, the wake note.
+- **Validation Steps:** `bun test packages/daemon/src/streams packages/daemon/src/events packages/daemon/src/coordination`.
+- **Notes:** Branch T336-coordinator-wake.
+
+### Ticket: T337 trackerPush used before init at startup
+- **Priority:** P1
+- **Status:** Done
+- **Owner:** Unassigned
+- **Scope:** Startup migration raises questions → StreamService.update → onUpdated hook reads `trackerPush`, a const declared later: "Cannot access 'trackerPush' before initialization". Declare it before the StreamService; the push is skipped during migration.
+- **Acceptance Criteria:** Regression test fails on the old code, passes on the new; status pushes still reach the tracker.
+- **Validation Steps:** `bun test packages/daemon/src/store packages/daemon/src/tracker`.
+- **Notes:** Branch T337-trackerpush-init (d18b826). Review (sonnet): APPROVE, regression confirmed against old code. QA (sonnet): PASS, reproduced on a legacy-shaped home before the fix, clean after. merge 8e6a3cf.
+
+### Ticket: T338 Names, not ids, and the cockpit gaps from the walkthrough
+- **Priority:** P1
+- **Status:** Todo
+- **Owner:** —
+- **Scope:** (1) Everywhere the user reads text (plan owners, hold/satisfied lines, cards, agent text via briefs), show node/contract/plan titles as links, never raw ids; briefs tell agents to use titles. (2) Parts' questions about shared things go to the coordinator first; approving a plan resolves questions it answers. (3) Cockpit gaps: project/node ids copyable where scopes need them (or a scope picker); Director autonomy picker per project; project tracker / push status / status map controls; Name field on Knowledge → New rule; New project with repos; PR review/check/auto-merge state in the Delivery panel; an event-log view.
+- **Acceptance Criteria:** Tests per item; e2e for the new controls.
+- **Validation Steps:** `bun run test:e2e`.
+- **Notes:** From Pete's walkthrough and T335's gap list. May split. Pete (2026-09-25): the Plan tab must label things: an "Owners" list by part name and each contract under a "Contract" heading.
+
+### Ticket: T339 Agents know the repo's own check commands
+- **Priority:** P1
+- **Status:** Done
+- **Owner:** Unassigned
+- **Scope:** Pete's run: the ledger-lite part tried `bunx tsc --noEmit` (not in the repo, so it would fetch TypeScript) and waited on a human decision, instead of using the repo's own scripts. Put the repo's check commands in the brief: the `scripts` of the worktree's package.json (test, typecheck, lint, build) or a per-repo `checks` list in repos.yaml when set, with "use these; don't install or fetch tools". When a command is held or denied for fetching a tool, the reason names the repo's own scripts.
+- **Acceptance Criteria:** Brief test lists the scripts; a repo with `checks` set uses them; the hold reason suggests them.
+- **Validation Steps:** `bun test packages/daemon/src/runner packages/daemon/src/attach`.
+- **Notes:** Branch T339-repo-checks, merge 797903e. Review (sonnet): APPROVE; nits applied (yarn runner, unit tests). QA (sonnet): PASS (brief Checks, repos.yaml override, bunx/npx/bun add holds name the scripts, no package.json → no section). Adds optional `checks` to repo entries (sibling of protected_branches).
+
+### Ticket: T340 An auto-merged PR shows as merged
+- **Priority:** P1
+- **Status:** In Progress
+- **Owner:** opus:worker-T340
+- **Scope:** Pete's run: the PR auto-merged but the cockpit kept showing the Merge banner, and clicking Merge re-showed it. Show the PR's real state (merged, checks, review); replace the Merge button with PR status and "Check now" when GitHub merges it.
+- **Acceptance Criteria:** A PR merged outside the cockpit shows merged after a poll or "Check now"; e2e.
+- **Validation Steps:** `bun test packages/daemon/src/delivery`; `bun run test:e2e`.
+- **Notes:** —
+
+### Ticket: T341 Walkthrough QA in a browser with the fake agent
+- **Priority:** P0
+- **Status:** Todo
+- **Owner:** —
+- **Scope:** Pete (2026-09-25): before he runs the walkthrough again, a QA agent drives LIVE-CHECKLIST end to end in the cockpit (Playwright, Chromium) with the fake agent, fake GitHub and fake Jira, screenshots every step, and checks what appears where. Every bug found is fixed (on the earliest phase) and re-run until clean. Only real-agent behaviour is left for Pete.
+- **Acceptance Criteria:** A run report with a screenshot per step and zero open findings; the scripted scenario lives in the repo as a reusable e2e (`test:walkthrough`, not in CI by default if slow).
+- **Validation Steps:** the scenario passes twice in a row.
+- **Notes:** After T336, T338, T339, T340 merge.
+
+### Ticket: T342 QA with a real agent
+- **Priority:** P1
+- **Status:** Blocked
+- **Owner:** —
+- **Scope:** Pete: "eventually I need you to be able to QA with a real agent." Run the T341 scenario against real Claude Code sessions in the cloud container, a real GitHub test repo and optionally a real tracker sandbox, and report agent-behaviour findings (like the `bunx tsc` choice) as well as app bugs. The daemon still holds no vendor credential (§7): the key lives only in the environment the vendor harness is spawned with.
+- **Acceptance Criteria:** One full real-agent run in the cloud with a report; secrets never printed or logged.
+- **Validation Steps:** —
+- **Notes:** Blocked on Pete adding, in the cloud environment's settings: `ANTHROPIC_API_KEY` (for Claude Code in the container), `GH_TOKEN` (fine-grained, write to a throwaway test repo only), and optionally a Linear or Jira sandbox token. Network must allow api.anthropic.com and api.github.com.
+
 ### Ticket: T325 Phase 13 QA and Pete's look
 - **Priority:** P0
 - **Status:** Done
@@ -1741,12 +1813,12 @@ Pete's requests from the walkthrough (D33, D34). Branch `claude/phase-14`, stack
 
 ### Ticket: T333 ∥ Move nodes by hand
 - **Priority:** P1
-- **Status:** In Progress
-- **Owner:** opus:worker-T333
+- **Status:** Done
+- **Owner:** Unassigned
 - **Scope:** Per D34: `agile node move <id> --parent <id|project>`, an HTTP route (same-origin, actor human) and drag-and-drop in the rail. Refuse moves into its own subtree, across projects, or while the parent's plan awaits approval. Re-derive roles; a thread line on the old and new parent; a work node keeps its branch and worktree. Update design/projects-design.md §6.
 - **Acceptance Criteria:** Service tests for every refusal and for roles after a move; CLI test; e2e drag moves a node and the rail updates.
 - **Validation Steps:** `bun test packages/daemon/src/streams packages/cli`; `bun run test:e2e`.
-- **Notes:** —
+- **Notes:** Branch T333-move-nodes, merge ca402d0. Review (sonnet): APPROVE. QA (sonnet): PASS; low: a drop the rail refuses client-side (own subtree, other project) shows no message, only a server refusal does.
 
 ### Ticket: T334 Phase 14 QA and Pete's look
 - **Priority:** P0

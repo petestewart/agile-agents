@@ -334,6 +334,11 @@ export function waitOnStream(id: string, on: string, remove = false): Promise<un
   return post(`/api/streams/${encodeURIComponent(id)}/wait`, { on, ...(remove ? { remove } : {}) });
 }
 
+/** T333 (D34): the rail's drag — move `id` under `parent` (a node, or a project id for its root). */
+export function moveStream(id: string, parent: string): Promise<Stream> {
+  return post(`/api/streams/${encodeURIComponent(id)}/move`, { parent }) as Promise<Stream>;
+}
+
 export async function getPolicy(): Promise<Policy> {
   const res = await fetch('/api/policy');
   const payload = (await res.json()) as Policy & { error?: string };

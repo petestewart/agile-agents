@@ -11,6 +11,11 @@ How to use it:
 
 - Paste each block as it is. Every block not marked **[vendor]** was run as
   pasted in a scratch home before it was written down.
+- From 3.4 on, the steps are done in the cockpit: which screen, what to click
+  or type, and what you should see. Every one not marked **[vendor]** was
+  clicked through in a real cockpit on a scratch home. The few steps the
+  cockpit can't do yet are marked **CLI only:**, and are listed at the end
+  of step 9.
 - **[vendor]** steps need a real login: Claude Code (the agents), `gh` (pull
   requests) or your Jira/Linear site. They were derived from the tests, the
   phase QA tickets and the CLI source, not run here.
@@ -83,10 +88,8 @@ The cockpit is `http://127.0.0.1:4600/`.
 
 `agile` with no arguments prints every command. The ones this walkthrough
 uses: `init`, `daemon start|stop|status`, `repo add|set|list`,
-`project new|list|show|set`, `node new|list|show|say|add-repo|wait|link|import-children|set`,
-`deliver`, `attach`, `knowledge add|show|accept|list|test`, `director say`,
-`tracker set|status`, `inbox`, `answer`, `status` and `tail`. Every verb takes
-`--json`.
+`project new|list|show|set`, `node new|list|show|add-repo`,
+`knowledge list` and `tail`. Every verb takes `--json`.
 
 ## 1. Install, a fresh home, start
 
@@ -367,32 +370,37 @@ agile node list --parent $C
 
 ### 3.4 Approve the plan and the contract
 
-Tell the coordinator to go ahead. Type on its thread, or paste:
+From here on, every step is done in the cockpit unless it is marked
+**CLI only:** (the cockpit has no control for it yet; the list is in
+"Not in the cockpit yet" at the end). Keep `http://127.0.0.1:4600/` open.
 
-```zsh
-SHOP=$(agile project list --json | jq -r '.[] | select(.name=="Shop") | .id')
-C=$(agile node list --project $SHOP --json | jq -r '.[] | select(.title=="Ledger export") | .id')
-agile node say $C "Go ahead. Write the plan and a contract for the JSON shape of one ledger entry, then let the parts work from them."
-agile inbox
-```
-
+- [ ] In the rail, click **Ledger export**. On the **Thread** tab, type in the
+      composer (`Write on the stream…`):
+      `Go ahead. Write the plan and a contract for the JSON shape of one ledger entry, then let the parts work from them.`
+      and press **Send** (or Enter). Your line appears on the thread at once.
 - [ ] Within a few minutes the coordinator writes a **plan** (which part owns
       which paths) and a **contract** (the JSON shape both parts rely on).
-      **Needs me** shows an **Approve plan** card on Ledger export whose text
-      names the owners and the contracts. `agile inbox` lists it too.
-- [ ] The node's **Plan** tab shows `Plan v1 · draft`, the owners, and each
-      contract's body.
-- [ ] Press **Approve plan**. The tab reads `Plan v1 · approved by human`.
-      Each part is told its paths (`plan_changed` in the part's **Activity**
-      tab), and each part's brief now carries its owned paths and the
-      contract.
-- [ ] While the parts work, the coordinator's page shows a status card per
-      child (what it is doing, files touched, done or blocked). If a part
-      wants to change the contract, it proposes the change to the parent; at
-      advise you get a **proposal** card (Apply/Dismiss) and the change shows
-      as one line in the coordinator's **Activity**.
-- [ ] Questions from any agent appear in **Needs me**. Answer inline, or with
-      `agile answer` and the `Q-…` id from `agile inbox`.
+      **Needs me** gets a badge, and shows a `plan to approve` card under
+      Ledger export whose text names the owners and the contracts. The same
+      card sits under **Needs you** on the Ledger export page.
+- [ ] On the Ledger export page, open the **Plan** tab. It reads
+      `Plan v1 · draft` with an **Approve** button, one line per part
+      (`<part>: <paths>`), and each contract as `<title> · v1 · parties 2`
+      with its body.
+- [ ] Press **Approve plan** on the card (or **Approve** on the Plan tab).
+      The tab reads `Plan v1 · approved by human` and the card leaves
+      **Needs me**. Click the ledger-lite part in the rail and open its
+      **Activity** tab: it has a `plan changed` row. Each part's brief now
+      carries its owned paths and the contract.
+- [ ] While the parts work, the Ledger export page shows a **Children**
+      section: one status card per part (its state, what it is doing, the
+      files it touched). If a part wants to change the contract, the
+      coordinator (at advise) puts a `coordinator proposal` card in **Needs
+      me** with **Apply** and **Dismiss**, and the change shows as one row in
+      the coordinator's **Activity** tab.
+- [ ] Questions from any agent appear in **Needs me** as `question` cards.
+      Type in `Answer in your own words…` and press **Answer**. The answer
+      goes to the asking session as you wrote it.
 
 ## 4. **[vendor]** Delivery: a pull request that looks after itself
 
@@ -402,87 +410,59 @@ merged, so it **waits on** the other part.
 
 ### 4.1 The ledger-lite part waits on the agile-test-repo part
 
-Paste this (or press **Link** on the ledger-lite part's page, pick
-`agile-test-repo part`, then **Wait on**). If the coordinator already proposed
-the same link, Apply its card instead.
+If the coordinator already proposed this link, press **Apply** on its card in
+**Needs me** instead, and skip to the checks.
 
-```zsh
-SHOP=$(agile project list --json | jq -r '.[] | select(.name=="Shop") | .id')
-C=$(agile node list --project $SHOP --json | jq -r '.[] | select(.title=="Ledger export") | .id')
-P1=$(agile node list --parent $C --json | jq -r '.[] | select(.repo=="ledger-lite") | .id')
-P2=$(agile node list --parent $C --json | jq -r '.[] | select(.repo=="agile-test-repo") | .id')
-agile node wait $P1 --on $P2
-agile node show $P1 --json | jq -r '.waits_on[] | .node + "  " + (.satisfied_at // "open")'
-```
-
-- [ ] `node wait` prints `… waits on …`; the second line prints P2's id and
-      `open`. **Dependencies** shows the edge; the part's page lists
-      `waits on agile-test-repo part`.
+- [ ] Open the **ledger-lite part** (under Ledger export in the rail). Press
+      **Link** in the row of buttons under the sessions, pick
+      `agile-test-repo part` in the list that opens, and press **Wait on**.
+- [ ] The page lists `waits on agile-test-repo part` with an **Unlink**
+      button.
+- [ ] **Dependencies** (top bar) shows
+      `ledger-lite part waits on agile-test-repo part`. Click either name to
+      open that node.
 
 ### 4.2 Open the pull request
 
-Watch the agile-test-repo part until its agent is done (the rail, or
-`agile node show $P2 --json | jq -r .agent.status` reads `done`). The first
-delivery is yours: press **Merge** in its Delivery panel, or:
-
-```zsh
-SHOP=$(agile project list --json | jq -r '.[] | select(.name=="Shop") | .id')
-C=$(agile node list --project $SHOP --json | jq -r '.[] | select(.title=="Ledger export") | .id')
-P2=$(agile node list --parent $C --json | jq -r '.[] | select(.repo=="agile-test-repo") | .id')
-agile deliver $P2
-agile node show $P2 --json | jq -r '.delivery_state.status, .delivery_state.pr.url, .delivery_state.pr.auto_merge'
-```
-
-- [ ] The ship checks run first (see the Delivery panel's
-      `Ship check rules: …` line), then the branch is pushed and a PR opens.
-      Status `pr_open`, the PR URL, and auto-merge `enabled`. The PR body
-      carries the goal and an `Issues:` line.
-- [ ] If auto-merge reads `unavailable`, GitHub refused it: check 2.1 (Allow
-      auto-merge, and the required `changelog` check). The node then waits for
-      you to merge on GitHub.
+- [ ] Open the **agile-test-repo part** and wait until the line under its
+      title reads `agent done` (its rail dot also turns amber, "waiting on
+      you"). The **Diff** tab shows what it changed against main.
+- [ ] The first delivery is yours. In the **Delivery** panel the line reads
+      `Ready: stream/… is N commits ahead of main.` and
+      `Ship check rules: …` (or `No diff-stage rules in scope.`). Press
+      **Merge**.
+- [ ] The ship checks run first, then the branch is pushed and a PR opens.
+      The panel shows `pushed stream/… to origin; opened PR #N into main: https://github.com/petestewart/agile-test-repo/pull/N`
+      and `Delivery: pr · pr open`. The thread adds the same line and
+      `auto-merge enabled on PR #N`. Open the link: the PR body carries the
+      goal and an `Issues:` line.
+- [ ] If the thread says `GitHub refused auto-merge on PR #N: …; waiting for a human merge`,
+      check 2.1 (Allow auto-merge, and the required `changelog` check). The
+      node then waits for you to merge on GitHub.
 
 ### 4.3 A review comment and a failing check reach the agent
 
 - [ ] **Straight away**, before the agent can fix the check, comment on the
       PR on github.com: `Please add a one-line description at the top of the schema file.`
 - [ ] The `changelog` check fails (the goal never mentioned CHANGELOG.md).
-      Within about a minute the app polls the PR, and the node's **Activity**
-      tab shows a `pr_review` and a `ci_failed` event routed to the part,
-      with how each was delivered (to the live session, or in a digest when
-      it woke).
-
-```zsh
-SHOP=$(agile project list --json | jq -r '.[] | select(.name=="Shop") | .id')
-C=$(agile node list --project $SHOP --json | jq -r '.[] | select(.title=="Ledger export") | .id')
-P2=$(agile node list --parent $C --json | jq -r '.[] | select(.repo=="agile-test-repo") | .id')
-agile tail --node $P2 --events
-agile node show $P2 --json | jq -r '.delivery_state.pr.review, .delivery_state.pr.checks'
-```
-
-- [ ] `tail --node … --events` prints one row per routed event: time, type,
-      why it was routed (`because self`), delivery status and the event id.
-- [ ] The agent reads the failing check, adds a CHANGELOG.md line, addresses
-      your comment, commits and pushes (its `deliver` verb updates the PR).
-      The check goes green.
+      Within about a minute the app polls the PR. The part's **Activity** tab
+      shows a `pr review` row and a `ci failed` row, each with why it was
+      routed (`self`) and how it was delivered (`delivered in session …` to
+      the live session, or `in digest …` when the agent woke).
+- [ ] On the **Thread** tab the agent reads the failing check, adds a
+      CHANGELOG.md line, addresses your comment, commits and pushes (its
+      `deliver` verb updates the PR). The check goes green.
 - [ ] With the check green and nothing pending, GitHub auto-merges the PR.
-      Within about a minute:
-
-```zsh
-SHOP=$(agile project list --json | jq -r '.[] | select(.name=="Shop") | .id')
-C=$(agile node list --project $SHOP --json | jq -r '.[] | select(.title=="Ledger export") | .id')
-P1=$(agile node list --parent $C --json | jq -r '.[] | select(.repo=="ledger-lite") | .id')
-P2=$(agile node list --parent $C --json | jq -r '.[] | select(.repo=="agile-test-repo") | .id')
-agile node show $P2 --json | jq -r '.delivery_state.status, .human.status'
-agile node show $P1 --json | jq -r '.waits_on[] | .node + "  " + (.satisfied_at // "open")'
-```
-
-- [ ] P2 reads `merged`. P1's wait now has a `satisfied_at` time, and P1's
-      thread says `waits on … satisfied`. The coordinator's **Activity**
-      shows the child's delivery (`child_delivered`).
+      Within about a minute the part's Delivery panel reads
+      `Delivery: pr · merged`.
+- [ ] Open the **ledger-lite part**: the wait reads
+      `waits on agile-test-repo part · satisfied`, and its thread says
+      `waits on … satisfied`. The coordinator's **Activity** tab has a
+      `child delivered` row.
 - [ ] Sync after merge is per repo: when main moves, every other live work
-      node **on that repo** gets main merged in. P1 is on ledger-lite, so it
-      is synced in step 5, when Blog's work merges into ledger-lite. Its own
-      merge is the last part of step 5.
+      node **on that repo** gets main merged in. The ledger-lite part is on
+      ledger-lite, so it is synced in step 5, when Blog's work merges into
+      ledger-lite. Its own merge is the last part of step 5.
 
 ## 5. Overlap across projects, waits on, sync, direct merge
 
@@ -492,48 +472,74 @@ their parents and the repo view show it, and you (or a coordinator) settle it
 with a "waits on" link. When one merges, main moves, and every other live
 node on the repo is **synced** (main merged in, never rebased).
 
-This step needs no agent. The nodes use `--no-start`, and you play their
-agents by committing in their worktrees by hand. Blocks that `cd` into a
-worktree are chained with `&&`, so nothing is written if a lookup fails.
+This step needs no agent. You create the nodes with **Start later** ticked,
+and play their agents by committing in their worktrees by hand. The
+terminal blocks here are only those commits and a look at the repo. Each
+commit is chained with `&&`, so nothing is written if the `cd` fails. A node's worktree is
+`<repo>/.worktrees/<node-id>-<slug>`, so the blocks find it by its slug. (The
+**Diff** tab shows the full path too.)
+
+After a hand-made commit, the Delivery panel may still say there is nothing
+to land until the next refresh: reload the page if it does.
 
 ### 5.1 A shared file, merged directly
 
 A Blog node adds `walkthrough-notes.md` to ledger-lite and merges directly.
-This is also what the one-click **Merge** does on a direct repo.
+
+- [ ] In the rail's project switcher pick **Blog**, then click
+      **All streams** so no node is selected (a new node's parent defaults
+      to the open node).
+- [ ] Press **New stream** in the top bar (or the `n` key). Title
+      `Walkthrough notes`, Goal
+      `Add walkthrough-notes.md with a Blog and a Shop section.`, Parent
+      `— none —`, Repo empty, tick **Start later**, press **Create**. The
+      node's page opens: `No sessions yet.`, and the rail shows it under Blog
+      with the conversation icon ○.
+- [ ] Press **+ Repo**, pick `ledger-lite`, press **Add**. The thread adds
+      `repo added: ledger-lite; now a work node on stream/…-walkthrough-notes`,
+      the line under the title ends with that branch, the rail icon becomes
+      the work icon ●, and no agent starts (it never had one). (Leave the
+      form's Repo field empty: a repo typed there is only used when an agent
+      starts, and no branch is cut until then.)
+- [ ] Commit the file in its worktree:
 
 ```zsh
-BLOG=$(agile project list --json | jq -r '.[] | select(.name=="Blog") | .id')
-N0=$(agile node new --project $BLOG --title "Walkthrough notes" --goal "Add walkthrough-notes.md with a Blog and a Shop section." --no-start --json | jq -r .id)
-agile node add-repo $N0 ledger-lite
-W=$(agile node show $N0 --json | jq -r .worktree)
-cd $W && printf '# Walkthrough notes\n\nRun: %s\n\n## Blog\n\n-\n\n## Shop\n\n-\n' "$(date)" > walkthrough-notes.md && git add walkthrough-notes.md && git commit -m "Add walkthrough notes"
+cd ~/Projects/ledger-lite/.worktrees/*-walkthrough-notes && printf '# Walkthrough notes\n\nRun: %s\n\n## Blog\n\n-\n\n## Shop\n\n-\n' "$(date)" > walkthrough-notes.md && git add walkthrough-notes.md && git commit -m "Add walkthrough notes"
 cd ~
-agile deliver $N0
+```
+
+- [ ] The Delivery panel reads
+      `Ready: stream/…-walkthrough-notes is 1 commit ahead of main.` Press
+      **Merge**. The panel reads `Landed.`, `Delivery: direct · merged` and
+      `landed stream/…-walkthrough-notes into main (…)`; the rail dot turns
+      green.
+- [ ] Check the repo:
+
+```zsh
 cd ~/Projects/ledger-lite
 git log --oneline -2
 git status --short
 cd ~
 ```
 
-- [ ] `add-repo` makes the node a work node on `stream/…-walkthrough-notes`
-      and does not start an agent (it never had one).
-- [ ] `deliver` prints `landed stream/…-walkthrough-notes into main (…)`, and
-      the log shows the `land …` merge commit on top of `Add walkthrough notes`.
-      `git status --short` prints nothing.
+- [ ] The log shows the `land …` merge commit on top of
+      `Add walkthrough notes`. `git status --short` prints nothing.
 
 ### 5.2 Two projects touch the same file
 
+- [ ] Switch the rail to **Shop**, click **All streams**, and create
+      `Shop note` as in 5.1: **New stream**, Title `Shop note`, Goal
+      `Fill in the Shop section of walkthrough-notes.md.`, tick **Start later**,
+      **Create**, then **+ Repo** → `ledger-lite` → **Add**.
+- [ ] Switch the rail to **Blog**, click **All streams**, and create
+      `Blog note` the same way (Goal
+      `Fill in the Blog section of walkthrough-notes.md.`), with **+ Repo** →
+      `ledger-lite` → **Add**.
+- [ ] Make one commit in each:
+
 ```zsh
-SHOP=$(agile project list --json | jq -r '.[] | select(.name=="Shop") | .id')
-BLOG=$(agile project list --json | jq -r '.[] | select(.name=="Blog") | .id')
-S=$(agile node new --project $SHOP --title "Shop note" --goal "Fill in the Shop section of walkthrough-notes.md." --no-start --json | jq -r .id)
-B=$(agile node new --project $BLOG --title "Blog note" --goal "Fill in the Blog section of walkthrough-notes.md." --no-start --json | jq -r .id)
-agile node add-repo $S ledger-lite
-agile node add-repo $B ledger-lite
-W=$(agile node show $S --json | jq -r .worktree)
-cd $W && perl -0pi -e 's/## Shop\n\n-/## Shop\n\n- Shop was here./' walkthrough-notes.md && git commit -am "Shop note"
-W=$(agile node show $B --json | jq -r .worktree)
-cd $W && perl -0pi -e 's/## Blog\n\n-/## Blog\n\n- Blog was here./' walkthrough-notes.md && git commit -am "Blog note"
+cd ~/Projects/ledger-lite/.worktrees/*-shop-note && perl -0pi -e 's/## Shop\n\n-/## Shop\n\n- Shop was here./' walkthrough-notes.md && git commit -am "Shop note"
+cd ~/Projects/ledger-lite/.worktrees/*-blog-note && perl -0pi -e 's/## Blog\n\n-/## Blog\n\n- Blog was here./' walkthrough-notes.md && git commit -am "Blog note"
 cd ~
 ```
 
@@ -542,55 +548,42 @@ cd ~
 Touched files are recomputed after every agent edit and commit, and every 60
 seconds. Wait a minute, then:
 
-```zsh
-S=$(agile node list --all --json | jq -r '.[] | select(.title=="Shop note") | .id')
-B=$(agile node list --all --json | jq -r '.[] | select(.title=="Blog note") | .id')
-agile node show $S --json | jq -r '.touched.files[]'
-agile node show $B --json | jq -r '.touched.files[]'
-agile tail --node $S --events
-```
-
-- [ ] Both print `walkthrough-notes.md`, and the Shop node has an
-      `overlap [ledger-lite] because party · pending (E-…)` event. (`pending`
-      means no session is attached to take it; a live agent gets it at once.)
-- [ ] Cockpit: both nodes carry the ⚠ overlap mark in the rail (switch to
-      **All projects** to see both), and **Repos** shows the overlap under
-      ledger-lite across Shop and Blog.
+- [ ] Switch the rail to **All projects**. Shop note and Blog note carry the
+      ⚠ overlap mark, and so do their project roots, Shop and Blog.
+- [ ] **Repos** (top bar) shows, under `ledger-lite (direct)`, both live nodes
+      with their project greyed (`Shop › Shop note`, `Blog › Blog note`) and
+      `⚠ Shop note and Blog note both changed walkthrough-notes.md`.
+- [ ] Open Shop note: its **Diff** tab shows the one-line change and the
+      worktree path, and its **Activity** tab has
+      `overlap · ledger-lite · party · pending`. (`pending` means no session
+      is attached to take it; a live agent gets it at once.)
 
 ### 5.3 Settle it with "waits on"; sync; merge
 
-Shop's note waits on Blog's (**Link** → Blog note → **Wait on** on the Shop
-note's page does the same):
+- [ ] On Shop note's page press **Link**, pick `Blog note`, press **Wait on**.
+      The page lists `waits on Blog note`, and **Dependencies** shows
+      `Shop note waits on Blog note`.
+- [ ] Press **Merge** on Shop note. It is held: the panel shows
+      `delivery held: waits on …` (the id of Blog note), and so does the
+      thread.
+- [ ] Open Blog note and press **Merge**. It reads `Landed.`
+- [ ] Open Shop note again. Its thread now ends with
+      `synced main into stream/…-shop-note` and `waits on … satisfied`, and
+      the wait reads `waits on Blog note · satisfied`. Press **Merge**: it
+      reads `Landed.` and `landed stream/…-shop-note into main (…)`.
+- [ ] Check the file:
 
 ```zsh
-S=$(agile node list --all --json | jq -r '.[] | select(.title=="Shop note") | .id')
-B=$(agile node list --all --json | jq -r '.[] | select(.title=="Blog note") | .id')
-agile node wait $S --on $B
-agile deliver $S
-```
-
-- [ ] `deliver` refuses: `delivery held: waits on …` (exit status 1). The
-      Delivery panel shows the hold.
-
-Merge Blog's note, then Shop's:
-
-```zsh
-S=$(agile node list --all --json | jq -r '.[] | select(.title=="Shop note") | .id')
-B=$(agile node list --all --json | jq -r '.[] | select(.title=="Blog note") | .id')
-agile deliver $B
-agile node show $S | tail -3
-agile deliver $S
 cd ~/Projects/ledger-lite
 cat walkthrough-notes.md
 git status --short
 cd ~
 ```
 
-- [ ] Blog's note lands. Shop's thread then shows
-      `synced main into stream/…-shop-note` and
-      `waits on … satisfied`, and Shop's note lands too.
 - [ ] `walkthrough-notes.md` has both lines. `git status --short` prints
-      nothing. The overlap mark is gone (merged nodes are no longer live).
+      nothing. The ⚠ marks are gone from the rail (merged nodes are no
+      longer live), and **Repos** shows the `main changed` and `pr merged`
+      events under ledger-lite.
 
 ### 5.4 **[vendor]** Back to the ledger-lite part
 
@@ -598,20 +591,14 @@ The merges above moved ledger-lite's main, so the Shop ledger-lite part from
 step 3 was synced too. (A part in the middle of a turn, or with uncommitted
 changes, is synced at the end of its turn.)
 
-```zsh
-SHOP=$(agile project list --json | jq -r '.[] | select(.name=="Shop") | .id')
-C=$(agile node list --project $SHOP --json | jq -r '.[] | select(.title=="Ledger export") | .id')
-P1=$(agile node list --parent $C --json | jq -r '.[] | select(.repo=="ledger-lite") | .id')
-agile tail --node $P1 --events
-agile node show $P1 --json | jq -r '.agent.status, .delivery_state.status'
-```
-
-- [ ] P1's events include `main_changed [ledger-lite] because same repo`,
-      and its thread shows `synced main into stream/…`.
-- [ ] When its agent is `done`, press **Merge** on its page (or
-      `agile deliver $P1`). Its wait is satisfied, the ship checks pass, and
-      it lands on ledger-lite's main in one click. The coordinator hears the
-      second child merged.
+- [ ] Open the ledger-lite part (under Ledger export). Its **Activity** tab
+      has `main changed · ledger-lite · same repo` rows, and its thread shows
+      `synced main into stream/…`.
+- [ ] When the line under its title reads `agent done`, press **Merge**. Its
+      wait is satisfied, the ship checks pass, and it lands on ledger-lite's
+      main in one click: `Landed.` The coordinator's **Activity** tab gets a
+      second `child delivered` row, and its **Children** cards read done.
+- [ ] Check the repo:
 
 ```zsh
 cd ~/Projects/ledger-lite
@@ -641,164 +628,161 @@ narrowed to paths), and scopes stack. Each item also has an **enforcement**:
 
 Every item starts `proposed`: you add one, an agent proposes one, or the
 lessons pass proposes one after a merge. Nothing applies until you accept it.
-Items live in the home, never in your repos.
+Items live in the home, never in your repos. The **Knowledge** screen (top
+bar) lists them all, with filters for Status, Kind, Enforcement and Scope.
 
 ### 6.1 The classifier key
 
-Ship and classifier action checks need the TypeSafe key. Use **one** of these,
-and never paste the key into a command:
+Ship and classifier action checks need the TypeSafe key. Use **one** of these:
 
-- **Settings (preferred):** cockpit → **Settings** → "TypeSafe API key" →
-  paste → **Save**. It takes effect at once.
+- **Settings (preferred):** **Settings** → "TypeSafe API key" → paste the key
+  into `paste a key` → **Save**. It takes effect at once, and the field is
+  never filled back in.
 - **Environment:** `TYPESAFE_API_KEY` exported in the shell that runs
   `agile daemon start`.
 
-```zsh
-agile daemon status
-```
-
-- [ ] The line reads `classifier key: loaded (from config.yaml)` (or
-      `from TYPESAFE_API_KEY`).
+- [ ] Under "TypeSafe API key" the status reads `key set (from config)` (or
+      `key set (from environment)`). `no key` means neither is set.
 
 ### 6.2 Add, accept and test a ship check
 
-```zsh
-K=$(agile knowledge add --name tests-with-changes --kind standard --scope repo:ledger-lite --text "Every change to a file under src/ comes with a test that exercises it" --enforcement ship --example "diff changes src/ledger.ts and adds no test::true" --example "diff changes src/ledger.ts and test/ledger.test.ts::false" --json | jq -r .id)
-agile knowledge show $K
-agile knowledge accept $K
-agile knowledge test $K
-```
-
-- [ ] `knowledge show` prints `status  proposed`, `enforcement  ship`,
-      `check  classifier` and the two examples (`violates …`, `allowed …`).
-- [ ] `accept` prints `… is accepted`. The item is now on the **Knowledge**
-      screen as accepted, and ledger-lite's norms in **Repos** list it.
-- [ ] `knowledge test` prints one row per example with a probability, a band
-      and `agree`, then `agreement 100.0%` (or close). `route` is the middle
-      band, not a failure. A 529 error row means TypeSafe was busy: run it
-      again. Without a key both rows read `classifier unavailable (not_configured)`.
+- [ ] **Knowledge** → **New rule**. Fill in:
+      - Scope: `repo:ledger-lite`
+      - Text: `Every change to a file under src/ comes with a test that exercises it`
+      - Enforcement: `ship`, Kind: `standard`
+      - Press **Add example** twice. First example:
+        `diff changes src/ledger.ts and adds no test`, **violates** ticked.
+        Second: `diff changes src/ledger.ts and test/ledger.test.ts`,
+        **violates** unticked.
+      - Leave Paths, Question, the Criteria and Pattern empty.
+- [ ] Press **Propose rule**. A new card appears with its id (`K-…`),
+      `repo:ledger-lite`, `ship · classifier`, `standard`, `proposed`,
+      `from human`, and **Accept**, **Retire**, **Edit**, **Test examples**.
+      **Needs me** also has a `standard proposed` card for it.
+- [ ] Press **Accept** (on the card, or in **Needs me**). The card reads
+      `accepted`. **Repos** → ledger-lite now lists it under the repo's norms:
+      `standard · Every change to a file under src/ … (ship) fired 0, violated 0`.
+- [ ] Press **Test examples** (it is greyed out without a key; hover it to
+      see why). After a few seconds it reads `2/2 agree · asked: Does this action violate: …?`
+      and one row per example:
+      `agree diff changes src/ledger.ts and adds no test — expected deny, got deny (p 0.9…)`
+      and `… — expected allow, got allow (p 0.3…)`. A band of `route` is the
+      middle band, not a failure. An `error: …` row with a 529 means TypeSafe
+      was busy: press it again.
 
 ### 6.3 A delivery held by the ship check, then fixed
 
 Again no agent: you play it.
 
-```zsh
-BLOG=$(agile project list --json | jq -r '.[] | select(.name=="Blog") | .id')
-T=$(agile node new --project $BLOG --title "Ledger count" --goal "Add a count function in src/ledger-count.ts." --no-start --json | jq -r .id)
-agile node add-repo $T ledger-lite
-W=$(agile node show $T --json | jq -r .worktree)
-cd $W && mkdir -p src && printf '// %s\nexport function count(xs: number[]): number {\n  return xs.length;\n}\n' "$(date)" > src/ledger-count.ts && git add src/ledger-count.ts && git commit -m "Add count"
-cd ~
-agile deliver $T
-agile node show $T --json | jq -r '.delivery_state.status, .delivery_state.held_by[].detail'
-```
-
-- [ ] `deliver` prints `delivery held by ship check tests-with-changes: Every change to a file under src/ comes with a test that exercises it (probability 0.8…)`,
-      and the node reads `held` with the same detail. On a live node the
-      findings go back to the worker to fix; they come to you only if the
-      check is unsure or the worker disputes them.
-
-Add the test and deliver again:
+- [ ] Rail → **Blog** → **All streams** → **New stream**: Title
+      `Ledger count`, Goal `Add a count function in src/ledger-count.ts.`,
+      tick **Start later**, **Create**. Then **+ Repo** → `ledger-lite` →
+      **Add**.
+- [ ] Commit the function with no test:
 
 ```zsh
-T=$(agile node list --all --json | jq -r '.[] | select(.title=="Ledger count") | .id')
-W=$(agile node show $T --json | jq -r .worktree)
-cd $W && mkdir -p test && printf "// %s\nimport { expect, test } from 'bun:test';\nimport { count } from '../src/ledger-count';\n\ntest('count', () => {\n  expect(count([1, 2, 3])).toBe(3);\n});\n" "$(date)" > test/ledger-count.test.ts && git add test/ledger-count.test.ts && git commit -m "Test count"
+cd ~/Projects/ledger-lite/.worktrees/*-ledger-count && mkdir -p src && printf '// %s\nexport function count(xs: number[]): number {\n  return xs.length;\n}\n' "$(date)" > src/ledger-count.ts && git add src/ledger-count.ts && git commit -m "Add count"
 cd ~
-agile deliver $T
-agile node show $T --json | jq -r '.delivery_state.status, .human.status'
 ```
 
-- [ ] `landed stream/…-ledger-count into main (…)`, then `merged` and
-      `landed`.
+- [ ] The Delivery panel lists `Ship check rules: K-…`. Press **Merge**. It
+      is held:
+      `delivery held by ship check K-…: Every change to a file under src/ comes with a test that exercises it (probability 0.8…)`,
+      and the panel reads `Delivery: direct · held — …` with the same detail.
+      On a live node the findings go back to the worker to fix; they come to
+      you only if the check is unsure or the worker disputes them. (The
+      classifier is not deterministic: in one of five runs here it allowed
+      this diff and the node landed at once. If that happens, note it and
+      skip the rest of 6.3.)
+- [ ] Add the test:
+
+```zsh
+cd ~/Projects/ledger-lite/.worktrees/*-ledger-count && mkdir -p test && printf "// %s\nimport { expect, test } from 'bun:test';\nimport { count } from '../src/ledger-count';\n\ntest('count', () => {\n  expect(count([1, 2, 3])).toBe(3);\n});\n" "$(date)" > test/ledger-count.test.ts && git add test/ledger-count.test.ts && git commit -m "Test count"
+cd ~
+```
+
+- [ ] Press **Merge** again. The panel reads `Landed.`,
+      `Delivery: direct · merged` and
+      `landed stream/…-ledger-count into main (…)`.
 
 ### 6.4 **[vendor]** A decision reaches a live node as an event
 
-Start a Shop conversation, so there is a live agent in the decision's scope:
-
-```zsh
-SHOP=$(agile project list --json | jq -r '.[] | select(.name=="Shop") | .id')
-Q=$(agile node new --project $SHOP --title "Cents check" --goal "Read ledger-lite and tell me how it stores amounts. Then wait: I may send you a decision about this." --json | jq -r .id)
-agile node show $Q --json | jq -r .role
-```
-
-When its first answer is on the thread, add and accept a `tell` decision
-scoped to Shop:
-
-```zsh
-SHOP=$(agile project list --json | jq -r '.[] | select(.name=="Shop") | .id')
-Q=$(agile node list --project $SHOP --json | jq -r '.[] | select(.title=="Cents check") | .id')
-D=$(agile knowledge add --name amounts-in-cents --kind decision --scope project:$SHOP --text "Amounts in exported JSON are integer cents, never floats" --enforcement tell --json | jq -r .id)
-agile knowledge accept $D
-agile tail --node $Q --events
-```
-
-- [ ] `tail` shows a `knowledge_accepted because party` row, delivered to the
-      live session. The agent's next thread line reacts to the decision
-      ("new decision in scope: …"). A Blog node never gets it.
-- [ ] The node's **Knowledge in scope** tab lists the global items,
-      `amounts-in-cents`, and nothing from Blog.
+- [ ] Rail → **Shop** → **All streams** → **New stream**: Title
+      `Cents check`, Goal
+      `Read ledger-lite and tell me how it stores amounts. Then wait: I may send you a decision about this.`,
+      leave **Start later** unticked, **Create**. A session appears in its
+      session list (`claude/… · low · starting`, then `running`), and the
+      rail icon is the conversation icon ○.
+- [ ] Wait for its first answer on the **Thread** tab.
+- [ ] The scope needs Shop's project id, which the cockpit does not show.
+      **CLI only:** `agile project list` prints it (`P-…` on the Shop row).
+- [ ] **Knowledge** → **New rule**: Scope `project:P-…` (Shop's id), Text
+      `Amounts in exported JSON are integer cents, never floats`,
+      Enforcement `tell`, Kind `decision`, **Propose rule**. Then **Accept** it
+      (on its card, or on the `decision proposed` card in **Needs me**).
+- [ ] Back on Cents check: its **Activity** tab has a
+      `knowledge accepted · party · delivered in session …` row, and the
+      agent's next thread line reacts to the decision ("new decision in
+      scope: …"). A Blog node never gets it.
+- [ ] Its **Knowledge in scope** tab lists the global items and the new
+      decision (`K-… · project:P-… · decision · tell`), and nothing scoped to
+      Blog.
 
 ## 7. **[vendor]** The Director
 
 The Director sits above every project. It sees all projects, repos, norms,
 overlaps and waits, answers "what needs me today?" from a live snapshot, and
-can set up work. Its level is per project (`--director-autonomy`), with the
-same three levels as coordinators: at **advise** (the default) its changes are
-drafts you create with one click; at **organise** it creates and starts nodes
-and adds waits on its own, and tells you; at **run** it may also restart
-stuck work. A brand-new project is always a draft, whatever the level. It
-never merges, accepts knowledge, or answers a question as you. Every action is
-recorded as done by `director`.
+can set up work. Its level is per project, with the same three levels as
+coordinators: at **advise** (the default) its changes are drafts you create
+with one click; at **organise** it creates and starts nodes and adds waits on
+its own, and tells you; at **run** it may also restart stuck work. A
+brand-new project is always a draft, whatever the level. It never merges,
+accepts knowledge, or answers a question as you. Every action is recorded as
+done by `director`.
 
 ### 7.1 What needs me today?
 
-```zsh
-agile director say "What needs me today?"
-agile tail --director
-```
-
-- [ ] `director say` prints `sent (E-…); follow with agile tail --director`.
-      The first line starts the Director (`director attached: claude/…`).
-- [ ] Within a minute or two its reply lands on its thread (run the `tail`
-      again, or open **Director**): the inbox first, then stuck nodes,
-      overlaps and open waits, taken from the snapshot, not memory.
+- [ ] **Director** (top bar). The line under the heading reads
+      `No session yet: a line below starts one.`
+- [ ] Type `What needs me today?` in `Tell the Director…` and press **Send**.
+      The line becomes `claude/… · live`, and your message is on its
+      thread.
+- [ ] Within a minute or two its reply lands on the thread: the inbox first,
+      then stuck nodes, overlaps and open waits, taken from the snapshot, not
+      memory. Its **Activity** section lists a `director request` row per
+      message you sent.
 
 ### 7.2 Advise: a draft tree with Create
 
-```zsh
-agile director say "Blog needs a CHANGELOG.md in ledger-lite listing the last five commits. Draft the work for me."
-agile tail --director
-```
-
-- [ ] **Director** → **Drafts** shows the draft as a tree (Blog, the new node,
-      its parts and any "waits on") with **Create** and **Dismiss**. Nothing
-      has been created yet.
+- [ ] On **Director**, send:
+      `Blog needs a CHANGELOG.md in ledger-lite listing the last five commits. Draft the work for me.`
+- [ ] A **Drafts** section appears under the thread with the draft as a tree
+      (Blog, the new node with its goal, its parts `on ledger-lite`, and any
+      `waits on`), with **Create** and **Dismiss**. Nothing has been created
+      yet.
 - [ ] Press **Create**. The nodes appear under Blog in the rail, not started.
 
 ### 7.3 Organise: the Director starts the work itself
+
+The Director's level has no control in the cockpit yet (the project root's
+**Coordinator autonomy** picker sets the coordinator's level only).
+
+- [ ] **CLI only:**
 
 ```zsh
 BLOG=$(agile project list --json | jq -r '.[] | select(.name=="Blog") | .id')
 agile project set $BLOG --director-autonomy organise
 agile project show $BLOG
-agile director say "Go ahead with the changelog: start it now."
 ```
 
 - [ ] `project show` reads `autonomy    coordinator=advise director=organise`.
+- [ ] On **Director**, send `Go ahead with the changelog: start it now.`
 - [ ] The Director starts the changelog node's agent itself, with no card,
-      and posts what it did on its thread. **Running** lists the node.
-
-```zsh
-BLOG=$(agile project list --json | jq -r '.[] | select(.name=="Blog") | .id')
-agile node list --project $BLOG --json | jq -r '.[] | .title + "  " + .role + "  " + .agent.status'
-agile director say "Merge the changelog when it is done."
-agile tail --director
-```
-
-- [ ] The changelog node reads `working` (or `done` later).
-- [ ] The Director refuses the merge: merging is yours. When the node is
-      done, merge it yourself with **Merge** on its page.
+      and posts what it did on its thread. **Running** lists the node, and
+      the node's page reads `agent working` (or `agent done` later).
+- [ ] Send `Merge the changelog when it is done.` The Director refuses:
+      merging is yours. When the node reads `agent done`, press **Merge** on
+      its page.
 
 ## 8. Trackers: Jira or Linear
 
@@ -812,29 +796,23 @@ project. The app never closes an issue or edits its text.
 ### 8.1 **[vendor]** The token
 
 In Jira, create an API token (Atlassian account → Security → API tokens).
-Then run the line below. **Change the two placeholders:** replace
-`https://your-site.atlassian.net` with your Jira site and `you@example.com`
-with your Atlassian email. The token is never an argument: the command asks
-for it at a prompt that does not echo.
 
-```zsh
-agile tracker set jira --base-url https://your-site.atlassian.net --email you@example.com
-agile tracker status
-agile daemon status
-```
+- [ ] **Settings** → **Trackers** → the **Jira** row. Fill in the base URL
+      (`https://your-site.atlassian.net`: **change it** to your Jira site),
+      the email (**change it** to your Atlassian email), paste the token into
+      `paste a token`, and press **Set**.
+- [ ] The row reads `token set`; the token field empties and is never filled
+      back in. **Clear** removes the token.
 
-- [ ] `tracker set` asks `jira token (not echoed):`, then prints
-      `agile tracker set: jira saved` and
-      `jira: token set · base URL https://… · email …`.
-- [ ] `daemon status` reads `trackers: jira configured · linear not configured`.
-- [ ] Cockpit → **Settings** → Trackers shows the same, with a field per
-      token (the token itself is never shown). `agile tracker clear jira`
-      removes it.
-
-Using Linear instead: `agile tracker set linear` (it asks for a personal API
-key), then use `linear` wherever 8.2 says `jira`.
+Using Linear instead: paste a personal API key in the **Linear** row and press
+**Set**, then use `linear` wherever 8.2 says `jira`.
 
 ### 8.2 The project's tracker settings
+
+The project's tracker, status push and status map have no control in the
+cockpit yet.
+
+- [ ] **CLI only:**
 
 ```zsh
 SHOP=$(agile project list --json | jq -r '.[] | select(.name=="Shop") | .id')
@@ -851,107 +829,83 @@ agile project show $SHOP
 
 You need one **epic** in Jira with at least one child issue, and its first
 child should be a small task an agent can do in agile-test-repo (for example
-"Add TRACKER.md with one line saying this repo is linked to Jira"). **Change
-the placeholder:** replace `SHOP-10` below with your epic's key. Every later
-block reads it back from the node, so this is the only place to type it.
+"Add TRACKER.md with one line saying this repo is linked to Jira").
 
-```zsh
-KEY=SHOP-10
-SHOP=$(agile project list --json | jq -r '.[] | select(.name=="Shop") | .id')
-E=$(agile node new --project $SHOP --title "Tracker epic" --goal "Placeholder until linked" --no-start --json | jq -r .id)
-agile node link $E $KEY
-agile node show $E --json | jq -r '.goal, .external_link.url'
-agile node import-children $E
-agile node import-children $E
-agile node list --parent $E
-```
-
-- [ ] `node link` prints `linked to … (jira); goal set from the issue`. The
-      goal is the epic's title, then `From jira issue … (https://…/browse/…)`
-      and its description.
-- [ ] The first `import-children` prints one row per child issue (id, key,
-      title) and `N created, 0 already linked`. The second prints
-      `0 created, N already linked`: importing is idempotent.
-- [ ] The epic node's page reads `Linked to <key> (jira) · 0/N merged` with
-      **Unlink** and **Import children**.
+- [ ] Rail → **Shop** → **All streams** → **New stream**: Title
+      `Tracker epic`, Goal `Placeholder until linked`, tick **Start later**,
+      **Create**.
+- [ ] On its page, type the epic's key in the **Link** field (placeholder
+      `SHOP-11`; **change it** to your epic's key, such as `SHOP-10`) and press
+      the **Link** button beside it.
+- [ ] The page reads `Linked to <key> (jira) · 0/N merged` with **Unlink**
+      and **Import children**. The goal under the title is now the epic's
+      title, then `From jira issue … (https://…/browse/…)` and its
+      description.
+- [ ] Press **Import children**. One node per child issue appears under
+      Tracker epic in the rail, each linked to its issue.
+- [ ] Press **Import children** again. Nothing new appears: importing is
+      idempotent.
 
 ### 8.4 **[vendor]** Work on a linked issue; status push; roll-up in the PR
 
-Give the first imported child a repo and start it:
-
-```zsh
-E=$(agile node list --all --json | jq -r '.[] | select(.title=="Tracker epic") | .id')
-I=$(agile node list --parent $E --json | jq -r '.[0].id')
-agile node show $I --json | jq -r '.title, .external_link.key'
-agile node add-repo $I agile-test-repo
-agile attach $I
-```
-
-- [ ] `attach` starts a worker in the child's new worktree. In Jira the child
-      issue moves to **In Progress**.
+- [ ] Open the first imported child (its page reads `Linked to <child key> (jira)`).
+      Press **+ Repo** → `agile-test-repo` → **Add**, then **Start** → keep the
+      defaults in the picker (vendor `claude`, the default model, effort
+      `low`) → **Start**.
+- [ ] A `worker` session appears in its session list and starts work in the
+      new worktree. In Jira the child issue moves to **In Progress**.
 - [ ] Edit the child issue's description in Jira. Within five minutes the
-      child's **Activity** shows an `external_changed` event and the agent is
+      child's **Activity** tab has an `external changed` row and the agent is
       told.
-- [ ] When the agent is done, press **Merge** (or `agile deliver $I`). The PR
-      body's `Issues:` line links the child issue. In Jira the issue moves to
+- [ ] When the page reads `agent done`, press **Merge**. The PR body's
+      `Issues:` line links the child issue. In Jira the issue moves to
       **In Review** and gains a link to the PR.
 - [ ] The `changelog` check from 2.1 fails first, and the agent fixes it as
-      in step 4. After auto-merge the issue moves to **Done**, and the epic
-      node reads `1/N merged`.
+      in step 4. After auto-merge the issue moves to **Done**, and the
+      Tracker epic page reads `1/N merged`.
 - [ ] An unlinked node under the epic node rolls up the same way: its PR's
       `Issues:` line names the epic.
 
 ### 8.5 **[vendor]** Create an issue from a node
 
-```zsh
-E=$(agile node list --all --json | jq -r '.[] | select(.title=="Tracker epic") | .id')
-agile node new --parent $E --title "Tracker follow-up" --goal "Note in TRACKER.md how issues are linked." --no-start
-```
-
+- [ ] Open **Tracker epic** and press **New stream** (the Parent defaults to
+      the open node, Tracker epic). Title `Tracker follow-up`, Goal
+      `Note in TRACKER.md how issues are linked.`, tick **Start later**,
+      **Create**.
 - [ ] On Tracker follow-up's page, leave the **Link** field empty and press
       **Create issue**. A new issue is created in the epic's Jira project, as a
       child of the epic, from the node's title and goal. The node reads
       `Linked to …`, and its goal is kept. This creates a real issue: delete it
       in Jira afterwards if you don't want it. (On a node with no linked
-      ancestor, type the project key, such as `SHOP`, first.)
+      ancestor, type the project key, such as `SHOP`, in the Link field
+      first.)
 
 ## 9. Day to day: inbox, logs, stop and start, troubleshooting
 
 ### 9.1 What is going on
 
-```zsh
-agile status
-agile inbox
-agile tail | tail -20
-```
-
-- [ ] `status` prints the daemon (pid, uptime), the home, the tree with each
-      node's `agent/human` status, and `needs you`, gates and open questions.
-- [ ] `inbox` lists everything waiting on you, oldest first: `kind`, the node
-      path (`Shop / Ledger export / ledger-lite part`), age, context and the
-      id to answer with. `done` items say
-      `worker finished — land or close the stream`.
-- [ ] `tail` is the raw event log. `agile tail --follow` keeps printing
-      (Ctrl-C to stop). `agile tail --stream` with a node id filters to that
-      node's audit log (`agile tail --stream $P1` after the next block), and
-      `agile tail --kind thread_appended` to one kind.
-
-A node's routed events (what woke it and why) are separate from the raw log:
-
-```zsh
-SHOP=$(agile project list --json | jq -r '.[] | select(.name=="Shop") | .id')
-C=$(agile node list --project $SHOP --json | jq -r '.[] | select(.title=="Ledger export") | .id')
-P1=$(agile node list --parent $C --json | jq -r '.[] | select(.repo=="ledger-lite") | .id')
-agile tail --node $P1 --events
-```
-
-- [ ] One row per event: time, type, `[repo]`, `because …` (self, ancestor,
-      waits on, same repo, party, sibling), the delivery status (`delivered`,
-      `pending`, `superseded`, `expired`, or `in digest …`) and the event id. A node with none
-      says `no routed events for …` and names its audit log. Add `--follow`
-      to watch.
+- [ ] **Needs me** is everything waiting on you, grouped by node, each card
+      with its kind (`question`, `decision`, `plan to approve`,
+      `coordinator proposal`, `… proposed`, `ready to land`) and how long it
+      has waited. A long card has **Show all**; **Open stream** opens its
+      node. The badge on **Needs me** counts them.
+- [ ] The rail's dots say who must act: amber waiting on you, blue agent
+      working, grey idle, green landed, red blocked (hover a row to read it).
+      The filter box (`Filter streams (/)`, or the `/` key) narrows the tree
+      by title. **Running** lists the nodes with a live agent.
+- [ ] A node's **Activity** tab is what woke it and why: one row per routed
+      event with its type, `[repo]`, why it was routed (self, ancestor,
+      waits on, same repo, party, sibling), the delivery status
+      (`delivered in session …`, `pending`, `superseded`, `expired`, or
+      `in digest …`) and when. A node with none says
+      `No events routed here yet.`
+- [ ] **CLI only:** the raw event log (every event, not only routed ones):
+      `agile tail | tail -20`, `agile tail --follow` to keep watching (Ctrl-C
+      to stop), `agile tail --kind thread_appended` for one kind.
 
 ### 9.2 Stop and start
+
+- [ ] **CLI only:**
 
 ```zsh
 agile daemon stop
@@ -961,23 +915,26 @@ agile daemon status
 ```
 
 - [ ] `stop` prints `agiled stopped: pid=…`; `status` then says
-      `agiled is not running`. `start` brings it back with every node, thread
-      and event intact. Stopping the daemon stops every agent session; start
-      a node again from its page (**Restart**) if it was mid-work.
+      `agiled is not running`, and the cockpit's top bar shows
+      `reconnecting…` instead of `live`. After `start` it reconnects with every
+      node, thread and event intact. Stopping the daemon stops every agent
+      session: open a node that was mid-work and press **Restart** →
+      **Start**.
 
 ### 9.3 Where things live
 
+- Why a session ended: the node page's session list shows it after the
+  session's status (`— <reason>`).
+- A node's worktree and branch: the line under its title (branch) and the
+  **Diff** tab (worktree path). Worktrees are
+  `<repo>/.worktrees/<node-id>-<slug>` on `stream/…` branches.
 - Daemon log: `tail -50 ~/.agile-walkthrough/log/agiled.log`
 - Event log: `~/.agile-walkthrough/log/events.jsonl`
 - A vendor session's stderr: one directory per session under
   `~/.agile-walkthrough/sessions/`, each with `stderr.log`:
   `ls -t ~/.agile-walkthrough/sessions | head -5`
-- Why a session ended: the node page's session strip, or (for the
-  ledger-lite part, with the 9.1 lookups)
-  `agile node show $P1 --json | jq -r '.sessions[].ended_reason'`.
 - Nodes, threads, projects, knowledge: `streams/`, `threads/`, `projects/`,
-  `knowledge/` in the home. Worktrees: `<repo>/.worktrees/<node-id>-<slug>`
-  on `stream/…` branches.
+  `knowledge/` in the home.
 
 ### 9.4 Troubleshooting
 
@@ -996,10 +953,11 @@ agile daemon start
 
   To run two homes at once, give one a different `port:` in its
   `config.yaml`, or set `AGILE_PORT` for its terminal.
-- **Stale daemon** (it crashed, or the Mac slept badly). `agile daemon status`
-  says `agiled is not running` and `agile daemon start` clears the old
-  pidfile and starts cleanly. If `status` says running but the cockpit does
-  not load, `agile daemon stop`, then `agile daemon start`. If stop hangs:
+- **Stale daemon** (it crashed, or the Mac slept badly). The cockpit shows
+  `reconnecting…`. `agile daemon status` says `agiled is not running` and
+  `agile daemon start` clears the old pidfile and starts cleanly. If
+  `status` says running but the cockpit does not load, `agile daemon stop`,
+  then `agile daemon start`. If stop hangs:
   `kill $(cat ~/.agile-walkthrough/agiled.pid)`, then start.
 - **`permission denied: agile`.** The CLI entry lost its executable bit
   (usually after a `git checkout` or `git pull`). Fix it:
@@ -1012,21 +970,42 @@ agile daemon status
 - **`AGILE_HOME` points at a file.** Every command refuses with one line
   naming the variable and the path. Point it at a directory.
 - **An agent never starts, or stops at once.** Look at the node's session
-  strip and its `stderr.log` (9.3). `node new`/`add-repo` on a repo whose main
-  has no commits is refused up front: make an initial commit first.
-- **A delivery refuses.** The Delivery panel (or `agile deliver`) says why:
-  held by a ship check (the item is named), waits on another node, a merge
-  conflict (**Resolve** starts a worker to fix it), `main is checked out with
+  list (the ended reason) and its `stderr.log` (9.3). Creating a node on, or
+  adding, a repo whose main has no commits is refused up front: make an
+  initial commit first.
+- **A delivery refuses.** The Delivery panel says why: held by a ship check
+  (the item is named), waits on another node, a merge conflict (the panel
+  lists the files; **Resolve** starts a worker to fix them), `main is checked out with
   uncommitted changes` (clean the repo's checkout), or nothing to deliver.
 - **`push … to origin failed: git has no working credentials for origin`.**
-  Run `gh auth setup-git` (2.1), then deliver again. The node reads `held`
-  until then.
+  Run `gh auth setup-git` (2.1), then press **Merge** again. The panel reads
+  `held` until then.
 - **The Director's thread repeats `director attached` and never answers.**
   Its vendor session dies as it starts (a Claude Code login problem, most
   likely), and the daemon starts another at once. Stop the daemon, read the
   newest `stderr.log` (9.3), fix the login, start again.
 - **A PR's state looks stale.** An open PR is polled about once a minute
   (every 15 seconds while its agent is fixing something, every 5 minutes
-  after an hour with no change). `gh auth status` must be
-  logged in; `agile daemon status` says `GitHub auth: available`.
+  after an hour with no change). `gh auth status` must be logged in.
+  **CLI only:** `agile daemon status` says `GitHub auth: available`.
 - **Start over:** 1.3, then 1.4.
+
+### Not in the cockpit yet
+
+These steps have no cockpit control, so they stay on the CLI:
+
+- A project's or node's id (for a `project:<id>` or `subtree:<id>`
+  knowledge scope, 6.4): `agile project list`, `agile node list`.
+- The Director's autonomy level per project (7.3):
+  `agile project set <id> --director-autonomy …`.
+- A project's tracker, status push and status map (8.2):
+  `agile project set <id> --tracker … --push-status … --status-map …`.
+- A name for a knowledge item: **New rule** has no Name field, so items made
+  there show their `K-…` id (6.2); `agile knowledge add --name …` sets one.
+- The raw event log (9.1): `agile tail`.
+- Stopping and starting the daemon (9.2), and whether GitHub auth is
+  available (9.4): `agile daemon stop|start|status`.
+- A pull request's review and check state: the Delivery panel shows only
+  `pr · pr open` / `merged`; the review and checks show as `pr review` and
+  `ci failed` rows on the **Activity** tab, and in
+  `agile node show <id> --json` (`.delivery_state.pr`).
