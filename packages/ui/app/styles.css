@@ -328,6 +328,9 @@ body {
 .cr-tree-row[aria-current="true"] {
   background: var(--accent-weak);
 }
+.cr-tree-row[data-drop-target="true"] {
+  outline: 1px dashed var(--accent);
+}
 .cr-tree-row .title {
   overflow: hidden;
   text-overflow: ellipsis;

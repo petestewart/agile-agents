@@ -7,6 +7,7 @@
 import {
   StreamAutonomyRequestSchema,
   StreamCycleError,
+  StreamMoveRequestSchema,
   THREAD_ENTRY_KINDS,
   type ThreadEntryKind,
   UlidSchema,
@@ -20,6 +21,7 @@ import { EmptyRepoError } from '../store/rpc-methods';
 import { AlreadyExistsError } from '../store/store';
 import { RepoInPlaceError, type RepoInPlaceService } from './repo-in-place';
 import {
+  NodeMoveError,
   type StreamNode,
   type StreamPatch,
   StreamProjectError,
@@ -122,6 +124,7 @@ const asParamErrors = paramErrors(
   UnknownRepoError,
   StreamProjectError,
   RepoInPlaceError,
+  NodeMoveError,
   WorktreeRefusedError,
   EmptyRepoError,
 );
@@ -206,6 +209,17 @@ export function buildStreamRpcMethods(
       return asParamErrors(() =>
         service.wait(EDGE_PRINCIPAL, id, on, remove === undefined ? {} : { remove }),
       );
+    },
+
+    /** T333 (D34): `{id, parent}` moves the node under a node, or a project's root (P-id). */
+    'node.move': async (params) => {
+      const { id, ...rest } = requireObject(params);
+      const streamId = requireStreamId(id);
+      const input = StreamMoveRequestSchema.safeParse(rest);
+      if (!input.success) {
+        throw new RpcParamError('invalid "parent": a node id or a project id (P-…)', rest);
+      }
+      return asParamErrors(() => service.move(streamId, input.data.parent));
     },
 
     /** T282: `{id, autonomy}` sets the node's coordinator autonomy; `null` inherits. */

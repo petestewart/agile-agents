@@ -96,9 +96,27 @@ export function threadAuthorFor(principal: StreamPrincipal, sessionId?: string):
   return `agent:${sessionId}`;
 }
 
+/** T333: a move D34 refuses (-32602 at the RPC edge, 400 over HTTP). */
+export class NodeMoveError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'NodeMoveError';
+  }
+}
+
+/** T333: what a move asks of plans and contracts (read lazily; no import cycle). */
+export interface MoveCoordination {
+  /** True while `node`'s plan is a draft awaiting approval. */
+  planAwaitingApproval(node: string): boolean;
+  /** Where `parent`'s plan or contracts still name `child` ("plan v2", "contract C-…"). */
+  namedIn(parent: string, child: string): string[];
+}
+
 export interface StreamServiceOptions {
   /** T244: after each written update (the event producers). Awaited; a throw is logged, never a failed update. */
   onUpdated?: (before: Stream, after: Stream) => void | Promise<void>;
+  /** T333: consulted by `move`. */
+  coordination?: MoveCoordination;
 }
 
 export class StreamService {
@@ -309,6 +327,67 @@ export class StreamService {
       body: options.remove ? `no longer waits on ${on}` : `waits on ${on}`,
     });
     return updated;
+  }
+
+  /**
+   * T333 (D34): moves `id` under `target` — a node, or a project id for its
+   * root — in the same project. Refused: a project root, into its own
+   * subtree, across projects, and while the old or the new parent's plan
+   * awaits approval. Only `parent` changes: roles are derived, so they
+   * follow; a work node keeps its branch and worktree, and sessions are not
+   * touched. The node and both parents get a thread line; the old parent's
+   * line names any plan or contract of its that still names the node.
+   * Moving to the current parent is a no-op.
+   */
+  async move(id: string, target: string): Promise<Stream> {
+    const node = this.get(id);
+    const from = node.parent;
+    if (from === undefined) throw new NodeMoveError(`${id} is a project root; it cannot move`);
+    let to = target;
+    if (target.startsWith('P-')) {
+      try {
+        to = this.store.getProject(target).root;
+      } catch {
+        throw new NodeMoveError(`unknown project: ${target}`);
+      }
+    } else if (!this.store.hasStream(target)) {
+      throw new UnknownParentStreamError(target);
+    }
+    if (to === from) return node;
+    const parent = this.get(to);
+    if (parent.project !== node.project) {
+      throw new NodeMoveError(
+        `${parent.title} is in ${parent.project ?? 'no project'}, ${node.title} in ${node.project ?? 'none'}: a node moves only within its project`,
+      );
+    }
+    for (let cur: string | undefined = to; cur !== undefined; cur = this.get(cur).parent) {
+      if (cur === id) throw new NodeMoveError(`${parent.title} is inside ${node.title}'s subtree`);
+    }
+    for (const p of [from, to]) {
+      if (this.options.coordination?.planAwaitingApproval(p) === true) {
+        throw new NodeMoveError(
+          `${this.get(p).title}'s plan is awaiting approval; approve it before moving nodes`,
+        );
+      }
+    }
+    const old = this.get(from);
+    const moved = await this.update('human', id, { parent: to });
+    const stale = this.options.coordination?.namedIn(from, id) ?? [];
+    await this.appendThread('human', from, {
+      kind: 'event',
+      body: `moved away: ${node.title} (${id}) is now under ${parent.title}${
+        stale.length > 0 ? `; still named in this node's ${stale.join(', ')}` : ''
+      }`,
+    });
+    await this.appendThread('human', to, {
+      kind: 'event',
+      body: `moved here: ${node.title} (${id}) from ${old.title}`,
+    });
+    await this.appendThread('human', id, {
+      kind: 'event',
+      body: `moved from ${old.title} to ${parent.title}`,
+    });
+    return moved;
   }
 
   /** T282: the node's coordinator autonomy override; `null` inherits the project's. */

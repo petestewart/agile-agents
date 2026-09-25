@@ -74,9 +74,10 @@ describe('project (T201)', () => {
   });
 });
 
-test('the method table is exactly the stream verbs and node.wait and node.autonomy', () => {
+test('the method table is exactly the stream verbs and node.wait, node.move and node.autonomy', () => {
   expect(Object.keys(methods).sort()).toEqual([
     'node.autonomy',
+    'node.move',
     'node.wait',
     'stream.archive',
     'stream.close',
@@ -113,6 +114,22 @@ describe('caller-input errors are invalid params, not internal errors (T126)', (
     expect(err.message).toContain(`${a.id} -> ${b.id} -> ${a.id}`);
     expect(err.message).not.toContain('undefined');
     expect(err.message).not.toContain('null');
+  });
+
+  test('node.move: a refused move and a bad parent are -32602; a move stamps human', async () => {
+    const a = await create('a');
+    const b = await call<Stream>('stream.create', { title: 'b', goal: 'g', parent: a.id });
+    expect(await codeOf(() => call('node.move', { id: a.id, parent: b.id }))).toBe(-32602);
+    expect(await codeOf(() => call('node.move', { id: a.id, parent: 'nope' }))).toBe(-32602);
+    expect(await codeOf(() => call('node.move', { id: a.id, parent: ulid() }))).toBe(-32602);
+    const c = await create('c');
+    const moved = await call<Stream>('node.move', { id: c.id, parent: a.id });
+    expect(moved.parent).toBe(a.id);
+    const page = await call<{ entries: ThreadEntry[] }>('stream.thread_read', { id: a.id });
+    expect(page.entries.at(-1)?.by).toBe('human');
+    expect((await call<Stream>('node.move', { id: c.id, parent: projectId })).parent).toBe(
+      projectRoot,
+    );
   });
 
   test('self-parent on stream.update is -32602', async () => {

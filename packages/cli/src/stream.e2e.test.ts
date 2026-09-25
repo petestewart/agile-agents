@@ -482,6 +482,25 @@ describe('agile node wait (T228)', () => {
   });
 });
 
+describe('agile node move (T333, D34)', () => {
+  test('moves under a node, back to the root with the project id, and refuses its own subtree', async () => {
+    const epic = await newStream('Epic');
+    const task = await newStream('Task');
+    const moved = await cli(['node', 'move', task.id, '--parent', epic.id]);
+    expect(moved.code).toBe(0);
+    expect(moved.out).toContain(`${task.id} is now under ${epic.id}`);
+    const role = async (id: string) =>
+      (JSON.parse((await cli(['node', 'show', id, '--json'])).out) as { role: string }).role;
+    expect(await role(epic.id)).toBe('coordinating');
+    expect((await cli(['node', 'move', epic.id, '--parent', task.id])).code).not.toBe(0);
+    const back = JSON.parse(
+      (await cli(['node', 'move', task.id, '--parent', projectId, '--json'])).out,
+    ) as Stream;
+    expect(back.parent).toBe(projectRoot);
+    expect(await role(epic.id)).toBe('conversation');
+  });
+});
+
 describe('a repo with no commits (T214)', () => {
   async function cliErr(argv: string[]): Promise<{ code: number; out: string; err: string }> {
     const errors: string[] = [];

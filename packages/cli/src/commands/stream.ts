@@ -409,6 +409,21 @@ export async function runStreamWait(
   return 0;
 }
 
+/** T333 (D34): `node move <id> --parent <id|P-id>`; a project id moves it to the project's root. */
+export async function runStreamMove(
+  socketPath: string,
+  args: ParsedArgs,
+  json: boolean,
+): Promise<number> {
+  const id = requirePositional(args, 0, 'node-id');
+  const parent = optionalString(args.options, 'parent');
+  if (parent === undefined) throw new Error('agile node move: --parent <node-id|P-id> is required');
+  const node = await callRpc<Stream>(socketPath, 'node.move', { id, parent });
+  if (json) printJson(node);
+  else console.log(`agile node move: ${id} is now under ${node.parent ?? '-'}`);
+  return 0;
+}
+
 /** T321: `node link <id> <KEY> [--system jira|linear]` or `node link <id> --remove`. */
 export async function runStreamLink(
   socketPath: string,
