@@ -731,17 +731,18 @@ export class DeliveryService {
       );
     }
     // T340: the record's open PR may have merged or closed on GitHub since the last poll.
-    let known = stream.delivery_state?.pr;
-    if (known?.state === 'open') {
-      const live = await github.getPull(known.number);
+    const recorded = stream.delivery_state?.pr;
+    let closedOnGitHub = false;
+    if (recorded?.state === 'open') {
+      const live = await github.getPull(recorded.number);
       if (!live.notModified && live.data.merged) {
         await Promise.resolve(this.options.refreshPr?.(stream.id)).catch(() => {});
         throw new LandRefusedError(
           stream.id,
-          `PR #${known.number} for ${stream.id} is already merged on GitHub; nothing to deliver`,
+          `PR #${recorded.number} for ${stream.id} is already merged on GitHub; nothing to deliver`,
         );
       }
-      if (!live.notModified && live.data.state === 'closed') known = { ...known, state: 'closed' };
+      closedOnGitHub = !live.notModified && live.data.state === 'closed';
     }
     const pushed = gitNetwork(['push', remote, `refs/heads/${branch}:refs/heads/${branch}`], cwd);
     if (pushed.exitCode !== 0) {
@@ -758,9 +759,10 @@ export class DeliveryService {
 
     const title = stream.title;
     const body = prBody(stream);
+    const known = stream.delivery_state?.pr;
     let pull: GitHubPull;
     let verb: string;
-    if (known !== undefined && known.state === 'open') {
+    if (known !== undefined && known.state === 'open' && !closedOnGitHub) {
       pull = await github.updatePull(known.number, { title, body });
       verb = 'updated';
     } else {
