@@ -11,6 +11,7 @@ import { join } from 'node:path';
 import { type Stream, ulid } from '@agile-agents/shared';
 import { GateService } from '../gates/service';
 import { runInit } from '../init';
+import { ProjectService } from '../projects/service';
 import { QuestionService } from '../questions/service';
 import { StateStore } from '../store';
 import { StreamService } from '../streams/service';
@@ -110,6 +111,29 @@ describe('InboxService.list', () => {
 
     await streams.update('human', child.id, { human: { status: 'landed' } });
     expect(inbox.list().some((i) => i.stream === child.id)).toBe(false);
+  });
+
+  test('T336: a coordinating node whose coordinator finished is not "ready to land"', async () => {
+    const grandchild = await streams.create('human', {
+      title: 'api part',
+      goal: 'g',
+      parent: child.id,
+    });
+    await streams.update('daemon', child.id, { agent: { status: 'done' } });
+    await streams.update('daemon', root.id, { agent: { status: 'done' } });
+    expect(inbox.list().some((i) => i.stream === child.id)).toBe(false);
+    expect(inbox.list().some((i) => i.stream === root.id)).toBe(false);
+    // Blocked still needs you; the part itself still lands.
+    await streams.update('daemon', child.id, { agent: { status: 'blocked' } });
+    await streams.update('daemon', grandchild.id, { agent: { status: 'done' } });
+    expect(inbox.list().find((i) => i.stream === child.id)?.kind).toBe('blocked');
+    expect(inbox.list().find((i) => i.stream === grandchild.id)?.kind).toBe('done');
+  });
+
+  test('T336: a project root\'s coordinator finishing is not "ready to land"', async () => {
+    const project = await new ProjectService(store, streams).create({ name: 'Shop' });
+    await streams.update('daemon', project.root, { agent: { status: 'done' } });
+    expect(inbox.list().some((i) => i.stream === project.root)).toBe(false);
   });
 
   test('an answered question leaves the inbox', async () => {

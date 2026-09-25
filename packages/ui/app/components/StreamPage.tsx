@@ -660,6 +660,8 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
   const repoOptions = repos.map((r) => r.name).filter((name) => name !== stream.repo);
   const chosenRepo = repoChoice || repoOptions[0] || '';
   const waits = stream.waits_on ?? [];
+  // T336: a part is not started until its coordinator's plan is approved.
+  const waitingForPlan = cockpit?.streams.find((r) => r.id === stream.id)?.waiting_for_plan;
   const titleOf = (id: string) => cockpit?.streams.find((r) => r.id === id)?.title ?? id;
   const linkOptions = (cockpit?.streams ?? []).filter(
     (r) => r.id !== stream.id && !waits.some((w) => w.node === r.id),
@@ -683,7 +685,8 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
           <span data-testid="stream-title">{stream.title}</span>
         </h1>
         <p className="cr-dim" data-testid="stream-status">
-          agent {stream.agent.status} · you {stream.human.status.replace(/_/g, ' ')}
+          agent {waitingForPlan ? 'waiting for the plan' : stream.agent.status} · you{' '}
+          {stream.human.status.replace(/_/g, ' ')}
           {stream.branch ? ` · ${stream.branch}` : ''}
         </p>
         <Markdown className="cr-goal" text={stream.goal} />

@@ -15,6 +15,7 @@ import { AttachService } from '../attach/service';
 import { VerbService } from '../attach/verbs';
 import { makeEmitter } from '../events/producers';
 import { RoutedEventService } from '../events/service';
+import { buildCockpitFrame } from '../feed/snapshot';
 import { GateService } from '../gates/service';
 import { InboxService } from '../inbox/service';
 import { runInit } from '../init';
@@ -302,5 +303,55 @@ describe('plans and contracts (T281)', () => {
     const changed = emitted.filter((e) => e.type === 'plan_changed');
     expect(changed.map((e) => e.routing.map((r) => r.node))).toEqual([[api.id], [web.id]]);
     expect(changed[0]?.payload.paths).toEqual(['prices.ts', 'sale.ts']);
+  });
+});
+
+describe('T336: parts wait for the plan', () => {
+  test('approval starts each part it first gives paths to, and only those', async () => {
+    const started: string[] = [];
+    plans = new PlanService({
+      store,
+      streams,
+      contracts,
+      start: async (id) => {
+        started.push(id);
+      },
+    });
+    const { node, api, web, docs } = await saleTree();
+    // The node has had its coordinator; web already ran and finished.
+    await store.updateStream('daemon', node.id, (before) => ({
+      ...before,
+      sessions: [
+        { id: ulid(), vendor: 'claude', model: 'm', role: 'coordinator', status: 'stopped' },
+      ],
+    }));
+    await streams.update('daemon', web.id, { agent: { status: 'done' } });
+    expect(plans.waitingForPlan(streams.get(api.id))).toBe(true);
+    expect(plans.waitingForPlan(streams.get(web.id))).toBe(false);
+    // The cockpit row says so.
+    const rows = buildCockpitFrame(streams, undefined, undefined, {}, undefined, (s) =>
+      plans.waitingForPlan(s),
+    ).streams;
+    expect(rows.find((r) => r.id === api.id)?.waiting_for_plan).toBe(true);
+    expect(rows.find((r) => r.id === web.id)?.waiting_for_plan).toBeUndefined();
+
+    await plans.write(node.id, [
+      { child: api.id, owns: ['prices.ts'] },
+      { child: web.id, owns: ['shop.html'] },
+    ]);
+    expect(started).toEqual([]);
+    await plans.approve(node.id);
+    expect(started).toEqual([api.id]);
+    expect(plans.waitingForPlan(streams.get(api.id))).toBe(false);
+
+    // docs is in no approved plan yet: it still waits, and the change that gives it paths starts it.
+    expect(plans.waitingForPlan(streams.get(docs.id))).toBe(true);
+    await plans.setOwner(node.id, docs.id, ['CHANGELOG.md'], 'coordinator');
+    expect(started).toEqual([api.id, docs.id]);
+  });
+
+  test('a child of a node that never had a coordinator is not waiting', async () => {
+    const { api } = await saleTree();
+    expect(plans.waitingForPlan(streams.get(api.id))).toBe(false);
   });
 });
