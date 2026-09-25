@@ -1644,7 +1644,13 @@ describe('T330: one long agent message is one thread entry', () => {
     attachService = buildAttachService(fakeProviderFor(ACP_PROVIDERS.claude, script));
     const stream = await makeStream();
     const { session } = await attachService.attach(stream.id);
-    await waitFor(() => threadBodies(stream.id).includes('next message'));
+    // A session that ended first (a pipe Bun lost mid-turn, CI job
+    // 108116863174) fails here at once, with the thread to read, rather
+    // than after the whole waitFor budget.
+    await waitFor(() =>
+      threadBodies(stream.id).some((b) => b === 'next message' || b.startsWith('session ended')),
+    );
+    expect(threadBodies(stream.id)).toContain('next message');
     const lines = streams
       .readThread(stream.id, { limit: 500 })
       .entries.filter((e) => e.by.startsWith('agent:') && e.kind === 'line');
