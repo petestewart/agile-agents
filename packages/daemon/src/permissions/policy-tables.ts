@@ -29,6 +29,16 @@ function hil(reason: string): PolicyVerdict {
   return { action: 'hil', reason };
 }
 
+/** T339: a held tool fetch or install points at the repo's own check commands. */
+function fetchHil(reason: string, worktreePath: string): PolicyVerdict {
+  const checks = cmd.repoScriptChecks(worktreePath);
+  const hint =
+    checks.length > 0
+      ? `use the repo's own scripts instead: ${checks.join(', ')}`
+      : "use the repo's own check commands from your brief instead";
+  return hil(`${reason}; ${hint}`);
+}
+
 export interface PolicyContext {
   role: PermissionRole;
   worktreePath: string;
@@ -125,7 +135,7 @@ function neverWithoutHumanForAtom(
   }
 
   if (cmd.isNewDependencyInstall(tokens)) {
-    return hil('installing a new dependency is never automatic');
+    return fetchHil('installing a new dependency is never automatic', ctx.worktreePath);
   }
   if (cmd.isRmMinusRf(tokens)) {
     const outside = cmd.rmTargets(tokens).some((t) => !isPathInside(t, ctx.worktreePath));
@@ -265,18 +275,23 @@ function engineerBenignCommandVerdict(
     // `bun add`. Fetch-forcing flags and `dlx` (which always fetches) are
     // always `hil`.
     if (dlx.forcesInstall) {
-      return hil(
+      return fetchHil(
         `"${dlx.bin}" forces a package install/global run (-p/--package/-y/--yes/-g/--global)`,
+        ctx.worktreePath,
       );
     }
     if (dlx.neverLocal) {
-      return hil(
+      return fetchHil(
         `"${dlx.bin}" via dlx always fetches into a temporary store, never the local node_modules/.bin`,
+        ctx.worktreePath,
       );
     }
     return cmd.isRepoLocalBin(dlx.bin, ctx.worktreePath)
       ? ALLOW
-      : hil(`"${dlx.bin}" is not an existing repo-local bin (node_modules/.bin)`);
+      : fetchHil(
+          `"${dlx.bin}" is not an existing repo-local bin (node_modules/.bin)`,
+          ctx.worktreePath,
+        );
   }
 
   if (head === 'find') {

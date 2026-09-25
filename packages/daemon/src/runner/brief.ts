@@ -64,6 +64,8 @@ export interface BuildBriefInput {
   };
   /** T281: this child's part of its parent's approved plan. */
   plan?: ChildPlanView;
+  /** T339: the repo's own check commands (repos.yaml `checks`, else package.json scripts). */
+  checks?: readonly string[];
   /** Overrides `BRIEF_THREAD_ENTRIES`. */
   threadEntries?: number;
   /** Overrides `BRIEF_CHAR_CEILING`. Test seam. */
@@ -216,6 +218,14 @@ export function planSection(view: ChildPlanView): string {
   return section('Your part of the plan', lines.join('\n'));
 }
 
+/** T339: the repo's own check commands, so an agent never fetches a tool to check its work. */
+export function checksSection(checks: readonly string[]): string {
+  return section(
+    'Checks',
+    `${checks.map((c) => `- \`${c}\``).join('\n')}\n\nUse these to test, typecheck, lint and build. Don't install or fetch tools (\`bunx tsc\`, \`npx <tool>\`, \`bun add\`) to check your work.`,
+  );
+}
+
 /** One pass of the assembler at a given thread-tail length and doc body cap. */
 function assemble(
   input: BuildBriefInput,
@@ -248,6 +258,9 @@ function assemble(
   }
 
   if (input.plan !== undefined) parts.push(planSection(input.plan));
+
+  if (input.checks !== undefined && input.checks.length > 0)
+    parts.push(checksSection(input.checks));
 
   const babysit = babysitSection(stream);
   if (babysit !== undefined) parts.push(babysit);
