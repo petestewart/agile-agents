@@ -200,7 +200,8 @@ function PlanView({
     <section className="cr-docs cr-plan" data-testid="plan">
       {plan && (
         <p data-testid="plan-status" data-status={plan.status}>
-          Plan v{plan.version} · {plan.status}
+          {/* T341: a draft reads as the version it becomes (the first plan is v1, never v0). */}
+          Plan v{plan.status === 'draft' ? plan.version + 1 : plan.version} · {plan.status}
           {plan.approved_by ? ` by ${plan.approved_by}` : ''}{' '}
           {plan.status === 'draft' && (
             <button
