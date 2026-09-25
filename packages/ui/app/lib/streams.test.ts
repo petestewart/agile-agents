@@ -16,11 +16,13 @@ import {
   groupInbox,
   isLiveSession,
   isThinking,
+  parseCollapsed,
   projectForNew,
   rowsInProject,
   ruleHitOf,
   runningRows,
   streamDot,
+  subtreeNeedsYou,
   threadAuthorLabel,
 } from './streams';
 
@@ -64,6 +66,29 @@ describe('buildStreamTree', () => {
     expect(tree.map((n) => n.row.id)).toEqual(['root', 'orphan']);
     expect(tree[0]?.children[0]?.row.id).toBe('mid');
     expect(tree[0]?.children[0]?.children[0]?.row.id).toBe('leaf');
+  });
+});
+
+describe('rail collapse (T331)', () => {
+  test('subtreeNeedsYou sees an amber dot anywhere below, not on the node itself', () => {
+    const quiet = buildStreamTree([
+      row('root', { agent_status: 'question' }),
+      row('a', { parent: 'root' }),
+    ]);
+    expect(quiet[0] && subtreeNeedsYou(quiet[0])).toBe(false);
+    const deep = buildStreamTree([
+      row('root'),
+      row('mid', { parent: 'root', agent_status: 'working' }),
+      row('leaf', { parent: 'mid', human_status: 'waiting_on_you' }),
+    ]);
+    expect(deep[0] && subtreeNeedsYou(deep[0])).toBe(true);
+  });
+
+  test('parseCollapsed keeps string ids and shrugs off anything malformed', () => {
+    expect([...parseCollapsed('["a","b",3]')]).toEqual(['a', 'b']);
+    expect(parseCollapsed('{"a":1}').size).toBe(0);
+    expect(parseCollapsed('not json').size).toBe(0);
+    expect(parseCollapsed(null).size).toBe(0);
   });
 });
 
