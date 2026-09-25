@@ -1627,14 +1627,16 @@ agile tail --director
 
 ### Ticket: T324 Status push and create issue
 - **Priority:** P2
-- **Status:** In Progress
-- **Owner:** opus:worker-T324
+- **Status:** Done
+- **Owner:** Unassigned
 - **Scope:**
   - A per-project `push_status` (off by default) and `status_map`: in progress, in review and done are pushed, and the PR link is added as a link or comment. The app never closes an issue or edits its text.
   - "Create issue" is a click only.
 - **Acceptance Criteria:** Against the fake: with `push_status` off, nothing is sent; with it on, the mapped transitions are sent. There is no call that edits text (asserted on the fake's request log).
 - **Validation Steps:** `bun test packages/daemon/src/trackers`.
 - **Notes:** After T321.
+- T324: sonnet review APPROVE. trackers/push.ts: forward-only phase push (in progress / in review / done) only with push_status on and a status_map entry (no defaults); only transitionStatus + addLink. Create issue only via same-origin POST /api/streams/:id/issue (actor human; no RPC/MCP). Daemon +143. Follow-ups: no roll-up push from unlinked nodes; a failed push is not retried; no e2e for the Create issue button. merge e20ba79.
+
 
 ### Ticket: T326 ∥ Tracker tokens in Settings and the CLI
 - **Priority:** P1
