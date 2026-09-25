@@ -67,6 +67,39 @@ function needsYou(items: readonly InboxItem[], stream: string): InboxItem[] {
 }
 
 /** T205: the registered repos a proposal names, so its card can offer "Add <repo>" (§7). */
+/** T330: past ~12 lines a thread entry renders collapsed, with a Show more / Show less toggle. */
+export const THREAD_COLLAPSE_LINES = 12;
+
+/** Long enough to collapse: more than 12 source lines, or ~12 wrapped lines of prose. */
+export function isLongThreadBody(body: string): boolean {
+  return (
+    body.split('\n').length > THREAD_COLLAPSE_LINES || body.length > THREAD_COLLAPSE_LINES * 100
+  );
+}
+
+function ThreadBody({ body }: { body: string }): JSX.Element {
+  const [expanded, setExpanded] = useState(false);
+  if (!isLongThreadBody(body)) return <Markdown text={body} />;
+  return (
+    <>
+      <Markdown
+        text={body}
+        className={expanded ? undefined : 'cr-collapsed'}
+        testId="thread-body"
+      />
+      <button
+        type="button"
+        className="cr-link"
+        data-testid="thread-expand"
+        aria-expanded={expanded}
+        onClick={() => setExpanded((open) => !open)}
+      >
+        {expanded ? 'Show less' : 'Show more'}
+      </button>
+    </>
+  );
+}
+
 export function reposNamedIn(body: string, repos: readonly RepoRow[], current?: string): string[] {
   return repos
     .map((r) => r.name)
@@ -661,7 +694,7 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
                     {threadAuthorLabel(entry.by, stream.sessions)}
                     {entry.kind !== 'line' ? ` · ${entry.kind}` : ''}
                   </div>
-                  <Markdown text={entry.body} />
+                  <ThreadBody body={entry.body} />
                   {entry.kind === 'proposal' &&
                     open &&
                     reposNamedIn(entry.body, repos, stream.repo).map((name) => (
