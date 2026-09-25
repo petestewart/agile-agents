@@ -1345,6 +1345,7 @@ async function startStreamCockpit(scripts: FakeAgentScript[]): Promise<StreamCoc
       attach: (id) => attach.attach(id),
       stop: (id) => attach.stop(id),
     }),
+    plans: new PlanService({ store, streams, contracts: new ContractService({ store, streams }) }),
     docs,
     feedPollIntervalMs: 50,
   });
@@ -3018,6 +3019,26 @@ describe('+ Repo in place (Playwright e2e, T205)', () => {
           .waitFor();
         await page
           .locator(`${root} [data-testid="thread"]`, { hasText: 'THREAD-MARKER-205' })
+          .waitFor();
+
+        // T336: once the node has had a coordinator, parts not yet started wait for its plan.
+        await cockpit.store.updateStream('daemon', node.id, (before) => ({
+          ...before,
+          sessions: [
+            { id: ulid(), vendor: 'claude', model: 'm', role: 'coordinator', status: 'stopped' },
+          ],
+        }));
+        await cockpit.streams.appendThread('daemon', node.id, { kind: 'event', body: 'nudge' });
+        for (const part of parts) {
+          await page
+            .locator(
+              `[data-testid="stream-tree"] [data-stream="${part.id}"] [data-testid="waiting-for-plan"]`,
+            )
+            .waitFor();
+        }
+        await page.locator(`[data-testid="stream-tree"] [data-stream="${parts[0]?.id}"]`).click();
+        await page
+          .locator('[data-testid="stream-status"]', { hasText: 'waiting for the plan' })
           .waitFor();
       } finally {
         await teardown([page]);

@@ -13,10 +13,13 @@
  * goal chain reach them as ancestors'. A session live on the node is
  * stopped before the reshape and restarted after it, so it runs in the
  * right place: in the new worktree (work) or the session dir as the
- * coordinator (coordinating, D20). New parts start their worker like any
- * new work node (T204, T213) unless the node was never started (made with
- * `--no-start` and not attached since); the moved part restarts in its
- * worktree.
+ * coordinator (coordinating, D20). A split node that was started gets its
+ * coordinator even when nothing was live, unless the human stopped it
+ * (T336). With a coordinator, the parts wait for its plan (§9.1: the plan
+ * comes before work): `PlanService.approve` starts each part the approved
+ * plan gives paths to. With none, they start their worker like any new
+ * work node (T204, T213) unless the node was never started (made with
+ * `--no-start` and not attached since).
  */
 
 import {
@@ -28,6 +31,7 @@ import {
 } from '@agile-agents/shared';
 import { git, removeWorktreeSafely } from '../delivery/git';
 import { mainBranch } from '../delivery/service';
+import { stoppedByHuman } from '../events/wake';
 import { createWorktree, slugify } from '../runner/worktrees';
 import { assertRepoHasCommits } from '../store/rpc-methods';
 import type { StateStore } from '../store/store';
@@ -102,6 +106,10 @@ export class RepoInPlaceService {
     // T204's start rule for new parts: `start` isn't stored, so a node that
     // never had a worker is the `--no-start` one.
     const started = wasLive || node.sessions.some((s) => isAgentRole(s.role));
+    // T336: a split hands the node's sessions to the moved part, which left
+    // a node that was started but not live with no agent at all: no
+    // coordinator to plan the parts. It gets one, unless the human stopped it.
+    const coordinates = role !== 'conversation' && !switching && started && !stoppedByHuman(node);
     // Stop first, so the exit path writes onto the records before they move.
     await this.sessions.stop(
       node.id,
@@ -136,11 +144,24 @@ export class RepoInPlaceService {
       );
     }
 
-    if (wasLive) await this.start(node.id, 'restart');
-    if (started) {
-      for (const part of parts) {
-        if (this.streams.get(part.id).human.status !== 'closed') await this.start(part.id, 'start');
+    const open = parts.filter((p) => this.streams.get(p.id).human.status !== 'closed');
+    // T336: a coordinator plans the parts before they work; the approval starts them.
+    const waitForPlan = role !== 'conversation' && !switching && (wasLive || coordinates);
+    if (waitForPlan && open.length > 0) {
+      await this.event(
+        node.id,
+        `${open.map((p) => p.title).join(', ')} ${open.length === 1 ? 'waits' : 'wait'} for the plan: write it with plan_write (who owns which paths); each part starts once the plan is approved`,
+      );
+      for (const part of open) {
+        await this.event(
+          part.id,
+          `waiting for the plan: this part starts when "${node.title}"'s plan is approved`,
+        );
       }
+    }
+    if (wasLive || coordinates) await this.start(node.id, wasLive ? 'restart' : 'start');
+    if (started && !waitForPlan) {
+      for (const part of open) await this.start(part.id, 'start');
     }
     return { node: this.streams.get(node.id), parts: parts.map((p) => this.streams.get(p.id)) };
   }
@@ -205,7 +226,8 @@ export class RepoInPlaceService {
   private async newPart(node: Stream, repo: string): Promise<Stream> {
     const part = await this.streams.create('daemon', {
       title: `${repo} part`,
-      goal: node.goal,
+      // T336: the part's share, not the parent's (often conversational) goal verbatim.
+      goal: `${repo} share of: ${node.goal}`,
       parent: node.id,
       repo,
     });

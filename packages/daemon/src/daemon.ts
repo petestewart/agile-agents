@@ -198,6 +198,11 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
             supersedeByPlan: async (node, version) =>
               questionService?.supersedeByPlan(node, version),
           },
+          // T336: a part waiting for the plan starts when the approved plan gives it paths.
+          start: async (id: string): Promise<unknown> => {
+            if (attachService === undefined) throw new Error('attach is not available');
+            return attachService.startWithPending(id);
+          },
         })
       : undefined;
   // T282: the autonomy gate for a coordinator's structural changes, and its proposals.
