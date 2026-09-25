@@ -1653,6 +1653,15 @@ agile tail --director
 - T326: sonnet review APPROVE. store.setTrackerSettings (atomic 0600; Jira base_url with the first token); GET/POST /api/settings/trackers (token_set only; same-origin 403; actor human); `agile tracker status|set|clear` (stdin or no-echo prompt; argv token refused); Settings Trackers section. Merged phase-13 in after T321 (RPC builder renamed buildTrackerSettingsRpcMethods). Daemon +143. merge 78293ee.
 
 
+### Ticket: T327 Project tracker settings from the CLI
+- **Priority:** P1
+- **Status:** Done
+- **Owner:** Unassigned
+- **Scope:** T324's per-project `tracker` block (system, `push_status`, `status_map`) had no way to be set. `agile project set <id> [--tracker jira|linear|none] [--push-status on|off] [--status-map in_progress=<Name>,in_review=<Name>,done=<Name>]`, merged into the current block through the existing `project.update` RPC. No cockpit project settings screen exists, so no UI.
+- **Acceptance Criteria:** CLI parse/merge tests; round-trip through a real daemon; invalid blocks refused.
+- **Validation Steps:** `bun test packages/cli packages/daemon/src/projects`.
+- **Notes:** Found while writing Pete's Phase 13 live check. Full bun test 2335/0. CLI-only (daemon delta 0); manager reviewed the diff. merge 02f8e68.
+
 ### Ticket: T325 Phase 13 QA and Pete's look
 - **Priority:** P0
 - **Status:** Done
