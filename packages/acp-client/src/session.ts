@@ -282,6 +282,8 @@ export function spawnSession(opts: SpawnSessionOptions): SpawnedSession {
   let handshake: string[] = [];
   /** Set by `close()`: an exit from here on is the one asked for, never a lost pipe. */
   let closeRequested = false;
+  /** Set while `cancel()` writes: a stdin failure then fails the session, never replaces the agent. */
+  let cancelling = false;
   /** The last of the agent's stderr, for the error when an agent is given up on. */
   let stderrTail = '';
   /** Pending `STDOUT_LOSS_GRACE_MS` checks, cleared by `close()`. */
@@ -328,7 +330,23 @@ export function spawnSession(opts: SpawnSessionOptions): SpawnedSession {
     if (exited || !child.stdin || child.stdin.destroyed) return false;
     const line = `${JSON.stringify(obj)}\n`;
     if (!stdoutSpoke) handshake.push(line);
-    child.stdin.write(line);
+    return writeTo(child, line);
+  }
+
+  /**
+   * Every write to an agent's stdin goes through here. Bun's stdin writer
+   * throws EPIPE synchronously when the agent is already gone but its exit
+   * is not reported yet: a transport failure of the session, never a throw
+   * into whoever sent the line (often an event-emitter callback, where a
+   * throw is an uncaught exception). False when the write failed.
+   */
+  function writeTo(target: ChildProcess, line: string): boolean {
+    try {
+      target.stdin?.write(line);
+    } catch (err) {
+      onStdinFailed(target, err);
+      return false;
+    }
     return true;
   }
 
@@ -556,7 +574,12 @@ export function spawnSession(opts: SpawnSessionOptions): SpawnedSession {
     child = next;
     wire(next);
     onStderr(`[acp-client] agent ${why} before it spoke (lost pipe); restarted the agent\n`);
-    for (const line of handshake) next.stdin?.write(line);
+    // Guarded like every other write: this runs inside an `exit`/`error`/
+    // `close` listener. A failed replay is `next`'s own lost pipe, handled
+    // (replaced again, within the spawn budget, or failed) by `writeTo`.
+    for (const line of handshake) {
+      if (!writeTo(next, line)) break;
+    }
     return true;
   }
 
@@ -572,6 +595,27 @@ export function spawnSession(opts: SpawnSessionOptions): SpawnedSession {
     if (typeof lost.exitCode === 'number' || typeof lost.signalCode === 'string') return;
     if (replaceChild(lost, 'stdout closed')) return;
     emit({ type: 'error', message: 'ACP agent stdout closed unexpectedly (lost pipe)' });
+    close();
+  }
+
+  /**
+   * A write to the agent's stdin failed: thrown by `write()` (Bun's fast
+   * path, EPIPE) or emitted later as the stream's `error` (a write that
+   * completed asynchronously). With nobody listening, that `error` would be
+   * an uncaught exception in the daemon (CI job 108169280649: a
+   * `session/cancel` sent after a failed prompt, to an agent already gone).
+   * An agent that never spoke is replaced, like any pipe lost before the
+   * handshake; past that the session fails as a transport error. Nothing to
+   * report once the session is closing or has exited.
+   */
+  function onStdinFailed(failed: ChildProcess, err: unknown): void {
+    if (failed !== child || exited || closeRequested) return;
+    const why = err instanceof Error ? err.message : String(err);
+    // Never a replacement for a failed `session/cancel`: whoever cancels is
+    // stopping the turn (the runner closes right after), so a fresh agent
+    // would only be spawned to be killed.
+    if (!cancelling && replaceChild(failed, 'stdin failed')) return;
+    emit({ type: 'error', message: `ACP agent stdin failed (lost pipe): ${why}` });
     close();
   }
 
@@ -628,6 +672,8 @@ export function spawnSession(opts: SpawnSessionOptions): SpawnedSession {
   /** Listens to one child; a replaced child's late events are ignored. */
   function wire(c: ChildProcess): void {
     let stdoutEnded = false;
+    // Always listened to: an unheard stream `error` is an uncaught exception.
+    c.stdin?.on('error', (err: Error) => onStdinFailed(c, err));
     c.stdout?.setEncoding('utf8');
     c.stdout?.on('data', (chunk: string) => {
       if (c === child) onStdout(chunk);
@@ -890,7 +936,12 @@ export function spawnSession(opts: SpawnSessionOptions): SpawnedSession {
     },
     cancel(): boolean {
       if (acpSessionId === null) return false;
-      return notify('session/cancel', { sessionId: acpSessionId });
+      cancelling = true;
+      try {
+        return notify('session/cancel', { sessionId: acpSessionId });
+      } finally {
+        cancelling = false;
+      }
     },
     async load(sessionId: string): Promise<unknown> {
       const run = async (): Promise<unknown> => {

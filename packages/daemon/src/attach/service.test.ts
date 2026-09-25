@@ -1684,3 +1684,62 @@ describe('T330: one long agent message is one thread entry', () => {
     expect(log).toContain(`Start: ${sentence.repeat(20)}and it ends here\nnext message\n`);
   }, 30_000);
 });
+
+describe('a send to an agent already gone (CI job 108169280649)', () => {
+  /**
+   * Every session this spawns throws EPIPE from `cancel()`, as Bun's stdin
+   * writer did when the daemon sent `session/cancel` to a dead agent. The
+   * runner must still close and finish the session, and nothing may escape.
+   */
+  const cancelThrows: typeof spawnSession = (opts) => {
+    const session = spawnSession(opts);
+    session.cancel = () => {
+      throw Object.assign(new Error('EPIPE: broken pipe, send'), { code: 'EPIPE' });
+    };
+    return session;
+  };
+
+  function buildWithSpawn(provider: AcpProviderConfig): AttachService {
+    return new AttachService({
+      store,
+      streams,
+      home,
+      provider: () => provider,
+      questions: { listOpen: () => questions.listOpen() },
+      gates: { list: () => gates.list() },
+      spawn: cancelThrows,
+    });
+  }
+
+  test('an agent that dies mid-turn still ends the session, recorded as failed', async () => {
+    attachService = buildWithSpawn(
+      fakeProviderFor(ACP_PROVIDERS.claude, {
+        steps: [
+          { type: 'agent_text', text: 'about to crash' },
+          { type: 'tool_call', toolCallId: 'x-1', title: 'read' },
+          { type: 'exit', code: 1 },
+        ],
+      }),
+    );
+    const stream = await makeStream();
+    const { session } = await attachService.attach(stream.id);
+    await waitFor(() => threadBodies(stream.id).some((b) => b.startsWith('session ended')));
+    const ended = streams.get(stream.id).sessions.find((s) => s.id === session.id);
+    expect(ended?.status).toBe('stopped');
+    expect(threadBodies(stream.id)).toContain('about to crash');
+  }, 30_000);
+
+  test('stop() on a live session still closes it when the cancel send fails', async () => {
+    attachService = buildWithSpawn(fakeProviderFor(ACP_PROVIDERS.claude, SPEAKS_THEN_HANGS));
+    const stream = await makeStream();
+    const { session } = await attachService.attach(stream.id);
+    await waitFor(() => threadBodies(stream.id).some((b) => b.includes('looking at the parser')));
+    // Resolves (before the fix the throw escaped from `stop()`), and the
+    // session is let go exactly as with a cancel that worked.
+    expect(await attachService.stop(stream.id)).toEqual([session.id]);
+    expect(streams.get(stream.id).sessions.find((s) => s.id === session.id)?.status).not.toBe(
+      'running',
+    );
+    expect(await attachService.stop(stream.id)).toEqual([]);
+  }, 30_000);
+});
