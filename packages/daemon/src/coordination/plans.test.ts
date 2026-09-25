@@ -325,6 +325,14 @@ describe('T336: parts wait for the plan', () => {
       },
     });
     const { node, api, web, docs } = await saleTree();
+    // Parts have repos (D33: repo-less children are tangents, not parts).
+    for (const [id, repo] of [
+      [api.id, 'api'],
+      [web.id, 'web'],
+      [docs.id, 'docs'],
+    ] as const) {
+      await store.updateStream('daemon', id, (before) => ({ ...before, repo }));
+    }
     // The node has had its coordinator; web already ran and finished.
     await store.updateStream('daemon', node.id, (before) => ({
       ...before,

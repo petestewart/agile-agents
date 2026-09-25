@@ -202,9 +202,8 @@ export class PlanService {
     } catch {
       return false;
     }
-    if (
-      nodeRole(parent, liveChildrenOf(parent.id, this.options.streams.list())) !== 'coordinating'
-    ) {
+    const all = this.options.streams.list();
+    if (nodeRole(parent, liveChildrenOf(parent.id, all), all) !== 'coordinating') {
       return false;
     }
     if (!parent.sessions.some((s) => s.role === 'coordinator')) return false;
