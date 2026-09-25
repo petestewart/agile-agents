@@ -7,7 +7,9 @@ import { ulid } from '@agile-agents/shared';
 import { Bus } from '../bus';
 import { GateService } from '../gates';
 import { runInit } from '../init';
+import { ProjectService } from '../projects/service';
 import { StateStore } from '../store';
+import { StreamService } from '../streams/service';
 import { HookService } from './service';
 
 const WORKER = '01ARZ3NDEKTSV4RRFFQ69G5FA1';
@@ -269,6 +271,58 @@ describe('HookService read scope (T213)', () => {
     } finally {
       rmSync(other, { recursive: true, force: true });
       rmSync(secret, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('HookService read scope for a conversation node (T330)', () => {
+  test('from its session dir: registered repos yes, the agile home and an unlisted private repo no', async () => {
+    const other = mkdtempSync(join(tmpdir(), 'agile-hook-other-'));
+    const secret = mkdtempSync(join(tmpdir(), 'agile-hook-secret-'));
+    const shared = mkdtempSync(join(tmpdir(), 'agile-hook-shared-'));
+    try {
+      const streams = new StreamService(store);
+      const project = await new ProjectService(store, streams).create({ name: 'Shop' });
+      const node = await streams.create('human', { title: 'Plan', goal: 'g', project: project.id });
+      await store.putRepos({
+        'ledger-lite': { path: other, protected_branches: ['main'] },
+        secret: {
+          path: secret,
+          protected_branches: ['main'],
+          visibility: { mode: 'private', projects: [`P-${ulid()}`] },
+        },
+        shared: {
+          path: shared,
+          protected_branches: ['main'],
+          visibility: { mode: 'private', projects: [project.id] },
+        },
+      });
+      // A conversation runs in its session dir under the home (attach/service.ts).
+      const sessionDir = join(stateRoot, 'sessions', WORKER);
+      mkdirSync(sessionDir, { recursive: true });
+      await store.putAgent(
+        WORKER,
+        agentRecord({ role: 'worker', stream: node.id, worktree: sessionDir }),
+      );
+      const hook = service({ agileHome: stateRoot });
+      const read = async (file_path: string) =>
+        (await hook.preToolUse({ cwd: sessionDir, tool_name: 'Read', tool_input: { file_path } }))
+          .hookSpecificOutput.permissionDecision;
+      const bash = async (command: string) =>
+        (await hook.preToolUse({ cwd: sessionDir, tool_name: 'Bash', tool_input: { command } }))
+          .hookSpecificOutput.permissionDecision;
+
+      expect(await read(join(other, 'README.md'))).toBe('allow');
+      expect(await read(join(shared, 'a.ts'))).toBe('allow');
+      expect(await bash(`ls ${other}`)).toBe('allow');
+      expect(await read(join(sessionDir, 'notes.md'))).toBe('allow');
+      expect(await read(join(stateRoot, 'config.yaml'))).toBe('deny');
+      expect(await bash(`cat ${stateRoot}/config.yaml`)).toBe('deny');
+      expect(await read(join(secret, 'a.ts'))).toBe('deny');
+      // Writes stay in the session dir.
+      expect(await bash(`touch ${other}/x`)).toBe('deny');
+    } finally {
+      for (const dir of [other, secret, shared]) rmSync(dir, { recursive: true, force: true });
     }
   });
 });

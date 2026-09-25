@@ -56,6 +56,9 @@ export interface PermissionResponderContext {
    * §4.3) has. Absent means the role table only.
    */
   patternRules?: PatternRuleGate;
+  /** T330 (P20): where a read may reach beyond the cwd, and what it never may (as `DecisionContext`). */
+  readRoots?: readonly string[];
+  hiddenRoots?: readonly string[];
 }
 
 /** How a pending `hil_request` was answered. */
@@ -162,6 +165,8 @@ export function buildPermissionResponder(
         role: ctx.role,
         worktreePath: ctx.worktreePath,
         request,
+        ...(ctx.readRoots !== undefined ? { readRoots: ctx.readRoots } : {}),
+        ...(ctx.hiddenRoots !== undefined ? { hiddenRoots: ctx.hiddenRoots } : {}),
         ...(gate !== undefined
           ? {
               patternRules: gate.rules(),
