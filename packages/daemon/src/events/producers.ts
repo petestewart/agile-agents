@@ -194,8 +194,10 @@ export function lastAgentLineOf(
  */
 export function emitTransitions(emit: EmitRouted, streams?: TangentStreams) {
   return async (before: Stream, after: Stream): Promise<void> => {
+    // Only a new `done` can be a finished tangent: don't read the tree otherwise.
+    const done = after.agent.status === 'done' && before.agent.status !== 'done';
     const tangents =
-      streams === undefined
+      streams === undefined || !done
         ? undefined
         : {
             all: streams.list({ include_archived: true }),
