@@ -30,13 +30,13 @@ export interface EventTailerHandle {
   pollNow(): void;
 }
 
-function readRange(path: string, start: number, end: number): string {
+function readRange(path: string, start: number, end: number): Buffer {
   const fd = openSync(path, 'r');
   try {
     const length = end - start;
     const buf = Buffer.alloc(length);
     readSync(fd, buf, 0, length, start);
-    return buf.toString('utf8');
+    return buf;
   } finally {
     closeSync(fd);
   }
@@ -45,7 +45,8 @@ function readRange(path: string, start: number, end: number): string {
 export function startEventTailer(options: EventTailerOptions): EventTailerHandle {
   const pollIntervalMs = options.pollIntervalMs ?? 250;
   let offset = options.startOffset ?? (existsSync(options.path) ? statSync(options.path).size : 0);
-  let carry = '';
+  // Kept as bytes: a poll can end mid-character, and `getOffset` counts bytes.
+  let carry: Buffer = Buffer.alloc(0);
 
   function pollNow(): void {
     if (!existsSync(options.path)) return;
@@ -53,16 +54,17 @@ export function startEventTailer(options: EventTailerOptions): EventTailerHandle
     if (size < offset) {
       // Truncated or rotated (append-only, so defensive): restart at the top.
       offset = 0;
-      carry = '';
+      carry = Buffer.alloc(0);
     }
     if (size === offset) return;
 
     const chunk = readRange(options.path, offset, size);
     offset = size;
 
-    const combined = carry + chunk;
-    const lines = combined.split('\n');
-    carry = lines.pop() ?? '';
+    const combined = Buffer.concat([carry, chunk]);
+    const end = combined.lastIndexOf(0x0a) + 1;
+    carry = combined.subarray(end);
+    const lines = combined.subarray(0, end).toString('utf8').split('\n');
 
     const parsed: unknown[] = [];
     for (const line of lines) {
@@ -86,7 +88,8 @@ export function startEventTailer(options: EventTailerOptions): EventTailerHandle
   }
 
   return {
-    getOffset: () => offset,
+    // A carried partial line is not consumed yet: it is re-read with its tail.
+    getOffset: () => offset - carry.length,
     stop: () => clearInterval(interval),
     pollNow,
   };

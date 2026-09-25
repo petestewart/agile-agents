@@ -60,8 +60,14 @@ export function buildSnapshot(
   questions?: QuestionService,
   /** The repo root; without it, no `project`. */
   projectRoot?: string,
+  /**
+   * Read events only up to this byte of `events.jsonl`. The `/ws` connect
+   * snapshot passes the live tailer's offset, so every line is either in the
+   * snapshot or published afterwards by the tailer, never both.
+   */
+  eventsEndOffset?: number,
 ): FeedSnapshot {
-  const events = store.listEvents().slice(-eventLimit);
+  const events = store.listEvents(eventsEndOffset).slice(-eventLimit);
   // Resolved gates are history: only pending ones ship.
   const hil = gates.list().filter((request) => request.status === 'pending');
   const openQuestions = questions?.listOpen() ?? [];
