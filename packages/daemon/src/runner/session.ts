@@ -574,6 +574,20 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
    * `prompt()` still resolves on its own turn's outcome.
    */
   let turnQueue: Promise<void> = Promise.resolve();
+  /**
+   * `session/cancel` ahead of a close is a courtesy to an agent that may
+   * already be gone (a failed prompt is often the agent dying). acp-client
+   * reports a send that fails as the session's transport error, so the
+   * result is not needed here; and nothing it does may skip the close and
+   * `finish()` after it, or the session is left half-stopped.
+   */
+  function cancelBeforeClose(): void {
+    try {
+      spawned.cancel();
+    } catch {
+      // Already reported through the session's error path, or moot: closing.
+    }
+  }
   let turnCount = 0;
   /** Turns enqueued and not yet finished, the running one included. */
   let inFlight = 0;
@@ -628,7 +642,7 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
           .catch(() => {
             // Best effort: `finish()` recovers the state either way.
           });
-        spawned.cancel();
+        cancelBeforeClose();
         spawned.close();
         await finish(`prompt failed: ${message}`, false);
         throw err;
@@ -701,7 +715,7 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
       stopRequested = true;
       // No unsubscribe: `finish()` runs off the session's later `exit`
       // event, and silencing it would leave `exited` unresolved.
-      spawned.cancel();
+      cancelBeforeClose();
       spawned.close();
     },
   };

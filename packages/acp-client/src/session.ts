@@ -328,7 +328,16 @@ export function spawnSession(opts: SpawnSessionOptions): SpawnedSession {
     if (exited || !child.stdin || child.stdin.destroyed) return false;
     const line = `${JSON.stringify(obj)}\n`;
     if (!stdoutSpoke) handshake.push(line);
-    child.stdin.write(line);
+    const writing = child;
+    try {
+      writing.stdin?.write(line);
+    } catch (err) {
+      // Bun's stdin writer throws EPIPE synchronously when the agent is
+      // already gone but its exit is not reported yet: a transport failure
+      // of the session, never a throw into whoever sent the line.
+      onStdinFailed(writing, err);
+      return false;
+    }
     return true;
   }
 
@@ -576,6 +585,24 @@ export function spawnSession(opts: SpawnSessionOptions): SpawnedSession {
   }
 
   /**
+   * A write to the agent's stdin failed: thrown by `write()` (Bun's fast
+   * path, EPIPE) or emitted later as the stream's `error` (a write that
+   * completed asynchronously). With nobody listening, that `error` would be
+   * an uncaught exception in the daemon (CI job 108169280649: a
+   * `session/cancel` sent after a failed prompt, to an agent already gone).
+   * An agent that never spoke is replaced, like any pipe lost before the
+   * handshake; past that the session fails as a transport error. Nothing to
+   * report once the session is closing or has exited.
+   */
+  function onStdinFailed(failed: ChildProcess, err: unknown): void {
+    if (failed !== child || exited || closeRequested) return;
+    const why = err instanceof Error ? err.message : String(err);
+    if (replaceChild(failed, 'stdin failed')) return;
+    emit({ type: 'error', message: `ACP agent stdin failed (lost pipe): ${why}` });
+    close();
+  }
+
+  /**
    * The current child exited. A lost stdin pipe gives no signal of its own
    * (writes still report success): the agent reads EOF and exits cleanly.
    * So a clean exit before the agent ever answered the handshake, that
@@ -628,6 +655,8 @@ export function spawnSession(opts: SpawnSessionOptions): SpawnedSession {
   /** Listens to one child; a replaced child's late events are ignored. */
   function wire(c: ChildProcess): void {
     let stdoutEnded = false;
+    // Always listened to: an unheard stream `error` is an uncaught exception.
+    c.stdin?.on('error', (err: Error) => onStdinFailed(c, err));
     c.stdout?.setEncoding('utf8');
     c.stdout?.on('data', (chunk: string) => {
       if (c === child) onStdout(chunk);

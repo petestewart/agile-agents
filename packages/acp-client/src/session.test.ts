@@ -771,6 +771,116 @@ describe('spawnSession', () => {
       expect(errors).toEqual([]);
     });
 
+    // CI job 108169280649: the daemon sent `session/cancel` after a failed
+    // prompt to an agent that was already gone. Bun's stdin writer threw
+    // EPIPE (or emits it as `error` for a write that completes later); with
+    // no listener that was an uncaught exception in the daemon.
+    function epipe(): Error {
+      return Object.assign(new Error('EPIPE: broken pipe, send'), {
+        code: 'EPIPE',
+        syscall: 'send',
+      });
+    }
+
+    /** From here on every write to the current child's stdin throws EPIPE. */
+    function breakStdin(): void {
+      const stdin = state.child?.stdin as unknown as { write: unknown };
+      stdin.write = () => {
+        throw epipe();
+      };
+    }
+
+    it('a write that throws EPIPE after the agent spoke is a transport error, not a throw', async () => {
+      const session = create();
+      const events: Array<{ type: string; detail: string | number }> = [];
+      session.on((e) => {
+        if (e.type === 'error') events.push({ type: 'error', detail: e.message });
+        if (e.type === 'exit') events.push({ type: 'exit', detail: e.exitCode });
+      });
+      await answerInitialize();
+      const reply = session.prompt('go');
+      await answerSessionNew('acp-1');
+      await flush();
+      breakStdin();
+
+      // The runner's path: cancel, then close.
+      expect(() => session.cancel()).not.toThrow();
+      expect(session.cancel()).toBe(false);
+      expect(events).toEqual([
+        { type: 'error', detail: 'ACP agent stdin failed (lost pipe): EPIPE: broken pipe, send' },
+      ]);
+      expect(state.child?.kill).toHaveBeenCalledWith('SIGTERM');
+      expect(spawnMock).toHaveBeenCalledTimes(1);
+      // The turn settles instead of hanging, and the exit still reaches the caller.
+      expect(await reply).toBeDefined();
+      state.child?.emit('exit', null, 'SIGTERM');
+      await flush();
+      expect(session.exited).toBe(true);
+      expect(events.at(-1)).toEqual({ type: 'exit', detail: -1 });
+    });
+
+    it('a request whose write throws rejects, and nothing escapes', async () => {
+      const session = create();
+      const errors: string[] = [];
+      session.on((e) => {
+        if (e.type === 'error') errors.push(e.message);
+      });
+      await answerInitialize();
+      breakStdin();
+      await expect(session.authenticate('cursor_login')).rejects.toThrow(
+        'ACP agent stdin unavailable',
+      );
+      expect(errors).toEqual(['ACP agent stdin failed (lost pipe): EPIPE: broken pipe, send']);
+    });
+
+    it("an EPIPE emitted on stdin is heard: reported once, and never an uncaught 'error'", async () => {
+      const session = create();
+      const errors: string[] = [];
+      session.on((e) => {
+        if (e.type === 'error') errors.push(e.message);
+      });
+      await answerInitialize();
+      expect(state.child?.stdin.listenerCount('error')).toBeGreaterThan(0);
+      state.child?.stdin.emit('error', epipe());
+      // After close() and after the exit, a late one is ignored.
+      state.child?.stdin.emit('error', epipe());
+      state.child?.emit('exit', 0);
+      state.child?.stdin.emit('error', epipe());
+      await flush();
+      expect(errors).toEqual(['ACP agent stdin failed (lost pipe): EPIPE: broken pipe, send']);
+      expect(session.exited).toBe(true);
+    });
+
+    it('a write after the agent exited neither throws nor writes', async () => {
+      const session = create();
+      await answerInitialize();
+      const outcome = session.prompt('go').then(
+        () => 'resolved',
+        (err: Error) => err.message,
+      );
+      await answerSessionNew('acp-1');
+      await flush();
+      state.child?.emit('exit', 1);
+      await flush();
+      breakStdin();
+      expect(() => session.cancel()).not.toThrow();
+      expect(session.cancel()).toBe(false);
+      expect(await outcome).toBeDefined();
+    });
+
+    it('stdin that fails before the agent spoke gets the agent replaced', async () => {
+      const stderr: string[] = [];
+      create({ onStderr: (chunk) => stderr.push(chunk) });
+      await flush();
+      const lost = state.child;
+      lost?.stdin.emit('error', epipe());
+      await flush();
+      expect(spawnMock).toHaveBeenCalledTimes(2);
+      expect(state.child).not.toBe(lost);
+      expect(stderr.join('')).toContain('stdin failed before it spoke');
+      await answerInitialize();
+    });
+
     it('a failing exit, or one after close(), is never replaced', async () => {
       const failed = create();
       await flush();
