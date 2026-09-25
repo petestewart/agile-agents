@@ -44,6 +44,16 @@ export class PlanNotDraftError extends Error {
   }
 }
 
+/**
+ * T336: how a part the split made waits for the plan: the reshape writes
+ * this line on its thread (the daemon's event, its first entries). A child
+ * the human made with "Start later" has none, so no approval starts it.
+ */
+export const WAITING_FOR_PLAN = 'waiting for the plan: ';
+
+/** How far into a part's thread the reshape's line can be (its pointer, then this). */
+const WAITING_LINE_WITHIN = 10;
+
 function isLive(s: Stream['sessions'][number]): boolean {
   return s.status !== 'stopped' && s.status !== 'error';
 }
@@ -175,10 +185,11 @@ export class PlanService {
   }
 
   /**
-   * T336: a part waiting for its coordinator's plan. It sits under a
-   * coordinating node that has had a coordinator, has not run since it was
-   * made (idle, nothing live), and no approved plan gives it paths yet
-   * (`owned`: the children the approved plan owns; the parent's by default).
+   * T336: a part waiting for its coordinator's plan. The split made it to
+   * wait (its thread has the `WAITING_FOR_PLAN` line), it sits under a
+   * coordinating node that has had a coordinator, has not run since (idle,
+   * nothing live), and no approved plan gives it paths yet (`owned`: the
+   * children the approved plan owns; the parent's by default).
    */
   waitingForPlan(child: Stream, owned?: ReadonlySet<string>): boolean {
     if (child.parent === undefined || child.archived === true) return false;
@@ -196,7 +207,12 @@ export class PlanService {
       return false;
     }
     if (!parent.sessions.some((s) => s.role === 'coordinator')) return false;
-    return !(owned ?? approvedOwners(this.get(parent.id))).has(child.id);
+    if ((owned ?? approvedOwners(this.get(parent.id))).has(child.id)) return false;
+    return this.options.streams
+      .readThread(child.id, { limit: WAITING_LINE_WITHIN })
+      .entries.some(
+        (e) => e.by === 'daemon' && e.kind === 'event' && e.body.startsWith(WAITING_FOR_PLAN),
+      );
   }
 
   /** T336: every part the approved `saved` first gives paths to, and still waiting, starts now. */

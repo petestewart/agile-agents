@@ -258,6 +258,15 @@ function patternRuleVerdict(
     protectedBranches: ctx.protectedBranches ?? DEFAULT_PROTECTED_BRANCHES,
     upstream: ctx.upstreamBranch ?? (() => undefined),
     head: ctx.headBranch ?? (() => undefined),
+    // T336: only a coordinator's read-only git -C may reach a repo it can read.
+    ...(permissionRoleFor(ctx.role) === 'coordinator'
+      ? {
+          coordinatorReads: {
+            ...(ctx.readRoots !== undefined ? { readRoots: ctx.readRoots } : {}),
+            ...(ctx.hiddenRoots !== undefined ? { hiddenRoots: ctx.hiddenRoots } : {}),
+          },
+        }
+      : {}),
   };
 
   const outcome = runPatternRules(rules, checkCtx);

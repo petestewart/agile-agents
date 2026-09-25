@@ -25,7 +25,7 @@ import { buildBrief } from '../runner/brief';
 import { StateStore } from '../store';
 import { StreamService } from '../streams/service';
 import { ContractService } from './contracts';
-import { PlanNotDraftError, PlanService } from './plans';
+import { PlanNotDraftError, PlanService, WAITING_FOR_PLAN } from './plans';
 
 const FAKE_AGENT_PATH = join(import.meta.dir, '..', 'runner', 'fake-agent.ts');
 
@@ -307,7 +307,8 @@ describe('plans and contracts (T281)', () => {
 });
 
 describe('T336: parts wait for the plan', () => {
-  test('approval starts each part it first gives paths to, and only those', async () => {
+  /** A node that has had its coordinator, and the plan service as the daemon wires it. */
+  async function planned() {
     const started: string[] = [];
     plans = new PlanService({
       store,
@@ -317,14 +318,26 @@ describe('T336: parts wait for the plan', () => {
         started.push(id);
       },
     });
-    const { node, api, web, docs } = await saleTree();
-    // The node has had its coordinator; web already ran and finished.
-    await store.updateStream('daemon', node.id, (before) => ({
+    const tree = await saleTree();
+    await store.updateStream('daemon', tree.node.id, (before) => ({
       ...before,
       sessions: [
         { id: ulid(), vendor: 'claude', model: 'm', role: 'coordinator', status: 'stopped' },
       ],
     }));
+    return { ...tree, started };
+  }
+  /** What the split writes on a part it makes to wait (repo-in-place.ts). */
+  const splitWaits = (id: string) =>
+    streams.appendThread('daemon', id, {
+      kind: 'event',
+      body: `${WAITING_FOR_PLAN}this part starts when "Show sale prices"'s plan is approved`,
+    });
+
+  test('approval starts each part it first gives paths to, and only those', async () => {
+    const { node, api, web, docs, started } = await planned();
+    for (const part of [api, web, docs]) await splitWaits(part.id);
+    // web already ran and finished.
     await streams.update('daemon', web.id, { agent: { status: 'done' } });
     expect(plans.waitingForPlan(streams.get(api.id))).toBe(true);
     expect(plans.waitingForPlan(streams.get(web.id))).toBe(false);
@@ -350,8 +363,22 @@ describe('T336: parts wait for the plan', () => {
     expect(started).toEqual([api.id, docs.id]);
   });
 
+  test('a "Start later" child the plan names is not started (only split parts wait)', async () => {
+    const { node, api, docs, started } = await planned();
+    await splitWaits(api.id);
+    // docs was made by the human with "Start later": no split line on its thread.
+    expect(plans.waitingForPlan(streams.get(docs.id))).toBe(false);
+    await plans.write(node.id, [
+      { child: api.id, owns: ['prices.ts'] },
+      { child: docs.id, owns: ['CHANGELOG.md'] },
+    ]);
+    await plans.approve(node.id);
+    expect(started).toEqual([api.id]);
+  });
+
   test('a child of a node that never had a coordinator is not waiting', async () => {
     const { api } = await saleTree();
+    await splitWaits(api.id);
     expect(plans.waitingForPlan(streams.get(api.id))).toBe(false);
   });
 });

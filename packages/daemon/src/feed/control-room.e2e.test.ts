@@ -44,7 +44,7 @@ import { ClassifierKeyService, FakeClassifier } from '../classifier';
 import { AutonomyService } from '../coordination/autonomy';
 import { CardService } from '../coordination/cards';
 import { ContractService } from '../coordination/contracts';
-import { PlanService } from '../coordination/plans';
+import { PlanService, WAITING_FOR_PLAN } from '../coordination/plans';
 import { DeliveryService } from '../delivery';
 import { DocsService } from '../docs';
 import { RoutedEventService, routeAndEmit } from '../events';
@@ -2769,14 +2769,20 @@ describe('+ Repo in place (Playwright e2e, T205)', () => {
           .locator(`${root} [data-testid="thread"]`, { hasText: 'THREAD-MARKER-205' })
           .waitFor();
 
-        // T336: once the node has had a coordinator, parts not yet started wait for its plan.
+        // T336: once the node has had a coordinator, the split's parts wait for its plan.
         await cockpit.store.updateStream('daemon', node.id, (before) => ({
           ...before,
           sessions: [
             { id: ulid(), vendor: 'claude', model: 'm', role: 'coordinator', status: 'stopped' },
           ],
         }));
-        await cockpit.streams.appendThread('daemon', node.id, { kind: 'event', body: 'nudge' });
+        // The split writes this on each part when the node has a coordinator (repo-in-place.ts).
+        for (const part of parts) {
+          await cockpit.streams.appendThread('daemon', part.id, {
+            kind: 'event',
+            body: `${WAITING_FOR_PLAN}this part starts when "Sale prices"'s plan is approved`,
+          });
+        }
         for (const part of parts) {
           await page
             .locator(
