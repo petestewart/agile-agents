@@ -154,6 +154,8 @@ export interface DeliveryServiceOptions {
   onStreamEnd?: (streamId: string) => void | Promise<void>;
   /** T226: main moved on `repo` (sync the other live nodes). Fire-and-forget. */
   onMainMoved?: (repo: string, mergedStream: string) => unknown;
+  /** T340: poll the node's PR now (`PrPoller.pollNow`); used when a deliver finds it merged on GitHub. */
+  refreshPr?: (streamId: string) => unknown;
 }
 
 export class DeliveryService {
@@ -728,6 +730,19 @@ export class DeliveryService {
         `PR #${stream.delivery_state.pr?.number ?? '?'} for ${stream.id} is already merged; nothing to deliver`,
       );
     }
+    // T340: the record's open PR may have merged or closed on GitHub since the last poll.
+    let known = stream.delivery_state?.pr;
+    if (known?.state === 'open') {
+      const live = await github.getPull(known.number);
+      if (!live.notModified && live.data.merged) {
+        await Promise.resolve(this.options.refreshPr?.(stream.id)).catch(() => {});
+        throw new LandRefusedError(
+          stream.id,
+          `PR #${known.number} for ${stream.id} is already merged on GitHub; nothing to deliver`,
+        );
+      }
+      if (!live.notModified && live.data.state === 'closed') known = { ...known, state: 'closed' };
+    }
     const pushed = gitNetwork(['push', remote, `refs/heads/${branch}:refs/heads/${branch}`], cwd);
     if (pushed.exitCode !== 0) {
       const line = `push ${branch} to ${remote} failed: ${describeGitNetworkFailure(pushed.stderr, remote)}`;
@@ -743,7 +758,6 @@ export class DeliveryService {
 
     const title = stream.title;
     const body = prBody(stream);
-    const known = stream.delivery_state?.pr;
     let pull: GitHubPull;
     let verb: string;
     if (known !== undefined && known.state === 'open') {
@@ -827,13 +841,20 @@ export class DeliveryService {
     return resolveDelivery(repoEntry, project, stream);
   }
 
-  /** Writes `delivery_state` (daemon-only, §14.2). */
+  /**
+   * Writes `delivery_state` (daemon-only, §14.2). In PR mode the node's PR
+   * is kept when `state` names none (T340): a re-deliver's ship check, gate
+   * or hold must not hide an open PR from the poller.
+   */
   private async setDeliveryState(
     streamId: string,
     state: Omit<DeliveryState, 'at'>,
   ): Promise<void> {
+    const pr =
+      state.pr ??
+      (state.mode === 'pr' ? this.options.streams.get(streamId).delivery_state?.pr : undefined);
     await this.options.streams.update('daemon', streamId, {
-      delivery_state: { ...state, at: new Date().toISOString() },
+      delivery_state: { ...state, ...(pr ? { pr } : {}), at: new Date().toISOString() },
     });
   }
 

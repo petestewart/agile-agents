@@ -109,6 +109,23 @@ export class PrPoller {
     return this.now().getTime() < this.pausedUntil;
   }
 
+  /**
+   * T340: "Check now". This node's PR is due at once; resolves with the
+   * node after the tick that polled it (merged → landed, then `afterTick`).
+   */
+  async pollNow(streamId: string): Promise<Stream> {
+    while (this.running) await this.running.catch(() => {});
+    const m = this.memo.get(streamId);
+    if (m) m.due = Math.min(m.due, this.now().getTime());
+    await this.tick();
+    if (this.paused) {
+      throw new Error(
+        `GitHub rate limit reached; PR polling paused until ${new Date(this.pausedUntil).toISOString()}`,
+      );
+    }
+    return this.options.streams.get(streamId);
+  }
+
   /** Polls every due PR and every due main; one tick at a time. */
   tick(): Promise<void> {
     if (this.running) return this.running;
@@ -256,7 +273,14 @@ export class PrPoller {
     memo.changedAt = this.now().getTime();
 
     const { streams } = this.options;
-    const status = merged ? 'merged' : state === 'closed' ? 'closed_unmerged' : 'pr_open';
+    // T340: a re-deliver held by its ship check keeps `held` while the PR stays open.
+    const status = merged
+      ? 'merged'
+      : state === 'closed'
+        ? 'closed_unmerged'
+        : stream.delivery_state?.status === 'held'
+          ? 'held'
+          : 'pr_open';
     await streams.update('daemon', stream.id, {
       delivery_state: {
         mode: 'pr',
@@ -320,7 +344,7 @@ export class PrPoller {
   }
 }
 
-/** Open PRs of live nodes. */
+/** Open PRs of live nodes, whatever the delivery status. */
 function pollable(all: readonly Stream[]): Stream[] {
   return all.filter(
     (s) =>
@@ -329,7 +353,7 @@ function pollable(all: readonly Stream[]): Stream[] {
       s.human.status !== 'landed' &&
       s.human.status !== 'closed' &&
       s.delivery_state?.mode === 'pr' &&
-      s.delivery_state.status === 'pr_open' &&
+      // T340: any status with the PR open (a re-deliver's ship check or hold included).
       s.delivery_state.pr?.state === 'open',
   );
 }
