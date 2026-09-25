@@ -37,9 +37,10 @@ export type Token =
 /**
  * An `http(s)` URL, stopping at whitespace, a quote or an angle bracket —
  * raw, or as `escapeHtml` left them — so the same pass runs on raw and
- * escaped text.
+ * escaped text. It stops at markdown.ts's private-use placeholder too,
+ * so a code span right after a URL is never pulled into its `href`.
  */
-const URL_SOURCE = String.raw`https?:\/\/(?:(?!&quot;|&#39;|&lt;|&gt;)[^\s"'<>])+`;
+const URL_SOURCE = String.raw`https?:\/\/(?:(?!&quot;|&#39;|&lt;|&gt;)[^\s"'<>\ue000])+`;
 /** A node/project/contract id (`<ulid>`, `P-<ulid>`, `C-<ulid>`), not inside a path or a longer word. */
 const ID_SOURCE = String.raw`(?<![\w/.-])(?:[PC]-)?[0-9A-HJKMNP-TV-Z]{26}(?![\w/-]|\.\w)`;
 const TOKEN = new RegExp(`(${URL_SOURCE})|(${ID_SOURCE})`, 'g');

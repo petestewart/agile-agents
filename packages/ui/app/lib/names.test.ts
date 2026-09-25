@@ -83,6 +83,12 @@ describe('renderMarkdown with names (T338)', () => {
     expect(html).not.toContain('onmouseover="');
   });
 
+  test('a code span right after a URL stays code, outside the href', () => {
+    expect(renderMarkdown('https://x.io/a`b`')).toBe(
+      '<p><a href="https://x.io/a" target="_blank" rel="noopener noreferrer">https://x.io/a</a><code>b</code></p>',
+    );
+  });
+
   test('without names, ids stay as written', () => {
     expect(renderMarkdown(`waits on ${NODE}`)).toBe(`<p>waits on ${NODE}</p>`);
   });
