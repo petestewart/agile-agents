@@ -152,7 +152,8 @@ export function DirectorPage(): JSX.Element {
               data-by={entry.by === 'human' || entry.by === 'daemon' ? entry.by : 'director'}
             >
               <div className="who">
-                {entry.by}
+                {/* T341: as on a node's thread, your lines read as "you". */}
+                {entry.by === 'human' ? 'you' : entry.by}
                 {entry.kind !== 'line' ? ` · ${entry.kind}` : ''}
               </div>
               <ThreadBody body={entry.body} />
