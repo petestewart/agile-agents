@@ -138,6 +138,24 @@ export function resolveChromiumExecutable(): string {
  * error is caught and turned into a failed attempt (retried like a launch
  * that rejects). Only spawns with more than three stdio entries are touched:
  * that is Playwright's pipe launch; the daemon's own spawns use three.
+ *
+ * The same sockets are also kept reachable for the life of the process
+ * (`pinnedStdio`), because on Bun 1.3.11 a dead child's extra-stdio socket
+ * closes its fd number a second time when it is garbage-collected. The fd
+ * was already closed when the child exited, so by then that number belongs
+ * to something else, and the stale close shuts it underneath its owner.
+ * Measured with strace on a full `bun test`: a finalizer sweep ran
+ * `close(240) close(242) close(241) close(243)` then `close(241) = EBADF`...,
+ * where 240 was the live Chromium's devtools pipe ("Connection terminated
+ * while reading from pipe", Chromium exits, the page wedges: the 40 s
+ * "made no progress" on the T161 stream-page test every CI run). After the
+ * e2e files the same stale closes land on whatever the next file opens: the
+ * fake agent's pipes in attach/service.test.ts, whose first line then never
+ * arrives (T330 on f59c9ef, T174 on 8377414, 20 s `waitFor` timeouts).
+ * Reproduced outside the suite by spawning a 5-stdio child, killing it,
+ * spawning another and forcing a GC: the second child's fd 3/4 sockets are
+ * closed; with the first child's sockets kept reachable they never are.
+ * Three-stdio children (the daemon's own) show no stale close.
  */
 interface StdioSocket {
   on(event: 'error', listener: (err: Error) => void): unknown;
@@ -158,6 +176,18 @@ interface PipeGuard {
   /** Resolves with the socket error when a guarded launch loses a stdio pipe. */
   lost: Promise<Error>;
   release(): void;
+}
+
+/**
+ * Every extra-stdio socket a guarded launch has opened, dead or alive:
+ * never collected, so never finalized, so never closes a reused fd (see
+ * above). A few objects per browser launch, for the life of a test process.
+ */
+const pinnedStdio: unknown[] = [];
+
+/** How many sockets are pinned; for the unit tests. */
+export function pinnedStdioCount(): number {
+  return pinnedStdio.length;
 }
 
 const activeGuards = new Map<
@@ -183,6 +213,7 @@ export function guardStdioPipes(host: SpawnHost = childProcess as unknown as Spa
       const extra = child.stdio?.slice(3) ?? [];
       for (const socket of extra) {
         if (!isStdioSocket(socket)) continue;
+        pinnedStdio.push(socket);
         // Stays attached after release, inert: an error on an abandoned
         // launch's pipe must not escape either.
         socket.on('error', (err: Error) => {
