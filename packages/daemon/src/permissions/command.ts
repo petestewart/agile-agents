@@ -7,7 +7,7 @@
 
 import { realpathSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { basename, dirname, isAbsolute, join as joinPath, relative, resolve } from 'node:path';
+import { basename, dirname, isAbsolute, join as joinPath, relative, resolve, sep } from 'node:path';
 
 // Quote-aware splitting/tokenizing
 
@@ -421,7 +421,7 @@ const UNSAFE_READ_GIT_OPTIONS = new Set([
 /**
  * T336: a git call that only reads, by allowlist: nothing stripped from its
  * front (no `GIT_*=` or other assignment, no wrapper), nothing before the
- * subcommand but `-C <dir>` (so no `-p`/`--paginate`, `-c`, `--config-env`, ...),
+ * subcommand but `-C <dir>` and one `--no-pager` (so no `-p`/`--paginate`, `-c`, `--config-env`, ...),
  * a subcommand in `diff`/`log`/`show`/`status`, and none of the unsafe options.
  */
 export function isReadOnlyGitAtom(atom: CommandAtom): boolean {
@@ -429,15 +429,87 @@ export function isReadOnlyGitAtom(atom: CommandAtom): boolean {
   const tokens = atom.tokens;
   if (tokens[0] !== 'git') return false;
   let i = 1;
-  while (tokens[i] === '-C') {
-    if (tokens[i + 1] === undefined) return false;
-    i += 2;
+  let noPager = false;
+  for (;;) {
+    if (tokens[i] === '-C') {
+      if (tokens[i + 1] === undefined) return false;
+      i += 2;
+    } else if (tokens[i] === '--no-pager' && !noPager) {
+      // T343: one `--no-pager` only turns the pager off.
+      noPager = true;
+      i += 1;
+    } else break;
   }
   if (!READ_ONLY_GIT_SUBCOMMANDS.has(tokens[i] ?? '')) return false;
   return !tokens.slice(i + 1).some((t) => {
     const eq = t.indexOf('=');
     return UNSAFE_READ_GIT_OPTIONS.has(eq === -1 ? t : t.slice(0, eq));
   });
+}
+
+/** T343: `git config` options that write (or open an editor on) a config file. */
+const GIT_CONFIG_WRITE_OPTIONS = new Set([
+  '--add',
+  '--unset',
+  '--unset-all',
+  '--replace-all',
+  '--rename-section',
+  '--remove-section',
+  '-e',
+  '--edit',
+]);
+/** T343: `git config` options that only read. */
+const GIT_CONFIG_READ_OPTIONS = new Set([
+  '--get',
+  '--get-all',
+  '--get-regexp',
+  '--get-urlmatch',
+  '--get-color',
+  '--get-colorbool',
+  '-l',
+  '--list',
+]);
+/** T343: `git config` options whose value is the next token. */
+const GIT_CONFIG_VALUE_OPTIONS = new Set([
+  '-f',
+  '--file',
+  '--blob',
+  '--type',
+  '--default',
+  '--comment',
+  '--value',
+]);
+
+/**
+ * T343: `args` (from `gitArgs`) is a `git config` that sets, unsets, renames
+ * or edits: anything but `--get*`/`--list`, the `get`/`list` subcommands or
+ * a lone key. Unknown shapes count as writes.
+ */
+export function isGitConfigWrite(args: string[]): boolean {
+  if (args[0] !== 'config') return false;
+  const rest = args.slice(1);
+  if (rest.some((t) => GIT_CONFIG_WRITE_OPTIONS.has(t))) return true;
+  if (rest.some((t) => GIT_CONFIG_READ_OPTIONS.has(t))) return false;
+  const positionals: string[] = [];
+  for (let i = 0; i < rest.length; i++) {
+    const t = rest[i] ?? '';
+    if (GIT_CONFIG_VALUE_OPTIONS.has(t)) i++;
+    else if (!t.startsWith('-')) positionals.push(t);
+  }
+  const [first] = positionals;
+  if (first === 'get' || first === 'list') return false;
+  return positionals.length !== 1;
+}
+
+/**
+ * T343: `path` is inside `root` with a `.git` segment: the worktree's gitfile
+ * or a `.git` directory. Git's own state, written only through git.
+ */
+export function isInsideGitDir(path: string, root: string): boolean {
+  const resolvedRoot = realpathNearestExisting(resolve(root));
+  const rel = relative(resolvedRoot, realpathNearestExisting(resolve(root, path)));
+  if (rel === '' || rel.startsWith('..') || isAbsolute(rel)) return false;
+  return rel.split(sep).includes('.git');
 }
 
 /** Args from `git`'s subcommand onward, or `undefined` if this isn't a `git` invocation with one. */

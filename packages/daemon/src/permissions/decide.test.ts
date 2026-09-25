@@ -1050,6 +1050,47 @@ describe('decidePermission — T030 reviewer read-only additions', () => {
       ]);
     }
   });
+
+  test('T343: one leading --no-pager is still a read', () => {
+    for (const command of [
+      'git --no-pager log -3',
+      'git --no-pager -C sub diff',
+      'git -C sub --no-pager show',
+    ]) {
+      expect([command, decide('reviewer', request('execute', { command })).kind]).toEqual([
+        command,
+        'allow',
+      ]);
+    }
+    for (const command of ['git --no-pager --no-pager log', 'git --no-pager -p log']) {
+      expect([command, decide('reviewer', request('execute', { command })).kind]).toEqual([
+        command,
+        'deny',
+      ]);
+    }
+  });
+
+  test('T343: the reviewer cannot take the read-only git env off', () => {
+    for (const command of [
+      'env -u GIT_ATTR_SOURCE git diff',
+      'env -u GIT_CONFIG_COUNT git status',
+      'env -i git log',
+      'unset GIT_ATTR_SOURCE; git diff',
+      'unset GIT_CONFIG_COUNT && git status',
+      'export GIT_ATTR_SOURCE=HEAD; git diff',
+      'export GIT_CONFIG_COUNT=0 && git status',
+      'GIT_ATTR_SOURCE=HEAD git diff',
+      'GIT_CONFIG_COUNT=0 git status',
+      'GIT_PAGER=less git log',
+      'sh -c "unset GIT_ATTR_SOURCE; git diff"',
+      'bash -c "export GIT_CONFIG_COUNT=0; git status"',
+    ]) {
+      expect([command, decide('reviewer', request('execute', { command })).kind]).toEqual([
+        command,
+        'deny',
+      ]);
+    }
+  });
 });
 
 describe('decidePermission — T030 review-round fixes (opus, 7 blockers)', () => {
@@ -1323,5 +1364,87 @@ describe('decidePermission — engineer reads under a read scope (T330)', () => 
 
   test('with no read scope a read stays allowed (as before)', () => {
     expect(decide('engineer', request('read', { targetPath: '/etc/hosts' })).kind).toBe('allow');
+  });
+});
+
+describe('decidePermission — T343 the engineer and git state', () => {
+  test('git config that sets, unsets or edits is held; reads stay allowed', () => {
+    for (const command of [
+      'git config core.fsmonitor /tmp/x',
+      'git config --local core.hooksPath hooks',
+      'git config --global core.pager less',
+      'git config --worktree diff.external x',
+      'git config --add alias.x y',
+      'git config --unset user.name',
+      'git config --unset-all user.name',
+      'git config --replace-all user.name Pat',
+      'git config --remove-section alias',
+      'git config --rename-section a b',
+      'git config -e',
+      'git config set core.fsmonitor x',
+      'git config unset user.name',
+      'git -C sub config core.fsmonitor x',
+      'git config',
+    ]) {
+      expect([command, decide('engineer', request('execute', { command })).kind]).toEqual([
+        command,
+        'hil',
+      ]);
+    }
+    for (const command of [
+      'git config --get user.name',
+      'git config --get-all remote.origin.fetch',
+      'git config --get-regexp ^alias',
+      'git config --list',
+      'git config -l --show-origin',
+      'git config user.name',
+      'git config --type=bool core.bare',
+      'git config --file .gitmodules submodule.x.url',
+      'git config get user.name',
+      'git config list',
+    ]) {
+      expect([command, decide('engineer', request('execute', { command })).kind]).toEqual([
+        command,
+        'allow',
+      ]);
+    }
+  });
+
+  test('writes into .git are denied; reads and git itself are not', () => {
+    for (const path of [
+      `${WORKTREE}/.git`,
+      `${WORKTREE}/.git/hooks/pre-commit`,
+      `${WORKTREE}/sub/.git/config`,
+    ]) {
+      expect([path, decide('engineer', request('edit', { targetPath: path })).kind]).toEqual([
+        path,
+        'deny',
+      ]);
+    }
+    for (const command of [
+      'echo x > .git/hooks/pre-commit',
+      'echo gitdir: /tmp > .git',
+      'cp evil.sh .git/hooks/post-checkout',
+      'touch .git/config',
+      'mkdir -p sub/.git/hooks',
+    ]) {
+      expect([command, decide('engineer', request('execute', { command })).kind]).toEqual([
+        command,
+        'deny',
+      ]);
+    }
+    for (const command of [
+      'cat .git',
+      'git status',
+      'echo x > .gitignore',
+      'touch .github/ci.yml',
+    ]) {
+      expect([command, decide('engineer', request('execute', { command })).kind]).toEqual([
+        command,
+        'allow',
+      ]);
+    }
+    const edit = decide('engineer', request('edit', { targetPath: `${WORKTREE}/.gitignore` }));
+    expect(edit.kind).toBe('allow');
   });
 });
