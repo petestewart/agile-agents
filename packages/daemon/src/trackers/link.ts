@@ -109,6 +109,55 @@ export class TrackerLinks {
     return updated;
   }
 
+  /**
+   * T324 (§10 "Node → new issue"): a human click only. Creates an issue from
+   * the node's title and goal and links the node to it (the goal is kept).
+   * `project` is the Jira project / Linear team key; it defaults to the
+   * nearest linked ancestor's, whose issue becomes the parent when it is an epic.
+   */
+  async createIssue(id: string, options: { project?: string } = {}): Promise<Stream> {
+    const stream = this.options.streams.get(id);
+    if (stream.external_link !== undefined) {
+      throw new TrackerError(`already linked to ${stream.external_link.key}`, 'validation');
+    }
+    const ancestor = this.linkedAncestor(stream);
+    const project = (options.project?.trim() || ancestor?.key.replace(/-\d+$/, '') || '')
+      .toUpperCase()
+      .slice(0, 40);
+    if (!/^[A-Z][A-Z0-9_]*$/.test(project)) {
+      throw new TrackerError(
+        'name the Jira project or Linear team key (e.g. SHOP): no linked ancestor to take it from',
+        'validation',
+      );
+    }
+    const system = ancestor?.system ?? this.systemFor(stream);
+    const issue = await this.options.tracker(system).createIssue({
+      project,
+      title: stream.title,
+      description: stream.goal,
+      ...(ancestor?.kind === 'epic' && ancestor.system === system ? { parent: ancestor.key } : {}),
+    });
+    const updated = await this.options.streams.update('human', id, {
+      external_link: linkFrom(system, issue, this.now()),
+    });
+    await this.options.streams.appendThread('human', id, {
+      kind: 'event',
+      body: `created ${issue.key} in ${system} and linked to it`,
+    });
+    this.due.set(id, this.now().getTime() + TRACKER_POLL_MS);
+    return updated;
+  }
+
+  private linkedAncestor(stream: Stream): Stream['external_link'] {
+    let parent = stream.parent;
+    for (let i = 0; parent !== undefined && i < 64; i++) {
+      const p = this.options.streams.get(parent);
+      if (p.external_link !== undefined) return p.external_link;
+      parent = p.parent;
+    }
+    return undefined;
+  }
+
   start(intervalMs = TRACKER_POLL_TICK_MS): void {
     if (intervalMs <= 0 || this.timer) return;
     this.timer = setInterval(() => {
