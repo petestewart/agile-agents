@@ -38,6 +38,7 @@ import {
   buildPermissionResponder,
   cursorModeIdFor,
 } from '../permissions';
+import { readOnlyGitEnv } from '../permissions/git-env';
 import type { PatternRuleRules } from '../permissions/rule-checks';
 import { patternRuleGate } from '../permissions/rule-checks';
 import {
@@ -296,6 +297,8 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
   // `SandboxRequiredError` when `requiresSandbox` and no backend resolves;
   // an available backend alone is never a reason to wrap.
   const wrapCommand = opts.wrapCommand ?? defaultWrapAgentCommand;
+  // T343: a read-only role's git can't run a repo-configured program.
+  const gitEnv = readOnlyGitEnv(policyRole, { ...process.env, ...provider.envOverrides });
   const wrapped = wrapCommand({
     role: policyRole,
     worktreePath,
@@ -305,6 +308,7 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
     requiresSandbox: opts.requiresSandbox,
     enabled: opts.sandboxEnabled,
     socketPath: opts.socketPath,
+    ...(Object.keys(gitEnv).length > 0 ? { envPassthroughNames: Object.keys(gitEnv) } : {}),
   });
 
   // Pi has no ACP-level hook: enforcement is the `agile` extension. A
@@ -360,6 +364,7 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
       ...(streamId !== undefined ? { AGILE_STREAM: streamId } : {}),
       // Headless git: a `commit` without -m would open core.editor and hang.
       GIT_EDITOR: 'true',
+      ...gitEnv,
       ...(opts.socketPath ? { AGILE_SOCKET_PATH: opts.socketPath } : {}),
       ...(provider.id === 'pi' ? { [PI_GATE_ENV_VAR]: '1' } : {}),
     },

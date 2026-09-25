@@ -663,6 +663,9 @@ describe('T336: isReadOnlyGitAtom is an allowlist', () => {
       'git -C /a -C b diff main',
       'git show HEAD:README.md',
       'git status --short',
+      // T343: one leading --no-pager only turns the pager off.
+      'git --no-pager log',
+      'git --no-pager -C /a diff',
     ]) {
       expect([command, readOnly(command)]).toEqual([command, true]);
     }
@@ -679,7 +682,7 @@ describe('T336: isReadOnlyGitAtom is an allowlist', () => {
       'git --namespace=x log',
       'git -p log',
       'git --paginate log',
-      'git --no-pager log',
+      'git --no-pager --no-pager log',
       'git -C',
       // Unsafe options on the subcommand.
       'git log --output=/tmp/x',

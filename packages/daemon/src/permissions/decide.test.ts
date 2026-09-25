@@ -995,6 +995,102 @@ describe('decidePermission — T030 reviewer read-only additions', () => {
       'deny',
     );
   });
+
+  test('T343: reviewer git reads are by the allowlist, plain reads still allowed', () => {
+    for (const command of [
+      'git log --oneline -5',
+      'git diff main',
+      'git show HEAD:README.md',
+      'git status --short',
+      'git -C sub log -p -3',
+      'git diff --stat && git log -1',
+    ]) {
+      expect([command, decide('reviewer', request('execute', { command })).kind]).toEqual([
+        command,
+        'allow',
+      ]);
+    }
+  });
+
+  test('T343: reviewer git that sets config, runs a program, writes or moves dirs is denied', () => {
+    for (const command of [
+      // Config that runs a program (core.fsmonitor on status, diff.external on
+      // diff: both checked against git 2.43); an alias for a builtin is ignored.
+      'git --config-env=core.fsmonitor=VAR status',
+      'git --config-env=diff.external=VAR diff',
+      'git --config-env=alias.log=VAR log',
+      'git --config-env alias.log=VAR log',
+      'git -c alias.log=!touch_x log',
+      'git -c core.pager=touch_x log',
+      'git log --config-env=alias.x=V',
+      // Env assignments and wrappers in front, directly or through sh -c.
+      'GIT_EXTERNAL_DIFF=/tmp/x git diff',
+      'GIT_PAGER=touch_x git log',
+      'GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=alias.log GIT_CONFIG_VALUE_0=!x git log',
+      'env git log',
+      'sh -c "GIT_PAGER=x git log"',
+      // Global options that move git or run a program.
+      'git --exec-path=/tmp log',
+      'git --git-dir=/tmp/x log',
+      'git --work-tree=/tmp status',
+      'git -p log',
+      'git --paginate log',
+      // Subcommand options that run a program or write a file.
+      'git diff --ext-diff',
+      'git show --textconv HEAD:a.bin',
+      'git log --output=/tmp/x',
+      'git diff --output /tmp/x',
+      'git diff -o /tmp/x',
+      'git diff -O/tmp/order',
+      'git log --open-files-in-pager',
+    ]) {
+      expect([command, decide('reviewer', request('execute', { command })).kind]).toEqual([
+        command,
+        'deny',
+      ]);
+    }
+  });
+
+  test('T343: one leading --no-pager is still a read', () => {
+    for (const command of [
+      'git --no-pager log -3',
+      'git --no-pager -C sub diff',
+      'git -C sub --no-pager show',
+    ]) {
+      expect([command, decide('reviewer', request('execute', { command })).kind]).toEqual([
+        command,
+        'allow',
+      ]);
+    }
+    for (const command of ['git --no-pager --no-pager log', 'git --no-pager -p log']) {
+      expect([command, decide('reviewer', request('execute', { command })).kind]).toEqual([
+        command,
+        'deny',
+      ]);
+    }
+  });
+
+  test('T343: the reviewer cannot take the read-only git env off', () => {
+    for (const command of [
+      'env -u GIT_ATTR_SOURCE git diff',
+      'env -u GIT_CONFIG_COUNT git status',
+      'env -i git log',
+      'unset GIT_ATTR_SOURCE; git diff',
+      'unset GIT_CONFIG_COUNT && git status',
+      'export GIT_ATTR_SOURCE=HEAD; git diff',
+      'export GIT_CONFIG_COUNT=0 && git status',
+      'GIT_ATTR_SOURCE=HEAD git diff',
+      'GIT_CONFIG_COUNT=0 git status',
+      'GIT_PAGER=less git log',
+      'sh -c "unset GIT_ATTR_SOURCE; git diff"',
+      'bash -c "export GIT_CONFIG_COUNT=0; git status"',
+    ]) {
+      expect([command, decide('reviewer', request('execute', { command })).kind]).toEqual([
+        command,
+        'deny',
+      ]);
+    }
+  });
 });
 
 describe('decidePermission — T030 review-round fixes (opus, 7 blockers)', () => {
@@ -1340,5 +1436,298 @@ describe('decidePermission — engineer reads under a read scope (T330)', () => 
 
   test('with no read scope a read stays allowed (as before)', () => {
     expect(decide('engineer', request('read', { targetPath: '/etc/hosts' })).kind).toBe('allow');
+  });
+});
+
+describe('decidePermission — T343 the engineer and git state', () => {
+  test('git config that sets, unsets or edits is held; reads stay allowed', () => {
+    for (const command of [
+      'git config core.fsmonitor /tmp/x',
+      'git config --local core.hooksPath hooks',
+      'git config --global core.pager less',
+      'git config --worktree diff.external x',
+      'git config --add alias.x y',
+      'git config --unset user.name',
+      'git config --unset-all user.name',
+      'git config --replace-all user.name Pat',
+      'git config --remove-section alias',
+      'git config --rename-section a b',
+      'git config -e',
+      'git config set core.fsmonitor x',
+      'git config unset user.name',
+      'git -C sub config core.fsmonitor x',
+      'git config',
+    ]) {
+      expect([command, decide('engineer', request('execute', { command })).kind]).toEqual([
+        command,
+        'hil',
+      ]);
+    }
+    for (const command of [
+      'git config --get user.name',
+      'git config --get-all remote.origin.fetch',
+      'git config --get-regexp ^alias',
+      'git config --list',
+      'git config -l --show-origin',
+      'git config user.name',
+      'git config --type=bool core.bare',
+      'git config --file .gitmodules submodule.x.url',
+      'git config get user.name',
+      'git config list',
+    ]) {
+      expect([command, decide('engineer', request('execute', { command })).kind]).toEqual([
+        command,
+        'allow',
+      ]);
+    }
+  });
+
+  test('writes into .git are denied; reads and git itself are not', () => {
+    for (const path of [
+      `${WORKTREE}/.git`,
+      `${WORKTREE}/.git/hooks/pre-commit`,
+      `${WORKTREE}/sub/.git/config`,
+    ]) {
+      expect([path, decide('engineer', request('edit', { targetPath: path })).kind]).toEqual([
+        path,
+        'deny',
+      ]);
+    }
+    for (const command of [
+      'echo x > .git/hooks/pre-commit',
+      'echo gitdir: /tmp > .git',
+      'cp evil.sh .git/hooks/post-checkout',
+      'touch .git/config',
+      'mkdir -p sub/.git/hooks',
+    ]) {
+      expect([command, decide('engineer', request('execute', { command })).kind]).toEqual([
+        command,
+        'deny',
+      ]);
+    }
+    for (const command of [
+      'cat .git',
+      'git status',
+      'echo x > .gitignore',
+      'touch .github/ci.yml',
+    ]) {
+      expect([command, decide('engineer', request('execute', { command })).kind]).toEqual([
+        command,
+        'allow',
+      ]);
+    }
+    const edit = decide('engineer', request('edit', { targetPath: `${WORKTREE}/.gitignore` }));
+    expect(edit.kind).toBe('allow');
+  });
+});
+
+describe("decidePermission — T343 the engineer and the repo's shared git dir", () => {
+  const COMMON = '/work/.git';
+
+  test('no write reaches the common dir, by absolute path or by ..', () => {
+    for (const path of [
+      `${COMMON}/info/attributes`,
+      `${COMMON}/config`,
+      `${WORKTREE}/../../.git/info/attributes`,
+    ]) {
+      expect([path, decide('engineer', request('edit', { targetPath: path })).kind]).toEqual([
+        path,
+        'deny',
+      ]);
+    }
+    for (const command of [
+      `echo 'a diff=evil' > ${COMMON}/info/attributes`,
+      "echo 'a diff=evil' > ../../.git/info/attributes",
+      `cp attrs ${COMMON}/info/attributes`,
+      'cp attrs ../../.git/info/attributes',
+      `touch ${COMMON}/info/attributes`,
+    ]) {
+      expect([command, decide('engineer', request('execute', { command })).kind]).toEqual([
+        command,
+        'deny',
+      ]);
+    }
+  });
+
+  test('git that writes a file there is denied; into the worktree it is allowed', () => {
+    for (const command of [
+      `git log -1 --format='a diff=evil' --output=${COMMON}/info/attributes`,
+      'git log -1 --output ../../.git/info/attributes',
+      'git diff --output=.git/x',
+      `git format-patch -o ${COMMON}/info HEAD~1`,
+      `git archive -o ${COMMON}/info/x HEAD`,
+      `git bundle create ${COMMON}/info/x HEAD`,
+      'git checkout-index --prefix=../../.git/info/ -a',
+      `git init ${COMMON}/info`,
+    ]) {
+      expect([command, decide('engineer', request('execute', { command })).kind]).toEqual([
+        command,
+        'deny',
+      ]);
+    }
+    for (const command of [
+      'git log -1 --output=out.txt',
+      'git format-patch -o patches HEAD~1',
+      'git bundle create x.bundle HEAD',
+      'git init fixtures/sub',
+      'GIT_EDITOR=true git rebase --continue',
+    ]) {
+      expect([command, decide('engineer', request('execute', { command })).kind]).toEqual([
+        command,
+        'allow',
+      ]);
+    }
+  });
+
+  test('git pointed at other dirs, or init with a template, is held', () => {
+    for (const command of [
+      `GIT_DIR=${COMMON} git status`,
+      `GIT_WORK_TREE=${COMMON}/info git checkout HEAD -- attributes`,
+      'GIT_TEMPLATE_DIR=tpl git init',
+      `sh -c "GIT_DIR=${COMMON} git status"`,
+      `git --git-dir=${COMMON} status`,
+      `git --work-tree=${COMMON}/info checkout HEAD -- attributes`,
+      // A re-init of a linked worktree copies the template into the common dir.
+      'git init --template=tpl',
+      'git init --separate-git-dir=../x',
+      'git -c init.templateDir=tpl init',
+    ]) {
+      expect([command, decide('engineer', request('execute', { command })).kind]).toEqual([
+        command,
+        'hil',
+      ]);
+    }
+  });
+});
+
+describe('decidePermission — T343 engineer git arguments that are paths', () => {
+  const kind = (command: string) => [
+    command,
+    decide('engineer', request('execute', { command })).kind,
+  ];
+
+  test('--unsafe-paths is denied outright', () => {
+    for (const command of [
+      'git apply --unsafe-paths --directory=/tmp/x p.diff',
+      'git apply --unsafe-paths p.diff',
+    ]) {
+      expect(kind(command)).toEqual([command, 'deny']);
+    }
+  });
+
+  test('worktree add, clone and submodule add are held whatever their target', () => {
+    for (const command of [
+      'git worktree add /tmp/x b',
+      'git worktree add ../../../tmp/x b',
+      'git worktree add sub b',
+      'git clone . /tmp/x',
+      'git clone https://example.com/r.git',
+      'git submodule add https://example.com/r.git /tmp/x',
+      'git submodule add https://example.com/r.git vendor/r',
+    ]) {
+      expect(kind(command)).toEqual([command, 'hil']);
+    }
+  });
+
+  test('any git argument that may be a path outside the worktree or into .git is held', () => {
+    for (const command of [
+      'git apply --directory=/tmp/x p.diff',
+      'git am --directory=/tmp/x mbox',
+      'git bogus-future-cmd --out=/tmp/x',
+      'git bogus-future-cmd -o/tmp/x',
+      'git bogus-future-cmd /tmp/x',
+      'git bogus-future-cmd ~/x',
+      'git bogus-future-cmd ../x',
+      'git bogus-future-cmd sub/../../x',
+      'git bogus-future-cmd --out=$HOME/x',
+      'git mv a.ts ../a.ts',
+      'git commit -F /tmp/msg',
+      'git fetch /work/other-repo',
+      'git add ./.git/config',
+    ]) {
+      expect(kind(command)).toEqual([command, 'hil']);
+    }
+  });
+
+  test('refs, pathspecs, messages and worktree paths stay allowed', () => {
+    for (const command of [
+      'git checkout -b feature/x origin/main',
+      'git rebase origin/main',
+      'git push origin HEAD:refs/heads/stream/x',
+      'git fetch origin refs/heads/main:refs/remotes/origin/main',
+      'git add src/a.ts ./b.ts',
+      'git commit -m "fix a/b and c"',
+      'git log -p -- ../other',
+      'git diff origin/main -- /abs/path',
+      'git show HEAD:../x',
+      'git apply --directory=sub p.diff',
+      'git stash push -- src',
+      'git worktree list',
+    ]) {
+      expect(kind(command)).toEqual([command, 'allow']);
+    }
+  });
+});
+
+describe('decidePermission — T343 engineer git config overrides that can run programs', () => {
+  const kind = (command: string) => [
+    command,
+    decide('engineer', request('execute', { command })).kind,
+  ];
+
+  test('-c, --config-env, --exec-path and program env prefixes are held', () => {
+    for (const command of [
+      'git -c core.pager="rm -rf ~" diff',
+      'git -c alias.x=!sh x',
+      'git -c diff.external=./evil.sh diff',
+      'git --config-env=core.pager=EVIL log',
+      'git --exec-path=./bin status',
+      'GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.pager GIT_CONFIG_VALUE_0=evil git log',
+      "GIT_CONFIG_PARAMETERS=\"'core.pager'='evil'\" git log",
+      'GIT_EXEC_PATH=./bin git status',
+      'GIT_PAGER=./evil git log',
+      'GIT_EXTERNAL_DIFF=./evil git diff',
+      'GIT_SSH_COMMAND=./evil git fetch origin',
+      'GIT_EDITOR=./evil git commit',
+      'EDITOR=vim git commit',
+      'VISUAL=./evil git rebase -i HEAD~2',
+      'sh -c "GIT_PAGER=./evil git log"',
+    ]) {
+      expect(kind(command)).toEqual([command, 'hil']);
+    }
+    const reason = decide('engineer', request('execute', { command: 'git -c core.pager=x diff' }));
+    expect(reason.kind === 'hil' && reason.hilRequest.summary).toContain(
+      'git config overrides that can run programs need the operator',
+    );
+  });
+
+  test('an inert editor (a shell builtin) and plain git stay allowed', () => {
+    for (const command of [
+      'GIT_EDITOR=true git rebase --continue',
+      'GIT_EDITOR=: git commit --amend',
+      'git diff',
+      'git log --oneline',
+    ]) {
+      expect(kind(command)).toEqual([command, 'allow']);
+    }
+  });
+
+  test('a commit message is text, not a path', () => {
+    for (const command of [
+      'git commit -m "../fix"',
+      'git commit -am "/tmp is gone"',
+      'git commit --message "~ expansion"',
+      'git commit --message=../fix',
+      'git commit -m../fix',
+      'git tag -a v1 -m "../x"',
+      'git commit -F -',
+    ]) {
+      expect(kind(command)).toEqual([command, 'allow']);
+    }
+    // The path after the message is still checked.
+    expect(kind('git commit -m "msg" ../outside.ts')).toEqual([
+      'git commit -m "msg" ../outside.ts',
+      'hil',
+    ]);
   });
 });
