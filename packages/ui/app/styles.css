@@ -1094,3 +1094,10 @@ body {
   font-size: 11px;
   margin-left: 6px;
 }
+
+/* T336: a part waiting for its coordinator's plan. */
+.cr-waiting {
+  color: var(--text-dim);
+  font-size: 11px;
+  margin-left: 6px;
+}

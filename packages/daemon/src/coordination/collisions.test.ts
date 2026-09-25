@@ -164,7 +164,7 @@ describe('collisions go to the parent (T287)', () => {
     expect(sent.type).toBe('coordinator_note');
     expect(sent.routing).toEqual([{ node: web.id, because: 'self' }]);
     expect(summarize(sent, web.id, title)).toBe(
-      'Your coordinator says: api owns prices.ts; wait for it to merge.',
+      'Your coordinator says: "api owns prices.ts; wait for it to merge."',
     );
   });
 

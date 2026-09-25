@@ -534,7 +534,11 @@ function reviewerVerdict(classified: PermissionRequest): PolicyVerdict {
  * dir (`ctx.worktreePath`) or nowhere; `tee`, process substitution and an
  * unresolvable target deny.
  */
-function coordinatorRedirectVerdict(tokens: string[], ctx: PolicyContext): PolicyVerdict {
+function coordinatorRedirectVerdict(
+  tokens: string[],
+  ctx: PolicyContext,
+  cwd: string = ctx.worktreePath,
+): PolicyVerdict {
   if (!cmd.hasWritingRedirectionOrTee(tokens)) return ALLOW;
   if (tokens.includes('tee') || tokens.some((t) => t.startsWith('<('))) {
     return deny('coordinator role denies tee/process substitution — write files with Write');
@@ -544,7 +548,7 @@ function coordinatorRedirectVerdict(tokens: string[], ctx: PolicyContext): Polic
   }
   for (const raw of cmd.redirectionTargets(tokens)) {
     const resolved = cmd.resolveTargetPath(raw);
-    if (!resolved.safe || !isPathInside(resolved.path, ctx.worktreePath)) {
+    if (!resolved.safe || !isPathInside(resolve(cwd, resolved.path), ctx.worktreePath)) {
       return deny('coordinator role writes only inside its session dir');
     }
   }
@@ -560,26 +564,62 @@ function hasReadScope(ctx: PolicyContext): boolean {
  * T305 (P20): under a read scope, every path-like argument of a coordinator's
  * command must be readable (`readDenyReason`); an unresolvable one denies.
  */
-function coordinatorScopedReads(tokens: string[], ctx: PolicyContext): PolicyVerdict {
+function coordinatorScopedReads(
+  tokens: string[],
+  ctx: PolicyContext,
+  cwd: string = ctx.worktreePath,
+): PolicyVerdict {
   if (!hasReadScope(ctx)) return ALLOW;
   for (const raw of tokens.slice(1)) {
     if (!(raw.includes('/') || raw.startsWith('.') || raw.startsWith('~'))) continue;
     const resolved = cmd.resolveTargetPath(raw);
     if (!resolved.safe) return deny(`coordinator role cannot resolve the path "${raw}"`);
-    const reason = readDenyReason(resolved.path, ctx);
+    // T336: relative to where a `cd` left the command.
+    const reason = readDenyReason(resolve(cwd, resolved.path), ctx);
     if (reason !== undefined) return deny(reason);
   }
   return ALLOW;
+}
+
+/**
+ * T336: `cd <dir>` (Claude's `cd <repo> && git log`) moves where the atoms
+ * after it run. The dir must be readable; a later relative redirect then
+ * resolves from it. Returns the new cwd, or the deny.
+ */
+function coordinatorCd(
+  tokens: string[],
+  ctx: PolicyContext,
+  cwd: string,
+): { cwd: string } | PolicyVerdict {
+  const [, target, ...rest] = tokens;
+  if (target === undefined || target === '-' || target.startsWith('-') || rest.length > 0) {
+    return deny('coordinator role allows cd only as `cd <dir>`');
+  }
+  const resolved = cmd.resolveTargetPath(target);
+  if (!resolved.safe) return deny(`coordinator role cannot resolve the path "${target}"`);
+  const dir = resolve(cwd, resolved.path);
+  if (hasReadScope(ctx)) {
+    const reason = readDenyReason(dir, ctx);
+    if (reason !== undefined) return deny(reason);
+  }
+  return { cwd: dir };
 }
 
 /** The reviewer's read-only tools, plus the two a scratch-dir redirect needs. */
 const COORDINATOR_WRITE_TOOLS = new Set(['echo', 'printf']);
 
 function coordinatorExecuteVerdict(command: string, ctx: PolicyContext): PolicyVerdict {
+  let cwd = ctx.worktreePath;
   for (const atom of cmd.parseCommandIntoAtoms(command)) {
-    const redirect = coordinatorRedirectVerdict(atom.tokens, ctx);
+    if (atom.tokens[0] === 'cd') {
+      const moved = coordinatorCd(atom.tokens, ctx, cwd);
+      if ('action' in moved) return moved;
+      cwd = moved.cwd;
+      continue;
+    }
+    const redirect = coordinatorRedirectVerdict(atom.tokens, ctx, cwd);
     if (redirect.action !== 'allow') return redirect;
-    const reads = coordinatorScopedReads(atom.tokens, ctx);
+    const reads = coordinatorScopedReads(atom.tokens, ctx, cwd);
     if (reads.action !== 'allow') return reads;
     const args = cmd.gitArgs(atom.tokens);
     if (args !== undefined && REVIEWER_READ_ONLY_GIT_SUBCOMMANDS.has(args[0] ?? '')) continue;

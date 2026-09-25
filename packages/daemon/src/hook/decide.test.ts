@@ -369,6 +369,55 @@ describe('T280: a coordinator writes only in its scratch session dir (P20)', () 
   });
 });
 
+describe('T336: a coordinator reads other repos with realistic Bash', () => {
+  const home = '/home/u/.agile';
+  const dir = `${home}/sessions/01J9AAAAAAAAAAAAAAAAAAAAAA`;
+  const ledger = '/home/u/Projects/ledger-lite';
+  const shop = '/home/u/Projects/shop-private';
+  const ctx = baseCtx({
+    role: 'coordinator',
+    worktreePath: dir,
+    readRoots: [ledger, '/home/u/Projects/agile-test-repo'],
+    hiddenRoots: [shop, home],
+  });
+  const bash = (command: string) =>
+    decidePreToolUse(ctx, { tool_name: 'Bash', tool_input: { command, description: 'x' } });
+
+  test('read-only commands on a readable repo are allowed, cd included', () => {
+    for (const command of [
+      `ls ${ledger}`,
+      `cat ${ledger}/README.md`,
+      `git -C ${ledger} log --oneline -5`,
+      `cd ${ledger} && git log --oneline -5`,
+      `cd ${ledger} && ls -la && git status`,
+      `cd ${dir} && echo draft > notes.md`,
+      `cd ${ledger} && cat README.md src/a.ts`,
+    ]) {
+      expect([command, bash(command).decision]).toEqual([command, 'allow']);
+    }
+  });
+
+  test('cd does not open a way to write or read what was closed', () => {
+    for (const command of [
+      // A relative redirect after cd lands in the repo, not the session dir.
+      `cd ${ledger} && echo x > notes.md`,
+      `cd ${ledger} && git commit -m x`,
+      `cd ${ledger} && touch x`,
+      `cd ${shop} && ls`,
+      `cd ${home} && cat config.yaml`,
+      'cd && ls',
+      'cd - && ls',
+      'cd $HOME && ls',
+      // T305's read scope follows the cd: a relative path resolves from it.
+      `cd ${ledger} && cat ../../../../etc/passwd`,
+      `cd ${ledger}/.. && cat shop-private/secret.ts`,
+      `git -C ${shop} log --oneline -5`,
+    ]) {
+      expect([command, bash(command).decision]).toEqual([command, 'deny']);
+    }
+  });
+});
+
 describe('T291: a coordinator has no network (P20)', () => {
   const web = (role: HookDecisionContext['role'], tool_name: string) =>
     decidePreToolUse(baseCtx({ role }), {
