@@ -1587,17 +1587,19 @@ agile tail --director
 
 ### Ticket: T320 Tracker port, fakes and credentials
 - **Priority:** P1
-- **Status:** In Progress
-- **Owner:** opus:worker-T320
+- **Status:** Done
+- **Owner:** Unassigned
 - **Scope:** `daemon/trackers` with one port (get issue, list epic children, add comment, add link, transition status, create issue) and two adapters (Jira REST, Linear GraphQL). There are fake servers for both, as in T220. Credentials follow P17 **only once Pete has approved it as a D-entry**. `agile daemon status` reports each tracker as configured or not.
 - **Acceptance Criteria:** Adapter tests against the fakes. The token never appears in logs or events (asserted).
 - **Validation Steps:** `bun test packages/daemon/src/trackers`.
 - **Notes:** P17 approved (D31). First ticket of Phase 13.
+- T320: sonnet review APPROVE. Port + Jira REST/Linear GraphQL adapters + local fakes (T220 pattern); `trackers` config block; store.setTrackerToken (0600); daemon status shows configured/not. credentials.test.ts asserts no token leak. Daemon +926 (≈430 fakes). Gap: no way to set a token → T326. merge 40d9291.
+
 
 ### Ticket: T321 Link a node; pull its goal; edits as events
 - **Priority:** P1
-- **Status:** Todo
-- **Owner:** —
+- **Status:** In Progress
+- **Owner:** opus:worker-T321
 - **Scope:** `agile node link <id> SHOP-11` and a Link field on the stream page. Linking sets the goal from the title, description and acceptance criteria. A poller (5 min) emits `external_changed` on edits and updates the goal with a thread line.
 - **Acceptance Criteria:** Against the fake: link, edit the description in the fake, then the event and the goal update.
 - **Validation Steps:** `bun test packages/daemon/src/trackers packages/daemon/src/events`.
@@ -1631,6 +1633,15 @@ agile tail --director
 - **Acceptance Criteria:** Against the fake: with `push_status` off, nothing is sent; with it on, the mapped transitions are sent. There is no call that edits text (asserted on the fake's request log).
 - **Validation Steps:** `bun test packages/daemon/src/trackers`.
 - **Notes:** After T321.
+
+### Ticket: T326 ∥ Tracker tokens in Settings and the CLI
+- **Priority:** P1
+- **Status:** In Progress
+- **Owner:** opus:worker-T326
+- **Scope:** D31's write path, which T320 left out. Settings gets a Trackers section (Jira base URL, email, token; Linear token) that shows only whether each token is set, with Set and Clear. An HTTP write route (same-origin, actor human) and `agile tracker set jira|linear` (token read from stdin or a prompt, never an argument) both go through `store.setTrackerToken`. The token is never returned by any route.
+- **Acceptance Criteria:** Route tests (403 cross-origin; GET never includes the token); CLI test; e2e: set a token in Settings, the screen shows "set", the page source never contains it.
+- **Validation Steps:** `bun test packages/daemon/src/trackers packages/cli`; `bun run test:e2e`.
+- **Notes:** After T320. Found in T320 review; T325's live check needs it.
 
 ### Ticket: T325 Phase 13 QA and Pete's look
 - **Priority:** P0
