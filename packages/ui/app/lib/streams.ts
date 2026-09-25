@@ -203,9 +203,12 @@ export function activityDelivery(
   }`;
 }
 
-/** T341: an event time as "YYYY-MM-DD HH:MM" (UTC), as the event log shows it. */
+/** T341: an event time as "YYYY-MM-DD HH:MM" in the viewer's local time; unparseable input as given. */
 export function eventTime(iso: string): string {
-  return iso.length >= 16 ? iso.slice(0, 16).replace('T', ' ') : iso;
+  const at = new Date(iso);
+  if (Number.isNaN(at.getTime())) return iso;
+  const two = (n: number) => String(n).padStart(2, '0');
+  return `${at.getFullYear()}-${two(at.getMonth() + 1)}-${two(at.getDate())} ${two(at.getHours())}:${two(at.getMinutes())}`;
 }
 
 export type DiffLineKind = 'add' | 'del' | 'hunk' | 'meta' | 'ctx';

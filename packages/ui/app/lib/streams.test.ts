@@ -287,7 +287,10 @@ describe('T341: an Activity row reads without raw ids', () => {
       'delivered to the Director session',
     );
   });
-  test('the time to the minute', () => {
-    expect(eventTime('2026-09-25T15:06:06.920Z')).toBe('2026-09-25 15:06');
+  test('the time to the minute, in local time', () => {
+    // Built from local fields, so it holds in any time zone.
+    expect(eventTime(new Date(2026, 8, 25, 15, 6, 6, 920).toISOString())).toBe('2026-09-25 15:06');
+    expect(eventTime(new Date(2026, 0, 3, 4, 5).toISOString())).toBe('2026-01-03 04:05');
+    expect(eventTime('not a time')).toBe('not a time');
   });
 });

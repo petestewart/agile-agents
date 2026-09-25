@@ -1,6 +1,6 @@
-# LIVE-CHECKLIST: the walkthrough of Phases 7–13
+# LIVE-CHECKLIST: the walkthrough of Phases 7–14
 
-This is the end-to-end walkthrough of the app as of `claude/phase-13`. It
+This is the end-to-end walkthrough of the app as of `claude/phase-14`. It
 teaches the app as it goes and follows `PLAN.md` §6.1: projects, + Repo,
 delivery by pull request and direct merge, overlaps, knowledge, the Director
 and tracker links. It uses the two repos on your Mac,
@@ -81,8 +81,9 @@ The cockpit is `http://127.0.0.1:4600/`.
 | **Dependencies** | Every "waits on" link, across projects |
 | **Knowledge** | Every knowledge item: filters, Accept/Retire, Edit, Test examples |
 | **Director** | The Director's thread and composer, its **Drafts** (Create/Dismiss), its activity |
+| **Events** | Every routed event, newest first: what happened, to which node, and who it was routed to and why |
 | **Settings** | Who decides, the TypeSafe API key, Trackers (Jira, Linear), session defaults, repos (add, delivery, visibility) |
-| A node's page | Title, role, "Needs you", sessions with **Start/Restart**, **Review**, **Stop**, **Close**, **Link** (waits on), **+ Repo**; the tracker link (**Link**, **Create issue**, **Import children**); **Coordinator autonomy**; the **Delivery** panel (**Merge**, Resolve); children's status cards; tabs **Thread**, **Diff**, **Activity**, **Plan**, **Knowledge in scope**, **Docs** |
+| A node's page | Title, role, "Needs you", sessions with **Start/Restart**, **Review**, **Stop**, **Close**, **Link** (waits on), **+ Repo**; the tracker link (**Link**, **Create issue**, **Import children**); **Coordinator autonomy** (and, on a project root, **Director autonomy** and the project's tracker); the **Delivery** panel (**Merge**, Resolve); children's status cards; tabs **Thread**, **Diff**, **Activity**, **Plan**, **Knowledge in scope**, **Docs** |
 
 ### The CLI
 
@@ -95,15 +96,15 @@ uses: `init`, `daemon start|stop|status`, `repo add|set|list`,
 
 ### 1.1 Build and install `agile`
 
-- [ ] Build `claude/phase-13` and put `agile` on your PATH. The block assumes
+- [ ] Build `claude/phase-14` and put `agile` on your PATH. The block assumes
       the checkout is at `~/agile-agents`.
 
 ```zsh
 cd ~/agile-agents
 git checkout -- packages/cli/src/index.ts
 git fetch origin
-git checkout claude/phase-13
-git pull origin claude/phase-13
+git checkout claude/phase-14
+git pull origin claude/phase-14
 bun --version
 bun install
 bun run build
@@ -126,7 +127,7 @@ then reload the cockpit tab:
 ```zsh
 cd ~/agile-agents
 git checkout -- packages/cli/src/index.ts
-git pull origin claude/phase-13
+git pull origin claude/phase-14
 bun install
 bun run build
 chmod +x packages/cli/src/index.ts
@@ -290,7 +291,7 @@ agile project show $SHOP
 agile node list
 ```
 
-- [ ] Each `project new` prints `P-…  Shop  root=…`. `project list` shows
+- [ ] Each `project new` prints `agile project new: P-…  Shop  root=…`. `project list` shows
       Shop (`ledger-lite,agile-test-repo`) and Blog (`ledger-lite`).
 - [ ] `project show` prints the name, root, repos,
       `autonomy    coordinator=advise director=advise` and `tracker     -`.
@@ -361,12 +362,15 @@ agile node list --parent $C
 - [ ] The second prints two parts, `ledger-lite part` and
       `agile-test-repo part`, and the role is `coordinating`. The ledger-lite
       part keeps the branch and any commits.
-- [ ] `node list --parent` shows both parts with role `work`. Both parts
-      start their own worker, and the coordinator keeps the chat. The thread
-      gains `repo added: …; now a work node on …` and
-      `repo added: agile-test-repo; now coordinating ledger-lite part, agile-test-repo part`.
+- [ ] `node list --parent` shows both parts with role `work`. The
+      coordinator keeps the chat; the parts wait for its plan and start when
+      you approve it in 3.4. The thread gains
+      `repo added: …; now a work node on …`,
+      `repo added: agile-test-repo; now coordinating ledger-lite part, agile-test-repo part`
+      and `ledger-lite part, agile-test-repo part wait for the plan: …`.
 - [ ] Cockpit: the rail shows Ledger export with the coordinating icon and
-      its two parts under it. **Running** lists the coordinator and both parts.
+      its two parts under it, each marked `waiting for the plan`. **Running**
+      lists the coordinator while it works; the parts join it once they start.
 
 ### 3.4 Approve the plan and the contract
 
@@ -385,8 +389,8 @@ From here on, every step is done in the cockpit unless it is marked
       card sits under **Needs you** on the Ledger export page.
 - [ ] On the Ledger export page, open the **Plan** tab. It reads
       `Plan v1 · draft` with an **Approve** button, one line per part
-      (`<part>: <paths>`), and each contract as `<title> · v1 · parties 2`
-      with its body.
+      (`<part>: <paths>`), and each contract as `Contract: <title> v1`, then
+      `Parties: ledger-lite part, agile-test-repo part` (by name), then its body.
 - [ ] Press **Approve plan** on the card (or **Approve** on the Plan tab).
       The tab reads `Plan v1 · approved by human` and the card leaves
       **Needs me**. Click the ledger-lite part in the rail and open its
@@ -433,9 +437,13 @@ If the coordinator already proposed this link, press **Apply** on its card in
       **Merge**.
 - [ ] The ship checks run first, then the branch is pushed and a PR opens.
       The panel shows `pushed stream/… to origin; opened PR #N into main: https://github.com/petestewart/agile-test-repo/pull/N`
-      and `Delivery: pr · pr open`. The thread adds the same line and
-      `auto-merge enabled on PR #N`. Open the link: the PR body carries the
-      goal and an `Issues:` line.
+      and `Delivery: pr · pr open`; the panel's status line reads
+      `PR #N into main: no review · CI … · auto-merge enabled. It merges on GitHub.`
+      with **Open PR**, and **Check now** replaces **Merge** (it polls the PR
+      at once instead of waiting for the next poll). The thread adds the
+      pushed line and `auto-merge enabled on PR #N`. **Needs me** has no card
+      for the part while its PR is open, and its rail dot is grey. Open the
+      link: the PR body carries the goal and an `Issues:` line.
 - [ ] If the thread says `GitHub refused auto-merge on PR #N: …; waiting for a human merge`,
       check 2.1 (Allow auto-merge, and the required `changelog` check). The
       node then waits for you to merge on GitHub.
@@ -446,9 +454,11 @@ If the coordinator already proposed this link, press **Apply** on its card in
       PR on github.com: `Please add a one-line description at the top of the schema file.`
 - [ ] The `changelog` check fails (the goal never mentioned CHANGELOG.md).
       Within about a minute the app polls the PR. The part's **Activity** tab
-      shows a `pr review` row and a `ci failed` row, each with why it was
-      routed (`self`) and how it was delivered (`delivered in session …` to
-      the live session, or `in digest …` when the agent woke).
+      shows a `pr review` row and a `ci failed` row, each with its repo, why
+      it was routed (`self`) and how it was delivered
+      (`delivered to the worker session`, with `in a digest` when several
+      events went in one turn, or `pending`). **Check now** on the Delivery
+      panel polls at once.
 - [ ] On the **Thread** tab the agent reads the failing check, adds a
       CHANGELOG.md line, addresses your comment, commits and pushes (its
       `deliver` verb updates the PR). The check goes green.
@@ -480,7 +490,9 @@ commit is chained with `&&`, so nothing is written if the `cd` fails. A node's w
 **Diff** tab shows the full path too.)
 
 After a hand-made commit, the Delivery panel may still say there is nothing
-to land until the next refresh: reload the page if it does.
+to land for up to a minute (touched files are recomputed every 60 seconds).
+Wait, or click another node in the rail and back. Don't reload the page: a
+reload goes back to **Needs me** and **All projects**.
 
 ### 5.1 A shared file, merged directly
 
@@ -564,8 +576,7 @@ seconds. Wait a minute, then:
       The page lists `waits on Blog note`, and **Dependencies** shows
       `Shop note waits on Blog note`.
 - [ ] Press **Merge** on Shop note. It is held: the panel shows
-      `delivery held: waits on …` (the id of Blog note), and so does the
-      thread.
+      `delivery held: waits on Blog note`, and so does the thread.
 - [ ] Open Blog note and press **Merge**. It reads `Landed.`
 - [ ] Open Shop note again. Its thread now ends with
       `synced main into stream/…-shop-note` and `waits on … satisfied`, and
@@ -647,7 +658,9 @@ Ship and classifier action checks need the TypeSafe key. Use **one** of these:
 ### 6.2 Add, accept and test a ship check
 
 - [ ] **Knowledge** → **New rule**. Fill in:
-      - Scope: `repo:ledger-lite`
+      - Scope: `Repo: ledger-lite` (the picker lists repos, projects and
+        nodes by name)
+      - Name: `tests-with-src`
       - Text: `Every change to a file under src/ comes with a test that exercises it`
       - Enforcement: `ship`, Kind: `standard`
       - Press **Add example** twice. First example:
@@ -655,13 +668,13 @@ Ship and classifier action checks need the TypeSafe key. Use **one** of these:
         Second: `diff changes src/ledger.ts and test/ledger.test.ts`,
         **violates** unticked.
       - Leave Paths, Question, the Criteria and Pattern empty.
-- [ ] Press **Propose rule**. A new card appears with its id (`K-…`),
+- [ ] Press **Propose rule**. A new card appears with its name (`tests-with-src`),
       `repo:ledger-lite`, `ship · classifier`, `standard`, `proposed`,
       `from human`, and **Accept**, **Retire**, **Edit**, **Test examples**.
       **Needs me** also has a `standard proposed` card for it.
 - [ ] Press **Accept** (on the card, or in **Needs me**). The card reads
       `accepted`. **Repos** → ledger-lite now lists it under the repo's norms:
-      `standard · Every change to a file under src/ … (ship) fired 0, violated 0`.
+      `standard · tests-with-src (ship) fired 0, violated 0`.
 - [ ] Press **Test examples** (it is greyed out without a key; hover it to
       see why). After a few seconds it reads `2/2 agree · asked: Does this action violate: …?`
       and one row per example:
@@ -685,10 +698,11 @@ cd ~/Projects/ledger-lite/.worktrees/*-ledger-count && mkdir -p src && printf '/
 cd ~
 ```
 
-- [ ] The Delivery panel lists `Ship check rules: K-…`. Press **Merge**. It
-      is held:
-      `delivery held by ship check K-…: Every change to a file under src/ comes with a test that exercises it (probability 0.8…)`,
-      and the panel reads `Delivery: direct · held — …` with the same detail.
+- [ ] The Delivery panel lists `Ship check rules: tests-with-src`. Press
+      **Merge**. It is held: the red line under the panel reads
+      `delivery held by ship check tests-with-src: Every change to a file under src/ comes with a test that exercises it (probability 0.8…)`,
+      and the panel reads `Delivery: direct · held` (the reason is on the red
+      line, once; opened later, the Delivery line carries it).
       On a live node the findings go back to the worker to fix; they come to
       you only if the check is unsure or the worker disputes them. (The
       classifier is not deterministic: in one of five runs here it allowed
@@ -705,7 +719,7 @@ cd ~
       `Delivery: direct · merged` and
       `landed stream/…-ledger-count into main (…)`.
 
-### 6.4 **[vendor]** A decision reaches a live node as an event
+### 6.4 **[vendor]** A decision reaches a node as an event
 
 - [ ] Rail → **Shop** → **All streams** → **New stream**: Title
       `Cents check`, Goal
@@ -713,20 +727,24 @@ cd ~
       leave **Start later** unticked, **Create**. A session appears in its
       session list (`claude/… · low · starting`, then `running`), and the
       rail icon is the conversation icon ○.
-- [ ] Wait for its first answer on the **Thread** tab.
-- [ ] The scope needs Shop's project id, which the cockpit does not show.
-      **CLI only:** `agile project list` prints it (`P-…` on the Shop row).
-- [ ] **Knowledge** → **New rule**: Scope `project:P-…` (Shop's id), Text
+- [ ] Wait for its first answer on the **Thread** tab. Its turn has ended,
+      so its session ends too (`session ended: its turn finished`).
+- [ ] **Knowledge** → **New rule**: Scope `Project: Shop`, Text
       `Amounts in exported JSON are integer cents, never floats`,
       Enforcement `tell`, Kind `decision`, **Propose rule**. Then **Accept** it
       (on its card, or on the `decision proposed` card in **Needs me**).
 - [ ] Back on Cents check: its **Activity** tab has a
-      `knowledge accepted · party · delivered in session …` row, and the
-      agent's next thread line reacts to the decision ("new decision in
-      scope: …"). A Blog node never gets it.
+      `knowledge accepted · … · pending` row. A conversation with no live
+      session wakes only on a line from you or an answer, so the decision
+      waits for its next session.
+- [ ] On its **Thread** tab type `Anything new in scope?` and press **Send**.
+      The agent wakes with the decision: the Activity row now reads
+      `knowledge accepted · … · delivered to the worker session`, and its
+      reply reacts to it ("new decision in scope: …"). A Blog node never
+      gets it.
 - [ ] Its **Knowledge in scope** tab lists the global items and the new
-      decision (`K-… · project:P-… · decision · tell`), and nothing scoped to
-      Blog.
+      decision (`K-… · project:Shop · decision · tell`), and nothing scoped
+      to Blog.
 
 ## 7. **[vendor]** The Director
 
@@ -764,10 +782,13 @@ done by `director`.
 
 ### 7.3 Organise: the Director starts the work itself
 
-The Director's level has no control in the cockpit yet (the project root's
-**Coordinator autonomy** picker sets the coordinator's level only).
+The Director's level is per project, on the project root's page (next to
+its **Coordinator autonomy** picker, which sets the coordinator's level
+only).
 
-- [ ] **CLI only:**
+- [ ] In the rail click **Blog** (the project root). Set **Director
+      autonomy** to `organise`.
+- [ ] Or, on the CLI:
 
 ```zsh
 BLOG=$(agile project list --json | jq -r '.[] | select(.name=="Blog") | .id')
@@ -775,7 +796,7 @@ agile project set $BLOG --director-autonomy organise
 agile project show $BLOG
 ```
 
-- [ ] `project show` reads `autonomy    coordinator=advise director=organise`.
+  `project show` reads `autonomy    coordinator=advise director=organise`.
 - [ ] On **Director**, send `Go ahead with the changelog: start it now.`
 - [ ] The Director starts the changelog node's agent itself, with no card,
       and posts what it did on its thread. **Running** lists the node, and
@@ -809,10 +830,14 @@ Using Linear instead: paste a personal API key in the **Linear** row and press
 
 ### 8.2 The project's tracker settings
 
-The project's tracker, status push and status map have no control in the
-cockpit yet.
+The project's tracker, status push and status map are on the project
+root's page.
 
-- [ ] **CLI only:**
+- [ ] In the rail click **Shop** (the project root). Under the pickers, set
+      **Tracker** to `Jira`, tick **push status**, fill **In progress**
+      `In Progress`, **In review** `In Review`, **Done** `Done`, and press
+      **Save tracker**.
+- [ ] Or, on the CLI:
 
 ```zsh
 SHOP=$(agile project list --json | jq -r '.[] | select(.name=="Shop") | .id')
@@ -820,7 +845,7 @@ agile project set $SHOP --tracker jira --push-status on --status-map "in_progres
 agile project show $SHOP
 ```
 
-- [ ] `project show` reads
+- [ ] Either way, the root page shows those values, and `project show` reads
       `tracker     jira push_status=on status_map=in_progress=In Progress,in_review=In Review,done=Done`.
       The names on the right must match your Jira workflow's status names
       (`key=` with nothing after it clears one phase).
@@ -837,12 +862,13 @@ child should be a small task an agent can do in agile-test-repo (for example
 - [ ] On its page, type the epic's key in the **Link** field (placeholder
       `SHOP-11`; **change it** to your epic's key, such as `SHOP-10`) and press
       the **Link** button beside it.
-- [ ] The page reads `Linked to <key> (jira) · 0/N merged` with **Unlink**
-      and **Import children**. The goal under the title is now the epic's
+- [ ] The page reads `Linked to <key> (jira)` with **Unlink** and
+      **Import children**. The goal under the title is now the epic's
       title, then `From jira issue … (https://…/browse/…)` and its
       description.
 - [ ] Press **Import children**. One node per child issue appears under
-      Tracker epic in the rail, each linked to its issue.
+      Tracker epic in the rail, each linked to its issue, and the link line
+      gains `· 0/N merged`.
 - [ ] Press **Import children** again. Nothing new appears: importing is
       idempotent.
 
@@ -896,9 +922,12 @@ child should be a small task an agent can do in agile-test-repo (for example
 - [ ] A node's **Activity** tab is what woke it and why: one row per routed
       event with its type, `[repo]`, why it was routed (self, ancestor,
       waits on, same repo, party, sibling), the delivery status
-      (`delivered in session …`, `pending`, `superseded`, `expired`, or
-      `in digest …`) and when. A node with none says
-      `No events routed here yet.`
+      (`delivered to the worker session`, `pending`, `superseded` or
+      `expired`, with `in a digest` when several went in one turn) and when
+      (`YYYY-MM-DD HH:MM`, local time; hover a row for the session id and the
+      full time). A node with none says `No events routed here yet.`
+- [ ] **Events** (top bar) lists every routed event across projects, newest
+      first: its type, the node it is about, who it was routed to and why.
 - [ ] **CLI only:** the raw event log (every event, not only routed ones):
       `agile tail | tail -20`, `agile tail --follow` to keep watching (Ctrl-C
       to stop), `agile tail --kind thread_appended` for one kind.
@@ -924,7 +953,8 @@ agile daemon status
 ### 9.3 Where things live
 
 - Why a session ended: the node page's session list shows it after the
-  session's status (`— <reason>`).
+  session's status (`— <reason>`) when it was not a normal end; a normal
+  end is `session ended: its turn finished` on the thread.
 - A node's worktree and branch: the line under its title (branch) and the
   **Diff** tab (worktree path). Worktrees are
   `<repo>/.worktrees/<node-id>-<slug>` on `stream/…` branches.
@@ -994,18 +1024,11 @@ agile daemon status
 
 These steps have no cockpit control, so they stay on the CLI:
 
-- A project's or node's id (for a `project:<id>` or `subtree:<id>`
-  knowledge scope, 6.4): `agile project list`, `agile node list`.
-- The Director's autonomy level per project (7.3):
-  `agile project set <id> --director-autonomy …`.
-- A project's tracker, status push and status map (8.2):
-  `agile project set <id> --tracker … --push-status … --status-map …`.
-- A name for a knowledge item: **New rule** has no Name field, so items made
-  there show their `K-…` id (6.2); `agile knowledge add --name …` sets one.
-- The raw event log (9.1): `agile tail`.
+- The raw event log, including events routed to no node (9.1): `agile tail`.
+  (**Events** in the top bar lists the routed ones.)
 - Stopping and starting the daemon (9.2), and whether GitHub auth is
   available (9.4): `agile daemon stop|start|status`.
-- A pull request's review and check state: the Delivery panel shows only
-  `pr · pr open` / `merged`; the review and checks show as `pr review` and
-  `ci failed` rows on the **Activity** tab, and in
-  `agile node show <id> --json` (`.delivery_state.pr`).
+- A pull request's full state as JSON: `agile node show <id> --json`
+  (`.delivery_state.pr`). The Delivery panel shows the open PR's review, CI
+  and auto-merge on one line, and the **Activity** tab has the `pr review`
+  and `ci failed` rows.

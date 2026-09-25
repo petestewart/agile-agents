@@ -1100,13 +1100,13 @@ test.skipIf(!RUN)(
         page.locator('[data-testid="thread"]'),
         /process exited \(code/,
       );
-      const prDot = await railRow('agile-test-repo part')
-        .locator('.cr-dot')
-        .getAttribute('data-dot');
-      check(
+      // The rail follows the next pushed frame.
+      await until(
         'with its PR open (auto-merge on), its dot is not amber',
-        prDot !== 'amber',
-        prDot ?? '',
+        async () =>
+          (await railRow('agile-test-repo part').locator('.cr-dot').getAttribute('data-dot')) !==
+          'amber',
+        10_000,
       );
       await openView('Needs me');
       await checkNotText(
@@ -1596,7 +1596,10 @@ test.skipIf(!RUN)(
       await openView('Knowledge');
       await page.locator('[data-testid="rules-new"]').click();
       const form = page.locator('[data-testid="rules-new-form"]');
-      await form.locator('[data-testid="rules-edit-scope"]').selectOption('repo:ledger-lite');
+      await form
+        .locator('[data-testid="rules-edit-scope"]')
+        .selectOption({ label: 'Repo: ledger-lite' });
+      await form.locator('[data-testid="rules-edit-name"]').fill('tests-with-src');
       await form
         .locator('[data-testid="rules-edit-text"]')
         .fill('Every change to a file under src/ comes with a test that exercises it');
@@ -1620,7 +1623,7 @@ test.skipIf(!RUN)(
         hasText: 'Every change to a file under src/',
       });
       await card.waitFor();
-      await checkText('the card shows its id K-…', card.locator('.cr-rule-meta'), /K-\S+/);
+      await checkText('the card shows its name', card.locator('.cr-rule-meta'), /tests-with-src/);
       await checkText(
         'repo:ledger-lite',
         card.locator('[data-testid="rules-scope"]'),
@@ -1662,11 +1665,11 @@ test.skipIf(!RUN)(
       );
       await openView('Repos');
       await checkText(
-        'standard · Every change to a file under src/ … (ship) fired 0, violated 0',
+        'standard · tests-with-src (ship) fired 0, violated 0',
         page.locator(
           '[data-testid="repo-view"] .cr-group[data-repo="ledger-lite"] [data-testid="repo-norm"]',
         ),
-        /standard · Every change to a file under src\/.* \(ship\) fired 0, violated 0/,
+        /standard · tests-with-src \(ship\) fired 0, violated 0/,
       );
       await openView('Knowledge');
       await card.getByRole('button', { name: 'Test examples' }).click();
@@ -1706,16 +1709,16 @@ test.skipIf(!RUN)(
         /^Ready: stream\/\S+-ledger-count is 1 commit ahead of main\.$/,
       );
       await checkText(
-        'the Delivery panel lists Ship check rules: K-…',
+        'the Delivery panel lists Ship check rules: tests-with-src',
         page.locator('[data-testid="land-diff-rules"]'),
-        /Ship check rules: K-\S+/,
+        /Ship check rules: tests-with-src/,
       );
       await page.locator('[data-testid="stream-land"]').click();
       const panel = page.locator('[data-testid="land-panel"]');
       await checkText(
-        'delivery held by ship check K-…: Every change to a file under src/ … (probability 0.8…)',
+        'delivery held by ship check tests-with-src: Every change to a file under src/ … (probability 0.8…)',
         panel,
-        /delivery held by ship check K-\S+: Every change to a file under src\/ comes with a test that exercises it \(probability 0\.8/,
+        /delivery held by ship check tests-with-src: Every change to a file under src\/ comes with a test that exercises it \(probability 0\.8/,
       );
       await checkText(
         'Delivery: direct · held',
@@ -1991,7 +1994,13 @@ test.skipIf(!RUN)(
     });
 
     await step('7.3', 'organise: the Director starts the work itself', async () => {
-      await agileOk(['project', 'set', blogId, '--director-autonomy', 'organise']);
+      // The root page's Director autonomy picker (the CLI is the alternative).
+      await pickProject('Blog');
+      await openNode('Blog');
+      await page.locator('[data-testid="director-autonomy-select"]').selectOption('organise');
+      await until('the level is saved', async () =>
+        /director=organise/.test(await agileOk(['project', 'show', blogId])),
+      );
       const show = await agileOk(['project', 'show', blogId]);
       check(
         'autonomy    coordinator=advise director=organise',
@@ -2080,7 +2089,7 @@ test.skipIf(!RUN)(
     });
 
     let shopId = '';
-    await step('8.2', "the project's tracker settings (CLI)", async () => {
+    await step('8.2', "the project's tracker settings (root page)", async () => {
       shopId =
         (
           JSON.parse(await agileOk(['project', 'list', '--json'])) as Array<{
@@ -2088,18 +2097,20 @@ test.skipIf(!RUN)(
             name: string;
           }>
         ).find((p) => p.name === 'Shop')?.id ?? '';
-      await agileOk([
-        'project',
-        'set',
-        shopId,
-        '--tracker',
-        'jira',
-        '--push-status',
-        'on',
-        '--status-map',
-        'in_progress=In Progress,in_review=In Review,done=Done',
-      ]);
-      const show = await agileOk(['project', 'show', shopId]);
+      await pickProject('Shop');
+      await openNode('Shop');
+      const form = page.locator('[data-testid="project-tracker-form"]');
+      await form.locator('[data-testid="project-tracker-system"]').selectOption({ label: 'Jira' });
+      await form.locator('[data-testid="project-tracker-push"]').check();
+      await form.locator('[data-testid="project-tracker-map-in_progress"]').fill('In Progress');
+      await form.locator('[data-testid="project-tracker-map-in_review"]').fill('In Review');
+      await form.locator('[data-testid="project-tracker-map-done"]').fill('Done');
+      await form.getByRole('button', { name: 'Save tracker' }).click();
+      let show = '';
+      await until('the tracker is saved', async () => {
+        show = await agileOk(['project', 'show', shopId]);
+        return /tracker\s+jira/.test(show);
+      });
       check(
         'tracker     jira push_status=on status_map=in_progress=In Progress,in_review=In Review,done=Done',
         /tracker\s+jira push_status=on status_map=in_progress=In Progress,in_review=In Review,done=Done/.test(
