@@ -1197,9 +1197,19 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
 
           if (feed) {
             ws.subscribe(FEED_WS_TOPIC);
+            // The snapshot's events stop where the tailer has read to: a line
+            // past that seam reaches this socket as a live `event` frame on the
+            // next poll, so reading it here too would deliver it twice.
             ws.send(
               JSON.stringify(
-                buildSnapshot(feed.store, feed.gates, undefined, feed.questions, options.repoRoot),
+                buildSnapshot(
+                  feed.store,
+                  feed.gates,
+                  undefined,
+                  feed.questions,
+                  options.repoRoot,
+                  tailer?.getOffset(),
+                ),
               ),
             );
             if (feed.streams) {
