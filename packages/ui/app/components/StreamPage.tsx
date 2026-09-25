@@ -30,6 +30,7 @@ import {
   addRepoToStream,
   approvePlan,
   attachSession,
+  checkStreamPr,
   closeStream,
   createNodeIssue,
   getStreamActivity,
@@ -324,6 +325,16 @@ function DiffView({ id }: { id: string }): JSX.Element {
   );
 }
 
+/** T340: a PR url is GitHub data; it is a link only when it is http(s). */
+function isWebUrl(url: string): boolean {
+  try {
+    const { protocol } = new URL(url);
+    return protocol === 'http:' || protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+
 function LandPanel({
   page,
   onChanged,
@@ -343,6 +354,25 @@ function LandPanel({
   // T176: a failed land's own line replaces the preflight, never "Ready" beside it.
   const failed = refused !== undefined || (outcome !== undefined && outcome.status !== 'landed');
   const conflicts = land?.conflicts;
+  // T340 (§4.1, P19): with a PR open the merge happens on GitHub; the panel shows the PR, not Merge.
+  const openPr =
+    stream.delivery_state?.mode === 'pr' && stream.delivery_state.pr?.state === 'open'
+      ? stream.delivery_state.pr
+      : undefined;
+
+  async function doCheckPr(): Promise<void> {
+    setBusy(true);
+    setOutcome(undefined);
+    setRefused(undefined);
+    try {
+      await checkStreamPr(stream.id);
+    } catch (err) {
+      setRefused(errorText(err));
+    } finally {
+      setBusy(false);
+      onChanged();
+    }
+  }
 
   async function doMarkLanded(): Promise<void> {
     setBusy(true);
@@ -386,7 +416,18 @@ function LandPanel({
             Mark landed
           </button>
         )}
-        {!finished && !land?.merged && (
+        {!finished && openPr && (
+          <button
+            type="button"
+            className="cr-btn"
+            data-testid="stream-pr-check"
+            disabled={busy}
+            onClick={() => void doCheckPr()}
+          >
+            {busy ? 'Checking…' : 'Check now'}
+          </button>
+        )}
+        {!finished && !land?.merged && !openPr && (
           <button
             type="button"
             className="cr-btn signal"
@@ -428,7 +469,20 @@ function LandPanel({
             Resolve
           </button>
         </div>
-      ) : failed ? null : land?.merged ? (
+      ) : failed ? null : openPr ? (
+        <p data-testid="land-before" data-ready="pr">
+          PR #{openPr.number} into {openPr.base}:{' '}
+          {openPr.review === 'none' ? 'no review' : openPr.review.replace('_', ' ')} · CI{' '}
+          {openPr.checks} · auto-merge {openPr.auto_merge}. It merges on GitHub.{' '}
+          {isWebUrl(openPr.url) ? (
+            <a data-testid="stream-pr-link" href={openPr.url} target="_blank" rel="noreferrer">
+              Open PR
+            </a>
+          ) : (
+            <span data-testid="stream-pr-link">{openPr.url}</span>
+          )}
+        </p>
+      ) : land?.merged ? (
         <p data-testid="land-before" data-ready="merged">
           Already merged into {land.target}.
         </p>
@@ -473,7 +527,7 @@ function LandPanel({
           data-status="refused"
           role="alert"
         >
-          Land refused: {refused}
+          {openPr ? 'Check failed' : 'Land refused'}: {refused}
         </p>
       )}
     </section>
