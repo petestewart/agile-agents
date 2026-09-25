@@ -36,6 +36,7 @@ import {
   getStreamPage,
   getStreamPlan,
   landStream,
+  linkNode,
   listRepos,
   markStreamLanded,
   resolveConflict,
@@ -444,6 +445,65 @@ function LandPanel({
   );
 }
 
+/** T321 (§10): the node's Jira/Linear link; linking sets the goal from the issue. */
+function TrackerLinkField({
+  stream,
+  busy,
+  act,
+}: {
+  stream: StreamPagePayload['stream'];
+  busy: boolean;
+  act: (fn: () => Promise<unknown>) => Promise<void> | void;
+}): JSX.Element {
+  const [key, setKey] = useState('');
+  const link = stream.external_link;
+  if (link !== undefined) {
+    return (
+      <p className="cr-dim" data-testid="tracker-link">
+        Linked to{' '}
+        <a href={link.url} target="_blank" rel="noreferrer noopener">
+          {link.key}
+        </a>{' '}
+        ({link.system}){' '}
+        <button
+          type="button"
+          className="cr-btn"
+          data-testid="tracker-unlink"
+          disabled={busy}
+          onClick={() => void act(() => linkNode(stream.id, null))}
+        >
+          Unlink
+        </button>
+      </p>
+    );
+  }
+  return (
+    <form
+      className="cr-actions"
+      data-testid="tracker-link-form"
+      onSubmit={(e) => {
+        e.preventDefault();
+        const k = key.trim();
+        if (k) void act(() => linkNode(stream.id, k).then(() => setKey('')));
+      }}
+    >
+      <label className="cr-dim">
+        Link{' '}
+        <input
+          data-testid="tracker-link-input"
+          placeholder="SHOP-11"
+          value={key}
+          disabled={busy}
+          onChange={(e) => setKey(e.target.value)}
+        />
+      </label>
+      <button type="submit" className="cr-btn" disabled={busy || key.trim() === ''}>
+        Link
+      </button>
+    </form>
+  );
+}
+
 const AUTONOMY_LEVELS = ['advise', 'organise', 'run'] as const;
 
 /**
@@ -823,6 +883,7 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
             ))}
           </ul>
         )}
+        <TrackerLinkField stream={stream} busy={busy} act={act} />
         <AutonomyPicker
           stream={stream}
           project={cockpit?.projects.find((p) => p.id === stream.project)}

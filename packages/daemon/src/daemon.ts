@@ -55,6 +55,9 @@ import { StateStore, buildStateRpcMethods } from './store';
 import { migrateHome } from './store/migrate';
 import { RepoInPlaceService, StreamService, buildStreamRpcMethods } from './streams';
 import { MainSync, OverlapTracker, SymbolWatcher } from './sync';
+import { trackerFromConfig } from './trackers/create';
+import { TrackerLinks } from './trackers/link';
+import { buildTrackerRpcMethods } from './trackers/rpc';
 
 export const DAEMON_VERSION: string = daemonPackageJson.version;
 
@@ -533,6 +536,35 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
       : undefined;
   prPoller?.start();
 
+  // T321: tracker links — the goal from the issue; edits as `external_changed`.
+  const trackersConfig = () => {
+    try {
+      return readHomeConfigFile(config.home).trackers;
+    } catch {
+      return undefined;
+    }
+  };
+  const trackerLinks =
+    store && streamService
+      ? new TrackerLinks({
+          streams: streamService,
+          project: (id) => {
+            try {
+              return store.getProject(id);
+            } catch {
+              return undefined;
+            }
+          },
+          configured: () => {
+            const t = trackersConfig();
+            return (['jira', 'linear'] as const).filter((s) => t?.[s]?.token !== undefined);
+          },
+          tracker: (system) => trackerFromConfig(system, trackersConfig()),
+          ...(emitRouted ? { emit: emitRouted } : {}),
+        })
+      : undefined;
+  trackerLinks?.start();
+
   // T205: "+ Repo" in place (projects-design §7), over the attach service's sessions.
   const repoInPlace =
     store && streamService && attachService
@@ -566,6 +598,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
               })
             : {}),
           ...(projectService ? buildProjectRpcMethods(projectService) : {}),
+          ...(trackerLinks ? buildTrackerRpcMethods(trackerLinks) : {}),
           ...(directorService ? buildDirectorRpcMethods(directorService) : {}),
           ...(inboxService ? buildInboxRpcMethods(inboxService) : {}),
           ...(rulesService ? buildKnowledgeRpcMethods(rulesService, ruleEvals) : {}),
@@ -630,6 +663,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
     ...(planService ? { plans: planService } : {}),
     ...(contractService ? { contracts: contractService } : {}),
     ...(autonomyService ? { autonomy: autonomyService } : {}),
+    ...(trackerLinks ? { trackerLinks } : {}),
     githubAuth,
   });
 
@@ -705,6 +739,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
         if (gateTimer) clearInterval(gateTimer);
         overlapTracker?.stop();
         prPoller?.stop();
+        trackerLinks?.stop();
         mainSync?.stop();
         // Sessions are child processes: stop them first so their exit writes land.
         attachService?.delivery.stop();

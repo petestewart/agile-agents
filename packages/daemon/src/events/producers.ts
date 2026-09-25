@@ -218,6 +218,9 @@ export function summarize(
       const paths = list(p.paths);
       return `The plan changed: ${String(p.summary)}. You own ${paths || 'no paths yet'}.`;
     }
+    case 'external_changed':
+      // T321: daemon-built (key + which fields); the tracker's text is only in the goal.
+      return `${String(p.key)}'s ${String(p.summary)}. Your goal was updated from the issue; check it still holds.`;
     case 'director_request':
       // T302: a daemon notice (a stuck node) is not the operator speaking.
       if (event.by === 'daemon') return String(p.body);
