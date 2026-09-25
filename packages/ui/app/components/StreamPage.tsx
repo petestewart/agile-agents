@@ -66,7 +66,9 @@ import { DEFAULT_RULES_FILTER } from '../lib/rules';
 import { useShell } from '../lib/shell';
 import {
   DOT_LABEL,
+  activityDelivery,
   diffLineKind,
+  eventTime,
   isLiveSession,
   isThinking,
   ruleHitOf,
@@ -200,7 +202,8 @@ function PlanView({
     <section className="cr-docs cr-plan" data-testid="plan">
       {plan && (
         <p data-testid="plan-status" data-status={plan.status}>
-          Plan v{plan.version} · {plan.status}
+          {/* T341: a draft reads as the version it becomes (the first plan is v1, never v0). */}
+          Plan v{plan.status === 'draft' ? plan.version + 1 : plan.version} · {plan.status}
           {plan.approved_by ? ` by ${plan.approved_by}` : ''}{' '}
           {plan.status === 'draft' && (
             <button
@@ -282,7 +285,15 @@ function PlanView({
 }
 
 /** T245: what woke this node and why — every routed event, its reason, and what carried it. */
-function ActivityView({ id, tick }: { id: string; tick: unknown }): JSX.Element {
+function ActivityView({
+  id,
+  tick,
+  sessions,
+}: {
+  id: string;
+  tick: unknown;
+  sessions: StreamPagePayload['stream']['sessions'];
+}): JSX.Element {
   const [rows, setRows] = useState<ActivityEntry[] | undefined>(undefined);
   const [error, setError] = useState<string | undefined>(undefined);
   // biome-ignore lint/correctness/useExhaustiveDependencies: `tick` (the pushed frame) is the re-read trigger.
@@ -313,13 +324,18 @@ function ActivityView({ id, tick }: { id: string; tick: unknown }): JSX.Element 
           <span className="cr-dim" data-testid="activity-because">
             {row.because.replace(/_/g, ' ')}
           </span>
-          <span className="cr-dim" data-testid="activity-status">
+          <span
+            className="cr-dim"
+            data-testid="activity-status"
+            title={[row.session, row.digest].filter(Boolean).join(' · ') || undefined}
+          >
             {' '}
-            · {row.status}
-            {row.session ? ` in session ${row.session}` : ''}
-            {row.digest ? ` in digest ${row.digest}` : ''}
+            · {activityDelivery(row, sessions)}
           </span>
-          <span className="cr-dim"> · {row.event.at}</span>
+          <span className="cr-dim" title={row.event.at}>
+            {' '}
+            · {eventTime(row.event.at)}
+          </span>
         </li>
       ))}
     </ul>
@@ -415,6 +431,13 @@ function LandPanel({
     stream.delivery_state?.mode === 'pr' && stream.delivery_state.pr?.state === 'open'
       ? stream.delivery_state.pr
       : undefined;
+
+  // The open PR's own line (land-before) is showing: not landed, no conflict, no failure.
+  const prAbove =
+    openPr !== undefined &&
+    stream.human.status !== 'landed' &&
+    !(conflicts && conflicts.length > 0) &&
+    !failed;
 
   async function doCheckPr(): Promise<void> {
     setBusy(true);
@@ -527,9 +550,14 @@ function LandPanel({
         </div>
       ) : failed ? null : openPr ? (
         <p data-testid="land-before" data-ready="pr">
-          PR #{openPr.number} into {openPr.base}:{' '}
-          {openPr.review === 'none' ? 'no review' : openPr.review.replace('_', ' ')} · CI{' '}
-          {openPr.checks} · auto-merge {openPr.auto_merge}. It merges on GitHub.{' '}
+          PR #{openPr.number}
+          {openPr.draft ? ' (draft)' : ''} into {openPr.base}:{' '}
+          {openPr.review === 'none' ? 'no review' : openPr.review.replace(/_/g, ' ')} · CI{' '}
+          {openPr.checks} · auto-merge {openPr.auto_merge}
+          {openPr.mergeable !== 'clean' && openPr.mergeable !== 'unknown'
+            ? ` · ${openPr.mergeable}`
+            : ''}
+          . It merges on GitHub.{' '}
           {isWebUrl(openPr.url) ? (
             <a data-testid="stream-pr-link" href={openPr.url} target="_blank" rel="noreferrer">
               Open PR
@@ -558,7 +586,11 @@ function LandPanel({
           data-status={stream.delivery_state.status}
         >
           Delivery: {stream.delivery_state.mode} · {stream.delivery_state.status.replace('_', ' ')}
-          {stream.delivery_state.held_by?.map((h) => (
+          {/* T341: the result line below already says why; the reason reads once. */}
+          {(outcome === undefined && refused === undefined
+            ? (stream.delivery_state.held_by ?? [])
+            : []
+          ).map((h) => (
             <span key={`${h.reason}:${h.detail}`}>
               {' — '}
               <Linked text={h.detail} />
@@ -566,7 +598,8 @@ function LandPanel({
           ))}
         </p>
       )}
-      {pr && (
+      {/* T341: an open PR already reads on the line above; this line is for the rest (merged, closed). */}
+      {pr && !prAbove && (
         <p className="cr-dim" data-testid="delivery-pr" data-state={pr.state}>
           {isWebUrl(pr.url) ? (
             <a
@@ -586,11 +619,16 @@ function LandPanel({
           {pr.mergeable !== 'clean' && pr.mergeable !== 'unknown' ? ` · ${pr.mergeable}` : ''}
         </p>
       )}
-      <p className="cr-dim" data-testid="land-diff-rules">
-        {page.diff_rules.length === 0
-          ? 'No diff-stage rules in scope.'
-          : `Ship check rules: ${page.diff_rules.join(', ')}`}
-      </p>
+      {!finished && (
+        <p className="cr-dim" data-testid="land-diff-rules">
+          {page.diff_rules.length === 0
+            ? 'No diff-stage rules in scope.'
+            : `Ship check rules: ${page.diff_rules
+                // T341: a named item reads by its name.
+                .map((id) => page.rules.find((r) => r.id === id)?.name ?? id)
+                .join(', ')}`}
+        </p>
+      )}
       {outcome && !(conflicts && conflicts.length > 0) && (
         <p
           className={`cr-land-result ${OUTCOME_TONE[outcome.status]}`}
@@ -1042,7 +1080,14 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
   }
 
   const { stream } = page;
-  const dot = streamDot({ agent_status: stream.agent.status, human_status: stream.human.status });
+  const row = cockpit?.streams.find((r) => r.id === stream.id);
+  const dot = streamDot({
+    agent_status: stream.agent.status,
+    human_status: stream.human.status,
+    ...(row ? { role: row.role } : {}),
+    ...(stream.delivery_state?.status === 'pr_open' ? { pr_open: true as const } : {}),
+    ...(stream.project !== undefined ? { project: stream.project } : {}),
+  });
   const live = stream.sessions.filter(isLiveSession);
   const liveWorker = live.find((s) => isAgentRole(s.role));
   const liveReviewer = live.find((s) => s.role === 'reviewer');
@@ -1541,7 +1586,8 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
               disabled={busy}
               placeholder={
                 liveWorker
-                  ? 'Write on the stream — the attached worker reads it too…'
+                  ? // T341: a coordinating node's live agent is its coordinator, not a worker.
+                    `Write on the stream — the attached ${liveWorker.role} reads it too…`
                   : 'Write on the stream…'
               }
               onChange={(e) => setDraft(e.target.value)}
@@ -1581,7 +1627,9 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
           </p>
         ))}
 
-      {tab === 'activity' && <ActivityView id={stream.id} tick={cockpit} />}
+      {tab === 'activity' && (
+        <ActivityView id={stream.id} tick={cockpit} sessions={stream.sessions} />
+      )}
 
       {tab === 'plan' && (
         <PlanView id={stream.id} tick={cockpit} onChanged={refresh} titleOf={titleOf} />

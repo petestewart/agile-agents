@@ -136,6 +136,47 @@ describe('InboxService.list', () => {
     expect(inbox.list().some((i) => i.stream === project.root)).toBe(false);
   });
 
+  test('T341: a conversation that answered is not "ready to land" (it has no branch)', async () => {
+    const project = await new ProjectService(store, streams).create({ name: 'Shop' });
+    const talk = await streams.create('human', {
+      title: 'Cents check',
+      goal: 'how are amounts stored?',
+      project: project.id,
+    });
+    await streams.update('daemon', talk.id, { agent: { status: 'done' } });
+    expect(inbox.list().some((i) => i.stream === talk.id)).toBe(false);
+    // Blocked still needs you.
+    await streams.update('daemon', talk.id, { agent: { status: 'blocked' } });
+    expect(inbox.list().find((i) => i.stream === talk.id)?.kind).toBe('blocked');
+  });
+
+  test('T341: a finished node whose PR is open is not "ready to land" (it merges on GitHub)', async () => {
+    const at = new Date().toISOString();
+    await streams.update('daemon', child.id, {
+      agent: { status: 'done' },
+      delivery_state: {
+        mode: 'pr',
+        status: 'pr_open',
+        at,
+        pr: {
+          number: 1,
+          url: 'https://github.com/o/r/pull/1',
+          head: 'stream/x',
+          base: 'main',
+          state: 'open',
+          draft: false,
+          review: 'none',
+          checks: 'pending',
+          mergeable: 'clean',
+          auto_merge: 'enabled',
+          last_seen: {},
+          polled_at: at,
+        },
+      },
+    });
+    expect(inbox.list().some((i) => i.stream === child.id)).toBe(false);
+  });
+
   test('an answered question leaves the inbox', async () => {
     const q = await questions.raise({
       stream: root.id,

@@ -627,6 +627,22 @@ describe('one ACP message is one thread entry (T137)', () => {
   }, 20_000);
 });
 
+describe('a finished turn ends the session (T137, T341)', () => {
+  test('the thread says its turn finished, not the exit code of the stop', async () => {
+    attachService = buildAttachService(
+      fakeProviderFor(ACP_PROVIDERS.claude, {
+        steps: [{ type: 'agent_text', text: 'all done' }, { type: 'end_turn' }],
+      }),
+    );
+    const stream = await makeStream();
+    await attachService.attach(stream.id);
+    await waitFor(() => threadBodies(stream.id).some((b) => b.startsWith('session ended:')));
+    const ended = threadBodies(stream.id).filter((b) => b.startsWith('session ended:'));
+    expect(ended).toEqual(['session ended: its turn finished']);
+    expect(streams.get(stream.id).agent.status).toBe('done');
+  }, 20_000);
+});
+
 describe('a failed thread append is logged and retried', () => {
   test('the first agent append throws: stderr.log says so and the line still lands', async () => {
     const original = streams.appendThread.bind(streams);
@@ -1225,7 +1241,7 @@ describe('T243: the wake policy (P11)', () => {
     // `delivered` is written when the runner hands the digest to the turn,
     // just before it goes over ACP: the agent's log line follows it.
     await waitFor(() => prompts(log).some((p) => p.includes('one more thing')));
-    expect(threadBodies(node.id)).toContain('woken by human_line');
+    expect(threadBodies(node.id)).toContain('woken by human line');
   }, 30_000);
 
   test('a stopped (detached) node is never woken; its events stay pending', async () => {
@@ -1348,7 +1364,7 @@ describe('T243: the wake policy (P11)', () => {
     await attachService.say(node.id, 'Go ahead. Write the plan and a contract');
     await waitFor(() => streams.get(node.id).sessions.length === 2);
     await waitFor(() => prompts(log).some((p) => p.includes('Go ahead. Write the plan')));
-    expect(threadBodies(node.id)).toContain('woken by human_line');
+    expect(threadBodies(node.id)).toContain('woken by human line');
     // The coordinator runs in the session dir, not a worktree (D20).
     expect(streams.get(node.id).sessions.every((s) => s.worktree === undefined)).toBe(true);
   }, 60_000);
@@ -1465,7 +1481,7 @@ describe('T280: the coordinator role (P20)', () => {
         .split('\n')
         .some((l) => l.includes('"session/prompt"') && l.includes('stuck on auth')),
     );
-    expect(threadBodies(node.id)).toContain('woken by child_status');
+    expect(threadBodies(node.id)).toContain('woken by child status');
   }, 30_000);
 
   test('T332 (D33): a conversation with a tangent keeps its worker; no coordinator replaces it', async () => {
@@ -1520,7 +1536,7 @@ describe('T280: the coordinator role (P20)', () => {
         .split('\n')
         .some((l) => l.includes('"session/prompt"') && l.includes('cart shipped')),
     );
-    expect(threadBodies(root.id)).toContain('woken by child_status');
+    expect(threadBodies(root.id)).toContain('woken by child status');
   }, 30_000);
 
   test("T336: a work node woken by its coordinator's note is handed the note, quoted, with its id", async () => {
@@ -1566,7 +1582,7 @@ describe('T280: the coordinator role (P20)', () => {
     const brief = prompts()[1] ?? '';
     expect(brief).toContain(`${note.id} (coordinator_note)`);
     expect(brief).toContain('Your coordinator says: \\"export CSV with a header row\\"');
-    expect(threadBodies(node.id)).toContain('woken by coordinator_note');
+    expect(threadBodies(node.id)).toContain('woken by coordinator note');
   }, 30_000);
 });
 

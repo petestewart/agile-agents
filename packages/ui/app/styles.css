@@ -1082,6 +1082,13 @@ body {
   font-size: 12px;
   margin: 4px 0 0;
 }
+/* T341: the repo view's "Recent events" and "Norms" labels. */
+.cr-lens-sub {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-dim);
+  margin: 10px 0 2px;
+}
 /* T227: an overlap warning (repo view) or mark (rail). */
 .cr-overlap {
   color: var(--warn);

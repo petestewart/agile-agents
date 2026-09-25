@@ -1989,14 +1989,14 @@ describe('delivery result tone and PR state (Playwright e2e, T338)', () => {
         await page.goto(`${cockpit.base}/`);
         await page.locator(`[data-testid="stream-tree"] [data-stream="${stream.id}"]`).click();
         await page
-          .locator('[data-testid="delivery-pr"]', { hasText: 'review review requested' })
+          .locator('[data-testid="land-before"]', { hasText: 'review requested' })
           .waitFor();
-        const prLine = (await page.locator('[data-testid="delivery-pr"]').textContent()) ?? '';
-        expect(prLine).toContain('checks pending');
+        const prLine = (await page.locator('[data-testid="land-before"]').textContent()) ?? '';
+        expect(prLine).toContain('CI pending');
         expect(prLine).toContain('auto-merge enabled');
-        expect(await page.locator('[data-testid="delivery-pr-link"]').getAttribute('href')).toBe(
-          url,
-        );
+        expect(await page.locator('[data-testid="stream-pr-link"]').getAttribute('href')).toBe(url);
+        // T341: the open PR reads once on the panel, not on a second line too.
+        expect(await page.locator('[data-testid="delivery-pr"]').count()).toBe(0);
 
         expect(await page.locator('[data-testid="stream-land"]').count()).toBe(0);
 

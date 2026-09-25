@@ -128,8 +128,12 @@ export function inboxContext(text: string): string {
   if (oneLine.length <= INBOX_CONTEXT_MAX_CHARS) return oneLine;
   const hard = oneLine.slice(0, INBOX_CONTEXT_MAX_CHARS - 1);
   const lastSpace = hard.lastIndexOf(' ');
-  const body = lastSpace > 0 ? hard.slice(0, lastSpace) : hard;
-  return `${body.trimEnd()}…`;
+  const body = (lastSpace > 0 ? hard.slice(0, lastSpace) : hard).trimEnd();
+  // T341: a cut inside a code span closes it, or the card shows a stray backtick.
+  if ((body.match(/`/g) ?? []).length % 2 === 1) {
+    return `${body.slice(0, INBOX_CONTEXT_MAX_CHARS - 2)}\`…`;
+  }
+  return `${body}…`;
 }
 
 /**

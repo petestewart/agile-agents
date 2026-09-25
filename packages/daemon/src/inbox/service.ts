@@ -94,12 +94,14 @@ export class InboxService {
       if (stream === undefined || stream.archived === true) continue;
       const titleOf = (id: string) => byId.get(id)?.title ?? id;
       // A revision reads as its change against the last approved version.
-      const was = new Map(plan.approved?.owners.map((o) => [o.child, o.owns.join(', ')]) ?? []);
+      // T341: paths are code on the card; a glob's `**` would otherwise render as bold.
+      const paths = (owns: readonly string[]) => owns.map((p) => `\`${p}\``).join(', ');
+      const was = new Map(plan.approved?.owners.map((o) => [o.child, paths(o.owns)]) ?? []);
       const owners = plan.owners.map((o) => {
-        const now = o.owns.length === 0 ? 'nothing' : o.owns.join(', ');
+        const now = o.owns.length === 0 ? 'nothing' : paths(o.owns);
         const before = was.get(o.child);
         const change =
-          plan.approved === undefined || before === o.owns.join(', ')
+          plan.approved === undefined || before === paths(o.owns)
             ? ''
             : ` (was ${before === undefined ? 'not in the plan' : before || 'nothing'})`;
         return `${titleOf(o.child)} owns ${now}${change}`;
@@ -247,6 +249,18 @@ export class InboxService {
     // T336: a coordinating node or a project root has no branch of its own;
     // its coordinator finishing a turn is nothing to land.
     if (stream.agent.status === 'done' && (hasParts(stream.id, byId) || isProjectRoot(stream))) {
+      return undefined;
+    }
+    // T341: nor is a node whose PR is open: it merges on GitHub, and the page has no Merge.
+    if (stream.agent.status === 'done' && stream.delivery_state?.status === 'pr_open') {
+      return undefined;
+    }
+    // T341: nor is a conversation's (a project node with no repo): it answered; it has no branch.
+    if (
+      stream.agent.status === 'done' &&
+      stream.project !== undefined &&
+      stream.repo === undefined
+    ) {
       return undefined;
     }
     return {

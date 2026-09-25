@@ -7,10 +7,12 @@ import { describe, expect, test } from 'bun:test';
 import type { InboxItem, SessionRef } from '@agile-agents/shared';
 import type { CockpitStreamRow } from './feed-types';
 import {
+  activityDelivery,
   ancestorTitles,
   buildStreamTree,
   dependencyEdges,
   diffLineKind,
+  eventTime,
   filterStreamRows,
   groupByRepo,
   groupInbox,
@@ -50,6 +52,19 @@ describe('streamDot', () => {
 
   test('a finished worker with the human half open is the operator’s move', () => {
     expect(streamDot(row('a', { agent_status: 'done' }))).toBe('amber');
+  });
+
+  test('T341: a finished coordinator, root or project conversation has nothing to land', () => {
+    expect(streamDot(row('a', { agent_status: 'done', role: 'coordinating' }))).toBe('grey');
+    expect(streamDot(row('a', { agent_status: 'done', role: 'project', project: 'P-1' }))).toBe(
+      'grey',
+    );
+    expect(
+      streamDot(row('a', { agent_status: 'done', role: 'conversation', project: 'P-1' })),
+    ).toBe('grey');
+    expect(streamDot(row('a', { agent_status: 'done', pr_open: true }))).toBe('grey');
+    // A question still is the operator's move.
+    expect(streamDot(row('a', { agent_status: 'question', role: 'coordinating' }))).toBe('amber');
   });
 });
 
@@ -246,5 +261,33 @@ describe('repo view and lenses (T209)', () => {
       ['B', 'A'],
       ['B', 'GONE'],
     ]);
+  });
+});
+
+describe('T341: an Activity row reads without raw ids', () => {
+  const sessions = [
+    { id: '01ARZ3NDEKTSV4RRFFQ69GE001', role: 'worker' as const },
+    { id: '01ARZ3NDEKTSV4RRFFQ69GE002', role: 'coordinator' as const },
+  ];
+  test('the session by its role, a digest as a word', () => {
+    expect(
+      activityDelivery(
+        { status: 'delivered', session: '01ARZ3NDEKTSV4RRFFQ69GE002', digest: 'D-1' },
+        sessions,
+      ),
+    ).toBe('delivered to the coordinator session in a digest');
+    expect(
+      activityDelivery({ status: 'delivered', session: '01ARZ3NDEKTSV4RRFFQ69GE001' }, sessions),
+    ).toBe('delivered to the worker session');
+    expect(activityDelivery({ status: 'pending' }, sessions)).toBe('pending');
+    expect(activityDelivery({ status: 'delivered', session: 'gone' }, sessions)).toBe(
+      'delivered to the agent session',
+    );
+    expect(activityDelivery({ status: 'delivered', session: 'x' }, [], 'Director')).toBe(
+      'delivered to the Director session',
+    );
+  });
+  test('the time to the minute', () => {
+    expect(eventTime('2026-09-25T15:06:06.920Z')).toBe('2026-09-25 15:06');
   });
 });

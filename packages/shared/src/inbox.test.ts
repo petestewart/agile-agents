@@ -79,6 +79,19 @@ describe('InboxItemSchema', () => {
     expect(inboxContext('y'.repeat(400))).toBe(`${'y'.repeat(INBOX_CONTEXT_MAX_CHARS - 1)}…`);
   });
 
+  // T341: a cut inside a code span closes the span.
+  test('context cut inside a code span closes it', () => {
+    const cut = inboxContext(
+      `${'word '.repeat(35)}\`{ "date": "YYYY-MM-DD", "amount": 1, "memo": "x" }\` end`,
+    );
+    expect(cut.length).toBeLessThanOrEqual(INBOX_CONTEXT_MAX_CHARS);
+    expect(cut.endsWith('`…')).toBe(true);
+    expect((cut.match(/`/g) ?? []).length % 2).toBe(0);
+    expect(inboxContext(`\`${'y'.repeat(400)}`)).toBe(
+      `\`${'y'.repeat(INBOX_CONTEXT_MAX_CHARS - 3)}\`…`,
+    );
+  });
+
   // T161: a clipped card must be readable in full.
   test('detail carries the full text only when the context clipped it', () => {
     expect(inboxDetail('a short question')).toBeUndefined();

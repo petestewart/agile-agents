@@ -41,14 +41,18 @@ function RepoEvents({
   }, [repo]);
   if (events.length === 0) return null;
   return (
-    <ul className="cr-lens-list" data-testid="repo-events">
-      {events.map((e) => (
-        <li key={e.id} className="cr-dim" data-testid="repo-event" data-event={e.id} title={e.at}>
-          {e.type.replace(/_/g, ' ')}
-          {e.subject ? ` · ${titleOf(e.subject)}` : ''}
-        </li>
-      ))}
-    </ul>
+    <>
+      {/* T341: labelled, so the events never read as more work nodes. */}
+      <h3 className="cr-lens-sub">Recent events</h3>
+      <ul className="cr-lens-list" data-testid="repo-events">
+        {events.map((e) => (
+          <li key={e.id} className="cr-dim" data-testid="repo-event" data-event={e.id} title={e.at}>
+            {e.type.replace(/_/g, ' ')}
+            {e.subject ? ` · ${titleOf(e.subject)}` : ''}
+          </li>
+        ))}
+      </ul>
+    </>
   );
 }
 
@@ -72,17 +76,20 @@ function RepoNorms({ repo }: { repo: string }): JSX.Element {
     );
   }
   return (
-    <ul className="cr-lens-list" data-testid="repo-norms">
-      {items.map((k) => (
-        <li key={k.id} className="cr-dim" data-testid="repo-norm" data-knowledge={k.id}>
-          <span data-testid="norm-kind">{k.kind}</span> · {k.name ?? k.text}{' '}
-          <span data-testid="norm-enforcement">({k.enforcement})</span>{' '}
-          <span data-testid="norm-stats">
-            fired {k.stats.fired}, violated {k.stats.violated}
-          </span>
-        </li>
-      ))}
-    </ul>
+    <>
+      <h3 className="cr-lens-sub">Norms</h3>
+      <ul className="cr-lens-list" data-testid="repo-norms">
+        {items.map((k) => (
+          <li key={k.id} className="cr-dim" data-testid="repo-norm" data-knowledge={k.id}>
+            <span data-testid="norm-kind">{k.kind}</span> · {k.name ?? k.text}{' '}
+            <span data-testid="norm-enforcement">({k.enforcement})</span>{' '}
+            <span data-testid="norm-stats">
+              fired {k.stats.fired}, violated {k.stats.violated}
+            </span>
+          </li>
+        ))}
+      </ul>
+    </>
   );
 }
 

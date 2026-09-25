@@ -5,6 +5,7 @@
  */
 
 import { existsSync } from 'node:fs';
+import type { spawnSession } from '@agile-agents/acp-client';
 import { trackerStatus } from '@agile-agents/shared';
 import daemonPackageJson from '../package.json' with { type: 'json' };
 import { AttachService, VerbService, buildAttachRpcMethods } from './attach';
@@ -117,6 +118,8 @@ export interface StartDaemonOptions extends DiscoverConfigOptions {
   overlapRecomputeMs?: number;
   /** Test seam: the clock threaded to `Bus` (heartbeat timestamps and coalescing). */
   now?: () => Date;
+  /** Test seam (T341): every agent and Director session's `spawnSession` (the fake agent offline). */
+  spawn?: typeof spawnSession;
 }
 
 export async function startDaemon(options: StartDaemonOptions = {}): Promise<DaemonHandle> {
@@ -252,6 +255,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
           onWorkerTurnEnd: (id) => {
             void mainSync?.turnEnded(id).catch((err) => console.error('main sync failed:', err));
           },
+          ...(options.spawn !== undefined ? { spawn: options.spawn } : {}),
         })
       : undefined;
   // T300 (P16): the Director, above every project; its delivery is the attach service's.
@@ -268,6 +272,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
           inbox: { list: () => inboxService?.list() ?? [] },
           ...(rulesService ? { knowledge: rulesService } : {}),
           ...(autonomyService ? { autonomy: autonomyService } : {}),
+          ...(options.spawn !== undefined ? { spawn: options.spawn } : {}),
         })
       : undefined;
   directorService?.startSight();
