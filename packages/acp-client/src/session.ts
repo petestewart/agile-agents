@@ -605,6 +605,22 @@ export function spawnSession(opts: SpawnSessionOptions): SpawnedSession {
         type: 'error',
         message: `ACP agent exited before it answered the handshake (${MAX_SPAWN_ATTEMPTS} attempts)${last ? `: ${last.slice(0, 300)}` : ''}`,
       });
+    } else if (
+      code === 0 &&
+      !exited &&
+      stdoutSpoke &&
+      !closeRequested &&
+      spawnError === null &&
+      pending.size > 0
+    ) {
+      // Past the handshake a replacement would lack the agent's session
+      // state, so this fails the session, but as what it is: an agent does
+      // not end cleanly with a request of ours unanswered, and a stdin pipe
+      // Bun lost on re-arm reads as exactly that (measured under strace).
+      emit({
+        type: 'error',
+        message: 'ACP agent exited cleanly with a request unanswered (lost stdin pipe?)',
+      });
     }
     onDead(code);
   }
