@@ -66,7 +66,6 @@ function needsYou(items: readonly InboxItem[], stream: string): InboxItem[] {
   );
 }
 
-/** T205: the registered repos a proposal names, so its card can offer "Add <repo>" (§7). */
 /** T330: past ~12 lines a thread entry renders collapsed, with a Show more / Show less toggle. */
 export const THREAD_COLLAPSE_LINES = 12;
 
@@ -100,6 +99,7 @@ function ThreadBody({ body }: { body: string }): JSX.Element {
   );
 }
 
+/** T205: the registered repos a proposal names, so its card can offer "Add <repo>" (§7). */
 export function reposNamedIn(body: string, repos: readonly RepoRow[], current?: string): string[] {
   return repos
     .map((r) => r.name)
