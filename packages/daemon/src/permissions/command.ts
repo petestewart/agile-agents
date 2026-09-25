@@ -318,7 +318,7 @@ const CHECK_SCRIPTS = ['test', 'typecheck', 'lint', 'build'] as const;
 /**
  * T339: the repo's own check commands, from the worktree's `package.json`
  * `scripts` (test, typecheck, lint, build), run with the runner its
- * lockfile names. Empty when there is no readable `package.json`.
+ * lockfile names (bun, then pnpm, then yarn, else npm). Empty when there is no readable `package.json`.
  */
 export function repoScriptChecks(worktreePath: string): string[] {
   let scripts: unknown;
@@ -330,7 +330,13 @@ export function repoScriptChecks(worktreePath: string): string[] {
   if (typeof scripts !== 'object' || scripts === null) return [];
   const has = (f: string) => existsSync(joinPath(worktreePath, f));
   const runner =
-    has('bun.lock') || has('bun.lockb') ? 'bun' : has('pnpm-lock.yaml') ? 'pnpm' : 'npm';
+    has('bun.lock') || has('bun.lockb')
+      ? 'bun'
+      : has('pnpm-lock.yaml')
+        ? 'pnpm'
+        : has('yarn.lock')
+          ? 'yarn'
+          : 'npm';
   return CHECK_SCRIPTS.filter(
     (s) => typeof (scripts as Record<string, unknown>)[s] === 'string',
   ).map((s) => `${runner} run ${s}`);
