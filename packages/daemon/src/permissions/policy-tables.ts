@@ -470,6 +470,11 @@ function isReviewerSafeTool(tokens: string[]): boolean {
   return false;
 }
 
+/** T343: `git diff -O<orderfile>` reads a file named on the command line. */
+function readsGitOrderFile(tokens: string[]): boolean {
+  return tokens.some((t) => t.startsWith('-O'));
+}
+
 function reviewerExecuteVerdict(command: string): PolicyVerdict {
   for (const atom of cmd.parseCommandIntoAtoms(command)) {
     // Benign redirects write nothing (`git diff 2>/dev/null` is a read);
@@ -477,10 +482,9 @@ function reviewerExecuteVerdict(command: string): PolicyVerdict {
     if (cmd.hasWritingRedirectionOrTee(atom.tokens)) {
       return deny('reviewer role denies exec with redirection/tee — those are write primitives');
     }
-    const args = cmd.gitArgs(atom.tokens);
-    const isReadOnlyGit =
-      args !== undefined && REVIEWER_READ_ONLY_GIT_SUBCOMMANDS.has(args[0] ?? '');
-    if (isReadOnlyGit) continue;
+    // T343: git by T336's strict allowlist (no -c/--config-env, `GIT_*=` prefix,
+    // pager, ext-diff, textconv, output), and no `-O<orderfile>`.
+    if (cmd.isReadOnlyGitAtom(atom) && !readsGitOrderFile(atom.tokens)) continue;
     if (isReviewerSafeTool(atom.tokens)) continue;
     return deny(
       'reviewer role denies all exec except read-only tools (git diff/log/show, grep, …)',

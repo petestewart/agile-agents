@@ -995,6 +995,61 @@ describe('decidePermission — T030 reviewer read-only additions', () => {
       'deny',
     );
   });
+
+  test('T343: reviewer git reads are by the allowlist, plain reads still allowed', () => {
+    for (const command of [
+      'git log --oneline -5',
+      'git diff main',
+      'git show HEAD:README.md',
+      'git status --short',
+      'git -C sub log -p -3',
+      'git diff --stat && git log -1',
+    ]) {
+      expect([command, decide('reviewer', request('execute', { command })).kind]).toEqual([
+        command,
+        'allow',
+      ]);
+    }
+  });
+
+  test('T343: reviewer git that sets config, runs a program, writes or moves dirs is denied', () => {
+    for (const command of [
+      // Config that runs a program (core.fsmonitor on status, diff.external on
+      // diff: both checked against git 2.43); an alias for a builtin is ignored.
+      'git --config-env=core.fsmonitor=VAR status',
+      'git --config-env=diff.external=VAR diff',
+      'git --config-env=alias.log=VAR log',
+      'git --config-env alias.log=VAR log',
+      'git -c alias.log=!touch_x log',
+      'git -c core.pager=touch_x log',
+      'git log --config-env=alias.x=V',
+      // Env assignments and wrappers in front, directly or through sh -c.
+      'GIT_EXTERNAL_DIFF=/tmp/x git diff',
+      'GIT_PAGER=touch_x git log',
+      'GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=alias.log GIT_CONFIG_VALUE_0=!x git log',
+      'env git log',
+      'sh -c "GIT_PAGER=x git log"',
+      // Global options that move git or run a program.
+      'git --exec-path=/tmp log',
+      'git --git-dir=/tmp/x log',
+      'git --work-tree=/tmp status',
+      'git -p log',
+      'git --paginate log',
+      // Subcommand options that run a program or write a file.
+      'git diff --ext-diff',
+      'git show --textconv HEAD:a.bin',
+      'git log --output=/tmp/x',
+      'git diff --output /tmp/x',
+      'git diff -o /tmp/x',
+      'git diff -O/tmp/order',
+      'git log --open-files-in-pager',
+    ]) {
+      expect([command, decide('reviewer', request('execute', { command })).kind]).toEqual([
+        command,
+        'deny',
+      ]);
+    }
+  });
 });
 
 describe('decidePermission — T030 review-round fixes (opus, 7 blockers)', () => {
