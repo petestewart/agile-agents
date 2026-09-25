@@ -1724,12 +1724,12 @@ agile tail --director
 
 ### Ticket: T337 trackerPush used before init at startup
 - **Priority:** P1
-- **Status:** In Review
-- **Owner:** opus:worker-T337
+- **Status:** Done
+- **Owner:** Unassigned
 - **Scope:** Startup migration raises questions → StreamService.update → onUpdated hook reads `trackerPush`, a const declared later: "Cannot access 'trackerPush' before initialization". Declare it before the StreamService; the push is skipped during migration.
 - **Acceptance Criteria:** Regression test fails on the old code, passes on the new; status pushes still reach the tracker.
 - **Validation Steps:** `bun test packages/daemon/src/store packages/daemon/src/tracker`.
-- **Notes:** Branch T337-trackerpush-init (d18b826). Review (sonnet): APPROVE, regression confirmed against old code. QA running.
+- **Notes:** Branch T337-trackerpush-init (d18b826). Review (sonnet): APPROVE, regression confirmed against old code. QA (sonnet): PASS, reproduced on a legacy-shaped home before the fix, clean after. merge 8e6a3cf.
 
 ### Ticket: T338 Names, not ids, and the cockpit gaps from the walkthrough
 - **Priority:** P1
