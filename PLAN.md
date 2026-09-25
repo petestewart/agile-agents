@@ -1662,6 +1662,24 @@ agile tail --director
 - **Validation Steps:** `bun test packages/cli packages/daemon/src/projects`.
 - **Notes:** Found while writing Pete's Phase 13 live check. Full bun test 2335/0. CLI-only (daemon delta 0); manager reviewed the diff. merge 02f8e68.
 
+### Ticket: T328 LIVE-CHECKLIST for the whole stage
+- **Priority:** P0
+- **Status:** Done
+- **Owner:** Unassigned
+- **Scope:** §6.1: `LIVE-CHECKLIST.md` rewritten as the Phases 7–13 walkthrough (orientation, setup, repos and projects, coordination, PR delivery, cross-project overlap, knowledge, Director, trackers, day to day), home `~/.agile-walkthrough`.
+- **Acceptance Criteria:** Every non-vendor block run as pasted in a scratch home; vendor blocks marked.
+- **Validation Steps:** Pete runs it on his Mac.
+- **Notes:** Asked for by Pete before cleanup. 42 blocks run under `zsh -f` (stand-in repos, stub gh, fake Jira, real classifier). Docs only. Found: the Director restarts a dying vendor session with no backoff → T329. merge fa59415.
+
+### Ticket: T329 Director restart backoff
+- **Priority:** P0
+- **Status:** In Progress
+- **Owner:** opus:worker-T329
+- **Scope:** `DirectorService.wake()` restarts a Director session that dies at start immediately, 3–4 times a second (≈5,500 `director_put` events, ≈1,800 thread lines and one `sessions/` dir per attempt in 9 minutes). Add backoff and a cap; after repeated start failures, stop and put one card in the inbox with the error.
+- **Acceptance Criteria:** A test with a vendor that dies at start: bounded attempts, backoff, one inbox card, no event flood.
+- **Validation Steps:** `bun test packages/daemon/src/director`.
+- **Notes:** Found in T328. Fix on claude/phase-12, merged forward.
+
 ### Ticket: T325 Phase 13 QA and Pete's look
 - **Priority:** P0
 - **Status:** Done
