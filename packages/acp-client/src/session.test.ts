@@ -552,6 +552,202 @@ describe('spawnSession', () => {
     expect(state.child?.kill).toHaveBeenCalled();
   });
 
+  // Bun 1.3.11 loses a pipe when its `epoll_ctl` fails with EBADF: on stdin
+  // at spawn `spawn()` throws `RangeError: Out of memory`; on stdout the
+  // stream closes with no `end` and the agent's output is dropped while it
+  // lives on (the T243 CI hang). Both measured by injecting EBADF with strace.
+  describe('a pipe Bun lost (EBADF)', () => {
+    const settle = () => new Promise((r) => setTimeout(r, 100));
+
+    it('a spawn that throws is retried', async () => {
+      let calls = 0;
+      const flaky = (...args: Parameters<typeof spawnMock>) => {
+        calls += 1;
+        if (calls === 1) throw new RangeError('Out of memory');
+        return spawnMock(...args);
+      };
+      const session = create({
+        spawn: flaky as unknown as typeof import('node:child_process').spawn,
+      });
+      expect(calls).toBe(2);
+      await answerInitialize();
+      await expect(session.initialized).resolves.toEqual({ protocolVersion: 1 });
+    });
+
+    it('a spawn that keeps throwing still throws, after three attempts', () => {
+      let calls = 0;
+      const broken = () => {
+        calls += 1;
+        throw new RangeError('Out of memory');
+      };
+      expect(() =>
+        create({ spawn: broken as unknown as typeof import('node:child_process').spawn }),
+      ).toThrow('Out of memory');
+      expect(calls).toBe(3);
+    });
+
+    it('an agent whose stdout died before it spoke is replaced and handed the handshake again', async () => {
+      const stderr: string[] = [];
+      const session = create({ onStderr: (chunk) => stderr.push(chunk) });
+      const exits: number[] = [];
+      session.on((e) => {
+        if (e.type === 'exit') exits.push(e.exitCode);
+      });
+      await flush();
+      const lost = state.child;
+      lost?.stdout.destroy(); // `close` with no `end`
+      await settle();
+
+      expect(spawnMock).toHaveBeenCalledTimes(2);
+      expect(lost?.kill).toHaveBeenCalledWith('SIGKILL');
+      expect(state.child).not.toBe(lost);
+      expect(stderr.join('')).toContain('lost pipe');
+      // The replaced agent's own exit is not the session's.
+      lost?.emit('exit', null);
+      expect(exits).toEqual([]);
+      expect(session.exited).toBe(false);
+
+      await answerInitialize();
+      await expect(session.initialized).resolves.toEqual({ protocolVersion: 1 });
+    });
+
+    it('an agent that spoke and then lost its stdout fails the session instead of hanging', async () => {
+      const session = create();
+      const errors: string[] = [];
+      session.on((e) => {
+        if (e.type === 'error') errors.push(e.message);
+      });
+      await answerInitialize();
+      state.child?.stdout.destroy();
+      await settle();
+
+      expect(spawnMock).toHaveBeenCalledTimes(1);
+      expect(errors).toContain('ACP agent stdout closed unexpectedly (lost pipe)');
+      expect(state.child?.kill).toHaveBeenCalledWith('SIGTERM');
+    });
+
+    it('a stdout that ends normally is not a lost pipe', async () => {
+      create();
+      await flush();
+      state.child?.stdout.push(null);
+      state.child?.stdout.resume();
+      await settle();
+      expect(spawnMock).toHaveBeenCalledTimes(1);
+      expect(state.child?.kill).not.toHaveBeenCalled();
+    });
+
+    it('a stdout that closes as the process exits is not a lost pipe', async () => {
+      const session = create();
+      await flush();
+      state.child?.stdout.destroy();
+      state.child?.emit('exit', 1);
+      await settle();
+      expect(spawnMock).toHaveBeenCalledTimes(1);
+      expect(session.exited).toBe(true);
+    });
+
+    // A lost stdin pipe gives no signal: the agent reads EOF and exits 0.
+    it('an agent that exits cleanly before it answered the handshake is replaced', async () => {
+      const stderr: string[] = [];
+      const session = create({ onStderr: (chunk) => stderr.push(chunk) });
+      await flush();
+      const lost = state.child;
+      lost?.emit('exit', 0);
+      await flush();
+
+      expect(spawnMock).toHaveBeenCalledTimes(2);
+      expect(state.child).not.toBe(lost);
+      expect(session.exited).toBe(false);
+      expect(stderr.join('')).toContain('exited before it spoke');
+      await answerInitialize();
+      await expect(session.initialized).resolves.toEqual({ protocolVersion: 1 });
+    });
+
+    it('a clean exit before the handshake is replaced only twice, then fails the session with the stderr tail', async () => {
+      const session = create();
+      const events: Array<{ type: string; detail: string | number }> = [];
+      session.on((e) => {
+        if (e.type === 'error') events.push({ type: 'error', detail: e.message });
+        if (e.type === 'exit') events.push({ type: 'exit', detail: e.exitCode });
+      });
+      await flush();
+      for (let i = 0; i < 3; i++) {
+        state.child?.stderr.push('Please run `vendor login` first\n');
+        await flush();
+        state.child?.emit('exit', 0);
+        await flush();
+      }
+      expect(spawnMock).toHaveBeenCalledTimes(3);
+      expect(session.exited).toBe(true);
+      // What the daemon's runner consumes: an `error` (a failed session,
+      // not a clean `done`) before the exit. (The rejected `initialize`
+      // reports its own error after.)
+      expect(events.slice(0, 2)).toEqual([
+        {
+          type: 'error',
+          detail:
+            'ACP agent exited before it answered the handshake (3 attempts): Please run `vendor login` first',
+        },
+        { type: 'exit', detail: 0 },
+      ]);
+      await expect(session.initialized).rejects.toThrow('ACP agent exited');
+    });
+
+    it('a spawn that threw counts toward the same budget as a replacement', async () => {
+      let calls = 0;
+      const flaky = (...args: Parameters<typeof spawnMock>) => {
+        calls += 1;
+        if (calls === 1) throw new RangeError('Out of memory');
+        return spawnMock(...args);
+      };
+      const session = create({
+        spawn: flaky as unknown as typeof import('node:child_process').spawn,
+      });
+      const errors: string[] = [];
+      session.on((e) => {
+        if (e.type === 'error') errors.push(e.message);
+      });
+      await flush();
+      state.child?.emit('exit', 0); // replaced: the third and last spawn
+      await flush();
+      state.child?.emit('exit', 0); // no spawns left
+      await flush();
+      expect(calls).toBe(3);
+      expect(session.exited).toBe(true);
+      expect(errors[0]).toStartWith('ACP agent exited before it answered the handshake');
+    });
+
+    it('a lost-pipe check still pending at close() never fires', async () => {
+      const session = create();
+      await flush();
+      state.child?.stdout.destroy(); // `close` with no `end`: a check is scheduled
+      await flush();
+      session.close();
+      await new Promise((r) => setTimeout(r, 100));
+      expect(spawnMock).toHaveBeenCalledTimes(1);
+      expect(state.child?.kill).not.toHaveBeenCalledWith('SIGKILL');
+    });
+
+    it('a failing exit, or one after close(), is never replaced', async () => {
+      const failed = create();
+      await flush();
+      state.child?.emit('exit', 1);
+      await flush();
+      expect(failed.exited).toBe(true);
+      expect(spawnMock).toHaveBeenCalledTimes(1);
+
+      const closed = create();
+      await flush();
+      closed.close();
+      state.child?.emit('exit', 0);
+      await flush();
+      expect(closed.exited).toBe(true);
+      expect(spawnMock).toHaveBeenCalledTimes(2);
+      await expect(closed.initialized).rejects.toThrow();
+      await expect(failed.initialized).rejects.toThrow();
+    });
+  });
+
   describe('prompt()', () => {
     it('creates a session lazily, sends the prompt, and resolves the folded reply', async () => {
       const session = create();
