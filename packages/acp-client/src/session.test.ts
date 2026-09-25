@@ -552,6 +552,101 @@ describe('spawnSession', () => {
     expect(state.child?.kill).toHaveBeenCalled();
   });
 
+  // Bun 1.3.11 loses a pipe when its `epoll_ctl` fails with EBADF: on stdin
+  // at spawn `spawn()` throws `RangeError: Out of memory`; on stdout the
+  // stream closes with no `end` and the agent's output is dropped while it
+  // lives on (the T243 CI hang). Both measured by injecting EBADF with strace.
+  describe('a pipe Bun lost (EBADF)', () => {
+    const settle = () => new Promise((r) => setTimeout(r, 100));
+
+    it('a spawn that throws is retried', async () => {
+      let calls = 0;
+      const flaky = (...args: Parameters<typeof spawnMock>) => {
+        calls += 1;
+        if (calls === 1) throw new RangeError('Out of memory');
+        return spawnMock(...args);
+      };
+      const session = create({
+        spawn: flaky as unknown as typeof import('node:child_process').spawn,
+      });
+      expect(calls).toBe(2);
+      await answerInitialize();
+      await expect(session.initialized).resolves.toEqual({ protocolVersion: 1 });
+    });
+
+    it('a spawn that keeps throwing still throws, after three attempts', () => {
+      let calls = 0;
+      const broken = () => {
+        calls += 1;
+        throw new RangeError('Out of memory');
+      };
+      expect(() =>
+        create({ spawn: broken as unknown as typeof import('node:child_process').spawn }),
+      ).toThrow('Out of memory');
+      expect(calls).toBe(3);
+    });
+
+    it('an agent whose stdout died before it spoke is replaced and handed the handshake again', async () => {
+      const stderr: string[] = [];
+      const session = create({ onStderr: (chunk) => stderr.push(chunk) });
+      const exits: number[] = [];
+      session.on((e) => {
+        if (e.type === 'exit') exits.push(e.exitCode);
+      });
+      await flush();
+      const lost = state.child;
+      lost?.stdout.destroy(); // `close` with no `end`
+      await settle();
+
+      expect(spawnMock).toHaveBeenCalledTimes(2);
+      expect(lost?.kill).toHaveBeenCalledWith('SIGKILL');
+      expect(state.child).not.toBe(lost);
+      expect(stderr.join('')).toContain('lost pipe');
+      // The replaced agent's own exit is not the session's.
+      lost?.emit('exit', null);
+      expect(exits).toEqual([]);
+      expect(session.exited).toBe(false);
+
+      await answerInitialize();
+      await expect(session.initialized).resolves.toEqual({ protocolVersion: 1 });
+    });
+
+    it('an agent that spoke and then lost its stdout fails the session instead of hanging', async () => {
+      const session = create();
+      const errors: string[] = [];
+      session.on((e) => {
+        if (e.type === 'error') errors.push(e.message);
+      });
+      await answerInitialize();
+      state.child?.stdout.destroy();
+      await settle();
+
+      expect(spawnMock).toHaveBeenCalledTimes(1);
+      expect(errors).toContain('ACP agent stdout closed unexpectedly (lost pipe)');
+      expect(state.child?.kill).toHaveBeenCalledWith('SIGTERM');
+    });
+
+    it('a stdout that ends normally is not a lost pipe', async () => {
+      create();
+      await flush();
+      state.child?.stdout.push(null);
+      state.child?.stdout.resume();
+      await settle();
+      expect(spawnMock).toHaveBeenCalledTimes(1);
+      expect(state.child?.kill).not.toHaveBeenCalled();
+    });
+
+    it('a stdout that closes as the process exits is not a lost pipe', async () => {
+      const session = create();
+      await flush();
+      state.child?.stdout.destroy();
+      state.child?.emit('exit', 0);
+      await settle();
+      expect(spawnMock).toHaveBeenCalledTimes(1);
+      expect(session.exited).toBe(true);
+    });
+  });
+
   describe('prompt()', () => {
     it('creates a session lazily, sends the prompt, and resolves the folded reply', async () => {
       const session = create();
