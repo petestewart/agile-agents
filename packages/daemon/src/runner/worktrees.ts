@@ -5,16 +5,10 @@
  * checkout stays clean). A worktree is created only here.
  */
 
-import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { existsSync, mkdirSync, rmSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
-import { DAEMON_CACHE_DIR, sandboxedSubprocessEnv } from '../subprocess-env';
-
-interface GitResult {
-  exitCode: number;
-  stdout: string;
-  stderr: string;
-}
+import { type GitResult, git } from '../landing/git';
+import { DAEMON_CACHE_DIR } from '../subprocess-env';
 
 /** Stream title -> kebab slug, capped (the worktree/branch name's readable half). */
 export function slugify(title: string, maxLen = 40): string {
@@ -62,35 +56,25 @@ export class WorktreeRefusedError extends Error {
 
 /**
  * One `git` invocation as argv (D11: no shell, so a slug or branch can't
- * inject a command), captured to files rather than pipes: reading piped
- * stdio alongside `proc.exited` races Bun's fd teardown (intermittent
- * `EBADF epoll_ctl`, truncated output). The same pattern as `test-run.ts`.
+ * inject a command), through the landing path's `Bun.spawnSync` wrapper.
+ *
+ * Never the async `Bun.spawn`: it registers the child's pidfd on the
+ * daemon's event loop, and when that `epoll_ctl` fails (`EBADF`: the pidfd
+ * number is no longer open by the time it is registered) Bun 1.3.11 gives
+ * up on the child and rejects `proc.exited` with `EBADF: bad file
+ * descriptor, epoll_ctl` while git is still running, unreaped, its exit
+ * status lost. Capturing stdio to files instead of pipes did not help: the
+ * pidfd watch is not a stdio fd. That is how an attach failed its
+ * `filterDriverRefusal` read with a 400 (the T161 cockpit e2e flake).
+ * `spawnSync` falls back to a blocking `waitpid` when the watch fails, so
+ * the exit status is always the child's own.
  */
-async function gitAsync(args: string[], cwd: string): Promise<GitResult> {
-  const capture = mkdtempSync(join(tmpdir(), 'agile-git-'));
-  const stdoutPath = join(capture, 'stdout');
-  const stderrPath = join(capture, 'stderr');
-  try {
-    const proc = Bun.spawn(['git', ...args], {
-      cwd,
-      env: sandboxedSubprocessEnv(cwd, 'git'),
-      stdin: 'ignore',
-      stdout: Bun.file(stdoutPath),
-      stderr: Bun.file(stderrPath),
-    });
-    const exitCode = await proc.exited;
-    const [stdout, stderr] = await Promise.all([
-      Bun.file(stdoutPath).text(),
-      Bun.file(stderrPath).text(),
-    ]);
-    return { exitCode, stdout: stdout.trim(), stderr: stderr.trim() };
-  } finally {
-    rmSync(capture, { recursive: true, force: true });
-  }
+function runGit(args: string[], cwd: string): GitResult {
+  return git(args, cwd, cwd);
 }
 
-async function runGitAsync(args: string[], cwd: string): Promise<string> {
-  const result = await gitAsync(args, cwd);
+function runGitOrThrow(args: string[], cwd: string): string {
+  const result = runGit(args, cwd);
   if (result.exitCode !== 0) {
     throw new Error(`git ${args.join(' ')} failed in ${cwd}: ${result.stderr}`);
   }
@@ -119,7 +103,7 @@ export async function filterDriverRefusal(repoRoot: string): Promise<string | un
       }
     }
   }
-  const config = await gitAsync(['config', '--get-regexp', '^filter\\.'], repoRoot);
+  const config = runGit(['config', '--get-regexp', '^filter\\.'], repoRoot);
   if (config.exitCode === 0 && config.stdout) {
     const first = config.stdout.split('\n')[0]?.split(' ')[0] ?? 'filter.*';
     return `git config configures a filter driver (${first}); checkout would run its smudge command`;
@@ -128,8 +112,8 @@ export async function filterDriverRefusal(repoRoot: string): Promise<string | un
 }
 
 /** Every local head or remote-tracking ref named `branch`. */
-async function existingBranchRefs(repoRoot: string, branch: string): Promise<string[]> {
-  const out = await runGitAsync(
+function existingBranchRefs(repoRoot: string, branch: string): string[] {
+  const out = runGitOrThrow(
     ['for-each-ref', '--format=%(refname)', 'refs/heads/**', 'refs/remotes/**'],
     repoRoot,
   );
@@ -147,9 +131,9 @@ async function existingBranchRefs(repoRoot: string, branch: string): Promise<str
  * edits `.gitignore`: that would leave the user's checkout dirty.
  */
 export async function ensureWorktreesIgnored(repoRoot: string): Promise<void> {
-  const check = await gitAsync(['check-ignore', '-q', '.worktrees/'], repoRoot);
+  const check = runGit(['check-ignore', '-q', '.worktrees/'], repoRoot);
   if (check.exitCode === 0) return;
-  const commonDir = await runGitAsync(['rev-parse', '--git-common-dir'], repoRoot);
+  const commonDir = runGitOrThrow(['rev-parse', '--git-common-dir'], repoRoot);
   const infoDir = join(isAbsolute(commonDir) ? commonDir : join(repoRoot, commonDir), 'info');
   mkdirSync(infoDir, { recursive: true });
   const exclude = join(infoDir, 'exclude');
@@ -220,7 +204,7 @@ export async function createWorktree(
     throw new WorktreeRefusedError(`worktree path already exists: ${path}`, 'worktree-exists');
   }
 
-  const clashes = await existingBranchRefs(repoRoot, branch);
+  const clashes = existingBranchRefs(repoRoot, branch);
   if (clashes.length > 0) {
     throw new WorktreeRefusedError(
       `branch ${branch} already exists (${clashes.join(', ')})`,
@@ -228,13 +212,13 @@ export async function createWorktree(
     );
   }
 
-  const head = await runGitAsync(
+  const head = runGitOrThrow(
     ['rev-parse', '--verify', `${options.baseRef ?? 'HEAD'}^{commit}`],
     repoRoot,
   );
 
   // Atomic claim: the zero oid means "only if the ref doesn't exist".
-  const claim = await gitAsync(['update-ref', `refs/heads/${branch}`, head, ZERO_OID], repoRoot);
+  const claim = runGit(['update-ref', `refs/heads/${branch}`, head, ZERO_OID], repoRoot);
   if (claim.exitCode !== 0) {
     throw new WorktreeRefusedError(
       `lost the race to claim branch ${branch}: ${claim.stderr}`,
@@ -247,15 +231,15 @@ export async function createWorktree(
   const hooksPath = join(repoRoot, NO_HOOKS_DIR);
   mkdirSync(hooksPath, { recursive: true });
 
-  const add = await gitAsync(
+  const add = runGit(
     ['-c', `core.hooksPath=${hooksPath}`, 'worktree', 'add', '--', path, branch],
     repoRoot,
   );
   if (add.exitCode !== 0) {
     // Release the claim so a retry isn't blocked by our own half-made state.
     rmSync(path, { recursive: true, force: true });
-    await gitAsync(['worktree', 'prune'], repoRoot);
-    await gitAsync(['update-ref', '-d', `refs/heads/${branch}`, head], repoRoot);
+    runGit(['worktree', 'prune'], repoRoot);
+    runGit(['update-ref', '-d', `refs/heads/${branch}`, head], repoRoot);
     throw new WorktreeRefusedError(
       `git worktree add failed for ${path}: ${add.stderr}`,
       'checkout-failed',
