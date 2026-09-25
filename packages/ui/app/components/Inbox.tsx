@@ -310,7 +310,8 @@ export function Inbox({
   return (
     <section className="cr-inbox" data-testid="inbox">
       <div className="cr-inbox-hd">
-        <h1>Inbox</h1>
+        {/* T341: the view is "Needs me" in the top bar and the walkthrough; its heading agrees. */}
+        <h1>Needs me</h1>
         <span className="cr-count" data-testid="inbox-count">
           {items.length}
         </span>
