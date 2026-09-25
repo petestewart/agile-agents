@@ -8,7 +8,7 @@ import type { AutonomyProposal } from '@agile-agents/shared';
 import { type FormEvent, useEffect, useState } from 'react';
 import { type DirectorPayload, decideProposal, getDirector, sayToDirector } from '../lib/api';
 import { useFeed } from '../lib/feed-context';
-import { Markdown } from './Markdown';
+import { ThreadBody } from './StreamPage';
 
 function errorText(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
@@ -148,7 +148,7 @@ export function DirectorPage(): JSX.Element {
                 {entry.by}
                 {entry.kind !== 'line' ? ` · ${entry.kind}` : ''}
               </div>
-              <Markdown text={entry.body} />
+              <ThreadBody body={entry.body} />
             </li>
           ))}
         </ol>

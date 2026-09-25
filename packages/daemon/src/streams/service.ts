@@ -10,10 +10,10 @@ import {
   type Stream,
   type StreamCreateInput,
   type StreamPrincipal,
-  THREAD_BODY_MAX_CHARS,
   type ThreadAuthor,
   type ThreadEntry,
   type ThreadEntryKind,
+  threadBodyMaxFor,
   ulid,
   validateStreamCreateInput,
 } from '@agile-agents/shared';
@@ -412,14 +412,16 @@ export class StreamService {
     input: ThreadAppendInput,
     sessionId?: string,
   ): Promise<ThreadEntry> {
-    if (input.body.length > THREAD_BODY_MAX_CHARS) {
+    const by = threadAuthorFor(principal, sessionId);
+    const max = threadBodyMaxFor(by, input.kind);
+    if (input.body.length > max) {
       throw new Error(
-        `thread body is ${input.body.length} characters; the cap is ${THREAD_BODY_MAX_CHARS} — write the detail to a file and pass it as "ref"`,
+        `thread body is ${input.body.length} characters; the cap is ${max} — write the detail to a file and pass it as "ref"`,
       );
     }
     return this.store.appendThreadEntry(id, {
       ts: new Date().toISOString(),
-      by: threadAuthorFor(principal, sessionId),
+      by,
       kind: input.kind,
       body: input.body,
       ...(input.ref !== undefined ? { ref: input.ref } : {}),
