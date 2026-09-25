@@ -127,6 +127,10 @@ test('T221: daemon status says whether GitHub auth is available, never the token
   expect(formatDaemonStatus({ ...base, githubAuth: 'unavailable' })).toContain(
     'GitHub auth: unavailable (run `gh auth login`)',
   );
+  // T320 (D31): each tracker configured or not, never a token.
+  expect(
+    formatDaemonStatus({ ...base, trackers: { jira: 'configured', linear: 'not configured' } }),
+  ).toContain('trackers: jira configured · linear not configured');
 });
 
 test('T170: daemon status shows the resolved session default, never "default"', () => {
