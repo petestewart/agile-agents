@@ -2,26 +2,29 @@
  * T343: the git env a read-only session is spawned with. The hook lets a
  * reviewer run only `git diff`/`log`/`show`/`status`, but repo settings can
  * still make those run a program. What this env neutralises (checked against
- * git 2.43):
+ * git 2.43, and none of it breaks a plain diff/log/show/status):
  * - tree attributes: `GIT_ATTR_SOURCE` is the empty tree, so no tracked
- *   `.gitattributes` binds a `diff=`/`filter=` driver (textconv, diff command,
- *   clean filter);
+ *   `.gitattributes` (worktree-writable) binds a `diff=`/`filter=` driver
+ *   (textconv, diff command, clean filter);
  * - the named config keys, forced through `GIT_CONFIG_*` after every config
- *   file: `diff.external` (empty, so a repo that sets it fails closed with a
- *   fatal error; `git diff --no-ext-diff` still works), `core.fsmonitor`
- *   (boolean `false`, never exec'd), `core.hooksPath`, `core.pager`, and the
- *   `gpg.*program`s a signed commit runs under `log.showSignature` or `%G?`;
+ *   file: `core.fsmonitor` (boolean `false`, never exec'd), `core.hooksPath`,
+ *   `core.pager`, and the `gpg.*program`s a signed commit runs under
+ *   `log.showSignature` or `%G?`;
  * - the pager: `GIT_PAGER` beats `pager.<cmd>`, and `cat` is git's "no pager"
  *   (never exec'd, so no PATH lookup).
  * Programs are absolute paths, never resolved through PATH.
  *
  * What it does NOT cover: `$GIT_DIR/info/attributes` (read whatever
- * `GIT_ATTR_SOURCE` says, and shared by every worktree of a repo) and a
- * driver of any other name in the repo's config. No env can enumerate those;
- * they are protected by the write layer, which lets no session write the
- * repo's shared git dir or its config (`policy-tables.ts`, the tier-0 sandbox).
- * The hook's allowlist refuses `VAR=`, `env`, `unset` and `export`, so the
- * agent cannot take this env off again.
+ * `GIT_ATTR_SOURCE` says, and shared by every worktree of a repo), a driver
+ * of any other name in the repo's config, and `diff.external`. No env can
+ * enumerate drivers, and no env value turns `diff.external` off: an empty one
+ * (config or `GIT_EXTERNAL_DIFF=`) makes every `git diff` die with "external
+ * diff died". All of these live in the repo's git dir, which the write layer
+ * protects: an engineer's `git config` writes are held and its writes into a
+ * `.git` path are denied (`policy-tables.ts`), and the tier-0 sandbox leaves
+ * the shared git dir read-only but for objects/refs/logs. The hook's
+ * allowlist refuses `VAR=`, `env`, `unset` and `export`, so the agent cannot
+ * take this env off again.
  */
 
 import type { PermissionRole } from './types';
@@ -34,7 +37,6 @@ const ABSOLUTE_FALSE = '/usr/bin/false';
 
 /** Config forced through `GIT_CONFIG_KEY_n`, applied after every config file. */
 const READ_ONLY_GIT_CONFIG: ReadonlyArray<readonly [string, string]> = [
-  ['diff.external', ''],
   ['core.fsmonitor', 'false'],
   ['core.hooksPath', '/dev/null'],
   ['core.pager', 'cat'],

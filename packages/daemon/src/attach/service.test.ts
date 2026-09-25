@@ -500,7 +500,6 @@ describe('the reviewer (§4.2)', () => {
       ]),
     );
     expect(config).toMatchObject({
-      'diff.external': '',
       'core.fsmonitor': 'false',
       'core.hooksPath': '/dev/null',
       'core.pager': 'cat',

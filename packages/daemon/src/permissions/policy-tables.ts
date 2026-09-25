@@ -352,6 +352,26 @@ function engineerBenignCommandVerdict(
   return undefined;
 }
 
+/**
+ * T343: any git argument that may be a path must resolve inside the worktree
+ * and outside `.git`, whatever the subcommand; otherwise it is held.
+ */
+function engineerGitPathVerdict(args: string[], ctx: PolicyContext): PolicyVerdict | undefined {
+  for (const raw of cmd.gitPathArguments(args, ctx.worktreePath)) {
+    const resolved = cmd.resolveTargetPath(raw);
+    if (
+      !resolved.safe ||
+      !isPathInside(resolved.path, ctx.worktreePath) ||
+      cmd.isInsideGitDir(resolved.path, ctx.worktreePath)
+    ) {
+      return hil(
+        `git argument "${raw}" may be a path outside the worktree or into .git: never automatic`,
+      );
+    }
+  }
+  return undefined;
+}
+
 function engineerExecuteVerdict(command: string, ctx: PolicyContext): PolicyVerdict {
   for (const atom of cmd.parseCommandIntoAtoms(command)) {
     if (cmd.hasRedirectionOrTee(atom.tokens)) {
@@ -394,6 +414,17 @@ function engineerExecuteVerdict(command: string, ctx: PolicyContext): PolicyVerd
       if (redirect !== undefined) return hil(`${redirect}: never automatic`);
       const written = verifyBenignPaths(cmd.gitWriteTargets(gitArgs), ctx);
       if (written.action !== 'allow') return written;
+      if (gitArgs.includes('--unsafe-paths')) {
+        return deny(
+          "git --unsafe-paths turns off git apply's own guard against writing outside the worktree",
+        );
+      }
+      const elsewhere = cmd.gitCheckoutElsewhereReason(gitArgs);
+      if (elsewhere !== undefined) {
+        return hil(`${elsewhere} writes a checkout wherever it is told: never automatic`);
+      }
+      const pathVerdict = engineerGitPathVerdict(gitArgs, ctx);
+      if (pathVerdict !== undefined) return pathVerdict;
       // Any git not on the never-without-human list: the worker's own branch work.
       continue;
     }

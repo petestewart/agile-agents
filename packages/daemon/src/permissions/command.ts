@@ -5,7 +5,7 @@
  * routed to `hil`, never `allow` (`hasUnsafeShellConstruct`).
  */
 
-import { realpathSync, statSync } from 'node:fs';
+import { existsSync, realpathSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, dirname, isAbsolute, join as joinPath, relative, resolve, sep } from 'node:path';
 
@@ -578,6 +578,52 @@ export function gitWriteTargets(args: string[]): string[] {
     targets.push(dir ?? '.');
   }
   return targets;
+}
+
+/** T343: subcommands whose positionals are refs or pathspecs to read, not paths to write. */
+const GIT_READ_POSITIONAL_SUBCOMMANDS = new Set(['log', 'diff', 'show', 'status', 'blame', 'grep']);
+
+/** T343: a token git may take as a filesystem path: absolute, `~`, `$`, `./`, a `..` segment, or on disk. */
+function looksLikeGitPath(value: string, root: string): boolean {
+  if (value === '' || value === '.') return false;
+  if (/^[/~$]/.test(value) || value.startsWith('./')) return true;
+  if (value.split('/').includes('..')) return true;
+  return existsSync(resolve(root, value));
+}
+
+/**
+ * T343: every argument of a git call (`args` from `gitArgs`) that may be a
+ * path, whatever the subcommand: option values (`--x=path`, `-xpath`) and
+ * positionals, except a read subcommand's positionals. A ref (`origin/main`)
+ * is not a path unless it exists on disk. The caller holds any that resolve
+ * outside the worktree or into `.git`.
+ */
+export function gitPathArguments(args: string[], root: string): string[] {
+  const readPositionals = GIT_READ_POSITIONAL_SUBCOMMANDS.has(args[0] ?? '');
+  const paths: string[] = [];
+  for (const t of args.slice(1)) {
+    let value: string;
+    if (t.startsWith('--')) {
+      const eq = t.indexOf('=');
+      if (eq === -1) continue;
+      value = t.slice(eq + 1);
+    } else if (t.startsWith('-')) {
+      value = t.slice(2);
+    } else {
+      if (readPositionals) continue;
+      value = t;
+    }
+    if (looksLikeGitPath(value, root)) paths.push(value);
+  }
+  return paths;
+}
+
+/** T343: a git call a worker shouldn't need and that writes where it is told. */
+export function gitCheckoutElsewhereReason(args: string[]): string | undefined {
+  if (args[0] === 'clone') return 'git clone';
+  if (args[0] === 'worktree' && args[1] === 'add') return 'git worktree add';
+  if (args[0] === 'submodule' && args.includes('add')) return 'git submodule add';
+  return undefined;
 }
 
 /**

@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { decidePermission } from './decide';
 import { EMPTY_TREE_SHA, readOnlyGitEnv } from './git-env';
 
 /** `GIT_CONFIG_KEY_n`/`VALUE_n` read back as ordered pairs. */
@@ -29,7 +30,6 @@ describe('readOnlyGitEnv', () => {
     expect(env.GIT_ATTR_SOURCE).toBe(EMPTY_TREE_SHA);
     expect(env.GIT_PAGER).toBe('cat');
     expect(configPairs(env)).toEqual([
-      ['diff.external', ''],
       ['core.fsmonitor', 'false'],
       ['core.hooksPath', '/dev/null'],
       ['core.pager', 'cat'],
@@ -49,11 +49,11 @@ describe('readOnlyGitEnv', () => {
       GIT_CONFIG_VALUE_1: '/tmp/x',
     });
     const pairs = configPairs(env);
-    expect(env.GIT_CONFIG_COUNT).toBe('10');
+    expect(env.GIT_CONFIG_COUNT).toBe('9');
     expect(pairs.slice(0, 3)).toEqual([
       ['user.name', 'Pat'],
       ['core.fsmonitor', '/tmp/x'],
-      ['diff.external', ''],
+      ['core.fsmonitor', 'false'],
     ]);
     // The later entry wins in git, so the forced value is last.
     expect(pairs.filter(([k]) => k === 'core.fsmonitor').at(-1)).toEqual([
@@ -64,8 +64,8 @@ describe('readOnlyGitEnv', () => {
 
   test('a malformed GIT_CONFIG_COUNT starts ours from zero', () => {
     const env = readOnlyGitEnv('reviewer', { GIT_CONFIG_COUNT: 'lots' });
-    expect(env.GIT_CONFIG_COUNT).toBe('8');
-    expect(env.GIT_CONFIG_KEY_0).toBe('diff.external');
+    expect(env.GIT_CONFIG_COUNT).toBe('7');
+    expect(env.GIT_CONFIG_KEY_0).toBe('core.fsmonitor');
   });
 });
 
@@ -150,14 +150,51 @@ describe('readOnlyGitEnv against real git', () => {
     }
   });
 
-  test('diff.<name>.command and diff.external run on diff, and not under the env', () => {
+  test('plain diff, log -p, show and status still work under the env', () => {
+    commitChanges('a.txt', '');
+    const out = (args: string[]) => {
+      const r = Bun.spawnSync(['git', ...args], {
+        cwd: repo,
+        env: reviewerEnv(),
+        stdout: 'pipe',
+        stderr: 'pipe',
+      });
+      return { code: r.exitCode, text: new TextDecoder().decode(r.stdout) };
+    };
+    expect(out(['diff'])).toMatchObject({ code: 0, text: expect.stringContaining('-2\n+3') });
+    expect(out(['log', '-p', '-1'])).toMatchObject({
+      code: 0,
+      text: expect.stringContaining('-1\n+2'),
+    });
+    expect(out(['show'])).toMatchObject({ code: 0, text: expect.stringContaining('-1\n+2') });
+    expect(out(['status', '--short'])).toMatchObject({ code: 0, text: ' M a.txt\n' });
+  });
+
+  test('diff.external is left to the write layer: an engineer cannot set it', () => {
+    for (const command of [
+      "git config diff.external 'touch /tmp/x'",
+      "git config --local diff.external 'touch /tmp/x'",
+      "echo '[diff] external = x' > ./.git/config",
+    ]) {
+      const verdict = decidePermission({
+        role: 'engineer',
+        worktreePath: repo,
+        request: {
+          toolCall: { kind: 'execute', title: 'Bash', rawInput: { command } },
+          options: [
+            { optionId: 'allow', name: 'Yes', kind: 'allow_once' },
+            { optionId: 'reject', name: 'No', kind: 'reject_once' },
+          ],
+        },
+      });
+      expect([command, verdict.kind]).not.toEqual([command, 'allow']);
+    }
+  });
+
+  test('diff.<name>.command bound by .gitattributes runs on diff, and not under the env', () => {
     commitChanges('a.bin', '*.bin diff=evil');
     git(['config', 'diff.evil.command', shellMarker()]);
     expect(ran(['diff'], plainEnv())).toBe(true);
-    git(['config', '--unset', 'diff.evil.command']);
-    git(['config', 'diff.external', shellMarker()]);
-    expect(ran(['diff'], plainEnv())).toBe(true);
-    git(['config', 'diff.evil.command', shellMarker()]);
     for (const args of [['diff'], ['log', '-p', '-2'], ['show']]) {
       expect([args, ran(args, reviewerEnv())]).toEqual([args, false]);
     }

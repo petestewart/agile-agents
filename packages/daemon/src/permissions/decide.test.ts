@@ -1527,3 +1527,72 @@ describe("decidePermission — T343 the engineer and the repo's shared git dir",
     }
   });
 });
+
+describe('decidePermission — T343 engineer git arguments that are paths', () => {
+  const kind = (command: string) => [
+    command,
+    decide('engineer', request('execute', { command })).kind,
+  ];
+
+  test('--unsafe-paths is denied outright', () => {
+    for (const command of [
+      'git apply --unsafe-paths --directory=/tmp/x p.diff',
+      'git apply --unsafe-paths p.diff',
+    ]) {
+      expect(kind(command)).toEqual([command, 'deny']);
+    }
+  });
+
+  test('worktree add, clone and submodule add are held whatever their target', () => {
+    for (const command of [
+      'git worktree add /tmp/x b',
+      'git worktree add ../../../tmp/x b',
+      'git worktree add sub b',
+      'git clone . /tmp/x',
+      'git clone https://example.com/r.git',
+      'git submodule add https://example.com/r.git /tmp/x',
+      'git submodule add https://example.com/r.git vendor/r',
+    ]) {
+      expect(kind(command)).toEqual([command, 'hil']);
+    }
+  });
+
+  test('any git argument that may be a path outside the worktree or into .git is held', () => {
+    for (const command of [
+      'git apply --directory=/tmp/x p.diff',
+      'git am --directory=/tmp/x mbox',
+      'git bogus-future-cmd --out=/tmp/x',
+      'git bogus-future-cmd -o/tmp/x',
+      'git bogus-future-cmd /tmp/x',
+      'git bogus-future-cmd ~/x',
+      'git bogus-future-cmd ../x',
+      'git bogus-future-cmd sub/../../x',
+      'git bogus-future-cmd --out=$HOME/x',
+      'git mv a.ts ../a.ts',
+      'git commit -F /tmp/msg',
+      'git fetch /work/other-repo',
+      'git add ./.git/config',
+    ]) {
+      expect(kind(command)).toEqual([command, 'hil']);
+    }
+  });
+
+  test('refs, pathspecs, messages and worktree paths stay allowed', () => {
+    for (const command of [
+      'git checkout -b feature/x origin/main',
+      'git rebase origin/main',
+      'git push origin HEAD:refs/heads/stream/x',
+      'git fetch origin refs/heads/main:refs/remotes/origin/main',
+      'git add src/a.ts ./b.ts',
+      'git commit -m "fix a/b and c"',
+      'git log -p -- ../other',
+      'git diff origin/main -- /abs/path',
+      'git show HEAD:../x',
+      'git apply --directory=sub p.diff',
+      'git stash push -- src',
+      'git worktree list',
+    ]) {
+      expect(kind(command)).toEqual([command, 'allow']);
+    }
+  });
+});
