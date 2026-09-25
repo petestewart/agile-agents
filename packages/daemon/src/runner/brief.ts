@@ -42,6 +42,8 @@ export interface BuildBriefInput {
   docs: BriefDoc[];
   /** Every rule in the home; `rulesInScope` filters them here, not the caller. */
   rules: readonly Rule[];
+  /** T330 (§4.4): for a node with no worktree, the registered repos it may read. */
+  readableRepos?: readonly { name: string; path: string }[];
   /** Overrides `BRIEF_THREAD_ENTRIES`. */
   threadEntries?: number;
   /** Overrides `BRIEF_CHAR_CEILING`. Test seam. */
@@ -84,6 +86,27 @@ function renderEntry(entry: ThreadEntry): string {
   return `- **${entry.by}** (${entry.kind}): ${entry.body}`;
 }
 
+/**
+ * T330 (projects-design §4.4, §7): a node with no worktree (a conversation,
+ * a coordinator) may still read the registered repos; it is told where
+ * they are and how code work starts.
+ */
+export function readableReposSection(repos: readonly { name: string; path: string }[]): string {
+  const lines =
+    repos.length === 0
+      ? ['none registered yet']
+      : repos.map((repo) => `- ${repo.name}: \`${repo.path}\``);
+  return section(
+    'Repos you can read',
+    [
+      'This node has no worktree of its own. You may read these registered repos (read only; write only in your session dir):',
+      ...lines,
+      '',
+      'Code changes happen in a work node: the operator starts one by adding a repo to this node with **+ Repo**, which cuts a branch and a worktree in that repo.',
+    ].join('\n'),
+  );
+}
+
 /** One pass of the assembler at a given thread-tail length and doc body cap. */
 function assemble(
   input: BuildBriefInput,
@@ -109,6 +132,8 @@ function assemble(
       ),
     );
   }
+
+  if (input.readableRepos !== undefined) parts.push(readableReposSection(input.readableRepos));
 
   parts.push(section('Rules in scope', renderRules(rules)));
 

@@ -320,3 +320,29 @@ describe('the token ceiling', () => {
     expect(brief).not.toContain('truncated to fit the brief');
   });
 });
+
+describe('buildBrief — repos a worktree-less node can read (T330)', () => {
+  const base = { role: 'worker' as const, ancestors: [], thread: [], docs: [], rules: [] };
+
+  test('lists each readable repo by name and absolute path, and how code work starts', () => {
+    const brief = buildBrief({
+      ...base,
+      stream: makeStream(),
+      readableRepos: [
+        { name: 'ledger-lite', path: '/src/ledger-lite' },
+        { name: 'agile-test-repo', path: '/src/agile-test-repo' },
+      ],
+    });
+    expect(brief).toContain('## Repos you can read');
+    expect(brief).toContain('- ledger-lite: `/src/ledger-lite`');
+    expect(brief).toContain('- agile-test-repo: `/src/agile-test-repo`');
+    expect(brief).toContain('**+ Repo**');
+  });
+
+  test('says so when none are registered, and is absent when not given', () => {
+    expect(buildBrief({ ...base, stream: makeStream(), readableRepos: [] })).toContain(
+      'none registered yet',
+    );
+    expect(buildBrief({ ...base, stream: makeStream() })).not.toContain('Repos you can read');
+  });
+});

@@ -19,7 +19,13 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ACP_PROVIDERS, type AcpProviderConfig } from '@agile-agents/acp-client';
-import type { HilId, Policy, Question, Stream } from '@agile-agents/shared';
+import {
+  type HilId,
+  type Policy,
+  type Question,
+  type Stream,
+  THREAD_BODY_MAX_CHARS,
+} from '@agile-agents/shared';
 import { GateService } from '../gates/service';
 import { runInit } from '../init';
 import { LandingService } from '../landing/service';
@@ -1000,4 +1006,135 @@ describe('T204: creating a node starts its agent (P5)', () => {
       ),
     ).toBe(true);
   });
+});
+
+describe('T330: a conversation node reads the registered repos (§4.4)', () => {
+  let other: string;
+  let secret: string;
+  let shared: string;
+
+  beforeEach(() => {
+    other = mkdtempSync(join(tmpdir(), 'agile-attach-other-'));
+    secret = mkdtempSync(join(tmpdir(), 'agile-attach-secret-'));
+    shared = mkdtempSync(join(tmpdir(), 'agile-attach-shared-'));
+    writeFileSync(join(other, 'README.md'), '# other\n');
+  });
+
+  afterEach(() => {
+    for (const dir of [other, secret, shared]) rmSync(dir, { recursive: true, force: true });
+  });
+
+  async function shopWithRepos() {
+    const project = await new ProjectService(store, streams).create({ name: 'Shop' });
+    await store.putRepos({
+      'ledger-lite': { path: other, protected_branches: ['main'] },
+      secret: {
+        path: secret,
+        protected_branches: ['main'],
+        visibility: { mode: 'private', projects: ['P-01ARZ3NDEKTSV4RRFFQ69G5FAV'] },
+      },
+      shared: {
+        path: shared,
+        protected_branches: ['main'],
+        visibility: { mode: 'private', projects: [project.id] },
+      },
+    });
+    return project;
+  }
+
+  test('the brief lists the repos it may read, with their paths, and + Repo', async () => {
+    attachService = buildAttachService(fakeProviderFor(ACP_PROVIDERS.claude, SPEAKS_THEN_HANGS));
+    const project = await shopWithRepos();
+    const node = await attachService.createNode('human', {
+      title: 'Plan',
+      goal: 'plan work across ledger-lite',
+      project: project.id,
+    });
+    const session = node.sessions[0];
+    if (session === undefined) throw new Error('no session');
+    const brief = readFileSync(join(home, 'sessions', session.id, 'brief.md'), 'utf8');
+    expect(brief).toContain('## Repos you can read');
+    expect(brief).toContain(`- ledger-lite: \`${other}\``);
+    expect(brief).toContain(`- shared: \`${shared}\``);
+    expect(brief).not.toContain(secret);
+    expect(brief).toContain('+ Repo');
+  });
+
+  test('a work node in its worktree gets no repo list', async () => {
+    attachService = buildAttachService(fakeProviderFor(ACP_PROVIDERS.claude, SPEAKS_THEN_HANGS));
+    await store.putRepos({ demo: { path: repo, protected_branches: ['main'] } });
+    const stream = await makeStream('demo');
+    const { session } = await attachService.attach(stream.id);
+    const brief = readFileSync(join(home, 'sessions', session.id, 'brief.md'), 'utf8');
+    expect(brief).not.toContain('## Repos you can read');
+  });
+
+  test('ACP: reads reach a registered repo, never the agile home or an unlisted private repo', async () => {
+    const results = ['public', 'home', 'secret', 'write'].map((n) => join(scratch, `${n}.json`));
+    const permission = (
+      id: string,
+      kind: string,
+      rawInput: Record<string, unknown>,
+      resultFile: string,
+    ) => ({
+      type: 'request_permission' as const,
+      toolCall: { toolCallId: id, kind, rawInput },
+      options: [
+        { optionId: 'allow', kind: 'allow_once' },
+        { optionId: 'reject', kind: 'reject_once' },
+      ],
+      resultFile,
+    });
+    attachService = buildAttachService(
+      fakeProviderFor(ACP_PROVIDERS.claude, {
+        steps: [
+          permission('r1', 'execute', { command: `cat ${other}/README.md` }, results[0] as string),
+          permission('r2', 'read', { file_path: join(home, 'config.yaml') }, results[1] as string),
+          permission('r3', 'execute', { command: `ls ${secret}` }, results[2] as string),
+          permission('r4', 'edit', { file_path: join(other, 'README.md') }, results[3] as string),
+          { type: 'hang' },
+        ],
+      }),
+    );
+    const project = await shopWithRepos();
+    await attachService.createNode('human', { title: 'Plan', goal: 'g', project: project.id });
+    await waitFor(() => results.every((path) => existsSync(path)));
+    const chosen = results.map(
+      (path) => JSON.parse(readFileSync(path, 'utf8')).outcome?.optionId as string | undefined,
+    );
+    // Writes stay confined to the session dir, as before.
+    expect(chosen).toEqual(['allow', 'reject', 'reject', 'reject']);
+  }, 30_000);
+});
+
+describe('T330: one long agent message is one thread entry', () => {
+  test('a message past the body cap is one capped line; output.log has all of it', async () => {
+    const chunk = 'All of this is one sentence that keeps going. '.repeat(10);
+    const tail = 'and it ends here';
+    attachService = buildAttachService(
+      fakeProviderFor(ACP_PROVIDERS.claude, {
+        steps: [
+          { type: 'agent_text', text: 'Start: ' },
+          ...Array.from({ length: 4 }, () => ({ type: 'agent_text' as const, text: chunk })),
+          { type: 'agent_text', text: tail },
+          { type: 'tool_call', toolCallId: 'read-1', title: 'read parser.ts' },
+          { type: 'agent_text', text: 'next message' },
+          { type: 'end_turn' },
+        ],
+      }),
+    );
+    const stream = await makeStream();
+    const { session } = await attachService.attach(stream.id);
+    await waitFor(() => threadBodies(stream.id).includes('next message'));
+    const agentLines = streams
+      .readThread(stream.id, { limit: 500 })
+      .entries.filter((e) => e.by.startsWith('agent:') && e.kind === 'line');
+    expect(agentLines.map((e) => e.body.slice(0, 7))).toEqual(['Start: ', 'next me']);
+    const [long] = agentLines;
+    expect(long?.body.length).toBeLessThanOrEqual(THREAD_BODY_MAX_CHARS);
+    expect(long?.body.endsWith('…')).toBe(true);
+    expect(long?.ref).toBe(join(home, 'sessions', session.id, 'output.log'));
+    const log = readFileSync(join(home, 'sessions', session.id, 'output.log'), 'utf8');
+    expect(log).toContain(`Start: ${chunk.repeat(4)}${tail}\nnext message\n`);
+  }, 30_000);
 });
