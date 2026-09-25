@@ -1587,8 +1587,8 @@ agile tail --director
 
 ### Ticket: T320 Tracker port, fakes and credentials
 - **Priority:** P1
-- **Status:** Todo
-- **Owner:** —
+- **Status:** In Progress
+- **Owner:** opus:worker-T320
 - **Scope:** `daemon/trackers` with one port (get issue, list epic children, add comment, add link, transition status, create issue) and two adapters (Jira REST, Linear GraphQL). There are fake servers for both, as in T220. Credentials follow P17 **only once Pete has approved it as a D-entry**. `agile daemon status` reports each tracker as configured or not.
 - **Acceptance Criteria:** Adapter tests against the fakes. The token never appears in logs or events (asserted).
 - **Validation Steps:** `bun test packages/daemon/src/trackers`.
