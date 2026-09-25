@@ -308,6 +308,43 @@ body {
 .cr-tree ul {
   padding-left: 14px;
 }
+/* T331: a caret column before every row; the children span the full width. */
+.cr-tree li {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr);
+  align-items: center;
+}
+.cr-tree li > .cr-tree-row {
+  grid-column: 2;
+}
+.cr-tree li > ul {
+  grid-column: 1 / -1;
+}
+.cr-tree-caret {
+  grid-column: 1;
+  border: 0;
+  background: transparent;
+  color: var(--text-dim);
+  font: inherit;
+  font-size: 11px;
+  line-height: 1;
+  padding: 4px 0;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.cr-tree-caret:hover {
+  color: var(--text);
+  background: var(--bg-raised);
+}
+.cr-tree-caret:disabled {
+  cursor: default;
+  opacity: 0.4;
+}
+.cr-tree-hidden-dot {
+  margin-left: auto;
+  width: 7px;
+  height: 7px;
+}
 .cr-tree-row {
   display: flex;
   align-items: center;
