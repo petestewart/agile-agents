@@ -31,6 +31,7 @@ import {
   approvePlan,
   attachSession,
   closeStream,
+  createNodeIssue,
   getStreamActivity,
   getStreamDiff,
   getStreamPage,
@@ -449,10 +450,12 @@ function LandPanel({
 /** T321 (§10): the node's Jira/Linear link; linking sets the goal from the issue. */
 function TrackerLinkField({
   stream,
+  rollup,
   busy,
   act,
 }: {
   stream: StreamPagePayload['stream'];
+  rollup: StreamPagePayload['rollup'];
   busy: boolean;
   act: (fn: () => Promise<unknown>) => Promise<void> | void;
 }): JSX.Element {
@@ -466,6 +469,11 @@ function TrackerLinkField({
           {link.key}
         </a>{' '}
         ({link.system}){' '}
+        {rollup !== undefined && (
+          <span data-testid="tracker-rollup">
+            · {rollup.merged}/{rollup.total} merged{' '}
+          </span>
+        )}
         <button
           type="button"
           className="cr-btn"
@@ -514,6 +522,18 @@ function TrackerLinkField({
       </label>
       <button type="submit" className="cr-btn" disabled={busy || key.trim() === ''}>
         Link
+      </button>
+      <button
+        type="button"
+        className="cr-btn"
+        data-testid="tracker-create-issue"
+        title="Create an issue from this node (type a project key like SHOP, or leave empty to use the linked parent's)"
+        disabled={busy || /-\d+$/.test(key.trim())}
+        onClick={() =>
+          void act(() => createNodeIssue(stream.id, key.trim() || undefined).then(() => setKey('')))
+        }
+      >
+        Create issue
       </button>
     </form>
   );
@@ -898,7 +918,7 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
             ))}
           </ul>
         )}
-        <TrackerLinkField stream={stream} busy={busy} act={act} />
+        <TrackerLinkField stream={stream} rollup={page.rollup} busy={busy} act={act} />
         <AutonomyPicker
           stream={stream}
           project={cockpit?.projects.find((p) => p.id === stream.project)}

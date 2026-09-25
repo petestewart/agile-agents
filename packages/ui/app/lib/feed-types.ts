@@ -165,6 +165,7 @@ export interface StreamPagePayload {
   diff_rules: string[];
   docs: StreamDoc[];
   land?: LandPreflight;
+  rollup?: { merged: number; total: number };
 }
 
 /** T245: mirror of `events/service.ts`'s `ActivityEntry` (`GET /api/streams/:id/activity`). */

@@ -65,6 +65,25 @@ describe('import children (T323)', () => {
     expect(streams.list().filter((s) => s.parent === epic.id)).toHaveLength(3);
   });
 
+  test('two concurrent imports create each child exactly once', async () => {
+    linear.addIssue({ key: 'SHOP-1', title: 'Epic' });
+    linear.addIssue({ key: 'SHOP-2', title: 'A', parent: 'SHOP-1' });
+    linear.addIssue({ key: 'SHOP-3', title: 'B', parent: 'SHOP-1' });
+    const epic = await streams.create('human', { title: 'Epic', goal: 'tbd' });
+    await links.link(epic.id, 'SHOP-1');
+    const [a, b] = await Promise.all([
+      links.importChildren(epic.id),
+      links.importChildren(epic.id),
+    ]);
+    expect(a.created.length + b.created.length).toBe(2);
+    const keys = streams
+      .list()
+      .filter((s) => s.parent === epic.id)
+      .map((s) => s.external_link?.key)
+      .sort();
+    expect(keys).toEqual(['SHOP-2', 'SHOP-3']);
+  });
+
   test('an unlinked node is refused as a param error', async () => {
     const node = await streams.create('human', { title: 'x', goal: 'tbd' });
     await expect(links.importChildren(node.id)).rejects.toMatchObject({ kind: 'validation' });

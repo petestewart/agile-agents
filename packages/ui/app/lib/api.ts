@@ -194,6 +194,11 @@ export function importChildren(id: string): Promise<unknown> {
   return post(`/api/streams/${encodeURIComponent(id)}/import-children`);
 }
 
+/** T324: "Create issue" for an unlinked node; `project` defaults to the nearest linked ancestor's. */
+export function createNodeIssue(id: string, project?: string): Promise<unknown> {
+  return post(`/api/streams/${encodeURIComponent(id)}/issue`, project ? { project } : {});
+}
+
 /** T282: the node's coordinator autonomy override; `null` inherits the project's. */
 export function setNodeAutonomy(id: string, autonomy: Autonomy | null): Promise<unknown> {
   return post(`/api/streams/${encodeURIComponent(id)}/autonomy`, { autonomy });

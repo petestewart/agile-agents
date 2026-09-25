@@ -46,6 +46,8 @@ export class TrackerLinks {
   private readonly due = new Map<string, number>();
   private timer: ReturnType<typeof setInterval> | undefined;
   private running: Promise<void> | undefined;
+  /** T323: one import at a time per parent node, so two clicks can't both create a child. */
+  private readonly imports = new Map<string, Promise<unknown>>();
 
   constructor(private readonly options: TrackerLinksOptions) {
     this.now = options.now ?? (() => new Date());
@@ -115,7 +117,18 @@ export class TrackerLinks {
    * on a child of this node) is skipped. Children are plain nodes from the
    * normal create path; nothing is started.
    */
-  async importChildren(id: string): Promise<{ created: Stream[]; skipped: string[] }> {
+  importChildren(id: string): Promise<{ created: Stream[]; skipped: string[] }> {
+    const prior = this.imports.get(id) ?? Promise.resolve();
+    const run = prior.then(() => this.importChildrenOnce(id));
+    const settled = run.catch(() => undefined);
+    this.imports.set(id, settled);
+    void settled.then(() => {
+      if (this.imports.get(id) === settled) this.imports.delete(id);
+    });
+    return run;
+  }
+
+  private async importChildrenOnce(id: string): Promise<{ created: Stream[]; skipped: string[] }> {
     const parent = this.options.streams.get(id);
     const link = parent.external_link;
     if (link === undefined) {
@@ -161,6 +174,55 @@ export class TrackerLinks {
       body: `imported ${created.length} child issue(s) from ${link.key}; ${skipped.length} already linked`,
     });
     return { created, skipped };
+  }
+
+  /**
+   * T324 (§10 "Node → new issue"): a human click only. Creates an issue from
+   * the node's title and goal and links the node to it (the goal is kept).
+   * `project` is the Jira project / Linear team key; it defaults to the
+   * nearest linked ancestor's, whose issue becomes the parent when it is an epic.
+   */
+  async createIssue(id: string, options: { project?: string } = {}): Promise<Stream> {
+    const stream = this.options.streams.get(id);
+    if (stream.external_link !== undefined) {
+      throw new TrackerError(`already linked to ${stream.external_link.key}`, 'validation');
+    }
+    const ancestor = this.linkedAncestor(stream);
+    const project = (options.project?.trim() || ancestor?.key.replace(/-\d+$/, '') || '')
+      .toUpperCase()
+      .slice(0, 40);
+    if (!/^[A-Z][A-Z0-9_]*$/.test(project)) {
+      throw new TrackerError(
+        'name the Jira project or Linear team key (e.g. SHOP): no linked ancestor to take it from',
+        'validation',
+      );
+    }
+    const system = ancestor?.system ?? this.systemFor(stream);
+    const issue = await this.options.tracker(system).createIssue({
+      project,
+      title: stream.title,
+      description: stream.goal,
+      ...(ancestor?.kind === 'epic' && ancestor.system === system ? { parent: ancestor.key } : {}),
+    });
+    const updated = await this.options.streams.update('human', id, {
+      external_link: linkFrom(system, issue, this.now()),
+    });
+    await this.options.streams.appendThread('human', id, {
+      kind: 'event',
+      body: `created ${issue.key} in ${system} and linked to it`,
+    });
+    this.due.set(id, this.now().getTime() + TRACKER_POLL_MS);
+    return updated;
+  }
+
+  private linkedAncestor(stream: Stream): Stream['external_link'] {
+    let parent = stream.parent;
+    for (let i = 0; parent !== undefined && i < 64; i++) {
+      const p = this.options.streams.get(parent);
+      if (p.external_link !== undefined) return p.external_link;
+      parent = p.parent;
+    }
+    return undefined;
   }
 
   start(intervalMs = TRACKER_POLL_TICK_MS): void {

@@ -13,7 +13,7 @@ import { createGitHubRest } from '../github/rest';
 import { runInit } from '../init';
 import { StateStore } from '../store';
 import { StreamService } from '../streams/service';
-import { DeliveryService, type DiffRules, LandRefusedError } from './service';
+import { DeliveryService, type DiffRules, LandRefusedError, prBody } from './service';
 
 const TOKEN = 'ghs_T224sentinelTOKENvalue0123456789';
 
@@ -266,5 +266,75 @@ describe('PR delivery (T224)', () => {
     walk(home);
     expect(files.some((f) => f.endsWith('events.jsonl'))).toBe(true);
     for (const f of files) expect(readFileSync(f, 'utf8')).not.toContain(TOKEN);
+  });
+});
+
+describe('T322: the PR body names the roll-up issue', () => {
+  const external_link = {
+    system: 'linear' as const,
+    key: 'SHOP-11',
+    url: 'https://linear.app/acme/issue/SHOP-11',
+    synced: { title: 't', description_hash: 'h', at: '2026-09-25T10:00:00Z' },
+  };
+  const parent = { id: 'p', parent: undefined, external_link } as unknown as Stream;
+  const child = {
+    id: 'c',
+    parent: 'p',
+    goal: 'add salePrice',
+    agent: { progress: 'half' },
+  } as unknown as Stream;
+
+  test("an unlinked node's PR mentions its nearest linked ancestor's issue", () => {
+    const body = prBody(child, (id) => (id === 'p' ? parent : undefined));
+    expect(body).toContain('## Goal\n\nadd salePrice');
+    expect(body).toContain('## Progress\n\nhalf');
+    expect(body).toContain('Issues: [SHOP-11](https://linear.app/acme/issue/SHOP-11)');
+  });
+
+  test('no linked ancestor leaves the line empty', () => {
+    expect(prBody(child, () => undefined).endsWith('Issues:')).toBe(true);
+  });
+});
+
+describe('T322: tracker key and url are untrusted in the PR body', () => {
+  const withLink = (key: string, url: string) => {
+    const parent = {
+      id: 'p',
+      external_link: {
+        system: 'jira',
+        key,
+        url,
+        synced: { title: 't', description_hash: 'h', at: 'x' },
+      },
+    } as unknown as Stream;
+    const child = { id: 'c', parent: 'p', goal: 'g', agent: {} } as unknown as Stream;
+    return prBody(child, (id) => (id === 'p' ? parent : undefined));
+  };
+
+  test('a javascript: url renders the key as plain text', () => {
+    const body = withLink('SHOP-11', 'javascript:alert(1)');
+    expect(body.endsWith('Issues: SHOP-11')).toBe(true);
+    expect(body).not.toContain('javascript');
+  });
+
+  test('a key carrying markdown cannot inject a link', () => {
+    const body = withLink('SHOP-11](http://evil)', 'https://jira.example/browse/SHOP-11');
+    expect(body.endsWith('Issues: [SHOP-11httpevil](https://jira.example/browse/SHOP-11)')).toBe(
+      true,
+    );
+    expect(body).not.toContain('](http://evil)');
+  });
+
+  test('a key with a newline stays on the one line', () => {
+    const body = withLink('SHOP-11\n## Injected', 'https://jira.example/browse/SHOP-11');
+    expect(body).not.toContain('\n## Injected');
+    expect(body.split('\n').at(-1)).toBe(
+      'Issues: [SHOP-11Injected](https://jira.example/browse/SHOP-11)',
+    );
+  });
+
+  test('parentheses in an https url are escaped so the link cannot break out', () => {
+    const body = withLink('SHOP-11', 'https://jira.example/a)b');
+    expect(body.endsWith('Issues: [SHOP-11](https://jira.example/a%29b)')).toBe(true);
   });
 });

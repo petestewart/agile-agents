@@ -756,14 +756,17 @@ async function handleAutonomyRoute(
   }
 }
 
-/** T321: `POST /api/streams/:id/link` `{key: "SHOP-11" | null}` links (or unlinks) the node. */
+/**
+ * T321: `POST /api/streams/:id/link` `{key: "SHOP-11" | null}` links (or unlinks) the node.
+ * T324: `POST /api/streams/:id/issue` `{project?: "SHOP"}` creates an issue and links it.
+ */
 async function handleLinkRoute(
   req: Request,
   url: URL,
   feed: FeedContext | undefined,
   sameOrigin: () => boolean,
 ): Promise<Response | undefined> {
-  const m = url.pathname.match(/^\/api\/streams\/([^/]+)\/(link|import-children)$/);
+  const m = url.pathname.match(/^\/api\/streams\/([^/]+)\/(link|issue|import-children)$/);
   if (!m || req.method !== 'POST') return undefined;
   if (!sameOrigin()) return errorResponse(403, 'cross-origin request rejected');
   if (!feed?.trackerLinks) return errorResponse(503, 'tracker links not available');
@@ -774,6 +777,14 @@ async function handleLinkRoute(
     if (m[2] === 'import-children')
       return jsonResponse(await feed.trackerLinks.importChildren(id.data));
     const body = await readJsonBody(req);
+    if (m[2] === 'issue') {
+      // T324: "Create issue", a human click only (no RPC, so no agent path).
+      const project = body.project;
+      if (project !== undefined && typeof project !== 'string') {
+        return errorResponse(400, 'invalid issue: project is a key (SHOP)');
+      }
+      return jsonResponse(await feed.trackerLinks.createIssue(id.data, project ? { project } : {}));
+    }
     const key = body.key;
     if (key !== null && (typeof key !== 'string' || key.trim() === '')) {
       return errorResponse(400, 'invalid link: key is an issue key (SHOP-11) or null');
