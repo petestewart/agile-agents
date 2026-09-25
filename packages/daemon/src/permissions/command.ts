@@ -169,6 +169,8 @@ export interface CommandAtom {
   prevTokens?: string[];
   /** T336: `VAR=value` assignments or a wrapper (`env`, `xargs`, ...) were stripped from its front. */
   prefixed?: true;
+  /** T343: the stripped tokens themselves (`VAR=value`, wrappers), when `prefixed`. */
+  prefix?: string[];
 }
 
 const SHELL_RUNNERS = new Set(['sh', 'bash', 'zsh']);
@@ -185,7 +187,10 @@ export function parseCommandIntoAtoms(command: string): CommandAtom[] {
   for (const seg of rawSegments) {
     const raw = tokenizeSegment(seg.raw);
     const tokens = stripPrefixes(raw);
-    const prefixed = tokens.length < raw.length ? { prefixed: true as const } : {};
+    const prefixed =
+      tokens.length < raw.length
+        ? { prefixed: true as const, prefix: raw.slice(0, raw.length - tokens.length) }
+        : {};
     if (isShellDashC(tokens)) {
       const nested = parseCommandIntoAtoms(tokens[2] ?? '');
       for (const [idx, atom] of nested.entries()) {
@@ -195,10 +200,10 @@ export function parseCommandIntoAtoms(command: string): CommandAtom[] {
             tokens: atom.tokens,
             precededByPipe: seg.delimiterBefore === '|',
             prevTokens: seg.delimiterBefore === '|' ? prev?.tokens : undefined,
-            ...(atom.prefixed ? { prefixed: true as const } : prefixed),
+            ...(atom.prefixed ? { prefixed: true as const, prefix: atom.prefix ?? [] } : prefixed),
           });
         } else {
-          atoms.push({ ...atom, ...prefixed });
+          atoms.push(atom.prefixed ? atom : { ...atom, ...prefixed });
         }
       }
       continue;
@@ -499,6 +504,80 @@ export function isGitConfigWrite(args: string[]): boolean {
   const [first] = positionals;
   if (first === 'get' || first === 'list') return false;
   return positionals.length !== 1;
+}
+
+/** T343: env that points git at another repo, worktree, index or template dir. */
+const GIT_REDIRECTING_ENV = new Set([
+  'GIT_DIR',
+  'GIT_WORK_TREE',
+  'GIT_COMMON_DIR',
+  'GIT_INDEX_FILE',
+  'GIT_OBJECT_DIRECTORY',
+  'GIT_TEMPLATE_DIR',
+]);
+
+/**
+ * T343: why an engineer's git call must be held, else `undefined`: it points
+ * git at other dirs (`--git-dir`, `--work-tree`, `GIT_DIR=`, ...), so its
+ * writes can land in the repo's shared `.git`, or it is a `git init` that
+ * can copy a template into it (a re-init of a linked worktree copies the
+ * template into the common dir, `info/attributes` included).
+ */
+export function gitDirRedirectReason(atom: CommandAtom): string | undefined {
+  const invocation = parseGitInvocation(atom.tokens);
+  if (invocation.args === undefined) return undefined;
+  const envName = (atom.prefix ?? [])
+    .map((t) => t.slice(0, Math.max(0, t.indexOf('='))))
+    .find((name) => GIT_REDIRECTING_ENV.has(name));
+  if (envName !== undefined) return `git with ${envName}= points git at other dirs`;
+  const globals = atom.tokens.slice(1, atom.tokens.length - invocation.args.length);
+  if (globals.some((t) => /^--(git-dir|work-tree)(=|$)/.test(t))) {
+    return 'git with --git-dir/--work-tree points git at other dirs';
+  }
+  const args = invocation.args;
+  if (
+    args[0] === 'init' &&
+    (invocation.configs.length > 0 ||
+      globals.some((t) => t.startsWith('--config-env')) ||
+      args.some((t) => /^--(template|separate-git-dir)(=|$)/.test(t)))
+  ) {
+    return 'git init with a template, separate git dir or config can write into the shared .git';
+  }
+  return undefined;
+}
+
+/** T343: subcommands whose `-o <path>` is an output file or directory. */
+const GIT_DASH_O_OUTPUT = new Set(['archive', 'format-patch', 'diff', 'log', 'show', 'range-diff']);
+
+/**
+ * T343: every path a git call (`args` from `gitArgs`) writes a file at:
+ * `--output`, `--output-directory`, `-o` on the diff family, `archive` and
+ * `format-patch`, `checkout-index --prefix`, `bundle create <file>`, and
+ * `init`'s directory. The caller confines them to the worktree, outside `.git`.
+ */
+export function gitWriteTargets(args: string[]): string[] {
+  const sub = args[0] ?? '';
+  const targets: string[] = [];
+  const valued = (flag: string) =>
+    flag === '--output' ||
+    flag === '--output-directory' ||
+    (flag === '-o' && GIT_DASH_O_OUTPUT.has(sub)) ||
+    (flag === '--prefix' && sub === 'checkout-index');
+  for (let i = 1; i < args.length; i++) {
+    const t = args[i] ?? '';
+    const eq = t.indexOf('=');
+    const flag = eq === -1 ? t : t.slice(0, eq);
+    if (!valued(flag)) continue;
+    const value = eq === -1 ? args[i + 1] : t.slice(eq + 1);
+    if (value !== undefined) targets.push(value);
+    if (eq === -1) i++;
+  }
+  if (sub === 'bundle' && args[1] === 'create' && args[2] !== undefined) targets.push(args[2]);
+  if (sub === 'init') {
+    const dir = args.slice(1).find((t) => !t.startsWith('-'));
+    targets.push(dir ?? '.');
+  }
+  return targets;
 }
 
 /**

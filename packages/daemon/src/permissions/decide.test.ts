@@ -1448,3 +1448,82 @@ describe('decidePermission — T343 the engineer and git state', () => {
     expect(edit.kind).toBe('allow');
   });
 });
+
+describe("decidePermission — T343 the engineer and the repo's shared git dir", () => {
+  const COMMON = '/work/.git';
+
+  test('no write reaches the common dir, by absolute path or by ..', () => {
+    for (const path of [
+      `${COMMON}/info/attributes`,
+      `${COMMON}/config`,
+      `${WORKTREE}/../../.git/info/attributes`,
+    ]) {
+      expect([path, decide('engineer', request('edit', { targetPath: path })).kind]).toEqual([
+        path,
+        'deny',
+      ]);
+    }
+    for (const command of [
+      `echo 'a diff=evil' > ${COMMON}/info/attributes`,
+      "echo 'a diff=evil' > ../../.git/info/attributes",
+      `cp attrs ${COMMON}/info/attributes`,
+      'cp attrs ../../.git/info/attributes',
+      `touch ${COMMON}/info/attributes`,
+    ]) {
+      expect([command, decide('engineer', request('execute', { command })).kind]).toEqual([
+        command,
+        'deny',
+      ]);
+    }
+  });
+
+  test('git that writes a file there is denied; into the worktree it is allowed', () => {
+    for (const command of [
+      `git log -1 --format='a diff=evil' --output=${COMMON}/info/attributes`,
+      'git log -1 --output ../../.git/info/attributes',
+      'git diff --output=.git/x',
+      `git format-patch -o ${COMMON}/info HEAD~1`,
+      `git archive -o ${COMMON}/info/x HEAD`,
+      `git bundle create ${COMMON}/info/x HEAD`,
+      'git checkout-index --prefix=../../.git/info/ -a',
+      `git init ${COMMON}/info`,
+    ]) {
+      expect([command, decide('engineer', request('execute', { command })).kind]).toEqual([
+        command,
+        'deny',
+      ]);
+    }
+    for (const command of [
+      'git log -1 --output=out.txt',
+      'git format-patch -o patches HEAD~1',
+      'git bundle create x.bundle HEAD',
+      'git init fixtures/sub',
+      'GIT_EDITOR=true git rebase --continue',
+    ]) {
+      expect([command, decide('engineer', request('execute', { command })).kind]).toEqual([
+        command,
+        'allow',
+      ]);
+    }
+  });
+
+  test('git pointed at other dirs, or init with a template, is held', () => {
+    for (const command of [
+      `GIT_DIR=${COMMON} git status`,
+      `GIT_WORK_TREE=${COMMON}/info git checkout HEAD -- attributes`,
+      'GIT_TEMPLATE_DIR=tpl git init',
+      `sh -c "GIT_DIR=${COMMON} git status"`,
+      `git --git-dir=${COMMON} status`,
+      `git --work-tree=${COMMON}/info checkout HEAD -- attributes`,
+      // A re-init of a linked worktree copies the template into the common dir.
+      'git init --template=tpl',
+      'git init --separate-git-dir=../x',
+      'git -c init.templateDir=tpl init',
+    ]) {
+      expect([command, decide('engineer', request('execute', { command })).kind]).toEqual([
+        command,
+        'hil',
+      ]);
+    }
+  });
+});

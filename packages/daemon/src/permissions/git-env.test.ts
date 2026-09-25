@@ -5,7 +5,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { chmodSync, existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { EMPTY_TREE_SHA, readOnlyGitEnv } from './git-env';
@@ -33,10 +33,10 @@ describe('readOnlyGitEnv', () => {
       ['core.fsmonitor', 'false'],
       ['core.hooksPath', '/dev/null'],
       ['core.pager', 'cat'],
-      ['gpg.program', 'false'],
-      ['gpg.openpgp.program', 'false'],
-      ['gpg.x509.program', 'false'],
-      ['gpg.ssh.program', 'false'],
+      ['gpg.program', '/usr/bin/false'],
+      ['gpg.openpgp.program', '/usr/bin/false'],
+      ['gpg.x509.program', '/usr/bin/false'],
+      ['gpg.ssh.program', '/usr/bin/false'],
     ]);
   });
 
@@ -94,6 +94,17 @@ describe('readOnlyGitEnv against real git', () => {
 
   const plainEnv = () => ({ ...(process.env as Record<string, string>) });
   const reviewerEnv = () => ({ ...plainEnv(), ...readOnlyGitEnv('reviewer', process.env) });
+  /** The reviewer env with a dir first on PATH holding a `false`, `cat` and `less` that drop the marker. */
+  function plantedPathEnv(): Record<string, string> {
+    const bin = join(dir, 'planted-bin');
+    mkdirSync(bin, { recursive: true });
+    for (const name of ['false', 'cat', 'less']) {
+      writeFileSync(join(bin, name), `#!/bin/sh\ntouch '${marker}'\n`);
+      chmodSync(join(bin, name), 0o755);
+    }
+    const env = reviewerEnv();
+    return { ...env, PATH: `${bin}:${env.PATH ?? ''}` };
+  }
 
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), 'agile-git-env-'));
@@ -168,6 +179,43 @@ describe('readOnlyGitEnv against real git', () => {
     expect(ran(['status'], reviewerEnv())).toBe(false);
   });
 
+  test('a false/cat/less planted first on PATH is never run', () => {
+    commitChanges('a.txt', '');
+    git(['config', 'core.fsmonitor', 'false']);
+    git(['config', 'pager.log', 'less']);
+    expect(ran(['status'], plantedPathEnv())).toBe(false);
+    // The pager only starts on a tty: `script` (util-linux) gives git one.
+    const script = Bun.which('script');
+    if (process.platform === 'linux' && script !== null) {
+      rmSync(marker, { force: true });
+      Bun.spawnSync([script, '-qec', 'git log -1', '/dev/null'], {
+        cwd: repo,
+        env: plantedPathEnv(),
+        stdout: 'pipe',
+        stderr: 'pipe',
+      });
+      expect(existsSync(marker)).toBe(false);
+      // Control: without the env the planted pager does run.
+      Bun.spawnSync([script, '-qec', 'git log -1', '/dev/null'], {
+        cwd: repo,
+        env: { ...plantedPathEnv(), GIT_PAGER: 'less' },
+        stdout: 'pipe',
+        stderr: 'pipe',
+      });
+      expect(existsSync(marker)).toBe(true);
+    }
+  });
+
+  test('NOT covered: $GIT_DIR/info/attributes still binds a driver (the write layer guards it)', () => {
+    commitChanges('a.bin', '');
+    mkdirSync(join(repo, '.git', 'info'), { recursive: true });
+    writeFileSync(join(repo, '.git', 'info', 'attributes'), 'a.bin diff=evil\n');
+    git(['config', 'diff.evil.command', shellMarker()]);
+    // The boundary the docstring states: no env reaches this, so no session may
+    // write the shared git dir or its config (decide.test.ts, T343 engineer).
+    expect(ran(['diff'], reviewerEnv())).toBe(true);
+  });
+
   test('gpg.program runs on a signed commit under log.showSignature, and not under the env', () => {
     commitChanges('a.txt', '');
     const tree = new TextDecoder()
@@ -201,6 +249,7 @@ describe('readOnlyGitEnv against real git', () => {
     ]) {
       expect([args, ran(args, plainEnv())]).toEqual([args, true]);
       expect([args, ran(args, reviewerEnv())]).toEqual([args, false]);
+      expect([args, ran(args, plantedPathEnv())]).toEqual([args, false]);
     }
   });
 });

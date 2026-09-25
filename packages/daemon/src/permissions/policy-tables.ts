@@ -390,6 +390,10 @@ function engineerExecuteVerdict(command: string, ctx: PolicyContext): PolicyVerd
       if (cmd.isGitConfigWrite(gitArgs)) {
         return hil('git config that sets or removes a value is never automatic');
       }
+      const redirect = cmd.gitDirRedirectReason(atom);
+      if (redirect !== undefined) return hil(`${redirect}: never automatic`);
+      const written = verifyBenignPaths(cmd.gitWriteTargets(gitArgs), ctx);
+      if (written.action !== 'allow') return written;
       // Any git not on the never-without-human list: the worker's own branch work.
       continue;
     }
