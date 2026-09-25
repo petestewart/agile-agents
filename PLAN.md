@@ -1560,8 +1560,8 @@ agile tail --node $C --events
 
 ### Ticket: T304 Phase 12 QA and Pete's look
 - **Priority:** P0
-- **Status:** Todo
-- **Owner:** —
+- **Status:** In Progress
+- **Owner:** sonnet:qa-T304
 - **Scope:** Black-box QA of the Director levels and guards with a fake agent. Daemon line count. Pete talks to a live Director at Advise and then Organise.
 - **Acceptance Criteria:** QA ACCEPT. Live: at Advise, Pete gets a draft tree with Create. At Organise, the Director creates and starts a small project and posts what it did. It refuses a merge request.
 - **Validation Steps:** Pete, on his Mac:
