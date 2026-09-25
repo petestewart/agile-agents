@@ -8,13 +8,16 @@
  */
 
 import { describe, expect, test } from 'bun:test';
+import childProcess, { type ChildProcess } from 'node:child_process';
 import { EventEmitter } from 'node:events';
+import { readdirSync, readlinkSync } from 'node:fs';
 import {
   type AcquirableBrowser,
   type GuardedChild,
   type SpawnHost,
   acquireBrowserPage,
   guardStdioPipes,
+  pinnedStdioCount,
   runWithinBudget,
 } from './chromium';
 
@@ -431,6 +434,94 @@ describe('acquireBrowserPage: a stdio pipe lost at spawn (Bun 1.3.11)', () => {
     outer.release();
     expect(host.spawn).toBe(original);
   });
+});
+
+/**
+ * CI jobs 108131833599 / 108131816730 (and the T161 stream-page wedge every
+ * run): on Bun 1.3.11 a dead child's extra-stdio socket closes its fd number
+ * again when it is garbage-collected, shutting whatever reused that number.
+ * The guard keeps those sockets reachable so they are never finalized.
+ */
+describe('guardStdioPipes: a dead launch never closes a live fd', () => {
+  test('a guarded spawn pins its extra-stdio sockets past a GC', () => {
+    const { host } = fakeSpawnHost();
+    const before = pinnedStdioCount();
+    const guard = guardStdioPipes(host);
+    let ref: WeakRef<object> | undefined;
+    (() => {
+      const child = host.spawn() as FakeChild;
+      ref = new WeakRef(child.stdio[3] as object);
+    })();
+    guard.release();
+    Bun.gc(true);
+    expect(pinnedStdioCount()).toBe(before + 2);
+    expect(ref?.deref()).toBeDefined();
+  });
+
+  /** The live fds of this process, as `fd -> target`. */
+  function openFds(): Map<string, string> {
+    const fds = new Map<string, string>();
+    for (const fd of readdirSync('/proc/self/fd')) {
+      try {
+        fds.set(fd, readlinkSync(`/proc/self/fd/${fd}`));
+      } catch {}
+    }
+    return fds;
+  }
+
+  function exited(child: ChildProcess): Promise<void> {
+    return new Promise((resolve) => {
+      if (child.exitCode !== null || child.signalCode !== null) resolve();
+      else child.once('exit', () => resolve());
+    });
+  }
+
+  /** A Chromium-shaped spawn (Playwright's pipe launch: fds 3 and 4), made under the guard. */
+  function spawnPipeLaunch(): ChildProcess {
+    const guard = guardStdioPipes();
+    try {
+      // Through the module object, as Playwright's `require('child_process')` does.
+      return childProcess.spawn('sleep', ['30'], {
+        stdio: ['ignore', 'pipe', 'pipe', 'pipe', 'pipe'],
+        detached: true,
+      });
+    } finally {
+      guard.release();
+    }
+  }
+
+  // The reproduction itself, on real processes: without the pin, the second
+  // child's fd 3/4 sockets are closed within the first round or two.
+  test.skipIf(process.platform !== 'linux')(
+    "a killed launch's sockets, once collected, leave the next launch's fds open",
+    async () => {
+      for (let round = 0; round < 5; round++) {
+        {
+          const dead = spawnPipeLaunch();
+          await Bun.sleep(20);
+          dead.kill('SIGKILL');
+          await exited(dead);
+        }
+        const before = openFds();
+        const live = spawnPipeLaunch();
+        try {
+          await Bun.sleep(20);
+          const mine = [...openFds()].filter(([fd]) => !before.has(fd));
+          expect(mine.length).toBeGreaterThanOrEqual(4);
+          Bun.gc(true);
+          await Bun.sleep(20);
+          Bun.gc(true);
+          await Bun.sleep(20);
+          const now = openFds();
+          expect(mine.filter(([fd, target]) => now.get(fd) !== target)).toEqual([]);
+        } finally {
+          live.kill('SIGKILL');
+          await exited(live);
+        }
+      }
+    },
+    20_000,
+  );
 });
 
 describe('runWithinBudget', () => {
