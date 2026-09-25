@@ -4,14 +4,14 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ACP_PROVIDERS, type AcpProviderConfig } from '@agile-agents/acp-client';
 import { DIRECTOR_NODE } from '@agile-agents/shared';
 import { AttachService } from '../attach/service';
 import { AutonomyService } from '../coordination/autonomy';
-import { routeEvent } from '../events/router';
+import { routeAndEmit, routeEvent } from '../events/router';
 import { RoutedEventService } from '../events/service';
 import { GateService } from '../gates/service';
 import { InboxService } from '../inbox/service';
@@ -22,11 +22,12 @@ import type { FakeAgentScript } from '../runner/fake-agent';
 import { StateStore } from '../store';
 import { StreamService } from '../streams/service';
 import { buildDirectorRpcMethods } from './rpc';
-import { DirectorService, type DirectorServiceOptions } from './service';
+import { DirectorService, type DirectorServiceOptions, MAX_FAILED_STARTS } from './service';
 
 const FAKE_AGENT_PATH = join(import.meta.dir, '..', 'runner', 'fake-agent.ts');
 
 let home: string;
+let stateRoot: string;
 let scratch: string;
 let store: StateStore;
 let streams: StreamService;
@@ -78,7 +79,8 @@ function build(script: FakeAgentScript, extra: Partial<DirectorServiceOptions> =
 beforeEach(() => {
   home = mkdtempSync(join(tmpdir(), 'agile-director-home-'));
   scratch = mkdtempSync(join(tmpdir(), 'agile-director-scratch-'));
-  store = StateStore.open(runInit(home).stateRoot);
+  stateRoot = runInit(home).stateRoot;
+  store = StateStore.open(stateRoot);
   streams = new StreamService(store);
   events = new RoutedEventService(store);
 });
@@ -197,5 +199,98 @@ describe('T300: the Director', () => {
     expect(brief).toContain('### Stuck (working, idle over 60 min)');
     expect(brief).toContain(`- Checkout (Shop) [${node.id}]: working, no activity for 1`);
     expect(brief).toContain('### Inbox (1 waiting on the operator)');
+  });
+
+  describe('T329: a Director that dies as it starts', () => {
+    /** A vendor that exits at once with an error on stderr, before any handshake. */
+    const dying: AcpProviderConfig = {
+      ...ACP_PROVIDERS.claude,
+      command: 'bun',
+      args: ['-e', "console.error('boom: not logged in'); process.exit(1)"],
+    };
+    let timers: { fn: () => void; ms: number; cancelled: boolean }[];
+
+    function buildDying(): void {
+      timers = [];
+      build(
+        { steps: [{ type: 'end_turn' }] },
+        {
+          provider: () => dying,
+          setTimer: (fn, ms) => {
+            const t = { fn, ms, cancelled: false };
+            timers.push(t);
+            return {
+              cancel: () => {
+                t.cancelled = true;
+              },
+            };
+          },
+        },
+      );
+    }
+
+    const sessionDirs = () => {
+      const dir = join(home, 'sessions');
+      return existsSync(dir) ? readdirSync(dir).filter((d) => !d.startsWith('.')).length : 0;
+    };
+    const directorPuts = () =>
+      readFileSync(join(stateRoot, 'log', 'events.jsonl'), 'utf8')
+        .split('\n')
+        .filter((l) => l.includes('"director_put"')).length;
+    const gaveUpLines = () =>
+      store.readDirectorThread().filter((e) => e.body.startsWith('the Director could not start'));
+
+    test('backs off, gives up after the cap with one line, and a human line retries', async () => {
+      buildDying();
+      await director.say('What needs me today?');
+
+      // Each failed start schedules one retry, 5 s doubling; none runs until its timer fires.
+      for (let i = 1; i < MAX_FAILED_STARTS; i++) {
+        await waitFor(() => timers.length === i);
+        expect(timers[i - 1]?.ms).toBe(5_000 * 2 ** (i - 1));
+        await Bun.sleep(50);
+        expect(sessionDirs()).toBe(i);
+        timers[i - 1]?.fn();
+      }
+      await waitFor(() => gaveUpLines().length === 1);
+      expect(sessionDirs()).toBe(MAX_FAILED_STARTS);
+      expect(timers).toHaveLength(MAX_FAILED_STARTS - 1);
+
+      // One summary naming the error; no per-attempt lines, a bounded number of puts.
+      const thread = store.readDirectorThread();
+      expect(gaveUpLines()[0]?.body).toContain(`(${MAX_FAILED_STARTS} tries)`);
+      expect(gaveUpLines()[0]?.body).toContain('boom: not logged in');
+      expect(thread.filter((e) => e.by === 'daemon')).toHaveLength(2); // attached + gave up
+      expect(directorPuts()).toBeLessThanOrEqual(6);
+      expect(store.getDirector()?.session?.status).toBe('error');
+
+      // Given up: a daemon request does not start another; it stays pending.
+      await routeAndEmit(
+        events,
+        { type: 'director_request', payload: { body: 'stuck node' }, by: 'daemon' },
+        streams.list(),
+      );
+      await Bun.sleep(300);
+      expect(sessionDirs()).toBe(MAX_FAILED_STARTS);
+      expect(events.pendingFor(DIRECTOR_NODE).length).toBe(2);
+
+      // The next human line resets the count and tries again at once.
+      await director.say('Try again.');
+      await waitFor(() => timers.length === MAX_FAILED_STARTS);
+      expect(sessionDirs()).toBe(MAX_FAILED_STARTS + 1);
+      expect(timers.at(-1)?.ms).toBe(5_000);
+      expect(gaveUpLines()).toHaveLength(1);
+    });
+
+    test('a human line mid-backoff cancels the scheduled retry and starts now', async () => {
+      buildDying();
+      await director.say('hello');
+      await waitFor(() => timers.length === 1);
+      await director.say('hello again');
+      await waitFor(() => timers.length === 2);
+      expect(timers[0]?.cancelled).toBe(true);
+      expect(timers[1]?.ms).toBe(5_000);
+      expect(sessionDirs()).toBe(2);
+    });
   });
 });

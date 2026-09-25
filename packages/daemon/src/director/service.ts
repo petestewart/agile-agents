@@ -57,6 +57,21 @@ import {
 /** Thread lines the brief carries, newest last. */
 const BRIEF_THREAD_LINES = 40;
 
+/**
+ * T329: a Director session that dies before its first turn ends is a failed
+ * start. The next attempt waits 5 s, doubling to at most 5 min; after
+ * `MAX_FAILED_STARTS` in a row the Director stops trying and says so once on
+ * its thread. The next human line resets the count.
+ */
+export const MAX_FAILED_STARTS = 5;
+const RETRY_BASE_MS = 5_000;
+const RETRY_MAX_MS = 5 * 60_000;
+
+/** The wait before the next start after `failures` failed starts in a row (≥ 1). */
+export function directorRetryDelayMs(failures: number): number {
+  return Math.min(RETRY_BASE_MS * 2 ** Math.max(0, failures - 1), RETRY_MAX_MS);
+}
+
 export interface DirectorServiceOptions {
   store: StateStore;
   streams: StreamService;
@@ -73,6 +88,8 @@ export interface DirectorServiceOptions {
   inbox?: { list(): InboxItem[] };
   knowledge?: { list(options: { status: 'accepted' }): KnowledgeItem[] };
   autonomy?: AutonomyService;
+  /** Test seam (T329): schedules the retry after a failed start. */
+  setTimer?: (fn: () => void, ms: number) => { cancel(): void };
 }
 
 export interface DirectorView {
@@ -126,6 +143,10 @@ export class DirectorService {
   /** Nodes already flagged stuck (one card and one wake per episode). */
   private readonly flagged = new Set<string>();
   private readonly wakeBudget: WakeBudget;
+  /** T329: failed starts in a row, the scheduled retry, and whether it gave up. */
+  private failedStarts = 0;
+  private retry: { cancel(): void } | undefined;
+  private gaveUp = false;
 
   constructor(private readonly options: DirectorServiceOptions) {
     this.wakeBudget = new WakeBudget(() => this.now().getTime());
@@ -258,6 +279,8 @@ export class DirectorService {
   async say(body: string): Promise<{ entry: ThreadEntry; event: RoutedEvent }> {
     const text = body.trim();
     if (text.length === 0) throw new Error('director say: the line is empty');
+    // T329: a human line tries again, whatever failed before.
+    this.resetFailedStarts();
     await this.ensureRecord();
     const entry = await this.append('human', 'line', text);
     const event = await routeAndEmit(
@@ -289,23 +312,76 @@ export class DirectorService {
     };
   }
 
-  /** Pending `director_request`s and no live session: start one. */
+  /**
+   * Pending `director_request`s and no live session: start one, unless a
+   * retry is scheduled or the Director gave up (T329).
+   */
   wake(_pending: readonly RoutedEvent[]): void {
-    if (this.stopped || this.liveHandle() !== undefined || this.starting !== undefined) return;
+    if (
+      this.stopped ||
+      this.gaveUp ||
+      this.retry !== undefined ||
+      // A session still exiting: its exit path decides what comes next.
+      this.handle !== undefined ||
+      this.starting !== undefined
+    ) {
+      return;
+    }
     this.starting = this.start()
-      .catch(async (err) => {
-        await this.append(
-          'daemon',
-          'event',
-          `could not start the Director: ${err instanceof Error ? err.message : String(err)}`.slice(
-            0,
-            800,
-          ),
-        ).catch(() => undefined);
-      })
+      .catch((err) => this.onFailedStart(err instanceof Error ? err.message : String(err)))
       .finally(() => {
         this.starting = undefined;
       });
+  }
+
+  private resetFailedStarts(): void {
+    this.failedStarts = 0;
+    this.gaveUp = false;
+    this.retry?.cancel();
+    this.retry = undefined;
+  }
+
+  /**
+   * T329: a start threw, or the session ended before its first turn did.
+   * Retry with backoff; at the cap, one thread line and no more tries until
+   * the next human line. Only that line is written: a retry is silent.
+   */
+  private async onFailedStart(error: string, session?: SessionRef): Promise<void> {
+    if (this.stopped) return;
+    this.failedStarts += 1;
+    if (this.failedStarts >= MAX_FAILED_STARTS) {
+      this.gaveUp = true;
+      if (session !== undefined) {
+        await this.setSession({
+          ...session,
+          status: 'error',
+          ended_reason: error.slice(0, 300),
+        }).catch(() => undefined);
+      }
+      await this.append(
+        'daemon',
+        'event',
+        `the Director could not start (${this.failedStarts} tries): ${error}. It stops trying until you write to it again.`.slice(
+          0,
+          800,
+        ),
+      ).catch(() => undefined);
+      return;
+    }
+    const retry = () => {
+      this.retry = undefined;
+      if (this.stopped || this.options.events.pendingFor(DIRECTOR_NODE).length === 0) return;
+      if (this.delivery !== undefined) this.delivery.notify(DIRECTOR_NODE);
+      else this.wake([]);
+    };
+    const ms = directorRetryDelayMs(this.failedStarts);
+    if (this.options.setTimer !== undefined) {
+      this.retry = this.options.setTimer(retry, ms);
+    } else {
+      const timer = setTimeout(retry, ms);
+      timer.unref?.();
+      this.retry = { cancel: () => clearTimeout(timer) };
+    }
   }
 
   private async setSession(session: SessionRef): Promise<void> {
@@ -320,6 +396,8 @@ export class DirectorService {
     const provider = this.options.provider
       ? this.options.provider(settings.vendor, settings.provider)
       : settings.provider;
+    // T329: a retry after a failed start writes nothing until it works.
+    const quiet = this.failedStarts > 0;
     const sessionId = ulid();
     const sessionDir = join(home, 'sessions', sessionId);
     mkdirSync(sessionDir, { recursive: true });
@@ -338,13 +416,16 @@ export class DirectorService {
       status: 'starting',
       ...(provider.effort !== undefined ? { effort: settings.effort } : {}),
     };
-    await this.setSession(session);
-    await this.append(
-      'daemon',
-      'event',
-      `director attached: ${settings.vendor}/${settings.model} effort=${settings.effort}`,
-      sessionId,
-    );
+    if (!quiet) {
+      await this.setSession(session);
+      await this.append(
+        'daemon',
+        'event',
+        `director attached: ${settings.vendor}/${settings.model} effort=${settings.effort}`,
+        sessionId,
+      );
+    }
+    let turnEnded = false;
     const handle = startAgentSession({
       store,
       streams,
@@ -364,18 +445,34 @@ export class DirectorService {
       ...(this.options.socketPath !== undefined ? { socketPath: this.options.socketPath } : {}),
       ...(this.options.now !== undefined ? { now: this.options.now } : {}),
       onTurnEnd: (info) => {
-        void this.onTurnEnd(handle, info.queued);
+        void (async () => {
+          if (!turnEnded) {
+            turnEnded = true;
+            // It started: the count resets, and a quiet retry records its session now.
+            this.failedStarts = 0;
+            if (quiet) await this.setSession({ ...session, status: 'running' }).catch(() => {});
+          }
+          await this.onTurnEnd(handle, info.queued);
+        })();
       },
     });
     this.handle = handle;
-    await this.setSessionStatus(session, 'running');
+    if (!quiet) await this.setSessionStatus(session, 'running');
     void handle.exited.then(async (info) => {
       if (this.handle === handle) this.handle = undefined;
-      await this.setSessionStatus(
-        session,
-        'stopped',
-        info.ok ? undefined : `${info.reason}${info.vendorError ? `: ${info.vendorError}` : ''}`,
-      ).catch(() => undefined);
+      const error = `${info.reason}${info.vendorError ? `: ${info.vendorError}` : ''}`;
+      // T329: ended before its first turn did: a failed start, retried with backoff.
+      // (`handle.stopped()` is true once it exited, so it cannot tell a stop from a death.)
+      if (!turnEnded && !this.stopped) {
+        const reported = this.onFailedStart(error, session);
+        // The first try's record says it stopped; a quiet retry's is written only at the cap.
+        if (!quiet) await this.setSessionStatus(session, 'stopped', error).catch(() => undefined);
+        await reported;
+        return;
+      }
+      await this.setSessionStatus(session, 'stopped', info.ok ? undefined : error).catch(
+        () => undefined,
+      );
       // Anything that arrived as the session ended goes to a fresh one.
       if (!this.stopped && this.options.events.pendingFor(DIRECTOR_NODE).length > 0) {
         this.delivery?.notify(DIRECTOR_NODE);
@@ -411,6 +508,8 @@ export class DirectorService {
   async stop(): Promise<void> {
     this.stopped = true;
     if (this.sightTimer !== undefined) clearInterval(this.sightTimer);
+    this.retry?.cancel();
+    this.retry = undefined;
     await this.starting;
     const handle = this.handle;
     if (handle === undefined) return;
