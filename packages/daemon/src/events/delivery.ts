@@ -85,6 +85,41 @@ export function digestPrompt(
   ].join('\n');
 }
 
+/**
+ * T336: the section a woken session's first prompt ends with. The brief
+ * alone showed only the thread's "woken by <type>" line, so the agent had
+ * to ask what arrived; each event comes with its id for `read_event`.
+ */
+export function wakePrompt(
+  events: readonly RoutedEvent[],
+  node: string,
+  titleOf?: (id: string) => string | undefined,
+): string {
+  const tail = events.some((e) => e.type === 'human_line') ? REPLY_FIRST : 'Continue the work.';
+  const shown = events.slice(-DIGEST_MAX);
+  const earlier = events.length - shown.length;
+  return [
+    '## What woke you',
+    '',
+    'This session was started for what arrived below. Quoted text is what its sender wrote; `read_event <id>` returns an event in full.',
+    '',
+    ...(earlier > 0 ? [`- (${earlier} earlier; read_event has them)`] : []),
+    ...shown.map((e) => `- ${e.id} (${e.type}): ${summaryOf(e, node, titleOf)}`),
+    '',
+    tail,
+  ].join('\n');
+}
+
+/** T336: events a woken session's brief carries, claimed so no digest repeats them. */
+export interface WakeDelivery {
+  /** The section appended to the brief (`wakePrompt`). */
+  text: string;
+  /** The brief was accepted: the events are `delivered` to `sessionId`. */
+  delivered(sessionId: string): void;
+  /** The session ended (or never started): unclaimed events go with the next digest or wake. */
+  release(): void;
+}
+
 export class SessionDelivery {
   private readonly timers = new Map<string, ReturnType<typeof setTimeout>>();
   /** Event ids per node in a digest sent but not yet accepted. */
@@ -141,6 +176,50 @@ export class SessionDelivery {
   /** Something is (or is about to be) waiting for this node's session. */
   waiting(node: string): boolean {
     return this.holds.has(node) || this.unsent(node).length > 0;
+  }
+
+  /**
+   * T336: hands `events` to a session about to start, in its brief. Until
+   * `release`, no digest sends them; `delivered` marks them (P10: once the
+   * session accepts the prompt).
+   */
+  inBrief(node: string, events: readonly RoutedEvent[]): WakeDelivery {
+    const ids = events.map((e) => e.id);
+    let sending = this.sending.get(node);
+    if (sending === undefined) {
+      sending = new Set();
+      this.sending.set(node, sending);
+    }
+    for (const id of ids) sending.add(id);
+    const claimed = sending;
+    let released = false;
+    const release = (): void => {
+      if (released) return;
+      released = true;
+      for (const id of ids) claimed.delete(id);
+      // Anything that arrived meanwhile (or went unmarked) goes now.
+      if (this.waiting(node)) this.notify(node);
+    };
+    return {
+      text: wakePrompt(events, node, this.options.titleOf),
+      delivered: (sessionId) => {
+        const events_ = this.options.events;
+        const still = new Set(events_.pendingFor(node).map((p) => p.event.id));
+        void events_
+          .mark(
+            node,
+            ids.filter((id) => still.has(id)),
+            'delivered',
+            { session: sessionId, digest: `D-${ulid()}` },
+          )
+          .then(() => this.options.onDelivered?.(node, sessionId, events))
+          .catch(() => {
+            // Already moved, or the home is gone: still-pending ones go again.
+          })
+          .finally(release);
+      },
+      release,
+    };
   }
 
   /** An idle session gets the digest after `delayMs`; a busy one at turn end. */

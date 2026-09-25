@@ -1252,4 +1252,39 @@ describe('T243: the wake policy (P11)', () => {
     expect(streams.get(node.id).sessions).toHaveLength(0);
     expect(store.readDeliveries(node.id).map((d) => d.status)).toEqual(['pending']);
   }, 60_000);
+
+  test('T336: the woken session is told what woke it, by event id, and can read_event it', async () => {
+    const log = join(scratch, 't336-told.jsonl');
+    const node = await finishedNode(log);
+    // The woken session stays live, so its session can call `read_event`.
+    await attachService.stopAll();
+    attachService = buildAttachService(
+      fakeProviderFor(ACP_PROVIDERS.claude, { ...SPEAKS_THEN_HANGS, logFile: log }),
+      { deliveryDelayMs: 5 },
+    );
+    await attachService.say(node.id, 'use the ledger CSV format');
+    await waitFor(() => streams.get(node.id).sessions.length === 2);
+    await waitFor(() => store.readDeliveries(node.id).at(-1)?.status === 'delivered');
+    const event = store.readDeliveries(node.id).at(-1)?.event as string;
+    const woken = streams.get(node.id).sessions.at(-1)?.id as string;
+    expect(store.readDeliveries(node.id).at(-1)?.session).toBe(woken);
+    await waitFor(() => prompts(log).length === 2);
+    // The brief itself carries the event: its id, its type and the line, quoted as data.
+    const brief = prompts(log)[1] ?? '';
+    expect(brief).toContain('What woke you');
+    expect(brief).toContain(`${event} (human_line)`);
+    expect(brief).toContain('use the ledger CSV format');
+    // ... and no digest repeats it.
+    await Bun.sleep(100);
+    expect(prompts(log)).toHaveLength(2);
+    const reader = new VerbService({
+      store,
+      streams,
+      questions,
+      events: new RoutedEventService(store),
+    });
+    const read = reader.readEvent({ session: woken, id: event });
+    expect(read.id).toBe(event);
+    expect(read.summary).toContain('use the ledger CSV format');
+  }, 30_000);
 });
