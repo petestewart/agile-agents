@@ -78,10 +78,10 @@ export function decidePermission(ctx: DecisionContext): Decision {
       : roleVerdict(ctx.role, classified, policyCtx));
 
   // The pattern rules (§5.2, §5.4), only for a call the role table cleared
-  // (a settled call must not bump stats). The only gate a hook-less vendor
-  // (Cursor, Codex, Grok, §4.3) has.
+  // or held (a settled call must not bump stats; a rule's deny beats a hold,
+  // T343). The only gate a hook-less vendor (Cursor, Codex, Grok, §4.3) has.
   const rulePass =
-    verdict.action === 'allow'
+    verdict.action !== 'deny'
       ? runPatternRules(ctx.patternRules, ruleCheckContext(ctx, classified))
       : undefined;
   const rulesEvaluated =
