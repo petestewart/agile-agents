@@ -57,6 +57,7 @@ import { RepoInPlaceService, StreamService, buildStreamRpcMethods } from './stre
 import { MainSync, OverlapTracker, SymbolWatcher } from './sync';
 import { trackerFromConfig } from './trackers/create';
 import { TrackerLinks } from './trackers/link';
+import { TrackerStatusPush } from './trackers/push';
 import { buildTrackerRpcMethods } from './trackers/rpc';
 import { buildTrackerSettingsRpcMethods } from './trackers/settings';
 
@@ -140,6 +141,8 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
           if (emitRouted) await emitTransitions(emitRouted)(before, after);
           // T283: the node's status card follows its record.
           await cardService?.refresh(after);
+          // T324: Node → tracker (off unless the project turns it on); never blocks the update.
+          void trackerPush?.onUpdated(before, after);
         },
       })
     : undefined;
@@ -565,6 +568,18 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
         })
       : undefined;
   trackerLinks?.start();
+  const trackerPush = store
+    ? new TrackerStatusPush({
+        project: (id) => {
+          try {
+            return store.getProject(id);
+          } catch {
+            return undefined;
+          }
+        },
+        tracker: (system) => trackerFromConfig(system, trackersConfig()),
+      })
+    : undefined;
 
   // T205: "+ Repo" in place (projects-design §7), over the attach service's sessions.
   const repoInPlace =

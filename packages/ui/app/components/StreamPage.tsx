@@ -31,6 +31,7 @@ import {
   approvePlan,
   attachSession,
   closeStream,
+  createNodeIssue,
   getStreamActivity,
   getStreamDiff,
   getStreamPage,
@@ -499,6 +500,18 @@ function TrackerLinkField({
       </label>
       <button type="submit" className="cr-btn" disabled={busy || key.trim() === ''}>
         Link
+      </button>
+      <button
+        type="button"
+        className="cr-btn"
+        data-testid="tracker-create-issue"
+        title="Create an issue from this node (type a project key like SHOP, or leave empty to use the linked parent's)"
+        disabled={busy || /-\d+$/.test(key.trim())}
+        onClick={() =>
+          void act(() => createNodeIssue(stream.id, key.trim() || undefined).then(() => setKey('')))
+        }
+      >
+        Create issue
       </button>
     </form>
   );
