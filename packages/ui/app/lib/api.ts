@@ -230,6 +230,11 @@ export function markStreamLanded(id: string): Promise<unknown> {
   return post(`/api/streams/${encodeURIComponent(id)}/mark-landed`);
 }
 
+/** T340: the Delivery panel's Check now: poll the node's open PR at once. */
+export function checkStreamPr(id: string): Promise<unknown> {
+  return post(`/api/streams/${encodeURIComponent(id)}/pr-check`);
+}
+
 /** T205: + Repo in place (projects-design §7); `switch` moves a work node with nothing committed. */
 export function addRepoToStream(id: string, repo: string, switching = false): Promise<unknown> {
   return post(`/api/streams/${encodeURIComponent(id)}/add-repo`, {
