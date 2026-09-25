@@ -1704,6 +1704,24 @@ agile tail --director
 - T331: sonnet review APPROVE. Caret, double-click and Left/Right toggle; folds in localStorage (try/catch); folded rows show the amber dot; filter opens folds. Merged on phase-7 and forward to 13 (phase-8 conflict in StreamTree.tsx resolved keeping the overlap mark, visibility badge and dot). Double-click also opens the stream — Pete to confirm.
 
 
+### Ticket: T335 Walkthrough cockpit-first from 3.4
+- **Priority:** P1
+- **Status:** Done
+- **Owner:** Unassigned
+- **Scope:** Pete: LIVE-CHECKLIST from 3.4 on uses the cockpit, CLI only where no UI exists.
+- **Acceptance Criteria:** Labels from packages/ui source; non-agent steps clicked through in a real cockpit.
+- **Validation Steps:** Pete's walkthrough.
+- **Notes:** Docs only. Found: the ship check let an untested diff through in 1 of 5 real-classifier runs (4 held at 0.80–0.83).
+
+### Ticket: T338 Names, not ids, and the cockpit gaps from the walkthrough
+- **Priority:** P1
+- **Status:** Todo
+- **Owner:** —
+- **Scope:** (1) Everywhere the user reads text (plan owners, hold/satisfied lines, cards, agent text via briefs), show node/contract/plan titles as links, never raw ids; briefs tell agents to use titles. (2) Parts' questions about shared things go to the coordinator first; approving a plan resolves questions it answers. (3) Cockpit gaps: project/node ids copyable where scopes need them (or a scope picker); Director autonomy picker per project; project tracker / push status / status map controls; Name field on Knowledge → New rule; New project with repos; PR review/check/auto-merge state in the Delivery panel; an event-log view.
+- **Acceptance Criteria:** Tests per item; e2e for the new controls.
+- **Validation Steps:** `bun run test:e2e`.
+- **Notes:** From Pete's walkthrough and T335's gap list. May split.
+
 ### Ticket: T325 Phase 13 QA and Pete's look
 - **Priority:** P0
 - **Status:** Done
