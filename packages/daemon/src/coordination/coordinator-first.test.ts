@@ -147,6 +147,15 @@ describe('coordinator first (T338)', () => {
     ).rejects.toThrow('was not sent to you');
   });
 
+  test('a question passed up to the operator stays open in the inbox when the plan is approved', async () => {
+    const s = await shop();
+    const { id } = await verbs.ask({ session: s.apiAgent, text: 'who owns the contract?' });
+    await verbs.answerChild({ session: s.coordinator, question: id });
+    await plans.approve(s.node.id, 'human');
+    expect(questions.get(id as never).status).toBe('open');
+    expect(inboxIds()).toContain(id);
+  });
+
   test('approving the plan supersedes the parts’ held questions and posts each part its share', async () => {
     const s = await shop();
     const held = await verbs.ask({

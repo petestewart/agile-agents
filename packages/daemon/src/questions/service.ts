@@ -291,12 +291,15 @@ export class QuestionService {
    * T338: approving `parent`'s plan answers the questions its parts sent
    * it first (about the plan, a contract, a sibling): each is `superseded`
    * by the plan version, whose `plan_changed` reaches the part. Questions
-   * that went straight to the operator are left for the operator.
+   * that went straight to the operator, or were passed up to them, are left
+   * for the operator.
    */
   async supersedeByPlan(parent: string, version: number): Promise<Question[]> {
     const by = `plan v${version}`;
     const out: Question[] = [];
-    for (const question of this.listOpen().filter((q) => q.coordinator === parent)) {
+    for (const question of this.listOpen().filter(
+      (q) => q.coordinator === parent && q.passed_up_at === undefined,
+    )) {
       const saved = await this.persist({
         ...question,
         status: 'answered',
