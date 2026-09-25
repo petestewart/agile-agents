@@ -2941,8 +2941,14 @@ describe('conversation tangents (Playwright e2e, T332)', () => {
         await page.locator('[data-testid="branch-start"]').click();
 
         // The tangent opens: a conversation child, its thread starting with the quoted line.
-        await waitForText(page, '[data-testid="thread"]', 'Branched off Why are prices slow?');
-        await waitForText(page, '[data-testid="thread"]', 'TANGENT-SEED is it the cache?');
+        await page
+          .locator('[data-testid="thread-entry"]', { hasText: 'Branched off Why are prices slow?' })
+          .first()
+          .waitFor();
+        await page
+          .locator('[data-testid="thread-entry"]', { hasText: 'TANGENT-SEED is it the cache?' })
+          .first()
+          .waitFor();
         const tangent = cockpit.streams.list().find((s) => s.parent === talk.id);
         expect(tangent?.goal).toBe('Does the cache help?');
         expect(tangent?.title).toBe('Does the cache help?');
@@ -2967,10 +2973,22 @@ describe('conversation tangents (Playwright e2e, T332)', () => {
         await producing.update('daemon', id, { agent: { status: 'done' } });
 
         await page.locator(`[data-testid="stream-tree"] [data-stream="${talk.id}"]`).click();
-        await waitForText(page, '[data-testid="thread"]', 'tangent finished: Does the cache help?');
-        await waitForText(page, '[data-testid="thread"]', 'TANGENT-SUMMARY yes, it halves p95');
+        await page
+          .locator('[data-testid="thread-entry"]', {
+            hasText: 'tangent finished: Does the cache help?',
+          })
+          .first()
+          .waitFor();
+        await page
+          .locator('[data-testid="thread-entry"]', {
+            hasText: 'TANGENT-SUMMARY yes, it halves p95',
+          })
+          .first()
+          .waitFor();
         await page.locator('.cr-tabs [data-tab="activity"]').click();
-        await waitForText(page, '[data-testid="activity"]', 'tangent summary');
+        await page
+          .locator('[data-testid="activity-type"]', { hasText: 'tangent summary' })
+          .waitFor();
       } finally {
         await teardown([page]);
         await cockpit.stop();
