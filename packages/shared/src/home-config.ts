@@ -162,6 +162,58 @@ export function validateGitHubConfig(input: unknown): GitHubConfig {
   return result.data;
 }
 
+/**
+ * T320 (projects-design §14.10, P17/**D31**): Jira and Linear connections
+ * under `trackers:` in `<home>/config.yaml`. `token` is the second written
+ * credential exception after the classifier key: written only through the
+ * store at 0600, never printed, logged, put in an event or sent to the
+ * browser; status surfaces say only whether one is set.
+ */
+export const TRACKER_SYSTEMS = ['jira', 'linear'] as const;
+export const TrackerSystemSchema = z.enum(TRACKER_SYSTEMS);
+export type TrackerSystem = z.infer<typeof TrackerSystemSchema>;
+export const DEFAULT_LINEAR_API_URL = 'https://api.linear.app/graphql';
+export const TRACKER_TOKEN_MAX_CHARS = 1024;
+const TrackerTokenSchema = z.string().trim().min(1).max(TRACKER_TOKEN_MAX_CHARS);
+export const TrackersConfigSchema = z
+  .object({
+    /** Jira Cloud/Server. With `email`, Basic auth (`email:token`); without, a Bearer PAT. */
+    jira: z
+      .object({
+        base_url: z.string().url(),
+        email: z.string().min(1).optional(),
+        token: TrackerTokenSchema.optional(),
+      })
+      .strict()
+      .optional(),
+    linear: z
+      .object({
+        api_url: z.string().url().default(DEFAULT_LINEAR_API_URL),
+        token: TrackerTokenSchema.optional(),
+      })
+      .strict()
+      .optional(),
+  })
+  .strict();
+export type TrackersConfig = z.infer<typeof TrackersConfigSchema>;
+
+export function validateTrackersConfig(input: unknown): TrackersConfig {
+  const result = TrackersConfigSchema.safeParse(input ?? {});
+  // The schema's message could quote a value; never echo a token.
+  if (!result.success) throw new Error('home config: trackers is invalid (values not shown)');
+  return result.data;
+}
+
+/** What `daemon.status` says per tracker: configured (a connection and a token) or not. Never the token. */
+export type TrackerStatus = Record<TrackerSystem, 'configured' | 'not configured'>;
+
+export function trackerStatus(config: TrackersConfig | undefined): TrackerStatus {
+  return {
+    jira: config?.jira?.token ? 'configured' : 'not configured',
+    linear: config?.linear?.token ? 'configured' : 'not configured',
+  };
+}
+
 export const HomeConfigSchema = z
   .object({
     /** HTTP port for the localhost cockpit/API. `0` lets the OS pick. */
@@ -186,6 +238,8 @@ export const HomeConfigSchema = z
     classifier: ClassifierConfigSchema.optional(),
     /** T221: `github.api_url`, defaulted in `discoverConfig`. */
     github: GitHubConfigSchema.optional(),
+    /** T320 (D31): Jira/Linear connections and tokens. */
+    trackers: TrackersConfigSchema.optional(),
     /** T243 (P11): routed-event settings. `wake_budget_per_hour` defaults to 20. */
     events: z
       .object({ wake_budget_per_hour: z.number().int().positive().optional() })

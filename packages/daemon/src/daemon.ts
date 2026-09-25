@@ -5,11 +5,17 @@
  */
 
 import { existsSync } from 'node:fs';
+import { trackerStatus } from '@agile-agents/shared';
 import daemonPackageJson from '../package.json' with { type: 'json' };
 import { AttachService, VerbService, buildAttachRpcMethods } from './attach';
 import { Bus, buildBusRpcMethods } from './bus';
 import { type Classifier, ClassifierKeyService, JevClassifier } from './classifier';
-import { type AgileConfig, type DiscoverConfigOptions, discoverConfig } from './config';
+import {
+  type AgileConfig,
+  type DiscoverConfigOptions,
+  discoverConfig,
+  readHomeConfigFile,
+} from './config';
 import { AutonomyService } from './coordination/autonomy';
 import { CardService } from './coordination/cards';
 import { ContractService } from './coordination/contracts';
@@ -658,6 +664,14 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
       ...(classifierKey ? { classifierStatus: () => classifierKey.status() } : {}),
       // T221 (§18): whether `gh` can supply a token, never the token.
       githubAuth,
+      // T320 (D31): configured or not, read per call; never a token.
+      trackerStatus: () => {
+        try {
+          return trackerStatus(readHomeConfigFile(config.home).trackers);
+        } catch {
+          return trackerStatus(undefined);
+        }
+      },
     });
     await rpc.listening;
   } catch (err) {

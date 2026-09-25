@@ -41,6 +41,7 @@ import {
   type Stream,
   type StreamPrincipal,
   type ThreadEntry,
+  type TrackerSystem,
   UlidSchema,
   assertKnowledgeAcceptable,
   assertKnowledgeWrite,
@@ -538,6 +539,36 @@ export class StateStore {
       } catch {
         // The schema's message could quote the value; never echo a key.
         throw new Error('config.yaml would not validate with this classifier key; nothing written');
+      }
+      writeYamlFileAtomic(path, raw, 0o600);
+      const event = buildEvent('home_config_put', { data: {} });
+      return { result: undefined, event };
+    });
+  }
+
+  /**
+   * T320 (D31): sets (`token`) or removes (`undefined`) `trackers.<system>.token`
+   * in `<home>/config.yaml`, exactly as `setClassifierApiKey` does: raw edit,
+   * strict schema, 0600, and an event with no data.
+   */
+  async setTrackerToken(system: TrackerSystem, token: string | undefined): Promise<void> {
+    await this.mutate(() => {
+      const path = this.abs('config.yaml');
+      const raw = mappingCopy(fileExists(path) ? readYamlFile(path) : {});
+      const trackers = mappingCopy(raw.trackers);
+      const entry = mappingCopy(trackers[system]);
+      if (token === undefined) Reflect.deleteProperty(entry, 'token');
+      else entry.token = token;
+      if (Object.keys(entry).length === 0) Reflect.deleteProperty(trackers, system);
+      else trackers[system] = entry;
+      if (Object.keys(trackers).length === 0) Reflect.deleteProperty(raw, 'trackers');
+      else raw.trackers = trackers;
+      try {
+        validateHomeConfig(raw);
+      } catch {
+        throw new Error(
+          `config.yaml would not validate with this ${system} token; nothing written`,
+        );
       }
       writeYamlFileAtomic(path, raw, 0o600);
       const event = buildEvent('home_config_put', { data: {} });
