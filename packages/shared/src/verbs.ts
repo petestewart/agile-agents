@@ -38,6 +38,7 @@ import {
   PlanWriteFieldsSchema,
 } from './plan';
 import { ProjectIdSchema, ProjectNameSchema } from './project';
+import { QuestionIdSchema } from './question';
 import { RoutedEventIdSchema } from './routed-event';
 import { StreamFindingSeveritySchema, THREAD_BODY_MAX_CHARS } from './stream';
 
@@ -169,6 +170,11 @@ export const NoteChildInputSchema = z
   .object({ session: Session, child: UlidSchema, body: Body })
   .strict();
 
+/** T338: the coordinator answers a part's question, or (no `answer`) passes it to the operator. */
+export const AnswerChildInputSchema = z
+  .object({ session: Session, question: QuestionIdSchema, answer: Body.optional() })
+  .strict();
+
 /**
  * T285 (§9.1, §9.5): a child (optionally co-signed by siblings in `with`)
  * proposes a new body for a contract it relies on. It lands on the
@@ -280,6 +286,7 @@ export const AGENT_VERBS = [
   'add_waits_on',
   'set_owner',
   'note_child',
+  'answer_child',
   'propose_contract',
   'decide_contract',
   'ask_sibling',
@@ -311,6 +318,7 @@ export const AGENT_VERB_SCHEMAS = {
   add_waits_on: AddWaitsOnInputSchema,
   set_owner: SetOwnerInputSchema,
   note_child: NoteChildInputSchema,
+  answer_child: AnswerChildInputSchema,
   propose_contract: ProposeContractInputSchema,
   decide_contract: DecideContractInputSchema,
   ask_sibling: AskSiblingInputSchema,
@@ -352,6 +360,8 @@ export const AGENT_VERB_DESCRIPTIONS: Record<AgentVerb, string> = {
     'Coordinator only: give a child ownership of paths ({child, owns: [globs]}). Gated by your autonomy level.',
   note_child:
     'Coordinator only: send one child a targeted note ({child, body}), e.g. after a sibling merged or collided.',
+  answer_child:
+    'Coordinator only: answer a child’s question that came to you first ({question: Q-id, answer}); leave out `answer` to pass it to the operator.',
   propose_contract:
     'Propose a change to a contract you rely on ({contract, body ≤800, reason, routine?, with?: [sibling ids who agreed]}). Each co-signer in `with` must have answered your latest `ask_sibling` with `agree` naming this contract and this exact body. Your coordinator approves, rejects or asks the operator; you are told which.',
   decide_contract:

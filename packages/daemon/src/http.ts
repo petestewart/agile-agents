@@ -55,6 +55,7 @@ import type { DirectorService } from './director/service';
 import type { DocsService } from './docs';
 import type { RoutedEventService } from './events';
 import {
+  type CockpitFrame,
   type EventTailerHandle,
   buildCockpitFrame,
   buildSnapshot,
@@ -422,6 +423,18 @@ interface FeedContext {
   trackerLinks?: TrackerLinks;
 }
 
+/** The cockpit frame (§9), as `/api/cockpit` and the `/ws` push send it. */
+function cockpitFrame(feed: FeedContext, streams: StreamService): CockpitFrame {
+  return buildCockpitFrame(
+    streams,
+    feed.inbox,
+    feed.projects,
+    feed.store.getRepos(),
+    (id) => feed.store.getCard(id),
+    feed.contracts,
+  );
+}
+
 function resolveFeedContext(options: HttpServerOptions): FeedContext | undefined {
   if (!options.store || !options.gates) return undefined;
   return {
@@ -644,6 +657,7 @@ async function handleDirectorRoute(
  *
  *   GET /api/streams/:id/activity  every event routed to the node: reason, delivery status, session or digest
  *   GET /api/repos/:name/events    every event on the repo
+ *   GET /api/events                T338: the event log, every routed event, newest first
  *   GET /api/repos/:name/knowledge T265: the repo's accepted standards and architecture
  */
 function handleActivityRoute(
@@ -654,6 +668,10 @@ function handleActivityRoute(
   if (req.method !== 'GET') return undefined;
   const node = url.pathname.match(/^\/api\/streams\/([^/]+)\/activity$/);
   const repo = url.pathname.match(/^\/api\/repos\/([^/]+)\/events$/);
+  if (url.pathname === '/api/events') {
+    if (!feed?.events) return errorResponse(503, 'events not available');
+    return jsonResponse({ events: feed.events.recent() });
+  }
   const norms = url.pathname.match(/^\/api\/repos\/([^/]+)\/knowledge$/);
   if (norms) {
     if (!feed?.rules) return errorResponse(503, 'knowledge not available');
@@ -716,7 +734,7 @@ async function handlePlanRoute(
  *
  *   POST /api/proposals/:id/apply|dismiss  the human decides a coordinator's proposal card
  *   POST /api/streams/:id/autonomy         `{autonomy: level|null}`: the node's override
- *   POST /api/projects/:id                 `{autonomy: {coordinator?, director?}}`: the project's levels
+ *   POST /api/projects/:id                 `{autonomy?: {coordinator?, director?}, tracker?: {…} | null}`: the project's levels and (T338) tracker settings
  */
 async function handleAutonomyRoute(
   req: Request,
@@ -751,6 +769,7 @@ async function handleAutonomyRoute(
     return jsonResponse(
       await feed.projects.update(decodeURIComponent(project?.[1] ?? ''), {
         autonomy: body.autonomy,
+        ...(body.tracker !== undefined ? { tracker: body.tracker } : {}),
       }),
     );
   } catch (err) {
@@ -1202,15 +1221,7 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
         // The cockpit frame (§9): the stream tree and the inbox.
         if (url.pathname === '/api/cockpit' && req.method === 'GET') {
           if (!feed?.streams) return errorResponse(503, 'streams not available');
-          return jsonResponse(
-            buildCockpitFrame(
-              feed.streams,
-              feed.inbox,
-              feed.projects,
-              feed.store.getRepos(),
-              (id) => feed.store.getCard(id),
-            ),
-          );
+          return jsonResponse(cockpitFrame(feed, feed.streams));
         }
 
         if (url.pathname === '/api/policy' && req.method === 'GET') {
@@ -1380,17 +1391,7 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
               ),
             );
             if (feed.streams) {
-              ws.send(
-                JSON.stringify(
-                  buildCockpitFrame(
-                    feed.streams,
-                    feed.inbox,
-                    feed.projects,
-                    feed.store.getRepos(),
-                    (id) => feed.store.getCard(id),
-                  ),
-                ),
-              );
+              ws.send(JSON.stringify(cockpitFrame(feed, feed.streams)));
             }
           }
         },
@@ -1413,18 +1414,7 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
         // push the cockpit frame once per batch (§3.3 "push, do not poll").
         if (feed.streams && newEvents.length > 0) {
           try {
-            server.publish(
-              FEED_WS_TOPIC,
-              JSON.stringify(
-                buildCockpitFrame(
-                  feed.streams,
-                  feed.inbox,
-                  feed.projects,
-                  feed.store.getRepos(),
-                  (id) => feed.store.getCard(id),
-                ),
-              ),
-            );
+            server.publish(FEED_WS_TOPIC, JSON.stringify(cockpitFrame(feed, feed.streams)));
           } catch (err) {
             console.error(messageOf(err));
           }

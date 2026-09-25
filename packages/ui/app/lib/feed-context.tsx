@@ -98,3 +98,8 @@ export function useFeed(): FeedContextValue {
   if (!value) throw new Error('useFeed must be used inside a <FeedProvider>');
   return value;
 }
+
+/** T338: the feed, or `undefined` outside a provider (text rendered on its own). */
+export function useOptionalFeed(): FeedContextValue | undefined {
+  return useContext(FeedContext);
+}

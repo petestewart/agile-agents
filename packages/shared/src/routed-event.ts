@@ -126,6 +126,13 @@ export const ROUTED_EVENT_PAYLOADS = {
       .optional(),
   }),
   coordinator_note: z.object({ body: NonEmpty }),
+  /** T338: a part's question about a shared thing, to its coordinator first. */
+  child_question: z.object({
+    child: UlidSchema,
+    title: Str,
+    question: NonEmpty,
+    text: NonEmpty,
+  }),
   plan_changed: z.object({ summary: NonEmpty, paths: Files }),
   external_changed: z.object({ key: NonEmpty, summary: NonEmpty }),
   director_request: z.object({ body: NonEmpty }),

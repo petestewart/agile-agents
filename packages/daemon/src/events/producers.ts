@@ -316,6 +316,8 @@ export function summarize(
       // T302: a daemon notice (a stuck node) is not the operator speaking.
       if (event.by === 'daemon') return String(p.body);
       return `The operator writes to you: ${String(p.body)}. Reply on your thread.`;
+    case 'child_question':
+      return `Child ${String(p.title)} asks you first (${String(p.question)}): ${String(p.text)}. Answer with \`answer_child\` {question, answer}; if only the operator can decide it, \`answer_child\` {question} alone passes it on.`;
     case 'coordinator_note':
       // T286: a daemon notice (a contract decision) is not the coordinator speaking.
       if (event.by === 'daemon') return String(p.body);

@@ -61,6 +61,7 @@ export const ROUTES: Record<RoutedEventType, readonly Rule[]> = {
   sibling_ask: ['sibling', 'parent'],
   sibling_reply: ['sibling', 'parent'],
   coordinator_note: ['self'],
+  child_question: ['parent'],
   plan_changed: ['party'],
   external_changed: ['self'],
   // T300 (P16): the Director is not a node; its queue is `director`.

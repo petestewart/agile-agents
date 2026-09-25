@@ -21,6 +21,7 @@ import type {
   KnowledgeItem as Rule,
   Stream,
   ThreadEntry,
+  TrackerSettings,
 } from '@agile-agents/shared';
 
 /** The project the daemon drives — the header's name, and its path on hover. */
@@ -89,6 +90,15 @@ export interface CockpitFrame {
   overlaps?: CockpitOverlap[];
   /** T283: the child nodes' status cards. Absent from an older daemon. */
   cards?: Array<CockpitStatusCard | CockpitCardError>;
+  /** T338: every contract's title and owning node, so text names contracts, not ids. Absent from an older daemon. */
+  contracts?: CockpitContractRow[];
+}
+
+/** T338: mirror of `feed/snapshot.ts`'s `CockpitContractRow`. */
+export interface CockpitContractRow {
+  id: string;
+  title: string;
+  node: string;
 }
 
 /** T283: a corrupt card file, refused with its path:line. */
@@ -131,6 +141,9 @@ export interface CockpitProjectRow {
     coordinator: 'advise' | 'organise' | 'run';
     director: 'advise' | 'organise' | 'run';
   };
+  /** T338: the project's repos and tracker settings. Absent from an older daemon. */
+  repos?: string[];
+  tracker?: TrackerSettings;
 }
 
 /** T161: mirror of `delivery/service.ts`'s `LandPreflight` — the Land button's "before". */
@@ -194,7 +207,9 @@ export type LandOutcome =
   | { status: 'gated'; gate: HilRequest; line: string }
   | { status: 'refused'; reason: string; line: string }
   | { status: 'blocked'; target: string; conflicts: string[]; line: string }
-  | { status: 'landed'; target: string; sha: string; line: string };
+  | { status: 'landed'; target: string; sha: string; line: string }
+  /** PR mode: the branch was pushed and its PR opened (or updated). A success. */
+  | { status: 'pr_open'; target: string; pr: { number: number; url: string }; line: string };
 
 /** T163: mirror of `rules/report.ts`'s `RuleReportRow` (§5.7). */
 export interface RuleReportRow {

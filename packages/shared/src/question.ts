@@ -78,6 +78,15 @@ export const QuestionSchema = z
     text: QuestionTextSchema,
     /** Answer options the raiser offered (an agent at a fork), if any. */
     options: z.array(z.string().min(1)).min(1).optional(),
+    /**
+     * T338: a part's question about a shared thing (a sibling, a contract,
+     * the plan) goes to its coordinator first: this is that parent node. It
+     * stays out of the operator's inbox while the coordinator is live and
+     * has not passed it up (`passed_up_at`); approving the parent's plan
+     * supersedes it.
+     */
+    coordinator: UlidSchema.optional(),
+    passed_up_at: z.string().datetime().optional(),
     status: QuestionStatusSchema,
     /** ISO-8601, mirrors `HilRequest.requested_at`. */
     raised_at: z.string().datetime(),

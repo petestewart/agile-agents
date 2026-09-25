@@ -12,6 +12,7 @@ import {
   MESSAGE_BODY_MAX_CHARS,
   type Question,
   type QuestionId,
+  type Stream,
   ulid,
   validateQuestion,
 } from '@agile-agents/shared';
@@ -26,6 +27,19 @@ export const QUESTIONS_DIR = 'questions';
 
 function questionPath(id: QuestionId): string {
   return `${QUESTIONS_DIR}/${id}.yaml`;
+}
+
+/**
+ * T338: a part's question is with its coordinator (not the operator's
+ * inbox) until the coordinator passes it up, or has no live session to
+ * answer it — so a question can never be stranded behind a stopped agent.
+ */
+export function withCoordinator(question: Question, coordinator: Stream | undefined): boolean {
+  return (
+    question.coordinator !== undefined &&
+    question.passed_up_at === undefined &&
+    coordinator?.sessions.some((s) => LIVE_SESSION_STATUSES.includes(s.status)) === true
+  );
 }
 
 function newQuestionId(): QuestionId {
@@ -67,6 +81,8 @@ export interface RaiseQuestionInput {
   session?: string;
   text: string;
   options?: string[];
+  /** T338: the part's coordinator, when the question goes there first. */
+  coordinator?: string;
 }
 
 export interface AnswerQuestionInput {
@@ -124,6 +140,7 @@ export class QuestionService {
       ...(input.options !== undefined && input.options.length > 0
         ? { options: input.options }
         : {}),
+      ...(input.coordinator !== undefined ? { coordinator: input.coordinator } : {}),
       status: 'open',
       raised_at: this.clock().toISOString(),
     };
@@ -151,7 +168,8 @@ export class QuestionService {
 
     await this.streams.update('daemon', saved.stream, {
       agent: { status: 'question' },
-      human: { status: 'waiting_on_you' },
+      // T338: with the coordinator first, it is not waiting on you yet.
+      human: { status: saved.coordinator !== undefined ? 'open' : 'waiting_on_you' },
     });
 
     await this.store.appendEvent(
@@ -185,9 +203,13 @@ export class QuestionService {
       answered_at: now.toISOString(),
     });
 
-    await this.streams.appendThread('human', saved.stream, {
+    // T338: a coordinator's answer (`agent:<session>`) is not the operator's.
+    const byAgent = input.by.startsWith('agent:');
+    await this.streams.appendThread(byAgent ? 'daemon' : 'human', saved.stream, {
       kind: 'answer',
-      body: answer,
+      body: byAgent
+        ? `Your coordinator answers: ${answer}`.slice(0, MESSAGE_BODY_MAX_CHARS)
+        : answer,
       ref: questionPath(saved.id),
     });
     // Back to `working` only if a live session exists; otherwise `idle`
@@ -249,6 +271,59 @@ export class QuestionService {
       superseded.push(saved);
     }
     return superseded;
+  }
+
+  /** T338: the coordinator passes a part's question on: it enters the operator's inbox. */
+  async passUp(id: QuestionId): Promise<Question> {
+    const current = this.get(id);
+    if (current.status !== 'open') throw new QuestionAlreadyAnsweredError(id);
+    const saved = await this.persist({ ...current, passed_up_at: this.clock().toISOString() });
+    await this.streams.appendThread('daemon', saved.stream, {
+      kind: 'event',
+      body: 'your coordinator passed this question to the operator',
+      ref: questionPath(saved.id),
+    });
+    await this.streams.update('daemon', saved.stream, { human: { status: 'waiting_on_you' } });
+    return saved;
+  }
+
+  /**
+   * T338: approving `parent`'s plan answers the questions its parts sent
+   * it first (about the plan, a contract, a sibling): each is `superseded`
+   * by the plan version, whose `plan_changed` reaches the part. Questions
+   * that went straight to the operator, or were passed up to them, are left
+   * for the operator.
+   */
+  async supersedeByPlan(parent: string, version: number): Promise<Question[]> {
+    const by = `plan v${version}`;
+    const out: Question[] = [];
+    for (const question of this.listOpen().filter(
+      (q) => q.coordinator === parent && q.passed_up_at === undefined,
+    )) {
+      const saved = await this.persist({
+        ...question,
+        status: 'answered',
+        answer: `superseded by the approved ${by}`,
+        resolved_as: 'superseded',
+        answered_by: 'daemon',
+        answered_at: this.clock().toISOString(),
+      });
+      await this.streams.appendThread('daemon', saved.stream, {
+        kind: 'event',
+        body: `question superseded by the approved ${by}; your part of it is in your brief`,
+        ref: questionPath(saved.id),
+      });
+      await this.store.appendEvent(
+        buildEvent('question_answered', {
+          stream: saved.stream,
+          agent: 'daemon',
+          ...(saved.session !== undefined ? { session: saved.session } : {}),
+          data: { id: saved.id, superseded_by: by },
+        }),
+      );
+      out.push(saved);
+    }
+    return out;
   }
 
   /**

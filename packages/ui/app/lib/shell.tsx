@@ -19,6 +19,7 @@ export type ShellView =
   | 'deps'
   | 'rules'
   | 'director'
+  | 'events'
   | 'settings'
   | 'stream';
 /** The views a `?view=` deep link may name; `stream` needs an id, so it is not one. */
@@ -29,6 +30,7 @@ export const SHELL_VIEWS: readonly ShellView[] = [
   'deps',
   'rules',
   'director',
+  'events',
   'settings',
 ];
 
@@ -107,6 +109,11 @@ export function useShell(): ShellValue {
   const value = useContext(ShellContext);
   if (!value) throw new Error('useShell must be used inside a <ShellProvider>');
   return value;
+}
+
+/** T338: the shell, or `undefined` outside a provider (text rendered on its own). */
+export function useOptionalShell(): ShellValue | undefined {
+  return useContext(ShellContext);
 }
 
 /**

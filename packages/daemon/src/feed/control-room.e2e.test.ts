@@ -1928,6 +1928,95 @@ describe('nothing to deliver (Playwright e2e, T231)', () => {
   );
 });
 
+describe('delivery result tone and PR state (Playwright e2e, T338)', () => {
+  browserTest(
+    'a pushed PR reads as success with a clickable URL; an open PR shows review, checks and auto-merge',
+    async () => {
+      const cockpit = await startStreamCockpit([]);
+      let page: Page | undefined;
+      try {
+        const stream = await cockpit.streams.create('human', {
+          title: 'pr node',
+          goal: 'g',
+          repo: 'demo',
+        });
+        const url = 'https://github.com/o/demo/pull/2';
+        await cockpit.streams.update('daemon', stream.id, {
+          branch: 's-pr',
+          delivery_state: {
+            mode: 'pr',
+            status: 'pr_open',
+            at: new Date().toISOString(),
+            pr: {
+              number: 2,
+              url,
+              head: 'abc',
+              base: 'main',
+              state: 'open',
+              draft: false,
+              review: 'review_requested',
+              checks: 'pending',
+              mergeable: 'clean',
+              auto_merge: 'enabled',
+              last_seen: {},
+              polled_at: new Date().toISOString(),
+            },
+          },
+        });
+        // T340: with the PR open there is no Merge; the push result is pinned on a node
+        // before its first deliver.
+        const fresh = await cockpit.streams.create('human', {
+          title: 'pushing node',
+          goal: 'g',
+          repo: 'demo',
+        });
+        await cockpit.streams.update('daemon', fresh.id, { branch: 's-fresh' });
+        page = await openPage();
+        // The land call itself is the daemon's (T224); this pins how its PR outcome reads.
+        await page.route(`**/api/streams/${fresh.id}/land`, (route) =>
+          route.fulfill({
+            status: 200,
+            contentType: 'application/json',
+            body: JSON.stringify({
+              status: 'pr_open',
+              target: 'main',
+              pr: { number: 2, url },
+              line: `pushed s-pr, opened PR #2 into main: ${url}`,
+            }),
+          }),
+        );
+        await page.goto(`${cockpit.base}/`);
+        await page.locator(`[data-testid="stream-tree"] [data-stream="${stream.id}"]`).click();
+        await page
+          .locator('[data-testid="delivery-pr"]', { hasText: 'review review requested' })
+          .waitFor();
+        const prLine = (await page.locator('[data-testid="delivery-pr"]').textContent()) ?? '';
+        expect(prLine).toContain('checks pending');
+        expect(prLine).toContain('auto-merge enabled');
+        expect(await page.locator('[data-testid="delivery-pr-link"]').getAttribute('href')).toBe(
+          url,
+        );
+
+        expect(await page.locator('[data-testid="stream-land"]').count()).toBe(0);
+
+        await page.locator(`[data-testid="stream-tree"] [data-stream="${fresh.id}"]`).click();
+        await page.locator('[data-testid="stream-land"]').click();
+        await waitForAttr(page, '[data-testid="land-result"]', 'data-status', 'pr_open');
+        const result = page.locator('[data-testid="land-result"]');
+        expect(await result.getAttribute('class')).toContain('ok');
+        expect(await result.getAttribute('class')).not.toContain('bad');
+        const link = result.locator(`a[href="${url}"]`);
+        expect(await link.getAttribute('target')).toBe('_blank');
+        expect(await link.getAttribute('rel')).toBe('noopener noreferrer');
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+});
+
 describe('parents and land conflicts (Playwright e2e, T176)', () => {
   browserTest(
     'attach on a parent starts straight away; a conflicted land shows the files, not "Ready"; Resolve then re-land',
@@ -2470,6 +2559,112 @@ describe('repo delivery settings (Playwright e2e, T222)', () => {
 });
 
 // ---- T208: the project tree and switcher -----------------------------------
+
+describe('cockpit gaps (Playwright e2e, T338)', () => {
+  browserTest(
+    'New project with repos; Director autonomy and tracker on the root; New rule with a name and a picked scope; the event log',
+    async () => {
+      const cockpit = await startCockpit();
+      const repo = mkdtempSync(join(tmpdir(), 'agile-gaps-e2e-'));
+      let page: Page | undefined;
+      try {
+        git(['init', '-q', '-b', 'main'], repo);
+        await cockpit.store.addRepo('api', { path: repo });
+        page = await openPage();
+        await page.goto(`${cockpit.base}/`);
+
+        // New project, with its repos ticked.
+        await page.locator('[data-testid="new-project-open"]').click();
+        await page.locator('[data-testid="new-project-name"]').fill('shop');
+        await page.locator('[data-testid="new-project-repo"][data-repo="api"]').check();
+        await page.locator('[data-testid="new-project-create"]').click();
+        await waitUntil('the project to exist', () => cockpit.projects.list().length === 1);
+        const shop = cockpit.projects.list()[0];
+        if (!shop) throw new Error('shop missing');
+        expect(shop.repos).toEqual(['api']);
+
+        // The root's page: Director autonomy, and the project's tracker block.
+        await page.locator(`[data-testid="stream-tree"] [data-stream="${shop.root}"]`).click();
+        await page.locator('[data-testid="project-controls"]').waitFor({ state: 'visible' });
+        expect(await page.locator('[data-testid="project-repos"]').textContent()).toBe(
+          'Repos: api',
+        );
+        await page.locator('[data-testid="director-autonomy-select"]').selectOption('organise');
+        await waitUntil(
+          'the Director level to be set',
+          () => cockpit.projects.get(shop.id).autonomy.director === 'organise',
+        );
+        expect(cockpit.projects.get(shop.id).autonomy.coordinator).toBe('advise');
+        await page.locator('[data-testid="project-tracker-system"]').selectOption('linear');
+        await page.locator('[data-testid="project-tracker-push"]').check();
+        await page.locator('[data-testid="project-tracker-map-done"]').fill('Shipped');
+        await page.locator('[data-testid="project-tracker-save"]').click();
+        await waitUntil(
+          'the tracker to be set',
+          () => cockpit.projects.get(shop.id).tracker !== undefined,
+        );
+        expect(cockpit.projects.get(shop.id).tracker).toEqual({
+          system: 'linear',
+          push_status: true,
+          status_map: { done: 'Shipped' },
+        });
+        // Cross-origin writes are refused.
+        const cross = await fetch(`${cockpit.base}/api/projects/${shop.id}`, {
+          method: 'POST',
+          headers: { origin: 'http://evil.example', 'content-type': 'application/json' },
+          body: JSON.stringify({ tracker: null }),
+        });
+        expect(cross.status).toBe(403);
+
+        // Knowledge → New rule: a Name, and the scope picked by name (no ids typed).
+        await page.locator('[data-view="rules"]').click();
+        await page.locator('[data-testid="rules-new"]').click();
+        const form = '[data-testid="rules-new-form"]';
+        await page.locator(`${form} [data-testid="rules-edit-name"]`).fill('money-in-cents');
+        await page.locator(`${form} [data-testid="rules-edit-text"]`).fill('store money in cents');
+        const scope = page.locator(`${form} [data-testid="rules-edit-scope"]`);
+        expect(await scope.locator('option').allTextContents()).toContain('Project: shop');
+        await scope.selectOption({ label: 'Project: shop' });
+        await page.locator(`${form} [data-testid="rules-edit-save"]`).click();
+        await page.locator(form).waitFor({ state: 'detached' });
+        await waitUntil('the item to be stored', () =>
+          cockpit.store.listKnowledge().some((r) => r.name === 'money-in-cents'),
+        );
+        const item = cockpit.store.listKnowledge().find((r) => r.name === 'money-in-cents');
+        expect(item?.scope).toEqual({ kind: 'project', project: shop.id });
+        // The list names the scope's project, not its id.
+        await waitForText(
+          page,
+          `[data-testid="rules-row"][data-rule="${item?.id}"] [data-testid="rules-scope"]`,
+          'project:shop',
+        );
+
+        // The event log: every routed event, subjects by title.
+        const node = await cockpit.streams.create('human', {
+          title: 'checkout',
+          goal: 'g',
+          project: shop.id,
+        });
+        const event = await routeAndEmit(
+          cockpit.events,
+          { type: 'human_line', subject: node.id, by: 'human', payload: { body: 'hi' } },
+          cockpit.streams.list(),
+        );
+        await page.locator('[data-view="events"]').click();
+        const row = `[data-testid="event-log"] [data-event="${event.id}"]`;
+        await page.locator(row).waitFor({ state: 'visible' });
+        const text = (await page.locator(row).textContent()) ?? '';
+        expect(text).toContain('human line · checkout');
+        expect(text).not.toContain(node.id);
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+        rmSync(repo, { recursive: true, force: true });
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+});
 
 describe('project tree and switcher (Playwright e2e, T208)', () => {
   browserTest(
@@ -3349,6 +3544,42 @@ describe('plan approval (Playwright e2e, T281)', () => {
         expect(await page.locator(`[data-contract="${contract.id}"]`).textContent()).toContain(
           'saleCents',
         );
+        // T338: labelled parts: an Owners heading listing parts by title, each contract under "Contract".
+        const planText = (await page.locator('[data-testid="plan"]').textContent()) ?? '';
+        expect(planText).toContain('Owners');
+        expect(planText).not.toContain(api.id);
+        const owner = `[data-testid="plan-owner"][data-child="${api.id}"]`;
+        expect(await page.locator(`${owner} a[data-node="${api.id}"]`).textContent()).toBe(
+          'api: add salePrice',
+        );
+        expect(await page.locator(`${owner} [data-testid="plan-owner-paths"]`).textContent()).toBe(
+          'prices.ts',
+        );
+        const c = `[data-contract="${contract.id}"]`;
+        expect(await page.locator(`${c} h3`).textContent()).toContain('Contract: GET /price/:id');
+        expect(await page.locator(`${c} [data-testid="contract-parties"]`).textContent()).toBe(
+          'Parties: api: add salePrice, web: show salePrice',
+        );
+        await page.locator(`${c} a[data-node="${web.id}"]`).click();
+        await waitForText(page, '[data-testid="stream-title"]', 'web: show salePrice');
+
+        // T338 (render-time names): an id in thread text reads as the node's title and opens it;
+        // a contract id reads as its title; a URL is a new-tab link. The stored line keeps the ids.
+        await cockpit.streams.appendThread('daemon', web.id, {
+          kind: 'event',
+          body: `waits on ${api.id}; relies on ${contract.id}; see https://example.com/pr/2`,
+        });
+        const line = '[data-testid="thread"] [data-testid="thread-entry"]:last-child';
+        await waitForText(page, `${line} a[data-node="${api.id}"]`, 'api: add salePrice');
+        expect(await page.locator(`${line} a[data-node="${node.id}"]`).textContent()).toBe(
+          'GET /price/:id',
+        );
+        expect(
+          await page.locator(`${line} a[href="https://example.com/pr/2"]`).getAttribute('rel'),
+        ).toBe('noopener noreferrer');
+        expect(await page.locator(line).textContent()).not.toContain(api.id);
+        await page.locator(`${line} a[data-node="${api.id}"]`).click();
+        await waitForText(page, '[data-testid="stream-title"]', 'api: add salePrice');
       } finally {
         await teardown([page]);
         await cockpit.stop();
