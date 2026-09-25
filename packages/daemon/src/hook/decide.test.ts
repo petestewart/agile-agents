@@ -392,6 +392,7 @@ describe('T336: a coordinator reads other repos with realistic Bash', () => {
       `cd ${ledger} && ls -la && git status`,
       `cd ${dir} && echo draft > notes.md`,
       `cd ${ledger} && cat README.md src/a.ts`,
+      `git -C ${ledger} log -O${ledger}/order.txt --since=2.weeks`,
     ]) {
       expect([command, bash(command).decision]).toEqual([command, 'allow']);
     }
@@ -410,6 +411,12 @@ describe('T336: a coordinator reads other repos with realistic Bash', () => {
       'cd $HOME && ls',
       // T305's read scope follows the cd: a relative path resolves from it.
       `cd ${ledger} && cat ../../../../etc/passwd`,
+      // Review B4: a flag's attached value is the path, not a relative token.
+      `git -C ${ledger} log -O${home}/config.yaml`,
+      `git -C ${ledger} log --orderfile=${home}/config.yaml`,
+      `git -C ${ledger} log -O ${home}/config.yaml`,
+      `cd ${ledger} && git log -O../../.agile/config.yaml`,
+      'git log -O../../config.yaml',
       `cd ${ledger}/.. && cat shop-private/secret.ts`,
       `git -C ${shop} log --oneline -5`,
     ]) {
