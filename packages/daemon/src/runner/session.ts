@@ -103,6 +103,8 @@ export interface AgentSessionOptions {
   /** `AGILE_SOCKET_PATH` for the hook and MCP bridge (a worktree cwd would resolve the wrong root). */
   socketPath?: string;
   provider?: AcpProviderConfig;
+  /** T305 (P20): the ACP read scope (`readRoots`/`hiddenRoots`), for the Director's session. */
+  readScope?: { readRoots: readonly string[]; hiddenRoots: readonly string[] };
   /** Test seam: a fake `spawnSession`. */
   spawn?: typeof defaultSpawnSession;
   now?: () => Date;
@@ -374,6 +376,7 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
     agent: sessionId as AgentId,
     worktreePath,
     session: spawned,
+    ...(opts.readScope ?? {}),
     // The same rules the hook tier enforces, bound to this stream: the
     // only tier a vendor without a pre-tool-use hook has.
     ...(opts.rules !== undefined && streamId !== undefined

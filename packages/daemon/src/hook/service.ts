@@ -40,6 +40,7 @@ import { type RuleStatsOutcome, knowledgeMatchesPaths } from '../knowledge/servi
 import { isPathInside } from '../permissions/command';
 import { worktreeBranchLookups } from '../permissions/push-detector';
 import { patternRulesOf, protectedBranchesFor, touchedPaths } from '../permissions/rule-checks';
+import { directorReadScope } from '../permissions/visibility';
 import { NotFoundError, type StateStore, buildEvent } from '../store';
 import {
   type ClassifierTierOutcome,
@@ -486,8 +487,7 @@ export class HookService {
       inbox: [],
       limits: this.limits,
       fileSize: this.fileSize,
-      readRoots: [],
-      hiddenRoots: [],
+      ...directorReadScope(() => this.store.getRepos(), this.options.agileHome),
     };
     // The Claude web tools have no ACP kind, so the role table never sees them.
     let decision: HookDecision = DIRECTOR_NETWORK_TOOLS.has(payload.tool_name ?? '')

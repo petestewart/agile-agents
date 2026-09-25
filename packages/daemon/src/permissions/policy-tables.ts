@@ -493,6 +493,27 @@ function coordinatorRedirectVerdict(tokens: string[], ctx: PolicyContext): Polic
   return ALLOW;
 }
 
+/** T305: a read scope is set (the Director's, or the hook's T213 one). */
+function hasReadScope(ctx: PolicyContext): boolean {
+  return ctx.readRoots !== undefined || ctx.hiddenRoots !== undefined;
+}
+
+/**
+ * T305 (P20): under a read scope, every path-like argument of a coordinator's
+ * command must be readable (`readDenyReason`); an unresolvable one denies.
+ */
+function coordinatorScopedReads(tokens: string[], ctx: PolicyContext): PolicyVerdict {
+  if (!hasReadScope(ctx)) return ALLOW;
+  for (const raw of tokens.slice(1)) {
+    if (!(raw.includes('/') || raw.startsWith('.') || raw.startsWith('~'))) continue;
+    const resolved = cmd.resolveTargetPath(raw);
+    if (!resolved.safe) return deny(`coordinator role cannot resolve the path "${raw}"`);
+    const reason = readDenyReason(resolved.path, ctx);
+    if (reason !== undefined) return deny(reason);
+  }
+  return ALLOW;
+}
+
 /** The reviewer's read-only tools, plus the two a scratch-dir redirect needs. */
 const COORDINATOR_WRITE_TOOLS = new Set(['echo', 'printf']);
 
@@ -500,6 +521,8 @@ function coordinatorExecuteVerdict(command: string, ctx: PolicyContext): PolicyV
   for (const atom of cmd.parseCommandIntoAtoms(command)) {
     const redirect = coordinatorRedirectVerdict(atom.tokens, ctx);
     if (redirect.action !== 'allow') return redirect;
+    const reads = coordinatorScopedReads(atom.tokens, ctx);
+    if (reads.action !== 'allow') return reads;
     const args = cmd.gitArgs(atom.tokens);
     if (args !== undefined && REVIEWER_READ_ONLY_GIT_SUBCOMMANDS.has(args[0] ?? '')) continue;
     if (isReviewerSafeTool(atom.tokens)) continue;
@@ -514,8 +537,14 @@ function coordinatorExecuteVerdict(command: string, ctx: PolicyContext): PolicyV
 /** P20 (T280): reads as visibility allows, writes only inside the session dir, no network. */
 function coordinatorVerdict(classified: PermissionRequest, ctx: PolicyContext): PolicyVerdict {
   switch (classified.toolClass) {
-    case 'read':
+    case 'read': {
+      if (!hasReadScope(ctx)) return ALLOW;
+      for (const path of allTargetPaths(classified)) {
+        const reason = readDenyReason(path, ctx);
+        if (reason !== undefined) return deny(reason);
+      }
       return ALLOW;
+    }
     case 'edit': {
       const paths = allTargetPaths(classified);
       if (paths.length === 0) {

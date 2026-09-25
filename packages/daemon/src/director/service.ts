@@ -42,6 +42,7 @@ import type { DeliveryTarget, SessionDelivery } from '../events/delivery';
 import { routeAndEmit } from '../events/router';
 import type { RoutedEventService } from '../events/service';
 import { WakeBudget } from '../events/wake';
+import { directorReadScope } from '../permissions/visibility';
 import type { CliInvocation } from '../runner/cli-bin';
 import { type AgentSessionHandle, startAgentSession } from '../runner/session';
 import type { StateStore } from '../store';
@@ -349,6 +350,7 @@ export class DirectorService {
       session,
       role: 'coordinator',
       worktreePath: sessionDir,
+      readScope: directorReadScope(() => store.getRepos(), home),
       brief,
       sessionDir,
       provider,
