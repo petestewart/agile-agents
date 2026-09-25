@@ -46,6 +46,8 @@ export class TrackerLinks {
   private readonly due = new Map<string, number>();
   private timer: ReturnType<typeof setInterval> | undefined;
   private running: Promise<void> | undefined;
+  /** T323: one import at a time per parent node, so two clicks can't both create a child. */
+  private readonly imports = new Map<string, Promise<unknown>>();
 
   constructor(private readonly options: TrackerLinksOptions) {
     this.now = options.now ?? (() => new Date());
@@ -107,6 +109,71 @@ export class TrackerLinks {
     });
     this.due.set(id, this.now().getTime() + TRACKER_POLL_MS);
     return updated;
+  }
+
+  /**
+   * T323: one linked child per issue in the node's epic. Idempotent: an
+   * issue already linked on any node of the project (or, with no project,
+   * on a child of this node) is skipped. Children are plain nodes from the
+   * normal create path; nothing is started.
+   */
+  importChildren(id: string): Promise<{ created: Stream[]; skipped: string[] }> {
+    const prior = this.imports.get(id) ?? Promise.resolve();
+    const run = prior.then(() => this.importChildrenOnce(id));
+    const settled = run.catch(() => undefined);
+    this.imports.set(id, settled);
+    void settled.then(() => {
+      if (this.imports.get(id) === settled) this.imports.delete(id);
+    });
+    return run;
+  }
+
+  private async importChildrenOnce(id: string): Promise<{ created: Stream[]; skipped: string[] }> {
+    const parent = this.options.streams.get(id);
+    const link = parent.external_link;
+    if (link === undefined) {
+      throw new TrackerError(`node ${id} is not linked to an epic: link it first`, 'validation');
+    }
+    const issues = await this.options.tracker(link.system).listEpicChildren(link.key);
+    const linked = new Set(
+      this.options.streams
+        .list({ include_archived: true })
+        .filter((s) =>
+          parent.project !== undefined ? s.project === parent.project : s.parent === id,
+        )
+        .flatMap((s) =>
+          s.external_link?.system === link.system ? [s.external_link.key.toUpperCase()] : [],
+        ),
+    );
+    const created: Stream[] = [];
+    const skipped: string[] = [];
+    for (const issue of issues) {
+      const key = issue.key.toUpperCase();
+      if (linked.has(key)) {
+        skipped.push(issue.key);
+        continue;
+      }
+      linked.add(key);
+      const child = await this.options.streams.create('human', {
+        title: titleFrom(issue),
+        goal: goalFrom(link.system, issue),
+        parent: id,
+      });
+      const withLink = await this.options.streams.update('human', child.id, {
+        external_link: linkFrom(link.system, issue, this.now()),
+      });
+      await this.options.streams.appendThread('human', child.id, {
+        kind: 'event',
+        body: `imported from ${link.key}: linked to ${issue.key} (${link.system})`,
+      });
+      this.due.set(child.id, this.now().getTime() + TRACKER_POLL_MS);
+      created.push(withLink);
+    }
+    await this.options.streams.appendThread('human', id, {
+      kind: 'event',
+      body: `imported ${created.length} child issue(s) from ${link.key}; ${skipped.length} already linked`,
+    });
+    return { created, skipped };
   }
 
   /**
@@ -255,6 +322,12 @@ function linkFrom(
       at: at.toISOString(),
     },
   };
+}
+
+/** A node title from the issue title: one line, capped. */
+function titleFrom(issue: TrackerIssue): string {
+  const t = issue.title.replace(/\s+/g, ' ').trim() || issue.key;
+  return t.length > 120 ? `${t.slice(0, 119)}…` : t;
 }
 
 /** The goal: the issue's title and text, framed as the issue's own words. */

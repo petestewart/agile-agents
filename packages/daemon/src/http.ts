@@ -766,13 +766,16 @@ async function handleLinkRoute(
   feed: FeedContext | undefined,
   sameOrigin: () => boolean,
 ): Promise<Response | undefined> {
-  const m = url.pathname.match(/^\/api\/streams\/([^/]+)\/(link|issue)$/);
+  const m = url.pathname.match(/^\/api\/streams\/([^/]+)\/(link|issue|import-children)$/);
   if (!m || req.method !== 'POST') return undefined;
   if (!sameOrigin()) return errorResponse(403, 'cross-origin request rejected');
   if (!feed?.trackerLinks) return errorResponse(503, 'tracker links not available');
   const id = UlidSchema.safeParse(decodeURIComponent(m[1] ?? ''));
   if (!id.success) return errorResponse(400, `invalid stream id: ${m[1]}`);
   try {
+    // T323: `POST /api/streams/:id/import-children` creates one linked child per epic issue.
+    if (m[2] === 'import-children')
+      return jsonResponse(await feed.trackerLinks.importChildren(id.data));
     const body = await readJsonBody(req);
     if (m[2] === 'issue') {
       // T324: "Create issue", a human click only (no RPC, so no agent path).

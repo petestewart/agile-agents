@@ -189,6 +189,11 @@ export function linkNode(id: string, key: string | null): Promise<unknown> {
   return post(`/api/streams/${encodeURIComponent(id)}/link`, { key });
 }
 
+/** T323: one linked child per issue in the node's epic; already-linked issues are skipped. */
+export function importChildren(id: string): Promise<unknown> {
+  return post(`/api/streams/${encodeURIComponent(id)}/import-children`);
+}
+
 /** T324: "Create issue" for an unlinked node; `project` defaults to the nearest linked ancestor's. */
 export function createNodeIssue(id: string, project?: string): Promise<unknown> {
   return post(`/api/streams/${encodeURIComponent(id)}/issue`, project ? { project } : {});

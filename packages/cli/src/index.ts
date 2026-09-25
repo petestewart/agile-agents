@@ -49,6 +49,7 @@ import {
   runStreamAddRepo,
   runStreamArchive,
   runStreamClose,
+  runStreamImportChildren,
   runStreamLink,
   runStreamList,
   runStreamNew,
@@ -95,6 +96,7 @@ function usage(): string {
     '  node switch-repo <id> <repo>  move a work node with nothing committed to another repo',
     '  node wait <id> --on <id>… [--remove]  hold delivery until each --on node is merged',
     '  node link <id> <KEY> [--system jira|linear] | --remove  link a tracker issue; its text becomes the goal',
+    '  node import-children <id>        one linked child per issue in the linked epic (idempotent)',
     '  node set <id> --autonomy advise|organise|run|inherit  this node\u2019s coordinator autonomy',
     '  stream …                   alias of `node`',
     '  knowledge list [--status proposed|accepted|retired] [--scope global|repo:<n>|project:<id>|subtree:<id>]',
@@ -322,6 +324,9 @@ export async function runCli(argv: string[], cwd: string = process.cwd()): Promi
         if (sub === 'say') return await runStreamSay(socketPath, parseArgs(restArgv), json);
         if (sub === 'wait') return await runStreamWait(socketPath, parseArgs(restArgv), json);
         if (sub === 'link') return await runStreamLink(socketPath, parseArgs(restArgv), json);
+        if (sub === 'import-children') {
+          return await runStreamImportChildren(socketPath, parseArgs(restArgv), json);
+        }
         if (sub === 'set') {
           return await runStreamSetAutonomy(socketPath, parseArgs(restArgv), json);
         }
