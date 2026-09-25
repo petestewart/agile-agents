@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import {
   DEFAULT_CLASSIFIER_ALLOW_BELOW,
   DEFAULT_CLASSIFIER_DENY_AT,
+  type Event,
   type Policy,
   type Rule,
   type SessionDefaultsStatus,
@@ -675,6 +676,63 @@ describe('T160 cockpit routes', () => {
       expect(pushed?.streams.find((s) => s.id === stream.id)?.human_status).toBe('waiting_on_you');
     } finally {
       ws.close();
+    }
+  });
+
+  test('/ws delivers an event exactly once when it lands between tailer polls and the connect snapshot', async () => {
+    // A slow poll so the event is on disk (and in a naive snapshot) before the
+    // tailer's next poll publishes it to the now-subscribed socket.
+    const slow = startHttpServer({
+      port: 0,
+      version: '0.0.0-test',
+      stateRoot,
+      startedAt: Date.now(),
+      store,
+      gates: new GateService(store),
+      feedPollIntervalMs: 400,
+    });
+    const agentId = '01ARZ3NDEKTSV4RRFFQ69GE902';
+    const seen: string[] = [];
+    let snapshots = 0;
+    await store.putAgent(agentId, {
+      vendor: 'claude',
+      model: 'claude-sonnet-4-5',
+      last_seen: new Date().toISOString(),
+    });
+    const ws = new WebSocket(`ws://127.0.0.1:${slow.port}/ws`);
+    ws.onmessage = (event) => {
+      const frame = JSON.parse(event.data as string) as {
+        type: string;
+        events?: Event[];
+        event?: Event;
+      };
+      if (frame.type === 'snapshot') {
+        snapshots++;
+        for (const e of frame.events ?? []) if (e.agent === agentId) seen.push(e.kind);
+      } else if (frame.type === 'event' && frame.event?.agent === agentId) {
+        seen.push(frame.event.kind);
+      }
+    };
+    try {
+      const deadline = Date.now() + 5000;
+      while (snapshots === 0 && Date.now() < deadline) await Bun.sleep(10);
+      expect(snapshots).toBe(1);
+      // Past two poll intervals: any duplicate publish has arrived by now.
+      await Bun.sleep(1000);
+      expect(seen).toEqual(['agent_put']);
+
+      // And an event written after the connect still arrives, once.
+      await store.putAgent(agentId, {
+        vendor: 'claude',
+        model: 'claude-sonnet-4-5',
+        last_seen: new Date().toISOString(),
+      });
+      while (seen.length < 2 && Date.now() < deadline) await Bun.sleep(10);
+      await Bun.sleep(500);
+      expect(seen).toEqual(['agent_put', 'agent_put']);
+    } finally {
+      ws.close();
+      await slow.stop();
     }
   });
 });
