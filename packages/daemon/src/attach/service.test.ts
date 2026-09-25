@@ -29,6 +29,7 @@ import { QuestionService } from '../questions/service';
 import { wireQuestionSupersession } from '../questions/supersede';
 import type { FakeAgentScript } from '../runner/fake-agent';
 import { StateStore } from '../store';
+import { RepoInPlaceService } from '../streams/repo-in-place';
 import { StreamService } from '../streams/service';
 import { buildAttachRpcMethods } from './rpc';
 import { sayPrompt } from './service';
@@ -1164,4 +1165,91 @@ describe('T243: the wake policy (P11)', () => {
     // just before it goes over ACP: the agent's log line follows it.
     await waitFor(() => prompts(log).some((p) => p.includes('left over')));
   }, 30_000);
+
+  /** Two registered repos with a `main` and one commit each, for + Repo. */
+  async function twoRepos(): Promise<RepoInPlaceService> {
+    const repos: Record<string, { path: string; protected_branches: string[] }> = {};
+    for (const name of ['ledger-lite', 'agile-test-repo']) {
+      const dir = join(scratch, name);
+      mkdirSync(dir);
+      git(['init', '-q', '-b', 'main'], dir);
+      git(['config', 'user.email', 'test@example.com'], dir);
+      git(['config', 'user.name', 'Test'], dir);
+      writeFileSync(join(dir, 'README.md'), `# ${name}\n`);
+      git(['add', '-A'], dir);
+      git(['commit', '-q', '-m', 'init'], dir);
+      repos[name] = { path: dir, protected_branches: ['main'] };
+    }
+    await store.putRepos(repos);
+    return new RepoInPlaceService(store, streams, {
+      attach: (id) => attachService.attach(id),
+      stop: (id, reason) =>
+        attachService.stop(id, undefined, reason !== undefined ? { reason } : {}),
+    });
+  }
+  /** No live session and every event's latest delivery record `delivered`. */
+  const settled = (id: string) => {
+    const latest = new Map(store.readDeliveries(id).map((d) => [d.event, d.status]));
+    return (
+      attachService.handleFor(id) === undefined &&
+      [...latest.values()].every((status) => status === 'delivered')
+    );
+  };
+
+  test('T336: ended session, answer, + Repo twice, a human line: the coordinator runs and gets it', async () => {
+    const log = join(scratch, 't336.jsonl');
+    const node = await finishedNode(log);
+    const reshape = await twoRepos();
+    const asked = streams.get(node.id).sessions[0]?.id;
+    const q = await questions.raise({
+      stream: node.id,
+      raised_by: '01ARZ3NDEKTSV4RRFFQ69GE001',
+      ...(asked !== undefined ? { session: asked } : {}),
+      text: 'CSV or JSON?',
+    });
+    await questions.answer(q.id, { answer: 'CSV', by: 'human' });
+    // No live session: the status the exit path left stays (not `idle`, the
+    // human's stop), so the answer wakes the conversation (P11).
+    expect(streams.get(node.id).agent.status).not.toBe('idle');
+    await waitFor(() => prompts(log).some((p) => p.includes('CSV or JSON?')));
+    await waitFor(() => streams.get(node.id).agent.status === 'done' && settled(node.id));
+
+    await reshape.addRepo(node.id, 'ledger-lite');
+    const { parts } = await reshape.addRepo(node.id, 'agile-test-repo');
+    expect(parts.map((p) => p.title)).toEqual(['ledger-lite part', 'agile-test-repo part']);
+    // T213: the parts start; T336: so does the coordinator, though nothing was live.
+    for (const part of parts) {
+      expect(streams.get(part.id).sessions.some((s) => s.role === 'worker')).toBe(true);
+    }
+    expect(streams.get(node.id).sessions).toHaveLength(1);
+    await waitFor(() => streams.get(node.id).agent.status === 'done' && settled(node.id));
+
+    await attachService.say(node.id, 'Go ahead. Write the plan and a contract');
+    await waitFor(() => streams.get(node.id).sessions.length === 2);
+    await waitFor(() => prompts(log).some((p) => p.includes('Go ahead. Write the plan')));
+    expect(threadBodies(node.id)).toContain('woken by human_line');
+    // The coordinator runs in the session dir, not a worktree (D20).
+    expect(streams.get(node.id).sessions.every((s) => s.worktree === undefined)).toBe(true);
+  }, 60_000);
+
+  test('T336: a detached node split into parts gets no coordinator and is not woken', async () => {
+    attachService = buildAttachService(fakeProviderFor(ACP_PROVIDERS.claude, SPEAKS_THEN_HANGS), {
+      deliveryDelayMs: 5,
+    });
+    const reshape = await twoRepos();
+    const project = await new ProjectService(store, streams).create({ name: 'Shop' });
+    const node = await attachService.createNode('human', {
+      title: 'Plan',
+      goal: 'g',
+      project: project.id,
+    });
+    await reshape.addRepo(node.id, 'ledger-lite');
+    await attachService.stop(node.id, 'worker', { detach: true });
+    await reshape.addRepo(node.id, 'agile-test-repo');
+    expect(streams.get(node.id).sessions).toHaveLength(0);
+    await attachService.say(node.id, 'are you there?');
+    await Bun.sleep(200);
+    expect(streams.get(node.id).sessions).toHaveLength(0);
+    expect(store.readDeliveries(node.id).map((d) => d.status)).toEqual(['pending']);
+  }, 60_000);
 });

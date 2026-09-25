@@ -17,12 +17,13 @@
  * new work node (T204, T213) unless the node was never started (made with
  * `--no-start` and not attached since); the moved part restarts in its
  * worktree. A split node that was started gets its coordinator even when
- * nothing was live, unless the human detached it (T336).
+ * nothing was live, unless the human stopped it (T336).
  */
 
 import { type SessionRef, type Stream, liveChildrenOf, nodeRole } from '@agile-agents/shared';
 import { git, removeWorktreeSafely } from '../delivery/git';
 import { mainBranch } from '../delivery/service';
+import { stoppedByHuman } from '../events/wake';
 import { createWorktree, slugify } from '../runner/worktrees';
 import { assertRepoHasCommits } from '../store/rpc-methods';
 import type { StateStore } from '../store/store';
@@ -99,12 +100,8 @@ export class RepoInPlaceService {
     const started = wasLive || node.sessions.some((s) => s.role === 'worker');
     // T336: a split hands the node's sessions to the moved part, which left
     // a node that was started but not live with no agent at all: no
-    // coordinator to plan the parts. It gets one, unless the human detached
-    // it (`idle`, and not from the daemon's own stop).
-    const lastWorker = node.sessions.filter((s) => s.role === 'worker').at(-1);
-    const detached =
-      node.agent.status === 'idle' && lastWorker?.ended_reason?.startsWith('stopped: ') !== true;
-    const coordinates = role === 'work' && !switching && started && !detached;
+    // coordinator to plan the parts. It gets one, unless the human stopped it.
+    const coordinates = role === 'work' && !switching && started && !stoppedByHuman(node);
     // Stop first, so the exit path writes onto the records before they move.
     await this.sessions.stop(
       node.id,
