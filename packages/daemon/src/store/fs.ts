@@ -100,9 +100,13 @@ export function appendJsonlLine(
 }
 
 /** Reads every non-empty line of a JSONL file as JSON. Missing file → []. */
-export function readJsonlFile<T = unknown>(path: string): T[] {
+export function readJsonlFile<T = unknown>(path: string, endOffset?: number): T[] {
   if (!existsSync(path)) return [];
-  const raw = readFileSync(path, 'utf8');
+  // `endOffset` bounds the read to a byte prefix (the feed tailer's seam).
+  const raw =
+    endOffset === undefined
+      ? readFileSync(path, 'utf8')
+      : readFileSync(path).subarray(0, endOffset).toString('utf8');
   return raw
     .split('\n')
     .map((line) => line.trim())

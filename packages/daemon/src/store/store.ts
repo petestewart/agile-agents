@@ -374,9 +374,12 @@ export class StateStore {
     });
   }
 
-  /** Read-only: the full `log/events.jsonl` audit stream. */
-  listEvents(): Event[] {
-    return readJsonlFile<unknown>(this.abs('log', 'events.jsonl')).map((line) =>
+  /**
+   * Read-only: the `log/events.jsonl` audit stream. `endOffset` stops at that
+   * byte (a line boundary), so a reader can pair it with a tailer's offset.
+   */
+  listEvents(endOffset?: number): Event[] {
+    return readJsonlFile<unknown>(this.abs('log', 'events.jsonl'), endOffset).map((line) =>
       validateEvent(line),
     );
   }
