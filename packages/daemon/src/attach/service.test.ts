@@ -644,7 +644,8 @@ describe('ask → answer → continue (T137)', () => {
     await waitFor(() =>
       threadBodies(stream.id).some((b) => b.startsWith('answer recorded with no live session')),
     );
-    expect(streams.get(stream.id).agent.status).toBe('idle');
+    // T336: the exit path's `done` stays; `idle` would read as the human's stop.
+    expect(streams.get(stream.id).agent.status).toBe('done');
   }, 30_000);
 });
 

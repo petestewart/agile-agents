@@ -158,6 +158,21 @@ describe('QuestionService.answer', () => {
     expect(streams.get(stream.id).human.status).toBe('open');
   });
 
+  test('T336: an answer after the session ended leaves `done`, not the human-stop `idle`', async () => {
+    const q = await raised();
+    // The asking session then ended on its own: the exit path wrote `done`.
+    await store.updateStream('daemon', stream.id, (before) => ({
+      ...before,
+      agent: { ...before.agent, status: 'done' },
+      sessions: [
+        { id: SESSION, vendor: 'claude', model: 'default', role: 'worker', status: 'stopped' },
+      ],
+    }));
+    await questions.answer(q.id, { answer: 'semicolon', by: 'human' });
+    expect(streams.get(stream.id).agent.status).toBe('done');
+    expect(streams.get(stream.id).human.status).toBe('open');
+  });
+
   test('delivers the answer to the session that asked, and writes no mail (T137)', async () => {
     const delivered: Array<{ session: string; answer?: string }> = [];
     const service = new QuestionService(store, streams, {
