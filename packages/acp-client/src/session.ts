@@ -67,10 +67,12 @@ const ACP_PROTOCOL_VERSION = 1;
  * the agent lives on, so the handshake never answers and the session hangs.
  * On the stdin pipe's re-arm, the agent's stdin is closed with no signal
  * here (writes still report success): the agent reads EOF and exits 0.
- * Each is retried this many times in all: a spawn that throws, and an agent
- * whose stdout died, or that exited cleanly, before it said anything
- * (nothing is lost by replacing it: only the handshake was sent, and it is
- * replayed). Past that point the session fails instead of hanging. A pidfd
+ * A session makes at most this many spawns in all, over first spawns,
+ * retries of a spawn that throws, and replacements of an agent whose stdout
+ * died, or that exited cleanly, before it said anything (nothing is lost by
+ * replacing it: only the handshake was sent, and it is replayed). Past that
+ * point the session fails, with an `error` event, instead of hanging or
+ * ending as if clean. A pidfd
  * EBADF in `node:child_process` Bun retries itself (unlike `Bun.spawn`'s
  * `exited`, T161).
  */
@@ -251,9 +253,12 @@ export function spawnSession(opts: SpawnSessionOptions): SpawnedSession {
   /** Serializes `load()` so two in-flight loads cannot interleave (matches Terma's `loadChain`). */
   let loadChain: Promise<void> = Promise.resolve();
 
-  /** Spawns the agent, retrying a synchronous throw (see `MAX_SPAWN_ATTEMPTS`). */
+  /** Spawns left for this session, over first spawns, throw retries and replacements alike. */
+  let spawnsLeft = MAX_SPAWN_ATTEMPTS;
+  /** Spawns the agent, retrying a synchronous throw while `spawnsLeft` allows. */
   function spawnChild(): ChildProcess {
-    for (let attempt = 1; ; attempt++) {
+    for (;;) {
+      spawnsLeft -= 1;
       try {
         return doSpawn(opts.cmd, opts.args ?? [], {
           cwd,
@@ -264,20 +269,23 @@ export function spawnSession(opts: SpawnSessionOptions): SpawnedSession {
           detached: true,
         });
       } catch (err) {
-        if (attempt >= MAX_SPAWN_ATTEMPTS) throw err;
+        if (spawnsLeft <= 0) throw err;
       }
     }
   }
 
   /** The current agent process. Replaced only while its stdout has never spoken. */
   let child: ChildProcess = spawnChild();
-  let respawnsLeft = MAX_SPAWN_ATTEMPTS - 1;
   /** Whether the current child's stdout has delivered anything. */
   let stdoutSpoke = false;
   /** Every line written while `stdoutSpoke` is false: what a replacement agent is sent again. */
   let handshake: string[] = [];
   /** Set by `close()`: an exit from here on is the one asked for, never a lost pipe. */
   let closeRequested = false;
+  /** The last of the agent's stderr, for the error when an agent is given up on. */
+  let stderrTail = '';
+  /** Pending `STDOUT_LOSS_GRACE_MS` checks, cleared by `close()`. */
+  const graceTimers = new Set<ReturnType<typeof setTimeout>>();
 
   function emit(event: AgentEvent): void {
     for (const listener of [...listeners]) listener(event);
@@ -532,8 +540,7 @@ export function spawnSession(opts: SpawnSessionOptions): SpawnedSession {
    * past that point (it spoke, is closing, or has no respawns left).
    */
   function replaceChild(lost: ChildProcess, why: string): boolean {
-    if (stdoutSpoke || closeRequested || respawnsLeft <= 0) return false;
-    respawnsLeft -= 1;
+    if (stdoutSpoke || closeRequested || spawnsLeft <= 0) return false;
     signalTree('SIGKILL', lost);
     let next: ChildProcess;
     try {
@@ -586,6 +593,19 @@ export function spawnSession(opts: SpawnSessionOptions): SpawnedSession {
     ) {
       return;
     }
+    if (code === 0 && !exited && !stdoutSpoke && !closeRequested && handshake.length > 0) {
+      // Out of replacements: an agent that never answered is a failure,
+      // never a clean end (a vendor CLI that exits 0 before speaking ACP).
+      const last = stderrTail
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter(Boolean)
+        .at(-1);
+      emit({
+        type: 'error',
+        message: `ACP agent exited before it answered the handshake (${MAX_SPAWN_ATTEMPTS} attempts)${last ? `: ${last.slice(0, 300)}` : ''}`,
+      });
+    }
     onDead(code);
   }
 
@@ -602,11 +622,17 @@ export function spawnSession(opts: SpawnSessionOptions): SpawnedSession {
     c.stdout?.on('close', () => {
       if (stdoutEnded || c !== child) return;
       // A dying process can close its pipe a moment before its exit is reported.
-      setTimeout(() => onStdoutLost(c), STDOUT_LOSS_GRACE_MS);
+      const timer = setTimeout(() => {
+        graceTimers.delete(timer);
+        onStdoutLost(c);
+      }, STDOUT_LOSS_GRACE_MS);
+      graceTimers.add(timer);
     });
     c.stderr?.setEncoding('utf8');
     c.stderr?.on('data', (chunk: string) => {
-      if (c === child) onStderr(chunk);
+      if (c !== child) return;
+      stderrTail = `${stderrTail}${chunk}`.slice(-2000);
+      onStderr(chunk);
     });
     // `exit` and `close` are both handled: Node emits `error` + `close`
     // (never `exit`) when the process could not be spawned at all.
@@ -645,6 +671,8 @@ export function spawnSession(opts: SpawnSessionOptions): SpawnedSession {
   function close(): void {
     if (exited) return;
     closeRequested = true;
+    for (const timer of graceTimers) clearTimeout(timer);
+    graceTimers.clear();
     clearForceKillTimer();
     signalTree('SIGTERM');
     forceKillTimer = setTimeout(() => {
