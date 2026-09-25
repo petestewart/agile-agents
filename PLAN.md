@@ -1849,12 +1849,21 @@ Pete's requests from the walkthrough (D33, D34). Branch `claude/phase-14`, stack
 
 ### Ticket: T334 Phase 14 QA and Pete's look
 - **Priority:** P0
-- **Status:** Todo
-- **Owner:** —
+- **Status:** Done
+- **Owner:** Unassigned
 - **Scope:** Black-box QA of tangents and moves; daemon line count.
 - **Acceptance Criteria:** QA ACCEPT.
 - **Validation Steps:** QA script; Pete in the cockpit.
-- **Notes:** After T332 and T333.
+- **Notes:** QA (sonnet): PASS on claude/phase-14. Typecheck, lint, bun test 2510/0, test:walkthrough pass; tangents, + Repo on a conversation with tangents, drag/CLI moves and refusals, rail collapse driven in a real cockpit. Low: a drop refused client-side (own subtree, other project) shows no message (known, T333). Low: + Repo on a conversation with tangents starts its part without waiting for a plan → T346. Draft PR petestewart/agile-agents#11 (14→13).
+
+### Ticket: T346 A conversation's first part waits for the plan too
+- **Priority:** P2
+- **Status:** Todo
+- **Owner:** Unassigned
+- **Scope:** Found in T334 QA: "+ Repo" on a conversation with tangents makes it coordinating with an "<repo> part" child, but the part starts at once, while T336 makes split parts wait for the coordinator's approved plan. Same gate here, or say why one part needs no plan.
+- **Acceptance Criteria:** Test: the part shows "waiting for the plan" and starts on approval.
+- **Validation Steps:** `bun test packages/daemon/src/streams packages/daemon/src/coordination`.
+- **Notes:** —
 
 ## 8. Deleted (must be gone from `main` by the end of Phase 6)
 
