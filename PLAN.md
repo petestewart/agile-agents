@@ -1538,12 +1538,14 @@ agile tail --node $C --events
 
 ### Ticket: T305 The Director reads repos
 - **Priority:** P1
-- **Status:** In Progress
-- **Owner:** opus:worker-T305
+- **Status:** Done
+- **Owner:** Unassigned
 - **Scope:** P20: the Director reads code under the visibility rules. Give its streamless session the coordinator read allow-list (every registered repo, agile home hidden), in the hook and the ACP permission path. Writes stay inside its scratch dir; no network.
 - **Acceptance Criteria:** Hook tests: a Director read inside a registered repo is allowed; the agile home and paths outside every repo are denied; writes outside scratch are still denied.
 - **Validation Steps:** `bun test packages/daemon/src/hook packages/daemon/src/director packages/daemon/src/permissions`.
 - **Notes:** After T301. Pete approved 2026-09-24.
+- T305: sonnet review APPROVE. directorReadScope: every repos.yaml path readable, agile home hidden, scratch-only if repos.yaml unreadable; hook + ACP paths. Side effect: stream coordinators' hook reads now enforce T213's read scope (was documented, never enforced). Director reads private repos too — pending Pete (one-line filter). merge 28b484f.
+
 
 ### Ticket: T304 Phase 12 QA and Pete's look
 - **Priority:** P0
