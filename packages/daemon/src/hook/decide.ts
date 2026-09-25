@@ -188,6 +188,17 @@ function roleToolVerdict(
 ): HookDecision | undefined {
   const readDenied = builtInReadDenyReason(ctx, payload);
   if (readDenied !== undefined) return { decision: 'deny', reason: readDenied };
+  // P20: a coordinator has no network. WebFetch/WebSearch have no ACP kind,
+  // so the role table never sees them; deny them here by name.
+  if (
+    permissionRoleFor(ctx.role) === 'coordinator' &&
+    (payload.tool_name === 'WebFetch' || payload.tool_name === 'WebSearch')
+  ) {
+    return {
+      decision: 'deny',
+      reason: `${payload.tool_name} denied: a coordinator has no network access (P20)`,
+    };
+  }
   const kind = claudeToolKind(payload);
   if (kind === undefined) return undefined;
 

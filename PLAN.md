@@ -1446,6 +1446,15 @@ agile tail --node $N --events
 - T290: coordinator_note added to the work wake types; wake + delivery tests; full bun test 2243/0. One-line change reviewed by the manager. merge 3832ebb.
 
 
+### Ticket: T291 Coordinators are denied WebFetch/WebSearch
+- **Priority:** P1
+- **Status:** Done
+- **Owner:** Unassigned
+- **Scope:** P20: a coordinator has no network. Claude's WebFetch/WebSearch have no ACP kind, so the role table never saw them; `roleToolVerdict` (hook/decide.ts) now denies them for the coordinator permission role. Engineers and reviewers unchanged.
+- **Acceptance Criteria:** Hook tests: coordinator denied both; worker allowed both.
+- **Validation Steps:** `bun test packages/daemon/src/hook`.
+- **Notes:** Found in T300 review. Full bun test 2245/0. Manager reviewed the diff (small). merge 7d767ec. Open: other network-capable tools (e.g. MCP servers) are not covered by name.
+
 ### Ticket: T288 ∥ Helper children on the same repo
 - **Priority:** P2
 - **Status:** Done (merge 63cdedc)
