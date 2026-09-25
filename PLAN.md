@@ -1529,12 +1529,14 @@ agile tail --node $C --events
 
 ### Ticket: T303 ∥ Norm suggestions
 - **Priority:** P2
-- **Status:** In Progress
-- **Owner:** opus:worker-T303
+- **Status:** Done
+- **Owner:** Unassigned
 - **Scope:** Findings that repeat across projects (the same file area or wording across reviewer findings and PR comments) wake the Director, which may `propose_knowledge`. The proposal comes to you as usual.
 - **Acceptance Criteria:** A test: three similar findings across two projects produce one proposal with its sources.
 - **Validation Steps:** `bun test packages/daemon/src/director packages/daemon/src/knowledge`.
 - **Notes:** After T264 and T301.
+- T303: sonnet review APPROVE. NormWatch (director/norms.ts): same dir or similar wording, >=3 new items from >=2 projects wakes the Director once; dedup via norm:<ids> thread refs; 3 wakes/day. Director propose_knowledge makes proposed items only, scope required, sources in source.finding. merged into phase-12.
+
 
 ### Ticket: T305 The Director reads repos
 - **Priority:** P1
@@ -1544,7 +1546,7 @@ agile tail --node $C --events
 - **Acceptance Criteria:** Hook tests: a Director read inside a registered repo is allowed; the agile home and paths outside every repo are denied; writes outside scratch are still denied.
 - **Validation Steps:** `bun test packages/daemon/src/hook packages/daemon/src/director packages/daemon/src/permissions`.
 - **Notes:** After T301. Pete approved 2026-09-24.
-- T305: sonnet review APPROVE. directorReadScope: every repos.yaml path readable, agile home hidden, scratch-only if repos.yaml unreadable; hook + ACP paths. Side effect: stream coordinators' hook reads now enforce T213's read scope (was documented, never enforced). Director reads private repos too — pending Pete (one-line filter). merge 28b484f.
+- T305: sonnet review APPROVE. directorReadScope: every repos.yaml path readable, agile home hidden, scratch-only if repos.yaml unreadable; hook + ACP paths. Side effect: stream coordinators' hook reads now enforce T213's read scope (was documented, never enforced). Director reads private repos too — Pete confirmed yes (2026-09-25). merge 28b484f.
 
 
 ### Ticket: T304 Phase 12 QA and Pete's look
