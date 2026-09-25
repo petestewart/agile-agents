@@ -1176,6 +1176,51 @@ describe('rules screen: patterns, new rule, cancel, classifier key (Playwright e
     },
     TEST_BUDGET_MS,
   );
+
+  browserTest(
+    'T326: Settings sets a Jira token write-only; the screen shows "set" and never the token',
+    async () => {
+      const token = 'fake-t326-jira-token-4455';
+      const cockpit = await startCockpit();
+      let page: Page | undefined;
+      try {
+        page = await openPage();
+        await page.goto(`${cockpit.base}/?view=settings`);
+        await waitForText(page, '[data-testid="settings-tracker-jira-status"]', 'no token');
+        await page
+          .locator('[data-testid="settings-tracker-jira-base-url"]')
+          .fill('https://shop.atlassian.net');
+        await page.locator('[data-testid="settings-tracker-jira-email"]').fill('p@example.com');
+        await page.locator('[data-testid="settings-tracker-jira-token"]').fill(token);
+        await page.locator('[data-testid="settings-tracker-jira-save"]').click();
+        await waitForText(page, '[data-testid="settings-tracker-jira-status"]', 'token set');
+        expect(await page.locator('[data-testid="settings-tracker-jira-token"]').inputValue()).toBe(
+          '',
+        );
+        expect(await page.content()).not.toContain(token);
+
+        // A reload reads the status back from the daemon: still "set", still no token.
+        await page.reload();
+        await waitForText(page, '[data-testid="settings-tracker-jira-status"]', 'token set');
+        expect(
+          await page.locator('[data-testid="settings-tracker-jira-base-url"]').inputValue(),
+        ).toBe('https://shop.atlassian.net');
+        expect(await page.content()).not.toContain(token);
+        expect(readFileSync(join(cockpit.home, 'config.yaml'), 'utf8')).toContain(token);
+
+        await page.locator('[data-testid="settings-tracker-jira-clear"]').click();
+        await waitForText(page, '[data-testid="settings-tracker-jira-status"]', 'no token');
+        expect(readFileSync(join(cockpit.home, 'config.yaml'), 'utf8')).not.toContain(token);
+        expect(readFileSync(join(cockpit.home, 'log', 'events.jsonl'), 'utf8')).not.toContain(
+          token,
+        );
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
 });
 
 // ---- T161: the stream page (design/cockpit-design.md §9.3) ---------------

@@ -1638,12 +1638,14 @@ agile tail --director
 
 ### Ticket: T326 ∥ Tracker tokens in Settings and the CLI
 - **Priority:** P1
-- **Status:** In Progress
-- **Owner:** opus:worker-T326
+- **Status:** Done
+- **Owner:** Unassigned
 - **Scope:** D31's write path, which T320 left out. Settings gets a Trackers section (Jira base URL, email, token; Linear token) that shows only whether each token is set, with Set and Clear. An HTTP write route (same-origin, actor human) and `agile tracker set jira|linear` (token read from stdin or a prompt, never an argument) both go through `store.setTrackerToken`. The token is never returned by any route.
 - **Acceptance Criteria:** Route tests (403 cross-origin; GET never includes the token); CLI test; e2e: set a token in Settings, the screen shows "set", the page source never contains it.
 - **Validation Steps:** `bun test packages/daemon/src/trackers packages/cli`; `bun run test:e2e`.
 - **Notes:** After T320. Found in T320 review; T325's live check needs it.
+- T326: sonnet review APPROVE. store.setTrackerSettings (atomic 0600; Jira base_url with the first token); GET/POST /api/settings/trackers (token_set only; same-origin 403; actor human); `agile tracker status|set|clear` (stdin or no-echo prompt; argv token refused); Settings Trackers section. Merged phase-13 in after T321 (RPC builder renamed buildTrackerSettingsRpcMethods). Daemon +143. merge 78293ee.
+
 
 ### Ticket: T325 Phase 13 QA and Pete's look
 - **Priority:** P0

@@ -551,14 +551,36 @@ export class StateStore {
    * in `<home>/config.yaml`, exactly as `setClassifierApiKey` does: raw edit,
    * strict schema, 0600, and an event with no data.
    */
-  async setTrackerToken(system: TrackerSystem, token: string | undefined): Promise<void> {
+  async setTrackerToken(
+    system: TrackerSystem,
+    token: string | undefined,
+    options: { by?: string } = {},
+  ): Promise<void> {
+    await this.setTrackerSettings(system, { token: token ?? null }, options);
+  }
+
+  /**
+   * T326: `setTrackerToken`'s write, widened to Jira's non-secret
+   * `base_url`/`email` so a first Jira setup (whose schema requires
+   * `base_url`) is one atomic write. Absent = unchanged, `null` = removed.
+   * The event names who wrote it and nothing else.
+   */
+  async setTrackerSettings(
+    system: TrackerSystem,
+    patch: { base_url?: string | null; email?: string | null; token?: string | null },
+    options: { by?: string } = {},
+  ): Promise<void> {
     await this.mutate(() => {
       const path = this.abs('config.yaml');
       const raw = mappingCopy(fileExists(path) ? readYamlFile(path) : {});
       const trackers = mappingCopy(raw.trackers);
       const entry = mappingCopy(trackers[system]);
-      if (token === undefined) Reflect.deleteProperty(entry, 'token');
-      else entry.token = token;
+      for (const field of ['base_url', 'email', 'token'] as const) {
+        const value = patch[field];
+        if (value === undefined) continue;
+        if (value === null) Reflect.deleteProperty(entry, field);
+        else entry[field] = value;
+      }
       if (Object.keys(entry).length === 0) Reflect.deleteProperty(trackers, system);
       else trackers[system] = entry;
       if (Object.keys(trackers).length === 0) Reflect.deleteProperty(raw, 'trackers');
@@ -566,12 +588,17 @@ export class StateStore {
       try {
         validateHomeConfig(raw);
       } catch {
+        // Never echo a token; say what is most likely missing.
+        const hint =
+          system === 'jira' && entry.base_url === undefined && Object.keys(entry).length > 0
+            ? ' (jira needs a base URL)'
+            : '';
         throw new Error(
-          `config.yaml would not validate with this ${system} token; nothing written`,
+          `config.yaml would not validate with these ${system} settings${hint}; nothing written`,
         );
       }
       writeYamlFileAtomic(path, raw, 0o600);
-      const event = buildEvent('home_config_put', { data: {} });
+      const event = buildEvent('home_config_put', { agent: options.by, data: {} });
       return { result: undefined, event };
     });
   }
