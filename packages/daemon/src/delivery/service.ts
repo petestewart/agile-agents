@@ -154,6 +154,8 @@ export interface DeliveryServiceOptions {
   onStreamEnd?: (streamId: string) => void | Promise<void>;
   /** T226: main moved on `repo` (sync the other live nodes). Fire-and-forget. */
   onMainMoved?: (repo: string, mergedStream: string) => unknown;
+  /** T340: poll the node's PR now (`PrPoller.pollNow`); used when a deliver finds it merged on GitHub. */
+  refreshPr?: (streamId: string) => unknown;
 }
 
 export class DeliveryService {
@@ -214,7 +216,9 @@ export class DeliveryService {
 
     // 3. PR mode (T224): push, then open or update the one PR.
     if (github !== undefined) {
-      const opened = await this.deliverPr(stream, repoEntry, github, branch, target);
+      const opened = await this.deliverPr(stream, repoEntry, github, branch, target, {
+        mayOpen: true,
+      });
       await this.settleQuietly();
       return opened;
     }
@@ -704,7 +708,9 @@ export class DeliveryService {
   /**
    * T224: `git push <remote> <branch>`, then the node's one PR: opened on
    * the first deliver, updated (never duplicated) after. A push failure
-   * holds the node with nothing opened.
+   * holds the node with nothing opened. Only the human's deliver passes
+   * `mayOpen`: without it (the agent's push, D8) nothing opens a PR, and a
+   * PR closed on GitHub refuses (T340).
    */
   private async deliverPr(
     stream: Stream,
@@ -712,6 +718,7 @@ export class DeliveryService {
     github: GitHubPort,
     branch: string,
     target: string,
+    opts: { mayOpen?: boolean } = {},
   ): Promise<LandOutcome> {
     const { streams } = this.options;
     const repoRoot = repoEntry.path;
@@ -726,6 +733,31 @@ export class DeliveryService {
       throw new LandRefusedError(
         stream.id,
         `PR #${stream.delivery_state.pr?.number ?? '?'} for ${stream.id} is already merged; nothing to deliver`,
+      );
+    }
+    // T340: the record's open PR may have merged or closed on GitHub since the last poll.
+    const recorded = stream.delivery_state?.pr;
+    let closedOnGitHub = false;
+    if (recorded?.state === 'open') {
+      const live = await github.getPull(recorded.number);
+      if (!live.notModified && live.data.merged) {
+        await Promise.resolve(this.options.refreshPr?.(stream.id)).catch(() => {});
+        throw new LandRefusedError(
+          stream.id,
+          `PR #${recorded.number} for ${stream.id} is already merged on GitHub; nothing to deliver`,
+        );
+      }
+      closedOnGitHub = !live.notModified && live.data.state === 'closed';
+    }
+    if (opts.mayOpen !== true && (recorded?.state !== 'open' || closedOnGitHub)) {
+      if (closedOnGitHub) {
+        await Promise.resolve(this.options.refreshPr?.(stream.id)).catch(() => {});
+      }
+      throw new LandRefusedError(
+        stream.id,
+        closedOnGitHub
+          ? `PR #${recorded?.number} for ${stream.id} was closed on GitHub; a push never opens a PR (the human delivers again)`
+          : `stream ${stream.id} has no open PR; a push never opens one (the human delivers)`,
       );
     }
     const pushed = gitNetwork(['push', remote, `refs/heads/${branch}:refs/heads/${branch}`], cwd);
@@ -746,7 +778,7 @@ export class DeliveryService {
     const known = stream.delivery_state?.pr;
     let pull: GitHubPull;
     let verb: string;
-    if (known !== undefined && known.state === 'open') {
+    if (known !== undefined && known.state === 'open' && !closedOnGitHub) {
       pull = await github.updatePull(known.number, { title, body });
       verb = 'updated';
     } else {
@@ -827,13 +859,20 @@ export class DeliveryService {
     return resolveDelivery(repoEntry, project, stream);
   }
 
-  /** Writes `delivery_state` (daemon-only, §14.2). */
+  /**
+   * Writes `delivery_state` (daemon-only, §14.2). In PR mode the node's PR
+   * is kept when `state` names none (T340): a re-deliver's ship check, gate
+   * or hold must not hide an open PR from the poller.
+   */
   private async setDeliveryState(
     streamId: string,
     state: Omit<DeliveryState, 'at'>,
   ): Promise<void> {
+    const pr =
+      state.pr ??
+      (state.mode === 'pr' ? this.options.streams.get(streamId).delivery_state?.pr : undefined);
     await this.options.streams.update('daemon', streamId, {
-      delivery_state: { ...state, at: new Date().toISOString() },
+      delivery_state: { ...state, ...(pr ? { pr } : {}), at: new Date().toISOString() },
     });
   }
 
