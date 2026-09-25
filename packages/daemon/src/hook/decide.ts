@@ -286,8 +286,9 @@ function computeGateVerdict(
   if (roleTool !== undefined) {
     // A role-policy deny that an accepted pattern rule also covers names
     // the rule: the human wrote it for exactly this call. Same verdict,
-    // better reason, and the rule's stats count it.
-    if (roleTool.decision === 'deny') {
+    // better reason, and the rule's stats count it. A rule's deny also beats
+    // a role hold (T343): the human already said no to this call.
+    if (roleTool.decision === 'deny' || roleTool.decision === 'ask') {
       const byRule = patternRuleVerdict(ctx, payload);
       if (byRule?.decision === 'deny') return byRule;
     }

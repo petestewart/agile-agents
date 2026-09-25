@@ -18,7 +18,12 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { ACP_PROVIDERS, type AcpProviderConfig } from '@agile-agents/acp-client';
+import {
+  ACP_PROVIDERS,
+  type AcpProviderConfig,
+  type SpawnSessionOptions,
+  spawnSession,
+} from '@agile-agents/acp-client';
 import {
   AGENT_LINE_MAX_CHARS,
   type HilId,
@@ -29,6 +34,7 @@ import {
 import { GateService } from '../gates/service';
 import { runInit } from '../init';
 import { LandingService } from '../landing/service';
+import { EMPTY_TREE_SHA } from '../permissions/git-env';
 import { ProjectService } from '../projects/service';
 import { QuestionService } from '../questions/service';
 import { wireQuestionSupersession } from '../questions/supersede';
@@ -94,7 +100,10 @@ const SPEAKS_THEN_HANGS: FakeAgentScript = {
  * delivers an answer by prompting the live session. Both sides are read
  * lazily so a test may rebuild either one.
  */
-function buildAttachService(provider: AcpProviderConfig): AttachService {
+function buildAttachService(
+  provider: AcpProviderConfig,
+  spawn?: typeof spawnSession,
+): AttachService {
   return new AttachService({
     store,
     streams,
@@ -102,6 +111,7 @@ function buildAttachService(provider: AcpProviderConfig): AttachService {
     provider: () => provider,
     questions: { listOpen: () => questions.listOpen() },
     gates: { list: () => gates.list() },
+    ...(spawn !== undefined ? { spawn } : {}),
   });
 }
 
@@ -460,6 +470,42 @@ describe('the reviewer (§4.2)', () => {
     // The worker is still live: its field, its call.
     expect(after.agent.status).toBe('working');
     expect(after.sessions.find((s) => s.id === session.id)?.status).not.toBe('running');
+  }, 30_000);
+
+  test('T343: a reviewer is spawned with the read-only git env, a worker without it', async () => {
+    const spawned: SpawnSessionOptions[] = [];
+    attachService = buildAttachService(fakeProviderFor(ACP_PROVIDERS.claude, SPEAKS), (o) => {
+      spawned.push(o);
+      return spawnSession(o);
+    });
+    const stream = await makeStream();
+    const worker = await attachService.attach(stream.id);
+    worker.handle.stop();
+    await worker.handle.exited;
+    const reviewer = await attachService.attach(stream.id, { role: 'reviewer' });
+    reviewer.handle.stop();
+    await reviewer.handle.exited;
+
+    const [workerEnv, reviewerEnv] = spawned.map((o) => o.envOverrides ?? {});
+    expect(workerEnv?.GIT_ATTR_SOURCE).toBeUndefined();
+    expect(workerEnv?.GIT_PAGER).toBeUndefined();
+    expect(workerEnv?.GIT_CONFIG_COUNT).toBeUndefined();
+    expect(reviewerEnv?.GIT_ATTR_SOURCE).toBe(EMPTY_TREE_SHA);
+    expect(reviewerEnv?.GIT_PAGER).toBe('cat');
+    const count = Number(reviewerEnv?.GIT_CONFIG_COUNT);
+    const config = Object.fromEntries(
+      Array.from({ length: count }, (_, i) => [
+        reviewerEnv?.[`GIT_CONFIG_KEY_${i}`],
+        reviewerEnv?.[`GIT_CONFIG_VALUE_${i}`],
+      ]),
+    );
+    expect(config).toMatchObject({
+      'core.fsmonitor': 'false',
+      'core.hooksPath': '/dev/null',
+      'core.pager': 'cat',
+    });
+    // Everything else the worker got, the reviewer got too.
+    expect(reviewerEnv?.GIT_EDITOR).toBe('true');
   }, 30_000);
 
   test('a reviewer never moves agent.status, even with no worker left', async () => {
