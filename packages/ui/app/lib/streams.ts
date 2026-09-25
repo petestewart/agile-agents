@@ -61,6 +61,26 @@ export function buildStreamTree(rows: readonly CockpitStreamRow[]): StreamTreeNo
 }
 
 /**
+ * T331: whether anything below `node` (not `node` itself) waits on the
+ * operator — an amber dot. A collapsed row shows it so a question is never
+ * hidden inside a folded subtree.
+ */
+export function subtreeNeedsYou(node: StreamTreeNode): boolean {
+  return node.children.some((child) => streamDot(child.row) === 'amber' || subtreeNeedsYou(child));
+}
+
+/** T331: the rail's collapsed nodes, read back from storage; anything malformed is an empty set. */
+export function parseCollapsed(raw: string | null): Set<string> {
+  if (!raw) return new Set();
+  try {
+    const value: unknown = JSON.parse(raw);
+    return new Set(Array.isArray(value) ? value.filter((v) => typeof v === 'string') : []);
+  } catch {
+    return new Set();
+  }
+}
+
+/**
  * T162: the tree's filter. Keeps the rows whose title contains `query`
  * (case-insensitive) plus their ancestors, so a match still reads under
  * its path. An empty query keeps everything.
