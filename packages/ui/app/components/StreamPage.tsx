@@ -416,6 +416,13 @@ function LandPanel({
       ? stream.delivery_state.pr
       : undefined;
 
+  // The open PR's own line (land-before) is showing: not landed, no conflict, no failure.
+  const prAbove =
+    openPr !== undefined &&
+    stream.human.status !== 'landed' &&
+    !(conflicts && conflicts.length > 0) &&
+    !failed;
+
   async function doCheckPr(): Promise<void> {
     setBusy(true);
     setOutcome(undefined);
@@ -527,9 +534,14 @@ function LandPanel({
         </div>
       ) : failed ? null : openPr ? (
         <p data-testid="land-before" data-ready="pr">
-          PR #{openPr.number} into {openPr.base}:{' '}
-          {openPr.review === 'none' ? 'no review' : openPr.review.replace('_', ' ')} · CI{' '}
-          {openPr.checks} · auto-merge {openPr.auto_merge}. It merges on GitHub.{' '}
+          PR #{openPr.number}
+          {openPr.draft ? ' (draft)' : ''} into {openPr.base}:{' '}
+          {openPr.review === 'none' ? 'no review' : openPr.review.replace(/_/g, ' ')} · CI{' '}
+          {openPr.checks} · auto-merge {openPr.auto_merge}
+          {openPr.mergeable !== 'clean' && openPr.mergeable !== 'unknown'
+            ? ` · ${openPr.mergeable}`
+            : ''}
+          . It merges on GitHub.{' '}
           {isWebUrl(openPr.url) ? (
             <a data-testid="stream-pr-link" href={openPr.url} target="_blank" rel="noreferrer">
               Open PR
@@ -566,7 +578,8 @@ function LandPanel({
           ))}
         </p>
       )}
-      {pr && (
+      {/* T341: an open PR already reads on the line above; this line is for the rest (merged, closed). */}
+      {pr && !prAbove && (
         <p className="cr-dim" data-testid="delivery-pr" data-state={pr.state}>
           {isWebUrl(pr.url) ? (
             <a
