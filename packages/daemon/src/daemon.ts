@@ -58,6 +58,7 @@ import { MainSync, OverlapTracker, SymbolWatcher } from './sync';
 import { trackerFromConfig } from './trackers/create';
 import { TrackerLinks } from './trackers/link';
 import { buildTrackerRpcMethods } from './trackers/rpc';
+import { buildTrackerSettingsRpcMethods } from './trackers/settings';
 
 export const DAEMON_VERSION: string = daemonPackageJson.version;
 
@@ -578,6 +579,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
     store && gateService && bus
       ? {
           ...buildStateRpcMethods(store, { githubAuth }),
+          ...buildTrackerSettingsRpcMethods(store),
           ...buildBusRpcMethods(bus),
           ...buildGateRpcMethods(gateService),
           ...(questionService ? buildQuestionRpcMethods(questionService) : {}),

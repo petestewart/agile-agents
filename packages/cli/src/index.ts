@@ -58,6 +58,7 @@ import {
   runStreamWait,
 } from './commands/stream';
 import { runDirectorTail, runNodeEvents, runTail } from './commands/tail';
+import { runTrackerClear, runTrackerSet, runTrackerStatus } from './commands/tracker';
 
 export const PACKAGE_NAME = '@agile-agents/cli';
 
@@ -127,6 +128,10 @@ function usage(): string {
     '  tail --node <id> --events  the node\u2019s routed events: reason, delivery status, session or digest (--follow)',
     '  tail --director            the Director\u2019s thread (--follow)',
     '  director say "<line>"      a line to the Director; its reply lands on its thread',
+    '  tracker status             Jira/Linear: base URL, email, whether each token is set (never the token)',
+    '  tracker set jira|linear [--base-url <url>] [--email <addr>|--no-email] [--no-token]',
+    '                             token read from stdin or a no-echo prompt, never an argument',
+    '  tracker clear jira|linear  remove the token from config.yaml',
     '  gate list                  list open HIL requests',
     '  inbox                      everything waiting on you, across all streams, oldest first',
     '  answer <id> <text|yes|no>  answer an inbox item: Q-… takes the answer text, HIL-… takes yes|no [note]',
@@ -285,6 +290,15 @@ export async function runCli(argv: string[], cwd: string = process.cwd()): Promi
         if (sub === 'say') return await runDirectorSay(socketPath, parseArgs(restArgv), json);
         console.error(usage());
         return 1;
+
+      // T326 (D31): tracker settings; the token never travels as an argument.
+      case 'tracker': {
+        if (sub === 'status') return await runTrackerStatus(socketPath, json);
+        if (sub === 'set') return await runTrackerSet(socketPath, parseArgs(restArgv), json);
+        if (sub === 'clear') return await runTrackerClear(socketPath, parseArgs(restArgv), json);
+        console.error(usage());
+        return 1;
+      }
 
       case 'project': {
         const projectArgs = parseArgs(restArgv);
