@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import {
+  AGENT_LINE_MAX_CHARS,
   type Stream,
   StreamAttachRequestSchema,
   StreamSayInputSchema,
@@ -9,6 +10,7 @@ import {
   assertStreamWrite,
   liveChildrenOf,
   nodeRole,
+  quoteThreadBody,
   ulid,
   validateSessionRef,
   validateStream,
@@ -181,6 +183,32 @@ describe('ThreadEntrySchema', () => {
         body: 'x'.repeat(THREAD_BODY_MAX_CHARS + 1),
       }),
     ).toThrow(/800/);
+  });
+
+  test('T330: an agent line may run to AGENT_LINE_MAX_CHARS; other entries keep the 800 cap', () => {
+    const agent = `agent:${SESSION}`;
+    const entry = (by: string, kind: string, length: number) => ({
+      ts: 'now',
+      by,
+      kind,
+      body: 'x'.repeat(length),
+    });
+    expect(validateThreadEntry(entry(agent, 'line', 3000)).body).toHaveLength(3000);
+    expect(validateThreadEntry(entry(agent, 'line', AGENT_LINE_MAX_CHARS)).body).toHaveLength(
+      AGENT_LINE_MAX_CHARS,
+    );
+    expect(() => validateThreadEntry(entry(agent, 'line', AGENT_LINE_MAX_CHARS + 1))).toThrow(
+      /16000/,
+    );
+    expect(() => validateThreadEntry(entry(agent, 'finding', 801))).toThrow(/800/);
+    expect(() => validateThreadEntry(entry('daemon', 'line', 801))).toThrow(/800/);
+  });
+
+  test('quoteThreadBody cuts a long body with an ellipsis', () => {
+    expect(quoteThreadBody('short')).toBe('short');
+    const quoted = quoteThreadBody('y'.repeat(5000));
+    expect(quoted).toHaveLength(THREAD_BODY_MAX_CHARS);
+    expect(quoted.endsWith('…')).toBe(true);
   });
 
   test('.strict() rejects an unknown key', () => {
