@@ -2396,6 +2396,90 @@ describe('project tree and switcher (Playwright e2e, T208)', () => {
   );
 });
 
+describe('collapsing the rail (Playwright e2e, T331)', () => {
+  browserTest(
+    'a caret folds a subtree without navigating, the fold survives a reload, and a hidden question still shows',
+    async () => {
+      const cockpit = await startCockpit();
+      let page: Page | undefined;
+      try {
+        const root = await cockpit.streams.create('human', { title: 'shop', goal: 'g' });
+        const mid = await cockpit.streams.create('human', {
+          title: 'ledger export',
+          goal: 'g',
+          parent: root.id,
+        });
+        const leaf = await cockpit.streams.create('human', {
+          title: 'csv writer',
+          goal: 'g',
+          parent: mid.id,
+        });
+        page = await openPage();
+        await page.goto(`${cockpit.base}/`);
+        const tree = '[data-testid="stream-tree"]';
+        const rowOf = (id: string): string => `${tree} [data-stream="${id}"]`;
+        const caretOf = (id: string): string =>
+          `${tree} li:has(> [data-stream="${id}"]) > [data-testid="tree-caret"]`;
+        await page.locator(rowOf(leaf.id)).waitFor({ state: 'visible' });
+        // Only nodes with children carry a caret.
+        expect(await page.locator(caretOf(leaf.id)).count()).toBe(0);
+        expect(await page.locator(caretOf(root.id)).getAttribute('aria-expanded')).toBe('true');
+
+        // Collapse the root: its subtree goes, and the page stays on the inbox.
+        await page.locator(caretOf(root.id)).click();
+        await page.locator(rowOf(mid.id)).waitFor({ state: 'detached' });
+        expect(await page.locator(rowOf(leaf.id)).count()).toBe(0);
+        expect(await page.locator(caretOf(root.id)).getAttribute('aria-expanded')).toBe('false');
+        expect(await page.locator('[data-testid="inbox-empty"]').isVisible()).toBe(true);
+        expect(
+          await page.locator(`${rowOf(root.id)} [data-testid="collapsed-needs-you"]`).count(),
+        ).toBe(0);
+
+        // A question deep inside the folded subtree shows on the folded row.
+        await cockpit.questions.raise({
+          stream: leaf.id,
+          raised_by: '01ARZ3NDEKTSV4RRFFQ69GE001',
+          session: ulid(),
+          text: 'quote every field?',
+        });
+        await page
+          .locator(`${rowOf(root.id)} [data-testid="collapsed-needs-you"]`)
+          .waitFor({ state: 'visible' });
+
+        // The fold survives a reload.
+        await page.reload();
+        await page.locator(rowOf(root.id)).waitFor({ state: 'visible' });
+        await page
+          .locator(`${rowOf(root.id)} [data-testid="collapsed-needs-you"]`)
+          .waitFor({ state: 'visible' });
+        expect(await page.locator(rowOf(mid.id)).count()).toBe(0);
+
+        // Expand from the keyboard: the children come back, the marker goes.
+        await page.locator(rowOf(root.id)).focus();
+        await page.keyboard.press('ArrowRight');
+        await page.locator(rowOf(leaf.id)).waitFor({ state: 'visible' });
+        expect(
+          await page.locator(`${rowOf(root.id)} [data-testid="collapsed-needs-you"]`).count(),
+        ).toBe(0);
+
+        // Double-clicking a row folds it too; the caret expands it again.
+        await page.locator(rowOf(mid.id)).dblclick();
+        await page.locator(rowOf(leaf.id)).waitFor({ state: 'detached' });
+        await page.locator(caretOf(mid.id)).click();
+        await page.locator(rowOf(leaf.id)).waitFor({ state: 'visible' });
+
+        // Expanded state persists as well.
+        await page.reload();
+        await page.locator(rowOf(leaf.id)).waitFor({ state: 'visible' });
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+});
+
 describe('move a node by dragging it in the rail (Playwright e2e, T333)', () => {
   browserTest(
     'a drop moves the node and the rail re-nests it; a refused drop says why',

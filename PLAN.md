@@ -1695,12 +1695,14 @@ agile tail --director
 
 ### Ticket: T331 Collapse nodes in the rail
 - **Priority:** P1
-- **Status:** In Progress
-- **Owner:** opus:worker-T331
+- **Status:** Done
+- **Owner:** Unassigned
 - **Scope:** Pete: a caret before any node with children collapses or expands its subtree (double-click toggles too); state kept per viewer; a collapsed row still shows an attention dot from its subtree.
 - **Acceptance Criteria:** Playwright: collapse hides children, expand shows them, state survives reload.
 - **Validation Steps:** `bun run test:e2e`.
 - **Notes:** Fixed on the earliest phase that has the rail, merged forward.
+- T331: sonnet review APPROVE. Caret, double-click and Left/Right toggle; folds in localStorage (try/catch); folded rows show the amber dot; filter opens folds. Merged on phase-7 and forward to 13 (phase-8 conflict in StreamTree.tsx resolved keeping the overlap mark, visibility badge and dot). Double-click also opens the stream — Pete to confirm.
+
 
 ### Ticket: T325 Phase 13 QA and Pete's look
 - **Priority:** P0
