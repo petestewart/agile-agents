@@ -39,7 +39,9 @@ export type FakeAgentStep =
    * `agent_message_chunk` (nothing when empty or timed out): a test plays
    * the agent turn by turn, deciding each reply while the turn is open.
    */
-  | { type: 'text_from_file'; path: string; timeoutMs?: number };
+  | { type: 'text_from_file'; path: string; timeoutMs?: number }
+  /** Dies mid-turn with `code` (default 1), the prompt unanswered: an agent that crashed. */
+  | { type: 'exit'; code?: number };
 
 export interface FakeAgentScript {
   steps: FakeAgentStep[];
@@ -185,6 +187,9 @@ async function runScript(promptRequestId: number | string): Promise<void> {
       case 'hang':
         // Never respond: an in-flight turn with no closing update, until killed.
         return;
+      case 'exit':
+        process.exit(step.code ?? 1);
+        break;
       case 'delay':
         await new Promise((resolve) => setTimeout(resolve, step.ms));
         break;
