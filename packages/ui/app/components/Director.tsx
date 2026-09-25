@@ -21,14 +21,20 @@ function DirectorProposal(props: {
   onDecide: (decision: 'apply' | 'dismiss') => void;
 }): JSX.Element {
   const { proposal, onDecide } = props;
+  const { cockpit } = useFeed();
   const change = proposal.change;
   const tree = change.action === 'create_tree' ? change.tree : undefined;
+  // T341: an existing project reads by its name, never its P-… id.
+  const projectName = (id: string | undefined) =>
+    cockpit?.projects.find((p) => p.id === id)?.name ?? id;
   return (
     <li data-testid="director-proposal" data-id={proposal.id} data-action={change.action}>
       {tree ? (
         <ul className="cr-tree" data-testid="director-draft-tree">
           <li>
-            <strong>{tree.new_project ?? tree.project}</strong>
+            <strong data-testid="director-draft-project">
+              {tree.new_project ?? projectName(tree.project)}
+            </strong>
             {tree.new_project ? <span className="cr-dim"> (new project)</span> : null}
             <ul>
               <li data-testid="director-draft-node">
