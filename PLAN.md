@@ -1713,6 +1713,24 @@ agile tail --director
 - **Validation Steps:** Pete's walkthrough.
 - **Notes:** Docs only. Found: the ship check let an untested diff through in 1 of 5 real-classifier runs (4 held at 0.80–0.83).
 
+### Ticket: T336 Coordinator plans first after a split
+- **Priority:** P1
+- **Status:** In Progress
+- **Owner:** opus:worker-T336
+- **Scope:** Pete's run: after "+ Repo" split a node, the parts started at once with the node's whole goal and raised questions before the coordinator's plan existed. The coordinator starts first; parts wait for plan approval and get scoped goals; no Land card on a coordinating node; coordinator may run read-only Bash; a node woken by a coordinator note gets the note text and event id.
+- **Acceptance Criteria:** Tests for the split ordering, part hold until approval, scoped goals, the wake note.
+- **Validation Steps:** `bun test packages/daemon/src/streams packages/daemon/src/events packages/daemon/src/coordination`.
+- **Notes:** Branch T336-coordinator-wake.
+
+### Ticket: T337 trackerPush used before init at startup
+- **Priority:** P1
+- **Status:** In Review
+- **Owner:** opus:worker-T337
+- **Scope:** Startup migration raises questions → StreamService.update → onUpdated hook reads `trackerPush`, a const declared later: "Cannot access 'trackerPush' before initialization". Declare it before the StreamService; the push is skipped during migration.
+- **Acceptance Criteria:** Regression test fails on the old code, passes on the new; status pushes still reach the tracker.
+- **Validation Steps:** `bun test packages/daemon/src/store packages/daemon/src/tracker`.
+- **Notes:** Branch T337-trackerpush-init (d18b826). Review (sonnet): APPROVE, regression confirmed against old code. QA running.
+
 ### Ticket: T338 Names, not ids, and the cockpit gaps from the walkthrough
 - **Priority:** P1
 - **Status:** Todo
@@ -1729,6 +1747,15 @@ agile tail --director
 - **Scope:** Pete's run: the ledger-lite part tried `bunx tsc --noEmit` (not in the repo, so it would fetch TypeScript) and waited on a human decision, instead of using the repo's own scripts. Put the repo's check commands in the brief: the `scripts` of the worktree's package.json (test, typecheck, lint, build) or a per-repo `checks` list in repos.yaml when set, with "use these; don't install or fetch tools". When a command is held or denied for fetching a tool, the reason names the repo's own scripts.
 - **Acceptance Criteria:** Brief test lists the scripts; a repo with `checks` set uses them; the hold reason suggests them.
 - **Validation Steps:** `bun test packages/daemon/src/runner packages/daemon/src/attach`.
+- **Notes:** —
+
+### Ticket: T340 An auto-merged PR shows as merged
+- **Priority:** P1
+- **Status:** In Progress
+- **Owner:** opus:worker-T340
+- **Scope:** Pete's run: the PR auto-merged but the cockpit kept showing the Merge banner, and clicking Merge re-showed it. Show the PR's real state (merged, checks, review); replace the Merge button with PR status and "Check now" when GitHub merges it.
+- **Acceptance Criteria:** A PR merged outside the cockpit shows merged after a poll or "Check now"; e2e.
+- **Validation Steps:** `bun test packages/daemon/src/delivery`; `bun run test:e2e`.
 - **Notes:** —
 
 ### Ticket: T341 Walkthrough QA in a browser with the fake agent
