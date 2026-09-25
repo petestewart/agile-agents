@@ -8,7 +8,15 @@
  */
 
 import { describe, expect, test } from 'bun:test';
-import { type AcquirableBrowser, acquireBrowserPage, runWithinBudget } from './chromium';
+import { EventEmitter } from 'node:events';
+import {
+  type AcquirableBrowser,
+  type GuardedChild,
+  type SpawnHost,
+  acquireBrowserPage,
+  guardStdioPipes,
+  runWithinBudget,
+} from './chromium';
 
 class FakeBrowser implements AcquirableBrowser {
   closes = 0;
@@ -283,6 +291,145 @@ describe('acquireBrowserPage', () => {
       }),
     ).rejects.toThrow('newPage broke');
     expect(launches).toBe(1);
+  });
+});
+
+/**
+ * CI job 108116908628: the lost pipe that no promise sees. Bun opens a
+ * Chromium launch's extra stdio pipes (fds 3 and 4) as sockets at spawn
+ * time, and when that connect fails it emits `error` on the socket from a
+ * `.catch`: with no listener yet, that escapes as an unhandled rejection
+ * (failing whatever test is running) while the launch itself hangs. The fake
+ * host below spawns a child shaped like bun's and fails fd 4 exactly that way.
+ */
+class FakeChild implements GuardedChild {
+  readonly stdio = [
+    null,
+    new EventEmitter(),
+    new EventEmitter(),
+    new EventEmitter(),
+    new EventEmitter(),
+  ];
+  kills: Array<string | undefined> = [];
+  kill(signal?: NodeJS.Signals): boolean {
+    this.kills.push(signal);
+    return true;
+  }
+}
+
+/** Bun's own shape: `doConnect(...).catch((error) => socket.emit('error', error))`. */
+function loseStdioPipe(child: FakeChild, fd = 4): void {
+  const socket = child.stdio[fd] as EventEmitter;
+  const err = Object.assign(new Error('Failed to connect'), { syscall: 'connect', code: 'ENOENT' });
+  void Promise.reject(err).catch((error: Error) => {
+    socket.emit('error', error);
+  });
+}
+
+function fakeSpawnHost(): { host: SpawnHost; children: FakeChild[]; original: SpawnHost['spawn'] } {
+  const children: FakeChild[] = [];
+  const original = (() => {
+    const child = new FakeChild();
+    children.push(child);
+    return child;
+  }) as SpawnHost['spawn'];
+  return { host: { spawn: original }, children, original };
+}
+
+describe('acquireBrowserPage: a stdio pipe lost at spawn (Bun 1.3.11)', () => {
+  test('the socket error is caught, the child killed, and a fresh launch is tried at once', async () => {
+    const { host, children, original } = fakeSpawnHost();
+    const good = new FakeBrowser('good');
+    const warnings: string[] = [];
+    let launches = 0;
+    const started = Date.now();
+
+    const acquired = await acquireBrowserPage({
+      label: 'test',
+      spawnHost: host,
+      launch: async () => {
+        launches += 1;
+        if (launches > 1) return good;
+        // Playwright spawns a few awaits into launch(), then waits on the
+        // dead pipe forever: the launch neither resolves nor rejects.
+        await Promise.resolve();
+        const child = host.spawn() as FakeChild;
+        loseStdioPipe(child);
+        return new Promise<FakeBrowser>(() => {});
+      },
+      openPage: async () => 'page',
+      budgetMs: 5_000,
+      warn: (m) => warnings.push(m),
+    });
+
+    expect(acquired.browser).toBe(good);
+    expect(launches).toBe(2);
+    // Retried on the error, not after the 5 s budget ran out.
+    expect(Date.now() - started).toBeLessThan(1_000);
+    expect(children[0]?.kills).toEqual(['SIGKILL']);
+    expect(warnings).toEqual([
+      "test: launch() lost Chromium's stdio pipe (Failed to connect) (attempt 1/3) — launching another",
+    ]);
+    // Nothing is left wrapped once no launch is in flight.
+    expect(host.spawn).toBe(original);
+  });
+
+  test('a pipe lost on every attempt fails loudly with that error', async () => {
+    const { host, children } = fakeSpawnHost();
+    await expect(
+      acquireBrowserPage({
+        label: 'test',
+        spawnHost: host,
+        launch: async () => {
+          await Promise.resolve();
+          loseStdioPipe(host.spawn() as FakeChild, 3);
+          return new Promise<FakeBrowser>(() => {});
+        },
+        openPage: async () => 'page',
+        budgetMs: 5_000,
+        attempts: 2,
+        warn: silent,
+      }),
+    ).rejects.toThrow(
+      "test: launch() lost Chromium's stdio pipe (Failed to connect) on attempt 2/2",
+    );
+    expect(children).toHaveLength(2);
+  });
+
+  test('a pipe error after the launch is decided stays caught, and inert', async () => {
+    const { host, children, original } = fakeSpawnHost();
+    const acquired = await acquireBrowserPage({
+      label: 'test',
+      spawnHost: host,
+      launch: async () => {
+        host.spawn();
+        return new FakeBrowser('ok');
+      },
+      openPage: async () => 'page',
+      warn: silent,
+    });
+    expect(host.spawn).toBe(original);
+    const child = children[0] as FakeChild;
+    loseStdioPipe(child);
+    await drainMicrotasks();
+    expect(child.kills).toEqual([]);
+    expect(acquired.browser.closes).toBe(0);
+  });
+
+  test('only the extra pipes are guarded, and nested guards restore spawn once', () => {
+    const { host, children, original } = fakeSpawnHost();
+    const outer = guardStdioPipes(host);
+    const inner = guardStdioPipes(host);
+    host.spawn();
+    const child = children[0] as FakeChild;
+    expect((child.stdio[1] as EventEmitter).listenerCount('error')).toBe(0);
+    expect((child.stdio[3] as EventEmitter).listenerCount('error')).toBe(1);
+    expect((child.stdio[4] as EventEmitter).listenerCount('error')).toBe(1);
+    inner.release();
+    expect(host.spawn).not.toBe(original);
+    outer.release();
+    outer.release();
+    expect(host.spawn).toBe(original);
   });
 });
 
