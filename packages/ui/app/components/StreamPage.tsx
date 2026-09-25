@@ -571,7 +571,11 @@ function LandPanel({
           data-status={stream.delivery_state.status}
         >
           Delivery: {stream.delivery_state.mode} · {stream.delivery_state.status.replace('_', ' ')}
-          {stream.delivery_state.held_by?.map((h) => (
+          {/* T341: the result line below already says why; the reason reads once. */}
+          {(outcome === undefined && refused === undefined
+            ? (stream.delivery_state.held_by ?? [])
+            : []
+          ).map((h) => (
             <span key={`${h.reason}:${h.detail}`}>
               {' — '}
               <Linked text={h.detail} />
