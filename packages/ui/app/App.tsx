@@ -11,7 +11,7 @@
 
 import { DirectorPage } from './components/Director';
 import { Inbox } from './components/Inbox';
-import { DependenciesLens, RepoView, RunningLens } from './components/Lenses';
+import { DependenciesLens, EventLog, RepoView, RunningLens } from './components/Lenses';
 import { NewStream } from './components/NewStream';
 import { Rules } from './components/Rules';
 import { Settings } from './components/Settings';
@@ -53,6 +53,8 @@ export function App(): JSX.Element {
             <Rules />
           ) : view === 'director' ? (
             <DirectorPage />
+          ) : view === 'events' ? (
+            <EventLog />
           ) : view === 'stream' && selected !== undefined ? (
             <StreamPage id={selected} />
           ) : (

@@ -45,6 +45,7 @@ import {
   sayOnStream,
   setNodeAutonomy,
   setProjectAutonomy,
+  setProjectTracker,
   stopSessions,
   waitOnStream,
 } from '../lib/api';
@@ -656,6 +657,131 @@ function AutonomyPicker({
   );
 }
 
+type StatusMapKey = 'in_progress' | 'in_review' | 'done';
+const STATUS_MAP_FIELDS: ReadonlyArray<{ key: StatusMapKey; label: string }> = [
+  { key: 'in_progress', label: 'In progress' },
+  { key: 'in_review', label: 'In review' },
+  { key: 'done', label: 'Done' },
+];
+
+/**
+ * T338: a project's own controls, on its root node's page: the Director's
+ * autonomy level (§12) and the tracker block (§10: system, push status,
+ * status map). Credentials stay in Settings → Trackers.
+ */
+function ProjectControls({
+  project,
+  busy,
+  act,
+}: {
+  project: CockpitProjectRow;
+  busy: boolean;
+  act: (fn: () => Promise<unknown>) => Promise<void> | void;
+}): JSX.Element {
+  const tracker = project.tracker;
+  const [system, setSystem] = useState<'' | 'jira' | 'linear'>(tracker?.system ?? '');
+  const [push, setPush] = useState(tracker?.push_status ?? false);
+  const [map, setMap] = useState<Record<StatusMapKey, string>>({
+    in_progress: tracker?.status_map?.in_progress ?? '',
+    in_review: tracker?.status_map?.in_review ?? '',
+    done: tracker?.status_map?.done ?? '',
+  });
+  function save(): void {
+    if (system === '') {
+      void act(() => setProjectTracker(project.id, null));
+      return;
+    }
+    const statusMap = Object.fromEntries(
+      STATUS_MAP_FIELDS.map((f) => [f.key, map[f.key].trim()]).filter(([, v]) => v !== ''),
+    );
+    void act(() =>
+      setProjectTracker(project.id, {
+        system,
+        ...(tracker?.base_url !== undefined ? { base_url: tracker.base_url } : {}),
+        push_status: push,
+        ...(Object.keys(statusMap).length > 0 ? { status_map: statusMap } : {}),
+      }),
+    );
+  }
+  return (
+    <div className="cr-project-controls" data-testid="project-controls">
+      <label className="cr-dim">
+        Director autonomy{' '}
+        <select
+          data-testid="director-autonomy-select"
+          value={project.autonomy?.director ?? 'advise'}
+          disabled={busy}
+          onChange={(e) =>
+            void act(() => setProjectAutonomy(project.id, { director: e.target.value as Autonomy }))
+          }
+        >
+          {AUTONOMY_LEVELS.map((l) => (
+            <option key={l} value={l}>
+              {l}
+            </option>
+          ))}
+        </select>
+      </label>
+      {project.repos !== undefined && (
+        <p className="cr-dim" data-testid="project-repos">
+          Repos: {project.repos.length === 0 ? 'none' : project.repos.join(', ')}
+        </p>
+      )}
+      <form
+        className="cr-actions"
+        data-testid="project-tracker-form"
+        onSubmit={(e) => {
+          e.preventDefault();
+          save();
+        }}
+      >
+        <label className="cr-dim">
+          Tracker{' '}
+          <select
+            data-testid="project-tracker-system"
+            value={system}
+            disabled={busy}
+            onChange={(e) => setSystem(e.target.value as '' | 'jira' | 'linear')}
+          >
+            <option value="">none</option>
+            <option value="jira">Jira</option>
+            <option value="linear">Linear</option>
+          </select>
+        </label>
+        {system !== '' && (
+          <>
+            <label className="cr-dim">
+              <input
+                type="checkbox"
+                data-testid="project-tracker-push"
+                checked={push}
+                disabled={busy}
+                onChange={(e) => setPush(e.target.checked)}
+              />{' '}
+              push status
+            </label>
+            {STATUS_MAP_FIELDS.map((f) => (
+              <label key={f.key} className="cr-dim">
+                {f.label}{' '}
+                <input
+                  data-testid={`project-tracker-map-${f.key}`}
+                  value={map[f.key]}
+                  placeholder="tracker status"
+                  disabled={busy}
+                  onChange={(e) => setMap((m) => ({ ...m, [f.key]: e.target.value }))}
+                />
+              </label>
+            ))}
+          </>
+        )}
+        <button type="submit" className="cr-btn" data-testid="project-tracker-save" disabled={busy}>
+          Save tracker
+        </button>
+      </form>
+    </div>
+  );
+}
+
 /** T283 (§14.5): the children's status cards, on the parent's page. */
 function ChildCards({
   cards,
@@ -996,6 +1122,12 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
           busy={busy}
           act={act}
         />
+        {(() => {
+          const project = cockpit?.projects.find((p) => p.root === stream.id);
+          return project ? (
+            <ProjectControls key={project.id} project={project} busy={busy} act={act} />
+          ) : null;
+        })()}
         {linking && (
           <div className="cr-actions" data-testid="link-wait-form">
             <select

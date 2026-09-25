@@ -15,6 +15,7 @@ import {
   type ReposConfig,
   type StatusCard,
   type Stream,
+  type TrackerSettings,
   liveChildrenOf,
   nodeRole,
 } from '@agile-agents/shared';
@@ -155,6 +156,9 @@ export interface CockpitProjectRow {
     coordinator: 'advise' | 'organise' | 'run';
     director: 'advise' | 'organise' | 'run';
   };
+  /** T338: the project's repos and tracker settings (the root node's project controls). */
+  repos?: string[];
+  tracker?: TrackerSettings;
 }
 
 export function buildCockpitFrame(
@@ -190,6 +194,8 @@ export function buildCockpitFrame(
       name: p.name,
       root: p.root,
       autonomy: p.autonomy,
+      repos: p.repos,
+      ...(p.tracker !== undefined ? { tracker: p.tracker } : {}),
     })),
     repos: Object.entries(repos).map(([name, entry]) => ({
       name,

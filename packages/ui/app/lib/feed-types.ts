@@ -21,6 +21,7 @@ import type {
   KnowledgeItem as Rule,
   Stream,
   ThreadEntry,
+  TrackerSettings,
 } from '@agile-agents/shared';
 
 /** The project the daemon drives — the header's name, and its path on hover. */
@@ -140,6 +141,9 @@ export interface CockpitProjectRow {
     coordinator: 'advise' | 'organise' | 'run';
     director: 'advise' | 'organise' | 'run';
   };
+  /** T338: the project's repos and tracker settings. Absent from an older daemon. */
+  repos?: string[];
+  tracker?: TrackerSettings;
 }
 
 /** T161: mirror of `delivery/service.ts`'s `LandPreflight` — the Land button's "before". */

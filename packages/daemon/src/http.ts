@@ -651,6 +651,7 @@ async function handleDirectorRoute(
  *
  *   GET /api/streams/:id/activity  every event routed to the node: reason, delivery status, session or digest
  *   GET /api/repos/:name/events    every event on the repo
+ *   GET /api/events                T338: the event log, every routed event, newest first
  *   GET /api/repos/:name/knowledge T265: the repo's accepted standards and architecture
  */
 function handleActivityRoute(
@@ -661,6 +662,10 @@ function handleActivityRoute(
   if (req.method !== 'GET') return undefined;
   const node = url.pathname.match(/^\/api\/streams\/([^/]+)\/activity$/);
   const repo = url.pathname.match(/^\/api\/repos\/([^/]+)\/events$/);
+  if (url.pathname === '/api/events') {
+    if (!feed?.events) return errorResponse(503, 'events not available');
+    return jsonResponse({ events: feed.events.recent() });
+  }
   const norms = url.pathname.match(/^\/api\/repos\/([^/]+)\/knowledge$/);
   if (norms) {
     if (!feed?.rules) return errorResponse(503, 'knowledge not available');
@@ -723,7 +728,7 @@ async function handlePlanRoute(
  *
  *   POST /api/proposals/:id/apply|dismiss  the human decides a coordinator's proposal card
  *   POST /api/streams/:id/autonomy         `{autonomy: level|null}`: the node's override
- *   POST /api/projects/:id                 `{autonomy: {coordinator?, director?}}`: the project's levels
+ *   POST /api/projects/:id                 `{autonomy?: {coordinator?, director?}, tracker?: {…} | null}`: the project's levels and (T338) tracker settings
  */
 async function handleAutonomyRoute(
   req: Request,
@@ -758,6 +763,7 @@ async function handleAutonomyRoute(
     return jsonResponse(
       await feed.projects.update(decodeURIComponent(project?.[1] ?? ''), {
         autonomy: body.autonomy,
+        ...(body.tracker !== undefined ? { tracker: body.tracker } : {}),
       }),
     );
   } catch (err) {

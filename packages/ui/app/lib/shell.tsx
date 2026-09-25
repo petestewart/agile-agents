@@ -19,6 +19,7 @@ export type ShellView =
   | 'deps'
   | 'rules'
   | 'director'
+  | 'events'
   | 'settings'
   | 'stream';
 /** The views a `?view=` deep link may name; `stream` needs an id, so it is not one. */
@@ -29,6 +30,7 @@ export const SHELL_VIEWS: readonly ShellView[] = [
   'deps',
   'rules',
   'director',
+  'events',
   'settings',
 ];
 

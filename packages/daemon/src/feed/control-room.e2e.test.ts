@@ -2391,6 +2391,112 @@ describe('repo delivery settings (Playwright e2e, T222)', () => {
 
 // ---- T208: the project tree and switcher -----------------------------------
 
+describe('cockpit gaps (Playwright e2e, T338)', () => {
+  browserTest(
+    'New project with repos; Director autonomy and tracker on the root; New rule with a name and a picked scope; the event log',
+    async () => {
+      const cockpit = await startCockpit();
+      const repo = mkdtempSync(join(tmpdir(), 'agile-gaps-e2e-'));
+      let page: Page | undefined;
+      try {
+        git(['init', '-q', '-b', 'main'], repo);
+        await cockpit.store.addRepo('api', { path: repo });
+        page = await openPage();
+        await page.goto(`${cockpit.base}/`);
+
+        // New project, with its repos ticked.
+        await page.locator('[data-testid="new-project-open"]').click();
+        await page.locator('[data-testid="new-project-name"]').fill('shop');
+        await page.locator('[data-testid="new-project-repo"][data-repo="api"]').check();
+        await page.locator('[data-testid="new-project-create"]').click();
+        await waitUntil('the project to exist', () => cockpit.projects.list().length === 1);
+        const shop = cockpit.projects.list()[0];
+        if (!shop) throw new Error('shop missing');
+        expect(shop.repos).toEqual(['api']);
+
+        // The root's page: Director autonomy, and the project's tracker block.
+        await page.locator(`[data-testid="stream-tree"] [data-stream="${shop.root}"]`).click();
+        await page.locator('[data-testid="project-controls"]').waitFor({ state: 'visible' });
+        expect(await page.locator('[data-testid="project-repos"]').textContent()).toBe(
+          'Repos: api',
+        );
+        await page.locator('[data-testid="director-autonomy-select"]').selectOption('organise');
+        await waitUntil(
+          'the Director level to be set',
+          () => cockpit.projects.get(shop.id).autonomy.director === 'organise',
+        );
+        expect(cockpit.projects.get(shop.id).autonomy.coordinator).toBe('advise');
+        await page.locator('[data-testid="project-tracker-system"]').selectOption('linear');
+        await page.locator('[data-testid="project-tracker-push"]').check();
+        await page.locator('[data-testid="project-tracker-map-done"]').fill('Shipped');
+        await page.locator('[data-testid="project-tracker-save"]').click();
+        await waitUntil(
+          'the tracker to be set',
+          () => cockpit.projects.get(shop.id).tracker !== undefined,
+        );
+        expect(cockpit.projects.get(shop.id).tracker).toEqual({
+          system: 'linear',
+          push_status: true,
+          status_map: { done: 'Shipped' },
+        });
+        // Cross-origin writes are refused.
+        const cross = await fetch(`${cockpit.base}/api/projects/${shop.id}`, {
+          method: 'POST',
+          headers: { origin: 'http://evil.example', 'content-type': 'application/json' },
+          body: JSON.stringify({ tracker: null }),
+        });
+        expect(cross.status).toBe(403);
+
+        // Knowledge → New rule: a Name, and the scope picked by name (no ids typed).
+        await page.locator('[data-view="rules"]').click();
+        await page.locator('[data-testid="rules-new"]').click();
+        const form = '[data-testid="rules-new-form"]';
+        await page.locator(`${form} [data-testid="rules-edit-name"]`).fill('money-in-cents');
+        await page.locator(`${form} [data-testid="rules-edit-text"]`).fill('store money in cents');
+        const scope = page.locator(`${form} [data-testid="rules-edit-scope"]`);
+        expect(await scope.locator('option').allTextContents()).toContain('Project: shop');
+        await scope.selectOption({ label: 'Project: shop' });
+        await page.locator(`${form} [data-testid="rules-edit-save"]`).click();
+        await page.locator(form).waitFor({ state: 'detached' });
+        await waitUntil('the item to be stored', () =>
+          cockpit.store.listKnowledge().some((r) => r.name === 'money-in-cents'),
+        );
+        const item = cockpit.store.listKnowledge().find((r) => r.name === 'money-in-cents');
+        expect(item?.scope).toEqual({ kind: 'project', project: shop.id });
+        // The list names the scope's project, not its id.
+        await waitForText(
+          page,
+          `[data-testid="rules-row"][data-rule="${item?.id}"] [data-testid="rules-scope"]`,
+          'project:shop',
+        );
+
+        // The event log: every routed event, subjects by title.
+        const node = await cockpit.streams.create('human', {
+          title: 'checkout',
+          goal: 'g',
+          project: shop.id,
+        });
+        const event = await routeAndEmit(
+          cockpit.events,
+          { type: 'human_line', subject: node.id, by: 'human', payload: { body: 'hi' } },
+          cockpit.streams.list(),
+        );
+        await page.locator('[data-view="events"]').click();
+        const row = `[data-testid="event-log"] [data-event="${event.id}"]`;
+        await page.locator(row).waitFor({ state: 'visible' });
+        const text = (await page.locator(row).textContent()) ?? '';
+        expect(text).toContain('human line · checkout');
+        expect(text).not.toContain(node.id);
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+        rmSync(repo, { recursive: true, force: true });
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+});
+
 describe('project tree and switcher (Playwright e2e, T208)', () => {
   browserTest(
     "two projects: each one's nodes show only under it; quick capture lands in the selected one",

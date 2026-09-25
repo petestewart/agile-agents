@@ -736,6 +736,31 @@ body {
   border-bottom: 1px solid var(--border);
   overflow-wrap: anywhere;
 }
+/* T338: a project's own controls on its root node's page. */
+.cr-project-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 6px;
+}
+.cr-project-controls .cr-actions {
+  flex-wrap: wrap;
+  align-items: center;
+}
+/* T338: New project's repo checkboxes. */
+.cr-repo-choices {
+  border: 0;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  font-size: 13px;
+}
+.cr-repo-choices legend {
+  padding: 0;
+  margin-bottom: 4px;
+}
 /* T338: the Plan tab labels its parts: an Owners list and a heading per contract. */
 .cr-plan h3 {
   font-size: 14px;
