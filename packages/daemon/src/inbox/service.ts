@@ -18,6 +18,7 @@ import {
   inboxContext,
   inboxDetail,
   isSeededRule,
+  liveChildrenOf,
 } from '@agile-agents/shared';
 import type { GateService } from '../gates/service';
 import type { QuestionService } from '../questions/service';
@@ -173,6 +174,9 @@ export class InboxService {
     if (stream.archived === true) return undefined;
     if (stream.human.status !== 'open') return undefined;
     if (stream.agent.status !== 'blocked' && stream.agent.status !== 'done') return undefined;
+    // T336: a coordinating node (or a project root with parts) has no branch
+    // of its own; its coordinator finishing a turn is nothing to land.
+    if (stream.agent.status === 'done' && hasParts(stream.id, byId)) return undefined;
     return {
       kind: stream.agent.status,
       id: stream.id,
@@ -189,4 +193,9 @@ export class InboxService {
       ...(stream.agent.progress !== undefined ? withDetail(stream.agent.progress) : {}),
     };
   }
+}
+
+/** Live children other than helpers: what makes a node coordinating (`nodeRole`). */
+function hasParts(id: string, byId: Map<string, Stream>): boolean {
+  return liveChildrenOf(id, [...byId.values()]).some((c) => c.helper_of !== id);
 }
