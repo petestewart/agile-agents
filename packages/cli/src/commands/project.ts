@@ -5,7 +5,7 @@
  * takes a comma-separated list of names from `repos.yaml`.
  */
 
-import type { Project } from '@agile-agents/shared';
+import type { Project, TrackerSettings } from '@agile-agents/shared';
 import type { ParsedArgs } from '../args';
 import { hasFlag, optionalList, optionalString, requireOption, requirePositional } from '../args';
 import { callRpc } from '../client';
@@ -73,7 +73,7 @@ export function projectFields(p: Project): Array<[string, string]> {
     ['session', session],
     ['delivery', delivery],
     ['autonomy', `coordinator=${p.autonomy.coordinator} director=${p.autonomy.director}`],
-    ['tracker', p.tracker ? p.tracker.system : '-'],
+    ['tracker', p.tracker ? trackerSummary(p.tracker) : '-'],
     ['archived', p.archived ? 'yes' : 'no'],
     ['created_at', p.created_at],
   ];
@@ -97,10 +97,98 @@ function onOff(value: string, flag: string): boolean {
   throw new Error(`--${flag} must be on or off`);
 }
 
+function trackerSummary(t: TrackerSettings): string {
+  const map = Object.entries(t.status_map ?? {})
+    .map(([k, v]) => `${k}=${v}`)
+    .join(',');
+  return `${t.system} push_status=${t.push_status ? 'on' : 'off'}${map ? ` status_map=${map}` : ''}`;
+}
+
+const TRACKER_SYSTEMS = ['jira', 'linear', 'none'] as const;
+const STATUS_MAP_KEYS = ['in_progress', 'in_review', 'done'] as const;
+
+/** The tracker flags of `project set`, parsed but not yet merged. `null` in `status_map` clears that key. */
+export interface TrackerFlags {
+  system?: (typeof TRACKER_SYSTEMS)[number];
+  push_status?: boolean;
+  status_map?: Record<string, string | null>;
+}
+
+/**
+ * T327: `--tracker jira|linear|none`, `--push-status on|off` and
+ * `--status-map in_progress=<Name>,in_review=<Name>,done=<Name>` (repeatable;
+ * names may hold spaces; `key=` clears one). Undefined when none is given.
+ */
+export function parseTrackerFlags(args: ParsedArgs): TrackerFlags | undefined {
+  const flags: TrackerFlags = {};
+  const system = optionalString(args.options, 'tracker');
+  if (system !== undefined) {
+    if (!(TRACKER_SYSTEMS as readonly string[]).includes(system)) {
+      throw new Error('--tracker must be jira, linear or none');
+    }
+    flags.system = system as TrackerFlags['system'];
+  }
+  const push = optionalString(args.options, 'push-status');
+  if (push !== undefined) flags.push_status = onOff(push, 'push-status');
+  const entries = optionalList(args, 'status-map');
+  if (entries !== undefined) {
+    const map: Record<string, string | null> = {};
+    for (const entry of entries) {
+      const eq = entry.indexOf('=');
+      const key = eq < 0 ? entry : entry.slice(0, eq).trim();
+      if (eq < 0 || !(STATUS_MAP_KEYS as readonly string[]).includes(key)) {
+        throw new Error(
+          `--status-map takes ${STATUS_MAP_KEYS.map((k) => `${k}=<Name>`).join(',')}`,
+        );
+      }
+      const name = entry.slice(eq + 1).trim();
+      map[key] = name.length > 0 ? name : null;
+    }
+    flags.status_map = map;
+  }
+  for (const flag of ['tracker', 'push-status', 'status-map']) {
+    if (args.options[flag] === true) throw new Error(`--${flag} needs a value`);
+  }
+  if (Object.keys(flags).length === 0) return undefined;
+  if (flags.system === 'none' && Object.keys(flags).length > 1) {
+    throw new Error('--tracker none clears the tracker; it takes no --push-status or --status-map');
+  }
+  return flags;
+}
+
+/**
+ * The project's next tracker block: `null` removes it. Fields merge into the
+ * current block; switching system starts a fresh block (status names and
+ * `base_url` belong to one system).
+ */
+export function mergeTracker(
+  before: TrackerSettings | undefined,
+  flags: TrackerFlags,
+): TrackerSettings | null {
+  if (flags.system === 'none') return null;
+  const system = flags.system ?? before?.system;
+  if (system === undefined) {
+    throw new Error('the project has no tracker: pass --tracker jira|linear as well');
+  }
+  const { status_map: beforeMap, ...base } =
+    before !== undefined && before.system === system ? before : { system, push_status: false };
+  const map: Record<string, string> = {};
+  for (const [key, name] of Object.entries({ ...beforeMap, ...flags.status_map })) {
+    if (name) map[key] = name;
+  }
+  return {
+    ...base,
+    system,
+    push_status: flags.push_status ?? base.push_status,
+    ...(Object.keys(map).length > 0 ? { status_map: map } : {}),
+  };
+}
+
 /**
  * `set <id> [--name n] [--repo a,b] [--vendor v] [--model m] [--effort e]
- * [--delivery direct|pr] [--auto-merge on|off] [--coordinator-autonomy a] [--director-autonomy a]`.
- * Session and delivery fields merge into what the project already has.
+ * [--delivery direct|pr] [--auto-merge on|off] [--coordinator-autonomy a] [--director-autonomy a]
+ * [--tracker jira|linear|none] [--push-status on|off] [--status-map k=Name,…]`.
+ * Session, delivery and tracker fields merge into what the project already has.
  */
 export async function runProjectSet(
   socketPath: string,
@@ -132,10 +220,13 @@ export async function runProjectSet(
     if (value !== undefined) autonomy[key] = value;
   }
 
-  if (Object.keys(session).length > 0 || Object.keys(delivery).length > 0) {
+  const tracker = parseTrackerFlags(args);
+
+  if (Object.keys(session).length > 0 || Object.keys(delivery).length > 0 || tracker) {
     const before = await callRpc<Project>(socketPath, 'project.get', { id });
     if (Object.keys(session).length > 0) patch.session = { ...before.session, ...session };
     if (Object.keys(delivery).length > 0) patch.delivery = { ...before.delivery, ...delivery };
+    if (tracker) patch.tracker = mergeTracker(before.tracker, tracker);
   }
   if (Object.keys(autonomy).length > 0) patch.autonomy = autonomy;
   if (Object.keys(patch).length === 0) {
