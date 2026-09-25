@@ -55,6 +55,7 @@ describe('agent verbs', () => {
       'add_waits_on',
       'set_owner',
       'note_child',
+      'answer_child',
       'propose_contract',
       'decide_contract',
       'ask_sibling',

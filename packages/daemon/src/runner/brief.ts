@@ -199,6 +199,7 @@ export function coordinatorSection(
       '',
       `Autonomy: **${autonomy}**. ${AUTONOMY_HINT[autonomy]}`,
       planLine,
+      'A child’s `ask` about the plan, a contract or a sibling comes to you first (`child_question`): answer it with `answer_child`, or pass it to the operator.',
       NAMES_HINT,
     ].join('\n'),
   );
@@ -224,7 +225,7 @@ export function planSection(view: ChildPlanView): string {
   }
   lines.push(
     '',
-    'Settle details with a sibling directly (`ask_sibling`, `reply_sibling`; your coordinator sees a copy). Anything that changes the plan, a contract or who owns what goes to your coordinator: agree it with the sibling first, then `propose_contract` with them in `with`.',
+    'Settle details with a sibling directly (`ask_sibling`, `reply_sibling`; your coordinator sees a copy). Anything that changes the plan, a contract or who owns what goes to your coordinator: agree it with the sibling first, then `propose_contract` with them in `with`. An `ask` about the plan, a contract or a sibling goes to your coordinator first.',
     NAMES_HINT,
   );
   return section('Your part of the plan', lines.join('\n'));
