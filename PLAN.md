@@ -1673,12 +1673,14 @@ agile tail --director
 
 ### Ticket: T329 Director restart backoff
 - **Priority:** P0
-- **Status:** In Progress
-- **Owner:** opus:worker-T329
+- **Status:** Done
+- **Owner:** Unassigned
 - **Scope:** `DirectorService.wake()` restarts a Director session that dies at start immediately, 3–4 times a second (≈5,500 `director_put` events, ≈1,800 thread lines and one `sessions/` dir per attempt in 9 minutes). Add backoff and a cap; after repeated start failures, stop and put one card in the inbox with the error.
 - **Acceptance Criteria:** A test with a vendor that dies at start: bounded attempts, backoff, one inbox card, no event flood.
 - **Validation Steps:** `bun test packages/daemon/src/director`.
 - **Notes:** Found in T328. Fix on claude/phase-12, merged forward.
+- T329: sonnet review APPROVE. A start fails if start() throws or the session exits before its first turn ends; retries back off 5/10/20/40 s (5 min cap), give up after 5 with one Director-thread line naming the vendor error; `director say` resets. No per-retry thread lines or director_put. Thread line instead of an inbox card (inbox items need a stream) — Pete to confirm. Daemon +99. merge 8a7bc1e on phase-12, forwarded.
+
 
 ### Ticket: T325 Phase 13 QA and Pete's look
 - **Priority:** P0
