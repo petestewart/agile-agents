@@ -1596,3 +1596,66 @@ describe('decidePermission — T343 engineer git arguments that are paths', () =
     }
   });
 });
+
+describe('decidePermission — T343 engineer git config overrides that can run programs', () => {
+  const kind = (command: string) => [
+    command,
+    decide('engineer', request('execute', { command })).kind,
+  ];
+
+  test('-c, --config-env, --exec-path and program env prefixes are held', () => {
+    for (const command of [
+      'git -c core.pager="rm -rf ~" diff',
+      'git -c alias.x=!sh x',
+      'git -c diff.external=./evil.sh diff',
+      'git --config-env=core.pager=EVIL log',
+      'git --exec-path=./bin status',
+      'GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.pager GIT_CONFIG_VALUE_0=evil git log',
+      "GIT_CONFIG_PARAMETERS=\"'core.pager'='evil'\" git log",
+      'GIT_EXEC_PATH=./bin git status',
+      'GIT_PAGER=./evil git log',
+      'GIT_EXTERNAL_DIFF=./evil git diff',
+      'GIT_SSH_COMMAND=./evil git fetch origin',
+      'GIT_EDITOR=./evil git commit',
+      'EDITOR=vim git commit',
+      'VISUAL=./evil git rebase -i HEAD~2',
+      'sh -c "GIT_PAGER=./evil git log"',
+    ]) {
+      expect(kind(command)).toEqual([command, 'hil']);
+    }
+    const reason = decide('engineer', request('execute', { command: 'git -c core.pager=x diff' }));
+    expect(reason.kind === 'hil' && reason.hilRequest.summary).toContain(
+      'git config overrides that can run programs need the operator',
+    );
+  });
+
+  test('an inert editor (a shell builtin) and plain git stay allowed', () => {
+    for (const command of [
+      'GIT_EDITOR=true git rebase --continue',
+      'GIT_EDITOR=: git commit --amend',
+      'git diff',
+      'git log --oneline',
+    ]) {
+      expect(kind(command)).toEqual([command, 'allow']);
+    }
+  });
+
+  test('a commit message is text, not a path', () => {
+    for (const command of [
+      'git commit -m "../fix"',
+      'git commit -am "/tmp is gone"',
+      'git commit --message "~ expansion"',
+      'git commit --message=../fix',
+      'git commit -m../fix',
+      'git tag -a v1 -m "../x"',
+      'git commit -F -',
+    ]) {
+      expect(kind(command)).toEqual([command, 'allow']);
+    }
+    // The path after the message is still checked.
+    expect(kind('git commit -m "msg" ../outside.ts')).toEqual([
+      'git commit -m "msg" ../outside.ts',
+      'hil',
+    ]);
+  });
+});

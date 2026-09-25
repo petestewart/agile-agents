@@ -410,6 +410,9 @@ function engineerExecuteVerdict(command: string, ctx: PolicyContext): PolicyVerd
       if (cmd.isGitConfigWrite(gitArgs)) {
         return hil('git config that sets or removes a value is never automatic');
       }
+      if (cmd.gitProgramOverride(atom)) {
+        return hil('git config overrides that can run programs need the operator');
+      }
       const redirect = cmd.gitDirRedirectReason(atom);
       if (redirect !== undefined) return hil(`${redirect}: never automatic`);
       const written = verifyBenignPaths(cmd.gitWriteTargets(gitArgs), ctx);

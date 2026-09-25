@@ -601,7 +601,18 @@ function looksLikeGitPath(value: string, root: string): boolean {
 export function gitPathArguments(args: string[], root: string): string[] {
   const readPositionals = GIT_READ_POSITIONAL_SUBCOMMANDS.has(args[0] ?? '');
   const paths: string[] = [];
+  let messageNext = false;
   for (const t of args.slice(1)) {
+    // A commit/tag message (`-m`, `-am`, `--message`) is text, never a path.
+    if (messageNext) {
+      messageNext = false;
+      continue;
+    }
+    if (t === '--message' || /^-[A-Za-z]*m$/.test(t)) {
+      messageNext = true;
+      continue;
+    }
+    if (t.startsWith('--message=') || t.startsWith('-m')) continue;
     let value: string;
     if (t.startsWith('--')) {
       const eq = t.indexOf('=');
@@ -616,6 +627,28 @@ export function gitPathArguments(args: string[], root: string): string[] {
     if (looksLikeGitPath(value, root)) paths.push(value);
   }
   return paths;
+}
+
+/** T343: env that makes git run a program of the caller's choosing. */
+const GIT_PROGRAM_ENV =
+  /^(GIT_CONFIG_[A-Z0-9_]*|GIT_CONFIG|GIT_EXEC_PATH|GIT_PAGER|PAGER|GIT_EXTERNAL_DIFF|GIT_SSH|GIT_SSH_COMMAND|GIT_ASKPASS|GIT_EDITOR|GIT_SEQUENCE_EDITOR|EDITOR|VISUAL)=(.*)$/;
+/** Editor values that run nothing: shell builtins (git runs the editor through `sh`). */
+const INERT_EDITOR = /^(GIT_EDITOR|GIT_SEQUENCE_EDITOR|EDITOR|VISUAL)=(true|:)$/;
+
+/**
+ * T343: an engineer's git call that overrides config, or env git reads as
+ * config, with something that can run a program (`-c core.pager=...`,
+ * `--config-env`, `--exec-path`, `GIT_PAGER=`, `GIT_SSH_COMMAND=`, ...), so
+ * a held command can't ride in on a git key. `GIT_EDITOR=true` (a builtin)
+ * is inert and stays allowed.
+ */
+export function gitProgramOverride(atom: CommandAtom): boolean {
+  const invocation = parseGitInvocation(atom.tokens);
+  if (invocation.args === undefined) return false;
+  if (invocation.configs.length > 0) return true;
+  const globals = atom.tokens.slice(1, atom.tokens.length - invocation.args.length);
+  if (globals.some((t) => /^--(config-env|exec-path)(=|$)/.test(t))) return true;
+  return (atom.prefix ?? []).some((t) => GIT_PROGRAM_ENV.test(t) && !INERT_EDITOR.test(t));
 }
 
 /** T343: a git call a worker shouldn't need and that writes where it is told. */
