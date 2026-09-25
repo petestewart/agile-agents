@@ -43,7 +43,9 @@ export async function applyTrackerSettings(
 }
 
 /** `tracker.status` / `tracker.set` for `agile tracker`; the CLI is the human's. */
-export function buildTrackerRpcMethods(store: StateStore): Record<string, RpcMethodHandler> {
+export function buildTrackerSettingsRpcMethods(
+  store: StateStore,
+): Record<string, RpcMethodHandler> {
   return {
     'tracker.status': () => readTrackerSettings(store),
     'tracker.set': async (params) => {

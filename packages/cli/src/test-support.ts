@@ -41,7 +41,7 @@ import {
   buildQuestionRpcMethods,
   buildStateRpcMethods,
   buildStreamRpcMethods,
-  buildTrackerRpcMethods,
+  buildTrackerSettingsRpcMethods,
   createFakeSpawn,
   runInit,
   startRpcServer,
@@ -207,7 +207,7 @@ export async function startTestDaemon(prefix = 'agile-cli-test-'): Promise<TestD
     startedAt: Date.now(),
     extraMethods: {
       ...buildStateRpcMethods(store),
-      ...buildTrackerRpcMethods(store),
+      ...buildTrackerSettingsRpcMethods(store),
       // T204: as `daemon.ts`, `node new` starts the node's agent (the fake one here).
       ...buildStreamRpcMethods(streamService, {
         create: (principal, input, opts) => attachService.createNode(principal, input, opts),

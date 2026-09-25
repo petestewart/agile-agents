@@ -84,6 +84,8 @@ import {
   setRepoSettings,
 } from './store';
 import type { RepoInPlaceService, StreamService } from './streams';
+import type { TrackerLinks } from './trackers/link';
+import { TrackerError } from './trackers/port';
 import {
   TRACKER_INPUT_ERROR,
   applyTrackerSettings,
@@ -175,6 +177,8 @@ export interface HttpServerOptions {
   contracts?: ContractService;
   /** T282: the Apply/Dismiss on a coordinator's proposal card. */
   autonomy?: AutonomyService;
+  /** T321: the stream page's Link field. */
+  trackerLinks?: TrackerLinks;
   /** Test hook: the tailer's poll interval (default 250ms). */
   feedPollIntervalMs?: number;
 }
@@ -410,6 +414,7 @@ interface FeedContext {
   plans?: PlanService;
   contracts?: ContractService;
   autonomy?: AutonomyService;
+  trackerLinks?: TrackerLinks;
 }
 
 function resolveFeedContext(options: HttpServerOptions): FeedContext | undefined {
@@ -434,6 +439,7 @@ function resolveFeedContext(options: HttpServerOptions): FeedContext | undefined
     plans: options.plans,
     contracts: options.contracts,
     autonomy: options.autonomy,
+    trackerLinks: options.trackerLinks,
   };
 }
 
@@ -746,6 +752,33 @@ async function handleAutonomyRoute(
       return errorResponse(409, err.message);
     }
     if (err instanceof NotFoundError) return errorResponse(404, messageOf(err));
+    return errorResponse(400, messageOf(err));
+  }
+}
+
+/** T321: `POST /api/streams/:id/link` `{key: "SHOP-11" | null}` links (or unlinks) the node. */
+async function handleLinkRoute(
+  req: Request,
+  url: URL,
+  feed: FeedContext | undefined,
+  sameOrigin: () => boolean,
+): Promise<Response | undefined> {
+  const m = url.pathname.match(/^\/api\/streams\/([^/]+)\/link$/);
+  if (!m || req.method !== 'POST') return undefined;
+  if (!sameOrigin()) return errorResponse(403, 'cross-origin request rejected');
+  if (!feed?.trackerLinks) return errorResponse(503, 'tracker links not available');
+  const id = UlidSchema.safeParse(decodeURIComponent(m[1] ?? ''));
+  if (!id.success) return errorResponse(400, `invalid stream id: ${m[1]}`);
+  try {
+    const body = await readJsonBody(req);
+    const key = body.key;
+    if (key !== null && (typeof key !== 'string' || key.trim() === '')) {
+      return errorResponse(400, 'invalid link: key is an issue key (SHOP-11) or null');
+    }
+    return jsonResponse(await feed.trackerLinks.link(id.data, key));
+  } catch (err) {
+    if (err instanceof NotFoundError) return errorResponse(404, messageOf(err));
+    if (err instanceof TrackerError) return errorResponse(400, err.message);
     return errorResponse(400, messageOf(err));
   }
 }
@@ -1179,6 +1212,9 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
 
         const autonomyRoute = await handleAutonomyRoute(req, url, feed, sameOrigin);
         if (autonomyRoute) return autonomyRoute;
+
+        const linkRoute = await handleLinkRoute(req, url, feed, sameOrigin);
+        if (linkRoute) return linkRoute;
 
         const planRoute = await handlePlanRoute(req, url, feed, sameOrigin);
         if (planRoute) return planRoute;

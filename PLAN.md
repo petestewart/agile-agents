@@ -1598,17 +1598,19 @@ agile tail --director
 
 ### Ticket: T321 Link a node; pull its goal; edits as events
 - **Priority:** P1
-- **Status:** In Progress
-- **Owner:** opus:worker-T321
+- **Status:** Done
+- **Owner:** Unassigned
 - **Scope:** `agile node link <id> SHOP-11` and a Link field on the stream page. Linking sets the goal from the title, description and acceptance criteria. A poller (5 min) emits `external_changed` on edits and updates the goal with a thread line.
 - **Acceptance Criteria:** Against the fake: link, edit the description in the fake, then the event and the goal update.
 - **Validation Steps:** `bun test packages/daemon/src/trackers packages/daemon/src/events`.
 - **Notes:** After T320.
+- T321: sonnet review APPROVE. TrackerLinks: goal from issue title+description (delimited, 8k cap); 5-min poller emits external_changed to the node; node.link RPC, POST /api/streams/:id/link, `agile node link`, stream-page field. Injection test. Daemon +338. Follow-up: a tracker edit overwrites a locally edited goal (no goal-edit path exists yet). AC come from the description. merge 78e8a05.
+
 
 ### Ticket: T322 ∥ Roll-up
 - **Priority:** P2
-- **Status:** Todo
-- **Owner:** —
+- **Status:** In Progress
+- **Owner:** opus:worker-T322
 - **Scope:** An unlinked node resolves to its nearest linked ancestor. The PR body mentions that issue (fills T224's line). The linked node shows progress as children merged/total.
 - **Acceptance Criteria:** Unit tests for resolution and the PR body.
 - **Validation Steps:** `bun test packages/daemon/src/trackers packages/daemon/src/delivery`.
@@ -1616,8 +1618,8 @@ agile tail --director
 
 ### Ticket: T323 ∥ Import an epic's children
 - **Priority:** P2
-- **Status:** Todo
-- **Owner:** —
+- **Status:** In Progress
+- **Owner:** opus:worker-T323
 - **Scope:** An "Import children" button and `agile node import-children <id>` create one linked child per issue in the epic. It is idempotent: already-linked issues are skipped.
 - **Acceptance Criteria:** A test against the fake: running it twice creates each child once.
 - **Validation Steps:** `bun test packages/daemon/src/trackers`.
@@ -1625,8 +1627,8 @@ agile tail --director
 
 ### Ticket: T324 Status push and create issue
 - **Priority:** P2
-- **Status:** Todo
-- **Owner:** —
+- **Status:** In Progress
+- **Owner:** opus:worker-T324
 - **Scope:**
   - A per-project `push_status` (off by default) and `status_map`: in progress, in review and done are pushed, and the PR link is added as a link or comment. The app never closes an issue or edits its text.
   - "Create issue" is a click only.

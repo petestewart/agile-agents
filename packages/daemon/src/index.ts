@@ -57,7 +57,7 @@ export {
 export * from './store';
 
 /** T326: `tracker.*` RPC (`agile tracker`). */
-export { buildTrackerRpcMethods } from './trackers/settings';
+export { buildTrackerSettingsRpcMethods } from './trackers/settings';
 
 export * from './bus';
 

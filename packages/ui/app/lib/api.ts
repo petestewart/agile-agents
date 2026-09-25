@@ -184,6 +184,11 @@ export function decideProposal(id: string, decision: 'apply' | 'dismiss'): Promi
   return post(`/api/proposals/${encodeURIComponent(id)}/${decision}`);
 }
 
+/** T321: link the node to a tracker issue (its text becomes the goal); `null` unlinks. */
+export function linkNode(id: string, key: string | null): Promise<unknown> {
+  return post(`/api/streams/${encodeURIComponent(id)}/link`, { key });
+}
+
 /** T282: the node's coordinator autonomy override; `null` inherits the project's. */
 export function setNodeAutonomy(id: string, autonomy: Autonomy | null): Promise<unknown> {
   return post(`/api/streams/${encodeURIComponent(id)}/autonomy`, { autonomy });
