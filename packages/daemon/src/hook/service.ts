@@ -36,6 +36,7 @@ import {
 import type { Bus } from '../bus';
 import { type Classifier, ClassifierUnavailableError, classifierEnabled } from '../classifier';
 import { isPathInside } from '../permissions/command';
+import { nodeReadScope } from '../permissions/policy-tables';
 import { worktreeBranchLookups } from '../permissions/push-detector';
 import { patternRulesOf, protectedBranchesFor } from '../permissions/rule-checks';
 import type { RuleStatsOutcome } from '../rules/service';
@@ -345,37 +346,16 @@ export class HookService {
     };
   }
 
-  /** The accepted pattern rules in scope for this stream (§5.3). */
-  /**
-   * T213 (projects-design §4.4, P20): any agent may read any registered
-   * repo and its worktrees, except a private repo its project isn't listed on.
-   */
+  /** T213, T330: the registered repos this node may read, and what it never may. */
   private readScope(stream: string): Pick<HookDecisionContext, 'readRoots' | 'hiddenRoots'> {
-    const record = this.streamRecord(stream);
-    let repos: ReposConfig;
-    try {
-      repos = this.store.getRepos();
-    } catch {
-      // Unreadable registry: reads stay in the worktree.
-      return this.options.agileHome !== undefined ? { hiddenRoots: [this.options.agileHome] } : {};
-    }
-    const readRoots: string[] = [];
-    const hiddenRoots: string[] = [];
-    for (const [name, entry] of Object.entries(repos)) {
-      const visibility = entry.visibility;
-      const visible =
-        name === record?.repo ||
-        visibility === undefined ||
-        visibility.mode === 'public' ||
-        (record?.project !== undefined &&
-          (visibility.projects as readonly string[]).includes(record.project));
-      (visible ? readRoots : hiddenRoots).push(entry.path);
-    }
-    // The home holds the classifier key and every node's state: never a read target.
-    if (this.options.agileHome !== undefined) hiddenRoots.push(this.options.agileHome);
-    return { readRoots, hiddenRoots };
+    return nodeReadScope(
+      this.streamRecord(stream),
+      () => this.store.getRepos(),
+      this.options.agileHome,
+    );
   }
 
+  /** The accepted pattern rules in scope for this stream (§5.3). */
   private patternRulesFor(stream: string): Rule[] {
     return patternRulesOf(this.rulesInScope(stream));
   }

@@ -320,3 +320,64 @@ describe('the token ceiling', () => {
     expect(brief).not.toContain('truncated to fit the brief');
   });
 });
+
+describe('buildBrief — repos a worktree-less node can read (T330)', () => {
+  const base = { role: 'worker' as const, ancestors: [], thread: [], docs: [], rules: [] };
+
+  test('lists each readable repo by name and absolute path, and how code work starts', () => {
+    const brief = buildBrief({
+      ...base,
+      stream: makeStream(),
+      readableRepos: [
+        { name: 'ledger-lite', path: '/src/ledger-lite' },
+        { name: 'agile-test-repo', path: '/src/agile-test-repo' },
+      ],
+    });
+    expect(brief).toContain('## Repos you can read');
+    expect(brief).toContain('- ledger-lite: `/src/ledger-lite`');
+    expect(brief).toContain('- agile-test-repo: `/src/agile-test-repo`');
+    expect(brief).toContain('**+ Repo**');
+  });
+
+  test('a work node reads them beside its own worktree, with no + Repo hint', () => {
+    const brief = buildBrief({
+      ...base,
+      stream: makeStream({ repo: 'agile-test-repo' }),
+      readableRepos: [{ name: 'ledger-lite', path: '/src/ledger-lite' }],
+      inWorktree: true,
+    });
+    expect(brief).toContain('Besides your own worktree');
+    expect(brief).toContain('- ledger-lite: `/src/ledger-lite`');
+    expect(brief).not.toContain('+ Repo');
+  });
+
+  test('says so when none are registered, and is absent when not given', () => {
+    expect(buildBrief({ ...base, stream: makeStream(), readableRepos: [] })).toContain(
+      'none registered yet',
+    );
+    expect(buildBrief({ ...base, stream: makeStream() })).not.toContain('Repos you can read');
+  });
+});
+
+describe('buildBrief — a long agent line is quoted, not pasted (T330)', () => {
+  test('the thread tail quotes at most the 800-char head of a 16k agent line', () => {
+    const long: ThreadEntry = {
+      ts: '2026-09-21T00:00:00Z',
+      by: 'agent:01ARZ3NDEKTSV4RRFFQ69G5FAV',
+      kind: 'line',
+      body: `HEAD ${'z'.repeat(15_000)} TAIL-MARKER`,
+    };
+    const input = {
+      role: 'worker' as const,
+      stream: makeStream(),
+      ancestors: [],
+      docs: [],
+      rules: [],
+    };
+    const brief = buildBrief({ ...input, thread: [long] });
+    expect(brief).toContain('HEAD ');
+    expect(brief).not.toContain('TAIL-MARKER');
+    const without = buildBrief({ ...input, thread: [] });
+    expect(brief.length - without.length).toBeLessThan(1000);
+  });
+});
