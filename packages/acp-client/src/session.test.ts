@@ -728,6 +728,49 @@ describe('spawnSession', () => {
       expect(state.child?.kill).not.toHaveBeenCalledWith('SIGKILL');
     });
 
+    // CI job 108116863174: the same EBADF on the stdin pipe's re-arm, after
+    // the handshake. The agent reads EOF and exits 0 mid-turn; that must not
+    // read as the clean end of a session.
+    it('an agent that spoke and then exits cleanly with a request unanswered fails the session', async () => {
+      const session = create();
+      const events: Array<{ type: string; detail: string | number }> = [];
+      session.on((e) => {
+        if (e.type === 'error') events.push({ type: 'error', detail: e.message });
+        if (e.type === 'exit') events.push({ type: 'exit', detail: e.exitCode });
+      });
+      await answerInitialize();
+      const outcome = session.authenticate('cursor_login').then(
+        () => 'answered',
+        (err: Error) => err.message,
+      );
+      await flush();
+      state.child?.emit('exit', 0);
+      await flush();
+
+      expect(spawnMock).toHaveBeenCalledTimes(1);
+      expect(events).toEqual([
+        {
+          type: 'error',
+          detail: 'ACP agent exited cleanly with a request unanswered (lost stdin pipe?)',
+        },
+        { type: 'exit', detail: 0 },
+      ]);
+      expect(await outcome).toBe('ACP agent exited');
+    });
+
+    it('a clean exit with nothing outstanding stays a clean exit', async () => {
+      const session = create();
+      const errors: string[] = [];
+      session.on((e) => {
+        if (e.type === 'error') errors.push(e.message);
+      });
+      await answerInitialize();
+      state.child?.emit('exit', 0);
+      await flush();
+      expect(session.exited).toBe(true);
+      expect(errors).toEqual([]);
+    });
+
     it('a failing exit, or one after close(), is never replaced', async () => {
       const failed = create();
       await flush();

@@ -8,6 +8,7 @@
  * layout.
  */
 
+import childProcess from 'node:child_process';
 import { existsSync, readdirSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
@@ -117,6 +118,107 @@ export function resolveChromiumExecutable(): string {
 }
 
 /**
+ * A lost stdio pipe that no promise sees. `chromium.launch()` spawns
+ * Chromium with two extra pipes (fds 3 and 4, `--remote-debugging-pipe`),
+ * and bun's `child_process.spawn` opens both eagerly as `net` sockets via
+ * `net.connect({ fd })`. On Bun 1.3.11 that connect can fail (the EBADF
+ * family: an `epoll_ctl` refused for the pipe fd surfaces as `connect
+ * ENOENT`), and bun reports it by emitting `error` on the socket from a
+ * `.catch`. Playwright only adds its own `error` listeners once the launch
+ * reaches its pipe transport, several awaits later, so in that window the
+ * emit has no listener: it escapes as an unhandled rejection that the launch
+ * promise never sees, bun's test runner fails whichever test is running
+ * (process handlers don't stop it), and the launch itself hangs on a dead
+ * pipe. CI job 108116908628 is that shape: a 9 ms failure with a stack
+ * through `#createStdioObject`; reproduced by injecting EBADF into that
+ * socket's `epoll_ctl` (strace `-e inject=epoll_ctl:error=EBADF:when=N`).
+ *
+ * The guard puts a listener on every extra stdio socket the moment spawn
+ * returns, while one of `acquireBrowserPage`'s launches is in flight, so the
+ * error is caught and turned into a failed attempt (retried like a launch
+ * that rejects). Only spawns with more than three stdio entries are touched:
+ * that is Playwright's pipe launch; the daemon's own spawns use three.
+ */
+interface StdioSocket {
+  on(event: 'error', listener: (err: Error) => void): unknown;
+}
+
+/** The part of a spawned child the guard touches; `ChildProcess` or a fake. */
+export interface GuardedChild {
+  stdio?: ReadonlyArray<unknown>;
+  kill(signal?: NodeJS.Signals): boolean;
+}
+
+/** Where `spawn` is looked up at call time: `node:child_process` itself, or a fake. */
+export interface SpawnHost {
+  spawn: (...args: never[]) => GuardedChild;
+}
+
+interface PipeGuard {
+  /** Resolves with the socket error when a guarded launch loses a stdio pipe. */
+  lost: Promise<Error>;
+  release(): void;
+}
+
+const activeGuards = new Map<
+  SpawnHost,
+  { original: SpawnHost['spawn']; onLost: Set<(err: Error) => void> }
+>();
+
+function isStdioSocket(value: unknown): value is StdioSocket {
+  return typeof (value as { on?: unknown } | null)?.on === 'function';
+}
+
+/** Wraps `host.spawn` until `release()`; nested guards share one wrapper. */
+export function guardStdioPipes(host: SpawnHost = childProcess as unknown as SpawnHost): PipeGuard {
+  let entry = activeGuards.get(host);
+  if (!entry) {
+    const original = host.spawn;
+    const onLost = new Set<(err: Error) => void>();
+    const created = { original, onLost };
+    entry = created;
+    activeGuards.set(host, created);
+    host.spawn = ((...args: never[]) => {
+      const child = original.apply(host, args);
+      const extra = child.stdio?.slice(3) ?? [];
+      for (const socket of extra) {
+        if (!isStdioSocket(socket)) continue;
+        // Stays attached after release, inert: an error on an abandoned
+        // launch's pipe must not escape either.
+        socket.on('error', (err: Error) => {
+          if (created.onLost.size === 0) return;
+          // A browser without its pipe is useless and would linger.
+          try {
+            child.kill('SIGKILL');
+          } catch {}
+          for (const notify of [...created.onLost]) notify(err);
+        });
+      }
+      return child;
+    }) as SpawnHost['spawn'];
+  }
+  const shared = entry;
+  let notify!: (err: Error) => void;
+  const lost = new Promise<Error>((resolve) => {
+    notify = resolve;
+  });
+  shared.onLost.add(notify);
+  let released = false;
+  return {
+    lost,
+    release() {
+      if (released) return;
+      released = true;
+      shared.onLost.delete(notify);
+      if (shared.onLost.size === 0 && activeGuards.get(host) === shared) {
+        activeGuards.delete(host);
+        host.spawn = shared.original;
+      }
+    },
+  };
+}
+
+/**
  * Acquiring a usable browser can itself hang forever (measured: one
  * `chromium.launch()` never returned while the next launch took 168 ms;
  * `launch()`'s own timeout didn't fire and `newPage()` takes none). A
@@ -149,6 +251,8 @@ export interface AcquireBrowserPageOptions<B extends AcquirableBrowser, P> {
   attempts?: number;
   /** Defaults to `console.error`; injected by the unit tests. */
   warn?: (message: string) => void;
+  /** Where a launch's `spawn` is guarded (see `guardStdioPipes`); injected by the unit tests. */
+  spawnHost?: SpawnHost;
 }
 
 /** An abandoned browser may itself be wedged, and nothing waits on it. */
@@ -186,7 +290,15 @@ export async function acquireBrowserPage<B extends AcquirableBrowser, P>(
       closeQuietly(attemptBrowser);
     };
 
-    const acquiring: Promise<B> = reusable ? Promise.resolve(reusable) : options.launch();
+    // Installed before `launch()` runs, since it spawns a few awaits later.
+    const guard = reusable ? undefined : guardStdioPipes(options.spawnHost);
+    let acquiring: Promise<B>;
+    try {
+      acquiring = reusable ? Promise.resolve(reusable) : options.launch();
+    } catch (err) {
+      guard?.release();
+      throw err;
+    }
     const opening = (async (): Promise<{ browser: B; page: P } | undefined> => {
       const browser = await acquiring;
       attemptBrowser = browser;
@@ -214,15 +326,52 @@ export async function acquireBrowserPage<B extends AcquirableBrowser, P>(
         launchFailure = { err };
       });
     }
-    const won = await Promise.race([
-      opening.catch((err: unknown) => {
-        if (launchFailure && attempt < attempts) return undefined;
-        throw err;
-      }),
-      new Promise<undefined>((resolve) => setTimeout(() => resolve(undefined), budgetMs)),
-    ]);
+    let pipeLost: Error | undefined;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let won: { browser: B; page: P } | undefined;
+    try {
+      won = await Promise.race([
+        opening.catch((err: unknown) => {
+          if (pipeLost && attempt < attempts) return undefined;
+          if (launchFailure && attempt < attempts) return undefined;
+          throw err;
+        }),
+        new Promise<undefined>((resolve) => {
+          timer = setTimeout(() => resolve(undefined), budgetMs);
+        }),
+        ...(guard
+          ? [
+              guard.lost.then((err) => {
+                pipeLost = err;
+                return undefined;
+              }),
+            ]
+          : []),
+      ]);
+    } finally {
+      clearTimeout(timer);
+      if (guard) {
+        // A launch abandoned before it spawned stays guarded until it settles;
+        // one that lost its pipe is dead (its child killed), so let it go now.
+        if (won || pipeLost) guard.release();
+        else void acquiring.then(guard.release, guard.release);
+      }
+    }
     // Only the winner is returned, so only the winner can be cached.
     if (won) return won;
+    if (pipeLost) {
+      abandoned = true;
+      putAway();
+      void opening.then(putAway, putAway);
+      const reason = `lost Chromium's stdio pipe (${pipeLost.message.split('\n')[0]})`;
+      if (attempt === attempts) {
+        throw new Error(`${options.label}: launch() ${reason} on attempt ${attempt}/${attempts}`);
+      }
+      warn(
+        `${options.label}: launch() ${reason} (attempt ${attempt}/${attempts}) — launching another`,
+      );
+      continue;
+    }
     if (launchFailure) {
       const reason =
         launchFailure.err instanceof Error
