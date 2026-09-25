@@ -8,7 +8,12 @@
 
 import { DEFAULT_PROTECTED_BRANCHES, type Rule, type RulePattern } from '@agile-agents/shared';
 import type { RuleStatsOutcome } from '../rules/service';
-import { isPathInside, parseCommandIntoAtoms, parseGitInvocation } from './command';
+import {
+  isPathInside,
+  parseCommandIntoAtoms,
+  parseGitInvocation,
+  resolveTargetPath,
+} from './command';
 import { type PushDetectorContext, detectProtectedBranchWrite, detectPush } from './push-detector';
 
 export interface RuleCheckContext extends PushDetectorContext {
@@ -45,7 +50,10 @@ function checkPathDeny(
   if (ctx.command !== undefined) {
     for (const atom of parseCommandIntoAtoms(ctx.command)) {
       for (const cPath of parseGitInvocation(atom.tokens).cPaths) {
-        if (!isPathInside(cPath, ctx.worktreePath)) {
+        // `~/x` is the home's, not the worktree's `./~/x`; `$X` can't be placed.
+        const resolved = resolveTargetPath(cPath);
+        if (!resolved.safe) return `git -C ${cPath} names a path that cannot be resolved`;
+        if (!isPathInside(resolved.path, ctx.worktreePath)) {
           return `git -C ${cPath} targets a repo outside the session's worktree`;
         }
       }
