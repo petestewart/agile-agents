@@ -65,12 +65,14 @@ const ACP_PROTOCOL_VERSION = 1;
  * memory` and leaves no child behind. On the stdout pipe, `stdout` emits
  * `close` with no `end` and every byte the agent writes is dropped while
  * the agent lives on, so the handshake never answers and the session hangs.
- * Both are retried this many times in all: a spawn that throws, and an agent
- * whose stdout died before it said anything (nothing is lost by replacing
- * it: only the handshake was sent, and it is replayed). An EBADF on the
- * stdin pipe's later re-arm closes the agent's stdin with no signal here
- * (writes still report success); the agent sees EOF and exits, and the exit
- * path reports that. A pidfd EBADF Bun retries itself.
+ * On the stdin pipe's re-arm, the agent's stdin is closed with no signal
+ * here (writes still report success): the agent reads EOF and exits 0.
+ * Each is retried this many times in all: a spawn that throws, and an agent
+ * whose stdout died, or that exited cleanly, before it said anything
+ * (nothing is lost by replacing it: only the handshake was sent, and it is
+ * replayed). Past that point the session fails instead of hanging. A pidfd
+ * EBADF in `node:child_process` Bun retries itself (unlike `Bun.spawn`'s
+ * `exited`, T161).
  */
 const MAX_SPAWN_ATTEMPTS = 3;
 /** How long a stdout `close` without `end` waits for the process's own exit before it counts as a lost pipe. */
@@ -274,6 +276,8 @@ export function spawnSession(opts: SpawnSessionOptions): SpawnedSession {
   let stdoutSpoke = false;
   /** Every line written while `stdoutSpoke` is false: what a replacement agent is sent again. */
   let handshake: string[] = [];
+  /** Set by `close()`: an exit from here on is the one asked for, never a lost pipe. */
+  let closeRequested = false;
 
   function emit(event: AgentEvent): void {
     for (const listener of [...listeners]) listener(event);
@@ -522,40 +526,67 @@ export function spawnSession(opts: SpawnSessionOptions): SpawnedSession {
   };
 
   /**
-   * The current child's stdout closed without `end` (see
-   * `MAX_SPAWN_ATTEMPTS`): the pipe is gone but the agent may not be. An
-   * agent that never spoke is replaced and sent the handshake again; one
-   * that did has session state a replacement would not, so the session
-   * fails now, as a transport error, instead of hanging on a reply that
-   * can never arrive.
+   * Replaces an agent that lost a pipe before it ever spoke (see
+   * `MAX_SPAWN_ATTEMPTS`): nothing is lost, since only the handshake was
+   * sent, and the replacement is sent it again. False when the session is
+   * past that point (it spoke, is closing, or has no respawns left).
+   */
+  function replaceChild(lost: ChildProcess, why: string): boolean {
+    if (stdoutSpoke || closeRequested || respawnsLeft <= 0) return false;
+    respawnsLeft -= 1;
+    signalTree('SIGKILL', lost);
+    let next: ChildProcess;
+    try {
+      next = spawnChild();
+    } catch (err) {
+      emit({
+        type: 'error',
+        message: `ACP agent ${why} and the agent could not be restarted: ${err instanceof Error ? err.message : String(err)}`,
+      });
+      onDead(null);
+      return true;
+    }
+    child = next;
+    wire(next);
+    onStderr(`[acp-client] agent ${why} before it spoke (lost pipe); restarted the agent\n`);
+    for (const line of handshake) next.stdin?.write(line);
+    return true;
+  }
+
+  /**
+   * The current child's stdout closed without `end`: the pipe is gone but
+   * the agent may not be. An agent that never spoke is replaced; one that
+   * did has session state a replacement would not, so the session fails
+   * now, as a transport error, instead of hanging on a reply that can
+   * never arrive.
    */
   function onStdoutLost(lost: ChildProcess): void {
-    if (lost !== child || exited || spawnError !== null) return;
+    if (lost !== child || exited || closeRequested || spawnError !== null) return;
     if (typeof lost.exitCode === 'number' || typeof lost.signalCode === 'string') return;
-    if (!stdoutSpoke && respawnsLeft > 0) {
-      respawnsLeft -= 1;
-      signalTree('SIGKILL', lost);
-      let next: ChildProcess;
-      try {
-        next = spawnChild();
-      } catch (err) {
-        emit({
-          type: 'error',
-          message: `ACP agent stdout was lost and the agent could not be restarted: ${err instanceof Error ? err.message : String(err)}`,
-        });
-        onDead(null);
-        return;
-      }
-      child = next;
-      wire(next);
-      onStderr(
-        '[acp-client] agent stdout closed before it spoke (lost pipe); restarted the agent\n',
-      );
-      for (const line of handshake) next.stdin?.write(line);
-      return;
-    }
+    if (replaceChild(lost, 'stdout closed')) return;
     emit({ type: 'error', message: 'ACP agent stdout closed unexpectedly (lost pipe)' });
     close();
+  }
+
+  /**
+   * The current child exited. A lost stdin pipe gives no signal of its own
+   * (writes still report success): the agent reads EOF and exits cleanly.
+   * So a clean exit before the agent ever answered the handshake, that
+   * nobody asked for, is treated as that lost pipe and the agent replaced;
+   * any other exit is the session's.
+   */
+  function onChildExit(c: ChildProcess, code: number | null): void {
+    if (c !== child) return;
+    if (
+      code === 0 &&
+      !exited &&
+      spawnError === null &&
+      handshake.length > 0 &&
+      replaceChild(c, 'exited')
+    ) {
+      return;
+    }
+    onDead(code);
   }
 
   /** Listens to one child; a replaced child's late events are ignored. */
@@ -579,9 +610,7 @@ export function spawnSession(opts: SpawnSessionOptions): SpawnedSession {
     });
     // `exit` and `close` are both handled: Node emits `error` + `close`
     // (never `exit`) when the process could not be spawned at all.
-    const dead = (code: number | null) => {
-      if (c === child) onDead(code);
-    };
+    const dead = (code: number | null) => onChildExit(c, code);
     c.on('exit', dead);
     c.on('close', dead);
     c.on('error', (err) => {
@@ -615,6 +644,7 @@ export function spawnSession(opts: SpawnSessionOptions): SpawnedSession {
 
   function close(): void {
     if (exited) return;
+    closeRequested = true;
     clearForceKillTimer();
     signalTree('SIGTERM');
     forceKillTimer = setTimeout(() => {

@@ -640,10 +640,58 @@ describe('spawnSession', () => {
       const session = create();
       await flush();
       state.child?.stdout.destroy();
-      state.child?.emit('exit', 0);
+      state.child?.emit('exit', 1);
       await settle();
       expect(spawnMock).toHaveBeenCalledTimes(1);
       expect(session.exited).toBe(true);
+    });
+
+    // A lost stdin pipe gives no signal: the agent reads EOF and exits 0.
+    it('an agent that exits cleanly before it answered the handshake is replaced', async () => {
+      const stderr: string[] = [];
+      const session = create({ onStderr: (chunk) => stderr.push(chunk) });
+      await flush();
+      const lost = state.child;
+      lost?.emit('exit', 0);
+      await flush();
+
+      expect(spawnMock).toHaveBeenCalledTimes(2);
+      expect(state.child).not.toBe(lost);
+      expect(session.exited).toBe(false);
+      expect(stderr.join('')).toContain('exited before it spoke');
+      await answerInitialize();
+      await expect(session.initialized).resolves.toEqual({ protocolVersion: 1 });
+    });
+
+    it('a clean exit before the handshake is replaced only twice, then is the session exit', async () => {
+      const session = create();
+      await flush();
+      for (let i = 0; i < 3; i++) {
+        state.child?.emit('exit', 0);
+        await flush();
+      }
+      expect(spawnMock).toHaveBeenCalledTimes(3);
+      expect(session.exited).toBe(true);
+      await expect(session.initialized).rejects.toThrow('ACP agent exited');
+    });
+
+    it('a failing exit, or one after close(), is never replaced', async () => {
+      const failed = create();
+      await flush();
+      state.child?.emit('exit', 1);
+      await flush();
+      expect(failed.exited).toBe(true);
+      expect(spawnMock).toHaveBeenCalledTimes(1);
+
+      const closed = create();
+      await flush();
+      closed.close();
+      state.child?.emit('exit', 0);
+      await flush();
+      expect(closed.exited).toBe(true);
+      expect(spawnMock).toHaveBeenCalledTimes(2);
+      await expect(closed.initialized).rejects.toThrow();
+      await expect(failed.initialized).rejects.toThrow();
     });
   });
 
