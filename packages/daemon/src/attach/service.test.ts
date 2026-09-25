@@ -20,11 +20,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ACP_PROVIDERS, type AcpProviderConfig } from '@agile-agents/acp-client';
 import {
+  AGENT_LINE_MAX_CHARS,
   type HilId,
   type Policy,
   type Question,
   type Stream,
-  THREAD_BODY_MAX_CHARS,
 } from '@agile-agents/shared';
 import { GateService } from '../gates/service';
 import { runInit } from '../init';
@@ -1060,7 +1060,33 @@ describe('T330: a conversation node reads the registered repos (§4.4)', () => {
     expect(brief).toContain('+ Repo');
   });
 
-  test('a work node in its worktree gets no repo list', async () => {
+  test('a work node is told the other repos it may read, beside its worktree', async () => {
+    attachService = buildAttachService(fakeProviderFor(ACP_PROVIDERS.claude, SPEAKS_THEN_HANGS));
+    const project = await shopWithRepos();
+    await store.putRepos({
+      ...store.getRepos(),
+      'agile-test-repo': { path: repo, protected_branches: ['main'] },
+    });
+    const node = await attachService.createNode('human', {
+      title: 'Entries',
+      goal: 'use ledger-lite entries',
+      project: project.id,
+      repo: 'agile-test-repo',
+    });
+    const session = node.sessions[0];
+    if (session === undefined) throw new Error('no session');
+    expect(node.worktree).toBeDefined();
+    const brief = readFileSync(join(home, 'sessions', session.id, 'brief.md'), 'utf8');
+    expect(brief).toContain('## Repos you can read');
+    expect(brief).toContain('Besides your own worktree');
+    expect(brief).toContain(`- ledger-lite: \`${other}\``);
+    expect(brief).toContain(`- shared: \`${shared}\``);
+    expect(brief).not.toContain('- agile-test-repo:');
+    expect(brief).not.toContain(secret);
+    expect(brief).not.toContain('+ Repo');
+  });
+
+  test('a work node with no other readable repo gets no list', async () => {
     attachService = buildAttachService(fakeProviderFor(ACP_PROVIDERS.claude, SPEAKS_THEN_HANGS));
     await store.putRepos({ demo: { path: repo, protected_branches: ['main'] } });
     const stream = await makeStream('demo');
@@ -1108,33 +1134,49 @@ describe('T330: a conversation node reads the registered repos (§4.4)', () => {
 });
 
 describe('T330: one long agent message is one thread entry', () => {
-  test('a message past the body cap is one capped line; output.log has all of it', async () => {
-    const chunk = 'All of this is one sentence that keeps going. '.repeat(10);
-    const tail = 'and it ends here';
-    attachService = buildAttachService(
-      fakeProviderFor(ACP_PROVIDERS.claude, {
-        steps: [
-          { type: 'agent_text', text: 'Start: ' },
-          ...Array.from({ length: 4 }, () => ({ type: 'agent_text' as const, text: chunk })),
-          { type: 'agent_text', text: tail },
-          { type: 'tool_call', toolCallId: 'read-1', title: 'read parser.ts' },
-          { type: 'agent_text', text: 'next message' },
-          { type: 'end_turn' },
-        ],
-      }),
-    );
+  /** A message streamed in `chunks` chunks of `sentence`, then a tool call, then a short message. */
+  function longMessageScript(sentence: string, chunks: number): FakeAgentScript {
+    return {
+      steps: [
+        { type: 'agent_text', text: 'Start: ' },
+        ...Array.from({ length: chunks }, () => ({ type: 'agent_text' as const, text: sentence })),
+        { type: 'agent_text', text: 'and it ends here' },
+        { type: 'tool_call', toolCallId: 'read-1', title: 'read parser.ts' },
+        { type: 'agent_text', text: 'next message' },
+        { type: 'end_turn' },
+      ],
+    };
+  }
+
+  async function agentLinesOf(script: FakeAgentScript) {
+    attachService = buildAttachService(fakeProviderFor(ACP_PROVIDERS.claude, script));
     const stream = await makeStream();
     const { session } = await attachService.attach(stream.id);
     await waitFor(() => threadBodies(stream.id).includes('next message'));
-    const agentLines = streams
+    const lines = streams
       .readThread(stream.id, { limit: 500 })
       .entries.filter((e) => e.by.startsWith('agent:') && e.kind === 'line');
-    expect(agentLines.map((e) => e.body.slice(0, 7))).toEqual(['Start: ', 'next me']);
-    const [long] = agentLines;
-    expect(long?.body.length).toBeLessThanOrEqual(THREAD_BODY_MAX_CHARS);
-    expect(long?.body.endsWith('…')).toBe(true);
-    expect(long?.ref).toBe(join(home, 'sessions', session.id, 'output.log'));
     const log = readFileSync(join(home, 'sessions', session.id, 'output.log'), 'utf8');
-    expect(log).toContain(`Start: ${chunk.repeat(4)}${tail}\nnext message\n`);
+    return { lines, log, logPath: join(home, 'sessions', session.id, 'output.log') };
+  }
+
+  test('a 3,000-char message is one entry with all of its text', async () => {
+    const sentence = 'All of this is one sentence that keeps going. '.repeat(10);
+    const whole = `Start: ${sentence.repeat(7)}and it ends here`;
+    expect(whole.length).toBeGreaterThan(3000);
+    const { lines, log } = await agentLinesOf(longMessageScript(sentence, 7));
+    expect(lines.map((e) => e.body)).toEqual([whole.trim(), 'next message']);
+    expect(log).toContain(`${whole.trim()}\nnext message\n`);
+  }, 30_000);
+
+  test('a 20,000-char message is one entry, cut at the end with the output.log ref', async () => {
+    const sentence = 'x'.repeat(1000);
+    const { lines, log, logPath } = await agentLinesOf(longMessageScript(sentence, 20));
+    expect(lines.map((e) => e.body.slice(0, 7))).toEqual(['Start: ', 'next me']);
+    const [long] = lines;
+    expect(long?.body.length).toBe(AGENT_LINE_MAX_CHARS);
+    expect(long?.body.endsWith('…')).toBe(true);
+    expect(long?.ref).toBe(logPath);
+    expect(log).toContain(`Start: ${sentence.repeat(20)}and it ends here\nnext message\n`);
   }, 30_000);
 });

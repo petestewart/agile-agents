@@ -11,6 +11,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Rule, SessionRole, Stream, ThreadEntry } from '@agile-agents/shared';
+import { quoteThreadBody } from '@agile-agents/shared';
 import { rulesInScope } from '../rules/service';
 
 /** One Markdown file per role. */
@@ -42,8 +43,10 @@ export interface BuildBriefInput {
   docs: BriefDoc[];
   /** Every rule in the home; `rulesInScope` filters them here, not the caller. */
   rules: readonly Rule[];
-  /** T330 (§4.4): for a node with no worktree, the registered repos it may read. */
+  /** T330 (§4.4): the registered repos it may read (a work node: the others than its own). */
   readableRepos?: readonly { name: string; path: string }[];
+  /** T330: the session runs in a worktree of its own (a work node), not a session dir. */
+  inWorktree?: boolean;
   /** Overrides `BRIEF_THREAD_ENTRIES`. */
   threadEntries?: number;
   /** Overrides `BRIEF_CHAR_CEILING`. Test seam. */
@@ -83,28 +86,37 @@ function renderDoc(doc: BriefDoc, bodyCap: number): string {
 }
 
 function renderEntry(entry: ThreadEntry): string {
-  return `- **${entry.by}** (${entry.kind}): ${entry.body}`;
+  // T330: an agent line may run to 16k chars; the brief quotes its head (the rest is on the thread).
+  const body = entry.by.startsWith('agent:') ? quoteThreadBody(entry.body) : entry.body;
+  return `- **${entry.by}** (${entry.kind}): ${body}`;
 }
 
 /**
- * T330 (projects-design §4.4, §7): a node with no worktree (a conversation,
- * a coordinator) may still read the registered repos; it is told where
- * they are and how code work starts.
+ * T330 (projects-design §4.4, §7): every agent may read the registered repos
+ * its project can see, so it is told where they are. A node with no
+ * worktree (a conversation, a coordinator) also learns how code work starts;
+ * a work node reads the others beside its own worktree.
  */
-export function readableReposSection(repos: readonly { name: string; path: string }[]): string {
+export function readableReposSection(
+  repos: readonly { name: string; path: string }[],
+  inWorktree = false,
+): string {
   const lines =
     repos.length === 0
       ? ['none registered yet']
       : repos.map((repo) => `- ${repo.name}: \`${repo.path}\``);
-  return section(
-    'Repos you can read',
-    [
-      'This node has no worktree of its own. You may read these registered repos (read only; write only in your session dir):',
-      ...lines,
-      '',
-      'Code changes happen in a work node: the operator starts one by adding a repo to this node with **+ Repo**, which cuts a branch and a worktree in that repo.',
-    ].join('\n'),
-  );
+  const body = inWorktree
+    ? [
+        'Besides your own worktree, you may read these registered repos (read only; change code only in your worktree):',
+        ...lines,
+      ]
+    : [
+        'This node has no worktree of its own. You may read these registered repos (read only; write only in your session dir):',
+        ...lines,
+        '',
+        'Code changes happen in a work node: the operator starts one by adding a repo to this node with **+ Repo**, which cuts a branch and a worktree in that repo.',
+      ];
+  return section('Repos you can read', body.join('\n'));
 }
 
 /** One pass of the assembler at a given thread-tail length and doc body cap. */
@@ -133,7 +145,9 @@ function assemble(
     );
   }
 
-  if (input.readableRepos !== undefined) parts.push(readableReposSection(input.readableRepos));
+  if (input.readableRepos !== undefined) {
+    parts.push(readableReposSection(input.readableRepos, input.inWorktree));
+  }
 
   parts.push(section('Rules in scope', renderRules(rules)));
 

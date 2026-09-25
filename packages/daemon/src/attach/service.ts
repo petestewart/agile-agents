@@ -301,16 +301,15 @@ export class AttachService {
 
     // T330 (§4.4, P20): the same read scope the hook tier gives this node.
     const readScope = nodeReadScope(stream, () => repos, this.options.home);
-    // 3. The brief. A node with no worktree is told where the repos it may read are.
+    // 3. The brief. It names the repos the node may read (a work node: the
+    // others than its own), so the agent knows where they are.
+    const readableRepos = Object.entries(repos)
+      .filter(([name, entry]) => readScope.readRoots.includes(entry.path) && name !== stream.repo)
+      .map(([name, entry]) => ({ name, path: entry.path }));
+    const inWorktree = worktreePath !== undefined;
     const ancestors = this.ancestorsOf(stream);
     const brief = buildBrief({
-      ...(worktreePath === undefined
-        ? {
-            readableRepos: Object.entries(repos)
-              .filter(([, entry]) => readScope.readRoots.includes(entry.path))
-              .map(([name, entry]) => ({ name, path: entry.path })),
-          }
-        : {}),
+      ...(!inWorktree || readableRepos.length > 0 ? { readableRepos, inWorktree } : {}),
       role,
       stream,
       ancestors,

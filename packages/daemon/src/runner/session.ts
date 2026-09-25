@@ -28,7 +28,7 @@ import {
   spawnSession as defaultSpawnSession,
 } from '@agile-agents/acp-client';
 import type { AgentId, SessionRef, SessionRole, Stream } from '@agile-agents/shared';
-import { THREAD_BODY_MAX_CHARS } from '@agile-agents/shared';
+import { AGENT_LINE_MAX_CHARS } from '@agile-agents/shared';
 import { writeClaudeSettings } from '../hook';
 import { permissionRoleFor } from '../hook/decide';
 import {
@@ -391,8 +391,9 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
   // ---------------------------------------------------------------- output
   // One thread `line` per ACP message, not per chunk (chunks are deltas of
   // one message). `output.log` gets everything; the line is capped and
-  // points at the log. T330: a message past the cap is still one line (it
-  // once split mid-sentence into several); its overflow streams to the log.
+  // points at the log. T330: a message is one line with its whole text up
+  // to `AGENT_LINE_MAX_CHARS` (it once split mid-sentence at 800 chars);
+  // past that it is cut at the end and the overflow streams to the log.
   let buffer = '';
   let overflowed = false;
   function flushOutput(): void {
@@ -404,8 +405,8 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
     if (text.length === 0) return;
     if (!wasOverflowed) outputLog.append(`${text}\n`);
     const body =
-      wasOverflowed || text.length > THREAD_BODY_MAX_CHARS
-        ? `${text.slice(0, THREAD_BODY_MAX_CHARS - 1).trimEnd()}…`
+      wasOverflowed || text.length > AGENT_LINE_MAX_CHARS
+        ? `${text.slice(0, AGENT_LINE_MAX_CHARS - 1).trimEnd()}…`
         : text;
     const append = () =>
       streams.appendThread(
@@ -524,10 +525,10 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
         if (text !== null) {
           if (overflowed) {
             outputLog.append(text);
-          } else if (buffer.length + text.length > THREAD_BODY_MAX_CHARS) {
+          } else if (buffer.length + text.length > AGENT_LINE_MAX_CHARS) {
             // Past the cap: the head stays for the line, the rest goes to the log as it comes.
             outputLog.append((buffer + text).trimStart());
-            buffer = (buffer + text).slice(0, THREAD_BODY_MAX_CHARS);
+            buffer = (buffer + text).slice(0, AGENT_LINE_MAX_CHARS);
             overflowed = true;
           } else {
             buffer += text;

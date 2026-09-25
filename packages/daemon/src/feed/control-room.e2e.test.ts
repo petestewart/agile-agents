@@ -1849,6 +1849,68 @@ describe('rule hits on the stream (Playwright e2e, T169)', () => {
   );
 });
 
+describe('a long agent message collapses (Playwright e2e, T330)', () => {
+  browserTest(
+    'an agent line past ~12 lines renders collapsed with Show more / Show less',
+    async () => {
+      const cockpit = await startCockpit();
+      let page: Page | undefined;
+      try {
+        const stream = await cockpit.streams.create('human', { title: 'plan', goal: 'g' });
+        const paragraphs = Array.from(
+          { length: 30 },
+          (_, i) => `Paragraph ${i}: the plan keeps going across both repos.`,
+        );
+        const body = `${paragraphs.join('\n\n')}\n\nLONG-TAIL-MARKER`;
+        expect(body.length).toBeGreaterThan(1600);
+        await cockpit.store.appendThreadEntry(stream.id, {
+          ts: new Date().toISOString(),
+          by: 'agent:01ARZ3NDEKTSV4RRFFQ69G5FAV',
+          kind: 'line',
+          body,
+        });
+        await cockpit.store.appendThreadEntry(stream.id, {
+          ts: new Date().toISOString(),
+          by: 'agent:01ARZ3NDEKTSV4RRFFQ69G5FAV',
+          kind: 'line',
+          body: 'a short one',
+        });
+
+        page = await openPage();
+        await page.goto(`${cockpit.base}/`);
+        await page.locator(`[data-testid="stream-tree"] [data-stream="${stream.id}"]`).click();
+        await page.locator(`[data-testid="stream-page"][data-stream="${stream.id}"]`).waitFor();
+        const long = page.locator('[data-testid="thread-entry"]', { hasText: 'Paragraph 0' });
+        await long.waitFor({ state: 'visible' });
+        // One entry, the whole text in it.
+        expect(await long.count()).toBe(1);
+        expect(await long.textContent()).toContain('LONG-TAIL-MARKER');
+        const toggle = long.locator('[data-testid="thread-expand"]');
+        expect(await toggle.textContent()).toBe('Show more');
+        const bodyBox = long.locator('[data-testid="thread-body"]');
+        const clipped = () => bodyBox.evaluate((el) => el.scrollHeight > el.clientHeight + 1);
+        expect(await clipped()).toBe(true);
+
+        await toggle.click();
+        expect(await toggle.textContent()).toBe('Show less');
+        expect(await toggle.getAttribute('aria-expanded')).toBe('true');
+        expect(await clipped()).toBe(false);
+        await toggle.click();
+        expect(await toggle.textContent()).toBe('Show more');
+        expect(await clipped()).toBe(true);
+
+        // A short entry has no toggle.
+        const short = page.locator('[data-testid="thread-entry"]', { hasText: 'a short one' });
+        expect(await short.locator('[data-testid="thread-expand"]').count()).toBe(0);
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+});
+
 // ---- T162: new stream, quick capture, `n` and `/` -------------------------
 
 describe('new stream and quick capture (Playwright e2e, T162)', () => {
