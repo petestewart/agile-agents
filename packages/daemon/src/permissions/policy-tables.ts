@@ -12,6 +12,7 @@
  */
 
 import { resolve } from 'node:path';
+import type { ReposConfig, Stream } from '@agile-agents/shared';
 import * as cmd from './command';
 import { isPathInside } from './command';
 import type { PermissionRequest, PermissionRole } from './types';
@@ -27,6 +28,16 @@ function deny(reason: string): PolicyVerdict {
 }
 function hil(reason: string): PolicyVerdict {
   return { action: 'hil', reason };
+}
+
+/** T339: a held tool fetch or install points at the repo's own check commands. */
+function fetchHil(reason: string, worktreePath: string): PolicyVerdict {
+  const checks = cmd.repoScriptChecks(worktreePath);
+  const hint =
+    checks.length > 0
+      ? `use the repo's own scripts instead: ${checks.join(', ')}`
+      : "use the repo's own check commands from your brief instead";
+  return hil(`${reason}; ${hint}`);
 }
 
 export interface PolicyContext {
@@ -58,6 +69,41 @@ export function readDenyReason(
   }
   if (readable.length > 0) return undefined;
   return `${raw} is outside the worktree and every repo this node can read`;
+}
+
+/**
+ * T213, T330 (projects-design §4.4, P20): a node's read scope, for the hook
+ * and the ACP responder alike. Any registered repo is readable except a
+ * private one its project isn't listed on; the agile home never is (the
+ * session's own dir, its cwd, is allowed before any root is checked). An
+ * unreadable registry reads nothing beyond the cwd.
+ */
+export function nodeReadScope(
+  node: Pick<Stream, 'repo' | 'project'> | undefined,
+  readRepos: () => ReposConfig,
+  agileHome: string | undefined,
+): { readRoots: string[]; hiddenRoots: string[] } {
+  const readRoots: string[] = [];
+  const hiddenRoots: string[] = [];
+  let repos: ReposConfig = {};
+  try {
+    repos = readRepos();
+  } catch {
+    // Fail closed: only the cwd.
+  }
+  for (const [name, entry] of Object.entries(repos)) {
+    const visibility = entry.visibility;
+    const visible =
+      name === node?.repo ||
+      visibility === undefined ||
+      visibility.mode === 'public' ||
+      (node?.project !== undefined &&
+        (visibility.projects as readonly string[]).includes(node.project));
+    (visible ? readRoots : hiddenRoots).push(entry.path);
+  }
+  // The home holds the classifier key and every node's state: never a read target.
+  if (agileHome !== undefined) hiddenRoots.push(agileHome);
+  return { readRoots, hiddenRoots };
 }
 
 // Never-without-human (§14 "Never without a human"). Checked before any
@@ -125,7 +171,7 @@ function neverWithoutHumanForAtom(
   }
 
   if (cmd.isNewDependencyInstall(tokens)) {
-    return hil('installing a new dependency is never automatic');
+    return fetchHil('installing a new dependency is never automatic', ctx.worktreePath);
   }
   if (cmd.isRmMinusRf(tokens)) {
     const outside = cmd.rmTargets(tokens).some((t) => !isPathInside(t, ctx.worktreePath));
@@ -265,18 +311,23 @@ function engineerBenignCommandVerdict(
     // `bun add`. Fetch-forcing flags and `dlx` (which always fetches) are
     // always `hil`.
     if (dlx.forcesInstall) {
-      return hil(
+      return fetchHil(
         `"${dlx.bin}" forces a package install/global run (-p/--package/-y/--yes/-g/--global)`,
+        ctx.worktreePath,
       );
     }
     if (dlx.neverLocal) {
-      return hil(
+      return fetchHil(
         `"${dlx.bin}" via dlx always fetches into a temporary store, never the local node_modules/.bin`,
+        ctx.worktreePath,
       );
     }
     return cmd.isRepoLocalBin(dlx.bin, ctx.worktreePath)
       ? ALLOW
-      : hil(`"${dlx.bin}" is not an existing repo-local bin (node_modules/.bin)`);
+      : fetchHil(
+          `"${dlx.bin}" is not an existing repo-local bin (node_modules/.bin)`,
+          ctx.worktreePath,
+        );
   }
 
   if (head === 'find') {
@@ -355,9 +406,16 @@ function engineerExecuteVerdict(command: string, ctx: PolicyContext): PolicyVerd
 
 function engineerVerdict(classified: PermissionRequest, ctx: PolicyContext): PolicyVerdict {
   switch (classified.toolClass) {
-    case 'read':
-      // Reads are never gated by ACP (spike-findings §A), but answer consistently.
+    case 'read': {
+      // Reads are never gated by ACP (spike-findings §A), but answer
+      // consistently: under a read scope (T330), as the hook's Read would.
+      if (!hasReadScope(ctx)) return ALLOW;
+      for (const path of allTargetPaths(classified)) {
+        const reason = readDenyReason(path, ctx);
+        if (reason !== undefined) return deny(reason);
+      }
       return ALLOW;
+    }
     case 'edit': {
       // Every path must resolve inside the worktree, not just the first.
       const paths = allTargetPaths(classified);

@@ -52,6 +52,8 @@ import {
 } from '../events/wake';
 import { settingsFileName } from '../hook/settings';
 import type { RuleStatsOutcome } from '../knowledge/service';
+import { repoScriptChecks } from '../permissions/command';
+import { nodeReadScope } from '../permissions/policy-tables';
 import type { BriefDoc } from '../runner/brief';
 import { buildBrief } from '../runner/brief';
 import type { CliInvocation } from '../runner/cli-bin';
@@ -530,9 +532,17 @@ export class AttachService {
       });
     }
 
-    // 3. The brief.
+    // T330 (§4.4, P20): the same read scope the hook tier gives this node.
+    const readScope = nodeReadScope(stream, () => repos, this.options.home);
+    // 3. The brief. It names the repos the node may read (a work node: the
+    // others than its own), so the agent knows where they are.
+    const readableRepos = Object.entries(repos)
+      .filter(([name, entry]) => readScope.readRoots.includes(entry.path) && name !== stream.repo)
+      .map(([name, entry]) => ({ name, path: entry.path }));
+    const inWorktree = worktreePath !== undefined;
     const ancestors = this.ancestorsOf(stream);
     const brief = buildBrief({
+      ...(!inWorktree || readableRepos.length > 0 ? { readableRepos, inWorktree } : {}),
       role,
       stream,
       ancestors,
@@ -540,6 +550,10 @@ export class AttachService {
       docs: this.options.docs?.docsForStream(stream.id) ?? [],
       // §5.3: the accepted rules in scope for this stream and its ancestors.
       rules: this.options.rules?.inScope(stream.id) ?? [],
+      // T339: the repo's own check commands, for a session that has its worktree.
+      ...(repoEntry !== undefined && worktreePath !== undefined
+        ? { checks: repoEntry.checks ?? repoScriptChecks(worktreePath) }
+        : {}),
       ...(role === 'coordinator'
         ? {
             coordinator: {
@@ -610,6 +624,7 @@ export class AttachService {
       brief: prompt,
       sessionDir,
       provider,
+      readScope,
       ...(this.options.rules !== undefined ? { rules: this.options.rules } : {}),
       ...(this.options.spawn !== undefined ? { spawn: this.options.spawn } : {}),
       ...(this.options.cliBin !== undefined ? { cliBin: this.options.cliBin } : {}),

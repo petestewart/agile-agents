@@ -133,7 +133,9 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
     : undefined;
   // A merge (land or a PR merged) hands the node to the retro (§17: after `merged`).
   // Every back-reference in this graph is read lazily through a closure,
-  // so construction order is never a trap.
+  // so construction order is never a trap. One the startup migration can
+  // reach before it is built is a `let`, so it reads as `undefined` (T337).
+  let trackerPush: TrackerStatusPush | undefined;
   const streamService: StreamService | undefined = store
     ? new StreamService(store, {
         // T244: record changes that are routed events (child_status, pr_merged, …).
@@ -573,18 +575,18 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
         })
       : undefined;
   trackerLinks?.start();
-  const trackerPush = store
-    ? new TrackerStatusPush({
-        project: (id) => {
-          try {
-            return store.getProject(id);
-          } catch {
-            return undefined;
-          }
-        },
-        tracker: (system) => trackerFromConfig(system, trackersConfig()),
-      })
-    : undefined;
+  if (store) {
+    trackerPush = new TrackerStatusPush({
+      project: (id) => {
+        try {
+          return store.getProject(id);
+        } catch {
+          return undefined;
+        }
+      },
+      tracker: (system) => trackerFromConfig(system, trackersConfig()),
+    });
+  }
 
   // T205: "+ Repo" in place (projects-design §7), over the attach service's sessions.
   const repoInPlace =

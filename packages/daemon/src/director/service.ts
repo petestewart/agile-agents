@@ -31,8 +31,9 @@ import {
   type RoutedEvent,
   type SessionRef,
   type SessionStatus,
-  THREAD_BODY_MAX_CHARS,
   type ThreadEntry,
+  quoteThreadBody,
+  threadBodyMaxFor,
   ulid,
 } from '@agile-agents/shared';
 import { resolveSessionSettings } from '../attach/resolve';
@@ -128,7 +129,7 @@ export function directorBrief(thread: readonly ThreadEntry[], digest?: string): 
     '',
     ...(recent.length === 0
       ? ['(empty)']
-      : recent.map((e) => `- [${e.ts}] ${e.by}: ${e.body.replace(/\s+/g, ' ')}`)),
+      : recent.map((e) => `- [${e.ts}] ${e.by}: ${quoteThreadBody(e.body.replace(/\s+/g, ' '))}`)),
     '',
     'Pending messages for you follow as their own turn.',
   ].join('\n');
@@ -264,8 +265,8 @@ export class DirectorService {
     body: string,
     ref?: string,
   ) {
-    const capped =
-      body.length > THREAD_BODY_MAX_CHARS ? `${body.slice(0, THREAD_BODY_MAX_CHARS - 1)}…` : body;
+    // T330: the Director's own message is one entry up to `AGENT_LINE_MAX_CHARS`.
+    const capped = quoteThreadBody(body, threadBodyMaxFor(by, kind));
     return this.options.store.appendDirectorThread({
       ts: this.now().toISOString(),
       by,

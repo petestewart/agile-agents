@@ -1242,6 +1242,31 @@ describe('decidePermission — T030 QA round 2 / opus round 3: dlx forms gated o
     makeExecutableBin(realWorktree, 'biome');
     expect(decideInRealWorktree('yarn dlx biome check .').kind).toBe('hil');
   });
+
+  // T339: a held tool fetch names the repo's own scripts instead.
+  test('bunx tsc --noEmit (not installed) is held, and the reason names the repo scripts', () => {
+    writeFileSync(
+      joinPath(realWorktree, 'package.json'),
+      JSON.stringify({ scripts: { test: 'bun test', typecheck: 'tsc -b', dev: 'vite' } }),
+    );
+    writeFileSync(joinPath(realWorktree, 'bun.lock'), '{}');
+    const decision = decideInRealWorktree('bunx tsc --noEmit');
+    expect(decision.kind).toBe('hil');
+    if (decision.kind === 'hil') {
+      expect(decision.reason).toContain(
+        "use the repo's own scripts instead: bun run test, bun run typecheck",
+      );
+      expect(decision.reason).not.toContain('dev');
+    }
+  });
+
+  test('npm install typescript with no package.json points at the brief', () => {
+    const decision = decideInRealWorktree('npm install typescript');
+    expect(decision.kind).toBe('hil');
+    if (decision.kind === 'hil') {
+      expect(decision.reason).toContain("use the repo's own check commands from your brief");
+    }
+  });
 });
 
 describe('T280: the coordinator table on the ACP path (P20)', () => {
@@ -1288,5 +1313,32 @@ describe('T305: the Director read scope on the ACP path (P20)', () => {
     const plain = (req: AcpPermissionRequestParams) =>
       decidePermission({ role: 'coordinator', worktreePath: dir, request: req }).kind;
     expect(plain(request('read', { targetPath: '/etc/hosts' }))).toBe('allow');
+  });
+});
+
+// T330: an engineer's ACP read under a read scope is judged like the hook's Read.
+describe('decidePermission — engineer reads under a read scope (T330)', () => {
+  const scoped = (targetPath: string) =>
+    decidePermission({
+      role: 'engineer',
+      worktreePath: '/home/op/.agile/sessions/S1',
+      readRoots: ['/repos/ledger-lite'],
+      hiddenRoots: ['/repos/secret', '/home/op/.agile'],
+      request: request('read', { targetPath }),
+    }).kind;
+
+  test('a readable repo and the own session dir are allowed', () => {
+    expect(scoped('/repos/ledger-lite/README.md')).toBe('allow');
+    expect(scoped('/home/op/.agile/sessions/S1/notes.md')).toBe('allow');
+  });
+
+  test('the agile home, a hidden repo and anywhere else are denied', () => {
+    expect(scoped('/home/op/.agile/config.yaml')).toBe('deny');
+    expect(scoped('/repos/secret/a.ts')).toBe('deny');
+    expect(scoped('/etc/hosts')).toBe('deny');
+  });
+
+  test('with no read scope a read stays allowed (as before)', () => {
+    expect(decide('engineer', request('read', { targetPath: '/etc/hosts' })).kind).toBe('allow');
   });
 });
