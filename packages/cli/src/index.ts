@@ -82,6 +82,8 @@ function usage(): string {
     '  project list [--all]       projects (--all includes archived)',
     '  project show <id>',
     '  project set <id> [--name n] [--repo a,b] [--vendor v] [--model m] [--effort e] [--delivery direct|pr] [--auto-merge on|off] [--coordinator-autonomy|--director-autonomy advise|organise|run]',
+    '                             [--tracker jira|linear|none] [--push-status on|off]',
+    '                             [--status-map in_progress=<Name>,in_review=<Name>,done=<Name>]  (quote names with spaces; key= clears one)',
     '  node new --title <t> --goal <g> --project <P-id> [--parent <id>] [--repo <name>] [--label l]… [--no-start]',
     "                             [--helper-of <id>]: a same-repo helper off that node's branch, merged back into it",
     "                             starts the node's agent unless --no-start",

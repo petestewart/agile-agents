@@ -87,6 +87,33 @@ describe('ProjectService', () => {
     expect(events().filter((e) => e.kind === 'project_updated').length).toBe(2);
   });
 
+  test('T327: the tracker block round-trips through the store; invalid input is refused', async () => {
+    const p = await projects.create({ name: 'Shop' });
+    const tracker = {
+      system: 'linear' as const,
+      push_status: true,
+      status_map: { in_progress: 'In Progress', in_review: 'In Review', done: 'Done' },
+    };
+    expect((await projects.update(p.id, { tracker })).tracker).toEqual(tracker);
+    expect(StateStore.open(home).getProject(p.id).tracker).toEqual(tracker);
+    for (const bad of [
+      { system: 'github' },
+      { system: 'jira', push_status: 'on' },
+      { system: 'jira', status_map: { review: 'Review' } },
+      { system: 'jira', status_map: { done: '' } },
+      { system: 'jira', extra: true },
+    ]) {
+      await expect(projects.update(p.id, { tracker: bad })).rejects.toThrow(/ProjectUpdateInput/);
+    }
+    expect(StateStore.open(home).getProject(p.id).tracker).toEqual(tracker);
+    const rpc = buildProjectRpcMethods(projects);
+    await expect(async () =>
+      rpc['project.update']?.({ id: p.id, tracker: { system: 'none' } }),
+    ).toThrow(RpcParamError);
+    await rpc['project.update']?.({ id: p.id, tracker: null });
+    expect(StateStore.open(home).getProject(p.id).tracker).toBeUndefined();
+  });
+
   test('archive hides from list unless asked', async () => {
     const p = await projects.create({ name: 'Shop' });
     await projects.archive(p.id);
