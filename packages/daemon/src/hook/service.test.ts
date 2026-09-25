@@ -324,6 +324,40 @@ describe('HookService — the streamless Director (T300)', () => {
     }
   });
 
+  test('T305: reads reach every registered repo; the agile home and elsewhere are denied', async () => {
+    // The fixture's home is the repo itself, so the registered repos live apart.
+    const scratch = join(stateRoot, 'sessions', DIRECTOR);
+    mkdirSync(scratch, { recursive: true });
+    const { stream: _none, ...streamless } = agentRecord({
+      role: 'coordinator',
+      worktree: scratch,
+    });
+    await store.putAgent(DIRECTOR, streamless);
+    const shop = mkdtempSync(join(tmpdir(), 'agile-hook-shop-'));
+    const blog = mkdtempSync(join(tmpdir(), 'agile-hook-blog-'));
+    try {
+      await store.addRepo('shop', { path: shop });
+      await store.addRepo('blog', { path: blog, visibility: { mode: 'private', projects: [] } });
+      const svc = service({ agileHome: stateRoot });
+      const call = async (tool_name: string, tool_input: Record<string, unknown>) =>
+        (await svc.preToolUse({ cwd: scratch, agile_agent: DIRECTOR, tool_name, tool_input }))
+          .hookSpecificOutput.permissionDecision;
+
+      expect(await call('Read', { file_path: join(shop, 'README.md') })).toBe('allow');
+      expect(await call('Grep', { pattern: 'x', path: blog })).toBe('allow');
+      expect(await call('Bash', { command: `cat ${join(shop, 'README.md')}` })).toBe('allow');
+      expect(await call('Read', { file_path: join(scratch, 'brief.md') })).toBe('allow');
+      expect(await call('Read', { file_path: join(stateRoot, 'config.yaml') })).toBe('deny');
+      expect(await call('Bash', { command: `cat ${join(stateRoot, 'repos.yaml')}` })).toBe('deny');
+      expect(await call('Read', { file_path: '/etc/hosts' })).toBe('deny');
+      expect(await call('Write', { file_path: join(shop, 'x.md'), content: 'x' })).toBe('deny');
+      expect(await call('Write', { file_path: join(scratch, 'x.md'), content: 'x' })).toBe('allow');
+    } finally {
+      rmSync(shop, { recursive: true, force: true });
+      rmSync(blog, { recursive: true, force: true });
+    }
+  });
+
   test('a streamless worker record is still unresolvable (fail-closed)', async () => {
     const { stream: _none, ...streamless } = agentRecord({ role: 'worker', worktree });
     await store.putAgent(WORKER, streamless);

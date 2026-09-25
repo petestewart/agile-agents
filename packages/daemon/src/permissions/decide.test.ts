@@ -1259,3 +1259,34 @@ describe('T280: the coordinator table on the ACP path (P20)', () => {
     expect(coord(request('fetch', { url: 'https://registry.npmjs.org/zod' }))).toBe('deny');
   });
 });
+
+describe('T305: the Director read scope on the ACP path (P20)', () => {
+  const home = '/home/u/.agile';
+  const dir = `${home}/sessions/01J9AAAAAAAAAAAAAAAAAAAAAA`;
+  const scoped = (req: AcpPermissionRequestParams) =>
+    decidePermission({
+      role: 'coordinator',
+      worktreePath: dir,
+      readRoots: ['/repos/shop'],
+      hiddenRoots: [home],
+      request: req,
+    }).kind;
+
+  test('reads reach registered repos and the scratch dir; the home and elsewhere deny', () => {
+    expect(scoped(request('read', { targetPath: '/repos/shop/src/a.ts' }))).toBe('allow');
+    expect(scoped(request('read', { targetPath: `${dir}/brief.md` }))).toBe('allow');
+    expect(scoped(request('read', { targetPath: `${home}/config.yaml` }))).toBe('deny');
+    expect(scoped(request('read', { targetPath: '/etc/passwd' }))).toBe('deny');
+    expect(scoped(request('execute', { command: 'cat /repos/shop/README.md' }))).toBe('allow');
+    expect(scoped(request('execute', { command: `cat ${home}/config.yaml` }))).toBe('deny');
+    expect(scoped(request('execute', { command: 'grep -r key /etc' }))).toBe('deny');
+    expect(scoped(request('execute', { command: 'cat $HOME/.agile/config.yaml' }))).toBe('deny');
+    expect(scoped(request('edit', { targetPath: '/repos/shop/src/a.ts' }))).toBe('deny');
+  });
+
+  test('without a scope the coordinator table is unchanged', () => {
+    const plain = (req: AcpPermissionRequestParams) =>
+      decidePermission({ role: 'coordinator', worktreePath: dir, request: req }).kind;
+    expect(plain(request('read', { targetPath: '/etc/hosts' }))).toBe('allow');
+  });
+});

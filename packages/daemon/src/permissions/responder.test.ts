@@ -97,6 +97,28 @@ describe('buildPermissionResponder', () => {
     expect(events[0]?.data.role).toBe('engineer');
   });
 
+  test('T305: a coordinator read scope reaches decidePermission', async () => {
+    const responder = buildPermissionResponder(store, {
+      role: 'coordinator',
+      agent: WORKER,
+      worktreePath: '/home/u/.agile/sessions/s1',
+      session: fakeSession(),
+      readRoots: ['/repos/shop'],
+      hiddenRoots: ['/home/u/.agile'],
+    });
+    expect(
+      (await responder.handleRequest(1, request('read', { file_path: '/repos/shop/a.ts' }))).kind,
+    ).toBe('allow');
+    expect(
+      (
+        await responder.handleRequest(
+          2,
+          request('read', { file_path: '/home/u/.agile/config.yaml' }),
+        )
+      ).kind,
+    ).toBe('deny');
+  });
+
   test('deny: answers with reject_once and logs the reason', async () => {
     const session = fakeSession();
     const responder = buildPermissionResponder(store, {

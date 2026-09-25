@@ -107,3 +107,22 @@ export function commandPaths(command: string): { reads: string[]; writes: string
   }
   return { reads, writes };
 }
+
+/**
+ * T305 (P20): the Director's read scope. It belongs to no project, so it
+ * reads every registered repo; the agile home stays hidden (its own scratch
+ * dir, the cwd, is allowed before any root is checked). An unreadable
+ * registry reads nothing beyond the cwd.
+ */
+export function directorReadScope(
+  readRepos: () => ReposConfig,
+  agileHome: string | undefined,
+): { readRoots: string[]; hiddenRoots: string[] } {
+  let readRoots: string[] = [];
+  try {
+    readRoots = Object.values(readRepos()).map((entry) => entry.path);
+  } catch {
+    // Fail closed: only the scratch dir.
+  }
+  return { readRoots, hiddenRoots: agileHome !== undefined ? [agileHome] : [] };
+}
