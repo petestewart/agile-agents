@@ -1571,7 +1571,8 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
               disabled={busy}
               placeholder={
                 liveWorker
-                  ? 'Write on the stream — the attached worker reads it too…'
+                  ? // T341: a coordinating node's live agent is its coordinator, not a worker.
+                    `Write on the stream — the attached ${liveWorker.role} reads it too…`
                   : 'Write on the stream…'
               }
               onChange={(e) => setDraft(e.target.value)}
