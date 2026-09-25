@@ -102,7 +102,8 @@ describe('agile node (T201)', () => {
     const role = async (id: string) =>
       (JSON.parse((await cli(['node', 'show', id, '--json'])).out) as { role: string }).role;
     expect(await role(projectRoot)).toBe('project');
-    expect(await role(epic.id)).toBe('coordinating');
+    // D33: its only child is a repo-less conversation (a tangent).
+    expect(await role(epic.id)).toBe('conversation');
     expect(await role(task.id)).toBe('conversation');
 
     const byParent = JSON.parse(
@@ -119,7 +120,7 @@ describe('agile node (T201)', () => {
       role: string;
     }>;
     expect(Array.isArray(unfiltered)).toBe(true);
-    expect(unfiltered.find((n) => n.id === epic.id)?.role).toBe('coordinating');
+    expect(unfiltered.find((n) => n.id === epic.id)?.role).toBe('conversation');
     expect(unfiltered.map((n) => n.id).sort()).toEqual([projectRoot, epic.id, task.id].sort());
   });
 });
