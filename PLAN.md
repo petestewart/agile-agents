@@ -1870,6 +1870,8 @@ Daemon: `em/`, `architect/`, `oracle/`, `qa/`, `halts/`, `quota/`, `handoff/`, `
 
 ## 10. Discovered Issues Log
 
+- 2026-09-25 (CI, phase 9): T131's rule "a reviewer's exit sets `agent.status` done when no worker is live" reversed. A reviewer that died at spawn marked a never-worked stream done. A review is not work, so a reviewer exit now only posts "review finished: N findings"; only a worker (from phase 11, a coordinator) exit moves `agent.status`. Branch ci-fix-review-status (81569dc) on phase-7, merged forward 7→14.
+
 - 2026-09-25 Pete: tangents (D33) and manual moves (D34) approved → Phase 14 on `claude/phase-14`. Cleanup phase starts after Pete finishes the walkthrough.
 
 - 2026-09-25 Pete (walkthrough): wants conversation nodes to have children (tangents / research branches that don't clog the main thread), and disagrees with "you never restructure the tree by hand" — wants manual restructuring. Both change the design (§6 roles, P1); proposals put to Pete before tickets.
