@@ -126,6 +126,16 @@ function DiffView({ id }: { id: string }): JSX.Element {
   );
 }
 
+/** T340: a PR url is GitHub data; it is a link only when it is http(s). */
+function isWebUrl(url: string): boolean {
+  try {
+    const { protocol } = new URL(url);
+    return protocol === 'http:' || protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+
 function LandPanel({
   page,
   onChanged,
@@ -265,9 +275,13 @@ function LandPanel({
           PR #{openPr.number} into {openPr.base}:{' '}
           {openPr.review === 'none' ? 'no review' : openPr.review.replace('_', ' ')} · CI{' '}
           {openPr.checks} · auto-merge {openPr.auto_merge}. It merges on GitHub.{' '}
-          <a data-testid="stream-pr-link" href={openPr.url} target="_blank" rel="noreferrer">
-            Open PR
-          </a>
+          {isWebUrl(openPr.url) ? (
+            <a data-testid="stream-pr-link" href={openPr.url} target="_blank" rel="noreferrer">
+              Open PR
+            </a>
+          ) : (
+            <span data-testid="stream-pr-link">{openPr.url}</span>
+          )}
         </p>
       ) : land?.merged ? (
         <p data-testid="land-before" data-ready="merged">

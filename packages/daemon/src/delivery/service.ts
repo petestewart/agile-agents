@@ -216,7 +216,9 @@ export class DeliveryService {
 
     // 3. PR mode (T224): push, then open or update the one PR.
     if (github !== undefined) {
-      const opened = await this.deliverPr(stream, repoEntry, github, branch, target);
+      const opened = await this.deliverPr(stream, repoEntry, github, branch, target, {
+        mayOpen: true,
+      });
       await this.settleQuietly();
       return opened;
     }
@@ -706,7 +708,9 @@ export class DeliveryService {
   /**
    * T224: `git push <remote> <branch>`, then the node's one PR: opened on
    * the first deliver, updated (never duplicated) after. A push failure
-   * holds the node with nothing opened.
+   * holds the node with nothing opened. Only the human's deliver passes
+   * `mayOpen`: without it (the agent's push, D8) nothing opens a PR, and a
+   * PR closed on GitHub refuses (T340).
    */
   private async deliverPr(
     stream: Stream,
@@ -714,6 +718,7 @@ export class DeliveryService {
     github: GitHubPort,
     branch: string,
     target: string,
+    opts: { mayOpen?: boolean } = {},
   ): Promise<LandOutcome> {
     const { streams } = this.options;
     const repoRoot = repoEntry.path;
@@ -743,6 +748,17 @@ export class DeliveryService {
         );
       }
       closedOnGitHub = !live.notModified && live.data.state === 'closed';
+    }
+    if (opts.mayOpen !== true && (recorded?.state !== 'open' || closedOnGitHub)) {
+      if (closedOnGitHub) {
+        await Promise.resolve(this.options.refreshPr?.(stream.id)).catch(() => {});
+      }
+      throw new LandRefusedError(
+        stream.id,
+        closedOnGitHub
+          ? `PR #${recorded?.number} for ${stream.id} was closed on GitHub; a push never opens a PR (the human delivers again)`
+          : `stream ${stream.id} has no open PR; a push never opens one (the human delivers)`,
+      );
     }
     const pushed = gitNetwork(['push', remote, `refs/heads/${branch}:refs/heads/${branch}`], cwd);
     if (pushed.exitCode !== 0) {

@@ -9,7 +9,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Stream } from '@agile-agents/shared';
 import { type FakeGitHub, startFakeGitHub } from '../github/fake-server';
-import { PR_POLL_MS, PrPoller } from '../github/poller';
+import { PR_CHECK_COOLDOWN_MS, PR_POLL_MS, PrPoller } from '../github/poller';
 import { createGitHubRest } from '../github/rest';
 import { runInit } from '../init';
 import { StateStore } from '../store';
@@ -252,6 +252,77 @@ describe('waits on + auto-merge (T228, P8, P19)', () => {
     const checked = await poll.pollNow(a.id);
     expect(checked.delivery_state?.status).toBe('merged');
     expect(checked.human.status).toBe('landed');
+  });
+
+  test('T340: a push (no mayOpen, D8) on a PR closed on GitHub refuses, pushes nothing, opens nothing', async () => {
+    await setUp('pr');
+    const poll: PrPoller = new PrPoller({
+      streams,
+      repos: () => store.getRepos(),
+      github: () => port(),
+      now: () => new Date(clock),
+    });
+    const landing = new DeliveryService({
+      store,
+      streams,
+      github: () => port(),
+      refreshPr: (id) => poll.pollNow(id),
+    });
+    const a = await node('a', 'a.txt');
+    expect((await landing.land(a.id)).status).toBe('pr_open');
+    const remoteSha = () => mustGit(['ls-remote', 'origin', 'refs/heads/stream/a']).split(/\s+/)[0];
+    const pushedSha = remoteSha();
+    commitIn(a.worktree as string, 'a2.txt', 'more\n');
+    (gh.pulls[0] as { state: string }).state = 'closed'; // a human declined it on GitHub
+    // `push()` (phase 9+, T246) calls deliverPr exactly like this: no mayOpen.
+    const deliverPr = (
+      landing as unknown as {
+        deliverPr: (...args: unknown[]) => Promise<unknown>;
+      }
+    ).deliverPr.bind(landing);
+    const s = streams.get(a.id);
+    await expect(deliverPr(s, store.getRepos().demo, port(), 'stream/a', 'main')).rejects.toThrow(
+      /closed on GitHub; a push never opens a PR/,
+    );
+    expect(remoteSha()).toBe(pushedSha);
+    expect(gh.pulls).toHaveLength(1);
+    expect(streams.get(a.id).delivery_state?.status).toBe('closed_unmerged');
+  });
+
+  test("T340: the human's deliver on a PR closed on GitHub opens a new one", async () => {
+    await setUp('pr');
+    const landing = service();
+    const a = await node('a', 'a.txt');
+    expect((await landing.land(a.id)).status).toBe('pr_open');
+    (gh.pulls[0] as { state: string }).state = 'closed';
+    const again = await landing.land(a.id);
+    expect(again.status).toBe('pr_open');
+    expect(gh.pulls).toHaveLength(2);
+    const pr = streams.get(a.id).delivery_state?.pr;
+    expect(pr?.number).toBe(2);
+    expect(pr?.state).toBe('open');
+    expect(lines(a.id).some((l) => l.includes('opened PR #2'))).toBe(true);
+  });
+
+  test('T340: Check now within the cooldown does not poll GitHub again', async () => {
+    await setUp('pr');
+    const landing = service();
+    const poll = new PrPoller({
+      streams,
+      repos: () => store.getRepos(),
+      github: () => port(),
+      now: () => new Date(clock),
+    });
+    const a = await node('a', 'a.txt');
+    expect((await landing.land(a.id)).status).toBe('pr_open');
+    await poll.pollNow(a.id);
+    const reads = () => gh.requests.filter((r) => r.path.endsWith('/pulls/1')).length;
+    const before = reads();
+    gh.addReview(1, { state: 'APPROVED' });
+    expect((await poll.pollNow(a.id)).delivery_state?.status).toBe('pr_open');
+    expect(reads()).toBe(before);
+    clock += PR_CHECK_COOLDOWN_MS;
+    expect((await poll.pollNow(a.id)).delivery_state?.status).toBe('merged');
   });
 
   test('T340: a re-deliver held by its ship check keeps the PR polled to merged', async () => {

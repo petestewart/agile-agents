@@ -36,6 +36,8 @@ export const PR_POLL_FLAGGED_MS = 15_000;
 export const PR_POLL_IDLE_MS = 5 * 60_000;
 /** A PR unchanged this long drops to `PR_POLL_IDLE_MS`. */
 export const PR_IDLE_AFTER_MS = 60 * 60_000;
+/** T340: Check now on one node polls GitHub at most this often. */
+export const PR_CHECK_COOLDOWN_MS = 5_000;
 /** How often `start()` looks for due work. */
 export const PR_POLL_TICK_MS = 5_000;
 /** A rate limit with no reset time pauses this long. */
@@ -74,6 +76,8 @@ export class PrPoller {
   private readonly now: () => Date;
   private readonly memo = new Map<string, PrMemo>();
   private readonly flagged = new Set<string>();
+  /** T340: when each node's Check now last polled (epoch ms). */
+  private readonly checkedAt = new Map<string, number>();
   /** Last main sha seen on the remote, per `pr` repo, and when it is next due. */
   private readonly mains = new Map<string, { sha?: string; due: number }>();
   private pausedUntil = 0;
@@ -112,8 +116,15 @@ export class PrPoller {
   /**
    * T340: "Check now". This node's PR is due at once; resolves with the
    * node after the tick that polled it (merged → landed, then `afterTick`).
+   * Within `PR_CHECK_COOLDOWN_MS` of the last one it is the node as it stands.
    */
   async pollNow(streamId: string): Promise<Stream> {
+    const t = this.now().getTime();
+    const last = this.checkedAt.get(streamId);
+    if (last !== undefined && t - last < PR_CHECK_COOLDOWN_MS) {
+      return this.options.streams.get(streamId);
+    }
+    this.checkedAt.set(streamId, t);
     while (this.running) await this.running.catch(() => {});
     const m = this.memo.get(streamId);
     if (m) m.due = Math.min(m.due, this.now().getTime());
