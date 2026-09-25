@@ -54,6 +54,9 @@ import { type HttpServerHandle, startHttpServer } from '../http';
 import { InboxService } from '../inbox';
 import { runInit } from '../init';
 import { KnowledgeService, type RuleRpcEvalDeps } from '../knowledge';
+import { startFakeLinear } from '../trackers/fake-linear';
+import { createLinear } from '../trackers/linear';
+import { TrackerLinks } from '../trackers/link';
 
 /** Proposals the home migration carried over from a seed import are batched under this source. */
 const SEED_PROVENANCE = 'migration';
@@ -521,6 +524,8 @@ async function startCockpit(
     ruleEvals?: RuleRpcEvalDeps;
     classifierKey?: boolean;
     githubAuth?: () => Promise<boolean>;
+    /** T321: the Link field's service, over a local fake tracker. */
+    trackerLinks?: (streams: StreamService) => TrackerLinks;
   } = {},
 ): Promise<Cockpit> {
   const home = mkdtempSync(join(tmpdir(), 'agile-cockpit-e2e-'));
@@ -582,6 +587,7 @@ async function startCockpit(
       : {}),
     // T222: the pr refusal's auth seam; never a real `gh`.
     ...(extra.githubAuth ? { githubAuth: extra.githubAuth } : {}),
+    ...(extra.trackerLinks ? { trackerLinks: extra.trackerLinks(streams) } : {}),
     feedPollIntervalMs: 50,
   });
   return {
@@ -2971,6 +2977,51 @@ describe('coordinator autonomy (Playwright e2e, T282)', () => {
       } finally {
         await teardown([page]);
         await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+});
+
+describe('tracker link field (Playwright e2e, T321)', () => {
+  browserTest(
+    'Link on the stream page pulls the goal from the (fake) issue; Unlink clears it',
+    async () => {
+      const linear = await startFakeLinear();
+      linear.addIssue({
+        key: 'SHOP-11',
+        title: 'Show sale prices',
+        description: 'AC: struck through',
+      });
+      const cockpit = await startCockpit({
+        trackerLinks: (streams) =>
+          new TrackerLinks({
+            streams,
+            configured: () => ['linear'],
+            tracker: () => createLinear({ api_url: linear.apiUrl, token: linear.token }),
+          }),
+      });
+      let page: Page | undefined;
+      try {
+        const node = await cockpit.streams.create('human', { title: 'Sale', goal: 'tbd' });
+        page = await openPage();
+        await page.goto(`${cockpit.base}/`);
+        await page.locator(`[data-testid="stream-tree"] [data-stream="${node.id}"]`).click();
+        await page.locator('[data-testid="tracker-link-input"]').fill('SHOP-11');
+        await page.locator('[data-testid="tracker-link-form"] button[type="submit"]').click();
+        await page.locator('[data-testid="tracker-link"]').waitFor({ state: 'visible' });
+        expect(await page.locator('[data-testid="tracker-link"]').textContent()).toContain(
+          'SHOP-11',
+        );
+        expect(cockpit.streams.get(node.id).goal).toContain('AC: struck through');
+        expect(await page.content()).not.toContain(linear.token);
+        await page.locator('[data-testid="tracker-unlink"]').click();
+        await page.locator('[data-testid="tracker-link-form"]').waitFor({ state: 'visible' });
+        expect(cockpit.streams.get(node.id).external_link).toBeUndefined();
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+        linear.stop();
       }
     },
     TEST_BUDGET_MS,
