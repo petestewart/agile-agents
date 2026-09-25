@@ -21,6 +21,7 @@ import {
   type QuestionId,
   QuestionIdSchema,
   SessionDefaultsPatchSchema,
+  type Stream,
   StreamAddRepoRequestSchema,
   StreamAttachRequestSchema,
   StreamAutonomyRequestSchema,
@@ -150,6 +151,8 @@ export interface HttpServerOptions {
   classifierKey?: ClassifierKeyService;
   /** `POST /api/streams/:id/land`. */
   landing?: DeliveryService;
+  /** T340: `POST /api/streams/:id/pr-check`, the Delivery panel's Check now (`PrPoller.pollNow`). */
+  prCheck?: (id: string) => Promise<Stream>;
   /** The stream page's sessions strip and composer. */
   attach?: AttachService;
   /** T205: the stream page's + Repo (projects-design §7). */
@@ -390,6 +393,7 @@ interface FeedContext {
   ruleEvals?: RuleRpcEvalDeps;
   classifierKey?: ClassifierKeyService;
   landing?: DeliveryService;
+  prCheck?: (id: string) => Promise<Stream>;
   attach?: AttachService;
   repoInPlace?: RepoInPlaceService;
   docs?: DocsService;
@@ -414,6 +418,7 @@ function resolveFeedContext(options: HttpServerOptions): FeedContext | undefined
     ruleEvals: options.ruleEvals,
     classifierKey: options.classifierKey,
     landing: options.landing,
+    prCheck: options.prCheck,
     attach: options.attach,
     repoInPlace: options.repoInPlace,
     docs: options.docs,
@@ -821,6 +826,7 @@ async function handleRuleRoute(
  *   POST /api/streams/:id/stop    the sessions strip's stop (a human detach)
  *   POST /api/streams/:id/close   the page's Close
  *   POST /api/streams/:id/mark-landed  merged outside `land`
+ *   POST /api/streams/:id/pr-check     Check now (T340): poll the node's open PR at once
  *   POST /api/streams/:id/add-repo     + Repo in place (T205): `{repo, switch?}`
  *   POST /api/streams/:id/wait         Link (T228, P8): `{on, remove?}` a `waits_on` edge
  *
@@ -835,7 +841,7 @@ async function handleStreamRoute(
   sameOrigin: () => boolean,
 ): Promise<Response | undefined> {
   const match = url.pathname.match(
-    /^\/api\/streams\/([^/]+)(?:\/(diff|say|attach|resolve|stop|close|mark-landed|add-repo|wait))?$/,
+    /^\/api\/streams\/([^/]+)(?:\/(diff|say|attach|resolve|stop|close|mark-landed|pr-check|add-repo|wait))?$/,
   );
   if (!match) return undefined;
   const action = match[2];
@@ -866,8 +872,12 @@ async function handleStreamRoute(
       return jsonResponse(feed.landing.diff(id));
     }
 
-    // Close and Mark landed take no body.
+    // Close, Mark landed and Check now take no body.
     if (action === 'close') return jsonResponse(await feed.streams.close('human', id));
+    if (action === 'pr-check') {
+      if (!feed.prCheck) return errorResponse(503, 'PR polling not available');
+      return jsonResponse(await feed.prCheck(id));
+    }
     if (action === 'mark-landed') {
       if (!feed.landing) return errorResponse(503, 'landing not available');
       return jsonResponse(await feed.landing.markLanded(id));
