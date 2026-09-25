@@ -203,7 +203,9 @@ export type LandOutcome =
   | { status: 'gated'; gate: HilRequest; line: string }
   | { status: 'refused'; reason: string; line: string }
   | { status: 'blocked'; target: string; conflicts: string[]; line: string }
-  | { status: 'landed'; target: string; sha: string; line: string };
+  | { status: 'landed'; target: string; sha: string; line: string }
+  /** PR mode: the branch was pushed and its PR opened (or updated). A success. */
+  | { status: 'pr_open'; target: string; pr: { number: number; url: string }; line: string };
 
 /** T163: mirror of `rules/report.ts`'s `RuleReportRow` (§5.7). */
 export interface RuleReportRow {

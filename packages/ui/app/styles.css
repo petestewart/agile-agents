@@ -590,6 +590,10 @@ body {
   color: var(--ok);
   background: var(--bg-raised);
 }
+.cr-land-result.info {
+  color: var(--info);
+  background: var(--bg-raised);
+}
 .cr-land-result.bad {
   color: var(--danger);
   background: var(--danger-weak);

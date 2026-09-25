@@ -333,6 +333,15 @@ function DiffView({ id }: { id: string }): JSX.Element {
   );
 }
 
+/** T338: how a delivery result reads: a pushed PR is a success, a gate is news, not an error. */
+const OUTCOME_TONE: Record<LandOutcome['status'], 'ok' | 'info' | 'bad'> = {
+  landed: 'ok',
+  pr_open: 'ok',
+  gated: 'info',
+  refused: 'bad',
+  blocked: 'bad',
+};
+
 function LandPanel({
   page,
   onChanged,
@@ -350,7 +359,9 @@ function LandPanel({
   if (stream.repo === undefined) return null;
   const finished = stream.human.status === 'landed' || stream.human.status === 'closed';
   // T176: a failed land's own line replaces the preflight, never "Ready" beside it.
-  const failed = refused !== undefined || (outcome !== undefined && outcome.status !== 'landed');
+  const failed =
+    refused !== undefined || (outcome !== undefined && OUTCOME_TONE[outcome.status] === 'bad');
+  const pr = stream.delivery_state?.pr;
   const conflicts = land?.conflicts;
 
   async function doMarkLanded(): Promise<void> {
@@ -465,6 +476,17 @@ function LandPanel({
           ))}
         </p>
       )}
+      {pr && (
+        <p className="cr-dim" data-testid="delivery-pr" data-state={pr.state}>
+          <a href={pr.url} target="_blank" rel="noopener noreferrer" data-testid="delivery-pr-link">
+            PR #{pr.number}
+          </a>{' '}
+          {pr.state}
+          {pr.draft ? ' (draft)' : ''} · review {pr.review.replace(/_/g, ' ')} · checks {pr.checks}{' '}
+          · auto-merge {pr.auto_merge}
+          {pr.mergeable !== 'clean' && pr.mergeable !== 'unknown' ? ` · ${pr.mergeable}` : ''}
+        </p>
+      )}
       <p className="cr-dim" data-testid="land-diff-rules">
         {page.diff_rules.length === 0
           ? 'No diff-stage rules in scope.'
@@ -472,12 +494,12 @@ function LandPanel({
       </p>
       {outcome && !(conflicts && conflicts.length > 0) && (
         <p
-          className={`cr-land-result ${outcome.status === 'landed' ? 'ok' : 'bad'}`}
+          className={`cr-land-result ${OUTCOME_TONE[outcome.status]}`}
           data-testid="land-result"
           data-status={outcome.status}
           aria-live="polite"
         >
-          {outcome.line}
+          <Linked text={outcome.line} />
         </p>
       )}
       {refused && (

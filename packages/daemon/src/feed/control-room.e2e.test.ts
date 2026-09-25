@@ -1832,6 +1832,84 @@ describe('nothing to deliver (Playwright e2e, T231)', () => {
   );
 });
 
+describe('delivery result tone and PR state (Playwright e2e, T338)', () => {
+  browserTest(
+    'a pushed PR reads as success with a clickable URL; an open PR shows review, checks and auto-merge',
+    async () => {
+      const cockpit = await startStreamCockpit([]);
+      let page: Page | undefined;
+      try {
+        const stream = await cockpit.streams.create('human', {
+          title: 'pr node',
+          goal: 'g',
+          repo: 'demo',
+        });
+        const url = 'https://github.com/o/demo/pull/2';
+        await cockpit.streams.update('daemon', stream.id, {
+          branch: 's-pr',
+          delivery_state: {
+            mode: 'pr',
+            status: 'pr_open',
+            at: new Date().toISOString(),
+            pr: {
+              number: 2,
+              url,
+              head: 'abc',
+              base: 'main',
+              state: 'open',
+              draft: false,
+              review: 'review_requested',
+              checks: 'pending',
+              mergeable: 'clean',
+              auto_merge: 'enabled',
+              last_seen: {},
+              polled_at: new Date().toISOString(),
+            },
+          },
+        });
+        page = await openPage();
+        // The land call itself is the daemon's (T224); this pins how its PR outcome reads.
+        await page.route(`**/api/streams/${stream.id}/land`, (route) =>
+          route.fulfill({
+            status: 200,
+            contentType: 'application/json',
+            body: JSON.stringify({
+              status: 'pr_open',
+              target: 'main',
+              pr: { number: 2, url },
+              line: `pushed s-pr, opened PR #2 into main: ${url}`,
+            }),
+          }),
+        );
+        await page.goto(`${cockpit.base}/`);
+        await page.locator(`[data-testid="stream-tree"] [data-stream="${stream.id}"]`).click();
+        await page
+          .locator('[data-testid="delivery-pr"]', { hasText: 'review review requested' })
+          .waitFor();
+        const prLine = (await page.locator('[data-testid="delivery-pr"]').textContent()) ?? '';
+        expect(prLine).toContain('checks pending');
+        expect(prLine).toContain('auto-merge enabled');
+        expect(await page.locator('[data-testid="delivery-pr-link"]').getAttribute('href')).toBe(
+          url,
+        );
+
+        await page.locator('[data-testid="stream-land"]').click();
+        await waitForAttr(page, '[data-testid="land-result"]', 'data-status', 'pr_open');
+        const result = page.locator('[data-testid="land-result"]');
+        expect(await result.getAttribute('class')).toContain('ok');
+        expect(await result.getAttribute('class')).not.toContain('bad');
+        const link = result.locator(`a[href="${url}"]`);
+        expect(await link.getAttribute('target')).toBe('_blank');
+        expect(await link.getAttribute('rel')).toBe('noopener noreferrer');
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+});
+
 describe('parents and land conflicts (Playwright e2e, T176)', () => {
   browserTest(
     'attach on a parent starts straight away; a conflicted land shows the files, not "Ready"; Resolve then re-land',
