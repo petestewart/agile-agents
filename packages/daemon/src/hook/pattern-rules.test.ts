@@ -237,6 +237,9 @@ test('T336: a read-only git -C into another readable repo is not an escape (a wr
       `git -C ${sibling} commit -m x`,
       `git -C ${sibling} checkout -b y`,
       `git -C ${sibling} log --output=${sibling}/x`,
+      // `~` is the home directory, never a `~` folder inside the worktree.
+      'git -C ~/elsewhere commit -m x',
+      'git -C $HOME/elsewhere commit -m x',
     ]) {
       expect((await decide(command)).decision).toBe('deny');
     }
