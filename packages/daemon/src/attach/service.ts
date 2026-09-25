@@ -45,6 +45,7 @@ import {
   wakeVerdict,
 } from '../events/wake';
 import { settingsFileName } from '../hook/settings';
+import { nodeReadScope } from '../permissions/policy-tables';
 import type { RuleStatsOutcome } from '../rules/service';
 import type { BriefDoc } from '../runner/brief';
 import { buildBrief } from '../runner/brief';
@@ -440,9 +441,17 @@ export class AttachService {
       });
     }
 
-    // 3. The brief.
+    // T330 (§4.4, P20): the same read scope the hook tier gives this node.
+    const readScope = nodeReadScope(stream, () => repos, this.options.home);
+    // 3. The brief. It names the repos the node may read (a work node: the
+    // others than its own), so the agent knows where they are.
+    const readableRepos = Object.entries(repos)
+      .filter(([name, entry]) => readScope.readRoots.includes(entry.path) && name !== stream.repo)
+      .map(([name, entry]) => ({ name, path: entry.path }));
+    const inWorktree = worktreePath !== undefined;
     const ancestors = this.ancestorsOf(stream);
     const brief = buildBrief({
+      ...(!inWorktree || readableRepos.length > 0 ? { readableRepos, inWorktree } : {}),
       role,
       stream,
       ancestors,
@@ -503,6 +512,7 @@ export class AttachService {
       brief: prompt,
       sessionDir,
       provider,
+      readScope,
       ...(this.options.rules !== undefined ? { rules: this.options.rules } : {}),
       ...(this.options.spawn !== undefined ? { spawn: this.options.spawn } : {}),
       ...(this.options.cliBin !== undefined ? { cliBin: this.options.cliBin } : {}),
