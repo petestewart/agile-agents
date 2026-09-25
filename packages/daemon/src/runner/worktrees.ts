@@ -7,8 +7,15 @@
 
 import { existsSync, mkdirSync, rmSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
-import { type GitResult, git } from '../landing/git';
-import { DAEMON_CACHE_DIR } from '../subprocess-env';
+import { DAEMON_CACHE_DIR, sandboxedSubprocessEnv } from '../subprocess-env';
+
+interface GitResult {
+  exitCode: number;
+  stdout: string;
+  stderr: string;
+}
+
+const textDecoder = new TextDecoder();
 
 /** Stream title -> kebab slug, capped (the worktree/branch name's readable half). */
 export function slugify(title: string, maxLen = 40): string {
@@ -56,7 +63,7 @@ export class WorktreeRefusedError extends Error {
 
 /**
  * One `git` invocation as argv (D11: no shell, so a slug or branch can't
- * inject a command), through the landing path's `Bun.spawnSync` wrapper.
+ * inject a command), run with `Bun.spawnSync` as the landing path's git is.
  *
  * Never the async `Bun.spawn`: it registers the child's pidfd on the
  * daemon's event loop, and when that `epoll_ctl` fails (`EBADF`: the pidfd
@@ -70,7 +77,18 @@ export class WorktreeRefusedError extends Error {
  * the exit status is always the child's own.
  */
 function runGit(args: string[], cwd: string): GitResult {
-  return git(args, cwd, cwd);
+  const result = Bun.spawnSync(['git', ...args], {
+    cwd,
+    env: sandboxedSubprocessEnv(cwd, 'git'),
+    stdin: 'ignore',
+    stdout: 'pipe',
+    stderr: 'pipe',
+  });
+  return {
+    exitCode: result.exitCode,
+    stdout: textDecoder.decode(result.stdout).trim(),
+    stderr: textDecoder.decode(result.stderr).trim(),
+  };
 }
 
 function runGitOrThrow(args: string[], cwd: string): string {
