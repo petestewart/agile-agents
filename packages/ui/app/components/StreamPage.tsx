@@ -1056,7 +1056,14 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
   }
 
   const { stream } = page;
-  const dot = streamDot({ agent_status: stream.agent.status, human_status: stream.human.status });
+  const row = cockpit?.streams.find((r) => r.id === stream.id);
+  const dot = streamDot({
+    agent_status: stream.agent.status,
+    human_status: stream.human.status,
+    ...(row ? { role: row.role } : {}),
+    ...(stream.delivery_state?.status === 'pr_open' ? { pr_open: true as const } : {}),
+    ...(stream.project !== undefined ? { project: stream.project } : {}),
+  });
   const live = stream.sessions.filter(isLiveSession);
   const liveWorker = live.find((s) => isAgentRole(s.role));
   const liveReviewer = live.find((s) => s.role === 'reviewer');

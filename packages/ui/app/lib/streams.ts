@@ -18,14 +18,19 @@ export type StreamDot = 'amber' | 'blue' | 'grey' | 'green' | 'red';
  * `done` with the human half still `open` is "waiting for me to review and
  * land" (§2.2), which is the operator's move, so it is amber too.
  */
-export function streamDot(row: Pick<CockpitStreamRow, 'agent_status' | 'human_status'>): StreamDot {
+export function streamDot(
+  row: Pick<CockpitStreamRow, 'agent_status' | 'human_status'> &
+    Partial<Pick<CockpitStreamRow, 'role' | 'project' | 'pr_open'>>,
+): StreamDot {
   if (row.human_status === 'waiting_on_you') return 'amber';
   if (row.human_status === 'landed') return 'green';
   if (row.human_status === 'closed') return 'grey';
   switch (row.agent_status) {
     case 'question':
-    case 'done':
       return 'amber';
+    case 'done':
+      // T341: as Needs me (T336): nothing to land here, so not the operator's move.
+      return nothingToLand(row) ? 'grey' : 'amber';
     case 'blocked':
       return 'red';
     case 'working':
@@ -33,6 +38,21 @@ export function streamDot(row: Pick<CockpitStreamRow, 'agent_status' | 'human_st
     default:
       return 'grey';
   }
+}
+
+/**
+ * A coordinating node, a project root, a project's conversation (no branch),
+ * or a node whose PR is open (it merges on GitHub): `done` is not your move.
+ */
+function nothingToLand(
+  row: Partial<Pick<CockpitStreamRow, 'role' | 'project' | 'pr_open'>>,
+): boolean {
+  return (
+    row.pr_open === true ||
+    row.role === 'coordinating' ||
+    row.role === 'project' ||
+    (row.role === 'conversation' && row.project !== undefined)
+  );
 }
 
 export const DOT_LABEL: Record<StreamDot, string> = {

@@ -108,6 +108,8 @@ export interface CockpitStreamRow {
   visibility_advisory?: true;
   /** T336: a part not yet started because its coordinator's plan is not approved. */
   waiting_for_plan?: true;
+  /** T341: its PR is open, so it merges on GitHub (not the operator's move here). */
+  pr_open?: true;
 }
 
 /** Vendors whose tool calls pass the `agile hook` path check (Claude's hook, Pi's extension). */
@@ -198,6 +200,7 @@ export function buildCockpitFrame(
       ...(marked.has(s.id) ? { overlap: true as const } : {}),
       ...(visibilityAdvisory(s, repos) ? { visibility_advisory: true as const } : {}),
       ...(waitingForPlan?.(s) === true ? { waiting_for_plan: true as const } : {}),
+      ...(s.delivery_state?.status === 'pr_open' ? { pr_open: true as const } : {}),
     })),
     projects: (projects?.list() ?? []).map((p) => ({
       id: p.id,

@@ -51,6 +51,19 @@ describe('streamDot', () => {
   test('a finished worker with the human half open is the operator’s move', () => {
     expect(streamDot(row('a', { agent_status: 'done' }))).toBe('amber');
   });
+
+  test('T341: a finished coordinator, root or project conversation has nothing to land', () => {
+    expect(streamDot(row('a', { agent_status: 'done', role: 'coordinating' }))).toBe('grey');
+    expect(streamDot(row('a', { agent_status: 'done', role: 'project', project: 'P-1' }))).toBe(
+      'grey',
+    );
+    expect(
+      streamDot(row('a', { agent_status: 'done', role: 'conversation', project: 'P-1' })),
+    ).toBe('grey');
+    expect(streamDot(row('a', { agent_status: 'done', pr_open: true }))).toBe('grey');
+    // A question still is the operator's move.
+    expect(streamDot(row('a', { agent_status: 'question', role: 'coordinating' }))).toBe('amber');
+  });
 });
 
 describe('buildStreamTree', () => {
