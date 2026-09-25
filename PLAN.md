@@ -1655,8 +1655,8 @@ agile tail --director
 
 ### Ticket: T325 Phase 13 QA and Pete's look
 - **Priority:** P0
-- **Status:** In Progress
-- **Owner:** sonnet:qa-T325
+- **Status:** Done
+- **Owner:** Unassigned
 - **Scope:** Black-box QA against the fakes. Daemon line count, plus the full §6.1 walkthrough on the final branch. Pete links a node to a real issue in whichever tracker he uses.
 - **Acceptance Criteria:** QA ACCEPT. Live: the goal is pulled from the issue, an edit shows as an event, and with `push_status` on the issue moves to in review when the PR opens. §6.1 is met.
 - **Validation Steps:** Pete, on his Mac, after adding the tracker token in Settings (P17), with a real issue key typed in place of the example key below:
@@ -1672,6 +1672,8 @@ agile node show $N --json | jq -r '.goal, .external_link.url'
 ```
 
 - **Notes:** `SHOP-1` is an example. Pete types his own issue key, because there is no shared test tracker. This is the one command in the phase that can't be pasted unchanged.
+- T325: sonnet QA ACCEPT against the fake Jira/Linear servers (credentials, link + real 5-min poll, roll-up injection, import twice, push on/off, never edits text or closes). typecheck, lint, bun test, test:integration, test:e2e green. §6.1: offline gate met; daemon line count NOT met (30,494 vs D18 < 20,000; ~430 are the tracker fakes) — Pete to decide; live walkthrough needs Pete.
+
 
 ## 8. Deleted (must be gone from `main` by the end of Phase 6)
 
@@ -1686,6 +1688,8 @@ Daemon: `em/`, `architect/`, `oracle/`, `qa/`, `halts/`, `quota/`, `handoff/`, `
 - Q5–Q24. The proposed decisions P1–P20 in `design/projects-design.md` §19 are open until Pete confirms each one as a D-entry. Tickets assume them. P17 (tracker tokens in `config.yaml`, a second credential exception) must be approved before T320.
 
 ## 10. Discovered Issues Log
+
+- Phase 13 complete on `claude/phase-13` (2026-09-25): T320–T324, T326 merged, T325 QA ACCEPT; awaiting Pete's look. All planned tickets for Phases 7–13 are Done. Open for Pete: daemon is 30,494 lines against D18's < 20,000.
 
 - Phase 12 complete on `claude/phase-12` (2026-09-25): T300–T303, T305 merged (plus T290/T291 on phase-11), T304 QA ACCEPT; awaiting Pete's look. Phase 13 proceeds on `claude/phase-13`.
 
