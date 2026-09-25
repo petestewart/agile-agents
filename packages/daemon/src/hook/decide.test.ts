@@ -368,3 +368,24 @@ describe('T280: a coordinator writes only in its scratch session dir (P20)', () 
     expect(decide('Read', { file_path: `${dir}/brief.md` })).toBe('allow');
   });
 });
+
+describe('T291: a coordinator has no network (P20)', () => {
+  const web = (role: HookDecisionContext['role'], tool_name: string) =>
+    decidePreToolUse(baseCtx({ role }), {
+      tool_name,
+      tool_input: { url: 'https://example.com', query: 'x' },
+    });
+
+  test('WebFetch and WebSearch are denied for a coordinator', () => {
+    for (const tool of ['WebFetch', 'WebSearch']) {
+      const d = web('coordinator', tool);
+      expect(d.decision).toBe('deny');
+      expect(d.reason).toContain('no network');
+    }
+  });
+
+  test('a worker (engineer) is unchanged: both fall through to allow', () => {
+    expect(web('worker', 'WebFetch').decision).toBe('allow');
+    expect(web('worker', 'WebSearch').decision).toBe('allow');
+  });
+});
