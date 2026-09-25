@@ -25,7 +25,7 @@ packages/acp-client  ACP session client and vendor providers (lifted from vendor
 packages/daemon      agiled: store, streams, attach/runner, worktrees, hook + permissions, knowledge,
                      classifier, landing, inbox/questions/gates, docs, MCP tools, HTTP + cockpit (feed/)
 packages/cli         agile: init · daemon · repo · stream · knowledge · attach · review · detach · land ·
-                     status · tail · inbox · answer · question · gate · hook · mcp  (`agile` with no args prints usage)
+                     status · tail · inbox · answer · question · gate · hook · mcp · tracker  (`agile` with no args prints usage)
 packages/ui          the cockpit (React + Vite, app/), served by the daemon
 fixtures/demo-project  seeded repo for the e2e runs
 ```
