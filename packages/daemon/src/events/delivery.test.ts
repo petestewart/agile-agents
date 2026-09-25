@@ -207,3 +207,37 @@ describe("T290: a parent's note wakes an ended work node", () => {
     delivery.stop();
   });
 });
+
+describe('T336: a woken session gets its events in the brief', () => {
+  test('claimed events are not digested; `delivered` marks them for the session', async () => {
+    const { prompts, target } = fakeTarget();
+    const delivery = new SessionDelivery({ events, target: () => target, delayMs: 5 });
+    const note = await events.emit(line('use CSV'));
+    const wake = delivery.inBrief(node, [note]);
+    expect(wake.text).toContain(
+      `${note.id} (human_line): The operator wrote on the stream: use CSV`,
+    );
+    delivery.notify(node);
+    await Bun.sleep(30);
+    expect(prompts).toEqual([]);
+    wake.delivered('S2');
+    await until(() => events.pendingFor(node).length === 0);
+    const [record] = store.readDeliveries(node).filter((d) => d.status === 'delivered');
+    expect(record?.session).toBe('S2');
+    wake.release();
+    await Bun.sleep(30);
+    expect(prompts).toEqual([]);
+    delivery.stop();
+  });
+
+  test('released unaccepted, the events go with the next digest', async () => {
+    const { prompts, target } = fakeTarget();
+    const delivery = new SessionDelivery({ events, target: () => target, delayMs: 5 });
+    const note = await events.emit(line('use CSV'));
+    const wake = delivery.inBrief(node, [note]);
+    wake.release();
+    await until(() => prompts.length === 1);
+    expect(prompts[0]).toContain('use CSV');
+    delivery.stop();
+  });
+});

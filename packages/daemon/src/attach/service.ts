@@ -41,7 +41,12 @@ import {
 import { readHomeConfigFile } from '../config';
 import type { ContractService } from '../coordination/contracts';
 import type { PlanService } from '../coordination/plans';
-import { type DeliveryTarget, REPLY_FIRST, SessionDelivery } from '../events/delivery';
+import {
+  type DeliveryTarget,
+  REPLY_FIRST,
+  SessionDelivery,
+  type WakeDelivery,
+} from '../events/delivery';
 import { routeAndEmit } from '../events/router';
 import { RoutedEventService } from '../events/service';
 import {
@@ -130,6 +135,8 @@ export interface AttachOptions extends AttachFlags {
   role?: SessionRole;
   /** Appended after the brief: the lessons session's material and instruction (§5.5). The caller caps it. */
   briefAppendix?: string;
+  /** T336: pending events handed over in the brief (a wake), so no digest repeats them. */
+  wake?: readonly RoutedEvent[];
 }
 
 /** `detach: true`: the human pulled the plug, not a shutdown. */
@@ -351,7 +358,8 @@ export class AttachService {
         kind: 'event',
         body: `woken by ${[...new Set(pending.map((e) => e.type))].join(', ')}`.slice(0, 800),
       });
-      await this.attach(node);
+      // T336: the first prompt carries the events, so the agent never has to ask for them.
+      await this.attach(node, { wake: pending });
     } catch (err) {
       await streams
         .appendThread('daemon', node, {
@@ -365,6 +373,14 @@ export class AttachService {
     } finally {
       this.waking.delete(node);
     }
+  }
+
+  /**
+   * T336: starts a node's agent with its pending events in the brief (a
+   * part its approved plan starts), rather than as a digest after it.
+   */
+  startWithPending(id: string): Promise<AttachResult> {
+    return this.attach(id, { wake: this.events.pendingFor(id).map((p) => p.event) });
   }
 
   /** T243: at daemon start (after `recover()`), every node with pending events is considered. */
@@ -432,6 +448,25 @@ export class AttachService {
   }
 
   async attach(streamId: string, options: AttachOptions = {}): Promise<AttachResult> {
+    const wake =
+      options.wake !== undefined && options.wake.length > 0
+        ? this.delivery.inBrief(streamId, options.wake)
+        : undefined;
+    try {
+      const result = await this.attachSession(streamId, options, wake);
+      if (wake !== undefined) void result.handle.exited.finally(wake.release);
+      return result;
+    } catch (err) {
+      wake?.release();
+      throw err;
+    }
+  }
+
+  private async attachSession(
+    streamId: string,
+    options: AttachOptions,
+    wake: WakeDelivery | undefined,
+  ): Promise<AttachResult> {
     const { store, streams } = this.options;
     const stream = streams.get(streamId);
     // P20 (T280): the agent of a coordinating node or a project root is a
@@ -569,8 +604,10 @@ export class AttachService {
     });
     // The lessons material rides after the brief, never inside it (the
     // brief's own ceiling protects its parts; the caller caps the appendix).
-    const prompt =
-      options.briefAppendix === undefined ? brief : `${brief}\n\n${options.briefAppendix}`;
+    // T336: a woken session is told what woke it, after everything else.
+    const prompt = [brief, options.briefAppendix, wake?.text]
+      .filter((part): part is string => part !== undefined)
+      .join('\n\n');
     // What the agent was handed, beside its logs: "what did it see" is a
     // file read. Best effort: a full disk must not stop a session starting.
     try {
@@ -617,6 +654,7 @@ export class AttachService {
       role,
       worktreePath: cwd,
       brief: prompt,
+      ...(wake !== undefined ? { onBriefDelivered: () => wake.delivered(sessionId) } : {}),
       sessionDir,
       provider,
       readScope,
