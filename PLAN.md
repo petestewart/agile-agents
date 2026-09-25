@@ -1804,12 +1804,12 @@ Pete's requests from the walkthrough (D33, D34). Branch `claude/phase-14`, stack
 
 ### Ticket: T332 ∥ Conversation tangents
 - **Priority:** P1
-- **Status:** In Progress
-- **Owner:** opus:worker-T332
+- **Status:** Done
+- **Owner:** Unassigned
 - **Scope:** Per D33: `nodeRole()` keeps a conversation whose children are all conversations as `conversation`; a "Branch off" action on a thread line (cockpit) and `node new --parent` on a conversation create a child conversation seeded with that line and its own question; the parent's agent is not replaced by a coordinator; a finished tangent emits a short summary event to the parent (routed, capped, the tangent's own words as data). Update design/projects-design.md §6/P1.
 - **Acceptance Criteria:** Role tests (conversation with conversation children stays conversation; becomes coordinating when a child gets a repo); e2e: Branch off from a line creates the child with the seed; a finished tangent's summary reaches the parent.
 - **Validation Steps:** `bun test packages/shared packages/daemon/src/streams packages/daemon/src/events`; `bun run test:e2e`.
-- **Notes:** —
+- **Notes:** Branch T332-tangents, merge d78af48. Review (sonnet): blocker (+ Repo on a conversation with tangents orphaned a worktree) fixed: it takes the part path; APPROVE. QA (sonnet): feature PASS; merging with T333 broke two T333 tests that assumed any child makes a coordinator. Manager call: roles stay structural (a repo-less child of a conversation is a tangent however it got there); T333 tests and design §7.1 updated.
 
 ### Ticket: T333 ∥ Move nodes by hand
 - **Priority:** P1
