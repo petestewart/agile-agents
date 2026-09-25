@@ -102,18 +102,20 @@ describe('caller-input errors are invalid params, not internal errors (T126)', (
     return err?.code;
   };
 
-  test('a parent cycle on stream.update is -32602 and names the chain', async () => {
+  test('T333: a raw parent change on stream.update is refused and points at node move', async () => {
     const a = await create('a');
-    const b = await call<Stream>('stream.create', { title: 'b', goal: 'g', parent: a.id });
-    const err = (await call('stream.update', { id: a.id, parent: b.id }).then(
-      () => undefined,
-      (e: unknown) => e,
-    )) as { code?: number; message: string };
-    expect(err.code).toBe(-32602);
-    expect(err.message).toContain('parent cycle');
-    expect(err.message).toContain(`${a.id} -> ${b.id} -> ${a.id}`);
-    expect(err.message).not.toContain('undefined');
-    expect(err.message).not.toContain('null');
+    const b = await create('b');
+    for (const parent of [b.id, a.id, 'nope']) {
+      const err = (await call('stream.update', { id: a.id, parent }).then(
+        () => undefined,
+        (e: unknown) => e,
+      )) as { code?: number; message: string };
+      expect(err.code).toBe(-32602);
+      expect(err.message).toContain('node move');
+    }
+    // Nothing moved; the rest of a patch still works without `parent`.
+    expect((await call<Stream>('stream.get', { id: a.id })).parent).toBe(projectRoot);
+    expect((await call<Stream>('stream.update', { id: a.id, title: 'a2' })).title).toBe('a2');
   });
 
   test('node.move: a refused move and a bad parent are -32602; a move stamps human', async () => {
@@ -132,9 +134,9 @@ describe('caller-input errors are invalid params, not internal errors (T126)', (
     );
   });
 
-  test('self-parent on stream.update is -32602', async () => {
+  test('self-parent on node.move is -32602', async () => {
     const a = await create('a');
-    expect(await codeOf(() => call('stream.update', { id: a.id, parent: a.id }))).toBe(-32602);
+    expect(await codeOf(() => call('node.move', { id: a.id, parent: a.id }))).toBe(-32602);
   });
 
   test('an unknown parent on stream.create is -32602', async () => {
