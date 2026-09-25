@@ -46,7 +46,8 @@ function makeRepo(prefix: string): string {
 }
 
 function roleOf(id: string): string {
-  return nodeRole(streams.get(id), liveChildrenOf(id, streams.list()));
+  const all = streams.list();
+  return nodeRole(streams.get(id), liveChildrenOf(id, all), all);
 }
 
 function bodies(id: string): string[] {
@@ -235,6 +236,35 @@ describe('T205 + Repo in place', () => {
     await expect(reshape.addRepo(root, 'api')).rejects.toThrow(RepoInPlaceError);
     await expect(reshape.addRepo(node.id, 'nope')).rejects.toThrow(/unknown repo/);
     expect(roleOf(node.id)).toBe('work');
+  }, 30_000);
+
+  test('D33: conversation with a tangent + api: the repo goes to a part, the node coordinates', async () => {
+    const node = await conversation();
+    const tangent = await streams.create('human', {
+      title: 'Why slow?',
+      goal: 'why are prices slow?',
+      parent: node.id,
+    });
+    await attach.attach(node.id);
+    expect(roleOf(node.id)).toBe('conversation');
+
+    const { node: after, parts } = await reshape.addRepo(node.id, 'api');
+
+    expect(parts.map((p) => p.title)).toEqual(['api part']);
+    expect(attach.handleFor(node.id, 'coordinator')).toBeDefined();
+    expect(roleOf(node.id)).toBe('coordinating');
+    expect(roleOf(tangent.id)).toBe('conversation');
+    expect(after.repo).toBeUndefined();
+    expect(after.worktree).toBeUndefined();
+    expect(after.branch).toBeUndefined();
+    const [part] = parts;
+    expect(roleOf(part?.id ?? '')).toBe('work');
+    expect(existsSync(part?.worktree ?? '')).toBe(true);
+    expect(attach.handleFor(part?.id ?? '')).toBeDefined();
+    expect(bodies(node.id)).toContain(
+      'repo added: api; now coordinating api part beside its tangents',
+    );
+    expect(bodies(node.id).some((b) => b.includes('now a work node'))).toBe(false);
   }, 30_000);
 
   test('coordinating + another repo adds one more part', async () => {

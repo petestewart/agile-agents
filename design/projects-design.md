@@ -215,6 +215,7 @@ You never restructure the tree by hand to change where work happens. The stream 
 | The node is | You click | Behind the scenes | What you see |
 |---|---|---|---|
 | A conversation | + api | It becomes a work node on api: a branch and worktree are created | The same chat carries on; the agent can now change code |
+| A conversation with tangents (§2.4) | + api | It becomes a coordinating node: a new child "api part" gets the branch and worktree, beside the tangents | The same chat carries on at this node; the part appears as a row under it |
 | Working in api | + web | It becomes a coordinating node. Its api work moves into a child "api part", keeping the branch and commits, and a new child "web part" is created | The same chat carries on at this node; the two parts appear as rows under it |
 | Working in api, nothing committed | Switch to web | As above, and the empty api part is closed | The same chat, now on web |
 
@@ -437,13 +438,13 @@ function nodeRole(node, liveChildren, all?): NodeRole {
   if (node.parent === undefined) return 'project';          // only a project root has no parent
   const others = liveChildren.filter(c => c.helper_of !== node.id);
   // D33: a conversation whose children are all conversations (tangents) stays one.
-  if (node.repo === undefined && others.every(c => isConversation(c, all))) return 'conversation';
+  if (node.repo === undefined && others.every(c => isTangent(c, all))) return 'conversation';
   if (others.length > 0) return 'coordinating';
   return node.repo !== undefined ? 'work' : 'conversation';
 }
 ```
 
-`liveChildren` means children that are not closed or archived. `isConversation` is true for a child with no repo whose own live children are all conversations; `all` (every node) lets it look down the tree. A coordinating node has no `branch` or `worktree`: the reshape in §7 moves them to its "part" child.
+`liveChildren` means children that are not closed or archived. `isTangent` is true for a child with no repo whose own live children are all conversations; `all` (every node) lets it look down the tree. A coordinating node has no `branch` or `worktree`: the reshape in §7 moves them to its "part" child.
 
 ### 14.3 KnowledgeItem (replaces Rule)
 
