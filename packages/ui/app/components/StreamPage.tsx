@@ -448,10 +448,12 @@ function LandPanel({
 /** T321 (§10): the node's Jira/Linear link; linking sets the goal from the issue. */
 function TrackerLinkField({
   stream,
+  rollup,
   busy,
   act,
 }: {
   stream: StreamPagePayload['stream'];
+  rollup: StreamPagePayload['rollup'];
   busy: boolean;
   act: (fn: () => Promise<unknown>) => Promise<void> | void;
 }): JSX.Element {
@@ -465,6 +467,11 @@ function TrackerLinkField({
           {link.key}
         </a>{' '}
         ({link.system}){' '}
+        {rollup !== undefined && (
+          <span data-testid="tracker-rollup">
+            · {rollup.merged}/{rollup.total} merged{' '}
+          </span>
+        )}
         <button
           type="button"
           className="cr-btn"
@@ -883,7 +890,7 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
             ))}
           </ul>
         )}
-        <TrackerLinkField stream={stream} busy={busy} act={act} />
+        <TrackerLinkField stream={stream} rollup={page.rollup} busy={busy} act={act} />
         <AutonomyPicker
           stream={stream}
           project={cockpit?.projects.find((p) => p.id === stream.project)}
