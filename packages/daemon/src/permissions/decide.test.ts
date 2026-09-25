@@ -1259,3 +1259,30 @@ describe('T280: the coordinator table on the ACP path (P20)', () => {
     expect(coord(request('fetch', { url: 'https://registry.npmjs.org/zod' }))).toBe('deny');
   });
 });
+
+// T330: an engineer's ACP read under a read scope is judged like the hook's Read.
+describe('decidePermission — engineer reads under a read scope (T330)', () => {
+  const scoped = (targetPath: string) =>
+    decidePermission({
+      role: 'engineer',
+      worktreePath: '/home/op/.agile/sessions/S1',
+      readRoots: ['/repos/ledger-lite'],
+      hiddenRoots: ['/repos/secret', '/home/op/.agile'],
+      request: request('read', { targetPath }),
+    }).kind;
+
+  test('a readable repo and the own session dir are allowed', () => {
+    expect(scoped('/repos/ledger-lite/README.md')).toBe('allow');
+    expect(scoped('/home/op/.agile/sessions/S1/notes.md')).toBe('allow');
+  });
+
+  test('the agile home, a hidden repo and anywhere else are denied', () => {
+    expect(scoped('/home/op/.agile/config.yaml')).toBe('deny');
+    expect(scoped('/repos/secret/a.ts')).toBe('deny');
+    expect(scoped('/etc/hosts')).toBe('deny');
+  });
+
+  test('with no read scope a read stays allowed (as before)', () => {
+    expect(decide('engineer', request('read', { targetPath: '/etc/hosts' })).kind).toBe('allow');
+  });
+});

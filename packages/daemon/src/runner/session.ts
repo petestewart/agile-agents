@@ -28,7 +28,7 @@ import {
   spawnSession as defaultSpawnSession,
 } from '@agile-agents/acp-client';
 import type { AgentId, SessionRef, SessionRole, Stream } from '@agile-agents/shared';
-import { THREAD_BODY_MAX_CHARS } from '@agile-agents/shared';
+import { AGENT_LINE_MAX_CHARS } from '@agile-agents/shared';
 import { writeClaudeSettings } from '../hook';
 import { permissionRoleFor } from '../hook/decide';
 import {
@@ -97,6 +97,8 @@ export interface AgentSessionOptions {
   /** `AGILE_SOCKET_PATH` for the hook and MCP bridge (a worktree cwd would resolve the wrong root). */
   socketPath?: string;
   provider?: AcpProviderConfig;
+  /** T330 (P20): the ACP read scope (`readRoots`/`hiddenRoots`), as the hook tier's. */
+  readScope?: { readRoots: readonly string[]; hiddenRoots: readonly string[] };
   /** Test seam: a fake `spawnSession`. */
   spawn?: typeof defaultSpawnSession;
   now?: () => Date;
@@ -363,6 +365,7 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
     agent: sessionId as AgentId,
     worktreePath,
     session: spawned,
+    ...(opts.readScope ?? {}),
     // The same rules the hook tier enforces, bound to this stream: the
     // only tier a vendor without a pre-tool-use hook has.
     ...(opts.rules !== undefined
@@ -388,15 +391,23 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
   // ---------------------------------------------------------------- output
   // One thread `line` per ACP message, not per chunk (chunks are deltas of
   // one message). `output.log` gets everything; the line is capped and
-  // points at the log.
+  // points at the log. T330: a message is one line with its whole text up
+  // to `AGENT_LINE_MAX_CHARS` (it once split mid-sentence at 800 chars);
+  // past that it is cut at the end and the overflow streams to the log.
   let buffer = '';
+  let overflowed = false;
   function flushOutput(): void {
-    const text = buffer.trim();
+    const text = overflowed ? buffer.trimStart() : buffer.trim();
+    const wasOverflowed = overflowed;
     buffer = '';
+    overflowed = false;
+    if (wasOverflowed) outputLog.append('\n');
     if (text.length === 0) return;
-    outputLog.append(`${text}\n`);
+    if (!wasOverflowed) outputLog.append(`${text}\n`);
     const body =
-      text.length > THREAD_BODY_MAX_CHARS ? `${text.slice(0, THREAD_BODY_MAX_CHARS - 1)}…` : text;
+      wasOverflowed || text.length > AGENT_LINE_MAX_CHARS
+        ? `${text.slice(0, AGENT_LINE_MAX_CHARS - 1).trimEnd()}…`
+        : text;
     const append = () =>
       streams.appendThread(
         'agent',
@@ -512,9 +523,16 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
       if (kind === 'agent_message_chunk') {
         const text = chunkText(update?.content);
         if (text !== null) {
-          buffer += text;
-          // A message longer than the cap is flushed as it goes.
-          if (buffer.length >= THREAD_BODY_MAX_CHARS) flushOutput();
+          if (overflowed) {
+            outputLog.append(text);
+          } else if (buffer.length + text.length > AGENT_LINE_MAX_CHARS) {
+            // Past the cap: the head stays for the line, the rest goes to the log as it comes.
+            outputLog.append((buffer + text).trimStart());
+            buffer = (buffer + text).slice(0, AGENT_LINE_MAX_CHARS);
+            overflowed = true;
+          } else {
+            buffer += text;
+          }
         }
         return;
       }
