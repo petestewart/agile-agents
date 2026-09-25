@@ -549,13 +549,31 @@ function hasReadScope(ctx: PolicyContext): boolean {
  * T305 (P20): under a read scope, every path-like argument of a coordinator's
  * command must be readable (`readDenyReason`); an unresolvable one denies.
  */
+/**
+ * T336 (review B4): the paths one argument may name. A flag carries its
+ * value inside the token (`--orderfile=/x`, `-O/x`, `-O../x`), which must
+ * be checked as the path, never the whole token read as a relative one.
+ */
+function pathCandidates(token: string): string[] {
+  if (!token.startsWith('-') || token === '-' || token === '--') return [token];
+  if (token.startsWith('--')) {
+    const eq = token.indexOf('=');
+    return eq === -1 ? [] : [token.slice(eq + 1)];
+  }
+  // A short option with its value attached (`-O/x`), or a bundle whose last
+  // letter takes it (`-aO/x`): the value is the rest after the option letter,
+  // or from where a path first starts.
+  const start = token.slice(1).search(/[/.~]/);
+  return start === -1 ? [token.slice(2)] : [token.slice(2), token.slice(start + 1)];
+}
+
 function coordinatorScopedReads(
   tokens: string[],
   ctx: PolicyContext,
   cwd: string = ctx.worktreePath,
 ): PolicyVerdict {
   if (!hasReadScope(ctx)) return ALLOW;
-  for (const raw of tokens.slice(1)) {
+  for (const raw of tokens.slice(1).flatMap(pathCandidates)) {
     if (!(raw.includes('/') || raw.startsWith('.') || raw.startsWith('~'))) continue;
     const resolved = cmd.resolveTargetPath(raw);
     if (!resolved.safe) return deny(`coordinator role cannot resolve the path "${raw}"`);
