@@ -43,6 +43,8 @@ Target shape, in one paragraph: a **stream** is the unit (goal, status, parent, 
 - **D30** (2026-09-24, Pete): Phases 7–13 are built on stacked branches. `claude/phase-7` comes off the current integration tip, and each `claude/phase-N` comes off `claude/phase-(N-1)`. Ticket branches `T###-<slug>` fork from their phase branch and merge back `--no-ff`. Pete reviews each phase at its QA ticket and lands the phases in order. A fix found in phase N while phase N+1 exists is made on phase N and merged forward into every later phase branch, never cherry-picked backwards.
 - **D31** (2026-09-24, Pete): P17 approved. Jira and Linear tokens may be stored in the home `config.yaml`, the second written credential exception after the TypeSafe key (D16), with the same rules: written only through the store at mode 0600, never printed, logged, committed or sent to the browser; Settings shows only whether a token is set. T320 is unblocked.
 - **D32** (2026-09-24, Pete): proposed decisions P1–P16 and P18–P20 (design/projects-design.md §19) accepted as written. Q5–Q24 are closed by D31 and D32.
+- **D33** (2026-09-25, Pete): conversations can have children (tangents). A conversation whose children are all conversations stays a conversation; it becomes coordinating only once a child has a repo. A tangent is started from a thread line ("Branch off") or `node new --parent`; when it finishes it posts a short summary event to the parent's thread. Amends P1.
+- **D34** (2026-09-25, Pete): the tree can be restructured by hand. Move a node under another parent in the same project (drag in the rail, or `agile node move <id> --parent <id|project>`); moving to the project root detaches it. Refused: into its own subtree, across projects, while the parent's plan is awaiting approval. Roles are re-derived; both parents get a thread line; a moved work node keeps its branch and worktree. Merging conversations is out of scope. Amends §6's "never by hand".
 - D11. KiroCrew is not adopted. Borrowed as designs only: hardened worktree creation, the push detector that cannot be dodged by spelling, agent-owned vs human-owned ledger fields, a fail-closed credential scrub before the external classifier, mechanical scope filtering of injected rules, an append-only log.
 
 ## 3. Non-goals for the reshape
@@ -1722,6 +1724,37 @@ agile node show $N --json | jq -r '.goal, .external_link.url'
 - T325: sonnet QA ACCEPT against the fake Jira/Linear servers (credentials, link + real 5-min poll, roll-up injection, import twice, push on/off, never edits text or closes). typecheck, lint, bun test, test:integration, test:e2e green. §6.1: offline gate met; daemon line count NOT met (30,494 vs D18 < 20,000; ~430 are the tracker fakes) — Pete to decide; live walkthrough needs Pete.
 
 
+### Phase 14 — Tree flexibility
+
+Pete's requests from the walkthrough (D33, D34). Branch `claude/phase-14`, stacked on `claude/phase-13`.
+
+### Ticket: T332 ∥ Conversation tangents
+- **Priority:** P1
+- **Status:** In Progress
+- **Owner:** opus:worker-T332
+- **Scope:** Per D33: `nodeRole()` keeps a conversation whose children are all conversations as `conversation`; a "Branch off" action on a thread line (cockpit) and `node new --parent` on a conversation create a child conversation seeded with that line and its own question; the parent's agent is not replaced by a coordinator; a finished tangent emits a short summary event to the parent (routed, capped, the tangent's own words as data). Update design/projects-design.md §6/P1.
+- **Acceptance Criteria:** Role tests (conversation with conversation children stays conversation; becomes coordinating when a child gets a repo); e2e: Branch off from a line creates the child with the seed; a finished tangent's summary reaches the parent.
+- **Validation Steps:** `bun test packages/shared packages/daemon/src/streams packages/daemon/src/events`; `bun run test:e2e`.
+- **Notes:** —
+
+### Ticket: T333 ∥ Move nodes by hand
+- **Priority:** P1
+- **Status:** In Progress
+- **Owner:** opus:worker-T333
+- **Scope:** Per D34: `agile node move <id> --parent <id|project>`, an HTTP route (same-origin, actor human) and drag-and-drop in the rail. Refuse moves into its own subtree, across projects, or while the parent's plan awaits approval. Re-derive roles; a thread line on the old and new parent; a work node keeps its branch and worktree. Update design/projects-design.md §6.
+- **Acceptance Criteria:** Service tests for every refusal and for roles after a move; CLI test; e2e drag moves a node and the rail updates.
+- **Validation Steps:** `bun test packages/daemon/src/streams packages/cli`; `bun run test:e2e`.
+- **Notes:** —
+
+### Ticket: T334 Phase 14 QA and Pete's look
+- **Priority:** P0
+- **Status:** Todo
+- **Owner:** —
+- **Scope:** Black-box QA of tangents and moves; daemon line count.
+- **Acceptance Criteria:** QA ACCEPT.
+- **Validation Steps:** QA script; Pete in the cockpit.
+- **Notes:** After T332 and T333.
+
 ## 8. Deleted (must be gone from `main` by the end of Phase 6)
 
 Daemon: `em/`, `architect/`, `oracle/`, `qa/`, `halts/`, `quota/`, `handoff/`, `plan/`, `review/` rounds, `sync/` (shelved on a branch), `feed/stories.ts`, `runner/pipeline-glue.ts`, sprint parts of `merge/`, `bus/` unless the thread reuses it. CLI: `run`, `send`, `halt`, `approve`, `sync`. Shared: `Ticket`, `Sprint`, `Stanza`, `Message`, `Halt`, `Quota`, `Review`, `Qa`, `Oracle`, `Kb`, `Ledger`. Briefs: all but `worker.md`, `reviewer.md`, `lessons.md`. UI: `plan/`, `sprint/`, `review/`, `OraclePanel`. State: the `agile-state` orphan branch and per-repo `.agile/`.
@@ -1735,6 +1768,8 @@ Daemon: `em/`, `architect/`, `oracle/`, `qa/`, `halts/`, `quota/`, `handoff/`, `
 - Q5–Q24. The proposed decisions P1–P20 in `design/projects-design.md` §19 are open until Pete confirms each one as a D-entry. Tickets assume them. P17 (tracker tokens in `config.yaml`, a second credential exception) must be approved before T320.
 
 ## 10. Discovered Issues Log
+
+- 2026-09-25 Pete: tangents (D33) and manual moves (D34) approved → Phase 14 on `claude/phase-14`. Cleanup phase starts after Pete finishes the walkthrough.
 
 - 2026-09-25 Pete (walkthrough): wants conversation nodes to have children (tangents / research branches that don't clog the main thread), and disagrees with "you never restructure the tree by hand" — wants manual restructuring. Both change the design (§6 roles, P1); proposals put to Pete before tickets.
 
