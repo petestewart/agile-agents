@@ -109,6 +109,60 @@ export class TrackerLinks {
     return updated;
   }
 
+  /**
+   * T323: one linked child per issue in the node's epic. Idempotent: an
+   * issue already linked on any node of the project (or, with no project,
+   * on a child of this node) is skipped. Children are plain nodes from the
+   * normal create path; nothing is started.
+   */
+  async importChildren(id: string): Promise<{ created: Stream[]; skipped: string[] }> {
+    const parent = this.options.streams.get(id);
+    const link = parent.external_link;
+    if (link === undefined) {
+      throw new TrackerError(`node ${id} is not linked to an epic: link it first`, 'validation');
+    }
+    const issues = await this.options.tracker(link.system).listEpicChildren(link.key);
+    const linked = new Set(
+      this.options.streams
+        .list({ include_archived: true })
+        .filter((s) =>
+          parent.project !== undefined ? s.project === parent.project : s.parent === id,
+        )
+        .flatMap((s) =>
+          s.external_link?.system === link.system ? [s.external_link.key.toUpperCase()] : [],
+        ),
+    );
+    const created: Stream[] = [];
+    const skipped: string[] = [];
+    for (const issue of issues) {
+      const key = issue.key.toUpperCase();
+      if (linked.has(key)) {
+        skipped.push(issue.key);
+        continue;
+      }
+      linked.add(key);
+      const child = await this.options.streams.create('human', {
+        title: titleFrom(issue),
+        goal: goalFrom(link.system, issue),
+        parent: id,
+      });
+      const withLink = await this.options.streams.update('human', child.id, {
+        external_link: linkFrom(link.system, issue, this.now()),
+      });
+      await this.options.streams.appendThread('human', child.id, {
+        kind: 'event',
+        body: `imported from ${link.key}: linked to ${issue.key} (${link.system})`,
+      });
+      this.due.set(child.id, this.now().getTime() + TRACKER_POLL_MS);
+      created.push(withLink);
+    }
+    await this.options.streams.appendThread('human', id, {
+      kind: 'event',
+      body: `imported ${created.length} child issue(s) from ${link.key}; ${skipped.length} already linked`,
+    });
+    return { created, skipped };
+  }
+
   start(intervalMs = TRACKER_POLL_TICK_MS): void {
     if (intervalMs <= 0 || this.timer) return;
     this.timer = setInterval(() => {
@@ -206,6 +260,12 @@ function linkFrom(
       at: at.toISOString(),
     },
   };
+}
+
+/** A node title from the issue title: one line, capped. */
+function titleFrom(issue: TrackerIssue): string {
+  const t = issue.title.replace(/\s+/g, ' ').trim() || issue.key;
+  return t.length > 120 ? `${t.slice(0, 119)}…` : t;
 }
 
 /** The goal: the issue's title and text, framed as the issue's own words. */

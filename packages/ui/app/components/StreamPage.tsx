@@ -35,6 +35,7 @@ import {
   getStreamDiff,
   getStreamPage,
   getStreamPlan,
+  importChildren,
   landStream,
   linkNode,
   listRepos,
@@ -474,6 +475,20 @@ function TrackerLinkField({
         >
           Unlink
         </button>
+        {link.kind === 'epic' ? (
+          <>
+            {' '}
+            <button
+              type="button"
+              className="cr-btn"
+              data-testid="tracker-import-children"
+              disabled={busy}
+              onClick={() => void act(() => importChildren(stream.id))}
+            >
+              Import children
+            </button>
+          </>
+        ) : null}
       </p>
     );
   }

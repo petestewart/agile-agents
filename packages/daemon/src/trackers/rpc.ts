@@ -1,4 +1,7 @@
-/** T321: `node.link` — `{id, key|null, system?}` links (or unlinks) a node to a tracker issue. */
+/**
+ * T321: `node.link` — `{id, key|null, system?}` links (or unlinks) a node to a tracker issue.
+ * T323: `node.import_children` — `{id}` creates one linked child per issue in the node's epic.
+ */
 
 import { TrackerSystemSchema, UlidSchema } from '@agile-agents/shared';
 import { RpcParamError } from '../gates/rpc';
@@ -8,6 +11,19 @@ import { TrackerError } from './port';
 
 export function buildTrackerRpcMethods(links: TrackerLinks): Record<string, RpcMethodHandler> {
   return {
+    'node.import_children': async (params) => {
+      if (typeof params !== 'object' || params === null || Array.isArray(params)) {
+        throw new RpcParamError('params must be an object', { params });
+      }
+      const id = UlidSchema.safeParse((params as Record<string, unknown>).id);
+      if (!id.success) throw new RpcParamError('invalid "id": must be a stream ULID', {});
+      try {
+        return await links.importChildren(id.data);
+      } catch (err) {
+        if (err instanceof TrackerError) throw new RpcParamError(err.message);
+        throw err;
+      }
+    },
     'node.link': async (params) => {
       if (typeof params !== 'object' || params === null || Array.isArray(params)) {
         throw new RpcParamError('params must be an object', { params });

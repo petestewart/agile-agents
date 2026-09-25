@@ -437,6 +437,31 @@ export async function runStreamLink(
   return 0;
 }
 
+/** T323: `node import-children <id>`: one linked child per issue in the node's epic (idempotent). */
+export async function runStreamImportChildren(
+  socketPath: string,
+  args: ParsedArgs,
+  json: boolean,
+): Promise<number> {
+  const id = requirePositional(args, 0, 'node-id');
+  const result = await callRpc<{ created: Stream[]; skipped: string[] }>(
+    socketPath,
+    'node.import_children',
+    { id },
+  );
+  if (json) {
+    printJson(result);
+    return 0;
+  }
+  for (const c of result.created) {
+    console.log(`  ${c.id}  ${c.external_link?.key ?? ''}  ${c.title}`);
+  }
+  console.log(
+    `agile node import-children: ${id}: ${result.created.length} created, ${result.skipped.length} already linked`,
+  );
+  return 0;
+}
+
 /** T282: `node set <id> --autonomy advise|organise|run|inherit`. */
 export async function runStreamSetAutonomy(
   socketPath: string,
