@@ -604,11 +604,16 @@ function LandPanel({
           {pr.mergeable !== 'clean' && pr.mergeable !== 'unknown' ? ` · ${pr.mergeable}` : ''}
         </p>
       )}
-      <p className="cr-dim" data-testid="land-diff-rules">
-        {page.diff_rules.length === 0
-          ? 'No diff-stage rules in scope.'
-          : `Ship check rules: ${page.diff_rules.join(', ')}`}
-      </p>
+      {!finished && (
+        <p className="cr-dim" data-testid="land-diff-rules">
+          {page.diff_rules.length === 0
+            ? 'No diff-stage rules in scope.'
+            : `Ship check rules: ${page.diff_rules
+                // T341: a named item reads by its name.
+                .map((id) => page.rules.find((r) => r.id === id)?.name ?? id)
+                .join(', ')}`}
+        </p>
+      )}
       {outcome && !(conflicts && conflicts.length > 0) && (
         <p
           className={`cr-land-result ${OUTCOME_TONE[outcome.status]}`}
