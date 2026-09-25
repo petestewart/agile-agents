@@ -1,16 +1,20 @@
 /**
- * T208: the rail's "New project" dialog — one name. On create, the
+ * T208: the rail's "New project" dialog — a name, and (T338) the
+ * registered repos it uses. On create, the
  * switcher moves to the new project so the next New stream or quick
  * capture files there.
  */
 
 import { type FormEvent, useEffect, useRef, useState } from 'react';
 import { createProject } from '../lib/api';
+import { useFeed } from '../lib/feed-context';
 import { useShell } from '../lib/shell';
 
 export function NewProject({ onClose }: { onClose(): void }): JSX.Element {
   const { setProject, select } = useShell();
   const [name, setName] = useState('');
+  const repos = useFeed().cockpit?.repos ?? [];
+  const [chosen, setChosen] = useState<string[]>([]);
   const [error, setError] = useState<string | undefined>(undefined);
   const [busy, setBusy] = useState(false);
   const nameRef = useRef<HTMLInputElement>(null);
@@ -31,7 +35,7 @@ export function NewProject({ onClose }: { onClose(): void }): JSX.Element {
     setBusy(true);
     setError(undefined);
     try {
-      const created = await createProject(n);
+      const created = await createProject(n, chosen);
       setProject(created.id);
       select(undefined);
       onClose();
@@ -55,6 +59,27 @@ export function NewProject({ onClose }: { onClose(): void }): JSX.Element {
             required
           />
         </label>
+        {repos.length > 0 && (
+          <fieldset className="cr-repo-choices" data-testid="new-project-repos">
+            <legend>Repos</legend>
+            {repos.map((r) => (
+              <label key={r.name}>
+                <input
+                  type="checkbox"
+                  data-testid="new-project-repo"
+                  data-repo={r.name}
+                  checked={chosen.includes(r.name)}
+                  onChange={(e) =>
+                    setChosen((prev) =>
+                      e.target.checked ? [...prev, r.name] : prev.filter((x) => x !== r.name),
+                    )
+                  }
+                />{' '}
+                {r.name}
+              </label>
+            ))}
+          </fieldset>
+        )}
         {error && (
           <p className="cr-error" role="alert" data-testid="new-project-error">
             {error}

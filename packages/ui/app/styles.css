@@ -590,6 +590,10 @@ body {
   color: var(--ok);
   background: var(--bg-raised);
 }
+.cr-land-result.info {
+  color: var(--info);
+  background: var(--bg-raised);
+}
 .cr-land-result.bad {
   color: var(--danger);
   background: var(--danger-weak);
@@ -736,6 +740,48 @@ body {
   padding: 8px 0;
   border-bottom: 1px solid var(--border);
   overflow-wrap: anywhere;
+}
+/* T338: a project's own controls on its root node's page. */
+.cr-project-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 6px;
+}
+.cr-project-controls .cr-actions {
+  flex-wrap: wrap;
+  align-items: center;
+}
+/* T338: New project's repo checkboxes. */
+.cr-repo-choices {
+  border: 0;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  font-size: 13px;
+}
+.cr-repo-choices legend {
+  padding: 0;
+  margin-bottom: 4px;
+}
+/* T338: the Plan tab labels its parts: an Owners list and a heading per contract. */
+.cr-plan h3 {
+  font-size: 14px;
+  margin: 10px 0 4px;
+  font-weight: 600;
+}
+.cr-plan li h3 {
+  margin-top: 0;
+}
+/* T338: a node or contract named by its title, as a link. */
+.cr-ref {
+  color: var(--info);
+  text-decoration: none;
+}
+.cr-ref:hover {
+  text-decoration: underline;
 }
 
 /* ---- settings ---- */

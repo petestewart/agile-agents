@@ -15,6 +15,7 @@ import {
   type ReposConfig,
   type StatusCard,
   type Stream,
+  type TrackerSettings,
   liveChildrenOf,
   nodeRole,
 } from '@agile-agents/shared';
@@ -130,6 +131,14 @@ export interface CockpitFrame {
   overlaps: Overlap[];
   /** T283 (§14.5): the status cards of child nodes, shown on the parent's page. */
   cards: CockpitCard[];
+  /** T338: every contract's title and owning node, so the cockpit names contracts, not ids. */
+  contracts: CockpitContractRow[];
+}
+
+export interface CockpitContractRow {
+  id: string;
+  title: string;
+  node: string;
 }
 
 /** A card, or the refusal of a corrupt one (path:line) so the rest still render. */
@@ -153,6 +162,9 @@ export interface CockpitProjectRow {
     coordinator: 'advise' | 'organise' | 'run';
     director: 'advise' | 'organise' | 'run';
   };
+  /** T338: the project's repos and tracker settings (the root node's project controls). */
+  repos?: string[];
+  tracker?: TrackerSettings;
 }
 
 export function buildCockpitFrame(
@@ -161,6 +173,7 @@ export function buildCockpitFrame(
   projects?: ProjectService,
   repos: ReposConfig = {},
   cardOf?: (node: string) => StatusCard | undefined,
+  contracts?: { list(): CockpitContractRow[] },
 ): CockpitFrame {
   const all = streams.list();
   const overlaps = findOverlaps(all);
@@ -187,6 +200,8 @@ export function buildCockpitFrame(
       name: p.name,
       root: p.root,
       autonomy: p.autonomy,
+      repos: p.repos,
+      ...(p.tracker !== undefined ? { tracker: p.tracker } : {}),
     })),
     repos: Object.entries(repos).map(([name, entry]) => ({
       name,
@@ -202,6 +217,7 @@ export function buildCockpitFrame(
         return [{ node: s.id, error: err instanceof Error ? err.message : String(err) }];
       }
     }),
+    contracts: (contracts?.list() ?? []).map((c) => ({ id: c.id, title: c.title, node: c.node })),
   };
 }
 

@@ -22,6 +22,7 @@ import type {
   Stream,
   StreamCreateInput,
   ThreadEntry,
+  TrackerSettings,
   TrackerSettingsInput,
   TrackerSettingsStatus,
 } from '@agile-agents/shared';
@@ -52,8 +53,18 @@ export function createStream(input: StreamCreateInput): Promise<Stream> {
 }
 
 /** T208: the rail's "New project". */
-export function createProject(name: string): Promise<Project> {
-  return post('/api/projects', { name }) as Promise<Project>;
+export function createProject(name: string, repos: string[] = []): Promise<Project> {
+  return post('/api/projects', { name, repos }) as Promise<Project>;
+}
+
+/** T338: the project's tracker block (system, push status, status map); `null` removes it. */
+export function setProjectTracker(id: string, tracker: TrackerSettings | null): Promise<unknown> {
+  return post(`/api/projects/${encodeURIComponent(id)}`, { tracker });
+}
+
+/** T338: the event log, every routed event, newest first. */
+export async function getEvents(): Promise<RoutedEvent[]> {
+  return (await get<{ events: RoutedEvent[] }>('/api/events')).events;
 }
 
 /** A question card: the typed text reaches the asking session verbatim (§3.3). */

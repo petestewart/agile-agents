@@ -46,6 +46,7 @@ import {
   sayOnStream,
   setNodeAutonomy,
   setProjectAutonomy,
+  setProjectTracker,
   stopSessions,
   waitOnStream,
 } from '../lib/api';
@@ -71,7 +72,7 @@ import {
   threadAuthorLabel,
 } from '../lib/streams';
 import { Card } from './Inbox';
-import { Markdown } from './Markdown';
+import { Linked, Markdown } from './Markdown';
 import { SessionPicker, sessionModelText } from './SessionPicker';
 
 type Tab = 'thread' | 'diff' | 'activity' | 'plan' | 'rules' | 'docs';
@@ -138,15 +139,36 @@ function errorText(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
+/** T338: a node by its title, as a link that opens its page (never the raw id). */
+function NodeLink({ id, titleOf }: { id: string; titleOf: (id: string) => string }): JSX.Element {
+  const { select } = useShell();
+  return (
+    <a
+      href={`#${id}`}
+      className="cr-ref"
+      data-node={id}
+      title={id}
+      onClick={(e) => {
+        e.preventDefault();
+        select(id);
+      }}
+    >
+      {titleOf(id)}
+    </a>
+  );
+}
+
 /** T281 (§9.1): who owns what, the contracts between the children, and the draft's Approve. */
 function PlanView({
   id,
   tick,
   onChanged,
+  titleOf,
 }: {
   id: string;
   tick: unknown;
   onChanged: () => void;
+  titleOf: (id: string) => string;
 }): JSX.Element {
   const [data, setData] = useState<Awaited<ReturnType<typeof getStreamPlan>> | undefined>();
   const [error, setError] = useState<string | undefined>(undefined);
@@ -173,7 +195,7 @@ function PlanView({
     );
   }
   return (
-    <section className="cr-docs" data-testid="plan">
+    <section className="cr-docs cr-plan" data-testid="plan">
       {plan && (
         <p data-testid="plan-status" data-status={plan.status}>
           Plan v{plan.version} · {plan.status}
@@ -201,33 +223,54 @@ function PlanView({
         </p>
       )}
       {plan && (
-        <ul data-testid="plan-owners">
-          {plan.owners.map((o) => (
-            <li key={o.child} data-testid="plan-owner" data-child={o.child}>
-              {o.child}: {o.owns.length === 0 ? 'nothing' : o.owns.join(', ')}
-              {plan.status === 'draft' && plan.approved
-                ? (() => {
-                    const before = plan.approved.owners.find((a) => a.child === o.child);
-                    const same = before?.owns.join(', ') === o.owns.join(', ');
-                    return same ? null : (
-                      <span className="cr-dim" data-testid="plan-owner-was">
-                        {' '}
-                        (approved v{plan.approved.version}:{' '}
-                        {before ? before.owns.join(', ') || 'nothing' : 'not in the plan'})
-                      </span>
-                    );
-                  })()
-                : null}
-            </li>
-          ))}
-        </ul>
+        <>
+          <h3>Owners</h3>
+          <ul data-testid="plan-owners">
+            {plan.owners.map((o) => (
+              <li key={o.child} data-testid="plan-owner" data-child={o.child}>
+                <NodeLink id={o.child} titleOf={titleOf} />
+                {': '}
+                {o.owns.length === 0 ? (
+                  'nothing'
+                ) : (
+                  <code data-testid="plan-owner-paths">{o.owns.join(', ')}</code>
+                )}
+                {plan.status === 'draft' && plan.approved
+                  ? (() => {
+                      const before = plan.approved.owners.find((a) => a.child === o.child);
+                      const same = before?.owns.join(', ') === o.owns.join(', ');
+                      return same ? null : (
+                        <span className="cr-dim" data-testid="plan-owner-was">
+                          {' '}
+                          (approved v{plan.approved.version}:{' '}
+                          {before ? before.owns.join(', ') || 'nothing' : 'not in the plan'})
+                        </span>
+                      );
+                    })()
+                  : null}
+              </li>
+            ))}
+          </ul>
+        </>
       )}
       <ul data-testid="contracts">
         {contracts.map((c) => (
           <li key={c.id} data-testid="contract" data-contract={c.id}>
-            <div className="cr-dim">
-              {c.title} · v{c.version} · parties {c.parties.length}
-            </div>
+            <h3>
+              Contract: <span data-testid="contract-title">{c.title}</span>{' '}
+              <span className="cr-dim">v{c.version}</span>
+            </h3>
+            <p className="cr-dim" data-testid="contract-parties">
+              Parties:{' '}
+              {c.parties.length === 0
+                ? 'none'
+                : c.parties.map((p, i) => (
+                    <span key={p}>
+                      {i > 0 ? ', ' : ''}
+                      <NodeLink id={p} titleOf={titleOf} />
+                    </span>
+                  ))}
+            </p>
             <Markdown text={c.body} />
           </li>
         ))}
@@ -335,6 +378,15 @@ function isWebUrl(url: string): boolean {
   }
 }
 
+/** T338: how a delivery result reads: a pushed PR is a success, a gate is news, not an error. */
+const OUTCOME_TONE: Record<LandOutcome['status'], 'ok' | 'info' | 'bad'> = {
+  landed: 'ok',
+  pr_open: 'ok',
+  gated: 'info',
+  refused: 'bad',
+  blocked: 'bad',
+};
+
 function LandPanel({
   page,
   onChanged,
@@ -352,7 +404,9 @@ function LandPanel({
   if (stream.repo === undefined) return null;
   const finished = stream.human.status === 'landed' || stream.human.status === 'closed';
   // T176: a failed land's own line replaces the preflight, never "Ready" beside it.
-  const failed = refused !== undefined || (outcome !== undefined && outcome.status !== 'landed');
+  const failed =
+    refused !== undefined || (outcome !== undefined && OUTCOME_TONE[outcome.status] === 'bad');
+  const pr = stream.delivery_state?.pr;
   const conflicts = land?.conflicts;
   // T340 (§4.1, P19): with a PR open the merge happens on GitHub; the panel shows the PR, not Merge.
   const openPr =
@@ -502,7 +556,32 @@ function LandPanel({
           data-status={stream.delivery_state.status}
         >
           Delivery: {stream.delivery_state.mode} · {stream.delivery_state.status.replace('_', ' ')}
-          {stream.delivery_state.held_by?.map((h) => ` — ${h.detail}`).join('')}
+          {stream.delivery_state.held_by?.map((h) => (
+            <span key={`${h.reason}:${h.detail}`}>
+              {' — '}
+              <Linked text={h.detail} />
+            </span>
+          ))}
+        </p>
+      )}
+      {pr && (
+        <p className="cr-dim" data-testid="delivery-pr" data-state={pr.state}>
+          {isWebUrl(pr.url) ? (
+            <a
+              href={pr.url}
+              target="_blank"
+              rel="noopener noreferrer"
+              data-testid="delivery-pr-link"
+            >
+              PR #{pr.number}
+            </a>
+          ) : (
+            <span data-testid="delivery-pr-link">PR #{pr.number}</span>
+          )}{' '}
+          {pr.state}
+          {pr.draft ? ' (draft)' : ''} · review {pr.review.replace(/_/g, ' ')} · checks {pr.checks}{' '}
+          · auto-merge {pr.auto_merge}
+          {pr.mergeable !== 'clean' && pr.mergeable !== 'unknown' ? ` · ${pr.mergeable}` : ''}
         </p>
       )}
       <p className="cr-dim" data-testid="land-diff-rules">
@@ -512,12 +591,12 @@ function LandPanel({
       </p>
       {outcome && !(conflicts && conflicts.length > 0) && (
         <p
-          className={`cr-land-result ${outcome.status === 'landed' ? 'ok' : 'bad'}`}
+          className={`cr-land-result ${OUTCOME_TONE[outcome.status]}`}
           data-testid="land-result"
           data-status={outcome.status}
           aria-live="polite"
         >
-          {outcome.line}
+          <Linked text={outcome.line} />
         </p>
       )}
       {refused && (
@@ -674,6 +753,131 @@ function AutonomyPicker({
   );
 }
 
+type StatusMapKey = 'in_progress' | 'in_review' | 'done';
+const STATUS_MAP_FIELDS: ReadonlyArray<{ key: StatusMapKey; label: string }> = [
+  { key: 'in_progress', label: 'In progress' },
+  { key: 'in_review', label: 'In review' },
+  { key: 'done', label: 'Done' },
+];
+
+/**
+ * T338: a project's own controls, on its root node's page: the Director's
+ * autonomy level (§12) and the tracker block (§10: system, push status,
+ * status map). Credentials stay in Settings → Trackers.
+ */
+function ProjectControls({
+  project,
+  busy,
+  act,
+}: {
+  project: CockpitProjectRow;
+  busy: boolean;
+  act: (fn: () => Promise<unknown>) => Promise<void> | void;
+}): JSX.Element {
+  const tracker = project.tracker;
+  const [system, setSystem] = useState<'' | 'jira' | 'linear'>(tracker?.system ?? '');
+  const [push, setPush] = useState(tracker?.push_status ?? false);
+  const [map, setMap] = useState<Record<StatusMapKey, string>>({
+    in_progress: tracker?.status_map?.in_progress ?? '',
+    in_review: tracker?.status_map?.in_review ?? '',
+    done: tracker?.status_map?.done ?? '',
+  });
+  function save(): void {
+    if (system === '') {
+      void act(() => setProjectTracker(project.id, null));
+      return;
+    }
+    const statusMap = Object.fromEntries(
+      STATUS_MAP_FIELDS.map((f) => [f.key, map[f.key].trim()]).filter(([, v]) => v !== ''),
+    );
+    void act(() =>
+      setProjectTracker(project.id, {
+        system,
+        ...(tracker?.base_url !== undefined ? { base_url: tracker.base_url } : {}),
+        push_status: push,
+        ...(Object.keys(statusMap).length > 0 ? { status_map: statusMap } : {}),
+      }),
+    );
+  }
+  return (
+    <div className="cr-project-controls" data-testid="project-controls">
+      <label className="cr-dim">
+        Director autonomy{' '}
+        <select
+          data-testid="director-autonomy-select"
+          value={project.autonomy?.director ?? 'advise'}
+          disabled={busy}
+          onChange={(e) =>
+            void act(() => setProjectAutonomy(project.id, { director: e.target.value as Autonomy }))
+          }
+        >
+          {AUTONOMY_LEVELS.map((l) => (
+            <option key={l} value={l}>
+              {l}
+            </option>
+          ))}
+        </select>
+      </label>
+      {project.repos !== undefined && (
+        <p className="cr-dim" data-testid="project-repos">
+          Repos: {project.repos.length === 0 ? 'none' : project.repos.join(', ')}
+        </p>
+      )}
+      <form
+        className="cr-actions"
+        data-testid="project-tracker-form"
+        onSubmit={(e) => {
+          e.preventDefault();
+          save();
+        }}
+      >
+        <label className="cr-dim">
+          Tracker{' '}
+          <select
+            data-testid="project-tracker-system"
+            value={system}
+            disabled={busy}
+            onChange={(e) => setSystem(e.target.value as '' | 'jira' | 'linear')}
+          >
+            <option value="">none</option>
+            <option value="jira">Jira</option>
+            <option value="linear">Linear</option>
+          </select>
+        </label>
+        {system !== '' && (
+          <>
+            <label className="cr-dim">
+              <input
+                type="checkbox"
+                data-testid="project-tracker-push"
+                checked={push}
+                disabled={busy}
+                onChange={(e) => setPush(e.target.checked)}
+              />{' '}
+              push status
+            </label>
+            {STATUS_MAP_FIELDS.map((f) => (
+              <label key={f.key} className="cr-dim">
+                {f.label}{' '}
+                <input
+                  data-testid={`project-tracker-map-${f.key}`}
+                  value={map[f.key]}
+                  placeholder="tracker status"
+                  disabled={busy}
+                  onChange={(e) => setMap((m) => ({ ...m, [f.key]: e.target.value }))}
+                />
+              </label>
+            ))}
+          </>
+        )}
+        <button type="submit" className="cr-btn" data-testid="project-tracker-save" disabled={busy}>
+          Save tracker
+        </button>
+      </form>
+    </div>
+  );
+}
+
 /** T283 (§14.5): the children's status cards, on the parent's page. */
 function ChildCards({
   cards,
@@ -715,7 +919,9 @@ function ChildCards({
                 </p>
               )}
               {card.relies_on.length > 0 && (
-                <p className="cr-dim">relies on {card.relies_on.join(', ')}</p>
+                <p className="cr-dim" data-testid="status-card-relies">
+                  relies on <Linked text={card.relies_on.join(', ')} />
+                </p>
               )}
             </li>
           ),
@@ -1012,6 +1218,12 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
           busy={busy}
           act={act}
         />
+        {(() => {
+          const project = cockpit?.projects.find((p) => p.root === stream.id);
+          return project ? (
+            <ProjectControls key={project.id} project={project} busy={busy} act={act} />
+          ) : null;
+        })()}
         {linking && (
           <div className="cr-actions" data-testid="link-wait-form">
             <select
@@ -1296,7 +1508,9 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
 
       {tab === 'activity' && <ActivityView id={stream.id} tick={cockpit} />}
 
-      {tab === 'plan' && <PlanView id={stream.id} tick={cockpit} onChanged={refresh} />}
+      {tab === 'plan' && (
+        <PlanView id={stream.id} tick={cockpit} onChanged={refresh} titleOf={titleOf} />
+      )}
 
       {tab === 'rules' && (
         <ul className="cr-rules" data-testid="rules">
@@ -1304,8 +1518,8 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
           {page.rules.map((rule) => (
             <li key={rule.id} data-testid="rule" data-rule={rule.id}>
               <div className="cr-dim">
-                {rule.name ?? rule.id} · {formatKnowledgeScope(rule.scope)} · {rule.kind} ·{' '}
-                {rule.enforcement}
+                {rule.name ?? rule.id} · <Linked text={formatKnowledgeScope(rule.scope)} /> ·{' '}
+                {rule.kind} · {rule.enforcement}
                 {rule.critical ? ' · critical' : ''}
               </div>
               <Markdown text={rule.text} />

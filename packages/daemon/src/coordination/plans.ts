@@ -28,6 +28,8 @@ export interface PlanServiceOptions {
   streams: StreamService;
   contracts: ContractService;
   emit?: EmitRouted;
+  /** T338: the parts' questions that went to this coordinator first. */
+  questions?: { supersedeByPlan(node: string, version: number): Promise<unknown> };
   now?: () => Date;
 }
 
@@ -136,7 +138,17 @@ export class PlanService {
       ref: planPath(node),
     });
     const contracts = saved.contracts.map((id) => this.options.contracts.find(id));
+    await this.options.questions?.supersedeByPlan(node, saved.version);
     for (const owner of saved.owners) {
+      // T338: each part reads its share on its own thread too.
+      await this.options.streams.appendThread('daemon', owner.child, {
+        kind: 'event',
+        body: `plan v${saved.version} approved: you own ${owner.owns.join(', ') || 'no paths'}`.slice(
+          0,
+          800,
+        ),
+        ref: planPath(node),
+      });
       const relies = contracts
         .filter((c): c is Contract => c?.parties.includes(owner.child) === true)
         .map((c) => c.title);

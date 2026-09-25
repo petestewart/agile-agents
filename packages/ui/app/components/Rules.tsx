@@ -50,10 +50,11 @@ import {
   formatFiredAt,
   patchOf,
   ruleScopes,
+  scopeChoices,
   sortRules,
 } from '../lib/rules';
 import { useShell } from '../lib/shell';
-import { Markdown } from './Markdown';
+import { Linked, Markdown } from './Markdown';
 
 function message(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
@@ -404,7 +405,9 @@ function RuleCard({
           onChange={onToggle}
         />
         <span>{rule.name ?? rule.id}</span>
-        <span data-testid="rules-scope">{formatRuleScope(rule.scope)}</span>
+        <span data-testid="rules-scope">
+          <Linked text={formatRuleScope(rule.scope)} />
+        </span>
         {rule.paths !== undefined && rule.paths.length > 0 && (
           <span data-testid="rules-paths">{rule.paths.join(', ')}</span>
         )}
@@ -556,6 +559,14 @@ function RuleEditor({
   const [error, setError] = useState<string | undefined>(undefined);
   const set = (patch: Partial<RuleDraft>): void => setDraft((prev) => ({ ...prev, ...patch }));
   const creating = mode === 'create';
+  // T338: scopes are picked by name, never typed as ids.
+  const { cockpit } = useFeed();
+  const scopes = useMemo(() => {
+    const choices = scopeChoices(cockpit);
+    return choices.some((c) => c.value === draft.scope)
+      ? choices
+      : [...choices, { value: draft.scope, label: draft.scope }];
+  }, [cockpit, draft.scope]);
 
   async function save(): Promise<void> {
     setBusy(true);
@@ -590,12 +601,17 @@ function RuleEditor({
         <div className="cr-rule-editor-row">
           <label>
             Scope{' '}
-            <input
+            <select
               data-testid="rules-edit-scope"
               value={draft.scope}
-              placeholder="global · repo:<name> · stream:<id>"
               onChange={(e) => set({ scope: e.target.value })}
-            />
+            >
+              {scopes.map((c) => (
+                <option key={c.value} value={c.value}>
+                  {c.label}
+                </option>
+              ))}
+            </select>
           </label>
           <label>
             <input
@@ -608,6 +624,16 @@ function RuleEditor({
           </label>
         </div>
       )}
+      <label>
+        Name
+        <input
+          data-testid="rules-edit-name"
+          value={draft.name}
+          maxLength={64}
+          placeholder="a short name, e.g. no-direct-db"
+          onChange={(e) => set({ name: e.target.value })}
+        />
+      </label>
       <label>
         Text
         <textarea

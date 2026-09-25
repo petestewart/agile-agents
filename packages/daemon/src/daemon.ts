@@ -193,6 +193,11 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
           streams: streamService,
           contracts: contractService,
           ...(emitRouted ? { emit: emitRouted } : {}),
+          // T338: approval supersedes the parts' questions it answers (the service is built below).
+          questions: {
+            supersedeByPlan: async (node, version) =>
+              questionService?.supersedeByPlan(node, version),
+          },
         })
       : undefined;
   // T282: the autonomy gate for a coordinator's structural changes, and its proposals.

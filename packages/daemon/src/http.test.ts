@@ -729,6 +729,7 @@ describe('T160 cockpit routes', () => {
         name: 'shop',
         root: shop.root,
         autonomy: { coordinator: 'advise', director: 'advise' },
+        repos: [],
       },
     ]);
     const roles = Object.fromEntries(frame.streams.map((r) => [r.id, [r.role, r.project]]));
