@@ -112,6 +112,23 @@ describe('InboxService.list', () => {
     expect(inbox.list().some((i) => i.stream === child.id)).toBe(false);
   });
 
+  test('T336: a coordinating node whose coordinator finished is not "ready to land"', async () => {
+    const grandchild = await streams.create('human', {
+      title: 'api part',
+      goal: 'g',
+      parent: child.id,
+    });
+    await streams.update('daemon', child.id, { agent: { status: 'done' } });
+    await streams.update('daemon', root.id, { agent: { status: 'done' } });
+    expect(inbox.list().some((i) => i.stream === child.id)).toBe(false);
+    expect(inbox.list().some((i) => i.stream === root.id)).toBe(false);
+    // Blocked still needs you; the part itself still lands.
+    await streams.update('daemon', child.id, { agent: { status: 'blocked' } });
+    await streams.update('daemon', grandchild.id, { agent: { status: 'done' } });
+    expect(inbox.list().find((i) => i.stream === child.id)?.kind).toBe('blocked');
+    expect(inbox.list().find((i) => i.stream === grandchild.id)?.kind).toBe('done');
+  });
+
   test('an answered question leaves the inbox', async () => {
     const q = await questions.raise({
       stream: root.id,

@@ -190,14 +190,22 @@ export class QuestionService {
       body: answer,
       ref: questionPath(saved.id),
     });
-    // Back to `working` only if a live session exists; otherwise `idle`
-    // (claiming an agent works when no process exists is the lie the
-    // two-writer split exists to stop).
-    const liveSession = this.streams
-      .get(saved.stream)
-      .sessions.some((session) => LIVE_SESSION_STATUSES.includes(session.status));
+    // Back to `working` only if a live session exists (claiming an agent
+    // works when no process exists is the lie the two-writer split exists
+    // to stop). With none, the status the exit path left (`done`/`blocked`)
+    // stays: `idle` is the wake policy's "the human stopped it" (T243), and
+    // writing it here kept the `answer` from waking the node (T336).
+    const node = this.streams.get(saved.stream);
+    const liveSession = node.sessions.some((session) =>
+      LIVE_SESSION_STATUSES.includes(session.status),
+    );
     await this.streams.update('daemon', saved.stream, {
-      agent: { status: liveSession ? 'working' : 'idle' },
+      ...(liveSession
+        ? { agent: { status: 'working' } }
+        : node.agent.status === 'question'
+          ? // A question with no process behind it: `idle` only if none ever ran.
+            { agent: { status: node.sessions.length > 0 ? 'done' : 'idle' } }
+          : {}),
       human: { status: 'open' },
     });
 
