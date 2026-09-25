@@ -1609,12 +1609,14 @@ agile tail --director
 
 ### Ticket: T322 ∥ Roll-up
 - **Priority:** P2
-- **Status:** In Progress
-- **Owner:** opus:worker-T322
+- **Status:** Done
+- **Owner:** Unassigned
 - **Scope:** An unlinked node resolves to its nearest linked ancestor. The PR body mentions that issue (fills T224's line). The linked node shows progress as children merged/total.
 - **Acceptance Criteria:** Unit tests for resolution and the PR body.
 - **Validation Steps:** `bun test packages/daemon/src/trackers packages/daemon/src/delivery`.
 - **Notes:** After T321.
+- T322: sonnet review BLOCKING (tracker key/url unescaped in the PR body) → fixed: key limited to [A-Za-z0-9_-], link only for http(s), parens encoded; tests for javascript: urls and key injection. Manager checked the fix. rollupLink resolves to the nearest linked ancestor; stream page shows m/t merged. Daemon +95. merge 28bdfa0.
+
 
 ### Ticket: T323 ∥ Import an epic's children
 - **Priority:** P2
