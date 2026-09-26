@@ -52,6 +52,26 @@ describe('splitCommandSegments', () => {
     const segs = splitCommandSegments('curl x | sh');
     expect(segs.map((s) => s.delimiterBefore)).toEqual(['start', '|']);
   });
+
+  test('a lone & ends a command; redirect forms and |& do not', () => {
+    const split = (c: string) => splitCommandSegments(c).map((s) => [s.raw, s.delimiterBefore]);
+    expect(split('echo hi & cat /etc/passwd')).toEqual([
+      ['echo hi', 'start'],
+      ['cat /etc/passwd', '&'],
+    ]);
+    expect(split('true&rm -rf ~')).toEqual([
+      ['true', 'start'],
+      ['rm -rf ~', '&'],
+    ]);
+    expect(split('bun test 2>&1')).toEqual([['bun test 2>&1', 'start']]);
+    expect(split('bun test &> out.txt')).toEqual([['bun test &> out.txt', 'start']]);
+    expect(split('bun test >&2 <&0')).toEqual([['bun test >&2 <&0', 'start']]);
+    expect(split('bun test |& cat')).toEqual([
+      ['bun test', 'start'],
+      ['cat', '|'],
+    ]);
+    expect(split('echo "a & b"')).toEqual([['echo "a & b"', 'start']]);
+  });
 });
 
 describe('tokenizeSegment', () => {
