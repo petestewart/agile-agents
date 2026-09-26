@@ -162,6 +162,8 @@ export function Sidebar({
 }): JSX.Element {
   const { setNewStreamOpen } = useShell();
   const [viewsOpen, setViewsOpen] = useState(loadViewsOpen);
+  // A line under the pinned block once the list has scrolled under it.
+  const [scrolled, setScrolled] = useState(false);
 
   const toggleViews = (): void => {
     setViewsOpen((open) => {
@@ -199,12 +201,19 @@ export function Sidebar({
           <Kbd>N</Kbd>
         </Button>
       </div>
-      <div className="cr-sb-scroll">
+      {/* Audit r5 #4: Needs me and its count stay in sight however far the tree scrolls. */}
+      <nav className="cr-sb-nav cr-sb-primary" aria-label="Main">
+        <NavButton item={PRIMARY[0] as NavItem} count={inboxCount} />
+        {PRIMARY.slice(1).map((item) => (
+          <NavButton key={item.view} item={item} />
+        ))}
+      </nav>
+      <div
+        className="cr-sb-scroll"
+        data-scrolled={scrolled ? 'true' : undefined}
+        onScroll={(e) => setScrolled(e.currentTarget.scrollTop > 0)}
+      >
         <nav className="cr-sb-nav" aria-label="Views">
-          <NavButton item={PRIMARY[0] as NavItem} count={inboxCount} />
-          {PRIMARY.slice(1).map((item) => (
-            <NavButton key={item.view} item={item} />
-          ))}
           <div className="cr-sb-section">
             <button
               type="button"
