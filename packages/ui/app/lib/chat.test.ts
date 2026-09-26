@@ -274,6 +274,14 @@ describe('the header', () => {
       merge: false,
     });
     expect(headerActions({ ...base, canStart: false })).toEqual({ merge: false });
+    // T384: an idle live agent waits on you: no Stop button (it's in the menu), no Start.
+    expect(headerActions({ ...base, liveAgent: true, anyLive: true, anyBusy: false })).toEqual({
+      merge: false,
+    });
+    expect(headerActions({ ...base, liveAgent: true, anyLive: true, anyBusy: true })).toEqual({
+      agent: 'stop',
+      merge: false,
+    });
     expect(headerActions({ ...base, open: false })).toEqual({ merge: false });
   });
 

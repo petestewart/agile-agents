@@ -872,6 +872,10 @@ legend {
   background: var(--bg-panel);
   box-shadow: var(--shadow-sm);
 }
+.cr-seg button:disabled {
+  color: var(--text-faint);
+  cursor: not-allowed;
+}
 .cr-seg-count {
   font-size: var(--text-xs);
   color: var(--text-faint);
@@ -1020,60 +1024,6 @@ legend {
   border-top: 1px solid var(--border);
   background: var(--bg-inset);
   border-radius: 0 0 var(--radius-lg) var(--radius-lg);
-}
-
-/* Older dialogs (New stream, New project) until their tickets move them onto Dialog. */
-.cr-modal-card {
-  width: 100%;
-  max-width: 480px;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  padding: 20px;
-  background: var(--bg-raised);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-lg);
-  animation: cr-pop-in 0.14s var(--ease);
-}
-.cr-modal-card h2 {
-  font-size: 15px;
-}
-.cr-modal-card label {
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
-  font-size: var(--text-sm);
-  font-weight: 500;
-}
-.cr-modal-card label:has(> input[type="checkbox"]) {
-  flex-direction: row;
-  align-items: center;
-  gap: 8px;
-  font-weight: 400;
-  font-size: var(--text-md);
-}
-.cr-modal-card label span {
-  color: var(--text-muted);
-  font-weight: 400;
-}
-.cr-modal-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 8px;
-  margin-top: 4px;
-}
-.cr-repo-choices {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-.cr-repo-choices label {
-  flex-direction: row;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 4px;
-  font-weight: 400;
 }
 
 .cr-toasts {
@@ -8202,12 +8152,8 @@ div.cr-lens-ev:hover {
   }
   .cr-inbox,
   .cr-settings,
-  .cr-rules-screen,
   .cr-page {
     padding-left: 16px;
     padding-right: 16px;
-  }
-  .cr-gate-row .cr-actions {
-    justify-content: flex-start;
   }
 }

@@ -5,7 +5,7 @@
  * covers them.
  */
 
-import type { InboxItem, NodeRole, RoutedEvent, SessionRef, Stream } from '@agile-agents/shared';
+import type { NodeRole, RoutedEvent, SessionRef, Stream } from '@agile-agents/shared';
 import type {
   CockpitProjectRow,
   CockpitRepoRow,
@@ -136,37 +136,6 @@ export function filterStreamRows(
     }
   }
   return rows.filter((row) => keep.has(row.id));
-}
-
-export interface InboxGroup {
-  /** The stream id, or `''` for items that belong to no stream (a global `rule_accept`). */
-  key: string;
-  /** "ledger-lite / import CSV / parser" (§3.2), or "No stream". */
-  label: string;
-  items: InboxItem[];
-}
-
-/**
- * §9.1: grouped by stream. The inbox arrives oldest first (§3.3), and the
- * groups keep that order — a group sits where its oldest item would — so
- * the oldest ask is still the first thing on the page.
- */
-export function groupInbox(items: readonly InboxItem[]): InboxGroup[] {
-  const groups = new Map<string, InboxGroup>();
-  for (const item of items) {
-    const key = item.stream ?? '';
-    let group = groups.get(key);
-    if (!group) {
-      group = {
-        key,
-        label: item.stream_path.length > 0 ? item.stream_path.join(' / ') : 'No stream',
-        items: [],
-      };
-      groups.set(key, group);
-    }
-    group.items.push(item);
-  }
-  return [...groups.values()];
 }
 
 // ---- T161: the stream page (§9.3) ----------------------------------------

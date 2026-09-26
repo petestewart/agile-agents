@@ -3770,16 +3770,21 @@ describe('repo delivery settings (Playwright e2e, T222)', () => {
       const cockpit = await startCockpit({ githubAuth: async () => authed });
       const repo = mkdtempSync(join(tmpdir(), 'agile-delivery-e2e-'));
       let page: Page | undefined;
+      const local = mkdtempSync(join(tmpdir(), 'agile-delivery-e2e-local-'));
       try {
         git(['init', '-q', '-b', 'main'], repo);
         git(['remote', 'add', 'origin', 'git@github.com:acme/api.git'], repo);
         await cockpit.store.addRepo('api', { path: repo });
+        // T384: a repo with no remote can't open pull requests: the option says why.
+        git(['init', '-q', '-b', 'main'], local);
+        await cockpit.store.addRepo('scratch', { path: local });
 
         page = await openPage();
         await page.goto(`${cockpit.base}/`);
         await page.locator('[data-view="settings"]').click();
         await page.locator('[data-testid="settings-nav-repos"]').click();
         const row = '[data-testid="settings-repo-api"]';
+        const pr0 = '[data-testid="settings-repo-api-delivery"] [data-value="pr"]';
         await page.locator(`${row}[data-delivery="direct"]`).waitFor({ state: 'visible' });
         // T367: the row says where the repo lives: GitHub, with its owner/name. (Not the
         // protocol: a git `insteadOf` in the environment may turn the SSH URL into https.)
@@ -3793,8 +3798,13 @@ describe('repo delivery settings (Playwright e2e, T222)', () => {
         );
         // Auto-merge is a pull-request setting: not offered for direct delivery.
         expect(await page.locator('[data-testid="settings-repo-api-auto-merge"]').count()).toBe(0);
+        const localPr = '[data-testid="settings-repo-scratch-delivery"] [data-value="pr"]';
+        await page.locator(localPr).waitFor({ state: 'visible' });
+        expect(await page.locator(localPr).isDisabled()).toBe(true);
+        expect(await page.locator(localPr).getAttribute('title')).toContain('GitHub remote');
+        expect(await page.locator(pr0).isDisabled()).toBe(false);
 
-        const pr = '[data-testid="settings-repo-api-delivery"] [data-value="pr"]';
+        const pr = pr0;
         await page.locator(pr).click();
         await waitForText(
           page,
@@ -3826,6 +3836,7 @@ describe('repo delivery settings (Playwright e2e, T222)', () => {
         await teardown([page]);
         await cockpit.stop();
         rmSync(repo, { recursive: true, force: true });
+        rmSync(local, { recursive: true, force: true });
       }
     },
     TEST_BUDGET_MS,

@@ -403,13 +403,12 @@ describe('card titles and text (T364)', () => {
     expect(planView(item({ kind: 'plan_approve', context: 'unexpected' }))).toBeUndefined();
   });
 
-  test("the daemon's stock lines read in the UI's words", () => {
-    expect(
-      statusText(item({ kind: 'done', context: 'worker finished — merge or close the stream' })),
-    ).not.toMatch(/\bstream\b|\bland\b/);
-    expect(statusText(item({ kind: 'blocked', context: 'blocked' }))).toContain('stuck');
+  test("a finished or stuck card reads the agent's line, whole", () => {
     expect(statusText(item({ kind: 'done', context: 'Added the CSV import.' }))).toBe(
       'Added the CSV import.',
+    );
+    expect(statusText(item({ kind: 'blocked', context: 'x', detail: 'x and more' }))).toBe(
+      'x and more',
     );
   });
 

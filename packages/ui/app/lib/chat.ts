@@ -405,6 +405,11 @@ export interface HeaderActionsInput {
   liveAgent: boolean;
   /** Any session is live (a reviewer too): Stop has something to stop. */
   anyLive: boolean;
+  /**
+   * T384: a live session is mid-turn (starting or running). An idle one is
+   * waiting on you: Stop stays in the ⋯ menu then, and the composer leads.
+   */
+  anyBusy?: boolean;
   /** Start agent is offered (an open node, not a part waiting for its plan). */
   canStart: boolean;
   /**
@@ -429,7 +434,13 @@ export interface HeaderActions {
 /** The header's agent control and Merge, and which one is the primary (design §1.1). */
 export function headerActions(input: HeaderActionsInput): HeaderActions {
   if (!input.open) return { merge: false };
-  const agent = input.anyLive ? 'stop' : input.canStart ? 'start' : undefined;
+  const agent = input.anyLive
+    ? input.anyBusy === false
+      ? undefined
+      : 'stop'
+    : input.canStart
+      ? 'start'
+      : undefined;
   const merge = input.mergeable;
   const primary =
     merge && input.landReady

@@ -436,7 +436,27 @@ function visibleIds(nodes: readonly StreamTreeNode[], fold: Fold, out: string[] 
 /** T365: what the rail's dots, icons and marks mean. */
 function Legend(): JSX.Element {
   const [at, setAt] = useState<{ top: number; left: number }>({ top: 0, left: 0 });
+  const anchor = useRef<HTMLElement | null>(null);
   const roles: CockpitStreamRow['role'][] = ['project', 'coordinating', 'work', 'conversation'];
+  // The sidebar clips what overflows it, so the legend floats beside it,
+  // level with the tree it explains (over the drawer on a phone).
+  const place = useCallback((el: HTMLElement): void => {
+    const box = el.getBoundingClientRect();
+    const side = el.closest('.cr-sidebar')?.getBoundingClientRect();
+    const beside = side !== undefined && side.right + 8 + 340 <= window.innerWidth;
+    setAt({
+      top: Math.round(Math.max(8, Math.min(box.top - 8, window.innerHeight - 560))),
+      left: Math.round(beside && side ? side.right + 8 : 8),
+    });
+  }, []);
+  // T384: it follows a window resize while open.
+  useEffect(() => {
+    const onResize = (): void => {
+      if (anchor.current?.getAttribute('aria-expanded') === 'true') place(anchor.current);
+    };
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, [place]);
   return (
     <Popover
       align="end"
@@ -451,15 +471,8 @@ function Legend(): JSX.Element {
           label="What the dots mean"
           data-testid="tree-legend-open"
           onClick={(e) => {
-            // The sidebar clips what overflows it, so the legend floats beside it,
-            // level with the tree it explains (over the drawer on a phone).
-            const box = e.currentTarget.getBoundingClientRect();
-            const side = e.currentTarget.closest('.cr-sidebar')?.getBoundingClientRect();
-            const beside = side !== undefined && side.right + 8 + 340 <= window.innerWidth;
-            setAt({
-              top: Math.round(Math.max(8, Math.min(box.top - 8, window.innerHeight - 560))),
-              left: Math.round(beside && side ? side.right + 8 : 8),
-            });
+            anchor.current = e.currentTarget;
+            place(e.currentTarget);
             props.onClick();
           }}
         />

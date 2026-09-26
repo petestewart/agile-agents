@@ -2113,6 +2113,15 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 - **Acceptance Criteria:** `GET /api/events` takes a cursor (`before=<event id>`) and a limit, newest first; Events' "Show more" fetches the next page until the log ends and says so; a repo card asks for its own repo's events.
 - **Validation Steps:** `bun test packages/daemon/src/events packages/daemon/src/http.test.ts packages/ui`; the Events and Repos e2e; the whole control-room e2e and the walkthrough.
 
+### Ticket: T384 P2 polish: pull requests need GitHub, Stop while it waits, popovers, dead code
+- **Priority:** P2
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** From the follow-ups doc: Pull request delivery offered for a repo with no GitHub remote (the daemon refuses it); Stop as a header button while the agent is idle waiting on you; a popover that stays open when Tab leaves it; the rail legend not following a window resize; dead `STOCK_TEXT`, `groupInbox` and old modal styles.
+- **Acceptance Criteria:** "Pull request" is disabled with the reason for a repo whose remote isn't GitHub; the header shows Stop only while something is mid-turn (⋯ → Stop agent otherwise); Tab out of a popover closes it without pulling focus back; the legend re-places on resize; the dead code is gone.
+- **Validation Steps:** `bun test packages/ui`; the settings, rail, menu and node-page e2e (T222 now checks the disabled option).
+- **Notes:** Branch T384-p2-polish. `Segmented` items take `disabled` and `title`; `headerActions` takes `anyBusy`.
+
 ### Ticket: T369 Phase 15 QA
 - **Priority:** P0
 - **Status:** Done

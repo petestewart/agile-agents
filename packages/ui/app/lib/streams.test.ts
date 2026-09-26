@@ -17,7 +17,6 @@ import {
   eventTime,
   filterStreamRows,
   groupByRepo,
-  groupInbox,
   isLiveSession,
   isThinking,
   parseCollapsed,
@@ -126,28 +125,6 @@ describe('filterStreamRows (T162)', () => {
     expect(filterStreamRows(rows, 'parser').map((r) => r.id)).toEqual(['root', 'mid', 'leaf']);
     expect(filterStreamRows(rows, 'DOC').map((r) => r.id)).toEqual(['other']);
     expect(filterStreamRows(rows, 'nothing')).toEqual([]);
-  });
-});
-
-describe('groupInbox', () => {
-  const item = (id: string, stream: string | undefined, path: string[]): InboxItem => ({
-    kind: stream ? 'question' : 'rule_accept',
-    id,
-    ...(stream ? { stream } : {}),
-    stream_path: path,
-    ts: '2026-09-22T00:00:00.000Z',
-    context: id,
-  });
-
-  test('groups by stream in oldest-first order and labels by path', () => {
-    const groups = groupInbox([
-      item('Q-1', 'b', ['ledger', 'parser']),
-      item('R-1', undefined, []),
-      item('Q-2', 'a', ['ledger']),
-      item('Q-3', 'b', ['ledger', 'parser']),
-    ]);
-    expect(groups.map((g) => g.label)).toEqual(['ledger / parser', 'No stream', 'ledger']);
-    expect(groups[0]?.items.map((i) => i.id)).toEqual(['Q-1', 'Q-3']);
   });
 });
 
