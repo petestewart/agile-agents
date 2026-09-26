@@ -3,6 +3,8 @@ import type { SessionDefaultsStatus } from '@agile-agents/shared';
 import {
   choiceOf,
   effortWord,
+  foldedRepos,
+  inheritingReposText,
   modelChip,
   modelForVendor,
   modelGroups,
@@ -185,5 +187,25 @@ describe('the model picker (T423)', () => {
       expect(restart).toMatchObject({ state: 'chosen', pending: fallback });
       expect(restart.title).toContain('restarts the agent with Claude Opus 5.5 · low');
     });
+  });
+});
+
+describe('T436: Settings → Agents folds the repositories that set nothing', () => {
+  test('two or more that inherit everything fold; one with a field of its own stays a card', () => {
+    expect(
+      foldedRepos({
+        a: { resolved: status.resolved },
+        b: { model: 'claude-sonnet-4-6', resolved: status.resolved },
+        c: { resolved: status.resolved },
+      }),
+    ).toEqual(['a', 'c']);
+    // One card is no longer than the row that would stand for it.
+    expect(foldedRepos({ a: {}, b: { effort: 'high' } })).toEqual([]);
+    expect(foldedRepos({})).toEqual([]);
+  });
+
+  test('the row says how many', () => {
+    expect(inheritingReposText(5)).toBe('5 repositories use the global default');
+    expect(inheritingReposText(1)).toBe('1 repository uses the global default');
   });
 });

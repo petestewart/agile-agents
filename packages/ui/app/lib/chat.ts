@@ -14,6 +14,7 @@ import {
 } from '@agile-agents/shared';
 import type { IconName } from '../components/Icon';
 import { branchName } from './inbox';
+import { type NodeStatusKey, statusOf } from './status';
 import { isLiveSession, ruleHitOf } from './streams';
 
 // ---------------------------------------------------------------- names
@@ -683,6 +684,12 @@ export interface HeaderActionsInput {
   mergeable: boolean;
   /** The preflight says a merge would go through. */
   landReady: boolean;
+  /**
+   * T436 (audit r6 #28): a decision card is open at the end of the node's
+   * chat (a plan to approve, a gate…): its button is the page's one primary,
+   * so Start stays plain beside it.
+   */
+  decisionOpen?: boolean;
 }
 
 export interface HeaderActions {
@@ -706,7 +713,7 @@ export function headerActions(input: HeaderActionsInput): HeaderActions {
   const primary =
     merge && input.landReady
       ? 'merge'
-      : agent === 'start' && input.startIsNext !== false
+      : agent === 'start' && input.startIsNext !== false && input.decisionOpen !== true
         ? 'agent'
         : undefined;
   return { ...(agent ? { agent } : {}), merge, ...(primary ? { primary } : {}) };
@@ -871,7 +878,26 @@ export interface DeliveryBadge {
   tone: 'gray' | 'green' | 'amber' | 'blue' | 'purple' | 'red';
 }
 
-/** The Delivery section's one-word state, in the order the panel reads it. */
+/** T436: the node statuses that are about its delivery, which the badge says in their own words. */
+const DELIVERY_STATUS_KEYS: ReadonlySet<NodeStatusKey> = new Set([
+  'pr_open',
+  'ready',
+  'no_changes',
+  'merged_outside',
+]);
+
+function statusBadge(key: NodeStatusKey): DeliveryBadge {
+  const { label, tone } = statusOf(key);
+  return { label, tone };
+}
+
+/**
+ * The Delivery section's one-word state, in the order the panel reads it.
+ * T436 (audit r6 #24): where the node's own status says it (Merged, Ready
+ * to merge, No changes, Already merged, PR open) the badge is that word in
+ * that tone, as the header's pill; only what the status can't say (a
+ * conflict, a hold, commits on a node still going) has words of its own.
+ */
 export function deliveryBadge(s: {
   landed: boolean;
   closed?: boolean;
@@ -880,14 +906,17 @@ export function deliveryBadge(s: {
   held: boolean;
   ready: boolean;
   mergedOutside: boolean;
+  /** The node's status (`lib/status.ts`). */
+  status?: NodeStatusKey;
 }): DeliveryBadge {
-  if (s.landed) return { label: 'Merged', tone: 'purple' };
-  if (s.closed) return { label: 'Closed', tone: 'gray' };
+  if (s.landed) return statusBadge('merged');
+  if (s.closed) return statusBadge('closed');
   if (s.conflict) return { label: 'Conflict', tone: 'red' };
-  if (s.prOpen) return { label: 'PR open', tone: 'blue' };
-  if (s.mergedOutside) return { label: 'Merged outside', tone: 'purple' };
+  if (s.prOpen) return statusBadge('pr_open');
   if (s.held) return { label: 'Held', tone: 'amber' };
-  if (s.ready) return { label: 'Can merge', tone: 'green' };
+  if (s.status !== undefined && DELIVERY_STATUS_KEYS.has(s.status)) return statusBadge(s.status);
+  if (s.mergedOutside) return statusBadge('merged_outside');
+  if (s.ready) return { label: 'Can merge', tone: 'gray' };
   return { label: 'Not ready', tone: 'gray' };
 }
 

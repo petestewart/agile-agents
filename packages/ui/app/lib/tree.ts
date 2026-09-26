@@ -229,8 +229,15 @@ export function newNodeDefaults(input: {
   return { project: projects[0]?.id, implied: false, parent: '' };
 }
 
+/**
+ * T436 (audit r6 #23): a legend entry — a status key, or `replied`: a
+ * conversation's `done`, which reads "Replied" everywhere (the Overview
+ * counts it on its own too).
+ */
+export type LegendKey = NodeStatusKey | 'replied';
+
 /** The legend's entries, in reading order: the human's move first. */
-export const LEGEND_ORDER: readonly NodeStatusKey[] = [
+export const LEGEND_ORDER: readonly LegendKey[] = [
   'needs_you',
   'ready',
   'no_changes',
@@ -243,14 +250,18 @@ export const LEGEND_ORDER: readonly NodeStatusKey[] = [
   'stopped',
   'idle',
   'done',
+  'replied',
   'merged',
   'closed',
 ];
 
 /** A row that reads as `key`, so the legend's dot is drawn by `StatusDot` like the rail's. */
-export function legendRow(key: NodeStatusKey): StatusInput {
+export function legendRow(key: LegendKey): StatusInput {
   const base: StatusInput = { agent_status: 'idle', human_status: 'open', role: 'work' };
   switch (key) {
+    case 'replied':
+      // A project's conversation that answered: the rail's row for it, dot and word.
+      return { ...base, agent_status: 'done', role: 'conversation', project: 'legend' };
     case 'merged':
       return { ...base, agent_status: 'done', human_status: 'landed' };
     case 'closed':
@@ -283,7 +294,7 @@ export function legendRow(key: NodeStatusKey): StatusInput {
 }
 
 /** The legend's one-line gloss per status (the dot's tooltip keeps the full hint). */
-export const LEGEND_NOTE: Record<NodeStatusKey, string> = {
+export const LEGEND_NOTE: Record<LegendKey, string> = {
   needs_you: 'Answer or decide',
   ready: 'Review the changes, then merge',
   no_changes: 'Finished with nothing to merge; close it',
@@ -296,6 +307,7 @@ export const LEGEND_NOTE: Record<NodeStatusKey, string> = {
   stopped: 'You stopped its agent',
   idle: 'Nothing running right now',
   done: 'Finished; nothing to merge',
+  replied: 'A conversation answered',
   merged: 'Its work is in',
   closed: 'Closed without merging',
 };

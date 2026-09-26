@@ -17,7 +17,7 @@ import type { InboxItem } from '@agile-agents/shared';
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { useOptionalFeed } from '../lib/feed-context';
 import type { CockpitProjectRow, CockpitStreamRow } from '../lib/feed-types';
-import { itemCommand, nodePath } from '../lib/inbox';
+import { itemCommand, nodePath, replyCommand } from '../lib/inbox';
 import {
   type PaletteEntry,
   RECENT_MAX,
@@ -35,6 +35,7 @@ import { type ShellView, useShell } from '../lib/shell';
 import { nodeStatus } from '../lib/status';
 import { ancestorTitles } from '../lib/streams';
 import { readTheme, saveTheme } from '../lib/theme';
+import { useDirectorUnread, useUnreadReplies } from '../lib/use-unread';
 import { inboxIcon } from './DecisionCard';
 import { Icon, type IconName } from './Icon';
 import { openShortcuts } from './Shortcuts';
@@ -306,6 +307,9 @@ function PaletteDialog({
   const list = useRef<HTMLDivElement>(null);
   const mod = modKeyLabel(typeof navigator === 'undefined' ? '' : navigator.platform);
   const inbox = useOptionalFeed()?.cockpit?.inbox;
+  // T436 (audit r6 #29): the replies you haven't read are Needs me's too, first, as there.
+  const replies = useUnreadReplies();
+  const directorReplied = useDirectorUnread();
 
   const commands = useMemo(() => {
     const out: Command[] = [];
@@ -320,6 +324,32 @@ function PaletteDialog({
         },
         ...(item.icon !== undefined ? { icon: item.icon } : {}),
         run: item.onSelect,
+      });
+    }
+    // T436: "Read reply: …" opens the chat, where the reply is (reading it there marks it read).
+    if (directorReplied !== undefined) {
+      out.push({
+        entry: {
+          key: 'reply:director',
+          group: 'needs',
+          title: replyCommand('The Director'),
+          keywords: ['reply', 'replied', 'unread', 'director'],
+        },
+        icon: 'sparkles',
+        run: () => actions.setView('director'),
+      });
+    }
+    for (const row of replies) {
+      out.push({
+        entry: {
+          key: `reply:${row.id}`,
+          group: 'needs',
+          title: replyCommand(row.title),
+          subtitle: nodePath(ancestorTitles(row, rows)),
+          keywords: ['reply', 'replied', 'unread', 'answer'],
+        },
+        icon: 'message-square',
+        run: () => actions.select(row.id, { tab: 'thread' }),
       });
     }
     // T416: what waits on you, as what you'd do: "Answer: …", "Merge: Add CSV import".
@@ -455,7 +485,7 @@ function PaletteDialog({
       run: openShortcuts,
     });
     return out;
-  }, [rows, projects, actions, here, inbox]);
+  }, [rows, projects, actions, here, inbox, replies, directorReplied]);
 
   const byKey = useMemo(() => new Map(commands.map((c) => [c.entry.key, c])), [commands]);
   const groups = useMemo(

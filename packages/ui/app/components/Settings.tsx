@@ -53,7 +53,7 @@ import {
   updateProject,
 } from '../lib/api';
 import { agentLabel, sessionIdText } from '../lib/chat';
-import { resolvedFor } from '../lib/defaults';
+import { foldedRepos, inheritingReposText, resolvedFor } from '../lib/defaults';
 import { useOptionalFeed } from '../lib/feed-context';
 import { useOptionalShell } from '../lib/shell';
 import { type ThemeChoice, readTheme, saveTheme } from '../lib/theme';
@@ -431,7 +431,7 @@ function NotificationsCard(): JSX.Element {
     <SetCard
       title="Notifications"
       icon="bell"
-      description="A browser notification when a new question, plan, merge or action to allow arrives while you’re in another tab or app. A click takes you to it. Kept in this browser."
+      description="A browser notification when a new question, plan, merge or action to allow, or a reply, arrives while you’re in another tab or app. A click takes you to it. Kept in this browser."
       testid="settings-notifications"
       {...(status !== undefined
         ? {
@@ -651,6 +651,30 @@ function AgentsSection({ onOpenRepos }: { onOpenRepos: () => void }): JSX.Elemen
   }, []);
 
   const repos = status ? Object.entries(status.repos) : [];
+  // T436 (audit r6 #25): repositories that set nothing fold into one row. Which ones is read
+  // once, so a card doesn't jump out of the fold while you change it.
+  const folded = useRef<ReadonlySet<string> | undefined>(undefined);
+  if (status && folded.current === undefined) folded.current = new Set(foldedRepos(status.repos));
+  const [showFolded, setShowFolded] = useState(false);
+  const repoCard = (
+    [name, repo]: (typeof repos)[number],
+    loaded: SessionDefaultsStatus,
+  ): JSX.Element => (
+    <SessionDefaultsCard
+      key={name}
+      title={name}
+      icon={<RepoIcon remote={remotes.get(name)} size={16} />}
+      description="What it inherits comes from the global default."
+      testid={`settings-session-repo-${name}`}
+      status={loaded}
+      fields={repo}
+      inherit={loaded.resolved}
+      resolved={repo.resolved}
+      save={async (patch) => setStatus(await saveRepoSessionDefaults(name, patch))}
+    />
+  );
+  const foldedCards = repos.filter(([name]) => folded.current?.has(name));
+  const ownCards = repos.filter(([name]) => !folded.current?.has(name));
   return (
     <SetSection
       title="Agents"
@@ -675,32 +699,7 @@ function AgentsSection({ onOpenRepos }: { onOpenRepos: () => void }): JSX.Elemen
             resolved={status.resolved}
             save={async (patch) => setStatus(await saveHomeSessionDefaults(patch))}
           />
-          <div className="cr-set-subhd" data-testid="settings-session-repos-heading">
-            <h3>Per repository</h3>
-            <p>Each overrides the global default for nodes in that repository.</p>
-          </div>
-          {repos.length === 0 ? (
-            <p className="cr-set-muted" data-testid="settings-session-repos-empty">
-              No repositories yet.{' '}
-              <button type="button" className="cr-link" onClick={onOpenRepos}>
-                Add one
-              </button>
-            </p>
-          ) : null}
-          {repos.map(([name, repo]) => (
-            <SessionDefaultsCard
-              key={name}
-              title={name}
-              icon={<RepoIcon remote={remotes.get(name)} size={16} />}
-              description="What it inherits comes from the global default."
-              testid={`settings-session-repo-${name}`}
-              status={status}
-              fields={repo}
-              inherit={status.resolved}
-              resolved={repo.resolved}
-              save={async (patch) => setStatus(await saveRepoSessionDefaults(name, patch))}
-            />
-          ))}
+          {/* T436 (audit r6 #25): in the order they win: a project's default before its repositories'. */}
           {projects.length > 0 ? (
             <div className="cr-set-subhd" data-testid="settings-session-projects-heading">
               <h3>Per project</h3>
@@ -730,6 +729,44 @@ function AgentsSection({ onOpenRepos }: { onOpenRepos: () => void }): JSX.Elemen
               />
             );
           })}
+          <div className="cr-set-subhd" data-testid="settings-session-repos-heading">
+            <h3>Per repository</h3>
+            <p>
+              Each overrides the global default for nodes in that repository, unless their project
+              sets its own.
+            </p>
+          </div>
+          {repos.length === 0 ? (
+            <p className="cr-set-muted" data-testid="settings-session-repos-empty">
+              No repositories yet.{' '}
+              <button type="button" className="cr-link" onClick={onOpenRepos}>
+                Add one
+              </button>
+            </p>
+          ) : null}
+          {ownCards.map((entry) => repoCard(entry, status))}
+          {foldedCards.length > 0 ? (
+            <div className="cr-set-fold" data-testid="settings-session-repos-fold">
+              <button
+                type="button"
+                className="cr-set-fold-btn"
+                aria-expanded={showFolded}
+                data-testid="settings-session-repos-fold-toggle"
+                onClick={() => setShowFolded((open) => !open)}
+              >
+                <Icon name={showFolded ? 'chevron-down' : 'chevron-right'} size={14} />
+                <span className="cr-set-fold-text">{inheritingReposText(foldedCards.length)}</span>
+                <span className="cr-set-fold-names">
+                  {foldedCards.map(([name]) => name).join(', ')}
+                </span>
+              </button>
+              {showFolded ? (
+                <div className="cr-set-fold-body">
+                  {foldedCards.map((entry) => repoCard(entry, status))}
+                </div>
+              ) : null}
+            </div>
+          ) : null}
         </>
       ) : null}
     </SetSection>

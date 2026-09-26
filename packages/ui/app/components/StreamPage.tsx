@@ -71,6 +71,7 @@ import {
   workingAs,
 } from '../lib/chat';
 import { choiceOf, modelChip, resolvedFor } from '../lib/defaults';
+import { useComposerDraft } from '../lib/drafts';
 import {
   type MergeFix,
   type MergeRefusal,
@@ -86,14 +87,14 @@ import type { LandOutcome, StreamPagePayload } from '../lib/feed-types';
 import { appendToDraft, roomAfter, useReview } from '../lib/review';
 import { DEFAULT_RULES_FILTER } from '../lib/rules';
 import { useShell } from '../lib/shell';
-import type { StatusInput } from '../lib/status';
+import { type StatusInput, statusKey } from '../lib/status';
 import { groupSteps, turnStartedAt } from '../lib/steps';
 import { isLiveSession, isThinking } from '../lib/streams';
 import { titleFromGoal } from '../lib/tree';
 import { ChatScroll, ContextMeter, MessageList, StepsFold, Thinking, useSteps } from './Chat';
 import { type NodeCommands, useNodeCommands } from './CommandPalette';
 import { Composer, type ComposerHandle } from './Composer';
-import { useMergeAsk } from './DecisionCard';
+import { addReviewToDraft, useMergeAsk } from './DecisionCard';
 import { DeliveryPanel, isMergeable, outcomeTone, useDelivery } from './Delivery';
 import { TabBoundary, lazyNamed } from './ErrorBoundary';
 import { Icon, type IconName } from './Icon';
@@ -347,16 +348,15 @@ function GoalCard({
 
 export function StreamPage({ id }: { id: string }): JSX.Element {
   const { cockpit, refresh, offline } = useFeed();
-  const { openRules, select, openOn, openAsk, openNewStream } = useShell();
+  const { openRules, select, tab, setTab, openAsk, openNewStream } = useShell();
   const toast = useToast();
   const copy = useCopy();
   const [page, setPage] = useState<StreamPagePayload | undefined>(undefined);
   const [loadError, setLoadError] = useState<string | undefined>(undefined);
-  // `undefined` is the node's own first tab (T387: a project root's Overview, else the chat).
-  // T403: a Needs me card asks for the chat (`openOn`).
-  const [tab, setTab] = useState<NodeTab | undefined>(openOn?.id === id ? openOn.tab : undefined);
-  const [draft, setDraft] = useState('');
-  const drafts = useRef(new Map<string, string>());
+  // `tab` (the shell's, in the URL: T436 #21) is `undefined` for the node's own first tab (T387:
+  // a project root's Overview, else the chat); T403: a Needs me card asks for the chat.
+  // T436 (#11): the draft is kept per node, across a reload too (`lib/drafts.ts`).
+  const [draft, setDraft] = useComposerDraft(id);
   const [busy, setBusy] = useState(false);
   const [sending, setSending] = useState(false);
   const [actionError, setActionError] = useState<string | undefined>(undefined);
@@ -429,14 +429,9 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
       .catch(() => setRepos([]));
   }, []);
 
-  // A different node opened: back to its first tab, its own draft, nothing half-open.
-  const lastId = useRef(id);
+  // A different node opened: nothing half-open (its tab is the shell's, its draft its own).
   // biome-ignore lint/correctness/useExhaustiveDependencies: `id` is the trigger.
   useEffect(() => {
-    drafts.current.set(lastId.current, draft);
-    lastId.current = id;
-    setDraft(drafts.current.get(id) ?? '');
-    setTab(openOn?.id === id ? openOn.tab : undefined);
     setActionError(undefined);
     setSendError(undefined);
     setMergeError(undefined);
@@ -635,6 +630,8 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
     ...(pending && liveAgent ? { restartWith: agentLabel(pending) } : {}),
   });
   const mergeable = isMergeable(page, delivery);
+  // T436 (audit r6 #24): a reviewer reads commits; until the branch has some there is nothing to review.
+  const hasCommits = stream.repo !== undefined && (page.land?.ahead ?? 0) > 0;
   const actions = headerActions({
     open,
     liveAgent: liveAgent !== undefined,
@@ -645,6 +642,7 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
     startIsNext: rootOf === undefined && (!hasRun || row?.stopped === true),
     mergeable,
     landReady: page.land?.ready === true,
+    decisionOpen: cards.length > 0,
   });
   // T387: a project's root, known from the page itself (no parent, a project) before the frame names it.
   const projectRoot =
@@ -774,7 +772,6 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
         await sayOnStream(stream.id, text);
       }
       setDraft('');
-      drafts.current.delete(stream.id);
     } catch (err) {
       // T416 (finding 7): under the composer, in words, with Retry; the draft stays as typed.
       setSendError(writeFailure(err));
@@ -793,6 +790,16 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
     mergeAsk.ask(
       {
         node: stream.title,
+        id: stream.id,
+        // T436 (#11): unsent review comments join the draft, and the chat opens on it.
+        onAddReview: () => {
+          addReviewToDraft(stream.id)
+            .then((result) => {
+              setTab(result === 'added' ? 'thread' : 'diff');
+              if (result === 'added') requestAnimationFrame(() => composer.current?.focusEnd());
+            })
+            .catch(() => setTab('diff'));
+        },
         ...(page.land?.target !== undefined ? { target: page.land.target } : {}),
         ...(row?.diff_stat !== undefined ? { files: row.diff_stat.files } : {}),
         pr:
@@ -906,7 +913,7 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
       icon: 'eye',
       testid: 'review',
       title: 'A read-only reviewer agent reads the diff and reports findings',
-      hidden: stream.repo === undefined,
+      hidden: !hasCommits,
       disabled: busy || liveReviewer !== undefined,
       onSelect: () => setPicker('reviewer'),
     },
@@ -1585,7 +1592,8 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
               : {}),
           }))}
           value={shownTab}
-          onChange={setTab}
+          // T436 (#21): the first tab is the plain node link; any other is `&tab=` in the URL.
+          onChange={(t) => setTab(t === tabs[0] ? undefined : t)}
           label="Node views"
           className="cr-node-tabs"
         />
@@ -1656,14 +1664,19 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
 
       {detailsOpen && (
         <DetailsPanel onClose={() => setDetailsOpen(false)}>
-          <DeliveryPanel page={page} delivery={delivery} onResolve={() => setPicker('resolve')} />
+          <DeliveryPanel
+            page={page}
+            delivery={delivery}
+            onResolve={() => setPicker('resolve')}
+            status={statusKey(statusInput)}
+          />
           <AgentSection
             stream={stream}
             {...(liveAgent ? { live: liveAgent } : {})}
             {...(defaultLabel ? { startWith: defaultLabel } : {})}
             busy={busy}
             canReview={liveReviewer === undefined}
-            {...(stream.repo !== undefined ? { onReview: () => setPicker('reviewer') } : {})}
+            {...(hasCommits ? { onReview: () => setPicker('reviewer') } : {})}
           />
           {/* T413: every child, by the status words used everywhere; a root's Overview lists them. */}
           {!projectRoot && <ChildCards parent={stream.id} cards={cockpit?.cards ?? []} />}

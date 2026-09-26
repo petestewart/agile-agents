@@ -36,6 +36,7 @@ import {
   decideGate,
   decideProposal,
   decideRule,
+  getStreamDiff,
   getStreamPage,
   landStream,
   markStreamLanded,
@@ -44,7 +45,8 @@ import {
   startWaitingParts,
   stopSessions,
 } from '../lib/api';
-import { tidyIds } from '../lib/chat';
+import { parseDiff, tidyIds } from '../lib/chat';
+import { draftOf, setDraftOf } from '../lib/drafts';
 import {
   type MergeFix,
   RECONNECTING,
@@ -79,6 +81,14 @@ import {
   statusText,
   waitingText,
 } from '../lib/inbox';
+import {
+  appendToDraft,
+  clearComments,
+  formatReview,
+  reviews,
+  roomAfter,
+  unsentReviewQuestion,
+} from '../lib/review';
 import { useShell } from '../lib/shell';
 import { ago } from '../lib/status';
 import { Icon, type IconName } from './Icon';
@@ -164,60 +174,40 @@ function stopAskingMerge(): void {
 export interface MergeAsk {
   /** The node's title. */
   node: string;
-  /** The node's id, to read its target when the caller doesn't know it. */
+  /** The node's id: to read its target when the caller doesn't know it, and its review comments. */
   id?: string;
   target?: string;
   files?: number;
   pr?: boolean;
+  /**
+   * T436: "Add to message" on the unsent-review question, where the caller
+   * does it its own way (the node's page opens its chat on the composer).
+   * Absent, the review joins the node's draft and its chat opens.
+   */
+  onAddReview?: () => void;
 }
 
 /**
- * T416 (finding 38): the first Merge — from a card or a node's header —
- * asks "Merge <node> into <target> (<n> files)?", with "Don't ask again"
- * remembered in this browser; after that Merge is one click. A merge can't
- * be undone from the cockpit, so it asks rather than offering Undo.
+ * T436 (audit r6 #11): a node's review comments not sent yet, put in its
+ * composer as one message, as the review bar's Add to message does, read
+ * against the diff as it is now. `too_long` when they don't fit beside the
+ * draft already there (the Changes tab's bar says what to cut).
  */
-export function useMergeAsk(): {
-  /** Runs `merge` at once, or after the question when this browser still asks. */
-  ask: (info: MergeAsk, merge: () => void) => void;
-  dialog: ReactNode;
-} {
-  const [pending, setPending] = useState<{ info: MergeAsk; merge: () => void } | undefined>();
-  return {
-    ask: (info, merge) => {
-      if (!mergeAsks()) {
-        merge();
-        return;
-      }
-      setPending({ info, merge });
-    },
-    dialog: pending ? (
-      <MergeDialog
-        info={pending.info}
-        onCancel={() => setPending(undefined)}
-        onConfirm={(never) => {
-          if (never) stopAskingMerge();
-          setPending(undefined);
-          pending.merge();
-        }}
-      />
-    ) : null,
-  };
+export async function addReviewToDraft(node: string): Promise<'added' | 'too_long'> {
+  const comments = reviews.get(node).comments;
+  if (comments.length === 0) return 'added';
+  const files = parseDiff((await getStreamDiff(node)).patch);
+  const draft = draftOf(node);
+  const message = formatReview(comments, files, roomAfter(draft));
+  if (!message.fits) return 'too_long';
+  setDraftOf(node, appendToDraft(draft, message.text));
+  clearComments(node);
+  return 'added';
 }
 
-function MergeDialog({
-  info,
-  onCancel,
-  onConfirm,
-}: {
-  info: MergeAsk;
-  onCancel: () => void;
-  onConfirm: (never: boolean) => void;
-}): JSX.Element {
-  const [never, setNever] = useState(false);
+/** A card knows its node, not the branch it merges into: the node's page read says. */
+function useMergeTarget(info: MergeAsk): string | undefined {
   const [target, setTarget] = useState(info.target);
-  const checkId = useId();
-  // A card knows its node, not the branch it merges into: the node's page read says.
   useEffect(() => {
     if (info.target !== undefined || info.id === undefined) return;
     let live = true;
@@ -232,6 +222,138 @@ function MergeDialog({
       live = false;
     };
   }, [info.id, info.target]);
+  return target;
+}
+
+/**
+ * T416 (finding 38): the first Merge — from a card or a node's header —
+ * asks "Merge <node> into <target> (<n> files)?", with "Don't ask again"
+ * remembered in this browser; after that Merge is one click. A merge can't
+ * be undone from the cockpit, so it asks rather than offering Undo.
+ *
+ * T436 (audit r6 #11): while the node has review comments not sent, every
+ * Merge asks "1 review comment on <node> isn't sent. Merge anyway?", with
+ * Add to message as the other button; that one question stands in for the
+ * first-Merge one.
+ */
+export function useMergeAsk(): {
+  /** Runs `merge` at once, or after the question when this browser still asks. */
+  ask: (info: MergeAsk, merge: () => void) => void;
+  dialog: ReactNode;
+} {
+  const { select } = useShell();
+  const [pending, setPending] = useState<
+    { info: MergeAsk; merge: () => void; unsent: number } | undefined
+  >();
+  const addReview = (info: MergeAsk): void => {
+    if (info.onAddReview) {
+      info.onAddReview();
+      return;
+    }
+    const id = info.id;
+    if (id === undefined) return;
+    addReviewToDraft(id)
+      .then((result) => select(id, { tab: result === 'added' ? 'thread' : 'diff' }))
+      .catch(() => select(id, { tab: 'diff' }));
+  };
+  return {
+    ask: (info, merge) => {
+      const unsent = info.id !== undefined ? reviews.get(info.id).comments.length : 0;
+      if (unsent === 0 && !mergeAsks()) {
+        merge();
+        return;
+      }
+      setPending({ info, merge, unsent });
+    },
+    dialog: !pending ? null : pending.unsent > 0 ? (
+      <UnsentReviewDialog
+        info={pending.info}
+        count={pending.unsent}
+        onCancel={() => setPending(undefined)}
+        onAdd={() => {
+          setPending(undefined);
+          addReview(pending.info);
+        }}
+        onMerge={() => {
+          setPending(undefined);
+          pending.merge();
+        }}
+      />
+    ) : (
+      <MergeDialog
+        info={pending.info}
+        onCancel={() => setPending(undefined)}
+        onConfirm={(never) => {
+          if (never) stopAskingMerge();
+          setPending(undefined);
+          pending.merge();
+        }}
+      />
+    ),
+  };
+}
+
+function UnsentReviewDialog({
+  info,
+  count,
+  onCancel,
+  onAdd,
+  onMerge,
+}: {
+  info: MergeAsk;
+  count: number;
+  onCancel: () => void;
+  onAdd: () => void;
+  onMerge: () => void;
+}): JSX.Element {
+  const target = useMergeTarget(info);
+  const words = unsentReviewQuestion({
+    node: info.node,
+    count,
+    ...(target !== undefined ? { target } : {}),
+    ...(info.pr ? { pr: true } : {}),
+  });
+  return (
+    <Dialog
+      open
+      onClose={onCancel}
+      title={words.title}
+      size="sm"
+      testid="merge-unsent"
+      onSubmit={onMerge}
+      footer={
+        <>
+          <Button
+            icon="corner-down-left"
+            data-testid="merge-unsent-add"
+            data-autofocus
+            onClick={onAdd}
+          >
+            Add to message
+          </Button>
+          <Button type="submit" variant="primary" icon="git-merge" data-testid="merge-unsent-merge">
+            {words.confirm}
+          </Button>
+        </>
+      }
+    >
+      <p className="cr-confirm-text">{words.body}</p>
+    </Dialog>
+  );
+}
+
+function MergeDialog({
+  info,
+  onCancel,
+  onConfirm,
+}: {
+  info: MergeAsk;
+  onCancel: () => void;
+  onConfirm: (never: boolean) => void;
+}): JSX.Element {
+  const [never, setNever] = useState(false);
+  const target = useMergeTarget(info);
+  const checkId = useId();
   const words = mergeQuestion({
     node: info.node,
     ...(target !== undefined ? { target } : {}),

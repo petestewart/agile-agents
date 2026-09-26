@@ -42,7 +42,7 @@ import { archiveStream, moveStream, unarchiveStream, updateStream } from '../lib
 import { useOptionalFeed } from '../lib/feed-context';
 import type { CockpitOverlap, CockpitProjectRow, CockpitStreamRow } from '../lib/feed-types';
 import { isShortcut, useShell } from '../lib/shell';
-import { type NodeStatusKey, ROLE_LABEL, nodeStatus, statusOf } from '../lib/status';
+import { type NodeStatusKey, ROLE_LABEL, nodeStatus } from '../lib/status';
 import {
   type StreamTreeNode,
   buildStreamTree,
@@ -596,11 +596,13 @@ function Legend(): JSX.Element {
           <div className="cr-legend-hd">Status</div>
           <ul className="cr-legend-list">
             {LEGEND_ORDER.map((key) => {
-              const s = statusOf(key);
+              // T436: drawn from the row it stands for, as the rail draws it ("Replied" too).
+              const row = legendRow(key);
+              const s = nodeStatus(row);
               return (
                 <li key={key} data-status={key}>
                   <span className="cr-legend-mark">
-                    <StatusDot row={legendRow(key)} status={s} />
+                    <StatusDot row={row} status={s} />
                   </span>
                   <span className="cr-legend-label">{s.label}</span>
                   <span className="cr-legend-hint">{LEGEND_NOTE[key]}</span>

@@ -10,6 +10,7 @@ import {
   type LogView,
   ROUTE_REASON,
   appendOlder,
+  childStatusPhrase,
   clip,
   deliveryHint,
   deliveryWords,
@@ -266,6 +267,65 @@ describe('eventDetail', () => {
     const long = 'x'.repeat(300);
     expect(eventDetail(event('E1', 'human_line', { body: long }))?.length).toBe(140);
     expect(eventDetail(event('E1', 'plan_changed', {}))).toBeUndefined();
+  });
+
+  test('T436: a child status reads in the status words, never the enum or "no progress line"', () => {
+    const rows: Record<string, CockpitStreamRow> = {
+      W: {
+        id: 'W',
+        title: 'Add CSV import',
+        role: 'work',
+        agent_status: 'done',
+        human_status: 'landed',
+      },
+      E: {
+        id: 'E',
+        title: 'Empty',
+        role: 'work',
+        agent_status: 'done',
+        human_status: 'open',
+        nothing_to_merge: true,
+      },
+      Q: {
+        id: 'Q',
+        title: 'Does import handle Excel files?',
+        role: 'conversation',
+        project: 'P',
+        agent_status: 'done',
+        human_status: 'open',
+      },
+      C: {
+        id: 'C',
+        title: 'Show sale prices',
+        role: 'coordinating',
+        agent_status: 'done',
+        human_status: 'open',
+      },
+    };
+    const rowOf = (id: string) => rows[id];
+    const status = (child: string, st: string, progress?: string) =>
+      eventDetail(
+        event('E1', 'child_status', {
+          child,
+          title: rows[child]?.title ?? 'Gone',
+          status: st,
+          ...(progress !== undefined ? { progress } : {}),
+        }),
+        titleOf,
+        rowOf,
+      );
+    // A work node that finished (merged since, but the event is about then).
+    expect(status('W', 'done', 'no progress line')).toBe('Add CSV import is ready to merge');
+    expect(status('E', 'done')).toBe('Empty finished with no changes');
+    expect(status('Q', 'done', 'no progress line')).toBe('Does import handle Excel files? replied');
+    expect(status('C', 'done')).toBe('Show sale prices is done');
+    expect(status('W', 'blocked', 'Redis is down')).toBe(
+      'Add CSV import is blocked — Redis is down',
+    );
+    expect(status('W', 'question')).toBe('Add CSV import is asking a question');
+    // A node the frame no longer has (deleted): it finished, no more.
+    expect(status('X', 'done')).toBe('Gone finished');
+    expect(childStatusPhrase('done')).toBe('finished');
   });
 
   test('clip keeps the first non-empty line', () => {

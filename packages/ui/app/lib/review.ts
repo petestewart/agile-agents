@@ -5,7 +5,9 @@
  * collect per node; "Add to message" turns them into one message in the
  * node's composer. This file is the pure part — anchoring a comment to diff
  * lines, telling when it is outdated, the message format — plus the small
- * in-memory store the comments live in for the browser session.
+ * store the comments live in. T436: the store is kept in this tab's
+ * `sessionStorage` (`lib/drafts.ts`), so a reload keeps them; closing the
+ * tab with some unsent asks first, and Merge asks about them.
  *
  * A comment is anchored by row keys, not by row positions: `n42` is line 42
  * of the new side (an added or unchanged line), `o42` line 42 of the old side
@@ -15,8 +17,10 @@
  */
 
 import { THREAD_BODY_MAX_CHARS } from '@agile-agents/shared';
-import { useSyncExternalStore } from 'react';
+import { useEffect, useSyncExternalStore } from 'react';
 import type { DiffFile, DiffRow } from './chat';
+import { KeptDrafts, type StorageLike, composerDrafts, sessionStore } from './drafts';
+import { useOptionalFeed } from './feed-context';
 
 export interface ReviewComment {
   /** Local only (React keys, edit/delete); never in the message. */
@@ -304,24 +308,83 @@ export function openAt(
   return { review: { comments: [...review.comments, kept], draft: fresh }, kept };
 }
 
+// ---------------------------------------------------------------- kept across a reload
+
+const isString = (v: unknown): v is string => typeof v === 'string';
+
+function parseComment(value: unknown): ReviewComment | undefined {
+  if (value === null || typeof value !== 'object') return undefined;
+  const c = value as Record<string, unknown>;
+  const strings = ['id', 'path', 'start', 'end', 'lines', 'body'] as const;
+  if (!strings.every((k) => isString(c[k]))) return undefined;
+  if (!Array.isArray(c.quote) || !c.quote.every(isString)) return undefined;
+  if (typeof c.removed !== 'boolean') return undefined;
+  return {
+    id: c.id as string,
+    path: c.path as string,
+    start: c.start as string,
+    end: c.end as string,
+    quote: [...(c.quote as string[])],
+    lines: c.lines as string,
+    removed: c.removed,
+    body: c.body as string,
+  };
+}
+
+function parseReviewDraft(value: unknown): ReviewDraft | undefined {
+  if (value === null || typeof value !== 'object') return undefined;
+  const d = value as Record<string, unknown>;
+  if (!isString(d.path) || !isString(d.start) || !isString(d.end) || !isString(d.text)) {
+    return undefined;
+  }
+  if (d.editing !== undefined && !isString(d.editing)) return undefined;
+  return {
+    path: d.path,
+    start: d.start,
+    end: d.end,
+    text: d.text,
+    ...(d.editing !== undefined ? { editing: d.editing } : {}),
+  };
+}
+
 /**
- * Review comments per node, for this browser session (in memory: they
- * outlive tab and node switches, not a reload). Subscribable, so the
- * Changes tab and its count in the tab bar read the same thing.
+ * T436: a node's review as stored, if it still reads as one: the comments
+ * that do (others are dropped), and the comment being written. Nothing
+ * left is `undefined`.
+ */
+export function parseNodeReview(value: unknown): NodeReview | undefined {
+  if (value === null || typeof value !== 'object') return undefined;
+  const r = value as Record<string, unknown>;
+  const comments = Array.isArray(r.comments)
+    ? r.comments.map(parseComment).filter((c): c is ReviewComment => c !== undefined)
+    : [];
+  const draft = parseReviewDraft(r.draft);
+  if (comments.length === 0 && draft === undefined) return undefined;
+  return { comments, ...(draft !== undefined ? { draft } : {}) };
+}
+
+/**
+ * Review comments per node. T436: kept in this tab's `sessionStorage`, so
+ * they outlive tab and node switches and a reload (closing the tab asks
+ * first, `useReviewUpkeep`). Subscribable, so the Changes tab and its count
+ * in the tab bar read the same thing.
  */
 export class ReviewStore {
-  private byNode = new Map<string, NodeReview>();
-  private listeners = new Set<() => void>();
+  private readonly kept: KeptDrafts<NodeReview>;
   private seq = 0;
+  /** Ids made in this page load never repeat one a reload brought back. */
+  private readonly run = Math.random().toString(36).slice(2, 7);
+
+  constructor(storage: () => StorageLike | undefined = sessionStore) {
+    this.kept = new KeptDrafts('agile.review', parseNodeReview, storage);
+  }
 
   get(node: string): NodeReview {
-    return this.byNode.get(node) ?? EMPTY;
+    return this.kept.get(node) ?? EMPTY;
   }
 
   set(node: string, next: NodeReview): void {
-    if (next.comments.length === 0 && next.draft === undefined) this.byNode.delete(node);
-    else this.byNode.set(node, next);
-    for (const fn of this.listeners) fn();
+    this.kept.set(node, next.comments.length === 0 && next.draft === undefined ? undefined : next);
   }
 
   update(node: string, fn: (review: NodeReview) => NodeReview): void {
@@ -331,15 +394,23 @@ export class ReviewStore {
   /** A fresh local id for a comment. */
   nextId(): string {
     this.seq += 1;
-    return `c${this.seq}`;
+    return `c${this.run}${this.seq}`;
   }
 
-  subscribe = (fn: () => void): (() => void) => {
-    this.listeners.add(fn);
-    return () => {
-      this.listeners.delete(fn);
-    };
-  };
+  /** T436: the nodes with comments not sent yet, and how many each. */
+  unsent(): Array<{ node: string; count: number }> {
+    return this.kept
+      .ids()
+      .map((node) => ({ node, count: this.get(node).comments.length }))
+      .filter((x) => x.count > 0);
+  }
+
+  /** T436: every node kept, with or without comments (a comment half-written counts). */
+  nodes(): string[] {
+    return this.kept.ids();
+  }
+
+  subscribe = (fn: () => void): (() => void) => this.kept.subscribe(fn);
 }
 
 export const reviews = new ReviewStore();
@@ -351,4 +422,83 @@ export function useReview(node: string): NodeReview {
     () => reviews.get(node),
     () => reviews.get(node),
   );
+}
+
+/**
+ * T436: the review comments left out by the review bar, taken off the node
+ * once they're in the composer (a comment still being written stays).
+ */
+export function clearComments(node: string, store: ReviewStore = reviews): void {
+  store.update(node, (r) => (r.draft ? { comments: [], draft: r.draft } : { comments: [] }));
+}
+
+/** T436: Merge's question while a node has review comments not sent (the first Merge's too). */
+export function unsentReviewQuestion(input: {
+  node: string;
+  count: number;
+  target?: string;
+  /** The repo delivers by pull request: Merge opens one. */
+  pr?: boolean;
+}): { title: string; body: string; confirm: string } {
+  const one = input.count === 1;
+  const what = one ? '1 review comment' : `${input.count} review comments`;
+  const it = one ? 'it' : 'them';
+  const target = input.target ?? 'its target branch';
+  const merge = input.pr ? 'Open the pull request anyway?' : 'Merge anyway?';
+  return {
+    title: `${what} on ${input.node} ${one ? 'isn’t' : 'aren’t'} sent. ${merge}`,
+    body: `Add to message puts ${it} in the chat for the agent, and nothing ${
+      input.pr ? 'is opened' : 'merges'
+    }. ${
+      input.pr
+        ? `Opening the pull request into ${target} leaves ${it} unsent.`
+        : `Merging puts its commits onto ${target} now and leaves ${it} unsent.`
+    }`,
+    confirm: input.pr ? 'Open pull request anyway' : 'Merge anyway',
+  };
+}
+
+/**
+ * T436: which kept drafts and reviews belong to nodes that are finished
+ * (merged or closed) or deleted — they can't be sent any more. A node the
+ * frame doesn't name yet (just created) is left alone.
+ */
+export function finishedIds(
+  ids: readonly string[],
+  rows: ReadonlyArray<{ id: string; human_status: string }>,
+  archived: ReadonlyArray<{ id: string }> = [],
+): string[] {
+  const done = new Set(
+    rows.filter((r) => r.human_status === 'landed' || r.human_status === 'closed').map((r) => r.id),
+  );
+  for (const row of archived) done.add(row.id);
+  return ids.filter((id) => done.has(id));
+}
+
+/**
+ * T436: mounted once in `App`. While any review comment is unsent, leaving
+ * the page (closing the tab, a reload) asks first — the browser's own
+ * "Leave site?" (a reload keeps them all the same). And a node that is
+ * merged, closed or deleted drops its kept draft and comments.
+ */
+export function useReviewUpkeep(): void {
+  const cockpit = useOptionalFeed()?.cockpit;
+  useEffect(() => {
+    if (!cockpit) return;
+    const ids = [...new Set([...reviews.nodes(), ...composerDrafts.ids()])];
+    for (const id of finishedIds(ids, cockpit.streams, cockpit.archived ?? [])) {
+      reviews.set(id, { comments: [] });
+      composerDrafts.set(id, undefined);
+    }
+  }, [cockpit]);
+  useEffect(() => {
+    const onLeave = (event: BeforeUnloadEvent): void => {
+      if (reviews.unsent().length === 0) return;
+      event.preventDefault();
+      // Older browsers ask only when this is set.
+      event.returnValue = '';
+    };
+    window.addEventListener('beforeunload', onLeave);
+    return () => window.removeEventListener('beforeunload', onLeave);
+  }, []);
 }

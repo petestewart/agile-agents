@@ -9,7 +9,13 @@ import type { RoutedEvent, RoutedEventType, RoutingEntry } from '@agile-agents/s
 import { agentLabel, dayLabel, sessionIdText } from './chat';
 import type { CockpitRepoRow, CockpitStreamRow } from './feed-types';
 import { overviewCounts } from './overview';
-import { type NodeStatusKey, statusKey } from './status';
+import {
+  type NodeStatus,
+  type NodeStatusKey,
+  type StatusInput,
+  nodeStatus,
+  statusKey,
+} from './status';
 import { dependencyEdges, eventLabel } from './streams';
 
 // ---------------------------------------------------------------- Repos
@@ -245,14 +251,46 @@ const REVIEW_STATE: Record<string, string> = {
   dismissed: 'dismissed a review',
 };
 
+/** The daemon's stand-in for a missing progress line, in events written before T436. */
+const NO_PROGRESS = 'no progress line';
+
+/** A node status as the rest of a sentence about it: "is ready to merge", "replied". */
+function statusPhrase(status: NodeStatus): string {
+  if (status.label === 'Replied') return 'replied';
+  if (status.key === 'no_changes') return 'finished with no changes';
+  if (status.key === 'pr_open') return 'has its pull request open';
+  if (status.key === 'needs_you') return 'is asking a question';
+  return `is ${status.label.toLowerCase()}`;
+}
+
+/**
+ * T436 (audit r6 #15): what a `child_status` event says the node became, in
+ * `lib/status.ts`'s words rather than the daemon's enum: a finished work
+ * node "is ready to merge" (or "finished with no changes"), a conversation
+ * "replied", a coordinator "is done", a stuck one "is blocked". `row` is the
+ * node as the frame has it now (its role, whether its branch has commits);
+ * without it (a deleted node) a finished one just "finished".
+ */
+export function childStatusPhrase(status: string, row?: StatusInput): string {
+  if (status === 'question') return 'is asking a question';
+  if (status === 'blocked')
+    return statusPhrase(nodeStatus({ agent_status: 'blocked', human_status: 'open' }));
+  if (status !== 'done') return `is ${status.replace(/_/g, ' ')}`;
+  if (row === undefined) return 'finished';
+  // The event is about the moment it finished: the node as it was then, open, its agent done.
+  return statusPhrase(nodeStatus({ ...row, agent_status: 'done', human_status: 'open' }));
+}
+
 /**
  * T368: what an event says, in one short muted line under its label — the
- * message, the PR, the files. Ids read as titles through `titleOf`.
+ * message, the PR, the files. Ids read as titles through `titleOf`; T436:
+ * `rowOf` gives a node's row, for a status in the status words.
  * `undefined` when there is nothing to add.
  */
 export function eventDetail(
   event: Pick<RoutedEvent, 'type' | 'payload'>,
   titleOf: (id: string) => string = (id) => id,
+  rowOf: (id: string) => StatusInput | undefined = () => undefined,
 ): string | undefined {
   const p = event.payload;
   const pr = num(p, 'pr');
@@ -273,10 +311,12 @@ export function eventDetail(
       case 'tangent_summary':
         return [str(p, 'title'), str(p, 'summary')].filter(Boolean).join(': ');
       case 'child_status': {
-        const status = str(p, 'status') ?? '';
-        const title = str(p, 'title') ?? titleOf(str(p, 'child') ?? '');
+        const child = str(p, 'child');
+        const title = str(p, 'title') ?? titleOf(child ?? '');
         const progress = str(p, 'progress');
-        return `${title} is ${status === 'question' ? 'asking a question' : status}${progress ? ` — ${progress}` : ''}`;
+        const said = progress !== undefined && progress !== NO_PROGRESS ? ` — ${progress}` : '';
+        const row = child !== undefined ? rowOf(child) : undefined;
+        return `${title} ${childStatusPhrase(str(p, 'status') ?? '', row)}${said}`;
       }
       case 'child_delivered': {
         const sha = str(p, 'sha');

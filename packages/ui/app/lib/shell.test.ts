@@ -87,6 +87,43 @@ describe('shellSearch', () => {
   });
 });
 
+describe('T436: a node’s tab in the URL', () => {
+  test('`&tab=` opens the node on that tab; its first tab is no param at all', () => {
+    expect(parseShellUrl(`?node=${NODE}&tab=diff`)).toEqual({
+      view: 'stream',
+      node: NODE,
+      project: undefined,
+      tab: 'diff',
+    });
+    expect(shellSearch({ view: 'stream', node: NODE, project: PROJECT, tab: 'plan' })).toBe(
+      `?node=${NODE}&tab=plan&project=${PROJECT}`,
+    );
+    expect(shellSearch({ view: 'stream', node: NODE, project: undefined })).toBe(`?node=${NODE}`);
+  });
+
+  test('an unknown tab, or one without a node, is dropped', () => {
+    expect(parseShellUrl(`?node=${NODE}&tab=nope`).tab).toBeUndefined();
+    expect(parseShellUrl('?view=events&tab=diff')).toEqual({
+      view: 'events',
+      node: undefined,
+      project: undefined,
+    });
+    expect(shellSearch({ view: 'events', node: undefined, project: undefined, tab: 'diff' })).toBe(
+      '?view=events',
+    );
+  });
+
+  test('a node with its tab round-trips, and the tab is the shell’s own param', () => {
+    const at: ShellLocation = { view: 'stream', node: NODE, project: PROJECT, tab: 'activity' };
+    expect(parseShellUrl(shellSearch(at))).toEqual(at);
+    // Staying on the node: a new tab replaces the old one, never both.
+    expect(keepScreenParams(`?node=${NODE}&tab=plan`, `?node=${NODE}&tab=diff&x=1`)).toBe(
+      `?node=${NODE}&tab=plan&x=1`,
+    );
+    expect(keepScreenParams(`?node=${NODE}`, `?node=${NODE}&tab=diff`)).toBe(`?node=${NODE}`);
+  });
+});
+
 describe('T409: keepScreenParams', () => {
   test("the screen's own params stay; the shell's are the new ones", () => {
     expect(keepScreenParams('?view=settings', '?view=settings&section=repos')).toBe(

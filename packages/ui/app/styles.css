@@ -7582,6 +7582,50 @@ div.cr-ov-ev:hover {
   color: var(--text-muted);
   margin: 0 0 12px;
 }
+/* T436 (audit r6 #25): repositories that set nothing, folded into one row; open, their cards. */
+.cr-set-fold {
+  margin-bottom: 16px;
+}
+.cr-set-fold-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 44px;
+  padding: 10px 14px;
+  font: inherit;
+  text-align: left;
+  color: var(--text);
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  cursor: pointer;
+}
+.cr-set-fold-btn:hover {
+  background: var(--bg-hover);
+}
+.cr-set-fold-btn > .cr-icon {
+  flex: none;
+  color: var(--text-muted);
+}
+.cr-set-fold-text {
+  flex: none;
+  font-weight: 500;
+}
+.cr-set-fold-names {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+}
+.cr-set-fold-body {
+  margin-top: 12px;
+  padding-left: 14px;
+  border-left: 2px solid var(--border);
+}
 .cr-set-sr {
   position: absolute;
   width: 1px;
@@ -8808,19 +8852,21 @@ div.cr-ov-ev:hover {
   justify-content: flex-end;
   gap: 6px;
 }
+/* T436 (audit r6 #18): an overlap is news, not a warning: neutral, as the rail's mark. */
 .cr-lens-overlap {
   display: flex;
   align-items: flex-start;
   gap: 10px;
   margin: 8px 4px 2px;
   padding: 10px 12px;
-  border: 1px solid color-mix(in srgb, var(--amber) 40%, transparent);
+  border: 1px solid var(--border);
   border-radius: var(--radius);
-  background: var(--amber-weak);
+  background: var(--bg-panel);
 }
 .cr-lens-overlap-icon {
+  flex: none;
   margin-top: 2px;
-  color: var(--amber-text);
+  color: var(--text-muted);
 }
 .cr-lens-overlap p {
   margin: 0;
@@ -10132,14 +10178,27 @@ div.cr-lens-ev:hover {
 }
 .cr-reply-icon {
   flex-shrink: 0;
+  align-self: flex-start;
+  margin-top: 2px;
   color: var(--accent-fg);
 }
 .cr-reply-text {
+  display: flex;
   flex: 1 1 auto;
+  flex-direction: column;
+  gap: 1px;
   min-width: 0;
+}
+/* T436 (audit r6 #17): the path and title on one line, the reply's first line under it; each clips. */
+.cr-reply-head,
+.cr-reply-preview {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.cr-reply-preview {
+  font-size: var(--text-sm);
+  color: var(--text-muted);
 }
 .cr-reply-path {
   color: var(--text-muted);
@@ -10149,6 +10208,8 @@ div.cr-lens-ev:hover {
 }
 .cr-reply-when {
   flex-shrink: 0;
+  align-self: flex-start;
+  margin-top: 1px;
   font-size: var(--text-sm);
   color: var(--text-faint);
 }

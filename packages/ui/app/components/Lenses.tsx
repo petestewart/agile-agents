@@ -103,6 +103,12 @@ function useTitleOf(): (id: string) => string {
   );
 }
 
+/** T436: a node's row as the frame has it, for a status event in the status words. */
+function useRowOf(): (id: string) => CockpitStreamRow | undefined {
+  const { cockpit } = useFeed();
+  return useCallback((id: string) => cockpit?.streams.find((r) => r.id === id), [cockpit]);
+}
+
 /** Opens a routed-event recipient: a node's page, or the Director. */
 function useOpenNode(): (id: string) => void {
   const { select, setView } = useShell();
@@ -409,7 +415,8 @@ function OverlapCallout({
   const [a, b] = overlap.nodes;
   return (
     <div className="cr-lens-overlap" role="note">
-      <Icon name="alert-triangle" size={16} className="cr-lens-overlap-icon" />
+      {/* T436 (audit r6 #18): the rail's neutral overlap mark, not a warning triangle. */}
+      <Icon name="overlap" size={16} strokeWidth={2} className="cr-lens-overlap-icon" />
       <div>
         <p data-testid="repo-overlap">
           <button type="button" className="cr-lens-link" onClick={() => select(a)}>
@@ -919,7 +926,8 @@ const EVENT_ICON: Partial<Record<RoutedEventType, IconName>> = {
   ship_findings: 'shield-check',
   child_delivered: 'git-merge',
   child_status: 'layers',
-  overlap: 'alert-triangle',
+  // T436 (audit r6 #18): the rail's neutral two squares; the triangle means blocked or critical.
+  overlap: 'overlap',
   symbol_changed: 'code',
   contract_changed: 'file-text',
   contract_proposal: 'file-text',
@@ -941,7 +949,6 @@ const EVENT_TONE: Partial<Record<RoutedEventType, 'red' | 'amber' | 'purple' | '
   ci_failed: 'red',
   sync_conflict: 'red',
   pr_closed: 'red',
-  overlap: 'amber',
   pr_behind: 'amber',
   ship_findings: 'amber',
   pr_merged: 'purple',
@@ -969,7 +976,8 @@ function EventRow({
   titleOf: (id: string) => string;
 }): JSX.Element {
   const open = useOpenNode();
-  const detail = eventDetail(event, titleOf);
+  const rowOf = useRowOf();
+  const detail = eventDetail(event, titleOf, rowOf);
   return (
     <li
       className="cr-lens-log-row"

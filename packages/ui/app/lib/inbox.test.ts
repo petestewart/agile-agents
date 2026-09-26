@@ -28,9 +28,12 @@ import {
   overlapText,
   overlapTitles,
   parseChoices,
+  plainLine,
   planView,
   proposalOf,
   questionView,
+  replyCommand,
+  replyPreview,
   scopeWords,
   setupSteps,
   statusText,
@@ -693,5 +696,59 @@ describe("T416: ⌘K's Needs me rows", () => {
 
   test('a blocked agent is filed with the questions: a reply unblocks it', () => {
     expect(filterOf(item({ kind: 'blocked', id: NODE }))).toBe('questions');
+  });
+});
+
+describe('T436: a reply’s preview and its ⌘K row', () => {
+  test('the first line with words of the agent’s last line, as plain words', () => {
+    const thread = [
+      { kind: 'line', by: 'agent:s1', body: 'An older reply' },
+      { kind: 'line', by: 'human', body: 'Which repos does checkout touch?' },
+      { kind: 'event', by: 'daemon', body: 'Agent finished' },
+      {
+        kind: 'line',
+        by: 'agent:s2',
+        body: '\n---\n## **Checkout** touches `web-app` and [api-server](http://x).\n\nMore.',
+      },
+    ];
+    expect(replyPreview(thread)).toBe('Checkout touches web-app and api-server.');
+  });
+
+  test('the Director’s own line is its reply', () => {
+    expect(
+      replyPreview([
+        { kind: 'line', by: 'human', body: 'Anything stuck?' },
+        { kind: 'line', by: 'director', body: 'Shop has two nodes waiting on you.' },
+      ]),
+    ).toBe('Shop has two nodes waiting on you.');
+  });
+
+  test('no reply in the thread: the last progress line; neither: nothing', () => {
+    const thread = [{ kind: 'line', by: 'human', body: 'q' }];
+    expect(replyPreview(thread, 'Read the schema; drafting the answer')).toBe(
+      'Read the schema; drafting the answer',
+    );
+    expect(replyPreview(thread)).toBeUndefined();
+    expect(replyPreview([], '   ')).toBeUndefined();
+  });
+
+  test('a long line is clipped', () => {
+    const long = replyPreview([{ kind: 'line', by: 'agent:s', body: 'word '.repeat(80) }]);
+    expect(long?.length).toBe(160);
+    expect(long?.endsWith('…')).toBe(true);
+  });
+
+  test('Markdown marks go, words stay', () => {
+    expect(plainLine('> - **bold** and _em_, snake_case_name')).toBe(
+      '- bold and em, snake_case_name',
+    );
+    expect(plainLine('1. step one')).toBe('step one');
+    expect(plainLine('a * b * c')).toBe('a * b * c');
+  });
+
+  test('⌘K reads an unread reply as what you would do', () => {
+    expect(replyCommand('Which repos does checkout touch?')).toBe(
+      'Read reply: Which repos does checkout touch?',
+    );
   });
 });
