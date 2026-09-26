@@ -364,6 +364,9 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
       ...(streamId !== undefined ? { AGILE_STREAM: streamId } : {}),
       // Headless git: a `commit` without -m would open core.editor and hang.
       GIT_EDITOR: 'true',
+      // T345: the hook checks `cd <dir>` from the cwd; an inherited CDPATH
+      // would send it elsewhere. Empty searches only the cwd (bash, dash, zsh).
+      CDPATH: '',
       ...gitEnv,
       ...(opts.socketPath ? { AGILE_SOCKET_PATH: opts.socketPath } : {}),
       ...(provider.id === 'pi' ? { [PI_GATE_ENV_VAR]: '1' } : {}),
