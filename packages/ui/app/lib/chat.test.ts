@@ -147,6 +147,12 @@ describe('chat rows', () => {
     expect(systemLine('landed stream/abc into main (1234567)').icon).toBe('git-merge');
     expect(systemLine('could not start the agent: no vendor').icon).toBe('alert-triangle');
     expect(systemLine('something else').icon).toBe('info');
+    // T385: an edited goal.
+    expect(systemLine('goal changed: Import CSV and TSV')).toEqual({
+      icon: 'pencil',
+      text: 'Goal changed: Import CSV and TSV',
+      tone: 'muted',
+    });
   });
 });
 

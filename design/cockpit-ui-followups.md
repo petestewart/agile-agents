@@ -60,8 +60,6 @@ deferred, or need a decision. Each names where it lives. Ticket them in
 ## Not built (ideas for a next UX pass)
 
 - Browser notifications when something new needs you (opt-in).
-- Inline title/goal editing on a node's header (the route exists:
-  `POST /api/streams/:id/update`).
 - A project overview on the root page (children by status, repos, recent
   activity) instead of the root node's chat.
 - Keyboard: `j`/`k` in the tree beyond the rail's arrow keys; `g i`-style

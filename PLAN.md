@@ -2122,6 +2122,15 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 - **Validation Steps:** `bun test packages/ui`; the settings, rail, menu and node-page e2e (T222 now checks the disabled option).
 - **Notes:** Branch T384-p2-polish. `Segmented` items take `disabled` and `title`; `headerActions` takes `anyBusy`.
 
+### Ticket: T385 Rename and re-goal a node from its page
+- **Priority:** P2
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** From the follow-ups' "not built": a node's title and goal could only be changed through the rail's Rename… (title only); a changed goal never reached a running agent.
+- **Acceptance Criteria:** A click on the page's title edits it in place (Enter or leaving saves, Esc cancels; not on a project root); the goal card's Edit changes the goal; `POST /api/streams/:id/update` adds a "goal changed: …" thread line when the goal changes, which the chat shows as "Goal changed: …".
+- **Validation Steps:** `bun test packages/ui`; control-room e2e "a click on the title renames the node; Edit on the goal…"; the whole control-room e2e (69/0) and the walkthrough.
+- **Notes:** Branch T385-edit-title-goal.
+
 ### Ticket: T369 Phase 15 QA
 - **Priority:** P0
 - **Status:** Done

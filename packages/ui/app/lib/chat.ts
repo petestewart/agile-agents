@@ -202,6 +202,9 @@ export function systemLine(body: string): SystemLine {
   if (/^session ended: its turn finished$/.test(body)) {
     return { icon: 'check', text: 'Turn finished', tone: 'muted' };
   }
+  // T385: you edited the goal on the page.
+  const goal = /^goal changed: (.+)$/s.exec(body);
+  if (goal) return { icon: 'pencil', text: `Goal changed: ${goal[1]}`, tone: 'muted' };
   return { icon: systemIcon(body), text: body, tone: systemTone(body) };
 }
 

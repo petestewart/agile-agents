@@ -35,6 +35,7 @@ import {
   sayOnStream,
   stopSessions,
   unarchiveStream,
+  updateStream,
   waitOnStream,
 } from '../lib/api';
 import {
@@ -180,18 +181,103 @@ function PageSkeleton(): JSX.Element {
   );
 }
 
-/** The node's goal, at the head of its conversation (long goals fold). */
-function GoalCard({ goal }: { goal: string }): JSX.Element {
+/**
+ * The node's goal, at the head of its conversation (long goals fold).
+ * T385: Edit changes it in place; the agent reads the change on its thread.
+ */
+function GoalCard({
+  goal,
+  onSave,
+}: {
+  goal: string;
+  onSave?: (goal: string) => Promise<void>;
+}): JSX.Element {
   const [open, setOpen] = useState(false);
+  const [draft, setDraft] = useState<string | undefined>(undefined);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | undefined>(undefined);
   const long = goal.split('\n').length > 8 || goal.length > 700;
+  const editing = draft !== undefined;
+  const save = (): void => {
+    const next = (draft ?? '').trim();
+    if (!onSave || busy) return;
+    if (next === '' || next === goal.trim()) {
+      setDraft(undefined);
+      return;
+    }
+    setBusy(true);
+    setError(undefined);
+    onSave(next)
+      .then(() => setDraft(undefined))
+      .catch((err: unknown) => setError(err instanceof Error ? err.message : String(err)))
+      .finally(() => setBusy(false));
+  };
   return (
-    <div className="cr-goal-card" data-folded={long && !open ? 'true' : undefined}>
+    <div
+      className="cr-goal-card"
+      data-testid="goal-card"
+      data-folded={long && !open && !editing ? 'true' : undefined}
+      data-editing={editing ? 'true' : undefined}
+    >
       <div className="cr-goal-label">
         <Icon name="scroll-text" size={13} />
         Goal
+        {onSave && !editing && (
+          <button
+            type="button"
+            className="cr-goal-edit"
+            data-testid="goal-edit"
+            title="Edit the goal"
+            onClick={() => setDraft(goal)}
+          >
+            <Icon name="pencil" size={12} />
+            Edit
+          </button>
+        )}
       </div>
-      <Markdown className="cr-goal" text={goal} />
-      {long && (
+      {editing ? (
+        <form
+          className="cr-goal-form"
+          onSubmit={(e) => {
+            e.preventDefault();
+            save();
+          }}
+        >
+          <textarea
+            className="cr-goal-input"
+            data-testid="goal-input"
+            aria-label="Goal"
+            value={draft}
+            rows={Math.min(12, Math.max(3, draft.split('\n').length + 1))}
+            // biome-ignore lint/a11y/noAutofocus: the user just asked to edit it.
+            autoFocus
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Escape') {
+                e.stopPropagation();
+                setDraft(undefined);
+                setError(undefined);
+              } else if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+                e.preventDefault();
+                save();
+              }
+            }}
+          />
+          {error && <p className="cr-field-error">{error}</p>}
+          <div className="cr-goal-actions">
+            <span className="cr-goal-hint">The agent reads the new goal on its next turn.</span>
+            <Button size="sm" variant="ghost" onClick={() => setDraft(undefined)}>
+              Cancel
+            </Button>
+            <Button size="sm" variant="primary" type="submit" busy={busy} data-testid="goal-save">
+              Save goal
+            </Button>
+          </div>
+        </form>
+      ) : (
+        <Markdown className="cr-goal" text={goal} />
+      )}
+      {long && !editing && (
         <button
           type="button"
           className="cr-fold"
@@ -872,7 +958,18 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
         resetKey={stream.id}
         label="Conversation"
       >
-        <GoalCard goal={stream.goal} />
+        <GoalCard
+          goal={stream.goal}
+          {...(open
+            ? {
+                onSave: async (goal: string) => {
+                  await updateStream(stream.id, { goal });
+                  load();
+                  refresh();
+                },
+              }
+            : {})}
+        />
         {page.thread_total > page.thread.length && (
           <p className="cr-chat-older">
             Showing the newest {page.thread.length} of {page.thread_total} lines.
@@ -1007,6 +1104,15 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
           detailsOpen={detailsOpen}
           onToggleDetails={() => setDetailsOpen(!detailsOpen)}
           menu={menu}
+          {...(open && role !== 'project'
+            ? {
+                onRename: async (title: string) => {
+                  await updateStream(stream.id, { title });
+                  load();
+                  refresh();
+                },
+              }
+            : {})}
         >
           {actionError && (
             <div className="cr-node-error" role="alert" data-testid="stream-error">
