@@ -19,17 +19,10 @@ deferred, or need a decision. Each names where it lives. Ticket them in
 - Inbox items carry the call, rule, name and scope only inside `context`
   text (`gateText`, `ruleItem` in `packages/daemon/src/inbox/service.ts`); the
   cards parse it. Add structured fields to `InboxItem` (`.strict()`).
-- A decision card stays disabled up to ~10 s after its action succeeds,
-  waiting for the next frame; remove it optimistically.
-- The header shows Stop while the live agent is idle waiting on your answer;
-  consider Stop as a menu item in that state.
-- `Popover` stays open when Tab leaves it; the tree legend's position doesn't
-  follow a window resize. (`components/ui.tsx`, `components/StreamTree.tsx`)
-- Pull request delivery is offered for a local-only repo and refused by the
-  daemon; disable it in the browser with the reason.
-  (`components/SettingsRepos.tsx`)
-- `lib/inbox.ts` `STOCK_TEXT` rewrote daemon card text the daemon now sends
-  itself (T371): dead code.
+- A decision card stays dimmed until the frame that drops it; the card's
+  action refreshes the frame at once, so this is only seen when the daemon is
+  slow to drop the item. Removing it optimistically would need a way back
+  when it doesn't go.
 - Model names read two ways: the composer chip and the node header say
   "Claude Opus 5.5 · low" (`sessionLabel`), while the details panel's session
   rows and Settings' "starts with" chips say `claude/claude-opus-5-5 · low`.
@@ -61,9 +54,6 @@ deferred, or need a decision. Each names where it lives. Ticket them in
 - RPC `stream.archive` archives one node without stopping its sessions; the
   HTTP route archives the subtree and stops them. CLI `test-support.ts` isn't
   wired to `onTreeChanged`.
-- Dead code/styles: `groupInbox` (`lib/streams.ts`) and its test;
-  `.cr-modal-card`, `.cr-modal-actions`, `.cr-repo-choices`,
-  `.cr-rules-screen`, `.cr-gate-row .cr-actions` in `styles.css`.
 - `git@github.com:` remotes show "GitHub · HTTPS" in the cloud container
   because its git config rewrites them to https (environment, not code).
 

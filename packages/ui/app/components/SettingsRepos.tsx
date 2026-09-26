@@ -29,9 +29,18 @@ import {
 type RepoPatch = Parameters<typeof saveRepoSettings>[1];
 
 function deliveryHint(repo: RepoRow): string {
-  return repo.delivery === 'pr'
-    ? 'Merge opens a pull request; the agent sees it through.'
-    : `Merge commits into ${repo.main_branch} on this machine.`;
+  if (repo.delivery === 'pr') return 'Merge opens a pull request; the agent sees it through.';
+  const direct = `Merge commits into ${repo.main_branch} on this machine.`;
+  const why = prRefusal(repo);
+  return why === undefined ? direct : `${direct} ${why}`;
+}
+
+/** T384: the daemon refuses pull requests without a GitHub remote; say so before the click. */
+function prRefusal(repo: RepoRow): string | undefined {
+  if (repo.delivery === 'pr' || repo.remote?.kind === 'github') return undefined;
+  return repo.remote === undefined
+    ? 'Pull requests need a GitHub remote; this repo has none.'
+    : 'Pull requests need a GitHub remote; this repo’s is elsewhere.';
 }
 
 /** One of a repo's settings: a small label, the control, a line on what it means. */
@@ -204,7 +213,13 @@ function RepoItem({
               onChange={(next) => next !== repo.delivery && save({ delivery: next })}
               items={[
                 { id: 'direct', label: 'Direct' },
-                { id: 'pr', label: 'Pull request' },
+                {
+                  id: 'pr',
+                  label: 'Pull request',
+                  ...(prRefusal(repo) !== undefined
+                    ? { disabled: true, title: prRefusal(repo) }
+                    : {}),
+                },
               ]}
             />
             {repo.delivery === 'pr' ? (

@@ -326,7 +326,15 @@ export function Segmented<T extends string>({
   label,
   testid,
 }: {
-  items: ReadonlyArray<{ id: T; label: ReactNode; count?: number; testid?: string }>;
+  items: ReadonlyArray<{
+    id: T;
+    label: ReactNode;
+    count?: number;
+    testid?: string;
+    /** T384: an option that can't be picked here; `title` says why. */
+    disabled?: boolean;
+    title?: string;
+  }>;
   value: T;
   onChange: (id: T) => void;
   label: string;
@@ -343,6 +351,8 @@ export function Segmented<T extends string>({
           aria-checked={value === item.id}
           data-value={item.id}
           data-testid={item.testid}
+          disabled={item.disabled}
+          title={item.title}
           onClick={() => onChange(item.id)}
         >
           {item.label}
@@ -355,8 +365,16 @@ export function Segmented<T extends string>({
 
 // ---------------------------------------------------------------- popover and menu
 
-/** Closes on Escape and on a mousedown outside `ref`. */
-function useDismiss(open: boolean, ref: React.RefObject<HTMLElement>, onDismiss: () => void): void {
+/**
+ * Closes on Escape and on a mousedown outside `ref`; (T384) `onLeave` runs
+ * when Tab takes focus out of `ref`, without pulling focus back.
+ */
+function useDismiss(
+  open: boolean,
+  ref: React.RefObject<HTMLElement>,
+  onDismiss: () => void,
+  onLeave?: () => void,
+): void {
   useEffect(() => {
     if (!open) return;
     const onDown = (event: MouseEvent): void => {
@@ -366,6 +384,11 @@ function useDismiss(open: boolean, ref: React.RefObject<HTMLElement>, onDismiss:
       if (event.key === 'Escape') {
         event.stopPropagation();
         onDismiss();
+      } else if (event.key === 'Tab' && onLeave && ref.current?.contains(event.target as Node)) {
+        // Where focus lands is known only after the browser moves it.
+        setTimeout(() => {
+          if (ref.current && !ref.current.contains(document.activeElement)) onLeave();
+        }, 0);
       }
     };
     document.addEventListener('mousedown', onDown);
@@ -374,7 +397,7 @@ function useDismiss(open: boolean, ref: React.RefObject<HTMLElement>, onDismiss:
       document.removeEventListener('mousedown', onDown);
       document.removeEventListener('keydown', onKey, true);
     };
-  }, [open, ref, onDismiss]);
+  }, [open, ref, onDismiss, onLeave]);
 }
 
 export interface PopoverProps {
@@ -411,7 +434,8 @@ export function Popover({
     setOpen(false);
     triggerRef.current?.focus();
   }, []);
-  useDismiss(open, wrap, close);
+  const leave = useCallback(() => setOpen(false), []);
+  useDismiss(open, wrap, close, leave);
   return (
     <span className="cr-pop-wrap" ref={wrap}>
       {trigger({

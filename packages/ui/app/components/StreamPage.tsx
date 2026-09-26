@@ -429,6 +429,7 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
     open,
     liveAgent: liveAgent !== undefined,
     anyLive: live.length > 0,
+    anyBusy: live.some((s) => s.status === 'starting' || s.status === 'running'),
     canStart: !waitingForPlan,
     startIsNext: !hasRun || row?.stopped === true,
     mergeable,

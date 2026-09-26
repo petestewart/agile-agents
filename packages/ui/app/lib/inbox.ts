@@ -435,17 +435,12 @@ export function planView(item: InboxItem): PlanView | undefined {
   return { node: m[2], revised: m[1] !== 'the plan', owners, contracts };
 }
 
-/** The daemon's stock lines for a stopped agent, in the UI's words (a node, not a stream). */
-const STOCK_TEXT: Record<string, string> = {
-  'worker finished — merge or close the stream':
-    'The agent finished. Look over the changes, then merge — or close the node if you won’t.',
-  blocked: 'The agent is stuck and needs a hand. Open the node to see where it stopped.',
-};
-
-/** A `done` or `blocked` card's text: the agent's last progress line, or the stock line in words. */
+/**
+ * A `done` or `blocked` card's text: the agent's last progress line, or the
+ * daemon's own line for it (in words since T371).
+ */
 export function statusText(item: InboxItem): string {
-  const text = fullText(item);
-  return STOCK_TEXT[text] ?? text;
+  return fullText(item);
 }
 
 /** The daemon's line for a finished agent that left none (`DONE_TEXT`): it talks about merging. */
