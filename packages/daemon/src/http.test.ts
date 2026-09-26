@@ -662,6 +662,40 @@ describe('T160 cockpit routes', () => {
     });
   });
 
+  test('T365: POST /api/streams/:id/update renames as human; strict body; cross-origin 403', async () => {
+    const update = (id: string, body: unknown, headers: Record<string, string> = {}) =>
+      fetch(url(`/api/streams/${id}/update`), {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', ...headers },
+        body: JSON.stringify(body),
+      });
+    const node = await streams.create('human', { title: 'old name', goal: 'the goal' });
+    expect(
+      (await update(node.id, { title: 'new' }, { origin: 'http://evil.example' })).status,
+    ).toBe(403);
+    // Only title and goal: no agent fields, no parent, no principal, and not nothing.
+    expect((await update(node.id, { title: 'x', agent: { status: 'done' } })).status).toBe(400);
+    expect((await update(node.id, { parent: node.id })).status).toBe(400);
+    expect((await update(node.id, {})).status).toBe(400);
+    expect((await update(node.id, { title: '   ' })).status).toBe(400);
+    expect((await update('01ARZ3NDEKTSV4RRFFQ69G5FAV', { title: 'x' })).status).toBe(404);
+
+    const res = await update(node.id, { title: '  Checkout flow  ' });
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { title: string }).title).toBe('Checkout flow');
+    expect(streams.get(node.id)).toMatchObject({ title: 'Checkout flow', goal: 'the goal' });
+    expect(
+      store
+        .listEvents()
+        .filter((e) => e.kind === 'stream_updated')
+        .at(-1)?.data,
+    ).toMatchObject({ principal: 'human' });
+    await update(node.id, { goal: 'a sharper goal' });
+    expect(streams.get(node.id)).toMatchObject({ title: 'Checkout flow', goal: 'a sharper goal' });
+    const frame = (await (await fetch(url('/api/cockpit'))).json()) as CockpitFrame;
+    expect(frame.streams.find((s) => s.id === node.id)?.title).toBe('Checkout flow');
+  });
+
   test('T361: POST /api/streams/:id/archive and /unarchive delete and restore a subtree as human', async () => {
     const post = (path: string, headers: Record<string, string> = {}) =>
       fetch(url(path), { method: 'POST', headers });

@@ -713,3 +713,18 @@ export const StreamMoveRequestSchema = z
   .object({ parent: z.union([UlidSchema, ProjectIdSchema]) })
   .strict();
 export type StreamMoveRequest = z.infer<typeof StreamMoveRequestSchema>;
+
+/**
+ * T365: `POST /api/streams/:id/update` — the rail's Rename (and the goal):
+ * the title and goal half of `stream.update`'s human patch. At least one.
+ */
+export const StreamUpdateRequestSchema = z
+  .object({
+    title: z.string().trim().min(1).optional(),
+    goal: z.string().trim().min(1).optional(),
+  })
+  .strict()
+  .refine((input) => input.title !== undefined || input.goal !== undefined, {
+    message: 'send a title or a goal',
+  });
+export type StreamUpdateRequest = z.infer<typeof StreamUpdateRequestSchema>;
