@@ -170,6 +170,8 @@ describe('the classifier step (ship items)', () => {
 
     const held = await landing.land(stream.id);
     expect(held.status).toBe('refused');
+    // T347 (D36 D9): a ship-check hold is marked, so the cockpit styles it as news.
+    expect(held.status === 'refused' && held.held).toBe(true);
     expect(streams.get(stream.id).delivery_state?.status).toBe('held');
     const event = emitted.find((e) => e.type === 'ship_findings');
     expect(event?.routing).toEqual([{ node: stream.id, because: 'self' }]);

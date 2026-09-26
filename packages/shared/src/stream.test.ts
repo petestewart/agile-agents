@@ -167,6 +167,13 @@ describe('ThreadEntrySchema', () => {
     }
   });
 
+  test('T347: agent_only is optional and only `true`; a line written before it still loads', () => {
+    const line = { ts: 'now', by: 'daemon', kind: 'event', body: 'read it by id' };
+    expect(validateThreadEntry(line).agent_only).toBeUndefined();
+    expect(validateThreadEntry({ ...line, agent_only: true }).agent_only).toBe(true);
+    expect(() => validateThreadEntry({ ...line, agent_only: false })).toThrow();
+  });
+
   test('rejects a malformed author', () => {
     expect(() =>
       validateThreadEntry({ ts: 'now', by: 'agent:eng-1', kind: 'line', body: 'hi' }),

@@ -5,7 +5,7 @@
  * covers them.
  */
 
-import type { InboxItem, NodeRole, SessionRef, Stream } from '@agile-agents/shared';
+import type { InboxItem, NodeRole, RoutedEvent, SessionRef, Stream } from '@agile-agents/shared';
 import type {
   CockpitProjectRow,
   CockpitRepoRow,
@@ -215,6 +215,15 @@ export function activityDelivery(
   return `${entry.status}${role !== undefined ? ` to the ${role} session` : ''}${
     entry.digest !== undefined ? ' in a digest' : ''
   }`;
+}
+
+/**
+ * T347 (D36 D5): an event's type in words. A direct merge is also a
+ * `pr_merged` event (the routing type), but it had no PR: it reads "merged".
+ */
+export function eventLabel(event: Pick<RoutedEvent, 'type' | 'payload'>): string {
+  if (event.type === 'pr_merged' && event.payload.pr === undefined) return 'merged';
+  return event.type.replace(/_/g, ' ');
 }
 
 /** T341: an event time as "YYYY-MM-DD HH:MM" in the viewer's local time; unparseable input as given. */

@@ -145,15 +145,18 @@ function Node({
         <span className="cr-role" data-testid="role-icon" aria-label={node.row.role}>
           {ROLE_ICON[node.row.role]}
         </span>
-        <span className="title">{node.row.title}</span>
+        {/* T347 (D36 D11): the plan badge sits on its own line, so the title keeps the width. */}
+        <span className="cr-tree-label">
+          <span className="title">{node.row.title}</span>
+          {node.row.waiting_for_plan && (
+            <span className="cr-waiting" data-testid="waiting-for-plan">
+              waiting for the plan
+            </span>
+          )}
+        </span>
         {node.row.overlap && (
           <span className="cr-overlap" data-testid="overlap-mark" title="overlapping changes">
             ⚠
-          </span>
-        )}
-        {node.row.waiting_for_plan && (
-          <span className="cr-waiting" data-testid="waiting-for-plan">
-            waiting for the plan
           </span>
         )}
         {node.row.visibility_advisory && (

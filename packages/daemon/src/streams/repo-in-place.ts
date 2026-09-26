@@ -254,6 +254,8 @@ export class RepoInPlaceService {
       kind: 'event',
       body: `part of "${node.title}": its thread so far (${total} entries) is the context; read it by id`,
       ref: node.id,
+      // T347 (D36 D12): for the part's agent, not the operator's thread view.
+      agent_only: true,
     });
     return part;
   }

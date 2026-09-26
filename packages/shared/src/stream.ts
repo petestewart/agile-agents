@@ -156,6 +156,12 @@ export const ThreadEntrySchema = z
     body: z.string().min(1),
     /** Pointer to the detail: a file path, url, session id, rule id. */
     ref: z.string().min(1).optional(),
+    /**
+     * T347 (D36 D12): a daemon line written for the agent (its brief and
+     * `read_stream` still carry it); the cockpit's thread view hides it.
+     * Absent on every line written before it, which all show.
+     */
+    agent_only: z.literal(true).optional(),
   })
   .strict()
   .superRefine((entry, ctx) => {

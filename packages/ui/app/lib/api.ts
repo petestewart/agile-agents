@@ -152,7 +152,7 @@ export function decideRule(id: string, decision: 'accept' | 'retire'): Promise<u
   return post(`/api/rules/${encodeURIComponent(id)}/${decision}`);
 }
 
-/** A `done` card's Land button, and the stream page's (§8.2). A refusal rejects with the daemon's reason. */
+/** A `done` card's Merge button, and the stream page's (§8.2). A refusal rejects with the daemon's reason. */
 export function landStream(id: string): Promise<LandOutcome> {
   return post(`/api/streams/${encodeURIComponent(id)}/land`) as Promise<LandOutcome>;
 }

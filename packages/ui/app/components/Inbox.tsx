@@ -9,13 +9,13 @@
  * text, beside the thread it came from).
  *
  *  - `question`    → free text, delivered verbatim to the asking session
- *  - `gate`        → allow/deny (a `land` gate reads land/hold), with the
+ *  - `gate`        → allow/deny (a `land` gate reads merge/hold), with the
  *                    typed reason as the note; the text alone is a note
  *  - `rule_accept` → accept / retire
  *  - `rule_batch`  → opens the rules screen filtered to that seed import (T163)
  *  - `plan_approve` → approve a coordinator's draft plan (T281)
  *  - `proposal`    → apply / dismiss a coordinator's change held at Advise (T282)
- *  - `done`        → land
+ *  - `done`        → merge (T347, D36 D7: the Delivery panel's word)
  *  - `blocked`     → shown, decided on the stream page
  */
 
@@ -42,7 +42,7 @@ const KIND_LABEL: Record<InboxItem['kind'], string> = {
   plan_approve: 'plan to approve',
   proposal: 'coordinator proposal',
   blocked: 'blocked',
-  done: 'ready to land',
+  done: 'ready to merge',
 };
 
 function waitingFor(iso: string): string {
@@ -169,7 +169,7 @@ export function Card({
               disabled={busy}
               onClick={() => act(() => decideGate(item.id, 'approve', text || undefined))}
             >
-              {land ? 'Land' : 'Allow'}
+              {land ? 'Merge' : 'Allow'}
             </button>
             <button
               type="button"
@@ -285,7 +285,7 @@ export function Card({
             disabled={busy}
             onClick={() => act(() => landStream(item.id))}
           >
-            Land
+            Merge
           </button>
         </div>
       )}

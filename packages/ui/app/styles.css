@@ -368,6 +368,12 @@ body {
 .cr-tree-row[data-drop-target="true"] {
   outline: 1px dashed var(--accent);
 }
+/* T347: the title, with the "waiting for the plan" badge on a line of its own under it. */
+.cr-tree-label {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
 .cr-tree-row .title {
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1107,9 +1113,8 @@ body {
   margin-left: 6px;
 }
 
-/* T336: a part waiting for its coordinator's plan. */
+/* T336: a part waiting for its coordinator's plan (T347: under its title). */
 .cr-waiting {
   color: var(--text-dim);
   font-size: 11px;
-  margin-left: 6px;
 }

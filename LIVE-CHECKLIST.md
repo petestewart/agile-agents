@@ -75,7 +75,7 @@ The cockpit is `http://127.0.0.1:4600/`.
 |---|---|
 | Left rail | Project switcher (**All projects**, Shop, Blog), **New project**, the tree with a role icon per node and a ⚠ mark on overlapping nodes, a filter |
 | Top bar | Quick capture (one line becomes a node), **New stream (n)**, and the views below |
-| **Needs me** | The inbox, grouped by node: questions (answer inline), gates (Approve/Deny), knowledge proposals (Accept/Retire), plans (**Approve plan**), coordinator and Director proposals (**Apply**/**Dismiss**), finished work (**Land**) |
+| **Needs me** | The inbox, grouped by node: questions (answer inline), gates (Approve/Deny), knowledge proposals (Accept/Retire), plans (**Approve plan**), coordinator and Director proposals (**Apply**/**Dismiss**), finished work (**Merge**) |
 | **Repos** | Per repo: its delivery mode, the live work nodes on it across projects (ancestors greyed), overlaps, its norms, recent repo events |
 | **Running** | Nodes with a live agent |
 | **Dependencies** | Every "waits on" link, across projects |
@@ -83,7 +83,7 @@ The cockpit is `http://127.0.0.1:4600/`.
 | **Director** | The Director's thread and composer, its **Drafts** (Create/Dismiss), its activity |
 | **Events** | Every routed event, newest first: what happened, to which node, and who it was routed to and why |
 | **Settings** | Who decides, the TypeSafe API key, Trackers (Jira, Linear), session defaults, repos (add, delivery, visibility) |
-| A node's page | Title, role, "Needs you", sessions with **Start/Restart**, **Review**, **Stop**, **Close**, **Link** (waits on), **+ Repo**; the tracker link (**Link**, **Create issue**, **Import children**); **Coordinator autonomy** (and, on a project root, **Director autonomy** and the project's tracker); the **Delivery** panel (**Merge**, Resolve); children's status cards; tabs **Thread**, **Diff**, **Activity**, **Plan**, **Knowledge in scope**, **Docs** |
+| A node's page | Title, role, "Needs you", sessions with **Start/Restart**, **Review**, **Stop**, **Close**, **Waits on…**, **+ Repo**; **Tracker issue…** (**Link**, **Create issue**; then **Unlink**, **Import children**), only when the node's project has a tracker; **Coordinator autonomy** on a coordinating node or a project root (and, on a project root, **Director autonomy** and the project's tracker); the **Delivery** panel (**Merge**, Resolve); children's status cards; tabs **Thread**, **Diff**, **Activity**, **Plan**, **Knowledge in scope**, **Docs** |
 
 ### The CLI
 
@@ -321,9 +321,10 @@ same three levels, set separately.
 
 Shop stays at advise for this run. To change it later:
 `agile project set $SHOP --coordinator-autonomy organise`, or the
-**Coordinator autonomy** picker on the project root's page. On any other node
-the picker (or `agile node set $C --autonomy organise`, and `inherit` to go
-back) overrides the project.
+**Coordinator autonomy** picker on the project root's page. On a coordinating
+node the picker (or `agile node set $C --autonomy organise`, and `inherit` to
+go back) overrides the project. A work node or a conversation has no
+coordinator, so its page has no picker.
 
 ### 3.2 Start a conversation
 
@@ -369,7 +370,8 @@ agile node list --parent $C
       `repo added: agile-test-repo; now coordinating ledger-lite part, agile-test-repo part`
       and `ledger-lite part, agile-test-repo part wait for the plan: …`.
 - [ ] Cockpit: the rail shows Ledger export with the coordinating icon and
-      its two parts under it, each marked `waiting for the plan`. **Running**
+      its two parts under it, each marked `waiting for the plan` on a line
+      under its title (the title is not cut off). **Running**
       lists the coordinator while it works; the parts join it once they start.
 
 ### 3.4 Approve the plan and the contract
@@ -417,8 +419,11 @@ merged, so it **waits on** the other part.
 If the coordinator already proposed this link, press **Apply** on its card in
 **Needs me** instead, and skip to the checks.
 
-- [ ] Open the **ledger-lite part** (under Ledger export in the rail). Press
-      **Link** in the row of buttons under the sessions, pick
+- [ ] Open the **ledger-lite part** (under Ledger export in the rail). Its
+      thread has no `… read it by id` line: that pointer is for its agent
+      only. Its page has no **Tracker issue…** (Shop has no tracker until
+      8.2) and no **Coordinator autonomy** (a work node). Press
+      **Waits on…** in the row of buttons under the sessions, pick
       `agile-test-repo part` in the list that opens, and press **Wait on**.
 - [ ] The page lists `waits on agile-test-repo part` with an **Unlink**
       button.
@@ -430,7 +435,9 @@ If the coordinator already proposed this link, press **Apply** on its card in
 
 - [ ] Open the **agile-test-repo part** and wait until the line under its
       title reads `agent done` (its rail dot also turns amber, "waiting on
-      you"). The **Diff** tab shows what it changed against main.
+      you"). **Needs me** has a `ready to merge` card for it with a **Merge**
+      button (the same word as the Delivery panel). The **Diff** tab shows
+      what it changed against main.
 - [ ] The first delivery is yours. In the **Delivery** panel the line reads
       `Ready: stream/… is N commits ahead of main.` and
       `Ship check rules: …` (or `No diff-stage rules in scope.`). Press
@@ -522,7 +529,7 @@ cd ~
 
 - [ ] The Delivery panel reads
       `Ready: stream/…-walkthrough-notes is 1 commit ahead of main.` Press
-      **Merge**. The panel reads `Landed.`, `Delivery: direct · merged` and
+      **Merge**. The panel reads `Merged.`, `Delivery: direct · merged` and
       `landed stream/…-walkthrough-notes into main (…)`; the rail dot turns
       green.
 - [ ] Check the repo:
@@ -572,16 +579,16 @@ seconds. Wait a minute, then:
 
 ### 5.3 Settle it with "waits on"; sync; merge
 
-- [ ] On Shop note's page press **Link**, pick `Blog note`, press **Wait on**.
+- [ ] On Shop note's page press **Waits on…**, pick `Blog note`, press **Wait on**.
       The page lists `waits on Blog note`, and **Dependencies** shows
       `Shop note waits on Blog note`.
 - [ ] Press **Merge** on Shop note. It is held: the panel shows
       `delivery held: waits on Blog note`, and so does the thread.
-- [ ] Open Blog note and press **Merge**. It reads `Landed.`
+- [ ] Open Blog note and press **Merge**. It reads `Merged.`
 - [ ] Open Shop note again. Its thread now ends with
       `synced main into stream/…-shop-note` and `waits on … satisfied`, and
       the wait reads `waits on Blog note · satisfied`. Press **Merge**: it
-      reads `Landed.` and `landed stream/…-shop-note into main (…)`.
+      reads `Merged.` and `landed stream/…-shop-note into main (…)`.
 - [ ] Check the file:
 
 ```zsh
@@ -593,8 +600,9 @@ cd ~
 
 - [ ] `walkthrough-notes.md` has both lines. `git status --short` prints
       nothing. The ⚠ marks are gone from the rail (merged nodes are no
-      longer live), and **Repos** shows the `main changed` and `pr merged`
-      events under ledger-lite.
+      longer live), and **Repos** shows the `main changed` and `merged`
+      events under ledger-lite (a direct merge reads `merged`; `pr merged` is
+      for a merged PR).
 
 ### 5.4 **[vendor]** Back to the ledger-lite part
 
@@ -607,7 +615,7 @@ changes, is synced at the end of its turn.)
       `synced main into stream/…`.
 - [ ] When the line under its title reads `agent done`, press **Merge**. Its
       wait is satisfied, the ship checks pass, and it lands on ledger-lite's
-      main in one click: `Landed.` The coordinator's **Activity** tab gets a
+      main in one click: `Merged.` The coordinator's **Activity** tab gets a
       second `child delivered` row, and its **Children** cards read done.
 - [ ] Check the repo:
 
@@ -699,9 +707,10 @@ cd ~
 ```
 
 - [ ] The Delivery panel lists `Ship check rules: tests-with-src`. Press
-      **Merge**. It is held: the red line under the panel reads
+      **Merge**. It is held: the line under the panel, in the neutral
+      (news) colour, not error red, reads
       `delivery held by ship check tests-with-src: Every change to a file under src/ comes with a test that exercises it (probability 0.8…)`,
-      and the panel reads `Delivery: direct · held` (the reason is on the red
+      and the panel reads `Delivery: direct · held` (the reason is on that
       line, once; opened later, the Delivery line carries it).
       On a live node the findings go back to the worker to fix; they come to
       you only if the check is unsure or the worker disputes them. (The
@@ -715,7 +724,7 @@ cd ~/Projects/ledger-lite/.worktrees/*-ledger-count && mkdir -p test && printf "
 cd ~
 ```
 
-- [ ] Press **Merge** again. The panel reads `Landed.`,
+- [ ] Press **Merge** again. The panel reads `Merged.`,
       `Delivery: direct · merged` and
       `landed stream/…-ledger-count into main (…)`.
 
@@ -857,9 +866,10 @@ child should be a small task an agent can do in agile-test-repo (for example
 - [ ] Rail → **Shop** → **All streams** → **New stream**: Title
       `Tracker epic`, Goal `Placeholder until linked`, tick **Start later**,
       **Create**.
-- [ ] On its page, type the epic's key in the **Link** field (placeholder
-      `SHOP-11`; **change it** to your epic's key, such as `SHOP-10`) and press
-      the **Link** button beside it.
+- [ ] On its page press **Tracker issue…** (it shows because Shop has a
+      tracker since 8.2), type the epic's key in the **Issue key** field
+      (placeholder `SHOP-11`; **change it** to your epic's key, such as
+      `SHOP-10`) and press the **Link** button beside it.
 - [ ] The page reads `Linked to <key> (jira)` with **Unlink** and
       **Import children**. The goal under the title is now the epic's
       title, then `From jira issue … (https://…/browse/…)` and its
@@ -896,12 +906,12 @@ child should be a small task an agent can do in agile-test-repo (for example
       the open node, Tracker epic). Title `Tracker follow-up`, Goal
       `Note in TRACKER.md how issues are linked.`, tick **Start later**,
       **Create**.
-- [ ] On Tracker follow-up's page, leave the **Link** field empty and press
-      **Create issue**. A new issue is created in the epic's Jira project, as a
+- [ ] On Tracker follow-up's page press **Tracker issue…**, leave the
+      **Issue key** field empty and press **Create issue**. A new issue is created in the epic's Jira project, as a
       child of the epic, from the node's title and goal. The node reads
       `Linked to …`, and its goal is kept. This creates a real issue: delete it
       in Jira afterwards if you don't want it. (On a node with no linked
-      ancestor, type the project key, such as `SHOP`, in the Link field
+      ancestor, type the project key, such as `SHOP`, in the Issue key field
       first.)
 
 ## 9. Day to day: inbox, logs, stop and start, troubleshooting
@@ -910,7 +920,7 @@ child should be a small task an agent can do in agile-test-repo (for example
 
 - [ ] **Needs me** is everything waiting on you, grouped by node, each card
       with its kind (`question`, `decision`, `plan to approve`,
-      `coordinator proposal`, `… proposed`, `ready to land`) and how long it
+      `coordinator proposal`, `… proposed`, `ready to merge`) and how long it
       has waited. A long card has **Show all**; **Open stream** opens its
       node. The badge on **Needs me** counts them.
 - [ ] The rail's dots say who must act: amber waiting on you, blue agent

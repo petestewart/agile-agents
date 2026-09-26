@@ -2018,6 +2018,71 @@ describe('delivery result tone and PR state (Playwright e2e, T338)', () => {
   );
 });
 
+describe('Merge wording and hold tone (Playwright e2e, T347)', () => {
+  browserTest(
+    'the Needs me card for finished work says Merge; a hold reads neutral, a refusal red',
+    async () => {
+      const cockpit = await startStreamCockpit([]);
+      let page: Page | undefined;
+      try {
+        const stream = await cockpit.streams.create('human', {
+          title: 'finished node',
+          goal: 'g',
+          repo: 'demo',
+        });
+        await cockpit.streams.update('daemon', stream.id, {
+          branch: 's-finished',
+          agent: { status: 'done' },
+        });
+        page = await openPage();
+        // The land call itself is the daemon's; these pin how a hold and a refusal read.
+        const outcomes = [
+          {
+            status: 'refused',
+            reason: 'Every change has a test',
+            line: 'delivery held by ship check tests-with-src: Every change has a test',
+            held: true,
+          },
+          {
+            status: 'refused',
+            reason: 'landing denied at the land gate by human',
+            line: 'landing denied at the land gate by human',
+          },
+        ];
+        await page.route(`**/api/streams/${stream.id}/land`, (route) =>
+          route.fulfill({
+            status: 200,
+            contentType: 'application/json',
+            body: JSON.stringify(outcomes.shift()),
+          }),
+        );
+        await page.goto(`${cockpit.base}/`);
+        // D7: "Merge", as on the Delivery panel.
+        const card = `[data-kind="done"][data-id="${stream.id}"]`;
+        await page.locator(`${card} [data-testid="land"]`).waitFor();
+        expect(await page.locator(`${card} [data-testid="land"]`).textContent()).toBe('Merge');
+        expect(await page.locator(`${card} .kind`).textContent()).toContain('ready to merge');
+        expect(await page.locator(card).textContent()).not.toMatch(/\bland\b/i);
+
+        // D9: a ship-check hold is news (neutral), a real refusal stays red.
+        await page.locator(`[data-testid="stream-tree"] [data-stream="${stream.id}"]`).click();
+        await page.locator('[data-testid="stream-land"]').click();
+        const result = page.locator('[data-testid="land-result"]');
+        await result.filter({ hasText: 'held by ship check' }).waitFor();
+        expect(await result.getAttribute('class')).toContain('info');
+        expect(await result.getAttribute('class')).not.toContain('bad');
+        await page.locator('[data-testid="stream-land"]').click();
+        await result.filter({ hasText: 'denied at the land gate' }).waitFor();
+        expect(await result.getAttribute('class')).toContain('bad');
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+});
+
 describe('parents and land conflicts (Playwright e2e, T176)', () => {
   browserTest(
     'attach on a parent starts straight away; a conflicted land shows the files, not "Ready"; Resolve then re-land',
@@ -3110,10 +3175,30 @@ describe('+ Repo in place (Playwright e2e, T205)', () => {
             )
             .waitFor();
         }
+        // T347 (D36 D11): the badge sits under the title, which is not cut off.
+        for (const part of parts) {
+          const row = `[data-testid="stream-tree"] [data-stream="${part.id}"]`;
+          const title = await page.locator(`${row} .title`).boundingBox();
+          const badge = await page.locator(`${row} [data-testid="waiting-for-plan"]`).boundingBox();
+          expect(badge && title ? badge.y >= title.y + title.height - 1 : false).toBe(true);
+          expect(
+            await page.locator(`${row} .title`).evaluate((el) => el.scrollWidth <= el.clientWidth),
+          ).toBe(true);
+        }
         await page.locator(`[data-testid="stream-tree"] [data-stream="${parts[0]?.id}"]`).click();
         await page
           .locator('[data-testid="stream-status"]', { hasText: 'waiting for the plan' })
           .waitFor();
+        // T347 (D36 D12): the split's "read it by id" pointer is for the agent, not this view.
+        await page.locator('[data-testid="thread"]', { hasText: 'waiting for the plan' }).waitFor();
+        expect(await page.locator('[data-testid="thread"]').textContent()).not.toContain(
+          'read it by id',
+        );
+        expect(
+          cockpit.streams
+            .readThread(parts[0]?.id as string, { limit: 50 })
+            .entries.some((e) => e.agent_only === true && e.body.endsWith('read it by id')),
+        ).toBe(true);
       } finally {
         await teardown([page]);
         await cockpit.stop();
@@ -3450,6 +3535,53 @@ describe('node activity (Playwright e2e, T245)', () => {
   );
 });
 
+describe('a direct merge reads "merged" (Playwright e2e, T347)', () => {
+  browserTest(
+    'Activity and Repos call a direct merge "merged" and a PR merge "pr merged"',
+    async () => {
+      const cockpit = await startCockpit();
+      let page: Page | undefined;
+      try {
+        await cockpit.store.putRepos({ api: { path: cockpit.home } });
+        const shop = await cockpit.projects.create({ name: 'Shop' });
+        const node = (title: string) =>
+          cockpit.streams.create('human', { title, goal: 'g', project: shop.id, repo: 'api' });
+        const direct = await node('api: direct change');
+        const viaPr = await node('api: pr change');
+        const emit = (subject: string, payload: Record<string, unknown>) =>
+          routeAndEmit(
+            cockpit.events,
+            { type: 'pr_merged', subject, repo: 'api', payload, by: 'daemon' },
+            cockpit.streams.list(),
+          );
+        const merged = await emit(direct.id, { repo: 'api', sha: 'abc123' });
+        const prMerged = await emit(viaPr.id, { pr: 4, repo: 'api', sha: 'def456' });
+
+        page = await openPage();
+        await page.goto(`${cockpit.base}/`);
+        await page.locator(`[data-testid="stream-tree"] [data-stream="${direct.id}"]`).click();
+        await page.locator('.cr-tabs [data-tab="activity"]').click();
+        const row = `[data-testid="activity"] [data-event="${merged.id}"]`;
+        await waitForText(page, `${row} [data-testid="activity-because"]`, 'self');
+        expect(await page.locator(`${row} [data-testid="activity-type"]`).textContent()).toBe(
+          'merged',
+        );
+
+        await page.locator('[data-view="repos"]').click();
+        const repoEvent = (id: string) =>
+          `[data-testid="repo-view"] [data-repo="api"] [data-event="${id}"]`;
+        await waitForText(page, repoEvent(merged.id), 'merged · api: direct change');
+        expect(await page.locator(repoEvent(merged.id)).textContent()).not.toContain('pr merged');
+        await waitForText(page, repoEvent(prMerged.id), 'pr merged · api: pr change');
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+});
+
 describe('conversation tangents (Playwright e2e, T332)', () => {
   browserTest(
     "Branch off a line makes a seeded tangent; its finished summary reaches the parent's thread",
@@ -3645,8 +3777,16 @@ describe('coordinator autonomy (Playwright e2e, T282)', () => {
           goal: 'g',
           project: shop.id,
         });
+        // T347: the parts have a repo, so the node is coordinating (not a conversation).
+        await cockpit.store.putRepos({ api: { path: cockpit.home } });
         const child = (title: string) =>
-          cockpit.streams.create('human', { title, goal: 'g', project: shop.id, parent: node.id });
+          cockpit.streams.create('human', {
+            title,
+            goal: 'g',
+            project: shop.id,
+            parent: node.id,
+            repo: 'api',
+          });
         const api = await child('api: add salePrice');
         const web = await child('web: show salePrice');
         const out = await cockpit.autonomy.act(node.id, 'coordinator', 'agent:test', {
@@ -3677,6 +3817,16 @@ describe('coordinator autonomy (Playwright e2e, T282)', () => {
           await new Promise((r) => setTimeout(r, 50));
         }
         expect(cockpit.autonomy.levelFor(node.id)).toBe('organise');
+
+        // T347 (D36 D6): a work node has no coordinator, so no picker; the root has one.
+        await page.locator(`[data-testid="stream-tree"] [data-stream="${api.id}"]`).click();
+        await page
+          .locator('[data-testid="stream-title"]', { hasText: 'api: add salePrice' })
+          .waitFor();
+        expect(await page.locator('[data-testid="autonomy"]').count()).toBe(0);
+        await page.locator(`[data-testid="stream-tree"] [data-stream="${shop.root}"]`).click();
+        await page.locator('[data-testid="stream-title"]', { hasText: 'Shop' }).waitFor();
+        await page.locator('[data-testid="autonomy"]').waitFor();
       } finally {
         await teardown([page]);
         await cockpit.stop();
@@ -3706,10 +3856,34 @@ describe('tracker link field (Playwright e2e, T321)', () => {
       });
       let page: Page | undefined;
       try {
-        const node = await cockpit.streams.create('human', { title: 'Sale', goal: 'tbd' });
+        // T347 (D36 D1): the field shows only in a project with a tracker, behind "Tracker issue…".
+        const blog = await cockpit.projects.create({ name: 'Blog' });
+        const plain = await cockpit.streams.create('human', {
+          title: 'Draft',
+          goal: 'tbd',
+          project: blog.id,
+        });
+        const shop = await cockpit.projects.create({ name: 'Shop' });
+        await cockpit.projects.update(shop.id, {
+          tracker: { system: 'linear', push_status: false },
+        });
+        const node = await cockpit.streams.create('human', {
+          title: 'Sale',
+          goal: 'tbd',
+          project: shop.id,
+        });
         page = await openPage();
         await page.goto(`${cockpit.base}/`);
+        await page.locator(`[data-testid="stream-tree"] [data-stream="${plain.id}"]`).click();
+        await page.locator('[data-testid="stream-title"]', { hasText: 'Draft' }).waitFor();
+        await page.locator('[data-testid="link-wait"]', { hasText: 'Waits on…' }).waitFor();
+        expect(await page.locator('[data-testid="tracker-link-open"]').count()).toBe(0);
+        expect(await page.locator('[data-testid="tracker-link-form"]').count()).toBe(0);
+        expect(await page.getByRole('button', { name: 'Link', exact: true }).count()).toBe(0);
         await page.locator(`[data-testid="stream-tree"] [data-stream="${node.id}"]`).click();
+        await page
+          .locator('[data-testid="tracker-link-open"]', { hasText: 'Tracker issue…' })
+          .click();
         await page.locator('[data-testid="tracker-link-input"]').fill('SHOP-11');
         await page.locator('[data-testid="tracker-link-form"] button[type="submit"]').click();
         await page.locator('[data-testid="tracker-link"]').waitFor({ state: 'visible' });
