@@ -87,6 +87,7 @@ import {
   WaitsOnSection,
 } from './NodeDetails';
 import { type Crumb, NodeHeader } from './NodeHeader';
+import { SendUpDialog } from './SendUp';
 import { SessionPicker } from './SessionPicker';
 import {
   Button,
@@ -330,6 +331,8 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
   const [linkChoice, setLinkChoice] = useState('');
   // T332 (D33): "Branch off" — the thread line (0-based, whole thread) and the tangent's question.
   const [branching, setBranching] = useState<number | undefined>(undefined);
+  // T421 (D42): Send to parent's dialog, with the words it starts from.
+  const [sendingUp, setSendingUp] = useState<string | undefined>(undefined);
   const [tangentQuestion, setTangentQuestion] = useState('');
   // Which open question Send answers: an id, 'message' (a plain line), or undefined (the oldest).
   const [answerChoice, setAnswerChoice] = useState<string | undefined>(undefined);
@@ -492,6 +495,11 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
   const rows = cockpit?.streams ?? [];
   const row = rows.find((r) => r.id === stream.id);
   const role = row?.role;
+  // T421 (D42): a conversation can send what it concludes to the node it sits under.
+  const sendUpTo =
+    role === 'conversation' && stream.parent !== undefined
+      ? rows.find((r) => r.id === stream.parent)
+      : undefined;
   const project = cockpit?.projects.find((p) => p.id === stream.project);
   const rootOf = cockpit?.projects.find((p) => p.root === stream.id);
   const children = rows.filter((r) => r.parent === stream.id);
@@ -694,6 +702,15 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
 
   const menu: MenuItem[] = [
     {
+      // T421 (D42): what this conversation concluded, to the node it is about.
+      label: sendUpTo !== undefined ? `Send to ${sendUpTo.title}…` : 'Send to parent…',
+      icon: 'send',
+      testid: 'send-up',
+      title: 'Send a conclusion up: it arrives there as your message, and its agent acts on it',
+      hidden: sendUpTo === undefined,
+      onSelect: () => setSendingUp(lastAgentLine(page.thread) ?? ''),
+    },
+    {
       // T419 (D42): a question about this node, in its own thread.
       label: 'Ask about this…',
       icon: 'message-square',
@@ -804,23 +821,39 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
   ];
 
   // ---------------------------------------------------------------- the chat
-  const renderActions = (entry: StreamPagePayload['thread'][number], i: number) =>
-    canBranch && entry.kind === 'line' && branching !== threadBase + i ? (
-      <button
-        type="button"
-        className="cr-msg-btn"
-        data-testid="branch-off"
-        title="Start a tangent from this line: a new conversation seeded with it"
-        disabled={busy}
-        onClick={() => {
-          setBranching(threadBase + i);
-          setTangentQuestion('');
-        }}
-      >
-        <Icon name="git-fork" size={13} />
-        Branch off
-      </button>
-    ) : null;
+  const renderActions = (entry: StreamPagePayload['thread'][number], i: number) => (
+    <>
+      {canBranch && entry.kind === 'line' && branching !== threadBase + i && (
+        <button
+          type="button"
+          className="cr-msg-btn"
+          data-testid="branch-off"
+          title="Start a tangent from this line: a new conversation seeded with it"
+          disabled={busy}
+          onClick={() => {
+            setBranching(threadBase + i);
+            setTangentQuestion('');
+          }}
+        >
+          <Icon name="git-fork" size={13} />
+          Branch off
+        </button>
+      )}
+      {sendUpTo !== undefined && entry.kind === 'line' && entry.by.startsWith('agent:') && (
+        // T421 (D42): this reply, sent up to the node the conversation is about.
+        <button
+          type="button"
+          className="cr-msg-btn"
+          data-testid="send-up-line"
+          title={`Send this to ${sendUpTo.title}: it arrives there as your message`}
+          onClick={() => setSendingUp(entry.body)}
+        >
+          <Icon name="send" size={13} />
+          Send to {sendUpTo.title}
+        </button>
+      )}
+    </>
+  );
 
   const renderExtra = (entry: StreamPagePayload['thread'][number], i: number) => (
     <>
@@ -1338,6 +1371,25 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
         <div className="cr-node-scrim" onClick={() => setDetailsOpen(false)} />
       )}
 
+      {sendingUp !== undefined && sendUpTo !== undefined && (
+        <SendUpDialog
+          node={stream.id}
+          parentTitle={sendUpTo.title}
+          initial={sendingUp}
+          onClose={() => setSendingUp(undefined)}
+          onSent={(parent) => {
+            setSendingUp(undefined);
+            load();
+            refresh();
+            toast({
+              tone: 'success',
+              title: `Sent to ${sendUpTo.title}`,
+              duration: 5000,
+              action: { label: 'Open it', onClick: () => select(parent, { tab: 'thread' }) },
+            });
+          }}
+        />
+      )}
       {picker && (
         <SessionPicker
           key={picker}
@@ -1507,4 +1559,13 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
       </ConfirmDialog>
     </section>
   );
+}
+
+/** T421: the conversation's last reply, where Send to parent starts. */
+function lastAgentLine(thread: StreamPagePayload['thread']): string | undefined {
+  for (let i = thread.length - 1; i >= 0; i--) {
+    const e = thread[i];
+    if (e !== undefined && e.kind === 'line' && e.by.startsWith('agent:')) return e.body;
+  }
+  return undefined;
 }

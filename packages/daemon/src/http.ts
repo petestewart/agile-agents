@@ -30,10 +30,12 @@ import {
   StreamCreateInputSchema,
   StreamMoveRequestSchema,
   StreamSayInputSchema,
+  StreamSendUpInputSchema,
   StreamUpdateRequestSchema,
   StreamWaitRequestSchema,
   UlidSchema,
   formatZodError,
+  sendUpText,
   validatePolicy,
 } from '@agile-agents/shared';
 import { CONTROL_ROOM_DIST_DIR, FEED_HTML_PATH } from '@agile-agents/ui';
@@ -1245,7 +1247,7 @@ async function handleStreamRoute(
   sameOrigin: () => boolean,
 ): Promise<Response | undefined> {
   const match = url.pathname.match(
-    /^\/api\/streams\/([^/]+)(?:\/(diff|steps|say|attach|resolve|stop|close|mark-landed|pr-check|add-repo|wait|move|update|archive|unarchive))?$/,
+    /^\/api\/streams\/([^/]+)(?:\/(diff|steps|say|send-up|attach|resolve|stop|close|mark-landed|pr-check|add-repo|wait|move|update|archive|unarchive))?$/,
   );
   if (!match) return undefined;
   const action = match[2];
@@ -1351,6 +1353,38 @@ async function handleStreamRoute(
         });
       }
       return jsonResponse(updated);
+    }
+    if (action === 'send-up') {
+      // T421 (D42): a conversation's conclusion goes to the node above it, as your line there.
+      const input = StreamSendUpInputSchema.safeParse(body);
+      if (!input.success) return errorResponse(400, formatZodError('send-up', input.error));
+      const node = feed.streams.get(id);
+      if (node.parent === undefined) {
+        return errorResponse(400, `${node.title} has nothing above it to send to`);
+      }
+      const parent = feed.streams.get(node.parent);
+      const text = sendUpText(node.title, input.data.body);
+      if (feed.attach) {
+        // As if typed into the parent's composer: its agent reads it (or starts on it).
+        const attach = feed.attach;
+        await sayAndAnswer(
+          {
+            say: (streamId, line, opts) => attach.say(streamId, line, opts),
+            ...(feed.questions ? { questions: feed.questions } : {}),
+          },
+          parent.id,
+          text,
+          { start: true },
+        );
+      } else {
+        await feed.streams.appendThread('human', parent.id, { kind: 'line', body: text });
+      }
+      await feed.streams.appendThread('human', node.id, {
+        kind: 'event',
+        body: `sent to ${parent.title}: ${input.data.body.replace(/\s+/g, ' ').slice(0, 200)}`,
+        ref: parent.id,
+      });
+      return jsonResponse({ parent: parent.id }, 201);
     }
     if (action === 'say') {
       const input = StreamSayInputSchema.safeParse(body);

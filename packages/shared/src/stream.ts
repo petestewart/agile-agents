@@ -698,6 +698,27 @@ export const StreamSayInputSchema = z
 export type StreamSayInput = z.infer<typeof StreamSayInputSchema>;
 
 /**
+ * T421 (D42): a conversation's conclusion, sent up to the node it was asked
+ * under (`POST /api/streams/:id/send-up`): your line on the parent's thread,
+ * which its agent reads as it reads its composer.
+ */
+export const StreamSendUpInputSchema = z
+  .object({
+    body: z
+      .string()
+      .trim()
+      .min(1)
+      .max(THREAD_BODY_MAX_CHARS - 400),
+  })
+  .strict();
+export type StreamSendUpInput = z.infer<typeof StreamSendUpInputSchema>;
+
+/** T421: the line the parent gets: which conversation it comes from, then the words sent. */
+export function sendUpText(conversationTitle: string, body: string): string {
+  return `From the conversation “${conversationTitle.slice(0, 200)}”:\n\n${body.trim()}`;
+}
+
+/**
  * T161: the stream page's sessions strip (`POST /api/streams/:id/attach`).
  * Only the two attachable roles (the `lessons` session is the daemon's).
  */

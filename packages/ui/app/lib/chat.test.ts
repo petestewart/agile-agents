@@ -621,3 +621,13 @@ describe('T411: how full the context is', () => {
     expect(contextMeter({ used: 250_000, size: 200_000 }).percent).toBe(100);
   });
 });
+
+describe('T421: a conclusion sent up reads in words', () => {
+  test('"sent to X: …" is a system row with the send icon', () => {
+    expect(systemLine('sent to Add CSV import: Stream it.')).toEqual({
+      icon: 'send',
+      text: 'Sent to Add CSV import: Stream it.',
+      tone: 'muted',
+    });
+  });
+});

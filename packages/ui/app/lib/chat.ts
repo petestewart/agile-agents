@@ -382,6 +382,9 @@ export function systemLine(body: string): SystemLine {
       tone: 'muted',
     };
   }
+  // T421 (D42): a conclusion sent up from this conversation.
+  const sent = /^sent to (.+?): (.*)$/s.exec(body);
+  if (sent) return { icon: 'send', text: `Sent to ${sent[1]}: ${sent[2]}`, tone: 'muted' };
   if (/^session ended: its turn finished$/.test(body)) {
     return { icon: 'check', text: 'Agent finished its turn', tone: 'muted' };
   }
