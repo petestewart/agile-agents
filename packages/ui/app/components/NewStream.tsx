@@ -22,6 +22,7 @@ import {
   getSessionDefaults,
   listRepos,
 } from '../lib/api';
+import { agentLabel, sessionIdText } from '../lib/chat';
 import { resolvedFor } from '../lib/defaults';
 import { useOptionalFeed } from '../lib/feed-context';
 import type { CockpitProjectRow, CockpitRepoRow, CockpitStreamRow } from '../lib/feed-types';
@@ -332,16 +333,16 @@ function NewStreamForm({
     </>
   );
 
-  const modelName = choice
-    ? choice.model.trim() || `${choice.vendor} default model`
-    : resolved
-      ? (resolved.model ?? `${resolved.vendor} default model`)
-      : 'the default model';
-  const modelMeta = choice
-    ? `${choice.vendor} · ${choice.effort} effort`
-    : resolved
-      ? `${resolved.vendor} · ${resolved.effort} effort`
-      : undefined;
+  // T386: the model in words, as the composer and Running say it; the ids on hover.
+  const startsWith = choice
+    ? {
+        vendor: choice.vendor,
+        ...(choice.model.trim() !== '' ? { model: choice.model.trim() } : {}),
+        effort: choice.effort,
+      }
+    : resolved;
+  const modelName = startsWith ? agentLabel(startsWith) : 'the default model';
+  const modelIds = startsWith ? sessionIdText(startsWith) : undefined;
 
   return (
     <Dialog
@@ -495,9 +496,8 @@ function NewStreamForm({
             {start ? (
               <>
                 <Icon name="bot" size={14} />
-                <span>
+                <span title={modelIds}>
                   <b>{modelName}</b>
-                  {modelMeta ? <span className="cr-faint"> · {modelMeta}</span> : null}
                 </span>
                 {session && !choice ? (
                   <button

@@ -40,6 +40,7 @@ import {
 } from '../lib/api';
 import {
   type NodeTab,
+  agentLabel,
   agentName,
   agentStateText,
   answerTarget,
@@ -52,7 +53,6 @@ import {
   oneLine,
   openQuestions,
   sendIntent,
-  sessionLabel,
   vendorLabel,
 } from '../lib/chat';
 import { resolvedFor } from '../lib/defaults';
@@ -493,7 +493,7 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
   const answeringItem = questions.find((q) => q.id === answering);
   const name = agentName(stream.sessions);
   const resolved = defaults ? resolvedFor(defaults, stream.repo, project?.session) : undefined;
-  const startWith = resolved ? sessionLabel(resolved) : undefined;
+  const startWith = resolved ? agentLabel(resolved) : undefined;
   const statusInput: StatusInput = row ?? {
     agent_status: stream.agent.status,
     human_status: stream.human.status,
@@ -933,7 +933,7 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
         title={`Running: ${liveAgent.vendor}/${liveAgent.model}${liveAgent.effort ? ` · ${liveAgent.effort}` : ''}`}
       >
         <span className="cr-model-dot" aria-hidden="true" />
-        {sessionLabel(liveAgent)}
+        {agentLabel(liveAgent)}
       </span>
     ) : startWith && open && !waitingForPlan ? (
       <button

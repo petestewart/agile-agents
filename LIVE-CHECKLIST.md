@@ -772,7 +772,7 @@ cd ~
       `Cents check`, Goal
       `Read ledger-lite and tell me how it stores amounts. Then wait: I may send you a decision about this.`,
       leave **Start the agent now** on (it names the model it will use:
-      `claude-opus-5-5 · claude · low effort` unless Settings says
+      `Claude Opus 5.5 · low` unless Settings says
       otherwise), **Create node**. A session appears in its
       session list (`Claude Opus 5.5 · low · starting`, then `running`), and the
       rail icon is the conversation icon ○.

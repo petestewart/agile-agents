@@ -6,9 +6,6 @@ deferred, or need a decision. Each names where it lives. Ticket them in
 
 ## P1 — wrong or confusing for the user
 
-- **Running shows no agent or model.** `CockpitStreamRow` carries no
-  session fields, so the Running lens can't say which vendor/model/effort a
-  live node runs. Add them in `feed/snapshot.ts` (from the live session).
 - **Events stop at 200.** `/api/events` is capped (`ACTIVITY_MAX`,
   `events/service.ts`); Events' "Show more" ends there and a repo card's
   recent events filter that global list, so a quiet repo's older events can
@@ -23,11 +20,14 @@ deferred, or need a decision. Each names where it lives. Ticket them in
   action refreshes the frame at once, so this is only seen when the daemon is
   slow to drop the item. Removing it optimistically would need a way back
   when it doesn't go.
-- Model names read two ways: the composer chip and the node header say
-  "Claude Opus 5.5 · low" (`sessionLabel`), while the details panel's session
-  rows and Settings' "starts with" chips say `claude/claude-opus-5-5 · low`.
-  Use `sessionLabel` everywhere a person reads it (the e2e suites pin the raw
-  form in `[data-testid="session"]` and `settings-session-*-resolved`).
+- Effort shows for a vendor that ignores it: a Gemini session's "Worker
+  started · Gemini default model · low" and its Settings chip say "low" though
+  the daemon never sends it. Drop effort from the label where the provider
+  has none (`lib/chat.ts` `sessionLabel`, the provider registry knows).
+- Settings → Agents: a repo set to another vendor still shows the global
+  Claude model as its inherited placeholder (`SessionPicker.tsx` `SessionFields`);
+  `resolveSessionDefaults` does take a named model across vendors, so this is
+  the resolution's question first.
 
 ## P3 — cleanup, hardening, decisions
 

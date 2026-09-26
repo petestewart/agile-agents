@@ -10,7 +10,6 @@
  *    Start agent never needs it). Prefilled with what the session would
  *    resolve to (the node's project, else its repo entry, else the home defaults, else the
  *    built-in), so Start with no edits attaches exactly the default.
- *  - `sessionModelText` — the session strip's model, never a bare "default".
  */
 
 import {
@@ -21,7 +20,7 @@ import {
 } from '@agile-agents/shared';
 import { useEffect, useId, useRef, useState } from 'react';
 import { getSessionDefaults } from '../lib/api';
-import { sessionLabel } from '../lib/chat';
+import { agentLabel } from '../lib/chat';
 import { resolvedFor } from '../lib/defaults';
 import { Button, Dialog, Field, Spinner } from './ui';
 
@@ -29,11 +28,6 @@ export interface SessionChoice {
   vendor: string;
   model: string;
   effort: string;
-}
-
-/** A session record's model for display: the provider's own default is named as such. */
-export function sessionModelText(session: { vendor: string; model: string }): string {
-  return session.model === 'default' ? `${session.vendor} default model` : session.model;
 }
 
 export function SessionFields({
@@ -274,11 +268,7 @@ export function SessionPicker({
               testid="picker"
               layout="stack"
             />
-            {resolved && (
-              <p className="cr-picker-default">
-                Default here: {sessionLabel({ ...resolved })} ({resolved.vendor})
-              </p>
-            )}
+            {resolved && <p className="cr-picker-default">Default here: {agentLabel(resolved)}</p>}
           </>
         ) : (
           !error && (
