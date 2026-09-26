@@ -169,6 +169,8 @@ describe('T160 cockpit routes', () => {
       role: 'conversation',
       agent_status: 'question',
       human_status: 'waiting_on_you',
+      // T361: its agent never ran.
+      never_started: true,
     });
     expect(frame.inbox.map((i) => i.stream_path)).toEqual([['root', 'leaf']]);
   });
@@ -649,6 +651,136 @@ describe('T160 cockpit routes', () => {
       by: 'human',
       body: `moved here: c (${c.id}) from a`,
     });
+  });
+
+  test('T361: POST /api/streams/:id/archive and /unarchive delete and restore a subtree as human', async () => {
+    const post = (path: string, headers: Record<string, string> = {}) =>
+      fetch(url(path), { method: 'POST', headers });
+    const shop = await new ProjectService(store, streams).create({ name: 'Shop' });
+    const a = await streams.create('human', { title: 'a', goal: 'g', project: shop.id });
+    const b = await streams.create('human', { title: 'b', goal: 'g', parent: a.id });
+    expect(
+      (await post(`/api/streams/${a.id}/archive`, { origin: 'http://evil.example' })).status,
+    ).toBe(403);
+    const root = await post(`/api/streams/${shop.root}/archive`);
+    expect(root.status).toBe(400);
+    expect(((await root.json()) as { error: string }).error).toContain(
+      "a project root can't be deleted; archive the project instead",
+    );
+
+    const res = await post(`/api/streams/${a.id}/archive`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      node: { id: string };
+      archived: string[];
+      stopped: string[];
+    };
+    expect(body.node.id).toBe(a.id);
+    expect(body.archived).toEqual([a.id, b.id]);
+    expect(body.stopped).toEqual([]);
+    expect(
+      store
+        .listEvents()
+        .filter((e) => e.kind === 'stream_archived')
+        .at(-1)?.data,
+    ).toMatchObject({ principal: 'human', archived: true });
+    let frame = (await (await fetch(url('/api/cockpit'))).json()) as CockpitFrame;
+    expect(frame.streams.map((s) => s.id)).toEqual([shop.root]);
+    // Only what Restore can bring back: `b` comes back with `a`.
+    expect(frame.archived).toEqual([{ id: a.id, title: 'a', project: shop.id, parent: shop.root }]);
+    expect((await post(`/api/streams/${b.id}/unarchive`)).status).toBe(400);
+
+    const back = await post(`/api/streams/${a.id}/unarchive`);
+    expect(back.status).toBe(200);
+    expect(((await back.json()) as { restored: string[] }).restored).toEqual([a.id, b.id]);
+    frame = (await (await fetch(url('/api/cockpit'))).json()) as CockpitFrame;
+    expect(frame.streams.map((s) => s.id).sort()).toEqual([shop.root, a.id, b.id].sort());
+    expect(frame.archived).toBeUndefined();
+    expect((await post(`/api/streams/${a.id}/unarchive`)).status).toBe(400);
+  });
+
+  test('T361: Delete stops every live session in the subtree as a human detach', async () => {
+    const a = await streams.create('human', { title: 'a', goal: 'g' });
+    const b = await streams.create('human', { title: 'b', goal: 'g', parent: a.id });
+    const c = await streams.create('human', { title: 'c', goal: 'g', parent: b.id });
+    const calls: Array<[string, unknown, unknown]> = [];
+    // A stand-in for `AttachService.stop`: `c` has a live session.
+    const attach = {
+      stop: async (id: string, role: unknown, opts: unknown) => {
+        calls.push([id, role, opts]);
+        return id === c.id ? ['S1'] : [];
+      },
+    } as unknown as AttachService;
+    const server = startHttpServer({
+      port: 0,
+      version: '0.0.0-test',
+      stateRoot,
+      startedAt: Date.now(),
+      store,
+      gates: new GateService(store),
+      streams,
+      attach,
+      feedPollIntervalMs: 20,
+    });
+    try {
+      const res = await fetch(`http://127.0.0.1:${server.port}/api/streams/${b.id}/archive`, {
+        method: 'POST',
+      });
+      expect(res.status).toBe(200);
+      expect(((await res.json()) as { stopped: string[] }).stopped).toEqual(['S1']);
+      const expected: Array<[string, unknown, unknown]> = [
+        [b.id, undefined, { detach: true }],
+        [c.id, undefined, { detach: true }],
+      ];
+      expect(calls.sort()).toEqual(expected.sort());
+      expect(streams.get(c.id).archived).toBe(true);
+      expect(streams.get(a.id).archived).toBeUndefined();
+    } finally {
+      await server.stop();
+    }
+  });
+
+  test('T361: POST /api/streams/:id/say passes start through and replies started', async () => {
+    const stream = await streams.create('human', { title: 's', goal: 'g' });
+    const seen: unknown[] = [];
+    const attach = {
+      say: async (id: string, body: string, opts: { start?: boolean }) => {
+        seen.push(opts);
+        return {
+          entry: await streams.appendThread('human', id, { kind: 'line', body }),
+          ...(opts.start ? { prompted: 'S1', started: true } : {}),
+        };
+      },
+    } as unknown as AttachService;
+    const server = startHttpServer({
+      port: 0,
+      version: '0.0.0-test',
+      stateRoot,
+      startedAt: Date.now(),
+      store,
+      gates: new GateService(store),
+      streams,
+      questions,
+      attach,
+      feedPollIntervalMs: 20,
+    });
+    try {
+      const say = (body: unknown) =>
+        fetch(`http://127.0.0.1:${server.port}/api/streams/${stream.id}/say`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+      const started = await say({ body: 'go', start: true });
+      expect(started.status).toBe(201);
+      expect(await started.json()).toMatchObject({ prompted: 'S1', started: true });
+      const plain = await say({ body: 'and again' });
+      expect(((await plain.json()) as { started?: true }).started).toBeUndefined();
+      expect((await say({ body: 'x', start: 'yes' })).status).toBe(400);
+      expect(seen).toEqual([{ start: true }, {}]);
+    } finally {
+      await server.stop();
+    }
   });
 
   test('T169: a say prompted into the asking session answers its open question as human', async () => {

@@ -8,7 +8,7 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { type Stream, ulid } from '@agile-agents/shared';
+import { type Stream, ulid, validateInboxItem } from '@agile-agents/shared';
 import { GateService } from '../gates/service';
 import { runInit } from '../init';
 import { ProjectService } from '../projects/service';
@@ -89,6 +89,52 @@ describe('InboxService.list', () => {
     expect(longItem?.context).not.toContain('TAIL?');
     expect(longItem?.detail).toBe(text.trim());
     expect(items.find((i) => i.id === short.id)?.detail).toBeUndefined();
+  });
+
+  test("T361: a question's choices ride on its card when they fit one", async () => {
+    const q = await questions.raise({
+      stream: child.id,
+      raised_by: '01ARZ3NDEKTSV4RRFFQ69GE001',
+      text: 'comma or semicolon?',
+      options: ['comma', 'semicolon'],
+    });
+    // Over RPC a question may offer anything; a card shows at most six short ones.
+    const many = await questions.raise({
+      stream: child.id,
+      raised_by: '01ARZ3NDEKTSV4RRFFQ69GE001',
+      text: 'which letter?',
+      options: ['a', 'b', 'c', 'd', 'e', 'f', 'g'],
+    });
+    const items = inbox.list();
+    expect(items.find((i) => i.id === q.id)?.options).toEqual(['comma', 'semicolon']);
+    expect(items.find((i) => i.id === many.id)?.options).toBeUndefined();
+    expect(items.every((i) => validateInboxItem(i).id === i.id)).toBe(true);
+  });
+
+  test("T361: a deleted node's question, gate and done item leave the inbox, and come back on restore", async () => {
+    const q = await questions.raise({
+      stream: child.id,
+      raised_by: '01ARZ3NDEKTSV4RRFFQ69GE001',
+      text: 'comma or semicolon?',
+    });
+    const gate = await gates.request('land', {
+      policy: { gates: { land: 'human' }, breaker_signals: [] },
+      stream: child.id,
+      summary: 'merge parser into main',
+    });
+    const other = await streams.create('human', { title: 'writer', goal: 'g', parent: root.id });
+    await streams.update('daemon', other.id, { agent: { status: 'done' } });
+    const ids = () => inbox.list().map((i) => i.id);
+    expect(ids()).toEqual(expect.arrayContaining([q.id, gate.id, other.id]));
+
+    await streams.archiveTree('human', child.id);
+    await streams.archiveTree('human', other.id);
+    expect(ids()).not.toContain(q.id);
+    expect(ids()).not.toContain(gate.id);
+    expect(ids()).not.toContain(other.id);
+
+    await streams.unarchiveTree('human', child.id);
+    expect(ids()).toEqual(expect.arrayContaining([q.id, gate.id]));
   });
 
   test('a pending gate shows; a resolved one does not', async () => {

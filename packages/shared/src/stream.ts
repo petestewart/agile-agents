@@ -375,6 +375,13 @@ export const StreamSchema = z
      */
     archived: z.literal(true).optional(),
     /**
+     * T361: the cockpit's Delete archives a node and its subtree; every node
+     * one delete archived carries that delete's id (a ulid, so it also orders
+     * the Archived list), and Restore brings back exactly those. Written
+     * with `archived` and cleared with it.
+     */
+    archive_id: UlidSchema.optional(),
+    /**
      * T150 (§6.4): the per-stream opt-out from the classifier tier — "a
      * stream working on something the operator does not want leaving the
      * machine turns the tier off; pattern rules and guidance still apply."
@@ -653,6 +660,11 @@ export function liveChildrenOf(nodeId: string, all: readonly Stream[]): Stream[]
 export const StreamSayInputSchema = z
   .object({
     body: z.string().trim().min(1).max(THREAD_BODY_MAX_CHARS),
+    /**
+     * T361: a node with no live agent (never started, or stopped) starts
+     * one, with the session defaults, and the line is its first prompt.
+     */
+    start: z.boolean().optional(),
   })
   .strict();
 export type StreamSayInput = z.infer<typeof StreamSayInputSchema>;

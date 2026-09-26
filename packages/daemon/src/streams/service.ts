@@ -117,11 +117,26 @@ export interface MoveCoordination {
   namedIn(parent: string, child: string): string[];
 }
 
+/** T361: a Delete or Restore the tree doesn't allow (400 over HTTP). */
+export class NodeArchiveError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'NodeArchiveError';
+  }
+}
+
 export interface StreamServiceOptions {
   /** T244: after each written update (the event producers). Awaited; a throw is logged, never a failed update. */
   onUpdated?: (before: Stream, after: Stream) => void | Promise<void>;
   /** T333: consulted by `move`. */
   coordination?: MoveCoordination;
+  /**
+   * T361: after a child is created, moved, closed, archived or restored:
+   * the parents whose derived role may have changed (the attach service
+   * restarts a live agent whose role no longer fits). Awaited; a throw is
+   * logged, never a failed write.
+   */
+  onTreeChanged?: (nodes: readonly string[]) => void | Promise<void>;
 }
 
 export class StreamService {
@@ -220,6 +235,7 @@ export class StreamService {
         ref: created.id,
       });
     }
+    await this.treeChanged([parent]);
     return created;
   }
 
@@ -346,6 +362,7 @@ export class StreamService {
     if (note !== undefined) {
       await this.appendThread(principal, id, { kind: 'line', body: `closed: ${note}` });
     }
+    await this.treeChanged([closed.parent]);
     return closed;
   }
 
@@ -432,6 +449,7 @@ export class StreamService {
       kind: 'event',
       body: `moved from ${old.title} to ${parent.title}`,
     });
+    await this.treeChanged([from, to]);
     return moved;
   }
 
@@ -447,7 +465,122 @@ export class StreamService {
 
   /** Sets the `archived` flag (nothing moves on disk); `list` hides it. Human status is kept. */
   async archive(principal: StreamPrincipal, id: string): Promise<Stream> {
-    return this.update(principal, id, { archived: true }, { kind: 'stream_archived' });
+    const archived = await this.update(
+      principal,
+      id,
+      { archived: true },
+      { kind: 'stream_archived' },
+    );
+    await this.treeChanged([archived.parent]);
+    return archived;
+  }
+
+  /** T361: `id` and every descendant, archived or not, each parent before its children. */
+  subtree(id: string): Stream[] {
+    const children = new Map<string, Stream[]>();
+    for (const s of this.store.listStreams()) {
+      if (s.parent !== undefined) children.set(s.parent, [...(children.get(s.parent) ?? []), s]);
+    }
+    const out = [this.get(id)];
+    const seen = new Set([id]);
+    for (let i = 0; i < out.length; i++) {
+      for (const child of children.get(out[i]?.id ?? '') ?? []) {
+        if (seen.has(child.id)) continue;
+        seen.add(child.id);
+        out.push(child);
+      }
+    }
+    return out;
+  }
+
+  /**
+   * T361: the cockpit's Delete. `stop` runs first on the whole subtree (no
+   * agent works on a hidden node); then the node and every descendant not
+   * archived yet are archived under one `archive_id`, leaves first. D13:
+   * nothing moves on disk, and worktrees and branches stay, so Restore
+   * loses nothing. A project root is refused: its project is archived.
+   * Returns what this delete archived, the node first.
+   */
+  async archiveTree(
+    principal: StreamPrincipal,
+    id: string,
+    stop?: (ids: readonly string[]) => Promise<unknown>,
+  ): Promise<Stream[]> {
+    const node = this.get(id);
+    if (node.parent === undefined) {
+      throw new NodeArchiveError("a project root can't be deleted; archive the project instead");
+    }
+    if (node.archived === true) throw new NodeArchiveError(`${node.title} is already deleted`);
+    const tree = this.subtree(id);
+    await stop?.(tree.map((s) => s.id));
+    const archiveId = ulid();
+    const archived: Stream[] = [];
+    for (const s of [...tree].reverse()) {
+      if (s.archived === true) continue;
+      const patch = { archived: true as const, archive_id: archiveId };
+      archived.unshift(await this.update(principal, s.id, patch, { kind: 'stream_archived' }));
+    }
+    const below = belowText(archived.length - 1);
+    await this.appendThread(principal, id, { kind: 'event', body: `deleted${below}` });
+    await this.appendThread(principal, node.parent, {
+      kind: 'event',
+      body: `deleted: ${node.title} (${id})${below}`.slice(0, 800),
+    });
+    await this.treeChanged([node.parent]);
+    return archived;
+  }
+
+  /**
+   * T361: Restore. Brings back the node and the descendants its delete
+   * archived (the same `archive_id`); nodes deleted on their own before it
+   * stay deleted. Agents are not started. Refused under a deleted parent
+   * (restore that first) and for a project root (it comes back with its project).
+   * Returns what was restored, the node first.
+   */
+  async unarchiveTree(principal: StreamPrincipal, id: string): Promise<Stream[]> {
+    const node = this.get(id);
+    if (node.archived !== true) throw new NodeArchiveError(`${node.title} is not deleted`);
+    if (node.parent === undefined) {
+      throw new NodeArchiveError('a project root comes back with its project, not on its own');
+    }
+    const parent = this.get(node.parent);
+    if (parent.archived === true) {
+      throw new NodeArchiveError(`${parent.title} is deleted too; restore it first`);
+    }
+    const batch = node.archive_id;
+    const all = this.store.listStreams();
+    const restore = [node];
+    for (let i = 0; i < restore.length; i++) {
+      const at = restore[i]?.id;
+      for (const s of all) {
+        if (s.parent !== at || s.archived !== true || batch === undefined) continue;
+        if (s.archive_id === batch) restore.push(s);
+      }
+    }
+    const restored: Stream[] = [];
+    for (const s of restore) {
+      restored.push(await this.update(principal, s.id, { archived: null, archive_id: null }));
+    }
+    const below = belowText(restored.length - 1);
+    await this.appendThread(principal, id, { kind: 'event', body: `restored${below}` });
+    await this.appendThread(principal, parent.id, {
+      kind: 'event',
+      body: `restored: ${node.title} (${id})${below}`.slice(0, 800),
+    });
+    await this.treeChanged([parent.id]);
+    return restored;
+  }
+
+  /** T361: tells `onTreeChanged` which parents changed; its failure never fails the write. */
+  private async treeChanged(nodes: readonly (string | undefined)[]): Promise<void> {
+    const hook = this.options.onTreeChanged;
+    const ids = [...new Set(nodes.filter((n): n is string => n !== undefined))];
+    if (hook === undefined || ids.length === 0) return;
+    try {
+      await hook(ids);
+    } catch (err) {
+      console.error(`role follow-up for ${ids.join(', ')} failed:`, err);
+    }
   }
 
   /** One thread line. Over the cap is rejected: a human should be told, not truncated. */
@@ -504,7 +637,9 @@ export interface StreamPatch {
   repo?: string;
   branch?: string;
   worktree?: string;
-  archived?: true;
+  /** T361: `null` clears it (Restore), with `archive_id`. */
+  archived?: true | null;
+  archive_id?: string | null;
   /** `'off'` opts the stream out of the classifier tier (§6.4); `null` clears the opt-out. */
   classifier?: 'off' | null;
   /** T176: `null` clears it. */
@@ -526,7 +661,8 @@ export interface StreamPatch {
 }
 
 function applyPatch(before: Stream, patch: StreamPatch): Stream {
-  const { agent, human, classifier, land_conflict, autonomy, ...rest } = patch;
+  const { agent, human, classifier, land_conflict, autonomy, archived, archive_id, ...rest } =
+    patch;
   // `classifier` is tri-state (absent, `'off'`, `null` = remove), rebuilt
   // so a cleared opt-out leaves no key in the YAML.
   const { classifier: existing, ...withoutOptOut } = before;
@@ -540,6 +676,10 @@ function applyPatch(before: Stream, patch: StreamPatch): Stream {
   else if (land_conflict !== undefined) next.land_conflict = land_conflict;
   if (autonomy === null) Reflect.deleteProperty(next, 'autonomy');
   else if (autonomy !== undefined) next.autonomy = autonomy;
+  if (archived === null) Reflect.deleteProperty(next, 'archived');
+  else if (archived !== undefined) next.archived = archived;
+  if (archive_id === null) Reflect.deleteProperty(next, 'archive_id');
+  else if (archive_id !== undefined) next.archive_id = archive_id;
   if (agent !== undefined) {
     // Any agent-half change is a fresh observation: stamp `updated_at` unless given.
     next.agent = { ...before.agent, updated_at: new Date().toISOString(), ...agent };
@@ -548,4 +688,9 @@ function applyPatch(before: Stream, patch: StreamPatch): Stream {
     next.human = { ...before.human, ...human };
   }
   return next;
+}
+
+/** " with 2 nodes below it", or nothing. */
+function belowText(n: number): string {
+  return n > 0 ? ` with ${n} node${n === 1 ? '' : 's'} below it` : '';
 }

@@ -79,6 +79,10 @@ export interface CockpitStreamRow {
   waiting_for_plan?: true;
   /** T341: its PR is open, so it merges on GitHub. */
   pr_open?: true;
+  /** T361: a work node or conversation whose agent never ran. Absent from an older daemon. */
+  never_started?: true;
+  /** T361: the human stopped its agent; nothing is live and it is still open. Absent from an older daemon. */
+  stopped?: true;
 }
 
 /** T160: mirror of `feed/snapshot.ts`'s `CockpitFrame` — the inbox and the tree, pushed on connect and after every event batch. */
@@ -96,6 +100,16 @@ export interface CockpitFrame {
   cards?: Array<CockpitStatusCard | CockpitCardError>;
   /** T338: every contract's title and owning node, so text names contracts, not ids. Absent from an older daemon. */
   contracts?: CockpitContractRow[];
+  /** T361: deleted nodes that can be restored, most recently deleted first (≤200). Absent when none. */
+  archived?: CockpitArchivedRow[];
+}
+
+/** T361: mirror of `feed/snapshot.ts`'s `CockpitArchivedRow`. */
+export interface CockpitArchivedRow {
+  id: string;
+  title: string;
+  project?: string;
+  parent?: string;
 }
 
 /** T338: mirror of `feed/snapshot.ts`'s `CockpitContractRow`. */

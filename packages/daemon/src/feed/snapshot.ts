@@ -16,9 +16,11 @@ import {
   type StatusCard,
   type Stream,
   type TrackerSettings,
+  isAgentRole,
   liveChildrenOf,
   nodeRole,
 } from '@agile-agents/shared';
+import { stoppedByHuman } from '../events/wake';
 import type { GateService } from '../gates';
 import type { InboxService } from '../inbox';
 import { canReadRepo } from '../permissions/visibility';
@@ -110,6 +112,10 @@ export interface CockpitStreamRow {
   waiting_for_plan?: true;
   /** T341: its PR is open, so it merges on GitHub (not the operator's move here). */
   pr_open?: true;
+  /** T361: a work node or conversation whose agent never ran (made with "Start later"). */
+  never_started?: true;
+  /** T361: its agent ran and the human stopped it; nothing is live and the node is still open. */
+  stopped?: true;
 }
 
 /** Vendors whose tool calls pass the `agile hook` path check (Claude's hook, Pi's extension). */
@@ -137,7 +143,20 @@ export interface CockpitFrame {
   cards: CockpitCard[];
   /** T338: every contract's title and owning node, so the cockpit names contracts, not ids. */
   contracts: CockpitContractRow[];
+  /** T361: deleted (archived) nodes the cockpit can restore, most recently deleted first. */
+  archived?: CockpitArchivedRow[];
 }
+
+/** T361: one deleted node: its parent is not deleted, so Restore can bring it back. */
+export interface CockpitArchivedRow {
+  id: string;
+  title: string;
+  project?: string;
+  parent?: string;
+}
+
+/** T361: how many deleted nodes the frame lists. */
+export const COCKPIT_ARCHIVED_MAX = 200;
 
 export interface CockpitContractRow {
   id: string;
@@ -180,7 +199,9 @@ export function buildCockpitFrame(
   contracts?: { list(): CockpitContractRow[] },
   waitingForPlan?: (node: Stream) => boolean,
 ): CockpitFrame {
-  const all = streams.list();
+  // One read of the home: the archived ones are only for Restore (T361).
+  const everything = streams.list({ include_archived: true });
+  const all = everything.filter((s) => s.archived !== true);
   const overlaps = findOverlaps(all);
   const marked = overlapMarked(overlaps, all);
   return {
@@ -201,6 +222,7 @@ export function buildCockpitFrame(
       ...(visibilityAdvisory(s, repos) ? { visibility_advisory: true as const } : {}),
       ...(waitingForPlan?.(s) === true ? { waiting_for_plan: true as const } : {}),
       ...(s.delivery_state?.status === 'pr_open' ? { pr_open: true as const } : {}),
+      ...startState(s, all),
     })),
     projects: (projects?.list() ?? []).map((p) => ({
       id: p.id,
@@ -225,7 +247,43 @@ export function buildCockpitFrame(
       }
     }),
     contracts: (contracts?.list() ?? []).map((c) => ({ id: c.id, title: c.title, node: c.node })),
+    ...archivedRows(everything),
   };
+}
+
+/**
+ * T361: `never_started` for a work node or conversation that has never had
+ * a worker (or coordinator); `stopped` for a node whose agent ran and the
+ * human stopped (`stoppedByHuman`), with nothing live, still open.
+ */
+function startState(s: Stream, all: readonly Stream[]): { never_started?: true; stopped?: true } {
+  if (s.human.status === 'closed' || s.human.status === 'landed') return {};
+  if (s.sessions.some((x) => LIVE_SESSION.has(x.status))) return {};
+  if (!s.sessions.some((x) => isAgentRole(x.role))) {
+    const role = nodeRole(s, liveChildrenOf(s.id, all), all);
+    return role === 'work' || role === 'conversation' ? { never_started: true } : {};
+  }
+  return stoppedByHuman(s) ? { stopped: true } : {};
+}
+
+/** T361: the deleted nodes Restore can bring back (a parent not deleted), newest delete first. */
+function archivedRows(all: readonly Stream[]): { archived?: CockpitArchivedRow[] } {
+  const deleted = new Set(all.filter((s) => s.archived === true).map((s) => s.id));
+  const rows = all
+    .filter((s) => s.archived === true && s.parent !== undefined && !deleted.has(s.parent))
+    // A delete's id is a ulid: its order is the order of the deletes (older records: creation).
+    .sort((a, b) => {
+      const [x, y] = [a.archive_id ?? a.id, b.archive_id ?? b.id];
+      return x < y ? 1 : x > y ? -1 : 0;
+    })
+    .slice(0, COCKPIT_ARCHIVED_MAX)
+    .map((s) => ({
+      id: s.id,
+      title: s.title,
+      ...(s.project !== undefined ? { project: s.project } : {}),
+      ...(s.parent !== undefined ? { parent: s.parent } : {}),
+    }));
+  return rows.length > 0 ? { archived: rows } : {};
 }
 
 function waitsOn(s: Stream): { waits_on?: string[] } {

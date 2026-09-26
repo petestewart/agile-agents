@@ -10,7 +10,13 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { type AgentId, type Stream, type ThreadEntry, ulid } from '@agile-agents/shared';
+import {
+  type AgentId,
+  type QuestionId,
+  type Stream,
+  type ThreadEntry,
+  ulid,
+} from '@agile-agents/shared';
 import { runInit } from '../init';
 import { KnowledgeService } from '../knowledge/service';
 import { QuestionService } from '../questions/service';
@@ -60,6 +66,28 @@ async function attach(repo?: string): Promise<{ session: string; stream: Stream 
   });
   return { session, stream };
 }
+
+describe('ask (T361)', () => {
+  test('carries its choices onto the question; out-of-bounds choices are refused', async () => {
+    const questions = new QuestionService(store, streams);
+    verbs = new VerbService({ store, streams, questions, rules });
+    const { session, stream } = await attach();
+    const { id } = await verbs.ask({
+      session,
+      text: 'which dialect?',
+      options: ['RFC 4180', 'Excel'],
+    });
+    const question = questions.get(id as QuestionId);
+    expect(question.stream).toBe(stream.id);
+    expect(question.options).toEqual(['RFC 4180', 'Excel']);
+    const plain = await verbs.ask({ session, text: 'anything else?' });
+    expect(questions.get(plain.id as QuestionId).options).toBeUndefined();
+    await expect(verbs.ask({ session, text: 'which?', options: ['only one'] })).rejects.toThrow(
+      /ask/,
+    );
+    expect(questions.listOpen()).toHaveLength(2);
+  });
+});
 
 describe('propose_knowledge', () => {
   test('writes a proposed rule with provenance and a thread entry that points at it', async () => {

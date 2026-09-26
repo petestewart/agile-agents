@@ -269,11 +269,19 @@ export async function getRepoKnowledge(repo: string): Promise<Rule[]> {
   return res.knowledge;
 }
 
-/** T161: the composer — a human line on the thread, and a prompt to the attached worker if there is one. */
-export function sayOnStream(id: string, body: string): Promise<{ prompted?: string }> {
-  return post(`/api/streams/${encodeURIComponent(id)}/say`, { body }) as Promise<{
-    prompted?: string;
-  }>;
+/**
+ * T161: the composer — a human line on the thread, and a prompt to the attached worker if there is one.
+ * T361: `start` starts an agent on a node with none live; the line is its first prompt.
+ */
+export function sayOnStream(
+  id: string,
+  body: string,
+  opts: { start?: boolean } = {},
+): Promise<{ prompted?: string; started?: true }> {
+  return post(`/api/streams/${encodeURIComponent(id)}/say`, {
+    body,
+    ...(opts.start === true ? { start: true } : {}),
+  }) as Promise<{ prompted?: string; started?: true }>;
 }
 
 /** T161: the sessions strip's Attach (a worker) and Review (a reviewer). */
@@ -404,4 +412,23 @@ export async function addRepo(input: {
   protected_branches?: string[];
 }): Promise<RepoRow[]> {
   return ((await post('/api/repos', input)) as { repos: RepoRow[] }).repos;
+}
+
+/** T361: Delete — stops the node's and its subtree's agents and archives them (worktrees and branches stay). */
+export function archiveStream(
+  id: string,
+): Promise<{ node: Stream; archived: string[]; stopped: string[] }> {
+  return post(`/api/streams/${encodeURIComponent(id)}/archive`) as Promise<{
+    node: Stream;
+    archived: string[];
+    stopped: string[];
+  }>;
+}
+
+/** T361: Restore — brings back a deleted node and what its delete archived; starts no agent. */
+export function unarchiveStream(id: string): Promise<{ node: Stream; restored: string[] }> {
+  return post(`/api/streams/${encodeURIComponent(id)}/unarchive`) as Promise<{
+    node: Stream;
+    restored: string[];
+  }>;
 }
