@@ -3725,8 +3725,21 @@ describe('cockpit gaps (Playwright e2e, T338)', () => {
         // The root's page: Director autonomy, and the project's tracker block.
         await page.locator(`[data-testid="stream-tree"] [data-stream="${shop.root}"]`).click();
         await page.locator('[data-testid="project-controls"]').waitFor({ state: 'visible' });
-        expect(await page.locator('[data-testid="project-repos"]').textContent()).toBe(
-          'Repos: api',
+        // T377: the project's repositories are a checklist on the root's details.
+        const apiBox = page.locator(
+          '[data-testid="project-repos"] [data-testid="project-repo"][data-repo="api"]',
+        );
+        expect(await apiBox.isChecked()).toBe(true);
+        await apiBox.uncheck();
+        await page.locator('[data-testid="project-repos-save"]').click();
+        await waitUntil(
+          'the repo to leave the project',
+          () => cockpit.projects.get(shop.id).repos.length === 0,
+        );
+        await page.locator('[data-testid="project-repos"] [data-testid="project-repo"]').check();
+        await page.locator('[data-testid="project-repos-save"]').click();
+        await waitUntil('the repo back in the project', () =>
+          cockpit.projects.get(shop.id).repos.includes('api'),
         );
         await page.locator('[data-testid="director-autonomy-select"]').selectOption('organise');
         await waitUntil(
