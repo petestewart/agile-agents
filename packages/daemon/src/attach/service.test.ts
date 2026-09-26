@@ -2186,6 +2186,30 @@ describe('T361: a message starts a node with no live agent', () => {
     }
   }, 30_000);
 
+  test('T389: a part waiting for its plan is not started by a line; the line waits for it', async () => {
+    let waiting = '';
+    attachService = buildAttachService(fakeProviderFor(ACP_PROVIDERS.claude, SPEAKS_THEN_HANGS), {
+      plans: {
+        get: () => undefined,
+        childView: () => undefined,
+        waitingForPlan: (s) => s.id === waiting,
+      },
+    });
+    const project = await new ProjectService(store, streams).create({ name: 'Shop' });
+    const node = await attachService.createNode('human', {
+      title: 'Cart API',
+      goal: 'g',
+      project: project.id,
+      start: false,
+    });
+    waiting = node.id;
+    const said = await attachService.say(node.id, 'use the new schema', { start: true });
+    expect(said.started).toBeUndefined();
+    expect(said.prompted).toBeUndefined();
+    expect(streams.get(node.id).sessions).toEqual([]);
+    expect(store.readDeliveries(node.id).map((d) => d.status)).toEqual(['pending']);
+  }, 30_000);
+
   test('a failed start is a thread line; the line stays pending', async () => {
     const project = await new ProjectService(store, streams).create({ name: 'Shop' });
     await store.updateProject(project.id, (p) => ({ ...p, session: { vendor: 'nope' } }));

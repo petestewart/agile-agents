@@ -77,9 +77,18 @@ export function buildSnapshot(
   eventsEndOffset?: number,
 ): FeedSnapshot {
   const events = store.listEvents(eventsEndOffset).slice(-eventLimit);
+  // T389: a deleted (archived) node's asks wait with it, as Needs me leaves them out.
+  const archived = new Set(
+    store
+      .listStreams()
+      .filter((s) => s.archived === true)
+      .map((s) => s.id),
+  );
   // Resolved gates are history: only pending ones ship.
-  const hil = gates.list().filter((request) => request.status === 'pending');
-  const openQuestions = questions?.listOpen() ?? [];
+  const hil = gates
+    .list()
+    .filter((request) => request.status === 'pending' && !archived.has(request.stream));
+  const openQuestions = (questions?.listOpen() ?? []).filter((q) => !archived.has(q.stream));
 
   return {
     type: 'snapshot',

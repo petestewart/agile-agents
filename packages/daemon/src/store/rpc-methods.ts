@@ -1,7 +1,13 @@
 /** The `state.*` RPC: the repo registry (`repos.yaml`, D9), used by `agile repo add|list` and Settings → Repos (T206). */
 
 import { realpathSync } from 'node:fs';
-import { type RepoEntry, RepoSettingsPatchSchema, formatZodError } from '@agile-agents/shared';
+import {
+  REPO_NAME_RULE,
+  type RepoEntry,
+  RepoNameSchema,
+  RepoSettingsPatchSchema,
+  formatZodError,
+} from '@agile-agents/shared';
 import { RpcParamError } from '../gates/rpc';
 import { repoFromRemoteUrl } from '../github/rest';
 import type { RpcMethodHandler } from '../rpc';
@@ -163,6 +169,10 @@ export function buildStateRpcMethods(
       const { name, ...entry } = params as { name?: string } & Record<string, unknown>;
       if (typeof name !== 'string' || name.length === 0) {
         throw new RpcParamError('state.repo_add: name is required');
+      }
+      // T389: a name the registry can keep and a route can carry.
+      if (!RepoNameSchema.safeParse(name).success || name.trim() !== name) {
+        throw new RpcParamError(`state.repo_add: invalid name "${name}": ${REPO_NAME_RULE}`);
       }
       const { path } = entry as { path?: unknown };
       if (typeof path !== 'string' || path.length === 0) {

@@ -98,3 +98,15 @@ describe('state.repo_set (T222, §14.8)', () => {
     );
   });
 });
+
+describe('state.repo_add names (T389)', () => {
+  test('a name is letters, digits, ".", "_" and "-", starting with a letter or digit', async () => {
+    const add = buildStateRpcMethods(store)['state.repo_add'];
+    if (!add) throw new Error('state.repo_add is missing');
+    for (const name of ['__proto__', 'my repo', 'a/b', '-x', '.hidden', ' api2']) {
+      await expect(add({ name, path: repo })).rejects.toThrow(/invalid name/);
+    }
+    await add({ name: 'ledger-lite.v2_x', path: repo });
+    expect(Object.keys(store.getRepos())).toContain('ledger-lite.v2_x');
+  });
+});

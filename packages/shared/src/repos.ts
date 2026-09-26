@@ -168,12 +168,28 @@ export interface RepoRemote {
  * `dest` defaults to `<projects folder>/<the URL's repo name>`, and `name`
  * (the registry name) to the URL's repo name.
  */
+/**
+ * T389: a repo's registry name (the key in `repos.yaml`): letters, digits,
+ * `.`, `_` and `-`, starting with a letter or digit. A name like `__proto__`
+ * would be lost when the registry is parsed, and one with a `/` or a space
+ * makes a poor route segment.
+ */
+export const REPO_NAME_MAX_CHARS = 100;
+export const REPO_NAME_RULE =
+  'a repo name is letters, digits, ".", "_" and "-", starting with a letter or digit';
+export const RepoNameSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(REPO_NAME_MAX_CHARS)
+  .regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/, REPO_NAME_RULE);
+
 export const REPO_CLONE_URL_MAX_CHARS = 2048;
 export const RepoCloneInputSchema = z
   .object({
     url: z.string().trim().min(1).max(REPO_CLONE_URL_MAX_CHARS),
     dest: z.string().trim().min(1).max(4096).optional(),
-    name: z.string().trim().min(1).max(200).optional(),
+    name: RepoNameSchema.optional(),
   })
   .strict();
 export type RepoCloneInput = z.infer<typeof RepoCloneInputSchema>;
