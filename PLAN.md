@@ -2571,6 +2571,15 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 - **Validation Steps:** `bun test packages/ui/app/lib/unread.test.ts packages/daemon/src/store/store.test.ts -t "T433|T395"`; control-room e2e `T429`, `T433`.
 - **Notes:** Branch T433-unread-marks.
 
+### Ticket: T434 An off switch for quick drafts
+- **Priority:** P3
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** Deferred from T414: the cheap model call behind untitled nodes' titles (D41) and Turn into work's goal draft (T422) had no off switch.
+- **Acceptance Criteria:** `quick_drafts: false` in the home's config.yaml (strict schema; absent = on) turns both off, read per call so it holds at once. `GET/POST /api/settings/quick-drafts` (`{on}` in, `{on, available}` out; same-origin; 400 on a bad body). Settings → General → **Quick drafts**: a switch with what it does and what off means; "Not available" (disabled, with the reason) when the `claude` command isn't on the daemon's PATH.
+- **Validation Steps:** `bun test packages/daemon/src/http.test.ts -t T434 packages/daemon/src/daemon.test.ts -t T434`; control-room e2e "General picks the theme…".
+- **Notes:** Branch T434-quick-drafts-switch.
+
 ### Ticket: T369 Phase 15 QA
 - **Priority:** P0
 - **Status:** Done

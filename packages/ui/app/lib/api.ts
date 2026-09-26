@@ -528,6 +528,20 @@ export interface DaemonHealth {
   uptime: number;
 }
 
+/** T434: Settings' quick drafts switch: on, and whether a cheap model is there at all. */
+export interface QuickDrafts {
+  on: boolean;
+  available: boolean;
+}
+
+export function getQuickDrafts(): Promise<QuickDrafts> {
+  return get<QuickDrafts>('/api/settings/quick-drafts');
+}
+
+export function setQuickDrafts(on: boolean): Promise<QuickDrafts> {
+  return post('/api/settings/quick-drafts', { on }) as Promise<QuickDrafts>;
+}
+
 export function getHealth(): Promise<DaemonHealth> {
   return get('/health');
 }

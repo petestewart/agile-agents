@@ -4721,6 +4721,12 @@ describe('Settings sections (Playwright e2e, T367)', () => {
         expect(note).toContain('answering questions');
         expect(await page.locator('[data-testid="settings-nav-permissions"]').count()).toBe(0);
 
+        // T434: Quick drafts has a switch; with no `claude` command here, it says why it's off.
+        await waitForText(page, '[data-testid="settings-quick-drafts-status"]', 'Not available');
+        expect(
+          await page.locator('[data-testid="settings-quick-drafts-switch"]').isDisabled(),
+        ).toBe(true);
+
         // The section is in the URL; back to General, it needs no parameter.
         await page.locator('[data-testid="settings-nav-trackers"]').click();
         await page.locator('[data-testid="settings"][data-section="trackers"]').waitFor();

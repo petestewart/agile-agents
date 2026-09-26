@@ -240,6 +240,13 @@ export const HomeConfigSchema = z
     github: GitHubConfigSchema.optional(),
     /** T320 (D31): Jira/Linear connections and tokens. */
     trackers: TrackersConfigSchema.optional(),
+    /**
+     * T434 (D41): quick drafts by one cheap model call through the user's own
+     * `claude` login: an untitled node's title, and Turn into work's goal.
+     * `false` turns both off (the first line stays the title; the goal starts
+     * from the last reply). Absent = on.
+     */
+    quick_drafts: z.boolean().optional(),
     /** T243 (P11): routed-event settings. `wake_budget_per_hour` defaults to 20. */
     events: z
       .object({ wake_budget_per_hour: z.number().int().positive().optional() })
@@ -303,3 +310,7 @@ export function trackerSettingsStatus(config: TrackersConfig | undefined): Track
     linear: { token_set: config?.linear?.token !== undefined },
   };
 }
+
+/** T434: Settings' quick drafts switch (`POST /api/settings/quick-drafts`). */
+export const QuickDraftsInputSchema = z.object({ on: z.boolean() }).strict();
+export type QuickDraftsInput = z.infer<typeof QuickDraftsInputSchema>;

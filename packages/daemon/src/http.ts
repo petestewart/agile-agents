@@ -22,6 +22,7 @@ import {
   MESSAGE_BODY_MAX_CHARS,
   type QuestionId,
   QuestionIdSchema,
+  QuickDraftsInputSchema,
   SessionDefaultsPatchSchema,
   type Stream,
   StreamAddRepoRequestSchema,
@@ -193,6 +194,8 @@ export interface HttpServerOptions {
   titleNamer?: TitleNamer;
   /** T422 (D42): the cheap model call (the same as titles) that drafts a goal from a conversation. */
   cheapModel?: TitleRun;
+  /** T434: a cheap model is there to switch (the `claude` command was found); Settings says so. */
+  quickDraftsAvailable?: boolean;
   /** T340: `POST /api/streams/:id/pr-check`, the Delivery panel's Check now (`PrPoller.pollNow`). */
   prCheck?: (id: string) => Promise<Stream>;
   /** The stream page's sessions strip and composer. */
@@ -593,6 +596,36 @@ async function handleSettingsRoute(
   } catch {
     // Store errors are generic already; this keeps any future one from quoting the key.
     return errorResponse(500, 'could not save the classifier key');
+  }
+}
+
+/**
+ * T434: Settings' quick drafts switch (D41's titles, T422's goal drafts):
+ *
+ *   GET  /api/settings/quick-drafts  `{on, available}` (available: the `claude` command was found)
+ *   POST /api/settings/quick-drafts  `{on}`, live at once; same-origin only
+ */
+async function handleQuickDraftsRoute(
+  req: Request,
+  url: URL,
+  feed: FeedContext | undefined,
+  available: boolean,
+  sameOrigin: () => boolean,
+): Promise<Response | undefined> {
+  if (url.pathname !== '/api/settings/quick-drafts') return undefined;
+  if (req.method !== 'GET' && req.method !== 'POST') return undefined;
+  if (!feed) return errorResponse(503, 'state store not initialised (run `agile init`)');
+  if (req.method === 'GET') {
+    return jsonResponse({ on: feed.store.getHomeConfig().quick_drafts !== false, available });
+  }
+  if (!sameOrigin()) return errorResponse(403, 'cross-origin request rejected');
+  const input = QuickDraftsInputSchema.safeParse(await readJsonBody(req).catch(() => undefined));
+  if (!input.success) return errorResponse(400, formatZodError('quick drafts', input.error));
+  try {
+    const config = await feed.store.setQuickDrafts(input.data.on, { by: 'human' });
+    return jsonResponse({ on: config.quick_drafts !== false, available });
+  } catch (err) {
+    return errorResponse(400, messageOf(err));
   }
 }
 
@@ -1610,6 +1643,14 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
           }
         }
 
+        const draftsRoute = await handleQuickDraftsRoute(
+          req,
+          url,
+          feed,
+          options.quickDraftsAvailable === true,
+          sameOrigin,
+        );
+        if (draftsRoute) return draftsRoute;
         const trackerRoute = await handleTrackerSettingsRoute(req, url, feed, sameOrigin);
         if (trackerRoute) return trackerRoute;
         const settingsRoute = await handleSettingsRoute(req, url, feed, sameOrigin);

@@ -23,9 +23,8 @@ None open. (The last ones were fixed in T379, T380, T382 and T383.)
 
 ## P3 — cleanup, hardening, decisions
 
-- Auto titles (T414, D41) have no off switch: a home `config.yaml` key and a
-  Settings → General toggle would let a user skip the Haiku call. The model
-  (`haiku`) is fixed too.
+- Quick drafts (T414, T422) have an off switch since T434; the model
+  (`haiku`) is still fixed.
 
 - The UI's main file still carries zod and every shared schema (~90 KB):
   the UI imports small helpers from `@agile-agents/shared`, whose index pulls

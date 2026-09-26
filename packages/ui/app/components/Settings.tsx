@@ -37,9 +37,11 @@ import { GATE_KINDS } from '@agile-agents/shared';
 import { type ReactNode, useEffect, useId, useRef, useState } from 'react';
 import {
   type DaemonHealth,
+  type QuickDrafts,
   getClassifierKey,
   getHealth,
   getPolicy,
+  getQuickDrafts,
   getSessionDefaults,
   getTrackerSettings,
   removeClassifierKey,
@@ -47,6 +49,7 @@ import {
   saveHomeSessionDefaults,
   saveRepoSessionDefaults,
   saveTrackerSettings,
+  setQuickDrafts,
   updateProject,
 } from '../lib/api';
 import { agentLabel, sessionIdText } from '../lib/chat';
@@ -273,6 +276,8 @@ function GeneralSection(): JSX.Element {
       </SetCard>
 
       <NotificationsCard />
+
+      <QuickDraftsCard />
 
       <DecisionsCard />
 
@@ -1076,6 +1081,75 @@ function timeoutOf(owner: string): string | undefined {
  * one note in General: the decisions no agent makes. The policy says who
  * owns each gate; one with a timeout says how long it waits for you.
  */
+/**
+ * T434 (D41): the quick drafts switch — an untitled node's title and Turn
+ * into work's goal, each from one cheap model call through your own
+ * `claude` login. Saved in the home's config.yaml, live at once.
+ */
+function QuickDraftsCard(): JSX.Element {
+  const [state, setState] = useState<QuickDrafts | undefined>();
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | undefined>();
+
+  useEffect(() => {
+    getQuickDrafts()
+      .then(setState)
+      .catch((err: unknown) => setError(errorText(err)));
+  }, []);
+
+  async function toggle(on: boolean): Promise<void> {
+    setBusy(true);
+    setError(undefined);
+    try {
+      setState(await setQuickDrafts(on));
+    } catch (err) {
+      setError(errorText(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <SetCard
+      title="Quick drafts"
+      icon="sparkles"
+      description="A node you create without a title gets a short one, and Turn into work drafts the goal from the conversation. Each is one quick Claude Haiku call through your own claude login. Off: the first line of the goal is the title, and the goal starts from the last reply."
+      testid="settings-quick-drafts"
+      {...(state !== undefined && !state.available
+        ? {
+            status: (
+              <Pill tone="gray">
+                <span data-testid="settings-quick-drafts-status">Not available</span>
+              </Pill>
+            ),
+          }
+        : {})}
+    >
+      <Switch
+        label="Draft titles and goals with a quick model call"
+        data-testid="settings-quick-drafts-switch"
+        checked={state?.on === true && state.available}
+        disabled={busy || state === undefined || !state.available}
+        onChange={(e) => void toggle(e.target.checked)}
+      />
+      {state !== undefined && !state.available ? (
+        <p className="cr-set-note" data-tone="plain" data-testid="settings-quick-drafts-note">
+          <Icon name="info" size={14} />
+          <span>
+            The <code>claude</code> command isn’t on the daemon’s PATH, so there is nothing to call.
+          </span>
+        </p>
+      ) : null}
+      {error ? (
+        <p className="cr-set-note" data-tone="amber" role="alert">
+          <Icon name="alert-triangle" size={14} />
+          <span>{error}</span>
+        </p>
+      ) : null}
+    </SetCard>
+  );
+}
+
 function DecisionsCard(): JSX.Element {
   const [policy, setPolicy] = useState<Policy | undefined>();
 

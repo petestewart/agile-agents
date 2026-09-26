@@ -870,6 +870,46 @@ describe('T160 cockpit routes', () => {
     }
   });
 
+  test('T434: GET/POST /api/settings/quick-drafts switches the cheap model call off and on', async () => {
+    const drafted = startHttpServer({
+      port: 0,
+      version: '0.0.0-test',
+      stateRoot,
+      startedAt: Date.now(),
+      store,
+      gates: new GateService(store),
+      streams,
+      quickDraftsAvailable: true,
+    });
+    try {
+      const at = (path: string) => `http://127.0.0.1:${drafted.port}${path}`;
+      const post = (body: unknown, headers: Record<string, string> = {}) =>
+        fetch(at('/api/settings/quick-drafts'), {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', ...headers },
+          body: JSON.stringify(body),
+        });
+      expect(await (await fetch(at('/api/settings/quick-drafts'))).json()).toEqual({
+        on: true,
+        available: true,
+      });
+      expect(await (await post({ on: false })).json()).toEqual({ on: false, available: true });
+      expect(store.getHomeConfig().quick_drafts).toBe(false);
+      expect(await (await post({ on: true })).json()).toEqual({ on: true, available: true });
+      // On is the default: the key goes.
+      expect(store.getHomeConfig().quick_drafts).toBeUndefined();
+      expect((await post({ on: 'yes' })).status).toBe(400);
+      expect((await post({ on: false }, { origin: 'http://evil.example' })).status).toBe(403);
+    } finally {
+      await drafted.stop();
+    }
+    // Without a `claude` command, it says so.
+    expect(await (await fetch(url('/api/settings/quick-drafts'))).json()).toEqual({
+      on: true,
+      available: false,
+    });
+  });
+
   test('T161: POST /api/streams/:id/say writes a human line; the actor is never read from the body; cross-origin is 403', async () => {
     const stream = await streams.create('human', { title: 's', goal: 'g' });
     const foreign = await fetch(url(`/api/streams/${stream.id}/say`), {
