@@ -118,7 +118,7 @@ export function NodeHeader(props: NodeHeaderProps): JSX.Element {
                     onClick={() => copy(props.branch ?? '', 'Copied the branch name')}
                   >
                     <Icon name="git-branch" size={13} />
-                    <span className="cr-meta-text">{props.branch}</span>
+                    <BranchName branch={props.branch} />
                   </button>
                 </>
               )}
@@ -187,5 +187,21 @@ export function NodeHeader(props: NodeHeaderProps): JSX.Element {
       </div>
       {props.children}
     </header>
+  );
+}
+
+/**
+ * T374: a node branch is `stream/<ulid>-<slug>`: the id part is noise to a
+ * reader, the slug is the meaning. The id part gives way first (ellipsis);
+ * the slug stays whole. The text is the whole branch (copy, tests, tooltip).
+ */
+function BranchName({ branch }: { branch: string }): JSX.Element {
+  const m = branch.match(/^(stream\/[0-9a-z]{26}-)(.+)$/i);
+  if (!m) return <span className="cr-meta-text">{branch}</span>;
+  return (
+    <span className="cr-meta-text cr-branch">
+      <span className="cr-branch-id">{m[1]}</span>
+      <span className="cr-branch-slug">{m[2]}</span>
+    </span>
   );
 }
