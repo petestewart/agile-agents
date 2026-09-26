@@ -1922,7 +1922,20 @@ describe("a node's page is a chat (Playwright e2e, T363)", () => {
           'Answers the question',
         );
 
-        // Pick the other question from the chip's menu, and answer it.
+        // A click on the other question's card makes it the one Send answers…
+        const secondCard = `[data-testid="stream-needs"] [data-id="${second.id}"]`;
+        await page.locator(`${secondCard} [data-testid="inbox-context"]`).click();
+        await waitUntilAsync('the chip to follow the click', async () =>
+          ((await chip.textContent()) ?? '').includes('quote every field'),
+        );
+        // …and the chip's menu picks too: back to the first, then the second again.
+        await chip.locator('button', { hasText: 'quote every field' }).click();
+        await page
+          .locator('[data-testid="composer-answering-menu"] [role="menuitem"]', {
+            hasText: 'comma or semicolon',
+          })
+          .click();
+        expect(await chip.textContent()).toContain('comma or semicolon');
         await chip.locator('button', { hasText: 'comma or semicolon' }).click();
         await page
           .locator('[data-testid="composer-answering-menu"] [role="menuitem"]', {

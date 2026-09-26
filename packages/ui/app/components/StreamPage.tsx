@@ -916,15 +916,28 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
             </div>
           )}
           {cards.map((item) => (
-            <Card
+            // biome-ignore lint/a11y/useKeyWithClickEvents: a pointer shortcut only; the composer's "Answering" menu picks the question from the keyboard.
+            <div
               key={item.id}
-              item={item}
-              full
-              onDone={() => {
-                load();
-                refresh();
+              className="cr-decision"
+              data-answering={item.id === answering ? 'true' : undefined}
+              onClick={(e) => {
+                // A click on a question (not on one of its buttons) makes it the one Send answers.
+                if (item.kind !== 'question' || item.id === answering) return;
+                if ((e.target as Element).closest('button, a, input, textarea, select')) return;
+                setAnswerChoice(item.id);
+                composer.current?.focus();
               }}
-            />
+            >
+              <Card
+                item={item}
+                full
+                onDone={() => {
+                  load();
+                  refresh();
+                }}
+              />
+            </div>
           ))}
         </section>
       </ChatScroll>

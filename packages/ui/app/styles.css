@@ -3096,6 +3096,15 @@ ul.cr-error {
 .cr-decisions .cr-card + .cr-card {
   margin-top: 0;
 }
+.cr-decision[data-answering="true"] .cr-card {
+  border-color: var(--amber);
+  box-shadow: 0 0 0 3px var(--amber-weak);
+}
+.cr-decisions:has(.cr-decision + .cr-decision)
+  .cr-decision:not([data-answering])
+  .cr-card[data-kind="question"] {
+  cursor: pointer;
+}
 
 /* -- the composer */
 .cr-composer-wrap {
