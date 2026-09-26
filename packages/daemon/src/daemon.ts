@@ -740,6 +740,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
     ...(classifierKey ? { classifierKey } : {}),
     ...(landingService ? { landing: landingService } : {}),
     ...(titleNamer ? { titleNamer } : {}),
+    ...(titleRun ? { cheapModel: titleRun } : {}),
     ...(prPoller ? { prCheck: (id: string) => prPoller.pollNow(id) } : {}),
     ...(attachService ? { attach: attachService } : {}),
     ...(routedEvents ? { events: routedEvents } : {}),

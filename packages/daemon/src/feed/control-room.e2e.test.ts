@@ -33,6 +33,7 @@ import {
   DEFAULT_CLASSIFIER_DENY_AT,
   type Question,
   type KnowledgeItem as Rule,
+  START_ON_GOAL,
   classifierQuestion,
   examplesOf,
   liveChildrenOf,
@@ -5407,6 +5408,106 @@ describe('Send to parent (Playwright e2e, T421, D42)', () => {
         expect(cockpit.streams.get(work.id).sessions.every((s) => s.role !== 'coordinator')).toBe(
           true,
         );
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+});
+
+describe('Turn into work (Playwright e2e, T422, D42)', () => {
+  browserTest(
+    'a conversation becomes the work it concluded, in place: goal from its last reply, a repo, its agent started on it',
+    async () => {
+      const reply = 'Stream the upload in 1 MB chunks so 2 GB files import.';
+      const cockpit = await startStreamCockpit([
+        // The conversation's agent: answers, then idles.
+        {
+          turns: [[{ type: 'agent_text', text: reply }, { type: 'end_turn' }]],
+          steps: [{ type: 'end_turn' }],
+        },
+        // Restarted in its worktree once it has a repo.
+        { steps: [{ type: 'end_turn' }] },
+        // The research conversation's agent.
+        { steps: [{ type: 'end_turn' }] },
+      ]);
+      let page: Page | undefined;
+      try {
+        const shop = await new ProjectService(cockpit.store, cockpit.streams).create({
+          name: 'shop',
+        });
+        const convo = await cockpit.streams.create('human', {
+          title: 'Why buffer the file?',
+          goal: 'why does the importer read the whole file?',
+          project: shop.id,
+        });
+        page = await openPage();
+        await page.goto(`${cockpit.base}/?node=${convo.id}`);
+        await page.locator(`[data-testid="stream-page"][data-stream="${convo.id}"]`).waitFor();
+        await page.locator('[data-testid="attach"]').click();
+        await page
+          .locator('[data-testid="thread-entry"][data-by="agent"]', { hasText: reply })
+          .waitFor();
+
+        await page.locator('[data-testid="node-menu-trigger"]').click();
+        await page.locator('[data-testid="turn-into-work-menu"]').click();
+        const goal = page.locator('[data-testid="turn-into-work-goal"]');
+        // No cheap model offline: the goal starts as its last reply, yours to edit.
+        await waitUntilAsync('the drafted goal', async () => (await goal.inputValue()) === reply);
+        await goal.fill(`${reply} Done when the 2 GB fixture imports.`);
+        await page.locator('[data-testid="turn-into-work-repo"]').click();
+        await page.locator('[data-testid="turn-into-work-repo-option"][data-repo="demo"]').click();
+        await page.locator('[data-testid="turn-into-work-start"]').click();
+        await page.locator('[data-testid="turn-into-work"]').waitFor({ state: 'detached' });
+
+        // Same node, same thread: now work on demo, its goal changed, its agent told to start.
+        await waitUntil('the work node', () => {
+          const node = cockpit.streams.get(convo.id);
+          return (
+            node.repo === 'demo' &&
+            nodeRole(
+              node,
+              liveChildrenOf(node.id, cockpit.streams.list()),
+              cockpit.streams.list(),
+            ) === 'work' &&
+            cockpit.streams
+              .readThread(convo.id)
+              .entries.some((e) => e.by === 'human' && e.body === START_ON_GOAL)
+          );
+        });
+        expect(cockpit.streams.get(convo.id).goal).toBe(
+          `${reply} Done when the 2 GB fixture imports.`,
+        );
+        await page.locator('[data-testid="node-role"][data-role="work"]').waitFor();
+
+        // No repository: it stays a conversation, researching the goal.
+        const research = await cockpit.streams.create('human', {
+          title: 'Import limits',
+          goal: 'what limits the importer?',
+          project: shop.id,
+        });
+        await page.goto(`${cockpit.base}/?node=${research.id}`);
+        await page.locator(`[data-testid="stream-page"][data-stream="${research.id}"]`).waitFor();
+        await page.locator('[data-testid="node-menu-trigger"]').click();
+        await page.locator('[data-testid="turn-into-work-menu"]').click();
+        // Nothing said yet: its question.
+        await waitUntilAsync(
+          'the question',
+          async () => (await goal.inputValue()) === 'what limits the importer?',
+        );
+        await goal.fill('Find the largest file the importer takes and why.');
+        await page.locator('[data-testid="turn-into-work-start"]').click();
+        await waitUntil('the research start', () =>
+          cockpit.streams
+            .readThread(research.id)
+            .entries.some((e) => e.by === 'human' && e.body === START_ON_GOAL),
+        );
+        const after = cockpit.streams.get(research.id);
+        expect(after.repo).toBeUndefined();
+        expect(after.goal).toBe('Find the largest file the importer takes and why.');
+        expect(cockpit.attachErrors).toEqual([]);
       } finally {
         await teardown([page]);
         await cockpit.stop();

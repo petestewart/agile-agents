@@ -718,6 +718,9 @@ export function sendUpText(conversationTitle: string, body: string): string {
   return `From the conversation “${conversationTitle.slice(0, 200)}”:\n\n${body.trim()}`;
 }
 
+/** T422 (D42): the line that sets a conversation's agent on the goal it was just turned into. */
+export const START_ON_GOAL = 'Now work on the goal above. Report back here when it is done.';
+
 /**
  * T161: the stream page's sessions strip (`POST /api/streams/:id/attach`).
  * Only the two attachable roles (the `lessons` session is the daemon's).

@@ -811,6 +811,65 @@ describe('T160 cockpit routes', () => {
     );
   });
 
+  test('T422: POST /api/streams/:id/draft-goal drafts the work a conversation concluded', async () => {
+    const convo = await streams.create('human', { title: 'Why buffer?', goal: 'why buffer?' });
+    const draft = (at: string, id: string, headers: Record<string, string> = {}) =>
+      fetch(`${at}/api/streams/${id}/draft-goal`, { method: 'POST', headers });
+    const base = url('').replace(/\/$/, '');
+    // Nothing said yet, and no model: the question itself.
+    expect(await (await draft(base, convo.id)).json()).toEqual({
+      goal: 'why buffer?',
+      from: 'question',
+    });
+    await streams.appendThread('human', convo.id, { kind: 'line', body: 'should we stream it?' });
+    await streams.appendThread(
+      'agent',
+      convo.id,
+      { kind: 'line', body: 'Yes: stream the upload in 1 MB chunks.' },
+      '01J0000000000000000000000A',
+    );
+    // No model: its last reply.
+    expect(await (await draft(base, convo.id)).json()).toEqual({
+      goal: 'Yes: stream the upload in 1 MB chunks.',
+      from: 'reply',
+    });
+    expect((await draft(base, convo.id, { origin: 'http://evil.example' })).status).toBe(403);
+    // With the cheap model: its draft, from the question and the talk.
+    const asked: string[] = [];
+    let reply: string | undefined =
+      'Goal: Stream uploads in 1 MB chunks; done when 2 GB files import.';
+    const withModel = startHttpServer({
+      port: 0,
+      version: '0.0.0-test',
+      stateRoot,
+      startedAt: Date.now(),
+      store,
+      gates: new GateService(store),
+      streams,
+      cheapModel: async (prompt) => {
+        asked.push(prompt);
+        return reply;
+      },
+    });
+    try {
+      const at = `http://127.0.0.1:${withModel.port}`;
+      expect(await (await draft(at, convo.id)).json()).toEqual({
+        goal: 'Stream uploads in 1 MB chunks; done when 2 GB files import.',
+        from: 'model',
+      });
+      expect(asked[0]).toContain('The question: why buffer?');
+      expect(asked[0]).toContain('Human: should we stream it?');
+      // A failed call falls back to the last reply.
+      reply = undefined;
+      expect(await (await draft(at, convo.id)).json()).toEqual({
+        goal: 'Yes: stream the upload in 1 MB chunks.',
+        from: 'reply',
+      });
+    } finally {
+      await withModel.stop();
+    }
+  });
+
   test('T161: POST /api/streams/:id/say writes a human line; the actor is never read from the body; cross-origin is 403', async () => {
     const stream = await streams.create('human', { title: 's', goal: 'g' });
     const foreign = await fetch(url(`/api/streams/${stream.id}/say`), {
