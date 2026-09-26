@@ -865,6 +865,18 @@ describe('T160 cockpit routes', () => {
         goal: 'Yes: stream the upload in 1 MB chunks.',
         from: 'reply',
       });
+      // T435: so does a draft that is the model talking to you, or its NONE.
+      expect(asked[0]).toContain('reply NONE');
+      for (const chatty of [
+        "I don't have the context of the conversation. Could you share it?",
+        'NONE',
+      ]) {
+        reply = chatty;
+        expect(await (await draft(at, convo.id)).json()).toEqual({
+          goal: 'Yes: stream the upload in 1 MB chunks.',
+          from: 'reply',
+        });
+      }
     } finally {
       await withModel.stop();
     }
@@ -998,6 +1010,61 @@ describe('T160 cockpit routes', () => {
     expect(streams.get(node.id)).toMatchObject({ title: 'Checkout flow', goal: 'a sharper goal' });
     const frame = (await (await fetch(url('/api/cockpit'))).json()) as CockpitFrame;
     expect(frame.streams.find((s) => s.id === node.id)?.title).toBe('Checkout flow');
+  });
+
+  test('T435: POST /api/streams/:id/update with auto_title has the cheap model name it better', async () => {
+    const asked: string[] = [];
+    const titleNamer = new TitleNamer({
+      streams,
+      run: async (prompt) => {
+        asked.push(prompt);
+        return 'Excel import support';
+      },
+    });
+    const named = startHttpServer({
+      port: 0,
+      version: '0.0.0-test',
+      stateRoot,
+      startedAt: Date.now(),
+      store,
+      gates: new GateService(store),
+      streams,
+      titleNamer,
+    });
+    try {
+      const update = (id: string, body: unknown) =>
+        fetch(`http://127.0.0.1:${named.port}/api/streams/${id}/update`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+      const node = await streams.create('human', {
+        title: 'Does import handle Excel files?',
+        goal: 'Does import handle Excel files?',
+      });
+      const res = await update(node.id, {
+        goal: 'Strip the BOM and split on CRLF in importCsv().',
+        title: 'Strip the BOM and split on CRLF',
+        auto_title: true,
+      });
+      expect(res.status).toBe(200);
+      // The placeholder at once, the model's title after; the model reads the new goal.
+      expect(((await res.json()) as Stream).title).toBe('Strip the BOM and split on CRLF');
+      await titleNamer.settled();
+      expect(streams.get(node.id).title).toBe('Excel import support');
+      expect(asked[0]).toContain('Strip the BOM and split on CRLF in importCsv().');
+      // Without it (or with no title), nothing is asked.
+      await update(node.id, { title: 'My name' });
+      await update(node.id, { goal: 'another goal', auto_title: true });
+      await titleNamer.settled();
+      expect(asked).toHaveLength(1);
+      expect(streams.get(node.id).title).toBe('My name');
+      // Still strict.
+      expect((await update(node.id, { auto_title: true })).status).toBe(400);
+      expect((await update(node.id, { title: 'x', auto_title: 'yes' })).status).toBe(400);
+    } finally {
+      await named.stop();
+    }
   });
 
   test('T361: POST /api/streams/:id/archive and /unarchive delete and restore a subtree as human', async () => {

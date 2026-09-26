@@ -4,7 +4,8 @@
  * target) and a form field that opens one in a popover (`PickerField`).
  * The input keeps focus; the arrow keys move the highlight and Enter
  * picks it (the combobox pattern), so Enter never submits the dialog
- * behind it.
+ * behind it. T435: typing moves the highlight to the first match
+ * (`pickHighlight`), so a name typed and Enter picks that name.
  */
 
 import {
@@ -16,7 +17,7 @@ import {
   useRef,
   useState,
 } from 'react';
-import { typeAheadMatch } from '../lib/tree';
+import { pickHighlight, typeAheadMatch } from '../lib/tree';
 import { Icon } from './Icon';
 import { Popover } from './ui';
 
@@ -147,7 +148,11 @@ export function PickList({
             data-testid={`${testid}-search`}
             placeholder={placeholder}
             value={query}
-            onChange={(e) => setQuery(e.target.value)}
+            onChange={(e) => {
+              // T435: Enter picks what you typed: the first match, not the pinned current value.
+              setQuery(e.target.value);
+              setActive(pickHighlight(options, e.target.value, value) ?? value);
+            }}
             onKeyDown={onKeyDown}
           />
         </div>

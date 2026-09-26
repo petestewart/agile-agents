@@ -723,17 +723,19 @@ export const StreamSayInputSchema = z
 export type StreamSayInput = z.infer<typeof StreamSayInputSchema>;
 
 /**
+ * T435: the longest conclusion Send to <parent> takes (the dialog counts
+ * down to it); the parent's line carries it whole.
+ */
+export const SEND_UP_MAX_CHARS = 3000;
+
+/**
  * T421 (D42): a conversation's conclusion, sent up to the node it was asked
  * under (`POST /api/streams/:id/send-up`): your line on the parent's thread,
  * which its agent reads as it reads its composer.
  */
 export const StreamSendUpInputSchema = z
   .object({
-    body: z
-      .string()
-      .trim()
-      .min(1)
-      .max(THREAD_BODY_MAX_CHARS - 400),
+    body: z.string().trim().min(1).max(SEND_UP_MAX_CHARS),
   })
   .strict();
 export type StreamSendUpInput = z.infer<typeof StreamSendUpInputSchema>;
@@ -797,6 +799,12 @@ export const StreamUpdateRequestSchema = z
   .object({
     title: z.string().trim().min(1).optional(),
     goal: z.string().trim().min(1).optional(),
+    /**
+     * T435 (D41's path): `title` is a placeholder the cockpit derived from the
+     * new goal (a conversation turned into work); the daemon asks the cheap
+     * model for a better one, unless the title changes again meanwhile.
+     */
+    auto_title: z.boolean().optional(),
   })
   .strict()
   .refine((input) => input.title !== undefined || input.goal !== undefined, {

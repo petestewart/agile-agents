@@ -13,6 +13,7 @@ import {
   newNodeDefaults,
   outline,
   overlapMark,
+  pickHighlight,
   projectOutline,
   searchOutline,
   splitRepos,
@@ -180,6 +181,39 @@ describe('typeAheadMatch (T426)', () => {
     expect(typeAheadMatch(repos, 'll')?.text).toBe('ledger-lite');
     expect(typeAheadMatch(repos, 'lll')?.text).toBe('ledger');
     expect(typeAheadMatch(repos, 'ww')?.text).toBe('web');
+  });
+});
+
+describe('pickHighlight (T435)', () => {
+  const parents = [
+    { value: '', text: 'Top level of Shop', pinned: true },
+    { value: 'a', text: 'Add CSV import' },
+    { value: 'b', text: 'Show sale prices' },
+    { value: 'c', text: 'Sale badge', disabled: true },
+    { value: 'd', text: 'web: show the sale badge' },
+  ];
+  test('no query: the current value, else the first pickable', () => {
+    expect(pickHighlight(parents, '', '')).toBe('');
+    expect(pickHighlight(parents, '  ', 'b')).toBe('b');
+    expect(pickHighlight(parents, '', 'c')).toBe('');
+    expect(pickHighlight(parents, '', 'gone')).toBe('');
+  });
+  test('typing: the first match that is not pinned, never the current value it kept', () => {
+    // Audit r6 #7: "sale" and Enter kept Top level.
+    expect(pickHighlight(parents, 'sale', '')).toBe('b');
+    expect(pickHighlight(parents, 'SALE B', '')).toBe('d');
+    expect(pickHighlight(parents, 'csv', 'b')).toBe('a');
+  });
+  test('a pinned option whose own text matches comes first; no match keeps the first', () => {
+    expect(pickHighlight(parents, 'top', 'a')).toBe('');
+    expect(pickHighlight(parents, 'shop', 'a')).toBe('');
+    expect(pickHighlight(parents, 'zzz', 'a')).toBe('');
+    const repos = [
+      { value: '', text: 'No repository', pinned: true },
+      { value: 'docs-site', text: 'docs-site' },
+    ];
+    expect(pickHighlight(repos, 'doc', '')).toBe('docs-site');
+    expect(pickHighlight(repos, 'no', 'docs-site')).toBe('');
   });
 });
 

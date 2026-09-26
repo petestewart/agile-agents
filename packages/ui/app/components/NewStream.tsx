@@ -10,7 +10,13 @@
  * the first render). Repository picks the role: none is a Conversation, a
  * repo is Work on its own branch. "Start the agent now" is on, with the
  * model it will use named; Change picks another for this node.
- * Cmd/Ctrl+Enter creates from anywhere in the form, Enter from the title.
+ * Cmd/Ctrl+Enter creates from anywhere in the form, Enter from the title
+ * (T435: not Enter in the goal, which is a long description, often several
+ * paragraphs — design/cockpit-ui.md §7).
+ *
+ * T435: a proposal's Create node… opens it next to the proposing node, on
+ * its repository (`NewStreamPreset.repo`); nested under a work node with a
+ * repository, the Parent's hint says that node will coordinate it.
  */
 
 import type { SessionDefaultsStatus } from '@agile-agents/shared';
@@ -22,6 +28,7 @@ import {
   getSessionDefaults,
   listRepos,
 } from '../lib/api';
+import { coordinatesIt } from '../lib/ask';
 import { agentLabel, sessionIdText } from '../lib/chat';
 import { resolvedFor } from '../lib/defaults';
 import { useOptionalFeed } from '../lib/feed-context';
@@ -123,7 +130,7 @@ export function NewStream({
   // whose first render already holds the default parent. Resetting it in an
   // effect after mount left one render with the last opening's parent, which
   // a fast reader (or a quick submit) could see as "— none —".
-  const key = `${selected ?? ''}|${newStreamPreset?.parent ?? ''}|${newStreamPreset?.project ?? ''}|${newStreamPreset?.title ?? ''}`;
+  const key = `${selected ?? ''}|${newStreamPreset?.parent ?? ''}|${newStreamPreset?.project ?? ''}|${newStreamPreset?.title ?? ''}|${newStreamPreset?.repo ?? ''}`;
   return <NewStreamForm key={key} rows={rows} projects={projects} preset={newStreamPreset} />;
 }
 
@@ -148,7 +155,8 @@ function NewStreamForm({
   const [title, setTitle] = useState<string | undefined>(preset?.title);
   const [projectId, setProjectId] = useState(defaults.project);
   const [parent, setParent] = useState(defaults.parent);
-  const [repo, setRepo] = useState('');
+  // T435 (#14): a proposal's node starts on the proposing node's repository.
+  const [repo, setRepo] = useState(preset?.repo ?? '');
   // T373: Add a repository from here; the new repo is picked.
   const [addingRepo, setAddingRepo] = useState(false);
   const [start, setStart] = useState(true);
@@ -200,6 +208,8 @@ function NewStreamForm({
       choice.model.trim() !== (resolved.model ?? '') ||
       choice.effort !== resolved.effort);
   const needsProject = parent === '' && projectId === undefined;
+  // T435 (#3): a node with a repository under a work node makes that node coordinate it.
+  const coordinates = repo !== '' ? coordinatesIt(parentRow) : undefined;
 
   const submit = async (): Promise<void> => {
     if (busy || finalTitle === '' || needsProject) return;
@@ -442,7 +452,16 @@ function NewStreamForm({
               </select>
             </Field>
           )}
-          <Field label="Parent" hint="Optional. Nest it under another node in this project.">
+          <Field
+            label="Parent"
+            hint={
+              coordinates !== undefined ? (
+                <span data-testid="new-stream-coordinates">{coordinates}</span>
+              ) : (
+                'Optional. Nest it under another node in this project.'
+              )
+            }
+          >
             <PickerField
               testid="new-stream-parent"
               label="Parent"

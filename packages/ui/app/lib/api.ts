@@ -510,10 +510,13 @@ export function cloneRepo(input: {
   return post('/api/repos/clone', input) as Promise<CloneRepoResult>;
 }
 
-/** T365: the rail's Rename (and a goal edit): the same patch as `stream.update`, stamped human. */
+/**
+ * T365: the rail's Rename (and a goal edit): the same patch as `stream.update`, stamped human.
+ * T435: `auto_title` marks `title` as a placeholder the cheap model names better (D41).
+ */
 export function updateStream(
   id: string,
-  patch: { title?: string; goal?: string },
+  patch: { title?: string; goal?: string; auto_title?: boolean },
 ): Promise<Stream> {
   return post(`/api/streams/${encodeURIComponent(id)}/update`, patch) as Promise<Stream>;
 }

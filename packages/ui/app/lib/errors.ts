@@ -131,3 +131,50 @@ export function mergeConflict(target: string, files: readonly string[]): MergeRe
     },
   };
 }
+
+// ---------------------------------------------------------------- T435: a text with a cap
+
+/** What a box past its cap says, under its counter (Send to <parent>). */
+export const TOO_LONG_FIX = 'Shorten it, or send the key point.';
+
+/** From this share of the cap on, a box shows its counter. */
+const NEARS = 0.85;
+
+/**
+ * T435 (audit r6 #2): a box's live count against its cap, once it nears it:
+ * `show` from 85% of `max`, `over` past it, `count` in words ("2,612 / 3,000").
+ */
+export function lengthBudget(
+  length: number,
+  max: number,
+): { show: boolean; over: boolean; count: string } {
+  const fmt = (n: number): string => n.toLocaleString('en-US');
+  return {
+    show: length >= Math.floor(max * NEARS),
+    over: length > max,
+    count: `${fmt(length)} / ${fmt(max)}`,
+  };
+}
+
+/** "invalid send-up: body: String must contain at most 3000 character(s)": the schema's own words. */
+const SCHEMA_ERROR = /^invalid [\w -]+: (?:[\w.<>]+: )?/;
+const AT_MOST = /at most (\d+) character/i;
+const AT_LEAST = /at least 1 character/i;
+
+/**
+ * T435 (audit r6 #2): a refused Send to <parent> in words — never "invalid
+ * send-up: body: …". Too long names the cap and the fix; empty asks for
+ * words; anything else is `writeFailure`'s sentence, without the schema's
+ * lead-in.
+ */
+export function sendUpFailure(err: unknown, max: number): string {
+  if (isNetworkError(err)) return 'Couldn’t reach the daemon; nothing was sent.';
+  const raw = err instanceof Error ? err.message : String(err);
+  const over = AT_MOST.exec(raw);
+  if (over) {
+    const cap = Number(over[1]) || max;
+    return `Too long to send: at most ${cap.toLocaleString('en-US')} characters. ${TOO_LONG_FIX}`;
+  }
+  if (AT_LEAST.test(raw)) return 'Write what to send first.';
+  return writeFailure(new Error(raw.replace(SCHEMA_ERROR, '')));
+}
