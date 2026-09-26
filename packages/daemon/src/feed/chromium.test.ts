@@ -506,7 +506,8 @@ describe('guardStdioPipes: a dead launch never closes a live fd', () => {
         const live = spawnPipeLaunch();
         try {
           await Bun.sleep(20);
-          const mine = [...openFds()].filter(([fd]) => !before.has(fd));
+          // By fd and target: a number freed after `before` and reused counts too.
+          const mine = [...openFds()].filter(([fd, target]) => before.get(fd) !== target);
           expect(mine.length).toBeGreaterThanOrEqual(4);
           Bun.gc(true);
           await Bun.sleep(20);

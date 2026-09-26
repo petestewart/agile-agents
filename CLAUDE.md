@@ -34,7 +34,7 @@ State lives in the home (`$AGILE_HOME`, default `~/.agile/`): `config.yaml`, `re
 
 ## Commands
 
-You need Bun **1.3.11 or newer**. CI pins 1.3.11. Older Bun ignores `pathIgnorePatterns`, so `vendor/` and `dist/` run as tests and fail. If `bun` is missing: `curl -fsSL https://bun.sh/install | bash` or `npm i -g bun`. If neither works, log it in the PLAN Discovered Issues and stop. Don't swap the toolchain.
+You need Bun **1.4.2 or newer**. CI pins 1.4.2 (D37). Bun before 1.4.0 closes a dead child's extra stdio fds a second time and loses child exits and pipes under load; the workarounds for that stay in the code. Older Bun also ignores `pathIgnorePatterns`, so `vendor/` and `dist/` run as tests and fail. If `bun` is missing: `curl -fsSL https://bun.sh/install | bash` or `npm i -g bun`. If neither works, log it in the PLAN Discovered Issues and stop. Don't swap the toolchain.
 
 ```bash
 bun install
