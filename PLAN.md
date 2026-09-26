@@ -1870,8 +1870,8 @@ Pete's requests from the walkthrough (D33, D34). Branch `claude/phase-14`, stack
 
 ### Ticket: T347 Cockpit wording and small UI (D36: D1, D5, D6, D7, D9, D11, D12)
 - **Priority:** P1
-- **Status:** Todo
-- **Owner:** Unassigned
+- **Status:** In Progress
+- **Owner:** opus:worker-T347
 - **Scope:** D1 rename the two "Link" buttons to "Waits on…" and "Tracker issue…"; the tracker field only when the project has a tracker. D5 a direct merge event reads "merged". D6 the coordinator autonomy picker only on coordinating nodes and project roots. D7 "Merge" on the Needs me card too. D9 a ship-check hold styled neutral. D11 part titles in the rail not cut off by "waiting for the plan". D12 daemon lines addressed to the agent hidden from the human thread (still delivered to the agent).
 - **Acceptance Criteria:** UI tests per item; walkthrough still clean.
 - **Validation Steps:** `bun test packages/ui`; `bun run build && bun run test:walkthrough`.
@@ -1888,12 +1888,12 @@ Pete's requests from the walkthrough (D33, D34). Branch `claude/phase-14`, stack
 
 ### Ticket: T349 A "question" state on Children cards (D36: D3)
 - **Priority:** P2
-- **Status:** Todo
+- **Status:** Done
 - **Owner:** Unassigned
 - **Scope:** A child waiting on the human shows "question" (not "blocked") on its parent's Children card. Schema: add the state to the card status enum (.strict()); older homes still load.
 - **Acceptance Criteria:** Tests: a child with an open question renders "question"; a real block still "blocked".
 - **Validation Steps:** `bun test packages/shared packages/daemon/src/coordination packages/ui`.
-- **Notes:** —
+- **Notes:** Branch T349-question-card-state, merge 3286bbd. CardState gains "question" (amber dot); open gates also read "question"; refreshQuestionCards rewrites stored stale "blocked" cards after migrateHome (idempotent). An older daemon refuses a stored "question" card. Review+QA (sonnet): APPROVE/PASS.
 
 ### Ticket: T350 Collapse ended sessions in the session list (D36: D4)
 - **Priority:** P2
@@ -1906,8 +1906,8 @@ Pete's requests from the walkthrough (D33, D34). Branch `claude/phase-14`, stack
 
 ### Ticket: T351 Accepting a decision wakes the conversation (D36: D10)
 - **Priority:** P2
-- **Status:** Todo
-- **Owner:** Unassigned
+- **Status:** In Progress
+- **Owner:** opus:worker-T351
 - **Scope:** When the human accepts knowledge scoped to a conversation whose turn has ended, the conversation is woken with the decision (same wake path as a human line), so it is delivered at once instead of staying "pending".
 - **Acceptance Criteria:** Test: accept → the conversation is woken and the item is delivered.
 - **Validation Steps:** `bun test packages/daemon/src/knowledge packages/daemon/src/events`.
@@ -1915,8 +1915,8 @@ Pete's requests from the walkthrough (D33, D34). Branch `claude/phase-14`, stack
 
 ### Ticket: T352 Upgrade Bun if a release fixes the pipe bugs (D37)
 - **Priority:** P1
-- **Status:** Todo
-- **Owner:** Unassigned
+- **Status:** In Progress
+- **Owner:** opus:worker-T352
 - **Scope:** Find the newest Bun release; check its changelog for the child_process fd double-close / EBADF-on-epoll_ctl fixes; run the full suite, test:integration and test:walkthrough under it, and the fd reproduction tests in chromium.test.ts and acp-client with the workarounds disabled. If fixed: move the pin (CI workflow, CLAUDE.md "1.3.11", engines) on phase-7 and forward. Keep the workarounds unless proven unneeded. If not fixed: report and stay.
 - **Acceptance Criteria:** CI green on the new pin; the reproductions pass without workarounds, or a written finding that no release fixes it.
 - **Validation Steps:** CI; `bun test`; `bun run test:integration`.

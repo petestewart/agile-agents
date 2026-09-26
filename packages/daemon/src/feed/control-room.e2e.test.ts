@@ -3232,6 +3232,22 @@ describe('status cards on the parent page (Playwright e2e, T283)', () => {
         await page.locator(bad).waitFor();
         expect(await page.locator(bad).textContent()).toContain(`cards/${web.id}.yaml:3:`);
         await waitForAttr(page, card, 'data-state', 'working');
+
+        // T349: a child waiting on your answer reads "question" with the amber dot…
+        await cards.refresh(
+          await cockpit.streams.update('daemon', api.id, { agent: { status: 'question' } }),
+        );
+        await cockpit.streams.update('human', web.id, { title: 'web: show sale?' });
+        await waitForAttr(page, card, 'data-state', 'question');
+        await waitForText(page, `${card} [data-testid="status-card-state"]`, 'question');
+        await waitForAttr(page, `${card} [data-testid="status-card-dot"]`, 'data-dot', 'amber');
+        // …and a real block still reads "blocked", with no needs-you dot.
+        await cards.refresh(
+          await cockpit.streams.update('daemon', api.id, { agent: { status: 'blocked' } }),
+        );
+        await cockpit.streams.update('human', web.id, { title: 'web: show sale.' });
+        await waitForAttr(page, card, 'data-state', 'blocked');
+        expect(await page.locator(`${card} [data-testid="status-card-dot"]`).count()).toBe(0);
       } finally {
         await teardown([page]);
         await cockpit.stop();
