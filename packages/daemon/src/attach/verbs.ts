@@ -24,6 +24,7 @@ import {
   type ThreadEntry,
   formatKnowledgeScope,
   formatZodError,
+  isConversationNode,
   parseKnowledgeScope,
   quoteThreadBody,
   validateVerbInput,
@@ -215,6 +216,8 @@ export class VerbService {
       return undefined;
     const plan = plans.get(parentId);
     if (plan === undefined) return undefined;
+    // D42: a conversation under a coordinator is the human's talk, not a part: its questions go to the human.
+    if (isConversationNode(streams.get(node), streams.list())) return undefined;
     const parent = streams.get(parentId);
     if (!parent.sessions.some((s) => s.role === 'coordinator' && LIVE.has(s.status)))
       return undefined;

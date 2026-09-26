@@ -82,7 +82,15 @@ export function transitionEvents(
   const title = after.title.slice(0, ROUTED_EVENT_STRING_MAX);
   const status = after.agent.status;
   const waits = status !== before.agent.status && WAIT_STATES.has(status);
-  if (waits && status === 'done' && tangents !== undefined && isTangent(after, tangents.all)) {
+  if (waits && tangents !== undefined && isSideConversation(after, tangents.all)) {
+    // D42: a conversation under a node that isn't one is the human's own talk:
+    // its status never wakes the parent's agent (Send to parent hands a conclusion up).
+  } else if (
+    waits &&
+    status === 'done' &&
+    tangents !== undefined &&
+    isTangent(after, tangents.all)
+  ) {
     // T332 (D33): a finished tangent sends its parent its own last words, not a status.
     out.push({
       ...base,
@@ -157,6 +165,14 @@ export function isTangent(node: Stream, all: readonly Stream[]): boolean {
   return role(node) === 'conversation' && role(parent) === 'conversation';
 }
 
+/** D42: a conversation whose parent is not a conversation (a question asked about a node). */
+export function isSideConversation(node: Stream, all: readonly Stream[]): boolean {
+  const parent = all.find((s) => s.id === node.parent);
+  if (parent === undefined) return false;
+  const role = (s: Stream) => nodeRole(s, liveChildrenOf(s.id, all), all);
+  return role(node) === 'conversation' && role(parent) !== 'conversation';
+}
+
 /** The tangent's own words: its last agent line, else its progress line; capped. */
 function tangentSummary(node: Stream, tangents: TangentContext): string {
   const text = (tangents.lastAgentLine(node.id) ?? node.agent.progress ?? '').trim();
@@ -194,10 +210,11 @@ export function lastAgentLineOf(
  */
 export function emitTransitions(emit: EmitRouted, streams?: TangentStreams) {
   return async (before: Stream, after: Stream): Promise<void> => {
-    // Only a new `done` can be a finished tangent: don't read the tree otherwise.
-    const done = after.agent.status === 'done' && before.agent.status !== 'done';
+    // Only a new wait state (done, blocked, a question) reads the tree: a finished
+    // tangent (D33) or a side conversation that tells its parent nothing (D42).
+    const waits = after.agent.status !== before.agent.status && WAIT_STATES.has(after.agent.status);
     const tangents =
-      streams === undefined || !done
+      streams === undefined || !waits
         ? undefined
         : {
             all: streams.list({ include_archived: true }),

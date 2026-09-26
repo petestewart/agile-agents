@@ -21,6 +21,7 @@ import {
   inboxDetail,
   isAgentRole,
   liveChildrenOf,
+  partsOf,
 } from '@agile-agents/shared';
 import type { AutonomyService } from '../coordination/autonomy';
 import type { ContractService } from '../coordination/contracts';
@@ -338,9 +339,9 @@ export const DONE_TEXT =
 export const BLOCKED_TEXT =
   'The agent is stuck and needs a hand. Open the node to see where it stopped.';
 
-/** Live children other than helpers: what makes a node coordinating (`nodeRole`). */
+/** Parts (D42: not helpers, not conversations): what makes a node coordinating (`nodeRole`). */
 function hasParts(id: string, byId: Map<string, Stream>): boolean {
-  return liveChildrenOf(id, [...byId.values()]).some((c) => c.helper_of !== id);
+  return partsOf(id, [...byId.values()]).length > 0;
 }
 
 /** A project's root node (P20: its agent is the project's coordinator). */

@@ -608,14 +608,17 @@ export function assertNoWaitsOnCycle(
 }
 
 /**
- * Derived, never stored (P1, amended by D33). `liveChildren` are the node's
- * children that are not closed or archived; same-repo helpers never count.
+ * Derived, never stored (P1, amended by D33 and D42). `liveChildren` are the
+ * node's children that are not closed or archived; same-repo helpers never
+ * count.
  *
- * D33: a node with no repo whose other children are all conversations
- * (tangents) stays a conversation; it becomes coordinating once a child has
- * a repo, or is itself coordinating. Pass `all` (every stream) so a
- * repo-less child's own children are looked at; without it a repo-less
- * child counts as a conversation.
+ * D42 (widening D33): a conversation child never reshapes its parent. A node's
+ * *parts* are its children that are not conversations (a child with no repo
+ * whose own children are all conversations); only parts make a node
+ * coordinating. So a side conversation under a work node leaves it work (its
+ * agent is not restarted as a coordinator), and one under a coordinator is not
+ * a part of its plan. Pass `all` (every stream) so a repo-less child's own
+ * children are looked at; without it a repo-less child counts as a conversation.
  */
 export type NodeRole = 'project' | 'coordinating' | 'work' | 'conversation';
 
@@ -627,12 +630,32 @@ export function nodeRole(
   all?: readonly Stream[],
 ): NodeRole {
   if (node.parent === undefined) return 'project';
-  const others = liveChildren.filter((c) => c.helper_of !== node.id);
-  if (node.repo === undefined && others.every((c) => isTangent(c, all, new Set([node.id])))) {
-    return 'conversation';
-  }
-  if (others.length > 0) return 'coordinating';
+  if (partsAmong(node.id, liveChildren, all).length > 0) return 'coordinating';
   return node.repo !== undefined ? 'work' : 'conversation';
+}
+
+/** D42: of `liveChildren`, the node's parts: not its helpers, not conversations. */
+function partsAmong<C extends RoleChild>(
+  nodeId: string,
+  liveChildren: ReadonlyArray<C>,
+  all: readonly Stream[] | undefined,
+): C[] {
+  return liveChildren.filter(
+    (c) => c.helper_of !== nodeId && !isTangent(c, all, new Set([nodeId])),
+  );
+}
+
+/**
+ * D42: the node's parts, the children that make it coordinating: live, not
+ * its helpers, not conversations. A project root with parts runs a coordinator.
+ */
+export function partsOf(nodeId: string, all: readonly Stream[]): Stream[] {
+  return partsAmong(nodeId, liveChildrenOf(nodeId, all), all);
+}
+
+/** D42: a node that is a conversation (no repo, only conversation children); roles over `all`. */
+export function isConversationNode(node: Stream, all: readonly Stream[]): boolean {
+  return node.parent !== undefined && isTangent(node, all, new Set());
 }
 
 /** D33: a child that is itself a conversation (no repo, only conversation children). */
