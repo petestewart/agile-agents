@@ -23,10 +23,6 @@ deferred, or need a decision. Each names where it lives. Ticket them in
   chip can name the wrong model for such a project; Settings can't edit them.
   (`packages/daemon/src/http.ts` session route, `components/NewStream.tsx`,
   `components/Settings.tsx`)
-- **`store.addRepo` silently replaces an existing name** (`POST /api/repos`,
-  `agile repo add`); the Add repository dialog guards it, the API doesn't.
-  (`packages/daemon/src/store/store.ts` ~726, `state.repo_add`)
-
 ## P2 — polish
 
 - Inbox items carry the call, rule, name and scope only inside `context`
