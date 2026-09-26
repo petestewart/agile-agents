@@ -2525,6 +2525,15 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 - **Validation Steps:** `bun run lint`; read through against `agile` usage, `DEFAULT_DAEMON_PORT`, `resolveSessionDefaults` and projects-design §12.
 - **Notes:** Branch T430-readme.
 
+### Ticket: T431 Turn into work's goal is yours while it drafts
+- **Priority:** P2
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** Timed on the demo: the goal draft (one Haiku call) takes about 6 s, and the Goal box was disabled until it came back.
+- **Acceptance Criteria:** The Goal box is editable at once ("Drafting from the conversation…" as its placeholder, "…or write your own" as its hint). The draft fills it only if you haven't typed; otherwise the hint says a draft is ready, with **Use it instead**. Start waits only for a non-empty goal.
+- **Validation Steps:** control-room e2e `T422` (a held draft request: typing survives it, Use it instead swaps it in); a screenshot of both states against the real model.
+- **Notes:** Branch T431-draft-while-typing.
+
 ### Ticket: T369 Phase 15 QA
 - **Priority:** P0
 - **Status:** Done
