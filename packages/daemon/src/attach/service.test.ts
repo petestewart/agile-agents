@@ -43,6 +43,7 @@ import { ProjectService } from '../projects/service';
 import { QuestionService } from '../questions/service';
 import { wireQuestionSupersession } from '../questions/supersede';
 import type { FakeAgentScript } from '../runner/fake-agent';
+import { missingVendorCommand } from '../runner/session';
 import { StateStore } from '../store';
 import { RepoInPlaceService } from '../streams/repo-in-place';
 import { StreamService } from '../streams/service';
@@ -270,9 +271,9 @@ describe('the exit path', () => {
     const { session, handle } = await attachService.attach(stream.id);
     expect(streams.get(stream.id).agent.status).toBe('working');
 
-    // Stopping is the operator's `agile detach`: SIGTERM, escalating to
-    // SIGKILL after the client's own grace period.
-    handle.stop();
+    // A stop of the daemon's own with no reason (+ Repo's restart): SIGTERM,
+    // escalating to SIGKILL after the client's own grace period. T432: ours, so no crash.
+    await attachService.stop(stream.id, 'worker');
     await handle.exited;
     await waitFor(() => streams.get(stream.id).agent.status === 'done');
 
@@ -283,6 +284,49 @@ describe('the exit path', () => {
     // to a session that has exited.
     expect(store.listAgents().some((a) => a.id === session.id)).toBe(false);
   }, 20_000);
+});
+
+describe('T432 (D43): a vendor that exits with an error on its own', () => {
+  test('is blocked, not done, and the thread says why in its own words', async () => {
+    const complaint = 'Invalid API key · Please run /login';
+    attachService = buildAttachService({
+      ...ACP_PROVIDERS.claude,
+      command: 'sh',
+      args: ['-c', `echo "${complaint}" >&2; exit 1`],
+    });
+    const stream = await makeStream();
+    const { session, handle } = await attachService.attach(stream.id);
+    await handle.exited;
+    await waitFor(() => streams.get(stream.id).agent.status === 'blocked');
+    const after = streams.get(stream.id);
+    expect(after.sessions.find((s) => s.id === session.id)?.status).toBe('error');
+    expect(threadBodies(stream.id)).toContain(
+      `session ended: process exited (code 1): ${complaint}`,
+    );
+  }, 20_000);
+
+  test('a vendor that is not installed is named before anything spawns', async () => {
+    attachService = buildAttachService({
+      ...ACP_PROVIDERS.claude,
+      command: 'definitely-not-a-vendor-xyz',
+      args: [],
+    });
+    const stream = await makeStream();
+    await expect(attachService.attach(stream.id)).rejects.toThrow(
+      "Claude Code can't start: `definitely-not-a-vendor-xyz` is not on the daemon's PATH.",
+    );
+  });
+
+  test('missingVendorCommand: npx names Node; a path or a found command is left alone', () => {
+    const none = () => null;
+    expect(missingVendorCommand({ label: 'Claude Code', command: 'npx' }, none)).toBe(
+      "Claude Code can't start: `npx` is not on the daemon's PATH. It runs through npx: install Node.js, then restart the daemon.",
+    );
+    expect(
+      missingVendorCommand({ label: 'Gemini CLI', command: '/opt/gemini' }, none),
+    ).toBeUndefined();
+    expect(missingVendorCommand({ label: 'X', command: 'x' }, () => '/usr/bin/x')).toBeUndefined();
+  });
 });
 
 describe('T370: the daemon stopping mid-work', () => {
@@ -624,7 +668,8 @@ describe('the reviewer (§4.2)', () => {
     });
     const stream = await makeStream('demo');
     const { session, handle } = await attachService.attach(stream.id);
-    handle.stop();
+    // T432: an end of the daemon's own (a crash starts no reviewer).
+    await attachService.stop(stream.id, 'worker');
     await handle.exited;
 
     await waitFor(() => streams.get(stream.id).sessions.length === 2);
@@ -637,7 +682,8 @@ describe('the reviewer (§4.2)', () => {
     await store.putRepos({ demo: { path: repo, protected_branches: ['main'] } });
     const stream = await makeStream('demo');
     const { handle } = await attachService.attach(stream.id);
-    handle.stop();
+    // T432: the daemon's own stop (a vendor killed from outside is a crash, not a finish).
+    await attachService.stop(stream.id, 'worker');
     await handle.exited;
     await waitFor(() => streams.get(stream.id).agent.status === 'done');
     await Bun.sleep(200);
@@ -802,7 +848,7 @@ describe('ask → answer → continue (T137)', () => {
     const { session, handle } = await attachService.attach(stream.id);
     await waitFor(() => store.listAgents().some((a) => a.id === session.id));
     const { id } = await verbs.ask({ session: session.id, text: 'comma or semicolon?' });
-    handle.stop();
+    await attachService.stop(stream.id, 'worker');
     await handle.exited;
 
     await questions.answer(id as Question['id'], { answer: 'semicolon', by: 'human' });
@@ -1986,7 +2032,9 @@ describe('a send to an agent already gone (CI job 108169280649)', () => {
     const { session } = await attachService.attach(stream.id);
     await waitFor(() => threadBodies(stream.id).some((b) => b.startsWith('session ended')));
     const ended = streams.get(stream.id).sessions.find((s) => s.id === session.id);
-    expect(ended?.status).toBe('stopped');
+    // T432 (D43): exit 1 mid-turn is a crash: the session failed and the node is stuck.
+    expect(ended?.status).toBe('error');
+    expect(streams.get(stream.id).agent.status).toBe('blocked');
     expect(threadBodies(stream.id)).toContain('about to crash');
   }, 30_000);
 

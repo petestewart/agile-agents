@@ -404,6 +404,17 @@ export function systemLine(body: string): SystemLine {
   if (/^session ended: its turn finished$/.test(body)) {
     return { icon: 'check', text: 'Agent finished its turn', tone: 'muted' };
   }
+  // T432 (D43): the vendor's process ended on its own; non-zero is a failure, with its reason.
+  const exited = /^session ended: process exited \(code (-?\d+)\)(?:: (.+))?$/s.exec(body);
+  if (exited) {
+    const [, code, why] = exited;
+    if (code === '0') return { icon: 'square', text: 'The agent’s process ended', tone: 'muted' };
+    return {
+      icon: 'alert-triangle',
+      text: `The agent stopped with an error${why ? `: ${tidyIds(why)}` : ` (exit code ${code})`}. Check its vendor is installed and logged in, then send a message to start it again.`,
+      tone: 'warn',
+    };
+  }
   const woken = /^woken by (.+)$/s.exec(body);
   if (woken) return { icon: 'play', text: wakeWords(woken[1] ?? ''), tone: 'muted' };
   const waited = /^waits on (.+) satisfied$/s.exec(body);

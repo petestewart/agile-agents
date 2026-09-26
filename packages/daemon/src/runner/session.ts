@@ -145,6 +145,25 @@ export interface AgentExitInfo {
   ok: boolean;
   /** The vendor's last non-empty stderr line, when the session ended on a failure or non-zero exit. */
   vendorError?: string;
+  /** T432: the process's exit code, when it exited (absent on a transport error). */
+  exitCode?: number;
+}
+
+/**
+ * T432: why the vendor can't start here, when its command is not on the
+ * daemon's PATH (an absolute or relative path is left to the spawn).
+ * `undefined` when it is there.
+ */
+export function missingVendorCommand(
+  provider: Pick<AcpProviderConfig, 'label' | 'command'>,
+  which: (command: string) => string | null = (command) => Bun.which(command),
+): string | undefined {
+  if (provider.command.includes('/') || which(provider.command) !== null) return undefined;
+  const via =
+    provider.command === 'npx'
+      ? ' It runs through npx: install Node.js, then restart the daemon.'
+      : '';
+  return `${provider.label} can't start: \`${provider.command}\` is not on the daemon's PATH.${via}`;
 }
 
 /** The last non-empty line of a stderr tail, trimmed. */
@@ -305,6 +324,13 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
   const provider = opts.provider ?? ACP_PROVIDERS.claude;
   const spawn = opts.spawn ?? defaultSpawnSession;
   const policyRole = permissionRoleFor(role);
+
+  // T432: a vendor that isn't installed says so, where the spawn would only
+  // have failed later as "ACP agent stdin unavailable".
+  if (opts.spawn === undefined) {
+    const missing = missingVendorCommand(provider);
+    if (missing !== undefined) throw new Error(missing);
+  }
 
   // Tier 1 (§8.1): hooks active before the first tool call. The session id
   // reaches the hook via `AGILE_AGENT` in the session env, not the file.
@@ -493,7 +519,12 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
     });
   }
 
-  async function finish(reason: string, ok: boolean, failed = !ok): Promise<void> {
+  async function finish(
+    reason: string,
+    ok: boolean,
+    failed = !ok,
+    exitCode?: number,
+  ): Promise<void> {
     if (settled) return;
     settled = true;
     unsubscribe();
@@ -516,6 +547,7 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
       reason,
       ok,
       ...(vendorError !== undefined ? { vendorError } : {}),
+      ...(exitCode !== undefined ? { exitCode } : {}),
     });
   }
 
@@ -524,7 +556,12 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
       // §2.3: exit ⇒ `done`. A non-zero code is normal (a detach's SIGTERM
       // looks like that), so it goes in the reason. Only a transport error
       // or failed prompt blocks the stream.
-      void finish(`process exited (code ${event.exitCode})`, true, event.exitCode !== 0);
+      void finish(
+        `process exited (code ${event.exitCode})`,
+        true,
+        event.exitCode !== 0,
+        event.exitCode,
+      );
       return;
     }
     if (event.type === 'error') {
