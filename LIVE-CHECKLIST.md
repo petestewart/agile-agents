@@ -76,12 +76,13 @@ The cockpit is `http://127.0.0.1:4600/`.
 |---|---|
 | Sidebar | **New node (n)**; the views below (**Needs me** with its count, **Director**, **Knowledge**, and under *Views* **Running**, **Repos**, **Dependencies**, **Events**); *Projects*: **?** (what the dots and icons mean), **+** (new project), a filter, and every project's tree with a status dot and a role icon per node and a ⚠ mark on overlapping nodes. On hover a row shows **+** (a new node under it) and **⋯** (Open, New child node, Rename, Move to, Copy node id, Delete; right-click opens it too); a project's **⋯** has **Show only this project**, undone with the chip's **×**. **Deleted (n)** below the tree restores deleted nodes; **Settings** at the bottom. Below 900px wide it is a drawer behind the ☰ button |
 | **Needs me** | The inbox, grouped by project, then node, oldest first, with a filter (**All** · **Questions** · **Decisions** · **Merges**): questions (a button per choice, or type and **Answer**), actions to allow (**Allow**/**Deny**, **Add a note**), knowledge proposals (**Accept**/**Retire**), plans (**Approve plan**), coordinator and Director proposals (**Apply**/**Dismiss**), finished work (**Merge**, **View changes**). `j`/`k` move between cards; Enter opens a card's node |
-| **Repos** | Per repo: its delivery mode, the live work nodes on it across projects (ancestors greyed), overlaps, its norms, recent repo events |
-| **Running** | Nodes with a live agent |
-| **Dependencies** | Every "waits on" link, across projects |
+| **Repos** | A card per repo: its kind (Local only, GitHub · SSH…) and delivery in words (**Merges directly** or **Opens pull requests**, **Auto-merge**), its live work nodes across projects (ancestors greyed, status in words), overlaps as a warning naming both nodes and the files, its recent events, and its norms (a click opens the item in Knowledge) |
+| **Running** | Nodes with a live agent, your move first: status, the node's path, role and repo; **⋯** → **Stop agent** |
+| **Dependencies** | Every "waits on" link, across projects, grouped by the node that waits: what it waits on and that node's status; **⋯** → **Remove link** (with Undo) |
 | **Knowledge** | Every knowledge item, split into **To review**, **Rules**, **Standards**, **Architecture** and **Decisions** (retired items fold at the bottom); search and scope/enforcement filters; a click opens an item's side panel: Accept/Retire, Edit, Test examples |
-| **Director** | The Director's thread and composer, its **Drafts** (Create/Dismiss), its activity |
-| **Events** | Every routed event, newest first: what happened, to which node, and who it was routed to and why |
+| **Director** | A chat with the Director, like a node's: its drafts wait on you at the end of the chat as cards (**Create**/**Dismiss**); the **Details** panel has its **Activity** and what it may do in each project |
+| **Events** | Every routed event, newest first, by day: what happened (and a line of detail), to which node, and who it was routed to and why; filter by type (**All** · **Messages** · **Merges and PRs** · **Coordination** · **Knowledge**), by repo, or search; **Show more** for older ones |
+| Anywhere | **Ctrl K** (**⌘K** on a Mac, or the search icon at the top of the sidebar) opens the command palette: find a node by part of its title or path, a project, a view or an action (New node, New project, switch theme, Keyboard shortcuts); ↑↓ and Enter. **?** lists every keyboard shortcut; **g** then a letter goes to a view (**g i** Needs me, **g k** Knowledge…) |
 | **Settings** | Sections on the left: **General** (theme: System, Light, Dark; the daemon), **Agents** (session defaults, global and per repo), **Repositories** (**Add repository**: a folder, or a URL to clone; per repo its icon, delivery, auto-merge, visibility), **Classifier** (the TypeSafe API key), **Trackers** (Jira, Linear), **Permissions** (who decides) |
 | A node's page | A chat with its agent. The header: path, title, status, role, repo and branch, then **Start agent** (its chevron picks another model), **Stop** while it works, **Merge** when there is something to merge, the details toggle and **⋯** (**Review changes…**, **Restart agent**, **Waits on…**, **Add repository…**, **Tracker issue…**, **Copy branch name**, **Close node…**, **Delete node…**). Tabs **Chat**, **Changes**, **Plan**, **Activity**, **Knowledge**, **Docs**, only where they apply. What needs you (questions, gates, plans, proposals) sits at the end of the chat, and the composer answers an open question. The **Details** panel: **Delivery** (Check now, Mark landed, Resolve), **Agent** (sessions), **Children**, **Waits on**, **Tracker** (**Link**, **Create issue**; then **Unlink**, **Import children**; only when the node's project has a tracker), **Coordinator autonomy** on a coordinating node or a project root (and, on a project root, **Director autonomy** and the project's tracker) |
 
@@ -446,9 +447,9 @@ If the coordinator already proposed this link, press **Apply** on its card in
       list that opens, and press **Wait on**.
 - [ ] The details panel's **Waits on** section lists
       `waits on agile-test-repo part` with an **Unlink** button.
-- [ ] **Dependencies** (sidebar) shows
-      `ledger-lite part waits on agile-test-repo part`. Click either name to
-      open that node.
+- [ ] **Dependencies** (sidebar) shows `ledger-lite part` with
+      `waits on agile-test-repo part` under it, and that part's status. Click
+      either name to open that node.
 
 ### 4.2 Open the pull request
 
@@ -592,9 +593,10 @@ seconds. Wait a minute, then:
 
 - [ ] Show all projects (the chip's **×**). Shop note and Blog note carry the
       ⚠ overlap mark, and so do their project roots, Shop and Blog.
-- [ ] **Repos** (sidebar) shows, under `ledger-lite (direct)`, both live nodes
-      with their project greyed (`Shop › Shop note`, `Blog › Blog note`) and
-      `⚠ Shop note and Blog note both changed walkthrough-notes.md`.
+- [ ] **Repos** (sidebar) shows the `ledger-lite` card (`Merges directly`)
+      with both live nodes, their project greyed (`Shop › Shop note`,
+      `Blog › Blog note`), and a warning:
+      `Shop note and Blog note both changed walkthrough-notes.md`.
 - [ ] Open Shop note: its **Changes** tab shows the one-line change and the
       worktree path, and its **Activity** tab has
       `overlap · ledger-lite · party · pending`. (`pending` means no session
@@ -604,7 +606,7 @@ seconds. Wait a minute, then:
 
 - [ ] On Shop note's page open **⋯** → **Waits on…**, pick `Blog note`, press **Wait on**.
       The page lists `waits on Blog note`, and **Dependencies** shows
-      `Shop note waits on Blog note`.
+      Shop note `waits on Blog note`.
 - [ ] Press **Merge** on Shop note. It is held: the panel shows
       `delivery held: waits on Blog note`, and so does the thread.
 - [ ] Open Blog note and press **Merge**. It reads `Merged.`
@@ -623,9 +625,9 @@ cd ~
 
 - [ ] `walkthrough-notes.md` has both lines. `git status --short` prints
       nothing. The ⚠ marks are gone from the rail (merged nodes are no
-      longer live), and **Repos** shows the `main changed` and `merged`
-      events under ledger-lite (a direct merge reads `merged`; `pr merged` is
-      for a merged PR).
+      longer live), and **Repos** shows the `Main changed` and `Merged`
+      events under ledger-lite's **Recent events** (a direct merge reads
+      `Merged`; `PR merged` is for a merged PR).
 
 ### 5.4 **[vendor]** Back to the ledger-lite part
 
@@ -716,8 +718,8 @@ Ship and classifier action checks need the TypeSafe key. Use **one** of these:
       repo`) with **Open in Knowledge**.
 - [ ] Press **Accept** (on the row, or in **Needs me**). The row moves under
       **Rules**; its panel reads `Accepted`. **Repos** → ledger-lite now lists
-      it under the repo's norms:
-      `standard · tests-with-src (ship) fired 0, violated 0`.
+      it under the repo's **Norms**:
+      `tests-with-src`, `Standard`, `Checked before merge`, `Not fired yet`.
 - [ ] Open it again and press **Test examples** (it is greyed out without a
       key, with "Set one in Settings" under it). After a few seconds the
       examples are replaced by the results: `2 of 2 examples agree`,
@@ -806,24 +808,25 @@ done by `director`.
 
 ### 7.1 What needs me today?
 
-- [ ] **Director** (sidebar). The line under the heading reads
-      `No session yet: a line below starts one.`
-- [ ] Type `What needs me today?` in `Tell the Director…` and press **Send**.
-      The line becomes `claude/… · live`, and your message is on its
-      thread.
+- [ ] **Director** (sidebar). The page is a chat, like a node's. The line
+      under the heading reads `Not started — your first message starts it.`,
+      and the empty chat suggests what to ask.
+- [ ] Type `What needs me today?` in `Ask the Director…` and press Enter.
+      The line becomes `<model> · Working`, and your message is on the chat
+      as a bubble on the right.
 - [ ] Within a minute or two its reply lands on the thread: the inbox first,
       then stuck nodes, overlaps and open waits, taken from the snapshot, not
-      memory. Its **Activity** section lists a `director request` row per
-      message you sent.
+      memory. The **Details** panel's **Activity** lists a `Director request`
+      row per message you sent.
 
 ### 7.2 Advise: a draft tree with Create
 
 - [ ] On **Director**, send:
       `Blog needs a CHANGELOG.md in ledger-lite listing the last five commits. Draft the work for me.`
-- [ ] A **Drafts** section appears under the thread with the draft as a tree
-      (Blog, the new node with its goal, its parts `on ledger-lite`, and any
-      `waits on`), with **Create** and **Dismiss**. Nothing has been created
-      yet.
+- [ ] A card (`A draft waits on you`) appears at the end of the chat with
+      the draft as a tree (Blog, the new node with its goal, its parts
+      `on ledger-lite`, and any `waits on`), with **Create** and **Dismiss**.
+      Nothing has been created yet.
 - [ ] Press **Create**. The nodes appear under Blog in the rail, not started.
 
 ### 7.3 Organise: the Director starts the work itself
@@ -987,7 +990,14 @@ child should be a small task an agent can do in agile-test-repo (for example
       (`YYYY-MM-DD HH:MM`, local time; hover a row for the session id and the
       full time). A node with none says `No events routed here yet.`
 - [ ] **Events** (sidebar) lists every routed event across projects, newest
-      first: its type, the node it is about, who it was routed to and why.
+      first under a day heading: what happened, the node it is about, and
+      who it was routed to and why (a chip per node). The type buttons, the
+      repo list and the search narrow it.
+- [ ] Press **Ctrl K** (**⌘K** on a Mac), type part of a node's title and
+      press Enter: its page opens. With nothing typed the palette lists the
+      nodes you opened last. Type `Knowledge` and press Enter: Knowledge
+      opens. Press **?** (not in a text box): the keyboard shortcuts; Esc
+      closes them. **g** then **i** goes to Needs me.
 - [ ] **CLI only:** the raw event log (every event, not only routed ones):
       `agile tail | tail -20`, `agile tail --follow` to keep watching (Ctrl-C
       to stop), `agile tail --kind thread_appended` for one kind.

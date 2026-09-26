@@ -9,7 +9,6 @@ import {
   EVENT_FAMILY,
   ROUTE_REASON,
   clip,
-  dayLabel,
   deliveryHint,
   deliveryWords,
   dependencyGroups,
@@ -237,23 +236,12 @@ describe('the event log', () => {
     expect(run({ family: 'all', query: 'cents' })).toEqual(['E3']);
   });
 
-  test('days read Today, Yesterday, then a date', () => {
-    const now = new Date(2026, 8, 26, 15, 0);
-    expect(dayLabel(new Date(2026, 8, 26, 1, 0).toISOString(), now)).toBe('Today');
-    expect(dayLabel(new Date(2026, 8, 25, 23, 0).toISOString(), now)).toBe('Yesterday');
-    expect(dayLabel(new Date(2026, 8, 21, 12, 0).toISOString(), now)).toBe('Mon 21 Sep');
-    expect(dayLabel(new Date(2025, 11, 31, 12, 0).toISOString(), now)).toBe('Wed 31 Dec 2025');
-    expect(dayLabel('garbage', now)).toBe('garbage');
-  });
-
   test('groupByDay keeps consecutive events of a day together', () => {
-    const now = new Date(2026, 8, 26, 15, 0);
+    const now = new Date(2026, 8, 26, 15, 0).getTime();
     const at = (d: number, h: number) => ({ at: new Date(2026, 8, d, h).toISOString() });
-    const days = groupByDay([at(26, 14), at(26, 9), at(25, 20), at(24, 8)], now);
-    expect(days.map((d) => [d.day, d.events.length])).toEqual([
-      ['Today', 2],
-      ['Yesterday', 1],
-      ['Thu 24 Sep', 1],
-    ]);
+    const days = groupByDay([at(26, 14), at(26, 9), at(25, 20), at(24, 8), at(24, 7)], now);
+    expect(days.map((d) => d.events.length)).toEqual([2, 1, 2]);
+    expect(days.slice(0, 2).map((d) => d.day)).toEqual(['Today', 'Yesterday']);
+    expect(days[2]?.day).not.toBe('Yesterday');
   });
 });

@@ -2026,9 +2026,9 @@ test.skipIf(!RUN)(
     await step('7.1', 'the Director: what needs me today?', async () => {
       await openView('Director');
       await checkText(
-        'No session yet: a line below starts one.',
+        'Not started — your first message starts it.',
         page.locator('[data-testid="director-session"]'),
-        'No session yet: a line below starts one.',
+        'Not started — your first message starts it.',
       );
       const answered = claimDirector(async (_session, prompt) => {
         check(
@@ -2038,9 +2038,9 @@ test.skipIf(!RUN)(
         );
         // While its turn is open: a finished turn ends the session.
         await checkText(
-          'the line becomes claude/… · live',
+          'the line becomes <model> · Working',
           page.locator('[data-testid="director-session"]'),
-          /^claude\/\S+ · live$/,
+          /^\S.* · (Working|Ready)$/,
         );
         return 'From the snapshot: nothing is waiting in your inbox. No node is stuck, there are no overlaps, and no open waits.';
       });
@@ -2058,19 +2058,26 @@ test.skipIf(!RUN)(
         /From the snapshot/,
       );
       await checkText(
-        'Activity lists a director request row',
+        'Activity (the details panel) lists a Director request row',
         page.locator('[data-testid="director-activity"]'),
-        /director request/,
+        /Director request/,
+      );
+      check(
+        'your lines are bubbles on the right, as in a node chat',
+        (await page
+          .locator('[data-testid="director-thread"] [data-by="human"][data-variant="you"]')
+          .count()) > 0,
+        await textOf(page.locator('[data-testid="director-thread"]')),
       );
       await checkText(
-        'your lines read as "you", as on a node thread',
-        page.locator('[data-testid="director-thread"] [data-by="human"] .who').first(),
-        /^you$/,
+        'its replies are signed Director',
+        page.locator('[data-testid="director-thread"] .cr-msg-name'),
+        /Director/,
         2_000,
       );
       await checkNotText(
         'the thread names who spoke, not raw ids',
-        page.locator('[data-testid="director-thread"] .who'),
+        page.locator('[data-testid="director-thread"] .cr-msg-name'),
         /[0-9A-Z]{26}/,
       );
     });

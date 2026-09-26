@@ -3,7 +3,7 @@
  * typing) and the `g` then letter jumps to a view (`g i` Needs me). It
  * lists only keys that work: the palette (⌘K), `n` (NewStream), `/`
  * (StreamTree), Esc (every Dialog, Menu and panel), the composer's Enter,
- * the arrows in menus, Knowledge and the tree.
+ * `j`/`k` in Needs me (Inbox), the arrows in menus, Knowledge and the tree.
  */
 
 import { Fragment, useEffect, useState } from 'react';
@@ -64,6 +64,13 @@ function sections(mod: string): ReadonlyArray<{
       ],
     },
     {
+      title: 'Needs me',
+      rows: [
+        { label: 'Next or previous card', keys: ['J', 'K'] },
+        { label: "Open the card's node", keys: ['Enter'] },
+      ],
+    },
+    {
       title: 'Lists',
       rows: [
         { label: 'Move through menus, results and Knowledge', keys: ['↑', '↓'] },
@@ -121,8 +128,9 @@ export function Shortcuts(): JSX.Element | null {
       }
       pendingG = isShortcut(event, 'g') ? Date.now() : 0;
     };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
+    // Capture: the letter after `g` is ours, not the page's (Needs me reads `k` too).
+    window.addEventListener('keydown', onKey, true);
+    return () => window.removeEventListener('keydown', onKey, true);
   }, [setView]);
 
   if (!open) return null;

@@ -31,13 +31,13 @@ import {
   stopSessions,
   waitOnStream,
 } from '../lib/api';
+import { clockTime } from '../lib/chat';
 import { useFeed } from '../lib/feed-context';
 import type { CockpitOverlap, CockpitRepoRow, CockpitStreamRow } from '../lib/feed-types';
 import {
   EVENT_FAMILIES,
   type EventFamily,
   ROUTE_REASON,
-  clockTime,
   deliveryHint,
   deliveryWords,
   dependencyGroups,
@@ -842,7 +842,8 @@ const EVENT_TONE: Partial<Record<RoutedEventType, 'red' | 'amber' | 'purple' | '
   knowledge_accepted: 'green',
 };
 
-function EventGlyph({ type }: { type: RoutedEventType }): JSX.Element {
+/** An event's type as a small tinted glyph (the Events log, a repo's events, the Director's activity). */
+export function EventGlyph({ type }: { type: RoutedEventType }): JSX.Element {
   return (
     <span className="cr-lens-ev-glyph" data-tone={EVENT_TONE[type]} aria-hidden="true">
       <Icon name={EVENT_ICON[type] ?? FAMILY_ICON[eventFamily(type)]} size={13} />

@@ -6,9 +6,10 @@
  */
 
 import type { RoutedEvent, RoutedEventType, RoutingEntry } from '@agile-agents/shared';
+import { dayLabel } from './chat';
 import type { CockpitRepoRow, CockpitStreamRow } from './feed-types';
 import { type NodeStatusKey, statusKey } from './status';
-import { dependencyEdges, eventLabel, eventTime } from './streams';
+import { dependencyEdges, eventLabel } from './streams';
 
 // ---------------------------------------------------------------- Repos
 
@@ -336,42 +337,25 @@ export function filterEvents(
   });
 }
 
-/** "Today", "Yesterday", or "Mon 21 Sep" in the viewer's time zone. */
-export function dayLabel(iso: string, now: Date = new Date()): string {
-  const at = new Date(iso);
-  if (Number.isNaN(at.getTime())) return iso;
-  const day = (d: Date): number => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
-  const diff = Math.round((day(now) - day(at)) / 86_400_000);
-  if (diff === 0) return 'Today';
-  if (diff === 1) return 'Yesterday';
-  const weekday = at.toLocaleDateString('en-US', { weekday: 'short' });
-  const month = at.toLocaleDateString('en-US', { month: 'short' });
-  const year = at.getFullYear() !== now.getFullYear() ? ` ${at.getFullYear()}` : '';
-  return `${weekday} ${at.getDate()} ${month}${year}`;
-}
-
 export interface EventDay<T> {
   day: string;
   events: T[];
 }
 
-/** Consecutive events of one day under one heading (the input is already newest first). */
+/**
+ * Consecutive events of one day under one heading (the input is already
+ * newest first). Days read as the chat's do: "Today", "Yesterday", a date.
+ */
 export function groupByDay<T extends Pick<RoutedEvent, 'at'>>(
   events: readonly T[],
-  now: Date = new Date(),
+  now: number = Date.now(),
 ): EventDay<T>[] {
   const out: EventDay<T>[] = [];
   for (const event of events) {
-    const day = dayLabel(event.at, now);
+    const day = dayLabel(event.at, now) || event.at;
     const last = out[out.length - 1];
     if (last && last.day === day) last.events.push(event);
     else out.push({ day, events: [event] });
   }
   return out;
-}
-
-/** "14:05" for a time today; the full local time is the row's tooltip (`eventTime`). */
-export function clockTime(iso: string): string {
-  const full = eventTime(iso);
-  return full.length > 11 ? full.slice(11) : full;
 }
