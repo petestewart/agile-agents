@@ -103,6 +103,23 @@ export function agentName(sessions: readonly Pick<SessionRef, 'vendor' | 'role'>
   return own ? vendorLabel(own.vendor) : 'The agent';
 }
 
+/**
+ * T400: who the live block names while a turn runs, and what it is doing.
+ * The node's own agent when it runs ("Claude is working"); else a running
+ * reviewer ("Codex is reviewing"), not the idle worker's name.
+ */
+export function workingAs(sessions: readonly Pick<SessionRef, 'vendor' | 'role' | 'status'>[]): {
+  name: string;
+  doing: 'working' | 'reviewing';
+} {
+  const running = (s: Pick<SessionRef, 'status'>) =>
+    s.status === 'starting' || s.status === 'running';
+  const own = sessions.some((s) => (s.role === 'worker' || s.role === 'coordinator') && running(s));
+  const reviewer = [...sessions].reverse().find((s) => s.role === 'reviewer' && running(s));
+  if (!own && reviewer) return { name: vendorLabel(reviewer.vendor), doing: 'reviewing' };
+  return { name: agentName(sessions), doing: 'working' };
+}
+
 // ---------------------------------------------------------------- chat rows
 
 /**
