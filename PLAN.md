@@ -2099,11 +2099,12 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 
 ### Ticket: T382 ∥ Running shows each node's agent and model; model names read one way
 - **Priority:** P1
-- **Status:** In progress
+- **Status:** Done
 - **Owner:** worker
 - **Scope:** From T368 and T369: the cockpit row carries no session fields, so Running can't say which agent/model/effort a live node runs; and model names read two ways (`Claude Opus 5.5 · low` in the composer and header, `claude/claude-opus-5-5 · low` in the details panel's session rows and Settings' "starts with" chips).
 - **Acceptance Criteria:** `CockpitStreamRow` carries the live agent's vendor, model and effort (additive, absent when nothing is live); Running shows it in words; every place a person reads a model uses `sessionLabel`; the e2e pins move with it.
 - **Validation Steps:** `bun test packages/ui packages/daemon/src/feed/snapshot.test.ts`; the Running, session-defaults and node-page e2e; the whole control-room e2e and the walkthrough.
+- **Notes:** Branch T382-running-model. The row's `live_agent` is the node's own worker or coordinator first, else a live reviewer, else lessons. Running has an Agent column; `agentLabel` names the agent only when the model's name doesn't. T386 (branch T386-model-labels) carried it to New node, the composer, the picker's "Default here" and removed the dead `sessionModelText`. control-room 68/0, walkthrough 0 findings.
 
 ### Ticket: T383 ∥ Events pages through the whole log
 - **Priority:** P1

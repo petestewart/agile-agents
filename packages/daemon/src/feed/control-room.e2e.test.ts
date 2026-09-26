@@ -4780,11 +4780,10 @@ describe('New stream starts the agent (Playwright e2e, T204)', () => {
         );
         // T365: the agent starts by default, and the dialog names the model it will use.
         expect(await page.locator('[data-testid="new-stream-start"]').isChecked()).toBe(true);
-        await waitForText(
-          page,
-          '[data-testid="new-stream-model"]',
-          'claude-opus-5-5 · claude · low effortChange',
-        );
+        await waitForText(page, '[data-testid="new-stream-model"]', 'Claude Opus 5.5 · lowChange');
+        expect(
+          await page.locator('[data-testid="new-stream-model"] span[title]').getAttribute('title'),
+        ).toBe('claude/claude-opus-5-5 · low effort');
         // Cmd/Ctrl+Enter in the goal creates it.
         await page.locator('[data-testid="new-stream-goal"]').press('Control+Enter');
         await page.locator('[data-testid="new-stream"]').waitFor({ state: 'detached' });
@@ -4827,11 +4826,7 @@ describe('New stream starts the agent (Playwright e2e, T204)', () => {
         await page.locator('[data-testid="new-stream-goal"]').fill('tidy the README');
         await page.locator('[data-testid="new-stream-model-change"]').click();
         await page.locator('[data-testid="new-stream-session-effort"]').selectOption('high');
-        await waitForText(
-          page,
-          '[data-testid="new-stream-model"]',
-          'claude-opus-5-5 · claude · high effort',
-        );
+        await waitForText(page, '[data-testid="new-stream-model"]', 'Claude Opus 5.5 · high');
         await page.locator('[data-testid="new-stream-create"]').click();
         await page.locator('[data-testid="new-stream"]').waitFor({ state: 'detached' });
         const created = cockpit.streams.list().find((x) => x.title === 'tidy the README');
