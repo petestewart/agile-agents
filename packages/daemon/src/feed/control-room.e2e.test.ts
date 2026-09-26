@@ -3001,12 +3001,13 @@ describe('review the diff with the agent (Playwright e2e, T393)', () => {
         // slow runner does, so focus returning to the line just commented can't take
         // the keyboard back from it.
         await p.evaluate(() => {
-          const w = window as unknown as {
-            requestAnimationFrame: typeof requestAnimationFrame;
+          type Frame = (at: number) => void;
+          const w = globalThis as unknown as {
+            requestAnimationFrame: (cb: Frame) => number;
             releaseFrames: () => void;
           };
-          const raf = w.requestAnimationFrame.bind(window);
-          const held: FrameRequestCallback[] = [];
+          const raf = w.requestAnimationFrame.bind(globalThis);
+          const held: Frame[] = [];
           w.requestAnimationFrame = (cb) => {
             held.push(cb);
             return 0;
@@ -3037,8 +3038,12 @@ describe('review the diff with the agent (Playwright e2e, T393)', () => {
         await p.evaluate(
           () =>
             new Promise<void>((done) => {
-              (window as unknown as { releaseFrames: () => void }).releaseFrames();
-              requestAnimationFrame(() => done());
+              const w = globalThis as unknown as {
+                releaseFrames: () => void;
+                requestAnimationFrame: (cb: () => void) => number;
+              };
+              w.releaseFrames();
+              w.requestAnimationFrame(() => done());
             }),
         );
         await p.keyboard.press('c');
