@@ -782,6 +782,14 @@ export function DetailsPanel({
   children,
   onClose,
 }: PropsWithChildren<{ onClose: () => void }>): JSX.Element {
+  // Below 1200px the panel slides over the page: Escape puts it away.
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape' && window.innerWidth < 1200) onClose();
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [onClose]);
   return (
     <aside className="cr-node-details" data-testid="node-details" aria-label="Node details">
       <div className="cr-node-details-hd">

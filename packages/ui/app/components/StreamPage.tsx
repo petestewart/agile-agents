@@ -19,7 +19,7 @@
  */
 
 import { type InboxItem, type SessionDefaultsStatus, isAgentRole } from '@agile-agents/shared';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   type RepoRow,
   addRepoToStream,
@@ -346,7 +346,7 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
     [cockpit],
   );
 
-  const threadTick = useMemo(() => page?.thread_total ?? 0, [page]);
+  const threadTick = page?.thread_total ?? 0;
 
   if (loadError && !page) {
     return (
@@ -787,13 +787,19 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
             ...questions.map((q) => ({
               label: oneLine(q.detail ?? q.context, 70),
               icon: q.id === answering ? ('check' as const) : undefined,
-              onSelect: () => setAnswerChoice(q.id),
+              onSelect: () => {
+                setAnswerChoice(q.id);
+                composer.current?.focus();
+              },
             })),
             'separator' as const,
             {
               label: 'Write a message instead',
               icon: 'message-square' as const,
-              onSelect: () => setAnswerChoice('message'),
+              onSelect: () => {
+                setAnswerChoice('message');
+                composer.current?.focus();
+              },
             },
           ]}
         />
@@ -807,7 +813,10 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
         size="sm"
         label="Write a message instead"
         data-testid="composer-answer-cancel"
-        onClick={() => setAnswerChoice('message')}
+        onClick={() => {
+          setAnswerChoice('message');
+          composer.current?.focus();
+        }}
       />
     </div>
   ) : questions.length > 0 && open ? (
@@ -815,7 +824,10 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
       type="button"
       className="cr-answering-off"
       data-testid="composer-answer-resume"
-      onClick={() => setAnswerChoice(undefined)}
+      onClick={() => {
+        setAnswerChoice(undefined);
+        composer.current?.focus();
+      }}
     >
       <Icon name="corner-down-left" size={13} />
       Answer the open question instead
