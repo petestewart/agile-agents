@@ -407,6 +407,11 @@ describe('T336: a coordinator reads other repos with realistic Bash', () => {
       'cd && ls',
       'cd - && ls',
       'cd $HOME && ls',
+      // T345: a failed cd leaves the shell in the repo; CDPATH sends cd anywhere.
+      `cd ${ledger} ; cd ${dir}/nope ; echo x > notes.md`,
+      `CDPATH=${home} cd sessions`,
+      // A bare name: CDPATH in the user's shell could send it anywhere.
+      `cd ${dir} && cd notes`,
     ]) {
       expect([command, bash(command).decision]).toEqual([command, 'deny']);
     }
@@ -484,5 +489,41 @@ describe('T291: a coordinator has no network (P20)', () => {
   test('a worker (engineer) is unchanged: both fall through to allow', () => {
     expect(web('worker', 'WebFetch').decision).toBe('allow');
     expect(web('worker', 'WebSearch').decision).toBe('allow');
+  });
+});
+
+describe('T345: a worker may cd within its worktree', () => {
+  const home = '/home/u/.agile';
+  const ctx = baseCtx({ readRoots: ['/home/u/Projects/ledger-lite'], hiddenRoots: [home] });
+  const bash = (command: string) =>
+    decidePreToolUse(ctx, { tool_name: 'Bash', tool_input: { command, description: 'x' } })
+      .decision;
+
+  test('cd into the worktree and work there is allowed', () => {
+    for (const command of ['cd ./sub && bun test', 'cd ./pkg && git status', 'tree -L 2']) {
+      expect([command, bash(command)]).toEqual([command, 'allow']);
+    }
+  });
+
+  test('cd out of it, and escapes through a later relative path, are denied', () => {
+    for (const command of [
+      'cd .. && ls',
+      'cd / && ls',
+      'cd ~ && ls',
+      `cd ${home} && cat config.yaml`,
+      'cd /home/u/Projects/ledger-lite && ls',
+      'cd ./.git && ls',
+      'cd ./sub && echo x > ../../out',
+    ]) {
+      expect([command, bash(command)]).toEqual([command, 'deny']);
+    }
+    expect(bash('cd $(git rev-parse --show-toplevel) && ls')).toBe('ask');
+    expect(bash('CDPATH=/ cd etc && cat shadow')).toBe('ask');
+    const bare = decidePreToolUse(ctx, {
+      tool_name: 'Bash',
+      tool_input: { command: 'cd sub && bun test', description: 'x' },
+    });
+    expect(bare.decision).toBe('deny');
+    expect(bare.reason).toContain('use `cd ./sub`');
   });
 });
