@@ -5,7 +5,9 @@
  *  - **Header** (`NodeHeader`): path, title, status in words, role, repo and
  *    branch; one primary action by state (Start agent, Stop, Merge), the
  *    details toggle and the ⋯ menu with everything else.
- *  - **Chat** (the default tab): the goal, the thread as a conversation,
+ *  - **Overview** (T387, a project's root only, and its first tab): the
+ *    project at a glance (`ProjectOverview`).
+ *  - **Chat** (any other node's first tab): the goal, the thread as a conversation,
  *    "<Agent> is working…", then whatever needs you on this node (questions,
  *    gates, plans, proposals, proposed knowledge) as decision cards right
  *    above the composer. With a question open the composer answers it.
@@ -1153,11 +1155,20 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
             <div className="cr-node-pane" data-tab-body="overview">
               <div className="cr-node-pane-col">
                 <ProjectOverview
+                  key={stream.id}
                   project={stream.project}
                   root={stream.id}
                   waiting={cards.length}
                   onOpenChat={() => setTab('thread')}
-                  onEditRepos={() => setDetailsOpen(true)}
+                  onEditRepos={() => {
+                    // The project's repositories are a checklist in the details panel.
+                    setDetailsOpen(true);
+                    requestAnimationFrame(() =>
+                      document
+                        .querySelector('[data-testid="project-repos"]')
+                        ?.scrollIntoView({ block: 'nearest', behavior: 'smooth' }),
+                    );
+                  }}
                 />
               </div>
             </div>

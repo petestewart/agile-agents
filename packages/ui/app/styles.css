@@ -5259,11 +5259,14 @@ div.cr-ov-ev:hover {
       "status agent repo age";
     row-gap: 1px;
   }
-  .cr-ov-row:not([data-agent]) {
-    grid-template-areas: "status path repo age";
-  }
   .cr-ov-agent:empty {
     display: none;
+  }
+}
+/* …and with no agent to show, the row is one line. */
+@container ov (min-width: 561px) and (max-width: 820px) {
+  .cr-ov-row:not([data-agent]) {
+    grid-template-areas: "status path repo age";
   }
 }
 /* A column: repos above the events. */

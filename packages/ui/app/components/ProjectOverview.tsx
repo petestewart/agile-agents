@@ -5,7 +5,7 @@
  *  - The counts by status, your move first ("2 need you · 1 ready to
  *    merge · 3 working · 5 done"); a count filters the list.
  *  - Its nodes as rows (status, where it sits, repo, agent, age): your move,
- *    working, idle; merged and closed fold into "Done (n)".
+ *    working, idle; merged and closed fold under "Done".
  *  - Its repos: icon, kind and what Merge does there.
  *  - Its recent events, with a link to Events.
  *
@@ -54,6 +54,8 @@ const BUCKET_TONE: Record<OverviewBucket, string> = {
 /** How many events one read asks for, and how many reads the first look may take. */
 const EVENT_PAGE = 200;
 const EVENT_PAGES = 3;
+/** After a push only the newest events are new: a smaller read. */
+const PUSH_PAGE = 50;
 /** How often, at most, the events are re-read while frames keep arriving. */
 const PUSH_REREAD_MS = 400;
 
@@ -127,7 +129,7 @@ function useProjectEvents(
   useEffect(() => {
     if (tick === 0) return;
     const mine = generation.current;
-    getEvents({ limit: EVENT_PAGE })
+    getEvents({ limit: PUSH_PAGE })
       .then((page) => {
         if (generation.current !== mine) return;
         setEvents((current) =>
@@ -147,15 +149,21 @@ function useProjectEvents(
 
 function RecentActivity({
   project,
+  root,
   nodes,
   titleOf,
+  onOpenChat,
 }: {
   project: string;
+  root: string;
   nodes: ReadonlySet<string>;
   titleOf: (id: string) => string;
+  onOpenChat: () => void;
 }): JSX.Element {
   const { select, setView } = useShell();
   const { events, error } = useProjectEvents(project, nodes);
+  // An event about the root is on this page already: its chat.
+  const open = (id: string): void => (id === root ? onOpenChat() : select(id));
   return (
     <section
       className="cr-ov-section"
@@ -214,7 +222,7 @@ function RecentActivity({
                   <button
                     type="button"
                     className="cr-ov-ev"
-                    onClick={() => e.subject !== undefined && select(e.subject)}
+                    onClick={() => e.subject !== undefined && open(e.subject)}
                   >
                     {body}
                   </button>
@@ -467,7 +475,6 @@ export function ProjectOverview({
   const { cockpit } = useFeed();
   const { openNewStream } = useShell();
   const [filter, setFilter] = useState<OverviewBucket | undefined>(undefined);
-  const listRef = useRef<HTMLDivElement>(null);
 
   const rows = cockpit?.streams ?? [];
   const nodes = useMemo(() => projectNodes(rows, root), [rows, root]);
@@ -497,10 +504,8 @@ export function ProjectOverview({
   const projectRow = cockpit.projects.find((p) => p.id === project);
   const repoNames = projectRepoNames(projectRow?.repos, nodes);
 
-  const pick = (bucket: OverviewBucket): void => {
-    setFilter(shown === bucket ? undefined : bucket);
-    listRef.current?.scrollIntoView?.({ block: 'nearest' });
-  };
+  // The list sits right under the counts, so a count filters it in place.
+  const pick = (bucket: OverviewBucket): void => setFilter(shown === bucket ? undefined : bucket);
 
   return (
     <div className="cr-ov" data-testid="project-overview">
@@ -576,7 +581,13 @@ export function ProjectOverview({
                   data-bucket={c.bucket}
                   data-tone={BUCKET_TONE[c.bucket]}
                   aria-pressed={shown === c.bucket}
-                  title={shown === c.bucket ? 'Show every node' : `Show only these ${c.count}`}
+                  title={
+                    shown === c.bucket
+                      ? 'Show every node'
+                      : c.count === 1
+                        ? 'Show only this one'
+                        : `Show only these ${c.count}`
+                  }
                   onClick={() => pick(c.bucket)}
                 >
                   <span className="cr-ov-count-dot" aria-hidden="true" />
@@ -595,16 +606,20 @@ export function ProjectOverview({
                 </button>
               )}
             </div>
-            <div ref={listRef}>
-              <NodeList nodes={nodes} rows={rows} root={root} repos={repos} filter={shown} />
-            </div>
+            <NodeList nodes={nodes} rows={rows} root={root} repos={repos} filter={shown} />
           </>
         )}
       </section>
 
       <div className="cr-ov-pair">
         <RepoList names={repoNames} repos={repos} nodes={nodes} onEdit={onEditRepos} />
-        <RecentActivity project={project} nodes={nodeIds} titleOf={titleOf} />
+        <RecentActivity
+          project={project}
+          root={root}
+          nodes={nodeIds}
+          titleOf={titleOf}
+          onOpenChat={onOpenChat}
+        />
       </div>
     </div>
   );
