@@ -1906,21 +1906,21 @@ Pete's requests from the walkthrough (D33, D34). Branch `claude/phase-14`, stack
 
 ### Ticket: T351 Accepting a decision wakes the conversation (D36: D10)
 - **Priority:** P2
-- **Status:** In Progress
-- **Owner:** opus:worker-T351
+- **Status:** Done
+- **Owner:** Unassigned
 - **Scope:** When the human accepts knowledge scoped to a conversation whose turn has ended, the conversation is woken with the decision (same wake path as a human line), so it is delivered at once instead of staying "pending".
 - **Acceptance Criteria:** Test: accept → the conversation is woken and the item is delivered.
 - **Validation Steps:** `bun test packages/daemon/src/knowledge packages/daemon/src/events`.
-- **Notes:** —
+- **Notes:** Branch T351-wake-on-accepted-knowledge, merge e82200c. knowledge_accepted wakes an ended, not human-stopped conversation (work nodes unchanged, P11); ≤5 conversation wakes per item (in memory, resets on restart); the item text reaches the agent quoted as data (≤200 chars). Startup replays pending items like other wake types. Design P11 and §15 updated. Review+QA (sonnet): APPROVE/PASS.
 
 ### Ticket: T352 Upgrade Bun if a release fixes the pipe bugs (D37)
 - **Priority:** P1
-- **Status:** In Progress
-- **Owner:** opus:worker-T352
+- **Status:** Done
+- **Owner:** Unassigned
 - **Scope:** Find the newest Bun release; check its changelog for the child_process fd double-close / EBADF-on-epoll_ctl fixes; run the full suite, test:integration and test:walkthrough under it, and the fd reproduction tests in chromium.test.ts and acp-client with the workarounds disabled. If fixed: move the pin (CI workflow, CLAUDE.md "1.3.11", engines) on phase-7 and forward. Keep the workarounds unless proven unneeded. If not fixed: report and stay.
 - **Acceptance Criteria:** CI green on the new pin; the reproductions pass without workarounds, or a written finding that no release fixes it.
 - **Validation Steps:** CI; `bun test`; `bun run test:integration`.
-- **Notes:** —
+- **Notes:** Bun 1.4.2 (newest stable). Measured: fd double-close 19/20 rounds on 1.3.11 and 1.3.14, 0/20 on 1.4.0–1.4.2; the in-repo repro with pinnedStdio off fails 10/10 on 1.3.11, passes 10/10 on 1.4.2; a 10k-spawn stress loses exits/pipes on 1.3.11, none on 1.4.x. Pin moved on phase-7 and forward (CI, engines, CLAUDE.md, LIVE-CHECKLIST); workarounds kept. Also fixed a chromium.test.ts fd-count check that compared fd numbers only. Manager read the 6-file diff.
 
 ## 8. Deleted (must be gone from `main` by the end of Phase 6)
 
