@@ -98,7 +98,7 @@ import {
   resolveMainBranchAsync,
   setRepoSettings,
 } from './store';
-import type { RepoInPlaceService, StreamService } from './streams';
+import type { RepoInPlaceService, StreamService, TitleNamer } from './streams';
 import type { TrackerLinks } from './trackers/link';
 import { TrackerError } from './trackers/port';
 import {
@@ -180,6 +180,8 @@ export interface HttpServerOptions {
   classifierKey?: ClassifierKeyService;
   /** `POST /api/streams/:id/land`. */
   landing?: DeliveryService;
+  /** T414 (D41): names a node created with `auto_title` (absent: the placeholder stays). */
+  titleNamer?: TitleNamer;
   /** T340: `POST /api/streams/:id/pr-check`, the Delivery panel's Check now (`PrPoller.pollNow`). */
   prCheck?: (id: string) => Promise<Stream>;
   /** The stream page's sessions strip and composer. */
@@ -1610,7 +1612,9 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
             const create = feed.attach
               ? feed.attach.createNode.bind(feed.attach)
               : feed.streams.create.bind(feed.streams);
-            return jsonResponse(await create('human', input.data, { requireProject: true }), 201);
+            const created = await create('human', input.data, { requireProject: true });
+            if (input.data.auto_title === true) options.titleNamer?.name(created);
+            return jsonResponse(created, 201);
           } catch (err) {
             // An unknown parent or repo, or a bad body: the human's to fix.
             return errorResponse(400, messageOf(err));

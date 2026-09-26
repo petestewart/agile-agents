@@ -5825,6 +5825,13 @@ describe('New stream starts the agent (Playwright e2e, T204)', () => {
         });
         page = await openPage();
         const traffic = recordTraffic(page);
+        // T414 (D41): a title New node derived asks the daemon to name it.
+        const creates: Array<Record<string, unknown>> = [];
+        page.on('request', (r) => {
+          if (r.method() === 'POST' && new URL(r.url()).pathname === '/api/streams') {
+            creates.push(r.postDataJSON() as Record<string, unknown>);
+          }
+        });
         await page.goto(`${cockpit.base}/`);
         await page.locator(`[data-testid="stream-tree"] [data-stream="${parent.id}"]`).click();
         await page.keyboard.press('n');
@@ -5852,6 +5859,7 @@ describe('New stream starts the agent (Playwright e2e, T204)', () => {
 
         const created = cockpit.streams.list().find((x) => x.title === 'import CSV');
         expect(created?.goal).toBe('import CSV\nBank exports, with a header row.');
+        expect(creates.map((c) => [c.title, c.auto_title])).toEqual([['import CSV', true]]);
         expect(created?.repo).toBe('demo');
         await waitForRunningWorker(page, cockpit, created?.id ?? '', traffic);
         // T363: with its agent running the page offers Stop, and the ⋯ menu Restart agent.
