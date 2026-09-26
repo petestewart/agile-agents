@@ -1870,12 +1870,21 @@ Pete's requests from the walkthrough (D33, D34). Branch `claude/phase-14`, stack
 
 ### Ticket: T353 Walkthrough step 8.5 is load-sensitive
 - **Priority:** P2
-- **Status:** Todo
+- **Status:** Done
 - **Owner:** Unassigned
 - **Scope:** `test:walkthrough` step 8.5 ("the Parent defaults to the open node, Tracker epic") failed twice under machine load (other Chromium runs) and passes when idle; seen on phase-14 at c7c4164. Root-cause it (a race in the New stream form's default parent, or the walkthrough reading before the cockpit update lands) and fix the product or the wait, not a timeout bump.
 - **Acceptance Criteria:** 5 walkthrough runs under parallel load, 0 failures at 8.5.
 - **Validation Steps:** `bun run build && bun run test:walkthrough`.
-- **Notes:** —
+- **Notes:** Branch T353-walkthrough-85, merge fec366e. Product race: the New stream form reset its default parent in an effect after mount, so the first render (and a quick submit) held the last opening's parent (11/15 fast reads). Now a fresh form per opening/open node with the parent as initial state (0/15). Also a best-effort "Check now" click in the walkthrough (the poller can merge first). 5/5 walkthroughs under 4-core load. Manager read the diff. Separate load flake at 7.3 → T354.
+
+### Ticket: T354 Walkthrough step 7.3 under parallel load
+- **Priority:** P3
+- **Status:** Todo
+- **Owner:** Unassigned
+- **Scope:** Seen once with three walkthroughs in parallel: step 7.3's Director thread lacked "Started Changelog in ledger-lite". Root-cause (product race vs. test reading early) and fix at the cause.
+- **Acceptance Criteria:** 5 parallel-load walkthroughs, 0 failures at 7.3.
+- **Validation Steps:** `bun run build && bun run test:walkthrough`.
+- **Notes:** From T353.
 
 ### Ticket: T347 Cockpit wording and small UI (D36: D1, D5, D6, D7, D9, D11, D12)
 - **Priority:** P1
