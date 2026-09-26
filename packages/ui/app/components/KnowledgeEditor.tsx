@@ -55,6 +55,7 @@ export function KnowledgeEditor({
   const [draft, setDraft] = useState<RuleDraft>(initial);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | undefined>(undefined);
+  const [textError, setTextError] = useState<string | undefined>(undefined);
   const set = (patch: Partial<RuleDraft>): void => setDraft((prev) => ({ ...prev, ...patch }));
   const creating = mode === 'create';
   const ids = useId();
@@ -75,7 +76,24 @@ export function KnowledgeEditor({
     scopeKind = undefined;
   }
 
+  const focusText = (): void => {
+    const el = document.getElementById(`${ids}-text`);
+    el?.focus({ preventScroll: true });
+    el?.scrollIntoView({ block: 'nearest' });
+  };
+
   async function save(): Promise<void> {
+    // The one required field says so where it is, not in the footer.
+    if (draft.text.trim() === '') {
+      setTextError('Write what agents should know.');
+      focusText();
+      return;
+    }
+    if (draft.text.length > RULE_TEXT_MAX_CHARS) {
+      setTextError(`At most ${RULE_TEXT_MAX_CHARS} characters: keep it to the rule itself.`);
+      focusText();
+      return;
+    }
     setBusy(true);
     setError(undefined);
     try {
@@ -137,6 +155,7 @@ export function KnowledgeEditor({
           <Field
             label="What agents should know"
             htmlFor={`${ids}-text`}
+            error={textError}
             hint={
               <span className="cr-kn-counter">
                 <span>Markdown. Agents in scope see this in their brief.</span>
@@ -152,7 +171,10 @@ export function KnowledgeEditor({
               rows={4}
               value={draft.text}
               placeholder="e.g. Store money as integer cents; convert only at the edges."
-              onChange={(e) => set({ text: e.target.value })}
+              onChange={(e) => {
+                set({ text: e.target.value });
+                setTextError(undefined);
+              }}
             />
           </Field>
           <Field

@@ -1996,7 +1996,6 @@ ul.cr-error {
 /* Toolbar: search, two compact filters, the count and sort. */
 .cr-kn-toolbar {
   display: flex;
-  flex-wrap: wrap;
   align-items: center;
   gap: 6px;
   padding: 12px 0 4px;
@@ -2048,11 +2047,13 @@ ul.cr-error {
 }
 .cr-kn-toolbar-end {
   display: inline-flex;
+  flex: none;
   align-items: center;
   gap: 4px;
   margin-left: auto;
 }
 .cr-kn-count {
+  white-space: nowrap;
   font-size: var(--text-sm);
   color: var(--text-faint);
   font-variant-numeric: tabular-nums;
@@ -2664,8 +2665,18 @@ ul.cr-error {
   list-style: none;
 }
 .cr-kn-evals li {
+  display: grid;
+  grid-template-columns: 88px minmax(0, 1fr);
+  align-items: start;
+  gap: 8px;
   font-size: var(--text-sm);
   line-height: 1.6;
+}
+.cr-kn-eval-body {
+  min-width: 0;
+}
+.cr-kn-eval-got {
+  display: block;
 }
 .cr-kn-verdict {
   display: inline-flex;
@@ -2712,6 +2723,12 @@ ul.cr-error {
   display: flex;
   flex: 1;
   flex-direction: column;
+}
+/* A focused field clears the sticky bar and footer. */
+.cr-kn-form input,
+.cr-kn-form textarea,
+.cr-kn-form select {
+  scroll-margin: 72px 0 96px;
 }
 .cr-kn-form-lede {
   margin: 14px 20px 0;
@@ -2934,6 +2951,9 @@ ul.cr-error {
   }
   .cr-kn-row-summary {
     display: none;
+  }
+  .cr-kn-toolbar {
+    flex-wrap: wrap;
   }
   .cr-kn-search {
     flex: 1 1 100%;

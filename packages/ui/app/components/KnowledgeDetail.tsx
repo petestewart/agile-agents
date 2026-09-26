@@ -374,7 +374,10 @@ export function KnowledgeDetail({
                 </button>
               </p>
             )}
-            {classifier.examples.length === 0 ? (
+            {report ? (
+              // The results list each example with its verdict: no second list.
+              <EvalResults report={report} />
+            ) : classifier.examples.length === 0 ? (
               <p className="cr-kn-fact-hint">No examples yet. Edit to add some.</p>
             ) : (
               <ul className="cr-kn-examples" data-testid="rules-examples">
@@ -393,7 +396,6 @@ export function KnowledgeDetail({
                 ))}
               </ul>
             )}
-            {report && <EvalResults report={report} />}
           </section>
         )}
 
@@ -481,12 +483,14 @@ function EvalResults({ report }: { report: RuleEvalReport }): JSX.Element {
               <Icon name={example.agree ? 'check' : 'x'} size={13} />
               {example.agree ? 'Agrees' : 'Disagrees'}
             </span>{' '}
-            <code>{example.action.replace(/\s+/g, ' ').slice(0, 160)}</code>
-            <span className="cr-kn-eval-got">
-              {' — '}expected {bandWords(example.expected_band)}, got{' '}
-              {example.error !== undefined
-                ? `an error: ${example.error}`
-                : `${bandWords(example.band)} (p ${example.probability?.toFixed(2)})`}
+            <span className="cr-kn-eval-body">
+              <code>{example.action.replace(/\s+/g, ' ').slice(0, 160)}</code>
+              <span className="cr-kn-eval-got">
+                {' — '}expected {bandWords(example.expected_band)}, got{' '}
+                {example.error !== undefined
+                  ? `an error: ${example.error}`
+                  : `${bandWords(example.band)} (p ${example.probability?.toFixed(2)})`}
+              </span>
             </span>
           </li>
         ))}
