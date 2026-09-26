@@ -262,6 +262,10 @@ export function useOptionalShell(): ShellValue | undefined {
  */
 export function isShortcut(event: KeyboardEvent, key: string): boolean {
   if (event.key !== key || event.metaKey || event.ctrlKey || event.altKey) return false;
+  // T373: an open dialog owns the keyboard, wherever its focus is.
+  if (typeof document !== 'undefined' && document.querySelector?.('[aria-modal="true"]')) {
+    return false;
+  }
   const target = event.target as HTMLElement | null;
   if (!target || typeof target.tagName !== 'string') return true;
   const tag = target.tagName.toLowerCase();

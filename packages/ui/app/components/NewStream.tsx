@@ -27,6 +27,7 @@ import type { CockpitProjectRow, CockpitRepoRow, CockpitStreamRow } from '../lib
 import { type NewStreamPreset, isShortcut, useShell } from '../lib/shell';
 import { ROLE_LABEL } from '../lib/status';
 import { newNodeDefaults, projectOutline, splitRepos, titleFromGoal } from '../lib/tree';
+import { AddRepoDialog } from './AddRepo';
 import { Icon } from './Icon';
 import { type PickOption, PickerField } from './Pickers';
 import { type SessionChoice, SessionFields, resolvedFor } from './SessionPicker';
@@ -131,6 +132,7 @@ function NewStreamForm({
   preset: NewStreamPreset | undefined;
 }): JSX.Element {
   const { setNewStreamOpen, select, selected, project: filter, setNewProjectOpen } = useShell();
+  const feed = useOptionalFeed();
   const toast = useToast();
   const repos = useRepoList();
   const [defaults] = useState(() =>
@@ -142,6 +144,8 @@ function NewStreamForm({
   const [projectId, setProjectId] = useState(defaults.project);
   const [parent, setParent] = useState(defaults.parent);
   const [repo, setRepo] = useState('');
+  // T373: Add a repository from here; the new repo is picked.
+  const [addingRepo, setAddingRepo] = useState(false);
   const [start, setStart] = useState(true);
   const [session, setSession] = useState<SessionDefaultsStatus | undefined>(undefined);
   // Set once "Change" is pressed: this node's own vendor, model and effort.
@@ -437,17 +441,27 @@ function NewStreamForm({
         <Field
           label="Repository"
           hint={
-            repo ? (
-              <>
-                <b>{ROLE_LABEL.work}</b>: writes code on its own branch in {repo}, then hands it to
-                you to merge.
-              </>
-            ) : (
-              <>
-                <b>{ROLE_LABEL.conversation}</b>: talks, researches and answers. No repository, no
-                branch.
-              </>
-            )
+            <>
+              {repo ? (
+                <>
+                  <b>{ROLE_LABEL.work}</b>: writes code on its own branch in {repo}, then hands it
+                  to you to merge.
+                </>
+              ) : (
+                <>
+                  <b>{ROLE_LABEL.conversation}</b>: talks, researches and answers. No repository, no
+                  branch.
+                </>
+              )}{' '}
+              <button
+                type="button"
+                className="cr-link"
+                data-testid="new-stream-add-repo"
+                onClick={() => setAddingRepo(true)}
+              >
+                Add a repository…
+              </button>
+            </>
           }
         >
           <PickerField
@@ -531,6 +545,14 @@ function NewStreamForm({
           </p>
         )}
       </div>
+      <AddRepoDialog
+        open={addingRepo}
+        onClose={() => setAddingRepo(false)}
+        onAdded={(added) => {
+          setRepo(added);
+          feed?.refresh();
+        }}
+      />
     </Dialog>
   );
 }
