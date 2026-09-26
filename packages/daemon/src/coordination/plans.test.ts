@@ -586,6 +586,26 @@ describe('T344: a "waiting for the plan" card when no coordinator will write one
     expect(await plans.startWaitingParts(node.id)).toEqual([]);
   });
 
+  test('a part started anyway and then detached does not bring the card back', async () => {
+    const { node, api, web, started, cards } = await stalled();
+    await plans.startWaitingParts(node.id);
+    // The human detaches api: its session stops and its agent goes back to idle.
+    await store.updateStream('daemon', api.id, (before) => ({
+      ...before,
+      agent: { ...before.agent, status: 'idle' },
+      sessions: before.sessions.map((s) => ({ ...s, status: 'stopped' as const })),
+    }));
+    expect(plans.waitingForPlan(streams.get(api.id))).toBe(false);
+    expect(cards()).toEqual([]);
+    // Nor does a later approval start it a second time.
+    await plans.write(node.id, [
+      { child: api.id, owns: ['prices.ts'] },
+      { child: web.id, owns: ['shop.html'] },
+    ]);
+    await plans.approve(node.id);
+    expect(started).toEqual([api.id, web.id]);
+  });
+
   test('"Wake coordinator" attaches the node\'s coordinator, and the card goes while it runs', async () => {
     const { node, cards } = await stalled();
     const attach = new AttachService({

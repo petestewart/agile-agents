@@ -3432,6 +3432,25 @@ describe('waiting for the plan (Playwright e2e, T344)', () => {
             cockpit.streams.get(part.id).sessions.some((s) => s.role === 'worker'),
           );
         }
+
+        // A part that ran and was detached is not waiting again: the card stays gone.
+        const first = parts[0] as (typeof parts)[number];
+        await cockpit.attach.stop(first.id, undefined, { detach: true });
+        await waitUntil(
+          'the part detached',
+          () => cockpit.streams.get(first.id).agent.status === 'idle',
+        );
+        await page.locator('[data-testid="inbox"]').waitFor();
+        await Bun.sleep(300);
+        expect(await page.locator(card).count()).toBe(0);
+        await page.locator(`[data-testid="stream-tree"] [data-stream="${first.id}"]`).waitFor();
+        expect(
+          await page
+            .locator(
+              `[data-testid="stream-tree"] [data-stream="${first.id}"] [data-testid="waiting-for-plan"]`,
+            )
+            .count(),
+        ).toBe(0);
       } finally {
         await teardown([page]);
         await cockpit.stop();
