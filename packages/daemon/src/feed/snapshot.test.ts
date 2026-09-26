@@ -224,6 +224,27 @@ describe('T361: the rail flags and the archived list', () => {
   }, 30_000);
 });
 
+describe('T437: a decision of yours marks its node', () => {
+  test('a plan, gate or proposal in Needs me flags its row; a done card or knowledge does not', async () => {
+    const planned = await streams.create('human', { title: 'Show sale prices', goal: 'g' });
+    const finished = await streams.create('human', { title: 'Add CSV import', goal: 'g' });
+    const item = (kind: string, stream: string) => ({
+      kind,
+      id: `${kind}-${stream}`,
+      stream,
+      stream_path: ['x'],
+      ts: new Date().toISOString(),
+      context: 'c',
+    });
+    const inbox = {
+      list: () => [item('plan_approve', planned.id), item('done', finished.id)],
+    } as unknown as Parameters<typeof buildCockpitFrame>[1];
+    const rows = new Map(buildCockpitFrame(streams, inbox).streams.map((r) => [r.id, r]));
+    expect(rows.get(planned.id)?.pending_decision).toBe(true);
+    expect(rows.get(finished.id)?.pending_decision).toBeUndefined();
+  });
+});
+
 describe('T382: the live agent a row names', () => {
   const session = (
     role: SessionRef['role'],

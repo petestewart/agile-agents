@@ -791,3 +791,12 @@ export function itemCommand(item: InboxItem, row?: Parameters<typeof doneCardOf>
       return `Unblock: ${node}`;
   }
 }
+
+/**
+ * T437: a blocked card whose line is the daemon's failure note (a vendor that
+ * isn't installed, or that stopped with an error): a reply alone restarts the
+ * same vendor, so the card says to fix it first.
+ */
+export function isAgentFailure(text: string): boolean {
+  return /^The agent (couldn’t start|stopped with an error): /.test(text.trim());
+}

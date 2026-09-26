@@ -171,8 +171,12 @@ export class StateStore {
   private readonly mutex = new Mutex();
   /** T395: each thread's last line time, from appends here, else the file's mtime (read once). */
   private readonly threadAt = new Map<string, string | undefined>();
-  /** T433: `directorReplyAt`'s cache: `undefined` until read, `null` for none. */
-  private directorRepliedAt: string | null | undefined;
+  /**
+   * T437: per thread (a node id, or the Director's), whether a line of yours
+   * waits for an answer and when the agent last answered one: a reply counts
+   * only when it follows something you said (or, on a node, its question).
+   */
+  private readonly answers = new Map<string, AnswerState>();
 
   // An absolute symlink target may resolve through a symlinked ancestor of
   // the state root (macOS `tmpdir()` under `/var -> /private/var`), so
@@ -901,6 +905,7 @@ export class StateStore {
       const relPath = this.threadRelPath(streamId);
       appendJsonlLine(this.abs(relPath), validated);
       this.threadAt.set(streamId, validated.ts);
+      this.noteAnswer(streamId, validated, () => this.readThread(streamId), true);
       const event = buildEvent('thread_appended', {
         stream: streamId,
         data: { by: validated.by, entry_kind: validated.kind },
@@ -938,7 +943,7 @@ export class StateStore {
     return this.mutate(() => {
       const validated = validateThreadEntry(entry);
       appendJsonlLine(this.abs(join('threads', `${DIRECTOR_NODE}.jsonl`)), validated);
-      if (validated.by === 'director') this.directorRepliedAt = validated.ts;
+      this.noteAnswer(DIRECTOR_NODE, validated, () => this.readDirectorThread(), false);
       const event = buildEvent('thread_appended', {
         data: { thread: DIRECTOR_NODE, by: validated.by, entry_kind: validated.kind },
       });
@@ -947,27 +952,49 @@ export class StateStore {
   }
 
   /**
-   * T433: when the Director last wrote a line of its own (a reply or a
-   * proposal), for the cockpit's unread mark. Read from the thread once, then
+   * T433/T437: when the Director last answered a line of yours (its own wakes,
+   * for a stuck node say, are not answers). Read from its thread once, then
    * kept as lines are appended.
    */
   directorReplyAt(): string | undefined {
-    if (this.directorRepliedAt === undefined) {
-      let at: string | null = null;
-      try {
-        const lines = this.readDirectorThread();
-        for (let i = lines.length - 1; i >= 0; i--) {
-          if (lines[i]?.by === 'director') {
-            at = lines[i]?.ts ?? null;
-            break;
-          }
-        }
-      } catch {
-        // A corrupt thread is refused where it is read; here it just has no mark.
-      }
-      this.directorRepliedAt = at;
+    return this.answerState(DIRECTOR_NODE, () => this.readDirectorThread(), false).at;
+  }
+
+  /**
+   * T437: when a node's agent last answered a line of yours, or its question
+   * (a node's goal is asked at its creation). An agent turn nobody asked for
+   * (woken by knowledge or an event) is not an answer.
+   */
+  answeredAt(streamId: string): string | undefined {
+    return this.answerState(streamId, () => this.readThread(streamId), true).at;
+  }
+
+  private answerState(key: string, read: () => ThreadEntry[], askedAtStart: boolean): AnswerState {
+    const known = this.answers.get(key);
+    if (known !== undefined) return known;
+    let state: AnswerState = { pending: askedAtStart };
+    try {
+      for (const entry of read()) state = nextAnswer(state, entry);
+    } catch {
+      // A corrupt thread is refused where it is read; here it just has no answer.
     }
-    return this.directorRepliedAt ?? undefined;
+    this.answers.set(key, state);
+    return state;
+  }
+
+  private noteAnswer(
+    key: string,
+    entry: ThreadEntry,
+    read: () => ThreadEntry[],
+    askedAtStart: boolean,
+  ): void {
+    // Not read yet: the cold read (the file already has this line) counts it.
+    const before = this.answers.get(key);
+    if (before === undefined) {
+      this.answerState(key, read, askedAtStart);
+      return;
+    }
+    this.answers.set(key, nextAnswer(before, entry));
   }
 
   readDirectorThread(): ThreadEntry[] {
@@ -1362,6 +1389,22 @@ function sessionDefaultsEventData(patch: SessionDefaultsPatch): Record<string, s
 }
 
 /** A shallow copy of a YAML mapping, or `{}` for anything else. */
+/** T437: a thread's answer state (see `StateStore.answeredAt`). */
+interface AnswerState {
+  /** A line of yours (or the node's question) waits for an answer. */
+  pending: boolean;
+  /** When the agent last answered one. */
+  at?: string;
+}
+
+function nextAnswer(state: AnswerState, entry: ThreadEntry): AnswerState {
+  if (entry.kind !== 'line') return state;
+  if (entry.by === 'human') return { ...state, pending: true };
+  const agent =
+    entry.by.startsWith('agent:') || entry.by === 'coordinator' || entry.by === 'director';
+  return agent && state.pending ? { pending: false, at: entry.ts } : state;
+}
+
 function mappingCopy(value: unknown): Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
     ? { ...(value as Record<string, unknown>) }

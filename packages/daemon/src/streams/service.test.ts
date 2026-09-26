@@ -12,7 +12,12 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { StreamCycleError, THREAD_BODY_MAX_CHARS, ulid } from '@agile-agents/shared';
+import {
+  HUMAN_LINE_MAX_CHARS,
+  StreamCycleError,
+  THREAD_BODY_MAX_CHARS,
+  ulid,
+} from '@agile-agents/shared';
 import { runInit } from '../init';
 import { StateStore } from '../store';
 import { StreamService } from './service';
@@ -318,8 +323,8 @@ describe('thread', () => {
   test('a body over the cap is rejected with the cap in the message', async () => {
     const stream = await newStream();
     await expect(
-      streams.appendThread('human', stream.id, { kind: 'line', body: 'x'.repeat(801) }),
-    ).rejects.toThrow(new RegExp(`cap is ${THREAD_BODY_MAX_CHARS}`));
+      streams.appendThread('human', stream.id, { kind: 'line', body: 'x'.repeat(4001) }),
+    ).rejects.toThrow(new RegExp(`cap is ${HUMAN_LINE_MAX_CHARS}`));
   });
 
   test('a corrupt thread line is refused with the path and the line number', async () => {

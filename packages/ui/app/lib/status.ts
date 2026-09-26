@@ -49,6 +49,8 @@ export type StatusInput = Pick<CockpitStreamRow, 'agent_status' | 'human_status'
       | 'waiting_for_plan'
       | 'nothing_to_merge'
       | 'merged_outside'
+      | 'repo'
+      | 'pending_decision'
     >
   > & {
     never_started?: true;
@@ -110,7 +112,8 @@ const STATUS: Record<NodeStatusKey, Omit<NodeStatus, 'key'>> = {
 function nothingToMerge(row: StatusInput): boolean {
   return (
     row.pr_open === true ||
-    row.role === 'coordinating' ||
+    // T437: a work node that gained a part keeps its own branch: still a merge.
+    (row.role === 'coordinating' && row.repo === undefined) ||
     row.role === 'project' ||
     (row.role === 'conversation' && row.project !== undefined)
   );
@@ -132,7 +135,12 @@ function readyOrEmpty(row: StatusInput): 'ready' | 'no_changes' | 'merged_outsid
 export function statusKey(row: StatusInput): NodeStatusKey {
   if (row.human_status === 'landed') return 'merged';
   if (row.human_status === 'closed') return 'closed';
-  if (row.human_status === 'waiting_on_you' || row.agent_status === 'question') {
+  // T437: a plan, a gate or a proposal of this node's waiting on you is your move too.
+  if (
+    row.human_status === 'waiting_on_you' ||
+    row.agent_status === 'question' ||
+    row.pending_decision === true
+  ) {
     // A finished branch waits on you as "ready", not as a question.
     if (row.agent_status === 'done' && !nothingToMerge(row)) return readyOrEmpty(row);
     return 'needs_you';

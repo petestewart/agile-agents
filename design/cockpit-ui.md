@@ -397,7 +397,18 @@ needs-you and blocked halo but keeps a hollow dot's ring (stopped, waiting).
   with everything read. T433: the node's row in the rail is bold with a blue
   dot, and the Director counts too: its reply marks the sidebar's Director,
   heads Replies, and is read when its page is on screen (the frame's
-  `director.replied_at`).
+  `director.replied_at`). T437: a reply is an agent's (or coordinator's, or
+  the Director's) line that follows one of yours; a new node's goal is the
+  first question. The row's `answered_at` marks it, so a node that talks on
+  its own, or a coordinator reporting up, isn't "Replied".
+- **Needs you, and failures** (T437): a node with an open gate, plan
+  approval or proposal (the row's `pending_decision`) reads "Needs you", not
+  "Working". An agent that couldn't start (its vendor missing, the spawn
+  failing) blocks its node with "The agent couldn't start: …", and its card
+  says "Fix its login or install, then reply to start it again…"; the
+  picker tags a vendor whose command isn't on the daemon's PATH "Not
+  installed" (session defaults' `not_installed`). A done node with its own
+  branch keeps its Merge card even when it has parts.
 - **What a worker proposes next** (T427): an agent's `propose_next` line
   ("Proposal") reads as the node it proposes — "Next: **<title>**", the goal
   under it (T435) — and carries **Create node…**, which opens New node with

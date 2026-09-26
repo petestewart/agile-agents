@@ -332,7 +332,7 @@ function Replies({
                 </span>
                 <span className="cr-reply-when">
                   {row.role === 'conversation' ? 'Replied' : 'Finished a turn'}
-                  {row.updated_at ? ` · ${ago(row.updated_at)}` : ''}
+                  {row.answered_at ? ` · ${ago(row.answered_at)}` : ''}
                 </span>
               </button>
               <IconButton

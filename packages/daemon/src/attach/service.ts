@@ -66,7 +66,12 @@ import { nodeReadScope } from '../permissions/policy-tables';
 import type { AboutParent, BriefDoc } from '../runner/brief';
 import { buildBrief } from '../runner/brief';
 import type { CliInvocation } from '../runner/cli-bin';
-import { type AgentSessionHandle, type ContextUsage, startAgentSession } from '../runner/session';
+import {
+  type AgentSessionHandle,
+  type ContextUsage,
+  missingVendorCommand,
+  startAgentSession,
+} from '../runner/session';
 import { createWorktree, slugify } from '../runner/worktrees';
 import type { StateStore } from '../store';
 import { assertRepoHasCommits, buildEvent } from '../store';
@@ -775,12 +780,35 @@ export class AttachService {
       // Diagnostics only.
     }
 
+    // T437: a vendor that isn't installed is refused before anything is recorded,
+    // so the node never reads "Working" for a session that can't exist.
+    if (this.options.spawn === undefined) {
+      const missing = missingVendorCommand(provider);
+      if (missing !== undefined) {
+        if (isAgentRole(role)) {
+          await streams
+            .update('daemon', stream.id, {
+              agent: {
+                status: 'blocked',
+                progress: `${FAILED_START_PREFIX}${missing}`.slice(0, 800),
+              },
+            })
+            .catch(() => {});
+        }
+        throw new Error(missing);
+      }
+    }
+
     // 5. Record the session before it can produce anything. A reviewer never
     // moves `agent.status`: a read-only second opinion is not work (§4.2).
     if (isAgentRole(role)) {
       // T176: a worker on the branch makes the last land's conflict stale.
       await streams.update('daemon', stream.id, {
-        agent: { status: 'working' },
+        agent: {
+          status: 'working',
+          // T437: an earlier failure's line is not this session's news.
+          ...(isFailureProgress(stream.agent.progress) ? { progress: undefined } : {}),
+        },
         ...(stream.land_conflict ? { land_conflict: null } : {}),
       });
     }
@@ -804,28 +832,45 @@ export class AttachService {
         },
       }),
     );
-    // 4. Spawn.
-    const handle = startAgentSession({
-      store,
-      streams,
-      stream: recorded,
-      session,
-      role,
-      worktreePath: cwd,
-      brief: prompt,
-      ...(wake !== undefined ? { onBriefDelivered: () => wake.delivered(sessionId) } : {}),
-      sessionDir,
-      provider,
-      readScope,
-      ...(this.options.rules !== undefined ? { rules: this.options.rules } : {}),
-      ...(this.options.spawn !== undefined ? { spawn: this.options.spawn } : {}),
-      ...(this.options.cliBin !== undefined ? { cliBin: this.options.cliBin } : {}),
-      ...(this.options.socketPath !== undefined ? { socketPath: this.options.socketPath } : {}),
-      ...(this.options.now !== undefined ? { now: this.options.now } : {}),
-      onTurnEnd: (info) => {
-        void this.onTurnEnd(stream.id, sessionId, role, info.queued);
-      },
-    });
+    // 4. Spawn. T437: a spawn that throws (a sandbox or extension refusal) ends the
+    // session it recorded: `error` with the reason, the node `blocked`, never "Working".
+    let handle: AgentSessionHandle;
+    try {
+      handle = startAgentSession({
+        store,
+        streams,
+        stream: recorded,
+        session,
+        role,
+        worktreePath: cwd,
+        brief: prompt,
+        ...(wake !== undefined ? { onBriefDelivered: () => wake.delivered(sessionId) } : {}),
+        sessionDir,
+        provider,
+        readScope,
+        ...(this.options.rules !== undefined ? { rules: this.options.rules } : {}),
+        ...(this.options.spawn !== undefined ? { spawn: this.options.spawn } : {}),
+        ...(this.options.cliBin !== undefined ? { cliBin: this.options.cliBin } : {}),
+        ...(this.options.socketPath !== undefined ? { socketPath: this.options.socketPath } : {}),
+        ...(this.options.now !== undefined ? { now: this.options.now } : {}),
+        onTurnEnd: (info) => {
+          void this.onTurnEnd(stream.id, sessionId, role, info.queued);
+        },
+      });
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      await this.setSessionStatus(stream.id, sessionId, 'error', reason.slice(0, 300)).catch(
+        () => {},
+      );
+      if (isAgentRole(role)) {
+        await streams
+          .update('daemon', stream.id, {
+            agent: { status: 'blocked', progress: `${FAILED_START_PREFIX}${reason}`.slice(0, 800) },
+          })
+          .catch(() => {});
+      }
+      throw err;
+    }
     this.handles(role).set(stream.id, handle);
     await this.setSessionStatus(stream.id, sessionId, 'running');
 
@@ -1245,7 +1290,18 @@ export class AttachService {
         return;
       }
       await this.options.streams.update('daemon', streamId, {
-        agent: { status: ok && !crashed ? 'done' : 'blocked' },
+        agent: {
+          status: ok && !crashed ? 'done' : 'blocked',
+          // T437: the reason travels with the status (Needs me, Overview, Events).
+          ...(crashed
+            ? {
+                progress: `${CRASHED_PREFIX}${vendorError ?? `exit code ${exitCode}`}`.slice(
+                  0,
+                  800,
+                ),
+              }
+            : {}),
+        },
       });
       await this.options.streams.appendThread('daemon', streamId, {
         kind: 'event',
@@ -1335,7 +1391,37 @@ export class AttachService {
         await handled;
       }),
     );
+    // T437: a session recorded as live with no process behind it (a start that died
+    // before this fix, a daemon killed mid-start) is ended too, so Stop always works.
+    const orphans = this.orphanSessions(streamId, role);
+    for (const orphan of orphans) {
+      await this.setSessionStatus(streamId, orphan.id, 'stopped').catch(() => {});
+      stopped.push(orphan.id);
+    }
+    if (orphans.some((o) => isAgentRole(o.role))) {
+      await this.options.streams
+        .update('daemon', streamId, { agent: { status: 'idle' } })
+        .catch(() => {});
+    }
     return stopped;
+  }
+
+  /** T437: `starting`/`running` session records on a node that no live handle stands behind. */
+  private orphanSessions(streamId: string, role?: SessionRole): SessionRef[] {
+    let stream: Stream;
+    try {
+      stream = this.options.streams.get(streamId);
+    } catch {
+      return [];
+    }
+    return stream.sessions.filter(
+      (s) =>
+        (role === undefined || s.role === role) &&
+        (s.status === 'starting' || s.status === 'running') &&
+        this.handles(s.role).get(streamId)?.sessionId !== s.id &&
+        // A start still in flight (T396) is not an orphan: its handle is on its way.
+        !this.starting.has(startKey(streamId, s.role)),
+    );
   }
 
   /**
@@ -1390,6 +1476,18 @@ export class AttachService {
       .flatMap((byStream) => [...byStream.values()])
       .find((each) => each.sessionId === sessionId);
   }
+}
+
+/** T437: the progress line a failed start or a vendor crash leaves, so Needs me, Overview and Events say why. */
+export const FAILED_START_PREFIX = 'The agent couldn’t start: ';
+export const CRASHED_PREFIX = 'The agent stopped with an error: ';
+
+/** A daemon-written failure line on `agent.progress` (a new start clears it). */
+function isFailureProgress(progress: string | undefined): boolean {
+  return (
+    progress !== undefined &&
+    (progress.startsWith(FAILED_START_PREFIX) || progress.startsWith(CRASHED_PREFIX))
+  );
 }
 
 /** A vendor failure's exit reason plus its last stderr line, for the sessions strip. A clean end says nothing. */

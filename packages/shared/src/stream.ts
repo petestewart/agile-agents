@@ -31,10 +31,16 @@ export const THREAD_BODY_MAX_CHARS = 800;
 export const AGENT_LINE_MAX_CHARS = 16_000;
 
 /** The body cap for one thread entry, by its writer and kind. */
+/**
+ * T437: a line you write (the composer, a review, a conclusion sent up) may
+ * run to this; the daemon's own lines and events keep `THREAD_BODY_MAX_CHARS`.
+ */
+export const HUMAN_LINE_MAX_CHARS = 4000;
+
 export function threadBodyMaxFor(by: string, kind: string): number {
-  return kind === 'line' && (by.startsWith('agent:') || by === 'director')
-    ? AGENT_LINE_MAX_CHARS
-    : THREAD_BODY_MAX_CHARS;
+  if (kind !== 'line') return THREAD_BODY_MAX_CHARS;
+  if (by.startsWith('agent:') || by === 'director') return AGENT_LINE_MAX_CHARS;
+  return by === 'human' ? HUMAN_LINE_MAX_CHARS : THREAD_BODY_MAX_CHARS;
 }
 
 /** A thread body as quoted into a brief or a tool result: at most `max` chars, cut with "…". */
@@ -702,7 +708,7 @@ export type SessionFlags = z.infer<typeof SessionFlagsSchema>;
  */
 export const StreamSayInputSchema = z
   .object({
-    body: z.string().trim().min(1).max(THREAD_BODY_MAX_CHARS),
+    body: z.string().trim().min(1).max(HUMAN_LINE_MAX_CHARS),
     /**
      * T361: a node with no live agent (never started, or stopped) starts
      * one, with the session defaults, and the line is its first prompt.
@@ -723,8 +729,8 @@ export const StreamSayInputSchema = z
 export type StreamSayInput = z.infer<typeof StreamSayInputSchema>;
 
 /**
- * T435: the longest conclusion Send to <parent> takes (the dialog counts
- * down to it); the parent's line carries it whole.
+ * T437: what Send to <parent> carries (the parent's line adds the
+ * conversation's title). T435: the dialog counts down to it.
  */
 export const SEND_UP_MAX_CHARS = 3000;
 

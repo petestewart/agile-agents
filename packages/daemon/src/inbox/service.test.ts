@@ -202,6 +202,20 @@ describe('InboxService.list', () => {
     expect(inbox.list().find((i) => i.stream === work.id)?.kind).toBe('done');
   });
 
+  test('T437: a work node that gained a part keeps its own branch, and its Merge card', async () => {
+    const made = await streams.create('human', { title: 'work', goal: 'g', parent: root.id });
+    const work = await store.updateStream('daemon', made.id, (b) => ({
+      ...b,
+      repo: 'api',
+      branch: 'stream/work',
+    }));
+    // A conversation under it was turned into work: a part.
+    const part = await streams.create('human', { title: 'follow-up', goal: 'g', parent: work.id });
+    await store.updateStream('daemon', part.id, (b) => ({ ...b, repo: 'api' }));
+    await streams.update('daemon', work.id, { agent: { status: 'done' } });
+    expect(inbox.list().find((i) => i.stream === work.id)?.kind).toBe('done');
+  });
+
   test('T336: a project root\'s coordinator finishing is not "ready to land"', async () => {
     const project = await new ProjectService(store, streams).create({ name: 'Shop' });
     await streams.update('daemon', project.root, { agent: { status: 'done' } });

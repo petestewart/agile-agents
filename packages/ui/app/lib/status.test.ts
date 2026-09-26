@@ -105,3 +105,34 @@ describe('T412: one verdict on a finished branch', () => {
     expect(statusKey(finished)).toBe('ready');
   });
 });
+
+describe('T437: your move, and a coordinator with its own branch', () => {
+  test('a plan, gate or proposal of the node waiting on you reads Needs you', () => {
+    expect(
+      statusKey({
+        agent_status: 'done',
+        human_status: 'open',
+        role: 'coordinating',
+        pending_decision: true,
+      }),
+    ).toBe('needs_you');
+    expect(
+      statusKey({
+        agent_status: 'idle',
+        human_status: 'open',
+        role: 'coordinating',
+        never_started: true,
+        pending_decision: true,
+      }),
+    ).toBe('needs_you');
+  });
+
+  test('a coordinating node that kept its own branch reads Ready to merge when done; one without, Done', () => {
+    expect(
+      statusKey({ agent_status: 'done', human_status: 'open', role: 'coordinating', repo: 'api' }),
+    ).toBe('ready');
+    expect(statusKey({ agent_status: 'done', human_status: 'open', role: 'coordinating' })).toBe(
+      'done',
+    );
+  });
+});
