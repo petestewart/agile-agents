@@ -7,6 +7,8 @@
  *
  * T161: a stream picked in the tree (or opened from an inbox card) shows
  * its stream page (§9.3) in the main column. T163: the rules screen.
+ * T360: the top bar is gone; the sidebar (views, projects, Settings) is the
+ * one navigation, a drawer below 900px (design/cockpit-ui.md §3).
  */
 
 import { DirectorPage } from './components/Director';
@@ -15,15 +17,14 @@ import { DependenciesLens, EventLog, RepoView, RunningLens } from './components/
 import { NewStream } from './components/NewStream';
 import { Rules } from './components/Rules';
 import { Settings } from './components/Settings';
+import { MobileBar, Sidebar } from './components/Sidebar';
 import { StreamPage } from './components/StreamPage';
-import { StreamTree } from './components/StreamTree';
-import { TopBar } from './components/TopBar';
 import { useFeed } from './lib/feed-context';
 import { useShell } from './lib/shell';
 
 export function App(): JSX.Element {
   const { snapshot, connected, cockpit, refresh } = useFeed();
-  const { view, selected, railOpen } = useShell();
+  const { view, selected, railOpen, toggleRail } = useShell();
   const rows = cockpit?.streams ?? [];
   const items = cockpit?.inbox ?? [];
   const projects = cockpit?.projects ?? [];
@@ -31,37 +32,37 @@ export function App(): JSX.Element {
 
   return (
     <div className="cr-root" data-rail={railOpen ? 'open' : 'closed'}>
-      <TopBar
+      <Sidebar
         snapshot={snapshot}
         inboxCount={items.length}
         connected={connected}
         rows={rows}
         projects={projects}
       />
-      <div className="cr-frame">
-        <StreamTree rows={rows} projects={projects} />
-        <main className="cr-main">
-          {view === 'settings' ? (
-            <Settings />
-          ) : view === 'repos' ? (
-            <RepoView rows={rows} repos={repos} overlaps={cockpit?.overlaps ?? []} />
-          ) : view === 'running' ? (
-            <RunningLens rows={rows} />
-          ) : view === 'deps' ? (
-            <DependenciesLens rows={rows} />
-          ) : view === 'rules' ? (
-            <Rules />
-          ) : view === 'director' ? (
-            <DirectorPage />
-          ) : view === 'events' ? (
-            <EventLog />
-          ) : view === 'stream' && selected !== undefined ? (
-            <StreamPage id={selected} />
-          ) : (
-            <Inbox items={items} onChanged={refresh} />
-          )}
-        </main>
-      </div>
+      {/* biome-ignore lint/a11y/useKeyWithClickEvents: the drawer closes with its own toggle and Escape too. */}
+      <div className="cr-scrim" onClick={toggleRail} />
+      <main className="cr-main">
+        <MobileBar connected={connected} name={snapshot?.project?.name ?? 'agile'} />
+        {view === 'settings' ? (
+          <Settings />
+        ) : view === 'repos' ? (
+          <RepoView rows={rows} repos={repos} overlaps={cockpit?.overlaps ?? []} />
+        ) : view === 'running' ? (
+          <RunningLens rows={rows} />
+        ) : view === 'deps' ? (
+          <DependenciesLens rows={rows} />
+        ) : view === 'rules' ? (
+          <Rules />
+        ) : view === 'director' ? (
+          <DirectorPage />
+        ) : view === 'events' ? (
+          <EventLog />
+        ) : view === 'stream' && selected !== undefined ? (
+          <StreamPage id={selected} />
+        ) : (
+          <Inbox items={items} onChanged={refresh} />
+        )}
+      </main>
       <NewStream rows={rows} projects={projects} />
     </div>
   );

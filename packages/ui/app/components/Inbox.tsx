@@ -37,6 +37,7 @@ import {
 import { useShell } from '../lib/shell';
 import { groupInbox } from '../lib/streams';
 import { Markdown } from './Markdown';
+import { Button, EmptyState } from './ui';
 
 const KIND_LABEL: Record<InboxItem['kind'], string> = {
   question: 'question',
@@ -335,19 +336,30 @@ export function Inbox({
   onChanged: () => void;
 }): JSX.Element {
   const groups = groupInbox(items);
+  const { setNewStreamOpen } = useShell();
   return (
     <section className="cr-inbox" data-testid="inbox">
       <div className="cr-inbox-hd">
-        {/* T341: the view is "Needs me" in the top bar and the walkthrough; its heading agrees. */}
+        {/* T341: the view is "Needs me" in the sidebar and the walkthrough; its heading agrees. */}
         <h1>Needs me</h1>
         <span className="cr-count" data-testid="inbox-count">
           {items.length}
         </span>
       </div>
       {items.length === 0 ? (
-        <p className="cr-calm" data-testid="inbox-empty">
-          Nothing needs you.
-        </p>
+        <div data-testid="inbox-empty">
+          <EmptyState
+            icon="check-circle"
+            title="Nothing needs you"
+            actions={
+              <Button icon="plus" onClick={() => setNewStreamOpen(true)}>
+                New node
+              </Button>
+            }
+          >
+            Questions, decisions, plans to approve and work ready to merge show up here.
+          </EmptyState>
+        </div>
       ) : (
         groups.map((group) => (
           <div className="cr-group" key={group.key} data-stream={group.key}>

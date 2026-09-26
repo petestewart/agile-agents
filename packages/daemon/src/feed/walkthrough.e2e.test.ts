@@ -454,7 +454,9 @@ async function openPage(): Promise<Page> {
 }
 let sharedBrowser: Browser | undefined;
 
-const nav = (label: string) => page.locator('nav[aria-label="Views"] button', { hasText: label });
+// T360: the views are sidebar buttons (Settings sits apart at the bottom).
+const nav = (label: string) =>
+  page.locator('[data-testid="sidebar"] [data-view]', { hasText: new RegExp(`^${label}`) });
 const rail = () => page.locator('[data-testid="stream-tree"]');
 const railRow = (title: string) =>
   rail().locator('.cr-tree-row', {
@@ -477,11 +479,12 @@ async function openNode(title: string): Promise<void> {
   await page.locator('[data-testid="stream-title"]', { hasText: title }).waitFor();
 }
 
+/** T360: "All streams" is gone from the rail; Needs me is the everything-view. */
 async function allStreams(): Promise<void> {
-  await rail().locator('.cr-tree-row', { hasText: 'All streams' }).click();
+  await page.locator('[data-testid="sidebar"] [data-view="inbox"]').click();
 }
 
-/** New stream (the top bar), as 5.1 fills it in. */
+/** New node (the sidebar), as 5.1 fills it in. */
 async function newStream(title: string, goal: string, startLater: boolean): Promise<void> {
   await page.locator('[data-testid="new-stream-open"]').click();
   await page.locator('[data-testid="new-stream-title"]').fill(title);
@@ -1308,9 +1311,10 @@ test.skipIf(!RUN)(
       );
       const row = railRow('Walkthrough notes');
       check(
-        'the rail shows it with the conversation icon ○',
-        (await row.locator('[data-testid="role-icon"]').textContent()) === '○',
-        (await row.locator('[data-testid="role-icon"]').textContent()) ?? '',
+        'the rail shows it with the conversation icon',
+        (await row.locator('[data-testid="role-icon"]').getAttribute('data-role')) ===
+          'conversation',
+        (await row.locator('[data-testid="role-icon"]').getAttribute('data-role')) ?? '',
       );
     });
 
@@ -1328,8 +1332,8 @@ test.skipIf(!RUN)(
       );
       const icon = await railRow('Walkthrough notes')
         .locator('[data-testid="role-icon"]')
-        .textContent();
-      check('the rail icon becomes the work icon ●', icon === '●', icon ?? '');
+        .getAttribute('data-role');
+      check('the rail icon becomes the work icon', icon === 'work', icon ?? '');
       check(
         'no agent starts',
         (await page.locator('[data-testid="session"]').count()) === 0,
@@ -1844,8 +1848,10 @@ test.skipIf(!RUN)(
         'Read ledger-lite and tell me how it stores amounts. Then wait: I may send you a decision about this.',
         false,
       );
-      const icon = await railRow('Cents check').locator('[data-testid="role-icon"]').textContent();
-      check('the rail icon is the conversation icon ○', icon === '○', icon ?? '');
+      const icon = await railRow('Cents check')
+        .locator('[data-testid="role-icon"]')
+        .getAttribute('data-role');
+      check('the rail icon is the conversation icon', icon === 'conversation', icon ?? '');
       await first;
       await checkText(
         'its first answer lands on the Thread tab',
@@ -2399,8 +2405,8 @@ test.skipIf(!RUN)(
       );
       const filter = page.locator('[data-testid="stream-filter"]');
       check(
-        'the filter box reads Filter streams (/)',
-        (await filter.getAttribute('placeholder')) === 'Filter streams (/)',
+        'the filter box reads Filter nodes…',
+        (await filter.getAttribute('placeholder')) === 'Filter nodes…',
         (await filter.getAttribute('placeholder')) ?? '',
       );
       await page.locator('body').click();

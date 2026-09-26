@@ -754,10 +754,8 @@ describe('cockpit shell (Playwright e2e)', () => {
           return saved.status === 'accepted' && saved.decided_by === 'human';
         });
 
-        // Back to every stream: allow the routed call with a reason.
-        await page
-          .locator('[data-testid="stream-tree"] .cr-tree-row', { hasText: 'All streams' })
-          .click();
+        // Back to Needs me: allow the routed call with a reason.
+        await page.locator('[data-view="inbox"]').click();
         const gateCard = `[data-id="${gate.id}"]`;
         await page.locator(`${gateCard} [data-testid="gate-note"]`).fill('pin it to 1.2.3');
         await page.locator(`${gateCard} [data-testid="gate-approve"]`).click();
@@ -821,6 +819,8 @@ describe('cockpit shell (Playwright e2e)', () => {
         await page.locator(`${card} [data-testid="answer-input"]`).fill('main');
         await page.locator(`${card} [data-testid="answer-send"]`).click();
         await page.locator(card).waitFor({ state: 'detached' });
+        // T360: the views live in the drawer at phone width.
+        await page.locator('[data-testid="rail-toggle"]').click();
         await page.locator('[data-view="inbox"]').click();
         await waitForCount(page, '[data-testid="inbox-empty"]', 1);
       } finally {
@@ -2453,20 +2453,24 @@ describe('the Knowledge screen (Playwright e2e, T266)', () => {
 
 describe('new stream and quick capture (Playwright e2e, T162)', () => {
   browserTest(
-    'quick capture turns one line into a stream with no repo and opens its page',
+    'New node with just a title makes a node with no repo and opens its page',
     async () => {
       const cockpit = await startCockpit();
       let page: Page | undefined;
       try {
-        // T208: the only project is where a capture on "All" files.
+        // T208: the only project is where a new node files when nothing is open.
         const shop = await cockpit.projects.create({ name: 'shop' });
         page = await openPage();
         await page.goto(`${cockpit.base}/`);
         await page.locator('[data-testid="inbox-empty"]').waitFor({ state: 'visible' });
 
-        // Interaction one: type the line. Interaction two: Enter.
-        await page.locator('[data-testid="quick-capture"]').fill('why is the nightly export slow?');
-        await page.locator('[data-testid="quick-capture"]').press('Enter');
+        // T360: quick capture is gone; New node with a title alone does the same.
+        await page.locator('[data-testid="new-stream-open"]').click();
+        await page
+          .locator('[data-testid="new-stream-title"]')
+          .fill('why is the nightly export slow?');
+        await page.locator('[data-testid="new-stream-start-later"]').check();
+        await page.locator('[data-testid="new-stream-title"]').press('Enter');
 
         await page.locator('[data-testid="stream-page"]').waitFor({ state: 'visible' });
         await waitUntil('the stream to exist', () => cockpit.streams.list().length === 2);
@@ -2478,7 +2482,6 @@ describe('new stream and quick capture (Playwright e2e, T162)', () => {
         const row = `[data-testid="stream-tree"] [data-stream="${created?.id}"]`;
         await page.locator(row).waitFor({ state: 'visible' });
         expect(await page.locator(row).getAttribute('aria-current')).toBe('true');
-        expect(await page.locator('[data-testid="quick-capture"]').inputValue()).toBe('');
       } finally {
         await teardown([page]);
         await cockpit.stop();
@@ -2506,11 +2509,11 @@ describe('new stream and quick capture (Playwright e2e, T162)', () => {
           .waitFor({ state: 'visible' });
 
         // `n` while typing does nothing: it is just a letter in the box.
-        await page.locator('[data-testid="quick-capture"]').focus();
+        await page.locator('[data-testid="stream-filter"]').focus();
         await page.keyboard.press('n');
         expect(await page.locator('[data-testid="new-stream"]').count()).toBe(0);
-        await page.locator('[data-testid="quick-capture"]').fill('');
-        await page.locator('[data-testid="quick-capture"]').blur();
+        await page.locator('[data-testid="stream-filter"]').fill('');
+        await page.locator('[data-testid="stream-filter"]').blur();
 
         await page.keyboard.press('n');
         await page.locator('[data-testid="new-stream"]').waitFor({ state: 'visible' });
@@ -2556,7 +2559,7 @@ describe('new stream and quick capture (Playwright e2e, T162)', () => {
         const checked = page.locator('[data-testid="new-stream-parent"] option:checked');
         for (let i = 0; i < 5; i++) {
           // The last opening had no parent (nothing open)…
-          await tree.locator('.cr-tree-row', { hasText: 'All streams' }).click();
+          await page.locator('[data-view="inbox"]').click();
           await page.locator('[data-testid="new-stream-open"]').click();
           expect(await checked.textContent()).toBe('— none —');
           await page.keyboard.press('Escape');
@@ -2889,9 +2892,11 @@ describe('project tree and switcher (Playwright e2e, T208)', () => {
         expect(await page.locator(`${tree} [data-stream="${shopNode.id}"]`).count()).toBe(0);
         expect(await page.locator(`${tree} [data-stream="${shop.root}"]`).count()).toBe(0);
 
-        // Quick capture files into the selected project (not the only/first one).
-        await page.locator('[data-testid="quick-capture"]').fill('write the guide');
-        await page.locator('[data-testid="quick-capture"]').press('Enter');
+        // New node files into the selected project (not the only/first one).
+        await page.locator('[data-testid="new-stream-open"]').click();
+        await page.locator('[data-testid="new-stream-title"]').fill('write the guide');
+        await page.locator('[data-testid="new-stream-start-later"]').check();
+        await page.locator('[data-testid="new-stream-create"]').click();
         await waitUntil('the capture to exist', () =>
           cockpit.streams.list().some((s) => s.title === 'write the guide'),
         );
@@ -3256,7 +3261,7 @@ describe('New stream starts the agent (Playwright e2e, T204)', () => {
   );
 
   browserTest(
-    'quick capture files a node and starts no session',
+    'New node with Start later files a node and starts no session',
     async () => {
       const cockpit = await startStreamCockpit([]);
       let page: Page | undefined;
@@ -3272,8 +3277,10 @@ describe('New stream starts the agent (Playwright e2e, T204)', () => {
         page = await openPage();
         await page.goto(`${cockpit.base}/`);
         await page.locator(`[data-testid="stream-tree"] [data-stream="${parent.id}"]`).click();
-        await page.locator('[data-testid="quick-capture"]').fill('why is export slow?');
-        await page.locator('[data-testid="quick-capture"]').press('Enter');
+        await page.locator('[data-testid="new-stream-open"]').click();
+        await page.locator('[data-testid="new-stream-title"]').fill('why is export slow?');
+        await page.locator('[data-testid="new-stream-start-later"]').check();
+        await page.locator('[data-testid="new-stream-create"]').click();
         await waitUntil('the captured node', () =>
           cockpit.streams.list().some((s) => s.title === 'why is export slow?'),
         );

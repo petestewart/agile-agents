@@ -168,7 +168,13 @@ export function ShellProvider({
   const value = useMemo<ShellValue>(
     () => ({
       view,
-      setView,
+      // T360: a view from the sidebar closes the phone drawer; any view but a
+      // node's page leaves no node open (so New node doesn't default to it).
+      setView: (next: ShellView) => {
+        setView(next);
+        if (next !== 'stream') setSelected(undefined);
+        setRailOpen(false);
+      },
       selected,
       // T161: picking a stream opens its page (§9.3); "All streams" is the
       // inbox. On a phone the drawer gets out of the way either way.
@@ -184,6 +190,7 @@ export function ShellProvider({
       openRules: (filter = DEFAULT_RULES_FILTER) => {
         setRulesFilter(filter);
         setView('rules');
+        setSelected(undefined);
       },
       newStreamOpen,
       setNewStreamOpen,
