@@ -496,6 +496,12 @@ async function pickedModel(
   const row = page.locator(
     `[data-testid="${testid}"] [data-testid="model-option"][aria-checked="true"]`,
   );
+  // The list fills in once the session defaults arrive (a fetch after the dialog opens):
+  // wait for the pick, as a reader would, rather than read the empty first render.
+  await row
+    .first()
+    .waitFor({ state: 'attached', timeout: POLL_DEADLINE_MS })
+    .catch(() => {});
   if ((await row.count()) === 0) return undefined;
   const effort = page.locator(`[data-testid="${testid}-effort"] [aria-checked="true"]`);
   return {

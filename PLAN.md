@@ -2580,6 +2580,15 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 - **Validation Steps:** `bun test packages/daemon/src/http.test.ts -t T434 packages/daemon/src/daemon.test.ts -t T434`; control-room e2e "General picks the theme…".
 - **Notes:** Branch T434-quick-drafts-switch.
 
+### Ticket: T423b CI: the picker's model read before it loaded
+- **Priority:** P0
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** CI (runs 1353, 1355) failed "stream page (T161) › attach → question → answer → findings → land": `pickedModel` read the picker's checked model right after the dialog opened, before its session defaults arrived (a fetch on mount), and got `undefined`. It passed locally on faster timing.
+- **Acceptance Criteria:** `pickedModel` waits (up to the poll deadline) for a checked model before reading it. Reproduced with the fetch held 1.5 s in the page (the old helper fails with CI's exact `undefined`; the new one passes). `page.route` can't hold it: the cockpit's service worker makes the request.
+- **Validation Steps:** control-room e2e "attach → question…", the T423 picker tests.
+- **Notes:** Branch T423b-picked-model-race.
+
 ### Ticket: T369 Phase 15 QA
 - **Priority:** P0
 - **Status:** Done
