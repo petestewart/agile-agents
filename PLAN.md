@@ -2498,6 +2498,15 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 - **Validation Steps:** `bun test packages/ui/app/lib/chat.test.ts packages/shared`; control-room e2e `T427`, `T205`.
 - **Notes:** Branch T427-proposed-next.
 
+### Ticket: T428 A picker's name outlasts its sub-label
+- **Priority:** P3
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** Found in the T422 screenshot pass: on a phone, Turn into work's repo picker cut "No repository" to "No r…" to keep its long sub-label whole (a zero flex basis on the name).
+- **Acceptance Criteria:** A pick option's name takes its width first and the muted sub-label truncates before it; the research option's sub-label reads "Research, no branch".
+- **Validation Steps:** Screenshots at 390px, light and dark; control-room e2e `T422`, `T365`.
+- **Notes:** Branch T428-picker-sub.
+
 ### Ticket: T369 Phase 15 QA
 - **Priority:** P0
 - **Status:** Done
