@@ -207,6 +207,10 @@ export function checkNeverWithoutHuman(
     if (cmd.hasUnsafeShellConstruct(classified.command)) {
       return hil('command substitution/backticks/eval/unbalanced quotes are unclassifiable');
     }
+    // T345: `cd <name>` then goes wherever CDPATH points.
+    if (cmd.mentionsCdpath(classified.command)) {
+      return hil('a command that sets or names CDPATH is never automatic');
+    }
     for (const atom of cmd.parseCommandIntoAtoms(classified.command)) {
       const verdict = neverWithoutHumanForAtom(atom, ctx);
       if (verdict !== undefined) return verdict;
@@ -286,11 +290,7 @@ function gitDirWriteDenyReason(path: string, ctx: PolicyContext): string | undef
     : undefined;
 }
 
-/**
- * T345: every dir a worker's atom may run in. A `cd` adds its target but
- * never drops the dir before it: a failed `cd`, a `;`, a pipe or a nested
- * `sh -c` leaves the next atom where it was, so a path must hold from each.
- */
+/** T345: every dir an atom may run in; a path must hold from each. */
 type Cwds = readonly string[];
 const MAX_CWDS = 16;
 
@@ -441,47 +441,81 @@ function cdTarget(tokens: string[], cwd: string, role: string): { dir: string } 
 }
 
 /**
- * T345: a worker's `cd` from each dir it may be in: into its own worktree,
- * never `.git`. The new dir is `realpath`'d, as the kernel resolves a later
- * `..` from the physical dir. Returns every dir later atoms may run in.
+ * T336, T345: each atom of `command` that isn't a `cd`, with every dir it
+ * may run in, or the verdict that stops the walk. `cd` checks each target.
+ * After `&&` only a `cd` that succeeded matters, so its target replaces the
+ * set; after `;`, `||`, `&`, a pipe or inside `sh -c`, a failed or subshell
+ * `cd` leaves the shell where it was, so the atom may run in any dir seen.
+ */
+function* walkCwds(
+  command: string,
+  start: string,
+  cd: (tokens: string[], cwd: string) => { dir: string } | PolicyVerdict,
+): Generator<{ atom: cmd.CommandAtom; cwds: Cwds } | PolicyVerdict> {
+  if (cmd.mentionsCdpath(command)) {
+    yield deny('a command that sets CDPATH is never automatic');
+    return;
+  }
+  let all: Cwds = [start];
+  let current: Cwds = [start];
+  const atoms = cmd.parseCommandIntoAtoms(command);
+  for (const [i, atom] of atoms.entries()) {
+    const here = atom.delimiterBefore === '&&' && atom.nested !== true ? current : all;
+    current = here;
+    if (atom.tokens[0] !== 'cd') {
+      yield { atom, cwds: here };
+      continue;
+    }
+    const dirs: string[] = [];
+    for (const cwd of here) {
+      const moved = cd(atom.tokens, cwd);
+      if ('action' in moved) {
+        yield moved;
+        return;
+      }
+      dirs.push(moved.dir);
+    }
+    const inPipeline = atom.precededByPipe || atoms[i + 1]?.precededByPipe === true;
+    const certain = atom.nested !== true && !inPipeline;
+    current = [...new Set(certain ? dirs : [...here, ...dirs])];
+    all = [...new Set([...all, ...dirs])];
+    // Fail closed on a chain too long to follow, so it can't stall the hook.
+    if (all.length > MAX_CWDS) {
+      yield deny('too many cd in one command to check');
+      return;
+    }
+  }
+}
+
+/**
+ * T345: a worker's `cd`: into its own worktree, never `.git`. The new dir is
+ * `realpath`'d, as the kernel resolves a later `..` from the physical dir.
  */
 function engineerCd(
   tokens: string[],
   ctx: PolicyContext,
-  cwds: Cwds,
-): { cwds: Cwds } | PolicyVerdict {
-  const next = new Set(cwds);
-  for (const cwd of cwds) {
-    const moved = cdTarget(tokens, cwd, 'engineer');
-    if ('action' in moved) return moved;
-    if (!isPathInside(moved.dir, ctx.worktreePath)) {
-      return deny(`cd ${tokens[1]} leaves the worktree`);
-    }
-    if (cmd.isInsideGitDir(moved.dir, ctx.worktreePath)) {
-      return deny(`cd ${tokens[1]} goes into git's own state (.git)`);
-    }
-    let dir = moved.dir;
-    try {
-      dir = realpathSync(dir);
-    } catch {
-      // Not there yet: the cd fails and the atoms after it stay where they were.
-    }
-    next.add(dir);
+  cwd: string,
+): { dir: string } | PolicyVerdict {
+  const moved = cdTarget(tokens, cwd, 'engineer');
+  if ('action' in moved) return moved;
+  if (!isPathInside(moved.dir, ctx.worktreePath)) {
+    return deny(`cd ${tokens[1]} leaves the worktree`);
   }
-  // Each cd can double the set: bound it so a long chain can't stall the hook.
-  if (next.size > MAX_CWDS) return deny('engineer role allows only a few cd per command');
-  return { cwds: [...next] };
+  if (cmd.isInsideGitDir(moved.dir, ctx.worktreePath)) {
+    return deny(`cd ${tokens[1]} goes into git's own state (.git)`);
+  }
+  try {
+    return { dir: realpathSync(moved.dir) };
+  } catch {
+    return moved; // not there yet: the cd will fail
+  }
 }
 
 function engineerExecuteVerdict(command: string, ctx: PolicyContext): PolicyVerdict {
-  let cwds: Cwds = [ctx.worktreePath];
-  for (const atom of cmd.parseCommandIntoAtoms(command)) {
-    if (atom.tokens[0] === 'cd') {
-      const moved = engineerCd(atom.tokens, ctx, cwds);
-      if ('action' in moved) return moved;
-      cwds = moved.cwds;
-      continue;
-    }
+  const cd = (tokens: string[], cwd: string) => engineerCd(tokens, ctx, cwd);
+  for (const step of walkCwds(command, ctx.worktreePath, cd)) {
+    if ('action' in step) return step;
+    const { atom, cwds } = step;
     if (cmd.hasRedirectionOrTee(atom.tokens)) {
       // Every non-benign redirection target (`>`, `1>`, `2>`, `&>`, a second
       // `>`, ...) must resolve inside the worktree. `tee`, an unresolvable
@@ -725,31 +759,28 @@ function coordinatorCd(
   tokens: string[],
   ctx: PolicyContext,
   cwd: string,
-): { cwd: string } | PolicyVerdict {
+): { dir: string } | PolicyVerdict {
   const moved = cdTarget(tokens, cwd, 'coordinator');
   if ('action' in moved) return moved;
-  const dir = moved.dir;
   if (ctx.readRoots !== undefined || ctx.hiddenRoots !== undefined) {
-    const reason = readDenyReason(dir, ctx);
+    const reason = readDenyReason(moved.dir, ctx);
     if (reason !== undefined) return deny(reason);
   }
-  return { cwd: dir };
+  return moved;
 }
 
 /** The reviewer's read-only tools, plus the two a scratch-dir redirect needs. */
 const COORDINATOR_WRITE_TOOLS = new Set(['echo', 'printf']);
 
 function coordinatorExecuteVerdict(command: string, ctx: PolicyContext): PolicyVerdict {
-  let cwd = ctx.worktreePath;
-  for (const atom of cmd.parseCommandIntoAtoms(command)) {
-    if (atom.tokens[0] === 'cd') {
-      const moved = coordinatorCd(atom.tokens, ctx, cwd);
-      if ('action' in moved) return moved;
-      cwd = moved.cwd;
-      continue;
+  const cd = (tokens: string[], cwd: string) => coordinatorCd(tokens, ctx, cwd);
+  for (const step of walkCwds(command, ctx.worktreePath, cd)) {
+    if ('action' in step) return step;
+    const { atom, cwds } = step;
+    for (const cwd of cwds) {
+      const redirect = coordinatorRedirectVerdict(atom.tokens, ctx, cwd);
+      if (redirect.action !== 'allow') return redirect;
     }
-    const redirect = coordinatorRedirectVerdict(atom.tokens, ctx, cwd);
-    if (redirect.action !== 'allow') return redirect;
     // T336: git by the strict allowlist (no -c/--config-env, pager, ext-diff, ...).
     if (cmd.isReadOnlyGitAtom(atom)) continue;
     if (isReviewerSafeTool(atom.tokens)) continue;

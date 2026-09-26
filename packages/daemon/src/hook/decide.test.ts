@@ -407,6 +407,9 @@ describe('T336: a coordinator reads other repos with realistic Bash', () => {
       'cd && ls',
       'cd - && ls',
       'cd $HOME && ls',
+      // T345: a failed cd leaves the shell in the repo; CDPATH sends cd anywhere.
+      `cd ${ledger} ; cd ${dir}/nope ; echo x > notes.md`,
+      `CDPATH=${home} cd sessions`,
     ]) {
       expect([command, bash(command).decision]).toEqual([command, 'deny']);
     }
@@ -513,5 +516,6 @@ describe('T345: a worker may cd within its worktree', () => {
       expect([command, bash(command)]).toEqual([command, 'deny']);
     }
     expect(bash('cd $(git rev-parse --show-toplevel) && ls')).toBe('ask');
+    expect(bash('CDPATH=/ cd etc && cat shadow')).toBe('ask');
   });
 });

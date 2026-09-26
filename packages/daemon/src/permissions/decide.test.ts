@@ -1713,6 +1713,8 @@ describe('decidePermission — T345 a worker may cd within its worktree', () => 
       'cd sub && tree -L 2',
       'cd sub && echo x > out.txt',
       'cd sub && cd deep && ls',
+      // A plain `&&` chain replaces the dir: many cds stay well under the cap.
+      'cd sub && cd deep && cd .. && cd deep && cd .. && cd .. && cd pkg && cd .. && cd sub && ls',
     ]) {
       expect([command, decideIn(command)]).toEqual([command, 'allow']);
     }
@@ -1744,6 +1746,38 @@ describe('decidePermission — T345 a worker may cd within its worktree', () => 
     }
   });
 
+  test('CDPATH makes `cd <name>` go anywhere: any command naming it is held', () => {
+    for (const command of [
+      'CDPATH=/ cd etc && cat shadow',
+      'CDPATH=/ ; cd etc && cat shadow',
+      'export CDPATH=/ && cd etc && ls',
+      'env CDPATH=/ bash -c "cd etc && ls"',
+      'CDPATH=/ ls',
+      'bash -c "CDPATH=/; cd etc; cat shadow"',
+    ]) {
+      expect([command, decideIn(command)]).toEqual([command, 'hil']);
+    }
+  });
+
+  test('a lone & ends a command: what follows it is checked on its own', () => {
+    for (const command of [
+      'echo hi & cat /etc/passwd',
+      'echo & cd .. && echo x > y',
+      'true & rm -rf ~',
+      'cd sub & echo x > ../top.txt',
+    ]) {
+      expect([command, decideIn(command)]).not.toEqual([command, 'allow']);
+    }
+    for (const command of [
+      'bun test 2>&1',
+      'bun test &> out.txt',
+      'bun test >&2',
+      'bun test |& cat',
+    ]) {
+      expect([command, decideIn(command)]).toEqual([command, 'allow']);
+    }
+  });
+
   test('cd $(...) is never allowed: command substitution is held for the human', () => {
     expect(decideIn('cd $(mktemp -d) && ls')).toBe('hil');
     expect(decideIn('cd `echo /` && ls')).toBe('hil');
@@ -1766,7 +1800,21 @@ describe('decidePermission — T345 a worker may cd within its worktree', () => 
     ]) {
       expect([command, decideIn(command)]).toEqual([command, 'deny']);
     }
-    expect(decideIn('cd sub && echo x > ../top.txt')).toBe('deny');
+    // After `&&` the cd took: `..` from sub is the worktree root.
+    expect(decideIn('cd sub && echo x > ../top.txt')).toBe('allow');
+    expect(decideIn('cd sub/deep && cat ../../README.md')).toBe('allow');
+    // After `;` or `||` the cd may have failed: the path must hold from the root too.
+    for (const command of [
+      'cd sub ; echo x > ../top.txt',
+      'cd sub || echo x > ../top.txt',
+      'cd sub && ls ; echo x > ../top.txt',
+      'cd sub && ls || echo x > ../top.txt',
+      'cd sub || true && echo x > ../top.txt',
+      'ls | cd sub && echo x > ../top.txt',
+      'bash -c "cd sub" && echo x > ../top.txt',
+    ]) {
+      expect([command, decideIn(command)]).toEqual([command, 'deny']);
+    }
     // Only from sub is `out` the symlink out of the worktree.
     expect(decideIn('echo x > out/pwn')).toBe('allow');
     for (const command of [
