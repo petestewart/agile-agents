@@ -7486,6 +7486,9 @@ div.cr-lens-ev:hover {
   padding: 4px 0 12px;
   background: var(--bg);
 }
+.cr-lens-toolbar[hidden] {
+  display: none;
+}
 .cr-lens-search {
   display: inline-flex;
   flex: 0 1 240px;

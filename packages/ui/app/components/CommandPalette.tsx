@@ -30,6 +30,12 @@ import { Dialog, Kbd, StatusDot } from './ui';
 
 const openers = new Set<() => void>();
 
+/** "⌘K" on a Mac, "Ctrl K" elsewhere: for tooltips that name the shortcut. */
+export function paletteKeyLabel(): string {
+  const mod = modKeyLabel(typeof navigator === 'undefined' ? '' : navigator.platform);
+  return mod === '⌘' ? '⌘K' : `${mod} K`;
+}
+
 /** Opens the palette from anywhere (the sidebar's search button). */
 export function openCommandPalette(): void {
   for (const open of openers) open();

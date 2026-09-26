@@ -22,6 +22,7 @@ describe('directorState', () => {
       text: 'Not started — your first message starts it.',
       working: false,
       live: false,
+      fresh: true,
     });
   });
 
@@ -48,7 +49,8 @@ describe('directorState', () => {
   test('the composer hint follows the state', () => {
     expect(directorHint(directorState(session('running'), true))).toMatch(/^Queued/);
     expect(directorHint(directorState(session('idle'), true))).toBe('Goes to the Director now.');
-    expect(directorHint(directorState(undefined, false))).toMatch(/^Wakes/);
+    expect(directorHint(directorState(undefined, false))).toMatch(/^Starts/);
+    expect(directorHint(directorState(session('stopped'), false))).toMatch(/^Wakes/);
   });
 });
 

@@ -210,19 +210,19 @@ function RepoEvents({
       {/* T341: labelled, so the events never read as more work nodes. */}
       <div className="cr-lens-section-hd">
         <h3 className="cr-lens-sub">Recent events</h3>
-        {events.length > REPO_EVENTS_SHOWN && (
-          <button
-            type="button"
-            className="cr-lens-more"
-            onClick={() => {
-              pendingEventRepo = repo;
-              setView('events');
-            }}
-          >
-            All {events.length} events
-            <Icon name="arrow-right" size={12} />
-          </button>
-        )}
+        <button
+          type="button"
+          className="cr-lens-more"
+          data-testid="repo-events-all"
+          title={`Every event on ${repo}, in Events`}
+          onClick={() => {
+            pendingEventRepo = repo;
+            setView('events');
+          }}
+        >
+          {events.length > REPO_EVENTS_SHOWN ? `All ${events.length} events` : 'In Events'}
+          <Icon name="arrow-right" size={12} />
+        </button>
       </div>
       <ul className="cr-lens-evlist" data-testid="repo-events">
         {events.slice(0, REPO_EVENTS_SHOWN).map((e) => {
@@ -967,7 +967,7 @@ export function EventLog(): JSX.Element {
           Everything that happened, newest first, and which nodes were told.
         </p>
       </PageHeader>
-      <div className="cr-lens-toolbar">
+      <div className="cr-lens-toolbar" hidden={events !== undefined && all.length === 0}>
         <label className="cr-lens-search">
           <Icon name="search" size={14} />
           <input
@@ -1000,7 +1000,7 @@ export function EventLog(): JSX.Element {
             items={EVENT_FAMILIES}
           />
         </div>
-        {repoNames.length > 1 && (
+        {(repoNames.length > 1 || repo !== undefined) && (
           <select
             className="cr-lens-select"
             data-testid="event-log-repo-filter"

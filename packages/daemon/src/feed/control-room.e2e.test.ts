@@ -5359,6 +5359,17 @@ describe('node activity (Playwright e2e, T245)', () => {
           `[data-testid="repo-view"] [data-repo="api"] [data-event="${event.id}"] [data-testid="repo-event-text"]`,
           'Main changed · api: add salePrice',
         );
+        // T368: the card's link opens Events on that repo.
+        await page.locator('[data-repo="api"] [data-testid="repo-events-all"]').click();
+        await page
+          .locator(`[data-testid="event-log"] [data-event="${event.id}"]`)
+          .waitFor({ state: 'visible' });
+        expect(
+          await page
+            .locator('[data-testid="event-log-repo-filter"]')
+            .inputValue()
+            .catch(() => ''),
+        ).toBe('api');
       } finally {
         await teardown([page]);
         await cockpit.stop();

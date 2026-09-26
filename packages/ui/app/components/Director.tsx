@@ -67,10 +67,11 @@ function useDetailsOpen(): [boolean, (open: boolean) => void] {
   return [open, set];
 }
 
-const SUGGESTIONS = [
-  'What needs me today?',
-  'Is anything stuck or overlapping?',
-  'Draft the work for…',
+/** The empty chat's starters: a click puts the text in the composer (the last one to finish). */
+const SUGGESTIONS: ReadonlyArray<{ label: string; text: string }> = [
+  { label: 'What needs me today?', text: 'What needs me today?' },
+  { label: 'Is anything stuck or overlapping?', text: 'Is anything stuck or overlapping?' },
+  { label: 'Draft the work for…', text: 'Draft the work for ' },
 ];
 
 /** T301: a held Director change, as a decision card. A draft tree renders as the tree it would build. */
@@ -443,15 +444,16 @@ export function DirectorPage(): JSX.Element {
                   <div className="cr-dir-suggest">
                     {SUGGESTIONS.map((s) => (
                       <button
-                        key={s}
+                        key={s.label}
                         type="button"
                         className="cr-dir-chip"
+                        data-testid="director-suggestion"
                         onClick={() => {
-                          setDraft(s);
+                          setDraft(s.text);
                           composer.current?.focus();
                         }}
                       >
-                        {s}
+                        {s.label}
                       </button>
                     ))}
                   </div>

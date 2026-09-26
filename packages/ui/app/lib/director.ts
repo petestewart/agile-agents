@@ -17,6 +17,8 @@ export interface DirectorSessionLike {
 export interface DirectorState {
   /** The header's line: "Claude Opus 5.5 · Working", or how the next message starts it. */
   text: string;
+  /** It has never run. */
+  fresh?: true;
   /** A turn is in flight: the chat shows "Director is working". */
   working: boolean;
   /** An agent is attached (working, or waiting for you). */
@@ -28,7 +30,12 @@ export function directorState(
   live: boolean,
 ): DirectorState {
   if (session === undefined) {
-    return { text: 'Not started — your first message starts it.', working: false, live: false };
+    return {
+      text: 'Not started — your first message starts it.',
+      working: false,
+      live: false,
+      fresh: true,
+    };
   }
   const model = modelLabel(session.vendor, session.model);
   const working = live && (session.status === 'running' || session.status === 'starting');
@@ -44,6 +51,7 @@ export function directorState(
 export function directorHint(state: DirectorState): string {
   if (state.working) return 'Queued: the Director reads it when this turn ends.';
   if (state.live) return 'Goes to the Director now.';
+  if (state.fresh) return 'Starts the Director with your message.';
   return 'Wakes the Director with your message.';
 }
 
