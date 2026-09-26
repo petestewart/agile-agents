@@ -47,6 +47,10 @@ describe('statusKey (T360, design/cockpit-ui.md §6)', () => {
     expect(nodeStatus({ ...base, agent_status: 'done', role: 'work' }).label).toBe(
       'Ready to merge',
     );
+    expect(
+      nodeStatus({ ...base, agent_status: 'done', role: 'conversation', project: 'P-1' }).label,
+    ).toBe('Replied');
+    expect(nodeStatus({ ...base, agent_status: 'done', role: 'coordinating' }).label).toBe('Done');
     expect(isYourMove('ready')).toBe(true);
     expect(isYourMove('working')).toBe(false);
   });
