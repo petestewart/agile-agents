@@ -7,7 +7,15 @@ import { join } from 'node:path';
 import { runInit } from '../init';
 import { StateStore } from '../store';
 import { StreamService } from './service';
-import { TitleNamer, claudeTitleRun, cleanTitle, titlePrompt } from './titles';
+import {
+  DRAFT_GOAL_MAX_CHARS,
+  TitleNamer,
+  claudeTitleRun,
+  cleanGoal,
+  cleanTitle,
+  draftGoalPrompt,
+  titlePrompt,
+} from './titles';
 
 describe('the title a reply makes', () => {
   test('its first line, unwrapped and trimmed', () => {
@@ -115,5 +123,32 @@ describe('TitleNamer', () => {
     await namer.settled();
     expect(errors).toHaveLength(1);
     expect(streams.get(node.id).title).toBe('placeholder');
+  });
+});
+
+describe('T422: the goal a conversation drafts', () => {
+  test('the prompt carries the question and the newest lines, each on one line', () => {
+    const lines = Array.from({ length: 40 }, (_, i) => ({
+      who: i % 2 === 0 ? ('you' as const) : ('agent' as const),
+      text: `line ${i}\nwrapped`,
+    }));
+    const prompt = draftGoalPrompt('  why buffer the file?  ', lines);
+    expect(prompt).toContain('The question: why buffer the file?');
+    expect(prompt).toContain('Agent: line 39 wrapped');
+    expect(prompt).toContain('Human: line 10 wrapped');
+    // Only the newest 30 lines.
+    expect(prompt).not.toContain('line 9 wrapped');
+  });
+
+  test('the reply, unwrapped and capped; nothing usable is no goal', () => {
+    expect(cleanGoal('Goal: Stream the upload instead of buffering it.\n')).toBe(
+      'Stream the upload instead of buffering it.',
+    );
+    expect(cleanGoal('**Goal**: "Add retries."')).toBe('Add retries.');
+    const long = cleanGoal('x'.repeat(5000)) ?? '';
+    expect(long.length).toBe(DRAFT_GOAL_MAX_CHARS);
+    expect(long.endsWith('…')).toBe(true);
+    expect(cleanGoal('  ')).toBeUndefined();
+    expect(cleanGoal(undefined)).toBeUndefined();
   });
 });

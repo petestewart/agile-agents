@@ -100,7 +100,14 @@ import {
   resolveMainBranchAsync,
   setRepoSettings,
 } from './store';
-import type { RepoInPlaceService, StreamService, TitleNamer } from './streams';
+import {
+  type RepoInPlaceService,
+  type StreamService,
+  type TitleNamer,
+  type TitleRun,
+  cleanGoal,
+  draftGoalPrompt,
+} from './streams';
 import type { TrackerLinks } from './trackers/link';
 import { TrackerError } from './trackers/port';
 import {
@@ -184,6 +191,8 @@ export interface HttpServerOptions {
   landing?: DeliveryService;
   /** T414 (D41): names a node created with `auto_title` (absent: the placeholder stays). */
   titleNamer?: TitleNamer;
+  /** T422 (D42): the cheap model call (the same as titles) that drafts a goal from a conversation. */
+  cheapModel?: TitleRun;
   /** T340: `POST /api/streams/:id/pr-check`, the Delivery panel's Check now (`PrPoller.pollNow`). */
   prCheck?: (id: string) => Promise<Stream>;
   /** The stream page's sessions strip and composer. */
@@ -469,6 +478,8 @@ interface FeedContext {
   mergeState?: NothingToMergeCache;
   /** T392: every node's agent steps, folded from the event log as it grows. */
   steps: StepIndex;
+  /** T422 (D42): the cheap model call that drafts a goal from a conversation. */
+  cheapModel?: TitleRun;
   userHome?: string;
 }
 
@@ -524,6 +535,7 @@ function resolveFeedContext(options: HttpServerOptions): FeedContext | undefined
         }
       : {}),
     steps: new StepIndex(`${options.stateRoot}/log/events.jsonl`),
+    ...(options.cheapModel ? { cheapModel: options.cheapModel } : {}),
     userHome: options.userHome,
   };
 }
@@ -1247,7 +1259,7 @@ async function handleStreamRoute(
   sameOrigin: () => boolean,
 ): Promise<Response | undefined> {
   const match = url.pathname.match(
-    /^\/api\/streams\/([^/]+)(?:\/(diff|steps|say|send-up|attach|resolve|stop|close|mark-landed|pr-check|add-repo|wait|move|update|archive|unarchive))?$/,
+    /^\/api\/streams\/([^/]+)(?:\/(diff|steps|say|send-up|draft-goal|attach|resolve|stop|close|mark-landed|pr-check|add-repo|wait|move|update|archive|unarchive))?$/,
   );
   if (!match) return undefined;
   const action = match[2];
@@ -1353,6 +1365,27 @@ async function handleStreamRoute(
         });
       }
       return jsonResponse(updated);
+    }
+    if (action === 'draft-goal') {
+      // T422 (D42): the goal of the work a conversation concluded, drafted by the cheap
+      // model; without one (or on a failed call), its last reply, else its question.
+      const node = feed.streams.get(id);
+      const { entries } = feed.streams.readThread(id, { limit: 200 });
+      const lines = entries
+        .filter((e) => e.kind === 'line' && (e.by === 'human' || e.by.startsWith('agent:')))
+        .map((e) => ({
+          who: e.by === 'human' ? ('you' as const) : ('agent' as const),
+          text: e.body,
+        }));
+      const run = feed.cheapModel;
+      const reply = run
+        ? await run(draftGoalPrompt(node.goal, lines)).catch(() => undefined)
+        : undefined;
+      const drafted = cleanGoal(reply);
+      if (drafted !== undefined) return jsonResponse({ goal: drafted, from: 'model' });
+      const last = cleanGoal([...lines].reverse().find((l) => l.who === 'agent')?.text);
+      if (last !== undefined) return jsonResponse({ goal: last, from: 'reply' });
+      return jsonResponse({ goal: node.goal, from: 'question' });
     }
     if (action === 'send-up') {
       // T421 (D42): a conversation's conclusion goes to the node above it, as your line there.

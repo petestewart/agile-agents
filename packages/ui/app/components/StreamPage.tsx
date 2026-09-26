@@ -103,6 +103,7 @@ import {
 import { type Crumb, NodeHeader } from './NodeHeader';
 import { SendUpDialog } from './SendUp';
 import { SessionPicker } from './SessionPicker';
+import { TurnIntoWorkDialog } from './TurnIntoWork';
 import {
   Button,
   ConfirmDialog,
@@ -369,6 +370,8 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
   const [branching, setBranching] = useState<number | undefined>(undefined);
   // T421 (D42): Send to parent's dialog, with the words it starts from.
   const [sendingUp, setSendingUp] = useState<string | undefined>(undefined);
+  // T422 (D42): Turn into work's dialog.
+  const [turning, setTurning] = useState(false);
   const [tangentQuestion, setTangentQuestion] = useState('');
   // Which open question Send answers: an id, 'message' (a plain line), or undefined (the oldest).
   const [answerChoice, setAnswerChoice] = useState<string | undefined>(undefined);
@@ -820,6 +823,15 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
       title: 'Send a conclusion up: it arrives there as your message, and its agent acts on it',
       hidden: sendUpTo === undefined,
       onSelect: () => setSendingUp(lastAgentLine(page.thread) ?? ''),
+    },
+    {
+      // T422 (D42): what the conversation concluded becomes the work, here.
+      label: 'Turn into work…',
+      icon: 'play',
+      testid: 'turn-into-work-menu',
+      title: 'State the goal (drafted from the talk), pick a repository or none, and start',
+      hidden: !open || role !== 'conversation',
+      onSelect: () => setTurning(true),
     },
     {
       // T419 (D42): a question about this node, in its own thread.
@@ -1622,6 +1634,24 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
         <div className="cr-node-scrim" onClick={() => setDetailsOpen(false)} />
       )}
 
+      {turning && (
+        <TurnIntoWorkDialog
+          node={stream.id}
+          goal={stream.goal}
+          repos={cockpit?.repos ?? []}
+          onClose={() => setTurning(false)}
+          onDone={(repo) => {
+            setTurning(false);
+            load();
+            refresh();
+            toast({
+              tone: 'success',
+              title: repo ? `Now a work node on ${repo}` : 'Now researching its goal',
+              duration: 4000,
+            });
+          }}
+        />
+      )}
       {sendingUp !== undefined && sendUpTo !== undefined && (
         <SendUpDialog
           node={stream.id}

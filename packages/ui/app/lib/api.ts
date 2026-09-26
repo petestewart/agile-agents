@@ -540,6 +540,17 @@ export function updateProject(
   return post(`/api/projects/${encodeURIComponent(id)}`, patch) as Promise<Project>;
 }
 
+/** T422: a drafted goal and where it came from (the cheap model, its last reply, or its question). */
+export interface GoalDraft {
+  goal: string;
+  from: 'model' | 'reply' | 'question';
+}
+
+/** T422 (D42): a goal for the work a conversation concluded (drafted by the cheap model when there is one). */
+export function draftGoal(id: string): Promise<GoalDraft> {
+  return post(`/api/streams/${encodeURIComponent(id)}/draft-goal`) as Promise<GoalDraft>;
+}
+
 /** T421 (D42): a conversation's conclusion, sent up to the node above it as your line there. */
 export function sendUp(id: string, body: string): Promise<{ parent: string }> {
   return post(`/api/streams/${encodeURIComponent(id)}/send-up`, { body }) as Promise<{
