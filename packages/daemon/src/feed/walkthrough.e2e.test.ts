@@ -922,7 +922,7 @@ test.skipIf(!RUN)(
       await checkText(
         'the part has a plan changed row',
         page.locator('[data-testid="activity"]'),
-        /plan changed/,
+        /Plan changed/,
       );
     });
 
@@ -1025,7 +1025,7 @@ test.skipIf(!RUN)(
       await checkText(
         'the change shows as a row in the coordinator Activity tab',
         page.locator('[data-testid="activity"]'),
-        /contract proposal/,
+        /Contract proposal/,
       );
       await openView('Needs me');
       await card.getByRole('button', { name: 'Apply' }).click();
@@ -1264,12 +1264,12 @@ test.skipIf(!RUN)(
       await checkText(
         'the Activity tab shows a pr review row',
         page.locator('[data-testid="activity"]'),
-        /pr review · agile-test-repo · self/,
+        /PR review · agile-test-repo · itself/,
       );
       await checkText(
         'the Activity tab shows a ci failed row',
         page.locator('[data-testid="activity"]'),
-        /ci failed · agile-test-repo · self/,
+        /CI failed · agile-test-repo · itself/,
       );
       await checkNotText(
         'Activity rows name no raw session or digest ids',
@@ -1319,7 +1319,7 @@ test.skipIf(!RUN)(
       await checkText(
         'the coordinator Activity has a child delivered row',
         page.locator('[data-testid="activity"]'),
-        /child delivered/,
+        /Child delivered/,
       );
       await settle();
       const coordDot = await railRow('Ledger export').locator('.cr-dot').getAttribute('data-dot');
@@ -1522,9 +1522,9 @@ test.skipIf(!RUN)(
       );
       await tab('Activity').click();
       await checkText(
-        'overlap · ledger-lite · party · pending',
+        'Overlap · ledger-lite · involved · pending',
         page.locator('[data-testid="activity"]'),
-        /overlap · ledger-lite · party · pending/,
+        /Overlap · ledger-lite · involved · pending/,
       );
     });
 
@@ -1635,9 +1635,9 @@ test.skipIf(!RUN)(
       await openNode('ledger-lite part');
       await tab('Activity').click();
       await checkText(
-        'main changed · ledger-lite · same repo rows',
+        'Main changed · ledger-lite · same repo rows',
         page.locator('[data-testid="activity"]'),
-        /main changed · ledger-lite · same repo/,
+        /Main changed · ledger-lite · same repo/,
       );
       await tab('Chat').click();
       await checkText(
@@ -1984,9 +1984,9 @@ test.skipIf(!RUN)(
       await openNode('Cents check');
       await tab('Activity').click();
       await checkText(
-        'knowledge accepted · … · delivered to the worker session (the accept woke it)',
+        'Knowledge accepted · … · delivered to the worker session (the accept woke it)',
         page.locator('[data-testid="activity"]'),
-        /knowledge accepted · \S+ · delivered to the worker session/,
+        /Knowledge accepted · \S+ · delivered to the worker session/,
       );
       await tab('Chat').click();
       await checkText(

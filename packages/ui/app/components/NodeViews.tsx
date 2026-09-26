@@ -12,9 +12,10 @@ import {
 import { useEffect, useState } from 'react';
 import { approvePlan, getStreamActivity, getStreamPlan } from '../lib/api';
 import type { ActivityEntry, StreamDoc } from '../lib/feed-types';
+import { ROUTE_REASON, eventTitle } from '../lib/lenses';
 import { DEFAULT_RULES_FILTER } from '../lib/rules';
 import { useShell } from '../lib/shell';
-import { activityDelivery, eventLabel, eventTime } from '../lib/streams';
+import { activityDelivery, eventTime } from '../lib/streams';
 import { Icon } from './Icon';
 import { Linked, Markdown } from './Markdown';
 import { Badge, Button, EmptyState } from './ui';
@@ -231,12 +232,16 @@ export function ActivityView({
           <span className="cr-timeline-dot" aria-hidden="true" />
           <div className="cr-timeline-main">
             <span className="cr-timeline-type" data-testid="activity-type">
-              {eventLabel(row.event)}
+              {eventTitle(row.event)}
             </span>
             {row.event.repo ? <span className="cr-dim"> · {row.event.repo}</span> : null}
             <span className="cr-dim"> · </span>
-            <span className="cr-dim" data-testid="activity-because">
-              {row.because.replace(/_/g, ' ')}
+            <span
+              className="cr-dim"
+              data-testid="activity-because"
+              title={ROUTE_REASON[row.because]?.hint}
+            >
+              {ROUTE_REASON[row.because]?.label ?? row.because.replace(/_/g, ' ')}
             </span>
             <span
               className="cr-dim"

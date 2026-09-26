@@ -599,7 +599,7 @@ seconds. Wait a minute, then:
       `Shop note and Blog note both changed walkthrough-notes.md`.
 - [ ] Open Shop note: its **Changes** tab shows the one-line change and the
       worktree path, and its **Activity** tab has
-      `overlap · ledger-lite · party · pending`. (`pending` means no session
+      `Overlap · ledger-lite · involved · pending`. (`pending` means no session
       is attached to take it; a live agent gets it at once.)
 
 ### 5.3 Settle it with "waits on"; sync; merge
@@ -636,7 +636,7 @@ step 3 was synced too. (A part in the middle of a turn, or with uncommitted
 changes, is synced at the end of its turn.)
 
 - [ ] Open the ledger-lite part (under Ledger export). Its **Activity** tab
-      has `main changed · ledger-lite · same repo` rows, and its thread shows
+      has `Main changed · ledger-lite · same repo` rows, and its thread shows
       `synced main into stream/…`.
 - [ ] When the line under its title reads `Agent finished`, press **Merge**. Its
       wait is satisfied, the ship checks pass, and it lands on ledger-lite's

@@ -907,10 +907,8 @@ describe('T160 cockpit routes', () => {
       (await post(`/api/projects/${shop.id}`, { session: { effort: 'extreme' } })).status,
     ).toBe(400);
     expect((await post(`/api/projects/${shop.id}`, { session: null })).status).toBe(200);
-    expect(
-      (((await (await fetch(url('/api/cockpit'))).json()) as CockpitFrame).projects[0] ?? {})
-        .session,
-    ).toBeUndefined();
+    const cleared = (await (await fetch(url('/api/cockpit'))).json()) as CockpitFrame;
+    expect(cleared.projects[0]?.session).toBeUndefined();
     expect(
       (await post(`/api/projects/${shop.id}`, { name: 'x' }, { origin: 'http://evil.example' }))
         .status,

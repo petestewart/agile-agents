@@ -5429,7 +5429,7 @@ describe('node activity (Playwright e2e, T245)', () => {
         const row = `[data-testid="activity"] [data-event="${event.id}"]`;
         await waitForText(page, `${row} [data-testid="activity-because"]`, 'same repo');
         expect(await page.locator(`${row} [data-testid="activity-type"]`).textContent()).toBe(
-          'main changed',
+          'Main changed',
         );
         expect(
           await page.locator(`${row} [data-testid="activity-status"]`).textContent(),
@@ -5494,9 +5494,9 @@ describe('a direct merge reads "merged" (Playwright e2e, T347)', () => {
         await page.locator(`[data-testid="stream-tree"] [data-stream="${direct.id}"]`).click();
         await page.locator('.cr-tabs [data-tab="activity"]').click();
         const row = `[data-testid="activity"] [data-event="${merged.id}"]`;
-        await waitForText(page, `${row} [data-testid="activity-because"]`, 'self');
+        await waitForText(page, `${row} [data-testid="activity-because"]`, 'itself');
         expect(await page.locator(`${row} [data-testid="activity-type"]`).textContent()).toBe(
-          'merged',
+          'Merged',
         );
 
         await page.locator('[data-view="repos"]').click();

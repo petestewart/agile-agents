@@ -2018,11 +2018,12 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 
 ### Ticket: T368 Lenses, Events and the Director
 - **Priority:** P2
-- **Status:** Todo
-- **Owner:** Unassigned
+- **Status:** Done
+- **Owner:** worker
 - **Scope:** Repos, Running, Dependencies and Events as clean lists with status and links; the Director page uses the node chat's components.
 - **Acceptance Criteria:** walkthrough green.
 - **Validation Steps:** `bun run test:walkthrough`.
+- **Notes:** Branch T368-lenses-palette. Repos as cards (remote kind, delivery in words, live work, overlaps, recent events linking to Events filtered to the repo, norms); Running as a table with your move first; Dependencies as edges with "Remove link" (Undo); Events as a day-grouped timeline with search, type and repo filters and routing chips in words. Also the ⌘K command palette (nodes, projects, views, actions, recents), the `?` shortcut list and `g` jumps; the Director on `ChatScroll`/`MessageList`/`Composer` with drafts as decision cards and a details panel. Pure logic in `lib/lenses.ts`, `lib/palette.ts`, `lib/director.ts` with tests. control-room 66/0, walkthrough 39 steps, 0 findings.
 
 ### Ticket: T370 A daemon shutdown leaves mid-work nodes idle
 - **Priority:** P1
