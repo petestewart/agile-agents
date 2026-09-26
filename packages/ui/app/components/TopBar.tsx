@@ -19,6 +19,8 @@ const NAV: ReadonlyArray<{ view: ShellView; label: string }> = [
   { view: 'running', label: 'Running' },
   { view: 'deps', label: 'Dependencies' },
   { view: 'rules', label: 'Knowledge' },
+  // T300: the Director's thread and activity.
+  { view: 'director', label: 'Director' },
   { view: 'settings', label: 'Settings' },
 ];
 

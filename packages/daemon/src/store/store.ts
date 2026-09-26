@@ -18,7 +18,9 @@ import { dirname, isAbsolute, join, normalize, parse, relative, resolve, sep } f
 import {
   type AgentId,
   type AgentRecord,
+  DIRECTOR_NODE,
   type Delivery,
+  type DirectorRecord,
   type Event,
   type HomeConfig,
   KnowledgeIdSchema,
@@ -50,6 +52,7 @@ import {
   projectNameKey,
   validateAgentRecord,
   validateDelivery,
+  validateDirectorRecord,
   validateEvent,
   validateHomeConfig,
   validateKnowledgeItem,
@@ -825,6 +828,50 @@ export class StateStore {
     });
   }
 
+  // ------------------------------------------------------------------ Director
+
+  /** T300 (§14.11, P16): `director.yaml`, the singleton record; undefined before the first write. */
+  getDirector(): DirectorRecord | undefined {
+    const path = this.abs('director.yaml');
+    if (!fileExists(path)) return undefined;
+    return readRecord(path, 'director', validateDirectorRecord);
+  }
+
+  async putDirector(record: unknown): Promise<DirectorRecord> {
+    return this.mutate(() => {
+      const validated = validateDirectorRecord(record);
+      writeYamlFileAtomic(this.abs('director.yaml'), validated);
+      return {
+        result: validated,
+        event: buildEvent('director_put', {
+          data: validated.session
+            ? { session: validated.session.id, status: validated.session.status }
+            : {},
+        }),
+      };
+    });
+  }
+
+  /** `threads/director.jsonl`: the same entries and checks as a stream's thread. */
+  async appendDirectorThread(entry: unknown): Promise<ThreadEntry> {
+    return this.mutate(() => {
+      const validated = validateThreadEntry(entry);
+      appendJsonlLine(this.abs(join('threads', `${DIRECTOR_NODE}.jsonl`)), validated);
+      const event = buildEvent('thread_appended', {
+        data: { thread: DIRECTOR_NODE, by: validated.by, entry_kind: validated.kind },
+      });
+      return { result: validated, event };
+    });
+  }
+
+  readDirectorThread(): ThreadEntry[] {
+    return this.readJsonlValidated(
+      this.abs(join('threads', `${DIRECTOR_NODE}.jsonl`)),
+      'thread',
+      validateThreadEntry,
+    );
+  }
+
   // ------------------------------------------------------------------ Knowledge
 
   /**
@@ -1070,7 +1117,8 @@ export class StateStore {
   // Every append is fsynced before it returns. `events/service.ts` is the API.
 
   private deliveryQueueRelPath(node: string): string {
-    return join('events', 'queue', `${this.streamIdSegment(node)}.jsonl`);
+    const segment = node === DIRECTOR_NODE ? node : this.streamIdSegment(node);
+    return join('events', 'queue', `${segment}.jsonl`);
   }
 
   /** Appends the event, then its deliveries, each fsynced, under the mutex. */

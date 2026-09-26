@@ -202,6 +202,9 @@ describe('ThreadEntrySchema', () => {
     );
     expect(() => validateThreadEntry(entry(agent, 'finding', 801))).toThrow(/800/);
     expect(() => validateThreadEntry(entry('daemon', 'line', 801))).toThrow(/800/);
+    // The Director's own message is an agent message too.
+    expect(validateThreadEntry(entry('director', 'line', 3000)).body).toHaveLength(3000);
+    expect(() => validateThreadEntry(entry('director', 'event', 801))).toThrow(/800/);
   });
 
   test('quoteThreadBody cuts a long body with an ellipsis', () => {

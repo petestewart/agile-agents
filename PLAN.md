@@ -1500,28 +1500,32 @@ agile tail --node $C --events
 
 ### Ticket: T300 Director record, thread and page
 - **Priority:** P0
-- **Status:** Todo
-- **Owner:** —
+- **Status:** Done
+- **Owner:** Unassigned
 - **Scope:** Add `director.yaml` and `threads/director.jsonl` (P16). A Director session (the coordinator mechanics, no worktree) is woken by `director_request`. There is a Director page in the cockpit (thread plus activity) plus `agile director say` and `agile tail --director`. Every Director action is recorded with principal `director`.
 - **Acceptance Criteria:** A fake-agent test: a human line reaches the Director and its reply lands on its thread. e2e: the page exists.
 - **Validation Steps:** `bun test packages/daemon/src/director`; `bun run test:e2e`.
 - **Notes:** First ticket of Phase 12.
+- T300: sonnet review BLOCKING (hook denied every Director tool call: streamless record unresolvable) → fixed (hook places a streamless coordinator record by its scratch cwd; coordinator role table; WebFetch/WebSearch and operator-bound calls denied) → APPROVE. Director reuses role coordinator. merge ba5bb1a into phase-12. Open: no Director wake budget yet (T302/T303).
+
 
 ### Ticket: T301 Director tools and guards
 - **Priority:** P0
-- **Status:** Todo
-- **Owner:** —
+- **Status:** Done
+- **Owner:** Unassigned
 - **Scope:**
   - Verbs: `draft_tree`, which returns a draft that renders as a tree with a Create button at Advise; `create_project`, `create_node`, `start_node`, `add_waits_on` and `restart_node`, gated by T282's function with the project's `director` level.
   - The Director never merges, accepts knowledge, or answers a question (hard refusals, tested).
 - **Acceptance Criteria:** Table tests per level; e2e: Create on an Advise draft builds the tree.
 - **Validation Steps:** `bun test packages/daemon/src/director packages/daemon/src/coordination`; `bun run test:e2e`.
 - **Notes:** After T300 and T282.
+- T301: sonnet review APPROVE. Verbs through AutonomyService/allowed() with the touched project's director level; hard refusals at gate, verb and hook layers; isDirector() tied to the minted session id. Director drafts are proposals with node director (shown on the Director page). merge 4a386d6. Pete: new project always a draft (no level yet); Director cannot read repos yet (P20 visibility) — follow-up.
+
 
 ### Ticket: T302 Cross-project sight and "what needs me today?"
 - **Priority:** P1
-- **Status:** Todo
-- **Owner:** —
+- **Status:** Done
+- **Owner:** Unassigned
 - **Scope:**
   - The Director's brief gets a digest of all projects: overlaps, waits-on, stuck or idle nodes (no activity for longer than a configured time while `working`), and the inbox.
   - It proposes links and spots when a norm from one project is about to be broken in another.
@@ -1529,20 +1533,35 @@ agile tail --node $C --events
 - **Acceptance Criteria:** A snapshot test of the digest; a fake-agent test where a stuck node yields a suggestion card.
 - **Validation Steps:** `bun test packages/daemon/src/director`.
 - **Notes:** After T301.
+- T302: sonnet review APPROVE. Digest in director/sight.ts (20-line caps); stuck = working with no activity past director.stuck_after_minutes (60); checkStuck every 60s → restart_node via autonomy (card below Run), once per episode, Director wake budget 6/h. Director proposals now also show in the inbox on the node they name. merge 2c0502b.
+
 
 ### Ticket: T303 ∥ Norm suggestions
 - **Priority:** P2
-- **Status:** Todo
-- **Owner:** —
+- **Status:** Done
+- **Owner:** Unassigned
 - **Scope:** Findings that repeat across projects (the same file area or wording across reviewer findings and PR comments) wake the Director, which may `propose_knowledge`. The proposal comes to you as usual.
 - **Acceptance Criteria:** A test: three similar findings across two projects produce one proposal with its sources.
 - **Validation Steps:** `bun test packages/daemon/src/director packages/daemon/src/knowledge`.
 - **Notes:** After T264 and T301.
+- T303: sonnet review APPROVE. NormWatch (director/norms.ts): same dir or similar wording, >=3 new items from >=2 projects wakes the Director once; dedup via norm:<ids> thread refs; 3 wakes/day. Director propose_knowledge makes proposed items only, scope required, sources in source.finding. merged into phase-12.
+
+
+### Ticket: T305 The Director reads repos
+- **Priority:** P1
+- **Status:** Done
+- **Owner:** Unassigned
+- **Scope:** P20: the Director reads code under the visibility rules. Give its streamless session the coordinator read allow-list (every registered repo, agile home hidden), in the hook and the ACP permission path. Writes stay inside its scratch dir; no network.
+- **Acceptance Criteria:** Hook tests: a Director read inside a registered repo is allowed; the agile home and paths outside every repo are denied; writes outside scratch are still denied.
+- **Validation Steps:** `bun test packages/daemon/src/hook packages/daemon/src/director packages/daemon/src/permissions`.
+- **Notes:** After T301. Pete approved 2026-09-24.
+- T305: sonnet review APPROVE. directorReadScope: every repos.yaml path readable, agile home hidden, scratch-only if repos.yaml unreadable; hook + ACP paths. Side effect: stream coordinators' hook reads now enforce T213's read scope (was documented, never enforced). Director reads private repos too — Pete confirmed yes (2026-09-25). merge 28b484f.
+
 
 ### Ticket: T304 Phase 12 QA and Pete's look
 - **Priority:** P0
-- **Status:** Todo
-- **Owner:** —
+- **Status:** Done
+- **Owner:** Unassigned
 - **Scope:** Black-box QA of the Director levels and guards with a fake agent. Daemon line count. Pete talks to a live Director at Advise and then Organise.
 - **Acceptance Criteria:** QA ACCEPT. Live: at Advise, Pete gets a draft tree with Create. At Organise, the Director creates and starts a small project and posts what it did. It refuses a merge request.
 - **Validation Steps:** Pete, on his Mac:
@@ -1561,6 +1580,8 @@ agile tail --director
 ```
 
 - **Notes:** The last `say` must be refused ("merging is yours").
+- T304: sonnet QA ACCEPT (no findings). typecheck, lint, bun test 2281/0, test:integration, test:e2e green. Daemon 28,755 lines. Live Director check (Advise/Organise/merge refusal) is Pete's, on his Mac.
+
 
 ### Phase 13 — External links
 
@@ -1645,11 +1666,13 @@ Daemon: `em/`, `architect/`, `oracle/`, `qa/`, `halts/`, `quota/`, `handoff/`, `
 
 ## 10. Discovered Issues Log
 
+- Phase 12 complete on `claude/phase-12` (2026-09-25): T300–T303, T305 merged (plus T290/T291 on phase-11), T304 QA ACCEPT; awaiting Pete's look. Phase 13 proceeds on `claude/phase-13`.
+
 - 2026-09-25 Pete: skip `Contract.paths` (T284); the import-index alerts cover contract breakage. Revisit only if a miss shows up.
+- 2026-09-24 Pete: Director keeps role `coordinator` for now (may get its own role later). A new project is always a draft (T301), agreed. Director repo reads → T305. T268: file-by-file chunks plus the changed-file list stay; no whole-diff summary.
 
 - 2026-09-24 Pete: `proposals/<AP-id>.yaml` home dir APPROVED (T282). T287 question answered: coordinator notes wake ended work nodes (T290).
-
-- Phase 11 complete on `claude/phase-11` (2026-09-24): T280–T288 merged, T289 QA ACCEPT; awaiting Pete's look. Open for Pete: `proposals/` home dir (T282); `Contract.paths` for the contract-touched alert (T284); should `coordinator_note` wake a finished work node (T287). Phase 12 proceeds on `claude/phase-12`.
+- Phase 11 complete on `claude/phase-11` (2026-09-24): T280–T288 merged, T289 QA ACCEPT; awaiting Pete's look. Open for Pete: `proposals/` home dir (T282); `Contract.paths` for the contract-touched alert (T284); should `coordinator_note` wake a finished work node (T287). Phase 12 proceeds on `claude/phase-12` (draft PR https://github.com/petestewart/agile-agents/pull/8 for Phase 11).
 - Phase 10 complete on `claude/phase-10` (2026-09-24): T260–T266 merged, T267 QA ACCEPT; T268 (real-classifier ship hold) before Pete's look. Phase 11 proceeds on `claude/phase-11`.
 - Phase 9 complete on `claude/phase-9` (2026-09-24): T240–T246 merged, T247 QA ACCEPT; awaiting Pete's look (draft PR https://github.com/petestewart/agile-agents/pull/6, base claude/phase-8). Phase 10 proceeds on `claude/phase-10`.
 - (Pete, 2026-09-24) P13 bullet 1 (leave a private repo out of a session's readable directories) is deferred until it becomes a need; the hook check (T229) stands alone.

@@ -98,7 +98,7 @@ export function isLongThreadBody(body: string): boolean {
   );
 }
 
-function ThreadBody({ body }: { body: string }): JSX.Element {
+export function ThreadBody({ body }: { body: string }): JSX.Element {
   const [expanded, setExpanded] = useState(false);
   if (!isLongThreadBody(body)) return <Markdown text={body} />;
   return (

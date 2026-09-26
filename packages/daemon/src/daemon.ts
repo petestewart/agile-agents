@@ -23,6 +23,7 @@ import {
   buildDeliveryRpcMethods,
   wireLandGateResolution,
 } from './delivery';
+import { DirectorService, NormWatch, buildDirectorRpcMethods } from './director';
 import { DocsService, buildDocsRpcMethods } from './docs';
 import { type EmitRouted, RoutedEventService, emitTransitions, makeEmitter } from './events';
 import { GateService, buildGateRpcMethods } from './gates';
@@ -192,6 +193,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
           streams: streamService,
           ...(planService ? { plans: planService } : {}),
           ...(contractService ? { contracts: contractService } : {}),
+          ...(projectService ? { projects: projectService } : {}),
         })
       : undefined;
   // Attach and questions know about each other: the turn-end rule asks
@@ -212,11 +214,54 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
           // The turn-end rule treats an open routed call like an open question.
           ...(gateService ? { gates: gateService } : {}),
           ...(routedEvents ? { events: routedEvents } : {}),
+          // T300: the `director` queue's delivery and wakes (declared below).
+          director: () => directorService,
           onWorkerTurnEnd: (id) => {
             void mainSync?.turnEnded(id).catch((err) => console.error('main sync failed:', err));
           },
         })
       : undefined;
+  // T300 (P16): the Director, above every project; its delivery is the attach service's.
+  const directorService =
+    store && streamService && routedEvents
+      ? new DirectorService({
+          store,
+          streams: streamService,
+          events: routedEvents,
+          home: config.home,
+          socketPath: config.socketPath,
+          cliBin: { command: cliBin.command, args: cliBin.args },
+          // T302: the digest's inbox (declared below) and norms, and stuck-node cards.
+          inbox: { list: () => inboxService?.list() ?? [] },
+          ...(rulesService ? { knowledge: rulesService } : {}),
+          ...(autonomyService ? { autonomy: autonomyService } : {}),
+        })
+      : undefined;
+  directorService?.startSight();
+  if (directorService && attachService) directorService.setDelivery(attachService.delivery);
+  // T303: findings and PR review comments that repeat across projects wake the Director.
+  const normWatch =
+    directorService && store && streamService && routedEvents
+      ? new NormWatch({ store, streams: streamService, events: routedEvents })
+      : undefined;
+  const checkNorms = () => {
+    void normWatch?.check().catch((err) => console.error('norm watch failed:', err));
+  };
+  routedEvents?.onEmitted((event) => {
+    if (event.type === 'pr_review') checkNorms();
+  });
+  // T301: the Director's start_node / restart_node (restart: stop the node's agent, start it again).
+  if (autonomyService && attachService) {
+    autonomyService.setAgents({
+      start: (node) => attachService.attach(node),
+      restart: async (node) => {
+        const reason = 'restarted by the Director';
+        await attachService.stop(node, 'worker', { reason });
+        await attachService.stop(node, 'coordinator', { reason });
+        return attachService.attach(node);
+      },
+    });
+  }
   const questionService: QuestionService | undefined =
     store && streamService
       ? new QuestionService(store, streamService, {
@@ -360,6 +405,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
               }
             : {}),
           ...(emitRouted ? { emitRouted } : {}),
+          onFinding: checkNorms,
           // T246: an agent's push; its PR is then polled at the babysit cadence.
           ...(landingService
             ? {
@@ -521,6 +567,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
               })
             : {}),
           ...(projectService ? buildProjectRpcMethods(projectService) : {}),
+          ...(directorService ? buildDirectorRpcMethods(directorService) : {}),
           ...(inboxService ? buildInboxRpcMethods(inboxService) : {}),
           ...(rulesService ? buildKnowledgeRpcMethods(rulesService, ruleEvals) : {}),
           ...(docsService ? buildDocsRpcMethods(docsService) : {}),
@@ -570,6 +617,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
     gates: gateService,
     streams: streamService,
     ...(projectService ? { projects: projectService } : {}),
+    ...(directorService ? { director: directorService } : {}),
     questions: questionService,
     inbox: inboxService,
     ...(rulesService ? { rules: rulesService } : {}),
@@ -654,7 +702,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
         mainSync?.stop();
         // Sessions are child processes: stop them first so their exit writes land.
         attachService?.delivery.stop();
-        await attachService?.stopAll();
+        await Promise.all([attachService?.stopAll(), directorService?.stop()]);
         await http.stop();
         await rpc.close();
         // Don't lose the rule stats since the last coalesced flush.

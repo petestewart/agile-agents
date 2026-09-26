@@ -55,6 +55,7 @@ describe('Event — cockpit design §7.4 log/events.jsonl', () => {
     'stream_closed',
     'stream_archived',
     'thread_appended',
+    'director_put',
     'tool_call',
     'agent_put',
     'agent_deleted',
@@ -84,7 +85,7 @@ describe('Event — cockpit design §7.4 log/events.jsonl', () => {
   });
 
   test('the enum holds exactly the kinds listed above — nothing orphaned', () => {
-    expect(EVENT_KINDS).toHaveLength(30);
+    expect(EVENT_KINDS).toHaveLength(31);
   });
 
   test('a stream event carries {stream} plus the status pair in data', () => {

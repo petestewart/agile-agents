@@ -9,6 +9,7 @@
  * its stream page (§9.3) in the main column. T163: the rules screen.
  */
 
+import { DirectorPage } from './components/Director';
 import { Inbox } from './components/Inbox';
 import { DependenciesLens, RepoView, RunningLens } from './components/Lenses';
 import { NewStream } from './components/NewStream';
@@ -50,6 +51,8 @@ export function App(): JSX.Element {
             <DependenciesLens rows={rows} />
           ) : view === 'rules' ? (
             <Rules />
+          ) : view === 'director' ? (
+            <DirectorPage />
           ) : view === 'stream' && selected !== undefined ? (
             <StreamPage id={selected} />
           ) : (

@@ -25,11 +25,13 @@ import {
   AutonomyProposalIdSchema,
   type CoordinatorAction,
   type CoordinatorChange,
+  DIRECTOR_NODE,
   HUMAN_ONLY_ACTIONS,
   type HumanOnlyAction,
   ulid,
   validateAutonomyProposal,
 } from '@agile-agents/shared';
+import type { ProjectService } from '../projects/service';
 import type { StateStore } from '../store/store';
 import type { StreamService } from '../streams/service';
 import { type ContractService, assertChildren } from './contracts';
@@ -54,6 +56,8 @@ export function allowed(
   if (action === 'approve_contract') {
     return level === 'run' && options.routine === true ? 'apply' : 'propose';
   }
+  // §12: restarting stuck work is Run's.
+  if (action === 'restart_node') return level === 'run' ? 'apply' : 'propose';
   return level === 'advise' ? 'propose' : 'apply';
 }
 
@@ -78,7 +82,15 @@ export interface AutonomyServiceOptions {
   streams: StreamService;
   plans?: PlanService;
   contracts?: ContractService;
+  /** T301: the Director's `create_project` / `create_tree` on a new project. */
+  projects?: ProjectService;
   now?: () => Date;
+}
+
+/** T301: starting and restarting a node's agent (the attach service), wired once it exists. */
+export interface NodeAgents {
+  start(node: string): Promise<unknown>;
+  restart(node: string): Promise<unknown>;
 }
 
 export type ActOutcome =
@@ -104,11 +116,30 @@ export function describeChange(change: CoordinatorChange, titleOf: (id: string) 
       return `contract ${change.title}${change.routine === true ? ' (routine)' : ''}: ${change.body}${
         change.reason ? `. Reason: ${change.reason}` : ''
       }`;
+    case 'create_tree': {
+      const t = change.tree;
+      const where = t.new_project !== undefined ? `new project ${t.new_project}` : t.project;
+      return `create "${t.title}" in ${where} (${t.parts.length} part${t.parts.length === 1 ? '' : 's'}: ${t.parts.map((p) => p.title).join(', ')})`;
+    }
+    case 'create_project':
+      return `create project ${change.name}`;
+    case 'create_node':
+      return `create node "${change.node.title}" under ${change.node.parent !== undefined ? titleOf(change.node.parent) : change.node.project}: ${change.node.goal}`;
+    case 'start_node':
+      return `start ${titleOf(change.node)}`;
+    case 'restart_node':
+      return `restart ${titleOf(change.node)}`;
   }
 }
 
 export class AutonomyService {
+  private agents: NodeAgents | undefined;
+
   constructor(private readonly options: AutonomyServiceOptions) {}
+
+  setAgents(agents: NodeAgents): void {
+    this.agents = agents;
+  }
 
   private now(): string {
     return (this.options.now?.() ?? new Date()).toISOString();
@@ -126,6 +157,42 @@ export class AutonomyService {
     }
   }
 
+  /**
+   * T301 (P16): the Director's level is its project's `director` setting,
+   * read from the project the change touches. A new project has none yet,
+   * so its creation is always Advise.
+   */
+  directorLevelFor(change: CoordinatorChange): Autonomy {
+    const { streams, store } = this.options;
+    const project = (): string | undefined => {
+      switch (change.action) {
+        case 'create_tree':
+          return change.tree.project;
+        case 'create_project':
+          return undefined;
+        case 'create_node':
+          return change.node.project ?? streams.get(change.node.parent ?? '').project;
+        case 'start_node':
+        case 'restart_node':
+          return streams.get(change.node).project;
+        case 'add_waits_on':
+          return streams.get(change.child).project;
+        case 'set_owner':
+          return streams.get(change.child).project;
+        case 'add_child':
+        case 'approve_contract':
+          return undefined;
+      }
+    };
+    const id = project();
+    if (id === undefined) return 'advise';
+    try {
+      return store.getProject(id).autonomy.director;
+    } catch {
+      return 'advise';
+    }
+  }
+
   /** The gate plus the effect: applied now, or held as a proposal for the inbox. */
   async act(
     node: string,
@@ -133,7 +200,8 @@ export class AutonomyService {
     by: string,
     change: CoordinatorChange,
   ): Promise<ActOutcome> {
-    const level = this.levelFor(node, principal);
+    const level =
+      node === DIRECTOR_NODE ? this.directorLevelFor(change) : this.levelFor(node, principal);
     const routine = change.action === 'approve_contract' ? change.routine : undefined;
     const verdict = allowed(principal, change.action, level, { routine: routine === true });
     if (verdict === 'refuse') throw new Error(`${change.action}: not allowed to a ${principal}`);
@@ -141,7 +209,7 @@ export class AutonomyService {
     const summary = describeChange(change, (id) => this.titleOf(id));
     if (verdict === 'apply') {
       const result = await this.perform(node, principal, by, change);
-      await this.options.streams.appendThread(principal, node, {
+      await this.note(principal, node, {
         kind: 'event',
         body: `${principal} (${level}) applied: ${summary}`.slice(0, 800),
       });
@@ -162,7 +230,7 @@ export class AutonomyService {
       validateAutonomyProposal,
       proposal,
     );
-    await this.options.streams.appendThread(principal, node, {
+    await this.note(principal, node, {
       kind: 'proposal',
       body: `${principal} (${level}) proposes: ${summary}`.slice(0, 800),
       ref: proposalPath(proposal.id),
@@ -222,12 +290,29 @@ export class AutonomyService {
       validateAutonomyProposal,
       validateAutonomyProposal({ ...proposal, status, decided_at: this.now() }),
     );
-    await this.options.streams.appendThread('human', proposal.node, {
+    await this.note('human', proposal.node, {
       kind: 'event',
       body: `${status}: ${proposal.summary}`.slice(0, 800),
       ref: proposalPath(proposal.id),
     });
     return saved;
+  }
+
+  /** A thread line on the node, or on the Director's own thread. */
+  private async note(
+    by: 'human' | 'coordinator' | 'director',
+    node: string,
+    entry: { kind: 'event' | 'proposal'; body: string; ref?: string },
+  ): Promise<void> {
+    if (node !== DIRECTOR_NODE) {
+      await this.options.streams.appendThread(by, node, entry);
+      return;
+    }
+    await this.options.store.appendDirectorThread({
+      ts: this.now(),
+      by: by === 'human' ? 'human' : 'director',
+      ...entry,
+    });
   }
 
   private titleOf(id: string): string {
@@ -241,6 +326,10 @@ export class AutonomyService {
   /** Refuses a change that could never apply, before anything is held. */
   private check(node: string, change: CoordinatorChange): void {
     const { streams } = this.options;
+    if (node === DIRECTOR_NODE) {
+      this.checkDirector(change);
+      return;
+    }
     streams.get(node);
     if (change.action === 'add_waits_on') {
       assertChildren(streams, node, [change.child], change.action);
@@ -254,6 +343,81 @@ export class AutonomyService {
       }
       assertChildren(streams, node, change.parties, 'contract_write');
     }
+  }
+
+  /** The Director is above every tree: its changes name their nodes, which must exist. */
+  private checkDirector(change: CoordinatorChange): void {
+    const { streams, store } = this.options;
+    switch (change.action) {
+      case 'create_tree':
+        if (change.tree.project !== undefined) store.getProject(change.tree.project);
+        else store.assertProjectNameFree(change.tree.new_project ?? '');
+        return;
+      case 'create_project':
+        store.assertProjectNameFree(change.name);
+        return;
+      case 'create_node':
+        if (change.node.parent !== undefined) streams.get(change.node.parent);
+        else store.getProject(change.node.project ?? '');
+        return;
+      case 'start_node':
+      case 'restart_node':
+        streams.get(change.node);
+        return;
+      case 'add_waits_on':
+        streams.get(change.child);
+        streams.get(change.on);
+        return;
+      default:
+        throw new Error(`${change.action}: not a Director change`);
+    }
+  }
+
+  /** The Director's draft, built: the project (if new), the node, its parts and their waits. */
+  private async createTree(
+    principal: 'human' | 'coordinator' | 'director',
+    change: Extract<CoordinatorChange, { action: 'create_tree' }>,
+  ): Promise<unknown> {
+    const { streams, store } = this.options;
+    const t = change.tree;
+    const project =
+      t.project !== undefined
+        ? store.getProject(t.project)
+        : await this.projects().create({ name: t.new_project }, principal);
+    const node = await streams.create(principal, {
+      title: t.title,
+      goal: t.goal,
+      parent: project.root,
+      ...(t.repo !== undefined ? { repo: t.repo } : {}),
+    });
+    const parts = [];
+    for (const part of t.parts) {
+      parts.push(
+        await streams.create(principal, {
+          title: part.title,
+          goal: part.goal,
+          parent: node.id,
+          ...(part.repo !== undefined ? { repo: part.repo } : {}),
+        }),
+      );
+    }
+    for (const [i, part] of t.parts.entries()) {
+      for (const after of part.after ?? []) {
+        const [child, on] = [parts[i], parts[after]];
+        if (child !== undefined && on !== undefined) await streams.wait(principal, child.id, on.id);
+      }
+    }
+    return { project: project.id, node: node.id, parts: parts.map((p) => p.id) };
+  }
+
+  private projects(): ProjectService {
+    if (this.options.projects === undefined) throw new Error('projects are not available');
+    return this.options.projects;
+  }
+
+  private nodeAgents(): NodeAgents {
+    if (this.agents === undefined) throw new Error('agents are not available');
+    return this.agents;
   }
 
   private async perform(
@@ -282,6 +446,22 @@ export class AutonomyService {
         const { contract, action: _action, routine: _routine, ...fields } = change;
         return contracts.write(node, { id: contract, ...fields }, by);
       }
+      case 'create_tree':
+        return this.createTree(principal, change);
+      case 'create_project':
+        return this.projects().create({ name: change.name, repos: change.repos ?? [] }, principal);
+      case 'create_node': {
+        const { parent, project, ...fields } = change.node;
+        // Created idle; `start_node` starts it.
+        return streams.create(principal, {
+          ...fields,
+          parent: parent ?? this.projects().get(project ?? '').root,
+        });
+      }
+      case 'start_node':
+        return this.nodeAgents().start(change.node);
+      case 'restart_node':
+        return this.nodeAgents().restart(change.node);
     }
   }
 }

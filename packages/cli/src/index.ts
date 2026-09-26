@@ -24,6 +24,7 @@ import {
   runDaemonStop,
   withClassifierStatus,
 } from './commands/daemon';
+import { runDirectorSay } from './commands/director';
 import { runBreakerClear, runGateList } from './commands/gate';
 import { parseHookArgs, runHook } from './commands/hook';
 import { runInbox } from './commands/inbox';
@@ -55,7 +56,7 @@ import {
   runStreamShow,
   runStreamWait,
 } from './commands/stream';
-import { runNodeEvents, runTail } from './commands/tail';
+import { runDirectorTail, runNodeEvents, runTail } from './commands/tail';
 
 export const PACKAGE_NAME = '@agile-agents/cli';
 
@@ -122,6 +123,8 @@ function usage(): string {
     '  status                     daemon, streams and what is waiting on you',
     '  tail                       tail the event log (--follow, --stream, --kind, --session)',
     '  tail --node <id> --events  the node\u2019s routed events: reason, delivery status, session or digest (--follow)',
+    '  tail --director            the Director\u2019s thread (--follow)',
+    '  director say "<line>"      a line to the Director; its reply lands on its thread',
     '  gate list                  list open HIL requests',
     '  inbox                      everything waiting on you, across all streams, oldest first',
     '  answer <id> <text|yes|no>  answer an inbox item: Q-… takes the answer text, HIL-… takes yes|no [note]',
@@ -213,6 +216,14 @@ export async function runCli(argv: string[], cwd: string = process.cwd()): Promi
 
       case 'tail': {
         const args = parseArgs(rest.slice(1));
+        // T300: the Director's thread.
+        if (args.options.director !== undefined) {
+          return await runDirectorTail({
+            home: resolveHomePaths().home,
+            follow: args.options.follow !== undefined,
+            json,
+          });
+        }
         // T245: a node's routed events (its Activity), not the audit log.
         if (args.options.events !== undefined) {
           if (typeof args.options.node !== 'string') {
@@ -268,6 +279,11 @@ export async function runCli(argv: string[], cwd: string = process.cwd()): Promi
         return 1;
 
       // T200: projects — a record plus a root stream (projects-design §14.1).
+      case 'director':
+        if (sub === 'say') return await runDirectorSay(socketPath, parseArgs(restArgv), json);
+        console.error(usage());
+        return 1;
+
       case 'project': {
         const projectArgs = parseArgs(restArgv);
         if (sub === 'new') return await runProjectNew(socketPath, projectArgs, json);

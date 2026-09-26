@@ -13,6 +13,8 @@ import { isAbsolute, normalize } from 'node:path';
 import {
   type AgentId,
   type AgentVerb,
+  CoordinatorChangeSchema,
+  DIRECTOR_NODE,
   type KnowledgeScope,
   type RoutedEvent,
   type SessionRole,
@@ -20,6 +22,7 @@ import {
   type StreamFinding,
   type ThreadEntry,
   formatKnowledgeScope,
+  formatZodError,
   parseKnowledgeScope,
   quoteThreadBody,
   validateVerbInput,
@@ -119,6 +122,24 @@ export interface VerbServiceOptions {
   /** T287: `note_child`'s write side (a `coordinator_note` routed event). */
   emitRouted?: EmitRouted;
   proposalLimit?: { assertCanPropose(caller: Pick<VerbCaller, 'session' | 'role'>): void };
+  /** T303: a finding was recorded (the Director's norm watch looks for repeats). */
+  onFinding?: () => void;
+}
+
+/** `source.finding`: the named sources (T303), and a tell/review item's examples (T260). */
+function proposalFinding(
+  checked: boolean,
+  examples: Parameters<typeof withExamplesNote>[1] | undefined,
+  sources: string[] | undefined,
+): { finding?: string } {
+  const withSources =
+    sources !== undefined && sources.length > 0 ? `sources: ${sources.join(', ')}` : undefined;
+  // A tell/review item has no check to hold them: keep them visible (T260).
+  const finding =
+    !checked && examples !== undefined && examples.length > 0
+      ? withExamplesNote(withSources, examples)
+      : withSources;
+  return finding !== undefined ? { finding } : {};
 }
 
 export class VerbService {
@@ -190,6 +211,7 @@ export class VerbService {
       },
       session,
     );
+    this.options.onFinding?.();
     return finding;
   }
 
@@ -203,8 +225,9 @@ export class VerbService {
    * subtree (§14.3): never wider by default.
    */
   async proposeKnowledge(input: unknown): Promise<ThreadEntry> {
-    const { session, text, kind, scope, paths, examples, enforcement, critical } =
+    const { session, text, kind, scope, paths, examples, enforcement, critical, sources } =
       validateVerbInput('propose_knowledge', input);
+    if (this.isDirector(session)) return this.directorProposeKnowledge(session, input);
     const caller = this.caller(session);
     // §5.5's proposal budget, checked before anything is written.
     this.options.proposalLimit?.assertCanPropose(caller);
@@ -221,10 +244,7 @@ export class VerbService {
         by: caller.role === 'lessons' ? 'lessons' : 'agent',
         node: caller.stream,
         session,
-        // A tell/review item has no check to hold them: keep them visible (T260).
-        ...(!checked && examples !== undefined && examples.length > 0
-          ? { finding: withExamplesNote(undefined, examples) }
-          : {}),
+        ...proposalFinding(checked, examples, sources),
       },
     });
     return this.options.streams.appendThread(
@@ -240,6 +260,40 @@ export class VerbService {
       },
       session,
     );
+  }
+
+  /**
+   * T303 (§12): the Director proposes too, never accepts. It has no node, so
+   * the scope is named (`global`, `repo:<name>`, `project:<id>`, `subtree:<id>`),
+   * the source is `director` with its `sources`, and the line goes on its thread.
+   */
+  private async directorProposeKnowledge(session: string, input: unknown): Promise<ThreadEntry> {
+    const { text, kind, scope, paths, examples, enforcement, critical, sources } =
+      validateVerbInput('propose_knowledge', input);
+    const named = scope?.trim();
+    if (named === undefined || ['subtree', 'stream', 'repo', 'project'].includes(named)) {
+      throw new Error(
+        'propose_knowledge: the Director has no node; name the scope (global, repo:<name>, project:<id> or subtree:<id>)',
+      );
+    }
+    const checked = enforcement === 'action' || enforcement === 'ship';
+    const item = await this.options.rules?.create('agent', {
+      text,
+      ...(kind !== undefined ? { kind } : {}),
+      scope: parseKnowledgeScope(named),
+      ...(paths !== undefined ? { paths } : {}),
+      ...(enforcement !== undefined ? { enforcement } : {}),
+      ...(checked ? { check: { by: 'classifier', examples: examples ?? [] } } : {}),
+      ...(critical !== undefined ? { critical } : {}),
+      source: { by: 'director', session, ...proposalFinding(checked, examples, sources) },
+    });
+    return this.options.store.appendDirectorThread({
+      ts: new Date().toISOString(),
+      by: 'director',
+      kind: 'proposal',
+      body: `${item?.kind ?? 'knowledge'} proposed (${named}): ${text}`.slice(0, 800),
+      ref: item === undefined ? 'knowledge_proposed' : `knowledge/${item.id}.yaml`,
+    });
   }
 
   /** The scope grammar of `propose_knowledge`, resolved against the calling session's node. */
@@ -507,7 +561,58 @@ export class VerbService {
 
   async addWaitsOn(input: unknown): Promise<unknown> {
     const { session, ...change } = validateVerbInput('add_waits_on', input);
+    if (this.isDirector(session)) {
+      return this.directorGated(session, 'add_waits_on', { action: 'add_waits_on', ...change });
+    }
     return this.gated(session, 'add_waits_on', { action: 'add_waits_on', ...change });
+  }
+
+  /**
+   * T301 (§12, P16): the Director's verbs, each through the autonomy gate at
+   * the project's `director` level. Held changes land on the Director page.
+   */
+  async draftTree(input: unknown): Promise<unknown> {
+    const { session, ...tree } = validateVerbInput('draft_tree', input);
+    return this.directorGated(session, 'draft_tree', { action: 'create_tree', tree });
+  }
+
+  async createProject(input: unknown): Promise<unknown> {
+    const { session, ...fields } = validateVerbInput('create_project', input);
+    return this.directorGated(session, 'create_project', { action: 'create_project', ...fields });
+  }
+
+  async createNode(input: unknown): Promise<unknown> {
+    const { session, ...node } = validateVerbInput('create_node', input);
+    return this.directorGated(session, 'create_node', { action: 'create_node', node });
+  }
+
+  async startNode(input: unknown): Promise<unknown> {
+    const { session, node } = validateVerbInput('start_node', input);
+    return this.directorGated(session, 'start_node', { action: 'start_node', node });
+  }
+
+  async restartNode(input: unknown): Promise<unknown> {
+    const { session, node } = validateVerbInput('restart_node', input);
+    return this.directorGated(session, 'restart_node', { action: 'restart_node', node });
+  }
+
+  /** The Director's session: the one its record names, streamless, on the coordinator table. */
+  private isDirector(session: string): boolean {
+    if (this.options.store.getDirector()?.session?.id !== session) return false;
+    try {
+      const record = this.options.store.getAgent(session as AgentId);
+      return record.stream === undefined && record.role === 'coordinator';
+    } catch {
+      return false;
+    }
+  }
+
+  private async directorGated(session: string, verb: string, raw: unknown): Promise<unknown> {
+    if (!this.isDirector(session)) throw new Error(`${verb}: only the Director can`);
+    if (this.options.autonomy === undefined) throw new Error(`${verb}: autonomy is not available`);
+    const parsed = CoordinatorChangeSchema.safeParse(raw);
+    if (!parsed.success) throw new Error(formatZodError(verb, parsed.error));
+    return this.options.autonomy.act(DIRECTOR_NODE, 'director', `agent:${session}`, parsed.data);
   }
 
   async setOwner(input: unknown): Promise<unknown> {
@@ -592,5 +697,10 @@ export function verbHandlers(
     decide_contract: (input) => service.decideContract(input),
     ask_sibling: (input) => service.askSibling(input),
     reply_sibling: (input) => service.replySibling(input),
+    draft_tree: (input) => service.draftTree(input),
+    create_project: (input) => service.createProject(input),
+    create_node: (input) => service.createNode(input),
+    start_node: (input) => service.startNode(input),
+    restart_node: (input) => service.restartNode(input),
   };
 }

@@ -11,7 +11,9 @@
  */
 
 import { z } from 'zod';
+import { DIRECTOR_NODE } from './director';
 import { ULID_PATTERN, UlidSchema, formatZodError } from './ids';
+import { ProjectIdSchema, ProjectNameSchema } from './project';
 
 export const CONTRACT_ID_PATTERN = new RegExp(`^C-${ULID_PATTERN.source.slice(1, -1)}$`);
 export const ContractIdSchema = z.string().regex(CONTRACT_ID_PATTERN, 'must look like C-<ulid>');
@@ -152,6 +154,12 @@ export const COORDINATOR_ACTIONS = [
   'set_owner',
   'merge_siblings',
   'approve_contract',
+  // T301 (§12): the Director's structural verbs.
+  'create_tree',
+  'create_project',
+  'create_node',
+  'start_node',
+  'restart_node',
 ] as const;
 export const CoordinatorActionSchema = z.enum(COORDINATOR_ACTIONS);
 export type CoordinatorAction = z.infer<typeof CoordinatorActionSchema>;
@@ -169,6 +177,76 @@ export const AUTONOMY_PROPOSAL_ID_PATTERN = new RegExp(`^AP-${ULID_PATTERN.sourc
 export const AutonomyProposalIdSchema = z
   .string()
   .regex(AUTONOMY_PROPOSAL_ID_PATTERN, 'must look like AP-<ulid>');
+
+const NodeTitle = z.string().trim().min(1).max(200);
+const NodeGoal = z.string().trim().min(1).max(CONTRACT_BODY_MAX_CHARS);
+/** A draft tree holds at most this many parts. */
+export const DRAFT_TREE_PARTS_MAX = 20;
+
+/**
+ * T301: one part of a Director's draft tree. `after` names the parts
+ * (by index) it waits on.
+ */
+export const DraftTreePartSchema = z
+  .object({
+    title: NodeTitle,
+    goal: NodeGoal,
+    repo: z.string().min(1).optional(),
+    after: z
+      .array(
+        z
+          .number()
+          .int()
+          .min(0)
+          .max(DRAFT_TREE_PARTS_MAX - 1),
+      )
+      .max(10)
+      .optional(),
+  })
+  .strict();
+export type DraftTreePart = z.infer<typeof DraftTreePartSchema>;
+
+/**
+ * T301 (§12): the Director's draft: a node with its parts, in an existing
+ * project or in a new one it would create.
+ */
+export const DraftTreeFieldsSchema = z
+  .object({
+    project: ProjectIdSchema.optional(),
+    new_project: ProjectNameSchema.optional(),
+    title: NodeTitle,
+    goal: NodeGoal,
+    repo: z.string().min(1).optional(),
+    parts: z.array(DraftTreePartSchema).min(1).max(DRAFT_TREE_PARTS_MAX),
+  })
+  .strict()
+  .refine((t) => (t.project === undefined) !== (t.new_project === undefined), {
+    message: 'name exactly one of project or new_project',
+    path: ['project'],
+  })
+  .refine(
+    (t) => t.parts.every((p, i) => (p.after ?? []).every((a) => a < t.parts.length && a !== i)),
+    {
+      message: 'after must name other parts of this tree by index',
+      path: ['parts'],
+    },
+  );
+export type DraftTreeFields = z.infer<typeof DraftTreeFieldsSchema>;
+
+/** T301: a Director's new node, under a parent node or at a project's root. */
+export const CreateNodeFieldsSchema = z
+  .object({
+    title: NodeTitle,
+    goal: NodeGoal,
+    parent: UlidSchema.optional(),
+    project: ProjectIdSchema.optional(),
+    repo: z.string().min(1).optional(),
+  })
+  .strict()
+  .refine((n) => (n.parent === undefined) !== (n.project === undefined), {
+    message: 'name exactly one of parent or project',
+    path: ['parent'],
+  });
 
 /** One gated change, with what applying it needs. */
 export const CoordinatorChangeSchema = z.discriminatedUnion('action', [
@@ -201,6 +279,20 @@ export const CoordinatorChangeSchema = z.discriminatedUnion('action', [
       proposal: ContractProposalIdSchema.optional(),
     })
     .strict(),
+  // T301: the Director's changes.
+  z
+    .object({ action: z.literal('create_tree'), tree: DraftTreeFieldsSchema })
+    .strict(),
+  z
+    .object({
+      action: z.literal('create_project'),
+      name: ProjectNameSchema,
+      repos: z.array(z.string().min(1)).max(PLAN_LIST_MAX).optional(),
+    })
+    .strict(),
+  z.object({ action: z.literal('create_node'), node: CreateNodeFieldsSchema }).strict(),
+  z.object({ action: z.literal('start_node'), node: UlidSchema }).strict(),
+  z.object({ action: z.literal('restart_node'), node: UlidSchema }).strict(),
 ]);
 export type CoordinatorChange = z.infer<typeof CoordinatorChangeSchema>;
 
@@ -212,8 +304,8 @@ export type CoordinatorChange = z.infer<typeof CoordinatorChangeSchema>;
 export const AutonomyProposalSchema = z
   .object({
     id: AutonomyProposalIdSchema,
-    /** The coordinating node the change is on. */
-    node: UlidSchema,
+    /** The coordinating node the change is on, or `director` for the Director's own (T301). */
+    node: z.union([UlidSchema, z.literal(DIRECTOR_NODE)]),
     principal: z.enum(['coordinator', 'director']),
     /** `agent:<session>` when a session asked. */
     by: z.string().min(1),

@@ -19,6 +19,7 @@ import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { AcpProviderConfig, spawnSession } from '@agile-agents/acp-client';
 import {
+  DIRECTOR_NODE,
   type HilRequest,
   type KnowledgeItem,
   type Plan,
@@ -40,7 +41,12 @@ import {
 import { readHomeConfigFile } from '../config';
 import type { ContractService } from '../coordination/contracts';
 import type { PlanService } from '../coordination/plans';
-import { REPLY_FIRST, SessionDelivery, type WakeDelivery } from '../events/delivery';
+import {
+  type DeliveryTarget,
+  REPLY_FIRST,
+  SessionDelivery,
+  type WakeDelivery,
+} from '../events/delivery';
 import { routeAndEmit } from '../events/router';
 import { RoutedEventService } from '../events/service';
 import {
@@ -177,6 +183,14 @@ export interface AttachServiceOptions {
   deliveryDelayMs?: number;
   /** T243: the wake budget's clock (tests). */
   wakeClock?: () => number;
+  /** T300 (P16): the Director, which takes the `director` queue's delivery and wakes. */
+  director?: () => DirectorEndpoint | undefined;
+}
+
+/** What delivery needs of the Director (`director/service.ts`). */
+export interface DirectorEndpoint {
+  target(): DeliveryTarget | undefined;
+  wake(pending: readonly RoutedEvent[]): void;
 }
 
 /** P5: the project step of the session defaults; absent when the project names nothing. */
@@ -264,6 +278,7 @@ export class AttachService {
     this.wakeBudget = new WakeBudget(options.wakeClock);
     this.delivery = new SessionDelivery({
       wake: (node, pending) => {
+        if (node === DIRECTOR_NODE) return options.director?.()?.wake(pending);
         void this.wake(node, pending).catch((err) => console.error('wake failed:', err));
       },
       events: this.events,
@@ -271,6 +286,7 @@ export class AttachService {
         options.streams.list({ include_archived: true }).find((s) => s.id === id)?.title,
       ...(options.deliveryDelayMs !== undefined ? { delayMs: options.deliveryDelayMs } : {}),
       target: (node) => {
+        if (node === DIRECTOR_NODE) return options.director?.()?.target();
         const handle = this.agentHandle(node);
         if (handle === undefined || handle.stopped()) return undefined;
         return {
@@ -369,6 +385,7 @@ export class AttachService {
 
   /** T243: at daemon start (after `recover()`), every node with pending events is considered. */
   wakePending(): void {
+    if (this.events.pendingFor(DIRECTOR_NODE).length > 0) this.delivery.notify(DIRECTOR_NODE);
     for (const stream of this.options.streams.list()) {
       if (this.events.pendingFor(stream.id).length > 0) this.delivery.notify(stream.id);
     }

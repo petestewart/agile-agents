@@ -22,6 +22,7 @@ import {
   type AgentMessage,
   type AgentRecord,
   type ClassifierConfig,
+  DIRECTOR_NODE,
   type KnowledgeId,
   type KnowledgeItem,
   MESSAGE_BODY_MAX_CHARS,
@@ -40,6 +41,7 @@ import { isPathInside } from '../permissions/command';
 import { nodeReadScope } from '../permissions/policy-tables';
 import { worktreeBranchLookups } from '../permissions/push-detector';
 import { patternRulesOf, protectedBranchesFor, touchedPaths } from '../permissions/rule-checks';
+import { directorReadScope } from '../permissions/visibility';
 import { NotFoundError, type StateStore, buildEvent } from '../store';
 import {
   type ClassifierTierOutcome,
@@ -189,6 +191,9 @@ function safeRealpath(path: string): string {
 /** Tools that never change files or commit: no `touched` recompute after them (T227). */
 const READ_ONLY_TOOLS = new Set(['Read', 'Grep', 'Glob', 'LS', 'WebFetch', 'WebSearch']);
 
+/** T300: Claude's network tools, denied to the Director (the coordinator table has no network). */
+const DIRECTOR_NETWORK_TOOLS: ReadonlySet<string> = new Set(['WebFetch', 'WebSearch']);
+
 const UNRESOLVED_CWD_REASON = 'agile: cwd is not a registered stream worktree';
 
 /** The `agile_agent` hint, written only by the CLI (from `AGILE_AGENT`); Claude's own payload never has it. */
@@ -244,6 +249,7 @@ export class HookService {
   private resolveAgentByCwd(
     cwd: string | undefined,
     agentHint: string | undefined,
+    options: { streamless?: boolean } = {},
   ): ResolvedHookIdentity | undefined {
     if (cwd === undefined) return undefined;
     const realCwd = safeRealpath(cwd);
@@ -267,8 +273,20 @@ export class HookService {
       // Several candidates and no matching hint: fail closed.
       if (chosen === undefined) return undefined;
       const streamId = chosen.record.stream;
-      // A record with no stream cannot be placed (§8.1 step 1: unresolvable ⇒ deny).
-      if (streamId === undefined) return undefined;
+      // A record with no stream cannot be placed (§8.1 step 1: unresolvable ⇒ deny),
+      // except the Director's (T300, P16) when the caller asks for it: a
+      // streamless coordinator-table session in its scratch dir.
+      if (streamId === undefined) {
+        if (options.streamless !== true || chosen.record.role !== 'coordinator') return undefined;
+        const scratch = this.absWorktree(chosen.record.worktree);
+        if (scratch === undefined) return undefined;
+        return {
+          session: chosen.id,
+          stream: DIRECTOR_NODE,
+          role: 'coordinator',
+          worktreePath: scratch,
+        };
+      }
       const worktreePath = this.absWorktree(chosen.record.worktree);
       if (worktreePath === undefined) return undefined;
       return {
@@ -428,7 +446,54 @@ export class HookService {
   }
 
   /** `hook.pre_tool_use`. An unresolved `cwd` is denied and logged. */
+  /**
+   * T300 (P16, P20): the Director's streamless session (hook tier). Only the role table
+   * applies (the coordinator's: writes only inside its scratch dir, no
+   * network); there is no stream, so no rules, routing or classifier tier,
+   * and a call the table would route is denied (fail-closed).
+   */
+  private async directorPreToolUse(
+    payload: ClaudePreToolUsePayload,
+  ): Promise<PreToolUseHookOutput | undefined> {
+    const who = this.resolveAgentByCwd(payload.cwd, agentHintFrom(payload), { streamless: true });
+    if (who === undefined || who.stream !== DIRECTOR_NODE) return undefined;
+    try {
+      await this.store.heartbeat(who.session as AgentId, {}, this.now);
+    } catch (err) {
+      if (!(err instanceof NotFoundError)) throw err;
+    }
+    const ctx: HookDecisionContext = {
+      ...who,
+      inbox: [],
+      limits: this.limits,
+      fileSize: this.fileSize,
+      ...directorReadScope(() => this.store.getRepos(), this.options.agileHome),
+    };
+    // The Claude web tools have no ACP kind, so the role table never sees them.
+    let decision: HookDecision = DIRECTOR_NETWORK_TOOLS.has(payload.tool_name ?? '')
+      ? { decision: 'deny', reason: 'the Director has no network access' }
+      : decidePreToolUse(ctx, payload);
+    if (decision.decision !== 'allow' && decision.decision !== 'deny') {
+      decision = {
+        decision: 'deny',
+        reason: `${decision.reason ?? 'this call needs the operator'}: the Director cannot route a call`,
+      };
+    }
+    await this.logDecision(who, 'pre_tool_use', decision, {
+      ...(payload.tool_name !== undefined ? { tool: payload.tool_name } : {}),
+    });
+    return {
+      hookSpecificOutput: {
+        hookEventName: 'PreToolUse',
+        permissionDecision: decision.decision as 'allow' | 'deny',
+        ...(decision.reason !== undefined ? { permissionDecisionReason: decision.reason } : {}),
+      },
+    };
+  }
+
   async preToolUse(payload: ClaudePreToolUsePayload): Promise<PreToolUseHookOutput> {
+    const director = await this.directorPreToolUse(payload);
+    if (director !== undefined) return director;
     const ctx = await this.buildContext(
       payload.cwd,
       agentHintFrom(payload),

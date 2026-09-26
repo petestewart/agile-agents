@@ -24,7 +24,7 @@ import { AutonomySchema, DeliveryOverrideSchema, ProjectIdSchema } from './proje
 export const THREAD_BODY_MAX_CHARS = 800;
 
 /**
- * T330: an agent's own message (`line` by `agent:<id>`) is one entry with
+ * T330: an agent's own message (`line` by `agent:<id>`, or the Director's) is one entry with
  * its whole text up to this cap; only past it is it cut, with the full text
  * behind the entry's `ref`. Every other entry keeps `THREAD_BODY_MAX_CHARS`.
  */
@@ -32,7 +32,9 @@ export const AGENT_LINE_MAX_CHARS = 16_000;
 
 /** The body cap for one thread entry, by its writer and kind. */
 export function threadBodyMaxFor(by: string, kind: string): number {
-  return kind === 'line' && by.startsWith('agent:') ? AGENT_LINE_MAX_CHARS : THREAD_BODY_MAX_CHARS;
+  return kind === 'line' && (by.startsWith('agent:') || by === 'director')
+    ? AGENT_LINE_MAX_CHARS
+    : THREAD_BODY_MAX_CHARS;
 }
 
 /** A thread body as quoted into a brief or a tool result: at most `max` chars, cut with "…". */

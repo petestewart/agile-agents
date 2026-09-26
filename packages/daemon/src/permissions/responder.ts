@@ -56,7 +56,7 @@ export interface PermissionResponderContext {
    * §4.3) has. Absent means the role table only.
    */
   patternRules?: PatternRuleGate;
-  /** T330 (P20): where a read may reach beyond the cwd, and what it never may (as `DecisionContext`). */
+  /** T305, T330 (P20): where a read may reach beyond the cwd, and what it never may (as `DecisionContext`). */
   readRoots?: readonly string[];
   hiddenRoots?: readonly string[];
 }

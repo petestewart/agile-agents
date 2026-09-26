@@ -270,3 +270,51 @@ export async function runNodeEvents(options: RunNodeEventsOptions): Promise<numb
   }
   return 0;
 }
+
+// ---- T300: `agile tail --director` ------------------------------------------
+
+/**
+ * The Director's thread (`<home>/threads/director.jsonl`, projects-design
+ * §14.11), read off disk like the audit tail: one line per entry, `--follow`
+ * polls for more.
+ */
+export async function runDirectorTail(options: {
+  home: string;
+  follow: boolean;
+  json: boolean;
+  pollMs?: number;
+  signal?: AbortSignal;
+}): Promise<number> {
+  const path = join(options.home, 'threads', 'director.jsonl');
+  let carry = '';
+  let offset = 0;
+  const consume = (text: string) => {
+    const result = splitComplete(carry, text);
+    carry = result.carry;
+    for (const line of result.complete) {
+      if (line.trim() === '') continue;
+      let entry: { ts: string; by: string; kind: string; body: string };
+      try {
+        entry = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      if (options.json) printJson(entry);
+      else console.log(`${entry.ts} ${entry.by} ${entry.kind}: ${entry.body}`);
+    }
+  };
+  const initial = await readFrom(path, 0);
+  consume(initial.text);
+  offset = initial.size;
+  if (!options.follow) return 0;
+  const pollMs = options.pollMs ?? 200;
+  while (!options.signal?.aborted) {
+    await new Promise((resolve) => setTimeout(resolve, pollMs));
+    if (options.signal?.aborted) break;
+    const next = await readFrom(path, offset);
+    if (next.size === offset) continue;
+    consume(next.text);
+    offset = next.size;
+  }
+  return 0;
+}

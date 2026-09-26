@@ -46,6 +46,7 @@ import { CardService } from '../coordination/cards';
 import { ContractService } from '../coordination/contracts';
 import { PlanService, WAITING_FOR_PLAN } from '../coordination/plans';
 import { DeliveryService } from '../delivery';
+import { DirectorService } from '../director';
 import { DocsService } from '../docs';
 import { RoutedEventService, routeAndEmit } from '../events';
 import { GateService } from '../gates';
@@ -502,6 +503,7 @@ interface Cockpit {
   plans: PlanService;
   contracts: ContractService;
   autonomy: AutonomyService;
+  director: DirectorService;
   /** Every `deliver(sessionId, question)` the question service made — the hand-off to the asking session. */
   delivered: Array<{ session: string; question: Question }>;
   http: HttpServerHandle;
@@ -547,6 +549,8 @@ async function startCockpit(
   });
   const projects = new ProjectService(store, streams);
   const events = new RoutedEventService(store);
+  // T300: no delivery wired, so a line to the Director stays pending (no session).
+  const director = new DirectorService({ store, streams, events, home });
   const http = startHttpServer({
     port: 0,
     version: 'test',
@@ -557,6 +561,7 @@ async function startCockpit(
     streams,
     projects,
     events,
+    director,
     questions,
     inbox,
     rules,
@@ -591,6 +596,7 @@ async function startCockpit(
     plans,
     contracts,
     autonomy,
+    director,
     delivered,
     http,
     base: `http://127.0.0.1:${http.port}`,
@@ -3221,6 +3227,100 @@ describe('coordinator autonomy (Playwright e2e, T282)', () => {
           await new Promise((r) => setTimeout(r, 50));
         }
         expect(cockpit.autonomy.levelFor(node.id)).toBe('organise');
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+});
+
+describe('the Director page (Playwright e2e, T300)', () => {
+  browserTest(
+    'the page shows the Director thread; a line sent there is routed to the Director',
+    async () => {
+      const cockpit = await startCockpit();
+      let page: Page | undefined;
+      try {
+        await cockpit.store.appendDirectorThread({
+          ts: new Date().toISOString(),
+          by: 'director',
+          kind: 'line',
+          body: 'Two projects are idle.',
+        });
+        page = await openPage();
+        await page.goto(`${cockpit.base}/`);
+        await page.locator('[data-view="director"]').click();
+        await page.locator('[data-testid="director-page"]').waitFor();
+        const entry = (text: string) =>
+          (page as Page)
+            .locator('[data-testid="director-thread"] [data-testid="thread-entry"]', {
+              hasText: text,
+            })
+            .waitFor();
+        await entry('Two projects are idle.');
+        await page.locator('[data-testid="director-composer"]').fill('Shop needs sale prices.');
+        await page.locator('[data-testid="director-send"]').click();
+        await entry('Shop needs sale prices.');
+        await page
+          .locator('[data-testid="director-activity-row"]', { hasText: 'director request' })
+          .waitFor();
+        expect(cockpit.events.pendingFor('director').map((p) => p.event.type)).toEqual([
+          'director_request',
+        ]);
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+});
+
+describe('the Director draft tree (Playwright e2e, T301)', () => {
+  browserTest(
+    'at Advise a draft renders as a tree; Create builds it',
+    async () => {
+      const cockpit = await startCockpit();
+      let page: Page | undefined;
+      try {
+        const shop = await cockpit.projects.create({ name: 'Shop' });
+        const out = await cockpit.autonomy.act('director', 'director', 'agent:test', {
+          action: 'create_tree',
+          tree: {
+            project: shop.id,
+            title: 'Show sale prices',
+            goal: 'sale prices on product pages',
+            parts: [
+              { title: 'api: add salePrice', goal: 'expose it' },
+              { title: 'web: show salePrice', goal: 'render it', after: [0] },
+            ],
+          },
+        });
+        expect(out.applied).toBe(false);
+        const id = out.applied ? '' : out.proposal.id;
+
+        page = await openPage();
+        await page.goto(`${cockpit.base}/`);
+        await page.locator('[data-view="director"]').click();
+        const card = `[data-testid="director-proposal"][data-id="${id}"]`;
+        await page.locator(`${card} [data-testid="director-draft-tree"]`).waitFor();
+        expect(await page.locator(`${card} [data-testid="director-draft-part"]`).count()).toBe(2);
+        expect(
+          await page.locator(`${card} [data-testid="director-draft-part"]`).nth(1).textContent(),
+        ).toContain('waits on api: add salePrice');
+        await page.locator(`${card} [data-testid="director-create"]`).click();
+        await page.locator(card).waitFor({ state: 'detached' });
+
+        const node = cockpit.streams.list().find((s) => s.title === 'Show sale prices');
+        expect(node?.parent).toBe(shop.root);
+        const parts = cockpit.streams.list().filter((s) => s.parent === node?.id);
+        expect(parts.map((p) => p.title).sort()).toEqual([
+          'api: add salePrice',
+          'web: show salePrice',
+        ]);
+        expect(cockpit.autonomy.get(id).status).toBe('applied');
       } finally {
         await teardown([page]);
         await cockpit.stop();

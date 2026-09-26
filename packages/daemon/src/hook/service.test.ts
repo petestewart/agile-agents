@@ -275,6 +275,103 @@ describe('HookService read scope (T213)', () => {
   });
 });
 
+// T300 (P16, P20): the Director's session has no stream; the hook places it
+// by its scratch cwd and applies the coordinator table.
+describe('HookService — the streamless Director (T300)', () => {
+  const DIRECTOR = '01ARZ3NDEKTSV4RRFFQ69G5FA9';
+
+  test('writes inside its scratch dir are allowed; outside, and network, are denied', async () => {
+    const scratch = join(stateRoot, 'sessions', DIRECTOR);
+    mkdirSync(scratch, { recursive: true });
+    const { stream: _none, ...streamless } = agentRecord({
+      role: 'coordinator',
+      worktree: scratch,
+    });
+    await store.putAgent(DIRECTOR, streamless);
+    const svc = service();
+    const call = (tool_name: string, tool_input: Record<string, unknown>) =>
+      svc.preToolUse({ cwd: scratch, agile_agent: DIRECTOR, tool_name, tool_input });
+
+    const inside = await call('Write', { file_path: join(scratch, 'notes.md'), content: 'x' });
+    expect(inside.hookSpecificOutput.permissionDecision).toBe('allow');
+    const outside = await call('Write', { file_path: join(repo, 'README.md'), content: 'x' });
+    expect(outside.hookSpecificOutput.permissionDecision).toBe('deny');
+    const net = await call('WebFetch', { url: 'https://example.com' });
+    expect(net.hookSpecificOutput.permissionDecision).toBe('deny');
+  });
+
+  test('T301: its own MCP verbs pass the hook; the operator CLI and a merge do not', async () => {
+    const scratch = join(stateRoot, 'sessions', DIRECTOR);
+    mkdirSync(scratch, { recursive: true });
+    const { stream: _none, ...streamless } = agentRecord({
+      role: 'coordinator',
+      worktree: scratch,
+    });
+    await store.putAgent(DIRECTOR, streamless);
+    const svc = service();
+    const call = (tool_name: string, tool_input: Record<string, unknown>) =>
+      svc.preToolUse({ cwd: scratch, agile_agent: DIRECTOR, tool_name, tool_input });
+    for (const verb of ['draft_tree', 'create_node', 'start_node', 'add_waits_on']) {
+      const out = await call(`mcp__agile__${verb}`, { title: 't' });
+      expect(out.hookSpecificOutput.permissionDecision).toBe('allow');
+    }
+    for (const command of [
+      'agile answer Q-1 yes',
+      'agile land 01ARZ',
+      'gh pr merge 3',
+      'git merge x',
+    ]) {
+      const out = await call('Bash', { command });
+      expect(out.hookSpecificOutput.permissionDecision).toBe('deny');
+    }
+  });
+
+  test('T305: reads reach every registered repo; the agile home and elsewhere are denied', async () => {
+    // The fixture's home is the repo itself, so the registered repos live apart.
+    const scratch = join(stateRoot, 'sessions', DIRECTOR);
+    mkdirSync(scratch, { recursive: true });
+    const { stream: _none, ...streamless } = agentRecord({
+      role: 'coordinator',
+      worktree: scratch,
+    });
+    await store.putAgent(DIRECTOR, streamless);
+    const shop = mkdtempSync(join(tmpdir(), 'agile-hook-shop-'));
+    const blog = mkdtempSync(join(tmpdir(), 'agile-hook-blog-'));
+    try {
+      await store.addRepo('shop', { path: shop });
+      await store.addRepo('blog', { path: blog, visibility: { mode: 'private', projects: [] } });
+      const svc = service({ agileHome: stateRoot });
+      const call = async (tool_name: string, tool_input: Record<string, unknown>) =>
+        (await svc.preToolUse({ cwd: scratch, agile_agent: DIRECTOR, tool_name, tool_input }))
+          .hookSpecificOutput.permissionDecision;
+
+      expect(await call('Read', { file_path: join(shop, 'README.md') })).toBe('allow');
+      expect(await call('Grep', { pattern: 'x', path: blog })).toBe('allow');
+      expect(await call('Bash', { command: `cat ${join(shop, 'README.md')}` })).toBe('allow');
+      expect(await call('Read', { file_path: join(scratch, 'brief.md') })).toBe('allow');
+      expect(await call('Read', { file_path: join(stateRoot, 'config.yaml') })).toBe('deny');
+      expect(await call('Bash', { command: `cat ${join(stateRoot, 'repos.yaml')}` })).toBe('deny');
+      expect(await call('Read', { file_path: '/etc/hosts' })).toBe('deny');
+      expect(await call('Write', { file_path: join(shop, 'x.md'), content: 'x' })).toBe('deny');
+      expect(await call('Write', { file_path: join(scratch, 'x.md'), content: 'x' })).toBe('allow');
+    } finally {
+      rmSync(shop, { recursive: true, force: true });
+      rmSync(blog, { recursive: true, force: true });
+    }
+  });
+
+  test('a streamless worker record is still unresolvable (fail-closed)', async () => {
+    const { stream: _none, ...streamless } = agentRecord({ role: 'worker', worktree });
+    await store.putAgent(WORKER, streamless);
+    const out = await service().preToolUse({
+      cwd: worktree,
+      tool_name: 'Write',
+      tool_input: { file_path: join(worktree, 'a.ts'), content: 'x' },
+    });
+    expect(out.hookSpecificOutput.permissionDecision).toBe('deny');
+  });
+});
+
 describe('HookService read scope for a conversation node (T330)', () => {
   test('from its session dir: registered repos yes, the agile home and an unlisted private repo no', async () => {
     const other = mkdtempSync(join(tmpdir(), 'agile-hook-other-'));

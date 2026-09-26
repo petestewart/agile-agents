@@ -602,7 +602,7 @@ function engineerVerdict(classified: PermissionRequest, ctx: PolicyContext): Pol
     case 'read': {
       // Reads are never gated by ACP (spike-findings §A), but answer
       // consistently: under a read scope (T330), as the hook's Read would.
-      if (ctx.readRoots === undefined && ctx.hiddenRoots === undefined) return ALLOW;
+      if (!hasReadScope(ctx)) return ALLOW;
       for (const path of allTargetPaths(classified)) {
         const reason = readDenyReason(path, ctx);
         if (reason !== undefined) return deny(reason);
@@ -759,6 +759,50 @@ function coordinatorRedirectVerdict(
   return ALLOW;
 }
 
+/** T305: a read scope is set (the Director's, or the hook's T213 one). */
+function hasReadScope(ctx: PolicyContext): boolean {
+  return ctx.readRoots !== undefined || ctx.hiddenRoots !== undefined;
+}
+
+/**
+ * T305 (P20): under a read scope, every path-like argument of a coordinator's
+ * command must be readable (`readDenyReason`); an unresolvable one denies.
+ */
+/**
+ * T336 (review B4): the paths one argument may name. A flag carries its
+ * value inside the token (`--orderfile=/x`, `-O/x`, `-O../x`), which must
+ * be checked as the path, never the whole token read as a relative one.
+ */
+function pathCandidates(token: string): string[] {
+  if (!token.startsWith('-') || token === '-' || token === '--') return [token];
+  if (token.startsWith('--')) {
+    const eq = token.indexOf('=');
+    return eq === -1 ? [] : [token.slice(eq + 1)];
+  }
+  // A short option with its value attached (`-O/x`), or a bundle whose last
+  // letter takes it (`-aO/x`): the value is the rest after the option letter,
+  // or from where a path first starts.
+  const start = token.slice(1).search(/[/.~]/);
+  return start === -1 ? [token.slice(2)] : [token.slice(2), token.slice(start + 1)];
+}
+
+function coordinatorScopedReads(
+  tokens: string[],
+  ctx: PolicyContext,
+  cwd: string = ctx.worktreePath,
+): PolicyVerdict {
+  if (!hasReadScope(ctx)) return ALLOW;
+  for (const raw of tokens.slice(1).flatMap(pathCandidates)) {
+    if (!(raw.includes('/') || raw.startsWith('.') || raw.startsWith('~'))) continue;
+    const resolved = cmd.resolveTargetPath(raw);
+    if (!resolved.safe) return deny(`coordinator role cannot resolve the path "${raw}"`);
+    // T336: relative to where a `cd` left the command.
+    const reason = readDenyReason(resolve(cwd, resolved.path), ctx);
+    if (reason !== undefined) return deny(reason);
+  }
+  return ALLOW;
+}
+
 /**
  * T336: `cd <dir>` (Claude's `cd <repo> && git log`) moves where the atoms
  * after it run. The dir must be readable; a later relative redirect then
@@ -771,7 +815,7 @@ function coordinatorCd(
 ): { dir: string } | PolicyVerdict {
   const moved = cdTarget(tokens, cwd, 'coordinator');
   if ('action' in moved) return moved;
-  if (ctx.readRoots !== undefined || ctx.hiddenRoots !== undefined) {
+  if (hasReadScope(ctx)) {
     const reason = readDenyReason(moved.dir, ctx);
     if (reason !== undefined) return deny(reason);
   }
@@ -789,6 +833,8 @@ function coordinatorExecuteVerdict(command: string, ctx: PolicyContext): PolicyV
     for (const cwd of cwds) {
       const redirect = coordinatorRedirectVerdict(atom.tokens, ctx, cwd);
       if (redirect.action !== 'allow') return redirect;
+      const reads = coordinatorScopedReads(atom.tokens, ctx, cwd);
+      if (reads.action !== 'allow') return reads;
     }
     // T336: git by the strict allowlist (no -c/--config-env, pager, ext-diff, ...).
     if (cmd.isReadOnlyGitAtom(atom)) continue;
@@ -804,8 +850,14 @@ function coordinatorExecuteVerdict(command: string, ctx: PolicyContext): PolicyV
 /** P20 (T280): reads as visibility allows, writes only inside the session dir, no network. */
 function coordinatorVerdict(classified: PermissionRequest, ctx: PolicyContext): PolicyVerdict {
   switch (classified.toolClass) {
-    case 'read':
+    case 'read': {
+      if (!hasReadScope(ctx)) return ALLOW;
+      for (const path of allTargetPaths(classified)) {
+        const reason = readDenyReason(path, ctx);
+        if (reason !== undefined) return deny(reason);
+      }
       return ALLOW;
+    }
     case 'edit': {
       const paths = allTargetPaths(classified);
       if (paths.length === 0) {
