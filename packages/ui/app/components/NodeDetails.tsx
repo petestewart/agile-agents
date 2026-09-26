@@ -18,7 +18,7 @@ import {
   updateProject,
   waitOnStream,
 } from '../lib/api';
-import { sessionLabel } from '../lib/chat';
+import { agentLabel, sessionIdText } from '../lib/chat';
 import { useOptionalFeed } from '../lib/feed-context';
 import type {
   CockpitCardError,
@@ -33,7 +33,6 @@ import { DOT_LABEL, cardDot, isLiveSession, sessionRows } from '../lib/streams';
 import { Icon } from './Icon';
 import { Linked } from './Markdown';
 import { NodeLink } from './NodeViews';
-import { sessionModelText } from './SessionPicker';
 import { Badge, Button, IconButton, RepoIcon } from './ui';
 
 type Act = (fn: () => Promise<unknown>) => Promise<void> | void;
@@ -90,8 +89,10 @@ function SessionItem({ session }: { session: SessionRef }): JSX.Element {
         <div className="cr-sess-top">
           <strong className="cr-sess-role">{session.role}</strong>{' '}
           <span className="cr-sess-model">
-            {session.vendor}/{sessionModelText(session)}
-            {session.effort ? ` · ${session.effort}` : ''} · {session.status}
+            <span data-testid="session-model" title={sessionIdText(session)}>
+              {agentLabel(session)}
+            </span>{' '}
+            · {session.status}
           </span>
         </div>
         {session.ended_reason && (
@@ -817,8 +818,8 @@ export function AgentSection({
     <DetailSection
       title="Agent"
       aside={
-        <span className="cr-dsec-sub" title={live ? `${live.vendor}/${live.model}` : undefined}>
-          {live ? sessionLabel(live) : startWith ? `Starts as ${startWith}` : ''}
+        <span className="cr-dsec-sub" title={live ? sessionIdText(live) : undefined}>
+          {live ? agentLabel(live) : startWith ? `Starts as ${startWith}` : ''}
         </span>
       }
     >

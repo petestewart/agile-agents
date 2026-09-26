@@ -53,6 +53,29 @@ export function sessionLabel(session: { vendor: string; model?: string; effort?:
   return session.effort ? `${model} · ${session.effort}` : model;
 }
 
+/**
+ * T382: `sessionLabel`, with the agent named first when the model's name
+ * does not say it — "Claude Opus 5.5 · low", "Gemini default model · low",
+ * but "Codex · gpt-9 · low". For a place nothing else names the agent
+ * (Running, a details session row, Settings' "starts with").
+ */
+export function agentLabel(session: { vendor: string; model?: string; effort?: string }): string {
+  const label = sessionLabel(session);
+  const vendor = session.vendor.replace(/[^a-z0-9]/gi, '');
+  if (vendor === '' || new RegExp(`\\b${vendor}\\b`, 'i').test(label)) return label;
+  return `${vendorLabel(session.vendor)} · ${label}`;
+}
+
+/** T382: the raw ids behind a label, for its tooltip: "claude/claude-opus-5-5 · low effort". */
+export function sessionIdText(session: {
+  vendor: string;
+  model?: string;
+  effort?: string;
+}): string {
+  const model = session.model === undefined || session.model === '' ? 'default' : session.model;
+  return `${session.vendor}/${model}${session.effort ? ` · ${session.effort} effort` : ''}`;
+}
+
 /** Who wrote a thread line, for the chat's name row. */
 export interface ChatAuthor {
   /** "You", "Claude", "Coordinator", "agile". */

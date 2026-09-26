@@ -45,6 +45,7 @@ import {
   saveTrackerSettings,
   updateProject,
 } from '../lib/api';
+import { agentLabel, sessionIdText } from '../lib/chat';
 import { resolvedFor } from '../lib/defaults';
 import { useOptionalFeed } from '../lib/feed-context';
 import { useOptionalShell } from '../lib/shell';
@@ -348,18 +349,15 @@ function projectResolved(
   fields: ProjectSessionDefaults | undefined,
 ): ResolvedSessionDefaults | string {
   const each = (repos.length > 0 ? repos : [undefined]).map((repo) =>
-    resolvedText(resolvedFor(status, repo, fields)),
+    resolvedFor(status, repo, fields),
   );
-  const first = each[0] ?? resolvedText(resolvedFor(status, undefined, fields));
-  return each.every((text) => text === first) ? first : 'Varies by repository';
+  const first = each[0] ?? resolvedFor(status, undefined, fields);
+  const key = sessionIdText(first);
+  return each.every((resolved) => sessionIdText(resolved) === key) ? first : 'Varies by repository';
 }
 
 function sameChoice(a: SessionChoice, b: SessionChoice): boolean {
   return a.vendor === b.vendor && a.model.trim() === b.model.trim() && a.effort === b.effort;
-}
-
-function resolvedText(resolved: ResolvedSessionDefaults): string {
-  return `${resolved.vendor} · ${resolved.model ?? 'default model'} · ${resolved.effort} effort`;
 }
 
 function SessionDefaultsCard({
@@ -398,10 +396,15 @@ function SessionDefaultsCard({
       testid={testid}
       label={typeof title === 'string' ? title : undefined}
       status={
-        <span className="cr-set-resolved" title="What a new agent here starts with">
+        <span
+          className="cr-set-resolved"
+          title={`What a new agent here starts with${
+            typeof resolved === 'string' ? '' : `: ${sessionIdText(resolved)}`
+          }`}
+        >
           <Icon name="bot" size={13} />
           <span data-testid={`${testid}-resolved`}>
-            {typeof resolved === 'string' ? resolved : resolvedText(resolved)}
+            {typeof resolved === 'string' ? resolved : agentLabel(resolved)}
           </span>
         </span>
       }

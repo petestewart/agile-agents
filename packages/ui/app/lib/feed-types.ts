@@ -21,6 +21,7 @@ import type {
   RoutedEvent,
   RoutingEntry,
   KnowledgeItem as Rule,
+  SessionRef,
   Stream,
   ThreadEntry,
   TrackerSettings,
@@ -87,6 +88,16 @@ export interface CockpitStreamRow {
   never_started?: true;
   /** T361: the human stopped its agent; nothing is live and it is still open. Absent from an older daemon. */
   stopped?: true;
+  /** T382: the live session Running names (its own agent first). Absent when nothing is live, or from an older daemon. */
+  live_agent?: CockpitLiveAgent;
+}
+
+/** T382: mirror of `feed/snapshot.ts`'s `CockpitLiveAgent`. */
+export interface CockpitLiveAgent {
+  role: SessionRef['role'];
+  vendor: string;
+  model: string;
+  effort?: SessionRef['effort'];
 }
 
 /** T160: mirror of `feed/snapshot.ts`'s `CockpitFrame` — the inbox and the tree, pushed on connect and after every event batch. */
