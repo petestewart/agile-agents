@@ -8233,7 +8233,8 @@ describe('Needs me, errors and the page chrome (Playwright e2e, T416)', () => {
         expect(await answer.getAttribute('data-variant')).toBe('primary');
         await page.locator(`${question} [data-testid="answer-input"]`).fill('');
 
-        // The keycaps work: on a focused card, B picks the second choice.
+        // The keycaps work: on a focused card, B picks the second choice (and A the first,
+        // without opening T419's Ask, which is `a` everywhere else).
         expect(await page.locator(`${question} .cr-choice-key`).allTextContents()).toEqual([
           'A',
           'B',
@@ -8244,6 +8245,22 @@ describe('Needs me, errors and the page chrome (Playwright e2e, T416)', () => {
           cockpit.questions.listOpen().every((q) => q.id !== asked.id),
         );
         expect(cockpit.questions.get(asked.id).answer).toBe('Floats');
+        const again = await cockpit.questions.raise({
+          stream: ledger,
+          raised_by: '01ARZ3NDEKTSV4RRFFQ69GE001',
+          session: ulid(),
+          text: 'Round how?',
+          options: ['Half up', 'Half even'],
+        });
+        const next = `[data-testid="inbox"] [data-id="${again.id}"]`;
+        await page.locator(next).waitFor({ state: 'visible' });
+        await page.locator(next).focus();
+        await page.keyboard.press('a');
+        await waitUntil('the second answer to be recorded', () =>
+          cockpit.questions.listOpen().every((q) => q.id !== again.id),
+        );
+        expect(cockpit.questions.get(again.id).answer).toBe('Half up');
+        expect(await page.locator('[data-testid="ask"]').count()).toBe(0);
       } finally {
         await teardown([page]);
         await cockpit.stop();
