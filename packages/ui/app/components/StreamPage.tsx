@@ -880,6 +880,7 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
           renderActions={renderActions}
           renderExtra={renderExtra}
           onOpenRule={(rule) => openRules({ ...DEFAULT_RULES_FILTER, rule })}
+          openQuestions={new Set(questions.map((q) => q.id))}
         />
         {thinking && <Thinking name={name} />}
         {emptyChat && open && (
