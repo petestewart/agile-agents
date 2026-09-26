@@ -1946,11 +1946,12 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 
 ### Ticket: T360 UI foundation: design system and sidebar shell
 - **Priority:** P0
-- **Status:** In Progress
+- **Status:** Done
 - **Owner:** manager
 - **Scope:** Tokens (light/dark), type scale, the primitives every screen uses (`components/ui.tsx`: Button, IconButton, Menu, Dialog with focus trap, Tabs, Badge, StatusDot, EmptyState, Toast; `components/Icon.tsx` inline SVG), and the shell: a left sidebar (Needs me, Director, views, the project tree, Settings) replaces the top bar; pages own their headers. "Node" everywhere in UI text (not "stream"). `design/cockpit-ui.md`.
 - **Acceptance Criteria:** Every view renders in the new shell in light and dark; e2e and walkthrough green with selectors moved from the top bar to the sidebar.
 - **Validation Steps:** `bun run build && bun run typecheck && bun run lint && bun test packages/ui && bun run test:e2e`.
+- **Notes:** Branch T360-ui-foundation, merge 8469594. control-room e2e 49/49 (one fix: a project-role row keeps its dot when its status is news), feed/installable green, walkthrough 1/1. Quick capture removed (New node is the one path); its four tests moved to the New node dialog. Also `.cr-thread li` styled markdown list items inside messages (fixed to `> li`).
 
 ### Ticket: T361 ∥ Agents follow role changes; question choices; delete and restore; a message starts a stopped node
 - **Priority:** P0
