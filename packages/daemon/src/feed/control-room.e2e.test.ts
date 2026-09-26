@@ -2854,7 +2854,7 @@ describe('cockpit gaps (Playwright e2e, T338)', () => {
         });
         expect(cross.status).toBe(403);
 
-        // Knowledge → New rule: a Name, and the scope picked by name (no ids typed).
+        // Knowledge → Add knowledge: a Name, and the scope picked by name (no ids typed).
         await page.locator('[data-view="rules"]').click();
         await page.locator('[data-testid="rules-new"]').click();
         const form = '[data-testid="rules-new-form"]';
