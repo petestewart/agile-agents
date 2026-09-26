@@ -306,7 +306,8 @@ function Replies({
           <ReplyRow
             key={row.id}
             id={row.id}
-            at={row.updated_at}
+            // T437: when it answered (a status change later is no new reply).
+            at={row.answered_at}
             // T436 (audit r6 #17): the rail's role glyphs, so a row reads as the tree does.
             icon={ROLE_GLYPH[row.role]}
             title={row.title}

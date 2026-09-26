@@ -147,20 +147,29 @@ export function useReplyNotifications(): void {
   const replies = useMemo(
     () => [
       ...(director !== undefined
-        ? [{ id: DIRECTOR_READ_KEY, title: 'The Director', updated_at: director }]
+        ? [
+            {
+              id: DIRECTOR_READ_KEY,
+              title: 'The Director',
+              updated_at: director,
+              answered_at: director,
+            },
+          ]
         : []),
       ...nodes,
     ],
     [director, nodes],
   );
   useEffect(() => {
-    const keys = new Set(replies.map((row) => `${row.id}:${row.updated_at}`));
+    const keys = new Set(replies.map((row) => `${row.id}:${row.answered_at ?? row.updated_at}`));
     // The first look only learns what is already unread.
     if (told.current === undefined) {
       told.current = keys;
       return;
     }
-    const fresh = replies.filter((row) => !told.current?.has(`${row.id}:${row.updated_at}`));
+    const fresh = replies.filter(
+      (row) => !told.current?.has(`${row.id}:${row.answered_at ?? row.updated_at}`),
+    );
     for (const key of keys) told.current.add(key);
     const away = document.visibilityState === 'hidden' || !document.hasFocus();
     const first = fresh[0];

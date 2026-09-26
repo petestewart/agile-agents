@@ -153,4 +153,6 @@ export interface SessionDefaultsStatus {
   repos: Record<string, SessionDefaultsFields & { resolved: ResolvedSessionDefaults }>;
   vendors: readonly SessionVendor[];
   known_models: Readonly<Record<SessionVendor, readonly string[]>>;
+  /** T437: vendors whose command isn't on the daemon's PATH, with why in words. Absent: all found (or an older daemon). */
+  not_installed?: Readonly<Partial<Record<SessionVendor, string>>>;
 }

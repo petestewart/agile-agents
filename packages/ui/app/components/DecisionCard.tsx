@@ -69,6 +69,7 @@ import {
   fold,
   fullText,
   gateView,
+  isAgentFailure,
   knowledgeView,
   mergeQuestion,
   noChangesText,
@@ -1171,7 +1172,11 @@ export function Card({
               aria-label="Your reply"
               value={draft}
               disabled={busy !== undefined || settled !== undefined}
-              placeholder="Reply to unblock…"
+              placeholder={
+                isAgentFailure(item.context)
+                  ? 'Fix its login or install, then reply to start it again…'
+                  : 'Reply to unblock…'
+              }
               onChange={(e) => setDraft(e.target.value)}
             />
             <Button

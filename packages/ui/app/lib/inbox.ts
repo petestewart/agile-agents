@@ -814,9 +814,9 @@ export function plainLine(line: string): string {
     .trim();
 }
 
-/** A line an agent wrote: a session's (`agent:<id>`), or the Director's own. */
+/** A line an agent wrote: a session's (`agent:<id>`), a coordinator's, or the Director's own. */
 function byAgent(by: string): boolean {
-  return by.startsWith('agent:') || by === 'director';
+  return by.startsWith('agent:') || by === 'coordinator' || by === 'director';
 }
 
 /**
@@ -849,4 +849,13 @@ export function replyPreview(
     }
   }
   return undefined;
+}
+
+/**
+ * T437: a blocked card whose line is the daemon's failure note (a vendor that
+ * isn't installed, or that stopped with an error): a reply alone restarts the
+ * same vendor, so the card says to fix it first.
+ */
+export function isAgentFailure(text: string): boolean {
+  return /^The agent (couldn’t start|stopped with an error): /.test(text.trim());
 }

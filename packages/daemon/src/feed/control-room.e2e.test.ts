@@ -5996,6 +5996,13 @@ describe("the Director's replies (Playwright e2e, T433)", () => {
         await page.goto(`${cockpit.base}/`);
         await page.locator('[data-testid="inbox"]').waitFor();
         expect(await page.locator('[data-testid="replies"]').count()).toBe(0);
+        // T437: a Director line counts as a reply only when it answers you.
+        await cockpit.store.appendDirectorThread({
+          ts: new Date(Date.now() + 500).toISOString(),
+          by: 'human',
+          kind: 'line',
+          body: 'What needs me?',
+        });
         await cockpit.store.appendDirectorThread({
           ts: new Date(Date.now() + 1000).toISOString(),
           by: 'director',
@@ -9618,6 +9625,12 @@ describe('views and polish (Playwright e2e, T436, audit r6)', () => {
       const reply = '**It buffers** because the parser needs the header row first.\n\nMore below.';
       const cockpit = await startStreamCockpit([
         { steps: [{ type: 'agent_text', text: reply }, { type: 'end_turn' }] },
+        {
+          steps: [
+            { type: 'agent_text', text: '## Planned the week: two nodes to start.' },
+            { type: 'end_turn' },
+          ],
+        },
       ]);
       let page: Page | undefined;
       try {
@@ -9648,11 +9661,14 @@ describe('views and polish (Playwright e2e, T436, audit r6)', () => {
         expect(await listed.locator('.cr-reply-icon').getAttribute('data-icon')).toBe(
           'message-square',
         );
-        // A project root that finished a turn: its own glyph, and its progress line when the
-        // thread has no reply of its agent's.
-        await cockpit.streams.update('daemon', shop.root, {
-          agent: { status: 'done', progress: 'Planned the week: two nodes to start.' },
+        // A project root that answered (T437: an agent line after yours): its own glyph
+        // (layers, not a fork), "Finished a turn", and its reply's first line as plain words.
+        const planned = await fetch(`${cockpit.base}/api/streams/${shop.root}/say`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ body: 'plan the week', start: true }),
         });
+        expect(planned.status).toBe(201);
         const root = page.locator(`[data-testid="reply"][data-stream="${shop.root}"]`);
         await root.waitFor();
         expect(await root.locator('.cr-reply-icon').getAttribute('data-icon')).toBe('layers');

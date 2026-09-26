@@ -25,6 +25,7 @@ import {
   type ProjectSessionDefaults,
   type ResolvedSessionDefaults,
   type SessionDefaultsStatus,
+  type SessionVendor,
   resolveSessionDefaults,
   vendorTakesEffort,
 } from '@agile-agents/shared';
@@ -132,12 +133,16 @@ export function ModelChoice({
             </div>
             {group.options.map((option) => {
               const on = sameModel(option, value);
+              // T437: a vendor whose command isn't on the daemon's PATH says so (still pickable).
+              const missing = status.not_installed?.[option.vendor as SessionVendor];
               const tag =
                 marks.running && sameModel(option, marks.running)
                   ? 'Running'
                   : marks.default && sameModel(option, marks.default)
                     ? 'Default'
-                    : undefined;
+                    : missing !== undefined
+                      ? 'Not installed'
+                      : undefined;
               return (
                 <button
                   key={`${option.vendor}/${option.model ?? ''}`}
@@ -149,8 +154,9 @@ export function ModelChoice({
                   data-testid="model-option"
                   data-vendor={option.vendor}
                   data-model={option.model ?? ''}
+                  data-missing={missing !== undefined ? 'true' : undefined}
                   data-autofocus={on ? true : undefined}
-                  title={sessionIdText({ vendor: option.vendor, model: option.model })}
+                  title={missing ?? sessionIdText({ vendor: option.vendor, model: option.model })}
                   onClick={() => {
                     setOther(undefined);
                     choose(option);
@@ -183,8 +189,9 @@ export function ModelChoice({
               onChange={(e) => setOther({ ...other, vendor: e.target.value })}
             >
               {status.vendors.map((v) => (
-                <option key={v} value={v}>
+                <option key={v} value={v} title={status.not_installed?.[v]}>
                   {vendorLabel(v)}
+                  {status.not_installed?.[v] !== undefined ? ' (not installed)' : ''}
                 </option>
               ))}
             </select>
@@ -556,8 +563,9 @@ export function SessionFields({
       >
         {inherit && <option value="">Inherits {vendorLabel(inherit.vendor)}</option>}
         {status.vendors.map((v) => (
-          <option key={v} value={v}>
+          <option key={v} value={v} title={status.not_installed?.[v]}>
             {vendorLabel(v)}
+            {status.not_installed?.[v] !== undefined ? ' (not installed)' : ''}
           </option>
         ))}
       </select>

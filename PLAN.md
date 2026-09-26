@@ -2580,6 +2580,15 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 - **Validation Steps:** `bun test packages/daemon/src/http.test.ts -t T434 packages/daemon/src/daemon.test.ts -t T434`; control-room e2e "General picks the theme…".
 - **Notes:** Branch T434-quick-drafts-switch.
 
+### Ticket: T437 Audit r6: failed starts, vendors, caps, and what counts as needing you
+- **Priority:** P1
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** Audit round 6's daemon-side findings (the integrated app, D42 flows). A start that failed before the vendor ran (its command missing, the spawn throwing) left the node `working` with a `starting` session no Stop could end. The picker offered vendors that couldn't start. A pasted message over 800 characters was refused. A done node with its own branch and parts lost its Merge card. A plan waiting on approval, or a gate, read as "Working". A conversation node "replied" whenever its agent spoke, even when nobody had asked.
+- **Acceptance Criteria:** (1) A vendor whose command isn't on the daemon's PATH is refused before any session is recorded: the node goes `blocked`, its progress reads "The agent couldn't start: <reason>", and the error reaches the caller. A spawn that throws ends its session `error` with the reason and blocks the node the same way. The next start clears either failure line (and T432's "The agent stopped with an error: …"). Stop ends a `starting` session left without a process (`stopped`, node `idle`), never one still starting. (2) Session defaults carry `not_installed` (vendor → reason); the picker tags such a vendor "Not installed" (`data-missing`) and its option reads "(not installed)". The failure card's placeholder says "Fix its login or install, then reply to start it again…". (3) A human line is capped at `HUMAN_LINE_MAX_CHARS` (4000); Send to parent at `SEND_UP_MAX_CHARS` (3000); agent and Director lines keep 16000, the rest 800. (4) A done node with its own repo and branch keeps its Merge card even when it has parts. (5) Frame rows carry `pending_decision` (an open gate, plan approval or proposal in its inbox) and read "Needs you". (6) Frame rows carry `answered_at`: the time an agent, coordinator or Director line followed a human line (a new node's goal is the first question), cached in the store from appends; Replies, the rail's unread marks and notifications key on it, and the Director's `replied_at` follows the same rule.
+- **Validation Steps:** `bun test packages/daemon/src/attach/service.test.ts -t T437 packages/daemon/src/store/store.test.ts -t "T437|T433" packages/daemon/src/http.test.ts -t T437 packages/daemon/src/inbox/service.test.ts -t T437 packages/ui/app/lib`; control-room e2e `T429`, `T433` (the Director answers a human line); full `bun test` 3176/0, control-room 97/0, walkthrough clean.
+- **Notes:** Branch T437-failed-starts. D36's D10 wake (an agent's line wakes an idle parent) is Pete's decision and stays. The UI halves of findings #2 (a counter on the composer) and #3 (the Merge card's place) are T435's; "Details" still shows the raw ended reason (follow-up).
+
 ### Ticket: T423b CI: the picker's model read before it loaded
 - **Priority:** P0
 - **Status:** Done
@@ -2618,6 +2627,7 @@ Daemon: `em/`, `architect/`, `oracle/`, `qa/`, `halts/`, `quota/`, `handoff/`, `
 - Q3. Whether `bus/` survives as the thread's transport or is deleted; decided in T120 by whichever is less code.
 - Q4. Whether repo docs live in `.agile-docs/` (tracked) or under the home (untracked). Plan says tracked so a repo carries its own guidance; Pete to confirm at T134. Superseded by D24: docs move to the home (T207).
 - Q5–Q24. The proposed decisions P1–P20 in `design/projects-design.md` §19 are open until Pete confirms each one as a D-entry. Tickets assume them. P17 (tracker tokens in `config.yaml`, a second credential exception) must be approved before T320.
+- Q25. D36 D10 (T351) wakes every finished conversation in an accepted item's scope, so one project-wide decision starts up to five vendor turns (audit r6 #9). T437 stopped those turns from reading as unread replies. Narrowing the wake to the conversation the item came from (its `source.node`) or a subtree scoped to it would save the turns; the rest would get the item on their next turn, as before D10. Pete to decide; the walkthrough's "Cents check" step assumes the wide wake.
 
 ## 10. Discovered Issues Log
 

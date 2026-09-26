@@ -259,7 +259,7 @@ function statusPhrase(status: NodeStatus): string {
   if (status.label === 'Replied') return 'replied';
   if (status.key === 'no_changes') return 'finished with no changes';
   if (status.key === 'pr_open') return 'has its pull request open';
-  if (status.key === 'needs_you') return 'is asking a question';
+  if (status.key === 'needs_you') return 'needs you';
   return `is ${status.label.toLowerCase()}`;
 }
 

@@ -20,6 +20,7 @@ const row = (over: Partial<CockpitStreamRow> & { id: string }): CockpitStreamRow
   agent_status: 'done',
   human_status: 'open',
   updated_at: '2026-09-26T10:00:00.000Z',
+  answered_at: over.updated_at ?? '2026-09-26T10:00:00.000Z',
   ...over,
 });
 
@@ -31,7 +32,8 @@ describe('which nodes answer you', () => {
     expect(answersYou(row({ id: 'w', role: 'work' }))).toBe(false);
     expect(answersYou(row({ id: 'busy', agent_status: 'working' }))).toBe(false);
     expect(answersYou(row({ id: 'shut', human_status: 'closed' }))).toBe(false);
-    expect(answersYou(row({ id: 'old', updated_at: undefined }))).toBe(false);
+    // T437: a turn nobody asked for (woken by knowledge) is no answer.
+    expect(answersYou(row({ id: 'woken', answered_at: undefined }))).toBe(false);
   });
 });
 

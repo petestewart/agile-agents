@@ -516,6 +516,36 @@ describe('T160 cockpit routes', () => {
     expect(puts.every((e) => e.agent === 'human')).toBe(true);
   });
 
+  test('T437: the session defaults say which vendors are not installed', async () => {
+    const withCheck = startHttpServer({
+      port: 0,
+      version: '0.0.0-test',
+      stateRoot,
+      startedAt: Date.now(),
+      store,
+      gates: new GateService(store),
+      vendorMissing: (vendor) =>
+        vendor === 'gemini'
+          ? "Gemini CLI can't start: `gemini` is not on the daemon's PATH."
+          : undefined,
+    });
+    try {
+      const status = (await (
+        await fetch(`http://127.0.0.1:${withCheck.port}/api/settings/session`)
+      ).json()) as SessionDefaultsStatus;
+      expect(status.not_installed).toEqual({
+        gemini: "Gemini CLI can't start: `gemini` is not on the daemon's PATH.",
+      });
+    } finally {
+      await withCheck.stop();
+    }
+    // Without the check (an older daemon, or tests), nothing is said.
+    const plain = (await (
+      await fetch(url('/api/settings/session'))
+    ).json()) as SessionDefaultsStatus;
+    expect(plain.not_installed).toBeUndefined();
+  });
+
   test('T170: session defaults — read every step, write home and repo through the store, stamped human', async () => {
     const post = (path: string, body: unknown, headers: Record<string, string> = {}) =>
       fetch(url(path), { method: 'POST', headers, body: JSON.stringify(body) });
@@ -937,7 +967,7 @@ describe('T160 cockpit routes', () => {
     const long = await fetch(url(`/api/streams/${stream.id}/say`), {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ body: 'x'.repeat(801) }),
+      body: JSON.stringify({ body: 'x'.repeat(4001) }),
     });
     expect(long.status).toBe(400);
   });

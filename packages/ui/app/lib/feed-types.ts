@@ -78,6 +78,10 @@ export interface CockpitStreamRow {
   overlap?: true;
   /** T229: a hookless vendor is live and a private repo is hidden from this node. */
   visibility_advisory?: true;
+  /** T437: a decision of yours about this node waits in Needs me (a plan, a gate, a proposal). */
+  pending_decision?: true;
+  /** T437: when its agent last answered a line of yours (or its question). Absent from an older daemon. */
+  answered_at?: string;
   /** T336: a part not yet started because its coordinator's plan is not approved. */
   waiting_for_plan?: true;
   /** T341: its PR is open, so it merges on GitHub. */

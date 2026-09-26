@@ -172,6 +172,10 @@ export interface CockpitStreamRow {
   overlap?: true;
   /** T229 (P13): a live session's vendor has no pre-tool-use hook, and a private repo is hidden from this node: the deny is advisory only. */
   visibility_advisory?: true;
+  /** T437: a decision of yours about this node waits in Needs me (a plan, a gate, a proposal). */
+  pending_decision?: true;
+  /** T437: when its agent last answered a line of yours (or its question); a woken turn is not an answer. */
+  answered_at?: string;
   /** T336: a part not yet started because its coordinator's plan is not approved. */
   waiting_for_plan?: true;
   /** T341: its PR is open, so it merges on GitHub (not the operator's move here). */
@@ -314,6 +318,8 @@ export function buildCockpitFrame(
   contextOf?: (session: string) => CockpitLiveAgent['context'],
   /** T433: when the Director last replied (`StateStore.directorReplyAt`). */
   directorRepliedAt?: () => string | undefined,
+  /** T437: when a node's agent last answered you (`StateStore.answeredAt`). */
+  answeredAt?: (node: string) => string | undefined,
 ): CockpitFrame {
   const repliedAt = directorRepliedAt?.();
   // One read of the home: the archived ones are only for Restore (T361).
@@ -321,9 +327,16 @@ export function buildCockpitFrame(
   const all = everything.filter((s) => s.archived !== true);
   const overlaps = findOverlaps(all);
   const marked = overlapMarked(overlaps, all);
+  const items = inbox?.list() ?? [];
+  // T437: a node with a decision of yours in Needs me (a plan, a gate, a proposal) is your move.
+  const deciding = new Set(
+    items
+      .filter((i) => DECISION_KINDS.has(i.kind) && i.stream !== undefined)
+      .map((i) => i.stream as string),
+  );
   return {
     type: 'cockpit',
-    inbox: inbox?.list() ?? [],
+    inbox: items,
     streams: all.map((s) => ({
       id: s.id,
       title: s.title,
@@ -338,10 +351,12 @@ export function buildCockpitFrame(
       ...(marked.has(s.id) ? { overlap: true as const } : {}),
       ...(visibilityAdvisory(s, repos) ? { visibility_advisory: true as const } : {}),
       ...(waitingForPlan?.(s) === true ? { waiting_for_plan: true as const } : {}),
+      ...(deciding.has(s.id) ? { pending_decision: true as const } : {}),
       ...(s.delivery_state?.status === 'pr_open' ? { pr_open: true as const } : {}),
       ...(nothingToMerge?.(s) === true ? { nothing_to_merge: true as const } : {}),
       ...mergeRow(mergeStateOf?.(s)),
       updated_at: latest(s.created_at, s.agent.updated_at, threadUpdatedAt?.(s.id)),
+      ...answeredRow(answeredAt?.(s.id)),
       ...startState(s),
       ...liveAgent(s, contextOf),
     })),
@@ -377,6 +392,13 @@ export function buildCockpitFrame(
     ...archivedRows(everything),
   };
 }
+
+function answeredRow(at: string | undefined): { answered_at?: string } {
+  return at !== undefined ? { answered_at: at } : {};
+}
+
+/** T437: the Needs me kinds that make a node your move (questions and blocks already do, through its status). */
+const DECISION_KINDS: ReadonlySet<string> = new Set(['gate', 'plan_approve', 'proposal']);
 
 /**
  * T361: `never_started` for an open node that has never had a worker or

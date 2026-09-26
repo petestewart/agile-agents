@@ -296,11 +296,11 @@ describe('agile stream against a daemon on a temp AGILE_HOME', () => {
     const original = console.error;
     console.error = (msg: string) => errors.push(String(msg));
     try {
-      expect(await runCli(['stream', 'say', stream.id, 'x'.repeat(801)], daemon.repo)).toBe(1);
+      expect(await runCli(['stream', 'say', stream.id, 'x'.repeat(4001)], daemon.repo)).toBe(1);
     } finally {
       console.error = original;
     }
-    expect(errors.join('\n')).toContain('the cap is 800');
+    expect(errors.join('\n')).toContain('the cap is 4000');
   });
 });
 

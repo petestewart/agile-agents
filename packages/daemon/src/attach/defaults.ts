@@ -15,6 +15,7 @@ import {
   type SessionDefaultsFields,
   type SessionDefaultsPatch,
   type SessionDefaultsStatus,
+  type SessionVendor,
   resolveSessionDefaults,
 } from '@agile-agents/shared';
 
@@ -42,7 +43,11 @@ function fields(
 }
 
 export class SessionDefaultsService {
-  constructor(private readonly store: SessionDefaultsStore) {}
+  constructor(
+    private readonly store: SessionDefaultsStore,
+    /** T437: why a vendor can't start here (its command isn't on PATH), or `undefined`. */
+    private readonly missing?: (vendor: SessionVendor) => string | undefined,
+  ) {}
 
   status(): SessionDefaultsStatus {
     const home = this.store.getHomeConfig();
@@ -60,7 +65,18 @@ export class SessionDefaultsService {
       repos,
       vendors: SESSION_VENDORS,
       known_models: KNOWN_MODEL_IDS,
+      ...this.notInstalled(),
     };
+  }
+
+  private notInstalled(): Pick<SessionDefaultsStatus, 'not_installed'> {
+    if (this.missing === undefined) return {};
+    const out: Partial<Record<SessionVendor, string>> = {};
+    for (const vendor of SESSION_VENDORS) {
+      const why = this.missing(vendor);
+      if (why !== undefined) out[vendor] = why;
+    }
+    return Object.keys(out).length > 0 ? { not_installed: out } : {};
   }
 
   async setHome(by: string, patch: SessionDefaultsPatch): Promise<SessionDefaultsStatus> {

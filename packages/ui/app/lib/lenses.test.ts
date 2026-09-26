@@ -323,6 +323,10 @@ describe('eventDetail', () => {
       'Add CSV import is blocked — Redis is down',
     );
     expect(status('W', 'question')).toBe('Add CSV import is asking a question');
+    // A coordinator that finished with its plan waiting on you (T437's pending_decision).
+    expect(
+      childStatusPhrase('done', { ...rows.C, pending_decision: true } as CockpitStreamRow),
+    ).toBe('needs you');
     // A node the frame no longer has (deleted): it finished, no more.
     expect(status('X', 'done')).toBe('Gone finished');
     expect(childStatusPhrase('done')).toBe('finished');

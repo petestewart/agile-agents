@@ -400,15 +400,26 @@ needs-you and blocked halo but keeps a hollow dot's ring (stopped, waiting).
   page is open in a visible tab. Needs me lists them first under **Replies**
   (open, ✓ to mark read, Mark all read), the sidebar's Needs me shows a dot,
   and one notification says "Replied: …" while you're away (T388's
-  setting). T436: a reply's row wears the rail's role glyph and a clipped
-  first line of what it said (its node's last agent line, else its progress
-  line; read once per reply from the node's page read, as the frame carries
-  no reply text), and ⌘K's Needs me group lists it first as "Read reply:
-  <title>", opening its chat. Read marks are per browser (localStorage); a first visit starts
-  with everything read. T433: the node's row in the rail is bold with a blue
+  setting). Read marks are per browser (localStorage); a first visit starts
+  with everything read. T436: a reply's row wears the rail's role glyph and a
+  clipped first line of what it said (its node's last agent line, else its
+  progress line; read once per reply from the node's page read, as the frame
+  carries no reply text), and ⌘K's Needs me group lists it first as "Read
+  reply: <title>", opening its chat. T433: the node's row in the rail is bold with a blue
   dot, and the Director counts too: its reply marks the sidebar's Director,
   heads Replies, and is read when its page is on screen (the frame's
-  `director.replied_at`).
+  `director.replied_at`). T437: a reply is an agent's (or coordinator's, or
+  the Director's) line that follows one of yours; a new node's goal is the
+  first question. The row's `answered_at` marks it, so a node that talks on
+  its own, or a coordinator reporting up, isn't "Replied".
+- **Needs you, and failures** (T437): a node with an open gate, plan
+  approval or proposal (the row's `pending_decision`) reads "Needs you", not
+  "Working". An agent that couldn't start (its vendor missing, the spawn
+  failing) blocks its node with "The agent couldn't start: …", and its card
+  says "Fix its login or install, then reply to start it again…"; the
+  picker tags a vendor whose command isn't on the daemon's PATH "Not
+  installed" (session defaults' `not_installed`). A done node with its own
+  branch keeps its Merge card even when it has parts.
 - **What a worker proposes next** (T427): an agent's `propose_next` line
   ("Proposal") carries **Create node…**, which opens New node with its title
   and goal filled in, under this node (design §2's "break it down"); the

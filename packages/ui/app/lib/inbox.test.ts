@@ -18,6 +18,7 @@ import {
   fold,
   gateView,
   groupNeedsMe,
+  isAgentFailure,
   isFirstRun,
   isLandGate,
   itemCommand,
@@ -750,5 +751,13 @@ describe('T436: a reply’s preview and its ⌘K row', () => {
     expect(replyCommand('Which repos does checkout touch?')).toBe(
       'Read reply: Which repos does checkout touch?',
     );
+  });
+});
+
+describe('isAgentFailure (T437)', () => {
+  test("the daemon's failure notes, and nothing else", () => {
+    expect(isAgentFailure('The agent couldn’t start: Gemini CLI can’t start')).toBe(true);
+    expect(isAgentFailure('The agent stopped with an error: Invalid API key')).toBe(true);
+    expect(isAgentFailure('The agent is stuck and needs a hand.')).toBe(false);
   });
 });
