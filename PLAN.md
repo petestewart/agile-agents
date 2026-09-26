@@ -2516,6 +2516,15 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 - **Validation Steps:** `bun test packages/ui/app/lib/unread.test.ts`; control-room e2e `T429` (95/0 whole file); the walkthrough; screenshots light, dark, phone.
 - **Notes:** Branch T429-unread-replies. Pure rules in `lib/unread.ts`, the store and hooks in `lib/use-unread.ts`. The rail's own unread mark waits for T424 (it owns `StreamTree.tsx`).
 
+### Ticket: T430 A README for the app
+- **Priority:** P2
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** The README was one line. Someone opening the repo couldn't tell what the app is, how to install and start it, or where to read more.
+- **Acceptance Criteria:** README.md says what the app does (roles, Needs me, Ask, coordinators and autonomy, the chat, knowledge, delivery, the Director, trackers), what it needs, how to install, start and set up a first project, the keys, a short CLI tour, where state lives and the session default order (P5, D40), the development commands and the package layout, and links the design docs. Every claim checked against the code or the design.
+- **Validation Steps:** `bun run lint`; read through against `agile` usage, `DEFAULT_DAEMON_PORT`, `resolveSessionDefaults` and projects-design §12.
+- **Notes:** Branch T430-readme.
+
 ### Ticket: T369 Phase 15 QA
 - **Priority:** P0
 - **Status:** Done
