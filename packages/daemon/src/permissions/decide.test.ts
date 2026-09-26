@@ -461,6 +461,38 @@ describe('decidePermission — package managers beyond npm/pnpm/bun (review roun
   }
 });
 
+describe('decidePermission — a lone & ends a command', () => {
+  test('what follows & is checked on its own', () => {
+    for (const command of [
+      'echo hi & cat /etc/passwd',
+      'echo & cd .. && echo x > y',
+      'true & rm -rf ~',
+      'true&cat ~/.ssh/id_rsa',
+      'echo \\\\& cat /etc/passwd',
+    ]) {
+      expect([command, decide('engineer', request('execute', { command })).kind]).not.toEqual([
+        command,
+        'allow',
+      ]);
+    }
+  });
+
+  test('redirect forms that contain & are unchanged', () => {
+    for (const command of [
+      'bun test 2>&1',
+      'bun test &> out.txt',
+      'bun test >&2',
+      'bun test |& cat',
+      'bun test & bun run build',
+    ]) {
+      expect([command, decide('engineer', request('execute', { command })).kind]).toEqual([
+        command,
+        'allow',
+      ]);
+    }
+  });
+});
+
 describe('decidePermission — engineer redirection (review round)', () => {
   test('redirecting output inside the worktree is fine', () => {
     const decision = decide(
