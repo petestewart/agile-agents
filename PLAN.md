@@ -1981,11 +1981,12 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 
 ### Ticket: T364 ∥ Needs me and the decision cards
 - **Priority:** P1
-- **Status:** Todo
+- **Status:** Done
 - **Owner:** Unassigned
 - **Scope:** One `Card` for every item kind with a clear title, the node path, its age and its actions; a question's choices as buttons; grouped by project then node; an empty state that says what to do next (first run: add a repo, make a project).
 - **Acceptance Criteria:** e2e per card kind still green; choice click answers.
 - **Validation Steps:** `bun test packages/ui`; `bun run test:e2e`.
+- **Notes:** Branch T364-needs-me, merge 6db025cc. `DecisionCard` (re-exported as `Card`): one anatomy for every kind, titles in words, choices as lettered buttons (the agent's `options`, else `choicesOf` parses older `(A) … (B) …` / lettered / numbered lists conservatively, 41 unit tests); `full` cards have no input (the node's composer answers). Gates explain themselves; notes behind "Add a note"; a Merge refusal shows on the card. Needs me grouped by project then node, a kind filter, j/k/Enter; first-run steps (repo, project, node) and "all caught up". Branch: control-room 51/51, walkthrough 0 findings; after merge UI 134/0, Needs-me e2e 13/13. Open: `groupInbox` now unused; daemon wording "worker finished — merge or close the stream" / "proposed rules from migration" reworded client-side; gate/knowledge items carry rule, call and scope only inside `context` (structured fields would be sturdier); an acted card stays disabled until the next frame.
 
 ### Ticket: T365 ∥ Rail, projects and the new-node flow
 - **Priority:** P1
