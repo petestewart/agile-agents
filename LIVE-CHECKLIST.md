@@ -32,7 +32,7 @@ cd ~/agile-agents
 which agile
 ```
 
-`bun --version` must be 1.3.11 or newer. `which agile` should print
+`bun --version` must be 1.4.2 or newer. `which agile` should print
 `~/.bun/bin/agile`; if it prints nothing, add `export PATH="$HOME/.bun/bin:$PATH"`
 to `~/.zshrc` and open a new terminal.
 
