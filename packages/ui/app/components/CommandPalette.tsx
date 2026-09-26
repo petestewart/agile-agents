@@ -4,11 +4,20 @@
  * and a few actions; ↑↓ move, Enter runs, Esc closes. With nothing typed it
  * lists the nodes you opened last. Matching and ranking are `lib/palette.ts`.
  *
+ * T416: on a node's page, "This node" lists what its header and ⋯ menu
+ * offer (Merge, Start/Stop agent, Open Changes, Close, Copy branch name…),
+ * handed over by the page itself (`useNodeCommands`), so the palette runs the
+ * page's own handlers; "Needs me" lists what waits on you ("Answer: …"); and
+ * with nothing typed the recent nodes fill up with the ones that changed last.
+ *
  * It is not bound to `/`: that key filters the node tree (T162).
  */
 
+import type { InboxItem } from '@agile-agents/shared';
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
+import { useOptionalFeed } from '../lib/feed-context';
 import type { CockpitProjectRow, CockpitStreamRow } from '../lib/feed-types';
+import { itemCommand, nodePath } from '../lib/inbox';
 import {
   type PaletteEntry,
   RECENT_MAX,
@@ -19,16 +28,67 @@ import {
   paletteResults,
   parseRecent,
   pushRecent,
+  recentNodes,
 } from '../lib/palette';
+import type { RulesFilter } from '../lib/rules';
 import { type ShellView, useShell } from '../lib/shell';
 import { nodeStatus } from '../lib/status';
 import { ancestorTitles } from '../lib/streams';
 import { readTheme, saveTheme } from '../lib/theme';
+import { inboxIcon } from './DecisionCard';
 import { Icon, type IconName } from './Icon';
 import { openShortcuts } from './Shortcuts';
-import { Dialog, Kbd, StatusDot } from './ui';
+import { Dialog, Kbd, type MenuItem, StatusDot } from './ui';
 
 const openers = new Set<() => void>();
+
+/** T416: what the open node's page offers, as its header and ⋯ menu build it. */
+export interface NodeCommands {
+  node: string;
+  title: string;
+  items: ReadonlyArray<MenuItem>;
+}
+
+/** The node page that is open now hands its commands over through this (read when ⌘K opens). */
+let nodeSource: (() => NodeCommands | undefined) | undefined;
+
+/**
+ * T416: a node's page registers what it can do; the palette reads it when it
+ * opens. `source` returns the page's latest items (a ref it fills on each
+ * render), so the palette runs the same handlers as the header and ⋯ menu.
+ */
+export function useNodeCommands(source: () => NodeCommands | undefined): void {
+  useEffect(() => {
+    nodeSource = source;
+    return () => {
+      if (nodeSource === source) nodeSource = undefined;
+    };
+  }, [source]);
+}
+
+/** The runnable items of a menu: no separators, nothing hidden or disabled, labels in words. */
+function runnable(items: ReadonlyArray<MenuItem>): Array<Exclude<MenuItem, 'separator'>> {
+  const seen = new Set<string>();
+  return items.filter((item): item is Exclude<MenuItem, 'separator'> => {
+    if (item === 'separator' || item.hidden || item.disabled) return false;
+    if (typeof item.label !== 'string' || seen.has(item.label)) return false;
+    seen.add(item.label);
+    return true;
+  });
+}
+
+/** Words a Needs me item answers to besides its title ("merge" finds a Ready to merge card). */
+const NEEDS_WORDS: Record<InboxItem['kind'], string[]> = {
+  question: ['question', 'answer', 'reply'],
+  gate: ['allow', 'deny', 'approve', 'gate'],
+  rule_accept: ['knowledge', 'accept', 'retire', 'rule'],
+  rule_batch: ['knowledge', 'review', 'import'],
+  plan_approve: ['plan', 'approve'],
+  plan_waiting: ['plan', 'wake', 'coordinator'],
+  proposal: ['proposal', 'apply', 'dismiss'],
+  done: ['merge', 'ready', 'finished'],
+  blocked: ['blocked', 'stuck', 'reply', 'unblock'],
+};
 
 /** "⌘K" on a Mac, "Ctrl K" elsewhere: for tooltips that name the shortcut. */
 export function paletteKeyLabel(): string {
@@ -157,7 +217,7 @@ export function CommandPalette({
   rows: readonly CockpitStreamRow[];
   projects: readonly CockpitProjectRow[];
 }): JSX.Element | null {
-  const { select, selected, setView, setNewStreamOpen, setNewProjectOpen } = useShell();
+  const { select, selected, setView, setNewStreamOpen, setNewProjectOpen, openRules } = useShell();
   const [open, setOpen] = useState(false);
   const [recent, setRecent] = useState<string[]>(loadRecent);
 
@@ -193,14 +253,16 @@ export function CommandPalette({
   }, [selected]);
 
   const actions = useMemo(
-    () => ({ select, setView, setNewStreamOpen, setNewProjectOpen }),
-    [select, setView, setNewStreamOpen, setNewProjectOpen],
+    () => ({ select, setView, setNewStreamOpen, setNewProjectOpen, openRules }),
+    [select, setView, setNewStreamOpen, setNewProjectOpen, openRules],
   );
   const close = useCallback(() => setOpen(false), []);
-  // The node already open is where you are, not somewhere to go.
-  const others = useMemo(() => recent.filter((id) => id !== selected), [recent, selected]);
+  // The node already open is where you are, not somewhere to go; the rest fills from what changed.
+  const others = useMemo(() => recentNodes(recent, rows, selected), [recent, rows, selected]);
 
   if (!open) return null;
+  // Read once, as it opens: the page open now and what it offers.
+  const here = selected !== undefined ? nodeSource?.() : undefined;
   return (
     <PaletteDialog
       rows={rows}
@@ -208,6 +270,7 @@ export function CommandPalette({
       recent={others}
       onClose={close}
       actions={actions}
+      {...(here !== undefined && here.node === selected ? { here } : {})}
     />
   );
 }
@@ -218,26 +281,66 @@ function PaletteDialog({
   recent,
   onClose,
   actions,
+  here,
 }: {
   rows: readonly CockpitStreamRow[];
   projects: readonly CockpitProjectRow[];
   recent: readonly string[];
   onClose: () => void;
   actions: {
-    select: (id: string) => void;
+    select: (id: string, options?: { tab?: 'thread' }) => void;
     setView: (view: ShellView) => void;
     setNewStreamOpen: (open: boolean) => void;
     setNewProjectOpen: (open: boolean) => void;
+    openRules: (filter?: RulesFilter) => void;
   };
+  /** T416: the node open now, and what its page offers. */
+  here?: NodeCommands;
 }): JSX.Element {
   const [query, setQuery] = useState('');
   const [active, setActive] = useState(0);
   const listId = useId();
   const list = useRef<HTMLDivElement>(null);
   const mod = modKeyLabel(typeof navigator === 'undefined' ? '' : navigator.platform);
+  const inbox = useOptionalFeed()?.cockpit?.inbox;
 
   const commands = useMemo(() => {
     const out: Command[] = [];
+    // T416: "This node" — the page's own items, first when nothing is typed.
+    for (const [i, item] of runnable(here?.items ?? []).entries()) {
+      out.push({
+        entry: {
+          key: `this:${i}`,
+          group: 'node',
+          title: item.label as string,
+          ...(item.title !== undefined ? { keywords: [item.title] } : {}),
+        },
+        ...(item.icon !== undefined ? { icon: item.icon } : {}),
+        run: item.onSelect,
+      });
+    }
+    // T416: what waits on you, as what you'd do: "Answer: …", "Merge: Add CSV import".
+    for (const item of inbox ?? []) {
+      const row = item.stream !== undefined ? rows.find((r) => r.id === item.stream) : undefined;
+      out.push({
+        entry: {
+          key: `needs:${item.id}`,
+          group: 'needs',
+          title: itemCommand(item, row),
+          ...(item.stream_path.length > 0 ? { subtitle: nodePath(item.stream_path) } : {}),
+          keywords: NEEDS_WORDS[item.kind],
+        },
+        icon: inboxIcon(item),
+        run: () => {
+          if (item.stream !== undefined) actions.select(item.stream, { tab: 'thread' });
+          else if (item.kind === 'rule_batch')
+            actions.openRules({ status: 'proposed', scope: 'all', source: item.id });
+          else if (item.kind === 'rule_accept')
+            actions.openRules({ status: 'proposed', scope: 'all', rule: item.id });
+          else actions.setView('inbox');
+        },
+      });
+    }
     for (const row of rows) {
       if (row.role === 'project') continue;
       out.push({
@@ -245,7 +348,7 @@ function PaletteDialog({
           key: `node:${row.id}`,
           group: 'nodes',
           title: row.title,
-          subtitle: ancestorTitles(row, rows).join(' › '),
+          subtitle: nodePath(ancestorTitles(row, rows)),
         },
         row,
         run: () => actions.select(row.id),
@@ -337,7 +440,7 @@ function PaletteDialog({
       run: openShortcuts,
     });
     return out;
-  }, [rows, projects, actions]);
+  }, [rows, projects, actions, here, inbox]);
 
   const byKey = useMemo(() => new Map(commands.map((c) => [c.entry.key, c])), [commands]);
   const groups = useMemo(
@@ -432,6 +535,9 @@ function PaletteDialog({
             <div key={group.id} role="group" aria-label={group.label} className="cr-palette-group">
               <div className="cr-palette-group-hd" aria-hidden="true">
                 {group.label}
+                {group.id === 'node' && here !== undefined ? (
+                  <span className="cr-palette-group-sub"> · {here.title}</span>
+                ) : null}
               </div>
               {group.items.map((entry) => {
                 index += 1;

@@ -3,8 +3,9 @@
  * sub-navigation on the left (a scrolling row of tabs on a phone):
  *
  *  - **General** — the theme (system, light, dark; per browser), browser
- *    notifications (T388; per browser, off by default) and the daemon this
- *    cockpit talks to.
+ *    notifications (T388; per browser, off by default), the decisions that
+ *    are always yours (T416: what the Permissions page said, as one note) and
+ *    the daemon this cockpit talks to.
  *  - **Agents** — T170 (D17) session defaults: global (`config.yaml`) and per
  *    repo (`repos.yaml`). An empty field inherits the next step.
  *  - **Repositories** — `SettingsRepos.tsx`: every repo with its icon,
@@ -13,10 +14,10 @@
  *    never sends it back, only where it comes from).
  *  - **Trackers** — T326: Jira's site and email, and a write-only token per
  *    tracker.
- *  - **Permissions** — who decides each gate kind (read-only: the human).
  *
  * The open section rides in the URL (`?view=settings&section=repos`), so a
- * reload or a shared link reopens it.
+ * reload or a shared link reopens it (an old `section=permissions` link opens
+ * General, where that note now is).
  */
 
 import type {
@@ -92,7 +93,6 @@ const SECTIONS = [
   { id: 'repos', label: 'Repositories', icon: 'folder-git' },
   { id: 'classifier', label: 'Classifier', icon: 'shield-check' },
   { id: 'trackers', label: 'Trackers', icon: 'ticket' },
-  { id: 'permissions', label: 'Permissions', icon: 'user' },
 ] as const satisfies ReadonlyArray<{ id: string; label: string; icon: IconName }>;
 
 export type SettingsSection = (typeof SECTIONS)[number]['id'];
@@ -152,7 +152,11 @@ export function Settings(): JSX.Element {
   return (
     <div className="cr-settings" data-testid="settings" data-section={section}>
       <div className="cr-set-wrap">
-        <PageHeader title="Settings" />
+        <PageHeader
+          title="Settings"
+          icon="settings"
+          subtitle="How the cockpit looks and tells you things, its agents, repositories and keys"
+        />
         <div className="cr-set-layout">
           <nav className="cr-set-nav" aria-label="Settings sections" ref={nav}>
             {SECTIONS.map((s) => (
@@ -178,10 +182,8 @@ export function Settings(): JSX.Element {
               <ReposSection />
             ) : section === 'classifier' ? (
               <ClassifierSection />
-            ) : section === 'trackers' ? (
-              <TrackersSection />
             ) : (
-              <PermissionsSection />
+              <TrackersSection />
             )}
           </div>
         </div>
@@ -269,6 +271,8 @@ function GeneralSection(): JSX.Element {
       </SetCard>
 
       <NotificationsCard />
+
+      <DecisionsCard />
 
       <SetCard
         title="Daemon"
@@ -409,13 +413,12 @@ function NotificationsCard(): JSX.Element {
     if (result === 'default') setDismissed(true);
   }
 
-  const status = on
-    ? { tone: 'green' as const, text: 'On' }
-    : !available
-      ? { tone: 'gray' as const, text: 'Not available' }
-      : access === 'denied'
-        ? { tone: 'amber' as const, text: 'Blocked' }
-        : { tone: 'gray' as const, text: 'Off' };
+  // T416 (finding 33): the switch says On or Off; a pill only for what it can't say.
+  const status = !available
+    ? { tone: 'gray' as const, text: 'Not available' }
+    : access === 'denied'
+      ? { tone: 'amber' as const, text: 'Blocked' }
+      : undefined;
 
   return (
     <SetCard
@@ -423,11 +426,15 @@ function NotificationsCard(): JSX.Element {
       icon="bell"
       description="A browser notification when a new question, plan, merge or action to allow arrives while you’re in another tab or app. A click takes you to it. Kept in this browser."
       testid="settings-notifications"
-      status={
-        <Pill tone={status.tone}>
-          <span data-testid="settings-notify-status">{status.text}</span>
-        </Pill>
-      }
+      {...(status !== undefined
+        ? {
+            status: (
+              <Pill tone={status.tone}>
+                <span data-testid="settings-notify-status">{status.text}</span>
+              </Pill>
+            ),
+          }
+        : {})}
     >
       <div className="cr-set-notify">
         <Switch
@@ -1036,67 +1043,59 @@ function TrackersSection(): JSX.Element {
   );
 }
 
-// ---------------------------------------------------------------- Permissions
+// ---------------------------------------------------------------- Always yours
 
-const GATE_TEXT: Record<
-  (typeof GATE_KINDS)[number],
-  { title: string; what: string; icon: IconName }
-> = {
-  land: {
-    title: 'Merging a node',
-    what: 'Finished work goes into its main branch (or its pull request is opened) only when you press Merge.',
-    icon: 'git-merge',
-  },
-  rule_accept: {
-    title: 'Accepting knowledge',
-    what: 'A lesson from a finished node, or a rule an agent proposed, applies only once you accept it.',
-    icon: 'book-open',
-  },
-  classifier_review: {
-    title: 'An action the classifier was unsure of',
-    what: 'When the classifier can’t tell whether an agent’s action breaks a rule, it asks you.',
-    icon: 'shield-check',
-  },
+/** What each gate is, as the note says it. */
+const GATE_WORDS: Record<(typeof GATE_KINDS)[number], string> = {
+  land: 'merging',
+  rule_accept: 'accepting knowledge',
+  classifier_review: 'allowing an action the classifier was unsure of',
 };
 
-function PermissionsSection(): JSX.Element {
+/** "human_timeout:2h" → "2h": how long it waits for you before a delegate decides. */
+function timeoutOf(owner: string): string | undefined {
+  return /^human_timeout:(\S+)$/.exec(owner)?.[1];
+}
+
+/**
+ * T416 (finding 33): what was a page of three read-only "You" badges, as
+ * one note in General: the decisions no agent makes. The policy says who
+ * owns each gate; one with a timeout says how long it waits for you.
+ */
+function DecisionsCard(): JSX.Element {
   const [policy, setPolicy] = useState<Policy | undefined>();
-  const [error, setError] = useState<string | undefined>();
 
   useEffect(() => {
     getPolicy()
       .then(setPolicy)
-      .catch((err: unknown) => setError(errorText(err)));
+      .catch(() => {
+        // The note stands as written: every gate is the human's unless the policy says otherwise.
+      });
   }, []);
 
   return (
-    <SetSection
-      title="Permissions"
-      description="Who decides when an agent reaches one of these. Each one waits for you in Needs me."
-      testid="settings-permissions"
+    <SetCard
+      title="Always yours"
+      icon="user"
+      testid="settings-decisions"
+      description="No agent does these on its own; each one waits for you in Needs me."
     >
-      <FormError error={error} />
-      <div className="cr-set-card">
-        <ul className="cr-set-gates">
-          {GATE_KINDS.map((gate) => {
-            const owner = policy ? (policy.gates[gate] ?? 'human') : undefined;
-            return (
-              <li key={gate} className="cr-set-gate" data-gate={gate}>
-                <span className="cr-set-card-icon">
-                  <Icon name={GATE_TEXT[gate].icon} size={16} />
-                </span>
-                <div className="cr-set-gate-text">
-                  <div className="cr-set-gate-title">{GATE_TEXT[gate].title}</div>
-                  <div className="cr-set-gate-what">{GATE_TEXT[gate].what}</div>
-                </div>
-                <Badge tone={owner === 'human' ? 'accent' : 'neutral'} icon="user">
-                  {owner === undefined ? '…' : owner === 'human' ? 'You' : owner}
-                </Badge>
-              </li>
-            );
-          })}
-        </ul>
-      </div>
-    </SetSection>
+      <p className="cr-set-decisions" data-testid="settings-decisions-note">
+        {GATE_KINDS.map((gate, i) => {
+          const owner = policy?.gates[gate] ?? 'human';
+          const wait = timeoutOf(owner);
+          return (
+            <span key={gate}>
+              {i === 0 ? 'Always yours: ' : ', '}
+              <span data-gate={gate} data-owner={owner}>
+                {GATE_WORDS[gate]}
+                {wait !== undefined ? ` (for ${wait}, then a delegate decides)` : ''}
+              </span>
+            </span>
+          );
+        })}
+        <span> and answering questions.</span>
+      </p>
+    </SetCard>
   );
 }

@@ -2,8 +2,9 @@
  * Needs me (cockpit design §3, §9.1; design/cockpit-ui.md §7): everything
  * that waits on the human, across every node, answered in place. T364:
  * grouped by project, then by node, oldest first; a filter by what the item
- * wants (an answer, a decision, a merge); `j`/`k` move between cards and
- * Enter opens a card's node. Nothing waiting reads "all caught up" — or, on
+ * wants (an answer, a decision, a merge); `j`/`k` move between cards,
+ * A/B (or 1/2) pick a focused question's choice (T416) and Enter opens a
+ * card's node. Nothing waiting reads "all caught up" — or, on
  * a first run (no repository or no project yet), the three steps to get
  * going.
  *
@@ -16,17 +17,20 @@ import { useEffect, useRef, useState } from 'react';
 import { useFeed } from '../lib/feed-context';
 import {
   type NeedsMeFilter,
+  PATH_SEP,
   type SetupStep,
   applyFilter,
+  choiceIndexOfKey,
   filterCounts,
   groupNeedsMe,
   isFirstRun,
+  nodePath,
   setupSteps,
 } from '../lib/inbox';
 import { isShortcut, useShell } from '../lib/shell';
 import { Card } from './DecisionCard';
 import { Icon, type IconName } from './Icon';
-import { Button, EmptyState, Kbd, Segmented, Spinner } from './ui';
+import { Button, EmptyState, Kbd, PageHeader, Segmented, Spinner } from './ui';
 
 export { Card } from './DecisionCard';
 
@@ -48,8 +52,10 @@ function useMinuteTick(): void {
 
 /**
  * `j`/`k` move focus between the cards; Enter on a focused card opens its
- * node. Never while typing (`isShortcut`), and Enter only when the card
- * itself has focus, so a focused button still presses.
+ * node. T416: on a focused question card, A/B… (or 1/2…) picks that choice,
+ * as its keycaps say. Never while typing (`isShortcut`), and Enter and the
+ * choice keys only when the card itself has focus, so a focused button
+ * still presses and a focused input still types.
  */
 function useCardKeys(list: React.RefObject<HTMLElement>, open: (id: string) => void): void {
   useEffect(() => {
@@ -70,11 +76,25 @@ function useCardKeys(list: React.RefObject<HTMLElement>, open: (id: string) => v
         cards[next]?.scrollIntoView({ block: 'nearest' });
         return;
       }
-      if (isShortcut(event, 'Enter') && at >= 0 && active === cards[at]) {
-        const node = cards[at]?.dataset.nodeId;
+      const card = at >= 0 && active === cards[at] ? cards[at] : undefined;
+      if (!card) return;
+      if (isShortcut(event, 'Enter')) {
+        const node = card.dataset.nodeId;
         if (node) {
           event.preventDefault();
           open(node);
+        }
+        return;
+      }
+      if (isShortcut(event, event.key) && !event.shiftKey) {
+        const choices = [
+          ...card.querySelectorAll<HTMLButtonElement>('[data-testid="answer-choice"]'),
+        ];
+        const index = choiceIndexOfKey(event.key, choices.length);
+        const choice = index !== undefined ? choices[index] : undefined;
+        if (choice && !choice.disabled) {
+          event.preventDefault();
+          choice.click();
         }
       }
     };
@@ -110,20 +130,21 @@ export function Inbox({
 
   return (
     <section className="cr-inbox cr-needsme" data-testid="inbox">
-      <header className="cr-page-hd cr-needsme-hd">
-        <div className="cr-page-hd-main">
-          <div className="cr-inbox-title">
-            {/* T341: the view is "Needs me" in the sidebar and the walkthrough; its heading agrees. */}
-            <h1 className="cr-page-title">Needs me</h1>
-            {items.length > 0 && (
-              <span className="cr-count" data-testid="inbox-count">
-                {items.length}
-              </span>
-            )}
-          </div>
-        </div>
-        {kinds > 1 && (
-          <div className="cr-page-actions">
+      <PageHeader
+        className="cr-needsme-hd"
+        icon="inbox"
+        // T341: the view is "Needs me" in the sidebar and the walkthrough; its heading agrees.
+        title="Needs me"
+        badge={
+          items.length > 0 ? (
+            <span className="cr-count" data-testid="inbox-count">
+              {items.length}
+            </span>
+          ) : undefined
+        }
+        subtitle="Questions, decisions and merges waiting on you"
+        actions={
+          kinds > 1 ? (
             <Segmented
               label="Show"
               testid="inbox-filter"
@@ -135,9 +156,9 @@ export function Inbox({
                 count: counts[f.id],
               }))}
             />
-          </div>
-        )}
-      </header>
+          ) : undefined
+        }
+      />
 
       {cockpit === undefined && items.length === 0 ? (
         <div className="cr-inbox-loading" data-testid="inbox-loading">
@@ -192,7 +213,7 @@ export function Inbox({
                           onClick={() => select(group.key)}
                         >
                           {parents.length > 0 && (
-                            <span className="cr-group-parent">{`${parents.join(' / ')} / `}</span>
+                            <span className="cr-group-parent">{`${nodePath(parents)}${PATH_SEP}`}</span>
                           )}
                           <span className="cr-group-leaf">{leaf}</span>
                           <Icon name="chevron-right" size={13} className="cr-group-chevron" />
@@ -209,7 +230,8 @@ export function Inbox({
           ))}
           <p className="cr-inbox-keys" aria-hidden="true">
             <Kbd>j</Kbd>
-            <Kbd>k</Kbd> move between cards · <Kbd>Enter</Kbd> opens the node
+            <Kbd>k</Kbd> move between cards · <Kbd>A</Kbd>
+            <Kbd>B</Kbd> pick a choice · <Kbd>Enter</Kbd> opens the node
           </p>
         </div>
       )}

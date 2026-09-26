@@ -54,11 +54,22 @@ import {
   nodeTabs,
   oneLine,
   openQuestions,
+  questionIdOfRef,
   sendIntent,
   vendorLabel,
   workingAs,
 } from '../lib/chat';
 import { resolvedFor } from '../lib/defaults';
+import {
+  type MergeFix,
+  type MergeRefusal,
+  RECONNECTING,
+  SEND_UNREACHABLE,
+  isNetworkMessage,
+  mergeConflict,
+  mergeRefusal,
+  writeFailure,
+} from '../lib/errors';
 import { useFeed } from '../lib/feed-context';
 import type { LandOutcome, StreamPagePayload } from '../lib/feed-types';
 import { appendToDraft, roomAfter, useReview } from '../lib/review';
@@ -68,10 +79,12 @@ import type { StatusInput } from '../lib/status';
 import { groupSteps, turnStartedAt } from '../lib/steps';
 import { isLiveSession, isThinking } from '../lib/streams';
 import { ChatScroll, ContextMeter, MessageList, StepsFold, Thinking, useSteps } from './Chat';
+import { type NodeCommands, useNodeCommands } from './CommandPalette';
 import { Composer, type ComposerHandle } from './Composer';
+import { useMergeAsk } from './DecisionCard';
 import { DeliveryPanel, isMergeable, outcomeTone, useDelivery } from './Delivery';
 import { TabBoundary, lazyNamed } from './ErrorBoundary';
-import { Icon } from './Icon';
+import { Icon, type IconName } from './Icon';
 import { Card } from './Inbox';
 import { Markdown } from './Markdown';
 import {
@@ -140,6 +153,17 @@ const TAB_LABEL: Record<NodeTab, string> = {
   activity: 'Activity',
   rules: 'Knowledge',
   docs: 'Docs',
+};
+
+/** T416: the tabs' glyphs, for "Open Changes" and the like in ⌘K's "This node". */
+const TAB_ICON: Record<NodeTab, IconName> = {
+  overview: 'layers',
+  thread: 'message-square',
+  diff: 'file-diff',
+  plan: 'list',
+  activity: 'activity',
+  rules: 'book-open',
+  docs: 'file-text',
 };
 
 const DETAILS_KEY = 'agile.node.details';
@@ -303,7 +327,7 @@ function GoalCard({
 }
 
 export function StreamPage({ id }: { id: string }): JSX.Element {
-  const { cockpit, refresh } = useFeed();
+  const { cockpit, refresh, offline } = useFeed();
   const { openRules, select, openOn } = useShell();
   const toast = useToast();
   const copy = useCopy();
@@ -317,6 +341,17 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
   const [busy, setBusy] = useState(false);
   const [sending, setSending] = useState(false);
   const [actionError, setActionError] = useState<string | undefined>(undefined);
+  // T416 (finding 7): a failed send says so under the composer, with Retry; the draft stays.
+  const [sendError, setSendError] = useState<string | undefined>(undefined);
+  // T416 (finding 6): a refused merge says why under the header's Merge, with the fix it names.
+  const [mergeError, setMergeError] = useState<MergeRefusal | undefined>(undefined);
+  const [mergeNote, setMergeNote] = useState<string | undefined>(undefined);
+  const [fixing, setFixing] = useState(false);
+  const mergeTarget = useRef('main');
+  const mergeAsk = useMergeAsk();
+  // T416 (finding 21): the header's and the ⋯ menu's actions, for ⌘K's "This node".
+  const commands = useRef<NodeCommands | undefined>(undefined);
+  useNodeCommands(useCallback(() => commands.current, []));
   const [picker, setPicker] = useState<Picker | undefined>(undefined);
   const [modal, setModal] = useState<Modal | undefined>(undefined);
   const [repos, setRepos] = useState<RepoRow[]>([]);
@@ -378,6 +413,9 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
     setDraft(drafts.current.get(id) ?? '');
     setTab(openOn?.id === id ? openOn.tab : undefined);
     setActionError(undefined);
+    setSendError(undefined);
+    setMergeError(undefined);
+    setMergeNote(undefined);
     setPicker(undefined);
     setModal(undefined);
     setRepoChoice('');
@@ -393,18 +431,36 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
 
   const onDeliveryResult = useCallback(
     (result: { outcome?: LandOutcome; refused?: string }) => {
-      // The Delivery section says it; with the panel shut, a toast does.
-      if (detailsOpen) return;
+      // T416 (finding 6): a refusal is said under the header's Merge, where it was pressed,
+      // in words and with the fix it names; never a toast over the composer.
+      const outcome = result.outcome;
       if (result.refused !== undefined) {
-        toast({ title: 'Merge refused', body: result.refused, tone: 'error' });
-      } else if (result.outcome) {
-        const tone = outcomeTone(result.outcome);
-        toast({
-          title: tone === 'ok' ? 'Delivered' : tone === 'info' ? 'Held' : 'Not merged',
-          body: result.outcome.line,
-          tone: tone === 'bad' ? 'error' : tone === 'ok' ? 'success' : 'info',
-        });
+        setMergeError(
+          mergeRefusal(
+            isNetworkMessage(result.refused)
+              ? 'Couldn’t reach the daemon; nothing was merged.'
+              : result.refused,
+            mergeTarget.current,
+          ),
+        );
+        return;
       }
+      if (outcome?.status === 'blocked') {
+        setMergeError(mergeConflict(outcome.target, outcome.conflicts));
+        return;
+      }
+      if (outcome?.status === 'refused' && !outcome.held) {
+        setMergeError(mergeRefusal(outcome.reason, mergeTarget.current));
+        return;
+      }
+      // Good news and holds: the Delivery section says it; with the panel shut, a toast does.
+      if (detailsOpen || !outcome) return;
+      const tone = outcomeTone(outcome);
+      toast({
+        title: tone === 'ok' ? 'Delivered' : tone === 'info' ? 'Held' : 'Not merged',
+        body: outcome.line,
+        tone: tone === 'bad' ? 'error' : tone === 'ok' ? 'success' : 'info',
+      });
     },
     [detailsOpen, toast],
   );
@@ -454,6 +510,7 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
   const threadTick = page?.thread_total ?? 0;
 
   if (loadError && !page) {
+    commands.current = undefined;
     return (
       <section className="cr-node" data-testid="stream-page">
         <div className="cr-node-main cr-node-failed">
@@ -479,7 +536,10 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
       </section>
     );
   }
-  if (!page || page.stream.id !== id) return <PageSkeleton />;
+  if (!page || page.stream.id !== id) {
+    commands.current = undefined;
+    return <PageSkeleton />;
+  }
 
   // ---------------------------------------------------------------- derived state
   const { stream } = page;
@@ -628,8 +688,13 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
   async function send(): Promise<void> {
     const text = draft.trim();
     if (!text || intent.action === 'none') return;
+    if (offline) {
+      setSendError(SEND_UNREACHABLE);
+      return;
+    }
     setSending(true);
     setActionError(undefined);
+    setSendError(undefined);
     try {
       if (intent.action === 'answer' && answering !== undefined) {
         await answerQuestion(answering, text);
@@ -642,9 +707,53 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
       setDraft('');
       drafts.current.delete(stream.id);
     } catch (err) {
-      setActionError(errorText(err));
+      // T416 (finding 7): under the composer, in words, with Retry; the draft stays as typed.
+      setSendError(writeFailure(err));
     } finally {
       setSending(false);
+      load();
+      refresh();
+    }
+  }
+
+  // T416 (finding 38): the first Merge asks, remembered per browser.
+  mergeTarget.current = page.land?.target ?? 'main';
+  const merge = (): void => {
+    setMergeError(undefined);
+    setMergeNote(undefined);
+    mergeAsk.ask(
+      {
+        node: stream.title,
+        ...(page.land?.target !== undefined ? { target: page.land.target } : {}),
+        ...(row?.diff_stat !== undefined ? { files: row.diff_stat.files } : {}),
+        pr:
+          stream.delivery_state?.mode === 'pr' ||
+          cockpit?.repos.find((r) => r.name === stream.repo)?.delivery === 'pr',
+      },
+      () => void delivery.land(),
+    );
+  };
+
+  /** The fix a refused merge named: a prepared message to the agent, or stopping it. */
+  async function applyFix(fix: MergeFix): Promise<void> {
+    setFixing(true);
+    try {
+      if (fix.kind === 'stop') {
+        await stopSessions(stream.id);
+        setMergeNote('The agent is stopped. Merge again when you’re ready.');
+      } else {
+        await sayOnStream(stream.id, fix.message, { start: true });
+        setMergeNote('Sent to the agent. Merge again once it says the branch is ready.');
+      }
+      setMergeError(undefined);
+    } catch (err) {
+      setMergeError((before) =>
+        before
+          ? { ...before, text: writeFailure(err, 'Couldn’t reach the daemon; nothing was sent.') }
+          : before,
+      );
+    } finally {
+      setFixing(false);
       load();
       refresh();
     }
@@ -788,6 +897,47 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
     },
   ];
 
+  // T416 (finding 21): ⌘K's "This node" — the header's own buttons, the other tabs, then the
+  // ⋯ menu — the same items (and the same handlers), so the palette never decides anything itself.
+  const headerItems: MenuItem[] = [
+    {
+      label: 'Merge',
+      icon: 'git-merge',
+      hidden: !actions.merge,
+      disabled: delivery.busy,
+      onSelect: merge,
+    },
+    {
+      label: hasRun ? 'Restart agent' : 'Start agent',
+      icon: 'play',
+      hidden: actions.agent !== 'start',
+      disabled: busy,
+      onSelect: start,
+    },
+    {
+      label: 'Stop agent',
+      icon: 'square',
+      hidden: actions.agent !== 'stop',
+      disabled: busy,
+      onSelect: stop,
+    },
+    ...tabs
+      .filter((t) => t !== shownTab)
+      .map(
+        (t): MenuItem => ({
+          label: `Open ${TAB_LABEL[t]}`,
+          icon: TAB_ICON[t],
+          onSelect: () => setTab(t),
+        }),
+      ),
+    {
+      label: detailsOpen ? 'Hide details' : 'Show details',
+      icon: 'panel-right',
+      onSelect: () => setDetailsOpen(!detailsOpen),
+    },
+  ];
+  commands.current = { node: stream.id, title: stream.title, items: [...headerItems, ...menu] };
+
   // ---------------------------------------------------------------- the chat
   const renderActions = (entry: StreamPagePayload['thread'][number], i: number) =>
     canBranch && entry.kind === 'line' && branching !== threadBase + i ? (
@@ -878,10 +1028,17 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
     </>
   );
 
+  // T416 (finding 12): the question reads in the chat right above; the bar only says which.
+  const answeringText = answeringItem ? (answeringItem.detail ?? answeringItem.context) : '';
+  const answeringIndex = questions.findIndex((q) => q.id === answering);
   const answeringChip = answeringItem ? (
-    <div className="cr-answering" data-testid="composer-answering">
+    <div
+      className="cr-answering"
+      data-testid="composer-answering"
+      data-question={answeringItem.id}
+      title={answeringText}
+    >
       <Icon name="corner-down-left" size={13} />
-      <span className="cr-answering-label">Answering</span>
       {questions.length > 1 ? (
         <Menu
           label="Which question"
@@ -889,8 +1046,16 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
           placement="top"
           testid="composer-answering-menu"
           trigger={(props) => (
-            <button type="button" className="cr-answering-q" {...props}>
-              {oneLine(answeringItem.detail ?? answeringItem.context)}
+            <button
+              type="button"
+              className="cr-answering-q"
+              data-testid="composer-answering-pick"
+              title={answeringText}
+              {...props}
+            >
+              <span className="cr-answering-label">
+                Answering question {answeringIndex + 1} of {questions.length}
+              </span>
               <Icon name="chevron-down" size={12} />
             </button>
           )}
@@ -915,9 +1080,7 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
           ]}
         />
       ) : (
-        <span className="cr-answering-q" title={answeringItem.detail ?? answeringItem.context}>
-          {oneLine(answeringItem.detail ?? answeringItem.context)}
-        </span>
+        <span className="cr-answering-label">Answering the question above</span>
       )}
       <IconButton
         icon="x"
@@ -976,6 +1139,13 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
     ) : undefined;
 
   const emptyChat = !conversation && !thinking && cards.length === 0;
+  // The open questions whose own line the chat shows (an older one may be above the loaded lines).
+  const askedInChat = new Set(
+    page.thread
+      .filter((e) => e.kind === 'question')
+      .map((e) => questionIdOfRef(e.ref))
+      .filter((q): q is string => q !== undefined),
+  );
   // T392: each reply's steps fold before it; the running turn's show live.
   const steps = groupSteps(agentSteps.steps, page.thread, {
     live: thinking,
@@ -1078,6 +1248,11 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
               <Card
                 item={item}
                 full
+                // T416 (finding 12): the chat's line above reads the question; the card
+                // repeats a line of it only to tell several apart.
+                {...(item.kind === 'question' && askedInChat.has(item.id)
+                  ? { questionText: questions.length > 1 ? ('line' as const) : ('none' as const) }
+                  : {})}
                 onDone={() => {
                   load();
                   refresh();
@@ -1112,7 +1287,32 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
             }
             label={answeringItem ? 'Your answer' : 'Message the agent'}
             mode={intent.action === 'answer' ? 'answer' : undefined}
+            {...(offline ? { sendBlocked: RECONNECTING } : {})}
           />
+          {sendError && (
+            <div className="cr-send-error" role="alert" data-testid="send-error">
+              <Icon name="alert-circle" size={14} />
+              <span>{sendError}</span>
+              <Button
+                size="sm"
+                variant="ghost"
+                icon="refresh"
+                data-testid="send-retry"
+                busy={sending}
+                disabled={offline || draft.trim() === ''}
+                title={offline ? RECONNECTING : 'Send it again'}
+                onClick={() => void send()}
+              >
+                Retry
+              </Button>
+              <IconButton
+                icon="x"
+                size="sm"
+                label="Dismiss"
+                onClick={() => setSendError(undefined)}
+              />
+            </div>
+          )}
         </div>
       </div>
     </div>
@@ -1150,7 +1350,7 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
           onStart={start}
           onChooseStart={() => setPicker('start')}
           onStop={stop}
-          onMerge={() => void delivery.land()}
+          onMerge={merge}
           {...(page.land && !page.land.ready && page.land.reason
             ? { mergeTitle: page.land.reason }
             : {})}
@@ -1167,6 +1367,55 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
               }
             : {})}
         >
+          {mergeError && (
+            <div className="cr-node-error cr-merge-error" role="alert" data-testid="merge-error">
+              <Icon name="alert-circle" size={15} />
+              <span>
+                <strong>Couldn’t merge.</strong> {mergeError.text}
+              </span>
+              {mergeError.fix && (
+                <Button
+                  size="sm"
+                  icon={mergeError.fix.kind === 'stop' ? 'square' : 'send'}
+                  data-testid="merge-fix"
+                  data-fix={mergeError.fix.kind}
+                  busy={fixing}
+                  disabled={offline}
+                  title={
+                    offline
+                      ? RECONNECTING
+                      : mergeError.fix.kind === 'stop'
+                        ? undefined
+                        : mergeError.fix.message
+                  }
+                  onClick={() => {
+                    const fix = mergeError.fix;
+                    if (fix) void applyFix(fix);
+                  }}
+                >
+                  {mergeError.fix.label}
+                </Button>
+              )}
+              <IconButton
+                icon="x"
+                size="sm"
+                label="Dismiss"
+                onClick={() => setMergeError(undefined)}
+              />
+            </div>
+          )}
+          {mergeNote && !mergeError && (
+            <output className="cr-node-note" data-testid="merge-note">
+              <Icon name="check" size={15} />
+              <span>{mergeNote}</span>
+              <IconButton
+                icon="x"
+                size="sm"
+                label="Dismiss"
+                onClick={() => setMergeNote(undefined)}
+              />
+            </output>
+          )}
           {actionError && (
             <div className="cr-node-error" role="alert" data-testid="stream-error">
               <Icon name="alert-circle" size={15} />
@@ -1477,6 +1726,7 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
           Worktrees and branches are kept, and you can undo this right after.
         </p>
       </ConfirmDialog>
+      {mergeAsk.dialog}
     </section>
   );
 }

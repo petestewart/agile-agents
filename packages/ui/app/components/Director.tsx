@@ -32,6 +32,7 @@ import {
   draftHeading,
   draftParts,
 } from '../lib/director';
+import { RECONNECTING, SEND_UNREACHABLE, writeFailure } from '../lib/errors';
 import { useFeed } from '../lib/feed-context';
 import { eventDetail, eventTitle } from '../lib/lenses';
 import { useShell } from '../lib/shell';
@@ -44,7 +45,7 @@ import { Icon } from './Icon';
 import { EventGlyph } from './Lenses';
 import { Markdown } from './Markdown';
 import { DetailSection } from './NodeDetails';
-import { Button, IconButton, useToast } from './ui';
+import { Button, EmptyState, IconButton, PageHeader, useToast } from './ui';
 
 function errorText(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
@@ -285,10 +286,13 @@ function AutonomyList(): JSX.Element | null {
 }
 
 export function DirectorPage(): JSX.Element {
-  const { cockpit } = useFeed();
+  const { cockpit, offline } = useFeed();
   const toast = useToast();
   const [page, setPage] = useState<DirectorPayload | undefined>(undefined);
+  // T416 (finding 30): a failed read and a failed send are different things, said in different
+  // places: the read in place of the chat (nothing else), the send under the composer.
   const [error, setError] = useState<string | undefined>(undefined);
+  const [sendError, setSendError] = useState<string | undefined>(undefined);
   const [draft, setDraft] = useState('');
   const [sending, setSending] = useState(false);
   const [seq, setSeq] = useState(0);
@@ -304,7 +308,8 @@ export function DirectorPage(): JSX.Element {
         setPage(p);
         setError(undefined);
       })
-      .catch((err: unknown) => live && setError(errorText(err)));
+      // In words: the daemon's reason as a sentence, or that it wasn't reached.
+      .catch((err: unknown) => live && setError(writeFailure(err, 'The daemon isn’t reachable.')));
     return () => {
       live = false;
     };
@@ -336,14 +341,19 @@ export function DirectorPage(): JSX.Element {
   const send = async (): Promise<void> => {
     const line = draft.trim();
     if (!line) return;
+    if (offline) {
+      setSendError(SEND_UNREACHABLE);
+      return;
+    }
     setSending(true);
+    setSendError(undefined);
     try {
       await sayToDirector(line);
       setDraft('');
-      setError(undefined);
       setSeq((n) => n + 1);
     } catch (err) {
-      setError(errorText(err));
+      // The draft stays; Retry sends it again.
+      setSendError(writeFailure(err));
     } finally {
       setSending(false);
     }
@@ -375,6 +385,8 @@ export function DirectorPage(): JSX.Element {
   }, [detailsOpen, setDetailsOpen]);
 
   const empty = thread.length === 0 && !state.working;
+  // The read failed before anything loaded: only that, with Try again (no empty state, no steps).
+  const failed = error !== undefined && page === undefined;
 
   return (
     <section
@@ -383,36 +395,32 @@ export function DirectorPage(): JSX.Element {
       data-details={detailsOpen ? 'open' : 'closed'}
     >
       <div className="cr-node-main">
-        <header className="cr-node-hd">
-          <div className="cr-node-hd-row">
-            <div className="cr-node-hd-main">
-              <div className="cr-node-title-row">
-                <span className="cr-dir-mark" aria-hidden="true">
-                  <Icon name="sparkles" size={15} />
-                </span>
-                <h1 className="cr-node-title">Director</h1>
+        <div className="cr-dir-hd">
+          <PageHeader
+            icon="sparkles"
+            title="Director"
+            badge={
+              <span
+                className="cr-role-badge"
+                title="One agent above every project: it sees all of them, drafts and starts work, and never merges."
+              >
+                <Icon name="layers" size={12} />
+                Every project
+              </span>
+            }
+            subtitle={
+              <span className="cr-dir-state">
                 <span
-                  className="cr-role-badge"
-                  title="One agent above every project: it sees all of them, drafts and starts work, and never merges."
-                >
-                  <Icon name="layers" size={12} />
-                  Every project
+                  className="cr-dir-live"
+                  data-state={state.working ? 'working' : state.live ? 'live' : 'off'}
+                  aria-hidden="true"
+                />
+                <span data-testid="director-session" title={session?.id}>
+                  {failed ? 'Couldn’t load the Director' : state.text}
                 </span>
-              </div>
-              <div className="cr-node-meta">
-                <span className="cr-node-meta-line">
-                  <span
-                    className="cr-dir-live"
-                    data-state={state.working ? 'working' : state.live ? 'live' : 'off'}
-                    aria-hidden="true"
-                  />
-                  <span className="cr-meta-item" data-testid="director-session" title={session?.id}>
-                    {state.text}
-                  </span>
-                </span>
-              </div>
-            </div>
-            <div className="cr-node-actions">
+              </span>
+            }
+            actions={
               <IconButton
                 icon="panel-right"
                 label={detailsOpen ? 'Hide details' : 'Show details'}
@@ -421,108 +429,155 @@ export function DirectorPage(): JSX.Element {
                 data-testid="director-details-toggle"
                 onClick={() => setDetailsOpen(!detailsOpen)}
               />
-            </div>
-          </div>
-          {error && (
+            }
+          />
+          {error !== undefined && !failed && !offline && (
             <div className="cr-node-error" role="alert" data-testid="director-error">
               <Icon name="alert-circle" size={15} />
-              <span>{error}</span>
-              <IconButton icon="x" size="sm" label="Dismiss" onClick={() => setError(undefined)} />
+              <span>Couldn’t refresh the conversation. {error}</span>
+              <Button size="sm" variant="ghost" icon="refresh" onClick={() => setSeq((n) => n + 1)}>
+                Try again
+              </Button>
             </div>
           )}
-        </header>
+        </div>
         <div className="cr-node-body">
-          <div className="cr-chat">
-            <ChatScroll
-              tick={`${thread.length}:${state.working}:${proposals.length}`}
-              resetKey="director"
-              label="Conversation with the Director"
-            >
-              <MessageList
-                entries={thread}
-                authorOf={authorOf}
-                byAttr={(by) => (by === 'human' || by === 'daemon' ? by : 'director')}
-                testid="director-thread"
-                label="Conversation with the Director"
-                steps={steps.before}
-              />
-              {state.working && (
-                <Thinking
-                  name="Director"
-                  steps={steps.current}
-                  since={turnStartedAt(thread, steps.current)}
-                />
-              )}
-              {!state.working && steps.current.length > 0 && (
-                <div className="cr-steps-tail">
-                  <StepsFold steps={steps.current} />
-                </div>
-              )}
-              {empty && (
-                <div className="cr-chat-empty" data-testid="director-empty">
-                  <span className="cr-chat-empty-icon">
-                    <Icon name="sparkles" size={20} />
-                  </span>
-                  <div className="cr-chat-empty-title">Ask the Director what needs you today…</div>
-                  <p>
-                    It sees every project at once: what waits on you, what is stuck, where work
-                    overlaps. It drafts new work for you to create and, if a project lets it, starts
-                    it. Merging is always yours.
-                  </p>
-                  <div className="cr-dir-suggest">
-                    {SUGGESTIONS.map((s) => (
-                      <button
-                        key={s.label}
-                        type="button"
-                        className="cr-dir-chip"
-                        data-testid="director-suggestion"
-                        onClick={() => {
-                          setDraft(s.text);
-                          composer.current?.focus();
-                        }}
-                      >
-                        {s.label}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              )}
-              <section
-                className="cr-decisions"
-                data-testid="director-proposals"
-                aria-label="Drafts waiting on you"
-                hidden={proposals.length === 0}
+          {failed ? (
+            <div className="cr-dir-failed" data-testid="director-failed">
+              <EmptyState
+                icon="alert-circle"
+                title="Couldn’t load the Director"
+                actions={
+                  <Button icon="refresh" onClick={() => setSeq((n) => n + 1)}>
+                    Try again
+                  </Button>
+                }
               >
-                {proposals.length > 0 && (
-                  <div className="cr-decisions-hd">
-                    <span className="cr-decisions-dot" aria-hidden="true" />
-                    {proposals.length === 1
-                      ? 'A draft waits on you'
-                      : `${proposals.length} drafts wait on you`}
+                <span className="cr-error" role="alert" data-testid="director-error">
+                  {offline ? 'The daemon isn’t reachable. It loads once it’s back.' : error}
+                </span>
+              </EmptyState>
+            </div>
+          ) : (
+            <div className="cr-chat">
+              <ChatScroll
+                tick={`${thread.length}:${state.working}:${proposals.length}`}
+                resetKey="director"
+                label="Conversation with the Director"
+              >
+                <MessageList
+                  entries={thread}
+                  authorOf={authorOf}
+                  byAttr={(by) => (by === 'human' || by === 'daemon' ? by : 'director')}
+                  testid="director-thread"
+                  label="Conversation with the Director"
+                  steps={steps.before}
+                />
+                {state.working && (
+                  <Thinking
+                    name="Director"
+                    steps={steps.current}
+                    since={turnStartedAt(thread, steps.current)}
+                  />
+                )}
+                {!state.working && steps.current.length > 0 && (
+                  <div className="cr-steps-tail">
+                    <StepsFold steps={steps.current} />
                   </div>
                 )}
-                {proposals.map((p) => (
-                  <DraftCard key={p.id} proposal={p} onDecide={(d) => decide(p, d)} />
-                ))}
-              </section>
-            </ChatScroll>
-            <div className="cr-chat-foot">
-              <div className="cr-chat-col">
-                <Composer
-                  ref={composer}
-                  value={draft}
-                  onChange={setDraft}
-                  onSend={() => void send()}
-                  busy={sending}
-                  placeholder="Ask the Director…"
-                  hint={directorHint(state)}
-                  label="Message the Director"
-                  inputTestid="director-composer"
-                  sendTestid="director-send"
-                />
+                {empty && (
+                  <div className="cr-chat-empty" data-testid="director-empty">
+                    <span className="cr-chat-empty-icon">
+                      <Icon name="sparkles" size={20} />
+                    </span>
+                    <div className="cr-chat-empty-title">
+                      Ask the Director what needs you today…
+                    </div>
+                    <p>
+                      It sees every project at once: what waits on you, what is stuck, where work
+                      overlaps. It drafts new work for you to create and, if a project lets it,
+                      starts it. Merging is always yours.
+                    </p>
+                    <div className="cr-dir-suggest">
+                      {SUGGESTIONS.map((s) => (
+                        <button
+                          key={s.label}
+                          type="button"
+                          className="cr-dir-chip"
+                          data-testid="director-suggestion"
+                          onClick={() => {
+                            setDraft(s.text);
+                            composer.current?.focus();
+                          }}
+                        >
+                          {s.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                <section
+                  className="cr-decisions"
+                  data-testid="director-proposals"
+                  aria-label="Drafts waiting on you"
+                  hidden={proposals.length === 0}
+                >
+                  {proposals.length > 0 && (
+                    <div className="cr-decisions-hd">
+                      <span className="cr-decisions-dot" aria-hidden="true" />
+                      {proposals.length === 1
+                        ? 'A draft waits on you'
+                        : `${proposals.length} drafts wait on you`}
+                    </div>
+                  )}
+                  {proposals.map((p) => (
+                    <DraftCard key={p.id} proposal={p} onDecide={(d) => decide(p, d)} />
+                  ))}
+                </section>
+              </ChatScroll>
+              <div className="cr-chat-foot">
+                <div className="cr-chat-col">
+                  <Composer
+                    ref={composer}
+                    value={draft}
+                    onChange={setDraft}
+                    onSend={() => void send()}
+                    busy={sending}
+                    placeholder="Ask the Director…"
+                    hint={directorHint(state)}
+                    label="Message the Director"
+                    inputTestid="director-composer"
+                    sendTestid="director-send"
+                    {...(offline ? { sendBlocked: RECONNECTING } : {})}
+                  />
+                  {sendError && (
+                    <div className="cr-send-error" role="alert" data-testid="send-error">
+                      <Icon name="alert-circle" size={14} />
+                      <span>{sendError}</span>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        icon="refresh"
+                        data-testid="send-retry"
+                        busy={sending}
+                        disabled={offline || draft.trim() === ''}
+                        title={offline ? RECONNECTING : 'Send it again'}
+                        onClick={() => void send()}
+                      >
+                        Retry
+                      </Button>
+                      <IconButton
+                        icon="x"
+                        size="sm"
+                        label="Dismiss"
+                        onClick={() => setSendError(undefined)}
+                      />
+                    </div>
+                  )}
+                </div>
               </div>
             </div>
-          </div>
+          )}
         </div>
       </div>
       {detailsOpen && (

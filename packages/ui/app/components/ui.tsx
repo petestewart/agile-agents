@@ -17,6 +17,7 @@ import {
   useContext,
   useEffect,
   useId,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -193,28 +194,45 @@ export function StatusPill({
 
 // ---------------------------------------------------------------- layout helpers
 
+/**
+ * T416 (finding 18): every page but a node's opens with the same header —
+ * an icon and the title (18px, 600) on one row, a one-line subtitle under
+ * it, the actions on the right — at the same height and top padding, in the
+ * same 960px column, so switching views never moves the title. `badge` sits
+ * after the title (Needs me's count) and stays out of the `h1`'s text.
+ */
 export function PageHeader({
   title,
   icon,
   subtitle,
+  badge,
   actions,
   children,
   testid,
+  className,
 }: PropsWithChildren<{
   title: ReactNode;
   icon?: IconName;
+  /** One line under the title: what the page is, or a summary of it. */
   subtitle?: ReactNode;
+  badge?: ReactNode;
   actions?: ReactNode;
   testid?: string;
+  className?: string;
 }>): JSX.Element {
   return (
-    <header className="cr-page-hd" data-testid={testid}>
+    <header className={`cr-page-hd${className ? ` ${className}` : ''}`} data-testid={testid}>
       <div className="cr-page-hd-main">
-        {subtitle ? <div className="cr-page-sub">{subtitle}</div> : null}
-        <h1 className="cr-page-title">
+        <div className="cr-page-title-row">
           {icon ? <Icon name={icon} size={18} className="cr-page-icon" /> : null}
-          {title}
-        </h1>
+          <h1 className="cr-page-title">{title}</h1>
+          {badge}
+        </div>
+        {subtitle ? (
+          <div className="cr-page-sub" title={typeof subtitle === 'string' ? subtitle : undefined}>
+            {subtitle}
+          </div>
+        ) : null}
         {children}
       </div>
       {actions ? <div className="cr-page-actions">{actions}</div> : null}
@@ -768,9 +786,55 @@ interface ToastEntry extends ToastInput {
 
 const ToastContext = createContext<((toast: ToastInput) => void) | undefined>(undefined);
 
+/**
+ * T416 (finding 6): where toasts sit. On a page with a composer (a node's
+ * chat, the Director) they stack just above it, at its right edge, so they
+ * never cover Send or the key hints; elsewhere the window's bottom right.
+ */
+function toastAnchor(): { bottom: number; right: number } | undefined {
+  if (typeof document === 'undefined') return undefined;
+  const foot = document.querySelector<HTMLElement>('.cr-chat-foot .cr-composer-wrap');
+  if (!foot) return undefined;
+  const box = foot.getBoundingClientRect();
+  if (box.width === 0 || box.height === 0) return undefined;
+  return {
+    bottom: Math.max(16, Math.round(window.innerHeight - box.top + 8)),
+    right: Math.max(16, Math.round(window.innerWidth - box.right)),
+  };
+}
+
+function useToastAnchor(active: boolean): { bottom: number; right: number } | undefined {
+  const [anchor, setAnchor] = useState<{ bottom: number; right: number } | undefined>(undefined);
+  // Before paint, so a toast never shows at the corner first and then jumps.
+  useLayoutEffect(() => {
+    if (!active) return;
+    const place = (): void =>
+      setAnchor((was) => {
+        const next = toastAnchor();
+        return was?.bottom === next?.bottom && was?.right === next?.right ? was : next;
+      });
+    place();
+    // The composer grows with its text and the window resizes; a toast follows both.
+    const foot = document.querySelector('.cr-chat-foot');
+    const observer =
+      foot && typeof ResizeObserver === 'function' ? new ResizeObserver(place) : undefined;
+    if (foot) observer?.observe(foot);
+    window.addEventListener('resize', place);
+    // A toast can outlive its page (Delete goes to Needs me): look again while any shows.
+    const timer = setInterval(place, 400);
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener('resize', place);
+      clearInterval(timer);
+    };
+  }, [active]);
+  return active ? anchor : undefined;
+}
+
 export function ToastProvider({ children }: PropsWithChildren): JSX.Element {
   const [toasts, setToasts] = useState<ToastEntry[]>([]);
   const seq = useRef(0);
+  const anchor = useToastAnchor(toasts.length > 0);
   const dismiss = useCallback((id: number) => {
     setToasts((all) => all.filter((t) => t.id !== id));
   }, []);
@@ -786,7 +850,13 @@ export function ToastProvider({ children }: PropsWithChildren): JSX.Element {
   return (
     <ToastContext.Provider value={push}>
       {children}
-      <div className="cr-toasts" aria-live="polite" data-testid="toasts">
+      <div
+        className="cr-toasts"
+        aria-live="polite"
+        data-testid="toasts"
+        data-anchor={anchor ? 'composer' : undefined}
+        style={anchor ? { bottom: anchor.bottom, right: anchor.right } : undefined}
+      >
         {toasts.map((t) => (
           <div key={t.id} className="cr-toast" data-tone={t.tone ?? 'info'} data-testid="toast">
             <Icon

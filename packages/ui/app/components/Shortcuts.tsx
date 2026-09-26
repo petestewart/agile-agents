@@ -3,7 +3,8 @@
  * typing) and the `g` then letter jumps to a view (`g i` Needs me). It
  * lists only keys that work: the palette (⌘K), `n` (NewStream), `/`
  * (StreamTree), Esc (every Dialog, Menu and panel), the composer's Enter,
- * `j`/`k` in Needs me (Inbox) and the tree (T395), the arrows in menus, Knowledge and the tree.
+ * `j`/`k` in Needs me (Inbox) and the tree (T395), A/B or 1/2 on a focused
+ * question card (T416), the arrows in menus, Knowledge and the tree.
  */
 
 import { Fragment, useEffect, useState } from 'react';
@@ -75,6 +76,8 @@ function sections(mod: string): ReadonlyArray<{
       title: 'Needs me',
       rows: [
         { label: 'Next or previous card', keys: ['J', 'K'] },
+        { label: 'Pick choice A, B… on the focused question', keys: ['A', 'B'] },
+        { label: '…or by number', keys: ['1', '2'] },
         { label: "Open the card's node", keys: ['Enter'] },
       ],
     },

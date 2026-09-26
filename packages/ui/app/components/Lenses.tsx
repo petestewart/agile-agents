@@ -515,16 +515,17 @@ export function RepoView({
   const liveCount = groups.reduce((n, g) => n + g.rows.length, 0);
   return (
     <section className="cr-page cr-lens" data-testid="repo-view">
-      <PageHeader title="Repos" icon="folder-git">
-        <p className="cr-lens-lede">
-          Live work by repository
-          {groups.length > 0
+      <PageHeader
+        title="Repos"
+        icon="folder-git"
+        subtitle={`Live work by repository${
+          groups.length > 0
             ? ` · ${liveCount} live ${liveCount === 1 ? 'node' : 'nodes'} across ${groups.length} ${
                 groups.length === 1 ? 'repo' : 'repos'
               }`
-            : ''}
-        </p>
-      </PageHeader>
+            : ''
+        }`}
+      />
       {groups.length === 0 ? (
         <EmptyState
           icon="folder-git"
@@ -658,11 +659,11 @@ export function RunningLens({ rows }: { rows: readonly CockpitStreamRow[] }): JS
   const repos = new Map((cockpit?.repos ?? []).map((r) => [r.name, r]));
   return (
     <section className="cr-page cr-lens" data-testid="running-lens">
-      <PageHeader title="Running" icon="zap">
-        <p className="cr-lens-lede">
-          {running.length > 0 ? runningSummary(running) : 'Nodes with a live agent'}
-        </p>
-      </PageHeader>
+      <PageHeader
+        title="Running"
+        icon="zap"
+        subtitle={running.length > 0 ? runningSummary(running) : 'Nodes with a live agent'}
+      />
       {running.length === 0 ? (
         <EmptyState
           icon="zap"
@@ -803,13 +804,15 @@ export function DependenciesLens({ rows }: { rows: readonly CockpitStreamRow[] }
   const edges = groups.reduce((n, g) => n + g.on.length, 0);
   return (
     <section className="cr-page cr-lens" data-testid="deps-lens">
-      <PageHeader title="Dependencies" icon="link">
-        <p className="cr-lens-lede">
-          {edges > 0
+      <PageHeader
+        title="Dependencies"
+        icon="link"
+        subtitle={
+          edges > 0
             ? `${edges} "waits on" ${edges === 1 ? 'link' : 'links'}. A node that waits on another holds its merge until that one merges.`
-            : 'What waits on what, across projects'}
-        </p>
-      </PageHeader>
+            : 'What waits on what, across projects'
+        }
+      />
       {groups.length === 0 ? (
         <EmptyState icon="link" title="Nothing waits on anything">
           A “waits on” link holds a node's merge until another node merges — for when one change
@@ -1121,11 +1124,11 @@ export function EventLog(): JSX.Element {
 
   return (
     <section className="cr-page cr-lens" data-testid="event-log">
-      <PageHeader title="Events" icon="activity">
-        <p className="cr-lens-lede">
-          Everything that happened, newest first, and which nodes were told.
-        </p>
-      </PageHeader>
+      <PageHeader
+        title="Events"
+        icon="activity"
+        subtitle="Everything that happened, newest first, and which nodes were told."
+      />
       <div className="cr-lens-toolbar" hidden={emptyLog}>
         <label className="cr-lens-search">
           <Icon name="search" size={14} />

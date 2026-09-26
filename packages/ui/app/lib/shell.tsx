@@ -138,6 +138,20 @@ export interface ShellValue {
    */
   project: string | undefined;
   setProject(id: string | undefined): void;
+  /**
+   * T416 (finding 24): a `?node=` link to a node that isn't there any more
+   * fell back to Needs me; this says so once (the shell renders no toast
+   * itself — `App` does, then clears it). `archived` when it was deleted.
+   */
+  missingNode: MissingNode | undefined;
+  clearMissingNode(): void;
+}
+
+/** T416: the node a stale link named: deleted (`archived`, with its title), or unknown. */
+export interface MissingNode {
+  id: string;
+  archived: boolean;
+  title?: string;
 }
 
 /** T365: New node's starting point from a row's `+` or a project's menu. */
@@ -162,7 +176,8 @@ export function ShellProvider({
   const [project, setProject] = useState<string | undefined>(initial.project);
   const [rulesFilter, setRulesFilter] = useState<RulesFilter>(DEFAULT_RULES_FILTER);
   // T348: ids read from the URL (on load, or on back/forward) are checked
-  // against the next cockpit frame; a stale one falls back quietly. Ids set
+  // against the next cockpit frame; a stale one falls back to Needs me, and
+  // (T416) `missingNode` says why. Ids set
   // by a click are never checked — a node just created may not be in the
   // frame yet.
   const [unchecked, setUnchecked] = useState(
@@ -171,12 +186,20 @@ export function ShellProvider({
   // The fallback replaces the bad URL rather than stacking a history entry on it.
   const replaceNext = useRef(false);
   const cockpit = useOptionalFeed()?.cockpit;
+  const [missingNode, setMissingNode] = useState<MissingNode | undefined>(undefined);
 
   useEffect(() => {
     if (!unchecked || !cockpit) return;
     setUnchecked(false);
     if (selected !== undefined && !cockpit.streams.some((row) => row.id === selected)) {
       replaceNext.current = true;
+      // T416: not quietly — `App` says the node is gone (and offers it back when deleted).
+      const archived = cockpit.archived?.find((row) => row.id === selected);
+      setMissingNode({
+        id: selected,
+        archived: archived !== undefined,
+        ...(archived !== undefined ? { title: archived.title } : {}),
+      });
       setSelected(undefined);
       setView((current) => (current === 'stream' ? 'inbox' : current));
     }
@@ -261,8 +284,11 @@ export function ShellProvider({
       setNewProjectOpen,
       project,
       setProject,
+      missingNode,
+      clearMissingNode: () => setMissingNode(undefined),
     }),
     [
+      missingNode,
       view,
       selected,
       openOn,
