@@ -9800,3 +9800,83 @@ div.cr-lens-ev:hover {
     white-space: normal;
   }
 }
+
+/* ---------------------------------------------------------------- T429: replies you haven't read */
+.cr-sb-replies {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  flex-shrink: 0;
+}
+.cr-replies {
+  /* Only the bottom: the page column centres it like the rest of Needs me. */
+  margin-bottom: 24px;
+}
+.cr-replies .cr-inbox-section-hd {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.cr-replies-all {
+  margin-left: auto;
+  font-size: var(--text-sm);
+  font-weight: 400;
+}
+.cr-replies-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-panel);
+}
+.cr-reply {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding-right: 6px;
+  border-bottom: 1px solid var(--border);
+}
+.cr-reply:last-child {
+  border-bottom: 0;
+}
+.cr-reply-open {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  align-items: center;
+  gap: 9px;
+  padding: 9px 12px;
+  font: inherit;
+  text-align: left;
+  color: var(--text);
+  background: none;
+  border: 0;
+  cursor: pointer;
+}
+.cr-reply-open:hover .cr-reply-title {
+  text-decoration: underline;
+}
+.cr-reply-icon {
+  flex-shrink: 0;
+  color: var(--accent-fg);
+}
+.cr-reply-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cr-reply-path {
+  color: var(--text-muted);
+}
+.cr-reply-title {
+  font-weight: 500;
+}
+.cr-reply-when {
+  flex-shrink: 0;
+  font-size: var(--text-sm);
+  color: var(--text-faint);
+}
