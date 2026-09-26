@@ -1,6 +1,6 @@
 # Cockpit UX — follow-ups after Phase 15
 
-Things found while building Phase 15 (T360–T374) that were out of scope,
+Things found while building Phase 15 (T360–T377) that were out of scope,
 deferred, or need a decision. Each names where it lives. Ticket them in
 `PLAN.md` before picking one up. Design rules: `cockpit-ui.md`.
 
@@ -13,22 +13,16 @@ deferred, or need a decision. Each names where it lives. Ticket them in
   "commits ahead" signal. Either the daemon stops raising `done` as a merge
   when the branch has no commits, or the row carries a cached `ahead` (like
   T362's remote cache). (`packages/ui/app/lib/status.ts`,
-  `packages/daemon/src/inbox/service.ts`, `feed/snapshot.ts`)
-- **A line sent with `start` is in the first prompt twice** (under "Thread
-  so far" and "What woke you"); only one prompt is sent.
-  (`AttachService.startWithPending`, `packages/daemon/src/attach/service.ts`)
-- **A question shows twice on its node's page**: the agent's thread line
-  (kind `question`) and its open card above the composer. Fold the thread
-  line while the card is open. (`components/Chat.tsx`, `lib/chat.ts`)
+  `packages/daemon/src/inbox/service.ts`, `feed/snapshot.ts`). Not a quick
+  fix: `done` is what coordinators, auto-review and the tracker push react
+  to, so "finished with no commits" wants its own signal (set once at the
+  worker's exit), not `idle`.
 - **Project session defaults are invisible.** `/api/settings/session` has
   global and per-repo defaults but not a project's (`project.session`), which
   attach applies; New node's "Starts with …" line and the composer's model
   chip can name the wrong model for such a project; Settings can't edit them.
   (`packages/daemon/src/http.ts` session route, `components/NewStream.tsx`,
   `components/Settings.tsx`)
-- **A project's repos can change over HTTP (T372) but not yet in the UI.**
-  Add "Repositories" to the project root's details (checklist like New
-  project, `updateProject`). (`components/NodeDetails.tsx`)
 - **`store.addRepo` silently replaces an existing name** (`POST /api/repos`,
   `agile repo add`); the Add repository dialog guards it, the API doesn't.
   (`packages/daemon/src/store/store.ts` ~726, `state.repo_add`)
@@ -47,10 +41,8 @@ deferred, or need a decision. Each names where it lives. Ticket them in
 - Pull request delivery is offered for a local-only repo and refused by the
   daemon; disable it in the browser with the reason.
   (`components/SettingsRepos.tsx`)
-- Default classifier question (`classifierQuestion`,
-  `packages/shared/src/knowledge.ts`), built-in knowledge names, guidance
-  flagged "never fired", daemon text with ids or "stream": being fixed in
-  T371 — check its notes in `PLAN.md` for what remains.
+- `lib/inbox.ts` `STOCK_TEXT` rewrote daemon card text the daemon now sends
+  itself (T371): dead code.
 
 ## P3 — cleanup, hardening, decisions
 
@@ -65,6 +57,9 @@ deferred, or need a decision. Each names where it lives. Ticket them in
   `GET /api/repos`.
 - A clone that times out kills git but can leave its ssh child running (git
   isn't in its own process group). (`packages/daemon/src/store/clone.ts`)
+- A line sent with `start` appears in the first prompt twice (the brief's
+  "Thread so far" and "What woke you"); by design for every wake (T336), a
+  few tokens, invisible to the user.
 - `say {start}` would start a part waiting for its coordinator's plan (the
   cockpit never sends it there); refuse it in the daemon too.
 - A wake and a manual attach can both pass the "no live agent" check and
