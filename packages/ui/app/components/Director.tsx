@@ -3,7 +3,8 @@
  * the node chat's pieces (T363: `ChatScroll`, `MessageList`, `Thinking`,
  * `Composer`), so talking to the Director looks and behaves like talking to
  * a node's agent: your lines as bubbles, its replies as prose, the daemon's
- * bookkeeping as system rows, Enter sends.
+ * bookkeeping as system rows, Enter sends. T399: its steps (tool calls) fold
+ * before each reply and show live while it works, as a node's do (T392).
  *
  * What needs you sits in the conversation, right above the composer: its
  * held drafts (T301) as decision cards — a draft tree as the tree it would
@@ -13,9 +14,15 @@
  * how far it may act in each project. Re-read on every pushed frame.
  */
 
-import type { AutonomyProposal } from '@agile-agents/shared';
+import { type AutonomyProposal, DIRECTOR_NODE } from '@agile-agents/shared';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { type DirectorPayload, decideProposal, getDirector, sayToDirector } from '../lib/api';
+import {
+  type DirectorPayload,
+  decideProposal,
+  getDirector,
+  getDirectorSteps,
+  sayToDirector,
+} from '../lib/api';
 import { type ChatAuthor, detailsOpenFrom } from '../lib/chat';
 import {
   DIRECTOR_AUTONOMY,
@@ -29,8 +36,9 @@ import { useFeed } from '../lib/feed-context';
 import { eventDetail, eventTitle } from '../lib/lenses';
 import { useShell } from '../lib/shell';
 import { ago } from '../lib/status';
+import { groupSteps } from '../lib/steps';
 import { activityDelivery, eventTime } from '../lib/streams';
-import { ChatScroll, MessageList, Thinking } from './Chat';
+import { ChatScroll, MessageList, StepsFold, Thinking, useSteps } from './Chat';
 import { Composer, type ComposerHandle } from './Composer';
 import { Icon } from './Icon';
 import { EventGlyph } from './Lenses';
@@ -306,6 +314,14 @@ export function DirectorPage(): JSX.Element {
   const state = directorState(session, page?.live === true);
   const thread = page?.thread ?? [];
   const proposals = page?.proposals ?? [];
+  // T399: its tool calls, as a node's chat shows them (T392): each reply's fold
+  // before it, the running turn's live under "Director is working".
+  const directorSteps = useSteps(DIRECTOR_NODE, getDirectorSteps);
+  const steps = groupSteps(directorSteps.steps, thread, {
+    live: state.working,
+    truncated: (page?.thread_total ?? thread.length) > thread.length,
+    partial: directorSteps.partial,
+  });
 
   const authorOf = useMemo(
     () =>
@@ -428,8 +444,14 @@ export function DirectorPage(): JSX.Element {
                 byAttr={(by) => (by === 'human' || by === 'daemon' ? by : 'director')}
                 testid="director-thread"
                 label="Conversation with the Director"
+                steps={steps.before}
               />
-              {state.working && <Thinking name="Director" />}
+              {state.working && <Thinking name="Director" steps={steps.current} />}
+              {!state.working && steps.current.length > 0 && (
+                <div className="cr-steps-tail">
+                  <StepsFold steps={steps.current} />
+                </div>
+              )}
               {empty && (
                 <div className="cr-chat-empty" data-testid="director-empty">
                   <span className="cr-chat-empty-icon">

@@ -29,6 +29,7 @@ import { type AttachService, resolveSessionSettings } from './attach';
 import { Bus } from './bus';
 import { ClassifierKeyService, FakeClassifier } from './classifier';
 import { readHomeConfigFile } from './config';
+import { DirectorService } from './director';
 import { RoutedEventService } from './events';
 import type { CockpitFrame, StepPage, StreamPagePayload } from './feed';
 import { GateService } from './gates';
@@ -666,6 +667,69 @@ describe('T160 cockpit routes', () => {
     expect((await fetch(url(`/api/streams/${node.id}/steps`), { method: 'POST' })).status).toBe(
       404,
     );
+  });
+
+  test("T399: GET /api/director/steps is the Director's tool calls; the page says how long its thread is", async () => {
+    const withDirector = startHttpServer({
+      port: 0,
+      version: '0.0.0-test',
+      stateRoot,
+      startedAt: Date.now(),
+      store,
+      gates: new GateService(store),
+      streams,
+      director: new DirectorService({
+        store,
+        streams,
+        events: new RoutedEventService(store),
+        home,
+      }),
+    });
+    try {
+      const at = (path: string) => `http://127.0.0.1:${withDirector.port}${path}`;
+      expect(await (await fetch(at('/api/director/steps'))).json()).toEqual({
+        steps: [],
+        total: 0,
+      });
+      await store.appendEvent(
+        buildEvent('tool_call', {
+          agent: 'S-D',
+          data: {
+            stream: 'director',
+            toolCallId: 'd1',
+            kind: 'read',
+            title: 'List',
+            status: 'completed',
+          },
+        }),
+      );
+      // A node's tool call is not the Director's.
+      const node = await streams.create('human', { title: 'n', goal: 'g' });
+      await store.appendEvent(
+        buildEvent('tool_call', { agent: 'S-N', data: { stream: node.id, toolCallId: 'n1' } }),
+      );
+      const page = (await (await fetch(at('/api/director/steps'))).json()) as StepPage;
+      expect(page.total).toBe(1);
+      expect(page.steps.map((s) => [s.id, s.kind, s.status])).toEqual([
+        ['d1', 'read', 'completed'],
+      ]);
+      await store.appendDirectorThread({
+        ts: new Date().toISOString(),
+        by: 'director',
+        kind: 'line',
+        body: 'hi',
+      });
+      const director = (await (await fetch(at('/api/director'))).json()) as {
+        thread: unknown[];
+        thread_total: number;
+      };
+      expect([director.thread.length, director.thread_total]).toEqual([1, 1]);
+      expect((await fetch(at('/api/director/steps'), { method: 'POST' })).status).toBe(404);
+      // Without a Director, the route says so.
+      expect((await fetch(url('/api/director/steps'))).status).toBe(503);
+    } finally {
+      await withDirector.stop();
+    }
   });
 
   test('T161: POST /api/streams/:id/say writes a human line; the actor is never read from the body; cross-origin is 403', async () => {

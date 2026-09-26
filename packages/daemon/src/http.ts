@@ -672,11 +672,14 @@ async function handleSessionSettingsRoute(
   }
 }
 
+const DIRECTOR_PATHS = new Set(['/api/director', '/api/director/steps', '/api/director/say']);
+
 /**
  * T300 (projects-design §12, P16): the Director page.
  *
- *   GET  /api/director      `{record, thread, live, activity, proposals}`
- *   POST /api/director/say  `{body}`: a human line and `director_request`
+ *   GET  /api/director        `{record, thread, thread_total, live, activity, proposals}`
+ *   GET  /api/director/steps  T399: the Director's agent steps, newest first, `{steps, total}`
+ *   POST /api/director/say    `{body}`: a human line and `director_request`
  */
 async function handleDirectorRoute(
   req: Request,
@@ -684,8 +687,12 @@ async function handleDirectorRoute(
   feed: FeedContext | undefined,
   sameOrigin: () => boolean,
 ): Promise<Response | undefined> {
-  if (url.pathname !== '/api/director' && url.pathname !== '/api/director/say') return undefined;
+  if (!DIRECTOR_PATHS.has(url.pathname)) return undefined;
   if (!feed?.director) return errorResponse(503, 'director not available');
+  if (url.pathname === '/api/director/steps' && req.method === 'GET') {
+    // Its tool calls are indexed under its own node id, as a node's are (T392).
+    return jsonResponse(feed.steps.stepsFor(DIRECTOR_NODE));
+  }
   if (url.pathname === '/api/director' && req.method === 'GET') {
     return jsonResponse({
       ...feed.director.view(),
