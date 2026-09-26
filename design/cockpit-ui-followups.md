@@ -23,8 +23,6 @@ None open. (The last ones were fixed in T379, T380, T382 and T383.)
   stays quiet and Send a test says the browser didn't show it.
   (`lib/use-notify.ts`, `public/sw.js`)
 
-- A Needs me card for a question on a project root opens the root on its
-  Overview (a banner there says "Open chat"): one click more than a node's.
 
 - The live steps block could also name the step in progress or how long the
   turn has run (a node's and the Director's alike).

@@ -2288,6 +2288,15 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 - **Validation Steps:** `bun test packages/shared/src/session-defaults.test.ts`; control-room e2e `T379` (picking Gemini makes the placeholder "inherit (Gemini default model)").
 - **Notes:** Branch T402-model-follows-vendor. D40 is to confirm.
 
+### Ticket: T403 A Needs me card opens the chat
+- **Priority:** P3
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** From the follow-ups: a Needs me card for something on a project root opened the root on its Overview, one click short of the card (at the end of its chat).
+- **Acceptance Criteria:** A card's Open goes to its node's chat, root or not; the tree and a deep link still open a root on its Overview.
+- **Validation Steps:** control-room e2e `T387`.
+- **Notes:** Branch T403-card-opens-chat. The shell's `select(id, {tab})` carries the tab; the page reads it when it opens.
+
 ### Ticket: T369 Phase 15 QA
 - **Priority:** P0
 - **Status:** Done

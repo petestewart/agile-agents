@@ -6796,6 +6796,17 @@ describe('project overview (Playwright e2e, T387)', () => {
         await page.locator(`${tabs}[data-tab="overview"]`).click();
         await page.locator(overview).waitFor({ state: 'visible' });
 
+        // T403: the question's card in Needs me opens the root on its chat, where the card is.
+        await page.locator('[data-view="inbox"]').click();
+        await page
+          .locator(`[data-testid="inbox"] [data-id="${question.id}"] [data-testid="open-stream"]`)
+          .click();
+        await page.locator(`[data-testid="stream-needs"] [data-id="${question.id}"]`).waitFor();
+        expect(await page.locator(`${tabs}[data-tab="thread"]`).getAttribute('aria-current')).toBe(
+          'page',
+        );
+        expect(await page.locator(overview).count()).toBe(0);
+
         // An empty project: "No nodes yet", and New node files into it.
         await page.locator(`${tree} [data-stream="${docs.root}"]`).click();
         const empty = `[data-testid="stream-page"][data-stream="${docs.root}"] [data-testid="overview-empty"]`;

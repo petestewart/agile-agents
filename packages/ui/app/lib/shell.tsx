@@ -17,6 +17,7 @@ import {
   useRef,
   useState,
 } from 'react';
+import type { NodeTab } from './chat';
 import { useOptionalFeed } from './feed-context';
 import { DEFAULT_RULES_FILTER, type RulesFilter } from './rules';
 
@@ -86,8 +87,14 @@ export interface ShellValue {
   setView(view: ShellView): void;
   /** The stream whose page is open (T161), or `undefined`. */
   selected: string | undefined;
-  /** Opens a stream's page; `undefined` goes back to the whole inbox. */
-  select(id: string | undefined): void;
+  /**
+   * Opens a stream's page; `undefined` goes back to the whole inbox. T403:
+   * `tab` opens it on that tab instead of its first (a Needs me card opens a
+   * project root on its chat, where the card is, not its Overview).
+   */
+  select(id: string | undefined, options?: { tab?: NodeTab }): void;
+  /** T403: the tab the last `select` asked for, with its node; read when the page opens. */
+  openOn: { id: string; tab: NodeTab } | undefined;
   /** Phone width only: the stream tree is a drawer. Ignored on a wide screen, where the rail is always shown. */
   railOpen: boolean;
   toggleRail(): void;
@@ -129,6 +136,7 @@ export function ShellProvider({
 }: PropsWithChildren<{ initial?: ShellLocation }>): JSX.Element {
   const [view, setView] = useState<ShellView>(initial.view);
   const [selected, setSelected] = useState<string | undefined>(initial.node);
+  const [openOn, setOpenOn] = useState<ShellValue['openOn']>(undefined);
   const [railOpen, setRailOpen] = useState(false);
   const [newStreamOpen, setNewStreamOpen] = useState(false);
   const [newStreamPreset, setNewStreamPreset] = useState<NewStreamPreset | undefined>(undefined);
@@ -198,10 +206,12 @@ export function ShellProvider({
         setRailOpen(false);
       },
       selected,
+      openOn,
       // T161: picking a stream opens its page (§9.3); "All streams" is the
       // inbox. On a phone the drawer gets out of the way either way.
-      select: (id) => {
+      select: (id, options) => {
         setSelected(id);
+        setOpenOn(id !== undefined && options?.tab ? { id, tab: options.tab } : undefined);
         setView(id === undefined ? 'inbox' : 'stream');
         setRailOpen(false);
       },
@@ -235,6 +245,7 @@ export function ShellProvider({
     [
       view,
       selected,
+      openOn,
       railOpen,
       newStreamOpen,
       newStreamPreset,
