@@ -9395,9 +9395,12 @@ div.cr-lens-ev:hover {
 }
 .cr-dir-state {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 7px;
   min-width: 0;
+}
+.cr-dir-state > .cr-dir-live {
+  margin-top: 6px;
 }
 .cr-dir-state > [data-testid="director-session"] {
   min-width: 0;
