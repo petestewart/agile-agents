@@ -18,6 +18,7 @@ import {
   formatKnowledgeScope,
   inboxContext,
   inboxDetail,
+  isAgentRole,
   liveChildrenOf,
 } from '@agile-agents/shared';
 import type { AutonomyService } from '../coordination/autonomy';
@@ -47,7 +48,7 @@ export interface InboxServiceDeps {
   /** A proposed rule is a `rule_accept` item (§3.1). */
   rules?: KnowledgeService;
   /** T281: a draft plan is a `plan_approve` item (§9.1: approval at every level). */
-  plans?: Pick<PlanService, 'listDraft'>;
+  plans?: Pick<PlanService, 'listDraft'> & Partial<Pick<PlanService, 'waitingParts'>>;
   contracts?: Pick<ContractService, 'find'>;
   /** T282: a coordinator's change held at Advise is a `proposal` item with Apply. */
   proposals?: Pick<AutonomyService, 'listOpen'>;
@@ -123,6 +124,12 @@ export class InboxService {
         ...withDetail(text),
         ref: `plans/${stream.id}.yaml`,
       });
+    }
+    // T344: parts waiting for a plan no running coordinator will write.
+    const drafted = new Set(this.deps.plans?.listDraft().map((p) => p.node));
+    for (const stream of byId.values()) {
+      const item = this.planWaitingItem(stream, byId, drafted);
+      if (item) items.push(item);
     }
     for (const proposal of this.deps.proposals?.listOpen() ?? []) {
       // T302: a Director proposal sits on the node its change is about.
@@ -235,6 +242,39 @@ export class InboxService {
       context: inboxContext(gateText(gate)),
       ...withDetail(gateText(gate)),
       ref: `gates/${gate.id}.yaml`,
+    };
+  }
+
+  /**
+   * T344: a coordinating node whose parts wait for its plan (T336) while no
+   * coordinator runs to write one (it ended its turn without a plan, or the
+   * human stopped it) and no plan waits on approval (that card replaces
+   * this one). Wake coordinator or Start parts anyway; derived, like the rest.
+   */
+  private planWaitingItem(
+    stream: Stream,
+    byId: Map<string, Stream>,
+    drafted: ReadonlySet<string>,
+  ): InboxItem | undefined {
+    const plans = this.deps.plans;
+    if (plans?.waitingParts === undefined || stream.archived === true) return undefined;
+    if (drafted.has(stream.id) || !hasParts(stream.id, byId)) return undefined;
+    const live = stream.sessions.some(
+      (s) => isAgentRole(s.role) && s.status !== 'stopped' && s.status !== 'error',
+    );
+    if (live) return undefined;
+    const parts = plans.waitingParts(stream.id);
+    if (parts.length === 0) return undefined;
+    const titles = parts.map((p) => p.title).join(', ');
+    const text = `${titles} ${parts.length === 1 ? 'waits' : 'wait'} for the plan, and no coordinator is running to write it. Wake the coordinator, or start the ${parts.length === 1 ? 'part' : 'parts'} without a plan.`;
+    return {
+      kind: 'plan_waiting',
+      id: stream.id,
+      stream: stream.id,
+      stream_path: this.path(stream, byId),
+      ts: stream.agent.updated_at,
+      context: inboxContext(text),
+      ...withDetail(text),
     };
   }
 

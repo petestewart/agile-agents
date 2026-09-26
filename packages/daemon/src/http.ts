@@ -702,6 +702,7 @@ function handleActivityRoute(
  *
  *   GET  /api/streams/:id/plan          `{plan, contracts}`: the node's plan (or null) and its contracts
  *   POST /api/streams/:id/plan/approve  the human approves the draft plan (the inbox card's button)
+ *   POST /api/streams/:id/plan/start-parts  T344: "Start parts anyway": the parts waiting for the plan start without one
  */
 async function handlePlanRoute(
   req: Request,
@@ -709,16 +710,18 @@ async function handlePlanRoute(
   feed: FeedContext | undefined,
   sameOrigin: () => boolean,
 ): Promise<Response | undefined> {
-  const match = url.pathname.match(/^\/api\/streams\/([^/]+)\/plan(\/approve)?$/);
+  const match = url.pathname.match(/^\/api\/streams\/([^/]+)\/plan(?:\/(approve|start-parts))?$/);
   if (!match) return undefined;
-  const approve = match[2] !== undefined;
-  if (req.method !== (approve ? 'POST' : 'GET')) return undefined;
+  const write = match[2] !== undefined;
+  const approve = match[2] === 'approve';
+  if (req.method !== (write ? 'POST' : 'GET')) return undefined;
   if (!feed?.plans || !feed.contracts) return errorResponse(503, 'plans not available');
   const id = UlidSchema.safeParse(decodeURIComponent(match[1] ?? ''));
   if (!id.success) return errorResponse(400, `invalid stream id: ${match[1]}`);
-  if (approve && !sameOrigin()) return errorResponse(403, 'cross-origin request rejected');
+  if (write && !sameOrigin()) return errorResponse(403, 'cross-origin request rejected');
   try {
     if (approve) return jsonResponse(await feed.plans.approve(id.data, 'human'));
+    if (write) return jsonResponse({ started: await feed.plans.startWaitingParts(id.data) });
     return jsonResponse({
       plan: feed.plans.get(id.data) ?? null,
       contracts: feed.contracts.forNode(id.data),

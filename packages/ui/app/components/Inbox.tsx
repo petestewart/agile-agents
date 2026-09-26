@@ -14,6 +14,8 @@
  *  - `rule_accept` → accept / retire
  *  - `rule_batch`  → opens the rules screen filtered to that seed import (T163)
  *  - `plan_approve` → approve a coordinator's draft plan (T281)
+ *  - `plan_waiting` → parts wait for a plan no coordinator is writing:
+ *                     wake the coordinator, or start the parts anyway (T344)
  *  - `proposal`    → apply / dismiss a coordinator's change held at Advise (T282)
  *  - `done`        → merge (T347, D36 D7: the Delivery panel's word)
  *  - `blocked`     → shown, decided on the stream page
@@ -24,11 +26,13 @@ import { useState } from 'react';
 import {
   answerQuestion,
   approvePlan,
+  attachSession,
   decideGate,
   decideProposal,
   decideRule,
   landStream,
   noteGate,
+  startWaitingParts,
 } from '../lib/api';
 import { useShell } from '../lib/shell';
 import { groupInbox } from '../lib/streams';
@@ -40,6 +44,7 @@ const KIND_LABEL: Record<InboxItem['kind'], string> = {
   rule_accept: 'knowledge proposed',
   rule_batch: 'knowledge proposed',
   plan_approve: 'plan to approve',
+  plan_waiting: 'waiting for the plan',
   proposal: 'coordinator proposal',
   blocked: 'blocked',
   done: 'ready to merge',
@@ -249,6 +254,29 @@ export function Card({
             onClick={() => act(() => approvePlan(item.id))}
           >
             Approve plan
+          </button>
+        </div>
+      )}
+
+      {item.kind === 'plan_waiting' && (
+        <div className="cr-actions">
+          <button
+            type="button"
+            className="cr-btn signal"
+            data-testid="plan-wake"
+            disabled={busy}
+            onClick={() => act(() => attachSession(item.id, 'worker'))}
+          >
+            Wake coordinator
+          </button>
+          <button
+            type="button"
+            className="cr-btn"
+            data-testid="plan-start-parts"
+            disabled={busy}
+            onClick={() => act(() => startWaitingParts(item.id))}
+          >
+            Start parts anyway
           </button>
         </div>
       )}

@@ -419,3 +419,145 @@ describe('T336: parts wait for the plan', () => {
     expect(plans.waitingForPlan(streams.get(api.id))).toBe(false);
   });
 });
+
+describe('T344: a "waiting for the plan" card when no coordinator will write one', () => {
+  /** A split node whose coordinator ran and stopped; `start` makes a part live, as attach would. */
+  async function stalled() {
+    const started: string[] = [];
+    plans = new PlanService({
+      store,
+      streams,
+      contracts,
+      start: async (id) => {
+        started.push(id);
+        await store.updateStream('daemon', id, (before) => ({
+          ...before,
+          agent: { ...before.agent, status: 'working' },
+          sessions: [
+            { id: ulid(), vendor: 'claude', model: 'm', role: 'worker', status: 'running' },
+          ],
+        }));
+      },
+    });
+    const tree = await saleTree();
+    for (const [id, repo] of [
+      [tree.api.id, 'api'],
+      [tree.web.id, 'web'],
+      [tree.docs.id, 'docs'],
+    ] as const) {
+      await store.updateStream('daemon', id, (before) => ({ ...before, repo }));
+    }
+    // The coordinator ended its turn without writing a plan.
+    await store.updateStream('daemon', tree.node.id, (before) => ({
+      ...before,
+      sessions: [
+        { id: ulid(), vendor: 'claude', model: 'm', role: 'coordinator', status: 'stopped' },
+      ],
+    }));
+    // api and web are the split's parts; docs was made with "Start later".
+    for (const part of [tree.api, tree.web]) {
+      await streams.appendThread('daemon', part.id, {
+        kind: 'event',
+        body: `${WAITING_FOR_PLAN}this part starts when "Show sale prices"'s plan is approved`,
+      });
+    }
+    const inbox = new InboxService({
+      streams,
+      questions: new QuestionService(store, streams, { deliver: async () => {} }),
+      gates: new GateService(store),
+      plans,
+      contracts,
+    });
+    const cards = () => inbox.list().filter((i) => i.stream === tree.node.id);
+    return { ...tree, started, cards };
+  }
+
+  test('the coordinator ends with no plan: a card; a written plan replaces it; approval clears it', async () => {
+    const { node, api, web, cards } = await stalled();
+    const [card] = cards();
+    expect(cards().map((c) => c.kind)).toEqual(['plan_waiting']);
+    expect(card?.id).toBe(node.id);
+    expect(card?.context).toContain('api: add salePrice, web: show salePrice wait for the plan');
+    expect(card?.context).not.toContain('docs');
+
+    await plans.write(node.id, [
+      { child: api.id, owns: ['prices.ts'] },
+      { child: web.id, owns: ['shop.html'] },
+    ]);
+    expect(cards().map((c) => c.kind)).toEqual(['plan_approve']);
+
+    await plans.approve(node.id);
+    expect(cards()).toEqual([]);
+  });
+
+  test('an approved plan that leaves a part out keeps the card for that part', async () => {
+    const { node, api, cards } = await stalled();
+    await plans.write(node.id, [{ child: api.id, owns: ['prices.ts'] }]);
+    await plans.approve(node.id);
+    expect(cards().map((c) => c.kind)).toEqual(['plan_waiting']);
+    expect(cards()[0]?.context).toStartWith('web: show salePrice waits for the plan');
+  });
+
+  test('no card while the coordinator runs; a human-stopped coordinator gets one', async () => {
+    const { node, cards } = await stalled();
+    await store.updateStream('daemon', node.id, (before) => ({
+      ...before,
+      sessions: [
+        ...before.sessions,
+        { id: ulid(), vendor: 'claude', model: 'm', role: 'coordinator', status: 'running' },
+      ],
+    }));
+    expect(cards()).toEqual([]);
+    // The human detached it: the session stopped and the agent went idle.
+    await store.updateStream('daemon', node.id, (before) => ({
+      ...before,
+      agent: { ...before.agent, status: 'idle' },
+      sessions: before.sessions.map((s) => ({ ...s, status: 'stopped' as const })),
+    }));
+    expect(cards().map((c) => c.kind)).toEqual(['plan_waiting']);
+  });
+
+  test('"Start parts anyway" starts the waiting parts, and the card goes', async () => {
+    const { node, api, web, docs, started, cards } = await stalled();
+    expect(await plans.startWaitingParts(node.id)).toEqual([api.id, web.id]);
+    expect(started).toEqual([api.id, web.id]);
+    expect(started).not.toContain(docs.id);
+    expect(cards()).toEqual([]);
+    expect(streams.readThread(node.id).entries.at(-1)?.body).toBe(
+      'started without a plan by human: api: add salePrice, web: show salePrice',
+    );
+    // Nothing is left to start.
+    expect(await plans.startWaitingParts(node.id)).toEqual([]);
+  });
+
+  test('"Wake coordinator" attaches the node\'s coordinator, and the card goes while it runs', async () => {
+    const { node, cards } = await stalled();
+    const attach = new AttachService({
+      store,
+      streams,
+      home,
+      plans,
+      contracts,
+      provider: () => {
+        const script = join(scratch, 'hang.json');
+        writeFileSync(script, JSON.stringify({ steps: [{ type: 'hang' }] }));
+        return {
+          ...ACP_PROVIDERS.claude,
+          command: 'bun',
+          args: [FAKE_AGENT_PATH],
+          envOverrides: { AGILE_FAKE_AGENT_SCRIPT: script },
+        };
+      },
+    });
+    try {
+      // The card's button: the sessions strip's attach (`POST /api/streams/:id/attach`).
+      const { session: s } = await attach.attach(node.id, { role: 'worker' });
+      expect(s.role).toBe('coordinator');
+      expect(cards()).toEqual([]);
+    } finally {
+      await attach.stop(node.id, undefined, { detach: true });
+    }
+    // Stopped again with no plan: the card is back.
+    expect(cards().map((c) => c.kind)).toEqual(['plan_waiting']);
+  });
+});
