@@ -8,7 +8,16 @@
  * selection) are siblings, and the inbox cards open a stream too.
  */
 
-import { type PropsWithChildren, createContext, useContext, useMemo, useState } from 'react';
+import {
+  type PropsWithChildren,
+  createContext,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
+import { useOptionalFeed } from './feed-context';
 import { DEFAULT_RULES_FILTER, type RulesFilter } from './rules';
 
 /** `stream` is the stream page (T161) — the stream is `selected`. `rules` is T163's rules screen. */
@@ -38,6 +47,37 @@ export function isShellView(value: string | null): value is ShellView {
   return value !== null && (SHELL_VIEWS as readonly string[]).includes(value);
 }
 
+/**
+ * T348 (D36 D2): the part of the shell a URL carries, so a reload or a
+ * shared link reopens the same view. `?node=<id>` is a node's page,
+ * `?view=<view>` any other view, `&project=<id>` the rail's project filter.
+ */
+export interface ShellLocation {
+  view: ShellView;
+  node: string | undefined;
+  project: string | undefined;
+}
+
+/** Reads a `location.search`; anything unknown or missing is the inbox, "All" projects. */
+export function parseShellUrl(search: string): ShellLocation {
+  const params = new URLSearchParams(search);
+  const node = params.get('node') || undefined;
+  const project = params.get('project') || undefined;
+  if (node !== undefined) return { view: 'stream', node, project };
+  const view = params.get('view');
+  return { view: isShellView(view) ? view : 'inbox', node: undefined, project };
+}
+
+/** The `location.search` for a shell location: `''` for the plain inbox. */
+export function shellSearch({ view, node, project }: ShellLocation): string {
+  const params = new URLSearchParams();
+  if (view === 'stream' && node !== undefined) params.set('node', node);
+  else if (view !== 'inbox' && view !== 'stream') params.set('view', view);
+  if (project !== undefined) params.set('project', project);
+  const query = params.toString();
+  return query === '' ? '' : `?${query}`;
+}
+
 export interface ShellValue {
   view: ShellView;
   setView(view: ShellView): void;
@@ -64,15 +104,66 @@ export interface ShellValue {
 const ShellContext = createContext<ShellValue | undefined>(undefined);
 
 export function ShellProvider({
-  initialView = 'inbox',
+  initial = { view: 'inbox', node: undefined, project: undefined },
   children,
-}: PropsWithChildren<{ initialView?: ShellView }>): JSX.Element {
-  const [view, setView] = useState<ShellView>(initialView);
-  const [selected, setSelected] = useState<string | undefined>(undefined);
+}: PropsWithChildren<{ initial?: ShellLocation }>): JSX.Element {
+  const [view, setView] = useState<ShellView>(initial.view);
+  const [selected, setSelected] = useState<string | undefined>(initial.node);
   const [railOpen, setRailOpen] = useState(false);
   const [newStreamOpen, setNewStreamOpen] = useState(false);
-  const [project, setProject] = useState<string | undefined>(undefined);
+  const [project, setProject] = useState<string | undefined>(initial.project);
   const [rulesFilter, setRulesFilter] = useState<RulesFilter>(DEFAULT_RULES_FILTER);
+  // T348: ids read from the URL (on load, or on back/forward) are checked
+  // against the next cockpit frame; a stale one falls back quietly. Ids set
+  // by a click are never checked — a node just created may not be in the
+  // frame yet.
+  const [unchecked, setUnchecked] = useState(
+    initial.node !== undefined || initial.project !== undefined,
+  );
+  // The fallback replaces the bad URL rather than stacking a history entry on it.
+  const replaceNext = useRef(false);
+  const cockpit = useOptionalFeed()?.cockpit;
+
+  useEffect(() => {
+    if (!unchecked || !cockpit) return;
+    setUnchecked(false);
+    if (selected !== undefined && !cockpit.streams.some((row) => row.id === selected)) {
+      replaceNext.current = true;
+      setSelected(undefined);
+      setView((current) => (current === 'stream' ? 'inbox' : current));
+    }
+    if (project !== undefined && !cockpit.projects.some((p) => p.id === project)) {
+      replaceNext.current = true;
+      setProject(undefined);
+    }
+  }, [unchecked, cockpit, selected, project]);
+
+  // State → URL. Opening another node or view is a new history entry (so
+  // back returns to it); the project filter alone only rewrites the current one.
+  useEffect(() => {
+    const next = shellSearch({ view, node: selected, project });
+    if (next === location.search) return;
+    const current = parseShellUrl(location.search);
+    const target = parseShellUrl(next);
+    const moved = current.view !== target.view || current.node !== target.node;
+    const url = `${location.pathname}${next}${location.hash}`;
+    if (moved && !replaceNext.current) history.pushState(null, '', url);
+    else history.replaceState(null, '', url);
+    replaceNext.current = false;
+  }, [view, selected, project]);
+
+  // URL → state, on back/forward.
+  useEffect(() => {
+    const onPop = (): void => {
+      const next = parseShellUrl(location.search);
+      setView(next.view);
+      setSelected(next.node);
+      setProject(next.project);
+      setUnchecked(next.node !== undefined || next.project !== undefined);
+    };
+    window.addEventListener('popstate', onPop);
+    return () => window.removeEventListener('popstate', onPop);
+  }, []);
 
   const value = useMemo<ShellValue>(
     () => ({
