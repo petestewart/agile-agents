@@ -1468,26 +1468,70 @@ ul.cr-error {
   flex-direction: column;
   min-height: 0;
 }
-.cr-rail-tools {
+.cr-rail-hd {
+  gap: 2px;
+}
+.cr-rail-hd > .cr-pop-wrap {
+  flex: none;
+}
+.cr-rail-hd .cr-icon-btn {
+  color: var(--text-faint);
+}
+.cr-rail-hd .cr-icon-btn:hover:not(:disabled),
+.cr-rail-hd .cr-icon-btn[aria-expanded="true"] {
+  color: var(--text);
+}
+
+/* "Only Shop ▾ ×": the project filter, when one is on. */
+.cr-rail-only {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  height: 28px;
+  margin: 2px 0 6px;
+  padding: 0 2px;
+  border-radius: var(--radius-sm);
+  color: var(--accent-fg);
+  background: var(--accent-weak);
+}
+.cr-rail-only > .cr-pop-wrap {
+  flex: 1;
+  min-width: 0;
+}
+.cr-rail-only-name {
   display: flex;
   align-items: center;
   gap: 6px;
-  margin: 2px 0 6px;
+  width: 100%;
+  min-width: 0;
+  height: 24px;
+  padding: 0 6px;
+  font: inherit;
+  font-size: var(--text-sm);
+  color: inherit;
+  background: none;
+  border: 0;
+  border-radius: 4px;
+  cursor: pointer;
 }
-.cr-project-bar {
-  display: flex;
-  gap: 6px;
-  margin: 2px 0 6px;
-}
-.cr-project-bar select {
+.cr-rail-only-name > span {
   flex: 1;
   min-width: 0;
-  height: 28px;
-  padding-top: 0;
-  padding-bottom: 0;
-  font-size: var(--text-sm);
-  background-color: var(--bg-panel);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
 }
+.cr-rail-only-name b {
+  font-weight: 600;
+}
+.cr-rail-only-name:hover {
+  background: var(--bg-hover);
+}
+.cr-rail-only .cr-icon-btn {
+  color: inherit;
+}
+
 .cr-tree-filter {
   width: 100%;
   height: 28px;
@@ -1503,6 +1547,9 @@ ul.cr-error {
   list-style: none;
   margin: 0;
   padding: 0;
+}
+.cr-tree > li + li {
+  margin-top: 6px;
 }
 .cr-tree ul {
   position: relative;
@@ -1520,7 +1567,11 @@ ul.cr-error {
 .cr-tree li {
   position: relative;
 }
-.cr-tree li > .cr-tree-row {
+.cr-tree-item {
+  position: relative;
+  border-radius: var(--radius-sm);
+}
+.cr-tree-item > .cr-tree-row {
   width: 100%;
 }
 .cr-tree-caret {
@@ -1563,10 +1614,11 @@ ul.cr-error {
   border-radius: var(--radius-sm);
   cursor: pointer;
 }
-.cr-tree-row:hover {
+.cr-tree-item:hover > .cr-tree-row {
   background: var(--bg-hover);
 }
-.cr-tree-row[aria-current="true"] {
+.cr-tree-row[aria-current="true"],
+.cr-tree-item:hover > .cr-tree-row[aria-current="true"] {
   background: var(--bg-active);
   font-weight: 500;
 }
@@ -1574,11 +1626,16 @@ ul.cr-error {
   background: var(--accent-weak);
   box-shadow: inset 0 0 0 1px var(--accent);
 }
+.cr-tree-item[data-drop-refused="true"] > .cr-tree-row {
+  background: var(--red-weak);
+  box-shadow: inset 0 0 0 1px var(--red);
+}
 .cr-tree-row[data-role="project"] {
   font-weight: 600;
 }
 .cr-tree-row[data-status="closed"] .title,
-.cr-tree-row[data-status="merged"] .title {
+.cr-tree-row[data-status="merged"] .title,
+.cr-tree-row[data-status="not_started"] .title {
   color: var(--text-muted);
 }
 .cr-tree-label {
@@ -1615,10 +1672,548 @@ ul.cr-error {
   font-size: var(--text-xs);
   color: var(--amber-text);
 }
+
+/* A row's + and ⋯: on hover, on keyboard focus, and while its menu is open. */
+.cr-tree-actions {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  display: flex;
+  gap: 1px;
+  opacity: 0;
+  transition: opacity 0.1s;
+}
+.cr-tree-item:hover > .cr-tree-actions,
+.cr-tree-item:has(:focus-visible) > .cr-tree-actions,
+.cr-tree-actions:has([aria-expanded="true"]) {
+  opacity: 1;
+}
+.cr-tree-item:hover > .cr-tree-row,
+.cr-tree-item:has(:focus-visible) > .cr-tree-row,
+.cr-tree-item:has(.cr-tree-actions [aria-expanded="true"]) > .cr-tree-row {
+  padding-right: 58px;
+}
+.cr-tree-actions .cr-icon-btn {
+  color: var(--text-muted);
+}
+.cr-tree-actions .cr-icon-btn:hover:not(:disabled),
+.cr-tree-actions .cr-icon-btn[aria-expanded="true"] {
+  color: var(--text);
+  background: var(--bg-active);
+}
+.cr-tree-actions .cr-menu-item {
+  font-weight: 400;
+}
+@media (hover: none) {
+  .cr-tree-actions {
+    opacity: 1;
+  }
+  .cr-tree-item > .cr-tree-row {
+    padding-right: 58px;
+  }
+}
+
+/* Why a drop is refused, under the row while the pointer is on it. */
+.cr-drop-hint {
+  position: absolute;
+  z-index: 5;
+  left: 20px;
+  right: 4px;
+  top: calc(100% + 2px);
+  padding: 5px 8px;
+  font-size: var(--text-xs);
+  line-height: 1.4;
+  color: var(--red-text);
+  background: var(--bg-raised);
+  border: 1px solid var(--red);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-md);
+  pointer-events: none;
+}
+
 .cr-tree-empty {
   padding: 8px;
   color: var(--text-faint);
   font-size: var(--text-sm);
+}
+.cr-tree-move-error {
+  display: flex;
+  align-items: flex-start;
+  gap: 4px;
+  padding: 6px 4px 6px 8px;
+  border-radius: var(--radius-sm);
+  background: var(--red-weak);
+}
+.cr-tree-move-error > span {
+  flex: 1;
+  padding-top: 3px;
+}
+.cr-tree-move-error .cr-icon-btn {
+  color: inherit;
+}
+
+/* No projects yet. */
+.cr-rail-empty {
+  margin: 2px 0;
+  padding: 14px 12px;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius);
+}
+.cr-rail-empty-title {
+  font-weight: 600;
+}
+.cr-rail-empty p {
+  margin: 4px 0 12px;
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+  line-height: 1.45;
+}
+
+/* The legend (the ? next to Projects): it floats beside the sidebar, which clips. */
+.cr-pop.cr-legend {
+  position: static;
+  min-width: 0;
+  padding: 0;
+  background: none;
+  border: 0;
+  box-shadow: none;
+  animation: none;
+}
+.cr-legend-body {
+  position: fixed;
+  z-index: 60;
+  width: min(340px, calc(100vw - 16px));
+  overflow-y: auto;
+  padding: 12px 14px 14px;
+  font-size: var(--text-sm);
+  font-weight: 400;
+  letter-spacing: normal;
+  line-height: 1.45;
+  color: var(--text);
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-lg);
+  animation: cr-pop-in 0.12s var(--ease);
+}
+.cr-legend-hd {
+  margin: 12px 0 6px;
+  font-size: var(--text-xs);
+  font-weight: 600;
+  color: var(--text-faint);
+}
+.cr-legend-hd:first-child {
+  margin-top: 0;
+}
+.cr-legend-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.cr-legend-list li {
+  display: grid;
+  grid-template-columns: 16px 100px minmax(0, 1fr);
+  align-items: center;
+  column-gap: 8px;
+}
+.cr-legend-mark {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 18px;
+}
+.cr-legend-label {
+  font-weight: 500;
+}
+.cr-legend-hint {
+  color: var(--text-muted);
+}
+.cr-legend-mark + .cr-legend-hint {
+  grid-column: 2 / 4;
+}
+
+/* Deleted (n): what Delete archived, with Restore. */
+.cr-rail-deleted {
+  margin-top: 8px;
+}
+.cr-rail-deleted-count {
+  margin-left: 2px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+.cr-rail-deleted-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.cr-rail-deleted-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 30px;
+  padding: 0 2px 0 8px;
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+}
+.cr-rail-deleted-row:hover {
+  background: var(--bg-hover);
+}
+.cr-rail-deleted-icon {
+  color: var(--text-faint);
+}
+.cr-rail-deleted-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cr-rail-deleted-where {
+  color: var(--text-faint);
+}
+.cr-rail-deleted-row .cr-btn {
+  height: 24px;
+  padding: 0 8px;
+}
+
+/* Pickers (New node's Parent and Repository, Move to…). */
+.cr-pickfield .cr-pop-wrap {
+  display: flex;
+  width: 100%;
+}
+.cr-pickfield-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  height: 34px;
+  padding: 0 9px;
+  font: inherit;
+  text-align: left;
+  color: var(--text);
+  background: var(--bg-panel);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: border-color 0.12s, box-shadow 0.12s;
+}
+.cr-pickfield-btn:hover {
+  border-color: var(--text-faint);
+}
+.cr-pickfield-btn[aria-expanded="true"] {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-weak);
+}
+.cr-pickfield-value {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+}
+.cr-pickfield-value > .cr-icon,
+.cr-pickfield-value > .cr-repo-icon {
+  color: var(--text-muted);
+}
+.cr-pickfield-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cr-pickfield-sub {
+  margin-left: auto;
+  font-size: var(--text-sm);
+  color: var(--text-faint);
+  white-space: nowrap;
+}
+.cr-pickfield-caret {
+  color: var(--text-faint);
+}
+.cr-pop.cr-pickfield-pop {
+  right: 0;
+  min-width: 0;
+  padding: 0;
+}
+.cr-picklist {
+  display: flex;
+  flex-direction: column;
+}
+.cr-picklist-search {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 10px;
+  color: var(--text-faint);
+  border-bottom: 1px solid var(--border);
+}
+.cr-picklist-search input,
+.cr-picklist-search input:focus,
+.cr-picklist-search input:hover {
+  flex: 1;
+  padding: 9px 0;
+  background: none;
+  border: 0;
+  box-shadow: none;
+}
+.cr-picklist-list {
+  max-height: 264px;
+  overflow-y: auto;
+  padding: 4px;
+  outline: none;
+}
+.cr-picklist-group {
+  padding: 8px 8px 4px;
+  font-size: var(--text-xs);
+  font-weight: 600;
+  color: var(--text-faint);
+}
+.cr-pick {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 30px;
+  padding: 4px 8px;
+  font: inherit;
+  text-align: left;
+  color: var(--text);
+  background: none;
+  border: 0;
+  border-radius: 5px;
+  cursor: pointer;
+}
+.cr-pick[data-active="true"] {
+  background: var(--bg-hover);
+}
+.cr-pick[aria-selected="true"] {
+  font-weight: 500;
+}
+.cr-pick:disabled {
+  color: var(--text-muted);
+  cursor: default;
+}
+.cr-pick-icon {
+  display: flex;
+  flex: none;
+  color: var(--text-muted);
+}
+.cr-pick-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cr-pick-sub {
+  font-size: var(--text-sm);
+  color: var(--text-faint);
+  white-space: nowrap;
+}
+.cr-pick-tag {
+  padding: 1px 7px;
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  background: var(--gray-weak);
+  border-radius: 999px;
+}
+.cr-pick-check {
+  color: var(--accent-fg);
+}
+.cr-picklist-empty {
+  padding: 10px 8px;
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+}
+.cr-move-list {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-panel);
+}
+.cr-move-list .cr-picklist-list {
+  max-height: min(340px, 50vh);
+}
+
+/* New node */
+.cr-newnode-goal {
+  min-height: 92px;
+  font-size: var(--text-lg);
+  line-height: 1.5;
+}
+.cr-newnode-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  column-gap: 12px;
+}
+.cr-newnode-start {
+  margin-bottom: 4px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-inset);
+}
+.cr-switch-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-weight: 500;
+  cursor: pointer;
+}
+input[type="checkbox"].cr-switch {
+  appearance: none;
+  position: relative;
+  flex: none;
+  width: 30px;
+  height: 18px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: var(--border-strong);
+  cursor: pointer;
+  transition: background 0.15s;
+}
+input[type="checkbox"].cr-switch::before {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: var(--shadow-sm);
+  transition: transform 0.15s var(--ease);
+}
+input[type="checkbox"].cr-switch:checked {
+  background: var(--accent);
+}
+input[type="checkbox"].cr-switch:checked::before {
+  transform: translateX(12px);
+}
+input[type="checkbox"].cr-switch:focus-visible {
+  box-shadow: var(--focus-ring);
+}
+.cr-newnode-model {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 8px 0 0 40px;
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+}
+.cr-newnode-model b {
+  font-weight: 500;
+  color: var(--text);
+}
+.cr-newnode-model .cr-link {
+  margin-left: 2px;
+  font-size: var(--text-sm);
+}
+.cr-newnode-session {
+  margin-left: 40px;
+}
+.cr-newnode-session .cr-actions {
+  margin-top: 8px;
+}
+.cr-newnode-session > .cr-link {
+  margin-top: 6px;
+  font-size: var(--text-sm);
+}
+.cr-newnode-keys {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  margin-right: auto;
+  font-size: var(--text-sm);
+  color: var(--text-faint);
+}
+
+/* New project: the repositories as a checklist. */
+.cr-checkfield {
+  min-width: 0;
+  margin: 0 0 14px;
+  padding: 0;
+  border: 0;
+}
+.cr-checkfield > legend {
+  padding: 0;
+  margin-bottom: 5px;
+  font-size: var(--text-sm);
+  font-weight: 500;
+  color: var(--text);
+}
+.cr-checklist {
+  display: flex;
+  flex-direction: column;
+  max-height: 290px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-panel);
+}
+.cr-check-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  cursor: pointer;
+  border-bottom: 1px solid var(--border);
+}
+.cr-check-row:hover {
+  background: var(--bg-hover);
+}
+.cr-check-row[data-checked="true"] {
+  background: var(--accent-weak);
+}
+.cr-check-main {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+}
+.cr-check-name {
+  font-weight: 500;
+}
+.cr-check-sub {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+}
+.cr-check-add {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 12px;
+  font: inherit;
+  text-align: left;
+  color: var(--accent-fg);
+  background: none;
+  border: 0;
+  cursor: pointer;
+}
+.cr-check-add:hover {
+  background: var(--bg-hover);
+}
+.cr-checklist-empty {
+  padding: 12px;
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius);
+}
+.cr-checklist-empty p {
+  margin: 0 0 6px;
+}
+.cr-dialog-text {
+  margin: 0;
+  line-height: 1.55;
+  color: var(--text-muted);
 }
 
 /* ==== Needs me ==== */
