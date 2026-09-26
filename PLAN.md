@@ -2189,6 +2189,38 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 - **Validation Steps:** `bun test packages/ui/app/lib/notify.test.ts`; the T388 e2e.
 - **Notes:** Branch T391-notify-each-finish. Also records D38 (no global Host check on read routes).
 
+### Ticket: T392 ∥ The chat shows what the agent is doing
+- **Priority:** P1
+- **Status:** In progress
+- **Owner:** worker
+- **Scope:** While an agent works, the chat shows only "Claude is working…": you can't tell whether it is reading, editing or running tests. The daemon already records each ACP tool call (`tool_call` events: kind, title, status) and the feed pushes them live.
+- **Acceptance Criteria:** During a turn the chat shows the agent's latest steps live (kind icon, title, status); after the turn a folded "N steps" row sits before the reply and expands to the list; titles are clipped, nothing raw; a daemon read gives a node's steps without scanning the whole log each time.
+- **Validation Steps:** `bun test packages/ui packages/daemon/src/http.test.ts`; a control-room e2e with a scripted fake agent; the whole control-room e2e and the walkthrough.
+
+### Ticket: T393 ∥ Review the diff with the agent
+- **Priority:** P1
+- **Status:** In progress
+- **Owner:** worker
+- **Scope:** The Changes tab shows the diff, but feedback on it means retyping file names and lines in the chat.
+- **Acceptance Criteria:** A line's gutter offers Comment; comments collect in a review bar ("3 comments"); "Add to message" puts one formatted message (path:line, the line, the comment) in the node's composer and opens the chat; comments survive tab switches and clear when sent.
+- **Validation Steps:** `bun test packages/ui`; a control-room e2e; the whole control-room e2e and the walkthrough.
+
+### Ticket: T394 ∥ Resilience and load: error boundaries, code-split views, service-worker notifications
+- **Priority:** P1
+- **Status:** In progress
+- **Owner:** worker
+- **Scope:** One component throwing blanks the whole cockpit (no error boundary); the app ships as one 590 KB script; notifications can't show on Android or an installed iOS app (they need the service worker).
+- **Acceptance Criteria:** Each view and a node page's tab body sit in an error boundary with a card in words (Try again, Reload, Copy details) that resets on navigation; the heavy views load on demand with a quiet fallback and the main chunk shrinks (no Vite size warning); notifications go through `registration.showNotification` when a worker is active, with clicks focusing the tab on the node, and fall back to `new Notification`.
+- **Validation Steps:** `bun test packages/ui`; the installable e2e; new e2e for the boundary; the whole control-room e2e and the walkthrough.
+
+### Ticket: T395 Rows say when they last changed; j/k in the tree
+- **Priority:** P2
+- **Status:** In progress
+- **Owner:** manager
+- **Scope:** The Overview's and Running's age is the node's creation time (the row has no last-change time); the rail's keyboard walk is arrow keys only.
+- **Acceptance Criteria:** The cockpit row carries `updated_at` (the latest of the node's creation and its agent's last change); the Overview and Running say "updated 3m ago" and sort within a group by it; `j`/`k` move through the rail like ↓/↑ when it has focus.
+- **Validation Steps:** `bun test packages/ui packages/daemon/src/feed/snapshot.test.ts`; the overview and rail e2e.
+
 ### Ticket: T369 Phase 15 QA
 - **Priority:** P0
 - **Status:** Done
