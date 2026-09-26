@@ -1141,6 +1141,62 @@ describe('T160 cockpit routes', () => {
     }
   });
 
+  test('T404: a /ws connect sends the recent events without reading the log again', async () => {
+    const agentId = '01ARZ3NDEKTSV4RRFFQ69GE903';
+    const put = () =>
+      store.putAgent(agentId, {
+        vendor: 'claude',
+        model: 'claude-sonnet-4-5',
+        last_seen: new Date().toISOString(),
+      });
+    await put();
+    let reads = 0;
+    const listEvents = store.listEvents.bind(store);
+    store.listEvents = (endOffset?: number) => {
+      reads += 1;
+      return listEvents(endOffset);
+    };
+    const quick = startHttpServer({
+      port: 0,
+      version: '0.0.0-test',
+      stateRoot,
+      startedAt: Date.now(),
+      store,
+      gates: new GateService(store),
+      feedPollIntervalMs: 20,
+    });
+    const snapshotOf = () =>
+      new Promise<Event[]>((resolve, reject) => {
+        const ws = new WebSocket(`ws://127.0.0.1:${quick.port}/ws`);
+        ws.onmessage = (event) => {
+          const frame = JSON.parse(event.data as string) as { type: string; events?: Event[] };
+          if (frame.type !== 'snapshot') return;
+          ws.close();
+          resolve(frame.events ?? []);
+        };
+        ws.onerror = (event) => reject(event);
+      });
+    try {
+      // Read once, when the server started.
+      expect(reads).toBe(1);
+      const first = await snapshotOf();
+      expect(first.filter((e) => e.agent === agentId).map((e) => e.kind)).toEqual(['agent_put']);
+      // Written after the start: the tailer adds it, and the next connect has it.
+      await put();
+      const deadline = Date.now() + 5000;
+      let second = await snapshotOf();
+      while (second.filter((e) => e.agent === agentId).length < 2 && Date.now() < deadline) {
+        await Bun.sleep(20);
+        second = await snapshotOf();
+      }
+      expect(second.filter((e) => e.agent === agentId)).toHaveLength(2);
+      expect(reads).toBe(1);
+    } finally {
+      store.listEvents = listEvents;
+      await quick.stop();
+    }
+  });
+
   test('/ws delivers an event exactly once when it lands between tailer polls and the connect snapshot', async () => {
     // A slow poll so the event is on disk (and in a naive snapshot) before the
     // tailer's next poll publishes it to the now-subscribed socket.

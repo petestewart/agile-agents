@@ -6,6 +6,7 @@ export {
 } from './stream-page';
 export {
   DEFAULT_SNAPSHOT_EVENT_LIMIT,
+  RecentEvents,
   buildCockpitFrame,
   buildSnapshot,
   type CockpitFrame,

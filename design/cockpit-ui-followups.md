@@ -29,9 +29,6 @@ None open. (The last ones were fixed in T379, T380, T382 and T383.)
 
 ## P3 — cleanup, hardening, decisions
 
-- `buildSnapshot` reads and validates the whole `events.jsonl` on every `/ws`
-  connect to keep the last 200; `StepIndex`'s fold-once-then-tail would
-  serve it too on a long-lived home.
 
 - `GET /api/repos/:name/events` (T245) still caps at 200 unpaged; nothing in
   the cockpit calls it since T383 (T389 removed `getRepoEvents`). Page it like

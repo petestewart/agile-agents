@@ -8,7 +8,7 @@
  * store the feed routes 503 and `/ws` sends only the hello frame.
  */
 
-import { realpathSync } from 'node:fs';
+import { existsSync, realpathSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import {
   ClassifierKeyInputSchema,
@@ -61,6 +61,7 @@ import {
   type CockpitFrame,
   type EventTailerHandle,
   NothingToMergeCache,
+  RecentEvents,
   StepIndex,
   buildCockpitFrame,
   buildSnapshot,
@@ -1419,6 +1420,8 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
   const feed = resolveFeedContext(options);
 
   let tailer: EventTailerHandle | undefined;
+  // T404: what a `/ws` connect's snapshot sends, without reading the log again.
+  let recent: RecentEvents | undefined;
 
   const server = rethrowPortInUse(options, hostname, () =>
     Bun.serve({
@@ -1667,6 +1670,7 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
                   feed.questions,
                   options.repoRoot,
                   tailer?.getOffset(),
+                  recent?.list(),
                 ),
               ),
             );
@@ -1708,10 +1712,22 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
   }
 
   if (feed) {
+    const eventsPath = `${options.stateRoot}/log/events.jsonl`;
+    const start = existsSync(eventsPath) ? statSync(eventsPath).size : 0;
+    try {
+      const kept = new RecentEvents();
+      kept.load(feed.store, start);
+      recent = kept;
+    } catch (err) {
+      // A corrupt log: each connect reads it again, and is refused with its path, as before.
+      console.error(messageOf(err));
+    }
     tailer = startEventTailer({
-      path: `${options.stateRoot}/log/events.jsonl`,
+      path: eventsPath,
+      startOffset: start,
       pollIntervalMs: options.feedPollIntervalMs,
       onEvents: (newEvents) => {
+        recent?.add(newEvents, (err) => console.error(`event tailer: ${err.message}`));
         for (const event of newEvents) {
           server.publish(FEED_WS_TOPIC, JSON.stringify({ type: 'event', event }));
         }
