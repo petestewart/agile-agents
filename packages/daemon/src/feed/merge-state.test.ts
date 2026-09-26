@@ -126,3 +126,77 @@ describe('NothingToMergeCache (T380)', () => {
     expect(h.calls).toBe(3);
   });
 });
+
+describe('T410: the size of what Merge brings', () => {
+  function measured(
+    ahead: () => number,
+    stat: () => { files: number; added: number; removed: number },
+  ) {
+    const jobs: Array<() => void> = [];
+    let now = 0;
+    let stats = 0;
+    let changes = 0;
+    const cache = new NothingToMergeCache({
+      preflight: () => ({ ahead: ahead() }),
+      stat: () => {
+        stats++;
+        return stat();
+      },
+      ttlMs: 1000,
+      now: () => now,
+      schedule: (fn) => jobs.push(fn),
+      onChange: () => changes++,
+    });
+    return {
+      cache,
+      run: () => {
+        for (const job of jobs.splice(0)) job();
+      },
+      advance: (ms: number) => {
+        now += ms;
+      },
+      get stats() {
+        return stats;
+      },
+      get changes() {
+        return changes;
+      },
+    };
+  }
+
+  test('measured with the same check, off the frame; a new size pushes the frame again', () => {
+    let size = { files: 2, added: 10, removed: 3 };
+    const h = measured(
+      () => 1,
+      () => size,
+    );
+    expect(h.cache.peekState(node())).toEqual({ nothingToMerge: false });
+    expect(h.stats).toBe(0);
+    h.run();
+    expect(h.cache.peekState(node())).toEqual({ nothingToMerge: false, stat: size });
+    expect(h.changes).toBe(1);
+    // The same size again: no push.
+    h.advance(1000);
+    h.cache.peekState(node());
+    h.run();
+    expect(h.changes).toBe(1);
+    // A commit by hand grew it.
+    size = { files: 3, added: 12, removed: 3 };
+    h.advance(1000);
+    h.cache.peekState(node());
+    h.run();
+    expect(h.cache.peekState(node()).stat).toEqual(size);
+    expect(h.changes).toBe(2);
+  });
+
+  test('nothing to merge is not measured', () => {
+    const h = measured(
+      () => 0,
+      () => ({ files: 1, added: 1, removed: 0 }),
+    );
+    h.cache.peekState(node());
+    h.run();
+    expect(h.cache.peekState(node())).toEqual({ nothingToMerge: true });
+    expect(h.stats).toBe(0);
+  });
+});

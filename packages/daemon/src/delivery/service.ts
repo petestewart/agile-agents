@@ -125,6 +125,26 @@ export interface LandPreflight {
   conflicts?: string[];
 }
 
+/** T410: what a merge would bring, in numbers: `git diff --shortstat`. */
+export interface DiffStat {
+  files: number;
+  added: number;
+  removed: number;
+}
+
+/** T410: `3 files changed, 120 insertions(+), 14 deletions(-)` in numbers; `undefined` for no change. */
+export function parseShortstat(text: string): DiffStat | undefined {
+  const files = /(\d+) files? changed/.exec(text);
+  if (!files) return undefined;
+  const added = /(\d+) insertions?\(\+\)/.exec(text);
+  const removed = /(\d+) deletions?\(-\)/.exec(text);
+  return {
+    files: Number(files[1]),
+    added: added ? Number(added[1]) : 0,
+    removed: removed ? Number(removed[1]) : 0,
+  };
+}
+
 /** How much of a stream diff travels in one response. */
 export const STREAM_DIFF_MAX_CHARS = 20_000;
 
@@ -673,6 +693,21 @@ export class DeliveryService {
    * target (`git diff <merge-base>` in the worktree), or the branch alone
    * once the worktree is gone. Capped; `truncated` says so.
    */
+  /**
+   * T410: the size of what Merge would bring: the branch's committed changes
+   * since it left its target (uncommitted edits in the worktree don't merge).
+   * `undefined` when the node can't merge or nothing differs.
+   */
+  diffStat(streamId: string): DiffStat | undefined {
+    const stream = this.options.streams.get(streamId);
+    if (stream.repo === undefined || stream.branch === undefined) return undefined;
+    const repoEntry = this.registeredRepo(stream, stream.repo);
+    const repoRoot = repoEntry.path;
+    const target = this.resolveTarget(stream, repoEntry, repoRoot);
+    const out = git(['diff', '--shortstat', `${target}...${stream.branch}`], repoRoot, repoRoot);
+    return out.exitCode === 0 ? parseShortstat(out.stdout) : undefined;
+  }
+
   diff(streamId: string): StreamDiff {
     const stream = this.options.streams.get(streamId);
     if (stream.repo === undefined || stream.branch === undefined) {

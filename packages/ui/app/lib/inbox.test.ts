@@ -7,6 +7,7 @@ import {
   cardTitle,
   choicesOf,
   cleanChoice,
+  diffStatParts,
   filterCounts,
   filterOf,
   fold,
@@ -556,5 +557,19 @@ describe('setupSteps / isFirstRun (T364)', () => {
       ['node', true, 1],
     ]);
     expect(isFirstRun(steps)).toBe(true);
+  });
+});
+
+describe('T410: a Merge card says how much it merges', () => {
+  test('files, lines added and removed; the label in words', () => {
+    expect(diffStatParts({ files: 3, added: 120, removed: 14 })).toEqual({
+      files: '3 files',
+      added: '+120',
+      removed: '\u221214',
+      label: '3 files changed, 120 lines added, 14 lines removed',
+    });
+    expect(diffStatParts({ files: 1, added: 1, removed: 0 }).label).toBe(
+      '1 file changed, 1 line added, 0 lines removed',
+    );
   });
 });

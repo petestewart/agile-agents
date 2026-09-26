@@ -71,6 +71,25 @@ export function cardTone(item: InboxItem): CardTone {
   }
 }
 
+/** T410: a change's size for a Merge card: "1 file", "3 files", with its lines added and removed. */
+export function diffStatParts(stat: { files: number; added: number; removed: number }): {
+  files: string;
+  added: string;
+  removed: string;
+  label: string;
+} {
+  const files = `${stat.files} ${stat.files === 1 ? 'file' : 'files'}`;
+  const added = `+${stat.added}`;
+  const removed = `\u2212${stat.removed}`;
+  const lines = (n: number, what: string) => `${n} ${n === 1 ? 'line' : 'lines'} ${what}`;
+  return {
+    files,
+    added,
+    removed,
+    label: `${files} changed, ${lines(stat.added, 'added')}, ${lines(stat.removed, 'removed')}`,
+  };
+}
+
 /** The whole text behind a card: `detail` when the daemon clipped `context`. */
 export function fullText(item: Pick<InboxItem, 'context' | 'detail'>): string {
   return item.detail ?? item.context;

@@ -2833,6 +2833,20 @@ describe('Merge wording and hold tone (Playwright e2e, T347)', () => {
         expect(await page.locator(`${card} .kind`).textContent()).toContain('Ready to merge');
         expect(await page.locator(card).textContent()).not.toMatch(/\bland\b/i);
 
+        // T410: the card says how much it merges; View changes opens the Changes tab.
+        const size = page.locator(`${card} [data-testid="card-diffstat"]`);
+        await size.waitFor();
+        expect(await size.getAttribute('title')).toBe(
+          '1 file changed, 1 line added, 0 lines removed',
+        );
+        await page.locator(`${card} [data-testid="view-changes"]`).click();
+        await page
+          .locator(
+            '[data-testid="stream-page"] .cr-node-tabs button[data-tab="diff"][aria-current="page"]',
+          )
+          .waitFor();
+        await page.locator('[data-view="inbox"]').click();
+
         // D9: a ship-check hold is news (neutral), a real refusal stays red.
         await page.locator(`[data-testid="stream-tree"] [data-stream="${stream.id}"]`).click();
         await page.locator('[data-testid="stream-land"]').click();

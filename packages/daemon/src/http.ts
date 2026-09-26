@@ -481,6 +481,7 @@ function cockpitFrame(feed: FeedContext, streams: StreamService): CockpitFrame {
     (entry) => feed.remotes.peek(entry),
     feed.mergeState ? (s) => feed.mergeState?.peek(s) === true : undefined,
     (id) => feed.store.threadUpdatedAt(id),
+    feed.mergeState ? (s) => feed.mergeState?.peekState(s).stat : undefined,
   );
 }
 
@@ -513,6 +514,7 @@ function resolveFeedContext(options: HttpServerOptions): FeedContext | undefined
       ? {
           mergeState: new NothingToMergeCache({
             preflight: (id) => options.landing?.preflight(id) ?? {},
+            stat: (id) => options.landing?.diffStat(id),
           }),
         }
       : {}),
