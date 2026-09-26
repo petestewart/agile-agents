@@ -2489,6 +2489,15 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 - **Validation Steps:** `bun test packages/ui/app/lib/tree.test.ts`; control-room e2e `T393`, `T367`, `T373`, the knowledge tests; the walkthrough (its 6.2 and 7 steps use Save as proposal, then Accept).
 - **Notes:** Branch T426-forms. LIVE-CHECKLIST names Save as proposal.
 
+### Ticket: T427 What a worker proposes next is one click from a node
+- **Priority:** P2
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** Pete: agents should be able to spawn their own children and work autonomously. Coordinators (at Organise/Run) and the Director already create nodes; a worker's `propose_next` only left a "Proposal" line with nothing to act on, so its follow-up work had to be retyped into New node.
+- **Acceptance Criteria:** A `propose_next` line ("next: <title> — <goal>", by an agent) shows **Create node…**, which opens New node with that title and goal (editable), under the proposing node; other proposal lines keep what they had (T205's Add <repo>). The verb's description tells the agent when to use it and what the human sees.
+- **Validation Steps:** `bun test packages/ui/app/lib/chat.test.ts packages/shared`; control-room e2e `T427`, `T205`.
+- **Notes:** Branch T427-proposed-next.
+
 ### Ticket: T369 Phase 15 QA
 - **Priority:** P0
 - **Status:** Done

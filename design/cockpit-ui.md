@@ -293,6 +293,11 @@ The `.cr-dot data-dot` colour (amber/blue/grey/green/red) is kept as
 - **Send to parent** (T421, D42): in a conversation under another node, a
   reply's hover action (or ⋯) sends a conclusion up. It lands there as your
   message, so that node's agent acts on it as on anything you type.
+- **What a worker proposes next** (T427): an agent's `propose_next` line
+  ("Proposal") carries **Create node…**, which opens New node with its title
+  and goal filled in, under this node (design §2's "break it down"); the
+  Parent picker can put it elsewhere. Coordinators (Organise/Run) and the
+  Director create nodes themselves; a worker proposes.
 - **Turn into work** (T422, D42): an open conversation's ⋯ menu. One box: the
   goal (drafted from the talk by the cheap model, else its last reply, else its
   question; the hint says which) and a repository, "No repository" first for

@@ -5613,6 +5613,65 @@ describe('Turn into work (Playwright e2e, T422, D42)', () => {
   );
 });
 
+describe('what a worker proposes next (Playwright e2e, T427)', () => {
+  browserTest(
+    "a propose_next line's Create node… opens New node with its title and goal, under this node",
+    async () => {
+      const cockpit = await startStreamCockpit([]);
+      let page: Page | undefined;
+      try {
+        const shop = await new ProjectService(cockpit.store, cockpit.streams).create({
+          name: 'shop',
+        });
+        const node = await cockpit.streams.create('human', {
+          title: 'Ledger totals',
+          goal: 'fix the totals',
+          project: shop.id,
+          repo: 'demo',
+        });
+        const goal = 'Export the ledger as CSV; done when a test covers it.';
+        await cockpit.streams.appendThread(
+          'agent',
+          node.id,
+          { kind: 'proposal', body: `next: Add CSV export — ${goal}` },
+          ulid(),
+        );
+        // A proposal that isn't a propose_next (no title and goal) offers nothing to create.
+        await cockpit.streams.appendThread('daemon', node.id, {
+          kind: 'proposal',
+          body: 'next: this needs a change in web too; add it?',
+        });
+        page = await openPage();
+        await page.goto(`${cockpit.base}/?node=${node.id}`);
+        await page.locator(`[data-testid="stream-page"][data-stream="${node.id}"]`).waitFor();
+        await page.locator('[data-testid="node-role"]').waitFor();
+        await page.locator('[data-testid="proposal-add-repo"]').waitFor();
+        expect(await page.locator('[data-testid="proposal-create-node"]').count()).toBe(1);
+        await page.locator('[data-testid="proposal-create-node"]').click();
+        await page.locator('[data-testid="new-stream"]').waitFor({ state: 'visible' });
+        expect(await page.locator('[data-testid="new-stream-title"]').inputValue()).toBe(
+          'Add CSV export',
+        );
+        expect(await page.locator('[data-testid="new-stream-goal"]').inputValue()).toBe(goal);
+        expect(
+          await page.locator('[data-testid="new-stream-parent"]').getAttribute('data-value'),
+        ).toBe(node.id);
+        await page.locator('[data-testid="new-stream-start"]').uncheck();
+        await page.locator('[data-testid="new-stream-create"]').click();
+        await waitUntil('the proposed node', () =>
+          cockpit.streams
+            .list()
+            .some((s) => s.parent === node.id && s.title === 'Add CSV export' && s.goal === goal),
+        );
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+});
+
 describe('the sidebar keeps Needs me in sight (Playwright e2e, audit r5 #4)', () => {
   browserTest(
     'opening a node far down a long tree scrolls the tree, not Needs me and its count',

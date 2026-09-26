@@ -165,6 +165,9 @@ export interface MissingNode {
 export interface NewStreamPreset {
   parent?: string;
   project?: string;
+  /** T427: a proposed node's words (an agent's `propose_next`), yours to edit. */
+  title?: string;
+  goal?: string;
 }
 
 const ShellContext = createContext<ShellValue | undefined>(undefined);
