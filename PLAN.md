@@ -2099,11 +2099,12 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 
 ### Ticket: T369 Phase 15 QA
 - **Priority:** P0
-- **Status:** Todo
-- **Owner:** Unassigned
+- **Status:** Done
+- **Owner:** manager
 - **Scope:** The whole offline gate on the integrated branch; a screenshot pass over every view, light and dark, desktop and phone width; deferred findings in `design/cockpit-ui-followups.md`.
 - **Acceptance Criteria:** Gate green; follow-ups written.
 - **Validation Steps:** `bun install && bun run build && bun run typecheck && bun run lint && bun test && bun run test:integration && bun run test:e2e && bun run test:walkthrough`.
+- **Notes:** Branches T369-phase-15-qa, T369-ci-card-order, T369-wrapup. Gate on the integrated tip: lint and typecheck clean, `bun test` 2869 pass / 0 fail, integration and e2e green (control-room 68/0 after T380), walkthrough 39 steps, 0 findings. QA fixes: a node's Activity reads like Events (titles, routing words), the walkthrough and checklist follow; the j/k e2e reads Needs me's order from the page (two cards raised in one millisecond sort by id, which failed CI twice); the design doc names the palette and keys. The screenshot pass (every view, light, dark, phone) found T381's wording. Remaining findings: `design/cockpit-ui-followups.md`.
 
 ## 8. Deleted (must be gone from `main` by the end of Phase 6)
 

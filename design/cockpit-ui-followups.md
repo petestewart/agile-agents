@@ -30,6 +30,11 @@ deferred, or need a decision. Each names where it lives. Ticket them in
   (`components/SettingsRepos.tsx`)
 - `lib/inbox.ts` `STOCK_TEXT` rewrote daemon card text the daemon now sends
   itself (T371): dead code.
+- Model names read two ways: the composer chip and the node header say
+  "Claude Opus 5.5 · low" (`sessionLabel`), while the details panel's session
+  rows and Settings' "starts with" chips say `claude/claude-opus-5-5 · low`.
+  Use `sessionLabel` everywhere a person reads it (the e2e suites pin the raw
+  form in `[data-testid="session"]` and `settings-session-*-resolved`).
 
 ## P3 — cleanup, hardening, decisions
 
