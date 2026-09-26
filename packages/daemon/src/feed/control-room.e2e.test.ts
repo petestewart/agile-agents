@@ -938,16 +938,23 @@ describe('Needs me and the decision cards (Playwright e2e, T364)', () => {
         expect(cockpit.delivered[0]?.question.answer).toBe('semicolon');
         await page.locator(card).waitFor({ state: 'detached' });
 
-        // j focuses the first card; Enter opens its node.
+        // j focuses the first card; Enter opens its node. Both cards are on
+        // `pricing`, ordered by time and then id: raised in the same
+        // millisecond (a fast runner), the gate's `HIL-` id sorts first.
+        const order = await page
+          .locator('[data-testid="inbox"] .cr-card')
+          .evaluateAll((cards) => cards.map((card) => card.getAttribute('data-id') ?? ''));
+        expect([...order].sort()).toEqual([written.id, gate.id].sort());
+        const [first = '', second = ''] = order;
         await page.locator('[data-testid="inbox"] h1').click();
         await page.keyboard.press('j');
         const focused = async (id: string): Promise<boolean> =>
           (await page?.evaluate<boolean>(
             `document.activeElement?.getAttribute('data-id') === ${JSON.stringify(id)}`,
           )) === true;
-        await waitUntilAsync('j to focus the first card', () => focused(written.id));
+        await waitUntilAsync('j to focus the first card', () => focused(first));
         await page.keyboard.press('j');
-        await waitUntilAsync('j to move to the next card', () => focused(gate.id));
+        await waitUntilAsync('j to move to the next card', () => focused(second));
         await page.keyboard.press('k');
         await page.keyboard.press('Enter');
         await page.locator(`[data-testid="stream-page"][data-stream="${pricing.id}"]`).waitFor();
