@@ -11,7 +11,7 @@ import { basename, dirname, isAbsolute, join as joinPath, relative, resolve, sep
 
 // Quote-aware splitting/tokenizing
 
-export type SegmentDelimiter = 'start' | ';' | '&&' | '||' | '|' | '\n';
+export type SegmentDelimiter = 'start' | ';' | '&&' | '||' | '|' | '&' | '\n';
 
 export interface RawSegment {
   raw: string;
@@ -19,7 +19,7 @@ export interface RawSegment {
 }
 
 /**
- * Splits on `;`, `&&`, `||`, `|` and newlines, never inside quotes, so
+ * Splits on `;`, `&&`, `||`, `|`, `&` and newlines, never inside quotes, so
  * `sh -c "git push origin main"` stays one segment (its `-c` argument is
  * recursed into by `parseCommandIntoAtoms`).
  */
@@ -67,7 +67,15 @@ export function splitCommandSegments(command: string): RawSegment[] {
       continue;
     }
     if (c === '|') {
+      // `|&` pipes stderr too: still a pipe.
       push('|');
+      if (command[i + 1] === '&') i++;
+      continue;
+    }
+    // A lone `&` runs what came before in the background and starts a new
+    // command (`echo & cat /etc/passwd`). Not `>&`, `<&` or `&>`.
+    if (c === '&' && !/[<>]/.test(command[i - 1] ?? '') && command[i + 1] !== '>') {
+      push('&');
       continue;
     }
     current += c;
