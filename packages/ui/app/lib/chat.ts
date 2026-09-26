@@ -601,7 +601,7 @@ export function deliveryBadge(s: {
   if (s.prOpen) return { label: 'PR open', tone: 'blue' };
   if (s.mergedOutside) return { label: 'Merged outside', tone: 'purple' };
   if (s.held) return { label: 'Held', tone: 'amber' };
-  if (s.ready) return { label: 'Ready to merge', tone: 'green' };
+  if (s.ready) return { label: 'Can merge', tone: 'green' };
   return { label: 'Not ready', tone: 'gray' };
 }
 

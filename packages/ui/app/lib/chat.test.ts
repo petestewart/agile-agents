@@ -12,6 +12,7 @@ import {
   chatRows,
   chatVariant,
   dayLabel,
+  deliveryBadge,
   detailsOpenFrom,
   diffTotals,
   headerActions,
@@ -318,6 +319,27 @@ describe('the header', () => {
       'coordinator',
     );
   });
+});
+
+test('the Delivery badge: merged, conflict, PR, held, then whether a merge would go through', () => {
+  const none = {
+    landed: false,
+    conflict: false,
+    prOpen: false,
+    held: false,
+    ready: false,
+    mergedOutside: false,
+  };
+  expect(deliveryBadge({ ...none, landed: true, ready: true }).label).toBe('Merged');
+  expect(deliveryBadge({ ...none, conflict: true, ready: true })).toEqual({
+    label: 'Conflict',
+    tone: 'red',
+  });
+  expect(deliveryBadge({ ...none, prOpen: true }).label).toBe('PR open');
+  expect(deliveryBadge({ ...none, held: true, ready: true }).label).toBe('Held');
+  expect(deliveryBadge({ ...none, ready: true })).toEqual({ label: 'Can merge', tone: 'green' });
+  expect(deliveryBadge({ ...none, mergedOutside: true }).label).toBe('Merged outside');
+  expect(deliveryBadge(none)).toEqual({ label: 'Not ready', tone: 'gray' });
 });
 
 describe('parseDiff', () => {
