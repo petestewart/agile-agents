@@ -498,8 +498,9 @@ commit is chained with `&&`, so nothing is written if the `cd` fails. A node's w
 
 After a hand-made commit, the Delivery panel may still say there is nothing
 to land for up to a minute (touched files are recomputed every 60 seconds).
-Wait, or click another node in the rail and back. Don't reload the page: a
-reload goes back to **Needs me** and **All projects**.
+Wait, or reload the page: the open node and the project filter are in the
+address bar, so a reload comes back to the same node under the same project.
+(Back and forward move between the nodes you opened.)
 
 ### 5.1 A shared file, merged directly
 

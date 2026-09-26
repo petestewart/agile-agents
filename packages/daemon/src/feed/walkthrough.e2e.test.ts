@@ -1336,6 +1336,17 @@ test.skipIf(!RUN)(
         '# Walkthrough notes\n\n## Blog\n\n-\n\n## Shop\n\n-\n',
         'Add walkthrough notes',
       );
+      // The checklist's "Wait, or reload the page" (T348): the node and the filter stay.
+      await page.reload();
+      await page
+        .locator('[data-testid="stream-title"]', { hasText: 'Walkthrough notes' })
+        .waitFor();
+      await until(
+        'the reload keeps the project switcher on Blog',
+        async () =>
+          (await page.locator('[data-testid="project-switcher"] option:checked').textContent()) ===
+          'Blog',
+      );
       await checkText(
         'Ready: stream/…-walkthrough-notes is 1 commit ahead of main.',
         page.locator('[data-testid="land-before"]'),

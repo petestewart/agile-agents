@@ -2871,6 +2871,86 @@ describe('project tree and switcher (Playwright e2e, T208)', () => {
   );
 });
 
+describe('the open node and project filter live in the URL (Playwright e2e, T348)', () => {
+  browserTest(
+    'open a node, filter, reload: the same view; back returns to the previous node; a stale id falls back to the inbox',
+    async () => {
+      const cockpit = await startCockpit();
+      let page: Page | undefined;
+      try {
+        const shop = await cockpit.projects.create({ name: 'shop' });
+        const docs = await cockpit.projects.create({ name: 'docs' });
+        const checkout = await cockpit.streams.create('human', {
+          title: 'checkout',
+          goal: 'g',
+          project: shop.id,
+        });
+        const refunds = await cockpit.streams.create('human', {
+          title: 'refunds',
+          goal: 'g',
+          project: shop.id,
+        });
+        const guide = await cockpit.streams.create('human', {
+          title: 'guide',
+          goal: 'g',
+          project: docs.id,
+        });
+        page = await openPage();
+        await page.goto(`${cockpit.base}/`);
+        const tree = '[data-testid="stream-tree"]';
+        const pageOf = (id: string): string => `[data-testid="stream-page"][data-stream="${id}"]`;
+        const switcher = page.locator('[data-testid="project-switcher"]');
+
+        // Open one node, then another, and filter to shop.
+        await page.locator(`${tree} [data-stream="${checkout.id}"]`).click();
+        await page.locator(pageOf(checkout.id)).waitFor({ state: 'visible' });
+        await page.locator(`${tree} [data-stream="${refunds.id}"]`).click();
+        await page.locator(pageOf(refunds.id)).waitFor({ state: 'visible' });
+        await switcher.selectOption(shop.id);
+        await page.locator(`${tree} [data-stream="${guide.id}"]`).waitFor({ state: 'detached' });
+        const search = new URL(page.url()).searchParams;
+        expect(search.get('node')).toBe(refunds.id);
+        expect(search.get('project')).toBe(shop.id);
+
+        // Reload: the same node, the same filter.
+        await page.reload();
+        await page.locator(pageOf(refunds.id)).waitFor({ state: 'visible' });
+        await waitUntilAsync(
+          'the switcher to come back on shop',
+          async () => (await switcher.inputValue()) === shop.id,
+        );
+        await page.locator(`${tree} [data-stream="${checkout.id}"]`).waitFor({ state: 'visible' });
+        expect(await page.locator(`${tree} [data-stream="${guide.id}"]`).count()).toBe(0);
+
+        // Back: the previous node (the filter is not a history step). Forward again.
+        await page.goBack();
+        await page.locator(pageOf(checkout.id)).waitFor({ state: 'visible' });
+        await page.goForward();
+        await page.locator(pageOf(refunds.id)).waitFor({ state: 'visible' });
+
+        // A shared link opens the same view in a fresh page.
+        const shared = page.url();
+        await page.goto(`${cockpit.base}/`);
+        await page.locator('[data-testid="inbox-empty"]').waitFor({ state: 'visible' });
+        await page.goto(shared);
+        await page.locator(pageOf(refunds.id)).waitFor({ state: 'visible' });
+
+        // A stale node and project quietly fall back to the inbox and "All".
+        await page.goto(`${cockpit.base}/?node=01ARZ3NDEKTSV4RRFFQ69G5FAV&project=P-gone`);
+        await page.locator('[data-testid="inbox-empty"]').waitFor({ state: 'visible' });
+        await page.locator(`${tree} [data-stream="${guide.id}"]`).waitFor({ state: 'visible' });
+        expect(await switcher.inputValue()).toBe('');
+        expect(new URL(page.url()).search).toBe('');
+        expect(await page.locator('[data-testid="stream-page"]').count()).toBe(0);
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+});
+
 describe('collapsing the rail (Playwright e2e, T331)', () => {
   browserTest(
     'a caret folds a subtree without navigating, the fold survives a reload, and a hidden question still shows',
