@@ -157,7 +157,7 @@ export function Inbox({
             >
               {headed && section.kind !== 'knowledge' && (
                 <h2 className="cr-inbox-section-hd">
-                  <Icon name={section.kind === 'project' ? 'folder' : 'layers'} size={14} />
+                  <Icon name={section.kind === 'project' ? 'layers' : 'circle-dashed'} size={14} />
                   <span className="cr-inbox-section-name">{section.label}</span>
                   <span className="cr-inbox-section-count">{section.count}</span>
                 </h2>

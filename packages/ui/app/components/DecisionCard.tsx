@@ -92,6 +92,9 @@ function fullTime(iso: string): string {
   });
 }
 
+/** A routed call longer than this (a long bash command) folds behind Show more in the list. */
+const ACTION_CLIP = 160;
+
 /** How long a card stays disabled after its action succeeded, waiting for the next frame to drop it. */
 const SETTLE_MS = 10_000;
 
@@ -283,11 +286,9 @@ export function Card({
     case 'gate': {
       const g = gateView(item);
       const reason = shown(g.reason);
-      foldable = reason.foldable;
-      const action =
-        g.action !== undefined && !full && !expanded && g.action.length > 160
-          ? `${g.action.slice(0, 159)}…`
-          : g.action;
+      const longAction = g.action !== undefined && !full && g.action.length > ACTION_CLIP;
+      foldable = reason.foldable || longAction;
+      const action = longAction && !expanded ? `${g.action?.slice(0, ACTION_CLIP - 1)}…` : g.action;
       body = (
         <div className="context cr-card-gate" data-testid="inbox-context">
           <p className="cr-card-lead">
