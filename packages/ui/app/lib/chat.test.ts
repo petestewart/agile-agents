@@ -71,12 +71,17 @@ describe('names', () => {
       'Claude Opus 5.5 · low',
     );
     expect(agentLabel({ vendor: 'claude', model: 'default' })).toBe('Claude default model');
-    expect(agentLabel({ vendor: 'gemini', effort: 'high' })).toBe('Gemini default model · high');
+    // T401: effort only where the vendor uses it.
+    expect(agentLabel({ vendor: 'gemini', effort: 'high' })).toBe('Gemini default model');
     expect(agentLabel({ vendor: 'gemini', model: 'gemini-2.5-pro', effort: 'low' })).toBe(
-      'gemini-2.5-pro · low',
+      'gemini-2.5-pro',
     );
-    expect(agentLabel({ vendor: 'codex', model: 'gpt-9', effort: 'max' })).toBe(
-      'Codex · gpt-9 · max',
+    expect(agentLabel({ vendor: 'codex', model: 'gpt-9', effort: 'max' })).toBe('Codex · gpt-9');
+    expect(sessionIdText({ vendor: 'codex', model: 'gpt-9', effort: 'max' })).toBe(
+      'codex/gpt-9 · max effort (ignored)',
+    );
+    expect(sessionIdText({ vendor: 'claude', model: 'opus', effort: 'max' })).toBe(
+      'claude/opus · max effort',
     );
     // A vendor inside a longer word is not a mention of it.
     expect(agentLabel({ vendor: 'pi', model: 'gpt-pilot' })).toBe('Pi · gpt-pilot');
