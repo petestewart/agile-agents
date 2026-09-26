@@ -49,6 +49,7 @@ import {
   type StepState,
   type StepUpdate,
   applyStep,
+  elapsedText,
   liveWindow,
   stepKey,
   stepState,
@@ -556,26 +557,49 @@ export function StepsFold({ steps }: { steps: readonly AgentStep[] }): JSX.Eleme
  * "Claude is working…" while a turn is in flight, with its latest steps
  * (the newest five; "+N earlier steps" opens the rest) as they happen.
  */
+/** T405: how long the turn has run, ticking once a second (only this re-renders). */
+function Elapsed({ since }: { since: string }): JSX.Element | null {
+  const start = Date.parse(since);
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, []);
+  if (Number.isNaN(start)) return null;
+  return (
+    <span
+      className="cr-thinking-time"
+      data-testid="thinking-time"
+      title={`Since ${clockTime(since)}`}
+    >
+      {elapsedText(now - start)}
+    </span>
+  );
+}
+
 export function Thinking({
   name,
   doing = 'working',
   steps = [],
+  since,
 }: {
   name: string;
   /** T400: "reviewing" while only a reviewer runs. */
   doing?: 'working' | 'reviewing';
   steps?: readonly AgentStep[];
+  /** T405: when the turn began (`turnStartedAt`); the head says how long it has run. */
+  since?: string;
 }): JSX.Element {
   const [expanded, setExpanded] = useState(false);
   const hold = useContext(ChatHold);
   const { shown, earlier } = liveWindow(steps, expanded);
   return (
     <div className="cr-thinking" data-testid="thinking" data-steps={steps.length}>
-      <div className="cr-thinking-head" aria-live="polite">
+      <div className="cr-thinking-head">
         <span className="cr-avatar" aria-hidden="true">
           <Icon name="sparkles" size={13} />
         </span>
-        <span className="cr-thinking-text">
+        <span className="cr-thinking-text" aria-live="polite">
           {name} is {doing}
         </span>
         <span className="cr-dots" aria-hidden="true">
@@ -583,6 +607,7 @@ export function Thinking({
           <span />
           <span />
         </span>
+        {since !== undefined && <Elapsed since={since} />}
       </div>
       {steps.length > 0 && (
         <div className="cr-live-steps">

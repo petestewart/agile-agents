@@ -3333,6 +3333,10 @@ describe("the agent's steps in the chat (Playwright e2e, T392)", () => {
         expect(await page.locator('[data-testid="thinking"]').textContent()).toContain(
           'Claude is working',
         );
+        // T405: and for how long, from the line that started the turn.
+        expect(
+          await page.locator('[data-testid="thinking"] [data-testid="thinking-time"]').textContent(),
+        ).toMatch(/^\d+s$/);
         // A command and a path read as code; the failed one says so.
         expect(await live.nth(1).locator('code').textContent()).toBe('bun test');
         expect(await live.nth(1).locator('[aria-label="Failed"]').count()).toBe(1);
