@@ -71,6 +71,11 @@ export const EVENT_KINDS = [
   // rather than as another edit.
   'rule_put',
   'rule_decided',
+  // -- knowledge (StateStore.createKnowledge / updateKnowledge, T260) --
+  // Replaces `rule_*` (kept above so older audit lines still read). Same
+  // data shape: {id, status, enforcement, scope, principal}.
+  'knowledge_put',
+  'knowledge_decided',
 
   // -- hook (HookService + the ACP permission responder) --
   // data: {event, decision, reason, tool?, command?}

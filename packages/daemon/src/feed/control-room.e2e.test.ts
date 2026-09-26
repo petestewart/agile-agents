@@ -31,7 +31,10 @@ import {
   DEFAULT_CLASSIFIER_ALLOW_BELOW,
   DEFAULT_CLASSIFIER_DENY_AT,
   type Question,
-  type Rule,
+  type KnowledgeItem as Rule,
+  classifierQuestion,
+  examplesOf,
+  patternOf,
   ulid,
   validateClassifierConfig,
 } from '@agile-agents/shared';
@@ -45,9 +48,12 @@ import { GateService } from '../gates';
 import { type HttpServerHandle, startHttpServer } from '../http';
 import { InboxService } from '../inbox';
 import { runInit } from '../init';
+import { KnowledgeService, type RuleRpcEvalDeps } from '../knowledge';
+
+/** Proposals the home migration carried over from a seed import are batched under this source. */
+const SEED_PROVENANCE = 'migration';
 import { ProjectService } from '../projects';
 import { QuestionService } from '../questions';
-import { type RuleRpcEvalDeps, RulesService, SEED_PROVENANCE } from '../rules';
 import type { FakeAgentScript } from '../runner/fake-agent';
 import { StateStore } from '../store';
 import { RepoInPlaceService, StreamService } from '../streams';
@@ -487,7 +493,7 @@ interface Cockpit {
   projects: ProjectService;
   questions: QuestionService;
   gates: GateService;
-  rules: RulesService;
+  rules: KnowledgeService;
   events: RoutedEventService;
   /** Every `deliver(sessionId, question)` the question service made — the hand-off to the asking session. */
   delivered: Array<{ session: string; question: Question }>;
@@ -519,7 +525,7 @@ async function startCockpit(
     },
   });
   const gates = new GateService(store);
-  const rules = new RulesService({ store, streams });
+  const rules = new KnowledgeService({ store, streams });
   const inbox = new InboxService({ streams, questions, gates, rules });
   const projects = new ProjectService(store, streams);
   const events = new RoutedEventService(store);
@@ -674,8 +680,8 @@ describe('cockpit shell (Playwright e2e)', () => {
         });
         const rule = await cockpit.rules.create('agent', {
           text: 'run the repo scripts, never a second toolchain',
-          scope: { kind: 'stream', ref: b.id },
-          provenance: { by: 'agent', stream: b.id },
+          scope: { kind: 'subtree', node: b.id },
+          source: { by: 'agent', node: b.id },
         });
 
         page = await openPage();
@@ -698,7 +704,7 @@ describe('cockpit shell (Playwright e2e)', () => {
         await page.locator(`[data-id="${rule.id}"] [data-testid="rule-accept"]`).click();
         await page.locator(`[data-id="${rule.id}"]`).waitFor({ state: 'detached' });
         await waitUntil('the rule to be accepted', () => {
-          const saved = cockpit.store.getRule(rule.id);
+          const saved = cockpit.store.getKnowledge(rule.id);
           return saved.status === 'accepted' && saved.decided_by === 'human';
         });
 
@@ -793,13 +799,13 @@ describe('rules screen (Playwright e2e, T163)', () => {
         const seeded: Rule[] = [];
         for (const text of ['schemas are strict', 'hooks enforce', 'one event per write']) {
           seeded.push(
-            await cockpit.rules.create('human', { text, provenance: { by: SEED_PROVENANCE } }),
+            await cockpit.rules.create('human', { text, source: { by: SEED_PROVENANCE } }),
           );
         }
         const lesson = await cockpit.rules.create('agent', {
           text: 'run the repo scripts, never a second toolchain',
-          scope: { kind: 'stream', ref: stream.id },
-          provenance: { by: 'agent', stream: stream.id },
+          scope: { kind: 'subtree', node: stream.id },
+          source: { by: 'agent', node: stream.id },
         });
 
         page = await openPage();
@@ -828,7 +834,7 @@ describe('rules screen (Playwright e2e, T163)', () => {
         await page.locator('[data-testid="rules-bulk-retire"]').click();
         await waitUntil('the seeded rules to be retired', () =>
           seeded.every((r) => {
-            const saved = cockpit.store.getRule(r.id);
+            const saved = cockpit.store.getKnowledge(r.id);
             return saved.status === 'retired' && saved.decided_by === 'human';
           }),
         );
@@ -843,7 +849,7 @@ describe('rules screen (Playwright e2e, T163)', () => {
         const row = `[data-testid="rules-row"][data-rule="${lesson.id}"]`;
         await page.locator(`${row} [data-testid="rules-accept"]`).click();
         await waitForAttr(page, row, 'data-status', 'accepted', POLL_DEADLINE_MS);
-        expect(cockpit.store.getRule(lesson.id).decided_by).toBe('human');
+        expect(cockpit.store.getKnowledge(lesson.id).decided_by).toBe('human');
 
         // The inbox is empty again, and the rule is in the stream's rules tab.
         await page.locator('[data-view="inbox"]').click();
@@ -883,11 +889,14 @@ describe('rules screen (Playwright e2e, T163)', () => {
       try {
         const rule = await cockpit.rules.create('human', {
           text: 'do not add a dependency without asking',
-          enforcement: 'classifier',
-          examples: [
-            { action: 'bun add lodash', violates: true },
-            { action: 'edit src/index.ts', violates: false },
-          ],
+          enforcement: 'action',
+          check: {
+            by: 'classifier',
+            examples: [
+              { action: 'bun add lodash', violates: true },
+              { action: 'edit src/index.ts', violates: false },
+            ],
+          },
         });
 
         page = await openPage();
@@ -914,13 +923,15 @@ describe('rules screen (Playwright e2e, T163)', () => {
           .fill('npm install left-pad');
         await page.locator(`${row} [data-testid="rules-edit-save"]`).click();
         await page.locator(`${row} [data-testid="rules-editor"]`).waitFor({ state: 'detached' });
-        const saved = cockpit.store.getRule(rule.id);
-        expect(saved.question).toBe('Does this action add a package to the project?');
-        expect(saved.criteria).toEqual({
-          true: 'a package manager adds a dependency',
-          false: 'no dependency changes',
+        const saved = cockpit.store.getKnowledge(rule.id);
+        expect(classifierQuestion(saved)).toBe('Does this action add a package to the project?');
+        expect(saved.check).toMatchObject({
+          criteria: {
+            true: 'a package manager adds a dependency',
+            false: 'no dependency changes',
+          },
         });
-        expect(saved.examples).toHaveLength(3);
+        expect(examplesOf(saved)).toHaveLength(3);
         await waitForText(
           page,
           `${row} [data-testid="rules-question"]`,
@@ -970,8 +981,11 @@ describe('rules screen: patterns, new rule, cancel, classifier key (Playwright e
       try {
         const rule = await cockpit.rules.create('human', {
           text: 'never wipe the tree',
-          enforcement: 'pattern',
-          pattern: { kind: 'command_deny', args: { patterns: ['rm -rf', 'git reset --hard'] } },
+          enforcement: 'action',
+          check: {
+            by: 'pattern',
+            pattern: { kind: 'command_deny', args: { patterns: ['rm -rf', 'git reset --hard'] } },
+          },
         });
         page = await openPage();
         await page.goto(`${cockpit.base}/?view=rules`);
@@ -983,7 +997,7 @@ describe('rules screen: patterns, new rule, cancel, classifier key (Playwright e
         );
 
         // Edit, change everything, Cancel: nothing is sent, the editor closes.
-        const before = JSON.stringify(cockpit.store.getRule(rule.id));
+        const before = JSON.stringify(cockpit.store.getKnowledge(rule.id));
         await page.locator(`${row} [data-testid="rules-edit"]`).click();
         await page.locator(`${row} [data-testid="rules-edit-text"]`).fill('changed text');
         await page
@@ -999,7 +1013,7 @@ describe('rules screen: patterns, new rule, cancel, classifier key (Playwright e
         await page.locator(`${row} [data-testid="rules-edit-text"]`).fill('changed by esc');
         await page.locator(`${row} [data-testid="rules-edit-text"]`).press('Escape');
         await page.locator(`${row} [data-testid="rules-editor"]`).waitFor({ state: 'detached' });
-        expect(JSON.stringify(cockpit.store.getRule(rule.id))).toBe(before);
+        expect(JSON.stringify(cockpit.store.getKnowledge(rule.id))).toBe(before);
 
         // Editing the pattern's arguments does save.
         await page.locator(`${row} [data-testid="rules-edit"]`).click();
@@ -1008,41 +1022,43 @@ describe('rules screen: patterns, new rule, cancel, classifier key (Playwright e
           .fill('rm -rf\ngit clean -fdx');
         await page.locator(`${row} [data-testid="rules-edit-save"]`).click();
         await page.locator(`${row} [data-testid="rules-editor"]`).waitFor({ state: 'detached' });
-        expect(cockpit.store.getRule(rule.id).pattern).toEqual({
+        expect(patternOf(cockpit.store.getKnowledge(rule.id))).toEqual({
           kind: 'command_deny',
           args: { patterns: ['rm -rf', 'git clean -fdx'] },
         });
 
-        // New rule: a pattern rule without a pattern is refused in the form.
+        // New rule: a pattern on a ship item is refused in the form (§14.3: action only).
         await page.locator('[data-testid="rules-new"]').click();
         const form = '[data-testid="rules-new-form"]';
         await page.locator(`${form} [data-testid="rules-edit-text"]`).fill('keep secrets out');
-        await page
-          .locator(`${form} [data-testid="rules-edit-enforcement"]`)
-          .selectOption('pattern');
-        await page.locator(`${form} [data-testid="rules-edit-save"]`).click();
-        await waitUntilAsync('the form to refuse a pattern rule with no pattern', async () =>
-          page
-            ? ((await page.locator(`${form} [role="alert"]`).textContent()) ?? '').includes(
-                'a pattern rule needs a pattern',
-              )
-            : false,
-        );
+        await page.locator(`${form} [data-testid="rules-edit-enforcement"]`).selectOption('ship');
         await page
           .locator(`${form} [data-testid="rules-edit-pattern-kind"]`)
           .selectOption('path_deny');
         await page.locator(`${form} [data-testid="rules-edit-pattern-args"]`).fill('secrets/**');
+        await page.locator(`${form} [data-testid="rules-edit-save"]`).click();
+        await waitUntilAsync('the form to refuse a pattern on a ship item', async () =>
+          page
+            ? ((await page.locator(`${form} [role="alert"]`).textContent()) ?? '').includes(
+                'a pattern check is an action check only',
+              )
+            : false,
+        );
+        await page.locator(`${form} [data-testid="rules-edit-enforcement"]`).selectOption('action');
         await page.locator(`${form} [data-testid="rules-edit-critical"]`).check();
         await page.locator(`${form} [data-testid="rules-edit-save"]`).click();
         await page.locator(form).waitFor({ state: 'detached' });
         await waitUntil('the new rule to be stored', () =>
-          cockpit.store.listRules().some((r) => r.text === 'keep secrets out'),
+          cockpit.store.listKnowledge().some((r) => r.text === 'keep secrets out'),
         );
-        const created = cockpit.store.listRules().find((r) => r.text === 'keep secrets out');
+        const created = cockpit.store.listKnowledge().find((r) => r.text === 'keep secrets out');
         expect(created?.status).toBe('proposed');
-        expect(created?.provenance.by).toBe('human');
+        expect(created?.source.by).toBe('human');
         expect(created?.critical).toBe(true);
-        expect(created?.pattern).toEqual({ kind: 'path_deny', args: { globs: ['secrets/**'] } });
+        expect(created && patternOf(created)).toEqual({
+          kind: 'path_deny',
+          args: { globs: ['secrets/**'] },
+        });
         await waitForText(
           page,
           `[data-testid="rules-row"][data-rule="${created?.id}"] [data-testid="rules-pattern"]`,
@@ -1074,11 +1090,14 @@ describe('rules screen: patterns, new rule, cancel, classifier key (Playwright e
       try {
         const rule = await cockpit.rules.create('human', {
           text: 'no new deps',
-          enforcement: 'classifier',
-          examples: [
-            { action: 'bun add lodash', violates: true },
-            { action: 'edit src/a.ts', violates: false },
-          ],
+          enforcement: 'action',
+          check: {
+            by: 'classifier',
+            examples: [
+              { action: 'bun add lodash', violates: true },
+              { action: 'edit src/a.ts', violates: false },
+            ],
+          },
         });
         await cockpit.rules.accept(rule.id, 'human');
         const testButton = `[data-testid="rules-row"][data-rule="${rule.id}"] [data-testid="rules-test"]`;
@@ -1142,7 +1161,7 @@ interface StreamCockpit {
   store: StateStore;
   streams: StreamService;
   questions: QuestionService;
-  rules: RulesService;
+  rules: KnowledgeService;
   verbs: VerbService;
   attach: AttachService;
   /** Every attach that threw, with its stack: what a 400 from the attach route was. */
@@ -1181,7 +1200,7 @@ async function startStreamCockpit(scripts: FakeAgentScript[]): Promise<StreamCoc
   });
   const streams = new StreamService(store);
   const gates = new GateService(store);
-  const rules = new RulesService({ store, streams });
+  const rules = new KnowledgeService({ store, streams });
   const docs = new DocsService(store, streams, init.stateRoot);
   const questions = new QuestionService(store, streams, {
     deliver: async (session, question) => {
@@ -1317,7 +1336,7 @@ describe('stream page (Playwright e2e, T161)', () => {
         });
         const rule = await cockpit.rules.create('human', {
           text: 'run the repo scripts, never a second toolchain',
-          scope: { kind: 'stream', ref: stream.id },
+          scope: { kind: 'subtree', node: stream.id },
         });
         await cockpit.rules.accept(rule.id, 'human');
         mkdirSync(join(cockpit.home, 'streams', `${stream.id}.docs`), { recursive: true });
@@ -1334,7 +1353,7 @@ describe('stream page (Playwright e2e, T161)', () => {
         await page.locator(root).waitFor({ state: 'visible' });
         expect(await page.locator('[data-testid="stream-title"]').textContent()).toBe('CSV parser');
 
-        // Rules in scope and docs, one click each.
+        // Knowledge in scope and docs, one click each.
         await page.locator('.cr-tabs [data-tab="rules"]').click();
         await page.locator(`[data-testid="rule"][data-rule="${rule.id}"]`).waitFor();
         await page.locator('.cr-tabs [data-tab="docs"]').click();
@@ -1945,8 +1964,11 @@ describe('rule hits on the stream (Playwright e2e, T169)', () => {
         const stream = await cockpit.streams.create('human', { title: 'build', goal: 'g' });
         const rule = await cockpit.rules.create('human', {
           text: 'never wipe build output',
-          enforcement: 'pattern',
-          pattern: { kind: 'command_deny', args: { patterns: ['rm -rf'] } },
+          enforcement: 'action',
+          check: {
+            by: 'pattern',
+            pattern: { kind: 'command_deny', args: { patterns: ['rm -rf'] } },
+          },
         });
         await cockpit.rules.accept(rule.id, 'human');
         const other = await cockpit.rules.create('human', { text: 'an unrelated rule' });
@@ -2039,6 +2061,65 @@ describe('a long agent message collapses (Playwright e2e, T330)', () => {
         // A short entry has no toggle.
         const short = page.locator('[data-testid="thread-entry"]', { hasText: 'a short one' });
         expect(await short.locator('[data-testid="thread-expand"]').count()).toBe(0);
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+});
+
+// ---- T266: the Knowledge screen -------------------------------------------
+
+describe('the Knowledge screen (Playwright e2e, T266)', () => {
+  browserTest(
+    'a proposed decision reads "decision proposed", is accepted, and shows on the node\'s Knowledge-in-scope tab',
+    async () => {
+      const cockpit = await startCockpit();
+      let page: Page | undefined;
+      try {
+        const stream = await cockpit.streams.create('human', { title: 'ledger', goal: 'g' });
+        const decision = await cockpit.rules.create('human', {
+          kind: 'decision',
+          text: 'money is stored as integer cents',
+          scope: { kind: 'subtree', node: stream.id },
+          paths: ['src/money/**'],
+        });
+        await cockpit.rules.create('human', { text: 'a global standard' });
+
+        page = await openPage();
+        await page.goto(`${cockpit.base}/`);
+        const card = `[data-testid="inbox"] [data-id="${decision.id}"]`;
+        await page.locator(card).waitFor({ state: 'visible' });
+        expect(await page.locator(`${card} .kind`).textContent()).toContain('decision proposed');
+
+        // The Knowledge screen filters by kind and enforcement.
+        await page.locator('[data-view="rules"]').click();
+        await page.locator('[data-testid="rules-screen"] h1', { hasText: 'Knowledge' }).waitFor();
+        await waitForCount(page, '[data-testid="rules-row"]', 2);
+        await page.locator('[data-testid="rules-filter-kind"]').selectOption('decision');
+        await waitForCount(page, '[data-testid="rules-row"]', 1);
+        const row = `[data-testid="rules-row"][data-rule="${decision.id}"]`;
+        expect(await page.locator(`${row} [data-testid="rules-paths"]`).textContent()).toBe(
+          'src/money/**',
+        );
+        await page.locator('[data-testid="rules-filter-enforcement"]').selectOption('action');
+        await waitForCount(page, '[data-testid="rules-row"]', 0);
+        await page.locator('[data-testid="rules-filter-enforcement"]').selectOption('all');
+
+        await page.locator(`${row} [data-testid="rules-accept"]`).click();
+        await waitUntil(
+          'the decision to be accepted',
+          () => cockpit.store.getKnowledge(decision.id).status === 'accepted',
+        );
+
+        await page.locator(`[data-testid="stream-tree"] [data-stream="${stream.id}"]`).click();
+        await page.locator(`[data-testid="stream-page"][data-stream="${stream.id}"]`).waitFor();
+        const tab = page.locator('.cr-tabs [data-tab="rules"]');
+        expect(await tab.textContent()).toContain('Knowledge in scope');
+        await tab.click();
+        await page.locator(`[data-testid="rule"][data-rule="${decision.id}"]`).waitFor();
       } finally {
         await teardown([page]);
         await cockpit.stop();
@@ -2782,10 +2863,31 @@ describe('repo view and lenses (Playwright e2e, T209)', () => {
           ],
         }));
 
+        // T265: an accepted api standard shows under api; a proposal and a web one do not.
+        const apiNorm = await cockpit.rules.create('human', {
+          text: 'every handler validates its input',
+          scope: { kind: 'repo', repo: 'api' },
+        });
+        await cockpit.rules.accept(apiNorm.id, 'human');
+        await cockpit.rules.create('human', {
+          text: 'a proposal is not a norm',
+          scope: { kind: 'repo', repo: 'api' },
+        });
+
         page = await openPage();
         await page.goto(`${cockpit.base}/`);
         await page.locator('[data-view="repos"]').click();
         const api = '[data-testid="repo-view"] [data-repo="api"]';
+        await page.locator(`${api} [data-knowledge="${apiNorm.id}"]`).waitFor({ state: 'visible' });
+        expect(await page.locator(`${api} [data-testid="repo-norm"]`).count()).toBe(1);
+        expect(
+          await page.locator(`${api} [data-knowledge="${apiNorm.id}"]`).textContent(),
+        ).toContain('every handler validates its input');
+        expect(
+          await page
+            .locator('[data-testid="repo-view"] [data-repo="web"] [data-testid="repo-norm"]')
+            .count(),
+        ).toBe(0);
         await page.locator(`${api} [data-stream="${blogApi.id}"]`).waitFor({ state: 'visible' });
         expect(await page.locator(`${api} [data-testid="repo-delivery"]`).textContent()).toBe(
           '(pr)',

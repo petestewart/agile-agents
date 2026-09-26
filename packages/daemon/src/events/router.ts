@@ -31,6 +31,7 @@ export const ROUTES: Record<RoutedEventType, readonly Rule[]> = {
   child_delivered: ['ancestors'],
   pr_review: ['self', 'ancestors'],
   ci_failed: ['self'],
+  ship_findings: ['self'],
   pr_behind: ['self'],
   pr_merged: ['self', 'ancestors', 'waits_on'],
   pr_closed: ['self', 'ancestors'],

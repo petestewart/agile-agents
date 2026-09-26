@@ -4,7 +4,7 @@
  */
 
 import { describe, expect, test } from 'bun:test';
-import { type Rule, validateRulePatch } from '@agile-agents/shared';
+import { type KnowledgeItem as Rule, validateKnowledgePatch } from '@agile-agents/shared';
 import type { RuleReportRow } from './feed-types';
 import {
   DEFAULT_RULES_FILTER,
@@ -20,14 +20,13 @@ import {
 function rule(id: string, over: Partial<Rule> = {}): Rule {
   return {
     id,
+    kind: 'standard',
     text: `rule ${id}`,
     scope: { kind: 'global' },
     status: 'proposed',
-    enforcement: 'guidance',
-    stage: 'action',
+    enforcement: 'tell',
     critical: false,
-    examples: [],
-    provenance: { by: 'human' },
+    source: { by: 'human' },
     stats: { fired: 0, violated: 0, routed: 0 },
     created_at: '2026-09-23T00:00:00.000Z',
     ...over,
@@ -37,7 +36,7 @@ function rule(id: string, over: Partial<Rule> = {}): Rule {
 function row(id: string): RuleReportRow {
   return {
     id,
-    tier: 'guidance',
+    tier: 'tell',
     status: 'accepted',
     fired: 0,
     violated: 0,
@@ -49,9 +48,9 @@ function row(id: string): RuleReportRow {
 
 describe('filterRules', () => {
   const rules = [
-    rule('R-1', { provenance: { by: 'seed:PLAN-v1' } }),
-    rule('R-2', { status: 'accepted', scope: { kind: 'repo', ref: 'demo' } }),
-    rule('R-3', { provenance: { by: 'seed:PLAN-v1' }, status: 'retired' }),
+    rule('R-1', { source: { by: 'migration' } }),
+    rule('R-2', { status: 'accepted', scope: { kind: 'repo', repo: 'demo' } }),
+    rule('R-3', { source: { by: 'migration' }, status: 'retired' }),
   ];
 
   test('the default shows everything', () => {
@@ -70,7 +69,7 @@ describe('filterRules', () => {
       'R-2',
     ]);
     expect(
-      filterRules(rules, { status: 'proposed', scope: 'all', source: 'seed:PLAN-v1' }).map(
+      filterRules(rules, { status: 'proposed', scope: 'all', source: 'migration' }).map(
         (r) => r.id,
       ),
     ).toEqual(['R-1']);
@@ -93,9 +92,13 @@ describe('patchOf', () => {
   test('a draft round-trips into a patch the strict schema takes', () => {
     const draft = draftOf(
       rule('R-1', {
-        question: 'Does this add a dependency?',
-        criteria: { true: 'adds one', false: 'does not' },
-        examples: [{ action: 'bun add x', violates: true }],
+        enforcement: 'ship',
+        check: {
+          by: 'classifier',
+          question: 'Does this add a dependency?',
+          criteria: { true: 'adds one', false: 'does not' },
+          examples: [{ action: 'bun add x', violates: true }],
+        },
       }),
     );
     const built = patchOf({
@@ -103,18 +106,28 @@ describe('patchOf', () => {
       examples: [...draft.examples, { action: '  ', violates: false }],
     });
     if ('error' in built) throw new Error(built.error);
-    expect(validateRulePatch(built.patch)).toEqual(built.patch);
-    expect(built.patch.criteria).toEqual({ true: 'adds one', false: 'does not' });
-    // Blank example rows are dropped.
-    expect(built.patch.examples).toEqual([{ action: 'bun add x', violates: true }]);
+    expect(validateKnowledgePatch(built.patch)).toEqual(built.patch);
+    expect(built.patch.check).toEqual({
+      by: 'classifier',
+      question: 'Does this add a dependency?',
+      criteria: { true: 'adds one', false: 'does not' },
+      // Blank example rows are dropped.
+      examples: [{ action: 'bun add x', violates: true }],
+    });
   });
 
   test('an empty question is left out; half the criteria is refused', () => {
     const draft = draftOf(rule('R-1'));
     const built = patchOf(draft);
     if ('error' in built) throw new Error(built.error);
-    expect('question' in built.patch).toBe(false);
-    expect('criteria' in built.patch).toBe(false);
+    // A tell item carries no check at all.
+    expect('check' in built.patch).toBe(false);
+    const ship = patchOf({ ...draft, enforcement: 'ship' });
+    if ('error' in ship) throw new Error(ship.error);
+    expect(ship.patch.check).toEqual({ by: 'classifier', examples: [] });
+    expect(patchOf({ ...draft, enforcement: 'ship', patternKind: 'no_push' })).toEqual({
+      error: 'a pattern check is an action check only',
+    });
     expect(patchOf({ ...draft, criteriaTrue: 'yes' })).toEqual({
       error: 'criteria need both halves: what yes means and what no means',
     });

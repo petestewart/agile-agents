@@ -22,12 +22,12 @@ import {
   GateService,
   HookService,
   InboxService,
+  KnowledgeService,
   ProjectService,
   QuestionService,
   RepoInPlaceService,
   RoutedEventService,
   type RpcServerHandle,
-  RulesService,
   StateStore,
   StreamService,
   VerbService,
@@ -36,9 +36,9 @@ import {
   buildGateRpcMethods,
   buildHookRpcMethods,
   buildInboxRpcMethods,
+  buildKnowledgeRpcMethods,
   buildProjectRpcMethods,
   buildQuestionRpcMethods,
-  buildRuleRpcMethods,
   buildStateRpcMethods,
   buildStreamRpcMethods,
   createFakeSpawn,
@@ -112,7 +112,7 @@ export interface TestDaemon {
   questionService: QuestionService;
   streamService: StreamService;
   /** Same instance wired into `rule.*` RPC (T140) — tests seed a rule through it. */
-  rulesService: RulesService;
+  rulesService: KnowledgeService;
   /** T244: the routed event log behind `read_event` — tests emit through it. */
   routedEvents: RoutedEventService;
   /**
@@ -187,8 +187,8 @@ export async function startTestDaemon(prefix = 'agile-cli-test-'): Promise<TestD
   // T130: attach + the eight verbs. Nothing here spawns a vendor — a test
   // that wants a live session injects its own `spawn` seam.
   // T140: rules (cockpit design §5) — the same service behind `rule.*` RPC,
-  // the inbox's `rule_accept` items and the `propose_rule` verb.
-  const rulesService = new RulesService({ store, streams: streamService });
+  // the inbox's `rule_accept` items and the `propose_knowledge` verb.
+  const rulesService = new KnowledgeService({ store, streams: streamService });
   const routedEvents = new RoutedEventService(store);
   const verbService = new VerbService({
     store,
@@ -226,7 +226,7 @@ export async function startTestDaemon(prefix = 'agile-cli-test-'): Promise<TestD
           rules: rulesService,
         }),
       ),
-      ...buildRuleRpcMethods(rulesService, {
+      ...buildKnowledgeRpcMethods(rulesService, {
         classifier,
         events: store,
         bands: {

@@ -6,9 +6,12 @@ import {
   DEFAULT_CLASSIFIER_ALLOW_BELOW,
   DEFAULT_CLASSIFIER_DENY_AT,
   type Event,
+  type KnowledgeItem,
   type Policy,
-  type Rule,
   type SessionDefaultsStatus,
+  classifierQuestion,
+  examplesOf,
+  patternOf,
   ulid,
   validateClassifierConfig,
 } from '@agile-agents/shared';
@@ -21,9 +24,9 @@ import { GateService } from './gates';
 import { type HttpServerHandle, startHttpServer } from './http';
 import { InboxService } from './inbox';
 import { runInit } from './init';
+import { KnowledgeService } from './knowledge';
 import { ProjectService } from './projects';
 import { QuestionService } from './questions';
-import { RulesService } from './rules';
 import { StateStore } from './store';
 import { StreamService } from './streams';
 
@@ -113,7 +116,7 @@ describe('T160 cockpit routes', () => {
   let store: StateStore;
   let streams: StreamService;
   let questions: QuestionService;
-  let rules: RulesService;
+  let rules: KnowledgeService;
   let stateRoot: string;
 
   beforeEach(() => {
@@ -124,7 +127,7 @@ describe('T160 cockpit routes', () => {
     streams = new StreamService(store);
     questions = new QuestionService(store, streams);
     const gates = new GateService(store);
-    rules = new RulesService({ store, streams });
+    rules = new KnowledgeService({ store, streams });
     cockpit = startHttpServer({
       port: 0,
       version: '0.0.0-test',
@@ -179,8 +182,8 @@ describe('T160 cockpit routes', () => {
     expect(foreign.status).toBe(403);
     const ok = await fetch(url(`/api/rules/${rule.id}/accept`), { method: 'POST' });
     expect(ok.status).toBe(200);
-    expect(store.getRule(rule.id).status).toBe('accepted');
-    expect(store.getRule(rule.id).decided_by).toBe('human');
+    expect(store.getKnowledge(rule.id).status).toBe('accepted');
+    expect(store.getKnowledge(rule.id).decided_by).toBe('human');
     const again = await fetch(url(`/api/rules/${rule.id}/accept`), { method: 'POST' });
     expect(again.status).toBe(409);
     expect((await fetch(url('/api/rules/nope/retire'), { method: 'POST' })).status).toBe(400);
@@ -191,7 +194,7 @@ describe('T160 cockpit routes', () => {
     const res = await fetch(url('/api/rules'));
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
-      rules: Rule[];
+      rules: KnowledgeItem[];
       report: { rows: Array<{ id: string; flag: string }> };
       evals: { available: boolean };
     };
@@ -206,7 +209,7 @@ describe('T160 cockpit routes', () => {
   });
 
   test('T163: POST /api/rules/:id/update edits as human through the strict patch schema; cross-origin is 403', async () => {
-    const rule = await rules.create('agent', { text: 'no new deps', enforcement: 'classifier' });
+    const rule = await rules.create('agent', { text: 'no new deps', enforcement: 'action' });
     const post = (body: unknown, headers: Record<string, string> = {}) =>
       fetch(url(`/api/rules/${rule.id}/update`), {
         method: 'POST',
@@ -214,29 +217,37 @@ describe('T160 cockpit routes', () => {
         body: JSON.stringify(body),
       });
     expect((await post({ text: 'x' }, { origin: 'http://evil.example' })).status).toBe(403);
-    // Not in the patch schema: a decision, the provenance, an unknown key.
+    // Not in the patch schema: a decision, the source, an unknown key.
     expect((await post({ status: 'accepted' })).status).toBe(400);
     expect((await post({ provenance: { by: 'human' } })).status).toBe(400);
+    expect((await post({ source: { by: 'human' } })).status).toBe(400);
     expect((await post({ confidence: 0.5 })).status).toBe(400);
-    expect((await post({ criteria: { true: 'adds one' } })).status).toBe(400);
+    expect(
+      (await post({ check: { by: 'classifier', criteria: { true: 'adds one' } } })).status,
+    ).toBe(400);
     const ok = await post({
-      question: 'Does this action add a dependency?',
-      criteria: { true: 'a package is added', false: 'no package is added' },
-      stage: 'diff',
-      examples: [
-        { action: 'bun add lodash', violates: true },
-        { action: 'edit src/a.ts', violates: false },
-      ],
+      enforcement: 'ship',
+      check: {
+        by: 'classifier',
+        question: 'Does this action add a dependency?',
+        criteria: { true: 'a package is added', false: 'no package is added' },
+        examples: [
+          { action: 'bun add lodash', violates: true },
+          { action: 'edit src/a.ts', violates: false },
+        ],
+      },
     });
     expect(ok.status).toBe(200);
-    const saved = store.getRule(rule.id);
-    expect(saved.question).toBe('Does this action add a dependency?');
-    expect(saved.criteria).toEqual({ true: 'a package is added', false: 'no package is added' });
-    expect(saved.stage).toBe('diff');
-    expect(saved.examples).toHaveLength(2);
+    const saved = store.getKnowledge(rule.id);
+    expect(classifierQuestion(saved)).toBe('Does this action add a dependency?');
+    expect(saved.check).toMatchObject({
+      criteria: { true: 'a package is added', false: 'no package is added' },
+    });
+    expect(saved.enforcement).toBe('ship');
+    expect(examplesOf(saved)).toHaveLength(2);
     expect(saved.status).toBe('proposed');
     expect(
-      (await fetch(url(`/api/rules/R-${ulid()}/update`), { method: 'POST', body: '{}' })).status,
+      (await fetch(url(`/api/rules/K-${ulid()}/update`), { method: 'POST', body: '{}' })).status,
     ).toBe(404);
   });
 
@@ -265,11 +276,14 @@ describe('T160 cockpit routes', () => {
       const at = (path: string) => `http://127.0.0.1:${withEvals.port}${path}`;
       const rule = await rules.create('human', {
         text: 'no new deps',
-        enforcement: 'classifier',
-        examples: [
-          { action: 'bun add lodash', violates: true },
-          { action: 'edit src/a.ts', violates: false },
-        ],
+        enforcement: 'action',
+        check: {
+          by: 'classifier',
+          examples: [
+            { action: 'bun add lodash', violates: true },
+            { action: 'edit src/a.ts', violates: false },
+          ],
+        },
       });
       const listed = (await (await fetch(at('/api/rules'))).json()) as { evals: unknown };
       expect(listed.evals).toEqual({ available: true, timeout_ms: 1234 });
@@ -289,7 +303,7 @@ describe('T160 cockpit routes', () => {
       expect(report.agreed).toBe(2);
       expect(report.rules[0]?.examples.map((e) => e.band)).toEqual(['deny', 'allow']);
       // An eval is not a firing.
-      expect(store.getRule(rule.id).stats.fired).toBe(0);
+      expect(store.getKnowledge(rule.id).stats.fired).toBe(0);
     } finally {
       await withEvals.stop();
     }
@@ -301,25 +315,36 @@ describe('T160 cockpit routes', () => {
     expect((await post({ text: 'x' }, { origin: 'http://evil.example' })).status).toBe(403);
     expect((await post({ text: 'x', status: 'accepted' })).status).toBe(400);
     expect((await post({ text: 'x', provenance: { by: 'agent' } })).status).toBe(400);
-    const noPattern = await post({ text: 'x', enforcement: 'pattern' });
-    expect(noPattern.status).toBe(400);
-    expect(((await noPattern.json()) as { error: string }).error).toContain(
-      'a pattern rule needs a pattern',
+    const shipPattern = await post({
+      text: 'x',
+      enforcement: 'ship',
+      check: { by: 'pattern', pattern: { kind: 'no_push' } },
+    });
+    expect(shipPattern.status).toBe(400);
+    expect(((await shipPattern.json()) as { error: string }).error).toContain(
+      'a pattern check is an action check only',
     );
     const tooMany = Array.from({ length: 21 }, (_, i) => ({ action: `a${i}`, violates: false }));
-    expect((await post({ text: 'x', examples: tooMany })).status).toBe(400);
+    expect(
+      (
+        await post({
+          text: 'x',
+          enforcement: 'ship',
+          check: { by: 'classifier', examples: tooMany },
+        })
+      ).status,
+    ).toBe(400);
     const ok = await post({
       text: 'never wipe build output',
-      enforcement: 'pattern',
-      pattern: { kind: 'command_deny', args: { patterns: ['rm -rf'] } },
+      enforcement: 'action',
+      check: { by: 'pattern', pattern: { kind: 'command_deny', args: { patterns: ['rm -rf'] } } },
       scope: { kind: 'global' },
-      stage: 'action',
     });
     expect(ok.status).toBe(200);
-    const rule = (await ok.json()) as Rule;
+    const rule = (await ok.json()) as KnowledgeItem;
     expect(rule.status).toBe('proposed');
-    expect(store.getRule(rule.id).provenance.by).toBe('human');
-    expect(store.getRule(rule.id).pattern).toEqual({
+    expect(store.getKnowledge(rule.id).source.by).toBe('human');
+    expect(patternOf(store.getKnowledge(rule.id))).toEqual({
       kind: 'command_deny',
       args: { patterns: ['rm -rf'] },
     });
@@ -477,7 +502,7 @@ describe('T160 cockpit routes', () => {
     await streams.appendThread('daemon', leaf.id, { kind: 'event', body: 'created' });
     const rule = await rules.create('human', {
       text: 'never push to main',
-      scope: { kind: 'stream', ref: root.id },
+      scope: { kind: 'subtree', node: root.id },
     });
     await rules.accept(rule.id, 'human');
     const res = await fetch(url(`/api/streams/${leaf.id}`));

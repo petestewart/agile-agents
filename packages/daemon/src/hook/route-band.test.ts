@@ -18,7 +18,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ACP_PROVIDERS, type AcpProviderConfig } from '@agile-agents/acp-client';
 import type { HilId, HilRequest, InboxItem, Stream } from '@agile-agents/shared';
-import { ulid, validateClassifierConfig, validateRule } from '@agile-agents/shared';
+import { ulid, validateClassifierConfig, validateKnowledgeItem } from '@agile-agents/shared';
 import { AttachService } from '../attach/service';
 import { Bus } from '../bus';
 import { FakeClassifier } from '../classifier';
@@ -393,18 +393,22 @@ describe('T138 route band — a routed manifest edit, approved, retried once', (
 describe('T151 classifier tier — a routed classifier answer, through the same band', () => {
   test('a middle-band answer routes, the approval lets that one call through, a deny reaches the model', async () => {
     const { stream, session, worktree } = await liveSession({ withRepo: true });
-    const rule = validateRule({
-      id: `R-${ulid()}`,
+    const rule = validateKnowledgeItem({
+      id: `K-${ulid()}`,
+      kind: 'standard',
       text: 'do not touch the migration files',
       scope: { kind: 'global' },
       status: 'accepted',
-      enforcement: 'classifier',
+      enforcement: 'action',
+      check: {
+        by: 'classifier',
+        examples: [
+          { action: 'edit db/migrations/001.sql', violates: true },
+          { action: 'edit src/index.ts', violates: false },
+        ],
+      },
       critical: false,
-      examples: [
-        { action: 'edit db/migrations/001.sql', violates: true },
-        { action: 'edit src/index.ts', violates: false },
-      ],
-      provenance: { by: 'human' },
+      source: { by: 'human' },
       stats: {},
       created_at: new Date().toISOString(),
     });

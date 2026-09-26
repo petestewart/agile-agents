@@ -7,7 +7,7 @@
  * hookless vendor gets.
  *
  * Shared with the hook rather than re-derived: the bands (`bandFor`), the
- * scope filter (`RulesService.inScope`) and the fail-closed scrub (§6.5).
+ * scope filter (`KnowledgeService.inScope`) and the fail-closed scrub (§6.5).
  *
  * A route's gate is keyed on a digest of the stream, target and diff, so
  * pressing Land again reuses the answer, and a changed diff is a new
@@ -21,22 +21,24 @@ import type {
   GateKind,
   HilId,
   HilRequest,
+  KnowledgeEnforcement,
+  KnowledgeId,
+  KnowledgeItem,
   Policy,
   RepoEntry,
-  Rule,
-  RuleId,
   Stream,
 } from '@agile-agents/shared';
 import { MESSAGE_BODY_MAX_CHARS } from '@agile-agents/shared';
+import { classifierCheckOf } from '@agile-agents/shared';
 import type { Answer, Classifier, Noul } from '../classifier';
 import { bandFor, classifierEnabled, noulFor, scrub } from '../classifier';
 import type { GateRequestContext } from '../gates/service';
-import type { RuleStatsOutcome } from '../rules/service';
+import { type RuleStatsOutcome, knowledgeMatchesPaths } from '../knowledge/service';
 import type { DiffRuleContext, DiffRuleVerdict, DiffRules } from './service';
 
-/** The slice of `RulesService` this tier needs. */
+/** The slice of `KnowledgeService` this tier needs. */
 export interface DiffRuleRules {
-  inScope(streamId: string, stage?: 'action' | 'diff' | 'both'): Rule[];
+  inScope(streamId: string, enforcement?: KnowledgeEnforcement): KnowledgeItem[];
   recordFired(id: string, outcome: RuleStatsOutcome): Promise<void>;
 }
 
@@ -90,7 +92,7 @@ export function truncateTo(state: string, budget: number): string {
 }
 
 /** `R-…` is unreadable on an inbox card; a built-in's `name` is not. */
-function nameOf(rule: Rule): string {
+function nameOf(rule: KnowledgeItem): string {
   return rule.name ?? rule.id;
 }
 
@@ -109,14 +111,56 @@ export function splitDiffByFile(diff: string): string[] {
   return parts.filter((part) => part.trim().length > 0);
 }
 
+/** Every repo-relative path a unified diff touches (both sides of a rename). */
+export function changedFilesOf(diff: string): string[] {
+  const files = new Set<string>();
+  for (const line of diff.split('\n')) {
+    const match = /^diff --git a\/(.+) b\/(.+)$/.exec(line);
+    if (match === null) continue;
+    files.add(match[1] as string);
+    files.add(match[2] as string);
+  }
+  return [...files];
+}
+
+/**
+ * The ship-time question (T268). A ship item's examples read like "diff
+ * changes src/a.ts and test/a.test.ts", so the default asks about the
+ * change, not "this action" (the hook's phrasing); an explicit
+ * `check.question` is sent as written.
+ */
+export function shipNoulFor(rule: KnowledgeItem): Noul {
+  const noul = noulFor(rule);
+  if (classifierCheckOf(rule)?.question !== undefined) return noul;
+  return { ...noul, question: `Does this change violate: ${rule.text}?` };
+}
+
+/**
+ * The state for one ship-check call (T268): the landing line, then the
+ * complete changed-file list, then the diff (or one file's part of it).
+ * Every per-file part carries the whole list, so an item about the change
+ * as a whole ("comes with a test") is not judged on a file that cannot
+ * show the test beside it.
+ */
+export const SHIP_FILE_LIST_MAX = 200;
+
+export function shipState(header: string, files: string[], diff: string, part?: string): string {
+  const shown = files.slice(0, SHIP_FILE_LIST_MAX).map((file) => `- ${file}`);
+  if (files.length > SHIP_FILE_LIST_MAX)
+    shown.push(`- … and ${files.length - SHIP_FILE_LIST_MAX} more`);
+  const list = shown.length === 0 ? '(none)' : shown.join('\n');
+  const lead = `${header}\nChanged files (${files.length}):\n${list}`;
+  return part === undefined ? `${lead}\n\nDiff:\n${diff}` : `${lead}\n\nDiff (${part}):\n${diff}`;
+}
+
 /**
  * The gate call for a routed diff: its digest is what an approval is good
  * for. `origin: 'diff_rules'` is what `wireLandGateResolution` keys on
  * (answering one performs a merge), and the hook path never sets it.
  */
-function diffCall(ctx: DiffRuleContext, diff: string): GateCall {
+export function diffCall(ctx: DiffRuleContext, diff: string, step?: string): GateCall {
   const fingerprint = createHash('sha256')
-    .update([ctx.stream.id, ctx.branch, ctx.target, diff].join('\0'))
+    .update([ctx.stream.id, ctx.branch, ctx.target, diff, ...(step ? [step] : [])].join('\0'))
     .digest('hex')
     .slice(0, 16);
   return {
@@ -127,20 +171,77 @@ function diffCall(ctx: DiffRuleContext, diff: string): GateCall {
   };
 }
 
+/** This stream's `classifier_review` gates on this exact diff, newest first. */
+function matchingGates(gates: DiffRuleGates, stream: Stream, call: GateCall): HilRequest[] {
+  return gates
+    .list()
+    .filter(
+      (gate) =>
+        gate.gate === 'classifier_review' &&
+        gate.stream === stream.id &&
+        gate.call?.origin === 'diff_rules' &&
+        gate.call?.fingerprint === call.fingerprint,
+    )
+    .sort((a, b) =>
+      a.requested_at === b.requested_at ? 0 : a.requested_at < b.requested_at ? 1 : -1,
+    );
+}
+
+/**
+ * An answer the human already gave for this diff (an approval is spent
+ * here), or `undefined` to ask the check. Shared by the classifier step and
+ * the reviewer step (T262), each with its own fingerprint.
+ */
+export async function answeredDiffGate(
+  gates: DiffRuleGates | undefined,
+  stream: Stream,
+  call: GateCall,
+): Promise<DiffRuleVerdict | undefined> {
+  if (gates === undefined) return undefined;
+  const candidates = matchingGates(gates, stream, call);
+  const approved = candidates.find(
+    (gate) => gate.decision === 'approve' && gate.consumed_at === undefined,
+  );
+  if (approved !== undefined) {
+    await gates.consume(approved.id);
+    return { decision: 'allow' };
+  }
+  const pending = candidates.find((gate) => gate.status === 'pending');
+  if (pending !== undefined) {
+    return {
+      decision: 'route',
+      gate: pending,
+      reason: `waiting on ${pending.id} — ${pending.summary ?? 'a ship check routed this land'}`,
+    };
+  }
+  const denied = candidates.find((gate) => gate.decision === 'deny');
+  if (denied !== undefined) {
+    return {
+      decision: 'deny',
+      reason: cap(`${denied.id} was denied: ${denied.note ?? 'no reason given'}`),
+    };
+  }
+  return undefined;
+}
+
 export class ClassifierDiffRules implements DiffRules {
   constructor(private readonly options: ClassifierDiffRulesOptions) {}
 
   async check(ctx: DiffRuleContext): Promise<DiffRuleVerdict> {
-    const rules = this.options.rules
-      .inScope(ctx.stream.id, 'diff')
-      .filter((rule) => rule.enforcement === 'classifier');
-    if (rules.length === 0) return { decision: 'allow' };
+    const candidates = this.options.rules
+      .inScope(ctx.stream.id, 'ship')
+      .filter((rule) => rule.check?.by === 'classifier');
+    if (candidates.length === 0) return { decision: 'allow' };
 
     const diff = ctx.diff();
+    // `paths` against the files the diff changes (T261).
+    const changed = changedFilesOf(diff);
+    const rules = candidates.filter((rule) => knowledgeMatchesPaths(rule, changed));
+    if (rules.length === 0) return { decision: 'allow' };
     const call = diffCall(ctx, diff);
 
     // The human may already have answered this exact diff.
-    const answered = await this.answeredGate(ctx.stream, call);
+    const answered = await answeredDiffGate(this.options.gates, ctx.stream, call);
     if (answered !== undefined) return answered;
 
     let answers: Map<string, Answer>;
@@ -151,7 +252,7 @@ export class ClassifierDiffRules implements DiffRules {
     }
 
     // Deny wins over route wins over allow; the first denying rule is named.
-    let routed: { rule: Rule; answer: Answer } | undefined;
+    let routed: { rule: KnowledgeItem; answer: Answer } | undefined;
     let verdict: DiffRuleVerdict = { decision: 'allow' };
     for (const rule of rules) {
       const answer = answers.get(rule.id);
@@ -178,7 +279,7 @@ export class ClassifierDiffRules implements DiffRules {
         verdict = {
           decision: 'deny',
           rule: nameOf(rule),
-          reason: cap(`${nameOf(rule)}: ${rule.text} (probability ${answer.probability})`),
+          reason: cap(`${rule.text} (probability ${answer.probability})`),
         };
       }
       if (band === 'route' && routed === undefined) routed = { rule, answer };
@@ -194,20 +295,27 @@ export class ClassifierDiffRules implements DiffRules {
    */
   private async ask(
     ctx: DiffRuleContext,
-    rules: Rule[],
+    rules: KnowledgeItem[],
     diff: string,
   ): Promise<Map<string, Answer>> {
     if (!this.enabled(ctx.stream)) {
       throw new Error('classifier tier is off for this stream');
     }
-    const questions: Noul[] = rules.map(noulFor);
-    const header = `Stream ${ctx.stream.id} (${ctx.stream.title}) landing ${ctx.branch} into ${ctx.target}.`;
+    const questions: Noul[] = rules.map(shipNoulFor);
+    const header = `Stream ${ctx.stream.id} (${ctx.stream.title}) delivering ${ctx.branch} into ${ctx.target}.`;
+    const files = changedFilesOf(diff);
     const budget = this.options.config.state_max_chars;
-    const whole = scrub(`${header}\n\n${diff}`);
+    const whole = scrub(shipState(header, files, diff));
+    const parts = whole.length <= budget ? [] : splitDiffByFile(diff);
     const states =
-      whole.length <= budget
+      parts.length === 0
         ? [whole]
-        : splitDiffByFile(diff).map((part) => truncateTo(scrub(`${header}\n\n${part}`), budget));
+        : parts.map((part, i) =>
+            truncateTo(
+              scrub(shipState(header, files, part, `part ${i + 1} of ${parts.length}`)),
+              budget,
+            ),
+          );
 
     const best = new Map<string, Answer>();
     for (const state of states) {
@@ -238,7 +346,7 @@ export class ClassifierDiffRules implements DiffRules {
    */
   private async failPolicy(
     stream: Stream,
-    rules: Rule[],
+    rules: KnowledgeItem[],
     error: unknown,
   ): Promise<DiffRuleVerdict> {
     const why = error instanceof Error ? error.message : String(error);
@@ -253,72 +361,24 @@ export class ClassifierDiffRules implements DiffRules {
     const named = critical.map(nameOf).join(', ');
     return {
       decision: 'deny',
-      rule: nameOf(critical[0] as Rule),
-      reason: cap(`classifier unavailable (${why}); critical diff rules deny: ${named}`),
+      rule: nameOf(critical[0] as KnowledgeItem),
+      reason: cap(`classifier unavailable (${why}); critical ship checks deny: ${named}`),
     };
   }
 
   /** §6.4's visible mark. Stats are the caller's: a critical rule that goes on to deny is `violated`. */
-  private async noteUnchecked(stream: Stream, rules: Rule[], why: string): Promise<void> {
+  private async noteUnchecked(stream: Stream, rules: KnowledgeItem[], why: string): Promise<void> {
     await this.options.streams.appendThread('daemon', stream.id, {
       kind: 'event',
-      body: cap(`hook_unchecked: diff rules ${rules.map(nameOf).join(', ')} not checked — ${why}`),
+      body: cap(`hook_unchecked: ship checks ${rules.map(nameOf).join(', ')} not checked — ${why}`),
     });
-  }
-
-  /** This stream's `classifier_review` gates on this exact diff, newest first. */
-  private matching(stream: Stream, call: GateCall): HilRequest[] {
-    const gates = this.options.gates;
-    if (gates === undefined) return [];
-    return gates
-      .list()
-      .filter(
-        (gate) =>
-          gate.gate === 'classifier_review' &&
-          gate.stream === stream.id &&
-          gate.call?.origin === 'diff_rules' &&
-          gate.call?.fingerprint === call.fingerprint,
-      )
-      .sort((a, b) =>
-        a.requested_at === b.requested_at ? 0 : a.requested_at < b.requested_at ? 1 : -1,
-      );
-  }
-
-  /** An answer the human already gave for this diff, or `undefined` to ask the classifier. */
-  private async answeredGate(stream: Stream, call: GateCall): Promise<DiffRuleVerdict | undefined> {
-    const gates = this.options.gates;
-    if (gates === undefined) return undefined;
-    const candidates = this.matching(stream, call);
-    const approved = candidates.find(
-      (gate) => gate.decision === 'approve' && gate.consumed_at === undefined,
-    );
-    if (approved !== undefined) {
-      await gates.consume(approved.id);
-      return { decision: 'allow' };
-    }
-    const pending = candidates.find((gate) => gate.status === 'pending');
-    if (pending !== undefined) {
-      return {
-        decision: 'route',
-        gate: pending,
-        reason: `waiting on ${pending.id} — ${pending.summary ?? 'a diff rule routed this land'}`,
-      };
-    }
-    const denied = candidates.find((gate) => gate.decision === 'deny');
-    if (denied !== undefined) {
-      return {
-        decision: 'deny',
-        reason: cap(`${denied.id} was denied: ${denied.note ?? 'no reason given'}`),
-      };
-    }
-    return undefined;
   }
 
   /** §8.2's "ROUTE ⇒ inbox item, landing waits". */
   private async route(
     ctx: DiffRuleContext,
     call: GateCall,
-    rule: Rule,
+    rule: KnowledgeItem,
     answer: Answer,
   ): Promise<DiffRuleVerdict> {
     const summary = cap(`${nameOf(rule)}: ${rule.text} (probability ${answer.probability})`);
@@ -333,7 +393,7 @@ export class ClassifierDiffRules implements DiffRules {
       call,
       summary,
       // The routing rule, so the human's deny counts as its violation.
-      rule: rule.id as RuleId,
+      rule: rule.id as KnowledgeId,
     });
     return {
       decision: 'route',

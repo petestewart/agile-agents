@@ -1,6 +1,6 @@
 /**
  * T152: diff-level rules at landing (design/cockpit-design.md §8.2), over a
- * real state home, real `RulesService`/`GateService`/`StreamService` and
+ * real state home, real `KnowledgeService`/`GateService`/`StreamService` and
  * the `FakeClassifier` — §6.2's "the only classifier the suite ever uses".
  * No git here: the tier is handed a `DiffRuleContext` whose `diff()` is the
  * fixture, so the bands, the budget split and the fail policy are asserted
@@ -12,21 +12,29 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { Rule, Stream } from '@agile-agents/shared';
+import type { KnowledgeEnforcement, KnowledgeItem, Stream } from '@agile-agents/shared';
 import { ClassifierUnavailableError, FakeClassifier } from '../classifier';
 import { GateService } from '../gates/service';
 import { wireClassifierRouteStats } from '../hook/route-band';
 import { runInit } from '../init';
-import { RulesService } from '../rules/service';
+import { KnowledgeService } from '../knowledge/service';
 import { StateStore } from '../store';
 import { StreamService } from '../streams/service';
-import { ClassifierDiffRules, TRUNCATION_MARKER, splitDiffByFile, truncateTo } from './diff-rules';
+import {
+  ClassifierDiffRules,
+  SHIP_FILE_LIST_MAX,
+  TRUNCATION_MARKER,
+  shipNoulFor,
+  shipState,
+  splitDiffByFile,
+  truncateTo,
+} from './diff-rules';
 import type { DiffRuleContext } from './service';
 
 let home: string;
 let store: StateStore;
 let streams: StreamService;
-let rules: RulesService;
+let rules: KnowledgeService;
 let gates: GateService;
 let stream: Stream;
 
@@ -37,7 +45,7 @@ beforeEach(async () => {
   const init = runInit(home);
   store = StateStore.open(init.stateRoot);
   streams = new StreamService(store);
-  rules = new RulesService({ store, streams, statsFlushMs: 0 });
+  rules = new KnowledgeService({ store, streams, statsFlushMs: 0 });
   gates = new GateService(store);
   await store.putRepos({ demo: { path: home, protected_branches: ['main'] } });
   stream = await streams.create('human', { title: 'CSV parser', goal: 'ship it', repo: 'demo' });
@@ -50,20 +58,22 @@ afterEach(async () => {
   rmSync(home, { recursive: true, force: true });
 });
 
-/** An accepted classifier rule at the given stage. */
+/** An accepted item with a classifier check at the given checkpoint (`ship` by default). */
 async function acceptRule(
   text: string,
-  over: { stage?: 'action' | 'diff' | 'both'; critical?: boolean } = {},
-): Promise<Rule> {
+  over: { enforcement?: KnowledgeEnforcement; critical?: boolean } = {},
+): Promise<KnowledgeItem> {
   const proposed = await rules.create('human', {
     text,
-    enforcement: 'classifier',
-    stage: over.stage ?? 'diff',
+    enforcement: over.enforcement ?? 'ship',
     critical: over.critical ?? false,
-    examples: [
-      { action: 'a violating change', violates: true },
-      { action: 'an innocent change', violates: false },
-    ],
+    check: {
+      by: 'classifier',
+      examples: [
+        { action: 'a violating change', violates: true },
+        { action: 'an innocent change', violates: false },
+      ],
+    },
   });
   return rules.accept(proposed.id, 'pete');
 }
@@ -205,19 +215,59 @@ describe('ClassifierDiffRules (§8.2)', () => {
   test('over the budget the diff is split per file and the MAX is taken', async () => {
     const rule = await acceptRule('one bad file makes the whole diff bad');
     const perFile = new FakeClassifier((state) => [
-      { id: rule.id, probability: state.includes('b.ts') ? 0.95 : 0.01 },
+      { id: rule.id, probability: state.includes('const b = 2') ? 0.95 : 0.01 },
     ]);
 
-    const verdict = await tier(perFile, { stateMaxChars: 200 }).check(contextFor(FILE_A + FILE_B));
+    const verdict = await tier(perFile, { stateMaxChars: 220 }).check(contextFor(FILE_A + FILE_B));
 
     // Two calls, one per file, and the 0.95 from b.ts wins over a.ts's 0.01.
     expect(perFile.calls).toHaveLength(2);
-    expect(perFile.calls[0]?.state).toContain('a.ts');
-    expect(perFile.calls[0]?.state).not.toContain('b.ts');
-    expect(perFile.calls[1]?.state).toContain('b.ts');
+    expect(perFile.calls[0]?.state).toContain('Diff (part 1 of 2):\ndiff --git a/a.ts');
+    expect(perFile.calls[0]?.state).not.toContain('const b = 2');
+    expect(perFile.calls[1]?.state).toContain('Diff (part 2 of 2):\ndiff --git a/b.ts');
+    // Each part still carries the whole changed-file list (T268).
+    for (const call of perFile.calls) {
+      expect(call.state).toContain('Changed files (2):\n- a.ts\n- b.ts');
+    }
     expect(verdict.decision).toBe('deny');
     if (verdict.decision === 'allow') throw new Error('unreachable');
     expect(verdict.reason).toContain('0.95');
+  });
+
+  test('the request: landing line, changed-file list, diff; asked about the change (T268)', async () => {
+    const rule = await acceptRule('Every change under src/ comes with a test');
+    const classifier = new FakeClassifier([{ id: rule.id, probability: 0.1 }]);
+
+    await tier(classifier).check(contextFor(FILE_A + FILE_B));
+
+    expect(classifier.calls).toHaveLength(1);
+    const call = classifier.calls[0];
+    expect(call?.state).toMatch(
+      /^Stream \S+ \(.*\) delivering \S+ into \S+\.\nChanged files \(2\):\n- a\.ts\n- b\.ts\n\nDiff:\ndiff --git a\/a\.ts/,
+    );
+    expect(call?.questions).toEqual([
+      {
+        id: rule.id,
+        question: 'Does this change violate: Every change under src/ comes with a test?',
+      },
+    ]);
+  });
+
+  test('an explicit question is sent as written', () => {
+    const noul = shipNoulFor({
+      id: 'K-1',
+      text: 't',
+      check: { by: 'classifier', question: 'Is a test missing?', examples: [] },
+    } as unknown as KnowledgeItem);
+    expect(noul.question).toBe('Is a test missing?');
+  });
+
+  test('a very long changed-file list is capped', () => {
+    const files = Array.from({ length: SHIP_FILE_LIST_MAX + 5 }, (_, i) => `f${i}.ts`);
+    const state = shipState('h', files, 'd');
+    expect(state).toContain(`Changed files (${files.length}):`);
+    expect(state).toContain('- … and 5 more');
+    expect(state).not.toContain(`f${SHIP_FILE_LIST_MAX}.ts`);
   });
 
   test('a diff inside the budget is one call, whole', async () => {
@@ -231,18 +281,20 @@ describe('ClassifierDiffRules (§8.2)', () => {
     expect(classifier.calls[0]?.state).toContain('b.ts');
   });
 
-  test('only accepted classifier rules staged diff/both are asked (§5.3, one scope filter)', async () => {
-    const diffRule = await acceptRule('checked at the diff', { stage: 'diff' });
-    const bothRule = await acceptRule('checked at both', { stage: 'both' });
-    await acceptRule('checked per action', { stage: 'action' });
+  test('only accepted ship items with a classifier check are asked (one scope filter)', async () => {
+    const diffRule = await acceptRule('checked at ship');
+    const bothRule = await acceptRule('also checked at ship');
+    await acceptRule('checked per action', { enforcement: 'action' });
     const proposed = await rules.create('human', {
       text: 'not accepted yet',
-      enforcement: 'classifier',
-      stage: 'diff',
-      examples: [
-        { action: 'x', violates: true },
-        { action: 'y', violates: false },
-      ],
+      enforcement: 'ship',
+      check: {
+        by: 'classifier',
+        examples: [
+          { action: 'x', violates: true },
+          { action: 'y', violates: false },
+        ],
+      },
     });
     const classifier = new FakeClassifier((_state, questions) =>
       questions.map((q) => ({ id: q.id, probability: 0.1 })),
@@ -256,7 +308,7 @@ describe('ClassifierDiffRules (§8.2)', () => {
   });
 
   test('no diff rules in scope is no call at all', async () => {
-    await acceptRule('per action only', { stage: 'action' });
+    await acceptRule('per action only', { enforcement: 'action' });
     const classifier = new FakeClassifier([]);
 
     expect(await tier(classifier).check(contextFor(FILE_A))).toEqual({ decision: 'allow' });

@@ -1,21 +1,28 @@
 /**
- * §5.4's built-in pattern rules, created as global rules on daemon start.
- * Rules rather than code, so the posture is data: accepting `no_push` or
- * retiring `no_push_protected` takes effect on the next tool call (D7).
+ * Cockpit §5.4's built-in pattern checks, created on daemon start as
+ * global `standard` items with `action` enforcement (T260). Data rather
+ * than code, so the posture is data: accepting `no_push` or retiring
+ * `no_push_protected` takes effect on the next tool call (D7).
  *
- *  - Idempotent: identity is `pattern.kind` + `provenance.by: 'builtin'`
- *    (a minted ulid can't be fixed).
+ *  - Idempotent: identity is the pattern kind + `source.by: 'builtin'`
+ *    (a minted ulid can't be fixed); a migrated built-in keeps both.
  *  - A retired built-in stays retired: the existence check ignores
  *    `status`, so it is never re-created or re-accepted.
  *  - Written as `daemon`, straight through the store:
- *    `RulesService.create` mints `proposed`, and these ship decided.
+ *    `KnowledgeService.create` mints `proposed`, and these ship decided.
  */
 
-import { type Rule, type RuleInput, type RulePattern, ulid } from '@agile-agents/shared';
+import {
+  type KnowledgeItem,
+  type KnowledgeItemInput,
+  type RulePattern,
+  patternOf,
+  ulid,
+} from '@agile-agents/shared';
 import type { StateStore } from '../store/store';
 
 /** A §5.4 built-in, minus the fields the store/clock supply. */
-interface BuiltinRuleSpec {
+interface BuiltinSpec {
   pattern: RulePattern;
   text: string;
   /** `accepted` for the two on by default; `retired` for `no_push` (D7). */
@@ -25,10 +32,10 @@ interface BuiltinRuleSpec {
   finding: string;
 }
 
-/** `provenance.by` of every built-in: half of the idempotence key. */
+/** `source.by` of every built-in: half of the idempotence key. */
 export const BUILTIN_PROVENANCE = 'builtin';
 
-export const BUILTIN_RULES: readonly BuiltinRuleSpec[] = [
+export const BUILTIN_KNOWLEDGE: readonly BuiltinSpec[] = [
   {
     pattern: { kind: 'no_push_protected', args: {} },
     text: 'Never push to, or merge into, a protected branch. Protected branches come from the repo entry in repos.yaml and default to main and master.',
@@ -54,26 +61,26 @@ export const BUILTIN_RULES: readonly BuiltinRuleSpec[] = [
   },
 ];
 
-/** The `provenance.by` + `pattern.kind` identity check. */
-function isBuiltin(rule: Rule, kind: RulePattern['kind']): boolean {
-  return rule.provenance.by === BUILTIN_PROVENANCE && rule.pattern?.kind === kind;
+/** The `source.by` + pattern kind identity check. */
+function isBuiltin(item: KnowledgeItem, kind: RulePattern['kind']): boolean {
+  return item.source.by === BUILTIN_PROVENANCE && patternOf(item)?.kind === kind;
 }
 
 /** Creates any missing built-in and returns all of them in §5.4's order. Safe on every start. */
-export async function ensureBuiltinRules(
+export async function ensureBuiltinKnowledge(
   store: StateStore,
   clock: () => Date = () => new Date(),
-): Promise<Rule[]> {
-  const existing = store.listRules();
-  const result: Rule[] = [];
-  for (const spec of BUILTIN_RULES) {
+): Promise<KnowledgeItem[]> {
+  const existing = store.listKnowledge();
+  const result: KnowledgeItem[] = [];
+  for (const spec of BUILTIN_KNOWLEDGE) {
     const found = existing.find((rule) => isBuiltin(rule, spec.pattern.kind));
     if (found !== undefined) {
       // Backfill `name` on a built-in that predates it; nothing else is touched.
       result.push(
         found.name === spec.pattern.kind
           ? found
-          : await store.updateRule('daemon', found.id, (before) => ({
+          : await store.updateKnowledge('daemon', found.id, (before) => ({
               ...before,
               name: spec.pattern.kind,
             })),
@@ -81,25 +88,24 @@ export async function ensureBuiltinRules(
       continue;
     }
     const now = clock().toISOString();
-    const record: RuleInput = {
-      id: `R-${ulid()}`,
-      // The §5.4 name the operator knows the rule by.
+    const record: KnowledgeItemInput = {
+      id: `K-${ulid()}`,
+      // The §5.4 name the operator knows the check by.
       name: spec.pattern.kind,
+      kind: 'standard',
       text: spec.text,
       scope: { kind: 'global' },
       status: spec.status,
-      enforcement: 'pattern',
-      stage: 'action',
-      pattern: spec.pattern,
+      enforcement: 'action',
+      check: { by: 'pattern', pattern: spec.pattern },
       critical: spec.critical,
-      examples: [],
-      provenance: { by: BUILTIN_PROVENANCE, finding: spec.finding },
+      source: { by: BUILTIN_PROVENANCE, finding: spec.finding },
       stats: {},
       created_at: now,
       decided_at: now,
       decided_by: BUILTIN_PROVENANCE,
     };
-    result.push(await store.createRule('daemon', record));
+    result.push(await store.createKnowledge('daemon', record));
   }
   return result;
 }

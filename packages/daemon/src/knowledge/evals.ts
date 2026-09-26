@@ -12,9 +12,11 @@
 
 import {
   type ClassifierBands,
-  type Rule,
-  RuleWriteError,
+  type KnowledgeItem,
+  KnowledgeWriteError,
+  classifierCheckOf,
   classifierQuestion,
+  examplesOf,
 } from '@agile-agents/shared';
 import { type Classifier, ClassifierUnavailableError, bandFor, noulFor } from '../classifier';
 import type { ClassifierBand } from '../classifier';
@@ -63,10 +65,10 @@ export interface RuleEvalReport {
   agreement_rate?: number;
 }
 
-/** The slice of `RulesService` an eval run reads. */
+/** The slice of `KnowledgeService` an eval run reads. */
 export interface RuleEvalRules {
-  get(id: string): Rule;
-  list(): Rule[];
+  get(id: string): KnowledgeItem;
+  list(): KnowledgeItem[];
 }
 
 export interface RunRuleEvalsOptions {
@@ -91,7 +93,7 @@ export interface RuleEvalCall {
 }
 
 /** A named rule that can't be evaluated (not classifier, or not accepted): caller input, -32602. */
-export class RuleNotEvaluableError extends RuleWriteError {
+export class RuleNotEvaluableError extends KnowledgeWriteError {
   constructor(message: string) {
     super(message);
     this.name = 'RuleNotEvaluableError';
@@ -99,21 +101,21 @@ export class RuleNotEvaluableError extends RuleWriteError {
 }
 
 /** Every accepted `classifier` rule, or the one named (which must be one). */
-export function evaluableRules(rules: RuleEvalRules, ruleId?: string): Rule[] {
+export function evaluableRules(rules: RuleEvalRules, ruleId?: string): KnowledgeItem[] {
   if (ruleId === undefined) {
     return rules
       .list()
-      .filter((rule) => rule.status === 'accepted' && rule.enforcement === 'classifier');
+      .filter((rule) => rule.status === 'accepted' && classifierCheckOf(rule) !== undefined);
   }
   const rule = rules.get(ruleId);
-  if (rule.enforcement !== 'classifier') {
+  if (classifierCheckOf(rule) === undefined) {
     throw new RuleNotEvaluableError(
-      `rule ${rule.id} is a ${rule.enforcement} rule: only classifier rules have examples to evaluate (§5.6)`,
+      `knowledge item ${rule.id} has no classifier check (${rule.check?.by ?? rule.enforcement}): only classifier checks have examples to evaluate (§5.6)`,
     );
   }
   if (rule.status !== 'accepted') {
     throw new RuleNotEvaluableError(
-      `rule ${rule.id} is ${rule.status}: only accepted rules are evaluated (a proposal is not a gate)`,
+      `knowledge item ${rule.id} is ${rule.status}: only accepted items are evaluated (a proposal is not a gate)`,
     );
   }
   return [rule];
@@ -143,10 +145,10 @@ export async function runRuleEvals(options: RunRuleEvalsOptions): Promise<RuleEv
   };
 }
 
-async function evalRule(rule: Rule, options: RunRuleEvalsOptions): Promise<RuleEvalRule> {
+async function evalRule(rule: KnowledgeItem, options: RunRuleEvalsOptions): Promise<RuleEvalRule> {
   const question = classifierQuestion(rule);
   const examples: RuleEvalExample[] = [];
-  for (const example of rule.examples) {
+  for (const example of examplesOf(rule)) {
     examples.push(await evalExample(rule, question, example.action, example.violates, options));
   }
   return {
@@ -162,7 +164,7 @@ async function evalRule(rule: Rule, options: RunRuleEvalsOptions): Promise<RuleE
 }
 
 async function evalExample(
-  rule: Rule,
+  rule: KnowledgeItem,
   question: string,
   action: string,
   violates: boolean,

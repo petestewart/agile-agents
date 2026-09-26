@@ -10,19 +10,18 @@
 import {
   type HilRequest,
   type InboxItem,
+  type KnowledgeItem,
   type Question,
-  type Rule,
   type Stream,
   describeGateCall,
-  formatRuleScope,
+  formatKnowledgeScope,
   inboxContext,
   inboxDetail,
-  isSeededRule,
   liveChildrenOf,
 } from '@agile-agents/shared';
 import type { GateService } from '../gates/service';
+import type { KnowledgeService } from '../knowledge/service';
 import type { QuestionService } from '../questions/service';
-import type { RulesService } from '../rules/service';
 import type { StreamService } from '../streams/service';
 
 /** The full text behind a clipped context, as a spreadable field. */
@@ -42,7 +41,7 @@ export interface InboxServiceDeps {
   questions: QuestionService;
   gates: GateService;
   /** A proposed rule is a `rule_accept` item (§3.1). */
-  rules?: RulesService;
+  rules?: KnowledgeService;
 }
 
 export class InboxService {
@@ -64,15 +63,16 @@ export class InboxService {
       const item = this.gateItem(gate, byId);
       if (item) items.push(item);
     }
-    // Proposed rules (§3.1, §5.1); a `rule_accept` item may name no stream
-    // (a global rule). A seed import's dozens collapse into one card per
-    // source; lessons and agent proposals stay one card each.
-    const seeded = new Map<string, Rule[]>();
+    // Proposed knowledge (§3.1, projects-design §5); a `rule_accept` item
+    // may name no stream (a global item). Proposals the home migration
+    // carried over from a seed import collapse into one card; lessons and
+    // agent proposals stay one card each.
+    const seeded = new Map<string, KnowledgeItem[]>();
     for (const rule of this.deps.rules?.listProposed() ?? []) {
-      if (isSeededRule(rule)) {
-        const batch = seeded.get(rule.provenance.by) ?? [];
+      if (rule.source.by === 'migration') {
+        const batch = seeded.get(rule.source.by) ?? [];
         batch.push(rule);
-        seeded.set(rule.provenance.by, batch);
+        seeded.set(rule.source.by, batch);
       } else {
         items.push(this.ruleItem(rule, byId));
       }
@@ -114,23 +114,24 @@ export class InboxService {
     };
   }
 
-  private ruleItem(rule: Rule, byId: Map<string, Stream>): InboxItem {
-    const stream =
-      rule.provenance.stream === undefined ? undefined : byId.get(rule.provenance.stream);
+  private ruleItem(rule: KnowledgeItem, byId: Map<string, Stream>): InboxItem {
+    const stream = rule.source.node === undefined ? undefined : byId.get(rule.source.node);
+    const label = `${rule.name !== undefined ? `${rule.name} · ` : ''}${formatKnowledgeScope(rule.scope)}: ${rule.text}`;
     return {
       kind: 'rule_accept',
       id: rule.id,
       ...(stream ? { stream: stream.id } : {}),
       stream_path: stream ? this.path(stream, byId) : [],
       ts: rule.created_at,
-      context: inboxContext(`${formatRuleScope(rule.scope)}: ${rule.text}`),
-      ...withDetail(`${formatRuleScope(rule.scope)}: ${rule.text}`),
-      ref: `rules/${rule.id}.yaml`,
+      context: inboxContext(label),
+      ...withDetail(label),
+      ref: `knowledge/${rule.id}.yaml`,
+      knowledge_kind: rule.kind,
     };
   }
 
   /** One card for a seed source's open proposals, sorted where its first rule would be. */
-  private ruleBatchItem(source: string, rules: Rule[]): InboxItem {
+  private ruleBatchItem(source: string, rules: KnowledgeItem[]): InboxItem {
     const sorted = [...rules].sort((a, b) =>
       a.created_at === b.created_at
         ? a.id.localeCompare(b.id)
@@ -138,7 +139,7 @@ export class InboxService {
           ? -1
           : 1,
     );
-    const first = sorted[0] as Rule;
+    const first = sorted[0] as KnowledgeItem;
     const noun = sorted.length === 1 ? 'proposed rule' : 'proposed rules';
     return {
       kind: 'rule_batch',

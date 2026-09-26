@@ -15,21 +15,24 @@
  *    its kind and arguments and has Cancel (and Esc), which discards; "New
  *    rule" creates any rule as a proposal (`POST /api/rules`).
  *
- * Every write reaches the same `RulesService` the CLI's `agile rules` does.
+ * Every write reaches the same `KnowledgeService` the CLI's `agile rules` does.
  */
 
 import {
-  RULE_ENFORCEMENTS,
+  KNOWLEDGE_ENFORCEMENTS,
+  KNOWLEDGE_KINDS,
+  type KnowledgeEnforcement,
+  type KnowledgeKind,
   RULE_EXAMPLES_MAX,
   RULE_PATTERN_KINDS,
-  RULE_STAGES,
-  type Rule,
-  type RuleEnforcement,
+  type KnowledgeItem as Rule,
   type RulePatternKind,
-  type RuleStage,
-  type RuleStatus,
+  type KnowledgeStatus as RuleStatus,
+  classifierCheckOf,
+  examplesOf,
   formatRulePattern,
-  formatRuleScope,
+  formatKnowledgeScope as formatRuleScope,
+  patternOf,
 } from '@agile-agents/shared';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { createRule, decideRule, getRules, testRule, updateRule } from '../lib/api';
@@ -78,7 +81,7 @@ export function Rules(): JSX.Element {
 
   useEffect(load, []);
   // Any rule write — here, in the inbox, from the CLI or an agent's
-  // `propose_rule` — re-reads the list (one read per batch of events).
+  // `propose_knowledge` — re-reads the list (one read per batch of events).
   useEffect(
     () =>
       onEvent((event) => {
@@ -126,7 +129,7 @@ export function Rules(): JSX.Element {
   return (
     <section className="cr-rules-screen" data-testid="rules-screen">
       <div className="cr-inbox-hd">
-        <h1>Rules</h1>
+        <h1>Knowledge</h1>
         <span className="cr-count" data-testid="rules-count">
           {shown.length}
         </span>
@@ -168,6 +171,38 @@ export function Rules(): JSX.Element {
             {RULE_STATUS_FILTERS.map((status) => (
               <option key={status} value={status}>
                 {status}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          Kind{' '}
+          <select
+            data-testid="rules-filter-kind"
+            value={filter.kind ?? 'all'}
+            onChange={(e) =>
+              setFilter({ ...filter, kind: e.target.value as KnowledgeKind | 'all' })
+            }
+          >
+            {['all', ...KNOWLEDGE_KINDS].map((kind) => (
+              <option key={kind} value={kind}>
+                {kind}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          Enforcement{' '}
+          <select
+            data-testid="rules-filter-enforcement"
+            value={filter.enforcement ?? 'all'}
+            onChange={(e) =>
+              setFilter({ ...filter, enforcement: e.target.value as KnowledgeEnforcement | 'all' })
+            }
+          >
+            {['all', ...KNOWLEDGE_ENFORCEMENTS].map((enforcement) => (
+              <option key={enforcement} value={enforcement}>
+                {enforcement}
               </option>
             ))}
           </select>
@@ -278,7 +313,7 @@ export function Rules(): JSX.Element {
       )}
       {data && shown.length === 0 && (
         <p className="cr-calm" data-testid="rules-empty">
-          No rules match.
+          Nothing matches.
         </p>
       )}
       {data && (
@@ -341,7 +376,7 @@ function RuleCard({
     setError(undefined);
     setReport(undefined);
     try {
-      setReport(await testRule(rule.id, evalDeadlineMs(rule.examples.length, evals.timeout_ms)));
+      setReport(await testRule(rule.id, evalDeadlineMs(examplesOf(rule).length, evals.timeout_ms)));
     } catch (err) {
       setError(message(err));
     } finally {
@@ -349,7 +384,9 @@ function RuleCard({
     }
   }
 
-  const testable = rule.enforcement === 'classifier' && rule.status === 'accepted';
+  const classifier = classifierCheckOf(rule);
+  const pattern = patternOf(rule);
+  const testable = classifier !== undefined && rule.status === 'accepted';
 
   return (
     <article
@@ -368,28 +405,37 @@ function RuleCard({
         />
         <span>{rule.name ?? rule.id}</span>
         <span data-testid="rules-scope">{formatRuleScope(rule.scope)}</span>
+        {rule.paths !== undefined && rule.paths.length > 0 && (
+          <span data-testid="rules-paths">{rule.paths.join(', ')}</span>
+        )}
         <span data-testid="rules-tier">
           {rule.enforcement}
+          {rule.check !== undefined ? ` · ${rule.check.by}` : ''}
           {rule.critical ? ' · critical' : ''}
         </span>
-        <span>{rule.stage}</span>
+        <span data-testid="rules-kind">{rule.kind}</span>
         <span data-testid="rules-status">{rule.status}</span>
-        <span>from {rule.provenance.by}</span>
+        <span>from {rule.source.by}</span>
       </div>
       <Markdown className="context" text={rule.text} />
-      {rule.pattern !== undefined && (
+      {rule.source.finding !== undefined && (
+        <p className="cr-dim" data-testid="rules-finding">
+          {rule.source.finding}
+        </p>
+      )}
+      {pattern !== undefined && (
         <p className="cr-dim" data-testid="rules-pattern">
-          <code>{formatRulePattern(rule.pattern)}</code>
+          <code>{formatRulePattern(pattern)}</code>
         </p>
       )}
-      {rule.question !== undefined && (
+      {classifier?.question !== undefined && (
         <p className="cr-dim" data-testid="rules-question">
-          Q: {rule.question}
+          Q: {classifier.question}
         </p>
       )}
-      {rule.criteria !== undefined && (
+      {classifier?.criteria !== undefined && (
         <p className="cr-dim" data-testid="rules-criteria">
-          yes = {rule.criteria.true} · no = {rule.criteria.false}
+          yes = {classifier.criteria.true} · no = {classifier.criteria.false}
         </p>
       )}
       <div className="cr-dim cr-rule-stats" data-testid="rules-stats">
@@ -441,7 +487,7 @@ function RuleCard({
         >
           {editing ? 'Close editor' : 'Edit'}
         </button>
-        {rule.enforcement === 'classifier' && (
+        {classifier !== undefined && (
           <button
             type="button"
             className="cr-btn"
@@ -452,7 +498,7 @@ function RuleCard({
                 ? 'No classifier key loaded: set one in Settings (or TYPESAFE_API_KEY)'
                 : !testable
                   ? 'Only accepted classifier rules are evaluated'
-                  : `One classifier call per example (${rule.examples.length})`
+                  : `One classifier call per example (${classifier.examples.length})`
             }
             onClick={runTest}
           >
@@ -571,6 +617,14 @@ function RuleEditor({
         />
       </label>
       <label>
+        Paths (globs, one per line; empty means all paths)
+        <textarea
+          data-testid="rules-edit-paths"
+          value={draft.paths}
+          onChange={(e) => set({ paths: e.target.value })}
+        />
+      </label>
+      <label>
         Question (one yes/no question; yes means the rule is broken)
         <input
           data-testid="rules-edit-question"
@@ -601,9 +655,9 @@ function RuleEditor({
           <select
             data-testid="rules-edit-enforcement"
             value={draft.enforcement}
-            onChange={(e) => set({ enforcement: e.target.value as RuleEnforcement })}
+            onChange={(e) => set({ enforcement: e.target.value as KnowledgeEnforcement })}
           >
-            {RULE_ENFORCEMENTS.map((value) => (
+            {KNOWLEDGE_ENFORCEMENTS.map((value) => (
               <option key={value} value={value}>
                 {value}
               </option>
@@ -611,13 +665,13 @@ function RuleEditor({
           </select>
         </label>
         <label>
-          Stage{' '}
+          Kind{' '}
           <select
-            data-testid="rules-edit-stage"
-            value={draft.stage}
-            onChange={(e) => set({ stage: e.target.value as RuleStage })}
+            data-testid="rules-edit-kind"
+            value={draft.kind}
+            onChange={(e) => set({ kind: e.target.value as KnowledgeKind })}
           >
-            {RULE_STAGES.map((value) => (
+            {KNOWLEDGE_KINDS.map((value) => (
               <option key={value} value={value}>
                 {value}
               </option>

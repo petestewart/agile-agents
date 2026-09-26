@@ -14,11 +14,23 @@
  * 4. Branches of parents in the old integration model that are not landed
  *    are listed in one inbox card (a question on the Unfiled root).
  *
- * Step 2 (rules → knowledge) is T260. One `home_migrated` event per run
- * that changed something.
+ * 2. Each `rules/R-X.yaml` becomes `knowledge/K-X.yaml` (T260,
+ *    `migrateRuleRecord`): `kind: standard`, `stream` scope → `subtree`,
+ *    the old tier and stage → one enforcement, a classifier rule at stage
+ *    `both` split into an `action` and a `ship` item (P6). A rule whose
+ *    `K-X` exists is skipped. `rules/` is left on disk, read-only.
+ *
+ * One `home_migrated` event per run that changed something.
  */
 
-import { type Project, type Stream, projectNameKey } from '@agile-agents/shared';
+import {
+  type Project,
+  type Stream,
+  migrateRuleRecord,
+  projectNameKey,
+  splitFinding,
+  ulid,
+} from '@agile-agents/shared';
 import type { ProjectService } from '../projects/service';
 import type { QuestionService } from '../questions/service';
 import type { StreamService } from '../streams/service';
@@ -41,6 +53,34 @@ export interface HomeMigrationResult {
   streams: number;
   repos: string[];
   parent_branches: string[];
+  /** Knowledge items written from legacy rules (step 2). */
+  knowledge: number;
+}
+
+/** Step 2: every legacy rule without its `K-X` becomes knowledge. Returns the items written. */
+export async function migrateRules(store: StateStore): Promise<number> {
+  let written = 0;
+  // A P6 twin has a fresh id, so it is found by its link to the rule
+  // (`splitFinding`), not by id: a crash between the pair's two writes is
+  // completed on the next start.
+  const twins = new Set(
+    store
+      .listKnowledge()
+      .map((item) => item.source.finding)
+      .filter((f): f is string => f !== undefined),
+  );
+  for (const rule of store.listLegacyRules()) {
+    const [base, twin] = migrateRuleRecord(rule, `K-${ulid()}`);
+    if (base !== undefined && !store.hasKnowledge(base.id)) {
+      await store.createKnowledge('daemon', base);
+      written++;
+    }
+    if (twin !== undefined && !twins.has(splitFinding(rule.id))) {
+      await store.createKnowledge('daemon', twin);
+      written++;
+    }
+  }
+  return written;
 }
 
 function needsRepoMigration(entry: { delivery?: unknown; visibility?: unknown }): boolean {
@@ -61,8 +101,25 @@ export async function migrateHome(deps: HomeMigrationDeps): Promise<HomeMigratio
     streams: 0,
     repos: [],
     parent_branches: [],
+    knowledge: await migrateRules(store),
   };
-  if (staleStreams.length === 0 && staleRepos.length === 0) return result;
+  if (staleStreams.length === 0 && staleRepos.length === 0) {
+    // Steps 1, 3 and 4 are done (a home migrated before T260): only step 2 may have run.
+    if (result.knowledge === 0) return result;
+    await store.appendEvent(
+      buildEvent('home_migrated', {
+        data: {
+          reparented: 0,
+          streams: 0,
+          repos: [],
+          parent_branches: 0,
+          knowledge: result.knowledge,
+        },
+      }),
+    );
+    result.migrated = true;
+    return result;
+  }
 
   // Made only when a stream or a note needs a home: a repos-only run makes no project.
   let unfiledCache: Project | undefined;
@@ -160,6 +217,7 @@ export async function migrateHome(deps: HomeMigrationDeps): Promise<HomeMigratio
         streams: result.streams,
         repos: result.repos,
         parent_branches: parentBranches.length,
+        knowledge: result.knowledge,
       },
     }),
   );

@@ -18,7 +18,7 @@
  *    refusal's reason, shown on the page).
  */
 
-import type { InboxItem } from '@agile-agents/shared';
+import { type InboxItem, formatKnowledgeScope } from '@agile-agents/shared';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   type RepoRow,
@@ -59,7 +59,7 @@ const TABS: ReadonlyArray<{ tab: Tab; label: string }> = [
   { tab: 'thread', label: 'Thread' },
   { tab: 'diff', label: 'Diff' },
   { tab: 'activity', label: 'Activity' },
-  { tab: 'rules', label: 'Rules in scope' },
+  { tab: 'rules', label: 'Knowledge in scope' },
   { tab: 'docs', label: 'Docs' },
 ];
 
@@ -974,12 +974,12 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
 
       {tab === 'rules' && (
         <ul className="cr-rules" data-testid="rules">
-          {page.rules.length === 0 && <li className="cr-dim">No accepted rules in scope.</li>}
+          {page.rules.length === 0 && <li className="cr-dim">No accepted knowledge in scope.</li>}
           {page.rules.map((rule) => (
             <li key={rule.id} data-testid="rule" data-rule={rule.id}>
               <div className="cr-dim">
-                {rule.name ?? rule.id} · {rule.scope.kind}
-                {rule.scope.ref ? `:${rule.scope.ref}` : ''} · {rule.enforcement} · {rule.stage}
+                {rule.name ?? rule.id} · {formatKnowledgeScope(rule.scope)} · {rule.kind} ·{' '}
+                {rule.enforcement}
                 {rule.critical ? ' · critical' : ''}
               </div>
               <Markdown text={rule.text} />

@@ -1,22 +1,23 @@
 import { describe, expect, test } from 'bun:test';
-import type { Rule, RuleInput, Stream, ThreadEntry } from '@agile-agents/shared';
-import { ulid, validateRule } from '@agile-agents/shared';
+import type { KnowledgeItem, KnowledgeItemInput, Stream, ThreadEntry } from '@agile-agents/shared';
+import { ulid, validateKnowledgeItem } from '@agile-agents/shared';
 import { BRIEF_CHAR_CEILING, BRIEF_THREAD_ENTRIES, buildBrief, readRoleBrief } from './brief';
 
 /**
- * T140: the brief takes real `Rule` records and filters them through
- * `rules/service.ts`'s `rulesInScope` (design §5.3). Scope filtering itself
+ * T140/T260: the brief takes real `KnowledgeItem` records and filters them
+ * through `knowledge/service.ts`'s `knowledgeInScope`. Scope filtering itself
  * is tested there; these tests only assert what the brief *renders*.
  */
-function makeRule(text: string, over: Partial<RuleInput> = {}): Rule {
-  return validateRule({
-    id: `R-${ulid()}`,
+function makeRule(text: string, over: Partial<KnowledgeItemInput> = {}): KnowledgeItem {
+  return validateKnowledgeItem({
+    id: `K-${ulid()}`,
+    kind: 'standard',
     text,
     scope: { kind: 'global' },
     status: 'accepted',
-    enforcement: 'guidance',
+    enforcement: 'tell',
     critical: false,
-    provenance: { by: 'human' },
+    source: { by: 'human' },
     stats: {},
     created_at: '2026-09-21T00:00:00Z',
     ...over,
@@ -73,7 +74,7 @@ describe('buildBrief', () => {
       ancestors: [root],
       thread: [entry('start with the dialect')],
       docs: [{ name: 'brief.md', body: 'the product is a cockpit\n' }],
-      rules: [makeRule('never push to main', { scope: { kind: 'repo', ref: '/srv/repo' } })],
+      rules: [makeRule('never push to main', { scope: { kind: 'repo', repo: '/srv/repo' } })],
       briefsDir: '/no/such/dir',
     });
 
@@ -89,9 +90,11 @@ describe('buildBrief', () => {
         '',
         '- Cockpit: one place to work from',
         '',
-        '## Rules in scope',
+        '## Knowledge in scope',
         '',
         '- never push to main',
+        '',
+        'Before touching an unfamiliar area, call `lookup_knowledge` with its path for the items that apply there.',
         '',
         '## Docs',
         '',
@@ -126,9 +129,11 @@ describe('buildBrief', () => {
         '',
         'decide the dialect and implement it',
         '',
-        '## Rules in scope',
+        '## Knowledge in scope',
         '',
         'none yet',
+        '',
+        'Before touching an unfamiliar area, call `lookup_knowledge` with its path for the items that apply there.',
         '',
       ].join('\n'),
     );
@@ -157,7 +162,7 @@ describe('buildBrief', () => {
     });
     expect(bare).not.toContain('## Docs');
     expect(bare).not.toContain('## Thread so far');
-    expect(bare).toContain('## Rules in scope\n\nnone yet');
+    expect(bare).toContain('## Knowledge in scope\n\nnone yet');
 
     const full = buildBrief({
       role: 'worker',
@@ -195,11 +200,11 @@ describe('buildBrief', () => {
       thread: [],
       docs: [],
       rules: [
-        makeRule('in scope by repo', { scope: { kind: 'repo', ref: '/srv/repo' } }),
+        makeRule('in scope by repo', { scope: { kind: 'repo', repo: '/srv/repo' } }),
         makeRule('global rule'),
         makeRule('still proposed', { status: 'proposed' }),
         makeRule('already retired', { status: 'retired' }),
-        makeRule('other repo', { scope: { kind: 'repo', ref: '/srv/other' } }),
+        makeRule('other repo', { scope: { kind: 'repo', repo: '/srv/other' } }),
       ],
       briefsDir: '/no/such/dir',
     });
@@ -221,8 +226,8 @@ describe('buildBrief', () => {
       thread: [],
       docs: [],
       rules: [
-        makeRule('inherited from the parent', { scope: { kind: 'stream', ref: root.id } }),
-        makeRule('someone else\u2019s stream', { scope: { kind: 'stream', ref: ulid() } }),
+        makeRule('inherited from the parent', { scope: { kind: 'subtree', node: root.id } }),
+        makeRule('someone else\u2019s stream', { scope: { kind: 'subtree', node: ulid() } }),
       ],
       briefsDir: '/no/such/dir',
     });
@@ -230,7 +235,7 @@ describe('buildBrief', () => {
     expect(brief).not.toContain('someone else');
   });
 
-  test('a guidance rule is its text and nothing else; an enforced rule says so (§5.2)', () => {
+  test('a tell item is its text and nothing else; a checked item names its checkpoint (§6)', () => {
     const brief = buildBrief({
       role: 'worker',
       stream: makeStream(),
@@ -240,23 +245,26 @@ describe('buildBrief', () => {
       rules: [
         makeRule('prefer the repo scripts'),
         makeRule('never push to a protected branch', {
-          enforcement: 'pattern',
-          pattern: { kind: 'no_push_protected' },
+          enforcement: 'action',
+          check: { by: 'pattern', pattern: { kind: 'no_push_protected' } },
           critical: true,
         }),
         makeRule('do not add a dependency without asking', {
-          enforcement: 'classifier',
-          examples: [
-            { action: 'bun add lodash', violates: true },
-            { action: 'read a file', violates: false },
-          ],
+          enforcement: 'ship',
+          check: {
+            by: 'classifier',
+            examples: [
+              { action: 'bun add lodash', violates: true },
+              { action: 'read a file', violates: false },
+            ],
+          },
         }),
       ],
       briefsDir: '/no/such/dir',
     });
     expect(brief).toContain('- prefer the repo scripts\n');
-    expect(brief).toContain('- never push to a protected branch (enforced: pattern, critical)');
-    expect(brief).toContain('- do not add a dependency without asking (enforced: classifier)');
+    expect(brief).toContain('- never push to a protected branch (enforced: action, critical)');
+    expect(brief).toContain('- do not add a dependency without asking (enforced: ship)');
   });
 });
 

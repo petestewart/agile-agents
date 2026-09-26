@@ -1,5 +1,5 @@
 /**
- * T140: the `propose_rule` verb (cockpit design §4.1, §5.1, **D4**). An
+ * T140: the `propose_knowledge` verb (T264) (cockpit design §4.1, §5.1, **D4**). An
  * agent proposes; the record lands with `status: 'proposed'`, provenance
  * pointing back at the stream and session, and a thread entry `ref`'d to
  * the rule's file. Nothing here can accept a rule — the store's principal
@@ -12,16 +12,16 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { type AgentId, type Stream, type ThreadEntry, ulid } from '@agile-agents/shared';
 import { runInit } from '../init';
+import { KnowledgeService } from '../knowledge/service';
 import { QuestionService } from '../questions/service';
-import { RulesService } from '../rules/service';
 import { StateStore } from '../store';
 import { StreamService } from '../streams/service';
-import { UnknownSessionError, VerbService } from './verbs';
+import { UnknownSessionError, VerbService, lookupPath } from './verbs';
 
 let home: string;
 let store: StateStore;
 let streams: StreamService;
-let rules: RulesService;
+let rules: KnowledgeService;
 let verbs: VerbService;
 
 beforeEach(() => {
@@ -29,7 +29,7 @@ beforeEach(() => {
   const init = runInit(home);
   store = StateStore.open(init.stateRoot);
   streams = new StreamService(store);
-  rules = new RulesService({ store, streams });
+  rules = new KnowledgeService({ store, streams });
   verbs = new VerbService({
     store,
     streams,
@@ -61,10 +61,10 @@ async function attach(repo?: string): Promise<{ session: string; stream: Stream 
   return { session, stream };
 }
 
-describe('propose_rule', () => {
+describe('propose_knowledge', () => {
   test('writes a proposed rule with provenance and a thread entry that points at it', async () => {
     const { session, stream } = await attach();
-    const entry: ThreadEntry = await verbs.proposeRule({
+    const entry: ThreadEntry = await verbs.proposeKnowledge({
       session,
       text: 'always run the integration suite before pushing',
     });
@@ -72,65 +72,121 @@ describe('propose_rule', () => {
     const [rule] = rules.listProposed();
     expect(rule?.status).toBe('proposed');
     expect(rule?.text).toBe('always run the integration suite before pushing');
-    expect(rule?.enforcement).toBe('guidance');
-    expect(rule?.provenance).toEqual({
-      stream: stream.id,
-      session,
-      by: `agent:${session}`,
-    });
+    expect(rule?.enforcement).toBe('tell');
+    expect(rule?.source).toEqual({ by: 'agent', node: stream.id, session });
     expect(rule?.decided_at).toBeUndefined();
     expect(rule?.decided_by).toBeUndefined();
     expect(entry.kind).toBe('proposal');
     expect(entry.by).toBe(`agent:${session}`);
-    expect(entry.ref).toBe(`rules/${rule?.id}.yaml`);
+    expect(entry.ref).toBe(`knowledge/${rule?.id}.yaml`);
   });
 
-  test('a repo-less stream’s proposal is scoped to that stream, never global', async () => {
-    const { session, stream } = await attach();
-    await verbs.proposeRule({ session, text: 'x' });
-    expect(rules.listProposed()[0]?.scope).toEqual({ kind: 'stream', ref: stream.id });
-  });
-
-  test('a stream with a repo scopes the proposal to the repo (§5.1)', async () => {
+  test('the scope defaults to the node’s subtree, even with a repo (T264)', async () => {
     await store.addRepo('alpha', { path: join(home, 'alpha') });
-    const { session } = await attach('alpha');
-    await verbs.proposeRule({ session, text: 'x' });
-    expect(rules.listProposed()[0]?.scope).toEqual({ kind: 'repo', ref: 'alpha' });
+    const { session, stream } = await attach('alpha');
+    await verbs.proposeKnowledge({ session, text: 'x' });
+    expect(rules.listProposed()[0]?.scope).toEqual({ kind: 'subtree', node: stream.id });
+  });
+
+  test('the agent picks the kind; omitted, it is standard', async () => {
+    const { session } = await attach();
+    await verbs.proposeKnowledge({ session, text: 'a', kind: 'decision' });
+    await verbs.proposeKnowledge({ session, text: 'b' });
+    expect(rules.listProposed().map((r) => [r.text, r.kind])).toEqual([
+      ['a', 'decision'],
+      ['b', 'standard'],
+    ]);
   });
 
   test('the scope grammar: global, the bare words, and explicit refs', async () => {
     await store.addRepo('alpha', { path: join(home, 'alpha') });
     const { session, stream } = await attach('alpha');
-    await verbs.proposeRule({ session, text: 'a', scope: 'global' });
-    await verbs.proposeRule({ session, text: 'b', scope: 'repo' });
-    await verbs.proposeRule({ session, text: 'c', scope: 'stream' });
-    await verbs.proposeRule({ session, text: 'd', scope: `stream:${stream.id}` });
+    await verbs.proposeKnowledge({ session, text: 'a', scope: 'global' });
+    await verbs.proposeKnowledge({ session, text: 'b', scope: 'repo' });
+    await verbs.proposeKnowledge({ session, text: 'c', scope: 'stream' });
+    await verbs.proposeKnowledge({ session, text: 'd', scope: `stream:${stream.id}` });
     expect(rules.listProposed().map((r) => [r.text, r.scope])).toEqual([
       ['a', { kind: 'global' }],
-      ['b', { kind: 'repo', ref: 'alpha' }],
-      ['c', { kind: 'stream', ref: stream.id }],
-      ['d', { kind: 'stream', ref: stream.id }],
+      ['b', { kind: 'repo', repo: 'alpha' }],
+      ['c', { kind: 'subtree', node: stream.id }],
+      ['d', { kind: 'subtree', node: stream.id }],
     ]);
   });
 
   test('an unparseable scope is refused, and nothing is written', async () => {
     const { session } = await attach();
-    await expect(verbs.proposeRule({ session, text: 'x', scope: 'everything' })).rejects.toThrow(
-      /invalid rule scope/,
-    );
+    await expect(
+      verbs.proposeKnowledge({ session, text: 'x', scope: 'everything' }),
+    ).rejects.toThrow(/invalid knowledge scope/);
     expect(rules.list()).toEqual([]);
   });
 
   test('a scope of "repo" on a repo-less stream is refused', async () => {
     const { session } = await attach();
-    await expect(verbs.proposeRule({ session, text: 'x', scope: 'repo' })).rejects.toThrow(
-      /needs a stream with a repo/,
+    await expect(verbs.proposeKnowledge({ session, text: 'x', scope: 'repo' })).rejects.toThrow(
+      /needs a node with a repo/,
     );
   });
 
+  test('examples proposed with a tell item are kept visible in source.finding', async () => {
+    const { session } = await attach();
+    await verbs.proposeKnowledge({
+      session,
+      text: 'say which dialect you picked',
+      enforcement: 'tell',
+      examples: [
+        { action: 'reply without naming the dialect', violates: true },
+        { action: 'reply: using RFC 4180', violates: false },
+      ],
+    });
+    const [rule] = rules.listProposed();
+    expect(rule?.enforcement).toBe('tell');
+    expect(rule?.check).toBeUndefined();
+    expect(rule?.source.finding).toBe(
+      'proposed examples: violates: reply without naming the dialect | allowed: reply: using RFC 4180',
+    );
+  });
+
+  test('an action item gets a classifier check with its examples', async () => {
+    const { session } = await attach();
+    await verbs.proposeKnowledge({
+      session,
+      text: 'no new dependencies',
+      enforcement: 'action',
+      examples: [
+        { action: 'bun add lodash', violates: true },
+        { action: 'bun test', violates: false },
+      ],
+    });
+    const [rule] = rules.listProposed();
+    expect(rule?.enforcement).toBe('action');
+    expect(rule?.check).toEqual({
+      by: 'classifier',
+      examples: [
+        { action: 'bun add lodash', violates: true },
+        { action: 'bun test', violates: false },
+      ],
+    });
+  });
+
   test('a session that is no longer attached cannot propose anything', async () => {
-    await expect(verbs.proposeRule({ session: ulid(), text: 'x' })).rejects.toThrow(
+    await expect(verbs.proposeKnowledge({ session: ulid(), text: 'x' })).rejects.toThrow(
       UnknownSessionError,
     );
+  });
+});
+
+describe('lookupPath (T263)', () => {
+  const wt = '/srv/repo/.worktrees/s1';
+  test('absolute, ./ and .. paths become repo-relative', () => {
+    expect(lookupPath(`${wt}/api/orders.ts`, wt)).toBe('api/orders.ts');
+    expect(lookupPath('./api/orders.ts', wt)).toBe('api/orders.ts');
+    expect(lookupPath('ui/../api/x.ts', wt)).toBe('api/x.ts');
+    expect(lookupPath('api/x.ts', undefined)).toBe('api/x.ts');
+  });
+  test('a path outside the worktree is refused', () => {
+    expect(() => lookupPath('/etc/passwd', wt)).toThrow('not a path inside');
+    expect(() => lookupPath('../other/x.ts', wt)).toThrow('not a path inside');
+    expect(() => lookupPath(wt, wt)).toThrow('not a path inside');
   });
 });

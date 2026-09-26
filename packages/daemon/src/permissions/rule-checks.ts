@@ -6,15 +6,26 @@
  * or `undefined`, and fails closed on a command it can't read (§8.1).
  */
 
-import { DEFAULT_PROTECTED_BRANCHES, type Rule, type RulePattern } from '@agile-agents/shared';
-import type { RuleStatsOutcome } from '../rules/service';
 import {
+  DEFAULT_PROTECTED_BRANCHES,
+  type KnowledgeItem,
+  type RulePattern,
+  patternOf,
+} from '@agile-agents/shared';
+import {
+  type RuleStatsOutcome,
+  knowledgeMatchesPaths,
+  worktreeRelativePaths,
+} from '../knowledge/service';
+import {
+  hasUnsafeShellConstruct,
   isPathInside,
   parseCommandIntoAtoms,
   parseGitInvocation,
   resolveTargetPath,
 } from './command';
 import { type PushDetectorContext, detectProtectedBranchWrite, detectPush } from './push-detector';
+import { commandPaths } from './visibility';
 
 export interface RuleCheckContext extends PushDetectorContext {
   /** The session's worktree: the `no_worktree_escape` boundary (§5.4). */
@@ -88,9 +99,9 @@ function checkCommandDeny(
 }
 
 /** One pattern rule's verdict on one call: a deny reason, or `undefined`. Non-pattern rules return `undefined`. */
-export function checkPatternRule(rule: Rule, ctx: RuleCheckContext): string | undefined {
-  if (rule.enforcement !== 'pattern' || rule.pattern === undefined) return undefined;
-  const pattern = rule.pattern;
+export function checkPatternRule(rule: KnowledgeItem, ctx: RuleCheckContext): string | undefined {
+  const pattern = rule.enforcement === 'action' ? patternOf(rule) : undefined;
+  if (pattern === undefined) return undefined;
   switch (pattern.kind) {
     case 'no_push_protected':
       return ctx.command === undefined ? undefined : detectProtectedBranchWrite(ctx.command, ctx);
@@ -108,9 +119,9 @@ export function checkPatternRule(rule: Rule, ctx: RuleCheckContext): string | un
 // order and stats can't drift.
 
 /** Rules carrying a deterministic check: the only kind this pass evaluates. */
-export function patternRulesOf(rules: readonly Rule[] | undefined): Rule[] {
+export function patternRulesOf(rules: readonly KnowledgeItem[] | undefined): KnowledgeItem[] {
   return (rules ?? []).filter(
-    (rule) => rule.enforcement === 'pattern' && rule.pattern !== undefined,
+    (rule) => rule.enforcement === 'action' && patternOf(rule) !== undefined,
   );
 }
 
@@ -123,18 +134,51 @@ export interface PatternRuleOutcome {
   rulesEvaluated: string[];
 }
 
+/**
+ * T261: the repo-relative paths a call touches, for a knowledge item's
+ * `paths`. `undefined` means unknown (a command the tokenizer can't read,
+ * or an unresolved `$VAR`): path-limited items are then evaluated, fail
+ * closed (§8.1). A command's paths are `commandPaths` plus every bare
+ * non-flag argument, so `rm prices.ts` (no slash) still counts.
+ */
+export function touchedPaths(ctx: {
+  worktreePath: string;
+  paths?: readonly string[];
+  command?: string;
+}): string[] | undefined {
+  const paths = [...(ctx.paths ?? [])];
+  if (ctx.command !== undefined) {
+    if (hasUnsafeShellConstruct(ctx.command)) return undefined;
+    const atoms = parseCommandIntoAtoms(ctx.command);
+    if (atoms.length === 0) return undefined;
+    const { reads, writes } = commandPaths(ctx.command);
+    paths.push(...reads, ...writes);
+    for (const { tokens } of atoms) {
+      for (const token of tokens.slice(1)) {
+        if (token.includes('$')) return undefined;
+        const bare = token.replace(/^\d*>+/, '');
+        if (bare.length > 0 && !bare.startsWith('-')) paths.push(bare);
+      }
+    }
+  }
+  return worktreeRelativePaths(paths, ctx.worktreePath);
+}
+
 /** Runs the rules in order and stops at the first deny (§8.1: match or uncertain ⇒ deny, rule named). */
 export function runPatternRules(
-  rules: readonly Rule[] | undefined,
+  rules: readonly KnowledgeItem[] | undefined,
   ctx: RuleCheckContext,
 ): PatternRuleOutcome {
   const rulesEvaluated: string[] = [];
+  const touched = touchedPaths(ctx);
   for (const rule of patternRulesOf(rules)) {
+    // A path-limited rule only gates calls on its paths (T261); unknown paths gate.
+    if (touched !== undefined && !knowledgeMatchesPaths(rule, touched)) continue;
     rulesEvaluated.push(rule.id);
     const reason = checkPatternRule(rule, ctx);
     if (reason !== undefined) {
       return {
-        reason: `rule ${rule.id} (${rule.pattern?.kind}): ${reason}`,
+        reason: `rule ${rule.id} (${patternOf(rule)?.kind}): ${reason}`,
         ruleViolated: rule.id,
         rulesEvaluated,
       };
@@ -170,15 +214,15 @@ export function protectedBranchesFor(
   }
 }
 
-/** The read/write sides of `RulesService` this pass uses (§5.3 and §5.7). */
+/** The read/write sides of `KnowledgeService` this pass uses (§5.3 and §5.7). */
 export interface PatternRuleRules {
-  inScope(streamId: string): Rule[];
+  inScope(streamId: string): KnowledgeItem[];
   recordFired?(id: string, outcome: RuleStatsOutcome): Promise<unknown>;
 }
 
 /** One session's rule pass bound to its stream, for the ACP tier (`buildPermissionResponder`). */
 export interface PatternRuleGate {
-  rules(): Rule[];
+  rules(): KnowledgeItem[];
   protectedBranches(): readonly string[];
   record(id: string, outcome: 'fired' | 'violated' | 'routed'): Promise<unknown>;
 }

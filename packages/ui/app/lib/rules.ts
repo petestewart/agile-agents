@@ -6,28 +6,36 @@
 
 import {
   DEFAULT_CLASSIFIER_TIMEOUT_MS,
+  type KnowledgeCheck,
+  type KnowledgeKind,
   RULE_EXAMPLES_MAX,
-  RULE_STATUSES,
-  type Rule,
-  type RuleCreateInput,
+  KNOWLEDGE_STATUSES as RULE_STATUSES,
+  type KnowledgeItem as Rule,
+  type KnowledgeCreateInput as RuleCreateInput,
   type RuleCriteria,
-  type RuleEnforcement,
+  type KnowledgeEnforcement as RuleEnforcement,
   type RuleExample,
-  type RulePatch,
+  type KnowledgePatch as RulePatch,
   type RulePattern,
   type RulePatternKind,
-  type RuleStage,
-  type RuleStatus,
-  formatRuleScope,
-  parseRuleScope,
+  type KnowledgeStatus as RuleStatus,
+  classifierCheckOf,
+  examplesOf,
+  formatKnowledgeScope as formatRuleScope,
+  patternOf as itemPattern,
+  parseKnowledgeScope as parseRuleScope,
   rulePatternArgs,
   rulePatternFromArgs,
 } from '@agile-agents/shared';
 import type { RuleReportRow } from './feed-types';
 
-/** What the rules screen shows. `source` is a `provenance.by` — the inbox's seed card sets it. */
+/** What the rules screen shows. `source` is a `source.by` — the inbox's migration card sets it. */
 export interface RulesFilter {
   status: RuleStatus | 'all';
+  /** T266: standard · architecture · decision, or `all`. */
+  kind?: KnowledgeKind | 'all';
+  /** T266: tell · review · action · ship, or `all`. */
+  enforcement?: RuleEnforcement | 'all';
   /** A `formatRuleScope` value, or `all`. */
   scope: string;
   source?: string;
@@ -46,8 +54,12 @@ export function filterRules(rules: readonly Rule[], filter: RulesFilter): Rule[]
   return rules.filter(
     (rule) =>
       (filter.status === 'all' || rule.status === filter.status) &&
+      (filter.kind === undefined || filter.kind === 'all' || rule.kind === filter.kind) &&
+      (filter.enforcement === undefined ||
+        filter.enforcement === 'all' ||
+        rule.enforcement === filter.enforcement) &&
       (filter.scope === 'all' || formatRuleScope(rule.scope) === filter.scope) &&
-      (filter.source === undefined || rule.provenance.by === filter.source) &&
+      (filter.source === undefined || rule.source.by === filter.source) &&
       (filter.rule === undefined || rule.id === filter.rule),
   );
 }
@@ -81,30 +93,36 @@ export interface RuleDraft {
   question: string;
   criteriaTrue: string;
   criteriaFalse: string;
+  /** T260: standard · architecture · decision. */
+  kind: KnowledgeKind;
   enforcement: RuleEnforcement;
-  stage: RuleStage;
   /** T167: the pattern's kind, or `''` for none. */
   patternKind: RulePatternKind | '';
   /** T167: its arguments, one per line (globs for `path_deny`, tokens for `command_deny`). */
   patternArgs: string;
   examples: RuleExample[];
-  /** T167, "New rule" only: `global` · `repo:<name>` · `stream:<id>`. */
+  /** T266: the item's path globs, one per line; empty means all paths. */
+  paths: string;
+  /** T167, "New rule" only: `global` · `repo:<name>` · `project:<id>` · `subtree:<id>`. */
   scope: string;
   /** T167, "New rule" only. */
   critical: boolean;
 }
 
 export function draftOf(rule: Rule): RuleDraft {
+  const classifier = classifierCheckOf(rule);
+  const pattern = itemPattern(rule);
   return {
     text: rule.text,
-    question: rule.question ?? '',
-    criteriaTrue: rule.criteria?.true ?? '',
-    criteriaFalse: rule.criteria?.false ?? '',
+    question: classifier?.question ?? '',
+    criteriaTrue: classifier?.criteria?.true ?? '',
+    criteriaFalse: classifier?.criteria?.false ?? '',
+    kind: rule.kind,
     enforcement: rule.enforcement,
-    stage: rule.stage,
-    patternKind: rule.pattern?.kind ?? '',
-    patternArgs: rule.pattern ? rulePatternArgs(rule.pattern).join('\n') : '',
-    examples: rule.examples.map((example) => ({ ...example })),
+    patternKind: pattern?.kind ?? '',
+    patternArgs: pattern ? rulePatternArgs(pattern).join('\n') : '',
+    examples: examplesOf(rule).map((example) => ({ ...example })),
+    paths: (rule.paths ?? []).join('\n'),
     scope: formatRuleScope(rule.scope),
     critical: rule.critical,
   };
@@ -117,22 +135,21 @@ export function emptyDraft(): RuleDraft {
     question: '',
     criteriaTrue: '',
     criteriaFalse: '',
-    enforcement: 'guidance',
-    stage: 'action',
+    kind: 'standard',
+    enforcement: 'tell',
     patternKind: '',
     patternArgs: '',
     examples: [],
+    paths: '',
     scope: 'global',
     critical: false,
   };
 }
 
 function patternOf(draft: RuleDraft): { pattern?: RulePattern } | { error: string } {
-  if (draft.patternKind === '') {
-    if (draft.enforcement === 'pattern') {
-      return { error: 'a pattern rule needs a pattern: pick its kind' };
-    }
-    return {};
+  if (draft.patternKind === '') return {};
+  if (draft.enforcement !== 'action') {
+    return { error: 'a pattern check is an action check only' };
   }
   try {
     return { pattern: rulePatternFromArgs(draft.patternKind, draft.patternArgs.split('\n')) };
@@ -165,15 +182,30 @@ export function patchOf(draft: RuleDraft): { patch: RulePatch } | { error: strin
   if ('error' in pattern) return pattern;
   const criteria: RuleCriteria | undefined =
     whenTrue.length > 0 ? { true: whenTrue, false: whenFalse } : undefined;
+  // §14.3: `action`/`ship` carry a check (the pattern, else a classifier
+  // question with its examples); `tell`/`review` carry none.
+  const checked = draft.enforcement === 'action' || draft.enforcement === 'ship';
+  const check: KnowledgeCheck | undefined = !checked
+    ? undefined
+    : pattern.pattern
+      ? { by: 'pattern', pattern: pattern.pattern }
+      : {
+          by: 'classifier',
+          ...(question.length > 0 ? { question } : {}),
+          ...(criteria ? { criteria } : {}),
+          examples,
+        };
+  const paths = draft.paths
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
   return {
     patch: {
       text,
-      ...(question.length > 0 ? { question } : {}),
-      ...(criteria ? { criteria } : {}),
+      kind: draft.kind,
+      paths,
       enforcement: draft.enforcement,
-      stage: draft.stage,
-      ...(pattern.pattern ? { pattern: pattern.pattern } : {}),
-      examples,
+      ...(check ? { check } : {}),
     },
   };
 }

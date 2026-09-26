@@ -5,16 +5,26 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { Event } from '@agile-agents/shared';
+import {
+  type Event,
+  type KnowledgeEnforcement,
+  LEGACY_RULE_ENFORCEMENTS,
+  LEGACY_RULE_STAGES,
+  type LegacyRuleEnforcement,
+  type LegacyRuleStage,
+  ulid,
+} from '@agile-agents/shared';
+import { stringify } from 'yaml';
 import { type DaemonHandle, startDaemon } from '../daemon';
 import { runInit } from '../init';
+import { ensureBuiltinKnowledge } from '../knowledge/builtins';
 import { ProjectService } from '../projects/service';
 import { QuestionService } from '../questions/service';
 import { StreamService } from '../streams/service';
-import { migrateHome } from './migrate';
+import { migrateHome, migrateRules } from './migrate';
 import { StateStore } from './store';
 
 let home: string;
@@ -109,6 +119,180 @@ describe('migrateHome (§17.1)', () => {
       visibility: { mode: 'public' },
     });
     expect((await migrateHome(deps)).migrated).toBe(false);
+  });
+});
+
+/**
+ * T260 (§17.1 step 2, P6): every legacy `rules/R-X.yaml` becomes knowledge.
+ * The rules are written as a pre-T260 daemon wrote them, into a home that
+ * is then copied, and the copy is migrated — the original is untouched.
+ */
+describe('rules → knowledge (§17.1 step 2)', () => {
+  const EXPECTED: Record<string, KnowledgeEnforcement[]> = {
+    'pattern/action': ['action'],
+    'pattern/diff': ['action'],
+    'pattern/both': ['action'],
+    'classifier/action': ['action'],
+    'classifier/diff': ['ship'],
+    'classifier/both': ['action', 'ship'],
+    'guidance/action': ['tell'],
+    'guidance/diff': ['tell'],
+    'guidance/both': ['tell'],
+  };
+
+  function writeLegacyRule(
+    root: string,
+    enforcement: LegacyRuleEnforcement,
+    stage: LegacyRuleStage,
+    over: Record<string, unknown> = {},
+  ): string {
+    const id = `R-${ulid()}`;
+    mkdirSync(join(root, 'rules'), { recursive: true });
+    const record = {
+      id,
+      text: `${enforcement} at ${stage}`,
+      scope: { kind: 'global' },
+      status: 'accepted',
+      enforcement,
+      stage,
+      ...(enforcement === 'pattern'
+        ? { pattern: { kind: 'command_deny', args: { patterns: ['rm -rf'] } } }
+        : {}),
+      critical: false,
+      examples:
+        enforcement === 'classifier'
+          ? [
+              { action: 'bun add lodash', violates: true },
+              { action: 'bun test', violates: false },
+            ]
+          : [],
+      provenance: { by: 'human' },
+      stats: { fired: 2, violated: 1, routed: 0 },
+      created_at: '2026-09-01T00:00:00.000Z',
+      decided_at: '2026-09-01T01:00:00.000Z',
+      decided_by: 'pete',
+      ...over,
+    };
+    writeFileSync(join(root, 'rules', `${id}.yaml`), stringify(record));
+    return id;
+  }
+
+  test('every enforcement × stage on a copied home, ulids kept, both split, idempotent', async () => {
+    const ids = new Map<string, string>();
+    for (const enforcement of LEGACY_RULE_ENFORCEMENTS) {
+      for (const stage of LEGACY_RULE_STAGES) {
+        ids.set(`${enforcement}/${stage}`, writeLegacyRule(home, enforcement, stage));
+      }
+    }
+    const stream = await streams.create('human', { title: 's', goal: 'g' });
+    const scoped = writeLegacyRule(home, 'guidance', 'action', {
+      text: 'a proposal on one stream',
+      scope: { kind: 'stream', ref: stream.id },
+      status: 'proposed',
+      decided_at: undefined,
+      decided_by: undefined,
+      provenance: { by: `agent:${ulid()}`, stream: stream.id },
+    });
+
+    const copy = mkdtempSync(join(tmpdir(), 'agile-migrate-copy-'));
+    try {
+      cpSync(home, copy, { recursive: true });
+      const copied = StateStore.open(copy);
+      const copiedStreams = new StreamService(copied);
+      const result = await migrateHome({
+        store: copied,
+        streams: copiedStreams,
+        projects: new ProjectService(copied, copiedStreams),
+        questions: new QuestionService(copied, copiedStreams),
+      });
+      // Nine rules plus the scoped one, plus one ship twin for classifier/both.
+      expect(result.knowledge).toBe(11);
+
+      const items = copied.listKnowledge();
+      for (const [key, id] of ids) {
+        const same = copied.getKnowledge(`K-${id.slice(2)}`);
+        expect(same.kind).toBe('standard');
+        expect(same.status).toBe('accepted');
+        expect(same.decided_by).toBe('pete');
+        expect(same.stats).toMatchObject({ fired: 2, violated: 1 });
+        const family = items.filter((i) => i.text === key.replace('/', ' at '));
+        expect(family.map((i) => i.enforcement).sort()).toEqual([...(EXPECTED[key] ?? [])].sort());
+      }
+      const split = items.filter((i) => i.text === 'classifier at both');
+      expect(split.find((i) => i.enforcement === 'ship')?.source.finding).toContain(
+        ids.get('classifier/both'),
+      );
+      const moved = copied.getKnowledge(`K-${scoped.slice(2)}`);
+      expect(moved.scope).toEqual({ kind: 'subtree', node: stream.id });
+      expect(moved.source).toMatchObject({ by: 'agent', node: stream.id });
+      expect(moved.status).toBe('proposed');
+
+      // `rules/` stays on disk; a second start writes nothing.
+      expect(copied.listLegacyRules()).toHaveLength(10);
+      const again = await migrateHome({
+        store: copied,
+        streams: copiedStreams,
+        projects: new ProjectService(copied, copiedStreams),
+        questions: new QuestionService(copied, copiedStreams),
+      });
+      expect(again.knowledge).toBe(0);
+      expect(copied.listKnowledge()).toHaveLength(11);
+      // The original home was not touched.
+      expect(store.listKnowledge()).toEqual([]);
+    } finally {
+      rmSync(copy, { recursive: true, force: true });
+    }
+  });
+
+  test('a crash between a P6 pair is completed on the next start', async () => {
+    const id = writeLegacyRule(home, 'classifier', 'both');
+    await migrateRules(store);
+    const twin = store.listKnowledge().find((i) => i.enforcement === 'ship');
+    if (twin === undefined) throw new Error('no ship twin');
+    // Model a crash after the base write: the twin's file never landed.
+    rmSync(join(home, 'knowledge', `${twin.id}.yaml`));
+    expect(await migrateRules(store)).toBe(1);
+    const items = store.listKnowledge();
+    expect(items.map((i) => i.enforcement).sort()).toEqual(['action', 'ship']);
+    expect(items.find((i) => i.enforcement === 'ship')?.source.finding).toContain(id);
+    expect(await migrateRules(store)).toBe(0);
+  });
+
+  test('a guidance rule keeps its examples visible in source.finding', async () => {
+    const id = writeLegacyRule(home, 'guidance', 'action', {
+      examples: [
+        { action: 'a', violates: true },
+        { action: 'b', violates: false },
+      ],
+    });
+    await migrateRules(store);
+    expect(store.getKnowledge(`K-${id.slice(2)}`).source.finding).toBe(
+      'proposed examples: violates: a | allowed: b',
+    );
+  });
+
+  test('a home already on projects migrates only its rules, with no second parent-branch card', async () => {
+    await seedOldHome();
+    await migrateHome(deps);
+    expect(deps.questions.listOpen()).toHaveLength(1);
+    writeLegacyRule(home, 'guidance', 'action');
+    const result = await migrateHome(deps);
+    expect(result).toMatchObject({ migrated: true, knowledge: 1, streams: 0 });
+    expect(deps.questions.listOpen()).toHaveLength(1);
+    expect(events().filter((e) => e.kind === 'home_migrated')).toHaveLength(2);
+  });
+
+  test('a migrated built-in is found by ensureBuiltinKnowledge, not created twice', async () => {
+    const id = writeLegacyRule(home, 'pattern', 'action', {
+      name: 'no_push_protected',
+      pattern: { kind: 'no_push_protected', args: {} },
+      provenance: { by: 'builtin' },
+      critical: true,
+    });
+    await migrateHome(deps);
+    const builtins = await ensureBuiltinKnowledge(store);
+    expect(builtins[0]?.id).toBe(`K-${id.slice(2)}`);
+    expect(store.listKnowledge()).toHaveLength(3);
   });
 });
 

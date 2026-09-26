@@ -10,9 +10,9 @@ import type {
   Policy,
   Project,
   RoutedEvent,
-  Rule,
-  RuleCreateInput,
-  RulePatch,
+  KnowledgeItem as Rule,
+  KnowledgeCreateInput as RuleCreateInput,
+  KnowledgePatch as RulePatch,
   SessionDefaultsPatch,
   SessionDefaultsStatus,
   Stream,
@@ -160,6 +160,12 @@ export async function getStreamActivity(id: string): Promise<ActivityEntry[]> {
 export async function getRepoEvents(repo: string): Promise<RoutedEvent[]> {
   const out = await get<{ events: RoutedEvent[] }>(`/api/repos/${encodeURIComponent(repo)}/events`);
   return out.events;
+}
+
+/** T265: the repo's accepted standards and architecture. */
+export async function getRepoKnowledge(repo: string): Promise<Rule[]> {
+  const res = await get<{ knowledge: Rule[] }>(`/api/repos/${encodeURIComponent(repo)}/knowledge`);
+  return res.knowledge;
 }
 
 /** T161: the composer — a human line on the thread, and a prompt to the attached worker if there is one. */

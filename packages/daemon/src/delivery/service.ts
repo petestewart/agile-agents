@@ -150,7 +150,7 @@ export interface DeliveryServiceOptions {
   diffRules?: DiffRules;
   /** PR mode (T224): the GitHub port for a repo; without it a `pr` repo refuses to deliver. */
   github?: (repo: RepoEntry) => GitHubPort;
-  /** Tells the retro (§5.5) a stream landed. Fire-and-forget: never a failed land. */
+  /** Tells the retro (§17: after `merged`) the node merged. Fire-and-forget: never a failed land. */
   onStreamEnd?: (streamId: string) => void | Promise<void>;
   /** T226: main moved on `repo` (sync the other live nodes). Fire-and-forget. */
   onMainMoved?: (repo: string, mergedStream: string) => unknown;
@@ -390,8 +390,8 @@ export class DeliveryService {
       diff: () => runGit(['diff', `${target}...${branch}`], repoRoot, repoRoot),
     });
     if (verdict.decision === 'allow') return undefined;
-    const what = verdict.decision === 'route' ? 'routed' : 'refused';
-    const line = `landing ${what} by diff rule${verdict.rule ? ` ${verdict.rule}` : ''}: ${verdict.reason}`;
+    const what = verdict.decision === 'route' ? 'routed' : 'held';
+    const line = `delivery ${what} by ship check${verdict.rule ? ` ${verdict.rule}` : ''}: ${verdict.reason}`;
     await this.setDeliveryState(stream.id, {
       mode,
       status: 'held',

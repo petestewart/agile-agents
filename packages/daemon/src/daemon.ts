@@ -13,6 +13,8 @@ import { type AgileConfig, type DiscoverConfigOptions, discoverConfig } from './
 import {
   ClassifierDiffRules,
   DeliveryService,
+  SessionShipReviewer,
+  ShipChecks,
   buildDeliveryRpcMethods,
   wireLandGateResolution,
 } from './delivery';
@@ -30,12 +32,12 @@ import {
 } from './hook';
 import { type HttpServerHandle, startHttpServer } from './http';
 import { InboxService, buildInboxRpcMethods } from './inbox';
+import { KnowledgeService, buildKnowledgeRpcMethods, ensureBuiltinKnowledge } from './knowledge';
 import { LessonsService } from './lessons';
 import { type LockHandle, acquireLock } from './lock';
 import { ProjectService, buildProjectRpcMethods } from './projects';
 import { QuestionService, buildQuestionRpcMethods, wireQuestionSupersession } from './questions';
 import { type RpcServerHandle, startRpcServer } from './rpc';
-import { RulesService, buildRuleRpcMethods, ensureBuiltinRules } from './rules';
 import { resolveCliBin } from './runner';
 import { StateStore, buildStateRpcMethods } from './store';
 import { migrateHome } from './store/migrate';
@@ -62,7 +64,7 @@ export interface DaemonHandle {
   gateService?: GateService;
   streamService?: StreamService;
   questionService?: QuestionService;
-  rulesService?: RulesService;
+  rulesService?: KnowledgeService;
   lessonsService?: LessonsService;
   inboxService?: InboxService;
   attachService?: AttachService;
@@ -112,14 +114,11 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
   const gateService = store
     ? new GateService(store, options.gateDelegate ? { delegate: options.gateDelegate } : {})
     : undefined;
-  // `close` and `land` both hand the ended stream to the retro (§5.5).
+  // A merge (land or a PR merged) hands the node to the retro (§17: after `merged`).
   // Every back-reference in this graph is read lazily through a closure,
   // so construction order is never a trap.
   const streamService: StreamService | undefined = store
     ? new StreamService(store, {
-        onStreamEnd: async (id) => {
-          await lessonsService?.onStreamEnd(id);
-        },
         // T244: record changes that are routed events (child_status, pr_merged, …).
         onUpdated: async (before, after): Promise<void> => {
           if (emitRouted) await emitTransitions(emitRouted)(before, after);
@@ -131,14 +130,20 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
   // How spawned sessions reach this daemon's CLI for hooks and MCP,
   // resolved to something that runs on this host, never assumed on $PATH.
   const cliBin = resolveCliBin();
-  // Rules (§5): read by every brief, the hook and landing.
-  const rulesService =
-    store && streamService ? new RulesService({ store, streams: streamService }) : undefined;
   // T240–T242: routed events, one service for every producer and the delivery.
   const routedEvents = store ? new RoutedEventService(store) : undefined;
   // T244: the producers' emit hook over that one service.
   const emitRouted: EmitRouted | undefined =
     routedEvents && streamService ? makeEmitter(routedEvents, streamService) : undefined;
+  // Rules (§5): read by every brief, the hook and landing. T264: accepting emits.
+  const rulesService =
+    store && streamService
+      ? new KnowledgeService({
+          store,
+          streams: streamService,
+          ...(emitRouted ? { emitRouted } : {}),
+        })
+      : undefined;
   // Attach and questions know about each other: the turn-end rule asks
   // what is open, and an answer is delivered by prompting the session.
   const attachService =
@@ -196,6 +201,28 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
           ...(gateService ? { gates: gateService } : {}),
         })
       : undefined;
+  // T262: the ship check — the classifier step, then a reviewer session
+  // over the `review` items in scope; findings go back as `ship_findings`.
+  let redeliver: ((streamId: string) => Promise<unknown>) | undefined;
+  const shipChecks =
+    diffRules && rulesService && store
+      ? new ShipChecks({
+          classifier: diffRules,
+          rules: rulesService,
+          policy: () => store.getPolicy(),
+          ...(gateService ? { gates: gateService } : {}),
+          ...(emitRouted ? { emit: emitRouted } : {}),
+          ...(attachService && streamService
+            ? {
+                reviewer: new SessionShipReviewer({
+                  attach: attachService,
+                  streams: streamService,
+                  onFinished: (id) => redeliver?.(id),
+                }),
+              }
+            : {}),
+        })
+      : undefined;
   // T226: sync after merge — main merged into the other live nodes on the repo.
   const mainSync =
     store && streamService
@@ -214,7 +241,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
       ? new DeliveryService({
           store,
           streams: streamService,
-          ...(diffRules ? { diffRules } : {}),
+          ...(shipChecks ? { diffRules: shipChecks } : {}),
           ...(gateService ? { gates: gateService } : {}),
           github: (entry) =>
             createGitHubRest({
@@ -231,6 +258,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
         })
       : undefined;
   if (gateService && landingService) wireLandGateResolution(gateService, landingService);
+  if (landingService) redeliver = (id) => landingService.land(id);
   // Deciding a gate closes the question the same session left open; wired
   // before the delivery below so it is superseded before the prompt.
   if (gateService && questionService) wireQuestionSupersession(gateService, questionService);
@@ -365,6 +393,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
           ...(mainSync
             ? { onMainMoved: (repo: string, except?: string) => mainSync.mainMoved(repo, except) }
             : {}),
+          onMerged: (id: string) => lessonsService?.onStreamEnd(id),
           ...(landingService ? { afterTick: () => landingService.settle() } : {}),
           ...(emitRouted ? { emit: emitRouted } : {}),
           home: config.home,
@@ -406,7 +435,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
             : {}),
           ...(projectService ? buildProjectRpcMethods(projectService) : {}),
           ...(inboxService ? buildInboxRpcMethods(inboxService) : {}),
-          ...(rulesService ? buildRuleRpcMethods(rulesService, ruleEvals) : {}),
+          ...(rulesService ? buildKnowledgeRpcMethods(rulesService, ruleEvals) : {}),
           ...(docsService ? buildDocsRpcMethods(docsService) : {}),
           ...(landingService ? buildDeliveryRpcMethods(landingService) : {}),
           ...buildHookRpcMethods(
@@ -472,7 +501,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
   // (a retired built-in stays retired).
   if (store) {
     try {
-      await ensureBuiltinRules(store);
+      await ensureBuiltinKnowledge(store);
     } catch (err) {
       // Not fatal: re-attempted on the next start.
       console.error('agiled: could not create the built-in rules:', err);

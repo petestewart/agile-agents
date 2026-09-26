@@ -21,37 +21,41 @@ import {
   type Delivery,
   type Event,
   type HomeConfig,
+  KnowledgeIdSchema,
+  type KnowledgeItem,
+  type KnowledgePrincipal,
+  type LegacyRule,
+  LegacyRuleIdSchema,
   type Policy,
   type Project,
   ProjectIdSchema,
   type RepoEntry,
   type ReposConfig,
   type RoutedEvent,
-  type Rule,
-  RuleIdSchema,
-  type RulePrincipal,
   type SessionDefaultsPatch,
   SessionDefaultsPatchSchema,
   type Stream,
   type StreamPrincipal,
   type ThreadEntry,
   UlidSchema,
+  assertKnowledgeAcceptable,
+  assertKnowledgeWrite,
   assertNoStreamCycle,
   assertNoWaitsOnCycle,
-  assertRuleAcceptable,
-  assertRuleWrite,
   assertStreamWrite,
+  formatKnowledgeScope,
   projectNameKey,
   validateAgentRecord,
   validateDelivery,
   validateEvent,
   validateHomeConfig,
+  validateKnowledgeItem,
+  validateLegacyRule,
   validatePolicy,
   validateProject,
   validateRepoEntry,
   validateReposConfig,
   validateRoutedEvent,
-  validateRule,
   validateStream,
   validateThreadEntry,
 } from '@agile-agents/shared';
@@ -125,24 +129,24 @@ function streamStateData(stream: Stream): Record<string, unknown> {
 }
 
 /**
- * What every rule event carries in `data` (§7.4). A rule's event has a
- * `stream` scope only when the rule itself is stream-scoped.
+ * What every knowledge event carries in `data` (§7.4). An item's event has
+ * a `stream` scope only when the item is subtree-scoped.
  */
-function ruleEventData(rule: Rule, principal: RulePrincipal): Record<string, unknown> {
+function knowledgeEventData(
+  item: KnowledgeItem,
+  principal: KnowledgePrincipal,
+): Record<string, unknown> {
   return {
-    id: rule.id,
-    status: rule.status,
-    enforcement: rule.enforcement,
-    scope: rule.scope.ref === undefined ? rule.scope.kind : `${rule.scope.kind}:${rule.scope.ref}`,
+    id: item.id,
+    status: item.status,
+    enforcement: item.enforcement,
+    scope: formatKnowledgeScope(item.scope),
     principal,
   };
 }
 
-/** A rule event's `stream` scope — only a stream-scoped rule has one. */
-function ruleEventStream(rule: Rule): { stream?: string } {
-  return rule.scope.kind === 'stream' && rule.scope.ref !== undefined
-    ? { stream: rule.scope.ref }
-    : {};
+function knowledgeEventStream(item: KnowledgeItem): { stream?: string } {
+  return item.scope.kind === 'subtree' ? { stream: item.scope.node } : {};
 }
 
 /** One mutation's return value and its one Event. */
@@ -816,103 +820,114 @@ export class StateStore {
     });
   }
 
-  // ------------------------------------------------------------------ Rules
+  // ------------------------------------------------------------------ Knowledge
 
   /**
-   * `rules/R-<ulid>.yaml`, one file per rule (§5). The store applies the
-   * principal split (`assertRuleWrite`, D4: agents create `proposed` only;
-   * decisions are human-only) and the tier invariants
-   * (`assertRuleAcceptable`). Scope refs are checked by `RulesService`.
+   * `knowledge/K-<ulid>.yaml`, one file per item (projects-design §14.3).
+   * The store applies the principal split (`assertKnowledgeWrite`, D4) and
+   * the check invariants (`assertKnowledgeAcceptable`). Scope refs are
+   * checked by `KnowledgeService`.
    */
-  private ruleRelPath(id: string): string {
-    return join('rules', `${this.ruleIdSegment(id)}.yaml`);
-  }
-
-  /** A rule id is `R-<ulid>`; reject anything else before it reaches a path. */
-  private ruleIdSegment(id: string): string {
-    const result = RuleIdSchema.safeParse(id);
+  private knowledgeRelPath(id: string): string {
+    const result = KnowledgeIdSchema.safeParse(id);
     if (!result.success) {
-      throw new Error(`invalid Rule id: ${id} must look like R-<ulid>`);
+      throw new Error(`invalid KnowledgeItem id: ${id} must look like K-<ulid>`);
     }
-    return result.data;
+    return join('knowledge', `${result.data}.yaml`);
   }
 
-  private readRuleFile(absPath: string): Rule {
-    return readRecord(absPath, 'rule', validateRule);
+  private readKnowledgeFile(absPath: string): KnowledgeItem {
+    return readRecord(absPath, 'knowledge item', validateKnowledgeItem);
   }
 
-  getRule(id: string): Rule {
-    const path = this.abs(this.ruleRelPath(id));
-    if (!fileExists(path)) throw new NotFoundError('Rule', id);
-    return this.readRuleFile(path);
+  getKnowledge(id: string): KnowledgeItem {
+    const path = this.abs(this.knowledgeRelPath(id));
+    if (!fileExists(path)) throw new NotFoundError('KnowledgeItem', id);
+    return this.readKnowledgeFile(path);
   }
 
-  hasRule(id: string): boolean {
-    return fileExists(this.abs(this.ruleRelPath(id)));
+  hasKnowledge(id: string): boolean {
+    return fileExists(this.abs(this.knowledgeRelPath(id)));
   }
 
-  /** Every rule in the home, oldest id first (ULIDs sort by time). */
-  listRules(): Rule[] {
-    const dir = this.abs('rules');
+  /** Every item in the home, oldest id first (ULIDs sort by time). */
+  listKnowledge(): KnowledgeItem[] {
+    const dir = this.abs('knowledge');
     return listDataFiles(dir, '.yaml')
-      .map((name) => this.readRuleFile(join(dir, name)))
+      .map((name) => this.readKnowledgeFile(join(dir, name)))
       .sort((a, b) => a.id.localeCompare(b.id));
   }
 
   /**
-   * Creates one rule. The caller supplies the whole record (the service
-   * mints `id`/`created_at`/`status`/`stats`); this validates it, applies
-   * both structural checks for the creating principal, refuses a duplicate
-   * id, and mints `rule_put`.
+   * Creates one item. The caller supplies the whole record; this validates
+   * it, applies both structural checks for the creating principal, refuses
+   * a duplicate id, and mints `knowledge_put`.
    */
-  async createRule(principal: RulePrincipal, rule: unknown): Promise<Rule> {
+  async createKnowledge(principal: KnowledgePrincipal, item: unknown): Promise<KnowledgeItem> {
     return this.mutate(() => {
-      const validated = assertRuleAcceptable(
-        assertRuleWrite(principal, undefined, validateRule(rule)),
+      const validated = assertKnowledgeAcceptable(
+        assertKnowledgeWrite(principal, undefined, validateKnowledgeItem(item)),
       );
-      const relPath = this.ruleRelPath(validated.id);
+      const relPath = this.knowledgeRelPath(validated.id);
       if (fileExists(this.abs(relPath))) {
-        throw new AlreadyExistsError('Rule', validated.id);
+        throw new AlreadyExistsError('KnowledgeItem', validated.id);
       }
       writeYamlFileAtomic(this.abs(relPath), validated);
       return {
         result: validated,
-        event: buildEvent('rule_put', {
-          ...ruleEventStream(validated),
-          data: ruleEventData(validated, principal),
+        event: buildEvent('knowledge_put', {
+          ...knowledgeEventStream(validated),
+          data: knowledgeEventData(validated, principal),
         }),
       };
     });
   }
 
   /**
-   * Read-modify-write of one rule under the mutex, so the principal check
-   * sees the same `before` the write lands on. `mutator` returns the whole
-   * next record. `options.kind` is `rule_decided` for the human's
-   * accept/retire and `rule_put` for every other edit (§7.4).
+   * Read-modify-write of one item under the mutex. `options.kind` is
+   * `knowledge_decided` for the human's accept/retire and `knowledge_put`
+   * for every other edit (§7.4).
    */
-  async updateRule(
-    principal: RulePrincipal,
+  async updateKnowledge(
+    principal: KnowledgePrincipal,
     id: string,
-    mutator: (before: Rule) => Rule,
-    options: { kind?: 'rule_put' | 'rule_decided' } = {},
-  ): Promise<Rule> {
+    mutator: (before: KnowledgeItem) => KnowledgeItem,
+    options: { kind?: 'knowledge_put' | 'knowledge_decided' } = {},
+  ): Promise<KnowledgeItem> {
     return this.mutate(() => {
-      const relPath = this.ruleRelPath(id);
-      if (!fileExists(this.abs(relPath))) throw new NotFoundError('Rule', id);
-      const before = this.readRuleFile(this.abs(relPath));
-      const after = assertRuleAcceptable(
-        assertRuleWrite(principal, before, validateRule(mutator(before))),
+      const relPath = this.knowledgeRelPath(id);
+      if (!fileExists(this.abs(relPath))) throw new NotFoundError('KnowledgeItem', id);
+      const before = this.readKnowledgeFile(this.abs(relPath));
+      const after = assertKnowledgeAcceptable(
+        assertKnowledgeWrite(principal, before, validateKnowledgeItem(mutator(before))),
       );
       writeYamlFileAtomic(this.abs(relPath), after);
       return {
         result: after,
-        event: buildEvent(options.kind ?? 'rule_put', {
-          ...ruleEventStream(after),
-          data: ruleEventData(after, principal),
+        event: buildEvent(options.kind ?? 'knowledge_put', {
+          ...knowledgeEventStream(after),
+          data: knowledgeEventData(after, principal),
         }),
       };
     });
+  }
+
+  /**
+   * The legacy `rules/R-<ulid>.yaml` records, read-only, for the one-shot
+   * migration (§17.1 step 2). Nothing writes `rules/` any more; it stays on
+   * disk for one phase.
+   */
+  listLegacyRules(): LegacyRule[] {
+    const dir = this.abs('rules');
+    return listDataFiles(dir, '.yaml')
+      .map((name) => {
+        const id = name.replace(/\.yaml$/, '');
+        if (!LegacyRuleIdSchema.safeParse(id).success) {
+          throw new Error(`invalid Rule file: rules/${name} must be named R-<ulid>.yaml`);
+        }
+        return readRecord(join(dir, name), 'rule', validateLegacyRule);
+      })
+      .sort((a, b) => a.id.localeCompare(b.id));
   }
 
   // ------------------------------------------------------------------ Projects

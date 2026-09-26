@@ -27,8 +27,8 @@ import { Markdown } from './Markdown';
 const KIND_LABEL: Record<InboxItem['kind'], string> = {
   question: 'question',
   gate: 'decision',
-  rule_accept: 'proposed rule',
-  rule_batch: 'proposed rules',
+  rule_accept: 'knowledge proposed',
+  rule_batch: 'knowledge proposed',
   blocked: 'blocked',
   done: 'ready to land',
 };
@@ -84,7 +84,10 @@ export function Card({
   return (
     <article className="cr-card" data-id={item.id} data-kind={item.kind}>
       <div className="kind">
-        {KIND_LABEL[item.kind]} · {waitingFor(item.ts)}
+        {item.knowledge_kind !== undefined
+          ? `${item.knowledge_kind} proposed`
+          : KIND_LABEL[item.kind]}{' '}
+        · {waitingFor(item.ts)}
       </div>
       <Markdown
         className="context"
@@ -219,7 +222,7 @@ export function Card({
             data-testid="rule-batch-open"
             onClick={() => openRules({ status: 'proposed', scope: 'all', source: item.id })}
           >
-            Review {item.rules?.length ?? 0} rules
+            Review {item.rules?.length ?? 0} items
           </button>
         </div>
       )}

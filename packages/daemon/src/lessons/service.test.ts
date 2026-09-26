@@ -7,7 +7,8 @@
  * reach the inbox as `rule_accept` items with provenance pointing at the
  * stream; accepting one puts it in the next brief in scope; a stream that
  * went smoothly starts no session at all; the fourth proposal is refused;
- * and both end paths — `stream.close` and a real `land` — call the retro.
+ * and the retro runs after `merged` only (T264, projects-design §17): a
+ * plain close starts none; a merge starts exactly one.
  */
 
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
@@ -22,8 +23,8 @@ import { DeliveryService } from '../delivery/service';
 import { GateService } from '../gates/service';
 import { InboxService } from '../inbox/service';
 import { runInit } from '../init';
+import { KnowledgeService } from '../knowledge/service';
 import { QuestionService } from '../questions/service';
-import { RulesService } from '../rules/service';
 import { buildBrief } from '../runner/brief';
 import type { FakeAgentScript } from '../runner/fake-agent';
 import { StateStore, buildEvent } from '../store';
@@ -38,7 +39,7 @@ let scratch: string;
 let store: StateStore;
 let streams: StreamService;
 let questions: QuestionService;
-let rules: RulesService;
+let rules: KnowledgeService;
 let verbs: VerbService;
 let attach: AttachService;
 let lessons: LessonsService;
@@ -72,7 +73,7 @@ function fakeProvider(script: FakeAgentScript): AcpProviderConfig {
 const PROPOSES: FakeAgentScript = {
   steps: [
     { type: 'agent_text', text: 'reading the findings' },
-    { type: 'tool_call', toolCallId: 'propose-1', title: 'propose_rule' },
+    { type: 'tool_call', toolCallId: 'propose-1', title: 'propose_knowledge' },
     { type: 'hang' },
   ],
 };
@@ -139,13 +140,11 @@ beforeEach(() => {
 
   const init = runInit(home);
   store = StateStore.open(init.stateRoot);
-  // Wired the way `daemon.ts` wires it: `close` hands the stream to the
-  // retro, which is built after the services it drives.
-  streams = new StreamService(store, { onStreamEnd: (id) => lessons.onStreamEnd(id) });
+  streams = new StreamService(store);
   questions = new QuestionService(store, streams, {
     deliver: (sessionId, question) => attach.deliverAnswer(sessionId, question),
   });
-  rules = new RulesService({ store, streams });
+  rules = new KnowledgeService({ store, streams });
   attach = new AttachService({
     store,
     streams,
@@ -185,14 +184,16 @@ afterEach(async () => {
   }
 });
 
-describe('T176: rules about what an agent says are guidance', () => {
-  test('brief and instruction say pattern/classifier only see tool calls and diffs', async () => {
+describe('T176: rules about what an agent says are tell items', () => {
+  test('brief and instruction say action/ship only see tool calls and diffs', async () => {
     const brief = readFileSync(join(import.meta.dir, '../../briefs/lessons.md'), 'utf8');
     expect(brief).toMatch(/only ever see \*\*tool calls and diffs\*\*/);
-    expect(brief).toMatch(/must be `guidance`/);
+    expect(brief).toMatch(/must be `tell`/);
     const stream = await streams.create('human', { title: 't', goal: 'g' });
     const text = renderMaterial(stream, { findings: ['f'], denials: [], questions: [] });
-    expect(text).toContain('what an agent says (messages, replies) is `guidance`');
+    expect(text).toContain('what an agent says (messages, replies) is `tell`');
+    // T264: the instruction asks for a kind.
+    expect(text).toContain('`kind` — `standard`');
   });
 });
 
@@ -251,20 +252,21 @@ describe('the proposals (the T141 acceptance criteria)', () => {
     expect(threadBodies(stream.id)).toContain('lessons: session started');
 
     // The retro's own verb calls, exactly as the MCP bridge forwards them.
-    await verbs.proposeRule({
+    await verbs.proposeKnowledge({
       session,
       text: 'sniff the dialect on quoted separators before choosing one',
-      scope: 'stream',
+      scope: 'subtree',
       examples: [
         { action: 'splitting a quoted line on the raw separator', violates: true },
         { action: 'parsing quotes before splitting', violates: false },
       ],
-      enforcement: 'guidance',
+      enforcement: 'tell',
     });
-    await verbs.proposeRule({
+    await verbs.proposeKnowledge({
       session,
       text: 'a parser change carries a fixture for the dialect it changes',
-      scope: 'stream',
+      kind: 'decision',
+      scope: 'subtree',
       examples: [
         { action: 'changing the sniffer with no new fixture', violates: true },
         { action: 'adding a semicolon fixture with the change', violates: false },
@@ -273,15 +275,15 @@ describe('the proposals (the T141 acceptance criteria)', () => {
 
     const proposed = rules.listProposed();
     expect(proposed).toHaveLength(2);
+    // T264: lessons propose with a kind (default `standard`).
+    expect(proposed.map((r) => r.kind).sort()).toEqual(['decision', 'standard']);
     for (const rule of proposed) {
       expect(rule.status).toBe('proposed');
-      expect(rule.provenance).toEqual({
-        stream: stream.id,
-        session,
-        by: `agent:${session}`,
-      });
-      expect(rule.examples).toHaveLength(2);
-      expect(rule.scope).toEqual({ kind: 'stream', ref: stream.id });
+      expect(rule.source).toMatchObject({ by: 'lessons', node: stream.id, session });
+      // A `tell` item carries no check: the examples stay visible in the source.
+      expect(rule.enforcement).toBe('tell');
+      expect(rule.source.finding).toMatch(/^proposed examples: violates: .+ \| allowed: .+$/);
+      expect(rule.scope).toEqual({ kind: 'subtree', node: stream.id });
     }
 
     // §3.1: each proposal is a `rule_accept` item the human decides.
@@ -289,7 +291,7 @@ describe('the proposals (the T141 acceptance criteria)', () => {
     expect(items).toHaveLength(2);
     expect(items.map((item) => item.id).sort()).toEqual(proposed.map((r) => r.id).sort());
     expect(items.map((item) => item.ref).sort()).toEqual(
-      proposed.map((r) => `rules/${r.id}.yaml`).sort(),
+      proposed.map((r) => `knowledge/${r.id}.yaml`).sort(),
     );
     expect(items.every((item) => item.stream === stream.id)).toBe(true);
 
@@ -306,7 +308,7 @@ describe('the proposals (the T141 acceptance criteria)', () => {
       ancestors: [],
       thread: [],
       docs: [],
-      rules: store.listRules(),
+      rules: store.listKnowledge(),
     });
     expect(brief).toContain(first.text);
     expect(brief).not.toContain(second.text);
@@ -318,12 +320,12 @@ describe('the proposals (the T141 acceptance criteria)', () => {
     const session = await runRetro(stream);
 
     for (let i = 0; i < MAX_LESSON_PROPOSALS; i += 1) {
-      await verbs.proposeRule({ session, text: `rule number ${i + 1}`, scope: 'stream' });
+      await verbs.proposeKnowledge({ session, text: `rule number ${i + 1}`, scope: 'subtree' });
     }
     expect(rules.listProposed()).toHaveLength(MAX_LESSON_PROPOSALS);
 
     await expect(
-      verbs.proposeRule({ session, text: 'one rule too many', scope: 'stream' }),
+      verbs.proposeKnowledge({ session, text: 'one rule too many', scope: 'subtree' }),
     ).rejects.toThrow(LessonQuotaError);
     expect(rules.listProposed()).toHaveLength(MAX_LESSON_PROPOSALS);
     // The cap is the retro's, not every session's: a worker is not capped.
@@ -357,15 +359,25 @@ describe('the proposals (the T141 acceptance criteria)', () => {
   }, 40_000);
 });
 
-describe('both end paths call the retro (§5.5: "on land or close")', () => {
-  test('stream.close starts it', async () => {
+describe('the retro runs after merged, never on a plain close (T264, §17)', () => {
+  test('a close without a merge starts no retro', async () => {
     const stream = await makeStream();
     await seedFinding(stream);
     await streams.close('human', stream.id, 'not worth finishing');
-    await waitFor(() => threadBodies(stream.id).includes('lessons: session started'));
+    await Bun.sleep(300);
+    expect(streams.get(stream.id).sessions.some((s) => s.role === 'lessons')).toBe(false);
+    expect(threadBodies(stream.id)).not.toContain('lessons: session started');
   }, 40_000);
 
-  test('a real land starts it, in the session dir the removed worktree left behind', async () => {
+  test('a merge reported twice (land, then a PR poll) starts one retro', async () => {
+    const stream = await makeStream();
+    await seedFinding(stream);
+    await runRetro(stream);
+    await lessons.onStreamEnd(stream.id);
+    expect(streams.get(stream.id).sessions.filter((s) => s.role === 'lessons')).toHaveLength(1);
+  }, 40_000);
+
+  test('a direct merge (land) starts it, in the session dir the removed worktree left behind', async () => {
     await store.putRepos({ demo: { path: repo, protected_branches: ['main'] } });
     const stream = await makeStream('demo');
     await seedFinding(stream);
@@ -405,10 +417,10 @@ describe('the inbox card', () => {
     const stream = await makeStream();
     await seedFinding(stream);
     const session = await runRetro(stream);
-    await verbs.proposeRule({
+    await verbs.proposeKnowledge({
       session,
       text: 'always name the dialect in the fixture file',
-      scope: 'stream',
+      scope: 'subtree',
       examples: [
         { action: 'a fixture called data.csv', violates: true },
         { action: 'a fixture called semicolon.csv', violates: false },

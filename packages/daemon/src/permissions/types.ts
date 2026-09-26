@@ -12,7 +12,7 @@
  * kind-only and the table's safe defaults (deny/hil) apply.
  */
 
-import type { Rule } from '@agile-agents/shared';
+import type { KnowledgeItem } from '@agile-agents/shared';
 
 /** The permission-table role a session is judged under (`permissionRoleFor`): worker = `engineer`, reviewer/lessons = `reviewer`. */
 export type PermissionRole = 'engineer' | 'reviewer';
@@ -92,7 +92,7 @@ export interface DecisionContext {
    * tier is the only gate a hook-less vendor (Cursor, Codex, Grok, §4.3)
    * has, so it runs the same rules as the hook.
    */
-  patternRules?: readonly Rule[];
+  patternRules?: readonly KnowledgeItem[];
   /** The stream's repo `protected_branches` (D8); defaults to `[main, master]`. */
   protectedBranches?: readonly string[];
   /** `@{upstream}` of the worktree (`worktreeBranchLookups`). */

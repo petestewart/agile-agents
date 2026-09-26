@@ -10,9 +10,9 @@
 
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import type { Rule, SessionRole, Stream, ThreadEntry } from '@agile-agents/shared';
+import type { KnowledgeItem, SessionRole, Stream, ThreadEntry } from '@agile-agents/shared';
 import { quoteThreadBody } from '@agile-agents/shared';
-import { rulesInScope } from '../rules/service';
+import { knowledgeInScope } from '../knowledge/service';
 
 /** One Markdown file per role. */
 export const BRIEFS_DIR = join(import.meta.dir, '..', '..', 'briefs');
@@ -41,8 +41,8 @@ export interface BuildBriefInput {
   /** The stream's thread, oldest first; only the tail is rendered. */
   thread: ThreadEntry[];
   docs: BriefDoc[];
-  /** Every rule in the home; `rulesInScope` filters them here, not the caller. */
-  rules: readonly Rule[];
+  /** Every knowledge item in the home; `knowledgeInScope` filters them here, not the caller. */
+  rules: readonly KnowledgeItem[];
   /** T330 (§4.4): the registered repos it may read (a work node: the others than its own). */
   readableRepos?: readonly { name: string; path: string }[];
   /** T330: the session runs in a worktree of its own (a work node), not a session dir. */
@@ -66,17 +66,37 @@ function section(heading: string, body: string): string {
   return `## ${heading}\n\n${body}`;
 }
 
-/** §5.2: a guidance rule is its text; a pattern or classifier rule is marked as enforced. */
-function renderRule(rule: Rule): string {
-  if (rule.enforcement === 'guidance') return `- ${rule.text}`;
+/** §6: a `tell` item is its text; a checked item is marked with its checkpoint. */
+function renderRule(rule: KnowledgeItem): string {
+  if (rule.enforcement === 'tell') return `- ${rule.text}`;
   const marks = [`enforced: ${rule.enforcement}`, ...(rule.critical ? ['critical'] : [])];
   return `- ${rule.text} (${marks.join(', ')})`;
 }
 
-function renderRules(rules: readonly Rule[]): string {
+/** Items for every path first, then path-limited items grouped under their globs (T261). */
+function renderRules(rules: readonly KnowledgeItem[]): string {
   if (rules.length === 0) return 'none yet';
-  return rules.map(renderRule).join('\n');
+  const everywhere: string[] = [];
+  const byGlobs = new Map<string, string[]>();
+  for (const rule of rules) {
+    const globs = rule.paths ?? [];
+    if (globs.length === 0) {
+      everywhere.push(renderRule(rule));
+      continue;
+    }
+    const key = globs.map((g) => `\`${g}\``).join(', ');
+    byGlobs.set(key, [...(byGlobs.get(key) ?? []), renderRule(rule)]);
+  }
+  const lines = [...everywhere];
+  for (const [globs, items] of byGlobs) {
+    lines.push(`- Only when touching ${globs}:`, ...items.map((item) => `  ${item}`));
+  }
+  return lines.join('\n');
 }
+
+/** T263: the brief carries everything in scope; the lookup narrows it to one path. */
+export const LOOKUP_HINT =
+  'Before touching an unfamiliar area, call `lookup_knowledge` with its path for the items that apply there.';
 
 function renderDoc(doc: BriefDoc, bodyCap: number): string {
   const body = doc.body.trimEnd();
@@ -143,7 +163,7 @@ export function babysitSection(stream: Stream): string | undefined {
 /** One pass of the assembler at a given thread-tail length and doc body cap. */
 function assemble(
   input: BuildBriefInput,
-  rules: readonly Rule[],
+  rules: readonly KnowledgeItem[],
   tailLength: number,
   docBodyCap: number,
 ): string {
@@ -173,7 +193,7 @@ function assemble(
     parts.push(readableReposSection(input.readableRepos, input.inWorktree));
   }
 
-  parts.push(section('Rules in scope', renderRules(rules)));
+  parts.push(section('Knowledge in scope', `${renderRules(rules)}\n\n${LOOKUP_HINT}`));
 
   const shownDocs = docBodyCap > 0 ? docs : [];
   if (shownDocs.length > 0) {
@@ -189,7 +209,7 @@ function assemble(
 }
 
 export function buildBrief(input: BuildBriefInput): string {
-  const rules = rulesInScope(input.rules, input.stream, input.ancestors);
+  const rules = knowledgeInScope(input.rules, input.stream, input.ancestors);
   const ceiling = input.ceiling ?? BRIEF_CHAR_CEILING;
   const maxTail = Math.min(input.threadEntries ?? BRIEF_THREAD_ENTRIES, input.thread.length);
   const docCap = Number.MAX_SAFE_INTEGER;

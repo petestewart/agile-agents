@@ -13,13 +13,13 @@ import {
   ClassifierKeyInputSchema,
   type HilDecision,
   HilIdSchema,
+  KnowledgeCreateInputSchema,
+  KnowledgeIdSchema,
+  KnowledgePatchSchema,
+  KnowledgeTestInputSchema,
   MESSAGE_BODY_MAX_CHARS,
   type QuestionId,
   QuestionIdSchema,
-  RuleCreateInputSchema,
-  RuleIdSchema,
-  RulePatchSchema,
-  RuleTestInputSchema,
   SessionDefaultsPatchSchema,
   type Stream,
   StreamAddRepoRequestSchema,
@@ -52,6 +52,13 @@ import {
 } from './feed';
 import { GateAlreadyResolvedError, GateNotFoundError, type GateService } from './gates';
 import type { InboxService } from './inbox';
+import {
+  KnowledgeAlreadyDecidedError,
+  type KnowledgeService,
+  type RuleRpcEvalDeps,
+  buildRuleReport,
+  testRules,
+} from './knowledge';
 import type { ProjectService } from './projects';
 import {
   QuestionAlreadyAnsweredError,
@@ -60,13 +67,6 @@ import {
   parseAnswerParams,
   sayAndAnswer,
 } from './questions';
-import {
-  RuleAlreadyDecidedError,
-  type RuleRpcEvalDeps,
-  type RulesService,
-  buildRuleReport,
-  testRules,
-} from './rules';
 import {
   NotFoundError,
   type StateStore,
@@ -136,7 +136,7 @@ export interface HttpServerOptions {
   /** T208: `GET/POST /api/projects` and the cockpit frame's projects. */
   projects?: ProjectService;
   /** The rules routes (`/api/rules...`). */
-  rules?: RulesService;
+  rules?: KnowledgeService;
   /** "Test examples": `rule.test`'s evals through the configured classifier. */
   ruleEvals?: RuleRpcEvalDeps;
   /** The classifier key behind Settings, and whether evals can run (without it, whenever `ruleEvals` is given). */
@@ -376,7 +376,7 @@ interface FeedContext {
   projects?: ProjectService;
   questions?: QuestionService;
   inbox?: InboxService;
-  rules?: RulesService;
+  rules?: KnowledgeService;
   ruleEvals?: RuleRpcEvalDeps;
   classifierKey?: ClassifierKeyService;
   landing?: DeliveryService;
@@ -523,6 +523,7 @@ async function handleSessionSettingsRoute(
  *
  *   GET /api/streams/:id/activity  every event routed to the node: reason, delivery status, session or digest
  *   GET /api/repos/:name/events    every event on the repo
+ *   GET /api/repos/:name/knowledge T265: the repo's accepted standards and architecture
  */
 function handleActivityRoute(
   req: Request,
@@ -532,6 +533,16 @@ function handleActivityRoute(
   if (req.method !== 'GET') return undefined;
   const node = url.pathname.match(/^\/api\/streams\/([^/]+)\/activity$/);
   const repo = url.pathname.match(/^\/api\/repos\/([^/]+)\/events$/);
+  const norms = url.pathname.match(/^\/api\/repos\/([^/]+)\/knowledge$/);
+  if (norms) {
+    if (!feed?.rules) return errorResponse(503, 'knowledge not available');
+    const name = decodeURIComponent(norms[1] ?? '');
+    return jsonResponse({
+      knowledge: feed.rules
+        .list({ status: 'accepted', scope: `repo:${name}` })
+        .filter((k) => k.kind !== 'decision'),
+    });
+  }
   if (!node && !repo) return undefined;
   if (!feed?.events) return errorResponse(503, 'events not available');
   try {
@@ -615,11 +626,11 @@ async function handleRepoRoute(
  *   GET  /api/rules               every rule, §5.7's pruning report, and whether evals can run
  *   POST /api/rules/:id/accept    the inbox card's and the rules screen's Accept
  *   POST /api/rules/:id/retire    …and Retire
- *   POST /api/rules/:id/update    the rules screen's edit (`RulePatchSchema`, strict)
- *   POST /api/rules               the rules screen's "New rule" (`RuleCreateInputSchema`, strict; proposed)
- *   POST /api/rules/test          "Test examples": `rule.test {id}`'s evals (`RuleTestInputSchema`)
+ *   POST /api/rules/:id/update    the rules screen's edit (`KnowledgePatchSchema`, strict)
+ *   POST /api/rules               the rules screen's "New rule" (`KnowledgeCreateInputSchema`, strict; proposed)
+ *   POST /api/rules/test          "Test examples": `rule.test {id}`'s evals (`KnowledgeTestInputSchema`)
  *
- * The same `RulesService` calls the `rule.*` RPC makes; every write is
+ * The same `KnowledgeService` calls the `rule.*` RPC makes; every write is
  * same-origin only and stamped `human` (§2.2), never read from the body.
  * Returns `undefined` for a path that is not one of these.
  */
@@ -650,10 +661,10 @@ async function handleRuleRoute(
     if (!feed?.rules) return errorResponse(503, 'rules not available');
     if (!sameOrigin()) return errorResponse(403, 'cross-origin request rejected');
     try {
-      const input = RuleCreateInputSchema.safeParse(await readJsonBody(req));
+      const input = KnowledgeCreateInputSchema.safeParse(await readJsonBody(req));
       if (!input.success) return errorResponse(400, formatZodError('new rule', input.error));
       return jsonResponse(
-        await feed.rules.create('human', { ...input.data, provenance: { by: 'human' } }),
+        await feed.rules.create('human', { ...input.data, source: { by: 'human' } }),
       );
     } catch (err) {
       return errorResponse(400, messageOf(err));
@@ -669,7 +680,7 @@ async function handleRuleRoute(
 
   try {
     if (isTest) {
-      const input = RuleTestInputSchema.safeParse(await readJsonBody(req));
+      const input = KnowledgeTestInputSchema.safeParse(await readJsonBody(req));
       if (!input.success) return errorResponse(400, formatZodError('rule test', input.error));
       if (!feed.ruleEvals || !evalsAvailable(feed)) {
         return errorResponse(
@@ -682,11 +693,11 @@ async function handleRuleRoute(
       noIdleTimeout();
       return jsonResponse(await testRules(feed.rules, feed.ruleEvals, input.data.id));
     }
-    const id = RuleIdSchema.safeParse(decodeURIComponent(match?.[1] ?? ''));
+    const id = KnowledgeIdSchema.safeParse(decodeURIComponent(match?.[1] ?? ''));
     if (!id.success) return errorResponse(400, `invalid rule id: ${match?.[1]}`);
     const action = match?.[2];
     if (action === 'update') {
-      const patch = RulePatchSchema.safeParse(await readJsonBody(req));
+      const patch = KnowledgePatchSchema.safeParse(await readJsonBody(req));
       if (!patch.success) return errorResponse(400, formatZodError('rule edit', patch.error));
       return jsonResponse(await feed.rules.update('human', id.data, patch.data));
     }
@@ -696,7 +707,7 @@ async function handleRuleRoute(
         : await feed.rules.retire(id.data, 'human'),
     );
   } catch (err) {
-    if (err instanceof RuleAlreadyDecidedError) return errorResponse(409, err.message);
+    if (err instanceof KnowledgeAlreadyDecidedError) return errorResponse(409, err.message);
     if (err instanceof NotFoundError) return errorResponse(404, err.message);
     return errorResponse(400, messageOf(err));
   }

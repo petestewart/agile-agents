@@ -16,11 +16,11 @@ import { afterEach, beforeEach, expect, test } from 'bun:test';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { AgentRecord, Rule } from '@agile-agents/shared';
+import { type AgentRecord, type KnowledgeItem, patternOf } from '@agile-agents/shared';
 import { Bus } from '../bus';
 import { runInit } from '../init';
-import { ensureBuiltinRules } from '../rules/builtins';
-import { RulesService } from '../rules/service';
+import { ensureBuiltinKnowledge } from '../knowledge/builtins';
+import { KnowledgeService } from '../knowledge/service';
 import { StateStore } from '../store';
 import { StreamService } from '../streams/service';
 import { HookService } from './service';
@@ -30,7 +30,7 @@ const BRANCH = 'T143-x';
 let repo: string;
 let store: StateStore;
 let bus: Bus;
-let rules: RulesService;
+let rules: KnowledgeService;
 let hooks: HookService;
 let stream: string;
 const session = 'worker-1';
@@ -57,7 +57,7 @@ beforeEach(async () => {
   bus = new Bus(store, init.stateRoot);
   const streams = new StreamService(store);
   // No flush timer: these tests own the flush point.
-  rules = new RulesService({ store, streams, statsFlushMs: 0 });
+  rules = new KnowledgeService({ store, streams, statsFlushMs: 0 });
 
   await store.putRepos({ demo: { path: repo, protected_branches: ['main'] } });
   const created = await streams.create('human', { title: 'rules', goal: 'gate me', repo: 'demo' });
@@ -72,7 +72,7 @@ beforeEach(async () => {
     last_seen: new Date().toISOString(),
   };
   await store.putAgent(session, record);
-  await ensureBuiltinRules(store);
+  await ensureBuiltinKnowledge(store);
   hooks = new HookService(store, bus, { rules });
 });
 
@@ -98,8 +98,8 @@ async function decide(command: string): Promise<{ decision: string; reason: stri
   };
 }
 
-function ruleOfKind(kind: string): Rule {
-  const found = store.listRules().find((rule) => rule.pattern?.kind === kind);
+function ruleOfKind(kind: string): KnowledgeItem {
+  const found = store.listKnowledge().find((rule) => patternOf(rule)?.kind === kind);
   if (found === undefined) throw new Error(`no ${kind} rule`);
   return found;
 }
@@ -114,14 +114,14 @@ test('a push to a protected branch is denied, the deny names the rule, and stats
   expect(reason).toContain('main');
 
   // Counters are coalesced (§5.7 is telemetry, not a decision): the read
-  // side of `RulesService` merges what is still pending, and a flush is
+  // side of `KnowledgeService` merges what is still pending, and a flush is
   // what puts it on disk.
   const pending = rules.get(before.id);
   expect(pending.stats.fired).toBe(1);
   expect(pending.stats.violated).toBe(1);
   expect(pending.stats.last_fired_at).toBeString();
   await rules.flushStats();
-  expect(store.getRule(before.id).stats).toMatchObject({ fired: 1, violated: 1 });
+  expect(store.getKnowledge(before.id).stats).toMatchObject({ fired: 1, violated: 1 });
 
   // The log answers "why was I denied" on its own (§5.4's built-ins are
   // global and critical, so a post-mortem must not need the transcript).
@@ -138,7 +138,7 @@ test('an allowed call still bumps fired for every rule that was evaluated, and v
   expect(decision).toBe('allow');
 
   await rules.flushStats();
-  const evaluated = store.listRules().filter((rule) => rule.status === 'accepted');
+  const evaluated = store.listKnowledge().filter((rule) => rule.status === 'accepted');
   expect(evaluated).toHaveLength(2); // no_push_protected + no_worktree_escape; no_push is retired
   for (const rule of evaluated) {
     expect(rule.stats.fired).toBe(1);
@@ -266,10 +266,9 @@ test('accepting the retired no_push rule gates every push, including to the tick
 test('T169: a command_deny hit on `rm -rf dist` writes one thread entry naming the rule', async () => {
   const created = await rules.create('human', {
     text: 'never wipe build output',
-    enforcement: 'pattern',
-    pattern: { kind: 'command_deny', args: { patterns: ['rm -rf'] } },
+    enforcement: 'action',
+    check: { by: 'pattern', pattern: { kind: 'command_deny', args: { patterns: ['rm -rf'] } } },
     scope: { kind: 'global' },
-    stage: 'action',
   });
   await rules.accept(created.id, 'human');
   const before = store.readThread(stream).length;
@@ -296,18 +295,16 @@ test('T169: a command_deny hit on `rm -rf dist` writes one thread entry naming t
 test('T169: three identical denied retries leave one thread entry; a new target or rule adds one', async () => {
   const wipe = await rules.create('human', {
     text: 'never wipe build output',
-    enforcement: 'pattern',
-    pattern: { kind: 'command_deny', args: { patterns: ['rm -rf'] } },
+    enforcement: 'action',
+    check: { by: 'pattern', pattern: { kind: 'command_deny', args: { patterns: ['rm -rf'] } } },
     scope: { kind: 'global' },
-    stage: 'action',
   });
   await rules.accept(wipe.id, 'human');
   const curl = await rules.create('human', {
     text: 'no network fetches',
-    enforcement: 'pattern',
-    pattern: { kind: 'command_deny', args: { patterns: ['curl'] } },
+    enforcement: 'action',
+    check: { by: 'pattern', pattern: { kind: 'command_deny', args: { patterns: ['curl'] } } },
     scope: { kind: 'global' },
-    stage: 'action',
   });
   await rules.accept(curl.id, 'human');
   const before = store.readThread(stream).length;

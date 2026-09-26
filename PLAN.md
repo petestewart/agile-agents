@@ -1221,7 +1221,7 @@ agile node show $P --json | jq -r '.delivery_state.status, .delivery_state.pr.au
 
 ### Ticket: T260 Knowledge items replace rules
 - **Priority:** P0
-- **Status:** Todo
+- **Status:** Done (merge e67f850)
 - **Owner:** —
 - **Scope:**
   - Add `KnowledgeItem` (§14.3) in `shared/knowledge.ts`, and `knowledge/` in the store.
@@ -1231,20 +1231,20 @@ agile node show $P --json | jq -r '.delivery_state.status, .delivery_state.pr.au
   - Delete `seed-plan-v1.ts`.
 - **Acceptance Criteria:** Migration test on a copied home with every enforcement and stage combination. The CLI shows the name on cards. The existing rules tests pass under the new names.
 - **Validation Steps:** `bun test packages/shared packages/daemon/src/knowledge packages/cli`.
-- **Notes:** First ticket of Phase 10.
+- **Notes:** First ticket of Phase 10. Review (sonnet): 2 blocking fixed (crash-safe P6 twin migration; propose_rule examples kept in `source.finding` for `tell` items). Daemon −165. `agile knowledge` (alias `rules`), RPC `knowledge.*` with `rule.*` aliases, `K-<ulid>` keeping rule ulids; the hook asks only `action` items. Still `/api/rules` and the Rules screen (T266 renames). CLAUDE.md still names `packages/daemon/src/rules` (needs Pete's OK to edit).
 
 ### Ticket: T261 Stacked scopes and paths
 - **Priority:** P0
-- **Status:** Todo
+- **Status:** Done (merge de5d9ff)
 - **Owner:** —
 - **Scope:** One scope filter (global, repo, project, subtree, plus `paths`) used by the brief, the hook and ship. In the worked example, the web part gets global, web and Shop items and its parent's contracts, and nothing from Blog. Paths filter against the files being edited (action) or changed (ship); the brief lists path-limited items under their globs.
 - **Acceptance Criteria:** Table tests from the worked example (§11 step 3).
 - **Validation Steps:** `bun test packages/daemon/src/knowledge packages/daemon/src/hook`.
-- **Notes:** After T260.
+- **Notes:** After T260. Review (sonnet): 2 blocking fixed (typecheck; Bash calls skipped path-limited rules). Bash paths now extracted; unknown paths fail closed (path-limited action items are evaluated). Daemon +104 net.
 
 ### Ticket: T262 Ship checks: classifier and reviewer checklist
 - **Priority:** P0
-- **Status:** Todo
+- **Status:** Done (merge 6f51557)
 - **Owner:** —
 - **Scope:** At delivery:
   - `ship` items run through the classifier over the diff (the old diff-rules code);
@@ -1253,20 +1253,20 @@ agile node show $P --json | jq -r '.delivery_state.status, .delivery_state.pr.au
   Findings hold delivery and go back to the worker as a `ship_findings` event (added to §15). They go to you only when the check is unsure (route band) or the worker disputes them with `ask`.
 - **Acceptance Criteria:** FakeClassifier + fake reviewer: a held delivery, a fix, a pass; a routed result reaches the inbox; the checklist appears in the reviewer's `brief.md`.
 - **Validation Steps:** `bun test packages/daemon/src/delivery packages/daemon/src/knowledge`.
-- **Notes:** After T261 and T244. The real key may be used for a manual check (D16).
+- **Notes:** After T261 and T244. The real key may be used for a manual check (D16). Review (sonnet) PASS. Daemon +291. `ship_findings` event (self, wakes work nodes). Reviewer session only when review items match changed paths; unsure → inbox gate. Follow-ups: a failed re-deliver after the reviewer finishes is only logged (node stays held until re-landed); review-result cache is unbounded; reviewer brief still says "no gate waits on you". Real-key manual check not done.
 
 ### Ticket: T263 ∥ Lookup tool and briefs
 - **Priority:** P1
-- **Status:** Todo
+- **Status:** Done (merge bc458de)
 - **Owner:** —
 - **Scope:** Add a `lookup_knowledge(path)` verb (MCP) that returns the accepted items in scope for that path. Briefs include everything in scope and tell the agent to use the lookup before touching unfamiliar areas.
 - **Acceptance Criteria:** A verb test over MCP; a brief snapshot test.
 - **Validation Steps:** `bun test packages/daemon/src/runner packages/cli`.
-- **Notes:** After T261.
+- **Notes:** After T261. Review (sonnet) PASS; path normalization added after review (absolute/`./`/`..`; outside the worktree refused). Daemon +61.
 
 ### Ticket: T264 Proposals, lessons kinds and `knowledge_accepted`
 - **Priority:** P1
-- **Status:** Todo
+- **Status:** Done (merge da3be9f)
 - **Owner:** —
 - **Scope:**
   - `propose_knowledge` replaces `propose_rule`. The agent picks the kind; the scope defaults to the node's subtree.
@@ -1275,20 +1275,20 @@ agile node show $P --json | jq -r '.delivery_state.status, .delivery_state.pr.au
   - Items that never fire are flagged in the report (unchanged logic, re-keyed).
 - **Acceptance Criteria:** Tests: accepting a Shop decision reaches Shop's live nodes and not Blog's; lessons after `merged` propose with a kind.
 - **Validation Steps:** `bun test packages/daemon/src/knowledge packages/daemon/src/lessons packages/daemon/src/events`.
-- **Notes:** After T244 and T260.
+- **Notes:** After T244 and T260. Review (sonnet): 1 blocking fixed — the lessons retro now runs only after `merged` (direct land, markLanded, PR poller `onMerged`), at most once per node; a plain close no longer starts it. `propose_rule` replaced by `propose_knowledge` (no alias). `knowledge_accepted` goes to every live node in scope as `parties`.
 
 ### Ticket: T265 ∥ Per-repo norms in the repo view
 - **Priority:** P2
-- **Status:** Todo
+- **Status:** Done (merge 6e37da9)
 - **Owner:** —
 - **Scope:** The repo view (T209) lists the accepted standards and architecture for that repo, with enforcement and stats.
 - **Acceptance Criteria:** e2e: an accepted api standard shows under api.
 - **Validation Steps:** `bun run test:e2e`.
-- **Notes:** After T260.
+- **Notes:** After T260. Review (sonnet) PASS. Daemon +11. `GET /api/repos/:name/knowledge` (accepted, repo-scoped, no decisions).
 
 ### Ticket: T266 Knowledge screen
 - **Priority:** P1
-- **Status:** Todo
+- **Status:** Done (merge a708c01)
 - **Owner:** —
 - **Scope:** The Rules screen becomes Knowledge:
   - filter by kind, scope and enforcement; edit text, paths, enforcement and check;
@@ -1298,12 +1298,21 @@ agile node show $P --json | jq -r '.delivery_state.status, .delivery_state.pr.au
   Inbox cards say "standard/architecture/decision proposed".
 - **Acceptance Criteria:** e2e: accept a proposed decision and see it on a node's Knowledge-in-scope tab.
 - **Validation Steps:** `bun run test:e2e`.
-- **Notes:** After T260. Pete looks at it.
+- **Notes:** After T260. Pete looks at it. Review (sonnet) PASS. Daemon +1. Screen and tab say Knowledge; kind/enforcement filters; paths editable; inbox cards "<kind> proposed" (new optional `knowledge_kind` on rule_accept items). Internal ids (`rules` view, `rules-*` testids, `/api/rules`) unchanged. "Never fires" flag predates this ticket.
+
+### Ticket: T268 Ship-check classifier false hold; Phase 10 wording
+- **Priority:** P1
+- **Status:** Done (merge b250331)
+- **Owner:** —
+- **Scope:** From T267 QA with the real TypeSafe key: the `tests-with-changes` ship item (Pete's T267 script) kept holding delivery after the worker added a real test (3 retries, deny 0.80–0.86), though `agile knowledge test` passed on the item's examples. Find out what the classifier is actually sent at ship time (the whole diff? truncated? file list?) and why it disagrees with the examples; fix the request (e.g. give it the changed-file list plus a bounded diff, and phrase the call the way the examples are phrased) so the T267 flow holds, then passes after a test is added. Check with the real key (D16; never print it). Also: the hold message still says "landing refused by diff rule"; `brief.md`'s heading still says "Rules in scope". Use knowledge wording.
+- **Acceptance Criteria:** Unit tests (FakeClassifier) pin the request shape. A recorded manual run with the real key: the T267 hold, then a pass after a test is added. Wording updated.
+- **Validation Steps:** `bun test packages/daemon/src/delivery packages/daemon/src/classifier packages/daemon/src/runner`.
+- **Notes:** Before Pete's Phase 10 look. Review (sonnet): code PASS; its one blocker was this record. Cause: an over-budget diff is split per file (§8.2/D14) and the src part never saw the added test (real key: 0.77/0.73). Every ship call now carries the full changed-file list (cap 200) before the diff; default question "Does this change violate: …?". Manual run with the real key (key never printed), T267 flow on a scratch ledger-lite: no test → held (0.81); test added → merged. Split parts now 0.44–0.53 (routed, not denied). Open for Pete: the no-test hold sits just above the 0.8 band; per-file splitting is weaker than one whole-diff call (changing it changes §8.2/D14). Wording: "delivery held by ship check <name>", brief heading "Knowledge in scope". Daemon +38.
 
 ### Ticket: T267 Phase 10 QA and Pete's look
 - **Priority:** P0
-- **Status:** Todo
-- **Owner:** —
+- **Status:** In Review (QA ACCEPT 2026-09-24; Pete's look pending)
+- **Owner:** Pete
 - **Scope:** Black-box QA of the migration, scopes, action and ship enforcement (real key allowed per D16), lookup and events. Daemon line count. Pete adds a ship-check standard on ledger-lite and watches a delivery get held and fixed.
 - **Acceptance Criteria:** QA ACCEPT. Live: the delivery is held with the item named, the worker adds the test, and the next deliver merges. A decision accepted mid-run shows in the live node's Activity.
 - **Validation Steps:** Pete, on his Mac:
@@ -1329,7 +1338,7 @@ agile knowledge accept $D
 agile tail --node $N --events
 ```
 
-- **Notes:** The goal's "do not write a test" wording is deliberate, so the hold fires.
+- **Notes:** The goal's "do not write a test" wording is deliberate, so the hold fires. QA (sonnet, black-box) ACCEPT on 0ae4dde: bun test 2183/0, integration and e2e green; migration of every enforcement × stage, scopes, `knowledge_accepted`, Knowledge screen verified by hand. With the real classifier key the ship item still held after a real test was added (3 retries, deny 0.80–0.86) while `knowledge test` agreed with its examples → T268. Daemon 24,729 lines (23,772 at Phase 9).
 
 ### Phase 11 — Coordination
 
@@ -1616,7 +1625,8 @@ Daemon: `em/`, `architect/`, `oracle/`, `qa/`, `halts/`, `quota/`, `handoff/`, `
 
 ## 10. Discovered Issues Log
 
-- Phase 9 complete on `claude/phase-9` (2026-09-24): T240–T246 merged, T247 QA ACCEPT; awaiting Pete's look. Phase 10 proceeds on `claude/phase-10`.
+- Phase 10 complete on `claude/phase-10` (2026-09-24): T260–T266 merged, T267 QA ACCEPT; T268 (real-classifier ship hold) before Pete's look. Phase 11 proceeds on `claude/phase-11`.
+- Phase 9 complete on `claude/phase-9` (2026-09-24): T240–T246 merged, T247 QA ACCEPT; awaiting Pete's look (draft PR https://github.com/petestewart/agile-agents/pull/6, base claude/phase-8). Phase 10 proceeds on `claude/phase-10`.
 - (Pete, 2026-09-24) P13 bullet 1 (leave a private repo out of a session's readable directories) is deferred until it becomes a need; the hook check (T229) stands alone.
 - Phase 8 complete on `claude/phase-8` (2026-09-24): T220–T229 merged, T230 QA ACCEPT; awaiting Pete's look (draft PR https://github.com/petestewart/agile-agents/pull/5, base claude/phase-7). Phase 9 proceeds on `claude/phase-9` cut from it.
 - Phase 7 complete on `claude/phase-7` (2026-09-24, tip 3ab7109): T200–T211 merged, T212 QA ACCEPT; awaiting Pete's look (draft PR https://github.com/petestewart/agile-agents/pull/4). Phase 8 proceeds on `claude/phase-8` cut from it (Pete: don't wait).
