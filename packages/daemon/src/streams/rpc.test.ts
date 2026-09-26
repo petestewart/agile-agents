@@ -251,6 +251,22 @@ describe('list / close / archive', () => {
     expect(all.tree[0]?.children).toHaveLength(1);
   });
 
+  test("T398: archive stops the node's live sessions first; an unknown node stops nothing", async () => {
+    const stopped: string[] = [];
+    const streams = new StreamService(store);
+    const withStop = buildStreamRpcMethods(streams, {
+      stopSessions: async (id) => {
+        stopped.push(id);
+      },
+    });
+    const node = await create('busy');
+    await withStop['stream.archive']?.({ id: node.id });
+    expect(stopped).toEqual([node.id]);
+    expect(streams.get(node.id).archived).toBe(true);
+    await expect(withStop['stream.archive']?.({ id: ulid() })).rejects.toThrow(/Stream/);
+    expect(stopped).toEqual([node.id]);
+  });
+
   test('close sets human.status and an unknown stream is not found', async () => {
     const stream = await create();
     const closed = await call<Stream>('stream.close', { id: stream.id, note: 'done thinking' });

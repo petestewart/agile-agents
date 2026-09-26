@@ -48,9 +48,10 @@ None open. (The last ones were fixed in T379, T380, T382 and T383.)
 - A line sent with `start` appears in the first prompt twice (the brief's
   "Thread so far" and "What woke you"); by design for every wake (T336), a
   few tokens, invisible to the user.
-- RPC `stream.archive` archives one node without stopping its sessions; the
-  HTTP route archives the subtree and stops them. CLI `test-support.ts` isn't
-  wired to `onTreeChanged`.
+- RPC `stream.archive` (the CLI) archives one node (it stops that node's
+  sessions since T398); the cockpit's Delete archives the subtree. Pete to
+  say whether the CLI should match. CLI `test-support.ts` isn't wired to
+  `onTreeChanged`.
 - `git@github.com:` remotes show "GitHub · HTTPS" in the cloud container
   because its git config rewrites them to https (environment, not code).
 

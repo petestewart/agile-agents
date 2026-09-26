@@ -146,6 +146,8 @@ export interface StreamRpcOptions {
   create?: StreamService['create'];
   /** T205: `node.add_repo` / `node.switch_repo` (projects-design §7). */
   repoInPlace?: RepoInPlaceService;
+  /** T398: stops a node's live sessions before `stream.archive` hides it (as the cockpit's Delete does). */
+  stopSessions?: (id: string) => Promise<unknown>;
 }
 
 export function buildStreamRpcMethods(
@@ -248,7 +250,11 @@ export function buildStreamRpcMethods(
 
     'stream.archive': async (params) => {
       const p = requireObject(params);
-      return service.archive(EDGE_PRINCIPAL, requireStreamId(p.id));
+      const id = requireStreamId(p.id);
+      // T398: no agent runs on a node nobody can see any more.
+      service.get(id);
+      await options.stopSessions?.(id);
+      return service.archive(EDGE_PRINCIPAL, id);
     },
 
     'stream.thread_append': async (params) => {
