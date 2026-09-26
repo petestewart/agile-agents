@@ -24,6 +24,14 @@ describe('parseShellUrl', () => {
     expect(parseShellUrl('?view=rules&project=p').project).toBe('p');
   });
 
+  test('Knowledge links say knowledge; the older rules link still opens it', () => {
+    expect(parseShellUrl('?view=knowledge').view).toBe('rules');
+    expect(parseShellUrl('?view=rules').view).toBe('rules');
+    expect(shellSearch({ view: 'rules', node: undefined, project: undefined })).toBe(
+      '?view=knowledge',
+    );
+  });
+
   test('a node wins over a view', () => {
     expect(parseShellUrl(`?view=rules&node=${NODE}`).view).toBe('stream');
   });

@@ -241,9 +241,9 @@ export function DeliveryPanel({
         >
           {land.ready
             ? `Ready: ${land.branch} is ${land.ahead} commit${land.ahead === 1 ? '' : 's'} ahead of ${land.target}${
-                land.gated ? ' — this repo asks for a land gate' : ''
+                land.gated ? ' — this repo asks you to approve each merge' : ''
               }.`
-            : `Not landable yet: ${land.reason}`}
+            : `Can’t merge yet: ${land.reason}`}
         </p>
       ) : null}
       {outcome && !(conflicts && conflicts.length > 0) && (
