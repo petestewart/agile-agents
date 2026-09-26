@@ -2423,9 +2423,9 @@ test.skipIf(!RUN)(
       );
       await streamPage().getByRole('button', { name: 'Start agent', exact: true }).click();
       await checkText(
-        'a worker session appears',
+        "a worker session appears (it reads as the node's Agent)",
         page.locator('[data-testid="session"][data-role="worker"]'),
-        /worker/,
+        /^Agent /,
       );
       await until(
         'Jira: the child moves to In Progress',

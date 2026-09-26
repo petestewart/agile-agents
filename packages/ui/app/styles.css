@@ -5095,7 +5095,7 @@ span.cr-answering-q {
   color: var(--text-faint);
 }
 .cr-activity-seen[data-delivery="pending"] {
-  color: var(--amber-text);
+  color: var(--text-muted);
 }
 .cr-activity-self {
   font-size: var(--text-sm);

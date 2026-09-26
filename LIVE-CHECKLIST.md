@@ -414,7 +414,7 @@ From here on, every step is done in the cockpit unless it is marked
 - [ ] Press **Approve plan** on the card (or **Approve** on the Plan tab).
       The tab reads `Plan v1 · approved by human` and the card leaves
       **Needs me**. Click the ledger-lite part in the rail and open its
-      **Activity** tab: it has a `plan changed` row. Each part's brief now
+      **Activity** tab: it has a `Plan changed` row. Each part's brief now
       carries its owned paths and the contract.
 - [ ] While the parts work, the Ledger export page shows a **Children**
       section: one row per part, its status in the words the rail uses, and
@@ -498,7 +498,7 @@ If the coordinator already proposed this link, press **Apply** on its card in
 - [ ] Open the **ledger-lite part**: the wait reads
       `agile-test-repo part merged, so this no longer waits on it`, and its
       thread says the same. The coordinator's **Activity** tab has a
-      `child delivered` row.
+      `Child delivered` row.
 - [ ] Sync after merge is per repo: when main moves, every other live work
       node **on that repo** gets main merged in. The ledger-lite part is on
       ledger-lite, so it is synced in step 5, when Blog's work merges into
@@ -939,10 +939,10 @@ child should be a small task an agent can do in agile-test-repo (for example
       **Start agent**: one click starts it with the defaults (the composer's
       chip names them: `Claude Opus 5.5 · low`; the chevron beside
       **Start agent** picks another model).
-- [ ] A `worker` session appears in its session list and starts work in the
+- [ ] An `Agent` session appears in its session list and starts work in the
       new worktree. In Jira the child issue moves to **In Progress**.
 - [ ] Edit the child issue's description in Jira. Within five minutes the
-      child's **Activity** tab has an `external changed` row and the agent is
+      child's **Activity** tab has an `External changed` row and the agent is
       told.
 - [ ] When the page reads `Agent finished`, press **Merge**. The PR body's
       `Issues:` line links the child issue. In Jira the issue moves to
