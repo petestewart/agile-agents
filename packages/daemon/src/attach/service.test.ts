@@ -534,6 +534,9 @@ describe('the reviewer (§4.2)', () => {
     });
     // Everything else the worker got, the reviewer got too.
     expect(reviewerEnv?.GIT_EDITOR).toBe('true');
+    // T345: no inherited CDPATH can redirect a checked `cd`.
+    expect(workerEnv?.CDPATH).toBe('');
+    expect(reviewerEnv?.CDPATH).toBe('');
   }, 30_000);
 
   test('a reviewer never moves agent.status, even with no worker left', async () => {
